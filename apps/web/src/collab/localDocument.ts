@@ -4,22 +4,6 @@ import { PENDING_MAX_CHARS, toBase64, readPending, openDatabase, transactionDone
 // The Yjs-free half (keys, purges, rescue-entry names) lives in ./localDocumentStore.
 export { pendingStorageKey, purgeLocalDocuments, purgePendingForScope, localDocumentKey, type LocalSaveState } from "./localDocumentStore";
 
-/** Everything this device holds for one document (IndexedDB row + rescue), base64; null if nothing. */
-export async function exportLocalDocument(key: string): Promise<string | null> {
-  try {
-    const db = await openDatabase();
-    try {
-      const stored = await new Promise<Uint8Array | undefined>((resolve, reject) => {
-        const request = db.transaction("documents").objectStore("documents").get(key);
-        request.onsuccess = () => resolve(request.result);
-        request.onerror = () => reject(request.error);
-      });
-      const pending = readPending(key);
-      const all = [stored, pending?.update].filter((u): u is Uint8Array => !!u);
-      return all.length ? toBase64(all.length === 1 ? all[0]! : Y.mergeUpdates(all)) : null;
-    } finally { db.close(); }
-  } catch { return null; }
-}
 /** Transactional snapshots: every acknowledgement means the complete CRDT reached disk.
  * Snapshot writes are serialized and coalesce edits arriving during a disk write.
  * Unscoped v2 databases are deliberately retained, never loaded or silently deleted.

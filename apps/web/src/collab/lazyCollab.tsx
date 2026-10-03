@@ -1,4 +1,4 @@
-import { lazy, Suspense, useState } from "react";
+import { useEffect, useState } from "react";
 import type { Note } from "@prism/core/shell";
 
 /**
@@ -7,16 +7,27 @@ import type { Note } from "@prism/core/shell";
  *
  * `preloadCollabEditor()` fetches the chunk ahead of the first open (on idle after
  * boot, and on the first interaction). Once it has arrived a document mounts the
- * editor DIRECTLY — no Suspense boundary, so no loading state is shown for a chunk
- * the browser already has. Only an open that beats the download shows the same
- * "Opening document…" line the editor itself starts with.
+ * editor DIRECTLY, so no loading state is shown for a chunk the browser already has.
+ * Only an open that beats the download shows the same "Opening document…" line the
+ * editor itself starts with. A failed download is never remembered: the next mount
+ * (the error boundary's Retry, another page) asks for the chunk again.
  */
 type Module = typeof import("./CollabDocument");
 let loaded: Module | null = null;
 let pending: Promise<Module> | null = null;
 
+type Loader = () => Promise<Module>;
+const importEditor: Loader = () => import("./CollabDocument");
+let loader: Loader = importEditor;
+/** Fixtures only: replace how the editor module is fetched (a failing download, a stand-in). */
+export function setCollabEditorLoaderForTests(next: Loader | null): void {
+  loader = next ?? importEditor;
+  loaded = null;
+  pending = null;
+}
+
 export function preloadCollabEditor(): Promise<Module> {
-  pending ??= import("./CollabDocument").then(
+  pending ??= loader().then(
     (m) => (loaded = m),
     (e) => {
       pending = null; // a failed download may be retried by the next open
@@ -26,17 +37,25 @@ export function preloadCollabEditor(): Promise<Module> {
   return pending;
 }
 
-const Deferred = lazy(() => preloadCollabEditor().then((m) => ({ default: m.CollabDocument })));
-
 export function CollabDocument(props: { noteId: string; note: Note }) {
-  // Decided once per mount: switching branches later would remount the editor.
-  const [direct] = useState(() => loaded !== null);
-  if (direct && loaded) return <loaded.CollabDocument {...props} />;
-  return (
-    <Suspense fallback={<p role="status" className="p-6 text-sm">Opening document…</p>}>
-      <Deferred {...props} />
-    </Suspense>
-  );
+  // The module this mount renders: already here (no loading state at all), or fetched now.
+  // NOT React.lazy: a lazy component remembers a failed download forever, so "Retry" (which
+  // remounts this component) would land in the same rejection. Each mount asks again.
+  const [state, setState] = useState<{ module: Module | null; error: Error | null }>(() => ({ module: loaded, error: null }));
+  useEffect(() => {
+    if (state.module) return;
+    let live = true;
+    preloadCollabEditor().then(
+      (module) => { if (live) setState({ module, error: null }); },
+      () => { if (live) setState({ module: null, error: new Error(navigator.onLine === false ? "You\u2019re offline and the editor isn\u2019t on this device yet. Reconnect, then try again." : "The editor couldn\u2019t be loaded. Check your connection and try again.") }); },
+    );
+    return () => { live = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- once per mount
+  }, []);
+  // Thrown to the surrounding error boundary: its Retry remounts this component → a new download.
+  if (state.error) throw state.error;
+  if (!state.module) return <p role="status" className="p-6 text-sm">Opening document…</p>;
+  return <state.module.CollabDocument {...props} />;
 }
 
 /**

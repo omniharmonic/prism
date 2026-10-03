@@ -53,7 +53,14 @@ const iso = (i: number) => new Date(Date.UTC(2026, 8, 30, 12, 0, 0) - i * 61_000
 
 // ── seed ─────────────────────────────────────────────────────────────────────
 let made = 0;
-const put = (n: Partial<FakeNote> & { id: string }) => { made++; return fv.put({ createdAt: iso(made + 5000), updatedAt: iso(made), ...n }); };
+// PERF_TITLES=all: EVERY note carries a title (not its file name) and an alias — the worst
+// case for the size of GET /api/tree, which emits both.
+const TITLED = process.env.PERF_TITLES === "all";
+const put = (n: Partial<FakeNote> & { id: string }) => {
+  made++;
+  const metadata = TITLED ? { ...(n.metadata ?? {}), title: `${title()} (${made})`, aliases: [`${words(2)} ${made}`] } : n.metadata;
+  return fv.put({ createdAt: iso(made + 5000), updatedAt: iso(made), ...n, ...(metadata ? { metadata } : {}) });
+};
 const body = (paragraphs: number) => Array.from({ length: paragraphs }, () => `<p>${sentence(18 + Math.floor(rnd() * 30))}</p>`).join("");
 
 const plan: Array<[share: number, make: (i: number) => Partial<FakeNote>]> = [

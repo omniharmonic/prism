@@ -251,6 +251,17 @@ The plain editor (`DocumentRenderer.tsx:85`) still calls `useNotes()`. The web a
 
 Initial JS: 972.1 → 754.6 KB gzip.
 
+### Tree size with titles and aliases (`GET /api/tree`, 15,016 notes)
+
+Measured against `perf-server.ts` after the tree gained `title` / `aliases` (a title equal to the file name is not emitted).
+
+| Vault | Rows with a title | Raw | gzip on the wire |
+|---|---|---|---|
+| Default fixture | 1,000 | 2,143 KB | 272 KB |
+| `PERF_TITLES=all`: every note has a ~20-char title and one alias | 15,016 | 3,198 KB | 501 KB |
+
+The browser's IndexedDB read cache skips a body over 4 MB (`MAX_BODY` in `offline/readCache.ts`). At 15k notes the tree is under it in both cases. It crosses 4 MB at about 29k notes with no titles (143 bytes a row) and at about 19.7k notes when every note has a short title and an alias (213 bytes a row); long titles or many aliases bring that lower (the per-row ceiling is 200 + 10 × 100 chars). Past the cap the tree is simply not cached, so an offline start has no sidebar. Not changed here. Proposed: give the tree its own cap in `readCache.ts` (for example 16 MB for the `/tree` key only, still inside the 64 MB total), rather than trimming what the tree carries.
+
 ### 3. The block editor out of the initial chunk — `feat/w6-perf`
 
 Design A below, built. Initial JS **754.6 → 417.5 KB gzip** (2,425 → 1,333 KB raw). The static set went from 2,765 modules / 2,516 KB minified to 2,384 / 1,432 KB (`perf-static-graph.mjs`).

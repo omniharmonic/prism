@@ -100,6 +100,24 @@ export function purgePendingForScope(scopeKey: string, keepKeys: string[]): void
   purgePending((t) => t === tag(scopeKey), kept);
 }
 
+/**
+ * Everything this device holds for one document, as stored, base64 — for the leave
+ * prompt's download. No Yjs: `state` is the IndexedDB row (a full Yjs update) and
+ * `pending` the unload-rescue entry (a Yjs update to apply on top of it); either may be
+ * null. THROWS when local storage cannot be read: the caller must not treat that as
+ * "nothing to keep" (it is about to delete this state).
+ */
+export async function exportLocalDocumentRaw(key: string): Promise<{ state: string | null; pending: string | null }> {
+  const db = await openDatabase();
+  try {
+    const stored = await new Promise<Uint8Array | undefined>((resolve, reject) => {
+      const request = db.transaction("documents").objectStore("documents").get(key);
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    return { state: stored ? toBase64(stored) : null, pending: readPending(key)?.raw ?? null };
+  } finally { db.close(); }
+}
 /** No credentials or unscoped legacy state. Call only after checking document access. */
 export function localDocumentKey(scope: WriteScope, documentName: string): string {
   return JSON.stringify([scopeKey(scope), documentName]);

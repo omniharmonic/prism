@@ -5,7 +5,11 @@ import { persistLocalDocument, localDocumentKey, pendingStorageKey, type LocalSa
 import { CollabDoc } from "../src/collab/CollabDoc";
 import { ReconnectScreen } from "../src/auth/ReconnectScreen";
 import { fetchMe, logout } from "../src/config";
-import { unsyncedDocs, syncUnsyncedDocs, startUnsyncedDocs } from "../src/collab/unsynced";
+import { unsyncedDocs, syncUnsyncedDocs, startUnsyncedDocs, exportUnsynced } from "../src/collab/unsynced";
+import { captureWriteContext } from "../src/offline/writeScope";
+import { CollabDocument as LazyCollabDocument, setCollabEditorLoaderForTests } from "../src/collab/lazyCollab";
+import { installChunkReloadRecovery } from "../src/chunkReload";
+import { RendererBoundary } from "../../../packages/core/src/components/layout/RendererBoundary";
 import { deriveSyncStatus, useSyncStore } from "@prism/core";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { VaultClientProvider, PlatformProvider, type VaultClient } from "@prism/core";
@@ -51,6 +55,8 @@ Object.assign(window, { prismCollabFixture: {
   },
   // Wave 2E re-review M1: live documents with edits only on this device.
   unsynced: () => unsyncedDocs(),
+  /** What the leave prompt's download would hold for this account's unsynced live documents. */
+  exportUnsynced: async () => exportUnsynced((await captureWriteContext()).scope),
   syncUnsynced: () => syncUnsyncedDocs(),
   startUnsynced: () => startUnsyncedDocs(),
   syncLabel: () => deriveSyncStatus(useSyncStore.getState()).label,
@@ -91,7 +97,20 @@ Object.assign(window, { prismCollabFixture: {
     } finally { db.close(); }
   },
 }});
+// ?lazy — the on-demand editor seam (lazyCollab): the first download of the editor chunk fails.
+const lazyMode = new URLSearchParams(location.search).has("lazy");
+if (lazyMode) {
+  let attempts = 0;
+  setCollabEditorLoaderForTests(async () => {
+    attempts++;
+    (window as unknown as { prismLazyAttempts: number }).prismLazyAttempts = attempts;
+    if (attempts === 1) throw new TypeError("Failed to fetch dynamically imported module");
+    return { CollabDocument: () => <p>Editor loaded</p>, useLiveCollab: () => true } as never;
+  });
+  installChunkReloadRecovery();
+  (window as unknown as { prismLazyBooted: number }).prismLazyBooted = Date.now();
+}
 const client = { listNotes: async () => [], getLinks: async () => [] } as unknown as VaultClient;
 const queries = new QueryClient();
 const query = new URLSearchParams(location.search);
-createRoot(document.getElementById("root")!).render(<React.StrictMode><QueryClientProvider client={queries}><PlatformProvider value="web"><VaultClientProvider client={client}>{(query.has("denied") || query.has("live")) ? <CollabDoc noteId="denied-note" /> : query.has("reconnect") ? <ReconnectScreen /> : <p>Scoped collaborative storage fixture</p>}</VaultClientProvider></PlatformProvider></QueryClientProvider></React.StrictMode>);
+createRoot(document.getElementById("root")!).render(<React.StrictMode><QueryClientProvider client={queries}><PlatformProvider value="web"><VaultClientProvider client={client}>{lazyMode ? <RendererBoundary><LazyCollabDocument noteId="n1" note={{ id: "n1", path: "Projects/Page", content: "", tags: [], metadata: {}, createdAt: "", updatedAt: null } as never} /></RendererBoundary> : (query.has("denied") || query.has("live")) ? <CollabDoc noteId="denied-note" /> : query.has("reconnect") ? <ReconnectScreen /> : <p>Scoped collaborative storage fixture</p>}</VaultClientProvider></PlatformProvider></QueryClientProvider></React.StrictMode>);

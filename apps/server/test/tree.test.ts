@@ -119,6 +119,39 @@ test("title + aliases (wikilink/mention matching): emitted only when present and
   assert.ok(!text.includes("Hidden Title") && !text.includes("hidden-alias"));
 });
 
+test("title + aliases hardening: control/bidi characters stripped, singular alias, no title equal to the file name, and never another member's private title", async () => {
+  fv.put({ id: "a", path: "docs/plan.md", content: "", tags: ["doc"], metadata: { title: "Road\u202emap\u0007 \u2066Q3\u2069\nplan", aliases: ["al\u200fias\u0000", "\u202e"], alias: "Solo" } });
+  fv.put({ id: "b", path: "docs/Budget.md", content: "", tags: [], metadata: { title: "Budget", alias: "money" } });
+  fv.put({ id: "c", path: "docs/Notes", content: "", tags: [], metadata: { title: "Notes" } });
+  fv.put({ id: "p", path: "private/diary.md", content: "", tags: ["doc"], metadata: { title: "Secret Diary Title", aliases: ["secret-alias"], prism_visibility: "private", prism_creator: "m@test.local" } });
+  fv.put({ id: "o", path: "private/mine.md", content: "", tags: [], metadata: { title: "Owner Private", prism_visibility: "private", prism_creator: OWNER } });
+  const r = await ownerReq("/tree");
+  const text = await r.text();
+  const body = JSON.parse(text) as Array<Record<string, unknown>>;
+  const a = body.find((e) => e.id === "a")!;
+  assert.equal(a.title, "Roadmap Q3 plan");
+  assert.deepEqual(a.aliases, ["alias", "Solo"]);
+  // A title that only repeats the file name adds nothing: not emitted. The alias still is.
+  const b = body.find((e) => e.id === "b")!;
+  assert.ok(!("title" in b));
+  assert.deepEqual(b.aliases, ["money"]);
+  assert.ok(!("title" in body.find((e) => e.id === "c")!));
+  // The admin tree lists another member's private note (path, as before) but not its title/aliases.
+  const p = body.find((e) => e.id === "p")!;
+  assert.equal(p.path, "private/diary.md");
+  assert.ok(!("title" in p) && !("aliases" in p));
+  assert.ok(!text.includes("Secret Diary Title") && !text.includes("secret-alias"));
+  assert.equal(body.find((e) => e.id === "o")?.title, "Owner Private");
+  // Its creator (a member who can view it) does get them.
+  grantUser("m@test.local", "tag", "doc", "view");
+  const mine = await tree(await req("/tree", { cookie: sessionCookie(makeSession("m@test.local")) }));
+  assert.equal(mine.find((e) => e.id === "p")?.title, "Secret Diary Title");
+  assert.deepEqual(mine.find((e) => e.id === "p")?.aliases, ["secret-alias"]);
+  // The owner's cached body is not handed to another admin-level reader as-is, and repeats are stable.
+  const again = await ownerReq("/tree");
+  assert.equal(again.headers.get("etag"), r.headers.get("etag"));
+});
+
 test("ETag: If-None-Match gives 304; a change gives a new tag and 200", async () => {
   fv.put({ id: "a", path: "a.md", content: "", tags: [] });
   const r1 = await ownerReq("/tree");

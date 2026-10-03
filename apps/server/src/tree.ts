@@ -44,6 +44,7 @@ export const TREE_META_KEYS = [
   // a title or an alias that differs from its file name).
   "title",
   "aliases",
+  "alias",
   // Pages (nested pages / trash): sibling order is emitted; trash state is internal
   // (trashed rows are never in the tree — GET /api/trash reads them from here).
   ORDER_KEY,
@@ -66,9 +67,11 @@ export interface TreeEntry {
   order?: number;
   /** `metadata.icon`: the page's emoji (a short string; anything longer is not an icon and is dropped). */
   icon?: string;
-  /** `metadata.title` (≤ 200 chars, else dropped): what page suggestions match besides the path name. */
+  /** `metadata.title` (≤ 200 chars, else dropped; control/bidi characters stripped; omitted when it
+   *  equals the file name): what page suggestions match besides the path name. */
   title?: string;
-  /** `metadata.aliases`: up to 10 non-blank strings of ≤ 100 chars each (other entries are dropped). */
+  /** `metadata.aliases` + `metadata.alias`: up to 10 distinct non-blank strings of ≤ 100 chars each
+   *  (other entries are dropped; control/bidi characters stripped). */
   aliases?: string[];
 }
 
@@ -124,7 +127,7 @@ interface State {
   rebuildAgain: boolean;
   waiters: Array<{ resolve: () => void; reject: (e: unknown) => void }>;
   timers: { reconnect?: NodeJS.Timeout; rebuild?: NodeJS.Timeout; dirty?: NodeJS.Timeout; snapshot?: NodeJS.Timeout; ping?: NodeJS.Timeout };
-  cache?: { version: number; body: string; etag: string };
+  cache?: { version: number; viewer: string; body: string; etag: string };
   stopped: boolean;
 }
 
@@ -185,15 +188,40 @@ const TITLE_MAX = 200;
 const ALIAS_MAX = 100;
 const ALIASES_MAX = 10;
 
-function aliasesOf(v: unknown): string[] | undefined {
-  if (!Array.isArray(v)) return undefined;
+/**
+ * Text that every tree reader renders in menus: no C0 control characters (tab and line
+ * breaks become a space) and no bidi controls, which could reorder or spoof the UI text
+ * around it — the rule `cleanLabel` applies to property labels. Linear, trimmed.
+ */
+function cleanText(v: string): string {
+  let out = "";
+  for (const ch of v) {
+    const c = ch.codePointAt(0)!;
+    if (c === 0x061c || c === 0x200e || c === 0x200f || (c >= 0x202a && c <= 0x202e) || (c >= 0x2066 && c <= 0x2069)) continue;
+    if (c === 9 || c === 10 || c === 13) out += " ";
+    else if (c < 0x20 || c === 0x7f) continue;
+    else out += ch;
+  }
+  return out.trim();
+}
+
+/** `metadata.aliases` (a list) and/or `metadata.alias` (one string) — both are honoured by `noteAliases`. */
+function aliasesOf(list: unknown, single: unknown): string[] | undefined {
   const out: string[] = [];
-  for (const a of v) {
-    if (typeof a !== "string" || a.length > ALIAS_MAX || a.trim() === "") continue;
-    out.push(a);
+  for (const a of [...(Array.isArray(list) ? list : []), single]) {
     if (out.length === ALIASES_MAX) break;
+    if (typeof a !== "string" || a.length > ALIAS_MAX) continue;
+    const text = cleanText(a);
+    if (text && !out.includes(text)) out.push(text);
   }
   return out.length ? out : undefined;
+}
+
+/** The file name a row is already known by: the path leaf, with and without `.md`. */
+function isFileName(title: string, path: string | null): boolean {
+  if (!path) return false;
+  const leaf = path.slice(path.lastIndexOf("/") + 1);
+  return title === leaf || (leaf.endsWith(".md") && title === leaf.slice(0, -3));
 }
 
 function rowFromNote(n: unknown): TreeRow | null {
@@ -214,8 +242,12 @@ function rowFromNote(n: unknown): TreeRow | null {
   const order = m[ORDER_KEY];
   if (typeof order === "number" && Number.isFinite(order)) row.order = order;
   if (typeof m.icon === "string" && m.icon !== "" && m.icon.length <= ICON_MAX) row.icon = m.icon;
-  if (typeof m.title === "string" && m.title.trim() !== "" && m.title.length <= TITLE_MAX) row.title = m.title;
-  const aliases = aliasesOf(m.aliases);
+  if (typeof m.title === "string" && m.title.length <= TITLE_MAX) {
+    const title = cleanText(m.title);
+    // A title that only repeats the file name tells a reader nothing new: not carried (tree size).
+    if (title && !isFileName(title, row.path)) row.title = title;
+  }
+  const aliases = aliasesOf(m.aliases, m.alias);
   if (aliases) row.aliases = aliases;
   if (typeof m[TRASH_META.at] === "string") row.trashedAt = m[TRASH_META.at] as string;
   if (typeof m[TRASH_META.by] === "string") row.trashedBy = m[TRASH_META.by] as string;
@@ -238,14 +270,14 @@ export function treeRowChanged(prev: TreeRow | undefined, row: TreeRow): boolean
   return shape(prev) !== shape(row);
 }
 
-function emit(r: TreeRow): TreeEntry {
+function emit(r: TreeRow, names = true): TreeEntry {
   const e: TreeEntry = { id: r.id, path: r.path, tags: r.tags, updatedAt: r.updatedAt };
   if (r.type !== undefined) e.type = r.type;
   if (r.prismType !== undefined) e.prismType = r.prismType;
   if (r.order !== undefined) e.order = r.order;
   if (r.icon !== undefined) e.icon = r.icon;
-  if (r.title !== undefined) e.title = r.title;
-  if (r.aliases !== undefined) e.aliases = r.aliases;
+  if (names && r.title !== undefined) e.title = r.title;
+  if (names && r.aliases !== undefined) e.aliases = r.aliases;
   return e;
 }
 
@@ -472,7 +504,7 @@ export async function ensureTree(entry: VaultEntry): Promise<{ version: number; 
   if (!st.started) startState(st);
   else if (!st.loaded && !st.ws && !st.rebuilding) void rebuild(st, "retry");
   if (!st.loaded) await new Promise<void>((resolve, reject) => st.waiters.push({ resolve, reject }));
-  return { version: st.version, entries: () => [...st.rows.values()].map(emit), rows: () => [...st.rows.values()], state: st };
+  return { version: st.version, entries: () => [...st.rows.values()].map((r) => emit(r)), rows: () => [...st.rows.values()], state: st };
 }
 
 /**
@@ -517,22 +549,37 @@ export async function warmPageAnchors(grants: ReadonlyArray<{ resource_type: str
   }
 }
 
-/** Serialize (and ETag) the projection, optionally filtered to rows a viewer may see. */
+/**
+ * Serialize (and ETag) the projection, optionally filtered to rows a viewer may see.
+ *
+ * The UNFILTERED tree (workspace owner/admin) lists every note's path, including other
+ * members' private notes — as it always has. It must not also hand out those notes'
+ * `title` / `aliases` (an export withholds them too): pass `names` = who is asking and
+ * whether they can VIEW a row; a private row they cannot view is emitted without both.
+ * Without `names`, private rows carry neither.
+ */
 export function renderTree(
   t: Awaited<ReturnType<typeof ensureTree>>,
   canView?: (r: NoteRef) => boolean,
+  names?: { viewer: string; canView: (r: NoteRef) => boolean },
 ): { body: string; etag: string; count: number } {
   const st = t.state;
-  if (!canView && st.cache && st.cache.version === st.version) {
+  const viewer = names?.viewer ?? "";
+  if (!canView && st.cache && st.cache.version === st.version && st.cache.viewer === viewer) {
     return { body: st.cache.body, etag: st.cache.etag, count: st.rows.size };
   }
   const list: TreeEntry[] = [];
   // Trashed pages are hidden from the tree for EVERYONE (owner included); the
   // Trash view reads them separately (GET /api/trash).
-  for (const r of st.rows.values()) if (!r.tags.includes(TRASH_TAG) && (!canView || canView(rowRef(r)))) list.push(emit(r));
+  for (const r of st.rows.values()) {
+    if (r.tags.includes(TRASH_TAG)) continue;
+    if (canView) { if (canView(rowRef(r))) list.push(emit(r)); continue; }
+    const named = r.visibility !== "private" || (r.title === undefined && r.aliases === undefined) || (!!names && names.canView(rowRef(r)));
+    list.push(emit(r, named));
+  }
   const body = JSON.stringify(list);
   const etag = `W/"${createHash("sha1").update(body).digest("hex").slice(0, 24)}"`;
-  if (!canView) st.cache = { version: st.version, body, etag };
+  if (!canView) st.cache = { version: st.version, viewer, body, etag };
   log(`vault=${st.entry.id} serve rows=${list.length} bytes=${body.length}${canView ? " (filtered)" : ""}`);
   return { body, etag, count: list.length };
 }

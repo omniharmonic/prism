@@ -12,10 +12,10 @@
  * leaves the entry in place (with the reason) for the user to open and resolve.
  */
 import { reportSyncSource } from "@prism/core/shell";
-import { captureWriteContext, scopeKey, type WriteScope } from "../offline/writeScope";
+import { captureWriteContext, sameScope, scopeKey, type WriteScope } from "../offline/writeScope";
 // Storage only (no Yjs): this module is on the app's boot path (the sync badge). The parts that
 // read or push a document's CRDT state are imported when they are needed.
-import { localDocumentKey, purgeLocalDocuments, purgePendingForScope } from "./localDocumentStore";
+import { localDocumentKey, purgeLocalDocuments, purgePendingForScope, exportLocalDocumentRaw } from "./localDocumentStore";
 
 export interface UnsyncedDoc { name: string; noteId: string; at: number; blocked?: "read-only" | "update-required" | "denied" }
 const storeKey = (scope: WriteScope) => `prism:collab-unsynced:${scopeKey(scope)}`;
@@ -85,11 +85,19 @@ export async function purgeOtherScopes(current: WriteScope | null): Promise<numb
   const mine = current ? scopeKey(current) : null;
   return purgeLocalDocuments((s) => s !== mine, (s, name) => registeredNames(s).has(name));
 }
-/** The unsynced live documents of `scope`, with their local state, for the leave prompt's download. */
-export async function exportUnsynced(scope: WriteScope): Promise<Array<{ noteId: string; document: string; yjsUpdateBase64: string | null }>> {
-  const out: Array<{ noteId: string; document: string; yjsUpdateBase64: string | null }> = [];
-  const { exportLocalDocument } = await import("./localDocument");
-  for (const entry of Object.values(read(scope))) out.push({ noteId: entry.noteId, document: entry.name, yjsUpdateBase64: await exportLocalDocument(localDocumentKey(scope, entry.name)) });
+/**
+ * The unsynced live documents of `scope`, with their local state, for the leave prompt's
+ * download: `yjsUpdateBase64` = the stored document (a Yjs update), `pendingUpdateBase64` =
+ * the unload-rescue entry to apply on top of it, when there is one. Read straight from
+ * storage — no editor chunk is needed at sign-out. THROWS if a document's state cannot be
+ * read; the caller keeps the person signed in rather than delete what it could not save.
+ */
+export async function exportUnsynced(scope: WriteScope): Promise<Array<{ noteId: string; document: string; yjsUpdateBase64: string | null; pendingUpdateBase64?: string }>> {
+  const out: Array<{ noteId: string; document: string; yjsUpdateBase64: string | null; pendingUpdateBase64?: string }> = [];
+  for (const entry of Object.values(read(scope))) {
+    const raw = await exportLocalDocumentRaw(localDocumentKey(scope, entry.name));
+    out.push({ noteId: entry.noteId, document: entry.name, yjsUpdateBase64: raw.state, ...(raw.pending ? { pendingUpdateBase64: raw.pending } : {}) });
+  }
   return out;
 }
 
@@ -99,7 +107,7 @@ export async function syncUnsyncedDocs(): Promise<void> {
   if (running || !navigator.onLine) return;
   running = true;
   try {
-    // Each document is re-authorized by its own fresh read before anything is sent.
+    // Finding out whether anything is waiting may use an identity confirmed a moment ago…
     const context = await captureWriteContext("recent");
     const todo = Object.values(read(context.scope)).filter((entry) => !openHere.has(entry.name) && entry.blocked !== "update-required");
     if (!todo.length) return;
@@ -108,6 +116,11 @@ export async function syncUnsyncedDocs(): Promise<void> {
     for (const entry of todo) {
       if (openHere.has(entry.name)) continue;
       if (!navigator.onLine) break;
+      // …but before EACH document is pushed, the server says who is signed in NOW (like the
+      // outbox before each row): after an account change in another tab, account A's local
+      // edits must never go out under B's session.
+      const current = await captureWriteContext(true);
+      if (!sameScope(context.scope, current.scope)) break;
       await syncOne(context.scope, context.headers, entry).catch(() => "kept");
     }
   } catch {

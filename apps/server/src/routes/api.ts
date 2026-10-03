@@ -344,7 +344,10 @@ api.get("/tree", compress(), async (c) => {
     console.warn(`[gateway] tree build failed: ${(e as Error).message}`);
     return c.json({ error: "vault_unreachable" }, 502);
   }
-  const { body, etag } = renderTree(tree, owner ? undefined : (r) => capsFor(actor, r).has("view"));
+  // Admins get the unfiltered tree (every path, as before) — but a private note they cannot
+  // VIEW keeps its title/aliases to its creator, exactly as an export does.
+  const mayView = (r: NoteRef) => capsFor(actor, r).has("view");
+  const { body, etag } = renderTree(tree, owner ? undefined : mayView, owner ? { viewer: actorSubject(actor) ?? "", canView: mayView } : undefined);
   const headers = { ETag: etag, "Cache-Control": "private, no-cache", Vary: "Cookie, Authorization, X-Prism-Vault" };
   if (etagMatches(c.req.header("if-none-match"), etag)) return new Response(null, { status: 304, headers });
   return new Response(body, { status: 200, headers: { ...headers, "Content-Type": "application/json" } });
