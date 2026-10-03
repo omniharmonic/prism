@@ -13,6 +13,10 @@
  *  - any note event            -> note LISTS (keys ["vault","notes",<filters>] only,
  *                                 never the per-id keys), search, tags, stats, graph,
  *                                 plus the vault-derived views in EXTRA_LIVE_KEYS
+ *  - the sidebar tree ["vault","tree"] (NP-OF-05): at once when a touched id is
+ *    not in the cached tree (a page made elsewhere) or was removed; for edits to
+ *    known pages at most once per TREE_THROTTLE_MS (renames/moves made elsewhere
+ *    still arrive, but an autosave elsewhere does not refetch the tree each time)
  *  - resync / >MAX_IDS touched -> queryKeys.vault.all + EXTRA_LIVE_KEYS
  * Invalidation only refetches ACTIVE (mounted) queries; the rest are just marked stale.
  */
@@ -50,6 +54,10 @@ export const EXTRA_LIVE_KEYS: ReadonlyArray<readonly unknown[]> = [
 /** More touched ids than this in one batch -> just refresh everything. */
 export const MAX_IDS = 50;
 
+/** Edits to pages the tree already lists refresh it at most this often. */
+export const TREE_THROTTLE_MS = 15_000;
+const TREE_KEY = ["vault", "tree"] as const;
+
 const isNoteListKey = (k: readonly unknown[]) => k[0] === "vault" && k[1] === "notes" && typeof k[2] !== "string";
 
 export interface Invalidator {
@@ -63,6 +71,9 @@ export interface Invalidator {
 
 export function createInvalidator(opts: {
   invalidate: (f: InvalidateFilter) => void;
+  /** Is this id in the cached sidebar tree? Unknown ids refresh the tree at once. Absent = always at once. */
+  inTree?: (id: string) => boolean;
+  treeThrottleMs?: number;
   debounceMs?: number;
   now?: () => number;
   setTimer?: (fn: () => void, ms: number) => unknown;
@@ -78,6 +89,16 @@ export function createInvalidator(opts: {
   let ids = new Set<string>();
   let anyNote = false;
   let everything = false;
+  let removed = false;
+  const treeThrottle = opts.treeThrottleMs ?? TREE_THROTTLE_MS;
+  let treeAt = -Infinity;
+  let treeTimer: unknown = null;
+  const refreshTree = () => {
+    if (treeTimer != null) clearT(treeTimer);
+    treeTimer = null;
+    treeAt = now();
+    opts.invalidate({ queryKey: TREE_KEY });
+  };
 
   const flush = () => {
     if (timer != null) clearT(timer);
@@ -85,10 +106,15 @@ export function createInvalidator(opts: {
     const all = everything || ids.size > MAX_IDS;
     const touched = [...ids];
     const hadNote = anyNote;
+    const hadRemove = removed;
     ids = new Set();
     anyNote = false;
     everything = false;
+    removed = false;
     if (all) {
+      if (treeTimer != null) clearT(treeTimer);
+      treeTimer = null;
+      treeAt = now();
       opts.invalidate({ queryKey: queryKeys.vault.all });
       for (const k of EXTRA_LIVE_KEYS) opts.invalidate({ queryKey: k });
       return;
@@ -96,6 +122,10 @@ export function createInvalidator(opts: {
     if (!hadNote) return;
     for (const id of touched) opts.invalidate({ queryKey: queryKeys.vault.note(id) });
     opts.invalidate({ predicate: (q) => isNoteListKey(q.queryKey) });
+    const inTree = opts.inTree;
+    const wait = treeAt + treeThrottle - now();
+    if (hadRemove || !inTree || touched.some((id) => !inTree(id)) || wait <= 0) refreshTree();
+    else if (treeTimer == null) treeTimer = setT(refreshTree, wait);
     opts.invalidate({ queryKey: ["vault", "search"] });
     opts.invalidate({ queryKey: queryKeys.vault.tags() });
     opts.invalidate({ queryKey: queryKeys.vault.stats() });
@@ -111,6 +141,7 @@ export function createInvalidator(opts: {
       if (ev.type === "resync") everything = true;
       else if (ev.type === "note" && typeof ev.id === "string") {
         anyNote = true;
+        if (ev.op === "remove") removed = true;
         ids.add(ev.id);
       } else return;
       schedule();
@@ -129,6 +160,8 @@ export function createInvalidator(opts: {
     flush,
     dispose() {
       if (timer != null) clearT(timer);
+      if (treeTimer != null) clearT(treeTimer);
+      treeTimer = null;
       timer = null;
     },
   };

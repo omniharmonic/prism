@@ -1,7 +1,8 @@
 import { isAccessUnavailable } from "../../data/VaultClient";
 import { noteLinkTitle } from "../../lib/wikilinks";
 import { isVaultNoteId } from "../../lib/noteIdentity";
-import { Suspense, useCallback, useEffect, useMemo } from "react";
+import { Suspense, useCallback, useEffect, useMemo, useRef } from "react";
+import { remoteAdoption } from "../../app/hooks/useAutoSave";
 import { Compass } from "lucide-react";
 import { useUIStore } from "../../app/stores/ui";
 import { useNote, useUpdateNote } from "../../app/hooks/useParachute";
@@ -106,6 +107,24 @@ export function Canvas() {
   // page leaves the live session too — its keystrokes must not reach the shared doc.
   const locked = !isVirtual && isLocked(effectiveNote);
   const isLiveDoc = collab.useLiveCollab(collabDocId) && collabDocId !== "" && !proposeOnly && !locked;
+  // NP-OF-05: an open PLAIN editor reads `note.content` once, at mount. When a
+  // re-read (events channel, focus refetch) brings content this editor neither
+  // shows nor wrote, an IDLE editor remounts on it; one with local edits keeps
+  // them (the save's 409 → "Needs review" path settles it). Live collab docs
+  // get remote edits through their socket and never come here.
+  const shown = useRef<{ id: string; content: string } | null>(null);
+  const plainNote = !isVirtual && !isLiveDoc && note ? note : null;
+  useEffect(() => {
+    if (!plainNote) { shown.current = null; return; }
+    const content = plainNote.content ?? "";
+    if (shown.current?.id !== plainNote.id) { shown.current = { id: plainNote.id, content }; return; }
+    if (shown.current.content === content) return;
+    const verdict = remoteAdoption(plainNote.id, content);
+    if (verdict === "keep" || verdict === "none") return; // re-judged on the next re-read
+    shown.current = { id: plainNote.id, content };
+    if (verdict === "adopt") useUIStore.getState().bumpNoteRevision(plainNote.id);
+  }, [plainNote]);
+
   // NP-PG-08: per-page small text / full width (styles/shell.css), any device, live or not.
   const pageStyle = isVirtual ? {} : pageStyleOf(effectiveNote);
 

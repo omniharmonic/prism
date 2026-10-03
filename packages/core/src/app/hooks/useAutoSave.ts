@@ -15,6 +15,10 @@ let autosaveInstances = 0;
 interface PendingSaveHandle {
   flush: () => Promise<void>;
   discard: () => void;
+  /** Unsent or in-flight edits, a failed save, or a draft held for conflict review. */
+  busy: () => boolean;
+  /** The content this editor last wrote successfully (null = nothing written yet). */
+  saved: () => string | null;
 }
 const pendingSaves = new Map<string, Set<PendingSaveHandle>>();
 
@@ -26,6 +30,22 @@ export async function flushPendingSaves(noteId: string): Promise<void> {
 /** Drop any unsent edits to `noteId` (after flushing — see above). */
 export function discardPendingSaves(noteId: string): void {
   for (const h of pendingSaves.get(noteId) ?? []) h.discard();
+}
+
+/**
+ * NP-OF-05: may an open plain editor adopt `remoteContent` (a re-read after a
+ * change made elsewhere)? "adopt" only when an editor for the note is mounted,
+ * every one of them is idle (nothing typed-and-unsent, no save in flight, no
+ * failed save, no draft parked for conflict review) and the content is not just
+ * the echo of this editor's own last save. With local edits the answer is
+ * "keep": the draft stays and the existing 409 → "Needs review" path decides.
+ */
+export function remoteAdoption(noteId: string, remoteContent: string): "adopt" | "own" | "keep" | "none" {
+  const handles = [...(pendingSaves.get(noteId) ?? [])];
+  if (handles.length === 0) return "none";
+  if (handles.some((h) => h.busy())) return "keep";
+  if (handles.some((h) => h.saved() === remoteContent)) return "own";
+  return "adopt";
 }
 
 export function useAutoSave(
@@ -46,6 +66,9 @@ export function useAutoSave(
   const lastContentRef = useRef<string>("");
   const pendingRef = useRef(false);
   const inFlight = useRef<Promise<void> | null>(null);
+  const wroteRef = useRef(false);
+  /** A save failed, or the draft was parked for review: remote content must not replace what is on screen. */
+  const heldRef = useRef(false);
   // Shared sync state (NP-OF-01): debounced edits count as "Saving…" and a
   // failure surfaces in the header with this editor's own retry.
   const syncKey = useRef(`autosave:${noteId}:${++autosaveInstances}`).current;
@@ -66,6 +89,8 @@ export function useAutoSave(
         if (sourceScope !== undefined && client.scope?.() !== sourceScope) throw new VaultRequestError(403, "Workspace changed before saving.");
         await mutateAsync({ id: noteId, content, expectedScope: sourceScope });
         lastContentRef.current = content;
+        wroteRef.current = true;
+        heldRef.current = false;
         reportSaveFailure(syncKey, null);
         if (!pendingRef.current) markDirty(syncKey, false);
         setLastSaved(new Date());
@@ -73,6 +98,7 @@ export function useAutoSave(
       } catch (error) {
         // Failed writes must not become the baseline for later saves.
         pendingRef.current = true;
+        heldRef.current = true;
         if (sourceScope && client.preserveDraft && isAccessUnavailable(error)) {
           try {
             await client.preserveDraft(noteId, content, sourceScope);
@@ -130,10 +156,13 @@ export function useAutoSave(
       discard: () => {
         if (timerRef.current) clearTimeout(timerRef.current);
         pendingRef.current = false;
+        heldRef.current = false;
         markDirty(syncKey, false);
         reportSaveFailure(syncKey, null);
         lastContentRef.current = getContent();
       },
+      busy: () => pendingRef.current || inFlight.current !== null || heldRef.current,
+      saved: () => (wroteRef.current ? lastContentRef.current : null),
     };
     const set = pendingSaves.get(noteId) ?? new Set<PendingSaveHandle>();
     set.add(handle);

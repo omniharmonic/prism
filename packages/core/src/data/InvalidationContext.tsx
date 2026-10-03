@@ -24,7 +24,11 @@ export function InvalidationSubscriber() {
     let close: (() => void) | null = null;
     let inv: ReturnType<typeof createInvalidator> | null = null;
     const start = () => {
-      const i = createInvalidator({ invalidate: (f) => void qc.invalidateQueries(f as never) });
+      const i = createInvalidator({
+        invalidate: (f) => void qc.invalidateQueries(f as never),
+        // NP-OF-05: a page this device's tree has never listed was made elsewhere → show it now.
+        inTree: (id) => (qc.getQueryData<Array<{ id: string }>>(["vault", "tree"]) ?? []).some((n) => n.id === id),
+      });
       inv = i;
       close = source.open({
         onEvent: (ev) => i.handleEvent(ev),

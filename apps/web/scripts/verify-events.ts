@@ -129,6 +129,46 @@ function harness(debounceMs = 500) {
   assert.ok(h.stale(queryKeys.vault.note("gone")));
 }
 
+{
+  // NP-OF-05 sidebar tree: an id the tree has never listed (a page made elsewhere) or a remove
+  // refreshes it at once; edits to known pages refresh it at most once per throttle window.
+  const qc = new QueryClient();
+  let t = 1_000;
+  const timers: Array<{ fn: () => void; at: number }> = [];
+  let treeCalls = 0;
+  const known = new Set(["k1", "k2"]);
+  const inv = createInvalidator({
+    invalidate: (f) => { if (f.queryKey?.[1] === "tree") treeCalls++; void qc.invalidateQueries(f as never); },
+    inTree: (id) => known.has(id),
+    treeThrottleMs: 15_000,
+    now: () => t,
+    setTimer: (fn, ms) => { const x = { fn, at: t + ms }; timers.push(x); return x; },
+    clearTimer: (x) => { const i = timers.indexOf(x as never); if (i >= 0) timers.splice(i, 1); },
+  });
+  const advance = (ms: number) => {
+    t += ms;
+    for (const x of timers.filter((x) => x.at <= t).sort((a, b) => a.at - b.at)) { if (timers.includes(x)) { timers.splice(timers.indexOf(x), 1); x.fn(); } }
+  };
+  inv.handleOpen();
+  inv.handleEvent({ type: "note", id: "k1", op: "upsert" });
+  advance(600);
+  assert.equal(treeCalls, 1, "first edit of a known page refreshes the tree");
+  for (let i = 0; i < 5; i++) { inv.handleEvent({ type: "note", id: "k2", op: "upsert" }); advance(600); }
+  assert.equal(treeCalls, 1, "further edits inside the window do not refetch the tree");
+  inv.handleEvent({ type: "note", id: "new-page", op: "upsert" });
+  advance(600);
+  assert.equal(treeCalls, 2, "an unknown id refreshes the tree at once");
+  inv.handleEvent({ type: "note", id: "k1", op: "remove" });
+  advance(600);
+  assert.equal(treeCalls, 3, "a remove refreshes the tree at once");
+  inv.handleEvent({ type: "note", id: "k1", op: "upsert" });
+  advance(600);
+  assert.equal(treeCalls, 3);
+  advance(15_000);
+  assert.equal(treeCalls, 4, "the throttled refresh still lands (a rename made elsewhere)");
+  inv.dispose();
+}
+
 // --- end to end: SSE server -> streamSSE -> parse -> invalidator, with a dropped stream ---
 const frames = [
   ['event: ready\ndata: {}\n\n', 'data: {"type":"note","id":"n1","op":"upsert"}\n\n', ": ping\n\n"],
