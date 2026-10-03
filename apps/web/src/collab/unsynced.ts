@@ -15,7 +15,7 @@ import * as Y from "yjs";
 import { HocuspocusProvider } from "@hocuspocus/provider";
 import { COLLAB_SCHEMA_VERSION, reportSyncSource } from "@prism/core";
 import { captureWriteContext, scopeKey, type WriteScope } from "../offline/writeScope";
-import { persistLocalDocument, localDocumentKey } from "./localDocument";
+import { persistLocalDocument, localDocumentKey, purgeLocalDocuments, purgePendingForScope, exportLocalDocument } from "./localDocument";
 import { collabWsUrl, collabToken, serverFetch } from "../transport";
 import { getCapabilityToken } from "../config";
 
@@ -57,6 +57,41 @@ export function setOpenHere(name: string, open: boolean): void {
 export async function unsyncedDocs(): Promise<UnsyncedDoc[]> {
   const context = await captureWriteContext().catch(() => null);
   return context ? Object.values(read(context.scope)) : [];
+}
+
+// ── sign-out / account change (review M3) ────────────────────────────────────
+const REGISTRY_PREFIX = "prism:collab-unsynced:";
+/** Names registered as unsynced under a raw scope key (any account on this device). */
+function registeredNames(rawScopeKey: string): Set<string> {
+  try {
+    const v = JSON.parse(localStorage.getItem(REGISTRY_PREFIX + rawScopeKey) ?? "{}") as Record<string, UnsyncedDoc>;
+    return new Set(v && typeof v === "object" ? Object.keys(v) : []);
+  } catch { return new Set(); }
+}
+/**
+ * Signing out of `scope`: live-document bodies must not stay on the device. Synced
+ * documents are always removed; unsynced ones (edits the server never took) only
+ * after the person chose to download or discard them (`includeUnsynced`).
+ */
+export async function purgeScopeDocuments(scope: WriteScope, includeUnsynced: boolean): Promise<number> {
+  const raw = scopeKey(scope);
+  const unsynced = includeUnsynced ? new Set<string>() : registeredNames(raw);
+  const removed = await purgeLocalDocuments((s) => s === raw, (_s, name) => unsynced.has(name));
+  purgePendingForScope(raw, [...unsynced].map((name) => localDocumentKey(scope, name)));
+  if (includeUnsynced) { try { localStorage.removeItem(REGISTRY_PREFIX + raw); } catch { /* private mode */ } listeners.forEach((fn) => fn()); }
+  return removed;
+}
+/** Another account now uses this browser: remove every OTHER scope's synced documents
+ *  (its unsynced ones stay for that account, exactly like its queued writes). */
+export async function purgeOtherScopes(current: WriteScope | null): Promise<number> {
+  const mine = current ? scopeKey(current) : null;
+  return purgeLocalDocuments((s) => s !== mine, (s, name) => registeredNames(s).has(name));
+}
+/** The unsynced live documents of `scope`, with their local state, for the leave prompt's download. */
+export async function exportUnsynced(scope: WriteScope): Promise<Array<{ noteId: string; document: string; yjsUpdateBase64: string | null }>> {
+  const out: Array<{ noteId: string; document: string; yjsUpdateBase64: string | null }> = [];
+  for (const entry of Object.values(read(scope))) out.push({ noteId: entry.noteId, document: entry.name, yjsUpdateBase64: await exportLocalDocument(localDocumentKey(scope, entry.name)) });
+  return out;
 }
 
 /** Push one document's local state to the server through a headless provider. */
