@@ -29,6 +29,7 @@ import { peopleApi } from "./people";
 import { humanCollabApi } from "./human-collab";
 import { transcriptsApi } from "./transcripts";
 import { databasesApi } from "./databases";
+import { stampJsonBody, stampMetadata, stripIdentity } from "../writer-stamp";
 import { graphNeighborhood } from "../graph";
 import { buildWikilinkIndex, resolveWikilink, noteLinkTitle } from "@prism/core/wikilinks";
 import { isTrashed, isLocked, isOwnerOnlyMeta, TRASH_TAG, TRASH_META, LOCK_KEY, ORDER_KEY } from "@prism/core/pages";
@@ -93,6 +94,8 @@ async function proxyToVault(c: Context) {
   if (method !== "GET" && method !== "HEAD") {
     headers["Content-Type"] = "application/json";
     init.body = await c.req.text();
+    // Writer stamp (`prism_last_writer`, ../writer-stamp.ts) on single-note creates/edits.
+    if ((method === "POST" && path === "/notes") || (method === "PATCH" && /^\/notes\/[^/]+$/.test(path))) init.body = stampJsonBody(init.body as string, resolveActor(c));
     // Any write may change what a cached read would return.
     readCache.clear();
     // Owner/admin bypass of a page lock is allowed but audited (one line, no content).
@@ -211,6 +214,7 @@ api.route("/", createPagesApi({ onWrite: () => readCache.clear() }));
 // Their writes bypass the owner proxy: drop cached owner reads afterwards.
 api.use("/properties/*", async (c, next) => { await next(); readCache.clear(); });
 api.use("/schemas/*", async (c, next) => { await next(); if (c.req.method !== "GET") readCache.clear(); });
+api.use("/databases/*", async (c, next) => { await next(); if (c.req.method !== "GET") readCache.clear(); });
 api.route("/", databasesApi);
 // Notifications inbox, reminders, access requests (wave 2A): before the owner passthrough.
 api.route("/", notificationsRoutes);
@@ -396,7 +400,8 @@ function annotate(actor: Actor, notes: Note[]): Array<Note & { _caps?: Cap[] }> 
     // Trashed pages are hidden from every list and search (GET /api/trash lists them).
     if (isTrashed(n)) continue;
     const caps = capsFor(actor, ref(n));
-    if (caps.has("view")) out.push(stamp ? { ...n, _caps: [...caps] } : n);
+    // Capability links never learn who created/edited a note (writer-stamp.ts).
+    if (caps.has("view")) out.push(stamp ? { ...n, _caps: [...caps] } : actor.kind === "link" ? { ...n, metadata: stripIdentity(n.metadata) } : n);
   }
   return out;
 }
@@ -491,6 +496,7 @@ api.get("/notes/:id", async (c) => {
     const { [TRASH_META.by]: _by, ...rest } = note.metadata;
     note = { ...note, metadata: rest };
   }
+  if (actor.kind === "link") note = { ...note, metadata: stripIdentity(note.metadata) };
   return c.json(annotated(actor) ? { ...note, _level: level, _caps: [...caps] } : { ...note, _level: level });
 });
 
@@ -522,6 +528,7 @@ api.post("/notes", async (c) => {
   // Narrowing is safe: a non-owner may create a note as private (e.g. a private task).
   const metadata = Object.fromEntries(Object.entries(body.metadata ?? {}).filter(([k, v]) => (k === "prism_visibility" ? v === "private" : !isOwnerOnlyMeta(k) && k !== LOCK_KEY && k !== ORDER_KEY)));
   if (subject) metadata.prism_creator = subject;
+  Object.assign(metadata, stampMetadata(undefined, actor));
   body.tags = (body.tags ?? []).filter((t) => t !== TRASH_TAG);
   try {
     const created = await vaultClient(actor.vaultId).createNote({ ...body, metadata });
@@ -648,7 +655,8 @@ api.patch("/notes/:id", async (c) => {
     if (wantsWrite) {
       updated = await vc.updateNote(id, {
         content: body.content,
-        metadata: body.metadata,
+        // Only a content/metadata write is stamped (a path-only move is not an edit).
+        metadata: wantsContent ? stampMetadata(body.metadata, actor) : body.metadata,
         path: canPath ? body.path : undefined,
         ifUpdatedAt: body.if_updated_at ?? note.updatedAt ?? undefined,
       });
@@ -726,7 +734,8 @@ api.get("/notes/:id/versions/:ix", async (c) => {
   const ix = Number(c.req.param("ix"));
   if (!Number.isInteger(ix) || ix < 0) return c.json({ error: "bad_request", reason: "invalid version" }, 400);
   try {
-    return c.json(stripProvenance(await vaultClient(resolveActor(c).vaultId).getVersion(gate.note.id, ix)));
+    const v = stripProvenance(await vaultClient(resolveActor(c).vaultId).getVersion(gate.note.id, ix));
+    return c.json(resolveActor(c).kind === "link" ? { ...v, metadata: stripIdentity(v.metadata) } : v);
   } catch (e) {
     return vaultErr(c, e);
   }

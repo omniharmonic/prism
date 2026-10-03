@@ -186,8 +186,11 @@ export async function syncMirror(src: MirrorVault, dst: MirrorVault, cfg: VaultM
 /** The mirrored copy's metadata: the source's own metadata plus our identity
  *  markers (which also make the copy self-describing in the destination vault). */
 function mirrorMetadata(source: Note, marker: string, mirrorId: string): Record<string, unknown> {
+  // The writer stamp names an account of the SOURCE vault: never carried over.
+  // (prism_creator/prism_visibility are kept — they decide who can see a private copy.)
+  const { prism_last_writer: _w, prism_last_write_at: _a, ...meta } = source.metadata ?? {};
   return {
-    ...(source.metadata ?? {}),
+    ...meta,
     mirror_source: marker,
     mirror_source_updated_at: source.updatedAt ?? null,
     mirror_id: mirrorId,

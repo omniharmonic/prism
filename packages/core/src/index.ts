@@ -51,6 +51,9 @@ export type { QuerySpec, QueryPage, QueryRow, SchemaMap, SchemaPatch, TagSchema,
 export { PropertyBar } from "./components/database/PropertyBar";
 export { NotePropertyBar } from "./components/database/NotePropertyBar";
 export { createDatabaseNote } from "./components/database/createDatabase";
+// Inline + linked database blocks (the editor's `databaseView` atom renders these).
+export { DatabaseBlock, renderDatabaseBlock, databaseBlockHtml, parseDatabaseBlock, createInlineDatabase, addLinkedView } from "./components/database/DatabaseBlock";
+export type { PropertyBatchItem, PropertyBatchResult, CsvImportRequest, CsvImportResponse } from "./lib/database";
 export { GraphCanvas } from "./components/layout/GraphCanvasLazy";
 export type { GraphNode, GraphLink, GraphData } from "./components/layout/GraphCanvas3D";
 

@@ -5,17 +5,18 @@
  */
 import { useState } from "react";
 import { Plus, Trash2, X } from "lucide-react";
-import type { QueryCondition, QueryFilter, QueryOp, QuerySort } from "../../lib/database/query";
-import type { PropertyDef } from "../../lib/database/schema";
+import type { QueryCondition, QueryFilter, QueryFilterGroup, QueryOp, QuerySort } from "../../lib/database/query";
+import { SYSTEM_PROPERTIES, type PropertyDef } from "../../lib/database/schema";
 import { VIEW_LABELS, VIEW_TYPES, type DatabaseView, type ViewType } from "./config";
 
 /** Title + timestamps + every property, as filter/sort targets. */
 export function filterTargets(props: PropertyDef[]): Array<{ key: string; label: string; def?: PropertyDef }> {
+  const own = props.filter((p) => !p.system);
   return [
     { key: "$title", label: "Title" },
-    ...props.map((p) => ({ key: p.key, label: p.label, def: p })),
-    { key: "$createdAt", label: "Created" },
-    { key: "$updatedAt", label: "Last edited" },
+    ...own.map((p) => ({ key: p.key, label: p.label, def: p })),
+    // System properties (created/edited time/by) are always filterable and sortable.
+    ...SYSTEM_PROPERTIES.map((p) => ({ key: p.key, label: p.label, def: p })),
   ];
 }
 
@@ -33,6 +34,9 @@ function opsFor(def?: PropertyDef): QueryOp[] {
     case "date": return ["eq", "ne", "gt", "gte", "lt", "lte", "exists", "not_exists"];
     case "select":
     case "status": return ["eq", "ne", "exists", "not_exists"];
+    case "email":
+    case "phone":
+    case "url": return ["contains", "not_contains", "eq", "ne", "exists", "not_exists"];
     case "multi_select":
     case "person":
     case "relation": return ["contains", "not_contains", "exists", "not_exists"];
@@ -65,48 +69,88 @@ function ValueInput({ def, cond, onChange }: { def?: PropertyDef; cond: QueryCon
   );
 }
 
+function ConditionRow({ c, i, prefix, targets, onChange, onRemove }: {
+  c: QueryCondition; i: number; prefix: string; targets: ReturnType<typeof filterTargets>;
+  onChange: (patch: Partial<QueryCondition>) => void; onRemove: () => void;
+}) {
+  const defOf = (key: string) => targets.find((t) => t.key === key)?.def;
+  const def = defOf(c.key);
+  return (
+    <div className="db-cond">
+      <select aria-label={`${prefix}${i + 1} property`} value={c.key} onChange={(e) => {
+        const nd = defOf(e.target.value);
+        onChange({ key: e.target.value, op: opsFor(nd)[0]!, value: nd?.kind === "checkbox" ? true : "" });
+      }}>
+        {targets.map((t) => <option key={t.key} value={t.key}>{t.label}</option>)}
+      </select>
+      <select aria-label={`${prefix}${i + 1} operator`} value={c.op} onChange={(e) => onChange({ op: e.target.value as QueryOp })}>
+        {opsFor(def).map((op) => <option key={op} value={op}>{OP_LABELS[op]}</option>)}
+      </select>
+      <ValueInput def={def} cond={c} onChange={(value) => onChange({ value })} />
+      <button type="button" className="db-icon-btn" aria-label={`Remove ${prefix.toLowerCase()}${i + 1}`} onClick={onRemove}><X size={14} /></button>
+    </div>
+  );
+}
+
+/**
+ * Simple filter chips plus advanced AND/OR groups (one level, like Notion's
+ * "Add filter group"): the top-level match combines conditions AND groups, each
+ * group combines its own conditions. Saved per view by the caller.
+ */
 export function FilterEditor({ filter, props, onChange }: { filter?: QueryFilter; props: PropertyDef[]; onChange: (f: QueryFilter | undefined) => void }) {
   const targets = filterTargets(props);
   const f: QueryFilter = filter ?? { match: "all", conditions: [] };
-  const set = (conditions: QueryCondition[], match = f.match) => onChange(conditions.length ? { match, conditions } : undefined);
-  const defOf = (key: string) => targets.find((t) => t.key === key)?.def;
+  const groups = f.groups ?? [];
+  const emit = (next: QueryFilter) => onChange(next.conditions.length || next.groups?.length ? { match: next.match, conditions: next.conditions, ...(next.groups?.length ? { groups: next.groups } : {}) } : undefined);
+  const set = (conditions: QueryCondition[], match = f.match) => emit({ match, conditions, groups });
+  const setGroups = (gs: QueryFilterGroup[]) => emit({ match: f.match, conditions: f.conditions, groups: gs });
+  const fresh = (): QueryCondition => {
+    const t = targets[1] ?? targets[0]!;
+    return { key: t.key, op: opsFor(t.def)[0]!, value: t.def?.kind === "checkbox" ? true : "" };
+  };
+  const terms = f.conditions.length + groups.length;
   return (
     <div className="db-settings" aria-label="Filter">
-      {f.conditions.length > 1 && (
+      {terms > 1 && (
         <div className="db-settings-row">
           <span>Show rows matching</span>
-          <select aria-label="Match" value={f.match} onChange={(e) => set(f.conditions, e.target.value as "all" | "any")}>
-            <option value="all">all conditions</option>
-            <option value="any">any condition</option>
+          <select aria-label="Match" value={f.match} onChange={(e) => emit({ ...f, groups, match: e.target.value as "all" | "any" })}>
+            <option value="all">all of these</option>
+            <option value="any">any of these</option>
           </select>
         </div>
       )}
-      {f.conditions.map((c, i) => {
-        const def = defOf(c.key);
-        const update = (patch: Partial<QueryCondition>) => set(f.conditions.map((x, j) => (j === i ? { ...x, ...patch } : x)));
+      {f.conditions.map((c, i) => (
+        <ConditionRow key={i} c={c} i={i} prefix="Condition " targets={targets}
+          onChange={(patch) => set(f.conditions.map((x, j) => (j === i ? { ...x, ...patch } : x)))}
+          onRemove={() => set(f.conditions.filter((_, j) => j !== i))} />
+      ))}
+      {groups.map((g, gi) => {
+        const setG = (patch: Partial<QueryFilterGroup>) => setGroups(groups.map((x, j) => (j === gi ? { ...x, ...patch } : x)));
         return (
-          <div className="db-cond" key={i}>
-            <select aria-label={`Condition ${i + 1} property`} value={c.key} onChange={(e) => {
-              const nd = defOf(e.target.value);
-              update({ key: e.target.value, op: opsFor(nd)[0]!, value: nd?.kind === "checkbox" ? true : "" });
-            }}>
-              {targets.map((t) => <option key={t.key} value={t.key}>{t.label}</option>)}
-            </select>
-            <select aria-label={`Condition ${i + 1} operator`} value={c.op} onChange={(e) => update({ op: e.target.value as QueryOp })}>
-              {opsFor(def).map((op) => <option key={op} value={op}>{OP_LABELS[op]}</option>)}
-            </select>
-            <ValueInput def={def} cond={c} onChange={(value) => update({ value })} />
-            <button type="button" className="db-icon-btn" aria-label={`Remove condition ${i + 1}`} onClick={() => set(f.conditions.filter((_, j) => j !== i))}><X size={14} /></button>
-          </div>
+          <fieldset key={gi} className="db-filter-group" aria-label={`Filter group ${gi + 1}`}>
+            <div className="db-settings-row">
+              <span>Group {gi + 1}: rows matching</span>
+              <select aria-label={`Group ${gi + 1} match`} value={g.match} onChange={(e) => setG({ match: e.target.value as "all" | "any" })}>
+                <option value="all">all</option>
+                <option value="any">any</option>
+              </select>
+              <button type="button" className="db-icon-btn" aria-label={`Remove group ${gi + 1}`} onClick={() => setGroups(groups.filter((_, j) => j !== gi))}><Trash2 size={13} /></button>
+            </div>
+            {g.conditions.map((c, i) => (
+              <ConditionRow key={i} c={c} i={i} prefix={`Group ${gi + 1} condition `} targets={targets}
+                onChange={(patch) => setG({ conditions: g.conditions.map((x, j) => (j === i ? { ...x, ...patch } : x)) })}
+                onRemove={() => setG({ conditions: g.conditions.filter((_, j) => j !== i) })} />
+            ))}
+            <button type="button" className="db-ghost" onClick={() => setG({ conditions: [...g.conditions, fresh()] })}><Plus size={13} aria-hidden="true" /> Add condition to group {gi + 1}</button>
+          </fieldset>
         );
       })}
-      {!f.conditions.length && <p className="db-pop-empty">No filters. Every row is shown.</p>}
+      {!terms && <p className="db-pop-empty">No filters. Every row is shown.</p>}
       <div className="db-settings-row">
-        <button type="button" className="db-ghost" onClick={() => {
-          const t = targets[1] ?? targets[0]!;
-          set([...f.conditions, { key: t.key, op: opsFor(t.def)[0]!, value: t.def?.kind === "checkbox" ? true : "" }]);
-        }}><Plus size={13} aria-hidden="true" /> Add filter</button>
-        {f.conditions.length > 0 && <button type="button" className="db-ghost" onClick={() => onChange(undefined)}>Clear all</button>}
+        <button type="button" className="db-ghost" onClick={() => set([...f.conditions, fresh()])}><Plus size={13} aria-hidden="true" /> Add filter</button>
+        {groups.length < 5 && <button type="button" className="db-ghost" onClick={() => setGroups([...groups, { match: "any", conditions: [fresh()] }])}><Plus size={13} aria-hidden="true" /> New filter group</button>}
+        {terms > 0 && <button type="button" className="db-ghost" onClick={() => onChange(undefined)}>Clear all</button>}
       </div>
     </div>
   );
@@ -145,7 +189,7 @@ export function ViewSettings({ view, props, canDelete, onChange, onDelete }: {
 }) {
   const [name, setName] = useState(view.name);
   const visible = view.visible ?? props.map((p) => p.key);
-  const groupable = props.filter((p) => p.kind === "select" || p.kind === "status" || p.kind === "checkbox" || p.kind === "person");
+  const groupable = props.filter((p) => !p.system && (p.kind === "select" || p.kind === "status" || p.kind === "checkbox" || p.kind === "person" || (view.type !== "board" && p.kind === "multi_select")));
   const dates = props.filter((p) => p.kind === "date");
   const urls = props.filter((p) => p.kind === "url" || /cover|image|thumbnail/i.test(p.key));
   const toggle = (key: string) => {
@@ -174,11 +218,11 @@ export function ViewSettings({ view, props, canDelete, onChange, onDelete }: {
           {VIEW_TYPES.map((t) => <option key={t} value={t}>{VIEW_LABELS[t]}</option>)}
         </select>
       </label>
-      {(view.type === "board" || view.type === "table") && (
+      {(view.type === "board" || view.type === "table" || view.type === "list") && (
         <label className="db-field">
           <span>Group by</span>
           <select aria-label="Group by" value={view.groupBy ?? ""} onChange={(e) => onChange({ groupBy: e.target.value || undefined })}>
-            {view.type === "table" && <option value="">None</option>}
+            {view.type !== "board" && <option value="">None</option>}
             {view.type === "board" && !view.groupBy && <option value="">Choose…</option>}
             {groupable.map((p) => <option key={p.key} value={p.key}>{p.label}</option>)}
           </select>

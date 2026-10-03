@@ -9,7 +9,7 @@ import type {
   VaultInfo,
 } from "../lib/types";
 import type { MoveRequest, MoveResult, TrashListing, PreferencesSnapshot, PagePreferences } from "../lib/pages/model";
-import type { QueryPage, QuerySpec, SchemaMap, SchemaPatch, TagSchema } from "../lib/database";
+import type { QueryPage, QuerySpec, SchemaMap, SchemaPatch, TagSchema, PropertyBatchItem, PropertyBatchResult, CsvImportRequest, CsvImportResponse } from "../lib/database";
 
 /** Transport status for recoverable UI states, without parsing diagnostic text. */
 export class VaultRequestError extends Error {
@@ -239,6 +239,11 @@ export interface VaultClient {
   /** Metadata-only property write with per-field compare-and-set (`expect` = the
    *  values the caller last saw). Throws {@link PropertyConflictError}. */
   updateProperties?(id: string, set: Record<string, unknown>, expect?: Record<string, unknown>): Promise<PropertyWriteResult>;
+  /** Up to 100 property writes, each its own CAS write and result (bulk edit).
+   *  Optional: the client falls back to one `updateProperties` per row. */
+  updatePropertiesBatch?(items: PropertyBatchItem[]): Promise<PropertyBatchResult[]>;
+  /** Owner/admin CSV import into a tag (dry-run by default). Optional. */
+  importCsv?(request: CsvImportRequest): Promise<CsvImportResponse>;
   /** Store an image/file as an attachment of `noteId` and return a URL to embed.
    *  Optional: when absent, the editor hides upload (paste/drop/pick) and offers
    *  only "Image from URL". Rejects on refusal; the editor inserts nothing. */

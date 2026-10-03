@@ -19,6 +19,7 @@
  * overwritten), exactly like `readBoardConfig`.
  */
 import { isFieldKey, QUERY_OPS, type QueryFilter, type QuerySort } from "../../lib/database/query";
+import { safeTitleLeaf } from "../../lib/database/schema";
 
 export const VIEW_TYPES = ["table", "board", "gallery", "list", "calendar"] as const;
 export type ViewType = (typeof VIEW_TYPES)[number];
@@ -43,11 +44,32 @@ export interface DatabaseView {
   order?: string[];
 }
 
+/** How a row opens from this database (Notion's per-database preference). */
+export type OpenMode = "side" | "center" | "page";
+export const OPEN_MODES: OpenMode[] = ["side", "center", "page"];
+
+/** A page template: a vault note (never a row — it does not carry the source tags). */
+export interface DatabaseTemplate {
+  /** The template note's id. */
+  id: string;
+  name: string;
+}
+
 export interface DatabaseConfig {
   version: 1;
   source: { tags: string[] };
   views: DatabaseView[];
+  /** Row opening preference (default: side peek on desktop; phones always open the page). */
+  openIn?: OpenMode;
+  /** Page templates for "+ New ▾" (≤ 20). */
+  templates?: DatabaseTemplate[];
+  /** The template "+ New" uses; absent = an empty page. */
+  defaultTemplate?: string;
 }
+
+/** Template notes keep the values a new row receives here (+ their body). */
+export const TEMPLATE_PROPS_KEY = "prism_template_props";
+export const TEMPLATE_FOR_KEY = "prism_template_for";
 
 export const VIEW_LABELS: Record<ViewType, string> = {
   table: "Table", board: "Board", gallery: "Gallery", list: "List", calendar: "Calendar",
@@ -77,8 +99,24 @@ function viewOk(v: unknown): v is DatabaseView {
   if (v.filter !== undefined) {
     const f = v.filter;
     if (!rec(f) || (f.match !== "all" && f.match !== "any") || !Array.isArray(f.conditions) || f.conditions.length > 25) return false;
-    if (!f.conditions.every((c) => rec(c) && keyOk(c.key) && (QUERY_OPS as readonly string[]).includes(c.op as string))) return false;
+    const condOk = (c: unknown) => rec(c) && keyOk(c.key) && (QUERY_OPS as readonly string[]).includes(c.op as string);
+    if (!f.conditions.every(condOk)) return false;
+    if (f.groups !== undefined) {
+      if (!Array.isArray(f.groups) || f.groups.length > 5) return false;
+      if (!f.groups.every((g) => rec(g) && (g.match === "all" || g.match === "any") && Array.isArray(g.conditions) && g.conditions.length <= 25 && g.conditions.every(condOk) && g.groups === undefined)) return false;
+    }
   }
+  return true;
+}
+
+function extrasOk(raw: Record<string, unknown>): boolean {
+  if (raw.openIn !== undefined && !(OPEN_MODES as string[]).includes(raw.openIn as string)) return false;
+  if (raw.templates !== undefined) {
+    const t = raw.templates;
+    if (!Array.isArray(t) || t.length > 20) return false;
+    if (!t.every((x) => rec(x) && typeof x.id === "string" && /^[A-Za-z0-9_-]{1,128}$/.test(x.id) && typeof x.name === "string" && x.name.trim() !== "" && x.name.length <= 80)) return false;
+  }
+  if (raw.defaultTemplate !== undefined && (typeof raw.defaultTemplate !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(raw.defaultTemplate))) return false;
   return true;
 }
 
@@ -91,7 +129,8 @@ export function readDatabaseConfig(metadata: Record<string, unknown> | null | un
     !raw.source.tags.length || raw.source.tags.length > 5 ||
     !raw.source.tags.every((t) => typeof t === "string" && t.length > 0 && t.length <= 128) ||
     !Array.isArray(raw.views) || !raw.views.length || raw.views.length > 20 || !raw.views.every(viewOk) ||
-    new Set(raw.views.map((v) => (v as DatabaseView).id)).size !== raw.views.length
+    new Set(raw.views.map((v) => (v as DatabaseView).id)).size !== raw.views.length ||
+    !extrasOk(raw)
   ) {
     throw new Error("This database has a configuration this version of Prism does not understand. Its saved settings have been preserved.");
   }
@@ -121,7 +160,7 @@ export function applyRank<T extends { id: string }>(rows: T[], order: string[] |
 
 /** A path for a new row: inside the database page's own folder. */
 export function rowPath(dbPath: string | null, title: string): string {
-  const safe = title.trim().replace(/[\\/]/g, "-").slice(0, 120) || "Untitled";
+  const safe = safeTitleLeaf(title);
   const base = (dbPath ?? "").replace(/\.[^./]+$/, "");
   return base ? `${base}/${safe}` : safe;
 }

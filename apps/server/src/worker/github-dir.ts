@@ -44,6 +44,7 @@
  *  - push-file refuses a note outside the sync folder (the desktop pushed it under
  *    its full vault path).
  */
+import { stripIdentity } from "../identity-keys";
 import { createHash } from "node:crypto";
 import type { Note } from "../parachute";
 
@@ -353,7 +354,8 @@ function yamlSequence(items: unknown[], indent: string): string[] {
 
 /** Desktop serialize_note_to_markdown. */
 export function serializeNoteMarkdown(note: Note, currentRepoPath: string, lookup: Map<string, string>): string {
-  const meta = note.metadata && typeof note.metadata === "object" ? note.metadata : {};
+  // Who created/edited a note never leaves the server in an export (writer-stamp.ts).
+  const meta = note.metadata && typeof note.metadata === "object" ? stripIdentity(note.metadata) : {};
   const entries: Array<[string, unknown]> = [];
   const title = typeof meta.title === "string" ? meta.title : note.path ? fileStem(note.path) : undefined;
   if (title !== undefined) entries.push(["title", title]);

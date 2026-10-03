@@ -297,18 +297,22 @@ export function BoardTaskForm({
   error,
   onClose,
   onCreate,
+  initialStatus,
 }: {
   config: BoardConfig;
   busy: boolean;
   error?: string;
   onClose: () => void;
   onCreate: (title: string, priority: string, status: string) => Promise<void>;
+  /** A column's "+ Add task" starts the task in that column. */
+  initialStatus?: string;
 }) {
   const [title, setTitle] = useState("");
   const [priority, setPriority] = useState("medium");
-  const [status, setStatus] = useState(config.columns[0].id);
+  const [status, setStatus] = useState(initialStatus && config.columns.some((c) => c.id === initialStatus) ? initialStatus : config.columns[0].id);
+  const column = config.columns.find((c) => c.id === initialStatus);
   return (
-    <Dialog title="New task" busy={busy} error={error} onClose={onClose}>
+    <Dialog title={column ? `New task in ${column.label}` : "New task"} busy={busy} error={error} onClose={onClose}>
       <form
         className="space-y-4"
         onSubmit={(e) => {

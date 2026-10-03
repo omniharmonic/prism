@@ -9,14 +9,17 @@
  * and offers Retry. Nothing is ever silently dropped.
  */
 import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from "react";
-import { Check, ExternalLink, Plus, Search, X } from "lucide-react";
+import { Check, ExternalLink, Mail, Phone, Plus, Search, X } from "lucide-react";
 import { PropertyConflictError } from "../../data/VaultClient";
 import { useLinkCandidates } from "../../lib/database/hooks";
 import {
   asWikilink,
   coerceValue,
+  formatDateTime,
   formatValue,
   isBlank,
+  looksLikeEmail,
+  looksLikePhone,
   linkLabel,
   optionColor,
   type OptionColor,
@@ -45,6 +48,14 @@ const list = (v: unknown): string[] => (Array.isArray(v) ? v.map(String) : isBla
 /** Read-only rendering (cards, read-only pages, cells of rows you cannot edit). */
 export function PropertyDisplay({ def, value }: { def: PropertyDef; value: unknown }) {
   if (isBlank(value)) return <span className="db-empty">Empty</span>;
+  if (def.system === "created_time" || def.system === "edited_time") {
+    const v = String(value);
+    return <time className="db-text db-system" dateTime={v} title={new Date(v).toLocaleString()}>{formatDateTime(v)}</time>;
+  }
+  if (def.system === "created_by" || def.system === "edited_by") {
+    const who = String(value) === "link" ? "Guest (link)" : String(value);
+    return <span className="db-chips"><span className="db-link-chip" data-kind="person"><span className="db-avatar" aria-hidden="true">{who.slice(0, 1).toUpperCase()}</span>{who}</span></span>;
+  }
   switch (def.kind) {
     case "select":
     case "status":
@@ -55,6 +66,14 @@ export function PropertyDisplay({ def, value }: { def: PropertyDef; value: unkno
       return <span className="db-chips">{list(value).map((v) => <span key={v} className="db-link-chip" data-kind={def.kind}>{def.kind === "person" && <span className="db-avatar" aria-hidden="true">{linkLabel(v).slice(0, 1).toUpperCase()}</span>}{linkLabel(v)}</span>)}</span>;
     case "checkbox":
       return <span className="db-check" data-checked={value === true || undefined} role="img" aria-label={value === true ? "Checked" : "Unchecked"}>{value === true && <Check size={12} aria-hidden="true" />}</span>;
+    case "email": {
+      const v = String(value);
+      return looksLikeEmail(v) ? <a className="db-url" href={`mailto:${v.trim()}`} onClick={(e) => e.stopPropagation()}>{v}</a> : <span className="db-text">{v}</span>;
+    }
+    case "phone": {
+      const v = String(value);
+      return looksLikePhone(v) ? <a className="db-url" href={`tel:${v.replace(/[^\d+]/g, "")}`} onClick={(e) => e.stopPropagation()}>{v}</a> : <span className="db-text">{v}</span>;
+    }
     case "url": {
       const href = String(value);
       const safe = /^https?:\/\//i.test(href);
@@ -105,7 +124,9 @@ export function PropertyValue({
     if (!busy && !conflict) base.current = value;
   }, [value, busy, conflict]);
 
-  const textual = def.kind === "text" || def.kind === "number" || def.kind === "url" || def.kind === "date";
+  const textual = def.kind === "text" || def.kind === "number" || def.kind === "url" || def.kind === "date" || def.kind === "email" || def.kind === "phone";
+  // System properties (created/edited time/by) are never editable.
+  if (def.system) readOnly = true;
 
   const begin = () => {
     if (readOnly || busy) return;
@@ -131,6 +152,12 @@ export function PropertyValue({
 
   async function commit(raw: unknown, overrideBase?: unknown) {
     const next = coerceValue(def, raw);
+    // Email/phone keep any text the person typed, but say when it does not look right.
+    if (typeof next === "string" && ((def.kind === "email" && !looksLikeEmail(next)) || (def.kind === "phone" && !looksLikePhone(next)))) {
+      attempted.current = raw;
+      setError(def.kind === "email" ? "That doesn’t look like an email address." : "That doesn’t look like a phone number.");
+      return;
+    }
     if (JSON.stringify(next ?? null) === JSON.stringify(value ?? null) && overrideBase === undefined) {
       setEditingText(false);
       onDone?.();
@@ -190,8 +217,8 @@ export function PropertyValue({
           ref={inputRef}
           className="db-input"
           aria-label={def.label}
-          type={def.kind === "date" ? "date" : def.kind === "number" ? "text" : def.kind === "url" ? "url" : "text"}
-          inputMode={def.kind === "number" ? "decimal" : undefined}
+          type={def.kind === "date" ? "date" : def.kind === "number" ? "text" : def.kind === "url" ? "url" : def.kind === "email" ? "email" : def.kind === "phone" ? "tel" : "text"}
+          inputMode={def.kind === "number" ? "decimal" : def.kind === "email" ? "email" : def.kind === "phone" ? "tel" : undefined}
           value={draft}
           disabled={busy}
           onChange={(e) => setDraft(e.target.value)}
@@ -225,6 +252,8 @@ export function PropertyValue({
           <PropertyDisplay def={def} value={value} />
         )}
         {def.kind === "url" && !isBlank(value) && /^https?:\/\//i.test(String(value)) && <ExternalLink size={11} aria-hidden="true" className="db-muted-icon" />}
+        {def.kind === "email" && !isBlank(value) && <Mail size={11} aria-hidden="true" className="db-muted-icon" />}
+        {def.kind === "phone" && !isBlank(value) && <Phone size={11} aria-hidden="true" className="db-muted-icon" />}
       </button>
       <span id={id}>{feedback}</span>
       {(def.kind === "select" || def.kind === "status" || def.kind === "multi_select") && (
@@ -324,7 +353,8 @@ function LinkPicker({ anchor, open, def, value, onClose, onPick }: {
   onClose: () => void; onPick: (next: unknown) => void;
 }) {
   const [q, setQ] = useState("");
-  const tag = def.kind === "person" ? "person" : /^projects?$/i.test(def.key) ? "project" : null;
+  // The relation's target database (schema hint `relationTag`), else the old heuristics.
+  const tag = def.target ?? (def.kind === "person" ? "person" : /^projects?$/i.test(def.key) ? "project" : null);
   const candidates = useLinkCandidates(tag, q, open);
   const current = list(value);
   const toggle = (path: string) => {
