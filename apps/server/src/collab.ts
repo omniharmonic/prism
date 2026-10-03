@@ -81,7 +81,10 @@ import {
   confirmDocAttempt,
   rebaseDoc,
   deleteDocState,
+  dropDocAttempt,
   addCollabSetAside,
+  pruneCollabSetAside,
+  deleteCollabSetAsideForNote,
   markCollabUnsaved,
   clearCollabUnsaved,
   isCollabUnsaved,
@@ -635,14 +638,26 @@ interface MergeBase {
   candidates: Uint8Array[];
   uncertain: boolean;
   floor: Uint8Array | null;
+  /** With `uncertain`: the candidate that is the state of an UNCONFIRMED write (it may or may not be in the vault). */
+  attempt?: Uint8Array | null;
+}
+type Replaced = { state: Uint8Array; body: string; why: "no_base" | "uncertain_base" };
+/**
+ * What a document held could not be set aside, so the vault's copy did NOT replace
+ * it (round 6, S3): the document is untouched and the caller tries again later.
+ */
+export class SetAsideFailedError extends Error {
+  constructor() {
+    super("set_aside_failed");
+  }
 }
 interface FoldResult {
   /** The Yjs state that equals the vault content after the fold: the new base. */
   base: Uint8Array;
   /** The vault's content REPLACED the document's (no merge). */
   wholesale: boolean;
-  /** With `wholesale`: what the document held just before, for the set-aside. */
-  replaced?: { state: Uint8Array; body: string; why: "no_base" | "uncertain_base" };
+  /** With `wholesale`: what the document held just before (already set aside when the caller asked for that). */
+  replaced?: Replaced;
 }
 
 /**
@@ -654,41 +669,52 @@ interface FoldResult {
  * since the base survives when the two sides touched different blocks (same-block
  * overlaps merge as two concurrent editors would).
  *
- * With an UNCERTAIN base (round 5, M-3/M-4) nothing is guessed. Each candidate's
- * merge is tried on a copy and accepted only if it passes `mergeIsSane` — every
- * run of text either side added is there exactly as often as that side has it,
- * nothing both sides hold is gone, nothing typed here and never sent is gone. A
- * base that is too OLD doubles what was typed in between (also INSIDE a
- * paragraph: `START edit one EXTERNAL edit one`); one that is too NEW deletes
- * typing that never reached the vault. If no candidate passes, the vault's copy
- * wins and the caller sets the document's own content aside and tells everyone.
+ * With an UNCERTAIN base (round 5, M-3/M-4; round 6, B3) nothing is guessed. The
+ * row's base (the floor) is always a safe base to TRY: too old a base can only
+ * duplicate. The state of an unconfirmed write is a base only if that write can
+ * be SEEN in the vault's copy (`attemptInVault`: everything it added over the
+ * floor is there) — a base that is too NEW deletes typing that never reached the
+ * vault, and no count of words can tell that from a deliberate deletion. Then:
+ *  - the write's additions are in the vault's copy → it landed and was edited
+ *    over: its state is the base (the floor would double what it added);
+ *  - they are not → the floor is the base;
+ *  - the write added nothing (it only removed) → the floor, then its state.
+ * Whichever is tried, its merge is made on a copy and taken only if it passes
+ * `mergeIsSane` and doubles no block. If none passes, the vault's copy wins and
+ * the document's own content is set aside — BEFORE it is replaced (`keep`).
  *
  * Without any base (a row from before bases were kept, sheets and canvases) the
  * vault's content REPLACES the document's as well — `wholesale: true`.
+ *
+ * `keep` (given when the document is AHEAD of the vault): called with what the
+ * document holds, before a wholesale replacement. If it throws, nothing is
+ * replaced and `SetAsideFailedError` is thrown — the document is untouched.
  */
-function foldVaultContent(doc: Y.Doc, kind: CollabKind, content: string, prepared: DocJson | null, merge: MergeBase): FoldResult {
+function foldVaultContent(doc: Y.Doc, kind: CollabKind, content: string, prepared: DocJson | null, merge: MergeBase, keep: ((replaced: Replaced) => void) | null): FoldResult {
   const mergeable = kind === "document" || kind === "code";
   const candidates = mergeable ? merge.candidates.filter((b) => isAncestorOf(b, doc)) : [];
   const replace = (why: "no_base" | "uncertain_base"): FoldResult => {
-    const replaced = { state: Y.encodeStateAsUpdate(doc), body: plainBody(doc, kind), why };
+    const replaced: Replaced = { state: Y.encodeStateAsUpdate(doc), body: plainBody(doc, kind), why };
+    if (keep) {
+      try {
+        keep(replaced);
+      } catch {
+        throw new SetAsideFailedError();
+      }
+    }
     applyExternalContent(doc, kind, content, prepared);
     return { base: Y.encodeStateAsUpdate(doc), wholesale: true, replaced };
   };
-  const shape = (d: Y.Doc): string => (kind === "code" ? yDocToCode(d) : JSON.stringify(yDocToDocJson(d)));
   /** The external change as a delta against one candidate base. */
   const forkOf = (b: Uint8Array) => {
     const fork = new Y.Doc();
     Y.applyUpdate(fork, b);
     const before = Y.encodeStateVector(fork);
-    const was = merge.uncertain ? shape(fork) : "";
     applyExternalContent(fork, kind, content, prepared);
     const delta = Y.encodeStateAsUpdate(fork, before);
     const nextBase = Y.encodeStateAsUpdate(fork);
-    // "Contained": the vault's content is this candidate plus insertions only.
-    const now = merge.uncertain ? shape(fork) : "";
-    const contained = merge.uncertain && now.length >= was.length && changedSpan(was, now) === now.length - was.length;
     fork.destroy();
-    return { delta, nextBase, contained };
+    return { delta, nextBase };
   };
   if (!merge.uncertain) {
     if (candidates.length === 0) return replace("no_base");
@@ -696,28 +722,35 @@ function foldVaultContent(doc: Y.Doc, kind: CollabKind, content: string, prepare
     Y.applyUpdate(doc, fork.delta, EXTERNAL_ORIGIN);
     return { base: fork.nextBase, wholesale: false };
   }
-  // Which state the vault's copy was edited FROM is not known. The newest candidate
-  // the vault's content merely ADDS to is tried first (our write is in there
-  // verbatim: it most likely landed), then older before newer. Whichever is tried,
-  // it is taken only if the result is sane.
-  const forks = candidates.map(forkOf);
-  const landedAt = forks.map((f) => f.contained).lastIndexOf(true);
-  if (landedAt > 0) forks.unshift(...forks.splice(landedAt, 1));
-  const local = tokenCounts(kind, doc);
-  const vault = tokenCounts(kind, kind === "code" ? content : prepared);
-  let floor = new Map<string, number>();
-  if (merge.floor && isAncestorOf(merge.floor, doc)) {
+  // Which state the vault's copy was edited FROM is not known.
+  type Side = { counts: Map<string, number>; plain: string };
+  const sideOf = (state: Uint8Array): Side => {
     const at = new Y.Doc();
-    Y.applyUpdate(at, merge.floor);
-    floor = tokenCounts(kind, at);
+    Y.applyUpdate(at, state);
+    const side = { counts: tokenCounts(kind, at), plain: plainBody(at, kind) };
     at.destroy();
+    return side;
+  };
+  const local = tokenCounts(kind, doc);
+  const vault: Side = { counts: tokenCounts(kind, kind === "code" ? content : prepared), plain: kind === "code" ? content : plainOfJson(prepared) };
+  // The floor: the last state KNOWN to have been the vault's content (unknown = nothing is known to have been there).
+  const floor: Side = merge.floor && isAncestorOf(merge.floor, doc) ? sideOf(merge.floor) : { counts: new Map(), plain: "" };
+  const attempt = merge.attempt && candidates.includes(merge.attempt) ? merge.attempt : null;
+  const others = candidates.filter((b) => b !== attempt).map((state) => ({ state, counts: state === merge.floor ? floor.counts : sideOf(state).counts }));
+  let order = others;
+  if (attempt) {
+    const side = sideOf(attempt);
+    const seen = attemptInVault(floor, side, vault);
+    if (seen === "present") order = [{ state: attempt, counts: side.counts }];
+    else if (seen === "nothing_added") order = [...others, { state: attempt, counts: side.counts }];
   }
-  for (const fork of forks) {
+  for (const candidate of order) {
+    const fork = forkOf(candidate.state);
     const trial = new Y.Doc();
     Y.applyUpdate(trial, Y.encodeStateAsUpdate(doc));
     const before = blockCounts(trial, kind);
     Y.applyUpdate(trial, fork.delta);
-    const sane = mergeIsSane(floor, local, vault, tokenCounts(kind, trial)) && !hasDuplicatedBlocks(blockCounts(trial, kind), before, prepared);
+    const sane = mergeIsSane(candidate.counts, floor.counts, local, vault.counts, tokenCounts(kind, trial)) && !hasDuplicatedBlocks(blockCounts(trial, kind), before, prepared);
     trial.destroy();
     if (!sane) continue;
     Y.applyUpdate(doc, fork.delta, EXTERNAL_ORIGIN);
@@ -727,14 +760,40 @@ function foldVaultContent(doc: Y.Doc, kind: CollabKind, content: string, prepare
   return replace("uncertain_base");
 }
 
-/** Size of the region in which two strings differ (common prefix and suffix removed, both sides counted). Linear. */
-function changedSpan(a: string, b: string): number {
-  const min = Math.min(a.length, b.length);
+/** How often `needle` (non-empty) occurs in `haystack`, not overlapping. Linear. */
+function occurrences(haystack: string, needle: string): number {
+  let n = 0;
+  for (let at = haystack.indexOf(needle); at !== -1; at = haystack.indexOf(needle, at + needle.length)) n++;
+  return n;
+}
+/**
+ * Can an UNCONFIRMED write be seen in the vault's copy — may that copy have been
+ * edited FROM the write's state (B3)?
+ *  - `present`: everything the write added over the floor is in the vault's copy:
+ *    word for word at least as often as the write has it, and as one run of text
+ *    (what lies between the floor's and the write's common beginning and end)
+ *    more often than the floor held that run. It landed and was edited over — or
+ *    someone typed the very same text, which merges to the same page.
+ *  - `absent`: something it added is missing. Either it never landed or it was
+ *    edited away again; merging against its state would DELETE whatever of it the
+ *    page still holds and the vault never saw. Not a base.
+ *  - `nothing_added`: it only removed text; nothing to look for.
+ */
+function attemptInVault(floor: { counts: Map<string, number>; plain: string }, attempt: { counts: Map<string, number>; plain: string }, vault: { counts: Map<string, number>; plain: string }): "present" | "absent" | "nothing_added" {
+  let added = false;
+  for (const [token, a] of attempt.counts) {
+    if (a <= (floor.counts.get(token) ?? 0)) continue;
+    added = true;
+    if ((vault.counts.get(token) ?? 0) < a) return "absent";
+  }
+  const min = Math.min(floor.plain.length, attempt.plain.length);
   let start = 0;
-  while (start < min && a.charCodeAt(start) === b.charCodeAt(start)) start++;
+  while (start < min && floor.plain.charCodeAt(start) === attempt.plain.charCodeAt(start)) start++;
   let end = 0;
-  while (end < min - start && a.charCodeAt(a.length - 1 - end) === b.charCodeAt(b.length - 1 - end)) end++;
-  return a.length + b.length - 2 * (start + end);
+  while (end < min - start && floor.plain.charCodeAt(floor.plain.length - 1 - end) === attempt.plain.charCodeAt(attempt.plain.length - 1 - end)) end++;
+  const run = attempt.plain.slice(start, attempt.plain.length - end);
+  if (run.length === 0) return added ? "absent" : "nothing_added";
+  return occurrences(vault.plain, run) > occurrences(floor.plain, run) ? "present" : "absent";
 }
 
 /** Top-level blocks of a document (as JSON text) → how often each occurs. Blocks without text (empty paragraphs, rules) are not counted. */
@@ -803,27 +862,33 @@ function tokenCounts(kind: CollabKind, source: Y.Doc | DocJson | string | null):
 }
 /**
  * Is `merged` a result nobody has to be asked about? Judged per word (token)
- * from four counts — `floor` (the last state known to have been the vault's
+ * from five counts — `base` (the candidate state the vault's copy is taken to
+ * have been edited from), `floor` (the last state KNOWN to have been the vault's
  * content), `local` (the document before the merge), `vault` (the vault's copy)
  * and `merged`:
- *  - never MORE of a word than the fuller side has (a doubled run: a base that
- *    was too old re-created what the document already held);
- *  - a word BOTH sides have is not gone;
- *  - a word only the document has, beyond the floor — typing that never reached
- *    the vault — is all there (a base that was too new deletes it);
- *  - a word only the vault has, beyond the floor — what was written elsewhere —
- *    is all there.
- * Deliberately strict: two people independently adding the same sentence, or a
- * merge that glues two words together, fails it — and then nobody guesses.
+ *  - never MORE of a word than the base had plus what each side added to it. (It
+ *    used to be "never more than the fuller side": that refused every merge in
+ *    which both sides had legitimately added the same common word — "the".)
+ *  - never FEWER than: what both sides have, plus what only the document has
+ *    beyond the floor and the vault (typing that never reached the vault — a
+ *    base that is too new deletes it), plus what only the vault has beyond the
+ *    floor and the document (what was written elsewhere). Round 6, B3: the
+ *    floor used to be ignored whenever BOTH sides held the word, so deleting a
+ *    typed "the end" passed as long as "the" and "end" stood anywhere in the
+ *    vault's copy.
+ * Deliberately strict below: two people deleting different copies of one word,
+ * or a merge that glues two words together, fails it — and then nobody guesses.
  */
-function mergeIsSane(floor: Map<string, number>, local: Map<string, number>, vault: Map<string, number>, merged: Map<string, number>): boolean {
+export function mergeIsSane(base: Map<string, number>, floor: Map<string, number>, local: Map<string, number>, vault: Map<string, number>, merged: Map<string, number>): boolean {
   const ok = (token: string): boolean => {
     const l = local.get(token) ?? 0;
     const v = vault.get(token) ?? 0;
     const m = merged.get(token) ?? 0;
     const f = floor.get(token) ?? 0;
-    const lower = l > 0 && v > 0 ? Math.min(l, v) : Math.max(0, Math.max(l, v) - f);
-    return m >= lower && m <= Math.max(l, v);
+    const b = base.get(token) ?? 0;
+    const lower = l > 0 && v > 0 ? Math.min(l, v) + Math.max(0, l - Math.max(f, v)) + Math.max(0, v - Math.max(f, l)) : Math.max(0, Math.max(l, v) - f);
+    const upper = b + Math.max(0, l - b) + Math.max(0, v - b);
+    return m >= lower && m <= upper;
   };
   for (const token of merged.keys()) if (!ok(token)) return false;
   for (const token of local.keys()) if (!merged.has(token) && !ok(token)) return false;
@@ -835,8 +900,12 @@ function plainBody(doc: Y.Doc, kind: CollabKind): string {
   if (kind === "code") return yDocToCode(doc);
   if (kind === "spreadsheet") return yDocToCsv(doc);
   if (kind === "canvas") return yDocToScene(doc);
+  return plainOfJson(yDocToDocJson(doc));
+}
+/** A ProseMirror document as plain text: one line per textblock, a blank line between top-level blocks. Linear, iterative. */
+function plainOfJson(json: DocJson | null): string {
   const blocks: string[] = [];
-  for (const block of (yDocToDocJson(doc) as { content?: unknown[] }).content ?? []) {
+  for (const block of (json as { content?: unknown[] } | null)?.content ?? []) {
     const parts: string[] = [];
     let line = "";
     // Depth-first, in document order: text nodes of one textblock on one line.
@@ -863,15 +932,31 @@ function plainBody(doc: Y.Doc, kind: CollabKind): string {
   }
   return blocks.join("\n\n");
 }
-/** Keep what a document held before the vault's copy replaced it (never fails the fold). */
-function setAsideLocal(documentName: string, vaultId: string, noteId: string, kind: CollabKind, replaced: NonNullable<FoldResult["replaced"]>): void {
+const setAsideFailures = new Map<string, number>();
+/**
+ * Keep what a document holds, BEFORE the vault's copy replaces it (S3: it used to
+ * be written afterwards, with a failure swallowed — the text was then gone from
+ * the page and from everywhere else). Throws when it could not be kept: the fold
+ * then replaces nothing.
+ */
+function setAsideLocal(documentName: string, vaultId: string, noteId: string, kind: CollabKind, replaced: Replaced): void {
   try {
     addCollabSetAside(noteId, vaultId, replaced.why, kind, replaced.body, replaced.state);
-    console.warn(`[collab] ${documentName}: the note's content replaced live changes that had not been saved (${replaced.why}) — what the page held is kept for the workspace owner (GET /api/admin/collab/unsaved → setAside)`);
+    setAsideFailures.delete(documentName);
+    console.warn(`[collab] ${documentName}: the note's content replaces live changes that had not been saved (${replaced.why}) — what the page held is kept for the workspace owner (GET /api/admin/collab/unsaved → setAside)`);
   } catch (e) {
-    console.error(`[collab] ${documentName}: could not set the replaced content aside:`, e instanceof Error ? e.message : "unknown");
+    // (the reconciler comes back every two seconds: said once a minute)
+    const last = setAsideFailures.get(documentName) ?? 0;
+    if (Date.now() - last > 60_000) {
+      setAsideFailures.set(documentName, Date.now());
+      console.error(`[collab] ${documentName}: could not set the page's unsaved content aside — the note's newer content is NOT folded in until it can be (the page keeps what it holds):`, e instanceof Error ? e.message : "unknown");
+    }
+    throw e;
   }
 }
+/** The `keep` a fold is given: set aside what an AHEAD document holds; nothing to keep for one that is in step. */
+const keeperFor = (ahead: boolean | undefined, documentName: string, vaultId: string, noteId: string, kind: CollabKind): ((replaced: Replaced) => void) | null =>
+  ahead ? (replaced) => setAsideLocal(documentName, vaultId, noteId, kind, replaced) : null;
 
 /** A history lookup: versions listed (one call) and version BODIES fetched, at most. */
 const HISTORY_LISTED = 50;
@@ -970,7 +1055,7 @@ function mergeBases(row: DocState | null, landed: string | null | undefined): Me
   if (landed !== undefined && landed === newest && row.attemptState) return only(row.attemptState);
   // Unknown which (or an older attempt, whose state was not kept): the fold tries each and
   // takes none it cannot vouch for — also when only one candidate is left. Older first.
-  return { candidates: [row.base, row.attemptState].filter((b): b is Uint8Array => b !== null), uncertain: true, floor: row.base };
+  return { candidates: [row.base, row.attemptState].filter((b): b is Uint8Array => b !== null), uncertain: true, floor: row.base, attempt: row.attemptState };
 }
 
 // ── what connected clients are told (Hocuspocus stateless messages) ─────────
@@ -1094,7 +1179,13 @@ export async function reconcileLoadedDocs(server: LiveDocs): Promise<void> {
       // …and so may the note (a store of ours, another fold): only apply what is still news.
       if (noteMs <= reconcileBaseline(name, target.vaultId, target.noteId)) return;
       const row = getDocState(target.noteId, target.vaultId);
-      const folded = foldVaultContent(doc, kind, content, prepared, mergeBases(row, landed));
+      let folded: FoldResult;
+      try {
+        folded = foldVaultContent(doc, kind, content, prepared, mergeBases(row, landed), keeperFor(row?.ahead, name, target.vaultId, target.noteId, kind));
+      } catch (e) {
+        if (e instanceof SetAsideFailedError) return; // nothing was replaced; the next tick tries again
+        throw e;
+      }
       // Persist the merged document WITH its new base, together: a snapshot must never
       // claim a base (the new vault content) that its state does not contain.
       if (row) {
@@ -1104,10 +1195,7 @@ export async function reconcileLoadedDocs(server: LiveDocs): Promise<void> {
       lastReconciled.set(name, noteMs);
       // The document was ahead and no merge could be trusted: what it held beyond the
       // vault's copy is no longer in it — everyone on the page is told, and it is kept.
-      if (folded.wholesale && row?.ahead) {
-        if (folded.replaced) setAsideLocal(name, target.vaultId, target.noteId, kind, folded.replaced);
-        tellClients(name, { type: "prism:notice", code: "external-replaced" });
-      }
+      if (folded.wholesale && row?.ahead) tellClients(name, { type: "prism:notice", code: "external-replaced" });
     };
     // Writes of ours that were never confirmed: did one land before this edit was made?
     // Only the note's history can say — asked off this loop.
@@ -1483,6 +1571,8 @@ export async function loadDocumentState(documentName: string, doc: Y.Doc, opts?:
 
   /** Does the restored snapshot hold changes the vault lacks? (then it is kept `ahead` and written later) */
   let ahead = false;
+  /** The note's newer content was NOT folded in (its replacement could not be set aside): it is still news. */
+  let unfolded = false;
   if (stored) {
     // Always restore the persisted CRDT state first: it carries the doc's stable
     // Yjs client IDs. A reconnecting client (in-session, or via IndexedDB across
@@ -1503,8 +1593,19 @@ export async function loadDocumentState(documentName: string, doc: Y.Doc, opts?:
       // the whole note on the first) — three-way against the true base when the
       // snapshot is ahead, so what was typed and what was changed elsewhere both
       // survive.
-      const fold = foldVaultContent(doc, kind, note.content, folded, mergeBases(stored, landed));
-      if (stored.ahead && !fold.wholesale) {
+      let fold: FoldResult | null = null;
+      try {
+        fold = foldVaultContent(doc, kind, note.content, folded, mergeBases(stored, landed), keeperFor(stored.ahead, documentName, target.vaultId, target.noteId, kind));
+      } catch (e) {
+        if (!(e instanceof SetAsideFailedError)) throw e;
+        // What the snapshot holds could not be set aside, so nothing replaced it: the
+        // page opens with its own (ahead) state, and the note's newer content stays
+        // news — the reconciler and the store's guard fold it once it can be kept.
+        unfolded = true;
+      }
+      if (!fold) {
+        /* opened as it was (above) */
+      } else if (stored.ahead && !fold.wholesale) {
         saveDocAhead(target.noteId, Y.encodeStateAsUpdate(doc), target.vaultId);
         rebaseDoc(target.noteId, target.vaultId, { source: noteMs, hash: rel.hash ?? contentHash(note.content), base: fold.base });
       } else {
@@ -1512,7 +1613,6 @@ export async function loadDocumentState(documentName: string, doc: Y.Doc, opts?:
         // was unknown and the external edit replaced it).
         if (stored.ahead) {
           console.warn(`[collab] ${documentName}: the note changed elsewhere and this snapshot could not be merged with it — the note's content replaced unsaved changes`);
-          if (fold.replaced) setAsideLocal(documentName, target.vaultId, target.noteId, kind, fold.replaced);
           pendingNotices.set(documentName, { message: { type: "prism:notice", code: "external-replaced" }, until: Date.now() + collabTuning.noticeTtlMs }); // told to whoever opens it now
         }
         ahead = false;
@@ -1562,7 +1662,7 @@ export async function loadDocumentState(documentName: string, doc: Y.Doc, opts?:
       saveDocState(target.noteId, Y.encodeStateAsUpdate(doc), noteMs, target.vaultId, contentHash(note.content));
       clearCollabUnsaved(target.noteId, target.vaultId);
     }
-    lastReconciled.set(documentName, noteMs);
+    if (!unfolded) lastReconciled.set(documentName, noteMs);
   } else if (stored?.ahead || isCollabUnsaved(target.noteId, target.vaultId)) {
     // The note could not be READ just now, and the snapshot holds changes it
     // lacks. Nothing above scheduled their write (it all hangs off the note), and
@@ -1797,6 +1897,13 @@ const UNSAVED_GIVE_UP_MS = 14 * 24 * 3600_000;
  * state is never deleted).
  */
 export async function sweepUnsavedDocuments(limit = 5, at = Date.now()): Promise<void> {
+  // Set-aside page text is kept 90 days. Pruned here as well as on insert (S4): a
+  // workspace where nothing is ever set aside again would keep its last rows forever.
+  try {
+    pruneCollabSetAside(at);
+  } catch {
+    /* best-effort */
+  }
   for (const row of dueCollabUnsaved(limit, at)) {
     const loaded = hocuspocus.documents.get(row.doc_name);
     if (loaded) {
@@ -1819,6 +1926,7 @@ export async function sweepUnsavedDocuments(limit = 5, at = Date.now()): Promise
     } catch (e) {
       if (e instanceof VaultError && e.status === 404) {
         clearCollabUnsaved(row.name, row.vault_id);
+        deleteCollabSetAsideForNote(row.vault_id, row.name);
         console.warn(`[collab] ${row.doc_name}: the note was deleted while changes to it were unsaved — nothing left to write`);
       }
       continue; // unreachable: tried again after its backoff
@@ -2085,16 +2193,22 @@ export async function storeDocumentState(documentName: string, doc: Y.Doc): Prom
           if (isDocBlocked(documentName)) break;
           const landed = await landedAttempt(vaultId, noteId, getDocMeta(noteId, vaultId));
           const row = getDocState(noteId, vaultId);
-          const fold = foldVaultContent(doc, kind, note.content, prepared, mergeBases(row, landed));
+          let fold: FoldResult;
+          try {
+            fold = foldVaultContent(doc, kind, note.content, prepared, mergeBases(row, landed), keeperFor(row?.ahead, documentName, vaultId, noteId, kind));
+          } catch (e) {
+            if (!(e instanceof SetAsideFailedError)) throw e;
+            // The page's own content could not be set aside, so the note's newer content did
+            // not replace it — and writing the page now would overwrite that content. Later.
+            failure = { reason: "error", permanent: false, retry: true };
+            break;
+          }
           if (row) {
             saveDocAhead(noteId, Y.encodeStateAsUpdate(doc), vaultId);
             rebaseDoc(noteId, vaultId, { source: noteMs, hash: hash ?? contentHash(note.content), base: fold.base });
           }
           lastReconciled.set(documentName, noteMs);
-          if (fold.wholesale && row?.ahead) {
-            if (fold.replaced) setAsideLocal(documentName, vaultId, noteId, kind, fold.replaced);
-            tellClients(documentName, { type: "prism:notice", code: "external-replaced" });
-          }
+          if (fold.wholesale && row?.ahead) tellClients(documentName, { type: "prism:notice", code: "external-replaced" });
         }
       }
 
@@ -2163,6 +2277,8 @@ export async function storeDocumentState(documentName: string, doc: Y.Doc): Prom
       } else {
         // Saved BEFORE the write is sent: the snapshot holds what is being written,
         // and its hash says "this vault copy is ours" whatever happens to the answer.
+        // Was this very content already sent once, its outcome never learnt? (see the catch below)
+        const sentBefore = getDocMeta(noteId, vaultId)?.attempts.includes(hash) ?? false;
         if (!saveDocAttempt(noteId, snapshotState, hash, vaultId, sourceAtSnapshot, [content.length, Buffer.byteLength(content)])) {
           await movedOn();
           continue;
@@ -2187,6 +2303,13 @@ export async function storeDocumentState(documentName: string, doc: Y.Doc): Prom
         } catch (e) {
           giveBack();
           const status = e instanceof VaultError ? e.status : 0;
+          // S2: a DEFINITE refusal (a 409, any other 4xx but 408) — the vault did not
+          // apply this write, so its content in the vault can never be "ours". The
+          // attempt is forgotten; left recorded, it made every later external edit an
+          // uncertain merge in ordinary concurrent editing (one 409 was enough). Kept
+          // for outcome-unknown failures (no answer, a timeout, a 5xx) — and when the
+          // same content was sent before without an answer: THAT send may have landed.
+          if ((e instanceof VaultConflictError || (status >= 400 && status < 500 && status !== 408)) && !sentBefore) dropDocAttempt(noteId, vaultId, hash);
           if (e instanceof VaultConflictError || status === 409) {
             // The note changed between our read and our write. Re-read it and go
             // round again: the guard above recognises our own lost write, sees
@@ -2386,7 +2509,11 @@ export const hocuspocus = new Hocuspocus({
   // re-encode and re-apply its whole state to itself).
   async onLoadDocument(data) {
     try {
-      await loadDocumentState(data.documentName, data.document, { actor: actorOfContext(data.context) });
+      // `charge: false` (S6): what a load converts is the STORED note — whoever opens it
+      // did not write it. Three slow notes used to leave the person who merely opened
+      // them `busy`; slow content is remembered by its hash instead (and by
+      // `unconvertible`, per document). Writers stay charged for what they submit.
+      await loadDocumentState(data.documentName, data.document, { actor: actorOfContext(data.context), charge: false });
     } catch (e) {
       // Hocuspocus never registered this Document, so it never destroys it either:
       // its Awareness keeps a live interval. Release it here, or every refused

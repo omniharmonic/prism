@@ -14,7 +14,7 @@
 import { Hono } from "hono";
 import { createHash } from "node:crypto";
 import type { Context } from "hono";
-import { resolveVaultEntry, grantsForResource, isCollabUnsaved } from "../db";
+import { resolveVaultEntry, grantsForResource, isCollabUnsaved, deleteCollabSetAsideForNote } from "../db";
 import { vault, vaultClient, VaultError, VaultConflictError, type Note } from "../parachute";
 import { resolveActor, requestVia, type Actor } from "../auth/actor";
 import { COLLAB_SCHEMA_VERSION } from "@prism/core/editor-schema";
@@ -158,6 +158,15 @@ async function proxyToVault(c: Context) {
   // subscribe socket covers everyone else's; this makes the writer's next read exact).
   if (method !== "GET" && method !== "HEAD" && res.status >= 200 && res.status < 300) {
     void treeAfterOwnerWrite(entry, method, path, res.body).catch(() => {});
+    // A note deleted for good takes the page text set aside from its live document with it.
+    const deleted = method === "DELETE" ? path.match(/^\/notes\/([^/?]+)$/)?.[1] : undefined;
+    if (deleted) {
+      try {
+        deleteCollabSetAsideForNote(entry.id, decodeURIComponent(deleted));
+      } catch {
+        /* a malformed escape: nothing to delete */
+      }
+    }
   }
   if (process.env.PRISM_VAULT_TRACE === "1") {
     console.log(`[trace] proxy ${method} ${path}${url.search} → ${res.status} ${res.body.length}B ${Date.now() - t0}ms ua=${(c.req.header("user-agent") ?? "").slice(0, 40)}`);
@@ -1214,6 +1223,7 @@ api.delete("/notes/:id", async (c) => {
     return vaultErr(c, e);
   }
   treeRemoveNote(resolveVaultEntry(actor.vaultId), note.id);
+  deleteCollabSetAsideForNote(actor.vaultId, note.id);
   return c.json({ ok: true });
 });
 

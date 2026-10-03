@@ -2003,6 +2003,26 @@ export const saveDocAttempt = db.transaction((name: string, state: Uint8Array, h
   setAttemptLens.run(JSON.stringify(lens), vaultId, name);
   return true;
 });
+const setDocAttempts = db.prepare(
+  `UPDATE collab_docs SET attempts = @attempts, attempt_state = CASE WHEN @attempts IS NULL THEN NULL ELSE attempt_state END, attempt_lens = @lens WHERE vault_id = @vault_id AND name = @name`,
+);
+/**
+ * The vault DEFINITELY refused the write of `hash` (a 409, another 4xx): it was
+ * not applied, so that content in the vault can never be "ours". The attempt is
+ * forgotten — the snapshot stays ahead on its kept base. Left recorded, it made
+ * every later external edit an UNCERTAIN merge (which base? did it land?) in
+ * ordinary concurrent editing. Only outcome-unknown failures (a timeout, a 5xx,
+ * no answer) keep their attempt. The caller must not drop a hash an EARLIER send
+ * of the same content may still have landed under (see the store).
+ */
+export const dropDocAttempt = db.transaction((name: string, vaultId: string, hash: string): void => {
+  const meta = getDocMeta(name, vaultId);
+  if (!meta || !meta.attempts.includes(hash)) return;
+  const kept = meta.attempts.filter((h) => h !== hash);
+  const lens: Record<string, [number, number]> = {};
+  for (const h of kept) if (meta.attemptLens?.[h]) lens[h] = meta.attemptLens[h]!;
+  setDocAttempts.run({ vault_id: vaultId, name, attempts: kept.length ? JSON.stringify(kept) : null, lens: kept.length ? JSON.stringify(lens) : null });
+});
 const confirmDocAttemptStmt = db.prepare(
   `UPDATE collab_docs SET state = COALESCE(attempt_state, state), source_updated_at = @source, base_hash = @hash, ahead = 0, base_state = NULL, attempts = NULL, attempt_state = NULL, updated_at = @updated_at
    WHERE vault_id = @vault_id AND name = @name`,
@@ -2133,6 +2153,19 @@ export const addCollabSetAside = db.transaction((name: string, vaultId: string, 
   pruneSetAsideAge.run(at - SET_ASIDE_MAX_AGE_MS);
   return id;
 });
+/** Drop set-aside rows past their 90 days (also run by the periodic unsaved sweep: an insert may never come again). */
+export function pruneCollabSetAside(at = now()): number {
+  return pruneSetAsideAge.run(at - SET_ASIDE_MAX_AGE_MS).changes;
+}
+const deleteSetAsideOfNote = db.prepare("DELETE FROM collab_set_aside WHERE vault_id = ? AND name = ?");
+/** The note is gone for good (purged from the Trash, deleted): what its page once held goes with it. Never throws. */
+export function deleteCollabSetAsideForNote(vaultId: string, noteId: string): number {
+  try {
+    return deleteSetAsideOfNote.run(vaultId, noteId).changes;
+  } catch {
+    return 0;
+  }
+}
 export function listCollabSetAside(vaultId: string, limit = 200): CollabSetAsideRow[] {
   return listSetAsideStmt.all(vaultId, limit) as CollabSetAsideRow[];
 }

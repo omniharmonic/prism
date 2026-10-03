@@ -31,7 +31,7 @@
 import { Hono, type Context } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { randomUUID } from "node:crypto";
-import { db, resolveVaultEntry, getVaultRegistry, listPublications, listVaultMirrors, grantsForResource, listGrantsForVault, type Grant } from "./db";
+import { db, resolveVaultEntry, getVaultRegistry, listPublications, listVaultMirrors, grantsForResource, listGrantsForVault, deleteCollabSetAsideForNote, type Grant } from "./db";
 import { recordAction } from "./actions/store";
 import { listGitHubConfigs } from "./worker/sync-store";
 import { pathInPrefix } from "./paths";
@@ -990,6 +990,7 @@ export function createPagesApi(opts: PagesApiOptions = {}) {
           await vaultClient(entry.id).deleteNote(id);
           treeRemoveNote(entry, id);
           ledgerDelete(entry.id, id);
+          deleteCollabSetAsideForNote(entry.id, id); // page text set aside from its live document goes with the page
           done.push(id);
           // Attachments go ONLY after their page is really gone (a failed delete must leave the
           // page restorable WITH its media). Per note; a purge that cannot finish records
@@ -1259,6 +1260,7 @@ export async function runTrashPurgeOnce(now = Date.now()): Promise<{ purged: num
       await vaultClient(entry.id).deleteNote(note.id);
       treeRemoveNote(entry, note.id);
       ledgerDelete(row.vault_id, row.note_id);
+      deleteCollabSetAsideForNote(entry.id, note.id); // (see DELETE /trash/:id)
       out.purged++;
       // After the delete succeeded, never before (see DELETE /trash/:id).
       await purgeAttachmentsForNote(entry.id, note.id, { noteGone: true }).catch(() => {});
