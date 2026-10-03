@@ -14,6 +14,7 @@ import { useUIStore } from "../../app/stores/ui";
 import { useNoteShortcuts } from "../navigation/NoteShortcuts";
 import { useIsMobile } from "../../app/hooks/useIsMobile";
 import { ShareButton } from "./ShareButton";
+import { PageActionsButton } from "../pages/PageActionsMenu";
 
 /** A square, quiet icon button for the top bar (rounded hover via .interactive). */
 function IconButton({
@@ -164,6 +165,7 @@ export function TabBar() {
           </IconButton>
         )}
         <ShareButton key="share" />
+        {isRealNote && <PageActionsButton key="page-actions" page={{ id: activeTab!.noteId, path: null, title: activeTab!.title }} size={18} />}
       </div>
     );
   }
@@ -346,6 +348,7 @@ export function TabBar() {
       </div>
       {/* Keep sharing at the same keyed parent on desktop and mobile. */}
       <ShareButton key="share" />
+      {isRealNote && <PageActionsButton key="page-actions" page={{ id: activeTab!.noteId, path: null, title: activeTab!.title }} />}
       <div className="flex items-center gap-0.5 flex-shrink-0">
         {/* Bot = opens Agent specifically */}
         <IconButton

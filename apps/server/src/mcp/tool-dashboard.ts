@@ -114,7 +114,8 @@ function runWidget(w: WidgetSpec, notes: Note[], extraFields: string[]): Record<
 
 async function visibleNotes(ctx: ToolContext): Promise<{ notes: Note[]; truncated: boolean }> {
   const q = roleAtLeast(ctx.principal.actor.role, "admin") ? `?limit=${MAX_SCAN}&include_content=false` : "?include_content=false";
-  const all = await jsonOrToolError<Note[]>(await ctx.dispatch(`/api/notes${q}`));
+  // Trashed pages are never dashboard rows (the owner passthrough returns them).
+  const all = (await jsonOrToolError<Note[]>(await ctx.dispatch(`/api/notes${q}`))).filter((n) => !(n.tags ?? []).includes("prism-trashed"));
   return { notes: all.slice(0, MAX_SCAN), truncated: all.length > MAX_SCAN };
 }
 

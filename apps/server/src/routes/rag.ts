@@ -15,6 +15,7 @@
  * additionally bind model + chunker; hydration uses that same vault client.
  * A retired capability vault must never fall back to the primary vault.
  */
+import { TRASH_TAG } from "@prism/core/pages";
 import { Hono } from "hono";
 import { createHash } from "node:crypto";
 import type { Context } from "hono";
@@ -66,7 +67,7 @@ rag.get("/search/semantic", async (c) => {
   const limit = Math.min(requestedLimit, 100);
   let hits;
   try {
-    hits = await semanticSearch(q, limit, (note) => roleAtLeast(actor.role, "admin") || effectiveCaps(actor.grants, ref(note), roleFloor(actor.role), subjectOf(actor)).has("view"), actor.vaultId);
+    hits = await semanticSearch(q, limit, (note) => !(note.tags ?? []).includes(TRASH_TAG) && (roleAtLeast(actor.role, "admin") || effectiveCaps(actor.grants, ref(note), roleFloor(actor.role), subjectOf(actor)).has("view")), actor.vaultId);
   } catch {
     return c.json({ error: "search_error" }, 502);
   }

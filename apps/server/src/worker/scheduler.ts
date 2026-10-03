@@ -40,6 +40,7 @@ import { indexNote, deindexNote, type IndexResult } from "../rag/service";
 import { getEmbedder } from "../rag/embedder";
 import { indexedNoteIds, allIndexedNoteIds } from "../rag/store";
 import { runHistoryCompactOnce } from "./history-compact";
+import { runTrashPurgeOnce, purgeEnabled as trashPurgeEnabled } from "../pages";
 import { recordSourceOutcome, runHealthCheckOnce } from "./health";
 import { defaultSkillsDeps, runSkillsOnce, type PassResult, type SkillsDeps } from "./skills";
 import { notionDbBackgroundEnabled, runNotionDbPassOnce } from "./notion-db-service";
@@ -55,6 +56,8 @@ let lastIndexSweepAt = 0;
 // every vault also compacts on its own when it (re)starts.
 let lastHistoryCompactAt = Date.now();
 let historyCompactInFlight = false;
+let lastTrashPurgeAt = 0;
+let trashPurgeInFlight = false;
 let indexSweepInFlight = false;
 
 // Governance→grants reconcile state. `governanceExists` caches the one question
@@ -764,6 +767,19 @@ async function tick(): Promise<void> {
       .catch((e) => console.warn("[worker] history-compact failed:", (e as Error).message))
       .finally(() => {
         historyCompactInFlight = false;
+      });
+  }
+
+  // Trash auto-purge (pages): OFF unless TRASH_PURGE_ENABLED=true. Pages older than
+  // TRASH_RETENTION_DAYS (30) in the Trash are deleted for good, every
+  // TRASH_PURGE_INTERVAL_MS (6 h). Fire-and-forget, like compaction.
+  if (trashPurgeEnabled() && !trashPurgeInFlight && Date.now() - lastTrashPurgeAt >= Number(process.env.TRASH_PURGE_INTERVAL_MS ?? 6 * 3_600_000)) {
+    lastTrashPurgeAt = Date.now();
+    trashPurgeInFlight = true;
+    void runTrashPurgeOnce()
+      .catch((e) => console.warn("[worker] trash-purge failed:", (e as Error).message))
+      .finally(() => {
+        trashPurgeInFlight = false;
       });
   }
 

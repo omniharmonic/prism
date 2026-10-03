@@ -158,6 +158,7 @@ interface TreeRow {
   updatedAt: string | null;
   type?: string;
   prismType?: string;
+  order?: number;
 }
 
 /**
@@ -174,7 +175,7 @@ export async function listTree(): Promise<NoteTreeEntry[]> {
       path: r.path,
       tags: r.tags,
       // Only the two keys the tree's type/icon inference reads.
-      metadata: r.type || r.prismType ? { ...(r.type ? { type: r.type } : {}), ...(r.prismType ? { prism_type: r.prismType } : {}) } : null,
+      metadata: r.type || r.prismType || r.order !== undefined ? { ...(r.type ? { type: r.type } : {}), ...(r.prismType ? { prism_type: r.prismType } : {}), ...(r.order !== undefined ? { prism_order: r.order } : {}) } : null,
     }));
   } catch (e) {
     if (!/ failed: (404|403) /.test((e as Error).message)) throw e;

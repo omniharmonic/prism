@@ -15,6 +15,7 @@ import { WikilinkChooser } from "./WikilinkChooser";
 import { NotionDbSyncHost } from "./NotionDbSyncHost";
 import { GraphFullscreen } from "./GraphFullscreen";
 import { MobileActionBar } from "./MobileActionBar";
+import { PagesHost } from "../pages/PagesHost";
 
 export function Shell() {
   const {
@@ -126,6 +127,7 @@ export function Shell() {
       <SharingDialogHost key="sharing" />
       <NotionDbSyncHost key="notion-sync" />
       <GraphFullscreen key="graph" />
+      <PagesHost key="pages" />
     </div></NoteShortcutsProvider>
   );
 }

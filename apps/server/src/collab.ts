@@ -520,6 +520,13 @@ function sessionEmailFromCookie(cookieHeader: string | null): string | null {
 /** Resolve the connection's effective level for a note (session wins over link).
  *  `isLocal` = the connection came straight from loopback (the desktop app), not
  *  the public tunnel; only then is the owner-token path honored. */
+/**
+ * Lock state per document, refreshed by every `resolveLevel` read of the note (it
+ * reads the note anyway) and set directly by the pages lock route. A locked note's
+ * sockets are read-only (lib/pages/model.ts LOCK_KEY).
+ */
+const lockedDocs = new Map<string, boolean>();
+
 export async function resolveLevel(documentName: string, token: string, cookieHeader: string | null, isLocal = false): Promise<Level | null> {
   // Federation path (GATED): a documentName that is a known `space_note_key` is
   // opened EITHER by a peer hub (peer-conn token) OR by THIS hub's own client
@@ -580,7 +587,9 @@ export async function resolveLevel(documentName: string, token: string, cookieHe
     // Same alias rule for the owner: a readable note must answer to this id.
     // (An unreadable note keeps the old behaviour — the owner may still open it.)
     try {
-      if ((await vaultClient(vaultId).getNote(noteId)).id !== noteId) return null;
+      const n = await vaultClient(vaultId).getNote(noteId);
+      if (n.id !== noteId) return null;
+      lockedDocs.set(documentName, n.metadata?.prism_locked === true);
     } catch {
       /* unreadable: unchanged */
     }
@@ -609,6 +618,7 @@ export async function resolveLevel(documentName: string, token: string, cookieHe
   try {
     const note = await vaultClient(vaultId).getNote(noteId);
     if (note.id !== noteId) return null; // resolved through a path/title alias
+    lockedDocs.set(documentName, note.metadata?.prism_locked === true);
     tags = note.tags ?? [];
     // Private-to-creator also gates LIVE editing: a private note is editable only
     // by its creator (or an explicit per-note grant), never via a tag/role floor.
@@ -679,7 +689,8 @@ export async function authorizeConnection(
   const level = await resolveLevel(documentName, token, cookieHeader, isLocal);
   if (revision !== accessRevision()) throw new Error("Access changed. Reconnect.");
   if (!atLeast(level, "view")) throw new Error("Forbidden");
-  connectionConfig.readOnly = !atLeast(level, rawWriteLevel());
+  // A LOCKED page (metadata.prism_locked) is read-only for every socket, owner included.
+  connectionConfig.readOnly = !atLeast(level, rawWriteLevel()) || lockedDocs.get(documentName) === true;
   return level as Level;
 }
 
@@ -924,7 +935,7 @@ async function revalidateConnection(connection: Connection<LiveAccess>): Promise
     if (revision !== accessRevision() || !connection.document.hasConnection(connection) || !level || level !== context.level) {
       throw new Error("Access changed. Reconnect.");
     }
-    connection.readOnly = !atLeast(level, rawWriteLevel());
+    connection.readOnly = !atLeast(level, rawWriteLevel()) || lockedDocs.get(connection.document.name) === true;
   } catch (error) {
     connection.readOnly = true;
     connection.close({ code: 4403, reason: "Access changed. Reconnect to check your permissions." });
@@ -1037,4 +1048,42 @@ export function attachCollab(server: Server): void {
       })
       .catch((e) => console.error("[federation] failed to start manager:", e));
   }
+}
+
+/**
+ * The pages lock route toggled `prism_locked`: record it, and on LOCK drop every
+ * writable connection to the doc (like an access change) so editors reconnect read-only.
+ */
+export function setNoteLocked(vaultId: string, noteId: string, locked: boolean): void {
+  const name = docNameFor(vaultId, noteId);
+  lockedDocs.set(name, locked);
+  if (!locked) return;
+  const doc = hocuspocus.documents.get(name);
+  for (const connection of doc?.getConnections() ?? []) {
+    if (connection.readOnly) continue;
+    connection.readOnly = true;
+    connection.close({ code: 4403, reason: "This page was locked. Reconnect to keep reading." });
+  }
+}
+
+/** Store a live doc NOW (bypassing the debounce) — before a vault-side rewrite of its note. */
+export async function flushLiveDoc(vaultId: string, noteId: string): Promise<void> {
+  const doc = hocuspocus.documents.get(docNameFor(vaultId, noteId));
+  if (!doc) return;
+  await hocuspocus.storeDocumentHooks(
+    doc,
+    {
+      clientsCount: doc.getConnectionsCount(),
+      context: {},
+      document: doc,
+      documentName: doc.name,
+      instance: hocuspocus,
+      requestHeaders: new Headers(),
+      requestParameters: new URLSearchParams(),
+      socketId: "server",
+      lastContext: {},
+      lastTransactionOrigin: { source: "local" },
+    } as never,
+    true,
+  );
 }

@@ -193,6 +193,8 @@ humanCollabApi.post("/:id/commands", async (c) => {
     if (note.id !== id) return missing(); // resolved through a path/title alias
     const level = levelOf(who, note);
     if (!atLeast(level, "suggest")) return fail(c, 403, "forbidden", "Suggest access is required for this document.");
+    // A locked page keeps comments open but takes no suggested edits.
+    if (command.kind === "suggest" && note.metadata?.prism_locked === true) return fail(c, 423, "locked", "This page is locked. Suggestions are paused until it is unlocked.");
     const kind = kindOf(note);
     if (kind !== "document") {
       return fail(c, 400, "unsupported_kind", `Suggested edits and anchored comments are available only for prose documents. This ${kind} is view-only with suggest access.`, { noteKind: kind });

@@ -440,7 +440,10 @@ databasesApi.post("/query", async (c) => {
   const cap = scanMax();
   const stamp = actor.kind === "user" && !owner;
   const visible: QueryInput[] = [];
+  // Trashed pages are not rows of any view (unless the view asks for the trash tag).
+  const wantsTrash = spec.tags.includes("prism-trashed");
   for (const n of notes) {
+    if (!wantsTrash && (n.tags ?? []).includes("prism-trashed")) continue;
     if (owner) {
       visible.push({ ...n, canEdit: true });
       continue;
@@ -519,6 +522,8 @@ databasesApi.post("/properties/:id", async (c) => {
       if (!caps.has("view")) return c.json({ error: "not_found" }, 404);
       if (!caps.has("edit")) return c.json({ error: "forbidden", reason: "editing properties requires edit access" }, 403);
       if (entries.some(([k]) => ACCESS_KEYS.has(k))) return c.json({ error: "forbidden" }, 403);
+      // A locked page's properties are read-only too (pages lock, owner/admin bypass).
+      if (note.metadata?.prism_locked === true) return c.json({ error: "locked", reason: "This page is locked." }, 423);
     }
     // Per-field compare-and-set: a property someone else changed since the client
     // read it is a conflict; edits to OTHER fields (or the body) are not.

@@ -77,6 +77,8 @@ export async function syncMirror(src: MirrorVault, dst: MirrorVault, cfg: VaultM
   const srcNotes = (await src.listNotes({ pathPrefix: cfg.src_prefix })).filter(
     (n) =>
       pathInPrefix(n.path, cfg.src_prefix) &&
+      // A trashed source page is not mirrored (review H1).
+      !(n.tags ?? []).includes("prism-trashed") &&
       // Never re-mirror a note that is itself a mirrored copy: chaining markers
       // is how an A→B + B→A pair would echo notes back and forth forever.
       !(n.metadata && typeof n.metadata.mirror_source === "string"),

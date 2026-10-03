@@ -195,12 +195,17 @@ export async function start() {
   // /agent[/<sessionId>] opens the Agent chat (WP3.2; the push deep link of WP3.3).
   // A client route: the SW denylist stays /api/* + /auth/*.
   const agentLink = path.match(/^\/agent(?:\/([0-9a-f-]{36}))?\/?$/i);
+  // /page/<id> opens one page (the page menu's "Copy link"). A client route like /agent.
+  const pageLink = path.match(/^\/page\/([^/?#]{1,256})\/?$/);
+  const pageId = pageLink ? (() => { try { return decodeURIComponent(pageLink[1]!); } catch { return null; } })() : null;
   const initialTab: InitialTab | undefined =
     path === "/map" || path === "/bioregion"
       ? { id: "map", title: "Map", type: "map" }
       : agentLink
         ? { id: AGENT_CHAT_TAB, title: "Agent chat", type: AGENT_CHAT_TAB }
-        : undefined;
+        : pageId && !/[\u0000-\u001f:]/.test(pageId)
+          ? { id: pageId, title: "Page", type: "document" }
+          : undefined;
 
   // The owner setup wizard is Tauri-only (its steps call `invoke()`), so the web
   // shell skips it by DEFAULT for everyone — a capability viewer, an invited

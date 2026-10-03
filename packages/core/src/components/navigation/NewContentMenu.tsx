@@ -17,6 +17,7 @@ import {
   Search,
   Check,
   ArrowRight,
+  LayoutTemplate,
 } from "lucide-react";
 import { useVaultClient } from "../../data/VaultClientContext";
 import { useUIStore } from "../../app/stores/ui";
@@ -24,6 +25,8 @@ import { useAgentChatStore } from "../../lib/agent/chatStore";
 import { useIsMobile } from "../../app/hooks/useIsMobile";
 import type { ContentType } from "../../lib/types";
 import { TaskCreateDialog } from "../tasks/TaskCreateDialog";
+import { TEMPLATE_TAG, pageTitle, templateCopy, withoutTrashed } from "../../lib/pages/model";
+import { inferContentType } from "../../lib/schemas/content-types";
 import { ComposeMessage } from "../comms/ComposeMessage";
 import {
   folderLabel,
@@ -103,6 +106,8 @@ export interface NewContentMenuProps {
   initialType?: ContentType;
   /** Opener for reliable focus restoration, including Safari pointer activation. */
   returnFocus?: HTMLElement | null;
+  /** "New page from template": open with the template list showing. */
+  startWithTemplates?: boolean;
 }
 export function NewContentMenu(props: NewContentMenuProps) {
   const client = useVaultClient();
@@ -121,6 +126,7 @@ function CreateContent({
   initialFolder,
   initialType = "document",
   returnFocus,
+  startWithTemplates,
 }: NewContentMenuProps) {
   const client = useVaultClient();
   const queryClient = useQueryClient();
@@ -157,6 +163,14 @@ function CreateContent({
       : null,
   );
   const [showTypes, setShowTypes] = useState(false);
+  // Templates: notes tagged `template` the viewer can see (lib/pages/model.ts).
+  const templates = useQuery({
+    queryKey: ["vault", "templates", initialScope.current],
+    queryFn: async () => withoutTrashed(await client.listNotes({ tag: TEMPLATE_TAG })).filter((n) => n.tags?.includes(TEMPLATE_TAG)),
+    retry: false,
+  });
+  const [template, setTemplate] = useState<{ id: string; title: string } | null>(null);
+  const [showTemplates, setShowTemplates] = useState(!!startWithTemplates);
   const [showFolders, setShowFolders] = useState(false);
   const [search, setSearch] = useState("");
   const [pending, setPending] = useState(false);
@@ -250,10 +264,20 @@ function CreateContent({
           entries,
         );
       }
-      const note = await client.createNote(input.params);
+      let params = input.params;
+      let openType = type as ContentType;
+      if (template) {
+        // Copy the template's body, properties and tags (minus `template` and system keys).
+        const source = await client.getNote(template.id, { fresh: true });
+        if (!alive.current || !current()) return;
+        const copy = templateCopy(source, input.title, selectedFolder);
+        params = copy;
+        openType = inferContentType({ ...source, metadata: copy.metadata, tags: copy.tags });
+      }
+      const note = await client.createNote(params);
       if (!alive.current || !current()) return;
       void queryClient.invalidateQueries({ queryKey: ["vault"] });
-      useUIStore.getState().openTab(note.id, input.title, type as ContentType);
+      useUIStore.getState().openTab(note.id, input.title, openType);
       onClose();
     } catch (e) {
       if (alive.current && current())
@@ -424,6 +448,83 @@ function CreateContent({
                   )}
                 </button>
               ))}
+            </div>
+          )}
+          {(type === "document" && (startWithTemplates || (templates.data?.length ?? 0) > 0)) && (
+            <div className="mb-3 flex flex-wrap items-center gap-2">
+              <span className="w-14 text-xs" style={{ color: "var(--text-muted)" }}>
+                Template
+              </span>
+              <button
+                type="button"
+                disabled={pending}
+                aria-expanded={showTemplates}
+                aria-controls="creation-templates"
+                onClick={() => {
+                  setShowTemplates(!showTemplates);
+                  setShowTypes(false);
+                  setShowFolders(false);
+                }}
+                className="focus-ring flex min-h-11 items-center gap-2 rounded-lg px-3 text-sm hover:bg-[var(--glass-hover)]"
+              >
+                <LayoutTemplate size={16} />
+                {template ? template.title : "Blank page"}
+                <ChevronDown size={14} />
+              </button>
+            </div>
+          )}
+          {type === "document" && showTemplates && (
+            <div
+              id="creation-templates"
+              role="group"
+              aria-label="Templates"
+              className="mb-4 grid grid-cols-1 gap-1 rounded-xl border p-2 sm:grid-cols-2"
+              style={{ borderColor: "var(--glass-border)" }}
+            >
+              <button
+                type="button"
+                disabled={pending}
+                aria-pressed={!template}
+                onClick={() => {
+                  setTemplate(null);
+                  setShowTemplates(false);
+                }}
+                className="focus-ring flex min-h-11 items-center gap-2 rounded-lg px-3 text-left text-sm hover:bg-[var(--glass-hover)]"
+              >
+                <FileText size={16} />
+                Blank page
+                {!template && <Check size={13} className="ml-auto" />}
+              </button>
+              {(templates.data ?? []).map((t) => {
+                const title = typeof t.metadata?.title === "string" && t.metadata.title ? (t.metadata.title as string) : pageTitle(t.path);
+                return (
+                  <button
+                    type="button"
+                    key={t.id}
+                    disabled={pending}
+                    aria-pressed={template?.id === t.id}
+                    onClick={() => {
+                      setTemplate({ id: t.id, title });
+                      setShowTemplates(false);
+                    }}
+                    className="focus-ring flex min-h-11 items-center gap-2 rounded-lg px-3 text-left text-sm hover:bg-[var(--glass-hover)]"
+                  >
+                    <LayoutTemplate size={16} />
+                    <span className="truncate">{title}</span>
+                    {template?.id === t.id && <Check size={13} className="ml-auto shrink-0" />}
+                  </button>
+                );
+              })}
+              {templates.isSuccess && !templates.data.length && (
+                <p className="px-2 py-2 text-xs sm:col-span-2" style={{ color: "var(--text-muted)" }}>
+                  No templates yet. Add the tag “template” to any page to offer it here.
+                </p>
+              )}
+              {templates.isError && (
+                <p className="px-2 py-2 text-xs sm:col-span-2" style={{ color: "var(--text-muted)" }}>
+                  Templates couldn’t load. You can still start from a blank page.
+                </p>
+              )}
             </div>
           )}
           <div className="flex items-center gap-2">

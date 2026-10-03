@@ -2,7 +2,7 @@ import { AddSavedNoteContextButton } from "../agent/SavedNoteHandoff";
 import { useState, useCallback, useEffect, useRef, useMemo } from "react";
 import {
   Search, X, FileText, MonitorPlay, Code, Mail, Table2, Globe,
-  CheckSquare, MessageSquare, Bot, ArrowRight, Settings, RefreshCw, Wand2, History, Sparkles } from "lucide-react";
+  CheckSquare, MessageSquare, Bot, ArrowRight, Settings, RefreshCw, Wand2, History, Sparkles, Trash2, FolderInput } from "lucide-react";
 import { useUIStore } from "../../app/stores/ui";
 import { useIsMobile } from "../../app/hooks/useIsMobile";
 import { useVaultSearch, useCreateNote } from "../../app/hooks/useParachute";
@@ -21,6 +21,8 @@ import { searchModeLabel, searchPreview, searchResultGroup } from "../navigation
 import "../navigation/search-workspace.css";
 import { NewContentMenu } from "../navigation/NewContentMenu";
 import { useNotionDbSyncModal } from "./NotionDbSyncHost";
+import { useNoteShortcuts } from "../navigation/NoteShortcuts";
+import { usePagesUI } from "../../lib/pages/store";
 
 interface Command {
   id: string;
@@ -48,6 +50,7 @@ export function CommandBar() {
   // none of them.
   const host = useHostServices();
   const vaultClient = useVaultClient();
+  const { recents } = useNoteShortcuts();
   const hostCmds = isDesktop || !!host;
 
   /** Run a command, surfacing a failure as an alert instead of a silent rejection. */
@@ -106,6 +109,21 @@ export function CommandBar() {
     createCommand("spreadsheet", "Spreadsheet", <Table2 size={15} />),
     createCommand("website", "Website", <Globe size={15} />),
     createCommand("task", "Task", <CheckSquare size={15} />),
+    {
+      id: "create-from-template", label: "New Page from Template", category: "create" as const,
+      icon: <FileText size={15} />,
+      action: () => { closeCommandBar(); usePagesUI.getState().openCreate({ template: true }); },
+    },
+    {
+      id: "open-trash", label: "Open Trash", category: "navigate" as const,
+      icon: <Trash2 size={15} />,
+      action: () => { closeCommandBar(); usePagesUI.getState().openTrash(true); },
+    },
+    ...(activeIsNote && activeTab ? [{
+      id: "move-page", label: "Move Page To…", category: "navigate" as const,
+      icon: <FolderInput size={15} />,
+      action: () => { closeCommandBar(); usePagesUI.getState().openMove({ id: activeTab.noteId, path: null, title: activeTab.title }); },
+    }] : []),
     // Utility commands
     {
       id: "settings", label: "Settings", category: "navigate" as const,
@@ -284,7 +302,18 @@ export function CommandBar() {
       action: () => { openTab(note.id, note.path?.split("/").pop() || note.id, inferContentType(note)); closeCommandBar(); },
     }));
   }, [searchResults, query, debouncedQuery, filter, openTab, closeCommandBar]);
-  const noteItems = vaultItems.filter(item => item.group === "notes");
+  // Empty query: recent pages first (synced across devices when the server keeps preferences).
+  const recentItems = useMemo(() => (query.trim() || (filter !== "all" && filter !== "notes")) ? [] : recents.slice(0, 8).map(r => ({
+    id: `recent-${r.id}`,
+    noteId: r.id,
+    label: r.title,
+    sublabel: "Recently opened",
+    group: "notes" as const,
+    icon: null as string | null,
+    preview: "",
+    action: () => { openTab(r.id, r.title, r.type); closeCommandBar(); },
+  })), [recents, query, filter, openTab, closeCommandBar]);
+  const noteItems = [...recentItems, ...vaultItems.filter(item => item.group === "notes")];
   const messageItems = vaultItems.filter(item => item.group === "messages");
   const orderedNotes = [...noteItems, ...messageItems];
   const showAsk = !!query.trim() && agentChat && (filter === "all" || filter === "commands");
@@ -343,7 +372,7 @@ export function CommandBar() {
       label={item.label} sublabel={item.sublabel} preview={item.preview} trailing={<span className="prism-search-open">Open <ArrowRight size={13} /></span>} />; })}
   </div>;
   const body = <>
-    {renderNotes(noteItems, "Notes")}{renderNotes(messageItems, "Messages")}
+    {recentItems.length > 0 ? renderNotes(noteItems, "Recent pages") : renderNotes(noteItems, "Notes")}{renderNotes(messageItems, "Messages")}
     {filteredCommands.length > 0 && <div role="group" aria-label="Commands"><div className="prism-search-group">Commands</div>{filteredCommands.map(cmd => {
       const index = items.findIndex(item => item.id === cmd.id);
       return <CmdRow key={cmd.id} id={`prism-command-${index}`} selected={selectedIndex === index} onClick={cmd.action} onHover={() => setSelectedId(cmd.id)} icon={cmd.icon} label={cmd.label} />;

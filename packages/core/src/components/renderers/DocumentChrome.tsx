@@ -1,6 +1,7 @@
 import React, { Suspense, useEffect, useRef, useState } from "react";
 import "./DocumentChrome.css";
-import { ChevronRight, Folder, Smile } from "lucide-react";
+import { ChevronRight, Smile } from "lucide-react";
+import { PageBreadcrumbs } from "../pages/Breadcrumbs";
 import type { EmojiClickData, EmojiStyle, Theme } from "emoji-picker-react";
 
 // Full emoji picker, lazy-loaded so it never weighs down the editor chunk —
@@ -291,17 +292,7 @@ export function PageHeader({
   const crumbs = parts.slice(0, -1);
   return (
     <header className="document-page-header">
-      {crumbs.length > 0 && (
-        <nav className="document-breadcrumb" aria-label="Document location">
-          <Folder size={14} aria-hidden="true" className="shrink-0" />
-          {crumbs.map((c, i) => (
-            <React.Fragment key={i}>
-              {i > 0 && <ChevronRight size={12} aria-hidden="true" className="shrink-0" />}
-              <span title={c} className="document-breadcrumb-part">{c}</span>
-            </React.Fragment>
-          ))}
-        </nav>
-      )}
+      {crumbs.length > 0 && <PageBreadcrumbs path={path} />}
       <div className="document-page-heading">
         {(icon || onIconChange) && (
           <IconTile icon={icon} typeIcon={typeIcon} onIconChange={onIconChange} />

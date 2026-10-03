@@ -14,6 +14,8 @@ import { RendererBoundary } from "./RendererBoundary";
 import { reviewMode } from "../../lib/governance/review";
 import { Skeleton } from "../ui/Skeleton";
 import type { Note } from "../../lib/types";
+import { isLocked } from "../../lib/pages/model";
+import { LockedBanner } from "../pages/LockedBanner";
 
 export function Canvas() {
   const openTabs = useUIStore((s) => s.openTabs);
@@ -96,7 +98,10 @@ export function Canvas() {
   // and every owner, so `isLiveDoc` is computed exactly as before for them.
   const proposeOnly = reviewMode(effectiveNote) === "propose";
   const noteRevision = useUIStore((s) => (effectiveNote ? s.noteRevisions[effectiveNote.id] ?? 0 : 0));
-  const isLiveDoc = collab.useLiveCollab(collabDocId) && collabDocId !== "" && !proposeOnly;
+  // Lock page (metadata.prism_locked): read-only for everyone until unlocked. A locked
+  // page leaves the live session too — its keystrokes must not reach the shared doc.
+  const locked = !isVirtual && isLocked(effectiveNote);
+  const isLiveDoc = collab.useLiveCollab(collabDocId) && collabDocId !== "" && !proposeOnly && !locked;
 
   return (
     <div className="flex flex-col h-full">
@@ -127,12 +132,14 @@ export function Canvas() {
           // + the note's revision: a version restore remounts the editor on the
           // restored content (a live collab doc above instead receives it through
           // the server's reconciler, so it keeps its session).
-          <RendererBoundary key={`${effectiveNote.id}:${noteRevision}`}>
+          <RendererBoundary key={`${effectiveNote.id}:${noteRevision}:${locked ? "locked" : "open"}`}>
+            {locked && <LockedBanner note={effectiveNote} />}
             <Suspense fallback={<LoadingSkeleton />}>
               <Renderer
                 note={effectiveNote}
-                onSave={handleSave}
-                onMetadataChange={handleMetadataChange}
+                onSave={locked ? undefined : handleSave}
+                onMetadataChange={locked ? undefined : handleMetadataChange}
+                readOnly={locked || undefined}
               />
             </Suspense>
           </RendererBoundary>

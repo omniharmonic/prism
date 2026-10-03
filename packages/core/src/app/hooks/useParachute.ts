@@ -7,12 +7,16 @@ import { queryKeys } from "../../lib/parachute/queries";
 import type { Note, NoteFilters, CreateNoteParams, UpdateNoteParams } from "../../lib/types";
 import { useAgentChatStore } from "../../lib/agent/chatStore";
 import { useLivePollMs } from "../../lib/events/channelStatus";
+import { withoutTrashed } from "../../lib/pages/model";
 
 export function useNotes(filters?: NoteFilters) {
   const client = useVaultClient();
   return useQuery({
     queryKey: queryKeys.vault.notes(filters),
     queryFn: () => client.listNotes(filters),
+    // Trashed pages are hidden from every list (owner passthrough and desktop
+    // return them; the gateway already drops them for everyone else).
+    select: withoutTrashed,
   });
 }
 
@@ -26,6 +30,7 @@ export function useVaultTree() {
   return useQuery({
     queryKey: ["vault", "tree"] as const,
     queryFn: () => client.listTree(),
+    select: withoutTrashed,
   });
 }
 
@@ -71,7 +76,7 @@ export function useVaultSearch(query: string) {
   });
   // A cached snippet is not proof of current access; hide it during revalidation.
   const visible = text && !result.isFetching && !result.isError ? result.data : undefined;
-  return { ...result, data: visible?.notes, mode: visible?.mode };
+  return { ...result, data: visible ? withoutTrashed(visible.notes) : undefined, mode: visible?.mode };
 }
 
 export function useTags() {

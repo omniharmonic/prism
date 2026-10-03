@@ -22,7 +22,7 @@ import { effectiveLevel, effectiveCaps, grantedTags, type Cap, type NoteRef } fr
 import { roleAtLeast, roleFloor } from "../roles";
 import { compress } from "hono/compress";
 import { openEventStream } from "../events";
-import { ensureTree, renderTree, etagMatches, treeUpsertNote, treeRemoveNote, treeAfterOwnerWrite } from "../tree";
+import { ensureTree, renderTree, etagMatches, treeUpsertNote, treeRemoveNote, treeAfterOwnerWrite, treeRowLocked } from "../tree";
 import { canvasApi } from "./canvas";
 import { threadsApi } from "./threads";
 import { peopleApi } from "./people";
@@ -31,6 +31,8 @@ import { transcriptsApi } from "./transcripts";
 import { databasesApi } from "./databases";
 import { graphNeighborhood } from "../graph";
 import { buildWikilinkIndex, resolveWikilink, noteLinkTitle } from "@prism/core/wikilinks";
+import { isTrashed, isLocked, isOwnerOnlyMeta, TRASH_TAG, TRASH_META, LOCK_KEY, ORDER_KEY } from "@prism/core/pages";
+import { createPagesApi } from "../pages";
 
 export const api = new Hono();
 
@@ -92,6 +94,11 @@ async function proxyToVault(c: Context) {
     init.body = await c.req.text();
     // Any write may change what a cached read would return.
     readCache.clear();
+    // Owner/admin bypass of a page lock is allowed but audited (one line, no content).
+    const lockedId = method === "PATCH" ? path.match(/^\/notes\/([^/?]+)$/)?.[1] : undefined;
+    if (lockedId && treeRowLocked(entry, decodeURIComponent(lockedId)) && /"content"\s*:/.test(init.body as string)) {
+      console.warn(`[pages] lock bypass: ${resolveActor(c).kind === "user" ? (resolveActor(c) as { email: string }).email : "?"} edited locked note ${decodeURIComponent(lockedId)} (vault ${entry.id})`);
+    }
   }
   const t0 = Date.now();
   let res: ProxiedResponse;
@@ -196,6 +203,9 @@ api.use("/transcripts/*", async (c, next) => {
   if (c.req.method !== "GET") readCache.clear();
 });
 api.route("/transcripts", transcriptsApi);
+// Pages (nested-page move, Trash, synced preferences): before the owner passthrough,
+// like /tree — these are Prism routes, not vault routes. Writes drop cached owner reads.
+api.route("/", createPagesApi({ onWrite: () => readCache.clear() }));
 // Typed properties + database views (schemas, lean query, property writes).
 // Their writes bypass the owner proxy: drop cached owner reads afterwards.
 api.use("/properties/*", async (c, next) => { await next(); readCache.clear(); });
@@ -213,7 +223,8 @@ api.get("/graph/neighborhood", async (c) => {
   try {
     const notes = await vaultClient(actor.vaultId).listNotes({includeLinks:true,includeMetadata:["title","type","prism_creator","prism_visibility"]});
     if (notes.length >= 50_000) return c.json({error:"incomplete_inventory"},503);
-    const allowed = roleAtLeast(actor.role,"admin") ? notes : notes.filter(note => capsFor(actor,ref(note)).has("view"));
+    const live = notes.filter(note => !isTrashed(note)); // trashed pages leave the graph
+    const allowed = roleAtLeast(actor.role,"admin") ? live : live.filter(note => capsFor(actor,ref(note)).has("view"));
     const graph = graphNeighborhood(allowed,center,depth,limit);
     c.header("Cache-Control","private, no-store");
     return graph ? c.json(graph) : c.json({error:"not_found"},404);
@@ -231,7 +242,8 @@ api.get("/wikilinks/resolve", async (c) => {
     if (all.length >= 50_000) return c.json({error:"incomplete_inventory"},503);
     // Permission filtering precedes resolution and candidate counts. No hidden
     // title or alias can influence the choices returned to a guest.
-    const allowed = roleAtLeast(actor.role,"admin") ? all : all.filter(note=>capsFor(actor,ref(note)).has("view"));
+    const live = all.filter(note => !isTrashed(note)); // a trashed page is not a link target
+    const allowed = roleAtLeast(actor.role,"admin") ? live : live.filter(note=>capsFor(actor,ref(note)).has("view"));
     const result = resolveWikilink(target,buildWikilinkIndex(allowed));
     const notes = result.kind === "match" ? [result.note] : result.kind === "ambiguous" ? result.notes : [];
     c.header("Cache-Control","private, no-store");
@@ -270,6 +282,8 @@ api.get("/events", async (c) => {
   return openEventStream(c, {
     entry,
     principal: actor.kind === "user" ? `u:${actor.email}` : `l:${actor.capabilityId}`,
+    // Ids only. Trashed notes stay on the channel for viewers (they see them in the
+    // Trash), so a restore or a permanent delete still reaches them.
     canView: owner ? () => true : (r) => capsFor(actor, r).has("view"),
   });
 });
@@ -370,6 +384,8 @@ function annotate(actor: Actor, notes: Note[]): Array<Note & { _caps?: Cap[] }> 
   const stamp = annotated(actor);
   const out: Array<Note & { _caps?: Cap[] }> = [];
   for (const n of notes) {
+    // Trashed pages are hidden from every list and search (GET /api/trash lists them).
+    if (isTrashed(n)) continue;
     const caps = capsFor(actor, ref(n));
     if (caps.has("view")) out.push(stamp ? { ...n, _caps: [...caps] } : n);
   }
@@ -461,6 +477,11 @@ api.get("/notes/:id", async (c) => {
   // `suggest` but not `edit` gets "propose this change for review" rather than a
   // silently failing autosave. Non-owner responses only — the owner's requests
   // are proxied verbatim, so no owner and no desktop client ever sees this field.
+  // Who trashed a page is an email: never shown to non-owners.
+  if (note.metadata && TRASH_META.by in note.metadata) {
+    const { [TRASH_META.by]: _by, ...rest } = note.metadata;
+    note = { ...note, metadata: rest };
+  }
   return c.json(annotated(actor) ? { ...note, _level: level, _caps: [...caps] } : { ...note, _level: level });
 });
 
@@ -487,7 +508,12 @@ api.post("/notes", async (c) => {
   }
   // Stamp the creator (private-to-creator + audit). A member can't forge it — we
   // overwrite any client-supplied prism_creator with the authenticated subject.
-  const metadata = { ...(body.metadata ?? {}), ...(subject ? { prism_creator: subject } : {}) };
+  // Owner-only keys (creator/visibility/trash state, lock) and the trash tag are never
+  // accepted from a non-owner create (review H3/M1).
+  // Narrowing is safe: a non-owner may create a note as private (e.g. a private task).
+  const metadata = Object.fromEntries(Object.entries(body.metadata ?? {}).filter(([k, v]) => (k === "prism_visibility" ? v === "private" : !isOwnerOnlyMeta(k) && k !== LOCK_KEY && k !== ORDER_KEY)));
+  if (subject) metadata.prism_creator = subject;
+  body.tags = (body.tags ?? []).filter((t) => t !== TRASH_TAG);
   try {
     const created = await vaultClient(actor.vaultId).createNote({ ...body, metadata });
     treeUpsertNote(resolveVaultEntry(actor.vaultId), created);
@@ -523,7 +549,25 @@ api.patch("/notes/:id", async (c) => {
     Array.isArray(x) ? [...new Set(x.filter((t): t is string => typeof t === "string" && t.length > 0))] : [];
   const addTags = strings(body.add_tags);
   const removeTags = strings(body.remove_tags);
+  // H3/M1/LOCK: a non-owner never writes who-can-see / who-created / trash state, the
+  // page lock or the sidebar order through this route, and never toggles the trash tag.
+  const meta = body.metadata && typeof body.metadata === "object" ? body.metadata : {};
+  const subjectNow = actorSubject(actor);
+  const forbiddenKey = (k: string): boolean => {
+    // Narrowing only: the note's creator may make it private; never widen it, and
+    // never (re)assign the creator — a no-op restatement of either is fine.
+    if (k === "prism_visibility") return !(meta[k] === "private" && noteRef.creator === subjectNow) && meta[k] !== note.metadata?.[k];
+    if (k === "prism_creator") return meta[k] !== note.metadata?.[k];
+    return isOwnerOnlyMeta(k) || k === LOCK_KEY || k === ORDER_KEY;
+  };
+  if (Object.keys(meta).some(forbiddenKey)) {
+    return c.json({ error: "forbidden", reason: "That property can only be changed through its own control." }, 403);
+  }
+  if (addTags.includes(TRASH_TAG) || removeTags.includes(TRASH_TAG)) {
+    return c.json({ error: "forbidden", reason: "Use Move to Trash / Restore." }, 403);
+  }
   const wantsContent = body.content !== undefined || body.metadata !== undefined;
+  if (wantsContent && isLocked(note) && caps.has("view")) return c.json({ error: "locked", reason: "This page is locked. Unlock it to edit." }, 423);
   const wantsTags = addTags.length > 0 || removeTags.length > 0;
   const wantsPath = body.path !== undefined;
   // `organize` is what unlocks a note's PATH (previously admin-only). Admins never
@@ -608,11 +652,24 @@ api.patch("/notes/:id", async (c) => {
       updated = await vc.getNote(id);
     }
     treeUpsertNote(resolveVaultEntry(actor.vaultId), updated);
+    // A write without content to a LIVE doc: keep the reconciler from folding the
+    // content-stale vault copy over unsaved typing (review M3).
+    if (body.content === undefined) void reconcileMetaWrite(actor.vaultId, id, note.updatedAt, updated.updatedAt);
     return c.json(updated);
   } catch (e) {
     return vaultErr(c, e);
   }
 });
+
+async function reconcileMetaWrite(vaultId: string, id: string, prev: string | null, next: string | null): Promise<void> {
+  try {
+    const collab = await import("../collab");
+    if (!collab.isDocLive(vaultId, id) || !prev || !next) return;
+    collab.markReconciled(collab.docNameFor(vaultId, id), Date.parse(prev), Date.parse(next));
+  } catch {
+    /* best effort */
+  }
+}
 
 // ── version history (vault ≥ 0.7.9) ──────────────────────────────────────────
 // Owners reach the vault's own routes through the passthrough. For everyone else:
@@ -669,6 +726,7 @@ api.get("/notes/:id/versions/:ix", async (c) => {
 api.post("/notes/:id/restore", async (c) => {
   const gate = await viewableNote(c, "edit");
   if (gate instanceof Response) return gate;
+  if (isLocked(gate.note)) return c.json({ error: "locked", reason: "This page is locked. Unlock it to restore a version." }, 423);
   const body = await c.req.json<{ version_ix?: number; if_updated_at?: string }>().catch(() => ({}) as { version_ix?: number; if_updated_at?: string });
   const ix = body.version_ix;
   if (typeof ix !== "number" || !Number.isInteger(ix) || ix < 0) {

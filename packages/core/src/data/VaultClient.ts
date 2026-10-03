@@ -8,6 +8,7 @@ import type {
   VaultStats,
   VaultInfo,
 } from "../lib/types";
+import type { MoveRequest, MoveResult, TrashListing, PreferencesSnapshot, PagePreferences } from "../lib/pages/model";
 import type { QueryPage, QuerySpec, SchemaMap, SchemaPatch, TagSchema } from "../lib/database";
 
 /** Transport status for recoverable UI states, without parsing diagnostic text. */
@@ -213,6 +214,20 @@ export interface VaultClient {
    *  a blind restore; a stale value throws {@link HistoryConflictError}. The
    *  replaced state is itself captured, so a restore is always undoable. */
   restoreNoteVersion?(noteId: string, versionIx: number, ifUpdatedAt: string): Promise<Note>;
+  /** Pages (lib/pages/model.ts). Optional per shell; without them the UI falls back
+   *  to plain vault writes (lib/pages/ops.ts). Move a page and its sub-pages. */
+  movePage?(noteId: string, request: MoveRequest): Promise<MoveResult>;
+  /** Soft-delete a page and its sub-pages (restorable from the Trash). */
+  trashPage?(noteId: string): Promise<{ rootId: string; trashed: string[] }>;
+  listTrash?(query?: string): Promise<TrashListing>;
+  restoreFromTrash?(noteId: string): Promise<{ restored: string[] }>;
+  /** Real delete of a page already in the Trash (and what was trashed with it). */
+  deleteFromTrash?(noteId: string): Promise<{ deleted: string[] }>;
+  /** Page lock / sidebar order: metadata-only, CAS, reconciled with a live editor. */
+  setPageMeta?(noteId: string, set: { prism_locked?: boolean; prism_order?: number }, ifUpdatedAt: string): Promise<{ updatedAt: string | null }>;
+  /** Favorites / recents / sidebar state, synced per user × vault. */
+  getPreferences?(): Promise<PreferencesSnapshot>;
+  savePreferences?(preferences: PagePreferences, ifRevision?: number): Promise<PreferencesSnapshot>;
   /** Tag schemas (vault types + Prism presentation hints), filtered to tags the
    *  caller may know. Optional: shells without it use the bundled schemas. */
   getSchemas?(tags?: string[]): Promise<{ schemas: SchemaMap; canEdit?: boolean }>;

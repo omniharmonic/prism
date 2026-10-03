@@ -1,7 +1,7 @@
 import { NavigationPreferences, useNavigationPreferences, TOOL_NAMES, type NavigationTool } from "./NavigationPreferences";
 import { useNoteShortcuts } from "./NoteShortcuts";
 import { useRef, useState } from "react";
-import { Search, Calendar, MessageSquare, PenSquare, Bot, RefreshCw, ChevronRight, FileText, Star, X, MapPin, FolderPlus, ChevronsDownUp, Sparkles, Users, Plus, Settings2 } from "lucide-react";
+import { Search, Calendar, MessageSquare, PenSquare, Bot, RefreshCw, ChevronRight, FileText, Star, X, MapPin, FolderPlus, ChevronsDownUp, Sparkles, Users, Plus, Settings2, Trash2, LayoutTemplate } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { PrismMark } from "../brand/PrismMark";
 import { Input } from "../ui/Input";
@@ -17,6 +17,7 @@ import { ComposeMessage } from "../comms/ComposeMessage";
 import type { ContentType } from "../../lib/types";
 import { useAgentAvailable } from "../../data/AgentClientContext";
 import { openAgentChat } from "../../lib/agent/chatStore";
+import { usePagesUI } from "../../lib/pages/store";
 
 export function Navigation() {
   const preferences = useNavigationPreferences();
@@ -34,6 +35,10 @@ export function Navigation() {
   const sidebarLabel = useSettingsStore((s) => s.sidebarLabel);
   const shortcuts = useNoteShortcuts();
   const { favorites, recents, toggleFavorite } = shortcuts;
+  // Section open state: synced per user × vault when the server keeps preferences.
+  const sectionProps = (id: string, defaultOpen: boolean) => shortcuts.synced && shortcuts.collapsed
+    ? { open: !shortcuts.collapsed.includes(id), onToggle: (open: boolean) => shortcuts.setCollapsed(id, !open) }
+    : { defaultOpen };
   const openTab = useUIStore((s) => s.openTab);
   const activeTabId = useUIStore((s) => s.activeTabId);
   const openTabs = useUIStore((s) => s.openTabs);
@@ -169,25 +174,28 @@ export function Navigation() {
           {shortcuts.recoveryMessage && <p role="status" className="mx-3 my-2 text-xs text-[var(--text-secondary)]">{shortcuts.recoveryMessage}</p>}
           {shortcuts.unavailable && <div role="status" className="mx-3 my-2 text-xs text-[var(--text-secondary)]">Some shortcuts are unavailable. <button className="focus-ring min-h-9 text-[var(--text-accent)]" onClick={shortcuts.retry}>Retry shortcuts</button></div>}
           {shortcuts.storageUnavailable && <p role="status" className="mx-3 my-2 text-xs text-[var(--text-secondary)]">Shortcuts work here, but couldn’t be saved on this device.</p>}
-          {/* Favorites (pinned notes) */}
-          {favorites.length > 0 && (
-            <NavSection label="Favorites" defaultOpen>
-              {favorites.map((f) => (
-                <NavItem
-                  key={f.id}
-                  icon={<Star size={14} fill="var(--color-accent)" color="var(--color-accent)" />}
-                  label={f.title}
-                  active={openTabs.find((t) => t.id === activeTabId)?.noteId === f.id}
-                  onClick={() => openTab(f.id, f.title, f.type)}
-                  trailing={<RowAction title="Remove from Favorites" onClick={() => toggleFavorite(f)} icon={<X size={12} />} />}
-                />
-              ))}
-            </NavSection>
-          )}
+          {/* Favorites — always present, so there is a visible place to pin pages. */}
+          <NavSection label="Favorites" {...sectionProps("favorites", true)}>
+            {favorites.length === 0 && (
+              <p className="workspace-nav-empty" style={{ padding: "2px 10px 6px 28px", fontSize: "var(--text-xs)", color: "var(--text-muted)" }}>
+                Star a page to pin it here.
+              </p>
+            )}
+            {favorites.map((f) => (
+              <NavItem
+                key={f.id}
+                icon={<Star size={14} fill="var(--color-accent)" color="var(--color-accent)" />}
+                label={f.title}
+                active={openTabs.find((t) => t.id === activeTabId)?.noteId === f.id}
+                onClick={() => openTab(f.id, f.title, f.type)}
+                trailing={<RowAction title="Remove from Favorites" onClick={() => toggleFavorite(f)} icon={<X size={12} />} />}
+              />
+            ))}
+          </NavSection>
 
           {/* Recently opened notes */}
           {recents.length > 0 && (
-            <NavSection label="Recent">
+            <NavSection label="Recent" {...sectionProps("recent", shortcuts.synced)}>
               {recents.map((r) => (
                 <NavItem
                   key={r.id}
@@ -201,7 +209,7 @@ export function Navigation() {
           )}
 
           {/* Projects / vault notes */}
-          <NavSection label={sidebarLabel === "Projects" ? "Pages" : sidebarLabel} defaultOpen action={<div className="flex items-center"><NavActionButton title="New folder" icon={<FolderPlus size={14} />} onClick={() => { setNewFolderName(""); setNewFolderOpen(true); }} /><NavActionButton title="Collapse all" icon={<ChevronsDownUp size={14} />} onClick={collapseNav} /><RefreshNavButton /></div>}>
+          <NavSection label={sidebarLabel === "Projects" ? "Pages" : sidebarLabel} {...sectionProps("pages", true)} action={<div className="flex items-center"><NavActionButton title="New page from template" icon={<LayoutTemplate size={14} />} onClick={() => usePagesUI.getState().openCreate({ template: true })} /><NavActionButton title="New folder" icon={<FolderPlus size={14} />} onClick={() => { setNewFolderName(""); setNewFolderOpen(true); }} /><NavActionButton title="Collapse all" icon={<ChevronsDownUp size={14} />} onClick={collapseNav} /><RefreshNavButton /></div>}>
             <ProjectTree />
           </NavSection>
           <NavSection label="Tools" action={<NavActionButton title="Customize sidebar" icon={<Settings2 size={14} />} onClick={() => setPreferencesOpen(true)} />}>
@@ -263,6 +271,7 @@ export function Navigation() {
         <button type="button" className="workspace-new-page focus-ring" aria-label="New page" onClick={event => { event.currentTarget.focus(); setShowNewMenu(true); }}>
           <Plus size={18} /><span>New page</span>
         </button>
+        <NavItem icon={<Trash2 size={16} />} label="Trash" active={false} onClick={() => usePagesUI.getState().openTrash(true)} />
         <NavItem icon={<Settings2 size={16} />} label="Workspace settings" active={openTabs.find(t => t.id === activeTabId)?.noteId === "network"} onClick={handleOpenNetwork} />
         {showNewMenu && <NewContentMenu onClose={() => setShowNewMenu(false)} />}
 
@@ -348,16 +357,23 @@ function RowAction({ icon, title, onClick }: { icon: React.ReactNode; title: str
 function NavSection({
   label,
   defaultOpen = false,
+  open: controlledOpen,
+  onToggle,
   action,
   children,
 }: {
   label: string;
   defaultOpen?: boolean;
+  /** Controlled open state (synced sidebar preferences); uncontrolled otherwise. */
+  open?: boolean;
+  onToggle?: (open: boolean) => void;
   /** Optional control rendered on the right of the section header (e.g. refresh). */
   action?: React.ReactNode;
   children: React.ReactNode;
 }) {
-  const [open, setOpen] = useState(defaultOpen);
+  const [localOpen, setLocalOpen] = useState(defaultOpen);
+  const open = controlledOpen ?? localOpen;
+  const setOpen = (next: boolean) => (onToggle ? onToggle(next) : setLocalOpen(next));
 
   return (
     <section aria-label={label} style={{ marginTop: 18 }}>

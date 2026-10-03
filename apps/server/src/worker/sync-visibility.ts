@@ -26,6 +26,8 @@ export function viewableBy(email: string, vaultId: string): (n: Note) => boolean
   const role = workspaceRole(who, vaultId);
   const grants = grantsForUser(who, vaultId);
   return (n) => {
+    // A trashed page is never exported (GitHub folder / Notion DB sync, review H1).
+    if ((n.tags ?? []).includes("prism-trashed")) return false;
     const r = ref(n);
     if (r.visibility === "private" && (r.creator ?? "").toLowerCase() !== who) return false;
     return effectiveCaps(grants, r, roleFloor(role), who).has("view");
