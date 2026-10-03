@@ -6,6 +6,16 @@ test("favorites readable offline after prefetch", async ({ page, context }, info
   await expect(page.locator(".tiptap[contenteditable=true]")).toBeVisible();
   // The favorite was never opened, yet it is fetched in the background.
   await expect.poll(() => page.evaluate(() => (window as any).prismShell.reads.includes("agenda")), { timeout: 10_000 }).toBe(true);
+  // …and is stored on this device (the cache write lands after the read).
+  await expect.poll(() => page.evaluate(() => new Promise<boolean>((resolve) => {
+    const open = indexedDB.open("prism-read-cache");
+    open.onsuccess = () => {
+      const keys = open.result.transaction("bodies").objectStore("bodies").getAllKeys();
+      keys.onsuccess = () => resolve((keys.result as string[]).some((k) => k.endsWith("|/notes/agenda")));
+      keys.onerror = () => resolve(false);
+    };
+    open.onerror = () => resolve(false);
+  })), { timeout: 10_000 }).toBe(true);
   // Per-page toggle in the page ⋯ menu, remembered for this account + vault.
   await page.getByRole("button", { name: "Page actions", exact: true }).click();
   await page.getByRole("menuitem", { name: /Make available offline/ }).click();

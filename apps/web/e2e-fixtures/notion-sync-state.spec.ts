@@ -36,6 +36,8 @@ test("desktop header: Saving… until the server confirms, Save failed · Retry,
   await context.setOffline(true);
   await typeInEditor(page, " Offline edit.");
   await expect(page.getByRole("button", { name: /Offline · changes saved on this device/ })).toBeVisible({ timeout: 8000 });
+  // Truthful: the change really is in the durable on-device outbox, not paused in memory.
+  await expect(page.locator(".offline-indicator-pill")).toContainText("1 change saved on this device");
   await page.screenshot({ path: info.outputPath("header-offline.png") });
   await context.setOffline(false);
   await expect(badge).toHaveText("Saved", { timeout: 15000 });
