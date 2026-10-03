@@ -17,8 +17,10 @@ import { safeWebUrl } from "../lib/media/embeds";
  * Every node serialises to plain, readable HTML that a non-Prism reader can
  * still make sense of:
  *   callout  → <div data-type="callout" data-emoji="💡">…blocks…</div>
- *   toggle   → <details data-type="toggle"><summary>…</summary>…blocks…</details> (open/closed is view state)
- *   columns  → <div data-type="columns" data-count="2"><div data-type="column">…</div>…</div>
+ *   toggle   → <details data-type="toggle" [data-heading-level="1|2|3"]><summary>…</summary>…blocks…</details> (open/closed is view state; v5: toggle headings)
+ *   columns  → <div data-type="columns" data-count="2…5"><div data-type="column" [data-col-width="1.5"]>…</div>…</div> (v5: up to 5, resizable)
+ *   subpage  → <div data-type="child-page" data-page-id="<noteId>"></div>  (v5: a sub-page row; NO title stored — resolved through the reader's permissions)
+ *   table    → <td|th data-cell-color="blue">  (v5: cell background)
  *   colours  → data-block-color="blue" on a block, <span data-text-color="red"> inline
  *   image    → <img src alt title width data-align data-caption>   (schema v3: align + caption)
  *   file     → <div data-type="attachment" data-kind="pdf|audio|video|file" data-src data-name data-size data-mime><a href>name</a></div>
@@ -171,6 +173,16 @@ export const Toggle = Node.create({
   group: "block",
   content: "toggleSummary block+",
   defining: true,
+  addAttributes() {
+    return {
+      // v5: a toggle heading (H1–H3 summary). null = a plain toggle list.
+      level: {
+        default: null,
+        parseHTML: (el) => intAttr((el as unknown as AttrSource).getAttribute("data-heading-level"), 1, 3),
+        renderHTML: (attrs) => (attrs.level ? { "data-heading-level": String(attrs.level) } : {}),
+      },
+    };
+  },
   // Open/closed is per-viewer VIEW state, never part of the document: a click is
   // not an edit (no history version, no untracked change while suggesting, no
   // flapping between collaborators). Stored HTML has no `open`, so other readers
@@ -205,7 +217,11 @@ export const Toggle = Node.create({
         const color = current.attrs.blockColor;
         if (isBlockColor(color)) dom.setAttribute("data-block-color", color);
         else dom.removeAttribute("data-block-color");
+        if (current.attrs.level) dom.setAttribute("data-heading-level", String(current.attrs.level));
+        else dom.removeAttribute("data-heading-level");
       };
+      // ⌘↵ (EditorKeys) flips the toggle that holds the caret through this event.
+      dom.addEventListener("prism:toggle-open", () => { open = !open; paint(); });
       arrow.addEventListener("mousedown", (event: DomNode) => event.preventDefault());
       arrow.addEventListener("click", (event: DomNode) => {
         event.preventDefault();
@@ -236,6 +252,19 @@ export const Column = Node.create({
   content: "block+",
   isolating: true,
   defining: true,
+  addAttributes() {
+    return {
+      // v5: relative width (flex-grow ratio) set by dragging the gutter. null = equal share.
+      width: {
+        default: null,
+        parseHTML: (el) => columnWidth((el as unknown as AttrSource).getAttribute("data-col-width")),
+        renderHTML: (attrs) => {
+          const w = columnWidth(attrs.width);
+          return w ? { "data-col-width": String(w), style: `flex-grow: ${w}` } : {};
+        },
+      },
+    };
+  },
   parseHTML() {
     return [{ tag: 'div[data-type="column"]', priority: 60 }];
   },
@@ -244,11 +273,18 @@ export const Column = Node.create({
   },
 });
 
-/** Two or three side-by-side columns (stacked on phones by CSS). */
+/** A column's stored width ratio, clamped; anything else → null (equal share). */
+export function columnWidth(value: unknown): number | null {
+  const n = typeof value === "number" ? value : typeof value === "string" && /^\d{1,2}(\.\d{1,3})?$/.test(value) ? Number(value) : NaN;
+  return Number.isFinite(n) && n >= 0.15 && n <= 10 ? Math.round(n * 1000) / 1000 : null;
+}
+export const MAX_COLUMNS = 5;
+
+/** Two to five side-by-side columns (stacked on phones by CSS). */
 export const Columns = Node.create({
   name: "columns",
   group: "block",
-  content: "column{2,3}",
+  content: "column{2,5}",
   isolating: true,
   defining: true,
   parseHTML() {
@@ -257,6 +293,9 @@ export const Columns = Node.create({
   renderHTML({ node, HTMLAttributes }) {
     return ["div", mergeAttributes(HTMLAttributes, { "data-type": "columns", "data-count": String(node.childCount) }), 0];
   },
+  addNodeView() {
+    return VIEWS.columns ?? null;
+  },
 });
 
 // ── Browser-only node views (registered by lib/tiptap/mediaViews.ts) ─────────
@@ -264,7 +303,7 @@ export const Columns = Node.create({
 // frames, live TOC, code toolbar) need a DOM and only exist in the browser. The
 // client registers them once at import; on the server the registry stays empty
 // and every node renders through its plain renderHTML.
-type ViewName = "image" | "attachment" | "embed" | "bookmark" | "tableOfContents" | "codeBlock" | "databaseView";
+type ViewName = "image" | "attachment" | "embed" | "bookmark" | "tableOfContents" | "codeBlock" | "databaseView" | "columns" | "childPage";
 const VIEWS: Partial<Record<ViewName, NodeViewRenderer>> = {};
 export function registerBlockViews(views: Partial<Record<ViewName, NodeViewRenderer>>): void {
   Object.assign(VIEWS, views);
@@ -473,6 +512,51 @@ export const DatabaseView = Node.create({
   },
 });
 
+/**
+ * A sub-page row (NP-PG-15): a link to a page created inside this one. Stores ONLY
+ * the page id — like the page mention, the title is resolved at view time through
+ * the reader's own permissions (an unviewable page reads "No access"), so stored
+ * HTML never leaks a title. An invalid id is not matched (dropped as an empty div).
+ */
+export const ChildPage = Node.create({
+  name: "childPage",
+  group: "block",
+  atom: true,
+  draggable: true,
+  selectable: true,
+  addAttributes() {
+    return {
+      pageId: { default: null, parseHTML: (el) => (el as unknown as AttrSource).getAttribute("data-page-id"), renderHTML: (x) => ({ "data-page-id": x.pageId }) },
+    };
+  },
+  parseHTML() {
+    return [{ tag: 'div[data-type="child-page"]', priority: 60, getAttrs: (el) => (DB_NOTE_ID.test((el as unknown as AttrSource).getAttribute("data-page-id") ?? "") ? null : false) }];
+  },
+  renderHTML({ HTMLAttributes }) {
+    return ["div", mergeAttributes(HTMLAttributes, { "data-type": "child-page" })];
+  },
+  renderText() {
+    return "";
+  },
+  addNodeView() {
+    return VIEWS.childPage ?? null;
+  },
+});
+
+/** v5: a table cell background (`data-cell-color`, the block colour names). Unknown values are dropped. */
+const cellColor = {
+  cellColor: {
+    default: null,
+    parseHTML: (el: unknown) => {
+      const v = (el as AttrSource).getAttribute("data-cell-color");
+      return (BLOCK_COLORS as readonly string[]).includes(v ?? "") ? v : null;
+    },
+    renderHTML: (attrs: Record<string, unknown>) => ((BLOCK_COLORS as readonly string[]).includes(String(attrs.cellColor ?? "")) ? { "data-cell-color": attrs.cellColor as string } : {}),
+  },
+};
+export const ColoredTableCell = TableCell.extend({ addAttributes() { return { ...this.parent?.(), ...cellColor }; } });
+export const ColoredTableHeader = TableHeader.extend({ addAttributes() { return { ...this.parent?.(), ...cellColor }; } });
+
 const lowlight = createLowlight(common);
 /** Highlighted code (lowlight decorations, no stored markup) with a language attribute and Tab indent. */
 export const CodeBlock = CodeBlockLowlight.extend({
@@ -498,11 +582,12 @@ export function blockSchemaExtensions(): Extensions {
     Bookmark,
     TableOfContents,
     DatabaseView,
+    ChildPage,
     CodeBlock,
     Table.configure({ resizable: true }),
     TableRow,
-    TableHeader,
-    TableCell,
+    ColoredTableHeader,
+    ColoredTableCell,
     Callout,
     Toggle,
     ToggleSummary,

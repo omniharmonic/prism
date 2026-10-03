@@ -345,8 +345,9 @@ api.get("/events", async (c) => {
  * short-circuit, so it covers the owner passthrough too.
  */
 export const EDITOR_SCHEMA_HEADER = "x-prism-editor-schema";
-// v2 (callout/toggle/columns/colours), v3 (mention), v4 (attachment/embed/bookmark/toc/database blocks, image align/caption).
-const SCHEMA_MARKERS = /data-type="(?:callout|toggle|columns|column|mention|attachment|embed|bookmark|toc)"|data-prism-database=|<details[\s>]|data-block-color=|data-text-color=|data-align=|data-caption=/;
+// v2 (callout/toggle/columns/colours), v3 (mention), v4 (attachment/embed/bookmark/toc/database blocks, image align/caption),
+// v5 (child-page rows, toggle headings, column widths, table cell colours — 4–5 columns are caught by the columns marker).
+const SCHEMA_MARKERS = /data-type="(?:callout|toggle|columns|column|mention|attachment|embed|bookmark|toc|child-page)"|data-prism-database=|<details[\s>]|data-block-color=|data-text-color=|data-align=|data-caption=|data-heading-level=|data-col-width=|data-cell-color=/;
 export function needsEditorUpdate(storedContent: string | null | undefined): boolean {
   return SCHEMA_MARKERS.test(storedContent ?? "");
 }
