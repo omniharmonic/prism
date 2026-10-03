@@ -118,5 +118,5 @@ test("pure helpers: terms, merged offsets, plain text and snippets", () => {
   const long = "lorem ".repeat(80) + "needle here";
   const { snippet, matches } = buildSnippet(long, ["needle"], 60);
   assert.ok(snippet.startsWith("…"));
-  assert.equal(snippet.slice(matches[0][0], matches[0][1]), "needle");
+  assert.equal(snippet.slice(matches[0]![0], matches[0]![1]), "needle");
 });

@@ -14,7 +14,7 @@ import { RendererBoundary } from "./RendererBoundary";
 import { reviewMode } from "../../lib/governance/review";
 import { Skeleton } from "../ui/Skeleton";
 import type { Note } from "../../lib/types";
-import { isLocked } from "../../lib/pages/model";
+import { isLocked, pageStyleOf } from "../../lib/pages/model";
 import { LockedBanner } from "../pages/LockedBanner";
 
 export function Canvas() {
@@ -102,12 +102,15 @@ export function Canvas() {
   // page leaves the live session too — its keystrokes must not reach the shared doc.
   const locked = !isVirtual && isLocked(effectiveNote);
   const isLiveDoc = collab.useLiveCollab(collabDocId) && collabDocId !== "" && !proposeOnly && !locked;
+  // NP-PG-08: per-page small text / full width (styles/shell.css), any device, live or not.
+  const pageStyle = isVirtual ? {} : pageStyleOf(effectiveNote);
 
   return (
     <div className="flex flex-col h-full">
       <TabBar />
 
-      <main id="workspace-document" tabIndex={-1} className="flex-1 min-h-0 overflow-auto">
+      <main id="workspace-document" tabIndex={-1} className="flex-1 min-h-0 overflow-auto"
+        data-page-small={pageStyle.small ? "true" : undefined} data-page-full={pageStyle.full ? "true" : undefined}>
         {!activeTab ? (
           <EmptyState />
         ) : isTagView ? (

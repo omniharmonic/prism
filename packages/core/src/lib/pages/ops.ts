@@ -122,8 +122,10 @@ export async function deleteFromTrash(client: VaultClient, id: string): Promise<
   return { deleted: group };
 }
 
-/** Lock / order: through the server's reconciling route when available, else a plain metadata write. */
-export async function setPageMeta(client: VaultClient, id: string, set: { prism_locked?: boolean; prism_order?: number }): Promise<void> {
+export type PageMetaSet = { prism_locked?: boolean; prism_order?: number; prism_page_style?: { small: boolean; full: boolean } };
+
+/** Lock / order / page style: through the server's reconciling route when available, else a plain metadata write. */
+export async function setPageMeta(client: VaultClient, id: string, set: PageMetaSet): Promise<void> {
   const fresh = await client.getNote(id, { fresh: true });
   if (client.setPageMeta) {
     await client.setPageMeta(id, set, fresh.updatedAt ?? fresh.createdAt);

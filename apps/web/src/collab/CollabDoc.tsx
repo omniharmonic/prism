@@ -470,7 +470,7 @@ function ScopedCollabDoc({
     <div style={outer}>
       {localSave === "unavailable" && <p role="alert" className="rounded-lg border p-3 text-sm">Local saving is unavailable. Keep this document open and copy any unsynced changes before leaving.</p>}
       {/* Extra bottom padding on narrow viewports clears the floating command pill. */}
-      <div style={{ maxWidth: 1080, margin: "0 auto", padding: narrow ? "12px 14px 124px" : "16px 20px 96px" }}>
+      <div style={{ maxWidth: "var(--page-max-width, 1080px)", margin: "0 auto", padding: narrow ? "12px 14px 124px" : "16px 20px 96px" }}>
         {/* Header — shared page chrome, identical to the non-collab document view */}
         <PageHeader
           path={path}

@@ -227,7 +227,7 @@ export interface VaultClient {
   /** Real delete of a page already in the Trash (and what was trashed with it). */
   deleteFromTrash?(noteId: string): Promise<{ deleted: string[] }>;
   /** Page lock / sidebar order: metadata-only, CAS, reconciled with a live editor. */
-  setPageMeta?(noteId: string, set: { prism_locked?: boolean; prism_order?: number }, ifUpdatedAt: string): Promise<{ updatedAt: string | null }>;
+  setPageMeta?(noteId: string, set: { prism_locked?: boolean; prism_order?: number; prism_page_style?: { small: boolean; full: boolean } }, ifUpdatedAt: string): Promise<{ updatedAt: string | null }>;
   /** Favorites / recents / sidebar state, synced per user × vault. */
   getPreferences?(): Promise<PreferencesSnapshot>;
   savePreferences?(preferences: PagePreferences, ifRevision?: number): Promise<PreferencesSnapshot>;

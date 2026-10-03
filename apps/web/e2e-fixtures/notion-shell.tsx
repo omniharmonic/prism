@@ -23,6 +23,10 @@ const notes: Note[] = [
   { id: "tracker", path: "Projects/Prism/Workshop tracker", content: "", tags: ["task"], metadata: { prism_type: "database", prism_creator: "owner@example.test" }, createdAt: recent, updatedAt: recent },
   { id: "field-notes", path: "Journal/Field notes", content: "<p>Notes from the last conversation about the workshop budget.</p>", tags: ["note"], metadata: { type: "document", prism_creator: "owner@example.test" }, createdAt: recent, updatedAt: recent },
 ];
+// Metadata written by the app survives reloads ("another device" = a fresh page).
+const savedMeta = JSON.parse(sessionStorage.getItem("notion-shell-meta") ?? "{}") as Record<string, Record<string, unknown>>;
+for (const n of notes) if (savedMeta[n.id]) n.metadata = { ...n.metadata, ...savedMeta[n.id] };
+const persistMeta = (n: Note) => { savedMeta[n.id] = { ...(n.metadata ?? {}) }; sessionStorage.setItem("notion-shell-meta", JSON.stringify(savedMeta)); };
 const controls = {
   writes: [] as Array<{ method: string; path: string; body: unknown }>,
   searches: [] as string[],
@@ -62,6 +66,18 @@ window.fetch = async (input, init) => {
   }
   if (path === "/api/search/semantic") return Response.json({ error: "semantic_index_primary_only" }, { status: 409 });
   if (path === "/api/notes" && method === "GET") return Response.json(notes.filter((n) => !url.searchParams.has("search") || (n.content ?? "").includes(url.searchParams.get("search")!)));
+  const metaId = path.match(/^\/api\/notes\/([^/]+)\/meta$/)?.[1];
+  if (metaId && method === "POST") {
+    const note = notes.find((n) => n.id === decodeURIComponent(metaId));
+    if (!note) return Response.json({ error: "not_found" }, { status: 404 });
+    const body = JSON.parse(String(init?.body));
+    controls.writes.push({ method, path, body });
+    if (body.if_updated_at !== note.updatedAt) return Response.json({ error: "conflict" }, { status: 409 });
+    note.metadata = { ...note.metadata, ...body.set };
+    note.updatedAt = `2026-10-02T00:01:${String(++seq).padStart(2, "0")}.000Z`;
+    persistMeta(note);
+    return Response.json({ ok: true, id: note.id, updatedAt: note.updatedAt, metadata: body.set });
+  }
   const noteId = path.match(/^\/api\/notes\/([^/]+)$/)?.[1];
   if (noteId) {
     const note = notes.find((n) => n.id === decodeURIComponent(noteId));
@@ -73,6 +89,7 @@ window.fetch = async (input, init) => {
       if (controls.hold) await new Promise<void>((resolve) => controls.release.push(resolve));
       if (controls.failStatus) return Response.json({ error: "fixture_failure" }, { status: controls.failStatus });
       Object.assign(note, body, { metadata: { ...note.metadata, ...body.metadata }, updatedAt: `2026-10-02T00:00:${String(++seq).padStart(2, "0")}.000Z` });
+      if (body.metadata) persistMeta(note);
     }
     return Response.json(note);
   }
