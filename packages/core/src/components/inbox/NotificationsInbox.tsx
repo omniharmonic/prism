@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Archive, ArchiveRestore, Bell, Check, CheckCheck, Settings2, WifiOff, Inbox as InboxIcon } from "lucide-react";
 import type { RendererProps } from "../renderers/RendererProps";
-import { useArchive, useMarkRead, useNotifications, useOnline, isNotificationsUnavailable, announceNotificationsChanged } from "../../lib/notifications/hooks";
+import { useArchive, useMarkRead, useNotifications, useOnline, useUnreadCount, isNotificationsUnavailable, announceNotificationsChanged } from "../../lib/notifications/hooks";
 import { openNotification, takePendingNotification, clearPendingNotification } from "../../lib/notifications/anchor";
 import { notificationsApi, type AccessLevel, type NotificationItem, type NotificationType } from "../../lib/notifications/client";
 import { NotificationSettingsPanel } from "./NotificationSettingsPanel";
@@ -61,7 +61,11 @@ export default function NotificationsInbox(_props: RendererProps) {
   const archive = useArchive();
 
   const all = useMemo(() => list.data?.pages.flatMap((p) => p.items) ?? [], [list.data]);
-  const unread = list.data?.pages[0]?.unread ?? 0;
+  // The live unread count (the one the sidebar badge shows): marking read updates it
+  // at once, whereas the list page's own `unread` is only as fresh as its last fetch —
+  // "Mark all read" used to stay enabled after everything was read.
+  const live = useUnreadCount();
+  const unread = live.available && !live.loading ? live.count : list.data?.pages[0]?.unread ?? 0;
   const types = FILTERS.find((f) => f.id === filter)!.types;
   const items = types ? all.filter((n) => types.includes(n.type)) : all;
   const groups = useMemo(() => {
