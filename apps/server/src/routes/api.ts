@@ -30,7 +30,7 @@ import { humanCollabApi } from "./human-collab";
 import { transcriptsApi } from "./transcripts";
 import { databasesApi } from "./databases";
 import { sharingApi } from "./sharing";
-import { consumeRateLimit } from "../middleware/ratelimit";
+import { consumeRateLimit, rateLimitClientKey } from "../middleware/ratelimit";
 import { redactVersionForViewer, stripWriterMeta, changeValue, creatorNameFor, CHANGE_KEY, WRITER_META_KEYS, createCapsAt, forViewer } from "../sharing";
 import { writerNames, WRITER_AT_KEY } from "../writer-stamp";
 import { attachmentsApi } from "./attachments";
@@ -461,22 +461,47 @@ api.use("/notes/:id", async (c, next) => {
 // ahead, the write is refused — `409 conflict {live, retry}` — for EVERY caller
 // (owner passthrough and in-process MCP included). A note that cannot be opened
 // live at all (unconvertible) is exempt: REST is the only way to fix it.
+//
+// Settling LOADS the document and STORES it (a conversion, a vault write). Only
+// someone who could make the body write may set that off: `edit` on the note,
+// not locked, not a system note (admins as the gateway treats them) — a viewer's
+// PATCH gets the route's own 403 with nothing loaded (review M1) — and at most
+// `UNSAVED_SETTLES_PER_MINUTE` per actor; past that the answer is the 409
+// without another attempt.
+//
+// A page whose changes can NEVER be written as they are (a permanent row) is not
+// "still being saved": it answers `409 unsaved_permanent {retry:false}` (M2).
 const UNSAVED_CONFLICT = { error: "conflict", live: true, retry: true, detail: "This page has changes that are still being saved from the live editor. Open the page, or try again in a moment." } as const;
+/** Read per call (tests change it). */
+const unsavedSettlesPerMinute = (): number => (Number(process.env.UNSAVED_SETTLES_PER_MINUTE) > 0 ? Number(process.env.UNSAVED_SETTLES_PER_MINUTE) : 6);
 async function unsavedRefusal(c: Context, id: string): Promise<Response | null> {
   const actor = resolveActor(c);
   if (actor.kind === "anon" || !id) return null; // the route answers 401/403/404
   const vaultId = roleAtLeast(actor.role, "admin") ? resolveVaultEntry(c.req.header("x-prism-vault")).id : actor.vaultId;
   if (!isCollabUnsaved(id, vaultId)) return null; // one indexed lookup; rows are keyed by note id
-  // Never an oracle: someone who cannot view the note gets the route's own 404.
+  // Never an oracle, and never work on behalf of someone who could not make this
+  // write anyway: without `edit` on an unlocked, non-system note the route's own
+  // answer (404 / 403 / 423) stands and NOTHING is loaded or stored.
   if (!roleAtLeast(actor.role, "admin")) {
     try {
-      if (!capsFor(actor, ref(await vaultClient(vaultId).getNote(id))).has("view")) return null;
+      const note = await vaultClient(vaultId).getNote(id);
+      if (!capsFor(actor, ref(note)).has("edit") || isLocked(note) || isTrashed(note) || systemNoteReason(note)) return null;
     } catch {
       return null;
     }
   }
   const collab = await import("../collab"); // lazily: collab ⇄ routes import cycle
-  return (await collab.settleUnsaved(vaultId, id)) === "pending" ? c.json(UNSAVED_CONFLICT, 409) : null;
+  const who = actor.kind === "user" ? `u:${actor.email.toLowerCase()}` : `c:${rateLimitClientKey(c)}`;
+  const wait = consumeRateLimit(`unsaved-settle:${who}`, unsavedSettlesPerMinute(), 60_000);
+  if (wait !== null) {
+    // No further load + store for this actor right now: the snapshot is still ahead as far as anyone knows.
+    c.header("Retry-After", String(wait));
+    const permanent = collab.unsavedPermanentReason(vaultId, id);
+    return permanent ? c.json(collab.unsavedPermanentBody(permanent), 409) : c.json(UNSAVED_CONFLICT, 409);
+  }
+  const settled = await collab.settleUnsaved(vaultId, id);
+  if (settled === "permanent") return c.json(collab.unsavedPermanentBody(collab.unsavedPermanentReason(vaultId, id)), 409);
+  return settled === "pending" ? c.json(UNSAVED_CONFLICT, 409) : null;
 }
 api.use("/notes/:id", async (c, next) => {
   const method = c.req.method;

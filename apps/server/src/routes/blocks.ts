@@ -41,7 +41,7 @@ import { treeUpsertNote, warmPageAnchors } from "../tree";
 import { roleAtLeast, roleFloor } from "../roles";
 import { csrfRefusal } from "./actions";
 import { consumeRateLimit } from "../middleware/ratelimit";
-import { CollabBusyError, DocumentTooComplexError, FIELD, collabSchema, docNameFor, ensureRenderedSize, hasLiveState, hocuspocus, isDocBlocked, isNoteId, noteCollabWriter, noteKind, renderedSizeOf } from "../collab";
+import { CollabBusyError, DocumentTooComplexError, FIELD, collabSchema, docNameFor, ensureRenderedSize, flushLiveDoc, hasLiveState, hocuspocus, isDocBlocked, isNoteId, noteCollabWriter, noteKind, renderedSizeOf } from "../collab";
 import { getCollabUnsaved, getDocState } from "../db";
 import { writerStamp } from "../sharing";
 import "../block-append-store";
@@ -111,6 +111,15 @@ export function appendToLiveDoc(doc: Y.Doc, blocks: unknown[], origin: string): 
   }, origin);
 }
 
+/** `block_append_receipts.live`: the blocks entered the live document; durability not yet confirmed. */
+const APPLIED_UNCONFIRMED = 2;
+/** Does a Yjs state vector contain the append recorded as "<client>:<clock>"? */
+function stateCovers(stateVector: Uint8Array, marker: string): boolean {
+  const [client, clock] = marker.split(":").map(Number);
+  if (!Number.isFinite(client) || !Number.isFinite(clock)) return false;
+  return (Y.decodeStateVector(stateVector).get(client!) ?? 0) >= clock!;
+}
+
 const inFlight = new Map<string, Promise<{ status: number; body: Record<string, unknown> }>>();
 
 export const blocksApi = new Hono();
@@ -156,11 +165,15 @@ blocksApi.post("/notes/:id/blocks/append", bodyLimit({ maxSize: MAX_HTML + 4096,
 
   const actorKey = actor.email.toLowerCase();
   const hash = createHash("sha256").update(html).digest("hex");
-  const receipt = db.prepare("SELECT body_hash, live FROM block_append_receipts WHERE vault_id = ? AND note_id = ? AND actor = ? AND request_id = ?").get(entry.id, note.id, actorKey, requestId) as { body_hash: string; live: number } | undefined;
+  const receipt = db.prepare("SELECT body_hash, live, applied FROM block_append_receipts WHERE vault_id = ? AND note_id = ? AND actor = ? AND request_id = ?").get(entry.id, note.id, actorKey, requestId) as { body_hash: string; live: number; applied: string | null } | undefined;
   if (receipt) {
     if (receipt.body_hash !== hash) return c.json({ error: "idempotency_mismatch" }, 422);
-    c.header("Idempotent-Replayed", "true");
-    return c.json({ ok: true, live: !!receipt.live, replayed: true });
+    if (receipt.live !== APPLIED_UNCONFIRMED) {
+      c.header("Idempotent-Replayed", "true");
+      return c.json({ ok: true, live: !!receipt.live, replayed: true });
+    }
+    // live = 2: an earlier try of this request put the blocks INTO the live document and
+    // was answered 503 `not_confirmed`. The run below must not append them again.
   }
   const key = `${entry.id}\u0000${note.id}\u0000${actorKey}\u0000${requestId}`;
   const running = inFlight.get(key);
@@ -180,17 +193,52 @@ blocksApi.post("/notes/:id/blocks/append", bodyLimit({ maxSize: MAX_HTML + 4096,
       throw e;
     }
     if (!blocks) return { status: 400, body: { error: "invalid_request", detail: "nothing to append" } };
-    const record = (live: boolean) => {
-      db.prepare("INSERT OR IGNORE INTO block_append_receipts (vault_id, note_id, actor, request_id, body_hash, live, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)")
-        .run(entry.id, note.id, actorKey, requestId, hash, live ? 1 : 0, new Date().toISOString());
+    const record = (live: boolean | typeof APPLIED_UNCONFIRMED, applied: string | null = null) => {
+      db.prepare(
+        `INSERT INTO block_append_receipts (vault_id, note_id, actor, request_id, body_hash, live, applied, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(vault_id, note_id, actor, request_id) DO UPDATE SET live = excluded.live, applied = COALESCE(excluded.applied, applied)`,
+      ).run(entry.id, note.id, actorKey, requestId, hash, live === APPLIED_UNCONFIRMED ? APPLIED_UNCONFIRMED : live ? 1 : 0, applied, new Date().toISOString());
       db.prepare("DELETE FROM block_append_receipts WHERE created_at < ?").run(new Date(Date.now() - RECEIPT_DAYS * 86_400_000).toISOString());
     };
+    const forget = () => db.prepare("DELETE FROM block_append_receipts WHERE vault_id = ? AND note_id = ? AND actor = ? AND request_id = ?").run(entry.id, note.id, actorKey, requestId);
     const docName = docNameFor(entry.id, note.id);
+    /** Durable = in the vault, or in the server's document store with the note recorded as still to be written. */
+    const durableWith = (marker: string | null): boolean => {
+      const snapshot = getDocState(note.id, entry.id);
+      if (!snapshot || (marker && !stateCovers(Y.encodeStateVectorFromUpdate(snapshot.state), marker))) return false;
+      return !snapshot.ahead || getCollabUnsaved(note.id, entry.id) !== null;
+    };
+    // A retry of a request whose blocks already ENTERED the live document (answered 503
+    // `not_confirmed`): never a second copy. If they are still there (in the loaded document,
+    // else in its snapshot), all that is left is to make them durable; if they are gone with a
+    // document that was lost before it was saved, the receipt is void and the append runs again.
+    if (receipt?.live === APPLIED_UNCONFIRMED && receipt.applied) {
+      const marker = receipt.applied;
+      const loaded = isDocBlocked(docName) ? undefined : (hocuspocus.documents.get(docName) as Y.Doc | undefined);
+      const snapshot = getDocState(note.id, entry.id);
+      const present = loaded ? stateCovers(Y.encodeStateVector(loaded), marker) : !!snapshot && stateCovers(Y.encodeStateVectorFromUpdate(snapshot.state), marker);
+      if (!present) forget();
+      else {
+        if (!durableWith(marker)) {
+          // One more store, now: through the loaded document, or by loading its snapshot.
+          try {
+            if (loaded) await flushLiveDoc(entry.id, note.id);
+            else await (await hocuspocus.openDirectConnection(docName, { human: `user:${actor.email}` })).disconnect();
+          } catch {
+            /* still not confirmed: answered below */
+          }
+        }
+        if (!durableWith(marker)) return { status: 503, body: { error: "not_confirmed", retry: true } };
+        record(true);
+        return { status: 200, body: { ok: true, live: true, replayed: true } };
+      }
+    }
     // Through the live document when it is open — and when it holds changes that have not
     // reached the vault yet (the stored body is stale: appending to it would write over them).
     if (hasLiveState(entry.id, note.id)) {
       let conn: Awaited<ReturnType<typeof hocuspocus.openDirectConnection>>;
       let appended = false;
+      let marker: string | null = null;
       try {
         // `user:<email>`: the identity form the collab hooks attribute and rate by.
         conn = await hocuspocus.openDirectConnection(docName, { human: `user:${actor.email}` });
@@ -212,6 +260,10 @@ blocksApi.post("/notes/:id/blocks/append", bodyLimit({ maxSize: MAX_HTML + 4096,
         }
         if ((renderedSizeOf(conn.document) ?? 0) + Buffer.byteLength(blocks.html) > MAX_NOTE) return { status: 413, body: { error: "too_large", detail: "that page is full" } };
         appendToLiveDoc(conn.document, blocks.json, `human:${actor.email}`);
+        // Same tick as the append: from here on a retry of this request finds the blocks by
+        // this marker instead of appending them again (L6).
+        marker = `${conn.document.clientID}:${Y.getState(conn.document.store, conn.document.clientID)}`;
+        record(APPLIED_UNCONFIRMED, marker);
         noteCollabWriter(docName, actor.email, "edit");
         appended = true;
       } finally {
@@ -220,9 +272,9 @@ blocksApi.post("/notes/:id/blocks/append", bodyLimit({ maxSize: MAX_HTML + 4096,
       // The receipt (and the 200) only once the change is DURABLE: written to the vault, or
       // saved in the server's document store with the note recorded as still to be written
       // (`collab_unsaved` — retried, restored at every open, never folded away).
-      const snapshot = getDocState(note.id, entry.id);
-      const durable = appended && !!snapshot && (!snapshot.ahead || getCollabUnsaved(note.id, entry.id) !== null);
-      if (!durable) return { status: 503, body: { error: "not_confirmed", retry: true } };
+      // Until then the receipt says "entered the live document" — the retry the client is told
+      // to make finds the blocks there and does not append a second copy.
+      if (!appended || !durableWith(marker)) return { status: 503, body: { error: "not_confirmed", retry: true } };
       record(true);
       return { status: 200, body: { ok: true, live: true } };
     }

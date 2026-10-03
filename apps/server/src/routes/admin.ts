@@ -18,6 +18,7 @@ import { vaultClient } from "../parachute";
 import { csrfRefusal } from "./actions";
 import { cancelWikilinkJob, startWikilinkJob, wikilinkJobStatus, WikilinkJobBusyError, type WikilinkJob } from "../wikilinks-job";
 import { recordAction } from "../actions/store";
+import { listCollabUnsaved } from "../db";
 import { mountPeopleCandidates, mountPeopleLinkJob, mountPeopleMerge, mountPeopleOwner } from "./people-admin";
 
 export const adminApi = new Hono();
@@ -34,6 +35,51 @@ adminApi.use("*", async (c, next) => {
     if (csrf) return csrf;
   }
   await next();
+});
+
+// ── pages whose live changes are not in the vault (collab_unsaved) ────────────
+//   GET  /api/admin/collab/unsaved                       → {rows:[{vaultId,noteId,reason,permanent,since,attempts}]}
+//   POST /api/admin/collab/unsaved/:id/discard {confirm:true}
+// The way out of a page that can NEVER be saved as it is (too large to render,
+// refused by the vault, given up on): the live changes the vault lacks are
+// dropped and the document becomes the stored page again (collab.ts
+// `discardUnsavedChanges`). Destructive, so: server owner, the CSRF guard above,
+// a human origin, an explicit `confirm`, and one audit row with counts only.
+adminApi.get("/collab/unsaved", (c) => {
+  const vaultId = ownerVault(c)!;
+  c.header("Cache-Control", "no-store");
+  return c.json({
+    rows: listCollabUnsaved(200)
+      .filter((r) => r.vault_id === vaultId)
+      .map((r) => ({ vaultId: r.vault_id, noteId: r.name, reason: r.reason, permanent: r.permanent === 1, since: r.since, attempts: r.attempts })),
+  });
+});
+adminApi.post("/collab/unsaved/:id/discard", async (c) => {
+  const vaultId = ownerVault(c)!;
+  const actor = resolveActor(c) as Extract<ReturnType<typeof resolveActor>, { kind: "user" }>;
+  const via = requestVia(c);
+  if (via !== "session" && via !== "device") return c.json({ error: "agent_origin_refused" }, 403);
+  const id = c.req.param("id");
+  const body = (await c.req.json<{ confirm?: unknown }>().catch(() => ({}))) as { confirm?: unknown };
+  const collab = await import("../collab"); // lazily: collab ⇄ routes import cycle
+  if (!collab.isNoteId(id)) return c.json({ error: "not_found" }, 404);
+  if (body.confirm !== true) return c.json({ error: "confirm_required", detail: "send {\"confirm\": true} — the page's unsaved live changes are dropped for good" }, 400);
+  const audit = (status: "ok" | "failed" | "refused", target: Record<string, unknown>, error?: string) =>
+    recordAction({ actorEmail: actor.email, via, origin: "human", action: "admin.collab-discard-unsaved", vaultId, target, status, error });
+  let result: Awaited<ReturnType<typeof collab.discardUnsavedChanges>>;
+  try {
+    result = await collab.discardUnsavedChanges(vaultId, id);
+  } catch (e) {
+    audit("failed", { discarded: 0 }, e instanceof Error ? e.message : "error");
+    return c.json({ error: "upstream_error" }, 502);
+  }
+  if (result.reason === "none") return c.json({ error: "not_found", detail: "that page has no unsaved live changes" }, 404);
+  if (!result.discarded) {
+    audit("refused", { discarded: 0, permanent: result.permanent ? 1 : 0 }, result.reason ?? undefined);
+    return result.reason === "busy" ? c.json({ error: "busy", retry: true }, 503) : c.json({ error: "vault_unreachable", retry: true }, 502);
+  }
+  audit("ok", { discarded: 1, permanent: result.permanent ? 1 : 0, live: result.live ? 1 : 0 });
+  return c.json({ ok: true, discarded: true, live: result.live });
 });
 
 adminApi.get("/wikilinks/resolve", (c) => {

@@ -425,7 +425,14 @@ export async function runImport(
           // vault yet, is never overwritten by an import (its stored body is not what people see).
           else if (r.action === "update" && r.holderId && (await import("../collab")).hasLiveState(entry.id, r.holderId)) {
             p.conflicts++;
-            if (p.problems.length < 200) p.problems.push({ entry: note.src, reason: "the page is open in the live editor (or still saving); run the import again later" });
+            const forGood = (await import("../collab")).unsavedPermanentReason(entry.id, r.holderId);
+            if (p.problems.length < 200)
+              p.problems.push({
+                entry: note.src,
+                reason: forGood
+                  ? "the page has live-editor changes that cannot be saved (too large or refused by the vault) — running the import again will not help until the page is made smaller or the owner discards those changes"
+                  : "the page is open in the live editor (or still saving); run the import again later",
+              });
           } else {
             const base = { v: 1 as const, src: note.src };
             let id = r.holderId;

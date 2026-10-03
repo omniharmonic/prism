@@ -23,7 +23,7 @@ import * as z from "zod/v4";
 import { ConversionError, htmlToMarkdown } from "../convert/service";
 import { CAPS, effectiveCaps, type Cap } from "../permissions";
 import { roleFloor } from "../roles";
-import { hasLiveState, isDocLive, noteKind, settleUnsaved, type CollabKind } from "../collab";
+import { hasLiveState, isDocLive, noteKind, settleUnsaved, unsavedPermanentReason, unsavedReasonText, type CollabKind } from "../collab";
 import type { Note } from "../parachute";
 import { canView, hasCapAnywhere, isAdmin } from "./access";
 import { jsonOrToolError } from "./dispatch";
@@ -97,9 +97,25 @@ function listRow(n: NoteOut, includeContent: boolean): Record<string, unknown> {
 const hasTag = (n: Note, tag: string) => (n.tags ?? []).some((t) => t === tag || t.startsWith(`${tag}/`));
 const byUpdatedDesc = (a: Note, b: Note) => (b.updatedAt ?? b.createdAt ?? "").localeCompare(a.updatedAt ?? a.createdAt ?? "");
 
+/**
+ * A page whose live-editor changes can NEVER be written as they are (a permanent
+ * `collab_unsaved` row). Not "wait a few seconds": no amount of retrying changes
+ * it, and the agent must be told so (detail.retry === false).
+ */
+function unsavedForGood(reason: string): ToolError {
+  return new ToolError(
+    "conflict",
+    `this page has changes from the live editor that cannot be saved to the stored note (${unsavedReasonText(reason)}), so its content cannot be changed from here. ` +
+      "Do NOT retry: waiting will not help. Someone has to open the page and make it smaller, or the workspace owner has to discard the unsaved live changes; tell the user.",
+    { live: true, retry: false, permanent: true, reason },
+  );
+}
+
 /** Fetch the note (view gate) and refuse a CONTENT write while its Yjs doc is live. */
 async function assertNotLive(ctx: ToolContext, id: string, verb: string): Promise<void> {
   const note = await getJson<NoteOut>(ctx, `/api/notes/${enc(id)}`); // 403/404 here first: liveness is never an oracle for non-viewers
+  const forGood = unsavedPermanentReason(ctx.principal.actor.vaultId, note.id);
+  if (forGood) throw unsavedForGood(forGood);
   // Live = loaded, or holding live-editor changes that have not reached the vault yet.
   if (hasLiveState(ctx.principal.actor.vaultId, note.id)) {
     throw new ToolError(
@@ -310,7 +326,13 @@ export const updateNoteTool = defineTool({
       // A note that is not loaded but holds unsaved live state is first given the chance to be
       // written; one that cannot be opened live at all is fixed over REST (the only way).
       const { vaultId } = ctx.principal.actor;
-      const viaLive = isDocLive(vaultId, note.id) || (hasLiveState(vaultId, note.id) && (await settleUnsaved(vaultId, note.id)) === "pending");
+      // …and one whose live changes can never be written is not merged into either: the merge
+      // would land in a document the stored note will never reflect (the agent would be told
+      // "merged" and read back an unchanged note, forever).
+      const settled = isDocLive(vaultId, note.id) || !hasLiveState(vaultId, note.id) ? null : await settleUnsaved(vaultId, note.id);
+      const forGood = unsavedPermanentReason(vaultId, note.id);
+      if (forGood) throw unsavedForGood(forGood);
+      const viaLive = isDocLive(vaultId, note.id) || settled === "pending";
       if (viaLive) {
         // WP6.3: a live doc takes the change through Yjs (three-way merge), never a vault overwrite.
         // The same goes for a note whose live changes have not reached the vault yet: its stored

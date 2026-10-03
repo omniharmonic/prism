@@ -49,6 +49,9 @@ export function conflictError(status: number, body: unknown): ToolError {
       return new ToolError("invalid_request", "that path matches more than one note — use the note id instead");
     case "transition_conflict":
       return new ToolError("conflict", "the field's current value is not the one you expected — re-read the note and retry", { reason: "transition_conflict" });
+    case "unsaved_permanent":
+      // The gateway's M2 answer: the page's live changes can never be saved as they are.
+      return new ToolError("conflict", typeof b.detail === "string" ? `${b.detail} Do NOT retry.` : "this page has live-editor changes that cannot be saved — retrying will not help", { live: true, retry: false, permanent: true, reason: typeof b.reason === "string" ? b.reason : "unknown" });
     case "target_exists":
     case "tag_in_use_by_tokens":
     case "history_unrecoverable":

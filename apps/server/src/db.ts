@@ -1845,6 +1845,8 @@ export interface DocState {
   /** The Yjs state that equals the vault content: `state` itself when not ahead, the kept base when ahead (null = unknown). */
   base: Uint8Array | null;
   attempts: string[];
+  /** The Yjs state of the NEWEST attempted write (what the vault holds if that write landed); null when there is no attempt. */
+  attemptState: Uint8Array | null;
 }
 export interface DocMeta {
   sourceUpdatedAt: number | null;
@@ -1862,7 +1864,7 @@ const parseAttempts = (raw: string | null): string[] => {
     return [];
   }
 };
-const selectDocState = db.prepare("SELECT state, source_updated_at, base_hash, ahead, base_state, attempts FROM collab_docs WHERE vault_id = ? AND name = ?");
+const selectDocState = db.prepare("SELECT state, source_updated_at, base_hash, ahead, base_state, attempts, attempt_state FROM collab_docs WHERE vault_id = ? AND name = ?");
 const selectDocMeta = db.prepare("SELECT source_updated_at, base_hash, ahead, attempts FROM collab_docs WHERE vault_id = ? AND name = ?");
 const upsertDocState = db.prepare(
   `INSERT INTO collab_docs (vault_id, name, state, source_updated_at, base_hash, ahead, base_state, attempts, attempt_state, updated_at)
@@ -1873,11 +1875,20 @@ const upsertDocState = db.prepare(
 /** CRDT doc state, scoped to a vault (a note id is only unique within a vault).
  *  vaultId defaults to 'primary' so pre-multitenant callers are unaffected. */
 export function getDocState(name: string, vaultId = "primary"): DocState | null {
-  const row = selectDocState.get(vaultId, name) as { state: Buffer; source_updated_at: number | null; base_hash: string | null; ahead: number; base_state: Buffer | null; attempts: string | null } | undefined;
+  const row = selectDocState.get(vaultId, name) as { state: Buffer; source_updated_at: number | null; base_hash: string | null; ahead: number; base_state: Buffer | null; attempts: string | null; attempt_state: Buffer | null } | undefined;
   if (!row) return null;
   const state = new Uint8Array(row.state);
   const ahead = row.ahead === 1;
-  return { state, sourceUpdatedAt: row.source_updated_at, baseHash: row.base_hash, ahead, base: ahead ? (row.base_state ? new Uint8Array(row.base_state) : null) : state, attempts: parseAttempts(row.attempts) };
+  const attempts = parseAttempts(row.attempts);
+  return {
+    state,
+    sourceUpdatedAt: row.source_updated_at,
+    baseHash: row.base_hash,
+    ahead,
+    base: ahead ? (row.base_state ? new Uint8Array(row.base_state) : null) : state,
+    attempts,
+    attemptState: attempts.length === 0 ? null : row.attempt_state ? new Uint8Array(row.attempt_state) : state,
+  };
 }
 /** The same without the Yjs blobs (the reconciler asks every tick). */
 export function getDocMeta(name: string, vaultId = "primary"): DocMeta | null {
@@ -1911,6 +1922,11 @@ const updateDocAttempt = db.prepare(
      state = @state, ahead = 1, attempts = @attempts, attempt_state = NULL, updated_at = @updated_at
    WHERE vault_id = @vault_id AND name = @name`,
 );
+const deleteDocStateStmt = db.prepare("DELETE FROM collab_docs WHERE vault_id = ? AND name = ?");
+/** Drop a note's snapshot altogether (only for a note that has no live document any more — see `discardUnsavedChanges`). */
+export function deleteDocState(name: string, vaultId = "primary"): void {
+  deleteDocStateStmt.run(vaultId, name);
+}
 /** The document holds changes the vault does not have: save them, keep the base. */
 export function saveDocAhead(name: string, state: Uint8Array, vaultId = "primary"): void {
   const params = { vault_id: vaultId, name, state: Buffer.from(state), updated_at: now() };
@@ -1921,11 +1937,22 @@ export function saveDocAhead(name: string, state: Uint8Array, vaultId = "primary
  * so that whatever happens to the acknowledgement the snapshot contains what was
  * written and the hash says "this vault copy is ours".
  */
-export const saveDocAttempt = db.transaction((name: string, state: Uint8Array, hash: string, vaultId: string): void => {
+/**
+ * `expectSource` (when given) is the row's `source_updated_at` as the store pass
+ * saw it when it SNAPSHOTTED `state`. The render between snapshot and this call
+ * is awaited; if the reconciler folded an external edit meanwhile the row is now
+ * built on a newer version (state, source and base all moved together) and
+ * `state` here is OLDER than the row's — saving it would leave a snapshot whose
+ * base it does not contain. Then nothing is saved and `false` is returned: the
+ * caller re-reads and snapshots again.
+ */
+export const saveDocAttempt = db.transaction((name: string, state: Uint8Array, hash: string, vaultId: string, expectSource?: number | null): boolean => {
   const meta = getDocMeta(name, vaultId);
+  if (expectSource !== undefined && (meta?.sourceUpdatedAt ?? null) !== expectSource) return false;
   const attempts = JSON.stringify([...(meta?.attempts ?? []).filter((h) => h !== hash), hash].slice(-DOC_ATTEMPTS_KEPT));
   const params = { vault_id: vaultId, name, state: Buffer.from(state), attempts, updated_at: now() };
   if (updateDocAttempt.run(params).changes === 0) insertDocAhead.run(params);
+  return true;
 });
 const confirmDocAttemptStmt = db.prepare(
   `UPDATE collab_docs SET state = COALESCE(attempt_state, state), source_updated_at = @source, base_hash = @hash, ahead = 0, base_state = NULL, attempts = NULL, attempt_state = NULL, updated_at = @updated_at
@@ -2133,7 +2160,12 @@ export const saveDocStateConfirming = db.transaction(
 );
 /** The attempted vault write was acknowledged: the snapshot saved with the attempt IS the vault content now. Confirms the commands it carried, in the same transaction. */
 export const confirmDocAttempt = db.transaction((name: string, vaultId: string, sourceUpdatedAt: number | null, hash: string, confirm: number[]): number => {
-  confirmDocAttemptStmt.run({ vault_id: vaultId, name, source: sourceUpdatedAt, hash, updated_at: now() });
+  // Only while the row still records this attempt. If it was rebased while the
+  // write was in flight (the reconciler merged an external edit made on top of
+  // it), the row is already built on something NEWER than this write: claiming
+  // "in step with <this write>" would misdescribe it. The commands the write
+  // carried did reach the vault and are confirmed either way.
+  if (getDocMeta(name, vaultId)?.attempts.includes(hash)) confirmDocAttemptStmt.run({ vault_id: vaultId, name, source: sourceUpdatedAt, hash, updated_at: now() });
   let n = 0;
   const at = now();
   for (const rowid of confirm) n += confirmCollabReceiptStmt.run(at, rowid).changes;

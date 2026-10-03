@@ -106,7 +106,7 @@ import { runVaultMirrorOnce } from "../worker/vault-mirror";
 import { startWorker } from "../worker/scheduler";
 import { vaultRegistry } from "../config";
 import { createVaultViaCli, seedVault } from "../vault-provision";
-import { noteKind, resolveSuggestionsInHtmlAsync, settleUnsaved } from "../collab";
+import { noteKind, resolveSuggestionsInHtmlAsync, settleUnsaved, unsavedPermanentBody, unsavedPermanentReason } from "../collab";
 import { isCollabUnsaved } from "../db";
 import { normalizePathPrefix, pathInPrefix } from "../paths";
 import { ancestorPages, descendantRefs, descendantRows, grantCapsList, inheritedPeople, personView, viewableAncestors } from "../sharing";
@@ -1840,7 +1840,10 @@ async function resolveSuggestion(c: Context, action: "accept" | "reject") {
     try {
       // The stored body is stale while live-editor changes are still being saved: give them the
       // chance to be written first (and read the note only after that), else resolve later.
-      if (isCollabUnsaved(s.note_id, "primary") && (await settleUnsaved("primary", s.note_id)) === "pending") {
+      const settled = isCollabUnsaved(s.note_id, "primary") ? await settleUnsaved("primary", s.note_id) : "clear";
+      // Changes that can never be written as they are: not "try again in a moment".
+      if (settled === "permanent") return c.json(unsavedPermanentBody(unsavedPermanentReason("primary", s.note_id)), 409);
+      if (settled === "pending") {
         return c.json({ error: "conflict", live: true, retry: true, detail: "This page has changes that are still being saved from the live editor. Try again in a moment." }, 409);
       }
       const note = await vault.getNote(s.note_id);
