@@ -13,6 +13,7 @@ import http from "node:http";
 import assert from "node:assert/strict";
 import { QueryClient } from "@tanstack/query-core";
 import { createInvalidator, parseInvalidationEvent, MAX_IDS } from "../../../packages/core/src/lib/events/invalidation.ts";
+import { takeFreshRead } from "../../../packages/core/src/lib/events/freshReads.ts";
 import { streamSSE } from "../../../packages/core/src/lib/transport/sse.ts";
 import { queryKeys } from "../../../packages/core/src/lib/parachute/queries.ts";
 
@@ -127,6 +128,64 @@ function harness(debounceMs = 500) {
   h.inv.handleEvent({ type: "bogus" } as never);
   h.advance(600);
   assert.ok(h.stale(queryKeys.vault.note("gone")));
+}
+
+{
+  // M1 sidebar tree: refreshed only when the server says the viewer's ROW changed (`tree: true`),
+  // at once; never for a plain content edit. Fallbacks: an id the tree has never listed, a remove.
+  // A hidden tab holds the refresh until it is visible again (one refetch).
+  const qc = new QueryClient();
+  let t = 1_000;
+  const timers: Array<{ fn: () => void; at: number }> = [];
+  let treeCalls = 0;
+  let visible = true;
+  const known = new Set(["k1", "k2"]);
+  const inv = createInvalidator({
+    invalidate: (f) => { if (f.queryKey?.[1] === "tree") treeCalls++; void qc.invalidateQueries(f as never); },
+    inTree: (id) => known.has(id),
+    visible: () => visible,
+    now: () => t,
+    setTimer: (fn, ms) => { const x = { fn, at: t + ms }; timers.push(x); return x; },
+    clearTimer: (x) => { const i = timers.indexOf(x as never); if (i >= 0) timers.splice(i, 1); },
+  });
+  const advance = (ms: number) => {
+    t += ms;
+    for (const x of timers.filter((x) => x.at <= t).sort((a, b) => a.at - b.at)) { if (timers.includes(x)) { timers.splice(timers.indexOf(x), 1); x.fn(); } }
+  };
+  inv.handleOpen();
+  for (let i = 0; i < 20; i++) { inv.handleEvent({ type: "note", id: i % 2 ? "k1" : "k2", op: "upsert" }); advance(600); }
+  assert.equal(treeCalls, 0, "content edits of pages the tree lists never refetch it");
+  assert.equal(timers.length, 0, "and nothing is scheduled for later");
+  inv.handleEvent({ type: "note", id: "k1", op: "upsert", tree: true });
+  advance(600);
+  assert.equal(treeCalls, 1, "a flagged event refreshes the tree at once");
+  inv.handleEvent({ type: "note", id: "new-page", op: "upsert" });
+  advance(600);
+  assert.equal(treeCalls, 2, "older server: an id the tree has never listed still refreshes it");
+  inv.handleEvent({ type: "note", id: "k1", op: "remove" });
+  advance(600);
+  assert.equal(treeCalls, 3, "a remove refreshes it");
+  // Hidden tab: held; visible again: exactly one refresh for everything that happened.
+  visible = false;
+  for (const id of ["k1", "k2", "k1"]) { inv.handleEvent({ type: "note", id, op: "upsert", tree: true }); advance(600); }
+  assert.equal(treeCalls, 3, "no tree refetch while hidden");
+  inv.handleVisible();
+  assert.equal(treeCalls, 3, "still hidden: nothing");
+  visible = true;
+  inv.handleVisible();
+  assert.equal(treeCalls, 4, "one catch-up refresh when the tab is visible again");
+  inv.handleVisible();
+  assert.equal(treeCalls, 4, "and only one");
+  // The flag survives parsing; anything else in the frame is dropped.
+  assert.deepEqual(parseInvalidationEvent('{"type":"note","id":"a","op":"upsert","tree":true,"path":"x"}'), { type: "note", id: "a", op: "upsert", tree: true });
+  assert.deepEqual(parseInvalidationEvent('{"type":"note","id":"a","op":"upsert","tree":"yes"}'), { type: "note", id: "a", op: "upsert" });
+  // Each touched id is marked for ONE fresh re-read.
+  inv.handleEvent({ type: "note", id: "fresh-me", op: "upsert" });
+  advance(600);
+  assert.equal(takeFreshRead("fresh-me"), true);
+  assert.equal(takeFreshRead("fresh-me"), false);
+  assert.equal(takeFreshRead("never-touched"), false);
+  inv.dispose();
 }
 
 // --- end to end: SSE server -> streamSSE -> parse -> invalidator, with a dropped stream ---

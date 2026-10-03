@@ -26,12 +26,49 @@ test("favorites readable offline after prefetch", async ({ page, context }, info
   await context.setOffline(true);
   await page.evaluate(() => (window as any).prismShellUI.getState().openTab("agenda", "Workshop agenda", "document"));
   await expect(page.getByText("Saturday: opening discussion", { exact: false })).toBeVisible();
+  await expect(page.getByTestId("offline-copy-notice")).toContainText("Offline copy from");
   await page.screenshot({ path: info.outputPath("offline-favorite.png") });
   // An uncached page is honestly unavailable, never a blank editor.
   await page.evaluate(() => (window as any).prismShellUI.getState().openTab("field-notes", "Field notes", "document"));
   await expect(page.getByText("Notes from the last conversation")).toHaveCount(0);
   await context.setOffline(false);
   await expect(page.getByText("Notes from the last conversation")).toBeVisible({ timeout: 15_000 });
+});
+
+/** NP-OF-02 */
+test("offline read of cached page", async ({ page, context }) => {
+  await page.goto("/e2e-fixtures/notion-shell.html");
+  await expect(page.locator(".tiptap[contenteditable=true]")).toBeVisible();
+  // Open a page while online: it is now a recently opened page with a copy on this device.
+  await page.evaluate(() => (window as any).prismShellUI.getState().openTab("agenda", "Workshop agenda", "document"));
+  await expect(page.getByText("Saturday: opening discussion", { exact: false })).toBeVisible();
+  await expect(page.getByTestId("offline-copy-notice")).toHaveCount(0); // a live read carries no label
+  await expect.poll(() => page.evaluate(() => new Promise<boolean>((resolve) => {
+    const open = indexedDB.open("prism-read-cache");
+    open.onsuccess = () => { const k = open.result.transaction("bodies").objectStore("bodies").getAllKeys(); k.onsuccess = () => resolve((k.result as string[]).some((key) => key.endsWith("|/notes/agenda"))); k.onerror = () => resolve(false); };
+    open.onerror = () => resolve(false);
+  })), { timeout: 10_000 }).toBe(true);
+  const before = Date.now();
+  await page.evaluate(() => (window as any).prismShellUI.getState().openTab("workspace", "A living workspace", "document"));
+  await expect(page.getByText("A shared place to think")).toBeVisible();
+  // Now read it with no connection (the fixture gates /api on navigator.onLine).
+  await context.setOffline(true);
+  await page.evaluate(() => (window as any).prismShellUI.getState().openTab("agenda", "Workshop agenda", "document"));
+  await expect(page.getByText("Saturday: opening discussion", { exact: false })).toBeVisible();
+  const notice = page.getByTestId("offline-copy-notice");
+  await expect(notice).toHaveText(/^Offline copy from (.+, )?\d{1,2}:\d{2}/);
+  // The time is when the copy was saved on this device — just now, not the page's edit date.
+  const at = Date.parse((await notice.locator("time").getAttribute("datetime"))!);
+  expect(Math.abs(at - before)).toBeLessThan(60_000);
+  // A page never opened here is honestly unavailable.
+  await page.evaluate(() => (window as any).prismShellUI.getState().openTab("tpl", "Meeting notes", "document"));
+  await expect(page.getByText("Topics to cover.")).toHaveCount(0);
+  await expect(page.getByTestId("offline-copy-notice")).toHaveCount(0);
+  // Back online: the page is read from the server again and the label goes away.
+  await context.setOffline(false);
+  await page.evaluate(() => (window as any).prismShellUI.getState().openTab("agenda", "Workshop agenda", "document"));
+  await expect(page.getByTestId("offline-copy-notice")).toHaveCount(0, { timeout: 15_000 });
+  await expect(page.getByText("Saturday: opening discussion", { exact: false })).toBeVisible();
 });
 
 /** Wave 2E review M4: what is cached on the device is bounded, revocable and tied to the account. */

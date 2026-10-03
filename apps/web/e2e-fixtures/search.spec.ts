@@ -19,6 +19,34 @@ test("search shows ranked passages and openly labels keyword fallback without re
   await page.screenshot({ path: testInfo.outputPath("search-results-mobile.png") });
 });
 
+// NP-SR-05
+test("ranked and keyword results are blended: title matches first, ranked next, other keyword hits last", async ({ page }) => {
+  await page.goto("/e2e-fixtures/search.html");
+  const results = page.getByRole("region", { name: "Search results" });
+  await expect(results).toContainText("Ranked search");
+  await page.evaluate(() => { (window as any).prismSearchFixture.keyword = "extra"; });
+  await page.getByRole("textbox", { name: "Query", exact: true }).fill("idea");
+  await expect(results).toContainText("Ranked search · with keyword matches");
+  const text = await results.innerText();
+  const at = (s: string) => text.indexOf(s);
+  // Both title matches lead (keyword order), the body-only keyword hit follows; nothing appears twice.
+  expect(at("Ideas ledger")).toBeGreaterThan(-1);
+  expect(at("Ideas ledger")).toBeLessThan(at("Minutes"));
+  expect(at("Connected ideas")).toBeLessThan(at("Minutes"));
+  expect(text.split("Connected ideas").length - 1).toBeLessThanOrEqual(2); // title + breadcrumb of ONE row
+  // Both searches ran for the query.
+  const requests = await page.evaluate(() => (window as any).prismSearchFixture.requests as string[]);
+  expect(requests).toContain("ranked:idea");
+  expect(requests).toContain("keyword:idea");
+  // The page both searches found keeps its ranked passage.
+  await expect(results).toContainText("A matching passage about connected ideas.");
+  // Keyword down: ranked alone, no error.
+  await page.evaluate(() => { (window as any).prismSearchFixture.keyword = "fail"; });
+  await page.getByRole("textbox", { name: "Query", exact: true }).fill("connected");
+  await expect(results).toContainText("Connected ideas");
+  await expect(results.getByRole("alert")).toHaveCount(0);
+});
+
 test("failed revalidation and audience changes never expose cached search results", async ({ page }) => {
   await page.goto("/e2e-fixtures/search.html");
   const results = page.getByRole("region", { name: "Search results" });

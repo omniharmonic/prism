@@ -83,7 +83,7 @@ export default function CodeRenderer({ note, readOnly }: RendererProps) {
   const isDark = theme === "dark";
 
   const getContent = useCallback(() => contentRef.current, []);
-  const { isSaving, lastSaved, scheduleSave } = useAutoSave(note.id, getContent);
+  const { isSaving, lastSaved, scheduleSave } = useAutoSave(note.id, getContent, undefined, undefined, { base: note.updatedAt, content: note.content });
   const scheduleSaveRef = useRef(scheduleSave);
   scheduleSaveRef.current = scheduleSave;
 

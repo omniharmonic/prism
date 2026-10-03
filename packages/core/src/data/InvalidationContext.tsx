@@ -24,7 +24,13 @@ export function InvalidationSubscriber() {
     let close: (() => void) | null = null;
     let inv: ReturnType<typeof createInvalidator> | null = null;
     const start = () => {
-      const i = createInvalidator({ invalidate: (f) => void qc.invalidateQueries(f as never) });
+      const i = createInvalidator({
+        invalidate: (f) => void qc.invalidateQueries(f as never),
+        // NP-OF-05: a page this device's tree has never listed was made elsewhere → show it now.
+        inTree: (id) => (qc.getQueryData<Array<{ id: string }>>(["vault", "tree"]) ?? []).some((n) => n.id === id),
+        // A hidden tab does not refetch the tree; it catches up when it is looked at again.
+        visible: () => typeof document === "undefined" || document.visibilityState !== "hidden",
+      });
       inv = i;
       close = source.open({
         onEvent: (ev) => i.handleEvent(ev),
@@ -47,8 +53,11 @@ export function InvalidationSubscriber() {
       start();
     };
     start();
+    const onVisible = () => { if (document.visibilityState !== "hidden") inv?.handleVisible(); };
+    document.addEventListener("visibilitychange", onVisible);
     window.addEventListener("prism:vault-changed", restart);
     return () => {
+      document.removeEventListener("visibilitychange", onVisible);
       window.removeEventListener("prism:vault-changed", restart);
       stop();
     };

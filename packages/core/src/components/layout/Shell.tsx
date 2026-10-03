@@ -2,7 +2,7 @@ import { NoteShortcutsProvider } from "../navigation/NoteShortcuts";
 import { useWorkspaceSession } from "../../app/hooks/useWorkspaceSession";
 import { X } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useUIStore } from "../../app/stores/ui";
+import { useUIStore, persistSidebar } from "../../app/stores/ui";
 import { useKeyboardShortcuts } from "../../app/hooks/useKeyboardShortcuts";
 import { useIsMobile } from "../../app/hooks/useIsMobile";
 import { Navigation } from "../navigation/Navigation";
@@ -59,6 +59,9 @@ function ShellLayout() {
   const companionOverlay = isMobile || layoutWidth - (sidebarOpen ? sidebarWidth + 4 : 0) - contextPanelWidth - 4 < 480;
 
   useKeyboardShortcuts();
+  // NP-SB-11: remember the desktop sidebar (width + collapsed) on this device.
+  // Phones use the same flag for their drawer, which must never be remembered.
+  useEffect(() => { if (!isMobile) persistSidebar(sidebarOpen, sidebarWidth); }, [isMobile, sidebarOpen, sidebarWidth]);
   useEffect(() => { applyReduceMotion(); }, []);
   // The host's outbox confirmed one of OUR queued writes (this tab or another):
   // re-read that page so the cached revision is the server's, without waiting

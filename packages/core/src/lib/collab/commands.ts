@@ -64,6 +64,14 @@ export interface HumanCommentCommand extends HumanCollabCommandBase, HumanCollab
   kind: "comment";
   text: string;
 }
+/** Open a PAGE-LEVEL thread (NP-CO-02): a discussion about the page as a whole,
+ *  not anchored to text. The server writes a `comments` map entry with
+ *  `page: true` and an empty quote; the body is not touched. Replies, resolve
+ *  and delete use the ordinary thread commands. */
+export interface HumanPageCommentCommand extends HumanCollabCommandBase {
+  kind: "page-comment";
+  text: string;
+}
 /** Reply in an existing thread. */
 export interface HumanReplyCommand extends HumanCollabCommandBase {
   kind: "reply";
@@ -86,6 +94,7 @@ export interface HumanDeleteCommentCommand extends HumanCollabCommandBase {
 export type HumanCollabCommand =
   | HumanSuggestCommand
   | HumanCommentCommand
+  | HumanPageCommentCommand
   | HumanReplyCommand
   | HumanResolveCommand
   | HumanDeleteCommentCommand;
@@ -101,7 +110,7 @@ export interface HumanCollabResult {
   suggestionId?: string;
   /** Every comment command: the thread it created / touched. */
   threadId?: string;
-  /** `comment` / `reply`: the id of the comment item that was written. */
+  /** `comment` / `page-comment` / `reply`: the id of the comment item that was written. */
   commentId?: string;
   /** `resolve`: the state that was set. */
   resolved?: boolean;

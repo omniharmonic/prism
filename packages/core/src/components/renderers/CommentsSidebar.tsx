@@ -29,6 +29,8 @@ export interface CommentCommandActions {
   reply(threadId: string, text: string): Promise<void>;
   resolve(threadId: string, resolved: boolean): Promise<void>;
   remove(threadId: string): Promise<void>;
+  /** Open a page-level thread (NP-CO-02). Absent = this person writes it on the shared doc directly. */
+  pageComment?(text: string): Promise<void>;
   /** Show Delete only where this person may delete (the server still decides). */
   canDelete?(thread: Thread): boolean;
 }
@@ -129,7 +131,7 @@ export function CommentsSidebar({
   );
 }
 
-function ThreadCard({
+export function ThreadCard({
   ydoc,
   thread,
   user,
@@ -188,6 +190,7 @@ function ThreadCard({
   return (
     <div
       ref={cardRef}
+      data-comment-id={thread.id}
       className="glass"
       style={{
         padding: 10,
@@ -198,6 +201,9 @@ function ThreadCard({
         transition: "box-shadow 0.2s, border-color 0.2s",
       }}
     >
+      {thread.page && !thread.quote && (
+        <div style={{ fontSize: 11, color: "var(--text-muted)", marginBottom: 6 }}>Page comment</div>
+      )}
       {thread.quote && (
         <div
           style={{

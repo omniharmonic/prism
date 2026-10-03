@@ -59,6 +59,8 @@ export interface NoteTreeEntry {
   path: string | null;
   tags: string[] | null;
   metadata: Record<string, unknown> | null;
+  /** When the page was last edited, where the host's tree listing carries it. */
+  updatedAt?: string | null;
 }
 
 export interface NoteIndex {

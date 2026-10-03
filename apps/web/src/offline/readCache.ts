@@ -24,7 +24,7 @@ export const MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
 /** "Available offline" pages have their own budget and never push out the tree/lists. */
 const PINNED_MAX_BYTES = 200 * 1024 * 1024;
 /** Device-local records that name pages or queries; dropped with the cache. */
-const LOCAL_PREFIXES = ["prism:offline-pinned:", "prism:offline-recent:", "prism:offline-stamps:", "prism:offline-protected", "prism:recent-searches:"];
+const LOCAL_PREFIXES = ["prism:offline-pinned:", "prism:offline-recent:", "prism:offline-stamps:", "prism:offline-protected", "prism:recent-searches:", "prism:tree-expanded:"];
 
 interface IndexRow {
   key: string;
@@ -93,7 +93,7 @@ function result<T>(r: IDBRequest<T>): Promise<T> {
   });
 }
 
-export async function cacheGet(key: string): Promise<{ body: string; contentType: string } | null> {
+export async function cacheGet(key: string): Promise<{ body: string; contentType: string; stored?: number } | null> {
   try {
     const db = await open();
     const t = db.transaction(["bodies", "index"], "readwrite");
@@ -107,7 +107,7 @@ export async function cacheGet(key: string): Promise<{ body: string; contentType
       return null;
     }
     t.objectStore("index").put({ ...idx, at: Date.now() }); // LRU touch
-    return { body: row.body, contentType: row.contentType };
+    return { body: row.body, contentType: row.contentType, stored: idx.stored ?? idx.at };
   } catch {
     return null;
   }
@@ -244,6 +244,8 @@ export async function clearReadCache(): Promise<void> {
   try {
     for (const key of Object.keys(localStorage)) if (LOCAL_PREFIXES.some((p) => key.startsWith(p))) localStorage.removeItem(key);
   } catch { /* private mode */ }
+  // In-memory device-local state of the previous account goes too (the sidebar's open folders).
+  try { window.dispatchEvent(new Event("prism:signed-out")); } catch { /* no window */ }
   await clearLegacyApiCache();
   try {
     const db = await open();
@@ -309,6 +311,7 @@ export async function readThrough(key: string, doFetch: () => Promise<Response>)
   throw new TypeError("Offline and not cached");
 }
 
-function hit2resp(hit: { body: string; contentType: string }): Response {
-  return new Response(hit.body, { status: 200, headers: { "content-type": hit.contentType, "x-prism-cache": "hit" } });
+function hit2resp(hit: { body: string; contentType: string; stored?: number }): Response {
+  // `x-prism-cache-stored`: when this copy was saved on the device (NP-OF-02 "Offline copy from <time>").
+  return new Response(hit.body, { status: 200, headers: { "content-type": hit.contentType, "x-prism-cache": "hit", ...(hit.stored ? { "x-prism-cache-stored": String(hit.stored) } : {}) } });
 }

@@ -39,7 +39,7 @@ export default function PresentationRenderer({ note, readOnly }: RendererProps) 
   const contentRef = useRef(serializeSlides(initialSlides));
 
   const getContent = useCallback(() => contentRef.current, []);
-  const { scheduleSave, saveError, saveNow } = useAutoSave(note.id, getContent);
+  const { scheduleSave, saveError, saveNow } = useAutoSave(note.id, getContent, undefined, undefined, { base: note.updatedAt, content: note.content });
 
   const updateSlides = useCallback((newSlides: string[]) => {
     if (readOnly) return;

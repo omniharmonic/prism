@@ -11,10 +11,8 @@ import { test, expect } from "@playwright/test";
 const path = "/e2e-fixtures/workspace.html?session&events";
 const WITHIN = { timeout: 2000 };
 
-// PRODUCT GAP (NP-OF-05): the event re-reads the note, but an OPEN plain (non-collab) editor never adopts the new
-// content — DocumentRenderer has no effect on `note.content`, and Canvas only remounts on a local revision bump.
-// Required title; fixme until an idle open editor takes the remote version (a dirty one must keep the draft).
-test.fixme("remote edit appears within 2s", async ({ page }) => {
+// An idle open plain editor takes the remote version (Canvas + remoteAdoption); a dirty one keeps its draft (below).
+test("remote edit appears within 2s", async ({ page }) => {
   await page.goto(path);
   await page.evaluate(() => (window as any).prismFixtureUI.getState().openTab("field-notes", "Field notes", "document"));
   const editor = page.locator(".tiptap");
@@ -36,9 +34,8 @@ test.fixme("remote edit appears within 2s", async ({ page }) => {
   expect(await page.evaluate(() => performance.getEntriesByType("navigation").length)).toBe(1);
 });
 
-// PRODUCT GAP (NP-OF-05): note events invalidate ["vault","notes",…] lists but not the sidebar's ["vault","tree"]
-// query (lib/events/invalidation.ts isNoteListKey), so a page made elsewhere is missing from the tree until a resync.
-test.fixme("a page created elsewhere appears in the tree within 2s", async ({ page }) => {
+// A note event for an id the tree has never listed refreshes ["vault","tree"] at once (lib/events/invalidation.ts).
+test("a page created elsewhere appears in the tree within 2s", async ({ page }) => {
   await page.goto(path + "&navigation");
   const nav = page.locator(".workspace-navigation");
   await expect(nav).toBeVisible();
@@ -50,7 +47,30 @@ test.fixme("a page created elsewhere appears in the tree within 2s", async ({ pa
   await expect(nav.getByText("Made on the phone")).toBeVisible(WITHIN);
 });
 
-// What does hold today: the event makes this client re-read exactly that page (no reload, no write-back).
+// Never clobber typing: with unsent local edits the remote version is NOT adopted.
+test("a remote edit never replaces unsaved typing", async ({ page }) => {
+  await page.goto(path);
+  await page.evaluate(() => (window as any).prismFixtureUI.getState().openTab("field-notes", "Field notes", "document"));
+  const editor = page.locator(".tiptap");
+  await expect(editor).toContainText("Useful observations from our last conversation.");
+  await editor.click();
+  await page.keyboard.press("ControlOrMeta+End");
+  await page.keyboard.type(" Typed here and not yet saved.");
+  await page.evaluate(() => {
+    const note = ((window as any).prismFixtureNotes as any[]).find((n) => n.id === "field-notes");
+    note.content = "<h1>Field notes</h1><p>Edited on the other device.</p>";
+    note.updatedAt = "2026-10-01T12:05:00.000Z";
+    (window as any).prismFixtureInvalidate("field-notes");
+  });
+  const reads = () => page.evaluate(() => ((window as any).prismFixtureReads as string[]).filter((id) => id === "field-notes").length);
+  const before = await reads();
+  await expect.poll(reads, WITHIN).toBeGreaterThan(before - 1);
+  await page.waitForTimeout(1200); // past the 500 ms batch + the re-read
+  await expect(editor).toContainText("Typed here and not yet saved.");
+  await expect(editor).not.toContainText("Edited on the other device.");
+});
+
+// The event makes this client re-read exactly that page (no reload, no write-back). the event makes this client re-read exactly that page (no reload, no write-back).
 test("a remote change event re-reads the open page from the server", async ({ page }) => {
   await page.goto(path);
   await page.evaluate(() => (window as any).prismFixtureUI.getState().openTab("field-notes", "Field notes", "document"));

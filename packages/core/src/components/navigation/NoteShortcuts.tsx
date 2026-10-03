@@ -9,7 +9,7 @@ import { useSettingsStore, type RecentItem } from "../../app/stores/settings";
 import { isVaultNoteId } from "../../lib/noteIdentity";
 import { inferContentType } from "../../lib/schemas/content-types";
 import { noteLinkTitle } from "../../lib/wikilinks";
-import { PagesRequestError, preferenceOps, type PagePreferences, type PreferencesSnapshot } from "../../lib/pages/model";
+import { PagesRequestError, moveWithin, preferenceOps, type PagePreferences, type PreferencesSnapshot } from "../../lib/pages/model";
 
 const PREFIX = "prism:note-shortcuts:v1:";
 type RecordValue = { version: 1; favorites: string[]; recents: string[]; legacyHandled: boolean };
@@ -47,6 +47,8 @@ interface Shortcuts {
   recents: RecentItem[];
   favoriteIds: string[];
   toggleFavorite: (item: RecentItem) => void;
+  /** Move a favorite to `index` of the SHOWN favorites (NP-SB-04). Absent where favorites can't be reordered. */
+  moveFavorite?: (id: string, index: number) => void;
   unavailable: boolean;
   retry: () => void;
   recoverable: boolean;
@@ -161,10 +163,13 @@ function useSyncedShortcuts(scope: string, query: ReturnType<typeof useQuery<Pre
     return { id, title: it.title, type: inferContentType({ path: it.path, tags: it.tags, metadata: { ...(it.type ? { type: it.type } : {}), ...(it.prismType ? { prism_type: it.prismType } : {}) } }) };
   };
   const list = (ids: string[], limit: number) => ids.flatMap((id) => { const i = toItem(id); return i ? [i] : []; }).slice(0, limit);
+  const shownFavorites = list(snap?.preferences.favorites ?? [], 100);
   return {
     ...NO_SHORTCUTS,
     synced: true,
-    favorites: list(snap?.preferences.favorites ?? [], 100),
+    favorites: shownFavorites,
+    // The order is synced like the list itself (revision CAS; re-applied once on a conflict).
+    moveFavorite: (id, index) => { const visible = shownFavorites.map((f) => f.id); apply((p) => preferenceOps.moveFavorite(p, id, index, visible)); },
     recents: list(snap?.preferences.recents ?? [], 12),
     favoriteIds: snap?.preferences.favorites ?? [],
     toggleFavorite: (item) => { if (isVaultNoteId(item.id)) apply((p) => preferenceOps.toggleFavorite(p, item.id), item); },
@@ -283,6 +288,11 @@ function useScopedShortcuts(scopeArg: string | null, enabled: boolean): Shortcut
       if (!isVaultNoteId(item.id)) return;
       const prior = recordRef.current;
       save({ ...prior, favorites: prior.favorites.includes(item.id) ? prior.favorites.filter(id => id !== item.id) : [item.id, ...prior.favorites].slice(0, 30) });
+    },
+    moveFavorite: (id, index) => {
+      const prior = recordRef.current;
+      const next = moveWithin(prior.favorites, id, index, materialize(prior.favorites).map((f) => f.id));
+      if (next !== prior.favorites) save({ ...prior, favorites: next });
     },
     unavailable: queries.some(query => query.isError), retry: () => { for (const query of queries) void query.refetch(); },
     recoverable: !record.legacyHandled && !!(old.favorites.length || old.recents.length), recovering, recover: () => { void recover(); },

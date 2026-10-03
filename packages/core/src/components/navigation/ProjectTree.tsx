@@ -36,6 +36,8 @@ import { Spinner } from "../ui/Spinner";
 import { useQueryClient } from "@tanstack/react-query";
 import { comparePages, isUnder, orderOf, parentOf, planReorder, protectionReason, withoutTrashed } from "../../lib/pages/model";
 import { usePagesUI, type PageRef } from "../../lib/pages/store";
+import { useOptionalVaultClient } from "../../data/VaultClientContext";
+import { pageIconOf, usePageIconOverride } from "../../lib/pages/icons";
 import { usePageActions } from "../../lib/pages/usePageActions";
 import { PageMenuPopover, usePageMenuItems } from "../pages/PageActionsMenu";
 import { renamePath } from "../renderers/DocumentChrome";
@@ -362,6 +364,10 @@ export function ProjectTree() {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [lastClickedId, setLastClickedId] = useState<string | null>(null);
   const [batchTrashConfirm, setBatchTrashConfirm] = useState(false);
+
+  // NP-SB-06: the tree remembers what was open, per account + vault, on this device.
+  const expansionScope = useOptionalVaultClient()?.scope?.() ?? "";
+  useEffect(() => { usePagesUI.getState().setExpandedScope(expansionScope); }, [expansionScope]);
 
   // "Collapse all" (any caller of collapseNav) bumps this counter.
   const collapseSignal = useUIStore((s) => s.navCollapseSignal);
@@ -720,7 +726,8 @@ function TreeNodeView({ node, depth, ctx }: { node: TreeNode; depth: number; ctx
   const showNewFolderInput = ctx.newFolder?.parentPath === node.rawPath && !isPage;
   const isSelected = isPage && ctx.selectedIds.has(node.note!.id);
   const contentType = node.note ? inferContentType(node.note) : "document";
-  const emoji = typeof node.note?.metadata?.icon === "string" ? (node.note.metadata.icon as string) : null;
+  const iconOverride = usePageIconOverride(node.note?.id);
+  const emoji = iconOverride !== undefined ? iconOverride : pageIconOf(node.note?.metadata?.icon);
   const Icon = isPage ? TYPE_ICONS[contentType] ?? FileText : open ? FolderOpen : Folder;
   const key = rawKey(node);
   const dropHere = ctx.drag && ctx.drag.over === key ? ctx.drag.zone : null;

@@ -34,7 +34,7 @@ export function PagesHost() {
 }
 
 function PageActionsSheet({ page, onClose }: { page: PageRef; onClose: () => void }) {
-  const items = usePageMenuItems(page, { close: onClose });
+  const items = usePageMenuItems(page, { close: onClose, sheet: true });
   return (
     <BottomSheet
       open

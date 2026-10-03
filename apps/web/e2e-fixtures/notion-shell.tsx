@@ -5,6 +5,8 @@
  */
 import React from "react";
 import { createRoot } from "react-dom/client";
+import { InvalidationSourceProvider } from "../../../packages/core/src/data/InvalidationContext";
+import type { InvalidationHandlers, InvalidationSource } from "../../../packages/core/src/lib/events/invalidation";
 import { App, AccountProvider, CollabDocumentProvider, CollabSharingProvider, PlatformProvider, VaultClientProvider, useUIStore, type Note } from "@prism/core";
 import { filtersToParams, matchesFilters, parseSearchFilters, queryTerms, searchMatches } from "@prism/core/search";
 import { inferContentType } from "../../../packages/core/src/lib/schemas/content-types";
@@ -58,9 +60,18 @@ const controls = {
   serverEdit: (id: string, content: string) => { const n = notes.find((x) => x.id === id)!; n.content = content; n.updatedAt = bump(); },
   note: (id: string) => notes.find((x) => x.id === id),
   all: () => notes,
+  /** The events channel (`/api/events` stand-in): ids only, plus the server's `tree` flag. */
+  event: (id: string, tree = false) => eventHandlers?.onEvent(tree ? { type: "note", id, op: "upsert", tree: true } : { type: "note", id, op: "upsert" }),
+  /** Note ids whose GET asked the server for its current state (`cache: "reload"` / `"no-store"`). */
+  freshReads: [] as string[],
+  treeReads: 0,
+  /** One-shot: the next GET of this note is answered with this OLDER copy (a reuse window / slow read). */
+  staleOnce: {} as Record<string, Note>,
   serverCreate: (path: string, content: string) => { notes.push({ id: `foreign-${++createdSeq}`, path, content, tags: [], metadata: { type: "document" }, createdAt: bump(), updatedAt: bump() }); },
   switchActor: async (email: string) => { controls.actor = email; await fetchMe(); },
 };
+let eventHandlers: InvalidationHandlers | null = null;
+const eventSource: InvalidationSource = { open(handlers) { eventHandlers = handlers; handlers.onOpen(); return () => { if (eventHandlers === handlers) eventHandlers = null; }; } };
 let seq = 0;
 let createdSeq = 0;
 const bump = () => `2026-10-02T00:${String(Math.floor(++seq / 60)).padStart(2, "0")}:${String(seq % 60).padStart(2, "0")}.000Z`;
@@ -98,7 +109,8 @@ window.fetch = async (input, init) => {
     const items = Object.fromEntries(notes.map((n) => [n.id, { path: n.path, title: n.path!.split("/").pop()!, tags: n.tags ?? [], type: n.metadata?.type as string | undefined }]));
     return Response.json({ preferences: { version: 1, favorites: controls.preferences.favorites, recents: controls.preferences.recents, sidebar: { order: [], collapsed: [] } }, revision: controls.revision, items });
   }
-  if (path === "/api/tree") return Response.json(notes.filter((n) => !controls.hidden.includes(n.id)).map((n) => ({ id: n.id, path: n.path, tags: n.tags, updatedAt: n.updatedAt, type: n.metadata?.type, prismType: n.metadata?.prism_type })));
+  if (path === "/api/tree") controls.treeReads++;
+  if (path === "/api/tree") return Response.json(notes.filter((n) => !controls.hidden.includes(n.id)).map((n) => ({ id: n.id, path: n.path, tags: n.tags, updatedAt: n.updatedAt, type: n.metadata?.type, prismType: n.metadata?.prism_type, ...(typeof n.metadata?.icon === "string" ? { icon: n.metadata.icon } : {}) })));
   if (path === "/api/search") {
     controls.searches.push(url.search);
     const q = url.searchParams.get("q") ?? "";
@@ -159,6 +171,8 @@ window.fetch = async (input, init) => {
     if (!note) return Response.json({ error: "not_found" }, { status: 404 });
     if (controls.hidden.includes(note.id)) return Response.json({ error: "forbidden" }, { status: 403 });
     if (method === "GET") controls.reads.push(note.id);
+    if (method === "GET" && (init?.cache === "reload" || init?.cache === "no-store")) controls.freshReads.push(note.id);
+    if (method === "GET" && controls.staleOnce[note.id]) { const stale = controls.staleOnce[note.id]!; delete controls.staleOnce[note.id]; return Response.json(viewerNote(stale)); }
     if (method === "DELETE") { controls.writes.push({ method, path, body: null }); notes.splice(notes.indexOf(note), 1); return Response.json({ ok: true }); }
     if (method === "PATCH") {
       const body = JSON.parse(String(init?.body));
@@ -211,14 +225,15 @@ const liveStub = { useLiveCollab: (id: string) => !!id, CollabDocument: ({ noteI
 const Live = ({ children }: { children: React.ReactNode }) => params.has("as") ? <CollabDocumentProvider value={liveStub}>{children}</CollabDocumentProvider> : <>{children}</>;
 await fetchMe();
 startOutboxSync();
-useUIStore.setState({ contextPanelOpen: false, sidebarWidth: 240, sidebarOpen: !params.has("collapsed") });
+// `?persisted` leaves the sidebar as the app restored it from this device (NP-SB-11).
+useUIStore.setState(params.has("persisted") ? { contextPanelOpen: false } : { contextPanelOpen: false, sidebarWidth: 240, sidebarOpen: !params.has("collapsed") });
 createRoot(document.getElementById("root")!).render(
   <React.StrictMode><PlatformProvider value="web"><VaultClientProvider client={httpVaultClient}><CollabSharingProvider value={{ ...(params.has("vaults") ? {
       listVaults: async () => [{ id: "primary", label: "Personal vault", vault: "personal", active: true }, { id: "research", label: "Shared research", vault: "research", active: false }],
       getActiveVault: () => "primary",
       setActiveVault: (id: string) => { (controls as unknown as { switchedVault?: string }).switchedVault = id; },
     } : {}), createShareLink: async () => "", getAccess: async () => ({ note: { id: "workspace", title: "A living workspace", tags: [], visibility: "private" }, people: [], links: [], tagAccess: [], canManageLinks: true, allowedLevels: ["view", "comment", "suggest", "edit"] }) }}>
-    <AccountProvider value={params.has("account") ? webAccount : null}><Live><App skipOnboarding initialTab={{ id: "workspace", title: "A living workspace", type: "document" }} /></Live></AccountProvider>
+    <AccountProvider value={params.has("account") ? webAccount : null}><Live><InvalidationSourceProvider source={params.has("events") ? eventSource : null}><App skipOnboarding initialTab={{ id: "workspace", title: "A living workspace", type: "document" }} /></InvalidationSourceProvider></Live></AccountProvider>
     <OfflineIndicator />
   </CollabSharingProvider></VaultClientProvider></PlatformProvider></React.StrictMode>,
 );

@@ -23,7 +23,7 @@ function vaultDocName(noteId: string): string {
 import { updateNote as restUpdateNote, getNote as restGetNote, hasPendingWrites, uploadAttachment, unfurl as restUnfurl } from "../parachute/rest";
 import { markUnsynced, clearUnsynced, setOpenHere, unsyncedDocs } from "./unsynced";
 import { reloadForUpdate } from "../offline/reloadForUpdate";
-import { reportSyncSource, BacklinksPill, EmptyPageStarters } from "@prism/core";
+import { reportSyncSource, BacklinksPill, EmptyPageStarters, notePageIconChanged, pageIconWriteConfirmed, pageIconWriteFailed, PageDiscussion } from "@prism/core";
 
 /** Track a CSS breakpoint without per-render layout thrash. */
 function useIsNarrow(): boolean {
@@ -242,8 +242,15 @@ function ScopedCollabDoc({
   };
 
   const handleIconChange = (emoji: string | null) => {
+    const previousIcon = icon;
     setIcon(emoji);
-    void restUpdateNote(noteId, { metadata: { icon: emoji } }).catch(() => {});
+    notePageIconChanged(noteId, emoji); // tabs, breadcrumbs, sidebar follow at once (NP-PG-01)
+    void restUpdateNote(noteId, { metadata: { icon: emoji } }).then(
+      // Confirmed: the server's `tree: true` event for this write refreshes the tree, which then replaces the override.
+      () => { pageIconWriteConfirmed(noteId); },
+      // Refused or lost: tabs, breadcrumbs and the sidebar go back to what the server has (review M3).
+      () => { pageIconWriteFailed(noteId); setIcon(previousIcon); },
+    );
   };
   // Page cover (metadata-only write, like the icon; the server reconciles it with the live doc).
   const handleCoverChange = (next: PageCoverValue | null) => {
@@ -298,6 +305,7 @@ function ScopedCollabDoc({
       }
     };
     return {
+      pageComment: (text) => run(`page-comment:${text}`, async () => ({ ...(await base()), kind: "page-comment", text })),
       reply: (threadId, text) => run(`reply:${threadId}:${text}`, async () => ({ ...(await base()), kind: "reply", threadId, text })),
       resolve: (threadId, resolved) => run(`resolve:${threadId}:${resolved}`, async () => ({ ...(await base()), kind: "resolve", threadId, resolved })),
       remove: (threadId) => run(`delete:${threadId}`, async () => ({ ...(await base()), kind: "delete-comment", threadId })),
@@ -666,6 +674,9 @@ function ScopedCollabDoc({
         {titleNotice && <p role="status" className="mb-4 text-xs text-[var(--text-secondary)]">{titleNotice}</p>}
         {uploadNotice && <p role="alert" className="mb-4 text-xs text-[var(--text-secondary)]">{uploadNotice} <button type="button" className="underline" onClick={() => setUploadNotice(null)}>Dismiss</button></p>}
         {embedded && isDocument && <div style={{ maxWidth: "var(--content-measure)", margin: "0 auto" }}><BacklinksPill noteId={noteId} title={title} /></div>}
+
+        {/* NP-CO-02: page-level discussion (threads about the page, not anchored to text). */}
+        {isDocument && showComments && <PageDiscussion ydoc={ydoc} user={user} canComment={canComment} editor={editor} actions={commentActions} />}
 
         {/* Doc + (desktop) inline comments */}
         <div style={{ display: "flex", gap: 20, alignItems: "flex-start" }}>
