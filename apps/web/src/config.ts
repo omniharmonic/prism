@@ -142,7 +142,14 @@ export async function fetchMe(): Promise<Me> {
     // cached pages and device-local page lists of the previous account go now,
     // not at the next sign-in (wave 2E review M4). Capability viewers keep theirs.
     if (!me.authenticated && !getCapabilityToken()) await clearReadCache();
-    await bindCacheUser(cachedMe.email);
+    const changed = await bindCacheUser(cachedMe.email);
+    // A different account on this browser: the previous account's synced live
+    // documents go with its read cache (its unsynced ones stay for it).
+    if (changed) {
+      const { captureWriteContext } = await import("./offline/writeScope");
+      const { purgeOtherScopes } = await import("./collab/unsynced");
+      await purgeOtherScopes((await captureWriteContext().catch(() => null))?.scope ?? null).catch(() => 0);
+    }
     return cachedMe;
   } catch {
     // Retain the last confirmed identity for offline drafts, but report the
@@ -236,7 +243,20 @@ export async function requestMagicLink(email: string): Promise<{ emailDelivery: 
   return { emailDelivery: body?.emailDelivery !== false };
 }
 
+/** Set when the last sign-out could not reach the server (shown once on the sign-in screen). */
+export const SIGNOUT_NOTICE_KEY = "prism:signout-unreached";
+export function takeSignOutNotice(): boolean {
+  try {
+    const set = sessionStorage.getItem(SIGNOUT_NOTICE_KEY) === "1";
+    sessionStorage.removeItem(SIGNOUT_NOTICE_KEY);
+    return set;
+  } catch { return false; }
+}
+
 export async function logout(): Promise<boolean> {
+  // The scope being signed out, captured while the identity is still known.
+  const { captureWriteContext } = await import("./offline/writeScope");
+  const leaving = await captureWriteContext().catch(() => null);
   // Unsent changes for this account would stay on the device (unencrypted and
   // never sent from another account): the user decides first — stay, download
   // and sign out, or discard and sign out. `false` = they chose to stay.
@@ -245,20 +265,26 @@ export async function logout(): Promise<boolean> {
   cachedMe = null;
   cachedMeContext = "";
   useAgentChatStore.getState().bindScope(null);
+  let reached = false;
   try {
-    if (isNative) {
-      // Device token: revoke it server-side (POST /auth/device/revoke with an
-      // empty body + the bearer revokes the calling token), then tell the shell
-      // to forget it. The cache is emptied either way.
-      await serverFetch("/auth/device/revoke", { method: "POST" });
-      await Promise.resolve(getHost()?.onSignedOut?.());
-    } else {
-      await serverFetch("/auth/logout", { method: "POST" });
-    }
+    // PWA: end the session. Native: revoke the calling device token (POST
+    // /auth/device/revoke with an empty body + the bearer).
+    const r = await serverFetch(isNative ? "/auth/device/revoke" : "/auth/logout", { method: "POST" });
+    reached = r.ok || r.status === 401;
   } catch {
-    /* best-effort */
+    /* offline / server unreachable: the local sign-out still completes below */
   } finally {
+    // The shell forgets its token WHETHER OR NOT the server answered (review low 9):
+    // it used to be skipped when the revoke request failed, leaving the token in the Keychain.
+    if (isNative) await Promise.resolve(getHost()?.onSignedOut?.()).catch(() => undefined);
     await clearReadCache();
+    // Live-document bodies of the signing-out account leave the device too (review
+    // M3). The person already chose download/discard for any unsynced ones.
+    if (leaving) {
+      const { purgeScopeDocuments } = await import("./collab/unsynced");
+      await purgeScopeDocuments(leaving.scope, true).catch(() => 0);
+    }
+    if (!reached) { try { sessionStorage.setItem(SIGNOUT_NOTICE_KEY, "1"); } catch { /* private mode */ } }
   }
   return true;
 }

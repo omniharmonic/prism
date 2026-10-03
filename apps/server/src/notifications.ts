@@ -41,8 +41,10 @@ import { sendPush, pushEnabled } from "./push";
 import { apnsEnabled, sendApnsToOwner, notificationAlert } from "./apns";
 import { sendEmail } from "./auth/email";
 import { documentActorId } from "./human-collab";
+import { writerIdFor } from "./writer-stamp";
+import { personNotesForEmail } from "./my-tasks";
 import { onAccessChanged } from "./access-events";
-import { docNameFor, federationTarget, isDocLive, markReconciled, setDocumentStoreListener, type DocumentStoredEvent } from "./collab";
+import { docNameFor, federationTarget, identifiedSuggestionsInHtml, plainTextOfHtml, isDocLive, markReconciled, setDocumentStoreListener, type DocumentStoredEvent } from "./collab";
 
 // ── schema ───────────────────────────────────────────────────────────────────
 db.exec(`
@@ -123,6 +125,7 @@ export function _resetNotifications(): void {
   unreadCache.clear();
   chipCache.clear();
   actorIdCache = null;
+  accountIdCache = null;
   deliveryHook = null;
 }
 
@@ -137,20 +140,21 @@ export type NotificationType =
   | "access_granted"
   | "access_denied"
   | "suggestion_accepted"
-  | "suggestion_rejected";
-const TYPES: readonly NotificationType[] = ["mention", "comment_reply", "comment_mention", "reminder", "share", "access_request", "access_granted", "access_denied", "suggestion_accepted", "suggestion_rejected"];
+  | "suggestion_rejected"
+  | "suggestion_resolved";
+const TYPES: readonly NotificationType[] = ["mention", "comment_reply", "comment_mention", "reminder", "share", "access_request", "access_granted", "access_denied", "suggestion_accepted", "suggestion_rejected", "suggestion_resolved"];
 export const isNotificationType = (t: unknown): t is NotificationType => typeof t === "string" && (TYPES as readonly string[]).includes(t);
 /** Filter groups the inbox offers (also accepts an exact type). */
 export const TYPE_GROUPS: Record<string, NotificationType[]> = {
   mention: ["mention", "comment_mention"],
-  comment: ["comment_reply", "comment_mention"],
+  comment: ["comment_reply", "comment_mention", "suggestion_accepted", "suggestion_rejected", "suggestion_resolved"],
   reminder: ["reminder"],
   access: ["access_request", "access_granted", "access_denied", "share"],
 };
 
 export type Category = "mention" | "comment" | "reminder" | "access";
 const categoryOf = (t: NotificationType): Category =>
-  t === "mention" || t === "comment_mention" ? "mention" : t === "comment_reply" ? "comment" : t === "reminder" ? "reminder" : "access";
+  t === "mention" || t === "comment_mention" ? "mention" : t === "comment_reply" || t === "suggestion_accepted" || t === "suggestion_rejected" || t === "suggestion_resolved" ? "comment" : t === "reminder" ? "reminder" : "access";
 
 export interface Anchor {
   mention?: string;
@@ -371,7 +375,15 @@ export function emailForActorId(actorId: string): string | null {
     if (config.ownerEmail) map.set(documentActorId(`user:${config.ownerEmail}`), config.ownerEmail);
     actorIdCache = { n: users.length, map };
   }
-  return actorIdCache.map.get(actorId) ?? null;
+  const known = actorIdCache.map.get(actorId);
+  if (known) return known;
+  // Legacy form: MCP agent suggestions written before wave 3 stored the account
+  // email itself. Believed only when it names a real account.
+  if (actorId.includes("@")) {
+    const email = actorId.trim().toLowerCase();
+    for (const e of actorIdCache.map.values()) if (e.toLowerCase() === email) return e;
+  }
+  return null;
 }
 
 /** Account emails behind a person note (its email identities that have an account). */
@@ -384,6 +396,59 @@ export async function accountsForPerson(vaultId: string, personId: string): Prom
   } catch {
     return [];
   }
+}
+
+// ── mentioning a member by ACCOUNT (wave 3) ──────────────────────────────────
+// A workspace member with no person note is mentioned by their account. The chip
+// stores the opaque subject id `u_<16 hex>` (writer-stamp.ts: HMAC of the email)
+// in the mention's existing `id` attribute and their display name in `label` —
+// never an email, and no editor schema change.
+export const ACCOUNT_MENTION_ID = /^u_[0-9a-f]{16}$/;
+let accountIdCache: { n: number; map: Map<string, string> } | null = null;
+/** The account behind an account-mention id, or null. */
+export function emailForAccountMention(id: string): string | null {
+  if (!ACCOUNT_MENTION_ID.test(id)) return null;
+  const users = listUsers();
+  if (!accountIdCache || accountIdCache.n !== users.length) {
+    const map = new Map<string, string>();
+    for (const u of users) map.set(writerIdFor(u.email), u.email.toLowerCase());
+    if (config.ownerEmail) map.set(writerIdFor(config.ownerEmail), config.ownerEmail.toLowerCase());
+    accountIdCache = { n: users.length, map };
+  }
+  return accountIdCache.map.get(id) ?? null;
+}
+/** May this account mention members by account? Workspace members only (never a guest). */
+export const canMentionMembers = (email: string, vaultId: string): boolean => roleAtLeast(workspaceRole(email, vaultId), "member");
+
+/**
+ * Members the caller may mention by account: workspace members (role ≥ member) of
+ * this vault who have a display name and are NOT already reachable through a
+ * person page the caller can view (those are offered as people). Returns the
+ * opaque id + display name only — never an email. Empty for a guest.
+ */
+export async function mentionableMembers(caller: string, vaultId: string, q: string, limit = 8): Promise<Array<{ id: string; name: string }>> {
+  const me = caller.toLowerCase();
+  if (!canMentionMembers(me, vaultId)) return [];
+  const needle = q.trim().toLowerCase();
+  const entry = resolveVaultEntry(vaultId);
+  const candidates = new Map<string, string>();
+  for (const u of listUsers()) candidates.set(u.email.toLowerCase(), (u.name ?? "").trim());
+  if (config.ownerEmail && !candidates.has(config.ownerEmail.toLowerCase())) candidates.set(config.ownerEmail.toLowerCase(), (getUser(config.ownerEmail)?.name ?? "").trim());
+  const out: Array<{ id: string; name: string }> = [];
+  for (const [email, name] of candidates) {
+    if (out.length >= limit) break;
+    if (email === me || !name || name.toLowerCase() === email || name.includes("@")) continue;
+    if (needle && !name.toLowerCase().includes(needle)) continue;
+    if (!canMentionMembers(email, vaultId)) continue;
+    let viaPerson = false;
+    try {
+      for (const pid of await personNotesForEmail(entry, email)) {
+        if (userCanView(me, vaultId, await noteInfo(vaultId, pid))) { viaPerson = true; break; }
+      }
+    } catch { /* people listing unavailable: offer the account */ }
+    if (!viaPerson) out.push({ id: writerIdFor(email), name });
+  }
+  return out;
 }
 
 // ── create + deliver ─────────────────────────────────────────────────────────
@@ -416,7 +481,7 @@ export interface NewNotification {
 // hourly budget only ever skips the PUSH, never the inbox item.
 const PER_SENDER_HOUR = Number(process.env.NOTIFY_PER_SENDER_HOUR ?? 20);
 const PER_SENDER_NOTE_HOUR = Number(process.env.NOTIFY_PER_SENDER_NOTE_HOUR ?? 8);
-const SPAMMABLE: ReadonlySet<NotificationType> = new Set(["mention", "comment_reply", "comment_mention"]);
+const SPAMMABLE: ReadonlySet<NotificationType> = new Set(["mention", "comment_reply", "comment_mention", "suggestion_accepted", "suggestion_rejected", "suggestion_resolved"]);
 const budgets = new Map<string, { n: number; reset: number }>();
 function budgetLeft(key: string, max: number): boolean {
   const b = budgets.get(key);
@@ -650,8 +715,9 @@ function rememberChips(vaultId: string, noteId: string, chips: ParsedMention[]):
   if (chipCache.size > 2000) chipCache.delete(chipCache.keys().next().value!);
 }
 
+// An account mention (`u_…`) names no note: it is never a link target.
 const linkTargets = (ms: ParsedMention[], self: string) =>
-  new Set(ms.filter((m) => (m.kind === "page" || m.kind === "person") && m.id && m.id !== self).map((m) => m.id!));
+  new Set(ms.filter((m) => (m.kind === "page" || m.kind === "person") && m.id && m.id !== self && !ACCOUNT_MENTION_ID.test(m.id)).map((m) => m.id!));
 
 /**
  * Diff old vs new mention chips; notify the people newly mentioned, link the
@@ -685,8 +751,14 @@ export async function noteContentStored(e: StoredContent): Promise<{ notified: n
     const uidFor = new Map(added.filter((m) => m.kind === "person" && m.id).map((m) => [m.id!, m.uid]));
     const notified = new Set<string>();
     for (const pid of people) {
-      if (!(await authorCanView(pid))) continue;
-      for (const email of await accountsForPerson(e.vaultId, pid)) {
+      // A member mentioned by account: EVERY author of the batch must be a workspace
+      // member (per-chip attribution isn't available, so a guest co-editing with a
+      // member cannot piggyback — review low 5); the recipient must be one too.
+      const account = emailForAccountMention(pid);
+      const recipients = ACCOUNT_MENTION_ID.test(pid)
+        ? account && canMentionMembers(account, e.vaultId) && authors.size > 0 && [...authors].every((a) => canMentionMembers(a, e.vaultId)) ? [account] : []
+        : (await authorCanView(pid)) ? await accountsForPerson(e.vaultId, pid) : [];
+      for (const email of recipients) {
         if (email === single || notified.has(email)) continue;
         if (!userCanView(email, e.vaultId, info)) continue;
         notified.add(email);
@@ -831,10 +903,18 @@ export async function commentsStored(docName: string, vaultId: string, noteId: s
       const preview = stripTokens(text).slice(0, PREVIEW_MAX) || null;
       const mentioned = new Set<string>();
       for (const m of extractCommentMentions(text).slice(0, 10)) {
-        // L3: the same rule as document chips — only people some author can see.
-        const person = await noteInfo(vaultId, m.id);
-        if (![...authors].some((a) => userCanView(a, vaultId, person))) continue;
-        for (const email of await accountsForPerson(vaultId, m.id)) {
+        // L3: the same rule as document chips — only people some author can see
+        // (a member mentioned by account: an author who is a workspace member).
+        let targets: string[];
+        if (ACCOUNT_MENTION_ID.test(m.id)) {
+          const account = emailForAccountMention(m.id);
+          targets = account && canMentionMembers(account, vaultId) && authors.size > 0 && [...authors].every((a) => canMentionMembers(a, vaultId)) ? [account] : [];
+        } else {
+          const person = await noteInfo(vaultId, m.id);
+          if (![...authors].some((a) => userCanView(a, vaultId, person))) continue;
+          targets = await accountsForPerson(vaultId, m.id);
+        }
+        for (const email of targets) {
           if (authors.has(email) || mentioned.has(email) || !userCanView(email, vaultId, info)) continue;
           mentioned.add(email);
           if (createNotification({ vaultId, recipient: email, type: "comment_mention", noteId, actorEmail: author, anchor: { thread: threadId }, preview, dedupe: `comment:${noteId}:${key}` })) sent++;
@@ -851,6 +931,84 @@ export async function commentsStored(docName: string, vaultId: string, noteId: s
   return sent;
 }
 
+// ── suggestions resolved (wave 3) ────────────────────────────────────────────
+const SUGGESTION_NOTICES_PER_STORE = 20;
+const SUGGESTION_MIN_CHARS = 4;
+const occurrences = (hay: string, needle: string): number => {
+  let n = 0;
+  for (let i = hay.indexOf(needle); i >= 0 && n < 3; i = hay.indexOf(needle, i + needle.length)) n++;
+  return n;
+};
+/**
+ * Was a resolved suggestion accepted or declined? Read from the DECODED text of
+ * the parsed documents (review M2 — entity-encoded HTML never matches mark text),
+ * and only when the evidence is unambiguous: the text is at least 4 characters,
+ * occurs exactly once in the previous document (the suggestion itself), and — for
+ * a replacement — both halves agree. Anything else is "resolved", never a guess.
+ */
+export function suggestionOutcome(s: { ins: string; del: string }, prevPlain: string, nextPlain: string): "accepted" | "rejected" | "resolved" {
+  const usable = (t: string) => t.trim().length >= SUGGESTION_MIN_CHARS && !t.includes("\n") && occurrences(prevPlain, t) === 1;
+  // Inserted text: still there → accepted; gone → declined.
+  const byIns = s.ins && usable(s.ins) ? (nextPlain.includes(s.ins) ? "accepted" : "rejected") : null;
+  // Deleted text: gone → accepted; still there → declined.
+  const byDel = s.del && usable(s.del) ? (nextPlain.includes(s.del) ? "rejected" : "accepted") : null;
+  if (s.ins && s.del) return byIns && byDel && byIns === byDel ? byIns : "resolved";
+  return (s.ins ? byIns : byDel) ?? "resolved";
+}
+/**
+ * "X accepted / declined your suggestion". Runs after a document is persisted
+ * (live store) or after the review queue applied a decision: a suggestion id
+ * present in the previous content and absent from the new one was resolved.
+ *
+ *  - the suggester is the ACCOUNT behind the suggestion's actor id (the opaque
+ *    `h_…` id the command endpoint and MCP write; the legacy email form is read
+ *    too). No resolvable account (a capability guest, a live-typed suggestion
+ *    with no actor id) → nothing is sent.
+ *  - accepted = the inserted text is still in the page (or, for a pure deletion,
+ *    the deleted text is gone); otherwise declined — the same rule the writer
+ *    stamp uses.
+ *  - the decider is the batch's single editor (several → unnamed); never sent
+ *    when the suggester is among the editors (they withdrew or changed it
+ *    themselves), and only to a suggester who can still VIEW the page.
+ *  - idempotent per (page, suggestion id); spends the per-sender budgets, because
+ *    an actor id on a mark is writable by any edit-level socket.
+ */
+export async function suggestionsResolved(o: { vaultId: string; noteId: string; prev: string | null; next: string; editors: string[] }): Promise<number> {
+  if (!o.prev || !o.prev.includes("data-suggestion-id")) return 0;
+  let before: ReturnType<typeof identifiedSuggestionsInHtml>;
+  let after: ReturnType<typeof identifiedSuggestionsInHtml>;
+  try {
+    before = identifiedSuggestionsInHtml(o.prev);
+    after = identifiedSuggestionsInHtml(o.next);
+  } catch {
+    return 0;
+  }
+  const gone = [...before].filter(([id]) => !after.has(id));
+  if (!gone.length) return 0;
+  const editors = new Set(o.editors.map((e) => e.toLowerCase()));
+  if (!editors.size) return 0; // a server-internal store (reconcile, restore): nobody decided anything
+  const info = await noteInfo(o.vaultId, o.noteId, { fresh: true });
+  if (!info || info.trashed) return 0;
+  const decider = editors.size === 1 ? [...editors][0]! : null;
+  let prevPlain: string;
+  let nextPlain: string;
+  try {
+    prevPlain = plainTextOfHtml(o.prev);
+    nextPlain = plainTextOfHtml(o.next);
+  } catch {
+    return 0;
+  }
+  let sent = 0;
+  for (const [id, s] of gone.slice(0, SUGGESTION_NOTICES_PER_STORE)) {
+    const suggester = s.actorId ? emailForActorId(s.actorId)?.toLowerCase() ?? null : null;
+    if (!suggester || editors.has(suggester) || !isAccount(suggester) || !userCanView(suggester, o.vaultId, info)) continue;
+    const outcome = suggestionOutcome(s, prevPlain, nextPlain);
+    const preview = (s.ins || s.del).replace(/\s+/g, " ").trim().slice(0, PREVIEW_MAX) || null;
+    if (createNotification({ vaultId: o.vaultId, recipient: suggester, type: outcome === "accepted" ? "suggestion_accepted" : outcome === "rejected" ? "suggestion_rejected" : "suggestion_resolved", noteId: o.noteId, actorEmail: decider, preview, dedupe: `suggestion:${o.noteId}:${id}` })) sent++;
+  }
+  return sent;
+}
+
 // ── collab wiring ────────────────────────────────────────────────────────────
 setDocumentStoreListener({
   loaded: (docName, doc) => {
@@ -862,6 +1020,9 @@ setDocumentStoreListener({
     void noteContentStored({ vaultId: e.vaultId, noteId: e.noteId, prev: e.prevContent, next: e.content, authors: e.editors, updatedAt: e.updatedAt });
     void commentsStored(e.docName, e.vaultId, e.noteId, e.doc, e.editors).catch((err) =>
       console.error(`[notify] comment processing failed: ${(err as Error).message}`),
+    );
+    void suggestionsResolved({ vaultId: e.vaultId, noteId: e.noteId, prev: e.prevContent, next: e.content, editors: e.editors }).catch((err) =>
+      console.error(`[notify] suggestion processing failed: ${(err as Error).message}`),
     );
   },
 });

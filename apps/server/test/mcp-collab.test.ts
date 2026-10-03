@@ -42,6 +42,8 @@ import { installFakeVault, makeCapability, makeSession, resetDb, sessionCookie, 
 
 const OWNER = "owner@test.local";
 const EDITOR = "editor@test.local";
+import { documentActorId } from "../src/human-collab";
+import { emailForActorId } from "../src/notifications";
 const SUGGESTER = "suggester@test.local";
 const COMMENTER = "commenter@test.local";
 const VIEWER = "viewer@test.local";
@@ -463,7 +465,15 @@ test("suggest_edit: deletion + insertion marks attributed to the actor, captured
   ]);
   const html = fv.notes.get("d1")!.content;
   assert.equal((html.match(new RegExp(`data-suggestion-id="${proposed.suggestion_id}"`, "g")) ?? []).length, 2);
-  assert.match(html, /data-actor-id="suggester@test.local"/);
+  // Wave 3: the document stores the account's opaque id — never the email — and it
+  // is the same id a human suggestion by that account carries.
+  assert.doesNotMatch(html, /suggester@test\.local/);
+  assert.match(html, new RegExp(`data-actor-id="${documentActorId("user:suggester@test.local")}"`));
+  assert.match(documentActorId("user:suggester@test.local"), /^h_[0-9a-f]{32}$/);
+  assert.equal(emailForActorId(documentActorId("user:suggester@test.local")), "suggester@test.local");
+  // Documents written before this hold the email form: still resolved, for real accounts only.
+  assert.equal(emailForActorId("Suggester@test.local"), "suggester@test.local");
+  assert.equal(emailForActorId("nobody@test.local"), null);
   assert.match(html, /data-suggestion="delete"[^>]*data-user="Member \(agent\)"/);
   const queued = suggestionsForNote("d1").filter((s) => s.status === "pending");
   assert.deepEqual(queued.map((s) => s.author), ["Member (agent)"], "the owner's review queue has it");

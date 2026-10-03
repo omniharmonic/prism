@@ -479,3 +479,172 @@ test("final L3: approving a request that raises an existing grant keeps who made
   assert.equal(g.level, "edit");
   assert.equal(g.created_by, "first-admin@test.local", "raised, not re-authored by the decider");
 });
+
+// ── suggestions accepted / declined (wave 3) ─────────────────────────────────
+import { suggestionsResolved } from "../src/notifications";
+const sug = (kind: "insert" | "delete", id: string, actor: string | null, text: string) =>
+  `<span data-suggestion="${kind}" data-user="Someone" data-color="#888" data-suggestion-id="${id}"${actor ? ` data-actor-id="${actor}"` : ""}>${text}</span>`;
+
+test("the suggester is told when an editor accepts or declines their suggestion — once, by account, view re-checked", async () => {
+  const ada = documentActorId(`user:${ADA}`);
+  const prev = `<p>hello ${sug("delete", "s1", ada, "world")}${sug("insert", "s1", ada, "there")} and ${sug("insert", "s2", ada, "extra")} and ${sug("delete", "s3", ada, "cut me")}</p>`;
+  // Bob accepts s1 (replacement applied), declines s2 (insert dropped), accepts s3 (deletion applied).
+  const next = "<p>hello there and  and </p>";
+  assert.equal(await suggestionsResolved({ vaultId: "primary", noteId: "doc", prev, next, editors: [BOB] }), 3);
+  const items = (await inbox(ADA)).items;
+  assert.deepEqual(items.map((i) => i.type).sort(), ["suggestion_accepted", "suggestion_accepted", "suggestion_rejected"]);
+  const declined = items.find((i) => i.type === "suggestion_rejected")!;
+  assert.equal(declined.preview, "extra");
+  assert.equal((declined.actor as { name?: string } | null)?.name, "Bob");
+  assert.equal(JSON.stringify(items).includes(BOB), false, "no account email in the inbox payload");
+  assert.equal((await inbox(ADA, "?type=comment")).items.length, 3, "listed under the comments filter");
+  // Idempotent: the same store again sends nothing.
+  assert.equal(await suggestionsResolved({ vaultId: "primary", noteId: "doc", prev, next, editors: [BOB] }), 0);
+  assert.equal((await inbox(BOB)).items.length, 0);
+});
+
+test("no notification without a resolvable account, for one's own change, for a server-internal store, or without view", async () => {
+  const ada = documentActorId(`user:${ADA}`);
+  const eve = documentActorId(`user:${EVE}`); // Eve has an account but cannot view the page
+  const guest = documentActorId("capability:link-1");
+  const prev = `<p>${sug("insert", "g1", guest, "guest text")}${sug("insert", "n1", null, "typed live")}${sug("insert", "e1", eve, "eve text")}${sug("insert", "a1", ada, "ada text")}</p>`;
+  const next = "<p>guest text typed live eve text</p>";
+  // Ada changed the page herself (withdrew a1): nothing for her; guest/no-id/unviewable: nothing.
+  assert.equal(await suggestionsResolved({ vaultId: "primary", noteId: "doc", prev, next, editors: [ADA] }), 0);
+  // A reconcile/restore store has no editor: nobody decided anything.
+  assert.equal(await suggestionsResolved({ vaultId: "primary", noteId: "doc", prev, next, editors: [] }), 0);
+  assert.equal(await suggestionsResolved({ vaultId: "primary", noteId: "doc", prev, next, editors: [BOB] }), 1, "only Ada's a1");
+  assert.equal((await inbox(EVE)).items.length, 0);
+  // Two editors in the batch: sent, but the decider is not named.
+  const prev2 = `<p>${sug("insert", "a2", ada, "more")}</p>`;
+  assert.equal(await suggestionsResolved({ vaultId: "primary", noteId: "doc", prev: prev2, next: "<p>more</p>", editors: [BOB, OWNER] }), 1);
+  const latest = (await inbox(ADA)).items.find((i) => i.preview === "more")!;
+  assert.equal(latest.type, "suggestion_accepted");
+  assert.equal(latest.actor ?? null, null);
+  // A suggestion still pending is not "resolved".
+  assert.equal(await suggestionsResolved({ vaultId: "primary", noteId: "doc", prev: prev2, next: prev2, editors: [BOB] }), 0);
+});
+
+test("legacy agent suggestions (email as actor id) still reach the account", async () => {
+  const prev = `<p>${sug("insert", "m1", ADA, "agent text")}</p>`;
+  assert.equal(await suggestionsResolved({ vaultId: "primary", noteId: "doc", prev, next: "<p></p>", editors: [BOB] }), 1);
+  assert.equal((await inbox(ADA)).items[0]!.type, "suggestion_rejected");
+});
+
+// ── mentioning a member who has no person note (wave 3) ──────────────────────
+import { setMembership } from "../src/db";
+import { writerIdFor } from "../src/writer-stamp";
+import { resetDatabaseCachesForTests } from "../src/routes/databases";
+const CAL = "cal@test.local"; // a workspace member with an account and NO person note
+
+test("the @ list offers members without a person page — opaque id + name, never an email; guests get nothing", async () => {
+  resetDatabaseCachesForTests();
+  setAccount(CAL, "Cal Newport", "scrypt$fixture");
+  for (const e of [ADA, BOB, CAL]) setMembership("primary", e, "member", OWNER);
+  const list = async (email: string | null, q = "") => {
+    const r = await req(`/mentions/members?q=${encodeURIComponent(q)}`, email);
+    return { status: r.status, body: r.status === 200 ? ((await r.json()) as { members: Array<{ id: string; name: string }> }) : null, raw: "" };
+  };
+  const bob = await list(BOB);
+  assert.equal(bob.status, 200);
+  // Ada has a person page Bob can view → offered as a person, not here. Cal has none.
+  assert.deepEqual(bob.body!.members.map((m) => m.name).sort(), ["Cal Newport"]);
+  assert.deepEqual(bob.body!.members.map((m) => m.id), [writerIdFor(CAL)]);
+  assert.match(bob.body!.members[0]!.id, /^u_[0-9a-f]{16}$/);
+  assert.equal(JSON.stringify(bob.body).includes("@"), false, "no email anywhere in the answer");
+  assert.deepEqual((await list(BOB, "newp")).body!.members.map((m) => m.name), ["Cal Newport"]);
+  assert.deepEqual((await list(BOB, "zzz")).body!.members, []);
+  // Cal cannot view Ada's person page, so for Cal she is offered by account; never Cal himself.
+  assert.deepEqual((await list(CAL)).body!.members.map((m) => m.name).sort(), ["Ada Lovelace", "Bob"]);
+  setAccount("nameless@test.local", null as never, "scrypt$fixture");
+  setMembership("primary", "nameless@test.local", "member", OWNER);
+  assert.equal((await list(CAL)).body!.members.length, 2, "a nameless account could only be shown by its email — not offered");
+  // A guest (an account with only a shared page) cannot enumerate the workspace.
+  grantUser(EVE, "note", "doc", "edit");
+  assert.deepEqual((await list(EVE)).body!.members, []);
+  assert.equal((await list(null)).status, 401);
+  // A capability link is not an account.
+  const link = makeCapability("note", "doc", "edit");
+  assert.equal((await api.request(`/mentions/members?t=${encodeURIComponent(link)}`)).status, 401);
+});
+
+test("an account mention notifies that member (view re-checked), adds no link, and a guest author cannot use it", async () => {
+  resetDatabaseCachesForTests();
+  setAccount(CAL, "Cal Newport", "scrypt$fixture");
+  for (const e of [ADA, BOB, CAL]) setMembership("primary", e, "member", OWNER);
+  const calId = writerIdFor(CAL);
+  const html = (uid: string) => `<p>hello ${chip("person", calId, uid, ' data-label="Cal Newport"')}</p>`;
+  const patchesBefore = fv.calls.filter((c) => c.method === "PATCH").length;
+  // Cal cannot view the page yet: nothing is sent.
+  let r = await noteContentStored({ vaultId: "primary", noteId: "doc", prev: "<p>hello</p>", next: html("m1"), authors: [BOB], updatedAt: fv.notes.get("doc")!.updatedAt });
+  assert.deepEqual([r.notified, r.linked], [0, 0]);
+  grantUser(CAL, "tag", "team", "view");
+  clearNoteInfoCache();
+  r = await noteContentStored({ vaultId: "primary", noteId: "doc", prev: "<p>hello</p>", next: html("m2"), authors: [BOB], updatedAt: fv.notes.get("doc")!.updatedAt });
+  assert.deepEqual([r.notified, r.linked], [1, 0], "notified; an account is not a note, so no backlink");
+  assert.equal(fv.calls.filter((c) => c.method === "PATCH").length, patchesBefore, "no links write to the vault");
+  const items = (await inbox(CAL)).items;
+  assert.equal(items.length, 1);
+  assert.equal(items[0]!.type, "mention");
+  assert.deepEqual(items[0]!.anchor, { mention: "m2" });
+  assert.equal(JSON.stringify(items).includes(BOB), false);
+  // The same chip again: no second notification.
+  r = await noteContentStored({ vaultId: "primary", noteId: "doc", prev: html("m2"), next: html("m2"), authors: [BOB], updatedAt: null });
+  assert.equal(r.notified, 0);
+  // A guest author (edit on this page only) cannot ping members by account, nor can a made-up id.
+  grantUser(EVE, "note", "doc", "edit");
+  r = await noteContentStored({ vaultId: "primary", noteId: "doc", prev: "<p>x</p>", next: `<p>${chip("person", writerIdFor(ADA), "m3")}${chip("person", "u_0000000000000000", "m4")}</p>`, authors: [EVE], updatedAt: null });
+  assert.equal(r.notified, 0);
+  assert.equal((await inbox(ADA)).items.length, 0);
+  // Never the author themselves.
+  r = await noteContentStored({ vaultId: "primary", noteId: "doc", prev: "<p>x</p>", next: `<p>${chip("person", writerIdFor(BOB), "m5")}</p>`, authors: [BOB], updatedAt: null });
+  assert.equal(r.notified, 0);
+});
+
+// ── review M2: accepted vs declined is read from DECODED text, and never guessed ──
+test("M2: entity-encoded text is still recognised as accepted; ambiguous text gets a neutral notification", async () => {
+  const ada = documentActorId(`user:${ADA}`);
+  // Accepted insertion whose text needs HTML escaping.
+  let prev = `<p>Our ${sug("insert", "e1", ada, "R&amp;D plan &lt;v2&gt;")} is ready.</p>`;
+  assert.equal(await suggestionsResolved({ vaultId: "primary", noteId: "doc", prev, next: "<p>Our R&amp;D plan &lt;v2&gt; is ready.</p>", editors: [BOB] }), 1);
+  // Declined insertion of a word that exists elsewhere on the page: we cannot tell → neutral.
+  prev = `<p>Read the notes ${sug("insert", "e2", ada, "the")} carefully, then the plan.</p>`;
+  assert.equal(await suggestionsResolved({ vaultId: "primary", noteId: "doc", prev, next: "<p>Read the notes carefully, then the plan.</p>", editors: [BOB] }), 1);
+  // A short insertion (too little to match on) → neutral, even when unique.
+  prev = `<p>Alpha ${sug("insert", "e3", ada, "zq")} beta</p>`;
+  assert.equal(await suggestionsResolved({ vaultId: "primary", noteId: "doc", prev, next: "<p>Alpha beta</p>", editors: [BOB] }), 1);
+  // A unique, long-enough declined insertion is still "declined"; an accepted deletion is "accepted".
+  prev = `<p>Keep ${sug("insert", "e4", ada, "this sentence out")} and ${sug("delete", "e5", ada, "remove these words")} here.</p>`;
+  assert.equal(await suggestionsResolved({ vaultId: "primary", noteId: "doc", prev, next: "<p>Keep  and  here.</p>", editors: [BOB] }), 2);
+  // A replacement whose two halves disagree (new text gone AND old text gone) → neutral.
+  prev = `<p>${sug("delete", "e6", ada, "old wording here")}${sug("insert", "e6", ada, "new wording here")}</p>`;
+  assert.equal(await suggestionsResolved({ vaultId: "primary", noteId: "doc", prev, next: "<p>rewritten entirely</p>", editors: [BOB] }), 1);
+  const byPreview = new Map((await inbox(ADA)).items.map((i) => [String(i.preview), String(i.type)]));
+  assert.equal(byPreview.get("R&D plan <v2>"), "suggestion_accepted");
+  assert.equal(byPreview.get("the"), "suggestion_resolved");
+  assert.equal(byPreview.get("zq"), "suggestion_resolved");
+  assert.equal(byPreview.get("this sentence out"), "suggestion_rejected");
+  assert.equal(byPreview.get("remove these words"), "suggestion_accepted");
+  assert.equal(byPreview.get("new wording here"), "suggestion_resolved");
+  assert.equal((await inbox(ADA, "?type=comment")).items.length, 6);
+});
+
+test("review low 5: a guest cannot piggyback on a member co-editor to ping members by account", async () => {
+  resetDatabaseCachesForTests();
+  setAccount(CAL, "Cal Newport", "scrypt$fixture");
+  for (const e of [ADA, BOB, CAL]) setMembership("primary", e, "member", OWNER);
+  grantUser(CAL, "tag", "team", "view");
+  grantUser(EVE, "note", "doc", "edit"); // a guest editing this one page
+  clearNoteInfoCache();
+  const html = (uid: string) => `<p>${chip("person", writerIdFor(CAL), uid, ' data-label="Cal Newport"')}</p>`;
+  // Guest + member in one batch: the chip may be the guest's — nobody is notified.
+  let r = await noteContentStored({ vaultId: "primary", noteId: "doc", prev: "<p>x</p>", next: html("g1"), authors: [EVE, BOB], updatedAt: null });
+  assert.equal(r.notified, 0);
+  assert.equal((await inbox(CAL)).items.length, 0);
+  // Members only: delivered.
+  r = await noteContentStored({ vaultId: "primary", noteId: "doc", prev: "<p>x</p>", next: html("g2"), authors: [ADA, BOB], updatedAt: null });
+  assert.equal(r.notified, 1);
+  // No author at all (server-internal store): nothing.
+  r = await noteContentStored({ vaultId: "primary", noteId: "doc", prev: "<p>x</p>", next: html("g3"), authors: [], updatedAt: null });
+  assert.equal(r.notified, 0);
+});

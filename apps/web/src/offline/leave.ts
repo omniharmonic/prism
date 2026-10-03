@@ -5,6 +5,7 @@
  * stay, download them and leave, or discard them and leave.
  */
 import { allQueued, discardAllCurrent, visibleWrites } from "./outbox";
+import { captureWriteContext } from "./writeScope";
 
 export type LeaveChoice = "stay" | "download" | "discard";
 export const LEAVE_EVENT = "prism:leave-with-unsent";
@@ -18,18 +19,32 @@ function download(value: unknown, name: string) {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
-/** Resolves true when it is fine to sign out now. */
+/**
+ * Resolves true when it is fine to sign out now. Counts queued writes AND live
+ * documents whose edits the server never took (review M3): both are unsent work
+ * that would otherwise stay on — or silently vanish from — this device.
+ * `discarded` tells the caller the person agreed to remove the unsynced documents.
+ */
 export async function confirmLeaveWithUnsent(): Promise<boolean> {
   const rows = await visibleWrites().catch(() => []);
-  if (!rows.length) return true;
+  const { unsyncedDocs, exportUnsynced } = await import("../collab/unsynced");
+  const context = await captureWriteContext().catch(() => null);
+  const docs = await unsyncedDocs().catch(() => []);
+  const count = rows.length + docs.length;
+  if (!count) return true;
   const choice = await new Promise<LeaveChoice>((resolve) => {
     let handled = false;
-    window.dispatchEvent(new CustomEvent(LEAVE_EVENT, { detail: { count: rows.length, take: () => { handled = true; }, resolve } }));
+    window.dispatchEvent(new CustomEvent(LEAVE_EVENT, { detail: { count, take: () => { handled = true; }, resolve } }));
     // No dialog host mounted (e.g. a bare page): fall back to the browser's own prompt.
-    if (!handled) resolve(window.confirm(`${rows.length} change${rows.length === 1 ? " has" : "s have"} not reached the server yet and will stay on this device, unsent. Sign out anyway?`) ? "download" : "stay");
+    if (!handled) resolve(window.confirm(`${count} change${count === 1 ? " has" : "s have"} not reached the server yet and will stay on this device, unsent. Sign out anyway?`) ? "download" : "stay");
   });
   if (choice === "stay") return false;
-  if (choice === "download") download((await allQueued()).filter((r) => rows.some((x) => x.id === r.id)), "prism-unsent-changes.json");
+  if (choice === "download") {
+    const queued = (await allQueued()).filter((r) => rows.some((x) => x.id === r.id));
+    const liveDocuments = context ? await exportUnsynced(context.scope).catch(() => []) : [];
+    // Queued writes as before; live documents as their Yjs state (base64) per note id.
+    download(liveDocuments.length ? { queuedWrites: queued, liveDocuments } : queued, "prism-unsent-changes.json");
+  }
   await discardAllCurrent().catch(() => undefined);
   return true;
 }

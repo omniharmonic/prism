@@ -4,7 +4,7 @@ import { AtSign, Bell, CalendarDays, CheckSquare, Clock, FileText, Inbox, Layout
 import type { RendererProps } from "../renderers/RendererProps";
 import { useNoteShortcuts } from "../navigation/NoteShortcuts";
 import { useUIStore } from "../../app/stores/ui";
-import { useNotes } from "../../app/hooks/useParachute";
+import { queryKeys } from "../../lib/parachute/queries";
 import { useVaultClient } from "../../data/VaultClientContext";
 import { usePagesUI } from "../../lib/pages/store";
 import { calendarApi, type CalendarEvent } from "../../lib/sync/client";
@@ -52,7 +52,30 @@ export default function Home(_props: RendererProps) {
     retry: false,
     staleTime: 60_000,
   });
-  const tasks = useNotes({ tag: "task", limit: 300 });
+  // My tasks (wave 3): the tasks ASSIGNED TO THE VIEWER, resolved by the server
+  // (`/api/query {assignedToMe}` — the viewer's person page / addresses). A shell
+  // or server without that (desktop, older server: no `identity` in the answer)
+  // keeps the previous list of every open task the viewer can see.
+  const assigned = useQuery({
+    queryKey: ["vault", "notes", { tag: "task", assignedToMe: true }],
+    queryFn: () => client.queryNotes!({ tags: ["task"], assignedToMe: true, limit: 200, fields: ["status", "due", "due_date", "dueDate", "type"] }),
+    enabled: !!client.queryNotes,
+    retry: false,
+    staleTime: 30_000,
+  });
+  // The server owner with no owner identity set gets every task back, plus a hint.
+  const ownerUnset = assigned.data?.identity === "unset";
+  const scoped = !!client.queryNotes && !assigned.isError && (assigned.isLoading || assigned.data?.identity !== undefined);
+  // The broad listing runs only when the scoped query is not available.
+  const allTasks = useQuery({
+    queryKey: queryKeys.vault.notes({ tag: "task", limit: 300 }),
+    queryFn: () => client.listNotes({ tag: "task", limit: 300 }),
+    select: (list: Note[]) => list.filter((n) => !(n.tags ?? []).includes("prism-trashed")),
+    enabled: !scoped,
+  });
+  const tasks = scoped
+    ? { isLoading: assigned.isLoading, data: (assigned.data?.rows ?? []).map((r) => ({ id: r.id, path: r.path, tags: r.tags, metadata: r.metadata, content: "", createdAt: r.createdAt, updatedAt: r.updatedAt }) as unknown as Note) }
+    : { isLoading: allTasks.isLoading, data: allTasks.data };
   const unread = useUnreadCount();
   const mentions = useNotifications("inbox", "mention");
 
@@ -125,10 +148,13 @@ export default function Home(_props: RendererProps) {
             ))}
           </section>
 
-          <section className="prism-home-panel" aria-label="My tasks">
+          <section className="prism-home-panel" aria-label="My tasks" data-scope={scoped && !ownerUnset ? "assigned" : "all"}>
             <h2><CheckSquare size={14} /> My tasks</h2>
+            {ownerUnset && <p className="prism-home-muted" data-testid="my-tasks-hint">Showing every open task. Set the owner identity (your person page) to see only the ones assigned to you.</p>}
             {tasks.isLoading ? <p className="prism-home-muted">Loading tasks…</p>
-              : openTasks.length === 0 ? <p className="prism-home-muted">No open tasks.</p>
+              : openTasks.length === 0 ? <p className="prism-home-muted">{scoped && !ownerUnset
+                ? assigned.data?.identity === "account" ? "No open tasks assigned to you. Tasks assigned by name appear once a person page carries your sign-in email." : "No open tasks assigned to you."
+                : "No open tasks."}</p>
               : openTasks.map((t) => (
                 <button key={t.id} type="button" className="prism-home-item focus-ring" onClick={() => openTab(t.id, noteLinkTitle(t), "task")}>
                   <CheckSquare size={14} color="var(--text-muted)" />

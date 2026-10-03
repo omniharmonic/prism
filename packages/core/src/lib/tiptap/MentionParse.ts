@@ -22,6 +22,11 @@ export const MAX_MENTIONS = 500;
 /** Prism note ids / person ids: the gateway's strict id shape. */
 export const MENTION_ID = /^[A-Za-z0-9_-]{1,128}$/;
 
+/** A workspace member mentioned by ACCOUNT (no person page): the server's opaque
+ *  subject id in the chip's `id` — never an email (wave 3). */
+export const ACCOUNT_MENTION_ID = /^u_[0-9a-f]{16}$/;
+export const isAccountMentionId = (id: string | null | undefined): boolean => !!id && ACCOUNT_MENTION_ID.test(id);
+
 const OPEN = "<span";
 const ATTR = /([a-zA-Z_:][-a-zA-Z0-9_:.]*)\s*=\s*("([^"]*)"|'([^']*)')/g;
 

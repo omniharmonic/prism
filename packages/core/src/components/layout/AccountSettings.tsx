@@ -4,7 +4,7 @@
 // The name + avatar feed collab presence so a person's cursor/comments/edits are
 // identifiable. Same surface for the owner and for workspace members.
 import { useCallback, useEffect, useRef, useState } from "react";
-import { User, Camera, Save, KeyRound, Check, Smartphone, X } from "lucide-react";
+import { User, Camera, Save, KeyRound, Check, Smartphone, X, LogOut } from "lucide-react";
 import { Button } from "../ui/Button";
 import { Input } from "../ui/Input";
 import { Badge } from "../ui/Badge";
@@ -30,6 +30,7 @@ async function fileToAvatar(file: File, size = 128): Promise<string> {
 
 export function AccountSettings() {
   const account = useAccount();
+  const [signingOut, setSigningOut] = useState(false);
   const [profile, setProfile] = useState<AccountProfile | null>(null);
   const [name, setName] = useState("");
   const [avatar, setAvatar] = useState<string | null>(null);
@@ -235,6 +236,22 @@ export function AccountSettings() {
 
       {/* Agent access tokens: Prism MCP PATs (WP6.1) */}
       <AgentAccessTokens />
+
+      {/* Sign out of this browser / app (wave 3) */}
+      {account.signOut && (
+        <div style={cardStyle}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+            <LogOut size={14} />
+            <div style={labelStyle}>Sign out</div>
+          </div>
+          <p style={{ fontSize: 12.5, color: "var(--text-muted)", margin: "0 0 10px" }}>
+            Ends your session on this device and removes the pages saved here for offline use.
+          </p>
+          <Button variant="ghost" onClick={() => { setSigningOut(true); void account.signOut!().finally(() => setSigningOut(false)); }} disabled={signingOut}>
+            <LogOut size={13} /> {signingOut ? "Signing out…" : "Sign out"}
+          </Button>
+        </div>
+      )}
     </div>
   );
 }

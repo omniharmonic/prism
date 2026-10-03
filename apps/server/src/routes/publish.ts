@@ -20,12 +20,15 @@ import type { Context } from "hono";
 import { getCookie, setCookie } from "hono/cookie";
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { VaultError, type Note } from "../parachute";
-import { getPublicationBySlug, excludedNoteIds, type Publication } from "../db";
+import { getPublicationBySlug, excludedNoteIds, publicationVaultId, type Publication } from "../db";
 import { pathPublicationIncludes } from "../paths";
 import { config } from "../config";
 import { publicationActor, canPublicView, pubVault, publicationNotes, deriveTitle, navTitle } from "../publication-content";
 export { canPublicView } from "../publication-content";
 import { verifyPassword } from "../auth/password";
+import { servableAttachment, attachmentOwningNote, serveAttachment } from "./attachments";
+import { consumeRateLimit, rateLimitClientKey } from "../middleware/ratelimit";
+import { BusyError, Semaphore } from "../media/limits";
 
 export const publish = new Hono();
 
@@ -250,16 +253,7 @@ publish.get("/:slug/notes/:id", async (c) => {
   }
 
   const tags = note.tags ?? [];
-  // An explicitly-excluded id is treated exactly like an out-of-set id (403) —
-  // same leak-proofing: no id-guessing into a note the owner tended away.
-  const excluded = new Set(excludedNoteIds(pub));
-  const allowed =
-    !excluded.has(note.id) &&
-    (pub.resource_type === "path"
-      ? pathPublicationIncludes(note, pub.resource)
-      : tags.includes(pub.resource) &&
-        canPublicView(publicationActor(pub).grants, note));
-  if (!allowed) return c.json({ error: "forbidden" }, 403);
+  if (!inPublication(pub, note)) return c.json({ error: "forbidden" }, 403);
 
   return c.json({
     id: note.id,
@@ -271,3 +265,104 @@ publish.get("/:slug/notes/:id", async (c) => {
     title: deriveTitle(note.content),
   });
 });
+
+/** Is this note part of the publication's public set? (The single-note rule.)
+ *  An explicitly-excluded id is treated exactly like an out-of-set id — same
+ *  leak-proofing: no id-guessing into a note the owner tended away. */
+function inPublication(pub: Publication, note: Note): boolean {
+  if (new Set(excludedNoteIds(pub)).has(note.id)) return false;
+  return pub.resource_type === "path"
+    ? pathPublicationIncludes(note, pub.resource)
+    : (note.tags ?? []).includes(pub.resource) && canPublicView(publicationActor(pub).grants, note);
+}
+
+const PUBLIC_ATTACHMENT_READS_PER_MINUTE = Number(process.env.PUBLIC_ATTACHMENT_READS_PER_MINUTE) || 600;
+
+// 3. An attachment of a PUBLISHED note (wave 3). Anonymous, publication-scoped:
+//    served only when (a) the publication is live and unlocked, (b) the row lives
+//    in the publication's own vault, (c) its owning note is in the public set by
+//    the SAME rule as the single-note route, and (d) the note's current body or
+//    metadata still references this attachment id — a file removed from the page
+//    is no longer public, even to someone who kept its id. Every refusal after
+//    the slug/lock checks is one uniform 404. Bytes + headers come from the same
+//    hardened responder as GET /api/attachments/:id.
+publish.get("/:slug/attachments/:id", async (c) => {
+  const pub = getPublicationBySlug(c.req.param("slug"));
+  if (!pub || isExpired(pub)) return c.json({ error: "not_found" }, 404);
+  if (pub.password_hash && !unlocked(c, pub)) return c.json({ error: "locked" }, 401);
+  const retry = consumeRateLimit(`pub-attach:${rateLimitClientKey(c)}`, PUBLIC_ATTACHMENT_READS_PER_MINUTE, 60_000);
+  if (retry !== null) {
+    c.header("Retry-After", String(retry));
+    return c.json({ error: "rate_limited", retryAfter: retry }, 429);
+  }
+  const row = servableAttachment(c.req.param("id"));
+  if (!row || row.vault_id !== publicationVaultId(pub)) return c.json({ error: "not_found" }, 404);
+  let note: Note | null;
+  try {
+    note = await attachmentOwningNote(row);
+  } catch {
+    return c.json({ error: "vault_unreachable" }, 502);
+  }
+  if (!note || !inPublication(pub, note)) return c.json({ error: "not_found" }, 404);
+  const ref = `/api/attachments/${row.id}`;
+  const referenced = (note.content ?? "").includes(ref) || JSON.stringify(note.metadata ?? {}).includes(ref);
+  if (!referenced) return c.json({ error: "not_found" }, 404);
+  // A small global in-flight cap (review low 8), like the media pools: anonymous
+  // streams through the vault never pile up without bound. The slot is held until
+  // the body is fully read, cancelled, errors, or PUBLIC_ATTACHMENT_SLOT_MAX_MS passes.
+  let release: () => void;
+  try {
+    release = await publicPool.acquire(publicLimits.waitMs);
+  } catch (e) {
+    if (e instanceof BusyError) {
+      c.header("Retry-After", "2");
+      return c.json({ error: "busy" }, 503);
+    }
+    throw e;
+  }
+  let res: Response;
+  try {
+    res = await serveAttachment(c, row);
+  } catch (e) {
+    release();
+    throw e;
+  }
+  if (!res.body) {
+    release();
+    return res;
+  }
+  const timer = setTimeout(release, publicLimits.slotMaxMs);
+  timer.unref?.(); // never keeps the process alive
+  const done = () => { clearTimeout(timer); release(); };
+  const reader = res.body.getReader();
+  const body = new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      try {
+        const { done: end, value } = await reader.read();
+        if (end) { controller.close(); done(); } else controller.enqueue(value);
+      } catch (err) {
+        done();
+        controller.error(err);
+      }
+    },
+    cancel(reason) {
+      done();
+      return reader.cancel(reason);
+    },
+  });
+  return new Response(body, { status: res.status, headers: res.headers });
+});
+
+interface PublicAttachmentLimits { maxInflight: number; waitMs: number; slotMaxMs: number }
+const envLimits = (): PublicAttachmentLimits => ({
+  maxInflight: Math.max(1, Number(process.env.PUBLIC_ATTACHMENT_MAX_INFLIGHT) || 8),
+  waitMs: Number(process.env.PUBLIC_ATTACHMENT_QUEUE_WAIT_MS) || 2_000,
+  slotMaxMs: Number(process.env.PUBLIC_ATTACHMENT_SLOT_MAX_MS) || 120_000,
+});
+let publicLimits = envLimits();
+let publicPool = new Semaphore(publicLimits.maxInflight, 32);
+/** Tests: override the public attachment pool (null = environment defaults). */
+export function configurePublicAttachments(over: Partial<PublicAttachmentLimits> | null): void {
+  publicLimits = { ...envLimits(), ...(over ?? {}) };
+  publicPool = new Semaphore(publicLimits.maxInflight, 32);
+}

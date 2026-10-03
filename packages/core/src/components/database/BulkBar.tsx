@@ -22,6 +22,7 @@ import type { PropertyBatchResult } from "../../lib/database/wire";
 import { Popover } from "./Popover";
 import { PropertyValue } from "./PropertyValue";
 import { rowPath } from "./config";
+import { copyFilesNotice } from "../../lib/pages/model";
 
 export interface UndoAction {
   label: string;
@@ -122,6 +123,7 @@ export function BulkBar({ rows, props, dbPath, canEditRow, canCreate, onDone, on
     setBusy(true);
     const made: string[] = [];
     const failed: Array<{ title: string; error: string }> = [];
+    let filesMissed = 0;
     for (const r of rows.slice(0, 50)) {
       try {
         const src = await client.getNote(r.id, { fresh: true });
@@ -136,6 +138,10 @@ export function BulkBar({ rows, props, dbPath, canEditRow, canCreate, onDone, on
         const title = `${noteTitle(r)} (copy)`;
         const n = await client.createNote({ content: src.content ?? "", path: rowPath(dbPath, `${title} ${Date.now().toString(36).slice(-4)}`), tags: (src.tags ?? []).filter((t) => t !== "prism-trashed"), metadata: { ...meta, title } });
         made.push(n.id);
+        // Each copy gets its own files (wave 3); a failure leaves the row, never the batch.
+        if (client.copyAttachments && ((src.content ?? "").includes("/api/attachments/") || JSON.stringify(meta).includes("/api/attachments/"))) {
+          if (copyFilesNotice(await client.copyAttachments(n.id).catch(() => null))) filesMissed++;
+        }
       } catch {
         failed.push({ title: noteTitle(r), error: "error" });
       }
@@ -143,7 +149,7 @@ export function BulkBar({ rows, props, dbPath, canEditRow, canCreate, onDone, on
     setBusy(false);
     refresh();
     onClear();
-    const capped = rows.length > 50 ? " Only the first 50 were duplicated." : "";
+    const capped = (rows.length > 50 ? " Only the first 50 were duplicated." : "") + (filesMissed ? ` Some files were not copied on ${filesMissed} ${filesMissed === 1 ? "page" : "pages"}.` : "");
     onDone((failed.length ? `Duplicated ${made.length} of ${Math.min(rows.length, 50)}. Not copied: ${describe(failed)}.` : `Duplicated ${made.length} ${made.length === 1 ? "page" : "pages"}.`) + capped, made.length && client.trashPage ? {
       label: "Undo duplicate",
       run: async () => {
