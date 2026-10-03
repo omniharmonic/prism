@@ -413,7 +413,25 @@ attachmentsApi.get("/attachments/:id", async (c) => {
     if (!capsFor(here, ref(note)).has("view")) return c.json(NOT_FOUND, 404);
     if (isTrashed(note)) return c.json(NOT_FOUND, 404);
   }
+  return serveAttachment(c, row);
+});
 
+/** The owning note of an attachment row (≤ 5 s cache; null = gone or an alias). */
+export const attachmentOwningNote = (row: AttachmentRow): Promise<Note | null> => owningNote(row.vault_id, row.note_id);
+
+/** A servable row with a sane storage path, or null. */
+export function servableAttachment(id: string): AttachmentRow | null {
+  const row = getAttachment(id);
+  return row && STORAGE_PATH.test(row.storage_path) && !row.storage_path.includes("..") ? row : null;
+}
+
+/**
+ * Stream one attachment with the rebuilt, hardened response (sniffed type, nosniff,
+ * CORP same-origin, private no-cache + ETag, sandbox CSP, download on a top-level
+ * navigation). AUTHORIZATION IS THE CALLER'S JOB — the signed-in route above and
+ * the publication route (`/api/p/:slug/attachments/:id`) both decide first.
+ */
+export async function serveAttachment(c: Context, row: AttachmentRow): Promise<Response> {
   // Immutable content per id → a strong ETag; revalidation still runs every check above.
   const etag = `"${row.id}"`;
   const dest = (c.req.header("sec-fetch-dest") ?? "").toLowerCase();
@@ -466,7 +484,7 @@ attachmentsApi.get("/attachments/:id", async (c) => {
     return new Response(null, { status: 416, headers });
   }
   return new Response(upstream.body, { status: upstream.status, headers });
-});
+}
 
 // ── GET /unfurl ─────────────────────────────────────────────────────────────
 

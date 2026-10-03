@@ -214,3 +214,20 @@ for (const layout of ["wiki", "docs", "landing"]) {
     }
   });
 }
+
+// Wave 3 gaps #6: a published page loads its files through the publication's own route.
+test("published pages load note attachments from the publication-scoped route", async ({ page }) => {
+  const requested: string[] = [];
+  page.on("request", (r) => { const u = new URL(r.url()); if (u.hostname === "127.0.0.1" && u.pathname.includes("/attachments/")) requested.push(u.pathname); });
+  // The fixture overrides window.fetch only; <img> requests reach the network — answer them here.
+  await page.route("**/api/p/guide/attachments/*", (route) => route.fulfill({ contentType: "image/png", body: Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==", "base64") }));
+  await page.goto("/e2e-fixtures/publication.html?attachments");
+  const img = page.getByRole("img", { name: "Field photo" });
+  await expect(img).toHaveAttribute("src", "/api/p/guide/attachments/a_fixtureImage0000000000");
+  await expect.poll(() => img.evaluate((el: HTMLImageElement) => el.complete && el.naturalWidth)).toBe(1);
+  await expect(page.getByRole("link", { name: "Download the photo" })).toHaveAttribute("href", "/api/p/guide/attachments/a_fixtureImage0000000000");
+  // Only the exact own-attachment shape is rewritten.
+  await expect(page.getByRole("img", { name: "Elsewhere" })).toHaveAttribute("src", "https://example.test/api/attachments/a_other");
+  // The signed-in route is never requested from a public page.
+  expect(requested.filter((p) => p.startsWith("/api/attachments/"))).toEqual([]);
+});
