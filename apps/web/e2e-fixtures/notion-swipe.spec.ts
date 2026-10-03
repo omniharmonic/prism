@@ -25,7 +25,7 @@ async function swipe(page: Page, row: Locator, dx: number, opts: { dy?: number; 
     if (!hold) fire("touchend", x + dx, y + dy, true);
   }, { x, y, dx, dy: opts.dy ?? 0, hold: !!opts.hold });
 }
-const release = (page: Page, row: Locator) => row.evaluate((el) => el.dispatchEvent(new TouchEvent("touchend", { bubbles: true, touches: [], changedTouches: [] })));
+const release = (_page: Page, row: Locator) => row.evaluate((el) => el.dispatchEvent(new TouchEvent("touchend", { bubbles: true, touches: [], changedTouches: [] })));
 const writes = (page: Page) => page.evaluate(() => (window as any).prismFixtureWrites as Array<Record<string, unknown>>);
 
 test("inbox rows: swipe right marks read, swipe left archives; short or vertical drags do nothing", async ({ page }) => {
