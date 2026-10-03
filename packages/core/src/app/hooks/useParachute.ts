@@ -76,6 +76,8 @@ export function useVaultSearch(query: string, filters?: SearchFilters) {
       const filtered = client.searchNotes ? await client.searchNotes(text, active) : null;
       if (!current()) throw new Error("Workspace changed");
       if (filtered) return { notes: filtered, mode: fallback };
+      // Another vault can only be searched by the server; never answer from the active one.
+      if (active?.vault) throw new Error("This server cannot search another vault.");
       const notes = await client.search(text);
       if (!current()) throw new Error("Workspace changed");
       return { notes: active ? notes.filter((n) => matchesFilters(n, active, terms, (x) => inferContentType(x as Note))) : notes, mode: fallback };

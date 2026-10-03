@@ -8,8 +8,11 @@ export interface SearchFilterState {
   type: string;
   author: "anyone" | "me";
   date: DateRange;
+  /** "" = the vault you are in. */
+  vault: string;
 }
-export const EMPTY_FILTERS: SearchFilterState = { titleOnly: false, type: "", author: "anyone", date: "any" };
+export interface SearchVault { id: string; label: string; active: boolean }
+export const EMPTY_FILTERS: SearchFilterState = { titleOnly: false, type: "", author: "anyone", date: "any", vault: "" };
 
 const TYPES: Array<[string, string]> = [
   ["", "Any type"], ["document", "Pages"], ["database", "Databases"], ["task", "Tasks"],
@@ -28,18 +31,19 @@ export function toSearchFilters(state: SearchFilterState): SearchFilters {
   if (state.type) f.types = [state.type];
   if (state.author === "me") f.author = "me";
   if (state.date !== "any") f.after = isoDaysAgo(state.date === "week" ? 7 : state.date === "month" ? 30 : 365);
+  if (state.vault) f.vault = state.vault;
   return f;
 }
 
 export function activeFilterCount(state: SearchFilterState): number {
-  return Number(state.titleOnly) + Number(!!state.type) + Number(state.author !== "anyone") + Number(state.date !== "any");
+  return Number(state.titleOnly) + Number(!!state.type) + Number(state.author !== "anyone") + Number(state.date !== "any") + Number(!!state.vault);
 }
 
 /**
  * NP-SR-04: title-only, type, edited-by and date filters for ⌘K and the phone
  * Search tab. Native controls only, so keyboard and screen readers work as-is.
  */
-export function SearchFilterBar({ value, onChange, onDone }: { value: SearchFilterState; onChange: (next: SearchFilterState) => void; onDone?: () => void }) {
+export function SearchFilterBar({ value, onChange, onDone, vaults }: { value: SearchFilterState; onChange: (next: SearchFilterState) => void; onDone?: () => void; vaults?: SearchVault[] }) {
   const [open, setOpen] = useState(() => activeFilterCount(value) > 0);
   const count = activeFilterCount(value);
   const set = (patch: Partial<SearchFilterState>) => { onChange({ ...value, ...patch }); onDone?.(); };
@@ -68,6 +72,11 @@ export function SearchFilterBar({ value, onChange, onDone }: { value: SearchFilt
             <option value="month">Edited in the past month</option>
             <option value="year">Edited in the past year</option>
           </select>
+          {vaults && vaults.length > 1 && (
+            <select aria-label="Vault" value={value.vault} onChange={(e) => set({ vault: e.target.value })}>
+              {vaults.map((v) => <option key={v.id} value={v.active ? "" : v.id}>{v.label}{v.active ? " (current)" : ""}</option>)}
+            </select>
+          )}
           {count > 0 && (
             <button type="button" className="prism-search-filter-clear focus-ring" onClick={() => set(EMPTY_FILTERS)}>
               <X size={13} aria-hidden /> Clear filters

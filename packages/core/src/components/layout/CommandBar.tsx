@@ -23,6 +23,8 @@ import { EMPTY_FILTERS, SearchFilterBar, activeFilterCount, toSearchFilters, typ
 import { recentSearches, rememberSearch } from "../navigation/searchRecents";
 import { useAgentChatStore } from "../../lib/agent/chatStore";
 import type { Range } from "../../lib/search/match";
+import { useQuery } from "@tanstack/react-query";
+import { useCollabSharing } from "../../data/CollabSharing";
 import "../navigation/search-workspace.css";
 import { NewContentMenu } from "../navigation/NewContentMenu";
 import { useNotionDbSyncModal } from "./NotionDbSyncHost";
@@ -46,6 +48,15 @@ export function CommandBar() {
   const wireFilters = useMemo(() => toSearchFilters(searchFilters), [searchFilters]);
   const searchScope = useAgentChatStore((s) => s.scope);
   const [recentQueries, setRecentQueries] = useState<string[]>([]);
+  // Vault scope (NP-SR-04): the vaults this account can reach on this server.
+  const sharing = useCollabSharing();
+  const { data: searchVaults } = useQuery({
+    queryKey: ["search-vaults", searchScope],
+    enabled: commandBarOpen && !!sharing?.listVaults,
+    staleTime: 60_000,
+    retry: false,
+    queryFn: async () => (await sharing!.listVaults!()).map((v) => ({ id: v.id, label: v.label, active: v.active })),
+  });
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [creationType, setCreationType] = useState<ContentType | null>(null);
   const returnFocus = useRef<HTMLElement | null>(null);
@@ -325,10 +336,26 @@ export function CommandBar() {
         icon: typeof note.metadata?.icon === "string" ? note.metadata.icon : null,
         preview: marks.snippet,
         previewRanges: marks.snippetRanges,
-        action: () => { rememberSearch(searchScope, debouncedQuery); openTab(note.id, label, inferContentType(note)); closeCommandBar(); },
+        action: () => {
+          rememberSearch(searchScope, debouncedQuery);
+          const vault = (note as { _vault?: string })._vault;
+          const type = inferContentType(note);
+          closeCommandBar();
+          if (!vault || !sharing?.setActiveVault) { openTab(note.id, label, type); return; }
+          // A result from another vault: switch to it first, then open the page there.
+          const before = useAgentChatStore.getState().scope;
+          const stop = useAgentChatStore.subscribe((state) => {
+            if (!state.scope || state.scope === before) return;
+            stop();
+            window.clearTimeout(timer);
+            useUIStore.getState().openTab(note.id, label, type);
+          });
+          const timer = window.setTimeout(stop, 8000);
+          sharing.setActiveVault(vault);
+        },
       };
     });
-  }, [searchResults, query, debouncedQuery, filter, openTab, closeCommandBar, searchScope]);
+  }, [searchResults, query, debouncedQuery, filter, openTab, closeCommandBar, searchScope, sharing]);
   // Empty query: recent pages first (synced across devices when the server keeps preferences).
   const recentItems = useMemo(() => (query.trim() || (filter !== "all" && filter !== "notes")) ? [] : recents.slice(0, 8).map(r => ({
     id: `recent-${r.id}`,
@@ -397,9 +424,9 @@ export function CommandBar() {
       <button key={id} tabIndex={0} type="button" aria-pressed={filter === id} className="focus-ring" onClick={() => { setFilter(id); setSelectedId(null); inputRef.current?.focus({ preventScroll: true }); }}>{label}</button>)}
   </div>;
   const filterCount = activeFilterCount(searchFilters);
-  const filterBar = filter !== "commands" && <SearchFilterBar value={searchFilters} onChange={(next) => { setSearchFilters(next); setSelectedId(null); }} />;
+  const filterBar = filter !== "commands" && <SearchFilterBar value={searchFilters} vaults={searchVaults} onChange={(next) => { setSearchFilters(next); setSelectedId(null); }} />;
   const status = <div className="prism-search-status" role="status">
-    <span>Current workspace</span><span>{!query.trim() ? "Search notes or choose an action" : searchingNow ? "Searching…" : searchFailed ? "Search unavailable" : `${vaultItems.length} results shown · ${searchModeLabel(searchMode)}${filterCount ? ` · ${filterCount} filter${filterCount === 1 ? "" : "s"}` : ""}`}</span>
+    <span>{searchFilters.vault ? searchVaults?.find((v) => v.id === searchFilters.vault)?.label ?? "Another vault" : "Current workspace"}</span><span>{!query.trim() ? "Search notes or choose an action" : searchingNow ? "Searching…" : searchFailed ? "Search unavailable" : `${vaultItems.length} results shown · ${searchModeLabel(searchMode)}${filterCount ? ` · ${filterCount} filter${filterCount === 1 ? "" : "s"}` : ""}`}</span>
   </div>;
   const renderNotes = (notes: typeof vaultItems, label: string) => notes.length > 0 && <div role="group" aria-label={label}>
     <div className="prism-search-group">{label}</div>

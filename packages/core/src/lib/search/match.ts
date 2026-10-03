@@ -17,6 +17,8 @@ export interface SearchFilters {
   after?: string;
   before?: string;
   dateField?: "updated" | "created";
+  /** Client-only: search this vault instead of the active one (sent as X-Prism-Vault, never as a param). */
+  vault?: string;
 }
 
 export interface SearchMatches {
@@ -260,7 +262,7 @@ export function parseSearchFilters(get: (name: string) => string | undefined): S
 }
 
 export function hasFilters(f: SearchFilters): boolean {
-  return !!(f.titleOnly || f.types?.length || f.tags?.length || f.author || f.after || f.before);
+  return !!(f.titleOnly || f.types?.length || f.tags?.length || f.author || f.after || f.before || f.vault);
 }
 
 /** Does `note` pass every filter? `typeOf` = inferContentType (kept injectable). */

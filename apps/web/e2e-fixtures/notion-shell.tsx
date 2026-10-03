@@ -73,6 +73,9 @@ window.fetch = async (input, init) => {
     const terms = queryTerms(q);
     const f = parseSearchFilters((k) => url.searchParams.get(k) ?? undefined);
     if (f.author === "me") f.author = "owner@example.test";
+    // Vault scope arrives as a header; the "research" vault holds one other page.
+    const vault = new Headers(init?.headers).get("X-Prism-Vault");
+    if (vault === "research") return Response.json(terms.every((t) => "workshop field study".includes(t)) ? [{ id: "study", path: "Studies/Workshop field study", tags: [], metadata: { type: "document" }, createdAt: recent, updatedAt: recent, _matches: searchMatches({ id: "study", path: "Studies/Workshop field study", content: "<p>A study of the workshop.</p>" }, terms) }] : []);
     const hits = notes.filter((n) => terms.every((t) => (n.path + " " + n.content).toLowerCase().includes(t)))
       .filter((n) => matchesFilters(n, f, terms, (x) => inferContentType(x as Note)))
       .map((n) => ({ ...n, content: undefined, _matches: searchMatches(n, terms) }));
@@ -156,7 +159,11 @@ await fetchMe();
 startOutboxSync();
 useUIStore.setState({ contextPanelOpen: false, sidebarWidth: 240, sidebarOpen: !params.has("collapsed") });
 createRoot(document.getElementById("root")!).render(
-  <React.StrictMode><PlatformProvider value="web"><VaultClientProvider client={httpVaultClient}><CollabSharingProvider value={{ createShareLink: async () => "", getAccess: async () => ({ note: { id: "workspace", title: "A living workspace", tags: [], visibility: "private" }, people: [], links: [], tagAccess: [], canManageLinks: true, allowedLevels: ["view", "comment", "suggest", "edit"] }) }}>
+  <React.StrictMode><PlatformProvider value="web"><VaultClientProvider client={httpVaultClient}><CollabSharingProvider value={{ ...(params.has("vaults") ? {
+      listVaults: async () => [{ id: "primary", label: "Personal vault", vault: "personal", active: true }, { id: "research", label: "Shared research", vault: "research", active: false }],
+      getActiveVault: () => "primary",
+      setActiveVault: (id: string) => { (controls as unknown as { switchedVault?: string }).switchedVault = id; },
+    } : {}), createShareLink: async () => "", getAccess: async () => ({ note: { id: "workspace", title: "A living workspace", tags: [], visibility: "private" }, people: [], links: [], tagAccess: [], canManageLinks: true, allowedLevels: ["view", "comment", "suggest", "edit"] }) }}>
     <App skipOnboarding initialTab={{ id: "workspace", title: "A living workspace", type: "document" }} />
     <OfflineIndicator />
   </CollabSharingProvider></VaultClientProvider></PlatformProvider></React.StrictMode>,

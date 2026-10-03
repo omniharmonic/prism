@@ -327,7 +327,10 @@ export async function search(query: string, tags?: string[], limit = 50): Promis
 export async function searchNotes(query: string, filters: SearchFilters = {}, limit = 50): Promise<Note[] | null> {
   const sp = filtersToParams(filters, new URLSearchParams({ q: query.slice(0, 200), limit: String(limit), lean: "1" }));
   try {
-    return await (await req(`/search?${sp.toString()}`)).json();
+    // Vault scope (NP-SR-04): another vault is named by header; the server
+    // re-resolves the caller's role and grants for THAT vault. Never cached.
+    const rows = (await (await req(`/search?${sp.toString()}`, filters.vault ? { headers: { "X-Prism-Vault": filters.vault }, cache: "no-store" } : undefined)).json()) as Note[];
+    return filters.vault ? rows.map((n) => ({ ...n, _vault: filters.vault })) : rows;
   } catch (error) {
     if (error instanceof VaultRequestError && [404, 405, 501].includes(error.status)) return null;
     throw error;

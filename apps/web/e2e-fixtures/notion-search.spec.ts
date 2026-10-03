@@ -61,3 +61,30 @@ test("filters narrow results", async ({ page }, info) => {
   await page.setViewportSize({ width: 390, height: 844 });
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
 });
+
+test("vault scope searches another vault the account can reach", async ({ page }) => {
+  await page.goto("/e2e-fixtures/notion-shell.html?vaults");
+  await expect(page.locator(".tiptap[contenteditable=true]")).toBeVisible();
+  await page.keyboard.press("ControlOrMeta+k");
+  await page.getByRole("combobox", { name: "Search notes and commands" }).fill("workshop");
+  const results = page.getByRole("group", { name: "Notes" });
+  await expect(results.getByRole("option")).toHaveCount(4);
+  await page.getByRole("button", { name: "Filters" }).click();
+  const vault = page.getByRole("group", { name: "Search filters" }).getByRole("combobox", { name: "Vault" });
+  await expect(vault.locator("option")).toHaveText(["Personal vault (current)", "Shared research"]);
+  await vault.selectOption({ label: "Shared research" });
+  await expect(results.getByRole("option")).toHaveCount(1);
+  await expect(results.getByRole("option")).toContainText("Workshop field study");
+  await expect(page.getByRole("status").filter({ hasText: "Shared research" })).toBeVisible();
+  // Opening it switches to that vault (the page lives there).
+  await results.getByRole("option").click();
+  await expect.poll(() => page.evaluate(() => (window as any).prismShell.switchedVault)).toBe("research");
+});
+
+test("without several vaults there is no vault selector", async ({ page }) => {
+  await page.goto("/e2e-fixtures/notion-shell.html");
+  await expect(page.locator(".tiptap[contenteditable=true]")).toBeVisible();
+  await page.keyboard.press("ControlOrMeta+k");
+  await page.getByRole("button", { name: "Filters" }).click();
+  await expect(page.getByRole("group", { name: "Search filters" }).getByRole("combobox", { name: "Vault" })).toHaveCount(0);
+});
