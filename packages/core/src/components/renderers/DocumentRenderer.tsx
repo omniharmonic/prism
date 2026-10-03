@@ -41,6 +41,7 @@ import { PageHeader, PageProperties, renamePath, type ContentFont } from "./Docu
 import { useUpdateNote } from "../../app/hooks/useParachute";
 import { reviewMode } from "../../lib/governance/review";
 import { ReviewBanner } from "./ReviewBanner";
+import "./editor-blocks.css";
 
 const lowlightInstance = createLowlight(common);
 

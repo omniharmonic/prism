@@ -20,6 +20,7 @@ import { SelectionActions } from "./SelectionActions";
 import { DocumentOutline } from "./DocumentOutline";
 import { CollabToolbar } from "./CollabToolbar";
 import { SuggestionReview } from "./SuggestionReview";
+import "./editor-blocks.css";
 
 export interface CollabUser {
   name: string;

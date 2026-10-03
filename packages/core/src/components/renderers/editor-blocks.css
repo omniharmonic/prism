@@ -1,0 +1,11 @@
+/* Block editor surfaces shared by the plain and the live collaborative editor.
+   Colours come from existing tokens only (tokens.css / workspace.css). */
+
+/* The writing surface is a focus target (TipTap gives it tabindex=0), so the
+   global :focus-visible ring drew a box around the whole document. The caret
+   and selection already show focus; keep the ring for real controls only. */
+.tiptap:focus,
+.tiptap:focus-visible,
+.prose-editor:focus-visible {
+  outline: none;
+}
