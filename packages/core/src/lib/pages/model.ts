@@ -463,3 +463,18 @@ export function parsePageStyle(value: unknown): PageStyle | null {
 export function pageStyleOf(note: { metadata?: Record<string, unknown> | null } | null | undefined): PageStyle {
   return parsePageStyle(note?.metadata?.[PAGE_STYLE_KEY]) ?? {};
 }
+
+/** Build the new note path when a title is renamed: swap the filename's base
+ *  name (preserving folder + extension), sanitizing path separators. Returns
+ *  null if the name is empty or unchanged. */
+export function renamePath(oldPath: string | null | undefined, newName: string): string | null {
+  if (!oldPath) return null;
+  const slash = oldPath.lastIndexOf("/");
+  const dir = slash >= 0 ? oldPath.slice(0, slash) : "";
+  const file = slash >= 0 ? oldPath.slice(slash + 1) : oldPath;
+  const ext = file.match(/\.[^.]+$/)?.[0] ?? "";
+  const safe = newName.trim().replace(/[\\/]/g, "-");
+  if (!safe) return null;
+  const next = (dir ? `${dir}/` : "") + safe + ext;
+  return next === oldPath ? null : next;
+}

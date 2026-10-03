@@ -92,7 +92,9 @@ test("offline rename and delete are refused with a clear message; nothing is que
   await title.fill("Renamed offline");
   await title.press("Enter");
   await expect(page.getByRole("status").filter({ hasText: "You’re offline. Renaming or moving a page needs a connection" })).toBeVisible();
-  await expect(title).toHaveValue("Renamed offline"); // the typed title is kept for a retry
+  // NP-PG-03: a rename is never queued — the title goes back and says why.
+  await expect(page.getByRole("button", { name: "Rename A living workspace", exact: true })).toBeVisible();
+  await expect(page.locator("[data-title-refused]")).toContainText("You’re offline");
   const refused = await page.evaluate(() => (window as any).prismShellClient.deleteNote("agenda").then(() => "deleted", (e: Error) => e.message));
   expect(refused).toContain("Deleting a page needs a connection");
   expect(await outbox(page)).toHaveLength(0);
@@ -100,9 +102,12 @@ test("offline rename and delete are refused with a clear message; nothing is que
   await page.waitForTimeout(500);
   expect(await writes(page)).toHaveLength(0);
   expect((await serverNote(page, "agenda")).content).toContain("Saturday");
-  // Online, the same rename goes through.
+  // Online, the same rename goes through — as a move of the page (and any sub-pages).
+  await page.getByRole("button", { name: "Rename A living workspace", exact: true }).click();
+  await title.fill("Renamed offline");
   await title.press("Enter");
   await expect(page.getByRole("button", { name: "Rename Renamed offline", exact: true })).toBeVisible();
+  expect((await writes(page)).map((w) => w.path)).toEqual(["/api/notes/workspace/move"]);
 });
 
 test("a real conflict needs review for that page only; other pages keep saving", async ({ page, context }) => {

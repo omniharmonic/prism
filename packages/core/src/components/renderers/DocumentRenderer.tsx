@@ -39,6 +39,8 @@ import { useVaultClient } from "../../data/VaultClientContext";
 import { ChildPages } from "../../lib/tiptap/childPage";
 import { createSubPage, describeSubPage } from "../../lib/tiptap/subPages";
 import { trashPage } from "../../lib/pages/ops";
+import { renamePageFromTitle } from "../../lib/pages/titleRename";
+import { queryKeys } from "../../lib/parachute/queries";
 import { useQueryClient } from "@tanstack/react-query";
 import { EditorFindBar } from "./EditorFindBar";
 import StarterKit from "@tiptap/starter-kit";
@@ -57,9 +59,8 @@ import { EditorToolbar } from "./EditorToolbar";
 import { KeyboardToolbar } from "./KeyboardToolbar";
 import { BacklinksPill } from "../layout/BacklinksPill";
 import { EmptyPageStarters } from "./EmptyPageStarters";
-import { PageHeader, PageProperties, renamePath, type ContentFont } from "./DocumentChrome";
+import { PageHeader, PageProperties, type ContentFont } from "./DocumentChrome";
 import { PropertyBar } from "../database/PropertyBar";
-import { useUpdateNote } from "../../app/hooks/useParachute";
 import { reviewMode } from "../../lib/governance/review";
 import { ReviewBanner } from "./ReviewBanner";
 import "./editor-blocks.css";
@@ -123,17 +124,16 @@ export default function DocumentRenderer({ note, onMetadataChange, readOnly }: R
   }, [persistMetadata]);
   const uploadCover = useCallback(async (file: File) => (await vaultClient.uploadAttachment!(note.id, file, { kind: "image" })).url, [vaultClient, note.id]);
 
-  // Rename the note by editing the title in the page header (preserves folder +
-  // extension; updates the open tab's label).
-  const updateNote = useUpdateNote();
+  // Rename from the title = the tree's Rename: a MOVE of the page and its sub-pages
+  // (`renamePageFromTitle`); never a bare path PATCH, which left the sub-pages behind.
   const renameTab = useUIStore((s) => s.renameTab);
+  const renameClient = useQueryClient();
   const handleRename = useCallback(async (newName: string) => {
     if (readOnly || governed) return; // read-only surface / no edit access: never rename/persist
-    const next = renamePath(note.path, newName);
-    if (!next) return;
-    await updateNote.mutateAsync({ id: note.id, path: next });
-    renameTab(note.id, newName.trim());
-  }, [note.path, note.id, updateNote, renameTab, readOnly, governed]);
+    const refresh = () => { void renameClient.invalidateQueries({ queryKey: queryKeys.vault.all }); };
+    const done = await renamePageFromTitle(vaultClient, { id: note.id, path: note.path }, newName, refresh);
+    if (done) renameTab(note.id, done.path.split("/").pop() || newName.trim());
+  }, [note.path, note.id, vaultClient, renameClient, renameTab, readOnly, governed]);
 
   // Wikilink navigation (shared with the collaborative editors).
   const handleWikilinkNavigate = useWikilinkNavigate();

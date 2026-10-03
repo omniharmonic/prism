@@ -119,14 +119,18 @@ test("real collaborative host shares properties and readable mobile header witho
       route.onClose(() => socket.close()); socket.on('close', () => route.close({ code: 1000 }));
     });
     await page.route('**/auth/me', route => route.fulfill({ json: { authenticated: true, email: 'alice@example.test', vaultId: 'primary', workspace: { id: 'workspace-a' } } }));
+    // A title rename is a MOVE of the page and its sub-pages (NP-PG-03).
+    await page.route('**/api/notes/denied-note/move', async route => {
+      renameRequests++;
+      if (uncertainRename) return route.fulfill({ status: 503, json: { error: 'fixture_unavailable' } });
+      if (rejectRename) return route.fulfill({ status: 403, json: { error: 'fixture_denied' } });
+      if (holdRename) await new Promise<void>(resolve => { releaseRename = resolve; });
+      path = route.request().postDataJSON().newPath;
+      await route.fulfill({ json: { ok: true, path, moved: [{ id: 'denied-note', from: '', to: path }] } });
+    });
     await page.route('**/api/notes/denied-note', async route => {
-      if (route.request().method() === 'PATCH') {
-        renameRequests++;
-        if (uncertainRename) return route.fulfill({ status: 503, json: { error: 'fixture_unavailable' } });
-        if (rejectRename) return route.fulfill({ status: 403, json: { error: 'fixture_denied' } });
-        if (holdRename) await new Promise<void>(resolve => { releaseRename = resolve; });
-        path = route.request().postDataJSON().path;
-      }
+      // The gateway never moves a page by PATCH for a non-owner; the title must not try.
+      if (route.request().method() === 'PATCH' && 'path' in route.request().postDataJSON()) return route.fulfill({ status: 403, json: { error: 'move_required' } });
       await route.fulfill({ json: { id: 'denied-note', path, content: '', _level: level, metadata: {}, tags: [] } });
     });
     await page.route('**/api/federated/**', route => route.fulfill({ status: 204 }));

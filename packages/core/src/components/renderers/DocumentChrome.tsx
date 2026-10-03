@@ -29,6 +29,9 @@ function EditableTitle({ name, onRename }: { name: string; onRename: (newName: s
   const savingRef = useRef(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+  // Why the last rename was refused; shown under the (reverted) title until the next edit or page.
+  const [refused, setRefused] = useState("");
+  useEffect(() => { setRefused(""); }, [name]);
 
   useEffect(() => {
     if (!editing) setDraft(name);
@@ -54,13 +57,23 @@ function EditableTitle({ name, onRename }: { name: string; onRename: (newName: s
     savingRef.current = true;
     setSaving(true);
     setError("");
+    setRefused("");
     // Move first: the rename may take a moment, and typing should not wait for it.
     if (thenBody) toBody();
     try {
       await onRename(v);
       setEditing(false);
-    } catch {
-      setError("Could not rename this page. Your title is still here; press Enter to retry.");
+    } catch (e) {
+      // Name taken / page changed / offline: say why and put the title back.
+      if (e instanceof Error && (e as { revertTitle?: unknown }).revertTitle === true) {
+        setDraft(name);
+        setEditing(false);
+        setRefused(e.message);
+        return;
+      }
+      // The server's own reason (no permission here, unsent changes…) when it gave one.
+      const why = e instanceof Error && e.name === "PagesRequestError" && e.message ? ` ${e.message.replace(/[.\s]+$/, "")}.` : "";
+      setError(`Could not rename this page.${why} Your title is still here; press Enter to retry.`);
       // The input stays mounted and enabled (readOnly while saving), so focus is
       // normally still here; this only restores it if the user clicked away.
       inputRef.current?.focus();
@@ -96,12 +109,15 @@ function EditableTitle({ name, onRename }: { name: string; onRename: (newName: s
     );
   }
   return (
-    <h1 style={titleStyle}>
-      <button type="button" onClick={() => setEditing(true)} aria-label={`Rename ${name}`}
-        title="Rename document" style={{ font: "inherit", textAlign: "left", cursor: "text", overflowWrap: "anywhere" }}>
-        {name}
-      </button>
-    </h1>
+    <>
+      <h1 style={titleStyle}>
+        <button type="button" onClick={() => { setRefused(""); setEditing(true); }} aria-label={`Rename ${name}`}
+          title="Rename document" style={{ font: "inherit", textAlign: "left", cursor: "text", overflowWrap: "anywhere" }}>
+          {name}
+        </button>
+      </h1>
+      {refused && <p role="alert" className="document-title-notice" data-title-refused>{refused}</p>}
+    </>
   );
 }
 
@@ -257,20 +273,7 @@ function IconTile({
 
 export type ContentFont = "sans" | "serif" | "mono";
 
-/** Build the new note path when a title is renamed: swap the filename's base
- *  name (preserving folder + extension), sanitizing path separators. Returns
- *  null if the name is empty or unchanged. */
-export function renamePath(oldPath: string | null | undefined, newName: string): string | null {
-  if (!oldPath) return null;
-  const slash = oldPath.lastIndexOf("/");
-  const dir = slash >= 0 ? oldPath.slice(0, slash) : "";
-  const file = slash >= 0 ? oldPath.slice(slash + 1) : oldPath;
-  const ext = file.match(/\.[^.]+$/)?.[0] ?? "";
-  const safe = newName.trim().replace(/[\\/]/g, "-");
-  if (!safe) return null;
-  const next = (dir ? `${dir}/` : "") + safe + ext;
-  return next === oldPath ? null : next;
-}
+export { renamePath } from "../../lib/pages/model";
 
 /** Notion-style page header: breadcrumb of the folder path + a large sans title
  *  derived from the filename. `right` is an optional slot for status/actions

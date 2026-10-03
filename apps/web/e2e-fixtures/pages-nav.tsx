@@ -7,7 +7,8 @@
  * Query flags: ?open=<id> initial page · ?prefs=<json> server preferences ·
  * ?legacy (no preferences route → per-device shortcuts) · ?fail-move=<id> (that
  * note's path writes fail once, for partial-move recovery) · ?shared (pages shared
- * with the viewer + a move that changes access) · ?guest[=empty] (a guest account).
+ * with the viewer + a move that changes access) · ?guest[=empty] (a guest account) ·
+ * ?member (the gateway rule for non-owners: a path PATCH is refused `move_required`).
  */
 import React from "react";
 import { createRoot } from "react-dom/client";
@@ -194,6 +195,8 @@ window.fetch = async (input, init) => {
     if (!note) return json({ error: "not_found" }, 404);
     if (method === "PATCH") {
       writes.push({ patch: note.id, ...body });
+      // The gateway's rule for everyone but the owner: a PATCH never moves a page.
+      if (params.has("member") && typeof body.path === "string" && body.path !== note.path) return json({ error: "move_required", reason: "Move pages with Move to… (POST /api/notes/:id/move)." }, 403);
       if (body.if_updated_at && body.if_updated_at !== note.updatedAt) return json({ error: "conflict" }, 409);
       patch(note, body);
     }

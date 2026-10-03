@@ -16,6 +16,7 @@ import { OfflineIndicator } from "../src/offline/OfflineIndicator";
 import { startOutboxSync, setStaleSendingMsForTests } from "../src/offline/outbox";
 import { logout } from "../src/config";
 import { webAccount } from "../src/account";
+import { fakeMove } from "./fake-move";
 
 void filtersToParams;
 const params = new URLSearchParams(location.search);
@@ -182,6 +183,15 @@ window.fetch = async (input, init) => {
     target.updatedAt = bump();
     setTimeout(() => controls.event(target.id), 0);
     return respond({ ok: true, live: false, updatedAt: target.updatedAt });
+  }
+  // Rename / move (POST /api/notes/:id/move): the page and its sub-pages, compare-and-set.
+  const moveId = method === "POST" ? path.match(/^\/api\/notes\/([^/]+)\/move$/)?.[1] : undefined;
+  if (moveId) {
+    const body = JSON.parse(String(init?.body));
+    controls.writes.push({ method, path, body });
+    if (controls.failStatus) return Response.json({ error: "fixture_failure" }, { status: controls.failStatus });
+    const moved = fakeMove(notes, decodeURIComponent(moveId), body, bump);
+    return respond(moved.body, { status: moved.status });
   }
   const noteId = path.match(/^\/api\/notes\/([^/]+)$/)?.[1];
   if (noteId) {
