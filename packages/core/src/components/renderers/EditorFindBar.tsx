@@ -3,16 +3,17 @@ import { X, ChevronUp, ChevronDown, ChevronRight } from "lucide-react";
 import type { useEditor } from "@tiptap/react";
 import { searchHighlightKey, replaceMatch, replaceAllMatches } from "../../lib/tiptap/SearchHighlight";
 import { structuralEditsAllowed } from "../../lib/tiptap/blockCommands";
+import { isReplaceShortcut, REPLACE_SHORTCUT_LABEL } from "../../lib/tiptap/findShortcuts";
 
 interface EditorFindBarProps {
   editor: ReturnType<typeof useEditor>;
   onClose: () => void;
-  /** Open with the replace row expanded (⌘⇧H). */
+  /** Open with the replace row expanded (⌘⌥F). */
   replaceOpen?: boolean;
 }
 
 /**
- * In-note find and replace (⌘F / ⌘⇧H). Searching dispatches meta-only
+ * In-note find and replace (⌘F / ⌘⌥F — ⌘⇧H is highlight, NP-ED-05). Searching dispatches meta-only
  * transactions (no doc change, so no autosave). Replace / Replace all each
  * dispatch ONE transaction — one undo step, in the plain editor and in a live
  * collaborative document alike. Replace is offered only where a raw edit is
@@ -93,7 +94,7 @@ export function EditorFindBar({ editor, onClose, replaceOpen = false }: EditorFi
   const onFindKey = (e: React.KeyboardEvent) => {
     if (e.key === "Enter") { e.preventDefault(); goToMatch(e.shiftKey ? -1 : 1); return; }
     if (e.key === "Escape") { e.preventDefault(); onClose(); return; }
-    if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === "h") { e.preventDefault(); setShowReplace(true); requestAnimationFrame(() => replaceRef.current?.focus()); }
+    if (isReplaceShortcut(e.nativeEvent)) { e.preventDefault(); setShowReplace(true); requestAnimationFrame(() => replaceRef.current?.focus()); }
   };
   const onReplaceKey = (e: React.KeyboardEvent) => {
     if (e.key === "Enter") { e.preventDefault(); if (e.metaKey || e.ctrlKey || e.altKey) replaceAll(); else replaceOne(); return; }
@@ -111,7 +112,7 @@ export function EditorFindBar({ editor, onClose, replaceOpen = false }: EditorFi
             className={iconBtn}
             aria-expanded={showReplace}
             aria-label={showReplace ? "Hide replace" : "Show replace"}
-            title="Replace (⌘⇧H)"
+            title={`Replace (${REPLACE_SHORTCUT_LABEL})`}
             style={{ color: "var(--text-muted)" }}
           >
             <ChevronRight size={14} style={{ transform: showReplace ? "rotate(90deg)" : undefined, transition: "transform 120ms" }} />

@@ -238,7 +238,7 @@ test("the merged editor offers a suggest-only person nothing that writes the doc
   // so ⌘F does not even open the in-note bar there; if it does, it is find-only.)
   await editor(page).click();
   await page.keyboard.press("ControlOrMeta+f");
-  await page.keyboard.press("ControlOrMeta+Shift+h");
+  await page.keyboard.press("ControlOrMeta+Alt+f");
   await page.waitForTimeout(200);
   await expect(page.getByLabel("Replace with")).toHaveCount(0);
   await expect(page.getByRole("button", { name: /^(Show replace|Replace|Replace all)$/ })).toHaveCount(0);

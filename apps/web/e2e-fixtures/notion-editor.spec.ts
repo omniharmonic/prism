@@ -121,7 +121,7 @@ test("toc block tracks headings", async ({ page }) => {
 test("replace and replace all", async ({ page }) => {
   await open(page);
   await page.getByText("Alpha paragraph about the river.").click();
-  await page.keyboard.press("ControlOrMeta+Shift+h");
+  await page.keyboard.press("ControlOrMeta+Alt+f");
   const bar = page.getByRole("search", { name: "Find in note" });
   await bar.getByRole("textbox", { name: "Find in note" }).fill("heron");
   await expect(bar).toContainText("1 / 3");
@@ -155,7 +155,7 @@ test("replace all in a live document reaches the other client as one undo step",
   const a = page.getByRole("region", { name: "Client A" });
   await expect(page.getByRole("region", { name: "Client B" }).locator(".tiptap")).toContainText("Closing heron note.");
   await a.getByText("Alpha paragraph about the river.").click();
-  await page.keyboard.press("ControlOrMeta+Shift+h");
+  await page.keyboard.press("ControlOrMeta+Alt+f");
   const bar = page.getByRole("search", { name: "Find in note" });
   await bar.getByRole("textbox", { name: "Find in note" }).fill("heron");
   await expect(bar).toContainText("1 / 3");
@@ -174,7 +174,7 @@ test("replace keeps offsets, deletes only the match, and never edits hidden link
   // "İ" lower-cases to two code units: offsets must come from the original text.
   await open(page, `?content=${enc("<p>İİİ heron İ heron</p><p>heron</p><p>See [[heron|the bird]] and [[Projects/heron]] here: heron</p>")}`);
   await clickInto(page, "heron");
-  await page.keyboard.press("ControlOrMeta+Shift+h");
+  await page.keyboard.press("ControlOrMeta+Alt+f");
   const bar = page.getByRole("search", { name: "Find in note" });
   await bar.getByRole("textbox", { name: "Find in note" }).fill("heron");
   // 2 in the first paragraph, 1 alone, 1 after the links — the two inside [[…]] are not matches.
@@ -297,10 +297,8 @@ test("markdown shortcuts convert as you type", async ({ page }) => {
   }
 });
 
-// PRODUCT GAP (NP-ED-04): ⌘Z after a conversion removes the typed characters too (an empty line), instead of
-// giving the literal characters back — the input rule and the typed prefix share one history group.
-// This is the checklist's required title; it stays fixme until the product meets it.
-test.fixme("markdown shortcuts convert and undo to literal", async ({ page }) => {
+// NP-ED-04: ⌘Z after a conversion gives the literal characters back (EditorKeys' input-rule undo).
+test("markdown shortcuts convert and undo to literal", async ({ page }) => {
   // ⌘Z right after a conversion gives the literal characters back (not an empty line, not the converted block).
   for (const s of BLOCK_SHORTCUTS) {
     await emptyDoc(page);
@@ -311,11 +309,19 @@ test.fixme("markdown shortcuts convert and undo to literal", async ({ page }) =>
   }
 });
 
-// PRODUCT GAP (NP-ED-04): there is no `>>` + space input rule — Typography turns ">>" into "»".
-test.fixme("markdown shortcuts: >> + space makes a toggle", async ({ page }) => {
+// NP-ED-04: `>>` + space is the toggle shortcut (Typography's » is off); ⌘Z gives ">> " back; `>` alone stays a quote.
+test("markdown shortcuts: >> + space makes a toggle", async ({ page }) => {
   await emptyDoc(page);
   await page.keyboard.type(">> x");
-  await expect.poll(() => html(page)).toMatch(/<details|data-type="toggle"/);
+  await expect.poll(() => html(page)).toMatch(/^<details data-type="toggle"><summary>x<\/summary>/);
+  await emptyDoc(page);
+  await page.keyboard.type(">> ");
+  await expect.poll(() => editorDoc(page)).toEqual(["toggle:", "paragraph:"]);
+  await page.keyboard.press("ControlOrMeta+z");
+  await expect.poll(async () => (await editorDoc(page)).map((b) => b.trimEnd())).toEqual(["paragraph:>>"]);
+  await emptyDoc(page);
+  await page.keyboard.type("> q");
+  await expect.poll(() => html(page)).toMatch(/^<blockquote><p>q<\/p><\/blockquote>/);
 });
 
 test("undo covers block ops; collab undo is per-user", async ({ page }) => {
@@ -430,25 +436,50 @@ test("paste fidelity from Notion/GDocs/Markdown", async ({ page }) => {
   expect(await html(page)).toContain("[[Projects/Prism/Roadmap]]");
 });
 
-// PRODUCT GAP (NP-ED-21): no to-do recognition for pasted checkbox lists.
-test.fixme("paste fidelity: a pasted to-do list stays a to-do list", async ({ page }) => {
+// NP-ED-21: checkbox lists (Notion, GitHub, Markdown exports) paste as to-do lists with their checked state.
+test("paste fidelity: a pasted to-do list stays a to-do list", async ({ page }) => {
   await emptyDoc(page);
   await pasteClipboard(page, { "text/html": '<ul class="to-do-list"><li><input type="checkbox" checked> Ship</li></ul>', "text/plain": "Ship" });
-  expect(await html(page)).toMatch(/data-type="taskList"/);
+  expect(await html(page)).toMatch(/<ul data-type="taskList"><li data-checked="true" data-type="taskItem"><label><input type="checkbox" checked="checked"><span><\/span><\/label><div><p>Ship<\/p><\/div><\/li><\/ul>/);
+  // Notion's own markup (a div checkbox) and a mixed list (not every item has a box → stays a bullet list).
+  await emptyDoc(page);
+  await pasteClipboard(page, { "text/html": '<ul class="to-do-list"><li><div class="checkbox checkbox-off"></div> Draft</li><li><div class="checkbox checkbox-on"></div> Review</li></ul>', "text/plain": "Draft" });
+  expect((await editorDoc(page))[0]).toBe("taskList:DraftReview");
+  expect((await html(page)).match(/data-checked="(true|false)"/g)).toEqual(['data-checked="false"', 'data-checked="true"']);
+  await emptyDoc(page);
+  await pasteClipboard(page, { "text/html": '<ul><li><input type="checkbox"> Boxed</li><li>Plain</li></ul>', "text/plain": "x" });
+  expect((await editorDoc(page))[0]).toMatch(/^bulletList:/);
 });
 
-// PRODUCT GAP (NP-ED-21): plain-text Markdown is pasted literally (no clipboardTextParser).
-test.fixme("paste fidelity: pasted Markdown text becomes blocks", async ({ page }) => {
+// NP-ED-21: plain-text Markdown (no HTML flavour on the clipboard) becomes blocks; prose and code blocks stay literal.
+test("paste fidelity: pasted Markdown text becomes blocks", async ({ page }) => {
   await emptyDoc(page);
   await pasteClipboard(page, { "text/plain": "## Plan\n\n- First\n- Second\n\n```\nconst a = 1;\n```\n" });
   const out = await html(page);
   expect(out).toMatch(/<h2[^>]*>Plan<\/h2>/);
   expect(out).toMatch(/<ul[^>]*><li><p>First<\/p><\/li>/);
+  expect(out).toMatch(/<pre><code>const a = 1;<\/code><\/pre>/);
+  // Task items, inline marks and a wikilink in Markdown text.
+  await emptyDoc(page);
+  await pasteClipboard(page, { "text/plain": "- [x] Done **now**\n- [ ] Later, see [[Projects/my_page|My *page*]]\n" });
+  const todo = await html(page);
+  expect(todo).toMatch(/data-type="taskList"/);
+  expect(todo).toMatch(/data-checked="true"[\s\S]*<strong>now<\/strong>/);
+  expect(todo).toContain("[[Projects/my_page|My *page*]]");
+  // Ordinary prose is not parsed (a lone asterisk or underscore is just text).
+  await emptyDoc(page);
+  await pasteClipboard(page, { "text/plain": "2 * 3 = 6 and snake_case_name" });
+  expect(await html(page)).toBe("<p>2 * 3 = 6 and snake_case_name</p>");
+  // Inside a code block Markdown stays source.
+  await open(page, `?content=${enc("<pre><code>x</code></pre>")}`);
+  await page.locator(".tiptap pre code").click();
+  await pasteClipboard(page, { "text/plain": "## not a heading" });
+  expect(await html(page)).not.toContain("<h2");
 });
 
-// PRODUCT GAP (NP-ED-21): copying out gives rich text but no Markdown text/plain (no clipboardTextSerializer).
-test.fixme("copy fidelity: copying out gives rich text and Markdown", async ({ page }) => {
-  await open(page, `?content=${enc("<h2>Plan</h2><ul><li><p>First</p></li></ul>")}`);
+// NP-ED-21: a copy carries rich text (text/html) and Markdown (text/plain).
+test("copy fidelity: copying out gives rich text and Markdown", async ({ page }) => {
+  await open(page, `?content=${enc('<h2>Plan</h2><ul><li><p>First</p></li></ul><ul data-type="taskList"><li data-type="taskItem" data-checked="true"><p>Ship <strong>it</strong></p></li></ul><p>See [[Projects/Prism/Roadmap]] and <a href="https://example.test/x">a link</a></p><pre><code class="language-ts">const a = 1;</code></pre>')}`);
   const copied = await page.evaluate(() => {
     const editor = (document.querySelector(".tiptap") as any).editor;
     editor.chain().focus().selectAll().run();
@@ -459,6 +490,20 @@ test.fixme("copy fidelity: copying out gives rich text and Markdown", async ({ p
   expect(copied.html).toContain("<h2");
   expect(copied.text).toContain("## Plan");
   expect(copied.text).toContain("- First");
+  expect(copied.text).toContain("- [x] Ship **it**");
+  expect(copied.text).toContain("See [[Projects/Prism/Roadmap]] and [a link](https://example.test/x)");
+  expect(copied.text).toContain("```ts\nconst a = 1;\n```");
+  // A selection inside one block copies as its plain text (no Markdown markers).
+  const inline = await page.evaluate(() => {
+    const editor = (document.querySelector(".tiptap") as any).editor;
+    let at = -1;
+    editor.state.doc.descendants((n: any, pos: number) => { if (n.isText && n.text === "Ship ") at = pos; });
+    editor.chain().focus().setTextSelection({ from: at, to: at + 7 }).run();
+    const dt = new DataTransfer();
+    document.querySelector(".tiptap")!.dispatchEvent(new ClipboardEvent("copy", { clipboardData: dt, bubbles: true, cancelable: true }));
+    return dt.getData("text/plain");
+  });
+  expect(inline).toBe("Ship it");
 });
 
 test("find in page counts and steps", async ({ page }) => {

@@ -23,6 +23,8 @@ import { MentionSuggest, type MentionSuggestState } from "../../lib/tiptap/Menti
 import { MentionContext, setMentionNoteId } from "../../lib/tiptap/MentionContext";
 import { MentionMenu } from "../../lib/tiptap/MentionMenu";
 import { BlockKeymap } from "../../lib/tiptap/blockCommands";
+import { EditorKeys, editorPlaceholder, blockSelectionActive } from "../../lib/tiptap/EditorKeys";
+import { FIND_IN_PAGE_EVENT, isReplaceShortcut, editorIsOnScreen } from "../../lib/tiptap/findShortcuts";
 import { BlockHandles } from "./BlockHandles";
 import { TableControls } from "./TableControls";
 import { ImageUpload } from "../../lib/tiptap/ImageUpload";
@@ -159,7 +161,7 @@ export default function DocumentRenderer({ note, onMetadataChange, readOnly }: R
 
   const extensions = useMemo(() => [
     StarterKit.configure({ codeBlock: false, link: false }),
-    Placeholder.configure({ placeholder: "Start writing, or press / for commands..." }),
+    Placeholder.configure(editorPlaceholder("Start writing, or press / for commands...")),
     // Images, tables, callouts, toggles, columns, colours: the SAME list the
     // live editor and the server use, so a note round-trips through either.
     ...blockSchemaExtensions(),
@@ -169,7 +171,7 @@ export default function DocumentRenderer({ note, onMetadataChange, readOnly }: R
     TaskItem.configure({ nested: true }),
     Highlight.configure({ multicolor: true }),
     Link.configure({ openOnClick: false, autolink: true }),
-    Typography,
+    Typography.configure({ raquo: false, laquo: false }),
     WikilinkExtension.configure({ onNavigate: handleWikilinkNavigate }),
     WikilinkAutocomplete.configure({ onStateChange: setAutocompleteState }),
     SlashCommand.configure({ onStateChange: setSlashState }),
@@ -177,6 +179,7 @@ export default function DocumentRenderer({ note, onMetadataChange, readOnly }: R
     MentionContext.configure({ noteId: note.id }),
     SearchHighlight,
     BlockKeymap,
+    EditorKeys,
     ImageUpload.configure({ upload, uploadFile, onError: setUploadError }),
     UrlPaste.configure({ onStateChange: setPasteState, unfurl }),
     // Inline/linked databases: only where the page itself may be written.
@@ -359,7 +362,7 @@ export default function DocumentRenderer({ note, onMetadataChange, readOnly }: R
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [saveNow, editor, openInlinePrompt, inlineAgent, sessionAgent]);
 
-  // Cmd+F / Ctrl+F — scoped to the editor container. Only fires when focus is
+  // Cmd+F / Ctrl+F (find) and ⌘⌥F / Ctrl+Alt+F (replace) — scoped to the editor container. Only fires when focus is
   // inside this DocumentRenderer's subtree (or when document.activeElement is
   // inside it), so it won't hijack Cmd+F on dashboard/graph/agent views.
   useEffect(() => {
@@ -367,9 +370,8 @@ export default function DocumentRenderer({ note, onMetadataChange, readOnly }: R
     if (!container) return;
 
     const handler = (e: KeyboardEvent) => {
-      const k = e.key.toLowerCase();
-      const isFind = (e.metaKey || e.ctrlKey) && !e.shiftKey && k === "f";
-      const isReplace = (e.metaKey || e.ctrlKey) && e.shiftKey && k === "h";
+      const isReplace = isReplaceShortcut(e);
+      const isFind = !isReplace && (e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "f";
       if (!isFind && !isReplace) return;
       // Only activate if focus (or the event target) is inside this container.
       const active = document.activeElement;
@@ -383,9 +385,12 @@ export default function DocumentRenderer({ note, onMetadataChange, readOnly }: R
       setFindOpen(true);
     };
 
+    // Phone ⋯ → "Find in page" (NP-ED-22): the shell asks whichever editor is on screen.
+    const onFindRequest = () => { if (editorIsOnScreen(container)) { setFindReplace(false); setFindOpen(true); } };
+    window.addEventListener(FIND_IN_PAGE_EVENT, onFindRequest);
     // Listen on the container itself so the event only bubbles from within.
     container.addEventListener("keydown", handler);
-    return () => container.removeEventListener("keydown", handler);
+    return () => { container.removeEventListener("keydown", handler); window.removeEventListener(FIND_IN_PAGE_EVENT, onFindRequest); };
     // Re-run when initialHtml flips from null → string: on first mount the
     // component renders a loading placeholder and containerRef is null, so
     // the listener must re-attach once the real container mounts.
@@ -401,7 +406,7 @@ export default function DocumentRenderer({ note, onMetadataChange, readOnly }: R
 
   return (
     <div ref={containerRef} className="document-writing-surface flex flex-col h-full" data-content-font={contentFont}>
-      {editor && <BubbleMenu editor={editor} pluginKey="documentSelectionActions" shouldShow={({ state }) => !state.selection.empty}>
+      {editor && <BubbleMenu editor={editor} pluginKey="documentSelectionActions" shouldShow={({ state }) => !state.selection.empty && !blockSelectionActive(state)}>
         <div className="document-selection-actions"><SelectionActions editor={editor} allowFormatting={!notEditable} /></div>
       </BubbleMenu>}
       {/* Toolbar (hidden on read-only surfaces — no editing affordances) */}

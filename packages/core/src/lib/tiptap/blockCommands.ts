@@ -155,26 +155,26 @@ export function moveSelectionBlock(state: EditorState, dir: -1 | 1): Transaction
 }
 
 /**
- * Move the top-level block at `fromIndex` so it lands before the block that is
- * currently at `toIndex` (toIndex === childCount → the end). One replace step
- * spanning only the blocks that actually change order.
+ * Move `count` top-level blocks starting at `fromIndex` so they land before the
+ * block that is currently at `toIndex` (toIndex === childCount → the end). One
+ * replace step spanning only the blocks that actually change order.
  */
-export function moveTopBlock(state: EditorState, fromIndex: number, toIndex: number): Transaction | null {
+export function moveTopBlock(state: EditorState, fromIndex: number, toIndex: number, count = 1): Transaction | null {
   const { doc } = state;
-  const count = doc.childCount;
-  if (fromIndex < 0 || fromIndex >= count || toIndex < 0 || toIndex > count) return null;
-  if (toIndex === fromIndex || toIndex === fromIndex + 1) return null; // no-op
+  const total = doc.childCount;
+  if (count < 1 || fromIndex < 0 || fromIndex + count > total || toIndex < 0 || toIndex > total) return null;
+  if (toIndex >= fromIndex && toIndex <= fromIndex + count) return null; // no-op
   const blocks = topLevelBlocks(doc);
   const lo = Math.min(fromIndex, toIndex);
-  const hi = Math.max(fromIndex, toIndex - 1);
+  const hi = Math.max(fromIndex + count - 1, toIndex - 1);
   const start = blocks[lo].pos;
   const end = blocks[hi].pos + blocks[hi].node.nodeSize;
-  const moving = blocks[fromIndex].node;
-  const rest = blocks.slice(lo, hi + 1).filter((b) => b.index !== fromIndex).map((b) => b.node);
-  const ordered = fromIndex < toIndex ? [...rest, moving] : [moving, ...rest];
+  const moving = blocks.slice(fromIndex, fromIndex + count).map((b) => b.node);
+  const rest = blocks.slice(lo, hi + 1).filter((b) => b.index < fromIndex || b.index >= fromIndex + count).map((b) => b.node);
+  const ordered = fromIndex < toIndex ? [...rest, ...moving] : [...moving, ...rest];
   const tr = state.tr.replaceWith(start, end, Fragment.fromArray(ordered));
   let landed = start;
-  for (const n of ordered) { if (n === moving) break; landed += n.nodeSize; }
+  for (const n of ordered) { if (n === moving[0]) break; landed += n.nodeSize; }
   placeCaret(tr, landed + 1);
   return tr.scrollIntoView();
 }
@@ -195,6 +195,8 @@ export interface MovePlan {
   /** Position before the moving node. */
   from: number;
   node: PMNode;
+  /** A multi-block move: every moving node (starting with `node`). */
+  nodes?: PMNode[];
   /** Where it goes, in the ORIGINAL document's coordinates. */
   target: number;
   /** Caret offset from the node's start after the move. */
@@ -212,14 +214,15 @@ export function planSelectionMove(state: EditorState, dir: -1 | 1): MovePlan | n
   return { from, node, target, caretOffset: state.selection.from - from };
 }
 
-export function planTopMove(state: EditorState, fromIndex: number, toIndex: number): MovePlan | null {
+export function planTopMove(state: EditorState, fromIndex: number, toIndex: number, count = 1): MovePlan | null {
   const { doc } = state;
-  const count = doc.childCount;
-  if (fromIndex < 0 || fromIndex >= count || toIndex < 0 || toIndex > count) return null;
-  if (toIndex === fromIndex || toIndex === fromIndex + 1) return null;
+  const total = doc.childCount;
+  if (count < 1 || fromIndex < 0 || fromIndex + count > total || toIndex < 0 || toIndex > total) return null;
+  if (toIndex >= fromIndex && toIndex <= fromIndex + count) return null;
   const blocks = topLevelBlocks(doc);
-  const target = toIndex === count ? doc.content.size : blocks[toIndex].pos;
-  return { from: blocks[fromIndex].pos, node: blocks[fromIndex].node, target, caretOffset: 1 };
+  const target = toIndex === total ? doc.content.size : blocks[toIndex].pos;
+  const nodes = blocks.slice(fromIndex, fromIndex + count).map((b) => b.node);
+  return { from: blocks[fromIndex].pos, node: nodes[0], nodes, target, caretOffset: 1 };
 }
 
 /** Is this editor bound to a shared Yjs document? */
@@ -231,10 +234,12 @@ type Dispatcher = { state: EditorState; dispatch: (tr: Transaction) => void };
 
 /** Delete, then insert at the mapped target: two transactions (see above). */
 export function dispatchSplitMove(view: Dispatcher, plan: MovePlan): void {
-  const del = view.state.tr.delete(plan.from, plan.from + plan.node.nodeSize);
+  const nodes = plan.nodes ?? [plan.node];
+  const size = nodes.reduce((n, node) => n + node.nodeSize, 0);
+  const del = view.state.tr.delete(plan.from, plan.from + size);
   view.dispatch(del);
   const at = del.mapping.map(plan.target);
-  const ins = view.state.tr.insert(at, plan.node);
+  const ins = view.state.tr.insert(at, Fragment.fromArray(nodes));
   placeCaret(ins, at + plan.caretOffset);
   view.dispatch(ins.scrollIntoView());
 }
@@ -254,13 +259,13 @@ export function moveSelectionBlockIn(editor: MoveEditor, dir: -1 | 1): boolean {
 }
 
 /** Move a top-level block: one step in a plain editor, delete+insert when live. */
-export function moveTopBlockIn(editor: MoveEditor, fromIndex: number, toIndex: number): boolean {
+export function moveTopBlockIn(editor: MoveEditor, fromIndex: number, toIndex: number, count = 1): boolean {
   if (isCollaborative(editor)) {
-    const plan = planTopMove(editor.state, fromIndex, toIndex);
+    const plan = planTopMove(editor.state, fromIndex, toIndex, count);
     if (plan) dispatchSplitMove(editor.view, plan);
     return !!plan;
   }
-  const tr = moveTopBlock(editor.state, fromIndex, toIndex);
+  const tr = moveTopBlock(editor.state, fromIndex, toIndex, count);
   if (tr) editor.view.dispatch(tr);
   return !!tr;
 }
@@ -271,6 +276,37 @@ export function duplicateTopBlock(state: EditorState, pos: number): Transaction 
   const at = pos + node.nodeSize;
   const tr = state.tr.insert(at, node);
   return placeCaret(tr, at + 1);
+}
+
+/** Duplicate the caret's unit (a list item inside its list, else the top-level block); the caret moves into the copy. */
+export function duplicateSelectionBlock(state: EditorState): Transaction | null {
+  const unit = movableUnit(state);
+  if (!unit) return null;
+  const at = unit.from + unit.node.nodeSize;
+  const tr = state.tr.insert(at, unit.node);
+  return placeCaret(tr, at + (state.selection.from - unit.from)).scrollIntoView();
+}
+
+/** Duplicate `count` top-level blocks starting at `index`, right after them. One step. */
+export function duplicateTopBlocks(state: EditorState, index: number, count = 1): Transaction | null {
+  const blocks = topLevelBlocks(state.doc).slice(index, index + count);
+  if (!blocks.length) return null;
+  const last = blocks[blocks.length - 1];
+  const at = last.pos + last.node.nodeSize;
+  return state.tr.insert(at, Fragment.fromArray(blocks.map((b) => b.node)));
+}
+
+/** Delete `count` top-level blocks starting at `index` (an empty paragraph stays if nothing else would). One step. */
+export function deleteTopBlocks(state: EditorState, index: number, count = 1): Transaction | null {
+  const blocks = topLevelBlocks(state.doc).slice(index, index + count);
+  if (!blocks.length) return null;
+  const from = blocks[0].pos;
+  const last = blocks[blocks.length - 1];
+  const to = last.pos + last.node.nodeSize;
+  const tr = state.tr;
+  if (blocks.length === state.doc.childCount) tr.replaceWith(from, to, state.schema.nodes.paragraph.create());
+  else tr.delete(from, to);
+  return placeCaret(tr, Math.min(from + 1, tr.doc.content.size));
 }
 
 export function deleteTopBlock(state: EditorState, pos: number): Transaction | null {

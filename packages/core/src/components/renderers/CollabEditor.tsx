@@ -23,6 +23,8 @@ import { KeyboardToolbar } from "./KeyboardToolbar";
 import { SuggestionReview } from "./SuggestionReview";
 import "./editor-blocks.css";
 import { BlockKeymap } from "../../lib/tiptap/blockCommands";
+import { EditorKeys, editorPlaceholder, blockSelectionActive } from "../../lib/tiptap/EditorKeys";
+import { FIND_IN_PAGE_EVENT, isReplaceShortcut, editorIsOnScreen } from "../../lib/tiptap/findShortcuts";
 import { BlockHandles } from "./BlockHandles";
 import { TableControls } from "./TableControls";
 import { ImageUpload, type ImageUploader, type FileUploader } from "../../lib/tiptap/ImageUpload";
@@ -188,13 +190,14 @@ export function CollabEditor({
       // the SAME list the Prism Server uses to seed/persist the Yjs doc, so the
       // HTML↔CRDT round-trip is loss-free. View-only plugins are added here.
       ...collabExtensions(),
-      Placeholder.configure({ placeholder: "Start writing together…" }),
+      Placeholder.configure(editorPlaceholder("Start writing together…")),
       WikilinkExtension.configure({ onNavigate: (t) => navRef.current?.(t) }),
       WikilinkAutocomplete.configure({ onStateChange: setAutocomplete }),
       SlashCommand.configure({ onStateChange: setSlash }),
       MentionSuggest.configure({ onStateChange: setMention }),
       MentionContext.configure({ noteId: noteId ?? null }),
       BlockKeymap,
+      EditorKeys,
       ImageUpload.configure({
         upload: uploadImage ? (file) => uploadRef.current!(file) : undefined,
         uploadFile: uploadFile ? (file) => uploadFileRef.current!(file) : undefined,
@@ -216,13 +219,12 @@ export function CollabEditor({
     onUpdate: handleUpdate,
   });
 
-  // ⌘F find / ⌘⇧H find + replace, while focus is in this editor (or its find bar).
+  // ⌘F find / ⌘⌥F find + replace, while focus is in this editor (or its find bar).
   useEffect(() => {
     if (!editor) return;
     const onKey = (e: KeyboardEvent) => {
-      const k = e.key.toLowerCase();
-      const isFind = (e.metaKey || e.ctrlKey) && !e.shiftKey && k === "f";
-      const isReplace = (e.metaKey || e.ctrlKey) && e.shiftKey && k === "h";
+      const isReplace = isReplaceShortcut(e);
+      const isFind = !isReplace && (e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "f";
       if (!isFind && !isReplace) return;
       const active = document.activeElement;
       let inside = false;
@@ -232,8 +234,11 @@ export function CollabEditor({
       e.preventDefault();
       setFind({ replace: isReplace });
     };
+    // Phone ⋯ → "Find in page" (NP-ED-22): the shell asks whichever editor is on screen.
+    const onFindRequest = () => { try { if (editorIsOnScreen(editor.view.dom)) setFind({ replace: false }); } catch { /* not mounted */ } };
     window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    window.addEventListener(FIND_IN_PAGE_EVENT, onFindRequest);
+    return () => { window.removeEventListener("keydown", onKey); window.removeEventListener(FIND_IN_PAGE_EVENT, onFindRequest); };
   }, [editor]);
 
   // Reflect editable changes (e.g. level resolved after connect) onto the editor.
@@ -308,7 +313,7 @@ export function CollabEditor({
           pluginKey="commentBubble"
           shouldShow={({ state }) => {
             const { from, to, empty } = state.selection;
-            if (empty || from === to) return false;
+            if (empty || from === to || blockSelectionActive(state)) return false;
             return !suggestionAt(state, from); // the suggestion bubble owns that case
           }}
         >
