@@ -120,28 +120,16 @@ export function EditorMenu({
     }
   };
 
-  return (
-    <div ref={ref} role="menu" aria-label={label} className={`editor-menu ${className ?? ""}`} style={style} onKeyDown={onKeyDown}
-      onMouseDown={(event) => event.preventDefault() /* keep the editor selection */}>
+  // Roving tab stop: one enabled item is in the tab order, so a menu that scrolls is keyboard-reachable
+  // by construction (Tab itself closes the menu; arrows move focus).
+  const tabStop = shown.find((it) => !it.disabled)?.id;
+  const rows = (
+    <>
       {onBack && (
         <button type="button" role="menuitem" tabIndex={-1} className="editor-menu-item editor-menu-back" onClick={onBack}>
           <ChevronLeft size={14} aria-hidden="true" /> <span>{label}</span>
         </button>
       )}
-      {searchable && (
-        <input
-          ref={searchRef}
-          type="search"
-          role="searchbox"
-          aria-label={searchLabel}
-          placeholder={`${searchLabel}…`}
-          className="editor-menu-search"
-          value={query}
-          onChange={(event) => setQuery(event.target.value)}
-          onMouseDown={(event) => event.stopPropagation() /* let the field take focus */}
-        />
-      )}
-      {searchable && q && shown.length === 0 && <div className="editor-menu-empty" role="status">No results</div>}
       {shown.map((it) => {
         const role = it.checked === undefined ? "menuitem" : "menuitemradio";
         return (
@@ -150,7 +138,7 @@ export function EditorMenu({
             <button
               type="button"
               role={role}
-              tabIndex={-1}
+              tabIndex={it.id === tabStop ? 0 : -1}
               data-item-id={it.id}
               aria-checked={it.checked === undefined ? undefined : it.checked}
               aria-haspopup={it.submenu ? "menu" : undefined}
@@ -168,6 +156,28 @@ export function EditorMenu({
           </div>
         );
       })}
+    </>
+  );
+  const frame = { ref, className: `editor-menu ${className ?? ""}`, style, onKeyDown,
+    onMouseDown: (event: React.MouseEvent) => event.preventDefault() /* keep the editor selection */ };
+  // A search field is not a menu item: with one, the popup is a plain container holding the field
+  // and the menu (role="menu" may only own menu items).
+  if (searchable) return (
+    <div {...frame}>
+      <input
+        ref={searchRef}
+        type="search"
+        role="searchbox"
+        aria-label={searchLabel}
+        placeholder={`${searchLabel}…`}
+        className="editor-menu-search"
+        value={query}
+        onChange={(event) => setQuery(event.target.value)}
+        onMouseDown={(event) => event.stopPropagation() /* let the field take focus */}
+      />
+      {q && shown.length === 0 && <div className="editor-menu-empty" role="status">No results</div>}
+      {(shown.length > 0 || onBack) && <div role="menu" aria-label={label}>{rows}</div>}
     </div>
   );
+  return <div {...frame} role="menu" aria-label={label}>{rows}</div>;
 }

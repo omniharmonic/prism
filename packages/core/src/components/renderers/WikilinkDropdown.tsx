@@ -7,6 +7,7 @@ import { noteAliases, noteLinkTitle } from "../../lib/wikilinks";
 import type { WikilinkAutocompleteState } from "../../lib/tiptap/WikilinkAutocomplete";
 import { useOptionalVaultClient } from "../../data/VaultClientContext";
 import { createSubPage, pageNameFromQuery, SubPageError } from "../../lib/tiptap/subPages";
+import { describeEditorPopup } from "../../lib/tiptap/popupAria";
 import { editorNotice } from "../../lib/tiptap/notice";
 
 type Row = { kind: "note"; note: Note } | { kind: "create"; name: string };
@@ -88,9 +89,7 @@ export function WikilinkDropdown({ editor, notes, autocomplete, hostPath }: {
   useEffect(()=>{
     if (!editor || !visible) return;
     const element = editor.view.dom;
-    element.setAttribute("aria-controls",id);
-    element.setAttribute("aria-autocomplete","list");
-    element.setAttribute("aria-activedescendant",`${id}-${index}`);
+    const undescribe = describeEditorPopup(element, id, `${id}-${index}`);
     const keydown = (event:KeyboardEvent)=>{
       if (event.isComposing) return;
       if (event.key==="ArrowDown" || event.key==="ArrowUp") {
@@ -107,7 +106,7 @@ export function WikilinkDropdown({ editor, notes, autocomplete, hostPath }: {
     element.addEventListener("keydown",keydown,true);
     return ()=>{
       element.removeEventListener("keydown",keydown,true);
-      for(const name of ["aria-controls","aria-autocomplete","aria-activedescendant"])element.removeAttribute(name);
+      undescribe();
     };
   },[editor,visible,id,index,rows,select,signature]);
   if (!editor || !visible) return null;

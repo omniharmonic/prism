@@ -277,8 +277,8 @@ export function TaskCreateDialog({ onClose }: TaskCreateDialogProps) {
             disabled={!title.trim() || isSubmitting}
             className="px-4 py-1.5 rounded-md text-sm font-medium transition-colors disabled:opacity-40"
             style={{
-              background: "var(--color-accent)",
-              color: "white",
+              background: "var(--action-bg, var(--color-accent))",
+              color: "var(--action-fg, #fff)",
             }}
           >
             {isSubmitting ? "Creating..." : "Create Task"}

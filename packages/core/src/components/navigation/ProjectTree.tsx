@@ -325,7 +325,7 @@ function ConfirmDialog({ title, body, confirm, onConfirm, onCancel }: { title: s
           <button onClick={onCancel} className="px-3 py-1.5 rounded-md text-xs hover:bg-[var(--glass-hover)]" style={{ color: "var(--text-secondary)" }}>
             Cancel
           </button>
-          <button onClick={onConfirm} className="px-3 py-1.5 rounded-md text-xs font-medium" style={{ background: "var(--color-danger)", color: "white" }}>
+          <button onClick={onConfirm} className="px-3 py-1.5 rounded-md text-xs font-medium" style={{ background: "var(--danger-bg, var(--color-danger))", color: "#fff" }}>
             {confirm}
           </button>
         </div>
@@ -604,7 +604,7 @@ export function ProjectTree() {
         </div>
       )}
 
-      <div className="py-0.5">
+      <div className="py-0.5" role="tree" aria-label="Pages">
         {tree.map((node) => (
           <TreeNodeView
             key={rawKey(node)}
@@ -766,7 +766,7 @@ function TreeNodeView({ node, depth, ctx }: { node: TreeNode; depth: number; ctx
   };
 
   return (
-    <div data-depth={depth} style={{ overflowX: "clip" }}>
+    <div data-depth={depth} style={{ overflowX: "clip" }} role="treeitem" aria-label={node.name} aria-level={depth + 1} aria-expanded={hasChildren ? open : undefined} aria-selected={active}>
       <div
         ref={setRow}
         className="page-tree-row prism-swipe-row"
@@ -829,6 +829,12 @@ function TreeNodeView({ node, depth, ctx }: { node: TreeNode; depth: number; ctx
               } else if (hasChildren && e.key === "ArrowLeft" && open) {
                 e.preventDefault();
                 usePagesUI.getState().toggleExpanded(node.rawPath, false);
+              } else if (e.key === "ArrowDown" || e.key === "ArrowUp" || e.key === "Home" || e.key === "End") {
+                // Tree pattern: arrows walk the visible rows (Tab still leaves the tree row by row).
+                const rows = Array.from(e.currentTarget.closest('[role="tree"]')?.querySelectorAll<HTMLElement>(".page-tree-open") ?? []);
+                const at = rows.indexOf(e.currentTarget);
+                const next = e.key === "Home" ? rows[0] : e.key === "End" ? rows[rows.length - 1] : rows[at + (e.key === "ArrowDown" ? 1 : -1)];
+                if (next) { e.preventDefault(); next.focus(); }
               }
             }}
             onPointerDown={(e) => {
@@ -885,7 +891,7 @@ function TreeNodeView({ node, depth, ctx }: { node: TreeNode; depth: number; ctx
         )}
       </div>
       {open && (hasChildren || showNewFolderInput) && (
-        <div>
+        <div role="group">
           {showNewFolderInput && (
             <div className="flex items-center gap-1.5 py-1" style={{ paddingLeft: `${24 + (depth + 1) * 14}px` }}>
               <FolderPlus size={14} className="flex-shrink-0" style={{ opacity: 0.7, color: "var(--text-secondary)" }} />

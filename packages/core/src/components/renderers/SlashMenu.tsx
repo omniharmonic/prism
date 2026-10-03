@@ -13,6 +13,7 @@ import { turnTopBlocksInto, type TurnIntoKind } from "../../lib/tiptap/blockComm
 import { canUploadImages, pickAndUploadImages, canUploadFiles, pickAndUploadFiles } from "../../lib/tiptap/ImageUpload";
 import { editorUnfurler, insertLinkBlock } from "../../lib/tiptap/UrlPaste";
 import { canInsertDatabase, requestDatabaseInsert } from "../../lib/tiptap/databaseView";
+import { describeEditorPopup } from "../../lib/tiptap/popupAria";
 import "./editor-blocks.css";
 
 const isMac = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform);
@@ -246,11 +247,7 @@ export function SlashMenu({ editor, state, onClose }: { editor: Editor | null; s
     let dom: HTMLElement | null = null;
     try { dom = editor?.view.dom ?? null; } catch { dom = null; }
     if (!dom) return;
-    dom.setAttribute("aria-controls", listId);
-    dom.setAttribute("aria-expanded", "true");
-    dom.setAttribute("aria-haspopup", "listbox");
-    if (activeId) dom.setAttribute("aria-activedescendant", activeId);
-    return () => { for (const a of ["aria-controls", "aria-expanded", "aria-haspopup", "aria-activedescendant"]) dom!.removeAttribute(a); };
+    return describeEditorPopup(dom, listId, activeId);
   }, [editor, listId, activeId]);
 
   useLayoutEffect(() => {

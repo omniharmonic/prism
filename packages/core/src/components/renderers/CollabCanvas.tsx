@@ -375,7 +375,7 @@ export function CollabCanvas({
             <button
               onClick={handleOpenSelected}
               className="focus-ring flex min-h-11 items-center gap-2 px-3 py-2 rounded-lg transition-colors"
-              style={{ background: "var(--color-accent)", color: "white" }}
+              style={{ background: "var(--action-bg, var(--color-accent))", color: "var(--action-fg, #fff)" }}
             >
               <ExternalLink size={11} />
               Open note

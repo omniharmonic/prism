@@ -51,7 +51,8 @@ export function PersonAvatar({
         fontSize: Math.max(8, Math.round(size * (size < 22 ? 0.5 : 0.4))),
         fontWeight: 650,
         letterSpacing: "0.01em",
-        color: tone,
+        // Initials stay AA on their own tint in both themes: the tone, pulled toward the reading colour.
+        color: `color-mix(in srgb, ${tone} 55%, var(--text-primary, #292a30))`,
         background: `color-mix(in srgb, ${tone} 16%, var(--bg-surface, #fff))`,
         border: `1px solid color-mix(in srgb, ${tone} 28%, transparent)`,
         boxSizing: "border-box",

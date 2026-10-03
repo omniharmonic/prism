@@ -346,7 +346,7 @@ export function ComposeMessage({ onClose }: ComposeMessageProps) {
             onClick={handleSend}
             disabled={!matchedRoom || !messageBody.trim() || sending}
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors disabled:opacity-40"
-            style={{ background: "var(--color-accent)", color: "white" }}
+            style={{ background: "var(--action-bg, var(--color-accent))", color: "var(--action-fg, #fff)" }}
           >
             <Send size={12} />
             {sending ? "Sending..." : "Send"}

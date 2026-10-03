@@ -281,7 +281,7 @@ export function BoardSettings({
             disabled={busy}
             className={
               control +
-              " bg-[var(--color-accent)] font-medium text-white disabled:opacity-50"
+              " bg-[var(--action-bg)] font-medium text-white disabled:opacity-50"
             }
           >
             {busy ? "Saving…" : "Save view"}
@@ -359,7 +359,7 @@ export function BoardTaskForm({
           disabled={busy || !title.trim()}
           className={
             control +
-            " bg-[var(--color-accent)] font-medium text-white disabled:opacity-50"
+            " bg-[var(--action-bg)] font-medium text-white disabled:opacity-50"
           }
         >
           {busy ? "Creating…" : "Create task"}

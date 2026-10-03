@@ -141,7 +141,7 @@ function PlatformSection({
         {group.unreadCount > 0 && (
           <span
             className="text-[10px] px-1.5 rounded-full"
-            style={{ background: "var(--color-accent)", color: "white" }}
+            style={{ background: "var(--action-bg, var(--color-accent))", color: "var(--action-fg, #fff)" }}
           >
             {group.unreadCount}
           </span>
@@ -213,7 +213,7 @@ function RoomRow({ room, onClick }: { room: MatrixRoom; onClick: () => void }) {
       {room.unread_count > 0 && (
         <span
           className="text-[10px] px-1 rounded-full mt-0.5 flex-shrink-0"
-          style={{ background: "var(--color-accent)", color: "white", minWidth: 16, textAlign: "center" }}
+          style={{ background: "var(--action-bg, var(--color-accent))", color: "var(--action-fg, #fff)", minWidth: 16, textAlign: "center" }}
         >
           {room.unread_count}
         </span>

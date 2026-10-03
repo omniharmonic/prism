@@ -102,7 +102,7 @@ function Sheet({ onClose }: { onClose: () => void }) {
           <input ref={search} type="search" aria-label="Search shortcuts" placeholder="Search shortcuts…" value={query} onChange={(e) => setQuery(e.target.value)} />
           <button type="button" aria-label="Close keyboard shortcuts" onClick={onClose}><X size={16} aria-hidden="true" /></button>
         </div>
-        <div className="prism-shortcuts-body">
+        <div className="prism-shortcuts-body focus-ring" tabIndex={0} role="group" aria-label="Shortcuts">
           {sections.length === 0 && <p role="status" style={{ color: "var(--text-muted)", fontSize: 13 }}>No shortcut matches “{query}”.</p>}
           {sections.map((s) => (
             <section key={s.title} aria-label={s.title}>

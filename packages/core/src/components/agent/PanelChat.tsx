@@ -196,7 +196,7 @@ function TauriPanelChat() {
                     });
                   }}
                   className="flex items-center gap-1 px-2 py-0.5 rounded text-xs transition-colors"
-                  style={{ background: "var(--color-accent)", color: "white" }}
+                  style={{ background: "var(--action-bg, var(--color-accent))", color: "var(--action-fg, #fff)" }}
                 >
                   <PenLine size={10} /> Insert into document
                 </button>
@@ -264,7 +264,7 @@ function TauriPanelChat() {
           onClick={handleSend}
           disabled={loading || !input.trim()}
           className="p-2 rounded-full transition-colors disabled:opacity-30"
-          style={{ background: "var(--color-accent)", color: "white" }}
+          style={{ background: "var(--action-bg, var(--color-accent))", color: "var(--action-fg, #fff)" }}
         >
           <Send size={14} />
         </button>

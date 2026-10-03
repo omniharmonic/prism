@@ -7,7 +7,8 @@
   --bg-document: #191a1e;
   --text-primary: #edeeef;
   --text-secondary: #b4b5bd;
-  --text-muted: #9698a3;
+  /* AA (≥4.5:1) on every surface it sits on, hover/active rows included (NP-AX-04). */
+  --text-muted: #a0a2ac;
   --glass: #222329;
   --glass-hover: #2b2d34;
   --glass-active: #323540;
@@ -20,6 +21,10 @@
   --action-bg: #316ed6;
   --action-hover: #295ebb;
   --action-fg: #ffffff;
+  /* Danger as TEXT on the elevated/menu surfaces is AA (5.1:1 on #292a30); as a FILL under white
+     text it is --danger-bg (5.7:1) — one hue cannot do both in dark (NP-AX-04). */
+  --color-danger: #f56f84;
+  --danger-bg: #c02a45;
   --workspace-control-height: 34px;
   --content-measure: 760px;
   --context-panel-width: 360px;
@@ -32,8 +37,9 @@ html.light {
   --bg-sidebar: #f5f5f3;
   --bg-document: #ffffff;
   --text-primary: #292a30;
-  --text-secondary: #626570;
-  --text-muted: #747783;
+  --text-secondary: #565964;
+  /* AA (≥4.5:1) on white, the sidebar and hover rows (NP-AX-04). */
+  --text-muted: #676a76;
   --glass: #ffffff;
   --glass-hover: #f2f3f5;
   --glass-active: #e9edf3;
@@ -42,8 +48,15 @@ html.light {
   --surface-hover: #ececea;
   --surface-active: #e4e5e4;
   --surface-selected: #e9f0fd;
-  --color-accent: #2f6bd4;
+  --color-accent: #2a62c4;
   --color-accent-hover: #2357b8;
+  /* Status colours double as text in light mode: AA on white and on their own 10% tints. */
+  --color-success: #177245;
+  --color-warning: #7a5600;
+  --color-danger: #c02a45;
+  --danger-bg: #c02a45;
+  /* Accent as text on its own pale tint (selection bars) is AA. */
+  --text-accent: #2a62c4;
   --focus-ring: #2f6bd4;
   --action-bg: #2f6bd4;
   --action-hover: #2357b8;
@@ -158,3 +171,9 @@ button:disabled { cursor: not-allowed; }
 .workspace-navigation-preferences::backdrop { background: rgb(20 22 28 / 30%); }
 @media (pointer: coarse) { .workspace-navigation[data-density] { --workspace-control-height: 44px; } }
 @media (max-width: 480px) { .workspace-navigation-preferences { padding: 18px; } }
+
+/* NP-AX-04: muted text is AA on the page, the sidebar and hover fills. On the stronger selected /
+   active fills (the active slash or search row, the open agent session) it steps up to secondary. */
+.slash-menu-option[data-active],
+.prism-search-result[aria-selected="true"],
+.prism-agent-session-row[data-active] { --text-muted: var(--text-secondary); }

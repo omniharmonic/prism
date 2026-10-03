@@ -349,7 +349,7 @@ function SharingDocument({ noteId, sharing, onClose }: Props) {
       .prism-share-dialog .share-stack { display:grid; gap:16px; }
       .prism-share-dialog .share-row { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
       .prism-share-dialog .share-card { padding:14px; border:1px solid var(--glass-border); border-radius:10px; }
-      .prism-share-dialog .share-primary { background:var(--color-accent); color:white; border-color:transparent; }
+      .prism-share-dialog .share-primary { background:var(--action-bg, var(--color-accent)); color:var(--action-fg, #fff); border-color:transparent; }
       .prism-share-dialog h3 { font-size:13px; margin:0 0 8px; font-weight:600; }
       .prism-share-dialog .share-person { display:grid; grid-template-columns:auto minmax(0,1fr) auto auto; align-items:center; gap:10px; padding:8px 0; }
       .prism-share-dialog .share-person .share-who { min-width:0; display:grid; gap:1px; }

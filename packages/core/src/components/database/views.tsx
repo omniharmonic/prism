@@ -190,7 +190,7 @@ function HeaderCell({ def, ctx, width, onResize }: { def: PropertyDef; ctx: View
         <span className="db-th-label">{def.label}</span>
         {sorted && (sorted.dir === "asc" ? <ArrowUpNarrowWide size={12} aria-hidden="true" /> : <ArrowDownWideNarrow size={12} aria-hidden="true" />)}
       </button>
-      <span className="db-resize" role="separator" aria-orientation="vertical" aria-label={`Resize ${def.label}`} tabIndex={0}
+      <span className="db-resize" role="separator" aria-orientation="vertical" aria-label={`Resize ${def.label}`} aria-valuenow={Math.round(width)} aria-valuemin={80} aria-valuemax={800} tabIndex={0}
         onPointerDown={startResize}
         onKeyDown={(e) => { if (e.key === "ArrowLeft" || e.key === "ArrowRight") { e.preventDefault(); onResize(Math.max(80, Math.min(800, width + (e.key === "ArrowRight" ? 20 : -20))), true); } }} />
       <Popover anchor={anchor} open={open} onClose={() => setOpen(false)} label={`${def.label} column`} width={220}>
@@ -245,7 +245,7 @@ function TableBlock({ ctx, rows, preset, label }: { ctx: ViewContext; rows: Quer
   const someOn = !!sel && rows.some((r) => sel.ids.has(r.id));
   return (
     <div className="db-table-wrap">
-      <table className="db-table" style={{ width: total }} aria-label={label} aria-multiselectable={sel ? true : undefined} onKeyDown={onGridKey}>
+      <table className="db-table" style={{ width: total }} aria-label={label} data-multiselect={sel ? "" : undefined} onKeyDown={onGridKey}>
         <colgroup>
           <col className="db-col-title" style={{ width: w("$title", 280) }} />
           {ctx.shown.map((p) => <col key={p.key} style={{ width: w(p.key, 180) }} />)}
@@ -391,11 +391,14 @@ function BoardColumn({ value, label, def, children, count, onAdd }: { value: str
   const drop = useDroppable({ id: `col:${value ?? ""}`, data: { value } });
   const color = value === null ? "gray" : def.options.find((o) => o.value === value)?.color ?? optionColor(value);
   return (
+    /* The board is a list of columns: each column region sits in a box-less list item. */
+    <div role="listitem" style={{ display: "contents" }}>
     <section ref={drop.setNodeRef} className="db-col" aria-label={label} data-over={drop.isOver || undefined} style={{ ["--hue" as string]: `var(--db-hue-${color}, ${HUES[color]})` }}>
       <header className="db-col-head"><span className="db-dot" aria-hidden="true" /> {label} <span className="db-badge-count">{count}</span></header>
       {onAdd && <button type="button" className="db-col-add" onClick={onAdd}><Plus size={14} aria-hidden="true" /> Add {def.kind === "status" ? "item" : "page"}</button>}
       {children}
     </section>
+    </div>
   );
 }
 const HUES: Record<string, string> = { gray: "#8a8f98", brown: "#9a6b4f", orange: "#d9730d", yellow: "#c29a12", green: "#2f9e5a", blue: "#2f73d9", purple: "#8b56d9", pink: "#c94f8f", red: "#d64545" };
@@ -493,7 +496,7 @@ export function GalleryView({ ctx }: { ctx: ViewContext }) {
         );
       })}
       {ctx.canCreate && (
-        <article className="db-gcard" style={{ justifyContent: "center", minHeight: 120 }}>
+        <article className="db-gcard" role="listitem" style={{ justifyContent: "center", minHeight: 120 }}>
           {adding ? <NewRowForm onCreate={(t) => ctx.create(t)} onCancel={() => setAdding(false)} /> : <button type="button" className="db-new-row" style={{ justifyContent: "center", minHeight: 120 }} onClick={() => setAdding(true)}><Plus size={14} aria-hidden="true" /> New</button>}
         </article>
       )}

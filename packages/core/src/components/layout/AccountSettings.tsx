@@ -151,7 +151,7 @@ export function AccountSettings() {
             ) : (
               <User size={26} style={{ color: "var(--text-muted)" }} />
             )}
-            <span style={{ position: "absolute", right: 0, bottom: 0, background: "var(--color-accent)", color: "#fff", borderRadius: 999, padding: 3, display: "inline-flex" }}>
+            <span style={{ position: "absolute", right: 0, bottom: 0, background: "var(--action-bg, var(--color-accent))", color: "var(--action-fg, #fff)", borderRadius: 999, padding: 3, display: "inline-flex" }}>
               <Camera size={11} />
             </span>
           </button>
@@ -166,7 +166,7 @@ export function AccountSettings() {
             <div style={labelStyle}>Display name</div>
             <Input placeholder="Your name" value={name} onChange={(e) => setName(e.target.value)} style={{ width: "100%" }} />
             <div style={{ fontSize: 11.5, color: "var(--text-muted)", marginTop: 6 }}>
-              {profile?.email} <span style={{ opacity: 0.7 }}>· your login (can't be changed here)</span>
+              {profile?.email} <span>· your login (can't be changed here)</span>
             </div>
           </div>
         </div>

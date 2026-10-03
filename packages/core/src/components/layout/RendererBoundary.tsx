@@ -38,7 +38,7 @@ export class RendererBoundary extends Component<
           <button
             onClick={() => this.setState({ error: null })}
             className="mt-4 px-3 py-1.5 rounded text-xs font-medium"
-            style={{ background: "var(--color-accent)", color: "white" }}
+            style={{ background: "var(--action-bg, var(--color-accent))", color: "var(--action-fg, #fff)" }}
           >
             Retry
           </button>

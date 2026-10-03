@@ -484,8 +484,8 @@ function ReverseEditor({ note, tag, propertyKey, label, multiple }: { note: Note
             const elsewhere = !on && !multiple ? links(row.metadata[propertyKey])[0] : undefined;
             const can = row.canEdit !== false && (!row._caps || row._caps.includes("edit"));
             return (
-              <li key={row.id} role="option" aria-selected={on}>
-                <button type="button" disabled={!can || busy !== ""} title={can ? undefined : "You can’t edit this page."} onClick={() => void toggle(row)}>
+              <li key={row.id} role="presentation">
+                <button type="button" role="option" aria-selected={on} disabled={!can || busy !== ""} title={can ? undefined : "You can’t edit this page."} onClick={() => void toggle(row)}>
                   <span className="db-check" data-checked={on || undefined} aria-hidden="true">{on && <Check size={12} />}</span>
                   <span className="db-pop-title">{noteTitle(row)}</span>
                   {elsewhere && <span className="db-pop-path">now: {linkLabel(elsewhere)}</span>}

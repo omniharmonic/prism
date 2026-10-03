@@ -1135,7 +1135,7 @@ function NotionPagePicker({ noteId, metadata, search, bind, onDone, onCancel, on
         <button
           onClick={() => doSearch(searchQuery)}
           className="px-2 h-7 rounded-md text-xs"
-          style={{ background: "var(--color-accent)", color: "white" }}
+          style={{ background: "var(--action-bg, var(--color-accent))", color: "var(--action-fg, #fff)" }}
         >
           Search
         </button>

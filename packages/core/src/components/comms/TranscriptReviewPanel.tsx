@@ -566,7 +566,7 @@ export function TranscriptReviewPanel({
           <div className="flex flex-wrap gap-2">
             <button
               className={control + " font-medium"}
-              style={{ background: "var(--color-accent)", color: "white" }}
+              style={{ background: "var(--action-bg, var(--color-accent))", color: "var(--action-fg, #fff)" }}
               disabled={
                 busy ||
                 cooldown ||

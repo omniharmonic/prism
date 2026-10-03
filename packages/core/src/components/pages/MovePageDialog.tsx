@@ -164,7 +164,7 @@ export function MovePageDialog({ page, onClose }: { page: PageRef; onClose: () =
               <button type="button" className="focus-ring" style={{ minHeight: 36, padding: "0 12px", borderRadius: 8, border: "1px solid var(--glass-border)", background: "transparent", color: "var(--text-primary)", font: "inherit", cursor: "pointer" }} onClick={() => setConfirm(null)}>
                 Cancel
               </button>
-              <button type="button" className="focus-ring" style={{ minHeight: 36, padding: "0 12px", borderRadius: 8, border: "1px solid var(--color-accent)", background: "var(--color-accent)", color: "#fff", font: "inherit", fontWeight: 600, cursor: "pointer" }} onClick={() => void choose(confirm, true)}>
+              <button type="button" className="focus-ring" style={{ minHeight: 36, padding: "0 12px", borderRadius: 8, border: "1px solid var(--color-accent)", background: "var(--action-bg, var(--color-accent))", color: "var(--action-fg, #fff)", font: "inherit", fontWeight: 600, cursor: "pointer" }} onClick={() => void choose(confirm, true)}>
                 Move to {confirm.label} anyway
               </button>
             </div>
