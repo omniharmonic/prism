@@ -69,8 +69,6 @@ test("phone header sync state", async ({ page, context }, info) => {
 test("footer reflects sync state", async ({ page }) => {
   await page.goto("/e2e-fixtures/notion-shell.html");
   const footer = page.locator(".workspace-navigation .sync-state-footer");
-  // Mounted by Navigation.tsx (group 2A owns it this wave; see the 2E report hunk).
-  test.skip(await footer.count() === 0, "sidebar footer badge not mounted on this branch");
   await expect(footer).toHaveText("Synced");
   await page.evaluate(() => { (window as any).prismShell.hold = true; });
   await typeInEditor(page, " Footer edit.");

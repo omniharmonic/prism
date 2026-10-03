@@ -20,6 +20,7 @@ import { openAgentChat } from "../../lib/agent/chatStore";
 import { usePagesUI } from "../../lib/pages/store";
 import { Home as HomeIcon, Inbox as InboxIcon } from "lucide-react";
 import { InboxBadge, openInbox } from "../inbox/InboxNavButton";
+import { SyncStateBadge } from "../layout/SyncStateBadge";
 import { useUnreadCount } from "../../lib/notifications/hooks";
 
 export function Navigation() {
@@ -283,6 +284,8 @@ export function Navigation() {
           <Plus size={18} /><span>New page</span>
         </button>
         <NavItem icon={<Trash2 size={16} />} label="Trash" active={false} onClick={() => usePagesUI.getState().openTrash(true)} />
+        {/* NP-SB-15: the one truthful sync state, in the sidebar footer. */}
+        <SyncStateBadge variant="footer" />
         <NavItem icon={<Settings2 size={16} />} label="Workspace settings" active={openTabs.find(t => t.id === activeTabId)?.noteId === "network"} onClick={handleOpenNetwork} />
         {showNewMenu && <NewContentMenu onClose={() => setShowNewMenu(false)} />}
 

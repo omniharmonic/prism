@@ -22,6 +22,8 @@ import { useUIStore } from "../../app/stores/ui";
 import { useNoteShortcuts } from "../navigation/NoteShortcuts";
 import { BottomSheet, type SheetItem } from "../ui/BottomSheet";
 import { NewContentMenu } from "../navigation/NewContentMenu";
+import { InboxNavButton } from "../inbox/InboxNavButton";
+import { useUnreadCount } from "../../lib/notifications/hooks";
 import { Settings } from "./Settings";
 import { FontSwitch } from "../renderers/DocumentChrome";
 import { useAgentAvailable } from "../../data/AgentClientContext";
@@ -69,7 +71,14 @@ export function MobileActionBar() {
     setMoreOpen(false);
   };
 
+  const openMessages = () => {
+    setMoreOpen(false);
+    useUIStore.setState({ sidebarOpen: false, contextPanelOpen: false });
+    openTab("vault-messages", "Messages", "vault-messages" as ContentType);
+  };
+  const inbox = useUnreadCount();
   const moreItems: SheetItem[] = [
+    ...(inbox.available ? [{ icon: <MessageSquare size={19} />, label: "Messages", onClick: openMessages }] : []),
     {
       icon: <FilePlus size={19} />,
       label: "New page",
@@ -170,16 +179,21 @@ export function MobileActionBar() {
         <MobileButton label="Notes" active={sidebarOpen} onClick={toggleSidebar}>
           <PanelLeft size={20} />
         </MobileButton>
-        <MobileButton
-          label="Messages"
-          active={activeTab?.noteId === "vault-messages"}
-          onClick={() => {
-            useUIStore.setState({ sidebarOpen: false, contextPanelOpen: false });
-            openTab("vault-messages", "Messages", "vault-messages" as ContentType);
-          }}
-        >
-          <MessageSquare size={20} />
-        </MobileButton>
+        {/* Inbox (wave 2A) takes the Messages slot wherever the server has a
+            notifications inbox; Messages then lives in More. Shells without one
+            (legacy desktop) keep Messages here. */}
+        <InboxNavButton>
+          {({ icon, label, onClick, available }) => available ? (
+            <MobileButton label={label} text="Inbox" active={activeTab?.noteId === "notifications"}
+              onClick={() => { useUIStore.setState({ sidebarOpen: false, contextPanelOpen: false }); onClick(); }}>
+              {icon}
+            </MobileButton>
+          ) : (
+            <MobileButton label="Messages" active={activeTab?.noteId === "vault-messages"} onClick={openMessages}>
+              <MessageSquare size={20} />
+            </MobileButton>
+          )}
+        </InboxNavButton>
         <MobileButton label="Search" onClick={openCommandBar}>
           <Search size={20} />
         </MobileButton>
@@ -286,12 +300,15 @@ export function MobileActionBar() {
 
 function MobileButton({
   label,
+  text,
   onClick,
   active = false,
   children,
   buttonRef,
 }: {
   label: string;
+  /** Visible caption when it differs from the accessible name (e.g. "Inbox, 3 unread"). */
+  text?: string;
   onClick: () => void;
   active?: boolean;
   children: React.ReactNode;
@@ -309,7 +326,7 @@ function MobileButton({
       }}
     >
       {children}
-      <span>{label}</span>
+      <span>{text ?? label}</span>
     </button>
   );
 }

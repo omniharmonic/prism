@@ -94,3 +94,26 @@ test("keyboard toolbar complete", async ({ page }, info) => {
   await expect(toolbar).toHaveCount(0);
   await expect(editor).not.toBeFocused();
 });
+
+test("the bottom bar carries Inbox with its unread badge; Messages moves to More", async ({ page }) => {
+  await page.goto("/e2e-fixtures/notion-shell.html?inbox");
+  const bar = page.getByRole("navigation", { name: "Mobile workspace" });
+  const inbox = bar.getByRole("button", { name: "Inbox, 3 unread" });
+  await expect(inbox).toBeVisible();
+  await expect(inbox).toContainText("Inbox");
+  await expect(inbox.locator(".prism-inbox-badge")).toHaveText("3");
+  await expect(bar.getByRole("button", { name: "Messages", exact: true })).toHaveCount(0);
+  await expect(bar.getByRole("button")).toHaveCount(5);
+  await inbox.click();
+  await expect(inbox).toHaveAttribute("aria-pressed", "true");
+  await bar.getByRole("button", { name: "More", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Messages", exact: true })).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+});
+
+test("without a notifications inbox the bar keeps Messages", async ({ page }) => {
+  await page.goto("/e2e-fixtures/notion-shell.html");
+  const bar = page.getByRole("navigation", { name: "Mobile workspace" });
+  await expect(bar.getByRole("button", { name: "Messages", exact: true })).toBeVisible();
+  await expect(bar.getByRole("button", { name: /Inbox/ })).toHaveCount(0);
+});

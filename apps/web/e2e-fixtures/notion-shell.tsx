@@ -134,6 +134,8 @@ window.fetch = async (input, init) => {
     }
     return Response.json(note);
   }
+  if (params.has("inbox") && path === "/api/notifications/unread") return Response.json({ unread: 3 });
+  if (params.has("inbox") && path === "/api/notifications") return Response.json({ items: [], next: null, unread: 3 });
   if (path === "/api/tags") return Response.json([{ name: "note", count: 3 }, { name: "task", count: 1 }]);
   if (path === "/api/vault" || path === "/api/vault/info") return Response.json({ name: "Personal vault", description: "", stats: { totalNotes: notes.length, totalTags: 2, totalLinks: 0 } });
   if (path === "/api/vault/stats" || path === "/api/stats") return Response.json({ totalNotes: notes.length, totalTags: 2, totalLinks: 0 });
