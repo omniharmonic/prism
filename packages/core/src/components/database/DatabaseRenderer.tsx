@@ -26,7 +26,8 @@ import { inferContentType } from "../../lib/schemas/content-types";
 import { queryKeys } from "../../lib/parachute/queries";
 import { noteAccess, useDatabaseRows, usePropertyWriter, useSchemas, useScope, useUpdateSchema } from "../../lib/database/hooks";
 import { filterConditions, noteTitle, QUERY_MAX_LIMIT, type QueryRow, type QuerySpec } from "../../lib/database/query";
-import { isSystemKey, propertyFromField, resolveProperties, SYSTEM_PROPERTIES, type PropertyDef } from "../../lib/database/schema";
+import { deletedKeys, isSystemKey, propertyFromField, resolveProperties, SYSTEM_PROPERTIES, type PropertyDef } from "../../lib/database/schema";
+import { PropertyEditor } from "./PropertyEditor";
 import { BottomSheet } from "../ui/BottomSheet";
 import { Popover } from "./Popover";
 import { FilterEditor, SortEditor, ViewSettings } from "./ViewControls";
@@ -145,7 +146,8 @@ export function DatabasePage({ note, readOnly, embedded }: RendererProps & {
   // rows, then the system properties (shown only when a view asks for them).
   const allProps: PropertyDef[] = useMemo(() => {
     const base = resolveProperties(tags, schemas, {});
-    const seen = new Set(base.map((p) => p.key));
+    // A deleted property stays hidden even where rows still hold a value for it.
+    const seen = new Set([...base.map((p) => p.key), ...deletedKeys(tags, schemas)]);
     for (const r of rows) for (const [k, v] of Object.entries(r.metadata)) {
       if (seen.has(k) || isSystemKey(k) || v === null || (typeof v === "object" && !Array.isArray(v))) continue;
       seen.add(k);
@@ -276,6 +278,13 @@ export function DatabasePage({ note, readOnly, embedded }: RendererProps & {
     return created;
   };
   const [editingTemplate, setEditingTemplate] = useState<DatabaseTemplate | null>(null);
+  // Property management (owner): the property being edited, by tag + key.
+  const [editingProp, setEditingProp] = useState<{ tag: string; key: string } | null>(null);
+  const deletedProps: PropertyDef[] = useMemo(() => {
+    const out: PropertyDef[] = [];
+    for (const t of tags) for (const [k, f] of Object.entries(schemas[t]?.fields ?? {})) if (f.deleted && !out.some((p) => p.key === k)) out.push(propertyFromField(k, f, t));
+    return out;
+  }, [tags, schemas]);
   const [importing, setImporting] = useState(false);
 
   const ctx: ViewContext | null = view ? {
@@ -299,6 +308,7 @@ export function DatabasePage({ note, readOnly, embedded }: RendererProps & {
     },
     create: async (titleText, preset) => { await createRow(titleText, preset); },
     updateView,
+    ...(ownerish && !readOnly ? { editProperty: (def: PropertyDef) => { if (def.tag) setEditingProp({ tag: def.tag, key: def.key }); } } : {}),
     // Selection only for people who can act on something (Notion viewers can't select).
     ...(view.type === "table" && !readOnly && (canCreate || rows.some(canEditRow)) ? { selection } : {}),
   } : null;
@@ -404,6 +414,7 @@ export function DatabasePage({ note, readOnly, embedded }: RendererProps & {
               }}
               onExport={() => void exportCsv()}
               onImport={() => setImporting(true)}
+              deleted={ownerish && !readOnly ? { props: deletedProps, onOpen: (def) => { if (def.tag) setEditingProp({ tag: def.tag, key: def.key }); } } : undefined}
             />
             {saveState === "local" && <p className="db-notice" role="status">You can’t edit this database, so view changes stay in this tab.</p>}
             {saveState === "conflict" && <p className="db-notice" role="alert">This database was changed somewhere else, so your view change wasn’t saved. <button type="button" className="db-ghost" onClick={() => { setLocal(null); setSaveState(""); void qc.invalidateQueries({ queryKey: queryKeys.vault.note(note.id) }); }}>Reload views</button></p>}
@@ -449,6 +460,9 @@ export function DatabasePage({ note, readOnly, embedded }: RendererProps & {
           onOpenBody={() => { const id = editingTemplate.id; setEditingTemplate(null); setPeek(id); }}
           onClose={() => setEditingTemplate(null)} />
       )}
+      {editingProp && schemas[editingProp.tag]?.fields[editingProp.key] && (
+        <PropertyEditor propertyKey={editingProp.key} tag={editingProp.tag} field={schemas[editingProp.tag]!.fields[editingProp.key]!} rows={rows} onClose={() => setEditingProp(null)} />
+      )}
       {importing && config && <CsvImportDialog tag={config.source.tags[0]!} dbPath={note.path} props={allProps} onClose={() => setImporting(false)} />}
     </>
   );
@@ -488,12 +502,13 @@ function SetupDatabase({ canEdit, onPick }: { canEdit: boolean; onPick: (tag: st
   );
 }
 
-function Toolbar({ config, view, props, search, onSearch, isMobile, canEditDb, canCreate, canImport, onSelect, onUpdate, onAddView, onDeleteView, onDuplicateView, onMoveView, onNew, onCreateTemplate, onEditTemplate, onSetDefaultTemplate, onRemoveTemplate, onExport, onImport }: {
+function Toolbar({ config, view, props, search, onSearch, isMobile, canEditDb, canCreate, canImport, onSelect, onUpdate, onAddView, onDeleteView, onDuplicateView, onMoveView, onNew, onCreateTemplate, onEditTemplate, onSetDefaultTemplate, onRemoveTemplate, onExport, onImport, deleted }: {
   config: DatabaseConfig; view: DatabaseView; props: PropertyDef[]; search: string; onSearch: (s: string) => void; isMobile: boolean;
   canEditDb: boolean; canCreate: boolean; canImport: boolean; onSelect: (id: string) => void; onUpdate: (p: Partial<DatabaseView>) => void;
   onAddView: (t: ViewType) => void; onDeleteView: () => void; onDuplicateView: () => void; onMoveView: (id: string, to: number) => void; onNew: (templateId: string | null) => void;
   onCreateTemplate: (name: string) => Promise<void>; onEditTemplate: (t: DatabaseTemplate) => void; onSetDefaultTemplate: (id: string | undefined) => void; onRemoveTemplate: (t: DatabaseTemplate) => void;
   onExport: () => void; onImport: () => void;
+  deleted?: { props: PropertyDef[]; onOpen: (def: PropertyDef) => void };
 }) {
   const filterBtn = useRef<HTMLButtonElement>(null);
   const sortBtn = useRef<HTMLButtonElement>(null);
@@ -508,7 +523,8 @@ function Toolbar({ config, view, props, search, onSearch, isMobile, canEditDb, c
   const body = panel === "filter" ? <FilterEditor filter={view.filter} props={props} onChange={(f) => onUpdate({ filter: f })} />
     : panel === "sort" ? <SortEditor sort={view.sort} props={props} onChange={(s) => onUpdate({ sort: s })} />
     : panel === "settings" ? <ViewSettings key={view.id} view={view} props={props} canDelete={canEditDb && config.views.length > 1} onChange={onUpdate} onDelete={() => { close(); onDeleteView(); }}
-        tabs={{ index: config.views.findIndex((v) => v.id === view.id), count: config.views.length, canDuplicate: config.views.length < MAX_VIEWS, onDuplicate: onDuplicateView, onMove: (to) => onMoveView(view.id, to) }} />
+        tabs={{ index: config.views.findIndex((v) => v.id === view.id), count: config.views.length, canDuplicate: config.views.length < MAX_VIEWS, onDuplicate: onDuplicateView, onMove: (to) => onMoveView(view.id, to) }}
+        deleted={deleted ? { props: deleted.props, onOpen: (def) => { close(); deleted.onOpen(def); } } : undefined} />
     : null;
   const titles = { filter: "Filter", sort: "Sort", settings: "View settings", add: "Add a view", more: "More", "": "" } as const;
   return (

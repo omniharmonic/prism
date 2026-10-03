@@ -17,10 +17,10 @@ import {
   type CollisionDetection,
   type DragEndEvent,
 } from "@dnd-kit/core";
-import { ArrowDownWideNarrow, ArrowUpNarrowWide, ArrowUpRight, ChevronDown, ChevronLeft, ChevronRight, EyeOff, Group, MoreHorizontal, Plus } from "lucide-react";
+import { ArrowDownWideNarrow, ArrowUpNarrowWide, ArrowUpRight, ChevronDown, ChevronLeft, ChevronRight, EyeOff, Group, MoreHorizontal, Pencil, Plus } from "lucide-react";
 import type { QueryRow } from "../../lib/database/query";
 import { noteTitle, unwrapLink } from "../../lib/database/query";
-import { isBlank, optionColor, propertyValue, type PropertyDef } from "../../lib/database/schema";
+import { isBlank, optionColor, optionLabel, propertyValue, type PropertyDef } from "../../lib/database/schema";
 import { OptionChip, PropertyDisplay, PropertyValue } from "./PropertyValue";
 import { Popover } from "./Popover";
 import { applyRank, reorderRank, type DatabaseView } from "./config";
@@ -43,6 +43,8 @@ export interface ViewContext {
   selection?: RowSelection;
   create: (title: string, preset?: Record<string, unknown>) => Promise<void>;
   updateView: (patch: Partial<DatabaseView>) => void;
+  /** Open the property editor (only for people who may change the schema). */
+  editProperty?: (def: PropertyDef) => void;
 }
 
 const title = (r: QueryRow) => noteTitle(r);
@@ -78,7 +80,7 @@ function GroupHeader({ g, def, open, onToggle }: { g: { value: string | null; la
       <button type="button" className="db-group-toggle focus-ring" aria-expanded={open} aria-label={`${open ? "Collapse" : "Expand"} ${g.label}`} onClick={onToggle}>
         {open ? <ChevronDown size={14} aria-hidden="true" /> : <ChevronRight size={14} aria-hidden="true" />}
       </button>
-      {g.value !== null && def.kind !== "checkbox" && def.kind !== "person" ? <OptionChip value={g.value} color={def.options.find((o) => o.value === g.value)?.color ?? optionColor(g.value)} /> : <span>{g.label}</span>}
+      {g.value !== null && def.kind !== "checkbox" && def.kind !== "person" ? <OptionChip value={g.value} label={g.label} color={def.options.find((o) => o.value === g.value)?.color ?? optionColor(g.value)} /> : <span>{g.label}</span>}
       <span className="db-badge-count" aria-label={`${g.rows.length} ${g.rows.length === 1 ? "page" : "pages"}`}>{g.rows.length}</span>
     </h3>
   );
@@ -148,7 +150,7 @@ function groupRows(rows: QueryRow[], def: PropertyDef | undefined): Array<{ valu
       buckets.get(v)!.push(r);
     }
   }
-  const label = (v: string | null) => (v === null ? `No ${def.label}` : def.kind === "checkbox" ? (v === "true" ? "Checked" : "Unchecked") : def.kind === "person" || def.kind === "relation" ? unwrapLink(v).split("/").pop()! : v);
+  const label = (v: string | null) => (v === null ? `No ${def.label}` : def.kind === "checkbox" ? (v === "true" ? "Checked" : "Unchecked") : def.kind === "person" || def.kind === "relation" ? unwrapLink(v).split("/").pop()! : optionLabel(def, v));
   const out = [...buckets.entries()].map(([value, rs]) => ({ value, label: label(value), rows: rs }));
   // Like Notion, the empty group leads.
   return [...out.filter((g) => g.value === null), ...out.filter((g) => g.value !== null)];
@@ -188,6 +190,10 @@ function HeaderCell({ def, ctx, width, onResize }: { def: PropertyDef; ctx: View
         onKeyDown={(e) => { if (e.key === "ArrowLeft" || e.key === "ArrowRight") { e.preventDefault(); onResize(Math.max(80, Math.min(800, width + (e.key === "ArrowRight" ? 20 : -20))), true); } }} />
       <Popover anchor={anchor} open={open} onClose={() => setOpen(false)} label={`${def.label} column`} width={220}>
         <div className="db-menu" role="menu">
+          {ctx.editProperty && def.tag && !def.system && <>
+            <button type="button" role="menuitem" onClick={() => { setOpen(false); ctx.editProperty!(def); }}><Pencil size={14} aria-hidden="true" /> Edit property…</button>
+            <hr />
+          </>}
           <button type="button" role="menuitem" onClick={() => { ctx.updateView({ sort: [{ key: def.key, dir: "asc" }] }); setOpen(false); }}><ArrowUpNarrowWide size={14} aria-hidden="true" /> Sort ascending</button>
           <button type="button" role="menuitem" onClick={() => { ctx.updateView({ sort: [{ key: def.key, dir: "desc" }] }); setOpen(false); }}><ArrowDownWideNarrow size={14} aria-hidden="true" /> Sort descending</button>
           {groupable && <button type="button" role="menuitem" onClick={() => { ctx.updateView({ groupBy: ctx.view.groupBy === def.key ? undefined : def.key }); setOpen(false); }}><Group size={14} aria-hidden="true" /> {ctx.view.groupBy === def.key ? "Ungroup" : "Group by this"}</button>}

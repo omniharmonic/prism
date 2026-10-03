@@ -350,3 +350,21 @@
 .db-files-upload { display: inline-flex; align-items: center; justify-content: center; gap: 6px; height: 32px; border-radius: 6px; border: 1px dashed var(--glass-border-strong); color: var(--text-secondary); font-size: 13px; }
 .db-files-upload:hover:not(:disabled) { background: var(--glass-hover); color: var(--text-primary); }
 @media (max-width: 767px) { .db-files-upload { height: 44px; } .db-files-picker li { min-height: 44px; } }
+
+/* Property editor (NP-DB-11) */
+.db-option-list { display: grid; gap: 4px; margin: 0; padding: 0; list-style: none; }
+.db-option-list li { display: flex; align-items: center; gap: 6px; min-width: 0; flex-wrap: wrap; }
+.db-option-list li > input { flex: 1; min-width: 96px; min-height: 30px; padding: 0 8px; border-radius: 6px; border: 1px solid var(--glass-border); background: var(--bg-surface); color: var(--text-primary); font: inherit; font-size: 13px; }
+.db-option-list li > select { min-height: 30px; padding: 0 6px; border-radius: 6px; border: 1px solid var(--glass-border); background: var(--bg-surface); color: var(--text-primary); font: inherit; font-size: 12.5px; }
+.db-radio { display: flex; align-items: center; gap: 8px; min-height: 30px; font-size: 13px; color: var(--text-primary); }
+.db-primary.db-danger { background: var(--color-danger, #d64545); }
+.db-dialog code { font-size: 12px; padding: 1px 4px; border-radius: 4px; background: var(--glass); }
+.db-th-edit { color: var(--text-muted); }
+.db-prop-label-edit { text-align: left; cursor: pointer; border-radius: 4px; }
+.db-prop-label-edit:hover { color: var(--text-primary); text-decoration: underline dotted; }
+@media (max-width: 767px) {
+  .db-prop-label-edit { min-height: 44px; display: inline-flex; align-items: center; }
+  .db-option-list li > input, .db-option-list li > select { min-height: 44px; font-size: 16px; }
+  .db-option-list .db-icon-btn { min-width: 44px; min-height: 44px; }
+  .db-radio { min-height: 44px; }
+}

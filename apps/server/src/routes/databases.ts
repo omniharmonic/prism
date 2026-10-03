@@ -6,6 +6,8 @@
  *   GET  /api/schemas[?tags=a,b]   tag → {description, fields{type,enum,default,
  *                                  description,indexed,kind,label,colors,hidden}}
  *   PUT  /api/schemas/:tag         owner-only additive schema edit (+ hints)
+ *   POST /api/schemas/:tag/fields/:field/remove-values
+ *                                  owner-only: clear a DELETED property's values (dry-run default)
  *   POST /api/query                lean filtered/sorted/paged rows for a view
  *   POST /api/properties/:id       metadata-only property write with per-field CAS
  *   POST /api/properties/batch     up to 100 of those, one result each (bulk edit)
@@ -26,7 +28,8 @@
  * never returned. Presentation hints (kind/label/colours/hidden) are Prism-only
  * and live in the server's settings table per (vault, tag).
  */
-import { ingestKeyChanged } from "../ingest-keys";
+import { ingestKeyChanged, INGEST_KEYS } from "../ingest-keys";
+import { recordAction } from "../actions/store";
 import { Hono, type Context } from "hono";
 import { canonicalTag } from "../tags";
 import { systemNoteReason } from "@prism/core/pages";
@@ -54,6 +57,8 @@ import {
   isFieldKey,
   isSystemKey,
   mergeSchemaFields,
+  compatibleKinds,
+  PROPERTY_KIND_LABELS,
   metadataKeysFor,
   runQuery,
   validateQuerySpec,
@@ -312,6 +317,34 @@ async function applySchemaPatch(c: Context, entry: VaultEntry, tag: string, patc
       }
     }
   }
+  // Presentation only (NP-DB-11): a `kind` hint must be a presentation of the field's
+  // VAULT type. Anything else would be a vault type change, which is never made here.
+  for (const [k, h] of Object.entries(patch.ui ?? {})) {
+    const vaultType = merged.fields[k]?.type;
+    if (h.kind && vaultType !== undefined && !compatibleKinds(vaultType).includes(h.kind)) {
+      return c.json({
+        error: "incompatible_kind", field: k,
+        detail: `“${k}” is stored as ${vaultType} for every page with this tag, so it cannot become ${PROPERTY_KIND_LABELS[h.kind]}. Stored values are never converted; add a new property instead.`,
+      }, 409);
+    }
+  }
+  // Deleting an option (hide it) is refused while any page still holds it.
+  const storedHints = readHints(entry.id).get(tag) ?? {};
+  for (const [k, h] of Object.entries(patch.ui ?? {})) {
+    const fresh = (h.hiddenOptions ?? []).filter((o) => !(storedHints[k]?.hiddenOptions ?? []).includes(o));
+    if (!fresh.length) continue;
+    let rows: Note[];
+    try {
+      rows = await vaultClient(entry.id).listNotes({ tags: [tag], includeMetadata: [k], limit: RAW_MAX });
+    } catch (e) {
+      return vaultFailure(c, e);
+    }
+    if (rows.length >= RAW_MAX) return c.json({ error: "option_in_use", field: k, detail: "this tag has too many pages to verify that the option is unused" }, 409);
+    for (const o of fresh) {
+      const count = rows.filter((n) => !(n.tags ?? []).includes("prism-trashed") && holdsOption(n.metadata?.[k], o)).length;
+      if (count) return c.json({ error: "option_in_use", field: k, option: o, count, detail: `${count} ${count === 1 ? "page still uses" : "pages still use"} “${o}”. Change ${count === 1 ? "it" : "them"} first.` }, 409);
+    }
+  }
   const description = patch.description ?? current?.description ?? "";
   const vaultChange = merged.changed || (patch.description !== undefined && patch.description !== (current?.description ?? ""));
 
@@ -347,6 +380,117 @@ async function applySchemaPatch(c: Context, entry: VaultEntry, tag: string, patc
   const fresh = vaultChange ? { description: description || null, fields: merged.fields } : current;
   return c.json({ tag, schema: present(fresh, readHints(entry.id).get(tag)) });
 }
+
+const holdsOption = (v: unknown, option: string): boolean => (Array.isArray(v) ? v.some((x) => String(x) === option) : typeof v === "string" && v === option);
+
+// ── removing a deleted property's values (NP-DB-11 "delete with explicit data handling") ──
+
+const REMOVE_DEFAULT = 500;
+const REMOVE_MAX = 2000;
+const REMOVE_CONCURRENCY = 2;
+const FIELD_NAME = /^[A-Za-z][A-Za-z0-9_-]{0,63}$/;
+const removeJobs = new Set<string>();
+
+/**
+ * Clear `metadata[field]` on the pages of `tag`. The vault tag schema is never
+ * touched (it is shared and additive-only); this is the only place Prism deletes
+ * property DATA, so it is deliberately narrow:
+ *   - server-owner role only, CSRF-guarded, dry-run unless `dryRun: false`;
+ *   - a write needs the property already marked deleted (hidden everywhere) — a
+ *     visible property's values are never removed (a dry run may preview first);
+ *   - never for Prism-managed or ingest-owned tags, system/ingest keys, system
+ *     notes, trashed pages, or a page that also carries ANOTHER tag whose schema
+ *     declares the same key (that tag's property would lose its value);
+ *   - one CAS write per page (`if_updated_at`; a page that moved is a conflict,
+ *     never retried blindly, never forced), ≤ `limit` pages per run.
+ */
+databasesApi.post("/schemas/:tag/fields/:field/remove-values", bodyLimit({ maxSize: 4096 }), async (c) => {
+  const actor = resolveActor(c);
+  if (actor.kind !== "user" || actor.role !== "owner") return c.json({ error: "forbidden", reason: "removing a property's values is owner-only" }, 403);
+  const via = requestVia(c);
+  const csrf = csrfRefusal(c, via);
+  if (csrf) return csrf;
+  // A person at a signed-in browser or device — never an agent credential (MCP, loopback token).
+  if (via !== "session" && via !== "device") return c.json({ error: "agent_origin_refused", detail: "removing values needs a signed-in person" }, 403);
+  const tag = canonicalTag(c.req.param("tag") ?? "");
+  const field = c.req.param("field") ?? "";
+  if (!tag || tag.length > 128 || /[\u0000-\u001f]/.test(tag)) return c.json({ error: "bad_request", detail: "invalid tag" }, 400);
+  if (!FIELD_NAME.test(field) || isSystemKey(field) || INGEST_KEYS.has(field) || field === "source") return c.json({ error: "bad_request", detail: "not a removable property" }, 400);
+  const body = (await c.req.json().catch(() => null)) as { dryRun?: unknown; limit?: unknown } | null;
+  if (!body || typeof body !== "object" || Array.isArray(body)) return c.json({ error: "bad_request" }, 400);
+  if (body.dryRun !== undefined && typeof body.dryRun !== "boolean") return c.json({ error: "bad_request", detail: "dryRun must be boolean" }, 400);
+  const dryRun = body.dryRun !== false;
+  const limit = body.limit === undefined ? REMOVE_DEFAULT : Number(body.limit);
+  if (!Number.isInteger(limit) || limit < 1 || limit > REMOVE_MAX) return c.json({ error: "bad_request", detail: `limit must be 1–${REMOVE_MAX}` }, 400);
+  if (LOCKED_TAG(tag)) return c.json({ error: "forbidden", reason: "this tag's schema is managed by Prism" }, 403);
+  if (INGEST_TAGS.has(tag)) return c.json({ error: "protected_tag", detail: "values of an ingested tag are never removed in bulk" }, 409);
+  const entry = entryFor(c, actor);
+  // A dry run may preview the count before the property is deleted; a WRITE needs it deleted first.
+  if (!dryRun && readHints(entry.id).get(tag)?.[field]?.deleted !== true) return c.json({ error: "not_deleted", detail: "delete (hide) the property first; a visible property's values are never removed" }, 409);
+
+  let schemas: Map<string, TagSchema>;
+  let rows: Note[];
+  try {
+    schemas = await vaultSchemas(entry);
+    rows = await vaultClient(entry.id).listNotes({ tags: [tag], includeMetadata: [field, "prism_creator", "prism_visibility"], limit: RAW_MAX });
+  } catch (e) {
+    return vaultFailure(c, e);
+  }
+  const holding = rows.filter((n) => n.metadata?.[field] !== undefined && n.metadata?.[field] !== null);
+  // Another tag on the same page declaring this key owns the value too: leave it.
+  const sharedBy = (n: Note) => (n.tags ?? []).some((t) => t !== tag && schemas.get(t)?.fields?.[field] !== undefined);
+  const skipped = { trashed: 0, shared: 0, system: 0 };
+  const targets: Note[] = [];
+  for (const n of holding) {
+    if ((n.tags ?? []).includes("prism-trashed")) skipped.trashed++;
+    else if (systemNoteReason(n)) skipped.system++;
+    else if (sharedBy(n)) skipped.shared++;
+    else targets.push(n);
+  }
+  const base = { tag, field, total: targets.length, skipped, truncated: rows.length >= RAW_MAX };
+  c.header("Cache-Control", "private, no-store");
+  if (dryRun) return c.json({ dryRun: true, ...base });
+
+  const jobKey = `${entry.id}\u0000${tag}\u0000${field}`;
+  if (removeJobs.has(jobKey)) return c.json({ error: "busy", detail: "this property's values are already being removed" }, 409);
+  removeJobs.add(jobKey);
+  const out = { removed: 0, conflicts: 0, failed: 0 };
+  try {
+    const vc = vaultClient(entry.id);
+    const batch = targets.slice(0, limit);
+    let next = 0;
+    const worker = async () => {
+      for (;;) {
+        const n = batch[next++];
+        if (!n) return;
+        if (!n.updatedAt) { out.conflicts++; continue; } // no revision to compare against: never forced
+        try {
+          const updated = await vc.updateNote(n.id, { metadata: { [field]: null }, ifUpdatedAt: n.updatedAt });
+          if (isDocLive(entry.id, n.id)) {
+            const prev = Date.parse(n.updatedAt);
+            const after = Date.parse(updated.updatedAt ?? "");
+            if (Number.isFinite(prev) && Number.isFinite(after)) markReconciled(docNameFor(entry.id, n.id), prev, after);
+          }
+          treeUpsertNote(entry, updated);
+          out.removed++;
+        } catch (e) {
+          if (e instanceof VaultConflictError) out.conflicts++;
+          else out.failed++;
+        }
+      }
+    };
+    await Promise.all(Array.from({ length: REMOVE_CONCURRENCY }, worker));
+  } finally {
+    removeJobs.delete(jobKey);
+    evictVaultListings(entry);
+  }
+  // Counts and names only — never a value.
+  recordAction({
+    actorEmail: actor.email, via, origin: "human", action: "schema.remove-values", vaultId: entry.id,
+    target: { tag, field, ...out, total: targets.length }, status: out.failed ? "failed" : "ok",
+  });
+  return c.json({ dryRun: false, ...base, ...out, remaining: Math.max(0, targets.length - out.removed) });
+});
 
 // ── query ────────────────────────────────────────────────────────────────────
 

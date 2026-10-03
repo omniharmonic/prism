@@ -25,6 +25,9 @@ import {
   looksLikePhone,
   linkLabel,
   optionColor,
+  optionLabel,
+  STATUS_GROUP_LABELS,
+  STATUS_GROUPS,
   type OptionColor,
   type PropertyDef,
 } from "../../lib/database/schema";
@@ -32,10 +35,10 @@ import { Popover } from "./Popover";
 
 export type ValueVariant = "bar" | "cell" | "panel" | "card";
 
-export function OptionChip({ value, color, onRemove, removeLabel }: { value: string; color: OptionColor; onRemove?: () => void; removeLabel?: string }) {
+export function OptionChip({ value, label, color, onRemove, removeLabel }: { value: string; /** Display name (an option rename); defaults to the stored value. */ label?: string; color: OptionColor; onRemove?: () => void; removeLabel?: string }) {
   return (
-    <span className="db-opt" data-color={color}>
-      <span className="db-opt-text">{value}</span>
+    <span className="db-opt" data-color={color} data-value={value}>
+      <span className="db-opt-text">{label ?? value}</span>
       {onRemove && (
         <button type="button" className="db-opt-remove" aria-label={removeLabel ?? `Remove ${value}`} onClick={(e) => { e.stopPropagation(); onRemove(); }}>
           <X size={11} aria-hidden="true" />
@@ -63,7 +66,7 @@ export function PropertyDisplay({ def, value }: { def: PropertyDef; value: unkno
     case "select":
     case "status":
     case "multi_select":
-      return <span className="db-chips">{list(value).map((v) => <OptionChip key={v} value={v} color={colorOf(def, v)} />)}</span>;
+      return <span className="db-chips">{list(value).map((v) => <OptionChip key={v} value={v} label={optionLabel(def, v)} color={colorOf(def, v)} />)}</span>;
     case "person":
     case "relation":
       return <span className="db-chips">{list(value).map((v) => <span key={v} className="db-link-chip" data-kind={def.kind}>{def.kind === "person" && <span className="db-avatar" aria-hidden="true">{linkLabel(v).slice(0, 1).toUpperCase()}</span>}{linkLabel(v)}</span>)}</span>;
@@ -384,9 +387,14 @@ function OptionPicker({ anchor, open, def, value, onClose, onPick, onCreateOptio
   const options = useMemo(() => {
     const vals = [...def.options.map((o) => o.value)];
     for (const v of selected) if (!vals.includes(v)) vals.push(v);
-    return vals.filter((v) => v.toLowerCase().includes(q.trim().toLowerCase()));
+    const needle = q.trim().toLowerCase();
+    return vals.filter((v) => v.toLowerCase().includes(needle) || optionLabel(def, v).toLowerCase().includes(needle));
   }, [def.options, q, value]); // eslint-disable-line react-hooks/exhaustive-deps
-  const exact = options.some((o) => o.toLowerCase() === q.trim().toLowerCase());
+  const exact = options.some((o) => o.toLowerCase() === q.trim().toLowerCase() || optionLabel(def, o).toLowerCase() === q.trim().toLowerCase());
+  // Status options are listed under their group (To-do / In progress / Complete).
+  const groupOf = (v: string) => def.options.find((o) => o.value === v)?.group;
+  const grouped = def.kind === "status" && options.some((o) => groupOf(o));
+  const ordered = grouped ? STATUS_GROUPS.flatMap((g) => options.filter((o) => (groupOf(o) ?? "in_progress") === g)) : options;
   // A free select (no schema enum) accepts any value; an enum select needs the
   // option in the schema first (the owner can add it), or the vault rejects the write.
   const canFree = multi || !def.options.length || def.type === undefined;
@@ -427,15 +435,20 @@ function OptionPicker({ anchor, open, def, value, onClose, onPick, onCreateOptio
           onKeyDown={(e) => { if (e.key === "Enter" && !e.nativeEvent.isComposing) { e.preventDefault(); if (options.length === 1) choose(options[0]!); else if (!exact) void create(); } }} />
       </div>
       <ul className="db-pop-list" role="listbox" aria-label={def.label} aria-multiselectable={multi || undefined}>
-        {options.map((o) => (
-          <li key={o} role="option" aria-selected={selected.has(o)}>
-            <button type="button" onClick={() => choose(o)}>
-              {multi && <span className="db-check" data-checked={selected.has(o) || undefined} aria-hidden="true">{selected.has(o) && <Check size={12} />}</span>}
-              <OptionChip value={o} color={colorOf(def, o)} />
-              {!multi && selected.has(o) && <Check size={14} className="db-pop-tick" aria-hidden="true" />}
-            </button>
-          </li>
-        ))}
+        {ordered.map((o, i) => {
+          const g = groupOf(o) ?? "in_progress";
+          const head = grouped && (i === 0 || (groupOf(ordered[i - 1]!) ?? "in_progress") !== g);
+          return (
+            <li key={o} role="option" aria-selected={selected.has(o)} data-group={grouped ? g : undefined}>
+              {head && <span className="db-pop-heading" role="presentation">{STATUS_GROUP_LABELS[g]}</span>}
+              <button type="button" onClick={() => choose(o)}>
+                {multi && <span className="db-check" data-checked={selected.has(o) || undefined} aria-hidden="true">{selected.has(o) && <Check size={12} />}</span>}
+                <OptionChip value={o} label={optionLabel(def, o)} color={colorOf(def, o)} />
+                {!multi && selected.has(o) && <Check size={14} className="db-pop-tick" aria-hidden="true" />}
+              </button>
+            </li>
+          );
+        })}
         {!options.length && !q && <li className="db-pop-empty">No options yet</li>}
       </ul>
       {q.trim() && !exact && (canFree || onCreateOption) && (

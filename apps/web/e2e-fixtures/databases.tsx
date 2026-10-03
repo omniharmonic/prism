@@ -20,7 +20,7 @@ import { Canvas } from "../../../packages/core/src/components/layout/Canvas";
 import { applyTheme } from "../../../packages/core/src/app/stores/settings";
 import { NewContentMenu } from "../../../packages/core/src/components/navigation/NewContentMenu";
 import { OpenAsDatabaseButton } from "../../../packages/core/src/components/database/OpenAsDatabaseButton";
-import { coerceCsvValue, mergeSchemaFields, parseCsv, runQuery, type CsvImportRequest, type CsvImportResponse, type CsvImportRow, type PropertyBatchResult, type QuerySpec, type SchemaMap, type SchemaPatch } from "@prism/core/database";
+import { coerceCsvValue, compatibleKinds, mergeSchemaFields, parseCsv, runQuery, type CsvImportRequest, type CsvImportResponse, type CsvImportRow, type PropertyBatchResult, type QuerySpec, type SchemaMap, type SchemaPatch } from "@prism/core/database";
 
 const params = new URLSearchParams(location.search);
 applyTheme(params.has("dark") ? "dark" : "light");
@@ -60,8 +60,13 @@ const schemas: SchemaMap = {
     },
   },
   person: { description: "People", fields: { role: { type: "string" } } },
-  initiative: { description: "Initiatives", fields: { stage: { type: "string" } } },
+  initiative: { description: "Initiatives", fields: { stage: { type: "string" }, budget: { type: "number" } } },
 };
+// Schema edits survive a reload within one test, like the notes.
+const persistedSchemas = sessionStorage.getItem("db-fixture-schemas");
+if (persistedSchemas) Object.assign(schemas, JSON.parse(persistedSchemas));
+/** The server's rules for tags it protects (routes/databases.ts INGEST_TAGS). */
+const INGEST = new Set(["task", "person", "email", "meeting"]);
 
 let notes: Note[] = [
   {
@@ -89,8 +94,10 @@ let notes: Note[] = [
   task("t6", "Private planning note", { status: "todo", priority: "low", prism_visibility: "private" }, { id: "t6" }),
   { id: "p1", path: "People/Mira Chen", content: "", tags: ["person"], metadata: { title: "Mira Chen", role: "Design" }, createdAt: at, updatedAt: at },
   { id: "p2", path: "People/Sam Rivera", content: "", tags: ["person"], metadata: { title: "Sam Rivera", role: "Engineering" }, createdAt: at, updatedAt: at },
-  { id: "atlas", path: "Projects/Atlas", content: "<p>Atlas initiative.</p>", tags: ["initiative"], metadata: { title: "Atlas", stage: "active" }, createdAt: at, updatedAt: at },
-  { id: "beacon", path: "Projects/Beacon", content: "<p>Beacon initiative.</p>", tags: ["initiative"], metadata: { title: "Beacon", stage: "planning" }, createdAt: at, updatedAt: at },
+  { id: "atlas", path: "Projects/Atlas", content: "<p>Atlas initiative.</p>", tags: ["initiative"], metadata: { title: "Atlas", stage: "active", budget: 12500 }, createdAt: at, updatedAt: at },
+  { id: "beacon", path: "Projects/Beacon", content: "<p>Beacon initiative.</p>", tags: ["initiative"], metadata: { title: "Beacon", stage: "planning", budget: 800.5 }, createdAt: at, updatedAt: at },
+  // A second database over a tag no ingester owns (property values may be removed there).
+  { id: "db2", path: "Projects/Initiatives", content: "", tags: [], metadata: { prism_type: "database", title: "Initiatives", prism_database: { version: 1, source: { tags: ["initiative"] }, views: [{ id: "table", name: "All initiatives", type: "table", visible: ["stage", "budget"] }] } }, createdAt: at, updatedAt: at },
   { id: "tpl-bug", path: "Projects/Launch plan/Templates/Bug report", content: "<h2>Steps to reproduce</h2><p>1.</p>", tags: [], metadata: { title: "Bug report", prism_template_for: "db", prism_template_props: { priority: "high", labels: ["bug"] } }, createdAt: at, updatedAt: at },
   { id: "page", path: "Projects/Prism/A living workspace", content: "<h2>Purpose</h2><p>A single, evolving place for thinking and projects.</p>", tags: ["task", "research"], metadata: { title: "A living workspace", status: "in-progress", priority: "medium", owner: "Alex Chen" }, createdAt: at, updatedAt: at },
 ];
@@ -122,6 +129,8 @@ const controls = {
   restored: [] as string[],
   batches: [] as unknown[],
   imports: [] as unknown[],
+  removals: [] as unknown[],
+  schemas: () => schemas,
 };
 Object.assign(window, { dbFixture: controls, prismUI: useUIStore });
 
@@ -187,9 +196,32 @@ if (!legacy) {
     const cur = schemas[tag] ?? { description: null, fields: {} };
     const merged = mergeSchemaFields(cur.fields, patch.fields ?? {});
     if (!merged.ok) throw new Error(merged.error);
-    for (const [k, h] of Object.entries(patch.ui ?? {})) merged.fields[k] = { ...(merged.fields[k] ?? {}), ...h };
+    // The server's presentation-only rules (routes/databases.ts applySchemaPatch).
+    for (const [k, h] of Object.entries(patch.ui ?? {})) {
+      const type = merged.fields[k]?.type;
+      if (h.kind && type !== undefined && !compatibleKinds(type).includes(h.kind)) throw new VaultRequestError(409, `PUT /schemas failed: 409 ${JSON.stringify({ error: "incompatible_kind", field: k, detail: `“${k}” is stored as ${type} for every page with this tag, so it cannot become ${h.kind}. Stored values are never converted; add a new property instead.` })}`);
+      for (const o of (h.hiddenOptions ?? []).filter((x) => !(cur.fields[k]?.hiddenOptions ?? []).includes(x))) {
+        const count = notes.filter((n) => n.tags?.includes(tag) && !n.tags.includes("prism-trashed") && (Array.isArray(n.metadata?.[k]) ? (n.metadata![k] as unknown[]).includes(o) : n.metadata?.[k] === o)).length;
+        if (count) throw new VaultRequestError(409, `PUT /schemas failed: 409 ${JSON.stringify({ error: "option_in_use", field: k, option: o, count, detail: `${count} ${count === 1 ? "page still uses" : "pages still use"} “${o}”. Change ${count === 1 ? "it" : "them"} first.` })}`);
+      }
+    }
+    for (const [k, h] of Object.entries(patch.ui ?? {})) merged.fields[k] = { ...(merged.fields[k] ?? {}), ...h, ...(h.colors ? { colors: { ...(merged.fields[k]?.colors ?? {}), ...h.colors } } : {}) };
     schemas[tag] = { description: patch.description ?? cur.description, fields: merged.fields };
+    sessionStorage.setItem("db-fixture-schemas", JSON.stringify(schemas));
     return clone(schemas[tag]!);
+  };
+  // POST /api/schemas/:tag/fields/:field/remove-values, as the server answers it.
+  client.removePropertyValues = async (tag, field, opts) => {
+    const dryRun = opts?.dryRun !== false;
+    controls.removals.push({ tag, field, dryRun });
+    if (INGEST.has(tag)) throw new VaultRequestError(409, `POST /schemas failed: 409 ${JSON.stringify({ error: "protected_tag", detail: "values of an ingested tag are never removed in bulk" })}`);
+    if (!dryRun && schemas[tag]?.fields[field]?.deleted !== true) throw new VaultRequestError(409, `POST /schemas failed: 409 ${JSON.stringify({ error: "not_deleted", detail: "delete (hide) the property first; a visible property's values are never removed" })}`);
+    const holding = notes.filter((n) => n.tags?.includes(tag) && n.metadata?.[field] !== undefined && n.metadata?.[field] !== null);
+    const targets = holding.filter((n) => !n.tags!.includes("prism-trashed"));
+    const base = { tag, field, total: targets.length, skipped: { trashed: holding.length - targets.length, shared: 0, system: 0 }, truncated: false };
+    if (dryRun) return { dryRun: true, ...base };
+    for (const n of targets) { const meta = { ...(n.metadata ?? {}) }; delete meta[field]; n.metadata = meta; bump(n); }
+    return { dryRun: false, ...base, removed: targets.length, conflicts: 0, failed: 0, remaining: 0 };
   };
   client.queryNotes = async (spec: QuerySpec) => {
     controls.queries.push(clone(spec));
@@ -315,7 +347,7 @@ function CreateShell() {
 
 const open = params.get("open") ?? "db";
 const target = find(open)!;
-useUIStore.getState().openTab(target.id, target.metadata?.title as string, target.id === "db" ? "database" : "task");
+useUIStore.getState().openTab(target.id, target.metadata?.title as string, target.metadata?.prism_type === "database" ? "database" : "task");
 const queries = new QueryClient({ defaultOptions: { queries: { retry: false } } });
 createRoot(document.getElementById("root")!).render(
   <React.StrictMode>

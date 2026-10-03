@@ -44,17 +44,52 @@ export const VAULT_TYPE_FOR_KIND: Record<PropertyKind, VaultFieldType> = {
   date: "string", person: "string", relation: "string", checkbox: "boolean", url: "string", email: "string", phone: "string", files: "array",
 };
 
+/** Number display formats (a presentation hint — the stored value stays a plain number). */
+export const NUMBER_FORMATS = ["number", "comma", "percent", "usd", "eur", "gbp"] as const;
+export type NumberFormat = (typeof NUMBER_FORMATS)[number];
+export const NUMBER_FORMAT_LABELS: Record<NumberFormat, string> = {
+  number: "Number", comma: "Number with commas", percent: "Percent", usd: "US dollar", eur: "Euro", gbp: "Pound",
+};
+
+/** Status groups (Notion's To-do / In progress / Complete). */
+export const STATUS_GROUPS = ["todo", "in_progress", "complete"] as const;
+export type StatusGroup = (typeof STATUS_GROUPS)[number];
+export const STATUS_GROUP_LABELS: Record<StatusGroup, string> = { todo: "To-do", in_progress: "In progress", complete: "Complete" };
+
+/**
+ * Presentation hints (Prism Server, per vault + tag + field). They NEVER change a
+ * stored value or the vault schema: a rename is a label, a "delete" hides the
+ * property everywhere (`deleted`), an option rename/recolour/reorder/delete is a
+ * map from the stored value to how it is shown.
+ */
+export interface FieldHints {
+  kind?: PropertyKind;
+  label?: string;
+  colors?: Record<string, OptionColor>;
+  hidden?: boolean;
+  relationTag?: string;
+  reverseLabel?: string;
+  /** "Deleted": hidden on every surface (pages, views, filters). Values stay until an owner removes them. */
+  deleted?: boolean;
+  /** Stored option value → display name (an option "rename"). */
+  optionLabels?: Record<string, string>;
+  /** Display order of options (stored values); unlisted options follow in schema order. */
+  optionOrder?: string[];
+  /** Options no longer offered (only allowed while no page uses them). */
+  hiddenOptions?: string[];
+  /** Number: how the value is displayed. */
+  format?: NumberFormat;
+  /** Status: option value → group. */
+  statusGroups?: Record<string, StatusGroup>;
+}
+
 /** One field as `GET /api/schemas` returns it: vault def + Prism hints. */
-export interface SchemaField {
+export interface SchemaField extends FieldHints {
   type?: string;
   enum?: string[];
   default?: unknown;
   description?: string;
   indexed?: boolean;
-  kind?: PropertyKind;
-  label?: string;
-  colors?: Record<string, OptionColor>;
-  hidden?: boolean;
   /** Relation: the tag whose pages the picker searches ("the target database"). */
   relationTag?: string;
   /** Relation: when set, pages of `relationTag` show the pages that link to them under this label. */
@@ -66,19 +101,13 @@ export interface TagSchema {
 }
 export type SchemaMap = Record<string, TagSchema>;
 
-/** Hints a client may send in `PUT /api/schemas/:tag` (`ui`). */
-export interface FieldHints {
-  kind?: PropertyKind;
-  label?: string;
-  colors?: Record<string, OptionColor>;
-  hidden?: boolean;
-  relationTag?: string;
-  reverseLabel?: string;
-}
-
 export interface PropertyOption {
   value: string;
+  /** What people see (the option's display name; defaults to the stored value). */
+  label: string;
   color: OptionColor;
+  /** Status properties: the option's group. */
+  group?: StatusGroup;
 }
 export interface PropertyDef {
   key: string;
@@ -100,6 +129,44 @@ export interface PropertyDef {
   reverseLabel?: string;
   /** Read-only system property (created/edited time/by). */
   system?: SystemKind;
+  /** Number: display format. */
+  format?: NumberFormat;
+  /** Options hidden from pickers (still shown on pages that hold them). */
+  hiddenOptions?: string[];
+}
+
+/**
+ * Kinds a field of a given VAULT type can be presented as (NP-DB-11 "change
+ * type"). A retype inside one row of this table only changes presentation; any
+ * other change would be a vault type change, which Prism refuses.
+ */
+export function compatibleKinds(vaultType: string | undefined): PropertyKind[] {
+  switch (vaultType) {
+    case "boolean": return ["checkbox"];
+    case "number":
+    case "integer": return ["number"];
+    case "date": return ["date"];
+    case "reference": return ["relation", "person"];
+    case "array": return ["multi_select", "person", "relation", "files"];
+    case "string":
+    case undefined: return ["text", "url", "email", "phone", "date", "select", "status", "person", "relation"];
+    default: return [];
+  }
+}
+
+/** The display name of an option value. */
+export function optionLabel(def: Pick<PropertyDef, "options"> | undefined, value: string): string {
+  return def?.options.find((o) => o.value === value)?.label ?? value;
+}
+
+const TODO_WORDS = /^(todo|to do|to-do|not started|backlog|draft|raw|new|open|planned|planning|tentative)$/i;
+const DONE_WORDS = /^(done|complete|completed|closed|shipped|published|processed|archived|cancelled|canceled|confirmed|resolved)$/i;
+/** A status option's group: the hint, else a guess from the word. */
+export function statusGroupOf(value: string, hints?: Record<string, StatusGroup>): StatusGroup {
+  const h = hints?.[value];
+  if (h && (STATUS_GROUPS as readonly string[]).includes(h)) return h;
+  const v = value.trim();
+  return TODO_WORDS.test(v) ? "todo" : DONE_WORDS.test(v) ? "complete" : "in_progress";
 }
 
 /** Notion's system properties: read-only, sortable, filterable. */
@@ -206,12 +273,19 @@ export function optionColor(value: string, hints?: Record<string, OptionColor>):
 
 export function propertyFromField(key: string, f: SchemaField, tag: string | null, sample?: unknown): PropertyDef {
   const kind = inferKind(key, f, sample);
-  const values = new Set<string>([...(f.enum ?? []), ...Object.keys(f.colors ?? {})]);
+  const hiddenOptions = Array.isArray(f.hiddenOptions) ? f.hiddenOptions.filter((v) => typeof v === "string") : [];
+  const all = [...new Set<string>([...(f.enum ?? []), ...Object.keys(f.colors ?? {})])].filter((v) => !hiddenOptions.includes(v));
+  const order = Array.isArray(f.optionOrder) ? f.optionOrder : [];
+  const rank = (v: string) => { const i = order.indexOf(v); return i < 0 ? order.length + all.indexOf(v) : i; };
+  const values = order.length ? [...all].sort((a, b) => rank(a) - rank(b)) : all;
+  const labelOf = (v: string) => { const l = f.optionLabels?.[v]; return typeof l === "string" && l.trim() ? l.trim() : v; };
   return {
     key,
     label: f.label?.trim() || humanize(key),
     kind,
-    options: [...values].map((v) => ({ value: v, color: optionColor(v, f.colors) })),
+    options: values.map((v) => ({ value: v, label: labelOf(v), color: optionColor(v, f.colors), ...(kind === "status" ? { group: statusGroupOf(v, f.statusGroups) } : {}) })),
+    ...(kind === "number" && f.format && (NUMBER_FORMATS as readonly string[]).includes(f.format) ? { format: f.format } : {}),
+    ...(hiddenOptions.length ? { hiddenOptions } : {}),
     tag,
     type: f.type,
     description: f.description,
@@ -221,6 +295,13 @@ export function propertyFromField(key: string, f: SchemaField, tag: string | nul
     ...(f.relationTag ? { target: f.relationTag } : {}),
     ...(f.reverseLabel ? { reverseLabel: f.reverseLabel } : {}),
   };
+}
+
+/** Keys the source tags' schemas mark as deleted (hidden everywhere). */
+export function deletedKeys(tags: string[], schemas: SchemaMap): Set<string> {
+  const out = new Set<string>();
+  for (const t of tags) for (const [k, f] of Object.entries(schemas[t]?.fields ?? {})) if (f.deleted) out.add(k);
+  return out;
 }
 
 /**
@@ -241,6 +322,8 @@ export function resolveProperties(
     if (!s) continue;
     for (const [key, f] of Object.entries(s.fields)) {
       if (seen.has(key) || isSystemKey(key)) continue;
+      // A deleted property is hidden on every surface, value or not (its key stays claimed).
+      if (f.deleted) { seen.add(key); continue; }
       if (f.hidden && isBlank(meta[key])) continue;
       seen.add(key);
       out.push(propertyFromField(key, f, tag, meta[key]));
@@ -273,16 +356,29 @@ export const linkTarget = (v: string): string => {
 export const asWikilink = (path: string): string => `[[${path}]]`;
 
 /** Short human text for any property value (cells, cards, filters). */
-export function formatValue(def: Pick<PropertyDef, "kind">, v: unknown): string {
+export function formatValue(def: Pick<PropertyDef, "kind"> & Partial<Pick<PropertyDef, "options" | "format">>, v: unknown): string {
   if (isBlank(v)) return "";
   if (def.kind === "checkbox") return v === true ? "Yes" : "No";
   if (Array.isArray(v)) return v.map((x) => formatValue(def, x)).filter(Boolean).join(", ");
+  if ((def.kind === "select" || def.kind === "status" || def.kind === "multi_select") && def.options) return optionLabel(def as Pick<PropertyDef, "options">, String(v));
   if (def.kind === "person" || def.kind === "relation") return typeof v === "string" ? linkLabel(v) : String(v);
   if (def.kind === "date" && typeof v === "string") return formatDate(v);
   if (def.kind === "files") return parseFileRefs(v).map((f) => f.name).join(", ");
   if (def.kind === "phone" && typeof v === "string") return v.trim();
-  if (def.kind === "number" && typeof v === "number") return v.toLocaleString();
+  if (def.kind === "number" && typeof v === "number") return formatNumber(v, def.format);
   return String(v);
+}
+
+/** A number as people read it. `percent` shows the stored number followed by % (12 → 12%), like Notion. */
+export function formatNumber(n: number, format?: NumberFormat): string {
+  switch (format) {
+    case "number": return String(n);
+    case "percent": return `${n.toLocaleString(undefined, { maximumFractionDigits: 2 })}%`;
+    case "usd": return n.toLocaleString("en-US", { style: "currency", currency: "USD" });
+    case "eur": return n.toLocaleString("en-IE", { style: "currency", currency: "EUR" });
+    case "gbp": return n.toLocaleString("en-GB", { style: "currency", currency: "GBP" });
+    default: return n.toLocaleString();
+  }
 }
 
 /** "Oct 2, 3:41 PM" (+ year when not this year) — system timestamps. */
@@ -428,6 +524,39 @@ export function validateSchemaPatch(raw: unknown): { ok: true; patch: SchemaPatc
       if (h.reverseLabel !== undefined) {
         if (!okText(h.reverseLabel, 80)) return { ok: false, error: `ui.${name}: reverseLabel must be ≤80 chars` };
         out.reverseLabel = (h.reverseLabel as string).trim();
+      }
+      if (h.deleted !== undefined) {
+        if (typeof h.deleted !== "boolean") return { ok: false, error: `ui.${name}: deleted must be boolean` };
+        out.deleted = h.deleted;
+      }
+      if (h.format !== undefined) {
+        if (!(NUMBER_FORMATS as readonly string[]).includes(h.format as string)) return { ok: false, error: `ui.${name}: unknown number format` };
+        out.format = h.format as NumberFormat;
+      }
+      const optName = (o: unknown) => okText(o, 80) && (o as string) !== "" && !BANNED.has(o as string);
+      if (h.optionLabels !== undefined) {
+        if (!recordOf(h.optionLabels) || names(h.optionLabels).length > 100) return { ok: false, error: `ui.${name}: optionLabels must be an object of ≤100 options` };
+        out.optionLabels = {};
+        for (const [opt, l] of Object.entries(h.optionLabels)) {
+          if (!optName(opt) || !okText(l, 80)) return { ok: false, error: `ui.${name}: invalid option name` };
+          if ((l as string).trim()) out.optionLabels[opt] = (l as string).trim();
+        }
+        const shown = Object.values(out.optionLabels).map((l) => l.toLowerCase());
+        if (new Set(shown).size !== shown.length) return { ok: false, error: `ui.${name}: two options cannot share a name` };
+      }
+      for (const listKey of ["optionOrder", "hiddenOptions"] as const) {
+        const v = h[listKey];
+        if (v === undefined) continue;
+        if (!Array.isArray(v) || v.length > 200 || !v.every(optName)) return { ok: false, error: `ui.${name}: ${listKey} must be a list of option names` };
+        out[listKey] = [...new Set(v as string[])];
+      }
+      if (h.statusGroups !== undefined) {
+        if (!recordOf(h.statusGroups) || names(h.statusGroups).length > 100) return { ok: false, error: `ui.${name}: statusGroups must be an object` };
+        out.statusGroups = {};
+        for (const [opt, g] of Object.entries(h.statusGroups)) {
+          if (!optName(opt) || !(STATUS_GROUPS as readonly string[]).includes(g as string)) return { ok: false, error: `ui.${name}: invalid status group` };
+          out.statusGroups[opt] = g as StatusGroup;
+        }
       }
       if (h.colors !== undefined) {
         if (!recordOf(h.colors) || names(h.colors).length > 100) return { ok: false, error: `ui.${name}: colors must be an object` };

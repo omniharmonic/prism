@@ -9,7 +9,7 @@ import type {
   VaultInfo,
 } from "../lib/types";
 import type { MoveRequest, MoveResult, TrashListing, PreferencesSnapshot, PagePreferences } from "../lib/pages/model";
-import type { QueryPage, QuerySpec, SchemaMap, SchemaPatch, TagSchema, PropertyBatchItem, PropertyBatchResult, CsvImportRequest, CsvImportResponse } from "../lib/database";
+import type { QueryPage, QuerySpec, SchemaMap, SchemaPatch, TagSchema, PropertyBatchItem, PropertyBatchResult, CsvImportRequest, CsvImportResponse, RemoveValuesResult } from "../lib/database";
 
 /** Transport status for recoverable UI states, without parsing diagnostic text. */
 export class VaultRequestError extends Error {
@@ -239,6 +239,9 @@ export interface VaultClient {
   getSchemas?(tags?: string[]): Promise<{ schemas: SchemaMap; canEdit?: boolean }>;
   /** Owner-only additive schema edit (the server holds the admin credential). */
   updateSchema?(tag: string, patch: SchemaPatch): Promise<TagSchema>;
+  /** Owner-only: clear a DELETED (hidden-everywhere) property's values on the pages of a
+   *  tag — dry-run unless `dryRun: false`, one CAS write per page. Optional. */
+  removePropertyValues?(tag: string, field: string, opts?: { dryRun?: boolean }): Promise<RemoveValuesResult>;
   /** Lean, permission-filtered, paged rows for a database view. Optional: the
    *  shared engine runs over `listNotes` when absent. */
   queryNotes?(spec: QuerySpec): Promise<QueryPage>;

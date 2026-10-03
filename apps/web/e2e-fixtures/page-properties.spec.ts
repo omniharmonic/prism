@@ -100,6 +100,107 @@ test("viewers see properties without edit affordances", async ({ page }) => {
   expect((await state(page)).writes).toEqual([]);
 });
 
+// NP-DB-11 — rename, change type (with a preview), edit options and delete are presentation changes: no stored value moves.
+test("rename, retype with preview, delete property", async ({ page }) => {
+  await page.goto("/e2e-fixtures/databases.html?open=page");
+  const props = bar(page);
+  const stored = async () => (await state(page)).page.metadata;
+  const lastSchema = async () => (await state(page)).schemaWrites.at(-1);
+
+  // Rename: a label. The metadata key and the value stay.
+  await props.getByRole("button", { name: "Edit property Status" }).click();
+  await page.getByRole("dialog", { name: "Edit property Status" }).getByLabel("Property name").fill("Stage");
+  await page.getByRole("dialog", { name: "Edit property Status" }).getByRole("button", { name: "Rename" }).click();
+  const editor = page.getByRole("dialog", { name: "Edit property Stage" });
+  await expect(editor).toBeVisible();
+  expect(await lastSchema()).toEqual({ tag: "task", patch: { ui: { status: { label: "Stage" } } } });
+  await expect(props.getByRole("button", { name: "Stage: in-progress" })).toBeVisible();
+  expect((await stored()).status).toBe("in-progress");
+
+  // Options: rename, recolour, reorder — all hints over the stored value.
+  await editor.getByLabel("Name of option in-progress").fill("Doing");
+  await editor.getByLabel("Name of option in-progress").blur();
+  await expect(props.getByRole("button", { name: "Stage: Doing" })).toBeVisible();
+  expect(await lastSchema()).toEqual({ tag: "task", patch: { ui: { status: { optionLabels: { "in-progress": "Doing" } } } } });
+  await editor.getByLabel("Colour of Doing").selectOption("red");
+  await expect(props.locator('.db-opt[data-value="in-progress"]')).toHaveAttribute("data-color", "red");
+  const names = () => editor.getByRole("list", { name: "Options", exact: true }).getByRole("textbox").evaluateAll((els) => els.map((e) => (e as HTMLInputElement).value));
+  expect(await names()).toEqual(["todo", "Doing", "done"]);
+  await editor.getByRole("button", { name: "Move Doing up" }).click();
+  await expect.poll(names).toEqual(["Doing", "todo", "done"]);
+  expect(await lastSchema()).toEqual({ tag: "task", patch: { ui: { status: { optionOrder: ["in-progress", "todo", "done"] } } } });
+  // Deleting an option pages still use is refused, with the count; an unused one is hidden and can be restored.
+  await editor.getByRole("button", { name: "Delete option todo" }).click();
+  await expect(editor.getByRole("alert")).toContainText("2 pages still use “todo”");
+  await expect.poll(names).toEqual(["Doing", "todo", "done"]);
+  await editor.getByLabel("New option").fill("blocked");
+  await editor.getByRole("button", { name: "Add option" }).click();
+  expect(await lastSchema()).toEqual({ tag: "task", patch: { fields: { status: { enum: ["todo", "in-progress", "done", "blocked"] } }, ui: { status: {} } } });
+  await expect.poll(names).toEqual(["Doing", "todo", "done", "blocked"]);
+  await editor.getByRole("button", { name: "Delete option blocked" }).click();
+  await expect.poll(names).toEqual(["Doing", "todo", "done"]);
+  await expect(editor.getByRole("list", { name: "Deleted options" })).toContainText("blocked (deleted)");
+  await editor.getByRole("button", { name: "Restore option blocked" }).click();
+  await expect.poll(names).toEqual(["Doing", "todo", "done", "blocked"]);
+  expect((await stored()).status).toBe("in-progress"); // never rewritten
+  await editor.getByRole("button", { name: "Close" }).click();
+
+  // Change type: only presentations of the same vault type are offered, with a preview of how values will read.
+  await props.getByRole("button", { name: "Edit property Priority" }).click();
+  const priority = page.getByRole("dialog", { name: "Edit property Priority" });
+  const type = priority.getByLabel("Property type");
+  await expect(type).toHaveValue("select");
+  await expect(type.locator('option[value="number"]')).toHaveJSProperty("disabled", true);
+  await expect(type.locator('option[value="checkbox"]')).toHaveJSProperty("disabled", true);
+  await expect(type.locator('option[value="status"]')).toHaveJSProperty("disabled", false);
+  await expect(priority).toContainText("Other types would change stored values; Prism never does that");
+  await type.selectOption("status");
+  const preview = priority.getByRole("group", { name: "Type change preview" });
+  await expect(preview).toContainText("1 of 1 value will show as Status");
+  await expect(preview).toContainText("No stored value changes");
+  await expect(preview.getByRole("list", { name: "Examples" })).toContainText("medium");
+  const before = (await state(page)).schemaWrites.length;
+  await preview.getByRole("button", { name: "Cancel" }).click();
+  expect((await state(page)).schemaWrites.length).toBe(before); // the preview writes nothing
+  await type.selectOption("status");
+  await priority.getByRole("button", { name: "Change type to Status" }).click();
+  expect(await lastSchema()).toEqual({ tag: "task", patch: { ui: { priority: { kind: "status" } } } });
+  await expect(type).toHaveValue("status");
+  await expect(priority.getByLabel("Group of medium")).toHaveValue("in_progress");
+  expect((await stored()).priority).toBe("medium");
+
+  // Delete with explicit data handling: keep the values → hidden everywhere, restorable.
+  await priority.getByRole("button", { name: "Delete property…" }).click();
+  const del = priority.getByRole("group", { name: "Delete property" });
+  await expect(del.getByRole("radio", { name: /Keep the values/ })).toBeChecked();
+  await del.getByRole("button", { name: "Delete property", exact: true }).click();
+  expect(await lastSchema()).toEqual({ tag: "task", patch: { ui: { priority: { deleted: true } } } });
+  await expect(priority.getByRole("region", { name: "Deleted property" })).toContainText("hidden on every page, view and filter");
+  await expect(props.getByRole("button", { name: /^Priority:/ })).toHaveCount(0);
+  expect((await stored()).priority).toBe("medium"); // hiding removes nothing
+  // Removing values of an ingest-owned tag is refused by the server; nothing is lost.
+  await priority.getByRole("button", { name: "Remove its values…" }).click();
+  await expect(priority.getByRole("alert")).toContainText("Values of an ingested tag are never removed in bulk");
+  expect((await stored()).priority).toBe("medium");
+  await priority.getByRole("button", { name: "Close" }).click();
+  // Restore from "Add property" → Deleted properties.
+  await props.getByRole("button", { name: "Add property" }).click();
+  await page.getByRole("dialog", { name: "Add a property" }).getByRole("button", { name: "Manage deleted property Priority" }).click();
+  await page.getByRole("dialog", { name: "Edit property Priority" }).getByRole("button", { name: "Restore property" }).click();
+  await expect(props.getByRole("button", { name: "Priority: medium" })).toBeVisible();
+  expect((await state(page)).writes).toEqual([]); // no page was written by any of this
+});
+
+test("non-owners see no schema controls", async ({ page }) => {
+  await page.goto("/e2e-fixtures/databases.html?open=page&viewer");
+  await expect(bar(page).getByRole("button", { name: "Status: in-progress" })).toBeVisible();
+  await expect(page.getByRole("button", { name: /^Edit property/ })).toHaveCount(0);
+  await page.goto("/e2e-fixtures/databases.html?viewer");
+  await page.getByRole("button", { name: "Status", exact: true }).click();
+  await expect(page.getByRole("menuitem", { name: "Sort ascending" })).toBeVisible();
+  await expect(page.getByRole("menuitem", { name: "Edit property…" })).toHaveCount(0);
+});
+
 for (const appearance of ["phone", "dark"])
   test(`property bar ${appearance}`, async ({ page }, info) => {
     if (appearance === "phone") await page.setViewportSize({ width: 390, height: 844 });

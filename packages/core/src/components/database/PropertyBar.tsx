@@ -26,6 +26,8 @@ import { isFieldKey } from "../../lib/database/query";
 import { useUIStore } from "../../app/stores/ui";
 import { queryKeys } from "../../lib/parachute/queries";
 import { PropertyValue } from "./PropertyValue";
+import { PropertyEditor } from "./PropertyEditor";
+import { propertyFromField } from "../../lib/database/schema";
 import { Popover } from "./Popover";
 import "./database.css";
 
@@ -66,6 +68,12 @@ export function PropertyBar({ note, readOnly, onOpenAll, layout = "bar", trailin
   const [showEmpty, setShowEmpty] = useState(layout === "panel");
   const [justAdded, setJustAdded] = useState<string | null>(null);
   const [freeDraft, setFreeDraft] = useState<FreeDraft>(null);
+  const [editingProp, setEditingProp] = useState<{ tag: string; key: string } | null>(null);
+  const deletedProps = useMemo(() => {
+    const out: PropertyDef[] = [];
+    for (const t of tags) for (const [k, f] of Object.entries(schemas[t]?.fields ?? {})) if (f.deleted && !out.some((p) => p.key === k)) out.push(propertyFromField(k, f, t));
+    return out;
+  }, [tags, schemas]);
   const meta = note.metadata ?? {};
 
   const shown = props.filter((p) => showEmpty || !isBlank(meta[p.key]) || revealed.includes(p.key));
@@ -92,7 +100,9 @@ export function PropertyBar({ note, readOnly, onOpenAll, layout = "bar", trailin
     <div className={`db-props db-props-${layout}`} role="group" aria-label="Page properties">
       {shown.map((def) => (
         <div className="db-prop" key={def.key} data-kind={def.kind}>
-          <span className="db-prop-label" title={def.description || def.label}>{def.label}</span>
+          {canEditSchema && def.tag ? (
+            <button type="button" className="db-prop-label db-prop-label-edit focus-ring" title={`Edit the “${def.label}” property`} aria-label={`Edit property ${def.label}`} onClick={() => setEditingProp({ tag: def.tag!, key: def.key })}>{def.label}</button>
+          ) : <span className="db-prop-label" title={def.description || def.label}>{def.label}</span>}
           <PropertyValue
             def={def}
             value={meta[def.key]}
@@ -129,6 +139,8 @@ export function PropertyBar({ note, readOnly, onOpenAll, layout = "bar", trailin
               firstTag={tags[0] ?? null}
               existing={props.map((p) => p.key)}
               showEmpty={showEmpty}
+              deleted={canEditSchema ? deletedProps : []}
+              onManageDeleted={(p) => { if (p.tag) setEditingProp({ tag: p.tag, key: p.key }); }}
               hiddenCount={hiddenEmpty.length}
               onToggleEmpty={() => setShowEmpty((v) => !v)}
               onReveal={reveal}
@@ -154,6 +166,9 @@ export function PropertyBar({ note, readOnly, onOpenAll, layout = "bar", trailin
         </div>
       )}
       {freeDraftNode()}
+      {editingProp && schemas[editingProp.tag]?.fields[editingProp.key] && (
+        <PropertyEditor propertyKey={editingProp.key} tag={editingProp.tag} field={schemas[editingProp.tag]!.fields[editingProp.key]!} rows={[note]} onClose={() => setEditingProp(null)} />
+      )}
       {trailing && <div className="db-prop db-prop-trailing">{trailing}</div>}
     </div>
   );
@@ -182,7 +197,8 @@ function relativeDay(iso: string): string {
   return d.toLocaleDateString(undefined, { month: "short", day: "numeric", ...(d.getFullYear() === today.getFullYear() ? {} : { year: "numeric" }) });
 }
 
-function AddProperty({ empty, canCreate, canEditSchema, firstTag, existing, showEmpty, hiddenCount, onToggleEmpty, onReveal, onCreateSchemaField, onCreateFree }: {
+function AddProperty({ empty, canCreate, canEditSchema, firstTag, existing, showEmpty, hiddenCount, onToggleEmpty, onReveal, onCreateSchemaField, onCreateFree, deleted, onManageDeleted }: {
+  deleted: PropertyDef[]; onManageDeleted: (p: PropertyDef) => void;
   empty: PropertyDef[]; canCreate: boolean; canEditSchema: boolean; firstTag: string | null; existing: string[];
   showEmpty: boolean; hiddenCount: number; onToggleEmpty: () => void; onReveal: (key: string) => void;
   onCreateSchemaField: (label: string, kind: PropertyKind, tag: string, relation?: { target: string; reverse: string }) => Promise<void>;
@@ -240,6 +256,21 @@ function AddProperty({ empty, canCreate, canEditSchema, firstTag, existing, show
           <button type="button" className="db-pop-clear" onClick={() => { onToggleEmpty(); setOpen(false); }}>
             {showEmpty ? "Hide empty properties" : `Show ${hiddenCount} empty ${hiddenCount === 1 ? "property" : "properties"}`}
           </button>
+        )}
+        {deleted.length > 0 && (
+          <>
+            <p className="db-pop-heading">Deleted properties</p>
+            <ul className="db-pop-list" aria-label="Deleted properties">
+              {deleted.map((p) => (
+                <li key={p.key}>
+                  <button type="button" aria-label={`Manage deleted property ${p.label}`} onClick={() => { onManageDeleted(p); setOpen(false); }}>
+                    <span className="db-pop-title">{p.label}</span>
+                    <span className="db-pop-path">Restore or remove…</span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </>
         )}
         {canCreate && (
           <form className="db-new-prop" onSubmit={(e) => { e.preventDefault(); void submit(); }}>

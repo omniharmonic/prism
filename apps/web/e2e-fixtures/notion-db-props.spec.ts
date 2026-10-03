@@ -161,3 +161,77 @@ test("a saved view change never shows the previous config again", async ({ page 
   await expect(page.getByRole("columnheader", { name: /Email/ })).toBeVisible();
   expect(await page.evaluate(() => (window as any).columnReverts)).toBe(0);
 });
+
+// NP-DB-11 / NP-DB-08 — property management from a table header: retype with a preview over the loaded rows, number format,
+// and delete with "remove the values" (dry run first, then the owner job).
+test("property management from the table: retype preview, number format, delete and remove values", async ({ page }) => {
+  await page.goto("/e2e-fixtures/databases.html?open=db2");
+  const table = page.getByRole("table", { name: "All initiatives" });
+  const notes = () => page.evaluate(() => (window as any).dbFixture.notes() as any[]);
+  await expect(row(page, "Atlas").getByRole("button", { name: "Stage: active" })).toBeVisible();
+  const edit = async (label: string) => {
+    await table.getByRole("button", { name: label, exact: true }).click();
+    await page.getByRole("menuitem", { name: "Edit property…" }).click();
+    return page.getByRole("dialog", { name: `Edit property ${label}` });
+  };
+
+  // Text → URL: the preview says how many current values will not read as links.
+  let editor = await edit("Stage");
+  await editor.getByLabel("Property type").selectOption("url");
+  const preview = editor.getByRole("group", { name: "Type change preview" });
+  await expect(preview).toContainText("0 of 2 values will show as URL; 2 do not look like one and will show as plain text.");
+  await preview.getByRole("button", { name: "Cancel" }).click();
+  // Text → Select: every value fits; cells become chips; stored values untouched.
+  await editor.getByLabel("Property type").selectOption("select");
+  await expect(preview).toContainText("2 of 2 values will show as Select.");
+  await preview.getByRole("button", { name: "Change type to Select" }).click();
+  await expect(row(page, "Atlas").locator('.db-opt[data-value="active"]')).toBeVisible();
+  expect((await fx(page)).schemaWrites.at(-1)).toEqual({ tag: "initiative", patch: { ui: { stage: { kind: "select" } } } });
+  await editor.getByRole("button", { name: "Close" }).click();
+
+  // Number format is a display hint: the stored number is unchanged.
+  editor = await edit("Budget");
+  await editor.getByLabel("Number format").selectOption("usd");
+  await expect(row(page, "Atlas").getByRole("button", { name: "Budget: $12,500.00" })).toBeVisible();
+  await expect(row(page, "Beacon").getByRole("button", { name: "Budget: $800.50" })).toBeVisible();
+  await editor.getByLabel("Number format").selectOption("percent");
+  await expect(row(page, "Atlas").getByRole("button", { name: "Budget: 12,500%" })).toBeVisible();
+  expect((await notes()).find((n: any) => n.id === "atlas").metadata.budget).toBe(12500);
+  // A number can never become text: the option is disabled and explained.
+  await expect(editor.getByLabel("Property type").locator('option[value="text"]')).toHaveJSProperty("disabled", true);
+  await editor.getByRole("button", { name: "Close" }).click();
+  // Editing the formatted number still edits the raw value.
+  await row(page, "Atlas").getByRole("button", { name: "Budget: 12,500%" }).click();
+  await expect(page.getByRole("textbox", { name: "Budget" })).toHaveValue("12500");
+  await page.keyboard.press("Escape");
+
+  // Delete + remove the values: a dry run names the count, then the job runs.
+  editor = await edit("Stage");
+  await editor.getByRole("button", { name: "Delete property…" }).click();
+  const del = editor.getByRole("group", { name: "Delete property" });
+  await del.getByRole("radio", { name: /Remove the values from every page/ }).check();
+  await del.getByRole("button", { name: "Check what would be removed" }).click();
+  await expect(del.getByRole("status")).toContainText("2 pages hold a “Stage” value.");
+  expect((await fx(page)).removals).toEqual([{ tag: "initiative", field: "stage", dryRun: true }]);
+  expect((await notes()).find((n: any) => n.id === "atlas").metadata.stage).toBe("active"); // nothing yet
+  await del.getByRole("button", { name: "Delete and remove 2 values" }).click();
+  await expect(editor.getByRole("status")).toContainText("Removed the value from 2 pages.");
+  expect((await fx(page)).removals.at(-1)).toEqual({ tag: "initiative", field: "stage", dryRun: false });
+  const after = (await notes()).filter((n: any) => n.tags.includes("initiative"));
+  expect(after.map((n: any) => "stage" in n.metadata)).toEqual([false, false]);
+  expect(after.map((n: any) => n.metadata.budget)).toEqual([12500, 800.5]); // other properties stay
+  await editor.getByRole("button", { name: "Close" }).click();
+  await expect(table.getByRole("button", { name: "Stage", exact: true })).toHaveCount(0);
+  // The filter builder no longer offers it either.
+  await page.getByRole("button", { name: "Filter", exact: true }).click();
+  await page.getByRole("dialog", { name: "Filter" }).getByRole("button", { name: "Add filter" }).click();
+  await expect(page.getByLabel("Condition 1 property").locator("option", { hasText: "Stage" })).toHaveCount(0);
+  await page.getByRole("dialog", { name: "Filter" }).getByRole("button", { name: "Clear all" }).click();
+  await page.keyboard.press("Escape");
+  // It can be restored from View settings (the column comes back, now empty).
+  await page.getByRole("button", { name: "View settings" }).click();
+  await page.getByRole("dialog", { name: "View settings" }).getByRole("button", { name: "Manage deleted property Stage" }).click();
+  await page.getByRole("dialog", { name: "Edit property Stage" }).getByRole("button", { name: "Restore property" }).click();
+  await expect(table.getByRole("button", { name: "Stage", exact: true })).toBeVisible();
+  await expect(row(page, "Atlas").getByRole("button", { name: "Stage: Empty" })).toBeVisible();
+});

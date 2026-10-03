@@ -51,6 +51,8 @@ export function rowsToCsv(rows: QueryRow[], props: PropertyDef[]): string {
     if (p.kind === "date" && typeof v === "string") return v;
     // Numbers are data, not formulas: written raw so `-5` round-trips (review L3).
     if (p.kind === "number" && typeof v === "number") return { number: v };
+    // Options are exported as STORED (a renamed option round-trips through an import).
+    if (p.kind === "select" || p.kind === "status" || p.kind === "multi_select") return Array.isArray(v) ? v.map(String).join(", ") : v === null || v === undefined ? "" : String(v);
     return formatValue(p, v);
   };
   return toCsv([["Title", ...props.map((p) => p.label)], ...rows.map((r) => [noteTitle(r), ...props.map((p) => cellText(r, p))])]);

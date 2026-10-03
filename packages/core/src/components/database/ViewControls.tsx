@@ -59,7 +59,7 @@ function ValueInput({ def, cond, onChange }: { def?: PropertyDef; cond: QueryCon
     return (
       <select aria-label="Filter value" value={String(cond.value ?? "")} onChange={(e) => onChange(e.target.value)}>
         <option value="">Choose…</option>
-        {def.options.map((o) => <option key={o.value} value={o.value}>{o.value}</option>)}
+        {def.options.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
       </select>
     );
   }
@@ -184,11 +184,13 @@ export function SortEditor({ sort, props, onChange }: { sort?: QuerySort[]; prop
 }
 
 /** Properties (visible + order), grouping, date/cover keys, rename/delete. */
-export function ViewSettings({ view, props, canDelete, onChange, onDelete, tabs }: {
+export function ViewSettings({ view, props, canDelete, onChange, onDelete, tabs, deleted }: {
   view: DatabaseView; props: PropertyDef[]; canDelete: boolean;
   onChange: (patch: Partial<DatabaseView>) => void; onDelete: () => void;
   /** Duplicate / reorder this view among the tabs (NP-DB-16). */
   tabs?: { index: number; count: number; canDuplicate: boolean; onDuplicate: () => void; onMove: (to: number) => void };
+  /** Deleted (hidden-everywhere) properties the viewer may restore, and how to open one. */
+  deleted?: { props: PropertyDef[]; onOpen: (def: PropertyDef) => void };
 }) {
   const [name, setName] = useState(view.name);
   const visible = view.visible ?? props.map((p) => p.key);
@@ -272,6 +274,19 @@ export function ViewSettings({ view, props, canDelete, onChange, onDelete, tabs 
           {!props.length && <li className="db-pop-empty">This tag has no properties yet.</li>}
         </ul>
       </div>
+      {deleted && deleted.props.length > 0 && (
+        <div>
+          <p className="db-pop-heading">Deleted properties</p>
+          <ul className="db-visible-list" aria-label="Deleted properties">
+            {deleted.props.map((p) => (
+              <li key={p.key} style={{ display: "flex", alignItems: "center" }}>
+                <span style={{ flex: 1 }} className="db-pop-empty">{p.label}</span>
+                <button type="button" className="db-ghost" aria-label={`Manage deleted property ${p.label}`} onClick={() => deleted.onOpen(p)}>Restore or remove…</button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
       {tabs && (
         <div className="db-settings-row" role="group" aria-label="View tab">
           <button type="button" className="db-ghost" disabled={!tabs.canDuplicate} onClick={tabs.onDuplicate}><Copy size={13} aria-hidden="true" /> Duplicate view</button>
