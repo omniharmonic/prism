@@ -5,6 +5,8 @@ import { persistLocalDocument, localDocumentKey, type LocalSaveState } from "../
 import { CollabDoc } from "../src/collab/CollabDoc";
 import { ReconnectScreen } from "../src/auth/ReconnectScreen";
 import { fetchMe } from "../src/config";
+import { unsyncedDocs, syncUnsyncedDocs, startUnsyncedDocs } from "../src/collab/unsynced";
+import { deriveSyncStatus, useSyncStore } from "@prism/core";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { VaultClientProvider, PlatformProvider, type VaultClient } from "@prism/core";
 import type { WriteScope } from "../src/offline/writeScope";
@@ -27,6 +29,11 @@ Object.assign(window, { prismCollabFixture: {
   },
   close(label: string) { const entry = opened.get(label)!; entry.persistence.close(); entry.doc.destroy(); opened.delete(label); },
   async checkAuth() { return fetchMe(); },
+  // Wave 2E re-review M1: live documents with edits only on this device.
+  unsynced: () => unsyncedDocs(),
+  syncUnsynced: () => syncUnsyncedDocs(),
+  startUnsynced: () => startUnsyncedDocs(),
+  syncLabel: () => deriveSyncStatus(useSyncStore.getState()).label,
 }});
 const client = { listNotes: async () => [], getLinks: async () => [] } as unknown as VaultClient;
 const queries = new QueryClient();

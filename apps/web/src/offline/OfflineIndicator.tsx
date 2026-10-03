@@ -18,6 +18,7 @@ import { serverFetch } from "../transport";
 import { getMe } from "../config";
 import { reportPendingWrites, OPEN_SAVED_CHANGES_EVENT } from "@prism/core";
 import { startOfflineAvailability } from "./availableOffline";
+import { startUnsyncedDocs } from "../collab/unsynced";
 
 const stateLabels = {
   queued: "Saved on this device",
@@ -106,7 +107,7 @@ export function OfflineIndicator() {
       items.filter((i) => i.state !== "queued" && i.state !== "sending").length,
     );
   }, [items]);
-  useEffect(() => { startOfflineAvailability(); }, []);
+  useEffect(() => { startOfflineAvailability(); startUnsyncedDocs(); }, []);
   // Changes kept for ANOTHER account / vault / workspace: never sent from here, shown so they aren't forgotten.
   const [elsewhere, setElsewhere] = useState<{ count: number; expireSoon: number }>({ count: 0, expireSoon: 0 });
   useEffect(() => {

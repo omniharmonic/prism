@@ -17,7 +17,8 @@ function vaultDocName(noteId: string): string {
   const v = getActiveVault();
   return v && v !== "primary" ? `${v}::${noteId}` : noteId;
 }
-import { updateNote as restUpdateNote, hasPendingWrites, uploadAttachment, unfurl as restUnfurl } from "../parachute/rest";
+import { updateNote as restUpdateNote, getNote as restGetNote, hasPendingWrites, uploadAttachment, unfurl as restUnfurl } from "../parachute/rest";
+import { markUnsynced, clearUnsynced, setOpenHere, unsyncedDocs } from "./unsynced";
 import { reloadForUpdate } from "../offline/reloadForUpdate";
 import { reportSyncSource, BacklinksPill, EmptyPageStarters } from "@prism/core";
 
@@ -136,7 +137,6 @@ function ScopedCollabDoc({
   const [updateRequired, setUpdateRequired] = useState(false);
   const [checkingAccess, setCheckingAccess] = useState(false);
   const [connected, setConnected] = useState(false);
-  const [synced, setSynced] = useState(false);
   const [online, setOnline] = useState(() => typeof navigator === "undefined" || navigator.onLine);
   // Wave 2E (NP-OF-01): live documents feed the shell's one sync state.
   const [unsynced, setUnsynced] = useState(0);
@@ -146,16 +146,29 @@ function ScopedCollabDoc({
     provider.on("unsyncedChanges", update);
     return () => { provider.off("unsyncedChanges", update); };
   }, [provider]);
+  // Which local document this is (set once its local state is loaded), and whether
+  // it is registered as holding edits the server has not taken (re-review M1).
+  const docRef = useRef<{ scope: import("../offline/writeScope").WriteScope; name: string } | null>(null);
+  const [registered, setRegistered] = useState(false);
+  const [synced, setSynced] = useState(false);
+  useEffect(() => {
+    const at = docRef.current;
+    if (!at) return;
+    if (!connected && unsynced > 0) { markUnsynced(at.scope, at.name, noteId); setRegistered(true); }
+    // Only a completed sync with nothing unacknowledged clears it — never a tab switch or unmount.
+    else if (connected && synced && unsynced === 0) { clearUnsynced(at.scope, at.name); setRegistered(false); }
+  }, [noteId, connected, synced, unsynced]);
   useEffect(() => {
     const key = `collab:${noteId}`;
+    const waiting = unsynced > 0 || registered;
     reportSyncSource(key, connected
       ? (unsynced > 0 ? "saving" : "idle")
       // Socket down with edits the server hasn't taken: never "Saved". They are on
       // this device (local), still being written locally (saving), or at risk (failed).
-      : unsynced > 0 ? (localSave === "unavailable" ? "failed" : localSave === "saved" ? "local" : "saving")
+      : waiting ? (localSave === "unavailable" ? "failed" : localSave === "saved" ? "local" : "saving")
         : localSave === "unavailable" ? "failed" : "idle");
     return () => reportSyncSource(key, null);
-  }, [noteId, connected, unsynced, localSave]);
+  }, [noteId, connected, unsynced, localSave, registered]);
   const [level, setLevel] = useState<string | null>(null);
   const [title, setTitle] = useState("Shared document");
   const [titleNotice, setTitleNotice] = useState("");
@@ -277,21 +290,37 @@ function ScopedCollabDoc({
         if (!capToken) {
           const me = await fetchMe();
           if (!current()) return;
-          if (!me.authenticated) { setConnectionError(true); return; }
-          setUser(identityFrom(me, null));
+          // No connection: the identity this device last confirmed still opens the
+          // document's LOCAL copy; the socket re-authorizes when it reconnects.
+          const known = me.authenticated ? me : (me as { unavailable?: boolean }).unavailable ? getMe() : null;
+          if (!known?.authenticated) { setConnectionError(true); return; }
+          setUser(identityFrom(known, null));
         } else setUser(identityFrom(null, capToken));
         const context = await captureWriteContext();
         if (!current()) return;
         const stillCurrent = async () => current() && scopeKey((await captureWriteContext()).scope) === scopeKey(context.scope);
         // Fresh authorization BEFORE loading any local CRDT or opening a socket.
-        const response = await serverFetch(`${apiBase()}/notes/${encodeURIComponent(noteId)}`, { headers: context.headers });
-        if (!(await stillCurrent())) return;
-        if (!response.ok) {
-          if ([401, 403, 404, 410].includes(response.status)) setDenied(true);
-          else setConnectionError(true);
-          return;
+        // With no connection at all, the copy this account was last authorized to
+        // read (the offline read cache, ≤ 30 days) stands in — and only a document
+        // that already has local state on this device may open that way (below).
+        let offlineOpen = false;
+        let note: Record<string, any>;
+        try {
+          const response = await serverFetch(`${apiBase()}/notes/${encodeURIComponent(noteId)}`, { headers: context.headers });
+          if (!(await stillCurrent())) return;
+          if (!response.ok) {
+            if ([401, 403, 404, 410].includes(response.status)) setDenied(true);
+            else setConnectionError(true);
+            return;
+          }
+          note = await response.json();
+        } catch (error) {
+          if (!(error instanceof TypeError)) throw error;
+          const cached = await restGetNote(noteId).catch(() => null);
+          if (!cached || !(await stillCurrent())) { if (current()) setConnectionError(true); return; }
+          note = cached as unknown as Record<string, any>;
+          offlineOpen = true;
         }
-        const note = await response.json();
         if (!(await stillCurrent())) return;
         setLevel(note._level ?? "own");
         setPath(note.path ?? null);
@@ -322,6 +351,12 @@ function ScopedCollabDoc({
           persistence = await persistLocalDocument(localDocumentKey(context.scope, name), doc, (state) => { if (current()) setLocalSave(state); });
         } catch { if (current()) setLocalSave("unavailable"); }
         if (!(await stillCurrent())) { persistence?.close(); return; }
+        // Opening without the server is only safe on top of local state: an empty
+        // local document would later be merged with the server's seed.
+        if (offlineOpen && Y.encodeStateAsUpdate(doc).length <= 2) { persistence?.close(); setConnectionError(true); return; }
+        docRef.current = { scope: context.scope, name };
+        setOpenHere(name, true);
+        void unsyncedDocs().then((docs) => { if (current() && docs.some((d) => d.name === name)) setRegistered(true); });
         // A server permission change closes just this document session. Refresh
         // the actual note level before reconnecting or exposing editing controls.
         // Ordinary network loss retains the existing offline-editing behavior.
@@ -386,6 +421,14 @@ function ScopedCollabDoc({
     })();
     return () => {
       cancelled = true;
+      // Leaving with edits the server has not acknowledged: they are in the local
+      // store — remember the document so the badge says so and it syncs later.
+      const at = docRef.current;
+      if (at) {
+        if ((p?.unsyncedChanges ?? 0) > 0) markUnsynced(at.scope, at.name, noteId);
+        setOpenHere(at.name, false);
+        docRef.current = null;
+      }
       p?.destroy();
       persistence?.close();
       doc.destroy();
