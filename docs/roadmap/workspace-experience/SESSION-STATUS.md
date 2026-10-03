@@ -24,11 +24,9 @@ Last full runs at the tip: server 1997/1997; fixture e2e 766 passed, 1 load flak
 ## Known open items
 
 - `thread-reading.spec.ts:160` (reading anchor drifts ~116 px) fails on main in isolation — being bisected on `fix/thread-reading`.
-- Leaving a tab within ~100 ms of the last keystroke while a live document's socket is down loses those keystrokes (no unload guard).
-- An MCP agent's comment/suggestion stores the account email as `data-actor-id` in the shared document (humans store an opaque `h_…` id).
-- Suggest-level people opening a shared page from the sidebar get the propose-for-review draft; the live suggest editor is only on `/collab/:id`. ⌘F does not open in read-only collab documents.
+- Closed on `feat/w3-gaps` (see `CLAUDE.md` § Wave 3 gaps): unload guard for live documents; MCP suggestions store the opaque actor id; a plain suggest share opens the live suggest editor in the workspace (governance roles keep the propose draft); ⌘F in read-only live documents; sign-out control; swipe actions; published pages load attachments; duplicated pages copy their attachments; suggestion accepted/declined notifications; My tasks = assigned to me; mentioning members without a person note.
+- Still open from that work: template copies (3A's `templateCopy`) do not copy attachments yet; documents written before the MCP change still hold the email in `data-actor-id` (read, not rewritten); a nameless account cannot be mentioned (it could only be shown by email).
 - Accepted lows (documented in `CLAUDE.md`): path-existence oracle on create/trash; organize in a tag may add that tag without `share`.
-- Gaps carried into wave 3: sign-out button in the web app, list swipe actions, published pages can't load attachments, copied pages reference the original's attachments, "suggestion accepted" notifications, "My tasks" (assigned to me), mentioning members who have no person note.
 
 ## Wave 3 (in progress)
 
@@ -43,7 +41,6 @@ Per checklist §3: 3A import/export + templates, 3B native completion (universal
 5. **Nightly skill install** (`docs/skills/`) — needs approval and a Prism PAT.
 6. **Native app embeds**: approve a minimal `frame-src` for Prism Client (YouTube-nocookie, Vimeo); until then embeds are "Open in…" cards in the app.
 7. Send `docs/roadmap/parachute-embedded-mode-request.md` to the Parachute team.
-8. Leave-page guard for the 100 ms offline-keystroke window: wanted or not.
 
 ## Apple account (done)
 
