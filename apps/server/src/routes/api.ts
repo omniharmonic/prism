@@ -33,6 +33,7 @@ import { graphNeighborhood } from "../graph";
 import { buildWikilinkIndex, resolveWikilink, noteLinkTitle } from "@prism/core/wikilinks";
 import { isTrashed, isLocked, isOwnerOnlyMeta, TRASH_TAG, TRASH_META, LOCK_KEY, ORDER_KEY } from "@prism/core/pages";
 import { createPagesApi } from "../pages";
+import { notificationsRoutes, restMentionHook } from "./notifications";
 
 export const api = new Hono();
 
@@ -211,6 +212,8 @@ api.route("/", createPagesApi({ onWrite: () => readCache.clear() }));
 api.use("/properties/*", async (c, next) => { await next(); readCache.clear(); });
 api.use("/schemas/*", async (c, next) => { await next(); if (c.req.method !== "GET") readCache.clear(); });
 api.route("/", databasesApi);
+// Notifications inbox, reminders, access requests (wave 2A): before the owner passthrough.
+api.route("/", notificationsRoutes);
 
 api.get("/graph/neighborhood", async (c) => {
   const actor = resolveActor(c);
@@ -325,6 +328,12 @@ api.use("/notes/:id", async (c, next) => {
   if (!needsEditorUpdate(stored)) return next();
   return c.json({ error: "editor_update_required", message: "Prism was updated. Reload or update the app to keep editing." }, 409);
 });
+
+// Wave 2A: a successful content write carrying @-mention chips → notifications +
+// mention backlinks (both the owner passthrough and the member route; never
+// changes the response). After the schema gate, before the owner short-circuit.
+api.use("/notes", restMentionHook);
+api.use("/notes/:id", restMentionHook);
 
 // Owner short-circuit: full vault access, token-free. Registered before the
 // authorized routes so the owner bypasses per-note filtering entirely.

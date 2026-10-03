@@ -14,6 +14,7 @@ import {
   _resetPush,
   saveSubscription,
   listSubscriptions,
+  removeSubscription,
   sendPush,
   notifyTurnEnd,
   pushEnabled,
@@ -42,13 +43,15 @@ beforeEach(() => {
 });
 afterEach(() => _resetPush());
 
-test("routes are owner-only (anon, capability, non-owner member all 403)", async () => {
+test("routes are signed-in users only (anon, capability 403; a member registers their OWN browser)", async () => {
   const req = (init: RequestInit) => pushApi.request("/subscribe", { method: "POST", headers: J, body: JSON.stringify(sub(1)), ...init });
   assert.equal((await req({})).status, 403);
   const cap = makeCapability("note", "n1", "edit");
   assert.equal((await req({ headers: { ...J, authorization: `Capability ${cap}` } })).status, 403);
   const member = sessionCookie(makeSession("member@test.local"));
-  assert.equal((await req({ headers: { ...J, cookie: member } })).status, 403);
+  assert.equal((await req({ headers: { ...J, cookie: member } })).status, 200);
+  assert.equal(listSubscriptions("member@test.local").length, 1, "bound to the member's own email");
+  removeSubscription("member@test.local", sub(1).endpoint);
   assert.equal((await pushApi.request("/vapid-public-key")).status, 403);
   assert.equal((await pushApi.request("/test", { method: "POST" })).status, 403);
   assert.equal((await pushApi.request("/subscribe", { method: "DELETE", headers: J, body: JSON.stringify(sub(1)) })).status, 403);

@@ -27,7 +27,9 @@ import { apnsEnabled, sendApnsToOwner, agentTurnNotification } from "./apns";
 export type PushTurnStatus = "done" | "error" | "interrupted" | "cancelled" | "queued" | "running";
 
 export interface PushPayload {
-  type: "agent-turn" | "test";
+  type: "agent-turn" | "test" | "notification";
+  /** `notification`: the inbox item id (ids only — the app fetches the rest). */
+  id?: string;
   sessionId?: string;
   turnId?: string;
   status?: string;

@@ -18,9 +18,13 @@ import {
 
 export const pushApi = new Hono();
 
+// Any signed-in USER may register their own browser / device (wave 2A: mentions,
+// replies, reminders and access requests notify members too). Every row is keyed
+// to the caller's email and every payload is ids-only; agent-turn pushes still
+// only ever go to the session owner (notifyTurnEnd). Links/anon → 403.
 pushApi.use("*", async (c, next) => {
   const actor = resolveActor(c);
-  if (actor.kind !== "user" || actor.role !== "owner") return c.json({ error: "forbidden" }, 403);
+  if (actor.kind !== "user") return c.json({ error: "forbidden" }, 403);
   await next();
 });
 
