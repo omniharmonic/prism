@@ -626,7 +626,10 @@ function Board({
                   </Column>
                 ))}
             </ScrollArea>
-            <DragOverlay>
+            {/* pointer-events: none — while the drop animation plays the overlay sits
+                over the cards, and a quick second grab would land on it instead of
+                the card (boards.spec.ts:868 flaked on exactly that). */}
+            <DragOverlay style={{ pointerEvents: "none" }}>
               {active && (
                 <div className="rounded-xl border border-[var(--glass-border)] bg-[var(--bg-elevated)] p-4 shadow-xl">
                   {boardTitle(active)}

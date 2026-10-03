@@ -185,8 +185,11 @@ test("real collaborative host shares properties and readable mobile header witho
     await page.getByRole('button', { name: 'Rename A clearer shared workspace', exact: true }).click();
     await renameTitle.fill('A locally queued title');
     await renameTitle.press('Enter');
-    await expect(page.getByText('Title change saved on this device. Waiting to sync.', { exact: true })).toBeVisible();
-    await expect(page.getByRole('button', { name: 'Rename A locally queued title', exact: true })).toBeVisible();
+    // A rename the server did not confirm (503) is a FAILURE, never "saved on this
+    // device": renames are not queued (wave 2E re-review H4). The typed title stays for a retry.
+    await expect(page.getByRole('alert').filter({ hasText: 'Could not rename this page' })).toBeVisible();
+    await expect(renameTitle).toHaveValue('A locally queued title');
+    await expect(page.getByText('Title change saved on this device. Waiting to sync.', { exact: true })).toHaveCount(0);
     expect(path).toBe('Projects/Prism/A clearer shared workspace');
     level = 'view';
     await page.reload();
