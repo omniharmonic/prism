@@ -14,7 +14,7 @@
 import { Hono } from "hono";
 import { createHash } from "node:crypto";
 import type { Context } from "hono";
-import { resolveVaultEntry, grantsForResource, isCollabUnsaved, deleteCollabSetAsideForNote } from "../db";
+import { resolveVaultEntry, grantsForResource, isCollabUnsaved, deleteCollabSetAsideForNote, hasCollabSetAside } from "../db";
 import { vault, vaultClient, VaultError, VaultConflictError, type Note } from "../parachute";
 import { resolveActor, requestVia, type Actor } from "../auth/actor";
 import { COLLAB_SCHEMA_VERSION } from "@prism/core/editor-schema";
@@ -143,6 +143,22 @@ async function proxyToVault(c: Context) {
       console.warn(`[pages] lock bypass: ${resolveActor(c).kind === "user" ? (resolveActor(c) as { email: string }).email : "?"} edited locked note ${decodeURIComponent(lockedId)} (vault ${entry.id})`);
     }
   }
+  // DELETE /notes/<id or PATH alias>: set-aside rows are keyed by note ID, so an alias is
+  // resolved BEFORE the note is gone (only when this vault holds any such row at all).
+  const deleting: string[] = [];
+  const deleteOf = method === "DELETE" ? path.match(/^\/notes\/([^/?]+)$/)?.[1] : undefined;
+  if (deleteOf) {
+    try {
+      const asked = decodeURIComponent(deleteOf);
+      deleting.push(asked);
+      if (hasCollabSetAside(entry.id)) {
+        const id = (await vaultClient(entry.id, { timeoutMs: 5000 }).getNote(asked)).id;
+        if (id !== asked) deleting.push(id);
+      }
+    } catch {
+      /* a malformed escape, or a note that cannot be read: the delete itself answers */
+    }
+  }
   const t0 = Date.now();
   let res: ProxiedResponse;
   try {
@@ -159,14 +175,7 @@ async function proxyToVault(c: Context) {
   if (method !== "GET" && method !== "HEAD" && res.status >= 200 && res.status < 300) {
     void treeAfterOwnerWrite(entry, method, path, res.body).catch(() => {});
     // A note deleted for good takes the page text set aside from its live document with it.
-    const deleted = method === "DELETE" ? path.match(/^\/notes\/([^/?]+)$/)?.[1] : undefined;
-    if (deleted) {
-      try {
-        deleteCollabSetAsideForNote(entry.id, decodeURIComponent(deleted));
-      } catch {
-        /* a malformed escape: nothing to delete */
-      }
-    }
+    for (const id of deleting) deleteCollabSetAsideForNote(entry.id, id);
   }
   if (process.env.PRISM_VAULT_TRACE === "1") {
     console.log(`[trace] proxy ${method} ${path}${url.search} → ${res.status} ${res.body.length}B ${Date.now() - t0}ms ua=${(c.req.header("user-agent") ?? "").slice(0, 40)}`);

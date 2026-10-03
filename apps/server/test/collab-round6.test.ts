@@ -23,7 +23,7 @@ import { createApp } from "../src/app";
 import * as dbm from "../src/db";
 import { addGrant, db, ensureUser, getDocState } from "../src/db";
 import * as collab from "../src/collab";
-import { hocuspocus, loadDocumentState, mergeIsSane, reconcileLoadedDocs, resetConversionState, resetReconcileState, storeDocumentState, sweepUnsavedDocuments, yDocToHtml } from "../src/collab";
+import { hocuspocus, loadDocumentState, mergeIsSane, occurrences, reconcileLoadedDocs, resetConversionState, resetReconcileState, storeDocumentState, sweepUnsavedDocuments, yDocToHtml } from "../src/collab";
 import * as service from "../src/convert/service";
 import { ConversionError, configureConversion, forgetConversionFailures, stopConversionWorkers } from "../src/convert/service";
 import { vaultClient } from "../src/parachute";
@@ -237,9 +237,68 @@ test("S2: a 409 does NOT drop a hash an earlier, unanswered send of the same con
   assert.equal(unsavedRow("s2c"), null);
 });
 
+test("S-1 (follow-up): a refused write is NOT dropped while an older unanswered one is recorded — when the older one turns out to have landed, the newer state never becomes the merge base, and later typing is not deleted silently", { timeout: 60_000 }, async () => {
+  fv.historySupported = false;
+  fv.put({ id: "s1", tags: ["garden"], content: "<p>start</p>", updatedAt: T0 });
+  const doc = await loadDocumentState("s1", new Y.Doc());
+  type(doc, "one");
+  await intercept(isPatch("s1"), fail(504), () => storeDocumentState("s1", doc)); // h1: no answer (not applied yet)
+  type(doc, "TTT");
+  await intercept(isPatch("s1"), fail(409), () => storeDocumentState("s1", doc)); // h2: refused
+  assert.equal(getDocState("s1")!.attempts.length, 2, "the refused attempt stays while the older one is unknown (the kept state is ITS state)");
+  // The first write lands after all.
+  vaultWrite("s1", LATER(1), "<p>start</p><p>one</p>");
+  await reconcileLoadedDocs({ documents: new Map([["s1", doc]]) });
+  const base = getDocState("s1")!.base;
+  if (base) {
+    const at = new Y.Doc();
+    Y.applyUpdate(at, base);
+    assert.doesNotMatch(yDocToHtml(at), /TTT/, "the base (what the vault holds) is a state with text the vault never got");
+  }
+  // Someone edits the note before this page's next store lands.
+  vaultWrite("s1", LATER(2), "<p>start</p><p>one</p><p>EXTERNAL</p>");
+  await reconcileLoadedDocs({ documents: new Map([["s1", doc]]) });
+  const html = yDocToHtml(doc);
+  const aside = await setAsideList();
+  assert.match(html, /EXTERNAL/);
+  assert.ok(count(html, "TTT") === 1 || aside.length === 1, `the typed text was deleted with nothing kept and nobody told: ${html}`);
+});
+
+// ── S-3 (follow-up) ─────────────────────────────────────────────────────────
+
+test("S-3 (follow-up): counting a run of text in a page is linear — periodic text cannot stall the event loop", () => {
+  assert.equal(occurrences("abababa", "aba"), 2, "not overlapping");
+  assert.equal(occurrences("aaaa", "aa"), 2);
+  assert.equal(occurrences("one two one", "one"), 2);
+  assert.equal(occurrences("abc", "abcd"), 0);
+  assert.equal(occurrences("abc", ""), 0);
+  assert.equal(occurrences("xabcabcabdabcabd", "abcabd"), 2);
+  const hay = "a".repeat(100_000);
+  for (const [label, needle, want] of [
+    ["mismatch in the middle", "a".repeat(25_000) + "b" + "a".repeat(25_000), 0], // `indexOf`: ~0.5 s here, and n × m beyond
+    ["mismatch at the far end", "b" + "a".repeat(40_000), 0],
+    ["mismatch at the near end", "a".repeat(40_000) + "b", 0],
+    ["all matches", "a".repeat(25_000), 4],
+    ["period two", "ab".repeat(20_000) + "b", 0],
+  ] as const) {
+    const started = performance.now();
+    assert.equal(occurrences(label === "period two" ? "ab".repeat(50_000) : hay, needle), want, label);
+    const ms = performance.now() - started;
+    assert.ok(ms < 150, `${label}: ${ms.toFixed(0)} ms for 100 KB`);
+  }
+});
+
 // ── S3 ──────────────────────────────────────────────────────────────────────
 
+const tuning = collab.collabTuning as { setAsideRetryMs: number; busyWaitMs: number };
+function setAsideRetry(ms: number): void {
+  const was = tuning.setAsideRetryMs;
+  tuning.setAsideRetryMs = ms;
+  restore.push(() => void (tuning.setAsideRetryMs = was));
+}
+
 test("S3: what a page holds is set aside BEFORE the vault's copy replaces it — if it cannot be kept, nothing is replaced (reconciler, store and load), and it is once it can", { timeout: 60_000 }, async () => {
+  setAsideRetry(0); // (every try is made: the backoff has its own test below)
   fv.historySupported = false;
   fv.put({ id: "s3", tags: ["garden"], content: "<p>alpha</p>", updatedAt: T0 });
   const doc = await loadDocumentState("s3", new Y.Doc());
@@ -272,6 +331,33 @@ test("S3: what a page holds is set aside BEFORE the vault's copy replaces it —
   assert.deepEqual(aside.map((r) => [r.noteId, r.reason]), [["s3", "uncertain_base"]]);
   const kept = (await (await app.request(`/api/admin/collab/set-aside/${aside[0]!.id}`, { headers: ownerHeaders() })).json()) as { body: string };
   assert.match(kept.body, /only local/);
+});
+
+test("follow-up: a set-aside that keeps failing is retried with a per-document backoff — not on every reconciler tick", { timeout: 60_000 }, async () => {
+  setAsideRetry(400);
+  fv.historySupported = false;
+  fv.put({ id: "bo", tags: ["garden"], content: "<p>alpha</p>", updatedAt: T0 });
+  const doc = await loadDocumentState("bo", new Y.Doc());
+  doc.transact(() => {
+    type(doc, "shared block");
+    type(doc, "only local");
+  });
+  await intercept(isPatch("bo"), fail(500), () => storeDocumentState("bo", doc));
+  vaultWrite("bo", LATER(1), "<p>alpha</p><p>shared block</p>");
+  db.exec("CREATE TRIGGER r6_no_aside BEFORE INSERT ON collab_set_aside BEGIN SELECT RAISE(ABORT, 'disk full'); END");
+  restore.push(() => void db.exec("DROP TRIGGER IF EXISTS r6_no_aside"));
+  const before = collab.collabStats.setAsideInserts;
+  for (let i = 0; i < 5; i++) await reconcileLoadedDocs({ documents: new Map([["bo", doc]]) });
+  assert.equal(collab.collabStats.setAsideInserts - before, 1, "five ticks in a row: one try");
+  assert.match(yDocToHtml(doc), /only local/, "…and nothing was replaced meanwhile");
+  await new Promise((r) => setTimeout(r, 450));
+  await reconcileLoadedDocs({ documents: new Map([["bo", doc]]) });
+  assert.equal(collab.collabStats.setAsideInserts - before, 2, "tried again after the wait");
+  db.exec("DROP TRIGGER r6_no_aside");
+  await new Promise((r) => setTimeout(r, 900)); // the second failure doubled the wait
+  await reconcileLoadedDocs({ documents: new Map([["bo", doc]]) });
+  assert.equal(yDocToHtml(doc), "<p>alpha</p><p>shared block</p>");
+  assert.equal((await setAsideList()).length, 1);
 });
 
 // ── S4 ──────────────────────────────────────────────────────────────────────
@@ -313,6 +399,13 @@ test("S4: a note deleted for good takes its set-aside page text with it — owne
   const purged = await app.request("/api/trash/s4c", { method: "DELETE", headers: ownerHeaders() });
   assert.equal(purged.status, 200, await purged.clone().text());
   assert.equal(asideRows("s4c"), 0);
+  // (d) the owner deletes a note by its PATH (an alias the vault resolves): the rows are keyed by id
+  fv.put({ id: "s4d", path: "vault/by-path", tags: ["garden"], content: "<p>d</p>", updatedAt: T0 });
+  aside("s4d");
+  assert.equal((await app.request(`/api/notes/${encodeURIComponent("vault/by-path")}`, { method: "DELETE", headers: ownerHeaders() })).status < 300, true);
+  assert.equal(fv.notes.has("s4d"), false, "(the vault resolved the alias and deleted the note)");
+  assert.equal(asideRows("s4d"), 0);
+  assert.equal(asideRows("keep"), 1);
 });
 
 test("S4: reading (and deleting) a set-aside body writes an audit row — ids only, never the text; refused requests too", async () => {

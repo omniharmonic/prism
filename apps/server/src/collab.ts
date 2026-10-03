@@ -760,10 +760,31 @@ function foldVaultContent(doc: Y.Doc, kind: CollabKind, content: string, prepare
   return replace("uncertain_base");
 }
 
-/** How often `needle` (non-empty) occurs in `haystack`, not overlapping. Linear. */
-function occurrences(haystack: string, needle: string): number {
+/**
+ * How often `needle` (non-empty) occurs in `haystack`, not overlapping. LINEAR in
+ * both (Knuth–Morris–Pratt): `indexOf` re-compares up to the whole needle at every
+ * position on periodic text — 50 KB of one letter against a 25 KB run of it was
+ * seconds on the event loop, and both strings are note content.
+ */
+export function occurrences(haystack: string, needle: string): number {
+  const m = needle.length;
+  if (m === 0 || m > haystack.length) return 0;
+  const fail = new Int32Array(m); // length of the longest proper border of needle[0..i]
+  for (let i = 1, k = 0; i < m; i++) {
+    while (k > 0 && needle.charCodeAt(i) !== needle.charCodeAt(k)) k = fail[k - 1]!;
+    if (needle.charCodeAt(i) === needle.charCodeAt(k)) k++;
+    fail[i] = k;
+  }
   let n = 0;
-  for (let at = haystack.indexOf(needle); at !== -1; at = haystack.indexOf(needle, at + needle.length)) n++;
+  for (let i = 0, k = 0; i < haystack.length; i++) {
+    const c = haystack.charCodeAt(i);
+    while (k > 0 && c !== needle.charCodeAt(k)) k = fail[k - 1]!;
+    if (c === needle.charCodeAt(k)) k++;
+    if (k === m) {
+      n++;
+      k = 0; // not overlapping
+    }
+  }
   return n;
 }
 /**
@@ -932,7 +953,10 @@ function plainOfJson(json: DocJson | null): string {
   }
   return blocks.join("\n\n");
 }
-const setAsideFailures = new Map<string, number>();
+/** Per document: how often its set-aside failed in a row, when it may be tried again, when that was last logged. */
+const setAsideFailures = new Map<string, { fails: number; nextAt: number; loggedAt: number }>();
+/** Counters tests read. */
+export const collabStats = { setAsideInserts: 0 };
 /**
  * Keep what a document holds, BEFORE the vault's copy replaces it (S3: it used to
  * be written afterwards, with a failure swallowed — the text was then gone from
@@ -940,17 +964,24 @@ const setAsideFailures = new Map<string, number>();
  * then replaces nothing.
  */
 function setAsideLocal(documentName: string, vaultId: string, noteId: string, kind: CollabKind, replaced: Replaced): void {
+  // The reconciler comes back every two seconds, and each try renders the whole page to
+  // text and writes megabytes: a table that keeps refusing is tried again with a backoff
+  // (per document: `setAsideRetryMs`, doubling to five minutes).
+  const failing = setAsideFailures.get(documentName);
+  if (failing && Date.now() < failing.nextAt) throw new Error("set-aside is backing off");
   try {
+    collabStats.setAsideInserts++;
     addCollabSetAside(noteId, vaultId, replaced.why, kind, replaced.body, replaced.state);
     setAsideFailures.delete(documentName);
     console.warn(`[collab] ${documentName}: the note's content replaces live changes that had not been saved (${replaced.why}) — what the page held is kept for the workspace owner (GET /api/admin/collab/unsaved → setAside)`);
   } catch (e) {
-    // (the reconciler comes back every two seconds: said once a minute)
-    const last = setAsideFailures.get(documentName) ?? 0;
-    if (Date.now() - last > 60_000) {
-      setAsideFailures.set(documentName, Date.now());
-      console.error(`[collab] ${documentName}: could not set the page's unsaved content aside — the note's newer content is NOT folded in until it can be (the page keeps what it holds):`, e instanceof Error ? e.message : "unknown");
-    }
+    const at = Date.now();
+    const fails = (failing?.fails ?? 0) + 1;
+    const loggedAt = failing && at - failing.loggedAt <= 60_000 ? failing.loggedAt : at;
+    setAsideFailures.set(documentName, { fails, nextAt: at + Math.min(5 * 60_000, collabTuning.setAsideRetryMs * 2 ** (fails - 1)), loggedAt });
+    if (loggedAt === at) console.error(`[collab] ${documentName}: could not set the page's unsaved content aside — the note's newer content is NOT folded in until it can be (the page keeps what it holds):`, e instanceof Error ? e.message : "unknown");
+    // Once per episode, everyone on the page: what they see is not in the stored page (and the server keeps trying).
+    if (fails === 1) tellClients(documentName, { type: "prism:unsaved", state: "pending", reason: "error" });
     throw e;
   }
 }
@@ -1081,7 +1112,7 @@ export type CollabClientMessage =
  */
 const pendingNotices = new Map<string, { message: CollabClientMessage; until: number }>();
 /** Tunables tests shorten. */
-export const collabTuning = { noticeTtlMs: 15_000, /** How long a load / store waits between tries for a converter slot. */ busyWaitMs: 1500, /** One vault call of a history lookup / the whole lookup (`landedAttempt`). */ historyCallMs: 2500, historyDeadlineMs: 6000 };
+export const collabTuning = { noticeTtlMs: 15_000, /** How long a load / store waits between tries for a converter slot. */ busyWaitMs: 1500, /** One vault call of a history lookup / the whole lookup (`landedAttempt`). */ historyCallMs: 2500, historyDeadlineMs: 6000, /** First wait before a failed set-aside is tried again for that document (doubles, to 5 min). */ setAsideRetryMs: 5000 };
 function tellClients(documentName: string, message: CollabClientMessage): void {
   try {
     hocuspocus.documents.get(documentName)?.broadcastStateless(JSON.stringify(message));
@@ -1093,6 +1124,7 @@ function tellClients(documentName: string, message: CollabClientMessage): void {
 /** Test-only: forget blocked documents and pending store retries. */
 export function resetConversionState(): void {
   blockedDocs.clear();
+  setAsideFailures.clear();
   convertFailures.clear();
   pendingNotices.clear();
   for (const r of storeRetries.values()) clearTimeout(r.timer);

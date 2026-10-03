@@ -2012,16 +2012,19 @@ const setDocAttempts = db.prepare(
  * forgotten — the snapshot stays ahead on its kept base. Left recorded, it made
  * every later external edit an UNCERTAIN merge (which base? did it land?) in
  * ordinary concurrent editing. Only outcome-unknown failures (a timeout, a 5xx,
- * no answer) keep their attempt. The caller must not drop a hash an EARLIER send
- * of the same content may still have landed under (see the store).
+ * no answer) keep their attempt — and so does a refused one that is not the only
+ * attempt recorded (below). The caller must not drop a hash an EARLIER send of
+ * the same content may still have landed under (see the store).
  */
 export const dropDocAttempt = db.transaction((name: string, vaultId: string, hash: string): void => {
   const meta = getDocMeta(name, vaultId);
-  if (!meta || !meta.attempts.includes(hash)) return;
-  const kept = meta.attempts.filter((h) => h !== hash);
-  const lens: Record<string, [number, number]> = {};
-  for (const h of kept) if (meta.attemptLens?.[h]) lens[h] = meta.attemptLens[h]!;
-  setDocAttempts.run({ vault_id: vaultId, name, attempts: kept.length ? JSON.stringify(kept) : null, lens: kept.length ? JSON.stringify(lens) : null });
+  // Only when it is the SOLE attempt. With an older, unanswered attempt still recorded the
+  // row's kept state (`attempt_state` / `state`) is THIS attempt's: dropping the hash would
+  // leave that state standing for the older attempt — and if the older one then turned out
+  // to have landed, a state holding MORE than the vault did would become the certain merge
+  // base (later folds deleted the difference, silently). Kept: the fold stays uncertain.
+  if (!meta || meta.attempts.length !== 1 || meta.attempts[0] !== hash) return;
+  setDocAttempts.run({ vault_id: vaultId, name, attempts: null, lens: null });
 });
 const confirmDocAttemptStmt = db.prepare(
   `UPDATE collab_docs SET state = COALESCE(attempt_state, state), source_updated_at = @source, base_hash = @hash, ahead = 0, base_state = NULL, attempts = NULL, attempt_state = NULL, updated_at = @updated_at
@@ -2156,6 +2159,15 @@ export const addCollabSetAside = db.transaction((name: string, vaultId: string, 
 /** Drop set-aside rows past their 90 days (also run by the periodic unsaved sweep: an insert may never come again). */
 export function pruneCollabSetAside(at = now()): number {
   return pruneSetAsideAge.run(at - SET_ASIDE_MAX_AGE_MS).changes;
+}
+const anySetAsideStmt = db.prepare("SELECT 1 FROM collab_set_aside WHERE vault_id = ? LIMIT 1");
+/** Does this vault hold any set-aside row at all? (cheap: lets a delete skip resolving an alias when there is nothing to remove) */
+export function hasCollabSetAside(vaultId: string): boolean {
+  try {
+    return anySetAsideStmt.get(vaultId) !== undefined;
+  } catch {
+    return false;
+  }
 }
 const deleteSetAsideOfNote = db.prepare("DELETE FROM collab_set_aside WHERE vault_id = ? AND name = ?");
 /** The note is gone for good (purged from the Trash, deleted): what its page once held goes with it. Never throws. */
