@@ -304,28 +304,23 @@ test("real workspace sharing keeps the dialog and invitation draft across respon
   await expect(page.getByLabel("Invite people", { exact: true })).toHaveValue("");
 });
 
-test("suggest permissions disclose the trusted-collaborator limitation before granting access", async ({
+test("suggest permissions describe server-enforced review, with no trusted-collaborator caveat", async ({
   page,
 }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await open(page);
-  const limitation =
-    /Use it only with trusted collaborators: the server does not yet prevent direct document changes/;
-  // Existing grants can be changed immediately, so explain this beside that list too.
-  await expect(
-    page
-      .getByRole("heading", { name: "People with access" })
-      .locator("..")
-      .getByText(limitation),
-  ).toBeVisible();
+  await expect(page.getByText(/trusted collaborators/)).toHaveCount(0);
   await page.getByLabel("Collaborator permission").selectOption("suggest");
-  await expect(page.locator("form").getByText(limitation)).toBeVisible();
+  await expect(
+    page.locator("form").getByText(/wait for an editor’s review — they can’t change the page directly/),
+  ).toBeVisible();
   await page.getByRole("tab", { name: "Link access", exact: true }).click();
   await page.getByLabel("Link permission").selectOption("suggest");
-  await expect(page.getByText(limitation)).toBeVisible();
+  await expect(page.getByText(/can’t change the page directly/)).toBeVisible();
   await page.getByRole("tab", { name: "Sync", exact: true }).click();
   await page.getByLabel("Peer permission").selectOption("suggest");
-  await expect(page.getByText(limitation)).toBeVisible();
+  await expect(page.getByText(/peers have no suggestion path yet/)).toBeVisible();
+  await expect(page.getByText(/trusted collaborators/)).toHaveCount(0);
   expect(
     await page.evaluate(
       () => document.documentElement.scrollWidth <= innerWidth + 1,

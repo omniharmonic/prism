@@ -43,8 +43,12 @@ const LABEL: Record<Choice, string> = {
 };
 const isFull = (p: Pick<SharePerson, "caps">) => !!p.caps && FULL_CAPS.every((c) => p.caps!.includes(c));
 const personName = (p: { name?: string | null; email?: string | null }) => p.name?.trim() || p.email || "Someone";
+/** Suggest-only is enforced by the server (raw edits need edit; suggestions and
+ *  comments go through server-authored commands), so no trust caveat is needed. */
 const SUGGEST_HELP =
-  "Can suggest tracks edits and comments in Prism. Use it only with trusted collaborators: the server does not yet prevent direct document changes with this permission.";
+  "Propose edits and comment. Their changes wait for an editor’s review — they can’t change the page directly.";
+const PEER_SUGGEST_HELP =
+  "A peer with Can suggest can read this page but not change it: peers have no suggestion path yet.";
 const HELP: Record<ShareLevel, string> = {
   view: "Read this document without changing it.",
   comment:
@@ -363,8 +367,8 @@ function SharingDocument({ noteId, sharing, onClose }: Props) {
         .prism-share-dialog { width:100vw; max-width:100vw; margin:auto 0 0; border-radius:16px 16px 0 0; max-height:92dvh; border-bottom:0; }
         .prism-share-dialog .share-invite { grid-template-columns:1fr auto; }
         .prism-share-dialog .share-invite input { grid-column:1/-1; }
-        .prism-share-dialog .share-person { grid-template-columns:auto minmax(0,1fr) auto; }
-        .prism-share-dialog .share-person > button:last-child { grid-column:3; }
+        .prism-share-dialog .share-person { gap:8px; }
+        .prism-share-dialog .share-person select { max-width:124px; padding:8px; }
         .prism-share-dialog .share-tabs { gap:14px; padding:0 16px; }
       }
     `}</style>
@@ -544,9 +548,6 @@ function SharingDocument({ noteId, sharing, onClose }: Props) {
                 )}
                 <section aria-labelledby={`${heading}-people`}>
                   <h3 id={`${heading}-people`}>People with access</h3>
-                  {!!access.people.length && levels.includes("suggest") && (
-                    <p>{SUGGEST_HELP}</p>
-                  )}
                   {access.owner && (
                     <div className="share-person" data-share-owner>
                       <PersonAvatar name={personName(access.owner)} avatar={access.owner.avatar} seed={access.owner.email ?? access.owner.name} size={32} />
@@ -568,9 +569,12 @@ function SharingDocument({ noteId, sharing, onClose }: Props) {
                       <span className="share-who share-email">
                         <strong>{personName(person)}</strong>
                         <small>
-                          {person.name ? person.email : ""}
-                          {person.name && person.scope === "page" ? " · " : ""}
-                          {person.scope === "page" ? "Includes sub-pages" : person.scope === "note" && !isPrivate ? "This page only" : ""}
+                          {[
+                            person.name ? person.email : "",
+                            person.scope === "page" ? "Includes sub-pages" : person.scope === "note" && !isPrivate ? "This page only" : "",
+                          ]
+                            .filter(Boolean)
+                            .join(" · ")}
                         </small>
                         {person.customPermissions && !isFull(person) && (
                           <small>
@@ -941,7 +945,7 @@ function SharingDocument({ noteId, sharing, onClose }: Props) {
                       </select>
                     </label>
                     {levelSelect(peerLevel, setPeerLevel, "Peer permission")}
-                    {peerLevel === "suggest" && <p>{SUGGEST_HELP}</p>}
+                    {peerLevel === "suggest" && <p>{PEER_SUGGEST_HELP}</p>}
                     <button
                       type="button"
                       disabled={!peer}

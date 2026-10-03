@@ -75,7 +75,7 @@ test("suggest-only human cannot edit directly", async ({ page }) => {
   const before = await editor(page).innerText();
   await editor(page).click();
   await page.keyboard.type("RAW TYPING");
-  await page.keyboard.press("Backspace");
+  await page.keyboard.press("Enter");
   expect(await editor(page).innerText()).toBe(before);
   await page.waitForTimeout(2500); // past the server's store debounce
   expect((await server.note("plan"))!.content).not.toContain("RAW");

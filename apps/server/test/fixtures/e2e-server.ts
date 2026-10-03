@@ -42,10 +42,10 @@ const RICH =
   "<hr>" +
   "<p>Line one<br>line two and [[Some Page]].</p>";
 
-fv.put({ id: "plan", path: "vault/Shared/Plan", content: "<p>Alpha beta gamma</p><p>Second paragraph here.</p>", metadata: { prism_creator: OWNER } });
-fv.put({ id: "notes", path: "vault/Shared/Plan/Notes", content: "<p>Child notes.</p>" });
-fv.put({ id: "rich", path: "vault/Shared/Rich", content: RICH });
-fv.put({ id: "secret", path: "vault/Private/Budget", content: "<p>Fictional budget.</p>" });
+fv.put({ id: "plan", path: "vault/Shared/Plan", content: "<p>Alpha beta gamma</p><p>Second paragraph here.</p>", metadata: { prism_creator: OWNER }, tags: ["team"] });
+fv.put({ id: "notes", path: "vault/Shared/Plan/Notes", content: "<p>Child notes about the plan.</p>", tags: ["team"] });
+fv.put({ id: "rich", path: "vault/Shared/Rich", content: RICH, tags: ["team"] });
+fv.put({ id: "secret", path: "vault/Private/Budget", content: "<p>Fictional budget for the plan.</p>", tags: ["team"] });
 
 for (const [email, name] of [[SAM, "Sam Chen"], [EVE, "Eve Editor"], [GINA, "Gina Guest"]] as const) {
   setAccount(email, email, "hash");

@@ -13,9 +13,8 @@ export function AccessHelp({ level }: { level: ShareLevel }) {
   if (level === "suggest")
     return (
       <p className="mt-2 text-xs leading-relaxed text-[var(--text-secondary)]">
-        Can suggest tracks edits and comments in Prism. Use it only with trusted
-        collaborators: the server does not yet prevent direct document changes
-        with this permission.
+        Can suggest proposes edits and comments. Their changes wait for an
+        editor’s review — they can’t change a page directly.
       </p>
     );
   if (level === "comment")

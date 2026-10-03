@@ -257,3 +257,4 @@ export { PresenceAvatars, presentPeople, jumpToCaret, type PresentPerson, type P
 export { PageInfo, countText, plainText } from "./components/sharing/PageInfo";
 export { PageUpdates, buildUpdates, type UpdateItem } from "./components/sharing/PageUpdates";
 export { writerOf, writerTitle, writerName, lastEditedBy } from "./lib/history/attribution";
+export { MoveAccessNotice, moveAccessSummary, useMoveAccessPreview } from "./components/sharing/MoveAccessNotice";

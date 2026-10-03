@@ -16,7 +16,7 @@ test("access invitation survives clipboard denial and preserves the confirmed ro
     .getByRole("combobox", { name: "Document access", exact: true })
     .selectOption("suggest");
   await expect(
-    page.getByText(/Use it only with trusted collaborators/),
+    page.getByText(/they can’t change a page directly/),
   ).toBeVisible();
   await page
     .getByRole("combobox", { name: "Management role", exact: true })

@@ -48,7 +48,7 @@ export function PersonAvatar({
         alignItems: "center",
         justifyContent: "center",
         overflow: "hidden",
-        fontSize: Math.max(10, Math.round(size * 0.4)),
+        fontSize: Math.max(8, Math.round(size * (size < 22 ? 0.5 : 0.4))),
         fontWeight: 650,
         letterSpacing: "0.01em",
         color: tone,
@@ -58,7 +58,7 @@ export function PersonAvatar({
         flexShrink: 0,
       }}
     >
-      {safe ? <img src={safe} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} /> : initialsOf(name)}
+      {safe ? <img src={safe} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} /> : size < 22 ? initialsOf(name).slice(0, 1) : initialsOf(name)}
     </span>
   );
 }

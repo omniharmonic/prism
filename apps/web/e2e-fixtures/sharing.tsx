@@ -13,6 +13,9 @@ import {
 import { ShareDialog } from "../../../packages/core/src/components/layout/ShareDialog";
 import { TabBar } from "../../../packages/core/src/components/layout/TabBar";
 import { SharingDialogHost } from "../../../packages/core/src/components/layout/SharingDialogHost";
+import "../../../packages/core/src/styles/tokens.css";
+import "../../../packages/core/src/styles/glass.css";
+import "../../../packages/core/src/styles/typography.css";
 const toolbar = new URLSearchParams(location.search).has("toolbar");
 if (toolbar)
   useUIStore
