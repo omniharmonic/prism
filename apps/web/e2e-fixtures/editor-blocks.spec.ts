@@ -162,6 +162,13 @@ test.describe("plain editor block handles", () => {
     if (SHOTS) await page.screenshot({ path: `${SHOTS}/block-menu-390.png` });
     await menu.getByRole("menuitem", { name: "Move down" }).click();
     expect((await blockTexts(page)).slice(1, 3)).toEqual(["bulletList:Charlie itemDelta item", "paragraph:Bravo paragraph"]);
+    // Insert without a keyboard: the menu offers it and opens the slash menu.
+    await clickInto(page, "Bravo paragraph");
+    await page.getByRole("button", { name: "Block actions" }).click();
+    await page.getByRole("menuitem", { name: "Insert block below" }).click();
+    await expect(page.getByRole("listbox", { name: "Insert block" })).toBeVisible();
+    await page.getByRole("option", { name: /^To-do list/ }).click();
+    expect((await blockTexts(page))[3]).toBe("taskList:");
     await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   });
 });

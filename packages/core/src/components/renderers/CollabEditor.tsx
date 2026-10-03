@@ -23,6 +23,7 @@ import { SuggestionReview } from "./SuggestionReview";
 import "./editor-blocks.css";
 import { BlockKeymap } from "../../lib/tiptap/blockCommands";
 import { BlockHandles } from "./BlockHandles";
+import { TableControls } from "./TableControls";
 import { ImageUpload, type ImageUploader } from "../../lib/tiptap/ImageUpload";
 
 export interface CollabUser {
@@ -278,6 +279,7 @@ export function CollabEditor({
       {/* Block gutter. Structural moves are raw edits, so it is off while
           suggesting (tracked changes) or comment-only. */}
       {editor && <BlockHandles editor={editor} enabled={editable && !commentOnly && !suggesting} />}
+      {editor && editable && !commentOnly && <TableControls editor={editor} />}
 
       {/* `[[` wikilink autocomplete dropdown */}
       {editor && autocomplete?.active && (

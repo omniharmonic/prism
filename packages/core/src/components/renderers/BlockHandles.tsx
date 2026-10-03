@@ -264,6 +264,8 @@ export function BlockHandles({ editor, enabled }: { editor: Editor; enabled: boo
   };
 
   const mainItems: EditorMenuItem[] = [
+    // Phones have no + button and no "/" key handy: insert lives in the menu.
+    ...(narrow ? [{ id: "insert", label: "Insert block below", icon: <Plus size={15} />, onSelect: () => { setMenu(null); insertBelow(); } }] : []),
     ...(canTurnInto(block) ? [{ id: "turn", label: "Turn into", icon: <Repeat2 size={15} />, submenu: true, onSelect: () => setMenu("turn") }] : []),
     ...(canColor(block) ? [{ id: "color", label: "Color", icon: <Palette size={15} />, submenu: true, onSelect: () => setMenu("color") }] : []),
     { id: "duplicate", label: "Duplicate", icon: <Copy size={15} />, onSelect: () => run(() => duplicateTopBlock(editor.state, hovered.pos)) },

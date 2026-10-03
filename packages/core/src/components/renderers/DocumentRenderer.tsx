@@ -19,6 +19,7 @@ import { SearchHighlight } from "../../lib/tiptap/SearchHighlight";
 import { blockSchemaExtensions } from "../../editor/blocks";
 import { BlockKeymap } from "../../lib/tiptap/blockCommands";
 import { BlockHandles } from "./BlockHandles";
+import { TableControls } from "./TableControls";
 import { ImageUpload } from "../../lib/tiptap/ImageUpload";
 import { useVaultClient } from "../../data/VaultClientContext";
 import { EditorFindBar } from "./EditorFindBar";
@@ -386,6 +387,7 @@ export default function DocumentRenderer({ note, onMetadataChange, readOnly }: R
         </div>
         {/* Block gutter: ⋮⋮ drag / block menu and + insert (tap menu on phones) */}
         {editor && <BlockHandles editor={editor} enabled={!notEditable} />}
+        {editor && !notEditable && <TableControls editor={editor} />}
         {/* Wikilink / @mention autocomplete dropdown */}
         {editor && autocompleteState?.active && (
           <WikilinkDropdown editor={editor} notes={allNotes || []} autocomplete={autocompleteState} />

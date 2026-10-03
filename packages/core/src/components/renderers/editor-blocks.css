@@ -180,3 +180,19 @@
 @media (max-width: 767px), (pointer: coarse) {
   .editor-menu-hint { display: none; } /* keyboard hints mean nothing on touch */
 }
+
+/* ── Table controls ── */
+.table-controls {
+  position: fixed; z-index: 35; display: flex; align-items: center; gap: 2px; padding: 3px;
+  border-radius: var(--radius-md); background: var(--bg-elevated); border: 1px solid var(--glass-border);
+  box-shadow: var(--glass-shadow-elevated); max-width: calc(100vw - 16px); overflow-x: auto;
+}
+.table-controls button {
+  display: inline-flex; align-items: center; justify-content: center; width: 30px; height: 30px; flex-shrink: 0;
+  border: 0; border-radius: 6px; background: none; color: var(--text-secondary); cursor: pointer;
+}
+.table-controls button:hover:not(:disabled) { background: var(--surface-hover); color: var(--text-primary); }
+.table-controls button:disabled { opacity: 0.35; cursor: default; }
+.table-controls button.is-danger:hover:not(:disabled) { color: var(--color-danger); }
+.table-controls .selection-divider { align-self: stretch; width: 1px; margin: 4px 2px; background: var(--glass-border); flex-shrink: 0; }
+@media (max-width: 767px) { .table-controls button { width: 40px; height: 40px; } }
