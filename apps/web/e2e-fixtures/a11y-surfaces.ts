@@ -288,7 +288,6 @@ export const SURFACES: Surface[] = [
     await expect(mine.locator("[data-comment-id]")).toHaveCount(1);
     await page.evaluate(() => (window as any).prismDiscussion.seedAnchored());
     await expect(page.getByRole("complementary", { name: "Comments sidebar" })).toContainText("the spring launch");
-    await mine.getByRole("button", { name: "Add comment" }).click();
   } },
   { id: "comments-live-panel", path: "/e2e-fixtures/notion-mentions.html?comments", open: async (page) => {
     const editor = page.locator(".ProseMirror").first();
@@ -423,8 +422,7 @@ export async function openSurface(page: Page, s: Surface, vp: Viewport, theme: T
   // Let enter transitions finish (≤180 ms by NP-AX-06) so colours are measured at rest — and any colour
   // transition the theme flip itself started (a half-way colour is neither theme's).
   await page.waitForTimeout(250);
-  await page.evaluate(() => Promise.race([
-    Promise.all(document.getAnimations().filter((a) => a instanceof CSSTransition).map((a) => a.finished.catch(() => {}))),
-    new Promise((done) => setTimeout(done, 2000)),
-  ]));
+  // Inherited colours re-transition level by level (each child chases its parent's moving value), so
+  // wait until no transition is running at all, not just for the ones running now.
+  await page.waitForFunction(() => !document.getAnimations().some((a) => a instanceof CSSTransition), null, { timeout: 8000 }).catch(() => {});
 }

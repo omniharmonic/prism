@@ -473,7 +473,9 @@ export function BoardView({ ctx, onPickGroup }: { ctx: ViewContext; onPickGroup:
 export function GalleryView({ ctx }: { ctx: ViewContext }) {
   const [adding, setAdding] = useState(false);
   return (
-    <div className="db-gallery" role="list" aria-label={`${ctx.view.name} gallery`} data-size={ctx.view.cardSize ?? "medium"}>
+    <div className="db-gallery" data-size={ctx.view.cardSize ?? "medium"}>
+      {/* The list owns the page cards only (box-less, so the grid is unchanged); the New tile sits beside it. */}
+      <div role="list" aria-label={`${ctx.view.name} gallery`} data-size={ctx.view.cardSize ?? "medium"} style={{ display: "contents" }}>
       {ctx.rows.map((r) => {
         // Cover (NP-DB-05): the chosen property (a URL or a files value), else the page cover
         // (image or brand gradient) — one resolver shared with the page header (`coverForNote`).
@@ -495,8 +497,9 @@ export function GalleryView({ ctx }: { ctx: ViewContext }) {
           </article>
         );
       })}
+      </div>
       {ctx.canCreate && (
-        <article className="db-gcard" role="listitem" style={{ justifyContent: "center", minHeight: 120 }}>
+        <article className="db-gcard" style={{ justifyContent: "center", minHeight: 120 }}>
           {adding ? <NewRowForm onCreate={(t) => ctx.create(t)} onCancel={() => setAdding(false)} /> : <button type="button" className="db-new-row" style={{ justifyContent: "center", minHeight: 120 }} onClick={() => setAdding(true)}><Plus size={14} aria-hidden="true" /> New</button>}
         </article>
       )}

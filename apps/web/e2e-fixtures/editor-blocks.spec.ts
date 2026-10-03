@@ -364,7 +364,7 @@ test.describe("plain editor block handles", () => {
     const pages = page.getByRole("menu", { name: "Move to" });
     await expect(pages.getByRole("menuitem", { name: "Roadmap" })).toBeVisible();
     await expect(pages.getByRole("menuitem", { name: "Block editor" })).toHaveCount(0); // never the page itself
-    await pages.getByRole("searchbox", { name: "Search pages" }).fill("road");
+    await page.getByRole("searchbox", { name: "Search pages" }).fill("road"); // above the menu, not one of its items
     if (SHOTS) await page.screenshot({ path: `${SHOTS}/block-move-to-1440.png` });
     await page.keyboard.press("Enter");
     await expect(page.getByRole("status").filter({ hasText: "Moved to Roadmap" })).toBeVisible();

@@ -342,8 +342,16 @@ export function PropertyValue({
     : def.kind === "email" && looksLikeEmail(raw) ? { href: `mailto:${raw.trim()}`, name: raw }
     : def.kind === "phone" && looksLikePhone(raw) ? { href: `tel:${raw.replace(/[^\d+]/g, "")}`, name: raw }
     : null;
+  const readOnlyLinks = !!readOnly && (def.kind === "relation" || def.kind === "person") && !isBlank(value);
   return (
     <span className={`db-value db-value-${variant}`} data-linked={valueLink ? "" : undefined}>
+      {readOnlyLinks ? (
+        /* A reader's relation / person chips are links to those pages. Links may not sit inside a
+           button, and a read-only cell has nothing else to do — so here it is a labelled group. */
+        <span className="db-value-button" role="group" data-readonly aria-label={`${def.label}: ${formatValue(def, value) || "Empty"}`}>
+          <PropertyDisplay def={def} value={value} openLinks links={false} />
+        </span>
+      ) : (
       <button
         ref={anchor}
         type="button"
@@ -364,6 +372,7 @@ export function PropertyValue({
           <PropertyDisplay def={def} value={value} openLinks={false} links={false} />
         )}
       </button>
+      )}
       {/* The link sits BESIDE the cell's button (never inside it): a real, keyboard-reachable link named by its value. */}
       {valueLink && (
         <a className="db-value-link focus-ring" href={valueLink.href} aria-label={valueLink.name} title={`Open ${valueLink.name}`}
