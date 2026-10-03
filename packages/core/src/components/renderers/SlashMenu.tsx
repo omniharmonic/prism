@@ -4,11 +4,13 @@ import type { Editor } from "@tiptap/react";
 import {
   Sparkles, Type, Heading1, Heading2, Heading3, List, ListOrdered, ListChecks, Quote, Code2, Minus,
   ChevronRight, MessageSquareText, Table as TableIcon, Image as ImageIcon, Link2, Columns2, Columns3, ImageUp,
+  Paperclip, FileText, Music, Film, Bookmark as BookmarkIcon, PlayCircle, ListTree,
 } from "lucide-react";
 import { useSelectionAsk } from "../../lib/agent/useSelectionAsk";
 import { dismissSlashCommand, type SlashCommandState } from "../../lib/tiptap/SlashCommand";
 import { turnTopBlocksInto, type TurnIntoKind } from "../../lib/tiptap/blockCommands";
-import { canUploadImages, pickAndUploadImages } from "../../lib/tiptap/ImageUpload";
+import { canUploadImages, pickAndUploadImages, canUploadFiles, pickAndUploadFiles } from "../../lib/tiptap/ImageUpload";
+import { editorUnfurler, insertLinkBlock } from "../../lib/tiptap/UrlPaste";
 import "./editor-blocks.css";
 
 const isMac = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform);
@@ -67,6 +69,19 @@ function insertImageByUrl(editor: Editor) {
   editor.chain().focus().setImage({ src: url }).run();
 }
 
+function promptLinkBlock(editor: Editor, type: "bookmark" | "embed") {
+  const url = window.prompt(type === "embed" ? "Link to embed (YouTube, Vimeo, Loom, Figma, Google Docs, Spotify…)" : "Link for the bookmark");
+  if (!url) return;
+  insertLinkBlock(editor, url, type, editorUnfurler(editor));
+}
+
+function insertToc(editor: Editor) {
+  const { $from } = editor.state.selection;
+  const empty = $from.depth === 1 && $from.parent.isTextblock && $from.parent.content.size === 0;
+  const from = empty ? $from.before(1) : $from.after(1);
+  editor.chain().focus().insertContentAt({ from, to: empty ? $from.after(1) : from }, { type: "tableOfContents" }).run();
+}
+
 const BASE: SlashItem[] = [
   { id: "text", group: "Basic blocks", title: "Text", subtitle: "Plain paragraph", icon: <Type size={16} />, keywords: ["text", "paragraph", "p", "body", "plain"], shortcut: "Mod-Alt-0", run: (e) => e.chain().focus().setParagraph().run() },
   { id: "h1", group: "Basic blocks", title: "Heading 1", subtitle: "Large section heading", icon: <Heading1 size={16} />, keywords: ["h1", "heading", "title", "big"], shortcut: "Mod-Alt-1", markdown: "#", run: (e) => e.chain().focus().setNode("heading", { level: 1 }).run() },
@@ -80,11 +95,21 @@ const BASE: SlashItem[] = [
   { id: "callout", group: "Basic blocks", title: "Callout", subtitle: "Make writing stand out", icon: <MessageSquareText size={16} />, keywords: ["callout", "note", "info", "tip", "warning", "box"], run: (e) => shapeBlock(e, "callout") },
   { id: "divider", group: "Basic blocks", title: "Divider", subtitle: "Visually divide sections", icon: <Minus size={16} />, keywords: ["divider", "hr", "rule", "separator", "line"], markdown: "---", run: (e) => e.chain().focus().setHorizontalRule().run() },
   { id: "image", group: "Media", title: "Image", subtitle: "Upload or embed with a link", icon: <ImageIcon size={16} />, keywords: ["image", "picture", "photo", "img", "upload"], run: (e) => (canUploadImages(e) ? pickAndUploadImages(e) : insertImageByUrl(e)) },
+  { id: "bookmark", group: "Media", title: "Web bookmark", subtitle: "A link preview card", icon: <BookmarkIcon size={16} />, keywords: ["bookmark", "preview", "card", "url", "web"], run: (e) => promptLinkBlock(e, "bookmark") },
+  { id: "embed", group: "Media", title: "Embed", subtitle: "YouTube, Vimeo, Loom, Figma, Google Docs…", icon: <PlayCircle size={16} />, keywords: ["embed", "video", "youtube", "vimeo", "loom", "figma", "google", "spotify", "codepen", "tweet", "iframe"], run: (e) => promptLinkBlock(e, "embed") },
+  { id: "toc", group: "Advanced", title: "Table of contents", subtitle: "Jump to a heading on this page", icon: <ListTree size={16} />, keywords: ["toc", "table of contents", "contents", "outline", "headings"], run: insertToc },
   { id: "code", group: "Advanced", title: "Code", subtitle: "Capture a code snippet", icon: <Code2 size={16} />, keywords: ["code", "codeblock", "pre", "snippet"], shortcut: "Mod-Alt-C", markdown: "```", run: (e) => e.chain().focus().toggleCodeBlock().run() },
   { id: "table", group: "Advanced", title: "Table", subtitle: "Rows and columns with a header", icon: <TableIcon size={16} />, keywords: ["table", "grid", "rows", "columns", "spreadsheet"], run: (e) => e.chain().focus().insertTable({ rows: 3, cols: 3, withHeaderRow: true }).run() },
   { id: "link", group: "Advanced", title: "Link to page", subtitle: "Link to another page with [[", icon: <Link2 size={16} />, keywords: ["link", "page", "wikilink", "mention", "reference"], markdown: "[[", run: (e) => e.chain().focus().insertContent("[[").run() },
   { id: "columns2", group: "Advanced", title: "2 columns", subtitle: "Side-by-side blocks", icon: <Columns2 size={16} />, keywords: ["columns", "column", "layout", "side", "2"], run: (e) => insertColumns(e, 2) },
   { id: "columns3", group: "Advanced", title: "3 columns", subtitle: "Three blocks side by side", icon: <Columns3 size={16} />, keywords: ["columns", "column", "layout", "side", "3"], run: (e) => insertColumns(e, 3) },
+];
+
+const FILE_ITEMS: SlashItem[] = [
+  { id: "file", group: "Media", title: "File", subtitle: "Upload any file", icon: <Paperclip size={16} />, keywords: ["file", "upload", "attachment", "attach", "document"], run: (e) => pickAndUploadFiles(e) },
+  { id: "pdf", group: "Media", title: "PDF", subtitle: "Upload a PDF to preview inline", icon: <FileText size={16} />, keywords: ["pdf", "document", "file"], run: (e) => pickAndUploadFiles(e, "application/pdf,.pdf") },
+  { id: "audio", group: "Media", title: "Audio", subtitle: "Upload a recording or song", icon: <Music size={16} />, keywords: ["audio", "sound", "music", "mp3", "voice", "recording"], run: (e) => pickAndUploadFiles(e, "audio/*") },
+  { id: "video", group: "Media", title: "Video", subtitle: "Upload a video to play inline", icon: <Film size={16} />, keywords: ["video", "movie", "mp4", "clip"], run: (e) => pickAndUploadFiles(e, "video/*") },
 ];
 
 const IMAGE_URL: SlashItem = { id: "image-url", group: "Media", title: "Image from URL", subtitle: "Embed an image by its address", icon: <ImageUp size={16} />, keywords: ["image", "url", "link", "embed"], run: insertImageByUrl };
@@ -129,9 +154,11 @@ export function SlashMenu({ editor, state, onClose }: { editor: Editor | null; s
   const documentText = editor && editor.state.doc.textBetween(0, state.from, "\n") + editor.state.doc.textBetween(state.to, editor.state.doc.content.size, "\n");
   const canAsk = action.canAsk && editor?.isEditable && !!documentText?.trim();
   const uploads = canUploadImages(editor);
+  const fileUploads = canUploadFiles(editor);
   const items = useMemo(() => {
     const all: SlashItem[] = [...BASE];
     if (uploads) all.splice(all.findIndex((i) => i.id === "image") + 1, 0, IMAGE_URL);
+    if (fileUploads) all.splice(all.findIndex((i) => i.id === (uploads ? "image-url" : "image")) + 1, 0, ...FILE_ITEMS);
     if (canAsk) all.push({ id: "ask", agent: true, group: "Agent", title: "Ask agent", subtitle: "Discuss this page in your conversation", icon: <Sparkles size={16} />, keywords: ["ask", "agent", "ai", "assistant"], shortcut: "Mod-J", run: () => {} });
     if (!q.trim()) return all;
     return all
@@ -139,7 +166,7 @@ export function SlashMenu({ editor, state, onClose }: { editor: Editor | null; s
       .filter((r) => r.score > 0)
       .sort((a, b) => b.score - a.score || a.i - b.i)
       .map((r) => r.it);
-  }, [q, canAsk, uploads]);
+  }, [q, canAsk, uploads, fileUploads]);
 
   useEffect(() => setSelected(0), [q]);
 

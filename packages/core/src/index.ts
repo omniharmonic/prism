@@ -104,6 +104,12 @@ export { CommentsSidebar } from "./components/renderers/CommentsSidebar";
 export { collabAffordances, type CollabAffordances } from "./lib/collab/access";
 export { PageHeader, PageProperties, FontSwitch, renamePath } from "./components/renderers/DocumentChrome";
 export type { ContentFont } from "./components/renderers/DocumentChrome";
+// Media, embeds, covers (wave 2B): page cover, attachment/cover helpers, embed allowlist.
+export { PageCover, CoverPicker } from "./components/renderers/PageCover";
+export { parseCover, coverPatch, coverForNote, gradientCss, COVER_GRADIENTS, safeMediaSrc, isOwnAttachment, attachmentKind, formatBytes, MAX_IMAGE_BYTES, MAX_FILE_BYTES } from "./lib/media/attachments";
+export type { PageCover as PageCoverValue, AttachmentKind } from "./lib/media/attachments";
+export { embedFor, isAllowedFrameSrc, safeWebUrl, EMBED_FRAME_ORIGINS, EMBED_SANDBOX } from "./lib/media/embeds";
+export type { EmbedTarget, EmbedProvider } from "./lib/media/embeds";
 export { useUpdateNote, useNotes } from "./app/hooks/useParachute";
 export { useUIStore } from "./app/stores/ui";
 export { useWikilinkNavigate } from "./app/hooks/useWikilinkNavigate";

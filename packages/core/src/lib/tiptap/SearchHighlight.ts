@@ -56,6 +56,13 @@ function findMatches(state: EditorState, query: string): SearchMatch[] {
 
 export const SearchHighlight = Extension.create({
   name: "searchHighlight",
+  // Above Highlight (whose Mod-Shift-H toggles a highlight mark): in Prism
+  // ⌘⇧H opens find-and-replace. The host's keydown listener opens the bar; this
+  // only claims the key so no stray stored mark lands on the next replacement.
+  priority: 1000,
+  addKeyboardShortcuts() {
+    return { "Mod-Shift-h": () => true };
+  },
 
   addProseMirrorPlugins() {
     return [
@@ -118,3 +125,30 @@ export const SearchHighlight = Extension.create({
     ];
   },
 });
+
+type ReplaceEditor = { state: EditorState; view: { dispatch: (tr: Transaction) => void } };
+
+/** Replace the match at `index` with `replacement` (one transaction, one undo step). */
+export function replaceMatch(editor: ReplaceEditor, index: number, replacement: string): boolean {
+  const ps = searchHighlightKey.getState(editor.state);
+  const m = ps?.matches[index];
+  if (!m) return false;
+  // Replacement text takes the marks of the text it replaces, never a stray stored mark.
+  const tr = editor.state.tr.setStoredMarks(null).insertText(replacement, m.from, m.to);
+  editor.view.dispatch(tr.scrollIntoView());
+  return true;
+}
+
+/**
+ * Replace every match in ONE transaction, back to front so earlier positions
+ * stay valid. One undo step in the plain editor (history) and in a live doc
+ * (one Yjs transaction = one Y.UndoManager item). Returns how many changed.
+ */
+export function replaceAllMatches(editor: ReplaceEditor, replacement: string): number {
+  const ps = searchHighlightKey.getState(editor.state);
+  if (!ps?.matches.length) return 0;
+  const tr = editor.state.tr;
+  for (let i = ps.matches.length - 1; i >= 0; i--) tr.setStoredMarks(null).insertText(replacement, ps.matches[i].from, ps.matches[i].to);
+  editor.view.dispatch(tr);
+  return ps.matches.length;
+}

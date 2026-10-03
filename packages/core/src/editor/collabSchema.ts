@@ -21,8 +21,11 @@ import { blockSchemaExtensions } from "./blocks";
  * this number (apps/server/test/collab-schema-version.test.ts pins the names).
  *   1 — StarterKit/Link/Highlight/Tasks + suggestion/comment marks (implicit)
  *   2 — + image, table, callout, toggle, columns, block/text colour
+ *   3 — + attachment (file/pdf/audio/video), embed, bookmark, tableOfContents,
+ *       image align + caption; codeBlock is now the lowlight variant (same
+ *       name + `language` attr, highlighting is decoration-only)
  */
-export const COLLAB_SCHEMA_VERSION = 2;
+export const COLLAB_SCHEMA_VERSION = 3;
 
 /**
  * The document schema shared by the collaborative editor (browser) and the
@@ -40,13 +43,14 @@ export const COLLAB_SCHEMA_VERSION = 2;
  */
 export function collabExtensions(): Extensions {
   return [
-    StarterKit.configure({ undoRedo: false, link: false }),
+    StarterKit.configure({ undoRedo: false, link: false, codeBlock: false }),
     Link.configure({ openOnClick: false, autolink: true }),
     Typography,
     Highlight.configure({ multicolor: true }),
     TaskList,
     TaskItem.configure({ nested: true }),
-    // Images, tables, callouts, toggles, columns and block/text colours —
+    // Images, files, embeds, bookmarks, TOC, highlighted code, tables,
+    // callouts, toggles, columns and block/text colours —
     // shared with the plain renderer so a note round-trips through either.
     ...blockSchemaExtensions(),
     // Suggested-edit marks (insertion/deletion). Schema-only here so the server

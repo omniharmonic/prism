@@ -242,5 +242,8 @@ export interface VaultClient {
   /** Store an image/file as an attachment of `noteId` and return a URL to embed.
    *  Optional: when absent, the editor hides upload (paste/drop/pick) and offers
    *  only "Image from URL". Rejects on refusal; the editor inserts nothing. */
-  uploadAttachment?(noteId: string, file: File): Promise<UploadedAttachment>;
+  uploadAttachment?(noteId: string, file: File, opts?: { kind?: "image" | "file" }): Promise<UploadedAttachment>;
+  /** Link preview for a bookmark block (title, description, site, image, favicon).
+   *  Optional: without it a bookmark shows its URL only. */
+  unfurl?(url: string): Promise<{ url: string; title?: string | null; description?: string | null; siteName?: string | null; image?: string | null; favicon?: string | null }>;
 }

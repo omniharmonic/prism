@@ -34,6 +34,9 @@ test("security headers are present on every response", async () => {
   assert.match(csp, /script-src 'self'/);
   assert.match(csp, /frame-ancestors 'none'/);
   assert.match(csp, /object-src 'none'/);
+  // Frames: only ourselves (inline PDF preview) and the embed allowlist — never a wildcard.
+  const frame = csp.split("; ").find((d) => d.startsWith("frame-src")) ?? "";
+  assert.equal(frame, "frame-src 'self' https://www.youtube-nocookie.com https://player.vimeo.com https://www.loom.com https://www.figma.com https://embed.figma.com https://docs.google.com https://www.google.com https://open.spotify.com https://codepen.io https://platform.twitter.com");
   // appOrigin is http in the test env → HSTS must NOT be set (https-only).
   assert.equal(r.headers.get("strict-transport-security"), null);
 });

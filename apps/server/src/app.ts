@@ -31,6 +31,7 @@ import { pats } from "./routes/pats";
 import { mountPrismMcp } from "./mcp/router";
 import { media, map as mapProxy } from "./routes/media";
 import { rateLimit } from "./middleware/ratelimit";
+import { EMBED_FRAME_ORIGINS } from "@prism/core/media-embeds";
 
 export function createApp(): Hono {
   const app = new Hono();
@@ -57,6 +58,10 @@ export function createApp(): Hono {
     "img-src 'self' data: blob: https:",
     "worker-src 'self' blob:",
     "connect-src 'self' ws: wss: https:",
+    // Embed blocks (wave 2B): ONLY the allowlisted players (packages/core/src/lib/media/embeds.ts),
+    // each framed with a strict sandbox; 'self' for the inline PDF preview of an attachment.
+    // Frames are always cross-origin to us and never get our cookies or DOM.
+    `frame-src 'self' ${EMBED_FRAME_ORIGINS.join(" ")}`,
   ].join("; ");
 
   app.use("*", async (c, next) => {

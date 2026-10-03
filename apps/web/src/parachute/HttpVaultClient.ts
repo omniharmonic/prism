@@ -52,4 +52,6 @@ export const httpVaultClient: VaultClient = {
   updateSchema: rest.updateSchema,
   queryNotes: rest.queryNotes,
   updateProperties: rest.updateProperties,
+  uploadAttachment: rest.uploadAttachment,
+  unfurl: rest.unfurl,
 };

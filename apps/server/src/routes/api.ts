@@ -308,9 +308,10 @@ api.get("/events", async (c) => {
  * short-circuit, so it covers the owner passthrough too.
  */
 export const EDITOR_SCHEMA_HEADER = "x-prism-editor-schema";
-const SCHEMA_V2_MARKERS = /data-type="(?:callout|toggle|columns|column)"|<details[\s>]|data-block-color=|data-text-color=/;
+// v2 (callout/toggle/columns/colours) + v3 (attachment/embed/bookmark/toc blocks, image align/caption).
+const SCHEMA_MARKERS = /data-type="(?:callout|toggle|columns|column|attachment|embed|bookmark|toc)"|<details[\s>]|data-block-color=|data-text-color=|data-align=|data-caption=/;
 export function needsEditorUpdate(storedContent: string | null | undefined): boolean {
-  return SCHEMA_V2_MARKERS.test(storedContent ?? "");
+  return SCHEMA_MARKERS.test(storedContent ?? "");
 }
 api.use("/notes/:id", async (c, next) => {
   const method = c.req.method;

@@ -3,6 +3,7 @@ import * as Y from "yjs";
 import { HocuspocusProvider } from "@hocuspocus/provider";
 import { persistLocalDocument, localDocumentKey, type LocalSaveState } from "./localDocument";
 import { captureWriteContext, scopeKey } from "../offline/writeScope";
+import { PageCover, parseCover, coverPatch, COVER_GRADIENTS, type PageCoverValue } from "@prism/core";
 import { COLLAB_SCHEMA_VERSION, useAgentDocumentSnapshot, CollabEditor, CommentsSidebar, collabAffordances, CollabCodeEditor, CollabSpreadsheet, CollabCanvas, detectCodeLanguage, inferContentType, PageHeader, NotePropertyBar, PageProperties, renamePath, useUIStore, useAgentChatStore, type ContentFont, type Note, type Editor } from "@prism/core";
 import { MessageSquare, X, Lock } from "lucide-react";
 import { serverFetch, collabWsUrl, collabToken } from "../transport";
@@ -16,7 +17,7 @@ function vaultDocName(noteId: string): string {
   const v = getActiveVault();
   return v && v !== "primary" ? `${v}::${noteId}` : noteId;
 }
-import { updateNote as restUpdateNote, hasPendingWrites } from "../parachute/rest";
+import { updateNote as restUpdateNote, hasPendingWrites, uploadAttachment, unfurl as restUnfurl } from "../parachute/rest";
 import { reloadForUpdate } from "../offline/reloadForUpdate";
 
 /** Track a CSS breakpoint without per-render layout thrash. */
@@ -144,6 +145,8 @@ function ScopedCollabDoc({
   const [path, setPath] = useState<string | null>(null);
   const [contentFont, setContentFont] = useState<ContentFont>("sans");
   const [icon, setIcon] = useState<string | null>(null);
+  const [cover, setCover] = useState<PageCoverValue | null>(null);
+  const [uploadNotice, setUploadNotice] = useState<string | null>(null);
   const [kind, setKind] = useState<CollabKind>("document");
   const [language, setLanguage] = useState("plaintext");
   const [presence, setPresence] = useState<PresenceUser[]>([]);
@@ -188,6 +191,22 @@ function ScopedCollabDoc({
   const handleIconChange = (emoji: string | null) => {
     setIcon(emoji);
     void restUpdateNote(noteId, { metadata: { icon: emoji } }).catch(() => {});
+  };
+  // Page cover (metadata-only write, like the icon; the server reconciles it with the live doc).
+  const handleCoverChange = (next: PageCoverValue | null) => {
+    setCover(next);
+    void restUpdateNote(noteId, { metadata: coverPatch(next) }).catch(() => {});
+  };
+  // Files/images go to the note's attachments (edit cap on the server); the block is inserted after the 201.
+  const uploadImage = async (file: File) => {
+    setUploadNotice(null);
+    const a = await uploadAttachment(noteId, file, { kind: "image" });
+    return { src: a.url, alt: a.name.replace(/\.[^.]+$/, "") };
+  };
+  const uploadFile = async (file: File) => {
+    setUploadNotice(null);
+    const a = await uploadAttachment(noteId, file, { kind: "file" });
+    return { src: a.url, name: a.name, size: a.size, mimeType: a.mimeType };
   };
 
   const isSuggestLevel = level === "suggest";
@@ -248,6 +267,7 @@ function ScopedCollabDoc({
         setPath(note.path ?? null);
         if (typeof note.metadata?.contentFont === "string") setContentFont(note.metadata.contentFont as ContentFont);
         setIcon(typeof note.metadata?.icon === "string" ? note.metadata.icon : null);
+        setCover(parseCover(note.metadata ?? null));
         const k = detectKind(note);
         setKind(k);
         if (k === "code") setLanguage(detectCodeLanguage(note.path ?? null, note.metadata ?? null));
@@ -455,6 +475,12 @@ function ScopedCollabDoc({
       {localSave === "unavailable" && <p role="alert" className="rounded-lg border p-3 text-sm">Local saving is unavailable. Keep this document open and copy any unsynced changes before leaving.</p>}
       {/* Extra bottom padding on narrow viewports clears the floating command pill. */}
       <div style={{ maxWidth: 1080, margin: "0 auto", padding: narrow ? "12px 14px 124px" : "16px 20px 96px" }}>
+        {/* Cover band — same component and metadata as the non-collab view */}
+        {isDocument && <div className="collab-cover-bleed"><PageCover
+          cover={cover}
+          onChange={canReview ? handleCoverChange : undefined}
+          onUpload={canReview && !getCapabilityToken() ? async (file) => (await uploadAttachment(noteId, file, { kind: "image" })).url : undefined}
+        /></div>}
         {/* Header — shared page chrome, identical to the non-collab document view */}
         <PageHeader
           path={path}
@@ -463,6 +489,7 @@ function ScopedCollabDoc({
           onRename={canReview ? handleRename : undefined}
           icon={icon}
           onIconChange={canReview ? handleIconChange : undefined}
+          onAddCover={canReview && isDocument && !cover ? () => handleCoverChange({ kind: "gradient", value: COVER_GRADIENTS[Math.floor(Math.random() * COVER_GRADIENTS.length)]!.name, y: 50 }) : undefined}
           right={
             <div style={{ display: "flex", alignItems: "center", gap: 10, paddingTop: 4 }}>
               <span style={{ fontSize: 11, color: "var(--text-muted)", display: "flex", alignItems: "center", gap: 6, whiteSpace: "nowrap" }}>
@@ -499,6 +526,7 @@ function ScopedCollabDoc({
         />
 
         {titleNotice && <p role="status" className="mb-4 text-xs text-[var(--text-secondary)]">{titleNotice}</p>}
+        {uploadNotice && <p role="alert" className="mb-4 text-xs text-[var(--text-secondary)]">{uploadNotice} <button type="button" className="underline" onClick={() => setUploadNotice(null)}>Dismiss</button></p>}
 
         {/* Doc + (desktop) inline comments */}
         <div style={{ display: "flex", gap: 20, alignItems: "flex-start" }}>
@@ -554,6 +582,10 @@ function ScopedCollabDoc({
                 }}
                 onWikilinkNavigate={onWikilinkNavigate}
                 wikilinkNotes={wikilinkNotes}
+                uploadImage={canReview ? uploadImage : undefined}
+                uploadFile={canReview ? uploadFile : undefined}
+                unfurl={getCapabilityToken() ? undefined : restUnfurl}
+                onUploadError={setUploadNotice}
               />
             )}
           </div>
