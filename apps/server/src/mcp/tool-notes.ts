@@ -23,7 +23,7 @@ import * as z from "zod/v4";
 import { ConversionError, htmlToMarkdown } from "../convert/service";
 import { CAPS, effectiveCaps, type Cap } from "../permissions";
 import { roleFloor } from "../roles";
-import { isDocLive, noteKind, type CollabKind } from "../collab";
+import { hasLiveState, isDocLive, noteKind, settleUnsaved, type CollabKind } from "../collab";
 import type { Note } from "../parachute";
 import { canView, hasCapAnywhere, isAdmin } from "./access";
 import { jsonOrToolError } from "./dispatch";
@@ -100,10 +100,11 @@ const byUpdatedDesc = (a: Note, b: Note) => (b.updatedAt ?? b.createdAt ?? "").l
 /** Fetch the note (view gate) and refuse a CONTENT write while its Yjs doc is live. */
 async function assertNotLive(ctx: ToolContext, id: string, verb: string): Promise<void> {
   const note = await getJson<NoteOut>(ctx, `/api/notes/${enc(id)}`); // 403/404 here first: liveness is never an oracle for non-viewers
-  if (isDocLive(ctx.principal.actor.vaultId, note.id)) {
+  // Live = loaded, or holding live-editor changes that have not reached the vault yet.
+  if (hasLiveState(ctx.principal.actor.vaultId, note.id)) {
     throw new ToolError(
       "conflict",
-      `this note is open in live collaborative editing, so ${verb} is refused to avoid racing the live document. ` +
+      `this note is open in live collaborative editing (or still saving changes from it), so ${verb} is refused to avoid racing the live document. ` +
         "Wait until no one has it open and retry — or read the version (prism_get_version) and write its content with " +
         "prism_update_note, which merges into the live document.",
       { live: true },
@@ -306,8 +307,14 @@ export const updateNoteTool = defineTool({
       noteId = note.id;
       // A locked page refuses content for EVERY principal (owners unlock it first).
       if (note.metadata?.prism_locked === true) throw new ToolError("conflict", "this page is locked — unlock it before editing its content", { locked: true });
-      if (isDocLive(ctx.principal.actor.vaultId, note.id)) {
+      // A note that is not loaded but holds unsaved live state is first given the chance to be
+      // written; one that cannot be opened live at all is fixed over REST (the only way).
+      const { vaultId } = ctx.principal.actor;
+      const viaLive = isDocLive(vaultId, note.id) || (hasLiveState(vaultId, note.id) && (await settleUnsaved(vaultId, note.id)) === "pending");
+      if (viaLive) {
         // WP6.3: a live doc takes the change through Yjs (three-way merge), never a vault overwrite.
+        // The same goes for a note whose live changes have not reached the vault yet: its stored
+        // body is stale, so the write goes through the document (which is loaded for it).
         const r = await liveContentWrite(ctx, note.id, a.content, a.if_updated_at);
         merged = { live: true, changed: r.changed };
         const rest = a.metadata !== undefined || a.path !== undefined || hasTags;

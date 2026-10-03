@@ -41,7 +41,8 @@ import { treeUpsertNote, warmPageAnchors } from "../tree";
 import { roleAtLeast, roleFloor } from "../roles";
 import { csrfRefusal } from "./actions";
 import { consumeRateLimit } from "../middleware/ratelimit";
-import { CollabBusyError, DocumentTooComplexError, FIELD, collabSchema, docNameFor, ensureRenderedSize, hocuspocus, isDocBlocked, isDocLive, isNoteId, noteCollabWriter, noteKind, renderedSizeOf } from "../collab";
+import { CollabBusyError, DocumentTooComplexError, FIELD, collabSchema, docNameFor, ensureRenderedSize, hasLiveState, hocuspocus, isDocBlocked, isNoteId, noteCollabWriter, noteKind, renderedSizeOf } from "../collab";
+import { getCollabUnsaved, getDocState } from "../db";
 import { writerStamp } from "../sharing";
 import "../block-append-store";
 
@@ -185,10 +186,14 @@ blocksApi.post("/notes/:id/blocks/append", bodyLimit({ maxSize: MAX_HTML + 4096,
       db.prepare("DELETE FROM block_append_receipts WHERE created_at < ?").run(new Date(Date.now() - RECEIPT_DAYS * 86_400_000).toISOString());
     };
     const docName = docNameFor(entry.id, note.id);
-    if (isDocLive(entry.id, note.id)) {
+    // Through the live document when it is open — and when it holds changes that have not
+    // reached the vault yet (the stored body is stale: appending to it would write over them).
+    if (hasLiveState(entry.id, note.id)) {
       let conn: Awaited<ReturnType<typeof hocuspocus.openDirectConnection>>;
+      let appended = false;
       try {
-        conn = await hocuspocus.openDirectConnection(docName, { human: actor.email });
+        // `user:<email>`: the identity form the collab hooks attribute and rate by.
+        conn = await hocuspocus.openDirectConnection(docName, { human: `user:${actor.email}` });
       } catch (e) {
         if (e instanceof DocumentTooComplexError) return { status: 413, body: { error: "too_complex", detail: "that page is too large or complex for the live editor" } };
         if (e instanceof CollabBusyError) return { status: 503, body: { error: "busy", retry: true } };
@@ -206,13 +211,19 @@ blocksApi.post("/notes/:id/blocks/append", bodyLimit({ maxSize: MAX_HTML + 4096,
           throw e;
         }
         if ((renderedSizeOf(conn.document) ?? 0) + Buffer.byteLength(blocks.html) > MAX_NOTE) return { status: 413, body: { error: "too_large", detail: "that page is full" } };
-        // Synchronous from here: the receipt and the Yjs change land in the same tick.
         appendToLiveDoc(conn.document, blocks.json, `human:${actor.email}`);
         noteCollabWriter(docName, actor.email, "edit");
-        record(true);
+        appended = true;
       } finally {
         await conn.disconnect(); // stores through the normal path
       }
+      // The receipt (and the 200) only once the change is DURABLE: written to the vault, or
+      // saved in the server's document store with the note recorded as still to be written
+      // (`collab_unsaved` — retried, restored at every open, never folded away).
+      const snapshot = getDocState(note.id, entry.id);
+      const durable = appended && !!snapshot && (!snapshot.ahead || getCollabUnsaved(note.id, entry.id) !== null);
+      if (!durable) return { status: 503, body: { error: "not_confirmed", retry: true } };
+      record(true);
       return { status: 200, body: { ok: true, live: true } };
     }
     let current = note;
@@ -228,7 +239,7 @@ blocksApi.post("/notes/:id/blocks/append", bodyLimit({ maxSize: MAX_HTML + 4096,
       if (Buffer.byteLength(next) > MAX_NOTE) return { status: 413, body: { error: "too_large", detail: "that page is full" } };
       // The page may have been opened since the check above: a body write under a
       // live document would be folded over what is being typed.
-      if (isDocLive(entry.id, note.id)) return { status: 409, body: { error: "conflict", retry: true } };
+      if (hasLiveState(entry.id, note.id)) return { status: 409, body: { error: "conflict", retry: true } };
       try {
         const saved = await client.updateNote(note.id, { content: next, metadata: writerStamp(actor.email, "edit"), ifUpdatedAt: current.updatedAt });
         record(false);

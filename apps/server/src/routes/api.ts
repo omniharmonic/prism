@@ -14,7 +14,7 @@
 import { Hono } from "hono";
 import { createHash } from "node:crypto";
 import type { Context } from "hono";
-import { resolveVaultEntry, grantsForResource } from "../db";
+import { resolveVaultEntry, grantsForResource, isCollabUnsaved } from "../db";
 import { vault, vaultClient, VaultError, VaultConflictError, type Note } from "../parachute";
 import { resolveActor, requestVia, type Actor } from "../auth/actor";
 import { COLLAB_SCHEMA_VERSION } from "@prism/core/editor-schema";
@@ -425,6 +425,41 @@ api.use("/notes/:id", async (c, next) => {
   if (!needsEditorUpdate(storedNote.content ?? "")) return next();
   return c.json({ error: "editor_update_required", message: "Prism was updated. Reload or update the app to keep editing." }, 409);
 });
+
+// A note whose LIVE document state has not reached the vault yet (a store that
+// could not render or write — `collab_unsaved`): the vault's body is stale, so a
+// REST write of the body (PATCH/PUT with `content`, or a version restore) would
+// pass its version check against content nobody is looking at. Such a note is
+// first given the chance to be written (load + store); if its state is still
+// ahead, the write is refused — `409 conflict {live, retry}` — for EVERY caller
+// (owner passthrough and in-process MCP included). A note that cannot be opened
+// live at all (unconvertible) is exempt: REST is the only way to fix it.
+const UNSAVED_CONFLICT = { error: "conflict", live: true, retry: true, detail: "This page has changes that are still being saved from the live editor. Open the page, or try again in a moment." } as const;
+async function unsavedRefusal(c: Context, id: string): Promise<Response | null> {
+  const actor = resolveActor(c);
+  if (actor.kind === "anon" || !id) return null; // the route answers 401/403/404
+  const vaultId = roleAtLeast(actor.role, "admin") ? resolveVaultEntry(c.req.header("x-prism-vault")).id : actor.vaultId;
+  if (!isCollabUnsaved(id, vaultId)) return null; // one indexed lookup; rows are keyed by note id
+  // Never an oracle: someone who cannot view the note gets the route's own 404.
+  if (!roleAtLeast(actor.role, "admin")) {
+    try {
+      if (!capsFor(actor, ref(await vaultClient(vaultId).getNote(id))).has("view")) return null;
+    } catch {
+      return null;
+    }
+  }
+  const collab = await import("../collab"); // lazily: collab ⇄ routes import cycle
+  return (await collab.settleUnsaved(vaultId, id)) === "pending" ? c.json(UNSAVED_CONFLICT, 409) : null;
+}
+api.use("/notes/:id", async (c, next) => {
+  const method = c.req.method;
+  if (method !== "PATCH" && method !== "PUT") return next();
+  let body: unknown;
+  try { body = JSON.parse(await c.req.text()); } catch { return next(); }
+  if (!body || typeof body !== "object" || typeof (body as { content?: unknown }).content !== "string") return next();
+  return (await unsavedRefusal(c, c.req.param("id"))) ?? next();
+});
+api.use("/notes/:id/restore", async (c, next) => (c.req.method === "POST" ? ((await unsavedRefusal(c, c.req.param("id"))) ?? next()) : next()));
 
 // Wave 2A: a successful content write carrying @-mention chips → notifications +
 // mention backlinks (both the owner passthrough and the member route; never

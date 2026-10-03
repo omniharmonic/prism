@@ -421,7 +421,12 @@ export async function runImport(
         try {
           if (r.action === "unchanged") p.unchanged++;
           else if (r.action === "conflict") p.conflicts++;
-          else {
+          // A page that is open in the live editor, or whose live changes have not reached the
+          // vault yet, is never overwritten by an import (its stored body is not what people see).
+          else if (r.action === "update" && r.holderId && (await import("../collab")).hasLiveState(entry.id, r.holderId)) {
+            p.conflicts++;
+            if (p.problems.length < 200) p.problems.push({ entry: note.src, reason: "the page is open in the live editor (or still saving); run the import again later" });
+          } else {
             const base = { v: 1 as const, src: note.src };
             let id = r.holderId;
             let updatedAt = r.holderUpdatedAt ?? undefined;
