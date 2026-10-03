@@ -5,7 +5,7 @@
  */
 import React from "react";
 import { createRoot } from "react-dom/client";
-import { App, CollabDocumentProvider, CollabSharingProvider, PlatformProvider, VaultClientProvider, useUIStore, type Note } from "@prism/core";
+import { App, AccountProvider, CollabDocumentProvider, CollabSharingProvider, PlatformProvider, VaultClientProvider, useUIStore, type Note } from "@prism/core";
 import { filtersToParams, matchesFilters, parseSearchFilters, queryTerms, searchMatches } from "@prism/core/search";
 import { inferContentType } from "../../../packages/core/src/lib/schemas/content-types";
 import { httpVaultClient } from "../src/parachute/HttpVaultClient";
@@ -13,6 +13,7 @@ import { fetchMe, setActiveVault } from "../src/config";
 import { OfflineIndicator } from "../src/offline/OfflineIndicator";
 import { startOutboxSync, setStaleSendingMsForTests } from "../src/offline/outbox";
 import { logout } from "../src/config";
+import { webAccount } from "../src/account";
 
 void filtersToParams;
 const params = new URLSearchParams(location.search);
@@ -88,7 +89,9 @@ window.fetch = async (input, init) => {
     }
   }
   const respond = (body: unknown, init2?: ResponseInit) => { if (lost) throw new TypeError("Failed to fetch"); return Response.json(body, init2); };
-  if (path === "/auth/me" && controls.signedOut) return Response.json({ authenticated: false });
+  // Sign-out (wave 3): the session ends on the "server"; it stays ended across the reload.
+  if (path === "/auth/logout" && method === "POST") { sessionStorage.setItem("notion-shell-signed-out", String(Number(sessionStorage.getItem("notion-shell-signed-out") ?? 0) + 1)); return Response.json({ ok: true }); }
+  if (path === "/auth/me" && (controls.signedOut || sessionStorage.getItem("notion-shell-signed-out"))) return Response.json({ authenticated: false });
   if (path === "/auth/me") return Response.json({ authenticated: true, email: controls.actor, name: "You", isOwner: true, vaultId: "primary", workspace: { id: "default", name: "Personal workspace" } });
   if (path === "/api/me/preferences") {
     if (method === "PUT") { const body = JSON.parse(String(init?.body)); controls.preferences = { ...controls.preferences, ...body.preferences }; controls.revision++; }
@@ -215,7 +218,7 @@ createRoot(document.getElementById("root")!).render(
       getActiveVault: () => "primary",
       setActiveVault: (id: string) => { (controls as unknown as { switchedVault?: string }).switchedVault = id; },
     } : {}), createShareLink: async () => "", getAccess: async () => ({ note: { id: "workspace", title: "A living workspace", tags: [], visibility: "private" }, people: [], links: [], tagAccess: [], canManageLinks: true, allowedLevels: ["view", "comment", "suggest", "edit"] }) }}>
-    <Live><App skipOnboarding initialTab={{ id: "workspace", title: "A living workspace", type: "document" }} /></Live>
+    <AccountProvider value={params.has("account") ? webAccount : null}><Live><App skipOnboarding initialTab={{ id: "workspace", title: "A living workspace", type: "document" }} /></Live></AccountProvider>
     <OfflineIndicator />
   </CollabSharingProvider></VaultClientProvider></PlatformProvider></React.StrictMode>,
 );

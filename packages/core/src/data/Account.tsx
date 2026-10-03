@@ -38,6 +38,10 @@ export interface AccountClient {
   testAgentConnection?(token: string): Promise<{ toolCount: number }>;
   /** Revoke a token — the agent's next request is refused. */
   revokeAgentToken?(id: string): Promise<void>;
+  /** Sign this browser/app out (wave 3). The shell ends the session (or revokes the
+   *  device token), clears its offline caches and returns to its sign-in screen.
+   *  Resolves false when the user chose to stay (unsent changes on this device). */
+  signOut?(): Promise<boolean>;
 }
 
 /** A Prism MCP access token as listed (never the secret). Times are epoch ms. */

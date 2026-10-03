@@ -3,7 +3,7 @@
 // refreshes the cached identity (fetchMe) so collab presence picks up the new
 // name/avatar immediately.
 import type { AccountClient, AccountProfile, SignedInDevice, AgentTokenList, CreatedAgentToken } from "@prism/core";
-import { fetchMe, vaultHeader } from "./config";
+import { fetchMe, vaultHeader, logout } from "./config";
 import { serverFetch } from "./transport";
 
 async function authFetch(path: string, init: RequestInit): Promise<Response> {
@@ -31,6 +31,15 @@ function prettyError(code?: string): string | null {
 }
 
 export const webAccount: AccountClient = {
+  // The one sign-out path (config.logout): asks about unsent changes, ends the
+  // session (PWA: POST /auth/logout; native: revoke the device token + tell the
+  // host), clears the offline read cache and its localStorage keys. Then a reload
+  // lands on the shell's own sign-in screen with no in-memory state left.
+  async signOut(): Promise<boolean> {
+    const left = await logout();
+    if (left) window.location.reload();
+    return left;
+  },
   async getProfile(): Promise<AccountProfile> {
     const me = await fetchMe();
     return {
