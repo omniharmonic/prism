@@ -37,9 +37,11 @@ const notes: Note[] = [
   doc("launch", "vault/Projects/Launch plan", '<p>Draft the <span data-comment-id="t1" data-resolved="false">announcement copy</span> by Friday.</p>'),
   doc("field", "vault/Notes/Field notes", "<p>River survey, upper reach.</p>"),
   doc("secret", "vault/Finance/Budget 2027", "<p>Confidential numbers.</p>", { metadata: { type: "document", prism_creator: "owner@example.test" } }),
-  doc("task-1", "vault/tasks/Write release notes", "<p>For the inbox release.</p>", { tags: ["task"], metadata: { type: "task", status: "in-progress", due: iso(NOW + DAY).slice(0, 10) } }),
-  doc("task-2", "vault/tasks/Review access requests", "<p>Weekly.</p>", { tags: ["task"], metadata: { type: "task", status: "todo" } }),
-  doc("task-3", "vault/tasks/Old cleanup", "<p>Done.</p>", { tags: ["task"], metadata: { type: "task", status: "done" } }),
+  doc("task-1", "vault/tasks/Write release notes", "<p>For the inbox release.</p>", { tags: ["task"], metadata: { type: "task", status: "in-progress", due: iso(NOW + DAY).slice(0, 10), assigned: "You" } }),
+  doc("task-2", "vault/tasks/Review access requests", "<p>Weekly.</p>", { tags: ["task"], metadata: { type: "task", status: "todo", assigned: "You, Ada Park" } }),
+  doc("task-3", "vault/tasks/Old cleanup", "<p>Done.</p>", { tags: ["task"], metadata: { type: "task", status: "done", assigned: "You" } }),
+  // Someone else's open task: visible to the viewer, but not one of THEIR tasks (wave 3).
+  doc("task-4", "vault/tasks/Order catering", "<p>For Ada.</p>", { tags: ["task"], metadata: { type: "task", status: "todo", assigned: "Ada Park" } }),
   doc("meet-1", "vault/meetings/Design sync", "<p>Agenda.</p>", { tags: ["meeting"], metadata: { type: "meeting", title: "Design sync", start: iso(TOMORROW_NOON), end: iso(TOMORROW_NOON + 3_600_000) } }),
   doc("meet-2", "vault/meetings/Old retro", "<p>Past.</p>", { tags: ["meeting"], metadata: { type: "meeting", title: "Old retro", start: iso(NOW - 3 * DAY), end: iso(NOW - 3 * DAY + HOUR) } }),
 ];
@@ -158,6 +160,16 @@ window.fetch = async (input, init) => {
   }
 
   // ── vault reads ──
+  // My tasks (wave 3): the server narrows to the caller's own tasks. `?oldserver`
+  // answers like a server that predates `assignedToMe` (no `identity`).
+  if (path === "/api/query" && method === "POST") {
+    const mine = body.assignedToMe === true && !params.has("oldserver");
+    const rows = notes.filter((n) => canView(n) && (body.tags as string[]).every((t) => n.tags?.includes(t)))
+      .filter((n) => !mine || String(n.metadata?.assigned ?? "").split(",").map((v) => v.trim()).includes("You"))
+      .map((n) => ({ id: n.id, path: n.path, tags: n.tags, createdAt: n.createdAt, updatedAt: n.updatedAt, metadata: n.metadata }));
+    (window as unknown as { prismQueries?: unknown[] }).prismQueries = [...((window as unknown as { prismQueries?: unknown[] }).prismQueries ?? []), body];
+    return json({ rows, next: null, total: rows.length, limited: false, truncated: false, ...(mine ? { identity: params.has("noperson") ? "account" : "person" } : {}) });
+  }
   if (path === "/api/notes" && method === "GET") {
     const tag = url.searchParams.get("tag");
     return json(notes.filter((n) => canView(n) && (!tag || n.tags?.includes(tag))));
