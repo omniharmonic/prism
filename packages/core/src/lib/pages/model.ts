@@ -117,10 +117,18 @@ export function protectionReason(n: PageLike): string | null {
   return null;
 }
 
-/** A clean vault path, or null: no empty / `.` / `..` segments, no leading slash, no control chars. */
+/**
+ * A clean vault path, or null: no empty / `.` / `..` segments, no leading slash, no
+ * control chars. Canonical the way the vault will STORE it, so every check runs on
+ * the real destination: the vault's `normalizePath` strips a trailing `.md`
+ * (case-insensitive) — `vault/agent.md` IS `vault/agent` — so it is stripped here
+ * first (repeatedly: what is sent must not be stripped again); and the result is
+ * Unicode-NFC, so one spelling of a name is what gets compared and stored.
+ */
 export function normalizePagePath(raw: unknown): string | null {
   if (typeof raw !== "string") return null;
-  const value = raw.trim();
+  let value = raw.trim().normalize("NFC");
+  while (/\.md$/i.test(value)) value = value.replace(/\.md$/i, "");
   if (!value || value.length > 1024 || /[\\\u0000-\u001f\u007f]/.test(value)) return null;
   const parts = value.split("/");
   if (parts.some((part) => !part.trim() || part === "." || part === ".." || part !== part.trim())) return null;

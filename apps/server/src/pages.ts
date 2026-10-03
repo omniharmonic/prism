@@ -257,41 +257,74 @@ export const pathUnavailable = (path: string) => ({ error: "path_conflict" as co
 
 export type PlacementRefusal = { status: 400 | 403 | 404 | 409 | 502; body: Record<string, unknown> };
 
+/** How the vault LOOKS UP a path (NOCASE) plus Unicode form: the key two paths collide on. */
+export const pathKey = (p: string): string => p.normalize("NFC").toLowerCase();
+
+/**
+ * The note that answers to `path` in the vault's own lookup. The unique index on
+ * `path` is BINARY but `getNoteByPath` is `COLLATE NOCASE`, so `projects/plan` can be
+ * created beside `Projects/Plan` — a shadow that later reads as `AmbiguousPathError`.
+ * Looked up in both Unicode forms (the vault does not normalise). "ambiguous" = the
+ * vault already holds two notes on that key.
+ */
+async function noteAtPath(entry: VaultEntry, path: string): Promise<Note | "ambiguous" | null> {
+  const vc = vaultClient(entry.id);
+  for (const form of new Set([path.normalize("NFC"), path.normalize("NFD")])) {
+    try {
+      const n = await vc.getNote(form);
+      // getNote also resolves ids and unique titles: only a PATH match counts.
+      if (n.path && pathKey(n.path) === pathKey(path)) return n;
+    } catch (e) {
+      if (e instanceof VaultConflictError) return "ambiguous";
+      if (!(e instanceof VaultError && e.status === 404)) throw e;
+    }
+  }
+  return null;
+}
+
 /**
  * Where a NON-ADMIN may place a note by naming a path — the gateway's create
  * (`POST /notes`), its path PATCH and a governed new entry. The move route's
- * destination rules, minus its parent-page requirement: a clean page path
- * (`normalizePagePath`), not a location an integration owns (`isProtectedPath`), not
- * an exported folder (`exportedLocation`), not under a trashed page. Refusals name no
- * note; a trashed ancestor answers exactly like a taken path.
+ * destination rules: a clean page path (`normalizePagePath`: `.md` stripped, NFC),
+ * not a location an integration owns (`isProtectedPath`), not an exported folder
+ * (`exportedLocation`), not under a trashed page, not a path some note already
+ * answers to case-insensitively (`noteAtPath`; `exceptId` = the note being renamed),
+ * and — with `actor` — the destination-parent rule (`destinationParentRefusal`).
+ * Refusals name no note; a trashed ancestor and a held path answer identically.
  */
 export async function placementRefusal(
   entry: VaultEntry,
   raw: unknown,
-  /** Pass the actor to ALSO check standing at the destination's parent PAGE, when
-   *  there is one (`destinationParentRefusal`) — a create does; the path PATCH does not. */
-  parentFor?: Actor,
+  opts: { actor?: Actor; tags?: string[]; exceptId?: string } = {},
 ): Promise<{ path: string } | PlacementRefusal> {
   const path = normalizePagePath(raw);
   if (!path) return { status: 400, body: { error: "invalid_request", reason: "path is not a valid page location." } };
   if (isProtectedPath(path)) return { status: 403, body: { error: "protected", reason: "That location is kept in sync by an integration." } };
   const why = exportedLocation(entry.id, path);
   if (why) return { status: 403, body: { error: "forbidden", reason: `${why} Only the workspace owner can add pages there.` } };
-  if (parentOf(path)) {
-    let trashed: Note[];
-    try {
-      trashed = await vaultClient(entry.id).listNotes({ tags: [TRASH_TAG], includeMetadata: [...TREE_META_KEYS] });
-    } catch {
-      return { status: 502, body: { error: "vault_unreachable" } };
+  try {
+    if (parentOf(path)) {
+      const trashed = await vaultClient(entry.id).listNotes({ tags: [TRASH_TAG], includeMetadata: [...TREE_META_KEYS] });
+      const key = pathKey(path);
+      if (trashed.some((n) => !!n.path && isUnder(key, pathKey(n.path)))) return { status: 409, body: pathUnavailable(path) };
     }
-    const lower = path.toLowerCase();
-    if (trashed.some((n) => !!n.path && isUnder(lower, n.path.toLowerCase()))) return { status: 409, body: pathUnavailable(path) };
-  }
-  if (parentFor) {
-    const refused = await destinationParentRefusal(parentFor, entry, path);
-    if (refused) return refused;
+    if (opts.actor) {
+      const refused = await destinationParentRefusal(opts.actor, entry, path, { tags: opts.tags });
+      if (refused) return refused;
+    }
+    const holder = await noteAtPath(entry, path);
+    if (holder === "ambiguous" || (holder && holder.id !== opts.exceptId)) return { status: 409, body: pathUnavailable(path) };
+  } catch {
+    return { status: 502, body: { error: "vault_unreachable" } };
   }
   return { path };
+}
+
+/** The tags a database page draws its rows from (`metadata.prism_database.source.tags`), or null. */
+function databaseSourceTags(page: Note): string[] | null {
+  if (page.metadata?.prism_type !== "database") return null;
+  const tags = (page.metadata?.prism_database as { source?: { tags?: unknown } } | undefined)?.source?.tags;
+  return Array.isArray(tags) && tags.length > 0 && tags.every((t) => typeof t === "string" && t) ? (tags as string[]) : null;
 }
 
 /**
@@ -299,26 +332,32 @@ export async function placementRefusal(
  * parent PAGE decides: a non-admin needs `create` or `organize` on it. Null = allowed.
  *  - a MOVE (`requirePage: true`, review H2) also needs that page to exist: the top
  *    level and plain folders are the owner's, and an unviewable page looks the same;
- *  - a CREATE (`requirePage: false`) is free where there is no page note (a plain
- *    folder, the top level — the New menu, imports, "Open as database"); inside a
- *    page the actor cannot view it answers 404, inside one they can view but not add
- *    to, 403.
+ *  - a CREATE / path PATCH (`requirePage: false`) is free where there is no page note
+ *    (a plain folder, the top level — the New menu, imports, "Open as database");
+ *    inside a page the actor cannot view it answers 404, inside one they can view
+ *    but not add to, 403;
+ *  - a DATABASE page is also an allowed parent for a ROW (`tags` given): the new note
+ *    carries every one of the database's source tags and the actor holds `create` in
+ *    each of them — view on the page is then enough ("+ New", duplicate, templates).
+ * The parent is found the way the vault finds it (case-insensitive, either Unicode
+ * form); two pages on one key is refused.
  * NOTE (sharing branch): replace the caps lookup below with
  * `createCapsAt(actor, path, tags)` from `apps/server/src/sharing.ts`, which also
  * accounts for page grants on ANY ancestor, not only the direct parent.
  */
-export async function destinationParentRefusal(actor: Actor, entry: VaultEntry, target: string, opts: { requirePage?: boolean } = {}): Promise<PlacementRefusal | null> {
+export async function destinationParentRefusal(actor: Actor, entry: VaultEntry, target: string, opts: { requirePage?: boolean; tags?: string[] } = {}): Promise<PlacementRefusal | null> {
   if (isAdmin(actor)) return null;
   const parent = parentOf(target);
-  let parentPage: Note | null = null;
+  let found: Note | "ambiguous" | null = null;
   if (parent && parent !== "vault") {
     try {
-      const p = await vaultClient(entry.id).getNote(parent);
-      if (p.path === parent) parentPage = p;
+      found = await noteAtPath(entry, parent);
     } catch {
-      parentPage = null;
+      found = "ambiguous"; // unreadable: never assume "no page there"
     }
   }
+  if (found === "ambiguous") return { status: 409, body: pathUnavailable(target) };
+  let parentPage: Note | null = found;
   if (parentPage && !canView(actor, noteRef(parentPage))) {
     if (!opts.requirePage) return { status: 404, body: { error: "not_found" } };
     parentPage = null; // for a move: indistinguishable from "no page there"
@@ -326,11 +365,13 @@ export async function destinationParentRefusal(actor: Actor, entry: VaultEntry, 
   if (!parentPage) {
     return opts.requirePage ? { status: 403, body: { error: "forbidden", reason: "Only the workspace owner can add pages at the top level or into a plain folder." } } : null;
   }
+  const refusal: PlacementRefusal = { status: 403, body: { error: "forbidden", reason: "You can’t add pages inside that page." } };
+  if (isTrashed(parentPage)) return refusal;
   const caps = capsOf(actor, noteRef(parentPage));
-  if (!(caps.has("create") || caps.has("organize")) || isTrashed(parentPage)) {
-    return { status: 403, body: { error: "forbidden", reason: "You can’t add pages inside that page." } };
-  }
-  return null;
+  if (caps.has("create") || caps.has("organize")) return null;
+  const source = opts.tags ? databaseSourceTags(parentPage) : null;
+  if (source && source.every((t) => opts.tags!.includes(t) && capsOf(actor, { id: "<new>", tags: [t] }).has("create"))) return null;
+  return refusal;
 }
 
 /** Live docs that LINK INTO the moved notes: store them before the path writes (review M2). */

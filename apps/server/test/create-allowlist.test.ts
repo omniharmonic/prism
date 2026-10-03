@@ -432,22 +432,7 @@ test("a non-owner restore cannot change lock / trash metadata", async () => {
   assert.ok(bad.status === 400 || bad.status === 428);
 });
 
-// ── search (step 4) ───────────────────────────────────────────────────────────
-
-test("search forwards only the query text and a bounded limit", async () => {
-  const { mem } = seed();
-  const r = await req("/search?q=original&limit=999999&tag=secret&near=v-hidden&path_prefix=Secret&include_links=true&meta.prism_creator=x", { cookie: mem });
-  assert.equal(r.status, 200);
-  const rows = await json(r);
-  assert.deepEqual(rows.map((n: { id: string }) => n.id).sort(), ["v-seen"], "only what the member can view");
-  const call = fv.calls.filter((c) => c.method === "GET" && c.search.includes("search=")).at(-1)!;
-  const sp = new URLSearchParams(call.search);
-  assert.deepEqual([...sp.keys()].sort(), ["include_content", "limit", "search"]);
-  assert.ok(Number(sp.get("limit")) <= 200);
-  const nan = await req("/search?q=original&limit=abc", { cookie: mem });
-  assert.equal(nan.status, 200);
-  assert.ok(/^\d+$/.test(new URLSearchParams(fv.calls.at(-1)!.search).get("limit") ?? ""));
-});
+// (GET /search moved to routes/search.ts on main — it bounds `q` and `limit` itself and has its own tests.)
 
 // ── round 2: the destination-parent rule, the per-tag rule, system notes, 404s ──
 

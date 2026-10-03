@@ -41,6 +41,7 @@ import {
   type Role,
 } from "../governance";
 import { roleAtLeast } from "../roles";
+import { canonicalTags } from "../tags";
 import { resolveVaultEntry } from "../db";
 import { placementRefusal, exportedLocation } from "../pages";
 import { protectionReason, systemNoteReason, isProtectedPath, TRASH_TAG } from "@prism/core/pages";
@@ -718,7 +719,8 @@ function coerceContentPayload(obj: unknown): ContentPayload {
   if (typeof o.content === "string") out.content = o.content;
   // Reserved keys (creator / visibility / trash / lock / order / writer stamp) are dropped.
   if (o.metadata && typeof o.metadata === "object" && !Array.isArray(o.metadata)) out.metadata = stripReservedContentMeta(o.metadata as Record<string, unknown>);
-  if (Array.isArray(o.tags)) out.tags = o.tags.map(String).filter(Boolean);
+  // Canonical tags (`../tags.ts`): what the vault will store is what gets checked.
+  if (Array.isArray(o.tags)) out.tags = canonicalTags(o.tags.map(String));
   if (typeof o.path === "string" && o.path) out.path = o.path;
   if (typeof o.rationale === "string" && o.rationale.trim()) out.rationale = o.rationale.trim().slice(0, 2000);
   return out;
