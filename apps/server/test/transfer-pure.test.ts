@@ -14,6 +14,7 @@ import {
   crc32,
   parseFrontMatter,
   planImport,
+  neutralizeUnsafeLinks,
   readZipDirectory,
   readZipEntry,
   renderFrontMatter,
@@ -156,10 +157,12 @@ test("markdown links: rewritten outside code, wikilinks and escapes left alone",
 
 test("the scanners are linear on pathological input", () => {
   const n = 300_000;
-  const shapes = ["[".repeat(n), "[ ".repeat(n / 2), "](".repeat(n / 2), "[a](".repeat(n / 4), "[a] ".repeat(n / 4), "`".repeat(n), "[[".repeat(n / 2), "![".repeat(n / 2) + "]", "/api/attachments/a_".repeat(n / 19), "---\n" + "a: [\n".repeat(n / 5)];
+  const shapes = ["<x:".repeat(n / 3), "<".repeat(n), "[a]: ".repeat(n / 5), "[".repeat(n), "[ ".repeat(n / 2), "](".repeat(n / 2), "[a](".repeat(n / 4), "[a] ".repeat(n / 4), "`".repeat(n), "[[".repeat(n / 2), "![".repeat(n / 2) + "]", "/api/attachments/a_".repeat(n / 19), "---\n" + "a: [\n".repeat(n / 5)];
   for (const s of shapes) {
     const t0 = Date.now();
     rewriteMarkdownLinks(s, () => "x");
+    neutralizeUnsafeLinks(s);
+    neutralizeUnsafeLinks(`<a:${s}`);
     attachmentIdsIn(s);
     parseFrontMatter(s);
     stripNotionId(s);

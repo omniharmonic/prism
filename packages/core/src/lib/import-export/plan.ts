@@ -24,6 +24,7 @@ import { parseCsv } from "../database/csv";
 import {
   isRelativeTarget,
   leadingHeading,
+  neutralizeUnsafeLinks,
   parseFrontMatter,
   resolveRelative,
   rewriteMarkdownLinks,
@@ -330,6 +331,8 @@ export function planImport(input: ImportFile[], opts: PlanOptions): ImportPlan {
       if (propertyLabels?.size) body = dropPropertyLines(body, propertyLabels);
     }
     const noteAssets: PlannedAsset[] = [];
+    // Autolinks and reference definitions with a script-ish scheme become plain text / `#`.
+    body = neutralizeUnsafeLinks(body);
     body = rewriteMarkdownLinks(body, (link) => {
       if (!isRelativeTarget(link.target)) {
         // Only web and mail links survive an import; `javascript:`, `data:`, `file:`… become their text.

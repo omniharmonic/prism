@@ -154,6 +154,94 @@ function cleanTarget(raw: string): string {
   return t;
 }
 
+/** A URL with a scheme other than http(s)/mailto (after removing the whitespace browsers ignore)? */
+function unsafeScheme(target: string): boolean {
+  let compact = "";
+  for (let i = 0; i < target.length && compact.length < 24; i++) if (target.charCodeAt(i) > 32) compact += target[i];
+  const colon = compact.indexOf(":");
+  if (colon <= 0) return false;
+  for (let i = 0; i < colon; i++) {
+    const c = compact.charCodeAt(i) | 0x20;
+    const ok = (c >= 97 && c <= 122) || (i > 0 && ((compact.charCodeAt(i) >= 48 && compact.charCodeAt(i) <= 57) || "+.-".includes(compact[i]!)));
+    if (!ok) return false; // not a scheme (e.g. `a/b:c`, `12:30`)
+  }
+  const scheme = compact.slice(0, colon).toLowerCase();
+  return scheme !== "http" && scheme !== "https" && scheme !== "mailto";
+}
+
+/**
+ * The two other ways Markdown makes a link: autolinks `<scheme:…>` and reference
+ * definitions `[label]: target`. A target whose scheme is not http(s)/mailto is
+ * neutralised — the autolink loses its angle brackets (plain text), the definition's
+ * target becomes `#`. Fenced code and inline code are left alone. Linear.
+ */
+export function neutralizeUnsafeLinks(md: string): string {
+  if (md.indexOf(":") === -1) return md;
+  const lines = md.split("\n");
+  let fence: string | null = null;
+  for (let n = 0; n < lines.length; n++) {
+    let line = lines[n]!;
+    const lead = line.trimStart();
+    if (fence) {
+      if (lead.startsWith(fence)) fence = null;
+      continue;
+    }
+    if (lead.startsWith("```") || lead.startsWith("~~~")) {
+      fence = lead.slice(0, 3);
+      continue;
+    }
+    if (line.indexOf(":") === -1) continue;
+    // `[label]: target "title"` (up to three spaces of indent).
+    if (lead.startsWith("[") && line.length - lead.length <= 3) {
+      const close = lead.indexOf("]:");
+      if (close > 0) {
+        let rest = lead.slice(close + 2).trimStart();
+        if (rest.startsWith("<")) rest = rest.slice(1);
+        if (unsafeScheme(rest)) {
+          lines[n] = `${lead.slice(0, close + 2)} #`;
+          continue;
+        }
+      }
+    }
+    if (line.indexOf("<") === -1) continue;
+    let out = "";
+    let i = 0;
+    let noTick = false;
+    let noGt = false;
+    let copied = 0;
+    while (i < line.length) {
+      const ch = line[i]!;
+      if (ch === "`" && !noTick) {
+        const close = line.indexOf("`", i + 1);
+        if (close === -1) noTick = true;
+        else {
+          i = close + 1;
+          continue;
+        }
+      }
+      if (ch === "<" && !noGt && line[i - 1] !== "\\") {
+        const gt = line.indexOf(">", i + 1);
+        if (gt === -1) noGt = true;
+        else {
+          const inner = line.slice(i + 1, Math.min(gt, i + 2048));
+          if (inner.indexOf("<") === -1 && inner.indexOf(" ") === -1 && unsafeScheme(inner)) {
+            out += `${line.slice(copied, i)}${line.slice(i + 1, gt)}`;
+            copied = gt + 1;
+            i = gt + 1;
+            continue;
+          }
+        }
+      }
+      i++;
+    }
+    if (copied > 0) {
+      line = out + line.slice(copied);
+      lines[n] = line;
+    }
+  }
+  return lines.join("\n");
+}
+
 /** Is this link target a relative file reference (not a URL, anchor or absolute path)? */
 export function isRelativeTarget(target: string): boolean {
   if (!target || target.startsWith("#") || target.startsWith("/") || target.startsWith("\\")) return false;

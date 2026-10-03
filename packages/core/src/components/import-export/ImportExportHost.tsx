@@ -5,6 +5,8 @@ import { transferAvailable } from "../../lib/import-export/client";
 import { printCurrentPage, useTransferUI } from "../../lib/import-export/store";
 import { ExportDialog } from "./ExportDialog";
 import { ImportDialog } from "./ImportDialog";
+import { CsvNewDatabaseDialog } from "../database/Csv";
+import { useUIStore } from "../../app/stores/ui";
 
 /**
  * Who may import / export the whole workspace: the owner and admins of the
@@ -27,6 +29,7 @@ export function useCanManageTransfers(): boolean {
 export function ImportExportHost() {
   const exporting = useTransferUI((s) => s.exporting);
   const importing = useTransferUI((s) => s.importing);
+  const csvDatabase = useTransferUI((s) => s.csvDatabase);
   useEffect(() => {
     // Browsers print on ⌘P/Ctrl+P themselves; the native shell's webview does not.
     if (!("__PRISM_HOST__" in window) && !("__TAURI_INTERNALS__" in window)) return;
@@ -43,6 +46,14 @@ export function ImportExportHost() {
     <>
       {exporting && <ExportDialog key={`${exporting.scope}:${exporting.page?.id ?? ""}`} target={exporting} onClose={() => useTransferUI.getState().openExport(null)} />}
       {importing && <ImportDialog parent={importing.parent} onClose={() => useTransferUI.getState().openImport(null)} />}
+      {/* DB-25: one CSV as a NEW database, with typed columns (the database group's dialog). */}
+      {csvDatabase && (
+        <CsvNewDatabaseDialog
+          folder={csvDatabase.folder}
+          onClose={() => useTransferUI.getState().openCsvDatabase(null)}
+          onCreated={(note, title) => useUIStore.getState().openTab(note.id, title, "database" as never)}
+        />
+      )}
     </>
   );
 }

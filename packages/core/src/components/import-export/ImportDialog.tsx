@@ -5,6 +5,7 @@ import { useUIStore } from "../../app/stores/ui";
 import { pageTitle } from "../../lib/pages/model";
 import { stripNotionId } from "../../lib/import-export/markdown";
 import { pollJob, transferApi, TransferError } from "../../lib/import-export/client";
+import { useTransferUI } from "../../lib/import-export/store";
 import type { ImportAudienceInfo, ImportItem, ImportJob, ImportPreview } from "../../lib/import-export/wire";
 import { plural, ProgressBar, TransferDialog } from "./TransferDialog";
 
@@ -132,6 +133,14 @@ export function ImportDialog({ parent, onClose }: { parent?: string; onClose: ()
                 <span>{file.name}</span>
                 <small>{sizeText(file.size)}</small>
                 <button type="button" className="transfer-btn focus-ring" disabled={busy} onClick={() => picker.current?.click()}>Change</button>
+              </div>
+            )}
+            {file && file.name.toLowerCase().endsWith(".csv") && (
+              <div className="transfer-note">
+                A CSV can become a database with typed columns you choose.{" "}
+                <button type="button" className="transfer-link focus-ring" disabled={busy} onClick={() => useTransferUI.getState().openCsvDatabase({ folder: folder.trim() || "vault/Imports" })}>
+                  Import as a new database…
+                </button>
               </div>
             )}
             <label className="transfer-field">

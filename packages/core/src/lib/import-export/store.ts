@@ -10,6 +10,9 @@ export interface ExportTarget {
 interface TransferUI {
   exporting: ExportTarget | null;
   importing: { parent?: string } | null;
+  /** "Import as a new database" for a single CSV (the database group's dialog), with its folder. */
+  csvDatabase: { folder: string } | null;
+  openCsvDatabase: (opts: { folder: string } | null) => void;
   openExport: (target: ExportTarget | null) => void;
   openImport: (opts: { parent?: string } | null) => void;
 }
@@ -17,8 +20,10 @@ interface TransferUI {
 export const useTransferUI = create<TransferUI>((set) => ({
   exporting: null,
   importing: null,
-  openExport: (exporting) => set({ exporting, importing: null }),
-  openImport: (importing) => set({ importing, exporting: null }),
+  csvDatabase: null,
+  openCsvDatabase: (csvDatabase) => set({ csvDatabase, importing: null, exporting: null }),
+  openExport: (exporting) => set({ exporting, importing: null, csvDatabase: null }),
+  openImport: (importing) => set({ importing, exporting: null, csvDatabase: null }),
 }));
 
 /** Print the open page (NP-TX-06). The print stylesheet (`styles/print.css`) removes the app chrome. */

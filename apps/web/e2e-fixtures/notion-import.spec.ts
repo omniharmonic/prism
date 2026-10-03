@@ -25,7 +25,7 @@ test("notion zip dry run then import", async ({ page }) => {
   await expect(tree(page)).toBeVisible();
   const before = (await fixtureNotes(page)).length;
   await runCommand(page, "Import… (Markdown, HTML, CSV, Notion)");
-  const dialog = page.getByRole("dialog", { name: "Import" });
+  const dialog = page.getByRole("dialog", { name: "Import", exact: true });
   await expect(dialog).toBeVisible();
   await expect(dialog.getByRole("button", { name: "Preview import" })).toBeDisabled();
   await shot(page, "import-pick-1440");
@@ -98,7 +98,7 @@ test("notion zip dry run then import", async ({ page }) => {
 test("a single Markdown file imports as one page; a damaged archive is refused with a plain message", async ({ page }) => {
   await page.goto(transferUrl());
   await runCommand(page, "Import… (Markdown, HTML, CSV, Notion)");
-  const dialog = page.getByRole("dialog", { name: "Import" });
+  const dialog = page.getByRole("dialog", { name: "Import", exact: true });
   await dialog.getByLabel("File to import").setInputFiles({ name: "broken.zip", mimeType: "application/zip", buffer: notionExport().subarray(0, 200) });
   await dialog.getByRole("button", { name: "Preview import" }).click();
   await expect(dialog.getByRole("alert")).toHaveText("That file isn’t a zip archive.");
@@ -117,7 +117,7 @@ test("a single Markdown file imports as one page; a damaged archive is refused w
 test("importing into a shared page says who will see the pages and defaults to private", async ({ page }) => {
   await page.goto(transferUrl());
   await runCommand(page, "Import… (Markdown, HTML, CSV, Notion)");
-  const dialog = page.getByRole("dialog", { name: "Import" });
+  const dialog = page.getByRole("dialog", { name: "Import", exact: true });
   const file = { name: "Plans.md", mimeType: "text/markdown", buffer: Buffer.from("Quarter plans.\n") };
   await dialog.getByLabel("File to import").setInputFiles(file);
   // An ordinary folder: visible like any other page, no extra step.
@@ -148,13 +148,27 @@ test("importing into a shared page says who will see the pages and defaults to p
   expect((await transferRequests(page)).at(-1)!.import).toMatchObject({ dryRun: false, private: false, confirmShared: true });
 });
 
+// DB-25: a single CSV can become a NEW database with typed columns (the database group's dialog).
+test("a single CSV offers Import as a new database", async ({ page }) => {
+  await page.goto(transferUrl());
+  await runCommand(page, "Import… (Markdown, HTML, CSV, Notion)");
+  const dialog = page.getByRole("dialog", { name: "Import", exact: true });
+  await dialog.getByLabel("File to import").setInputFiles({ name: "Notes.md", mimeType: "text/markdown", buffer: Buffer.from("x") });
+  await expect(dialog.getByRole("button", { name: "Import as a new database…" })).toHaveCount(0);
+  await dialog.getByLabel("File to import").setInputFiles({ name: "Books.csv", mimeType: "text/csv", buffer: Buffer.from("Name,Rating\nDune,5\n") });
+  await dialog.getByRole("button", { name: "Import as a new database…" }).click();
+  await expect(dialog).toHaveCount(0);
+  await expect(page.getByRole("dialog", { name: "Import CSV as a new database" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Import a CSV as a new database" })).toBeVisible();
+});
+
 test("phone: the import dialog is a full-height sheet with reachable controls", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(transferUrl());
   // (On a phone the command palette is reached from the bottom bar; open the dialog directly.)
   await page.waitForFunction(() => !!(window as any).prismTransfer);
   await page.evaluate(() => (window as any).prismTransfer.ui.getState().openImport({}));
-  const dialog = page.getByRole("dialog", { name: "Import" });
+  const dialog = page.getByRole("dialog", { name: "Import", exact: true });
   await expect(dialog).toBeVisible();
   await dialog.getByLabel("File to import").setInputFiles({ name: "Notes.zip", mimeType: "application/zip", buffer: notionExport() });
   await dialog.getByRole("button", { name: "Preview import" }).click();

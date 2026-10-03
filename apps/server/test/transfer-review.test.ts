@@ -363,3 +363,31 @@ test("L8: a member cannot write the importer's stamp onto a note (so an admin's 
   assert.deepEqual([job.conflicts, job.created], [1, 0]);
   assert.equal(note.content, "member's own page");
 });
+
+test("L4 (residual): autolinks and reference-style definitions with a script-ish scheme are neutralised on import", async () => {
+  const md = [
+    "Auto <javascript:alert(1)> and <https://ok.example/a> and <mailto:a@b.co> and <data:text/html,x> `<javascript:kept-in-code>`",
+    "[ref one][r1] and [ref two][r2] and 1 < 2 > 0 and <b>html</b>",
+    "",
+    "[r1]: javascript:alert(1) \"title\"",
+    "[r2]: https://ok.example/b",
+    "   [r3]: <vbscript:x>",
+    "```",
+    "[r4]: javascript:in-code",
+    "<javascript:in-code>",
+    "```",
+  ].join("\n");
+  await run(md, { name: "R.md", type: "text/markdown", parent: "vault/Imports" });
+  assert.equal(byPath("vault/Imports/R")!.content, [
+    "Auto javascript:alert(1) and <https://ok.example/a> and <mailto:a@b.co> and data:text/html,x `<javascript:kept-in-code>`",
+    "[ref one][r1] and [ref two][r2] and 1 < 2 > 0 and <b>html</b>",
+    "",
+    "[r1]: #",
+    "[r2]: https://ok.example/b",
+    "[r3]: #",
+    "```",
+    "[r4]: javascript:in-code",
+    "<javascript:in-code>",
+    "```",
+  ].join("\n"));
+});
