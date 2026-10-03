@@ -2,7 +2,7 @@
  * Metadata keys that NAME a person (pure — no db/config imports, so export
  * engines like `worker/github-dir.ts` can use it). See `writer-stamp.ts`.
  */
-export const IDENTITY_KEYS = ["prism_creator", "prism_last_writer", "prism_last_write_at", "prism_trashed_by"] as const;
+export const IDENTITY_KEYS = ["prism_creator", "prism_last_writer", "prism_last_write_at", "prism_trashed_by", "forked_by"] as const;
 
 /** A copy of `metadata` without anything that names a person (same object when none present). */
 export function stripIdentity<T extends Record<string, unknown> | null | undefined>(metadata: T): T {

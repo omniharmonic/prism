@@ -469,3 +469,13 @@ test("L3: a comment @-token only notifies people the author can see", async () =
   await commentsStored("l3", "primary", "doc", doc, [ZED]);
   assert.equal((await inbox(EVE)).items.length, 0);
 });
+
+test("final L3: approving a request that raises an existing grant keeps who made that grant", async () => {
+  upsertGrant({ vault_id: "primary", subject_type: "user", subject: EVE, resource_type: "note", resource: "secret", level: "view", created_by: "first-admin@test.local" });
+  db.prepare("INSERT INTO access_requests (id, vault_id, note_id, requester, level, status, created_at) VALUES ('r9','primary','secret',?, 'edit','pending',?)").run(EVE, Date.now());
+  const ok = await req("/access-requests/r9", OWNER, { method: "POST", body: JSON.stringify({ decision: "approve", level: "edit" }) });
+  assert.equal(ok.status, 200);
+  const g = grantsForUser(EVE).find((x) => x.resource === "secret" && x.resource_type === "note")!;
+  assert.equal(g.level, "edit");
+  assert.equal(g.created_by, "first-admin@test.local", "raised, not re-authored by the decider");
+});

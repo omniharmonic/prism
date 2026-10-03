@@ -108,7 +108,7 @@ import { vaultRegistry } from "../config";
 import { createVaultViaCli, seedVault } from "../vault-provision";
 import { noteKind, resolveSuggestionsInHtml } from "../collab";
 import { normalizePathPrefix, pathInPrefix } from "../paths";
-import { ancestorPages, descendantRows, grantCapsList, inheritedPeople, personView, viewableAncestors } from "../sharing";
+import { ancestorPages, descendantRefs, descendantRows, grantCapsList, inheritedPeople, personView, viewableAncestors } from "../sharing";
 import { rowRef } from "../tree";
 import { hashPassword } from "../auth/password";
 import { createInvite } from "../auth/invite";
@@ -785,8 +785,17 @@ async function pageShareRefusal(c: Context, id: string, granting: Iterable<Cap>)
   if (!entry) return c.json({ error: "forbidden" }, 403);
   const need = new Set<Cap>([...granting, "share"]);
   const subject = actor.kind === "user" ? actor.email : null;
-  for (const r of await descendantRows(entry, note.path)) {
-    const caps = effectiveCaps(actor.grants, rowRef(r), roleFloor(actor.role), subject);
+  // A FRESH listing (not the cached tree — L1), TRASHED notes included (M2): a live
+  // page share reaches the trashed pages under it (so a holder can restore what they
+  // trashed), which makes them part of "everything inside it".
+  let inside: NoteRef[];
+  try {
+    inside = await descendantRefs(entry, note.path);
+  } catch {
+    return c.json({ error: "vault_error" }, 502);
+  }
+  for (const r of inside) {
+    const caps = effectiveCaps(actor.grants, r, roleFloor(actor.role), subject);
     for (const cap of need) {
       if (!caps.has(cap)) {
         return c.json({ error: "forbidden", reason: "You can share this page only on its own: you cannot share everything inside it." }, 403);

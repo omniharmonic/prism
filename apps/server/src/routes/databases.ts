@@ -26,6 +26,7 @@
  * never returned. Presentation hints (kind/label/colours/hidden) are Prism-only
  * and live in the server's settings table per (vault, tag).
  */
+import { ingestKeyChanged } from "../ingest-keys";
 import { Hono, type Context } from "hono";
 import { canonicalTag } from "../tags";
 import { systemNoteReason } from "@prism/core/pages";
@@ -561,6 +562,8 @@ async function writeProperties(actor: Actor, entry: VaultEntry, id: string, entr
       if (!caps.has("view")) return { ok: false, id, status: 404, error: "not_found" };
       if (!caps.has("edit")) return { ok: false, id, status: 403, error: "forbidden", reason: "editing properties requires edit access" };
       if (entries.some(([k]) => ACCESS_KEYS.has(k))) return { ok: false, id, status: 403, error: "forbidden" };
+      // Ingest / skill / merge matching keys are never set by hand (review M1) — same rule as the gateway PATCH.
+      if (entries.some(([k, v]) => ingestKeyChanged(k, v, note.metadata?.[k]))) return { ok: false, id, status: 403, error: "forbidden", reason: "That property is set by an integration." };
       // True system notes (agent, alert, governance) are read-only for non-owners;
       // ingest notes (a ClickUp task's status, a meeting's fields) stay editable.
       if (systemNoteReason(note)) return { ok: false, id, status: 403, error: "forbidden", reason: "this is a system note" };

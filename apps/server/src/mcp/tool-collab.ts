@@ -65,6 +65,7 @@ import {
   type ThreadOut,
 } from "../collab-ops";
 import { getDocState, getUser } from "../db";
+import { creatorNameFor } from "../sharing";
 import { vaultClient, type Note } from "../parachute";
 import type { UserActor } from "./auth";
 import { canView, hasCapAnywhere } from "./access";
@@ -146,10 +147,10 @@ async function target(ctx: ToolContext, id: string, need: Need, contentChange = 
 
 const originOf = (ctx: ToolContext) => `mcp:${ctx.principal.actor.email}`;
 
-/** Attribution in the editor's own vocabulary: display name (or email) + " (agent)". */
+/** Attribution in the editor's own vocabulary: display name (else "Member") + " (agent)". */
 function authorOf(ctx: ToolContext): CollabAuthor {
   const email = ctx.principal.actor.email;
-  const name = getUser(email)?.name?.trim() || email;
+  const name = creatorNameFor(email) ?? "Member"; // never the account email (final review L4)
   return { name: `${name} (agent)`, color: colorFor(email), actorId: email, turnId: ctx.principal.agentTurnId };
 }
 

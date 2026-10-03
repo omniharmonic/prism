@@ -483,3 +483,88 @@ test("create: nothing is created under a trashed shared page", async () => {
   assert.ok(r.status === 409 || r.status === 403 || r.status === 404, `refused (${r.status})`);
   assert.equal(fv.notes.size, before);
 });
+
+// ── final review (HEAD 93ad46a) ──────────────────────────────────────────────
+test("final M1: ingest-matching keys cannot be set through /properties (single + batch), create or PATCH", async () => {
+  fv.put({ id: "task1", path: "vault/Tasks/One", content: "t", tags: ["task"], metadata: { status: "todo", source: "clickup", source_id: "cu-1" } });
+  fv.put({ id: "task2", path: "vault/Tasks/Two", content: "t", tags: ["task"], metadata: { status: "todo" } });
+  for (const id of ["task1", "task2"]) grantCaps(BOB, "note", id, ["view", "comment", "suggest", "edit"]);
+  const set = (id: string, s: Record<string, unknown>) => postJ(BOB, `/properties/${id}`, { set: s });
+  for (const [k, v] of Object.entries({ source_id: "cu-1", sourceId: "cu-1", calendarEventId: "ev", merged_into: "p", matrixRoomId: "!r:x", runner: "server", skillName: "evil", threadId: "t", messageId: "<m>", source: "clickup", lastRun: "2020-01-01T00:00:00Z" })) {
+    assert.equal((await set("task2", { [k]: v })).status, 403, k);
+  }
+  assert.deepEqual(fv.notes.get("task2")!.metadata, { status: "todo" }, "nothing was written");
+  // Restating the stored value, ordinary properties and a free `source` are fine.
+  assert.equal((await set("task1", { source_id: "cu-1", source: "clickup", status: "doing" })).status, 200);
+  assert.equal((await set("task2", { source: "web", status: "doing" })).status, 200);
+  // Changing a real ClickUp task's id is refused.
+  assert.equal((await set("task1", { source_id: "cu-2" })).status, 403);
+  // Batch: per item.
+  const batch = await postJ(BOB, "/properties/batch", { items: [{ id: "task2", set: { source_id: "cu-1" } }, { id: "task1", set: { status: "done" } }] });
+  const results = ((await batch.json()) as { results: Array<{ ok: boolean; error?: string }> }).results;
+  assert.deepEqual(results.map((r) => [r.ok, r.error ?? null]), [[false, "forbidden"], [true, null]]);
+  assert.equal(fv.notes.get("task2")!.metadata!.source_id, undefined);
+  // The owner still can.
+  assert.equal((await postJ(OWNER, "/properties/task2", { set: { source_id: "cu-9" } })).status, 200);
+  // Create / PATCH: an ingester's `source` value is dropped like the other keys.
+  const { addGrant: grant } = await import("../src/db");
+  grant({ subject_type: "user", subject: BOB, resource_type: "tag", resource: "task", level: "edit", created_by: OWNER });
+  const made = (await (await postJ(BOB, "/notes", { content: "x", tags: ["task"], metadata: { source: "clickup", sourceId: "cu-1", status: "todo" } })).json()) as { id: string };
+  assert.deepEqual(Object.keys(fv.notes.get(made.id)!.metadata!).filter((k) => k === "source" || k === "sourceId"), []);
+  const patched = await req(api, "/notes/task2", { method: "PATCH", cookie: as(BOB), headers: J, body: JSON.stringify({ metadata: { source: "fireflies", note: "ok" }, if_updated_at: fv.notes.get("task2")!.updatedAt }) });
+  assert.equal(patched.status, 200);
+  assert.equal(fv.notes.get("task2")!.metadata!.source, "web", "an ingester's source value is dropped, the rest applies");
+  assert.equal(fv.notes.get("task2")!.metadata!.note, "ok");
+});
+
+test("final M2 + L1: a page share needs the sharer's standing over TRASHED and just-created notes inside the page", async () => {
+  const carol = as(CAROL);
+  const share = () => req(acl, "/notes/p/people", { method: "PUT", cookie: carol, headers: J, body: JSON.stringify({ email: BOB, level: "view", scope: "page" }) });
+  // Carol can view + share the page and its live sub-page (note grants), nothing else.
+  grantCaps(CAROL, "note", "p", ["view", "share"]);
+  grantCaps(CAROL, "note", "p1", ["view", "share"]);
+  assert.equal((await status(CAROL, "p")), 200); // warms the tree projection
+  // A TRASHED page under it that Carol cannot see.
+  fv.put({ id: "bin", path: "vault/Team/Plan/Old budget", content: "<p>secret</p>", tags: ["prism-trashed"], metadata: { prism_trashed_at: "2026-01-01T00:00:00.000Z", prism_trashed_root: "bin" } });
+  assert.equal((await share()).status, 403, "trashed descendants count");
+  assert.equal(grantsForResource("page", "p", "primary").length, 0);
+  fv.notes.delete("bin");
+  // A live page the cached tree has not seen yet (L1: the check lists the vault).
+  fv.put({ id: "fresh", path: "vault/Team/Plan/Just added", content: "<p>new</p>" });
+  assert.equal((await share()).status, 403, "a note the cached tree has not seen counts");
+  fv.notes.delete("fresh");
+  assert.equal((await share()).status, 200);
+  // A legit page-grant holder still sees and restores what gets trashed under the page (M-D).
+  grantCaps(DAVE, "page", "p", ["view", "edit", "organize", "delete"]);
+  assert.equal((await postJ(DAVE, "/notes/p1/trash")).status, 200);
+  assert.equal((await postJ(DAVE, "/trash/p1/restore")).status, 200);
+});
+
+test("final L2: a database row under a shared page needs create standing in that page", async () => {
+  const { addGrant: grant } = await import("../src/db");
+  const db = { prism_type: "database", prism_database: { version: 1, source: { tags: ["row"] }, views: [] } };
+  fv.put({ id: "db", path: "vault/Shared/Board", content: "", tags: ["dbs"], metadata: db });
+  fv.put({ id: "db2", path: "vault/Loose/Board", content: "", tags: ["dbs"], metadata: db });
+  grantCaps(DAVE, "page", "q", ["view"]); // vault/Shared is shared with Dave
+  grant({ subject_type: "user", subject: CAROL, resource_type: "tag", resource: "row", level: "edit", created_by: OWNER });
+  grant({ subject_type: "user", subject: CAROL, resource_type: "tag", resource: "dbs", level: "view", created_by: OWNER });
+  const row = (path: string) => postJ(CAROL, "/notes", { content: "", tags: ["row"], path });
+  assert.equal((await row("vault/Shared/Board/Row")).status, 403, "the row would be shared with the page's people");
+  assert.equal((await row("vault/Loose/Board/Row")).status, 200, "the M4 database rule is unchanged elsewhere");
+  grantCaps(CAROL, "page", "q", ["view", "create"]);
+  assert.equal((await row("vault/Shared/Board/Row")).status, 200);
+});
+
+test("final L4: forViewer strips who trashed / forked a page (lists, search, single); the viewer's own stays", async () => {
+  fv.put({ id: "fk", path: "vault/Team/Plan/Fork", content: "<p>plan fork</p>", metadata: { forked_by: CAROL, prism_trashed_by: CAROL, kept: 1 } });
+  fv.put({ id: "mine", path: "vault/Team/Plan/Mine", content: "<p>plan mine</p>", metadata: { forked_by: BOB } });
+  grantCaps(BOB, "page", "p", ["view"]);
+  for (const path of ["/notes/fk", "/notes", "/search?q=plan"]) {
+    const body = JSON.stringify(await (await req(api, path, { cookie: as(BOB) })).json());
+    assert.ok(!body.includes(CAROL), path);
+  }
+  const one = (await (await req(api, "/notes/fk", { cookie: as(BOB) })).json()) as { metadata: Record<string, unknown> };
+  assert.equal(one.metadata.kept, 1);
+  const own = (await (await req(api, "/notes/mine", { cookie: as(BOB) })).json()) as { metadata: Record<string, unknown> };
+  assert.equal(own.metadata.forked_by, BOB);
+});

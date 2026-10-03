@@ -57,7 +57,10 @@ function identityFrom(me: { name?: string | null; email?: string; avatar?: strin
     const seed = `guest-${capToken.slice(0, 10)}`;
     return { name: "Guest", color: colorFor(seed) };
   }
-  const name = (me?.name && me.name.trim()) || me?.email || "You";
+  // Never the account email (final review L4): presence and comment authorship are
+  // seen by everyone on the page. No display name → the neutral "Member" (the
+  // server's command endpoint uses the same label, so "my comment" checks agree).
+  const name = (me?.name && me.name.trim() && me.name.trim() !== me.email ? me.name.trim() : "") || "Member";
   return { name, color: colorFor(me?.email || name), avatar: me?.avatar ?? null };
 }
 

@@ -32,6 +32,7 @@ import { consumeRateLimit, rateLimit } from "../middleware/ratelimit";
 import { config } from "../config";
 import { vaultClient, VaultError, type Note } from "../parachute";
 import { atLeast, type Level } from "../permissions";
+import { creatorNameFor } from "../sharing";
 import type { Role } from "../roles";
 import { csrfRefusal, readCapped } from "./actions";
 
@@ -232,7 +233,7 @@ humanCollabApi.post("/:id/commands", async (c) => {
       if (freshKind !== "document") {
         return fail(c, 400, "unsupported_kind", "This note is no longer a prose document.", { noteKind: freshKind });
       }
-      const name = safeAuthorName(now.email ? getUser(now.email)?.name?.trim() || now.email : "Guest");
+      const name = safeAuthorName(now.email ? creatorNameFor(now.email) ?? "Member" : "Guest");
       outcome = executeHumanCommand(conn.document as unknown as Y.Doc, {
         ...receiptKey,
         docName,

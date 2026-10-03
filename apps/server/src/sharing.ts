@@ -16,7 +16,8 @@ import { getUser, getVaultRegistry, grantsForResource, type Grant } from "./db";
 import type { Actor } from "./auth/actor";
 import { roleFloor } from "./roles";
 import type { VaultEntry } from "./config";
-import { ensureTree, rowRef, type TreeRow } from "./tree";
+import { ensureTree, rowRef, TREE_META_KEYS, type TreeRow } from "./tree";
+import { vaultClient } from "./parachute";
 import { effectiveCaps, expandLevel, type Cap, type Level, type NoteRef } from "./permissions";
 import { WRITER_KEY, WRITER_AT_KEY, resolveWriter, stripIdentity, writerIdFor, writerNames } from "./writer-stamp";
 import { TRASH_TAG } from "@prism/core/pages";
@@ -136,6 +137,25 @@ export const grantCapsList = (g: Grant): Cap[] => [...(g.caps?.length ? g.caps :
 export async function descendantRows(entry: VaultEntry, path: string): Promise<TreeRow[]> {
   const tree = await ensureTree(entry);
   return tree.rows().filter((r) => live(r) && !!r.path && r.path.startsWith(`${path}/`));
+}
+
+/**
+ * Every note strictly under `path` — live AND trashed — from a fresh `path_prefix`
+ * listing (the move route's source of truth, not the cached projection). The
+ * anti-escalation check for a page share: a live page grant reaches trashed
+ * descendants too (`pageGrantDepth`), so they count as "inside the page".
+ */
+export async function descendantRefs(entry: VaultEntry, path: string): Promise<NoteRef[]> {
+  const notes = await vaultClient(entry.id).listNotes({ pathPrefix: path, includeMetadata: [...TREE_META_KEYS] });
+  return notes
+    .filter((n) => !!n.path && n.path.startsWith(`${path}/`))
+    .map((n) => ({
+      id: n.id,
+      tags: n.tags ?? [],
+      path: n.path ?? null,
+      creator: (n.metadata?.prism_creator as string | undefined) ?? null,
+      visibility: n.metadata?.prism_visibility === "private" ? ("private" as const) : ("workspace" as const),
+    }));
 }
 
 /** What history shows for one stored state: who produced it, by kind. */
@@ -275,6 +295,13 @@ export const forViewer = <T extends { metadata?: Record<string, unknown> | null 
   if (metadata && "prism_creator" in metadata && creator !== actor.email) {
     const { prism_creator: _c, ...rest } = metadata;
     metadata = rest;
+  }
+  // Who trashed / forked it is an email too (final review L4): only the viewer's own stays.
+  for (const k of ["prism_trashed_by", "forked_by"]) {
+    if (metadata && k in metadata && metadata[k] !== actor.email) {
+      const { [k]: _gone, ...rest } = metadata;
+      metadata = rest;
+    }
   }
   return { ...note, metadata, ...(typeof creator === "string" ? { _creator: { me: creator === actor.email, name: creatorNameFor(creator) } } : {}) };
 };

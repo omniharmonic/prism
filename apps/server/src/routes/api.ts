@@ -34,6 +34,7 @@ import { consumeRateLimit } from "../middleware/ratelimit";
 import { redactVersionForViewer, stripWriterMeta, changeValue, creatorNameFor, CHANGE_KEY, WRITER_META_KEYS, createCapsAt, forViewer } from "../sharing";
 import { writerNames, WRITER_AT_KEY } from "../writer-stamp";
 import { attachmentsApi } from "./attachments";
+import { ingestKeyChanged } from "../ingest-keys";
 import { searchApi } from "./search";
 import { stampJsonBody, stampMetadata, stripIdentity } from "../writer-stamp";
 import { graphNeighborhood } from "../graph";
@@ -623,11 +624,6 @@ const CREATE_KEYS = new Set(["content", "path", "tags", "metadata"]);
  * `mailbox`, `uid`, `provider`, `model`, `structured`; and the people identity fields
  * (`email`, `channels`, …), which an editor may change through the identity route.
  */
-const INGEST_KEYS = new Set([
-  "source_id", "calendarEventId", "messageId", "threadId", "matrixRoomId",
-  "skillName", "runner", "lastRun", "executionMode",
-  "merged_into", "mergedInto", "superseded_by", "prism_merge_history", "prism_merged_from", "prism_merged_into_prev",
-]);
 const isPlainObject = (x: unknown): x is Record<string, unknown> => !!x && typeof x === "object" && !Array.isArray(x);
 const invalid = (c: Context, reason: string) => c.json({ error: "invalid_request", reason }, 400);
 /** The system-owned tags (`protectionReason`): a non-owner never puts a note INTO one. */
@@ -730,7 +726,7 @@ api.post("/notes", async (c) => {
   // Owner-only keys (creator/visibility/trash state, lock) and the trash tag are never
   // accepted from a non-owner create (review H3/M1).
   // Narrowing is safe: a non-owner may create a note as private (e.g. a private task).
-  const metadata = Object.fromEntries(Object.entries((body.metadata as Record<string, unknown> | null | undefined) ?? {}).filter(([k, v]) => (k === "prism_visibility" ? v === "private" : !isOwnerOnlyMeta(k) && k !== LOCK_KEY && k !== ORDER_KEY && k !== PAGE_STYLE_KEY && !INGEST_KEYS.has(k) && !(WRITER_META_KEYS as readonly string[]).includes(k))));
+  const metadata = Object.fromEntries(Object.entries((body.metadata as Record<string, unknown> | null | undefined) ?? {}).filter(([k, v]) => (k === "prism_visibility" ? v === "private" : !isOwnerOnlyMeta(k) && k !== LOCK_KEY && k !== ORDER_KEY && k !== PAGE_STYLE_KEY && !ingestKeyChanged(k, v, undefined) && !(WRITER_META_KEYS as readonly string[]).includes(k))));
   if (subject) metadata.prism_creator = subject;
   // The writer stamp is server-owned: client values were dropped above, ours is applied here.
   Object.assign(metadata, stampChange(stampMetadata(undefined, actor), requestVia(c) === "mcp" ? "agent" : "edit"));
@@ -800,7 +796,7 @@ api.patch("/notes/:id", async (c) => {
   // The writer stamp is server-owned (review M3): whatever a client sends for it is
   // dropped (never stored), and the server's own stamp is applied on the write below.
   if (body.metadata) {
-    body.metadata = Object.fromEntries(Object.entries(body.metadata).filter(([k, v]) => !(WRITER_META_KEYS as readonly string[]).includes(k) && (!INGEST_KEYS.has(k) || JSON.stringify(v) === JSON.stringify(note.metadata?.[k]))));
+    body.metadata = Object.fromEntries(Object.entries(body.metadata).filter(([k, v]) => !(WRITER_META_KEYS as readonly string[]).includes(k) && !ingestKeyChanged(k, v, note.metadata?.[k])));
   }
   const meta = body.metadata && typeof body.metadata === "object" ? body.metadata : {};
   const subjectNow = actorSubject(actor);

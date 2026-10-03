@@ -542,7 +542,12 @@ export async function destinationParentRefusal(actor: Actor, entry: VaultEntry, 
   const caps = capsOf(actor, noteRef(parentPage));
   if (caps.has("create") || caps.has("organize") || here.has("create") || here.has("organize")) return null;
   const source = opts.tags ? databaseSourceTags(parentPage) : null;
-  if (source && source.every((t) => opts.tags!.includes(t) && capsOf(actor, { id: "<new>", tags: [t] }).has("create"))) return null;
+  if (source && source.every((t) => opts.tags!.includes(t) && capsOf(actor, { id: "<new>", tags: [t] }).has("create"))) {
+    // …unless the database sits under (or is) a page somebody shares: the row would be
+    // shared with those people, so the shared-page rule applies — `create` there (L2).
+    const shared = (await sharedAncestor(entry, target)) ?? (grantsForResource("page", parentPage.id, entry.id).length ? parentPage : null);
+    return shared ? refusal : null;
+  }
   return refusal;
 }
 

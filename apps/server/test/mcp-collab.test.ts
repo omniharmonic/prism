@@ -458,15 +458,15 @@ test("suggest_edit: deletion + insertion marks attributed to the actor, captured
     for (const m of n.marks) if (m.type.name === "insertion" || m.type.name === "deletion") marks.push([m.type.name, n.text ?? "", String(m.attrs.user)]);
   });
   assert.deepEqual(marks, [
-    ["deletion", "beta", `${SUGGESTER} (agent)`],
-    ["insertion", "gamma", `${SUGGESTER} (agent)`],
+    ["deletion", "beta", "Member (agent)"],
+    ["insertion", "gamma", "Member (agent)"],
   ]);
   const html = fv.notes.get("d1")!.content;
   assert.equal((html.match(new RegExp(`data-suggestion-id="${proposed.suggestion_id}"`, "g")) ?? []).length, 2);
   assert.match(html, /data-actor-id="suggester@test.local"/);
-  assert.match(html, /data-suggestion="delete"[^>]*data-user="suggester@test\.local \(agent\)"/);
+  assert.match(html, /data-suggestion="delete"[^>]*data-user="Member \(agent\)"/);
   const queued = suggestionsForNote("d1").filter((s) => s.status === "pending");
-  assert.deepEqual(queued.map((s) => s.author), [`${SUGGESTER} (agent)`], "the owner's review queue has it");
+  assert.deepEqual(queued.map((s) => s.author), ["Member (agent)"], "the owner's review queue has it");
   refused(await call(sg, "prism_suggest_edit", { id: "d1", find: "absent", replace: "x" }), "invalid_request");
 });
 

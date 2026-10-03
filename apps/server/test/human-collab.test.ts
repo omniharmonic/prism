@@ -548,7 +548,7 @@ test("levels: anon 401; view / comment 403; suggest and edit 200; private notes 
   const d = offlineDoc("d1");
   const combined = await post("d1", await command(d, () => ({ kind: "suggest", ...select(d, "beta"), text: "B" })), viaLink);
   assert.equal(combined.status, 200, JSON.stringify(combined.body));
-  assert.match(vaultHtml("d1"), new RegExp(`data-user="${OTHER}"[^>]*data-actor-id="${documentActorId(`user:${OTHER}`)}"`));
+  assert.match(vaultHtml("d1"), new RegExp(`data-user="Member"[^>]*data-actor-id="${documentActorId(`user:${OTHER}`)}"`));
 });
 
 test("non-prose kinds are refused with an explanation, and stay read-only for suggest actors", { timeout: 20000 }, async () => {
