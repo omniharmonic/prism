@@ -72,3 +72,26 @@ test("full width, small text, font persist per page", async ({ page }, info) => 
   await expect(page.getByText("Saturday: opening discussion", { exact: false })).toBeVisible();
   await expect(main).not.toHaveAttribute("data-page-small", "true");
 });
+
+/** Wave 2E · NP-PG-10 */
+test("backlinks pill lists linking pages", async ({ page }, info) => {
+  await page.goto("/e2e-fixtures/notion-shell.html");
+  await expect(page.locator(".tiptap[contenteditable=true]")).toBeVisible();
+  const pill = page.getByRole("button", { name: "2 backlinks" });
+  await expect(pill).toBeVisible(); // the hidden page is never counted
+  await pill.click();
+  const list = page.getByRole("region", { name: "Pages that link here" });
+  await expect(list.getByRole("button")).toHaveCount(2);
+  await expect(list).toContainText("Workshop agenda");
+  await expect(list).toContainText("See A living workspace for the plan.");
+  await expect(list).not.toContainText("hidden-page");
+  await page.screenshot({ path: info.outputPath("backlinks-desktop.png") });
+  await page.keyboard.press("Escape");
+  await expect(list).toHaveCount(0);
+  await expect(pill).toBeFocused();
+  await pill.click();
+  await list.getByRole("button", { name: /Field notes/ }).click();
+  await expect(page.getByText("Notes from the last conversation")).toBeVisible();
+  // A page nobody links to has no pill.
+  await expect(page.getByRole("button", { name: /backlinks?$/ })).toHaveCount(0);
+});

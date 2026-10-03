@@ -18,7 +18,7 @@ function vaultDocName(noteId: string): string {
 }
 import { updateNote as restUpdateNote, hasPendingWrites } from "../parachute/rest";
 import { reloadForUpdate } from "../offline/reloadForUpdate";
-import { reportSyncSource } from "@prism/core";
+import { reportSyncSource, BacklinksPill } from "@prism/core";
 
 /** Track a CSS breakpoint without per-render layout thrash. */
 function useIsNarrow(): boolean {
@@ -515,6 +515,7 @@ function ScopedCollabDoc({
         />
 
         {titleNotice && <p role="status" className="mb-4 text-xs text-[var(--text-secondary)]">{titleNotice}</p>}
+        {embedded && isDocument && <div style={{ maxWidth: "var(--content-measure)", margin: "0 auto" }}><BacklinksPill noteId={noteId} title={title} /></div>}
 
         {/* Doc + (desktop) inline comments */}
         <div style={{ display: "flex", gap: 20, alignItems: "flex-start" }}>

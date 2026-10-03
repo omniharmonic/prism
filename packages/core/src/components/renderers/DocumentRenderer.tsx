@@ -39,6 +39,7 @@ import { convertApi } from "../../lib/parachute/client";
 import { DocumentOutline } from "./DocumentOutline";
 import { EditorToolbar } from "./EditorToolbar";
 import { KeyboardToolbar } from "./KeyboardToolbar";
+import { BacklinksPill } from "../layout/BacklinksPill";
 import { PageHeader, PageProperties, renamePath, type ContentFont } from "./DocumentChrome";
 import { PropertyBar } from "../database/PropertyBar";
 import { useUpdateNote } from "../../app/hooks/useParachute";
@@ -390,6 +391,7 @@ export default function DocumentRenderer({ note, onMetadataChange, readOnly }: R
             icon={note.metadata?.icon as string | undefined}
             onIconChange={persistMetadata ? (emoji) => persistMetadata({ icon: emoji }) : undefined}
           />
+          {!readOnly && <BacklinksPill noteId={note.id} title={note.path?.split("/").pop() ?? ""} />}
           <EditorContent editor={editor} />
         </div>
         {/* Block gutter: ⋮⋮ drag / block menu and + insert (tap menu on phones) */}

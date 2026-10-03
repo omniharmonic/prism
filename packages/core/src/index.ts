@@ -253,3 +253,4 @@ export { useSyncStore, useSyncStatus, deriveSyncStatus, markDirty, reportSaveFai
 export { useReduceMotion, setReduceMotion, applyReduceMotion, prefersReducedMotion } from "./lib/motion";
 export { setOfflineAvailability, useOfflineAvailability, type OfflineAvailability } from "./lib/offline/availability";
 export { isVaultNoteId } from "./lib/noteIdentity";
+export { BacklinksPill } from "./components/layout/BacklinksPill";

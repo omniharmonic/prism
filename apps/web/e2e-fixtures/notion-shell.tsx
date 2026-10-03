@@ -21,7 +21,7 @@ const notes: Note[] = [
   { id: "workspace", path: "Projects/Prism/A living workspace", content: "<h2>Purpose</h2><p>A shared place to think, write and plan the workshop together.</p>", tags: ["note"], metadata: { type: "document", prism_creator: "owner@example.test" }, createdAt: "2026-09-01T09:00:00.000Z", updatedAt: recent },
   { id: "agenda", path: "Library/Workshop agenda", content: "<p>Saturday: opening discussion, field notes, next steps for the workshop.</p>", tags: ["note"], metadata: { type: "document", prism_creator: "mira@example.test" }, createdAt: "2026-05-01T09:00:00.000Z", updatedAt: "2026-05-02T09:00:00.000Z" },
   { id: "tracker", path: "Projects/Prism/Workshop tracker", content: "", tags: ["task"], metadata: { prism_type: "database", prism_creator: "owner@example.test" }, createdAt: recent, updatedAt: recent },
-  { id: "field-notes", path: "Journal/Field notes", content: "<p>Notes from the last conversation about the workshop budget.</p>", tags: ["note"], metadata: { type: "document", prism_creator: "owner@example.test" }, createdAt: recent, updatedAt: recent },
+  { id: "field-notes", path: "Journal/Field notes", content: "<p>Notes from the last conversation about the workshop budget. See A living workspace for the plan.</p>", tags: ["note"], metadata: { type: "document", prism_creator: "owner@example.test" }, createdAt: recent, updatedAt: recent },
 ];
 // Metadata written by the app survives reloads ("another device" = a fresh page).
 const savedMeta = JSON.parse(sessionStorage.getItem("notion-shell-meta") ?? "{}") as Record<string, Record<string, unknown>>;
@@ -90,6 +90,16 @@ window.fetch = async (input, init) => {
       if (controls.failStatus) return Response.json({ error: "fixture_failure" }, { status: controls.failStatus });
       Object.assign(note, body, { metadata: { ...note.metadata, ...body.metadata }, updatedAt: `2026-10-02T00:00:${String(++seq).padStart(2, "0")}.000Z` });
       if (body.metadata) persistMeta(note);
+    }
+    if (url.searchParams.get("include_links") === "true") {
+      // Two visible pages and one the viewer can't see (absent from /api/tree) link here.
+      const links = note.id === "workspace" ? [
+        { sourceId: "agenda", targetId: "workspace", relationship: "wikilink" },
+        { sourceId: "field-notes", targetId: "workspace", relationship: "references" },
+        { sourceId: "hidden-page", targetId: "workspace", relationship: "wikilink" },
+        { sourceId: "workspace", targetId: "agenda", relationship: "wikilink" },
+      ] : [];
+      return Response.json({ ...note, links });
     }
     return Response.json(note);
   }
