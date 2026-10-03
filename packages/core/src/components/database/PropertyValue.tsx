@@ -9,7 +9,8 @@
  * and offers Retry. Nothing is ever silently dropped.
  */
 import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from "react";
-import { Check, ExternalLink, Mail, Paperclip, Phone, Plus, Search, Upload, X } from "lucide-react";
+import { CalendarClock, Check, ExternalLink, Mail, Paperclip, Phone, Plus, Search, Upload, X } from "lucide-react";
+import { buildDateValue, dateRange, hasTime, parseDateParts } from "../../lib/database/dates";
 import { useVaultClient } from "../../data/VaultClientContext";
 import { serverFetch } from "../../lib/transport/serverFetch";
 import { downloadOwnAttachment, fileRef, isImageFileName, parseFileRefs, MAX_FILE_BYTES } from "../../lib/media/attachments";
@@ -168,6 +169,11 @@ export function PropertyValue({
       void commit(!(value === true));
       return;
     }
+    // A date with a time or an end opens the full date editor (a plain day edits in place).
+    if (def.kind === "date" && typeof value === "string" && (hasTime(value) || dateRange(value))) {
+      setOpen(true);
+      return;
+    }
     if (textual) {
       setDraft(isBlank(value) ? "" : def.kind === "date" ? String(value).slice(0, 10) : String(value));
       setEditingText(true);
@@ -250,7 +256,7 @@ export function PropertyValue({
 
   if (editingText) {
     return (
-      <span className={`db-value db-value-${variant}`} data-editing>
+      <span className={`db-value db-value-${variant}`} data-editing data-date={def.kind === "date" || undefined}>
         <input
           ref={inputRef}
           className="db-input"
@@ -263,6 +269,14 @@ export function PropertyValue({
           onKeyDown={onTextKey}
           onBlur={() => { if (!busy && !error && !conflict) void commit(draft); }}
         />
+        {def.kind === "date" && (
+          // Time and end date live in the full editor; mousedown is swallowed so the input does not commit first.
+          <button type="button" className="db-icon-btn db-date-more" aria-label={`Time and end date for ${def.label}`} disabled={busy}
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={() => { setEditingText(false); setOpen(true); }}>
+            <CalendarClock size={14} aria-hidden="true" />
+          </button>
+        )}
         {feedback}
       </span>
     );
@@ -299,6 +313,10 @@ export function PropertyValue({
           onCreateOption={onCreateOption}
           onPick={(next) => { void commit(next); }} />
       )}
+      {def.kind === "date" && open && (
+        <DatePicker anchor={anchor} def={def} value={value} onClose={() => { setOpen(false); onDone?.(); }}
+          onPick={(next) => { void commit(next); }} />
+      )}
       {def.kind === "files" && (
         <FilesPicker anchor={anchor} open={open} def={def} value={value} noteId={noteId} onClose={() => { setOpen(false); onDone?.(); }}
           onPick={(next) => commit(next)} />
@@ -308,6 +326,51 @@ export function PropertyValue({
           onPick={(next) => { void commit(next); }} />
       )}
     </span>
+  );
+}
+
+/**
+ * The full date editor (NP-DB-08): a day, optionally with a time, optionally with
+ * an end. Stored as `YYYY-MM-DD`, a zoned instant, or `start/end` (lib/database/dates.ts).
+ * Nothing is written until Done; Escape leaves the value alone.
+ */
+function DatePicker({ anchor, def, value, onClose, onPick }: {
+  anchor: React.RefObject<HTMLElement | null>; def: PropertyDef; value: unknown; onClose: () => void; onPick: (next: unknown) => void;
+}) {
+  const initial = parseDateParts(value);
+  const [date, setDate] = useState(initial?.date ?? "");
+  const [time, setTime] = useState(initial?.time ?? "09:00");
+  const [timeOn, setTimeOn] = useState(!!initial?.time);
+  const [endOn, setEndOn] = useState(!!initial?.endDate);
+  const [endDate, setEndDate] = useState(initial?.endDate ?? initial?.date ?? "");
+  const [endTime, setEndTime] = useState(initial?.endTime ?? initial?.time ?? "10:00");
+  // The vault's own `date` type holds one date; a range needs a text-typed field.
+  const rangeOk = def.type !== "date";
+  const next = date ? buildDateValue({ date, time: timeOn ? time : null, endDate: endOn && rangeOk ? endDate || date : null, endTime: timeOn ? endTime : null }) : null;
+  const backwards = !!next && endOn && rangeOk && (() => { const r = dateRange(next); return !!r && Date.parse(r[1].length === 10 ? `${r[1]}T00:00:00` : r[1]) < Date.parse(r[0].length === 10 ? `${r[0]}T00:00:00` : r[0]); })();
+  const done = () => { if (!date) { onPick(null); onClose(); return; } if (!next || backwards) return; onPick(next); onClose(); };
+  return (
+    <Popover anchor={anchor} open onClose={onClose} label={`Edit ${def.label}`} width={300}>
+      <form className="db-settings db-date-editor" onSubmit={(e) => { e.preventDefault(); done(); }}>
+        <div className="db-date-row">
+          <label className="db-field"><span>{endOn ? "Start date" : "Date"}</span><input autoFocus type="date" aria-label={endOn ? "Start date" : "Date"} value={date} onChange={(e) => { setDate(e.target.value); if (!endOn) setEndDate(e.target.value); }} /></label>
+          {timeOn && <label className="db-field"><span>{endOn ? "Start time" : "Time"}</span><input type="time" aria-label={endOn ? "Start time" : "Time"} value={time} onChange={(e) => setTime(e.target.value)} /></label>}
+        </div>
+        {endOn && rangeOk && (
+          <div className="db-date-row">
+            <label className="db-field"><span>End date</span><input type="date" aria-label="End date" value={endDate} min={date || undefined} onChange={(e) => setEndDate(e.target.value)} /></label>
+            {timeOn && <label className="db-field"><span>End time</span><input type="time" aria-label="End time" value={endTime} onChange={(e) => setEndTime(e.target.value)} /></label>}
+          </div>
+        )}
+        <label className="db-radio"><input type="checkbox" checked={endOn && rangeOk} disabled={!rangeOk} onChange={(e) => { setEndOn(e.target.checked); if (e.target.checked && (!endDate || endDate < date)) setEndDate(date); }} /> Add an end date{!rangeOk ? " (this property holds a single date)" : ""}</label>
+        <label className="db-radio"><input type="checkbox" checked={timeOn} onChange={(e) => setTimeOn(e.target.checked)} /> Include time</label>
+        {backwards && <p role="alert" className="db-error">The end is before the start.</p>}
+        <div className="db-settings-row">
+          {!isBlank(value) ? <button type="button" className="db-ghost" onClick={() => { onPick(null); onClose(); }}>Clear</button> : <span />}
+          <button type="submit" className="db-primary" disabled={!!date && (!next || backwards)}>Done</button>
+        </div>
+      </form>
+    </Popover>
   );
 }
 
@@ -438,16 +501,16 @@ function OptionPicker({ anchor, open, def, value, onClose, onPick, onCreateOptio
         {ordered.map((o, i) => {
           const g = groupOf(o) ?? "in_progress";
           const head = grouped && (i === 0 || (groupOf(ordered[i - 1]!) ?? "in_progress") !== g);
-          return (
+          return [
+            head ? <li key={`g:${g}`} role="presentation" className="db-pop-heading db-status-group" data-status-group={g}>{STATUS_GROUP_LABELS[g]}</li> : null,
             <li key={o} role="option" aria-selected={selected.has(o)} data-group={grouped ? g : undefined}>
-              {head && <span className="db-pop-heading" role="presentation">{STATUS_GROUP_LABELS[g]}</span>}
               <button type="button" onClick={() => choose(o)}>
                 {multi && <span className="db-check" data-checked={selected.has(o) || undefined} aria-hidden="true">{selected.has(o) && <Check size={12} />}</span>}
                 <OptionChip value={o} label={optionLabel(def, o)} color={colorOf(def, o)} />
                 {!multi && selected.has(o) && <Check size={14} className="db-pop-tick" aria-hidden="true" />}
               </button>
-            </li>
-          );
+            </li>,
+          ];
         })}
         {!options.length && !q && <li className="db-pop-empty">No options yet</li>}
       </ul>

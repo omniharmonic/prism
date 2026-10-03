@@ -176,7 +176,13 @@
 /* calendar */
 .db-cal-head { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
 .db-cal-head h3 { margin: 0 8px 0 0; font-size: 15px; font-weight: 650; }
-.db-cal { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); border-top: 1px solid var(--glass-border); border-left: 1px solid var(--glass-border); }
+.db-cal { border-top: 1px solid var(--glass-border); border-left: 1px solid var(--glass-border); }
+/* A week is one grid row: seven day cells, with multi-day bars laid over them (NP-DB-07). */
+.db-cal-week { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); }
+.db-cal-week > .db-cal-day { grid-row: 1; }
+.db-cal-day[data-over] { background: color-mix(in srgb, var(--color-accent) 10%, transparent); }
+.db-cal-item.db-cal-bar { grid-row: 1; align-self: start; z-index: 1; width: auto; height: 20px; line-height: 16px; margin-left: 3px; margin-right: 3px; background: color-mix(in srgb, var(--color-accent) 26%, var(--bg-surface)); font-weight: 550; }
+.db-cal-item[data-dragging] { opacity: .85; box-shadow: var(--glass-shadow); cursor: grabbing; }
 .db-cal-dow { padding: 6px 8px; font-size: 11.5px; color: var(--text-muted); border-right: 1px solid var(--glass-border); border-bottom: 1px solid var(--glass-border); }
 .db-cal-day { position: relative; display: flex; flex-direction: column; gap: 3px; min-height: 104px; padding: 4px; border-right: 1px solid var(--glass-border); border-bottom: 1px solid var(--glass-border); min-width: 0; }
 .db-cal-day[data-outside] { background: color-mix(in srgb, var(--glass) 60%, transparent); }
@@ -368,3 +374,10 @@
   .db-option-list .db-icon-btn { min-width: 44px; min-height: 44px; }
   .db-radio { min-height: 44px; }
 }
+
+/* Date editor (NP-DB-08) */
+.db-date-row { display: grid; grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr); gap: 8px; }
+.db-date-row > .db-field:only-child { grid-column: 1 / -1; }
+.db-date-more { flex: none; color: var(--text-muted); }
+.db-value[data-editing][data-date] { flex-direction: row; flex-wrap: wrap; align-items: center; gap: 2px; }
+.db-value[data-editing][data-date] > .db-input { flex: 1 1 110px; min-width: 0; }

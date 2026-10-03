@@ -235,3 +235,82 @@ test("property management from the table: retype preview, number format, delete 
   await expect(table.getByRole("button", { name: "Stage", exact: true })).toBeVisible();
   await expect(row(page, "Atlas").getByRole("button", { name: "Stage: Empty" })).toBeVisible();
 });
+
+// NP-DB-08 — a date holds a day, a time, or a range; status options are grouped. Editors, filters and sorts all understand them.
+test("date range and time, status groups", async ({ page }) => {
+  await page.goto("/e2e-fixtures/databases.html");
+  const table = page.getByRole("table", { name: "All tasks" });
+  const dueOf = (id: string) => page.evaluate((id) => (window as any).dbFixture.notes().find((n: any) => n.id === id).metadata.due as string, id);
+  const start = await dueOf("t3");
+  const plus = (iso: string, n: number) => { const d = new Date(`${iso}T12:00:00`); d.setDate(d.getDate() + n); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; };
+  const end = plus(start, 2);
+  const dueCell = () => row(page, "Refine onboarding copy").getByRole("button", { name: /^Due:/ });
+
+  // A plain day still edits in place; the full editor adds an end date.
+  await dueCell().click();
+  await expect(page.getByLabel("Due", { exact: true })).toBeFocused();
+  await page.getByRole("button", { name: "Time and end date for Due" }).click();
+  let editor = page.getByRole("dialog", { name: "Edit Due" });
+  await expect(editor.getByLabel("Date", { exact: true })).toHaveValue(start);
+  await editor.getByRole("checkbox", { name: "Add an end date" }).check();
+  await editor.getByLabel("End date", { exact: true }).fill(end);
+  await editor.getByRole("button", { name: "Done" }).click();
+  expect((await writes(page)).at(-1)).toEqual({ id: "t3", set: { due: `${start}/${end}` }, expect: { due: start } });
+  await expect(dueCell()).toHaveAccessibleName(/^Due: .+ → .+/);
+
+  // The range filters as every day inside it, and sorts by its start.
+  await page.getByRole("button", { name: "Filter", exact: true }).click();
+  const filter = page.getByRole("dialog", { name: "Filter" });
+  await filter.getByRole("button", { name: "Add filter" }).click();
+  await filter.getByLabel("Condition 1 property").selectOption("due");
+  await filter.getByLabel("Condition 1 operator").selectOption("eq");
+  await filter.getByLabel("Filter value").fill(plus(start, 1));
+  await expect(table.locator("tbody tr[data-row-id]")).toHaveCount(1);
+  await expect(row(page, "Refine onboarding copy")).toBeVisible();
+  await filter.getByRole("button", { name: "Clear all" }).click();
+  await page.keyboard.press("Escape");
+
+  // Include time: start and end times, stored as instants; the editor reads them back in local time.
+  await dueCell().click(); // a range opens the full editor directly
+  editor = page.getByRole("dialog", { name: "Edit Due" });
+  await expect(editor.getByLabel("Start date")).toHaveValue(start);
+  await expect(editor.getByLabel("End date", { exact: true })).toHaveValue(end);
+  await editor.getByRole("checkbox", { name: "Include time" }).check();
+  await editor.getByLabel("Start time").fill("09:30");
+  await editor.getByLabel("End time").fill("17:00");
+  await editor.getByRole("button", { name: "Done" }).click();
+  const timed = await dueOf("t3");
+  expect(timed).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:00\.000Z\/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:00\.000Z$/);
+  const local = await page.evaluate((v) => v.split("/").map((x) => { const d = new Date(x); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")} ${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`; }), timed);
+  expect(local).toEqual([`${start} 09:30`, `${end} 17:00`]);
+  await expect(dueCell()).toHaveAccessibleName(/^Due: .+9:30.* → .+5:00/);
+  // An end before the start is refused in the editor; nothing is written.
+  await dueCell().click();
+  editor = page.getByRole("dialog", { name: "Edit Due" });
+  await editor.getByLabel("End date", { exact: true }).fill(plus(start, -3));
+  await expect(editor.getByRole("alert")).toHaveText("The end is before the start.");
+  await expect(editor.getByRole("button", { name: "Done" })).toBeDisabled();
+  // Dropping the end leaves a single date with its time.
+  await editor.getByRole("checkbox", { name: "Add an end date" }).uncheck();
+  await editor.getByRole("button", { name: "Done" }).click();
+  expect(await dueOf("t3")).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:00\.000Z$/);
+  // Escape leaves the value alone; Clear empties it (null, never "").
+  await dueCell().click();
+  await page.keyboard.press("Escape");
+  const count = (await writes(page)).length;
+  expect((await writes(page)).length).toBe(count);
+  await dueCell().click();
+  await page.getByRole("dialog", { name: "Edit Due" }).getByRole("button", { name: "Clear" }).click();
+  expect((await writes(page)).at(-1).set).toEqual({ due: null });
+
+  // Status options are grouped To-do / In progress / Complete in the editor and the filter.
+  await row(page, "Refine onboarding copy").getByRole("button", { name: "Status: in-progress" }).click();
+  const picker = page.getByRole("dialog", { name: "Choose Status" });
+  await expect(picker.locator(".db-status-group")).toHaveText(["To-do", "In progress", "Complete"]);
+  await expect(picker.getByRole("option")).toHaveText(["todo", "in-progress", "done"]);
+  await page.keyboard.press("Escape");
+  await page.getByRole("button", { name: "Filter", exact: true }).click();
+  await filter.getByRole("button", { name: "Add filter" }).click();
+  await filter.getByLabel("Condition 1 property").selectOption("status");
+  expect(await filter.getByLabel("Filter value").locator("optgroup").evaluateAll((els) => els.map((e) => (e as HTMLOptGroupElement).label))).toEqual(["To-do", "In progress", "Complete"]);
+});

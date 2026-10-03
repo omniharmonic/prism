@@ -20,6 +20,7 @@
  */
 
 import { fileRef, parseFileRef, parseFileRefs } from "../media/attachments";
+import { dateRange, hasTime, isDateValue } from "./dates";
 
 export const PROPERTY_KINDS = [
   "text", "number", "select", "multi_select", "status", "date", "person", "relation", "checkbox", "url", "email", "phone", "files",
@@ -230,7 +231,7 @@ export function inferKind(key: string, f: SchemaField | undefined, sample?: unkn
       if (sample.startsWith("[[")) return PERSON_KEYS.test(key) ? "person" : "relation";
       if (/^https?:\/\//i.test(sample)) return "url";
       if (looksLikeEmail(sample)) return "email";
-      if (/^\d{4}-\d{2}-\d{2}($|T)/.test(sample)) return "date";
+      if (/^\d{4}-\d{2}-\d{2}($|T)/.test(sample) && isDateValue(sample)) return "date";
     }
     return "text";
   }
@@ -403,12 +404,19 @@ export function looksLikeEmail(v: string): boolean {
 /** Valid-looking phone (digits with + ( ) - . space, 5–20 digits). */
 export const looksLikePhone = (v: string): boolean => /^\+?[\d\s().-]+$/.test(v.trim()) && (v.replace(/\D/g, "").length >= 5) && (v.replace(/\D/g, "").length <= 20);
 
+/** "Oct 3" · "Oct 3, 9:30 AM" (a value with a time) · "Oct 3 → Oct 5" (a range). */
 export function formatDate(v: string): string {
+  const r = dateRange(v);
+  if (r) return `${formatOneDate(r[0])} → ${formatOneDate(r[1])}`;
+  return formatOneDate(v);
+}
+function formatOneDate(v: string): string {
   const day = /^\d{4}-\d{2}-\d{2}$/.test(v);
   const d = new Date(day ? `${v}T00:00:00` : v);
   if (Number.isNaN(d.getTime())) return v;
   const sameYear = d.getFullYear() === new Date().getFullYear();
-  return d.toLocaleDateString(undefined, { month: "short", day: "numeric", ...(sameYear ? {} : { year: "numeric" }) });
+  const date: Intl.DateTimeFormatOptions = { month: "short", day: "numeric", ...(sameYear ? {} : { year: "numeric" }) };
+  return hasTime(v) ? d.toLocaleString(undefined, { ...date, hour: "numeric", minute: "2-digit" }) : d.toLocaleDateString(undefined, date);
 }
 
 /** Coerce raw editor input into the stored shape for `def` (null = clear). */

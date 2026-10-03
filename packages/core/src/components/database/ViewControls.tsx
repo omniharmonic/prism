@@ -6,7 +6,7 @@
 import { useState } from "react";
 import { ArrowLeft, ArrowRight, Copy, Plus, Trash2, X } from "lucide-react";
 import type { QueryCondition, QueryFilter, QueryFilterGroup, QueryOp, QuerySort } from "../../lib/database/query";
-import { SYSTEM_PROPERTIES, type PropertyDef } from "../../lib/database/schema";
+import { STATUS_GROUP_LABELS, STATUS_GROUPS, SYSTEM_PROPERTIES, type PropertyDef } from "../../lib/database/schema";
 import { VIEW_LABELS, VIEW_TYPES, type DatabaseView, type ViewType } from "./config";
 
 /** Title + timestamps + every property, as filter/sort targets. */
@@ -59,7 +59,12 @@ function ValueInput({ def, cond, onChange }: { def?: PropertyDef; cond: QueryCon
     return (
       <select aria-label="Filter value" value={String(cond.value ?? "")} onChange={(e) => onChange(e.target.value)}>
         <option value="">Choose…</option>
-        {def.options.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+        {def.kind === "status" && def.options.some((o) => o.group)
+          ? STATUS_GROUPS.map((g) => {
+              const inGroup = def.options.filter((o) => (o.group ?? "in_progress") === g);
+              return inGroup.length ? <optgroup key={g} label={STATUS_GROUP_LABELS[g]}>{inGroup.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}</optgroup> : null;
+            })
+          : def.options.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
       </select>
     );
   }
