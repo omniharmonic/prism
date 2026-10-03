@@ -1,6 +1,8 @@
 import { webCollabSharing } from "../src/collab/grant";
 import { fetchMe, setActiveVault } from "../src/config";
 import React, { useState } from "react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { VaultClientProvider, type VaultClient } from "@prism/core";
 import { createRoot } from "react-dom/client";
 import {
   useAgentChatStore,
@@ -189,7 +191,7 @@ const sharing: CollabSharing = {
     return {} as never;
   },
 };
-Object.assign(window, { prismSharingFixture: control });
+Object.assign(window, { prismSharingFixture: control, prismSharingUI: useUIStore });
 function Fixture() {
   const [open, setOpen] = useState(false);
   return (
@@ -213,8 +215,19 @@ function Fixture() {
     </main>
   );
 }
+// ?tree — the dialog inside a data context (as in the app): the Publish tab can preview the collection.
+const treeClient = {
+  listTree: async () => [
+    { id: "private", path: "Projects/Prism/A calmer place to think", tags: ["prism"], metadata: { icon: "🌿" } },
+    { id: "roadmap", path: "Projects/Prism/Roadmap", tags: ["prism", "plan"], metadata: null },
+    { id: "notes", path: "Projects/Prism/Field notes", tags: ["prism"], metadata: null },
+    { id: "other", path: "Journal/Monday", tags: ["journal"], metadata: null },
+    ...Array.from({ length: 9 }, (_, i) => ({ id: `more-${i}`, path: `Projects/Prism/Appendix ${String.fromCharCode(65 + i)}`, tags: ["prism"], metadata: null })),
+  ],
+} as unknown as VaultClient;
+const withTree = new URLSearchParams(location.search).has("tree");
 createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
-    <Fixture />
+    {withTree ? <QueryClientProvider client={new QueryClient()}><VaultClientProvider client={treeClient}><Fixture /></VaultClientProvider></QueryClientProvider> : <Fixture />}
   </React.StrictMode>,
 );

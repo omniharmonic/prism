@@ -163,6 +163,41 @@ test("changing audience closes the modal and ignores a delayed sharing result", 
   });
   await expect(page.getByRole("dialog")).toHaveCount(0);
 });
+// NP-CO-08
+test("Publish tab: explains per-tag publishing, previews the collection and hands off to the Publishing studio", async ({ page }) => {
+  await open(page, "?tree");
+  await page.getByRole("tab", { name: "Publish", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Share document" });
+  // Per tag, not per page — said in plain words.
+  await expect(dialog).toContainText("Prism publishes by tag, not page by page");
+  await expect(dialog).toContainText("every page tagged #prism becomes a page of one read-only site");
+  // Preview: the pages that carry the tag (and only those), this page marked.
+  const preview = dialog.getByRole("group", { name: "Pages tagged prism" });
+  await expect(preview).toContainText("Preview · 12 pages tagged #prism");
+  await expect(preview.getByRole("listitem")).toHaveCount(8);
+  await expect(preview.locator('li[aria-current="true"]')).toContainText("A calmer place to think");
+  await expect(preview.locator('li[aria-current="true"]')).toContainText("this page");
+  await expect(preview).not.toContainText("Monday");
+  await preview.getByRole("button", { name: "Show all 12" }).click();
+  await expect(preview.getByRole("listitem")).toHaveCount(12);
+  await expect(preview).toContainText("Private pages and pages in the Trash are never published.");
+  // Hand-off: the studio opens (Workspace settings → Publish) and the dialog closes; nothing was published from here.
+  await dialog.getByRole("button", { name: "Review and publish in the Publishing studio" }).click();
+  await expect(dialog).toHaveCount(0);
+  expect(await page.evaluate(() => { const s = (window as any).prismSharingUI.getState(); return s.openTabs.find((t: any) => t.id === s.activeTabId)?.noteId; })).toBe("network");
+  expect(await page.evaluate(() => (window as any).prismSharingFixture.calls.filter((c: any) => c.kind === "publish").length)).toBe(0);
+});
+
+test("Publish tab: a published collection is managed in the studio; without a data context the hand-off is still offered", async ({ page }) => {
+  await open(page);
+  await page.getByRole("tab", { name: "Publish", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Share document" });
+  await expect(dialog.getByRole("group", { name: "Pages tagged prism" })).toHaveCount(0);
+  await expect(dialog.getByRole("button", { name: "Review and publish in the Publishing studio" })).toBeVisible();
+  await dialog.getByRole("button", { name: "Publish collection", exact: true }).click();
+  await expect(dialog.getByRole("button", { name: "Manage this site in the Publishing studio" })).toBeVisible();
+});
+
 test("publishing and peer sync retain their independent controls and failure recovery", async ({
   page,
 }) => {

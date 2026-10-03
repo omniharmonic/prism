@@ -27,6 +27,7 @@ import type {
 } from "../../data/CollabSharing";
 import { useAgentChatStore } from "../../lib/agent/chatStore";
 import { PersonAvatar } from "../sharing/PersonAvatar";
+import { PublishHandoff } from "../sharing/PublishHandoff";
 
 type Props = { noteId: string; sharing: CollabSharing; onClose: () => void };
 type Section = "people" | "links" | "publish" | "sync";
@@ -812,6 +813,8 @@ function SharingDocument({ noteId, sharing, onClose }: Props) {
                         ))}
                       </select>
                     </label>
+                    {/* NP-CO-08: per-tag explanation, preview, hand-off to the studio. */}
+                    <PublishHandoff tag={tag} noteId={noteId} published={!!currentPub} onClose={onClose} />
                     <p className="share-card">
                       Publishing includes{" "}
                       {publishedCount === null
