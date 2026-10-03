@@ -445,9 +445,9 @@ export async function getThreadMessages(noteId: string, before?: string): Promis
 // ---- typed properties + database views (routes/databases.ts) ---------------
 // Live, never read-through cached: a view must reflect permission changes now.
 
-export async function getSchemas(tags?: string[]): Promise<SchemaMap> {
-  const body = (await (await req(`/schemas${qs({ tags: tags?.length ? tags.join(",") : undefined })}`, { cache: "no-store" })).json()) as { schemas: SchemaMap };
-  return body.schemas ?? {};
+export async function getSchemas(tags?: string[]): Promise<{ schemas: SchemaMap; canEdit?: boolean }> {
+  const body = (await (await req(`/schemas${qs({ tags: tags?.length ? tags.join(",") : undefined })}`, { cache: "no-store" })).json()) as { schemas?: SchemaMap; canEdit?: boolean };
+  return { schemas: body.schemas ?? {}, canEdit: body.canEdit === true };
 }
 
 export async function updateSchema(tag: string, patch: SchemaPatch): Promise<TagSchema> {

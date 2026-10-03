@@ -122,7 +122,8 @@ test("board: move by menu and by drag writes the group property, rank stays view
   await page.mouse.move(target.x + target.width / 2, target.y + target.height - 20, { steps: 12 });
   await page.mouse.up();
   await expect(todo.getByRole("article", { name: "Write release notes" })).toBeVisible();
-  expect((await writes(page)).at(-1)).toEqual({ id: "t2", set: { status: "todo" }, expect: { status: "in-progress" } });
+  // The property write; the view's rank is saved separately on the database note.
+  expect((await writes(page)).filter((w: any) => w.set).at(-1)).toEqual({ id: "t2", set: { status: "todo" }, expect: { status: "in-progress" } });
   // The task note itself never carries a rank.
   expect((await writes(page)).every((w: any) => !w.set || !("order" in w.set))).toBe(true);
 });
@@ -203,4 +204,61 @@ test("phone: sticky first column, no page overflow, filters in a sheet", async (
   await page.getByRole("tab", { name: "Board" }).click();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   await page.screenshot({ path: info.outputPath("db-board-390.png") });
+});
+
+test("L3: quick consecutive view changes chain on the saved revision (no false conflict)", async ({ page }) => {
+  await page.goto("/e2e-fixtures/databases.html");
+  await page.evaluate(() => { (window as any).dbFixture.slowMs = 400; });
+  await page.getByRole("button", { name: "Due", exact: true }).click();
+  await page.getByRole("menuitem", { name: "Sort ascending" }).click();
+  await page.getByRole("button", { name: "Assignee", exact: true }).click();
+  await page.getByRole("menuitem", { name: "Hide in this view" }).click();
+  const saved = () => page.evaluate(() => (window as any).dbFixture.notes().find((n: any) => n.id === "db").metadata.prism_database.views[0]);
+  await expect.poll(async () => (await saved()).visible.includes("assignee")).toBe(false);
+  expect((await saved()).sort).toEqual([{ key: "due", dir: "asc" }]);
+  const cw = await configWrites(page);
+  expect(cw).toHaveLength(2);
+  expect(cw[1].ifUpdatedAt).not.toBe(cw[0].ifUpdatedAt); // the second save used the first save's revision
+  await expect(page.getByRole("alert").filter({ hasText: "changed somewhere else" })).toHaveCount(0);
+});
+
+test("L5: a capability link (no _caps) gets no edit affordances it cannot use", async ({ page }) => {
+  await page.goto("/e2e-fixtures/databases.html?link");
+  await expect(page.getByRole("button", { name: "Review workspace navigation", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "New", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Add a view" })).toHaveCount(0);
+  await row(page, "Write release notes").getByRole("button", { name: "Status: in-progress" }).click();
+  await expect(page.getByRole("dialog", { name: "Choose Status" })).toHaveCount(0);
+  expect((await writes(page)).length).toBe(0);
+});
+
+test("L4: a 403 from the query route is an error, never a fallback listing", async ({ page }) => {
+  await page.goto("/e2e-fixtures/databases.html?forbidden");
+  await expect(page.getByRole("alert").filter({ hasText: "Pages could not be loaded" })).toBeVisible();
+  expect(await page.evaluate(() => (window as any).dbFixture.listCalls)).toBe(0);
+});
+
+test("L8: the search box is debounced", async ({ page }) => {
+  await page.goto("/e2e-fixtures/databases.html");
+  await expect(page.getByText("7 pages")).toBeVisible();
+  await page.getByLabel("Search this database").pressSequentially("release", { delay: 40 });
+  await expect(page.getByText("1 page", { exact: true })).toBeVisible();
+  const searches = await page.evaluate(() => (window as any).dbFixture.queries.filter((q: any) => q.search).map((q: any) => q.search));
+  expect(searches).toEqual(["release"]);
+});
+
+test.describe("L2: dates in the viewer's timezone", () => {
+  test.use({ timezoneId: "America/Los_Angeles" });
+  test("a UTC datetime lands on its local calendar day; queries carry the tz offset", async ({ page }) => {
+    await page.goto("/e2e-fixtures/databases.html?tz");
+    await page.getByRole("tab", { name: "Calendar" }).click();
+    const { local } = await page.evaluate(() => {
+      const d = new Date(); d.setDate(d.getDate() + 2);
+      return { local: `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}` };
+    });
+    const label = await page.evaluate((iso) => new Date(`${iso}T00:00:00`).toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" }), local);
+    await expect(page.getByRole("gridcell", { name: label }).getByRole("button", { name: "Late call" })).toBeVisible();
+    const q = await page.evaluate(() => (window as any).dbFixture.queries.at(-1));
+    expect(q.tzOffset).toBe(await page.evaluate(() => new Date().getTimezoneOffset()));
+  });
 });

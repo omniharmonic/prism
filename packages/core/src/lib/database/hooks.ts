@@ -33,7 +33,8 @@ export function bundledSchemas(): SchemaMap {
   return out;
 }
 
-const unsupported = (e: unknown) => e instanceof VaultRequestError && [403, 404, 405, 501].includes(e.status);
+/** An older server without the route (never a 403: that is a real refusal, review L4). */
+const unsupported = (e: unknown) => e instanceof VaultRequestError && [404, 405, 501].includes(e.status);
 
 export const schemaKey = (scope: string) => ["vault", "schemas", scope] as const;
 
@@ -43,12 +44,13 @@ export function useSchemas() {
   return useQuery({
     queryKey: schemaKey(scope),
     staleTime: 60_000,
-    queryFn: async (): Promise<{ schemas: SchemaMap; live: boolean }> => {
-      if (!client.getSchemas) return { schemas: bundledSchemas(), live: false };
+    queryFn: async (): Promise<{ schemas: SchemaMap; live: boolean; canEdit: boolean }> => {
+      if (!client.getSchemas) return { schemas: bundledSchemas(), live: false, canEdit: false };
       try {
-        return { schemas: await client.getSchemas(), live: true };
+        const r = await client.getSchemas();
+        return { schemas: r.schemas, live: true, canEdit: r.canEdit === true };
       } catch (e) {
-        if (unsupported(e)) return { schemas: bundledSchemas(), live: false };
+        if (unsupported(e)) return { schemas: bundledSchemas(), live: false, canEdit: false };
         throw e;
       }
     },
@@ -63,7 +65,7 @@ export function useUpdateSchema() {
   const update = useCallback(async (tag: string, patch: SchemaPatch) => {
     if (!client.updateSchema) throw new Error("Editing a database's properties needs the Prism Server.");
     const schema = await client.updateSchema(tag, patch);
-    qc.setQueryData<{ schemas: SchemaMap; live: boolean }>(schemaKey(scope), (old) =>
+    qc.setQueryData<{ schemas: SchemaMap; live: boolean; canEdit: boolean }>(schemaKey(scope), (old) =>
       old ? { ...old, schemas: { ...old.schemas, [tag]: schema } } : old);
     void qc.invalidateQueries({ queryKey: schemaKey(scope) });
     return schema;
@@ -153,7 +155,8 @@ export function useDatabaseRows(spec: QuerySpec | null) {
     initialPageParam: null as string | null,
     getNextPageParam: (last: QueryPage) => last.next,
     queryFn: async ({ pageParam }): Promise<QueryPage> => {
-      const s = { ...spec!, cursor: pageParam };
+      // The caller's zone decides "@today" and which local day a datetime falls on.
+      const s = { ...spec!, cursor: pageParam, tzOffset: new Date().getTimezoneOffset() };
       if (client.queryNotes) {
         try {
           return await client.queryNotes(s);
@@ -161,8 +164,9 @@ export function useDatabaseRows(spec: QuerySpec | null) {
           if (!unsupported(e)) throw e;
         }
       }
-      // Fallback: the same engine over the shell's own (already permission-scoped) listing.
-      const notes = await client.listNotes({ tag: spec!.tags[0] });
+      // Fallback (shells without the route): the same engine over the shell's own,
+      // already permission-scoped, bounded listing.
+      const notes = await client.listNotes({ tag: spec!.tags[0], limit: 5000 });
       const limited = notes.some((n) => Array.isArray(n._caps));
       return runQuery(notes, s, { limited });
     },
@@ -183,7 +187,7 @@ export function useLinkCandidates(tag: string | null, search: string, enabled: b
       });
       if (tag && client.queryNotes) {
         try {
-          const page = await client.queryNotes({ tags: [tag], search: search || undefined, limit: 20, sort: [{ key: "$title", dir: "asc" }] });
+          const page = await client.queryNotes({ tags: [tag], search: search || undefined, limit: 20, sort: [{ key: "$title", dir: "asc" }], fields: ["title"] });
           return page.rows.map(toRow);
         } catch (e) {
           if (!unsupported(e)) throw e;
@@ -194,4 +198,21 @@ export function useLinkCandidates(tag: string | null, search: string, enabled: b
       return [];
     },
   });
+}
+
+/**
+ * What the CALLER may do with a note, from the server's own answer: `_caps` for
+ * signed-in non-owners, `_level` for capability links, and nothing at all for
+ * owners/admins (the passthrough) and the desktop — who may edit (review L5).
+ */
+export function noteAccess(note: { _caps?: string[]; _level?: string } | null | undefined): { edit: boolean; create: boolean; organize: boolean } {
+  if (Array.isArray(note?._caps)) {
+    const caps = new Set(note!._caps);
+    return { edit: caps.has("edit"), create: caps.has("create"), organize: caps.has("organize") };
+  }
+  if (typeof note?._level === "string") {
+    const edit = note._level === "edit" || note._level === "own";
+    return { edit, create: false, organize: false };
+  }
+  return { edit: true, create: true, organize: true };
 }

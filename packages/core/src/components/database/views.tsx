@@ -439,7 +439,10 @@ export function CalendarView({ ctx, month, onMonth, onPickDate }: { ctx: ViewCon
     for (const r of ctx.rows) {
       const v = key === "$createdAt" ? r.createdAt : r.metadata[key];
       if (typeof v !== "string" || !/^\d{4}-\d{2}-\d{2}/.test(v)) continue;
-      const d = v.length > 10 && key === "$createdAt" ? ymd(new Date(v)) : v.slice(0, 10);
+      // A datetime WITH a zone belongs to the viewer's local day (review L2);
+      // a date or a zone-less wall time is taken as written.
+      const zoned = v.length > 10 && /(Z|[+-]\d{2}:?\d{2})$/.test(v) && !Number.isNaN(Date.parse(v));
+      const d = zoned ? ymd(new Date(v)) : v.slice(0, 10);
       m.set(d, [...(m.get(d) ?? []), r]);
     }
     return m;

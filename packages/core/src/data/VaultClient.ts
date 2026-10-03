@@ -205,7 +205,7 @@ export interface VaultClient {
   restoreNoteVersion?(noteId: string, versionIx: number, ifUpdatedAt: string): Promise<Note>;
   /** Tag schemas (vault types + Prism presentation hints), filtered to tags the
    *  caller may know. Optional: shells without it use the bundled schemas. */
-  getSchemas?(tags?: string[]): Promise<SchemaMap>;
+  getSchemas?(tags?: string[]): Promise<{ schemas: SchemaMap; canEdit?: boolean }>;
   /** Owner-only additive schema edit (the server holds the admin credential). */
   updateSchema?(tag: string, patch: SchemaPatch): Promise<TagSchema>;
   /** Lean, permission-filtered, paged rows for a database view. Optional: the

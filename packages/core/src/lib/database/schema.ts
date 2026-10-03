@@ -83,6 +83,8 @@ export interface PropertyDef {
   default?: unknown;
   /** True when the vault schema stores multiple values (array). */
   multiple: boolean;
+  /** The vault enum exactly (never colour-hint keys) — what a schema write may extend. */
+  enumValues: string[];
 }
 
 // Metadata keys that are system state, never shown as properties.
@@ -173,6 +175,7 @@ export function propertyFromField(key: string, f: SchemaField, tag: string | nul
     description: f.description,
     default: f.default,
     multiple: f.type === "array" || kind === "multi_select",
+    enumValues: [...(f.enum ?? [])],
   };
 }
 

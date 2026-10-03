@@ -11,8 +11,8 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ChevronRight, Plus, Search, Check, Tag as TagIcon, X } from "lucide-react";
 import type { Note } from "../../lib/types";
 import { useVaultClient } from "../../data/VaultClientContext";
-import { noteCaps, reviewMode } from "../../lib/governance/review";
-import { useSchemas, usePropertyWriter, useScope, useUpdateSchema } from "../../lib/database/hooks";
+import { reviewMode } from "../../lib/governance/review";
+import { noteAccess, useSchemas, usePropertyWriter, useScope, useUpdateSchema } from "../../lib/database/hooks";
 import {
   isBlank,
   PROPERTY_KIND_LABELS,
@@ -51,11 +51,11 @@ export function PropertyBar({ note, readOnly, onOpenAll, layout = "bar", trailin
   const { data } = useSchemas();
   const write = usePropertyWriter();
   const schemaEdit = useUpdateSchema();
-  const caps = noteCaps(note);
-  const editable = !readOnly && reviewMode(note) === "none" && (caps?.has("edit") ?? true);
-  const canOrganize = !readOnly && reviewMode(note) === "none" && (caps?.has("organize") ?? true);
-  // Owners (and the desktop) get no `_caps`; schema edits are owner-only server-side too.
-  const canEditSchema = editable && schemaEdit.available && !!data?.live && caps === null;
+  const access = noteAccess(note);
+  const editable = !readOnly && reviewMode(note) === "none" && access.edit;
+  const canOrganize = !readOnly && reviewMode(note) === "none" && access.organize;
+  // The server says who may change schemas (owner role); never guess from `_caps`.
+  const canEditSchema = editable && schemaEdit.available && !!data?.live && !!data?.canEdit;
   const tags = note.tags ?? [];
   const schemas = data?.schemas ?? {};
   const props = useMemo(() => {
@@ -78,7 +78,8 @@ export function PropertyBar({ note, readOnly, onOpenAll, layout = "bar", trailin
     canEditSchema && def.tag
       ? async (option: string) => {
           if (def.kind === "multi_select") return; // free values; colour hints only
-          await schemaEdit.update(def.tag!, { fields: { [def.key]: { enum: [...def.options.map((o) => o.value), option] } } });
+          // Only the vault enum is extended — colour-hint keys are presentation (review L7).
+          await schemaEdit.update(def.tag!, { fields: { [def.key]: { enum: [...def.enumValues, option] } } });
         }
       : undefined;
 
@@ -157,7 +158,7 @@ export function PropertyBar({ note, readOnly, onOpenAll, layout = "bar", trailin
   // A brand-new free property: an editor for its first value (nothing is written until committed).
   function freeDraftNode() {
     if (!freeDraft) return null;
-    const def: PropertyDef = { key: freeDraft.key, label: freeDraft.label, kind: freeDraft.kind, options: [], tag: null, multiple: false };
+    const def: PropertyDef = { key: freeDraft.key, label: freeDraft.label, kind: freeDraft.kind, options: [], tag: null, multiple: false, enumValues: [] };
     return (
       <div className="db-prop" data-kind={def.kind}>
         <span className="db-prop-label">{def.label}</span>

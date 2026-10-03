@@ -15,12 +15,12 @@ import { Calendar, ChevronRight, Database, Filter, GalleryVerticalEnd, KanbanSqu
 import type { RendererProps } from "../renderers/RendererProps";
 import type { Note } from "../../lib/types";
 import { useVaultClient } from "../../data/VaultClientContext";
-import { noteCaps, reviewMode } from "../../lib/governance/review";
+import { reviewMode } from "../../lib/governance/review";
 import { useUIStore } from "../../app/stores/ui";
 import { useIsMobile } from "../../app/hooks/useIsMobile";
 import { inferContentType } from "../../lib/schemas/content-types";
 import { queryKeys } from "../../lib/parachute/queries";
-import { useDatabaseRows, usePropertyWriter, useSchemas, useScope, useUpdateSchema } from "../../lib/database/hooks";
+import { noteAccess, useDatabaseRows, usePropertyWriter, useSchemas, useScope, useUpdateSchema } from "../../lib/database/hooks";
 import { noteTitle, QUERY_MAX_LIMIT, type QueryRow, type QuerySpec } from "../../lib/database/query";
 import { isSystemKey, propertyFromField, resolveProperties, type PropertyDef } from "../../lib/database/schema";
 import { BottomSheet } from "../ui/BottomSheet";
@@ -42,8 +42,8 @@ function DatabasePage({ note, readOnly }: RendererProps) {
   const client = useVaultClient();
   const qc = useQueryClient();
   const isMobile = useIsMobile();
-  const caps = noteCaps(note);
-  const canEditDb = !readOnly && reviewMode(note) === "none" && (caps?.has("edit") ?? true);
+  const access = noteAccess(note);
+  const canEditDb = !readOnly && reviewMode(note) === "none" && access.edit;
 
   let stored: DatabaseConfig | null = null;
   let configError = "";
@@ -61,9 +61,23 @@ function DatabasePage({ note, readOnly }: RendererProps) {
   });
   const view = config?.views.find((v) => v.id === activeId) ?? config?.views[0];
   const [search, setSearch] = useState("");
+  // The query follows the box 300 ms after typing stops (review L8).
+  const [debouncedSearch, setDebouncedSearch] = useState("");
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedSearch(search), 300);
+    return () => clearTimeout(t);
+  }, [search]);
   const [month, setMonth] = useState(() => new Date(new Date().getFullYear(), new Date().getMonth(), 1));
   const [saveState, setSaveState] = useState<"" | "saving" | "error" | "conflict" | "local">("");
   const saveSeq = useRef(0);
+  // Config saves are chained: each uses the revision the previous save produced,
+  // never the (possibly stale) prop (review L3).
+  const revision = useRef<string | null>(note.updatedAt);
+  const saving = useRef<Promise<unknown>>(Promise.resolve());
+  const pendingSaves = useRef(0);
+  useEffect(() => {
+    if (!pendingSaves.current) revision.current = note.updatedAt;
+  }, [note.updatedAt]);
 
   const { data: schemaData } = useSchemas();
   const schemas = schemaData?.schemas ?? {};
@@ -80,18 +94,19 @@ function DatabasePage({ note, readOnly }: RendererProps) {
     if (view.type === "calendar" && view.dateKey && view.dateKey !== "$createdAt" && (!filter || filter.match === "all")) {
       const grid = monthGrid(month);
       const iso = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-      filter = { match: "all", conditions: [...(filter?.conditions ?? []), { key: view.dateKey, op: "gte", value: iso(grid[0]!) }, { key: view.dateKey, op: "lte", value: `${iso(grid[41]!)}T23:59:59` }] };
+      // Date-only bounds: the engine compares a datetime by its LOCAL day (tzOffset).
+      filter = { match: "all", conditions: [...(filter?.conditions ?? []), { key: view.dateKey, op: "gte", value: iso(grid[0]!) }, { key: view.dateKey, op: "lte", value: iso(grid[41]!) }] };
     }
     const bulk = view.type === "board" || view.type === "calendar" || view.type === "gallery";
     return {
       tags,
       ...(filter ? { filter } : {}),
       ...(view.sort ? { sort: view.sort } : {}),
-      ...(search.trim() ? { search: search.trim() } : {}),
+      ...(debouncedSearch.trim() ? { search: debouncedSearch.trim() } : {}),
       ...(fields ? { fields } : {}),
       limit: bulk ? QUERY_MAX_LIMIT : 100,
     };
-  }, [config, view, schemas, tags, hasSchema, search, month]);
+  }, [config, view, schemas, tags, hasSchema, debouncedSearch, month]);
 
   const rowsQuery = useDatabaseRows(spec);
   const pages = rowsQuery.data?.pages ?? [];
@@ -128,15 +143,23 @@ function DatabasePage({ note, readOnly }: RendererProps) {
     }
     const seq = ++saveSeq.current;
     setSaveState("saving");
-    try {
-      const saved = await client.updateNote(note.id, { metadata: { prism_database: next }, ifUpdatedAt: note.updatedAt ?? undefined });
-      if (seq !== saveSeq.current) return;
+    pendingSaves.current += 1;
+    const run = saving.current.catch(() => {}).then(async () => {
+      const saved = await client.updateNote(note.id, { metadata: { prism_database: next }, ifUpdatedAt: revision.current ?? undefined });
+      revision.current = saved.updatedAt ?? revision.current;
       qc.setQueryData<Note>(queryKeys.vault.note(note.id), (old) => (old ? { ...old, updatedAt: saved.updatedAt ?? old.updatedAt, metadata: { ...(old.metadata ?? {}), prism_database: next } } : old));
+    });
+    saving.current = run;
+    try {
+      await run;
+      if (seq !== saveSeq.current) return;
       setLocal(null);
       setSaveState("");
     } catch (e) {
       if (seq !== saveSeq.current) return;
       setSaveState(/\b409\b|conflict|changed/i.test(String((e as Error).message)) ? "conflict" : "error");
+    } finally {
+      pendingSaves.current -= 1;
     }
   }
   const updateView = (patch: Partial<DatabaseView>) => {
@@ -146,20 +169,21 @@ function DatabasePage({ note, readOnly }: RendererProps) {
 
   const write = usePropertyWriter();
   const schemaEdit = useUpdateSchema();
-  const ownerish = caps === null && schemaEdit.available && !!schemaData?.live;
-  const canCreate = !readOnly && (caps?.has("create") ?? true) && caps?.has("edit") !== false;
+  const ownerish = schemaEdit.available && !!schemaData?.live && !!schemaData?.canEdit;
+  const canCreate = !readOnly && access.create && access.edit;
   const ctx: ViewContext | null = view ? {
     view,
     rows,
     props: allProps,
     shown,
-    canEditRow: (r) => !readOnly && (r._caps ? r._caps.includes("edit") : true),
+    // The server's per-row answer wins; then the caps annotation (review L5).
+    canEditRow: (r) => !readOnly && (typeof r.canEdit === "boolean" ? r.canEdit : r._caps ? r._caps.includes("edit") : true),
     canCreate,
     commit: (r, def) => async (next, base) => {
       await write({ id: r.id, updatedAt: r.updatedAt }, { [def.key]: next }, { [def.key]: base ?? null });
     },
     createOption: (def) => (ownerish && def.tag && def.kind !== "multi_select"
-      ? async (o: string) => { await schemaEdit.update(def.tag!, { fields: { [def.key]: { enum: [...def.options.map((x) => x.value), o] } } }); }
+      ? async (o: string) => { await schemaEdit.update(def.tag!, { fields: { [def.key]: { enum: [...def.enumValues, o] } } }); }
       : undefined),
     open: (r) => useUIStore.getState().openTab(r.id, noteTitle(r), inferContentType({ ...r, content: "" })),
     create: async (titleText, preset) => {

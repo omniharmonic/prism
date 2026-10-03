@@ -12,7 +12,7 @@
 import React from "react";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { VaultClientProvider, CollabDocumentProvider, PlatformProvider, useUIStore, useAgentChatStore, PropertyConflictError, type VaultClient, type Note } from "@prism/core";
+import { VaultClientProvider, CollabDocumentProvider, PlatformProvider, useUIStore, useAgentChatStore, PropertyConflictError, VaultRequestError, type VaultClient, type Note } from "@prism/core";
 import { Canvas } from "../../../packages/core/src/components/layout/Canvas";
 import { applyTheme } from "../../../packages/core/src/app/stores/settings";
 import { mergeSchemaFields, runQuery, type QuerySpec, type SchemaMap, type SchemaPatch } from "@prism/core/database";
@@ -20,6 +20,7 @@ import { mergeSchemaFields, runQuery, type QuerySpec, type SchemaMap, type Schem
 const params = new URLSearchParams(location.search);
 applyTheme(params.has("dark") ? "dark" : "light");
 const viewer = params.has("viewer");
+const link = params.has("link");
 const legacy = params.has("legacy");
 useAgentChatStore.setState({ scope: "db-fixture" });
 
@@ -40,7 +41,7 @@ const schemas: SchemaMap = {
     description: "Work to be done",
     fields: {
       status: { type: "string", enum: ["todo", "in-progress", "done"], default: "todo", colors: { "in-progress": "blue" } },
-      priority: { type: "string", enum: ["low", "medium", "high"] },
+      priority: { type: "string", enum: ["low", "medium", "high"], colors: { blocked: "red" } },
       due: { type: "string" },
       estimate: { type: "number", label: "Estimate (h)" },
       assignee: { type: "string" },
@@ -85,6 +86,8 @@ let notes: Note[] = [
 const persisted = sessionStorage.getItem("db-fixture-notes");
 if (persisted) notes = JSON.parse(persisted);
 const save = () => sessionStorage.setItem("db-fixture-notes", JSON.stringify(notes));
+if (params.has("tz")) notes.push(task("t7", "Late call", { status: "todo", due: `${day(3)}T05:00:00Z` }));
+if (link) notes = notes.map((n) => ({ ...n, _level: "view" }));
 if (viewer) notes = notes.map((n) => (n.id === "t6" ? n : { ...n, _caps: ["view"] }));
 
 const controls = {
@@ -94,6 +97,9 @@ const controls = {
   failNext: false,
   /** The next property write finds the field already changed to this value elsewhere. */
   conflictWith: undefined as unknown,
+  slowMs: 0,
+  listCalls: 0,
+  queries: [] as QuerySpec[],
   notes: () => notes,
 };
 Object.assign(window, { dbFixture: controls, prismUI: useUIStore });
@@ -106,7 +112,7 @@ const bump = (n: Note) => { rev0 += 1; n.updatedAt = `2026-10-02T00:${String(Mat
 
 const client: Partial<VaultClient> = {
   scope: () => "db-fixture",
-  listNotes: async (f) => clone(visible().filter((n) => !f?.tag || n.tags?.includes(f.tag)).slice(0, f?.limit ?? 50000)),
+  listNotes: async (f) => (controls.listCalls++, clone(visible().filter((n) => !f?.tag || n.tags?.includes(f.tag)).slice(0, f?.limit ?? 50000))),
   listTree: async () => clone(visible()),
   getNote: async (id) => {
     const n = find(id);
@@ -131,6 +137,7 @@ const client: Partial<VaultClient> = {
   },
   updateNote: async (id, p) => {
     controls.writes.push(clone({ id, ...p }));
+    if (controls.slowMs) await new Promise((r) => setTimeout(r, controls.slowMs));
     const n = find(id)!;
     if (p.ifUpdatedAt !== undefined && p.ifUpdatedAt !== n.updatedAt) throw new Error("PATCH failed: 409 conflict");
     if (p.metadata) {
@@ -146,7 +153,7 @@ const client: Partial<VaultClient> = {
 };
 
 if (!legacy) {
-  client.getSchemas = async () => clone(schemas);
+  client.getSchemas = async () => ({ schemas: clone(schemas), canEdit: !viewer && !link });
   client.updateSchema = async (tag: string, patch: SchemaPatch) => {
     controls.schemaWrites.push(clone({ tag, patch }));
     const cur = schemas[tag] ?? { description: null, fields: {} };
@@ -157,8 +164,10 @@ if (!legacy) {
     return clone(schemas[tag]!);
   };
   client.queryNotes = async (spec: QuerySpec) => {
-    const rows = visible().map((n) => ({ ...n, content: "" }));
-    return runQuery(rows, spec, { limited: viewer });
+    controls.queries.push(clone(spec));
+    if (params.has("forbidden")) throw new VaultRequestError(403, "POST /query failed: 403 forbidden");
+    const rows = visible().map((n) => ({ ...n, content: "", canEdit: !link && (!viewer || !!n._caps?.includes("edit")) }));
+    return runQuery(rows, spec, { limited: viewer || link });
   };
   client.updateProperties = async (id, set, expect) => {
     controls.writes.push(clone({ id, set, expect }));
