@@ -9,6 +9,7 @@ import assert from "node:assert/strict";
 import { api } from "../src/routes/api";
 import { resetTreeForTests } from "../src/tree";
 import { resetDatabaseCachesForTests, setSchemaAdminMinter } from "../src/routes/databases";
+import { writerIdFor } from "../src/writer-stamp";
 import { validateQuerySpec, runQuery, parseCsv, toCsv, coerceCsvValue, CsvError } from "@prism/core/database";
 import { installFakeVault, resetDb, makeSession, sessionCookie, grantUser, makeCapability, type FakeVault } from "./helpers";
 
@@ -124,20 +125,20 @@ test("writer stamp: property writes, non-owner edits/creates and the owner passt
   seed();
   grantUser("kai@test.local", "tag", "task", "edit");
   assert.equal((await post("/properties/t1", { set: { status: "done" } }, login("kai@test.local"))).status, 200);
-  assert.equal(fv.notes.get("t1")!.metadata!.prism_last_writer, "kai@test.local");
+  assert.equal(fv.notes.get("t1")!.metadata!.prism_last_writer, writerIdFor("kai@test.local"));
   // A client cannot forge it: /properties refuses prism_*; a PATCH has it overwritten.
   assert.equal((await post("/properties/t1", { set: { prism_last_writer: "ceo@test.local" } }, login("kai@test.local"))).status, 400);
   const p = await req("/notes/t2", { method: "PATCH", cookie: login("kai@test.local"), headers: J, body: JSON.stringify({ metadata: { points: 9, prism_last_writer: "ceo@test.local" } }) });
   assert.equal(p.status, 200);
-  assert.equal(fv.notes.get("t2")!.metadata!.prism_last_writer, "kai@test.local");
+  assert.equal(fv.notes.get("t2")!.metadata!.prism_last_writer, writerIdFor("kai@test.local"));
   const created = await post("/notes", { content: "", tags: ["task"], metadata: { title: "New", prism_last_writer: "ceo@test.local" } }, login("kai@test.local"));
   assert.equal(created.status, 200);
-  assert.equal(((await created.json()) as any).metadata.prism_last_writer, "kai@test.local");
+  assert.equal(((await created.json()) as any).metadata.prism_last_writer, writerIdFor("kai@test.local"));
   // Owner passthrough: the forwarded JSON body is stamped (PATCH and single create).
   assert.equal((await req("/notes/t2", { method: "PATCH", cookie: login(OWNER), headers: J, body: JSON.stringify({ content: "<p>x</p>" }) })).status, 200);
-  assert.equal(fv.notes.get("t2")!.metadata!.prism_last_writer, OWNER);
+  assert.equal(fv.notes.get("t2")!.metadata!.prism_last_writer, writerIdFor(OWNER));
   const oc = await post("/notes", { content: "", tags: ["task"], metadata: { title: "Owner made" } }, login(OWNER));
-  assert.equal(((await oc.json()) as any).metadata.prism_last_writer, OWNER);
+  assert.equal(((await oc.json()) as any).metadata.prism_last_writer, writerIdFor(OWNER));
   // A capability link with edit is stamped "link", never its grant id.
   const cap = makeCapability("note", "t1", "edit");
   const viaLink = await req("/properties/t1", { method: "POST", headers: { ...J, authorization: `Capability ${cap}` }, body: JSON.stringify({ set: { points: 4 } }) });
@@ -145,7 +146,7 @@ test("writer stamp: property writes, non-owner edits/creates and the owner passt
   assert.equal(fv.notes.get("t1")!.metadata!.prism_last_writer, "link");
   // Owners read it back through /query (it is part of the canonical listing).
   const q = (await (await post("/query", { tags: ["task"], fields: ["prism_last_writer"], sort: [{ key: "prism_last_writer", dir: "asc" }] }, login(OWNER))).json()) as any;
-  assert.ok(q.rows.some((r: any) => r.metadata.prism_last_writer === "link"));
+  assert.ok(q.rows.some((r: any) => r.metadata.prism_last_writer === "Guest (link)"), "resolved for signed-in viewers");
 });
 
 test("properties: a trashed page's properties are not writable (it is restored, not edited)", async () => {
@@ -176,7 +177,7 @@ test("batch: each item is its own CAS write; refusals are per item and indisting
   assert.deepEqual(results[2], { id: "t3", ok: false, error: "not_found" }, "a private note reads exactly like a missing one");
   assert.deepEqual(results[3], { id: "nope", ok: false, error: "not_found" });
   assert.equal(fv.notes.get("t1")!.metadata!.status, "done");
-  assert.equal(fv.notes.get("t1")!.metadata!.prism_last_writer, "kai@test.local");
+  assert.equal(fv.notes.get("t1")!.metadata!.prism_last_writer, writerIdFor("kai@test.local"));
   assert.equal(fv.notes.get("t2")!.metadata!.status, "doing");
   assert.equal(patches().length, 1);
 });
@@ -268,7 +269,9 @@ test("import: writing creates and updates with CAS + writer stamp, and a re-run 
   const made = [...fv.notes.values()].find((n) => n.metadata?.title === "New one")!;
   assert.equal(made.path, "Projects/Launch/New one");
   assert.deepEqual(made.tags, ["task"]);
-  assert.deepEqual({ ...made.metadata }, { title: "New one", status: "todo", points: 2, sku: "N-9", prism_last_writer: OWNER });
+  const { prism_last_write_at: at, ...madeMeta } = made.metadata as Record<string, unknown>;
+  assert.equal(typeof at, "string");
+  assert.deepEqual(madeMeta, { title: "New one", status: "todo", points: 2, sku: "N-9", prism_last_writer: writerIdFor(OWNER) });
   assert.equal(fv.notes.get("t1")!.metadata!.status, "done");
   assert.equal((patches()[0]!.body as any).if_updated_at, "2026-10-01T10:00:00.000Z");
   // Same file again: nothing new, nothing rewritten.

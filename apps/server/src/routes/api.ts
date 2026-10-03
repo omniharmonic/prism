@@ -29,7 +29,7 @@ import { peopleApi } from "./people";
 import { humanCollabApi } from "./human-collab";
 import { transcriptsApi } from "./transcripts";
 import { databasesApi } from "./databases";
-import { stampJsonBody, stampMetadata } from "../writer-stamp";
+import { stampJsonBody, stampMetadata, stripIdentity } from "../writer-stamp";
 import { graphNeighborhood } from "../graph";
 import { buildWikilinkIndex, resolveWikilink, noteLinkTitle } from "@prism/core/wikilinks";
 import { isTrashed, isLocked, isOwnerOnlyMeta, TRASH_TAG, TRASH_META, LOCK_KEY, ORDER_KEY } from "@prism/core/pages";
@@ -391,7 +391,8 @@ function annotate(actor: Actor, notes: Note[]): Array<Note & { _caps?: Cap[] }> 
     // Trashed pages are hidden from every list and search (GET /api/trash lists them).
     if (isTrashed(n)) continue;
     const caps = capsFor(actor, ref(n));
-    if (caps.has("view")) out.push(stamp ? { ...n, _caps: [...caps] } : n);
+    // Capability links never learn who created/edited a note (writer-stamp.ts).
+    if (caps.has("view")) out.push(stamp ? { ...n, _caps: [...caps] } : actor.kind === "link" ? { ...n, metadata: stripIdentity(n.metadata) } : n);
   }
   return out;
 }
@@ -486,6 +487,7 @@ api.get("/notes/:id", async (c) => {
     const { [TRASH_META.by]: _by, ...rest } = note.metadata;
     note = { ...note, metadata: rest };
   }
+  if (actor.kind === "link") note = { ...note, metadata: stripIdentity(note.metadata) };
   return c.json(annotated(actor) ? { ...note, _level: level, _caps: [...caps] } : { ...note, _level: level });
 });
 
@@ -644,7 +646,8 @@ api.patch("/notes/:id", async (c) => {
     if (wantsWrite) {
       updated = await vc.updateNote(id, {
         content: body.content,
-        metadata: stampMetadata(body.metadata, actor),
+        // Only a content/metadata write is stamped (a path-only move is not an edit).
+        metadata: wantsContent ? stampMetadata(body.metadata, actor) : body.metadata,
         path: canPath ? body.path : undefined,
         ifUpdatedAt: body.if_updated_at ?? note.updatedAt ?? undefined,
       });
@@ -722,7 +725,8 @@ api.get("/notes/:id/versions/:ix", async (c) => {
   const ix = Number(c.req.param("ix"));
   if (!Number.isInteger(ix) || ix < 0) return c.json({ error: "bad_request", reason: "invalid version" }, 400);
   try {
-    return c.json(stripProvenance(await vaultClient(resolveActor(c).vaultId).getVersion(gate.note.id, ix)));
+    const v = stripProvenance(await vaultClient(resolveActor(c).vaultId).getVersion(gate.note.id, ix));
+    return c.json(resolveActor(c).kind === "link" ? { ...v, metadata: stripIdentity(v.metadata) } : v);
   } catch (e) {
     return vaultErr(c, e);
   }

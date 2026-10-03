@@ -259,8 +259,21 @@ export function readKey(n: QueryInput, key: string): unknown {
   }
 }
 
-/** `[[vault/people/Ada]]` → `vault/people/ada`; trims; lowercases. */
-const norm = (v: string) => v.trim().replace(/^\[\[(.*)\]\]$/, "$1").replace(/\|.*$/, "").toLowerCase();
+/**
+ * `[[vault/people/Ada|Ada L]]` → `vault/people/ada`; trims; lowercases.
+ * LINEAR on purpose (review H2): the old `/\|.*$/` was quadratic on values with
+ * many `|`, and search runs this on every string of every row.
+ */
+export function unwrapLink(v: string): string {
+  let s = v.trim();
+  if (s.length >= 4 && s.startsWith("[[") && s.endsWith("]]")) s = s.slice(2, -2);
+  return s;
+}
+const norm = (v: string) => {
+  const s = unwrapLink(v);
+  const bar = s.indexOf("|");
+  return (bar >= 0 ? s.slice(0, bar) : s).toLowerCase();
+};
 
 const isEmpty = (v: unknown) => v === undefined || v === null || v === "" || (Array.isArray(v) && v.length === 0);
 

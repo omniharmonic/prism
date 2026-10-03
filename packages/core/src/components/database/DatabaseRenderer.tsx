@@ -34,7 +34,7 @@ import { BoardView, CalendarView, GalleryView, ListView, TableView, monthGrid, t
 import { defaultConfig, newViewId, readDatabaseConfig, rowPath, VIEW_LABELS, VIEW_TYPES, type DatabaseConfig, type DatabaseTemplate, type DatabaseView, type OpenMode, type ViewType } from "./config";
 import { RowPeek } from "./RowPeek";
 import { BulkBar, UndoToast, type UndoAction } from "./BulkBar";
-import { createTemplateNote, NewButton, TemplateEditor, templateProps } from "./Templates";
+import { createTemplateNote, isTemplateFor, NewButton, TemplateEditor, templateProps } from "./Templates";
 import { allRows, CsvImportDialog, downloadText, rowsToCsv } from "./Csv";
 
 const VIEW_ICONS: Record<ViewType, typeof Table2> = { table: Table2, board: KanbanSquare, gallery: GalleryVerticalEnd, list: ListIcon, calendar: Calendar };
@@ -251,12 +251,18 @@ export function DatabasePage({ note, readOnly, embedded }: RendererProps & {
     let content = "";
     let fromTemplate: Record<string, unknown> = {};
     const tid = templateId === undefined ? config?.defaultTemplate : templateId;
+    let privateTo: string | null = null;
     if (tid && config?.templates?.some((t) => t.id === tid)) {
+      // Read as the CURRENT user (the gateway enforces view), and only from a
+      // real template of THIS database (review M3).
       const tpl = await client.getNote(tid, { fresh: true });
+      if (!isTemplateFor(tpl, note)) throw new Error("That template is not part of this database, so nothing was copied from it.");
       content = tpl.content ?? "";
       fromTemplate = templateProps(tpl);
+      // A private template's body stays private: the new row is private too.
+      if (tpl.metadata?.prism_visibility === "private") privateTo = typeof tpl.metadata.prism_creator === "string" ? tpl.metadata.prism_creator : "";
     }
-    const created = await client.createNote({ content, path: rowPath(note.path, titleText), tags: [...tags], metadata: { ...defaults, ...fromTemplate, ...(preset ?? {}), title: titleText } });
+    const created = await client.createNote({ content, path: rowPath(note.path, titleText), tags: [...tags], metadata: { ...defaults, ...fromTemplate, ...(preset ?? {}), title: titleText, ...(privateTo !== null ? { prism_visibility: "private", ...(privateTo ? { prism_creator: privateTo } : {}) } : {}) } });
     invalidateRows();
     return created;
   };
@@ -367,7 +373,7 @@ export function DatabasePage({ note, readOnly, embedded }: RendererProps & {
                 void saveConfig({ ...config, views: config.views.filter((v) => v.id !== view.id) });
                 setActiveId(config.views.find((v) => v.id !== view.id)!.id);
               }}
-              onNew={(templateId) => void createRow("Untitled", undefined, templateId).then((n) => { if (!isMobile && openMode !== "page") setPeek(n.id); }).catch(() => setToast({ message: "The page could not be created. Try again.", undo: null }))}
+              onNew={(templateId) => void createRow("Untitled", undefined, templateId).then((n) => { if (!isMobile && openMode !== "page") setPeek(n.id); }).catch((e: unknown) => setToast({ message: e instanceof Error && /template/i.test(e.message) ? e.message : "The page could not be created. Try again.", undo: null }))}
               onCreateTemplate={async (name) => {
                 const t = await createTemplateNote(client, note, name);
                 await saveConfig({ ...config, templates: [...(config.templates ?? []), t] });
@@ -422,7 +428,7 @@ export function DatabasePage({ note, readOnly, embedded }: RendererProps & {
           onClose={() => { setPeek(null); invalidateRows(); }} />
       )}
       {editingTemplate && config && (
-        <TemplateEditor template={editingTemplate} props={allProps}
+        <TemplateEditor template={editingTemplate} db={note} props={allProps}
           onRename={(name) => void saveConfig({ ...config, templates: (config.templates ?? []).map((t) => (t.id === editingTemplate.id ? { ...t, name } : t)) })}
           onOpenBody={() => { const id = editingTemplate.id; setEditingTemplate(null); setPeek(id); }}
           onClose={() => setEditingTemplate(null)} />

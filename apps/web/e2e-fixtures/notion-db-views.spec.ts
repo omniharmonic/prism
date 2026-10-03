@@ -140,7 +140,7 @@ test("database template applies on new row", async ({ page }) => {
   await expect(editor.getByRole("button", { name: "Priority: low" })).toBeVisible();
   await editor.getByRole("button", { name: "Done" }).click();
   const saved = (await configWrites(page)).at(-1).metadata.prism_database.templates;
-  expect(saved.map((t: any) => t.name)).toEqual(["Bug report", "Release checklist"]);
+  expect(saved.map((t: any) => t.name)).toEqual(["Bug report", "Sneaky", "Release checklist"]);
   // The template note is not a row: it does not carry the source tag.
   const tplNote = (await fx(page)).creates.at(-1);
   expect(tplNote.tags).toEqual([]);
@@ -217,4 +217,25 @@ test("bulk: viewers get no selection and no bulk actions", async ({ page }) => {
   await table(page).getByRole("button", { name: "Write release notes", exact: true }).focus();
   await page.keyboard.press("ControlOrMeta+a");
   await expect(page.getByRole("toolbar", { name: "Selected pages" })).toHaveCount(0);
+});
+
+test("templates: an entry that is not a template of this database copies nothing", async ({ page }) => {
+  await page.goto("/e2e-fixtures/databases.html?templates");
+  await page.getByRole("button", { name: "New page from a template" }).click();
+  await page.getByRole("menuitem", { name: "Sneaky" }).click();
+  await expect(page.locator(".db-toast")).toContainText("That template is not part of this database, so nothing was copied from it.");
+  expect((await fx(page)).creates).toEqual([]);
+});
+
+test("bulk duplicate keeps a private page private", async ({ page }) => {
+  await page.goto("/e2e-fixtures/databases.html");
+  await table(page).getByRole("checkbox", { name: "Select Private planning note" }).click();
+  await table(page).getByRole("checkbox", { name: "Select Update pricing page" }).click();
+  await page.getByRole("toolbar", { name: "Selected pages" }).getByRole("button", { name: "Duplicate" }).click();
+  await expect(page.locator(".db-toast")).toContainText("Duplicated 2 pages.");
+  const creates = (await fx(page)).creates as any[];
+  const priv = creates.find((c) => c.metadata.title === "Private planning note (copy)");
+  const pub = creates.find((c) => c.metadata.title === "Update pricing page (copy)");
+  expect(priv.metadata.prism_visibility).toBe("private");
+  expect(pub.metadata.prism_visibility).toBeUndefined();
 });

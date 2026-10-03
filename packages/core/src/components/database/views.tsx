@@ -19,7 +19,7 @@ import {
 } from "@dnd-kit/core";
 import { ArrowDownWideNarrow, ArrowUpNarrowWide, ArrowUpRight, ChevronDown, ChevronLeft, ChevronRight, EyeOff, Group, MoreHorizontal, Plus } from "lucide-react";
 import type { QueryRow } from "../../lib/database/query";
-import { noteTitle } from "../../lib/database/query";
+import { noteTitle, unwrapLink } from "../../lib/database/query";
 import { isBlank, optionColor, propertyValue, type PropertyDef } from "../../lib/database/schema";
 import { OptionChip, PropertyDisplay, PropertyValue } from "./PropertyValue";
 import { Popover } from "./Popover";
@@ -147,7 +147,7 @@ function groupRows(rows: QueryRow[], def: PropertyDef | undefined): Array<{ valu
       buckets.get(v)!.push(r);
     }
   }
-  const label = (v: string | null) => (v === null ? `No ${def.label}` : def.kind === "checkbox" ? (v === "true" ? "Checked" : "Unchecked") : def.kind === "person" || def.kind === "relation" ? v.replace(/^\[\[(.*)\]\]$/, "$1").split("/").pop()! : v);
+  const label = (v: string | null) => (v === null ? `No ${def.label}` : def.kind === "checkbox" ? (v === "true" ? "Checked" : "Unchecked") : def.kind === "person" || def.kind === "relation" ? unwrapLink(v).split("/").pop()! : v);
   const out = [...buckets.entries()].map(([value, rs]) => ({ value, label: label(value), rows: rs }));
   // Like Notion, the empty group leads.
   return [...out.filter((g) => g.value === null), ...out.filter((g) => g.value !== null)];

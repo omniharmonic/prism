@@ -127,6 +127,12 @@ export function BulkBar({ rows, props, dbPath, canEditRow, canCreate, onDone, on
         const src = await client.getNote(r.id, { fresh: true });
         const meta: Record<string, unknown> = {};
         for (const [k, v] of Object.entries(src.metadata ?? {})) if (!isSystemKey(k) || k === "icon" || k === "cover") meta[k] = v;
+        // A copy of a private page stays private to the same person (review M2):
+        // dropping prism_visibility would publish it to the whole workspace.
+        if (src.metadata?.prism_visibility === "private") {
+          meta.prism_visibility = "private";
+          if (typeof src.metadata.prism_creator === "string") meta.prism_creator = src.metadata.prism_creator;
+        }
         const title = `${noteTitle(r)} (copy)`;
         const n = await client.createNote({ content: src.content ?? "", path: rowPath(dbPath, `${title} ${Date.now().toString(36).slice(-4)}`), tags: (src.tags ?? []).filter((t) => t !== "prism-trashed"), metadata: { ...meta, title } });
         made.push(n.id);

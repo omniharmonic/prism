@@ -39,8 +39,10 @@ import { docNameFor, isDocLive, isNoteId, markReconciled } from "../collab";
 import { consumeRateLimit } from "../middleware/ratelimit";
 import { mintEphemeralAdminToken } from "../mcp-token";
 import { csrfRefusal } from "./actions";
-import { stampMetadata, WRITER_KEY } from "../writer-stamp";
+import { resolveWriter, stampMetadata, stripIdentity, WRITER_AT_KEY, WRITER_KEY, writerNames } from "../writer-stamp";
 import {
+  safeTitleLeaf,
+  unwrapLink,
   coerceCsvValue,
   CsvError,
   CursorMismatchError,
@@ -354,7 +356,7 @@ const scanMax = () => envInt("QUERY_SCAN_MAX", 20_000);
 const RAW_MAX = 50_000;
 const LIST_TTL_MS = Number(process.env.QUERY_LIST_TTL_MS ?? 4_000);
 const PERMISSION_KEYS = ["prism_creator", "prism_visibility"];
-const ROW_META = ["title", "type", "prism_type", "icon", "cover", WRITER_KEY];
+const ROW_META = ["title", "type", "prism_type", "icon", "cover", WRITER_KEY, WRITER_AT_KEY];
 
 /**
  * Listing cache (review H1): ONE canonical listing per (vault, tag) — the tag's
@@ -449,15 +451,28 @@ databasesApi.post("/query", async (c) => {
   const visible: QueryInput[] = [];
   // Trashed pages are not rows of any view (unless the view asks for the trash tag).
   const wantsTrash = spec.tags.includes("prism-trashed");
+  // Who edited a row (writer-stamp.ts): a signed-in viewer sees a display name
+  // (resolved BEFORE the engine, so it sorts/filters/searches by name); a
+  // capability link sees no identity key at all — not even through a filter.
+  const names = actor.kind === "user" ? writerNames() : null;
+  const present = (n: Note): Note => {
+    const meta = n.metadata;
+    if (!meta) return n;
+    if (!names) return { ...n, metadata: stripIdentity(meta) };
+    if (!(WRITER_KEY in meta) && !(WRITER_AT_KEY in meta)) return n;
+    const { [WRITER_AT_KEY]: _at, [WRITER_KEY]: _w, ...rest } = meta;
+    const who = resolveWriter(meta, n.updatedAt, names);
+    return { ...n, metadata: who ? { ...rest, [WRITER_KEY]: who } : rest };
+  };
   for (const n of notes) {
     if (!wantsTrash && (n.tags ?? []).includes("prism-trashed")) continue;
     if (owner) {
-      visible.push({ ...n, canEdit: true });
+      visible.push({ ...present(n), canEdit: true });
       continue;
     }
     const caps = capsFor(actor, ref(n));
     if (!caps.has("view")) continue;
-    visible.push({ ...n, canEdit: caps.has("edit"), ...(stamp ? { _caps: [...caps] } : {}) });
+    visible.push({ ...present(n), canEdit: caps.has("edit"), ...(stamp ? { _caps: [...caps] } : {}) });
   }
   // The cut happens AFTER permission filtering (review M2) on a deterministic
   // updated_at-desc order, so a non-owner's "truncated" counts only rows they see.
@@ -465,7 +480,7 @@ databasesApi.post("/query", async (c) => {
   try {
     const page = runQuery(visible.slice(0, cap), spec, { limited: !owner, truncated });
     // Permission keys are read for the filter above, never returned unless asked for.
-    for (const r of page.rows) for (const k of PERMISSION_KEYS) if (spec.fields ? !spec.fields.includes(k) : !owner) delete r.metadata[k];
+    for (const r of page.rows) for (const k of PERMISSION_KEYS) if (actor.kind === "link" || (spec.fields ? !spec.fields.includes(k) : !owner)) delete r.metadata[k];
     c.header("Cache-Control", "private, no-store");
     return c.json(page);
   } catch (e) {
@@ -564,7 +579,7 @@ async function writeProperties(actor: Actor, entry: VaultEntry, id: string, entr
       if (Number.isFinite(prev) && Number.isFinite(next)) markReconciled(docNameFor(entry.id, id), prev, next);
     }
     treeUpsertNote(entry, updated);
-    const metadata: Record<string, unknown> = { ...(updated.metadata ?? {}) };
+    const metadata: Record<string, unknown> = { ...(actor.kind === "link" ? stripIdentity(updated.metadata ?? {}) : updated.metadata ?? {}) };
     if (!isAdmin(actor)) for (const k of ACCESS_KEYS) delete metadata[k];
     return { ok: true, id: updated.id, updatedAt: updated.updatedAt, metadata };
   }
@@ -574,6 +589,12 @@ async function writeProperties(actor: Actor, entry: VaultEntry, id: string, entr
 const evictVaultListings = (entry: VaultEntry) => {
   for (const k of [...listCache.keys()]) if (k.startsWith(`${entry.id}\u0000`)) evictListing(k);
 };
+/** Spend `n` units of the actor's per-minute property-write budget; seconds to wait, or null. */
+function consumeWriteBudget(a: Actor, n: number): number | null {
+  let wait: number | null = null;
+  for (let i = 0; i < n; i++) wait = consumeRateLimit(`db-write:${actorKey(a)}`, envInt("PROPERTY_BATCH_ITEMS_PER_MINUTE", isAdmin(a) ? 2000 : 600), 60_000) ?? wait;
+  return wait;
+}
 const actorKey = (a: Actor) => (a.kind === "user" ? `u:${a.email}` : a.kind === "link" ? `l:${a.capabilityId}` : "anon");
 
 // ── batched property writes (bulk edit) ───────────────────────────────────────
@@ -610,8 +631,7 @@ databasesApi.post("/properties/batch", bodyLimit({ maxSize: 512 * 1024, onError:
     parsed.push({ id: raw.id, ...p });
   }
   // Every item counts against the actor's per-minute write budget.
-  let wait: number | null = null;
-  for (let i = 0; i < parsed.length; i++) wait = consumeRateLimit(`db-write:${actorKey(actor)}`, envInt("PROPERTY_BATCH_ITEMS_PER_MINUTE", isAdmin(actor) ? 2000 : 600), 60_000) ?? wait;
+  const wait = consumeWriteBudget(actor, parsed.length);
   if (wait !== null) {
     c.header("Retry-After", String(wait));
     return c.json({ error: "rate_limited", retryAfter: wait }, 429);
@@ -647,6 +667,12 @@ databasesApi.post("/properties/:id", async (c) => {
   const body = (await c.req.json().catch(() => null)) as { set?: unknown; expect?: unknown } | null;
   const parsed = parseWrite(body?.set, body?.expect);
   if ("error" in parsed) return c.json({ error: "bad_request", detail: parsed.error }, 400);
+  // One per-actor write budget for single and batched property writes (review L2).
+  const wait = consumeWriteBudget(actor, 1);
+  if (wait !== null) {
+    c.header("Retry-After", String(wait));
+    return c.json({ error: "rate_limited", retryAfter: wait }, 429);
+  }
   const entry = entryFor(c, actor);
   const out = await writeProperties(actor, entry, id, parsed.entries, parsed.expected);
   if (out.ok) evictVaultListings(entry);
@@ -668,8 +694,8 @@ const ERRORS_MAX = 100;
 const okPrefix = (p: unknown): p is string =>
   typeof p === "string" && p.length > 0 && p.length <= 200 && !/[\u0000-\u001f\\]/.test(p) &&
   !p.startsWith("/") && p.split("/").every((seg) => seg !== "" && seg !== "." && seg !== "..");
-const safeLeaf = (t: string) => t.trim().replace(/[\\/\u0000-\u001f]/g, "-").slice(0, 120) || "Untitled";
-const keyNorm = (v: unknown) => (Array.isArray(v) ? v.join(",") : v === null || v === undefined ? "" : String(v)).trim().replace(/^\[\[(.*)\]\]$/, "$1").toLowerCase();
+const safeLeaf = (t: string) => safeTitleLeaf(t);
+const keyNorm = (v: unknown) => unwrapLink((Array.isArray(v) ? v.join(",") : v === null || v === undefined ? "" : String(v)).trim()).toLowerCase();
 
 interface ImportRowPlan {
   row: number;
@@ -748,8 +774,11 @@ databasesApi.post("/databases/import/csv", bodyLimit({ maxSize: IMPORT_MAX_BYTES
   try {
     schemaCache.delete(entry.id);
     schema = (await vaultSchemas(entry)).get(tag);
-    evictListing(`${entry.id}\u0000${tag}`); // plan against the vault as it is NOW
-    existing = (await canonicalListing(entry, tag)).filter((n) => !(n.tags ?? []).includes("prism-trashed"));
+    // A dedicated, fresh, lean listing with EXACTLY the keys the import reads
+    // (review M1): the canonical query listing carries only schema keys, so a
+    // non-schema key column would never match and every re-run would duplicate.
+    const keys = [...new Set(["title", ...[...map.values()].filter((k) => k !== "$title")])];
+    existing = (await vaultClient(entry.id).listNotes({ tags: [tag], includeContent: false, includeMetadata: keys, limit: RAW_MAX })).filter((n) => !(n.tags ?? []).includes("prism-trashed"));
   } catch (e) {
     return vaultFailure(c, e);
   }

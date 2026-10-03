@@ -22,6 +22,7 @@ import { useNote } from "../../app/hooks/useParachute";
 import type { Note } from "../../lib/types";
 import type { VaultClient } from "../../data/VaultClient";
 import { inferContentType } from "../../lib/schemas/content-types";
+import { safeTitleLeaf } from "../../lib/database/schema";
 // Lazy: the database page stays out of the main bundle until a block renders.
 const DatabasePage = lazy(() => import("./DatabaseRenderer").then((m) => ({ default: m.DatabasePage })));
 import { defaultConfig, newViewId, VIEW_LABELS, type DatabaseConfig, type ViewType } from "./config";
@@ -77,7 +78,7 @@ export async function createInlineDatabase(client: Pick<VaultClient, "createNote
   const base = (host.path ?? "").replace(/\.[^./]+$/, "");
   const n = await client.createNote({
     content: "",
-    path: `${base ? `${base}/` : ""}${title.replace(/[\\/]/g, "-").slice(0, 120)}`,
+    path: `${base ? `${base}/` : ""}${safeTitleLeaf(title)}`,
     tags: [],
     metadata: { title, prism_type: "database", prism_database: config },
   });

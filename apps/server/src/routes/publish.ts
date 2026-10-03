@@ -1,4 +1,5 @@
 import { readerPresentationTheme } from "../publication-presentation";
+import { stripIdentity } from "../writer-stamp";
 import { publicationGraph, publicationMap, geometryOf, geoOf } from "../publication-projections";
 /**
  * Public publication router (mounted at /p by the integrator).
@@ -265,7 +266,8 @@ publish.get("/:slug/notes/:id", async (c) => {
     content: note.content,
     path: note.path,
     tags,
-    metadata: note.metadata,
+    // The public never learns who created or last edited a page (writer-stamp.ts).
+    metadata: stripIdentity(note.metadata),
     title: deriveTitle(note.content),
   });
 });

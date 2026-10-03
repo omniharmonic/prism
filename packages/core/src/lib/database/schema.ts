@@ -156,7 +156,7 @@ export function inferKind(key: string, f: SchemaField | undefined, sample?: unkn
     if (typeof sample === "string") {
       if (sample.startsWith("[[")) return PERSON_KEYS.test(key) ? "person" : "relation";
       if (/^https?:\/\//i.test(sample)) return "url";
-      if (/^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/.test(sample)) return "email";
+      if (looksLikeEmail(sample)) return "email";
       if (/^\d{4}-\d{2}-\d{2}($|T)/.test(sample)) return "date";
     }
     return "text";
@@ -253,13 +253,17 @@ export const isBlank = (v: unknown): boolean =>
 
 /** `[[vault/people/Ada Lovelace]]` → `Ada Lovelace`. */
 export function linkLabel(v: string): string {
-  const inner = v.trim().replace(/^\[\[(.*)\]\]$/, "$1");
+  const t = v.trim();
+  const inner = t.length >= 4 && t.startsWith("[[") && t.endsWith("]]") ? t.slice(2, -2) : t;
   const alias = inner.split("|")[1];
   if (alias) return alias.trim();
   return (inner.split("/").pop() ?? inner).replace(/\.[^.]+$/, "");
 }
 /** `[[path]]` → `path`; plain strings pass through. */
-export const linkTarget = (v: string): string => v.trim().replace(/^\[\[(.*)\]\]$/, "$1").split("|")[0]!.trim();
+export const linkTarget = (v: string): string => {
+  const t = v.trim();
+  return (t.length >= 4 && t.startsWith("[[") && t.endsWith("]]") ? t.slice(2, -2) : t).split("|")[0]!.trim();
+};
 export const asWikilink = (path: string): string => `[[${path}]]`;
 
 /** Short human text for any property value (cells, cards, filters). */
@@ -283,7 +287,16 @@ export function formatDateTime(v: string): string {
 }
 
 /** Valid-looking email (one @, a dot in the domain, no spaces). */
-export const looksLikeEmail = (v: string): boolean => /^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/.test(v.trim());
+export function looksLikeEmail(v: string): boolean {
+  // Linear (no backtracking regex over user text, review H2).
+  const s = v.trim();
+  if (s.length > 320) return false;
+  const at = s.indexOf("@");
+  if (at < 1 || at !== s.lastIndexOf("@")) return false;
+  for (let i = 0; i < s.length; i++) { const c = s.charCodeAt(i); if (c <= 32 || c === 60 || c === 62) return false; }
+  const dot = s.lastIndexOf(".");
+  return dot > at + 1 && dot < s.length - 1;
+}
 /** Valid-looking phone (digits with + ( ) - . space, 5–20 digits). */
 export const looksLikePhone = (v: string): boolean => /^\+?[\d\s().-]+$/.test(v.trim()) && (v.replace(/\D/g, "").length >= 5) && (v.replace(/\D/g, "").length <= 20);
 
@@ -466,4 +479,19 @@ export function mergeSchemaFields(
     }
   }
   return { ok: true, fields, changed };
+}
+
+/**
+ * A safe path LEAF for a page titled `t` (CSV import, new rows, inline
+ * databases): no separators/control characters, never `.`/`..` (review L1).
+ */
+export function safeTitleLeaf(t: string, max = 120): string {
+  let s = "";
+  for (const ch of t.trim()) {
+    const c = ch.codePointAt(0)!;
+    s += ch === "/" || ch === "\\" || c < 32 || c === 127 ? "-" : ch;
+    if (s.length >= max) break;
+  }
+  s = s.trim();
+  return !s || /^\.+$/.test(s) ? "Untitled" : s;
 }

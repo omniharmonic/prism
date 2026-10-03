@@ -87,8 +87,11 @@ export function csvCell(v: string): string {
   return /[",\r\n]/.test(safe) || safe !== safe.trim() ? `"${safe.replace(/"/g, '""')}"` : safe;
 }
 
-export function toCsv(rows: string[][]): string {
-  return rows.map((r) => r.map(csvCell).join(",")).join("\r\n") + "\r\n";
+/** A cell: text (formula-guarded) or a number (written as-is — review L3: `-5` stays `-5`). */
+export type CsvCellValue = string | { number: number };
+
+export function toCsv(rows: CsvCellValue[][]): string {
+  return rows.map((r) => r.map((c) => (typeof c === "string" ? csvCell(c) : Number.isFinite(c.number) ? String(c.number) : "")).join(",")).join("\r\n") + "\r\n";
 }
 
 /** Coerce one CSV text cell to a vault field type. `{error}` when it cannot be. */

@@ -19,6 +19,7 @@
  * overwritten), exactly like `readBoardConfig`.
  */
 import { isFieldKey, QUERY_OPS, type QueryFilter, type QuerySort } from "../../lib/database/query";
+import { safeTitleLeaf } from "../../lib/database/schema";
 
 export const VIEW_TYPES = ["table", "board", "gallery", "list", "calendar"] as const;
 export type ViewType = (typeof VIEW_TYPES)[number];
@@ -159,7 +160,7 @@ export function applyRank<T extends { id: string }>(rows: T[], order: string[] |
 
 /** A path for a new row: inside the database page's own folder. */
 export function rowPath(dbPath: string | null, title: string): string {
-  const safe = title.trim().replace(/[\\/]/g, "-").slice(0, 120) || "Untitled";
+  const safe = safeTitleLeaf(title);
   const base = (dbPath ?? "").replace(/\.[^./]+$/, "");
   return base ? `${base}/${safe}` : safe;
 }

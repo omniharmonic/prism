@@ -96,7 +96,8 @@ if (persisted) notes = JSON.parse(persisted);
 const save = () => sessionStorage.setItem("db-fixture-notes", JSON.stringify(notes));
 if (params.has("templates") && !persisted) {
   const db = notes.find((n) => n.id === "db")!;
-  db.metadata = { ...db.metadata, prism_database: { ...(db.metadata!.prism_database as object), templates: [{ id: "tpl-bug", name: "Bug report" }] } };
+  // "Sneaky" points at an ordinary page (not a template of this database): refused.
+  db.metadata = { ...db.metadata, prism_database: { ...(db.metadata!.prism_database as object), templates: [{ id: "tpl-bug", name: "Bug report" }, { id: "page", name: "Sneaky" }] } };
 }
 if (params.has("tz")) notes.push(task("t7", "Late call", { status: "todo", due: `${day(3)}T05:00:00Z` }));
 if (link) notes = notes.map((n) => ({ ...n, _level: "view" }));

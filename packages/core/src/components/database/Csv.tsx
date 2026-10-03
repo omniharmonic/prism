@@ -10,7 +10,7 @@ import { useMemo, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Upload } from "lucide-react";
 import { useVaultClient } from "../../data/VaultClientContext";
-import { CsvError, parseCsv, toCsv } from "../../lib/database/csv";
+import { CsvError, parseCsv, toCsv, type CsvCellValue } from "../../lib/database/csv";
 import { formatValue, propertyValue, type PropertyDef } from "../../lib/database/schema";
 import { noteTitle, runQuery, type QueryRow, type QuerySpec } from "../../lib/database/query";
 import type { CsvImportResponse } from "../../lib/database/wire";
@@ -45,11 +45,12 @@ function collect(notes: Parameters<typeof runQuery>[0], spec: QuerySpec): QueryR
 
 /** The CSV text for rows × (Title + props), values as people read them. */
 export function rowsToCsv(rows: QueryRow[], props: PropertyDef[]): string {
-  const cellText = (r: QueryRow, p: PropertyDef) => {
+  const cellText = (r: QueryRow, p: PropertyDef): CsvCellValue => {
     const v = propertyValue(r, p.key);
     if (p.system === "created_time" || p.system === "edited_time") return typeof v === "string" ? v : "";
     if (p.kind === "date" && typeof v === "string") return v;
-    if (p.kind === "number" && typeof v === "number") return String(v);
+    // Numbers are data, not formulas: written raw so `-5` round-trips (review L3).
+    if (p.kind === "number" && typeof v === "number") return { number: v };
     return formatValue(p, v);
   };
   return toCsv([["Title", ...props.map((p) => p.label)], ...rows.map((r) => [noteTitle(r), ...props.map((p) => cellText(r, p))])]);

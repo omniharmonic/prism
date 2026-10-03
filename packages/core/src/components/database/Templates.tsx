@@ -14,11 +14,24 @@ import { Check, ChevronDown, FileText, Pencil, Plus, Star, Trash2 } from "lucide
 import { useVaultClient } from "../../data/VaultClientContext";
 import { queryKeys } from "../../lib/parachute/queries";
 import { isFieldKey } from "../../lib/database/query";
-import { isSystemKey, type PropertyDef } from "../../lib/database/schema";
+import { isSystemKey, safeTitleLeaf, type PropertyDef } from "../../lib/database/schema";
 import type { Note } from "../../lib/types";
 import { Popover } from "./Popover";
 import { PropertyValue } from "./PropertyValue";
 import { newViewId, TEMPLATE_FOR_KEY, TEMPLATE_PROPS_KEY, type DatabaseConfig, type DatabaseTemplate } from "./config";
+
+/**
+ * Is `tpl` really a template OF database `db` (review M3)? It must say so
+ * (`prism_template_for` = the database id) AND live under `<db>/Templates/`.
+ * A config entry pointing anywhere else (e.g. someone's private note) is refused,
+ * so a template can never be used to copy an unrelated page's body into a row.
+ */
+export function isTemplateFor(tpl: Pick<Note, "path" | "metadata"> | null | undefined, db: Pick<Note, "id" | "path">): boolean {
+  if (!tpl || tpl.metadata?.[TEMPLATE_FOR_KEY] !== db.id) return false;
+  const base = (db.path ?? "").replace(/\.[^./]+$/, "");
+  const prefix = `${base ? `${base}/` : ""}Templates/`;
+  return !!tpl.path && tpl.path.startsWith(prefix) && !tpl.path.slice(prefix.length).split("/").some((seg) => seg === ".." || seg === ".");
+}
 
 /** The property values a template gives a new row (only real property keys). */
 export function templateProps(note: Pick<Note, "metadata"> | null | undefined): Record<string, unknown> {
@@ -88,8 +101,9 @@ export function NewButton({ config, canManage, onNew, onCreateTemplate, onEdit, 
 }
 
 /** Edit a template: name, starting property values, and (as a page) its body. */
-export function TemplateEditor({ template, props, onRename, onOpenBody, onClose }: {
+export function TemplateEditor({ template, db, props, onRename, onOpenBody, onClose }: {
   template: DatabaseTemplate;
+  db: Pick<Note, "id" | "path">;
   props: PropertyDef[];
   onRename: (name: string) => void;
   onOpenBody: () => void;
@@ -99,11 +113,13 @@ export function TemplateEditor({ template, props, onRename, onOpenBody, onClose 
   const qc = useQueryClient();
   const [name, setName] = useState(template.name);
   const note = useQuery({ queryKey: queryKeys.vault.note(template.id), queryFn: () => client.getNote(template.id, { fresh: true }) });
+  const valid = !note.data || isTemplateFor(note.data, db);
   const values = templateProps(note.data);
   const editable = props.filter((p) => !p.system);
   const commit = (def: PropertyDef) => async (next: unknown) => {
     // Read-merge-write the whole props object against the revision just read (CAS).
     const fresh = await client.getNote(template.id, { fresh: true });
+    if (!isTemplateFor(fresh, db)) throw new Error("This is not a template of this database.");
     const merged = { ...templateProps(fresh) };
     if (next === null) delete merged[def.key]; else merged[def.key] = next;
     const saved = await client.updateNote(template.id, { metadata: { [TEMPLATE_PROPS_KEY]: merged }, ifUpdatedAt: fresh.updatedAt ?? undefined });
@@ -115,7 +131,7 @@ export function TemplateEditor({ template, props, onRename, onOpenBody, onClose 
         <header className="db-dialog-head"><h2>Edit template</h2><button type="button" className="db-icon-btn" aria-label="Close" onClick={onClose}>×</button></header>
         <label className="db-field"><span>Name</span><input aria-label="Template name" value={name} maxLength={80} onChange={(e) => setName(e.target.value)} onBlur={() => { if (name.trim() && name.trim() !== template.name) onRename(name.trim()); }} /></label>
         <p className="db-pop-heading">New pages start with</p>
-        {note.isLoading ? <p className="db-pop-empty">Loading…</p> : note.isError ? <p className="db-error" role="alert">The template could not be loaded.</p> : (
+        {note.isLoading ? <p className="db-pop-empty">Loading…</p> : note.isError ? <p className="db-error" role="alert">The template could not be loaded.</p> : !valid ? <p className="db-error" role="alert">This entry does not point at a template of this database. Remove it from the template list.</p> : (
           <div className="db-props db-props-panel" role="group" aria-label="Template properties">
             {editable.map((def) => (
               <div className="db-prop" key={def.key} data-kind={def.kind}>
@@ -138,7 +154,7 @@ export function TemplateEditor({ template, props, onRename, onOpenBody, onClose 
 /** Create a template note for `db` and return its config entry. */
 export async function createTemplateNote(client: { createNote: (p: { content: string; path?: string; tags?: string[]; metadata?: Record<string, unknown> }) => Promise<Note> }, db: Pick<Note, "id" | "path">, name: string): Promise<DatabaseTemplate> {
   const base = (db.path ?? "").replace(/\.[^./]+$/, "");
-  const leaf = name.replace(/[\\/]/g, "-").slice(0, 80);
+  const leaf = safeTitleLeaf(name, 80);
   const n = await client.createNote({
     content: "",
     path: `${base ? `${base}/` : ""}Templates/${leaf} ${newViewId().slice(1, 5)}`,
