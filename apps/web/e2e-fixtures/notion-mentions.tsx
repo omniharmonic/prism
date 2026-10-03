@@ -178,7 +178,7 @@ function CommentsFixture() {
       <div style={{ flex: "1 1 420px", minWidth: 0 }}>
         <CollabEditor ydoc={ydoc} provider={null} user={user} seedReady seedContent={async () => "<p>The rollout plan is ready for review.</p>"} canComment canReview onEditor={setEditor} onCommentActivate={setFocused} noteId="plan" />
       </div>
-      <aside style={{ flex: "0 1 300px" }} aria-label="Comments panel">
+      <aside style={{ flex: "1 1 300px", minWidth: 0 }} aria-label="Comments panel">
         <CommentsSidebar ydoc={ydoc} user={user} canComment editor={editor} focusedThreadId={focused} />
       </aside>
     </div>

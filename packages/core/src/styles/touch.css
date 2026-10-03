@@ -1,0 +1,57 @@
+/*
+ * NP-AX-07 — touch targets on phones. Everything here is inside one media query: nothing changes on a
+ * desktop with a mouse. A control is ≥ 44×44, or keeps its drawn size and gets a 44×44 hit area
+ * (`::after` slop, only where no other control sits within reach), or is ≥ 24×24 with clear space
+ * around it. Measured by apps/web/e2e-fixtures/notion-a11y-touch.spec.ts.
+ * The `html` prefix outranks the component sheets, which load after this file.
+ */
+@media (max-width: 767px), (hover: none) and (pointer: coarse) {
+  /* ── Top bar ── */
+  html button[title="Add to Favorites"], html button[title="Remove from Favorites"],
+  html button[aria-label="Page actions"], html .share-trigger { min-width: 44px !important; min-height: 44px !important; }
+
+  /* ── Page header ── */
+  html .document-breadcrumb-part { min-height: 44px; min-width: 44px; display: inline-flex; align-items: center; }
+  html .document-page-heading button { min-height: 44px; }
+
+  /* ── Sidebar ── */
+  html .page-tree-action, html .page-tree-disclosure, html .workspace-new-page-more { min-width: 44px; min-height: 44px; }
+  html .nav-action-button { min-width: 44px !important; min-height: 44px !important; }
+
+  /* ── Editor ── */
+  html .block-gutter.is-narrow .block-gutter-button { position: relative; }
+  html .block-gutter.is-narrow .block-gutter-button::after { content: ""; position: absolute; left: 50%; top: 50%; width: 44px; height: 44px; transform: translate(-50%, -50%); }
+  html .editor-menu-search { min-height: 44px; font-size: 16px; }
+  html .prism-find-bar button { min-width: 44px; min-height: 44px; display: inline-flex; align-items: center; justify-content: center; }
+  html .prism-find-bar input { min-height: 44px; font-size: 16px; }
+
+  /* ── Databases ── */
+  html .db-tab { min-height: 44px; min-width: 44px; justify-content: center; }
+  html .db-split-more { min-width: 44px; }
+  html .db-icon-btn { min-width: 44px; min-height: 44px; }
+  html .db-row-open { min-height: 44px; display: inline-flex; align-items: center; }
+  html .db-row-open.db-card-title { display: flex; }
+  html .db-value-button, html .db-th { min-height: 44px; }
+  html .db-opt-remove, html .db-tag-name { min-width: 44px; min-height: 44px; }
+  html .db-table .db-value-button { min-height: 44px !important; }
+  html .db-dialog input:not([type=checkbox]):not([type=radio]), html .db-dialog select,
+  html .db-popover input:not([type=checkbox]):not([type=radio]), html .db-popover select { min-height: 44px; font-size: 16px; }
+  html .db-link-open { position: relative; }
+  html .db-link-open::after { content: ""; position: absolute; left: 0; right: 0; top: 50%; height: 44px; transform: translateY(-50%); }
+  /* A checkbox keeps a 24 px box with clear space on every side (WCAG 2.5.8 spacing). */
+  html .db-table input.db-sel { width: 24px; height: 24px; margin: 10px; }
+
+  html .db-visible-list label { min-height: 44px; display: flex; align-items: center; gap: 8px; }
+
+  /* ── Comments, inbox settings ── */
+  html .prism-comment-icon { min-width: 44px; min-height: 44px; display: inline-flex; align-items: center; justify-content: center; }
+  html .prism-notification-settings input[type=checkbox] { width: 24px; height: 24px; margin: 10px; }
+
+  html input[aria-label="Invite people"], html input[aria-label="Search inbox"] { min-height: 44px; font-size: 16px; }
+
+  html [role=dialog] label:has(> input[type=checkbox]), html [role=dialog] label:has(> input[type=radio]),
+  html dialog label:has(> input[type=checkbox]), html dialog label:has(> input[type=radio]) { min-height: 44px; display: flex; align-items: center; gap: 8px; }
+
+  /* ── Boards ── */
+  html .board-card-drag { min-width: 44px; }
+}

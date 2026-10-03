@@ -14,6 +14,7 @@ import "./styles/typography.css";
 import "./styles/collab.css";
 import "./styles/workspace.css";
 import "./styles/shell.css";
+import "./styles/touch.css";
 import "./styles/print.css";
 
 export { PrismMark, PrismAppIcon } from "./components/brand/PrismMark";

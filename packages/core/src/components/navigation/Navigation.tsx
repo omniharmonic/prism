@@ -404,7 +404,7 @@ function NavActionButton({ icon, title, onClick }: { icon: React.ReactNode; titl
       onClick={event => { event.currentTarget.focus(); onClick(); }}
       title={title}
       aria-label={title}
-      className="focus-ring flex items-center justify-center transition-colors flex-shrink-0"
+      className="nav-action-button focus-ring flex items-center justify-center transition-colors flex-shrink-0"
       style={{
         width: 30,
         height: 30,
@@ -522,7 +522,8 @@ function RefreshNavButton() {
     <button
       onClick={refresh}
       title="Refresh vault"
-      className="interactive flex items-center justify-center"
+      aria-label="Refresh vault"
+      className="nav-action-button interactive flex items-center justify-center"
       style={{ width: 28, height: 32, color: "var(--text-muted)" }}
     >
       <RefreshCw size={12} className={spinning ? "animate-spin" : ""} />
