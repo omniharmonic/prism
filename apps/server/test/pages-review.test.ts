@@ -282,3 +282,22 @@ test("LOW: no existence oracle on a hidden clash; trashed pages can't move; tras
   assert.equal(c.status, 409);
   assert.match(((await c.json()) as { reason: string }).reason, /Trash/);
 });
+
+// ── editor-schema gate (main bda65e2) vs the pages routes ─────────────────────
+test("pages routes are metadata/path-only: they never trip the editor-schema gate", async () => {
+  const v2 = '<div data-type="callout"><p>new block</p></div>';
+  fv.put({ id: "p", path: "Team/P", content: v2, tags: ["team"] });
+  fv.put({ id: "c", path: "Team/P/Child", content: v2, tags: ["team"] });
+  fv.put({ id: "d", path: "Team/Dest", content: "d", tags: ["team"] });
+  const owner = as(OWNER);
+  // No X-Prism-Editor-Schema header on any of these.
+  assert.equal((await post("/notes/p/meta", { set: { prism_order: 3 }, if_updated_at: stamp("p") }, owner)).status, 200);
+  assert.equal((await post("/notes/p/meta", { set: { prism_locked: true }, if_updated_at: stamp("p") }, owner)).status, 200);
+  assert.equal((await post("/notes/p/meta", { set: { prism_locked: false }, if_updated_at: stamp("p") }, owner)).status, 200);
+  assert.equal((await post("/notes/p/move", { newParentPath: "Team/Dest", if_updated_at: stamp("p") }, owner)).status, 200);
+  assert.equal((await post("/notes/p/trash", {}, owner)).status, 200);
+  assert.equal((await post("/trash/p/restore", {}, owner)).status, 200);
+  assert.equal(fv.notes.get("p")!.content, v2, "content untouched");
+  // …while a header-less CONTENT write to the same note is still gated.
+  assert.equal((await patch("p", { content: "<p>old editor</p>", if_updated_at: stamp("p") }, owner)).status, 409);
+});
