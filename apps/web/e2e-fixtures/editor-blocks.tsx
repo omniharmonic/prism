@@ -15,7 +15,7 @@ const notes: Note[] = [
 ];
 const writes: Array<{ id: string; content?: string }> = [];
 const uploads: Array<{ noteId: string; name: string; type: string; size: number }> = [];
-const controls = { failUpload: false, holdUpload: null as null | (() => void) };
+const controls = { failUpload: false };
 const client = {
   getNote: async (id: string) => notes.find((n) => n.id === id)!,
   listNotes: async () => notes,
@@ -30,7 +30,7 @@ const client = {
   },
   ...(params.has("upload") ? {
     uploadAttachment: async (noteId: string, file: File) => {
-      if (controls.holdUpload === null) await new Promise((r) => setTimeout(r, 30));
+      await new Promise((r) => setTimeout(r, 30)); // a real round-trip is async
       uploads.push({ noteId, name: file.name, type: file.type, size: file.size });
       if (controls.failUpload) throw new Error("fixture upload refused");
       return { id: `att-${uploads.length}`, url: `/e2e-fixtures/fixture-image.svg?u=${uploads.length}`, name: file.name, mimeType: file.type, size: file.size };

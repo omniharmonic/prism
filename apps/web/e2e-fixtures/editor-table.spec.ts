@@ -5,9 +5,10 @@ import WebSocket from "ws";
 const SHOTS = process.env.PRISM_EDITOR_SHOTS;
 
 /** rows × columns of the first table, plus whether its first row is a header row. */
-const shape = (page: Page) => page.evaluate(() => {
+type Shape = { rows: number; cols: number; header: boolean } | null;
+const shape = (page: Page): Promise<Shape> => page.evaluate((): Shape => {
   const editor = (document.querySelector(".tiptap") as any).editor;
-  let out: { rows: number; cols: number; header: boolean } | null = null;
+  let out = null as Shape;
   editor.state.doc.descendants((n: any) => {
     if (out || n.type.name !== "table") return !out;
     const first = n.firstChild;
