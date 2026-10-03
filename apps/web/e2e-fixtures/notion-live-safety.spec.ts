@@ -255,3 +255,106 @@ test("M3: a refused icon write does not leave the icon showing in tabs and the s
   await expect(tabs.locator('[data-page-icon="workspace"]')).toHaveCount(0);
   expect(await shell(page, (s) => s.note("workspace").metadata.icon)).toBeUndefined();
 });
+
+/**
+ * Editor group (4A) × live updates (4B). Every local change the block editor makes
+ * — a block command included, not only typing — is a ProseMirror transaction, so it
+ * marks the editor's autosave touched and its save names the editor's OWN base.
+ */
+const contentSaves = (page: Page, id: string) => page.evaluate((id) => ((window as any).prismShell.writes as any[]).filter((w) => w.method === "PATCH" && w.path === `/api/notes/${id}` && w.body && "content" in w.body), id);
+
+test("4A×4B: a block command (no typing) makes the editor dirty; a remote edit is offered, and the save names the editor's own base", async ({ page }) => {
+  await ready(page);
+  const base = await shell(page, (s) => s.note("workspace").updatedAt as string);
+  // Duplicate the paragraph from the block menu — a command, not a keystroke.
+  await editor(page).locator("p").first().hover();
+  await page.locator(".block-gutter").getByRole("button", { name: /Drag to move/ }).click();
+  await page.getByRole("menuitem", { name: /^Duplicate/ }).click();
+  await expect(editor(page).locator("p").filter({ hasText: "A shared place to think" })).toHaveCount(2);
+  // Idle and unfocused: a CLEAN editor would now adopt the remote version silently.
+  await page.evaluate(() => { (document.activeElement as HTMLElement | null)?.blur(); window.getSelection()?.removeAllRanges(); });
+  await page.mouse.move(700, 700);
+  await mark(page);
+  const before = await reads(page, "workspace");
+  await remoteEdit(page, "workspace", REMOTE);
+  await reRead(page, "workspace", before);
+  const remoteRevision = await shell(page, (s) => s.note("workspace").updatedAt as string);
+  // Offered, not applied: the duplicated block is still on screen in the same editor.
+  await expect(page.getByTestId("remote-update-review")).toContainText("This page was updated elsewhere");
+  expect(await kept(page)).toBe(true);
+  await expect(editor(page).locator("p").filter({ hasText: "A shared place to think" })).toHaveCount(2);
+  // Its autosave names the revision the editor mounted from → refused → review; the remote edit stands.
+  await expect.poll(async () => (await contentSaves(page, "workspace")).length, { timeout: 8000 }).toBeGreaterThan(0);
+  const save = (await contentSaves(page, "workspace"))[0].body;
+  expect(save.if_updated_at).toBe(base);
+  expect(save.force).toBeUndefined();
+  await expect(page.locator('[data-sync-state="review"]').first()).toBeVisible({ timeout: 8000 });
+  expect(await shell(page, (s) => s.note("workspace").content as string)).toBe(REMOTE);
+  expect(await shell(page, (s) => s.note("workspace").updatedAt as string)).toBe(remoteRevision);
+});
+
+test("4A×4B: Move to — the source saves on its own base, and the target page opens on the appended blocks (never overwritten)", async ({ page }) => {
+  await ready(page);
+  // The target has been open in this session: its pre-move copy is in the cache.
+  await page.evaluate(() => (window as any).prismShellUI.getState().openTab("agenda", "Workshop agenda", "document"));
+  await expect(editor(page)).toContainText("Saturday: opening discussion");
+  await page.evaluate(() => (window as any).prismShellUI.getState().openTab("workspace", "A living workspace", "document"));
+  await expect(editor(page)).toContainText("A shared place to think");
+  const base = await shell(page, (s) => s.note("workspace").updatedAt as string);
+  await editor(page).locator("p").first().hover();
+  await page.locator(".block-gutter").getByRole("button", { name: /Drag to move/ }).click();
+  await page.getByRole("menuitem", { name: "Move to" }).click();
+  await page.getByRole("menu", { name: "Move to" }).getByRole("menuitem", { name: "Workshop agenda" }).click();
+  await expect(page.getByRole("status").filter({ hasText: "Moved to Workshop agenda" })).toBeVisible();
+  await expect(editor(page)).not.toContainText("A shared place to think");
+  // The source's removal is a local change like any other: saved once, on its own base.
+  await expect.poll(async () => (await contentSaves(page, "workspace")).length, { timeout: 8000 }).toBe(1);
+  const save = (await contentSaves(page, "workspace"))[0].body;
+  expect(save.if_updated_at).toBe(base);
+  expect(save.content).not.toContain("A shared place to think");
+  await expect(page.locator('[data-sync-state="review"]')).toHaveCount(0);
+  // The target shows the server's appended version, and never writes its stale copy back.
+  await page.evaluate(() => (window as any).prismShellUI.getState().openTab("agenda", "Workshop agenda", "document"));
+  await expect(editor(page)).toContainText("A shared place to think");
+  await expect(editor(page)).toContainText("Saturday: opening discussion");
+  await page.waitForTimeout(2600); // past the autosave debounce: a stale write-back would have gone out
+  expect(await contentSaves(page, "agenda")).toHaveLength(0);
+  expect(await shell(page, (s) => s.note("agenda").content as string)).toContain("A shared place to think");
+});
+
+/** The append arriving at a page that is OPEN (from another window's "Move to"): a remote edit like any other. */
+const appendElsewhere = (page: Page, id: string, html: string) => page.evaluate(async ([id, html]) => {
+  const r = await fetch(`/api/notes/${id}/blocks/append`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ html, requestId: `req-${Date.now()}` }) });
+  if (!r.ok) throw new Error(String(r.status));
+}, [id, html] as const);
+
+test("4A×4B: blocks appended to the OPEN plain page are adopted when it is clean and idle", async ({ page }) => {
+  await ready(page);
+  await page.evaluate(() => { (document.activeElement as HTMLElement | null)?.blur(); window.getSelection()?.removeAllRanges(); });
+  const before = await reads(page, "workspace");
+  await appendElsewhere(page, "workspace", "<p>Moved in from another page.</p>");
+  await reRead(page, "workspace", before);
+  await expect(editor(page)).toContainText("Moved in from another page.");
+  await expect(editor(page)).toContainText("A shared place to think");
+  await expect(page.getByTestId("remote-update-review")).toHaveCount(0);
+  expect(await contentSaves(page, "workspace")).toHaveLength(0);
+});
+
+test("4A×4B: blocks appended to the OPEN plain page while it holds unsaved typing are kept on the server; the draft goes to review", async ({ page }) => {
+  await ready(page);
+  const base = await shell(page, (s) => s.note("workspace").updatedAt as string);
+  await editor(page).click();
+  await page.keyboard.press("ControlOrMeta+End");
+  await page.keyboard.type(" Typed here.");
+  const before = await reads(page, "workspace");
+  await appendElsewhere(page, "workspace", "<p>Moved in from another page.</p>");
+  await reRead(page, "workspace", before);
+  await expect(page.getByTestId("remote-update-review")).toContainText("This page was updated elsewhere");
+  await expect(editor(page)).toContainText("Typed here.");
+  await expect.poll(async () => (await contentSaves(page, "workspace")).length, { timeout: 8000 }).toBeGreaterThan(0);
+  expect((await contentSaves(page, "workspace"))[0].body.if_updated_at).toBe(base);
+  await expect(page.locator('[data-sync-state="review"]').first()).toBeVisible({ timeout: 8000 });
+  const stored = await shell(page, (s) => s.note("workspace").content as string);
+  expect(stored).toContain("Moved in from another page.");
+  expect(stored).not.toContain("Typed here.");
+});

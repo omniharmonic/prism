@@ -165,6 +165,19 @@ window.fetch = async (input, init) => {
     notes.push(created);
     return respond(created);
   }
+  // "Move to" (POST /api/notes/:id/blocks/append): the SERVER appends to the target with its
+  // own compare-and-set and the change reaches every open copy of that page as an event.
+  const appendTo = method === "POST" ? path.match(/^\/api\/notes\/([^/]+)\/blocks\/append$/)?.[1] : undefined;
+  if (appendTo) {
+    const target = notes.find((n) => n.id === decodeURIComponent(appendTo));
+    if (!target) return Response.json({ error: "not_found" }, { status: 404 });
+    const body = JSON.parse(String(init?.body)) as { html: string; requestId: string };
+    controls.writes.push({ method, path, body });
+    target.content = `${target.content ?? ""}${body.html}`;
+    target.updatedAt = bump();
+    setTimeout(() => controls.event(target.id), 0);
+    return respond({ ok: true, live: false, updatedAt: target.updatedAt });
+  }
   const noteId = path.match(/^\/api\/notes\/([^/]+)$/)?.[1];
   if (noteId) {
     const note = notes.find((n) => n.id === decodeURIComponent(noteId));
