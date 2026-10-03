@@ -73,12 +73,30 @@ export function Popover({
     };
   }, [open, onClose, anchor]);
 
+  // Keyboard (NP-AX-02): once placed, focus moves into the panel unless something inside already took it
+  // (an autofocus field). When the panel closes with focus still inside (or dropped to <body>), it goes
+  // back to the anchor — a pointer that moved focus elsewhere keeps it.
+  const placed = !!pos;
+  useEffect(() => {
+    if (!open || !placed) return;
+    const el = panel.current;
+    if (el && !el.contains(document.activeElement)) {
+      const first = el.querySelector<HTMLElement>('input:not([disabled]):not([type=hidden]), select:not([disabled]), textarea:not([disabled]), button:not([disabled]), [href], [tabindex]:not([tabindex="-1"])');
+      (first ?? el).focus({ preventScroll: true });
+    }
+    return () => {
+      const a = document.activeElement;
+      if (!a || a === document.body || el?.contains(a)) anchor.current?.focus({ preventScroll: true });
+    };
+  }, [open, placed, anchor]);
+
   if (!open) return null;
   return createPortal(
     <div
       ref={panel}
       role="dialog"
       aria-label={label}
+      tabIndex={-1}
       className={`db-popover ${className}`}
       style={{ top: pos?.top ?? -9999, left: pos?.left ?? -9999, width: Math.min(width, typeof window !== "undefined" ? window.innerWidth - 16 : width), maxHeight: pos?.maxHeight }}
     >

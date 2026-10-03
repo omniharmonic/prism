@@ -92,6 +92,23 @@ export function SelectionActions({ editor, allowFormatting, onComment, onSuggest
     setLinkError(false);
     setLinking(true);
   };
+  // Keyboard (NP-AX-02): opened with ⌘K, the field must hold the caret, or typing replaces the selected
+  // text. `autoFocus` is not enough: right after a selection or a format change the bubble is still
+  // waiting to be shown (it is attached ~250 ms later) and focusing a detached field does nothing. Keep
+  // trying for a moment, and stop as soon as the field — or anything else in its form — has focus.
+  const linkInput = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    if (!linking) return;
+    let frame = 0;
+    let tries = 0;
+    const tick = () => {
+      const field = linkInput.current;
+      if (field?.isConnected && !field.form?.contains(document.activeElement)) field.focus({ preventScroll: true });
+      if (!field?.form?.contains(document.activeElement) && tries++ < 90) frame = requestAnimationFrame(tick);
+    };
+    frame = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(frame);
+  }, [linking]);
   // ⌘K / Ctrl+K with a text selection (EditorKeys) opens the same inline field.
   const decorateRef = useRef(false);
   decorateRef.current = decorate;
@@ -123,6 +140,7 @@ export function SelectionActions({ editor, allowFormatting, onComment, onSuggest
       <form className="selection-link-form" onSubmit={(event) => { event.preventDefault(); applyLink(); }}>
         <Link2 size={14} aria-hidden="true" />
         <input
+          ref={linkInput}
           autoFocus
           aria-label="Link address"
           aria-invalid={linkError || undefined}

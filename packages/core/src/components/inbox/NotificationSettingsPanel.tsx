@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useNotificationSettings, useSaveNotificationSettings } from "../../lib/notifications/hooks";
 import type { NotificationSettings } from "../../lib/notifications/client";
 import "./inbox.css";
@@ -23,8 +23,13 @@ export function NotificationSettingsPanel({ onClose }: { onClose: () => void }) 
     setDraft((d) => (d ? { ...d, [key]: { ...d[key], [channel]: value } } : d));
   const pushAvailable = !!available && (available.webPush || available.apns);
 
+  // Keyboard: the panel takes focus when it opens; Esc closes it (the opener gets focus back).
+  const root = useRef<HTMLElement>(null);
+  useEffect(() => { root.current?.querySelector<HTMLElement>("button")?.focus(); }, []);
+
   return (
-    <section className="prism-inbox-settings" aria-label="Notification settings" data-testid="notification-settings">
+    <section ref={root} className="prism-inbox-settings" aria-label="Notification settings" data-testid="notification-settings"
+      onKeyDown={(e) => { if (e.key === "Escape") { e.stopPropagation(); onClose(); } }}>
       <div className="flex items-center gap-2">
         <h2 className="flex-1 text-sm font-semibold">Notification settings</h2>
         <button type="button" className="prism-inbox-btn" onClick={onClose}>Close</button>
@@ -34,7 +39,7 @@ export function NotificationSettingsPanel({ onClose }: { onClose: () => void }) 
       {q.isError && <p role="alert" className="mt-3 text-sm text-[var(--color-danger)]">Couldn’t load notification settings.</p>}
       {draft && (
         <>
-          <table className="mt-3">
+          <table className="mt-3 prism-notification-settings">
             <thead>
               <tr><th>Type</th><th style={{ width: 72 }}>Push</th><th style={{ width: 72 }}>Email</th></tr>
             </thead>
