@@ -43,15 +43,32 @@ export function noteCaps(note: { _caps?: unknown } | null | undefined): Set<stri
  *
  * Absent annotation → "none": the component must behave byte-for-byte as it did
  * before. Present and carrying `edit` → also "none": a full editor needs no
- * review banner. Present without `edit` → "propose" when the actor holds
- * `suggest` or `create` (the two caps that give them standing to open a content
- * proposal), else "read-only".
+ * review banner. Present without `edit`:
+ *
+ *  - `suggest` that comes from a GOVERNANCE role (`_review: "governance"`, set by
+ *    the gateway when the grant conferring suggest/create was compiled from a
+ *    governance membership) → "propose": edit a local draft, submit it for review.
+ *  - a PLAIN `suggest` grant (someone shared the page "can suggest") →
+ *    "read-only" here, and `liveSuggest(note)` is true: Canvas keeps the note in
+ *    the live collaborative editor, whose socket is read-only and whose
+ *    suggestions/comments go through the server's command endpoint. No local
+ *    draft, no raw write path.
+ *  - `create` without `suggest` → "propose" (unchanged: the only way that person
+ *    can contribute to an existing page is a proposal).
+ *  - otherwise "read-only".
  */
-export function reviewMode(note: { _caps?: unknown } | null | undefined): ReviewMode {
+export function reviewMode(note: { _caps?: unknown; _review?: unknown } | null | undefined): ReviewMode {
   const caps = noteCaps(note);
   if (caps === null) return "none";
   if (caps.has("edit")) return "none";
-  return caps.has("suggest") || caps.has("create") ? "propose" : "read-only";
+  if (caps.has("suggest")) return note?._review === "governance" ? "propose" : "read-only";
+  return caps.has("create") ? "propose" : "read-only";
+}
+
+/** A plain suggest-level share: the live suggest-only editor applies (see `reviewMode`). */
+export function liveSuggest(note: { _caps?: unknown; _review?: unknown } | null | undefined): boolean {
+  const caps = noteCaps(note);
+  return !!caps && !caps.has("edit") && caps.has("suggest") && note?._review !== "governance";
 }
 
 // ── the gateway client ───────────────────────────────────────────────────────

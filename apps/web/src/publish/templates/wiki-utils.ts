@@ -261,3 +261,22 @@ export function ancestorFolders(notes: NavNote[], activeId: string | null): Set<
   }
   return out;
 }
+
+// ---------------------------------------------------------------------------
+// Attachments on a published page (wave 3)
+// ---------------------------------------------------------------------------
+
+/**
+ * A page stores its files as `/api/attachments/<id>` — a route for signed-in
+ * people. On a public site the same file is served by the publication-scoped
+ * `/api/p/<slug>/attachments/<id>` (only for notes in this publication, behind
+ * its password if it has one). Rewrites exactly that URL shape, as a whole
+ * attribute value, in already-sanitized HTML; anything else is left alone.
+ */
+const OWN_ATTACHMENT_ATTR = /((?:src|href|data-src|poster)=")\/api\/attachments\/([A-Za-z0-9_-]{1,64})(")/g;
+export function publicAttachmentUrl(slug: string, id: string): string {
+  return `/api/p/${encodeURIComponent(slug)}/attachments/${id}`;
+}
+export function rewritePublicAttachments(html: string, slug: string): string {
+  return html ? html.replace(OWN_ATTACHMENT_ATTR, (_m, open: string, id: string, close: string) => `${open}${publicAttachmentUrl(slug, id)}${close}`) : html;
+}

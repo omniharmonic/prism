@@ -66,6 +66,7 @@ import {
   REQUEST_LEVELS,
   noteContentStored,
   cachedChips,
+  mentionableMembers,
   type NotificationType,
   type ReminderRow,
   type RequestLevel,
@@ -135,6 +136,18 @@ notificationsRoutes.use("/notifications", async (c, next) => {
   const retry = consumeRateLimit(`notifications:${w.email}`, readsPerMinute(), 60_000);
   if (retry !== null) return limited(c, retry);
   await next();
+});
+
+// Members the caller may @-mention by account (wave 3): opaque id + display name,
+// never an email; workspace members only (a guest gets an empty list).
+notificationsRoutes.get("/mentions/members", async (c) => {
+  const w = who(c);
+  if (!w) return unauthorized(c);
+  const retry = consumeRateLimit(`notifications:${w.email}`, readsPerMinute(), 60_000);
+  if (retry !== null) return limited(c, retry);
+  const q = (c.req.query("q") ?? "").slice(0, 80);
+  c.header("Cache-Control", "private, no-store");
+  return c.json({ members: await mentionableMembers(w.email, w.vaultId, q) });
 });
 
 notificationsRoutes.get("/notifications", async (c) => {

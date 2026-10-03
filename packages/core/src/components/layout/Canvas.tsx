@@ -108,6 +108,10 @@ export function Canvas() {
   // Gated entirely on the gateway's `_caps` annotation, which only a non-owner
   // web response ever carries — `reviewMode` is "none" for every desktop client
   // and every owner, so `isLiveDoc` is computed exactly as before for them.
+  // Wave 3: "propose" now means GOVERNANCE review applies (`_review: "governance"`,
+  // or create-without-suggest). A plain suggest-level share stays in the live
+  // editor: its socket is read-only server-side and suggestions/comments go through
+  // the command endpoint — the same suggest-only editor `/collab/:id` gives.
   const proposeOnly = reviewMode(effectiveNote) === "propose";
   const noteRevision = useUIStore((s) => (effectiveNote ? s.noteRevisions[effectiveNote.id] ?? 0 : 0));
   // Lock page (metadata.prism_locked): read-only for everyone until unlocked. A locked

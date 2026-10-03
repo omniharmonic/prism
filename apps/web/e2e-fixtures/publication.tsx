@@ -102,6 +102,12 @@ window.fetch = async (input, init) => {
   if (locked) return json({}, 401);
   if (action === "graph") return json({ nodes: [], edges: [] });
   if (action === "map") return json({ features: [] });
+  // Wave 3: the publication-scoped attachment route (a 1×1 PNG for the one known id).
+  if (action === "attachments") {
+    (controls as { attachmentReads?: string[] }).attachmentReads = [...((controls as { attachmentReads?: string[] }).attachmentReads ?? []), path];
+    if (id !== "a_fixtureImage0000000000") return json({ error: "not_found" }, 404);
+    return new Response(Uint8Array.from(atob("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="), (ch) => ch.charCodeAt(0)), { headers: { "content-type": "image/png" } });
+  }
   if (action === "notes") {
     if (controls.hold === id)
       await new Promise<void>((resolve) => {
@@ -119,6 +125,7 @@ window.fetch = async (input, init) => {
         (params.has("font")
           ? "<h2>Reading together</h2><pre><code>const source = true;</code></pre>"
           : "") +
+        (params.has("attachments") ? `<p><img src="/api/attachments/a_fixtureImage0000000000" alt="Field photo"></p><p><a href="/api/attachments/a_fixtureImage0000000000">Download the photo</a></p><p><img src="https://example.test/api/attachments/a_other" alt="Elsewhere"></p>` : "") +
         (params.has("typography") ? `<h1>A place for shared understanding</h1><h2>Working together</h2><p>Shared context makes our notes easier to read and revisit.</p><p>${"UNBROKEN_TOKEN_".repeat(12)}</p>` : "") +
         (params.has("long-content")
           ? `<h2>${longTitle}</h2><p><a href="https://example.test/">${longTitle}</a></p><pre><code>${longTitle.repeat(4)}</code></pre>`

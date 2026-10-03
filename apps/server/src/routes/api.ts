@@ -18,7 +18,7 @@ import { resolveVaultEntry, grantsForResource } from "../db";
 import { vault, vaultClient, VaultError, VaultConflictError, type Note } from "../parachute";
 import { resolveActor, requestVia, type Actor } from "../auth/actor";
 import { COLLAB_SCHEMA_VERSION } from "@prism/core/editor-schema";
-import { effectiveLevel, effectiveCaps, grantedTags, resolvePageAnchor, type Cap, type NoteRef } from "../permissions";
+import { effectiveLevel, effectiveCaps, governedReview, grantedTags, resolvePageAnchor, type Cap, type NoteRef } from "../permissions";
 import { roleAtLeast, roleFloor } from "../roles";
 import { compress } from "hono/compress";
 import { openEventStream } from "../events";
@@ -99,6 +99,13 @@ const actorSubject = (a: Actor): string | null =>
  */
 const capsFor = (actor: Actor, note: NoteRef): Set<Cap> =>
   effectiveCaps(actor.grants, note, roleFloor(actor.role), actorSubject(actor));
+
+/** `_review: "governance"` beside `_caps` (wave 3): the caller's suggest/create
+ *  standing on this note comes from a governance role, so the client offers the
+ *  propose-for-review draft. Absent for a plain "can suggest" share — that person
+ *  gets the live suggest-only editor. A hint, never a guard. */
+const reviewStamp = (actor: Actor, note: NoteRef): { _review?: "governance" } =>
+  governedReview(actor.grants, note, roleFloor(actor.role), actorSubject(actor)) ? { _review: "governance" } : {};
 
 /**
  * Transparent proxy to the vault for the OWNER only. Forwards the exact path,
@@ -445,7 +452,7 @@ function annotate(actor: Actor, notes: Note[]): Array<Note & { _caps?: Cap[] }> 
     const caps = capsFor(actor, ref(n));
     // Capability links never learn who created/edited a note (writer-stamp.ts).
     // Attribution keys never reach a non-owner (review M3); a link gets no identity keys at all.
-    if (caps.has("view")) out.push(stamp ? { ...forViewer(actor, n), _caps: [...caps] } : forViewer(actor, n));
+    if (caps.has("view")) out.push(stamp ? { ...forViewer(actor, n), _caps: [...caps], ...reviewStamp(actor, ref(n)) } : forViewer(actor, n));
   }
   return out;
 }
@@ -597,7 +604,7 @@ api.get("/notes/:id", async (c) => {
     note = { ...note, metadata: rest };
   }
   note = forViewer(actor, note);
-  return c.json(annotated(actor) ? { ...note, _level: level, _caps: [...caps] } : { ...note, _level: level });
+  return c.json(annotated(actor) ? { ...note, _level: level, _caps: [...caps], ...reviewStamp(actor, ref(note)) } : { ...note, _level: level });
 });
 
 /**

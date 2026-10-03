@@ -22,6 +22,7 @@ import { PageIcon } from "../../lib/pages/icons";
 import { Home as HomeIcon, Inbox as InboxIcon } from "lucide-react";
 import { InboxBadge, openInbox } from "../inbox/InboxNavButton";
 import { SyncStateBadge } from "../layout/SyncStateBadge";
+import { AccountMenu } from "./AccountMenu";
 import { useQuickCreatePage } from "../../lib/pages/quickCreate";
 import { useUnreadCount } from "../../lib/notifications/hooks";
 import { SharedWithMe, useViewerIsGuest } from "../sharing/SharedWithMe";
@@ -326,6 +327,7 @@ export function Navigation() {
         {/* NP-SB-15: the one truthful sync state, in the sidebar footer. */}
         <SyncStateBadge variant="footer" />
         <NavItem icon={<Settings2 size={16} />} label="Workspace settings" active={openTabs.find(t => t.id === activeTabId)?.noteId === "network"} onClick={handleOpenNetwork} />
+        <AccountMenu />
         {showNewMenu && <NewContentMenu onClose={() => setShowNewMenu(false)} />}
 
       </div>

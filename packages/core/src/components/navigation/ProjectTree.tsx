@@ -41,6 +41,8 @@ import { pageIconOf, usePageIconOverride } from "../../lib/pages/icons";
 import { usePageActions } from "../../lib/pages/usePageActions";
 import { PageMenuPopover, usePageMenuItems } from "../pages/PageActionsMenu";
 import { renamePath } from "../renderers/DocumentChrome";
+import { useNoteShortcuts } from "./NoteShortcuts";
+import { useSwipeActions } from "../../lib/gestures/useSwipeActions";
 import "../pages/pages.css";
 
 // Icon mapping for content types
@@ -743,6 +745,19 @@ function TreeNodeView({ node, depth, ctx }: { node: TreeNode; depth: number; ctx
     openTab(node.note!.id, node.name, contentType);
   };
 
+  // Phone (touch): swipe a page row right to (un)favorite it, left for its actions
+  // menu — the same things the star and ⋯ buttons do.
+  const shortcuts = useNoteShortcuts();
+  const favorite = isPage && shortcuts.favoriteIds.includes(node.note!.id);
+  const rowEl = useRef<HTMLDivElement | null>(null);
+  const swipe = useSwipeActions<HTMLDivElement>({
+    disabled: !isPage || isRenaming || !ctx.isMobile,
+    right: isPage ? { label: favorite ? "Remove favorite" : "Favorite", tone: "accent", run: () => shortcuts.toggleFavorite({ id: node.note!.id, title: node.name, type: contentType as ContentType }) } : null,
+    left: isPage ? { label: "More", run: () => { if (rowEl.current) ctx.onMenu(node, rowEl.current); } } : null,
+  });
+  const swipeRef = swipe.ref;
+  const setRow = useCallback((el: HTMLDivElement | null) => { rowEl.current = el; swipeRef(el); }, [swipeRef]);
+
   const zoneFor = (e: React.DragEvent): DropZone => {
     const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
     const y = e.clientY - r.top;
@@ -751,9 +766,10 @@ function TreeNodeView({ node, depth, ctx }: { node: TreeNode; depth: number; ctx
   };
 
   return (
-    <div data-depth={depth}>
+    <div data-depth={depth} style={{ overflowX: "clip" }}>
       <div
-        className="page-tree-row"
+        ref={setRow}
+        className="page-tree-row prism-swipe-row"
         data-active={active || undefined}
         data-selected={isSelected || undefined}
         data-drop={dropHere ?? undefined}
@@ -782,6 +798,7 @@ function TreeNodeView({ node, depth, ctx }: { node: TreeNode; depth: number; ctx
         }}
         onDragEnd={() => ctx.setDrag(null)}
       >
+        {swipe.hint}
         {hasChildren ? (
           <button
             type="button"

@@ -257,14 +257,17 @@ export async function clearReadCache(): Promise<void> {
 }
 
 /** Bind the cache to the signed-in account; a different account empties it first. */
-export async function bindCacheUser(email: string | undefined): Promise<void> {
-  if (!email) return;
+export async function bindCacheUser(email: string | undefined): Promise<boolean> {
+  if (!email) return false;
   try {
     const prev = localStorage.getItem(USER_KEY);
-    if (prev && prev !== email) await clearReadCache();
+    const changed = !!prev && prev !== email;
+    if (changed) await clearReadCache();
     localStorage.setItem(USER_KEY, email);
+    return changed;
   } catch {
     /* private mode */
+    return false;
   }
 }
 

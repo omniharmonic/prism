@@ -1,7 +1,8 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState, type KeyboardEvent, type RefObject } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { User } from "lucide-react";
-import { splitCommentMentions, commentMentionToken } from "./MentionParse";
+import { splitCommentMentions, commentMentionToken, isAccountMentionId } from "./MentionParse";
+import { notificationsApi } from "../notifications/client";
 import { useOptionalVaultClient } from "../../data/VaultClientContext";
 import { useUIStore } from "../../app/stores/ui";
 import type { ContentType } from "../types";
@@ -20,6 +21,8 @@ export function MentionText({ text }: { text: string }) {
       {splitCommentMentions(text).map((part, i) =>
         "text" in part ? (
           <span key={i}>{part.text}</span>
+        ) : isAccountMentionId(part.id) ? (
+          <span key={i} className="prism-comment-mention" data-account="true" aria-label={`Member: ${part.label}`}>@{part.label}</span>
         ) : (
           <span
             key={i}
@@ -61,15 +64,23 @@ export function useCommentMentionPicker(ref: RefObject<Field | null>, value: str
   const [index, setIndex] = useState(0);
   const [dismissed, setDismissed] = useState<number | null>(null);
   const active = activeQuery(value, caret);
-  const open = !!active && dismissed !== active.start && !!client?.listPeople;
+  const peopleOpen = !!active && dismissed !== active.start && !!client?.listPeople;
   const people = useQuery({
     queryKey: ["vault", "people", "comment-mention", active?.query ?? ""],
     queryFn: () => client!.listPeople!(active?.query ?? ""),
-    enabled: open,
+    enabled: peopleOpen,
     staleTime: 30_000,
     retry: false,
   });
-  const items = open ? (people.data?.people ?? []).slice(0, 6) : [];
+  const members = useQuery({
+    queryKey: ["vault", "people", "mention-members", active?.query ?? ""],
+    queryFn: () => notificationsApi.mentionMembers(active?.query ?? ""),
+    enabled: !!active && dismissed !== active.start,
+    staleTime: 30_000,
+    retry: false,
+  });
+  const open = (!!active && dismissed !== active.start) && (!!client?.listPeople || (members.data?.length ?? 0) > 0);
+  const items: Array<{ id: string; name: string; role?: string | null }> = open ? [...(people.data?.people ?? []), ...(members.data ?? []).map((m) => ({ ...m, role: "Workspace member" }))].slice(0, 6) : [];
   useEffect(() => setIndex(0), [active?.query]);
   // Place the caret after an inserted token in the same commit as the new value,
   // so typing straight on never lands before it.

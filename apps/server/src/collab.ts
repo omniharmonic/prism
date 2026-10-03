@@ -71,7 +71,7 @@ import { warmPageAnchors } from "./tree";
 import { writerStamp } from "./sharing";
 import { randomUUID } from "node:crypto";
 import { createSuggestion, suggestionsForNote } from "./db";
-import { suggestionAuthors, hasSuggestions, resolveSuggestions, summarizeSuggestions, type PmNode } from "./suggestions";
+import { suggestionAuthors, hasSuggestions, resolveSuggestions, summarizeSuggestions, identifiedSuggestions, plainTextOf, type IdentifiedSuggestion, type PmNode } from "./suggestions";
 import { roleFloor, roleAtLeast, workspaceRole, type Role } from "./roles";
 
 // TipTap's generate{JSON,HTML} need a DOM at call time; provide a lightweight
@@ -120,6 +120,17 @@ export function resolveSuggestionsInHtml(html: string, author: string | null, ac
   const json = generateJSON(html, exts) as PmNode;
   if (!hasSuggestions(json, author)) return html;
   return generateHTML(resolveSuggestions(json, author, action) as never, exts);
+}
+
+/** Identified suggestions (id → actor + text) in a note's HTML; empty when it has none. */
+export function identifiedSuggestionsInHtml(html: string): Map<string, IdentifiedSuggestion> {
+  if (!html.includes("data-suggestion-id")) return new Map(); // cheap pre-check
+  return identifiedSuggestions(generateJSON(html, exts) as PmNode);
+}
+
+/** A note's HTML as decoded reader text (entities resolved, tags gone). */
+export function plainTextOfHtml(html: string): string {
+  return plainTextOf(generateJSON(html, exts) as PmNode);
 }
 
 /** Summary line for the review inbox. */

@@ -234,15 +234,20 @@ test("the merged editor offers a suggest-only person nothing that writes the doc
   await expect(page.getByRole("button", { name: "Insert block below" })).toHaveCount(0);
   await expect(page.getByRole("button", { name: /block actions/i })).toHaveCount(0);
 
-  // Find / replace (2E): Replace is never offered. (A read-only body takes no focus,
-  // so ⌘F does not even open the in-note bar there; if it does, it is find-only.)
+  // Find (wave 3): ⌘F works in the read-only body — find only, Replace never offered.
   await editor(page).click();
   await page.keyboard.press("ControlOrMeta+f");
+  const find = page.getByRole("search", { name: "Find in note" });
+  await expect(find).toBeVisible();
+  await find.getByLabel("Find in note").fill("gamma");
+  await expect(find.locator(".prism-find-count")).toHaveText("1 / 1");
+  await expect(editor(page).locator(".prism-search-match").first()).toBeVisible();
   await page.keyboard.press("ControlOrMeta+Shift+h");
   await page.waitForTimeout(200);
   await expect(page.getByLabel("Replace with")).toHaveCount(0);
   await expect(page.getByRole("button", { name: /^(Show replace|Replace|Replace all)$/ })).toHaveCount(0);
   await page.keyboard.press("Escape");
+  await expect(find).toHaveCount(0);
 
   // Files: a dropped or pasted image is neither uploaded nor inserted.
   await dropFile(page, "drop");
@@ -290,9 +295,11 @@ test("a suggest-only person gets no empty-page starters and no phone editing too
   await phone.close();
 });
 
-test("in the workspace itself: Shared with me opens the page as a propose-for-review draft; nothing typed reaches the server", async ({ page }) => {
+test("in the workspace itself: Shared with me opens the LIVE suggest-only editor; nothing typed reaches the server, a suggestion goes through a command", async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 });
   const writes = watchWrites(page);
+  const posts: string[] = [];
+  page.on("request", (r) => { if (r.method() === "POST" && r.url().includes("/commands")) posts.push(r.postData() ?? ""); });
   await connect(page, page.context(), server, "sam");
   await page.goto("/e2e-fixtures/collab-route.html?app");
   const shared = page.getByRole("region", { name: "Shared with me" });
@@ -302,27 +309,37 @@ test("in the workspace itself: Shared with me opens the page as a propose-for-re
   await expect(page.getByRole("button", { name: "New page", exact: true })).toHaveCount(0);
   await shared.getByRole("button", { name: /Plan/ }).click();
   await expect(editor(page)).toContainText("Alpha");
-  // Inside the workspace a person without `edit` is routed AWAY from the live
-  // session (Canvas `reviewMode` = "propose", governance P4): the body is a LOCAL
-  // draft that is only ever sent as a proposal — never autosaved, never on the socket.
-  const sockets: string[] = [];
-  page.on("websocket", (ws) => sockets.push(ws.url()));
+  // Wave 3: a PLAIN suggest share stays in the live session inside the workspace too
+  // (Canvas routes only governance review to the propose draft). The socket is
+  // read-only server-side; the body is not editable; no local draft exists.
+  await expect(page.getByText(/Live · /)).toBeVisible();
+  await expect(editor(page)).toHaveAttribute("contenteditable", "false");
+  await expect(page.getByRole("button", { name: /Submit for review/ })).toHaveCount(0);
+  const before = await editor(page).innerText();
   await editor(page).click();
   await page.keyboard.press("End");
   await page.keyboard.type(" RAW TYPING");
+  expect(await editor(page).innerText()).toBe(before);
   await expect(page.getByRole("heading", { name: /^Rename / })).toHaveCount(0);
   await expect(page.getByRole("button", { name: /cover/i })).toHaveCount(0);
   await expect(page.getByRole("group", { name: "Start this page" })).toHaveCount(0);
-  const actions = page.getByRole("button", { name: "Page actions", exact: true });
-  if (await actions.count()) {
-    await actions.click();
-    await expect(page.getByRole("menu").locator("dl.prism-page-info")).toBeVisible();
-    await page.keyboard.press("Escape");
-  }
+  // ⌘F finds in the read-only live body (find only).
+  await page.keyboard.press("ControlOrMeta+f");
+  const find = page.getByRole("search", { name: "Find in note" });
+  await expect(find).toBeVisible();
+  await find.getByLabel("Find in note").fill("Alpha");
+  await expect(find.locator(".prism-find-count")).toHaveText(/^1 \/ \d+$/);
+  await expect(page.getByLabel("Replace with")).toHaveCount(0);
+  await page.keyboard.press("Escape");
+  // The suggestion path: a server-authored command, never a raw write.
+  const composer = await suggestReplace(page, "Alpha", "Omega");
+  await composer.getByRole("button", { name: "Suggest", exact: true }).click();
+  await expect(page.getByRole("status").filter({ hasText: "Suggestion sent for review." })).toBeVisible();
+  expect(posts).toHaveLength(1);
   await page.waitForTimeout(3000); // past autosave and the server's store debounce
   expect(writes).toEqual([]);
-  expect(sockets.filter((u) => u.includes("/collab"))).toEqual([]);
   expect((await server.note("plan"))!.content).not.toContain("RAW");
-  await page.screenshot({ path: "/private/tmp/claude-501/-Users-benjaminlife-dev-prism/94600911-66b9-4b8d-b802-fc8f8fe9305f/scratchpad/w2-sharing/suggest-only-workspace.png" });
+  await expect.poll(async () => (await server.note("plan"))!.content).toContain("Omega");
+  await page.screenshot({ path: "/private/tmp/claude-501/-Users-benjaminlife-dev-prism/94600911-66b9-4b8d-b802-fc8f8fe9305f/scratchpad/w3-gaps/suggest-live-workspace.png" });
   await page.unrouteAll({ behavior: "ignoreErrors" });
 });

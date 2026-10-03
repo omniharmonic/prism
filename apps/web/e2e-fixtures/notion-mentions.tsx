@@ -91,6 +91,11 @@ window.fetch = async (input, init) => {
     const q = (url.searchParams.get("q") ?? "").toLowerCase();
     return json({ people: people.filter((p) => !q || p.name.toLowerCase().includes(q)), next: null });
   }
+  // Wave 3: workspace members with no person page — opaque id + name only.
+  if (path === "/api/mentions/members") {
+    const q = (url.searchParams.get("q") ?? "").toLowerCase();
+    return json({ members: [{ id: "u_0123456789abcdef", name: "Cal Newport" }].filter((m) => !q || m.name.toLowerCase().includes(q)) });
+  }
   const person = path.match(/^\/api\/people\/([^/]+)$/);
   if (person) {
     const p = people.find((x) => x.id === decodeURIComponent(person[1]!));
