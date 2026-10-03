@@ -373,8 +373,10 @@ function ReverseRelations({ note }: { note: Note }) {
           <span className="db-prop-label" title={`Pages tagged #${r.tag} whose ${r.key} links here`}>{r.label}</span>
           <span className="db-chips" role="list" aria-label={r.label}>
             {r.rows.map((row) => (
-              <button key={row.id} type="button" role="listitem" className="db-link-chip db-link-open" data-kind="relation"
-                onClick={() => useUIStore.getState().openTab(row.id, row.title, "document")}>{row.title}</button>
+              <span key={row.id} role="listitem">
+                <button type="button" className="db-link-chip db-link-open" data-kind="relation"
+                  onClick={() => useUIStore.getState().openTab(row.id, row.title, "document")}>{row.title}</button>
+              </span>
             ))}
             {!r.rows.length && <span className="db-empty">Empty</span>}
             {r.more && <span className="db-pop-path">and more</span>}

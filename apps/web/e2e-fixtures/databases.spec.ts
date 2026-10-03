@@ -267,3 +267,38 @@ test.describe("L2: dates in the viewer's timezone", () => {
     expect(q.tzOffset).toBe(await page.evaluate(() => new Date().getTimezoneOffset()));
   });
 });
+
+test("AND/OR filter groups", async ({ page }) => {
+  await page.goto("/e2e-fixtures/databases.html");
+  const table = page.getByRole("table", { name: "All tasks" });
+  await page.getByRole("button", { name: "Filter", exact: true }).click();
+  const filter = page.getByRole("dialog", { name: "Filter" });
+  // A simple condition: priority is high…
+  await filter.getByRole("button", { name: "Add filter" }).click();
+  await filter.getByLabel("Condition 1 property").selectOption("priority");
+  await filter.getByLabel("Filter value").first().selectOption("high");
+  await expect(table.locator("tbody tr[data-row-id]")).toHaveCount(2);
+  // …AND a group: (status is todo OR status is done).
+  await filter.getByRole("button", { name: "New filter group" }).click();
+  const group = filter.getByRole("group", { name: "Filter group 1" });
+  await group.getByLabel("Group 1 condition 1 property").selectOption("status");
+  await group.getByLabel("Filter value").selectOption("todo");
+  await group.getByRole("button", { name: "Add condition to group 1" }).click();
+  await group.getByLabel("Group 1 condition 2 property").selectOption("status");
+  await group.getByLabel("Filter value").nth(1).selectOption("done");
+  await expect(group.getByLabel("Group 1 match")).toHaveValue("any");
+  await expect(table.locator("tbody tr[data-row-id]")).toHaveCount(1);
+  await expect(table.getByRole("button", { name: "Review workspace navigation", exact: true })).toBeVisible();
+  // The top level can be OR too: high OR (todo OR done).
+  await filter.getByLabel("Match", { exact: true }).selectOption("any");
+  await expect(table.locator("tbody tr[data-row-id]")).toHaveCount(5);
+  const saved = (await configWrites(page)).at(-1).metadata.prism_database.views[0].filter;
+  expect(saved).toEqual({
+    match: "any",
+    conditions: [{ key: "priority", op: "eq", value: "high" }],
+    groups: [{ match: "any", conditions: [{ key: "status", op: "eq", value: "todo" }, { key: "status", op: "eq", value: "done" }] }],
+  });
+  await expect(page.getByRole("button", { name: "Filter · 3" })).toBeVisible();
+  // The server engine evaluated the same grammar (the fixture runs it on every query).
+  expect((await page.evaluate(() => (window as any).dbFixture.queries.at(-1).filter))).toEqual(saved);
+});

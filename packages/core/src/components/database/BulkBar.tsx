@@ -37,8 +37,10 @@ const REASONS: Record<string, string> = {
 const describe = (failed: Array<{ title: string; error: string }>) =>
   failed.slice(0, 3).map((f) => `${f.title} (${REASONS[f.error] ?? "not saved"})`).join(", ") + (failed.length > 3 ? ` and ${failed.length - 3} more` : "");
 
-export function BulkBar({ rows, props, dbPath, canEditRow, onDone, onClear }: {
+export function BulkBar({ rows, props, dbPath, canEditRow, canCreate, onDone, onClear }: {
   rows: QueryRow[];
+  /** May the caller create pages here (duplicate)? */
+  canCreate: boolean;
   props: PropertyDef[];
   dbPath: string | null;
   canEditRow: (r: QueryRow) => boolean;
@@ -156,7 +158,7 @@ export function BulkBar({ rows, props, dbPath, canEditRow, onDone, onClear }: {
       {editable.length > 0 && editableCount > 0 && (
         <button ref={editAnchor} type="button" className="db-control" aria-haspopup="dialog" aria-expanded={editOpen} disabled={busy} onClick={() => setEditOpen((o) => !o)}><Pencil size={13} aria-hidden="true" /> Edit property</button>
       )}
-      <button type="button" className="db-control" disabled={busy} onClick={() => void duplicate()}><Copy size={13} aria-hidden="true" /> Duplicate</button>
+      {canCreate && <button type="button" className="db-control" disabled={busy} onClick={() => void duplicate()}><Copy size={13} aria-hidden="true" /> Duplicate</button>}
       {client.trashPage && <button type="button" className="db-control db-danger" disabled={busy} onClick={() => void trash()}><Trash2 size={13} aria-hidden="true" /> Move to Trash</button>}
       <button type="button" className="db-icon-btn" aria-label="Clear selection" onClick={onClear}><X size={14} /></button>
       <Popover anchor={editAnchor} open={editOpen} onClose={() => setEditOpen(false)} label="Edit property on selected pages" width={320}>

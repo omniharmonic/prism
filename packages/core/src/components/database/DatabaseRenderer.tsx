@@ -283,14 +283,15 @@ export function DatabasePage({ note, readOnly, embedded }: RendererProps & {
     },
     create: async (titleText, preset) => { await createRow(titleText, preset); },
     updateView,
-    ...(view.type === "table" && !readOnly ? { selection } : {}),
+    // Selection only for people who can act on something (Notion viewers can't select).
+    ...(view.type === "table" && !readOnly && (canCreate || rows.some(canEditRow)) ? { selection } : {}),
   } : null;
 
   // ⌘A selects every loaded row of a table view (unless typing somewhere).
   const onBodyKey = useCallback((e: React.KeyboardEvent) => {
     const t = e.target as HTMLElement;
     const typing = t.closest("input, textarea, select, [contenteditable='true']") && !(t instanceof HTMLInputElement && t.type === "checkbox");
-    if (typing || view?.type !== "table" || readOnly) return;
+    if (typing || view?.type !== "table" || readOnly || !(canCreate || rows.some(canEditRow))) return;
     if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "a") {
       e.preventDefault();
       setSelected(new Set(rows.map((r) => r.id)));
@@ -385,7 +386,7 @@ export function DatabasePage({ note, readOnly, embedded }: RendererProps & {
             {saveState === "conflict" && <p className="db-notice" role="alert">This database was changed somewhere else, so your view change wasn’t saved. <button type="button" className="db-ghost" onClick={() => { setLocal(null); setSaveState(""); void qc.invalidateQueries({ queryKey: queryKeys.vault.note(note.id) }); }}>Reload views</button></p>}
             {saveState === "error" && <p className="db-notice" role="alert">The view change could not be saved. <button type="button" className="db-ghost" onClick={() => local && void saveConfig(local)}>Retry</button></p>}
             {selectedRows.length > 0 && (
-              <BulkBar rows={selectedRows} props={allProps} dbPath={note.path} canEditRow={canEditRow}
+              <BulkBar rows={selectedRows} props={allProps} dbPath={note.path} canEditRow={canEditRow} canCreate={canCreate}
                 onClear={() => setSelected(new Set())}
                 onDone={(message, undo) => setToast({ message, undo })} />
             )}
