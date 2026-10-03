@@ -56,6 +56,7 @@ const TYPE_ICONS: Record<ContentType, React.ElementType> = {
   "messages-dashboard": MessageSquare,
   network: Radio,
   "bioregion-entity": MapPin,
+  database: Table2,
 };
 
 // Build a tree from flat notes list
