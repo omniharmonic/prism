@@ -321,3 +321,52 @@ test("gallery card size and cover", async ({ page }) => {
   // A cover that is not ours / https never becomes an <img> (no javascript:, no arbitrary same-origin path).
   expect(await gallery.locator('.db-cover img:not([src^="/api/attachments/"]):not([src^="https://"])').count()).toBe(0);
 });
+
+// NP-DB-14 — multi-level sort from the Sort menu, saved per view.
+test("multi-level sort", async ({ page }) => {
+  await page.goto("/e2e-fixtures/databases.html");
+  const table = page.getByRole("table", { name: "All tasks" });
+  await expect(table.locator("tbody tr").first()).toBeVisible();
+  await page.getByRole("button", { name: "Sort", exact: true }).click();
+  const sort = page.getByRole("dialog", { name: "Sort" });
+  await sort.getByRole("button", { name: /Add sort/ }).click();
+  await sort.getByLabel("Sort 1 property").selectOption("priority");
+  await sort.getByLabel("Sort 1 direction").selectOption("desc");
+  await sort.getByRole("button", { name: /Add sort/ }).click();
+  await sort.getByLabel("Sort 2 property").selectOption("due");
+  await sort.getByLabel("Sort 2 direction").selectOption("desc");
+  const titles = () => table.locator("tbody tr").evaluateAll((rows) => rows.map((r) => r.querySelector("button")?.textContent?.trim() ?? "").filter(Boolean));
+  const pos = async (title: string) => (await titles()).indexOf(title);
+  // Level 1 groups the two high-priority rows together; level 2 orders them by due date, newest first.
+  await expect.poll(async () => (await pos("Write release notes")) - (await pos("Review workspace navigation"))).toBe(-1);
+  const saved = (await configWrites(page)).at(-1).metadata.prism_database.views[0].sort;
+  expect(saved).toEqual([{ key: "priority", dir: "desc" }, { key: "due", dir: "desc" }]);
+  // Flipping only the second level reorders inside the group and leaves the first level alone.
+  await sort.getByLabel("Sort 2 direction").selectOption("asc");
+  await expect.poll(async () => (await pos("Write release notes")) - (await pos("Review workspace navigation"))).toBe(1);
+  expect((await configWrites(page)).at(-1).metadata.prism_database.views[0].sort).toEqual([{ key: "priority", dir: "desc" }, { key: "due", dir: "asc" }]);
+  // Per view: the Board view has no sort of its own.
+  expect((await configWrites(page)).at(-1).metadata.prism_database.views[1].sort).toBeUndefined();
+  // Removing a level is saved too.
+  await sort.getByRole("button", { name: "Remove sort 1" }).click();
+  await expect.poll(async () => (await configWrites(page)).at(-1).metadata.prism_database.views[0].sort).toEqual([{ key: "due", dir: "asc" }]);
+});
+
+// NP-DB-16 — saved views can be renamed and deleted (duplicate and reorder are product gaps, see PARITY-EVIDENCE.md).
+test("a saved view is renamed and deleted from View settings", async ({ page }) => {
+  await page.goto("/e2e-fixtures/databases.html");
+  await expect(page.getByRole("tab", { name: "All tasks" })).toBeVisible();
+  await page.getByRole("button", { name: "View settings" }).click();
+  const settings = page.getByRole("dialog", { name: "View settings" });
+  await settings.getByLabel("View name").fill("Everything");
+  await settings.getByLabel("View name").blur();
+  await expect(page.getByRole("tab", { name: "Everything" })).toBeVisible();
+  await expect.poll(async () => (await configWrites(page)).at(-1)?.metadata.prism_database.views[0].name).toBe("Everything");
+  const before = (await configWrites(page)).at(-1).metadata.prism_database.views.length;
+  await settings.getByRole("button", { name: "Delete view" }).click();
+  await expect(page.getByRole("tab", { name: "Everything" })).toHaveCount(0);
+  await expect.poll(async () => (await configWrites(page)).at(-1).metadata.prism_database.views.length).toBe(before - 1);
+  await expect(page.getByRole("tab", { name: "Board" })).toHaveAttribute("aria-selected", "true");
+});
+
+test.fixme("saved views: duplicate and reorder tabs (PRODUCT GAP NP-DB-16 — no control exists)", async () => {});

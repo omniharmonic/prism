@@ -8,9 +8,16 @@ export function useComposerAutosize(ref: RefObject<HTMLTextAreaElement | null>, 
     const scrollTop = input.scrollTop;
     const style = getComputedStyle(input);
     const border = parseFloat(style.borderTopWidth) + parseFloat(style.borderBottomWidth);
+    // Measuring collapses the field. Hold its parent at the current height meanwhile:
+    // otherwise a neighbouring scroller grows for that one layout, the browser clamps
+    // its scrollTop, and a thread read at the end jumps up by the draft's height.
+    const parent = input.parentElement;
+    const parentMinHeight = parent?.style.minHeight ?? "";
+    if (parent) parent.style.minHeight = `${parent.getBoundingClientRect().height}px`;
     input.style.height = "0px";
     const needed = input.scrollHeight + (Number.isFinite(border) ? border : 0);
     input.style.height = `${Math.max(minHeight, Math.min(160, needed))}px`;
+    if (parent) parent.style.minHeight = parentMinHeight;
     input.style.overflowY = needed > 160 ? "auto" : "hidden";
     // Keep an internally scrolled long draft stable while measuring it.
     if (needed > 160) input.scrollTop = scrollTop;

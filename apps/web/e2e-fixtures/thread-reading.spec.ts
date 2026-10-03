@@ -36,6 +36,14 @@ async function same(page: Page, anchor: Awaited<ReturnType<typeof position>>) {
     })
     .toBe(true);
 }
+/** Two frames: queued scroll events and resize observations have been delivered. */
+const settled = (page: Page) =>
+  page.evaluate(
+    () =>
+      new Promise<void>((r) =>
+        requestAnimationFrame(() => requestAnimationFrame(() => r())),
+      ),
+  );
 async function bottom(page: Page) {
   await expect
     .poll(() =>
@@ -145,6 +153,8 @@ test("deliberate scrolling or latest abandons a missing restoration", async ({
     .getByRole("button", { name: "Load earlier messages", exact: true })
     .evaluate((el) => (el as HTMLButtonElement).click());
   await same(page, replacement);
+  // The thread saves its position on the next frame; write the fixture's value after it.
+  await settled(page);
   await page.evaluate(() => {
     const f = (window as any).prismReadingFixture;
     f.save(f.identity, { eventId: "missing", offset: 0, atBottom: false });
@@ -180,10 +190,43 @@ test("delayed height and composer resizing preserve reading anchor and latest se
     .getByRole("textbox", { name: "Message", exact: true })
     .fill("Short draft");
   await bottom(page);
+  // The thread grew, so the browser clamped its scrollTop and queued a scroll event.
+  // No person shrinks and regrows a draft inside one frame; let that event arrive.
+  await settled(page);
   await page
     .getByRole("textbox", { name: "Message", exact: true })
     .fill("Long draft\n".repeat(15));
   await bottom(page);
+});
+test("typing in a tall draft never moves the thread", async ({ page }) => {
+  await page.goto("/e2e-fixtures/thread-reading.html");
+  const box = page.getByRole("textbox", { name: "Message", exact: true });
+  await box.fill("Long draft\n".repeat(15));
+  await bottom(page);
+  await settled(page);
+  // Measuring the draft must not resize the thread, even for one layout.
+  const moves = await region(page).evaluate((el) => {
+    const seen: number[] = [];
+    el.addEventListener("scroll", () => seen.push(el.scrollTop));
+    (window as any).prismThreadScrolls = seen;
+    return seen.length;
+  });
+  expect(moves).toBe(0);
+  await box.pressSequentially("more");
+  await settled(page);
+  expect(await page.evaluate(() => (window as any).prismThreadScrolls)).toEqual(
+    [],
+  );
+  await bottom(page);
+  // Near the end but not following it: the reading anchor stays put too.
+  await region(page).evaluate((el) => {
+    el.scrollTop = el.scrollHeight - el.clientHeight - 90;
+  });
+  await settled(page);
+  const anchor = await position(page);
+  await box.pressSequentially("more");
+  await settled(page);
+  expect(await position(page)).toEqual(anchor);
 });
 for (const failure of ["corrupt", "denied"])
   test(`${failure} storage never breaks reading or scrolling`, async ({

@@ -239,3 +239,273 @@ test("inline database: slash → new table view, and a linked view of an existin
   await expect(page.locator(".prism-database-block").nth(1).getByRole("button", { name: "Braiding Sweetgrass" })).toBeVisible();
   expect(await html(page)).toBe(stored);
 });
+
+/* ───────────────────────── wave 3D verification rows ─────────────────────────
+ * NP-ED-04 (markdown shortcuts), NP-ED-20 (undo/redo), NP-ED-21 (paste fidelity),
+ * NP-ED-22 (find in page). Clauses the product does not meet are `test.fixme`
+ * with the gap named — they are NOT weakened to pass. */
+
+const editorDoc = (page: Page) => page.evaluate(() => {
+  const out: string[] = [];
+  (document.querySelector(".tiptap") as any).editor.state.doc.forEach((n: any) => out.push(`${n.type.name}:${n.textContent}`));
+  return out;
+});
+async function emptyDoc(page: Page) {
+  await open(page, `?content=${enc("<p></p>")}`);
+  await page.locator(".tiptap[contenteditable=true]").click();
+  await expect(page.locator(".tiptap")).toBeFocused();
+}
+
+const BLOCK_SHORTCUTS: Array<{ keys: string; html: RegExp; literal: string }> = [
+  { keys: "# ", html: /^<h1[^>]*>x<\/h1>/, literal: "# x" },
+  { keys: "## ", html: /^<h2[^>]*>x<\/h2>/, literal: "## x" },
+  { keys: "### ", html: /^<h3[^>]*>x<\/h3>/, literal: "### x" },
+  { keys: "- ", html: /^<ul[^>]*><li><p>x<\/p><\/li><\/ul>/, literal: "- x" },
+  { keys: "* ", html: /^<ul[^>]*><li><p>x<\/p><\/li><\/ul>/, literal: "* x" },
+  { keys: "+ ", html: /^<ul[^>]*><li><p>x<\/p><\/li><\/ul>/, literal: "+ x" },
+  { keys: "1. ", html: /^<ol[^>]*><li><p>x<\/p><\/li><\/ol>/, literal: "1. x" },
+  { keys: "[] ", html: /^<ul[^>]*data-type="taskList"/, literal: "[] x" },
+  { keys: "> ", html: /^<blockquote[^>]*><p>x<\/p><\/blockquote>/, literal: "> x" },
+  { keys: "``` ", html: /^<pre[^>]*><code[^>]*>x<\/code><\/pre>/, literal: "``` x" },
+];
+const INLINE_SHORTCUTS: Array<{ keys: string; html: RegExp }> = [
+  { keys: "**b** ", html: /<strong>b<\/strong>/ },
+  { keys: "*i* ", html: /<em>i<\/em>/ },
+  { keys: "`c` ", html: /<code>c<\/code>/ },
+  { keys: "~~s~~ ", html: /<s>s<\/s>/ },
+];
+
+test("markdown shortcuts convert as you type", async ({ page }) => {
+  test.setTimeout(90_000);
+  // Every block prefix converts as it is typed (`>` is a quote by design, checklist §1.3).
+  for (const s of BLOCK_SHORTCUTS) {
+    await emptyDoc(page);
+    await page.keyboard.type(s.keys);
+    await page.keyboard.type("x");
+    await expect.poll(() => html(page), { message: `"${s.keys}" converts` }).toMatch(s.html);
+  }
+  // `---` becomes a divider.
+  await emptyDoc(page);
+  await page.keyboard.type("---");
+  await expect.poll(() => html(page)).toContain("<hr");
+  // Inline marks convert when the closing delimiter is typed; the delimiters disappear.
+  for (const s of INLINE_SHORTCUTS) {
+    await emptyDoc(page);
+    await page.keyboard.type(s.keys);
+    await expect.poll(() => html(page), { message: `"${s.keys}" converts` }).toMatch(s.html);
+    expect(await html(page)).not.toMatch(/\*\*|~~|`/);
+  }
+});
+
+// PRODUCT GAP (NP-ED-04): ⌘Z after a conversion removes the typed characters too (an empty line), instead of
+// giving the literal characters back — the input rule and the typed prefix share one history group.
+// This is the checklist's required title; it stays fixme until the product meets it.
+test.fixme("markdown shortcuts convert and undo to literal", async ({ page }) => {
+  // ⌘Z right after a conversion gives the literal characters back (not an empty line, not the converted block).
+  for (const s of BLOCK_SHORTCUTS) {
+    await emptyDoc(page);
+    await page.keyboard.type(s.keys);
+    await expect.poll(() => editorDoc(page), { message: `"${s.keys}" converted before undo` }).not.toEqual(["paragraph:"]);
+    await page.keyboard.press("ControlOrMeta+z");
+    await expect.poll(async () => (await editorDoc(page)).map((b) => b.trimEnd()), { message: `undo of "${s.keys}" restores the literal characters` }).toEqual([`paragraph:${s.keys.trimEnd()}`]);
+  }
+});
+
+// PRODUCT GAP (NP-ED-04): there is no `>>` + space input rule — Typography turns ">>" into "»".
+test.fixme("markdown shortcuts: >> + space makes a toggle", async ({ page }) => {
+  await emptyDoc(page);
+  await page.keyboard.type(">> x");
+  await expect.poll(() => html(page)).toMatch(/<details|data-type="toggle"/);
+});
+
+test("undo covers block ops; collab undo is per-user", async ({ page }) => {
+  test.setTimeout(90_000);
+  const mod = "ControlOrMeta";
+  const start = ["paragraph:one", "paragraph:two", "paragraph:three"];
+  const fresh = async () => {
+    await open(page, `?content=${enc("<p>one</p><p>two</p><p>three</p>")}`);
+    await clickInto(page, "two");
+    await page.keyboard.press("End");
+  };
+  const undoRedo = async (label: string, changed: (doc: string[], html: string) => boolean) => {
+    const after = { doc: await editorDoc(page), html: await html(page) };
+    expect(changed(after.doc, after.html), `${label}: the change happened`).toBe(true);
+    const base = await page.evaluate(() => (window as any).__base as string);
+    await page.keyboard.press(`${mod}+z`);
+    await expect.poll(() => html(page), { message: `${label}: one ⌘Z restores the document` }).toBe(base);
+    await page.keyboard.press(`${mod}+Shift+z`);
+    await expect.poll(() => html(page), { message: `${label}: ⌘⇧Z redoes it` }).toBe(after.html);
+  };
+  const mark = () => page.evaluate(() => { (window as any).__base = (document.querySelector(".tiptap") as any).editor.getHTML(); });
+  const run = (fn: string) => page.evaluate((fn) => { const editor = (document.querySelector(".tiptap") as any).editor; new Function("editor", fn)(editor); }, fn);
+
+  // Typing.
+  await fresh(); await mark();
+  await page.keyboard.type(" typed");
+  await undoRedo("typing", (doc) => doc[1] === "paragraph:two typed");
+  // Block move (Alt+Shift+↓).
+  await fresh(); await mark();
+  await page.keyboard.press("Alt+Shift+ArrowDown");
+  await undoRedo("block move", (doc) => doc.join() === ["paragraph:one", "paragraph:three", "paragraph:two"].join());
+  // Turn into (heading shortcut).
+  await fresh(); await mark();
+  await page.keyboard.press(`${mod}+Alt+1`);
+  await undoRedo("turn into", (doc) => doc[1] === "heading:two");
+  // Block colour.
+  await fresh(); await mark();
+  // The block menu's Color item dispatches exactly this (setTopBlockColor); the menu itself is driven in editor-blocks.spec.
+  await run(`let at = -1; editor.state.doc.forEach((n, o) => { if (n.textContent === "two") at = o; }); const n = editor.state.doc.nodeAt(at); editor.view.dispatch(editor.state.tr.setNodeMarkup(at, undefined, { ...n.attrs, blockColor: "blue" }));`);
+  await undoRedo("colour", (_d, h) => /data-block-color="blue"/.test(h));
+  // Delete a block's text.
+  await fresh(); await mark();
+  await page.getByText("two", { exact: true }).selectText();
+  await page.keyboard.press("Backspace");
+  await undoRedo("delete", (doc) => doc[1] === "paragraph:");
+  // Table edit: adding a row is its own undo step.
+  await open(page, `?content=${enc("<table><tbody><tr><th><p>Name</p></th><th><p>Role</p></th></tr><tr><td><p>Ada</p></td><td><p>Lead</p></td></tr></tbody></table><p>after</p>")}`);
+  await clickInto(page, "Ada");
+  await mark();
+  await run(`editor.chain().focus().addRowAfter().run()`);
+  await undoRedo("table edit", (_d, h) => (h.match(/<tr/g) ?? []).length === 3);
+  expect(start).toHaveLength(3);
+
+  // Collab: undo reverts only MY changes — the other person's concurrent edit stays.
+  await open(page, "?live");
+  const a = page.getByRole("region", { name: "Client A" });
+  const b = page.getByRole("region", { name: "Client B" });
+  await expect(b.locator(".tiptap")).toContainText("Closing heron note.");
+  await a.getByText("Alpha paragraph about the river.").click();
+  await page.keyboard.press("End");
+  await page.keyboard.type(" A-EDIT");
+  await expect(b.locator(".tiptap")).toContainText("river. A-EDIT");
+  await b.getByText("Closing heron note.").click();
+  await page.keyboard.press("End");
+  await page.keyboard.type(" B-EDIT");
+  await expect(a.locator(".tiptap")).toContainText("note. B-EDIT");
+  await page.keyboard.press(`${mod}+z`); // focus is in B
+  await expect(b.locator(".tiptap")).not.toContainText("B-EDIT");
+  await expect(a.locator(".tiptap")).not.toContainText("B-EDIT");
+  await expect(a.locator(".tiptap")).toContainText("A-EDIT");
+  await expect(b.locator(".tiptap")).toContainText("A-EDIT");
+  // …and B's redo brings back only B's edit.
+  await page.keyboard.press(`${mod}+Shift+z`);
+  await expect(a.locator(".tiptap")).toContainText("note. B-EDIT");
+});
+
+async function pasteClipboard(page: Page, data: Record<string, string>) {
+  await page.evaluate((data) => {
+    const dt = new DataTransfer();
+    for (const [type, value] of Object.entries(data)) dt.setData(type, value);
+    document.querySelector(".tiptap")!.dispatchEvent(new ClipboardEvent("paste", { clipboardData: dt, bubbles: true, cancelable: true }));
+  }, data);
+}
+
+/** What each source app puts on the clipboard for the same small document (wrappers and class noise as they emit it). */
+const RICH_BODY = '<h2>Plan</h2><p>Intro with <a href="https://example.test/doc">a link</a>.</p><ul><li>First</li><li>Second</li></ul><ol><li>Step</li></ol><table><tbody><tr><td>Name</td><td>Role</td></tr><tr><td>Ada</td><td>Lead</td></tr></tbody></table><pre><code>const a = 1;</code></pre><img src="https://example.test/pic.png" alt="Pic">';
+const PASTE_SOURCES: Record<string, string> = {
+  notion: `<meta charset="utf-8">${RICH_BODY.replace("<h2>", '<h2 class="notion-header-block">')}<ul class="to-do-list"><li><input type="checkbox" checked> Ship</li></ul>`,
+  gdocs: `<meta charset="utf-8"><b style="font-weight:normal;" id="docs-internal-guid-1234">${RICH_BODY.replace(/<(p|li|h2)>/g, '<$1 dir="ltr" style="line-height:1.38;margin-top:0pt;"><span style="font-size:11pt;font-family:Arial;">').replace(/<\/(p|li|h2)>/g, "</span></$1>")}</b>`,
+  word: `<html xmlns:o="urn:schemas-microsoft-com:office:office"><body><!--StartFragment-->${RICH_BODY.replace(/<p>/g, '<p class="MsoNormal">')}<!--EndFragment--></body></html>`,
+  web: `<div><article>${RICH_BODY}</article></div>`,
+};
+
+test("paste fidelity from Notion/GDocs/Markdown", async ({ page }) => {
+  for (const [source, clip] of Object.entries(PASTE_SOURCES)) {
+    await emptyDoc(page);
+    await pasteClipboard(page, { "text/html": clip, "text/plain": "Plan" });
+    const out = await html(page);
+    const say = (what: string) => `${source}: ${what} survives the paste`;
+    expect(out, say("heading")).toMatch(/<h2[^>]*>Plan<\/h2>/);
+    expect(out, say("link")).toMatch(/<a [^>]*href="https:\/\/example\.test\/doc"[^>]*>a link<\/a>/);
+    expect(out, say("bulleted list")).toMatch(/<ul[^>]*><li><p>First<\/p><\/li><li><p>Second<\/p><\/li><\/ul>/);
+    expect(out, say("numbered list")).toMatch(/<ol[^>]*><li><p>Step<\/p><\/li><\/ol>/);
+    expect(out, say("table")).toMatch(/<table[\s\S]*Ada[\s\S]*Lead[\s\S]*<\/table>/);
+    expect(out, say("code")).toMatch(/<pre[^>]*><code[^>]*>const a = 1;<\/code><\/pre>/);
+    expect(out, say("image")).toMatch(/<img [^>]*src="https:\/\/example\.test\/pic\.png"/);
+    expect(out, `${source}: no source-app styling is stored`).not.toMatch(/MsoNormal|docs-internal-guid|font-family|notion-header-block/);
+  }
+  // Wikilinks survive a paste as text the editor still recognises.
+  await emptyDoc(page);
+  await pasteClipboard(page, { "text/plain": "See [[Projects/Prism/Roadmap]] today" });
+  expect(await html(page)).toContain("[[Projects/Prism/Roadmap]]");
+});
+
+// PRODUCT GAP (NP-ED-21): no to-do recognition for pasted checkbox lists.
+test.fixme("paste fidelity: a pasted to-do list stays a to-do list", async ({ page }) => {
+  await emptyDoc(page);
+  await pasteClipboard(page, { "text/html": '<ul class="to-do-list"><li><input type="checkbox" checked> Ship</li></ul>', "text/plain": "Ship" });
+  expect(await html(page)).toMatch(/data-type="taskList"/);
+});
+
+// PRODUCT GAP (NP-ED-21): plain-text Markdown is pasted literally (no clipboardTextParser).
+test.fixme("paste fidelity: pasted Markdown text becomes blocks", async ({ page }) => {
+  await emptyDoc(page);
+  await pasteClipboard(page, { "text/plain": "## Plan\n\n- First\n- Second\n\n```\nconst a = 1;\n```\n" });
+  const out = await html(page);
+  expect(out).toMatch(/<h2[^>]*>Plan<\/h2>/);
+  expect(out).toMatch(/<ul[^>]*><li><p>First<\/p><\/li>/);
+});
+
+// PRODUCT GAP (NP-ED-21): copying out gives rich text but no Markdown text/plain (no clipboardTextSerializer).
+test.fixme("copy fidelity: copying out gives rich text and Markdown", async ({ page }) => {
+  await open(page, `?content=${enc("<h2>Plan</h2><ul><li><p>First</p></li></ul>")}`);
+  const copied = await page.evaluate(() => {
+    const editor = (document.querySelector(".tiptap") as any).editor;
+    editor.chain().focus().selectAll().run();
+    const dt = new DataTransfer();
+    document.querySelector(".tiptap")!.dispatchEvent(new ClipboardEvent("copy", { clipboardData: dt, bubbles: true, cancelable: true }));
+    return { html: dt.getData("text/html"), text: dt.getData("text/plain") };
+  });
+  expect(copied.html).toContain("<h2");
+  expect(copied.text).toContain("## Plan");
+  expect(copied.text).toContain("- First");
+});
+
+test("find in page counts and steps", async ({ page }) => {
+  await open(page);
+  await clickInto(page, "Alpha paragraph about the river.");
+  await page.keyboard.press("ControlOrMeta+f"); // the real key, in an editable page
+  const bar = page.getByRole("search", { name: "Find in note" });
+  const field = bar.getByRole("textbox", { name: "Find in note" });
+  await expect(field).toBeFocused();
+  await field.fill("heron");
+  await expect(bar).toContainText("1 / 3");
+  // Every match is highlighted, and exactly one is the current match.
+  await expect(page.locator(".prism-search-match")).toHaveCount(3);
+  const current = () => page.evaluate(() => {
+    const all = [...document.querySelectorAll(".prism-search-match")];
+    return all.map((el, i) => (el.classList.contains("prism-search-match-active") ? i : -1)).filter((i) => i >= 0);
+  });
+  expect(await current()).toEqual([0]);
+  // Next / previous by button, wrapping at both ends.
+  await bar.getByRole("button", { name: "Next match" }).click();
+  await expect(bar).toContainText("2 / 3");
+  expect(await current()).toEqual([1]);
+  await bar.getByRole("button", { name: "Next match" }).click();
+  await expect(bar).toContainText("3 / 3");
+  await bar.getByRole("button", { name: "Next match" }).click();
+  await expect(bar).toContainText("1 / 3");
+  await bar.getByRole("button", { name: "Previous match" }).click();
+  await expect(bar).toContainText("3 / 3");
+  expect(await current()).toEqual([2]);
+  // …and by keyboard from the field.
+  await field.focus();
+  await page.keyboard.press("Enter");
+  await expect(bar).toContainText("1 / 3");
+  await page.keyboard.press("Shift+Enter");
+  await expect(bar).toContainText("3 / 3");
+  // No match is stated, not left as a stale count.
+  await field.fill("zebra");
+  await expect(bar).not.toContainText("/ 3");
+  await expect(page.locator(".prism-search-match")).toHaveCount(0);
+  await expect(bar.getByRole("button", { name: "Next match" })).toBeDisabled();
+  // Esc closes and clears the highlights.
+  await field.fill("heron");
+  await expect(page.locator(".prism-search-match")).toHaveCount(3);
+  await page.keyboard.press("Escape");
+  await expect(bar).toHaveCount(0);
+  await expect(page.locator(".prism-search-match")).toHaveCount(0);
+});
+
+// PRODUCT GAP (NP-ED-22): on a phone the find bar has no entry in the page ⋯ sheet (keyboard only).
+test.fixme("find in page: phone reaches it from ⋯", async () => {});
