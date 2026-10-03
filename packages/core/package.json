@@ -16,6 +16,7 @@
     "./collab-access": "./src/lib/collab/access.ts",
     "./collab-commands": "./src/lib/collab/commands.ts",
     "./wikilinks": "./src/lib/wikilinks.ts",
+    "./mentions": "./src/lib/tiptap/MentionParse.ts",
     "./pages": "./src/lib/pages/model.ts",
     "./search": "./src/lib/search/match.ts",
     "./styles/*": "./src/styles/*",

@@ -1,5 +1,6 @@
 import "./boards/BoardWorkspace.css";
-import { useRef, useState } from "react";
+import "../database/database.css";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   DndContext,
@@ -23,7 +24,13 @@ import {
   ArrowUpRight,
   ArrowUp,
   ArrowDown,
+  CalendarDays,
+  ChevronLeft,
+  ChevronRight,
+  Database,
+  MoreHorizontal,
 } from "lucide-react";
+import { Popover } from "../database/Popover";
 import type { RendererProps } from "./RendererProps";
 import type { Note } from "../../lib/types";
 import { useVaultClient } from "../../data/VaultClientContext";
@@ -97,7 +104,8 @@ function Board({
   const [query, setQuery] = useState("");
   const [view, setView] = useState<"board" | "list" | null>(null);
   const [settings, setSettings] = useState(false);
-  const [creating, setCreating] = useState(false);
+  // false = closed; null = the header's "New task"; a column id = that column's "+ Add task".
+  const [creating, setCreating] = useState<string | null | false>(false);
   const [busy, setBusy] = useState<string | null>(null);
   const writeLock = useRef(false);
   const refreshLock = useRef(false);
@@ -349,6 +357,30 @@ function Board({
       if (current() && !pending && !boardTasks([created], config, "").length)
         setNotice("Task created. Your view's filters exclude it.");
     });
+  /**
+   * Supersede this board with a database over the same tag(s): a NEW database
+   * note (board view grouped the same way + a table), never a rewrite of the
+   * tasks or of this board — so nothing is lost and this board keeps working.
+   */
+  const openAsDatabase = async () =>
+    run("database", async () => {
+      if (!config) return;
+      const tags = (config.source.tags ?? ["task"]).slice(0, 5);
+      const views = [
+        { id: "board", name: "Board", type: "board", groupBy: safeBoardField(config.groupBy) ? config.groupBy : "status", ...(config.order?.length ? { order: config.order.slice(0, 10000) } : {}) },
+        { id: "table", name: "All tasks", type: "table" },
+      ];
+      const created = await client.createNote({
+        content: "",
+        path: `${(note.path ?? "Tasks").replace(/\.[^./]+$/, "")} database`,
+        tags: [],
+        metadata: { title: `${boardTitle(note)} (database)`, prism_type: "database", prism_database: { version: 1, source: { tags: tags.length ? tags : ["task"] }, views } },
+      });
+      if (!current()) return;
+      openTab(created.id, `${boardTitle(note)} (database)`, "database");
+      const narrowed = !!(config.source.pathPrefix || Object.keys(config.source.metadataFilters ?? {}).length || config.source.dateRange);
+      setNotice(narrowed ? "Database created. It shows every page with these tags; this board's folder and property filters are not carried over." : "Database created.");
+    });
   const dragEnd = (event: DragEndEvent) => {
     setActiveId(null);
     const task = notes.find((n) => n.id === event.active.id);
@@ -412,7 +444,13 @@ function Board({
           </p>
           <h1 className="board-title mt-1 font-semibold">{boardTitle(note)}</h1>
         </div>
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2">
+          {canCreate && (
+            <button className={boardControl} title="Open these tasks in a database (table, board, calendar…) — nothing is moved or rewritten" onClick={() => void openAsDatabase()}>
+              <Database size={15} className="mr-2 inline" />
+              Open as database
+            </button>
+          )}
           {canEdit(note) && (
             <button className={boardControl} onClick={() => setSettings(true)}>
               <Settings2 size={15} className="mr-2 inline" />
@@ -420,7 +458,7 @@ function Board({
             </button>
           )}
           {canCreate && (
-            <button className={boardControl + " board-primary"} onClick={() => setCreating(true)}>
+            <button className={boardControl + " board-primary"} onClick={() => setCreating(null)}>
               <Plus size={16} className="mr-1 inline" />
               New task
             </button>
@@ -532,13 +570,7 @@ function Board({
             onDragCancel={() => setActiveId(null)}
             onDragEnd={dragEnd}
           >
-            <div
-              className={
-                mode === "board"
-                  ? "board-columns flex min-h-0 flex-1 gap-4 overflow-auto p-5"
-                  : "board-list min-h-0 flex-1 overflow-auto p-5"
-              }
-            >
+            <ScrollArea board={mode === "board"}>
               {mode === "list" && !notes.length && (
                 <div className="rounded-xl border border-dashed border-[var(--glass-border)] px-5 py-10 text-center text-sm text-[var(--text-secondary)]">
                   No tasks match this view. Adjust the search or view filters to
@@ -557,6 +589,7 @@ function Board({
                     group={group}
                     list={mode === "list"}
                     disabled={readOnly || !!busy}
+                    onAdd={canCreate && group.id !== null ? () => setCreating(group.id) : undefined}
                   >
                     {group.tasks.map((task, index) => (
                       <TaskCard
@@ -592,7 +625,7 @@ function Board({
                     ))}
                   </Column>
                 ))}
-            </div>
+            </ScrollArea>
             <DragOverlay>
               {active && (
                 <div className="rounded-xl border border-[var(--glass-border)] bg-[var(--bg-elevated)] p-4 shadow-xl">
@@ -612,11 +645,12 @@ function Board({
           onSave={save}
         />
       )}
-      {creating && (
+      {creating !== false && (
         <BoardTaskForm
           config={config}
           busy={!!busy}
           error={error}
+          initialStatus={creating ?? undefined}
           onClose={() => setCreating(false)}
           onCreate={create}
         />
@@ -625,16 +659,51 @@ function Board({
   );
 }
 
+/**
+ * The columns' scroller. On a board wider than the screen it shows edge fades
+ * and ‹ › buttons, so a column past the edge ("Ungrouped" at 1440 px with five
+ * columns) is never silently cut off (gap analysis §20).
+ */
+function ScrollArea({ board, children }: { board: boolean; children: ReactNode }) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [edges, setEdges] = useState({ left: false, right: false });
+  useEffect(() => {
+    const el = ref.current;
+    if (!el || !board) return;
+    const update = () => setEdges({ left: el.scrollLeft > 4, right: el.scrollLeft + el.clientWidth < el.scrollWidth - 4 });
+    update();
+    el.addEventListener("scroll", update, { passive: true });
+    const ro = typeof ResizeObserver !== "undefined" ? new ResizeObserver(update) : null;
+    ro?.observe(el);
+    for (const c of Array.from(el.children)) ro?.observe(c);
+    return () => { el.removeEventListener("scroll", update); ro?.disconnect(); };
+  }, [board]);
+  const by = (dir: -1 | 1) => ref.current?.scrollBy({ left: dir * Math.max(240, (ref.current.clientWidth ?? 600) * 0.8), behavior: "smooth" });
+  if (!board) return <div className="board-list min-h-0 flex-1 overflow-auto p-5">{children}</div>;
+  return (
+    <div className="board-scroll relative flex min-h-0 flex-1 flex-col" data-overflow-left={edges.left || undefined} data-overflow-right={edges.right || undefined}>
+      <div ref={ref} className="board-columns flex min-h-0 flex-1 gap-4 overflow-auto p-5" role="region" aria-label="Board columns" tabIndex={0}>
+        {children}
+      </div>
+      {edges.left && <button type="button" className="board-scroll-btn board-scroll-left focus-ring" aria-label="Scroll columns left" onClick={() => by(-1)}><ChevronLeft size={18} /></button>}
+      {edges.right && <button type="button" className="board-scroll-btn board-scroll-right focus-ring" aria-label="Scroll columns right" onClick={() => by(1)}><ChevronRight size={18} /></button>}
+    </div>
+  );
+}
+
 function Column({
   group,
   list,
   disabled,
   children,
+  onAdd,
 }: {
   group: { id: string | null; label: string; tasks: Note[] };
   list: boolean;
   disabled: boolean;
   children: React.ReactNode;
+  /** Per-column "+ Add task" (created in this column). */
+  onAdd?: () => void;
 }) {
   const { setNodeRef, isOver } = useDroppable({
     id: "column:" + (group.id ?? "ungrouped"),
@@ -656,6 +725,11 @@ function Column({
           {group.tasks.length}
         </span>
       </h2>
+      {onAdd && (
+        <button type="button" className="board-col-add focus-ring" aria-label={"Add task to " + group.label} disabled={disabled} onClick={onAdd}>
+          <Plus size={14} aria-hidden="true" /> Add task
+        </button>
+      )}
       <div
         className="board-column-body min-h-24 space-y-2 rounded-xl p-1"
         style={{ background: isOver ? "var(--glass-active)" : "transparent" }}
@@ -707,6 +781,11 @@ function TaskCard({
     disabled: !ordering || disabled,
   });
   const raw = task.metadata?.[config.groupBy];
+  const menuAnchor = useRef<HTMLButtonElement>(null);
+  const [menu, setMenu] = useState(false);
+  const [moveOpen, setMoveOpen] = useState(false);
+  const due = dueInfo(task);
+  const closeMenu = () => { setMenu(false); setMoveOpen(false); };
   return (
     <article
       ref={(node) => {
@@ -732,6 +811,31 @@ function TaskCard({
             className="ml-1 inline text-[var(--text-secondary)]"
           />
         </button>
+        <button
+          ref={menuAnchor}
+          type="button"
+          aria-label={"Actions for " + boardTitle(task)}
+          aria-haspopup="menu"
+          aria-expanded={menu}
+          className="board-card-menu focus-ring min-h-11 w-8 shrink-0 text-[var(--text-secondary)]"
+          onClick={() => setMenu((o) => !o)}
+        >
+          <MoreHorizontal size={16} />
+        </button>
+        <Popover anchor={menuAnchor} open={menu} onClose={closeMenu} label={"Actions for " + boardTitle(task)} width={220}>
+          <div className="db-menu" role="menu">
+            <button type="button" role="menuitem" onClick={() => { closeMenu(); onOpen(); }}><ArrowUpRight size={14} aria-hidden="true" /> Open</button>
+            {!readOnly && <button type="button" role="menuitem" aria-expanded={moveOpen} disabled={disabled} onClick={() => setMoveOpen((o) => !o)}><ChevronRight size={14} aria-hidden="true" /> Move to…</button>}
+            {!readOnly && moveOpen && config.columns.filter((c) => c.id !== status).map((c) => (
+              <button key={c.id} type="button" role="menuitem" style={{ paddingLeft: 28 }} onClick={() => { closeMenu(); onMove(c.id); }}>{c.label}</button>
+            ))}
+            {ordering && <>
+              <hr />
+              <button type="button" role="menuitem" disabled={disabled || !onEarlier} onClick={() => { closeMenu(); onEarlier?.(); }}><ArrowUp size={14} aria-hidden="true" /> Move earlier</button>
+              <button type="button" role="menuitem" disabled={disabled || !onLater} onClick={() => { closeMenu(); onLater?.(); }}><ArrowDown size={14} aria-hidden="true" /> Move later</button>
+            </>}
+          </div>
+        </Popover>
         {(!readOnly || ordering) && (
           <button
             {...attributes}
@@ -775,7 +879,13 @@ function TaskCard({
         </div>
       )}
       <dl className="mb-3 flex flex-wrap gap-x-3 gap-y-1 text-xs text-[var(--text-secondary)]">
-        {config.cardFields.map((field) => {
+        {due && (
+          <div data-board-field="due" className="board-due" data-due={due.state}>
+            <dt className="sr-only">Due</dt>
+            <dd><CalendarDays size={12} aria-hidden="true" className="mr-1 inline" />{due.label}</dd>
+          </div>
+        )}
+        {config.cardFields.filter((field) => !(due && (field === "deadline" || field === "due"))).map((field) => {
           const value =
             task.metadata?.[field] ??
             (field === "deadline" ? task.metadata?.due : undefined);
@@ -820,4 +930,20 @@ function TaskCard({
       )}
     </article>
   );
+}
+
+/** The card's due-date chip: `due` (or `deadline`), with overdue / today / soon states. */
+function dueInfo(task: Note): { label: string; state: "overdue" | "today" | "soon" | "later" } | null {
+  const raw = task.metadata?.due ?? task.metadata?.deadline;
+  if (typeof raw !== "string" || !/^\d{4}-\d{2}-\d{2}/.test(raw)) return null;
+  const day = raw.slice(0, 10);
+  const d = new Date(`${day}T00:00:00`);
+  if (Number.isNaN(d.getTime())) return null;
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const diff = Math.round((d.getTime() - today.getTime()) / 86_400_000);
+  const done = /^(done|complete|completed|closed)$/i.test(String(task.metadata?.status ?? ""));
+  const date = d.toLocaleDateString(undefined, { month: "short", day: "numeric", ...(d.getFullYear() === today.getFullYear() ? {} : { year: "numeric" }) });
+  const label = diff === 0 ? "Due today" : diff === 1 ? "Due tomorrow" : diff < 0 && !done ? `Overdue · ${date}` : `Due ${date}`;
+  return { label, state: done ? "later" : diff < 0 ? "overdue" : diff === 0 ? "today" : diff <= 3 ? "soon" : "later" };
 }

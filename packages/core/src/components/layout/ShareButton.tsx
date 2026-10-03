@@ -12,6 +12,8 @@ const VIRTUAL = new Set([
   "agent-activity",
   "agent-chat",
   "people",
+  "home",
+  "notifications",
 ]);
 
 /** A note id that maps to a real Parachute note (not a tag/virtual/dashboard tab). */

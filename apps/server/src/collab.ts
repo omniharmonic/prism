@@ -795,7 +795,57 @@ export async function loadDocumentState(documentName: string, doc: Y.Doc): Promi
     saveDocState(target.noteId, Y.encodeStateAsUpdate(doc), toMs(note.updatedAt), target.vaultId);
     lastReconciled.set(documentName, toMs(note.updatedAt));
   }
+  if (kind === "document") {
+    try {
+      storeListener?.loaded?.(documentName, doc);
+    } catch {
+      /* best-effort */
+    }
+  }
   return doc;
+}
+
+/**
+ * Observer of persisted documents (wave 2A notifications: mention diff +
+ * backlinks, comment replies). Registered by notifications.ts; collab.ts never
+ * imports it. `editors` = the accounts whose sockets / commands changed this doc
+ * since its previous store (every one of them is an author of the batch).
+ */
+export interface DocumentStoredEvent {
+  docName: string;
+  vaultId: string;
+  noteId: string;
+  prevContent: string | null;
+  content: string;
+  updatedAt: string | null;
+  doc: Y.Doc;
+  editors: string[];
+}
+export interface DocumentStoreListener {
+  loaded?(docName: string, doc: Y.Doc): void;
+  unloaded?(docName: string): void;
+  stored(e: DocumentStoredEvent): void;
+}
+let storeListener: DocumentStoreListener | null = null;
+export function setDocumentStoreListener(l: DocumentStoreListener | null): void {
+  storeListener = l;
+}
+const docEditors = new Map<string, Set<string>>();
+/** Record who changed a live doc (Hocuspocus onChange context). */
+export function noteDocEditor(docName: string, context: unknown): void {
+  const c = (context ?? {}) as { email?: unknown; human?: unknown; mcp?: unknown };
+  const email = typeof c.email === "string" ? c.email
+    : typeof c.human === "string" && c.human.startsWith("user:") ? c.human.slice(5)
+    : typeof c.mcp === "string" ? c.mcp : null;
+  if (!email) return;
+  let set = docEditors.get(docName);
+  if (!set) docEditors.set(docName, (set = new Set()));
+  if (set.size < 50) set.add(email.toLowerCase());
+}
+function takeDocEditors(docName: string): string[] {
+  const set = docEditors.get(docName);
+  docEditors.delete(docName);
+  return set ? [...set] : [];
 }
 
 /**
@@ -840,6 +890,7 @@ export async function storeDocumentState(documentName: string, doc: Y.Doc): Prom
   }
 
   let rendered: number[] = [];
+  let sourceUpdatedRaw: string | null = null;
   try {
     // Same tick as the render below: exactly the commands this content contains
     // — and only those whose change is STILL in the document. A fold of a newer
@@ -864,13 +915,23 @@ export async function storeDocumentState(documentName: string, doc: Y.Doc): Prom
       // captures a history version, so an identical re-write would clutter the
       // note's history with no-change entries and bump updatedAt for nothing.
       sourceUpdatedAt = toMs(current.updatedAt);
+      sourceUpdatedRaw = current.updatedAt;
     } else {
       const updated = await vaultClient(target.vaultId).updateNote(target.noteId, { content });
       sourceUpdatedAt = toMs(updated.updatedAt);
+      sourceUpdatedRaw = updated.updatedAt;
     }
     vaultWritten = true;
     // G2b: persisted suggestion marks land in the owner's durable review queue.
     if (kind === "document") captureSuggestions(target.noteId, content);
+    // Wave 2A: mention / comment notifications + mention backlinks (fire-and-forget).
+    if (kind === "document" && storeListener) {
+      try {
+        storeListener.stored({ docName: documentName, vaultId: target.vaultId, noteId: target.noteId, prevContent: current?.content ?? null, content, updatedAt: sourceUpdatedRaw, doc, editors: takeDocEditors(documentName) });
+      } catch {
+        /* notifications are best-effort — never fail the persist */
+      }
+    }
   } catch {
     /* vault write failed — still persist CRDT state below */
   }
@@ -923,7 +984,7 @@ export async function assertEditorSchema(documentName: string, params: URLSearch
   throw Object.assign(new Error(UPDATE_REQUIRED_REASON), { reason: UPDATE_REQUIRED_REASON });
 }
 
-interface LiveAccess { level: Level; token: string; cookie: string | null; isLocal: boolean }
+interface LiveAccess { level: Level; token: string; cookie: string | null; isLocal: boolean; email?: string | null }
 
 /** Recheck incoming updates against current grants, credentials and note privacy. */
 async function revalidateConnection(connection: Connection<LiveAccess>): Promise<void> {
@@ -958,8 +1019,22 @@ export const hocuspocus = new Hocuspocus({
     const level = await authorizeConnection(data.documentName, data.token, cookie, data.connectionConfig, isLocal);
     // After authorization, so the refusal is no oracle about a note's kind.
     await assertEditorSchema(data.documentName, data.requestParameters);
-    // Credentials stay only in the connection's server-side context.
-    return { level, token: data.token, cookie, isLocal } satisfies LiveAccess;
+    // Credentials stay only in the connection's server-side context. `email`
+    // attributes this socket's changes for notifications (never sent anywhere).
+    const email = sessionEmailFromCookie(cookie) ?? deviceEmail(data.token);
+    return { level, token: data.token, cookie, isLocal, email } satisfies LiveAccess;
+  },
+  async onChange(data) {
+    noteDocEditor(data.documentName, data.context);
+  },
+  // Wave 2A (review L6): drop per-document notification state with the doc.
+  async afterUnloadDocument(data) {
+    docEditors.delete(data.documentName);
+    try {
+      storeListener?.unloaded?.(data.documentName);
+    } catch {
+      /* best-effort */
+    }
   },
   async beforeHandleMessage({ connection }) {
     await revalidateConnection(connection);

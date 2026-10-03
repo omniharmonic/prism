@@ -126,6 +126,16 @@ export function CommandBar() {
       action: () => { closeCommandBar(); usePagesUI.getState().openCreate({ template: true }); },
     },
     {
+      id: "open-home", label: "Home", category: "navigate" as const,
+      icon: <FileText size={15} />,
+      action: () => { closeCommandBar(); useUIStore.getState().openTab("home", "Home", "home" as ContentType); },
+    },
+    {
+      id: "open-inbox", label: "Inbox", category: "navigate" as const,
+      icon: <Mail size={15} />,
+      action: () => { closeCommandBar(); useUIStore.getState().openTab("notifications", "Inbox", "notifications" as ContentType); },
+    },
+    {
       id: "open-trash", label: "Open Trash", category: "navigate" as const,
       icon: <Trash2 size={15} />,
       action: () => { closeCommandBar(); usePagesUI.getState().openTrash(true); },

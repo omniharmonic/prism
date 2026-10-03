@@ -1,0 +1,51 @@
+import { test, expect, type Page } from "@playwright/test";
+
+/** Home (NP-SB-03): recents, upcoming reminders + events, open tasks, mentions, quick create. */
+const SHOTS = process.env.INBOX_SHOTS;
+const url = (q = "") => `/e2e-fixtures/notion-inbox.html${q}`;
+const home = (page: Page) => page.getByTestId("home");
+const shot = async (page: Page, name: string) => { if (SHOTS) await page.screenshot({ path: `${SHOTS}/${name}.png` }); };
+
+test("home shows recents, upcoming events, my tasks", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  // "Start with last open document" off → the app launches on Home.
+  await page.addInitScript(() => localStorage.setItem("prism-settings", JSON.stringify({ state: { startWithLastDocument: false }, version: 0 })));
+  await page.goto(url("?reset"));
+  await expect(home(page)).toBeVisible();
+  await expect(home(page).getByRole("heading", { level: 1 })).toHaveText(/Good (morning|afternoon|evening)/);
+
+  const recents = home(page).getByRole("region", { name: "Recently visited" });
+  await expect(recents.getByRole("button", { name: "Roadmap" })).toBeVisible();
+  await expect(recents.getByRole("button", { name: "Launch plan" })).toBeVisible();
+
+  const upcoming = home(page).getByRole("region", { name: "Upcoming" });
+  await expect(upcoming.getByRole("button", { name: /Design sync/ })).toContainText("Tomorrow");
+  await expect(upcoming.locator('[data-kind="reminder"]')).toContainText("Roadmap");
+  await expect(upcoming).not.toContainText("Old retro");
+
+  const tasks = home(page).getByRole("region", { name: "My tasks" });
+  await expect(tasks.getByRole("button", { name: /Write release notes/ })).toBeVisible();
+  await expect(tasks.getByRole("button", { name: /Review access requests/ })).toBeVisible();
+  await expect(tasks).not.toContainText("Old cleanup");
+
+  const mentions = home(page).getByRole("region", { name: "Mentions of you" });
+  await expect(mentions.getByRole("button", { name: /Ada Park · Roadmap/ })).toBeVisible();
+  await expect(home(page).getByRole("button", { name: "Inbox · 2 unread" })).toBeVisible();
+  await shot(page, "home-1440-light");
+
+  // Quick create opens the new-page dialog.
+  await home(page).getByRole("button", { name: "New page", exact: true }).click();
+  await expect(page.getByRole("dialog", { name: "New page", exact: true })).toBeVisible();
+  await page.keyboard.press("Escape");
+
+  // Recents open the page.
+  await recents.getByRole("button", { name: "Field notes" }).click();
+  await expect(page.locator("#workspace-document")).toContainText("River survey");
+
+  // Phone layout: one column, no horizontal scroll.
+  await page.locator(".workspace-navigation").first().getByRole("button", { name: "Home", exact: true }).click();
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(home(page)).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1)).toBe(true);
+  await shot(page, "home-390-light");
+});

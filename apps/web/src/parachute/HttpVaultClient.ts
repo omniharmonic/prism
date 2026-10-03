@@ -53,4 +53,6 @@ export const httpVaultClient: VaultClient = {
   updateSchema: rest.updateSchema,
   queryNotes: rest.queryNotes,
   updateProperties: rest.updateProperties,
+  updatePropertiesBatch: rest.updatePropertiesBatch,
+  importCsv: rest.importCsv,
 };

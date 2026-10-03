@@ -16,6 +16,8 @@ import { Skeleton } from "../ui/Skeleton";
 import type { Note } from "../../lib/types";
 import { isLocked, pageStyleOf } from "../../lib/pages/model";
 import { LockedBanner } from "../pages/LockedBanner";
+import { RequestAccessButton } from "../inbox/RequestAccessButton";
+import { useUnreadCount } from "../../lib/notifications/hooks";
 
 export function Canvas() {
   const openTabs = useUIStore((s) => s.openTabs);
@@ -31,6 +33,8 @@ export function Canvas() {
 
   const { data: note, isLoading, isError, error, isFetching, refetch } = useNote(parachuteNoteId);
   const accessUnavailable = isAccessUnavailable(error);
+  // Request access (NP-CO-13) needs a Prism Server with notifications.
+  const canRequestAccess = useUnreadCount().available;
   useEffect(() => {
     if (!parachuteNoteId) return;
     if (accessUnavailable) useUIStore.getState().renameTab(parachuteNoteId, "Unavailable document");
@@ -121,6 +125,7 @@ export function Canvas() {
           <div role="alert" className="mx-auto max-w-lg px-6 pt-16 text-center">
             <h2 className="text-lg font-medium">{accessUnavailable ? "Document unavailable" : "Couldn’t open this document"}</h2>
             <p className="mt-3 text-sm text-[var(--text-secondary)]">{accessUnavailable ? "Your access may have changed, or this document may have been moved or removed." : "Check your connection and try again. Your saved work has not been changed."}</p>
+            {accessUnavailable && canRequestAccess && parachuteNoteId && <div className="mt-5"><RequestAccessButton noteId={parachuteNoteId} /></div>}
             <div className="mt-5 flex flex-wrap justify-center gap-3">
               <button type="button" disabled={isFetching} onClick={() => { void refetch(); }} className="focus-ring min-h-11 rounded-lg border border-[var(--border-subtle)] px-4 text-sm">{isFetching ? "Checking document…" : "Retry document"}</button>
               <button type="button" onClick={() => activeTab && useUIStore.getState().closeTab(activeTab.id)} className="focus-ring min-h-11 rounded-lg px-4 text-sm text-[var(--text-secondary)]">Close tab</button>

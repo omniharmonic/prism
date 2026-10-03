@@ -18,6 +18,7 @@ import { useCallback, useState } from "react";
 import { CheckCircle2, History, Send, Eye, AlertTriangle } from "lucide-react";
 import { fetchRevisions, type NoteRevision, type ReviewMode } from "../../lib/governance/review";
 import { submitForReview } from "../../lib/governance/review";
+import { RequestAccessButton } from "../inbox/RequestAccessButton";
 
 const wrap: React.CSSProperties = {
   margin: "0 auto",
@@ -109,6 +110,7 @@ export function ReviewBanner({
             <span data-testid="review-readonly-notice">
               You have read access to this note. Editing it requires permission from a steward.
             </span>
+            <RequestAccessButton noteId={noteId} level="edit" compact />
           </>
         ) : status.kind === "sent" ? (
           <>

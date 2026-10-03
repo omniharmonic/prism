@@ -19,7 +19,7 @@
  */
 
 export const PROPERTY_KINDS = [
-  "text", "number", "select", "multi_select", "status", "date", "person", "relation", "checkbox", "url",
+  "text", "number", "select", "multi_select", "status", "date", "person", "relation", "checkbox", "url", "email", "phone",
 ] as const;
 export type PropertyKind = (typeof PROPERTY_KINDS)[number];
 
@@ -32,13 +32,13 @@ export type OptionColor = (typeof OPTION_COLORS)[number];
 
 export const PROPERTY_KIND_LABELS: Record<PropertyKind, string> = {
   text: "Text", number: "Number", select: "Select", multi_select: "Multi-select", status: "Status",
-  date: "Date", person: "Person", relation: "Relation", checkbox: "Checkbox", url: "URL",
+  date: "Date", person: "Person", relation: "Relation", checkbox: "Checkbox", url: "URL", email: "Email", phone: "Phone",
 };
 
 /** The vault type a new property of `kind` is created with. */
 export const VAULT_TYPE_FOR_KIND: Record<PropertyKind, VaultFieldType> = {
   text: "string", number: "number", select: "string", multi_select: "array", status: "string",
-  date: "string", person: "string", relation: "string", checkbox: "boolean", url: "string",
+  date: "string", person: "string", relation: "string", checkbox: "boolean", url: "string", email: "string", phone: "string",
 };
 
 /** One field as `GET /api/schemas` returns it: vault def + Prism hints. */
@@ -52,6 +52,10 @@ export interface SchemaField {
   label?: string;
   colors?: Record<string, OptionColor>;
   hidden?: boolean;
+  /** Relation: the tag whose pages the picker searches ("the target database"). */
+  relationTag?: string;
+  /** Relation: when set, pages of `relationTag` show the pages that link to them under this label. */
+  reverseLabel?: string;
 }
 export interface TagSchema {
   description: string | null;
@@ -65,6 +69,8 @@ export interface FieldHints {
   label?: string;
   colors?: Record<string, OptionColor>;
   hidden?: boolean;
+  relationTag?: string;
+  reverseLabel?: string;
 }
 
 export interface PropertyOption {
@@ -85,6 +91,31 @@ export interface PropertyDef {
   multiple: boolean;
   /** The vault enum exactly (never colour-hint keys) — what a schema write may extend. */
   enumValues: string[];
+  /** Relation: the tag the picker searches. */
+  target?: string;
+  /** Relation: the reverse label shown on target pages. */
+  reverseLabel?: string;
+  /** Read-only system property (created/edited time/by). */
+  system?: SystemKind;
+}
+
+/** Notion's system properties: read-only, sortable, filterable. */
+export type SystemKind = "created_time" | "edited_time" | "created_by" | "edited_by";
+/** Who last wrote a note — stamped by the Prism Server gateway (`apps/server/src/writer-stamp.ts`). */
+export const LAST_WRITER_KEY = "prism_last_writer";
+export const SYSTEM_PROPERTIES: PropertyDef[] = [
+  { key: "$createdAt", label: "Created time", kind: "date", options: [], tag: null, multiple: false, enumValues: [], system: "created_time" },
+  { key: "$updatedAt", label: "Last edited time", kind: "date", options: [], tag: null, multiple: false, enumValues: [], system: "edited_time" },
+  { key: "prism_creator", label: "Created by", kind: "text", options: [], tag: null, multiple: false, enumValues: [], system: "created_by" },
+  { key: LAST_WRITER_KEY, label: "Last edited by", kind: "text", options: [], tag: null, multiple: false, enumValues: [], system: "edited_by" },
+];
+export const isSystemProperty = (key: string): boolean => SYSTEM_PROPERTIES.some((p) => p.key === key);
+
+/** A row/note's value for `def` (system properties read note columns). */
+export function propertyValue(n: { createdAt?: string | null; updatedAt?: string | null; metadata?: Record<string, unknown> | null }, key: string): unknown {
+  if (key === "$createdAt") return n.createdAt ?? null;
+  if (key === "$updatedAt") return n.updatedAt ?? null;
+  return n.metadata?.[key];
 }
 
 // Metadata keys that are system state, never shown as properties.
@@ -99,6 +130,8 @@ const RELATION_KEYS = /^(project|projects|parent|related|relates_to|organization
 const URL_KEYS = /(^|_)(url|link|website|href)$/i;
 const DATE_KEYS = /^(date|due|deadline|start|end|scheduled|completed|completed_at|due_date|start_date|end_date|first-met|last-contact|published)$/i;
 const STATUS_KEYS = /^(status|state|stage|event_status)$/i;
+const EMAIL_KEYS = /^(email|e-mail|mail|email_address)$/i;
+const PHONE_KEYS = /^(phone|telephone|mobile|cell|phone_number)$/i;
 
 /** Kind for a schema field (hints win, then vault type, then the key name). */
 export function inferKind(key: string, f: SchemaField | undefined, sample?: unknown): PropertyKind {
@@ -123,12 +156,15 @@ export function inferKind(key: string, f: SchemaField | undefined, sample?: unkn
     if (typeof sample === "string") {
       if (sample.startsWith("[[")) return PERSON_KEYS.test(key) ? "person" : "relation";
       if (/^https?:\/\//i.test(sample)) return "url";
+      if (looksLikeEmail(sample)) return "email";
       if (/^\d{4}-\d{2}-\d{2}($|T)/.test(sample)) return "date";
     }
     return "text";
   }
   if (t === "string") {
     if (URL_KEYS.test(key)) return "url";
+    if (EMAIL_KEYS.test(key)) return "email";
+    if (PHONE_KEYS.test(key)) return "phone";
     if (DATE_KEYS.test(key)) return "date";
     if (PERSON_KEYS.test(key)) return "person";
     if (RELATION_KEYS.test(key) && typeof sample === "string" && sample.startsWith("[[")) return "relation";
@@ -176,6 +212,8 @@ export function propertyFromField(key: string, f: SchemaField, tag: string | nul
     default: f.default,
     multiple: f.type === "array" || kind === "multi_select",
     enumValues: [...(f.enum ?? [])],
+    ...(f.relationTag ? { target: f.relationTag } : {}),
+    ...(f.reverseLabel ? { reverseLabel: f.reverseLabel } : {}),
   };
 }
 
@@ -215,13 +253,17 @@ export const isBlank = (v: unknown): boolean =>
 
 /** `[[vault/people/Ada Lovelace]]` → `Ada Lovelace`. */
 export function linkLabel(v: string): string {
-  const inner = v.trim().replace(/^\[\[(.*)\]\]$/, "$1");
+  const t = v.trim();
+  const inner = t.length >= 4 && t.startsWith("[[") && t.endsWith("]]") ? t.slice(2, -2) : t;
   const alias = inner.split("|")[1];
   if (alias) return alias.trim();
   return (inner.split("/").pop() ?? inner).replace(/\.[^.]+$/, "");
 }
 /** `[[path]]` → `path`; plain strings pass through. */
-export const linkTarget = (v: string): string => v.trim().replace(/^\[\[(.*)\]\]$/, "$1").split("|")[0]!.trim();
+export const linkTarget = (v: string): string => {
+  const t = v.trim();
+  return (t.length >= 4 && t.startsWith("[[") && t.endsWith("]]") ? t.slice(2, -2) : t).split("|")[0]!.trim();
+};
 export const asWikilink = (path: string): string => `[[${path}]]`;
 
 /** Short human text for any property value (cells, cards, filters). */
@@ -231,9 +273,32 @@ export function formatValue(def: Pick<PropertyDef, "kind">, v: unknown): string 
   if (Array.isArray(v)) return v.map((x) => formatValue(def, x)).filter(Boolean).join(", ");
   if (def.kind === "person" || def.kind === "relation") return typeof v === "string" ? linkLabel(v) : String(v);
   if (def.kind === "date" && typeof v === "string") return formatDate(v);
+  if (def.kind === "phone" && typeof v === "string") return v.trim();
   if (def.kind === "number" && typeof v === "number") return v.toLocaleString();
   return String(v);
 }
+
+/** "Oct 2, 3:41 PM" (+ year when not this year) — system timestamps. */
+export function formatDateTime(v: string): string {
+  const d = new Date(v);
+  if (Number.isNaN(d.getTime())) return v;
+  const sameYear = d.getFullYear() === new Date().getFullYear();
+  return d.toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit", ...(sameYear ? {} : { year: "numeric" }) });
+}
+
+/** Valid-looking email (one @, a dot in the domain, no spaces). */
+export function looksLikeEmail(v: string): boolean {
+  // Linear (no backtracking regex over user text, review H2).
+  const s = v.trim();
+  if (s.length > 320) return false;
+  const at = s.indexOf("@");
+  if (at < 1 || at !== s.lastIndexOf("@")) return false;
+  for (let i = 0; i < s.length; i++) { const c = s.charCodeAt(i); if (c <= 32 || c === 60 || c === 62) return false; }
+  const dot = s.lastIndexOf(".");
+  return dot > at + 1 && dot < s.length - 1;
+}
+/** Valid-looking phone (digits with + ( ) - . space, 5–20 digits). */
+export const looksLikePhone = (v: string): boolean => /^\+?[\d\s().-]+$/.test(v.trim()) && (v.replace(/\D/g, "").length >= 5) && (v.replace(/\D/g, "").length <= 20);
 
 export function formatDate(v: string): string {
   const day = /^\d{4}-\d{2}-\d{2}$/.test(v);
@@ -344,6 +409,14 @@ export function validateSchemaPatch(raw: unknown): { ok: true; patch: SchemaPatc
         if (typeof h.hidden !== "boolean") return { ok: false, error: `ui.${name}: hidden must be boolean` };
         out.hidden = h.hidden;
       }
+      if (h.relationTag !== undefined) {
+        if (!okText(h.relationTag, 128) || !(h.relationTag as string).trim()) return { ok: false, error: `ui.${name}: relationTag must be a tag name` };
+        out.relationTag = (h.relationTag as string).trim();
+      }
+      if (h.reverseLabel !== undefined) {
+        if (!okText(h.reverseLabel, 80)) return { ok: false, error: `ui.${name}: reverseLabel must be ≤80 chars` };
+        out.reverseLabel = (h.reverseLabel as string).trim();
+      }
       if (h.colors !== undefined) {
         if (!recordOf(h.colors) || names(h.colors).length > 100) return { ok: false, error: `ui.${name}: colors must be an object` };
         out.colors = {};
@@ -406,4 +479,19 @@ export function mergeSchemaFields(
     }
   }
   return { ok: true, fields, changed };
+}
+
+/**
+ * A safe path LEAF for a page titled `t` (CSV import, new rows, inline
+ * databases): no separators/control characters, never `.`/`..` (review L1).
+ */
+export function safeTitleLeaf(t: string, max = 120): string {
+  let s = "";
+  for (const ch of t.trim()) {
+    const c = ch.codePointAt(0)!;
+    s += ch === "/" || ch === "\\" || c < 32 || c === 127 ? "-" : ch;
+    if (s.length >= max) break;
+  }
+  s = s.trim();
+  return !s || /^\.+$/.test(s) ? "Untitled" : s;
 }

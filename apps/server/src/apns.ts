@@ -367,6 +367,18 @@ export function agentTurnNotification(sessionId: string, turnId: string, status:
     collapseId: collapseId(`agent-${sessionId}`),
   };
 }
+/** Content-free inbox notification (wave 2A): the id only; the app fetches the rest. */
+export function notificationAlert(id: string): ApnsNotification {
+  return {
+    payload: {
+      aps: { alert: { title: "Prism", body: "You have a new notification" }, sound: "default", "thread-id": "prism-inbox" },
+      type: "notification",
+      notificationId: id,
+      url: `/inbox/${encodeURIComponent(id)}`,
+    },
+    collapseId: collapseId(`notification-${id}`),
+  };
+}
 export function testNotification(): ApnsNotification {
   return {
     payload: { aps: { alert: { title: "Prism", body: "Notifications are working" }, sound: "default" }, type: "test" },
