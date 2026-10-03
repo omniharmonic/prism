@@ -6,7 +6,7 @@ import Collaboration from "@tiptap/extension-collaboration";
 import CollaborationCaret from "@tiptap/extension-collaboration-caret";
 import * as Y from "yjs";
 import type { Editor } from "@tiptap/react";
-import { Check, X, MessageSquarePlus } from "lucide-react";
+import { Check, X } from "lucide-react";
 import { collabExtensions } from "../../editor/collabSchema";
 import { SuggestionMode, suggestionAt } from "../../editor/suggestions";
 import { CommentOnly, commentOnRange, CommentInteraction } from "../../editor/comments";
@@ -20,6 +20,11 @@ import { SelectionActions } from "./SelectionActions";
 import { DocumentOutline } from "./DocumentOutline";
 import { CollabToolbar } from "./CollabToolbar";
 import { SuggestionReview } from "./SuggestionReview";
+import "./editor-blocks.css";
+import { BlockKeymap } from "../../lib/tiptap/blockCommands";
+import { BlockHandles } from "./BlockHandles";
+import { TableControls } from "./TableControls";
+import { ImageUpload, type ImageUploader } from "../../lib/tiptap/ImageUpload";
 
 export interface CollabUser {
   name: string;
@@ -59,6 +64,8 @@ export function CollabEditor({
   onCommentActivate,
   onWikilinkNavigate,
   wikilinkNotes,
+  uploadImage,
+  onUploadError,
 }: {
   ydoc: Y.Doc;
   provider: AwarenessProvider | null;
@@ -96,6 +103,11 @@ export function CollabEditor({
   /** Vault notes for the `[[` autocomplete dropdown. Omitted → no suggestions
    *  (e.g. a recipient on a share link with no notes list). */
   wikilinkNotes?: Note[];
+  /** Store a pasted/dropped/picked image and return its URL. Omitted → upload
+   *  is hidden and only "Image from URL" is offered. Read at mount. */
+  uploadImage?: ImageUploader;
+  /** User-facing upload failure message. */
+  onUploadError?: (message: string) => void;
 }) {
   const suggestionBubble = useRef<HTMLDivElement>(null);
   // Inline comment composer anchored to a captured selection range.
@@ -118,6 +130,11 @@ export function CollabEditor({
   const commentActivateRef = useRef(onCommentActivate);
   useEffect(() => { commentActivateRef.current = onCommentActivate; }, [onCommentActivate]);
 
+  const uploadRef = useRef(uploadImage);
+  useEffect(() => { uploadRef.current = uploadImage; }, [uploadImage]);
+  const uploadErrorRef = useRef(onUploadError);
+  useEffect(() => { uploadErrorRef.current = onUploadError; }, [onUploadError]);
+
   const editor = useEditor({
     extensions: [
       // Shared content schema (StarterKit + Link/Typography/Highlight/Tasks) —
@@ -128,6 +145,11 @@ export function CollabEditor({
       WikilinkExtension.configure({ onNavigate: (t) => navRef.current?.(t) }),
       WikilinkAutocomplete.configure({ onStateChange: setAutocomplete }),
       SlashCommand.configure({ onStateChange: setSlash }),
+      BlockKeymap,
+      ImageUpload.configure({
+        upload: uploadImage ? (file) => uploadRef.current!(file) : undefined,
+        onError: (message) => uploadErrorRef.current?.(message),
+      }),
       SuggestionMode.configure({ user }),
       CommentOnly.configure({ active: !!commentOnly }),
       CommentInteraction.configure({ onActivate: (id) => commentActivateRef.current?.(id) }),
@@ -215,10 +237,10 @@ export function CollabEditor({
           }}
         >
           <div className="cd-bubble">
-            <SelectionActions editor={editor} allowFormatting={editable && !commentOnly} />
-            {canComment && <button
-              onMouseDown={(e) => e.preventDefault()}
-              onClick={() => {
+            <SelectionActions
+              editor={editor}
+              allowFormatting={editable && !commentOnly}
+              onComment={canComment ? () => {
                 const sel = editor.state.selection;
                 const c = editor.view.coordsAtPos(sel.to);
                 setComposer({
@@ -228,10 +250,8 @@ export function CollabEditor({
                   left: Math.max(8, Math.min(c.left, window.innerWidth - 288)),
                 });
                 setDraft("");
-              }}
-            >
-              <MessageSquarePlus size={14} /> Comment
-            </button>}
+              } : undefined}
+            />
           </div>
         </BubbleMenu>
       )}
@@ -255,6 +275,11 @@ export function CollabEditor({
       )}
 
       <EditorContent editor={editor} />
+
+      {/* Block gutter. Structural moves are raw edits, so it is off while
+          suggesting (tracked changes) or comment-only. */}
+      {editor && <BlockHandles editor={editor} enabled={editable && !commentOnly && !suggesting} />}
+      {editor && editable && !commentOnly && <TableControls editor={editor} />}
 
       {/* `[[` wikilink autocomplete dropdown */}
       {editor && autocomplete?.active && (

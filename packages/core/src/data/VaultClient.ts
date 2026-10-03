@@ -140,6 +140,16 @@ export function toNoteVersion(raw: Record<string, unknown>): NoteVersion {
   };
 }
 
+/** What {@link VaultClient.uploadAttachment} returns: an embeddable, access-checked URL. */
+export interface UploadedAttachment {
+  id: string;
+  /** Same-origin (or server-proxied) URL the editor stores in `<img src>`. */
+  url: string;
+  name: string;
+  mimeType: string;
+  size: number;
+}
+
 /**
  * The data-source seam between the shared UI (`@prism/core`) and a host shell.
  *
@@ -214,4 +224,8 @@ export interface VaultClient {
   /** Metadata-only property write with per-field compare-and-set (`expect` = the
    *  values the caller last saw). Throws {@link PropertyConflictError}. */
   updateProperties?(id: string, set: Record<string, unknown>, expect?: Record<string, unknown>): Promise<PropertyWriteResult>;
+  /** Store an image/file as an attachment of `noteId` and return a URL to embed.
+   *  Optional: when absent, the editor hides upload (paste/drop/pick) and offers
+   *  only "Image from URL". Rejects on refusal; the editor inserts nothing. */
+  uploadAttachment?(noteId: string, file: File): Promise<UploadedAttachment>;
 }

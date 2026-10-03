@@ -19,6 +19,7 @@
  *    reseeded the document, after a crash before the store, and after a failed
  *    vault write — never a second mutation, never a result for a lost change.
  */
+import { COLLAB_SCHEMA_VERSION } from "@prism/core/editor-schema";
 import { test, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { randomBytes, randomUUID } from "node:crypto";
@@ -129,7 +130,7 @@ beforeEach(async () => {
   });
   attachCollab(server);
   await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
-  wsUrl = `ws://127.0.0.1:${(server.address() as AddressInfo).port}/collab`;
+  wsUrl = `ws://127.0.0.1:${(server.address() as AddressInfo).port}/collab?schema=${COLLAB_SCHEMA_VERSION}`;
 });
 
 afterEach(async () => {

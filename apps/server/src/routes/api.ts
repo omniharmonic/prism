@@ -16,7 +16,8 @@ import { createHash } from "node:crypto";
 import type { Context } from "hono";
 import { resolveVaultEntry } from "../db";
 import { vault, vaultClient, VaultError, VaultConflictError, type Note } from "../parachute";
-import { resolveActor, type Actor } from "../auth/actor";
+import { resolveActor, requestVia, type Actor } from "../auth/actor";
+import { COLLAB_SCHEMA_VERSION } from "@prism/core/editor-schema";
 import { effectiveLevel, effectiveCaps, grantedTags, type Cap, type NoteRef } from "../permissions";
 import { roleAtLeast, roleFloor } from "../roles";
 import { compress } from "hono/compress";
@@ -271,6 +272,44 @@ api.get("/events", async (c) => {
     principal: actor.kind === "user" ? `u:${actor.email}` : `l:${actor.capabilityId}`,
     canView: owner ? () => true : (r) => capsFor(actor, r).has("view"),
   });
+});
+
+/**
+ * REST half of the editor-schema handshake (C1; the socket half is in collab.ts).
+ * A content write from an editor built before the current document schema would
+ * have parsed the stored HTML through a schema that drops callouts, toggles,
+ * columns and colours — and saving it deletes them. Current clients send
+ * `X-Prism-Editor-Schema: <COLLAB_SCHEMA_VERSION>` through serverFetch. A
+ * content PATCH/PUT without it (or older) is refused with 409
+ * `editor_update_required` ONLY when the stored note already holds content the
+ * old schema cannot represent, so metadata writes, untouched notes and plain
+ * Markdown notes keep working for any caller. Tables and images are NOT markers:
+ * the old plain editor already supported them (only the old live editor, which
+ * the socket gate refuses, dropped them). In-process MCP dispatches (agents,
+ * which write Markdown/HTML through the gateway without a header) and server
+ * workers (which call the vault directly) are unaffected. Runs BEFORE the owner
+ * short-circuit, so it covers the owner passthrough too.
+ */
+export const EDITOR_SCHEMA_HEADER = "x-prism-editor-schema";
+const SCHEMA_V2_MARKERS = /data-type="(?:callout|toggle|columns|column)"|<details[\s>]|data-block-color=|data-text-color=/;
+export function needsEditorUpdate(storedContent: string | null | undefined): boolean {
+  return SCHEMA_V2_MARKERS.test(storedContent ?? "");
+}
+api.use("/notes/:id", async (c, next) => {
+  const method = c.req.method;
+  if (method !== "PATCH" && method !== "PUT") return next();
+  if (requestVia(c) === "mcp") return next();
+  const sent = c.req.header(EDITOR_SCHEMA_HEADER);
+  if (sent && /^\d{1,6}$/.test(sent) && Number(sent) >= COLLAB_SCHEMA_VERSION) return next();
+  let body: unknown;
+  try { body = JSON.parse(await c.req.text()); } catch { return next(); }
+  if (!body || typeof body !== "object" || typeof (body as { content?: unknown }).content !== "string") return next();
+  const actor = resolveActor(c);
+  if (actor.kind === "anon") return next(); // the route answers 401/403
+  let stored: string;
+  try { stored = (await vaultClient(actor.vaultId).getNote(c.req.param("id"))).content ?? ""; } catch { return next(); }
+  if (!needsEditorUpdate(stored)) return next();
+  return c.json({ error: "editor_update_required", message: "Prism was updated. Reload or update the app to keep editing." }, 409);
 });
 
 // Owner short-circuit: full vault access, token-free. Registered before the

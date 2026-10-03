@@ -44,6 +44,7 @@
  */
 import * as Y from "yjs";
 import { HocuspocusProvider, WebSocketStatus } from "@hocuspocus/provider";
+import { COLLAB_SCHEMA_VERSION } from "@prism/core/editor-schema";
 import WebSocket from "ws";
 import { hocuspocus, noteKind, PEER_ORIGIN, type CollabKind } from "./collab";
 import { signPeerConnToken } from "./auth/peer-conn";
@@ -150,7 +151,8 @@ class PeerBinding {
     this.doc.on("update", this.updateHandler);
 
     this.provider = new HocuspocusProvider({
-      url: this.peerUrl,
+      // The peer refuses a document socket without our schema version (C1).
+      url: withSchemaParam(this.peerUrl),
       name: this.fed.space_note_key,
       document: this.doc,
       // Re-minted per (re)connect so an expired token never sticks.
@@ -290,3 +292,8 @@ export class FederationManager {
 
 /** Process-wide singleton (mirrors the `hocuspocus` singleton in collab.ts). */
 export const federationManager = new FederationManager();
+
+/** Append `schema=<COLLAB_SCHEMA_VERSION>` to a collab URL (keeps any query). */
+export function withSchemaParam(url: string): string {
+  return `${url}${url.includes("?") ? "&" : "?"}schema=${COLLAB_SCHEMA_VERSION}`;
+}

@@ -21,6 +21,7 @@
  * comment made through the command endpoint DOES reach it (and a comment-level
  * actor's is refused); and the shared UI table.
  */
+import { COLLAB_SCHEMA_VERSION } from "@prism/core/editor-schema";
 import { test, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { createServer, type Server } from "node:http";
@@ -53,7 +54,7 @@ beforeEach(async () => {
   });
   attachCollab(server);
   await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
-  wsUrl = `ws://127.0.0.1:${(server.address() as AddressInfo).port}/collab`;
+  wsUrl = `ws://127.0.0.1:${(server.address() as AddressInfo).port}/collab?schema=${COLLAB_SCHEMA_VERSION}`;
 });
 
 afterEach(async () => {
