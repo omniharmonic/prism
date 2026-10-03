@@ -149,6 +149,25 @@ export class TaskWorker {
     }
   }
 
+  /**
+   * Fail everything still WAITING (never the running task) with `busy`: nothing
+   * about those inputs is known, and running them would spawn a thread each.
+   */
+  flush(): void {
+    const waiting = this.queue;
+    this.queue = [];
+    // The task a death just promoted (a thread is booting for it, nothing was sent yet) counts as waiting.
+    const next = this.current;
+    if (next && !next.sent) {
+      const thread = this.thread;
+      this.thread = null;
+      this.settle();
+      if (thread) void thread.worker.terminate();
+      waiting.unshift(next);
+    }
+    for (const task of waiting) task.reject(new WorkerFailedError("busy", "busy", 503));
+  }
+
   /** Shutdown / test helper. */
   async stop(): Promise<void> {
     const thread = this.thread;

@@ -792,7 +792,7 @@ export type CollabClientMessage =
  */
 const pendingNotices = new Map<string, { message: CollabClientMessage; until: number }>();
 /** Tunables tests shorten. */
-export const collabTuning = { noticeTtlMs: 15_000 };
+export const collabTuning = { noticeTtlMs: 15_000, /** How long a load / store waits between tries for a converter slot. */ busyWaitMs: 1500 };
 function tellClients(documentName: string, message: CollabClientMessage): void {
   try {
     hocuspocus.documents.get(documentName)?.broadcastStateless(JSON.stringify(message));
@@ -866,7 +866,7 @@ export async function reconcileLoadedDocs(server: LiveDocs): Promise<void> {
     }
     let prepared: DocJson | null;
     try {
-      prepared = await prepareExternalContent(kind, note.content);
+      prepared = await prepareExternalContent(kind, note.content, { actor: `doc:${name}` });
     } catch (e) {
       if (!(e instanceof ConversionError)) throw e;
       // Load-dependent (busy / timeout / a crashed worker): try again next tick.
@@ -1160,14 +1160,13 @@ export function setLostCommandCleanup(fn: typeof lostCommandCleanup): void {
  * unsaved store) — so a load and a store wait for a slot a few times first.
  */
 const BUSY_RETRIES = 5;
-const BUSY_WAIT_MS = 1500;
 async function patiently<T>(convert: () => Promise<T>): Promise<T> {
   for (let attempt = 0; ; attempt++) {
     try {
       return await convert();
     } catch (e) {
       if (!(e instanceof ConversionError) || e.reason !== "busy" || attempt >= BUSY_RETRIES) throw e;
-      await new Promise((r) => setTimeout(r, BUSY_WAIT_MS));
+      await new Promise((r) => setTimeout(r, collabTuning.busyWaitMs));
     }
   }
 }
@@ -1774,7 +1773,8 @@ export async function storeDocumentState(documentName: string, doc: Y.Doc): Prom
   const readable = await readNote();
   if (!kind) kind = "document";
   kindCache.set(documentName, kind);
-  const lane: ConvertOptions = { lane: "store" };
+  // Its own actor: a document whose renders keep timing out cools down by itself (H-1) — never the store lane.
+  const lane: ConvertOptions = { lane: "store", actor: `doc:${documentName}` };
 
   type Failure = { reason: string; permanent: boolean; retry: boolean };
   let failure: Failure | null = null;

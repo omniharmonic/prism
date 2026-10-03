@@ -129,6 +129,14 @@ export const convertCfg = {
   breakerFailures: envInt("CONVERT_BREAKER_FAILURES", 4, 0),
   breakerCooldownMs: envInt("CONVERT_BREAKER_COOLDOWN_MS", 30_000, 1),
   breakerCooldownMaxMs: envInt("CONVERT_BREAKER_COOLDOWN_MAX_MS", 10 * 60_000, 1),
+  /**
+   * Per ACTOR: this many consecutive TIMEOUTS of one account's (link's, document's)
+   * conversions and that actor is refused (`busy`, no thread used) for a cool-down,
+   * doubling per failed trial up to the max. Nobody else is affected. 0 = off.
+   */
+  actorBreakerFailures: envInt("CONVERT_ACTOR_BREAKER_FAILURES", 3, 0),
+  actorCooldownMs: envInt("CONVERT_ACTOR_COOLDOWN_MS", 30_000, 1),
+  actorCooldownMaxMs: envInt("CONVERT_ACTOR_COOLDOWN_MAX_MS", 10 * 60_000, 1),
   /** Idle threads are terminated after this long (they respawn on demand; 0 = keep). */
   idleMs: envInt("CONVERT_IDLE_MS", 5 * 60_000, 0),
   /** How long a failed input is remembered (by hash). */
@@ -147,28 +155,37 @@ export function configureConversion(patch: Partial<ConvertConfig>): () => void {
 let pool: TaskWorker[] = [];
 /**
  * The thread for a task. Saving must not wait behind opening: with ≥ 2 threads the
- * first one serves ONLY the `store` lane (a store may also use any other thread
- * that is idler); everything else shares the rest. One thread: shared, and a
- * store goes to the head of its queue.
+ * first one serves ONLY the `store` lane — and stores use ONLY it (H-2). A store
+ * used to take whichever thread was idler, and to MOVE to the others once its own
+ * thread's breaker opened: a store lane that kept dying then tripped the open
+ * lane's breaker too, and nobody could open anything. A store that finds its
+ * thread cooling down is answered `busy` and retried by its caller (the snapshot
+ * is saved ahead; `collab_unsaved`, the retry timer and the sweep write it later).
+ * One thread: shared, and a store goes to the head of its queue.
  */
 function worker(lane: "store" | "default"): TaskWorker | null {
   while (pool.length < convertCfg.threads) pool.push(new TaskWorker(convertCfg.heapMb, convertCfg.maxQueue, { preload: "doc" }));
-  const candidates = (pool.length < 2 ? pool : lane === "store" ? pool : pool.slice(1)).filter(breakerAdmits);
+  const candidates = (pool.length < 2 ? pool : lane === "store" ? pool.slice(0, 1) : pool.slice(1)).filter(breakerAdmits);
   let best = candidates[0] ?? null;
   for (const w of candidates) if (w.pending < best!.pending) best = w;
   return best;
 }
 
-// ── circuit breaker ─────────────────────────────────────────────────────────
-// A task that passes its deadline costs a thread: it is terminated and the next
-// task spawns a fresh one (a parser stack, up to `heapMb`). Under memory pressure
-// EVERY conversion times out, and every loaded document's store retried one —
-// a respawn storm exactly when the host could least afford it. Per thread:
-// `breakerFailures` consecutive kills/deaths open the breaker for a cool-down;
-// after it ONE task is let through (half-open) — success closes the breaker,
-// another failure re-opens it for twice as long. Per thread, so the default lane
-// (opens, agent writes — whatever a member can make time out) cannot take the
-// store lane's thread down with it.
+// ── circuit breaker (shared, per thread): DEAD workers only ─────────────────
+// A thread that dies (crash, out of memory, never comes up) costs a respawn — a
+// parser stack, up to `heapMb` — and says the SERVER is in trouble, whoever asked.
+// `breakerFailures` consecutive deaths open the thread's breaker for a cool-down:
+// nothing is spawned, callers are answered `busy`; after it ONE task is let
+// through (half-open) — success closes it, another death re-opens it for twice as
+// long. What was QUEUED behind the death that opened it is answered `busy` at
+// once (`TaskWorker.flush`): those tasks would each have spawned a thread, and —
+// counted as failures — each doubled the cool-down.
+//
+// A TIMEOUT is not counted here (H-1). It is, as far as anyone can tell, a
+// property of that input — and inputs come from members: four slow notes used to
+// open the breaker of the lane EVERYONE opens pages through, re-tripped by one
+// request per trial, up to ten minutes at a time. Timeouts are charged to the
+// actor that sent them (below).
 interface Breaker {
   fails: number;
   openUntil: number;
@@ -188,22 +205,84 @@ function breakerAdmits(w: TaskWorker): boolean {
   if (b.openUntil === 0) return true;
   return Date.now() >= b.openUntil && !b.trial;
 }
-function breakerResult(w: TaskWorker, ok: boolean): void {
+/** `trial`: this task was the half-open trial (admitted while the breaker was open). */
+function breakerResult(w: TaskWorker, outcome: "ok" | "dead" | "neutral", trial: boolean): void {
   if (convertCfg.breakerFailures <= 0) return;
   const b = breakerOf(w);
-  b.trial = false;
-  if (ok) {
+  if (trial) b.trial = false;
+  if (outcome === "neutral") return;
+  if (outcome === "ok") {
     b.fails = 0;
     b.openUntil = 0;
     b.cooldownMs = 0;
     return;
   }
+  // Already open and this was not the trial: a task admitted BEFORE it opened. Not news.
+  if (b.openUntil !== 0 && !trial) return;
   b.fails++;
   if (b.openUntil !== 0 || b.fails >= convertCfg.breakerFailures) {
     b.cooldownMs = Math.min(convertCfg.breakerCooldownMaxMs, b.cooldownMs ? b.cooldownMs * 2 : convertCfg.breakerCooldownMs);
     b.openUntil = Date.now() + b.cooldownMs;
     conversionStats.breakerOpened++;
-    console.warn(`[convert] ${b.fails} conversions in a row ended with the worker killed or dead — this thread takes no work for ${Math.round(b.cooldownMs / 1000)} s (callers are answered busy)`);
+    console.warn(`[convert] ${b.fails} conversions in a row ended with the worker dead — this thread takes no work for ${Math.round(b.cooldownMs / 1000)} s (callers are answered busy)`);
+    w.flush();
+  }
+}
+
+// ── per-actor penalty: TIMEOUTS ─────────────────────────────────────────────
+// `actorBreakerFailures` consecutive timeouts of ONE actor's conversions (an
+// account, a link, a document's own stores and folds — whatever key the caller
+// passes) and that actor is refused for a cool-down: `busy`, no thread used.
+// After it one trial; a success ends the penalty, another timeout doubles it.
+// Everyone else converts as before. (The same input twice is also remembered by
+// hash — "failure memory" below — whoever sends it.)
+interface Penalty {
+  fails: number;
+  openUntil: number;
+  cooldownMs: number;
+  trial: boolean;
+  at: number;
+}
+const PENALTIES_MAX = 2000;
+/** Timeouts further apart than this are not "in a row". */
+const PENALTY_WINDOW_MS = 10 * 60_000;
+const penalties = new Map<string, Penalty>();
+/** Is this actor cooling down right now? (no trial is taken by asking) */
+function actorPenalised(actor: string | null | undefined): boolean {
+  if (!actor || convertCfg.actorBreakerFailures <= 0) return false;
+  const p = penalties.get(actor);
+  return !!p && p.openUntil !== 0 && (Date.now() < p.openUntil || p.trial);
+}
+/** Admit one task of this actor: null = refused; `trial` = it is the half-open trial. */
+function actorAdmit(actor: string | null | undefined): { trial: boolean } | null {
+  if (!actor || convertCfg.actorBreakerFailures <= 0) return { trial: false };
+  const p = penalties.get(actor);
+  if (!p || p.openUntil === 0) return { trial: false };
+  if (Date.now() < p.openUntil || p.trial) return null;
+  p.trial = true;
+  return { trial: true };
+}
+function actorResult(actor: string | null | undefined, outcome: "ok" | "timeout" | "neutral", trial: boolean): void {
+  if (!actor || convertCfg.actorBreakerFailures <= 0) return;
+  let p = penalties.get(actor);
+  if (trial && p) p.trial = false;
+  if (outcome === "neutral") return;
+  if (outcome === "ok") return void penalties.delete(actor);
+  const at = Date.now();
+  if (!p) {
+    penalties.set(actor, (p = { fails: 0, openUntil: 0, cooldownMs: 0, trial: false, at }));
+    while (penalties.size > PENALTIES_MAX) penalties.delete(penalties.keys().next().value!);
+  }
+  // Already cooling down and this was not the trial: a task admitted before the penalty began.
+  if (p.openUntil !== 0 && !trial) return;
+  if (p.openUntil === 0 && at - p.at > PENALTY_WINDOW_MS) p.fails = 0;
+  p.at = at;
+  p.fails++;
+  if (p.openUntil !== 0 || p.fails >= convertCfg.actorBreakerFailures) {
+    p.cooldownMs = Math.min(convertCfg.actorCooldownMaxMs, p.cooldownMs ? p.cooldownMs * 2 : convertCfg.actorCooldownMs);
+    p.openUntil = at + p.cooldownMs;
+    conversionStats.actorPenalised++;
+    console.warn(`[convert] ${p.fails} conversions in a row timed out for one actor — its conversions are answered busy for ${Math.round(p.cooldownMs / 1000)} s (nobody else is affected)`);
   }
 }
 
@@ -277,12 +356,13 @@ function remember(key: string, reason: ConversionFailure): void {
 export function forgetConversionFailures(): void {
   failures.clear();
   breakers = new WeakMap(); // …and every thread's circuit breaker is closed again
+  penalties.clear(); // …and nobody is cooling down
 }
 const hashOf = (op: string, text: string): string => createHash("sha256").update(op).update("\0").update(text).digest("base64");
 
 // ── stats (health / tests) ──────────────────────────────────────────────────
 
-export const conversionStats = { inline: 0, worker: 0, refused: 0, timeouts: 0, failed: 0, busy: 0, remembered: 0, breakerOpened: 0, breakerRefused: 0 };
+export const conversionStats = { inline: 0, worker: 0, refused: 0, timeouts: 0, failed: 0, busy: 0, remembered: 0, breakerOpened: 0, breakerRefused: 0, actorPenalised: 0, actorRefused: 0 };
 
 // ── the two execution paths ─────────────────────────────────────────────────
 
@@ -320,7 +400,26 @@ export function isCheapContent(content: string, markdown: boolean): boolean {
 }
 
 function offThread<T>(message: unknown, chars: number, opts: ConvertOptions | undefined): Promise<T> {
-  return withActorSlot(opts?.actor, () => runInWorker<T>(message, chars, opts?.lane ?? "default"));
+  const actor = opts?.actor;
+  const refuse = (): never => {
+    conversionStats.actorRefused++;
+    conversionStats.busy++;
+    throw new ConversionError("busy");
+  };
+  // Refused before it takes a place in the actor's line…
+  if (actorPenalised(actor)) return Promise.reject(new Error()).catch(refuse);
+  return withActorSlot(actor, async () => {
+    // …and checked again once it is this task's turn: the penalty may have begun while it waited.
+    const admitted = actorAdmit(actor) ?? refuse();
+    try {
+      const value = await runInWorker<T>(message, chars, opts?.lane ?? "default");
+      actorResult(actor, "ok", admitted.trial);
+      return value;
+    } catch (e) {
+      actorResult(actor, e instanceof ConversionError && e.reason === "timeout" ? "timeout" : "neutral", admitted.trial);
+      throw e;
+    }
+  });
 }
 async function runInWorker<T>(message: unknown, chars: number, lane: "store" | "default"): Promise<T> {
   const w = worker(lane);
@@ -332,28 +431,30 @@ async function runInWorker<T>(message: unknown, chars: number, lane: "store" | "
   }
   conversionStats.worker++;
   const b = breakerOf(w);
-  if (b.openUntil !== 0) b.trial = true; // half-open: this is the one trial
+  const trial = b.openUntil !== 0; // half-open: this is the one trial
+  if (trial) b.trial = true;
   try {
     const value = await w.run<T>(message, timeoutFor(chars), [], lane === "store");
     armIdleStop();
-    breakerResult(w, true);
+    breakerResult(w, "ok", trial);
     return value;
   } catch (e) {
     armIdleStop();
     if (e instanceof WorkerTimeoutError) {
+      // The thread came up and ran: this is about the input (charged to the actor), not the worker.
       conversionStats.timeouts++;
-      breakerResult(w, false);
+      breakerResult(w, "neutral", trial);
       throw new ConversionError("timeout");
     }
     if (e instanceof WorkerFailedError && e.code === "busy") {
-      b.trial = false;
+      breakerResult(w, "neutral", trial);
       conversionStats.busy++;
       throw new ConversionError("busy");
     }
     conversionStats.failed++;
     // `worker_failed` = the thread died or never came up; an ordinary error reply
     // (a parser threw on this input) leaves the thread alive and is no respawn.
-    breakerResult(w, !(e instanceof WorkerFailedError && e.code === "worker_failed"));
+    breakerResult(w, e instanceof WorkerFailedError && e.code === "worker_failed" ? "dead" : "ok", trial);
     throw new ConversionError("failed");
   }
 }

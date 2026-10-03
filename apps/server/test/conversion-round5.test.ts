@@ -425,3 +425,93 @@ test("C-1: rendering a document is inline only when it is SMALL — megabytes of
   assert.equal(await service.docJsonToHtml(para("small")), "<p>small</p>");
   assert.equal(conversionStats.inline, before + 1);
 });
+
+// ── H-1 / H-2 ───────────────────────────────────────────────────────────────
+
+const reasonOf = (p: Promise<unknown>): Promise<string> => p.then(() => "ok", (e) => (e instanceof ConversionError ? e.reason : `threw ${String(e)}`));
+/** Ordinary content that is not "tiny": converted in the worker. */
+const prose = (tag: string) => `${tag} ` + "word ".repeat(6000);
+/** A document whose render goes to the worker (text beyond the inline byte cap). */
+const bigDoc = (tag: string) => ({ type: "doc", content: [{ type: "paragraph", content: [{ type: "text", text: `${tag} ` + "word ".repeat(6000) }] }] });
+type Extra = Partial<service.ConvertConfig> & Record<string, number>;
+
+test("H-1: one member's timeouts never deny conversion to anyone else — the shared breaker counts only DEAD workers; timeouts cool down that actor alone", { timeout: 120_000 }, async () => {
+  await stopConversionWorkers();
+  restore.push(configureConversion({ timeoutMs: 250, timeoutPerMbMs: 0, timeoutMaxMs: 250, failureTtlMs: 0, breakerFailures: 3, breakerCooldownMs: 30_000, actorBreakerFailures: 3, actorCooldownMs: 1500, actorCooldownMaxMs: 6000 } as Extra));
+  const bomb = (i: number) => "*a ".repeat(6000) + i; // marked is quadratic: seconds in the worker — distinct content each time
+  const mallory = { actor: "user:mallory" };
+  const opened = conversionStats.breakerOpened;
+  const reasons: string[] = [];
+  for (let i = 0; i < 4; i++) reasons.push(await reasonOf(service.markdownToHtml(bomb(i), mallory)));
+  assert.deepEqual(reasons, ["timeout", "timeout", "timeout", "busy"], "three timeouts, then this actor is told to come back later");
+  // Everybody else converts as if nothing had happened.
+  restore.push(configureConversion({ timeoutMs: 20_000, timeoutMaxMs: 20_000 }));
+  assert.match(await service.markdownToHtml(prose("alice"), { actor: "user:alice" }), /^<p>alice word/, "another member's open");
+  assert.match(await service.markdownToHtml(prose("server")), /^<p>server word/, "a server-side conversion (no actor)");
+  assert.equal(await reasonOf(service.docJsonToHtml(bigDoc("store"), { lane: "store" })), "ok", "a store");
+  assert.equal(conversionStats.breakerOpened, opened, "the shared breaker never opened");
+  // The actor itself is refused without a thread being used — even for good content — until the cool-down is over.
+  const used = conversionStats.worker;
+  assert.equal(await reasonOf(service.markdownToHtml(prose("mallory"), mallory)), "busy");
+  assert.equal(conversionStats.worker, used, "no worker was handed the penalised actor's task");
+  await new Promise((r) => setTimeout(r, 1600));
+  assert.equal(await reasonOf(service.markdownToHtml(prose("mallory again"), mallory)), "ok", "one trial after the cool-down; a success ends the penalty");
+  assert.equal(await reasonOf(service.markdownToHtml(prose("mallory once more"), mallory)), "ok");
+  await stopConversionWorkers();
+});
+
+test("H-1: tasks already queued when the breaker opens are answered busy — they neither respawn a thread nor double the cool-down", { timeout: 120_000 }, async () => {
+  await stopConversionWorkers();
+  // A 4 MB heap ceiling: the thread dies while it loads (out of memory) — `worker_failed`, the breaker's business.
+  restore.push(configureConversion({ threads: 1, heapMb: 4, failureTtlMs: 0, breakerFailures: 2, breakerCooldownMs: 1500, breakerCooldownMaxMs: 60_000 } as Extra));
+  restore.push(() => void stopConversionWorkers());
+  const opened = conversionStats.breakerOpened;
+  const all = await Promise.all([0, 1, 2, 3, 4, 5].map((i) => reasonOf(service.markdownToHtml(prose(`q${i}`)))));
+  assert.deepEqual(all, ["failed", "failed", "busy", "busy", "busy", "busy"], "two dead workers open the breaker; what was queued behind them is not run");
+  assert.equal(conversionStats.breakerOpened - opened, 1, "opened ONCE — the queued tasks did not each double the cool-down");
+  // The cool-down is still the first one (1.5 s): after it exactly one trial is let through.
+  const used = conversionStats.worker;
+  assert.equal(await reasonOf(service.markdownToHtml(prose("early"))), "busy");
+  assert.equal(conversionStats.worker, used);
+  await new Promise((r) => setTimeout(r, 1700));
+  assert.equal(await reasonOf(service.markdownToHtml(prose("trial"))), "failed", "the trial ran (and the thread is still dead)");
+  assert.equal(conversionStats.worker, used + 1);
+  assert.equal(conversionStats.breakerOpened - opened, 2, "a failed TRIAL re-opens it");
+});
+
+test("H-2: stores stay on their reserved thread — a store lane that keeps dying never trips the thread opens use; a store answered busy is retried without loss", { timeout: 120_000 }, async () => {
+  await stopConversionWorkers();
+  restore.push(configureConversion({ threads: 2, heapMb: 4, failureTtlMs: 0, breakerFailures: 2, breakerCooldownMs: 60_000, breakerCooldownMaxMs: 60_000 } as Extra));
+  restore.push(() => void stopConversionWorkers());
+  const tuning = collab.collabTuning as { noticeTtlMs: number; busyWaitMs?: number };
+  const waitWas = tuning.busyWaitMs;
+  tuning.busyWaitMs = 20;
+  restore.push(() => void (tuning.busyWaitMs = waitWas));
+  const store = (tag: string) => reasonOf(service.docJsonToHtml(bigDoc(tag), { lane: "store" }));
+  assert.deepEqual([await store("a"), await store("b")], ["failed", "failed"], "the store thread dies twice: its breaker opens");
+  const used = conversionStats.worker;
+  assert.deepEqual([await store("c"), await store("d"), await store("e")], ["busy", "busy", "busy"], "further stores wait — they do NOT move to the other thread");
+  assert.equal(conversionStats.worker, used, "no thread was used for them");
+  // The thread that serves opens was never touched by stores: an open is still ATTEMPTED (not refused by a breaker).
+  const refused = conversionStats.breakerRefused;
+  assert.equal(await reasonOf(service.markdownToHtml(prose("open"))), "failed", "attempted (this test's threads cannot come up at all)");
+  assert.equal(conversionStats.breakerRefused, refused, "not refused by a breaker");
+  assert.equal(conversionStats.worker, used + 1);
+
+  // A live page stored while its lane answers busy: nothing reaches the vault, nothing is lost, and it is written later.
+  fv.put({ id: "h2", tags: ["garden"], content: "<p>start</p>", updatedAt: T0 });
+  const doc = await loadDocumentState("h2", new Y.Doc());
+  type(doc, "typed while the store lane was down " + "word ".repeat(6000));
+  await storeDocumentState("h2", doc);
+  assert.equal(vaultContent("h2"), "<p>start</p>");
+  assert.equal(unsavedRow("h2")?.permanent, 0, "recorded as not saved YET (retried), not as unsaveable");
+  assert.equal(unsavedRow("h2")?.reason, "busy");
+  assert.equal(getDocState("h2")!.ahead, true, "the typing is in the server's document store");
+  // The lane heals (a deploy with a sane heap; the breaker's cool-down is over).
+  await stopConversionWorkers();
+  restore.push(configureConversion({ heapMb: 512 }));
+  await storeDocumentState("h2", doc);
+  assert.match(vaultContent("h2"), /typed while the store lane was down/);
+  assert.equal(unsavedRow("h2"), null);
+  assert.equal(getDocState("h2")!.ahead, false);
+});

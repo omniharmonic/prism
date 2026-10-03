@@ -336,24 +336,27 @@ test("M4: the worker heap ceiling is modest by default, and what is parsed at al
   assert.ok(cfg.breakerFailures! > 0, "the circuit breaker is on by default");
 });
 
+// (Round 5, H-1: a TIMEOUT is charged to the actor that sent the input — the shared, per-thread breaker
+// counts only dead workers; see conversion-round5.test.ts. The respawn bound this test is about holds per actor.)
 test("M4: consecutive killed workers open a circuit breaker — no more respawns until a cool-down, then one trial", { timeout: 120_000 }, async () => {
   await stopConversionWorkers();
-  restore.push(configureConversion({ threads: 1, timeoutMs: 250, timeoutPerMbMs: 0, timeoutMaxMs: 250, failureTtlMs: 0, ...({ breakerFailures: 3, breakerCooldownMs: 1200, breakerCooldownMaxMs: 5000 } as object) }));
+  restore.push(configureConversion({ threads: 1, timeoutMs: 250, timeoutPerMbMs: 0, timeoutMaxMs: 250, failureTtlMs: 0, ...({ breakerFailures: 3, breakerCooldownMs: 1200, breakerCooldownMaxMs: 5000, actorBreakerFailures: 3, actorCooldownMs: 1200, actorCooldownMaxMs: 5000 } as object) }));
+  const who = { actor: "user:slow@test.local" };
   const bomb = (i: number) => "*a ".repeat(6000) + i; // marked is quadratic: seconds in the worker
   const reasons: string[] = [];
-  for (let i = 0; i < 3; i++) reasons.push(await service.markdownToHtml(bomb(i)).then(() => "ok", (e) => (e as ConversionError).reason));
+  for (let i = 0; i < 3; i++) reasons.push(await service.markdownToHtml(bomb(i), who).then(() => "ok", (e) => (e as ConversionError).reason));
   assert.deepEqual(reasons, ["timeout", "timeout", "timeout"]);
   const spawned = conversionStats.worker;
   const start = performance.now();
-  const fourth = await service.markdownToHtml(bomb(3)).then(() => "ok", (e) => (e as ConversionError).reason);
+  const fourth = await service.markdownToHtml(bomb(3), who).then(() => "ok", (e) => (e as ConversionError).reason);
   assert.equal(fourth, "busy", "answered busy — says nothing about the input, callers retry later");
   assert.ok(performance.now() - start < 100, "at once");
   assert.equal(conversionStats.worker, spawned, "no thread was spawned for it");
   // After the cool-down ONE task is let through; a success closes the breaker.
   await new Promise((r) => setTimeout(r, 1300));
   restore.push(configureConversion({ timeoutMs: 20_000, timeoutMaxMs: 20_000, inlineMaxChars: 0, inlineMaxNodes: 0 }));
-  assert.equal(await service.markdownToHtml("ok *then*"), "<p>ok <em>then</em></p>\n");
-  assert.equal(await service.markdownToHtml("and again"), "<p>and again</p>\n");
+  assert.equal(await service.markdownToHtml("ok *then*", who), "<p>ok <em>then</em></p>\n");
+  assert.equal(await service.markdownToHtml("and again", who), "<p>and again</p>\n");
   await stopConversionWorkers();
 });
 
