@@ -381,3 +381,15 @@
 .db-date-more { flex: none; color: var(--text-muted); }
 .db-value[data-editing][data-date] { flex-direction: row; flex-wrap: wrap; align-items: center; gap: 2px; }
 .db-value[data-editing][data-date] > .db-input { flex: 1 1 110px; min-width: 0; }
+
+/* Gallery card sizes (NP-DB-05) */
+.db-gallery[data-size="small"] { grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 10px; }
+.db-gallery[data-size="small"] .db-cover { height: 96px; font-size: 30px; }
+.db-gallery[data-size="large"] { grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 18px; }
+.db-gallery[data-size="large"] .db-cover { height: 196px; font-size: 52px; }
+@media (max-width: 767px) {
+  .db-gallery[data-size="small"] { grid-template-columns: 1fr 1fr 1fr; }
+  .db-gallery[data-size="large"] { grid-template-columns: 1fr; }
+  .db-gallery[data-size="large"] .db-cover { height: 160px; }
+}
+@media (max-width: 420px) { .db-gallery[data-size="small"] { grid-template-columns: 1fr 1fr; } }

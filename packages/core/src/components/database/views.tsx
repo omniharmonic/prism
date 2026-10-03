@@ -87,6 +87,10 @@ function GroupHeader({ g, def, open, onToggle }: { g: { value: string | null; la
   );
 }
 const groupKey = (v: string | null) => v ?? "∅";
+/** The view's groups, without the empty ones when it hides them (NP-DB-04). `keep`: a group being added to. */
+function shownGroups<T extends { value: string | null; rows: QueryRow[] }>(groups: T[], view: DatabaseView, keep?: string | null): T[] {
+  return view.hideEmptyGroups ? groups.filter((g) => g.rows.length > 0 || (keep !== undefined && g.value === keep)) : groups;
+}
 /** Shift state of the click that is about to toggle a row checkbox (click fires before change). */
 let lastShift = false;
 const groupPreset = (def: PropertyDef, v: string | null) => (v === null ? undefined : { [def.key]: def.kind === "checkbox" ? v === "true" : def.kind === "multi_select" ? [v] : v });
@@ -299,7 +303,7 @@ export function TableView({ ctx }: { ctx: ViewContext }) {
   if (!groupDef) return <TableBlock ctx={ctx} rows={ctx.rows} label={ctx.view.name} />;
   return (
     <>
-      {groupRows(ctx.rows, groupDef).map((g) => {
+      {shownGroups(groupRows(ctx.rows, groupDef), ctx.view).map((g) => {
         const open = !collapsed.has(groupKey(g.value));
         return (
           <section key={groupKey(g.value)} aria-label={g.label} className="db-group">
@@ -445,7 +449,7 @@ export function BoardView({ ctx, onPickGroup }: { ctx: ViewContext; onPickGroup:
   return (
     <DndContext sensors={sensors} collisionDetection={boardCollision} onDragEnd={onDragEnd}>
       <div className="db-board" role="list" aria-label={`${ctx.view.name} board`}>
-        {groups.map((g) => (
+        {shownGroups(groups, ctx.view, adding).map((g) => (
           <BoardColumn key={g.value ?? "∅"} value={g.value} label={g.label} def={groupDef} count={g.rows.length}
             onAdd={ctx.canCreate ? () => setAdding(g.value) : undefined}>
             {adding === g.value && (
@@ -466,7 +470,7 @@ export function BoardView({ ctx, onPickGroup }: { ctx: ViewContext; onPickGroup:
 export function GalleryView({ ctx }: { ctx: ViewContext }) {
   const [adding, setAdding] = useState(false);
   return (
-    <div className="db-gallery" role="list" aria-label={`${ctx.view.name} gallery`}>
+    <div className="db-gallery" role="list" aria-label={`${ctx.view.name} gallery`} data-size={ctx.view.cardSize ?? "medium"}>
       {ctx.rows.map((r) => {
         // Cover (NP-DB-05): the chosen property (a URL or a files value), else the page cover
         // (image or brand gradient) — one resolver shared with the page header (`coverForNote`).
@@ -521,7 +525,7 @@ export function ListView({ ctx }: { ctx: ViewContext }) {
   if (!groupDef) return <ListRows ctx={ctx} rows={ctx.rows} label={`${ctx.view.name} list`} />;
   return (
     <>
-      {groupRows(ctx.rows, groupDef).map((g) => {
+      {shownGroups(groupRows(ctx.rows, groupDef), ctx.view).map((g) => {
         const open = !collapsed.has(groupKey(g.value));
         return (
           <section key={groupKey(g.value)} aria-label={g.label} className="db-group">

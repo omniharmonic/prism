@@ -7,7 +7,7 @@ import { useState } from "react";
 import { ArrowLeft, ArrowRight, Copy, Plus, Trash2, X } from "lucide-react";
 import type { QueryCondition, QueryFilter, QueryFilterGroup, QueryOp, QuerySort } from "../../lib/database/query";
 import { STATUS_GROUP_LABELS, STATUS_GROUPS, SYSTEM_PROPERTIES, type PropertyDef } from "../../lib/database/schema";
-import { VIEW_LABELS, VIEW_TYPES, type DatabaseView, type ViewType } from "./config";
+import { CARD_SIZES, VIEW_LABELS, VIEW_TYPES, type CardSize, type DatabaseView, type ViewType } from "./config";
 
 /** Title + timestamps + every property, as filter/sort targets. */
 export function filterTargets(props: PropertyDef[]): Array<{ key: string; label: string; def?: PropertyDef }> {
@@ -235,6 +235,19 @@ export function ViewSettings({ view, props, canDelete, onChange, onDelete, tabs,
             {view.type !== "board" && <option value="">None</option>}
             {view.type === "board" && !view.groupBy && <option value="">Choose…</option>}
             {groupable.map((p) => <option key={p.key} value={p.key}>{p.label}</option>)}
+          </select>
+        </label>
+      )}
+      {(view.type === "board" || view.type === "table" || view.type === "list") && view.groupBy && (
+        <label className="db-radio">
+          <input type="checkbox" checked={view.hideEmptyGroups === true} onChange={(e) => onChange({ hideEmptyGroups: e.target.checked || undefined })} /> Hide empty groups
+        </label>
+      )}
+      {view.type === "gallery" && (
+        <label className="db-field">
+          <span>Card size</span>
+          <select aria-label="Card size" value={view.cardSize ?? "medium"} onChange={(e) => onChange({ cardSize: e.target.value === "medium" ? undefined : (e.target.value as CardSize) })}>
+            {CARD_SIZES.map((s) => <option key={s} value={s}>{s.charAt(0).toUpperCase() + s.slice(1)}</option>)}
           </select>
         </label>
       )}

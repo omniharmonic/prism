@@ -320,6 +320,30 @@ test("gallery card size and cover", async ({ page }) => {
   await expect(card("Refine onboarding copy").locator(".db-cover img, .db-cover-gradient")).toHaveCount(0);
   // A cover that is not ours / https never becomes an <img> (no javascript:, no arbitrary same-origin path).
   expect(await gallery.locator('.db-cover img:not([src^="/api/attachments/"]):not([src^="https://"])').count()).toBe(0);
+
+  // Card size S / M / L (NP-DB-05): saved per view, and it really changes the cards.
+  const width = async () => (await card("Review workspace navigation").boundingBox())!.width;
+  const coverHeight = async () => (await card("Review workspace navigation").locator(".db-cover").boundingBox())!.height;
+  const [mediumW, mediumH] = [await width(), await coverHeight()];
+  await expect(gallery).toHaveAttribute("data-size", "medium");
+  await page.getByRole("button", { name: "View settings" }).click();
+  const size = page.getByRole("dialog", { name: "View settings" }).getByLabel("Card size");
+  await expect(size).toHaveValue("medium");
+  await size.selectOption("large");
+  await expect(gallery).toHaveAttribute("data-size", "large");
+  await expect.poll(width).toBeGreaterThan(mediumW);
+  expect(await coverHeight()).toBeGreaterThan(mediumH);
+  await expect.poll(async () => (await configWrites(page)).at(-1)?.metadata.prism_database.views[2].cardSize).toBe("large");
+  await size.selectOption("small");
+  await expect(gallery).toHaveAttribute("data-size", "small");
+  await expect.poll(width).toBeLessThan(mediumW);
+  expect(await coverHeight()).toBeLessThan(mediumH);
+  await expect.poll(async () => (await configWrites(page)).at(-1)?.metadata.prism_database.views[2].cardSize).toBe("small");
+  // The cover still fills the card at every size, and the choice survives a reload.
+  await expect(img).toHaveCSS("object-fit", "cover");
+  await page.reload();
+  await page.getByRole("tab", { name: "Gallery" }).click();
+  await expect(page.getByRole("list", { name: "Gallery gallery" })).toHaveAttribute("data-size", "small");
 });
 
 // NP-DB-14 — multi-level sort from the Sort menu, saved per view.
@@ -461,6 +485,93 @@ test("create database from New page and from tag", async ({ page }) => {
   await page.getByRole("button", { name: "Open as database" }).click();
   await expect(page.getByRole("table", { name: "Table" })).toBeVisible();
   expect((await fx(page)).creates.length).toBe(count);
+});
+
+// NP-DB-04 — board groups by select / status / person; empty groups can be hidden; cards open, move and reorder from their menu.
+test("board: hide empty groups, group by person, card menu order and open", async ({ page }) => {
+  await page.goto("/e2e-fixtures/databases.html");
+  await page.getByRole("tab", { name: "Board" }).click();
+  const board = page.getByRole("list", { name: "Board board" });
+  const columns = () => board.getByRole("region").evaluateAll((els) => els.map((e) => e.getAttribute("aria-label")));
+  await page.getByRole("button", { name: "View settings" }).click();
+  const settings = page.getByRole("dialog", { name: "View settings" });
+  await settings.getByLabel("Group by").selectOption("priority");
+  // "blocked" is an option nobody uses: an empty column.
+  await expect.poll(columns).toEqual(["low", "medium", "high", "blocked"]);
+  await expect(board.getByRole("region", { name: "blocked" })).toContainText("No pages");
+  await settings.getByRole("checkbox", { name: "Hide empty groups" }).check();
+  await expect.poll(columns).toEqual(["low", "medium", "high"]);
+  await expect.poll(async () => (await configWrites(page)).at(-1)?.metadata.prism_database.views[1]).toMatchObject({ groupBy: "priority", hideEmptyGroups: true });
+  // A group that becomes empty disappears; one that gains a page comes back.
+  await page.keyboard.press("Escape");
+  for (const title of ["Update pricing page", "Private planning note"]) {
+    await page.getByRole("button", { name: `Actions for ${title}` }).click();
+    await page.getByRole("menuitem", { name: "Move to…" }).click();
+    await page.getByRole("menuitem", { name: "medium" }).click();
+    await expect(board.getByRole("region", { name: "medium" }).getByRole("article", { name: title })).toBeVisible();
+  }
+  await expect.poll(columns).toEqual(["medium", "high"]);
+  await page.getByRole("button", { name: "View settings" }).click();
+  await settings.getByRole("checkbox", { name: "Hide empty groups" }).uncheck();
+  await expect.poll(columns).toEqual(["low", "medium", "high", "blocked"]);
+  await expect.poll(async () => (await configWrites(page)).at(-1)?.metadata.prism_database.views[1].hideEmptyGroups).toBeUndefined();
+
+  // Group by a person property.
+  await settings.getByLabel("Group by").selectOption("assignee");
+  await expect.poll(async () => (await columns()).slice().sort()).toEqual(["Mira Chen", "No Assignee", "Sam Rivera"]);
+  expect((await columns())[0]).toBe("No Assignee"); // the empty group leads
+  await expect(board.getByRole("region", { name: "Mira Chen" }).getByRole("article")).toHaveCount(1);
+  await page.keyboard.press("Escape");
+
+  // Card menu: Move later reorders inside the column (view-local rank), Open opens the page.
+  const none = board.getByRole("region", { name: "No Assignee" });
+  const order = () => none.getByRole("article").evaluateAll((els) => els.map((e) => e.getAttribute("aria-label")));
+  const first = (await order())[0]!;
+  await page.getByRole("button", { name: `Actions for ${first}` }).click();
+  await page.getByRole("menuitem", { name: "Move later" }).click();
+  await expect.poll(async () => (await order())[1]).toBe(first);
+  await expect.poll(async () => Array.isArray((await configWrites(page)).at(-1)?.metadata.prism_database.views[1].order)).toBe(true);
+  await page.getByRole("button", { name: `Actions for ${first}` }).click();
+  await page.getByRole("menuitem", { name: "Open" }).click();
+  await expect(page.getByRole("dialog", { name: new RegExp(first) })).toBeVisible();
+  // Grouped tables hide empty groups the same way.
+  await page.keyboard.press("Escape");
+  await page.getByRole("tab", { name: "All tasks" }).click();
+  await page.getByRole("button", { name: "View settings" }).click();
+  await settings.getByLabel("Group by").selectOption("priority");
+  await expect(page.getByRole("region", { name: "blocked" })).toBeVisible();
+  await settings.getByRole("checkbox", { name: "Hide empty groups" }).check();
+  await expect(page.getByRole("region", { name: "blocked" })).toHaveCount(0);
+  await expect(page.getByRole("region", { name: "high" })).toBeVisible();
+});
+
+// NP-DB-23 — on a phone a board opens as a grouped list (the saved view is untouched); the board is one tap away.
+test("phone: boards default to list", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/e2e-fixtures/databases.html");
+  await page.getByRole("tab", { name: "Board" }).click();
+  await expect(page.getByText("Shown as a list on this screen.")).toBeVisible();
+  await expect(page.locator(".db-board")).toHaveCount(0);
+  const todo = page.getByRole("region", { name: "todo", exact: true });
+  await expect(todo.getByRole("list", { name: "todo list" }).getByRole("button", { name: "Review workspace navigation" })).toBeVisible();
+  await expect(page.getByRole("region", { name: "in-progress", exact: true })).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  // Rows open full-page on a phone.
+  await todo.getByRole("button", { name: "Review workspace navigation" }).click();
+  await expect.poll(() => page.evaluate(() => (window as any).prismUI.getState().openTabs.map((t: any) => t.noteId))).toContain("t1");
+  await page.evaluate(() => { const s = (window as any).prismUI.getState(); s.setActiveTab(s.openTabs[0].id); });
+  await page.getByRole("tab", { name: "Board" }).click();
+  // One tap shows the real board; nothing about the view is rewritten.
+  await page.getByRole("button", { name: "Show as board" }).click();
+  await expect(page.locator(".db-board")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Show as list" })).toBeVisible();
+  expect(await configWrites(page)).toEqual([]);
+  // A wide screen gets the board straight away.
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.reload();
+  await page.getByRole("tab", { name: "Board" }).click();
+  await expect(page.locator(".db-board")).toBeVisible();
+  await expect(page.getByText("Shown as a list on this screen.")).toHaveCount(0);
 });
 
 // NP-DB-07 — a calendar item is dragged to another day (CAS write through the property writer); a range spans as one bar.

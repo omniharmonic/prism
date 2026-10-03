@@ -83,6 +83,8 @@ export function DatabasePage({ note, readOnly, embedded }: RendererProps & {
     const t = setTimeout(() => setDebouncedSearch(search), 300);
     return () => clearTimeout(t);
   }, [search]);
+  // Phones show a board as a grouped list first (NP-DB-23); the saved view is not changed.
+  const [phoneBoard, setPhoneBoard] = useState(false);
   const [month, setMonth] = useState(() => new Date(new Date().getFullYear(), new Date().getMonth(), 1));
   const [saveState, setSaveState] = useState<"" | "saving" | "error" | "conflict" | "local">("");
   const saveSeq = useRef(0);
@@ -440,7 +442,15 @@ export function DatabasePage({ note, readOnly, embedded }: RendererProps & {
             ) : (
               <>
                 {view.type === "table" && <TableView ctx={ctx} />}
-                {view.type === "board" && <BoardView ctx={ctx} onPickGroup={(k) => updateView({ groupBy: k })} />}
+                {view.type === "board" && isMobile && view.groupBy && (
+                  <p className="db-notice db-phone-layout" role="status">
+                    {phoneBoard ? "Board layout." : "Shown as a list on this screen."}{" "}
+                    <button type="button" className="db-ghost" aria-pressed={phoneBoard} onClick={() => setPhoneBoard((v) => !v)}>{phoneBoard ? "Show as list" : "Show as board"}</button>
+                  </p>
+                )}
+                {view.type === "board" && (isMobile && view.groupBy && !phoneBoard
+                  ? <ListView ctx={ctx} />
+                  : <BoardView ctx={ctx} onPickGroup={(k) => updateView({ groupBy: k })} />)}
                 {view.type === "gallery" && <GalleryView ctx={ctx} />}
                 {view.type === "list" && <ListView ctx={ctx} />}
                 {view.type === "calendar" && <CalendarView ctx={ctx} month={month} onMonth={setMonth} onPickDate={(k) => updateView({ dateKey: k })} />}
