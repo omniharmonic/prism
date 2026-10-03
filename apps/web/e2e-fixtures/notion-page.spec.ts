@@ -180,3 +180,43 @@ test("Enter in the title moves into the body", async ({ page }) => {
   await title.press("Enter");
   await expect(page.locator(".tiptap[contenteditable=true]")).toBeFocused();
 });
+
+/** NP-PG-01 */
+test("icon propagates to tree, tabs, ⌘K", async ({ page }) => {
+  await page.goto("/e2e-fixtures/notion-shell.html");
+  await expect(page.locator(".tiptap[contenteditable=true]")).toBeVisible();
+  const nav = page.locator(".workspace-navigation");
+  const tabs = page.getByRole("navigation", { name: "Open document tabs" });
+  await expect(tabs.locator("[data-page-icon]")).toHaveCount(0);
+  await page.getByRole("button", { name: "Add icon" }).click();
+  const picker = page.locator(".EmojiPickerReact");
+  await expect(picker).toBeVisible();
+  await picker.locator("button.epr-emoji:visible").first().click();
+  const tile = page.locator(".document-icon-control.has-icon");
+  await expect(tile).toBeVisible();
+  const emoji = (await tile.innerText()).trim();
+  expect(emoji.length).toBeGreaterThan(0);
+  // Tab, sidebar tree and (once starred) Favorites show it at once — no reload.
+  await expect(tabs.locator('[data-page-icon="workspace"]')).toHaveText(emoji);
+  await expect(nav.getByRole("region", { name: "Pages", exact: true })).toContainText(emoji);
+  await page.getByRole("button", { name: "Add to Favorites" }).click();
+  await expect(nav.locator('[data-page-icon="workspace"]').first()).toHaveText(emoji);
+  expect(await page.evaluate(() => (window as any).prismShell.note("workspace").metadata.icon)).toBe(emoji);
+  // ⌘K results.
+  await page.keyboard.press("ControlOrMeta+k");
+  await page.getByRole("combobox", { name: "Search notes and commands" }).fill("living");
+  await expect(page.getByRole("group", { name: "Notes" }).getByRole("option", { name: /A living workspace/ }).first()).toContainText(emoji);
+  await page.keyboard.press("Escape");
+  // Breadcrumbs of a sub-page show the parent page's icon.
+  await page.evaluate(() => {
+    const shell = (window as any).prismShell;
+    shell.serverCreate("Projects/Prism/A living workspace/Decisions", "<p>Decided.</p>");
+    (window as any).prismShellUI.getState().openTab("foreign-1", "Decisions", "document");
+  });
+  const crumbs = page.getByRole("navigation", { name: "Document location" });
+  await expect(crumbs.locator('[data-page-icon="workspace"]')).toHaveText(emoji);
+  // "Another device": a fresh load reads the icon from the server's tree.
+  await page.reload();
+  await expect(page.locator(".tiptap[contenteditable=true]")).toBeVisible();
+  await expect(page.getByRole("navigation", { name: "Open document tabs" }).locator('[data-page-icon="workspace"]')).toHaveText(emoji);
+});

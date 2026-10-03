@@ -19,6 +19,7 @@ import { SyncStateBadge } from "./SyncStateBadge";
 import { QueryClientContext } from "@tanstack/react-query";
 import { agentKeys, useAgentClient } from "../../data/AgentClientContext";
 import type { AgentSessionSummary } from "../../lib/agent/sessions";
+import { PageIcon } from "../../lib/pages/icons";
 
 /** True while a cached agent session has a queued/running turn. Reads the
  *  cache only (AgentChat/AgentActivity own the polling) — never adds a request. */
@@ -280,6 +281,7 @@ export function TabBar() {
                   }}
                 />
               )}
+              <PageIcon noteId={tab.noteId} />
               <button
                 aria-label={`Open ${tab.title}`}
                 aria-current={active ? "page" : undefined}

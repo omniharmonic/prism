@@ -23,7 +23,7 @@ function vaultDocName(noteId: string): string {
 import { updateNote as restUpdateNote, getNote as restGetNote, hasPendingWrites, uploadAttachment, unfurl as restUnfurl } from "../parachute/rest";
 import { markUnsynced, clearUnsynced, setOpenHere, unsyncedDocs } from "./unsynced";
 import { reloadForUpdate } from "../offline/reloadForUpdate";
-import { reportSyncSource, BacklinksPill, EmptyPageStarters } from "@prism/core";
+import { reportSyncSource, BacklinksPill, EmptyPageStarters, notePageIconChanged } from "@prism/core";
 
 /** Track a CSS breakpoint without per-render layout thrash. */
 function useIsNarrow(): boolean {
@@ -243,6 +243,7 @@ function ScopedCollabDoc({
 
   const handleIconChange = (emoji: string | null) => {
     setIcon(emoji);
+    notePageIconChanged(noteId, emoji); // tabs, breadcrumbs, sidebar follow at once (NP-PG-01)
     void restUpdateNote(noteId, { metadata: { icon: emoji } }).catch(() => {});
   };
   // Page cover (metadata-only write, like the icon; the server reconciles it with the live doc).

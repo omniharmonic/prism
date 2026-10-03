@@ -95,7 +95,7 @@ window.fetch = async (input, init) => {
     const items = Object.fromEntries(notes.map((n) => [n.id, { path: n.path, title: n.path!.split("/").pop()!, tags: n.tags ?? [], type: n.metadata?.type as string | undefined }]));
     return Response.json({ preferences: { version: 1, favorites: controls.preferences.favorites, recents: controls.preferences.recents, sidebar: { order: [], collapsed: [] } }, revision: controls.revision, items });
   }
-  if (path === "/api/tree") return Response.json(notes.filter((n) => !controls.hidden.includes(n.id)).map((n) => ({ id: n.id, path: n.path, tags: n.tags, updatedAt: n.updatedAt, type: n.metadata?.type, prismType: n.metadata?.prism_type })));
+  if (path === "/api/tree") return Response.json(notes.filter((n) => !controls.hidden.includes(n.id)).map((n) => ({ id: n.id, path: n.path, tags: n.tags, updatedAt: n.updatedAt, type: n.metadata?.type, prismType: n.metadata?.prism_type, ...(typeof n.metadata?.icon === "string" ? { icon: n.metadata.icon } : {}) })));
   if (path === "/api/search") {
     controls.searches.push(url.search);
     const q = url.searchParams.get("q") ?? "";

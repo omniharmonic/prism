@@ -276,6 +276,7 @@ export { setOfflineAvailability, useOfflineAvailability, type OfflineAvailabilit
 export { isVaultNoteId } from "./lib/noteIdentity";
 export { BacklinksPill } from "./components/layout/BacklinksPill";
 export { EmptyPageStarters } from "./components/renderers/EmptyPageStarters";
+export { PageIcon, notePageIconChanged } from "./lib/pages/icons";
 // Wave 2A: @-mentions, notifications inbox, reminders, access requests.
 export { MentionNode, mentionExtensions, setMentionNodeView, newMentionUid, mentionFallbackText, MENTION_KINDS, type MentionKind, type MentionAttrs } from "./lib/tiptap/MentionNode";
 export { extractMentions, newMentions, extractCommentMentions, splitCommentMentions, commentMentionToken, type ParsedMention } from "./lib/tiptap/MentionParse";

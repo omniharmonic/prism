@@ -18,6 +18,7 @@ import type { ContentType } from "../../lib/types";
 import { useAgentAvailable } from "../../data/AgentClientContext";
 import { openAgentChat } from "../../lib/agent/chatStore";
 import { usePagesUI } from "../../lib/pages/store";
+import { PageIcon } from "../../lib/pages/icons";
 import { Home as HomeIcon, Inbox as InboxIcon } from "lucide-react";
 import { InboxBadge, openInbox } from "../inbox/InboxNavButton";
 import { SyncStateBadge } from "../layout/SyncStateBadge";
@@ -203,7 +204,7 @@ export function Navigation() {
             {favorites.map((f) => (
               <NavItem
                 key={f.id}
-                icon={<Star size={14} fill="var(--color-accent)" color="var(--color-accent)" />}
+                icon={<PageIcon noteId={f.id} fallback={<Star size={14} fill="var(--color-accent)" color="var(--color-accent)" />} />}
                 label={f.title}
                 active={openTabs.find((t) => t.id === activeTabId)?.noteId === f.id}
                 onClick={() => openTab(f.id, f.title, f.type)}
@@ -218,7 +219,7 @@ export function Navigation() {
               {recents.map((r) => (
                 <NavItem
                   key={r.id}
-                  icon={<FileText size={15} />}
+                  icon={<PageIcon noteId={r.id} fallback={<FileText size={15} />} />}
                   label={r.title}
                   active={openTabs.find((t) => t.id === activeTabId)?.noteId === r.id}
                   onClick={() => openTab(r.id, r.title, r.type)}

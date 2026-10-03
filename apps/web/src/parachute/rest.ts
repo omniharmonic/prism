@@ -217,6 +217,7 @@ interface TreeRow {
   type?: string;
   prismType?: string;
   order?: number;
+  icon?: string;
 }
 
 /**
@@ -245,8 +246,8 @@ export async function listTree(): Promise<NoteTreeEntry[]> {
       id: r.id,
       path: r.path,
       tags: r.tags,
-      // Only the two keys the tree's type/icon inference reads.
-      metadata: r.type || r.prismType || r.order !== undefined ? { ...(r.type ? { type: r.type } : {}), ...(r.prismType ? { prism_type: r.prismType } : {}), ...(r.order !== undefined ? { prism_order: r.order } : {}) } : null,
+      // Only the keys the tree reads: type inference, sibling order, the page's emoji.
+      metadata: r.type || r.prismType || r.order !== undefined || r.icon ? { ...(r.type ? { type: r.type } : {}), ...(r.prismType ? { prism_type: r.prismType } : {}), ...(r.order !== undefined ? { prism_order: r.order } : {}), ...(r.icon ? { icon: r.icon } : {}) } : null,
     }));
     // Pages created on this device and not yet confirmed are part of the tree:
     // they show in the sidebar and their paths are taken (a second offline

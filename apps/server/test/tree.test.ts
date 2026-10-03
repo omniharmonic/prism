@@ -65,6 +65,22 @@ test("built from one lean list; emits only tree fields (no content, no private m
   assert.equal(listCalls().length, 1);
 });
 
+test("page icon (NP-PG-01): a short emoji is emitted and follows a metadata write; anything long is dropped", async () => {
+  fv.put({ id: "a", path: "a.md", content: "", tags: [], metadata: { icon: "🌱" } });
+  fv.put({ id: "b", path: "b.md", content: "", tags: [], metadata: { icon: "x".repeat(33) } });
+  fv.put({ id: "c", path: "c.md", content: "", tags: [], metadata: { icon: 7 } });
+  let body = await tree(await ownerReq("/tree"));
+  assert.equal(body.find((e) => e.id === "a")?.icon, "🌱");
+  assert.ok(!("icon" in body.find((e) => e.id === "b")!));
+  assert.ok(!("icon" in body.find((e) => e.id === "c")!));
+  assert.ok(listCalls()[0]!.search.includes("icon"));
+  const r = await ownerReq("/notes/c", { method: "PATCH", body: JSON.stringify({ metadata: { icon: "📌" }, force: true }) });
+  assert.equal(r.status, 200);
+  await tick();
+  body = await tree(await ownerReq("/tree"));
+  assert.equal(body.find((e) => e.id === "c")?.icon, "📌");
+});
+
 test("ETag: If-None-Match gives 304; a change gives a new tag and 200", async () => {
   fv.put({ id: "a", path: "a.md", content: "", tags: [] });
   const r1 = await ownerReq("/tree");

@@ -10,6 +10,7 @@ import { useLivePollMs } from "../../lib/events/channelStatus";
 import { withoutTrashed } from "../../lib/pages/model";
 import { hasFilters, matchesFilters, queryTerms, type SearchFilters } from "../../lib/search/match";
 import { inferContentType } from "../../lib/schemas/content-types";
+import { notePageIconChanged } from "../../lib/pages/iconStore";
 
 export function useNotes(filters?: NoteFilters) {
   const client = useVaultClient();
@@ -204,13 +205,15 @@ export function useUpdateNote() {
         const cached = queryClient.getQueryData<Note>(queryKeys.vault.note(id));
         if (cached?.updatedAt) params = { ...params, ifUpdatedAt: cached.updatedAt };
       }
+      // NP-PG-01: a changed icon shows in tabs, breadcrumbs and the sidebar at once.
+      if (params.metadata && "icon" in params.metadata) notePageIconChanged(id, params.metadata.icon);
       return client.updateNote(id, params, { expectedScope });
     },
-    onSuccess: (_, { id, path }) => {
+    onSuccess: (_, { id, path, metadata }) => {
       queryClient.invalidateQueries({ queryKey: queryKeys.vault.note(id) });
       queryClient.invalidateQueries({ queryKey: queryKeys.vault.notes() });
       // A rename/move changes the sidebar: don't wait for the events channel.
-      if (path !== undefined) queryClient.invalidateQueries({ queryKey: ["vault", "tree"] });
+      if (path !== undefined || (metadata && "icon" in metadata)) queryClient.invalidateQueries({ queryKey: ["vault", "tree"] });
 
       // Auto-sync to GitHub: trigger push for matching sync configs
       // TODO: Match note path against config.vaultPath and call githubSyncApi.pushFile()
