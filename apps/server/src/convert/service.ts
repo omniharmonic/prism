@@ -67,11 +67,20 @@ const envInt = (name: string, fallback: number, min = 0): number => {
   return Number.isFinite(n) && n >= min ? Math.floor(n) : fallback;
 };
 
+/**
+ * Heap ceiling of ONE conversion thread. The host is shared (16 GB: the vault, a
+ * VM, a 7 GB local model, this server) and under a swap storm every loaded
+ * document's store reaches for a thread at once — two 2 GB ceilings were a
+ * quarter of the machine. 512 MB by default; what can be converted scales with it
+ * (below). Raise `CONVERT_HEAP_MB` on a host with memory to spare.
+ */
+const HEAP_MB = envInt("CONVERT_HEAP_MB", 512, 64);
+
 /** Limits (env-tunable; read once, `configureConversion` overrides them in tests). */
 export const convertCfg = {
   /** Largest input handed to a parser at all (the vault's note ceiling is 2 MB). */
   maxChars: envInt("CONVERT_MAX_BYTES", 2_500_000, 1024),
-  /** Inline (main thread) only for Markdown below this size (stored HTML: by node count, below) … */
+  /** Inline (main thread) only for a body below this size — Markdown AND stored HTML (the DOM parser is super-linear in pieces no counter can fully anticipate; a small byte cap bounds every shape) … */
   inlineMaxChars: envInt("CONVERT_INLINE_MAX_BYTES", 24_000, 0),
   /** … this many emphasis/link delimiter runs in one block … */
   inlineMaxDelimiters: envInt("CONVERT_INLINE_MAX_DELIMITERS", 200, 0),
@@ -80,9 +89,11 @@ export const convertCfg = {
   /** … and this many nodes to build (HTML tags / Markdown lines + delimiters / a ProseMirror document's nodes + marks). */
   inlineMaxNodes: envInt("CONVERT_INLINE_MAX_NODES", 2500, 0),
   /** A ProseMirror document with more nodes + marks than this is not rendered at all. */
-  maxNodes: envInt("CONVERT_MAX_NODES", 400_000, 1),
+  // (measured: happy-dom + ProseMirror need ~4–5 KB of heap per node, so the defaults follow the heap: 200 nodes per MB to render …)
+  maxNodes: envInt("CONVERT_MAX_NODES", Math.min(400_000, HEAP_MB * 200), 1),
   /** A note body that would parse into more nodes than this (lines + delimiter runs + tags) is refused up front (`too_many_nodes`). */
-  maxInputNodes: envInt("CONVERT_MAX_INPUT_NODES", 200_000, 1),
+  // (… and 100 per MB to parse: refused by name up front, instead of running a thread out of memory on every open.)
+  maxInputNodes: envInt("CONVERT_MAX_INPUT_NODES", Math.min(200_000, HEAP_MB * 100), 1),
   /** Conversions one actor may have in the worker at once; more wait their turn (bounded), then `busy`. */
   perActorInflight: envInt("CONVERT_PER_ACTOR_INFLIGHT", 2, 1),
   perActorWaiting: envInt("CONVERT_PER_ACTOR_WAITING", 8, 0),
@@ -96,12 +107,22 @@ export const convertCfg = {
   /**
    * Worker threads, tasks queued per thread, heap per thread. With two or more
    * threads the FIRST is reserved for the `store` lane. The heap is a ceiling, not
-   * a reservation (2 MB of ordinary Markdown needs well over 768 MB while its DOM
-   * and ProseMirror trees coexist); idle threads exit (`idleMs`).
+   * a reservation (see HEAP_MB; 2 MB of ordinary Markdown needs well over 768 MB
+   * while its DOM and ProseMirror trees coexist — such a note needs
+   * `CONVERT_HEAP_MB=2048`); idle threads exit (`idleMs`).
    */
   threads: envInt("CONVERT_THREADS", 2, 1),
   maxQueue: envInt("CONVERT_MAX_QUEUE", 32, 1),
-  heapMb: envInt("CONVERT_HEAP_MB", 2048, 64),
+  heapMb: HEAP_MB,
+  /**
+   * Circuit breaker, per thread: after this many CONSECUTIVE tasks that ended with
+   * the thread killed (deadline) or dead (crash / out of memory), the thread takes
+   * no work for a cool-down (doubling per re-trip up to the max) — tasks are
+   * answered `busy`, nothing is spawned. One success closes it. 0 = off.
+   */
+  breakerFailures: envInt("CONVERT_BREAKER_FAILURES", 4, 0),
+  breakerCooldownMs: envInt("CONVERT_BREAKER_COOLDOWN_MS", 30_000, 1),
+  breakerCooldownMaxMs: envInt("CONVERT_BREAKER_COOLDOWN_MAX_MS", 10 * 60_000, 1),
   /** Idle threads are terminated after this long (they respawn on demand; 0 = keep). */
   idleMs: envInt("CONVERT_IDLE_MS", 5 * 60_000, 0),
   /** How long a failed input is remembered (by hash). */
@@ -124,12 +145,60 @@ let pool: TaskWorker[] = [];
  * that is idler); everything else shares the rest. One thread: shared, and a
  * store goes to the head of its queue.
  */
-function worker(lane: "store" | "default"): TaskWorker {
+function worker(lane: "store" | "default"): TaskWorker | null {
   while (pool.length < convertCfg.threads) pool.push(new TaskWorker(convertCfg.heapMb, convertCfg.maxQueue, { preload: "doc" }));
-  const candidates = pool.length < 2 ? pool : lane === "store" ? pool : pool.slice(1);
-  let best = candidates[0]!;
-  for (const w of candidates) if (w.pending < best.pending) best = w;
+  const candidates = (pool.length < 2 ? pool : lane === "store" ? pool : pool.slice(1)).filter(breakerAdmits);
+  let best = candidates[0] ?? null;
+  for (const w of candidates) if (w.pending < best!.pending) best = w;
   return best;
+}
+
+// ── circuit breaker ─────────────────────────────────────────────────────────
+// A task that passes its deadline costs a thread: it is terminated and the next
+// task spawns a fresh one (a parser stack, up to `heapMb`). Under memory pressure
+// EVERY conversion times out, and every loaded document's store retried one —
+// a respawn storm exactly when the host could least afford it. Per thread:
+// `breakerFailures` consecutive kills/deaths open the breaker for a cool-down;
+// after it ONE task is let through (half-open) — success closes the breaker,
+// another failure re-opens it for twice as long. Per thread, so the default lane
+// (opens, agent writes — whatever a member can make time out) cannot take the
+// store lane's thread down with it.
+interface Breaker {
+  fails: number;
+  openUntil: number;
+  cooldownMs: number;
+  /** Half-open: one trial task is in flight. */
+  trial: boolean;
+}
+let breakers = new WeakMap<TaskWorker, Breaker>();
+const breakerOf = (w: TaskWorker): Breaker => {
+  let b = breakers.get(w);
+  if (!b) breakers.set(w, (b = { fails: 0, openUntil: 0, cooldownMs: 0, trial: false }));
+  return b;
+};
+function breakerAdmits(w: TaskWorker): boolean {
+  if (convertCfg.breakerFailures <= 0) return true;
+  const b = breakerOf(w);
+  if (b.openUntil === 0) return true;
+  return Date.now() >= b.openUntil && !b.trial;
+}
+function breakerResult(w: TaskWorker, ok: boolean): void {
+  if (convertCfg.breakerFailures <= 0) return;
+  const b = breakerOf(w);
+  b.trial = false;
+  if (ok) {
+    b.fails = 0;
+    b.openUntil = 0;
+    b.cooldownMs = 0;
+    return;
+  }
+  b.fails++;
+  if (b.openUntil !== 0 || b.fails >= convertCfg.breakerFailures) {
+    b.cooldownMs = Math.min(convertCfg.breakerCooldownMaxMs, b.cooldownMs ? b.cooldownMs * 2 : convertCfg.breakerCooldownMs);
+    b.openUntil = Date.now() + b.cooldownMs;
+    conversionStats.breakerOpened++;
+    console.warn(`[convert] ${b.fails} conversions in a row ended with the worker killed or dead — this thread takes no work for ${Math.round(b.cooldownMs / 1000)} s (callers are answered busy)`);
+  }
 }
 
 // ── per-actor fairness ──────────────────────────────────────────────────────
@@ -169,7 +238,7 @@ function armIdleStop(): void {
 /** Shutdown / test helper: terminate the conversion threads (they respawn on demand). */
 export async function stopConversionWorkers(): Promise<void> {
   const old = pool;
-  pool = [];
+  pool = []; // new threads, new (closed) breakers
   await Promise.all(old.map((w) => w.stop()));
 }
 
@@ -201,12 +270,13 @@ function remember(key: string, reason: ConversionFailure): void {
 }
 export function forgetConversionFailures(): void {
   failures.clear();
+  breakers = new WeakMap(); // …and every thread's circuit breaker is closed again
 }
 const hashOf = (op: string, text: string): string => createHash("sha256").update(op).update("\0").update(text).digest("base64");
 
 // ── stats (health / tests) ──────────────────────────────────────────────────
 
-export const conversionStats = { inline: 0, worker: 0, refused: 0, timeouts: 0, failed: 0, busy: 0, remembered: 0 };
+export const conversionStats = { inline: 0, worker: 0, refused: 0, timeouts: 0, failed: 0, busy: 0, remembered: 0, breakerOpened: 0, breakerRefused: 0 };
 
 // ── the two execution paths ─────────────────────────────────────────────────
 
@@ -218,11 +288,13 @@ function refusal(c: Complexity): ConversionFailure | null {
   if (c.delimiterRuns > convertCfg.maxDelimiters || c.quoteDepth > convertCfg.maxQuoteDepth) return "too_complex";
   return null;
 }
-function cheap(c: Complexity, markdown: boolean): boolean {
+function cheap(c: Complexity, _markdown: boolean): boolean {
   return (
-    // Text is cheap for the DOM parser, the node count is what costs; `marked`
-    // additionally scans its input, so Markdown is held to a size as well.
-    c.chars <= (markdown ? convertCfg.inlineMaxChars : convertCfg.maxChars) &&
+    // Both kinds are held to a small size: the node count is what costs, but
+    // counting is only as good as our knowledge of the parser (stored HTML was
+    // once inline up to 2.5 MB "by node count", and 100 KB of lone `>` stalled
+    // the loop for seconds). The byte cap bounds whatever the counters miss.
+    c.chars <= convertCfg.inlineMaxChars &&
     c.nodes <= convertCfg.inlineMaxNodes &&
     c.delimiterRuns <= convertCfg.inlineMaxDelimiters &&
     c.quoteDepth <= convertCfg.inlineMaxDepth &&
@@ -243,22 +315,37 @@ function offThread<T>(message: unknown, chars: number, opts: ConvertOptions | un
   return withActorSlot(opts?.actor, () => runInWorker<T>(message, chars, opts?.lane ?? "default"));
 }
 async function runInWorker<T>(message: unknown, chars: number, lane: "store" | "default"): Promise<T> {
+  const w = worker(lane);
+  if (!w) {
+    // Every thread this lane may use is cooling down: nothing is spawned.
+    conversionStats.breakerRefused++;
+    conversionStats.busy++;
+    throw new ConversionError("busy");
+  }
   conversionStats.worker++;
+  const b = breakerOf(w);
+  if (b.openUntil !== 0) b.trial = true; // half-open: this is the one trial
   try {
-    const value = await worker(lane).run<T>(message, timeoutFor(chars), [], lane === "store");
+    const value = await w.run<T>(message, timeoutFor(chars), [], lane === "store");
     armIdleStop();
+    breakerResult(w, true);
     return value;
   } catch (e) {
     armIdleStop();
     if (e instanceof WorkerTimeoutError) {
       conversionStats.timeouts++;
+      breakerResult(w, false);
       throw new ConversionError("timeout");
     }
     if (e instanceof WorkerFailedError && e.code === "busy") {
+      b.trial = false;
       conversionStats.busy++;
       throw new ConversionError("busy");
     }
     conversionStats.failed++;
+    // `worker_failed` = the thread died or never came up; an ordinary error reply
+    // (a parser threw on this input) leaves the thread alive and is no respawn.
+    breakerResult(w, !(e instanceof WorkerFailedError && e.code === "worker_failed"));
     throw new ConversionError("failed");
   }
 }

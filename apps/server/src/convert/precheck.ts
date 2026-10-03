@@ -88,7 +88,7 @@ export function markdownComplexity(md: string): Pick<Complexity, "delimiterRuns"
   return { delimiterRuns: maxRuns, quoteDepth: maxQuote, nodes };
 }
 
-/** Start tags in `html` (`<` + a letter). One pass. */
+/** Start tags in `html` (`<` + a letter). One pass. (Kept for callers that want elements only.) */
 export function htmlTagCount(html: string): number {
   let n = 0;
   let at = html.indexOf("<");
@@ -100,12 +100,49 @@ export function htmlTagCount(html: string): number {
   return n;
 }
 
+const LT = 60; // <
+const AMP = 38; // &
+const EQ = 61; // =
+
+/**
+ * How many pieces a DOM parser will make of `html` — an UPPER bound on its
+ * nodes, one pass, no regex. Counting only start tags (`<` + a letter) missed
+ * everything else happy-dom turns into a node, and its tree building is
+ * super-linear in the node count: 100 KB of lone `>` (or of `<!--a-->`) stalled
+ * the event loop for 3.4 s, 200 KB for 16.7 s, while "0 tags" let megabytes of
+ * it convert inline. Counted here:
+ *  - every `<` (start tag, END tag, comment, `<!…>`, `<?…>`, a stray `<`);
+ *  - every `>` that closes nothing (a lone `>`, the `>` of `/>` or `-->` after
+ *    the tag already closed) — the parser emits a text node per piece;
+ *  - attributes (`=` inside a tag) and character references (`&`), which cost
+ *    per item though they are not nodes — weighted 1/4.
+ */
+export function htmlNodeCount(html: string, markdown = false): number {
+  let n = 0;
+  let cheap = 0; // attributes + entities
+  let inTag = false;
+  for (let i = 0; i < html.length; i++) {
+    const c = html.charCodeAt(i);
+    if (c === LT) {
+      n++;
+      inTag = true;
+    } else if (c === GT) {
+      if (inTag) inTag = false;
+      else if (!markdown) n++; // in Markdown a bare `>` is a blockquote marker or text (escaped by marked)
+    } else if (!markdown && (c === AMP || (c === EQ && inTag))) cheap++;
+  }
+  return n + (cheap >> 2);
+}
+
 /** Everything the service decides on, for a note body (`markdown` = it goes through marked). */
 export function complexityOf(content: string, markdown: boolean): Complexity {
   const md = markdown ? markdownComplexity(content) : { delimiterRuns: 0, quoteDepth: 0, nodes: 0 };
   // Markdown may carry raw HTML, which marked passes through to the DOM parser.
   const hasTags = content.includes("<");
-  return { chars: content.length, ...md, nodes: md.nodes + (hasTags ? htmlTagCount(content) : 0), htmlDepth: hasTags ? htmlDepth(content) : 0 };
+  // Stored HTML goes straight to the DOM parser: count every piece it will make.
+  // Markdown's `>` and `&` are blockquotes and text for `marked` (already counted
+  // per line / held to the inline byte cap), so only its `<` pieces are added.
+  return { chars: content.length, ...md, nodes: md.nodes + (markdown ? (hasTags ? htmlNodeCount(content, true) : 0) : htmlNodeCount(content)), htmlDepth: hasTags ? htmlDepth(content) : 0 };
 }
 
 /** Nodes + marks and text length of a ProseMirror JSON document, abandoned once past `limit` nodes. Iterative. */
