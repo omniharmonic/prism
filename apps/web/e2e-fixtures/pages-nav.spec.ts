@@ -437,6 +437,8 @@ test("export with sub-pages and images", async ({ page }) => {
   await dialog.getByRole("button", { name: "Print…" }).click();
   await expect(dialog).toHaveCount(0);
   await expect.poll(() => page.evaluate(() => (window as any).printCalls)).toBe(1);
+});
+
 // NP-MB-03 — what the phone page-actions sheet holds, its row size and how it is dismissed.
 // Share, Find and Agent are NOT rows of this sheet today (Share is a header button, Agent lives in More, Find is
 // keyboard-only): product gap recorded in PARITY-EVIDENCE.md.
