@@ -8,3 +8,6 @@
 .document-outline-popover > p { margin: 6px 10px; font-size: 12px; color: var(--text-muted); }
 .document-outline-readonly { padding: 3px 8px; border-bottom: 1px solid var(--glass-border); }
 @media (max-width:767px) { .document-outline-toggle, .document-outline-popover > button { min-height: 44px; } }
+
+/* NP-PG-11: the section being read. */
+.document-outline-popover button[aria-current="location"] { color: var(--text-primary); font-weight: 600; box-shadow: inset 2px 0 0 0 var(--color-accent); background: var(--surface-hover); }
