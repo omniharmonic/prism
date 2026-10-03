@@ -3,6 +3,8 @@ import { Server } from "@hocuspocus/server";
 import WebSocket from "ws";
 
 const SHOTS = process.env.PRISM_EDITOR_SHOTS;
+/** The editor's current document-schema version (bumped with every schema change). */
+const V = 3;
 const REASON = "update_required: Prism was updated. Reload or update the app to keep editing.";
 
 /** A real Hocuspocus server that enforces the schema param like the Prism Server. */
@@ -41,16 +43,16 @@ async function openLive(page: Page, server: Server, sockets: WebSocket[], urls: 
 }
 
 test("the live editor sends its schema version and REST calls carry the editor-schema header", async ({ page }) => {
-  const { server, seen } = await gatedServer(2);
+  const { server, seen } = await gatedServer(V);
   const sockets: WebSocket[] = [];
   const urls: string[] = [];
   try {
     const headers = await openLive(page, server, sockets, urls);
     await expect(page.locator(".tiptap[contenteditable=true]")).toBeVisible();
-    expect(urls[0]).toMatch(/\/collab\?schema=2$/);
-    expect(seen[0]).toBe("2");
+    expect(urls[0]).toMatch(new RegExp(`/collab\\?schema=${V}$`));
+    expect(seen[0]).toBe(String(V));
     expect(headers.length).toBeGreaterThan(0);
-    expect(headers.every((h) => h === "2")).toBe(true);
+    expect(headers.every((h) => h === String(V))).toBe(true);
   } finally {
     for (const s of sockets) s.close();
     await server.destroy();
@@ -58,7 +60,7 @@ test("the live editor sends its schema version and REST calls carry the editor-s
 });
 
 test("a server that requires a newer schema shows 'Update required' with Reload — no editor", async ({ page }) => {
-  const { server } = await gatedServer(3);
+  const { server } = await gatedServer(V + 1);
   const sockets: WebSocket[] = [];
   try {
     await openLive(page, server, sockets, []);

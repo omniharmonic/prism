@@ -18,6 +18,10 @@ import { SlashMenu } from "./SlashMenu";
 import { SearchHighlight } from "../../lib/tiptap/SearchHighlight";
 import { blockSchemaExtensions } from "../../editor/blocks";
 import { mentionExtensions } from "../../lib/tiptap/MentionNode";
+import "../../lib/tiptap/MentionView";
+import { MentionSuggest, type MentionSuggestState } from "../../lib/tiptap/MentionSuggest";
+import { MentionContext, setMentionNoteId } from "../../lib/tiptap/MentionContext";
+import { MentionMenu } from "../../lib/tiptap/MentionMenu";
 import { BlockKeymap } from "../../lib/tiptap/blockCommands";
 import { BlockHandles } from "./BlockHandles";
 import { TableControls } from "./TableControls";
@@ -68,6 +72,7 @@ export default function DocumentRenderer({ note, onMetadataChange, readOnly }: R
   const { data: allNotes } = useNotes();
   const [autocompleteState, setAutocompleteState] = useState<WikilinkAutocompleteState | null>(null);
   const [slashState, setSlashState] = useState<SlashCommandState | null>(null);
+  const [mentionState, setMentionState] = useState<MentionSuggestState | null>(null);
 
   // Per-document content font (Notion-style "Aa" switch). Defaults to sans;
   // the choice is persisted in note metadata so it travels with the doc.
@@ -141,6 +146,8 @@ export default function DocumentRenderer({ note, onMetadataChange, readOnly }: R
     WikilinkExtension.configure({ onNavigate: handleWikilinkNavigate }),
     WikilinkAutocomplete.configure({ onStateChange: setAutocompleteState }),
     SlashCommand.configure({ onStateChange: setSlashState }),
+    MentionSuggest.configure({ onStateChange: setMentionState }),
+    MentionContext.configure({ noteId: note.id }),
     SearchHighlight,
     BlockKeymap,
     ImageUpload.configure({ upload, onError: setUploadError }),
@@ -230,6 +237,7 @@ export default function DocumentRenderer({ note, onMetadataChange, readOnly }: R
   }, [initialHtml]); // Re-create editor when initialHtml changes
 
   editorRef.current = editor;
+  useEffect(() => setMentionNoteId(editor, note.id), [editor, note.id]);
 
   // Keep the editor's editable state in sync if readOnly flips after creation.
   // emitUpdate: false — setEditable's default emits TipTap's `update` event,
@@ -404,6 +412,8 @@ export default function DocumentRenderer({ note, onMetadataChange, readOnly }: R
         {editor && slashState?.active && (
           <SlashMenu editor={editor} state={slashState} onClose={() => setSlashState(null)} />
         )}
+        {/* `@` mention menu: people, pages, dates, reminders */}
+        {editor && mentionState?.active && <MentionMenu editor={editor} state={mentionState} notes={allNotes || []} />}
         {/* In-note find bar (Cmd+F / Ctrl+F) */}
         {editor && findOpen && (
           <EditorFindBar editor={editor} onClose={() => setFindOpen(false)} />
