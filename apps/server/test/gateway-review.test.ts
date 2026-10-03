@@ -147,9 +147,14 @@ test("M1: a path that differs from a held one only by case or Unicode form is ta
   // The path PATCH too.
   grantUser("org@test.local", "tag", "team", "own");
   fv.put({ id: "mine", path: "Team/Mine", content: "m", tags: ["team"] });
-  assert.equal((await patch("mine", { path: "team/plan", if_updated_at: stamp("mine") }, as("org@test.local"))).status, 409);
+  // (Wave 2D, review C1: a non-owner path change is a MOVE — the bare PATCH answers
+  // `move_required`; the pages move route applies the same held-path rule.)
+  const refused = await patch("mine", { path: "team/plan", if_updated_at: stamp("mine") }, as("org@test.local"));
+  assert.equal(refused.status, 403);
+  assert.equal((await json(refused)).error, "move_required");
+  assert.equal((await post("/notes/mine/move", { newPath: "team/plan", if_updated_at: stamp("mine") }, as("org@test.local"))).status, 409);
   // …but renaming a note to a different CASE of its own path is not a conflict with itself.
-  assert.equal((await patch("mine", { path: "Team/MINE", if_updated_at: stamp("mine") }, as("org@test.local"))).status, 200);
+  assert.equal((await post("/notes/mine/move", { newPath: "Team/MINE", if_updated_at: stamp("mine") }, as("org@test.local"))).status, 200);
 });
 
 test("M1: the parent-page rule is not bypassed by case", async () => {
@@ -243,11 +248,20 @@ test("L2: a path PATCH applies the create's parent rule", async () => {
   fv.put({ id: "mine", path: "Team/Mine", content: "m", tags: ["team"] });
   fv.put({ id: "locked", path: "Locked", content: "viewable, not creatable", tags: ["ro"] });
   fv.put({ id: "hers", path: "Hers", content: "invisible", tags: ["hers"] });
-  assert.equal((await patch("mine", { path: "Locked/Mine", if_updated_at: stamp("mine") }, org)).status, 403);
-  assert.equal((await patch("mine", { path: "Hers/Mine", if_updated_at: stamp("mine") }, org)).status, 404);
+  // Wave 2D (review C1): the PATCH itself answers `move_required`; the destination's
+  // parent rule is applied by the pages move route (where an unviewable parent reads
+  // like "no page there", and the top level / plain folders are the owner's).
+  for (const path of ["Locked/Mine", "Hers/Mine", "Team/Renamed", "PlainFolder/Renamed"]) {
+    const r = await patch("mine", { path, if_updated_at: stamp("mine") }, org);
+    assert.equal(r.status, 403, path);
+    assert.equal((await json(r)).error, "move_required");
+  }
+  const mv = (newPath: string) => post("/notes/mine/move", { newPath, if_updated_at: stamp("mine") }, org);
+  assert.equal((await mv("Locked/Mine")).status, 403);
+  assert.equal((await mv("Hers/Mine")).status, 403);
   assert.equal(fv.notes.get("mine")!.path, "Team/Mine");
-  assert.equal((await patch("mine", { path: "Team/Renamed", if_updated_at: stamp("mine") }, org)).status, 200);
-  assert.equal((await patch("mine", { path: "PlainFolder/Renamed", if_updated_at: stamp("mine") }, org)).status, 200, "a plain folder, as for a create");
+  assert.equal((await mv("Team/Renamed")).status, 200);
+  assert.equal((await mv("PlainFolder/Renamed")).status, 403, "a plain folder is the owner's for a move");
 });
 
 // ── L3 ────────────────────────────────────────────────────────────────────────

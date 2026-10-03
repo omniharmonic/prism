@@ -50,8 +50,8 @@ test("a create-not-edit grant may POST into its scope but cannot edit what is th
   assert.equal(created.status, 200, "create is allowed by the create cap");
   const body = (await created.json()) as { id: string; metadata: Record<string, unknown>; _creator?: { me: boolean } };
   assert.equal(fv.notes.get(body.id)!.metadata!.prism_creator, "kai@test.local", "the creator is still stamped");
-  // …but an email never travels back to a non-admin (review M-B): they learn it is theirs.
-  assert.equal(body.metadata.prism_creator, undefined);
+  // Their OWN address is no disclosure and stays (someone else's never travels, review M-B).
+  assert.equal(body.metadata.prism_creator, "kai@test.local");
   assert.equal(body._creator?.me, true);
 
   const patched = await req("/notes/n1", { method: "PATCH", cookie, headers: J, body: JSON.stringify({ content: "hijacked" }) });
