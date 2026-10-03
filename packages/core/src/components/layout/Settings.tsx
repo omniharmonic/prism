@@ -3,6 +3,7 @@ import { X, Database, MessageSquare, Mail, Cloud, Bot, Sun, Moon, Plus, Trash2, 
 import { invoke } from "@tauri-apps/api/core";
 import { useUIStore } from "../../app/stores/ui";
 import { useSettingsStore, type Theme } from "../../app/stores/settings";
+import { useReduceMotion } from "../../lib/motion";
 import { ollamaApi, localAiApi } from "../../lib/parachute/client";
 import { useIsWeb } from "../../data/Platform";
 import { useAccount } from "../../data/Account";
@@ -527,6 +528,10 @@ export function Settings({ open, onClose }: SettingsProps) {
                 </div>
               </Section>
 
+              <Section title="Motion">
+                <ReduceMotionRow />
+              </Section>
+
               <Section title="Typography">
                 <Row label="UI Font">
                   <select aria-label="UI Font" value={fontFamily} onChange={(e) => setFontFamily(e.target.value)} className="h-7 rounded-md px-2 text-xs outline-none"
@@ -999,5 +1004,19 @@ function SourceField({ icon, label, desc, fieldKey, placeholder, sensitive, valu
         )}
       </div>
     </div>
+  );
+}
+
+/** NP-AX-06: device-local Reduce motion, on top of the OS preference. */
+function ReduceMotionRow() {
+  const [reduce, setReduce] = useReduceMotion();
+  return (
+    <label className="flex min-h-11 items-center justify-between gap-3 text-xs" style={{ color: "var(--text-primary)" }}>
+      <span>
+        <span className="block">Reduce motion</span>
+        <span className="block" style={{ color: "var(--text-muted)" }}>Turns off menu, sheet and panel animations on this device. Your system setting is always honoured.</span>
+      </span>
+      <input type="checkbox" checked={reduce} onChange={(e) => setReduce(e.target.checked)} aria-label="Reduce motion" />
+    </label>
   );
 }

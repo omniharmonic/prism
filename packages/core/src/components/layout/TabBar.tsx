@@ -1,5 +1,5 @@
 import { isVaultNoteId } from "../../lib/noteIdentity";
-import { useEffect, useRef, useState } from "react";
+import { useContext, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { OpenDocuments } from "./OpenDocuments";
 import {
   X,
@@ -15,6 +15,20 @@ import { useNoteShortcuts } from "../navigation/NoteShortcuts";
 import { useIsMobile } from "../../app/hooks/useIsMobile";
 import { ShareButton } from "./ShareButton";
 import { PageActionsButton } from "../pages/PageActionsMenu";
+import { SyncStateBadge } from "./SyncStateBadge";
+import { QueryClientContext } from "@tanstack/react-query";
+import { agentKeys, useAgentClient } from "../../data/AgentClientContext";
+import type { AgentSessionSummary } from "../../lib/agent/sessions";
+
+/** True while a cached agent session has a queued/running turn. Reads the
+ *  cache only (AgentChat/AgentActivity own the polling) — never adds a request. */
+function useAgentActive(): boolean {
+  const client = useAgentClient();
+  const queries = useContext(QueryClientContext); // optional: fixtures may mount TabBar without one
+  const key = agentKeys(client).list(false);
+  const read = () => !!(queries?.getQueryData<AgentSessionSummary[]>(key) ?? []).some((s) => s.lastTurnStatus === "running" || s.lastTurnStatus === "queued");
+  return useSyncExternalStore((notify) => queries ? queries.getQueryCache().subscribe(notify) : () => {}, read, () => false);
+}
 
 /** A square, quiet icon button for the top bar (rounded hover via .interactive). */
 function IconButton({
@@ -87,6 +101,7 @@ export function TabBar() {
   const isFav = isRealNote && favoriteIds.includes(activeTab!.noteId);
 
   const isMobile = useIsMobile();
+  const agentActive = useAgentActive();
   const strip = useRef<HTMLDivElement>(null);
   const [announcement, setAnnouncement] = useState("");
   useEffect(() => {
@@ -144,6 +159,7 @@ export function TabBar() {
             {activeTab?.title ?? "Prism"}
           </span>
         </div>
+        {isRealNote && <SyncStateBadge key="sync" variant="phone" />}
 
         {isRealNote && (
           <IconButton
@@ -324,8 +340,9 @@ export function TabBar() {
         {announcement}
       </span>
 
-      {/* Right actions */}
+      {/* Right actions: one quiet row — save state, favorite, Share, ⋯, Agent (NP-PG-06). */}
       <div className="flex items-center gap-0.5 flex-shrink-0">
+        {isRealNote && <SyncStateBadge key="sync" variant="header" />}
         {isRealNote && (
           <IconButton
             onClick={() =>
@@ -350,20 +367,22 @@ export function TabBar() {
       <ShareButton key="share" />
       {isRealNote && <PageActionsButton key="page-actions" page={{ id: activeTab!.noteId, path: null, title: activeTab!.title }} />}
       <div className="flex items-center gap-0.5 flex-shrink-0">
-        {/* Bot = opens Agent specifically */}
-        <IconButton
-          onClick={() => {
-            if (!contextPanelOpen) {
-              setContextPanelTab("agent");
-              toggleContextPanel();
-            } else {
-              setContextPanelTab("agent");
-            }
+        {/* Labelled Agent button with an activity dot while a turn runs. */}
+        <button
+          type="button"
+          onClick={(event) => {
+            event.currentTarget.focus({ preventScroll: true });
+            setContextPanelTab("agent");
+            if (!contextPanelOpen) toggleContextPanel();
           }}
           title="AI Agent"
+          aria-label={agentActive ? "AI Agent (working)" : "AI Agent"}
+          className="tabbar-labelled interactive focus-ring"
         >
-          <Bot size={16} />
-        </IconButton>
+          <Bot size={15} aria-hidden />
+          <span>Agent</span>
+          {agentActive && <span className="tabbar-activity-dot" aria-hidden />}
+        </button>
         {/* Panel toggle = opens Metadata by default */}
         <IconButton
           onClick={() => {

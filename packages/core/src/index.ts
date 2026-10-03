@@ -5,6 +5,7 @@ import "./styles/glass.css";
 import "./styles/typography.css";
 import "./styles/collab.css";
 import "./styles/workspace.css";
+import "./styles/shell.css";
 
 export { PrismMark, PrismAppIcon } from "./components/brand/PrismMark";
 
@@ -245,3 +246,8 @@ export { TranscriptReviewClientProvider, useTranscriptReviewClient, type Transcr
 export { eligiblePublicationNavigation, parsePublicationNavigation, type PublicationNavigation } from "./lib/publishing/navigation";
 // Pages: nested-page moves, Trash, synced preferences (lib/pages/model.ts).
 export { PagesRequestError, TRASH_TAG, sanitizePreferences, type MoveRequest, type MoveResult, type TrashItem, type TrashListing, type PreferencesSnapshot, type PagePreferences } from "./lib/pages/model";
+
+// Shell sync state + motion (wave 2E: NP-OF-01, NP-SB-15, NP-PG-06, NP-AX-06)
+export { SyncStateBadge, OPEN_SAVED_CHANGES_EVENT } from "./components/layout/SyncStateBadge";
+export { useSyncStore, useSyncStatus, deriveSyncStatus, markDirty, reportSaveFailure, reportSyncSource, reportPendingWrites, trackVaultWrites, type SyncStatus, type SyncKind } from "./lib/sync/syncState";
+export { useReduceMotion, setReduceMotion, applyReduceMotion, prefersReducedMotion } from "./lib/motion";

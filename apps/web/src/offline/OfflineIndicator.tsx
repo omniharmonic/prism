@@ -11,6 +11,7 @@ import {
 import { captureWriteContext, sameScope } from "./writeScope";
 import { serverFetch } from "../transport";
 import { getMe } from "../config";
+import { reportPendingWrites, OPEN_SAVED_CHANGES_EVENT } from "@prism/core";
 
 const stateLabels = {
   queued: "Saved on this device",
@@ -92,6 +93,18 @@ export function OfflineIndicator() {
       window.removeEventListener("prism:vault-changed", scopeChange);
     };
   }, []);
+  // Feed the shell's one sync state (header / sidebar footer) with the outbox.
+  useEffect(() => {
+    reportPendingWrites(
+      items.length,
+      items.filter((i) => i.state !== "queued" && i.state !== "sending").length,
+    );
+  }, [items]);
+  useEffect(() => {
+    const show = () => setOpen(true);
+    window.addEventListener(OPEN_SAVED_CHANGES_EVENT, show);
+    return () => window.removeEventListener(OPEN_SAVED_CHANGES_EVENT, show);
+  }, []);
   useEffect(() => {
     if (open) dialog.current?.showModal();
     else dialog.current?.close();
@@ -161,7 +174,7 @@ export function OfflineIndicator() {
         onClick={() => setOpen(true)}
         aria-haspopup="dialog"
         aria-label={label}
-        className="fixed bottom-4 left-1/2 z-[100] -translate-x-1/2 rounded-full border border-[var(--glass-border)] bg-[var(--bg-surface)] px-4 py-2 text-xs text-[var(--text-primary)] shadow-lg"
+        className="offline-indicator-pill fixed bottom-4 left-1/2 z-[100] -translate-x-1/2 rounded-full border border-[var(--glass-border)] bg-[var(--bg-surface)] px-4 py-2 text-xs text-[var(--text-primary)] shadow-lg"
       >
         <span role="status">
           {!online && items.length ? "Offline · " : ""}

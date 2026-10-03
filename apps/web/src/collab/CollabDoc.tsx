@@ -18,6 +18,7 @@ function vaultDocName(noteId: string): string {
 }
 import { updateNote as restUpdateNote, hasPendingWrites } from "../parachute/rest";
 import { reloadForUpdate } from "../offline/reloadForUpdate";
+import { reportSyncSource } from "@prism/core";
 
 /** Track a CSS breakpoint without per-render layout thrash. */
 function useIsNarrow(): boolean {
@@ -136,6 +137,21 @@ function ScopedCollabDoc({
   const [connected, setConnected] = useState(false);
   const [synced, setSynced] = useState(false);
   const [online, setOnline] = useState(() => typeof navigator === "undefined" || navigator.onLine);
+  // Wave 2E (NP-OF-01): live documents feed the shell's one sync state.
+  const [unsynced, setUnsynced] = useState(0);
+  useEffect(() => {
+    if (!provider) return;
+    const update = ({ number }: { number: number }) => setUnsynced(number);
+    provider.on("unsyncedChanges", update);
+    return () => { provider.off("unsyncedChanges", update); };
+  }, [provider]);
+  useEffect(() => {
+    const key = `collab:${noteId}`;
+    reportSyncSource(key, connected
+      ? (unsynced > 0 ? "saving" : "idle")
+      : localSave === "unavailable" ? "failed" : localSave === "saved" && unsynced > 0 ? "local" : "idle");
+    return () => reportSyncSource(key, null);
+  }, [noteId, connected, unsynced, localSave]);
   const [level, setLevel] = useState<string | null>(null);
   const [title, setTitle] = useState("Shared document");
   const [titleNotice, setTitleNotice] = useState("");

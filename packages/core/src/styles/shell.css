@@ -1,0 +1,96 @@
+/* ═══════════════════════════════════════════
+   SHELL POLISH (wave 2E) — header, peek sidebar, gestures, motion.
+   ═══════════════════════════════════════════ */
+
+/* Motion tokens (NP-AX-06): menus, sheets and peeks move 120–180 ms, opacity +
+   translate only. Every surface below reads these, and both the OS preference
+   and the in-app "Reduce motion" setting (html.reduce-motion) zero them. */
+:root {
+  --motion-fast: 120ms;
+  --motion-base: 150ms;
+  --motion-slow: 180ms;
+  --motion-ease: cubic-bezier(0.22, 1, 0.36, 1);
+}
+@media (prefers-reduced-motion: reduce) {
+  :root { --motion-fast: 0ms; --motion-base: 0ms; --motion-slow: 0ms; }
+}
+:root.reduce-motion { --motion-fast: 0ms; --motion-base: 0ms; --motion-slow: 0ms; }
+:root.reduce-motion *,
+:root.reduce-motion *::before,
+:root.reduce-motion *::after {
+  transition-duration: 0.01ms !important;
+  animation-duration: 0.01ms !important;
+  animation-iteration-count: 1 !important;
+  scroll-behavior: auto !important;
+}
+
+/* Restrained entrances: re-time the shared surfaces to the motion tokens. */
+.sheet-backdrop { animation-duration: var(--motion-fast); }
+.sheet-panel { animation-duration: var(--motion-slow); animation-timing-function: var(--motion-ease); }
+.command-pill { animation-duration: var(--motion-slow); }
+.modal-rise { animation-duration: var(--motion-base); }
+.drawer-left, .drawer-right { animation-duration: var(--motion-slow); }
+@keyframes prism-menu-in {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes prism-fade-in { from { opacity: 0; } to { opacity: 1; } }
+.prism-menu-enter,
+[role="menu"],
+[role="listbox"].prism-popover {
+  animation: prism-menu-in var(--motion-fast) var(--motion-ease);
+}
+.workspace-mobile-drawer[open] { animation: prism-fade-in var(--motion-fast) ease-out; }
+.workspace-mobile-drawer[open] > div { animation: drawer-in-left var(--motion-slow) var(--motion-ease); }
+.workspace-mobile-drawer[data-side="right"][open] > div { animation-name: drawer-in-right; }
+@media (prefers-reduced-motion: reduce) {
+  .prism-menu-enter, [role="menu"], [role="listbox"].prism-popover,
+  .workspace-mobile-drawer[open], .workspace-mobile-drawer[open] > div { animation: none; }
+}
+:root.reduce-motion .prism-menu-enter, :root.reduce-motion [role="menu"],
+:root.reduce-motion .workspace-mobile-drawer[open],
+:root.reduce-motion .workspace-mobile-drawer[open] > div { animation: none; }
+
+/* Header bar (NP-PG-06): labelled actions stay one quiet row. */
+.tabbar-labelled {
+  position: relative; display: inline-flex; align-items: center; gap: 6px;
+  height: 30px; padding: 0 10px; border-radius: 6px; flex-shrink: 0;
+  font-size: 12.5px; font-weight: 500; color: var(--text-secondary);
+}
+.tabbar-labelled:hover { color: var(--text-primary); }
+.tabbar-activity-dot {
+  position: absolute; top: 5px; right: 5px; width: 6px; height: 6px;
+  border-radius: 999px; background: var(--color-accent);
+}
+
+/* Collapsed-sidebar peek (NP-SB-12): a thin hover strip on the left edge
+   reveals the sidebar as a floating overlay; it leaves on mouse-out or Esc. */
+.sidebar-peek-zone {
+  position: absolute; top: 0; bottom: 0; left: 0; width: 10px; z-index: 40;
+}
+.sidebar-peek {
+  position: absolute; top: 8px; bottom: 8px; left: 0; z-index: 41;
+  width: min(300px, 80vw); overflow: hidden;
+  border: 1px solid var(--glass-border); border-left: 0; border-radius: 0 10px 10px 0;
+  background: var(--bg-surface); box-shadow: var(--glass-shadow-elevated);
+  animation: prism-peek-in var(--motion-slow) var(--motion-ease);
+}
+@keyframes prism-peek-in {
+  from { opacity: 0; transform: translateX(-12px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+@media (prefers-reduced-motion: reduce) { .sidebar-peek { animation: none; } }
+:root.reduce-motion .sidebar-peek { animation: none; }
+
+/* Edge-swipe affordance (NP-MB-06): a soft glow that follows the thumb. */
+.edge-swipe-hint {
+  position: fixed; top: 0; bottom: 0; left: 0; width: 28px; z-index: 30; pointer-events: none;
+  background: linear-gradient(90deg, var(--color-accent-dim), transparent);
+  opacity: 0; transition: opacity var(--motion-fast) ease-out;
+}
+.edge-swipe-hint[data-active="true"] { opacity: 1; }
+
+/* The offline / saved-changes pill never sits on the phone bottom bar. */
+@media (max-width: 768px) {
+  .offline-indicator-pill { bottom: calc(env(safe-area-inset-bottom, 0px) + 84px) !important; }
+}
