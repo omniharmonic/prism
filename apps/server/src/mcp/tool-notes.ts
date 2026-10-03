@@ -20,7 +20,7 @@
  *    for the passthrough (the vault has no /search route).
  */
 import * as z from "zod/v4";
-import TurndownService from "turndown";
+import { ConversionError, htmlToMarkdown } from "../convert/service";
 import { CAPS, effectiveCaps, type Cap } from "../permissions";
 import { roleFloor } from "../roles";
 import { isDocLive, noteKind, type CollabKind } from "../collab";
@@ -450,7 +450,6 @@ export const NOTE_TOOLS = [
 
 // ── resource: prism://note/{id} ─────────────────────────────────────────────
 
-const turndown = new TurndownService({ headingStyle: "atx", codeBlockStyle: "fenced" });
 /** Collab persists document notes as HTML; vault-native ones are already Markdown. */
 const looksLikeHtml = (s: string) => /^\s*<[a-z][a-z0-9-]*[\s>/]/i.test(s);
 
@@ -471,12 +470,26 @@ export const noteResource: PrismResource = {
     const note = await getJson<NoteOut>(ctx, `/api/notes/${enc(id)}`);
     const shaped = shapeNote(ctx, note);
     const kind = (shaped.collab as { kind: CollabKind }).kind;
+    // `shaped.content` is ALREADY capped (NOTE_CONTENT_CHARS): only that much is
+    // ever converted, and the conversion runs in the worker under a time limit.
     const body = String(shaped.content);
     const isDoc = kind === "document";
-    const text = isDoc && looksLikeHtml(body) ? turndown.turndown(body) : body;
-    const { content: _c, ...meta } = shaped;
+    let text = body;
+    let unconverted: string | null = null;
+    if (isDoc && looksLikeHtml(body)) {
+      try {
+        text = await htmlToMarkdown(body);
+      } catch (e) {
+        if (!(e instanceof ConversionError)) throw e;
+        // Deterministic fallback: the stored body as it is, and a note saying so.
+        unconverted = e.reason;
+        text = `<!-- prism: this note's HTML could not be converted to Markdown (${e.reason}); the stored HTML follows unchanged -->\n${body}`;
+      }
+    }
+    const { content: _c, ...rest } = shaped;
+    const meta = unconverted ? { ...rest, contentFormat: "html", contentUnconverted: unconverted } : rest;
     return [
-      { uri: uri.href, mimeType: isDoc ? "text/markdown" : "text/plain", text },
+      { uri: uri.href, mimeType: unconverted ? "text/html" : isDoc ? "text/markdown" : "text/plain", text },
       { uri: `${uri.href}#metadata`, mimeType: "application/json", text: JSON.stringify(meta, null, 2) },
     ];
   },

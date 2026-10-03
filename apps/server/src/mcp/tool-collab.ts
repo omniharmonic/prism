@@ -28,12 +28,17 @@
 import { systemNoteReason } from "@prism/core/pages";
 import * as z from "zod/v4";
 import * as Y from "yjs";
+import { ConversionError } from "../convert/service";
 import { effectiveCaps, effectiveLevel, atLeast, maxLevel, type Cap, type Level } from "../permissions";
 import { roleFloor, roleAtLeast } from "../roles";
 import {
   docNameFor,
   hocuspocus,
   isDocLive,
+  isDocDegraded,
+  carriesDegradedSeed,
+  liveDocument,
+  prepareExternalContent,
   noteKind,
   parseCsv,
   serializeCsv,
@@ -170,6 +175,11 @@ async function withDoc<T>(ctx: ToolContext, docName: string, fn: (doc: Y.Doc) =>
   const conn = await hocuspocus.openDirectConnection(docName, { mcp: ctx.principal.actor.email });
   try {
     if (!conn.document) throw new ToolError("upstream_error", "the document could not be opened");
+    // A degraded document (content that cannot be converted in budget) is a
+    // read-only plain-text view that is never stored: nothing may be written to it.
+    if (isDocDegraded(docName) || carriesDegradedSeed(conn.document)) {
+      throw new ToolError("invalid_request", "this page is too large or complex for the live editor, so comments, suggestions and live edits are unavailable on it");
+    }
     const before = Y.encodeStateVector(conn.document);
     const out = await fn(conn.document);
     // Attribute the store this write triggers to the agent (history: "Agent revision").
@@ -211,6 +221,16 @@ export async function liveContentWrite(ctx: ToolContext, id: string, content: st
   const t = await target(ctx, id, "edit");
   const { vaultId } = ctx.principal.actor;
   let changed = false;
+  // The new body is parsed off the main thread BEFORE the merge's synchronous section.
+  let prepared: Awaited<ReturnType<typeof prepareExternalContent>>;
+  try {
+    prepared = await prepareExternalContent(t.kind, content);
+  } catch (e) {
+    if (!(e instanceof ConversionError)) throw e;
+    throw e.reason === "busy"
+      ? new ToolError("upstream_error", "the server is busy converting documents — retry in a moment")
+      : new ToolError("invalid_request", "this content is too large or complex to merge into the open document");
+  }
   await withDoc(ctx, t.docName, async (live) => {
     // Fresh vault read AFTER the doc is pinned open (not the gateway's cached copy).
     const cur = await vaultClient(vaultId).getNote(t.note.id);
@@ -230,7 +250,7 @@ export async function liveContentWrite(ctx: ToolContext, id: string, content: st
       );
     }
     try {
-      changed = mergeContentIntoLive(live, snap.state, t.kind, content, originOf(ctx));
+      changed = mergeContentIntoLive(live, snap.state, t.kind, content, originOf(ctx), prepared);
     } catch (e) {
       opError(e);
     }
@@ -272,7 +292,7 @@ export const listCommentsTool = defineTool({
     requireDocument(t);
     const includeResolved = include_resolved === true;
     // Read-only: use the live doc if loaded, else the persisted CRDT snapshot — never load/seed a doc to read it.
-    const live = hocuspocus.documents.get(t.docName) as Y.Doc | undefined;
+    const live = liveDocument(t.docName);
     let threads: ThreadOut[];
     if (live) {
       threads = listThreads(live, includeResolved);
@@ -413,7 +433,7 @@ export const sheetReadTool = defineTool({
   async handler({ id, range }, ctx) {
     const t = await target(ctx, id, "view");
     requireSheet(t);
-    const live = hocuspocus.documents.get(t.docName) as Y.Doc | undefined;
+    const live = liveDocument(t.docName);
     const grid = live ? gridOfRows(live.getArray<Y.Array<string>>(SHEET_FIELD)) : parseCsv(t.note.content ?? "");
     const rows = grid.length;
     const cols = Math.max(0, ...grid.map((r) => r.length));

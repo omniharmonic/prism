@@ -171,8 +171,8 @@ async function myActorIds(a: Actor): Promise<{ ids: Set<string>; names: Set<stri
 
 /** Threads of one document, from the live doc when loaded, else its persisted snapshot. Never loads a doc. */
 async function threadsOf(vaultId: string, noteId: string): Promise<Array<{ id: string; quote: string; resolved: boolean; items: Array<Record<string, unknown>> }>> {
-  const { hocuspocus, docNameFor } = await import("../collab");
-  const live = hocuspocus.documents.get(docNameFor(vaultId, noteId)) as unknown as Y.Doc | undefined;
+  const { liveDocument, docNameFor } = await import("../collab");
+  const live = liveDocument(docNameFor(vaultId, noteId));
   let doc = live;
   let scratch: Y.Doc | null = null;
   if (!doc) {

@@ -24,7 +24,8 @@ import { HUMAN_COLLAB_LIMITS, type HumanCollabCommand, type HumanCollabErrorBody
 import { accessRevision } from "../access-events";
 import { resolveActor, requestVia } from "../auth/actor";
 import { verifyCapability } from "../auth/capability";
-import { collabLevelFor, docNameFor, hocuspocus, isNoteId, noteCollabWriter, noteKind } from "../collab";
+import { carriesDegradedSeed, collabLevelFor, docNameFor, ensureRenderedSize, hocuspocus, isDocDegraded, isNoteId, noteCollabWriter, noteKind } from "../collab";
+import { ConversionError } from "../convert/service";
 import { colorFor } from "../collab-ops";
 import { getCollabReceipt, getFederatedByLocal, getFederationEnabled, getUser, getVaultRegistry, grantsForCapability, type Grant } from "../db";
 import { documentActorId, executeHumanCommand, findReceipt, HumanCommandError, pruneReceiptsIfDue, safeAuthorName, textProblem, type HumanCommandOutcome } from "../human-collab";
@@ -216,6 +217,21 @@ humanCollabApi.post("/:id/commands", async (c) => {
     let outcome: HumanCommandOutcome | null = null;
     try {
       if (!conn.document) return fail(c, 502, "upstream_error", "The live document could not be opened. Keep your draft and retry the same request.", { retry: true });
+      // A degraded document (content that cannot be converted in budget) is a
+      // read-only plain-text view that is never stored: it takes no commands.
+      if (isDocDegraded(docName) || carriesDegradedSeed(conn.document as unknown as Y.Doc)) {
+        return fail(c, 413, "document_too_large", "This page is too large or complex for the live editor, so suggestions and comments are unavailable on it.");
+      }
+      // The engine needs the document's rendered size; measure it off the main
+      // thread now (a no-op once known), so its synchronous section never renders.
+      try {
+        await ensureRenderedSize(conn.document as unknown as Y.Doc);
+      } catch (e) {
+        if (!(e instanceof ConversionError)) throw e;
+        return e.reason === "busy"
+          ? fail(c, 503, "not_confirmed", "The server is busy. Keep your draft and retry the same request.", { retry: true })
+          : fail(c, 413, "document_too_large", "This page is too large or complex for the live editor, so suggestions and comments are unavailable on it.");
+      }
       // Everything above awaited (note read, document load). Read the note once
       // more, then decide and mutate with NO await in between: the credential,
       // the grant rows, the workspace, the note's privacy/tags and the access

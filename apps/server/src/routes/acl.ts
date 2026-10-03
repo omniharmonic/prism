@@ -106,7 +106,7 @@ import { runVaultMirrorOnce } from "../worker/vault-mirror";
 import { startWorker } from "../worker/scheduler";
 import { vaultRegistry } from "../config";
 import { createVaultViaCli, seedVault } from "../vault-provision";
-import { noteKind, resolveSuggestionsInHtml } from "../collab";
+import { noteKind, resolveSuggestionsInHtmlAsync } from "../collab";
 import { normalizePathPrefix, pathInPrefix } from "../paths";
 import { ancestorPages, descendantRefs, descendantRows, grantCapsList, inheritedPeople, personView, viewableAncestors } from "../sharing";
 import { rowRef } from "../tree";
@@ -1838,7 +1838,7 @@ async function resolveSuggestion(c: Context, action: "accept" | "reject") {
   if (s.author && s.author_kind === "user") {
     try {
       const note = await vault.getNote(s.note_id);
-      const next = resolveSuggestionsInHtml(note.content, s.author, action);
+      const next = await resolveSuggestionsInHtmlAsync(note.content, s.author, action);
       if (next !== note.content) {
         await vault.updateNote(s.note_id, { content: next });
         applied = true;

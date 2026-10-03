@@ -49,7 +49,8 @@ export class TaskWorker {
   private current: Task | null = null;
   private timer: ReturnType<typeof setTimeout> | null = null;
 
-  constructor(private readonly maxOldGenerationSizeMb: number, private readonly maxQueue = 64) {}
+  /** `workerData` reaches the thread as-is (`{ preload: "doc" }` loads the document converters before `ready`, outside any task's clock). */
+  constructor(private readonly maxOldGenerationSizeMb: number, private readonly maxQueue = 64, private readonly workerData: unknown = undefined) {}
 
   get pending(): number {
     return this.queue.length + (this.current ? 1 : 0);
@@ -65,7 +66,7 @@ export class TaskWorker {
   }
 
   private spawn(): Thread {
-    const worker = new Worker(ENTRY, { execArgv: [], resourceLimits: { maxOldGenerationSizeMb: this.maxOldGenerationSizeMb } });
+    const worker = new Worker(ENTRY, { execArgv: [], workerData: this.workerData, resourceLimits: { maxOldGenerationSizeMb: this.maxOldGenerationSizeMb } });
     worker.unref();
     const thread: Thread = { worker, ready: false };
     // Every handler first checks that this is still THE thread: a killed worker's late
