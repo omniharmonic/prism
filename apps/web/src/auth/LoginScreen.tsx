@@ -1,4 +1,4 @@
-import { PrismMark } from "@prism/core";
+import { PrismMark } from "@prism/core/shell";
 import { useState } from "react";
 import { login, requestMagicLink, postLoginTarget } from "../config";
 import { takeSignOutNotice } from "../config";

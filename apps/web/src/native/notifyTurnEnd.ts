@@ -3,7 +3,7 @@
 // that updates the chat also asks the shell to notify. The shell decides
 // whether to show it (only when the main window is unfocused), sanitises and
 // caps the text, and rate-limits. Background push for a CLOSED app is WP5/APNs.
-import type { AgentClient, AgentStreamHandlers } from "@prism/core";
+import type { AgentClient, AgentStreamHandlers } from "@prism/core/shell";
 import { isNative } from "../transport";
 
 interface Shell {

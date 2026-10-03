@@ -1,4 +1,4 @@
-import { useAgentChatStore } from "@prism/core";
+import { useAgentChatStore } from "@prism/core/shell";
 /**
  * Web connection config: which Parachute vault to talk to, and the bearer token.
  *

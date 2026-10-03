@@ -1,4 +1,4 @@
-import { type Note, useWikilinkNavigate } from "@prism/core";
+import { type Note, useWikilinkNavigate } from "@prism/core/shell";
 import { CollabDoc } from "./CollabDoc";
 import { isOwner } from "../config";
 import { useLinkNotes } from "./linkNotes";

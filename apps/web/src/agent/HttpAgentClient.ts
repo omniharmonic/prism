@@ -8,7 +8,7 @@
  * resume with `?after=` + `Last-Event-ID`. `contextHeaders()` names the active
  * vault/workspace: sessions live per vault.
  */
-import { createHttpAgentClient } from "@prism/core";
+import { createHttpAgentClient } from "@prism/core/shell";
 import { serverFetch, streamServerSSE } from "../transport";
 import { contextHeaders, agentScope, getMe } from "../config";
 import { withTurnEndNotifications } from "../native/notifyTurnEnd";

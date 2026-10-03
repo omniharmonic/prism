@@ -9,7 +9,7 @@
  */
 import { marked } from "marked";
 import TurndownService from "turndown";
-import type { NoteFilters, CreateNoteParams, UpdateNoteParams } from "@prism/core";
+import type { NoteFilters, CreateNoteParams, UpdateNoteParams } from "@prism/core/shell";
 import * as rest from "../parachute/rest";
 
 const turndown = new TurndownService({ headingStyle: "atx", codeBlockStyle: "fenced" });

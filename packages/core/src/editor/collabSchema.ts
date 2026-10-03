@@ -29,7 +29,8 @@ import { mentionExtensions } from "../lib/tiptap/MentionNode";
  *   5 — + childPage (sub-page row), toggle `level` (toggle headings), column `width`
  *       and up to 5 columns, table cell `cellColor` (wave 4A)
  */
-export const COLLAB_SCHEMA_VERSION = 5;
+// The value lives in ./schemaVersion (no imports) so the app shell can read it without the editor.
+export { COLLAB_SCHEMA_VERSION } from "./schemaVersion";
 
 /**
  * The document schema shared by the collaborative editor (browser) and the

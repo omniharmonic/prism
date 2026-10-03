@@ -2,7 +2,7 @@
 // owner/member session cookie. Backs the Settings → Account tab. On success it
 // refreshes the cached identity (fetchMe) so collab presence picks up the new
 // name/avatar immediately.
-import type { AccountClient, AccountProfile, SignedInDevice, AgentTokenList, CreatedAgentToken } from "@prism/core";
+import type { AccountClient, AccountProfile, SignedInDevice, AgentTokenList, CreatedAgentToken } from "@prism/core/shell";
 import { fetchMe, vaultHeader, logout } from "./config";
 import { serverFetch } from "./transport";
 

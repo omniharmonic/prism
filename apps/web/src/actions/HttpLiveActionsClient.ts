@@ -7,7 +7,7 @@
  * and the native build (bearer device token → also human). `contextHeaders()`
  * names the active vault: credentials are stored per vault.
  */
-import { createHttpLiveActionsClient } from "@prism/core";
+import { createHttpLiveActionsClient } from "@prism/core/shell";
 import { serverFetch } from "../transport";
 import { contextHeaders, agentScope, getMe } from "../config";
 

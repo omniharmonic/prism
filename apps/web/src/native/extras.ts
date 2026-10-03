@@ -12,7 +12,7 @@
 //    Everything else is reported as "not supported yet".
 import { marked } from "marked";
 import TurndownService from "turndown";
-import { useUIStore } from "@prism/core";
+import { useUIStore } from "@prism/core/shell";
 import * as rest from "../parachute/rest";
 
 interface Shell {

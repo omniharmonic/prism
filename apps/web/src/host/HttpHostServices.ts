@@ -9,7 +9,7 @@
  * it to the SERVER OWNER only (the routes are admin/owner-gated anyway; this
  * keeps the affordances hidden from everyone else).
  */
-import { createHttpHostServices } from "@prism/core";
+import { createHttpHostServices } from "@prism/core/shell";
 import { serverFetch } from "../transport";
 import { contextHeaders, agentScope, getMe } from "../config";
 

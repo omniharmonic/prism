@@ -13,7 +13,7 @@
  * (see PrismHost). Every server call in apps/web and @prism/core goes through
  * `serverFetch` / `streamServerSSE` / `collabWsUrl` here.
  */
-import { streamSSE, setServerFetch as installCoreFetch, setMapProxyFetch, COLLAB_SCHEMA_VERSION, type StreamSSEOptions } from "@prism/core";
+import { streamSSE, setServerFetch as installCoreFetch, setMapProxyFetch, COLLAB_SCHEMA_VERSION, type StreamSSEOptions } from "@prism/core/shell";
 import { clearReadCache } from "./offline/readCache";
 
 /** The contract a native shell implements and injects BEFORE the app boots. */

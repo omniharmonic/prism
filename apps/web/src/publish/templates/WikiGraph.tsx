@@ -8,10 +8,10 @@
 // out-of-set node. GraphCanvas (and the three.js bundle it pulls in) is
 // lazy-loaded so it costs nothing until the reader opens the graph panel.
 import { Suspense, lazy, useEffect, useMemo, useRef, useState } from "react";
-import type { GraphData, GraphNode } from "@prism/core";
+import type { GraphData, GraphNode } from "@prism/core/shell";
 import type { PubGraph } from "./types";
 
-const GraphCanvas = lazy(() => import("@prism/core").then((m) => ({ default: m.GraphCanvas })));
+const GraphCanvas = lazy(() => import("@prism/core/shell").then((m) => ({ default: m.GraphCanvas })));
 
 const MAX_NODES = 600;
 

@@ -1,4 +1,4 @@
-import type { VaultClient } from "@prism/core";
+import type { VaultClient } from "@prism/core/shell";
 import * as rest from "./rest";
 import * as pages from "./pages";
 import * as sharing from "./sharing";

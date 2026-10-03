@@ -20,6 +20,10 @@
     "test:e2e": "playwright test",
     "test:e2e:live": "playwright test --config playwright.live.config.ts",
     "check:scripts": "node scripts/check-scripts.mjs",
+    "perf": "playwright test -c playwright.perf.config.ts",
+    "perf:bundle": "node scripts/perf-bundle.mjs",
+    "perf:graph": "node scripts/perf-static-graph.mjs",
+    "check:initial": "node scripts/perf-static-graph.mjs --assert-lazy node_modules/@tiptap/,node_modules/prosemirror-,node_modules/yjs/,node_modules/@hocuspocus/,node_modules/highlight.js/,node_modules/lowlight/,node_modules/maplibre-gl/,node_modules/@excalidraw/",
     "build:brand": "node --import tsx scripts/build-brand.ts",
     "test:native-ui": "npm run build:native && playwright test --config playwright.native.config.ts"
   },

@@ -1,5 +1,5 @@
 import { useMemo } from "react";
-import { type Note, useVaultTree } from "@prism/core";
+import { type Note, useVaultTree } from "@prism/core/shell";
 
 /**
  * The pages a live document's `[[` and `@` suggestions choose from: the sidebar tree,

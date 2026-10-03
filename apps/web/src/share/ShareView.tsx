@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { marked } from "marked";
-import { sanitizeHtml } from "@prism/core";
+import { sanitizeHtml } from "@prism/core/shell";
 import { loadConnection, DEFAULT_VAULT_URL, DEFAULT_VAULT_NAME } from "../config";
 
 /**

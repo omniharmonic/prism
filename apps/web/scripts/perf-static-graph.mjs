@@ -7,6 +7,11 @@
  *   node apps/web/scripts/perf-static-graph.mjs            # totals by package
  *   node apps/web/scripts/perf-static-graph.mjs --why maplibre-gl   # one import chain to it
  *   node apps/web/scripts/perf-static-graph.mjs --files --top 40    # largest first-party modules in the static set
+ *   node apps/web/scripts/perf-static-graph.mjs --edges 'node_modules/(@tiptap|prosemirror|yjs)'   # who imports it directly
+ *
+ *   node apps/web/scripts/perf-static-graph.mjs --frontier '(@tiptap|prosemirror)'   # modules just outside the heavy set
+ *   node apps/web/scripts/perf-static-graph.mjs --from core/shell.ts --reaches '@tiptap'   # which direct imports lead there
+ *   node apps/web/scripts/perf-static-graph.mjs --assert-lazy @tiptap,prosemirror-view     # exit 1 if any is static (check:initial)
  *
  * Sizes are esbuild-minified bytes per package (not gzip, not rollup's exact output);
  * use scripts/perf-bundle.mjs on a real build for the budget number.
@@ -58,12 +63,85 @@ const group = (p) => {
   const w = p.match(/src\/([^/]+)/);
   return w ? "web/" + w[1] : p;
 };
+if (process.argv.includes("--assert-lazy")) {
+  // Guard (NP-PF-08): none of these may be statically reachable from the entry. Exit 1 with one chain each.
+  const names = process.argv[process.argv.indexOf("--assert-lazy") + 1].split(",");
+  let bad = 0;
+  for (const name of names) {
+    const hit = [...reach.keys()].find((k) => k.includes(name));
+    if (!hit) continue;
+    bad++;
+    const chain = [];
+    for (let f = hit; f; f = reach.get(f)) chain.push(f);
+    console.error(`"${name}" is in the app's initial JavaScript:\n  ` + chain.reverse().join("\n  → ") + "\n");
+  }
+  if (bad) { console.error("Boot-path modules import `@prism/core/shell`, never `@prism/core`; editor code is import()ed."); process.exit(1); }
+  console.log(`Lazy as required: ${names.join(", ")}`);
+  process.exit(0);
+}
 if (why) {
   const hit = [...reach.keys()].find((k) => k.includes(why));
   if (!hit) { console.log(`"${why}" is NOT statically reachable from the entry (it is lazy or unused).`); process.exit(0); }
   const chain = [];
   for (let f = hit; f; f = reach.get(f)) chain.push(f);
   console.log(`"${why}" is reached statically:\n  ` + chain.reverse().join("\n  → "));
+  process.exit(0);
+}
+if (process.argv.includes("--edges")) {
+  // Every FIRST-PARTY module in the static set that directly imports something matching
+  // the pattern (a regex over module paths) — the edges to cut to make that code lazy.
+  const pattern = new RegExp(process.argv[process.argv.indexOf("--edges") + 1]);
+  const rows = new Map();
+  for (const file of reach.keys()) {
+    if (file.includes("node_modules")) continue;
+    for (const imp of inputs[file]?.imports ?? []) {
+      if (imp.external || !reach.has(imp.path)) continue;
+      if (imp.kind !== "import-statement" && imp.kind !== "require-call") continue;
+      if (!pattern.test(imp.path) || (!imp.path.includes("node_modules") && pattern.test(file))) continue;
+      const k = file.replace("../../packages/core/src/", "core/");
+      rows.set(k, [...(rows.get(k) ?? []), group(imp.path)]);
+    }
+  }
+  for (const [f, to] of [...rows].sort()) console.log(`${f}\n      → ${[...new Set(to)].join(", ")}`);
+  console.log(`\n${rows.size} first-party modules in the static set import /${pattern.source}/ directly.`);
+  process.exit(0);
+}
+if (process.argv.includes("--frontier")) {
+  // First-party modules that import the pattern DIRECTLY form the "heavy" set; print every
+  // static-set module OUTSIDE that set which imports a member (the places a lazy boundary can go).
+  const pattern = new RegExp(process.argv[process.argv.indexOf("--frontier") + 1]);
+  const statics = (file) => (inputs[file]?.imports ?? []).filter((i) => !i.external && reach.has(i.path) && (i.kind === "import-statement" || i.kind === "require-call")).map((i) => i.path);
+  const short = (f) => f.replace("../../packages/core/src/", "core/");
+  const heavy = new Set([...reach.keys()].filter((f) => !f.includes("node_modules") && statics(f).some((i) => i.includes("node_modules") && pattern.test(i))));
+  const rows = new Map();
+  for (const file of reach.keys()) {
+    if (file.includes("node_modules") || heavy.has(file)) continue;
+    const to = statics(file).filter((i) => heavy.has(i)).map(short);
+    if (to.length) rows.set(short(file), to);
+  }
+  for (const [f, to] of [...rows].sort()) console.log(`${f}\n      → ${to.join(", ")}`);
+  console.log(`\n${heavy.size} modules import /${pattern.source}/ directly; ${rows.size} other modules import one of those.`);
+  process.exit(0);
+}
+if (process.argv.includes("--from")) {
+  // Which DIRECT static imports of one module lead (transitively, statically) to the pattern?
+  //   --from core/index.ts --reaches '@tiptap|prosemirror'
+  const from = process.argv[process.argv.indexOf("--from") + 1];
+  const pattern = new RegExp(process.argv[process.argv.indexOf("--reaches") + 1]);
+  const statics = (file) => (inputs[file]?.imports ?? []).filter((i) => !i.external && inputs[i.path] && (i.kind === "import-statement" || i.kind === "require-call")).map((i) => i.path);
+  const memo = new Map();
+  const leads = (file) => {
+    if (memo.has(file)) return memo.get(file);
+    memo.set(file, null);
+    let hit = file.includes("node_modules") && pattern.test(file) ? file : null;
+    if (!hit && !file.includes("node_modules")) for (const i of statics(file)) { const h = leads(i); if (h) { hit = `${i.replace("../../packages/core/src/", "core/")}`; break; } }
+    memo.set(file, hit);
+    return hit;
+  };
+  for (const start of Object.keys(inputs).filter((k) => k.replace("../../packages/core/src/", "core/").endsWith(from))) {
+    console.log(start);
+    for (const i of statics(start)) { const h = leads(i); if (h) console.log(`   ${i.replace("../../packages/core/src/", "core/")}   (via ${h})`); }
+  }
   process.exit(0);
 }
 if (process.argv.includes("--files")) {

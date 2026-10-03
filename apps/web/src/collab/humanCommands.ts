@@ -4,7 +4,7 @@ import {
   type HumanCollabErrorCode,
   type HumanCollabResult,
 } from "@prism/core/collab-commands";
-import { HumanCommandFailure } from "@prism/core";
+import { HumanCommandFailure } from "@prism/core/shell";
 import { contextHeaders } from "../config";
 import {
   humanNoteId,

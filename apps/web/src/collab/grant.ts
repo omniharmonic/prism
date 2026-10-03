@@ -26,10 +26,10 @@ import type {
   WorkspaceMember,
   WorkspaceOverview,
   WorkspaceRole,
-} from "@prism/core";
+} from "@prism/core/shell";
 import { serverFetch, collabWsUrl } from "../transport";
 import { getActiveVault, setActiveVault, getActiveWorkspace, setActiveWorkspace, contextHeaders, agentScope, getMe, apiBase } from "../config";
-import type { ViewerIdentity } from "@prism/core";
+import type { ViewerIdentity } from "@prism/core/shell";
 
 /**
  * Web sharing impl, backed by the Prism Server ACL API (/acl, owner-only). The

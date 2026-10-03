@@ -21,13 +21,13 @@ Group 3C, branch `feat/w5-a11y`, measured 2026-10-03. Budgets are the ones in
 | NP-PF-06 filter or sort | ≤ 500 ms | sort 41 / 49 ms · search filter 385 / 391 ms | pass |
 | NP-PF-06 scroll | 60 fps | 60 / 60 fps | pass (100 rows in the DOM) |
 | NP-PF-07 iOS memory | ≤ 300 MB, no growth | web proxy: 60.8 MB JS heap after 50 opens, flat | **device-only, not measured** |
-| NP-PF-08 initial JS | ≤ 600 KB gzip | **754.6 KB** (was 972.1 KB) | **MISS** |
+| NP-PF-08 initial JS | ≤ 600 KB gzip | **417.1 KB** (was 754.6 KB, 972.1 KB before that) | pass (branch `feat/w6-perf`) |
 | NP-PF-09 idle clients | no polling storm | browser 12 req/min for 3 tabs; server → vault 92 calls/min | browser side fine; **vault side is not at baseline** |
 | NP-SB-13 new page | < 300 ms | **99 / 109 ms** (was 257 / 319) | pass (was a miss on the median) |
 
 What still misses, and why:
 
-1. **NP-PF-08** is 155 KB gzip over. The editor stack is in the first chunk. Design below.
+1. ~~NP-PF-08~~ fixed on `feat/w6-perf` (fix 3 below): 417.1 KB gzip.
 2. **NP-PF-09, vault side.** The collab reconciler reads every open live document from the vault every 2 s. Design below; the fix is in `collab.ts`, which this group does not own.
 3. **NP-PF-01 iPhone and NP-PF-07** need a device (Safari Web Inspector, Xcode Instruments).
 
@@ -186,6 +186,8 @@ The heap is flat after the first ten opens (−0.19 MB per open over the second 
 | Initial JS, raw | 3,223 KB | 2,425 KB |
 | Budget | 600 KB | 600 KB — still a miss by 155 KB |
 
+After the editor split (`feat/w6-perf`, fix 3): **417.1 KB gzip / 1,332 KB raw** (PWA build), 416.7 KB (native build). Pass, 183 KB under.
+
 Lazy chunks, as the row asks:
 
 | Feature | Lazy? |
@@ -194,7 +196,7 @@ Lazy chunks, as the row asks:
 | Canvas | yes (Excalidraw, 1,082 KB gzip in 4 chunks) |
 | Graph | yes (355 KB gzip) |
 | Map | **yes after the fix**; before it, maplibre-gl was in the initial chunk |
-| Editor | **no** — TipTap, ProseMirror, Yjs and highlight.js are in the initial chunk |
+| Editor | **yes after fix 3**; before it TipTap, ProseMirror, Yjs and highlight.js were in the initial chunk |
 
 What the entry reaches statically after the fix (`perf-static-graph.mjs`, minified KB, not gzip): layout components 247, renderers 186, react-dom 177, highlight.js 165, prosemirror-view 95, TipTap extensions in `lib/tiptap` 93, `@tiptap/core` 87, entities 75, database components 73, navigation 73, marked 70, yjs 64.
 
@@ -239,7 +241,7 @@ The create invalidates every vault query. Before the fix that refetched and pars
 
 On a real network and the real vault the difference is larger than on loopback: this is the same full-vault list that stalled the vault on 2026-09-30.
 
-**Behaviour change to decide on:** the tree carries a page's path, tags, type and icon, not `metadata.title` or `aliases`. In a live document, `[[` and `@` suggestions now match a page by its path name only. A page whose `metadata.title` or alias differs from its path name is no longer suggested by that title. If that matters, add `title` and `aliases` to the tree projection rather than going back to the full list.
+**Behaviour change, since fixed (`53798f3`):** the tree carried a page's path, tags, type and icon, not `metadata.title` or `aliases`, so `[[` and `@` suggestions in a live document matched a page by its path name only. The tree projection now carries `title` and `aliases`, and both suggestion lists match them again.
 
 The plain editor (`DocumentRenderer.tsx:85`) still calls `useNotes()`. The web app does not use it for the owner's documents; the legacy desktop does. Left alone because that file is a shared hotspot.
 
@@ -249,9 +251,45 @@ The plain editor (`DocumentRenderer.tsx:85`) still calls `useNotes()`. The web a
 
 Initial JS: 972.1 → 754.6 KB gzip.
 
+### 3. The block editor out of the initial chunk — `feat/w6-perf`
+
+Design A below, built. Initial JS **754.6 → 417.1 KB gzip** (2,425 → 1,332 KB raw). The static set went from 2,765 modules / 2,516 KB minified to 2,384 / 1,432 KB (`perf-static-graph.mjs`).
+
+What changed:
+
+- `@prism/core/shell` (`packages/core/src/shell.ts`) is the old barrel minus the six exports that load the editor (`CollabEditor`, `CommentsSidebar`, `HumanSuggestionComposer`, `PresenceAvatars`, `PageDiscussion`, `MentionNode`). `@prism/core` (`index.ts`) re-exports the shell and adds those, so the legacy desktop, the fixtures and `CollabDoc.tsx` are unchanged. Every `apps/web/src` module except `CollabDoc.tsx` imports the shell.
+- `COLLAB_SCHEMA_VERSION` lives in `editor/schemaVersion.ts` (no imports; `collabSchema.ts` re-exports it, value still 5). The request header and the background sync need the number at boot.
+- `main.tsx`: the live editor goes through `collab/lazyCollab.tsx`; `ShareView`, `PublicationView`, `CollabPage`, `CommonsLanding` are `import()`ed on their routes.
+- `collab/unsynced.ts` (on the boot path for the sync badge) no longer imports Yjs: storage and purges are `localDocumentStore.ts`, the headless push is `unsyncedSync.ts`, loaded only when a document is waiting. `localDocument.ts` re-exports the storage half, so its callers are unchanged.
+- Guard: `npm run check:initial -w @prism/web` fails if TipTap, ProseMirror, Yjs, the socket provider, highlight.js, maplibre or Excalidraw become statically reachable from the entry. `perf-static-graph.mjs` gained `--edges`, `--frontier`, `--from … --reaches` and `--assert-lazy`.
+
+Loading the editor chunk:
+
+- A `/page/<id>` link starts the download at the top of `start()`, in parallel with `/auth/me`.
+- Otherwise it is fetched when the browser is idle (≤ 3 s after boot) or at the first key or pointer press.
+- Once the chunk is in, a document mounts the editor directly, with no Suspense boundary, so there is no loading state for a chunk the browser already has. An open that beats the download shows "Opening document…", the same line the editor starts with.
+- The service worker still precaches the editor chunks, so a live document opens offline as before.
+
+Timings on the new build (same harness, 5 samples, load 2.6–3.9):
+
+| Row | Before (best / median) | After | Samples after (ms) |
+|---|---|---|---|
+| NP-PF-01 empty cache | 455 / 493 ms | 448 / 496 ms | 448, 476, 496, 701, 739 |
+| NP-PF-01 warm cache | 419 / 427 ms | 371 / 525 ms | 371, 449, 525, 598, 614 |
+| NP-PF-01 iPhone proxy | 1,172 / 1,200 ms | 1,014 / 1,055 ms | 1,014, 1,017, 1,055, 1,103, 1,184 |
+| NP-PF-02 uncached from ⌘K | 185 / 204 ms | 179 / 185 ms | |
+| NP-PF-02 cached from ⌘K | 65 / 80 ms | 76 / 78 ms | |
+| NP-PF-02 cached from the tree | 60 / 68 ms | 56 / 66 ms | |
+
+The warm-cache median is worse and noisy (371–614 ms); the best sample is better. Not explained; the machine was shared. Without the early download on a page link the same row was 504 / 858 ms, so that step matters.
+
+Not measured: a first document open from Home on a slow network before the idle download has finished. It shows "Opening document…" until the chunk arrives.
+
+Still in the initial chunk and movable later: `marked` (70 KB minified; `EmptyPageStarters`, `ShareView`'s share, the Tauri shim, native extras), `entities` (75 KB, through `lib/wikilinks.ts`), `turndown`, `dompurify`.
+
 ## Designs, not built
 
-### A. Editor out of the initial chunk (NP-PF-08)
+### A. Editor out of the initial chunk (NP-PF-08) — BUILT, see fix 3
 
 The remaining 155 KB cannot come from small moves. Estimated gzip savings: highlight.js about 50 KB, the editor stack as a whole (ProseMirror, TipTap, Yjs, y-tiptap, Hocuspocus provider, highlight.js, linkify, `lib/tiptap`, the editor renderers) about 300 KB. Lazy-loading the editor would put the initial JS near 455 KB.
 
@@ -289,6 +327,6 @@ Not required by any budget today. The whole tree is 266 KB gzip and renders in a
 ## Files
 
 - `apps/web/playwright.perf.config.ts`, `apps/web/perf/harness.ts`, `apps/web/perf/pf.spec.ts`, `apps/web/tsconfig.perf.json`
-- `apps/web/scripts/perf-bundle.mjs`, `apps/web/scripts/perf-static-graph.mjs`
+- `apps/web/scripts/perf-bundle.mjs`, `apps/web/scripts/perf-static-graph.mjs` (`npm run perf | perf:bundle | perf:graph | check:initial -w @prism/web`)
 - `apps/server/test/fixtures/perf-server.ts`, `apps/server/scripts/measure-api.ts`
 - existing: `apps/server/scripts/measure-idle-clients.ts`
