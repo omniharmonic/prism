@@ -6,7 +6,10 @@
  *
  *   node --import tsx apps/client/scripts/build-ios-icon.ts <out.png>
  *   npx tauri icon <out.png> -o <tmpdir> --ios-color "#22242a"
- *   cp <tmpdir>/ios/*.png apps/client/src-tauri/gen/apple/Assets.xcassets/AppIcon.appiconset/
+ *   # tauri icon keeps an alpha channel; App Store Connect refuses one on the 1024 icon, so flatten:
+ *   for f in <tmpdir>/ios/*.png; do sips -s format jpeg -s formatOptions 100 "$f" --out /tmp/i.jpg &&
+ *     sips -s format png /tmp/i.jpg --out apps/client/src-tauri/gen/apple/Assets.xcassets/AppIcon.appiconset/$(basename "$f"); done
+ *   (the PNGs are git-ignored repo-wide: `git add -f` them)
  *
  * (Only the ios/ outputs are copied: `tauri icon` would otherwise overwrite the
  * desktop icons, which build-brand.ts owns.)
