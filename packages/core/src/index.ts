@@ -41,6 +41,7 @@ export type {
   NoteVersion,
   NoteVersionSummary,
   NoteVersionPage,
+  UploadedAttachment,
 } from "./data/VaultClient";
 export { VaultRequestError, isAccessUnavailable, HistoryUnavailableError, HistoryConflictError, toNoteVersion } from "./data/VaultClient";
 export { GraphCanvas } from "./components/layout/GraphCanvasLazy";

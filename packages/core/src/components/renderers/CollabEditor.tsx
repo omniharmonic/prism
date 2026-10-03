@@ -21,6 +21,9 @@ import { DocumentOutline } from "./DocumentOutline";
 import { CollabToolbar } from "./CollabToolbar";
 import { SuggestionReview } from "./SuggestionReview";
 import "./editor-blocks.css";
+import { BlockKeymap } from "../../lib/tiptap/blockCommands";
+import { BlockHandles } from "./BlockHandles";
+import { ImageUpload, type ImageUploader } from "../../lib/tiptap/ImageUpload";
 
 export interface CollabUser {
   name: string;
@@ -60,6 +63,8 @@ export function CollabEditor({
   onCommentActivate,
   onWikilinkNavigate,
   wikilinkNotes,
+  uploadImage,
+  onUploadError,
 }: {
   ydoc: Y.Doc;
   provider: AwarenessProvider | null;
@@ -97,6 +102,11 @@ export function CollabEditor({
   /** Vault notes for the `[[` autocomplete dropdown. Omitted → no suggestions
    *  (e.g. a recipient on a share link with no notes list). */
   wikilinkNotes?: Note[];
+  /** Store a pasted/dropped/picked image and return its URL. Omitted → upload
+   *  is hidden and only "Image from URL" is offered. Read at mount. */
+  uploadImage?: ImageUploader;
+  /** User-facing upload failure message. */
+  onUploadError?: (message: string) => void;
 }) {
   const suggestionBubble = useRef<HTMLDivElement>(null);
   // Inline comment composer anchored to a captured selection range.
@@ -119,6 +129,11 @@ export function CollabEditor({
   const commentActivateRef = useRef(onCommentActivate);
   useEffect(() => { commentActivateRef.current = onCommentActivate; }, [onCommentActivate]);
 
+  const uploadRef = useRef(uploadImage);
+  useEffect(() => { uploadRef.current = uploadImage; }, [uploadImage]);
+  const uploadErrorRef = useRef(onUploadError);
+  useEffect(() => { uploadErrorRef.current = onUploadError; }, [onUploadError]);
+
   const editor = useEditor({
     extensions: [
       // Shared content schema (StarterKit + Link/Typography/Highlight/Tasks) —
@@ -129,6 +144,11 @@ export function CollabEditor({
       WikilinkExtension.configure({ onNavigate: (t) => navRef.current?.(t) }),
       WikilinkAutocomplete.configure({ onStateChange: setAutocomplete }),
       SlashCommand.configure({ onStateChange: setSlash }),
+      BlockKeymap,
+      ImageUpload.configure({
+        upload: uploadImage ? (file) => uploadRef.current!(file) : undefined,
+        onError: (message) => uploadErrorRef.current?.(message),
+      }),
       SuggestionMode.configure({ user }),
       CommentOnly.configure({ active: !!commentOnly }),
       CommentInteraction.configure({ onActivate: (id) => commentActivateRef.current?.(id) }),
@@ -256,6 +276,10 @@ export function CollabEditor({
       )}
 
       <EditorContent editor={editor} />
+
+      {/* Block gutter. Structural moves are raw edits, so it is off while
+          suggesting (tracked changes) or comment-only. */}
+      {editor && <BlockHandles editor={editor} enabled={editable && !commentOnly && !suggesting} />}
 
       {/* `[[` wikilink autocomplete dropdown */}
       {editor && autocomplete?.active && (

@@ -1,58 +1,145 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import type { Editor } from "@tiptap/react";
-import { Sparkles, Type, Heading1, Heading2, Heading3, List, ListOrdered, ListChecks, Quote, Code2, Minus } from "lucide-react";
+import {
+  Sparkles, Type, Heading1, Heading2, Heading3, List, ListOrdered, ListChecks, Quote, Code2, Minus,
+  ChevronRight, MessageSquareText, Table as TableIcon, Image as ImageIcon, Link2, Columns2, Columns3, ImageUp,
+} from "lucide-react";
 import { useSelectionAsk } from "../../lib/agent/useSelectionAsk";
-import type { SlashCommandState } from "../../lib/tiptap/SlashCommand";
+import { dismissSlashCommand, type SlashCommandState } from "../../lib/tiptap/SlashCommand";
+import { turnTopBlocksInto, type TurnIntoKind } from "../../lib/tiptap/blockCommands";
+import { canUploadImages, pickAndUploadImages } from "../../lib/tiptap/ImageUpload";
+import "./editor-blocks.css";
+
+const isMac = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform);
+/** "Mod-Alt-1" → "⌘⌥1" on Apple platforms, "Ctrl+Alt+1" elsewhere. */
+export function shortcutLabel(spec: string): string {
+  const parts = spec.split("-");
+  if (isMac) return parts.map((p) => ({ Mod: "⌘", Alt: "⌥", Shift: "⇧" } as Record<string, string>)[p] ?? p.toUpperCase()).join("");
+  return parts.map((p) => ({ Mod: "Ctrl" } as Record<string, string>)[p] ?? (p.length === 1 ? p.toUpperCase() : p)).join("+");
+}
+
+type Group = "Basic blocks" | "Media" | "Advanced" | "Agent";
 
 interface SlashItem {
-  agent?: boolean;
+  id: string;
+  group: Group;
   title: string;
   subtitle: string;
   icon: React.ReactNode;
   keywords: string[];
+  /** A keyboard shortcut (TipTap spec) or a markdown prefix shown as a hint. */
+  shortcut?: string;
+  markdown?: string;
+  agent?: boolean;
+  /** Runs after the "/query" text was removed. */
   run: (editor: Editor) => void;
 }
 
-const ITEMS: SlashItem[] = [
-  { title: "Text", subtitle: "Plain paragraph", icon: <Type size={16} />, keywords: ["text", "paragraph", "p", "body"], run: (e) => e.chain().focus().setParagraph().run() },
-  { title: "Heading 1", subtitle: "Large section heading", icon: <Heading1 size={16} />, keywords: ["h1", "heading", "title", "big"], run: (e) => e.chain().focus().toggleHeading({ level: 1 }).run() },
-  { title: "Heading 2", subtitle: "Medium heading", icon: <Heading2 size={16} />, keywords: ["h2", "heading", "subtitle"], run: (e) => e.chain().focus().toggleHeading({ level: 2 }).run() },
-  { title: "Heading 3", subtitle: "Small heading", icon: <Heading3 size={16} />, keywords: ["h3", "heading"], run: (e) => e.chain().focus().toggleHeading({ level: 3 }).run() },
-  { title: "Bullet List", subtitle: "Unordered list", icon: <List size={16} />, keywords: ["bullet", "ul", "list", "unordered", "point"], run: (e) => e.chain().focus().toggleBulletList().run() },
-  { title: "Numbered List", subtitle: "Ordered list", icon: <ListOrdered size={16} />, keywords: ["numbered", "ol", "ordered", "list", "1"], run: (e) => e.chain().focus().toggleOrderedList().run() },
-  { title: "To-do List", subtitle: "Checklist with checkboxes", icon: <ListChecks size={16} />, keywords: ["todo", "task", "checkbox", "check", "list"], run: (e) => e.chain().focus().toggleTaskList().run() },
-  { title: "Quote", subtitle: "Capture a quotation", icon: <Quote size={16} />, keywords: ["quote", "blockquote", "cite"], run: (e) => e.chain().focus().toggleBlockquote().run() },
-  { title: "Code", subtitle: "Code block", icon: <Code2 size={16} />, keywords: ["code", "codeblock", "pre", "snippet"], run: (e) => e.chain().focus().toggleCodeBlock().run() },
-  { title: "Divider", subtitle: "Horizontal rule", icon: <Minus size={16} />, keywords: ["divider", "hr", "rule", "separator", "line"], run: (e) => e.chain().focus().setHorizontalRule().run() },
+/** Re-shape the caret's block when it is a top-level paragraph, else insert after it. */
+function shapeBlock(editor: Editor, kind: TurnIntoKind) {
+  const { $from } = editor.state.selection;
+  if ($from.depth === 1 && $from.parent.type.name === "paragraph") {
+    const tr = turnTopBlocksInto(editor.state, $from.pos, $from.pos, kind);
+    if (tr) { editor.view.dispatch(tr); editor.commands.focus(); return; }
+  }
+  const json = kind === "toggle"
+    ? { type: "toggle", attrs: { open: true }, content: [{ type: "toggleSummary" }, { type: "paragraph" }] }
+    : { type: "callout", content: [{ type: "paragraph" }] };
+  const at = $from.after(1);
+  editor.chain().focus().insertContentAt(at, json).setTextSelection(at + 2).run();
+}
+
+function insertColumns(editor: Editor, count: 2 | 3) {
+  const { $from } = editor.state.selection;
+  const empty = $from.depth === 1 && $from.parent.type.name === "paragraph" && $from.parent.content.size === 0;
+  const json = { type: "columns", content: Array.from({ length: count }, () => ({ type: "column", content: [{ type: "paragraph" }] })) };
+  const from = empty ? $from.before(1) : $from.after(1);
+  const to = empty ? $from.after(1) : from;
+  // columns(+1) column(+1) paragraph(+1)
+  editor.chain().focus().insertContentAt({ from, to }, json).setTextSelection(from + 3).run();
+}
+
+function insertImageByUrl(editor: Editor) {
+  const url = window.prompt("Image URL");
+  if (!url) return;
+  if (!/^(https?:)?\/\//i.test(url) && !url.startsWith("/")) return; // no javascript:/data: URLs
+  editor.chain().focus().setImage({ src: url }).run();
+}
+
+const BASE: SlashItem[] = [
+  { id: "text", group: "Basic blocks", title: "Text", subtitle: "Plain paragraph", icon: <Type size={16} />, keywords: ["text", "paragraph", "p", "body", "plain"], shortcut: "Mod-Alt-0", run: (e) => e.chain().focus().setParagraph().run() },
+  { id: "h1", group: "Basic blocks", title: "Heading 1", subtitle: "Large section heading", icon: <Heading1 size={16} />, keywords: ["h1", "heading", "title", "big"], shortcut: "Mod-Alt-1", markdown: "#", run: (e) => e.chain().focus().setNode("heading", { level: 1 }).run() },
+  { id: "h2", group: "Basic blocks", title: "Heading 2", subtitle: "Medium section heading", icon: <Heading2 size={16} />, keywords: ["h2", "heading", "subtitle"], shortcut: "Mod-Alt-2", markdown: "##", run: (e) => e.chain().focus().setNode("heading", { level: 2 }).run() },
+  { id: "h3", group: "Basic blocks", title: "Heading 3", subtitle: "Small section heading", icon: <Heading3 size={16} />, keywords: ["h3", "heading"], shortcut: "Mod-Alt-3", markdown: "###", run: (e) => e.chain().focus().setNode("heading", { level: 3 }).run() },
+  { id: "bullet", group: "Basic blocks", title: "Bulleted list", subtitle: "A simple bulleted list", icon: <List size={16} />, keywords: ["bullet", "ul", "list", "unordered", "point"], shortcut: "Mod-Shift-8", markdown: "-", run: (e) => e.chain().focus().toggleBulletList().run() },
+  { id: "numbered", group: "Basic blocks", title: "Numbered list", subtitle: "A list with numbering", icon: <ListOrdered size={16} />, keywords: ["numbered", "ol", "ordered", "list", "1"], shortcut: "Mod-Shift-7", markdown: "1.", run: (e) => e.chain().focus().toggleOrderedList().run() },
+  { id: "todo", group: "Basic blocks", title: "To-do list", subtitle: "Track tasks with checkboxes", icon: <ListChecks size={16} />, keywords: ["todo", "task", "checkbox", "check", "list"], shortcut: "Mod-Shift-9", markdown: "[]", run: (e) => e.chain().focus().toggleTaskList().run() },
+  { id: "toggle", group: "Basic blocks", title: "Toggle", subtitle: "Hide content inside a toggle", icon: <ChevronRight size={16} />, keywords: ["toggle", "collapse", "details", "expand", "accordion"], run: (e) => shapeBlock(e, "toggle") },
+  { id: "quote", group: "Basic blocks", title: "Quote", subtitle: "Capture a quotation", icon: <Quote size={16} />, keywords: ["quote", "blockquote", "cite"], shortcut: "Mod-Shift-B", markdown: ">", run: (e) => e.chain().focus().toggleBlockquote().run() },
+  { id: "callout", group: "Basic blocks", title: "Callout", subtitle: "Make writing stand out", icon: <MessageSquareText size={16} />, keywords: ["callout", "note", "info", "tip", "warning", "box"], run: (e) => shapeBlock(e, "callout") },
+  { id: "divider", group: "Basic blocks", title: "Divider", subtitle: "Visually divide sections", icon: <Minus size={16} />, keywords: ["divider", "hr", "rule", "separator", "line"], markdown: "---", run: (e) => e.chain().focus().setHorizontalRule().run() },
+  { id: "image", group: "Media", title: "Image", subtitle: "Upload or embed with a link", icon: <ImageIcon size={16} />, keywords: ["image", "picture", "photo", "img", "upload"], run: (e) => (canUploadImages(e) ? pickAndUploadImages(e) : insertImageByUrl(e)) },
+  { id: "code", group: "Advanced", title: "Code", subtitle: "Capture a code snippet", icon: <Code2 size={16} />, keywords: ["code", "codeblock", "pre", "snippet"], shortcut: "Mod-Alt-C", markdown: "```", run: (e) => e.chain().focus().toggleCodeBlock().run() },
+  { id: "table", group: "Advanced", title: "Table", subtitle: "Rows and columns with a header", icon: <TableIcon size={16} />, keywords: ["table", "grid", "rows", "columns", "spreadsheet"], run: (e) => e.chain().focus().insertTable({ rows: 3, cols: 3, withHeaderRow: true }).run() },
+  { id: "link", group: "Advanced", title: "Link to page", subtitle: "Link to another page with [[", icon: <Link2 size={16} />, keywords: ["link", "page", "wikilink", "mention", "reference"], markdown: "[[", run: (e) => e.chain().focus().insertContent("[[").run() },
+  { id: "columns2", group: "Advanced", title: "2 columns", subtitle: "Side-by-side blocks", icon: <Columns2 size={16} />, keywords: ["columns", "column", "layout", "side", "2"], run: (e) => insertColumns(e, 2) },
+  { id: "columns3", group: "Advanced", title: "3 columns", subtitle: "Three blocks side by side", icon: <Columns3 size={16} />, keywords: ["columns", "column", "layout", "side", "3"], run: (e) => insertColumns(e, 3) },
 ];
 
+const IMAGE_URL: SlashItem = { id: "image-url", group: "Media", title: "Image from URL", subtitle: "Embed an image by its address", icon: <ImageUp size={16} />, keywords: ["image", "url", "link", "embed"], run: insertImageByUrl };
+
+/** Fuzzy score: prefix > word prefix > substring > in-order letters. 0 = no match. */
+export function slashScore(query: string, item: { title: string; keywords: string[] }): number {
+  const q = query.toLowerCase().trim();
+  if (!q) return 1;
+  let best = 0;
+  for (const raw of [item.title, ...item.keywords]) {
+    const s = raw.toLowerCase();
+    const weight = raw === item.title ? 1 : 0.9;
+    if (s === q) best = Math.max(best, 120 * weight);
+    else if (s.startsWith(q)) best = Math.max(best, 100 * weight);
+    else if (s.split(/[\s-]+/).some((w) => w.startsWith(q))) best = Math.max(best, 80 * weight);
+    else if (s.includes(q)) best = Math.max(best, 60 * weight);
+    else {
+      let i = 0;
+      let gaps = 0;
+      let last = -1;
+      for (let j = 0; j < s.length && i < q.length; j++) {
+        if (s[j] === q[i]) { if (last >= 0) gaps += j - last - 1; last = j; i++; }
+      }
+      if (i === q.length && q.length >= 2) best = Math.max(best, Math.max(5, 40 - gaps * 3) * weight);
+    }
+  }
+  return best;
+}
+
 /**
- * Notion/Anytype-style slash-command menu. Rendered when the SlashCommand plugin
- * reports an active `/` trigger; filters block types by query, supports keyboard
- * navigation, and on select removes the `/query` text and applies the block.
- * Shared by the plain and collaborative editors.
+ * Notion-style `/` menu: grouped blocks, fuzzy search, keyboard navigation and
+ * shortcut hints. The editor keeps focus (combobox pattern): the editor DOM
+ * points at the active option with aria-activedescendant. Shared by the plain
+ * and collaborative editors.
  */
-export function SlashMenu({
-  editor,
-  state,
-  onClose,
-}: {
-  editor: Editor | null;
-  state: SlashCommandState;
-  onClose: () => void;
-}) {
+export function SlashMenu({ editor, state, onClose }: { editor: Editor | null; state: SlashCommandState; onClose: () => void }) {
   const [selected, setSelected] = useState(0);
+  const listId = useId();
+  const listRef = useRef<HTMLDivElement>(null);
   const action = useSelectionAsk(editor);
-  const q = state.query.toLowerCase();
+  const q = state.query;
   const documentText = editor && editor.state.doc.textBetween(0, state.from, "\n") + editor.state.doc.textBetween(state.to, editor.state.doc.content.size, "\n");
   const canAsk = action.canAsk && editor?.isEditable && !!documentText?.trim();
-  const items = useMemo(
-    () => {
-      const all = canAsk ? [...ITEMS, { agent: true, title: "Ask agent", subtitle: "Discuss this page in your conversation", icon: <Sparkles size={16} />, keywords: ["ask", "agent", "ai"], run: () => {} }] : ITEMS;
-      return q ? all.filter(it => it.title.toLowerCase().includes(q) || it.keywords.some(k => k.includes(q))) : all;
-    },
-    [q, canAsk],
-  );
+  const uploads = canUploadImages(editor);
+  const items = useMemo(() => {
+    const all: SlashItem[] = [...BASE];
+    if (uploads) all.splice(all.findIndex((i) => i.id === "image") + 1, 0, IMAGE_URL);
+    if (canAsk) all.push({ id: "ask", agent: true, group: "Agent", title: "Ask agent", subtitle: "Discuss this page in your conversation", icon: <Sparkles size={16} />, keywords: ["ask", "agent", "ai", "assistant"], shortcut: "Mod-J", run: () => {} });
+    if (!q.trim()) return all;
+    return all
+      .map((it, i) => ({ it, i, score: slashScore(q, it) }))
+      .filter((r) => r.score > 0)
+      .sort((a, b) => b.score - a.score || a.i - b.i)
+      .map((r) => r.it);
+  }, [q, canAsk, uploads]);
 
   useEffect(() => setSelected(0), [q]);
 
@@ -60,61 +147,95 @@ export function SlashMenu({
     if (!editor) return;
     if (it.agent) { if (action.ask("document", { from: state.from, to: state.to })) onClose(); return; }
     editor.chain().focus().deleteRange({ from: state.from, to: state.to }).run();
-    it.run(editor);
     onClose();
+    it.run(editor);
   };
 
   // Keyboard nav in the capture phase so it intercepts before the editor.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (!items.length) return;
-      if (e.key === "ArrowDown") { e.preventDefault(); e.stopPropagation(); setSelected((i) => (i + 1) % items.length); }
-      else if (e.key === "ArrowUp") { e.preventDefault(); e.stopPropagation(); setSelected((i) => (i - 1 + items.length) % items.length); }
-      else if (e.key === "Enter") { e.preventDefault(); e.stopPropagation(); select(items[selected]); }
-      else if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); onClose(); }
+      if (e.isComposing) return;
+      const dismiss = () => { if (editor) dismissSlashCommand(editor, state.from); onClose(); };
+      if (!items.length) { if (e.key === "Escape") { e.preventDefault(); dismiss(); } return; }
+      const stop = () => { e.preventDefault(); e.stopPropagation(); };
+      if (e.key === "ArrowDown" || (e.key === "n" && e.ctrlKey)) { stop(); setSelected((i) => (i + 1) % items.length); }
+      else if (e.key === "ArrowUp" || (e.key === "p" && e.ctrlKey)) { stop(); setSelected((i) => (i - 1 + items.length) % items.length); }
+      else if (e.key === "Home" && !e.shiftKey) { stop(); setSelected(0); }
+      else if (e.key === "End" && !e.shiftKey) { stop(); setSelected(items.length - 1); }
+      else if (e.key === "Enter" || e.key === "Tab") { stop(); select(items[Math.min(selected, items.length - 1)]); }
+      else if (e.key === "Escape") { stop(); dismiss(); }
     };
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [items, selected, editor, state.from, state.to, action.ask]);
 
-  if (!editor || items.length === 0) return null;
-  const coords = editor.view.coordsAtPos(state.to);
+  // Combobox semantics on the editor surface while the menu is open.
+  const activeId = items[selected] ? `${listId}-${items[selected].id}` : undefined;
+  useEffect(() => {
+    let dom: HTMLElement | null = null;
+    try { dom = editor?.view.dom ?? null; } catch { dom = null; }
+    if (!dom) return;
+    dom.setAttribute("aria-controls", listId);
+    dom.setAttribute("aria-expanded", "true");
+    dom.setAttribute("aria-haspopup", "listbox");
+    if (activeId) dom.setAttribute("aria-activedescendant", activeId);
+    return () => { for (const a of ["aria-controls", "aria-expanded", "aria-haspopup", "aria-activedescendant"]) dom!.removeAttribute(a); };
+  }, [editor, listId, activeId]);
 
-  return (
+  useLayoutEffect(() => {
+    listRef.current?.querySelector<HTMLElement>('[aria-selected="true"]')?.scrollIntoView({ block: "nearest" });
+  }, [selected, items]);
+
+  if (!editor || items.length === 0) return null;
+  let coords: { left: number; top: number; bottom: number };
+  try { coords = editor.view.coordsAtPos(state.to); } catch { return null; }
+  const width = Math.min(320, window.innerWidth - 16);
+  const maxHeight = 360;
+  const below = window.innerHeight - coords.bottom - 12;
+  const top = below >= Math.min(maxHeight, 220) ? coords.bottom + 6 : Math.max(8, coords.top - 6 - Math.min(maxHeight, coords.top - 14));
+  const height = below >= Math.min(maxHeight, 220) ? Math.min(maxHeight, below) : Math.min(maxHeight, coords.top - 14);
+  const grouped = !q.trim();
+  let lastGroup: Group | null = null;
+
+  return createPortal(
     <div
-      className="fixed glass-elevated overflow-hidden"
-      style={{
-        left: Math.min(coords.left, window.innerWidth - 320),
-        top: coords.bottom + 6,
-        width: 300,
-        maxHeight: 332,
-        overflowY: "auto",
-        borderRadius: "var(--radius-lg)",
-        padding: 4,
-        zIndex: 70,
-      }}
+      ref={listRef}
+      id={listId}
+      role="listbox"
+      aria-label="Insert block"
+      className="slash-menu editor-menu"
+      style={{ position: "fixed", left: Math.max(8, Math.min(coords.left, window.innerWidth - width - 8)), top, width, maxWidth: width, maxHeight: height, zIndex: 70 }}
+      onMouseDown={(e) => e.preventDefault() /* keep the caret in the editor */}
     >
-      {items.map((it, i) => (
-        <button
-          key={it.title}
-          onClick={() => select(it)}
-          onMouseEnter={() => setSelected(i)}
-          className="interactive w-full flex items-center gap-3 text-left"
-          style={{ padding: "7px 8px", background: i === selected ? "var(--surface-active)" : "transparent", color: "var(--text-primary)" }}
-        >
-          <span
-            className="flex items-center justify-center flex-shrink-0"
-            style={{ width: 30, height: 30, borderRadius: "var(--radius-sm)", background: "var(--surface-hover)", color: "var(--text-secondary)" }}
-          >
-            {it.icon}
-          </span>
-          <div className="min-w-0">
-            <div className="truncate" style={{ fontSize: "var(--text-sm)", fontWeight: 500 }}>{it.title}</div>
-            <div className="truncate" style={{ fontSize: 10, color: "var(--text-muted)" }}>{it.subtitle}</div>
+      {items.map((it, i) => {
+        const header = grouped && it.group !== lastGroup ? it.group : null;
+        lastGroup = it.group;
+        const hint = it.shortcut ? shortcutLabel(it.shortcut) : it.markdown;
+        return (
+          <div key={it.id} role="presentation">
+            {header && <div className="editor-menu-section" role="presentation">{header}</div>}
+            <div
+              id={`${listId}-${it.id}`}
+              role="option"
+              aria-selected={i === selected}
+              aria-label={`${it.title} ${it.subtitle}`}
+              className="slash-menu-option editor-menu-item"
+              data-active={i === selected || undefined}
+              onClick={() => select(it)}
+              onMouseMove={() => { if (i !== selected) setSelected(i); }}
+            >
+              <span className="slash-menu-icon" aria-hidden="true">{it.icon}</span>
+              <span className="slash-menu-text">
+                <span className="slash-menu-title">{it.title}</span>
+                <span className="slash-menu-subtitle">{it.subtitle}</span>
+              </span>
+              {hint && <kbd className="editor-menu-hint" aria-hidden="true">{hint}</kbd>}
+            </div>
           </div>
-        </button>
-      ))}
-    </div>
+        );
+      })}
+    </div>,
+    document.body,
   );
 }
