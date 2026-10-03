@@ -1,0 +1,427 @@
+/**
+ * Fourth independent review of the conversion change (round 5). Each test was
+ * run against the code WITHOUT its fix first and failed there.
+ *
+ *  C-1  A few KB of Markdown TABLE became a million cells on the main thread (the
+ *       pre-check never counted `|`); other multiplicative / uncounted shapes;
+ *       `docJsonToHtml` rendered any amount of text inline.
+ *  H-1  The shared circuit breaker let one member's timeouts deny conversion to
+ *       everyone.
+ *  H-2  Store failures spilled from the reserved thread onto the open lane's.
+ *  M-1  `prism_update_note` settled (load + store) without edit / the bucket.
+ *  M-2  `settleUnsaved` loaded + stored a PERMANENT row on every body write.
+ *  M-3/4 An uncertain merge base could double in-paragraph typing or delete
+ *       unlanded typing; `code` had no guard.
+ *  M-5  Discard: only permanent rows (or force), a notice, serialised with stores.
+ *  M-6  History lookups had no timeout and blocked the reconciler's other documents.
+ *  Lows the admin list's LIMIT ran before the vault filter.
+ */
+import { COLLAB_SCHEMA_VERSION } from "@prism/core/editor-schema";
+import { test, beforeEach, afterEach, after } from "node:test";
+import assert from "node:assert/strict";
+import { randomBytes } from "node:crypto";
+import { createServer, type Server } from "node:http";
+import type { AddressInfo, Socket } from "node:net";
+import * as Y from "yjs";
+import WebSocket from "ws";
+import { HocuspocusProvider } from "@hocuspocus/provider";
+import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
+import { createApp } from "../src/app";
+import * as dbm from "../src/db";
+import { addGrant, ensureUser, getDocState, isCollabUnsaved, saveDocAhead } from "../src/db";
+import { issuePat } from "../src/auth/pat";
+import * as collab from "../src/collab";
+import { attachCollab, hocuspocus, loadDocumentState, reconcileLoadedDocs, resetConversionState, resetReconcileState, storeDocumentState, sweepUnsavedDocuments, yDocToDocJson, yDocToHtml } from "../src/collab";
+import * as service from "../src/convert/service";
+import { ConversionError, configureConversion, contentToSeed, conversionStats, forgetConversionFailures, isCheapContent, stopConversionWorkers } from "../src/convert/service";
+import * as precheck from "../src/convert/precheck";
+import { vaultClient } from "../src/parachute";
+import { db } from "../src/db";
+import { installFakeVault, makeCapability, makeSession, resetDb, sessionCookie, type FakeVault } from "./helpers";
+
+const OWNER = "owner@test.local";
+const EDITOR = "editor@test.local";
+const VIEWER = "viewer@test.local";
+const T0 = "2026-02-01T00:00:00.000Z";
+/** Later than anything the fake vault stamps on a write (June 2026). */
+const LATER = (n: number) => `2026-12-0${n}T00:00:00.000Z`;
+const J = { "content-type": "application/json" };
+
+let fv: FakeVault;
+let app: ReturnType<typeof createApp>;
+let server: Server;
+let wsUrl: string;
+let ip: string;
+let restore: Array<() => void> = [];
+const sockets = new Set<Socket>();
+const providers: HocuspocusProvider[] = [];
+const clientSockets = new Set<WebSocket>();
+class TrackedWebSocket extends WebSocket {
+  constructor(...args: ConstructorParameters<typeof WebSocket>) {
+    super(...args);
+    clientSockets.add(this);
+  }
+}
+const saved = { debounce: hocuspocus.configuration.debounce, maxDebounce: hocuspocus.configuration.maxDebounce };
+
+beforeEach(async () => {
+  resetDb();
+  resetReconcileState();
+  resetConversionState();
+  forgetConversionFailures();
+  fv = installFakeVault();
+  app = createApp();
+  ip = `10.${randomBytes(1)[0]}.${randomBytes(1)[0]}.${randomBytes(1)[0]}`;
+  hocuspocus.configuration.debounce = 100;
+  hocuspocus.configuration.maxDebounce = 300;
+  for (const e of [OWNER, EDITOR, VIEWER]) ensureUser(e);
+  addGrant({ subject_type: "user", subject: VIEWER, resource_type: "tag", resource: "garden", level: "view", caps: ["view"] as never, created_by: "test", vault_id: "primary" });
+  addGrant({ subject_type: "user", subject: EDITOR, resource_type: "tag", resource: "garden", level: "view", caps: ["view", "comment", "suggest", "edit", "create"] as never, created_by: "test", vault_id: "primary" });
+  server = createServer();
+  server.on("connection", (s: Socket) => {
+    sockets.add(s);
+    s.on("close", () => sockets.delete(s));
+  });
+  attachCollab(server);
+  await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+  wsUrl = `ws://127.0.0.1:${(server.address() as AddressInfo).port}/collab?schema=${COLLAB_SCHEMA_VERSION}`;
+});
+
+afterEach(async () => {
+  for (const r of restore.splice(0).reverse()) r();
+  for (const p of providers.splice(0)) p.destroy();
+  for (const s of clientSockets) s.terminate();
+  clientSockets.clear();
+  hocuspocus.closeConnections();
+  for (const s of sockets) s.destroy();
+  sockets.clear();
+  await new Promise<void>((r) => server.close(() => r()));
+  hocuspocus.configuration.debounce = saved.debounce;
+  hocuspocus.configuration.maxDebounce = saved.maxDebounce;
+  hocuspocus.flushPendingStores();
+  for (const d of [...hocuspocus.documents.values()]) await hocuspocus.unloadDocument(d);
+  resetConversionState();
+  fv.restore();
+});
+after(async () => {
+  await stopConversionWorkers();
+});
+
+// ── plumbing ────────────────────────────────────────────────────────────────
+
+const until = async (what: string, cond: () => boolean, ms = 15_000) => {
+  const end = Date.now() + ms;
+  while (!cond()) {
+    if (Date.now() > end) throw new Error(`timed out waiting for: ${what}`);
+    await new Promise((r) => setTimeout(r, 25));
+  }
+};
+const text = (doc: Y.Doc) => JSON.stringify(yDocToDocJson(doc));
+function type(doc: Y.Doc, words: string): void {
+  const p = new Y.XmlElement("paragraph");
+  p.insert(0, [new Y.XmlText(words)]);
+  const frag = doc.getXmlFragment("default");
+  frag.insert(frag.length, [p]);
+}
+const live = (name: string) => hocuspocus.documents.get(name) as Y.Doc | undefined;
+const vaultContent = (id: string) => fv.notes.get(id)!.content;
+const patches = (id: string) => fv.calls.filter((c) => c.method === "PATCH" && c.path.endsWith(`/notes/${id}`));
+/** Somebody else writes the note: same body + a property (metadata only), or a new body. */
+function vaultWrite(id: string, at: string, change: { content?: string; metadata?: Record<string, unknown> }): void {
+  const n = fv.notes.get(id)!;
+  fv.put({ ...n, content: change.content ?? n.content, metadata: { ...(n.metadata ?? {}), ...(change.metadata ?? {}) }, updatedAt: at });
+}
+type Unsaved = { reason: string | null; permanent: number; attempts: number } | null;
+const unsavedRow = (id: string): Unsaved => (dbm as unknown as { getCollabUnsaved?: (n: string, v: string) => Unsaved }).getCollabUnsaved?.(id, "primary") ?? null;
+
+/** Run `during` while vault requests matching `match` are intercepted by `on` (which may pass them through). */
+async function intercept<T>(match: (method: string, path: string, body: string) => boolean, on: (pass: () => Promise<Response>) => Promise<Response>, during: () => Promise<T>): Promise<T> {
+  const inner = globalThis.fetch;
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
+    const method = (init?.method ?? (input instanceof Request ? input.method : "GET")).toUpperCase();
+    if (match(method, url.pathname, typeof init?.body === "string" ? init.body : "")) return on(() => inner(input, init));
+    return inner(input, init);
+  }) as typeof fetch;
+  try {
+    return await during();
+  } finally {
+    globalThis.fetch = inner;
+  }
+}
+const isPatch = (id: string) => (method: string, path: string) => method === "PATCH" && path.endsWith(`/notes/${id}`);
+const isGet = (id: string) => (method: string, path: string) => method === "GET" && path.endsWith(`/notes/${id}`);
+const fail = (status: number) => async () => new Response(JSON.stringify({ error: "boom" }), { status, headers: J });
+
+/** A person opens the page (server side), types, and leaves; the store on leaving runs under `during`. */
+async function typeAndLeave(id: string, words: string, leaving: (leave: () => Promise<void>) => Promise<void> = (leave) => leave()): Promise<void> {
+  const conn = await hocuspocus.openDirectConnection(id, {});
+  await conn.transact((doc) => type(doc as unknown as Y.Doc, words));
+  await leaving(() => conn.disconnect());
+  await until(`${id} unloads`, () => !hocuspocus.documents.has(id));
+}
+
+interface Tab {
+  doc: Y.Doc;
+  provider: HocuspocusProvider;
+  messages: Array<Record<string, unknown>>;
+  synced: () => boolean;
+}
+function open(name: string, doc = new Y.Doc()): Tab {
+  let synced = false;
+  const messages: Array<Record<string, unknown>> = [];
+  const provider = new HocuspocusProvider({
+    url: wsUrl,
+    name,
+    token: makeCapability("tag", "garden", "edit"),
+    document: doc,
+    awareness: null,
+    // @ts-expect-error WebSocketPolyfill is accepted at runtime
+    WebSocketPolyfill: TrackedWebSocket,
+    onSynced: () => void (synced = true),
+    onStateless: ({ payload }: { payload: string }) => {
+      try {
+        messages.push(JSON.parse(payload));
+      } catch {
+        /* not ours */
+      }
+    },
+  });
+  providers.push(provider);
+  return { doc, provider, messages, synced: () => synced };
+}
+const close = (tab: Tab) => {
+  tab.provider.destroy();
+  providers.splice(providers.indexOf(tab.provider), 1);
+};
+
+async function connectMcp(email: string): Promise<Client> {
+  const headers: Record<string, string> = { "cf-connecting-ip": ip, "x-forwarded-for": ip, authorization: `Bearer ${issuePat({ email, vaultId: "primary", scope: "write" }).token}` };
+  const fetchImpl = async (input: string | URL | Request, init?: RequestInit) => {
+    const req = new Request(input, init);
+    const h = new Headers(req.headers);
+    for (const [k, v] of Object.entries(headers)) h.set(k, v);
+    const body = req.method === "POST" ? await req.text() : undefined;
+    const u = new URL(req.url);
+    return app.request(u.pathname + u.search, { method: req.method, headers: h, body });
+  };
+  const client = new Client({ name: "test", version: "1" }, { versionNegotiation: { mode: { pin: "2026-07-28" } } });
+  await client.connect(new StreamableHTTPClientTransport(new URL("http://localhost:8787/mcp"), { fetch: fetchImpl as typeof fetch }));
+  return client;
+}
+type Out = { ok: true; data: any } | { ok: false; error: string; message?: string };
+async function call(cl: Client, name: string, args: Record<string, unknown>): Promise<Out> {
+  const r: any = await cl.callTool({ name, arguments: args });
+  if (r.isError) return { ok: false, error: r.structuredContent?.error ?? "protocol", message: r.structuredContent?.message };
+  return { ok: true, data: r.structuredContent ?? JSON.parse(r.content[0].text) };
+}
+const ownerHeaders = () => ({ cookie: sessionCookie(makeSession(OWNER)), ...J, "x-prism-editor-schema": String(COLLAB_SCHEMA_VERSION), "sec-fetch-site": "same-origin" });
+
+
+/** Run `fn` while a 10 ms timer measures the longest gap between its ticks (the event loop's worst stall). */
+async function probed<T>(fn: () => Promise<T> | T): Promise<{ value?: T; error?: unknown; maxLagMs: number; ms: number }> {
+  let last = performance.now();
+  let maxLagMs = 0;
+  const timer = setInterval(() => {
+    const now = performance.now();
+    maxLagMs = Math.max(maxLagMs, now - last - 10);
+    last = now;
+  }, 10);
+  const start = performance.now();
+  try {
+    const value = await fn();
+    return { value, maxLagMs: Math.max(maxLagMs, performance.now() - last - 10), ms: performance.now() - start };
+  } catch (error) {
+    return { error, maxLagMs: Math.max(maxLagMs, performance.now() - last - 10), ms: performance.now() - start };
+  } finally {
+    clearInterval(timer);
+  }
+}
+const typeInto = (doc: Y.Doc, words: string): void => {
+  const p = doc.getXmlFragment("default").get(0) as Y.XmlElement;
+  const t = p.get(0) as Y.XmlText;
+  t.insert(t.length, words);
+};
+const count = (haystack: string, needle: string): number => haystack.split(needle).length - 1;
+/** Someone else writes the body through the vault (so the vault records what it replaced, like the real one). */
+async function externalEdit(id: string, change: (content: string) => string): Promise<void> {
+  const n = fv.notes.get(id)!;
+  await vaultClient("primary").updateNote(id, { content: change(n.content), ifUpdatedAt: n.updatedAt! });
+}
+const lostAck = async (pass: () => Promise<Response>) => {
+  await pass();
+  return new Response("gateway timeout", { status: 504 });
+};
+const covers = (state: Uint8Array, base: Uint8Array): boolean => {
+  const have = Y.decodeStateVector(Y.encodeStateVectorFromUpdate(state));
+  for (const [client, clock] of Y.decodeStateVector(Y.encodeStateVectorFromUpdate(base))) if ((have.get(client) ?? 0) < clock) return false;
+  return true;
+};
+
+
+// ── C-1 ─────────────────────────────────────────────────────────────────────
+
+const LOOP_BUDGET_MS = 200;
+/** `marked` pads every body row to the header's width: ~4C + 2R characters, C × R cells. */
+const table = (cols: number, rows: number, pipe = "|") => pipe + ("a" + pipe).repeat(cols) + "\n|" + "-|".repeat(cols) + "\n" + "x\n".repeat(rows);
+const lines = (n: number, line: (i: number) => string): string => {
+  let out = "";
+  for (let i = 0; out.length < n; i++) out += line(i);
+  return out;
+};
+/** Markdown shapes that are multiplicative, recursive or simply not what the old counters counted. `n` = bytes aimed for. */
+const MD_SHAPES: Array<[string, (n: number) => string]> = [
+  ["table (C × R cells)", (n) => table(Math.ceil(n / 6), Math.ceil(n / 6))],
+  ["table, no leading pipe", (n) => "a|".repeat(n / 6) + "\n" + "-|".repeat(n / 6) + "\n" + "x\n".repeat(n / 6)],
+  ["table, escaped-backslash pipes", (n) => "|" + "a\\\\|".repeat(n / 10) + "\n|" + "-|".repeat(n / 10) + "\n" + "x\n".repeat(n / 6)],
+  ["table, wide rows", (n) => lines(n, () => "|a|b|c|d|\n").replace("\n", "\n|-|-|-|-|\n")],
+  ["table inside a blockquote", (n) => "> |" + "a|".repeat(n / 8) + "\n> |" + "-|".repeat(n / 8) + "\n" + "> x\n".repeat(n / 16)],
+  ["raw HTML block of lone >", (n) => "<div>\n" + ">".repeat(n)],
+  ["raw HTML block of &", (n) => "<div>\n" + "&".repeat(n)],
+  ["raw HTML block of entities", (n) => "<div>\n" + "&amp;".repeat(n / 5)],
+  ["raw HTML, boolean attributes", (n) => "<div " + "a ".repeat(n / 2) + ">x</div>"],
+  ["raw HTML, attributes", (n) => "<div " + "a=1 ".repeat(n / 4) + ">x</div>"],
+  ["raw HTML comment tails", (n) => "<div>\n" + "-->".repeat(n / 3)],
+  ["< flood", (n) => "<".repeat(n)],
+  ["a < b", (n) => "a < b ".repeat(n / 6)],
+  ["unclosed tags", (n) => "<a ".repeat(n / 3)],
+  ["nested lists on one line", (n) => "- ".repeat(n / 2) + "x"],
+  ["nested ordered lists on one line", (n) => "1. ".repeat(n / 3) + "x"],
+  ["nested mixed containers on one line", (n) => "> - 1. ".repeat(n / 7) + "x"],
+  ["nested blockquotes on one line", (n) => "> ".repeat(n / 2) + "x"],
+  ["nested lists by indentation", (n) => lines(n, (i) => "  ".repeat(i) + "- x\n")],
+  ["nested emphasis", (n) => "*_".repeat(n / 4) + "x" + "_*".repeat(n / 4)],
+  ["one long * run", (n) => "a " + "*".repeat(n) + " b"],
+  ["one long _ run", (n) => "a" + "_".repeat(n) + "b"],
+  ["one long ~ run", (n) => "a " + "~".repeat(n) + " b"],
+  ["unmatched emphasis", (n) => "*a ".repeat(n / 3)],
+  ["link reference definitions", (n) => lines(n / 2, (i) => `[r${i}]: http://x.test/${i}\n`) + "\n" + lines(n / 2, (i) => `[r${i}] `)],
+  ["one long backtick run", (n) => "a " + "`".repeat(n) + " b"],
+  ["unmatched backticks", (n) => "`a ".repeat(n / 3)],
+  ["backtick runs of growing length", (n) => lines(n, (i) => "`".repeat((i % 40) + 1) + "a ")],
+  ["[ flood", (n) => "[".repeat(n)],
+  ["] flood", (n) => "]".repeat(n)],
+  ["footnote-like [^1]", (n) => "[^1]".repeat(n / 4)],
+  ["empty links []", (n) => "[]".repeat(n / 2)],
+  ["image openers ![", (n) => "![".repeat(n / 2)],
+  ["link openers [a](", (n) => "[a](".repeat(n / 4)],
+  ["( flood after a link", (n) => "[a](" + "(".repeat(n)],
+  ["delimiter soup on one line", (n) => "*_~`[]()!<>&|\\".repeat(n / 14)],
+  ["hard-wrapped delimiters, one line", (n) => "**a**_b_~~c~~`d`".repeat(n / 16)],
+  ["bare autolinks", (n) => "www.a.b ".repeat(n / 8)],
+  ["scheme autolinks", (n) => "http://a.b ".repeat(n / 11)],
+  ["e-mail autolinks", (n) => "a@b.cd ".repeat(n / 7)],
+  ["backslashes", (n) => "\\".repeat(n)],
+  ["# flood", (n) => "#".repeat(n)],
+  ["trailing blanks", (n) => "a" + " ".repeat(n) + "\nb"],
+  ["blank lines of spaces", (n) => lines(n, () => "    \n")],
+  ["tabs", (n) => "\t".repeat(n) + "x"],
+  ["setext underlines", (n) => "a\n===\n".repeat(n / 6)],
+];
+/** Stored-HTML shapes the round-4 counter did not know. */
+const HTML_SHAPES: Array<[string, (n: number) => string]> = [
+  ["boolean attributes", (n) => "<p " + "a ".repeat(n / 2) + ">x</p>"],
+  ["quoted attributes", (n) => "<p " + 'a="1" '.repeat(n / 6) + ">x</p>"],
+  ["one attribute, = flood", (n) => "<p a" + "=".repeat(n) + ">x</p>"],
+  ["table cells", (n) => "<table><tbody><tr>" + "<td><p>x</p></td>".repeat(n / 17) + "</tr></tbody></table>"],
+];
+
+test("C-1: a Markdown table's CELLS are counted (columns × rows), not its bytes — 6 KB of it is neither cheap nor attempted", async () => {
+  const bomb = table(1000, 1000);
+  assert.ok(bomb.length < 6200, `${bomb.length} bytes`);
+  assert.ok(precheck.complexityOf(bomb, true).nodes >= 1_000_000, `counted ${precheck.complexityOf(bomb, true).nodes} nodes`);
+  assert.equal(isCheapContent(bomb, true), false, "never on the main thread");
+  assert.equal(service.conversionRefusal(bomb, true), "too_many_nodes", "refused up front, by name");
+  // A few hundred bytes are already thousands of cells.
+  assert.equal(isCheapContent(table(60, 60), true), false, `${table(60, 60).length} bytes = 3,600 cells`);
+  // …in every spelling of a table.
+  assert.equal(isCheapContent("a|".repeat(60) + "\n" + "-|".repeat(60) + "\n" + "x\n".repeat(60), true), false, "no leading pipe");
+  assert.equal(isCheapContent("|" + "a\\\\|".repeat(60) + "\n|" + "-|".repeat(60) + "\n" + "x\n".repeat(60), true), false, "\\\\| is a cell boundary");
+  assert.equal(isCheapContent("> |" + "a|".repeat(60) + "\n> |" + "-|".repeat(60) + "\n" + "> x\n".repeat(60), true), false, "inside a blockquote");
+  // An ordinary table, and pipes that are no table (no delimiter row), stay cheap.
+  assert.equal(isCheapContent("| a | b |\n|---|---|\n| 1 | 2 |\n| 3 | 4 |\n", true), true);
+  assert.equal(isCheapContent("x | y\n".repeat(100), true), true, "pipes in prose are text");
+  assert.ok(precheck.complexityOf("x | y\n".repeat(20_000), true).nodes < 25_000, "…however long the block (a chat log is not a table)");
+  // The worker path refuses it too: nothing is spawned, nothing converted.
+  const before = { ...conversionStats };
+  await assert.rejects(contentToSeed(bomb), (e) => e instanceof ConversionError && e.reason === "too_many_nodes");
+  await assert.rejects(service.markdownToHtml(bomb), (e) => e instanceof ConversionError && e.reason === "too_many_nodes");
+  assert.equal(conversionStats.worker, before.worker, "not handed to a worker");
+  assert.equal(conversionStats.inline, before.inline, "not converted inline");
+  // …and a table inside the worker's budget goes to the worker, not the event loop.
+  assert.equal(service.conversionRefusal(table(150, 150), true), null);
+});
+
+/** Shapes that are only bulk (blanks): harmless at any size the byte cap admits — measured below, not refused. */
+const INERT = new Set(["trailing blanks", "blank lines of spaces", "tabs"]);
+
+test("C-1: none of the audited Markdown / HTML shapes is 'cheap' at 12 KB, 24 KB or 100 KB", () => {
+  const cheapOnes: string[] = [];
+  for (const size of [12_000, 24_000, 100_000]) {
+    for (const [label, make] of MD_SHAPES) if (!(INERT.has(label) && size < 100_000) && isCheapContent(make(size).slice(0, size), true)) cheapOnes.push(`Markdown, ${label}, ${size} B`);
+    for (const [label, make] of HTML_SHAPES) if (isCheapContent(make(size), false)) cheapOnes.push(`HTML, ${label}, ${size} B`);
+  }
+  assert.deepEqual(cheapOnes, [], "these would convert on the main thread");
+  // What people actually write stays inline.
+  assert.equal(isCheapContent("# Title\n\nSome *prose* with a [link](http://x.test) and `code`.\n\n- one\n- two\n  - nested\n\n> quoted\n\n1. first\n2. second\n", true), true);
+  assert.equal(isCheapContent("----------------------------------------------------------------------------------------------------\n\ntext\n", true), true, "a long rule is not nesting");
+  assert.equal(isCheapContent('<p class="x" data-a="1">hello <strong>there</strong></p>', false), true);
+});
+
+test("C-1: whatever still converts inline is small — the LARGEST 'cheap' input of every audited shape keeps the event loop turning", { timeout: 300_000 }, async () => {
+  await contentToSeed("<p>warm</p>"); // module + JIT warm-up is not what is measured
+  await contentToSeed("warm *up*");
+  const worst: Array<[string, number, number]> = [];
+  for (const [kind, shapes, markdown] of [["Markdown", MD_SHAPES, true], ["HTML", HTML_SHAPES, false]] as const) {
+    for (const [label, make] of shapes) {
+      // The largest input of this shape the pre-check still calls cheap (bisect on size).
+      let lo = 8;
+      let hi = 100_000;
+      if (!isCheapContent(make(lo), markdown)) continue; // not inline at any size
+      while (hi - lo > 32) {
+        const mid = (lo + hi) >> 1;
+        if (isCheapContent(make(mid), markdown)) lo = mid;
+        else hi = mid;
+      }
+      const input = make(lo);
+      assert.ok(input.length <= 24_100, `${kind}, ${label}: inline input is ${input.length} bytes`);
+      const before = conversionStats.inline;
+      const r = await probed(() => contentToSeed(input));
+      assert.ok(r.error === undefined || r.error instanceof ConversionError, `${kind}, ${label}: ${String(r.error)}`);
+      assert.equal(conversionStats.inline, before + 1, `${kind}, ${label}: converted inline`);
+      worst.push([`${kind}, ${label} (${input.length} B)`, Math.round(r.maxLagMs), Math.round(r.ms)]);
+      assert.ok(r.maxLagMs < LOOP_BUDGET_MS, `${kind}, ${label}: ${input.length} bytes inline stalled the loop ${r.maxLagMs.toFixed(0)} ms`);
+    }
+  }
+  worst.sort((a, b) => b[1] - a[1]);
+  console.log("C-1 inline worst cases (lag ms, total ms):", JSON.stringify(worst.slice(0, 8)));
+});
+
+test("C-1: opening a note whose body is the 6 KB table answers at once — no live document, no stall", { timeout: 60_000 }, async () => {
+  fv.put({ id: "c1t", tags: ["garden"], content: table(1000, 1000), updatedAt: T0 });
+  assert.equal(isCheapContent(table(1000, 1000), true), false); // (guards the line below on a build without the fix)
+  const r = await probed(() => loadDocumentState("c1t", new Y.Doc()));
+  assert.ok(r.error instanceof collab.DocumentTooComplexError, String(r.error));
+  assert.ok(r.maxLagMs < LOOP_BUDGET_MS, `the event loop stalled ${r.maxLagMs.toFixed(0)} ms`);
+  assert.equal(getDocState("c1t"), null, "nothing derived from the body was stored");
+});
+
+test("C-1: rendering a document is inline only when it is SMALL — megabytes of text in one paragraph (or one attribute) go to the worker", { timeout: 120_000 }, async () => {
+  const para = (text: string, marks?: unknown[]) => ({ type: "doc", content: [{ type: "paragraph", content: [{ type: "text", text, ...(marks ? { marks } : {}) }] }] });
+  const weigh = precheck.docJsonWeight;
+  assert.ok(weigh(para("x", [{ type: "link", attrs: { href: "h".repeat(50_000) } }])).chars >= 50_000, "attribute strings are part of a document's size");
+  for (const [label, doc] of [
+    ["100 KB of text in one paragraph", para("word ".repeat(20_000))],
+    ["a 100 KB link target", para("x", [{ type: "link", attrs: { href: "http://x.test/" + "a".repeat(100_000) } }])],
+  ] as const) {
+    assert.throws(() => service.docJsonToHtmlBounded(doc), (e) => e instanceof ConversionError && e.reason === "too_large", `${label}: the synchronous form refuses it`);
+    const before = { ...conversionStats };
+    const html = await service.docJsonToHtml(doc);
+    assert.equal(conversionStats.inline, before.inline, `${label}: not rendered on the main thread`);
+    assert.equal(conversionStats.worker, before.worker + 1, `${label}: rendered in the worker`);
+    assert.ok(html.startsWith("<p>") && html.length > 100_000);
+  }
+  const before = conversionStats.inline;
+  assert.equal(await service.docJsonToHtml(para("small")), "<p>small</p>");
+  assert.equal(conversionStats.inline, before + 1);
+});

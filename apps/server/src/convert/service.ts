@@ -86,8 +86,14 @@ export const convertCfg = {
   inlineMaxDelimiters: envInt("CONVERT_INLINE_MAX_DELIMITERS", 200, 0),
   /** … this element / blockquote nesting … */
   inlineMaxDepth: envInt("CONVERT_INLINE_MAX_DEPTH", 40, 0),
-  /** … and this many nodes to build (HTML tags / Markdown lines + delimiters / a ProseMirror document's nodes + marks). */
-  inlineMaxNodes: envInt("CONVERT_INLINE_MAX_NODES", 2500, 0),
+  /**
+   * … and this many nodes to PARSE (Markdown lines, delimiter runs, table cells, autolinks / HTML pieces). Measured
+   * on the event loop: a paragraph ≈ 0.15 ms, a list item ≈ 0.25–1 ms, a table cell ≈ 0.3–0.5 ms — 2,500 of them
+   * (the old cap) was 0.4–1 s. 250 keeps every shape well under 100 ms; "not obviously tiny" goes to the worker.
+   */
+  inlineMaxNodes: envInt("CONVERT_INLINE_MAX_NODES", 250, 0),
+  /** … (Markdown) this many characters `marked` gives a meaning to — the net under every shape the counters do not know … */
+  inlineMaxSpecials: envInt("CONVERT_INLINE_MAX_SPECIALS", 600, 0),
   /** A ProseMirror document with more nodes + marks than this is not rendered at all. */
   // (measured: happy-dom + ProseMirror need ~4–5 KB of heap per node, so the defaults follow the heap: 200 nodes per MB to render …)
   maxNodes: envInt("CONVERT_MAX_NODES", Math.min(400_000, HEAP_MB * 200), 1),
@@ -298,7 +304,9 @@ function cheap(c: Complexity, _markdown: boolean): boolean {
     c.nodes <= convertCfg.inlineMaxNodes &&
     c.delimiterRuns <= convertCfg.inlineMaxDelimiters &&
     c.quoteDepth <= convertCfg.inlineMaxDepth &&
-    c.htmlDepth <= convertCfg.inlineMaxDepth
+    c.nestDepth <= convertCfg.inlineMaxDepth &&
+    c.htmlDepth <= convertCfg.inlineMaxDepth &&
+    c.specials <= convertCfg.inlineMaxSpecials
   );
 }
 
@@ -417,10 +425,20 @@ export function contentToSeed(content: string, opts?: ConvertOptions): Promise<U
   return convertText("doc-seed", src, usesMarkdown(src), () => core.contentToSeedSync(src), { op: "doc-seed", content: src }, opts);
 }
 
+/**
+ * May this document be rendered on the calling thread? Few nodes, shallow — and
+ * SMALL: text and attribute strings together within the inline byte cap (it used
+ * to be the node count alone, so megabytes of text in one paragraph, or in one
+ * attribute, rendered on the event loop).
+ */
+/** Rendering is 20–50× cheaper per node than parsing (≈ 5–20 µs): ten times the parse cap in nodes + marks. */
+const inlineRenderNodes = (): number => convertCfg.inlineMaxNodes * 10;
+const cheapDoc = (w: { complete: boolean; depth: number; chars: number }): boolean => w.complete && w.depth <= convertCfg.inlineMaxDepth && w.chars <= convertCfg.inlineMaxChars;
+
 /** ProseMirror JSON → the HTML a collab store writes. */
 export async function docJsonToHtml(json: unknown, opts?: ConvertOptions): Promise<string> {
-  const w = docJsonWeight(json, convertCfg.inlineMaxNodes);
-  if (w.complete && w.depth <= convertCfg.inlineMaxDepth) {
+  const w = docJsonWeight(json, inlineRenderNodes());
+  if (cheapDoc(w)) {
     conversionStats.inline++;
     try {
       return core.docJsonToHtmlSync(json);
@@ -463,7 +481,6 @@ export function contentToSeedBounded(content: string): Uint8Array {
   return core.contentToSeedSync(src);
 }
 export function docJsonToHtmlBounded(json: unknown): string {
-  const w = docJsonWeight(json, convertCfg.inlineMaxNodes);
-  if (!w.complete || w.depth > convertCfg.inlineMaxDepth) throw new ConversionError("too_large");
+  if (!cheapDoc(docJsonWeight(json, inlineRenderNodes()))) throw new ConversionError("too_large");
   return core.docJsonToHtmlSync(json);
 }
