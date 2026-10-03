@@ -371,7 +371,15 @@ export function emailForActorId(actorId: string): string | null {
     if (config.ownerEmail) map.set(documentActorId(`user:${config.ownerEmail}`), config.ownerEmail);
     actorIdCache = { n: users.length, map };
   }
-  return actorIdCache.map.get(actorId) ?? null;
+  const known = actorIdCache.map.get(actorId);
+  if (known) return known;
+  // Legacy form: MCP agent suggestions written before wave 3 stored the account
+  // email itself. Believed only when it names a real account.
+  if (actorId.includes("@")) {
+    const email = actorId.trim().toLowerCase();
+    for (const e of actorIdCache.map.values()) if (e.toLowerCase() === email) return e;
+  }
+  return null;
 }
 
 /** Account emails behind a person note (its email identities that have an account). */

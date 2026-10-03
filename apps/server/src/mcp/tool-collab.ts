@@ -66,6 +66,7 @@ import {
 } from "../collab-ops";
 import { getDocState, getUser } from "../db";
 import { creatorNameFor } from "../sharing";
+import { documentActorId } from "../human-collab";
 import { vaultClient, type Note } from "../parachute";
 import type { UserActor } from "./auth";
 import { canView, hasCapAnywhere } from "./access";
@@ -151,7 +152,11 @@ const originOf = (ctx: ToolContext) => `mcp:${ctx.principal.actor.email}`;
 function authorOf(ctx: ToolContext): CollabAuthor {
   const email = ctx.principal.actor.email;
   const name = creatorNameFor(email) ?? "Member"; // never the account email (final review L4)
-  return { name: `${name} (agent)`, color: colorFor(email), actorId: email, turnId: ctx.principal.agentTurnId };
+  // The id stored in the shared document is the account's OPAQUE document id (the
+  // same `h_…` a human's suggestions carry) — never the email: every viewer of the
+  // page, guests included, can read `data-actor-id` (wave 3). Documents written
+  // before this still hold the email form; readers accept both (`emailForActorId`).
+  return { name: `${name} (agent)`, color: colorFor(email), actorId: documentActorId(`user:${email}`), turnId: ctx.principal.agentTurnId };
 }
 
 /**
