@@ -156,6 +156,7 @@ test("folder discovery failure has honest root fallback and retry", async ({
 test("all specialized page defaults and dedicated Task/Message entry points remain available", async ({
   page,
 }) => {
+  test.setTimeout(90_000); // nine full page loads in one test
   for (const [label, type] of [
     ["Canvas", "canvas"],
     ["Spreadsheet", "spreadsheet"],
@@ -170,11 +171,14 @@ test("all specialized page defaults and dedicated Task/Message entry points rema
     await expect(page.locator("#creation-formats button")).toHaveCount(10);
     await page.getByRole("button", { name: label, exact: true }).click();
     await page.getByRole("button", { name: "Create", exact: true }).click();
-    expect(
-      await page.evaluate(
-        () => (window as any).prismCreation.latest().metadata.type,
-      ),
-    ).toBe(type);
+    // The create is asynchronous: read the result only once it has landed.
+    await expect
+      .poll(() =>
+        page.evaluate(
+          () => (window as any).prismCreation.latest()?.metadata?.type,
+        ),
+      )
+      .toBe(type);
   }
   await open(page);
   await page.getByRole("button", { name: "Page", exact: true }).click();

@@ -42,7 +42,7 @@ test.describe("plain editor selection toolbar", () => {
     // Inline code excludes other marks (TipTap's code mark), so it replaces them.
     await select(page, "Foxtrot closing");
     await page.getByRole("button", { name: "Code selection" }).click();
-    expect(await html(page)).toContain("<p><code>Foxtrot closing</code></p>");
+    await expect.poll(() => html(page)).toContain("<p><code>Foxtrot closing</code></p>");
   });
 
   test("links are typed inline, validated, applied and removable", async ({ page }) => {
@@ -60,7 +60,7 @@ test.describe("plain editor selection toolbar", () => {
     expect(await html(page)).not.toContain("evil");
     await field.fill("example.test/docs");
     await field.press("Enter");
-    expect(await html(page)).toContain('href="https://example.test/docs"');
+    await expect.poll(() => html(page)).toContain('href="https://example.test/docs"');
     bubble = await select(page, "Bravo paragraph");
     await expect(bubble.getByRole("button", { name: "Link", exact: true })).toHaveAttribute("aria-pressed", "true");
     await bubble.getByRole("button", { name: "Link", exact: true }).click();
@@ -82,11 +82,11 @@ test.describe("plain editor selection toolbar", () => {
     await expect(menu.getByRole("menuitemradio", { name: "Default" })).toHaveAttribute("aria-checked", "true");
     if (SHOTS) await page.screenshot({ path: `${SHOTS}/selection-color-1440.png` });
     await menu.getByRole("menuitemradio", { name: "Red", exact: true }).click();
-    expect(await html(page)).toContain('<span data-text-color="red">Bravo paragraph</span>');
+    await expect.poll(() => html(page)).toContain('<span data-text-color="red">Bravo paragraph</span>');
     await select(page, "Bravo paragraph");
     await page.getByRole("button", { name: "Text color and highlight" }).click();
     await page.getByRole("menuitemradio", { name: "Yellow highlight" }).click();
-    expect(await html(page)).toMatch(/<mark data-color="var\(--prism-color-yellow-bg\)"[^>]*>/);
+    await expect.poll(() => html(page)).toMatch(/<mark data-color="var\(--prism-color-yellow-bg\)"[^>]*>/);
     // Keyboard: Escape closes the menu and returns focus to its button.
     await select(page, "Foxtrot closing");
     const again = page.getByRole("button", { name: "Text color and highlight" });
@@ -101,7 +101,7 @@ test.describe("plain editor selection toolbar", () => {
     const bubble = await select(page, "Foxtrot closing");
     await bubble.getByRole("button", { name: /^Turn into/ }).click();
     await page.getByRole("menuitemradio", { name: "Heading 2" }).click();
-    expect(await html(page)).toContain("<h2>Foxtrot closing</h2>");
+    await expect.poll(() => html(page)).toContain("<h2>Foxtrot closing</h2>");
   });
 
   test("phones: the toolbar stays on screen with 44px targets", async ({ page }) => {
