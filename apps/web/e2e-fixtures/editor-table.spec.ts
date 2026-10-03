@@ -131,3 +131,41 @@ test("live editor: tables, callouts, toggles and columns reach the other client 
     await server.destroy();
   }
 });
+
+// NP-ED-10: header column and cell background colour.
+test("header column and cell background colour", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto("/e2e-fixtures/editor-blocks.html");
+  await insertTable(page);
+  const bar = page.getByRole("toolbar", { name: "Table" });
+  const html = () => page.evaluate(() => (document.querySelector(".tiptap") as any).editor.getHTML() as string);
+  const firstCells = () => page.evaluate(() => {
+    const editor = (document.querySelector(".tiptap") as any).editor;
+    const out: string[] = [];
+    editor.state.doc.descendants((n: any) => { if (n.type.name === "tableRow") out.push(n.firstChild.type.name); return n.type.name !== "tableRow"; });
+    return out;
+  });
+  expect(await firstCells()).toEqual(["tableHeader", "tableCell", "tableCell"]);
+  await bar.getByRole("button", { name: "Toggle header column" }).click();
+  expect(await firstCells()).toEqual(["tableHeader", "tableHeader", "tableHeader"]);
+  await bar.getByRole("button", { name: "Toggle header column" }).click();
+  expect(await firstCells()).toEqual(["tableHeader", "tableCell", "tableCell"]);
+  await bar.getByRole("button", { name: "Toggle header column" }).click();
+  // Cell colour: the caret's cell, from the token palette; keyboard-first menu.
+  await page.keyboard.press("ArrowDown");
+  await page.keyboard.type("Ada");
+  await bar.getByRole("button", { name: "Cell background color" }).click();
+  const menu = page.getByRole("menu", { name: "Cell background" });
+  await expect(menu.getByRole("menuitemradio", { name: "No background" })).toHaveAttribute("aria-checked", "true");
+  await menu.getByRole("menuitemradio", { name: "Blue background" }).click();
+  await expect.poll(html).toMatch(/<th[^>]*data-cell-color="blue"[^>]*><p>Ada<\/p><\/th>/);
+  const bg = await page.locator('.tiptap [data-cell-color="blue"]').evaluate((el) => getComputedStyle(el).backgroundColor);
+  expect(bg).not.toBe("rgba(0, 0, 0, 0)");
+  if (SHOTS) await page.screenshot({ path: `${SHOTS}/table-cell-color-1440.png` });
+  // The colour is saved, and one ⌘Z removes it.
+  await expect.poll(() => page.evaluate(() => (window as any).prismBlockWrites.at(-1)?.content ?? ""), { timeout: 6000 }).toContain('data-cell-color="blue"');
+  await bar.getByRole("button", { name: "Cell background color" }).click();
+  await expect(page.getByRole("menuitemradio", { name: "Blue background" })).toHaveAttribute("aria-checked", "true");
+  await page.getByRole("menuitemradio", { name: "No background" }).click();
+  await expect.poll(html).not.toContain("data-cell-color");
+});

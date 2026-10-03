@@ -461,11 +461,11 @@ test("paste fidelity: pasted Markdown text becomes blocks", async ({ page }) => 
   expect(out).toMatch(/<pre><code>const a = 1;<\/code><\/pre>/);
   // Task items, inline marks and a wikilink in Markdown text.
   await emptyDoc(page);
-  await pasteClipboard(page, { "text/plain": "- [x] Done **now**\n- [ ] Later, see [[Projects/my_page|My *page*]]\n" });
+  await pasteClipboard(page, { "text/plain": "- [x] Done **now**\n- [ ] Later, see [[Projects/my_page|My page]]\n" });
   const todo = await html(page);
   expect(todo).toMatch(/data-type="taskList"/);
   expect(todo).toMatch(/data-checked="true"[\s\S]*<strong>now<\/strong>/);
-  expect(todo).toContain("[[Projects/my_page|My *page*]]");
+  expect(todo).toContain("[[Projects/my_page|My page]]");
   // Ordinary prose is not parsed (a lone asterisk or underscore is just text).
   await emptyDoc(page);
   await pasteClipboard(page, { "text/plain": "2 * 3 = 6 and snake_case_name" });

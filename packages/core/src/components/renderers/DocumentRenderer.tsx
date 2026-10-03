@@ -36,6 +36,10 @@ import { InsertDatabaseDialog } from "./InsertDatabaseDialog";
 import { PageCover } from "./PageCover";
 import { COVER_GRADIENTS, coverPatch, parseCover, type PageCover as Cover } from "../../lib/media/attachments";
 import { useVaultClient } from "../../data/VaultClientContext";
+import { ChildPages } from "../../lib/tiptap/childPage";
+import { createSubPage } from "../../lib/tiptap/subPages";
+import { trashPage } from "../../lib/pages/ops";
+import { useQueryClient } from "@tanstack/react-query";
 import { EditorFindBar } from "./EditorFindBar";
 import StarterKit from "@tiptap/starter-kit";
 import Placeholder from "@tiptap/extension-placeholder";
@@ -158,6 +162,18 @@ export default function DocumentRenderer({ note, onMetadataChange, readOnly }: R
   const unfurl = useMemo<Unfurler | undefined>(() => (vaultClient.unfurl ? (url) => unfurlRef.current!(url) : undefined), [!!vaultClient.unfurl]); // eslint-disable-line react-hooks/exhaustive-deps
   const [pasteState, setPasteState] = useState<UrlPasteState | null>(null);
   const [dbInsert, setDbInsert] = useState<DatabaseInsertRequest | null>(null);
+  // Sub-pages (NP-PG-15): only where this page itself may be written.
+  const queryClient = useQueryClient();
+  const pathRef = useRef(note.path);
+  pathRef.current = note.path;
+  const subPagesRef = useRef({ client: vaultClient, queryClient });
+  subPagesRef.current = { client: vaultClient, queryClient };
+  const canSubPage = !readOnly && !governed && !!note.path;
+  const childPages = useMemo(() => ChildPages.configure(canSubPage ? {
+    hostPath: () => pathRef.current,
+    create: () => createSubPage(subPagesRef.current.client, subPagesRef.current.queryClient, pathRef.current ?? ""),
+    trash: (id: string) => trashPage(subPagesRef.current.client, id).then(() => void subPagesRef.current.queryClient.invalidateQueries({ queryKey: ["vault"] })),
+  } : {}), [canSubPage]);
 
   const extensions = useMemo(() => [
     StarterKit.configure({ codeBlock: false, link: false }),
@@ -184,7 +200,8 @@ export default function DocumentRenderer({ note, onMetadataChange, readOnly }: R
     UrlPaste.configure({ onStateChange: setPasteState, unfurl }),
     // Inline/linked databases: only where the page itself may be written.
     DatabaseInsert.configure({ onRequest: readOnly || governed ? undefined : setDbInsert }),
-  ], [handleWikilinkNavigate, upload, uploadFile, unfurl, readOnly, governed]);
+    childPages,
+  ], [handleWikilinkNavigate, upload, uploadFile, unfurl, readOnly, governed, childPages]);
   const [initialHtml, setInitialHtml] = useState<string | null>(null);
   const contentRef = useRef<string>(note.content);
   const editorRef = useRef<ReturnType<typeof useEditor>>(null);
@@ -451,11 +468,11 @@ export default function DocumentRenderer({ note, onMetadataChange, readOnly }: R
           {editor && !notEditable && <EmptyPageStarters editor={editor} noteId={note.id} title={note.path?.split("/").pop() ?? ""} />}
         </div>
         {/* Block gutter: ⋮⋮ drag / block menu and + insert (tap menu on phones) */}
-        {editor && <BlockHandles editor={editor} enabled={!notEditable} />}
+        {editor && <BlockHandles editor={editor} enabled={!notEditable} notes={governed ? undefined : allNotes} noteId={note.id} />}
         {editor && !notEditable && <TableControls editor={editor} />}
         {/* Wikilink / @mention autocomplete dropdown */}
         {editor && autocompleteState?.active && (
-          <WikilinkDropdown editor={editor} notes={allNotes || []} autocomplete={autocompleteState} />
+          <WikilinkDropdown editor={editor} notes={allNotes || []} autocomplete={autocompleteState} hostPath={canSubPage ? note.path : undefined} />
         )}
         {/* `/` slash-command menu */}
         {editor && slashState?.active && (

@@ -196,10 +196,12 @@ export const Toggle = Node.create({
     return ["details", mergeAttributes(HTMLAttributes, { "data-type": "toggle" }), 0];
   },
   addNodeView() {
-    return ({ node, editor }) => {
+    return ({ node }) => {
       let current = node;
       let open = true;
-      const doc: DomNode = (editor.view.dom as DomNode).ownerDocument;
+      // Not `editor.view.dom.ownerDocument`: while the INITIAL document's views are built the
+      // view does not exist yet (TipTap throws), so a stored page containing a toggle failed to open.
+      const doc: DomNode = (globalThis as { document?: DomNode }).document;
       const dom: DomNode = doc.createElement("div");
       dom.className = "prism-toggle";
       dom.setAttribute("data-type", "toggle");

@@ -18,6 +18,9 @@ import { embedFor, EMBED_SANDBOX, isAllowedFrameSrc, safeWebUrl } from "../media
 import { formatBytes, isDangerousImageSrc, isOwnAttachment, ownOrProxiedSrc, safeAttachmentSrc } from "../media/attachments";
 import { serverFetch } from "../transport/serverFetch";
 import { structuralEditsAllowed } from "./blockCommands";
+// Wave 4A views register themselves alongside the media views (one import in each editor).
+import "./columnsView";
+import "./childPage";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Any = any;

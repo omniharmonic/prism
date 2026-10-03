@@ -4,8 +4,9 @@ import type { Editor } from "@tiptap/react";
 import {
   Sparkles, Type, Heading1, Heading2, Heading3, List, ListOrdered, ListChecks, Quote, Code2, Minus,
   ChevronRight, MessageSquareText, Table as TableIcon, Image as ImageIcon, Link2, Columns2, Columns3, ImageUp,
-  Paperclip, FileText, Music, Film, Bookmark as BookmarkIcon, PlayCircle, ListTree,
+  Paperclip, FileText, Music, Film, Bookmark as BookmarkIcon, PlayCircle, ListTree, FilePlus, Columns4,
 } from "lucide-react";
+import { canCreateChildPage, createChildPage } from "../../lib/tiptap/childPage";
 import { useSelectionAsk } from "../../lib/agent/useSelectionAsk";
 import { dismissSlashCommand, type SlashCommandState } from "../../lib/tiptap/SlashCommand";
 import { turnTopBlocksInto, type TurnIntoKind } from "../../lib/tiptap/blockCommands";
@@ -53,7 +54,25 @@ function shapeBlock(editor: Editor, kind: TurnIntoKind) {
   editor.chain().focus().insertContentAt(at, json).setTextSelection(at + 2).run();
 }
 
-function insertColumns(editor: Editor, count: 2 | 3) {
+/** A toggle whose summary is a heading (NP-ED-08): re-shapes the caret's paragraph, else inserts one after it. */
+function insertToggleHeading(editor: Editor, level: 1 | 2 | 3) {
+  const { state } = editor;
+  const { $from } = state.selection;
+  const n = state.schema.nodes;
+  if ($from.depth < 1 || !n.toggle) return;
+  const start = $from.before(1);
+  const block = state.doc.nodeAt(start);
+  const reshape = $from.depth === 1 && block?.type.name === "paragraph";
+  const toggle = n.toggle.create({ level }, [n.toggleSummary.create(null, reshape ? block!.content : null), n.paragraph.create()]);
+  const tr = state.tr;
+  const at = reshape ? start : $from.after(1);
+  if (reshape) tr.replaceWith(start, start + block!.nodeSize, toggle);
+  else tr.insert(at, toggle);
+  editor.view.dispatch(tr);
+  editor.chain().focus().setTextSelection(Math.min(at + 2 + (reshape ? block!.content.size : 0), editor.state.doc.content.size)).run();
+}
+
+function insertColumns(editor: Editor, count: 2 | 3 | 4 | 5) {
   const { $from } = editor.state.selection;
   const empty = $from.depth === 1 && $from.parent.type.name === "paragraph" && $from.parent.content.size === 0;
   const json = { type: "columns", content: Array.from({ length: count }, () => ({ type: "column", content: [{ type: "paragraph" }] })) };
@@ -91,7 +110,10 @@ const BASE: SlashItem[] = [
   { id: "bullet", group: "Basic blocks", title: "Bulleted list", subtitle: "A simple bulleted list", icon: <List size={16} />, keywords: ["bullet", "ul", "list", "unordered", "point"], shortcut: "Mod-Shift-8", markdown: "-", run: (e) => e.chain().focus().toggleBulletList().run() },
   { id: "numbered", group: "Basic blocks", title: "Numbered list", subtitle: "A list with numbering", icon: <ListOrdered size={16} />, keywords: ["numbered", "ol", "ordered", "list", "1"], shortcut: "Mod-Shift-7", markdown: "1.", run: (e) => e.chain().focus().toggleOrderedList().run() },
   { id: "todo", group: "Basic blocks", title: "To-do list", subtitle: "Track tasks with checkboxes", icon: <ListChecks size={16} />, keywords: ["todo", "task", "checkbox", "check", "list"], shortcut: "Mod-Shift-9", markdown: "[]", run: (e) => e.chain().focus().toggleTaskList().run() },
-  { id: "toggle", group: "Basic blocks", title: "Toggle", subtitle: "Hide content inside a toggle", icon: <ChevronRight size={16} />, keywords: ["toggle", "collapse", "details", "expand", "accordion"], run: (e) => shapeBlock(e, "toggle") },
+  { id: "toggle", group: "Basic blocks", title: "Toggle", subtitle: "Hide content inside a toggle", icon: <ChevronRight size={16} />, keywords: ["toggle", "collapse", "details", "expand", "accordion"], markdown: ">>", run: (e) => shapeBlock(e, "toggle") },
+  { id: "toggle-h1", group: "Basic blocks", title: "Toggle heading 1", subtitle: "A large heading that hides content", icon: <Heading1 size={16} />, keywords: ["toggle heading", "collapsible heading", "h1"], run: (e) => insertToggleHeading(e, 1) },
+  { id: "toggle-h2", group: "Basic blocks", title: "Toggle heading 2", subtitle: "A medium heading that hides content", icon: <Heading2 size={16} />, keywords: ["toggle heading", "collapsible heading", "h2"], run: (e) => insertToggleHeading(e, 2) },
+  { id: "toggle-h3", group: "Basic blocks", title: "Toggle heading 3", subtitle: "A small heading that hides content", icon: <Heading3 size={16} />, keywords: ["toggle heading", "collapsible heading", "h3"], run: (e) => insertToggleHeading(e, 3) },
   { id: "quote", group: "Basic blocks", title: "Quote", subtitle: "Capture a quotation", icon: <Quote size={16} />, keywords: ["quote", "blockquote", "cite"], shortcut: "Mod-Shift-B", markdown: ">", run: (e) => e.chain().focus().toggleBlockquote().run() },
   { id: "callout", group: "Basic blocks", title: "Callout", subtitle: "Make writing stand out", icon: <MessageSquareText size={16} />, keywords: ["callout", "note", "info", "tip", "warning", "box"], run: (e) => shapeBlock(e, "callout") },
   { id: "divider", group: "Basic blocks", title: "Divider", subtitle: "Visually divide sections", icon: <Minus size={16} />, keywords: ["divider", "hr", "rule", "separator", "line"], markdown: "---", run: (e) => e.chain().focus().setHorizontalRule().run() },
@@ -104,6 +126,8 @@ const BASE: SlashItem[] = [
   { id: "link", group: "Advanced", title: "Link to page", subtitle: "Link to another page with [[", icon: <Link2 size={16} />, keywords: ["link", "page", "wikilink", "mention", "reference"], markdown: "[[", run: (e) => e.chain().focus().insertContent("[[").run() },
   { id: "columns2", group: "Advanced", title: "2 columns", subtitle: "Side-by-side blocks", icon: <Columns2 size={16} />, keywords: ["columns", "column", "layout", "side", "2"], run: (e) => insertColumns(e, 2) },
   { id: "columns3", group: "Advanced", title: "3 columns", subtitle: "Three blocks side by side", icon: <Columns3 size={16} />, keywords: ["columns", "column", "layout", "side", "3"], run: (e) => insertColumns(e, 3) },
+  { id: "columns4", group: "Advanced", title: "4 columns", subtitle: "Four blocks side by side", icon: <Columns4 size={16} />, keywords: ["columns", "column", "layout", "side", "4"], run: (e) => insertColumns(e, 4) },
+  { id: "columns5", group: "Advanced", title: "5 columns", subtitle: "Five blocks side by side", icon: <Columns4 size={16} />, keywords: ["columns", "column", "layout", "side", "5"], run: (e) => insertColumns(e, 5) },
 ];
 
 const FILE_ITEMS: SlashItem[] = [
@@ -121,6 +145,9 @@ const DATABASE_ITEMS: SlashItem[] = [
   { id: "db-calendar", group: "Database", title: "Calendar", subtitle: "A new database on a calendar", icon: <ListChecks size={16} />, keywords: ["database", "calendar view", "dates", "inline"], run: (e) => requestDatabaseInsert(e, "new", "calendar") },
   { id: "db-linked", group: "Database", title: "Linked view of database", subtitle: "Show an existing database here", icon: <Link2 size={16} />, keywords: ["linked", "database", "view", "existing", "embed database"], run: (e) => requestDatabaseInsert(e, "linked", "table") },
 ];
+
+/** A sub-page created in place and shown as a link row (NP-PG-15). */
+const PAGE_ITEM: SlashItem = { id: "page", group: "Basic blocks", title: "Page", subtitle: "Add a sub-page inside this page", icon: <FilePlus size={16} />, keywords: ["page", "subpage", "sub-page", "child", "new page"], run: (e) => { void createChildPage(e).catch(() => {}); } };
 
 const IMAGE_URL: SlashItem = { id: "image-url", group: "Media", title: "Image from URL", subtitle: "Embed an image by its address", icon: <ImageUp size={16} />, keywords: ["image", "url", "link", "embed"], run: insertImageByUrl };
 
@@ -166,8 +193,10 @@ export function SlashMenu({ editor, state, onClose }: { editor: Editor | null; s
   const uploads = canUploadImages(editor);
   const fileUploads = canUploadFiles(editor);
   const databases = canInsertDatabase(editor);
+  const subPages = canCreateChildPage(editor);
   const items = useMemo(() => {
     const all: SlashItem[] = [...BASE];
+    if (subPages) all.splice(all.findIndex((i) => i.id === "text") + 1, 0, PAGE_ITEM);
     if (uploads) all.splice(all.findIndex((i) => i.id === "image") + 1, 0, IMAGE_URL);
     if (fileUploads) all.splice(all.findIndex((i) => i.id === (uploads ? "image-url" : "image")) + 1, 0, ...FILE_ITEMS);
     if (databases) all.splice(all.findIndex((i) => i.id === "toc"), 0, ...DATABASE_ITEMS);
@@ -178,7 +207,7 @@ export function SlashMenu({ editor, state, onClose }: { editor: Editor | null; s
       .filter((r) => r.score > 0)
       .sort((a, b) => b.score - a.score || a.i - b.i)
       .map((r) => r.it);
-  }, [q, canAsk, uploads, fileUploads, databases]);
+  }, [q, canAsk, uploads, fileUploads, databases, subPages]);
 
   useEffect(() => setSelected(0), [q]);
 

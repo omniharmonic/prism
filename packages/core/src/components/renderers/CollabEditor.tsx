@@ -41,6 +41,12 @@ import { MentionSuggest, type MentionSuggestState } from "../../lib/tiptap/Menti
 import { MentionContext, setMentionNoteId } from "../../lib/tiptap/MentionContext";
 import { MentionMenu } from "../../lib/tiptap/MentionMenu";
 import { useCommentMentionPicker } from "../../lib/tiptap/MentionText";
+import { ChildPages } from "../../lib/tiptap/childPage";
+import { createSubPage } from "../../lib/tiptap/subPages";
+import { trashPage } from "../../lib/pages/ops";
+import { useOptionalVaultClient } from "../../data/VaultClientContext";
+import { QueryClientContext } from "@tanstack/react-query";
+import { useContext } from "react";
 
 export interface CollabUser {
   name: string;
@@ -180,6 +186,13 @@ export function CollabEditor({
   const [dbInsert, setDbInsert] = useState<DatabaseInsertRequest | null>(null);
   const hostPathRef = useRef(hostPath);
   useEffect(() => { hostPathRef.current = hostPath; }, [hostPath]);
+  // Sub-pages (NP-PG-15): where the host gave this page's path AND a vault client exists.
+  const vaultClient = useOptionalVaultClient();
+  const queryClient = useContext(QueryClientContext) ?? null;
+  const subPagesRef = useRef({ client: vaultClient, queryClient });
+  subPagesRef.current = { client: vaultClient, queryClient };
+  const noteIdRef = useRef(noteId);
+  noteIdRef.current = noteId;
   const findRef = useRef<HTMLDivElement>(null);
   const uploadErrorRef = useRef(onUploadError);
   useEffect(() => { uploadErrorRef.current = onUploadError; }, [onUploadError]);
@@ -206,6 +219,11 @@ export function CollabEditor({
       UrlPaste.configure({ onStateChange: setPasteState, unfurl: unfurl ? (url) => unfurlRef.current!(url) : undefined }),
       SearchHighlight,
       DatabaseInsert.configure({ onRequest: hostPath !== undefined ? setDbInsert : undefined }),
+      ChildPages.configure(hostPath !== undefined && vaultClient ? {
+        hostPath: () => hostPathRef.current,
+        create: () => (subPagesRef.current.client && hostPathRef.current ? createSubPage(subPagesRef.current.client, subPagesRef.current.queryClient, hostPathRef.current) : Promise.resolve(null)),
+        trash: (id: string) => (subPagesRef.current.client ? trashPage(subPagesRef.current.client, id).then(() => void subPagesRef.current.queryClient?.invalidateQueries({ queryKey: ["vault"] })) : Promise.reject(new Error("unavailable"))),
+      } : {}),
       SuggestionMode.configure({ user }),
       CommentOnly.configure({ active: !!commentOnly }),
       CommentInteraction.configure({ onActivate: (id) => commentActivateRef.current?.(id) }),
@@ -387,12 +405,24 @@ export function CollabEditor({
 
       {/* Block gutter. Structural moves are raw edits, so it is off while
           suggesting (tracked changes) or comment-only. */}
-      {editor && <BlockHandles editor={editor} enabled={editable && !commentOnly && !suggesting} />}
+      {editor && (
+        <BlockHandles
+          editor={editor}
+          enabled={editable && !commentOnly && !suggesting}
+          notes={wikilinkNotes}
+          noteId={noteId}
+          onComment={canComment && !humanCommands ? (range) => {
+            const c = editor.view.coordsAtPos(range.to);
+            setComposer({ from: range.from, to: range.to, top: c.bottom + 6, left: Math.max(8, Math.min(c.left, window.innerWidth - 288)) });
+            setDraft("");
+          } : undefined}
+        />
+      )}
       {editor && editable && !commentOnly && <TableControls editor={editor} />}
 
       {/* `[[` wikilink autocomplete dropdown */}
       {editor && autocomplete?.active && (
-        <WikilinkDropdown editor={editor} notes={wikilinkNotes || []} autocomplete={autocomplete} />
+        <WikilinkDropdown editor={editor} notes={wikilinkNotes || []} autocomplete={autocomplete} hostPath={editable && !commentOnly && !suggesting ? hostPath ?? undefined : undefined} />
       )}
 
       {/* `/` slash-command menu */}
