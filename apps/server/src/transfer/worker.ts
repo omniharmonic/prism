@@ -16,7 +16,7 @@ export type WorkerRequest =
   | PlanRequest
   // The conversion service (convert/service.ts): collab seeding/folding/storing and the MCP note resource.
   | { op: "md-html"; content: string }
-  | { op: "html-md"; html: string }
+  | { op: "html-md"; html: string; flavor?: "blocks" }
   | { op: "doc-json"; content: string; markdown: boolean }
   | { op: "doc-seed"; content: string }
   | { op: "doc-html"; json: unknown };
@@ -32,8 +32,10 @@ async function handle(req: WorkerRequest): Promise<{ value: unknown; transfer?: 
   switch (req.op) {
     case "md-html":
       return { value: (await loadCore()).markdownToHtmlSync(req.content) };
-    case "html-md":
-      return { value: (await loadCore()).htmlToMarkdownSync(req.html) };
+    case "html-md": {
+      const c = await loadCore();
+      return { value: req.flavor === "blocks" ? c.blocksHtmlToMarkdownSync(req.html) : c.htmlToMarkdownSync(req.html) };
+    }
     case "doc-json": {
       const c = await loadCore();
       return { value: req.markdown ? c.contentToDocJsonSync(req.content) : c.htmlToDocJsonSync(req.content) };

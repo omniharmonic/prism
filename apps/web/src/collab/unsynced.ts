@@ -113,7 +113,9 @@ async function syncOne(scope: WriteScope, headers: Record<string, string>, entry
       const done = (value: "synced" | "kept" | UnsyncedDoc["blocked"]) => { window.clearTimeout(timer); resolve(value); };
       provider = new HocuspocusProvider({
         url: `${collabWsUrl()}?schema=${COLLAB_SCHEMA_VERSION}`, name: entry.name, token: collabToken(getCapabilityToken()), document: doc,
-        onAuthenticationFailed: ({ reason }) => done(reason?.startsWith("update_required") ? "update-required" : "denied"),
+        // `too_complex` / `busy`: the server has no live document to take this state right now —
+        // nothing about the access changed, so the local state is simply kept and tried again later.
+        onAuthenticationFailed: ({ reason }) => done(reason?.startsWith("update_required") ? "update-required" : reason?.startsWith("too_complex") || reason?.startsWith("busy") ? "kept" : "denied"),
         onSynced: () => {
           if (provider?.authorizedScope === "readonly") { done("read-only"); return; }
           // The server has our state once nothing is left unacknowledged.

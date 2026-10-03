@@ -57,10 +57,13 @@ export class TaskWorker {
   }
 
   /** Run one task. Rejects with WorkerTimeoutError when it runs longer than `timeoutMs` (queueing and worker start-up are not counted). */
-  run<T>(message: unknown, timeoutMs: number, transfer: ArrayBuffer[] = []): Promise<T> {
+  run<T>(message: unknown, timeoutMs: number, transfer: ArrayBuffer[] = [], front = false): Promise<T> {
     return new Promise<T>((resolve, reject) => {
       if (this.queue.length >= this.maxQueue) return reject(new WorkerFailedError("busy", "busy", 503));
-      this.queue.push({ message, transfer, timeoutMs, sent: false, resolve: resolve as (v: unknown) => void, reject });
+      const task: Task = { message, transfer, timeoutMs, sent: false, resolve: resolve as (v: unknown) => void, reject };
+      // `front`: ahead of everything still waiting (never ahead of the running task).
+      if (front) this.queue.unshift(task);
+      else this.queue.push(task);
       this.pump();
     });
   }

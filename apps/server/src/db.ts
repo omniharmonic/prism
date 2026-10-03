@@ -99,6 +99,16 @@ db.exec(`
     updated_at        INTEGER NOT NULL,
     PRIMARY KEY (vault_id, name)
   );
+  -- Live documents whose latest state is in collab_docs but NOT yet in the vault
+  -- (a store that could not render or write). The Yjs state is safe; this row is
+  -- the reminder to write the note later (collab.ts retries; cleared on success).
+  CREATE TABLE IF NOT EXISTS collab_unsaved (
+    vault_id TEXT NOT NULL DEFAULT 'primary',
+    name     TEXT NOT NULL,      -- note id
+    doc_name TEXT NOT NULL,      -- the collab document name it is served under
+    since    INTEGER NOT NULL,
+    PRIMARY KEY (vault_id, name)
+  );
   CREATE TABLE IF NOT EXISTS invites (
     token_hash  TEXT PRIMARY KEY,
     email       TEXT NOT NULL,
@@ -1821,6 +1831,23 @@ export function getDocState(name: string, vaultId = "primary"): DocState | null 
   const row = selectDocState.get(vaultId, name) as { state: Buffer; source_updated_at: number | null } | undefined;
   if (!row) return null;
   return { state: new Uint8Array(row.state), sourceUpdatedAt: row.source_updated_at };
+}
+const markUnsavedStmt = db.prepare("INSERT INTO collab_unsaved (vault_id, name, doc_name, since) VALUES (?, ?, ?, ?) ON CONFLICT(vault_id, name) DO NOTHING");
+const clearUnsavedStmt = db.prepare("DELETE FROM collab_unsaved WHERE vault_id = ? AND name = ?");
+const listUnsavedStmt = db.prepare("SELECT vault_id, name, doc_name, since FROM collab_unsaved ORDER BY since LIMIT ?");
+/** Remember that this note's live state (in collab_docs) has not reached the vault yet. */
+export function markCollabUnsaved(name: string, vaultId: string, docName: string): void {
+  markUnsavedStmt.run(vaultId, name, docName, now());
+}
+export function clearCollabUnsaved(name: string, vaultId: string): void {
+  clearUnsavedStmt.run(vaultId, name);
+}
+const isUnsavedStmt = db.prepare("SELECT 1 FROM collab_unsaved WHERE vault_id = ? AND name = ?");
+export function isCollabUnsaved(name: string, vaultId: string): boolean {
+  return isUnsavedStmt.get(vaultId, name) !== undefined;
+}
+export function listCollabUnsaved(limit = 50): Array<{ vault_id: string; name: string; doc_name: string; since: number }> {
+  return listUnsavedStmt.all(limit) as Array<{ vault_id: string; name: string; doc_name: string; since: number }>;
 }
 export function saveDocState(name: string, state: Uint8Array, sourceUpdatedAt: number | null, vaultId = "primary"): void {
   upsertDocState.run({

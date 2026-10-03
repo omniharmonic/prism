@@ -68,6 +68,22 @@ export function contentToSeedSync(content: string): Uint8Array {
   return Y.encodeStateAsUpdate(prosemirrorJSONToYDoc(schema, contentToDocJsonSync(content), FIELD));
 }
 
+let blocksTurndown: TurndownService | null = null;
+/**
+ * HTML → Markdown for blocks appended to a Markdown-bodied page ("Move to").
+ * Prism blocks Markdown cannot say (callouts, files, embeds, sub-page rows,
+ * databases, toggles, columns) stay as HTML blocks — valid in Markdown, and
+ * exactly what the editor parses back.
+ */
+export function blocksHtmlToMarkdownSync(html: string): string {
+  if (!blocksTurndown) {
+    blocksTurndown = new TurndownService({ headingStyle: "atx", codeBlockStyle: "fenced", bulletListMarker: "-" });
+    blocksTurndown.keep(((node: { nodeName: string; getAttribute(name: string): string | null }) =>
+      (node.nodeName === "DIV" && (!!node.getAttribute("data-type") || !!node.getAttribute("data-prism-database"))) || node.nodeName === "DETAILS") as never);
+  }
+  return blocksTurndown.turndown(html);
+}
+
 let plainTurndown: TurndownService | null = null;
 /** HTML → Markdown for an agent reading a document note (the MCP resource's flavour). */
 export function htmlToMarkdownSync(html: string): string {

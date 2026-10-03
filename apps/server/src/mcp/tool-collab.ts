@@ -35,8 +35,9 @@ import {
   docNameFor,
   hocuspocus,
   isDocLive,
-  isDocDegraded,
-  carriesDegradedSeed,
+  isDocBlocked,
+  DocumentTooComplexError,
+  CollabBusyError,
   liveDocument,
   prepareExternalContent,
   noteKind,
@@ -172,14 +173,20 @@ function authorOf(ctx: ToolContext): CollabAuthor {
 const sameVector = (a: Uint8Array, b: Uint8Array): boolean => a.length === b.length && a.every((x, i) => x === b[i]);
 
 async function withDoc<T>(ctx: ToolContext, docName: string, fn: (doc: Y.Doc) => T | Promise<T>): Promise<T> {
-  const conn = await hocuspocus.openDirectConnection(docName, { mcp: ctx.principal.actor.email });
+  const tooComplex = () => new ToolError("invalid_request", "this page is too large or complex for the live editor, so comments, suggestions and live edits are unavailable on it");
+  let conn: Awaited<ReturnType<typeof hocuspocus.openDirectConnection>>;
+  try {
+    conn = await hocuspocus.openDirectConnection(docName, { mcp: ctx.principal.actor.email });
+  } catch (e) {
+    // The note's body cannot be converted in budget: it has no live document at all.
+    if (e instanceof DocumentTooComplexError) throw tooComplex();
+    if (e instanceof CollabBusyError) throw new ToolError("upstream_error", "the server is busy converting documents — retry in a moment");
+    throw e;
+  }
   try {
     if (!conn.document) throw new ToolError("upstream_error", "the document could not be opened");
-    // A degraded document (content that cannot be converted in budget) is a
-    // read-only plain-text view that is never stored: nothing may be written to it.
-    if (isDocDegraded(docName) || carriesDegradedSeed(conn.document)) {
-      throw new ToolError("invalid_request", "this page is too large or complex for the live editor, so comments, suggestions and live edits are unavailable on it");
-    }
+    // A blocked document (its note changed to content it cannot absorb) is never stored again.
+    if (isDocBlocked(docName)) throw tooComplex();
     const before = Y.encodeStateVector(conn.document);
     const out = await fn(conn.document);
     // Attribute the store this write triggers to the agent (history: "Agent revision").
@@ -224,7 +231,7 @@ export async function liveContentWrite(ctx: ToolContext, id: string, content: st
   // The new body is parsed off the main thread BEFORE the merge's synchronous section.
   let prepared: Awaited<ReturnType<typeof prepareExternalContent>>;
   try {
-    prepared = await prepareExternalContent(t.kind, content);
+    prepared = await prepareExternalContent(t.kind, content, { actor: `user:${ctx.principal.actor.email.toLowerCase()}` });
   } catch (e) {
     if (!(e instanceof ConversionError)) throw e;
     throw e.reason === "busy"

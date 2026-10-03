@@ -24,7 +24,7 @@ import { HUMAN_COLLAB_LIMITS, type HumanCollabCommand, type HumanCollabErrorBody
 import { accessRevision } from "../access-events";
 import { resolveActor, requestVia } from "../auth/actor";
 import { verifyCapability } from "../auth/capability";
-import { carriesDegradedSeed, collabLevelFor, docNameFor, ensureRenderedSize, hocuspocus, isDocDegraded, isNoteId, noteCollabWriter, noteKind } from "../collab";
+import { CollabBusyError, DocumentTooComplexError, collabLevelFor, docNameFor, ensureRenderedSize, hocuspocus, isDocBlocked, isNoteId, noteCollabWriter, noteKind } from "../collab";
 import { ConversionError } from "../convert/service";
 import { colorFor } from "../collab-ops";
 import { getCollabReceipt, getFederatedByLocal, getFederationEnabled, getUser, getVaultRegistry, grantsForCapability, type Grant } from "../db";
@@ -213,24 +213,30 @@ humanCollabApi.post("/:id/commands", async (c) => {
 
     pruneReceiptsIfDue();
     const docName = documentNameFor(who.vaultId, id);
-    const conn = await hocuspocus.openDirectConnection(docName, { human: who.identity });
+    const TOO_COMPLEX = "This page is too large or complex for the live editor, so suggestions and comments are unavailable on it.";
+    let conn: Direct;
+    try {
+      conn = await hocuspocus.openDirectConnection(docName, { human: who.identity });
+    } catch (e) {
+      // The note's body cannot be converted in budget: it has no live document at all.
+      if (e instanceof DocumentTooComplexError) return fail(c, 413, "document_too_large", TOO_COMPLEX);
+      if (e instanceof CollabBusyError) return fail(c, 503, "not_confirmed", "The server is busy. Keep your draft and retry the same request.", { retry: true });
+      throw e;
+    }
     let outcome: HumanCommandOutcome | null = null;
     try {
       if (!conn.document) return fail(c, 502, "upstream_error", "The live document could not be opened. Keep your draft and retry the same request.", { retry: true });
-      // A degraded document (content that cannot be converted in budget) is a
-      // read-only plain-text view that is never stored: it takes no commands.
-      if (isDocDegraded(docName) || carriesDegradedSeed(conn.document as unknown as Y.Doc)) {
-        return fail(c, 413, "document_too_large", "This page is too large or complex for the live editor, so suggestions and comments are unavailable on it.");
-      }
+      // A blocked document (its note changed to content it cannot absorb) is never stored again.
+      if (isDocBlocked(docName)) return fail(c, 413, "document_too_large", TOO_COMPLEX);
       // The engine needs the document's rendered size; measure it off the main
       // thread now (a no-op once known), so its synchronous section never renders.
       try {
-        await ensureRenderedSize(conn.document as unknown as Y.Doc);
+        await ensureRenderedSize(conn.document as unknown as Y.Doc, { actor: who.identity });
       } catch (e) {
         if (!(e instanceof ConversionError)) throw e;
         return e.reason === "busy"
           ? fail(c, 503, "not_confirmed", "The server is busy. Keep your draft and retry the same request.", { retry: true })
-          : fail(c, 413, "document_too_large", "This page is too large or complex for the live editor, so suggestions and comments are unavailable on it.");
+          : fail(c, 413, "document_too_large", TOO_COMPLEX);
       }
       // Everything above awaited (note read, document load). Read the note once
       // more, then decide and mutate with NO await in between: the credential,

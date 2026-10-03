@@ -32,7 +32,26 @@ import * as core from "./core";
 import type { DocJson } from "./core";
 
 export type { DocJson } from "./core";
-export type ConversionFailure = "too_large" | "too_complex" | "timeout" | "busy" | "failed";
+/**
+ * Why a conversion did not happen.
+ *  - `too_large` / `too_complex` / `too_many_nodes`: the PRE-CHECK refused the
+ *    input — deterministic, the same input is refused every time;
+ *  - `timeout`: the worker did not finish in its wall clock — depends on load;
+ *  - `busy`: no slot (queue full, or this actor's lane is full) — says nothing
+ *    about the input;
+ *  - `failed`: the worker crashed, ran out of memory or never came up.
+ */
+export type ConversionFailure = "too_large" | "too_complex" | "too_many_nodes" | "timeout" | "busy" | "failed";
+/** A refusal that is a property of the INPUT (the pre-check), not of the server's load. */
+export const isDeterministicFailure = (reason: ConversionFailure): boolean => reason === "too_large" || reason === "too_complex" || reason === "too_many_nodes";
+
+/** Who a conversion is for, and whether it is part of SAVING a live document. */
+export interface ConvertOptions {
+  /** A stable key for the account / link behind the request: bounds how many conversions it has in flight. */
+  actor?: string | null;
+  /** `store`: rendering / folding for a store — a reserved thread (or the head of the queue), never behind opens and agent writes. */
+  lane?: "store" | "default";
+}
 
 /** A conversion that was refused or did not finish in budget. Callers fall back. */
 export class ConversionError extends Error {
@@ -61,7 +80,12 @@ export const convertCfg = {
   /** … and this many nodes to build (HTML tags / Markdown lines + delimiters / a ProseMirror document's nodes + marks). */
   inlineMaxNodes: envInt("CONVERT_INLINE_MAX_NODES", 2500, 0),
   /** A ProseMirror document with more nodes + marks than this is not rendered at all. */
-  maxNodes: envInt("CONVERT_MAX_NODES", 1_500_000, 1),
+  maxNodes: envInt("CONVERT_MAX_NODES", 400_000, 1),
+  /** A note body that would parse into more nodes than this (lines + delimiter runs + tags) is refused up front (`too_many_nodes`). */
+  maxInputNodes: envInt("CONVERT_MAX_INPUT_NODES", 200_000, 1),
+  /** Conversions one actor may have in the worker at once; more wait their turn (bounded), then `busy`. */
+  perActorInflight: envInt("CONVERT_PER_ACTOR_INFLIGHT", 2, 1),
+  perActorWaiting: envInt("CONVERT_PER_ACTOR_WAITING", 8, 0),
   /** Refused outright (never sent to the worker): delimiter runs in one block / blockquote depth. */
   maxDelimiters: envInt("CONVERT_MAX_DELIMITERS", 20_000, 1),
   maxQuoteDepth: envInt("CONVERT_MAX_QUOTE_DEPTH", 200, 1),
@@ -69,10 +93,15 @@ export const convertCfg = {
   timeoutMs: envInt("CONVERT_TIMEOUT_MS", 8000, 20),
   timeoutPerMbMs: envInt("CONVERT_TIMEOUT_PER_MB_MS", 30_000, 0),
   timeoutMaxMs: envInt("CONVERT_TIMEOUT_MAX_MS", 60_000, 20),
-  /** Worker threads, tasks queued per thread, heap per thread. */
+  /**
+   * Worker threads, tasks queued per thread, heap per thread. With two or more
+   * threads the FIRST is reserved for the `store` lane. The heap is a ceiling, not
+   * a reservation (2 MB of ordinary Markdown needs well over 768 MB while its DOM
+   * and ProseMirror trees coexist); idle threads exit (`idleMs`).
+   */
   threads: envInt("CONVERT_THREADS", 2, 1),
   maxQueue: envInt("CONVERT_MAX_QUEUE", 32, 1),
-  heapMb: envInt("CONVERT_HEAP_MB", 768, 64),
+  heapMb: envInt("CONVERT_HEAP_MB", 2048, 64),
   /** Idle threads are terminated after this long (they respawn on demand; 0 = keep). */
   idleMs: envInt("CONVERT_IDLE_MS", 5 * 60_000, 0),
   /** How long a failed input is remembered (by hash). */
@@ -89,11 +118,43 @@ export function configureConversion(patch: Partial<ConvertConfig>): () => void {
 // ── worker pool ─────────────────────────────────────────────────────────────
 
 let pool: TaskWorker[] = [];
-function worker(): TaskWorker {
+/**
+ * The thread for a task. Saving must not wait behind opening: with ≥ 2 threads the
+ * first one serves ONLY the `store` lane (a store may also use any other thread
+ * that is idler); everything else shares the rest. One thread: shared, and a
+ * store goes to the head of its queue.
+ */
+function worker(lane: "store" | "default"): TaskWorker {
   while (pool.length < convertCfg.threads) pool.push(new TaskWorker(convertCfg.heapMb, convertCfg.maxQueue, { preload: "doc" }));
-  let best = pool[0]!;
-  for (const w of pool) if (w.pending < best.pending) best = w;
+  const candidates = pool.length < 2 ? pool : lane === "store" ? pool : pool.slice(1);
+  let best = candidates[0]!;
+  for (const w of candidates) if (w.pending < best.pending) best = w;
   return best;
+}
+
+// ── per-actor fairness ──────────────────────────────────────────────────────
+// One account (or link) holds at most `perActorInflight` worker slots; its
+// further conversions wait in ITS OWN line (bounded), not in the shared queue —
+// so a member opening pathological notes in a loop delays only themself.
+const actorSlots = new Map<string, { running: number; waiting: Array<() => void> }>();
+async function withActorSlot<T>(actor: string | null | undefined, run: () => Promise<T>): Promise<T> {
+  if (!actor) return run();
+  let slot = actorSlots.get(actor);
+  if (!slot) actorSlots.set(actor, (slot = { running: 0, waiting: [] }));
+  if (slot.running >= convertCfg.perActorInflight) {
+    if (slot.waiting.length >= convertCfg.perActorWaiting) {
+      conversionStats.busy++;
+      throw new ConversionError("busy");
+    }
+    await new Promise<void>((resolve) => slot!.waiting.push(resolve));
+  } else slot.running++;
+  try {
+    return await run();
+  } finally {
+    const next = slot.waiting.shift();
+    if (next) next(); // hands its slot over: `running` is unchanged
+    else if (--slot.running === 0) actorSlots.delete(actor);
+  }
 }
 let idleTimer: ReturnType<typeof setTimeout> | null = null;
 /** A converter thread holds a parser stack in memory; let idle ones go (16 GB host). */
@@ -114,19 +175,28 @@ export async function stopConversionWorkers(): Promise<void> {
 
 // ── failure memory ──────────────────────────────────────────────────────────
 
+// Only what is (very likely) a property of the INPUT is remembered: an input
+// that timed out TWICE. Never `busy`, never a worker crash / out-of-memory / boot
+// timeout (`failed`) — those describe the server at that moment, and remembering
+// them would keep a good note unopenable for the whole TTL. Pre-check refusals
+// need no memory: the pre-check is linear and answers the same every time.
 const FAILURES_MAX = 500;
-const failures = new Map<string, { reason: ConversionFailure; until: number }>();
+const TIMEOUTS_TO_REMEMBER = 2;
+const failures = new Map<string, { timeouts: number; until: number }>();
 function remembered(key: string): ConversionFailure | null {
   const hit = failures.get(key);
   if (!hit) return null;
-  if (hit.until > Date.now()) return hit.reason;
-  failures.delete(key);
-  return null;
+  if (hit.until <= Date.now()) {
+    failures.delete(key);
+    return null;
+  }
+  return hit.timeouts >= TIMEOUTS_TO_REMEMBER ? "timeout" : null;
 }
 function remember(key: string, reason: ConversionFailure): void {
-  if (convertCfg.failureTtlMs <= 0 || reason === "busy") return; // `busy` says nothing about the input
+  if (convertCfg.failureTtlMs <= 0 || reason !== "timeout") return;
+  const timeouts = (failures.get(key)?.timeouts ?? 0) + 1;
   failures.delete(key);
-  failures.set(key, { reason, until: Date.now() + convertCfg.failureTtlMs });
+  failures.set(key, { timeouts, until: Date.now() + convertCfg.failureTtlMs });
   while (failures.size > FAILURES_MAX) failures.delete(failures.keys().next().value!);
 }
 export function forgetConversionFailures(): void {
@@ -144,6 +214,7 @@ const timeoutFor = (chars: number): number => Math.min(convertCfg.timeoutMaxMs, 
 
 function refusal(c: Complexity): ConversionFailure | null {
   if (c.chars > convertCfg.maxChars) return "too_large";
+  if (c.nodes > convertCfg.maxInputNodes) return "too_many_nodes";
   if (c.delimiterRuns > convertCfg.maxDelimiters || c.quoteDepth > convertCfg.maxQuoteDepth) return "too_complex";
   return null;
 }
@@ -168,10 +239,13 @@ export function isCheapContent(content: string, markdown: boolean): boolean {
   return cheap(complexityOf(content, markdown), markdown);
 }
 
-async function offThread<T>(message: unknown, chars: number): Promise<T> {
+function offThread<T>(message: unknown, chars: number, opts: ConvertOptions | undefined): Promise<T> {
+  return withActorSlot(opts?.actor, () => runInWorker<T>(message, chars, opts?.lane ?? "default"));
+}
+async function runInWorker<T>(message: unknown, chars: number, lane: "store" | "default"): Promise<T> {
   conversionStats.worker++;
   try {
-    const value = await worker().run<T>(message, timeoutFor(chars));
+    const value = await worker(lane).run<T>(message, timeoutFor(chars), [], lane === "store");
     armIdleStop();
     return value;
   } catch (e) {
@@ -190,7 +264,7 @@ async function offThread<T>(message: unknown, chars: number): Promise<T> {
 }
 
 /** One text-input conversion: pre-check → remembered failure → inline or worker. */
-async function convertText<T>(op: string, text: string, markdown: boolean, inline: () => T, message: unknown): Promise<T> {
+async function convertText<T>(op: string, text: string, markdown: boolean, inline: () => T, message: unknown, opts?: ConvertOptions): Promise<T> {
   const c = complexityOf(text, markdown);
   const refused = refusal(c);
   if (refused) {
@@ -213,7 +287,7 @@ async function convertText<T>(op: string, text: string, markdown: boolean, inlin
     throw new ConversionError(known);
   }
   try {
-    return await offThread<T>(message, c.chars);
+    return await offThread<T>(message, c.chars, opts);
   } catch (e) {
     if (e instanceof ConversionError) remember(key, e.reason);
     throw e;
@@ -225,34 +299,39 @@ async function convertText<T>(op: string, text: string, markdown: boolean, inlin
 const usesMarkdown = (content: string): boolean => !core.isStoredHtml(content);
 
 /** Markdown → HTML (marked defaults; NOT sanitised — collab's seed input, never served as-is). */
-export function markdownToHtml(md: string): Promise<string> {
-  return convertText("md-html", md, true, () => core.markdownToHtmlSync(md), { op: "md-html", content: md });
+export function markdownToHtml(md: string, opts?: ConvertOptions): Promise<string> {
+  return convertText("md-html", md, true, () => core.markdownToHtmlSync(md), { op: "md-html", content: md }, opts);
 }
 
 /** HTML → Markdown (for an agent reading a document note). */
-export function htmlToMarkdown(html: string): Promise<string> {
-  return convertText("html-md", html, false, () => core.htmlToMarkdownSync(html), { op: "html-md", html });
+export function htmlToMarkdown(html: string, opts?: ConvertOptions): Promise<string> {
+  return convertText("html-md", html, false, () => core.htmlToMarkdownSync(html), { op: "html-md", html }, opts);
+}
+
+/** HTML → Markdown for blocks appended to a Markdown page: Prism-only blocks stay as HTML blocks. */
+export function blocksHtmlToMarkdown(html: string, opts?: ConvertOptions): Promise<string> {
+  return convertText("html-md-blocks", html, false, () => core.blocksHtmlToMarkdownSync(html), { op: "html-md", html, flavor: "blocks" }, opts);
 }
 
 /** A note body (stored HTML or Markdown) → ProseMirror JSON of the shared schema. */
-export function contentToDocJson(content: string): Promise<DocJson> {
+export function contentToDocJson(content: string, opts?: ConvertOptions): Promise<DocJson> {
   const src = content ?? "";
-  return convertText("doc-json", src, usesMarkdown(src), () => core.contentToDocJsonSync(src), { op: "doc-json", content: src, markdown: true });
+  return convertText("doc-json", src, usesMarkdown(src), () => core.contentToDocJsonSync(src), { op: "doc-json", content: src, markdown: true }, opts);
 }
 
 /** HTML → ProseMirror JSON with no Markdown step. */
-export function htmlToDocJson(html: string): Promise<DocJson> {
-  return convertText("html-json", html, false, () => core.htmlToDocJsonSync(html), { op: "doc-json", content: html, markdown: false });
+export function htmlToDocJson(html: string, opts?: ConvertOptions): Promise<DocJson> {
+  return convertText("html-json", html, false, () => core.htmlToDocJsonSync(html), { op: "doc-json", content: html, markdown: false }, opts);
 }
 
 /** A note body → the encoded state of a fresh Y.Doc (the first-ever seed of a live document). */
-export function contentToSeed(content: string): Promise<Uint8Array> {
+export function contentToSeed(content: string, opts?: ConvertOptions): Promise<Uint8Array> {
   const src = content ?? "";
-  return convertText("doc-seed", src, usesMarkdown(src), () => core.contentToSeedSync(src), { op: "doc-seed", content: src });
+  return convertText("doc-seed", src, usesMarkdown(src), () => core.contentToSeedSync(src), { op: "doc-seed", content: src }, opts);
 }
 
 /** ProseMirror JSON → the HTML a collab store writes. */
-export async function docJsonToHtml(json: unknown): Promise<string> {
+export async function docJsonToHtml(json: unknown, opts?: ConvertOptions): Promise<string> {
   const w = docJsonWeight(json, convertCfg.inlineMaxNodes);
   if (w.complete && w.depth <= convertCfg.inlineMaxDepth) {
     conversionStats.inline++;
@@ -267,10 +346,10 @@ export async function docJsonToHtml(json: unknown): Promise<string> {
   // Far beyond anything a 2 MB note can hold: not worth a structured clone.
   if (full.chars > convertCfg.maxChars * 2 || full.nodes > convertCfg.maxNodes) {
     conversionStats.refused++;
-    throw new ConversionError("too_large");
+    throw new ConversionError(full.nodes > convertCfg.maxNodes ? "too_many_nodes" : "too_large");
   }
   // The deadline scales with the output: text plus ~40 bytes of markup per node.
-  return offThread<string>({ op: "doc-html", json }, full.chars + full.nodes * 40);
+  return offThread<string>({ op: "doc-html", json }, full.chars + full.nodes * 40, opts);
 }
 
 // ── bounded synchronous forms ───────────────────────────────────────────────

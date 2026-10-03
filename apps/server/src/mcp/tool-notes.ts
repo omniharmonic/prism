@@ -478,7 +478,7 @@ export const noteResource: PrismResource = {
     let unconverted: string | null = null;
     if (isDoc && looksLikeHtml(body)) {
       try {
-        text = await htmlToMarkdown(body);
+        text = await htmlToMarkdown(body, { actor: `user:${ctx.principal.actor.email.toLowerCase()}` });
       } catch (e) {
         if (!(e instanceof ConversionError)) throw e;
         // Deterministic fallback: the stored body as it is, and a note saying so.

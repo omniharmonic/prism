@@ -28,9 +28,9 @@ import { Hono, type Context } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { createHash } from "node:crypto";
 import * as Y from "yjs";
-import TurndownService from "turndown";
 import { Fragment } from "@tiptap/pm/model";
 import { yDocToProsemirrorJSON, updateYFragment } from "@tiptap/y-tiptap";
+import { ConversionError, blocksHtmlToMarkdown, contentToSeed, docJsonToHtml, type ConvertOptions } from "../convert/service";
 import { isLocked, isTrashed, systemNoteReason } from "@prism/core/pages";
 import { db, resolveVaultEntry } from "../db";
 import type { VaultEntry } from "../config";
@@ -41,7 +41,7 @@ import { treeUpsertNote, warmPageAnchors } from "../tree";
 import { roleAtLeast, roleFloor } from "../roles";
 import { csrfRefusal } from "./actions";
 import { consumeRateLimit } from "../middleware/ratelimit";
-import { FIELD, collabSchema, contentToYUpdate, docNameFor, hocuspocus, isDocLive, isNoteId, noteCollabWriter, noteKind, yDocToHtml } from "../collab";
+import { CollabBusyError, DocumentTooComplexError, FIELD, collabSchema, docNameFor, ensureRenderedSize, hocuspocus, isDocBlocked, isDocLive, isNoteId, noteCollabWriter, noteKind, renderedSizeOf } from "../collab";
 import { writerStamp } from "../sharing";
 import "../block-append-store";
 
@@ -65,27 +65,38 @@ const ref = (n: Pick<Note, "id" | "tags" | "metadata"> & { path?: string | null 
 const entryFor = (c: Context, a: Actor): VaultEntry => (isAdmin(a) ? resolveVaultEntry(c.req.header("x-prism-vault")) : resolveVaultEntry(a.vaultId));
 
 const looksLikeHtml = (s: string) => /^\s*<[a-z][a-z0-9-]*[\s>/]/i.test(s);
-const turndown = new TurndownService({ headingStyle: "atx", codeBlockStyle: "fenced", bulletListMarker: "-" });
-// Prism blocks Markdown cannot say (callouts, files, embeds, sub-page rows, databases, toggles, columns)
-// stay as HTML blocks — valid in Markdown, and exactly what the editor parses back.
-turndown.keep(((node: { nodeName: string; getAttribute(name: string): string | null }) =>
-  (node.nodeName === "DIV" && (!!node.getAttribute("data-type") || !!node.getAttribute("data-prism-database"))) || node.nodeName === "DETAILS") as never);
+// Every conversion here goes through the conversion service (worker thread + wall
+// clock; inline only for small input) — never a parser on this thread. It throws
+// ConversionError when the blocks cannot be converted in budget.
 
 /** Parse through the shared schema: canonical HTML + the document's blocks. Null when nothing valid is left. */
-export function canonicalBlocks(html: string): { html: string; json: unknown[] } | null {
+export async function canonicalBlocks(html: string, opts?: ConvertOptions): Promise<{ html: string; json: unknown[] } | null> {
   const tmp = new Y.Doc();
-  Y.applyUpdate(tmp, contentToYUpdate(html));
+  Y.applyUpdate(tmp, await contentToSeed(html, opts));
   const json = yDocToProsemirrorJSON(tmp, FIELD) as { content?: unknown[] };
-  const out = yDocToHtml(tmp);
+  tmp.destroy();
+  const out = await docJsonToHtml(json, opts);
   if (!json.content?.length || out === "<p></p>") return null;
   return { html: out, json: json.content };
 }
 
-/** The target body with the blocks appended, in the body's own format. */
-export function appendToBody(body: string, blocksHtml: string): string {
+/**
+ * The target body with the blocks appended, in the body's own format. A
+ * Markdown body gets the blocks as Markdown (Prism-only blocks — callouts, files,
+ * embeds, sub-page rows, databases, toggles, columns — stay as HTML blocks: valid
+ * in Markdown, and exactly what the editor parses back).
+ */
+export async function appendToBody(body: string, blocksHtml: string, opts?: ConvertOptions): Promise<string> {
   if (!body.trim()) return blocksHtml;
   if (looksLikeHtml(body)) return body.replace(/\s+$/, "") + blocksHtml;
-  return `${body.replace(/\s+$/, "")}\n\n${turndown.turndown(blocksHtml).trim()}\n`;
+  return `${body.replace(/\s+$/, "")}\n\n${(await blocksHtmlToMarkdown(blocksHtml, opts)).trim()}\n`;
+}
+
+/** A conversion that did not happen, as this route's answer. */
+function conversionRefusal(e: ConversionError): { status: number; body: Record<string, unknown> } {
+  return e.reason === "busy"
+    ? { status: 503, body: { error: "busy", retry: true } }
+    : { status: 413, body: { error: "too_complex", detail: "those blocks are too large or complex to move" } };
 }
 
 /** Append blocks at the end of a live document: one Yjs transaction that only CREATES elements. */
@@ -159,7 +170,14 @@ blocksApi.post("/notes/:id/blocks/append", bodyLimit({ maxSize: MAX_HTML + 4096,
   }
 
   const run = (async (): Promise<{ status: number; body: Record<string, unknown> }> => {
-    const blocks = canonicalBlocks(html);
+    const who: ConvertOptions = { actor: `user:${actorKey}` };
+    let blocks: Awaited<ReturnType<typeof canonicalBlocks>>;
+    try {
+      blocks = await canonicalBlocks(html, who);
+    } catch (e) {
+      if (e instanceof ConversionError) return conversionRefusal(e);
+      throw e;
+    }
     if (!blocks) return { status: 400, body: { error: "invalid_request", detail: "nothing to append" } };
     const record = (live: boolean) => {
       db.prepare("INSERT OR IGNORE INTO block_append_receipts (vault_id, note_id, actor, request_id, body_hash, live, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)")
@@ -168,10 +186,26 @@ blocksApi.post("/notes/:id/blocks/append", bodyLimit({ maxSize: MAX_HTML + 4096,
     };
     const docName = docNameFor(entry.id, note.id);
     if (isDocLive(entry.id, note.id)) {
-      const conn = await hocuspocus.openDirectConnection(docName, { human: actor.email });
+      let conn: Awaited<ReturnType<typeof hocuspocus.openDirectConnection>>;
+      try {
+        conn = await hocuspocus.openDirectConnection(docName, { human: actor.email });
+      } catch (e) {
+        if (e instanceof DocumentTooComplexError) return { status: 413, body: { error: "too_complex", detail: "that page is too large or complex for the live editor" } };
+        if (e instanceof CollabBusyError) return { status: 503, body: { error: "busy", retry: true } };
+        throw e;
+      }
       try {
         if (!conn.document) return { status: 502, body: { error: "upstream_error" } };
-        if (Buffer.byteLength(yDocToHtml(conn.document)) + Buffer.byteLength(blocks.html) > MAX_NOTE) return { status: 413, body: { error: "too_large", detail: "that page is full" } };
+        if (isDocBlocked(docName)) return { status: 409, body: { error: "conflict", retry: true } };
+        // The page's rendered size: the last store's figure, else measured once
+        // OFF this thread (a live page of thousands of paragraphs is not rendered here).
+        try {
+          await ensureRenderedSize(conn.document, who);
+        } catch (e) {
+          if (e instanceof ConversionError) return e.reason === "busy" ? { status: 503, body: { error: "busy", retry: true } } : { status: 413, body: { error: "too_large", detail: "that page is full" } };
+          throw e;
+        }
+        if ((renderedSizeOf(conn.document) ?? 0) + Buffer.byteLength(blocks.html) > MAX_NOTE) return { status: 413, body: { error: "too_large", detail: "that page is full" } };
         // Synchronous from here: the receipt and the Yjs change land in the same tick.
         appendToLiveDoc(conn.document, blocks.json, `human:${actor.email}`);
         noteCollabWriter(docName, actor.email, "edit");
@@ -184,7 +218,13 @@ blocksApi.post("/notes/:id/blocks/append", bodyLimit({ maxSize: MAX_HTML + 4096,
     let current = note;
     for (let attempt = 0; attempt < 2; attempt++) {
       if (!current.updatedAt) return { status: 409, body: { error: "conflict" } };
-      const next = appendToBody(current.content ?? "", blocks.html);
+      let next: string;
+      try {
+        next = await appendToBody(current.content ?? "", blocks.html, who);
+      } catch (e) {
+        if (e instanceof ConversionError) return conversionRefusal(e);
+        throw e;
+      }
       if (Buffer.byteLength(next) > MAX_NOTE) return { status: 413, body: { error: "too_large", detail: "that page is full" } };
       // The page may have been opened since the check above: a body write under a
       // live document would be folded over what is being typed.

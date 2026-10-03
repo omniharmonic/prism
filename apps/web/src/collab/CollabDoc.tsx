@@ -23,6 +23,7 @@ function vaultDocName(noteId: string): string {
 import { updateNote as restUpdateNote, getNote as restGetNote, hasPendingWrites, uploadAttachment, unfurl as restUnfurl } from "../parachute/rest";
 import { markUnsynced, clearUnsynced, setOpenHere, unsyncedDocs } from "./unsynced";
 import { reloadForUpdate } from "../offline/reloadForUpdate";
+import { PlainTextPage } from "./PlainTextPage";
 import { reportSyncSource, BacklinksPill, EmptyPageStarters } from "@prism/core";
 
 /** Track a CSS breakpoint without per-render layout thrash. */
@@ -141,6 +142,11 @@ function ScopedCollabDoc({
   const [connectionError, setConnectionError] = useState(false);
   const [denied, setDenied] = useState(false);
   const [updateRequired, setUpdateRequired] = useState(false);
+  // The server has no live document for this page (its content cannot be converted
+  // for the live editor): the stored page is shown as plain text instead.
+  const [tooComplex, setTooComplex] = useState<null | "edit" | "view">(null);
+  // Bumped to open the document afresh (new local document, new socket) without a page reload.
+  const [attempt, setAttempt] = useState(0);
   const [checkingAccess, setCheckingAccess] = useState(false);
   const [connected, setConnected] = useState(false);
   const [online, setOnline] = useState(() => typeof navigator === "undefined" || navigator.onLine);
@@ -371,6 +377,9 @@ function ScopedCollabDoc({
           offlineOpen = true;
         }
         if (!(await stillCurrent())) return;
+        // The level the gateway reported for this page (kept for the plain-text fallback,
+        // which outlives the socket's own level state).
+        let noteLevel: string = note._level ?? "own";
         setLevel(note._level ?? "own");
         setPath(note.path ?? null);
         if (typeof note.metadata?.contentFont === "string") setContentFont(note.metadata.contentFont as ContentFont);
@@ -422,6 +431,7 @@ function ScopedCollabDoc({
             }
             const fresh = await r.json();
             if (!(await stillCurrent()) || request !== accessCheck) return false;
+            noteLevel = fresh._level ?? "own";
             setLevel(fresh._level ?? "own");
             setDenied(false);
             setConnectionError(false);
@@ -439,6 +449,11 @@ function ScopedCollabDoc({
             if (!current()) return;
             setLevel(null);
             if (reason?.startsWith("update_required")) { setUpdateRequired(true); p?.disconnect(); }
+            // No live document exists for this page (nothing was synced, so nothing of it is
+            // in this device's local copy): show the stored page as plain text.
+            else if (reason?.startsWith("too_complex")) { setTooComplex(noteLevel === "edit" || noteLevel === "own" ? "edit" : "view"); p?.disconnect(); }
+            // The server could not take the open right now — nothing is wrong with the page or the access.
+            else if (reason?.startsWith("busy")) { setConnectionError(true); p?.disconnect(); }
             else setDenied(true);
           },
           onAuthenticated: ({ scope }) => {
@@ -512,7 +527,7 @@ function ScopedCollabDoc({
       persistence?.close();
       doc.destroy();
     };
-  }, [noteId]);
+  }, [noteId, attempt]);
 
 
   // The local collaborator identity (cursor + comment/suggestion authorship).
@@ -535,6 +550,17 @@ function ScopedCollabDoc({
         </div>
       </div>
     );
+  }
+
+  if (tooComplex) {
+    const openLive = () => {
+      setTooComplex(null);
+      setConnection(null);
+      setSynced(false);
+      setConnected(false);
+      setAttempt((n) => n + 1);
+    };
+    return <PlainTextPage noteId={noteId} canEdit={tooComplex === "edit"} embedded={embedded} onOpenLive={openLive} />;
   }
 
   if (denied) {
