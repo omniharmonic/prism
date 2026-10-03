@@ -88,7 +88,7 @@ test("every slash block inserts the node it names and the stored HTML keeps it",
   const html = await editorHtml(page);
   expect(html).toContain("<h1>Big title</h1>");
   expect(html).toMatch(/<div data-emoji="💡" data-type="callout"><p>Mind the gap<\/p><\/div>/);
-  expect(html).toMatch(/<details open="" data-type="toggle"><summary>Show details<\/summary><p>Hidden body<\/p><\/details>/);
+  expect(html).toMatch(/<details data-type="toggle"><summary>Show details<\/summary><p>Hidden body<\/p><\/details>/);
   expect(html).toContain("<blockquote><p>Quoted</p></blockquote>");
   expect(html).toMatch(/data-type="taskItem"[^>]*>.*A task/);
   expect(html).toContain("<hr>");
@@ -101,7 +101,7 @@ test("every slash block inserts the node it names and the stored HTML keeps it",
   if (SHOTS) await page.screenshot({ path: `${SHOTS}/slash-blocks-1440.png`, fullPage: true });
 });
 
-test("a collapsed toggle hides its body and the open state is stored", async ({ page }) => {
+test("collapsing a toggle hides its body locally and never writes to the document", async ({ page }) => {
   await newLine(page);
   await slash(page, "toggle");
   await page.keyboard.press("Enter");
@@ -109,9 +109,14 @@ test("a collapsed toggle hides its body and the open state is stored", async ({ 
   await page.keyboard.press("ArrowDown");
   await page.keyboard.type("Secret body");
   await expect(page.getByText("Secret body")).toBeVisible();
+  const before = await editorHtml(page);
+  const txs = await page.evaluate(() => { const log: number[] = []; (document.querySelector(".tiptap") as any).editor.on("transaction", ({ transaction }: any) => { if (transaction.docChanged) log.push(1); }); (window as any).toggleTx = log; });
+  void txs;
   await page.getByRole("button", { name: "Collapse toggle" }).click();
   await expect(page.getByText("Secret body")).toBeHidden();
-  expect(await editorHtml(page)).toMatch(/<details data-type="toggle"><summary>Summary line<\/summary><p>Secret body<\/p><\/details>/);
+  expect(await editorHtml(page)).toBe(before);
+  expect(await page.evaluate(() => (window as any).toggleTx.length)).toBe(0);
+  expect(before).toMatch(/<details data-type="toggle"><summary>Summary line<\/summary><p>Secret body<\/p><\/details>/);
   await page.getByRole("button", { name: "Expand toggle" }).click();
   await expect(page.getByText("Secret body")).toBeVisible();
 });

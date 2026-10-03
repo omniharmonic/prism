@@ -13,7 +13,7 @@
  * (see PrismHost). Every server call in apps/web and @prism/core goes through
  * `serverFetch` / `streamServerSSE` / `collabWsUrl` here.
  */
-import { streamSSE, setServerFetch as installCoreFetch, setMapProxyFetch, type StreamSSEOptions } from "@prism/core";
+import { streamSSE, setServerFetch as installCoreFetch, setMapProxyFetch, COLLAB_SCHEMA_VERSION, type StreamSSEOptions } from "@prism/core";
 import { clearReadCache } from "./offline/readCache";
 
 /** The contract a native shell implements and injects BEFORE the app boots. */
@@ -113,10 +113,13 @@ function isOurServer(url: string): boolean {
  */
 export async function serverFetch(input: string, init: RequestInit = {}): Promise<Response> {
   const url = serverUrl(input);
-  if (!isNative) {
-    return fetch(url, { ...init, credentials: init.credentials ?? "include" });
-  }
   const headers = new Headers(init.headers);
+  // Editor-schema handshake (C1): the server refuses content writes from an
+  // editor older than the stored note's schema. Only to our own server.
+  if ((isOurServer(url) || url.startsWith(`${location.origin}/`)) && !headers.has("X-Prism-Editor-Schema")) headers.set("X-Prism-Editor-Schema", String(COLLAB_SCHEMA_VERSION));
+  if (!isNative) {
+    return fetch(url, { ...init, headers, credentials: init.credentials ?? "include" });
+  }
   if (!headers.has("Authorization") && isOurServer(url)) {
     const token = await getDeviceToken();
     if (token) headers.set("Authorization", `Bearer ${token}`);

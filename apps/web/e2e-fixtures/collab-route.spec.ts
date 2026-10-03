@@ -12,7 +12,7 @@ for (const [target, capability] of [['Projects/Prism/Shared ideas', ''], ['share
   await server.listen();
   try {
     page.on('pageerror', error => errors.push(error.message));
-    await page.routeWebSocket(/\/collab$/, route => {
+    await page.routeWebSocket(/\/collab(\?|$)/, route => {
       const socket = new WebSocket(server.webSocketURL); sockets.push(socket);
       const pending: (string | Buffer)[] = [];
       route.onMessage(message => socket.readyState === WebSocket.OPEN ? socket.send(message) : pending.push(message));
@@ -38,7 +38,7 @@ for (const [target, capability] of [['Projects/Prism/Shared ideas', ''], ['share
 
 test('a denied alias never opens a socket or exposes an old title and can retry', async ({ page }) => {
   let reads = 0; let sockets = 0;
-  await page.routeWebSocket(/\/collab$/, route => { sockets++; route.close(); });
+  await page.routeWebSocket(/\/collab(\?|$)/, route => { sockets++; route.close(); });
   await page.route('**/api/notes/**', route => { reads++; return route.fulfill({ status: 403, json: { error: 'private fixture diagnostics' } }); });
   await page.goto('/e2e-fixtures/collab-route.html');
   await expect(page.getByRole('alert')).toContainText('This shared document could not be opened');

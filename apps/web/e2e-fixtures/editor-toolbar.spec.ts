@@ -118,7 +118,7 @@ test("live editor: the toolbar carries Comment, which anchors a thread on the se
   await server.listen();
   const sockets: WebSocket[] = [];
   try {
-    await page.routeWebSocket(/\/collab$/, (route) => {
+    await page.routeWebSocket(/\/collab(\?|$)/, (route) => {
       const socket = new WebSocket(server.webSocketURL); sockets.push(socket);
       const pending: (string | Buffer)[] = [];
       route.onMessage((m) => (socket.readyState === WebSocket.OPEN ? socket.send(m) : pending.push(m)));

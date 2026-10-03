@@ -20,6 +20,7 @@
  *    notes) and PARITY of collabAccess with the socket's resolveLevel;
  *  - a create path conflict reads "a note already exists at <path>".
  */
+import { COLLAB_SCHEMA_VERSION } from "@prism/core/editor-schema";
 import { test, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
@@ -101,7 +102,7 @@ beforeEach(async () => {
   });
   attachCollab(server);
   await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
-  wsUrl = `ws://127.0.0.1:${(server.address() as AddressInfo).port}/collab`;
+  wsUrl = `ws://127.0.0.1:${(server.address() as AddressInfo).port}/collab?schema=${COLLAB_SCHEMA_VERSION}`;
 });
 
 afterEach(async () => {

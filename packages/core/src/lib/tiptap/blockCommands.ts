@@ -221,7 +221,7 @@ function build(schema: Schema, kind: TurnIntoKind, paras: PMNode[], color: Block
       return [n.callout.create(colored(), paras)];
     case "toggle": {
       const [first, ...rest] = paras;
-      return [n.toggle.create(colored({ open: true }), [n.toggleSummary.create(null, first.content), ...(rest.length ? rest : [n.paragraph.create()])])];
+      return [n.toggle.create(colored(), [n.toggleSummary.create(null, first.content), ...(rest.length ? rest : [n.paragraph.create()])])];
     }
   }
 }

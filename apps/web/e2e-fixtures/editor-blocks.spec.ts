@@ -180,7 +180,7 @@ test("live collaborative editor: a block move reaches the other client and the s
   const open = async () => {
     const context = await browser.newContext({ viewport: { width: 1280, height: 860 } });
     const page = await context.newPage();
-    await page.routeWebSocket(/\/collab$/, (route) => {
+    await page.routeWebSocket(/\/collab(\?|$)/, (route) => {
       const socket = new WebSocket(server.webSocketURL); sockets.push(socket);
       const pending: (string | Buffer)[] = [];
       route.onMessage((m) => (socket.readyState === WebSocket.OPEN ? socket.send(m) : pending.push(m)));

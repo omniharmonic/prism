@@ -13,7 +13,7 @@ import { Table, TableRow, TableCell, TableHeader } from "@tiptap/extension-table
  * Every node serialises to plain, readable HTML that a non-Prism reader can
  * still make sense of:
  *   callout  → <div data-type="callout" data-emoji="💡">…blocks…</div>
- *   toggle   → <details data-type="toggle" open><summary>…</summary>…blocks…</details>
+ *   toggle   → <details data-type="toggle"><summary>…</summary>…blocks…</details> (open/closed is view state)
  *   columns  → <div data-type="columns" data-count="2"><div data-type="column">…</div>…</div>
  *   colours  → data-block-color="blue" on a block, <span data-text-color="red"> inline
  *
@@ -156,15 +156,10 @@ export const Toggle = Node.create({
   group: "block",
   content: "toggleSummary block+",
   defining: true,
-  addAttributes() {
-    return {
-      open: {
-        default: true,
-        parseHTML: (el) => (el as unknown as AttrSource).hasAttribute("open"),
-        renderHTML: (attrs) => (attrs.open ? { open: "" } : {}),
-      },
-    };
-  },
+  // Open/closed is per-viewer VIEW state, never part of the document: a click is
+  // not an edit (no history version, no untracked change while suggesting, no
+  // flapping between collaborators). Stored HTML has no `open`, so other readers
+  // of the HTML see a closed <details>; the editor starts every toggle open.
   parseHTML() {
     // Any <details> is a toggle; one without a <summary> gets an empty summary
     // from the content expression's fill rather than losing its body.
@@ -174,9 +169,9 @@ export const Toggle = Node.create({
     return ["details", mergeAttributes(HTMLAttributes, { "data-type": "toggle" }), 0];
   },
   addNodeView() {
-    return ({ node, getPos, editor }) => {
+    return ({ node, editor }) => {
       let current = node;
-      let localOpen: boolean | null = null; // read-only viewers toggle locally
+      let open = true;
       const doc: DomNode = (editor.view.dom as DomNode).ownerDocument;
       const dom: DomNode = doc.createElement("div");
       dom.className = "prism-toggle";
@@ -189,7 +184,6 @@ export const Toggle = Node.create({
       body.className = "prism-toggle-body";
       dom.append(arrow, body);
       const paint = () => {
-        const open = localOpen ?? !!current.attrs.open;
         dom.setAttribute("data-open", String(open));
         arrow.setAttribute("aria-expanded", String(open));
         arrow.setAttribute("aria-label", open ? "Collapse toggle" : "Expand toggle");
@@ -200,15 +194,8 @@ export const Toggle = Node.create({
       arrow.addEventListener("mousedown", (event: DomNode) => event.preventDefault());
       arrow.addEventListener("click", (event: DomNode) => {
         event.preventDefault();
-        const pos = typeof getPos === "function" ? getPos() : undefined;
-        if (!editor.isEditable || typeof pos !== "number") {
-          localOpen = !(localOpen ?? !!current.attrs.open);
-          paint();
-          return;
-        }
-        editor.view.dispatch(
-          editor.view.state.tr.setNodeMarkup(pos, undefined, { ...current.attrs, open: !current.attrs.open }),
-        );
+        open = !open;
+        paint();
       });
       paint();
       return {
@@ -221,7 +208,7 @@ export const Toggle = Node.create({
           return true;
         },
         ignoreMutation(mutation) {
-          return mutation.type === "attributes" && mutation.target === dom;
+          return mutation.type === "attributes" && (mutation.target === dom || mutation.target === arrow);
         },
       };
     };

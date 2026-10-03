@@ -18,6 +18,7 @@ export { setMapProxyFetch, mapProxyActive, proxiedStyle, protocolUrlToPath, loca
 
 // Collaborative editor (CRDT) — host shells supply the Yjs doc + provider.
 export { CollabEditor } from "./components/renderers/CollabEditor";
+export { COLLAB_SCHEMA_VERSION } from "./editor/collabSchema";
 export type { CollabUser, AwarenessProvider } from "./components/renderers/CollabEditor";
 export type { Editor } from "@tiptap/react";
 export { CollabCodeEditor, CollabSpreadsheet, CollabCanvas } from "./components/renderers/LazyCollabEditors";

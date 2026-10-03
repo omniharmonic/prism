@@ -18,6 +18,7 @@
  *  - the kill switch (COLLAB_SUGGEST_ENFORCED=false) restores the old writable
  *    suggest socket.
  */
+import { COLLAB_SCHEMA_VERSION } from "@prism/core/editor-schema";
 import { test, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { createServer, type Server } from "node:http";
@@ -56,7 +57,7 @@ beforeEach(async () => {
   });
   attachCollab(server);
   await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
-  wsUrl = `ws://127.0.0.1:${(server.address() as AddressInfo).port}/collab`;
+  wsUrl = `ws://127.0.0.1:${(server.address() as AddressInfo).port}/collab?schema=${COLLAB_SCHEMA_VERSION}`;
   ensureUser(SUGGESTER);
   grantUser(SUGGESTER, "tag", "team", "suggest");
 });

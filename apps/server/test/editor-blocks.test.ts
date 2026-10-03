@@ -34,12 +34,11 @@ test("callout without an emoji gets the default and an empty callout stays a blo
   assert.match(out, /data-emoji="💡"/);
 });
 
-test("toggle keeps its summary, body and open state", () => {
-  const open = stable('<details data-type="toggle" open><summary>Read <em>more</em></summary><p>Hidden body</p><p>Second</p></details>');
-  assert.match(open, /<details open="" data-type="toggle"><summary>Read <em>more<\/em><\/summary><p>Hidden body<\/p><p>Second<\/p><\/details>/);
+test("toggle keeps its summary and body; open/closed is view state and never stored", () => {
+  const fromOpen = stable('<details data-type="toggle" open><summary>Read <em>more</em></summary><p>Hidden body</p><p>Second</p></details>');
+  assert.match(fromOpen, /<details data-type="toggle"><summary>Read <em>more<\/em><\/summary><p>Hidden body<\/p><p>Second<\/p><\/details>/);
   const closed = stable('<details data-type="toggle"><summary>Closed</summary><p>Body</p></details>');
-  assert.doesNotMatch(closed, /open=/);
-  assert.match(closed, /<summary>Closed<\/summary><p>Body<\/p>/);
+  assert.equal(closed, '<details data-type="toggle"><summary>Closed</summary><p>Body</p></details>');
 });
 
 test("a plain <details> from elsewhere becomes a toggle instead of losing its body", () => {
@@ -73,7 +72,7 @@ test("block colours survive on paragraphs, headings, lists, quotes, callouts and
     '<p data-block-color="blue">Blue</p><h2 data-block-color="red_background">Bg</h2>' +
     '<ul data-block-color="green"><li><p>g</p></li></ul><blockquote data-block-color="gray"><p>q</p></blockquote>' +
     '<div data-type="callout" data-block-color="yellow_background"><p>c</p></div>' +
-    '<details data-type="toggle" data-block-color="blue_background" open><summary>t</summary><p>b</p></details>' +
+    '<details data-type="toggle" data-block-color="blue_background"><summary>t</summary><p>b</p></details>' +
     '<p data-block-color="javascript:alert(1)">bad</p>',
   );
   for (const v of ["blue", "red_background", "green", "gray", "yellow_background", "blue_background"]) {
@@ -92,7 +91,7 @@ test("inline text colour and background highlight survive; unknown text colours 
 test("nested new blocks (a table and a toggle inside a column inside a callout) round-trip", () => {
   const out = stable(
     '<div data-type="callout" data-emoji="💡"><div data-type="columns"><div data-type="column">' +
-    '<details data-type="toggle" open><summary>S</summary><p>x</p></details></div>' +
+    '<details data-type="toggle"><summary>S</summary><p>x</p></details></div>' +
     '<div data-type="column"><table><tbody><tr><td><p>c</p></td></tr></tbody></table></div></div></div>',
   );
   assert.match(out, /data-type="callout"[\s\S]*data-type="columns"[\s\S]*data-type="toggle"[\s\S]*<table/);

@@ -10,6 +10,21 @@ import { commentMarks } from "./commentMark";
 import { blockSchemaExtensions } from "./blocks";
 
 /**
+ * Version of the shared document schema below, sent by every live editor as the
+ * `schema` query parameter on the collab WebSocket (and as the
+ * `X-Prism-Editor-Schema` header on REST writes). The server refuses a document
+ * socket from an older/unknown version: y-prosemirror DELETES any node or mark
+ * its schema cannot represent, so a stale client would silently destroy newer
+ * content for everyone.
+ *
+ * ANY change to a node, mark or attribute name in `collabExtensions()` MUST bump
+ * this number (apps/server/test/collab-schema-version.test.ts pins the names).
+ *   1 — StarterKit/Link/Highlight/Tasks + suggestion/comment marks (implicit)
+ *   2 — + image, table, callout, toggle, columns, block/text colour
+ */
+export const COLLAB_SCHEMA_VERSION = 2;
+
+/**
  * The document schema shared by the collaborative editor (browser) and the
  * Prism Server's Yjs seeding/persistence (Node). It is the single source of
  * truth for which nodes/marks a collaborative note can contain, so the

@@ -3,6 +3,7 @@ import * as Y from "yjs";
 import { invoke } from "@tauri-apps/api/core";
 import { HocuspocusProvider } from "@hocuspocus/provider";
 import {
+  COLLAB_SCHEMA_VERSION,
   CollabEditor,
   CommentsSidebar,
   CollabCodeEditor,
@@ -109,7 +110,8 @@ export function CollabDocument({ noteId, note }: { noteId: string; note: Note })
       }
       if (cancelled) return;
       p = new HocuspocusProvider({
-        url: cfg.url,
+        // Schema handshake (C1): the server refuses a document socket without it.
+        url: `${cfg.url}${cfg.url.includes("?") ? "&" : "?"}schema=${COLLAB_SCHEMA_VERSION}`,
         name,
         token: cfg.token,
         document: ydoc,

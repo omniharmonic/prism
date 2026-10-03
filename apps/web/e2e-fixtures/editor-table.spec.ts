@@ -87,7 +87,7 @@ test("live editor: tables, callouts, toggles and columns reach the other client 
   const open = async () => {
     const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
     const page = await context.newPage();
-    await page.routeWebSocket(/\/collab$/, (route) => {
+    await page.routeWebSocket(/\/collab(\?|$)/, (route) => {
       const socket = new WebSocket(server.webSocketURL); sockets.push(socket);
       const pending: (string | Buffer)[] = [];
       route.onMessage((m) => (socket.readyState === WebSocket.OPEN ? socket.send(m) : pending.push(m)));
@@ -120,7 +120,7 @@ test("live editor: tables, callouts, toggles and columns reach the other client 
     await expect.poll(() => html(b.page)).toBe(await html(a.page));
     const out = await html(b.page);
     expect(out).toMatch(/data-type="callout"><p>Careful<\/p>/);
-    expect(out).toMatch(/<details open="" data-type="toggle"><summary>More<\/summary>/);
+    expect(out).toMatch(/<details data-type="toggle"><summary>More<\/summary>/);
     expect(out).toMatch(/data-type="columns" data-count="2"><div data-type="column"><p>Left<\/p>/);
     expect(out).toMatch(/<th[^>]*><p>Cell<\/p><\/th>/);
     expect((out.match(/<tr>/g) ?? []).length).toBe(4);

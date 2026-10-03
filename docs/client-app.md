@@ -503,6 +503,22 @@ still run step 8.
 4. Launch `Prism.app`. The desktop keeps all its Tauri commands; nothing on the server needs
    to change (the WP4.3 server additions are additive).
 
+## Editor schema handshake (block editor release)
+
+The block editor (callouts, toggles, columns, block/text colour, and tables/images in the live editor) changed the shared document schema to **`COLLAB_SCHEMA_VERSION = 2`** (`packages/core/src/editor/collabSchema.ts`). A client built before it is dangerous: y-prosemirror deletes every node or mark its schema cannot represent, so an old live editor would silently remove the new blocks (and whole text runs carrying an unknown mark) for everyone, and the server would persist the loss. Two gates stop stale clients:
+
+- **Socket.** Every live editor opens `/collab?schema=2` (web `CollabDoc`, the legacy desktop `DesktopCollabDocument`, the federation bridge). For a DOCUMENT-kind note the server refuses a socket whose `schema` is missing or older, after authorization, with reason `update_required: Prism was updated. Reload or update the app to keep editing.` The client shows **Update required — Reload** (PWA: asks the service worker for the new build and reloads; native: reloads). Code, sheet and canvas sockets are not gated. Direct connections (MCP tools, human collab commands, federation applier) never pass through authentication and are unaffected.
+- **REST.** `serverFetch` sends `X-Prism-Editor-Schema: 2` to the Prism Server. A content `PATCH`/`PUT /api/notes/:id` without it (or older) gets **409 `editor_update_required`**, owner passthrough included, but only when the STORED note already contains v2 content (`data-type="callout|toggle|columns|column"`, `<details`, `data-block-color`, `data-text-color`). Metadata writes, plain notes and notes with only tables/images (the old plain editor already supported them) are unaffected. In-process MCP dispatches (agents) and server workers are exempt. A script that PATCHes content over a v2 note must send the header.
+
+Any future node/mark/attribute change must bump the version; `apps/server/test/collab-schema-gate.test.ts` pins the schema's names and fails otherwise.
+
+### Release order
+
+1. **Server first:** deploy the server with the gate, then `pm2 restart prism-server`. Old clients are refused from this moment, so no stale editor can write v2-incompatible content.
+2. **PWA:** build and deploy `apps/web`. Open tabs get **Update required — Reload**; the reload activates the waiting service worker.
+3. **Prism Client:** rebuild (`npm run tauri build -- --bundles app` in `apps/client`) and reinstall on every Mac. An installed old bundle shows the server's refusal as a denied/failed document until it is replaced.
+4. **Legacy desktop (`Prism.app`):** it talks to the vault directly for plain notes and cannot be gated there. **Do not use it for editing after this release** — opening a note with callouts/toggles/columns/colours in its plain editor and saving drops them. Its live-collab socket is refused unless it is rebuilt from this tree.
+
 ## Known limits (follow-ups)
 
 - **External images and the basemap go through the server** (Client parity C, see "External

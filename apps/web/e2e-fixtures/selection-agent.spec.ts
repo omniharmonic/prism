@@ -145,7 +145,7 @@ test('actual collaborative host hands off selected text and view-only selection 
   await server.listen();
   const sockets: WebSocket[] = [];
   try {
-    await page.routeWebSocket(/\/collab$/, route => {
+    await page.routeWebSocket(/\/collab(\?|$)/, route => {
       const socket = new WebSocket(server.webSocketURL); sockets.push(socket);
       const pending: (string | Buffer)[] = [];
       route.onMessage(message => socket.readyState === WebSocket.OPEN ? socket.send(message) : pending.push(message));

@@ -44,7 +44,7 @@ function shapeBlock(editor: Editor, kind: TurnIntoKind) {
     if (tr) { editor.view.dispatch(tr); editor.commands.focus(); return; }
   }
   const json = kind === "toggle"
-    ? { type: "toggle", attrs: { open: true }, content: [{ type: "toggleSummary" }, { type: "paragraph" }] }
+    ? { type: "toggle", content: [{ type: "toggleSummary" }, { type: "paragraph" }] }
     : { type: "callout", content: [{ type: "paragraph" }] };
   const at = $from.after(1);
   editor.chain().focus().insertContentAt(at, json).setTextSelection(at + 2).run();

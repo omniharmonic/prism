@@ -24,7 +24,7 @@ async function collaborativeFixture(page: Page, kind: "code" | "spreadsheet" | "
   });
   await server.listen();
   const sockets: WebSocket[] = [];
-  await page.routeWebSocket(/\/collab$/, route => {
+  await page.routeWebSocket(/\/collab(\?|$)/, route => {
     const socket = new WebSocket(server.webSocketURL); sockets.push(socket);
     const pending: (string | Buffer)[] = [];
     route.onMessage(message => socket.readyState === WebSocket.OPEN ? socket.send(message) : pending.push(message));

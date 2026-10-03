@@ -3,7 +3,7 @@ import * as Y from "yjs";
 import { HocuspocusProvider } from "@hocuspocus/provider";
 import { persistLocalDocument, localDocumentKey, type LocalSaveState } from "./localDocument";
 import { captureWriteContext, scopeKey } from "../offline/writeScope";
-import { useAgentDocumentSnapshot, CollabEditor, CommentsSidebar, collabAffordances, CollabCodeEditor, CollabSpreadsheet, CollabCanvas, detectCodeLanguage, inferContentType, PageHeader, renamePath, useUIStore, useAgentChatStore, type ContentFont, type Note, type Editor } from "@prism/core";
+import { COLLAB_SCHEMA_VERSION, useAgentDocumentSnapshot, CollabEditor, CommentsSidebar, collabAffordances, CollabCodeEditor, CollabSpreadsheet, CollabCanvas, detectCodeLanguage, inferContentType, PageHeader, renamePath, useUIStore, useAgentChatStore, type ContentFont, type Note, type Editor } from "@prism/core";
 import { MessageSquare, X, Lock } from "lucide-react";
 import { serverFetch, collabWsUrl, collabToken } from "../transport";
 import { apiBase, agentScope, getCapabilityToken, getActiveVault, getMe, fetchMe, contextHeaders } from "../config";
@@ -17,6 +17,7 @@ function vaultDocName(noteId: string): string {
   return v && v !== "primary" ? `${v}::${noteId}` : noteId;
 }
 import { updateNote as restUpdateNote, hasPendingWrites } from "../parachute/rest";
+import { reloadForUpdate } from "../offline/reloadForUpdate";
 
 /** Track a CSS breakpoint without per-render layout thrash. */
 function useIsNarrow(): boolean {
@@ -55,8 +56,9 @@ function identityFrom(me: { name?: string | null; email?: string; avatar?: strin
   return { name, color: colorFor(me?.email || name), avatar: me?.avatar ?? null };
 }
 
+/** The server refuses a document socket without the current schema version (C1). */
 function collabUrl(): string {
-  return collabWsUrl();
+  return `${collabWsUrl()}?schema=${COLLAB_SCHEMA_VERSION}`;
 }
 
 interface PresenceUser {
@@ -129,6 +131,7 @@ function ScopedCollabDoc({
   const [localSave, setLocalSave] = useState<LocalSaveState>("saving");
   const [connectionError, setConnectionError] = useState(false);
   const [denied, setDenied] = useState(false);
+  const [updateRequired, setUpdateRequired] = useState(false);
   const [checkingAccess, setCheckingAccess] = useState(false);
   const [connected, setConnected] = useState(false);
   const [synced, setSynced] = useState(false);
@@ -298,7 +301,12 @@ function ScopedCollabDoc({
           url: collabUrl(), name, token: collabToken(capToken), document: doc,
           onStatus: ({ status }) => { if (current()) setConnected(status === "connected"); },
           onSynced: () => { if (current()) { setSynced(true); setConnected(true); } },
-          onAuthenticationFailed: () => { if (current()) { setLevel(null); setDenied(true); } },
+          onAuthenticationFailed: ({ reason }) => {
+            if (!current()) return;
+            setLevel(null);
+            if (reason?.startsWith("update_required")) { setUpdateRequired(true); p?.disconnect(); }
+            else setDenied(true);
+          },
           onAuthenticated: () => {
             void refreshAccess().then(ok => { if (ok && current()) { setCheckingAccess(false); } });
           },
@@ -356,6 +364,22 @@ function ScopedCollabDoc({
   // authorship is correct from the first keystroke. Was hardcoded "You" for
   // everyone — the bug that collapsed all collaborators into one identity.
   const [user, setUser] = useState<PresenceUser>(() => identityFrom(getMe(), getCapabilityToken()));
+
+  if (updateRequired) {
+    return (
+      <div role="alert" style={{ minHeight: embedded ? "40vh" : "100dvh", display: "flex", alignItems: "center", justifyContent: "center", padding: 24, textAlign: "center", background: "var(--bg-base)" }}>
+        <div style={{ maxWidth: 440 }}>
+          <h1 style={{ fontSize: "var(--text-2xl)", fontWeight: 700, margin: 0, color: "var(--text-primary)", letterSpacing: "-0.02em" }}>Update required</h1>
+          <p style={{ fontSize: "var(--text-sm)", color: "var(--text-secondary)", marginTop: 10, lineHeight: 1.6 }}>
+            Prism was updated. Reload or update the app to keep editing. Nothing you saved is lost.
+          </p>
+          <button type="button" onClick={() => void reloadForUpdate()} style={{ marginTop: 22, height: 36, padding: "0 18px", borderRadius: "var(--radius-md)", border: "none", background: "var(--color-accent)", color: "#fff", fontSize: "var(--text-base)", fontWeight: 550, cursor: "pointer" }}>
+            Reload
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   if (denied) {
     return (

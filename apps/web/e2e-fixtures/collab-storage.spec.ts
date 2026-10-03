@@ -67,7 +67,7 @@ test("real collaborative editor survives StrictMode and reload with scoped durab
   await server.listen();
   const sockets: WebSocket[] = [];
   try {
-    await page.routeWebSocket(/\/collab$/, route => {
+    await page.routeWebSocket(/\/collab(\?|$)/, route => {
       const socket = new WebSocket(server.webSocketURL);
       sockets.push(socket);
       const pending: (string | Buffer)[] = [];
