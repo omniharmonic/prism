@@ -1,7 +1,7 @@
 import { isAccessUnavailable } from "../../data/VaultClient";
 import { noteLinkTitle } from "../../lib/wikilinks";
 import { isVaultNoteId } from "../../lib/noteIdentity";
-import { Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef } from "react";
+import { Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useSyncExternalStore } from "react";
 import { remoteAdoption } from "../../app/hooks/useAutoSave";
 import { Compass } from "lucide-react";
 import { useUIStore } from "../../app/stores/ui";
@@ -19,6 +19,13 @@ import { isLocked, pageStyleOf } from "../../lib/pages/model";
 import { LockedBanner } from "../pages/LockedBanner";
 import { RequestAccessButton } from "../inbox/RequestAccessButton";
 import { useUnreadCount } from "../../lib/notifications/hooks";
+import { OfflineCopyNotice, offlineCopyAt } from "./OfflineCopyNotice";
+
+function subscribeOnline(notify: () => void) {
+  window.addEventListener("online", notify);
+  window.addEventListener("offline", notify);
+  return () => { window.removeEventListener("online", notify); window.removeEventListener("offline", notify); };
+}
 
 export function Canvas() {
   const openTabs = useUIStore((s) => s.openTabs);
@@ -32,7 +39,7 @@ export function Canvas() {
   const isVirtual = !!activeTab && !isVaultNoteId(activeTab.noteId);
   const parachuteNoteId = isVirtual ? null : (activeTab?.noteId ?? null);
 
-  const { data: note, isLoading, isError, error, isFetching, refetch } = useNote(parachuteNoteId);
+  const { data: note, isLoading, isError, error, isFetching, refetch, dataUpdatedAt } = useNote(parachuteNoteId);
   const accessUnavailable = isAccessUnavailable(error);
   // Request access (NP-CO-13) needs a Prism Server with notifications.
   const canRequestAccess = useUnreadCount().available;
@@ -184,6 +191,12 @@ export function Canvas() {
     return stop;
   }, [activeTabId, navRestore]);
 
+  // NP-OF-02: this page came from the device's copy (no connection).
+  // Either the host says so (read from its on-device cache), or the device is
+  // offline and what is on screen is the copy this session read earlier.
+  const online = useSyncExternalStore(subscribeOnline, () => navigator.onLine, () => true);
+  const offlineAt = isVirtual || !note ? null : offlineCopyAt(note) ?? (!online && dataUpdatedAt ? new Date(dataUpdatedAt).toISOString() : null);
+
   // NP-PG-08: per-page small text / full width (styles/shell.css), any device, live or not.
   const pageStyle = isVirtual ? {} : pageStyleOf(effectiveNote);
 
@@ -193,6 +206,7 @@ export function Canvas() {
 
       <main id="workspace-document" ref={mainRef} tabIndex={-1} className="flex-1 min-h-0 overflow-auto"
         data-page-small={pageStyle.small ? "true" : undefined} data-page-full={pageStyle.full ? "true" : undefined}>
+        {!isVirtual && !isTagView && offlineAt && <OfflineCopyNotice at={offlineAt} />}
         {!activeTab ? (
           <EmptyState />
         ) : isTagView ? (

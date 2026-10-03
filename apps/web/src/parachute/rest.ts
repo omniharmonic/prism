@@ -271,8 +271,15 @@ export async function getNote(id: string, options?: { fresh?: boolean }): Promis
     if (!draft) throw new Error("This local draft is unavailable in the current workspace.");
     return draft;
   }
-  const note = await (await req(`/notes/${encodeURIComponent(resolved)}`, options?.fresh ? { cache: "no-store" } : undefined)).json() as Note;
-  return await localNote(resolved, note).catch(() => note) ?? note;
+  const resp = await req(`/notes/${encodeURIComponent(resolved)}`, options?.fresh ? { cache: "no-store" } : undefined);
+  const note = await resp.json() as Note;
+  const merged = await localNote(resolved, note).catch(() => note) ?? note;
+  // Served from this device's copy (no connection): say so, with when it was saved (NP-OF-02).
+  if (resp.headers.get("x-prism-cache") === "hit") {
+    const stored = Number(resp.headers.get("x-prism-cache-stored"));
+    return { ...merged, _offlineCopyAt: Number.isFinite(stored) && stored > 0 ? new Date(stored).toISOString() : (merged.updatedAt ?? null) } as Note;
+  }
+  return merged;
 }
 
 export async function createNote(params: CreateNoteParams): Promise<Note> {
