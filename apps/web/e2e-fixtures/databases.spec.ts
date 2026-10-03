@@ -463,6 +463,91 @@ test("create database from New page and from tag", async ({ page }) => {
   expect((await fx(page)).creates.length).toBe(count);
 });
 
+// NP-DB-07 — a calendar item is dragged to another day (CAS write through the property writer); a range spans as one bar.
+test("calendar drag reschedule and multi-day span", async ({ page }) => {
+  // Dates inside the current month, starting on a Monday so a three-day range sits in one week row.
+  const now = new Date();
+  const mon = new Date(now.getFullYear(), now.getMonth(), 8);
+  while (mon.getDay() !== 1) mon.setDate(mon.getDate() + 1);
+  const d = (off: number) => { const x = new Date(mon.getFullYear(), mon.getMonth(), mon.getDate() + off); return `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, "0")}-${String(x.getDate()).padStart(2, "0")}`; };
+  // Tall enough that the whole month is on screen (a drag near the edge auto-scrolls, as it should).
+  await page.setViewportSize({ width: 1280, height: 1300 });
+  await page.goto("/e2e-fixtures/databases.html");
+  await expect(page.getByRole("table", { name: "All tasks" })).toBeVisible();
+  await page.evaluate(([range, single, cross]) => {
+    const notes = (window as any).dbFixture.notes();
+    const set = (id: string, due: string | null) => { const n = notes.find((x: any) => x.id === id); n.metadata = { ...n.metadata, due }; };
+    set("t3", range); set("t2", single); set("t4", cross); set("t1", null); set("t5", null);
+  }, [`${d(0)}/${d(2)}`, d(3), `${d(5)}/${d(8)}`]);
+  await page.getByRole("tab", { name: "Calendar" }).click();
+  const cal = page.getByRole("grid", { name: "Calendar calendar" });
+  const cell = (day: string) => cal.locator(`[data-day="${day}"]`);
+  const box = async (l: ReturnType<typeof cell>) => (await l.boundingBox())!;
+
+  // A three-day range is ONE bar across its three day cells.
+  const bar = cal.locator('.db-cal-bar[data-cal-item="t3"]');
+  await expect(bar).toHaveCount(1);
+  await expect(bar).toHaveAccessibleName(/^Refine onboarding copy, .+ → .+/);
+  const [b, first, last] = [await box(bar), await box(cell(d(0))), await box(cell(d(2)))];
+  expect(b.x).toBeGreaterThanOrEqual(first.x);
+  expect(b.x + b.width).toBeLessThanOrEqual(last.x + last.width + 1);
+  expect(b.width).toBeGreaterThan(first.width * 2.5);
+  await expect(cell(d(1)).locator(".db-cal-item")).toHaveCount(0); // not repeated per day
+  // A range crossing the weekend continues on the next week row: two pieces of the same item.
+  const crossing = cal.locator('.db-cal-bar[data-cal-item="t4"]');
+  await expect(crossing).toHaveCount(2);
+  expect((await box(crossing.first())).x).toBeGreaterThanOrEqual((await box(cell(d(5)))).x);
+  expect((await box(crossing.nth(1))).x).toBeLessThan((await box(cell(d(8)))).x);
+
+  const drag = async (from: ReturnType<typeof cell>, toDay: string) => {
+    const a = await box(from);
+    const t = await box(cell(toDay));
+    await page.mouse.move(a.x + Math.min(20, a.width / 2), a.y + a.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(a.x + 30, a.y + a.height / 2 + 12, { steps: 4 });
+    await page.mouse.move(t.x + t.width / 2, t.y + t.height / 2 + 14, { steps: 12 });
+    await page.mouse.up();
+  };
+  // Drag a single-day item to the next day: one CAS property write.
+  await drag(cell(d(3)).locator('[data-cal-item="t2"]'), d(4));
+  await expect.poll(async () => (await writes(page)).at(-1)).toEqual({ id: "t2", set: { due: d(4) }, expect: { due: d(3) } });
+  await expect(cell(d(4)).locator('[data-cal-item="t2"]')).toBeVisible();
+  await expect(cell(d(3)).locator('[data-cal-item="t2"]')).toHaveCount(0);
+  // Drag the bar a week later: the whole range moves and keeps its length.
+  await drag(bar, d(7));
+  await expect.poll(async () => (await writes(page)).at(-1)).toEqual({ id: "t3", set: { due: `${d(7)}/${d(9)}` }, expect: { due: `${d(0)}/${d(2)}` } });
+  // Changed elsewhere meanwhile: refused, said so, and nothing is overwritten.
+  await page.evaluate((v) => { (window as any).dbFixture.conflictWith = v; }, d(10));
+  await drag(cell(d(4)).locator('[data-cal-item="t2"]'), d(6));
+  await expect(page.getByRole("alert")).toContainText("“Write release notes” was changed somewhere else, so it was not moved.");
+  expect(await page.evaluate(() => (window as any).dbFixture.notes().find((n: any) => n.id === "t2").metadata.due)).toBe(d(10));
+
+  // A clicked item still opens (a click is not a drag).
+  await cell(d(10)).locator('[data-cal-item="t2"]').click();
+  await expect(page.getByRole("dialog", { name: /Write release notes/ })).toBeVisible();
+  await page.keyboard.press("Escape");
+  // Month navigation.
+  const heading = cal.locator("xpath=preceding-sibling::*").first();
+  await page.getByRole("button", { name: "Next month" }).click();
+  await expect(page.getByRole("heading", { level: 3 })).not.toHaveText(now.toLocaleDateString("en-US", { month: "long", year: "numeric" }));
+  await page.getByRole("button", { name: "Today", exact: true }).click();
+  await expect(cell(d(7))).toBeVisible();
+  void heading;
+});
+
+test("calendar: a viewer cannot drag an item to another day", async ({ page }) => {
+  await page.goto("/e2e-fixtures/databases.html?viewer");
+  await page.getByRole("tab", { name: "Calendar" }).click();
+  const item = page.locator("[data-cal-item]").first();
+  await expect(item).toBeVisible();
+  const a = (await item.boundingBox())!;
+  await page.mouse.move(a.x + 10, a.y + a.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(a.x + 200, a.y + 160, { steps: 10 });
+  await page.mouse.up();
+  expect((await writes(page)).filter((w: any) => !w.metadata?.prism_database)).toEqual([]);
+});
+
 // NP-DB-16 — a view is duplicated with every setting, and tabs reorder (buttons and drag); both are saved to the database note.
 test("saved views: duplicate and reorder tabs", async ({ page }) => {
   await page.goto("/e2e-fixtures/databases.html");

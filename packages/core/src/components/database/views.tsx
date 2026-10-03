@@ -20,7 +20,8 @@ import {
 import { ArrowDownWideNarrow, ArrowUpNarrowWide, ArrowUpRight, ChevronDown, ChevronLeft, ChevronRight, EyeOff, Group, MoreHorizontal, Pencil, Plus } from "lucide-react";
 import type { QueryRow } from "../../lib/database/query";
 import { noteTitle, unwrapLink } from "../../lib/database/query";
-import { isBlank, optionColor, optionLabel, propertyValue, type PropertyDef } from "../../lib/database/schema";
+import { formatDate, isBlank, optionColor, optionLabel, propertyValue, type PropertyDef } from "../../lib/database/schema";
+import { dayDiff, daySpan, shiftDateValue } from "../../lib/database/dates";
 import { OptionChip, PropertyDisplay, PropertyValue } from "./PropertyValue";
 import { Popover } from "./Popover";
 import { applyRank, reorderRank, type DatabaseView } from "./config";
@@ -544,24 +545,65 @@ export function monthGrid(month: Date): Date[] {
   return Array.from({ length: 42 }, (_, i) => new Date(first.getFullYear(), first.getMonth(), 1 - offset + i));
 }
 
+type CalItem = { row: QueryRow; first: string; last: string };
+/** One week's multi-day bars: the visible stretch of each item, packed into lanes. */
+function weekBars(items: CalItem[], week: string[]): Array<{ item: CalItem; from: number; len: number; lane: number; before: boolean; after: boolean }> {
+  const out: Array<{ item: CalItem; from: number; len: number; lane: number; before: boolean; after: boolean }> = [];
+  const laneEnd: number[] = [];
+  const inWeek = items.filter((it) => it.first !== it.last && it.first <= week[6]! && it.last >= week[0]!).sort((a, b) => (a.first < b.first ? -1 : a.first > b.first ? 1 : a.last < b.last ? 1 : -1));
+  for (const item of inWeek) {
+    const from = item.first < week[0]! ? 0 : week.indexOf(item.first);
+    const to = item.last > week[6]! ? 6 : week.indexOf(item.last);
+    let lane = laneEnd.findIndex((end) => end < from);
+    if (lane < 0) lane = laneEnd.length;
+    laneEnd[lane] = to;
+    out.push({ item, from, len: to - from + 1, lane, before: item.first < week[0]!, after: item.last > week[6]! });
+  }
+  return out;
+}
+
+function CalChip({ row, ctx, anchorDay, className, style, label, editable }: { row: QueryRow; ctx: ViewContext; anchorDay: string; className: string; style?: React.CSSProperties; label?: string; editable: boolean }) {
+  // One draggable per visible piece of an item (a bar has one per week it crosses).
+  const drag = useDraggable({ id: `${row.id}@${anchorDay}`, data: { row, anchorDay }, disabled: !editable });
+  return (
+    <button ref={drag.setNodeRef} type="button" className={className} title={title(row)} aria-label={label}
+      data-dragging={drag.isDragging || undefined} data-cal-item={row.id}
+      style={{ ...style, ...(drag.transform ? { transform: `translate3d(${drag.transform.x}px, ${drag.transform.y}px, 0)`, zIndex: 6, position: "relative" } : {}) }}
+      {...drag.listeners}
+      onClick={(e) => ctx.open(row, e)}>{title(row)}</button>
+  );
+}
+
+function CalDay({ k, col, children, ...rest }: { k: string; col: number; children: ReactNode } & React.HTMLAttributes<HTMLDivElement>) {
+  const drop = useDroppable({ id: `day:${k}`, data: { day: k } });
+  return <div ref={drop.setNodeRef} {...rest} data-over={drop.isOver || undefined} data-day={k} style={{ gridColumn: col + 1 }}>{children}</div>;
+}
+
 export function CalendarView({ ctx, month, onMonth, onPickDate }: { ctx: ViewContext; month: Date; onMonth: (d: Date) => void; onPickDate: (key: string) => void }) {
   const key = ctx.view.dateKey;
   const [adding, setAdding] = useState<string | null>(null);
+  const [problem, setProblem] = useState("");
+  const sensors = useSensors(
+    useSensor(MouseSensor, { activationConstraint: { distance: 8 } }),
+    useSensor(TouchSensor, { activationConstraint: { delay: 250, tolerance: 6 } }),
+  );
   const days = monthGrid(month);
-  const byDay = useMemo(() => {
-    const m = new Map<string, QueryRow[]>();
-    if (!key) return m;
+  // Every row with a date: the local day(s) it covers (a range spans first → last).
+  const items = useMemo(() => {
+    const out: CalItem[] = [];
+    if (!key) return out;
     for (const r of ctx.rows) {
       const v = propertyValue(r, key);
-      if (typeof v !== "string" || !/^\d{4}-\d{2}-\d{2}/.test(v)) continue;
-      // A datetime WITH a zone belongs to the viewer's local day (review L2);
-      // a date or a zone-less wall time is taken as written.
-      const zoned = v.length > 10 && /(Z|[+-]\d{2}:?\d{2})$/.test(v) && !Number.isNaN(Date.parse(v));
-      const d = zoned ? ymd(new Date(v)) : v.slice(0, 10);
-      m.set(d, [...(m.get(d) ?? []), r]);
+      const span = typeof v === "string" ? daySpan(v) : null;
+      if (span) out.push({ row: r, first: span[0], last: span[1] });
     }
-    return m;
+    return out;
   }, [ctx.rows, key]);
+  const byDay = useMemo(() => {
+    const m = new Map<string, QueryRow[]>();
+    for (const it of items) if (it.first === it.last) m.set(it.first, [...(m.get(it.first) ?? []), it.row]);
+    return m;
+  }, [items]);
   if (!key) {
     const dates = ctx.props.filter((p) => p.kind === "date");
     return (
@@ -578,6 +620,23 @@ export function CalendarView({ ctx, month, onMonth, onPickDate }: { ctx: ViewCon
   }
   const today = ymd(new Date());
   const editableKey = key !== "$createdAt";
+  const dateDef = ctx.props.find((p) => p.key === key) ?? ({ key, label: key, kind: "date", options: [], tag: null, multiple: false, enumValues: [] } satisfies PropertyDef);
+  const canMove = (r: QueryRow) => editableKey && !dateDef.system && ctx.canEditRow(r);
+  // Drag to reschedule (NP-DB-07): the item moves by whole days — its time of day and a
+  // range's length are kept — through the same per-field compare-and-set as a cell edit.
+  const onDragEnd = (e: DragEndEvent) => {
+    const data = e.active.data.current as { row: QueryRow; anchorDay: string } | undefined;
+    const target = (e.over?.data.current as { day?: string } | undefined)?.day;
+    if (!data || !target || !canMove(data.row)) return;
+    const current = propertyValue(data.row, key);
+    const delta = dayDiff(data.anchorDay, target);
+    if (typeof current !== "string" || !delta) return;
+    setProblem("");
+    ctx.commit(data.row, dateDef)(shiftDateValue(current, delta), current).catch((err: unknown) => {
+      setProblem(err instanceof Error && /conflict|changed/i.test(`${err.name} ${err.message}`) ? `“${title(data.row)}” was changed somewhere else, so it was not moved. Try again.` : `“${title(data.row)}” could not be moved. Try again.`);
+    });
+  };
+  const weeks = Array.from({ length: 6 }, (_, w) => days.slice(w * 7, w * 7 + 7));
   return (
     <div>
       <div className="db-cal-head">
@@ -586,23 +645,45 @@ export function CalendarView({ ctx, month, onMonth, onPickDate }: { ctx: ViewCon
         <button type="button" className="db-control" onClick={() => onMonth(new Date(new Date().getFullYear(), new Date().getMonth(), 1))}>Today</button>
         <button type="button" className="db-icon-btn" aria-label="Next month" onClick={() => onMonth(new Date(month.getFullYear(), month.getMonth() + 1, 1))}><ChevronRight size={16} /></button>
       </div>
-      <div className="db-cal" role="grid" aria-label={`${ctx.view.name} calendar`}>
-        {["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map((d) => <div key={d} className="db-cal-dow" role="columnheader">{d}</div>)}
-        {days.map((d) => {
-          const k = ymd(d);
-          const items = byDay.get(k) ?? [];
-          return (
-            <div key={k} role="gridcell" aria-label={d.toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" })} className="db-cal-day" data-outside={d.getMonth() !== month.getMonth() || undefined} data-today={k === today || undefined}>
-              <div className="db-cal-num"><span>{d.getDate()}</span>
-                {ctx.canCreate && editableKey && <button type="button" className="db-cal-add" aria-label={`New page on ${k}`} onClick={() => setAdding(k)}><Plus size={13} aria-hidden="true" /></button>}
+      {problem && <p className="db-notice" role="alert">{problem}</p>}
+      <DndContext sensors={sensors} collisionDetection={pointerWithin} onDragEnd={onDragEnd}>
+        <div className="db-cal" role="grid" aria-label={`${ctx.view.name} calendar`}>
+          <div className="db-cal-week db-cal-dows" role="row">
+            {["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map((d) => <div key={d} className="db-cal-dow" role="columnheader">{d}</div>)}
+          </div>
+          {weeks.map((week) => {
+            const keys = week.map(ymd);
+            const bars = weekBars(items, keys);
+            const lanes = bars.reduce((n, b) => Math.max(n, b.lane + 1), 0);
+            return (
+              <div key={keys[0]} className="db-cal-week" role="row">
+                {week.map((d, col) => {
+                  const k = keys[col]!;
+                  const dayItems = byDay.get(k) ?? [];
+                  return (
+                    <CalDay key={k} k={k} col={col} role="gridcell" aria-label={d.toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" })} className="db-cal-day" data-outside={d.getMonth() !== month.getMonth() || undefined} data-today={k === today || undefined}>
+                      <div className="db-cal-num"><span>{d.getDate()}</span>
+                        {ctx.canCreate && editableKey && <button type="button" className="db-cal-add" aria-label={`New page on ${k}`} onClick={() => setAdding(k)}><Plus size={13} aria-hidden="true" /></button>}
+                      </div>
+                      {/* Room for this week's multi-day bars, which are laid over the row. */}
+                      {lanes > 0 && <div aria-hidden="true" style={{ height: lanes * 24, flex: "none" }} />}
+                      {adding === k && <NewRowForm label={`New page on ${k}`} onCreate={(t) => ctx.create(t, { [key]: k })} onCancel={() => setAdding(null)} />}
+                      {dayItems.slice(0, 3).map((r) => <CalChip key={r.id} row={r} ctx={ctx} anchorDay={k} className="db-cal-item" editable={canMove(r)} />)}
+                      {dayItems.length > 3 && <span className="db-pop-path" style={{ marginLeft: 4 }}>+{dayItems.length - 3} more</span>}
+                    </CalDay>
+                  );
+                })}
+                {bars.map((b) => (
+                  <CalChip key={`${b.item.row.id}@${keys[b.from]}`} row={b.item.row} ctx={ctx} anchorDay={keys[b.from]!} editable={canMove(b.item.row)}
+                    className="db-cal-item db-cal-bar"
+                    label={`${title(b.item.row)}, ${formatDate(`${b.item.first}/${b.item.last}`)}`}
+                    style={{ gridColumn: `${b.from + 1} / span ${b.len}`, marginTop: 30 + b.lane * 24, ...(b.before ? { borderTopLeftRadius: 0, borderBottomLeftRadius: 0 } : {}), ...(b.after ? { borderTopRightRadius: 0, borderBottomRightRadius: 0 } : {}) }} />
+                ))}
               </div>
-              {adding === k && <NewRowForm label={`New page on ${k}`} onCreate={(t) => ctx.create(t, { [key]: k })} onCancel={() => setAdding(null)} />}
-              {items.slice(0, 3).map((r) => <button key={r.id} type="button" className="db-cal-item" title={title(r)} onClick={(e) => ctx.open(r, e)}>{title(r)}</button>)}
-              {items.length > 3 && <span className="db-pop-path" style={{ marginLeft: 4 }}>+{items.length - 3} more</span>}
-            </div>
-          );
-        })}
-      </div>
+            );
+          })}
+        </div>
+      </DndContext>
     </div>
   );
 }

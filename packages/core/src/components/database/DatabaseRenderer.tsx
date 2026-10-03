@@ -19,6 +19,7 @@ import { Calendar, ChevronRight, Database, Download, Filter, GalleryVerticalEnd,
 import type { RendererProps } from "../renderers/RendererProps";
 import type { Note } from "../../lib/types";
 import { useVaultClient } from "../../data/VaultClientContext";
+import { PropertyConflictError } from "../../data/VaultClient";
 import { reviewMode } from "../../lib/governance/review";
 import { useUIStore } from "../../app/stores/ui";
 import { useIsMobile } from "../../app/hooks/useIsMobile";
@@ -296,7 +297,13 @@ export function DatabasePage({ note, readOnly, embedded }: RendererProps & {
     canEditRow,
     canCreate,
     commit: (r, def) => async (next, base) => {
-      await write({ id: r.id, updatedAt: r.updatedAt }, { [def.key]: next }, { [def.key]: base ?? null });
+      try {
+        await write({ id: r.id, updatedAt: r.updatedAt }, { [def.key]: next }, { [def.key]: base ?? null });
+      } catch (e) {
+        // Changed elsewhere: show what is stored now (the editor keeps the person's own value to retry).
+        if (e instanceof PropertyConflictError) invalidateRows();
+        throw e;
+      }
     },
     createOption: (def) => (ownerish && def.tag && def.kind !== "multi_select"
       ? async (o: string) => { await schemaEdit.update(def.tag!, { fields: { [def.key]: { enum: [...def.enumValues, o] } } }); }
