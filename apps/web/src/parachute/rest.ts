@@ -26,7 +26,8 @@ import type {
   NoteVersion,
   NoteVersionPage,
 } from "@prism/core";
-import { VaultRequestError, HistoryUnavailableError, HistoryConflictError, toNoteVersion } from "@prism/core";
+import { VaultRequestError, HistoryUnavailableError, HistoryConflictError, PropertyConflictError, toNoteVersion } from "@prism/core";
+import type { QueryPage, QuerySpec, SchemaMap, SchemaPatch, TagSchema, PropertyWriteResult } from "@prism/core";
 import { agentScope, apiBase, DEFAULT_VAULT_NAME, capabilityHeader, contextHeaders } from "../config";
 import { retainDraft, enqueue, hasPending, flush, localNote, resolveLocalNoteId } from "../offline/outbox";
 import { captureWriteContext, scopeKey } from "../offline/writeScope";
@@ -439,4 +440,51 @@ export async function reconcileCanvasRelations(id: string, fingerprint: string):
 /** Explicit owner-only live source read; a shared transcript is not a room credential. */
 export async function getThreadMessages(noteId: string, before?: string): Promise<import("@prism/core").MessageBatch> {
   return (await req(`/threads/${encodeURIComponent(noteId)}/live${qs({ before })}`, { cache: "no-store" })).json();
+}
+
+// ---- typed properties + database views (routes/databases.ts) ---------------
+// Live, never read-through cached: a view must reflect permission changes now.
+
+export async function getSchemas(tags?: string[]): Promise<SchemaMap> {
+  const body = (await (await req(`/schemas${qs({ tags: tags?.length ? tags.join(",") : undefined })}`, { cache: "no-store" })).json()) as { schemas: SchemaMap };
+  return body.schemas ?? {};
+}
+
+export async function updateSchema(tag: string, patch: SchemaPatch): Promise<TagSchema> {
+  const resp = await req(`/schemas/${encodeURIComponent(tag)}`, { method: "PUT", body: JSON.stringify(patch) });
+  return ((await resp.json()) as { schema: TagSchema }).schema;
+}
+
+export async function queryNotes(spec: QuerySpec): Promise<QueryPage> {
+  return (await req(`/query`, { method: "POST", body: JSON.stringify(spec), cache: "no-store" })).json();
+}
+
+/**
+ * Metadata-only property write with per-field compare-and-set. Offline, the
+ * write is queued through the outbox as a plain metadata merge (it replays on
+ * reconnect) — the same path every other offline edit takes.
+ */
+export async function updateProperties(id: string, set: Record<string, unknown>, expect?: Record<string, unknown>): Promise<PropertyWriteResult> {
+  if (isOffline()) {
+    const n = await updateNote(id, { metadata: set });
+    return { id: n.id, updatedAt: n.updatedAt, metadata: n.metadata ?? {} };
+  }
+  try {
+    return (await (await req(`/properties/${encodeURIComponent(id)}`, { method: "POST", body: JSON.stringify({ set, expect }), cache: "no-store" })).json()) as PropertyWriteResult;
+  } catch (e) {
+    if (e instanceof VaultRequestError && e.status === 409) {
+      const raw = e.message.slice(e.message.indexOf("{"));
+      let fields: string[] = [];
+      let current: Record<string, unknown> = {};
+      try {
+        const b = JSON.parse(raw) as { fields?: string[]; current?: Record<string, unknown> };
+        fields = b.fields ?? [];
+        current = b.current ?? {};
+      } catch {
+        /* keep the generic conflict */
+      }
+      throw new PropertyConflictError(fields, current);
+    }
+    throw e;
+  }
 }

@@ -30,3 +30,8 @@ export function useVaultClient(): VaultClient {
   }
   return client;
 }
+
+/** The host's {@link VaultClient}, or null when none is mounted (e.g. the public share route). */
+export function useOptionalVaultClient(): VaultClient | null {
+  return useContext(VaultClientContext);
+}

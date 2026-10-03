@@ -112,24 +112,32 @@ export function inferKind(key: string, f: SchemaField | undefined, sample?: unkn
     return "multi_select";
   }
   if (f?.enum?.length) return STATUS_KEYS.test(key) ? "status" : "select";
-  if (t === "string" || t === undefined) {
-    if (t === undefined && sample !== undefined) {
-      if (typeof sample === "boolean") return "checkbox";
-      if (typeof sample === "number") return "number";
-      if (Array.isArray(sample)) return "multi_select";
+  if (t === undefined) {
+    // A free key (no schema): only the stored value may decide, so editing can
+    // never change its format (e.g. plain "Alex Chen" never becomes [[Alex Chen]]).
+    if (typeof sample === "boolean") return "checkbox";
+    if (typeof sample === "number") return "number";
+    if (Array.isArray(sample)) return sample.some((x) => typeof x === "string" && x.startsWith("[[")) ? (PERSON_KEYS.test(key) ? "person" : "relation") : "multi_select";
+    if (typeof sample === "string") {
+      if (sample.startsWith("[[")) return PERSON_KEYS.test(key) ? "person" : "relation";
+      if (/^https?:\/\//i.test(sample)) return "url";
+      if (/^\d{4}-\d{2}-\d{2}($|T)/.test(sample)) return "date";
     }
+    return "text";
+  }
+  if (t === "string") {
     if (URL_KEYS.test(key)) return "url";
     if (DATE_KEYS.test(key)) return "date";
     if (PERSON_KEYS.test(key)) return "person";
     if (RELATION_KEYS.test(key) && typeof sample === "string" && sample.startsWith("[[")) return "relation";
-    if (STATUS_KEYS.test(key) && t === undefined && typeof sample === "string") return "text";
   }
   return "text";
 }
 
 /** "first-met" → "First met". */
 export function humanize(key: string): string {
-  const s = key.replace(/[_-]+/g, " ").replace(/([a-z])([A-Z])/g, "$1 $2").trim();
+  const s = key.replace(/[_-]+/g, " ").replace(/([a-z])([A-Z])/g, "$1 $2").trim()
+    .replace(/\b(url|id|api)\b/gi, (w) => w.toUpperCase());
   return s.charAt(0).toUpperCase() + s.slice(1);
 }
 

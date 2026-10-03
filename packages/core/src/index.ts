@@ -43,6 +43,12 @@ export type {
   NoteVersionPage,
 } from "./data/VaultClient";
 export { VaultRequestError, isAccessUnavailable, HistoryUnavailableError, HistoryConflictError, toNoteVersion } from "./data/VaultClient";
+// Typed properties + database views (seam types, conflict error, pure engine).
+export { PropertyConflictError, type PropertyWriteResult } from "./data/VaultClient";
+export type { QuerySpec, QueryPage, QueryRow, SchemaMap, SchemaPatch, TagSchema, SchemaField, PropertyDef, PropertyKind } from "./lib/database";
+export { PropertyBar } from "./components/database/PropertyBar";
+export { NotePropertyBar } from "./components/database/NotePropertyBar";
+export { createDatabaseNote } from "./components/database/createDatabase";
 export { GraphCanvas } from "./components/layout/GraphCanvasLazy";
 export type { GraphNode, GraphLink, GraphData } from "./components/layout/GraphCanvas3D";
 
@@ -94,7 +100,7 @@ export type {
 export { ShareDialog } from "./components/layout/ShareDialog";
 export { CommentsSidebar } from "./components/renderers/CommentsSidebar";
 export { collabAffordances, type CollabAffordances } from "./lib/collab/access";
-export { PageHeader, FontSwitch, renamePath } from "./components/renderers/DocumentChrome";
+export { PageHeader, PageProperties, FontSwitch, renamePath } from "./components/renderers/DocumentChrome";
 export type { ContentFont } from "./components/renderers/DocumentChrome";
 export { useUpdateNote, useNotes } from "./app/hooks/useParachute";
 export { useUIStore } from "./app/stores/ui";
