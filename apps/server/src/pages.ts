@@ -58,6 +58,7 @@ import {
   parentOf,
   planSubtreeMove,
   protectionReason,
+  systemNoteReason,
   sanitizePreferences,
   type PagePreferences,
   type PlannedMove,
@@ -250,7 +251,7 @@ export function publishedTag(vaultId: string, tag: string): boolean {
  *  caller's own path, no word about what is there or whether they could see it. */
 export const pathUnavailable = (path: string) => ({ error: "path_conflict" as const, path, reason: "That location isn’t available. Choose another place." });
 
-export type PlacementRefusal = { status: 400 | 403 | 409 | 502; body: Record<string, unknown> };
+export type PlacementRefusal = { status: 400 | 403 | 404 | 409 | 502; body: Record<string, unknown> };
 
 /**
  * Where a NON-ADMIN may place a note by naming a path — the gateway's create
@@ -263,8 +264,8 @@ export type PlacementRefusal = { status: 400 | 403 | 409 | 502; body: Record<str
 export async function placementRefusal(
   entry: VaultEntry,
   raw: unknown,
-  /** Pass the actor to ALSO require standing at the destination's parent page
-   *  (`destinationParentRefusal`) — a create does; the older path PATCH does not. */
+  /** Pass the actor to ALSO check standing at the destination's parent PAGE, when
+   *  there is one (`destinationParentRefusal`) — a create does; the path PATCH does not. */
   parentFor?: Actor,
 ): Promise<{ path: string } | PlacementRefusal> {
   const path = normalizePagePath(raw);
@@ -290,26 +291,37 @@ export async function placementRefusal(
 }
 
 /**
- * The move route's DESTINATION rule (review H2), shared with a non-owner create: a
- * non-admin needs `create` or `organize` on the destination's parent PAGE. With no
- * parent page (top level, a plain folder) — or one the actor cannot even view, which
- * must look the same — only the owner/admin may place a page there. Null = allowed.
- * (The sharing branch replaces the caps lookup here with a page-grant-aware
- * `createCapsAt(path, actor)`; this is the one place that asks the question.)
+ * THE one hook for "may this actor place a page at `target`?" — the destination's
+ * parent PAGE decides: a non-admin needs `create` or `organize` on it. Null = allowed.
+ *  - a MOVE (`requirePage: true`, review H2) also needs that page to exist: the top
+ *    level and plain folders are the owner's, and an unviewable page looks the same;
+ *  - a CREATE (`requirePage: false`) is free where there is no page note (a plain
+ *    folder, the top level — the New menu, imports, "Open as database"); inside a
+ *    page the actor cannot view it answers 404, inside one they can view but not add
+ *    to, 403.
+ * NOTE (sharing branch): replace the caps lookup below with
+ * `createCapsAt(actor, path, tags)` from `apps/server/src/sharing.ts`, which also
+ * accounts for page grants on ANY ancestor, not only the direct parent.
  */
-export async function destinationParentRefusal(actor: Actor, entry: VaultEntry, target: string): Promise<PlacementRefusal | null> {
+export async function destinationParentRefusal(actor: Actor, entry: VaultEntry, target: string, opts: { requirePage?: boolean } = {}): Promise<PlacementRefusal | null> {
   if (isAdmin(actor)) return null;
   const parent = parentOf(target);
   let parentPage: Note | null = null;
   if (parent && parent !== "vault") {
     try {
       const p = await vaultClient(entry.id).getNote(parent);
-      if (p.path === parent && canView(actor, noteRef(p))) parentPage = p;
+      if (p.path === parent) parentPage = p;
     } catch {
       parentPage = null;
     }
   }
-  if (!parentPage) return { status: 403, body: { error: "forbidden", reason: "Only the workspace owner can add pages at the top level or into a plain folder." } };
+  if (parentPage && !canView(actor, noteRef(parentPage))) {
+    if (!opts.requirePage) return { status: 404, body: { error: "not_found" } };
+    parentPage = null; // for a move: indistinguishable from "no page there"
+  }
+  if (!parentPage) {
+    return opts.requirePage ? { status: 403, body: { error: "forbidden", reason: "Only the workspace owner can add pages at the top level or into a plain folder." } } : null;
+  }
   const caps = capsOf(actor, noteRef(parentPage));
   if (!(caps.has("create") || caps.has("organize")) || isTrashed(parentPage)) {
     return { status: 403, body: { error: "forbidden", reason: "You can’t add pages inside that page." } };
@@ -426,7 +438,7 @@ export function createPagesApi(opts: PagesApiOptions = {}) {
         const why = exportedLocation(entry.id, m.to);
         if (why) return c.json({ error: "forbidden", reason: `${why} Only the workspace owner can move pages there.` }, 403);
       }
-      const refused = await destinationParentRefusal(actor, entry, target);
+      const refused = await destinationParentRefusal(actor, entry, target, { requirePage: true });
       if (refused) return c.json(refused.body, refused.status);
     }
 
@@ -524,7 +536,7 @@ export function createPagesApi(opts: PagesApiOptions = {}) {
     }
     if (!canView(actor, noteRef(note))) return c.json({ error: "not_found" }, 404);
     // System notes (integration-owned, agent, governance) are not page-managed by non-owners.
-    if (!isAdmin(actor) && protectionReason(note)) return c.json({ error: "protected", reason: protectionReason(note) }, 403);
+    if (!isAdmin(actor) && systemNoteReason(note)) return c.json({ error: "protected", reason: systemNoteReason(note) }, 403);
     if (!canOrganize(actor, noteRef(note))) return c.json({ error: "forbidden", reason: "Changing this needs organize access to the page." }, 403);
     if (typeof body!.if_updated_at !== "string") return c.json({ error: "precondition_required" }, 428);
     try {

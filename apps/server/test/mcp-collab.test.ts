@@ -567,7 +567,6 @@ test("create: a vault path conflict reads 'a note already exists at <path>' (mem
     }
     return realFetch(input, init);
   }) as typeof fetch;
-  fv.put({ id: "garden-page", path: "garden", content: "page", tags: ["garden"] }); // a parent page the editor may add to
   try {
     for (const who of [EDITOR, OWNER]) {
       const cl = await connectMcp(who);

@@ -468,5 +468,6 @@ test("system notes take no uploads from a non-owner, whatever their grants", asy
   grantUser(MEMBER, "tag", "doc", "own");
   const c = login(MEMBER);
   assert.equal((await upload("n1", PNG, { cookie: c })).status, 201, "an ordinary note still takes the upload");
-  for (const id of ["skill1", "meet1"]) assert.equal((await upload(id, PNG, { cookie: c })).status, 403, id);
+  assert.equal((await upload("skill1", PNG, { cookie: c })).status, 403, "a true system note");
+  assert.equal((await upload("meet1", PNG, { cookie: c })).status, 201, "a meeting note is an ordinary editable page");
 });

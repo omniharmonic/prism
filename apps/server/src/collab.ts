@@ -34,7 +34,7 @@
  */
 import { Window } from "happy-dom";
 import { accessRevision, onAccessChanged } from "./access-events";
-import { protectionReason } from "@prism/core/pages";
+import { systemNoteReason } from "@prism/core/pages";
 import { Hocuspocus, type Connection } from "@hocuspocus/server";
 import { WebSocketServer } from "ws";
 import type { IncomingMessage, Server } from "node:http";
@@ -657,11 +657,12 @@ export function collabLevelFor(
 ): Level | null {
   const lvl = effectiveLevel(grants, noteRef, roleFloor(role), email);
   const caps = effectiveCaps(grants, noteRef, roleFloor(role), email);
-  // A SYSTEM note (integration-owned location, agent/alert/person/thread tag, any
-  // governance record) is READ-ONLY for everyone below workspace admin, whatever
+  // A TRUE system note (`systemNoteReason`: agent-*/alert tags, `vault/agent`, any
+  // governance record — NOT ingest notes like meetings, tasks, people or threads,
+  // which collaborators edit) is READ-ONLY for everyone below workspace admin, whatever
   // their grants (an `own` grant on its tag included): the same rule as the gateway's
   // PATCH. "view" = a read-only socket, and no commands.
-  if (!roleAtLeast(role, "admin") && protectionReason({ path: noteRef.path ?? null, tags: noteRef.tags })) return caps.has("view") ? "view" : null;
+  if (!roleAtLeast(role, "admin") && systemNoteReason({ path: noteRef.path ?? null, tags: noteRef.tags })) return caps.has("view") ? "view" : null;
   if (lvl === "own") return "own";
   if (!caps.has("view")) return null;
   if (caps.has("edit")) return maxLevel(lvl, "edit");

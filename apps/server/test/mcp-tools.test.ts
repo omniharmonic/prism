@@ -248,7 +248,6 @@ test("a PAT bound to another vault acts only in that vault", async () => {
 // ── writes ──────────────────────────────────────────────────────────────────
 
 test("create_note: editor may create inside an editable tag, not outside; create-only holder may drop into its tag; viewer has no tool", async () => {
-  fv.put({ id: "garden-page", path: "garden", content: "page", tags: ["garden"] }); // a parent page the editor may add to
   const ed = await connect(pat(EDITOR));
   const made = must(await call(ed, "prism_create_note", { content: "fresh", tags: ["garden"], path: "garden/new" }));
   assert.equal(made.path, "garden/new");

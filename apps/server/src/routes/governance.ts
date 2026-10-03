@@ -43,7 +43,7 @@ import {
 import { roleAtLeast } from "../roles";
 import { resolveVaultEntry } from "../db";
 import { placementRefusal, exportedLocation } from "../pages";
-import { protectionReason, isProtectedPath, TRASH_TAG } from "@prism/core/pages";
+import { protectionReason, systemNoteReason, isProtectedPath, TRASH_TAG } from "@prism/core/pages";
 import { reconcileGovernanceGrants } from "../governance-grants";
 import { notifyVoters } from "../governance-notify";
 import { expandLevel, effectiveCaps, isCap, type Cap } from "../permissions";
@@ -404,7 +404,7 @@ async function viewableNote(c: Context, id: string): Promise<Note | null> {
   };
   return effectiveCaps(actor.grants, ref, roleFloor(actor.role), actor.email).has("view") ? note : null;
 }
-const SYSTEM_NOTE = "system notes (integration-owned, agent and governance records) cannot be changed or copied this way";
+const SYSTEM_NOTE = "system notes (agent, alert and governance records; for a fork also integration-owned notes) cannot be changed or copied this way";
 
 /** Open a proposal. Proposing ≠ deciding — any member may open one. The payload
  *  is a JSON-encoded GovChange for governance amendments. */
@@ -417,7 +417,7 @@ governance.post("/proposals", async (c) => {
   if (action === "edit_note") {
     const note = await viewableNote(c, target);
     if (!note) return c.json({ error: "not_found" }, 404);
-    if (protectionReason(note)) return c.json({ error: "bad_request", detail: SYSTEM_NOTE }, 400);
+    if (systemNoteReason(note)) return c.json({ error: "bad_request", detail: SYSTEM_NOTE }, 400);
   }
   const payload = typeof b.payload === "string" ? b.payload : JSON.stringify(b.payload ?? {});
   const openedBy = email(c);
@@ -446,7 +446,7 @@ governance.post("/content/propose", async (c) => {
   if (action === "edit_note") {
     const note = await viewableNote(c, target);
     if (!note) return c.json({ error: "not_found" }, 404);
-    if (protectionReason(note)) return c.json({ error: "bad_request", detail: SYSTEM_NOTE }, 400);
+    if (systemNoteReason(note)) return c.json({ error: "bad_request", detail: SYSTEM_NOTE }, 400);
   }
 
   const payload: ContentPayload = coerceContentPayload(b);
@@ -579,7 +579,7 @@ governance.post("/proposals/:id/apply", async (c) => {
     if (refused) return c.json({ error: "bad_payload", detail: refused }, 400);
     if (proposal.action === "edit_note") {
       const targetNote = await vault.getNote(proposal.target).catch(() => null);
-      if (targetNote && protectionReason(targetNote)) return c.json({ error: "bad_payload", detail: SYSTEM_NOTE }, 400);
+      if (targetNote && systemNoteReason(targetNote)) return c.json({ error: "bad_payload", detail: SYSTEM_NOTE }, 400);
     }
     const result = await applyContentProposal(vault, proposal, cp, { author: me, autoPublish: ev.policy.autoPublish });
     await setProposalState(vault, proposal.id, result.published ? "applied" : "approved");
@@ -682,7 +682,7 @@ governance.post("/forks/:id/propose-merge", async (c) => {
   if (originId) {
     const origin = await vault.getNote(originId).catch(() => null);
     if (origin && !(await viewableNote(c, origin.id))) return c.json({ error: "not_found" }, 404);
-    if (origin && protectionReason(origin)) return c.json({ error: "bad_request", detail: SYSTEM_NOTE }, 400);
+    if (origin && systemNoteReason(origin)) return c.json({ error: "bad_request", detail: SYSTEM_NOTE }, 400);
   }
   try {
     const r = await proposeMerge(vault, fork.id, email(c));

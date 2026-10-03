@@ -451,29 +451,28 @@ test("search forwards only the query text and a bounded limit", async () => {
 
 // ── round 2: the destination-parent rule, the per-tag rule, system notes, 404s ──
 
-test("a create needs create/organize standing on the destination's parent PAGE (the move route's rule)", async () => {
+test("create placement: plain folders and the top level are free; inside somebody's PAGE needs create/organize there", async () => {
   const { mem } = seed();
   fv.put({ id: "hers", path: "Hers", content: "someone else's page", tags: ["hers"] });
   fv.put({ id: "ro", path: "ReadOnly", content: "viewable, not creatable", tags: ["ro"] });
   grantUser(MEM, "tag", "ro", "view");
-  const cases: Array<[string, string]> = [
-    ["TopLevel", "top level"],
-    ["vault/TopLevel", "top level of the personal vault"],
-    ["Folder/New", "a plain folder (no page there)"],
-    ["Hers/New", "under a page the member cannot view"],
-    ["ReadOnly/New", "under a page the member can only view"],
-  ];
-  const bodies: string[] = [];
-  for (const [path, why] of cases) {
-    const r = await post("/notes", { content: "x", tags: ["team"], path }, mem);
-    assert.equal(r.status, 403, why);
-    bodies.push(await r.text());
+  // No page note at the parent → as before this branch (the New menu, dropped-file imports, "Open as database").
+  for (const path of ["TopLevel", "vault/TopLevel", "Folder/New", "vault/imports/2026-10-03/dropped-ab12", "Tasks database", "Deep/Plain/Folder/Note"]) {
+    assert.equal((await post("/notes", { content: "x", tags: ["team"], path }, mem)).status, 200, path);
   }
-  assert.equal(bodies[2], bodies[3], "an unviewable parent page looks exactly like no page at all");
-  assert.equal(vaultPosts().length, 0);
+  // A page the member cannot view: 404, like a missing note. One they can only view: 403.
+  const hidden = await post("/notes", { content: "x", tags: ["team"], path: "Hers/New" }, mem);
+  assert.equal(hidden.status, 404);
+  assert.deepEqual(await json(hidden), { error: "not_found" });
+  assert.equal((await post("/notes", { content: "x", tags: ["team"], path: "ReadOnly/New" }, mem)).status, 403);
+  assert.ok(![...fv.notes.values()].some((n) => n.path === "Hers/New" || n.path === "ReadOnly/New"));
   assert.equal((await post("/notes", { content: "x", tags: ["team"], path: "Team/Child" }, mem)).status, 200, "under a page they can create in");
-  assert.equal((await post("/notes", { content: "x", tags: ["team"] }, mem)).status, 200, "a pathless create is unaffected");
-  assert.equal((await post("/notes", { content: "x", tags: ["team"], path: "TopLevel" }, as(OWNER))).status, 200, "the owner places pages anywhere");
+  assert.equal((await post("/notes", { content: "x", tags: ["team"] }, mem)).status, 200, "a pathless create");
+  // The MOVE route keeps its stricter rule: the top level and plain folders are the owner's.
+  grantUser("org@test.local", "tag", "team", "own");
+  fv.put({ id: "mv", path: "Team/Movable", content: "m", tags: ["team"] });
+  assert.equal((await post("/notes/mv/move", { newParentPath: "", if_updated_at: stamp("mv") }, as("org@test.local"))).status, 403);
+  assert.equal((await post("/notes/mv/move", { newParentPath: "PlainFolder", if_updated_at: stamp("mv") }, as("org@test.local"))).status, 403);
 });
 
 test("EVERY tag on a create must be addable: governed tags need standing, plain tags stay free", async () => {
@@ -498,19 +497,25 @@ test("EVERY tag on a create must be addable: governed tags need standing, plain 
   assert.equal((await post("/notes", { content: "x", tags: ["project-x"] }, maker)).status, 403);
 });
 
+// TRUE system notes: read-only for non-owners whatever their grants.
 const SYSTEM_NOTES: Array<Partial<FakeNote> & { id: string }> = [
   { id: "skill", path: "Shared/skill", tags: ["shared", "agent-skill"], metadata: { skillName: "s", enabled: true } },
   { id: "dispatch", path: "Shared/dispatch", tags: ["shared", "agent-dispatch"] },
   { id: "session", path: "Shared/session", tags: ["shared", "agent-session"] },
   { id: "alert", path: "Shared/alert", tags: ["shared", "alert"] },
   { id: "govrole", path: "Shared/govrole", tags: ["shared", "governance-role"], metadata: { name: "steward" } },
+  { id: "agentfile", path: "vault/agent/reports/r1", tags: ["shared"] },
+];
+// INGEST-owned notes: editable per grants; only their placement and system tags are pinned.
+const INGEST_NOTES: Array<Partial<FakeNote> & { id: string }> = [
   { id: "thread", path: "vault/messages/matrix/room", tags: ["shared", "message-thread"] },
   { id: "person", path: "vault/people/Ada", tags: ["shared", "person"] },
-  { id: "meeting", path: "vault/meetings/2026-01-01/Sync", tags: ["shared"] },
-  { id: "cutask", path: "vault/tasks/clickup/T1", tags: ["shared"], metadata: { priority: "low" } },
+  { id: "meeting", path: "vault/meetings/2026-01-01/Sync", tags: ["shared", "meeting"] },
+  { id: "cutask", path: "vault/tasks/clickup/T1", tags: ["shared", "task", "clickup"], metadata: { priority: "low" } },
+  { id: "inbox", path: "vault/_inbox/transcripts/t1", tags: ["shared", "transcript"] },
 ];
 
-test("system notes are read-only for non-owners through every general write route, whatever their grants", async () => {
+test("true system notes are read-only for non-owners through every general write route, whatever their grants", async () => {
   grantUser("boss@test.local", "tag", "shared", "own");
   grantCaps("boss@test.local", "vault", "*", ["view", "edit", "create", "organize", "delete", "share"]);
   const boss = as("boss@test.local");
@@ -545,16 +550,77 @@ test("system notes are read-only for non-owners through every general write rout
   }
 });
 
-test("collab: a system note is a read-only socket (and so takes no commands) for a non-owner editor", async () => {
+test("ingest notes stay editable per grants; only their placement and system tags are pinned", async () => {
+  grantUser("ed@test.local", "tag", "shared", "own");
+  const ed = as("ed@test.local");
+  fv.put({ id: "dest", path: "Shared", content: "page", tags: ["shared"] });
+  for (const n of INGEST_NOTES) fv.put({ content: "original", ...n });
+  for (const { id } of INGEST_NOTES) {
+    const tagsBefore = [...(fv.notes.get(id)!.tags ?? [])];
+    const pathBefore = fv.notes.get(id)!.path;
+    // Editable exactly as before this branch.
+    assert.equal((await patch(id, { content: "edited body", if_updated_at: stamp(id) }, ed)).status, 200, `${id}: body`);
+    assert.equal(fv.notes.get(id)!.content, "edited body");
+    assert.equal((await patch(id, { metadata: { note: "m" }, if_updated_at: stamp(id) }, ed)).status, 200, `${id}: metadata`);
+    assert.equal((await post(`/properties/${id}`, { set: { status: "done" } }, ed)).status, 200, `${id}: properties`);
+    assert.equal(fv.notes.get(id)!.metadata!.status, "done");
+    assert.equal((await patch(id, { add_tags: ["shared"] }, ed)).status, 200, `${id}: an ordinary tag`);
+    assert.equal((await post(`/notes/${id}/restore`, { version_ix: 0, if_updated_at: stamp(id) }, ed)).status, 200, `${id}: restore`);
+    // Pinned: move, trash, path change, system-tag changes.
+    assert.equal((await post(`/notes/${id}/move`, { newPath: `Shared/elsewhere-${id}`, if_updated_at: stamp(id) }, ed)).status, 403, `${id}: move`);
+    assert.equal((await post(`/notes/${id}/trash`, {}, ed)).status, 403, `${id}: trash`);
+    assert.equal((await patch(id, { path: `Shared/moved-${id}`, if_updated_at: stamp(id) }, ed)).status, 403, `${id}: path`);
+    assert.equal((await patch(id, { add_tags: ["agent-skill"] }, ed)).status, 403, `${id}: add agent-skill`);
+    for (const t of tagsBefore.filter((x) => ["person", "message-thread"].includes(x))) {
+      assert.equal((await patch(id, { remove_tags: [t] }, ed)).status, 403, `${id}: remove ${t}`);
+    }
+    // Identity keys are never forged.
+    assert.equal((await patch(id, { metadata: { prism_creator: "ed@test.local" }, if_updated_at: stamp(id) }, ed)).status, 403, `${id}: creator`);
+    assert.equal(fv.notes.get(id)!.path, pathBefore);
+    assert.deepEqual([...(fv.notes.get(id)!.tags ?? [])].sort(), [...tagsBefore].sort());
+  }
+});
+
+test("a member with edit on #task changes a ClickUp task's status via /api/properties", async () => {
+  grantUser("worker@test.local", "tag", "task", "edit");
+  fv.put({ id: "cu1", path: "vault/tasks/clickup/Fix-bug", content: "do it", tags: ["task", "clickup"], metadata: { status: "todo", source_id: "abc" } });
+  const worker = as("worker@test.local");
+  const r = await post("/properties/cu1", { set: { status: "in-progress" }, expect: { status: "todo" } }, worker);
+  assert.equal(r.status, 200, await r.clone().text());
+  assert.equal(fv.notes.get("cu1")!.metadata!.status, "in-progress");
+  const batch = await json(await post("/properties/batch", { items: [{ id: "cu1", set: { status: "done" } }] }, worker));
+  assert.equal(batch.results[0].ok, true);
+  assert.equal((await post("/notes/cu1/trash", {}, worker)).status, 403);
+  assert.equal((await patch("cu1", { add_tags: ["agent-skill"] }, worker)).status, 403);
+});
+
+test("a member with edit on a meeting note edits its body and opens it live at edit level — but cannot move or trash it", async () => {
+  const { resolveLevel } = await import("../src/collab");
+  grantUser("att@test.local", "tag", "meeting", "edit");
+  fv.put({ id: "meet1", path: "vault/meetings/2026-01-01/Sync", content: "<p>agenda</p>", tags: ["meeting"], metadata: { calendarEventId: "e1" } });
+  const cookie = as("att@test.local");
+  assert.equal((await patch("meet1", { content: "<p>agenda + notes</p>", if_updated_at: stamp("meet1") }, cookie)).status, 200);
+  assert.equal(fv.notes.get("meet1")!.content, "<p>agenda + notes</p>");
+  assert.equal(await resolveLevel("meet1", "session", cookie), "edit");
+  assert.equal((await post("/notes/meet1/move", { newPath: "Elsewhere/Sync", if_updated_at: stamp("meet1") }, cookie)).status, 403);
+  assert.equal((await post("/notes/meet1/trash", {}, cookie)).status, 403);
+  assert.equal((await patch("meet1", { add_tags: ["agent-skill"] }, cookie)).status, 403);
+  assert.equal(fv.notes.get("meet1")!.path, "vault/meetings/2026-01-01/Sync");
+});
+
+test("collab: a true system note is a read-only socket (and so takes no commands) for a non-owner; ingest notes keep their level", async () => {
   const { resolveLevel, collabLevelFor } = await import("../src/collab");
   const { collabAccess } = await import("../src/mcp/tool-collab");
   const { grantsForUser } = await import("../src/db");
   grantUser("boss@test.local", "tag", "shared", "own");
-  for (const n of SYSTEM_NOTES) fv.put({ content: "original", ...n });
+  for (const n of [...SYSTEM_NOTES, ...INGEST_NOTES]) fv.put({ content: "original", ...n });
   fv.put({ id: "plain", path: "Shared/plain", content: "c", tags: ["shared"] });
   const cookie = as("boss@test.local");
   const grants = grantsForUser("boss@test.local");
-  assert.equal(await resolveLevel("plain", "session", cookie), "own", "an ordinary note keeps its level");
+  for (const id of ["plain", ...INGEST_NOTES.map((n) => n.id)]) {
+    assert.equal(await resolveLevel(id, "session", cookie), "own", `${id}: keeps its level`);
+    assert.equal(collabAccess({ grants, role: "guest", email: "boss@test.local" } as never, fv.notes.get(id) as never).level, "own", `${id}: MCP`);
+  }
   for (const n of SYSTEM_NOTES) {
     assert.equal(await resolveLevel(n.id, "session", cookie), "view", `${n.id}: socket`);
     const note = fv.notes.get(n.id)!;

@@ -84,7 +84,31 @@ export function isProtectedPath(path: string | null | undefined): boolean {
   return PROTECTED_PATH_PREFIXES.some((root) => p === root || p.startsWith(`${root}/`));
 }
 
-/** Why this note may not be moved or trashed from the page UI, or null. */
+/**
+ * TRUE system notes: what the agent runner executes or records (`agent-*`, anything
+ * under `vault/agent`), alerts, and every `governance-*` record. Unlike the wider
+ * `protectionReason` set below (which also covers INGEST notes — meetings, ClickUp
+ * tasks, people, message threads, the inbox — that collaborators legitimately edit
+ * in place), these are read-only for every non-owner whatever their grants: a skill
+ * note runs with the vault token, a governance note carries authority.
+ */
+export const SYSTEM_NOTE_TAGS = ["agent-skill", "agent-dispatch", "agent-session", "alert"] as const;
+export const SYSTEM_NOTE_PATH_PREFIX = "vault/agent";
+export function systemNoteReason(n: PageLike): string | null {
+  const tags = n.tags ?? [];
+  if (tags.some((t) => t.startsWith("governance-"))) return "Governance records can only change through governance.";
+  const p = (n.path ?? "").toLowerCase();
+  if (tags.some((t) => (SYSTEM_NOTE_TAGS as readonly string[]).includes(t)) || p === SYSTEM_NOTE_PATH_PREFIX || p.startsWith(`${SYSTEM_NOTE_PATH_PREFIX}/`)) {
+    return "This is a system note, so it can’t be changed here.";
+  }
+  return null;
+}
+
+/**
+ * Why this note may not be MOVED or TRASHED (or have its path / system tags changed)
+ * from the page UI, or null — the PLACEMENT notion: system notes AND ingest-owned
+ * ones. It says nothing about editing the note in place; that is `systemNoteReason`.
+ */
 export function protectionReason(n: PageLike): string | null {
   if (isProtectedPath(n.path)) return "This page is kept in sync by an integration, so it can’t be moved or deleted here.";
   const tags = n.tags ?? [];

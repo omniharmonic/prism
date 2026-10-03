@@ -25,7 +25,7 @@
  * normal Hocuspocus store path (disconnect() stores immediately), after which
  * the doc unloads if nobody else has it open.
  */
-import { protectionReason } from "@prism/core/pages";
+import { systemNoteReason } from "@prism/core/pages";
 import * as z from "zod/v4";
 import * as Y from "yjs";
 import { effectiveCaps, effectiveLevel, atLeast, maxLevel, type Cap, type Level } from "../permissions";
@@ -104,7 +104,7 @@ export function collabAccess(actor: Pick<UserActor, "grants" | "role" | "email">
   const lvl = effectiveLevel(actor.grants, noteRef, floor, actor.email);
   const caps = effectiveCaps(actor.grants, noteRef, floor, actor.email);
   // System notes are read-only below workspace admin (mirrors collabLevelFor).
-  if (!roleAtLeast(actor.role, "admin") && protectionReason({ path: note.path ?? null, tags: note.tags ?? [] })) return { level: caps.has("view") ? "view" : null, caps };
+  if (!roleAtLeast(actor.role, "admin") && systemNoteReason({ path: note.path ?? null, tags: note.tags ?? [] })) return { level: caps.has("view") ? "view" : null, caps };
   if (lvl === "own") return { level: "own", caps };
   if (!caps.has("view")) return { level: null, caps };
   const level: Level = caps.has("edit")

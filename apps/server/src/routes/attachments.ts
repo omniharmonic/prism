@@ -81,7 +81,7 @@ import { BusyError, Semaphore } from "../media/limits";
 import { mediaPolicy, withMediaSlot } from "./media";
 import { isNoteId } from "../collab";
 import { consumeRateLimit } from "../middleware/ratelimit";
-import { isLocked, isTrashed, protectionReason } from "@prism/core/pages";
+import { isLocked, isTrashed, systemNoteReason } from "@prism/core/pages";
 import {
   contentDisposition,
   getAttachment,
@@ -293,8 +293,8 @@ attachmentsApi.post(
       if (!caps.has("view")) return c.json(NOT_FOUND, 404);
       if (isTrashed(note)) return c.json(NOT_FOUND, 404);
       if (!caps.has("edit")) return c.json({ error: "forbidden", detail: "edit access required" }, 403);
-      // System notes (integration-owned, agent, governance) take no uploads from non-owners.
-      if (protectionReason(note)) return c.json({ error: "protected", detail: "this is a system note" }, 403);
+      // True system notes (agent, alert, governance) take no uploads from non-owners.
+      if (systemNoteReason(note)) return c.json({ error: "protected", detail: "this is a system note" }, 403);
       if (isLocked(note)) return c.json({ error: "locked", detail: "this page is locked" }, 409);
     } else if (isTrashed(note)) {
       return c.json(NOT_FOUND, 404);

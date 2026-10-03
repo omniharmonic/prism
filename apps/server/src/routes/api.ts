@@ -33,7 +33,7 @@ import { attachmentsApi } from "./attachments";
 import { stampJsonBody, stampMetadata, stripIdentity } from "../writer-stamp";
 import { graphNeighborhood } from "../graph";
 import { buildWikilinkIndex, resolveWikilink, noteLinkTitle } from "@prism/core/wikilinks";
-import { isTrashed, isLocked, isOwnerOnlyMeta, protectionReason, TRASH_TAG, TRASH_META, LOCK_KEY, ORDER_KEY } from "@prism/core/pages";
+import { isTrashed, isLocked, isOwnerOnlyMeta, protectionReason, systemNoteReason, TRASH_TAG, TRASH_META, LOCK_KEY, ORDER_KEY } from "@prism/core/pages";
 import { createPagesApi, placementRefusal, pathUnavailable, publishedTag } from "../pages";
 import { notificationsRoutes, restMentionHook } from "./notifications";
 
@@ -530,18 +530,18 @@ const invalid = (c: Context, reason: string) => c.json({ error: "invalid_request
 const systemTags = (tags: string[]): string[] => tags.filter((t) => protectionReason({ tags: [t] }) !== null);
 
 /**
- * SYSTEM NOTES — anything `protectionReason` names: integration-owned locations
- * (messages, meetings, ClickUp tasks, people, the agent folder, the inbox), the
- * system tags (`agent-skill`, `agent-dispatch`, `agent-session`, `alert`, `person`,
- * `message-thread`, `message-archive`) and every `governance-*` record. A non-owner
- * may READ one their grants reach, but never write it through the general routes —
- * PATCH, restore, delete, properties, attachments, the collab socket and commands —
- * whatever their grants say: a skill note is run with the vault token, a governance
- * note carries authority (it changes only through the governance service), and an
- * ingest note is rewritten by its integration.
+ * TRUE SYSTEM NOTES — `systemNoteReason`: `agent-skill` / `agent-dispatch` /
+ * `agent-session` / `alert`, anything under `vault/agent`, every `governance-*`
+ * record. A non-owner may READ one their grants reach, but never write it through
+ * the general routes — PATCH, restore, delete, properties, attachments, the collab
+ * socket and commands — whatever their grants say: a skill note is run with the
+ * vault token, a governance note carries authority (it changes only through the
+ * governance service). INGEST notes (meetings, ClickUp tasks, people, threads, the
+ * inbox) are NOT in this set: they stay editable per the caller's grants and are
+ * protected only from move / trash / path and system-tag changes (`protectionReason`).
  */
 const systemNoteRefusal = (c: Context, note: Note) => {
-  const why = protectionReason(note);
+  const why = systemNoteReason(note);
   return why ? c.json({ error: "protected", reason: why }, 403) : null;
 };
 /** One answer for "no such note" and "a note you cannot view" (no existence oracle). */
@@ -600,9 +600,9 @@ api.post("/notes", async (c) => {
   const outside = tags.filter((t) => tagGoverned(vaultKey, t) && !canAddTag(actor, t));
   if (outside.length) return c.json({ error: "forbidden", reason: "You can only add tags you can create or organize in." }, 403);
 
-  // PATH: the pages API's destination rules — protected / exported / under the Trash,
-  // and (as for a move) `create` or `organize` on the destination's parent page; the
-  // top level and plain folders are the owner's.
+  // PATH: the pages API's destination rules — protected / exported / under the Trash —
+  // and, when the destination sits inside somebody's PAGE, `create` or `organize` on
+  // that page. A plain folder or the top level needs no more than the tag rules above.
   let path: string | undefined;
   if (typeof body.path === "string") {
     const placed = await placementRefusal(resolveVaultEntry(actor.vaultId), body.path, actor);
@@ -696,7 +696,8 @@ api.patch("/notes/:id", async (c) => {
   }
   // A system-owned tag is never entered by a non-owner, whatever their organize scope
   // (an `agent-skill` note is run with the vault token; governance tags carry authority).
-  if (systemTags(addTags).length) return c.json({ error: "protected", reason: "System tags are set by Prism, not by hand." }, 403);
+  // Nor removed: an ingest note keeps the tag its integration finds it by.
+  if (systemTags(addTags).length || systemTags(removeTags).length) return c.json({ error: "protected", reason: "System tags are set by Prism, not by hand." }, 403);
   const wantsContent = body.content !== undefined || body.metadata !== undefined;
   if (wantsContent && isLocked(note) && caps.has("view")) return c.json({ error: "locked", reason: "This page is locked. Unlock it to edit." }, 423);
   const wantsTags = addTags.length > 0 || removeTags.length > 0;
@@ -765,6 +766,9 @@ api.patch("/notes/:id", async (c) => {
   // may add to; this older route never did, and still does not.)
   let newPath: string | undefined;
   if (canPath && wantsPath && body.path !== note.path) {
+    // An ingest-owned or system note does not move (the pages API's rule).
+    const pinned = protectionReason(note);
+    if (pinned) return c.json({ error: "protected", reason: pinned }, 403);
     const placed = await placementRefusal(resolveVaultEntry(actor.vaultId), body.path);
     if ("status" in placed) return c.json(placed.body, placed.status);
     newPath = placed.path;
