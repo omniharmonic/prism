@@ -50,12 +50,16 @@ export function createJob<P>(kind: Job<P>["kind"], owner: string, vaultId: strin
   return job;
 }
 
-/** The caller's own job in this vault, or null (another account's id is indistinguishable from none). */
-export function findJob<P>(kind: Job<P>["kind"], id: string, owner: string, vaultId: string): Job<P> | null {
+/**
+ * The caller's own job, or null (another account's id is indistinguishable from
+ * none). `vaultId` narrows it to the request's vault; omitted, the job's own
+ * binding stands (a plain download navigation cannot send `X-Prism-Vault`).
+ */
+export function findJob<P>(kind: Job<P>["kind"], id: string, owner: string, vaultId?: string): Job<P> | null {
   if (!isJobId(id)) return null;
   sweepJobs();
   const job = jobs.get(id);
-  if (!job || job.kind !== kind || job.owner !== owner.toLowerCase() || job.vaultId !== vaultId) return null;
+  if (!job || job.kind !== kind || job.owner !== owner.toLowerCase() || (vaultId !== undefined && job.vaultId !== vaultId)) return null;
   return job as Job<P>;
 }
 

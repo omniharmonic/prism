@@ -16,6 +16,7 @@ import { NotionDbSyncHost } from "./NotionDbSyncHost";
 import { GraphFullscreen } from "./GraphFullscreen";
 import { MobileActionBar } from "./MobileActionBar";
 import { PagesHost } from "../pages/PagesHost";
+import { ImportExportHost } from "../import-export/ImportExportHost";
 import { VaultClientProvider, useOptionalVaultClient } from "../../data/VaultClientContext";
 import { trackVaultWrites } from "../../lib/sync/syncState";
 import { applyReduceMotion } from "../../lib/motion";
@@ -184,6 +185,7 @@ function ShellLayout() {
       <NotionDbSyncHost key="notion-sync" />
       <GraphFullscreen key="graph" />
       <PagesHost key="pages" />
+      <ImportExportHost key="import-export" />
     </div></NoteShortcutsProvider>
   );
 }

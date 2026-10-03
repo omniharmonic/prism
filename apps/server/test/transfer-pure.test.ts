@@ -264,3 +264,38 @@ test("planner: front matter → tags and properties through the allow rules; col
   assert.equal(many.notes.length, 5);
   assert.equal(many.problems.length, 3);
 });
+
+// ── template variables (NP-TX-02; packages/core/src/lib/pages/templates.ts) ──
+import { applyTemplateVariables, resolveTemplateContent, resolveTemplateMetadata, templateCreator } from "../../../packages/core/src/lib/pages/templates";
+
+test("template variables: body (HTML chips / Markdown text), properties, and what is NOT a variable", () => {
+  const now = new Date(2026, 9, 3, 15, 30, 0);
+  let n = 0;
+  const ctx = { now, creator: "Ada <Park>", uid: () => `uid${++n}` };
+  const html = resolveTemplateContent('<h2>Log @today</h2><p title="@today">At @Now by @me, @creator.</p><pre>@today</pre><p><code>@now</code> me@today.io @todayish x@me <span data-type="mention" data-kind="date" data-date="2026-01-01">@2026-01-01</span> @today</p>', ctx);
+  assert.equal(
+    html,
+    `<h2>Log <span data-type="mention" data-kind="date" data-date="2026-10-03" data-mention-uid="uid1">@2026-10-03</span></h2>` +
+      `<p title="@today">At <span data-type="mention" data-kind="date" data-date="${now.toISOString()}" data-mention-uid="uid2">@${now.toISOString().slice(0, 10)}</span> by Ada &lt;Park&gt;, Ada &lt;Park&gt;.</p><pre>@today</pre>` +
+      `<p><code>@now</code> me@today.io @todayish x@me <span data-type="mention" data-kind="date" data-date="2026-01-01">@2026-01-01</span> <span data-type="mention" data-kind="date" data-date="2026-10-03" data-mention-uid="uid3">@2026-10-03</span></p>`,
+  );
+  const md = resolveTemplateContent("# @today\n\nBy @me. `@today` [[Notes @today]] mail a@now.co\n```\n@today\n```\n@now", ctx);
+  const day = now.toLocaleDateString(undefined, { year: "numeric", month: "long", day: "numeric" });
+  assert.ok(md.startsWith(`# ${day}\n\nBy Ada <Park>. \`@today\` [[Notes @today]] mail a@now.co\n\`\`\`\n@today\n\`\`\`\n${day} `), md);
+  assert.deepEqual(resolveTemplateMetadata({ due: "@today", at: " @NOW ", who: "@me", list: ["@today", "x"], note: "see @today", n: 3 }, ctx), { due: "2026-10-03", at: now.toISOString(), who: "Ada <Park>", list: ["2026-10-03", "x"], note: "see @today", n: 3 });
+  // No creator known: @me stays as written; the title is never rewritten.
+  assert.equal(resolveTemplateContent("By @me", { now }), "By @me");
+  assert.deepEqual(applyTemplateVariables({ content: "x", path: "p", metadata: { title: "@today", due: "@today" } }, ctx).metadata, { title: "@today", due: "2026-10-03" });
+  // Linear on hostile templates.
+  const t0 = Date.now();
+  for (const s of ["@".repeat(200_000), "<".repeat(200_000), "@today".repeat(40_000), "<p>" + "@me ".repeat(50_000), "`@".repeat(100_000), "[[@".repeat(70_000)]) resolveTemplateContent(s, ctx);
+  assert.ok(Date.now() - t0 < 2000);
+});
+
+test("template creator: the account's name, else its e-mail, else nothing", async () => {
+  const res = (body: unknown, ok = true) => async () => ({ ok, json: async () => body }) as Response;
+  assert.equal(await templateCreator(res({ name: " Ada ", email: "a@x.co" })), "Ada");
+  assert.equal(await templateCreator(res({ name: null, email: "a@x.co" })), "a@x.co");
+  assert.equal(await templateCreator(res({}, false)), null);
+  assert.equal(await templateCreator(async () => { throw new Error("offline"); }), null);
+});

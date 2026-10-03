@@ -19,6 +19,7 @@ import {
   Check,
   Type,
   MoveHorizontal,
+  Printer,
 } from "lucide-react";
 import { useOfflineAvailability } from "../../lib/offline/availability";
 import { useNote } from "../../app/hooks/useParachute";
@@ -29,6 +30,7 @@ import { isVaultNoteId } from "../../lib/noteIdentity";
 import { isLocked, pageStyleOf, protectionReason } from "../../lib/pages/model";
 import { usePagesUI, type PageRef } from "../../lib/pages/store";
 import { usePageActions } from "../../lib/pages/usePageActions";
+import { printCurrentPage, useTransferUI } from "../../lib/import-export/store";
 import type { Note } from "../../lib/types";
 import { PageInfo } from "../sharing/PageInfo";
 import "./pages.css";
@@ -135,6 +137,9 @@ export function usePageMenuItems(
       : []),
     { id: "export-md", label: "Export as Markdown", icon: <FileDown size={15} />, onClick: run(() => void actions.exportPage(page, "markdown")) },
     { id: "export-html", label: "Export as HTML", icon: <FileDown size={15} />, onClick: run(() => void actions.exportPage(page, "html")) },
+    // Wave 3A: sub-pages + images as a ZIP, PDF via print (components/import-export).
+    { id: "export-more", label: "Export…", icon: <FileDown size={15} />, detail: "Sub-pages, images, PDF", onClick: run(() => useTransferUI.getState().openExport({ scope: "page", page: { id: page.id, title: page.title, path: subject.path ?? page.path } })) },
+    ...(activeNoteId === page.id ? [{ id: "print", label: "Print", icon: <Printer size={15} />, onClick: run(printCurrentPage) }] : []),
     {
       id: "history",
       label: "Version history",

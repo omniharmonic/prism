@@ -58,6 +58,10 @@ let revision = kept?.revision ?? (params.has("prefs") ? 1 : 0);
 const failOnce = new Set(params.getAll("fail-move"));
 const moves = new Map<string, { from: string; to: string }>();
 Object.assign(window, { prismFixtureUI: useUIStore, prismFixtureNotes: notes, prismFixtureWrites: writes, prismFixturePrefs: () => ({ prefs, revision }) });
+// Wave 3A: `notion-transfer.html` loads this fixture with an extension (extra seed
+// notes, the import/export routes, a viewer role). Absent → nothing changes.
+const extension = (window as unknown as { prismFixtureExtension?: { seed?: (notes: Note[], make: typeof doc, stamp: () => string) => void; fetch?: (url: URL, method: string, init?: RequestInit) => Promise<Response | null>; sharing?: Record<string, unknown> } }).prismFixtureExtension;
+extension?.seed?.(notes, doc, stamp);
 
 const json = (body: unknown, status = 200) => Response.json(body, { status });
 const byId = (id: string) => notes.find((n) => n.id === id || n.path === id);
@@ -89,6 +93,8 @@ window.fetch = async (input, init) => {
   const path = url.pathname;
   const method = init?.method ?? "GET";
   const body = typeof init?.body === "string" && init.body ? JSON.parse(init.body) : {};
+  const extended = await extension?.fetch?.(url, method, init);
+  if (extended) return extended;
   if (path === "/auth/me") return json({ authenticated: true, email: "owner@example.test", name: "You", isOwner: true, vaultId: "primary", workspace: { id: "default", name: "Personal workspace" } });
   if (path === "/api/tree") return json(notes.filter((n) => !isTrashed(n)).map((n) => ({ id: n.id, path: n.path, tags: n.tags, updatedAt: n.updatedAt, type: n.metadata?.type, ...(typeof n.metadata?.prism_order === "number" ? { order: n.metadata.prism_order } : {}) })));
   if (path === "/api/me/preferences") {
@@ -230,7 +236,7 @@ await fetchMe();
 useUIStore.setState({ contextPanelOpen: false, sidebarWidth: 260, sidebarOpen: true });
 const open = byId(params.get("open") ?? "living");
 createRoot(document.getElementById("root")!).render(
-  <React.StrictMode><PlatformProvider value="web"><VaultClientProvider client={httpVaultClient}><CollabSharingProvider value={{ createShareLink: async () => "", ...(params.has("guest") ? { getViewer: async () => ({ email: "guest@example.test", role: "guest" as const, isServerOwner: false, vaultId: "primary" }) } : {}) }}>
+  <React.StrictMode><PlatformProvider value="web"><VaultClientProvider client={httpVaultClient}><CollabSharingProvider value={{ createShareLink: async () => "", ...(extension?.sharing ?? {}), ...(params.has("guest") ? { getViewer: async () => ({ email: "guest@example.test", role: "guest" as const, isServerOwner: false, vaultId: "primary" }) } : {}) }}>
     <App skipOnboarding initialTab={open ? { id: open.id, title: pageTitle(open.path), type: "document" } : undefined} />
   </CollabSharingProvider></VaultClientProvider></PlatformProvider></React.StrictMode>,
 );

@@ -6,6 +6,7 @@ import "./styles/typography.css";
 import "./styles/collab.css";
 import "./styles/workspace.css";
 import "./styles/shell.css";
+import "./styles/print.css";
 
 export { PrismMark, PrismAppIcon } from "./components/brand/PrismMark";
 
@@ -144,6 +145,10 @@ export { initializeSettings } from "./app/stores/settings";
 
 // Transport seams (WP2.2): how shared UI reaches the Prism Server in any shell.
 export { serverFetch, setServerFetch, type ServerFetch } from "./lib/transport/serverFetch";
+// Import / export / print (wave 3A).
+export { setTransferContextHeaders, transferApi, transferAvailable, TransferError } from "./lib/import-export/client";
+export { useTransferUI, printCurrentPage } from "./lib/import-export/store";
+export { ImportExportHost, useCanManageTransfers } from "./components/import-export/ImportExportHost";
 export { streamSSE, SSEParser, type SSEMessage, type StreamSSEOptions } from "./lib/transport/sse";
 
 // Agent client seam (Arch v2 WP3.2): durable server-side agent sessions.

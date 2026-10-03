@@ -134,7 +134,9 @@ function ownJob(c: Context): Job<ExportProgress> | Response {
   if (actor instanceof Response) return actor;
   const limited = rateLimited(c, `export-read:${actor.email.toLowerCase()}`, 600, 60_000);
   if (limited) return limited;
-  const job = findJob<ExportProgress>("export", c.req.param("id") ?? "", actor.email, entryFor(c, actor).id);
+  // Bound to the ACCOUNT (and an unguessable id); the job remembers its own vault, so a
+  // plain browser download — which cannot send X-Prism-Vault — still finds it.
+  const job = findJob<ExportProgress>("export", c.req.param("id") ?? "", actor.email);
   return job ?? c.json(NOT_FOUND, 404);
 }
 

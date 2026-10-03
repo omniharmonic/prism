@@ -253,7 +253,7 @@ const stampOf = (n: Pick<Note, "metadata">): ImportStamp | null => {
 
 /** The destination root, validated; a refusal carries the HTTP answer. */
 export async function resolveRoot(entry: VaultEntry, raw: unknown): Promise<{ root: string; existing: Note[] } | PlacementRefusal> {
-  const root = normalizePagePath(raw);
+  const root = typeof raw === "string" && raw.length <= 1000 ? normalizePagePath(raw) : null;
   if (!root) return { status: 400, body: { error: "invalid_request", reason: "Choose a folder to import into." } };
   if (root.split("/").length > 12) return { status: 400, body: { error: "invalid_request", reason: "That folder is nested too deeply." } };
   let existing: Note[];

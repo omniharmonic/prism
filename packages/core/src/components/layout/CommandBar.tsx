@@ -2,7 +2,7 @@ import { AddSavedNoteContextButton } from "../agent/SavedNoteHandoff";
 import { useState, useCallback, useEffect, useRef, useMemo } from "react";
 import {
   Search, X, FileText, MonitorPlay, Code, Mail, Table2, Globe,
-  CheckSquare, MessageSquare, Bot, ArrowRight, Settings, RefreshCw, Wand2, History, Sparkles, Trash2, FolderInput } from "lucide-react";
+  CheckSquare, MessageSquare, Bot, ArrowRight, Settings, RefreshCw, Wand2, History, Sparkles, Trash2, FolderInput, Upload, Download, Printer } from "lucide-react";
 import { useUIStore } from "../../app/stores/ui";
 import { useIsMobile } from "../../app/hooks/useIsMobile";
 import { useVaultSearch, useCreateNote } from "../../app/hooks/useParachute";
@@ -28,6 +28,9 @@ import { useCollabSharing } from "../../data/CollabSharing";
 import "../navigation/search-workspace.css";
 import { NewContentMenu } from "../navigation/NewContentMenu";
 import { useNotionDbSyncModal } from "./NotionDbSyncHost";
+import { transferAvailable } from "../../lib/import-export/client";
+import { printCurrentPage, useTransferUI } from "../../lib/import-export/store";
+import { useCanManageTransfers } from "../import-export/ImportExportHost";
 import { useNoteShortcuts } from "../navigation/NoteShortcuts";
 import { usePagesUI } from "../../lib/pages/store";
 
@@ -65,6 +68,7 @@ export function CommandBar() {
   const createNote = useCreateNote();
   const isMobile = useIsMobile();
   const agentChat = useAgentAvailable();
+  const canTransfer = useCanManageTransfers();
   // Host-backed commands: the desktop runs them through Tauri; a thin client
   // (PWA / Prism Client) through the server for its owner (WP4.3). Others get
   // none of them.
@@ -151,6 +155,25 @@ export function CommandBar() {
       icon: <Trash2 size={15} />,
       action: () => { closeCommandBar(); usePagesUI.getState().openTrash(true); },
     },
+    // Wave 3A: import / export / print (components/import-export).
+    ...(transferAvailable() && canTransfer ? [{
+      id: "import", label: "Import… (Markdown, HTML, CSV, Notion)", category: "create" as const,
+      icon: <Upload size={15} />,
+      action: () => { closeCommandBar(); useTransferUI.getState().openImport({}); },
+    }, {
+      id: "export-workspace", label: "Export Workspace…", category: "sync" as const,
+      icon: <Download size={15} />,
+      action: () => { closeCommandBar(); useTransferUI.getState().openExport({ scope: "vault" }); },
+    }] : []),
+    ...(activeIsNote && activeTab ? [{
+      id: "export-page", label: "Export Page…", category: "sync" as const,
+      icon: <Download size={15} />,
+      action: () => { closeCommandBar(); useTransferUI.getState().openExport({ scope: "page", page: { id: activeTab.noteId, title: activeTab.title, path: null } }); },
+    }, {
+      id: "print-page", label: "Print Page", category: "sync" as const,
+      icon: <Printer size={15} />,
+      action: () => { closeCommandBar(); printCurrentPage(); },
+    }] : []),
     ...(activeIsNote && activeTab ? [{
       id: "move-page", label: "Move Page To…", category: "navigate" as const,
       icon: <FolderInput size={15} />,
@@ -309,7 +332,7 @@ export function CommandBar() {
         closeCommandBar();
       },
     }] : []),
-  ], [createCommand, activeTab, activeIsNote, agentChat, closeCommandBar, toggleContextPanel, setContextPanelTab, createNote, openTab, hostCmds, host, vaultClient, surface, transformNote]);
+  ], [createCommand, activeTab, activeIsNote, agentChat, canTransfer, closeCommandBar, toggleContextPanel, setContextPanelTab, createNote, openTab, hostCmds, host, vaultClient, surface, transformNote]);
 
   // Filter commands by query
   const filteredCommands = useMemo(() => {

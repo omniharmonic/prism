@@ -1,4 +1,5 @@
 import { test, expect, type Page } from "@playwright/test";
+import { serveAttachments, transferRequests, transferUrl, unzip } from "./transfer-helpers";
 
 /** Pages & navigation (nested pages, move, Trash, page menu, synced favorites/recents, breadcrumbs, templates). */
 const SHOTS = process.env.PAGES_NAV_SHOTS;
@@ -374,4 +375,62 @@ test("Move to… confirms first when the move changes who can open the page", as
   await again.getByRole("combobox").fill("Journal");
   await again.getByRole("option", { name: /Journal/ }).first().click();
   await expect.poll(() => notePath(page, "living")).toBe("vault/Journal/A living workspace");
+});
+
+// NP-TX-03 (wave 3A): the page menu's "Export…" — sub-pages and images as a ZIP,
+// one plain file when neither is wanted, PDF through the print dialog.
+test("export with sub-pages and images", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.addInitScript(() => { (window as any).printCalls = 0; window.print = () => { (window as any).printCalls++; }; });
+  await serveAttachments(page);
+  await page.goto(transferUrl("?open=prism"));
+  await expect(page.getByRole("heading", { name: "Rename Prism", exact: true })).toBeVisible();
+  const open = async () => {
+    await page.getByRole("button", { name: "Page actions", exact: true }).click();
+    await page.getByRole("menuitem", { name: /^Export…/ }).click();
+  };
+  await open();
+  const dialog = page.getByRole("dialog", { name: "Export “Prism”" });
+  await expect(dialog.getByRole("radio")).toHaveText(["Markdown", "HTML", "PDF"]);
+  const sub = dialog.getByRole("checkbox", { name: /Sub-pages/ });
+  const files = dialog.getByRole("checkbox", { name: /Images and files/ });
+  await expect(sub).toBeChecked();
+  await expect(files).toBeChecked();
+  await expect(dialog).toContainText("3 pages inside this one, in matching folders.");
+  await expect(dialog).toContainText("Downloads a .zip");
+  await shot(page, "export-page-1440");
+
+  let download = page.waitForEvent("download");
+  await dialog.getByRole("button", { name: "Export", exact: true }).click();
+  let file = await download;
+  expect(file.suggestedFilename()).toBe("Prism.zip");
+  await expect(dialog.getByRole("heading", { name: "Export ready" })).toBeVisible();
+  await expect(dialog).toContainText("4 pages and 1 file in Prism.zip");
+  const zip = await unzip(file);
+  const image = [...zip.files.keys()].find((n) => n.startsWith("_attachments/"))!;
+  expect([...zip.files.keys()].sort()).toEqual(["Prism.md", "Prism/A living workspace.md", "Prism/Plan.md", "Prism/Plan/Week 1.md", image, "_export.json"].sort());
+  expect(zip.files.get("Prism.md")).toContain(`src="${image.replace(" ", "%20")}"`);
+  expect(zip.files.get("Prism/Plan/Week 1.md")).toContain("First week.");
+  expect((await transferRequests(page)).find((r) => r.export)!.export).toEqual({ scope: "page", noteId: "prism", format: "markdown", subpages: true, attachments: true });
+  await dialog.getByRole("button", { name: "Done", exact: true }).click();
+
+  // Neither sub-pages nor files: one plain file, made on this device.
+  await open();
+  await sub.uncheck();
+  await files.uncheck();
+  await expect(dialog).toContainText("Downloads one .md file");
+  download = page.waitForEvent("download");
+  await dialog.getByRole("button", { name: "Export", exact: true }).click();
+  file = await download;
+  expect(file.suggestedFilename()).toBe("Prism.md");
+  await expect(dialog).toHaveCount(0);
+  expect((await transferRequests(page)).filter((r) => r.export)).toHaveLength(1);
+
+  // PDF: the print dialog, for the page as it appears.
+  await open();
+  await dialog.getByRole("radio", { name: "PDF" }).click();
+  await expect(sub).toHaveCount(0);
+  await dialog.getByRole("button", { name: "Print…" }).click();
+  await expect(dialog).toHaveCount(0);
+  await expect.poll(() => page.evaluate(() => (window as any).printCalls)).toBe(1);
 });

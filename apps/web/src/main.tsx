@@ -13,7 +13,8 @@ import { httpHostServices } from "./host/HttpHostServices";
 import { httpInvalidationSource } from "./events/httpInvalidationSource";
 import { webCollabSharing } from "./collab/grant";
 import { CollabDocument, useLiveCollab } from "./collab/CollabDocument";
-import { fetchMe, initCapability, isOwner, postLoginTarget, capabilityHeader } from "./config";
+import { fetchMe, initCapability, isOwner, postLoginTarget, capabilityHeader, contextHeaders } from "./config";
+import { setTransferContextHeaders } from "@prism/core";
 import { ReconnectScreen } from "./auth/ReconnectScreen";
 import { LoginScreen as WebLoginScreen } from "./auth/LoginScreen";
 import { NativeSignInScreen, NativeStartupScreen } from "./auth/NativeSignInScreen";
@@ -64,6 +65,7 @@ window.addEventListener("vite:preloadError", () => {
 
 export async function start() {
   initializeTransport();
+  setTransferContextHeaders(contextHeaders); // import/export act on the ACTIVE vault
   await clearLegacyApiCache();
   initializeSettings();
   const root = ReactDOM.createRoot(document.getElementById("root") as HTMLElement);

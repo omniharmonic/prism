@@ -1,0 +1,157 @@
+/**
+ * Print (NP-TX-06): ⌘P / "Print" gives the PAGE — no sidebar, tabs, toolbars,
+ * panels, dialogs or toasts — in dark ink on white whichever theme is active.
+ *
+ * How the chrome goes away without a class on every shell element: every
+ * ancestor of the document region (`:has(#workspace-document)`) is flattened to
+ * a plain, auto-height block, and every SIBLING along that chain is removed.
+ * The app is a fixed-height flex layout with its own scroller; left as is, a
+ * printout would stop at the first screenful.
+ *
+ * Surfaces without `#workspace-document` (sign-in, public sites) are untouched.
+ */
+@media print {
+  @page { margin: 18mm 16mm; }
+
+  /* The light palette, whatever the theme (kept in step with `html.light` in tokens.css + workspace.css). */
+  html, html.dark, html.light {
+  --bg-base: #f7f8fa;
+  --bg-surface: #ffffff;
+  --bg-elevated: #ffffff;
+
+  --glass: rgba(255, 255, 255, 0.72);
+  --glass-hover: rgba(255, 255, 255, 0.86);
+  --glass-active: rgba(255, 255, 255, 0.94);
+  --glass-border: rgba(15, 23, 42, 0.07);
+  --glass-border-strong: rgba(15, 23, 42, 0.12);
+  --glass-blur: 18px;
+
+  --surface-hover: rgba(15, 23, 42, 0.045);
+  --surface-active: rgba(15, 23, 42, 0.075);
+  --surface-selected: rgba(79, 143, 247, 0.12);
+
+  --glass-shadow: 0 0 0 0.5px rgba(15, 23, 42, 0.04),
+                  0 1px 3px rgba(15, 23, 42, 0.06),
+                  0 1px 2px rgba(15, 23, 42, 0.04);
+  --glass-shadow-elevated: 0 0 0 0.5px rgba(15, 23, 42, 0.06),
+                           0 6px 20px rgba(15, 23, 42, 0.10),
+                           0 2px 6px rgba(15, 23, 42, 0.06);
+
+  --text-primary: rgba(15, 23, 42, 0.90);
+  --text-secondary: rgba(15, 23, 42, 0.55);
+  --text-muted: rgba(15, 23, 42, 0.40);
+  --text-accent: #2f6fe0;
+
+  --color-accent: #2f6fe0;
+  --color-accent-hover: #4f8ff7;
+  --color-accent-dim: rgba(47, 111, 224, 0.10);
+
+  --focus-ring: rgba(47, 111, 224, 0.45);
+
+  color-scheme: light;
+    /* workspace.css (the active surface palette) */
+  --bg-base: #ffffff;
+  --bg-surface: #ffffff;
+  --bg-elevated: #ffffff;
+  --bg-sidebar: #f5f5f3;
+  --bg-document: #ffffff;
+  --text-primary: #292a30;
+  --text-secondary: #626570;
+  --text-muted: #747783;
+  --glass: #ffffff;
+  --glass-hover: #f2f3f5;
+  --glass-active: #e9edf3;
+  --glass-border: #e7e7e5;
+  --glass-border-strong: #d0d2d6;
+  --surface-hover: #ececea;
+  --surface-active: #e4e5e4;
+  --surface-selected: #e9f0fd;
+  --color-accent: #2f6bd4;
+  --color-accent-hover: #2357b8;
+  --focus-ring: #2f6bd4;
+  --action-bg: #2f6bd4;
+  --action-hover: #2357b8;
+  --action-fg: #ffffff;
+    --bg-base: #ffffff;
+    --bg-surface: #ffffff;
+    --bg-elevated: #ffffff;
+    --bg-document: #ffffff;
+    --text-primary: #111111;
+    --text-secondary: #333333;
+    --text-muted: #555555;
+    color-scheme: light;
+  }
+
+  /* Print the final styles, never a frame of the theme cross-fade. */
+  *, *::before, *::after { transition: none !important; animation: none !important; }
+
+  html:has(#workspace-document), html:has(#workspace-document) body {
+    height: auto !important; min-height: 0 !important; overflow: visible !important;
+    background: #fff !important; color: #111 !important;
+    -webkit-print-color-adjust: exact; print-color-adjust: exact;
+  }
+
+  /* Every ancestor of the document: a plain block that grows with its content. */
+  :has(> #workspace-document), :has(#workspace-document) {
+    display: block !important; position: static !important; float: none !important;
+    width: auto !important; max-width: none !important;
+    height: auto !important; min-height: 0 !important; max-height: none !important;
+    margin: 0 !important; padding: 0 !important; border: 0 !important;
+    overflow: visible !important; transform: none !important; filter: none !important;
+    background: #fff !important; box-shadow: none !important;
+  }
+  /* …and everything beside that chain is app chrome. */
+  :has(#workspace-document) > :not(:has(#workspace-document)):not(#workspace-document) { display: none !important; }
+
+  #workspace-document {
+    display: block !important; position: static !important;
+    width: auto !important; height: auto !important; max-height: none !important;
+    overflow: visible !important; background: #fff !important; color: #111 !important;
+  }
+  /* Inner scrollers and fixed measures of the page itself. */
+  #workspace-document .document-writing-scroll,
+  #workspace-document [class*="overflow-auto"],
+  #workspace-document [class*="overflow-y-auto"],
+  #workspace-document [class*="overflow-hidden"] { overflow: visible !important; height: auto !important; max-height: none !important; }
+  #workspace-document [class*="h-full"], #workspace-document [class*="h-screen"] { height: auto !important; }
+
+  /* Controls inside the page that are not content. */
+  #workspace-document .document-formatting-bar,
+  #workspace-document .document-page-topline,
+  #workspace-document .document-page-adders,
+  #workspace-document .document-page-status,
+  #workspace-document .document-page-presence,
+  #workspace-document .document-cover-controls,
+  #workspace-document .document-cover-picker,
+  #workspace-document .document-save-footer,
+  #workspace-document .document-title-notice,
+  #workspace-document .document-properties-control,
+  #workspace-document .document-properties-disclosure,
+  #workspace-document .db-prop-actions,
+  #workspace-document .db-add-tag,
+  #workspace-document .db-opt-remove,
+  #workspace-document .empty-page-starters,
+  #workspace-document .keyboard-toolbar,
+  #workspace-document .page-locked-banner,
+  #workspace-document .workspace-skip-link,
+  #workspace-document [role="toolbar"],
+  #workspace-document [role="menu"],
+  #workspace-document [role="tooltip"],
+  #workspace-document [data-print="hide"],
+  #workspace-document ::-webkit-scrollbar { display: none !important; }
+
+  /* Text prints as text: no caret/selection tint, no animation, links readable. */
+  #workspace-document *, #workspace-document *::before, #workspace-document *::after {
+    animation: none !important; transition: none !important; text-shadow: none !important;
+    caret-color: transparent !important;
+  }
+  #workspace-document a { color: inherit !important; text-decoration: underline; }
+  #workspace-document pre, #workspace-document blockquote, #workspace-document table,
+  #workspace-document img, #workspace-document figure, #workspace-document li { break-inside: avoid; }
+  #workspace-document h1, #workspace-document h2, #workspace-document h3 { break-after: avoid; }
+  #workspace-document img, #workspace-document video { max-width: 100% !important; }
+  #workspace-document pre { white-space: pre-wrap; border: 1px solid #ddd; }
+  /* Rules that name the dark theme directly. */
+  html.dark #workspace-document .prose-editor pre { background: rgba(0, 0, 0, 0.03) !important; }
+  html.dark #workspace-document .prose-editor code:not(pre code) { background: rgba(0, 0, 0, 0.05) !important; }
+}
