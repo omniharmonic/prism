@@ -23,6 +23,8 @@ export interface Thread {
   quote: string;
   resolved: boolean;
   comments: CommentItem[];
+  /** A page-level discussion (NP-CO-02): about the page as a whole, with no anchor in the text. */
+  page?: boolean;
 }
 
 const root = (ydoc: Y.Doc) => ydoc.getMap<Y.Map<unknown>>("comments");
@@ -36,6 +38,7 @@ function snapshot(ydoc: Y.Doc): Thread[] {
       quote: String(t.get("quote") ?? ""),
       resolved: !!t.get("resolved"),
       comments,
+      ...(t.get("page") === true ? { page: true } : {}),
     });
   });
   // unresolved first, then by first-comment time
@@ -63,6 +66,26 @@ export function createThread(ydoc: Y.Doc, id: string, quote: string, first: Comm
     const t = new Y.Map<unknown>();
     t.set("id", id);
     t.set("quote", quote);
+    t.set("resolved", false);
+    const arr = new Y.Array<CommentItem>();
+    arr.push([first]);
+    t.set("comments", arr);
+    root(ydoc).set(id, t);
+  });
+}
+
+/**
+ * Open a page-level thread (NP-CO-02): the same `comments` map entry as an
+ * anchored thread, marked `page: true`, with no `comment` mark in the body — so
+ * it needs no editor schema change. An editor's socket writes it directly;
+ * suggest-level people send the `page-comment` command instead.
+ */
+export function createPageThread(ydoc: Y.Doc, id: string, first: CommentItem): void {
+  ydoc.transact(() => {
+    const t = new Y.Map<unknown>();
+    t.set("id", id);
+    t.set("quote", "");
+    t.set("page", true);
     t.set("resolved", false);
     const arr = new Y.Array<CommentItem>();
     arr.push([first]);

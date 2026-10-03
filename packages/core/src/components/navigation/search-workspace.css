@@ -29,3 +29,12 @@
 @media(max-width:640px){.prism-search-filterbar{padding:6px 10px 0}.prism-search-filter-panel select,.prism-search-filter-toggle,.prism-search-filter-check,.prism-search-filter-clear{min-height:44px;font-size:16px}}
 :root.reduce-motion .prism-search-filter-panel{animation:none}
 @media (prefers-reduced-motion:reduce){.prism-search-filter-panel{animation:none}}
+
+/* NP-SR-06 shortcut hints · NP-SB-04 star from the palette · NP-SR-08 full-screen phone search */
+.prism-command-shortcut{font:inherit;font-size:11px;padding:2px 6px;border-radius:5px;border:1px solid var(--glass-border);color:var(--text-muted);white-space:nowrap}
+.prism-search-star{display:inline-flex;align-items:center;gap:6px;min-height:44px;padding:0 10px;border-radius:7px;font-size:12px;color:var(--text-secondary)}
+.prism-search-star:hover{background:var(--surface-hover);color:var(--text-primary)}
+.prism-search-fullscreen{background:var(--bg-surface)}
+.prism-search-fullscreen::backdrop{background:var(--bg-surface)}
+.prism-search-sheet-full{border:0;box-shadow:none;border-radius:0;padding-top:env(safe-area-inset-top);padding-bottom:env(safe-area-inset-bottom)}
+.prism-search-sheet-full .prism-search-result{min-height:48px}

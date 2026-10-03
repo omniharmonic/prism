@@ -20,9 +20,16 @@ import {
   Type,
   MoveHorizontal,
   Printer,
+  ExternalLink,
+  Share2,
   Search,
+  Bot,
 } from "lucide-react";
 import { requestFindInPage } from "../../lib/tiptap/findShortcuts";
+import { useCollabSharing } from "../../data/CollabSharing";
+import { openSharingDialog } from "../layout/SharingDialogHost";
+import { openInNewTab } from "../../lib/pages/openInNewTab";
+import { inferContentType } from "../../lib/schemas/content-types";
 import { useOfflineAvailability } from "../../lib/offline/availability";
 import { useNote } from "../../app/hooks/useParachute";
 import { useUIStore } from "../../app/stores/ui";
@@ -31,7 +38,7 @@ import { useNoteShortcuts } from "../navigation/NoteShortcuts";
 import { isVaultNoteId } from "../../lib/noteIdentity";
 import { isLocked, pageStyleOf, protectionReason } from "../../lib/pages/model";
 import { usePagesUI, type PageRef } from "../../lib/pages/store";
-import { usePageActions } from "../../lib/pages/usePageActions";
+import { usePageActions, pageLink } from "../../lib/pages/usePageActions";
 import { printCurrentPage, useTransferUI } from "../../lib/import-export/store";
 import type { Note } from "../../lib/types";
 import { PageInfo } from "../sharing/PageInfo";
@@ -55,8 +62,9 @@ export interface PageMenuItem {
  */
 export function usePageMenuItems(
   page: PageRef,
-  opts: { entry?: { path: string | null; tags: string[] | null } | null; onRename?: () => void; close: () => void },
+  opts: { entry?: { path: string | null; tags: string[] | null } | null; onRename?: () => void; close: () => void; /** Phone page sheet: adds Share, Find and Agent (the desktop header has them as buttons). */ sheet?: boolean },
 ): PageMenuItem[] {
+  const sharing = useCollabSharing();
   const actions = usePageActions();
   const { favoriteIds, toggleFavorite } = useNoteShortcuts();
   const real = isVaultNoteId(page.id);
@@ -79,6 +87,14 @@ export function usePageMenuItems(
     fn();
   };
   if (!real) return [];
+  const isActive = activeNoteId === page.id;
+  const native = typeof window !== "undefined" && !!(window as unknown as { __PRISM_HOST__?: unknown }).__PRISM_HOST__;
+  /** Open this page (if it isn't the one in front) and run `then` once it is. */
+  const onPage = (then: () => void) => {
+    if (!isActive) useUIStore.getState().openTab(page.id, page.title, inferContentType(subject as Note));
+    // After the sheet has closed and handed focus back.
+    window.setTimeout(then, isActive ? 60 : 400);
+  };
   const items: PageMenuItem[] = [
     {
       id: "favorite",
@@ -86,6 +102,17 @@ export function usePageMenuItems(
       icon: <Star size={15} fill={isFav ? "var(--color-accent)" : "none"} />,
       onClick: run(() => toggleFavorite({ id: page.id, title: page.title, type: "document" })),
     },
+    ...(opts.sheet && sharing?.getAccess
+      ? [{ id: "share", label: "Share", icon: <Share2 size={15} />, onClick: run(() => openSharingDialog(page.id)) }]
+      : []),
+    // "Open in new tab" (NP-SB-07 / NP-PG-07). Another page: a tab behind the one
+    // being read. The page already in front: a second browser tab on the same page
+    // (the native app has one window, so it is not offered there).
+    ...(!isActive
+      ? [{ id: "open-new-tab", label: "Open in new tab", icon: <ExternalLink size={15} />, onClick: run(() => openInNewTab(page.id, page.title, inferContentType(subject as Note))) }]
+      : !native && !opts.sheet
+        ? [{ id: "open-new-tab", label: "Open in new tab", icon: <ExternalLink size={15} />, onClick: run(() => { window.open(pageLink(page.id), "_blank", "noopener"); }) }]
+        : []),
     {
       id: "add-inside",
       label: "Add a page inside",
@@ -162,8 +189,23 @@ export function usePageMenuItems(
       danger: true,
       startsGroup: true,
       disabled: !!protectedReason,
+      // Integration-owned pages say why (NP-PG-07).
+      detail: protectedReason ?? undefined,
       onClick: run(() => void actions.trash(page)),
     },
+    ...(opts.sheet
+      ? [{
+          id: "agent",
+          label: "Agent",
+          icon: <Bot size={15} />,
+          startsGroup: true,
+          onClick: run(() => onPage(() => {
+            const ui = useUIStore.getState();
+            ui.setContextPanelTab("agent");
+            if (!useUIStore.getState().contextPanelOpen) ui.toggleContextPanel();
+          })),
+        }]
+      : []),
   ];
   return items;
 }
@@ -235,7 +277,11 @@ export function PageMenuPopover({
             onClick={item.onClick}
           >
             {item.icon}
-            <span>{item.label}</span>
+            <span className="page-menu-label">
+              {item.label}
+              {/* A disabled action says why (a tooltip never shows on a disabled control). */}
+              {item.disabled && item.detail && <small className="page-menu-detail">{item.detail}</small>}
+            </span>
           </button>
         </div>
       ))}

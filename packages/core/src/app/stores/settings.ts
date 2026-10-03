@@ -161,6 +161,12 @@ export const useSettingsStore = create<SettingsStore>()(
 );
 
 // Apply theme — just toggle the class. CSS handles all the values.
+/** Flip light/dark from what is on screen now (⌘⇧L, the palette's "Toggle Theme"). */
+export function toggleTheme(): void {
+  const light = typeof document !== "undefined" ? document.documentElement.classList.contains("light") : useSettingsStore.getState().theme === "light";
+  useSettingsStore.getState().setTheme(light ? "dark" : "light");
+}
+
 export function applyTheme(theme: Theme) {
   const root = document.documentElement;
   if (theme === "light") {

@@ -35,7 +35,7 @@ import { canonicalCollabState, humanCollabRevision, humanCollabRevisionInput, HU
 import { createApp } from "../src/app";
 import { config } from "../src/config";
 import { attachCollab, collabSchema, contentToYUpdate, hocuspocus, loadDocumentState, reconcileLoadedDocs, resetReconcileState, yDocToHtml } from "../src/collab";
-import { editFragment, findTextRange } from "../src/collab-ops";
+import { editFragment, findTextRange, listThreads } from "../src/collab-ops";
 import {
   addGrant,
   addVaultEntry,
@@ -76,6 +76,7 @@ import {
   RECEIPTS_PER_DOCUMENT,
   THREADS_PER_DOCUMENT,
   type HumanCommandContext,
+  confirmableCommands,
 } from "../src/human-collab";
 import { resolveSuggestions, type PmNode } from "../src/suggestions";
 import { installFakeVault, makeCapability, makeSession, resetDb, sessionCookie, type FakeVault } from "./helpers";
@@ -1329,6 +1330,26 @@ test("LOW-b: unconfirmed receipts belong to ONE in-memory document — loading t
   assert.equal(getCollabReceipt("primary", "d1", "user:x", "r-1"), null, "its own document's load drops it");
 });
 
+// Hocuspocus unloads by NAME. A late unload of a document that is already gone (the timer
+// after a store; a released direct connection) used to remove the NEWER document loaded
+// under the same name — still alive, no longer registered: an orphan people keep editing,
+// a second copy for the next open, and an Awareness interval that never stops.
+test("a late unload of an already-unloaded document never unregisters the document that replaced it", { timeout: 20000 }, async () => {
+  const first = await hocuspocus.openDirectConnection("d1", {});
+  const old = first.document!;
+  await first.disconnect();
+  await unloaded("d1");
+  const second = await hocuspocus.openDirectConnection("d1", {});
+  const current = second.document!;
+  assert.notEqual(current, old);
+  await hocuspocus.unloadDocument(old); // the stale request, while someone is on the new document
+  assert.equal(hocuspocus.documents.get("d1"), current, "the registered document is untouched");
+  assert.equal(current.isDestroyed, false);
+  // Letting go of it still unloads and destroys it.
+  await second.disconnect();
+  await unloaded("d1");
+  assert.equal(current.isDestroyed, true);
+});
 // ── second review (store fold, text hygiene, budgets, cost, migration) ──────
 
 test("R1: a store that folds a newer vault copy does NOT confirm a command whose change the fold removed — 503, cleaned up, then stale", { timeout: 20000 }, async () => {
@@ -1597,4 +1618,114 @@ test("LOW: cleaning up a lost comment never deletes other people's replies", { t
   undoLostCommands(solo, db.prepare("SELECT rowid, kind, result FROM collab_command_receipts WHERE request_id = ?").all(c2.requestId) as never);
   assert.equal(solo.getMap("comments").has(m2.result.threadId!), false);
   assert.equal(yDocToHtml(solo), BODY);
+});
+
+// ── NP-CO-02: page-level (unanchored) discussion ────────────────────────────
+test("page-comment: a suggest actor opens a page-level thread — no anchor, body untouched, server-stamped author; reply / resolve / delete work on it", { timeout: 20000 }, async () => {
+  const auth = userAuth(SUGGESTER);
+  const editor = await editorClient("d1");
+  const me = await client("d1", auth.socket);
+  const made = await post("d1", await command(me, () => ({ kind: "page-comment", text: "Should this page move to the handbook?" })), auth);
+  assert.equal(made.status, 200, JSON.stringify(made.body));
+  assert.deepEqual(Object.keys(made.body).sort(), ["commentId", "kind", "requestId", "threadId"]);
+  assert.equal(made.body.kind, "page-comment");
+  await caughtUp(editor);
+  const thread = () => editor.getMap<Y.Map<unknown>>("comments").get(made.body.threadId);
+  const items = () => (thread()!.get("comments") as Y.Array<any>).toArray();
+  assert.equal(thread()!.get("page"), true, "marked as a page-level thread");
+  // Agents see it as such too (prism_list_comments reads this listing): a page thread, never "anchored".
+  const listed = listThreads(live("d1")!, true).find((t) => t.id === made.body.threadId)!;
+  assert.equal(listed.page, true);
+  assert.equal(listed.anchored, false);
+  assert.equal(thread()!.get("quote"), "");
+  assert.equal(thread()!.get("resolved"), false);
+  assert.deepEqual(items().map((i) => [i.text, i.author, i.actorId, i.agent]), [["Should this page move to the handbook?", "Sue Gester", documentActorId(auth.identity), false]]);
+  // Not anchored to text: the body is byte-for-byte what it was, live and in the vault.
+  assert.equal(yDocToHtml(editor), BODY);
+  assert.equal(vaultHtml("d1"), BODY);
+  assert.ok(!/data-comment-id/.test(yDocToHtml(editor)));
+
+  // The same thread actions as an anchored thread.
+  await caughtUp(me);
+  const reply = await post("d1", await command(me, () => ({ kind: "reply", threadId: made.body.threadId, text: "Yes, after the review." })), auth);
+  assert.equal(reply.status, 200, JSON.stringify(reply.body));
+  await caughtUp(editor);
+  assert.deepEqual(items().map((i) => i.text), ["Should this page move to the handbook?", "Yes, after the review."]);
+  await caughtUp(me);
+  const resolved = await post("d1", await command(me, () => ({ kind: "resolve", threadId: made.body.threadId, resolved: true })), auth);
+  assert.equal(resolved.status, 200, JSON.stringify(resolved.body));
+  await caughtUp(editor);
+  assert.equal(thread()!.get("resolved"), true);
+  assert.equal(yDocToHtml(editor), BODY, "resolving a page thread stamps no mark");
+  await caughtUp(me);
+  const deleted = await post("d1", await command(me, () => ({ kind: "delete-comment", threadId: made.body.threadId })), auth);
+  assert.equal(deleted.status, 200, JSON.stringify(deleted.body));
+  await caughtUp(editor);
+  assert.equal(thread(), undefined);
+  assert.equal(yDocToHtml(editor), BODY);
+});
+
+test("page-comment: needs suggest (comment / view / anon refused), strict schema, text rules, and counts against the thread budget", { timeout: 20000 }, async () => {
+  const doc = offlineDoc("d1");
+  const good = await command(doc, { kind: "page-comment", text: "hello" });
+  assert.equal((await post("d1", good, null)).status, 401);
+  for (const level of ["view", "comment"] as const) {
+    const r = await post("d1", { ...good, requestId: randomUUID() }, guestAuth(level));
+    assert.equal(r.status, 403, level);
+  }
+  const auth = guestAuth();
+  // No range, no thread id, no author: any extra key is a 400.
+  for (const extra of [{ from: 1, to: 2 }, { quote: "alpha" }, { threadId: "c-x" }, { author: "Owner" }, { page: true }, { resolved: false }]) {
+    const r = await post("d1", { ...good, requestId: randomUUID(), ...extra }, auth);
+    assert.equal(r.status, 400, `extra key ${Object.keys(extra)[0]}`);
+    assert.equal(r.body.error, "invalid_command");
+  }
+  for (const text of ["", "   ", "x".repeat(HUMAN_COLLAB_LIMITS.commentText + 1), "bad\u0000text"]) {
+    const r = await post("d1", { ...good, requestId: randomUUID(), text }, auth);
+    assert.equal(r.status, 400, JSON.stringify(text.slice(0, 12)));
+  }
+  assert.equal(receiptCount(), 0, "nothing refused left a receipt");
+  // A guest's page comment is attributed by the server.
+  const made = await post("d1", { ...good, requestId: randomUUID() }, auth);
+  assert.equal(made.status, 200, JSON.stringify(made.body));
+  const editor = await editorClient("d1");
+  const item = (editor.getMap<Y.Map<unknown>>("comments").get(made.body.threadId)!.get("comments") as Y.Array<any>).get(0);
+  assert.equal(item.author, "Guest");
+  assert.equal(item.actorId, documentActorId(auth.identity));
+  // A stale revision is refused like every other command (the thread list changed).
+  const stale = await post("d1", { ...good, requestId: randomUUID(), text: "second" }, auth);
+  assert.equal(stale.status, 409);
+  assert.equal(stale.body.error, "stale_revision");
+});
+
+test("page-comment: a replay applies once across unload + reload; a lost one is cleaned up (thread kept only if someone else replied)", { timeout: 20000 }, async () => {
+  const auth = guestAuth();
+  const c = await command(offlineDoc("d1"), { kind: "page-comment", text: "once" });
+  const made = await post("d1", c, auth);
+  assert.equal(made.status, 200, JSON.stringify(made.body));
+  await unloaded("d1");
+  const again = await post("d1", c, auth);
+  assert.equal(again.replayed, true);
+  assert.deepEqual(again.body, made.body);
+  const editor = await editorClient("d1");
+  assert.equal(editor.getMap("comments").size, 1);
+  assert.equal((editor.getMap<Y.Map<unknown>>("comments").get(made.body.threadId)!.get("comments") as Y.Array<any>).length, 1);
+
+  // Lost-command cleanup, on in-memory documents.
+  const ctx = (actor: string): HumanCommandContext => ({ vaultId: "primary", noteId: "d2", docName: "d2", actor, level: "suggest", author: { name: actor, color: "#000", actorId: documentActorId(actor) } });
+  const solo = await loadDocumentState("d1", new Y.Doc());
+  const p1 = { requestId: randomUUID(), createdAt: Date.now(), revision: humanRevision(solo), kind: "page-comment" as const, text: "root" };
+  const m1 = executeHumanCommand(solo, ctx("user:a"), p1);
+  const rows = (id: string) => db.prepare("SELECT rowid, kind, result FROM collab_command_receipts WHERE request_id = ?").all(id) as never;
+  assert.deepEqual(confirmableCommands(solo, rows(p1.requestId)).length, 1, "present → confirmable");
+  undoLostCommands(solo, rows(p1.requestId));
+  assert.equal(solo.getMap("comments").has(m1.result.threadId!), false, "a lost page comment with no replies is removed whole");
+  const mixed = await loadDocumentState("d1", new Y.Doc());
+  const p2 = { ...p1, requestId: randomUUID(), revision: humanRevision(mixed) };
+  const m2 = executeHumanCommand(mixed, ctx("user:a"), p2);
+  executeHumanCommand(mixed, ctx("user:b"), { requestId: randomUUID(), createdAt: Date.now(), revision: humanRevision(mixed), kind: "reply" as const, threadId: m2.result.threadId!, text: "someone else's reply" });
+  undoLostCommands(mixed, rows(p2.requestId));
+  const kept = mixed.getMap<Y.Map<unknown>>("comments").get(m2.result.threadId!);
+  assert.ok(kept, "kept: it holds someone else's reply");
+  assert.deepEqual((kept!.get("comments") as Y.Array<any>).toArray().map((i) => i.text), ["someone else's reply"]);
 });

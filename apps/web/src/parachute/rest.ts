@@ -217,6 +217,7 @@ interface TreeRow {
   type?: string;
   prismType?: string;
   order?: number;
+  icon?: string;
 }
 
 /**
@@ -245,8 +246,9 @@ export async function listTree(): Promise<NoteTreeEntry[]> {
       id: r.id,
       path: r.path,
       tags: r.tags,
-      // Only the two keys the tree's type/icon inference reads.
-      metadata: r.type || r.prismType || r.order !== undefined ? { ...(r.type ? { type: r.type } : {}), ...(r.prismType ? { prism_type: r.prismType } : {}), ...(r.order !== undefined ? { prism_order: r.order } : {}) } : null,
+      updatedAt: r.updatedAt,
+      // Only the keys the tree reads: type inference, sibling order, the page's emoji.
+      metadata: r.type || r.prismType || r.order !== undefined || r.icon ? { ...(r.type ? { type: r.type } : {}), ...(r.prismType ? { prism_type: r.prismType } : {}), ...(r.order !== undefined ? { prism_order: r.order } : {}), ...(r.icon ? { icon: r.icon } : {}) } : null,
     }));
     // Pages created on this device and not yet confirmed are part of the tree:
     // they show in the sidebar and their paths are taken (a second offline
@@ -262,15 +264,24 @@ export async function listTree(): Promise<NoteTreeEntry[]> {
   }
 }
 
-export async function getNote(id: string, options?: { fresh?: boolean }): Promise<Note> {
+export async function getNote(id: string, options?: { fresh?: boolean; latest?: boolean }): Promise<Note> {
   const resolved = await resolveLocalNoteId(id);
   if (resolved.startsWith("offline-")) {
     const draft = await localNote(resolved);
     if (!draft) throw new Error("This local draft is unavailable in the current workspace.");
     return draft;
   }
-  const note = await (await req(`/notes/${encodeURIComponent(resolved)}`, options?.fresh ? { cache: "no-store" } : undefined)).json() as Note;
-  return await localNote(resolved, note).catch(() => note) ?? note;
+  // `reload` sends `Cache-Control: no-cache` (the gateway then skips its reuse window) and,
+  // unlike `no-store`, still goes through the device read cache (written on success, used offline).
+  const resp = await req(`/notes/${encodeURIComponent(resolved)}`, options?.fresh ? { cache: "no-store" } : options?.latest ? { cache: "reload" } : undefined);
+  const note = await resp.json() as Note;
+  const merged = await localNote(resolved, note).catch(() => note) ?? note;
+  // Served from this device's copy (no connection): say so, with when it was saved (NP-OF-02).
+  if (resp.headers.get("x-prism-cache") === "hit") {
+    const stored = Number(resp.headers.get("x-prism-cache-stored"));
+    return { ...merged, _offlineCopyAt: Number.isFinite(stored) && stored > 0 ? new Date(stored).toISOString() : (merged.updatedAt ?? null) } as Note;
+  }
+  return merged;
 }
 
 export async function createNote(params: CreateNoteParams): Promise<Note> {
@@ -344,7 +355,9 @@ export async function updateNote(id: string, params: UpdateNoteParams, options?:
     tags: null,
     createdAt: nowISO(),
     updatedAt: nowISO(),
-  }), undefined, options?.expectedScope);
+    // Not a server revision: the write is queued. Editors keep their own base (H1).
+    _queued: true,
+  } as Note), undefined, options?.expectedScope);
 }
 
 /**

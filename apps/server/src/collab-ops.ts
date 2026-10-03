@@ -378,6 +378,8 @@ export interface ThreadOut {
   resolved: boolean;
   /** Whether a `comment` mark with this id still anchors text in the body. */
   anchored: boolean;
+  /** A page-level discussion (NP-CO-02): about the page as a whole; never anchored. */
+  page?: true;
   comments: Array<Omit<CommentItem, "color">>;
 }
 
@@ -407,6 +409,7 @@ export function listThreads(ydoc: Y.Doc, includeResolved: boolean): ThreadOut[] 
       quote: String(t.get("quote") ?? ""),
       resolved,
       anchored: anchored.has(id),
+      ...(t.get("page") === true ? { page: true as const } : {}),
       comments: items.map(({ color: _c, ...rest }) => rest),
     });
   });

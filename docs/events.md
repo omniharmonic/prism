@@ -8,9 +8,18 @@ SSE. `event: ready` once, then default-`message` events with JSON data, `: ping`
 
 ```
 data: {"type":"note","id":"<note id>","op":"upsert"}
-data: {"type":"note","id":"<note id>","op":"remove"}
+data: {"type":"note","id":"<note id>","op":"upsert","tree":true}
+data: {"type":"note","id":"<note id>","op":"remove","tree":true}
 data: {"type":"resync"}
 ```
+
+`tree: true` means **this viewer's sidebar row for the note changed**: the note was created or removed, became
+visible or hidden for them, or its path, tags, `type`/`prism_type`, icon, sibling order or trash state changed
+(`treeRowChanged` in `src/tree.ts` — everything `GET /api/tree` emits except `updatedAt`). A plain content edit
+carries no flag. The client refetches `/api/tree` only for flagged events (at once) and for `resync`; without the
+flag every autosave anywhere made every open client download the tree again (its ETag never matches, because
+rows carry `updatedAt`). The flag is computed per connection AFTER the same view filter, on the row's state before
+and after, so it tells a viewer nothing about a note (or a state of one) they cannot see. A remove is always flagged.
 
 Never content, path, tags or metadata. No `Last-Event-ID`: events are invalidations, a reconnect makes the client
 refetch (`resync`).
@@ -48,6 +57,12 @@ produces no frame. A note that just became hidden is emitted because the client 
 (overflow drops the queue and sends one `resync`), `EVENTS_PING_MS` 25000, `EVENTS_MAX_AGE_MS` 900000.
 
 ## Client
+
+Tree refresh: flagged events and `resync` only; while the tab is hidden the refresh waits until it is visible
+again (one refetch, however many events arrived). As a fallback for an older server (no flag), an id the cached
+tree has never listed still refreshes it. A note re-read caused by an event asks the gateway for a FRESH answer
+(`getNote(id, {latest: true})` → `cache: "reload"` → `Cache-Control: no-cache`, honoured for single-note GETs) — the owner passthrough's 5 s
+reuse window must not answer "the note changed" with the copy from before the change.
 
 `@prism/core`: `lib/events/invalidation.ts` (pure mapper, 500 ms batching), `data/InvalidationContext.tsx`
 (`InvalidationSourceProvider`, app-wide `InvalidationSubscriber`), `lib/events/channelStatus.ts` (`useLivePollMs`).

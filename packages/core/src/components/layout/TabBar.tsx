@@ -19,6 +19,7 @@ import { SyncStateBadge } from "./SyncStateBadge";
 import { QueryClientContext } from "@tanstack/react-query";
 import { agentKeys, useAgentClient } from "../../data/AgentClientContext";
 import type { AgentSessionSummary } from "../../lib/agent/sessions";
+import { PageIcon } from "../../lib/pages/icons";
 
 /** True while a cached agent session has a queued/running turn. Reads the
  *  cache only (AgentChat/AgentActivity own the polling) — never adds a request. */
@@ -48,6 +49,7 @@ function IconButton({
     <button
       onClick={disabled ? undefined : (event) => { event.currentTarget.focus({ preventScroll: true }); onClick(); }}
       title={title}
+      aria-pressed={active === undefined ? undefined : active}
       disabled={disabled}
       className="interactive focus-ring flex items-center justify-center flex-shrink-0"
       style={{
@@ -199,7 +201,7 @@ export function TabBar() {
       {/* Sidebar toggle */}
       <IconButton
         onClick={toggleSidebar}
-        title="Toggle sidebar (⌘B)"
+        title="Toggle sidebar (⌘\)"
         active={sidebarOpen}
       >
         <PanelLeft size={16} />
@@ -279,6 +281,7 @@ export function TabBar() {
                   }}
                 />
               )}
+              <PageIcon noteId={tab.noteId} />
               <button
                 aria-label={`Open ${tab.title}`}
                 aria-current={active ? "page" : undefined}
@@ -389,7 +392,7 @@ export function TabBar() {
             if (!contextPanelOpen) setContextPanelTab("metadata");
             toggleContextPanel();
           }}
-          title="Info panel (⌘\)"
+          title="Info panel (⌘⇧\)"
           active={contextPanelOpen}
         >
           <PanelRight size={16} />

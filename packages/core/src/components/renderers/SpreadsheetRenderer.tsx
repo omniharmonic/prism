@@ -25,7 +25,7 @@ export default function SpreadsheetRenderer({ note, readOnly }: RendererProps) {
   dataRef.current = data;
   // A stable getter keeps autosave cleanup from flushing the previous render.
   const getContent = useCallback(() => serializeCSV(dataRef.current), []);
-  const { isSaving, lastSaved, saveError, saveNow, scheduleSave: rawScheduleSave } = useAutoSave(note.id, getContent);
+  const { isSaving, lastSaved, saveError, saveNow, scheduleSave: rawScheduleSave } = useAutoSave(note.id, getContent, undefined, undefined, { base: note.updatedAt, content: note.content, noWrite: !!readOnly });
   // Read-only surfaces (published Wiki / anonymous): never write back. Wrapping
   // scheduleSave keeps the cell/row handlers unchanged while blocking mutation.
   const scheduleSave = useCallback(() => { if (!readOnly) rawScheduleSave(); }, [readOnly, rawScheduleSave]);

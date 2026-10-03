@@ -62,6 +62,7 @@ export function parseHumanCommand(body: string): HumanCollabCommand | null {
     const extra: Record<string, string[]> = {
       suggest: ["from", "to", "quote", "text"],
       comment: ["from", "to", "quote", "text"],
+      "page-comment": ["text"],
       reply: ["threadId", "text"],
       resolve: ["threadId", "resolved"],
       "delete-comment": ["threadId"],
@@ -93,9 +94,9 @@ export function parseHumanCommand(body: string): HumanCollabCommand | null {
       )
         return null;
       if (v.kind === "comment" && v.from === v.to) return null;
-    } else if (typeof v.threadId !== "string" || !humanThreadId(v.threadId))
+    } else if (v.kind !== "page-comment" && (typeof v.threadId !== "string" || !humanThreadId(v.threadId)))
       return null;
-    if (["suggest", "comment", "reply"].includes(v.kind)) {
+    if (["suggest", "comment", "page-comment", "reply"].includes(v.kind)) {
       if (
         typeof v.text !== "string" ||
         v.text.length >
@@ -106,6 +107,7 @@ export function parseHumanCommand(body: string): HumanCollabCommand | null {
       )
         return null;
       if (v.kind === "suggest" && v.from === v.to && !v.text) return null;
+      if (v.kind === "page-comment" && !v.text.trim()) return null;
     }
     if (v.kind === "resolve" && typeof v.resolved !== "boolean") return null;
     return v as HumanCollabCommand;

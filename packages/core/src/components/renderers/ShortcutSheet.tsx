@@ -56,7 +56,8 @@ export const SHORTCUT_SECTIONS: Section[] = [
   ] },
   { title: "Navigation", rows: [
     k("Quick find (no text selected)", K.quickFind), k("New page (desktop app)", K.newPage), k("Save now", K.save), k("Ask agent about the selection", K.askAgent),
-    k("Toggle sidebar", K.toggleSidebar), k("Toggle side panel", K.toggleSidePanel), k("Close tab", K.closeTab), k("Keyboard shortcuts", K.shortcutSheet),
+    k("Toggle sidebar", K.toggleSidebar), k("Toggle side panel", K.toggleSidePanel), k("Back / forward", K.navBack, K.navForward),
+    k("Settings", K.settings), k("Toggle theme", K.toggleTheme), k("Close tab", K.closeTab), k("Keyboard shortcuts", K.shortcutSheet),
   ] },
   { title: "Databases", rows: [
     k("Select all rows (table)", "Mod-A"), k("Select a range of rows", "Shift-Click"), k("Open a row in a new tab", "Mod-Click"),
@@ -149,7 +150,7 @@ export function installShortcutSheetKey(): void {
   window.addEventListener("keydown", (event) => {
     if (event.key !== "/" || !(isMac ? event.metaKey : event.ctrlKey) || event.altKey || event.shiftKey || event.defaultPrevented) return;
     const target = event.target as HTMLElement | null;
-    if (target?.closest?.('input, textarea, select, [contenteditable="true"]') && !target.closest(".tiptap")) return; // typing in a field
+    if (target?.closest?.('input, textarea, select, [contenteditable="true"]') && !target.closest(".tiptap, [data-prism-shortcuts]")) return; // typing in a field (the sheet's own search box still closes it)
     if (!root && document.querySelector('dialog[open], [role="dialog"][aria-modal="true"]')) return; // another modal owns the moment
     event.preventDefault();
     if (root) closeShortcutSheet(); else openShortcutSheet();

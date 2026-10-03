@@ -11,7 +11,7 @@ test("tablet companion overlays instead of squeezing the document and restores f
   await page.screenshot({ path: info.outputPath("tablet-companion.png") });
   await page.keyboard.press("Escape");
   await expect(panel).toHaveCount(0);
-  const opener = page.getByRole("button", { name: "Info panel (⌘\\)", exact: true });
+  const opener = page.getByRole("button", { name: "Info panel (⌘⇧\\)", exact: true });
   await opener.click();
   await expect(panel).toBeVisible();
   await page.keyboard.press("Escape");

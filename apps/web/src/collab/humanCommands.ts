@@ -193,9 +193,9 @@ export function humanCommandsFor(
         ? validId(payload.suggestionId)
         : validId(payload.threadId)) &&
       (command.kind === "suggest" ||
-        command.kind === "comment" ||
+        command.kind === "comment" || command.kind === "page-comment" ||
         payload.threadId === command.threadId) &&
-      (!["comment", "reply"].includes(command.kind) ||
+      (!["comment", "page-comment", "reply"].includes(command.kind) ||
         validId(payload.commentId)) &&
       (command.kind !== "resolve" || payload.resolved === command.resolved);
     if (!valid)
@@ -256,8 +256,8 @@ export function sendHumanCommand(noteId: string, capabilityToken: string | null)
       payload.requestId === command.requestId &&
       payload.kind === command.kind &&
       (command.kind === "suggest" ? validId(payload.suggestionId) : validId(payload.threadId)) &&
-      (command.kind === "suggest" || command.kind === "comment" || payload.threadId === command.threadId) &&
-      (!["comment", "reply"].includes(command.kind) || validId(payload.commentId)) &&
+      (command.kind === "suggest" || command.kind === "comment" || command.kind === "page-comment" || payload.threadId === command.threadId) &&
+      (!["comment", "page-comment", "reply"].includes(command.kind) || validId(payload.commentId)) &&
       (command.kind !== "resolve" || payload.resolved === command.resolved);
     if (!ok) throw new HumanCommandFailure("The reply did not confirm this change.", "invalid_response", "unknown", response.status);
     return payload as unknown as HumanCollabResult;

@@ -8,6 +8,7 @@ import { inferContentType } from "../../lib/schemas/content-types";
 import { usePagesUI } from "../../lib/pages/store";
 import { useOptionalVaultClient } from "../../data/VaultClientContext";
 import { PageMenuPopover } from "./PageActionsMenu";
+import { PageIcon } from "../../lib/pages/icons";
 import "./pages.css";
 
 interface Crumb {
@@ -102,6 +103,7 @@ function LiveCrumbs({ crumbs }: { crumbs: Crumb[] }) {
               title={pages.has(c.raw) ? `Open ${c.label}` : `Show ${c.label} in the sidebar`}
               onClick={() => go(c)}
             >
+              <PageIcon noteId={pages.get(c.raw)?.id} />
               {c.label}
             </button>
           )}

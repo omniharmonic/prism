@@ -56,6 +56,12 @@ test("outline opens without moving the selection, follows heading edits and navi
   await page.keyboard.type(' together');
   await page.getByRole('button', { name: 'Outline', exact: true }).click();
   await expect(outline.getByRole('button', { name: 'Next steps together', exact: true })).toBeVisible();
+  // NP-PG-11: the section being read is highlighted, and follows the scroll while the outline is open.
+  await expect(outline.getByRole('button', { name: 'Next steps together', exact: true })).toHaveAttribute('aria-current', 'location');
+  await expect(outline.locator('[aria-current="location"]')).toHaveCount(1);
+  await page.locator('.document-writing-scroll').evaluate(node => { node.scrollTop = 0; });
+  await expect(outline.getByRole('button', { name: 'Next steps together', exact: true })).not.toHaveAttribute('aria-current', 'location');
+  expect(await outline.locator('[aria-current="location"]').count()).toBeLessThanOrEqual(1);
   await outline.getByRole('button', { name: 'Next steps together', exact: true }).focus();
   await page.keyboard.press('Escape');
   await expect(outline).toHaveCount(0);

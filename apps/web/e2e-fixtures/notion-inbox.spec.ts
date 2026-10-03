@@ -121,4 +121,7 @@ test("mark all read clears the badge with one write", async ({ page }) => {
   await expect(inbox(page).locator('[data-testid="notification-row"][data-unread="true"]')).toHaveCount(0);
   await expect(nav(page).getByTestId("inbox-badge")).toHaveCount(0);
   expect((await writes(page)).filter((w) => "read" in w).at(-1)).toMatchObject({ read: { all: true } });
+  // Nothing left to mark: the control is disabled, and the tab no longer shows a count.
+  await expect(inbox(page).getByRole("button", { name: "Mark all read" })).toBeDisabled();
+  await expect(inbox(page).getByRole("tab", { name: "Inbox", exact: true })).toBeVisible();
 });

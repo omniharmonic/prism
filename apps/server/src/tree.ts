@@ -38,6 +38,8 @@ export const TREE_META_KEYS = [
   "prism_type",
   "prism_creator",
   "prism_visibility",
+  // The page's emoji (NP-PG-01): shown in the sidebar, tabs, breadcrumbs, favorites.
+  "icon",
   // Pages (nested pages / trash): sibling order is emitted; trash state is internal
   // (trashed rows are never in the tree — GET /api/trash reads them from here).
   ORDER_KEY,
@@ -58,6 +60,8 @@ export interface TreeEntry {
   prismType?: string;
   /** `metadata.prism_order`: the page's fractional sibling order, when set. */
   order?: number;
+  /** `metadata.icon`: the page's emoji (a short string; anything longer is not an icon and is dropped). */
+  icon?: string;
 }
 
 /** Internal row: the entry plus what the private-note rule needs (never emitted). */
@@ -166,6 +170,9 @@ const log = (msg: string) => {
 
 // ── row construction ────────────────────────────────────────────────────────
 
+/** An emoji (incl. ZWJ sequences) is well under this; a longer value is not sent to every tree reader. */
+const ICON_MAX = 32;
+
 function rowFromNote(n: unknown): TreeRow | null {
   if (!n || typeof n !== "object") return null;
   const o = n as Record<string, unknown>;
@@ -183,6 +190,7 @@ function rowFromNote(n: unknown): TreeRow | null {
   if (typeof m.prism_type === "string") row.prismType = m.prism_type;
   const order = m[ORDER_KEY];
   if (typeof order === "number" && Number.isFinite(order)) row.order = order;
+  if (typeof m.icon === "string" && m.icon !== "" && m.icon.length <= ICON_MAX) row.icon = m.icon;
   if (typeof m[TRASH_META.at] === "string") row.trashedAt = m[TRASH_META.at] as string;
   if (typeof m[TRASH_META.by] === "string") row.trashedBy = m[TRASH_META.by] as string;
   if (typeof m[TRASH_META.root] === "string") row.trashedRoot = m[TRASH_META.root] as string;
@@ -193,11 +201,23 @@ function rowFromNote(n: unknown): TreeRow | null {
 /** The permission-math view of a row (same shape the gateway's `ref()` builds). */
 export const rowRef = (r: TreeRow): NoteRef => ({ id: r.id, tags: r.tags, creator: r.creator, visibility: r.visibility, path: r.path });
 
+/**
+ * Did the row a client's SIDEBAR shows change — anything `emit` sends except
+ * `updatedAt`, plus trash state (a trashed row leaves the tree)? A plain content
+ * edit only moves `updatedAt`, and must not make every client refetch the tree (M1).
+ */
+export function treeRowChanged(prev: TreeRow | undefined, row: TreeRow): boolean {
+  if (!prev) return true;
+  const shape = (r: TreeRow) => JSON.stringify([r.path, [...r.tags].sort(), r.type ?? null, r.prismType ?? null, r.order ?? null, r.icon ?? null, !!r.trashedAt]);
+  return shape(prev) !== shape(row);
+}
+
 function emit(r: TreeRow): TreeEntry {
   const e: TreeEntry = { id: r.id, path: r.path, tags: r.tags, updatedAt: r.updatedAt };
   if (r.type !== undefined) e.type = r.type;
   if (r.prismType !== undefined) e.prismType = r.prismType;
   if (r.order !== undefined) e.order = r.order;
+  if (r.icon !== undefined) e.icon = r.icon;
   return e;
 }
 

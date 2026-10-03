@@ -11,6 +11,24 @@ function pushNav(history: string[], index: number, tabId: string): { navHistory:
   return { navHistory: capped, navIndex: capped.length - 1 };
 }
 
+/** NP-SB-11: the desktop sidebar's width and collapsed state persist per device. */
+const SIDEBAR_KEY = "prism:sidebar";
+const clampSidebar = (width: number) => Math.max(200, Math.min(400, Math.round(width)));
+function readSidebar(): { open: boolean; width: number } {
+  try {
+    const raw = JSON.parse(localStorage.getItem(SIDEBAR_KEY) ?? "null") as { open?: unknown; width?: unknown } | null;
+    if (raw && typeof raw === "object") {
+      return { open: raw.open !== false, width: typeof raw.width === "number" && Number.isFinite(raw.width) ? clampSidebar(raw.width) : 260 };
+    }
+  } catch { /* private window / no storage: defaults */ }
+  return { open: true, width: 260 };
+}
+/** Called by the desktop shell only — the phone drawer's open state is never persisted. */
+export function persistSidebar(open: boolean, width: number): void {
+  try { localStorage.setItem(SIDEBAR_KEY, JSON.stringify({ open, width: clampSidebar(width) })); } catch { /* ignore */ }
+}
+const savedSidebar = readSidebar();
+
 export interface PendingEdit {
   noteId: string;
   content: string;
@@ -33,6 +51,8 @@ interface UIStore {
   /** Visit history of active tab ids (for back/forward navigation). */
   navHistory: string[];
   navIndex: number;
+  /** Bumped by back/forward: the canvas restores that page's scroll position (NP-SR-07). */
+  navRestore: number;
 
   // Command bar
   commandBarOpen: boolean;
@@ -76,6 +96,8 @@ interface UIStore {
   setContextPanelTab: (tab: UIStore["contextPanelTab"]) => void;
 
   openTab: (noteId: string, title: string, type: ContentType) => void;
+  /** NP-SB-07 "Open in new tab": add the page as a tab WITHOUT leaving the current one. */
+  openTabInBackground: (noteId: string, title: string, type: ContentType) => void;
   closeTab: (tabId: string) => void;
   closeTabs: (noteId: string) => void;
   closeAllTabs: () => void;
@@ -113,14 +135,15 @@ interface UIStore {
 }
 
 export const useUIStore = create<UIStore>((set, get) => ({
-  sidebarOpen: true,
-  sidebarWidth: 260,
+  sidebarOpen: savedSidebar.open,
+  sidebarWidth: savedSidebar.width,
   contextPanelOpen: false,
   contextPanelWidth: 320,
   contextPanelTab: "metadata",
   openTabs: [],
   navHistory: [],
   navIndex: -1,
+  navRestore: 0,
   activeTabId: null,
   commandBarOpen: false,
   settingsOpen: false,
@@ -137,7 +160,7 @@ export const useUIStore = create<UIStore>((set, get) => ({
   noteRevisions: {},
 
   toggleSidebar: () => set((s) => ({ sidebarOpen: !s.sidebarOpen })),
-  setSidebarWidth: (width) => set({ sidebarWidth: Math.max(200, Math.min(400, width)) }),
+  setSidebarWidth: (width) => set({ sidebarWidth: clampSidebar(width) }),
 
   toggleContextPanel: () => set((s) => ({ contextPanelOpen: !s.contextPanelOpen })),
   setContextPanelWidth: (width) => set({ contextPanelWidth: Math.max(260, Math.min(480, width)) }),
@@ -167,6 +190,14 @@ export const useUIStore = create<UIStore>((set, get) => ({
       activeTabId: newTab.id,
       ...pushNav(s.navHistory, s.navIndex, newTab.id),
     });
+  },
+
+  openTabInBackground: (noteId, title, type) => {
+    const s = get();
+    if (s.openTabs.some((t) => t.noteId === noteId)) return;
+    // With nothing open there is no "current page" to stay on.
+    if (!s.activeTabId) { s.openTab(noteId, title, type); return; }
+    set({ openTabs: [...s.openTabs, { id: `tab-${noteId}`, noteId, title, type, isDirty: false }] });
   },
 
   closeTab: (tabId) => {
@@ -232,7 +263,7 @@ export const useUIStore = create<UIStore>((set, get) => ({
       let i = s.navIndex - 1;
       while (i >= 0 && !s.openTabs.find((t) => t.id === s.navHistory[i])) i--;
       if (i < 0) return s;
-      return { navIndex: i, activeTabId: s.navHistory[i] };
+      return { navIndex: i, activeTabId: s.navHistory[i], navRestore: s.navRestore + 1 };
     }),
 
   navForward: () =>
@@ -240,7 +271,7 @@ export const useUIStore = create<UIStore>((set, get) => ({
       let i = s.navIndex + 1;
       while (i < s.navHistory.length && !s.openTabs.find((t) => t.id === s.navHistory[i])) i++;
       if (i >= s.navHistory.length) return s;
-      return { navIndex: i, activeTabId: s.navHistory[i] };
+      return { navIndex: i, activeTabId: s.navHistory[i], navRestore: s.navRestore + 1 };
     }),
 
   openCommandBar: () => set({ commandBarOpen: true }),

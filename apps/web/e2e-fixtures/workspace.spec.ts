@@ -77,7 +77,9 @@ test("document autosave waits through unrelated workspace rerenders", async ({ p
   const editor = page.locator(".tiptap[contenteditable=true]");
   await expect(editor).toBeVisible();
   await page.clock.install();
-  await page.clock.pauseAt(new Date());
+  // Pause a little AHEAD of now: the page's clock keeps running while this call travels, and
+  // pausing at a time it has already passed is refused ("Cannot fast-forward to the past").
+  await page.clock.pauseAt(new Date(Date.now() + 5_000));
   await editor.press("ControlOrMeta+End");
   await editor.pressSequentially(" A new idea.");
   // Updating the shared font registration used to flush the debounce early.
@@ -206,7 +208,7 @@ test("the same editor and unsaved text survive both responsive breakpoints", asy
   const editor = page.locator(".tiptap[contenteditable=true]");
   await expect(editor).toBeVisible();
   await page.clock.install();
-  await page.clock.pauseAt(new Date());
+  await page.clock.pauseAt(new Date(Date.now() + 5_000)); // ahead of now: the page clock runs while the call travels
   await editor.press("ControlOrMeta+End");
   await editor.pressSequentially(" RESPONSIVE_DRAFT_STAYS");
   await page.evaluate(() => (window as any).prismEditorBeforeResize = document.querySelector(".tiptap[contenteditable=true]"));

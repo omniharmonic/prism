@@ -567,6 +567,41 @@ function planComment(prose: PMNode, command: Exclude<HumanCollabCommand, { kind:
     };
   }
 
+  // NP-CO-02: a page-level thread. Data only — a `comments` map entry marked
+  // `page: true` with an empty quote; the body (and so the editor schema) is
+  // untouched. Same budgets as an anchored thread.
+  if (command.kind === "page-comment") {
+    const text = command.text.trim();
+    if (!text) throw invalid("Enter a comment.");
+    const problem = textProblem(text, "comment");
+    if (problem) throw invalid(problem);
+    if (doc.share.has("comments") && doc.getMap("comments").size >= THREADS_PER_DOCUMENT) {
+      throw new HumanCommandError(429, "too_many_threads", "This document has reached its limit of comment threads. Resolve and delete old threads first.");
+    }
+    const threadId = `c-${randomUUID()}`;
+    const commentId = randomUUID();
+    const entry = item(text, commentId);
+    const added = bytes(JSON.stringify({ id: threadId, quote: "", page: true, resolved: false, comments: [entry] })) + 16;
+    commentBudget(doc, added, usage.comments);
+    return {
+      result: { requestId: command.requestId, kind: "page-comment", threadId, commentId },
+      nextProse: null,
+      commit: (d) => {
+        const t = new Y.Map<unknown>();
+        t.set("id", threadId);
+        t.set("quote", "");
+        t.set("page", true);
+        t.set("resolved", false);
+        const arr = new Y.Array<unknown>();
+        arr.push([entry]);
+        t.set("comments", arr);
+        d.getMap("comments").set(threadId, t);
+      },
+      bodyBytes: 0,
+      commentBytes: added,
+    };
+  }
+
   const thread = doc.share.has("comments") ? getThread(doc, command.threadId) : undefined;
   if (!thread) throw new HumanCommandError(409, "thread_missing", "This comment thread no longer exists.");
   const items = thread.get("comments") as Y.Array<StoredComment> | undefined;
@@ -744,6 +779,7 @@ export function confirmableCommands(doc: Y.Doc, pending: UnconfirmedCollabReceip
       !r ? false
       : row.kind === "suggest" ? !!r.suggestionId && suggestions.has(r.suggestionId)
       : row.kind === "comment" ? !!t && anchors.has(r.threadId!) && items().some((c) => c?.id === r.commentId)
+      : row.kind === "page-comment" ? !!t && items().some((c) => c?.id === r.commentId)
       : row.kind === "reply" ? !!t && items().some((c) => c?.id === r.commentId)
       : row.kind === "resolve" ? !!t && !!t.get("resolved") === !!r.resolved
       : row.kind === "delete-comment" ? !t && !anchors.has(r.threadId!)
@@ -769,6 +805,8 @@ export function confirmableCommands(doc: Y.Doc, pending: UnconfirmedCollabReceip
  *                   anchor) go only if nobody else has replied — a thread that
  *                   holds other people's replies is kept, unanchored if the
  *                   fold removed the anchor (the sidebar shows it as such)
+ *   page-comment    remove the comment item; the (unanchored) thread goes only
+ *                   if nobody else has replied
  *   reply           remove that one comment item
  *   delete-comment  cannot be undone (the thread data is gone): strip the orphan
  *                   anchor so body and comments agree; the retry gets 409
@@ -806,6 +844,12 @@ export function undoLostCommands(doc: Y.Doc, lost: UnconfirmedCollabReceipt[]): 
           threads?.delete(r.threadId);
           stripAnchor(r.threadId);
         }
+      } else if (row.kind === "page-comment" && r.threadId) {
+        // No anchor to strip: remove the item; the thread goes unless someone else replied.
+        const t = threads?.get(r.threadId);
+        const items = t?.get("comments") as Y.Array<StoredComment> | undefined;
+        removeItem(items, r.commentId);
+        if (!t || !items || items.length === 0) threads?.delete(r.threadId);
       } else if (row.kind === "reply" && r.threadId) {
         removeItem(threads?.get(r.threadId)?.get("comments") as Y.Array<StoredComment> | undefined, r.commentId);
       } else if (row.kind === "delete-comment" && r.threadId) {

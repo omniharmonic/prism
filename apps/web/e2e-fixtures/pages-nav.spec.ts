@@ -42,6 +42,26 @@ test("a page with sub-pages is one node: it opens, discloses its children, and a
   await expect(row(page, "Roadmap")).toBeVisible();
 });
 
+// NP-SB-06
+test("tree expansion persists on this device", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto(url());
+  await expect(row(page, "Plan")).toBeVisible();
+  await expect(row(page, "Week 1")).toHaveCount(0);
+  await expand(page, "Plan");
+  await expect(row(page, "Week 1")).toBeVisible();
+  await page.reload();
+  await expect(row(page, "Week 1")).toBeVisible(); // still open, nothing clicked
+  await tree(page).getByRole("button", { name: "Collapse Plan", exact: true }).click();
+  await expect(row(page, "Week 1")).toHaveCount(0);
+  await page.reload();
+  await expect(row(page, "Plan")).toBeVisible();
+  await expect(row(page, "Week 1")).toHaveCount(0);
+  // Remembered per account + vault, and nowhere but this device's storage.
+  const keys = await page.evaluate(() => Object.keys(localStorage).filter((k) => k.startsWith("prism:tree-expanded:")));
+  expect(keys).toHaveLength(1);
+});
+
 test("Move to… moves a page with its sub-pages, and the breadcrumbs follow", async ({ page }) => {
   await page.goto(url("?open=week1"));
   await expect(page.getByRole("navigation", { name: "Document location" })).toContainText("Plan");
@@ -149,8 +169,52 @@ test("integration-owned pages can't be moved or trashed from the page menu", asy
   await nav(page).getByRole("button", { name: "Page actions for Team room", exact: true }).click();
   await expect(page.getByRole("menuitem", { name: "Move to…" })).toBeDisabled();
   await expect(page.getByRole("menuitem", { name: "Move to Trash" })).toBeDisabled();
+  // …and each says why, in the menu itself (NP-PG-07).
+  const reason = await page.getByRole("menuitem", { name: "Move to…" }).locator(".page-menu-detail").innerText();
+  expect(reason.trim().length).toBeGreaterThan(10);
+  await expect(page.getByRole("menuitem", { name: "Move to Trash" }).locator(".page-menu-detail")).toHaveText(reason);
   await page.keyboard.press("Escape");
   await expect(nav(page).getByRole("button", { name: "Add a page inside Team room" })).toHaveCount(0);
+});
+
+// NP-SB-07
+test("tree row hover + and ⋯", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto(url());
+  const plan = row(page, "Plan");
+  await expect(plan).toBeVisible();
+  const add = nav(page).getByRole("button", { name: "Add a page inside Plan", exact: true });
+  const more = nav(page).getByRole("button", { name: "Page actions for Plan", exact: true });
+  // Quiet at rest, revealed on hover (and on keyboard focus).
+  const shown = (l: typeof add) => l.evaluate((el) => Number(getComputedStyle(el.closest(".page-tree-actions") ?? el).opacity) > 0.5);
+  await page.mouse.move(900, 500);
+  expect(await shown(add)).toBe(false);
+  expect(await shown(more)).toBe(false);
+  await plan.hover();
+  await expect.poll(() => shown(add)).toBe(true);
+  await expect.poll(() => shown(more)).toBe(true);
+  await more.click();
+  const menu = page.getByRole("menu");
+  for (const name of ["Add to Favorites", "Duplicate", "Copy link", "Rename", "Move to…", "Open in new tab", "Move to Trash"]) await expect(menu.getByRole("menuitem", { name, exact: true }), name).toBeVisible();
+  // Open in new tab: the page opens as a tab behind the one being read.
+  await menu.getByRole("menuitem", { name: "Open in new tab", exact: true }).click();
+  const tabs = page.getByRole("navigation", { name: "Open document tabs" });
+  await expect(tabs.getByRole("button", { name: "Open Plan", exact: true })).toBeVisible();
+  await expect(tabs.getByRole("button", { name: "Open A living workspace", exact: true })).toHaveAttribute("aria-current", "page");
+  await expect(page.getByRole("status").filter({ hasText: "Opened “Plan” in a new tab" })).toBeVisible();
+  await page.getByRole("button", { name: "Go to tab", exact: true }).click();
+  await expect(tabs.getByRole("button", { name: "Open Plan", exact: true })).toHaveAttribute("aria-current", "page");
+});
+
+// NP-PG-07
+test("page ⋯ menu: Open in new tab opens the page's own address", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto(url("?open=prism"));
+  await expect(page.getByRole("heading", { name: "Rename Prism", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Page actions", exact: true }).click();
+  const popup = page.waitForEvent("popup");
+  await page.getByRole("menuitem", { name: "Open in new tab", exact: true }).click();
+  expect((await popup).url()).toMatch(/\/page\/prism$/);
 });
 
 test("page ⋯ menu: favorite, duplicate, copy link, lock, export and history", async ({ page, context }) => {
@@ -189,6 +253,39 @@ test("page ⋯ menu: favorite, duplicate, copy link, lock, export and history", 
   await page.getByRole("menuitem", { name: "Duplicate" }).click();
   await expect(page.getByRole("heading", { name: "Rename Prism (copy)", exact: true })).toBeVisible();
   expect((await writes(page)).find((w) => w.create)).toMatchObject({ create: { path: "vault/Projects/Prism (copy)", tags: ["page"] } });
+});
+
+// NP-SB-04
+test("favorites reorder by drag and keyboard", async ({ page, browser }) => {
+  const seed = { favorites: ["plan", "archive", "weekly"], recents: [] };
+  await page.goto(url(`?prefs=${encodeURIComponent(JSON.stringify(seed))}`));
+  const favorites = page.getByRole("region", { name: "Favorites", exact: true });
+  const names = () => favorites.locator(".workspace-nav-row").evaluateAll((rows) => rows.map((r) => r.querySelector("button")!.textContent!.trim()));
+  await expect.poll(names).toEqual(["Plan", "Archive", "Weekly review"]);
+  // Keyboard: Alt+Shift+↓ moves the focused favorite down; focus stays on it and the move is announced.
+  const plan = favorites.getByRole("button", { name: "Plan", exact: true });
+  await plan.focus();
+  await page.keyboard.press("Alt+Shift+ArrowDown");
+  await expect.poll(names).toEqual(["Archive", "Plan", "Weekly review"]);
+  await expect(plan).toBeFocused();
+  await expect(favorites.getByRole("status")).toHaveText("Plan moved to position 2 of 3 in Favorites");
+  await page.keyboard.press("Alt+Shift+ArrowDown");
+  await page.keyboard.press("Alt+Shift+ArrowDown"); // already last: nothing happens
+  await expect.poll(names).toEqual(["Archive", "Weekly review", "Plan"]);
+  await page.keyboard.press("Alt+Shift+ArrowUp");
+  await expect.poll(names).toEqual(["Archive", "Plan", "Weekly review"]);
+  // Drag: "Weekly review" onto "Archive" puts it first.
+  await favorites.locator(".workspace-nav-row", { hasText: "Weekly review" }).dragTo(favorites.locator(".workspace-nav-row", { hasText: "Archive" }));
+  await expect.poll(names).toEqual(["Weekly review", "Archive", "Plan"]);
+  // The order is the synced record: the server has it, and another device shows it.
+  await expect.poll(async () => (await page.evaluate(() => (window as any).prismFixturePrefs())).prefs.favorites).toEqual(["weekly", "archive", "plan"]);
+  const server = await page.evaluate(() => (window as any).prismFixturePrefs());
+  const other = await browser.newContext();
+  const second = await other.newPage();
+  await second.goto(url(`?prefs=${encodeURIComponent(JSON.stringify(server.prefs))}`));
+  const there = second.getByRole("region", { name: "Favorites", exact: true });
+  await expect.poll(() => there.locator(".workspace-nav-row").evaluateAll((rows) => rows.map((r) => r.querySelector("button")!.textContent!.trim()))).toEqual(["Weekly review", "Archive", "Plan"]);
+  await other.close();
 });
 
 test("favorites and recents sync through the server and migrate this device's shortcuts once", async ({ page, browser }) => {

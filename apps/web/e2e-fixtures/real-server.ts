@@ -99,8 +99,14 @@ export async function connect(page: Page, context: BrowserContext, server: RealS
   await context.addCookies([{ name: "prism_session", value: sid, domain: base.hostname === "about:blank" ? "127.0.0.1" : "127.0.0.1", path: "/" }]);
   await page.route((url) => /^\/(api|auth|acl)(\/|$)/.test(url.pathname), async (route) => {
     const url = new URL(route.request().url());
-    const response = await route.fetch({ url: `http://127.0.0.1:${server.port}${url.pathname}${url.search}` });
-    await route.fulfill({ response });
+    try {
+      const response = await route.fetch({ url: `http://127.0.0.1:${server.port}${url.pathname}${url.search}` });
+      await route.fulfill({ response });
+    } catch (error) {
+      // A spec that closes its page or context with a request still in flight (the tree
+      // refresh, a poll) has nothing left to answer; anything else is a real failure.
+      if (!page.isClosed()) throw error;
+    }
   });
   const sockets: WebSocket[] = [];
   await page.routeWebSocket(/\/collab(\?|$)/, (ws) => {

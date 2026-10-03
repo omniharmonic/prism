@@ -58,6 +58,8 @@ const commentText = z.string().min(1).max(HUMAN_COLLAB_LIMITS.commentText).refin
 const commandSchema = z.discriminatedUnion("kind", [
   z.strictObject({ ...base, ...range, kind: z.literal("suggest"), text }),
   z.strictObject({ ...base, ...range, kind: z.literal("comment"), text: commentText }),
+  // NP-CO-02: a page-level thread — text only (no range, no quote, no thread id).
+  z.strictObject({ ...base, kind: z.literal("page-comment"), text: commentText.refine((v) => v.trim().length > 0) }),
   z.strictObject({ ...base, kind: z.literal("reply"), threadId, text: commentText }),
   z.strictObject({ ...base, kind: z.literal("resolve"), threadId, resolved: z.boolean() }),
   z.strictObject({ ...base, kind: z.literal("delete-comment"), threadId }),
@@ -157,7 +159,7 @@ humanCollabApi.post("/:id/commands", async (c) => {
   if (!parsed.success) {
     // Say WHY when it is the text (the user can fix that); never echo the body.
     const j = json as { kind?: unknown; text?: unknown } | null;
-    const why = j && typeof j.text === "string" && (j.kind === "suggest" || j.kind === "comment" || j.kind === "reply") ? textProblem(j.text, j.kind === "suggest" ? "suggest" : "comment") : null;
+    const why = j && typeof j.text === "string" && (j.kind === "suggest" || j.kind === "comment" || j.kind === "page-comment" || j.kind === "reply") ? textProblem(j.text, j.kind === "suggest" ? "suggest" : "comment") : null;
     return fail(c, 400, "invalid_command", why ?? "That collaboration request is not valid.");
   }
   const command = parsed.data as HumanCollabCommand;

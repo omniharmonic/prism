@@ -1,3 +1,4 @@
+import { useEffect } from "react";
 import { isAccessUnavailable } from "../../data/VaultClient";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
@@ -9,7 +10,10 @@ import { useAgentChatStore } from "../../lib/agent/chatStore";
 import { useLivePollMs } from "../../lib/events/channelStatus";
 import { withoutTrashed } from "../../lib/pages/model";
 import { hasFilters, matchesFilters, queryTerms, type SearchFilters } from "../../lib/search/match";
+import { blendResults } from "../../lib/search/blend";
+import { takeFreshRead } from "../../lib/events/freshReads";
 import { inferContentType } from "../../lib/schemas/content-types";
+import { notePageIconChanged, pageIconWriteConfirmed, pageIconWriteFailed, reconcilePageIcons } from "../../lib/pages/iconStore";
 
 export function useNotes(filters?: NoteFilters) {
   const client = useVaultClient();
@@ -29,18 +33,22 @@ export function useNotes(filters?: NoteFilters) {
  */
 export function useVaultTree() {
   const client = useVaultClient();
-  return useQuery({
+  const result = useQuery({
     queryKey: ["vault", "tree"] as const,
     queryFn: () => client.listTree(),
     select: withoutTrashed,
   });
+  // A completed tree read replaces any confirmed local icon override (review M3).
+  useEffect(() => { if (result.dataUpdatedAt) reconcilePageIcons(result.dataUpdatedAt); }, [result.dataUpdatedAt]);
+  return result;
 }
 
 export function useNote(id: string | null) {
   const client = useVaultClient();
   const result = useQuery({
     queryKey: queryKeys.vault.note(id!),
-    queryFn: () => client.getNote(id!),
+    // A read caused by "this note changed" asks for the current state, not a reused answer.
+    queryFn: () => (takeFreshRead(id!) ? client.getNote(id!, { latest: true }) : client.getNote(id!)),
     enabled: !!id,
     retry: (count, error) => !isAccessUnavailable(error) && count < 1,
   });
@@ -63,24 +71,31 @@ export function useVaultSearch(query: string, filters?: SearchFilters) {
       const terms = queryTerms(text);
       // Filters narrow the server's permission-filtered keyword search (or, on an
       // older server, the same results client-side). Ranked search has no filters.
+      const keywordSearch = async (): Promise<Note[]> => {
+        const filtered = client.searchNotes ? await client.searchNotes(text, active) : null;
+        if (filtered) return filtered;
+        // Another vault can only be searched by the server; never answer from the active one.
+        if (active?.vault) throw new Error("This server cannot search another vault.");
+        const notes = await client.search(text);
+        return active ? notes.filter((n) => matchesFilters(n, active, terms, (x) => inferContentType(x as Note))) : notes;
+      };
       if (!active && client.semanticSearch) {
-        try {
-          const notes = await client.semanticSearch(text);
-          if (!current()) throw new Error("Workspace changed");
-          return { notes, mode: "ranked" as const };
-        } catch {
-          if (!current()) throw new Error("Workspace changed");
+        // NP-SR-05: ranked and keyword run together and are blended. Either may
+        // fail on its own: ranked down (or a non-primary vault) → keyword, said
+        // openly; keyword down → ranked alone. Both down → the error.
+        const [ranked, keyword] = await Promise.allSettled([client.semanticSearch(text), keywordSearch()]);
+        if (!current()) throw new Error("Workspace changed");
+        if (ranked.status === "fulfilled" && keyword.status === "fulfilled") {
+          const extra = keyword.value.some((k) => !ranked.value.some((r) => r.id === k.id));
+          return { notes: blendResults(ranked.value, keyword.value, terms), mode: extra ? "blended" as const : "ranked" as const };
         }
+        if (ranked.status === "fulfilled") return { notes: ranked.value, mode: "ranked" as const };
+        if (keyword.status === "fulfilled") return { notes: keyword.value, mode: "fallback" as const };
+        throw keyword.reason;
       }
-      const fallback = !active && client.semanticSearch ? "fallback" as const : "keyword" as const;
-      const filtered = client.searchNotes ? await client.searchNotes(text, active) : null;
+      const notes = await keywordSearch();
       if (!current()) throw new Error("Workspace changed");
-      if (filtered) return { notes: filtered, mode: fallback };
-      // Another vault can only be searched by the server; never answer from the active one.
-      if (active?.vault) throw new Error("This server cannot search another vault.");
-      const notes = await client.search(text);
-      if (!current()) throw new Error("Workspace changed");
-      return { notes: active ? notes.filter((n) => matchesFilters(n, active, terms, (x) => inferContentType(x as Note))) : notes, mode: fallback };
+      return { notes, mode: "keyword" as const };
     },
     enabled: text.length > 0,
     staleTime: 0,
@@ -204,13 +219,19 @@ export function useUpdateNote() {
         const cached = queryClient.getQueryData<Note>(queryKeys.vault.note(id));
         if (cached?.updatedAt) params = { ...params, ifUpdatedAt: cached.updatedAt };
       }
+      // NP-PG-01: a changed icon shows in tabs, breadcrumbs and the sidebar at once.
+      if (params.metadata && "icon" in params.metadata) notePageIconChanged(id, params.metadata.icon);
       return client.updateNote(id, params, { expectedScope });
     },
-    onSuccess: (_, { id, path }) => {
+    onError: (_e, { id, metadata }) => {
+      if (metadata && "icon" in metadata) pageIconWriteFailed(id);
+    },
+    onSuccess: (_, { id, path, metadata }) => {
+      if (metadata && "icon" in metadata) pageIconWriteConfirmed(id);
       queryClient.invalidateQueries({ queryKey: queryKeys.vault.note(id) });
       queryClient.invalidateQueries({ queryKey: queryKeys.vault.notes() });
       // A rename/move changes the sidebar: don't wait for the events channel.
-      if (path !== undefined) queryClient.invalidateQueries({ queryKey: ["vault", "tree"] });
+      if (path !== undefined || (metadata && "icon" in metadata)) queryClient.invalidateQueries({ queryKey: ["vault", "tree"] });
 
       // Auto-sync to GitHub: trigger push for matching sync configs
       // TODO: Match note path against config.vaultPath and call githubSyncApi.pushFile()

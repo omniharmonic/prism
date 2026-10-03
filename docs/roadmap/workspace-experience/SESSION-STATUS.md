@@ -45,3 +45,18 @@ Per checklist §3: 3A import/export + templates, 3B native completion (universal
 ## Apple account (done)
 
 Team `83Y42N33H8` (Individual). App ID `com.benjaminlife.prism.client`; APNs key `P2648BP7K4` (file still in `~/Downloads` — move it into the password manager); Developer ID Application + Apple Distribution certificates valid in the login keychain; App Store Connect app "Prism Workspace"; API key `AB84HRLBUA` at `~/.appstoreconnect/private_keys/`; provisioning profile "Prism Workspace App Store".
+
+## Update 2026-10-03 (later) — READ FIRST
+
+**Incident:** the test agents overloaded the production host (load ~40, 15 GB swap) and Prism returned Cloudflare 524 until all agents and test runs were stopped. Rule from now on: **at most 2 agents running browser/server suites at once on this machine, `--workers=2`, and check `uptime` + `curl 127.0.0.1:8787/health` before launching more.** No sub-agent may spawn its own sub-agents.
+
+**On main (`a550aa7`, nothing deployed):** everything above plus wave 3 gaps, import/export/templates, wave 4 editor (schema v5), databases, shell/live updates. Last full runs: server 2137/2137, browser 899 passed.
+
+**Stopped mid-work (resume, one or two at a time):**
+- `fix/collab-convert` (`.worktrees/collab-convert`): server Markdown/HTML conversion off the main thread. Two review rounds; round 3 fixes (persisted absorbed/attempted-write hash honoured at load/reconcile/store; true base for MCP merge; "not saved" notice; sweep rotation; M1–M4) were in progress — check `git status`/log there. Needs main merged, a third independent review, then merge. Until it lands, main still converts on the main thread (a 1 MB note stalls the server ~4 s on live open).
+- `feat/w5-verify` (`.worktrees/w3-verify`): second checklist verification pass; drafts for 61 rows, not integrated.
+- `feat/w5-a11y` (`.worktrees/w5-a11y`): axe + performance sweep, just started.
+- `feat/w5-webkit` (`.worktrees/w5-webkit`): WebKit green, baseline run only.
+- Not started: native group (universal links, ZIP save IPC on iOS; `feat/native-ios` must merge main).
+
+**Owner decisions added:** editor shortcuts (⌘K link with selection else quick find; ⌘⇧H highlight; replace ⌘⌥F; ⌘/ shortcut sheet, block menu ⌘⇧/); DB-11 presentation-only property management; DB-12 computed reverse relations; CO-08 direct publish controls kept; conversion timeout/heap values for the mini.

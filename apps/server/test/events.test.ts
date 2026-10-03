@@ -151,7 +151,7 @@ test("non-owner: only viewable ids, ids only; private + ungranted notes never ap
   k.frame({ type: "remove", id: "priv" }); // private to someone else → nothing
   k.frame(upsert("brandnew", ["secret"])); // ungranted create → nothing
   await tick();
-  assert.deepEqual(s.events(), [{ type: "note", id: "pub", op: "upsert" }]);
+  assert.deepEqual(s.events(), [{ type: "note", id: "pub", op: "upsert" }]); // already in the snapshot, same row: not a tree change
   for (const id of ["hidden", "priv", "brandnew", "secret", "exec", "someone@else"]) assert.ok(!s.raw().includes(id), `leaked ${id}`);
   assert.ok(!s.raw().includes("path") && !s.raw().includes("tags") && !s.raw().includes("content"));
 
@@ -162,9 +162,9 @@ test("non-owner: only viewable ids, ids only; private + ungranted notes never ap
   k.frame({ type: "remove", id: "hidden" });
   await tick();
   assert.deepEqual(s.events().slice(1), [
-    { type: "note", id: "pub", op: "upsert" },
-    { type: "note", id: "hidden", op: "upsert" },
-    { type: "note", id: "hidden", op: "remove" },
+    { type: "note", id: "pub", op: "upsert", tree: true }, // left this viewer's tree
+    { type: "note", id: "hidden", op: "upsert", tree: true }, // entered it
+    { type: "note", id: "hidden", op: "remove", tree: true },
   ]);
   await s.close();
 });
@@ -176,8 +176,8 @@ test("owner sees every note event; resync on snapshot replace; heartbeat ping", 
   k.frame({ type: "remove", id: "priv" });
   await tick(120);
   assert.deepEqual(s.events(), [
-    { type: "note", id: "hidden", op: "upsert" },
-    { type: "note", id: "priv", op: "remove" },
+    { type: "note", id: "hidden", op: "upsert", tree: true },
+    { type: "note", id: "priv", op: "remove", tree: true },
   ]);
   assert.ok(s.raw().includes(": ping"));
   k.frame(snap(note("x", [])));
@@ -200,9 +200,9 @@ test("gateway write-through emits (owner passthrough + non-owner create/patch/de
   await api.request("/notes/p1", { method: "DELETE", headers: { cookie: mc } });
   await tick();
   const want = [
-    { type: "note", id: created.id, op: "upsert" },
-    { type: "note", id: "p1", op: "upsert" },
-    { type: "note", id: "p1", op: "remove" },
+    { type: "note", id: created.id, op: "upsert", tree: true }, // created
+    { type: "note", id: "p1", op: "upsert" }, // a content edit: the sidebar row did not change (M1)
+    { type: "note", id: "p1", op: "remove", tree: true },
   ];
   assert.deepEqual(member.events(), want);
   assert.deepEqual(owner.events(), want);
@@ -253,6 +253,6 @@ test("capability link: view-scoped to its note", async () => {
   k.frame(upsert("pub", ["proj"]));
   k.frame(upsert("mine", ["secret"]));
   await tick();
-  assert.deepEqual(s.events(), [{ type: "note", id: "mine", op: "upsert" }]);
+  assert.deepEqual(s.events().map(({ type, id, op }: any) => ({ type, id, op })), [{ type: "note", id: "mine", op: "upsert" }]);
   await s.close();
 });

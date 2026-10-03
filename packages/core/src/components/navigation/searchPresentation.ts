@@ -11,8 +11,8 @@ export function searchPreview(note: Note & { _snippet?: string }, max = 220): st
   return text.length > max ? `${text.slice(0, max).trimEnd()}…` : text;
 }
 
-export const searchModeLabel = (mode?: "ranked" | "keyword" | "fallback") =>
-  mode === "fallback" ? "Keyword search · Ranked search is unavailable" : mode === "ranked" ? "Ranked search" : "Keyword search";
+export const searchModeLabel = (mode?: "ranked" | "blended" | "keyword" | "fallback") =>
+  mode === "fallback" ? "Keyword search · Ranked search is unavailable" : mode === "blended" ? "Ranked search · with keyword matches" : mode === "ranked" ? "Ranked search" : "Keyword search";
 
 /** Messages are existing email/thread notes, not a separate remote inbox search. */
 export function searchResultGroup(note: Note): "messages" | "notes" {
