@@ -317,47 +317,112 @@ export function newDatabaseProblems(plan: CsvNewDatabasePlan): Array<{ row: numb
   return out;
 }
 
+/** How far a CSV → new database got (so a retry continues instead of starting over). */
+export interface NewDatabaseProgress {
+  /** The database page, once it exists. */
+  note?: Pick<Note, "id" | "path">;
+  /** We created that page in this attempt (as opposed to adopting one that was there). */
+  createdPage?: boolean;
+  /** Property batches (20 fields each) already written. */
+  schemaBatches?: number;
+  schemaDone?: boolean;
+  configDone?: boolean;
+}
+export class NewDatabaseError extends Error {
+  constructor(public readonly stage: "page" | "schema" | "config" | "import", public readonly progress: NewDatabaseProgress, public readonly detail: string | null, public readonly pageRemoved = false) {
+    super(`new database: ${stage} failed`);
+    this.name = "NewDatabaseError";
+  }
+}
+const detailOf = (e: unknown): string | null => {
+  const raw = String((e as Error)?.message ?? "");
+  const at = raw.indexOf("{");
+  return at < 0 ? null : raw.slice(at).match(/"(?:detail|reason)":"([^"]+)"/)?.[1] ?? null;
+};
+
 /**
- * Create a database from a CSV: the tag's properties (owner-only schema write),
- * the database page (or `adopt` an empty one), then the rows through the same
- * owner/admin import route as "Import CSV…". Re-running the import on the new
- * database converges (rows are matched by title).
+ * Create a database from a CSV. Order matters:
+ *   1. the database PAGE (unconfigured) — or `adopt` an empty one;
+ *   2. the tag's properties, with `requireNew`: the SERVER refuses a tag that is
+ *      used, shared, published or an integration's (if it does, a page made in
+ *      step 1 is put in the Trash again — a schema, once written, cannot be undone,
+ *      so it comes after the page);
+ *   3. the page's view config, against the page's CURRENT revision;
+ *   4. the rows, through the same owner/admin import route as "Import CSV…".
+ * A failure throws {@link NewDatabaseError} carrying the progress; pass it back
+ * as `resume` to continue (nothing is created twice; rows are matched by title).
  */
 export async function importCsvAsNewDatabase(client: VaultClient, opts: {
   csv: string; plan: CsvNewDatabasePlan; tag: string; title: string;
   /** Folder for the new database page (ignored with `adopt`). */
   folder?: string;
   /** An existing, still unconfigured database page to turn into this database. */
-  adopt?: Pick<Note, "id" | "path" | "updatedAt">;
+  adopt?: Pick<Note, "id" | "path">;
+  resume?: NewDatabaseProgress;
 }): Promise<{ note: Pick<Note, "id" | "path">; result: CsvImportResponse }> {
   if (!client.updateSchema || !client.importCsv) throw new Error("Importing a CSV as a database needs the Prism Server.");
   const cols = opts.plan.columns.filter((c) => c.as !== "title" && c.as !== "skip");
   const index = (c: CsvColumnPlan) => opts.plan.header.indexOf(c.name);
-  // 1. Properties, in batches the schema route accepts (≤ 20 fields per write).
-  for (let i = 0; i < cols.length; i += 20) {
-    const patch: SchemaPatch = { fields: {}, ui: {} };
-    for (const c of cols.slice(i, i + 20)) {
-      patch.fields![c.key] = fieldFor(c, opts.plan.rows.map((r) => r[index(c)] ?? "")) as NonNullable<SchemaPatch["fields"]>[string];
-      patch.ui![c.key] = { kind: c.as as PropertyKind, label: c.name.slice(0, 80) };
+  const progress: NewDatabaseProgress = { ...(opts.resume ?? {}) };
+  // 1. The page.
+  if (!progress.note) {
+    if (opts.adopt) progress.note = opts.adopt;
+    else {
+      try {
+        const path = `${opts.folder ? `${opts.folder.replace(/\/+$/, "")}/` : ""}${safeTitleLeaf(opts.title)}`;
+        progress.note = await client.createNote({ content: "", path, metadata: { prism_type: "database", title: opts.title } });
+        progress.createdPage = true;
+      } catch (e) {
+        throw new NewDatabaseError("page", progress, detailOf(e));
+      }
     }
-    await client.updateSchema(opts.tag, patch);
   }
-  // 2. The database page: a Table over the tag, showing the imported columns in file order.
-  const config: DatabaseConfig = { ...defaultConfig(opts.tag), views: [{ id: "table", name: "Table", type: "table", ...(cols.length ? { visible: cols.map((c) => c.key) } : {}) }] };
-  let note: Pick<Note, "id" | "path">;
-  if (opts.adopt) {
-    await client.updateNote(opts.adopt.id, { metadata: { prism_database: config }, ifUpdatedAt: opts.adopt.updatedAt ?? undefined });
-    note = opts.adopt;
-  } else {
-    const path = `${opts.folder ? `${opts.folder.replace(/\/+$/, "")}/` : ""}${safeTitleLeaf(opts.title)}`;
-    note = await client.createNote({ content: "", path, metadata: { prism_type: "database", title: opts.title, prism_database: config } });
+  const note = progress.note;
+  // 2. Properties, in batches the schema route accepts (≤ 20 fields per write). The FIRST
+  //    write carries `requireNew`; later batches extend the tag it just claimed.
+  if (!progress.schemaDone) {
+    try {
+      if (!cols.length) await client.updateSchema(opts.tag, { requireNew: true, description: `Pages of the “${opts.title}” database` });
+      for (let i = (progress.schemaBatches ?? 0) * 20; i < cols.length; i += 20) {
+        const patch: SchemaPatch = { ...(i === 0 ? { requireNew: true } : {}), fields: {}, ui: {} };
+        for (const c of cols.slice(i, i + 20)) {
+          patch.fields![c.key] = fieldFor(c, opts.plan.rows.map((r) => r[index(c)] ?? "")) as NonNullable<SchemaPatch["fields"]>[string];
+          patch.ui![c.key] = { kind: c.as as PropertyKind, label: c.name.slice(0, 80) };
+        }
+        await client.updateSchema(opts.tag, patch);
+        progress.schemaBatches = i / 20 + 1;
+      }
+      progress.schemaDone = true;
+    } catch (e) {
+      // Refused before anything of the tag exists: take back a page we made for it.
+      let removed = false;
+      if (progress.createdPage && !progress.schemaBatches && client.trashPage) {
+        try { await client.trashPage(note.id); removed = true; progress.note = undefined; progress.createdPage = false; } catch { /* the page stays; the message says so */ }
+      }
+      throw new NewDatabaseError("schema", progress, detailOf(e), removed);
+    }
   }
-  // 3. The rows.
+  // 3. The view config, against the page as it is NOW (it may have changed since the dialog opened).
+  if (!progress.configDone) {
+    try {
+      const config: DatabaseConfig = { ...defaultConfig(opts.tag), views: [{ id: "table", name: "Table", type: "table", ...(cols.length ? { visible: cols.map((c) => c.key) } : {}) }] };
+      const fresh = await client.getNote(note.id, { fresh: true });
+      await client.updateNote(note.id, { metadata: { prism_database: config }, ifUpdatedAt: fresh.updatedAt ?? undefined });
+      progress.configDone = true;
+    } catch (e) {
+      throw new NewDatabaseError("config", progress, detailOf(e));
+    }
+  }
+  // 4. The rows.
   const mapping: Record<string, string> = {};
   for (const c of opts.plan.columns) if (c.name) mapping[c.name] = c.as === "title" ? "$title" : c.as === "skip" ? "" : c.key;
   const pathPrefix = (note.path ?? `vault/${opts.tag}`).replace(/\.[^./]+$/, "");
-  const result = await client.importCsv({ tag: opts.tag, csv: opts.csv, mapping, pathPrefix, dryRun: false });
-  return { note, result };
+  try {
+    const result = await client.importCsv({ tag: opts.tag, csv: opts.csv, mapping, pathPrefix, dryRun: false });
+    return { note, result };
+  } catch (e) {
+    throw new NewDatabaseError("import", progress, detailOf(e));
+  }
 }
 
 /**
@@ -367,7 +432,7 @@ export async function importCsvAsNewDatabase(client: VaultClient, opts: {
  */
 export function CsvNewDatabaseDialog({ folder = "", adopt, onClose, onCreated }: {
   folder?: string;
-  adopt?: Pick<Note, "id" | "path" | "updatedAt"> & { title?: string };
+  adopt?: Pick<Note, "id" | "path"> & { title?: string };
   onClose: () => void;
   /** The new database page, once it exists (open it). */
   onCreated?: (note: Pick<Note, "id" | "path">, title: string) => void;
@@ -383,6 +448,8 @@ export function CsvNewDatabaseDialog({ folder = "", adopt, onClose, onCreated }:
   const [done, setDone] = useState<{ note: Pick<Note, "id" | "path">; result: CsvImportResponse } | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  // What a failed attempt already made: a retry continues from there.
+  const [progress, setProgress] = useState<NewDatabaseProgress | null>(null);
   const available = !!client.updateSchema && !!client.importCsv;
 
   const load = async (file: File) => {
@@ -421,13 +488,22 @@ export function CsvNewDatabaseDialog({ folder = "", adopt, onClose, onCreated }:
     if (!plan) return;
     setBusy(true); setError("");
     try {
-      // The tag must be new: an existing tag's pages and properties belong to its own database.
+      // The tag must be new. The SERVER decides (it also knows who a tag is shared with or
+      // published to); the schema write enforces the same rule again at import time.
       const t = tag.trim();
-      const [schemas, tags] = await Promise.all([client.getSchemas ? client.getSchemas([t]) : Promise.resolve({ schemas: {} }), client.getTags()]);
-      const used = tags.find((x) => x.tag === t)?.count ?? 0;
-      if (used > 0 || Object.keys((schemas.schemas as Record<string, { fields?: object }>)[t]?.fields ?? {}).length) {
-        setError(`#${t} is already in use${used ? ` by ${used} ${used === 1 ? "page" : "pages"}` : ""}. Choose a new tag, or open that tag’s database and use “Import CSV…” there.`);
-        return;
+      if (client.checkNewTag) {
+        const a = await client.checkNewTag(t);
+        if (!a.available) {
+          setError(`#${t} can’t start a new database: ${a.detail ?? "it is already in use"}. Choose a new tag${a.reason === "tag_in_use" ? ", or open that tag’s database and use “Import CSV…” there" : ""}.`);
+          return;
+        }
+      } else {
+        const [schemas, tags] = await Promise.all([client.getSchemas ? client.getSchemas([t]) : Promise.resolve({ schemas: {} }), client.getTags()]);
+        const used = tags.find((x) => x.tag === t)?.count ?? 0;
+        if (used > 0 || Object.keys((schemas.schemas as Record<string, { fields?: object }>)[t]?.fields ?? {}).length) {
+          setError(`#${t} is already in use${used ? ` by ${used} ${used === 1 ? "page" : "pages"}` : ""}. Choose a new tag, or open that tag’s database and use “Import CSV…” there.`);
+          return;
+        }
       }
       setChecked({ problems: newDatabaseProblems(plan) });
     } catch {
@@ -440,14 +516,31 @@ export function CsvNewDatabaseDialog({ folder = "", adopt, onClose, onCreated }:
     if (!plan) return;
     setBusy(true); setError("");
     try {
-      const out = await importCsvAsNewDatabase(client, { csv, plan, tag: tag.trim(), title: title.trim(), folder, adopt });
+      const out = await importCsvAsNewDatabase(client, { csv, plan, tag: tag.trim(), title: title.trim(), folder, adopt, resume: progress ?? undefined });
+      setProgress(null);
       setDone(out);
       void qc.invalidateQueries({ predicate: (q) => q.queryKey[0] === "vault" && (q.queryKey[1] === "notes" || q.queryKey[1] === "tree" || q.queryKey[1] === "schemas" || q.queryKey[1] === "tags") });
       if (adopt) void qc.invalidateQueries({ queryKey: queryKeys.vault.note(adopt.id) });
     } catch (e) {
-      const raw = String((e as Error).message ?? "");
-      const detail = raw.slice(raw.indexOf("{")).match(/"(?:detail|reason)":"([^"]+)"/)?.[1];
-      setError(`${detail ?? "The import stopped before it finished."} Anything already created is kept: open the “${title.trim()}” database and use “Import CSV…” to bring in the rest (rows are matched by title, so nothing is duplicated).`);
+      const name = title.trim();
+      if (!(e instanceof NewDatabaseError)) setError("The import could not start. Nothing was created.");
+      else {
+        // Say exactly what exists now — never point at a page that was not made (or was taken back).
+        const p = e.progress;
+        setProgress(p.note || p.schemaDone ? p : null);
+        const why = e.detail ? `${e.detail.charAt(0).toUpperCase()}${e.detail.slice(1)}. ` : "";
+        if (e.stage === "page") setError(`${why}The database page could not be created. Nothing was created.`);
+        else if (e.stage === "schema") {
+          if (!p.note || e.pageRemoved) setError(`${why}Nothing was created.`);
+          else if (adopt) setError(`${why}This page is unchanged and nothing was imported.`);
+          else setError(`${why}An empty database page “${name}” was created but could not be removed; nothing was imported into it.`);
+          setChecked(null);
+          if (!p.schemaBatches) setProgress(null);
+        } else if (e.stage === "config") setError(`${why}The properties were created, but the database page could not be set up and no rows were imported. Try again.`);
+        else setError(`${why}“${name}” was created with its properties, but the rows were not imported. Try again — rows are matched by title, so nothing is duplicated.`);
+      }
+      if (adopt) void qc.invalidateQueries({ queryKey: queryKeys.vault.note(adopt.id) });
+      void qc.invalidateQueries({ queryKey: ["vault", "tree"] });
     } finally {
       setBusy(false);
     }
@@ -514,7 +607,9 @@ export function CsvNewDatabaseDialog({ folder = "", adopt, onClose, onCreated }:
             <div className="db-settings-row">
               <span className="db-pop-empty">Nothing is created until you import.</span>
               {checked
-                ? <button type="button" className="db-primary" disabled={busy || !ready} onClick={() => void run()}>{busy ? "Importing…" : `Create database and import ${plan!.rows.length - badRows} ${plan!.rows.length - badRows === 1 ? "row" : "rows"}`}</button>
+                ? progress?.configDone
+                  ? <button type="button" className="db-primary" disabled={busy} onClick={() => void run()}>{busy ? "Importing…" : "Try the import again"}</button>
+                  : <button type="button" className="db-primary" disabled={busy || !ready} onClick={() => void run()}>{busy ? "Importing…" : `Create database and import ${plan!.rows.length - badRows} ${plan!.rows.length - badRows === 1 ? "row" : "rows"}`}</button>
                 : <button type="button" className="db-primary" disabled={busy || !ready} onClick={() => void preview()}>{busy ? "Checking…" : "Preview"}</button>}
             </div>
           </>

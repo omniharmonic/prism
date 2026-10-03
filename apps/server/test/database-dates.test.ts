@@ -83,3 +83,33 @@ test("editor parts round-trip", () => {
   assert.equal(buildDateValue({ date: "nope", time: null, endDate: null, endTime: null }), null);
   assert.equal(parseDateParts("someday"), null);
 });
+
+test("L9: due dates of any shape sort by their start and summarise as start – end", async () => {
+  const { dueSortKey, dueSummary } = await import("@prism/core/database");
+  const now = new Date(2026, 9, 10, 12, 0, 0);
+  assert.ok(dueSortKey("2026-10-03/2026-10-20") < dueSortKey("2026-10-05"));
+  assert.ok(dueSortKey("2026-10-05T09:00:00.000Z") > dueSortKey("2026-10-05") - 86_400_000);
+  assert.equal(dueSortKey("someday"), Infinity);
+  assert.equal(dueSortKey(undefined), Infinity);
+  assert.deepEqual(dueSummary("2026-10-10", false, now), { label: "Due today", state: "today" });
+  assert.equal(dueSummary("2026-10-08", false, now)!.state, "overdue");
+  const running = dueSummary("2026-10-08/2026-10-13", false, now)!;
+  assert.equal(running.state, "today");
+  assert.match(running.label, /^Due .+ – .+/);
+  const ended = dueSummary("2026-10-01/2026-10-03", false, now)!;
+  assert.equal(ended.state, "overdue");
+  assert.match(ended.label, /^Overdue · .+ – .+/);
+  assert.equal(dueSummary("2026-10-12/2026-10-14", false, now)!.state, "soon");
+  assert.equal(dueSummary("2026-10-01/2026-10-03", true, now)!.state, "later");
+  assert.equal(dueSummary("soon", false, now), null);
+});
+
+test("the client's list of ingest sources and tags matches the server's", async () => {
+  const { INGEST_SOURCE_VALUES, integrationOwned } = await import("@prism/core/database");
+  const { INGEST_SOURCES } = await import("../src/ingest-keys");
+  assert.deepEqual([...INGEST_SOURCE_VALUES].sort(), [...INGEST_SOURCES].sort());
+  assert.equal(integrationOwned({ tags: ["task"], metadata: { calendarEventId: "e" } }), true);
+  assert.equal(integrationOwned({ tags: ["task", "clickup"], metadata: {} }), true);
+  assert.equal(integrationOwned({ tags: ["task"], metadata: { source: "Notion" } }), true);
+  assert.equal(integrationOwned({ tags: ["task"], metadata: { source: "book" } }), false);
+});

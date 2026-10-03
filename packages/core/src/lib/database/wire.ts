@@ -54,8 +54,11 @@ export interface RemoveValuesResult {
   field: string;
   /** Pages whose value would be / was targeted. */
   total: number;
-  skipped: { trashed: number; shared: number; system: number };
+  /** Pages holding a value that are left alone, by reason. */
+  skipped: { trashed: number; shared: number; system: number; ingest: number; private: number };
   truncated: boolean;
+  /** A write run stopped at its page/time limit: ask again (each run re-lists). */
+  more?: boolean;
   removed?: number;
   conflicts?: number;
   failed?: number;

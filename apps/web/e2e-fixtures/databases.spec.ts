@@ -659,6 +659,39 @@ test("calendar: a viewer cannot drag an item to another day", async ({ page }) =
   expect((await writes(page)).filter((w: any) => !w.metadata?.prism_database)).toEqual([]);
 });
 
+// Review L8 — a page an integration keeps in sync is never rescheduled by a drag; the chip says why.
+test("L8: calendar drag is off for calendar-synced, ClickUp and ingest-sourced rows", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 1300 });
+  await page.goto("/e2e-fixtures/databases.html?ingest");
+  await page.getByRole("tab", { name: "Calendar" }).click();
+  const cal = page.getByRole("grid", { name: "Calendar calendar" });
+  for (const id of ["g1", "g2", "g3"]) {
+    const chip = cal.locator(`[data-cal-item="${id}"]`);
+    await expect(chip).toHaveAttribute("data-locked", "");
+    await expect(chip).toHaveAttribute("title", /kept in sync by an integration/);
+    const a = (await chip.boundingBox())!;
+    await page.mouse.move(a.x + 10, a.y + a.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(a.x + 40, a.y + 20, { steps: 4 });
+    await page.mouse.move(a.x + 10, a.y + 260, { steps: 10 });
+    await page.mouse.up();
+  }
+  expect((await writes(page)).filter((w: any) => w.set)).toEqual([]);
+  // Long-press / context menu explains it too.
+  await cal.locator('[data-cal-item="g1"]').dispatchEvent("contextmenu");
+  await expect(page.getByRole("alert")).toContainText("“Synced standup” is kept in sync by an integration");
+  // An ordinary page (its `source` is just a word) still moves.
+  const free = cal.locator('[data-cal-item="g4"]');
+  await expect(free).not.toHaveAttribute("data-locked", "");
+  const a = (await free.boundingBox())!;
+  await page.mouse.move(a.x + 10, a.y + a.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(a.x + 40, a.y + 20, { steps: 4 });
+  await page.mouse.move(a.x + 10, a.y + 260, { steps: 10 });
+  await page.mouse.up();
+  await expect.poll(async () => (await writes(page)).filter((w: any) => w.set).at(-1)?.id).toBe("g4");
+});
+
 // NP-DB-16 — a view is duplicated with every setting, and tabs reorder (buttons and drag); both are saved to the database note.
 test("saved views: duplicate and reorder tabs", async ({ page }) => {
   await page.goto("/e2e-fixtures/databases.html");

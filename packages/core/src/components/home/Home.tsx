@@ -1,4 +1,5 @@
 import { useMemo } from "react";
+import { dueSortKey } from "../../lib/database/dates";
 import { useQuery } from "@tanstack/react-query";
 import { AtSign, Bell, CalendarDays, CheckSquare, Clock, FileText, Inbox, LayoutTemplate, Plus } from "lucide-react";
 import type { RendererProps } from "../renderers/RendererProps";
@@ -97,7 +98,8 @@ export default function Home(_props: RendererProps) {
 
   const openTasks = useMemo(() => {
     const list = (tasks.data ?? []).filter((n: Note) => !DONE.has(String(n.metadata?.status ?? "").toLowerCase()));
-    const due = (n: Note) => Date.parse(String(n.metadata?.due ?? n.metadata?.due_date ?? n.metadata?.dueDate ?? "")) || Infinity;
+    // A due date may be a day, a time or a range (start/end): order by its start.
+    const due = (n: Note) => dueSortKey(n.metadata?.due ?? n.metadata?.due_date ?? n.metadata?.dueDate);
     return list.sort((a, b) => due(a) - due(b)).slice(0, 8);
   }, [tasks.data]);
 

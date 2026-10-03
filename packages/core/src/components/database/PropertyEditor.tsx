@@ -327,10 +327,19 @@ export function PropertyEditor({ propertyKey, field, tag, rows, onClose }: {
     setBusy(true);
     setError("");
     try {
-      const out = await client.removePropertyValues(tag, propertyKey, { dryRun: false });
+      // Short requests: the server handles a few hundred pages (or ~20 s) per call and says
+      // `more`; each call re-lists, so a page is never written twice.
+      let removed = 0;
+      let left = 0;
+      for (let round = 0; round < 60; round++) {
+        const out = await client.removePropertyValues(tag, propertyKey, { dryRun: false, limit: 500 });
+        removed += out.removed ?? 0;
+        left = (out.conflicts ?? 0) + (out.failed ?? 0);
+        setNotice(`Removing… ${removed} ${removed === 1 ? "page" : "pages"} so far.`);
+        if (!out.more || !(out.removed ?? 0)) break;
+      }
       void qc.invalidateQueries({ predicate: (q) => q.queryKey[0] === "vault" && (q.queryKey[1] === "notes" || q.queryKey[1] === "note") });
-      const left = (out.conflicts ?? 0) + (out.failed ?? 0);
-      setNotice(`Removed the value from ${out.removed ?? 0} ${(out.removed ?? 0) === 1 ? "page" : "pages"}.${left ? ` ${left} changed meanwhile or could not be written and still hold a value — remove values again to retry.` : ""}`);
+      setNotice(`Removed the value from ${removed} ${removed === 1 ? "page" : "pages"}.${left ? ` ${left} changed meanwhile or could not be written and still hold a value — remove values again to retry.` : ""}`);
       setPlan(null);
     } catch (e) {
       setError(serverDetail(e, "The values could not be removed. They are still stored on their pages."));
@@ -342,12 +351,12 @@ export function PropertyEditor({ propertyKey, field, tag, rows, onClose }: {
 }
 
 function RemovalPlan({ plan, label, tag }: { plan: RemoveValuesResult; label: string; tag: string }) {
-  const kept = plan.skipped.shared + plan.skipped.trashed + plan.skipped.system;
+  const kept = plan.skipped.shared + plan.skipped.trashed + plan.skipped.system + (plan.skipped.ingest ?? 0) + (plan.skipped.private ?? 0);
   return (
     <p role="status">
       <strong>{plan.total} {plan.total === 1 ? "page holds" : "pages hold"} a “{label}” value.</strong>{" "}
       Removing clears it from {plan.total === 1 ? "that page" : "those pages"} (tagged <code>#{tag}</code>); the page text is not touched. It can only be brought back page by page from version history.
-      {kept > 0 && ` ${kept} ${kept === 1 ? "page is" : "pages are"} left alone (in the Trash, a system page, or the value also belongs to another tag’s property).`}
+      {kept > 0 && ` ${kept} ${kept === 1 ? "page is" : "pages are"} left alone (in the Trash, kept in sync by an integration, a system page, someone else’s private page, or the value also belongs to another tag’s property).`}
       {plan.truncated && " This tag is very large; only the first pages were counted."}
     </p>
   );

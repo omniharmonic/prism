@@ -41,6 +41,7 @@ import { allRows, CsvImportDialog, CsvNewDatabaseDialog, downloadText, rowsToCsv
 
 const VIEW_ICONS: Record<ViewType, typeof Table2> = { table: Table2, board: KanbanSquare, gallery: GalleryVerticalEnd, list: ListIcon, calendar: Calendar };
 const ROW_META = ["type", "prism_type", "icon", "cover", "coverY"];
+const INTEGRATION_META = ["source", "source_id", "calendarEventId"];
 /** System property keys that live in metadata (the others are note columns). */
 const SYSTEM_META = SYSTEM_PROPERTIES.map((p) => p.key).filter((k) => !k.startsWith("$"));
 
@@ -116,6 +117,8 @@ export function DatabasePage({ note, readOnly, embedded }: RendererProps & {
     const schemaKeys = tags.flatMap((t) => Object.keys(schemas[t]?.fields ?? {}));
     const wanted = new Set<string>([...schemaKeys, ...(view.visible ?? []), ...ROW_META]);
     for (const k of [view.groupBy, view.dateKey, view.coverKey]) if (k && !k.startsWith("$")) wanted.add(k);
+    // The calendar needs to know which rows an integration owns (they are not dragged).
+    if (view.type === "calendar") for (const k of INTEGRATION_META) wanted.add(k);
     // System properties that live in metadata (created by / last edited by) are
     // fetched when the view shows, filters or sorts by them.
     for (const k of SYSTEM_META) if (view.visible?.includes(k) || filterConditions(view.filter).some((c) => c.key === k) || view.sort?.some((s) => s.key === k)) wanted.add(k);
@@ -483,7 +486,7 @@ export function DatabasePage({ note, readOnly, embedded }: RendererProps & {
       {editingProp && schemas[editingProp.tag]?.fields[editingProp.key] && (
         <PropertyEditor propertyKey={editingProp.key} tag={editingProp.tag} field={schemas[editingProp.tag]!.fields[editingProp.key]!} rows={rows} onClose={() => setEditingProp(null)} />
       )}
-      {importingNew && <CsvNewDatabaseDialog adopt={{ id: note.id, path: note.path, updatedAt: note.updatedAt, title }} onClose={() => setImportingNew(false)} />}
+      {importingNew && <CsvNewDatabaseDialog adopt={{ id: note.id, path: note.path, title }} onClose={() => setImportingNew(false)} />}
       {importing && config && <CsvImportDialog tag={config.source.tags[0]!} dbPath={note.path} props={allProps} onClose={() => setImporting(false)} />}
     </>
   );

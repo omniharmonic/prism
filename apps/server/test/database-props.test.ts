@@ -10,6 +10,7 @@ import { api } from "../src/routes/api";
 import { resetTreeForTests } from "../src/tree";
 import { resetDatabaseCachesForTests, setSchemaAdminMinter } from "../src/routes/databases";
 import { listActionAudit } from "../src/actions/store";
+import { resolveProperties } from "@prism/core/database";
 import { installFakeVault, resetDb, makeSession, sessionCookie, grantUser, type FakeVault } from "./helpers";
 
 let fv: FakeVault;
@@ -45,6 +46,9 @@ beforeEach(() => {
     return innerFetch(input, init);
   }) as typeof fetch;
   setSchemaAdminMinter(async () => "admin-jwt-for-test");
+  // One process, one owner: the per-owner limits are tested on their own (L5).
+  process.env.SCHEMA_WRITES_PER_MINUTE = "1000000";
+  process.env.SCHEMA_REMOVE_PER_MINUTE = "1000000";
 });
 afterEach(() => {
   setSchemaAdminMinter(null);
@@ -157,7 +161,7 @@ test("delete = hide everywhere; values are removed only by the explicit owner jo
 
   // Dry run is the default: counts only, nothing written.
   const dry = (await (await remove("recipe", "notes", {})).json()) as any;
-  assert.deepEqual(dry, { dryRun: true, tag: "recipe", field: "notes", total: 2, skipped: { trashed: 1, shared: 1, system: 0 }, truncated: false });
+  assert.deepEqual(dry, { dryRun: true, tag: "recipe", field: "notes", total: 2, skipped: { trashed: 1, shared: 1, system: 0, ingest: 0, private: 0 }, truncated: false });
   assert.equal(fv.notes.get("r1")!.metadata!.notes, "salt");
 
   // Someone edits r2 between the listing and the write: that page is a conflict, never forced.
@@ -262,4 +266,143 @@ test("NP-DB-25: a CSV becomes a new database — a brand-new tag's schema, then 
   const again = (await (await imp(false)).json()) as any;
   assert.equal(again.result.created, 0);
   assert.equal([...fv.notes.values()].filter((n) => n.tags?.includes("book")).length, 2);
+});
+
+// ── review round (M1, L1–L7) ────────────────────────────────────────────────
+
+test("M1: remove-values never touches ingest-owned pages that also carry the tag; the dry run says so", async () => {
+  seed();
+  fv.put({ id: "e1", path: "vault/messages/email/hello-abcd1234", tags: ["email", "recipe"], content: "", metadata: { title: "Mail", source: "proton-bridge", uid: 41, lastMessageAt: 1700000000000, notes: "from mail" }, updatedAt: "2026-10-01T15:00:00.000Z" });
+  fv.put({ id: "m1", path: "vault/meetings/2026-10-01/Sync", tags: ["meeting", "recipe"], content: "", metadata: { title: "Sync", calendarEventId: "ev1", start: "2026-10-01T10:00:00Z", notes: "agenda" }, updatedAt: "2026-10-01T15:00:00.000Z" });
+  fv.put({ id: "th1", path: "Chats/Team", tags: ["message-thread", "recipe"], content: "", metadata: { title: "Team", lastMessageAt: 1700000000001, notes: "x" }, updatedAt: "2026-10-01T15:00:00.000Z" });
+  fv.put({ id: "s1", path: "Recipes/From ClickUp", tags: ["recipe"], content: "", metadata: { title: "From ClickUp", source: "clickup", source_id: "cu1", notes: "y" }, updatedAt: "2026-10-01T15:00:00.000Z" });
+  for (const field of ["notes", "uid", "lastMessageAt", "start"]) {
+    assert.equal((await put("recipe", { ui: { [field]: { deleted: true } } })).status, 200, field);
+    const dry = (await (await remove("recipe", field, {})).json()) as any;
+    assert.equal(dry.skipped.ingest, field === "notes" ? 4 : 1 + Number(field === "lastMessageAt"), `dry run counts ingest pages for ${field}`);
+    assert.equal((await remove("recipe", field, { dryRun: false })).status, 200);
+  }
+  assert.deepEqual(fv.notes.get("e1")!.metadata, { title: "Mail", source: "proton-bridge", uid: 41, lastMessageAt: 1700000000000, notes: "from mail" });
+  assert.equal(fv.notes.get("m1")!.metadata!.start, "2026-10-01T10:00:00Z");
+  assert.equal(fv.notes.get("m1")!.metadata!.notes, "agenda");
+  assert.equal(fv.notes.get("th1")!.metadata!.lastMessageAt, 1700000000001);
+  assert.equal(fv.notes.get("s1")!.metadata!.notes, "y", "a page an ingester recognises by `source` is left alone");
+  assert.equal("notes" in fv.notes.get("r1")!.metadata!, false, "ordinary pages are still cleared");
+});
+
+test("L1: prototype-named fields are refused everywhere and never read through the prototype", async () => {
+  seed();
+  for (const name of ["toString", "valueOf", "hasOwnProperty", "constructor", "isPrototypeOf"]) {
+    assert.equal((await put("recipe", { fields: { [name]: { type: "string" } } })).status, 400, `field ${name}`);
+    assert.equal((await put("recipe", { ui: { [name]: { deleted: true } } })).status, 400, `hint ${name}`);
+    assert.equal((await put("recipe", { ui: { course: { optionLabels: { [name]: "X" } } } })).status, 400, `option ${name}`);
+    assert.equal((await remove("recipe", name, {})).status, 400, `remove ${name}`);
+  }
+  assert.equal(tagPuts.length, 0);
+});
+
+test("L2: a page whose OTHER tag declares the key only through schema-ui hints is left alone", async () => {
+  seed();
+  fv.put({ id: "h1", path: "Recipes/Hinted", tags: ["recipe", "pantry"], content: "", metadata: { title: "Hinted", notes: "pantry owns this too" }, updatedAt: "2026-10-01T15:00:00.000Z" });
+  assert.equal((await put("pantry", { ui: { notes: { kind: "text", label: "Pantry notes" } } })).status, 200);
+  assert.equal((await put("recipe", { ui: { notes: { deleted: true } } })).status, 200);
+  const dry = (await (await remove("recipe", "notes", {})).json()) as any;
+  assert.equal(dry.skipped.shared, 2); // r3 (vault schema of `favourite`) + h1 (hints of `pantry`)
+  await remove("recipe", "notes", { dryRun: false });
+  assert.equal(fv.notes.get("h1")!.metadata!.notes, "pantry owns this too");
+});
+
+test("L4: someone else's private page is skipped and counted", async () => {
+  seed();
+  fv.put({ id: "pv1", path: "Recipes/Secret", tags: ["recipe"], content: "", metadata: { title: "Secret", notes: "mine", prism_visibility: "private", prism_creator: "kai@test.local" }, updatedAt: "2026-10-01T15:00:00.000Z" });
+  fv.put({ id: "pv2", path: "Recipes/Own", tags: ["recipe"], content: "", metadata: { title: "Own", notes: "owner's", prism_visibility: "private", prism_creator: OWNER }, updatedAt: "2026-10-01T15:00:00.000Z" });
+  await put("recipe", { ui: { notes: { deleted: true } } });
+  const dry = (await (await remove("recipe", "notes", {})).json()) as any;
+  assert.equal(dry.skipped.private, 1);
+  await remove("recipe", "notes", { dryRun: false });
+  assert.equal(fv.notes.get("pv1")!.metadata!.notes, "mine");
+  assert.equal("notes" in fv.notes.get("pv2")!.metadata!, false, "the owner's own private page is theirs to clear");
+});
+
+test("L5: schema writes and remove-values are rate limited per owner; a write run is chunked and says when more remains", async () => {
+  for (let i = 0; i < 30; i++) fv.put({ id: `b${i}`, path: `Recipes/B${i}`, tags: ["recipe"], content: "", metadata: { title: `B${i}`, notes: "n" }, updatedAt: "2026-10-01T10:00:00.000Z" });
+  await put("recipe", { ui: { notes: { deleted: true } } });
+  const first = (await (await remove("recipe", "notes", { dryRun: false, limit: 10 })).json()) as any;
+  assert.equal(first.removed, 10);
+  assert.equal(first.more, true);
+  assert.equal(first.remaining, 20);
+  const rest = (await (await remove("recipe", "notes", { dryRun: false, limit: 500 })).json()) as any;
+  assert.equal(rest.removed, 20);
+  assert.equal(rest.more, false);
+  // Per-owner limits (the defaults are 120 schema writes and 30 removal requests a minute).
+  process.env.SCHEMA_WRITES_PER_MINUTE = "5";
+  process.env.SCHEMA_REMOVE_PER_MINUTE = "5";
+  let limited = 0;
+  for (let i = 0; i < 40; i++) if ((await remove("recipe", "notes", {})).status === 429) limited++;
+  assert.ok(limited > 0, "remove-values is rate limited");
+  let putLimited = 0;
+  for (let i = 0; i < 90; i++) if ((await put("recipe", { ui: { serves: { label: `S${i}` } } })).status === 429) putLimited++;
+  assert.ok(putLimited > 0, "schema writes are rate limited");
+});
+
+test("L6: hint validation — option names, late field declaration, system keys/tags, control characters", async () => {
+  // A label may not collide with another option's stored value or label.
+  const clashValue = await put("recipe", { ui: { course: { optionLabels: { main: "starter" } } } });
+  assert.equal(clashValue.status, 409);
+  assert.equal(((await clashValue.json()) as any).error, "option_name_taken");
+  assert.equal((await put("recipe", { ui: { course: { optionLabels: { main: "Sweet" } } } })).status, 200);
+  assert.equal((await put("recipe", { ui: { course: { optionLabels: { main: "Sweet", dessert: "sweet" } } } })).status, 400, "two labels the same");
+  assert.equal((await put("recipe", { ui: { course: { optionLabels: { main: "Main" } } } })).status, 200, "its own value, re-cased, is fine");
+  // A kind stored for a free key is re-validated when the field is declared later.
+  assert.equal((await put("recipe", { ui: { rating: { kind: "url" } } })).status, 200);
+  const late = await put("recipe", { fields: { rating: { type: "number" } } });
+  assert.equal(late.status, 409);
+  assert.equal(((await late.json()) as any).error, "incompatible_kind");
+  assert.equal((await put("recipe", { fields: { rating: { type: "number" } }, ui: { rating: { kind: "number" } } })).status, 200);
+  // System keys and system tags take no hints.
+  for (const key of ["prism_creator", "title", "gov_sig", "_caps"]) assert.equal((await put("recipe", { ui: { [key]: { label: "X" } } })).status, 400, key);
+  for (const tag of ["prism-trashed", "agent-session", "alert", "governance-role", "agent-skill"]) assert.equal((await put(tag, { ui: { notes: { label: "X" } } })).status, 403, tag);
+  // Newlines and bidi controls never reach a stored label.
+  assert.equal((await put("recipe", { ui: { serves: { label: "Ser\nves‮!" }, course: { optionLabels: { dessert: "Pud\r\nding⁧" } } } })).status, 200);
+  const f = await fieldsOf("recipe");
+  assert.equal(f.serves.label, "Ser ves!");
+  assert.equal(f.course.optionLabels.dessert, "Pud ding");
+});
+
+test("L7: `requireNew` makes the server refuse a tag that is used, governed, published or protected", async () => {
+  seed();
+  const fresh = (tag: string, body: Record<string, unknown> = {}) => put(tag, { requireNew: true, fields: { author: { type: "string" } }, ...body });
+  const used = await fresh("recipe");
+  assert.equal(used.status, 409);
+  assert.equal(((await used.json()) as any).error, "tag_in_use");
+  fv.put({ id: "u1", path: "X/U", tags: ["usedtag"], content: "", metadata: {}, updatedAt: "2026-10-01T10:00:00.000Z" });
+  assert.equal((await fresh("usedtag")).status, 409, "a tag with pages but no schema");
+  assert.equal((await fresh("#usedtag")).status, 409, "canonicalised");
+  grantUser("kai@test.local", "tag", "sharedtag", "edit");
+  const governed = await fresh("sharedtag");
+  assert.equal(governed.status, 409);
+  assert.equal(((await governed.json()) as any).error, "tag_governed");
+  for (const tag of ["task", "person", "email", "meeting"]) assert.equal((await fresh(tag)).status, 409, tag);
+  for (const tag of ["agent-skill", "prism-trashed", "governance-role"]) assert.equal((await fresh(tag)).status, 403, tag);
+  assert.equal(tagPuts.length, 0);
+  // The availability probe gives the same answers without writing.
+  const probe = async (tag: string) => (await (await req(`/schemas/${encodeURIComponent(tag)}/availability`, { cookie: login(OWNER) })).json()) as any;
+  assert.deepEqual(await probe("brandnew"), { tag: "brandnew", available: true });
+  assert.equal((await probe("recipe")).available, false);
+  assert.equal((await probe("sharedtag")).reason, "tag_governed");
+  assert.equal((await req("/schemas/brandnew/availability", { cookie: login("kai@test.local") })).status, 403);
+  assert.equal((await fresh("brandnew")).status, 200);
+  assert.equal(tagPuts.length, 1);
+});
+
+test("L3: a property deleted on one tag does not hide another tag's live property with the same key", () => {
+  const schemas = {
+    recipe: { description: null, fields: { notes: { type: "string", deleted: true }, course: { type: "string" } } },
+    favourite: { description: null, fields: { notes: { type: "string", label: "Why I like it" } } },
+  };
+  const both = resolveProperties(["recipe", "favourite"], schemas, { notes: "family recipe" });
+  assert.deepEqual(both.map((p) => [p.key, p.tag, p.label]), [["course", "recipe", "Course"], ["notes", "favourite", "Why I like it"]]);
+  assert.deepEqual(resolveProperties(["favourite", "recipe"], schemas, { notes: "x" }).map((p) => p.key), ["notes", "course"]);
+  // Deleted by its only declaring tag: hidden even though the page holds a value.
+  assert.deepEqual(resolveProperties(["recipe"], schemas, { notes: "x" }).map((p) => p.key), ["course"]);
 });

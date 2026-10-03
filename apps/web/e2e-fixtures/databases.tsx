@@ -20,6 +20,7 @@ import { Canvas } from "../../../packages/core/src/components/layout/Canvas";
 import { applyTheme } from "../../../packages/core/src/app/stores/settings";
 import { NewContentMenu } from "../../../packages/core/src/components/navigation/NewContentMenu";
 import { OpenAsDatabaseButton } from "../../../packages/core/src/components/database/OpenAsDatabaseButton";
+import { CsvNewDatabaseDialog } from "../../../packages/core/src/components/database/Csv";
 import { coerceCsvValue, compatibleKinds, mergeSchemaFields, parseCsv, runQuery, type CsvImportRequest, type CsvImportResponse, type CsvImportRow, type PropertyBatchResult, type QuerySpec, type SchemaMap, type SchemaPatch } from "@prism/core/database";
 
 const params = new URLSearchParams(location.search);
@@ -67,6 +68,13 @@ const persistedSchemas = sessionStorage.getItem("db-fixture-schemas");
 if (persistedSchemas) Object.assign(schemas, JSON.parse(persistedSchemas));
 /** The server's rules for tags it protects (routes/databases.ts INGEST_TAGS). */
 const INGEST = new Set(["task", "person", "email", "meeting"]);
+function newTagRefusal(tag: string): { error: string; detail: string } | null {
+  if (INGEST.has(tag)) return { error: "tag_in_use", detail: `#${tag} belongs to an integration` };
+  if (tag === "shared") return { error: "tag_governed", detail: `#${tag} is shared or published, so new pages with it would be visible to other people` };
+  if (Object.keys(schemas[tag]?.fields ?? {}).length) return { error: "tag_in_use", detail: `#${tag} already has properties` };
+  if (notes.some((n) => n.tags?.includes(tag))) return { error: "tag_in_use", detail: `#${tag} is already used by pages` };
+  return null;
+}
 
 let notes: Note[] = [
   {
@@ -110,6 +118,20 @@ if (params.has("templates") && !persisted) {
   // "Sneaky" points at an ordinary page (not a template of this database): refused.
   db.metadata = { ...db.metadata, prism_database: { ...(db.metadata!.prism_database as object), templates: [{ id: "tpl-bug", name: "Bug report" }, { id: "page", name: "Sneaky" }] } };
 }
+if (params.has("free-dates") && !persisted) {
+  // The same rows under a tag no integration owns (date ranges are withheld on ingest tags).
+  notes = notes.map((n) => ({ ...n, tags: (n.tags ?? []).map((t) => (t === "task" ? "work" : t)) }));
+  const db = notes.find((n) => n.id === "db")!;
+  db.metadata = { ...db.metadata, prism_database: { ...(db.metadata!.prism_database as object), source: { tags: ["work"] } } };
+}
+if (params.has("free-dates")) schemas.work = schemas.task!;
+if (params.has("ingest")) {
+  // Rows an integration owns: a calendar-synced page, a ClickUp task, an ingest `source`.
+  notes.push(task("g1", "Synced standup", { status: "todo", due: day(1), calendarEventId: "ev-1" }));
+  notes.push(task("g2", "ClickUp ticket", { status: "todo", due: day(1), source: "clickup", source_id: "cu-9" }, { tags: ["task", "clickup"] }));
+  notes.push(task("g3", "Notion mirror", { status: "todo", due: day(1), source: "notion" }));
+  notes.push(task("g4", "Hand-made", { status: "todo", due: day(3), source: "book" }));
+}
 if (params.has("tz")) notes.push(task("t7", "Late call", { status: "todo", due: `${day(3)}T05:00:00Z` }));
 if (link) notes = notes.map((n) => ({ ...n, _level: "view" }));
 if (viewer) notes = notes.map((n) => (n.id === "t6" ? n : { ...n, _caps: ["view"] }));
@@ -131,6 +153,13 @@ const controls = {
   imports: [] as unknown[],
   removals: [] as unknown[],
   schemas: () => schemas,
+  /** Order of the calls a "CSV → new database" makes. */
+  log: [] as string[],
+  /** The next CSV import fails (after schema + page). */
+  failNextImport: false,
+  /** remove-values handles at most this many pages per request (then says `more`). */
+  removeChunk: 0,
+  availability: [] as string[],
 };
 Object.assign(window, { dbFixture: controls, prismUI: useUIStore });
 
@@ -166,6 +195,7 @@ const client: Partial<VaultClient> = {
   getGraph: async () => ({ nodes: [], edges: [] }),
   createNote: async (p) => {
     controls.creates.push(clone(p));
+    controls.log.push("create");
     if (controls.failNext) { controls.failNext = false; throw new Error("The page could not be created. Your title is kept; try again."); }
     const n: Note = { id: `new-${++rev}`, content: p.content, path: p.path ?? null, tags: p.tags ?? [], metadata: p.metadata ?? {}, createdAt: at, updatedAt: at, ...(viewer ? { _caps: ["view", "edit"] } : {}) };
     notes.push(n);
@@ -174,6 +204,7 @@ const client: Partial<VaultClient> = {
   },
   updateNote: async (id, p) => {
     controls.writes.push(clone({ id, ...p }));
+    if (p.metadata?.prism_database) controls.log.push("config");
     if (controls.slowMs) await new Promise((r) => setTimeout(r, controls.slowMs));
     const n = find(id)!;
     if (p.ifUpdatedAt !== undefined && p.ifUpdatedAt !== n.updatedAt) throw new Error("PATCH failed: 409 conflict");
@@ -192,7 +223,12 @@ const client: Partial<VaultClient> = {
 if (!legacy) {
   client.getSchemas = async () => ({ schemas: clone(schemas), canEdit: !viewer && !link });
   client.updateSchema = async (tag: string, patch: SchemaPatch) => {
-    controls.schemaWrites.push(clone({ tag, patch }));
+    const { requireNew, ...rest } = patch;
+    // What the server does for `requireNew` (routes/databases.ts newTagRefusal).
+    if (requireNew) { const no = newTagRefusal(tag); if (no) throw new VaultRequestError(409, `PUT /schemas failed: 409 ${JSON.stringify(no)}`); }
+    patch = rest;
+    controls.schemaWrites.push(clone({ tag, patch, ...(requireNew ? { requireNew } : {}) }));
+    controls.log.push("schema");
     const cur = schemas[tag] ?? { description: null, fields: {} };
     const merged = mergeSchemaFields(cur.fields, patch.fields ?? {});
     if (!merged.ok) throw new Error(merged.error);
@@ -210,6 +246,11 @@ if (!legacy) {
     sessionStorage.setItem("db-fixture-schemas", JSON.stringify(schemas));
     return clone(schemas[tag]!);
   };
+  client.checkNewTag = async (tag: string) => {
+    controls.availability.push(tag);
+    const no = newTagRefusal(tag);
+    return no ? { tag, available: false, reason: no.error, detail: no.detail } : { tag, available: true };
+  };
   // POST /api/schemas/:tag/fields/:field/remove-values, as the server answers it.
   client.removePropertyValues = async (tag, field, opts) => {
     const dryRun = opts?.dryRun !== false;
@@ -218,10 +259,11 @@ if (!legacy) {
     if (!dryRun && schemas[tag]?.fields[field]?.deleted !== true) throw new VaultRequestError(409, `POST /schemas failed: 409 ${JSON.stringify({ error: "not_deleted", detail: "delete (hide) the property first; a visible property's values are never removed" })}`);
     const holding = notes.filter((n) => n.tags?.includes(tag) && n.metadata?.[field] !== undefined && n.metadata?.[field] !== null);
     const targets = holding.filter((n) => !n.tags!.includes("prism-trashed"));
-    const base = { tag, field, total: targets.length, skipped: { trashed: holding.length - targets.length, shared: 0, system: 0 }, truncated: false };
+    const base = { tag, field, total: targets.length, skipped: { trashed: holding.length - targets.length, shared: 0, system: 0, ingest: 0, private: 0 }, truncated: false };
     if (dryRun) return { dryRun: true, ...base };
-    for (const n of targets) { const meta = { ...(n.metadata ?? {}) }; delete meta[field]; n.metadata = meta; bump(n); }
-    return { dryRun: false, ...base, removed: targets.length, conflicts: 0, failed: 0, remaining: 0 };
+    const batch = controls.removeChunk ? targets.slice(0, controls.removeChunk) : targets;
+    for (const n of batch) { const meta = { ...(n.metadata ?? {}) }; delete meta[field]; n.metadata = meta; bump(n); }
+    return { dryRun: false, ...base, removed: batch.length, conflicts: 0, failed: 0, remaining: targets.length - batch.length, more: batch.length < targets.length };
   };
   client.queryNotes = async (spec: QuerySpec) => {
     controls.queries.push(clone(spec));
@@ -282,6 +324,8 @@ if (!legacy) {
   // A compact emulation of POST /api/databases/import/csv (the real one is server-tested).
   client.importCsv = async (req: CsvImportRequest): Promise<CsvImportResponse> => {
     controls.imports.push(clone({ ...req, csv: req.csv.length }));
+    controls.log.push(req.dryRun === false ? "import" : "import-dry");
+    if (controls.failNextImport && req.dryRun === false) { controls.failNextImport = false; throw new VaultRequestError(502, `POST /databases/import/csv failed: 502 ${JSON.stringify({ error: "vault_unreachable" })}`); }
     const [header, ...rows] = parseCsv(req.csv);
     const fields = schemas[req.tag]?.fields ?? {};
     const keyCol = req.keyColumn ?? Object.entries(req.mapping).find(([, k]) => k === "$title")![0];
@@ -332,15 +376,19 @@ if (!legacy) {
 /** NP-DB-01: the two ways to make a database — the New page menu and a tag's "Open as database". */
 function CreateShell() {
   const [menu, setMenu] = React.useState(false);
+  const [importing, setImporting] = React.useState(false);
   return (
     <main style={{ height: "100dvh", display: "flex", flexDirection: "column" }}>
       <header style={{ display: "flex", gap: 12, alignItems: "center", padding: "8px 16px" }}>
         <button type="button" onClick={() => setMenu(true)}>New page</button>
+        {/* Stands in for the import entry (group 3A): CSV → a NEW database in a folder. */}
+        <button type="button" onClick={() => setImporting(true)}>Import CSV as database</button>
         <span>#task</span>
         <OpenAsDatabaseButton tag="task" />
       </header>
       <Canvas />
       {menu && <NewContentMenu initialFolder="Projects" onClose={() => setMenu(false)} />}
+      {importing && <CsvNewDatabaseDialog folder="Projects" onClose={() => setImporting(false)} onCreated={(n, title) => useUIStore.getState().openTab(n.id, title, "database")} />}
     </main>
   );
 }

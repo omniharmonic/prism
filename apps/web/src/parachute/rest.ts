@@ -612,8 +612,13 @@ export async function updateSchema(tag: string, patch: SchemaPatch): Promise<Tag
 }
 
 /** Owner-only: clear a deleted property's values (dry-run by default). Never queued offline. */
-export async function removePropertyValues(tag: string, field: string, opts: { dryRun?: boolean } = {}): Promise<RemoveValuesResult> {
-  return (await req(`/schemas/${encodeURIComponent(tag)}/fields/${encodeURIComponent(field)}/remove-values`, { method: "POST", body: JSON.stringify({ dryRun: opts.dryRun !== false }), cache: "no-store" })).json();
+export async function removePropertyValues(tag: string, field: string, opts: { dryRun?: boolean; limit?: number } = {}): Promise<RemoveValuesResult> {
+  return (await req(`/schemas/${encodeURIComponent(tag)}/fields/${encodeURIComponent(field)}/remove-values`, { method: "POST", body: JSON.stringify({ dryRun: opts.dryRun !== false, ...(opts.limit ? { limit: opts.limit } : {}) }), cache: "no-store" })).json();
+}
+
+/** Owner-only: can this tag start a new database? (The schema write with `requireNew` enforces it again.) */
+export async function checkNewTag(tag: string): Promise<{ tag: string; available: boolean; reason?: string; detail?: string }> {
+  return (await req(`/schemas/${encodeURIComponent(tag)}/availability`, { cache: "no-store" })).json();
 }
 
 export async function queryNotes(spec: QuerySpec): Promise<QueryPage> {

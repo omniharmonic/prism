@@ -294,8 +294,9 @@ test("property management from the table: retype preview, number format, delete 
 });
 
 // NP-DB-08 — a date holds a day, a time, or a range; status options are grouped. Editors, filters and sorts all understand them.
+// (`?free-dates` re-homes the fixture's rows under a tag no integration owns: ranges are withheld on ingest tags, L9.)
 test("date range and time, status groups", async ({ page }) => {
-  await page.goto("/e2e-fixtures/databases.html");
+  await page.goto("/e2e-fixtures/databases.html?free-dates");
   const table = page.getByRole("table", { name: "All tasks" });
   const dueOf = (id: string) => page.evaluate((id) => (window as any).dbFixture.notes().find((n: any) => n.id === id).metadata.due as string, id);
   const start = await dueOf("t3");
@@ -370,4 +371,32 @@ test("date range and time, status groups", async ({ page }) => {
   await filter.getByRole("button", { name: "Add filter" }).click();
   await filter.getByLabel("Condition 1 property").selectOption("status");
   expect(await filter.getByLabel("Filter value").locator("optgroup").evaluateAll((els) => els.map((e) => (e as HTMLOptGroupElement).label))).toEqual(["To-do", "In progress", "Complete"]);
+});
+
+// Review L5 — a long removal is several short requests: the client keeps asking while the server says `more`.
+test("L5: removing values is chunked", async ({ page }) => {
+  await page.goto("/e2e-fixtures/databases.html?open=db2");
+  await page.evaluate(() => { (window as any).dbFixture.removeChunk = 1; });
+  await page.getByRole("table", { name: "All initiatives" }).getByRole("button", { name: "Stage", exact: true }).click();
+  await page.getByRole("menuitem", { name: "Edit property…" }).click();
+  const editor = page.getByRole("dialog", { name: "Edit property Stage" });
+  await editor.getByRole("button", { name: "Delete property…" }).click();
+  const del = editor.getByRole("group", { name: "Delete property" });
+  await del.getByRole("radio", { name: /Remove the values from every page/ }).check();
+  await del.getByRole("button", { name: "Check what would be removed" }).click();
+  await del.getByRole("button", { name: "Delete and remove 2 values" }).click();
+  await expect(editor.getByRole("status")).toContainText("Removed the value from 2 pages.");
+  expect((await fx(page)).removals.filter((r: any) => !r.dryRun).length).toBe(2);
+  expect(await page.evaluate(() => (window as any).dbFixture.notes().filter((n: any) => n.tags.includes("initiative") && "stage" in n.metadata).length)).toBe(0);
+});
+
+// Review L9 — an ingest-owned tag's date fields stay single dates (other readers of `task.due` expect one date).
+test("L9: no date range on an ingest tag's field; other tags keep it", async ({ page }) => {
+  await page.goto("/e2e-fixtures/databases.html");
+  await row(page, "Refine onboarding copy").getByRole("button", { name: /^Due:/ }).click();
+  await page.getByRole("button", { name: "Time and end date for Due" }).click();
+  const editor = page.getByRole("dialog", { name: "Edit Due" });
+  await expect(editor.getByRole("checkbox", { name: /Add an end date/ })).toBeDisabled();
+  await expect(editor).toContainText("kept in sync by an integration");
+  await expect(editor.getByRole("checkbox", { name: "Include time" })).toBeEnabled();
 });

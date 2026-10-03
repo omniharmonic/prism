@@ -1068,3 +1068,16 @@ test("a task board opens as a database without rewriting a task", async ({ page 
   expect(await page.evaluate(() => (window as any).prismBoardFixture.open().some((t: any) => t.type === "database"))).toBe(true);
   await expect(page.getByText("Database created.")).toBeVisible();
 });
+
+// Review L9 — a date RANGE in `due` (set from a database view) reads as start – end and is overdue only once it has ended.
+test("L9: the due chip shows a range and judges it by its ends", async ({ page }) => {
+  await page.goto("/e2e-fixtures/boards.html?due-range");
+  const chips = page.locator("[data-board-field='due']");
+  await expect(chips).toHaveCount(2);
+  const running = chips.filter({ hasText: "–" }).first();
+  await expect(chips.filter({ hasText: "–" })).toHaveCount(2);
+  await expect(running).toBeVisible();
+  const states = await chips.evaluateAll((els) => els.map((e) => e.getAttribute("data-due")).sort());
+  expect(states).toEqual(["overdue", "today"]); // one ended a week ago; one is running now
+  await expect(chips.filter({ hasText: /^.*Overdue/ })).toHaveCount(1);
+});

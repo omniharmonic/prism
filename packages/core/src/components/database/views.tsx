@@ -20,7 +20,7 @@ import {
 import { ArrowDownWideNarrow, ArrowUpNarrowWide, ArrowUpRight, ChevronDown, ChevronLeft, ChevronRight, EyeOff, Group, MoreHorizontal, Pencil, Plus } from "lucide-react";
 import type { QueryRow } from "../../lib/database/query";
 import { noteTitle, unwrapLink } from "../../lib/database/query";
-import { formatDate, isBlank, optionColor, optionLabel, propertyValue, type PropertyDef } from "../../lib/database/schema";
+import { formatDate, integrationOwned, isBlank, optionColor, optionLabel, propertyValue, type PropertyDef } from "../../lib/database/schema";
 import { dayDiff, daySpan, shiftDateValue } from "../../lib/database/dates";
 import { OptionChip, PropertyDisplay, PropertyValue } from "./PropertyValue";
 import { Popover } from "./Popover";
@@ -566,12 +566,14 @@ function weekBars(items: CalItem[], week: string[]): Array<{ item: CalItem; from
   return out;
 }
 
-function CalChip({ row, ctx, anchorDay, className, style, label, editable }: { row: QueryRow; ctx: ViewContext; anchorDay: string; className: string; style?: React.CSSProperties; label?: string; editable: boolean }) {
+const LOCKED_WHY = "kept in sync by an integration, so its date is changed where it comes from";
+function CalChip({ row, ctx, anchorDay, className, style, label, editable, onLocked }: { row: QueryRow; ctx: ViewContext; anchorDay: string; className: string; style?: React.CSSProperties; label?: string; editable: boolean; /** Set when the row cannot be dragged because an integration owns it (hover / long-press says why). */ onLocked?: () => void }) {
   // One draggable per visible piece of an item (a bar has one per week it crosses).
   const drag = useDraggable({ id: `${row.id}@${anchorDay}`, data: { row, anchorDay }, disabled: !editable });
   return (
-    <button ref={drag.setNodeRef} type="button" className={className} title={title(row)} aria-label={label}
-      data-dragging={drag.isDragging || undefined} data-cal-item={row.id}
+    <button ref={drag.setNodeRef} type="button" className={className} title={onLocked ? `${title(row)} — ${LOCKED_WHY}` : title(row)} aria-label={label}
+      data-dragging={drag.isDragging || undefined} data-cal-item={row.id} data-locked={onLocked ? "" : undefined}
+      onContextMenu={onLocked ? (e) => { e.preventDefault(); onLocked(); } : undefined}
       style={{ ...style, ...(drag.transform ? { transform: `translate3d(${drag.transform.x}px, ${drag.transform.y}px, 0)`, zIndex: 6, position: "relative" } : {}) }}
       {...drag.listeners}
       onClick={(e) => ctx.open(row, e)}>{title(row)}</button>
@@ -625,7 +627,11 @@ export function CalendarView({ ctx, month, onMonth, onPickDate }: { ctx: ViewCon
   const today = ymd(new Date());
   const editableKey = key !== "$createdAt";
   const dateDef = ctx.props.find((p) => p.key === key) ?? ({ key, label: key, kind: "date", options: [], tag: null, multiple: false, enumValues: [] } satisfies PropertyDef);
-  const canMove = (r: QueryRow) => editableKey && !dateDef.system && ctx.canEditRow(r);
+  // A page an integration keeps in sync (a calendar event, a ClickUp task, any ingest source)
+  // is never rescheduled here: its date would be overwritten on the next sync, or drift from it.
+  const locked = (r: QueryRow) => editableKey && !dateDef.system && ctx.canEditRow(r) && integrationOwned(r);
+  const canMove = (r: QueryRow) => editableKey && !dateDef.system && ctx.canEditRow(r) && !integrationOwned(r);
+  const whyLocked = (r: QueryRow) => (locked(r) ? () => setProblem(`“${title(r)}” is ${LOCKED_WHY}.`) : undefined);
   // Drag to reschedule (NP-DB-07): the item moves by whole days — its time of day and a
   // range's length are kept — through the same per-field compare-and-set as a cell edit.
   const onDragEnd = (e: DragEndEvent) => {
@@ -672,13 +678,13 @@ export function CalendarView({ ctx, month, onMonth, onPickDate }: { ctx: ViewCon
                       {/* Room for this week's multi-day bars, which are laid over the row. */}
                       {lanes > 0 && <div aria-hidden="true" style={{ height: lanes * 24, flex: "none" }} />}
                       {adding === k && <NewRowForm label={`New page on ${k}`} onCreate={(t) => ctx.create(t, { [key]: k })} onCancel={() => setAdding(null)} />}
-                      {dayItems.slice(0, 3).map((r) => <CalChip key={r.id} row={r} ctx={ctx} anchorDay={k} className="db-cal-item" editable={canMove(r)} />)}
+                      {dayItems.slice(0, 3).map((r) => <CalChip key={r.id} row={r} ctx={ctx} anchorDay={k} className="db-cal-item" editable={canMove(r)} onLocked={whyLocked(r)} />)}
                       {dayItems.length > 3 && <span className="db-pop-path" style={{ marginLeft: 4 }}>+{dayItems.length - 3} more</span>}
                     </CalDay>
                   );
                 })}
                 {bars.map((b) => (
-                  <CalChip key={`${b.item.row.id}@${keys[b.from]}`} row={b.item.row} ctx={ctx} anchorDay={keys[b.from]!} editable={canMove(b.item.row)}
+                  <CalChip key={`${b.item.row.id}@${keys[b.from]}`} row={b.item.row} ctx={ctx} anchorDay={keys[b.from]!} editable={canMove(b.item.row)} onLocked={whyLocked(b.item.row)}
                     className="db-cal-item db-cal-bar"
                     label={`${title(b.item.row)}, ${formatDate(`${b.item.first}/${b.item.last}`)}`}
                     style={{ gridColumn: `${b.from + 1} / span ${b.len}`, marginTop: 30 + b.lane * 24, ...(b.before ? { borderTopLeftRadius: 0, borderBottomLeftRadius: 0 } : {}), ...(b.after ? { borderTopRightRadius: 0, borderBottomRightRadius: 0 } : {}) }} />

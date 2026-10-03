@@ -241,7 +241,9 @@ export interface VaultClient {
   updateSchema?(tag: string, patch: SchemaPatch): Promise<TagSchema>;
   /** Owner-only: clear a DELETED (hidden-everywhere) property's values on the pages of a
    *  tag — dry-run unless `dryRun: false`, one CAS write per page. Optional. */
-  removePropertyValues?(tag: string, field: string, opts?: { dryRun?: boolean }): Promise<RemoveValuesResult>;
+  removePropertyValues?(tag: string, field: string, opts?: { dryRun?: boolean; limit?: number }): Promise<RemoveValuesResult>;
+  /** Owner-only: may `tag` start a NEW database (unused, unshared, unpublished, not an integration's)? The server decides. */
+  checkNewTag?(tag: string): Promise<{ tag: string; available: boolean; reason?: string; detail?: string }>;
   /** Lean, permission-filtered, paged rows for a database view. Optional: the
    *  shared engine runs over `listNotes` when absent. */
   queryNotes?(spec: QuerySpec): Promise<QueryPage>;

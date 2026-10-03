@@ -24,6 +24,7 @@ import {
   coerceValue,
   formatDateTime,
   formatValue,
+  INGEST_TAGS,
   isBlank,
   looksLikeEmail,
   looksLikePhone,
@@ -397,8 +398,11 @@ function DatePicker({ anchor, def, value, onClose, onPick }: {
   const [endOn, setEndOn] = useState(!!initial?.endDate);
   const [endDate, setEndDate] = useState(initial?.endDate ?? initial?.date ?? "");
   const [endTime, setEndTime] = useState(initial?.endTime ?? initial?.time ?? "10:00");
-  // The vault's own `date` type holds one date; a range needs a text-typed field.
-  const rangeOk = def.type !== "date";
+  // The vault's own `date` type holds one date; a range needs a text-typed field. And a
+  // field of a tag an integration owns (`task.due`, a meeting's date…) stays a single date:
+  // ingesters, agents and other apps read it as one.
+  const ingestField = !!def.tag && INGEST_TAGS.has(def.tag);
+  const rangeOk = def.type !== "date" && !ingestField;
   const next = date ? buildDateValue({ date, time: timeOn ? time : null, endDate: endOn && rangeOk ? endDate || date : null, endTime: timeOn ? endTime : null }) : null;
   const backwards = !!next && endOn && rangeOk && (() => { const r = dateRange(next); return !!r && Date.parse(r[1].length === 10 ? `${r[1]}T00:00:00` : r[1]) < Date.parse(r[0].length === 10 ? `${r[0]}T00:00:00` : r[0]); })();
   const done = () => { if (!date) { onPick(null); onClose(); return; } if (!next || backwards) return; onPick(next); onClose(); };
@@ -415,7 +419,7 @@ function DatePicker({ anchor, def, value, onClose, onPick }: {
             {timeOn && <label className="db-field"><span>End time</span><input type="time" aria-label="End time" value={endTime} onChange={(e) => setEndTime(e.target.value)} /></label>}
           </div>
         )}
-        <label className="db-radio"><input type="checkbox" checked={endOn && rangeOk} disabled={!rangeOk} onChange={(e) => { setEndOn(e.target.checked); if (e.target.checked && (!endDate || endDate < date)) setEndDate(date); }} /> Add an end date{!rangeOk ? " (this property holds a single date)" : ""}</label>
+        <label className="db-radio"><input type="checkbox" checked={endOn && rangeOk} disabled={!rangeOk} onChange={(e) => { setEndOn(e.target.checked); if (e.target.checked && (!endDate || endDate < date)) setEndDate(date); }} /> Add an end date{ingestField ? " (not here: this property is kept in sync by an integration)" : !rangeOk ? " (this property holds a single date)" : ""}</label>
         <label className="db-radio"><input type="checkbox" checked={timeOn} onChange={(e) => setTimeOn(e.target.checked)} /> Include time</label>
         {backwards && <p role="alert" className="db-error">The end is before the start.</p>}
         <div className="db-settings-row">

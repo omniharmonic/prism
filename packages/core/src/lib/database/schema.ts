@@ -137,6 +137,25 @@ export interface PropertyDef {
 }
 
 /**
+ * An option's display name may not read as ANOTHER option (its stored value or its
+ * name): two chips that look the same but store different values. Returns the
+ * clashing name, or null. `values` = every option of the field.
+ */
+export function optionNameClash(values: string[], labels: Record<string, string>): string | null {
+  const taken = new Map<string, string>(); // shown text (lower-cased) → the option value it belongs to
+  for (const v of values) if (!Object.prototype.hasOwnProperty.call(labels, v)) taken.set(v.toLowerCase(), v);
+  for (const [v, l] of Object.entries(labels)) {
+    const shown = l.toLowerCase();
+    const holder = taken.get(shown);
+    if (holder !== undefined && holder !== v) return l;
+    // The stored value of another option, even one that is itself renamed, stays reserved.
+    if (values.some((o) => o !== v && o.toLowerCase() === shown)) return l;
+    taken.set(shown, v);
+  }
+  return null;
+}
+
+/**
  * Kinds a field of a given VAULT type can be presented as (NP-DB-11 "change
  * type"). A retype inside one row of this table only changes presentation; any
  * other change would be a vault type change, which Prism refuses.
@@ -298,10 +317,12 @@ export function propertyFromField(key: string, f: SchemaField, tag: string | nul
   };
 }
 
-/** Keys the source tags' schemas mark as deleted (hidden everywhere). */
+/** Keys hidden everywhere for a page with these tags: deleted by one of them and declared LIVE by none. */
 export function deletedKeys(tags: string[], schemas: SchemaMap): Set<string> {
   const out = new Set<string>();
-  for (const t of tags) for (const [k, f] of Object.entries(schemas[t]?.fields ?? {})) if (f.deleted) out.add(k);
+  const live = new Set<string>();
+  for (const t of tags) for (const [k, f] of Object.entries(schemas[t]?.fields ?? {})) (f.deleted ? out : live).add(k);
+  for (const k of live) out.delete(k);
   return out;
 }
 
@@ -318,19 +339,21 @@ export function resolveProperties(
   const meta = metadata ?? {};
   const out: PropertyDef[] = [];
   const seen = new Set<string>();
+  // A deleted property is hidden on every surface, value or not — but only as THAT tag's
+  // property: another tag of the same page that declares the key live still shows it.
+  const gone = deletedKeys(tags, schemas);
   for (const tag of tags) {
     const s = schemas[tag];
     if (!s) continue;
     for (const [key, f] of Object.entries(s.fields)) {
-      if (seen.has(key) || isSystemKey(key)) continue;
-      // A deleted property is hidden on every surface, value or not (its key stays claimed).
-      if (f.deleted) { seen.add(key); continue; }
+      if (seen.has(key) || isSystemKey(key) || f.deleted) continue;
       if (f.hidden && isBlank(meta[key])) continue;
       seen.add(key);
       out.push(propertyFromField(key, f, tag, meta[key]));
     }
   }
   for (const [key, value] of Object.entries(meta)) {
+    if (gone.has(key)) continue;
     if (seen.has(key) || isSystemKey(key) || value === null || typeof value === "object" && !Array.isArray(value)) continue;
     seen.add(key);
     out.push(propertyFromField(key, {}, null, value));
@@ -454,6 +477,8 @@ export function coerceValue(def: Pick<PropertyDef, "kind" | "multiple">, raw: un
 // ── schema patch (PUT /api/schemas/:tag) ─────────────────────────────────────
 
 export interface SchemaPatch {
+  /** The tag must be NEW (no pages, no schema, nobody shares or publishes it) — the server enforces it (CSV → new database). */
+  requireNew?: boolean;
   description?: string;
   /** New fields (type required) or additive edits to existing ones. */
   fields?: Record<string, { type?: VaultFieldType; enum?: string[]; description?: string; default?: unknown }>;
@@ -463,13 +488,45 @@ export interface SchemaPatch {
 
 const recordOf = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
 const FIELD_NAME = /^[A-Za-z][A-Za-z0-9_-]{0,63}$/;
-const BANNED = new Set(["__proto__", "constructor", "prototype"]);
+/** Every `Object.prototype` property name (toString, valueOf, hasOwnProperty, constructor, __proto__, …) + `prototype`: never a field or option name. */
+export const isPrototypeName = (k: string): boolean => k === "prototype" || k in Object.prototype;
+const BANNED = { has: isPrototypeName };
+/** A label as stored: no line breaks, no bidi controls (they could reorder or spoof surrounding UI text). */
+export function cleanLabel(v: string): string {
+  let out = "";
+  for (const ch of v) {
+    const c = ch.codePointAt(0)!;
+    if (c === 0x061c || c === 0x200e || c === 0x200f || (c >= 0x202a && c <= 0x202e) || (c >= 0x2066 && c <= 0x2069)) continue;
+    out += c === 9 || c === 10 || c === 13 ? " " : ch;
+  }
+  return out.replace(/ {2,}/g, " ").trim();
+}
+/**
+ * Tags whose notes an integration owns (ingest): their schemas may gain fields and
+ * hints, never a `default:`; their values are never removed in bulk; a CSV never
+ * becomes a "new" database over one; date ranges are not offered on their fields.
+ */
+export const INGEST_TAGS: ReadonlySet<string> = new Set(["email", "meeting", "message-thread", "message-archive", "person", "transcript", "task", "clickup", "alert"]);
+/** `metadata.source` values an ingester recognises its own notes by (mirrors the server's `INGEST_SOURCES`; a test pins them equal). */
+export const INGEST_SOURCE_VALUES: ReadonlySet<string> = new Set(["clickup", "fireflies", "fathom", "proton-bridge", "github", "gmail", "matrix", "calendar", "notion"]);
+/** Is this row kept in sync by an integration (calendar event, ClickUp task, any ingest tag or source)? */
+export function integrationOwned(n: { tags?: string[] | null; metadata?: Record<string, unknown> | null }): boolean {
+  const m = n.metadata ?? {};
+  if (typeof m.calendarEventId === "string" && m.calendarEventId) return true;
+  if (m.source_id !== undefined && m.source_id !== null && m.source_id !== "") return true;
+  if (typeof m.source === "string" && INGEST_SOURCE_VALUES.has(m.source.trim().toLowerCase())) return true;
+  return (n.tags ?? []).some((t) => t === "clickup" || t === "meeting" || t === "email" || t === "message-thread" || t === "message-archive" || t === "transcript");
+}
 const okText = (v: unknown, max: number) => typeof v === "string" && v.length <= max && !/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/.test(v);
 
 /** Validate an untrusted `PUT /api/schemas/:tag` body. Never throws. */
 export function validateSchemaPatch(raw: unknown): { ok: true; patch: SchemaPatch } | { ok: false; error: string } {
   if (!recordOf(raw)) return { ok: false, error: "body must be an object" };
   const patch: SchemaPatch = {};
+  if (raw.requireNew !== undefined) {
+    if (typeof raw.requireNew !== "boolean") return { ok: false, error: "requireNew must be boolean" };
+    if (raw.requireNew) patch.requireNew = true;
+  }
   if (raw.description !== undefined) {
     if (!okText(raw.description, 1000)) return { ok: false, error: "description must be ≤1000 chars" };
     patch.description = raw.description as string;
@@ -510,7 +567,7 @@ export function validateSchemaPatch(raw: unknown): { ok: true; patch: SchemaPatc
     if (!recordOf(raw.ui) || names(raw.ui).length > 100) return { ok: false, error: "ui must be an object of ≤100 fields" };
     patch.ui = {};
     for (const [name, h] of Object.entries(raw.ui)) {
-      if (!FIELD_NAME.test(name) || BANNED.has(name)) return { ok: false, error: `invalid field name: ${name}` };
+      if (!FIELD_NAME.test(name) || BANNED.has(name) || isSystemKey(name)) return { ok: false, error: `invalid field name: ${name}` };
       if (!recordOf(h)) return { ok: false, error: `ui.${name} must be an object` };
       const out: FieldHints = {};
       if (h.kind !== undefined) {
@@ -519,7 +576,7 @@ export function validateSchemaPatch(raw: unknown): { ok: true; patch: SchemaPatc
       }
       if (h.label !== undefined) {
         if (!okText(h.label, 80)) return { ok: false, error: `ui.${name}: label must be ≤80 chars` };
-        out.label = (h.label as string).trim();
+        out.label = cleanLabel(h.label as string);
       }
       if (h.hidden !== undefined) {
         if (typeof h.hidden !== "boolean") return { ok: false, error: `ui.${name}: hidden must be boolean` };
@@ -531,7 +588,7 @@ export function validateSchemaPatch(raw: unknown): { ok: true; patch: SchemaPatc
       }
       if (h.reverseLabel !== undefined) {
         if (!okText(h.reverseLabel, 80)) return { ok: false, error: `ui.${name}: reverseLabel must be ≤80 chars` };
-        out.reverseLabel = (h.reverseLabel as string).trim();
+        out.reverseLabel = cleanLabel(h.reverseLabel as string);
       }
       if (h.deleted !== undefined) {
         if (typeof h.deleted !== "boolean") return { ok: false, error: `ui.${name}: deleted must be boolean` };
@@ -547,7 +604,8 @@ export function validateSchemaPatch(raw: unknown): { ok: true; patch: SchemaPatc
         out.optionLabels = {};
         for (const [opt, l] of Object.entries(h.optionLabels)) {
           if (!optName(opt) || !okText(l, 80)) return { ok: false, error: `ui.${name}: invalid option name` };
-          if ((l as string).trim()) out.optionLabels[opt] = (l as string).trim();
+          const text = cleanLabel(l as string);
+          if (text) out.optionLabels[opt] = text;
         }
         const shown = Object.values(out.optionLabels).map((l) => l.toLowerCase());
         if (new Set(shown).size !== shown.length) return { ok: false, error: `ui.${name}: two options cannot share a name` };
@@ -580,6 +638,14 @@ export function validateSchemaPatch(raw: unknown): { ok: true; patch: SchemaPatc
     }
   }
   if (!patch.fields && !patch.ui && patch.description === undefined) return { ok: false, error: "nothing to change" };
+  for (const group of [patch.ui ?? {}] as Array<Record<string, FieldHints>>) {
+    for (const [name, h] of Object.entries(group)) {
+      for (const opt of [...Object.keys(h.colors ?? {}), ...(h.optionOrder ?? []), ...(h.hiddenOptions ?? []), ...Object.keys(h.statusGroups ?? {})]) {
+        if (isPrototypeName(opt)) return { ok: false, error: `ui.${name}: invalid option name` };
+      }
+    }
+  }
+  for (const [name, f] of Object.entries(patch.fields ?? {})) if ((f.enum ?? []).some(isPrototypeName)) return { ok: false, error: `field ${name}: invalid option name` };
   return { ok: true, patch };
 }
 

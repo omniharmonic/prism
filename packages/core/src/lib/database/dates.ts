@@ -119,3 +119,36 @@ export function buildDateValue(p: DateParts): string | null {
   if (!end) return null;
   return `${start}/${end}`;
 }
+
+/** Sort key for a due date of any shape: the START of a range, the instant of a datetime; `Infinity` when there is none. */
+export function dueSortKey(v: unknown): number {
+  if (typeof v !== "string" || !v) return Infinity;
+  const start = dateRange(v)?.[0] ?? v;
+  const t = Date.parse(DAY.test(start) ? `${start}T00:00:00` : start.replace(" ", "T"));
+  return Number.isNaN(t) ? Infinity : t;
+}
+
+/**
+ * A task card's due chip. A single date is judged by its day; a RANGE is "today"
+ * while it is running, "soon"/"later" by its start, and overdue only once it has
+ * ended — and reads as start – end.
+ */
+export function dueSummary(raw: unknown, done: boolean, now = new Date()): { label: string; state: "overdue" | "today" | "soon" | "later" } | null {
+  if (typeof raw !== "string") return null;
+  const span = daySpan(raw);
+  if (!span) return null;
+  const today = ymd(now);
+  const [first, last] = span;
+  const startIn = dayDiff(today, first);
+  const endIn = dayDiff(today, last);
+  const fmt = (day: string) => {
+    const d = new Date(`${day}T00:00:00`);
+    return d.toLocaleDateString(undefined, { month: "short", day: "numeric", ...(d.getFullYear() === now.getFullYear() ? {} : { year: "numeric" }) });
+  };
+  if (first === last) {
+    const label = startIn === 0 ? "Due today" : startIn === 1 ? "Due tomorrow" : startIn < 0 && !done ? `Overdue · ${fmt(first)}` : `Due ${fmt(first)}`;
+    return { label, state: done ? "later" : startIn < 0 ? "overdue" : startIn === 0 ? "today" : startIn <= 3 ? "soon" : "later" };
+  }
+  const text = `${fmt(first)} – ${fmt(last)}`;
+  return { label: endIn < 0 && !done ? `Overdue · ${text}` : `Due ${text}`, state: done ? "later" : endIn < 0 ? "overdue" : startIn <= 0 ? "today" : startIn <= 3 ? "soon" : "later" };
+}
