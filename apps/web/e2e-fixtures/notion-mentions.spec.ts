@@ -284,3 +284,30 @@ test("comment mention, edit own, reopen", async ({ page }) => {
   expect(stored).toContain("@[Ada Lovelace](person:p-ada)");
   expect(stored).toContain("\"resolved\":false");
 });
+
+// Wave 3 gaps #10: a workspace member with no person page is mentioned by account.
+test("@ menu lists workspace members without a person page; the chip stores an opaque id, never an email", async ({ page }) => {
+  const editor = await openEditor(page);
+  await typeAtEnd(page, editor, "Ask @cal");
+  const menu = page.getByRole("listbox", { name: "Mention a person, page or date" });
+  const option = menu.getByRole("group", { name: "People" }).getByRole("option", { name: /Cal Newport/ });
+  await expect(option).toBeVisible();
+  await expect(option).toContainText("Workspace member");
+  await expect(option).not.toContainText("@example");
+  await expect(menu.getByRole("option", { name: /Ada Lovelace/ })).toHaveCount(0); // the debounced people query caught up
+  await page.keyboard.press("Enter");
+  await expect(menu).toHaveCount(0);
+  const chip = editor.locator('[data-type="mention"][data-kind="person"]').filter({ hasText: "Cal Newport" });
+  await expect(chip).toHaveCount(1);
+  await expect(chip.locator(".prism-mention-chip")).toHaveAttribute("data-account", "true");
+  await expect(chip.locator(".prism-mention-chip")).toHaveAttribute("aria-label", "Member: Cal Newport");
+  // Saved HTML: the existing attributes only — the opaque id and the display name.
+  await expect.poll(() => saved(page, "plan")).toContain('data-id="u_0123456789abcdef"');
+  const html = await saved(page, "plan");
+  expect(html).toContain('data-label="Cal Newport"');
+  expect(html).not.toMatch(/cal@|newport@/i);
+  // Hovering opens no profile card and requests no profile.
+  await chip.hover();
+  await page.waitForTimeout(600);
+  await expect(page.getByText("Open profile")).toHaveCount(0);
+});

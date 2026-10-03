@@ -32,6 +32,11 @@ export interface MyIdentity {
 }
 
 const PERSON_KEYS = ["name", "email", "emails", "contact", "channels", "status", "type"];
+/** Live human person notes carrying `email` (lean, cached 60 s) — ids only. */
+export async function personNotesForEmail(entry: VaultEntry, email: string): Promise<string[]> {
+  const want = email.trim().toLowerCase();
+  return (await people(entry)).filter((n) => !isTombstone(n) && !isNonHumanPerson(n) && personEmails(n).includes(want)).map((n) => n.id);
+}
 const TTL_MS = 60_000;
 const cache = new Map<string, { expires: number; value: Promise<Note[]> }>();
 export function resetMyTasksForTests(): void {

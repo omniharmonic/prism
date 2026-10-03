@@ -530,3 +530,73 @@ test("legacy agent suggestions (email as actor id) still reach the account", asy
   assert.equal(await suggestionsResolved({ vaultId: "primary", noteId: "doc", prev, next: "<p></p>", editors: [BOB] }), 1);
   assert.equal((await inbox(ADA)).items[0]!.type, "suggestion_rejected");
 });
+
+// ── mentioning a member who has no person note (wave 3) ──────────────────────
+import { setMembership } from "../src/db";
+import { writerIdFor } from "../src/writer-stamp";
+import { resetDatabaseCachesForTests } from "../src/routes/databases";
+const CAL = "cal@test.local"; // a workspace member with an account and NO person note
+
+test("the @ list offers members without a person page — opaque id + name, never an email; guests get nothing", async () => {
+  resetDatabaseCachesForTests();
+  setAccount(CAL, "Cal Newport", "scrypt$fixture");
+  for (const e of [ADA, BOB, CAL]) setMembership("primary", e, "member", OWNER);
+  const list = async (email: string | null, q = "") => {
+    const r = await req(`/mentions/members?q=${encodeURIComponent(q)}`, email);
+    return { status: r.status, body: r.status === 200 ? ((await r.json()) as { members: Array<{ id: string; name: string }> }) : null, raw: "" };
+  };
+  const bob = await list(BOB);
+  assert.equal(bob.status, 200);
+  // Ada has a person page Bob can view → offered as a person, not here. Cal has none.
+  assert.deepEqual(bob.body!.members.map((m) => m.name).sort(), ["Cal Newport"]);
+  assert.deepEqual(bob.body!.members.map((m) => m.id), [writerIdFor(CAL)]);
+  assert.match(bob.body!.members[0]!.id, /^u_[0-9a-f]{16}$/);
+  assert.equal(JSON.stringify(bob.body).includes("@"), false, "no email anywhere in the answer");
+  assert.deepEqual((await list(BOB, "newp")).body!.members.map((m) => m.name), ["Cal Newport"]);
+  assert.deepEqual((await list(BOB, "zzz")).body!.members, []);
+  // Cal cannot view Ada's person page, so for Cal she is offered by account; never Cal himself.
+  assert.deepEqual((await list(CAL)).body!.members.map((m) => m.name).sort(), ["Ada Lovelace", "Bob"]);
+  setAccount("nameless@test.local", null as never, "scrypt$fixture");
+  setMembership("primary", "nameless@test.local", "member", OWNER);
+  assert.equal((await list(CAL)).body!.members.length, 2, "a nameless account could only be shown by its email — not offered");
+  // A guest (an account with only a shared page) cannot enumerate the workspace.
+  grantUser(EVE, "note", "doc", "edit");
+  assert.deepEqual((await list(EVE)).body!.members, []);
+  assert.equal((await list(null)).status, 401);
+  // A capability link is not an account.
+  const link = makeCapability("note", "doc", "edit");
+  assert.equal((await api.request(`/mentions/members?t=${encodeURIComponent(link)}`)).status, 401);
+});
+
+test("an account mention notifies that member (view re-checked), adds no link, and a guest author cannot use it", async () => {
+  resetDatabaseCachesForTests();
+  setAccount(CAL, "Cal Newport", "scrypt$fixture");
+  for (const e of [ADA, BOB, CAL]) setMembership("primary", e, "member", OWNER);
+  const calId = writerIdFor(CAL);
+  const html = (uid: string) => `<p>hello ${chip("person", calId, uid, ' data-label="Cal Newport"')}</p>`;
+  const patchesBefore = fv.calls.filter((c) => c.method === "PATCH").length;
+  // Cal cannot view the page yet: nothing is sent.
+  let r = await noteContentStored({ vaultId: "primary", noteId: "doc", prev: "<p>hello</p>", next: html("m1"), authors: [BOB], updatedAt: fv.notes.get("doc")!.updatedAt });
+  assert.deepEqual([r.notified, r.linked], [0, 0]);
+  grantUser(CAL, "tag", "team", "view");
+  clearNoteInfoCache();
+  r = await noteContentStored({ vaultId: "primary", noteId: "doc", prev: "<p>hello</p>", next: html("m2"), authors: [BOB], updatedAt: fv.notes.get("doc")!.updatedAt });
+  assert.deepEqual([r.notified, r.linked], [1, 0], "notified; an account is not a note, so no backlink");
+  assert.equal(fv.calls.filter((c) => c.method === "PATCH").length, patchesBefore, "no links write to the vault");
+  const items = (await inbox(CAL)).items;
+  assert.equal(items.length, 1);
+  assert.equal(items[0]!.type, "mention");
+  assert.deepEqual(items[0]!.anchor, { mention: "m2" });
+  assert.equal(JSON.stringify(items).includes(BOB), false);
+  // The same chip again: no second notification.
+  r = await noteContentStored({ vaultId: "primary", noteId: "doc", prev: html("m2"), next: html("m2"), authors: [BOB], updatedAt: null });
+  assert.equal(r.notified, 0);
+  // A guest author (edit on this page only) cannot ping members by account, nor can a made-up id.
+  grantUser(EVE, "note", "doc", "edit");
+  r = await noteContentStored({ vaultId: "primary", noteId: "doc", prev: "<p>x</p>", next: `<p>${chip("person", writerIdFor(ADA), "m3")}${chip("person", "u_0000000000000000", "m4")}</p>`, authors: [EVE], updatedAt: null });
+  assert.equal(r.notified, 0);
+  assert.equal((await inbox(ADA)).items.length, 0);
+  // Never the author themselves.
+  r = await noteContentStored({ vaultId: "primary", noteId: "doc", prev: "<p>x</p>", next: `<p>${chip("person", writerIdFor(BOB), "m5")}</p>`, authors: [BOB], updatedAt: null });
+  assert.equal(r.notified, 0);
+});

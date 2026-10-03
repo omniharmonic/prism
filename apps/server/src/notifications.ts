@@ -41,6 +41,8 @@ import { sendPush, pushEnabled } from "./push";
 import { apnsEnabled, sendApnsToOwner, notificationAlert } from "./apns";
 import { sendEmail } from "./auth/email";
 import { documentActorId } from "./human-collab";
+import { writerIdFor } from "./writer-stamp";
+import { personNotesForEmail } from "./my-tasks";
 import { onAccessChanged } from "./access-events";
 import { docNameFor, federationTarget, identifiedSuggestionsInHtml, isDocLive, markReconciled, setDocumentStoreListener, type DocumentStoredEvent } from "./collab";
 
@@ -123,6 +125,7 @@ export function _resetNotifications(): void {
   unreadCache.clear();
   chipCache.clear();
   actorIdCache = null;
+  accountIdCache = null;
   deliveryHook = null;
 }
 
@@ -394,6 +397,59 @@ export async function accountsForPerson(vaultId: string, personId: string): Prom
   }
 }
 
+// ── mentioning a member by ACCOUNT (wave 3) ──────────────────────────────────
+// A workspace member with no person note is mentioned by their account. The chip
+// stores the opaque subject id `u_<16 hex>` (writer-stamp.ts: HMAC of the email)
+// in the mention's existing `id` attribute and their display name in `label` —
+// never an email, and no editor schema change.
+export const ACCOUNT_MENTION_ID = /^u_[0-9a-f]{16}$/;
+let accountIdCache: { n: number; map: Map<string, string> } | null = null;
+/** The account behind an account-mention id, or null. */
+export function emailForAccountMention(id: string): string | null {
+  if (!ACCOUNT_MENTION_ID.test(id)) return null;
+  const users = listUsers();
+  if (!accountIdCache || accountIdCache.n !== users.length) {
+    const map = new Map<string, string>();
+    for (const u of users) map.set(writerIdFor(u.email), u.email.toLowerCase());
+    if (config.ownerEmail) map.set(writerIdFor(config.ownerEmail), config.ownerEmail.toLowerCase());
+    accountIdCache = { n: users.length, map };
+  }
+  return accountIdCache.map.get(id) ?? null;
+}
+/** May this account mention members by account? Workspace members only (never a guest). */
+export const canMentionMembers = (email: string, vaultId: string): boolean => roleAtLeast(workspaceRole(email, vaultId), "member");
+
+/**
+ * Members the caller may mention by account: workspace members (role ≥ member) of
+ * this vault who have a display name and are NOT already reachable through a
+ * person page the caller can view (those are offered as people). Returns the
+ * opaque id + display name only — never an email. Empty for a guest.
+ */
+export async function mentionableMembers(caller: string, vaultId: string, q: string, limit = 8): Promise<Array<{ id: string; name: string }>> {
+  const me = caller.toLowerCase();
+  if (!canMentionMembers(me, vaultId)) return [];
+  const needle = q.trim().toLowerCase();
+  const entry = resolveVaultEntry(vaultId);
+  const candidates = new Map<string, string>();
+  for (const u of listUsers()) candidates.set(u.email.toLowerCase(), (u.name ?? "").trim());
+  if (config.ownerEmail && !candidates.has(config.ownerEmail.toLowerCase())) candidates.set(config.ownerEmail.toLowerCase(), (getUser(config.ownerEmail)?.name ?? "").trim());
+  const out: Array<{ id: string; name: string }> = [];
+  for (const [email, name] of candidates) {
+    if (out.length >= limit) break;
+    if (email === me || !name || name.toLowerCase() === email || name.includes("@")) continue;
+    if (needle && !name.toLowerCase().includes(needle)) continue;
+    if (!canMentionMembers(email, vaultId)) continue;
+    let viaPerson = false;
+    try {
+      for (const pid of await personNotesForEmail(entry, email)) {
+        if (userCanView(me, vaultId, await noteInfo(vaultId, pid))) { viaPerson = true; break; }
+      }
+    } catch { /* people listing unavailable: offer the account */ }
+    if (!viaPerson) out.push({ id: writerIdFor(email), name });
+  }
+  return out;
+}
+
 // ── create + deliver ─────────────────────────────────────────────────────────
 const MAX_PER_RECIPIENT_HOUR = Number(process.env.NOTIFY_MAX_PER_RECIPIENT_HOUR ?? 200);
 const PREVIEW_MAX = 160;
@@ -658,8 +714,9 @@ function rememberChips(vaultId: string, noteId: string, chips: ParsedMention[]):
   if (chipCache.size > 2000) chipCache.delete(chipCache.keys().next().value!);
 }
 
+// An account mention (`u_…`) names no note: it is never a link target.
 const linkTargets = (ms: ParsedMention[], self: string) =>
-  new Set(ms.filter((m) => (m.kind === "page" || m.kind === "person") && m.id && m.id !== self).map((m) => m.id!));
+  new Set(ms.filter((m) => (m.kind === "page" || m.kind === "person") && m.id && m.id !== self && !ACCOUNT_MENTION_ID.test(m.id)).map((m) => m.id!));
 
 /**
  * Diff old vs new mention chips; notify the people newly mentioned, link the
@@ -693,8 +750,13 @@ export async function noteContentStored(e: StoredContent): Promise<{ notified: n
     const uidFor = new Map(added.filter((m) => m.kind === "person" && m.id).map((m) => [m.id!, m.uid]));
     const notified = new Set<string>();
     for (const pid of people) {
-      if (!(await authorCanView(pid))) continue;
-      for (const email of await accountsForPerson(e.vaultId, pid)) {
+      // A member mentioned by account: some author must be a workspace member (the
+      // only people offered the list); the recipient must be one too.
+      const account = emailForAccountMention(pid);
+      const recipients = ACCOUNT_MENTION_ID.test(pid)
+        ? account && canMentionMembers(account, e.vaultId) && [...authors].some((a) => canMentionMembers(a, e.vaultId)) ? [account] : []
+        : (await authorCanView(pid)) ? await accountsForPerson(e.vaultId, pid) : [];
+      for (const email of recipients) {
         if (email === single || notified.has(email)) continue;
         if (!userCanView(email, e.vaultId, info)) continue;
         notified.add(email);
@@ -839,10 +901,18 @@ export async function commentsStored(docName: string, vaultId: string, noteId: s
       const preview = stripTokens(text).slice(0, PREVIEW_MAX) || null;
       const mentioned = new Set<string>();
       for (const m of extractCommentMentions(text).slice(0, 10)) {
-        // L3: the same rule as document chips — only people some author can see.
-        const person = await noteInfo(vaultId, m.id);
-        if (![...authors].some((a) => userCanView(a, vaultId, person))) continue;
-        for (const email of await accountsForPerson(vaultId, m.id)) {
+        // L3: the same rule as document chips — only people some author can see
+        // (a member mentioned by account: an author who is a workspace member).
+        let targets: string[];
+        if (ACCOUNT_MENTION_ID.test(m.id)) {
+          const account = emailForAccountMention(m.id);
+          targets = account && canMentionMembers(account, vaultId) && [...authors].some((a) => canMentionMembers(a, vaultId)) ? [account] : [];
+        } else {
+          const person = await noteInfo(vaultId, m.id);
+          if (![...authors].some((a) => userCanView(a, vaultId, person))) continue;
+          targets = await accountsForPerson(vaultId, m.id);
+        }
+        for (const email of targets) {
           if (authors.has(email) || mentioned.has(email) || !userCanView(email, vaultId, info)) continue;
           mentioned.add(email);
           if (createNotification({ vaultId, recipient: email, type: "comment_mention", noteId, actorEmail: author, anchor: { thread: threadId }, preview, dedupe: `comment:${noteId}:${key}` })) sent++;
