@@ -24,7 +24,7 @@ import { updateNote as restUpdateNote, getNote as restGetNote, hasPendingWrites,
 import { markUnsynced, clearUnsynced, setOpenHere, unsyncedDocs } from "./unsynced";
 import { reloadForUpdate } from "../offline/reloadForUpdate";
 import { PlainTextPage } from "./PlainTextPage";
-import { reportSyncSource, NOT_SAVED_TO_PAGE, BacklinksPill, EmptyPageStarters, notePageIconChanged, pageIconWriteConfirmed, pageIconWriteFailed, PageDiscussion } from "@prism/core";
+import { reportSyncSource, NOT_SAVED_TO_PAGE, unsavedExplanation, BacklinksPill, EmptyPageStarters, notePageIconChanged, pageIconWriteConfirmed, pageIconWriteFailed, PageDiscussion } from "@prism/core";
 
 /** Track a CSS breakpoint without per-render layout thrash. */
 function useIsNarrow(): boolean {
@@ -147,7 +147,8 @@ function ScopedCollabDoc({
   const [tooComplex, setTooComplex] = useState<null | "edit" | "view">(null);
   // What the SERVER says about this page (stateless messages, repeated on every connect):
   // its latest changes cannot be written to the stored page / a one-off notice.
-  const [serverUnsaved, setServerUnsaved] = useState(false);
+  // `permanent`: it cannot be written as the page is; else the server is still trying.
+  const [serverUnsaved, setServerUnsaved] = useState<null | { permanent: boolean; reason: string | null }>(null);
   const [serverNotice, setServerNotice] = useState<string | null>(null);
   // Bumped to open the document afresh (new local document, new socket) without a page reload.
   const [attempt, setAttempt] = useState(0);
@@ -179,7 +180,7 @@ function ScopedCollabDoc({
     const waiting = unsynced > 0 || registered;
     reportSyncSource(key, connected
       // The server holds the changes but cannot write them to the page: never "Saved".
-      ? (serverUnsaved ? "unsaved" : unsynced > 0 ? "saving" : "idle")
+      ? (serverUnsaved ? (serverUnsaved.permanent ? "unsaved" : unsynced > 0 ? "saving" : "retrying") : unsynced > 0 ? "saving" : "idle")
       // Socket down with edits the server hasn't taken: never "Saved". They are on
       // this device (local), still being written locally (saving), or at risk (failed).
       : waiting ? (localSave === "unavailable" ? "failed" : localSave === "saved" ? "local" : "saving")
@@ -460,9 +461,13 @@ function ScopedCollabDoc({
           onSynced: () => { socketUp = true; if (current()) { setSynced(true); setConnected(true); } },
           onStateless: ({ payload }) => {
             if (!current()) return;
-            let message: { type?: unknown; state?: unknown; code?: unknown };
+            let message: { type?: unknown; state?: unknown; code?: unknown; reason?: unknown };
             try { message = JSON.parse(payload); } catch { return; }
-            if (message.type === "prism:unsaved") setServerUnsaved(message.state === "unsaved");
+            // "unsaved" = cannot be written as the page is; "pending" = not written yet, the server keeps trying; "saved" clears both.
+            if (message.type === "prism:unsaved") {
+              const reason = typeof message.reason === "string" ? message.reason : null;
+              setServerUnsaved(message.state === "unsaved" ? { permanent: true, reason } : message.state === "pending" ? { permanent: false, reason } : null);
+            }
             else if (message.type === "prism:notice" && message.code === "external-replaced") setServerNotice("Changes made elsewhere replaced part of this page.");
           },
           onAuthenticationFailed: ({ reason }) => {
@@ -657,9 +662,9 @@ function ScopedCollabDoc({
   return (
     <div style={outer}>
       {localSave === "unavailable" && <p role="alert" className="rounded-lg border p-3 text-sm">Local saving is unavailable. Keep this document open and copy any unsynced changes before leaving.</p>}
-      {serverUnsaved && (
-        <p role="alert" data-testid="collab-not-saved" className="rounded-lg border p-3 text-sm">
-          {NOT_SAVED_TO_PAGE}. Your changes are kept on the server and open with this page, but the stored page does not have them until it is smaller.
+      {serverUnsaved?.permanent && (
+        <p role="alert" data-testid="collab-not-saved" data-reason={serverUnsaved.reason ?? ""} className="rounded-lg border p-3 text-sm">
+          {NOT_SAVED_TO_PAGE}. {unsavedExplanation(serverUnsaved.reason)}
         </p>
       )}
       {serverNotice && (

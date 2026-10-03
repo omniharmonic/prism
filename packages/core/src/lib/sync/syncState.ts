@@ -18,10 +18,34 @@ import type { VaultClient } from "../../data/VaultClient";
  */
 /** `device`: a live document NOT open right now still has edits only on this device. */
 /** `unsaved`: the server holds a live document's changes but CANNOT write them to the stored page (too large / refused). */
-export type SyncSourceState = "saving" | "local" | "device" | "failed" | "unsaved" | "idle";
+/** `retrying`: the server holds a live document's changes and has not been able to write them to the stored page YET (the vault is unreachable, the converter is busy) — it keeps trying. */
+export type SyncSourceState = "saving" | "local" | "device" | "failed" | "unsaved" | "retrying" | "idle";
 
-/** What the badge says while a live page's changes cannot be written to the stored page. */
-export const NOT_SAVED_TO_PAGE = "Not saved to the page — too large or complex; copy your changes or split the page";
+/** What the badge says while a live page's changes cannot be written to the stored page (WHY is the page's own notice: `unsavedExplanation`). */
+export const NOT_SAVED_TO_PAGE = "Not saved to the page";
+/** …and while the server is still trying to write them. */
+export const SAVING_TO_PAGE = "Saving to the page — retrying";
+
+/**
+ * Why a live page's changes are not in the stored page, and what helps — by the
+ * server's reason (`prism:unsaved`): a converter refusal (`too_large`,
+ * `too_complex`, `too_many_nodes`), `vault <status>`, `gave_up`. The advice
+ * "make it smaller" is only given where a smaller page would in fact be saved.
+ */
+export function unsavedExplanation(reason: string | null | undefined, permanent = true): string {
+  const kept = "Your changes are kept on the server and open with this page";
+  if (!permanent) return `The server has not been able to write this page's latest changes to the stored page yet, and keeps trying. ${kept}.`;
+  if (reason === "vault 413") return `The stored page would be larger than the vault accepts. ${kept}, but the stored page does not have them until the page is smaller — split it, or copy your changes somewhere safe.`;
+  if (reason === "vault 400" || reason === "vault 422") return `The vault refuses this page's content. ${kept}, but the stored page does not have them — and making the page smaller may not help. Copy your changes somewhere safe and tell the workspace owner.`;
+  if (reason === "gave_up") return `Saving this page was tried for two weeks without success and has stopped. ${kept}, but the stored page does not have them. Copy your changes somewhere safe and tell the workspace owner.`;
+  return `This page is too large or complex to be stored. ${kept}, but the stored page does not have them until the page is smaller — split it, or copy your changes somewhere safe.`;
+}
+
+/** What pressing the badge does — and so what its accessible name may promise. `null`: nothing to press. */
+export function syncBadgeAction(status: Pick<SyncStatus, "kind" | "failure">): "retry" | "review" | null {
+  if (status.kind === "failed") return status.failure?.retry ? "retry" : null;
+  return status.kind === "review" || status.kind === "local" || status.kind === "waiting" ? "review" : null;
+}
 
 export interface SyncFailure {
   message: string;
@@ -91,6 +115,9 @@ export function deriveSyncStatus(s: Pick<SyncStore, "online" | "inFlight" | "dir
   if (s.inFlight > 0 || Object.keys(s.dirty).length > 0 || sources.includes("saving")) {
     return { kind: "saving", label: "Saving…", footer: "Saving…" };
   }
+  // The server has a live document's changes but could not write the stored page
+  // yet (vault unreachable, converter busy) and keeps trying: not "Saved".
+  if (sources.includes("retrying")) return { kind: "saving", label: SAVING_TO_PAGE, footer: "Saving to the page…" };
   // A live document whose socket is down while the browser thinks it is online
   // is, for the user, offline: its edits are on this device only.
   if (sources.includes("local")) return { kind: "local", label: "Offline · changes saved on this device", footer: "Offline · saved on this device" };

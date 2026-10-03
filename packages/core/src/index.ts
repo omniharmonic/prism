@@ -277,7 +277,7 @@ export { writerOf, writerTitle, writerName, lastEditedBy } from "./lib/history/a
 export { MoveAccessNotice, moveAccessSummary, useMoveAccessPreview } from "./components/sharing/MoveAccessNotice";
 // Shell sync state + motion (wave 2E: NP-OF-01, NP-SB-15, NP-PG-06, NP-AX-06)
 export { SyncStateBadge, OPEN_SAVED_CHANGES_EVENT } from "./components/layout/SyncStateBadge";
-export { useSyncStore, useSyncStatus, deriveSyncStatus, markDirty, reportSaveFailure, reportSyncSource, reportPendingWrites, trackVaultWrites, NOT_SAVED_TO_PAGE, type SyncStatus, type SyncKind } from "./lib/sync/syncState";
+export { useSyncStore, useSyncStatus, deriveSyncStatus, markDirty, reportSaveFailure, reportSyncSource, reportPendingWrites, trackVaultWrites, NOT_SAVED_TO_PAGE, SAVING_TO_PAGE, unsavedExplanation, syncBadgeAction, type SyncStatus, type SyncKind } from "./lib/sync/syncState";
 export { useReduceMotion, setReduceMotion, applyReduceMotion, prefersReducedMotion } from "./lib/motion";
 export { setOfflineAvailability, useOfflineAvailability, type OfflineAvailability } from "./lib/offline/availability";
 export { isVaultNoteId } from "./lib/noteIdentity";
