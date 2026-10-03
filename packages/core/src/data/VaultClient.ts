@@ -258,7 +258,7 @@ export interface VaultClient {
    *  body/metadata references that belongs to another page is re-uploaded under the
    *  copy and the references are rewritten. Call right after creating the copy,
    *  before opening it. Optional (older servers / desktop: the copy keeps the links). */
-  copyAttachments?(noteId: string): Promise<{ copied: number; failed: number; skipped: number; more: boolean }>;
+  copyAttachments?(noteId: string): Promise<{ copied: number; failed: number; skipped: number; errors?: number; more: boolean }>;
   /** Link preview for a bookmark block (title, description, site, image, favicon).
    *  Optional: without it a bookmark shows its URL only. */
   unfurl?(url: string): Promise<{ url: string; title?: string | null; description?: string | null; siteName?: string | null; image?: string | null; favicon?: string | null }>;

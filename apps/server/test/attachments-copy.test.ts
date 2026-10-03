@@ -117,18 +117,6 @@ test("quota: a file that does not fit is not copied and the copy points at nothi
   assert.equal(usedBytes("primary", "dup"), PNG.length);
 });
 
-test("a vault failure while attaching leaves a dangling reference and a recorded orphan", async () => {
-  const a = await upload("orig");
-  fv.put({ ...fv.notes.get("orig")!, content: `<img src="/api/attachments/${a}">` });
-  duplicate("orig", "dup");
-  fv.failNextAttach = true;
-  const body = await json(await copy("dup", login(OWNER)));
-  assert.deepEqual([body.copied, body.failed], [0, 1]);
-  const [id] = idsIn(fv.notes.get("dup")!.content);
-  assert.notEqual(id, a);
-  assert.equal(getAttachment(id!), null);
-});
-
 test("permissions: edit on the copy, view on the file's page; nothing is learned about unviewable notes", async () => {
   fv.put({ id: "hidden", path: "Private/Hidden", content: "<p>x</p>", tags: ["secret"] });
   const visible = await upload("orig");
@@ -168,4 +156,75 @@ test("CSRF, credentials: JSON only, same-site refused, anonymous and capability 
   const link = makeCapability("note", "dup", "edit");
   assert.equal((await api.request(`/notes/dup/attachments/copy?t=${encodeURIComponent(link)}`, { method: "POST", headers: J, body: "{}" })).status, 401);
   assert.equal((await copy("dup", cookie)).status, 200);
+});
+
+// ── review M1 + lows (1)(2) ──────────────────────────────────────────────────
+/** What the client does: call until nothing is left or a round makes no progress. */
+async function copyAll(id: string, cookie: string) {
+  const total = { copied: 0, failed: 0, skipped: 0, errors: 0, more: false, rounds: 0 };
+  for (let round = 0; round < 10; round++) {
+    const r = await json(await copy(id, cookie));
+    total.copied += r.copied; total.failed += r.failed; total.errors = r.errors ?? 0; total.skipped = r.skipped; total.more = r.more; total.rounds++;
+    if (!r.more || r.copied + r.failed === 0) break;
+  }
+  return total;
+}
+
+test("M1: more than 50 files are all copied across rounds — own and skipped references never use up a round", async () => {
+  const ids: string[] = [];
+  for (let i = 0; i < 53; i++) ids.push(await upload("orig"));
+  fv.put({ ...fv.notes.get("orig")!, content: ids.map((a) => `<img src="/api/attachments/${a}">`).join("") });
+  duplicate("orig", "dup");
+  const first = await json(await copy("dup", login(OWNER)));
+  assert.deepEqual([first.copied, first.more], [50, true]);
+  const total = await copyAll("dup", login(OWNER));
+  assert.equal(total.more, false);
+  const now = idsIn(fv.notes.get("dup")!.content);
+  assert.equal(now.length, 53);
+  assert.equal(now.filter((a) => ids.includes(a)).length, 0, "no reference still names the original's files");
+  assert.ok(now.every((a) => getAttachment(a)?.note_id === "dup"));
+});
+
+test("M1: 50 leading references that cannot be copied do not hide the one that can", async () => {
+  const real = await upload("orig");
+  const ghosts = Array.from({ length: 50 }, (_, i) => `a_${String(i).padStart(22, "G")}`);
+  fv.put({ id: "dup", path: "Docs/dup", tags: ["doc"], content: [...ghosts, real].map((a) => `<img src="/api/attachments/${a}">`).join("") });
+  const r = await json(await copy("dup", login(OWNER)));
+  assert.deepEqual([r.copied, r.skipped, r.more], [1, 50, false]);
+  assert.equal(getAttachment(idsIn(fv.notes.get("dup")!.content)[50]!)!.note_id, "dup");
+});
+
+test("low 2: a vault failure leaves the ORIGINAL reference and is reported, never a dangling one", async () => {
+  const a = await upload("orig");
+  fv.put({ ...fv.notes.get("orig")!, content: `<img src="/api/attachments/${a}">` });
+  duplicate("orig", "dup");
+  const before = fv.notes.get("dup")!.updatedAt;
+  fv.failNextAttach = true;
+  const r = await json(await copy("dup", login(OWNER)));
+  assert.deepEqual([r.copied, r.failed, r.errors, r.more], [0, 0, 1, true]);
+  assert.deepEqual(idsIn(fv.notes.get("dup")!.content), [a]);
+  assert.equal(fv.notes.get("dup")!.updatedAt, before, "nothing was written");
+  // The next call finishes the job.
+  const again = await json(await copy("dup", login(OWNER)));
+  assert.deepEqual([again.copied, again.errors, again.more], [1, 0, false]);
+});
+
+test("low 1: a per-call byte budget stops the round early with more=true; the next call continues", async () => {
+  const ids = [await upload("orig"), await upload("orig"), await upload("orig")];
+  fv.put({ ...fv.notes.get("orig")!, content: ids.map((a) => `<img src="/api/attachments/${a}">`).join("") });
+  duplicate("orig", "dup");
+  configureAttachments({ copyMaxBytes: PNG.length * 2 });
+  const first = await json(await copy("dup", login(OWNER)));
+  assert.deepEqual([first.copied, first.more], [2, true]);
+  const second = await json(await copy("dup", login(OWNER)));
+  assert.deepEqual([second.copied, second.more], [1, false]);
+});
+
+test("M1 (client): what the person is told — nothing when all copied, a notice when anything is left", async () => {
+  const { copyFilesNotice } = await import("@prism/core/pages");
+  assert.equal(copyFilesNotice({ failed: 0, errors: 0, more: false }), "");
+  assert.equal(copyFilesNotice({ failed: 0, errors: 0, more: true }), "Some files were not copied.");
+  assert.equal(copyFilesNotice({ failed: 0, errors: 2, more: false }), "Some files were not copied.");
+  assert.equal(copyFilesNotice({ failed: 1, more: false }), "Some files were not copied.");
+  assert.equal(copyFilesNotice(null), "Its files could not be copied.");
 });

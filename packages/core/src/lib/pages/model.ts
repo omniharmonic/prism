@@ -299,6 +299,14 @@ export function referencesAttachments(note: { content?: string | null; metadata?
   return (note.content ?? "").includes("/api/attachments/") || JSON.stringify(note.metadata ?? {}).includes("/api/attachments/");
 }
 
+/** What to tell the person after a copy's files were (not) copied; "" when all is well.
+ *  `more` still true when the client stopped = files left pointing at the original. */
+export function copyFilesNotice(result: { failed: number; errors?: number; more: boolean } | null): string {
+  if (!result) return "Its files could not be copied.";
+  if (result.more || (result.errors ?? 0) > 0 || result.failed > 0) return "Some files were not copied.";
+  return "";
+}
+
 // ── wire types (server ⇄ clients) ───────────────────────────────────────────
 
 export interface MoveRequest {

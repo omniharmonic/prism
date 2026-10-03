@@ -123,6 +123,9 @@ export interface AttachmentsConfig {
   vaultQuotaBytes: number;
   maxConcurrentUploads: number;
   uploadWaitMs: number;
+  /** Attachment copy (duplicate a page): bytes and wall-clock per call. */
+  copyMaxBytes: number;
+  copyMaxMs: number;
   readsPerMinute: number;
   unfurlPerMinute: number;
   unfurlMaxBytes: number;
@@ -142,6 +145,8 @@ function envConfig(): AttachmentsConfig {
     vaultQuotaBytes: envNum("ATTACHMENT_VAULT_QUOTA_BYTES", 5 * 1024 * 1024 * 1024),
     maxConcurrentUploads: Math.max(1, envNum("ATTACHMENT_MAX_CONCURRENT_UPLOADS", 2)),
     uploadWaitMs: envNum("ATTACHMENT_UPLOAD_WAIT_MS", 10_000),
+    copyMaxBytes: envNum("ATTACHMENT_COPY_MAX_BYTES", 100 * 1024 * 1024),
+    copyMaxMs: envNum("ATTACHMENT_COPY_MAX_MS", 40_000),
     readsPerMinute: envNum("ATTACHMENT_READS_PER_MINUTE", 1200),
     unfurlPerMinute: envNum("UNFURL_PER_MINUTE", 60),
     unfurlMaxBytes: envNum("UNFURL_MAX_BYTES", 1024 * 1024),
@@ -391,6 +396,8 @@ attachmentsApi.post(
 
 const ATTACHMENT_REF = /\/api\/attachments\/(a_[A-Za-z0-9_-]{22})(?![A-Za-z0-9_-])/g;
 const COPY_MAX = 50;
+/** References classified per call (a 2 MB body holds far fewer). */
+const COPY_SCAN_MAX = 2000;
 
 /**
  * Give a COPIED page its own attachments (wave 3). A duplicate starts with the
@@ -449,9 +456,8 @@ attachmentsApi.post("/notes/:id/attachments/copy", bodyLimit({ maxSize: 1024, on
 
   const metaJson = JSON.stringify(note.metadata ?? {});
   const referenced = [...new Set([...(note.content ?? "").matchAll(ATTACHMENT_REF), ...metaJson.matchAll(ATTACHMENT_REF)].map((m) => m[1]!))];
-  const todo = referenced.slice(0, COPY_MAX);
   const replace = new Map<string, string>();
-  let copied = 0, failed = 0, skipped = 0;
+  let copied = 0, failed = 0, skipped = 0, errors = 0;
   const owners = new Map<string, boolean>();
   const canViewOwner = async (noteId: string): Promise<boolean> => {
     if (owners.has(noteId)) return owners.get(noteId)!;
@@ -463,46 +469,80 @@ attachmentsApi.post("/notes/:id/attachments/copy", bodyLimit({ maxSize: 1024, on
     owners.set(noteId, ok);
     return ok;
   };
-  let release: () => void;
-  try {
-    release = await uploadSlots.acquire(cfg.uploadWaitMs);
-  } catch (e) {
-    if (e instanceof BusyError) { c.header("Retry-After", "5"); return c.json({ error: "busy" }, 503); }
-    throw e;
+  // Classify EVERY reference first (review M1): the copy's own files and the ones
+  // that cannot be copied never take one of the round's 50 places, so a later
+  // round always starts on work that is still to do.
+  const candidates: AttachmentRow[] = [];
+  for (const attId of referenced.slice(0, COPY_SCAN_MAX)) {
+    const row = getAttachment(attId);
+    if (row && row.vault_id === entry.id && row.note_id === note.id) continue; // already the copy's own file
+    if (!row || row.vault_id !== entry.id || !STORAGE_PATH.test(row.storage_path) || row.storage_path.includes("..") || !(await canViewOwner(row.note_id))) { skipped++; continue; }
+    candidates.push(row);
   }
-  try {
-    for (const attId of todo) {
-      const row = getAttachment(attId);
-      if (row && row.vault_id === entry.id && row.note_id === note.id) continue; // already the copy's own file
-      if (!row || row.vault_id !== entry.id || !STORAGE_PATH.test(row.storage_path) || row.storage_path.includes("..") || !(await canViewOwner(row.note_id))) { skipped++; continue; }
-      const dangling = () => { replace.set(attId, newAttachmentId()); failed++; };
-      if (row.size > cfg.maxBytes || usedBytes(entry.id, note.id) + row.size > cfg.noteQuotaBytes || usedBytes(entry.id) + row.size > cfg.vaultQuotaBytes) { dangling(); continue; }
+  let done = 0;
+  let bytes = 0;
+  const started = Date.now();
+  let busy = false;
+  for (const row of candidates.slice(0, COPY_MAX)) {
+    // Per-call budgets (review low 1): the caller simply calls again (`more`).
+    if (done > 0 && (bytes + row.size > cfg.copyMaxBytes || Date.now() - started > cfg.copyMaxMs)) break;
+    // Quota / size: this file will never fit — the copy must not keep pointing at
+    // the original's file, so the reference is rewritten to an id with no row.
+    if (row.size > cfg.maxBytes || usedBytes(entry.id, note.id) + row.size > cfg.noteQuotaBytes || usedBytes(entry.id) + row.size > cfg.vaultQuotaBytes) {
+      replace.set(row.id, newAttachmentId());
+      failed++;
+      done++;
+      continue;
+    }
+    // One upload slot PER FILE, released between files, so a long copy never
+    // starves ordinary uploads.
+    let release: () => void;
+    try {
+      release = await uploadSlots.acquire(cfg.uploadWaitMs);
+    } catch (e) {
+      if (e instanceof BusyError) { busy = true; break; }
+      throw e;
+    }
+    try {
       const mime = row.mime as AttachmentType;
       const fresh = { id: newAttachmentId(), vault_id: entry.id, note_id: note.id, storage_path: "", mime, size: row.size, name: row.name, created_by: actorKey(actor), created_at: new Date().toISOString() };
+      // A vault error or timeout is TRANSIENT (review low 2): the original reference
+      // stays, the file is reported (`errors`) and a later call retries it.
+      let blob: Blob;
       try {
         const upstream = await vaultStorageFetch(entry.id, row.storage_path, null);
-        if (upstream.status !== 200) { await upstream.body?.cancel().catch(() => {}); dangling(); continue; }
-        const bytes = await upstream.blob();
-        if (bytes.size > cfg.maxBytes) { dangling(); continue; }
-        fresh.size = bytes.size;
-        fresh.storage_path = (await vaultUpload(entry.id, bytes, `upload.${ATTACHMENT_EXT[mime] ?? "bin"}`)).path;
-      } catch { dangling(); continue; }
+        if (upstream.status !== 200) { await upstream.body?.cancel().catch(() => {}); errors++; done++; continue; }
+        blob = await upstream.blob();
+      } catch { errors++; done++; continue; }
+      if (blob.size > cfg.maxBytes) { replace.set(row.id, newAttachmentId()); failed++; done++; continue; }
+      try {
+        fresh.size = blob.size;
+        fresh.storage_path = (await vaultUpload(entry.id, blob, `upload.${ATTACHMENT_EXT[mime] ?? "bin"}`)).path;
+      } catch { errors++; done++; continue; }
       try {
         const attached = await vaultAttach(entry.id, note.id, fresh.storage_path, mime);
         insertAttachment({ ...fresh, vault_attachment_id: attached.id || null });
       } catch {
         try { recordOrphan(fresh); } catch { /* best-effort */ }
-        dangling();
+        errors++;
+        done++;
         continue;
       }
-      replace.set(attId, fresh.id);
+      replace.set(row.id, fresh.id);
       copied++;
+      done++;
+      bytes += blob.size;
+    } finally {
+      release();
     }
-  } finally {
-    release();
   }
-  const more = referenced.length > todo.length;
-  if (replace.size === 0) return c.json({ ok: true, copied, failed, skipped, more, updatedAt: note.updatedAt });
+  if (busy && done === 0) { c.header("Retry-After", "5"); return c.json({ error: "busy" }, 503); }
+  // Anything still to do: files past this round, past the scan cap, or that hit a transient error.
+  const more = candidates.length > done || errors > 0 || referenced.length > COPY_SCAN_MAX;
+  if (replace.size === 0) return c.json({ ok: true, copied, failed, skipped, errors, more, updatedAt: note.updatedAt });
+  // The page may have been opened while files were copied (review low 3): a body
+  // write under a live document would be folded over what is being typed.
+  if (isDocLive(entry.id, note.id)) return c.json({ error: "live", detail: "close the page before copying its files" }, 409);
   const swap = (text: string) => text.replace(ATTACHMENT_REF, (m, old: string) => (replace.has(old) ? `/api/attachments/${replace.get(old)}` : m));
   const content = swap(note.content ?? "");
   const changedMeta: Record<string, unknown> = {};
@@ -518,7 +558,7 @@ attachmentsApi.post("/notes/:id/attachments/copy", bodyLimit({ maxSize: 1024, on
       ifUpdatedAt: note.updatedAt,
     });
     noteCache.delete(`${entry.id}\u0000${note.id}`);
-    return c.json({ ok: true, copied, failed, skipped, more, updatedAt: saved.updatedAt });
+    return c.json({ ok: true, copied, failed, skipped, errors, more, updatedAt: saved.updatedAt });
   } catch (e) {
     // The page changed under us (or the vault refused): the new rows exist but nothing
     // references them yet — the owner's sweep flags them. The caller may simply retry.
