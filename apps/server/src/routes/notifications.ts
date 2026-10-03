@@ -28,13 +28,14 @@ import { bodyLimit } from "hono/body-limit";
 import { randomUUID } from "node:crypto";
 import { resolveActor, requestVia, type Actor } from "../auth/actor";
 import { resolveVaultEntry } from "../db";
-import { roleAtLeast } from "../roles";
+import { roleAtLeast, workspaceRole } from "../roles";
 import { config, emailEnabled } from "../config";
 import { pushEnabled } from "../push";
 import { apnsEnabled } from "../apns";
 import { consumeRateLimit } from "../middleware/ratelimit";
 import { csrfRefusal } from "./actions";
 import { isNoteId } from "../collab";
+import type { ParsedMention } from "@prism/core/mentions";
 import { vaultClient } from "../parachute";
 import {
   TYPE_GROUPS,
@@ -64,6 +65,7 @@ import {
   displayName,
   REQUEST_LEVELS,
   noteContentStored,
+  cachedChips,
   type NotificationType,
   type ReminderRow,
   type RequestLevel,
@@ -316,6 +318,7 @@ notificationsRoutes.post("/access-requests", SMALL, async (c) => {
 
 notificationsRoutes.get("/access-requests", async (c) => {
   const w = who(c)!;
+  const admin = roleAtLeast(workspaceRole(w.email, w.vaultId), "admin");
   const items = [];
   for (const r of pendingAccessRequests(w.vaultId)) {
     const info = await noteInfo(r.vault_id, r.note_id);
@@ -324,8 +327,9 @@ notificationsRoutes.get("/access-requests", async (c) => {
       id: r.id,
       noteId: r.note_id,
       title: info!.title,
-      // The decider needs to know WHO is asking; they already manage this page's sharing.
-      requester: { email: r.requester, name: displayName(r.requester) },
+      // L7: workspace owners/admins see who is asking by email; a page's
+      // share-holder sees a display name only.
+      requester: admin ? { email: r.requester, name: displayName(r.requester) } : { name: displayName(r.requester) },
       level: r.level,
       message: r.message,
       createdAt: r.created_at,
@@ -355,9 +359,14 @@ notificationsRoutes.post("/access-requests/:id", SMALL, async (c) => {
 /**
  * Mounted in routes/api.ts on `/notes` and `/notes/:id` BEFORE the owner
  * short-circuit, so both the passthrough and the member route are covered. Only a
- * successful content write whose body carries a mention chip does any work: the
- * previous content is read first (server-side, never returned), then diffed
- * after the write succeeds — fire-and-forget, never changes the response.
+ * successful content write whose body carries a mention chip does any work, and
+ * never changes the response.
+ *
+ * Review M4: the server remembers each note's last-seen chip set
+ * (`cachedChips`), so an autosave of a page whose chips are all known reads
+ * nothing. Only a body with an unknown chip (and no cache) pre-reads the stored
+ * content. Over the per-user pre-read budget the work is DEFERRED, not dropped:
+ * after the write, the previous body comes from the note's version history.
  */
 export const restMentionHook: MiddlewareHandler = async (c, next) => {
   const method = c.req.method;
@@ -381,19 +390,29 @@ export const restMentionHook: MiddlewareHandler = async (c, next) => {
   if (!content || content.indexOf('data-type="mention"') < 0) return next();
   const actor = resolveActor(c);
   if (actor.kind !== "user") return next();
-  // Bounded: the pre-read below is one vault call per mention-carrying write.
-  if (consumeRateLimit(`mention-hook:${actor.email}`, 120, 60_000) !== null) return next();
   const vaultId = roleAtLeast(actor.role, "admin") ? resolveVaultEntry(c.req.header("x-prism-vault")).id : actor.vaultId;
   let prev: string | null = "";
+  let prevMentions: ParsedMention[] | null = null;
+  let deferred = false;
   if (!isCreate) {
     if (!id || !isNoteId(id)) return next();
-    try {
-      const n = await vaultClient(vaultId, { timeoutMs: 10_000 }).getNote(id);
-      prev = n.id === id ? (n.content ?? "") : null;
-    } catch {
+    prevMentions = cachedChips(vaultId, id);
+    if (!prevMentions) {
+      prev = null;
+      if (consumeRateLimit(`mention-hook:${actor.email}`, 120, 60_000) !== null) deferred = true;
+      else {
+        try {
+          const n = await vaultClient(vaultId, { timeoutMs: 10_000 }).getNote(id);
+          if (n.id !== id) return next();
+          prev = n.content ?? "";
+        } catch {
+          return next();
+        }
+      }
+    } else {
+      // Known chips only (incl. removals): nothing to notify; links still diff.
       prev = null;
     }
-    if (prev === null) return next();
   }
   await next();
   const status = c.res.status;
@@ -406,5 +425,23 @@ export const restMentionHook: MiddlewareHandler = async (c, next) => {
   }
   const noteId = isCreate ? (typeof body.id === "string" ? body.id : null) : id!;
   if (!noteId || !isNoteId(noteId)) return;
-  void noteContentStored({ vaultId, noteId, prev, next: content, authors: [actor.email], updatedAt: typeof body.updatedAt === "string" ? body.updatedAt : null });
+  const updatedAt = typeof body.updatedAt === "string" ? body.updatedAt : null;
+  const run = (p: string | null) =>
+    void noteContentStored({ vaultId, noteId, prev: p, prevMentions, next: content!, authors: [actor.email], updatedAt });
+  if (!deferred) return run(prev);
+  // Deferred: the version captured by THIS write is the body it replaced.
+  setTimeout(() => {
+    void (async () => {
+      try {
+        const v = vaultClient(vaultId, { timeoutMs: 10_000 });
+        const { versions } = await v.listVersions(noteId, 1);
+        const row = versions[0];
+        if (!row) return;
+        const old = await v.getVersion(noteId, row.version_ix);
+        run(old.content ?? "");
+      } catch {
+        /* history unavailable: this batch's chips are not diffed (logged nowhere, no content) */
+      }
+    })();
+  }, 1000);
 };

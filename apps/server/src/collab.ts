@@ -823,6 +823,7 @@ export interface DocumentStoredEvent {
 }
 export interface DocumentStoreListener {
   loaded?(docName: string, doc: Y.Doc): void;
+  unloaded?(docName: string): void;
   stored(e: DocumentStoredEvent): void;
 }
 let storeListener: DocumentStoreListener | null = null;
@@ -1025,6 +1026,15 @@ export const hocuspocus = new Hocuspocus({
   },
   async onChange(data) {
     noteDocEditor(data.documentName, data.context);
+  },
+  // Wave 2A (review L6): drop per-document notification state with the doc.
+  async afterUnloadDocument(data) {
+    docEditors.delete(data.documentName);
+    try {
+      storeListener?.unloaded?.(data.documentName);
+    } catch {
+      /* best-effort */
+    }
   },
   async beforeHandleMessage({ connection }) {
     await revalidateConnection(connection);

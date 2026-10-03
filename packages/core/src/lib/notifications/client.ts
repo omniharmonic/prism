@@ -89,7 +89,8 @@ export interface AccessRequest {
   id: string;
   noteId: string;
   title: string | null;
-  requester: { name: string; email: string };
+  /** `email` only for workspace owners/admins; a share-holder sees the name. */
+  requester: { name: string; email?: string };
   level: AccessLevel;
   message: string | null;
   createdAt: number;

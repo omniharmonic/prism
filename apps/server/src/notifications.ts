@@ -28,21 +28,21 @@
  */
 import { randomUUID } from "node:crypto";
 import type * as Y from "yjs";
-import { db, getUser, listMemberships, listUsers, grantsForUser, resolveVaultEntry, hasAccount, upsertGrant } from "./db";
+import { db, getUser, listMemberships, listUsers, grantsForUser, grantsForResource, resolveVaultEntry, hasAccount, upsertGrant } from "./db";
 import { config, emailEnabled } from "./config";
-import { effectiveCaps, expandLevel, type Cap, type NoteRef, type Level } from "./permissions";
+import { effectiveCaps, expandLevel, levelRank, type Cap, type NoteRef, type Level } from "./permissions";
 import { workspaceRole, roleAtLeast, roleFloor } from "./roles";
-import { ensureTree, rowRef } from "./tree";
+import { ensureTree, rowRef, subscribeTreeChanges } from "./tree";
 import { vaultClient, VaultConflictError, type Note } from "./parachute";
-import { newMentions, extractCommentMentions, COMMENT_MENTION } from "@prism/core/mentions";
+import { extractMentions, mentionKey, extractCommentMentions, COMMENT_MENTION, type ParsedMention } from "@prism/core/mentions";
 import { pageTitle, TRASH_TAG } from "@prism/core/pages";
 import { personSummary } from "./people-directory";
 import { sendPush, pushEnabled } from "./push";
 import { apnsEnabled, sendApnsToOwner, notificationAlert } from "./apns";
 import { sendEmail } from "./auth/email";
 import { documentActorId } from "./human-collab";
-import { consumeRateLimit } from "./middleware/ratelimit";
-import { docNameFor, isDocLive, markReconciled, setDocumentStoreListener, type DocumentStoredEvent } from "./collab";
+import { onAccessChanged } from "./access-events";
+import { docNameFor, federationTarget, isDocLive, markReconciled, setDocumentStoreListener, type DocumentStoredEvent } from "./collab";
 
 // ── schema ───────────────────────────────────────────────────────────────────
 db.exec(`
@@ -117,7 +117,11 @@ export const NOTIFICATION_TABLES = ["notifications", "notification_settings", "n
 export function _resetNotifications(): void {
   for (const t of NOTIFICATION_TABLES) db.exec(`DELETE FROM ${t}`);
   commentBaselines.clear();
+  watchedVaults.clear();
   refCache.clear();
+  budgets.clear();
+  unreadCache.clear();
+  chipCache.clear();
   actorIdCache = null;
   deliveryHook = null;
 }
@@ -231,6 +235,8 @@ const st = {
   unarchiveOne: db.prepare("UPDATE notifications SET archived_at = NULL WHERE id = ? AND recipient = ? AND vault_id = ?"),
   readForRequest: db.prepare("UPDATE notifications SET read_at = COALESCE(read_at, ?) WHERE request_id = ? AND type = 'access_request'"),
   pruneOld: db.prepare("DELETE FROM notifications WHERE created_at < ?"),
+  del: db.prepare("DELETE FROM notifications WHERE id = ?"),
+  anyUnread: db.prepare("SELECT 1 FROM notifications WHERE recipient = ? AND vault_id = ? AND read_at IS NULL AND archived_at IS NULL LIMIT 1"),
 };
 
 export function getSettings(email: string): Settings {
@@ -280,6 +286,7 @@ export async function noteInfo(vaultId: string, noteId: string, opts: { fresh?: 
   let treeSaysMissing = false;
   try {
     const tree = await ensureTree(entry);
+    watchTree(entry);
     const row = tree.state.rows.get(noteId);
     // Read-time lookups trust a loaded projection's "not there" (deleted notes must
     // not cost a vault call per inbox row); producers (`fresh`) still ask the vault.
@@ -306,7 +313,32 @@ export async function noteInfo(vaultId: string, noteId: string, opts: { fresh?: 
 }
 export const forgetNoteInfo = (vaultId: string, noteId: string) => refCache.delete(`${vaultId}\0${noteId}`);
 /** Tests / access changes: drop every cached note reference. */
-export const clearNoteInfoCache = (): void => refCache.clear();
+export const clearNoteInfoCache = (): void => {
+  refCache.clear();
+  unreadCache.clear();
+};
+/** Access-relevant tree changes (tags, creator, visibility, trash, removal) drop the
+ *  cached note facts and unread counts, so a revocation shows up at once. */
+const watchedVaults = new Set<string>();
+function watchTree(entry: Parameters<typeof subscribeTreeChanges>[0]): void {
+  if (watchedVaults.has(entry.id)) return;
+  watchedVaults.add(entry.id);
+  void subscribeTreeChanges(entry, (ch) => {
+    if (ch.kind === "resync") {
+      refCache.clear();
+      unreadCache.clear();
+      return;
+    }
+    const id = ch.kind === "upsert" ? ch.row.id : ch.id;
+    const prev = ch.prev;
+    const next = ch.kind === "upsert" ? ch.row : undefined;
+    const relevant = !prev || !next || prev.creator !== next.creator || prev.visibility !== next.visibility ||
+      prev.tags.join("\0") !== next.tags.join("\0") || prev.trashedAt !== next.trashedAt;
+    if (!relevant) return;
+    refCache.delete(`${entry.id}\0${id}`);
+    unreadCache.clear();
+  }).catch(() => watchedVaults.delete(entry.id));
+}
 
 /** The caps a signed-in USER holds on a note in a vault (gateway math). */
 export function userCaps(email: string, vaultId: string, ref: NoteRef): Set<Cap> | "admin" {
@@ -377,11 +409,32 @@ export interface NewNotification {
   dedupe: string;
 }
 
+// Budgets (review M1). Spent only AFTER a row was actually inserted (a dedupe hit
+// is free). Mentions/comments from one sender are capped per recipient and per
+// (sender, page, recipient) — an over-budget item is not kept. Everything else
+// (reminders, shares, access outcomes) always gets its row; the recipient-wide
+// hourly budget only ever skips the PUSH, never the inbox item.
+const PER_SENDER_HOUR = Number(process.env.NOTIFY_PER_SENDER_HOUR ?? 20);
+const PER_SENDER_NOTE_HOUR = Number(process.env.NOTIFY_PER_SENDER_NOTE_HOUR ?? 8);
+const SPAMMABLE: ReadonlySet<NotificationType> = new Set(["mention", "comment_reply", "comment_mention"]);
+const budgets = new Map<string, { n: number; reset: number }>();
+function budgetLeft(key: string, max: number): boolean {
+  const b = budgets.get(key);
+  return !b || b.reset < Date.now() || b.n < max;
+}
+function spend(key: string): void {
+  const now = Date.now();
+  const b = budgets.get(key);
+  if (!b || b.reset < now) budgets.set(key, { n: 1, reset: now + 3_600_000 });
+  else b.n++;
+  if (budgets.size > 20_000) for (const [k, v] of budgets) if (v.reset < now) budgets.delete(k);
+}
+
 /** Insert (idempotent by dedupe key) and fan out. Returns the new id, or null. */
 export function createNotification(n: NewNotification): string | null {
   const recipient = n.recipient.toLowerCase();
-  if (n.actorEmail && recipient === n.actorEmail.toLowerCase()) return null; // never the author
-  if (consumeRateLimit(`notify:${recipient}`, MAX_PER_RECIPIENT_HOUR, 3_600_000) !== null) return null;
+  const actor = n.actorEmail?.toLowerCase() ?? null;
+  if (actor && recipient === actor) return null; // never the author
   const id = randomUUID();
   const r = st.insert.run({
     id,
@@ -389,20 +442,34 @@ export function createNotification(n: NewNotification): string | null {
     recipient,
     type: n.type,
     note_id: n.noteId,
-    actor_email: n.actorEmail?.toLowerCase() ?? null,
+    actor_email: actor,
     anchor: n.anchor ? JSON.stringify(n.anchor) : null,
     preview: n.preview ? n.preview.slice(0, PREVIEW_MAX) : null,
     request_id: n.requestId ?? null,
     dedupe_key: n.dedupe.slice(0, 400),
     created_at: Date.now(),
   });
-  if (r.changes !== 1) return null;
-  void deliver(id).catch((e) => console.error(`[notify] deliver failed: ${(e as Error).message}`));
+  if (r.changes !== 1) return null; // duplicate: no budget spent
+  if (actor && SPAMMABLE.has(n.type)) {
+    const k1 = `s:${actor}:${recipient}`;
+    const k2 = `n:${actor}:${n.noteId ?? ""}:${recipient}`;
+    if (!budgetLeft(k1, PER_SENDER_HOUR) || !budgetLeft(k2, PER_SENDER_NOTE_HOUR)) {
+      st.del.run(id);
+      return null;
+    }
+    spend(k1);
+    spend(k2);
+  }
+  const rk = `r:${recipient}`;
+  const push = budgetLeft(rk, MAX_PER_RECIPIENT_HOUR);
+  spend(rk);
+  forgetUnread(recipient);
+  void deliver(id, { push }).catch((e) => console.error(`[notify] deliver failed: ${(e as Error).message}`));
   return id;
 }
 
 /** Push / APNs for one notification, re-checking access at delivery time. */
-export async function deliver(id: string): Promise<boolean> {
+export async function deliver(id: string, opts: { push?: boolean } = {}): Promise<boolean> {
   const row = st.get.get(id) as Row | undefined;
   if (!row || row.delivered_at || row.read_at) return false;
   if (row.note_id && row.type !== "access_denied") {
@@ -410,6 +477,7 @@ export async function deliver(id: string): Promise<boolean> {
     if (!userCanView(row.recipient, row.vault_id, info)) return false;
   }
   st.delivered.run(Date.now(), id);
+  if (opts.push === false) return false; // over the recipient's hourly push budget: inbox only
   if (!getSettings(row.recipient)[categoryOf(row.type)].push) return false;
   deliveryHook?.({ id, recipient: row.recipient, type: row.type });
   // IDS ONLY: the notification id; the app fetches the rest with its own credentials.
@@ -417,6 +485,15 @@ export async function deliver(id: string): Promise<boolean> {
   if (apnsEnabled()) void sendApnsToOwner(row.recipient, notificationAlert(id)).catch(() => {});
   return true;
 }
+
+// Unread counts (review L5): a short per-(user, vault) cache, dropped on every
+// change to that user's rows and on any permission change.
+const unreadCache = new Map<string, { at: number; n: number }>();
+const UNREAD_TTL_MS = 30_000;
+function forgetUnread(email: string): void {
+  for (const k of unreadCache.keys()) if (k.startsWith(`${email}\0`)) unreadCache.delete(k);
+}
+onAccessChanged(() => unreadCache.clear());
 
 // ── read side ────────────────────────────────────────────────────────────────
 const parseAnchor = (s: string | null): Anchor | null => {
@@ -497,15 +574,24 @@ export async function listNotifications(
   return { items, next };
 }
 
-/** Unread, still-viewable, not archived (capped at 500 rows scanned). */
+/** Unread, still-viewable, not archived (cached briefly; capped at 500 rows scanned). */
 export async function unreadCount(email: string, vaultId: string): Promise<number> {
-  const rows = st.unreadRows.all(email.toLowerCase(), vaultId) as Row[];
+  const e = email.toLowerCase();
+  const key = `${e}\0${vaultId}`;
+  const hit = unreadCache.get(key);
+  if (hit && Date.now() - hit.at < UNREAD_TTL_MS) return hit.n;
   let n = 0;
-  for (const r of rows) if (await view(r)) n++;
+  if (st.anyUnread.get(e, vaultId)) {
+    const rows = st.unreadRows.all(e, vaultId) as Row[];
+    for (const r of rows) if (await view(r)) n++;
+  }
+  unreadCache.set(key, { at: Date.now(), n });
+  if (unreadCache.size > 5000) unreadCache.clear();
   return n;
 }
 
 export function markRead(email: string, vaultId: string, o: { ids?: string[]; all?: boolean }): void {
+  forgetUnread(email.toLowerCase());
   const now = Date.now();
   if (o.all) {
     st.readAll.run(now, email.toLowerCase(), vaultId);
@@ -517,6 +603,7 @@ export function markRead(email: string, vaultId: string, o: { ids?: string[]; al
   tx(o.ids ?? []);
 }
 export function setArchived(email: string, vaultId: string, ids: string[], archived: boolean): void {
+  forgetUnread(email.toLowerCase());
   const now = Date.now();
   const tx = db.transaction(() => {
     for (const id of ids) {
@@ -534,23 +621,53 @@ const MAX_LINKS_PER_STORE = 50;
 export interface StoredContent {
   vaultId: string;
   noteId: string;
+  /** The previous body (or null when only `prevMentions` is known). */
   prev: string | null;
+  /** The previous chip set, when known without the body (the chip cache). */
+  prevMentions?: ParsedMention[] | null;
   next: string;
-  /** Who wrote this batch (all of them are authors: none of them is notified). */
+  /** Who wrote this batch. One author → they're never notified and get the credit;
+   *  several (a live-editor batch) → credited to "a collaborator", nobody excluded. */
   authors: string[];
   /** The note's updatedAt after the write (CAS base for the backlink write). */
   updatedAt: string | null;
 }
 
+// Last-seen chip set per note (review M4): lets a REST autosave skip the
+// pre-read when the body carries no chip this server hasn't already seen.
+const CHIP_TTL_MS = 10 * 60_000;
+const chipCache = new Map<string, { at: number; chips: ParsedMention[] }>();
+export function cachedChips(vaultId: string, noteId: string): ParsedMention[] | null {
+  const k = `${vaultId}\0${noteId}`;
+  const hit = chipCache.get(k);
+  if (!hit || Date.now() - hit.at > CHIP_TTL_MS) return null;
+  return hit.chips;
+}
+function rememberChips(vaultId: string, noteId: string, chips: ParsedMention[]): void {
+  const k = `${vaultId}\0${noteId}`;
+  chipCache.delete(k);
+  chipCache.set(k, { at: Date.now(), chips });
+  if (chipCache.size > 2000) chipCache.delete(chipCache.keys().next().value!);
+}
+
+const linkTargets = (ms: ParsedMention[], self: string) =>
+  new Set(ms.filter((m) => (m.kind === "page" || m.kind === "person") && m.id && m.id !== self).map((m) => m.id!));
+
 /**
  * Diff old vs new mention chips; notify the people newly mentioned, link the
- * newly mentioned pages/people (backlinks). Never throws.
+ * newly mentioned pages/people and unlink targets whose last chip is gone
+ * (backlinks). Never throws.
  */
-export async function noteContentStored(e: StoredContent): Promise<{ notified: number; linked: number }> {
-  const out = { notified: 0, linked: 0 };
+export async function noteContentStored(e: StoredContent): Promise<{ notified: number; linked: number; unlinked: number }> {
+  const out = { notified: 0, linked: 0, unlinked: 0 };
   try {
-    const added = newMentions(e.prev, e.next);
-    if (!added.length) return out;
+    const before = e.prevMentions ?? extractMentions(e.prev);
+    const after = extractMentions(e.next);
+    rememberChips(e.vaultId, e.noteId, after);
+    const seen = new Set(before.map(mentionKey));
+    const added = after.filter((m) => !seen.has(mentionKey(m)));
+    const removedTargets = [...linkTargets(before, e.noteId)].filter((t) => !linkTargets(after, e.noteId).has(t));
+    if (!added.length && !removedTargets.length) return out;
     const authors = new Set(e.authors.map((a) => a.toLowerCase()));
     const info = await noteInfo(e.vaultId, e.noteId, { fresh: true });
     if (!info || info.trashed) return out;
@@ -560,14 +677,17 @@ export async function noteContentStored(e: StoredContent): Promise<{ notified: n
       for (const a of authors) if (userCanView(a, e.vaultId, t)) return true;
       return false;
     };
-    const actor = authors.size === 1 ? [...authors][0]! : (e.authors[e.authors.length - 1]?.toLowerCase() ?? null);
+    // L4: per-update attribution isn't available in a multi-editor batch, so the
+    // credit goes to "a collaborator" and nobody in it is excluded (a mentioned
+    // co-editor did not necessarily write the chip).
+    const single = authors.size === 1 ? [...authors][0]! : null;
     const people = [...new Set(added.filter((m) => m.kind === "person" && m.id).map((m) => m.id!))].slice(0, MAX_MENTION_RECIPIENTS);
     const uidFor = new Map(added.filter((m) => m.kind === "person" && m.id).map((m) => [m.id!, m.uid]));
     const notified = new Set<string>();
     for (const pid of people) {
       if (!(await authorCanView(pid))) continue;
       for (const email of await accountsForPerson(e.vaultId, pid)) {
-        if (authors.has(email) || notified.has(email)) continue;
+        if (email === single || notified.has(email)) continue;
         if (!userCanView(email, e.vaultId, info)) continue;
         notified.add(email);
         const uid = uidFor.get(pid) ?? null;
@@ -576,45 +696,53 @@ export async function noteContentStored(e: StoredContent): Promise<{ notified: n
           recipient: email,
           type: "mention",
           noteId: e.noteId,
-          actorEmail: actor,
+          actorEmail: single,
           anchor: uid ? { mention: uid } : null,
           dedupe: `mention:${e.noteId}:${uid ?? pid}`,
         })) out.notified++;
       }
     }
-    // Backlinks (NP-RF-07): one CAS links-only write for every new page/person target.
-    const targets = [...new Set(added.filter((m) => (m.kind === "page" || m.kind === "person") && m.id && m.id !== e.noteId).map((m) => m.id!))].slice(0, MAX_LINKS_PER_STORE);
     const allowed: string[] = [];
-    for (const t of targets) if (await authorCanView(t)) allowed.push(t);
-    if (allowed.length) out.linked = await addMentionLinks(e.vaultId, e.noteId, allowed, e.updatedAt);
+    for (const t of [...linkTargets(added, e.noteId)].slice(0, MAX_LINKS_PER_STORE)) if (await authorCanView(t)) allowed.push(t);
+    const remove = removedTargets.slice(0, MAX_LINKS_PER_STORE);
+    if (allowed.length || remove.length) {
+      const ok = await writeMentionLinks(e.vaultId, e.noteId, allowed, remove, e.updatedAt);
+      if (ok) {
+        out.linked = allowed.length;
+        out.unlinked = remove.length;
+      }
+    }
   } catch (err) {
     console.error(`[notify] mention processing failed: ${(err as Error).message}`);
   }
   return out;
 }
 
-async function addMentionLinks(vaultId: string, noteId: string, targets: string[], updatedAt: string | null): Promise<number> {
+async function writeMentionLinks(vaultId: string, noteId: string, add: string[], remove: string[], updatedAt: string | null): Promise<boolean> {
   const v = vaultClient(vaultId, { timeoutMs: 15_000 });
   let base = updatedAt;
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
       if (!base) base = (await v.getNote(noteId)).updatedAt;
-      if (!base) return 0;
-      const res = await v.updateNote(noteId, { links: { add: targets.map((target) => ({ target, relationship: "mentions" })) }, ifUpdatedAt: base });
+      if (!base) return false;
+      const links: { add?: Array<{ target: string; relationship: string }>; remove?: Array<{ target: string; relationship: string }> } = {};
+      if (add.length) links.add = add.map((target) => ({ target, relationship: "mentions" }));
+      if (remove.length) links.remove = remove.map((target) => ({ target, relationship: "mentions" }));
+      const res = await v.updateNote(noteId, { links, ifUpdatedAt: base });
       // A links-only write to a note open in the live editor: tell the reconciler
       // this vault version carries no content change (never fold it over typing).
       if (isDocLive(vaultId, noteId)) markReconciled(docNameFor(vaultId, noteId), Date.parse(base), Date.parse(res.updatedAt ?? ""));
-      return targets.length;
+      return true;
     } catch (err) {
       if (err instanceof VaultConflictError && attempt === 0) {
         base = null; // someone wrote in between: re-read once and retry
         continue;
       }
       console.warn(`[notify] mention links for ${noteId} not written: ${(err as Error).message.slice(0, 120)}`);
-      return 0;
+      return false;
     }
   }
-  return 0;
+  return false;
 }
 
 // ── comments on store (collab) ───────────────────────────────────────────────
@@ -639,15 +767,37 @@ function keysOf(json: Record<string, ThreadJson>): Set<string> {
   return s;
 }
 
-/** Baseline a document's comment items (called when the doc loads). */
-export function primeComments(docName: string, doc: Y.Doc): void {
-  commentBaselines.set(docName, keysOf(commentsJson(doc)));
-}
-
 const cp = {
   list: db.prepare("SELECT email FROM comment_participants WHERE vault_id = ? AND note_id = ? AND thread_id = ? LIMIT 50"),
+  has: db.prepare("SELECT 1 FROM comment_participants WHERE vault_id = ? AND note_id = ? AND thread_id = ? LIMIT 1"),
   add: db.prepare("INSERT OR IGNORE INTO comment_participants (vault_id, note_id, thread_id, email) VALUES (?, ?, ?, ?)"),
 };
+
+/**
+ * Baseline a document's comment items (called when the doc loads). A thread this
+ * server has never attributed (written before wave 2A) seeds its participants
+ * from the items' `actorId` once — afterwards participants come only from
+ * attribution at store time (review M3: `actorId` in the comments map is
+ * writable by any edit-level socket).
+ */
+export function primeComments(docName: string, doc: Y.Doc, target?: { vaultId: string; noteId: string }): void {
+  const json = commentsJson(doc);
+  commentBaselines.set(docName, keysOf(json));
+  if (!target) return;
+  for (const [tid, t] of Object.entries(json)) {
+    const threadId = String(t.id ?? tid);
+    if (cp.has.get(target.vaultId, target.noteId, threadId)) continue;
+    for (const c of (t.comments ?? []).slice(0, 50)) {
+      const e = typeof c.actorId === "string" ? emailForActorId(c.actorId) : null;
+      if (e) cp.add.run(target.vaultId, target.noteId, threadId, e);
+    }
+  }
+}
+/** Forget a document's in-memory state when it unloads (review L6). */
+export function forgetComments(docName: string): void {
+  commentBaselines.delete(docName);
+}
+
 const stripTokens = (text: string) => text.replace(COMMENT_MENTION, (_m, label: string) => `@${label}`).replace(/\s+/g, " ").trim();
 
 export async function commentsStored(docName: string, vaultId: string, noteId: string, doc: Y.Doc, editors: string[]): Promise<number> {
@@ -655,7 +805,11 @@ export async function commentsStored(docName: string, vaultId: string, noteId: s
   const now = keysOf(json);
   const before = commentBaselines.get(docName);
   commentBaselines.set(docName, now);
-  if (!before) return 0; // first sight of this doc: baseline only, never a backfill burst
+  if (!before) {
+    // First sight of this doc: baseline only, never a backfill burst.
+    primeComments(docName, doc, { vaultId, noteId });
+    return 0;
+  }
   let sent = 0;
   const info = await noteInfo(vaultId, noteId, { fresh: true });
   if (!info || info.trashed) return 0;
@@ -667,34 +821,31 @@ export async function commentsStored(docName: string, vaultId: string, noteId: s
       const c = items[i]!;
       const key = itemKey(threadId, c, i);
       if (before.has(key)) continue;
-      const author = typeof c.actorId === "string" ? emailForActorId(c.actorId) : editorSet.size === 1 ? [...editorSet][0]! : null;
-      const authors = new Set([...(author ? [author] : []), ...editorSet]);
+      // M3: an item's actorId is believed only when that account really wrote in
+      // this batch (server commands and MCP report themselves as editors);
+      // otherwise the batch's single editor is the author, or nobody is credited.
+      const claimed = typeof c.actorId === "string" ? emailForActorId(c.actorId) : null;
+      const author = claimed && editorSet.has(claimed) ? claimed : editorSet.size === 1 ? [...editorSet][0]! : null;
+      const authors = author ? new Set([author]) : editorSet;
       const text = typeof c.text === "string" ? c.text : "";
       const preview = stripTokens(text).slice(0, PREVIEW_MAX) || null;
       const mentioned = new Set<string>();
       for (const m of extractCommentMentions(text).slice(0, 10)) {
+        // L3: the same rule as document chips — only people some author can see.
+        const person = await noteInfo(vaultId, m.id);
+        if (![...authors].some((a) => userCanView(a, vaultId, person))) continue;
         for (const email of await accountsForPerson(vaultId, m.id)) {
           if (authors.has(email) || mentioned.has(email) || !userCanView(email, vaultId, info)) continue;
           mentioned.add(email);
           if (createNotification({ vaultId, recipient: email, type: "comment_mention", noteId, actorEmail: author, anchor: { thread: threadId }, preview, dedupe: `comment:${noteId}:${key}` })) sent++;
         }
       }
-      // Earlier participants: server-attributed items (actorId) plus everyone this
-      // module has attributed in the thread before (live-editor comments carry no
-      // actorId, so their author is remembered when their item is first stored).
-      const participants = new Set<string>(
-        (cp.list.all(vaultId, noteId, threadId) as Array<{ email: string }>).map((r) => r.email),
-      );
-      for (let j = 0; j < i; j++) {
-        const p = items[j]!;
-        const e = typeof p.actorId === "string" ? emailForActorId(p.actorId) : null;
-        if (e) participants.add(e);
-      }
-      if (author) cp.add.run(vaultId, noteId, threadId, author.toLowerCase());
+      const participants = new Set<string>((cp.list.all(vaultId, noteId, threadId) as Array<{ email: string }>).map((r) => r.email));
       for (const email of participants) {
         if (authors.has(email) || mentioned.has(email) || !userCanView(email, vaultId, info)) continue;
         if (createNotification({ vaultId, recipient: email, type: "comment_reply", noteId, actorEmail: author, anchor: { thread: threadId }, preview, dedupe: `comment:${noteId}:${key}` })) sent++;
       }
+      if (author) cp.add.run(vaultId, noteId, threadId, author);
     }
   }
   return sent;
@@ -702,7 +853,11 @@ export async function commentsStored(docName: string, vaultId: string, noteId: s
 
 // ── collab wiring ────────────────────────────────────────────────────────────
 setDocumentStoreListener({
-  loaded: (docName, doc) => primeComments(docName, doc),
+  loaded: (docName, doc) => {
+    const t = federationTarget(docName);
+    primeComments(docName, doc, { vaultId: t.vaultId, noteId: t.noteId });
+  },
+  unloaded: (docName) => forgetComments(docName),
   stored: (e: DocumentStoredEvent) => {
     void noteContentStored({ vaultId: e.vaultId, noteId: e.noteId, prev: e.prevContent, next: e.content, authors: e.editors, updatedAt: e.updatedAt });
     void commentsStored(e.docName, e.vaultId, e.noteId, e.doc, e.editors).catch((err) =>
@@ -915,14 +1070,27 @@ export async function decideAccessRequest(o: { id: string; vaultId: string; deci
     // Never hand out more than you hold (acl.ts denyEscalation, same rule).
     if (caps !== "admin" && ![...expandLevel(level as Level)].every((c) => caps.has(c))) return { ok: false, status: 403, error: "escalation" };
     if (ar.decide.run("approved", Date.now(), decider, r.id).changes !== 1) return { ok: false, status: 409, error: "already_decided" };
-    upsertGrant({ vault_id: r.vault_id, subject_type: "user", subject: r.requester, resource_type: "note", resource: r.note_id, level: level as Level, created_by: decider });
+    // L2: approving never LOWERS what the requester already holds on this note.
+    const existing = grantsForResource("note", r.note_id, r.vault_id).find((g) => g.subject_type === "user" && g.subject === r.requester);
+    const want = expandLevel(level as Level);
+    const held = existing ? new Set<Cap>(existing.caps ?? expandLevel(existing.level)) : new Set<Cap>();
+    if (![...want].every((c) => held.has(c))) {
+      if (existing?.caps) {
+        upsertGrant({ vault_id: r.vault_id, subject_type: "user", subject: r.requester, resource_type: "note", resource: r.note_id, level: level as Level, caps: [...new Set<Cap>([...held, ...want])], created_by: decider });
+      } else {
+        const lvl = existing && levelRank(existing.level) > levelRank(level as Level) ? existing.level : (level as Level);
+        upsertGrant({ vault_id: r.vault_id, subject_type: "user", subject: r.requester, resource_type: "note", resource: r.note_id, level: lvl, created_by: decider });
+      }
+    }
     forgetNoteInfo(r.vault_id, r.note_id);
     st.readForRequest.run(Date.now(), r.id);
+    unreadCache.clear();
     createNotification({ vaultId: r.vault_id, recipient: r.requester, type: "access_granted", noteId: r.note_id, actorEmail: decider, requestId: r.id, dedupe: `access_granted:${r.id}` });
     return { ok: true, status: "approved" };
   }
   if (ar.decide.run("denied", Date.now(), decider, r.id).changes !== 1) return { ok: false, status: 409, error: "already_decided" };
   st.readForRequest.run(Date.now(), r.id);
+  unreadCache.clear();
   createNotification({ vaultId: r.vault_id, recipient: r.requester, type: "access_denied", noteId: r.note_id, actorEmail: decider, requestId: r.id, dedupe: `access_denied:${r.id}` });
   return { ok: true, status: "denied" };
 }
@@ -942,26 +1110,35 @@ const defaultDigest: EmailSender = async (to, count) => {
   await sendEmail(to, `You have ${count} unread ${noun} in Prism`, `<p>You have ${count} unread ${noun} in Prism.</p><p><a href="${link}">Open your inbox</a></p>`, `digest ${count}`);
 };
 
-/** One digest per user per interval for notifications still unread after a delay. */
+/**
+ * One digest per user per interval for notifications still unread after a delay.
+ * Paged PER RECIPIENT (review M2): rows whose category has email off are marked
+ * as handled, so they can never fill a page and block anyone's digest.
+ */
 export async function runEmailDigestOnce(now = Date.now()): Promise<number> {
   if (!emailSender && !emailEnabled()) return 0;
-  const rows = db
-    .prepare("SELECT * FROM notifications WHERE read_at IS NULL AND archived_at IS NULL AND emailed_at IS NULL AND created_at <= ? ORDER BY created_at ASC LIMIT 1000")
-    .all(now - EMAIL_AFTER_MS) as Row[];
-  const byUser = new Map<string, Row[]>();
-  for (const r of rows) {
-    if (!getSettings(r.recipient)[categoryOf(r.type)].email) continue;
-    byUser.set(r.recipient, [...(byUser.get(r.recipient) ?? []), r]);
-  }
-  let sent = 0;
+  const cutoff = now - EMAIL_AFTER_MS;
+  const pending = "read_at IS NULL AND archived_at IS NULL AND emailed_at IS NULL AND created_at <= ?";
+  const recipients = db.prepare(`SELECT DISTINCT recipient FROM notifications WHERE ${pending} LIMIT 500`).all(cutoff) as Array<{ recipient: string }>;
+  const rowsFor = db.prepare(`SELECT * FROM notifications WHERE recipient = ? AND ${pending} ORDER BY created_at ASC LIMIT 200`);
   const mark = db.prepare("UPDATE notifications SET emailed_at = ? WHERE id = ?");
+  const lastAt = db.prepare("SELECT last_at FROM notification_email_log WHERE email = ?");
   const log = db.prepare("INSERT INTO notification_email_log (email, last_at) VALUES (?, ?) ON CONFLICT(email) DO UPDATE SET last_at = excluded.last_at");
-  for (const [email, list] of byUser) {
-    const last = (db.prepare("SELECT last_at FROM notification_email_log WHERE email = ?").get(email) as { last_at: number } | undefined)?.last_at ?? 0;
+  let sent = 0;
+  for (const { recipient: email } of recipients) {
+    const settings = getSettings(email);
+    const rows = rowsFor.all(email, cutoff) as Row[];
+    const wanted: Row[] = [];
+    for (const r of rows) {
+      if (settings[categoryOf(r.type)].email) wanted.push(r);
+      else mark.run(now, r.id); // email off for this kind: handled, never emailed
+    }
+    if (!wanted.length) continue;
+    const last = (lastAt.get(email) as { last_at: number } | undefined)?.last_at ?? 0;
     if (now - last < EMAIL_MIN_INTERVAL_MS) continue;
     const visible: Row[] = [];
-    for (const r of list) if (await view(r)) visible.push(r);
-    for (const r of list) mark.run(now, r.id); // hidden rows are never emailed later either
+    for (const r of wanted) if (await view(r)) visible.push(r);
+    for (const r of wanted) mark.run(now, r.id); // hidden rows are never emailed later either
     if (!visible.length) continue;
     try {
       await (emailSender ?? defaultDigest)(email, visible.length);

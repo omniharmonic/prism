@@ -356,3 +356,116 @@ test("live-editor comments (no actorId) are attributed to the socket's account a
   assert.equal((await inbox(ADA)).items[0]!.type, "comment_reply");
   assert.equal((await inbox(BOB)).items.length, 0, "never the author");
 });
+
+// ── review M1–M4, L1–L7 ──────────────────────────────────────────────────────
+
+test("M1: one sender can't exhaust a recipient's budget; reminders/shares/access outcomes always land (push may be skipped)", async () => {
+  // Bob churns chips with fresh uids at Ada.
+  let made = 0;
+  for (let i = 0; i < 60; i++) if (createNotification({ vaultId: "primary", recipient: ADA, type: "mention", noteId: "doc", actorEmail: BOB, dedupe: `spam:${i}` })) made++;
+  assert.ok(made <= 20, `per-sender cap (got ${made})`);
+  assert.ok(made >= 5);
+  // Eve (another sender) still reaches Ada.
+  grantUser(EVE, "tag", "team", "edit");
+  assert.ok(createNotification({ vaultId: "primary", recipient: ADA, type: "mention", noteId: "doc", actorEmail: EVE, dedupe: "eve:1" }));
+  // A duplicate (dedupe) spends no budget: the same key 50× → one row.
+  for (let i = 0; i < 50; i++) createNotification({ vaultId: "primary", recipient: BOB, type: "mention", noteId: "doc", actorEmail: EVE, dedupe: "same" });
+  assert.ok(createNotification({ vaultId: "primary", recipient: BOB, type: "mention", noteId: "doc", actorEmail: EVE, dedupe: "other" }));
+  // Exhaust the recipient's hourly push budget, then a reminder still creates its row.
+  for (let i = 0; i < 400; i++) createNotification({ vaultId: "primary", recipient: ADA, type: "share", noteId: "doc", actorEmail: `s${i}@test.local`, dedupe: `share:${i}` });
+  const at = new Date(Date.now() + 60_000).toISOString();
+  await req("/reminders", ADA, { method: "POST", body: JSON.stringify({ noteId: "doc", at, tz: "UTC" }) });
+  assert.equal(await runRemindersOnce(Date.now() + 120_000), 1);
+  assert.ok((await inbox(ADA, "?type=reminder")).items.length === 1, "reminder row created even over the push budget");
+});
+
+test("M2: email digest isn't blocked by rows whose category has email off; pages per recipient", async () => {
+  await req("/notifications/settings", ADA, { method: "PUT", body: JSON.stringify({ settings: { reminder: { push: true, email: false } } }) });
+  for (let i = 0; i < 1100; i++) db.prepare("INSERT INTO notifications (id, vault_id, recipient, type, note_id, created_at) VALUES (?, 'primary', ?, 'reminder', 'doc', ?)").run(`old${i}`, ADA, 1000 + i);
+  createNotification({ vaultId: "primary", recipient: BOB, type: "comment_reply", noteId: "doc", actorEmail: ADA, dedupe: "b1" });
+  const sent: Array<[string, number]> = [];
+  setDigestSender(async (to, n) => void sent.push([to, n]));
+  await runEmailDigestOnce(Date.now() + 3_600_000);
+  assert.deepEqual(sent, [[BOB, 1]]);
+});
+
+test("M3: a live-editor comment carrying someone else's actorId is credited to the socket's account", async () => {
+  const doc = new Y.Doc();
+  const threads = doc.getMap<Y.Map<unknown>>("comments");
+  primeComments("m3", doc);
+  const t = new Y.Map<unknown>();
+  t.set("id", "t3");
+  const arr = new Y.Array<Record<string, unknown>>();
+  // Eve (editor) writes an item that claims to be Ada's, with a token at Bob.
+  arr.push([{ actorId: documentActorId(`user:${ADA}`), author: "Ada", text: "x", createdAt: 1 }]);
+  t.set("comments", arr);
+  threads.set("t3", t);
+  grantUser(EVE, "tag", "team", "edit");
+  await commentsStored("m3", "primary", "doc", doc, [EVE]);
+  // Bob replies: the earlier participant is Eve (the real writer), not Ada.
+  arr.push([{ actorId: documentActorId(`user:${BOB}`), author: "Bob", text: "reply", createdAt: 2 }]);
+  await commentsStored("m3", "primary", "doc", doc, [BOB]);
+  assert.equal((await inbox(ADA)).items.length, 0, "Ada never wrote here");
+  assert.equal((await inbox(EVE)).items[0]!.type, "comment_reply");
+});
+
+test("M4: REST autosaves of a page with known chips don't re-read the vault; new chips still notify", async () => {
+  const html = `<p>${chip("person", "p-ada", "k1")}</p>`;
+  await req("/notes/doc", OWNER, { method: "PATCH", body: JSON.stringify({ content: html }), headers: { "x-prism-editor-schema": "99" } });
+  await until(() => inbox(ADA), (v) => v.items.length === 1);
+  const reads = () => fv.calls.filter((c) => c.method === "GET" && c.path.endsWith("/notes/doc")).length;
+  const before = reads();
+  for (let i = 0; i < 5; i++) {
+    await req("/notes/doc", OWNER, { method: "PATCH", body: JSON.stringify({ content: `${html}<p>typing ${i}</p>` }), headers: { "x-prism-editor-schema": "99" } });
+  }
+  await new Promise((r) => setTimeout(r, 50));
+  assert.equal(reads() - before, 0, "no pre-read while the chip set is unchanged");
+  await req("/notes/doc", OWNER, { method: "PATCH", body: JSON.stringify({ content: `${html}${chip("person", "p-ada", "k2")}` }), headers: { "x-prism-editor-schema": "99" } });
+  assert.equal((await until(() => inbox(ADA), (v) => v.items.length === 2)).items.length, 2);
+});
+
+test("L1: deleting the last chip to a target removes the mentions backlink; L4: a multi-editor batch credits 'a collaborator' and still notifies a mentioned editor", async () => {
+  const one = `<p>${chip("person", "p-ada", "l1")}</p>`;
+  await noteContentStored({ vaultId: "primary", noteId: "doc", prev: "", next: one, authors: [BOB], updatedAt: null });
+  assert.equal((fv.notes.get("doc")!.links ?? []).length, 1);
+  await noteContentStored({ vaultId: "primary", noteId: "doc", prev: one, next: "<p>gone</p>", authors: [BOB], updatedAt: null });
+  assert.equal((fv.notes.get("doc")!.links ?? []).length, 0);
+  // Two editors in the batch, one of them (Ada) is mentioned → notified, no actor name.
+  await noteContentStored({ vaultId: "primary", noteId: "doc", prev: "", next: `<p>${chip("person", "p-ada", "l4")}</p>`, authors: [BOB, ADA], updatedAt: null });
+  const item = (await inbox(ADA)).items.find((i) => (i.anchor as { mention?: string })?.mention === "l4")!;
+  assert.ok(item);
+  assert.equal(item.actor, null);
+});
+
+test("L2: approving a request never lowers an existing grant; L7: share-holders see names, not emails", async () => {
+  grantUser(EVE, "note", "secret", "edit");
+  db.prepare("INSERT INTO access_requests (id, vault_id, note_id, requester, level, status, created_at) VALUES ('r1','primary','secret',?, 'view','pending',?)").run(EVE, Date.now());
+  await req("/access-requests/r1", OWNER, { method: "POST", body: JSON.stringify({ decision: "approve", level: "view" }) });
+  assert.ok(grantsForUser(EVE).some((g) => g.resource === "secret" && g.level === "edit"), "still edit");
+  upsertGrant({ vault_id: "primary", subject_type: "user", subject: BOB, resource_type: "note", resource: "doc", level: "view", caps: ["view", "share"], created_by: "test" });
+  db.prepare("INSERT INTO access_requests (id, vault_id, note_id, requester, level, status, created_at) VALUES ('r2','primary','doc',?, 'view','pending',?)").run(EVE, Date.now());
+  const asBob = ((await (await req("/access-requests", BOB)).json()) as { items: Array<{ requester: Record<string, unknown> }> }).items;
+  assert.equal(asBob.length, 1);
+  assert.equal(asBob[0]!.requester.email, undefined);
+  assert.equal(asBob[0]!.requester.name, "Eve");
+  const asOwner = ((await (await req("/access-requests", OWNER)).json()) as { items: Array<{ requester: Record<string, unknown> }> }).items;
+  assert.equal(asOwner[0]!.requester.email, EVE);
+});
+
+test("L3: a comment @-token only notifies people the author can see", async () => {
+  const doc = new Y.Doc();
+  primeComments("l3", doc);
+  const t = new Y.Map<unknown>();
+  t.set("id", "t");
+  const arr = new Y.Array<Record<string, unknown>>();
+  arr.push([{ text: "hi @[Eve](person:p-eve)", createdAt: 1 }]);
+  t.set("comments", arr);
+  doc.getMap<Y.Map<unknown>>("comments").set("t", t);
+  grantUser(EVE, "tag", "team", "view");
+  // Author: a member with no view of person notes.
+  const ZED = "zed@test.local";
+  setAccount(ZED, "Zed", "scrypt$fixture");
+  grantUser(ZED, "tag", "team", "edit");
+  await commentsStored("l3", "primary", "doc", doc, [ZED]);
+  assert.equal((await inbox(EVE)).items.length, 0);
+});
