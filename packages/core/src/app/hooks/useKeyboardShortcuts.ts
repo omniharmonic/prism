@@ -1,3 +1,4 @@
+import { usePagesUI } from "../../lib/pages/store";
 import { useEffect } from "react";
 import { useUIStore } from "../stores/ui";
 
@@ -34,6 +35,13 @@ export function useKeyboardShortcuts() {
         case "k":
           e.preventDefault();
           openCommandBar();
+          break;
+        case "n":
+          // ⌘N / Ctrl+N: a new "Untitled" page (NP-SB-13). Browsers keep this
+          // combination for a new window, so it only arrives in the native app.
+          if (e.shiftKey || e.altKey) return;
+          e.preventDefault();
+          usePagesUI.getState().openCreate({});
           break;
       }
     };

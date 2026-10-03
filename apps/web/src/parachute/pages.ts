@@ -73,7 +73,7 @@ export async function movePage(noteId: string, request: MoveRequest): Promise<Mo
   return { ok: true, path: String(data.path), moved: (data.moved as MoveResult["moved"]) ?? [] };
 }
 
-export async function setPageMeta(noteId: string, set: { prism_locked?: boolean; prism_order?: number }, ifUpdatedAt: string): Promise<{ updatedAt: string | null }> {
+export async function setPageMeta(noteId: string, set: { prism_locked?: boolean; prism_order?: number; prism_page_style?: { small: boolean; full: boolean } }, ifUpdatedAt: string): Promise<{ updatedAt: string | null }> {
   const { data } = await call<{ updatedAt: string | null }>("POST", `/notes/${id(noteId)}/meta`, { set, if_updated_at: ifUpdatedAt });
   return { updatedAt: data.updatedAt ?? null };
 }

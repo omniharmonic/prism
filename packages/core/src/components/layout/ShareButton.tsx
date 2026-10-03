@@ -3,6 +3,7 @@ import { Share2, Check, Copy, X } from "lucide-react";
 import { useUIStore } from "../../app/stores/ui";
 import { useCollabSharing } from "../../data/CollabSharing";
 import { openSharingDialog } from "./SharingDialogHost";
+import { useIsMobile } from "../../app/hooks/useIsMobile";
 
 const VIRTUAL = new Set([
   "messages-dashboard",
@@ -157,14 +158,17 @@ export function ShareButton() {
 
 /** Tab-bar share control backed by the full ACL dialog (web shell). */
 function RichShareButton({ noteId }: { noteId: string }) {
+  const isMobile = useIsMobile();
+  // NP-PG-06: labelled "Share" on desktop; the phone header keeps the icon.
   return (
     <button
       onClick={() => openSharingDialog(noteId)}
       data-prism-share-trigger
-      className="px-2 h-full hover:bg-[var(--glass-hover)] transition-colors"
+      className={isMobile ? "px-2 h-full hover:bg-[var(--glass-hover)] transition-colors" : "tabbar-labelled interactive focus-ring"}
       title="Share"
     >
-      <Share2 size={15} style={{ color: "var(--text-muted)" }} />
+      <Share2 size={15} style={{ color: isMobile ? "var(--text-muted)" : undefined }} aria-hidden={!isMobile || undefined} />
+      {!isMobile && <span>Share</span>}
     </button>
   );
 }

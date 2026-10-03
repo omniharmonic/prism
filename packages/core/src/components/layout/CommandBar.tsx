@@ -17,7 +17,14 @@ import { useHostServices } from "../../data/HostServicesContext";
 import { useVaultClient } from "../../data/VaultClientContext";
 import { buildTransformPrompt, hostServiceErrorText, runWikilinkJobToEnd, wikilinkJobSummary } from "../../lib/host/services";
 import { addSyncConfig, resolveWikilinks } from "../../lib/host/vaultOps";
-import { searchModeLabel, searchPreview, searchResultGroup } from "../navigation/searchPresentation";
+import { searchModeLabel, searchResultGroup } from "../navigation/searchPresentation";
+import { Highlighted, resultHighlights } from "../navigation/searchHighlight";
+import { EMPTY_FILTERS, SearchFilterBar, activeFilterCount, toSearchFilters, type SearchFilterState } from "../navigation/searchFilters";
+import { recentSearches, rememberSearch } from "../navigation/searchRecents";
+import { useAgentChatStore } from "../../lib/agent/chatStore";
+import type { Range } from "../../lib/search/match";
+import { useQuery } from "@tanstack/react-query";
+import { useCollabSharing } from "../../data/CollabSharing";
 import "../navigation/search-workspace.css";
 import { NewContentMenu } from "../navigation/NewContentMenu";
 import { useNotionDbSyncModal } from "./NotionDbSyncHost";
@@ -37,6 +44,19 @@ export function CommandBar() {
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState<"all" | "notes" | "messages" | "commands">("all");
   const [debouncedQuery] = useDebounce(query, 200);
+  const [searchFilters, setSearchFilters] = useState<SearchFilterState>(EMPTY_FILTERS);
+  const wireFilters = useMemo(() => toSearchFilters(searchFilters), [searchFilters]);
+  const searchScope = useAgentChatStore((s) => s.scope);
+  const [recentQueries, setRecentQueries] = useState<string[]>([]);
+  // Vault scope (NP-SR-04): the vaults this account can reach on this server.
+  const sharing = useCollabSharing();
+  const { data: searchVaults } = useQuery({
+    queryKey: ["search-vaults", searchScope],
+    enabled: commandBarOpen && !!sharing?.listVaults,
+    staleTime: 60_000,
+    retry: false,
+    queryFn: async () => (await sharing!.listVaults!()).map((v) => ({ id: v.id, label: v.label, active: v.active })),
+  });
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [creationType, setCreationType] = useState<ContentType | null>(null);
   const returnFocus = useRef<HTMLElement | null>(null);
@@ -68,12 +88,14 @@ export function CommandBar() {
     return host!.agentText(buildTransformPrompt(note, targetType), { skill: "transform", noteId, timeoutMs: 10 * 60_000 });
   }, [host, vaultClient]);
 
-  const { data: searchResults, mode: searchMode, isFetching: searching, isError: searchFailed, refetch: retrySearch } = useVaultSearch(commandBarOpen ? debouncedQuery : "");
+  const { data: searchResults, mode: searchMode, isFetching: searching, isError: searchFailed, refetch: retrySearch } = useVaultSearch(commandBarOpen ? debouncedQuery : "", wireFilters);
 
   useEffect(() => {
     if (commandBarOpen) {
       setQuery("");
       setFilter("all");
+      setSearchFilters(EMPTY_FILTERS);
+      setRecentQueries(recentSearches(useAgentChatStore.getState().scope));
       setSelectedId(null);
       const previous = document.activeElement as HTMLElement | null;
       returnFocus.current = previous;
@@ -301,17 +323,39 @@ export function CommandBar() {
   // search a separate message index or paginate the complete vault.
   const vaultItems = useMemo(() => {
     const notes = query.trim() === debouncedQuery.trim() ? searchResults ?? [] : [];
-    return notes.filter(note => filter !== "commands" && (filter === "all" || searchResultGroup(note) === filter)).map(note => ({
-      id: `note-${note.id}`,
-      noteId: note.id,
-      label: note.path?.split("/").pop() || note.id,
-      sublabel: note.path || "Saved note",
-      group: searchResultGroup(note),
-      icon: typeof note.metadata?.icon === "string" ? note.metadata.icon : null,
-      preview: searchPreview(note, 220),
-      action: () => { openTab(note.id, note.path?.split("/").pop() || note.id, inferContentType(note)); closeCommandBar(); },
-    }));
-  }, [searchResults, query, debouncedQuery, filter, openTab, closeCommandBar]);
+    return notes.filter(note => filter !== "commands" && (filter === "all" || searchResultGroup(note) === filter)).map(note => {
+      const label = note.path?.split("/").pop() || note.id;
+      const marks = resultHighlights(note, label, debouncedQuery);
+      return {
+        id: `note-${note.id}`,
+        noteId: note.id,
+        label,
+        labelRanges: marks.title,
+        sublabel: note.path || "Saved note",
+        group: searchResultGroup(note),
+        icon: typeof note.metadata?.icon === "string" ? note.metadata.icon : null,
+        preview: marks.snippet,
+        previewRanges: marks.snippetRanges,
+        action: () => {
+          rememberSearch(searchScope, debouncedQuery);
+          const vault = (note as { _vault?: string })._vault;
+          const type = inferContentType(note);
+          closeCommandBar();
+          if (!vault || !sharing?.setActiveVault) { openTab(note.id, label, type); return; }
+          // A result from another vault: switch to it first, then open the page there.
+          const before = useAgentChatStore.getState().scope;
+          const stop = useAgentChatStore.subscribe((state) => {
+            if (!state.scope || state.scope === before) return;
+            stop();
+            window.clearTimeout(timer);
+            useUIStore.getState().openTab(note.id, label, type);
+          });
+          const timer = window.setTimeout(stop, 8000);
+          sharing.setActiveVault(vault);
+        },
+      };
+    });
+  }, [searchResults, query, debouncedQuery, filter, openTab, closeCommandBar, searchScope, sharing]);
   // Empty query: recent pages first (synced across devices when the server keeps preferences).
   const recentItems = useMemo(() => (query.trim() || (filter !== "all" && filter !== "notes")) ? [] : recents.slice(0, 8).map(r => ({
     id: `recent-${r.id}`,
@@ -321,13 +365,20 @@ export function CommandBar() {
     group: "notes" as const,
     icon: null as string | null,
     preview: "",
+    labelRanges: [] as Range[],
+    previewRanges: [] as Range[],
     action: () => { openTab(r.id, r.title, r.type); closeCommandBar(); },
   })), [recents, query, filter, openTab, closeCommandBar]);
+  // Recent searches (this device, this workspace): re-run with one keystroke.
+  const recentQueryItems = (query.trim() || filter === "commands") ? [] : recentQueries.slice(0, 5).map((q, i) => ({
+    id: `recent-search-${i}`, query: q,
+    action: () => { setQuery(q); setSelectedId(null); inputRef.current?.focus({ preventScroll: true }); },
+  }));
   const noteItems = [...recentItems, ...vaultItems.filter(item => item.group === "notes")];
   const messageItems = vaultItems.filter(item => item.group === "messages");
   const orderedNotes = [...noteItems, ...messageItems];
   const showAsk = !!query.trim() && agentChat && (filter === "all" || filter === "commands");
-  const items = [...orderedNotes, ...filteredCommands, ...(showAsk ? [{ id: "ask-agent", action: () => askClaude() }] : [])];
+  const items = [...recentQueryItems, ...orderedNotes, ...filteredCommands, ...(showAsk ? [{ id: "ask-agent", action: () => askClaude() }] : [])];
   // Ask is never a default action: Enter while waiting or after zero matches
   // cannot accidentally submit the user's search as an agent prompt.
   const defaultId = orderedNotes[0]?.id ?? filteredCommands[0]?.id;
@@ -372,16 +423,22 @@ export function CommandBar() {
     {([['all', 'All'], ['notes', 'Notes'], ['messages', 'Messages'], ['commands', 'Commands']] as const).map(([id, label]) =>
       <button key={id} tabIndex={0} type="button" aria-pressed={filter === id} className="focus-ring" onClick={() => { setFilter(id); setSelectedId(null); inputRef.current?.focus({ preventScroll: true }); }}>{label}</button>)}
   </div>;
+  const filterCount = activeFilterCount(searchFilters);
+  const filterBar = filter !== "commands" && <SearchFilterBar value={searchFilters} vaults={searchVaults} onChange={(next) => { setSearchFilters(next); setSelectedId(null); }} />;
   const status = <div className="prism-search-status" role="status">
-    <span>Current workspace</span><span>{!query.trim() ? "Search notes or choose an action" : searchingNow ? "Searching…" : searchFailed ? "Search unavailable" : `${vaultItems.length} results shown · ${searchModeLabel(searchMode)}`}</span>
+    <span>{searchFilters.vault ? searchVaults?.find((v) => v.id === searchFilters.vault)?.label ?? "Another vault" : "Current workspace"}</span><span>{!query.trim() ? "Search notes or choose an action" : searchingNow ? "Searching…" : searchFailed ? "Search unavailable" : `${vaultItems.length} results shown · ${searchModeLabel(searchMode)}${filterCount ? ` · ${filterCount} filter${filterCount === 1 ? "" : "s"}` : ""}`}</span>
   </div>;
   const renderNotes = (notes: typeof vaultItems, label: string) => notes.length > 0 && <div role="group" aria-label={label}>
     <div className="prism-search-group">{label}</div>
     {notes.map(item => { const index = items.findIndex(candidate => candidate.id === item.id); return <CmdRow key={item.id} id={`prism-command-${index}`} selected={selectedIndex === index} onClick={item.action} onHover={() => setSelectedId(item.id)}
       icon={item.icon ? <span>{item.icon}</span> : item.group === "messages" ? <MessageSquare size={18} /> : <FileText size={18} />}
-      label={item.label} sublabel={item.sublabel} preview={item.preview} trailing={<span className="prism-search-open">Open <ArrowRight size={13} /></span>} />; })}
+      label={item.label} labelRanges={item.labelRanges} sublabel={item.sublabel} preview={item.preview} previewRanges={item.previewRanges} trailing={<span className="prism-search-open">Open <ArrowRight size={13} /></span>} />; })}
   </div>;
   const body = <>
+    {recentQueryItems.length > 0 && <div role="group" aria-label="Recent searches"><div className="prism-search-group">Recent searches</div>{recentQueryItems.map(item => {
+      const index = items.findIndex(candidate => candidate.id === item.id);
+      return <CmdRow key={item.id} id={`prism-command-${index}`} selected={selectedIndex === index} onClick={item.action} onHover={() => setSelectedId(item.id)} icon={<Search size={16} />} label={item.query} />;
+    })}</div>}
     {recentItems.length > 0 ? renderNotes(noteItems, "Recent pages") : renderNotes(noteItems, "Notes")}{renderNotes(messageItems, "Messages")}
     {filteredCommands.length > 0 && <div role="group" aria-label="Commands"><div className="prism-search-group">Commands</div>{filteredCommands.map(cmd => {
       const index = items.findIndex(item => item.id === cmd.id);
@@ -420,7 +477,7 @@ export function CommandBar() {
           }}
           onClick={(e) => e.stopPropagation()}
         >
-          {filters}{status}{feedback}<div id="prism-command-results" role="listbox" aria-label="Notes and commands" style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: 6 }}>{body}</div>
+          {filters}{filterBar}{status}{feedback}<div id="prism-command-results" role="listbox" aria-label="Notes and commands" style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: 6 }}>{body}</div>
           {contextActions}{inputRow}
         </div>
       </dialog>
@@ -438,7 +495,7 @@ export function CommandBar() {
         style={{ width: "min(780px, 100%)", borderRadius: "var(--radius-lg)" }}
         onClick={(e) => e.stopPropagation()}
       >
-        {inputRow}{filters}{status}{feedback}
+        {inputRow}{filters}{filterBar}{status}{feedback}
         <div id="prism-command-results" role="listbox" aria-label="Notes and commands" style={{ maxHeight: "min(440px, 56vh)", overflowY: "auto", padding: 6 }}>{body}</div>
 
         {contextActions}
@@ -464,8 +521,10 @@ function CmdRow({
   onHover,
   icon,
   label,
+  labelRanges,
   sublabel,
   preview,
+  previewRanges,
   accent,
   trailing,
 }: {
@@ -475,8 +534,10 @@ function CmdRow({
   onHover: () => void;
   icon: React.ReactNode;
   label: string;
+  labelRanges?: Range[];
   sublabel?: string;
   preview?: string;
+  previewRanges?: Range[];
   accent?: boolean;
   trailing?: React.ReactNode;
 }) {
@@ -504,8 +565,8 @@ function CmdRow({
         {icon}
       </span>
       <div className="min-w-0 flex-1 text-left">
-        <div className="prism-search-result-title">{label}</div>
-        {preview && <div className="mt-1 line-clamp-2 break-words text-xs leading-relaxed" style={{ color: "var(--text-secondary)" }}>{preview}</div>}
+        <div className="prism-search-result-title"><Highlighted text={label} ranges={labelRanges ?? []} /></div>
+        {preview && <div className="mt-1 line-clamp-2 break-words text-xs leading-relaxed" style={{ color: "var(--text-secondary)" }}><Highlighted text={preview} ranges={previewRanges ?? []} /></div>}
         {sublabel && (
           <div className="truncate" style={{ fontSize: "var(--text-xs)", color: "var(--text-muted)" }}>{sublabel}</div>
         )}

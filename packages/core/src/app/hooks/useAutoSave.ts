@@ -2,6 +2,9 @@ import { useVaultClient } from "../../data/VaultClientContext";
 import { isAccessUnavailable, VaultRequestError } from "../../data/VaultClient";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useUpdateNote } from "./useParachute";
+import { markDirty, reportSaveFailure } from "../../lib/sync/syncState";
+
+let autosaveInstances = 0;
 
 /**
  * Every mounted autosave, by note id — so an out-of-band write (restoring a
@@ -43,6 +46,10 @@ export function useAutoSave(
   const lastContentRef = useRef<string>("");
   const pendingRef = useRef(false);
   const inFlight = useRef<Promise<void> | null>(null);
+  // Shared sync state (NP-OF-01): debounced edits count as "Saving…" and a
+  // failure surfaces in the header with this editor's own retry.
+  const syncKey = useRef(`autosave:${noteId}:${++autosaveInstances}`).current;
+  const retryRef = useRef<() => void>(() => {});
 
   const doSave = useCallback(async () => {
     if (inFlight.current) {
@@ -50,7 +57,7 @@ export function useAutoSave(
       if (!pendingRef.current) return;
     }
     const content = getContent();
-    if (content === lastContentRef.current) { pendingRef.current = false; return; }
+    if (content === lastContentRef.current) { pendingRef.current = false; markDirty(syncKey, false); return; }
     pendingRef.current = false;
     setIsSaving(true);
     setSaveError(null);
@@ -59,6 +66,8 @@ export function useAutoSave(
         if (sourceScope !== undefined && client.scope?.() !== sourceScope) throw new VaultRequestError(403, "Workspace changed before saving.");
         await mutateAsync({ id: noteId, content, expectedScope: sourceScope });
         lastContentRef.current = content;
+        reportSaveFailure(syncKey, null);
+        if (!pendingRef.current) markDirty(syncKey, false);
         setLastSaved(new Date());
         savedCallback.current?.(content);
       } catch (error) {
@@ -72,7 +81,21 @@ export function useAutoSave(
           } catch {
             setSaveError("Your draft could not be saved on this device. Keep this page open and copy your changes before leaving.");
           }
+        } else if (sourceScope && client.preserveDraft && error instanceof VaultRequestError && (error.status === 409 || error.status === 428)) {
+          // The page changed somewhere else. A retry would re-read the newer
+          // revision and overwrite it, so this version goes to conflict review
+          // instead (saved on this device; "Needs review" in the header).
+          try {
+            await client.preserveDraft(noteId, content, sourceScope, "conflict");
+            pendingRef.current = false;
+            lastContentRef.current = content;
+            setSaveError("This page changed somewhere else. Your version is saved on this device — open “Needs review” to compare before applying it.");
+          } catch {
+            setSaveError("This page changed somewhere else and your version could not be saved on this device. Copy your changes before leaving.");
+          }
         } else setSaveError("Changes could not be saved. Keep this page open and retry when ready.");
+        if (pendingRef.current) reportSaveFailure(syncKey, { message: "Changes could not be saved.", retry: () => retryRef.current() });
+        else markDirty(syncKey, false);
         throw error;
       } finally {
         setIsSaving(false);
@@ -86,6 +109,7 @@ export function useAutoSave(
   // Schedule a debounced save
   const scheduleSave = useCallback(() => {
     pendingRef.current = true;
+    markDirty(syncKey, true);
     if (timerRef.current) clearTimeout(timerRef.current);
     timerRef.current = setTimeout(() => { void doSave().catch(() => {}); }, debounceMs);
   }, [doSave, debounceMs]);
@@ -95,6 +119,7 @@ export function useAutoSave(
     if (timerRef.current) clearTimeout(timerRef.current);
     void doSave().catch(() => {});
   }, [doSave]);
+  retryRef.current = saveNow;
 
   useEffect(() => {
     const handle: PendingSaveHandle = {
@@ -105,6 +130,8 @@ export function useAutoSave(
       discard: () => {
         if (timerRef.current) clearTimeout(timerRef.current);
         pendingRef.current = false;
+        markDirty(syncKey, false);
+        reportSaveFailure(syncKey, null);
         lastContentRef.current = getContent();
       },
     };
@@ -121,9 +148,10 @@ export function useAutoSave(
   useEffect(() => {
     return () => {
       if (timerRef.current) clearTimeout(timerRef.current);
-      if (pendingRef.current) void doSave().catch(() => {});
+      if (pendingRef.current) void doSave().catch(() => {}).finally(() => { markDirty(syncKey, false); reportSaveFailure(syncKey, null); });
+      else { markDirty(syncKey, false); reportSaveFailure(syncKey, null); }
     };
-  }, [doSave]);
+  }, [doSave, syncKey]);
 
   return { isSaving, lastSaved, saveError, scheduleSave, saveNow };
 }

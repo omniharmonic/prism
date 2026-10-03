@@ -50,7 +50,9 @@ function EditableTitle({ name, onRename }: { name: string; onRename: (newName: s
       setEditing(false);
     } catch {
       setError("Could not rename this page. Your title is still here; press Enter to retry.");
-      requestAnimationFrame(() => inputRef.current?.focus());
+      // The input stays mounted and enabled (readOnly while saving), so focus is
+      // normally still here; this only restores it if the user clicked away.
+      inputRef.current?.focus();
     } finally {
       savingRef.current = false;
       setSaving(false);
@@ -63,7 +65,10 @@ function EditableTitle({ name, onRename }: { name: string; onRename: (newName: s
         ref={inputRef}
         aria-label="Document title"
         value={draft}
-        disabled={saving}
+        // readOnly, not disabled: disabling a focused input drops its focus, and
+        // re-focusing after the failure raced React's re-enable under load.
+        readOnly={saving}
+        aria-busy={saving || undefined}
         aria-invalid={!!error}
         onChange={(e) => setDraft(e.target.value)}
         onBlur={() => { void commit(); }}

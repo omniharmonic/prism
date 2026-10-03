@@ -68,7 +68,8 @@ test("nested mobile page cancellation leaves navigation open and restores its la
   await page.goto("/e2e-fixtures/workspace.html");
   await page.getByRole("button", { name: "Notes", exact: true }).click();
   const nav = page.getByRole("dialog", { name: "Workspace navigation" });
-  const opener = nav.getByRole("button", { name: "New page", exact: true });
+  // "New page" itself now creates at once (NP-SB-13); the chooser is its neighbour.
+  const opener = nav.getByRole("button", { name: "Choose page type", exact: true });
   await opener.click();
   const create = page.getByRole("dialog", { name: "New page", exact: true });
   await expect(create.getByLabel("Page title")).toBeFocused();

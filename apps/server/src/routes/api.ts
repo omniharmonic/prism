@@ -30,10 +30,11 @@ import { humanCollabApi } from "./human-collab";
 import { transcriptsApi } from "./transcripts";
 import { databasesApi } from "./databases";
 import { attachmentsApi } from "./attachments";
+import { searchApi } from "./search";
 import { stampJsonBody, stampMetadata, stripIdentity } from "../writer-stamp";
 import { graphNeighborhood } from "../graph";
 import { buildWikilinkIndex, resolveWikilink, noteLinkTitle } from "@prism/core/wikilinks";
-import { isTrashed, isLocked, isOwnerOnlyMeta, protectionReason, systemNoteReason, TRASH_TAG, TRASH_META, LOCK_KEY, ORDER_KEY } from "@prism/core/pages";
+import { isTrashed, isLocked, isOwnerOnlyMeta, protectionReason, systemNoteReason, TRASH_TAG, TRASH_META, LOCK_KEY, ORDER_KEY, PAGE_STYLE_KEY } from "@prism/core/pages";
 import { createPagesApi, placementRefusal, pathUnavailable, publishedTag } from "../pages";
 import { notificationsRoutes, restMentionHook } from "./notifications";
 
@@ -219,6 +220,7 @@ api.use("/databases/*", async (c, next) => { await next(); if (c.req.method !== 
 api.route("/", databasesApi);
 // Attachments (upload/serve via vault storage) + link previews; before the owner passthrough.
 api.route("/", attachmentsApi);
+api.route("/", searchApi); // GET /search (all actors; filters + match offsets, wave 2E) — before the owner short-circuit
 // Notifications inbox, reminders, access requests (wave 2A): before the owner passthrough.
 api.route("/", notificationsRoutes);
 
@@ -615,7 +617,7 @@ api.post("/notes", async (c) => {
   // Owner-only keys (creator/visibility/trash state, lock) and the trash tag are never
   // accepted from a non-owner create (review H3/M1).
   // Narrowing is safe: a non-owner may create a note as private (e.g. a private task).
-  const metadata = Object.fromEntries(Object.entries((body.metadata as Record<string, unknown> | null | undefined) ?? {}).filter(([k, v]) => (k === "prism_visibility" ? v === "private" : !isOwnerOnlyMeta(k) && k !== LOCK_KEY && k !== ORDER_KEY)));
+  const metadata = Object.fromEntries(Object.entries((body.metadata as Record<string, unknown> | null | undefined) ?? {}).filter(([k, v]) => (k === "prism_visibility" ? v === "private" : !isOwnerOnlyMeta(k) && k !== LOCK_KEY && k !== ORDER_KEY && k !== PAGE_STYLE_KEY)));
   if (subject) metadata.prism_creator = subject;
   Object.assign(metadata, stampMetadata(undefined, actor));
   try {
@@ -686,7 +688,8 @@ api.patch("/notes/:id", async (c) => {
     // never (re)assign the creator — a no-op restatement of either is fine.
     if (k === "prism_visibility") return !(meta[k] === "private" && noteRef.creator === subjectNow) && meta[k] !== note.metadata?.[k];
     if (k === "prism_creator") return meta[k] !== note.metadata?.[k];
-    return isOwnerOnlyMeta(k) || k === LOCK_KEY || k === ORDER_KEY;
+    // The page style has its own validated route (POST /notes/:id/meta).
+    return isOwnerOnlyMeta(k) || k === LOCK_KEY || k === ORDER_KEY || k === PAGE_STYLE_KEY;
   };
   if (Object.keys(meta).some(forbiddenKey)) {
     return c.json({ error: "forbidden", reason: "That property can only be changed through its own control." }, 403);
@@ -960,22 +963,7 @@ api.delete("/notes/:id", async (c) => {
   return c.json({ ok: true });
 });
 
-api.get("/search", async (c) => {
-  const actor = resolveActor(c);
-  const q = c.req.query("q") ?? c.req.query("search") ?? "";
-  // The vault is asked for the text and a bounded count — no other query parameter
-  // (tag, near, path_prefix, include_*, metadata filters) is ever forwarded.
-  const asked = Number(c.req.query("limit") ?? 50);
-  const limit = Number.isInteger(asked) && asked >= 1 ? Math.min(asked, 200) : 50;
-  let results: Note[];
-  try {
-    results = await vaultClient(actor.vaultId).search(q.slice(0, 2000), [], limit);
-  } catch (e) {
-    return vaultErr(c, e);
-  }
-  if (roleAtLeast(actor.role, "admin")) return c.json(results);
-  return c.json(annotate(actor, results));
-});
+// GET /search lives in ./search.ts (mounted above, before the owner short-circuit).
 
 api.get("/tags", async (c) => {
   const actor = resolveActor(c);

@@ -19,6 +19,7 @@ import type { Note } from "../../lib/types";
 import { SelectionActions } from "./SelectionActions";
 import { DocumentOutline } from "./DocumentOutline";
 import { CollabToolbar } from "./CollabToolbar";
+import { KeyboardToolbar } from "./KeyboardToolbar";
 import { SuggestionReview } from "./SuggestionReview";
 import "./editor-blocks.css";
 import { BlockKeymap } from "../../lib/tiptap/blockCommands";
@@ -287,6 +288,7 @@ export function CollabEditor({
           canReview={canReview}
         />
       )}
+      {toolbar && editor && editable && !commentOnly && !suggesting && <KeyboardToolbar editor={editor} />}
       {toolbar && editor && (!editable || commentOnly) && (
         <div className="document-outline-readonly"><DocumentOutline editor={editor} /></div>
       )}
