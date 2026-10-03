@@ -32,6 +32,11 @@ interface BodyRow {
 }
 
 let dbp: Promise<IDBDatabase> | null = null;
+/** Keys the LRU never evicts: pages kept "Available offline" (NP-OF-04). */
+let protectedKeys = new Set<string>();
+export function setProtectedCacheKeys(keys: Iterable<string>): void {
+  protectedKeys = new Set(keys);
+}
 
 function open(): Promise<IDBDatabase> {
   if (!dbp) {
@@ -115,6 +120,7 @@ async function evict(db: IDBDatabase): Promise<void> {
   const t = db.transaction(["bodies", "index"], "readwrite");
   for (const r of rows) {
     if (count <= MAX_ENTRIES && bytes <= MAX_BYTES) break;
+    if (protectedKeys.has(r.key)) continue;
     t.objectStore("bodies").delete(r.key);
     t.objectStore("index").delete(r.key);
     count--;
@@ -131,6 +137,7 @@ export async function clearLegacyApiCache(): Promise<void> {
 
 /** Drop everything (sign-out, 401, account switch). */
 export async function clearReadCache(): Promise<void> {
+  protectedKeys = new Set();
   await clearLegacyApiCache();
   try {
     const db = await open();

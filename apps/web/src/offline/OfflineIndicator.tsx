@@ -12,6 +12,7 @@ import { captureWriteContext, sameScope } from "./writeScope";
 import { serverFetch } from "../transport";
 import { getMe } from "../config";
 import { reportPendingWrites, OPEN_SAVED_CHANGES_EVENT } from "@prism/core";
+import { startOfflineAvailability } from "./availableOffline";
 
 const stateLabels = {
   queued: "Saved on this device",
@@ -100,6 +101,7 @@ export function OfflineIndicator() {
       items.filter((i) => i.state !== "queued" && i.state !== "sending").length,
     );
   }, [items]);
+  useEffect(() => { startOfflineAvailability(); }, []);
   useEffect(() => {
     const show = () => setOpen(true);
     window.addEventListener(OPEN_SAVED_CHANGES_EVENT, show);

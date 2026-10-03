@@ -251,3 +251,5 @@ export { PagesRequestError, TRASH_TAG, sanitizePreferences, type MoveRequest, ty
 export { SyncStateBadge, OPEN_SAVED_CHANGES_EVENT } from "./components/layout/SyncStateBadge";
 export { useSyncStore, useSyncStatus, deriveSyncStatus, markDirty, reportSaveFailure, reportSyncSource, reportPendingWrites, trackVaultWrites, type SyncStatus, type SyncKind } from "./lib/sync/syncState";
 export { useReduceMotion, setReduceMotion, applyReduceMotion, prefersReducedMotion } from "./lib/motion";
+export { setOfflineAvailability, useOfflineAvailability, type OfflineAvailability } from "./lib/offline/availability";
+export { isVaultNoteId } from "./lib/noteIdentity";

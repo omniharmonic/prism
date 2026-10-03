@@ -14,7 +14,10 @@ import {
   Pencil,
   Star,
   Trash2,
+  CloudDownload,
+  CloudOff,
 } from "lucide-react";
+import { useOfflineAvailability } from "../../lib/offline/availability";
 import { useNote } from "../../app/hooks/useParachute";
 import { useUIStore } from "../../app/stores/ui";
 import { useIsMobile } from "../../app/hooks/useIsMobile";
@@ -56,6 +59,7 @@ export function usePageMenuItems(
   const canEdit = !caps || caps.includes("edit");
   const protectedReason = protectionReason(subject);
   const isFav = favoriteIds.includes(page.id);
+  const offline = useOfflineAvailability(real ? page.id : null);
   const run = (fn: () => void) => () => {
     opts.close();
     fn();
@@ -92,6 +96,15 @@ export function usePageMenuItems(
           label: locked ? "Unlock page" : "Lock page",
           icon: locked ? <LockOpen size={15} /> : <Lock size={15} />,
           onClick: run(() => void actions.toggleLock(note)),
+        }]
+      : []),
+    ...(offline.supported
+      ? [{
+          id: "offline",
+          label: offline.available ? "Remove offline copy" : "Make available offline",
+          icon: offline.available ? <CloudOff size={15} /> : <CloudDownload size={15} />,
+          detail: offline.available ? "Available offline on this device" : undefined,
+          onClick: run(offline.toggle),
         }]
       : []),
     { id: "export-md", label: "Export as Markdown", icon: <FileDown size={15} />, onClick: run(() => void actions.exportPage(page, "markdown")) },
