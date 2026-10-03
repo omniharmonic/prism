@@ -13,6 +13,9 @@ test("writing navigation keeps the vault above the page tree and tools reachable
   await selector.click();
   const menu = nav.getByRole("menu");
   await expect(menu.getByRole("menuitem", { name: "Personal workspace" })).toBeVisible();
+  // NP-SB-01: every accessible vault is listed, plus the way to manage them.
+  await expect(menu.getByRole("menuitem", { name: "Shared research" })).toBeVisible();
+  await expect(menu.getByRole("menuitem", { name: /Manage workspaces & vaults/ })).toBeVisible();
   expect((await menu.boundingBox())!.y).toBeGreaterThan((await selector.boundingBox())!.y);
   await menu.getByRole("menuitem", { name: "Shared research" }).click();
   expect(await page.evaluate(() => (window as any).prismFixtureWrites)).toEqual([{ switchedVault: "secondary" }]);

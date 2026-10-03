@@ -78,8 +78,11 @@ test("drag and drop reparents a page and reorders siblings", async ({ page }) =>
   const box = (await target.boundingBox())!;
   await row(page, "Plan").dragTo(target, { targetPosition: { x: 20, y: 2 } });
   await expect.poll(async () => (await writes(page)).filter((w) => (w.set as any)?.prism_order !== undefined).length).toBeGreaterThan(0);
-  const order = await nav(page).locator(".page-tree-open").allTextContents();
-  expect(order.indexOf("Plan")).toBeLessThan(order.indexOf("A living workspace"));
+  // The tree re-renders after the order write settles: poll (reading it once raced the refetch under load).
+  await expect.poll(async () => {
+    const order = await nav(page).locator(".page-tree-open").allTextContents();
+    return order.indexOf("Plan") >= 0 && order.indexOf("Plan") < order.indexOf("A living workspace");
+  }).toBe(true);
   expect(box.height).toBeGreaterThan(0);
 });
 
@@ -115,6 +118,7 @@ test("Trash: delete moves to Trash with Undo; the Trash restores and deletes per
   await nav(page).getByRole("button", { name: "Trash", exact: true }).click();
   const trash = page.getByRole("dialog", { name: "Trash" });
   await expect(trash.getByRole("listitem", { name: "Plan" })).toContainText("1 page inside");
+  await expect(trash).toContainText("Pages stay in the Trash until you delete them."); // NP-SB-10 retention notice
   await shot(page, "trash-1440");
   await trash.getByLabel("Search the Trash").fill("nothing-matches");
   await expect(trash).toContainText("No matching pages");
@@ -374,4 +378,43 @@ test("Move to… confirms first when the move changes who can open the page", as
   await again.getByRole("combobox").fill("Journal");
   await again.getByRole("option", { name: /Journal/ }).first().click();
   await expect.poll(() => notePath(page, "living")).toBe("vault/Journal/A living workspace");
+});
+
+// NP-MB-03 — what the phone page-actions sheet holds, its row size and how it is dismissed.
+// Share, Find and Agent are NOT rows of this sheet today (Share is a header button, Agent lives in More, Find is
+// keyboard-only): product gap recorded in PARITY-EVIDENCE.md.
+test("phone: the page actions sheet lists every page action with 44px rows and closes three ways", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(url());
+  const open = async () => {
+    await page.getByRole("button", { name: "Page actions", exact: true }).click();
+    const sheet = page.getByRole("dialog", { name: "A living workspace" });
+    await expect(sheet).toBeVisible();
+    return sheet;
+  };
+  let sheet = await open();
+  for (const name of ["Add to Favorites", "Copy link", "Move to…", "Lock page", "Version history", "Export as Markdown", "Move to Trash", "Duplicate"]) {
+    const item = sheet.getByRole("button", { name, exact: true });
+    await expect(item, name).toBeVisible();
+    expect(await item.evaluate((el) => el.getBoundingClientRect().height), `${name} row height`).toBeGreaterThanOrEqual(44);
+  }
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(390);
+  // Esc.
+  await page.keyboard.press("Escape");
+  await expect(sheet).toHaveCount(0);
+  // The Close control.
+  sheet = await open();
+  await sheet.getByRole("button", { name: "Close sheet" }).click();
+  await expect(sheet).toHaveCount(0);
+  // The drag handle.
+  sheet = await open();
+  const handle = sheet.locator(".prism-mobile-sheet-handle");
+  await handle.evaluate((element) => {
+    for (const [type, y] of [["touchstart", 100], ["touchmove", 230], ["touchend", 230]] as const) {
+      const event = new Event(type, { bubbles: true });
+      Object.defineProperty(event, "touches", { value: type === "touchend" ? [] : [{ clientY: y }] });
+      element.dispatchEvent(event);
+    }
+  });
+  await expect(sheet).toHaveCount(0);
 });

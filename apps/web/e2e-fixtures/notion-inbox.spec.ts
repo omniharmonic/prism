@@ -108,3 +108,17 @@ test("notification settings respected", async ({ page }) => {
   await expect(page.getByTestId("notification-settings").getByLabel("Comments email")).toBeChecked();
   await expect(page.getByTestId("notification-settings").getByLabel("Mentions push")).toBeEnabled();
 });
+
+// NP-CO-03 — "Mark all read" clears the badge everywhere with one write.
+test("mark all read clears the badge with one write", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto(url("?reset&open=notifications"));
+  await expect(nav(page).getByTestId("inbox-badge")).toHaveText("2");
+  await expect(inbox(page).locator('[data-testid="notification-row"][data-unread="true"]')).toHaveCount(2);
+  // The reminder that fired is listed like any other item.
+  await expect(inbox(page).getByTestId("notification-row").filter({ hasText: /remind/i })).toHaveCount(1);
+  await inbox(page).getByRole("button", { name: "Mark all read" }).click();
+  await expect(inbox(page).locator('[data-testid="notification-row"][data-unread="true"]')).toHaveCount(0);
+  await expect(nav(page).getByTestId("inbox-badge")).toHaveCount(0);
+  expect((await writes(page)).filter((w) => "read" in w).at(-1)).toMatchObject({ read: { all: true } });
+});

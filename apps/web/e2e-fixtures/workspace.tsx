@@ -30,7 +30,7 @@ Object.assign(window, {
   prismFixtureReleaseRead: (id: string) => { readGates.get(id)?.(); readGates.delete(id); },
   prismFixtureSwitchActor: async (email: string) => { controls.actor = email; await fetchMe(); },
   prismFixtureSwitchVault: async (id: string) => { setActiveVault(id); window.dispatchEvent(new Event("prism:vault-changed")); await fetchMe(); },
-  prismFixtureWrites: writes, prismFixtureControls: controls, prismFixtureOpenLink: () => navigateWikilink(httpVaultClient, "Duplicate", note => useUIStore.getState().openTab(note.id, note.path!, "document")) });
+  prismFixtureWrites: writes, prismFixtureControls: controls, prismFixtureNotes: notes, prismFixtureOpenLink: () => navigateWikilink(httpVaultClient, "Duplicate", note => useUIStore.getState().openTab(note.id, note.path!, "document")) });
 notes.push({ id: "thread", path: "Messages/Project discussion", content: "# Project discussion\n\n[2026-10-01 10:15] @morgan:example.test: First line\nSecond line\n\n- A list\n[2026-10-01 10:20] Alex: Another thought.", tags: ["message-thread"], metadata: { type: "message-thread", platform: "telegram", ...(params.has("live") ? { matrixRoomId: "!fixture:example.test" } : {}) }, createdAt: date, updatedAt: date });
 if (params.has("canvas")) notes.push({ id: "focus-canvas", path: "Projects/Prism/Canvas fixture", content: JSON.stringify({ elements: [], appState: {} }), metadata: { type: "canvas" }, tags: ["canvas"], createdAt: date, updatedAt: date });
 const fixturePeople = [

@@ -88,3 +88,23 @@ test("without several vaults there is no vault selector", async ({ page }) => {
   await page.getByRole("button", { name: "Filters" }).click();
   await expect(page.getByRole("group", { name: "Search filters" }).getByRole("combobox", { name: "Vault" })).toHaveCount(0);
 });
+
+// NP-SB-02: quick find opens from anywhere — including mid-sentence in the editor — and Esc gives the caret back.
+test("⌘K opens while typing in the editor and Esc returns to the caret", async ({ page }) => {
+  await page.goto("/e2e-fixtures/notion-shell.html");
+  const editor = page.locator(".tiptap[contenteditable=true]");
+  await expect(editor).toBeVisible();
+  await editor.click();
+  await page.keyboard.press("ControlOrMeta+End");
+  await page.keyboard.type(" caret-before");
+  await page.keyboard.press("ControlOrMeta+k");
+  const input = page.getByRole("combobox", { name: "Search notes and commands" });
+  await expect(input).toBeFocused();
+  await input.fill("workshop"); // typing goes to the palette, not the page
+  await expect(editor).not.toContainText("workshop caret");
+  await page.keyboard.press("Escape");
+  await expect(input).toHaveCount(0);
+  await expect(editor).toBeFocused();
+  await page.keyboard.type("-after");
+  await expect(editor).toContainText("caret-before-after"); // same caret position, nothing lost
+});
