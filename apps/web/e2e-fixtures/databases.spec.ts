@@ -463,4 +463,51 @@ test("create database from New page and from tag", async ({ page }) => {
   expect((await fx(page)).creates.length).toBe(count);
 });
 
-test.fixme("saved views: duplicate and reorder tabs (PRODUCT GAP NP-DB-16 — no control exists)", async () => {});
+// NP-DB-16 — a view is duplicated with every setting, and tabs reorder (buttons and drag); both are saved to the database note.
+test("saved views: duplicate and reorder tabs", async ({ page }) => {
+  await page.goto("/e2e-fixtures/databases.html");
+  const tabs = () => page.getByRole("tablist", { name: "Views" }).getByRole("tab").allInnerTexts().then((t) => t.map((x) => x.trim()).filter(Boolean));
+  const savedViews = async () => (await configWrites(page)).at(-1)?.metadata.prism_database.views as any[] | undefined;
+  await page.getByRole("tab", { name: "Board" }).click();
+  await page.getByRole("button", { name: "View settings" }).click();
+  const settings = page.getByRole("dialog", { name: "View settings" });
+  await settings.getByRole("button", { name: "Duplicate view" }).click();
+  // The copy sits right after its source, is selected, and keeps the layout, grouping and properties.
+  await expect.poll(tabs).toEqual(["All tasks", "Board", "Board copy", "Gallery", "List", "Calendar"]);
+  await expect(page.getByRole("tab", { name: "Board copy" })).toHaveAttribute("aria-selected", "true");
+  await expect.poll(async () => (await savedViews())?.length).toBe(6);
+  const [src, copy] = [(await savedViews())![1], (await savedViews())![2]];
+  expect(copy).toEqual({ ...src, id: copy.id, name: "Board copy" });
+  expect(copy.id).not.toBe(src.id);
+  await expect(page.getByRole("list", { name: "Board copy board" })).toBeVisible();
+  // Changing the copy leaves the source alone.
+  await settings.getByLabel("Group by").selectOption("priority");
+  await expect.poll(async () => (await savedViews())!.map((v) => v.groupBy).slice(1, 3)).toEqual(["status", "priority"]);
+
+  // Reorder with the buttons…
+  await settings.getByRole("button", { name: "Move view left" }).click();
+  await expect.poll(tabs).toEqual(["All tasks", "Board copy", "Board", "Gallery", "List", "Calendar"]);
+  await settings.getByRole("button", { name: "Move view left" }).click();
+  await expect.poll(tabs).toEqual(["Board copy", "All tasks", "Board", "Gallery", "List", "Calendar"]);
+  await expect(settings.getByRole("button", { name: "Move view left" })).toBeDisabled();
+  await expect.poll(async () => (await savedViews())!.map((v) => v.name)).toEqual(["Board copy", "All tasks", "Board", "Gallery", "List", "Calendar"]);
+  await page.keyboard.press("Escape");
+  // …and by dragging a tab onto another.
+  await page.getByRole("tab", { name: "Calendar" }).dragTo(page.getByRole("tab", { name: "All tasks" }));
+  await expect.poll(tabs).toEqual(["Board copy", "Calendar", "All tasks", "Board", "Gallery", "List"]);
+  await expect.poll(async () => (await savedViews())!.map((v) => v.name)).toEqual(["Board copy", "Calendar", "All tasks", "Board", "Gallery", "List"]);
+  // The order survives a reload (it lives in the database note).
+  await page.reload();
+  await expect.poll(tabs).toEqual(["Board copy", "Calendar", "All tasks", "Board", "Gallery", "List"]);
+});
+
+test("viewer: duplicating or reordering a view stays in this tab", async ({ page }) => {
+  await page.goto("/e2e-fixtures/databases.html?viewer");
+  await page.getByRole("button", { name: "View settings" }).click();
+  const settings = page.getByRole("dialog", { name: "View settings" });
+  await settings.getByRole("button", { name: "Duplicate view" }).click();
+  await expect(page.getByRole("tab", { name: "All tasks copy" })).toHaveAttribute("aria-selected", "true");
+  await expect(page.getByText("You can’t edit this database, so view changes stay in this tab.")).toBeVisible();
+  expect(await configWrites(page)).toEqual([]);
+  await expect(page.getByRole("tab", { name: "All tasks", exact: true })).toHaveAttribute("draggable", "false");
+});

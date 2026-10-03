@@ -158,6 +158,34 @@ export function applyRank<T extends { id: string }>(rows: T[], order: string[] |
   return [...rows].sort((a, b) => (rank.get(a.id) ?? Number.MAX_SAFE_INTEGER) - (rank.get(b.id) ?? Number.MAX_SAFE_INTEGER));
 }
 
+export const MAX_VIEWS = 20;
+
+/** A copy of `view` placed right after it (NP-DB-16): its own id, every setting kept. */
+export function duplicateView(config: DatabaseConfig, viewId: string): { config: DatabaseConfig; id: string } | null {
+  const at = config.views.findIndex((v) => v.id === viewId);
+  if (at < 0 || config.views.length >= MAX_VIEWS) return null;
+  const src = config.views[at]!;
+  const taken = new Set(config.views.map((v) => v.name));
+  const base = `${src.name} copy`.slice(0, 76);
+  let name = base;
+  for (let i = 2; taken.has(name); i++) name = `${base} ${i}`;
+  const copy: DatabaseView = { ...(JSON.parse(JSON.stringify(src)) as DatabaseView), id: newViewId(), name };
+  const views = [...config.views];
+  views.splice(at + 1, 0, copy);
+  return { config: { ...config, views }, id: copy.id };
+}
+
+/** Move a view tab to `to` (an index in the current order). */
+export function moveView(config: DatabaseConfig, viewId: string, to: number): DatabaseConfig | null {
+  const from = config.views.findIndex((v) => v.id === viewId);
+  const target = Math.max(0, Math.min(config.views.length - 1, to));
+  if (from < 0 || from === target) return null;
+  const views = [...config.views];
+  const [v] = views.splice(from, 1);
+  views.splice(target, 0, v!);
+  return { ...config, views };
+}
+
 /** A path for a new row: inside the database page's own folder. */
 export function rowPath(dbPath: string | null, title: string): string {
   const safe = safeTitleLeaf(title);

@@ -4,7 +4,7 @@
  * whether that is saved to the database note or kept for this session only.
  */
 import { useState } from "react";
-import { Plus, Trash2, X } from "lucide-react";
+import { ArrowLeft, ArrowRight, Copy, Plus, Trash2, X } from "lucide-react";
 import type { QueryCondition, QueryFilter, QueryFilterGroup, QueryOp, QuerySort } from "../../lib/database/query";
 import { SYSTEM_PROPERTIES, type PropertyDef } from "../../lib/database/schema";
 import { VIEW_LABELS, VIEW_TYPES, type DatabaseView, type ViewType } from "./config";
@@ -184,9 +184,11 @@ export function SortEditor({ sort, props, onChange }: { sort?: QuerySort[]; prop
 }
 
 /** Properties (visible + order), grouping, date/cover keys, rename/delete. */
-export function ViewSettings({ view, props, canDelete, onChange, onDelete }: {
+export function ViewSettings({ view, props, canDelete, onChange, onDelete, tabs }: {
   view: DatabaseView; props: PropertyDef[]; canDelete: boolean;
   onChange: (patch: Partial<DatabaseView>) => void; onDelete: () => void;
+  /** Duplicate / reorder this view among the tabs (NP-DB-16). */
+  tabs?: { index: number; count: number; canDuplicate: boolean; onDuplicate: () => void; onMove: (to: number) => void };
 }) {
   const [name, setName] = useState(view.name);
   const visible = view.visible ?? props.map((p) => p.key);
@@ -270,6 +272,15 @@ export function ViewSettings({ view, props, canDelete, onChange, onDelete }: {
           {!props.length && <li className="db-pop-empty">This tag has no properties yet.</li>}
         </ul>
       </div>
+      {tabs && (
+        <div className="db-settings-row" role="group" aria-label="View tab">
+          <button type="button" className="db-ghost" disabled={!tabs.canDuplicate} onClick={tabs.onDuplicate}><Copy size={13} aria-hidden="true" /> Duplicate view</button>
+          <span style={{ display: "inline-flex", gap: 2 }}>
+            <button type="button" className="db-icon-btn" aria-label="Move view left" disabled={tabs.index <= 0} onClick={() => tabs.onMove(tabs.index - 1)}><ArrowLeft size={14} aria-hidden="true" /></button>
+            <button type="button" className="db-icon-btn" aria-label="Move view right" disabled={tabs.index >= tabs.count - 1} onClick={() => tabs.onMove(tabs.index + 1)}><ArrowRight size={14} aria-hidden="true" /></button>
+          </span>
+        </div>
+      )}
       {canDelete && (
         <button type="button" className="db-ghost" style={{ color: "var(--color-danger)" }} onClick={onDelete}><Trash2 size={13} aria-hidden="true" /> Delete view</button>
       )}

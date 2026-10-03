@@ -31,7 +31,7 @@ import { BottomSheet } from "../ui/BottomSheet";
 import { Popover } from "./Popover";
 import { FilterEditor, SortEditor, ViewSettings } from "./ViewControls";
 import { BoardView, CalendarView, GalleryView, ListView, TableView, monthGrid, type RowSelection, type ViewContext } from "./views";
-import { defaultConfig, newViewId, readDatabaseConfig, rowPath, VIEW_LABELS, VIEW_TYPES, type DatabaseConfig, type DatabaseTemplate, type DatabaseView, type OpenMode, type ViewType } from "./config";
+import { defaultConfig, duplicateView, MAX_VIEWS, moveView, newViewId, readDatabaseConfig, rowPath, VIEW_LABELS, VIEW_TYPES, type DatabaseConfig, type DatabaseTemplate, type DatabaseView, type OpenMode, type ViewType } from "./config";
 import { RowPeek } from "./RowPeek";
 import { BulkBar, UndoToast, type UndoAction } from "./BulkBar";
 import { createTemplateNote, isTemplateFor, NewButton, TemplateEditor, templateProps } from "./Templates";
@@ -382,6 +382,13 @@ export function DatabasePage({ note, readOnly, embedded }: RendererProps & {
                 void saveConfig({ ...config, views: config.views.filter((v) => v.id !== view.id) });
                 setActiveId(config.views.find((v) => v.id !== view.id)!.id);
               }}
+              onDuplicateView={() => {
+                const next = duplicateView(config, view.id);
+                if (!next) return;
+                void saveConfig(next.config);
+                setActiveId(next.id);
+              }}
+              onMoveView={(id, to) => { const next = moveView(config, id, to); if (next) void saveConfig(next); }}
               onNew={(templateId) => void createRow("Untitled", undefined, templateId).then((n) => { if (!isMobile && openMode !== "page") setPeek(n.id); }).catch((e: unknown) => setToast({ message: e instanceof Error && /template/i.test(e.message) ? e.message : "The page could not be created. Try again.", undo: null }))}
               onCreateTemplate={async (name) => {
                 const t = await createTemplateNote(client, note, name);
@@ -481,10 +488,10 @@ function SetupDatabase({ canEdit, onPick }: { canEdit: boolean; onPick: (tag: st
   );
 }
 
-function Toolbar({ config, view, props, search, onSearch, isMobile, canEditDb, canCreate, canImport, onSelect, onUpdate, onAddView, onDeleteView, onNew, onCreateTemplate, onEditTemplate, onSetDefaultTemplate, onRemoveTemplate, onExport, onImport }: {
+function Toolbar({ config, view, props, search, onSearch, isMobile, canEditDb, canCreate, canImport, onSelect, onUpdate, onAddView, onDeleteView, onDuplicateView, onMoveView, onNew, onCreateTemplate, onEditTemplate, onSetDefaultTemplate, onRemoveTemplate, onExport, onImport }: {
   config: DatabaseConfig; view: DatabaseView; props: PropertyDef[]; search: string; onSearch: (s: string) => void; isMobile: boolean;
   canEditDb: boolean; canCreate: boolean; canImport: boolean; onSelect: (id: string) => void; onUpdate: (p: Partial<DatabaseView>) => void;
-  onAddView: (t: ViewType) => void; onDeleteView: () => void; onNew: (templateId: string | null) => void;
+  onAddView: (t: ViewType) => void; onDeleteView: () => void; onDuplicateView: () => void; onMoveView: (id: string, to: number) => void; onNew: (templateId: string | null) => void;
   onCreateTemplate: (name: string) => Promise<void>; onEditTemplate: (t: DatabaseTemplate) => void; onSetDefaultTemplate: (id: string | undefined) => void; onRemoveTemplate: (t: DatabaseTemplate) => void;
   onExport: () => void; onImport: () => void;
 }) {
@@ -495,10 +502,13 @@ function Toolbar({ config, view, props, search, onSearch, isMobile, canEditDb, c
   const moreBtn = useRef<HTMLButtonElement>(null);
   const [panel, setPanel] = useState<"" | "filter" | "sort" | "settings" | "add" | "more">("");
   const close = () => setPanel("");
+  // Tabs reorder by drag (people who can save) as well as from View settings.
+  const dragId = useRef<string | null>(null);
   const filterCount = filterConditions(view.filter).length;
   const body = panel === "filter" ? <FilterEditor filter={view.filter} props={props} onChange={(f) => onUpdate({ filter: f })} />
     : panel === "sort" ? <SortEditor sort={view.sort} props={props} onChange={(s) => onUpdate({ sort: s })} />
-    : panel === "settings" ? <ViewSettings key={view.id} view={view} props={props} canDelete={canEditDb && config.views.length > 1} onChange={onUpdate} onDelete={() => { close(); onDeleteView(); }} />
+    : panel === "settings" ? <ViewSettings key={view.id} view={view} props={props} canDelete={canEditDb && config.views.length > 1} onChange={onUpdate} onDelete={() => { close(); onDeleteView(); }}
+        tabs={{ index: config.views.findIndex((v) => v.id === view.id), count: config.views.length, canDuplicate: config.views.length < MAX_VIEWS, onDuplicate: onDuplicateView, onMove: (to) => onMoveView(view.id, to) }} />
     : null;
   const titles = { filter: "Filter", sort: "Sort", settings: "View settings", add: "Add a view", more: "More", "": "" } as const;
   return (
@@ -507,7 +517,12 @@ function Toolbar({ config, view, props, search, onSearch, isMobile, canEditDb, c
         {config.views.map((v) => {
           const Icon = VIEW_ICONS[v.type];
           return (
-            <button key={v.id} type="button" role="tab" className="db-tab focus-ring" aria-selected={v.id === view.id} onClick={() => onSelect(v.id)}>
+            <button key={v.id} type="button" role="tab" className="db-tab focus-ring" aria-selected={v.id === view.id} onClick={() => onSelect(v.id)}
+              draggable={canEditDb && config.views.length > 1}
+              onDragStart={(e) => { dragId.current = v.id; e.dataTransfer.effectAllowed = "move"; e.dataTransfer.setData("text/plain", v.name); }}
+              onDragOver={(e) => { if (dragId.current && dragId.current !== v.id) { e.preventDefault(); e.dataTransfer.dropEffect = "move"; } }}
+              onDrop={(e) => { e.preventDefault(); const id = dragId.current; dragId.current = null; if (id && id !== v.id) onMoveView(id, config.views.findIndex((x) => x.id === v.id)); }}
+              onDragEnd={() => { dragId.current = null; }}>
               <Icon size={14} aria-hidden="true" /> {v.name}
             </button>
           );
