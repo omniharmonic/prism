@@ -6,6 +6,13 @@ const url = (q = "") => `/e2e-fixtures/notion-inbox.html${q}`;
 const home = (page: Page) => page.getByTestId("home");
 const shot = async (page: Page, name: string) => { if (SHOTS) await page.screenshot({ path: `${SHOTS}/${name}.png` }); };
 
+// The fixtures seed items relative to "now" ("20 minutes ago" must be today, "26 hours ago" yesterday), so run
+// every test at 15:00 local on the current day — otherwise the grouping changes around midnight.
+test.beforeEach(async ({ page }) => {
+  const pinAfternoon = new Date(); pinAfternoon.setHours(15, 0, 0, 0);
+  await page.clock.setFixedTime(pinAfternoon); // fixes Date only; timers keep running natively
+});
+
 test("home shows recents, upcoming events, my tasks", async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 });
   // "Start with last open document" off → the app launches on Home.
