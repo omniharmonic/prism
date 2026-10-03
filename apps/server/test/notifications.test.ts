@@ -628,3 +628,23 @@ test("M2: entity-encoded text is still recognised as accepted; ambiguous text ge
   assert.equal(byPreview.get("new wording here"), "suggestion_resolved");
   assert.equal((await inbox(ADA, "?type=comment")).items.length, 6);
 });
+
+test("review low 5: a guest cannot piggyback on a member co-editor to ping members by account", async () => {
+  resetDatabaseCachesForTests();
+  setAccount(CAL, "Cal Newport", "scrypt$fixture");
+  for (const e of [ADA, BOB, CAL]) setMembership("primary", e, "member", OWNER);
+  grantUser(CAL, "tag", "team", "view");
+  grantUser(EVE, "note", "doc", "edit"); // a guest editing this one page
+  clearNoteInfoCache();
+  const html = (uid: string) => `<p>${chip("person", writerIdFor(CAL), uid, ' data-label="Cal Newport"')}</p>`;
+  // Guest + member in one batch: the chip may be the guest's — nobody is notified.
+  let r = await noteContentStored({ vaultId: "primary", noteId: "doc", prev: "<p>x</p>", next: html("g1"), authors: [EVE, BOB], updatedAt: null });
+  assert.equal(r.notified, 0);
+  assert.equal((await inbox(CAL)).items.length, 0);
+  // Members only: delivered.
+  r = await noteContentStored({ vaultId: "primary", noteId: "doc", prev: "<p>x</p>", next: html("g2"), authors: [ADA, BOB], updatedAt: null });
+  assert.equal(r.notified, 1);
+  // No author at all (server-internal store): nothing.
+  r = await noteContentStored({ vaultId: "primary", noteId: "doc", prev: "<p>x</p>", next: html("g3"), authors: [], updatedAt: null });
+  assert.equal(r.notified, 0);
+});

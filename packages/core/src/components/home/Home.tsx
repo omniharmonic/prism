@@ -63,6 +63,8 @@ export default function Home(_props: RendererProps) {
     retry: false,
     staleTime: 30_000,
   });
+  // The server owner with no owner identity set gets every task back, plus a hint.
+  const ownerUnset = assigned.data?.identity === "unset";
   const scoped = !!client.queryNotes && !assigned.isError && (assigned.isLoading || assigned.data?.identity !== undefined);
   // The broad listing runs only when the scoped query is not available.
   const allTasks = useQuery({
@@ -146,10 +148,11 @@ export default function Home(_props: RendererProps) {
             ))}
           </section>
 
-          <section className="prism-home-panel" aria-label="My tasks" data-scope={scoped ? "assigned" : "all"}>
+          <section className="prism-home-panel" aria-label="My tasks" data-scope={scoped && !ownerUnset ? "assigned" : "all"}>
             <h2><CheckSquare size={14} /> My tasks</h2>
+            {ownerUnset && <p className="prism-home-muted" data-testid="my-tasks-hint">Showing every open task. Set the owner identity (your person page) to see only the ones assigned to you.</p>}
             {tasks.isLoading ? <p className="prism-home-muted">Loading tasks…</p>
-              : openTasks.length === 0 ? <p className="prism-home-muted">{scoped
+              : openTasks.length === 0 ? <p className="prism-home-muted">{scoped && !ownerUnset
                 ? assigned.data?.identity === "account" ? "No open tasks assigned to you. Tasks assigned by name appear once a person page carries your sign-in email." : "No open tasks assigned to you."
                 : "No open tasks."}</p>
               : openTasks.map((t) => (

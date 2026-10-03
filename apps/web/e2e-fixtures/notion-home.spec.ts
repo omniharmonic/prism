@@ -70,3 +70,13 @@ test("my tasks: an older server (no assignedToMe) keeps the list of every open t
   await expect(tasks.getByRole("button", { name: /Order catering/ })).toBeVisible();
   await expect(tasks).toHaveAttribute("data-scope", "all");
 });
+
+test("my tasks: an owner with no owner identity set sees every open task and a hint, never an empty list", async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem("prism-settings", JSON.stringify({ state: { startWithLastDocument: false }, version: 0 })));
+  await page.goto(url("?reset&ownerunset"));
+  const tasks = home(page).getByRole("region", { name: "My tasks" });
+  await expect(tasks.getByRole("button", { name: /Order catering/ })).toBeVisible();
+  await expect(tasks.getByRole("button", { name: /Write release notes/ })).toBeVisible();
+  await expect(tasks.getByTestId("my-tasks-hint")).toContainText("Set the owner identity");
+  await expect(tasks).toHaveAttribute("data-scope", "all");
+});

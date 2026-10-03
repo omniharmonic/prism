@@ -75,8 +75,11 @@ test("a member with no person note matches by address only; a display name is ne
 });
 
 test("the server owner is the identity layer's owner setting: person note, aliases and extra addresses", async () => {
-  // Nothing configured: only the sign-in address could match.
-  assert.deepEqual((await ids(await query(login(OWNER), { tags: ["task"], assignedToMe: true }))).ids, []);
+  // Nothing configured (review low 6): never an empty list — every task, as before,
+  // and the answer says the owner identity is unset so the UI can hint at it.
+  const unset = await ids(await query(login(OWNER), { tags: ["task"], assignedToMe: true }));
+  assert.deepEqual(unset.ids, ["t1", "t2", "t3", "t4", "t5", "t6", "t7"]);
+  assert.equal(unset.identity, "unset");
   saveOwnerSettings("primary", { person: "p-owner", emails: [], aliases: ["Benjamin"] });
   resetDatabaseCachesForTests();
   const mine = await ids(await query(login(OWNER), { tags: ["task"], assignedToMe: true }));
@@ -97,7 +100,7 @@ test("a capability link has no account: no tasks; a bad value is a 400", async (
 });
 
 test("assignedToMe: tombstones never stand for a person; long or odd values are handled linearly", () => {
-  const me = { emails: new Set(["a@x.test"]), names: new Set(["ada lovelace"]), refs: new Set(["p1", "vault/people/ada lovelace", "ada lovelace"]), person: true };
+  const me = { emails: new Set(["a@x.test"]), names: new Set(["ada lovelace"]), refs: new Set(["p1", "vault/people/ada lovelace", "ada lovelace"]), person: true, ownerUnset: false };
   assert.equal(assignedToMe({ assigned: "Bob and Ada Lovelace" }, me), true);
   assert.equal(assignedToMe({ assigned: "[[Ada Lovelace|Ada]]" }, me), true);
   assert.equal(assignedToMe({ assignee: ["x@y.test", "A@X.test"] }, me), true);

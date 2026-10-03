@@ -29,6 +29,9 @@ export interface MyIdentity {
   refs: Set<string>;
   /** Whether a person note was found for the caller. */
   person: boolean;
+  /** The SERVER OWNER with no owner identity configured (no person note found, no
+   *  alias): tasks cannot be told apart, so the caller keeps the unfiltered list. */
+  ownerUnset: boolean;
 }
 
 const PERSON_KEYS = ["name", "email", "emails", "contact", "channels", "status", "type"];
@@ -68,7 +71,7 @@ function personEmails(n: Note): string[] {
 const leafOf = (path: string | null | undefined) => (path ?? "").split("/").pop()!.replace(/\.md$/i, "");
 
 export async function myIdentity(actor: Actor, entry: VaultEntry): Promise<MyIdentity> {
-  const me: MyIdentity = { emails: new Set(), names: new Set(), refs: new Set(), person: false };
+  const me: MyIdentity = { emails: new Set(), names: new Set(), refs: new Set(), person: false, ownerUnset: false };
   if (actor.kind !== "user") return me;
   me.emails.add(lower(actor.email));
   const isServerOwner = !!config.ownerEmail && lower(actor.email) === lower(config.ownerEmail);
@@ -81,6 +84,7 @@ export async function myIdentity(actor: Actor, entry: VaultEntry): Promise<MyIde
   try {
     list = await people(entry);
   } catch {
+    me.ownerUnset = !!owner && me.names.size === 0;
     return me; // the vault is busy: addresses still match
   }
   const ownerRef = owner?.person ? lower(owner.person.replace(/\.md$/i, "")) : "";
@@ -98,6 +102,7 @@ export async function myIdentity(actor: Actor, entry: VaultEntry): Promise<MyIde
     if (name) me.names.add(name);
     if (owner) for (const e of personEmails(n)) me.emails.add(e);
   }
+  me.ownerUnset = !!owner && !me.person && me.names.size === 0;
   return me;
 }
 

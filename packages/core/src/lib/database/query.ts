@@ -100,8 +100,9 @@ export interface QueryRow {
 }
 export interface QueryPage {
   /** `assignedToMe` queries only: "person" when a person page stands for the
-   *  caller, "account" when only their sign-in address could be matched. */
-  identity?: "person" | "account";
+   *  caller, "account" when only their sign-in address could be matched, "unset"
+   *  when the server owner has no owner identity configured (rows are NOT narrowed). */
+  identity?: "person" | "account" | "unset";
   rows: QueryRow[];
   /** Cursor for the next page, or null at the end. */
   next: string | null;

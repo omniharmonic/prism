@@ -751,11 +751,12 @@ export async function noteContentStored(e: StoredContent): Promise<{ notified: n
     const uidFor = new Map(added.filter((m) => m.kind === "person" && m.id).map((m) => [m.id!, m.uid]));
     const notified = new Set<string>();
     for (const pid of people) {
-      // A member mentioned by account: some author must be a workspace member (the
-      // only people offered the list); the recipient must be one too.
+      // A member mentioned by account: EVERY author of the batch must be a workspace
+      // member (per-chip attribution isn't available, so a guest co-editing with a
+      // member cannot piggyback — review low 5); the recipient must be one too.
       const account = emailForAccountMention(pid);
       const recipients = ACCOUNT_MENTION_ID.test(pid)
-        ? account && canMentionMembers(account, e.vaultId) && [...authors].some((a) => canMentionMembers(a, e.vaultId)) ? [account] : []
+        ? account && canMentionMembers(account, e.vaultId) && authors.size > 0 && [...authors].every((a) => canMentionMembers(a, e.vaultId)) ? [account] : []
         : (await authorCanView(pid)) ? await accountsForPerson(e.vaultId, pid) : [];
       for (const email of recipients) {
         if (email === single || notified.has(email)) continue;
@@ -907,7 +908,7 @@ export async function commentsStored(docName: string, vaultId: string, noteId: s
         let targets: string[];
         if (ACCOUNT_MENTION_ID.test(m.id)) {
           const account = emailForAccountMention(m.id);
-          targets = account && canMentionMembers(account, vaultId) && [...authors].some((a) => canMentionMembers(a, vaultId)) ? [account] : [];
+          targets = account && canMentionMembers(account, vaultId) && authors.size > 0 && [...authors].every((a) => canMentionMembers(a, vaultId)) ? [account] : [];
         } else {
           const person = await noteInfo(vaultId, m.id);
           if (![...authors].some((a) => userCanView(a, vaultId, person))) continue;

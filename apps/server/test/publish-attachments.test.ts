@@ -135,3 +135,38 @@ test("an expired publication serves nothing", async () => {
   publishTag("dead", "wiki", { expires_at: Date.now() - 1000 });
   assert.equal((await get("dead", id)).status, 404);
 });
+
+test("review low 8: a small global in-flight cap — a held stream makes the next public read wait, then 503", async () => {
+  const { configurePublicAttachments } = await import("../src/routes/publish");
+  fv.put({ id: "n1", path: "wiki/alpha", tags: ["wiki"], content: "<p>Alpha</p>" });
+  const id = await upload("n1");
+  embed("n1", id);
+  publishTag("site", "wiki");
+  configurePublicAttachments({ maxInflight: 1, waitMs: 30 });
+  try {
+    const held = await get("site", id); // body not read: the slot is still taken
+    assert.equal(held.status, 200);
+    const refused = await get("site", id);
+    assert.equal(refused.status, 503);
+    assert.equal(refused.headers.get("retry-after"), "2");
+    await held.arrayBuffer(); // finished → slot released
+    const next = await get("site", id);
+    assert.equal(next.status, 200);
+    await next.arrayBuffer();
+    // A cancelled download releases its slot too.
+    const cancelled = await get("site", id);
+    assert.equal(cancelled.status, 200);
+    await cancelled.body!.cancel();
+    const after = await get("site", id);
+    assert.equal(after.status, 200);
+    await after.arrayBuffer();
+    // 304 / errors never hold a slot.
+    assert.equal((await get("site", "a_AAAAAAAAAAAAAAAAAAAAAA")).status, 404);
+    assert.equal((await get("site", id, { "if-none-match": `"${id}"` })).status, 304);
+    const last = await get("site", id);
+    assert.equal(last.status, 200);
+    await last.arrayBuffer();
+  } finally {
+    configurePublicAttachments(null);
+  }
+});

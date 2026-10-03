@@ -458,9 +458,13 @@ databasesApi.post("/query", async (c) => {
   // "Assigned to me" (wave 3): the caller's own identity narrows the rows. A link
   // has no account, so it has no tasks. Only ever removes rows the caller could see.
   let mine: MyIdentity | null = null;
+  let ownerUnset = false;
   if (spec.assignedToMe) {
     if (actor.kind !== "user") return empty();
     mine = await myIdentity(actor, entry);
+    // The server owner with no owner identity set (review low 6): the previous
+    // behaviour — every task — and `identity: "unset"` so the UI can say why.
+    if (mine.ownerUnset) { ownerUnset = true; mine = null; }
   }
   const cap = scanMax();
   const stamp = actor.kind === "user" && !owner;
@@ -510,6 +514,7 @@ databasesApi.post("/query", async (c) => {
     const page = runQuery(visible.slice(0, cap), spec, { limited: !owner, truncated });
     // Whether a person page stands for the caller (else only their address matched).
     if (mine) page.identity = mine.person ? "person" : "account";
+    else if (ownerUnset) page.identity = "unset";
     // Permission keys are read for the filter above, never returned unless asked for.
     for (const r of page.rows) for (const k of PERMISSION_KEYS) if (actor.kind === "link" || (spec.fields ? !spec.fields.includes(k) : !owner)) delete r.metadata[k];
     c.header("Cache-Control", "private, no-store");

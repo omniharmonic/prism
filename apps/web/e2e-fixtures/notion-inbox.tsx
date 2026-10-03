@@ -163,6 +163,10 @@ window.fetch = async (input, init) => {
   // My tasks (wave 3): the server narrows to the caller's own tasks. `?oldserver`
   // answers like a server that predates `assignedToMe` (no `identity`).
   if (path === "/api/query" && method === "POST") {
+    if (body.assignedToMe === true && params.has("ownerunset")) {
+      const all = notes.filter((n) => canView(n) && (body.tags as string[]).every((t) => n.tags?.includes(t))).map((n) => ({ id: n.id, path: n.path, tags: n.tags, createdAt: n.createdAt, updatedAt: n.updatedAt, metadata: n.metadata }));
+      return json({ rows: all, next: null, total: all.length, limited: false, truncated: false, identity: "unset" });
+    }
     const mine = body.assignedToMe === true && !params.has("oldserver");
     const rows = notes.filter((n) => canView(n) && (body.tags as string[]).every((t) => n.tags?.includes(t)))
       .filter((n) => !mine || String(n.metadata?.assigned ?? "").split(",").map((v) => v.trim()).includes("You"))
