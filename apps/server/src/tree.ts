@@ -28,7 +28,8 @@
 import { createHash } from "node:crypto";
 import type { VaultEntry } from "./config";
 import { vaultClient } from "./parachute";
-import type { NoteRef } from "./permissions";
+import { setPageAnchorResolver, type NoteRef } from "./permissions";
+import { getVaultRegistry } from "./db";
 import { TRASH_TAG, TRASH_META, ORDER_KEY, LOCK_KEY } from "@prism/core/pages";
 
 /** Metadata keys the projection reads — the ONLY ones requested from the vault. */
@@ -190,7 +191,7 @@ function rowFromNote(n: unknown): TreeRow | null {
 }
 
 /** The permission-math view of a row (same shape the gateway's `ref()` builds). */
-export const rowRef = (r: TreeRow): NoteRef => ({ id: r.id, tags: r.tags, creator: r.creator, visibility: r.visibility });
+export const rowRef = (r: TreeRow): NoteRef => ({ id: r.id, tags: r.tags, creator: r.creator, visibility: r.visibility, path: r.path });
 
 function emit(r: TreeRow): TreeEntry {
   const e: TreeEntry = { id: r.id, path: r.path, tags: r.tags, updatedAt: r.updatedAt };
@@ -424,6 +425,47 @@ export async function ensureTree(entry: VaultEntry): Promise<{ version: number; 
   else if (!st.loaded && !st.ws && !st.rebuilding) void rebuild(st, "retry");
   if (!st.loaded) await new Promise<void>((resolve, reject) => st.waiters.push({ resolve, reject }));
   return { version: st.version, entries: () => [...st.rows.values()].map(emit), rows: () => [...st.rows.values()], state: st };
+}
+
+/**
+ * Page-subtree grants (permissions.ts) resolve their anchor page's CURRENT path
+ * here — a synchronous read of the in-memory rows. Unknown → null (the grant then
+ * matches the anchor id only, fail closed): the projection is not loaded yet (we
+ * start loading it so the next request sees sub-pages), the anchor was deleted,
+ * or it is in the Trash (a trashed page shares nothing below it).
+ */
+setPageAnchorResolver((vaultId, anchorId) => {
+  const st = states.get(vaultId);
+  if (!st || !st.loaded) {
+    const entry = getVaultRegistry().find((v) => v.id === vaultId);
+    if (entry) void ensureTree(entry).catch(() => {});
+    return null;
+  }
+  const row = st.rows.get(anchorId);
+  if (!row || row.trashedAt || row.tags.includes(TRASH_TAG)) return null;
+  return { path: row.path };
+});
+
+/**
+ * Make sure the projection that resolves a caller's page-subtree grants is loaded
+ * before an authorization decision (first request after boot). A no-op for callers
+ * without page grants; bounded so a stalled vault can never hang a request — on
+ * timeout the grants simply match their anchor ids only (fail closed).
+ */
+export async function warmPageAnchors(grants: ReadonlyArray<{ resource_type: string; vault_id?: string | null }>, timeoutMs = 5000): Promise<void> {
+  const vaults = new Set<string>();
+  for (const g of grants) if (g.resource_type === "page") vaults.add(g.vault_id ?? "primary");
+  for (const vaultId of vaults) {
+    if (states.get(vaultId)?.loaded) continue;
+    const entry = getVaultRegistry().find((v) => v.id === vaultId);
+    if (!entry) continue;
+    let timer: NodeJS.Timeout | undefined;
+    await Promise.race([
+      ensureTree(entry).catch(() => {}),
+      new Promise<void>((resolve) => { timer = setTimeout(resolve, timeoutMs); timer.unref?.(); }),
+    ]);
+    clearTimeout(timer);
+  }
 }
 
 /** Serialize (and ETag) the projection, optionally filtered to rows a viewer may see. */

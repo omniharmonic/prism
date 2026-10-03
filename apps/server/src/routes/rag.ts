@@ -54,6 +54,7 @@ const ref = (n: Note): NoteRef => ({
   tags: n.tags ?? [],
   creator: (n.metadata?.prism_creator as string | undefined) ?? null,
   visibility: n.metadata?.prism_visibility === "private" ? "private" : "workspace",
+  path: n.path ?? null,
 });
 const subjectOf = (a: ReturnType<typeof resolveActor>): string | null =>
   a.kind === "user" ? a.email : a.kind === "link" ? a.capabilityId : null;

@@ -55,11 +55,12 @@ export const databasesApi = new Hono();
 
 // ── shared helpers ───────────────────────────────────────────────────────────
 
-const ref = (n: Pick<Note, "id" | "tags" | "metadata">): NoteRef => ({
+const ref = (n: Pick<Note, "id" | "tags" | "metadata"> & { path?: string | null }): NoteRef => ({
   id: n.id,
   tags: n.tags ?? [],
   creator: (n.metadata?.prism_creator as string | undefined) ?? null,
   visibility: n.metadata?.prism_visibility === "private" ? "private" : "workspace",
+  path: n.path ?? null,
 });
 const actorSubject = (a: Actor): string | null => (a.kind === "user" ? a.email : a.kind === "link" ? a.capabilityId : null);
 const capsFor = (actor: Actor, note: NoteRef): Set<Cap> =>

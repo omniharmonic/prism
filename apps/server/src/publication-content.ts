@@ -20,6 +20,7 @@ const ref = (n: Note): NoteRef => ({
   tags: n.tags ?? [],
   visibility:
     n.metadata?.prism_visibility === "private" ? "private" : "workspace",
+  path: n.path ?? null,
 });
 
 /**

@@ -60,6 +60,7 @@ function capsOf(actor: UserActor, note: Note): Set<Cap> {
       tags: note.tags ?? [],
       creator: str(note.metadata?.prism_creator),
       visibility: note.metadata?.prism_visibility === "private" ? "private" : "workspace",
+      path: note.path ?? null,
     },
     roleFloor(actor.role),
     actor.email,

@@ -55,6 +55,7 @@ canvasApi.post("/:id/relationships", async (c) => {
           note.metadata?.prism_visibility === "private"
             ? "private"
             : "workspace",
+        path: note.path ?? null,
       },
       roleFloor(fresh.role),
       fresh.kind === "user" ? fresh.email : fresh.capabilityId,

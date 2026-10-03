@@ -75,6 +75,7 @@ const noteRef = (n: Note): NoteRef => ({
   tags: n.tags ?? [],
   creator: (n.metadata?.prism_creator as string | undefined) ?? null,
   visibility: n.metadata?.prism_visibility === "private" ? "private" : "workspace",
+  path: n.path ?? null,
 });
 const canView = (a: Actor, r: NoteRef): boolean => isAdmin(a) || capsOf(a, r).has("view");
 const canOrganize = (a: Actor, r: NoteRef): boolean => isAdmin(a) || capsOf(a, r).has("organize");
@@ -190,7 +191,7 @@ type RowLike = { id: string; path: string | null; tags: string[] | null; updated
 const refOf = (r: RowLike): NoteRef =>
   "creator" in r && r.creator !== undefined
     ? rowRef(r as TreeRow)
-    : { id: r.id, tags: r.tags ?? [], creator: (r.metadata?.prism_creator as string | undefined) ?? null, visibility: r.metadata?.prism_visibility === "private" ? "private" : "workspace" };
+    : { id: r.id, tags: r.tags ?? [], creator: (r.metadata?.prism_creator as string | undefined) ?? null, visibility: r.metadata?.prism_visibility === "private" ? "private" : "workspace", path: r.path ?? null };
 
 /**
  * The notes under `path` read FRESH from the vault (one lean `path_prefix` listing),

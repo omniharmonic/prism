@@ -38,6 +38,7 @@ import {
   serializeCsv,
   SHEET_FIELD,
   markReconciled,
+  noteCollabWriter,
   type CollabKind,
 } from "../collab";
 import {
@@ -92,12 +93,13 @@ export interface CollabAccess {
  * actor's grants with its per-vault role floor and the private-to-creator
  * visibility check, projected onto the socket ladder.
  */
-export function collabAccess(actor: Pick<UserActor, "grants" | "role" | "email">, note: Pick<Note, "id" | "tags" | "metadata">): CollabAccess {
+export function collabAccess(actor: Pick<UserActor, "grants" | "role" | "email">, note: Pick<Note, "id" | "tags" | "metadata"> & { path?: string | null }): CollabAccess {
   const noteRef = {
     id: note.id,
     tags: note.tags ?? [],
     creator: (note.metadata?.prism_creator as string | undefined) ?? null,
     visibility: (note.metadata?.prism_visibility === "private" ? "private" : "workspace") as "private" | "workspace",
+    path: note.path ?? null,
   };
   const floor = roleFloor(actor.role);
   const lvl = effectiveLevel(actor.grants, noteRef, floor, actor.email);
@@ -153,11 +155,17 @@ function authorOf(ctx: ToolContext): CollabAuthor {
  * disconnect — which stores immediately through the normal onStoreDocument path
  * and unloads the doc if no one else has it open.
  */
+const sameVector = (a: Uint8Array, b: Uint8Array): boolean => a.length === b.length && a.every((x, i) => x === b[i]);
+
 async function withDoc<T>(ctx: ToolContext, docName: string, fn: (doc: Y.Doc) => T | Promise<T>): Promise<T> {
   const conn = await hocuspocus.openDirectConnection(docName, { mcp: ctx.principal.actor.email });
   try {
     if (!conn.document) throw new ToolError("upstream_error", "the document could not be opened");
-    return await fn(conn.document);
+    const before = Y.encodeStateVector(conn.document);
+    const out = await fn(conn.document);
+    // Attribute the store this write triggers to the agent (history: "Agent revision").
+    if (!sameVector(before, Y.encodeStateVector(conn.document))) noteCollabWriter(docName, ctx.principal.actor.email, "agent");
+    return out;
   } finally {
     await conn.disconnect();
   }

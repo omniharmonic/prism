@@ -62,6 +62,7 @@ function capsOf(ctx: ToolContext, note: NoteOut): Cap[] {
       tags: note.tags ?? [],
       creator: (meta.prism_creator as string | undefined) ?? null,
       visibility: meta.prism_visibility === "private" ? "private" : "workspace",
+      path: note.path ?? null,
     },
     roleFloor(actor.role),
     actor.email,

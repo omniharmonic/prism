@@ -106,6 +106,8 @@ import { vaultRegistry } from "../config";
 import { createVaultViaCli, seedVault } from "../vault-provision";
 import { noteKind, resolveSuggestionsInHtml } from "../collab";
 import { normalizePathPrefix, pathInPrefix } from "../paths";
+import { ancestorPages, descendantRows, grantCapsList, inheritedPeople, personView } from "../sharing";
+import { rowRef } from "../tree";
 import { hashPassword } from "../auth/password";
 import { createInvite } from "../auth/invite";
 import { getSecret, secretsConfigured } from "../secrets";
@@ -119,7 +121,7 @@ const pexec = promisify(execFile);
 async function grantAndInvite(
   email: string,
   level: Level,
-  resourceType: "note" | "tag",
+  resourceType: "note" | "tag" | "page",
   resource: string,
   owner: string,
   vaultId: string,
@@ -207,6 +209,7 @@ async function sharerCaps(c: Context, scope: ShareScope): Promise<Set<Cap>> {
         tags: n.tags ?? [],
         creator: (n.metadata?.prism_creator as string | undefined) ?? null,
         visibility: n.metadata?.prism_visibility === "private" ? "private" : "workspace",
+        path: n.path ?? null,
       };
     } catch {
       return new Set<Cap>();
@@ -564,11 +567,25 @@ acl.get("/notes/:id", async (c) => {
   const vaultId = resolveActor(c).vaultId;
   try {
     const note = await vaultClient(vaultId).getNote(id);
+    // A note is shared by its id only — never through a path/title alias.
+    if (note.id !== id) return c.json({ error: "not_found" }, 404);
     const tags = note.tags ?? [];
     const grants = grantsForResource("note", id, vaultId);
-    const people = grants
-      .filter((g) => g.subject_type === "user")
-      .map((g) => ({ email: g.subject, level: g.level, caps: [...(g.caps ?? expandLevel(g.level))], customPermissions: !!g.caps?.length }));
+    // Direct people: per-note grants plus page-subtree grants anchored HERE
+    // (`scope: "page"` — sharing this page shares its sub-pages, NP-CO-09).
+    // Names/avatars go only to callers who already see these emails (the
+    // admin/share-holder gate above) — see sharing.ts NAMING POLICY.
+    const pageGrants = grantsForResource("page", id, vaultId).filter((g) => g.subject_type === "user");
+    const pageSubjects = new Set(pageGrants.map((g) => g.subject));
+    const people = [
+      ...pageGrants.map((g) => ({ ...personView(g.subject), level: g.level, caps: grantCapsList(g), customPermissions: !!g.caps?.length, scope: "page" as const })),
+      ...grants
+        .filter((g) => g.subject_type === "user" && !pageSubjects.has(g.subject))
+        .map((g) => ({ ...personView(g.subject), level: g.level, caps: [...(g.caps ?? expandLevel(g.level))], customPermissions: !!g.caps?.length, scope: "note" as const })),
+    ];
+    const entry = getVaultRegistry().find((v) => v.id === vaultId);
+    const ancestors = entry && note.metadata?.prism_visibility !== "private" ? await ancestorPages(entry, note.path) : [];
+    const inherited = entry && ancestors.length ? await inheritedPeople(entry, id, note.path, ancestors) : [];
     const linkIds = new Set(grants.filter((g) => g.subject_type === "link").map((g) => g.subject));
     // A bearer URL IS a credential. Scoped sharers may manage people grants,
     // but must not receive existing links that can confer powers they lack.
@@ -595,7 +612,13 @@ acl.get("/notes/:id", async (c) => {
     const creator = (note.metadata?.prism_creator as string | undefined) ?? null;
     const held = canManageLinks ? null : await sharerCaps(c, { kind: "note", resource: id });
     const allowedLevels = LEVELS.filter(level => level !== "own" && (!held || [...expandLevel(level)].every(cap => held.has(cap))));
-    return c.json({ note: { id, tags, title: (typeof note.metadata?.title === "string" && note.metadata.title.trim()) || note.path?.split("/").pop() || deriveTitle(note.content), visibility, creator }, people, links, tagAccess, canManageLinks, allowedLevels });
+    const ownerEmail = creator ?? config.ownerEmail;
+    const ownerView = personView(ownerEmail);
+    // The owner row names the page's creator (else the workspace owner). Its email
+    // is shown to admins only; a scoped sharer sees the name/avatar.
+    const owner = canManageLinks ? ownerView : { email: null, name: ownerView.name, avatar: ownerView.avatar };
+    const parent = ancestors[0] ? { id: ancestors[0].id, title: ancestors[0].title } : null;
+    return c.json({ note: { id, tags, title: (typeof note.metadata?.title === "string" && note.metadata.title.trim()) || note.path?.split("/").pop() || deriveTitle(note.content), visibility, creator, path: note.path ?? null }, owner, people, inherited, parent, links, tagAccess, canManageLinks, allowedLevels });
   } catch (e) {
     if (e instanceof VaultError && e.status === 404) return c.json({ error: "not_found" }, 404);
     return c.json({ error: "vault_error" }, 502);
@@ -603,7 +626,8 @@ acl.get("/notes/:id", async (c) => {
 });
 
 acl.put("/notes/:id/people", async (c) => {
-  const { email, level, caps: rawCaps } = await c.req.json<{ email?: string; level?: string; caps?: unknown }>();
+  const { email, level, caps: rawCaps, scope: rawScope } = await c.req.json<{ email?: string; level?: string; caps?: unknown; scope?: unknown }>();
+  if (rawScope !== undefined && rawScope !== "note" && rawScope !== "page") return c.json({ error: "bad_request", reason: "scope must be note or page" }, 400);
   const caps = parseCapsInput(rawCaps);
   if (caps === "invalid") return c.json({ error: "bad_request", reason: `caps must be a non-empty subset of: ${CAPS.join(", ")}` }, 400);
   // With caps the level is DERIVED (and may be omitted); without them the level
@@ -612,10 +636,23 @@ acl.put("/notes/:id/people", async (c) => {
   if (!isEmail(email) || lvl === null) return c.json({ error: "bad_request" }, 400);
   // A non-admin reached here by holding `share` on THIS note; they may not hand
   // out more than they hold, nor pull a new person into the workspace.
-  const denied = await denyEscalation(c, { kind: "note", resource: c.req.param("id") }, normEmail(email), caps ?? expandLevel(lvl));
+  const id = c.req.param("id");
+  const vaultId = resolveActor(c).vaultId;
+  const recipient = normEmail(email);
+  const denied = await denyEscalation(c, { kind: "note", resource: id }, recipient, caps ?? expandLevel(lvl));
   if (denied) return denied;
-  const { invited, inviteUrl } = await grantAndInvite(normEmail(email), lvl, "note", c.req.param("id"), grantAuthor(c), resolveActor(c).vaultId, caps);
-  return c.json({ ok: true, email: normEmail(email), level: caps ? levelForCaps(caps) : lvl, caps, invited, inviteUrl });
+  // Scope: explicit, else keep the kind of grant this person already has here
+  // (so a level change from an older caller never forks a page share in two).
+  const hasPageGrant = grantsForResource("page", id, vaultId).some((g) => g.subject_type === "user" && g.subject === recipient);
+  const scope: "note" | "page" = rawScope === "note" || rawScope === "page" ? rawScope : hasPageGrant ? "page" : "note";
+  if (scope === "page") {
+    const refused = await pageShareRefusal(c, id, caps ?? expandLevel(lvl));
+    if (refused) return refused;
+  }
+  const { invited, inviteUrl } = await grantAndInvite(recipient, lvl, scope, id, grantAuthor(c), vaultId, caps);
+  // One grant per person per page: the other kind is replaced.
+  removeGrantBySubjectResource("user", recipient, scope === "page" ? "note" : "page", id, vaultId);
+  return c.json({ ok: true, email: recipient, level: caps ? levelForCaps(caps) : lvl, caps, scope, invited, inviteUrl });
 });
 
 // Revoking a person's access to a note. The route gate is the whole check: a
@@ -623,15 +660,49 @@ acl.put("/notes/:id/people", async (c) => {
 // the authority to manage other subjects' grants on it. (Removing a grant can
 // only ever reduce access, so there is nothing to escalate.)
 acl.delete("/notes/:id/people/:email", (c) => {
-  removeGrantBySubjectResource(
-    "user",
-    normEmail(decodeURIComponent(c.req.param("email"))),
-    "note",
-    c.req.param("id"),
-    resolveActor(c).vaultId,
-  );
+  const who = normEmail(decodeURIComponent(c.req.param("email")));
+  // Both kinds: a per-note grant and a page-subtree grant anchored on this page.
+  removeGrantBySubjectResource("user", who, "note", c.req.param("id"), resolveActor(c).vaultId);
+  removeGrantBySubjectResource("user", who, "page", c.req.param("id"), resolveActor(c).vaultId);
   return c.json({ ok: true });
 });
+
+/**
+ * A page share reaches the page's sub-pages. An ADMIN may always make one. A
+ * scoped sharer (holder of `share` on this page) may only when they hold the
+ * granted caps AND `share` on every CURRENT sub-page too — otherwise the share
+ * would hand out access to pages they could not share themselves. The refusal
+ * never says how many or which sub-pages (no existence oracle). The page must be
+ * addressed by its real id.
+ */
+async function pageShareRefusal(c: Context, id: string, granting: Iterable<Cap>): Promise<Response | null> {
+  const actor = resolveActor(c);
+  let note;
+  try {
+    note = await vaultClient(actor.vaultId).getNote(id);
+  } catch (e) {
+    if (e instanceof VaultError && e.status === 404) return c.json({ error: "not_found" }, 404);
+    return c.json({ error: "vault_error" }, 502);
+  }
+  if (note.id !== id) return c.json({ error: "not_found" }, 404);
+  if (note.metadata?.prism_visibility === "private") {
+    return c.json({ error: "bad_request", reason: "A private page is shared on its own. Share it with “This page only”." }, 400);
+  }
+  if (roleAtLeast(actor.role, "admin") || !note.path) return null;
+  const entry = getVaultRegistry().find((v) => v.id === actor.vaultId);
+  if (!entry) return c.json({ error: "forbidden" }, 403);
+  const need = new Set<Cap>([...granting, "share"]);
+  const subject = actor.kind === "user" ? actor.email : null;
+  for (const r of await descendantRows(entry, note.path)) {
+    const caps = effectiveCaps(actor.grants, rowRef(r), roleFloor(actor.role), subject);
+    for (const cap of need) {
+      if (!caps.has(cap)) {
+        return c.json({ error: "forbidden", reason: "You can share this page only on its own: you cannot share everything inside it." }, 403);
+      }
+    }
+  }
+  return null;
+}
 
 acl.post("/notes/:id/links", async (c) => {
   const id = c.req.param("id");

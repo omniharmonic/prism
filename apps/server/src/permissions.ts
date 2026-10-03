@@ -2,7 +2,8 @@
  * Permission model. Access is computed per (subject, note): a subject is a
  * signed-in user (email), a capability link, or "anyone with the link". The
  * effective level is the MAX over all grants that match the note directly
- * (resource=note:<id>) or via one of its tags (resource=tag:<name>), raised by a
+ * (resource=note:<id>), via one of its tags (resource=tag:<name>), or via a shared
+ * ancestor page (resource=page:<id>, see "Page-subtree grants"), raised by a
  * role-derived floor (owner/admin → "own"; see roles.ts). This layer is pure;
  * the store (db) supplies the grants, the caller supplies the floor.
  */
@@ -43,6 +44,83 @@ export interface NoteRef {
    * until the creator shares that specific note. Default "workspace".
    */
   visibility?: "private" | "workspace";
+  /**
+   * The note's vault path (`Projects/Alpha/Notes`). Lets a `resource_type='page'`
+   * (page-subtree) grant reach the sub-pages of the page it is anchored on.
+   * Optional: a ref without a path matches page grants by id only (fail closed —
+   * the anchor page itself, never its descendants).
+   */
+  path?: string | null;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Page-subtree grants (NP-CO-09). A grant with resource_type "page" is anchored
+// on a NOTE ID (resource = the page's id) and reaches that page AND every note
+// whose path lies under the page's CURRENT path — "sharing a page shares its
+// sub-pages". Anchoring on the id (not on a path string) means:
+//   - moving the shared page moves its access with it (the grant follows the id);
+//   - moving a sub-page OUT of the shared page drops its inherited access, and
+//     moving a page IN gains it (membership is re-evaluated from the live path);
+//   - a page later created at the anchor's OLD path never inherits anything.
+// The anchor's current path comes from a resolver the tree projection registers
+// (an in-memory, synchronous lookup). Unknown anchor (tree not loaded yet, anchor
+// deleted or trashed) → the grant matches the anchor id ONLY (fail closed).
+//
+// NEAREST ANCHOR WINS among page grants: when page grants are anchored on several
+// ancestors of a note, only those on the CLOSEST ancestor (longest anchor path)
+// apply. That is how a child is RESTRICTED (a lower page grant on the child) or
+// EXPANDED (a higher one) explicitly. Note/tag/space/vault grants and the role
+// floor are unaffected and still union in as before; a page grant on the note
+// itself counts as the nearest anchor.
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface PageAnchor {
+  /** The anchor page's current path, or null when it has none. */
+  path: string | null;
+}
+type PageAnchorResolver = (vaultId: string, anchorId: string) => PageAnchor | null;
+let pageAnchorResolver: PageAnchorResolver = () => null;
+/** Registered once by `tree.ts` (the in-memory projection). Tests may override;
+ *  the previous resolver is returned so they can put it back. */
+export function setPageAnchorResolver(fn: PageAnchorResolver | null): PageAnchorResolver {
+  const prev = pageAnchorResolver;
+  pageAnchorResolver = fn ?? (() => null);
+  return prev;
+}
+/** The anchor of a page grant as currently resolved (null = unknown → id-only). */
+export const resolvePageAnchor = (vaultId: string, anchorId: string): PageAnchor | null => pageAnchorResolver(vaultId, anchorId);
+
+/** `path` lies strictly under `ancestor` (`a/b` is under `a`, `ab` is not). */
+export const pathUnder = (path: string | null | undefined, ancestor: string | null | undefined): boolean =>
+  !!path && !!ancestor && path.startsWith(`${ancestor}/`);
+
+/**
+ * How close a page grant's anchor is to `note`: the anchor's path length when it
+ * is the note itself or an ancestor of it, else -1 (does not match). The note
+ * itself always matches (by id), ranked above every ancestor.
+ */
+export function pageGrantDepth(g: Pick<Grant, "resource_type" | "resource" | "vault_id">, note: NoteRef): number {
+  if (g.resource_type !== "page") return -1;
+  if (g.resource === note.id) return Number.MAX_SAFE_INTEGER;
+  const anchor = resolvePageAnchor(g.vault_id ?? "primary", g.resource);
+  if (!anchor?.path || !pathUnder(note.path, anchor.path)) return -1;
+  return anchor.path.length;
+}
+
+/** The page grants that apply to `note`: those on its nearest shared ancestor (or itself). */
+export function nearestPageGrants(grants: Grant[], note: NoteRef): Grant[] {
+  let best = -1;
+  let out: Grant[] = [];
+  for (const g of grants) {
+    if (g.resource_type !== "page") continue;
+    const d = pageGrantDepth(g, note);
+    if (d < 0) continue;
+    if (d > best) {
+      best = d;
+      out = [g];
+    } else if (d === best) out.push(g);
+  }
+  return out;
 }
 
 /**
@@ -71,7 +149,8 @@ export function effectiveLevel(
     if (subject && note.creator && subject === note.creator) return "own";
     let lvl: Level | null = null;
     for (const g of grants) {
-      if (g.resource_type === "note" && g.resource === note.id) lvl = maxLevel(lvl, g.level);
+      // A page grant ON the private page itself is an explicit per-note share.
+      if ((g.resource_type === "note" || g.resource_type === "page") && g.resource === note.id) lvl = maxLevel(lvl, g.level);
     }
     return lvl;
   }
@@ -86,6 +165,7 @@ export function effectiveLevel(
       g.resource_type === "vault"; // a whole-workspace grant matches every note in the vault
     if (matches) level = maxLevel(level, g.level);
   }
+  for (const g of nearestPageGrants(grants, note)) level = maxLevel(level, g.level);
   return level;
 }
 
@@ -201,7 +281,7 @@ export function effectiveCaps(
   if (note.visibility === "private") {
     if (subject && note.creator && subject === note.creator) return new Set<Cap>(CAPS);
     for (const g of grants) {
-      if (g.resource_type === "note" && g.resource === note.id) for (const c of grantCaps(g)) out.add(c);
+      if ((g.resource_type === "note" || g.resource_type === "page") && g.resource === note.id) for (const c of grantCaps(g)) out.add(c);
     }
     return out;
   }
@@ -216,5 +296,6 @@ export function effectiveCaps(
       g.resource_type === "vault";
     if (matches) for (const c of grantCaps(g)) out.add(c);
   }
+  for (const g of nearestPageGrants(grants, note)) for (const c of grantCaps(g)) out.add(c);
   return out;
 }

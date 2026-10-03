@@ -24,7 +24,7 @@ import { HUMAN_COLLAB_LIMITS, type HumanCollabCommand, type HumanCollabErrorBody
 import { accessRevision } from "../access-events";
 import { resolveActor, requestVia } from "../auth/actor";
 import { verifyCapability } from "../auth/capability";
-import { collabLevelFor, docNameFor, hocuspocus, isNoteId, noteKind } from "../collab";
+import { collabLevelFor, docNameFor, hocuspocus, isNoteId, noteCollabWriter, noteKind } from "../collab";
 import { colorFor } from "../collab-ops";
 import { getCollabReceipt, getFederatedByLocal, getFederationEnabled, getUser, getVaultRegistry, grantsForCapability, type Grant } from "../db";
 import { documentActorId, executeHumanCommand, findReceipt, HumanCommandError, pruneReceiptsIfDue, safeAuthorName, textProblem, type HumanCommandOutcome } from "../human-collab";
@@ -99,6 +99,7 @@ const noteRef = (note: Note) => ({
   tags: note.tags ?? [],
   creator: typeof note.metadata?.prism_creator === "string" ? note.metadata.prism_creator : null,
   visibility: (note.metadata?.prism_visibility === "private" ? "private" : "workspace") as "private" | "workspace",
+  path: note.path ?? null,
 });
 const levelOf = (who: Caller, note: Note): Level | null => collabLevelFor(who.grants, noteRef(note), who.role, who.email);
 const kindOf = (note: Note) => noteKind({ path: note.path ?? null, tags: note.tags ?? null, metadata: note.metadata ?? null, content: note.content });
@@ -238,6 +239,8 @@ humanCollabApi.post("/:id/commands", async (c) => {
         level: nowLevel as Level,
         author: { name, color: colorFor(now.identity), actorId: documentActorId(now.identity) },
       }, command);
+      // History attribution for the store below (a suggestion / comment, not a direct edit).
+      if (!outcome.replayed) noteCollabWriter(docName, now.email ?? "link", "suggestion");
     } finally {
       // Store only when a command is (or was) applied; a refusal writes nothing.
       await release(conn, outcome !== null);

@@ -18,17 +18,19 @@ import { resolveVaultEntry } from "../db";
 import { vault, vaultClient, VaultError, VaultConflictError, type Note } from "../parachute";
 import { resolveActor, requestVia, type Actor } from "../auth/actor";
 import { COLLAB_SCHEMA_VERSION } from "@prism/core/editor-schema";
-import { effectiveLevel, effectiveCaps, grantedTags, type Cap, type NoteRef } from "../permissions";
+import { effectiveLevel, effectiveCaps, grantedTags, resolvePageAnchor, type Cap, type NoteRef } from "../permissions";
 import { roleAtLeast, roleFloor } from "../roles";
 import { compress } from "hono/compress";
 import { openEventStream } from "../events";
-import { ensureTree, renderTree, etagMatches, treeUpsertNote, treeRemoveNote, treeAfterOwnerWrite, treeRowLocked } from "../tree";
+import { ensureTree, renderTree, etagMatches, treeUpsertNote, treeRemoveNote, treeAfterOwnerWrite, treeRowLocked, warmPageAnchors } from "../tree";
 import { canvasApi } from "./canvas";
 import { threadsApi } from "./threads";
 import { peopleApi } from "./people";
 import { humanCollabApi } from "./human-collab";
 import { transcriptsApi } from "./transcripts";
 import { databasesApi } from "./databases";
+import { sharingApi } from "./sharing";
+import { redactVersionForViewer } from "../sharing";
 import { graphNeighborhood } from "../graph";
 import { buildWikilinkIndex, resolveWikilink, noteLinkTitle } from "@prism/core/wikilinks";
 import { isTrashed, isLocked, isOwnerOnlyMeta, TRASH_TAG, TRASH_META, LOCK_KEY, ORDER_KEY } from "@prism/core/pages";
@@ -48,6 +50,8 @@ api.use("*", async (c, next) => {
       : actor.kind === "link" && cap ? `capability:${createHash("sha256").update(cap).digest("hex")}` : null;
     if (expected !== actual) return c.json({ error: "write_actor_changed" }, 409);
   }
+  // Page-subtree grants resolve their anchor through the tree projection (NP-CO-09).
+  await warmPageAnchors(resolveActor(c).grants);
   await next();
 });
 
@@ -56,6 +60,7 @@ const ref = (n: Note): NoteRef => ({
   tags: n.tags ?? [],
   creator: (n.metadata?.prism_creator as string | undefined) ?? null,
   visibility: n.metadata?.prism_visibility === "private" ? "private" : "workspace",
+  path: n.path ?? null,
 });
 
 /** The grant subject of an actor (for the private-note creator check). */
@@ -206,6 +211,8 @@ api.route("/transcripts", transcriptsApi);
 // Pages (nested-page move, Trash, synced preferences): before the owner passthrough,
 // like /tree — these are Prism routes, not vault routes. Writes drop cached owner reads.
 api.route("/", createPagesApi({ onWrite: () => readCache.clear() }));
+// Sharing reads (shared-with-me, comment index, page activity, move access preview).
+api.route("/", sharingApi);
 // Typed properties + database views (schemas, lean query, property writes).
 // Their writes bypass the owner proxy: drop cached owner reads afterwards.
 api.use("/properties/*", async (c, next) => { await next(); readCache.clear(); });
@@ -418,7 +425,19 @@ async function visibleNotes(actor: Actor, includeContent: boolean): Promise<Note
       collected.set(n.id, n);
     }
   }
-  for (const g of actor.grants.filter((x) => x.resource_type === "note")) {
+  // Page-subtree grants (NP-CO-09): the anchor page plus everything under its
+  // current path (one lean path_prefix listing each). Membership is still decided
+  // by the caps filter in annotate(); this only bounds what is fetched.
+  for (const g of actor.grants.filter((x) => x.resource_type === "page")) {
+    const anchor = resolvePageAnchor(g.vault_id ?? actor.vaultId, g.resource);
+    if (!anchor?.path) continue;
+    try {
+      for (const n of await vc.listNotes({ pathPrefix: `${anchor.path}/`, includeContent })) collected.set(n.id, n);
+    } catch {
+      /* listing failed — the anchor itself is still fetched below */
+    }
+  }
+  for (const g of actor.grants.filter((x) => x.resource_type === "note" || x.resource_type === "page")) {
     if (collected.has(g.resource)) continue;
     try {
       collected.set(g.resource, await vc.getNote(g.resource));
@@ -705,7 +724,8 @@ api.get("/notes/:id/versions", async (c) => {
   const offset = Math.max(0, Number(c.req.query("offset") ?? 0) || 0);
   try {
     const page = await vaultClient(resolveActor(c).vaultId).listVersions(gate.note.id, limit, offset);
-    return c.json({ versions: page.versions.map(stripProvenance), total: page.total });
+    const viewer = resolveActor(c).kind === "user" ? (resolveActor(c) as { email: string }).email : null;
+    return c.json({ versions: page.versions.map((v) => redactVersionForViewer(v, viewer)), total: page.total });
   } catch (e) {
     return vaultErr(c, e);
   }
@@ -717,7 +737,8 @@ api.get("/notes/:id/versions/:ix", async (c) => {
   const ix = Number(c.req.param("ix"));
   if (!Number.isInteger(ix) || ix < 0) return c.json({ error: "bad_request", reason: "invalid version" }, 400);
   try {
-    return c.json(stripProvenance(await vaultClient(resolveActor(c).vaultId).getVersion(gate.note.id, ix)));
+    const viewer = resolveActor(c).kind === "user" ? (resolveActor(c) as { email: string }).email : null;
+    return c.json(redactVersionForViewer(await vaultClient(resolveActor(c).vaultId).getVersion(gate.note.id, ix), viewer));
   } catch (e) {
     return vaultErr(c, e);
   }

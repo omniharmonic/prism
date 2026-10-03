@@ -39,7 +39,7 @@ import { WebSocketServer } from "ws";
 import type { IncomingMessage, Server } from "node:http";
 import * as Y from "yjs";
 import { generateJSON, generateHTML, getSchema } from "@tiptap/core";
-import { prosemirrorJSONToYDoc, yDocToProsemirrorJSON, updateYFragment } from "@tiptap/y-tiptap";
+import { prosemirrorJSONToYDoc, yDocToProsemirrorJSON, updateYFragment, initProseMirrorDoc } from "@tiptap/y-tiptap";
 import { collabExtensions, COLLAB_SCHEMA_VERSION } from "@prism/core/editor-schema";
 import { inferContentType } from "@prism/core/content-types";
 import { marked } from "marked";
@@ -66,6 +66,7 @@ import {
   type Grant,
 } from "./db";
 import { effectiveLevel, effectiveCaps, atLeast, maxLevel, type Level } from "./permissions";
+import { warmPageAnchors } from "./tree";
 import { randomUUID } from "node:crypto";
 import { createSuggestion, suggestionsForNote } from "./db";
 import { suggestionAuthors, hasSuggestions, resolveSuggestions, summarizeSuggestions, type PmNode } from "./suggestions";
@@ -615,6 +616,8 @@ export async function resolveLevel(documentName: string, token: string, cookieHe
   let tags: string[] = [];
   let creator: string | null = null;
   let visibility: "private" | "workspace" = "workspace";
+  let notePath: string | null = null;
+  await warmPageAnchors(grants); // page-subtree grants need the tree (NP-CO-09)
   try {
     const note = await vaultClient(vaultId).getNote(noteId);
     if (note.id !== noteId) return null; // resolved through a path/title alias
@@ -624,10 +627,11 @@ export async function resolveLevel(documentName: string, token: string, cookieHe
     // by its creator (or an explicit per-note grant), never via a tag/role floor.
     creator = (note.metadata?.prism_creator as string | undefined) ?? null;
     visibility = note.metadata?.prism_visibility === "private" ? "private" : "workspace";
+    notePath = note.path ?? null;
   } catch {
     if (role !== "owner") return null; // Never infer public visibility from a failed read.
   }
-  return collabLevelFor(grants, { id: noteId, tags, creator, visibility }, role, email ?? null);
+  return collabLevelFor(grants, { id: noteId, tags, creator, visibility, path: notePath }, role, email ?? null);
 }
 
 /**
@@ -648,7 +652,7 @@ export async function resolveLevel(documentName: string, token: string, cookieHe
  */
 export function collabLevelFor(
   grants: Grant[],
-  noteRef: { id: string; tags: string[]; creator: string | null; visibility: "private" | "workspace" },
+  noteRef: { id: string; tags: string[]; creator: string | null; visibility: "private" | "workspace"; path?: string | null },
   role: Role,
   email: string | null,
 ): Level | null {
@@ -795,7 +799,90 @@ export async function loadDocumentState(documentName: string, doc: Y.Doc): Promi
     saveDocState(target.noteId, Y.encodeStateAsUpdate(doc), toMs(note.updatedAt), target.vaultId);
     lastReconciled.set(documentName, toMs(note.updatedAt));
   }
+  if (kind === "document") lastSuggestions.set(documentName, suggestionTexts(doc));
+  collabWriters.delete(documentName);
   return doc;
+}
+
+// ── Writer attribution for collab stores (NP-PG-13 / NP-PG-17) ──────────────
+// A collab store writes the note on behalf of whoever changed the live doc since
+// the last store. We stamp the MOST RECENT writer as `metadata.prism_last_writer`
+// (the same key and value form as the gateway's writer stamp: an account email,
+// or "link" for a capability guest) plus `metadata.prism_last_change`, the KIND
+// of that change: "edit" (typed in the live editor), "suggestion" (a human
+// command), "agent" (a Prism MCP tool) or "accepted-suggestion" (an edit that
+// resolved suggestion marks by accepting them). History and page info read these
+// to say who changed what. Server-internal writes (reconciler folds, restores,
+// federation) carry no writer and leave the stamp untouched.
+export type CollabChangeKind = "edit" | "suggestion" | "agent";
+const collabWriters = new Map<string, Map<string, CollabChangeKind>>();
+/** Record that `writer` changed `documentName` (most recent last). */
+export function noteCollabWriter(documentName: string, writer: string | null, kind: CollabChangeKind): void {
+  if (!writer) return;
+  let m = collabWriters.get(documentName);
+  if (!m) collabWriters.set(documentName, (m = new Map()));
+  m.delete(writer);
+  m.set(writer, kind);
+}
+const writerByContext = new WeakMap<object, string | null>();
+function socketWriter(context: Partial<LiveAccess> | undefined): string | null {
+  if (!context || typeof context !== "object" || context.level === undefined) return null;
+  if (writerByContext.has(context)) return writerByContext.get(context) ?? null;
+  let who: string | null = null;
+  if (context.isLocal && context.token && ((config.collabToken && context.token === config.collabToken) || (config.parachuteToken && context.token === config.parachuteToken))) who = config.ownerEmail;
+  else who = sessionEmailFromCookie(context.cookie ?? null) ?? deviceEmail(context.token ?? "") ?? (context.token && context.token !== "session" && verifyCapability(context.token) ? "link" : null);
+  writerByContext.set(context, who);
+  return who;
+}
+
+/** Suggestion ids → their inserted/deleted text, from a document's prose. */
+function suggestionTexts(doc: Y.Doc): Map<string, { ins: string; del: string }> {
+  const out = new Map<string, { ins: string; del: string }>();
+  const frag = doc.getXmlFragment(FIELD);
+  if (frag.length === 0) return out;
+  let prose;
+  try {
+    prose = initProseMirrorDoc(frag, schema).doc;
+  } catch {
+    return out;
+  }
+  prose.descendants((n) => {
+    if (!n.isText || !n.text) return;
+    for (const m of n.marks) {
+      if (m.type.name !== "insertion" && m.type.name !== "deletion") continue;
+      const id = String(m.attrs.suggestionId ?? m.attrs.id ?? "");
+      if (!id) continue;
+      const e = out.get(id) ?? { ins: "", del: "" };
+      if (m.type.name === "insertion") e.ins += n.text;
+      else e.del += n.text;
+      out.set(id, e);
+    }
+  });
+  return out;
+}
+const lastSuggestions = new Map<string, Map<string, { ins: string; del: string }>>();
+
+/** The stamp for a store of `documentName`, consuming the recorded writers. */
+function takeWriterStamp(documentName: string, doc: Y.Doc, kind: string): Record<string, string> | null {
+  const writers = collabWriters.get(documentName);
+  collabWriters.delete(documentName);
+  let accepted = false;
+  if (kind === "document") {
+    const before = lastSuggestions.get(documentName);
+    const now = suggestionTexts(doc);
+    lastSuggestions.set(documentName, now);
+    if (before && writers?.size) {
+      const plain = doc.getXmlFragment(FIELD).toString().replace(/<[^>]*>/g, "");
+      for (const [id, s] of before) {
+        if (now.has(id)) continue;
+        // Gone: accepted when its inserted text survived (or, for a pure deletion, its text is gone).
+        if ((s.ins && plain.includes(s.ins)) || (!s.ins && s.del && !plain.includes(s.del))) accepted = true;
+      }
+    }
+  }
+  if (!writers?.size) return null;
+  const [writer, change] = [...writers.entries()].pop()!;
+  return { prism_last_writer: writer, prism_last_change: accepted && change === "edit" ? "accepted-suggestion" : change };
 }
 
 /**
@@ -865,7 +952,8 @@ export async function storeDocumentState(documentName: string, doc: Y.Doc): Prom
       // note's history with no-change entries and bump updatedAt for nothing.
       sourceUpdatedAt = toMs(current.updatedAt);
     } else {
-      const updated = await vaultClient(target.vaultId).updateNote(target.noteId, { content });
+      const stamp = takeWriterStamp(documentName, doc, kind);
+      const updated = await vaultClient(target.vaultId).updateNote(target.noteId, stamp ? { content, metadata: stamp } : { content });
       sourceUpdatedAt = toMs(updated.updatedAt);
     }
     vaultWritten = true;
@@ -967,6 +1055,10 @@ export const hocuspocus = new Hocuspocus({
   async beforeSync({ connection }) {
     // A permission write can close the connection during an awaited message hook.
     if (!connection.document.hasConnection(connection)) throw new Error("Access changed. Reconnect.");
+  },
+  async onChange(data) {
+    // Attribute raw socket edits (read-only sockets never reach here with a change).
+    if (data.connection) noteCollabWriter(data.documentName, socketWriter(data.context as Partial<LiveAccess>), "edit");
   },
   onLoadDocument: (data) => loadDocumentState(data.documentName, data.document),
   onStoreDocument: (data) => storeDocumentState(data.documentName, data.document),

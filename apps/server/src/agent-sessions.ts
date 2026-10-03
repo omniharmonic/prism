@@ -533,6 +533,7 @@ const noteRef = (n: Note): NoteRef => ({
   tags: n.tags ?? [],
   creator: (n.metadata?.prism_creator as string | undefined) ?? null,
   visibility: n.metadata?.prism_visibility === "private" ? "private" : "workspace",
+  path: n.path ?? null,
 });
 
 export class SessionBudgetError extends Error {}

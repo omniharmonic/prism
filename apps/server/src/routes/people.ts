@@ -32,6 +32,7 @@ const ref = (note: Note): NoteRef => ({
       : null,
   visibility:
     note.metadata?.prism_visibility === "private" ? "private" : "workspace",
+  path: note.path ?? null,
 });
 const capsFor = (actor: Actor, note: NoteRef) =>
   effectiveCaps(
