@@ -651,3 +651,13 @@ It needs only a payload directory and a temp root, never touches `~/.parachute`,
 
 We'll report results on your issue tracker per pre-release tag, so a regression reaches you before a
 `latest` promotion.
+
+## Addendum (2026-10-03): deleting stored attachment files
+
+Separate from embedded mode, found while building Prism's uploads on vault 0.7.9. Deleting a note cascades
+its attachment rows, but the stored file under `/storage` stays on disk, and there is no API to remove a
+stored file once its note is gone (the delete routes are addressed through the note). Prism therefore
+records those files as orphans it cannot reclaim. Request: either delete the stored file when the last
+attachment row that references it is removed, or expose an admin `DELETE /storage/<path>` (and a listing of
+unreferenced stored files) so a host can reclaim the space. Acceptance: after deleting a note with an
+attachment, the file is gone, or one admin call removes it and `doctor` reports no unreferenced files.
