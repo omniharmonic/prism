@@ -213,9 +213,11 @@ export function DatabasePage({ note, readOnly, embedded }: RendererProps & {
   const selection: RowSelection = {
     ids: selected,
     toggle: (id, shift, ordered) => {
+      // Read the anchor NOW: the state updater runs later (and twice in StrictMode).
+      const a = anchorId.current;
+      anchorId.current = id;
       setSelected((cur) => {
         const next = new Set(cur);
-        const a = anchorId.current;
         if (shift && a && ordered.includes(a) && ordered.includes(id)) {
           const [i, j] = [ordered.indexOf(a), ordered.indexOf(id)].sort((x, y) => x - y);
           for (const k of ordered.slice(i!, j! + 1)) next.add(k);
@@ -223,7 +225,6 @@ export function DatabasePage({ note, readOnly, embedded }: RendererProps & {
         else next.add(id);
         return next;
       });
-      anchorId.current = id;
     },
     setAll: (ids, on) => setSelected((cur) => {
       const next = new Set(cur);
