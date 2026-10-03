@@ -135,6 +135,8 @@ export function startOfflineAvailability(): void {
       if (!scope || !isVaultNoteId(id)) return;
       pinned = on ? [id, ...pinned.filter((p) => p !== id)].slice(0, MAX_PINNED) : pinned.filter((p) => p !== id);
       writeList("pinned", scope, pinned);
+      // Pinning is a promise to keep the page: ask the browser not to evict this origin's storage.
+      if (on) void navigator.storage?.persist?.().catch(() => false);
       if (on) fetched.delete(id);
       else {
         // "Remove offline copy" really removes it: the cached body, and the
