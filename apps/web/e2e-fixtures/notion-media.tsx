@@ -10,6 +10,8 @@ import * as Y from "yjs";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { PlatformProvider, VaultClientProvider, CollabEditor, VaultRequestError, type Note, type VaultClient } from "@prism/core";
 import DocumentRenderer from "../../../packages/core/src/components/renderers/DocumentRenderer";
+import { useUIStore } from "../../../packages/core/src/app/stores/ui";
+import { linkTarget, pageIdFromUrl } from "../../../packages/core/src/lib/tiptap/prismLinks";
 
 const params = new URLSearchParams(location.search);
 if (params.has("dark")) { document.documentElement.classList.remove("light"); document.documentElement.classList.add("dark"); }
@@ -75,6 +77,8 @@ Object.assign(window, {
   prismMediaCreates: creates,
   prismMediaTrashed: trashed,
   prismMediaVault: vault,
+  prismMediaUI: useUIStore,
+  prismLinks: { linkTarget, pageIdFromUrl },
   prismEditor: (i = 0) => (document.querySelectorAll(".tiptap")[i] as unknown as { editor: unknown })?.editor,
 });
 

@@ -31,6 +31,7 @@ import { ImageUpload } from "../../lib/tiptap/ImageUpload";
 import "../../lib/tiptap/mediaViews";
 import { UrlPaste, type UrlPasteState, type Unfurler } from "../../lib/tiptap/UrlPaste";
 import { PasteUrlMenu } from "./PasteUrlMenu";
+import { LinkCard } from "./LinkCard";
 import { DatabaseInsert, type DatabaseInsertRequest } from "../../lib/tiptap/databaseView";
 import { InsertDatabaseDialog } from "./InsertDatabaseDialog";
 import { PageCover } from "./PageCover";
@@ -493,6 +494,8 @@ export default function DocumentRenderer({ note, onMetadataChange, readOnly }: R
         {editor && slashState?.active && (
           <SlashMenu editor={editor} state={slashState} onClose={() => setSlashState(null)} />
         )}
+        {/* Link card: address + Open / Edit / Remove for the link under the pointer or caret */}
+        {editor && <LinkCard editor={editor} />}
         {/* "Paste as" menu after a bare URL paste */}
         {editor && pasteState && !notEditable && (
           <PasteUrlMenu editor={editor} state={pasteState} unfurl={unfurl} onClose={() => setPasteState(null)} />

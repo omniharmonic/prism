@@ -105,13 +105,15 @@ function undoLastInputRule(view: { state: EditorState; dispatch: (tr: Transactio
 
 /** The selection toolbar listens for this on the editor DOM and opens its link field. */
 export const EDIT_LINK_EVENT = "prism:edit-link";
+/** Fired on the editor DOM by ⌘K with the CARET inside a link: the link card (LinkCard) takes keyboard focus. */
+export const LINK_CARD_FOCUS_EVENT = "prism:link-card-focus";
 
 function decorating(editor: Editor): boolean {
   const storage = editor.storage as unknown as Record<string, { suggesting?: boolean; active?: boolean } | undefined>;
   return editor.isEditable && !storage.suggestionMode?.suggesting && !storage.commentOnly?.active;
 }
 
-const EDITOR_POPUPS = ".slash-menu, .editor-menu, .prism-mention-menu, .prism-paste-menu, [role='listbox'][aria-label='Link to a document'], .prism-find-bar:focus-within";
+const EDITOR_POPUPS = ".slash-menu, .editor-menu, .prism-mention-menu, .prism-paste-menu, .prism-link-card, [role='listbox'][aria-label='Link to a document'], .prism-find-bar:focus-within";
 /**
  * Escape belongs to a popup only when it is one of the EDITOR's own (slash, `[[`,
  * `@`, paste-as, block / colour menus) and actually on screen — never to some
@@ -260,7 +262,14 @@ export const EditorKeys = Extension.create({
       },
       "Mod-k": () => {
         const { selection } = editor.state;
-        if (!(selection instanceof TextSelection) || selection.empty || !decorating(editor) || !editor.schema.marks.link) return false; // → quick find
+        const linkType = editor.schema.marks.link;
+        // The caret inside a link: move into its card (Open / Edit / Remove). Tab walks on, Esc comes back.
+        if (linkType && selection instanceof TextSelection && selection.empty && editor.isEditable
+          && (linkType.isInSet(selection.$from.marks()) || (selection.$from.nodeAfter && linkType.isInSet(selection.$from.nodeAfter.marks)))) {
+          editor.view.dom.dispatchEvent(new CustomEvent(LINK_CARD_FOCUS_EVENT));
+          return true;
+        }
+        if (!(selection instanceof TextSelection) || selection.empty || !decorating(editor) || !linkType) return false; // → quick find
         editor.view.dom.dispatchEvent(new CustomEvent(EDIT_LINK_EVENT));
         return true;
       },

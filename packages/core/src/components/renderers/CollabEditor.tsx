@@ -33,6 +33,7 @@ import { SearchHighlight } from "../../lib/tiptap/SearchHighlight";
 import { UrlPaste, type UrlPasteState, type Unfurler } from "../../lib/tiptap/UrlPaste";
 import { EditorFindBar } from "./EditorFindBar";
 import { PasteUrlMenu } from "./PasteUrlMenu";
+import { LinkCard } from "./LinkCard";
 import { DatabaseInsert, type DatabaseInsertRequest } from "../../lib/tiptap/databaseView";
 import { InsertDatabaseDialog } from "./InsertDatabaseDialog";
 import { HumanSuggestionComposer, type ComposerKind, type HumanCommandChannel } from "./HumanSuggestionComposer";
@@ -449,6 +450,8 @@ export function CollabEditor({
         <SlashMenu editor={editor} state={slash} onClose={() => setSlash(null)} />
       )}
 
+      {/* Link card: address + Open / Edit / Remove for the link under the pointer or caret */}
+      {editor && <LinkCard editor={editor} />}
       {/* "Paste as" menu after a bare URL paste */}
       {editor && pasteState && editable && !commentOnly && !suggesting && (
         <PasteUrlMenu editor={editor} state={pasteState} unfurl={unfurl ? (url) => unfurlRef.current!(url) : undefined} onClose={() => setPasteState(null)} />
