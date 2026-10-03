@@ -39,6 +39,10 @@ const controls = {
   revision: 1,
   reads: [] as string[],
   actor: "owner@example.test",
+  signedOut: false,
+  /** Pages this account can no longer see (absent from the tree, 403 on read). */
+  hidden: [] as string[],
+  refreshMe: () => fetchMe(),
   /** Another device/agent changed the page on the server. */
   serverEdit: (id: string, content: string) => { const n = notes.find((x) => x.id === id)!; n.content = content; n.updatedAt = bump(); },
   note: (id: string) => notes.find((x) => x.id === id),
@@ -54,13 +58,14 @@ window.fetch = async (input, init) => {
   const path = url.pathname;
   const method = init?.method ?? "GET";
   if (!navigator.onLine && (path.startsWith("/api/") || path.startsWith("/auth/"))) throw new TypeError("Failed to fetch");
+  if (path === "/auth/me" && controls.signedOut) return Response.json({ authenticated: false });
   if (path === "/auth/me") return Response.json({ authenticated: true, email: controls.actor, name: "You", isOwner: true, vaultId: "primary", workspace: { id: "default", name: "Personal workspace" } });
   if (path === "/api/me/preferences") {
     if (method === "PUT") { const body = JSON.parse(String(init?.body)); controls.preferences = { ...controls.preferences, ...body.preferences }; controls.revision++; }
     const items = Object.fromEntries(notes.map((n) => [n.id, { path: n.path, title: n.path!.split("/").pop()!, tags: n.tags ?? [], type: n.metadata?.type as string | undefined }]));
     return Response.json({ preferences: { version: 1, favorites: controls.preferences.favorites, recents: controls.preferences.recents, sidebar: { order: [], collapsed: [] } }, revision: controls.revision, items });
   }
-  if (path === "/api/tree") return Response.json(notes.map((n) => ({ id: n.id, path: n.path, tags: n.tags, updatedAt: n.updatedAt, type: n.metadata?.type, prismType: n.metadata?.prism_type })));
+  if (path === "/api/tree") return Response.json(notes.filter((n) => !controls.hidden.includes(n.id)).map((n) => ({ id: n.id, path: n.path, tags: n.tags, updatedAt: n.updatedAt, type: n.metadata?.type, prismType: n.metadata?.prism_type })));
   if (path === "/api/search") {
     controls.searches.push(url.search);
     const q = url.searchParams.get("q") ?? "";
@@ -101,6 +106,7 @@ window.fetch = async (input, init) => {
   if (noteId) {
     const note = notes.find((n) => n.id === decodeURIComponent(noteId));
     if (!note) return Response.json({ error: "not_found" }, { status: 404 });
+    if (controls.hidden.includes(note.id)) return Response.json({ error: "forbidden" }, { status: 403 });
     if (method === "GET") controls.reads.push(note.id);
     if (method === "DELETE") { controls.writes.push({ method, path, body: null }); notes.splice(notes.indexOf(note), 1); return Response.json({ ok: true }); }
     if (method === "PATCH") {
