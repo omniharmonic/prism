@@ -40,7 +40,7 @@ import type { NoteRef } from "./permissions";
 import { rowRef, subscribeTreeChanges, treeRowChanged, type TreeChange } from "./tree";
 
 /** `tree: true` = this viewer's sidebar row for the note changed (created, removed,
- *  appeared / disappeared for them, or path / tags / type / icon / order / trash
+ *  appeared / disappeared for them, or path / tags / type / icon / title / aliases / order / trash
  *  state changed). Absent on a plain content edit. Still ids only. */
 export type InvalidationEvent = { type: "note"; id: string; op: "upsert" | "remove"; tree?: true } | { type: "resync" };
 

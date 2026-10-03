@@ -40,6 +40,10 @@ export const TREE_META_KEYS = [
   "prism_visibility",
   // The page's emoji (NP-PG-01): shown in the sidebar, tabs, breadcrumbs, favorites.
   "icon",
+  // What `[[` / `@` suggestions match besides the path name (a page is often known by
+  // a title or an alias that differs from its file name).
+  "title",
+  "aliases",
   // Pages (nested pages / trash): sibling order is emitted; trash state is internal
   // (trashed rows are never in the tree — GET /api/trash reads them from here).
   ORDER_KEY,
@@ -62,6 +66,10 @@ export interface TreeEntry {
   order?: number;
   /** `metadata.icon`: the page's emoji (a short string; anything longer is not an icon and is dropped). */
   icon?: string;
+  /** `metadata.title` (≤ 200 chars, else dropped): what page suggestions match besides the path name. */
+  title?: string;
+  /** `metadata.aliases`: up to 10 non-blank strings of ≤ 100 chars each (other entries are dropped). */
+  aliases?: string[];
 }
 
 /** Internal row: the entry plus what the private-note rule needs (never emitted). */
@@ -172,6 +180,21 @@ const log = (msg: string) => {
 
 /** An emoji (incl. ZWJ sequences) is well under this; a longer value is not sent to every tree reader. */
 const ICON_MAX = 32;
+/** Bounds for the two matching fields: the tree goes to every reader, so neither may grow without limit. */
+const TITLE_MAX = 200;
+const ALIAS_MAX = 100;
+const ALIASES_MAX = 10;
+
+function aliasesOf(v: unknown): string[] | undefined {
+  if (!Array.isArray(v)) return undefined;
+  const out: string[] = [];
+  for (const a of v) {
+    if (typeof a !== "string" || a.length > ALIAS_MAX || a.trim() === "") continue;
+    out.push(a);
+    if (out.length === ALIASES_MAX) break;
+  }
+  return out.length ? out : undefined;
+}
 
 function rowFromNote(n: unknown): TreeRow | null {
   if (!n || typeof n !== "object") return null;
@@ -191,6 +214,9 @@ function rowFromNote(n: unknown): TreeRow | null {
   const order = m[ORDER_KEY];
   if (typeof order === "number" && Number.isFinite(order)) row.order = order;
   if (typeof m.icon === "string" && m.icon !== "" && m.icon.length <= ICON_MAX) row.icon = m.icon;
+  if (typeof m.title === "string" && m.title.trim() !== "" && m.title.length <= TITLE_MAX) row.title = m.title;
+  const aliases = aliasesOf(m.aliases);
+  if (aliases) row.aliases = aliases;
   if (typeof m[TRASH_META.at] === "string") row.trashedAt = m[TRASH_META.at] as string;
   if (typeof m[TRASH_META.by] === "string") row.trashedBy = m[TRASH_META.by] as string;
   if (typeof m[TRASH_META.root] === "string") row.trashedRoot = m[TRASH_META.root] as string;
@@ -208,7 +234,7 @@ export const rowRef = (r: TreeRow): NoteRef => ({ id: r.id, tags: r.tags, creato
  */
 export function treeRowChanged(prev: TreeRow | undefined, row: TreeRow): boolean {
   if (!prev) return true;
-  const shape = (r: TreeRow) => JSON.stringify([r.path, [...r.tags].sort(), r.type ?? null, r.prismType ?? null, r.order ?? null, r.icon ?? null, !!r.trashedAt]);
+  const shape = (r: TreeRow) => JSON.stringify([r.path, [...r.tags].sort(), r.type ?? null, r.prismType ?? null, r.order ?? null, r.icon ?? null, r.title ?? null, r.aliases ?? null, !!r.trashedAt]);
   return shape(prev) !== shape(row);
 }
 
@@ -218,6 +244,8 @@ function emit(r: TreeRow): TreeEntry {
   if (r.prismType !== undefined) e.prismType = r.prismType;
   if (r.order !== undefined) e.order = r.order;
   if (r.icon !== undefined) e.icon = r.icon;
+  if (r.title !== undefined) e.title = r.title;
+  if (r.aliases !== undefined) e.aliases = r.aliases;
   return e;
 }
 

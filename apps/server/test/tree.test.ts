@@ -81,6 +81,44 @@ test("page icon (NP-PG-01): a short emoji is emitted and follows a metadata writ
   assert.equal(body.find((e) => e.id === "c")?.icon, "📌");
 });
 
+test("title + aliases (wikilink/mention matching): emitted only when present and within bounds, follow a write, change the ETag, never for an unviewable note", async () => {
+  fv.put({ id: "a", path: "docs/q3-plan.md", content: "", tags: ["doc"], metadata: { title: "Quarterly Roadmap", aliases: ["Q3", "  ", 7, "x".repeat(101), "roadmap"] } });
+  fv.put({ id: "b", path: "b.md", content: "", tags: [], metadata: { title: "t".repeat(201), aliases: "not-a-list" } });
+  fv.put({ id: "c", path: "c.md", content: "", tags: [], metadata: { title: "", aliases: Array.from({ length: 14 }, (_, i) => `alias ${i}`) } });
+  fv.put({ id: "d", path: "d.md", content: "", tags: ["secret"], metadata: { title: "Hidden Title", aliases: ["hidden-alias"] } });
+  const r1 = await ownerReq("/tree");
+  let body = await tree(r1);
+  const a = body.find((e) => e.id === "a")!;
+  assert.equal(a.title, "Quarterly Roadmap");
+  assert.deepEqual(a.aliases, ["Q3", "roadmap"]); // blank, non-string and over-long entries dropped
+  const b = body.find((e) => e.id === "b")!;
+  assert.ok(!("title" in b) && !("aliases" in b));
+  const c = body.find((e) => e.id === "c")!;
+  assert.ok(!("title" in c));
+  assert.equal((c.aliases as string[]).length, 10);
+  const search = decodeURIComponent(listCalls()[0]!.search);
+  assert.ok(/[=,]title(,|&|$)/.test(search) && /[=,]aliases(,|&|$)/.test(search), search);
+
+  // A title / alias write goes through to the projection and changes the ETag.
+  const etag = r1.headers.get("etag")!;
+  const w = await ownerReq("/notes/b", { method: "PATCH", body: JSON.stringify({ metadata: { title: "Budget", aliases: ["money"] }, force: true }) });
+  assert.equal(w.status, 200);
+  await tick();
+  const r2 = await ownerReq("/tree", { headers: { "If-None-Match": etag } });
+  assert.equal(r2.status, 200);
+  assert.notEqual(r2.headers.get("etag"), etag);
+  body = await tree(r2);
+  assert.equal(body.find((e) => e.id === "b")?.title, "Budget");
+  assert.deepEqual(body.find((e) => e.id === "b")?.aliases, ["money"]);
+
+  // A member who can view only `doc` notes gets a's title and nothing of d.
+  grantUser("m@test.local", "tag", "doc", "view");
+  const rm = await req("/tree", { cookie: sessionCookie(makeSession("m@test.local")) });
+  const text = await rm.text();
+  assert.ok(text.includes("Quarterly Roadmap"));
+  assert.ok(!text.includes("Hidden Title") && !text.includes("hidden-alias"));
+});
+
 test("ETag: If-None-Match gives 304; a change gives a new tag and 200", async () => {
   fv.put({ id: "a", path: "a.md", content: "", tags: [] });
   const r1 = await ownerReq("/tree");

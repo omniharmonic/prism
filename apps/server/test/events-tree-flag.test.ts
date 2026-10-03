@@ -22,13 +22,15 @@ test("a content edit (only updatedAt moved) is not a tree change", () => {
 test("created, removed, and every emitted row field mark the tree", () => {
   assert.deepEqual(eventFor({ kind: "upsert", row: row(), prev: undefined }, all), { type: "note", id: "n1", op: "upsert", tree: true });
   assert.deepEqual(eventFor({ kind: "remove", id: "n1", prev: row() }, all), { type: "note", id: "n1", op: "remove", tree: true });
-  const changes: Array<Partial<TreeRow>> = [{ path: "docs/renamed" }, { tags: ["doc", "x"] }, { tags: [] }, { type: "code" }, { prismType: "database" }, { icon: "🌱" }, { order: 5 }, { trashedAt: "2026-06-02T00:00:00Z" }];
+  const changes: Array<Partial<TreeRow>> = [{ path: "docs/renamed" }, { tags: ["doc", "x"] }, { tags: [] }, { type: "code" }, { prismType: "database" }, { icon: "🌱" }, { title: "Roadmap" }, { aliases: ["Q3"] }, { order: 5 }, { trashedAt: "2026-06-02T00:00:00Z" }];
   for (const change of changes) {
     assert.equal(treeRowChanged(row(), row(change)), true, JSON.stringify(change));
     assert.deepEqual(eventFor({ kind: "upsert", row: row(change), prev: row() }, all), { type: "note", id: "n1", op: "upsert", tree: true });
   }
   // Tag ORDER is not a change; internal keys that are never emitted are not either.
   assert.equal(treeRowChanged(row({ tags: ["a", "b"] }), row({ tags: ["b", "a"] })), false);
+  assert.equal(treeRowChanged(row({ aliases: ["a", "b"] }), row({ aliases: ["a", "b"] })), false);
+  assert.equal(treeRowChanged(row({ aliases: ["a", "b"] }), row({ aliases: ["a"] })), true);
   assert.equal(treeRowChanged(row(), row({ trashedBy: "someone@x" } as Partial<TreeRow>)), false);
 });
 

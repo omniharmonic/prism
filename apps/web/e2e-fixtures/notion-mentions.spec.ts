@@ -311,3 +311,31 @@ test("@ menu lists workspace members without a person page; the chip stores an o
   await page.waitForTimeout(600);
   await expect(page.getByText("Open profile")).toHaveCount(0);
 });
+
+test("live document: [[ and @ find a page by its title and by an alias, not only by its file name", async ({ page }) => {
+  const editor = await openEditor(page, "?live");
+  await expect(editor).toContainText("Notes for the review.");
+
+  // [[ + title
+  await typeAtEnd(page, editor, "[[Quarterly");
+  const links = page.getByRole("listbox").filter({ hasText: "Quarterly Roadmap" });
+  await expect(links.getByRole("option", { name: /Quarterly Roadmap/ })).toBeVisible();
+  await page.keyboard.press("Escape");
+  // [[ + alias
+  await typeAtEnd(page, editor, "[[North St");
+  await expect(page.getByRole("listbox").getByRole("option", { name: /Quarterly Roadmap/ })).toBeVisible();
+  await page.keyboard.press("Escape");
+  // [[ + file name still works
+  await typeAtEnd(page, editor, "[[q3-pl");
+  await expect(page.getByRole("listbox").getByRole("option", { name: /Quarterly Roadmap/ })).toBeVisible();
+  await page.keyboard.press("Escape");
+
+  // @ + title, @ + alias
+  await typeAtEnd(page, editor, "@Quarterly");
+  await expect(page.getByRole("listbox").getByRole("option", { name: /Quarterly Roadmap/ })).toBeVisible();
+  await page.keyboard.press("Escape");
+  await typeAtEnd(page, editor, "@North St");
+  await page.getByRole("listbox").getByRole("option", { name: /Quarterly Roadmap/ }).click();
+  // The chip resolves the page (by its id) to its title.
+  await expect(editor.getByRole("link", { name: "Page: Quarterly Roadmap" })).toBeVisible();
+});
