@@ -31,7 +31,8 @@ export type NotificationType =
   | "access_granted"
   | "access_denied"
   | "suggestion_accepted"
-  | "suggestion_rejected";
+  | "suggestion_rejected"
+  | "suggestion_resolved";
 
 export interface NotificationItem {
   id: string;

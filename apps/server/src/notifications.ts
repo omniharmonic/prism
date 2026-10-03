@@ -44,7 +44,7 @@ import { documentActorId } from "./human-collab";
 import { writerIdFor } from "./writer-stamp";
 import { personNotesForEmail } from "./my-tasks";
 import { onAccessChanged } from "./access-events";
-import { docNameFor, federationTarget, identifiedSuggestionsInHtml, isDocLive, markReconciled, setDocumentStoreListener, type DocumentStoredEvent } from "./collab";
+import { docNameFor, federationTarget, identifiedSuggestionsInHtml, plainTextOfHtml, isDocLive, markReconciled, setDocumentStoreListener, type DocumentStoredEvent } from "./collab";
 
 // ── schema ───────────────────────────────────────────────────────────────────
 db.exec(`
@@ -140,20 +140,21 @@ export type NotificationType =
   | "access_granted"
   | "access_denied"
   | "suggestion_accepted"
-  | "suggestion_rejected";
-const TYPES: readonly NotificationType[] = ["mention", "comment_reply", "comment_mention", "reminder", "share", "access_request", "access_granted", "access_denied", "suggestion_accepted", "suggestion_rejected"];
+  | "suggestion_rejected"
+  | "suggestion_resolved";
+const TYPES: readonly NotificationType[] = ["mention", "comment_reply", "comment_mention", "reminder", "share", "access_request", "access_granted", "access_denied", "suggestion_accepted", "suggestion_rejected", "suggestion_resolved"];
 export const isNotificationType = (t: unknown): t is NotificationType => typeof t === "string" && (TYPES as readonly string[]).includes(t);
 /** Filter groups the inbox offers (also accepts an exact type). */
 export const TYPE_GROUPS: Record<string, NotificationType[]> = {
   mention: ["mention", "comment_mention"],
-  comment: ["comment_reply", "comment_mention", "suggestion_accepted", "suggestion_rejected"],
+  comment: ["comment_reply", "comment_mention", "suggestion_accepted", "suggestion_rejected", "suggestion_resolved"],
   reminder: ["reminder"],
   access: ["access_request", "access_granted", "access_denied", "share"],
 };
 
 export type Category = "mention" | "comment" | "reminder" | "access";
 const categoryOf = (t: NotificationType): Category =>
-  t === "mention" || t === "comment_mention" ? "mention" : t === "comment_reply" || t === "suggestion_accepted" || t === "suggestion_rejected" ? "comment" : t === "reminder" ? "reminder" : "access";
+  t === "mention" || t === "comment_mention" ? "mention" : t === "comment_reply" || t === "suggestion_accepted" || t === "suggestion_rejected" || t === "suggestion_resolved" ? "comment" : t === "reminder" ? "reminder" : "access";
 
 export interface Anchor {
   mention?: string;
@@ -480,7 +481,7 @@ export interface NewNotification {
 // hourly budget only ever skips the PUSH, never the inbox item.
 const PER_SENDER_HOUR = Number(process.env.NOTIFY_PER_SENDER_HOUR ?? 20);
 const PER_SENDER_NOTE_HOUR = Number(process.env.NOTIFY_PER_SENDER_NOTE_HOUR ?? 8);
-const SPAMMABLE: ReadonlySet<NotificationType> = new Set(["mention", "comment_reply", "comment_mention", "suggestion_accepted", "suggestion_rejected"]);
+const SPAMMABLE: ReadonlySet<NotificationType> = new Set(["mention", "comment_reply", "comment_mention", "suggestion_accepted", "suggestion_rejected", "suggestion_resolved"]);
 const budgets = new Map<string, { n: number; reset: number }>();
 function budgetLeft(key: string, max: number): boolean {
   const b = budgets.get(key);
@@ -931,7 +932,28 @@ export async function commentsStored(docName: string, vaultId: string, noteId: s
 
 // ── suggestions resolved (wave 3) ────────────────────────────────────────────
 const SUGGESTION_NOTICES_PER_STORE = 20;
-const plainOf = (html: string) => html.replace(/<[^>]*>/g, "");
+const SUGGESTION_MIN_CHARS = 4;
+const occurrences = (hay: string, needle: string): number => {
+  let n = 0;
+  for (let i = hay.indexOf(needle); i >= 0 && n < 3; i = hay.indexOf(needle, i + needle.length)) n++;
+  return n;
+};
+/**
+ * Was a resolved suggestion accepted or declined? Read from the DECODED text of
+ * the parsed documents (review M2 — entity-encoded HTML never matches mark text),
+ * and only when the evidence is unambiguous: the text is at least 4 characters,
+ * occurs exactly once in the previous document (the suggestion itself), and — for
+ * a replacement — both halves agree. Anything else is "resolved", never a guess.
+ */
+export function suggestionOutcome(s: { ins: string; del: string }, prevPlain: string, nextPlain: string): "accepted" | "rejected" | "resolved" {
+  const usable = (t: string) => t.trim().length >= SUGGESTION_MIN_CHARS && !t.includes("\n") && occurrences(prevPlain, t) === 1;
+  // Inserted text: still there → accepted; gone → declined.
+  const byIns = s.ins && usable(s.ins) ? (nextPlain.includes(s.ins) ? "accepted" : "rejected") : null;
+  // Deleted text: gone → accepted; still there → declined.
+  const byDel = s.del && usable(s.del) ? (nextPlain.includes(s.del) ? "rejected" : "accepted") : null;
+  if (s.ins && s.del) return byIns && byDel && byIns === byDel ? byIns : "resolved";
+  return (s.ins ? byIns : byDel) ?? "resolved";
+}
 /**
  * "X accepted / declined your suggestion". Runs after a document is persisted
  * (live store) or after the review queue applied a decision: a suggestion id
@@ -967,14 +989,21 @@ export async function suggestionsResolved(o: { vaultId: string; noteId: string; 
   const info = await noteInfo(o.vaultId, o.noteId, { fresh: true });
   if (!info || info.trashed) return 0;
   const decider = editors.size === 1 ? [...editors][0]! : null;
-  const plain = plainOf(o.next);
+  let prevPlain: string;
+  let nextPlain: string;
+  try {
+    prevPlain = plainTextOfHtml(o.prev);
+    nextPlain = plainTextOfHtml(o.next);
+  } catch {
+    return 0;
+  }
   let sent = 0;
   for (const [id, s] of gone.slice(0, SUGGESTION_NOTICES_PER_STORE)) {
     const suggester = s.actorId ? emailForActorId(s.actorId)?.toLowerCase() ?? null : null;
     if (!suggester || editors.has(suggester) || !isAccount(suggester) || !userCanView(suggester, o.vaultId, info)) continue;
-    const accepted = s.ins ? plain.includes(s.ins) : !!s.del && !plain.includes(s.del);
+    const outcome = suggestionOutcome(s, prevPlain, nextPlain);
     const preview = (s.ins || s.del).replace(/\s+/g, " ").trim().slice(0, PREVIEW_MAX) || null;
-    if (createNotification({ vaultId: o.vaultId, recipient: suggester, type: accepted ? "suggestion_accepted" : "suggestion_rejected", noteId: o.noteId, actorEmail: decider, preview, dedupe: `suggestion:${o.noteId}:${id}` })) sent++;
+    if (createNotification({ vaultId: o.vaultId, recipient: suggester, type: outcome === "accepted" ? "suggestion_accepted" : outcome === "rejected" ? "suggestion_rejected" : "suggestion_resolved", noteId: o.noteId, actorEmail: decider, preview, dedupe: `suggestion:${o.noteId}:${id}` })) sent++;
   }
   return sent;
 }

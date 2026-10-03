@@ -128,3 +128,11 @@ export function identifiedSuggestions(node: PmNode, out = new Map<string, Identi
   for (const child of node.content ?? []) identifiedSuggestions(child, out);
   return out;
 }
+
+/** A document's text as readers see it (decoded; one line per block). */
+export function plainTextOf(node: PmNode, out: string[] = [], top = true): string {
+  if (typeof node.text === "string") out.push(node.text);
+  for (const child of node.content ?? []) plainTextOf(child, out, false);
+  if (!top && node.content && node.type !== "text") out.push("\n");
+  return top ? out.join("") : "";
+}

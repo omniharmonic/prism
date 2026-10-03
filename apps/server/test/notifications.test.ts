@@ -600,3 +600,31 @@ test("an account mention notifies that member (view re-checked), adds no link, a
   r = await noteContentStored({ vaultId: "primary", noteId: "doc", prev: "<p>x</p>", next: `<p>${chip("person", writerIdFor(BOB), "m5")}</p>`, authors: [BOB], updatedAt: null });
   assert.equal(r.notified, 0);
 });
+
+// ── review M2: accepted vs declined is read from DECODED text, and never guessed ──
+test("M2: entity-encoded text is still recognised as accepted; ambiguous text gets a neutral notification", async () => {
+  const ada = documentActorId(`user:${ADA}`);
+  // Accepted insertion whose text needs HTML escaping.
+  let prev = `<p>Our ${sug("insert", "e1", ada, "R&amp;D plan &lt;v2&gt;")} is ready.</p>`;
+  assert.equal(await suggestionsResolved({ vaultId: "primary", noteId: "doc", prev, next: "<p>Our R&amp;D plan &lt;v2&gt; is ready.</p>", editors: [BOB] }), 1);
+  // Declined insertion of a word that exists elsewhere on the page: we cannot tell → neutral.
+  prev = `<p>Read the notes ${sug("insert", "e2", ada, "the")} carefully, then the plan.</p>`;
+  assert.equal(await suggestionsResolved({ vaultId: "primary", noteId: "doc", prev, next: "<p>Read the notes carefully, then the plan.</p>", editors: [BOB] }), 1);
+  // A short insertion (too little to match on) → neutral, even when unique.
+  prev = `<p>Alpha ${sug("insert", "e3", ada, "zq")} beta</p>`;
+  assert.equal(await suggestionsResolved({ vaultId: "primary", noteId: "doc", prev, next: "<p>Alpha beta</p>", editors: [BOB] }), 1);
+  // A unique, long-enough declined insertion is still "declined"; an accepted deletion is "accepted".
+  prev = `<p>Keep ${sug("insert", "e4", ada, "this sentence out")} and ${sug("delete", "e5", ada, "remove these words")} here.</p>`;
+  assert.equal(await suggestionsResolved({ vaultId: "primary", noteId: "doc", prev, next: "<p>Keep  and  here.</p>", editors: [BOB] }), 2);
+  // A replacement whose two halves disagree (new text gone AND old text gone) → neutral.
+  prev = `<p>${sug("delete", "e6", ada, "old wording here")}${sug("insert", "e6", ada, "new wording here")}</p>`;
+  assert.equal(await suggestionsResolved({ vaultId: "primary", noteId: "doc", prev, next: "<p>rewritten entirely</p>", editors: [BOB] }), 1);
+  const byPreview = new Map((await inbox(ADA)).items.map((i) => [String(i.preview), String(i.type)]));
+  assert.equal(byPreview.get("R&D plan <v2>"), "suggestion_accepted");
+  assert.equal(byPreview.get("the"), "suggestion_resolved");
+  assert.equal(byPreview.get("zq"), "suggestion_resolved");
+  assert.equal(byPreview.get("this sentence out"), "suggestion_rejected");
+  assert.equal(byPreview.get("remove these words"), "suggestion_accepted");
+  assert.equal(byPreview.get("new wording here"), "suggestion_resolved");
+  assert.equal((await inbox(ADA, "?type=comment")).items.length, 6);
+});

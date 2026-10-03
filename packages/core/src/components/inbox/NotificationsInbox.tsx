@@ -47,6 +47,7 @@ function sentence(n: NotificationItem): { who: string | null; text: string; page
     case "access_denied": return { who: null, text: "Your access request was declined:", page };
     case "suggestion_accepted": return { who, text: "accepted your suggestion on", page };
     case "suggestion_rejected": return { who, text: "declined your suggestion on", page };
+    case "suggestion_resolved": return { who, text: "resolved your suggestion on", page };
     default: return { who, text: "updated", page };
   }
 }
