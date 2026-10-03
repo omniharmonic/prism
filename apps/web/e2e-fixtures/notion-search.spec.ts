@@ -120,7 +120,9 @@ test("back/forward restores scroll", async ({ page }) => {
   });
   const main = page.locator("#workspace-document .document-writing-scroll");
   await expect(page.locator(".tiptap")).toContainText("Agenda line 120");
-  await main.evaluate((node) => { node.scrollTop = 900; });
+  // A scroll position is remembered from the scroll EVENT, which the browser sends a frame after
+  // the scroll: leave the page only once it has been delivered (a person cannot be faster than that).
+  await main.evaluate((node) => new Promise<void>((resolve) => { node.addEventListener("scroll", () => resolve(), { once: true }); node.scrollTop = 900; }));
   await expect.poll(() => main.evaluate((node) => node.scrollTop)).toBe(900);
   await page.evaluate(() => (window as any).prismShellUI.getState().openTab("field-notes", "Field notes", "document"));
   await expect(page.locator(".tiptap")).toContainText("workshop budget");
