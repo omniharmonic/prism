@@ -29,6 +29,7 @@ import { peopleApi } from "./people";
 import { humanCollabApi } from "./human-collab";
 import { transcriptsApi } from "./transcripts";
 import { databasesApi } from "./databases";
+import { stampJsonBody, stampMetadata } from "../writer-stamp";
 import { graphNeighborhood } from "../graph";
 import { buildWikilinkIndex, resolveWikilink, noteLinkTitle } from "@prism/core/wikilinks";
 import { isTrashed, isLocked, isOwnerOnlyMeta, TRASH_TAG, TRASH_META, LOCK_KEY, ORDER_KEY } from "@prism/core/pages";
@@ -92,6 +93,8 @@ async function proxyToVault(c: Context) {
   if (method !== "GET" && method !== "HEAD") {
     headers["Content-Type"] = "application/json";
     init.body = await c.req.text();
+    // Writer stamp (`prism_last_writer`, ../writer-stamp.ts) on single-note creates/edits.
+    if ((method === "POST" && path === "/notes") || (method === "PATCH" && /^\/notes\/[^/]+$/.test(path))) init.body = stampJsonBody(init.body as string, resolveActor(c));
     // Any write may change what a cached read would return.
     readCache.clear();
     // Owner/admin bypass of a page lock is allowed but audited (one line, no content).
@@ -210,6 +213,7 @@ api.route("/", createPagesApi({ onWrite: () => readCache.clear() }));
 // Their writes bypass the owner proxy: drop cached owner reads afterwards.
 api.use("/properties/*", async (c, next) => { await next(); readCache.clear(); });
 api.use("/schemas/*", async (c, next) => { await next(); if (c.req.method !== "GET") readCache.clear(); });
+api.use("/databases/*", async (c, next) => { await next(); if (c.req.method !== "GET") readCache.clear(); });
 api.route("/", databasesApi);
 
 api.get("/graph/neighborhood", async (c) => {
@@ -513,6 +517,7 @@ api.post("/notes", async (c) => {
   // Narrowing is safe: a non-owner may create a note as private (e.g. a private task).
   const metadata = Object.fromEntries(Object.entries(body.metadata ?? {}).filter(([k, v]) => (k === "prism_visibility" ? v === "private" : !isOwnerOnlyMeta(k) && k !== LOCK_KEY && k !== ORDER_KEY)));
   if (subject) metadata.prism_creator = subject;
+  Object.assign(metadata, stampMetadata(undefined, actor));
   body.tags = (body.tags ?? []).filter((t) => t !== TRASH_TAG);
   try {
     const created = await vaultClient(actor.vaultId).createNote({ ...body, metadata });
@@ -639,7 +644,7 @@ api.patch("/notes/:id", async (c) => {
     if (wantsWrite) {
       updated = await vc.updateNote(id, {
         content: body.content,
-        metadata: body.metadata,
+        metadata: stampMetadata(body.metadata, actor),
         path: canPath ? body.path : undefined,
         ifUpdatedAt: body.if_updated_at ?? note.updatedAt ?? undefined,
       });

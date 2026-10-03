@@ -29,10 +29,20 @@ export interface QueryCondition {
   op: QueryOp;
   value?: unknown;
 }
-export interface QueryFilter {
-  /** `all` = AND, `any` = OR (one level; no nesting). */
+export interface QueryFilterGroup {
   match: "all" | "any";
   conditions: QueryCondition[];
+}
+export interface QueryFilter {
+  /** `all` = AND, `any` = OR — how the top-level conditions AND groups combine. */
+  match: "all" | "any";
+  conditions: QueryCondition[];
+  /**
+   * One level of nested groups ("advanced filter"): each group is its own AND/OR
+   * over flat conditions and counts as ONE term of the top level. Groups never
+   * nest further. Conditions across the top level and every group are ≤ 25.
+   */
+  groups?: QueryFilterGroup[];
 }
 export interface QuerySort {
   key: string;
@@ -50,7 +60,9 @@ export interface QuerySpec {
   /** Metadata keys to return per row (≤ 40; `title` is always returned).
    *  Omitted = each row's whole metadata (no content). */
   fields?: string[];
-  /** Case-insensitive substring over the title. */
+  /** Case-insensitive substring over the title AND the row's text properties
+   *  (string / string[] values of `fields`, or of every non-system key when
+   *  `fields` is omitted). `[[link]]` brackets are ignored. */
   search?: string;
   /** The caller's `Date#getTimezoneOffset()` (minutes, −840…840): `@today` and
    *  date-vs-datetime comparisons use the caller's local day. Default 0 (UTC). */
@@ -101,6 +113,7 @@ export const QUERY_MAX_LIMIT = 500;
 export const QUERY_DEFAULT_LIMIT = 100;
 const MAX_TAGS = 5;
 const MAX_CONDITIONS = 25;
+const MAX_GROUPS = 5;
 const MAX_SORTS = 3;
 const MAX_FIELDS = 40;
 
@@ -130,21 +143,26 @@ export function validateQuerySpec(raw: unknown): { ok: true; spec: QuerySpec } |
     if (!record(f) || (f.match !== "all" && f.match !== "any") || !Array.isArray(f.conditions) || f.conditions.length > MAX_CONDITIONS) {
       return { ok: false, error: `filter must be {match: "all"|"any", conditions: [≤${MAX_CONDITIONS}]}` };
     }
-    const conditions: QueryCondition[] = [];
-    for (const c of f.conditions) {
-      if (!record(c) || !isKey(c.key) || !(QUERY_OPS as readonly string[]).includes(c.op as string)) {
-        return { ok: false, error: "each condition needs a valid key and op" };
+    const parsed = parseConditions(f.conditions);
+    if (typeof parsed === "string") return { ok: false, error: parsed };
+    spec.filter = { match: f.match, conditions: parsed };
+    if (f.groups !== undefined && f.groups !== null) {
+      if (!Array.isArray(f.groups) || f.groups.length > MAX_GROUPS) return { ok: false, error: `filter.groups must be ≤${MAX_GROUPS} groups` };
+      const groups: QueryFilterGroup[] = [];
+      let total = parsed.length;
+      for (const g of f.groups) {
+        // One level only: a group carrying its own `groups` is refused, not ignored.
+        if (!record(g) || (g.match !== "all" && g.match !== "any") || !Array.isArray(g.conditions) || g.groups !== undefined) {
+          return { ok: false, error: "each group must be {match: \"all\"|\"any\", conditions: [...]} (no nesting)" };
+        }
+        const gc = parseConditions(g.conditions);
+        if (typeof gc === "string") return { ok: false, error: gc };
+        total += gc.length;
+        groups.push({ match: g.match, conditions: gc });
       }
-      const op = c.op as QueryOp;
-      const v = c.value;
-      if (op === "in" || op === "nin") {
-        if (!Array.isArray(v) || v.length > 100 || !v.every(scalar)) return { ok: false, error: `${op} needs an array of ≤100 values` };
-      } else if (op !== "exists" && op !== "not_exists") {
-        if (!scalar(v) || (typeof v === "string" && v.length > 500)) return { ok: false, error: `${op} needs a scalar value` };
-      }
-      conditions.push({ key: c.key as string, op, ...(op === "exists" || op === "not_exists" ? {} : { value: v }) });
+      if (total > MAX_CONDITIONS) return { ok: false, error: `a filter holds ≤${MAX_CONDITIONS} conditions in all` };
+      if (groups.length) spec.filter.groups = groups;
     }
-    spec.filter = { match: f.match, conditions };
   }
   if (raw.sort !== undefined && raw.sort !== null) {
     if (!Array.isArray(raw.sort) || raw.sort.length > MAX_SORTS) return { ok: false, error: `sort must be ≤${MAX_SORTS} keys` };
@@ -182,6 +200,30 @@ export function validateQuerySpec(raw: unknown): { ok: true; spec: QuerySpec } |
   return { ok: true, spec };
 }
 
+function parseConditions(raw: unknown[]): QueryCondition[] | string {
+  if (raw.length > MAX_CONDITIONS) return `≤${MAX_CONDITIONS} conditions`;
+  const conditions: QueryCondition[] = [];
+  for (const c of raw) {
+    if (!record(c) || !isKey(c.key) || !(QUERY_OPS as readonly string[]).includes(c.op as string)) {
+      return "each condition needs a valid key and op";
+    }
+    const op = c.op as QueryOp;
+    const v = c.value;
+    if (op === "in" || op === "nin") {
+      if (!Array.isArray(v) || v.length > 100 || !v.every(scalar)) return `${op} needs an array of ≤100 values`;
+    } else if (op !== "exists" && op !== "not_exists") {
+      if (!scalar(v) || (typeof v === "string" && v.length > 500)) return `${op} needs a scalar value`;
+    }
+    conditions.push({ key: c.key as string, op, ...(op === "exists" || op === "not_exists" ? {} : { value: v }) });
+  }
+  return conditions;
+}
+
+/** Every condition of a filter, top level and groups (for lean key lists). */
+export function filterConditions(f: QueryFilter | undefined): QueryCondition[] {
+  return f ? [...f.conditions, ...(f.groups ?? []).flatMap((g) => g.conditions)] : [];
+}
+
 /**
  * Every metadata key the engine must read to evaluate `spec` (for lean listings),
  * or null when `spec.fields` is omitted — then every row carries its whole
@@ -191,7 +233,7 @@ export function metadataKeysFor(spec: QuerySpec): string[] | null {
   if (!spec.fields) return null;
   const keys = new Set<string>(["title"]);
   for (const k of spec.fields ?? []) keys.add(k);
-  for (const c of spec.filter?.conditions ?? []) if (isFieldKey(c.key)) keys.add(c.key);
+  for (const c of filterConditions(spec.filter)) if (isFieldKey(c.key)) keys.add(c.key);
   for (const s of spec.sort ?? []) if (isFieldKey(s.key)) keys.add(s.key);
   return [...keys];
 }
@@ -317,11 +359,39 @@ export function evaluateCondition(n: QueryInput, c: QueryCondition, now = new Da
   }
 }
 
+function matchesGroup(n: QueryInput, g: QueryFilterGroup, now: Date, tzOffset: number): boolean {
+  if (!g.conditions.length) return true;
+  return g.match === "all"
+    ? g.conditions.every((c) => evaluateCondition(n, c, now, tzOffset))
+    : g.conditions.some((c) => evaluateCondition(n, c, now, tzOffset));
+}
+
 export function matchesFilter(n: QueryInput, f: QueryFilter | undefined, now = new Date(), tzOffset = 0): boolean {
-  if (!f || !f.conditions.length) return true;
-  return f.match === "all"
-    ? f.conditions.every((c) => evaluateCondition(n, c, now, tzOffset))
-    : f.conditions.some((c) => evaluateCondition(n, c, now, tzOffset));
+  if (!f) return true;
+  // Empty groups are no-ops (a half-built group in the editor never empties a view).
+  const terms: Array<() => boolean> = [
+    ...f.conditions.map((c) => () => evaluateCondition(n, c, now, tzOffset)),
+    ...(f.groups ?? []).filter((g) => g.conditions.length).map((g) => () => matchesGroup(n, g, now, tzOffset)),
+  ];
+  if (!terms.length) return true;
+  return f.match === "all" ? terms.every((t) => t()) : terms.some((t) => t());
+}
+
+/** Keys never searched: system/permission state (`prism_*`, `gov_*`, `_*`) and presentation keys. */
+const UNSEARCHED = /^(prism_|gov_|_)|^(type|icon|cover|layout|sync|content_font)$/;
+
+/** Title, then text-ish property values of `fields` (or every non-system key). */
+export function matchesSearch(n: QueryInput, needle: string, fields: string[] | undefined): boolean {
+  if (noteTitle(n).toLowerCase().includes(needle)) return true;
+  const meta = n.metadata ?? {};
+  const keys = fields ?? Object.keys(meta);
+  const hit = (v: unknown): boolean => typeof v === "string" && v.length <= 10_000 && norm(v).includes(needle);
+  for (const k of keys) {
+    if (k === "title" || UNSEARCHED.test(k) || !Object.prototype.hasOwnProperty.call(meta, k)) continue;
+    const v = meta[k];
+    if (Array.isArray(v) ? v.slice(0, 200).some(hit) : hit(v)) return true;
+  }
+  return false;
 }
 
 function sortValue(n: QueryInput, key: string): unknown {
@@ -420,7 +490,7 @@ export function runQuery(
     (n) =>
       spec.tags.every((t) => (n.tags ?? []).includes(t)) &&
       matchesFilter(n, spec.filter, now, spec.tzOffset ?? 0) &&
-      (!needle || noteTitle(n).toLowerCase().includes(needle)),
+      (!needle || matchesSearch(n, needle, spec.fields)),
   );
   const sorted = sortRows(matched, spec.sort, spec.tzOffset ?? 0);
   const limit = spec.limit ?? QUERY_DEFAULT_LIMIT;
