@@ -25,9 +25,9 @@ import type {
   SemanticHit,
   NoteVersion,
   NoteVersionPage,
-} from "@prism/core";
-import { VaultRequestError, HistoryUnavailableError, HistoryConflictError, PropertyConflictError, toNoteVersion } from "@prism/core";
-import type { QueryPage, QuerySpec, SchemaMap, SchemaPatch, TagSchema, PropertyWriteResult } from "@prism/core";
+} from "@prism/core/shell";
+import { VaultRequestError, HistoryUnavailableError, HistoryConflictError, PropertyConflictError, toNoteVersion } from "@prism/core/shell";
+import type { QueryPage, QuerySpec, SchemaMap, SchemaPatch, TagSchema, PropertyWriteResult } from "@prism/core/shell";
 import { filtersToParams, type SearchFilters } from "@prism/core/search";
 import type { PropertyBatchItem, PropertyBatchResult, CsvImportRequest, CsvImportResponse, RemoveValuesResult } from "@prism/core/database";
 import { agentScope, apiBase, DEFAULT_VAULT_NAME, capabilityHeader, contextHeaders } from "../config";
@@ -218,6 +218,21 @@ interface TreeRow {
   prismType?: string;
   order?: number;
   icon?: string;
+  title?: string;
+  aliases?: string[];
+}
+
+/** The metadata keys a tree row carries (null when it has none). */
+function treeMetadata(r: TreeRow): Record<string, unknown> | null {
+  const m: Record<string, unknown> = {};
+  if (r.type) m.type = r.type;
+  if (r.prismType) m.prism_type = r.prismType;
+  if (r.order !== undefined) m.prism_order = r.order;
+  if (r.icon) m.icon = r.icon;
+  // What `[[` / `@` page suggestions match besides the path name.
+  if (r.title) m.title = r.title;
+  if (r.aliases?.length) m.aliases = r.aliases;
+  return Object.keys(m).length ? m : null;
 }
 
 /**
@@ -247,8 +262,9 @@ export async function listTree(): Promise<NoteTreeEntry[]> {
       path: r.path,
       tags: r.tags,
       updatedAt: r.updatedAt,
-      // Only the keys the tree reads: type inference, sibling order, the page's emoji.
-      metadata: r.type || r.prismType || r.order !== undefined || r.icon ? { ...(r.type ? { type: r.type } : {}), ...(r.prismType ? { prism_type: r.prismType } : {}), ...(r.order !== undefined ? { prism_order: r.order } : {}), ...(r.icon ? { icon: r.icon } : {}) } : null,
+      // Only the keys the tree reads: type inference, sibling order, the page's emoji,
+      // and the title + aliases page suggestions match.
+      metadata: treeMetadata(r),
     }));
     // Pages created on this device and not yet confirmed are part of the tree:
     // they show in the sidebar and their paths are taken (a second offline

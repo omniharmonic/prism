@@ -1,5 +1,5 @@
 import type { ComponentType } from "react";
-import type { PublicationTheme } from "@prism/core";
+import type { PublicationTheme } from "@prism/core/shell";
 
 /**
  * Shared contract between PublicationView (the data shell) and the publication

@@ -1,4 +1,4 @@
-import { PrismMark } from "@prism/core";
+import { PrismMark } from "@prism/core/shell";
 import { useEffect } from "react";
 import { startNativeSignIn, getHost } from "../transport";
 import { takeSignOutNotice } from "../config";

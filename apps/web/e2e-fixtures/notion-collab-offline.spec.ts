@@ -232,6 +232,26 @@ test("sign-out removes local live-document state; unsynced documents go through 
     expect(await fixture<Stored>("stored")).toEqual(held);
     expect(logouts).toBe(1);
 
+    // 2b. The download holds the document's device state (IndexedDB row and/or rescue entry) —
+    //     read without the editor chunk — and when that state cannot be read, "download"
+    //     must NOT sign out: nothing is purged and the person is told.
+    const exported = await fixture<Array<{ noteId: string; yjsUpdateBase64: string | null; pendingUpdateBase64?: string | null }>>("exportUnsynced");
+    expect(exported.length).toBe(1);
+    expect((exported[0]!.yjsUpdateBase64 ?? "").length + (exported[0]!.pendingUpdateBase64 ?? "").length).toBeGreaterThan(0);
+    await page.evaluate(() => {
+      const w = window as any;
+      w.__messages = [] as string[];
+      window.addEventListener("prism:offline-refused", (e) => w.__messages.push(String((e as CustomEvent).detail?.message)));
+      w.__open = IDBFactory.prototype.open;
+      IDBFactory.prototype.open = function (name: string, version?: number) { if (name === "prism-collab-v3") throw new Error("storage blocked"); return w.__open.call(this, name, version); };
+    });
+    const blocked = await fixture<{ left: boolean; asked: number[] }>("logout", "download");
+    await page.evaluate(() => { IDBFactory.prototype.open = (window as any).__open; });
+    expect(blocked).toEqual({ left: false, asked: [1] });
+    expect(await fixture<Stored>("stored")).toEqual(held);
+    expect(logouts).toBe(1);
+    expect((await page.evaluate(() => (window as any).__messages as string[])).join(" ")).toMatch(/could not be (read|saved)|not signed out/i);
+
     // 3. "Discard" (server unreachable): the body, the rescue entry and the registry all go,
     //    the local sign-out completes, and the next sign-in screen says the server was not reached.
     logoutReachable = false;
@@ -240,6 +260,66 @@ test("sign-out removes local live-document state; unsynced documents go through 
     expect(await fixture<Stored>("stored")).toEqual({ rows: [], rescue: [], registry: [] });
     expect(await page.evaluate(() => sessionStorage.getItem("prism:signout-unreached"))).toBe("1");
     expect(serverText).not.toContain("Never reached the server.");
+  } finally {
+    for (const socket of sockets) socket.close();
+    await server.destroy();
+  }
+});
+
+/** Review: the background push re-checks WHO is signed in right before each document.
+ *  An account change in another tab must never send account A's local edits under B's session. */
+test("an account change right before the background sync sends nothing", async ({ page }) => {
+  let serverText = "";
+  const server = new Server({
+    address: "127.0.0.1", port: 0, quiet: true, debounce: 10,
+    async onAuthenticate() { return { fixture: true }; },
+    async onChange({ document }) { serverText = document.getXmlFragment("default").toString(); },
+  });
+  await server.listen();
+  const sockets: WebSocket[] = [];
+  let up = true;
+  let who = "alice@example.test";
+  try {
+    await page.routeWebSocket(/\/collab(\?|$)/, (route) => {
+      if (!up) { void route.close({ code: 1006 }); return; }
+      const socket = new WebSocket(server.webSocketURL); sockets.push(socket);
+      const pending: (string | Buffer)[] = [];
+      route.onMessage((message) => (socket.readyState === WebSocket.OPEN ? socket.send(message) : pending.push(message)));
+      socket.on("open", () => { for (const message of pending) socket.send(message); });
+      socket.on("message", (message, binary) => { try { route.send(binary ? Buffer.from(message as Buffer) : message.toString()); } catch { /* page moved on */ } });
+      route.onClose(() => socket.close()); socket.on("close", () => { void route.close({ code: 1000 }).catch(() => undefined); });
+    });
+    await page.route("**/auth/me", (route) => route.fulfill({ json: { authenticated: true, email: who, vaultId: "primary", workspace: { id: "workspace-a" } } }));
+    await page.route("**/api/notes/denied-note**", (route) => route.fulfill({ json: { id: "denied-note", path: "Projects/Live page", content: "", _level: "own", metadata: {}, tags: [] } }));
+    await page.route("**/api/federated/**", (route) => route.fulfill({ status: 204 }));
+    const fixture = <T,>(fn: string, ...args: unknown[]) => page.evaluate(([f, a]) => (window as any).prismCollabFixture[f as string](...(a as unknown[])), [fn, args]) as Promise<T>;
+
+    await page.goto("/e2e-fixtures/collab-storage.html?live");
+    const editor = page.locator(".tiptap[contenteditable=true]");
+    await expect(editor).toBeVisible();
+    await expect(page.getByText(/Live · /)).toBeVisible({ timeout: 10000 });
+    up = false;
+    for (const socket of sockets.splice(0)) socket.close();
+    await expect(page.getByText(/Connecting…|Offline/).first()).toBeVisible({ timeout: 10000 });
+    await editor.click();
+    await page.keyboard.type("Alice only.");
+    await expect.poll(async () => (await fixture<unknown[]>("unsynced")).length, { timeout: 10000 }).toBe(1);
+    await expect.poll(async () => (await fixture<string[]>("localTexts")).join("\n"), { timeout: 10000 }).toContain("Alice only.");
+    await page.goto("/e2e-fixtures/collab-storage.html");
+    await expect(page.getByText("Scoped collaborative storage fixture")).toBeVisible();
+
+    // Alice is confirmed; a moment later the session belongs to Bob (another tab signed in).
+    up = true;
+    await fixture("checkAuth");
+    who = "bob@example.test";
+    await fixture("syncUnsynced");
+    await page.waitForTimeout(500);
+    expect(sockets.length).toBe(0);
+    expect(serverText).not.toContain("Alice only.");
+    // Alice's entry and her local state are still on the device for her.
+    const kept = await fixture<{ rows: string[]; registry: string[] }>("stored");
+    expect(kept.registry.length).toBe(1);
+    expect((await fixture<string[]>("localTexts")).join("\n")).toContain("Alice only.");
   } finally {
     for (const socket of sockets) socket.close();
     await server.destroy();

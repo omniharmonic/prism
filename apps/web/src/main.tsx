@@ -1,10 +1,10 @@
 import React from "react";
-import { TranscriptReviewClientProvider } from "@prism/core";
+import { TranscriptReviewClientProvider } from "@prism/core/shell";
 import { httpTranscriptReviewClient } from "./transcript-review";
-import { PublicationPreviewProvider } from "@prism/core";
+import { PublicationPreviewProvider } from "@prism/core/shell";
 const PresentationPreview = React.lazy(() => import("./publish/PresentationPreview"));
 import ReactDOM from "react-dom/client";
-import { App, PushProvider, VaultClientProvider, CollabSharingProvider, CollabDocumentProvider, AccountProvider, PlatformProvider, AgentClientProvider, LiveActionsProvider, HostServicesProvider, InvalidationSourceProvider, initializeSettings, GovernancePanel, useAgentChatStore, useUIStore, AGENT_CHAT_TAB, openAgentChat, listenForInboxOpenRequests, setPendingNotification, type InitialTab } from "@prism/core";
+import { App, PushProvider, VaultClientProvider, CollabSharingProvider, CollabDocumentProvider, AccountProvider, PlatformProvider, AgentClientProvider, LiveActionsProvider, HostServicesProvider, InvalidationSourceProvider, initializeSettings, GovernancePanel, useAgentChatStore, useUIStore, AGENT_CHAT_TAB, openAgentChat, listenForInboxOpenRequests, setPendingNotification, type InitialTab } from "@prism/core/shell";
 import { webAccount } from "./account";
 import { httpVaultClient } from "./parachute/HttpVaultClient";
 import { httpAgentClient } from "./agent/HttpAgentClient";
@@ -12,19 +12,15 @@ import { httpLiveActionsClient } from "./actions/HttpLiveActionsClient";
 import { httpHostServices } from "./host/HttpHostServices";
 import { httpInvalidationSource } from "./events/httpInvalidationSource";
 import { webCollabSharing } from "./collab/grant";
-import { CollabDocument, useLiveCollab } from "./collab/CollabDocument";
+import { CollabDocument, useLiveCollab, preloadCollabEditor, preloadCollabEditorWhenIdle } from "./collab/lazyCollab";
 import { fetchMe, initCapability, isOwner, postLoginTarget, capabilityHeader, contextHeaders } from "./config";
-import { setTransferContextHeaders } from "@prism/core";
+import { setTransferContextHeaders } from "@prism/core/shell";
 import { ReconnectScreen } from "./auth/ReconnectScreen";
 import { LoginScreen as WebLoginScreen } from "./auth/LoginScreen";
 import { NativeSignInScreen, NativeStartupScreen } from "./auth/NativeSignInScreen";
 import { isNative, serverFetch, gatewayOrigin, initializeTransport, getDeviceToken } from "./transport";
 import { RegisterScreen } from "./auth/RegisterScreen";
 import { SetPasswordScreen } from "./auth/SetPasswordScreen";
-import { ShareView } from "./share/ShareView";
-import { PublicationView } from "./publish/PublicationView";
-import { CollabPage } from "./collab/CollabPage";
-import { CommonsLanding } from "./commons/CommonsLanding";
 import { CommonsNav } from "./commons/CommonsNav";
 import { clearLegacyApiCache } from "./offline/readCache";
 import { startOutboxSync } from "./offline/outbox";
@@ -34,34 +30,18 @@ import { webPush } from "./push/webPush";
 import { initAgentDeepLink } from "./push/deeplink";
 import { initNativeExtras } from "./native/extras";
 import { installExternalImageProxy } from "./native/externalImages";
+import { installChunkReloadRecovery } from "./chunkReload";
 
 // Native shell: no password/magic-link form — the host runs the device-token flow.
 const SignInScreen = isNative ? NativeSignInScreen : WebLoginScreen;
 
-// Importing `@prism/core` pulls in the global design system (tokens/glass/
+// Route-level pages and the live editor are import()ed where they are used: nothing on this
+// module's static path may load the block editor (NP-PF-08; `npm run check:initial`).
+
+// Importing `@prism/core/shell` pulls in the global design system (tokens/glass/
 // typography) as a side effect, so the login screen is styled too.
 
-// Self-heal after a deploy: when a lazily-imported chunk fails to load (its
-// hashed filename changed in a new build, so the old one 404s / the SPA fallback
-// hands back index.html), drop the stale service worker + caches and reload once
-// to fetch the fresh build. Guarded so it can never loop.
-window.addEventListener("vite:preloadError", () => {
-  const KEY = "prism:chunk-reload-at";
-  const last = Number(sessionStorage.getItem(KEY) || "0");
-  if (Date.now() - last < 15000) return; // already recovered very recently — don't loop
-  sessionStorage.setItem(KEY, String(Date.now()));
-  void (async () => {
-    try {
-      const regs = (await navigator.serviceWorker?.getRegistrations?.()) ?? [];
-      await Promise.all(regs.map((r) => r.unregister()));
-      const keys = (await caches?.keys?.()) ?? [];
-      await Promise.all(keys.map((k) => caches.delete(k)));
-    } catch {
-      /* best-effort cache bust */
-    }
-    window.location.reload();
-  })();
-});
+installChunkReloadRecovery(); // stale-chunk self-heal after a deploy (never while offline)
 
 export async function start() {
   initializeTransport();
@@ -69,6 +49,10 @@ export async function start() {
   await clearLegacyApiCache();
   initializeSettings();
   const root = ReactDOM.createRoot(document.getElementById("root") as HTMLElement);
+
+  // A page link opens straight into a document: fetch the editor NOW, alongside the
+  // sign-in check and the first data, instead of after the shell has rendered.
+  if (/^\/page\/[^/]/.test(window.location.pathname)) void preloadCollabEditor().catch(() => undefined);
 
   // Capture a ?t= capability token early so every route (incl. /collab) can use
   // it — a share/collab link is the recipient's only credential.
@@ -98,6 +82,7 @@ export async function start() {
   // Public, read-only share route: /share/:id (or /view/:id). No login.
   const share = window.location.pathname.match(/^\/(?:share|view)\/(.+)$/);
   if (share) {
+    const { ShareView } = await import("./share/ShareView");
     root.render(
       <React.StrictMode>
         <ShareView noteId={decodeURIComponent(share[1])} />
@@ -111,6 +96,7 @@ export async function start() {
   // server-side. Must be checked before the session/capability logic below.
   const pub = window.location.pathname.match(/^\/p\/([^/]+)(?:\/notes\/(.+))?$/);
   if (pub) {
+    const { PublicationView } = await import("./publish/PublicationView");
     root.render(
       <React.StrictMode>
         <PublicationView slug={decodeURIComponent(pub[1])} noteId={pub[2] ? decodeURIComponent(pub[2]) : null} />
@@ -126,6 +112,7 @@ export async function start() {
     // CollabCanvas (and the note-card drawer) use the VaultClient seam, so the
     // share route must provide it too — without this the canvas editor throws on
     // mount and the page goes blank (document/code/sheet don't hit the seam).
+    const { CollabPage } = await import("./collab/CollabPage");
     root.render(
       <React.StrictMode>
         <VaultClientProvider client={httpVaultClient}>
@@ -180,6 +167,7 @@ export async function start() {
       );
       return;
     }
+    const { CommonsLanding } = await import("./commons/CommonsLanding");
     root.render(
       <React.StrictMode>
         <CommonsLanding />
@@ -286,6 +274,8 @@ export async function start() {
   }
   // Web Push (WP3.3) is a PWA + server-owner feature; native (APNs) comes with WP5.3.
   const pushClient = !capability && !isNative && isOwner() ? webPush : null;
+  // The editor chunk: fetched in the background so the first document opens without waiting for it.
+  preloadCollabEditorWhenIdle();
   root.render(
     <React.StrictMode>
       <PlatformProvider value="web">

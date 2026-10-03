@@ -11,13 +11,11 @@
  * read-only (suggest/view) socket, a refused schema version or lost access
  * leaves the entry in place (with the reason) for the user to open and resolve.
  */
-import * as Y from "yjs";
-import { HocuspocusProvider } from "@hocuspocus/provider";
-import { COLLAB_SCHEMA_VERSION, reportSyncSource } from "@prism/core";
-import { captureWriteContext, scopeKey, type WriteScope } from "../offline/writeScope";
-import { persistLocalDocument, localDocumentKey, purgeLocalDocuments, purgePendingForScope, exportLocalDocument } from "./localDocument";
-import { collabWsUrl, collabToken, serverFetch } from "../transport";
-import { getCapabilityToken } from "../config";
+import { reportSyncSource } from "@prism/core/shell";
+import { captureWriteContext, sameScope, scopeKey, type WriteScope } from "../offline/writeScope";
+// Storage only (no Yjs): this module is on the app's boot path (the sync badge). The parts that
+// read or push a document's CRDT state are imported when they are needed.
+import { localDocumentKey, purgeLocalDocuments, purgePendingForScope, exportLocalDocumentRaw } from "./localDocumentStore";
 
 export interface UnsyncedDoc { name: string; noteId: string; at: number; blocked?: "read-only" | "update-required" | "denied" }
 const storeKey = (scope: WriteScope) => `prism:collab-unsynced:${scopeKey(scope)}`;
@@ -87,55 +85,20 @@ export async function purgeOtherScopes(current: WriteScope | null): Promise<numb
   const mine = current ? scopeKey(current) : null;
   return purgeLocalDocuments((s) => s !== mine, (s, name) => registeredNames(s).has(name));
 }
-/** The unsynced live documents of `scope`, with their local state, for the leave prompt's download. */
-export async function exportUnsynced(scope: WriteScope): Promise<Array<{ noteId: string; document: string; yjsUpdateBase64: string | null }>> {
-  const out: Array<{ noteId: string; document: string; yjsUpdateBase64: string | null }> = [];
-  for (const entry of Object.values(read(scope))) out.push({ noteId: entry.noteId, document: entry.name, yjsUpdateBase64: await exportLocalDocument(localDocumentKey(scope, entry.name)) });
-  return out;
-}
-
-/** Push one document's local state to the server through a headless provider. */
-async function syncOne(scope: WriteScope, headers: Record<string, string>, entry: UnsyncedDoc): Promise<"synced" | "kept"> {
-  // Fresh authorization first, exactly like opening the document.
-  const response = await serverFetch(`${scope.api}/notes/${encodeURIComponent(entry.noteId)}`, { headers, cache: "no-store" });
-  if ([401, 403, 404, 410].includes(response.status)) { markUnsynced(scope, entry.name, entry.noteId, "denied"); return "kept"; }
-  if (!response.ok) return "kept";
-  const level = ((await response.json()) as { _level?: string })._level ?? "own";
-  // Below edit the server accepts no raw updates (suggest-only enforcement): keep the local state for the user.
-  if (level !== "own" && level !== "edit") { markUnsynced(scope, entry.name, entry.noteId, "read-only"); return "kept"; }
-  const doc = new Y.Doc();
-  let persistence: Awaited<ReturnType<typeof persistLocalDocument>> | undefined;
-  let provider: HocuspocusProvider | undefined;
-  try {
-    persistence = await persistLocalDocument(localDocumentKey(scope, entry.name), doc, () => {});
-    const outcome = await new Promise<"synced" | "kept" | UnsyncedDoc["blocked"]>((resolve) => {
-      const timer = window.setTimeout(() => resolve("kept"), 20_000);
-      const done = (value: "synced" | "kept" | UnsyncedDoc["blocked"]) => { window.clearTimeout(timer); resolve(value); };
-      provider = new HocuspocusProvider({
-        url: `${collabWsUrl()}?schema=${COLLAB_SCHEMA_VERSION}`, name: entry.name, token: collabToken(getCapabilityToken()), document: doc,
-        // `too_complex` / `busy`: the server has no live document to take this state right now —
-        // nothing about the access changed, so the local state is simply kept and tried again later.
-        onAuthenticationFailed: ({ reason }) => done(reason?.startsWith("update_required") ? "update-required" : reason?.startsWith("too_complex") || reason?.startsWith("busy") ? "kept" : "denied"),
-        onSynced: () => {
-          if (provider?.authorizedScope === "readonly") { done("read-only"); return; }
-          // The server has our state once nothing is left unacknowledged.
-          const settle = () => { if ((provider?.unsyncedChanges ?? 0) === 0) done("synced"); };
-          provider?.on("unsyncedChanges", settle);
-          settle();
-        },
-      });
-    });
-    if (outcome === "synced") { clearUnsynced(scope, entry.name); return "synced"; }
-    if (outcome && outcome !== "kept") markUnsynced(scope, entry.name, entry.noteId, outcome);
-    return "kept";
-  } catch {
-    return "kept";
-  } finally {
-    provider?.destroy();
-    await persistence?.flush().catch(() => undefined);
-    persistence?.close();
-    doc.destroy();
+/**
+ * The unsynced live documents of `scope`, with their local state, for the leave prompt's
+ * download: `yjsUpdateBase64` = the stored document (a Yjs update), `pendingUpdateBase64` =
+ * the unload-rescue entry to apply on top of it, when there is one. Read straight from
+ * storage — no editor chunk is needed at sign-out. THROWS if a document's state cannot be
+ * read; the caller keeps the person signed in rather than delete what it could not save.
+ */
+export async function exportUnsynced(scope: WriteScope): Promise<Array<{ noteId: string; document: string; yjsUpdateBase64: string | null; pendingUpdateBase64?: string }>> {
+  const out: Array<{ noteId: string; document: string; yjsUpdateBase64: string | null; pendingUpdateBase64?: string }> = [];
+  for (const entry of Object.values(read(scope))) {
+    const raw = await exportLocalDocumentRaw(localDocumentKey(scope, entry.name));
+    out.push({ noteId: entry.noteId, document: entry.name, yjsUpdateBase64: raw.state, ...(raw.pending ? { pendingUpdateBase64: raw.pending } : {}) });
   }
+  return out;
 }
 
 let running = false;
@@ -144,10 +107,20 @@ export async function syncUnsyncedDocs(): Promise<void> {
   if (running || !navigator.onLine) return;
   running = true;
   try {
-    const context = await captureWriteContext(true);
-    for (const entry of Object.values(read(context.scope))) {
-      if (openHere.has(entry.name) || entry.blocked === "update-required") continue;
+    // Finding out whether anything is waiting may use an identity confirmed a moment ago…
+    const context = await captureWriteContext("recent");
+    const todo = Object.values(read(context.scope)).filter((entry) => !openHere.has(entry.name) && entry.blocked !== "update-required");
+    if (!todo.length) return;
+    // Yjs + the socket provider load only when there is a document to push.
+    const { syncOne } = await import("./unsyncedSync");
+    for (const entry of todo) {
+      if (openHere.has(entry.name)) continue;
       if (!navigator.onLine) break;
+      // …but before EACH document is pushed, the server says who is signed in NOW (like the
+      // outbox before each row): after an account change in another tab, account A's local
+      // edits must never go out under B's session.
+      const current = await captureWriteContext(true);
+      if (!sameScope(context.scope, current.scope)) break;
       await syncOne(context.scope, context.headers, entry).catch(() => "kept");
     }
   } catch {

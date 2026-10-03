@@ -171,6 +171,53 @@ test("⌘↵ opens a result in a new tab; rows show the edited date", async ({ p
 });
 
 /** NP-SR-06 */
+test("⌘K keeps its rows while the next search is in flight; Enter opens the row that is showing", async ({ page }) => {
+  const input = await openPalette(page);
+  const dialog = page.getByRole("dialog", { name: "Search workspace" });
+  const notes = page.getByRole("group", { name: "Notes" });
+  await input.fill("agenda");
+  const row = notes.getByRole("option", { name: /Workshop agenda/ });
+  await expect(row).toBeVisible();
+  await expect(row).toHaveAttribute("aria-selected", "true");
+
+  // The server is slow from here on: the next search does not answer until released.
+  await page.evaluate(() => { (window as any).prismShell.searchHold = true; });
+  const before = await page.evaluate(() => (window as any).prismShell.searches.length as number);
+  await input.pressSequentially(" work");
+  // While typing (debounce) and while the request is in flight, the row never leaves.
+  await expect(row).toBeVisible();
+  await expect.poll(() => page.evaluate(() => (window as any).prismShell.searchWaiting.length as number)).toBeGreaterThan(0);
+  expect(await page.evaluate(() => (window as any).prismShell.searches.length as number)).toBeGreaterThan(before);
+  await expect(dialog).toContainText("Searching…");
+  await expect(row).toBeVisible();
+  await expect(row).toHaveAttribute("aria-selected", "true");
+  await expect(dialog).not.toContainText("No matching notes");
+
+  // Enter in that gap opens the row on screen.
+  await page.keyboard.press("Enter");
+  await expect(dialog).toHaveCount(0);
+  const tabs = page.getByRole("navigation", { name: "Open document tabs" });
+  await expect(tabs.getByRole("button", { name: "Open Workshop agenda", exact: true })).toHaveAttribute("aria-current", "page");
+  await page.evaluate(() => (window as any).prismShell.releaseSearch());
+
+  // When the slow answer arrives it replaces the held rows (here: nothing matches).
+  await page.keyboard.press("ControlOrMeta+k");
+  const again = page.getByRole("combobox", { name: "Search notes and commands" });
+  await again.fill("agenda");
+  await expect(notes.getByRole("option", { name: /Workshop agenda/ })).toBeVisible();
+  await page.evaluate(() => { (window as any).prismShell.searchHold = true; });
+  await again.pressSequentially(" zzzz");
+  await expect.poll(() => page.evaluate(() => (window as any).prismShell.searchWaiting.length as number)).toBeGreaterThan(0);
+  await expect(notes.getByRole("option", { name: /Workshop agenda/ })).toBeVisible();
+  await page.evaluate(() => (window as any).prismShell.releaseSearch());
+  await expect(page.getByRole("option", { name: /Workshop agenda/ })).toHaveCount(0);
+  await expect(dialog).toContainText("No matching notes");
+  // Clearing the field goes back to recents at once — no stale search rows.
+  await again.fill("");
+  await expect(dialog).not.toContainText("No matching notes");
+  await expect(page.getByRole("option", { name: /Library\/Workshop agenda/ })).toHaveCount(0);
+});
+
 test("commands carry icons and shortcut hints; Toggle theme works from the palette and the keyboard", async ({ page }) => {
   const input = await openPalette(page);
   await input.fill("toggle");

@@ -4,7 +4,7 @@
  * active write context (vault, workspace, actor binding), so a cookie session and
  * a native device token both work. Errors are plain messages — never server text.
  */
-import type { AccessPreview, IndexedThread, PageActivity, SharedWithMeListing } from "@prism/core";
+import type { AccessPreview, IndexedThread, PageActivity, SharedWithMeListing } from "@prism/core/shell";
 import { captureWriteContext } from "../offline/writeScope";
 import { serverFetch } from "../transport";
 

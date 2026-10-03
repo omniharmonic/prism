@@ -9,7 +9,7 @@
 // it costs nothing until the reader opens the map view. Clicking a feature
 // navigates to that note's wiki page (same routing as the nav tree).
 import { Suspense, lazy, useMemo, useState } from "react";
-import type { MapFeature } from "@prism/core";
+import type { MapFeature } from "@prism/core/shell";
 import type { PubMapFeature } from "./types";
 
 const CommonsMap = lazy(() => import("@prism/core/map").then((m) => ({ default: m.CommonsMap })));

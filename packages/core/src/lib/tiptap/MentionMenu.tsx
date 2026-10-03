@@ -3,7 +3,7 @@ import type { Editor } from "@tiptap/react";
 import { useQuery } from "@tanstack/react-query";
 import { AtSign, Bell, CalendarDays, FileText, User } from "lucide-react";
 import type { Note } from "../types";
-import { noteLinkTitle } from "../wikilinks";
+import { noteAliases, noteLinkTitle } from "../wikilinks";
 import { useOptionalVaultClient } from "../../data/VaultClientContext";
 import { newMentionUid, type MentionAttrs } from "./MentionNode";
 import { parseDateQuery, type DateCandidate } from "./MentionDates";
@@ -89,7 +89,8 @@ export function MentionMenu({ editor, state, notes }: { editor: Editor | null; s
       for (const m of (members.data ?? []).slice(0, Math.max(0, 6 - out.length))) out.push({ kind: "person", id: m.id, label: m.name, detail: "Workspace member" });
       const pages = notes
         .filter((n) => !(n.tags ?? []).includes("person") && n.id !== noteId)
-        .filter((n) => !q || noteLinkTitle(n).toLowerCase().includes(q))
+        // A page answers to its title, its file name and its aliases.
+        .filter((n) => !q || [noteLinkTitle(n), n.path?.split("/").pop() ?? "", ...noteAliases(n)].some((text) => text.toLowerCase().includes(q)))
         .slice(0, 5);
       for (const n of pages) out.push({ kind: "page", id: n.id, label: noteLinkTitle(n), detail: n.path ?? "" });
     }

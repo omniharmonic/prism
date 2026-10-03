@@ -13,7 +13,7 @@
  *   run 2 s after start, on reconnect, on a pin, when the tab becomes visible
  *   after an hour, and hourly.
  */
-import { setOfflineAvailability, useUIStore, isVaultNoteId } from "@prism/core";
+import { setOfflineAvailability, useUIStore, isVaultNoteId } from "@prism/core/shell";
 import { getNote, treeStamps } from "../parachute/rest";
 import { getPreferences } from "../parachute/pages";
 import { captureWriteContext, scopeKey } from "./writeScope";

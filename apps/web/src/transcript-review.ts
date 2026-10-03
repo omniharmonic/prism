@@ -1,4 +1,4 @@
-import type { TranscriptReviewClient } from "@prism/core";
+import type { TranscriptReviewClient } from "@prism/core/shell";
 import { agentScope } from "./config";
 import { managementRequest } from "./collab/grant";
 export const httpTranscriptReviewClient: TranscriptReviewClient = {

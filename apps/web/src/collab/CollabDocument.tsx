@@ -1,7 +1,7 @@
-import { useMemo } from "react";
-import { type Note, useWikilinkNavigate, useVaultTree } from "@prism/core";
+import { type Note, useWikilinkNavigate } from "@prism/core/shell";
 import { CollabDoc } from "./CollabDoc";
 import { isOwner } from "../config";
+import { useLinkNotes } from "./linkNotes";
 
 /**
  * In-app live collaborative editor (the CollabDocument seam impl). The web/PWA
@@ -14,13 +14,9 @@ export function CollabDocument({ noteId }: { noteId: string; note: Note }) {
   // SUGGEST dropdown surfaces vault note names, so it's owner-only — a signed-in
   // collaborator editing a shared doc gets navigation but no suggestions.
   const navigate = useWikilinkNavigate();
-  // The suggest lists need names and paths only, which the sidebar's tree already holds.
-  // This used to be `useNotes()`: the WHOLE vault with every body (13–16 MB at 15k notes),
-  // fetched on the first document open and again after every list invalidation (NP-PF-01/09).
-  // Trade-off: a page is suggested by its path name; `metadata.title`/`aliases` that differ
-  // from it are not in the tree projection and no longer match here.
-  const { data: tree } = useVaultTree();
-  const notes = useMemo<Note[]>(() => (tree ?? []).map((n) => ({ id: n.id, path: n.path, tags: n.tags, metadata: n.metadata, content: "", createdAt: "", updatedAt: n.updatedAt ?? null })), [tree]);
+  // The suggest lists read the sidebar's tree (names, paths, titles, aliases), never the
+  // whole vault with every body.
+  const notes = useLinkNotes();
   return (
     <CollabDoc
       noteId={noteId}

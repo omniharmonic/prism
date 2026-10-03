@@ -4,7 +4,7 @@ import { isNative, serverFetch, gatewayOrigin } from "../transport";
 import { installExternalImageProxy } from "../native/externalImages";
 import { Suspense, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import type { PublicationPreviewProps } from "@prism/core";
+import type { PublicationPreviewProps } from "@prism/core/shell";
 import { managementRequest } from "../collab/grant";
 import { getTemplate } from "./templates/registry";
 import type {

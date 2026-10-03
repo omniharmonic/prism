@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { isAccessUnavailable } from "../../data/VaultClient";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
@@ -58,6 +58,9 @@ export function useNote(id: string | null) {
 
 }
 
+/** How long the previous answer may stand in while the next search is in flight. */
+const SEARCH_HOLD_MS = 10_000;
+
 /** Ranked retrieval with an explicit keyword fallback and audience-scoped results. */
 export function useVaultSearch(query: string, filters?: SearchFilters) {
   const client = useVaultClient();
@@ -101,10 +104,23 @@ export function useVaultSearch(query: string, filters?: SearchFilters) {
     staleTime: 0,
     retry: false,
   });
-  // A cached snippet is not proof of current access; hide it during revalidation.
-  const visible = text && !result.isFetching && !result.isError ? result.data : undefined;
-  return { ...result, data: visible ? withoutTrashed(visible.notes) : undefined, mode: visible?.mode };
+  // A cached snippet is not proof of current access: an answer from the query cache is
+  // never shown while it is being revalidated. The ONE exception is the answer this very
+  // list was showing a moment ago (same audience, same filters, at most SEARCH_HOLD_MS
+  // old): it stays up while the next answer is on its way, so the list does not blink
+  // empty between keystrokes or during a background refetch (and Enter keeps acting on
+  // the row the person is looking at). An error clears it.
+  const fresh = text && !result.isFetching && !result.isError ? result.data : undefined;
+  const filterKey = active ? JSON.stringify(active) : "";
+  const shown = useRef<{ scope: typeof scope; filterKey: string; at: number; value: NonNullable<typeof fresh> } | null>(null);
+  if (fresh) shown.current = { scope, filterKey, at: Date.now(), value: fresh };
+  else if (!text || result.isError) shown.current = null;
+  const last = shown.current;
+  const held = !fresh && text && result.isFetching && last && last.scope === scope && last.filterKey === filterKey && Date.now() - last.at < SEARCH_HOLD_MS ? last.value : undefined;
+  const visible = fresh ?? held;
+  return { ...result, data: visible ? withoutTrashed(visible.notes) : undefined, mode: visible?.mode, held: !!held };
 }
+
 
 export function useTags() {
   const client = useVaultClient();

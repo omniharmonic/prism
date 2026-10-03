@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent, Suspense, lazy } from "react";
-import { sanitizeHtml, eligiblePublicationNavigation } from "@prism/core";
+import { sanitizeHtml, eligiblePublicationNavigation } from "@prism/core/shell";
 import type { PubNote, PublicationTemplateProps } from "./types";
 import { resolveTheme } from "../theme";
 import { WikiGraph } from "./WikiGraph";

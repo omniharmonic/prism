@@ -12,7 +12,7 @@ import {
   type PagePreferences,
   type PreferencesSnapshot,
   type TrashListing,
-} from "@prism/core";
+} from "@prism/core/shell";
 import { captureWriteContext } from "../offline/writeScope";
 import { serverFetch } from "../transport";
 

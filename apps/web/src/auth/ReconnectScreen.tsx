@@ -1,5 +1,5 @@
 import { useEffect } from "react";
-import { PrismMark } from "@prism/core";
+import { PrismMark } from "@prism/core/shell";
 
 /** Do not turn a failed auth check into a false sign-out or open cached private data. */
 export function ReconnectScreen() {

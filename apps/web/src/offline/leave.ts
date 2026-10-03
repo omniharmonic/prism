@@ -41,7 +41,18 @@ export async function confirmLeaveWithUnsent(): Promise<boolean> {
   if (choice === "stay") return false;
   if (choice === "download") {
     const queued = (await allQueued()).filter((r) => rows.some((x) => x.id === r.id));
-    const liveDocuments = context ? await exportUnsynced(context.scope).catch(() => []) : [];
+    // What could not be read cannot be handed over — and signing out deletes it. Stay signed in.
+    let liveDocuments: Awaited<ReturnType<typeof exportUnsynced>> = [];
+    try {
+      if (docs.length) {
+        if (!context) throw new Error("no scope");
+        liveDocuments = await exportUnsynced(context.scope);
+        if (liveDocuments.length < docs.length || liveDocuments.some((d) => !d.yjsUpdateBase64 && !d.pendingUpdateBase64)) throw new Error("incomplete");
+      }
+    } catch {
+      window.dispatchEvent(new CustomEvent("prism:offline-refused", { detail: { message: "Your unsynced documents could not be read for the download, so you are not signed out and nothing was removed. Try again, or reconnect so they can sync." } }));
+      return false;
+    }
     // Queued writes as before; live documents as their Yjs state (base64) per note id.
     download(liveDocuments.length ? { queuedWrites: queued, liveDocuments } : queued, "prism-unsent-changes.json");
   }

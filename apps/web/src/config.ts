@@ -1,4 +1,4 @@
-import { useAgentChatStore } from "@prism/core";
+import { useAgentChatStore } from "@prism/core/shell";
 /**
  * Web connection config: which Parachute vault to talk to, and the bearer token.
  *
@@ -113,14 +113,33 @@ export interface Me {
 
 let cachedMe: Me | null = null;
 let cachedMeContext = "";
+/** When the cached identity was confirmed by the server, and the request now in flight. */
+let cachedMeAt = 0;
+let meInFlight: { context: string; startedAt: number; promise: Promise<Me> } | null = null;
 const identityContext = () => JSON.stringify([gatewayOrigin(), contextHeaders(), getCapabilityToken()]);
 
 /** Current identity per the session cookie. Never throws. Caches the result so
  *  synchronous owner checks (e.g. gating owner-only UI) don't need a refetch.
  *  Sends the active-vault header so the returned `role` is scoped to the vault
  *  the app is currently viewing (role is per-workspace). */
-export async function fetchMe(): Promise<Me> {
+export function fetchMe(options?: { maxAgeMs?: number }): Promise<Me> {
   const context = identityContext();
+  // `maxAgeMs` (opt-in): "who am I" was confirmed a moment ago — reuse that answer, or the
+  // request already on its way, instead of asking again. At boot several parts of the app
+  // ask within the same second (it was eight /auth/me calls). A plain `fetchMe()` ALWAYS
+  // asks the server: callers that must notice a change (an account switch, a sign-out, the
+  // check before each queued write is sent) never pass it.
+  const maxAge = options?.maxAgeMs ?? 0;
+  if (maxAge > 0) {
+    if (cachedMe?.authenticated && cachedMeContext === context && Date.now() - cachedMeAt <= maxAge) return Promise.resolve(cachedMe);
+    if (meInFlight && meInFlight.context === context && Date.now() - meInFlight.startedAt <= maxAge) return meInFlight.promise;
+  }
+  const promise = askMe(context).finally(() => { if (meInFlight?.promise === promise) meInFlight = null; });
+  meInFlight = { context, startedAt: Date.now(), promise };
+  return promise;
+}
+
+async function askMe(context: string): Promise<Me> {
   try {
     // Native: no device token → not signed in; don't even ask (the sign-in
     // screen starts the flow). A 401 is routed to the host by serverFetch.
@@ -137,6 +156,7 @@ export async function fetchMe(): Promise<Me> {
     if (identityContext() !== context) return getMe() ?? { authenticated: false };
     cachedMe = me;
     cachedMeContext = context;
+    cachedMeAt = Date.now();
     useAgentChatStore.getState().bindScope(agentScope());
     // The server says nobody is signed in (session expired/revoked, PWA 401):
     // cached pages and device-local page lists of the previous account go now,

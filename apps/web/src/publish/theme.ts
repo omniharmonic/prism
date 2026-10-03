@@ -1,4 +1,4 @@
-import type { PublicationTheme } from "@prism/core";
+import type { PublicationTheme } from "@prism/core/shell";
 
 /**
  * Sanitize an owner-set publication theme for rendering on a PUBLIC page.

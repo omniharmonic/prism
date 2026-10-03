@@ -13,7 +13,11 @@
     <title>Prism</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link href="https://fonts.googleapis.com/css2?family=Inter:opsz,wght@14..32,300;14..32,400;14..32,500;14..32,600;14..32,700&family=JetBrains+Mono:wght@400;500;600&family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;0,6..72,600;1,6..72,400&family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700&display=swap" rel="stylesheet" />
+    <!-- Web fonts must not block the first paint: the sheet is only PRELOADED here and is
+         switched to a stylesheet by src/bootstrap.ts (an inline onload handler would be
+         refused by the script-src CSP). Until it arrives text uses the fallback stacks;
+         the sheet itself declares font-display: swap. -->
+    <link id="prism-web-fonts" rel="preload" as="style" href="https://fonts.googleapis.com/css2?family=Inter:opsz,wght@14..32,300;14..32,400;14..32,500;14..32,600;14..32,700&family=JetBrains+Mono:wght@400;500;600&family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;0,6..72,600;1,6..72,400&family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700&display=swap" />
     <style>
       /* Prevent FOUC — set background before CSS loads */
       html.dark body { background: #0a0a0b; color: rgba(255,255,255,0.92); }

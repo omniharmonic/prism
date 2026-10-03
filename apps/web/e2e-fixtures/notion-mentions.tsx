@@ -8,7 +8,9 @@
  * item once the (Playwright-controlled) clock passes its time.
  *
  * Query flags: ?open=<id> initial page · ?comments → the live editor + comments
- * sidebar on a local Y.Doc (comment mentions, edit own, resolve / reopen).
+ * sidebar on a local Y.Doc (comment mentions, edit own, resolve / reopen) ·
+ * ?live → the live editor fed by the SAME tree-backed page list the workspace gives a
+ * live document (`useLinkNotes`: `[[` and `@` match a page's title and aliases).
  */
 import React, { useState } from "react";
 import { createRoot } from "react-dom/client";
@@ -17,6 +19,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { App, PlatformProvider, VaultClientProvider, CollabSharingProvider, CollabEditor, CommentsSidebar, useUIStore, type Note, type Editor } from "@prism/core";
 import { httpVaultClient } from "../src/parachute/HttpVaultClient";
 import { fetchMe, setActiveVault } from "../src/config";
+import { useLinkNotes } from "../src/collab/linkNotes";
 import { extractMentions } from "../../../packages/core/src/lib/tiptap/MentionParse";
 import { TRASH_TAG } from "../../../packages/core/src/lib/pages/model";
 import "../../../packages/core/src/styles/tokens.css";
@@ -37,6 +40,8 @@ const notes: Note[] = [
   doc("plan", "vault/Projects/Launch plan", "<p>Write the plan here.</p>"),
   doc("brief", "vault/Projects/Project brief", "<p>The brief for the spring launch: goals, scope and milestones.</p>", { metadata: { type: "document", icon: "🧭" } }),
   doc("retro", "vault/Projects/Retro notes", "<p>What went well.</p>"),
+  // Known by a title and an alias that differ from its file name.
+  doc("q3", "vault/Projects/q3-plan", "<p>Targets.</p>", { metadata: { type: "document", title: "Quarterly Roadmap", aliases: ["North Star"] } }),
   doc("old", "vault/Archive/Old draft", "<p>Gone.</p>", { tags: ["page", TRASH_TAG] }),
   doc("secret", "vault/Private/Salary review", "<p>Confidential.</p>"),
   doc("refs", "vault/Projects/References", `<p>See ${chip({ "data-kind": "page", "data-id": "brief", "data-mention-uid": "u-brief" })} and ${chip({ "data-kind": "page", "data-id": "secret", "data-mention-uid": "u-secret" })} and ${chip({ "data-kind": "page", "data-id": "old", "data-mention-uid": "u-old" })}.</p><p>Owner ${chip({ "data-kind": "person", "data-id": "p-ada", "data-label": "Ada Lovelace", "data-mention-uid": "u-ada" })} due ${chip({ "data-kind": "date", "data-date": "2026-10-02", "data-mention-uid": "u-date" })}.</p>`),
@@ -86,7 +91,7 @@ window.fetch = async (input, init) => {
   const method = init?.method ?? "GET";
   const body = typeof init?.body === "string" && init.body ? JSON.parse(init.body) : {};
   if (path === "/auth/me") return json({ authenticated: true, email: "owner@example.test", name: "You", isOwner: true, vaultId: "primary", workspace: { id: "default", name: "Personal workspace" } });
-  if (path === "/api/tree") return json(visible().map((n) => ({ id: n.id, path: n.path, tags: n.tags, updatedAt: n.updatedAt, type: n.metadata?.type })));
+  if (path === "/api/tree") return json(visible().map((n) => ({ id: n.id, path: n.path, tags: n.tags, updatedAt: n.updatedAt, type: n.metadata?.type, ...(n.metadata?.title ? { title: n.metadata.title } : {}), ...(n.metadata?.aliases ? { aliases: n.metadata.aliases } : {}) })));
   if (path === "/api/people") {
     const q = (url.searchParams.get("q") ?? "").toLowerCase();
     return json({ people: people.filter((p) => !q || p.name.toLowerCase().includes(q)), next: null });
@@ -180,8 +185,24 @@ function CommentsFixture() {
   );
 }
 
+/** A live document as the workspace mounts it: page suggestions come from the tree. */
+function LiveFixture() {
+  const [ydoc] = useState(() => new Y.Doc());
+  const linkNotes = useLinkNotes();
+  return (
+    <div style={{ padding: 24, minHeight: "100vh", background: "var(--bg-base)", color: "var(--text-primary)" }}>
+      <CollabEditor ydoc={ydoc} provider={null} user={{ name: "You", color: "#6d5bd0" }} seedReady seedContent={async () => "<p>Notes for the review.</p>"} wikilinkNotes={linkNotes} noteId="plan" />
+    </div>
+  );
+}
+
 const root = createRoot(document.getElementById("root")!);
-if (params.has("comments")) {
+if (params.has("live")) {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  root.render(
+    <React.StrictMode><QueryClientProvider client={client}><VaultClientProvider client={httpVaultClient}><LiveFixture /></VaultClientProvider></QueryClientProvider></React.StrictMode>,
+  );
+} else if (params.has("comments")) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   root.render(
     <React.StrictMode><QueryClientProvider client={client}><VaultClientProvider client={httpVaultClient}><CommentsFixture /></VaultClientProvider></QueryClientProvider></React.StrictMode>,

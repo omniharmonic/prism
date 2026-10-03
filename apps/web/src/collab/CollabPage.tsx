@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { useAgentChatStore } from "@prism/core";
+import { useAgentChatStore } from "@prism/core/shell";
 import { CollabDoc } from "./CollabDoc";
 import { apiBase, contextHeaders, getCapabilityToken } from "../config";
 import { httpVaultClient } from "../parachute/HttpVaultClient";

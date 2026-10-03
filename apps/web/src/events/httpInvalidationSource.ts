@@ -8,7 +8,7 @@
  * final failure (401/403/404: anon, old server) leaves the channel "down", so every
  * poll keeps its normal interval.
  */
-import { parseInvalidationEvent, type InvalidationSource } from "@prism/core";
+import { parseInvalidationEvent, type InvalidationSource } from "@prism/core/shell";
 import { streamServerSSE } from "../transport";
 import { capabilityHeader, contextHeaders } from "../config";
 

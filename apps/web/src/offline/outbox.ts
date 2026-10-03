@@ -759,7 +759,9 @@ export async function flush(): Promise<void> {
   flushing = true;
   let nextRetry = Infinity;
   try {
-    const initial = await captureWriteContext(true);
+    // Selecting the rows may use an identity confirmed in the last few seconds (boot asks
+    // several times at once); every row is still preceded by a FRESH check below.
+    const initial = await captureWriteContext("recent");
     await recoverInterrupted();
     // A row that is stuck (needs review, unknown result, waiting to retry, or
     // waiting on an unconfirmed new note) holds back only LATER rows for the

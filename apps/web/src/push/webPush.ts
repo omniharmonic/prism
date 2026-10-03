@@ -2,7 +2,7 @@
 // PushClient seam. PWA only: the native (WP2.2) build never registers web push
 // (no service worker there). SEAM for WP5.3: the iPhone app registers an APNs
 // device token through this same PushClient interface instead of PushManager.
-import type { PushClient, PushState } from "@prism/core";
+import type { PushClient, PushState } from "@prism/core/shell";
 import { isNative, serverFetch } from "../transport";
 
 const hasPushApi = () =>

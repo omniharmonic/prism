@@ -16,7 +16,7 @@ import { LEAVE_EVENT, type LeaveChoice } from "./leave";
 import { captureWriteContext, sameScope } from "./writeScope";
 import { serverFetch } from "../transport";
 import { getMe } from "../config";
-import { reportPendingWrites, OPEN_SAVED_CHANGES_EVENT } from "@prism/core";
+import { reportPendingWrites, OPEN_SAVED_CHANGES_EVENT } from "@prism/core/shell";
 import { startOfflineAvailability } from "./availableOffline";
 import { startUnsyncedDocs } from "../collab/unsynced";
 
