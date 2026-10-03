@@ -142,14 +142,14 @@
   background: var(--bg-elevated); color: var(--text-primary);
   border: 1px solid var(--glass-border); box-shadow: var(--glass-shadow-elevated);
 }
-.editor-menu-item {
+.editor-menu .editor-menu-item {
   display: flex; align-items: center; gap: 9px; width: 100%; min-height: 32px; padding: 4px 8px;
   border: 0; border-radius: 5px; background: none; color: var(--text-primary); font-size: 13px; text-align: left; cursor: pointer;
 }
-.editor-menu-item:focus { outline: none; background: var(--surface-active); }
-.editor-menu-item:focus-visible { outline: none; box-shadow: inset 0 0 0 1px var(--focus-ring); }
-.editor-menu-item[aria-disabled="true"] { opacity: 0.45; cursor: default; }
-.editor-menu-item.is-danger { color: var(--color-danger); }
+.editor-menu .editor-menu-item:focus { outline: none; background: var(--surface-active); }
+.editor-menu .editor-menu-item:focus-visible { outline: none; box-shadow: inset 0 0 0 1px var(--focus-ring); }
+.editor-menu .editor-menu-item[aria-disabled="true"] { opacity: 0.45; cursor: default; }
+.editor-menu .editor-menu-item.is-danger { color: var(--color-danger); }
 .editor-menu-icon { display: inline-flex; width: 18px; justify-content: center; color: var(--text-secondary); flex-shrink: 0; }
 .editor-menu-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .editor-menu-hint { margin-left: auto; font-size: 11px; color: var(--text-muted); border: 0; background: none; padding: 0; }
@@ -161,7 +161,7 @@
   border: 1px solid var(--glass-border-strong); font-size: 11px; font-weight: 700; padding: 0 !important;
 }
 @media (max-width: 767px) {
-  .editor-menu-item { min-height: 44px; font-size: 15px; }
+  .editor-menu .editor-menu-item { min-height: 44px; font-size: 15px; }
 }
 
 /* ── Slash menu ── */

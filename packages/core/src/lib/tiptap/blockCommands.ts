@@ -64,6 +64,16 @@ export function topBlockAt(doc: PMNode, pos: number): TopBlock | null {
   return { pos: offset, node: doc.child(index), index };
 }
 
+/**
+ * A browser range that starts at the very end of a block (e.g. a triple-click or
+ * select-all of the next line) belongs to the NEXT block for block commands.
+ */
+export function selectionStart(doc: PMNode, from: number, to: number): number {
+  if (from >= to) return from;
+  const $from = doc.resolve(from);
+  return $from.parent.isTextblock && $from.parentOffset === $from.parent.content.size ? Math.min(from + 1, to) : from;
+}
+
 export function canColor(node: PMNode): boolean {
   return (COLORABLE_BLOCKS as readonly string[]).includes(node.type.name) && "blockColor" in node.attrs;
 }
@@ -222,6 +232,7 @@ function build(schema: Schema, kind: TurnIntoKind, paras: PMNode[], color: Block
  */
 export function turnTopBlocksInto(state: EditorState, from: number, to: number, kind: TurnIntoKind): Transaction | null {
   const { doc, schema } = state;
+  from = selectionStart(doc, from, to);
   const first = topBlockAt(doc, from);
   const last = topBlockAt(doc, Math.max(from, to));
   if (!first || !last) return null;

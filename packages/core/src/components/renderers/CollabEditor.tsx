@@ -6,7 +6,7 @@ import Collaboration from "@tiptap/extension-collaboration";
 import CollaborationCaret from "@tiptap/extension-collaboration-caret";
 import * as Y from "yjs";
 import type { Editor } from "@tiptap/react";
-import { Check, X, MessageSquarePlus } from "lucide-react";
+import { Check, X } from "lucide-react";
 import { collabExtensions } from "../../editor/collabSchema";
 import { SuggestionMode, suggestionAt } from "../../editor/suggestions";
 import { CommentOnly, commentOnRange, CommentInteraction } from "../../editor/comments";
@@ -236,10 +236,10 @@ export function CollabEditor({
           }}
         >
           <div className="cd-bubble">
-            <SelectionActions editor={editor} allowFormatting={editable && !commentOnly} />
-            {canComment && <button
-              onMouseDown={(e) => e.preventDefault()}
-              onClick={() => {
+            <SelectionActions
+              editor={editor}
+              allowFormatting={editable && !commentOnly}
+              onComment={canComment ? () => {
                 const sel = editor.state.selection;
                 const c = editor.view.coordsAtPos(sel.to);
                 setComposer({
@@ -249,10 +249,8 @@ export function CollabEditor({
                   left: Math.max(8, Math.min(c.left, window.innerWidth - 288)),
                 });
                 setDraft("");
-              }}
-            >
-              <MessageSquarePlus size={14} /> Comment
-            </button>}
+              } : undefined}
+            />
           </div>
         </BubbleMenu>
       )}

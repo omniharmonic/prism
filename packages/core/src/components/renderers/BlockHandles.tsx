@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import type { Editor } from "@tiptap/react";
+import { TextSelection } from "@tiptap/pm/state";
 import { GripVertical, Plus, Copy, Trash2, ArrowUp, ArrowDown, Repeat2, Palette } from "lucide-react";
 import { BLOCK_COLORS, type BlockColorValue } from "../../editor/blocks";
 import {
@@ -28,6 +29,11 @@ interface Hovered {
 
 const COARSE = "(pointer: coarse), (max-width: 767px)";
 const isMac = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform);
+
+function textRangeSelected(editor: Editor): boolean {
+  const { selection } = editor.state;
+  return selection instanceof TextSelection && !selection.empty;
+}
 
 /** TipTap 3 throws on `editor.view` until the EditorContent has mounted. */
 function viewReady(editor: Editor): boolean {
@@ -113,7 +119,8 @@ export function BlockHandles({ editor, enabled }: { editor: Editor; enabled: boo
         if (!viewReady(editor)) return;
         const er = editor.view.dom.getBoundingClientRect();
         const inside = event.clientX >= er.left - 72 && event.clientX <= er.right + 8 && event.clientY >= er.top - 4 && event.clientY <= er.bottom + 4;
-        if (!inside) { setHovered(null); return; }
+        // A text range selection owns the selection toolbar; keep the gutter out of its way.
+        if (!inside || textRangeSelected(editor)) { setHovered(null); return; }
         const index = blockIndexAtY(event.clientY);
         setHovered(index === null ? null : place(index));
       });
@@ -151,9 +158,11 @@ export function BlockHandles({ editor, enabled }: { editor: Editor; enabled: boo
   // Document edits shift blocks: re-place (and close a menu whose block vanished).
   useEffect(() => {
     const onUpdate = () => setHovered((h) => (h ? place(Math.min(h.index, editor.state.doc.childCount - 1)) : h));
+    const onSelection = () => { if (!coarse && !menuRef.current && textRangeSelected(editor)) setHovered(null); };
     editor.on("update", onUpdate);
-    return () => { editor.off("update", onUpdate); };
-  }, [editor, place]);
+    editor.on("selectionUpdate", onSelection);
+    return () => { editor.off("update", onUpdate); editor.off("selectionUpdate", onSelection); };
+  }, [editor, place, coarse]);
 
   // ⌘/ (Ctrl+/) opens the block menu for the caret's block.
   useEffect(() => {
