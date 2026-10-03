@@ -149,9 +149,16 @@ test("access preview: moving a sub-page out of a shared page warns who loses acc
   assert.equal(stay.willChange, false);
   // Moving the shared page itself never changes what its own share gives.
   assert.equal((await json(await get("/notes/p/access-preview?parent=vault/Notes", as(OWNER)))).willChange, false);
-  // An editor without share learns only that access would change.
-  const bob = await json(await get("/notes/c1/access-preview?parent=vault/Notes", as(BOB)));
+  // A destination the caller cannot add to answers like a missing page (review M1)…
+  assert.equal((await get("/notes/c1/access-preview?parent=vault/Notes", as(BOB))).status, 404);
+  // …and one they can add to tells an editor without share only THAT access would change.
+  fv.put({ id: "dest", path: "vault/Dest", content: "<p>dest</p>" });
+  resetTreeForTests();
+  addGrant({ subject_type: "user", subject: BOB, resource_type: "note", resource: "dest", level: "view", created_by: OWNER, caps: ["view", "create"] });
+  pageGrant(CAROL, "p", "view");
+  const bob = await json(await get("/notes/c1/access-preview?parent=vault/Dest", as(BOB)));
   assert.deepEqual(Object.keys(bob), ["willChange"]);
+  assert.equal(bob.willChange, true);
   assert.equal((await get("/notes/c1/access-preview?parent=../x", as(OWNER))).status, 400);
 });
 

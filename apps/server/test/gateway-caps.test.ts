@@ -126,12 +126,14 @@ test("an `edit` grant cannot retag (organize is a separate power)", async () => 
   assert.equal(fv.notes.get("n1")!.content, "v1", "the whole request is rejected — no partial write");
 });
 
-test("organize also unlocks the note's path (previously admin-only), edit alone does not", async () => {
+test("a path change is a MOVE: organize is told to use the move route, edit alone is silently ignored", async () => {
   fv.put({ id: "n1", content: "v1", path: "/original", tags: ["team"] });
   grantCaps("obi@test.local", "tag", "team", ["view", "edit", "organize"]);
   const r = await req("/notes/n1", { method: "PATCH", cookie: login("obi@test.local"), headers: J, body: JSON.stringify({ content: "v2", path: "/filed" }) });
-  assert.equal(r.status, 200);
-  assert.equal(fv.notes.get("n1")!.path, "/filed");
+  assert.equal(r.status, 403);
+  assert.equal(((await r.json()) as { error: string }).error, "move_required");
+  assert.equal(fv.notes.get("n1")!.path, "/original");
+  assert.equal(fv.notes.get("n1")!.content, "v1", "the whole request is refused — no partial write");
 
   fv.put({ id: "n2", content: "v1", path: "/original", tags: ["team"] });
   grantUser("eddy@test.local", "tag", "team", "edit");
@@ -265,16 +267,18 @@ test("acl: a caps-less people-grant is unchanged, and GET /grants reports caps",
   assert.deepEqual(list.find((g) => g.resource === "intake")!.caps, ["view", "create"]);
 });
 
-test("a path-only PATCH: organize applies it, edit no-ops it, view is still refused", async () => {
+test("a path-only PATCH: organize → move_required, edit no-ops it, view is still refused", async () => {
   fv.put({ id: "n1", content: "v1", path: "/original", tags: ["team"] });
   grantCaps("obi@test.local", "tag", "team", ["view", "organize"]);
-  assert.equal((await req("/notes/n1", { method: "PATCH", cookie: login("obi@test.local"), headers: J, body: JSON.stringify({ path: "/filed" }) })).status, 200);
-  assert.equal(fv.notes.get("n1")!.path, "/filed");
+  const org = await req("/notes/n1", { method: "PATCH", cookie: login("obi@test.local"), headers: J, body: JSON.stringify({ path: "/filed" }) });
+  assert.equal(org.status, 403);
+  assert.equal(((await org.json()) as { error: string }).error, "move_required");
+  assert.equal(fv.notes.get("n1")!.path, "/original");
 
   grantUser("eddy@test.local", "tag", "team", "edit");
   const edit = await req("/notes/n1", { method: "PATCH", cookie: login("eddy@test.local"), headers: J, body: JSON.stringify({ path: "/hijacked" }) });
   assert.equal(edit.status, 200, "an editor's stray path change stays a silent no-op, not an error");
-  assert.equal(fv.notes.get("n1")!.path, "/filed");
+  assert.equal(fv.notes.get("n1")!.path, "/original");
 
   grantUser("val@test.local", "tag", "team", "view");
   const view = await req("/notes/n1", { method: "PATCH", cookie: login("val@test.local"), headers: J, body: JSON.stringify({ path: "/nope" }) });
