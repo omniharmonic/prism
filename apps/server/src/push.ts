@@ -23,6 +23,30 @@
 import { db } from "./db";
 import { config } from "./config";
 import { apnsEnabled, sendApnsToOwner, agentTurnNotification } from "./apns";
+import { parseTarget } from "./media/netguard";
+
+/**
+ * The push services browsers actually hand out (review H1): Chromium browsers
+ * (Chrome, Brave, Samsung Internet, Opera) → FCM; Firefox → Mozilla autopush;
+ * Safari 16+/iOS 16.4+ → Apple; Edge → Windows Notification Service. An endpoint
+ * is a URL the SERVER posts to, so anything else (an IP, an intranet name, our own
+ * vault) is refused. Layer two = the media netguard's URL rules (https:443 only,
+ * no IP literals, no userinfo, no localhost/.local/.internal/single-label names).
+ */
+export const PUSH_HOSTS = ["fcm.googleapis.com", "android.googleapis.com", "updates.push.services.mozilla.com", "web.push.apple.com"] as const;
+export const PUSH_HOST_SUFFIXES = [".push.apple.com", ".notify.windows.com"] as const;
+export function isPushEndpoint(raw: unknown): raw is string {
+  if (typeof raw !== "string" || raw.length >= 2048) return false;
+  try {
+    const t = parseTarget(raw);
+    if (t.protocol !== "https:" || t.port !== 443) return false;
+    return (PUSH_HOSTS as readonly string[]).includes(t.host) || PUSH_HOST_SUFFIXES.some((s) => t.host.endsWith(s) && t.host.length > s.length);
+  } catch {
+    return false;
+  }
+}
+/** Rows per account: a new browser beyond this replaces the oldest. */
+export const MAX_SUBSCRIPTIONS_PER_USER = 10;
 
 export type PushTurnStatus = "done" | "error" | "interrupted" | "cancelled" | "queued" | "running";
 
@@ -95,12 +119,16 @@ async function defaultSender(): Promise<PushSender> {
 
 // ── subscriptions ────────────────────────────────────────────────────────────
 const q = {
+  // An endpoint already bound to ANOTHER account is never re-bound (review H1).
   upsert: db.prepare(
     `INSERT INTO push_subscriptions (endpoint, email, p256dh, auth, user_agent, created_at, failures)
      VALUES (@endpoint, @email, @p256dh, @auth, @user_agent, @created_at, 0)
-     ON CONFLICT(endpoint) DO UPDATE SET email = excluded.email, p256dh = excluded.p256dh,
-       auth = excluded.auth, user_agent = excluded.user_agent, failures = 0`,
+     ON CONFLICT(endpoint) DO UPDATE SET p256dh = excluded.p256dh,
+       auth = excluded.auth, user_agent = excluded.user_agent, failures = 0
+     WHERE push_subscriptions.email = excluded.email`,
   ),
+  ownerOf: db.prepare("SELECT email FROM push_subscriptions WHERE endpoint = ?"),
+  oldest: db.prepare("SELECT endpoint FROM push_subscriptions WHERE email = ? ORDER BY created_at DESC, rowid DESC LIMIT -1 OFFSET ?"),
   del: db.prepare("DELETE FROM push_subscriptions WHERE endpoint = ? AND email = ?"),
   delAny: db.prepare("DELETE FROM push_subscriptions WHERE endpoint = ?"),
   forEmail: db.prepare("SELECT * FROM push_subscriptions WHERE email = ?"),
@@ -110,7 +138,11 @@ const q = {
   owner: db.prepare("SELECT owner_email FROM agent_sessions WHERE id = ?"),
 };
 
-export function saveSubscription(p: { email: string; endpoint: string; p256dh: string; auth: string; userAgent?: string | null }): void {
+/** Store a subscription. `false` = the endpoint belongs to another account (nothing changed). */
+export function saveSubscription(p: { email: string; endpoint: string; p256dh: string; auth: string; userAgent?: string | null }): boolean {
+  const email = p.email.toLowerCase();
+  const holder = (q.ownerOf.get(p.endpoint) as { email: string } | undefined)?.email;
+  if (holder && holder !== email) return false;
   q.upsert.run({
     endpoint: p.endpoint,
     email: p.email.toLowerCase(),
@@ -119,6 +151,8 @@ export function saveSubscription(p: { email: string; endpoint: string; p256dh: s
     user_agent: p.userAgent ? p.userAgent.slice(0, 200) : null,
     created_at: Date.now(),
   });
+  for (const r of q.oldest.all(email, MAX_SUBSCRIPTIONS_PER_USER) as Array<{ endpoint: string }>) q.delAny.run(r.endpoint);
+  return true;
 }
 export const removeSubscription = (email: string, endpoint: string): boolean =>
   q.del.run(endpoint, email.toLowerCase()).changes > 0;
@@ -130,7 +164,14 @@ export const listSubscriptions = (email: string): PushSubscriptionRow[] =>
 export async function sendPush(email: string, payload: PushPayload): Promise<{ sent: number; pruned: number; failed: number }> {
   const out = { sent: 0, pruned: 0, failed: 0 };
   if (!pushEnabled() && !sender) return out;
-  const subs = listSubscriptions(email);
+  // Never POST to a stored endpoint that isn't a push service (rows from before
+  // validation existed): drop it instead.
+  const subs = listSubscriptions(email).filter((s) => {
+    if (isPushEndpoint(s.endpoint)) return true;
+    q.delAny.run(s.endpoint);
+    out.pruned++;
+    return false;
+  });
   if (!subs.length) return out;
   let send: PushSender;
   try {

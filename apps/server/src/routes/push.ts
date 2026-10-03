@@ -3,8 +3,11 @@
  * /api/agent: the subscription is a capability to ping the owner's browser.
  */
 import { Hono } from "hono";
+import { config } from "../config";
 import { resolveActor, requestVia } from "../auth/actor";
-import { pushEnabled, vapidPublicKey, saveSubscription, removeSubscription, sendPush } from "../push";
+import { pushEnabled, vapidPublicKey, saveSubscription, removeSubscription, sendPush, isPushEndpoint } from "../push";
+import { csrfRefusal } from "./actions";
+import { consumeRateLimit } from "../middleware/ratelimit";
 import {
   apnsEnabled,
   apnsTokenForDevice,
@@ -32,36 +35,51 @@ pushApi.get("/vapid-public-key", (c) =>
   pushEnabled() ? c.json({ publicKey: vapidPublicKey() }) : c.json({ error: "push_disabled" }, 503),
 );
 
-const isHttps = (s: unknown): s is string => typeof s === "string" && /^https:\/\//.test(s) && s.length < 2048;
 const isKey = (s: unknown): s is string => typeof s === "string" && s.length > 0 && s.length < 512;
 
 pushApi.post("/subscribe", async (c) => {
+  const csrf = csrfRefusal(c, requestVia(c));
+  if (csrf) return csrf;
   const actor = resolveActor(c);
   if (actor.kind !== "user") return c.json({ error: "forbidden" }, 403);
   const b = await c.req.json<{ endpoint?: unknown; keys?: { p256dh?: unknown; auth?: unknown } }>().catch(() => ({}) as { endpoint?: unknown; keys?: { p256dh?: unknown; auth?: unknown } });
   const p256dh = b.keys?.p256dh;
   const auth = b.keys?.auth;
-  if (!isHttps(b.endpoint) || !isKey(p256dh) || !isKey(auth)) {
-    return c.json({ error: "bad_request", detail: "endpoint (https) + keys.p256dh + keys.auth required" }, 400);
+  if (!isPushEndpoint(b.endpoint) || !isKey(p256dh) || !isKey(auth)) {
+    return c.json({ error: "bad_request", detail: "a browser push-service endpoint + keys.p256dh + keys.auth required" }, 400);
   }
-  saveSubscription({ email: actor.email, endpoint: b.endpoint, p256dh, auth, userAgent: c.req.header("user-agent") });
+  if (!saveSubscription({ email: actor.email, endpoint: b.endpoint, p256dh, auth, userAgent: c.req.header("user-agent") })) {
+    return c.json({ error: "conflict" }, 409);
+  }
   return c.json({ ok: true });
 });
 
 pushApi.delete("/subscribe", async (c) => {
+  const csrf = csrfRefusal(c, requestVia(c));
+  if (csrf) return csrf;
   const actor = resolveActor(c);
   if (actor.kind !== "user") return c.json({ error: "forbidden" }, 403);
   const b = await c.req.json<{ endpoint?: unknown }>().catch(() => ({}) as { endpoint?: unknown });
-  if (!isHttps(b.endpoint)) return c.json({ error: "bad_request", detail: "endpoint required" }, 400);
+  if (typeof b.endpoint !== "string" || b.endpoint.length >= 2048) return c.json({ error: "bad_request", detail: "endpoint required" }, 400);
   return c.json({ ok: removeSubscription(actor.email, b.endpoint) });
 });
 
-/** Send a content-free test ping to every subscription of the owner. */
+/** Send a content-free test ping to every subscription of the caller. CSRF-guarded
+ *  and rate-limited; only the server owner sees per-endpoint counts (no outcome
+ *  oracle for anyone else). */
 pushApi.post("/test", async (c) => {
+  const csrf = csrfRefusal(c, requestVia(c));
+  if (csrf) return csrf;
   const actor = resolveActor(c);
   if (actor.kind !== "user") return c.json({ error: "forbidden" }, 403);
   if (!pushEnabled()) return c.json({ error: "push_disabled" }, 503);
-  return c.json(await sendPush(actor.email, { type: "test" }));
+  const retry = consumeRateLimit(`push-test:${actor.email}`, 5, 60_000);
+  if (retry !== null) {
+    c.header("Retry-After", String(retry));
+    return c.json({ error: "rate_limited", retryAfter: retry }, 429);
+  }
+  const r = await sendPush(actor.email, { type: "test" });
+  return c.json(actor.role === "owner" && actor.email === config.ownerEmail ? r : { ok: true });
 });
 
 // ── APNs (iOS) ───────────────────────────────────────────────────────────────
