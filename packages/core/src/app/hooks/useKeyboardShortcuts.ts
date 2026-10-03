@@ -1,6 +1,7 @@
 import { usePagesUI } from "../../lib/pages/store";
 import { useEffect } from "react";
 import { useUIStore } from "../stores/ui";
+import { toggleTheme } from "../stores/settings";
 
 export function useKeyboardShortcuts() {
   const { toggleSidebar, toggleContextPanel, openCommandBar, activeTabId, closeTab } = useUIStore();
@@ -30,6 +31,18 @@ export function useKeyboardShortcuts() {
         e.preventDefault();
         if (e.key === "[") useUIStore.getState().navBack();
         else useUIStore.getState().navForward();
+        return;
+      }
+
+      // ⌘⇧L toggles the theme, ⌘, opens Settings (NP-SR-06: the palette shows the same hints).
+      if (e.shiftKey && !e.altKey && e.key.toLowerCase() === "l") {
+        e.preventDefault();
+        toggleTheme();
+        return;
+      }
+      if (e.key === "," && !e.shiftKey && !e.altKey) {
+        e.preventDefault();
+        useUIStore.getState().setSettingsOpen(true);
         return;
       }
 

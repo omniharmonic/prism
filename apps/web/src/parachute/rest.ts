@@ -246,6 +246,7 @@ export async function listTree(): Promise<NoteTreeEntry[]> {
       id: r.id,
       path: r.path,
       tags: r.tags,
+      updatedAt: r.updatedAt,
       // Only the keys the tree reads: type inference, sibling order, the page's emoji.
       metadata: r.type || r.prismType || r.order !== undefined || r.icon ? { ...(r.type ? { type: r.type } : {}), ...(r.prismType ? { prism_type: r.prismType } : {}), ...(r.order !== undefined ? { prism_order: r.order } : {}), ...(r.icon ? { icon: r.icon } : {}) } : null,
     }));

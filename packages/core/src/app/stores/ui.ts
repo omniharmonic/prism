@@ -96,6 +96,8 @@ interface UIStore {
   setContextPanelTab: (tab: UIStore["contextPanelTab"]) => void;
 
   openTab: (noteId: string, title: string, type: ContentType) => void;
+  /** NP-SB-07 "Open in new tab": add the page as a tab WITHOUT leaving the current one. */
+  openTabInBackground: (noteId: string, title: string, type: ContentType) => void;
   closeTab: (tabId: string) => void;
   closeTabs: (noteId: string) => void;
   closeAllTabs: () => void;
@@ -188,6 +190,14 @@ export const useUIStore = create<UIStore>((set, get) => ({
       activeTabId: newTab.id,
       ...pushNav(s.navHistory, s.navIndex, newTab.id),
     });
+  },
+
+  openTabInBackground: (noteId, title, type) => {
+    const s = get();
+    if (s.openTabs.some((t) => t.noteId === noteId)) return;
+    // With nothing open there is no "current page" to stay on.
+    if (!s.activeTabId) { s.openTab(noteId, title, type); return; }
+    set({ openTabs: [...s.openTabs, { id: `tab-${noteId}`, noteId, title, type, isDirty: false }] });
   },
 
   closeTab: (tabId) => {

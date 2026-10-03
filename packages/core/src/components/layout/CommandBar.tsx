@@ -2,7 +2,8 @@ import { AddSavedNoteContextButton } from "../agent/SavedNoteHandoff";
 import { useState, useCallback, useEffect, useRef, useMemo } from "react";
 import {
   Search, X, FileText, MonitorPlay, Code, Mail, Table2, Globe,
-  CheckSquare, MessageSquare, Bot, ArrowRight, Settings, RefreshCw, Wand2, History, Sparkles, Trash2, FolderInput } from "lucide-react";
+  CheckSquare, MessageSquare, Bot, ArrowRight, Settings, RefreshCw, Wand2, History, Sparkles, Trash2, FolderInput,
+  Star, SunMoon, PanelLeft, PanelRight, ChevronLeft, ChevronRight, FilePlus2, Home as HomeIcon, Inbox as InboxIcon, LayoutTemplate } from "lucide-react";
 import { useUIStore } from "../../app/stores/ui";
 import { useIsMobile } from "../../app/hooks/useIsMobile";
 import { useVaultSearch, useCreateNote } from "../../app/hooks/useParachute";
@@ -30,12 +31,19 @@ import { NewContentMenu } from "../navigation/NewContentMenu";
 import { useNotionDbSyncModal } from "./NotionDbSyncHost";
 import { useNoteShortcuts } from "../navigation/NoteShortcuts";
 import { usePagesUI } from "../../lib/pages/store";
+import { openInNewTab } from "../../lib/pages/openInNewTab";
+import { PageIcon } from "../../lib/pages/icons";
+import { ariaKeys, editedLabel, hint } from "../../lib/shortcutHints";
+import { toggleTheme } from "../../app/stores/settings";
+import { useVaultTree } from "../../app/hooks/useParachute";
 
 interface Command {
   id: string;
   label: string;
   category: "create" | "navigate" | "sync" | "transform" | "agent";
   icon: React.ReactNode;
+  /** Shown at the end of the row (NP-SR-06), e.g. ["mod", "shift", "L"]; the key itself is bound in useKeyboardShortcuts. */
+  keys?: string[];
   action: () => void;
 }
 
@@ -64,13 +72,25 @@ export function CommandBar() {
   const dialogRef = useRef<HTMLDialogElement>(null);
   const createNote = useCreateNote();
   const isMobile = useIsMobile();
+  // Phone search fills the VISUAL viewport (what is left above the keyboard).
+  const [viewportHeight, setViewportHeight] = useState<number | null>(null);
+  useEffect(() => {
+    const vv = window.visualViewport;
+    if (!commandBarOpen || !isMobile || !vv) { setViewportHeight(null); return; }
+    const measure = () => setViewportHeight(Math.round(vv.height));
+    measure();
+    vv.addEventListener("resize", measure);
+    return () => vv.removeEventListener("resize", measure);
+  }, [commandBarOpen, isMobile]);
   const agentChat = useAgentAvailable();
   // Host-backed commands: the desktop runs them through Tauri; a thin client
   // (PWA / Prism Client) through the server for its owner (WP4.3). Others get
   // none of them.
   const host = useHostServices();
   const vaultClient = useVaultClient();
-  const { recents } = useNoteShortcuts();
+  const { recents, favoriteIds, toggleFavorite } = useNoteShortcuts();
+  // Edited dates for recent pages come from the (already loaded) sidebar tree.
+  const { data: tree } = useVaultTree();
   const hostCmds = isDesktop || !!host;
 
   /** Run a command, surfacing a failure as an alert instead of a silent rejection. */
@@ -141,18 +161,23 @@ export function CommandBar() {
     createCommand("website", "Website", <Globe size={15} />),
     createCommand("task", "Task", <CheckSquare size={15} />),
     {
+      id: "new-page", label: "New Page", category: "create" as const, keys: ["mod", "N"],
+      icon: <FilePlus2 size={15} />,
+      action: () => { closeCommandBar(); usePagesUI.getState().openCreate({}); },
+    },
+    {
       id: "create-from-template", label: "New Page from Template", category: "create" as const,
-      icon: <FileText size={15} />,
+      icon: <LayoutTemplate size={15} />,
       action: () => { closeCommandBar(); usePagesUI.getState().openCreate({ template: true }); },
     },
     {
       id: "open-home", label: "Home", category: "navigate" as const,
-      icon: <FileText size={15} />,
+      icon: <HomeIcon size={15} />,
       action: () => { closeCommandBar(); useUIStore.getState().openTab("home", "Home", "home" as ContentType); },
     },
     {
-      id: "open-inbox", label: "Inbox", category: "navigate" as const,
-      icon: <Mail size={15} />,
+      id: "open-inbox", label: "Open Inbox", category: "navigate" as const,
+      icon: <InboxIcon size={15} />,
       action: () => { closeCommandBar(); useUIStore.getState().openTab("notifications", "Inbox", "notifications" as ContentType); },
     },
     {
@@ -165,9 +190,39 @@ export function CommandBar() {
       icon: <FolderInput size={15} />,
       action: () => { closeCommandBar(); usePagesUI.getState().openMove({ id: activeTab.noteId, path: null, title: activeTab.title }); },
     }] : []),
+    ...(activeIsNote && activeTab ? [{
+      id: "toggle-favorite", label: favoriteIds.includes(activeTab.noteId) ? "Remove This Page from Favorites" : "Add This Page to Favorites", category: "navigate" as const,
+      icon: <Star size={15} />,
+      action: () => { toggleFavorite({ id: activeTab.noteId, title: activeTab.title, type: activeTab.type }); closeCommandBar(); },
+    }] : []),
     // Utility commands
     {
-      id: "settings", label: "Settings", category: "navigate" as const,
+      id: "toggle-theme", label: "Toggle Theme", category: "navigate" as const, keys: ["mod", "shift", "L"],
+      icon: <SunMoon size={15} />,
+      action: () => { toggleTheme(); closeCommandBar(); },
+    },
+    {
+      id: "toggle-sidebar", label: "Toggle Sidebar", category: "navigate" as const, keys: ["mod", "\\"],
+      icon: <PanelLeft size={15} />,
+      action: () => { closeCommandBar(); useUIStore.getState().toggleSidebar(); },
+    },
+    {
+      id: "toggle-info-panel", label: "Toggle Info Panel", category: "navigate" as const, keys: ["mod", "shift", "\\"],
+      icon: <PanelRight size={15} />,
+      action: () => { closeCommandBar(); useUIStore.getState().toggleContextPanel(); },
+    },
+    {
+      id: "nav-back", label: "Back", category: "navigate" as const, keys: ["mod", "["],
+      icon: <ChevronLeft size={15} />,
+      action: () => { closeCommandBar(); useUIStore.getState().navBack(); },
+    },
+    {
+      id: "nav-forward", label: "Forward", category: "navigate" as const, keys: ["mod", "]"],
+      icon: <ChevronRight size={15} />,
+      action: () => { closeCommandBar(); useUIStore.getState().navForward(); },
+    },
+    {
+      id: "settings", label: "Settings", category: "navigate" as const, keys: ["mod", ","],
       icon: <Settings size={15} />,
       action: () => { closeCommandBar(); useUIStore.getState().setSettingsOpen(true); },
     },
@@ -318,7 +373,7 @@ export function CommandBar() {
         closeCommandBar();
       },
     }] : []),
-  ], [createCommand, activeTab, activeIsNote, agentChat, closeCommandBar, toggleContextPanel, setContextPanelTab, createNote, openTab, hostCmds, host, vaultClient, surface, transformNote]);
+  ], [favoriteIds, toggleFavorite, createCommand, activeTab, activeIsNote, agentChat, closeCommandBar, toggleContextPanel, setContextPanelTab, createNote, openTab, hostCmds, host, vaultClient, surface, transformNote]);
 
   // Filter commands by query
   const filteredCommands = useMemo(() => {
@@ -341,6 +396,10 @@ export function CommandBar() {
         label,
         labelRanges: marks.title,
         sublabel: note.path || "Saved note",
+        edited: editedLabel(note.updatedAt),
+        type: inferContentType(note),
+        // ⌘↵ never crosses vaults: a result from another vault opens the ordinary way.
+        sameVault: !(note as { _vault?: string })._vault,
         group: searchResultGroup(note),
         icon: typeof note.metadata?.icon === "string" ? note.metadata.icon : null,
         preview: marks.snippet,
@@ -371,13 +430,16 @@ export function CommandBar() {
     noteId: r.id,
     label: r.title,
     sublabel: "Recently opened",
+    edited: editedLabel(tree?.find((n) => n.id === r.id)?.updatedAt),
+    type: r.type,
+    sameVault: true,
     group: "notes" as const,
     icon: null as string | null,
     preview: "",
     labelRanges: [] as Range[],
     previewRanges: [] as Range[],
     action: () => { openTab(r.id, r.title, r.type); closeCommandBar(); },
-  })), [recents, query, filter, openTab, closeCommandBar]);
+  })), [recents, tree, query, filter, openTab, closeCommandBar]);
   // Recent searches (this device, this workspace): re-run with one keystroke.
   const recentQueryItems = (query.trim() || filter === "commands") ? [] : recentQueries.slice(0, 5).map((q, i) => ({
     id: `recent-search-${i}`, query: q,
@@ -403,7 +465,13 @@ export function CommandBar() {
       const next = e.key === "ArrowDown" ? Math.max(0, Math.min(selectedIndex + 1, totalItems - 1)) : Math.max(selectedIndex - 1, 0);
       setSelectedId(items[next]?.id ?? null);
     }
-    if (e.key === "Enter") { e.preventDefault(); items[selectedIndex]?.action(); }
+    if (e.key === "Enter") {
+      e.preventDefault();
+      // ⌘↵ / Ctrl+↵ on a page: open it in a new tab and stay on this one (NP-SR-01).
+      const note = (e.metaKey || e.ctrlKey) ? orderedNotes.find((item) => item.id === items[selectedIndex]?.id) : undefined;
+      if (note?.sameVault) { rememberSearch(searchScope, debouncedQuery); closeCommandBar(); openInNewTab(note.noteId, note.label, note.type); return; }
+      items[selectedIndex]?.action();
+    }
   };
 
   // "Ask Claude: …" → a new server agent session with that prompt (web owner).
@@ -440,8 +508,8 @@ export function CommandBar() {
   const renderNotes = (notes: typeof vaultItems, label: string) => notes.length > 0 && <div role="group" aria-label={label}>
     <div className="prism-search-group">{label}</div>
     {notes.map(item => { const index = items.findIndex(candidate => candidate.id === item.id); return <CmdRow key={item.id} id={`prism-command-${index}`} selected={selectedIndex === index} onClick={item.action} onHover={() => setSelectedId(item.id)}
-      icon={item.icon ? <span>{item.icon}</span> : item.group === "messages" ? <MessageSquare size={18} /> : <FileText size={18} />}
-      label={item.label} labelRanges={item.labelRanges} sublabel={item.sublabel} preview={item.preview} previewRanges={item.previewRanges} trailing={<span className="prism-search-open">Open <ArrowRight size={13} /></span>} />; })}
+      icon={item.icon ? <span>{item.icon}</span> : item.group === "messages" ? <MessageSquare size={18} /> : <PageIcon noteId={item.noteId} fallback={<FileText size={18} />} />}
+      label={item.label} labelRanges={item.labelRanges} sublabel={item.edited ? `${item.sublabel} · ${item.edited}` : item.sublabel} preview={item.preview} previewRanges={item.previewRanges} trailing={<span className="prism-search-open">Open <ArrowRight size={13} /></span>} />; })}
   </div>;
   const body = <>
     {recentQueryItems.length > 0 && <div role="group" aria-label="Recent searches"><div className="prism-search-group">Recent searches</div>{recentQueryItems.map(item => {
@@ -451,43 +519,40 @@ export function CommandBar() {
     {recentItems.length > 0 ? renderNotes(noteItems, "Recent pages") : renderNotes(noteItems, "Notes")}{renderNotes(messageItems, "Messages")}
     {filteredCommands.length > 0 && <div role="group" aria-label="Commands"><div className="prism-search-group">Commands</div>{filteredCommands.map(cmd => {
       const index = items.findIndex(item => item.id === cmd.id);
-      return <CmdRow key={cmd.id} id={`prism-command-${index}`} selected={selectedIndex === index} onClick={cmd.action} onHover={() => setSelectedId(cmd.id)} icon={cmd.icon} label={cmd.label} />;
+      return <CmdRow key={cmd.id} id={`prism-command-${index}`} selected={selectedIndex === index} onClick={cmd.action} onHover={() => setSelectedId(cmd.id)} icon={cmd.icon} label={cmd.label} keys={cmd.keys} />;
     })}</div>}
     {showAsk && <CmdRow id={`prism-command-${items.length - 1}`} selected={selectedIndex === items.length - 1} onClick={askClaude} onHover={() => setSelectedId("ask-agent")} icon={<Bot size={18} />} label={`Ask your agent: "${query}"`} accent trailing={<ArrowRight size={13} />} />}
   </>;
   const selectedNote = orderedNotes.find(item => item.id === (selectedId ?? defaultId));
-  const contextActions = selectedNote && agentChat && <div aria-label="Selected note actions" className="flex min-w-0 items-center justify-between gap-2 border-t px-3" style={{ borderColor: "var(--glass-border)" }}>
-    <span className="min-w-0 truncate text-xs" style={{ color: "var(--text-secondary)" }}>{selectedNote.label}</span>
-    <AddSavedNoteContextButton noteId={selectedNote.noteId} label={selectedNote.label} onAdded={closeCommandBar} />
+  // Selected page actions: star it without opening it (NP-SB-04), hand it to the agent.
+  const selectedFav = !!selectedNote && favoriteIds.includes(selectedNote.noteId);
+  const contextActions = selectedNote && (agentChat || selectedNote.sameVault) && <div aria-label="Selected note actions" className="flex min-w-0 items-center justify-between gap-2 border-t px-3" style={{ borderColor: "var(--glass-border)" }}>
+    <span className="min-w-0 flex-1 truncate text-xs" style={{ color: "var(--text-secondary)" }}>{selectedNote.label}</span>
+    {selectedNote.sameVault && <button type="button" className="prism-search-star focus-ring" aria-pressed={selectedFav}
+      aria-label={selectedFav ? `Remove ${selectedNote.label} from Favorites` : `Add ${selectedNote.label} to Favorites`}
+      onClick={() => toggleFavorite({ id: selectedNote.noteId, title: selectedNote.label, type: selectedNote.type })}>
+      <Star size={14} aria-hidden fill={selectedFav ? "var(--color-accent)" : "none"} color={selectedFav ? "var(--color-accent)" : "currentColor"} />
+      <span>{selectedFav ? "Starred" : "Star"}</span>
+    </button>}
+    {agentChat && <AddSavedNoteContextButton noteId={selectedNote.noteId} label={selectedNote.label} onAdded={closeCommandBar} />}
   </div>;
   const feedback = <>
     {query.trim() && searchFailed && <div role="alert" className="prism-search-feedback">Couldn't search this workspace. <button className="focus-ring" onClick={() => void retrySearch()}>Try again</button></div>}
     {query.trim() && !searchingNow && !searchFailed && !vaultItems.length && filter !== "commands" && <p className="prism-search-feedback">{filter === "messages" ? "No matching messages in these results." : "No matching notes."} <span>Try a name, phrase, or related idea.</span></p>}
     {filter === "commands" && !filteredCommands.length && <p className="prism-search-feedback">No matching commands.</p>}
   </>;
-  // Mobile: a floating sheet with the field docked at the bottom (just above the
-  // keyboard, Obsidian-style) and results scrolling above it.
+  // Phone (NP-SR-08): a full-screen Search surface — field at the top with the
+  // keyboard up at once, recent searches and pages below, 44 px rows. Sized to
+  // the visual viewport so the list ends above the keyboard.
   if (isMobile) {
     return (
       <dialog ref={dialogRef} aria-label="Search workspace" onCancel={(e) => { e.preventDefault(); e.stopPropagation(); closeCommandBar(); }}
-        className="fixed inset-0 m-0 h-dvh max-h-none w-full max-w-none border-0 bg-transparent p-0 text-[var(--text-primary)] flex flex-col justify-end"
-        style={{ zIndex: "var(--z-modal)" as unknown as number }}
-        onClick={closeCommandBar}
+        className="prism-search-fullscreen fixed inset-0 m-0 max-h-none w-full max-w-none border-0 p-0 text-[var(--text-primary)]"
+        style={{ zIndex: "var(--z-modal)" as unknown as number, height: viewportHeight ? `${viewportHeight}px` : "100dvh" }}
       >
-        <div className="sheet-backdrop absolute inset-0" style={{ background: "rgba(0,0,0,0.45)" }} />
-        <div
-          className="prism-search-sheet sheet-panel relative flex flex-col"
-          style={{
-            margin: "0 8px",
-            marginBottom: "calc(env(safe-area-inset-bottom) + 8px)",
-            borderRadius: "var(--radius-lg)",
-            maxHeight: "78dvh",
-            overflow: "hidden",
-          }}
-          onClick={(e) => e.stopPropagation()}
-        >
-          {filters}{filterBar}{status}{feedback}<div id="prism-command-results" role="listbox" aria-label="Notes and commands" style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: 6 }}>{body}</div>
-          {contextActions}{inputRow}
+        <div className="prism-search-sheet prism-search-sheet-full flex h-full flex-col" data-testid="phone-search">
+          {inputRow}{filters}{filterBar}{status}{feedback}<div id="prism-command-results" role="listbox" aria-label="Notes and commands" style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: 6 }}>{body}</div>
+          {contextActions}
         </div>
       </dialog>
     );
@@ -515,6 +580,7 @@ export function CommandBar() {
         >
           <span className="flex items-center gap-1"><kbd>↑</kbd><kbd>↓</kbd> navigate</span>
           <span className="flex items-center gap-1"><kbd>↵</kbd> open</span>
+          <span className="flex items-center gap-1"><kbd>{hint("mod", "enter")}</kbd> new tab</span>
           <span className="flex items-center gap-1"><kbd>esc</kbd> close</span>
         </div>
       </div>
@@ -536,6 +602,7 @@ function CmdRow({
   previewRanges,
   accent,
   trailing,
+  keys,
 }: {
   id: string;
   selected: boolean;
@@ -549,6 +616,8 @@ function CmdRow({
   previewRanges?: Range[];
   accent?: boolean;
   trailing?: React.ReactNode;
+  /** A keyboard shortcut for this row: a visible hint (kept out of the row's name) + aria-keyshortcuts. */
+  keys?: string[];
 }) {
   return (
     <button
@@ -556,6 +625,7 @@ function CmdRow({
       role="option"
       id={id}
       aria-selected={selected}
+      aria-keyshortcuts={keys ? ariaKeys(...keys) : undefined}
       tabIndex={-1}
       onClick={onClick}
       onMouseEnter={onHover}
@@ -581,6 +651,7 @@ function CmdRow({
         )}
       </div>
       {trailing && <span style={{ marginLeft: "auto", color: "var(--text-muted)" }}>{trailing}</span>}
+      {keys && <kbd aria-hidden="true" className="prism-command-shortcut" style={{ marginLeft: "auto" }}>{hint(...keys)}</kbd>}
     </button>
   );
 }
