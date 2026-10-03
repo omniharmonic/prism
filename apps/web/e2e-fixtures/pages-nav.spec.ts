@@ -41,6 +41,26 @@ test("a page with sub-pages is one node: it opens, discloses its children, and a
   await expect(row(page, "Roadmap")).toBeVisible();
 });
 
+// NP-SB-06
+test("tree expansion persists on this device", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto(url());
+  await expect(row(page, "Plan")).toBeVisible();
+  await expect(row(page, "Week 1")).toHaveCount(0);
+  await expand(page, "Plan");
+  await expect(row(page, "Week 1")).toBeVisible();
+  await page.reload();
+  await expect(row(page, "Week 1")).toBeVisible(); // still open, nothing clicked
+  await tree(page).getByRole("button", { name: "Collapse Plan", exact: true }).click();
+  await expect(row(page, "Week 1")).toHaveCount(0);
+  await page.reload();
+  await expect(row(page, "Plan")).toBeVisible();
+  await expect(row(page, "Week 1")).toHaveCount(0);
+  // Remembered per account + vault, and nowhere but this device's storage.
+  const keys = await page.evaluate(() => Object.keys(localStorage).filter((k) => k.startsWith("prism:tree-expanded:")));
+  expect(keys).toHaveLength(1);
+});
+
 test("Move to… moves a page with its sub-pages, and the breadcrumbs follow", async ({ page }) => {
   await page.goto(url("?open=week1"));
   await expect(page.getByRole("navigation", { name: "Document location" })).toContainText("Plan");

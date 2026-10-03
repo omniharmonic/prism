@@ -36,6 +36,7 @@ import { Spinner } from "../ui/Spinner";
 import { useQueryClient } from "@tanstack/react-query";
 import { comparePages, isUnder, orderOf, parentOf, planReorder, protectionReason, withoutTrashed } from "../../lib/pages/model";
 import { usePagesUI, type PageRef } from "../../lib/pages/store";
+import { useOptionalVaultClient } from "../../data/VaultClientContext";
 import { usePageActions } from "../../lib/pages/usePageActions";
 import { PageMenuPopover, usePageMenuItems } from "../pages/PageActionsMenu";
 import { renamePath } from "../renderers/DocumentChrome";
@@ -360,6 +361,10 @@ export function ProjectTree() {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [lastClickedId, setLastClickedId] = useState<string | null>(null);
   const [batchTrashConfirm, setBatchTrashConfirm] = useState(false);
+
+  // NP-SB-06: the tree remembers what was open, per account + vault, on this device.
+  const expansionScope = useOptionalVaultClient()?.scope?.() ?? "";
+  useEffect(() => { usePagesUI.getState().setExpandedScope(expansionScope); }, [expansionScope]);
 
   // "Collapse all" (any caller of collapseNav) bumps this counter.
   const collapseSignal = useUIStore((s) => s.navCollapseSignal);

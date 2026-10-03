@@ -18,9 +18,34 @@ export interface PageToast {
   action?: { label: string; run: () => void };
 }
 
+/** NP-SB-06: expansion persists on this device, per account + vault (`VaultClient.scope()`). */
+const EXPANDED_PREFIX = "prism:tree-expanded:";
+const EXPANDED_MAX = 500;
+function readExpanded(scope: string): Record<string, true> {
+  try {
+    const raw = JSON.parse(localStorage.getItem(EXPANDED_PREFIX + scope) ?? "[]") as unknown;
+    if (!Array.isArray(raw)) return {};
+    const out: Record<string, true> = {};
+    for (const path of raw.slice(0, EXPANDED_MAX)) if (typeof path === "string") out[path] = true;
+    return out;
+  } catch { return {}; }
+}
+function writeExpanded(scope: string | null, expanded: Record<string, true>): void {
+  if (scope === null) return;
+  try {
+    const paths = Object.keys(expanded).slice(-EXPANDED_MAX);
+    if (paths.length) localStorage.setItem(EXPANDED_PREFIX + scope, JSON.stringify(paths));
+    else localStorage.removeItem(EXPANDED_PREFIX + scope);
+  } catch { /* no storage: in-memory only */ }
+}
+
 interface PagesUIState {
   /** Expanded tree rows, keyed by the row's full (raw) path. */
   expanded: Record<string, true>;
+  /** Which account + vault `expanded` belongs to (null = not persisted yet). */
+  expandedScope: string | null;
+  /** Load this scope's remembered expansion (called by the tree when the vault is known or changes). */
+  setExpandedScope: (scope: string) => void;
   toggleExpanded: (path: string, open?: boolean) => void;
   /** Expand every ancestor of `path` (breadcrumb "show in sidebar"). */
   reveal: (path: string) => void;
@@ -48,12 +73,20 @@ let toastTimer: ReturnType<typeof setTimeout> | undefined;
 
 export const usePagesUI = create<PagesUIState>((set, get) => ({
   expanded: {},
+  expandedScope: null,
+  setExpandedScope: (scope) => {
+    if (get().expandedScope === scope) return;
+    // Rows opened before the scope was known (the reveal of the first page) are kept.
+    const carried = get().expandedScope === null ? get().expanded : {};
+    set({ expandedScope: scope, expanded: { ...readExpanded(scope), ...carried } });
+  },
   toggleExpanded: (path, open) =>
     set((s) => {
       const next = { ...s.expanded };
       const want = open ?? !next[path];
       if (want) next[path] = true;
       else delete next[path];
+      writeExpanded(s.expandedScope, next);
       return { expanded: next };
     }),
   reveal: (path) =>
@@ -61,9 +94,10 @@ export const usePagesUI = create<PagesUIState>((set, get) => ({
       const next = { ...s.expanded };
       const parts = path.split("/");
       for (let i = 1; i <= parts.length; i++) next[parts.slice(0, i).join("/")] = true;
+      writeExpanded(s.expandedScope, next);
       return { expanded: next };
     }),
-  collapseAll: () => set({ expanded: {} }),
+  collapseAll: () => { writeExpanded(get().expandedScope, {}); set({ expanded: {} }); },
 
   movePage: null,
   openMove: (page) => set({ movePage: page }),
