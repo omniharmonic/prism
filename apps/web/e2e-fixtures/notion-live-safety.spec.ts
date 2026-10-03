@@ -179,6 +179,41 @@ test("H3: an older copy is never adopted, and an event-driven re-read asks the s
   await expect(page.getByTestId("remote-update-review")).toHaveCount(0);
 });
 
+/** H3 — the outbox maps a base only across THIS device's own confirmed writes; it never launders one past a remote revision. */
+test("H3: after an offline save is delivered, a later remote edit still conflicts with the next local save", async ({ page, context }) => {
+  await ready(page);
+  await editor(page).click();
+  await page.keyboard.press("ControlOrMeta+End");
+  // Offline: the save is queued (the editor's base stays the revision it mounted from).
+  await context.setOffline(true);
+  await page.keyboard.type(" Offline line.");
+  await page.keyboard.press("ControlOrMeta+s");
+  await context.setOffline(false);
+  // Delivered: the server now holds it (revision B), and this device knows A → B was its own write.
+  await expect.poll(() => shell(page, (s) => String(s.note("workspace").content).includes("Offline line.")), { timeout: 15_000 }).toBe(true);
+  await expect(page.locator(".sync-state-header")).toHaveText("Saved", { timeout: 15_000 });
+  // A local save on top of its own delivered write is fine (A is mapped to B, not refused).
+  await page.keyboard.type(" Next.");
+  await page.keyboard.press("ControlOrMeta+s");
+  await expect.poll(() => shell(page, (s) => String(s.note("workspace").content).includes("Next.")), { timeout: 10_000 }).toBe(true);
+  // Another device edits (revision C) and this client is told; the caret is in the page, so nothing is swapped.
+  const before = await reads(page, "workspace");
+  await remoteEdit(page, "workspace", REMOTE);
+  await reRead(page, "workspace", before);
+  const remoteRevision = await shell(page, (s) => s.note("workspace").updatedAt as string);
+  await page.getByTestId("remote-update-review").getByRole("button", { name: "Keep mine" }).click();
+  await editor(page).click();
+  await page.keyboard.press("ControlOrMeta+End");
+  await page.keyboard.type(" After the remote edit.");
+  await page.keyboard.press("ControlOrMeta+s");
+  // Refused: the base named is one of this device's own revisions, never C.
+  await expect(page.locator('[data-sync-state="review"]').first()).toBeVisible({ timeout: 10_000 });
+  const last = await shell(page, (s) => s.writes.filter((w: any) => w.method === "PATCH" && w.path === "/api/notes/workspace" && "content" in (w.body ?? {})).at(-1).body);
+  expect(last.if_updated_at).not.toBe(remoteRevision);
+  expect(await shell(page, (s) => s.note("workspace").content as string)).toBe(REMOTE);
+  await expect(editor(page)).toContainText("After the remote edit.");
+});
+
 /** M1 — content edits elsewhere never refetch the tree; a changed ROW does, at once. */
 test("M1: the sidebar tree is refetched only for events that changed a row", async ({ page }) => {
   await ready(page);
