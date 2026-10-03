@@ -14,7 +14,7 @@
 import { Hono } from "hono";
 import { createHash } from "node:crypto";
 import type { Context } from "hono";
-import { resolveVaultEntry } from "../db";
+import { resolveVaultEntry, grantsForResource } from "../db";
 import { vault, vaultClient, VaultError, VaultConflictError, type Note } from "../parachute";
 import { resolveActor, requestVia, type Actor } from "../auth/actor";
 import { COLLAB_SCHEMA_VERSION } from "@prism/core/editor-schema";
@@ -495,7 +495,8 @@ api.get("/notes/:id", async (c) => {
   // Read gate on the `view` CAP: for a level-only grant this is exactly
   // atLeast(level, "view"); a caps grant that omits `view` (e.g. ["create"])
   // correctly reads nothing even though its ladder projection floors at "view".
-  if (!caps.has("view")) return c.json({ error: "forbidden" }, 403);
+  // 404, not 403: "exists but not yours" would let anyone probe paths and titles.
+  if (!caps.has("view")) return notFound(c);
   // `_caps` (P4) travels beside `_level` so a client can render the RIGHT
   // affordance instead of discovering a 403 by attempting a write: an actor with
   // `suggest` but not `edit` gets "propose this change for review" rather than a
@@ -527,6 +528,36 @@ const isPlainObject = (x: unknown): x is Record<string, unknown> => !!x && typeo
 const invalid = (c: Context, reason: string) => c.json({ error: "invalid_request", reason }, 400);
 /** The system-owned tags (`protectionReason`): a non-owner never puts a note INTO one. */
 const systemTags = (tags: string[]): string[] => tags.filter((t) => protectionReason({ tags: [t] }) !== null);
+
+/**
+ * SYSTEM NOTES — anything `protectionReason` names: integration-owned locations
+ * (messages, meetings, ClickUp tasks, people, the agent folder, the inbox), the
+ * system tags (`agent-skill`, `agent-dispatch`, `agent-session`, `alert`, `person`,
+ * `message-thread`, `message-archive`) and every `governance-*` record. A non-owner
+ * may READ one their grants reach, but never write it through the general routes —
+ * PATCH, restore, delete, properties, attachments, the collab socket and commands —
+ * whatever their grants say: a skill note is run with the vault token, a governance
+ * note carries authority (it changes only through the governance service), and an
+ * ingest note is rewritten by its integration.
+ */
+const systemNoteRefusal = (c: Context, note: Note) => {
+  const why = protectionReason(note);
+  return why ? c.json({ error: "protected", reason: why }, 403) : null;
+};
+/** One answer for "no such note" and "a note you cannot view" (no existence oracle). */
+const notFound = (c: Context) => c.json({ error: "not_found" }, 404);
+
+/**
+ * May the actor put a note into tag `t` — the PATCH `add_tags` anti-escalation rule,
+ * shared with create: they hold `create` or `organize` in that tag itself (via a tag
+ * or vault grant, evaluated against a synthetic ref carrying just that tag).
+ */
+const canAddTag = (actor: Actor, t: string): boolean => {
+  const slice = capsFor(actor, { id: "<retag>", tags: [t] });
+  return slice.has("create") || slice.has("organize");
+};
+/** A tag somebody's access hangs on: any grant (person, link, anyone, governance role) names it. */
+const tagGoverned = (vaultId: string, t: string): boolean => grantsForResource("tag", t, vaultId).length > 0 || publishedTag(vaultId, t);
 
 api.post("/notes", async (c) => {
   const actor = resolveActor(c);
@@ -560,13 +591,21 @@ api.post("/notes", async (c) => {
   // standing in that tag itself — not merely in another tag on the same note.
   const tags = [...new Set((stringTags ?? []).filter((t) => t !== TRASH_TAG))];
   if (systemTags(tags).length) return c.json({ error: "protected", reason: "Notes with a system tag are created by Prism, not by hand." }, 403);
-  const exposed = tags.filter((t) => publishedTag(resolveVaultEntry(actor.vaultId).id, t) && !capsFor(actor, { id: "<new>", tags: [t] }).has("create"));
-  if (exposed.length) return c.json({ error: "forbidden", reason: "One of those tags is published publicly. Only people who can add pages to it can use it." }, 403);
+  // EVERY tag, not just one: the `create` cap above may come from any tag on the note,
+  // so each OTHER tag must be one the actor could add with PATCH `add_tags`
+  // (`canAddTag`) — or a plain organisational tag nobody's access hangs on (no grant
+  // names it, nothing is published from it). Otherwise `create` in one folder would
+  // drop notes into every other shared folder and onto public sites.
+  const vaultKey = resolveVaultEntry(actor.vaultId).id;
+  const outside = tags.filter((t) => tagGoverned(vaultKey, t) && !canAddTag(actor, t));
+  if (outside.length) return c.json({ error: "forbidden", reason: "You can only add tags you can create or organize in." }, 403);
 
-  // PATH: the pages API's destination rules (protected / exported / under the Trash).
+  // PATH: the pages API's destination rules — protected / exported / under the Trash,
+  // and (as for a move) `create` or `organize` on the destination's parent page; the
+  // top level and plain folders are the owner's.
   let path: string | undefined;
   if (typeof body.path === "string") {
-    const placed = await placementRefusal(resolveVaultEntry(actor.vaultId), body.path);
+    const placed = await placementRefusal(resolveVaultEntry(actor.vaultId), body.path, actor);
     if ("status" in placed) return c.json(placed.body, placed.status);
     path = placed.path;
   }
@@ -611,6 +650,9 @@ api.patch("/notes/:id", async (c) => {
   }
   const noteRef = ref(note);
   const caps = capsFor(actor, noteRef);
+  if (!caps.has("view")) return notFound(c);
+  const system = systemNoteRefusal(c, note);
+  if (system) return system;
 
   // Only these six fields are ever read, and each is sent to the vault by name
   // (never the body): `links`, `tags: {add, remove}`, `force`, `if_exists`, `append`,
@@ -690,10 +732,7 @@ api.patch("/notes/:id", async (c) => {
   //     orphan the note out of their own reach (an irreversible foot-gun, and a
   //     way to make a note invisible to everyone whose access came via that tag).
   if (addTags.length) {
-    const forbidden = addTags.filter((t) => {
-      const slice = capsFor(actor, { id: "<retag>", tags: [t] });
-      return !(slice.has("create") || slice.has("organize"));
-    });
+    const forbidden = addTags.filter((t) => !canAddTag(actor, t));
     if (forbidden.length) {
       return c.json(
         { error: "forbidden", reason: `cannot add tags outside your scope: ${forbidden.join(", ")}`, tags: forbidden },
@@ -726,8 +765,6 @@ api.patch("/notes/:id", async (c) => {
   // may add to; this older route never did, and still does not.)
   let newPath: string | undefined;
   if (canPath && wantsPath && body.path !== note.path) {
-    const why = protectionReason(note);
-    if (why) return c.json({ error: "protected", reason: why }, 403);
     const placed = await placementRefusal(resolveVaultEntry(actor.vaultId), body.path);
     if ("status" in placed) return c.json(placed.body, placed.status);
     newPath = placed.path;
@@ -809,7 +846,9 @@ async function viewableNote(c: Context, need: Cap): Promise<{ note: Note } | Res
   } catch (e) {
     return vaultErr(c, e);
   }
-  if (!capsFor(actor, ref(note)).has(need)) return c.json({ error: "forbidden" }, 403);
+  const caps = capsFor(actor, ref(note));
+  if (!caps.has("view")) return notFound(c);
+  if (!caps.has(need)) return c.json({ error: "forbidden" }, 403);
   return { note };
 }
 
@@ -842,6 +881,8 @@ api.get("/notes/:id/versions/:ix", async (c) => {
 api.post("/notes/:id/restore", async (c) => {
   const gate = await viewableNote(c, "edit");
   if (gate instanceof Response) return gate;
+  const system = systemNoteRefusal(c, gate.note);
+  if (system) return system;
   if (isLocked(gate.note)) return c.json({ error: "locked", reason: "This page is locked. Unlock it to restore a version." }, 423);
   const body = await c.req.json<{ version_ix?: unknown; if_updated_at?: unknown }>().catch(() => ({}) as { version_ix?: unknown; if_updated_at?: unknown });
   const ix = body?.version_ix;
@@ -892,6 +933,9 @@ api.delete("/notes/:id", async (c) => {
   const subject = actorSubject(actor);
   const noteRef = ref(note);
   const caps = capsFor(actor, noteRef);
+  if (!caps.has("view")) return notFound(c);
+  const system = systemNoteRefusal(c, note);
+  if (system) return system;
   const isCreator = !!subject && noteRef.creator === subject;
   // Either path suffices: the pre-caps rule (your OWN note, with edit on it), or
   // the explicit `delete` cap — the composable way to say "may clean up this

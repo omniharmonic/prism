@@ -826,25 +826,37 @@ export async function rollbackNote(
 // merge converges to mirrors via the existing CRDT bridge — the hub whose
 // governance gates the merge IS the canonical hub.
 
-/** Fork a note: copy content+tags+metadata, stamp ancestry, audit. */
+/**
+ * Fork a note: copy content+tags+metadata, stamp ancestry, audit. The fork is
+ * PRIVATE TO THE FORKER (`prism_creator` = them, `prism_visibility: "private"`): it
+ * is a personal working copy whose only way back is a merge proposal, so it must not
+ * appear in the origin's shared folder (it keeps the tags) for people who never asked
+ * for it — and forking must not be a way to create inside a tag without `create`.
+ * The origin's reserved metadata (creator, lock, trash, order, writer stamp) is not
+ * inherited. The caller (the route) has already checked the forker may VIEW the
+ * origin; `keepPath: false` drops the path (an exported/protected location).
+ */
 export async function forkNote(
   vault: ServiceVault,
   noteId: string,
   by: string,
+  opts: { keepPath?: boolean } = {},
 ): Promise<{ id: string; forkedFrom: string }> {
   const origin = await vault.getNote(noteId);
   // A fork is a new note: it never inherits the origin's governance signature
   // (which is bound to the origin's id anyway and would not verify).
   const { [GOV_SIG_FIELD]: _sig, ...originMeta } = origin.metadata ?? {};
   const metadata: Record<string, unknown> = {
-    ...originMeta,
+    ...stripReservedContentMeta(originMeta),
     forked_from: origin.id,
     forked_at: nowIso(),
     forked_by: by,
+    prism_creator: by,
+    prism_visibility: "private",
   };
   const fork = await vault.createNote({
     content: origin.content,
-    ...(origin.path ? { path: `${origin.path}-fork-${Date.now().toString(36)}` } : {}),
+    ...(origin.path && opts.keepPath !== false ? { path: `${origin.path}-fork-${Date.now().toString(36)}` } : {}),
     metadata,
     tags: origin.tags ?? [],
   });

@@ -322,8 +322,8 @@ test("a governance member reaches #medicine notes through the real gateway — a
   assert.equal(patched.status, 200, "in scope: writable (the edit cap)");
   assert.equal(fv.notes.get("med1")!.content, "<p>yarrow, revised</p>");
 
-  assert.equal((await jreq(api, "/notes/fin1", member)).status, 403, "out of scope: invisible");
-  assert.equal((await jreq(api, "/notes/fin1", member, "PATCH", { content: "x" })).status, 403);
+  assert.equal((await jreq(api, "/notes/fin1", member)).status, 404, "out of scope: invisible");
+  assert.equal((await jreq(api, "/notes/fin1", member, "PATCH", { content: "x" })).status, 404);
 
   const listed = (await body(await jreq(api, "/notes", member))) as Array<{ id: string }>;
   assert.deepEqual(listed.map((n) => n.id), ["med1"], "listing is bounded by the granted tag");
@@ -339,7 +339,7 @@ test("revoking the membership revokes the access, through the amendment path", a
   assert.equal(res.status, 200);
 
   assert.deepEqual(grantsForUser(MEMBER, "primary"), [], "the compiled grant is gone");
-  assert.equal((await jreq(api, "/notes/med1", cookieFor(MEMBER))).status, 403, "access ends with the role");
+  assert.equal((await jreq(api, "/notes/med1", cookieFor(MEMBER))).status, 404, "access ends with the role");
 });
 
 test("amending a role's capabilities re-materializes the grants it confers", async () => {

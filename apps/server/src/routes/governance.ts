@@ -19,6 +19,8 @@ import { Hono, type Context } from "hono";
 import { config } from "../config";
 import { vault } from "../parachute";
 import { resolveActor } from "../auth/actor";
+import type { Note } from "../parachute";
+import { roleFloor } from "../roles";
 import {
   activeRolesForSubject,
   isLocked,
@@ -40,11 +42,11 @@ import {
 } from "../governance";
 import { roleAtLeast } from "../roles";
 import { resolveVaultEntry } from "../db";
-import { placementRefusal } from "../pages";
-import { protectionReason, TRASH_TAG } from "@prism/core/pages";
+import { placementRefusal, exportedLocation } from "../pages";
+import { protectionReason, isProtectedPath, TRASH_TAG } from "@prism/core/pages";
 import { reconcileGovernanceGrants } from "../governance-grants";
 import { notifyVoters } from "../governance-notify";
-import { expandLevel, isCap, type Cap } from "../permissions";
+import { expandLevel, effectiveCaps, isCap, type Cap } from "../permissions";
 import {
   GOV_TAGS,
   parseProposal,
@@ -380,6 +382,30 @@ governance.get("/proposals/:id", async (c) => {
   return c.json({ proposal, votes, evaluation, payload });
 });
 
+/**
+ * A note the CALLER may act on by id: a strict note id (never a path/title alias the
+ * vault would resolve), that exists, and that their own grants let them VIEW. Null
+ * for anything else — the caller answers 404, so "missing" and "not yours" look the
+ * same. Governance routes run with the vault token; without this a member could
+ * fork, or open an edit proposal against, a note they cannot see.
+ */
+const NOTE_ID = /^[A-Za-z0-9_-]{1,128}$/;
+async function viewableNote(c: Context, id: string): Promise<Note | null> {
+  if (!NOTE_ID.test(id)) return null;
+  const actor = resolveActor(c);
+  if (actor.kind !== "user") return null;
+  const note = await vault.getNote(id).catch(() => null);
+  if (!note || note.id !== id) return null;
+  const ref = {
+    id: note.id,
+    tags: note.tags ?? [],
+    creator: (note.metadata?.prism_creator as string | undefined) ?? null,
+    visibility: (note.metadata?.prism_visibility === "private" ? "private" : "workspace") as "private" | "workspace",
+  };
+  return effectiveCaps(actor.grants, ref, roleFloor(actor.role), actor.email).has("view") ? note : null;
+}
+const SYSTEM_NOTE = "system notes (integration-owned, agent and governance records) cannot be changed or copied this way";
+
 /** Open a proposal. Proposing ≠ deciding — any member may open one. The payload
  *  is a JSON-encoded GovChange for governance amendments. */
 governance.post("/proposals", async (c) => {
@@ -388,6 +414,11 @@ governance.post("/proposals", async (c) => {
   const target = String(b.target ?? "");
   if (!action) return c.json({ error: "bad_request", detail: "action required" }, 400);
   if (!hasStanding(c, await loadGovernance(vault, config.ownerEmail))) return noStanding(c);
+  if (action === "edit_note") {
+    const note = await viewableNote(c, target);
+    if (!note) return c.json({ error: "not_found" }, 404);
+    if (protectionReason(note)) return c.json({ error: "bad_request", detail: SYSTEM_NOTE }, 400);
+  }
   const payload = typeof b.payload === "string" ? b.payload : JSON.stringify(b.payload ?? {});
   const openedBy = email(c);
   const { id } = await openProposal(vault, { action, target, payload, openedBy });
@@ -409,6 +440,14 @@ governance.post("/content/propose", async (c) => {
   const target = String(b.target ?? "");
   if (action === "edit_note" && !target) return c.json({ error: "bad_request", detail: "edit_note requires a target note id" }, 400);
   if (!hasStanding(c, await loadGovernance(vault, config.ownerEmail))) return noStanding(c);
+
+  // The proposer must be able to VIEW what they propose to change (404 otherwise —
+  // missing and unviewable look the same), and a system note is never a target.
+  if (action === "edit_note") {
+    const note = await viewableNote(c, target);
+    if (!note) return c.json({ error: "not_found" }, 404);
+    if (protectionReason(note)) return c.json({ error: "bad_request", detail: SYSTEM_NOTE }, 400);
+  }
 
   const payload: ContentPayload = coerceContentPayload(b);
   try {
@@ -538,6 +577,10 @@ governance.post("/proposals/:id/apply", async (c) => {
     // /proposals route (raw payload), or before these rules existed.
     const refused = await contentPayloadRefusal(proposal.action, cp);
     if (refused) return c.json({ error: "bad_payload", detail: refused }, 400);
+    if (proposal.action === "edit_note") {
+      const targetNote = await vault.getNote(proposal.target).catch(() => null);
+      if (targetNote && protectionReason(targetNote)) return c.json({ error: "bad_payload", detail: SYSTEM_NOTE }, 400);
+    }
     const result = await applyContentProposal(vault, proposal, cp, { author: me, autoPublish: ev.policy.autoPublish });
     await setProposalState(vault, proposal.id, result.published ? "applied" : "approved");
     await recordAudit(vault, {
@@ -613,8 +656,15 @@ governance.post("/fork", async (c) => {
   const b = await c.req.json().catch(() => ({}));
   const noteId = String(b.noteId ?? "");
   if (!noteId) return c.json({ error: "bad_request", detail: "noteId required" }, 400);
+  // The forker must be able to VIEW the source (strict id; missing == unviewable ==
+  // 404), and a system note is never copied (a forked skill would run twice).
+  const origin = await viewableNote(c, noteId);
+  if (!origin) return c.json({ error: "not_found" }, 404);
+  if (protectionReason(origin)) return c.json({ error: "forbidden", detail: SYSTEM_NOTE }, 403);
+  // The fork is private to the forker; it leaves an exported folder's path behind.
+  const keepPath = !!origin.path && !isProtectedPath(origin.path) && !exportedLocation(resolveVaultEntry().id, origin.path);
   try {
-    const fork = await forkNote(vault, noteId, email(c));
+    const fork = await forkNote(vault, origin.id, email(c), { keepPath });
     return c.json({ ok: true, ...fork }, 201);
   } catch (e) {
     return c.json({ error: "fork_failed", detail: (e as Error).message }, 400);
@@ -624,8 +674,18 @@ governance.post("/fork", async (c) => {
 /** Propose merging a fork's content back into its origin — an ordinary
  *  edit_note proposal, gated by the origin's per-tag policy like any change. */
 governance.post("/forks/:id/propose-merge", async (c) => {
+  // The caller must be able to view the fork (it is private to its forker) AND the
+  // origin it would change.
+  const fork = await viewableNote(c, c.req.param("id"));
+  if (!fork) return c.json({ error: "not_found" }, 404);
+  const originId = String(fork.metadata?.forked_from ?? "");
+  if (originId) {
+    const origin = await vault.getNote(originId).catch(() => null);
+    if (origin && !(await viewableNote(c, origin.id))) return c.json({ error: "not_found" }, 404);
+    if (origin && protectionReason(origin)) return c.json({ error: "bad_request", detail: SYSTEM_NOTE }, 400);
+  }
   try {
-    const r = await proposeMerge(vault, c.req.param("id"), email(c));
+    const r = await proposeMerge(vault, fork.id, email(c));
     return c.json({ ok: true, ...r }, 201);
   } catch (e) {
     return c.json({ error: "merge_propose_failed", detail: (e as Error).message }, 400);

@@ -109,6 +109,7 @@ test("owner write-through: create / update / tag change / delete show up without
 test("non-owner write-through (create / edit / delete through the gateway) updates the projection", async () => {
   grantUser("m@x.test", "tag", "proj", "edit");
   fv.put({ id: "p1", path: "proj/one.md", content: "1", tags: ["proj"] });
+  fv.put({ id: "projpage", path: "proj", content: "page", tags: ["proj"] }); // the parent page a member create needs
   const cookie = sessionCookie(makeSession("m@x.test"));
   await req("/tree", { cookie }); // build
   const created = (await (await req("/notes", { method: "POST", cookie, body: JSON.stringify({ content: "c", path: "proj/two.md", tags: ["proj"] }) })).json()) as { id: string };

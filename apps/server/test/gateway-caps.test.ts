@@ -79,7 +79,7 @@ test("a caps grant without `view` cannot read (the ladder floor does not leak it
   const cookie = login("blind@test.local");
   assert.equal(grantsForResource("tag", "intake")[0]!.level, "view", "the stored ladder projection");
 
-  assert.equal((await req("/notes/n1", { cookie })).status, 403, "direct GET denied");
+  assert.equal((await req("/notes/n1", { cookie })).status, 404, "direct GET denied");
   assert.deepEqual(await (await req("/notes", { cookie })).json(), [], "list shows nothing");
   const search = await req("/search?q=secret", { cookie });
   assert.deepEqual(await search.json(), [], "search shows nothing");

@@ -25,10 +25,11 @@
  * normal Hocuspocus store path (disconnect() stores immediately), after which
  * the doc unloads if nobody else has it open.
  */
+import { protectionReason } from "@prism/core/pages";
 import * as z from "zod/v4";
 import * as Y from "yjs";
 import { effectiveCaps, effectiveLevel, atLeast, maxLevel, type Cap, type Level } from "../permissions";
-import { roleFloor } from "../roles";
+import { roleFloor, roleAtLeast } from "../roles";
 import {
   docNameFor,
   hocuspocus,
@@ -92,7 +93,7 @@ export interface CollabAccess {
  * actor's grants with its per-vault role floor and the private-to-creator
  * visibility check, projected onto the socket ladder.
  */
-export function collabAccess(actor: Pick<UserActor, "grants" | "role" | "email">, note: Pick<Note, "id" | "tags" | "metadata">): CollabAccess {
+export function collabAccess(actor: Pick<UserActor, "grants" | "role" | "email">, note: Pick<Note, "id" | "tags" | "metadata"> & { path?: string | null }): CollabAccess {
   const noteRef = {
     id: note.id,
     tags: note.tags ?? [],
@@ -102,6 +103,8 @@ export function collabAccess(actor: Pick<UserActor, "grants" | "role" | "email">
   const floor = roleFloor(actor.role);
   const lvl = effectiveLevel(actor.grants, noteRef, floor, actor.email);
   const caps = effectiveCaps(actor.grants, noteRef, floor, actor.email);
+  // System notes are read-only below workspace admin (mirrors collabLevelFor).
+  if (!roleAtLeast(actor.role, "admin") && protectionReason({ path: note.path ?? null, tags: note.tags ?? [] })) return { level: caps.has("view") ? "view" : null, caps };
   if (lvl === "own") return { level: "own", caps };
   if (!caps.has("view")) return { level: null, caps };
   const level: Level = caps.has("edit")

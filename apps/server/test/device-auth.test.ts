@@ -417,7 +417,7 @@ test("a device actor has exactly the user's grants (non-owner sees only granted 
   const list = (await (await app.request(notesPath(), { headers: h })).json()) as Array<{ id: string }>;
   assert.deepEqual(list.map((n) => n.id), ["n1"]);
   assert.equal((await app.request("/api/notes/n1", { headers: h })).status, 200);
-  assert.equal((await app.request("/api/notes/n2", { headers: h })).status, 403);
+  assert.equal((await app.request("/api/notes/n2", { headers: h })).status, 404);
   assert.equal((await app.request("/api/notes/n1", { method: "PATCH", headers: { ...h, "content-type": "application/json" }, body: JSON.stringify({ content: "x" }) })).status, 403);
   const me = (await (await app.request("/auth/me", { headers: h })).json()) as { email: string; role: string; isOwner: boolean };
   assert.equal(me.email, MEMBER);

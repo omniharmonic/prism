@@ -48,16 +48,16 @@ test("anon GET /notes returns an empty list, NOT the vault", async () => {
   assert.deepEqual(await r.json(), []);
 });
 
-test("anon GET /notes/:id on a real note is forbidden", async () => {
+test("anon GET /notes/:id on a real note is refused exactly like a missing one (404)", async () => {
   fv.put({ id: "n1", content: "secret", tags: ["private"] });
   const r = await req("/notes/n1");
-  assert.equal(r.status, 403);
+  assert.equal(r.status, 404);
 });
 
 test("anon write attempts are forbidden", async () => {
   assert.equal((await req("/notes", { method: "POST", body: "{}" })).status, 403);
   fv.put({ id: "n1", content: "x", tags: [] });
-  assert.equal((await req("/notes/n1", { method: "DELETE" })).status, 403);
+  assert.equal((await req("/notes/n1", { method: "DELETE" })).status, 404);
 });
 
 // -------------------------------------------------------------------- owner
@@ -120,7 +120,7 @@ test("a view capability gets the granted note with its level, but 403 on others"
   assert.equal(((await ok.json()) as { _level: string })._level, "view");
 
   const denied = await req(`/notes/n3?t=${encodeURIComponent(t)}`);
-  assert.equal(denied.status, 403);
+  assert.equal(denied.status, 404);
 });
 
 test("a view capability cannot write (below edit)", async () => {
@@ -229,7 +229,7 @@ test("private-to-creator: a private note in a shared folder is invisible to the 
   // Alice sees the shared note but NOT bob's private one (list + direct GET).
   const aliceList = (await (await req("/notes", { cookie: alice })).json()) as Array<{ id: string }>;
   assert.deepEqual(aliceList.map((n) => n.id).sort(), ["n2"], "private n1 hidden from the folder member's list");
-  assert.equal((await req("/notes/n1", { cookie: alice })).status, 403, "direct GET of the private note → 403");
+  assert.equal((await req("/notes/n1", { cookie: alice })).status, 404, "direct GET of the private note → 404 (indistinguishable from missing)");
   // Bob (the creator) sees his own private note.
   assert.equal((await req("/notes/n1", { cookie: bob })).status, 200);
   // Bob shares THAT ONE note with alice at view → she now sees exactly it.

@@ -27,6 +27,7 @@
  * and live in the server's settings table per (vault, tag).
  */
 import { Hono, type Context } from "hono";
+import { protectionReason } from "@prism/core/pages";
 import { bodyLimit } from "hono/body-limit";
 import { db, resolveVaultEntry } from "../db";
 import type { VaultEntry } from "../config";
@@ -545,6 +546,8 @@ async function writeProperties(actor: Actor, entry: VaultEntry, id: string, entr
       if (!caps.has("view")) return { ok: false, id, status: 404, error: "not_found" };
       if (!caps.has("edit")) return { ok: false, id, status: 403, error: "forbidden", reason: "editing properties requires edit access" };
       if (entries.some(([k]) => ACCESS_KEYS.has(k))) return { ok: false, id, status: 403, error: "forbidden" };
+      // System notes (integration-owned, agent, governance) are read-only for non-owners.
+      if (protectionReason(note)) return { ok: false, id, status: 403, error: "forbidden", reason: "this is a system note" };
       // A locked page's properties are read-only too (pages lock, owner/admin bypass).
       if (note.metadata?.prism_locked === true) return { ok: false, id, status: 423, error: "locked", reason: "This page is locked." };
     }

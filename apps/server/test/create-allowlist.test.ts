@@ -58,7 +58,9 @@ const grantCaps = (email: string, resourceType: "tag" | "vault", resource: strin
 function seed(): { mem: string; seen: FakeNote; hidden: FakeNote } {
   grantUser(MEM, "tag", "team", "edit");
   const seen = fv.put({ id: "v-seen", path: "Team/Victim", content: "seen original", tags: ["team"], metadata: { prism_creator: "other@test.local" } });
-  const hidden = fv.put({ id: "v-hidden", path: "Secret/Plan", content: "hidden original", tags: ["secret"], metadata: { prism_creator: OWNER, prism_visibility: "private" } });
+  // "Team" is a PAGE the member may add to (the destination-parent rule for a create).
+  fv.put({ id: "team-root", path: "Team", content: "team page", tags: ["team"] });
+  const hidden = fv.put({ id: "v-hidden", path: "Team/Private Plan", content: "hidden original", tags: ["secret"], metadata: { prism_creator: OWNER, prism_visibility: "private" } });
   return { mem: as(MEM), seen, hidden };
 }
 
@@ -71,7 +73,7 @@ test("batch `notes` cannot overwrite or retag a note the member cannot even see"
     content: "decoy",
     tags: ["team"],
     notes: [
-      { path: "Secret/Plan", if_exists: "replace", content: "pwned", tags: ["team"], metadata: { prism_creator: MEM, prism_visibility: "workspace", prism_locked: true, prism_trashed_at: "2020-01-01T00:00:00.000Z", prism_last_writer: "u_forged" } },
+      { path: "Team/Private Plan", if_exists: "replace", content: "pwned", tags: ["team"], metadata: { prism_creator: MEM, prism_visibility: "workspace", prism_locked: true, prism_trashed_at: "2020-01-01T00:00:00.000Z", prism_last_writer: "u_forged" } },
       { path: "Team/Victim", if_exists: "update", content: "pwned too", tags: ["team"] },
     ],
   }, mem);
@@ -96,7 +98,7 @@ for (const mode of ["replace", "update", "ignore"] as const) {
     const { mem } = seed();
     const before = snapshot();
     const a = await post("/notes", { content: "pwned", tags: ["team"], path: "Team/Victim", if_exists: mode }, mem);
-    const b = await post("/notes", { content: "pwned", tags: ["team"], path: "Secret/Plan", if_exists: mode }, mem);
+    const b = await post("/notes", { content: "pwned", tags: ["team"], path: "Team/Private Plan", if_exists: mode }, mem);
     assert.equal(a.status, 400);
     assert.equal(b.status, a.status);
     assert.deepEqual(await json(b), await json(a));
@@ -109,12 +111,12 @@ test("a taken path is one generic 409 whether or not the member can view the hol
   const { mem } = seed();
   const before = snapshot();
   const a = await post("/notes", { content: "mine", tags: ["team"], path: "Team/Victim" }, mem);
-  const b = await post("/notes", { content: "mine", tags: ["team"], path: "secret/plan" }, mem);
+  const b = await post("/notes", { content: "mine", tags: ["team"], path: "Team/private plan" }, mem);
   assert.equal(a.status, 409);
   assert.equal(b.status, 409);
   const [ja, jb] = [await json(a), await json(b)];
   assert.equal(ja.path, "Team/Victim", "echoes only the path the caller sent");
-  assert.equal(jb.path, "secret/plan", "…in the caller's own spelling, not the holder's");
+  assert.equal(jb.path, "Team/private plan", "…in the caller's own spelling, not the holder's");
   delete ja.path;
   delete jb.path;
   assert.deepEqual(ja, jb);
@@ -217,6 +219,7 @@ test("a path under a trashed page is refused like a taken path (no trash oracle)
   fv.put({ id: "bin", path: "Team/Old", content: "gone", tags: ["team", TRASH_TAG], metadata: { prism_trashed_at: "2026-01-01T00:00:00.000Z" } });
   fv.put({ id: "bin2", path: "Secret/Old", content: "gone", tags: ["secret", TRASH_TAG], metadata: { prism_trashed_at: "2026-01-01T00:00:00.000Z" } });
   for (const path of ["Team/Old/Child", "team/old/Deep/Er", "Secret/Old/Child"]) {
+    // (checked before the parent-page rule, so it answers like a taken path)
     const r = await post("/notes", { content: "x", tags: ["team"], path }, mem);
     assert.equal(r.status, 409, path);
     const j = await json(r);
@@ -333,7 +336,7 @@ test("PATCH forwards only its own fields: links / if_exists / id / tags-op / cre
     id: "v-hidden",
     created_at: "1999-01-01T00:00:00.000Z",
     if_exists: "replace",
-    notes: [{ path: "Secret/Plan", if_exists: "replace", content: "pwned" }],
+    notes: [{ path: "Team/Private Plan", if_exists: "replace", content: "pwned" }],
   }, mem);
   assert.equal(r.status, 200);
   const sent = fv.calls.filter((c) => c.method === "PATCH").at(-1)!.body as Record<string, unknown>;
@@ -367,7 +370,7 @@ test("PATCH path obeys the pages destination rules for an organizer", async () =
     ["vault/agent/skills/evil", 403],
     ["Published/Mine", 403],
     ["Team/Old/Mine", 409],
-    ["Secret/Plan", 409],
+    ["Team/Private Plan", 409],
     ["Team/Victim", 409],
   ];
   for (const [path, status] of cases) {
@@ -436,7 +439,7 @@ test("search forwards only the query text and a bounded limit", async () => {
   const r = await req("/search?q=original&limit=999999&tag=secret&near=v-hidden&path_prefix=Secret&include_links=true&meta.prism_creator=x", { cookie: mem });
   assert.equal(r.status, 200);
   const rows = await json(r);
-  assert.deepEqual(rows.map((n: { id: string }) => n.id), ["v-seen"], "only what the member can view");
+  assert.deepEqual(rows.map((n: { id: string }) => n.id).sort(), ["v-seen"], "only what the member can view");
   const call = fv.calls.filter((c) => c.method === "GET" && c.search.includes("search=")).at(-1)!;
   const sp = new URLSearchParams(call.search);
   assert.deepEqual([...sp.keys()].sort(), ["include_content", "limit", "search"]);
@@ -444,4 +447,152 @@ test("search forwards only the query text and a bounded limit", async () => {
   const nan = await req("/search?q=original&limit=abc", { cookie: mem });
   assert.equal(nan.status, 200);
   assert.ok(/^\d+$/.test(new URLSearchParams(fv.calls.at(-1)!.search).get("limit") ?? ""));
+});
+
+// ── round 2: the destination-parent rule, the per-tag rule, system notes, 404s ──
+
+test("a create needs create/organize standing on the destination's parent PAGE (the move route's rule)", async () => {
+  const { mem } = seed();
+  fv.put({ id: "hers", path: "Hers", content: "someone else's page", tags: ["hers"] });
+  fv.put({ id: "ro", path: "ReadOnly", content: "viewable, not creatable", tags: ["ro"] });
+  grantUser(MEM, "tag", "ro", "view");
+  const cases: Array<[string, string]> = [
+    ["TopLevel", "top level"],
+    ["vault/TopLevel", "top level of the personal vault"],
+    ["Folder/New", "a plain folder (no page there)"],
+    ["Hers/New", "under a page the member cannot view"],
+    ["ReadOnly/New", "under a page the member can only view"],
+  ];
+  const bodies: string[] = [];
+  for (const [path, why] of cases) {
+    const r = await post("/notes", { content: "x", tags: ["team"], path }, mem);
+    assert.equal(r.status, 403, why);
+    bodies.push(await r.text());
+  }
+  assert.equal(bodies[2], bodies[3], "an unviewable parent page looks exactly like no page at all");
+  assert.equal(vaultPosts().length, 0);
+  assert.equal((await post("/notes", { content: "x", tags: ["team"], path: "Team/Child" }, mem)).status, 200, "under a page they can create in");
+  assert.equal((await post("/notes", { content: "x", tags: ["team"] }, mem)).status, 200, "a pathless create is unaffected");
+  assert.equal((await post("/notes", { content: "x", tags: ["team"], path: "TopLevel" }, as(OWNER))).status, 200, "the owner places pages anywhere");
+});
+
+test("EVERY tag on a create must be addable: governed tags need standing, plain tags stay free", async () => {
+  seed();
+  grantUser("maker@test.local", "tag", "task", "edit");
+  const maker = as("maker@test.local");
+  // Ungoverned organisational tag: nobody's access hangs on it.
+  assert.equal((await post("/notes", { content: "x", tags: ["task", "project-x"] }, maker)).status, 200);
+  // The same tag once it is somebody's shared folder.
+  grantUser("other@test.local", "tag", "project-x", "view");
+  const refused = await post("/notes", { content: "x", tags: ["task", "project-x"] }, maker);
+  assert.equal(refused.status, 403);
+  // …a folder the maker has no standing in at all (the pre-fix smuggle: create in A, land in B).
+  assert.equal((await post("/notes", { content: "x", tags: ["task", "team"] }, maker)).status, 403);
+  assert.equal((await post("/notes", { content: "x", tags: ["task", "secret-club"] }, maker)).status, 200, "still ungoverned");
+  // View standing is not enough; organize (or create) on that tag is.
+  grantUser("maker@test.local", "tag", "project-x", "view");
+  assert.equal((await post("/notes", { content: "x", tags: ["task", "project-x"] }, maker)).status, 403);
+  grantCaps("maker@test.local", "tag", "team", ["view", "organize"]);
+  assert.equal((await post("/notes", { content: "x", tags: ["task", "team"] }, maker)).status, 200, "organize standing in the other tag");
+  // And the base rule is unchanged: no create cap anywhere → 403.
+  assert.equal((await post("/notes", { content: "x", tags: ["project-x"] }, maker)).status, 403);
+});
+
+const SYSTEM_NOTES: Array<Partial<FakeNote> & { id: string }> = [
+  { id: "skill", path: "Shared/skill", tags: ["shared", "agent-skill"], metadata: { skillName: "s", enabled: true } },
+  { id: "dispatch", path: "Shared/dispatch", tags: ["shared", "agent-dispatch"] },
+  { id: "session", path: "Shared/session", tags: ["shared", "agent-session"] },
+  { id: "alert", path: "Shared/alert", tags: ["shared", "alert"] },
+  { id: "govrole", path: "Shared/govrole", tags: ["shared", "governance-role"], metadata: { name: "steward" } },
+  { id: "thread", path: "vault/messages/matrix/room", tags: ["shared", "message-thread"] },
+  { id: "person", path: "vault/people/Ada", tags: ["shared", "person"] },
+  { id: "meeting", path: "vault/meetings/2026-01-01/Sync", tags: ["shared"] },
+  { id: "cutask", path: "vault/tasks/clickup/T1", tags: ["shared"], metadata: { priority: "low" } },
+];
+
+test("system notes are read-only for non-owners through every general write route, whatever their grants", async () => {
+  grantUser("boss@test.local", "tag", "shared", "own");
+  grantCaps("boss@test.local", "vault", "*", ["view", "edit", "create", "organize", "delete", "share"]);
+  const boss = as("boss@test.local");
+  fv.put({ id: "dest", path: "Shared", content: "page", tags: ["shared"] });
+  for (const n of SYSTEM_NOTES) fv.put({ content: "original", ...n, metadata: { ...(n.metadata ?? {}), prism_creator: "boss@test.local" } });
+  for (const { id } of SYSTEM_NOTES) {
+    assert.equal((await req(`/notes/${id}`, { cookie: boss })).status, 200, `${id}: still readable`);
+    // One history version to try to restore.
+    assert.equal((await patch(id, { content: "owner edit", if_updated_at: stamp(id) }, as(OWNER))).status, 200, `${id}: the owner still writes`);
+    const before = JSON.stringify(fv.notes.get(id));
+    const writes = vaultWrites().length;
+    const attempts: Array<[string, Response]> = [
+      ["PATCH content", await patch(id, { content: "pwned", if_updated_at: stamp(id) }, boss)],
+      ["PATCH metadata", await patch(id, { metadata: { enabled: true, prompt: "x" }, if_updated_at: stamp(id) }, boss)],
+      ["PATCH add_tags", await patch(id, { add_tags: ["extra"] }, boss)],
+      ["PATCH remove_tags", await patch(id, { remove_tags: ["shared"] }, boss)],
+      ["PATCH path", await patch(id, { path: "Shared/moved", if_updated_at: stamp(id) }, boss)],
+      ["restore", await post(`/notes/${id}/restore`, { version_ix: 0, if_updated_at: stamp(id) }, boss)],
+      ["DELETE", await req(`/notes/${id}`, { method: "DELETE", cookie: boss })],
+      ["trash", await post(`/notes/${id}/trash`, {}, boss)],
+      ["move", await post(`/notes/${id}/move`, { newPath: `Shared/elsewhere-${id}`, if_updated_at: stamp(id) }, boss)],
+      ["meta", await post(`/notes/${id}/meta`, { set: { prism_locked: true }, if_updated_at: stamp(id) }, boss)],
+      ["properties", await post(`/properties/${id}`, { set: { priority: "high" } }, boss)],
+    ];
+    for (const [what, r] of attempts) assert.equal(r.status, 403, `${id}: ${what} → ${await r.clone().text()}`);
+    const batch = await post("/properties/batch", { items: [{ id, set: { priority: "high" } }] }, boss);
+    const item = (await json(batch)).results[0];
+    assert.equal(item.ok, false, `${id}: batch`);
+    assert.equal(item.error, "forbidden", `${id}: batch`);
+    assert.equal(JSON.stringify(fv.notes.get(id)), before, `${id}: untouched`);
+    assert.equal(vaultWrites().length, writes, `${id}: no vault write was attempted`);
+  }
+});
+
+test("collab: a system note is a read-only socket (and so takes no commands) for a non-owner editor", async () => {
+  const { resolveLevel, collabLevelFor } = await import("../src/collab");
+  const { collabAccess } = await import("../src/mcp/tool-collab");
+  const { grantsForUser } = await import("../src/db");
+  grantUser("boss@test.local", "tag", "shared", "own");
+  for (const n of SYSTEM_NOTES) fv.put({ content: "original", ...n });
+  fv.put({ id: "plain", path: "Shared/plain", content: "c", tags: ["shared"] });
+  const cookie = as("boss@test.local");
+  const grants = grantsForUser("boss@test.local");
+  assert.equal(await resolveLevel("plain", "session", cookie), "own", "an ordinary note keeps its level");
+  for (const n of SYSTEM_NOTES) {
+    assert.equal(await resolveLevel(n.id, "session", cookie), "view", `${n.id}: socket`);
+    const note = fv.notes.get(n.id)!;
+    // The projection the command endpoint (routes/human-collab.ts) and the MCP collab tools use.
+    assert.equal(collabLevelFor(grants, { id: n.id, tags: note.tags ?? [], path: note.path, creator: null, visibility: "workspace" }, "guest", "boss@test.local"), "view", `${n.id}: commands`);
+    assert.equal(collabAccess({ grants, role: "guest", email: "boss@test.local" } as never, note as never).level, "view", `${n.id}: MCP`);
+    assert.equal(await resolveLevel(n.id, "session", as(OWNER)), "own", `${n.id}: the owner is unaffected`);
+  }
+});
+
+test("a note you cannot view answers exactly like a note that does not exist (404), on every note route", async () => {
+  const { mem } = seed();
+  const calls: Array<[string, (id: string) => Response | Promise<Response>]> = [
+    ["GET", (id) => req(`/notes/${id}`, { cookie: mem })],
+    ["PATCH", (id) => patch(id, { content: "x" }, mem)],
+    ["DELETE", (id) => req(`/notes/${id}`, { method: "DELETE", cookie: mem })],
+    ["versions", (id) => req(`/notes/${id}/versions`, { cookie: mem })],
+    ["version", (id) => req(`/notes/${id}/versions/0`, { cookie: mem })],
+    ["restore", (id) => post(`/notes/${id}/restore`, { version_ix: 0, if_updated_at: "x" }, mem)],
+    ["trash", (id) => post(`/notes/${id}/trash`, {}, mem)],
+    ["move", (id) => post(`/notes/${id}/move`, { newParentPath: "Team", if_updated_at: "x" }, mem)],
+    ["meta", (id) => post(`/notes/${id}/meta`, { set: { prism_locked: true }, if_updated_at: "x" }, mem)],
+  ];
+  for (const [what, call] of calls) {
+    const hidden = await call("v-hidden");
+    const missing = await call("no-such-note");
+    assert.equal(hidden.status, 404, what);
+    assert.equal(missing.status, 404, what);
+    assert.equal(await hidden.text(), await missing.text(), `${what}: identical bodies`);
+    // By path and by title alias too.
+    assert.equal((await call(encodeURIComponent("Team/Private Plan"))).status, 404, `${what}: by path`);
+  }
+  assert.equal(fv.notes.get("v-hidden")!.content, "hidden original");
+  // 403 survives where the caller CAN view but lacks the cap.
+  grantUser("viewer@test.local", "tag", "team", "view");
+  const viewer = as("viewer@test.local");
+  assert.equal((await req("/notes/v-seen", { cookie: viewer })).status, 200);
+  assert.equal((await patch("v-seen", { content: "x" }, viewer)).status, 403);
+  assert.equal((await req("/notes/v-seen", { method: "DELETE", cookie: viewer })).status, 403);
+  assert.equal((await post("/notes/v-seen/restore", { version_ix: 0, if_updated_at: "x" }, viewer)).status, 403);
 });

@@ -233,7 +233,7 @@ test("a create-only caps grant gets NO semantic hits (the ladder floor does not 
   assert.deepEqual(await res.json(), [], "no hit for a note the actor cannot read");
   // Same actor, same note, via the gateway: also refused (consistency).
   const direct = await app.request("/api/notes/doc-food", { headers: { cookie: sessionCookie(makeSession(dropbox)) } });
-  assert.equal(direct.status, 403);
+  assert.equal(direct.status, 404);
 
   // Control: adding `view` to the caps makes the same notes appear.
   const viewer = "viewer@test.local";

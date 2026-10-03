@@ -189,6 +189,7 @@ test("owner sees every note event; resync on snapshot replace; heartbeat ping", 
 test("gateway write-through emits (owner passthrough + non-owner create/patch/delete)", async () => {
   process.env.TREE_SUBSCRIBE = "0"; // lean-list build; events come from write-through only
   fv.put({ id: "p1", path: "proj/one.md", content: "1", tags: ["proj"] });
+  fv.put({ id: "projpage", path: "proj", content: "page", tags: ["proj"] }); // the parent page a member create needs
   grantUser("m@x.test", "tag", "proj", "own");
   const owner = await open({ cookie: ownerCookie() }, false);
   const member = await open({ cookie: sessionCookie(makeSession("m@x.test")) }, false);

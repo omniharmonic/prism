@@ -97,6 +97,7 @@ function resolveCaller(c: Context): Caller | null {
 const noteRef = (note: Note) => ({
   id: note.id,
   tags: note.tags ?? [],
+  path: note.path ?? null,
   creator: typeof note.metadata?.prism_creator === "string" ? note.metadata.prism_creator : null,
   visibility: (note.metadata?.prism_visibility === "private" ? "private" : "workspace") as "private" | "workspace",
 });

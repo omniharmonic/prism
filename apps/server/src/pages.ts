@@ -260,7 +260,13 @@ export type PlacementRefusal = { status: 400 | 403 | 409 | 502; body: Record<str
  * an exported folder (`exportedLocation`), not under a trashed page. Refusals name no
  * note; a trashed ancestor answers exactly like a taken path.
  */
-export async function placementRefusal(entry: VaultEntry, raw: unknown): Promise<{ path: string } | PlacementRefusal> {
+export async function placementRefusal(
+  entry: VaultEntry,
+  raw: unknown,
+  /** Pass the actor to ALSO require standing at the destination's parent page
+   *  (`destinationParentRefusal`) — a create does; the older path PATCH does not. */
+  parentFor?: Actor,
+): Promise<{ path: string } | PlacementRefusal> {
   const path = normalizePagePath(raw);
   if (!path) return { status: 400, body: { error: "invalid_request", reason: "path is not a valid page location." } };
   if (isProtectedPath(path)) return { status: 403, body: { error: "protected", reason: "That location is kept in sync by an integration." } };
@@ -276,7 +282,39 @@ export async function placementRefusal(entry: VaultEntry, raw: unknown): Promise
     const lower = path.toLowerCase();
     if (trashed.some((n) => !!n.path && isUnder(lower, n.path.toLowerCase()))) return { status: 409, body: pathUnavailable(path) };
   }
+  if (parentFor) {
+    const refused = await destinationParentRefusal(parentFor, entry, path);
+    if (refused) return refused;
+  }
   return { path };
+}
+
+/**
+ * The move route's DESTINATION rule (review H2), shared with a non-owner create: a
+ * non-admin needs `create` or `organize` on the destination's parent PAGE. With no
+ * parent page (top level, a plain folder) — or one the actor cannot even view, which
+ * must look the same — only the owner/admin may place a page there. Null = allowed.
+ * (The sharing branch replaces the caps lookup here with a page-grant-aware
+ * `createCapsAt(path, actor)`; this is the one place that asks the question.)
+ */
+export async function destinationParentRefusal(actor: Actor, entry: VaultEntry, target: string): Promise<PlacementRefusal | null> {
+  if (isAdmin(actor)) return null;
+  const parent = parentOf(target);
+  let parentPage: Note | null = null;
+  if (parent && parent !== "vault") {
+    try {
+      const p = await vaultClient(entry.id).getNote(parent);
+      if (p.path === parent && canView(actor, noteRef(p))) parentPage = p;
+    } catch {
+      parentPage = null;
+    }
+  }
+  if (!parentPage) return { status: 403, body: { error: "forbidden", reason: "Only the workspace owner can add pages at the top level or into a plain folder." } };
+  const caps = capsOf(actor, noteRef(parentPage));
+  if (!(caps.has("create") || caps.has("organize")) || isTrashed(parentPage)) {
+    return { status: 403, body: { error: "forbidden", reason: "You can’t add pages inside that page." } };
+  }
+  return null;
 }
 
 /** Live docs that LINK INTO the moved notes: store them before the path writes (review M2). */
@@ -325,7 +363,7 @@ export function createPagesApi(opts: PagesApiOptions = {}) {
     } catch (e) {
       return vaultErr(c, e);
     }
-    if (!canView(actor, noteRef(root))) return c.json({ error: "forbidden" }, 403);
+    if (!canView(actor, noteRef(root))) return c.json({ error: "not_found" }, 404);
     if (!root.path) return c.json({ error: "bad_request", reason: "This page has no location to move." }, 400);
     if (isTrashed(root)) return c.json({ error: "in_trash", reason: "Restore this page from the Trash before moving it." }, 409);
     if (body.fromPath !== undefined) return c.json({ error: "bad_request", reason: "Resume a move with its moveId." }, 400);
@@ -388,21 +426,8 @@ export function createPagesApi(opts: PagesApiOptions = {}) {
         const why = exportedLocation(entry.id, m.to);
         if (why) return c.json({ error: "forbidden", reason: `${why} Only the workspace owner can move pages there.` }, 403);
       }
-      const parent = parentOf(target);
-      let parentPage: Note | null = null;
-      if (parent && parent !== "vault") {
-        try {
-          const p = await vc.getNote(parent);
-          if (p.path === parent) parentPage = p;
-        } catch {
-          parentPage = null;
-        }
-      }
-      if (!parentPage) return c.json({ error: "forbidden", reason: "Only the workspace owner can move pages to the top level or into a plain folder." }, 403);
-      const caps = capsOf(actor, noteRef(parentPage));
-      if (!(caps.has("create") || caps.has("organize")) || isTrashed(parentPage)) {
-        return c.json({ error: "forbidden", reason: "You can’t add pages inside that page." }, 403);
-      }
+      const refused = await destinationParentRefusal(actor, entry, target);
+      if (refused) return c.json(refused.body, refused.status);
     }
 
     // Every destination must be free (case-insensitively, like the vault's path index).
@@ -497,7 +522,9 @@ export function createPagesApi(opts: PagesApiOptions = {}) {
     } catch (e) {
       return vaultErr(c, e);
     }
-    if (!canView(actor, noteRef(note))) return c.json({ error: "forbidden" }, 403);
+    if (!canView(actor, noteRef(note))) return c.json({ error: "not_found" }, 404);
+    // System notes (integration-owned, agent, governance) are not page-managed by non-owners.
+    if (!isAdmin(actor) && protectionReason(note)) return c.json({ error: "protected", reason: protectionReason(note) }, 403);
     if (!canOrganize(actor, noteRef(note))) return c.json({ error: "forbidden", reason: "Changing this needs organize access to the page." }, 403);
     if (typeof body!.if_updated_at !== "string") return c.json({ error: "precondition_required" }, 428);
     try {
@@ -526,7 +553,7 @@ export function createPagesApi(opts: PagesApiOptions = {}) {
     } catch (e) {
       return vaultErr(c, e);
     }
-    if (!canView(actor, noteRef(root))) return c.json({ error: "forbidden" }, 403);
+    if (!canView(actor, noteRef(root))) return c.json({ error: "not_found" }, 404);
     if (isTrashed(root)) return c.json({ ok: true, rootId: root.id, trashed: [], already: true });
     let group: Note[];
     try {
@@ -614,7 +641,7 @@ export function createPagesApi(opts: PagesApiOptions = {}) {
     } catch (e) {
       return vaultErr(c, e);
     }
-    if (!canView(actor, noteRef(root))) return c.json({ error: "forbidden" }, 403);
+    if (!canView(actor, noteRef(root))) return c.json({ error: "not_found" }, 404);
     if (!isTrashed(root)) return c.json({ ok: true, restored: [], already: true });
     let group: Note[];
     try {
@@ -653,7 +680,7 @@ export function createPagesApi(opts: PagesApiOptions = {}) {
     } catch (e) {
       return vaultErr(c, e);
     }
-    if (!canView(actor, noteRef(root))) return c.json({ error: "forbidden" }, 403);
+    if (!canView(actor, noteRef(root))) return c.json({ error: "not_found" }, 404);
     // Two deliberate steps: only something already in the Trash can be deleted for good.
     if (!isTrashed(root)) return c.json({ error: "not_in_trash", reason: "Move the page to Trash first." }, 409);
     let group: Note[];

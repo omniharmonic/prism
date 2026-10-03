@@ -461,3 +461,12 @@ test("LOW: the owning-note cache is at most 5 s — a trashed page stops serving
   t.mock.timers.tick(5_001);
   assert.equal((await get(id, { cookie: m })).status, 404);
 });
+
+test("system notes take no uploads from a non-owner, whatever their grants", async () => {
+  fv.put({ id: "skill1", path: "Docs/Skill", content: "prompt", tags: ["doc", "agent-skill"] });
+  fv.put({ id: "meet1", path: "vault/meetings/2026-01-01/Sync", content: "m", tags: ["doc"] });
+  grantUser(MEMBER, "tag", "doc", "own");
+  const c = login(MEMBER);
+  assert.equal((await upload("n1", PNG, { cookie: c })).status, 201, "an ordinary note still takes the upload");
+  for (const id of ["skill1", "meet1"]) assert.equal((await upload(id, PNG, { cookie: c })).status, 403, id);
+});
