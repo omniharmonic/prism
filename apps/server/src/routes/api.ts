@@ -43,6 +43,8 @@ import { isTrashed, isLocked, isOwnerOnlyMeta, protectionReason, systemNoteReaso
 import { createPagesApi, placementRefusal, pathUnavailable, publishedTag } from "../pages";
 import { notificationsRoutes, restMentionHook } from "./notifications";
 import { canonicalTag, canonicalTags, canonicalTagsStrict } from "../tags";
+import { exportApi } from "./export";
+import { createImportApi } from "./import";
 
 export const api = new Hono();
 
@@ -251,6 +253,10 @@ api.route("/", attachmentsApi);
 api.route("/", searchApi); // GET /search (all actors; filters + match offsets, wave 2E) — before the owner short-circuit
 // Notifications inbox, reminders, access requests (wave 2A): before the owner passthrough.
 api.route("/", notificationsRoutes);
+// Import / export (wave 3A): Prism routes, before the owner passthrough. An import
+// writes notes outside the owner proxy: drop cached owner reads as it goes.
+api.route("/", exportApi);
+api.route("/", createImportApi({ onWrite: () => readCache.clear() }));
 
 api.get("/graph/neighborhood", async (c) => {
   const actor = resolveActor(c);

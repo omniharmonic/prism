@@ -20,6 +20,7 @@
     "./mentions": "./src/lib/tiptap/MentionParse.ts",
     "./pages": "./src/lib/pages/model.ts",
     "./search": "./src/lib/search/match.ts",
+    "./import-export": "./src/lib/import-export/index.ts",
     "./styles/*": "./src/styles/*",
     "./messages": "./src/lib/matrix/types.ts"
   },
