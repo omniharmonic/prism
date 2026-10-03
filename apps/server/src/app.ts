@@ -66,7 +66,8 @@ export function createApp(): Hono {
     if (!c.res.headers.has("Content-Security-Policy")) c.header("Content-Security-Policy", CSP);
     c.header("X-Content-Type-Options", "nosniff");
     c.header("Referrer-Policy", "strict-origin-when-cross-origin");
-    c.header("X-Frame-Options", "DENY");
+    // A route may allow same-origin framing of its own response (PDF attachment preview).
+    if (!c.res.headers.has("X-Frame-Options")) c.header("X-Frame-Options", "DENY");
     c.header("Permissions-Policy", "geolocation=(), microphone=(), camera=()");
     if (config.appOrigin.startsWith("https")) {
       c.header("Strict-Transport-Security", "max-age=31536000; includeSubDomains");

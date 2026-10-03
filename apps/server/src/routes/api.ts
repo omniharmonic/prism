@@ -29,6 +29,7 @@ import { peopleApi } from "./people";
 import { humanCollabApi } from "./human-collab";
 import { transcriptsApi } from "./transcripts";
 import { databasesApi } from "./databases";
+import { attachmentsApi } from "./attachments";
 import { graphNeighborhood } from "../graph";
 import { buildWikilinkIndex, resolveWikilink, noteLinkTitle } from "@prism/core/wikilinks";
 import { isTrashed, isLocked, isOwnerOnlyMeta, TRASH_TAG, TRASH_META, LOCK_KEY, ORDER_KEY } from "@prism/core/pages";
@@ -211,6 +212,8 @@ api.route("/", createPagesApi({ onWrite: () => readCache.clear() }));
 api.use("/properties/*", async (c, next) => { await next(); readCache.clear(); });
 api.use("/schemas/*", async (c, next) => { await next(); if (c.req.method !== "GET") readCache.clear(); });
 api.route("/", databasesApi);
+// Attachments (upload/serve via vault storage) + link previews; before the owner passthrough.
+api.route("/", attachmentsApi);
 
 api.get("/graph/neighborhood", async (c) => {
   const actor = resolveActor(c);
