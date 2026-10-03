@@ -662,3 +662,70 @@ test("M-5: a discard waits for the document's store — a store that snapshotted
   assert.equal(unsavedRow("m5c"), null);
   await holder.disconnect();
 });
+
+// ── M-6 ─────────────────────────────────────────────────────────────────────
+
+type Tuning = { noticeTtlMs: number; busyWaitMs?: number; historyCallMs?: number; historyDeadlineMs?: number };
+function tune(patch: Partial<Tuning>): void {
+  const tuning = collab.collabTuning as Tuning;
+  const was = { ...tuning };
+  Object.assign(tuning, patch);
+  restore.push(() => void Object.assign(tuning, was));
+}
+/** While `during` runs, every read of `id`'s history takes `ms` (a hung vault) — unless the caller gives up first (its abort signal is honoured). */
+async function slowHistory<T>(id: string, ms: number, during: () => Promise<T>): Promise<T> {
+  const inner = globalThis.fetch;
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
+    if (!url.pathname.includes(`/notes/${id}/versions`)) return inner(input, init);
+    return new Promise<Response>((resolve, reject) => {
+      const timer = setTimeout(() => resolve(inner(input, init)), ms);
+      init?.signal?.addEventListener("abort", () => {
+        clearTimeout(timer);
+        reject(init.signal!.reason ?? new Error("aborted"));
+      });
+    });
+  }) as typeof fetch;
+  try {
+    return await during();
+  } finally {
+    globalThis.fetch = inner;
+  }
+}
+/** A page whose typing was written to the vault with the acknowledgement LOST, then edited there by someone else. */
+async function lostAckThenExternal(id: string, external: (content: string) => string): Promise<Y.Doc> {
+  fv.put({ id, tags: ["garden"], content: "<p>start</p>", updatedAt: T0 });
+  const doc = await loadDocumentState(id, new Y.Doc());
+  type(doc, "edit one");
+  await intercept(isPatch(id), lostAck, () => storeDocumentState(id, doc));
+  assert.equal(vaultContent(id), "<p>start</p><p>edit one</p>", "the write DID land");
+  await externalEdit(id, external);
+  return doc;
+}
+const eachOnce = (html: string, words: string[]) => words.map((w) => count(html, w));
+
+test("M-6: a history lookup that hangs cannot hold a page's load — it gives up at its deadline, and the merge is decided without it", { timeout: 60_000 }, async () => {
+  tune({ historyCallMs: 300, historyDeadlineMs: 700 });
+  await lostAckThenExternal("m6", (c) => c + "<p>EXTERNAL</p>");
+  resetReconcileState(); // a restart: nothing in memory
+  const started = performance.now();
+  const reopened = await slowHistory("m6", 5000, () => loadDocumentState("m6", new Y.Doc()));
+  const took = performance.now() - started;
+  assert.ok(took < 2500, `the load waited ${took.toFixed(0)} ms on the note's history`);
+  assert.deepEqual(eachOnce(yDocToHtml(reopened), ["start", "edit one", "EXTERNAL"]), [1, 1, 1], yDocToHtml(reopened));
+});
+
+test("M-6: the reconciler does not make other documents wait for one document's history lookup", { timeout: 60_000 }, async () => {
+  tune({ historyCallMs: 4000, historyDeadlineMs: 6000 });
+  const slow = await lostAckThenExternal("m6a", (c) => c + "<p>EXTERNAL A</p>");
+  fv.put({ id: "m6b", tags: ["garden"], content: "<p>start</p>", updatedAt: T0 });
+  const plain = await loadDocumentState("m6b", new Y.Doc());
+  vaultWrite("m6b", LATER(1), { content: "<p>start</p><p>EXTERNAL B</p>" });
+  await slowHistory("m6a", 2500, async () => {
+    const tick = reconcileLoadedDocs({ documents: new Map([["m6a", slow], ["m6b", plain]]) });
+    await until("the other document absorbed its external edit", () => /EXTERNAL B/.test(text(plain)), 1500);
+    assert.doesNotMatch(text(slow), /EXTERNAL A/, "(the slow one is still waiting for its history)");
+    await tick;
+  });
+  assert.deepEqual(eachOnce(yDocToHtml(slow), ["start", "edit one", "EXTERNAL A"]), [1, 1, 1], yDocToHtml(slow));
+});

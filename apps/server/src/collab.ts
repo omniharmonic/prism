@@ -735,14 +735,36 @@ const LANDED_VERSIONS_SEARCHED = 6;
  */
 async function landedAttempt(vaultId: string, noteId: string, meta: DocMeta | null): Promise<string | null | undefined> {
   if (!meta || meta.attempts.length === 0) return null;
+  // The lookup sits on the load path, inside the store and in the reconciler: it
+  // may never hold them (M-6). Each vault call is aborted after `historyCallMs`,
+  // and the whole lookup is abandoned — answer "cannot tell" — at `historyDeadlineMs`,
+  // whether or not a call honoured its abort.
+  const deadline = Date.now() + collabTuning.historyDeadlineMs;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const gaveUp = new Promise<undefined>((resolve) => {
+    timer = setTimeout(() => resolve(undefined), collabTuning.historyDeadlineMs);
+    (timer as { unref?: () => void }).unref?.();
+  });
   try {
-    const vault = vaultClient(vaultId);
-    const { versions, total } = await vault.listVersions(noteId, LANDED_VERSIONS_SEARCHED, 0);
+    return await Promise.race([searchHistoryForAttempt(vaultId, noteId, meta, deadline), gaveUp]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+async function searchHistoryForAttempt(vaultId: string, noteId: string, meta: DocMeta, deadline: number): Promise<string | null | undefined> {
+  /** A client whose every call is cut off at the per-call limit or the lookup's deadline, whichever is sooner. */
+  const vault = () => {
+    const left = deadline - Date.now();
+    if (left <= 0) throw new Error("history lookup deadline");
+    return vaultClient(vaultId, { timeoutMs: Math.max(1, Math.min(left, collabTuning.historyCallMs)) });
+  };
+  try {
+    const { versions, total } = await vault().listVersions(noteId, LANDED_VERSIONS_SEARCHED, 0);
     const since = meta.sourceUpdatedAt ?? 0;
     for (const v of versions) {
       // A version superseded no later than the snapshot's own source is the base or older.
       if (toMs(v.superseded_at) <= since) return null;
-      const full = await vault.getVersion(noteId, v.version_ix);
+      const full = await vault().getVersion(noteId, v.version_ix);
       if (typeof full.content !== "string") return undefined;
       const hash = contentHash(full.content);
       if (meta.attempts.includes(hash)) return hash;
@@ -794,7 +816,7 @@ export type CollabClientMessage =
  */
 const pendingNotices = new Map<string, { message: CollabClientMessage; until: number }>();
 /** Tunables tests shorten. */
-export const collabTuning = { noticeTtlMs: 15_000, /** How long a load / store waits between tries for a converter slot. */ busyWaitMs: 1500 };
+export const collabTuning = { noticeTtlMs: 15_000, /** How long a load / store waits between tries for a converter slot. */ busyWaitMs: 1500, /** One vault call of a history lookup / the whole lookup (`landedAttempt`). */ historyCallMs: 2500, historyDeadlineMs: 6000 };
 function tellClients(documentName: string, message: CollabClientMessage): void {
   try {
     hocuspocus.documents.get(documentName)?.broadcastStateless(JSON.stringify(message));
@@ -830,6 +852,10 @@ function reconcileBaseline(documentName: string, vaultId: string, noteId: string
  * is what makes an MCP-agent edit appear in open editors within one interval.
  */
 export async function reconcileLoadedDocs(server: LiveDocs): Promise<void> {
+  // Folds that first need a look at the note's HISTORY (a snapshot with unconfirmed
+  // writes met an external edit) are finished after every other document had its
+  // turn, side by side: one slow vault must not delay everyone else's page (M-6).
+  const afterHistory: Array<Promise<void>> = [];
   for (const [name, doc] of server.documents) {
     const d = doc as Y.Doc & { isLoading?: boolean; getConnectionsCount?: () => number };
     if (d.isLoading) continue; // mid-load — onLoadDocument owns seeding
@@ -880,24 +906,38 @@ export async function reconcileLoadedDocs(server: LiveDocs): Promise<void> {
       dropConnections(name);
       continue;
     }
+    const content = note.content;
+    /** Synchronous: apply the external edit (the awaits before it may have changed everything — checked first). */
+    const fold = (landed: string | null | undefined): void => {
+      // The document may have unloaded, or been flagged, meanwhile.
+      if (server.documents.get(name) !== doc || d.isLoading || isDocBlocked(name)) return;
+      // …and so may the note (a store of ours, another fold): only apply what is still news.
+      if (noteMs <= reconcileBaseline(name, target.vaultId, target.noteId)) return;
+      const row = getDocState(target.noteId, target.vaultId);
+      const folded = foldVaultContent(doc, kind, content, prepared, mergeBases(row, landed));
+      // Persist the merged document WITH its new base, together: a snapshot must never
+      // claim a base (the new vault content) that its state does not contain.
+      if (row) {
+        saveDocAhead(target.noteId, Y.encodeStateAsUpdate(doc), target.vaultId);
+        rebaseDoc(target.noteId, target.vaultId, { source: noteMs, hash: hash ?? contentHash(content), base: folded.base });
+      }
+      lastReconciled.set(name, noteMs);
+      // The document was ahead of a base nobody kept: what it held beyond the vault's copy is gone.
+      if (folded.wholesale && row?.ahead) tellClients(name, { type: "prism:notice", code: "external-replaced" });
+    };
     // Writes of ours that were never confirmed: did one land before this edit was made?
-    const landed = await landedAttempt(target.vaultId, target.noteId, meta);
-    // The conversion was awaited: the document may have unloaded, or been flagged, meanwhile.
-    if (server.documents.get(name) !== doc || d.isLoading || isDocBlocked(name)) continue;
-    // …and so may the note (a store of ours, another fold): only apply what is still news.
-    if (noteMs <= reconcileBaseline(name, target.vaultId, target.noteId)) continue;
-    const row = getDocState(target.noteId, target.vaultId);
-    const fold = foldVaultContent(doc, kind, note.content, prepared, mergeBases(row, landed));
-    // Persist the merged document WITH its new base, together: a snapshot must never
-    // claim a base (the new vault content) that its state does not contain.
-    if (row) {
-      saveDocAhead(target.noteId, Y.encodeStateAsUpdate(doc), target.vaultId);
-      rebaseDoc(target.noteId, target.vaultId, { source: noteMs, hash: hash ?? contentHash(note.content), base: fold.base });
+    // Only the note's history can say — asked off this loop.
+    if (meta && meta.attempts.length > 0) {
+      afterHistory.push(
+        landedAttempt(target.vaultId, target.noteId, meta)
+          .then(fold)
+          .catch((e) => console.error(`[collab] ${name}: reconcile failed:`, e instanceof Error ? e.message : "unknown")),
+      );
+      continue;
     }
-    lastReconciled.set(name, noteMs);
-    // The document was ahead of a base nobody kept: what it held beyond the vault's copy is gone.
-    if (fold.wholesale && row?.ahead) tellClients(name, { type: "prism:notice", code: "external-replaced" });
+    fold(null);
   }
+  await Promise.all(afterHistory);
 }
 
 /**
