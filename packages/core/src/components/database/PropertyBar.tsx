@@ -22,7 +22,9 @@ import {
   type PropertyDef,
   type PropertyKind,
 } from "../../lib/database/schema";
-import { isFieldKey } from "../../lib/database/query";
+import { isFieldKey, noteTitle, runQuery, type QueryRow, type QuerySpec } from "../../lib/database/query";
+import { asWikilink, linkLabel, linkTarget } from "../../lib/database/schema";
+import { PropertyConflictError } from "../../data/VaultClient";
 import { useUIStore } from "../../app/stores/ui";
 import { queryKeys } from "../../lib/parachute/queries";
 import { PropertyValue } from "./PropertyValue";
@@ -116,7 +118,7 @@ export function PropertyBar({ note, readOnly, onOpenAll, layout = "bar", trailin
           />
         </div>
       ))}
-      <ReverseRelations note={note} />
+      <ReverseRelations note={note} editable={editable} />
       {showTags && (
         <div className="db-prop db-prop-tags">
           <span className="db-prop-label">Tags</span>
@@ -394,9 +396,10 @@ function TagChips({ note, editable }: { note: Note; editable: boolean }) {
  * computed by query — the forward value is the only thing ever written, so the
  * two sides cannot drift. Each chip opens the linking page.
  */
-function ReverseRelations({ note }: { note: Note }) {
+function ReverseRelations({ note, editable }: { note: Note; editable: boolean }) {
   const { data } = useSchemas();
-  const reverse = useReverseRelations(note, data?.schemas ?? {});
+  const schemas = data?.schemas ?? {};
+  const reverse = useReverseRelations(note, schemas);
   if (!reverse.data?.length) return null;
   return (
     <>
@@ -413,8 +416,88 @@ function ReverseRelations({ note }: { note: Note }) {
             {!r.rows.length && <span className="db-empty">Empty</span>}
             {r.more && <span className="db-pop-path">and more</span>}
           </span>
+          {editable && note.path && <ReverseEditor note={note} tag={r.tag} propertyKey={r.key} label={r.label} multiple={schemas[r.tag]?.fields[r.key]?.type === "array"} />}
         </div>
       ))}
+    </>
+  );
+}
+
+/**
+ * Editing the reverse side (NP-DB-12): the reverse property is the SAME relation
+ * seen from the target, so adding or removing a page here writes that page's
+ * forward value — with per-field compare-and-set against the value just shown —
+ * and nothing on this page. One stored side means the two can never disagree.
+ */
+function ReverseEditor({ note, tag, propertyKey, label, multiple }: { note: Note; tag: string; propertyKey: string; label: string; multiple: boolean }) {
+  const client = useVaultClient();
+  const scope = useScope();
+  const write = usePropertyWriter();
+  const anchor = useRef<HTMLButtonElement>(null);
+  const [open, setOpen] = useState(false);
+  const [q, setQ] = useState("");
+  const [busy, setBusy] = useState("");
+  const [error, setError] = useState("");
+  const here = note.path!;
+  const candidates = useQuery({
+    queryKey: ["vault", "notes", { reverseCandidates: scope, tag, propertyKey, q }],
+    enabled: open,
+    staleTime: 5_000,
+    queryFn: async () => {
+      const spec: QuerySpec = { tags: [tag], ...(q.trim() ? { search: q.trim() } : {}), sort: [{ key: "$title", dir: "asc" }], limit: 25, fields: ["title", propertyKey] };
+      const page = client.queryNotes ? await client.queryNotes(spec) : runQuery(await client.listNotes({ tag, limit: 5000 }), spec, { limited: false });
+      return page.rows.filter((r) => r.id !== note.id);
+    },
+  });
+  const links = (v: unknown): string[] => (Array.isArray(v) ? v.map(String) : typeof v === "string" && v ? [v] : []);
+  const pointsHere = (v: unknown) => links(v).some((x) => linkTarget(x) === here);
+  const toggle = async (row: QueryRow) => {
+    const current = row.metadata[propertyKey] ?? null;
+    const on = pointsHere(current);
+    let next: unknown;
+    if (on) {
+      const rest = links(current).filter((x) => linkTarget(x) !== here);
+      next = rest.length ? (multiple ? rest : rest[0]) : null;
+    } else next = multiple ? [...links(current), asWikilink(here)] : asWikilink(here);
+    setBusy(row.id);
+    setError("");
+    try {
+      await write({ id: row.id, updatedAt: row.updatedAt }, { [propertyKey]: next }, { [propertyKey]: current });
+    } catch (e) {
+      setError(e instanceof PropertyConflictError ? `“${noteTitle(row)}” was changed somewhere else. The list is up to date now; try again.` : "That page could not be changed. You may not be able to edit it.");
+    } finally {
+      setBusy("");
+      void candidates.refetch();
+    }
+  };
+  return (
+    <>
+      <button ref={anchor} type="button" className="db-ghost focus-ring" aria-haspopup="dialog" aria-expanded={open} aria-label={`Edit ${label}`} onClick={() => setOpen((o) => !o)}><Plus size={13} aria-hidden="true" /> Edit</button>
+      <Popover anchor={anchor} open={open} onClose={() => setOpen(false)} label={`Edit ${label}`} width={320}>
+        <div className="db-pop-search">
+          <Search size={14} aria-hidden="true" />
+          <input autoFocus aria-label={`Search #${tag} pages`} placeholder="Search pages…" value={q} onChange={(e) => setQ(e.target.value)} />
+        </div>
+        <ul className="db-pop-list" role="listbox" aria-label={`${label} candidates`} aria-multiselectable="true">
+          {(candidates.data ?? []).map((row) => {
+            const on = pointsHere(row.metadata[propertyKey]);
+            const elsewhere = !on && !multiple ? links(row.metadata[propertyKey])[0] : undefined;
+            const can = row.canEdit !== false && (!row._caps || row._caps.includes("edit"));
+            return (
+              <li key={row.id} role="option" aria-selected={on}>
+                <button type="button" disabled={!can || busy !== ""} title={can ? undefined : "You can’t edit this page."} onClick={() => void toggle(row)}>
+                  <span className="db-check" data-checked={on || undefined} aria-hidden="true">{on && <Check size={12} />}</span>
+                  <span className="db-pop-title">{noteTitle(row)}</span>
+                  {elsewhere && <span className="db-pop-path">now: {linkLabel(elsewhere)}</span>}
+                </button>
+              </li>
+            );
+          })}
+          {candidates.isLoading && <li className="db-pop-empty">Searching…</li>}
+          {!candidates.isLoading && !(candidates.data ?? []).length && <li className="db-pop-empty">No pages</li>}
+        </ul>
+        {error && <p role="alert" className="db-error">{error}</p>}
+      </Popover>
     </>
   );
 }

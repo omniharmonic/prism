@@ -125,6 +125,11 @@ test("relation picker and reverse property", async ({ page }) => {
   await expect(bar.getByRole("button", { name: "Project: Beacon" })).toBeVisible();
   const q = (await fx(page)).queries.find((s: any) => s.tags[0] === "initiative");
   expect(q).toBeTruthy();
+  // The chip opens the related page: from the picker…
+  const tabs = () => page.evaluate(() => (window as any).prismUI.getState().openTabs.map((t: any) => t.noteId) as string[]);
+  await bar.getByRole("button", { name: "Project: Beacon" }).click();
+  await page.getByRole("dialog", { name: "Link Project" }).getByRole("button", { name: "Open Beacon" }).click();
+  await expect.poll(tabs).toContain("beacon");
 
   // The target page shows who links to it (read-only, computed; never written back).
   await page.goto("/e2e-fixtures/databases.html?open=atlas");
@@ -137,6 +142,58 @@ test("relation picker and reverse property", async ({ page }) => {
   await tasks.getByRole("button", { name: "Write release notes" }).click();
   await expect.poll(() => page.evaluate(() => (window as any).prismUI.getState().openTabs.map((t: any) => t.noteId))).toContain("t2");
   expect((await writes(page)).length).toBe(0);
+});
+
+// NP-DB-12 — relation chips open the related page, and the reverse property is editable from the target
+// (it writes the linking page's forward value with compare-and-set; the target page itself is never written).
+test("relation chips open pages; the reverse property edits the forward side", async ({ page }) => {
+  const tabs = () => page.evaluate(() => (window as any).prismUI.getState().openTabs.map((t: any) => t.noteId) as string[]);
+  // In a table: a plain click on an editable cell edits; ⌘/Ctrl-click on the chip opens the page.
+  await page.goto("/e2e-fixtures/databases.html");
+  await showColumns(page, ["Project"]);
+  await row(page, "Write release notes").locator(".db-link-chip", { hasText: "Atlas" }).click({ modifiers: ["ControlOrMeta"] });
+  await expect.poll(tabs).toContain("atlas");
+  // Read-only (a viewer): the chip is a link and a plain click opens it.
+  await page.goto("/e2e-fixtures/databases.html?viewer");
+  await showColumns(page, ["Project"]);
+  await row(page, "Write release notes").getByRole("link", { name: "Atlas" }).click();
+  await expect.poll(tabs).toContain("atlas");
+  await page.goto("/e2e-fixtures/databases.html?viewer");
+  await showColumns(page, ["Assignee"]);
+  await row(page, "Write release notes").getByRole("link", { name: /Sam Rivera/ }).click();
+  await expect.poll(tabs).toContain("p2");
+  expect(await writes(page)).toEqual([]);
+
+  // The reverse side on the target page: add and remove linking pages.
+  await page.goto("/e2e-fixtures/databases.html?open=atlas");
+  const tasks = page.getByRole("list", { name: "Tasks" });
+  await expect(tasks.getByRole("listitem")).toHaveCount(2);
+  await page.getByRole("button", { name: "Edit Tasks" }).click();
+  const picker = page.getByRole("dialog", { name: "Edit Tasks" });
+  await expect(picker.getByRole("option", { name: /Write release notes/ })).toHaveAttribute("aria-selected", "true");
+  await picker.getByRole("textbox", { name: "Search #task pages" }).fill("onboarding");
+  await picker.getByRole("option", { name: /Refine onboarding copy/ }).click();
+  expect((await writes(page)).at(-1)).toEqual({ id: "t3", set: { project: "[[Projects/Atlas]]" }, expect: { project: null } });
+  await expect(tasks.getByRole("listitem")).toHaveCount(3);
+  await picker.getByRole("textbox", { name: "Search #task pages" }).fill("");
+  await picker.getByRole("option", { name: /Write release notes/ }).click();
+  expect((await writes(page)).at(-1)).toEqual({ id: "t2", set: { project: null }, expect: { project: "[[Projects/Atlas]]" } });
+  await expect(tasks.getByRole("listitem")).toHaveCount(2);
+  await expect(tasks.getByRole("button", { name: "Write release notes" })).toHaveCount(0);
+  // The linking page was changed elsewhere meanwhile: refused, nothing overwritten.
+  await page.evaluate(() => { (window as any).dbFixture.conflictWith = "[[Projects/Beacon]]"; });
+  await picker.getByRole("option", { name: /Design new icon set/ }).click();
+  await expect(picker.getByRole("alert")).toContainText("“Design new icon set” was changed somewhere else");
+  expect(await page.evaluate(() => (window as any).dbFixture.notes().find((n: any) => n.id === "t4").metadata.project)).toBe("[[Projects/Beacon]]");
+  await expect(picker.getByRole("option", { name: /Design new icon set/ })).toContainText("now: Beacon");
+  // Only the linking pages were written — never the target page itself.
+  expect((await writes(page)).every((w: any) => w.id !== "atlas")).toBe(true);
+});
+
+test("the reverse property is read-only for someone who cannot edit the page", async ({ page }) => {
+  await page.goto("/e2e-fixtures/databases.html?open=atlas&viewer");
+  await expect(page.getByRole("list", { name: "Tasks" }).getByRole("listitem")).toHaveCount(2);
+  await expect(page.getByRole("button", { name: "Edit Tasks" })).toHaveCount(0);
 });
 
 test("a saved view change never shows the previous config again", async ({ page }) => {

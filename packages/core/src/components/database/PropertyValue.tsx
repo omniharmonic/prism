@@ -12,6 +12,9 @@ import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from 
 import { CalendarClock, Check, ExternalLink, Mail, Paperclip, Phone, Plus, Search, Upload, X } from "lucide-react";
 import { buildDateValue, dateRange, hasTime, parseDateParts } from "../../lib/database/dates";
 import { useVaultClient } from "../../data/VaultClientContext";
+import { useUIStore } from "../../app/stores/ui";
+import { inferContentType } from "../../lib/schemas/content-types";
+import type { Note } from "../../lib/types";
 import { serverFetch } from "../../lib/transport/serverFetch";
 import { downloadOwnAttachment, fileRef, isImageFileName, parseFileRefs, MAX_FILE_BYTES } from "../../lib/media/attachments";
 import { PropertyConflictError } from "../../data/VaultClient";
@@ -25,6 +28,7 @@ import {
   looksLikeEmail,
   looksLikePhone,
   linkLabel,
+  linkTarget,
   optionColor,
   optionLabel,
   STATUS_GROUP_LABELS,
@@ -35,6 +39,55 @@ import {
 import { Popover } from "./Popover";
 
 export type ValueVariant = "bar" | "cell" | "panel" | "card";
+
+/**
+ * Open the page a `[[path]]` relation/person value points at (NP-DB-12). The
+ * page is read through the reader's own client, so someone who cannot view it
+ * opens nothing and learns nothing beyond the link text they already see.
+ */
+export function useOpenLinked() {
+  const client = useVaultClient();
+  return async (value: string): Promise<boolean> => {
+    const target = linkTarget(value);
+    if (!target) return false;
+    try {
+      let note: Note | null = null;
+      try {
+        note = await client.getNote(target);
+      } catch {
+        // A server that only takes ids: find the id in the (permission-filtered) tree.
+        const entry = (await client.listTree()).find((n) => n.path === target || n.path?.replace(/\.[^./]+$/, "") === target);
+        if (entry) note = await client.getNote(entry.id);
+      }
+      if (!note) return false;
+      useUIStore.getState().openTab(note.id, (typeof note.metadata?.title === "string" && note.metadata.title) || linkLabel(value), inferContentType(note));
+      return true;
+    } catch {
+      return false;
+    }
+  };
+}
+
+/** A related page / person as a chip. `open`: a plain click opens it (else only ⌘/Ctrl-click does — the cell's own click edits). */
+function LinkChip({ value, kind, open }: { value: string; kind: "person" | "relation"; open: boolean }) {
+  const openLinked = useOpenLinked();
+  const [missing, setMissing] = useState(false);
+  const go = (e: { stopPropagation: () => void; preventDefault: () => void }) => {
+    e.stopPropagation();
+    e.preventDefault();
+    void openLinked(value).then((ok) => setMissing(!ok));
+  };
+  const label = linkLabel(value);
+  return (
+    <span className={`db-link-chip${open ? " db-link-open" : ""}`} data-kind={kind} data-missing={missing || undefined}
+      role={open ? "link" : undefined} tabIndex={open ? 0 : undefined}
+      title={missing ? "This page is unavailable. It may have moved, or you may not have access." : open ? `Open ${label}` : `${label} — ${navigator.platform?.startsWith("Mac") ? "⌘" : "Ctrl"}-click to open`}
+      onClick={(e) => { if (open || e.metaKey || e.ctrlKey) go(e); }}
+      onKeyDown={(e) => { if (open && e.key === "Enter") go(e); }}>
+      {kind === "person" && <span className="db-avatar" aria-hidden="true">{label.slice(0, 1).toUpperCase()}</span>}{label}
+    </span>
+  );
+}
 
 export function OptionChip({ value, label, color, onRemove, removeLabel }: { value: string; /** Display name (an option rename); defaults to the stored value. */ label?: string; color: OptionColor; onRemove?: () => void; removeLabel?: string }) {
   return (
@@ -53,7 +106,7 @@ const colorOf = (def: PropertyDef, v: string): OptionColor => def.options.find((
 const list = (v: unknown): string[] => (Array.isArray(v) ? v.map(String) : isBlank(v) ? [] : [String(v)]);
 
 /** Read-only rendering (cards, read-only pages, cells of rows you cannot edit). */
-export function PropertyDisplay({ def, value }: { def: PropertyDef; value: unknown }) {
+export function PropertyDisplay({ def, value, openLinks = true }: { def: PropertyDef; value: unknown; /** Relation/person chips open their page on a plain click (off inside an editable cell, where the click edits). */ openLinks?: boolean }) {
   if (isBlank(value)) return <span className="db-empty">Empty</span>;
   if (def.system === "created_time" || def.system === "edited_time") {
     const v = String(value);
@@ -70,7 +123,7 @@ export function PropertyDisplay({ def, value }: { def: PropertyDef; value: unkno
       return <span className="db-chips">{list(value).map((v) => <OptionChip key={v} value={v} label={optionLabel(def, v)} color={colorOf(def, v)} />)}</span>;
     case "person":
     case "relation":
-      return <span className="db-chips">{list(value).map((v) => <span key={v} className="db-link-chip" data-kind={def.kind}>{def.kind === "person" && <span className="db-avatar" aria-hidden="true">{linkLabel(v).slice(0, 1).toUpperCase()}</span>}{linkLabel(v)}</span>)}</span>;
+      return <span className="db-chips">{list(value).map((v) => <LinkChip key={v} value={v} kind={def.kind as "person" | "relation"} open={openLinks} />)}</span>;
     case "checkbox":
       return <span className="db-check" data-checked={value === true || undefined} role="img" aria-label={value === true ? "Checked" : "Unchecked"}>{value === true && <Check size={12} aria-hidden="true" />}</span>;
     case "files": {
@@ -301,7 +354,7 @@ export function PropertyValue({
         {def.kind === "checkbox" ? (
           <span className="db-check" data-checked={value === true || undefined} aria-hidden="true">{value === true && <Check size={12} />}</span>
         ) : (
-          <PropertyDisplay def={def} value={value} />
+          <PropertyDisplay def={def} value={value} openLinks={!!readOnly} />
         )}
         {def.kind === "url" && !isBlank(value) && /^https?:\/\//i.test(String(value)) && <ExternalLink size={11} aria-hidden="true" className="db-muted-icon" />}
         {def.kind === "email" && !isBlank(value) && <Mail size={11} aria-hidden="true" className="db-muted-icon" />}
@@ -532,6 +585,7 @@ function LinkPicker({ anchor, open, def, value, onClose, onPick }: {
   onClose: () => void; onPick: (next: unknown) => void;
 }) {
   const [q, setQ] = useState("");
+  const openLinked = useOpenLinked();
   // The relation's target database (schema hint `relationTag`), else the old heuristics.
   const tag = def.target ?? (def.kind === "person" ? "person" : /^projects?$/i.test(def.key) ? "project" : null);
   const candidates = useLinkCandidates(tag, q, open);
@@ -553,7 +607,7 @@ function LinkPicker({ anchor, open, def, value, onClose, onPick }: {
         <div className="db-pop-current">
           {current.map((v) => (
             <span key={v} className="db-link-chip" data-kind={def.kind}>
-              {linkLabel(v)}
+              <button type="button" className="db-link-open" aria-label={`Open ${linkLabel(v)}`} onClick={() => void openLinked(v).then((ok) => { if (ok) onClose(); })}>{linkLabel(v)}</button>
               <button type="button" aria-label={`Remove ${linkLabel(v)}`} onClick={() => { const next = current.filter((x) => x !== v); onPick(next.length ? (def.multiple ? next : next[0]) : null); }}><X size={11} aria-hidden="true" /></button>
             </span>
           ))}
