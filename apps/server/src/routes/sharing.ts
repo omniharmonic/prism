@@ -327,10 +327,19 @@ sharingApi.get("/notes/:id/access-preview", async (c) => {
     if (!n || !n.path) return c.json({ error: "not_found" }, 404);
     const entry = entryOf(a);
     if (!entry) return c.json({ error: "not_found" }, 404);
+    // The destination must be a page the caller can SEE and add to (the move
+    // route's own rule); anything else answers exactly like a missing page, so
+    // this is never an oracle for hidden pages or their grantees (review M1).
+    if (!isAdmin(a)) {
+      if (!parent) return c.json({ error: "not_found" }, 404);
+      const page = await vaultClient(a.vaultId).getNote(parent).catch(() => null);
+      const caps = page && page.path === parent && !(page.tags ?? []).includes(TRASH_TAG) ? capsOf(a, noteRef(page)) : null;
+      if (!caps || !caps.has("view") || !(caps.has("create") || caps.has("organize"))) return c.json({ error: "not_found" }, 404);
+    }
     const leaf = n.path.slice(n.path.lastIndexOf("/") + 1);
     const newPath = parent ? `${parent}/${leaf}` : leaf;
-    const before = await inheritedLevels(entry, n.id, n.path);
-    const after = await inheritedLevels(entry, n.id, newPath, n.path);
+    const before = await inheritedLevels(entry, n.id, n.path, undefined, a);
+    const after = await inheritedLevels(entry, n.id, newPath, n.path, a);
     const people = new Set([...before.keys(), ...after.keys()]);
     const changes: Array<{ email: string; name: string | null; avatar: string | null; from: string | null; to: string | null }> = [];
     for (const email of people) {
@@ -353,8 +362,13 @@ sharingApi.get("/notes/:id/access-preview", async (c) => {
  * grants (nearest per person). `excludePrefix` drops ancestors that are inside
  * the moving group's old location (they are not ancestors after the move).
  */
-async function inheritedLevels(entry: VaultEntry, noteId: string, path: string, excludePrefix?: string): Promise<Map<string, string>> {
-  const chain = (await ancestorPages(entry, path)).filter((p) => !excludePrefix || (p.path !== excludePrefix && !p.path.startsWith(`${excludePrefix}/`)));
+async function inheritedLevels(entry: VaultEntry, noteId: string, path: string, excludePrefix?: string, viewer?: Actor): Promise<Map<string, string>> {
+  const tree = await ensureTree(entry);
+  const rows = new Map(tree.rows().map((r) => [r.id, r]));
+  const chain = (await ancestorPages(entry, path))
+    .filter((p) => !excludePrefix || (p.path !== excludePrefix && !p.path.startsWith(`${excludePrefix}/`)))
+    // Only ancestors the caller can view count (a hidden page's shares are not theirs to learn).
+    .filter((p) => !viewer || isAdmin(viewer) || (rows.has(p.id) && canView(viewer, rowRef(rows.get(p.id)!))));
   const out = new Map<string, string>();
   const own = new Set(grantsForResource("page", noteId, entry.id).filter((g) => g.subject_type === "user").map((g) => g.subject));
   for (const anc of chain) {

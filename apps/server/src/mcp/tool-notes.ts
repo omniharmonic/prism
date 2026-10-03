@@ -316,19 +316,38 @@ export const updateNoteTool = defineTool({
       }
     }
     const content = merged ? undefined : a.content;
+    // A path change is a MOVE (security review C1): it goes through the pages route
+    // (POST /api/notes/:id/move), which checks the destination, the whole subtree and
+    // page-share exposure — never a bare PATCH. Everything else is PATCHed first.
+    const wantsOther = content !== undefined || a.metadata !== undefined || hasTags;
     // The owner/admin passthrough speaks the vault's PATCH dialect; everyone else the gateway's.
-    const body: Record<string, unknown> = { content, metadata: a.metadata, path: a.path, if_updated_at: ifUpdatedAt };
+    const body: Record<string, unknown> = { content, metadata: a.metadata, if_updated_at: ifUpdatedAt };
     if (isAdmin(ctx.principal)) {
       if (hasTags) body.tags = { add: a.add_tags ?? [], remove: a.remove_tags ?? [] };
     } else {
       body.add_tags = a.add_tags;
       body.remove_tags = a.remove_tags;
     }
-    const updated = await withConflictHint(ctx, a.id, () => getJson<NoteOut>(ctx, `/api/notes/${enc(a.id)}`, { method: "PATCH", ...json(body) }));
-    // A metadata/tag/path-only write to a LIVE note: keep the reconciler from folding
-    // the (content-unchanged) vault copy back over unsaved human typing.
-    if (content === undefined) afterLiveMetaWrite(ctx, updated.id ?? noteId, ifUpdatedAt, updated.updatedAt);
-    return { ...listRow(updated, false), metadata: updated.metadata ?? {}, ...(merged ? { collab: merged } : {}) };
+    let updated: NoteOut | null = null;
+    if (wantsOther || a.path === undefined) {
+      updated = await withConflictHint(ctx, a.id, () => getJson<NoteOut>(ctx, `/api/notes/${enc(a.id)}`, { method: "PATCH", ...json(body) }));
+      // A metadata/tag-only write to a LIVE note: keep the reconciler from folding
+      // the (content-unchanged) vault copy back over unsaved human typing.
+      if (content === undefined) afterLiveMetaWrite(ctx, updated.id ?? noteId, ifUpdatedAt, updated.updatedAt);
+    }
+    if (a.path !== undefined) {
+      const current = updated ?? (await getJson<NoteOut>(ctx, `/api/notes/${enc(a.id)}`));
+      if (current.path !== a.path) {
+        const res = await getJson<{ ok?: boolean; error?: string; reason?: string }>(ctx, `/api/notes/${enc(current.id ?? a.id)}/move`, {
+          method: "POST",
+          ...json({ newPath: a.path, if_updated_at: updated ? updated.updatedAt : ifUpdatedAt }),
+        });
+        if (res.ok !== true) throw new ToolError("conflict", res.reason ?? "the move did not complete — re-read the note and retry");
+        updated = await getJson<NoteOut>(ctx, `/api/notes/${enc(current.id ?? a.id)}`);
+      } else updated = current;
+    }
+    const final = updated!;
+    return { ...listRow(final, false), metadata: final.metadata ?? {}, ...(merged ? { collab: merged } : {}) };
   },
 });
 

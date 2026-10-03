@@ -31,7 +31,8 @@
 import { Hono, type Context } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { randomUUID } from "node:crypto";
-import { db, resolveVaultEntry, getVaultRegistry, listPublications, listVaultMirrors } from "./db";
+import { db, resolveVaultEntry, getVaultRegistry, listPublications, listVaultMirrors, grantsForResource } from "./db";
+import { recordAction } from "./actions/store";
 import { listGitHubConfigs } from "./worker/sync-store";
 import { pathInPrefix } from "./paths";
 import { resolveActor, type Actor } from "./auth/actor";
@@ -223,6 +224,59 @@ function checkGroup(a: Actor, root: Note, rows: RowLike[], allowed: (a: Actor, r
 }
 
 /**
+ * Which notes a move would newly expose to page shares (see the move route), and
+ * whether the actor may do that: `share` on each exposed note, else blocked.
+ */
+async function shareExposure(
+  entry: VaultEntry,
+  actor: Actor,
+  plan: PlannedMove[],
+  from: string,
+  target: string,
+  atTarget: Note[],
+  group: Note[],
+): Promise<{ blocked: boolean; count: number }> {
+  const moving = new Set(plan.map((m) => m.id));
+  const mayShare = (r: NoteRef) => isAdmin(actor) || capsOf(actor, r).has("share");
+  let count = 0;
+  let blocked = false;
+  // (a) anchors inside the moved group, landing over existing notes.
+  for (const m of plan) {
+    if (!grantsForResource("page", m.id, entry.id).length) continue;
+    for (const n of atTarget) {
+      if (moving.has(n.id) || !n.path || isTrashed(n) || !isUnder(n.path, m.to)) continue;
+      count++;
+      if (!mayShare(noteRef(n))) blocked = true;
+    }
+  }
+  // (b) the destination's ancestors shared with others that do not already cover the group.
+  const tree = await ensureTree(entry);
+  const byPath = new Map<string, TreeRow>();
+  for (const r of tree.rows()) if (r.path && !r.trashedAt && !r.tags.includes(TRASH_TAG)) byPath.set(r.path, r);
+  const ancestorIds = (p: string): Set<string> => {
+    const out = new Set<string>();
+    let q = p;
+    while (q.includes("/")) {
+      q = q.slice(0, q.lastIndexOf("/"));
+      const row = byPath.get(q);
+      if (row && !moving.has(row.id)) out.add(row.id);
+    }
+    return out;
+  };
+  const before = ancestorIds(from);
+  const sharedWithOthers = (id: string) =>
+    grantsForResource("page", id, entry.id).some((g) => !(g.subject_type === "user" && g.subject === (actor.kind === "user" ? actor.email : "")));
+  const newAnchors = [...ancestorIds(target)].filter((id) => !before.has(id) && sharedWithOthers(id));
+  if (newAnchors.length) {
+    for (const r of group.map(noteRef)) {
+      count++;
+      if (!mayShare(r)) blocked = true;
+    }
+  }
+  return { blocked, count };
+}
+
+/**
  * Why `path` is an EXPORTED location (a folder publication, a GitHub folder sync,
  * a vault-mirror source) in this vault, or null. Moving a page there publishes or
  * exports it, so only the owner/admin may (review H2).
@@ -381,6 +435,20 @@ export function createPagesApi(opts: PagesApiOptions = {}) {
           : { error: "path_conflict", path: clash.to, reason: `A page already exists at ${clash.to}.` },
         409,
       );
+    }
+
+    // PAGE-SHARE EXPOSURE (security review C1/H1). Page grants follow the page and
+    // match by its CURRENT path, so a move can share notes nobody chose to share:
+    //  (a) a moved page that carries page grants lands over EXISTING notes (not in the
+    //      moved group) — they would join its share;
+    //  (b) the moved group lands under a page shared with OTHER people that does not
+    //      already cover it — it would join that share.
+    // Either needs `share` on every note that becomes exposed (admins bypass, audited).
+    // The refusal names no note and gives no count.
+    const exposure = await shareExposure(entry, actor, plan, from, target, atTarget, [root, ...descendants]);
+    if (exposure.blocked) {
+      if (!admin) return c.json({ error: "forbidden", reason: "Moving here would share pages with people who don’t have them now. You need permission to share these pages." }, 403);
+      recordAction({ actorEmail: actor.email, via: "session", origin: "human", action: "pages.move-share-bypass", vaultId: entry.id, target: { rootId: root.id, exposed: exposure.count }, idempotencyKey: null, status: "ok", error: null });
     }
 
     const outcome = await exclusive(entry.id, [from, target], async () => {

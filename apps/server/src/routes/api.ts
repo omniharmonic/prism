@@ -588,7 +588,16 @@ api.patch("/notes/:id", async (c) => {
   const wantsContent = body.content !== undefined || body.metadata !== undefined;
   if (wantsContent && isLocked(note) && caps.has("view")) return c.json({ error: "locked", reason: "This page is locked. Unlock it to edit." }, 423);
   const wantsTags = addTags.length > 0 || removeTags.length > 0;
-  const wantsPath = body.path !== undefined;
+  // A path CHANGE is a move: non-owners make it through POST /api/notes/:id/move
+  // (pages.ts), which checks the destination, the whole subtree and page-share
+  // exposure. A bare PATCH could rename a shared page over existing notes and so
+  // share them (security review C1). Restating the current path stays a no-op.
+  if (body.path !== undefined && body.path !== note.path) {
+    if (caps.has("organize")) return c.json({ error: "move_required", reason: "Move pages with Move to… (POST /api/notes/:id/move)." }, 403);
+    body.path = undefined; // an editor's stray path stays a silent no-op (pre-caps behaviour)
+  }
+  if (body.path !== undefined) body.path = undefined;
+  const wantsPath = false;
   // `organize` is what unlocks a note's PATH (previously admin-only). Admins never
   // reach this handler — they short-circuit to the passthrough — but the role check
   // is kept so the rule reads as organize-OR-admin.

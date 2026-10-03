@@ -34,6 +34,8 @@ import {
   removeGrant,
   removeGrantBySubjectResource,
   grantsForResource,
+  grantsForUser,
+  type Grant,
   grantsForCapability,
   grantsForPeer,
   createCapability,
@@ -645,6 +647,8 @@ acl.put("/notes/:id/people", async (c) => {
   // (so a level change from an older caller never forks a page share in two).
   const hasPageGrant = grantsForResource("page", id, vaultId).some((g) => g.subject_type === "user" && g.subject === recipient);
   const scope: "note" | "page" = rawScope === "note" || rawScope === "page" ? rawScope : hasPageGrant ? "page" : "note";
+  const narrowing = await scopedSharerRefusal(c, id, recipient, { scope, level: lvl, caps: caps ?? null });
+  if (narrowing) return narrowing;
   if (scope === "page") {
     const refused = await pageShareRefusal(c, id, caps ?? expandLevel(lvl));
     if (refused) return refused;
@@ -659,13 +663,81 @@ acl.put("/notes/:id/people", async (c) => {
 // non-admin only reaches this handler with `share` on THIS note, which is exactly
 // the authority to manage other subjects' grants on it. (Removing a grant can
 // only ever reduce access, so there is nothing to escalate.)
-acl.delete("/notes/:id/people/:email", (c) => {
+acl.delete("/notes/:id/people/:email", async (c) => {
   const who = normEmail(decodeURIComponent(c.req.param("email")));
+  const refused = await scopedSharerRefusal(c, c.req.param("id"), who, null);
+  if (refused) return refused;
   // Both kinds: a per-note grant and a page-subtree grant anchored on this page.
   removeGrantBySubjectResource("user", who, "note", c.req.param("id"), resolveActor(c).vaultId);
   removeGrantBySubjectResource("user", who, "page", c.req.param("id"), resolveActor(c).vaultId);
   return c.json({ ok: true });
 });
+
+/** A grant an administrator (or governance) made — a scoped sharer may not change it. */
+function adminAuthored(g: Grant, vaultId: string): boolean {
+  const by = g.created_by ?? "";
+  if (!by || by === config.ownerEmail || by.startsWith("governance:")) return true;
+  return roleAtLeast(workspaceRole(by, vaultId), "admin");
+}
+
+/**
+ * Scoped (non-admin) sharers manage access; they never take it away from under an
+ * administrator (security review M2). Refused, for a non-admin:
+ *  - changing or removing a grant an admin/owner/governance made;
+ *  - replacing (other kind) a grant someone else made;
+ *  - a new/changed grant that LOWERS the person's current access to this page or,
+ *    for a page share, to any current sub-page (nearest-anchor restriction).
+ * `next` null = a removal. Answers carry no other person's grants.
+ */
+async function scopedSharerRefusal(
+  c: Context,
+  id: string,
+  recipient: string,
+  next: { scope: "note" | "page"; level: Level; caps: Cap[] | null } | null,
+): Promise<Response | null> {
+  const actor = resolveActor(c);
+  if (roleAtLeast(actor.role, "admin")) return null;
+  const vaultId = actor.vaultId;
+  const mine = actor.kind === "user" ? actor.email : "";
+  const existing = (["note", "page"] as const).flatMap((t) => grantsForResource(t, id, vaultId).filter((g) => g.subject_type === "user" && g.subject === recipient));
+  const forbid = (reason: string) => c.json({ error: "forbidden", reason }, 403);
+  if (existing.some((g) => adminAuthored(g, vaultId))) return forbid("This person’s access here was set by an administrator. Ask an administrator to change it.");
+  if (!next) return null;
+  if (existing.some((g) => g.resource_type !== next.scope && g.created_by !== mine)) return forbid("This person’s access here was set by someone else. Ask them or an administrator to change it.");
+  // Would this lower what the person can do here (or below, for a page share)?
+  let note;
+  try {
+    note = await vaultClient(vaultId).getNote(id);
+  } catch {
+    return forbid("This page is not available.");
+  }
+  if (note.id !== id) return c.json({ error: "not_found" }, 404);
+  const ref = (n: { id: string; tags?: string[] | null; path?: string | null; metadata?: Record<string, unknown> | null }): NoteRef => ({
+    id: n.id,
+    tags: n.tags ?? [],
+    creator: (n.metadata?.prism_creator as string | undefined) ?? null,
+    visibility: n.metadata?.prism_visibility === "private" ? "private" : "workspace",
+    path: n.path ?? null,
+  });
+  const refs: NoteRef[] = [ref(note)];
+  const entry = getVaultRegistry().find((v) => v.id === vaultId);
+  if (entry && note.path && (next.scope === "page" || existing.some((g) => g.resource_type === "page"))) {
+    for (const r of await descendantRows(entry, note.path)) refs.push(rowRef(r));
+  }
+  const floor = roleFloor(workspaceRole(recipient, vaultId));
+  const now = grantsForUser(recipient, vaultId);
+  const replaced = new Set(existing.map((g) => g.id));
+  const after: Grant[] = [
+    ...now.filter((g) => !replaced.has(g.id)),
+    { id: "<next>", vault_id: vaultId, subject_type: "user", subject: recipient, resource_type: next.scope, resource: id, level: next.caps ? levelForCaps(next.caps) : next.level, created_by: mine, created_at: 0, expires_at: null, caps: next.caps },
+  ];
+  for (const r of refs) {
+    const before = effectiveCaps(now, r, floor, recipient);
+    const later = effectiveCaps(after, r, floor, recipient);
+    for (const cap of before) if (!later.has(cap)) return forbid("That would reduce this person’s current access. Only an administrator can do that.");
+  }
+  return null;
+}
 
 /**
  * A page share reaches the page's sub-pages. An ADMIN may always make one. A
