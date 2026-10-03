@@ -1,4 +1,5 @@
 import "./boards/BoardWorkspace.css";
+import { dueSummary } from "../../lib/database/dates";
 import "../database/database.css";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -937,16 +938,6 @@ function TaskCard({
 
 /** The card's due-date chip: `due` (or `deadline`), with overdue / today / soon states. */
 function dueInfo(task: Note): { label: string; state: "overdue" | "today" | "soon" | "later" } | null {
-  const raw = task.metadata?.due ?? task.metadata?.deadline;
-  if (typeof raw !== "string" || !/^\d{4}-\d{2}-\d{2}/.test(raw)) return null;
-  const day = raw.slice(0, 10);
-  const d = new Date(`${day}T00:00:00`);
-  if (Number.isNaN(d.getTime())) return null;
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  const diff = Math.round((d.getTime() - today.getTime()) / 86_400_000);
   const done = /^(done|complete|completed|closed)$/i.test(String(task.metadata?.status ?? ""));
-  const date = d.toLocaleDateString(undefined, { month: "short", day: "numeric", ...(d.getFullYear() === today.getFullYear() ? {} : { year: "numeric" }) });
-  const label = diff === 0 ? "Due today" : diff === 1 ? "Due tomorrow" : diff < 0 && !done ? `Overdue · ${date}` : `Due ${date}`;
-  return { label, state: done ? "later" : diff < 0 ? "overdue" : diff === 0 ? "today" : diff <= 3 ? "soon" : "later" };
+  return dueSummary(task.metadata?.due ?? task.metadata?.deadline, done);
 }

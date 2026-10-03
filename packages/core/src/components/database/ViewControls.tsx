@@ -4,10 +4,10 @@
  * whether that is saved to the database note or kept for this session only.
  */
 import { useState } from "react";
-import { Plus, Trash2, X } from "lucide-react";
+import { ArrowLeft, ArrowRight, Copy, Plus, Trash2, X } from "lucide-react";
 import type { QueryCondition, QueryFilter, QueryFilterGroup, QueryOp, QuerySort } from "../../lib/database/query";
-import { SYSTEM_PROPERTIES, type PropertyDef } from "../../lib/database/schema";
-import { VIEW_LABELS, VIEW_TYPES, type DatabaseView, type ViewType } from "./config";
+import { STATUS_GROUP_LABELS, STATUS_GROUPS, SYSTEM_PROPERTIES, type PropertyDef } from "../../lib/database/schema";
+import { CARD_SIZES, VIEW_LABELS, VIEW_TYPES, type CardSize, type DatabaseView, type ViewType } from "./config";
 
 /** Title + timestamps + every property, as filter/sort targets. */
 export function filterTargets(props: PropertyDef[]): Array<{ key: string; label: string; def?: PropertyDef }> {
@@ -59,7 +59,12 @@ function ValueInput({ def, cond, onChange }: { def?: PropertyDef; cond: QueryCon
     return (
       <select aria-label="Filter value" value={String(cond.value ?? "")} onChange={(e) => onChange(e.target.value)}>
         <option value="">Choose…</option>
-        {def.options.map((o) => <option key={o.value} value={o.value}>{o.value}</option>)}
+        {def.kind === "status" && def.options.some((o) => o.group)
+          ? STATUS_GROUPS.map((g) => {
+              const inGroup = def.options.filter((o) => (o.group ?? "in_progress") === g);
+              return inGroup.length ? <optgroup key={g} label={STATUS_GROUP_LABELS[g]}>{inGroup.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}</optgroup> : null;
+            })
+          : def.options.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
       </select>
     );
   }
@@ -184,9 +189,13 @@ export function SortEditor({ sort, props, onChange }: { sort?: QuerySort[]; prop
 }
 
 /** Properties (visible + order), grouping, date/cover keys, rename/delete. */
-export function ViewSettings({ view, props, canDelete, onChange, onDelete }: {
+export function ViewSettings({ view, props, canDelete, onChange, onDelete, tabs, deleted }: {
   view: DatabaseView; props: PropertyDef[]; canDelete: boolean;
   onChange: (patch: Partial<DatabaseView>) => void; onDelete: () => void;
+  /** Duplicate / reorder this view among the tabs (NP-DB-16). */
+  tabs?: { index: number; count: number; canDuplicate: boolean; onDuplicate: () => void; onMove: (to: number) => void };
+  /** Deleted (hidden-everywhere) properties the viewer may restore, and how to open one. */
+  deleted?: { props: PropertyDef[]; onOpen: (def: PropertyDef) => void };
 }) {
   const [name, setName] = useState(view.name);
   const visible = view.visible ?? props.map((p) => p.key);
@@ -226,6 +235,19 @@ export function ViewSettings({ view, props, canDelete, onChange, onDelete }: {
             {view.type !== "board" && <option value="">None</option>}
             {view.type === "board" && !view.groupBy && <option value="">Choose…</option>}
             {groupable.map((p) => <option key={p.key} value={p.key}>{p.label}</option>)}
+          </select>
+        </label>
+      )}
+      {(view.type === "board" || view.type === "table" || view.type === "list") && view.groupBy && (
+        <label className="db-radio">
+          <input type="checkbox" checked={view.hideEmptyGroups === true} onChange={(e) => onChange({ hideEmptyGroups: e.target.checked || undefined })} /> Hide empty groups
+        </label>
+      )}
+      {view.type === "gallery" && (
+        <label className="db-field">
+          <span>Card size</span>
+          <select aria-label="Card size" value={view.cardSize ?? "medium"} onChange={(e) => onChange({ cardSize: e.target.value === "medium" ? undefined : (e.target.value as CardSize) })}>
+            {CARD_SIZES.map((s) => <option key={s} value={s}>{s.charAt(0).toUpperCase() + s.slice(1)}</option>)}
           </select>
         </label>
       )}
@@ -270,6 +292,28 @@ export function ViewSettings({ view, props, canDelete, onChange, onDelete }: {
           {!props.length && <li className="db-pop-empty">This tag has no properties yet.</li>}
         </ul>
       </div>
+      {deleted && deleted.props.length > 0 && (
+        <div>
+          <p className="db-pop-heading">Deleted properties</p>
+          <ul className="db-visible-list" aria-label="Deleted properties">
+            {deleted.props.map((p) => (
+              <li key={p.key} style={{ display: "flex", alignItems: "center" }}>
+                <span style={{ flex: 1 }} className="db-pop-empty">{p.label}</span>
+                <button type="button" className="db-ghost" aria-label={`Manage deleted property ${p.label}`} onClick={() => deleted.onOpen(p)}>Restore or remove…</button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+      {tabs && (
+        <div className="db-settings-row" role="group" aria-label="View tab">
+          <button type="button" className="db-ghost" disabled={!tabs.canDuplicate} onClick={tabs.onDuplicate}><Copy size={13} aria-hidden="true" /> Duplicate view</button>
+          <span style={{ display: "inline-flex", gap: 2 }}>
+            <button type="button" className="db-icon-btn" aria-label="Move view left" disabled={tabs.index <= 0} onClick={() => tabs.onMove(tabs.index - 1)}><ArrowLeft size={14} aria-hidden="true" /></button>
+            <button type="button" className="db-icon-btn" aria-label="Move view right" disabled={tabs.index >= tabs.count - 1} onClick={() => tabs.onMove(tabs.index + 1)}><ArrowRight size={14} aria-hidden="true" /></button>
+          </span>
+        </div>
+      )}
       {canDelete && (
         <button type="button" className="db-ghost" style={{ color: "var(--color-danger)" }} onClick={onDelete}><Trash2 size={13} aria-hidden="true" /> Delete view</button>
       )}

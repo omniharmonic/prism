@@ -17,10 +17,11 @@ import {
   type CollisionDetection,
   type DragEndEvent,
 } from "@dnd-kit/core";
-import { ArrowDownWideNarrow, ArrowUpNarrowWide, ArrowUpRight, ChevronDown, ChevronLeft, ChevronRight, EyeOff, Group, MoreHorizontal, Plus } from "lucide-react";
+import { ArrowDownWideNarrow, ArrowUpNarrowWide, ArrowUpRight, ChevronDown, ChevronLeft, ChevronRight, EyeOff, Group, MoreHorizontal, Pencil, Plus } from "lucide-react";
 import type { QueryRow } from "../../lib/database/query";
 import { noteTitle, unwrapLink } from "../../lib/database/query";
-import { isBlank, optionColor, propertyValue, type PropertyDef } from "../../lib/database/schema";
+import { formatDate, integrationOwned, isBlank, optionColor, optionLabel, propertyValue, type PropertyDef } from "../../lib/database/schema";
+import { dayDiff, daySpan, shiftDateValue } from "../../lib/database/dates";
 import { OptionChip, PropertyDisplay, PropertyValue } from "./PropertyValue";
 import { Popover } from "./Popover";
 import { applyRank, reorderRank, type DatabaseView } from "./config";
@@ -43,6 +44,8 @@ export interface ViewContext {
   selection?: RowSelection;
   create: (title: string, preset?: Record<string, unknown>) => Promise<void>;
   updateView: (patch: Partial<DatabaseView>) => void;
+  /** Open the property editor (only for people who may change the schema). */
+  editProperty?: (def: PropertyDef) => void;
 }
 
 const title = (r: QueryRow) => noteTitle(r);
@@ -78,12 +81,16 @@ function GroupHeader({ g, def, open, onToggle }: { g: { value: string | null; la
       <button type="button" className="db-group-toggle focus-ring" aria-expanded={open} aria-label={`${open ? "Collapse" : "Expand"} ${g.label}`} onClick={onToggle}>
         {open ? <ChevronDown size={14} aria-hidden="true" /> : <ChevronRight size={14} aria-hidden="true" />}
       </button>
-      {g.value !== null && def.kind !== "checkbox" && def.kind !== "person" ? <OptionChip value={g.value} color={def.options.find((o) => o.value === g.value)?.color ?? optionColor(g.value)} /> : <span>{g.label}</span>}
+      {g.value !== null && def.kind !== "checkbox" && def.kind !== "person" ? <OptionChip value={g.value} label={g.label} color={def.options.find((o) => o.value === g.value)?.color ?? optionColor(g.value)} /> : <span>{g.label}</span>}
       <span className="db-badge-count" aria-label={`${g.rows.length} ${g.rows.length === 1 ? "page" : "pages"}`}>{g.rows.length}</span>
     </h3>
   );
 }
 const groupKey = (v: string | null) => v ?? "∅";
+/** The view's groups, without the empty ones when it hides them (NP-DB-04). `keep`: a group being added to. */
+function shownGroups<T extends { value: string | null; rows: QueryRow[] }>(groups: T[], view: DatabaseView, keep?: string | null): T[] {
+  return view.hideEmptyGroups ? groups.filter((g) => g.rows.length > 0 || (keep !== undefined && g.value === keep)) : groups;
+}
 /** Shift state of the click that is about to toggle a row checkbox (click fires before change). */
 let lastShift = false;
 const groupPreset = (def: PropertyDef, v: string | null) => (v === null ? undefined : { [def.key]: def.kind === "checkbox" ? v === "true" : def.kind === "multi_select" ? [v] : v });
@@ -148,7 +155,7 @@ function groupRows(rows: QueryRow[], def: PropertyDef | undefined): Array<{ valu
       buckets.get(v)!.push(r);
     }
   }
-  const label = (v: string | null) => (v === null ? `No ${def.label}` : def.kind === "checkbox" ? (v === "true" ? "Checked" : "Unchecked") : def.kind === "person" || def.kind === "relation" ? unwrapLink(v).split("/").pop()! : v);
+  const label = (v: string | null) => (v === null ? `No ${def.label}` : def.kind === "checkbox" ? (v === "true" ? "Checked" : "Unchecked") : def.kind === "person" || def.kind === "relation" ? unwrapLink(v).split("/").pop()! : optionLabel(def, v));
   const out = [...buckets.entries()].map(([value, rs]) => ({ value, label: label(value), rows: rs }));
   // Like Notion, the empty group leads.
   return [...out.filter((g) => g.value === null), ...out.filter((g) => g.value !== null)];
@@ -188,6 +195,10 @@ function HeaderCell({ def, ctx, width, onResize }: { def: PropertyDef; ctx: View
         onKeyDown={(e) => { if (e.key === "ArrowLeft" || e.key === "ArrowRight") { e.preventDefault(); onResize(Math.max(80, Math.min(800, width + (e.key === "ArrowRight" ? 20 : -20))), true); } }} />
       <Popover anchor={anchor} open={open} onClose={() => setOpen(false)} label={`${def.label} column`} width={220}>
         <div className="db-menu" role="menu">
+          {ctx.editProperty && def.tag && !def.system && <>
+            <button type="button" role="menuitem" onClick={() => { setOpen(false); ctx.editProperty!(def); }}><Pencil size={14} aria-hidden="true" /> Edit property…</button>
+            <hr />
+          </>}
           <button type="button" role="menuitem" onClick={() => { ctx.updateView({ sort: [{ key: def.key, dir: "asc" }] }); setOpen(false); }}><ArrowUpNarrowWide size={14} aria-hidden="true" /> Sort ascending</button>
           <button type="button" role="menuitem" onClick={() => { ctx.updateView({ sort: [{ key: def.key, dir: "desc" }] }); setOpen(false); }}><ArrowDownWideNarrow size={14} aria-hidden="true" /> Sort descending</button>
           {groupable && <button type="button" role="menuitem" onClick={() => { ctx.updateView({ groupBy: ctx.view.groupBy === def.key ? undefined : def.key }); setOpen(false); }}><Group size={14} aria-hidden="true" /> {ctx.view.groupBy === def.key ? "Ungroup" : "Group by this"}</button>}
@@ -197,6 +208,30 @@ function HeaderCell({ def, ctx, width, onResize }: { def: PropertyDef; ctx: View
       </Popover>
     </th>
   );
+}
+
+/**
+ * Spreadsheet-style keyboard navigation (NP-DB-03): arrow keys move between the
+ * cells of a table body; Enter on a cell edits it (the cell's own button), Esc
+ * leaves the editor and returns to the cell, Tab walks cells in reading order
+ * (native tab order). Keys typed inside an editor or a popover are never taken.
+ */
+function onGridKey(e: React.KeyboardEvent<HTMLTableElement>) {
+  if (e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return;
+  const dir = e.key === "ArrowLeft" ? [0, -1] : e.key === "ArrowRight" ? [0, 1] : e.key === "ArrowUp" ? [-1, 0] : e.key === "ArrowDown" ? [1, 0] : null;
+  if (!dir) return;
+  const t = e.target as HTMLElement;
+  if (t.closest("input, textarea, select, [contenteditable='true']")) return;
+  const cellEl = t.closest("td, th");
+  const rowEl = cellEl?.parentElement;
+  // Portaled popovers bubble here through React but are not inside a cell.
+  if (!cellEl || !rowEl || !rowEl.hasAttribute("data-row-id") || !e.currentTarget.contains(cellEl)) return;
+  const rows = Array.from(e.currentTarget.querySelectorAll<HTMLElement>("tbody > tr[data-row-id]"));
+  const r = rows.indexOf(rowEl as HTMLElement) + dir[0]!;
+  const c = Array.from(rowEl.children).indexOf(cellEl) + dir[1]!;
+  const target = rows[r]?.children[c]?.querySelector<HTMLElement>(".db-value-button:not(:disabled), .db-row-open");
+  e.preventDefault();
+  target?.focus();
 }
 
 function TableBlock({ ctx, rows, preset, label }: { ctx: ViewContext; rows: QueryRow[]; preset?: Record<string, unknown>; label: string }) {
@@ -210,7 +245,7 @@ function TableBlock({ ctx, rows, preset, label }: { ctx: ViewContext; rows: Quer
   const someOn = !!sel && rows.some((r) => sel.ids.has(r.id));
   return (
     <div className="db-table-wrap">
-      <table className="db-table" style={{ width: total }} aria-label={label} aria-multiselectable={sel ? true : undefined}>
+      <table className="db-table" style={{ width: total }} aria-label={label} aria-multiselectable={sel ? true : undefined} onKeyDown={onGridKey}>
         <colgroup>
           <col className="db-col-title" style={{ width: w("$title", 280) }} />
           {ctx.shown.map((p) => <col key={p.key} style={{ width: w(p.key, 180) }} />)}
@@ -268,7 +303,7 @@ export function TableView({ ctx }: { ctx: ViewContext }) {
   if (!groupDef) return <TableBlock ctx={ctx} rows={ctx.rows} label={ctx.view.name} />;
   return (
     <>
-      {groupRows(ctx.rows, groupDef).map((g) => {
+      {shownGroups(groupRows(ctx.rows, groupDef), ctx.view).map((g) => {
         const open = !collapsed.has(groupKey(g.value));
         return (
           <section key={groupKey(g.value)} aria-label={g.label} className="db-group">
@@ -414,7 +449,7 @@ export function BoardView({ ctx, onPickGroup }: { ctx: ViewContext; onPickGroup:
   return (
     <DndContext sensors={sensors} collisionDetection={boardCollision} onDragEnd={onDragEnd}>
       <div className="db-board" role="list" aria-label={`${ctx.view.name} board`}>
-        {groups.map((g) => (
+        {shownGroups(groups, ctx.view, adding).map((g) => (
           <BoardColumn key={g.value ?? "∅"} value={g.value} label={g.label} def={groupDef} count={g.rows.length}
             onAdd={ctx.canCreate ? () => setAdding(g.value) : undefined}>
             {adding === g.value && (
@@ -435,7 +470,7 @@ export function BoardView({ ctx, onPickGroup }: { ctx: ViewContext; onPickGroup:
 export function GalleryView({ ctx }: { ctx: ViewContext }) {
   const [adding, setAdding] = useState(false);
   return (
-    <div className="db-gallery" role="list" aria-label={`${ctx.view.name} gallery`}>
+    <div className="db-gallery" role="list" aria-label={`${ctx.view.name} gallery`} data-size={ctx.view.cardSize ?? "medium"}>
       {ctx.rows.map((r) => {
         // Cover (NP-DB-05): the chosen property (a URL or a files value), else the page cover
         // (image or brand gradient) — one resolver shared with the page header (`coverForNote`).
@@ -490,7 +525,7 @@ export function ListView({ ctx }: { ctx: ViewContext }) {
   if (!groupDef) return <ListRows ctx={ctx} rows={ctx.rows} label={`${ctx.view.name} list`} />;
   return (
     <>
-      {groupRows(ctx.rows, groupDef).map((g) => {
+      {shownGroups(groupRows(ctx.rows, groupDef), ctx.view).map((g) => {
         const open = !collapsed.has(groupKey(g.value));
         return (
           <section key={groupKey(g.value)} aria-label={g.label} className="db-group">
@@ -514,24 +549,67 @@ export function monthGrid(month: Date): Date[] {
   return Array.from({ length: 42 }, (_, i) => new Date(first.getFullYear(), first.getMonth(), 1 - offset + i));
 }
 
+type CalItem = { row: QueryRow; first: string; last: string };
+/** One week's multi-day bars: the visible stretch of each item, packed into lanes. */
+function weekBars(items: CalItem[], week: string[]): Array<{ item: CalItem; from: number; len: number; lane: number; before: boolean; after: boolean }> {
+  const out: Array<{ item: CalItem; from: number; len: number; lane: number; before: boolean; after: boolean }> = [];
+  const laneEnd: number[] = [];
+  const inWeek = items.filter((it) => it.first !== it.last && it.first <= week[6]! && it.last >= week[0]!).sort((a, b) => (a.first < b.first ? -1 : a.first > b.first ? 1 : a.last < b.last ? 1 : -1));
+  for (const item of inWeek) {
+    const from = item.first < week[0]! ? 0 : week.indexOf(item.first);
+    const to = item.last > week[6]! ? 6 : week.indexOf(item.last);
+    let lane = laneEnd.findIndex((end) => end < from);
+    if (lane < 0) lane = laneEnd.length;
+    laneEnd[lane] = to;
+    out.push({ item, from, len: to - from + 1, lane, before: item.first < week[0]!, after: item.last > week[6]! });
+  }
+  return out;
+}
+
+const LOCKED_WHY = "kept in sync by an integration, so its date is changed where it comes from";
+function CalChip({ row, ctx, anchorDay, className, style, label, editable, onLocked }: { row: QueryRow; ctx: ViewContext; anchorDay: string; className: string; style?: React.CSSProperties; label?: string; editable: boolean; /** Set when the row cannot be dragged because an integration owns it (hover / long-press says why). */ onLocked?: () => void }) {
+  // One draggable per visible piece of an item (a bar has one per week it crosses).
+  const drag = useDraggable({ id: `${row.id}@${anchorDay}`, data: { row, anchorDay }, disabled: !editable });
+  return (
+    <button ref={drag.setNodeRef} type="button" className={className} title={onLocked ? `${title(row)} — ${LOCKED_WHY}` : title(row)} aria-label={label}
+      data-dragging={drag.isDragging || undefined} data-cal-item={row.id} data-locked={onLocked ? "" : undefined}
+      onContextMenu={onLocked ? (e) => { e.preventDefault(); onLocked(); } : undefined}
+      style={{ ...style, ...(drag.transform ? { transform: `translate3d(${drag.transform.x}px, ${drag.transform.y}px, 0)`, zIndex: 6, position: "relative" } : {}) }}
+      {...drag.listeners}
+      onClick={(e) => ctx.open(row, e)}>{title(row)}</button>
+  );
+}
+
+function CalDay({ k, col, children, ...rest }: { k: string; col: number; children: ReactNode } & React.HTMLAttributes<HTMLDivElement>) {
+  const drop = useDroppable({ id: `day:${k}`, data: { day: k } });
+  return <div ref={drop.setNodeRef} {...rest} data-over={drop.isOver || undefined} data-day={k} style={{ gridColumn: col + 1 }}>{children}</div>;
+}
+
 export function CalendarView({ ctx, month, onMonth, onPickDate }: { ctx: ViewContext; month: Date; onMonth: (d: Date) => void; onPickDate: (key: string) => void }) {
   const key = ctx.view.dateKey;
   const [adding, setAdding] = useState<string | null>(null);
+  const [problem, setProblem] = useState("");
+  const sensors = useSensors(
+    useSensor(MouseSensor, { activationConstraint: { distance: 8 } }),
+    useSensor(TouchSensor, { activationConstraint: { delay: 250, tolerance: 6 } }),
+  );
   const days = monthGrid(month);
-  const byDay = useMemo(() => {
-    const m = new Map<string, QueryRow[]>();
-    if (!key) return m;
+  // Every row with a date: the local day(s) it covers (a range spans first → last).
+  const items = useMemo(() => {
+    const out: CalItem[] = [];
+    if (!key) return out;
     for (const r of ctx.rows) {
       const v = propertyValue(r, key);
-      if (typeof v !== "string" || !/^\d{4}-\d{2}-\d{2}/.test(v)) continue;
-      // A datetime WITH a zone belongs to the viewer's local day (review L2);
-      // a date or a zone-less wall time is taken as written.
-      const zoned = v.length > 10 && /(Z|[+-]\d{2}:?\d{2})$/.test(v) && !Number.isNaN(Date.parse(v));
-      const d = zoned ? ymd(new Date(v)) : v.slice(0, 10);
-      m.set(d, [...(m.get(d) ?? []), r]);
+      const span = typeof v === "string" ? daySpan(v) : null;
+      if (span) out.push({ row: r, first: span[0], last: span[1] });
     }
-    return m;
+    return out;
   }, [ctx.rows, key]);
+  const byDay = useMemo(() => {
+    const m = new Map<string, QueryRow[]>();
+    for (const it of items) if (it.first === it.last) m.set(it.first, [...(m.get(it.first) ?? []), it.row]);
+    return m;
+  }, [items]);
   if (!key) {
     const dates = ctx.props.filter((p) => p.kind === "date");
     return (
@@ -548,6 +626,27 @@ export function CalendarView({ ctx, month, onMonth, onPickDate }: { ctx: ViewCon
   }
   const today = ymd(new Date());
   const editableKey = key !== "$createdAt";
+  const dateDef = ctx.props.find((p) => p.key === key) ?? ({ key, label: key, kind: "date", options: [], tag: null, multiple: false, enumValues: [] } satisfies PropertyDef);
+  // A page an integration keeps in sync (a calendar event, a ClickUp task, any ingest source)
+  // is never rescheduled here: its date would be overwritten on the next sync, or drift from it.
+  const locked = (r: QueryRow) => editableKey && !dateDef.system && ctx.canEditRow(r) && integrationOwned(r);
+  const canMove = (r: QueryRow) => editableKey && !dateDef.system && ctx.canEditRow(r) && !integrationOwned(r);
+  const whyLocked = (r: QueryRow) => (locked(r) ? () => setProblem(`“${title(r)}” is ${LOCKED_WHY}.`) : undefined);
+  // Drag to reschedule (NP-DB-07): the item moves by whole days — its time of day and a
+  // range's length are kept — through the same per-field compare-and-set as a cell edit.
+  const onDragEnd = (e: DragEndEvent) => {
+    const data = e.active.data.current as { row: QueryRow; anchorDay: string } | undefined;
+    const target = (e.over?.data.current as { day?: string } | undefined)?.day;
+    if (!data || !target || !canMove(data.row)) return;
+    const current = propertyValue(data.row, key);
+    const delta = dayDiff(data.anchorDay, target);
+    if (typeof current !== "string" || !delta) return;
+    setProblem("");
+    ctx.commit(data.row, dateDef)(shiftDateValue(current, delta), current).catch((err: unknown) => {
+      setProblem(err instanceof Error && /conflict|changed/i.test(`${err.name} ${err.message}`) ? `“${title(data.row)}” was changed somewhere else, so it was not moved. Try again.` : `“${title(data.row)}” could not be moved. Try again.`);
+    });
+  };
+  const weeks = Array.from({ length: 6 }, (_, w) => days.slice(w * 7, w * 7 + 7));
   return (
     <div>
       <div className="db-cal-head">
@@ -556,23 +655,45 @@ export function CalendarView({ ctx, month, onMonth, onPickDate }: { ctx: ViewCon
         <button type="button" className="db-control" onClick={() => onMonth(new Date(new Date().getFullYear(), new Date().getMonth(), 1))}>Today</button>
         <button type="button" className="db-icon-btn" aria-label="Next month" onClick={() => onMonth(new Date(month.getFullYear(), month.getMonth() + 1, 1))}><ChevronRight size={16} /></button>
       </div>
-      <div className="db-cal" role="grid" aria-label={`${ctx.view.name} calendar`}>
-        {["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map((d) => <div key={d} className="db-cal-dow" role="columnheader">{d}</div>)}
-        {days.map((d) => {
-          const k = ymd(d);
-          const items = byDay.get(k) ?? [];
-          return (
-            <div key={k} role="gridcell" aria-label={d.toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" })} className="db-cal-day" data-outside={d.getMonth() !== month.getMonth() || undefined} data-today={k === today || undefined}>
-              <div className="db-cal-num"><span>{d.getDate()}</span>
-                {ctx.canCreate && editableKey && <button type="button" className="db-cal-add" aria-label={`New page on ${k}`} onClick={() => setAdding(k)}><Plus size={13} aria-hidden="true" /></button>}
+      {problem && <p className="db-notice" role="alert">{problem}</p>}
+      <DndContext sensors={sensors} collisionDetection={pointerWithin} onDragEnd={onDragEnd}>
+        <div className="db-cal" role="grid" aria-label={`${ctx.view.name} calendar`}>
+          <div className="db-cal-week db-cal-dows" role="row">
+            {["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map((d) => <div key={d} className="db-cal-dow" role="columnheader">{d}</div>)}
+          </div>
+          {weeks.map((week) => {
+            const keys = week.map(ymd);
+            const bars = weekBars(items, keys);
+            const lanes = bars.reduce((n, b) => Math.max(n, b.lane + 1), 0);
+            return (
+              <div key={keys[0]} className="db-cal-week" role="row">
+                {week.map((d, col) => {
+                  const k = keys[col]!;
+                  const dayItems = byDay.get(k) ?? [];
+                  return (
+                    <CalDay key={k} k={k} col={col} role="gridcell" aria-label={d.toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" })} className="db-cal-day" data-outside={d.getMonth() !== month.getMonth() || undefined} data-today={k === today || undefined}>
+                      <div className="db-cal-num"><span>{d.getDate()}</span>
+                        {ctx.canCreate && editableKey && <button type="button" className="db-cal-add" aria-label={`New page on ${k}`} onClick={() => setAdding(k)}><Plus size={13} aria-hidden="true" /></button>}
+                      </div>
+                      {/* Room for this week's multi-day bars, which are laid over the row. */}
+                      {lanes > 0 && <div aria-hidden="true" style={{ height: lanes * 24, flex: "none" }} />}
+                      {adding === k && <NewRowForm label={`New page on ${k}`} onCreate={(t) => ctx.create(t, { [key]: k })} onCancel={() => setAdding(null)} />}
+                      {dayItems.slice(0, 3).map((r) => <CalChip key={r.id} row={r} ctx={ctx} anchorDay={k} className="db-cal-item" editable={canMove(r)} onLocked={whyLocked(r)} />)}
+                      {dayItems.length > 3 && <span className="db-pop-path" style={{ marginLeft: 4 }}>+{dayItems.length - 3} more</span>}
+                    </CalDay>
+                  );
+                })}
+                {bars.map((b) => (
+                  <CalChip key={`${b.item.row.id}@${keys[b.from]}`} row={b.item.row} ctx={ctx} anchorDay={keys[b.from]!} editable={canMove(b.item.row)} onLocked={whyLocked(b.item.row)}
+                    className="db-cal-item db-cal-bar"
+                    label={`${title(b.item.row)}, ${formatDate(`${b.item.first}/${b.item.last}`)}`}
+                    style={{ gridColumn: `${b.from + 1} / span ${b.len}`, marginTop: 30 + b.lane * 24, ...(b.before ? { borderTopLeftRadius: 0, borderBottomLeftRadius: 0 } : {}), ...(b.after ? { borderTopRightRadius: 0, borderBottomRightRadius: 0 } : {}) }} />
+                ))}
               </div>
-              {adding === k && <NewRowForm label={`New page on ${k}`} onCreate={(t) => ctx.create(t, { [key]: k })} onCancel={() => setAdding(null)} />}
-              {items.slice(0, 3).map((r) => <button key={r.id} type="button" className="db-cal-item" title={title(r)} onClick={(e) => ctx.open(r, e)}>{title(r)}</button>)}
-              {items.length > 3 && <span className="db-pop-path" style={{ marginLeft: 4 }}>+{items.length - 3} more</span>}
-            </div>
-          );
-        })}
-      </div>
+            );
+          })}
+        </div>
+      </DndContext>
     </div>
   );
 }

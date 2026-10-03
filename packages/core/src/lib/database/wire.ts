@@ -46,3 +46,21 @@ export interface CsvImportResponse {
   errors: CsvImportRow[];
   result?: { created: number; updated: number; failed: Array<{ row: number; error: string }> };
 }
+
+/** `POST /api/schemas/:tag/fields/:field/remove-values` (owner-only; dry-run by default). */
+export interface RemoveValuesResult {
+  dryRun: boolean;
+  tag: string;
+  field: string;
+  /** Pages whose value would be / was targeted. */
+  total: number;
+  /** Pages holding a value that are left alone, by reason. */
+  skipped: { trashed: number; shared: number; system: number; ingest: number; private: number };
+  truncated: boolean;
+  /** A write run stopped at its page/time limit: ask again (each run re-lists). */
+  more?: boolean;
+  removed?: number;
+  conflicts?: number;
+  failed?: number;
+  remaining?: number;
+}

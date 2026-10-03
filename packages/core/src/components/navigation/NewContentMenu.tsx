@@ -18,6 +18,7 @@ import {
   Check,
   ArrowRight,
   LayoutTemplate,
+  Database,
 } from "lucide-react";
 import { useVaultClient } from "../../data/VaultClientContext";
 import { useUIStore } from "../../app/stores/ui";
@@ -74,6 +75,13 @@ const OPTIONS = [
     label: "Dashboard",
     detail: "Bring useful views into one place.",
     icon: LayoutDashboard,
+  },
+  {
+    // NP-DB-01: a full-page database; it asks for its source tag on first open.
+    type: "database",
+    label: "Database",
+    detail: "A table of pages with board, calendar and gallery views.",
+    icon: Database,
   },
   {
     type: "website",

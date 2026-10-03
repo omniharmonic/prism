@@ -63,3 +63,24 @@ test("inline database: phone width keeps the page inside the viewport", async ({
   await expect(page.locator(".db-block").first().getByRole("tab", { name: "Board" })).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
 });
+
+// NP-DB-01 — slash "Database – full page": a new database as a sub-page, linked from the page (never embedded).
+test("slash: full-page database creates a sub-page and leaves a link", async ({ page }) => {
+  await page.goto(`/e2e-fixtures/notion-media.html?content=${encodeURIComponent("<p>Plan</p><p></p>")}`);
+  await page.locator(".tiptap p").nth(1).click();
+  await page.keyboard.type("/full");
+  await expect(page.getByRole("option", { name: /^Full-page database/ })).toHaveAttribute("aria-selected", "true");
+  await page.keyboard.press("Enter");
+  const dialog = page.getByRole("dialog", { name: "New full-page database" });
+  await dialog.getByRole("textbox").fill("book");
+  await dialog.getByRole("button", { name: "Create database" }).click();
+  await expect(dialog).toHaveCount(0);
+  const created = await page.evaluate(() => (window as any).prismMediaCreates[0]);
+  expect(created.path).toBe("Projects/Prism/Field guide/book database");
+  expect(created.metadata.prism_type).toBe("database");
+  expect(created.metadata.prism_database.views).toHaveLength(1);
+  expect(created.metadata.prism_database.views[0].type).toBe("table");
+  const stored = await page.evaluate(() => (document.querySelector(".tiptap") as any).editor.getHTML() as string);
+  expect(stored).toContain("[[Projects/Prism/Field guide/book database]]");
+  expect(stored).not.toContain("data-prism-database"); // a link to the page, not an inline block
+});

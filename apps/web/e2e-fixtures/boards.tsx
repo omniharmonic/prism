@@ -66,6 +66,12 @@ if (new URLSearchParams(location.search).has("due")) {
   notes[2].metadata = { ...notes[2].metadata, due: day(0), status: "todo" };
   notes[0].metadata = { ...notes[0].metadata, prism_board: { ...DEFAULT_BOARD, columns: [...DEFAULT_BOARD.columns, { id: "review", label: "In review" }], order: ["design", "custom"] } };
 }
+if (new URLSearchParams(location.search).has("due-range")) {
+  // A date RANGE in `due` (written by a database view): started two days ago, ends in three.
+  const day = (n: number) => { const d = new Date(); d.setDate(d.getDate() + n); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; };
+  notes[1].metadata = { ...notes[1].metadata, due: `${day(-2)}/${day(3)}`, status: "todo" };
+  notes[2].metadata = { ...notes[2].metadata, due: `${day(-9)}/${day(-7)}`, status: "todo" };
+}
 if (new URLSearchParams(location.search).has("manual-drag")) {
   notes[0].metadata = {
     ...notes[0].metadata,

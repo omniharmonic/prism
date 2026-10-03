@@ -125,6 +125,11 @@ test("relation picker and reverse property", async ({ page }) => {
   await expect(bar.getByRole("button", { name: "Project: Beacon" })).toBeVisible();
   const q = (await fx(page)).queries.find((s: any) => s.tags[0] === "initiative");
   expect(q).toBeTruthy();
+  // The chip opens the related page: from the picker…
+  const tabs = () => page.evaluate(() => (window as any).prismUI.getState().openTabs.map((t: any) => t.noteId) as string[]);
+  await bar.getByRole("button", { name: "Project: Beacon" }).click();
+  await page.getByRole("dialog", { name: "Link Project" }).getByRole("button", { name: "Open Beacon" }).click();
+  await expect.poll(tabs).toContain("beacon");
 
   // The target page shows who links to it (read-only, computed; never written back).
   await page.goto("/e2e-fixtures/databases.html?open=atlas");
@@ -137,6 +142,58 @@ test("relation picker and reverse property", async ({ page }) => {
   await tasks.getByRole("button", { name: "Write release notes" }).click();
   await expect.poll(() => page.evaluate(() => (window as any).prismUI.getState().openTabs.map((t: any) => t.noteId))).toContain("t2");
   expect((await writes(page)).length).toBe(0);
+});
+
+// NP-DB-12 — relation chips open the related page, and the reverse property is editable from the target
+// (it writes the linking page's forward value with compare-and-set; the target page itself is never written).
+test("relation chips open pages; the reverse property edits the forward side", async ({ page }) => {
+  const tabs = () => page.evaluate(() => (window as any).prismUI.getState().openTabs.map((t: any) => t.noteId) as string[]);
+  // In a table: a plain click on an editable cell edits; ⌘/Ctrl-click on the chip opens the page.
+  await page.goto("/e2e-fixtures/databases.html");
+  await showColumns(page, ["Project"]);
+  await row(page, "Write release notes").locator(".db-link-chip", { hasText: "Atlas" }).click({ modifiers: ["ControlOrMeta"] });
+  await expect.poll(tabs).toContain("atlas");
+  // Read-only (a viewer): the chip is a link and a plain click opens it.
+  await page.goto("/e2e-fixtures/databases.html?viewer");
+  await showColumns(page, ["Project"]);
+  await row(page, "Write release notes").getByRole("link", { name: "Atlas" }).click();
+  await expect.poll(tabs).toContain("atlas");
+  await page.goto("/e2e-fixtures/databases.html?viewer");
+  await showColumns(page, ["Assignee"]);
+  await row(page, "Write release notes").getByRole("link", { name: /Sam Rivera/ }).click();
+  await expect.poll(tabs).toContain("p2");
+  expect(await writes(page)).toEqual([]);
+
+  // The reverse side on the target page: add and remove linking pages.
+  await page.goto("/e2e-fixtures/databases.html?open=atlas");
+  const tasks = page.getByRole("list", { name: "Tasks" });
+  await expect(tasks.getByRole("listitem")).toHaveCount(2);
+  await page.getByRole("button", { name: "Edit Tasks" }).click();
+  const picker = page.getByRole("dialog", { name: "Edit Tasks" });
+  await expect(picker.getByRole("option", { name: /Write release notes/ })).toHaveAttribute("aria-selected", "true");
+  await picker.getByRole("textbox", { name: "Search #task pages" }).fill("onboarding");
+  await picker.getByRole("option", { name: /Refine onboarding copy/ }).click();
+  expect((await writes(page)).at(-1)).toEqual({ id: "t3", set: { project: "[[Projects/Atlas]]" }, expect: { project: null } });
+  await expect(tasks.getByRole("listitem")).toHaveCount(3);
+  await picker.getByRole("textbox", { name: "Search #task pages" }).fill("");
+  await picker.getByRole("option", { name: /Write release notes/ }).click();
+  expect((await writes(page)).at(-1)).toEqual({ id: "t2", set: { project: null }, expect: { project: "[[Projects/Atlas]]" } });
+  await expect(tasks.getByRole("listitem")).toHaveCount(2);
+  await expect(tasks.getByRole("button", { name: "Write release notes" })).toHaveCount(0);
+  // The linking page was changed elsewhere meanwhile: refused, nothing overwritten.
+  await page.evaluate(() => { (window as any).dbFixture.conflictWith = "[[Projects/Beacon]]"; });
+  await picker.getByRole("option", { name: /Design new icon set/ }).click();
+  await expect(picker.getByRole("alert")).toContainText("“Design new icon set” was changed somewhere else");
+  expect(await page.evaluate(() => (window as any).dbFixture.notes().find((n: any) => n.id === "t4").metadata.project)).toBe("[[Projects/Beacon]]");
+  await expect(picker.getByRole("option", { name: /Design new icon set/ })).toContainText("now: Beacon");
+  // Only the linking pages were written — never the target page itself.
+  expect((await writes(page)).every((w: any) => w.id !== "atlas")).toBe(true);
+});
+
+test("the reverse property is read-only for someone who cannot edit the page", async ({ page }) => {
+  await page.goto("/e2e-fixtures/databases.html?open=atlas&viewer");
+  await expect(page.getByRole("list", { name: "Tasks" }).getByRole("listitem")).toHaveCount(2);
+  await expect(page.getByRole("button", { name: "Edit Tasks" })).toHaveCount(0);
 });
 
 test("a saved view change never shows the previous config again", async ({ page }) => {
@@ -160,4 +217,186 @@ test("a saved view change never shows the previous config again", async ({ page 
   await page.evaluate(() => new Promise<void>((done) => setTimeout(() => requestAnimationFrame(() => requestAnimationFrame(() => done())), 0)));
   await expect(page.getByRole("columnheader", { name: /Email/ })).toBeVisible();
   expect(await page.evaluate(() => (window as any).columnReverts)).toBe(0);
+});
+
+// NP-DB-11 / NP-DB-08 — property management from a table header: retype with a preview over the loaded rows, number format,
+// and delete with "remove the values" (dry run first, then the owner job).
+test("property management from the table: retype preview, number format, delete and remove values", async ({ page }) => {
+  await page.goto("/e2e-fixtures/databases.html?open=db2");
+  const table = page.getByRole("table", { name: "All initiatives" });
+  const notes = () => page.evaluate(() => (window as any).dbFixture.notes() as any[]);
+  await expect(row(page, "Atlas").getByRole("button", { name: "Stage: active" })).toBeVisible();
+  const edit = async (label: string) => {
+    await table.getByRole("button", { name: label, exact: true }).click();
+    await page.getByRole("menuitem", { name: "Edit property…" }).click();
+    return page.getByRole("dialog", { name: `Edit property ${label}` });
+  };
+
+  // Text → URL: the preview says how many current values will not read as links.
+  let editor = await edit("Stage");
+  await editor.getByLabel("Property type").selectOption("url");
+  const preview = editor.getByRole("group", { name: "Type change preview" });
+  await expect(preview).toContainText("0 of 2 values will show as URL; 2 do not look like one and will show as plain text.");
+  await preview.getByRole("button", { name: "Cancel" }).click();
+  // Text → Select: every value fits; cells become chips; stored values untouched.
+  await editor.getByLabel("Property type").selectOption("select");
+  await expect(preview).toContainText("2 of 2 values will show as Select.");
+  await preview.getByRole("button", { name: "Change type to Select" }).click();
+  await expect(row(page, "Atlas").locator('.db-opt[data-value="active"]')).toBeVisible();
+  expect((await fx(page)).schemaWrites.at(-1)).toEqual({ tag: "initiative", patch: { ui: { stage: { kind: "select" } } } });
+  await editor.getByRole("button", { name: "Close" }).click();
+
+  // Number format is a display hint: the stored number is unchanged.
+  editor = await edit("Budget");
+  await editor.getByLabel("Number format").selectOption("usd");
+  await expect(row(page, "Atlas").getByRole("button", { name: "Budget: $12,500.00" })).toBeVisible();
+  await expect(row(page, "Beacon").getByRole("button", { name: "Budget: $800.50" })).toBeVisible();
+  await editor.getByLabel("Number format").selectOption("percent");
+  await expect(row(page, "Atlas").getByRole("button", { name: "Budget: 12,500%" })).toBeVisible();
+  expect((await notes()).find((n: any) => n.id === "atlas").metadata.budget).toBe(12500);
+  // A number can never become text: the option is disabled and explained.
+  await expect(editor.getByLabel("Property type").locator('option[value="text"]')).toHaveJSProperty("disabled", true);
+  await editor.getByRole("button", { name: "Close" }).click();
+  // Editing the formatted number still edits the raw value.
+  await row(page, "Atlas").getByRole("button", { name: "Budget: 12,500%" }).click();
+  await expect(page.getByRole("textbox", { name: "Budget" })).toHaveValue("12500");
+  await page.keyboard.press("Escape");
+
+  // Delete + remove the values: a dry run names the count, then the job runs.
+  editor = await edit("Stage");
+  await editor.getByRole("button", { name: "Delete property…" }).click();
+  const del = editor.getByRole("group", { name: "Delete property" });
+  await del.getByRole("radio", { name: /Remove the values from every page/ }).check();
+  await del.getByRole("button", { name: "Check what would be removed" }).click();
+  await expect(del.getByRole("status")).toContainText("2 pages hold a “Stage” value.");
+  expect((await fx(page)).removals).toEqual([{ tag: "initiative", field: "stage", dryRun: true }]);
+  expect((await notes()).find((n: any) => n.id === "atlas").metadata.stage).toBe("active"); // nothing yet
+  await del.getByRole("button", { name: "Delete and remove 2 values" }).click();
+  await expect(editor.getByRole("status")).toContainText("Removed the value from 2 pages.");
+  expect((await fx(page)).removals.at(-1)).toEqual({ tag: "initiative", field: "stage", dryRun: false });
+  const after = (await notes()).filter((n: any) => n.tags.includes("initiative"));
+  expect(after.map((n: any) => "stage" in n.metadata)).toEqual([false, false]);
+  expect(after.map((n: any) => n.metadata.budget)).toEqual([12500, 800.5]); // other properties stay
+  await editor.getByRole("button", { name: "Close" }).click();
+  await expect(table.getByRole("button", { name: "Stage", exact: true })).toHaveCount(0);
+  // The filter builder no longer offers it either.
+  await page.getByRole("button", { name: "Filter", exact: true }).click();
+  await page.getByRole("dialog", { name: "Filter" }).getByRole("button", { name: "Add filter" }).click();
+  await expect(page.getByLabel("Condition 1 property").locator("option", { hasText: "Stage" })).toHaveCount(0);
+  await page.getByRole("dialog", { name: "Filter" }).getByRole("button", { name: "Clear all" }).click();
+  await page.keyboard.press("Escape");
+  // It can be restored from View settings (the column comes back, now empty).
+  await page.getByRole("button", { name: "View settings" }).click();
+  await page.getByRole("dialog", { name: "View settings" }).getByRole("button", { name: "Manage deleted property Stage" }).click();
+  await page.getByRole("dialog", { name: "Edit property Stage" }).getByRole("button", { name: "Restore property" }).click();
+  await expect(table.getByRole("button", { name: "Stage", exact: true })).toBeVisible();
+  await expect(row(page, "Atlas").getByRole("button", { name: "Stage: Empty" })).toBeVisible();
+});
+
+// NP-DB-08 — a date holds a day, a time, or a range; status options are grouped. Editors, filters and sorts all understand them.
+// (`?free-dates` re-homes the fixture's rows under a tag no integration owns: ranges are withheld on ingest tags, L9.)
+test("date range and time, status groups", async ({ page }) => {
+  await page.goto("/e2e-fixtures/databases.html?free-dates");
+  const table = page.getByRole("table", { name: "All tasks" });
+  const dueOf = (id: string) => page.evaluate((id) => (window as any).dbFixture.notes().find((n: any) => n.id === id).metadata.due as string, id);
+  const start = await dueOf("t3");
+  const plus = (iso: string, n: number) => { const d = new Date(`${iso}T12:00:00`); d.setDate(d.getDate() + n); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; };
+  const end = plus(start, 2);
+  const dueCell = () => row(page, "Refine onboarding copy").getByRole("button", { name: /^Due:/ });
+
+  // A plain day still edits in place; the full editor adds an end date.
+  await dueCell().click();
+  await expect(page.getByLabel("Due", { exact: true })).toBeFocused();
+  await page.getByRole("button", { name: "Time and end date for Due" }).click();
+  let editor = page.getByRole("dialog", { name: "Edit Due" });
+  await expect(editor.getByLabel("Date", { exact: true })).toHaveValue(start);
+  await editor.getByRole("checkbox", { name: "Add an end date" }).check();
+  await editor.getByLabel("End date", { exact: true }).fill(end);
+  await editor.getByRole("button", { name: "Done" }).click();
+  expect((await writes(page)).at(-1)).toEqual({ id: "t3", set: { due: `${start}/${end}` }, expect: { due: start } });
+  await expect(dueCell()).toHaveAccessibleName(/^Due: .+ → .+/);
+
+  // The range filters as every day inside it, and sorts by its start.
+  await page.getByRole("button", { name: "Filter", exact: true }).click();
+  const filter = page.getByRole("dialog", { name: "Filter" });
+  await filter.getByRole("button", { name: "Add filter" }).click();
+  await filter.getByLabel("Condition 1 property").selectOption("due");
+  await filter.getByLabel("Condition 1 operator").selectOption("eq");
+  await filter.getByLabel("Filter value").fill(plus(start, 1));
+  await expect(table.locator("tbody tr[data-row-id]")).toHaveCount(1);
+  await expect(row(page, "Refine onboarding copy")).toBeVisible();
+  await filter.getByRole("button", { name: "Clear all" }).click();
+  await page.keyboard.press("Escape");
+
+  // Include time: start and end times, stored as instants; the editor reads them back in local time.
+  await dueCell().click(); // a range opens the full editor directly
+  editor = page.getByRole("dialog", { name: "Edit Due" });
+  await expect(editor.getByLabel("Start date")).toHaveValue(start);
+  await expect(editor.getByLabel("End date", { exact: true })).toHaveValue(end);
+  await editor.getByRole("checkbox", { name: "Include time" }).check();
+  await editor.getByLabel("Start time").fill("09:30");
+  await editor.getByLabel("End time").fill("17:00");
+  await editor.getByRole("button", { name: "Done" }).click();
+  const timed = await dueOf("t3");
+  expect(timed).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:00\.000Z\/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:00\.000Z$/);
+  const local = await page.evaluate((v) => v.split("/").map((x) => { const d = new Date(x); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")} ${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`; }), timed);
+  expect(local).toEqual([`${start} 09:30`, `${end} 17:00`]);
+  await expect(dueCell()).toHaveAccessibleName(/^Due: .+9:30.* → .+5:00/);
+  // An end before the start is refused in the editor; nothing is written.
+  await dueCell().click();
+  editor = page.getByRole("dialog", { name: "Edit Due" });
+  await editor.getByLabel("End date", { exact: true }).fill(plus(start, -3));
+  await expect(editor.getByRole("alert")).toHaveText("The end is before the start.");
+  await expect(editor.getByRole("button", { name: "Done" })).toBeDisabled();
+  // Dropping the end leaves a single date with its time.
+  await editor.getByRole("checkbox", { name: "Add an end date" }).uncheck();
+  await editor.getByRole("button", { name: "Done" }).click();
+  expect(await dueOf("t3")).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:00\.000Z$/);
+  // Escape leaves the value alone; Clear empties it (null, never "").
+  await dueCell().click();
+  await page.keyboard.press("Escape");
+  const count = (await writes(page)).length;
+  expect((await writes(page)).length).toBe(count);
+  await dueCell().click();
+  await page.getByRole("dialog", { name: "Edit Due" }).getByRole("button", { name: "Clear" }).click();
+  expect((await writes(page)).at(-1).set).toEqual({ due: null });
+
+  // Status options are grouped To-do / In progress / Complete in the editor and the filter.
+  await row(page, "Refine onboarding copy").getByRole("button", { name: "Status: in-progress" }).click();
+  const picker = page.getByRole("dialog", { name: "Choose Status" });
+  await expect(picker.locator(".db-status-group")).toHaveText(["To-do", "In progress", "Complete"]);
+  await expect(picker.getByRole("option")).toHaveText(["todo", "in-progress", "done"]);
+  await page.keyboard.press("Escape");
+  await page.getByRole("button", { name: "Filter", exact: true }).click();
+  await filter.getByRole("button", { name: "Add filter" }).click();
+  await filter.getByLabel("Condition 1 property").selectOption("status");
+  expect(await filter.getByLabel("Filter value").locator("optgroup").evaluateAll((els) => els.map((e) => (e as HTMLOptGroupElement).label))).toEqual(["To-do", "In progress", "Complete"]);
+});
+
+// Review L5 — a long removal is several short requests: the client keeps asking while the server says `more`.
+test("L5: removing values is chunked", async ({ page }) => {
+  await page.goto("/e2e-fixtures/databases.html?open=db2");
+  await page.evaluate(() => { (window as any).dbFixture.removeChunk = 1; });
+  await page.getByRole("table", { name: "All initiatives" }).getByRole("button", { name: "Stage", exact: true }).click();
+  await page.getByRole("menuitem", { name: "Edit property…" }).click();
+  const editor = page.getByRole("dialog", { name: "Edit property Stage" });
+  await editor.getByRole("button", { name: "Delete property…" }).click();
+  const del = editor.getByRole("group", { name: "Delete property" });
+  await del.getByRole("radio", { name: /Remove the values from every page/ }).check();
+  await del.getByRole("button", { name: "Check what would be removed" }).click();
+  await del.getByRole("button", { name: "Delete and remove 2 values" }).click();
+  await expect(editor.getByRole("status")).toContainText("Removed the value from 2 pages.");
+  expect((await fx(page)).removals.filter((r: any) => !r.dryRun).length).toBe(2);
+  expect(await page.evaluate(() => (window as any).dbFixture.notes().filter((n: any) => n.tags.includes("initiative") && "stage" in n.metadata).length)).toBe(0);
+});
+
+// Review L9 — an ingest-owned tag's date fields stay single dates (other readers of `task.due` expect one date).
+test("L9: no date range on an ingest tag's field; other tags keep it", async ({ page }) => {
+  await page.goto("/e2e-fixtures/databases.html");
+  await row(page, "Refine onboarding copy").getByRole("button", { name: /^Due:/ }).click();
+  await page.getByRole("button", { name: "Time and end date for Due" }).click();
+  const editor = page.getByRole("dialog", { name: "Edit Due" });
+  await expect(editor.getByRole("checkbox", { name: /Add an end date/ })).toBeDisabled();
+  await expect(editor).toContainText("kept in sync by an integration");
+  await expect(editor.getByRole("checkbox", { name: "Include time" })).toBeEnabled();
 });

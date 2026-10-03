@@ -56,6 +56,8 @@ export const httpVaultClient: VaultClient = {
   savePreferences: pages.savePreferences,
   getSchemas: rest.getSchemas,
   updateSchema: rest.updateSchema,
+  removePropertyValues: rest.removePropertyValues,
+  checkNewTag: rest.checkNewTag,
   queryNotes: rest.queryNotes,
   updateProperties: rest.updateProperties,
   uploadAttachment: rest.uploadAttachment,

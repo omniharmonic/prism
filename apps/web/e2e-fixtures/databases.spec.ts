@@ -320,6 +320,30 @@ test("gallery card size and cover", async ({ page }) => {
   await expect(card("Refine onboarding copy").locator(".db-cover img, .db-cover-gradient")).toHaveCount(0);
   // A cover that is not ours / https never becomes an <img> (no javascript:, no arbitrary same-origin path).
   expect(await gallery.locator('.db-cover img:not([src^="/api/attachments/"]):not([src^="https://"])').count()).toBe(0);
+
+  // Card size S / M / L (NP-DB-05): saved per view, and it really changes the cards.
+  const width = async () => (await card("Review workspace navigation").boundingBox())!.width;
+  const coverHeight = async () => (await card("Review workspace navigation").locator(".db-cover").boundingBox())!.height;
+  const [mediumW, mediumH] = [await width(), await coverHeight()];
+  await expect(gallery).toHaveAttribute("data-size", "medium");
+  await page.getByRole("button", { name: "View settings" }).click();
+  const size = page.getByRole("dialog", { name: "View settings" }).getByLabel("Card size");
+  await expect(size).toHaveValue("medium");
+  await size.selectOption("large");
+  await expect(gallery).toHaveAttribute("data-size", "large");
+  await expect.poll(width).toBeGreaterThan(mediumW);
+  expect(await coverHeight()).toBeGreaterThan(mediumH);
+  await expect.poll(async () => (await configWrites(page)).at(-1)?.metadata.prism_database.views[2].cardSize).toBe("large");
+  await size.selectOption("small");
+  await expect(gallery).toHaveAttribute("data-size", "small");
+  await expect.poll(width).toBeLessThan(mediumW);
+  expect(await coverHeight()).toBeLessThan(mediumH);
+  await expect.poll(async () => (await configWrites(page)).at(-1)?.metadata.prism_database.views[2].cardSize).toBe("small");
+  // The cover still fills the card at every size, and the choice survives a reload.
+  await expect(img).toHaveCSS("object-fit", "cover");
+  await page.reload();
+  await page.getByRole("tab", { name: "Gallery" }).click();
+  await expect(page.getByRole("list", { name: "Gallery gallery" })).toHaveAttribute("data-size", "small");
 });
 
 // NP-DB-14 — multi-level sort from the Sort menu, saved per view.
@@ -369,4 +393,350 @@ test("a saved view is renamed and deleted from View settings", async ({ page }) 
   await expect(page.getByRole("tab", { name: "Board" })).toHaveAttribute("aria-selected", "true");
 });
 
-test.fixme("saved views: duplicate and reorder tabs (PRODUCT GAP NP-DB-16 — no control exists)", async () => {});
+// NP-DB-03 — arrows move between cells, Enter edits, Esc cancels back to the cell, Tab commits and moves on; columns reorder.
+test("column reorder and cell keyboard nav", async ({ page }) => {
+  await page.goto("/e2e-fixtures/databases.html");
+  const table = page.getByRole("table", { name: "All tasks" });
+  const focused = () => page.evaluate(() => document.activeElement?.getAttribute("aria-label") ?? document.activeElement?.textContent ?? "");
+  const focusedRow = () => page.evaluate(() => document.activeElement?.closest("tr")?.getAttribute("data-row-id") ?? "");
+  await row(page, "Refine onboarding copy").getByRole("button", { name: "Status: in-progress" }).focus();
+  await page.keyboard.press("ArrowRight");
+  expect(await focused()).toBe("Priority: medium");
+  await page.keyboard.press("ArrowLeft");
+  await page.keyboard.press("ArrowLeft");
+  expect(await focused()).toBe("Refine onboarding copy");
+  await page.keyboard.press("ArrowLeft"); // already at the first column: stays put
+  expect(await focused()).toBe("Refine onboarding copy");
+  for (let i = 0; i < 5; i++) await page.keyboard.press("ArrowRight");
+  expect(await focused()).toBe("Estimate (h): 5");
+
+  // Enter edits; Esc cancels without writing and returns to the cell.
+  const before = (await writes(page)).length;
+  await page.keyboard.press("Enter");
+  const input = page.getByRole("textbox", { name: "Estimate (h)" });
+  await expect(input).toBeFocused();
+  await input.fill("9");
+  await page.keyboard.press("ArrowLeft"); // arrows inside an editor move the caret, not the cell
+  await expect(input).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(input).toHaveCount(0);
+  expect(await focused()).toBe("Estimate (h): 5");
+  expect((await writes(page)).length).toBe(before);
+
+  // Enter commits and stays on the cell; ArrowDown/Up move along the column.
+  await page.keyboard.press("Enter");
+  await input.fill("9");
+  await page.keyboard.press("Enter");
+  await expect.poll(focused).toBe("Estimate (h): 9");
+  expect((await writes(page)).at(-1)).toEqual({ id: "t3", set: { estimate: 9 }, expect: { estimate: 5 } });
+  const here = await focusedRow();
+  await page.keyboard.press("ArrowDown");
+  expect(await focused()).toMatch(/^Estimate \(h\):/);
+  expect(await focusedRow()).not.toBe(here);
+  await page.keyboard.press("ArrowUp");
+  expect(await focusedRow()).toBe(here);
+
+  // Tab commits the edit and moves to the next cell.
+  await page.keyboard.press("Enter");
+  await input.fill("4");
+  await page.keyboard.press("Tab");
+  await expect.poll(async () => (await writes(page)).at(-1)).toEqual({ id: "t3", set: { estimate: 4 }, expect: { estimate: 9 } });
+  await expect.poll(focused).toMatch(/^Labels:/);
+  expect(await focusedRow()).toBe(here);
+
+  // Columns reorder from View settings and the order is saved.
+  const headers = () => table.locator("thead th").allInnerTexts();
+  expect((await headers()).slice(0, 3)).toEqual(["Title", "Status", "Priority"]);
+  await page.getByRole("button", { name: "View settings" }).click();
+  await page.getByRole("dialog", { name: "View settings" }).getByRole("button", { name: "Move Priority earlier" }).click();
+  await expect.poll(async () => (await headers()).slice(0, 3)).toEqual(["Title", "Priority", "Status"]);
+  await expect.poll(async () => (await configWrites(page)).at(-1)?.metadata.prism_database.views[0].visible.slice(0, 2)).toEqual(["priority", "status"]);
+});
+
+// NP-DB-01 — a database is created from the New page menu, or from a tag; either way it starts as a Table over that tag.
+test("create database from New page and from tag", async ({ page }) => {
+  await page.goto("/e2e-fixtures/databases.html?create&open=page");
+  await page.getByRole("button", { name: "New page", exact: true }).click();
+  const dialog = page.getByRole("dialog");
+  await dialog.getByRole("button", { name: "Page", exact: true }).click();
+  await dialog.getByRole("button", { name: "Database", exact: true }).click();
+  await dialog.getByRole("textbox").first().fill("Roadmap");
+  await dialog.getByRole("button", { name: "Create", exact: true }).click();
+  const created = (await fx(page)).creates.at(-1);
+  expect(created.path).toBe("Projects/Roadmap");
+  expect(created.metadata.prism_type).toBe("database");
+  expect(created.tags ?? []).toEqual([]);
+  // The new page asks which pages it shows, then opens as a Table view over that tag.
+  await expect(page.getByRole("heading", { name: "Which pages should this database show?" })).toBeVisible();
+  await page.getByLabel("Source tag").fill("task");
+  await page.getByRole("button", { name: "Create database" }).click();
+  await expect(page.getByRole("tab", { name: "Table" })).toHaveAttribute("aria-selected", "true");
+  await expect(page.getByRole("table", { name: "Table" }).getByRole("button", { name: "Write release notes", exact: true })).toBeVisible();
+  expect((await configWrites(page)).at(-1).metadata.prism_database).toEqual({ version: 1, source: { tags: ["task"] }, views: [{ id: "table", name: "Table", type: "table" }] });
+
+  // From a tag: "Open as database" creates Databases/<tag> once, then reopens it.
+  await page.getByRole("button", { name: "Open as database" }).click();
+  await expect.poll(async () => (await fx(page)).creates.at(-1)?.path).toBe("Databases/task");
+  const fromTag = (await fx(page)).creates.at(-1);
+  expect(fromTag.metadata.prism_database).toEqual({ version: 1, source: { tags: ["task"] }, views: [{ id: "table", name: "Table", type: "table" }] });
+  await expect(page.getByRole("heading", { name: "task", exact: true })).toBeVisible();
+  await expect(page.getByRole("table", { name: "Table" }).getByRole("button", { name: "Write release notes", exact: true })).toBeVisible();
+  const count = (await fx(page)).creates.length;
+  await page.getByRole("button", { name: "Open as database" }).click();
+  await expect(page.getByRole("table", { name: "Table" })).toBeVisible();
+  expect((await fx(page)).creates.length).toBe(count);
+});
+
+// NP-DB-04 — board groups by select / status / person; empty groups can be hidden; cards open, move and reorder from their menu.
+test("board: hide empty groups, group by person, card menu order and open", async ({ page }) => {
+  await page.goto("/e2e-fixtures/databases.html");
+  await page.getByRole("tab", { name: "Board" }).click();
+  const board = page.getByRole("list", { name: "Board board" });
+  const columns = () => board.getByRole("region").evaluateAll((els) => els.map((e) => e.getAttribute("aria-label")));
+  await page.getByRole("button", { name: "View settings" }).click();
+  const settings = page.getByRole("dialog", { name: "View settings" });
+  await settings.getByLabel("Group by").selectOption("priority");
+  // "blocked" is an option nobody uses: an empty column.
+  await expect.poll(columns).toEqual(["low", "medium", "high", "blocked"]);
+  await expect(board.getByRole("region", { name: "blocked" })).toContainText("No pages");
+  await settings.getByRole("checkbox", { name: "Hide empty groups" }).check();
+  await expect.poll(columns).toEqual(["low", "medium", "high"]);
+  await expect.poll(async () => (await configWrites(page)).at(-1)?.metadata.prism_database.views[1]).toMatchObject({ groupBy: "priority", hideEmptyGroups: true });
+  // A group that becomes empty disappears; one that gains a page comes back.
+  await page.keyboard.press("Escape");
+  for (const title of ["Update pricing page", "Private planning note"]) {
+    await page.getByRole("button", { name: `Actions for ${title}` }).click();
+    await page.getByRole("menuitem", { name: "Move to…" }).click();
+    await page.getByRole("menuitem", { name: "medium" }).click();
+    await expect(board.getByRole("region", { name: "medium" }).getByRole("article", { name: title })).toBeVisible();
+  }
+  await expect.poll(columns).toEqual(["medium", "high"]);
+  await page.getByRole("button", { name: "View settings" }).click();
+  await settings.getByRole("checkbox", { name: "Hide empty groups" }).uncheck();
+  await expect.poll(columns).toEqual(["low", "medium", "high", "blocked"]);
+  await expect.poll(async () => (await configWrites(page)).at(-1)?.metadata.prism_database.views[1].hideEmptyGroups).toBeUndefined();
+
+  // Group by a person property.
+  await settings.getByLabel("Group by").selectOption("assignee");
+  await expect.poll(async () => (await columns()).slice().sort()).toEqual(["Mira Chen", "No Assignee", "Sam Rivera"]);
+  expect((await columns())[0]).toBe("No Assignee"); // the empty group leads
+  await expect(board.getByRole("region", { name: "Mira Chen" }).getByRole("article")).toHaveCount(1);
+  await page.keyboard.press("Escape");
+
+  // Card menu: Move later reorders inside the column (view-local rank), Open opens the page.
+  const none = board.getByRole("region", { name: "No Assignee" });
+  const order = () => none.getByRole("article").evaluateAll((els) => els.map((e) => e.getAttribute("aria-label")));
+  const first = (await order())[0]!;
+  await page.getByRole("button", { name: `Actions for ${first}` }).click();
+  await page.getByRole("menuitem", { name: "Move later" }).click();
+  await expect.poll(async () => (await order())[1]).toBe(first);
+  await expect.poll(async () => Array.isArray((await configWrites(page)).at(-1)?.metadata.prism_database.views[1].order)).toBe(true);
+  await page.getByRole("button", { name: `Actions for ${first}` }).click();
+  await page.getByRole("menuitem", { name: "Open" }).click();
+  await expect(page.getByRole("dialog", { name: new RegExp(first) })).toBeVisible();
+  // Grouped tables hide empty groups the same way.
+  await page.keyboard.press("Escape");
+  await page.getByRole("tab", { name: "All tasks" }).click();
+  await page.getByRole("button", { name: "View settings" }).click();
+  await settings.getByLabel("Group by").selectOption("priority");
+  await expect(page.getByRole("region", { name: "blocked" })).toBeVisible();
+  await settings.getByRole("checkbox", { name: "Hide empty groups" }).check();
+  await expect(page.getByRole("region", { name: "blocked" })).toHaveCount(0);
+  await expect(page.getByRole("region", { name: "high" })).toBeVisible();
+});
+
+// NP-DB-23 — on a phone a board opens as a grouped list (the saved view is untouched); the board is one tap away.
+test("phone: boards default to list", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/e2e-fixtures/databases.html");
+  await page.getByRole("tab", { name: "Board" }).click();
+  await expect(page.getByText("Shown as a list on this screen.")).toBeVisible();
+  await expect(page.locator(".db-board")).toHaveCount(0);
+  const todo = page.getByRole("region", { name: "todo", exact: true });
+  await expect(todo.getByRole("list", { name: "todo list" }).getByRole("button", { name: "Review workspace navigation" })).toBeVisible();
+  await expect(page.getByRole("region", { name: "in-progress", exact: true })).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  // Rows open full-page on a phone.
+  await todo.getByRole("button", { name: "Review workspace navigation" }).click();
+  await expect.poll(() => page.evaluate(() => (window as any).prismUI.getState().openTabs.map((t: any) => t.noteId))).toContain("t1");
+  await page.evaluate(() => { const s = (window as any).prismUI.getState(); s.setActiveTab(s.openTabs[0].id); });
+  await page.getByRole("tab", { name: "Board" }).click();
+  // One tap shows the real board; nothing about the view is rewritten.
+  await page.getByRole("button", { name: "Show as board" }).click();
+  await expect(page.locator(".db-board")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Show as list" })).toBeVisible();
+  expect(await configWrites(page)).toEqual([]);
+  // A wide screen gets the board straight away.
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.reload();
+  await page.getByRole("tab", { name: "Board" }).click();
+  await expect(page.locator(".db-board")).toBeVisible();
+  await expect(page.getByText("Shown as a list on this screen.")).toHaveCount(0);
+});
+
+// NP-DB-07 — a calendar item is dragged to another day (CAS write through the property writer); a range spans as one bar.
+test("calendar drag reschedule and multi-day span", async ({ page }) => {
+  // Dates inside the current month, starting on a Monday so a three-day range sits in one week row.
+  const now = new Date();
+  const mon = new Date(now.getFullYear(), now.getMonth(), 8);
+  while (mon.getDay() !== 1) mon.setDate(mon.getDate() + 1);
+  const d = (off: number) => { const x = new Date(mon.getFullYear(), mon.getMonth(), mon.getDate() + off); return `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, "0")}-${String(x.getDate()).padStart(2, "0")}`; };
+  // Tall enough that the whole month is on screen (a drag near the edge auto-scrolls, as it should).
+  await page.setViewportSize({ width: 1280, height: 1300 });
+  await page.goto("/e2e-fixtures/databases.html");
+  await expect(page.getByRole("table", { name: "All tasks" })).toBeVisible();
+  await page.evaluate(([range, single, cross]) => {
+    const notes = (window as any).dbFixture.notes();
+    const set = (id: string, due: string | null) => { const n = notes.find((x: any) => x.id === id); n.metadata = { ...n.metadata, due }; };
+    set("t3", range); set("t2", single); set("t4", cross); set("t1", null); set("t5", null);
+  }, [`${d(0)}/${d(2)}`, d(3), `${d(5)}/${d(8)}`]);
+  await page.getByRole("tab", { name: "Calendar" }).click();
+  const cal = page.getByRole("grid", { name: "Calendar calendar" });
+  const cell = (day: string) => cal.locator(`[data-day="${day}"]`);
+  const box = async (l: ReturnType<typeof cell>) => (await l.boundingBox())!;
+
+  // A three-day range is ONE bar across its three day cells.
+  const bar = cal.locator('.db-cal-bar[data-cal-item="t3"]');
+  await expect(bar).toHaveCount(1);
+  await expect(bar).toHaveAccessibleName(/^Refine onboarding copy, .+ → .+/);
+  const [b, first, last] = [await box(bar), await box(cell(d(0))), await box(cell(d(2)))];
+  expect(b.x).toBeGreaterThanOrEqual(first.x);
+  expect(b.x + b.width).toBeLessThanOrEqual(last.x + last.width + 1);
+  expect(b.width).toBeGreaterThan(first.width * 2.5);
+  await expect(cell(d(1)).locator(".db-cal-item")).toHaveCount(0); // not repeated per day
+  // A range crossing the weekend continues on the next week row: two pieces of the same item.
+  const crossing = cal.locator('.db-cal-bar[data-cal-item="t4"]');
+  await expect(crossing).toHaveCount(2);
+  expect((await box(crossing.first())).x).toBeGreaterThanOrEqual((await box(cell(d(5)))).x);
+  expect((await box(crossing.nth(1))).x).toBeLessThan((await box(cell(d(8)))).x);
+
+  const drag = async (from: ReturnType<typeof cell>, toDay: string) => {
+    const a = await box(from);
+    const t = await box(cell(toDay));
+    await page.mouse.move(a.x + Math.min(20, a.width / 2), a.y + a.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(a.x + 30, a.y + a.height / 2 + 12, { steps: 4 });
+    await page.mouse.move(t.x + t.width / 2, t.y + t.height / 2 + 14, { steps: 12 });
+    await page.mouse.up();
+  };
+  // Drag a single-day item to the next day: one CAS property write.
+  await drag(cell(d(3)).locator('[data-cal-item="t2"]'), d(4));
+  await expect.poll(async () => (await writes(page)).at(-1)).toEqual({ id: "t2", set: { due: d(4) }, expect: { due: d(3) } });
+  await expect(cell(d(4)).locator('[data-cal-item="t2"]')).toBeVisible();
+  await expect(cell(d(3)).locator('[data-cal-item="t2"]')).toHaveCount(0);
+  // Drag the bar a week later: the whole range moves and keeps its length.
+  await drag(bar, d(7));
+  await expect.poll(async () => (await writes(page)).at(-1)).toEqual({ id: "t3", set: { due: `${d(7)}/${d(9)}` }, expect: { due: `${d(0)}/${d(2)}` } });
+  // Changed elsewhere meanwhile: refused, said so, and nothing is overwritten.
+  await page.evaluate((v) => { (window as any).dbFixture.conflictWith = v; }, d(10));
+  await drag(cell(d(4)).locator('[data-cal-item="t2"]'), d(6));
+  await expect(page.getByRole("alert")).toContainText("“Write release notes” was changed somewhere else, so it was not moved.");
+  expect(await page.evaluate(() => (window as any).dbFixture.notes().find((n: any) => n.id === "t2").metadata.due)).toBe(d(10));
+
+  // A clicked item still opens (a click is not a drag).
+  await cell(d(10)).locator('[data-cal-item="t2"]').click();
+  await expect(page.getByRole("dialog", { name: /Write release notes/ })).toBeVisible();
+  await page.keyboard.press("Escape");
+  // Month navigation.
+  const heading = cal.locator("xpath=preceding-sibling::*").first();
+  await page.getByRole("button", { name: "Next month" }).click();
+  await expect(page.getByRole("heading", { level: 3 })).not.toHaveText(now.toLocaleDateString("en-US", { month: "long", year: "numeric" }));
+  await page.getByRole("button", { name: "Today", exact: true }).click();
+  await expect(cell(d(7))).toBeVisible();
+  void heading;
+});
+
+test("calendar: a viewer cannot drag an item to another day", async ({ page }) => {
+  await page.goto("/e2e-fixtures/databases.html?viewer");
+  await page.getByRole("tab", { name: "Calendar" }).click();
+  const item = page.locator("[data-cal-item]").first();
+  await expect(item).toBeVisible();
+  const a = (await item.boundingBox())!;
+  await page.mouse.move(a.x + 10, a.y + a.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(a.x + 200, a.y + 160, { steps: 10 });
+  await page.mouse.up();
+  expect((await writes(page)).filter((w: any) => !w.metadata?.prism_database)).toEqual([]);
+});
+
+// Review L8 — a page an integration keeps in sync is never rescheduled by a drag; the chip says why.
+test("L8: calendar drag is off for calendar-synced, ClickUp and ingest-sourced rows", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 1300 });
+  await page.goto("/e2e-fixtures/databases.html?ingest");
+  await page.getByRole("tab", { name: "Calendar" }).click();
+  const cal = page.getByRole("grid", { name: "Calendar calendar" });
+  for (const id of ["g1", "g2", "g3"]) {
+    const chip = cal.locator(`[data-cal-item="${id}"]`);
+    await expect(chip).toHaveAttribute("data-locked", "");
+    await expect(chip).toHaveAttribute("title", /kept in sync by an integration/);
+    const a = (await chip.boundingBox())!;
+    await page.mouse.move(a.x + 10, a.y + a.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(a.x + 40, a.y + 20, { steps: 4 });
+    await page.mouse.move(a.x + 10, a.y + 260, { steps: 10 });
+    await page.mouse.up();
+  }
+  expect((await writes(page)).filter((w: any) => w.set)).toEqual([]);
+  // Long-press / context menu explains it too.
+  await cal.locator('[data-cal-item="g1"]').dispatchEvent("contextmenu");
+  await expect(page.getByRole("alert")).toContainText("“Synced standup” is kept in sync by an integration");
+  // An ordinary page (its `source` is just a word) still moves.
+  const free = cal.locator('[data-cal-item="g4"]');
+  await expect(free).not.toHaveAttribute("data-locked", "");
+  const a = (await free.boundingBox())!;
+  await page.mouse.move(a.x + 10, a.y + a.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(a.x + 40, a.y + 20, { steps: 4 });
+  await page.mouse.move(a.x + 10, a.y + 260, { steps: 10 });
+  await page.mouse.up();
+  await expect.poll(async () => (await writes(page)).filter((w: any) => w.set).at(-1)?.id).toBe("g4");
+});
+
+// NP-DB-16 — a view is duplicated with every setting, and tabs reorder (buttons and drag); both are saved to the database note.
+test("saved views: duplicate and reorder tabs", async ({ page }) => {
+  await page.goto("/e2e-fixtures/databases.html");
+  const tabs = () => page.getByRole("tablist", { name: "Views" }).getByRole("tab").allInnerTexts().then((t) => t.map((x) => x.trim()).filter(Boolean));
+  const savedViews = async () => (await configWrites(page)).at(-1)?.metadata.prism_database.views as any[] | undefined;
+  await page.getByRole("tab", { name: "Board" }).click();
+  await page.getByRole("button", { name: "View settings" }).click();
+  const settings = page.getByRole("dialog", { name: "View settings" });
+  await settings.getByRole("button", { name: "Duplicate view" }).click();
+  // The copy sits right after its source, is selected, and keeps the layout, grouping and properties.
+  await expect.poll(tabs).toEqual(["All tasks", "Board", "Board copy", "Gallery", "List", "Calendar"]);
+  await expect(page.getByRole("tab", { name: "Board copy" })).toHaveAttribute("aria-selected", "true");
+  await expect.poll(async () => (await savedViews())?.length).toBe(6);
+  const [src, copy] = [(await savedViews())![1], (await savedViews())![2]];
+  expect(copy).toEqual({ ...src, id: copy.id, name: "Board copy" });
+  expect(copy.id).not.toBe(src.id);
+  await expect(page.getByRole("list", { name: "Board copy board" })).toBeVisible();
+  // Changing the copy leaves the source alone.
+  await settings.getByLabel("Group by").selectOption("priority");
+  await expect.poll(async () => (await savedViews())!.map((v) => v.groupBy).slice(1, 3)).toEqual(["status", "priority"]);
+
+  // Reorder with the buttons…
+  await settings.getByRole("button", { name: "Move view left" }).click();
+  await expect.poll(tabs).toEqual(["All tasks", "Board copy", "Board", "Gallery", "List", "Calendar"]);
+  await settings.getByRole("button", { name: "Move view left" }).click();
+  await expect.poll(tabs).toEqual(["Board copy", "All tasks", "Board", "Gallery", "List", "Calendar"]);
+  await expect(settings.getByRole("button", { name: "Move view left" })).toBeDisabled();
+  await expect.poll(async () => (await savedViews())!.map((v) => v.name)).toEqual(["Board copy", "All tasks", "Board", "Gallery", "List", "Calendar"]);
+  await page.keyboard.press("Escape");
+  // …and by dragging a tab onto another.
+  await page.getByRole("tab", { name: "Calendar" }).dragTo(page.getByRole("tab", { name: "All tasks" }));
+  await expect.poll(tabs).toEqual(["Board copy", "Calendar", "All tasks", "Board", "Gallery", "List"]);
+  await expect.poll(async () => (await savedViews())!.map((v) => v.name)).toEqual(["Board copy", "Calendar", "All tasks", "Board", "Gallery", "List"]);
+  // The order survives a reload (it lives in the database note).
+  await page.reload();
+  await expect.poll(tabs).toEqual(["Board copy", "Calendar", "All tasks", "Board", "Gallery", "List"]);
+});
+
+test("viewer: duplicating or reordering a view stays in this tab", async ({ page }) => {
+  await page.goto("/e2e-fixtures/databases.html?viewer");
+  await page.getByRole("button", { name: "View settings" }).click();
+  const settings = page.getByRole("dialog", { name: "View settings" });
+  await settings.getByRole("button", { name: "Duplicate view" }).click();
+  await expect(page.getByRole("tab", { name: "All tasks copy" })).toHaveAttribute("aria-selected", "true");
+  await expect(page.getByText("You can’t edit this database, so view changes stay in this tab.")).toBeVisible();
+  expect(await configWrites(page)).toEqual([]);
+  await expect(page.getByRole("tab", { name: "All tasks", exact: true })).toHaveAttribute("draggable", "false");
+});

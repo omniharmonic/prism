@@ -42,7 +42,14 @@ export interface DatabaseView {
   coverKey?: string;
   /** Board: view-local manual rank (rows are never rewritten to reorder). */
   order?: string[];
+  /** Board / grouped table / grouped list: leave out groups with no pages. */
+  hideEmptyGroups?: boolean;
+  /** Gallery: card size (default medium). */
+  cardSize?: CardSize;
 }
+
+export const CARD_SIZES = ["small", "medium", "large"] as const;
+export type CardSize = (typeof CARD_SIZES)[number];
 
 /** How a row opens from this database (Notion's per-database preference). */
 export type OpenMode = "side" | "center" | "page";
@@ -92,6 +99,8 @@ function viewOk(v: unknown): v is DatabaseView {
   if (v.groupBy !== undefined && !keyOk(v.groupBy)) return false;
   if (v.dateKey !== undefined && !keyOk(v.dateKey)) return false;
   if (v.coverKey !== undefined && !keyOk(v.coverKey)) return false;
+  if (v.hideEmptyGroups !== undefined && typeof v.hideEmptyGroups !== "boolean") return false;
+  if (v.cardSize !== undefined && !(CARD_SIZES as readonly string[]).includes(v.cardSize as string)) return false;
   if (v.visible !== undefined && (!Array.isArray(v.visible) || v.visible.length > 60 || !v.visible.every(keyOk))) return false;
   if (v.widths !== undefined && (!rec(v.widths) || !Object.entries(v.widths).every(([k, w]) => keyOk(k) && typeof w === "number" && w >= 60 && w <= 1200))) return false;
   if (v.order !== undefined && (!Array.isArray(v.order) || v.order.length > 10000 || !v.order.every((x) => typeof x === "string"))) return false;
@@ -156,6 +165,34 @@ export function applyRank<T extends { id: string }>(rows: T[], order: string[] |
   if (!order?.length) return rows;
   const rank = new Map(order.map((id, i) => [id, i]));
   return [...rows].sort((a, b) => (rank.get(a.id) ?? Number.MAX_SAFE_INTEGER) - (rank.get(b.id) ?? Number.MAX_SAFE_INTEGER));
+}
+
+export const MAX_VIEWS = 20;
+
+/** A copy of `view` placed right after it (NP-DB-16): its own id, every setting kept. */
+export function duplicateView(config: DatabaseConfig, viewId: string): { config: DatabaseConfig; id: string } | null {
+  const at = config.views.findIndex((v) => v.id === viewId);
+  if (at < 0 || config.views.length >= MAX_VIEWS) return null;
+  const src = config.views[at]!;
+  const taken = new Set(config.views.map((v) => v.name));
+  const base = `${src.name} copy`.slice(0, 76);
+  let name = base;
+  for (let i = 2; taken.has(name); i++) name = `${base} ${i}`;
+  const copy: DatabaseView = { ...(JSON.parse(JSON.stringify(src)) as DatabaseView), id: newViewId(), name };
+  const views = [...config.views];
+  views.splice(at + 1, 0, copy);
+  return { config: { ...config, views }, id: copy.id };
+}
+
+/** Move a view tab to `to` (an index in the current order). */
+export function moveView(config: DatabaseConfig, viewId: string, to: number): DatabaseConfig | null {
+  const from = config.views.findIndex((v) => v.id === viewId);
+  const target = Math.max(0, Math.min(config.views.length - 1, to));
+  if (from < 0 || from === target) return null;
+  const views = [...config.views];
+  const [v] = views.splice(from, 1);
+  views.splice(target, 0, v!);
+  return { ...config, views };
 }
 
 /** A path for a new row: inside the database page's own folder. */

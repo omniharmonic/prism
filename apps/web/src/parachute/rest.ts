@@ -29,7 +29,7 @@ import type {
 import { VaultRequestError, HistoryUnavailableError, HistoryConflictError, PropertyConflictError, toNoteVersion } from "@prism/core";
 import type { QueryPage, QuerySpec, SchemaMap, SchemaPatch, TagSchema, PropertyWriteResult } from "@prism/core";
 import { filtersToParams, type SearchFilters } from "@prism/core/search";
-import type { PropertyBatchItem, PropertyBatchResult, CsvImportRequest, CsvImportResponse } from "@prism/core/database";
+import type { PropertyBatchItem, PropertyBatchResult, CsvImportRequest, CsvImportResponse, RemoveValuesResult } from "@prism/core/database";
 import { agentScope, apiBase, DEFAULT_VAULT_NAME, capabilityHeader, contextHeaders } from "../config";
 import { retainDraft, enqueue, hasPending, hasPendingFor, noteKey, currentBase, flush, localNote, resolveLocalNoteId, retrySafe, queuedCreates } from "../offline/outbox";
 import { captureWriteContext, scopeKey } from "../offline/writeScope";
@@ -609,6 +609,16 @@ export async function getSchemas(tags?: string[]): Promise<{ schemas: SchemaMap;
 export async function updateSchema(tag: string, patch: SchemaPatch): Promise<TagSchema> {
   const resp = await req(`/schemas/${encodeURIComponent(tag)}`, { method: "PUT", body: JSON.stringify(patch) });
   return ((await resp.json()) as { schema: TagSchema }).schema;
+}
+
+/** Owner-only: clear a deleted property's values (dry-run by default). Never queued offline. */
+export async function removePropertyValues(tag: string, field: string, opts: { dryRun?: boolean; limit?: number } = {}): Promise<RemoveValuesResult> {
+  return (await req(`/schemas/${encodeURIComponent(tag)}/fields/${encodeURIComponent(field)}/remove-values`, { method: "POST", body: JSON.stringify({ dryRun: opts.dryRun !== false, ...(opts.limit ? { limit: opts.limit } : {}) }), cache: "no-store" })).json();
+}
+
+/** Owner-only: can this tag start a new database? (The schema write with `requireNew` enforces it again.) */
+export async function checkNewTag(tag: string): Promise<{ tag: string; available: boolean; reason?: string; detail?: string }> {
+  return (await req(`/schemas/${encodeURIComponent(tag)}/availability`, { cache: "no-store" })).json();
 }
 
 export async function queryNotes(spec: QuerySpec): Promise<QueryPage> {

@@ -13,6 +13,7 @@
  * dates by value. A missing value never satisfies a comparison except
  * `ne` / `nin` / `not_contains` / `not_exists`, and always sorts last.
  */
+import { dateRange } from "./dates";
 
 export const QUERY_OPS = [
   "eq", "ne", "in", "nin", "contains", "not_contains",
@@ -323,8 +324,9 @@ function localDay(s: string, tzOffset: number): string {
 export function compareValues(a: unknown, b: unknown, tzOffset = 0): number {
   if (typeof a === "number" && typeof b === "number") return a - b;
   if (typeof a === "boolean" || typeof b === "boolean") return Number(a === true) - Number(b === true);
-  const sa = String(a);
-  const sb = String(b);
+  // A date range (`start/end`) orders by its start.
+  const sa = rangeEnd(String(a), "start");
+  const sb = rangeEnd(String(b), "start");
   const na = Number(sa);
   const nb = Number(sb);
   if (sa.trim() !== "" && sb.trim() !== "" && Number.isFinite(na) && Number.isFinite(nb)) return na - nb;
@@ -341,10 +343,20 @@ export function compareValues(a: unknown, b: unknown, tzOffset = 0): number {
   return norm(sa).localeCompare(norm(sb));
 }
 
+/** One end of a date range; any other string unchanged. */
+function rangeEnd(s: string, side: "start" | "end"): string {
+  if (s.indexOf("/") < 10) return s;
+  const r = dateRange(s);
+  return r ? r[side === "start" ? 0 : 1] : s;
+}
+
 function equalsOne(actual: unknown, expected: unknown, tz = 0): boolean {
   if (Array.isArray(actual)) return actual.some((a) => equalsOne(a, expected, tz));
   if (isEmpty(actual)) return isEmpty(expected);
   if (typeof actual === "string" && typeof expected === "string") {
+    // A range "is" a date when that date falls inside it.
+    const r = dateRange(actual.trim());
+    if (r && ISO_DATE.test(expected.trim())) return compareValues(r[0], expected.trim(), tz) <= 0 && compareValues(r[1], expected.trim(), tz) >= 0;
     if (ISO_DATE.test(actual.trim()) && ISO_DATE.test(expected.trim())) return compareValues(actual.trim(), expected.trim(), tz) === 0;
     return norm(actual) === norm(expected);
   }
@@ -359,10 +371,15 @@ function contains(actual: unknown, needle: unknown): boolean {
   return norm(String(actual)).includes(n);
 }
 
-function ordered(actual: unknown, expected: unknown, test: (c: number) => boolean, tz: number): boolean {
+/**
+ * `side`: which end of a date RANGE the comparison reads — "after / on or after"
+ * look at its end, "before / on or before" at its start, so a window filter
+ * (`>= from` AND `<= to`) keeps every range that overlaps the window.
+ */
+function ordered(actual: unknown, expected: unknown, test: (c: number) => boolean, tz: number, side: "start" | "end"): boolean {
   if (isEmpty(actual) || isEmpty(expected)) return false;
   const values = Array.isArray(actual) ? actual : [actual];
-  return values.some((v) => !isEmpty(v) && test(compareValues(v, expected, tz)));
+  return values.some((v) => !isEmpty(v) && test(compareValues(typeof v === "string" ? rangeEnd(v, side) : v, expected, tz)));
 }
 
 export function evaluateCondition(n: QueryInput, c: QueryCondition, now = new Date(), tzOffset = 0): boolean {
@@ -376,10 +393,10 @@ export function evaluateCondition(n: QueryInput, c: QueryCondition, now = new Da
     case "nin": return !(value as unknown[]).some((v) => equalsOne(actual, resolveRelative(v, now, tz), tz));
     case "contains": return contains(actual, value);
     case "not_contains": return !contains(actual, value);
-    case "gt": return ordered(actual, value, (x) => x > 0, tz);
-    case "gte": return ordered(actual, value, (x) => x >= 0, tz);
-    case "lt": return ordered(actual, value, (x) => x < 0, tz);
-    case "lte": return ordered(actual, value, (x) => x <= 0, tz);
+    case "gt": return ordered(actual, value, (x) => x > 0, tz, "end");
+    case "gte": return ordered(actual, value, (x) => x >= 0, tz, "end");
+    case "lt": return ordered(actual, value, (x) => x < 0, tz, "start");
+    case "lte": return ordered(actual, value, (x) => x <= 0, tz, "start");
     case "exists": return !isEmpty(actual);
     case "not_exists": return isEmpty(actual);
   }

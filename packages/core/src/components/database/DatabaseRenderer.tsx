@@ -19,6 +19,7 @@ import { Calendar, ChevronRight, Database, Download, Filter, GalleryVerticalEnd,
 import type { RendererProps } from "../renderers/RendererProps";
 import type { Note } from "../../lib/types";
 import { useVaultClient } from "../../data/VaultClientContext";
+import { PropertyConflictError } from "../../data/VaultClient";
 import { reviewMode } from "../../lib/governance/review";
 import { useUIStore } from "../../app/stores/ui";
 import { useIsMobile } from "../../app/hooks/useIsMobile";
@@ -26,21 +27,23 @@ import { inferContentType } from "../../lib/schemas/content-types";
 import { queryKeys } from "../../lib/parachute/queries";
 import { noteAccess, useDatabaseRows, usePropertyWriter, useSchemas, useScope, useUpdateSchema } from "../../lib/database/hooks";
 import { filterConditions, noteTitle, QUERY_MAX_LIMIT, type QueryRow, type QuerySpec } from "../../lib/database/query";
-import { isSystemKey, propertyFromField, resolveProperties, SYSTEM_PROPERTIES, type PropertyDef } from "../../lib/database/schema";
+import { deletedKeys, isSystemKey, propertyFromField, resolveProperties, SYSTEM_PROPERTIES, type PropertyDef } from "../../lib/database/schema";
+import { PropertyEditor } from "./PropertyEditor";
 import { BottomSheet } from "../ui/BottomSheet";
 import { Popover } from "./Popover";
 import { FilterEditor, SortEditor, ViewSettings } from "./ViewControls";
 import { BoardView, CalendarView, GalleryView, ListView, TableView, monthGrid, type RowSelection, type ViewContext } from "./views";
-import { defaultConfig, newViewId, readDatabaseConfig, rowPath, VIEW_LABELS, VIEW_TYPES, type DatabaseConfig, type DatabaseTemplate, type DatabaseView, type OpenMode, type ViewType } from "./config";
+import { defaultConfig, duplicateView, MAX_VIEWS, moveView, newViewId, readDatabaseConfig, rowPath, VIEW_LABELS, VIEW_TYPES, type DatabaseConfig, type DatabaseTemplate, type DatabaseView, type OpenMode, type ViewType } from "./config";
 import { RowPeek } from "./RowPeek";
 import { BulkBar, UndoToast, type UndoAction } from "./BulkBar";
 import { createTemplateNote, isTemplateFor, NewButton, TemplateEditor, templateProps } from "./Templates";
 import { resolveTemplateContent, resolveTemplateMetadata, templateCreator } from "../../lib/pages/templates";
 import { serverFetch } from "../../lib/transport/serverFetch";
-import { allRows, CsvImportDialog, downloadText, rowsToCsv } from "./Csv";
+import { allRows, CsvImportDialog, CsvNewDatabaseDialog, downloadText, rowsToCsv } from "./Csv";
 
 const VIEW_ICONS: Record<ViewType, typeof Table2> = { table: Table2, board: KanbanSquare, gallery: GalleryVerticalEnd, list: ListIcon, calendar: Calendar };
 const ROW_META = ["type", "prism_type", "icon", "cover", "coverY"];
+const INTEGRATION_META = ["source", "source_id", "calendarEventId"];
 /** System property keys that live in metadata (the others are note columns). */
 const SYSTEM_META = SYSTEM_PROPERTIES.map((p) => p.key).filter((k) => !k.startsWith("$"));
 
@@ -83,6 +86,8 @@ export function DatabasePage({ note, readOnly, embedded }: RendererProps & {
     const t = setTimeout(() => setDebouncedSearch(search), 300);
     return () => clearTimeout(t);
   }, [search]);
+  // Phones show a board as a grouped list first (NP-DB-23); the saved view is not changed.
+  const [phoneBoard, setPhoneBoard] = useState(false);
   const [month, setMonth] = useState(() => new Date(new Date().getFullYear(), new Date().getMonth(), 1));
   const [saveState, setSaveState] = useState<"" | "saving" | "error" | "conflict" | "local">("");
   const saveSeq = useRef(0);
@@ -114,6 +119,8 @@ export function DatabasePage({ note, readOnly, embedded }: RendererProps & {
     const schemaKeys = tags.flatMap((t) => Object.keys(schemas[t]?.fields ?? {}));
     const wanted = new Set<string>([...schemaKeys, ...(view.visible ?? []), ...ROW_META]);
     for (const k of [view.groupBy, view.dateKey, view.coverKey]) if (k && !k.startsWith("$")) wanted.add(k);
+    // The calendar needs to know which rows an integration owns (they are not dragged).
+    if (view.type === "calendar") for (const k of INTEGRATION_META) wanted.add(k);
     // System properties that live in metadata (created by / last edited by) are
     // fetched when the view shows, filters or sorts by them.
     for (const k of SYSTEM_META) if (view.visible?.includes(k) || filterConditions(view.filter).some((c) => c.key === k) || view.sort?.some((s) => s.key === k)) wanted.add(k);
@@ -147,7 +154,8 @@ export function DatabasePage({ note, readOnly, embedded }: RendererProps & {
   // rows, then the system properties (shown only when a view asks for them).
   const allProps: PropertyDef[] = useMemo(() => {
     const base = resolveProperties(tags, schemas, {});
-    const seen = new Set(base.map((p) => p.key));
+    // A deleted property stays hidden even where rows still hold a value for it.
+    const seen = new Set([...base.map((p) => p.key), ...deletedKeys(tags, schemas)]);
     for (const r of rows) for (const [k, v] of Object.entries(r.metadata)) {
       if (seen.has(k) || isSystemKey(k) || v === null || (typeof v === "object" && !Array.isArray(v))) continue;
       seen.add(k);
@@ -281,7 +289,15 @@ export function DatabasePage({ note, readOnly, embedded }: RendererProps & {
     return created;
   };
   const [editingTemplate, setEditingTemplate] = useState<DatabaseTemplate | null>(null);
+  // Property management (owner): the property being edited, by tag + key.
+  const [editingProp, setEditingProp] = useState<{ tag: string; key: string } | null>(null);
+  const deletedProps: PropertyDef[] = useMemo(() => {
+    const out: PropertyDef[] = [];
+    for (const t of tags) for (const [k, f] of Object.entries(schemas[t]?.fields ?? {})) if (f.deleted && !out.some((p) => p.key === k)) out.push(propertyFromField(k, f, t));
+    return out;
+  }, [tags, schemas]);
   const [importing, setImporting] = useState(false);
+  const [importingNew, setImportingNew] = useState(false);
 
   const ctx: ViewContext | null = view ? {
     view,
@@ -292,7 +308,13 @@ export function DatabasePage({ note, readOnly, embedded }: RendererProps & {
     canEditRow,
     canCreate,
     commit: (r, def) => async (next, base) => {
-      await write({ id: r.id, updatedAt: r.updatedAt }, { [def.key]: next }, { [def.key]: base ?? null });
+      try {
+        await write({ id: r.id, updatedAt: r.updatedAt }, { [def.key]: next }, { [def.key]: base ?? null });
+      } catch (e) {
+        // Changed elsewhere: show what is stored now (the editor keeps the person's own value to retry).
+        if (e instanceof PropertyConflictError) invalidateRows();
+        throw e;
+      }
     },
     createOption: (def) => (ownerish && def.tag && def.kind !== "multi_select"
       ? async (o: string) => { await schemaEdit.update(def.tag!, { fields: { [def.key]: { enum: [...def.enumValues, o] } } }); }
@@ -304,6 +326,7 @@ export function DatabasePage({ note, readOnly, embedded }: RendererProps & {
     },
     create: async (titleText, preset) => { await createRow(titleText, preset); },
     updateView,
+    ...(ownerish && !readOnly ? { editProperty: (def: PropertyDef) => { if (def.tag) setEditingProp({ tag: def.tag, key: def.key }); } } : {}),
     // Selection only for people who can act on something (Notion viewers can't select).
     ...(view.type === "table" && !readOnly && (canCreate || rows.some(canEditRow)) ? { selection } : {}),
   } : null;
@@ -362,7 +385,9 @@ export function DatabasePage({ note, readOnly, embedded }: RendererProps & {
         {configError ? (
           <div className="db-state" role="alert"><h2>This database can’t be shown</h2><p>{configError}</p></div>
         ) : !config ? (
-          <SetupDatabase canEdit={canEditDb} onPick={(tag) => saveConfig(defaultConfig(tag))} />
+          <SetupDatabase canEdit={canEditDb} onPick={(tag) => saveConfig(defaultConfig(tag))}
+            // A brand-new database can start from a CSV (owner: it creates the tag's properties).
+            onImport={ownerish && !!client.importCsv && !embedded ? () => setImportingNew(true) : undefined} />
         ) : view && ctx ? (
           <>
             <Toolbar
@@ -387,6 +412,13 @@ export function DatabasePage({ note, readOnly, embedded }: RendererProps & {
                 void saveConfig({ ...config, views: config.views.filter((v) => v.id !== view.id) });
                 setActiveId(config.views.find((v) => v.id !== view.id)!.id);
               }}
+              onDuplicateView={() => {
+                const next = duplicateView(config, view.id);
+                if (!next) return;
+                void saveConfig(next.config);
+                setActiveId(next.id);
+              }}
+              onMoveView={(id, to) => { const next = moveView(config, id, to); if (next) void saveConfig(next); }}
               onNew={(templateId) => void createRow("Untitled", undefined, templateId).then((n) => { if (!isMobile && openMode !== "page") setPeek(n.id); }).catch((e: unknown) => setToast({ message: e instanceof Error && /template/i.test(e.message) ? e.message : "The page could not be created. Try again.", undo: null }))}
               onCreateTemplate={async (name) => {
                 const t = await createTemplateNote(client, note, name);
@@ -402,6 +434,7 @@ export function DatabasePage({ note, readOnly, embedded }: RendererProps & {
               }}
               onExport={() => void exportCsv()}
               onImport={() => setImporting(true)}
+              deleted={ownerish && !readOnly ? { props: deletedProps, onOpen: (def) => { if (def.tag) setEditingProp({ tag: def.tag, key: def.key }); } } : undefined}
             />
             {saveState === "local" && <p className="db-notice" role="status">You can’t edit this database, so view changes stay in this tab.</p>}
             {saveState === "conflict" && <p className="db-notice" role="alert">This database was changed somewhere else, so your view change wasn’t saved. <button type="button" className="db-ghost" onClick={() => { setLocal(null); setSaveState(""); void qc.invalidateQueries({ queryKey: queryKeys.vault.note(note.id) }); }}>Reload views</button></p>}
@@ -420,7 +453,15 @@ export function DatabasePage({ note, readOnly, embedded }: RendererProps & {
             ) : (
               <>
                 {view.type === "table" && <TableView ctx={ctx} />}
-                {view.type === "board" && <BoardView ctx={ctx} onPickGroup={(k) => updateView({ groupBy: k })} />}
+                {view.type === "board" && isMobile && view.groupBy && (
+                  <p className="db-notice db-phone-layout" role="status">
+                    {phoneBoard ? "Board layout." : "Shown as a list on this screen."}{" "}
+                    <button type="button" className="db-ghost" aria-pressed={phoneBoard} onClick={() => setPhoneBoard((v) => !v)}>{phoneBoard ? "Show as list" : "Show as board"}</button>
+                  </p>
+                )}
+                {view.type === "board" && (isMobile && view.groupBy && !phoneBoard
+                  ? <ListView ctx={ctx} />
+                  : <BoardView ctx={ctx} onPickGroup={(k) => updateView({ groupBy: k })} />)}
                 {view.type === "gallery" && <GalleryView ctx={ctx} />}
                 {view.type === "list" && <ListView ctx={ctx} />}
                 {view.type === "calendar" && <CalendarView ctx={ctx} month={month} onMonth={setMonth} onPickDate={(k) => updateView({ dateKey: k })} />}
@@ -447,6 +488,10 @@ export function DatabasePage({ note, readOnly, embedded }: RendererProps & {
           onOpenBody={() => { const id = editingTemplate.id; setEditingTemplate(null); setPeek(id); }}
           onClose={() => setEditingTemplate(null)} />
       )}
+      {editingProp && schemas[editingProp.tag]?.fields[editingProp.key] && (
+        <PropertyEditor propertyKey={editingProp.key} tag={editingProp.tag} field={schemas[editingProp.tag]!.fields[editingProp.key]!} rows={rows} onClose={() => setEditingProp(null)} />
+      )}
+      {importingNew && <CsvNewDatabaseDialog adopt={{ id: note.id, path: note.path, title }} onClose={() => setImportingNew(false)} />}
       {importing && config && <CsvImportDialog tag={config.source.tags[0]!} dbPath={note.path} props={allProps} onClose={() => setImporting(false)} />}
     </>
   );
@@ -469,7 +514,7 @@ function EmptyRows({ ctx, filtered, tag }: { ctx: ViewContext; filtered: boolean
   );
 }
 
-function SetupDatabase({ canEdit, onPick }: { canEdit: boolean; onPick: (tag: string) => void }) {
+function SetupDatabase({ canEdit, onPick, onImport }: { canEdit: boolean; onPick: (tag: string) => void; onImport?: () => void }) {
   const client = useVaultClient();
   const [tags, setTags] = useState<Array<{ tag: string; count: number }>>([]);
   const [value, setValue] = useState("");
@@ -482,16 +527,18 @@ function SetupDatabase({ canEdit, onPick }: { canEdit: boolean; onPick: (tag: st
       <input list="db-setup-tags" className="db-control" aria-label="Source tag" placeholder="Tag, e.g. task" value={value} onChange={(e) => setValue(e.target.value)} />
       <datalist id="db-setup-tags">{tags.map((t) => <option key={t.tag} value={t.tag}>{t.count}</option>)}</datalist>
       <button type="submit" className="db-primary" disabled={!value.trim()}>Create database</button>
+      {onImport && <button type="button" className="db-ghost" onClick={onImport}><Upload size={13} aria-hidden="true" /> Or import a CSV as its rows…</button>}
     </form>
   );
 }
 
-function Toolbar({ config, view, props, search, onSearch, isMobile, canEditDb, canCreate, canImport, onSelect, onUpdate, onAddView, onDeleteView, onNew, onCreateTemplate, onEditTemplate, onSetDefaultTemplate, onRemoveTemplate, onExport, onImport }: {
+function Toolbar({ config, view, props, search, onSearch, isMobile, canEditDb, canCreate, canImport, onSelect, onUpdate, onAddView, onDeleteView, onDuplicateView, onMoveView, onNew, onCreateTemplate, onEditTemplate, onSetDefaultTemplate, onRemoveTemplate, onExport, onImport, deleted }: {
   config: DatabaseConfig; view: DatabaseView; props: PropertyDef[]; search: string; onSearch: (s: string) => void; isMobile: boolean;
   canEditDb: boolean; canCreate: boolean; canImport: boolean; onSelect: (id: string) => void; onUpdate: (p: Partial<DatabaseView>) => void;
-  onAddView: (t: ViewType) => void; onDeleteView: () => void; onNew: (templateId: string | null) => void;
+  onAddView: (t: ViewType) => void; onDeleteView: () => void; onDuplicateView: () => void; onMoveView: (id: string, to: number) => void; onNew: (templateId: string | null) => void;
   onCreateTemplate: (name: string) => Promise<void>; onEditTemplate: (t: DatabaseTemplate) => void; onSetDefaultTemplate: (id: string | undefined) => void; onRemoveTemplate: (t: DatabaseTemplate) => void;
   onExport: () => void; onImport: () => void;
+  deleted?: { props: PropertyDef[]; onOpen: (def: PropertyDef) => void };
 }) {
   const filterBtn = useRef<HTMLButtonElement>(null);
   const sortBtn = useRef<HTMLButtonElement>(null);
@@ -500,10 +547,14 @@ function Toolbar({ config, view, props, search, onSearch, isMobile, canEditDb, c
   const moreBtn = useRef<HTMLButtonElement>(null);
   const [panel, setPanel] = useState<"" | "filter" | "sort" | "settings" | "add" | "more">("");
   const close = () => setPanel("");
+  // Tabs reorder by drag (people who can save) as well as from View settings.
+  const dragId = useRef<string | null>(null);
   const filterCount = filterConditions(view.filter).length;
   const body = panel === "filter" ? <FilterEditor filter={view.filter} props={props} onChange={(f) => onUpdate({ filter: f })} />
     : panel === "sort" ? <SortEditor sort={view.sort} props={props} onChange={(s) => onUpdate({ sort: s })} />
-    : panel === "settings" ? <ViewSettings key={view.id} view={view} props={props} canDelete={canEditDb && config.views.length > 1} onChange={onUpdate} onDelete={() => { close(); onDeleteView(); }} />
+    : panel === "settings" ? <ViewSettings key={view.id} view={view} props={props} canDelete={canEditDb && config.views.length > 1} onChange={onUpdate} onDelete={() => { close(); onDeleteView(); }}
+        tabs={{ index: config.views.findIndex((v) => v.id === view.id), count: config.views.length, canDuplicate: config.views.length < MAX_VIEWS, onDuplicate: onDuplicateView, onMove: (to) => onMoveView(view.id, to) }}
+        deleted={deleted ? { props: deleted.props, onOpen: (def) => { close(); deleted.onOpen(def); } } : undefined} />
     : null;
   const titles = { filter: "Filter", sort: "Sort", settings: "View settings", add: "Add a view", more: "More", "": "" } as const;
   return (
@@ -512,7 +563,12 @@ function Toolbar({ config, view, props, search, onSearch, isMobile, canEditDb, c
         {config.views.map((v) => {
           const Icon = VIEW_ICONS[v.type];
           return (
-            <button key={v.id} type="button" role="tab" className="db-tab focus-ring" aria-selected={v.id === view.id} onClick={() => onSelect(v.id)}>
+            <button key={v.id} type="button" role="tab" className="db-tab focus-ring" aria-selected={v.id === view.id} onClick={() => onSelect(v.id)}
+              draggable={canEditDb && config.views.length > 1}
+              onDragStart={(e) => { dragId.current = v.id; e.dataTransfer.effectAllowed = "move"; e.dataTransfer.setData("text/plain", v.name); }}
+              onDragOver={(e) => { if (dragId.current && dragId.current !== v.id) { e.preventDefault(); e.dataTransfer.dropEffect = "move"; } }}
+              onDrop={(e) => { e.preventDefault(); const id = dragId.current; dragId.current = null; if (id && id !== v.id) onMoveView(id, config.views.findIndex((x) => x.id === v.id)); }}
+              onDragEnd={() => { dragId.current = null; }}>
               <Icon size={14} aria-hidden="true" /> {v.name}
             </button>
           );

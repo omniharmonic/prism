@@ -70,7 +70,7 @@ export function parseDatabaseBlock(el: Element): { noteId: string; viewId: strin
  * sub-page of the host page over `tag`, starting with one view of `type`.
  * Returns the block attrs for the editor to insert.
  */
-export async function createInlineDatabase(client: Pick<VaultClient, "createNote">, host: Pick<Note, "path">, opts: { tag: string; type?: ViewType; title?: string }): Promise<{ noteId: string; viewId: string }> {
+export async function createInlineDatabase(client: Pick<VaultClient, "createNote">, host: Pick<Note, "path">, opts: { tag: string; type?: ViewType; title?: string }): Promise<{ noteId: string; viewId: string; path: string | null; title: string }> {
   const type = opts.type ?? "table";
   const viewId = newViewId();
   const config: DatabaseConfig = { ...defaultConfig(opts.tag), views: [{ id: viewId, name: VIEW_LABELS[type], type }] };
@@ -82,7 +82,7 @@ export async function createInlineDatabase(client: Pick<VaultClient, "createNote
     tags: [],
     metadata: { title, prism_type: "database", prism_database: config },
   });
-  return { noteId: n.id, viewId };
+  return { noteId: n.id, viewId, path: n.path ?? null, title };
 }
 
 /**

@@ -9,8 +9,12 @@
  * and offers Retry. Nothing is ever silently dropped.
  */
 import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from "react";
-import { Check, ExternalLink, Mail, Paperclip, Phone, Plus, Search, Upload, X } from "lucide-react";
+import { CalendarClock, Check, ExternalLink, Mail, Paperclip, Phone, Plus, Search, Upload, X } from "lucide-react";
+import { buildDateValue, dateRange, hasTime, parseDateParts } from "../../lib/database/dates";
 import { useVaultClient } from "../../data/VaultClientContext";
+import { useUIStore } from "../../app/stores/ui";
+import { inferContentType } from "../../lib/schemas/content-types";
+import type { Note } from "../../lib/types";
 import { serverFetch } from "../../lib/transport/serverFetch";
 import { downloadOwnAttachment, fileRef, isImageFileName, parseFileRefs, MAX_FILE_BYTES } from "../../lib/media/attachments";
 import { PropertyConflictError } from "../../data/VaultClient";
@@ -20,11 +24,16 @@ import {
   coerceValue,
   formatDateTime,
   formatValue,
+  INGEST_TAGS,
   isBlank,
   looksLikeEmail,
   looksLikePhone,
   linkLabel,
+  linkTarget,
   optionColor,
+  optionLabel,
+  STATUS_GROUP_LABELS,
+  STATUS_GROUPS,
   type OptionColor,
   type PropertyDef,
 } from "../../lib/database/schema";
@@ -32,10 +41,59 @@ import { Popover } from "./Popover";
 
 export type ValueVariant = "bar" | "cell" | "panel" | "card";
 
-export function OptionChip({ value, color, onRemove, removeLabel }: { value: string; color: OptionColor; onRemove?: () => void; removeLabel?: string }) {
+/**
+ * Open the page a `[[path]]` relation/person value points at (NP-DB-12). The
+ * page is read through the reader's own client, so someone who cannot view it
+ * opens nothing and learns nothing beyond the link text they already see.
+ */
+export function useOpenLinked() {
+  const client = useVaultClient();
+  return async (value: string): Promise<boolean> => {
+    const target = linkTarget(value);
+    if (!target) return false;
+    try {
+      let note: Note | null = null;
+      try {
+        note = await client.getNote(target);
+      } catch {
+        // A server that only takes ids: find the id in the (permission-filtered) tree.
+        const entry = (await client.listTree()).find((n) => n.path === target || n.path?.replace(/\.[^./]+$/, "") === target);
+        if (entry) note = await client.getNote(entry.id);
+      }
+      if (!note) return false;
+      useUIStore.getState().openTab(note.id, (typeof note.metadata?.title === "string" && note.metadata.title) || linkLabel(value), inferContentType(note));
+      return true;
+    } catch {
+      return false;
+    }
+  };
+}
+
+/** A related page / person as a chip. `open`: a plain click opens it (else only ⌘/Ctrl-click does — the cell's own click edits). */
+function LinkChip({ value, kind, open }: { value: string; kind: "person" | "relation"; open: boolean }) {
+  const openLinked = useOpenLinked();
+  const [missing, setMissing] = useState(false);
+  const go = (e: { stopPropagation: () => void; preventDefault: () => void }) => {
+    e.stopPropagation();
+    e.preventDefault();
+    void openLinked(value).then((ok) => setMissing(!ok));
+  };
+  const label = linkLabel(value);
   return (
-    <span className="db-opt" data-color={color}>
-      <span className="db-opt-text">{value}</span>
+    <span className={`db-link-chip${open ? " db-link-open" : ""}`} data-kind={kind} data-missing={missing || undefined}
+      role={open ? "link" : undefined} tabIndex={open ? 0 : undefined}
+      title={missing ? "This page is unavailable. It may have moved, or you may not have access." : open ? `Open ${label}` : `${label} — ${navigator.platform?.startsWith("Mac") ? "⌘" : "Ctrl"}-click to open`}
+      onClick={(e) => { if (open || e.metaKey || e.ctrlKey) go(e); }}
+      onKeyDown={(e) => { if (open && e.key === "Enter") go(e); }}>
+      {kind === "person" && <span className="db-avatar" aria-hidden="true">{label.slice(0, 1).toUpperCase()}</span>}{label}
+    </span>
+  );
+}
+
+export function OptionChip({ value, label, color, onRemove, removeLabel }: { value: string; /** Display name (an option rename); defaults to the stored value. */ label?: string; color: OptionColor; onRemove?: () => void; removeLabel?: string }) {
+  return (
+    <span className="db-opt" data-color={color} data-value={value}>
+      <span className="db-opt-text">{label ?? value}</span>
       {onRemove && (
         <button type="button" className="db-opt-remove" aria-label={removeLabel ?? `Remove ${value}`} onClick={(e) => { e.stopPropagation(); onRemove(); }}>
           <X size={11} aria-hidden="true" />
@@ -49,7 +107,7 @@ const colorOf = (def: PropertyDef, v: string): OptionColor => def.options.find((
 const list = (v: unknown): string[] => (Array.isArray(v) ? v.map(String) : isBlank(v) ? [] : [String(v)]);
 
 /** Read-only rendering (cards, read-only pages, cells of rows you cannot edit). */
-export function PropertyDisplay({ def, value }: { def: PropertyDef; value: unknown }) {
+export function PropertyDisplay({ def, value, openLinks = true }: { def: PropertyDef; value: unknown; /** Relation/person chips open their page on a plain click (off inside an editable cell, where the click edits). */ openLinks?: boolean }) {
   if (isBlank(value)) return <span className="db-empty">Empty</span>;
   if (def.system === "created_time" || def.system === "edited_time") {
     const v = String(value);
@@ -63,10 +121,10 @@ export function PropertyDisplay({ def, value }: { def: PropertyDef; value: unkno
     case "select":
     case "status":
     case "multi_select":
-      return <span className="db-chips">{list(value).map((v) => <OptionChip key={v} value={v} color={colorOf(def, v)} />)}</span>;
+      return <span className="db-chips">{list(value).map((v) => <OptionChip key={v} value={v} label={optionLabel(def, v)} color={colorOf(def, v)} />)}</span>;
     case "person":
     case "relation":
-      return <span className="db-chips">{list(value).map((v) => <span key={v} className="db-link-chip" data-kind={def.kind}>{def.kind === "person" && <span className="db-avatar" aria-hidden="true">{linkLabel(v).slice(0, 1).toUpperCase()}</span>}{linkLabel(v)}</span>)}</span>;
+      return <span className="db-chips">{list(value).map((v) => <LinkChip key={v} value={v} kind={def.kind as "person" | "relation"} open={openLinks} />)}</span>;
     case "checkbox":
       return <span className="db-check" data-checked={value === true || undefined} role="img" aria-label={value === true ? "Checked" : "Unchecked"}>{value === true && <Check size={12} aria-hidden="true" />}</span>;
     case "files": {
@@ -142,6 +200,14 @@ export function PropertyValue({
   const attempted = useRef<unknown>(undefined);
   const base = useRef<unknown>(value);
   const id = useId();
+  // Keyboard edits (Enter / Esc) hand focus back to the cell so arrow keys keep working (NP-DB-03).
+  const refocus = useRef(false);
+  useEffect(() => {
+    if (!editingText && refocus.current) {
+      refocus.current = false;
+      anchor.current?.focus();
+    }
+  }, [editingText]);
 
   useEffect(() => {
     if (!busy && !conflict) base.current = value;
@@ -155,6 +221,11 @@ export function PropertyValue({
     if (readOnly || busy) return;
     if (def.kind === "checkbox") {
       void commit(!(value === true));
+      return;
+    }
+    // A date with a time or an end opens the full date editor (a plain day edits in place).
+    if (def.kind === "date" && typeof value === "string" && (hasTime(value) || dateRange(value))) {
+      setOpen(true);
       return;
     }
     if (textual) {
@@ -205,10 +276,14 @@ export function PropertyValue({
   const onTextKey = (e: KeyboardEvent<HTMLInputElement>) => {
     if (e.key === "Enter" && !e.nativeEvent.isComposing) {
       e.preventDefault();
+      refocus.current = true;
       void commit(draft);
     }
+    if (e.key === "Tab") refocus.current = false;
     if (e.key === "Escape") {
       e.preventDefault();
+      e.stopPropagation();
+      refocus.current = true;
       setEditingText(false);
       setError("");
       onDone?.();
@@ -235,7 +310,7 @@ export function PropertyValue({
 
   if (editingText) {
     return (
-      <span className={`db-value db-value-${variant}`} data-editing>
+      <span className={`db-value db-value-${variant}`} data-editing data-date={def.kind === "date" || undefined}>
         <input
           ref={inputRef}
           className="db-input"
@@ -248,6 +323,14 @@ export function PropertyValue({
           onKeyDown={onTextKey}
           onBlur={() => { if (!busy && !error && !conflict) void commit(draft); }}
         />
+        {def.kind === "date" && (
+          // Time and end date live in the full editor; mousedown is swallowed so the input does not commit first.
+          <button type="button" className="db-icon-btn db-date-more" aria-label={`Time and end date for ${def.label}`} disabled={busy}
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={() => { setEditingText(false); setOpen(true); }}>
+            <CalendarClock size={14} aria-hidden="true" />
+          </button>
+        )}
         {feedback}
       </span>
     );
@@ -272,7 +355,7 @@ export function PropertyValue({
         {def.kind === "checkbox" ? (
           <span className="db-check" data-checked={value === true || undefined} aria-hidden="true">{value === true && <Check size={12} />}</span>
         ) : (
-          <PropertyDisplay def={def} value={value} />
+          <PropertyDisplay def={def} value={value} openLinks={!!readOnly} />
         )}
         {def.kind === "url" && !isBlank(value) && /^https?:\/\//i.test(String(value)) && <ExternalLink size={11} aria-hidden="true" className="db-muted-icon" />}
         {def.kind === "email" && !isBlank(value) && <Mail size={11} aria-hidden="true" className="db-muted-icon" />}
@@ -284,6 +367,10 @@ export function PropertyValue({
           onCreateOption={onCreateOption}
           onPick={(next) => { void commit(next); }} />
       )}
+      {def.kind === "date" && open && (
+        <DatePicker anchor={anchor} def={def} value={value} onClose={() => { setOpen(false); onDone?.(); }}
+          onPick={(next) => { void commit(next); }} />
+      )}
       {def.kind === "files" && (
         <FilesPicker anchor={anchor} open={open} def={def} value={value} noteId={noteId} onClose={() => { setOpen(false); onDone?.(); }}
           onPick={(next) => commit(next)} />
@@ -293,6 +380,54 @@ export function PropertyValue({
           onPick={(next) => { void commit(next); }} />
       )}
     </span>
+  );
+}
+
+/**
+ * The full date editor (NP-DB-08): a day, optionally with a time, optionally with
+ * an end. Stored as `YYYY-MM-DD`, a zoned instant, or `start/end` (lib/database/dates.ts).
+ * Nothing is written until Done; Escape leaves the value alone.
+ */
+function DatePicker({ anchor, def, value, onClose, onPick }: {
+  anchor: React.RefObject<HTMLElement | null>; def: PropertyDef; value: unknown; onClose: () => void; onPick: (next: unknown) => void;
+}) {
+  const initial = parseDateParts(value);
+  const [date, setDate] = useState(initial?.date ?? "");
+  const [time, setTime] = useState(initial?.time ?? "09:00");
+  const [timeOn, setTimeOn] = useState(!!initial?.time);
+  const [endOn, setEndOn] = useState(!!initial?.endDate);
+  const [endDate, setEndDate] = useState(initial?.endDate ?? initial?.date ?? "");
+  const [endTime, setEndTime] = useState(initial?.endTime ?? initial?.time ?? "10:00");
+  // The vault's own `date` type holds one date; a range needs a text-typed field. And a
+  // field of a tag an integration owns (`task.due`, a meeting's date…) stays a single date:
+  // ingesters, agents and other apps read it as one.
+  const ingestField = !!def.tag && INGEST_TAGS.has(def.tag);
+  const rangeOk = def.type !== "date" && !ingestField;
+  const next = date ? buildDateValue({ date, time: timeOn ? time : null, endDate: endOn && rangeOk ? endDate || date : null, endTime: timeOn ? endTime : null }) : null;
+  const backwards = !!next && endOn && rangeOk && (() => { const r = dateRange(next); return !!r && Date.parse(r[1].length === 10 ? `${r[1]}T00:00:00` : r[1]) < Date.parse(r[0].length === 10 ? `${r[0]}T00:00:00` : r[0]); })();
+  const done = () => { if (!date) { onPick(null); onClose(); return; } if (!next || backwards) return; onPick(next); onClose(); };
+  return (
+    <Popover anchor={anchor} open onClose={onClose} label={`Edit ${def.label}`} width={300}>
+      <form className="db-settings db-date-editor" onSubmit={(e) => { e.preventDefault(); done(); }}>
+        <div className="db-date-row">
+          <label className="db-field"><span>{endOn ? "Start date" : "Date"}</span><input autoFocus type="date" aria-label={endOn ? "Start date" : "Date"} value={date} onChange={(e) => { setDate(e.target.value); if (!endOn) setEndDate(e.target.value); }} /></label>
+          {timeOn && <label className="db-field"><span>{endOn ? "Start time" : "Time"}</span><input type="time" aria-label={endOn ? "Start time" : "Time"} value={time} onChange={(e) => setTime(e.target.value)} /></label>}
+        </div>
+        {endOn && rangeOk && (
+          <div className="db-date-row">
+            <label className="db-field"><span>End date</span><input type="date" aria-label="End date" value={endDate} min={date || undefined} onChange={(e) => setEndDate(e.target.value)} /></label>
+            {timeOn && <label className="db-field"><span>End time</span><input type="time" aria-label="End time" value={endTime} onChange={(e) => setEndTime(e.target.value)} /></label>}
+          </div>
+        )}
+        <label className="db-radio"><input type="checkbox" checked={endOn && rangeOk} disabled={!rangeOk} onChange={(e) => { setEndOn(e.target.checked); if (e.target.checked && (!endDate || endDate < date)) setEndDate(date); }} /> Add an end date{ingestField ? " (not here: this property is kept in sync by an integration)" : !rangeOk ? " (this property holds a single date)" : ""}</label>
+        <label className="db-radio"><input type="checkbox" checked={timeOn} onChange={(e) => setTimeOn(e.target.checked)} /> Include time</label>
+        {backwards && <p role="alert" className="db-error">The end is before the start.</p>}
+        <div className="db-settings-row">
+          {!isBlank(value) ? <button type="button" className="db-ghost" onClick={() => { onPick(null); onClose(); }}>Clear</button> : <span />}
+          <button type="submit" className="db-primary" disabled={!!date && (!next || backwards)}>Done</button>
+        </div>
+      </form>
+    </Popover>
   );
 }
 
@@ -372,9 +507,14 @@ function OptionPicker({ anchor, open, def, value, onClose, onPick, onCreateOptio
   const options = useMemo(() => {
     const vals = [...def.options.map((o) => o.value)];
     for (const v of selected) if (!vals.includes(v)) vals.push(v);
-    return vals.filter((v) => v.toLowerCase().includes(q.trim().toLowerCase()));
+    const needle = q.trim().toLowerCase();
+    return vals.filter((v) => v.toLowerCase().includes(needle) || optionLabel(def, v).toLowerCase().includes(needle));
   }, [def.options, q, value]); // eslint-disable-line react-hooks/exhaustive-deps
-  const exact = options.some((o) => o.toLowerCase() === q.trim().toLowerCase());
+  const exact = options.some((o) => o.toLowerCase() === q.trim().toLowerCase() || optionLabel(def, o).toLowerCase() === q.trim().toLowerCase());
+  // Status options are listed under their group (To-do / In progress / Complete).
+  const groupOf = (v: string) => def.options.find((o) => o.value === v)?.group;
+  const grouped = def.kind === "status" && options.some((o) => groupOf(o));
+  const ordered = grouped ? STATUS_GROUPS.flatMap((g) => options.filter((o) => (groupOf(o) ?? "in_progress") === g)) : options;
   // A free select (no schema enum) accepts any value; an enum select needs the
   // option in the schema first (the owner can add it), or the vault rejects the write.
   const canFree = multi || !def.options.length || def.type === undefined;
@@ -415,15 +555,20 @@ function OptionPicker({ anchor, open, def, value, onClose, onPick, onCreateOptio
           onKeyDown={(e) => { if (e.key === "Enter" && !e.nativeEvent.isComposing) { e.preventDefault(); if (options.length === 1) choose(options[0]!); else if (!exact) void create(); } }} />
       </div>
       <ul className="db-pop-list" role="listbox" aria-label={def.label} aria-multiselectable={multi || undefined}>
-        {options.map((o) => (
-          <li key={o} role="option" aria-selected={selected.has(o)}>
-            <button type="button" onClick={() => choose(o)}>
-              {multi && <span className="db-check" data-checked={selected.has(o) || undefined} aria-hidden="true">{selected.has(o) && <Check size={12} />}</span>}
-              <OptionChip value={o} color={colorOf(def, o)} />
-              {!multi && selected.has(o) && <Check size={14} className="db-pop-tick" aria-hidden="true" />}
-            </button>
-          </li>
-        ))}
+        {ordered.map((o, i) => {
+          const g = groupOf(o) ?? "in_progress";
+          const head = grouped && (i === 0 || (groupOf(ordered[i - 1]!) ?? "in_progress") !== g);
+          return [
+            head ? <li key={`g:${g}`} role="presentation" className="db-pop-heading db-status-group" data-status-group={g}>{STATUS_GROUP_LABELS[g]}</li> : null,
+            <li key={o} role="option" aria-selected={selected.has(o)} data-group={grouped ? g : undefined}>
+              <button type="button" onClick={() => choose(o)}>
+                {multi && <span className="db-check" data-checked={selected.has(o) || undefined} aria-hidden="true">{selected.has(o) && <Check size={12} />}</span>}
+                <OptionChip value={o} label={optionLabel(def, o)} color={colorOf(def, o)} />
+                {!multi && selected.has(o) && <Check size={14} className="db-pop-tick" aria-hidden="true" />}
+              </button>
+            </li>,
+          ];
+        })}
         {!options.length && !q && <li className="db-pop-empty">No options yet</li>}
       </ul>
       {q.trim() && !exact && (canFree || onCreateOption) && (
@@ -444,6 +589,7 @@ function LinkPicker({ anchor, open, def, value, onClose, onPick }: {
   onClose: () => void; onPick: (next: unknown) => void;
 }) {
   const [q, setQ] = useState("");
+  const openLinked = useOpenLinked();
   // The relation's target database (schema hint `relationTag`), else the old heuristics.
   const tag = def.target ?? (def.kind === "person" ? "person" : /^projects?$/i.test(def.key) ? "project" : null);
   const candidates = useLinkCandidates(tag, q, open);
@@ -465,7 +611,7 @@ function LinkPicker({ anchor, open, def, value, onClose, onPick }: {
         <div className="db-pop-current">
           {current.map((v) => (
             <span key={v} className="db-link-chip" data-kind={def.kind}>
-              {linkLabel(v)}
+              <button type="button" className="db-link-open" aria-label={`Open ${linkLabel(v)}`} onClick={() => void openLinked(v).then((ok) => { if (ok) onClose(); })}>{linkLabel(v)}</button>
               <button type="button" aria-label={`Remove ${linkLabel(v)}`} onClick={() => { const next = current.filter((x) => x !== v); onPick(next.length ? (def.multiple ? next : next[0]) : null); }}><X size={11} aria-hidden="true" /></button>
             </span>
           ))}

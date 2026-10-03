@@ -6,6 +6,8 @@
  *   GET  /api/schemas[?tags=a,b]   tag → {description, fields{type,enum,default,
  *                                  description,indexed,kind,label,colors,hidden}}
  *   PUT  /api/schemas/:tag         owner-only additive schema edit (+ hints)
+ *   POST /api/schemas/:tag/fields/:field/remove-values
+ *                                  owner-only: clear a DELETED property's values (dry-run default)
  *   POST /api/query                lean filtered/sorted/paged rows for a view
  *   POST /api/properties/:id       metadata-only property write with per-field CAS
  *   POST /api/properties/batch     up to 100 of those, one result each (bulk edit)
@@ -26,10 +28,13 @@
  * never returned. Presentation hints (kind/label/colours/hidden) are Prism-only
  * and live in the server's settings table per (vault, tag).
  */
-import { ingestKeyChanged } from "../ingest-keys";
+import { ingestKeyChanged, INGEST_KEYS, INGEST_SOURCES } from "../ingest-keys";
+import { grantsForResource } from "../db";
+import { publishedTag } from "../pages";
+import { recordAction } from "../actions/store";
 import { Hono, type Context } from "hono";
 import { canonicalTag } from "../tags";
-import { systemNoteReason } from "@prism/core/pages";
+import { protectionReason, systemNoteReason, SYSTEM_NOTE_TAGS } from "@prism/core/pages";
 import { bodyLimit } from "hono/body-limit";
 import { db, resolveVaultEntry } from "../db";
 import type { VaultEntry } from "../config";
@@ -54,6 +59,11 @@ import {
   isFieldKey,
   isSystemKey,
   mergeSchemaFields,
+  compatibleKinds,
+  INGEST_TAGS,
+  isPrototypeName,
+  optionNameClash,
+  PROPERTY_KIND_LABELS,
   metadataKeysFor,
   runQuery,
   validateQuerySpec,
@@ -246,8 +256,47 @@ const echoable = (fields: Record<string, SchemaField>): Record<string, SchemaFie
  * fields/hints, but never a `default:` (the vault would stamp it into notes the
  * ingesters own).
  */
-const LOCKED_TAG = (t: string) => t === "agent-skill" || t === "agent-dispatch" || t.startsWith("governance-");
-const INGEST_TAGS = new Set(["email", "meeting", "message-thread", "message-archive", "person", "transcript", "task", "clickup", "alert"]);
+const LOCKED_TAG = (t: string) => t === "prism-trashed" || (SYSTEM_NOTE_TAGS as readonly string[]).includes(t) || t.startsWith("governance-");
+const own = <T,>(o: Record<string, T> | null | undefined, k: string): T | undefined => (o && Object.hasOwn(o, k) ? o[k] : undefined);
+
+/**
+ * Why `tag` cannot start a NEW database (CSV → new database), or null. A tag
+ * with pages or a schema already is someone's database; a tag a grant names or
+ * a site publishes would hand the imported pages to those audiences.
+ */
+async function newTagRefusal(entry: VaultEntry, tag: string): Promise<{ status: 403 | 409; error: string; detail: string } | null> {
+  if (LOCKED_TAG(tag)) return { status: 403, error: "forbidden", detail: "this tag is managed by Prism" };
+  if (INGEST_TAGS.has(tag)) return { status: 409, error: "tag_in_use", detail: `#${tag} belongs to an integration` };
+  if (grantsForResource("tag", tag, entry.id).length > 0 || publishedTag(entry.id, tag)) return { status: 409, error: "tag_governed", detail: `#${tag} is shared or published, so new pages with it would be visible to other people` };
+  const schema = (await vaultSchemas(entry)).get(tag);
+  if (Object.keys(schema?.fields ?? {}).length || Object.keys(readHints(entry.id).get(tag) ?? {}).length) return { status: 409, error: "tag_in_use", detail: `#${tag} already has properties` };
+  const any = await vaultClient(entry.id).listNotes({ tags: [tag], includeMetadata: [], limit: 1 });
+  if (any.length) return { status: 409, error: "tag_in_use", detail: `#${tag} is already used by pages` };
+  return null;
+}
+const perOwner = (c: Context, name: string, email: string, max: number) => {
+  const wait = consumeRateLimit(`${name}:${email}`, max, 60_000);
+  if (wait === null) return null;
+  c.header("Retry-After", String(wait));
+  return c.json({ error: "rate_limited", retryAfter: wait }, 429);
+};
+
+databasesApi.get("/schemas/:tag/availability", async (c) => {
+  const actor = resolveActor(c);
+  if (actor.kind !== "user" || actor.role !== "owner") return c.json({ error: "forbidden" }, 403);
+  const limited = perOwner(c, "schema-write", actor.email, envInt("SCHEMA_WRITES_PER_MINUTE", 120));
+  if (limited) return limited;
+  const tag = canonicalTag(c.req.param("tag") ?? "");
+  if (!tag || tag.length > 128 || /[\u0000-\u001f]/.test(tag)) return c.json({ error: "bad_request", detail: "invalid tag" }, 400);
+  let refusal;
+  try {
+    refusal = await newTagRefusal(entryFor(c, actor), tag);
+  } catch (e) {
+    return vaultFailure(c, e);
+  }
+  c.header("Cache-Control", "private, no-store");
+  return c.json(refusal ? { tag, available: false, reason: refusal.error, detail: refusal.detail } : { tag, available: true });
+});
 const JS_TYPE_OK: Record<string, (v: unknown) => boolean> = {
   string: (v) => typeof v === "string",
   date: (v) => typeof v === "string",
@@ -275,6 +324,8 @@ databasesApi.put("/schemas/:tag", async (c) => {
   if (actor.kind !== "user" || actor.role !== "owner") return c.json({ error: "forbidden", reason: "changing a schema is owner-only" }, 403);
   const csrf = csrfRefusal(c, requestVia(c));
   if (csrf) return csrf;
+  const limited = perOwner(c, "schema-write", actor.email, envInt("SCHEMA_WRITES_PER_MINUTE", 120));
+  if (limited) return limited;
   const tag = canonicalTag(c.req.param("tag") ?? "");
   if (!tag || tag.length > 128 || /[\u0000-\u001f]/.test(tag)) return c.json({ error: "bad_request", detail: "invalid tag" }, 400);
   const parsed = validateSchemaPatch(await c.req.json().catch(() => null));
@@ -296,6 +347,15 @@ async function applySchemaPatch(c: Context, entry: VaultEntry, tag: string, patc
   } catch (e) {
     return vaultFailure(c, e);
   }
+  if (patch.requireNew) {
+    let refusal;
+    try {
+      refusal = await newTagRefusal(entry, tag);
+    } catch (e) {
+      return vaultFailure(c, e);
+    }
+    if (refusal) return c.json({ error: refusal.error, detail: refusal.detail }, refusal.status);
+  }
   const merged = mergeSchemaFields(current?.fields ?? {}, patch.fields ?? {});
   if (!merged.ok) return c.json({ error: "not_additive", detail: merged.error, field: merged.field }, 409);
   // A NEW field whose name existing notes already use with a different value type
@@ -313,6 +373,44 @@ async function applySchemaPatch(c: Context, entry: VaultEntry, tag: string, patc
       if (sample.some((n) => n.metadata?.[k] !== undefined && n.metadata?.[k] !== null && !ok(n.metadata[k]))) {
         return c.json({ error: "type_conflict", detail: `existing pages already use “${k}” with a different kind of value`, field: k }, 409);
       }
+    }
+  }
+  // Presentation only (NP-DB-11): a `kind` hint must be a presentation of the field's
+  // VAULT type. Anything else would be a vault type change, which is never made here.
+  // The kind in force is this request's, else the one stored earlier — so a hint saved
+  // for a free key is checked again when the field is declared with a type later.
+  const storedHints = readHints(entry.id).get(tag) ?? {};
+  for (const k of new Set([...Object.keys(patch.ui ?? {}), ...Object.keys(patch.fields ?? {})])) {
+    const vaultType = own(merged.fields, k)?.type;
+    const kind = own(patch.ui, k)?.kind ?? own(storedHints, k)?.kind;
+    if (kind && vaultType !== undefined && !compatibleKinds(vaultType).includes(kind)) {
+      return c.json({
+        error: "incompatible_kind", field: k,
+        detail: `“${k}” is stored as ${vaultType} for every page with this tag, so it cannot be shown as ${PROPERTY_KIND_LABELS[kind]}. Stored values are never converted; choose a matching type or add a new property instead.`,
+      }, 409);
+    }
+  }
+  // An option's display name may not read as another option (its value or its name).
+  for (const [k, h] of Object.entries(patch.ui ?? {})) {
+    if (!h.optionLabels) continue;
+    const values = [...new Set([...(own(merged.fields, k)?.enum ?? []), ...Object.keys(own(storedHints, k)?.colors ?? {}), ...Object.keys(h.colors ?? {})])];
+    const clash = optionNameClash(values, h.optionLabels);
+    if (clash) return c.json({ error: "option_name_taken", field: k, detail: `Another option is already called “${clash}”.` }, 409);
+  }
+  // Deleting an option (hide it) is refused while any page still holds it.
+  for (const [k, h] of Object.entries(patch.ui ?? {})) {
+    const fresh = (h.hiddenOptions ?? []).filter((o) => !(own(storedHints, k)?.hiddenOptions ?? []).includes(o));
+    if (!fresh.length) continue;
+    let rows: Note[];
+    try {
+      rows = await vaultClient(entry.id).listNotes({ tags: [tag], includeMetadata: [k], limit: RAW_MAX });
+    } catch (e) {
+      return vaultFailure(c, e);
+    }
+    if (rows.length >= RAW_MAX) return c.json({ error: "option_in_use", field: k, detail: "this tag has too many pages to verify that the option is unused" }, 409);
+    for (const o of fresh) {
+      const count = rows.filter((n) => !(n.tags ?? []).includes("prism-trashed") && holdsOption(n.metadata?.[k], o)).length;
+      if (count) return c.json({ error: "option_in_use", field: k, option: o, count, detail: `${count} ${count === 1 ? "page still uses" : "pages still use"} “${o}”. Change ${count === 1 ? "it" : "them"} first.` }, 409);
     }
   }
   const description = patch.description ?? current?.description ?? "";
@@ -351,6 +449,137 @@ async function applySchemaPatch(c: Context, entry: VaultEntry, tag: string, patc
   return c.json({ tag, schema: present(fresh, readHints(entry.id).get(tag)) });
 }
 
+const holdsOption = (v: unknown, option: string): boolean => (Array.isArray(v) ? v.some((x) => String(x) === option) : typeof v === "string" && v === option);
+
+// ── removing a deleted property's values (NP-DB-11 "delete with explicit data handling") ──
+
+const REMOVE_DEFAULT = 500;
+const REMOVE_MAX = 2000;
+const REMOVE_CONCURRENCY = 2;
+const FIELD_NAME = /^[A-Za-z][A-Za-z0-9_-]{0,63}$/;
+/** ONE removal run at a time for the whole server (it is a burst of vault writes). */
+let removeRunning = false;
+
+/**
+ * Clear `metadata[field]` on the pages of `tag`. The vault tag schema is never
+ * touched (it is shared and additive-only); this is the only place Prism deletes
+ * property DATA, so it is deliberately narrow:
+ *   - server-owner role only, CSRF-guarded, dry-run unless `dryRun: false`;
+ *   - a write needs the property already marked deleted (hidden everywhere) — a
+ *     visible property's values are never removed (a dry run may preview first);
+ *   - never for Prism-managed or ingest-owned tags, system/ingest keys, system
+ *     notes, trashed pages, or a page that also carries ANOTHER tag whose schema
+ *     declares the same key (that tag's property would lose its value);
+ *   - never a page an integration owns (protected place/tag, any ingest tag, an
+ *     ingest `source`) nor someone else's PRIVATE page — both skipped and counted;
+ *   - one CAS write per page (`if_updated_at`; a page that moved is a conflict,
+ *     never retried blindly, never forced), ≤ `limit` pages and ~20 s per request
+ *     (`more: true` → the client asks again), one run at a time server-wide,
+ *     rate limited per owner.
+ */
+databasesApi.post("/schemas/:tag/fields/:field/remove-values", bodyLimit({ maxSize: 4096 }), async (c) => {
+  const actor = resolveActor(c);
+  if (actor.kind !== "user" || actor.role !== "owner") return c.json({ error: "forbidden", reason: "removing a property's values is owner-only" }, 403);
+  const via = requestVia(c);
+  const csrf = csrfRefusal(c, via);
+  if (csrf) return csrf;
+  // A person at a signed-in browser or device — never an agent credential (MCP, loopback token).
+  if (via !== "session" && via !== "device") return c.json({ error: "agent_origin_refused", detail: "removing values needs a signed-in person" }, 403);
+  const tag = canonicalTag(c.req.param("tag") ?? "");
+  const field = c.req.param("field") ?? "";
+  if (!tag || tag.length > 128 || /[\u0000-\u001f]/.test(tag)) return c.json({ error: "bad_request", detail: "invalid tag" }, 400);
+  if (!FIELD_NAME.test(field) || isPrototypeName(field) || isSystemKey(field) || INGEST_KEYS.has(field) || field === "source") return c.json({ error: "bad_request", detail: "not a removable property" }, 400);
+  const limited = perOwner(c, "schema-remove", actor.email, envInt("SCHEMA_REMOVE_PER_MINUTE", 30));
+  if (limited) return limited;
+  const body = (await c.req.json().catch(() => null)) as { dryRun?: unknown; limit?: unknown } | null;
+  if (!body || typeof body !== "object" || Array.isArray(body)) return c.json({ error: "bad_request" }, 400);
+  if (body.dryRun !== undefined && typeof body.dryRun !== "boolean") return c.json({ error: "bad_request", detail: "dryRun must be boolean" }, 400);
+  const dryRun = body.dryRun !== false;
+  const limit = body.limit === undefined ? REMOVE_DEFAULT : Number(body.limit);
+  if (!Number.isInteger(limit) || limit < 1 || limit > REMOVE_MAX) return c.json({ error: "bad_request", detail: `limit must be 1–${REMOVE_MAX}` }, 400);
+  if (LOCKED_TAG(tag)) return c.json({ error: "forbidden", reason: "this tag's schema is managed by Prism" }, 403);
+  if (INGEST_TAGS.has(tag)) return c.json({ error: "protected_tag", detail: "values of an ingested tag are never removed in bulk" }, 409);
+  const entry = entryFor(c, actor);
+  // A dry run may preview the count before the property is deleted; a WRITE needs it deleted first.
+  const hints = readHints(entry.id);
+  if (!dryRun && own(hints.get(tag), field)?.deleted !== true) return c.json({ error: "not_deleted", detail: "delete (hide) the property first; a visible property's values are never removed" }, 409);
+
+  let schemas: Map<string, TagSchema>;
+  let rows: Note[];
+  try {
+    schemas = await vaultSchemas(entry);
+    rows = await vaultClient(entry.id).listNotes({ tags: [tag], includeMetadata: [field, "prism_creator", "prism_visibility", "source"], limit: RAW_MAX });
+  } catch (e) {
+    return vaultFailure(c, e);
+  }
+  const holding = rows.filter((n) => { const v = own(n.metadata, field); return v !== undefined && v !== null; });
+  // Another tag on the same page declaring this key — in its vault schema OR only in
+  // its Prism hints — owns the value too: leave it.
+  const sharedBy = (n: Note) => (n.tags ?? []).some((t) => t !== tag && (own(schemas.get(t)?.fields, field) !== undefined || own(hints.get(t), field) !== undefined));
+  // A page an integration keeps in sync (by place, by tag, or by its `source`): its
+  // metadata is the ingester's, whatever other tag it also carries.
+  const ingestOwned = (n: Note) => protectionReason(n) !== null || (n.tags ?? []).some((t) => INGEST_TAGS.has(t)) ||
+    (typeof n.metadata?.source === "string" && INGEST_SOURCES.has(n.metadata.source.trim().toLowerCase()));
+  const othersPrivate = (n: Note) => n.metadata?.prism_visibility === "private" && String(n.metadata?.prism_creator ?? "").toLowerCase() !== actor.email.toLowerCase();
+  const skipped = { trashed: 0, shared: 0, system: 0, ingest: 0, private: 0 };
+  const targets: Note[] = [];
+  for (const n of holding) {
+    if ((n.tags ?? []).includes("prism-trashed")) skipped.trashed++;
+    else if (systemNoteReason(n)) skipped.system++;
+    else if (ingestOwned(n)) skipped.ingest++;
+    else if (othersPrivate(n)) skipped.private++;
+    else if (sharedBy(n)) skipped.shared++;
+    else targets.push(n);
+  }
+  const base = { tag, field, total: targets.length, skipped, truncated: rows.length >= RAW_MAX };
+  c.header("Cache-Control", "private, no-store");
+  if (dryRun) return c.json({ dryRun: true, ...base });
+
+  if (removeRunning) return c.json({ error: "busy", detail: "property values are already being removed; try again when that finishes" }, 409);
+  removeRunning = true;
+  const out = { removed: 0, conflicts: 0, failed: 0 };
+  // One request stays short: it stops at `limit` pages or the time budget, and says
+  // `more` — the client asks again (each run re-lists, so nothing is done twice).
+  const deadline = Date.now() + envInt("SCHEMA_REMOVE_BUDGET_MS", 20_000);
+  let next = 0;
+  try {
+    const vc = vaultClient(entry.id);
+    const batch = targets.slice(0, limit);
+    const worker = async () => {
+      for (;;) {
+        if (Date.now() > deadline) return;
+        const n = batch[next++];
+        if (!n) return;
+        if (!n.updatedAt) { out.conflicts++; continue; } // no revision to compare against: never forced
+        try {
+          const updated = await vc.updateNote(n.id, { metadata: { [field]: null }, ifUpdatedAt: n.updatedAt });
+          if (isDocLive(entry.id, n.id)) {
+            const prev = Date.parse(n.updatedAt);
+            const after = Date.parse(updated.updatedAt ?? "");
+            if (Number.isFinite(prev) && Number.isFinite(after)) markReconciled(docNameFor(entry.id, n.id), prev, after);
+          }
+          treeUpsertNote(entry, updated);
+          out.removed++;
+        } catch (e) {
+          if (e instanceof VaultConflictError) out.conflicts++;
+          else out.failed++;
+        }
+      }
+    };
+    await Promise.all(Array.from({ length: REMOVE_CONCURRENCY }, worker));
+  } finally {
+    removeRunning = false;
+    evictVaultListings(entry);
+  }
+  const attempted = Math.min(next, targets.length, limit);
+  // Counts and names only — never a value.
+  recordAction({
+    actorEmail: actor.email, via, origin: "human", action: "schema.remove-values", vaultId: entry.id,
+    target: { tag, field, ...out, total: targets.length }, status: out.failed ? "failed" : "ok",
+  });
+  return c.json({ dryRun: false, ...base, ...out, remaining: Math.max(0, targets.length - out.removed), more: targets.length > attempted });
+});
+
 // ── query ────────────────────────────────────────────────────────────────────
 
 // Read per call so an operator (and tests) can tune without a restart.
@@ -364,7 +593,8 @@ const scanMax = () => envInt("QUERY_SCAN_MAX", 20_000);
 const RAW_MAX = 50_000;
 const LIST_TTL_MS = Number(process.env.QUERY_LIST_TTL_MS ?? 4_000);
 const PERMISSION_KEYS = ["prism_creator", "prism_visibility"];
-const ROW_META = ["title", "type", "prism_type", "icon", "cover", "coverY", WRITER_KEY, WRITER_AT_KEY];
+// `source` / `source_id` / `calendarEventId` say an integration owns the row (the calendar view will not drag it).
+const ROW_META = ["title", "type", "prism_type", "icon", "cover", "coverY", WRITER_KEY, WRITER_AT_KEY, "source", "source_id", "calendarEventId"];
 
 /**
  * Listing cache (review H1): ONE canonical listing per (vault, tag) — the tag's

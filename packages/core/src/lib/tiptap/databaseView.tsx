@@ -32,8 +32,8 @@ export function registerDatabaseView(): void {
 registerDatabaseView();
 
 export interface DatabaseInsertRequest {
-  /** "new": create a database as a sub-page of this page; "linked": embed an existing one. */
-  mode: "new" | "linked";
+  /** "new": create a database as a sub-page of this page and embed it; "linked": embed an existing one; "page": create the sub-page and open it (a link is left here). */
+  mode: "new" | "linked" | "page";
   type: ViewType;
   /** Where the block goes (captured when the slash item ran). */
   pos: number;
@@ -56,7 +56,7 @@ const handler = (editor: Editor | null) =>
 
 export const canInsertDatabase = (editor: Editor | null): boolean => !!handler(editor) && !!editor?.schema.nodes.databaseView;
 
-export function requestDatabaseInsert(editor: Editor, mode: "new" | "linked", type: ViewType): void {
+export function requestDatabaseInsert(editor: Editor, mode: DatabaseInsertRequest["mode"], type: ViewType): void {
   const { $from } = editor.state.selection;
   handler(editor)?.({ mode, type, pos: $from.depth >= 1 ? $from.before(1) : $from.pos });
 }
