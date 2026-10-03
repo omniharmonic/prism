@@ -7,7 +7,7 @@
  *
  * Query: `q` (≤200 chars, required), `limit` (1–100, default 50), `title=1`
  * (match titles only), `type=document,database` (inferContentType), `tag=a,b`
- * (all required), `author=<email>` (prism_creator or prism_last_writer),
+ * (all required), `author=<email>|me` (prism_creator or prism_last_writer),
  * `after`/`before` (YYYY-MM-DD or ISO, inclusive), `date=created` (default:
  * updated), `lean=1` (drop `content` from rows; the snippet still comes back).
  *
@@ -60,6 +60,11 @@ searchApi.get("/search", async (c: Context) => {
   const limit = Number.isFinite(limitRaw) ? Math.min(100, Math.max(1, Math.floor(limitRaw))) : 50;
   if (!q) return c.json([]);
   const filters = parseSearchFilters((name) => c.req.query(name));
+  // `author=me` = the signed-in account; a link or anon caller has no "me".
+  if (filters.author === "me") {
+    if (actor.kind !== "user") return c.json([]);
+    filters.author = actor.email.toLowerCase();
+  }
   const lean = c.req.query("lean") === "1";
   const terms = queryTerms(q);
   // Filters and the view filter both narrow after the vault answers, so ask for

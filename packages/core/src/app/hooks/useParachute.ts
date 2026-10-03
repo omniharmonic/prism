@@ -8,6 +8,8 @@ import type { Note, NoteFilters, CreateNoteParams, UpdateNoteParams } from "../.
 import { useAgentChatStore } from "../../lib/agent/chatStore";
 import { useLivePollMs } from "../../lib/events/channelStatus";
 import { withoutTrashed } from "../../lib/pages/model";
+import { hasFilters, matchesFilters, queryTerms, type SearchFilters } from "../../lib/search/match";
+import { inferContentType } from "../../lib/schemas/content-types";
 
 export function useNotes(filters?: NoteFilters) {
   const client = useVaultClient();
@@ -49,15 +51,19 @@ export function useNote(id: string | null) {
 }
 
 /** Ranked retrieval with an explicit keyword fallback and audience-scoped results. */
-export function useVaultSearch(query: string) {
+export function useVaultSearch(query: string, filters?: SearchFilters) {
   const client = useVaultClient();
   const scope = useAgentChatStore((state) => state.scope);
   const text = query.trim();
+  const active = filters && hasFilters(filters) ? filters : undefined;
   const result = useQuery({
-    queryKey: ["vault", "search", scope, text],
+    queryKey: ["vault", "search", scope, text, active ?? null],
     queryFn: async () => {
       const current = () => useAgentChatStore.getState().scope === scope;
-      if (client.semanticSearch) {
+      const terms = queryTerms(text);
+      // Filters narrow the server's permission-filtered keyword search (or, on an
+      // older server, the same results client-side). Ranked search has no filters.
+      if (!active && client.semanticSearch) {
         try {
           const notes = await client.semanticSearch(text);
           if (!current()) throw new Error("Workspace changed");
@@ -66,9 +72,13 @@ export function useVaultSearch(query: string) {
           if (!current()) throw new Error("Workspace changed");
         }
       }
+      const fallback = !active && client.semanticSearch ? "fallback" as const : "keyword" as const;
+      const filtered = client.searchNotes ? await client.searchNotes(text, active) : null;
+      if (!current()) throw new Error("Workspace changed");
+      if (filtered) return { notes: filtered, mode: fallback };
       const notes = await client.search(text);
       if (!current()) throw new Error("Workspace changed");
-      return { notes, mode: client.semanticSearch ? "fallback" as const : "keyword" as const };
+      return { notes: active ? notes.filter((n) => matchesFilters(n, active, terms, (x) => inferContentType(x as Note))) : notes, mode: fallback };
     },
     enabled: text.length > 0,
     staleTime: 0,

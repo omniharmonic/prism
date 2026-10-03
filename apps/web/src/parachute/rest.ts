@@ -28,6 +28,7 @@ import type {
 } from "@prism/core";
 import { VaultRequestError, HistoryUnavailableError, HistoryConflictError, PropertyConflictError, toNoteVersion } from "@prism/core";
 import type { QueryPage, QuerySpec, SchemaMap, SchemaPatch, TagSchema, PropertyWriteResult } from "@prism/core";
+import { filtersToParams, type SearchFilters } from "@prism/core/search";
 import { agentScope, apiBase, DEFAULT_VAULT_NAME, capabilityHeader, contextHeaders } from "../config";
 import { retainDraft, enqueue, hasPending, flush, localNote, resolveLocalNoteId } from "../offline/outbox";
 import { captureWriteContext, scopeKey } from "../offline/writeScope";
@@ -258,6 +259,19 @@ export async function search(query: string, tags?: string[], limit = 50): Promis
   const sp = new URLSearchParams({ search: query, limit: String(limit), include_content: "true" });
   for (const t of tags ?? []) sp.append("tag", t);
   return (await req(`/notes?${sp.toString()}`)).json();
+}
+
+/** Filtered full-text search with match offsets (`GET /api/search`, wave 2E).
+ *  Lean rows: no bodies, a server-built snippet instead. An older server that
+ *  has no such route for this actor answers 404/405/501 → `null` (caller falls back). */
+export async function searchNotes(query: string, filters: SearchFilters = {}, limit = 50): Promise<Note[] | null> {
+  const sp = filtersToParams(filters, new URLSearchParams({ q: query, limit: String(limit), lean: "1" }));
+  try {
+    return await (await req(`/search?${sp.toString()}`)).json();
+  } catch (error) {
+    if (error instanceof VaultRequestError && [404, 405, 501].includes(error.status)) return null;
+    throw error;
+  }
 }
 
 /** Hybrid semantic search via the server's RAG service (dense + full-text,

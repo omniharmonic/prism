@@ -74,8 +74,29 @@ export function findMatches(text: string, terms: string[], cap = 64): Range[] {
 const ENTITIES: Record<string, string> = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: " ", "#39": "'" };
 
 /** Saved note HTML/Markdown → readable plain text (linear; never executes markup). */
+/** Drop <script>/<style>/<noscript> blocks with indexOf scans (linear, no regex backtracking). */
+function stripRawBlocks(input: string): string {
+  const lower = input.toLowerCase();
+  let out = "";
+  let at = 0;
+  for (;;) {
+    let next = -1;
+    let name = "";
+    for (const tag of ["script", "style", "noscript"]) {
+      const i = lower.indexOf(`<${tag}`, at);
+      if (i !== -1 && (next === -1 || i < next)) { next = i; name = tag; }
+    }
+    if (next === -1) return out + input.slice(at);
+    out += input.slice(at, next);
+    const close = lower.indexOf(`</${name}`, next);
+    if (close === -1) return out;
+    const end = lower.indexOf(">", close);
+    at = end === -1 ? input.length : end + 1;
+  }
+}
+
 export function plainText(source: string, max = 200_000): string {
-  const input = source.length > max ? source.slice(0, max) : source;
+  const input = stripRawBlocks(source.length > max ? source.slice(0, max) : source);
   let out = "";
   let inTag = false;
   for (let i = 0; i < input.length; i++) {

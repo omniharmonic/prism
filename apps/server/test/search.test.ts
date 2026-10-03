@@ -72,6 +72,7 @@ test("filters only narrow: title, type, tag, author, date range", async () => {
   assert.deepEqual(await q("type=document"), ["w2", "w3"], "type is inferContentType, not a tag");
   assert.deepEqual(await q(`author=${encodeURIComponent(MEMBER.toUpperCase())}`), ["w2"]);
   assert.deepEqual(await q(`author=${encodeURIComponent(OWNER)}`), ["w1", "w2", "w4"], "creator OR last writer");
+  assert.deepEqual(await q("author=me"), ["w1", "w2", "w4"], "me = the signed-in account");
   assert.deepEqual(await q("after=2026-09-21"), ["w3", "w4"]);
   assert.deepEqual(await q("before=2026-08-01"), ["w2"]);
   assert.deepEqual(await q("date=created&after=2026-08-01&before=2026-09-01"), ["w1"]);
