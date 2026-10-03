@@ -142,6 +142,14 @@ export function PropertyValue({
   const attempted = useRef<unknown>(undefined);
   const base = useRef<unknown>(value);
   const id = useId();
+  // Keyboard edits (Enter / Esc) hand focus back to the cell so arrow keys keep working (NP-DB-03).
+  const refocus = useRef(false);
+  useEffect(() => {
+    if (!editingText && refocus.current) {
+      refocus.current = false;
+      anchor.current?.focus();
+    }
+  }, [editingText]);
 
   useEffect(() => {
     if (!busy && !conflict) base.current = value;
@@ -205,10 +213,14 @@ export function PropertyValue({
   const onTextKey = (e: KeyboardEvent<HTMLInputElement>) => {
     if (e.key === "Enter" && !e.nativeEvent.isComposing) {
       e.preventDefault();
+      refocus.current = true;
       void commit(draft);
     }
+    if (e.key === "Tab") refocus.current = false;
     if (e.key === "Escape") {
       e.preventDefault();
+      e.stopPropagation();
+      refocus.current = true;
       setEditingText(false);
       setError("");
       onDone?.();

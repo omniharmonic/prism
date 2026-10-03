@@ -369,4 +369,64 @@ test("a saved view is renamed and deleted from View settings", async ({ page }) 
   await expect(page.getByRole("tab", { name: "Board" })).toHaveAttribute("aria-selected", "true");
 });
 
+// NP-DB-03 — arrows move between cells, Enter edits, Esc cancels back to the cell, Tab commits and moves on; columns reorder.
+test("column reorder and cell keyboard nav", async ({ page }) => {
+  await page.goto("/e2e-fixtures/databases.html");
+  const table = page.getByRole("table", { name: "All tasks" });
+  const focused = () => page.evaluate(() => document.activeElement?.getAttribute("aria-label") ?? document.activeElement?.textContent ?? "");
+  const focusedRow = () => page.evaluate(() => document.activeElement?.closest("tr")?.getAttribute("data-row-id") ?? "");
+  await row(page, "Refine onboarding copy").getByRole("button", { name: "Status: in-progress" }).focus();
+  await page.keyboard.press("ArrowRight");
+  expect(await focused()).toBe("Priority: medium");
+  await page.keyboard.press("ArrowLeft");
+  await page.keyboard.press("ArrowLeft");
+  expect(await focused()).toBe("Refine onboarding copy");
+  await page.keyboard.press("ArrowLeft"); // already at the first column: stays put
+  expect(await focused()).toBe("Refine onboarding copy");
+  for (let i = 0; i < 5; i++) await page.keyboard.press("ArrowRight");
+  expect(await focused()).toBe("Estimate (h): 5");
+
+  // Enter edits; Esc cancels without writing and returns to the cell.
+  const before = (await writes(page)).length;
+  await page.keyboard.press("Enter");
+  const input = page.getByRole("textbox", { name: "Estimate (h)" });
+  await expect(input).toBeFocused();
+  await input.fill("9");
+  await page.keyboard.press("ArrowLeft"); // arrows inside an editor move the caret, not the cell
+  await expect(input).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(input).toHaveCount(0);
+  expect(await focused()).toBe("Estimate (h): 5");
+  expect((await writes(page)).length).toBe(before);
+
+  // Enter commits and stays on the cell; ArrowDown/Up move along the column.
+  await page.keyboard.press("Enter");
+  await input.fill("9");
+  await page.keyboard.press("Enter");
+  await expect.poll(focused).toBe("Estimate (h): 9");
+  expect((await writes(page)).at(-1)).toEqual({ id: "t3", set: { estimate: 9 }, expect: { estimate: 5 } });
+  const here = await focusedRow();
+  await page.keyboard.press("ArrowDown");
+  expect(await focused()).toMatch(/^Estimate \(h\):/);
+  expect(await focusedRow()).not.toBe(here);
+  await page.keyboard.press("ArrowUp");
+  expect(await focusedRow()).toBe(here);
+
+  // Tab commits the edit and moves to the next cell.
+  await page.keyboard.press("Enter");
+  await input.fill("4");
+  await page.keyboard.press("Tab");
+  await expect.poll(async () => (await writes(page)).at(-1)).toEqual({ id: "t3", set: { estimate: 4 }, expect: { estimate: 9 } });
+  await expect.poll(focused).toMatch(/^Labels:/);
+  expect(await focusedRow()).toBe(here);
+
+  // Columns reorder from View settings and the order is saved.
+  const headers = () => table.locator("thead th").allInnerTexts();
+  expect((await headers()).slice(0, 3)).toEqual(["Title", "Status", "Priority"]);
+  await page.getByRole("button", { name: "View settings" }).click();
+  await page.getByRole("dialog", { name: "View settings" }).getByRole("button", { name: "Move Priority earlier" }).click();
+  await expect.poll(async () => (await headers()).slice(0, 3)).toEqual(["Title", "Priority", "Status"]);
+  await expect.poll(async () => (await configWrites(page)).at(-1)?.metadata.prism_database.views[0].visible.slice(0, 2)).toEqual(["priority", "status"]);
+});
+
 test.fixme("saved views: duplicate and reorder tabs (PRODUCT GAP NP-DB-16 — no control exists)", async () => {});

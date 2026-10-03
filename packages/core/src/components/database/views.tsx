@@ -199,6 +199,30 @@ function HeaderCell({ def, ctx, width, onResize }: { def: PropertyDef; ctx: View
   );
 }
 
+/**
+ * Spreadsheet-style keyboard navigation (NP-DB-03): arrow keys move between the
+ * cells of a table body; Enter on a cell edits it (the cell's own button), Esc
+ * leaves the editor and returns to the cell, Tab walks cells in reading order
+ * (native tab order). Keys typed inside an editor or a popover are never taken.
+ */
+function onGridKey(e: React.KeyboardEvent<HTMLTableElement>) {
+  if (e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return;
+  const dir = e.key === "ArrowLeft" ? [0, -1] : e.key === "ArrowRight" ? [0, 1] : e.key === "ArrowUp" ? [-1, 0] : e.key === "ArrowDown" ? [1, 0] : null;
+  if (!dir) return;
+  const t = e.target as HTMLElement;
+  if (t.closest("input, textarea, select, [contenteditable='true']")) return;
+  const cellEl = t.closest("td, th");
+  const rowEl = cellEl?.parentElement;
+  // Portaled popovers bubble here through React but are not inside a cell.
+  if (!cellEl || !rowEl || !rowEl.hasAttribute("data-row-id") || !e.currentTarget.contains(cellEl)) return;
+  const rows = Array.from(e.currentTarget.querySelectorAll<HTMLElement>("tbody > tr[data-row-id]"));
+  const r = rows.indexOf(rowEl as HTMLElement) + dir[0]!;
+  const c = Array.from(rowEl.children).indexOf(cellEl) + dir[1]!;
+  const target = rows[r]?.children[c]?.querySelector<HTMLElement>(".db-value-button:not(:disabled), .db-row-open");
+  e.preventDefault();
+  target?.focus();
+}
+
 function TableBlock({ ctx, rows, preset, label }: { ctx: ViewContext; rows: QueryRow[]; preset?: Record<string, unknown>; label: string }) {
   const [widths, setWidths] = useState<Record<string, number>>(ctx.view.widths ?? {});
   const [adding, setAdding] = useState(false);
@@ -210,7 +234,7 @@ function TableBlock({ ctx, rows, preset, label }: { ctx: ViewContext; rows: Quer
   const someOn = !!sel && rows.some((r) => sel.ids.has(r.id));
   return (
     <div className="db-table-wrap">
-      <table className="db-table" style={{ width: total }} aria-label={label} aria-multiselectable={sel ? true : undefined}>
+      <table className="db-table" style={{ width: total }} aria-label={label} aria-multiselectable={sel ? true : undefined} onKeyDown={onGridKey}>
         <colgroup>
           <col className="db-col-title" style={{ width: w("$title", 280) }} />
           {ctx.shown.map((p) => <col key={p.key} style={{ width: w(p.key, 180) }} />)}
