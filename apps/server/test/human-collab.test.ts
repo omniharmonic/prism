@@ -1338,15 +1338,17 @@ test("R1: a store that folds a newer vault copy does NOT confirm a command whose
     fv.put({ id, tags: ["garden"], content: BODY, updatedAt: T0 });
     const editor = await editorClient(id); // keeps the document in memory
     const cmd = await command(editor, () => (kind === "suggest" ? { kind, ...select(editor, "beta"), text: "gamma" } : { kind, ...select(editor, "beta"), text: "note" }));
-    // An external writer replaces the note AFTER the command is applied in
-    // memory and BEFORE its store reads the vault: the store folds that copy
-    // over the live document, which removes the command's marks.
+    // An external writer changes the note AFTER the command is applied in memory
+    // and BEFORE its store reads the vault: it REMOVES the paragraph the command
+    // marked. The store merges that edit into the live document (three-way: an
+    // edit to another block would leave the command intact), and the command's
+    // marks go with their paragraph.
     const inner = globalThis.fetch;
     let done = false;
     globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
       if (!done && getCollabReceipt("primary", id, auth.identity, cmd.requestId)) {
         done = true;
-        fv.put({ id, tags: ["garden"], content: "<p>alpha</p><p>rewritten elsewhere</p>", updatedAt: "2026-12-01T00:00:00.000Z" });
+        fv.put({ id, tags: ["garden"], content: "<p>alpha</p>", updatedAt: "2026-12-01T00:00:00.000Z" });
       }
       return inner(input, init);
     }) as typeof fetch;
@@ -1357,7 +1359,7 @@ test("R1: a store that folds a newer vault copy does NOT confirm a command whose
     assert.equal(r.body.error, "not_confirmed");
     assert.equal(getCollabReceipt("primary", id, auth.identity, cmd.requestId), null, "the receipt of the removed change is forgotten, not confirmed");
     const html = yDocToHtml(live(id)!);
-    assert.equal(html, "<p>alpha</p><p>rewritten elsewhere</p>", "the external copy stands, with no leftover marks");
+    assert.equal(html, "<p>alpha</p>", "the external copy stands, with no leftover marks");
     assert.equal(live(id)!.getMap("comments").size, 0, "no thread left without its anchor");
     await caughtUp(editor);
     const retry = await post(id, cmd, auth);

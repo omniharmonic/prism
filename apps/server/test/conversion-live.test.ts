@@ -307,7 +307,11 @@ test("a LIVE document whose note becomes unconvertible is closed (never stored o
   close(tab);
   const back = open("ok", editToken(), kept);
   await until("live again", () => back.synced() && back.provider.authorizedScope === "read-write", 30_000);
-  await until("converged", () => yDocToHtml(back.doc) === "<p>rewritten</p>" && yDocToHtml(live("ok")!) === "<p>rewritten</p>");
+  // The note's new content AND the typing that never reached the vault: merged three-way against the snapshot's true base.
+  const merged = "<p>rewritten</p><p>unsaved typing</p>";
+  await until("converged", () => yDocToHtml(back.doc) === merged && yDocToHtml(live("ok")!) === merged, 20_000).catch((e) => {
+    throw new Error(`${(e as Error).message}: client ${yDocToHtml(back.doc)} | server ${yDocToHtml(live("ok")!)}`);
+  });
   assert.deepEqual(back.refused, []);
 });
 

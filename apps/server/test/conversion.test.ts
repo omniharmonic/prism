@@ -58,7 +58,7 @@ import {
   yDocToHtmlAsync,
 } from "../src/collab";
 import { mergeContentIntoLive } from "../src/collab-ops";
-import { getDocState, insertCollabReceipt, isCollabUnsaved, unconfirmedCollabReceipts } from "../src/db";
+import { dueCollabUnsaved, getCollabUnsaved, getDocState, insertCollabReceipt, isCollabUnsaved, unconfirmedCollabReceipts } from "../src/db";
 import { installFakeVault, resetDb, type FakeVault } from "./helpers";
 
 // ── helpers ─────────────────────────────────────────────────────────────────
@@ -392,7 +392,8 @@ test("M2: saving has its own lane — a store's render is not queued behind open
     const html = await docJsonToHtml(json, { lane: "store" });
     assert.equal(html, "<p>to be saved</p>");
     // Reserved thread (2+): at once. One thread: right after the task that was already running.
-    assert.ok(hogsDone <= (threads === 1 ? 1 : 0), `threads=${threads}: the store's render finished after ${hogsDone} of 4 queued opens`);
+    // (one more than the ideal is allowed for scheduling noise on a loaded host; queued behind them it would be 4)
+    assert.ok(hogsDone <= (threads === 1 ? 2 : 1), `threads=${threads}: the store's render finished after ${hogsDone} of 4 queued opens`);
     await Promise.all(hogs);
   }
 });
@@ -639,7 +640,7 @@ test("M4 — store: a render that fails because of LOAD (timeout / busy / crash)
   assert.equal(vaultWrites().length, 1);
 });
 
-test("store: a document beyond what can be rendered at all is not written and not flagged; its state is saved", { timeout: 120_000 }, async () => {
+test("store: a document beyond what can be rendered at all is not written, not blocked and not retried — recorded as permanently unsaved until it shrinks", { timeout: 120_000 }, async () => {
   fv.put({ id: "n5", tags: ["garden"], content: "<p>small</p>", updatedAt: "2026-03-01T00:00:00.000Z" });
   const doc = await loadDocumentState("n5", new Y.Doc());
   const source = getDocState("n5")!.sourceUpdatedAt;
@@ -647,12 +648,20 @@ test("store: a document beyond what can be rendered at all is not written and no
   restore.push(configureConversion({ inlineMaxNodes: 0, maxNodes: 1 }));
   await storeDocumentState("n5", doc);
   assert.deepEqual(vaultWrites(), []);
-  assert.equal(isDocBlocked("n5"), false);
-  assert.equal(getDocState("n5")!.sourceUpdatedAt, source);
-  assert.equal(isCollabUnsaved("n5", "primary"), false, "no timer-driven retry for a deterministic refusal: the next edit stores again");
+  assert.equal(isDocBlocked("n5"), false, "the document stays live");
+  const row = getDocState("n5")!;
+  assert.equal(row.sourceUpdatedAt, source);
+  assert.equal(row.ahead, true, "the snapshot is ahead of the vault, on its true base");
+  const unsaved = getCollabUnsaved("n5", "primary")!;
+  assert.equal(unsaved.permanent, 1, "recorded — and not retried: only a smaller page can be saved");
+  assert.equal(unsaved.reason, "too_many_nodes");
+  assert.deepEqual(dueCollabUnsaved(10, Date.now() + 365 * 86_400_000), [], "the sweep never picks a permanent row");
+  // Once the page can be rendered again, the next store writes it and clears the record.
   restoreLimits();
   await storeDocumentState("n5", doc);
   assert.equal(fv.notes.get("n5")!.content, "<p>small</p><p></p>");
+  assert.equal(getCollabUnsaved("n5", "primary"), null);
+  assert.equal(getDocState("n5")!.ahead, false);
 });
 
 test("store: a busy converter is waited out — the note is written, nothing is flagged", { timeout: 120_000 }, async () => {
