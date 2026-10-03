@@ -36,6 +36,10 @@ const persistMeta = (n: Note) => { savedMeta[n.id] = { ...(n.metadata ?? {}) }; 
 const controls = {
   writes: [] as Array<{ method: string; path: string; body: unknown }>,
   searches: [] as string[],
+  /** A slow search: while set, every /api/search answer waits for releaseSearch(). */
+  searchHold: false,
+  searchWaiting: [] as Array<() => void>,
+  releaseSearch: () => { controls.searchHold = false; controls.searchWaiting.splice(0).forEach((r) => r()); },
   hold: false,
   release: [] as Array<() => void>,
   failStatus: 0,
@@ -113,6 +117,7 @@ window.fetch = async (input, init) => {
   if (path === "/api/tree") return Response.json(notes.filter((n) => !controls.hidden.includes(n.id)).map((n) => ({ id: n.id, path: n.path, tags: n.tags, updatedAt: n.updatedAt, type: n.metadata?.type, prismType: n.metadata?.prism_type, ...(typeof n.metadata?.icon === "string" ? { icon: n.metadata.icon } : {}) })));
   if (path === "/api/search") {
     controls.searches.push(url.search);
+    if (controls.searchHold) await new Promise<void>((resolve) => controls.searchWaiting.push(resolve));
     const q = url.searchParams.get("q") ?? "";
     const terms = queryTerms(q);
     const f = parseSearchFilters((k) => url.searchParams.get(k) ?? undefined);

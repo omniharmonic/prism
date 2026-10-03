@@ -417,7 +417,9 @@ export function CommandBar() {
   // Local filters describe the returned accessible set; they do not claim to
   // search a separate message index or paginate the complete vault.
   const vaultItems = useMemo(() => {
-    const notes = query.trim() === debouncedQuery.trim() ? searchResults ?? [] : [];
+    // The rows on screen stay until the next answer arrives (typing on, a background
+    // refetch): the list never blinks empty, and Enter acts on the row that is showing.
+    const notes = query.trim() ? searchResults ?? [] : [];
     return notes.filter(note => filter !== "commands" && (filter === "all" || searchResultGroup(note) === filter)).map(note => {
       const label = note.path?.split("/").pop() || note.id;
       const marks = resultHighlights(note, label, debouncedQuery);

@@ -146,7 +146,7 @@ No fix was needed. A folder much larger than 3,000 pages would pass 500 ms, sinc
 
 The full-text number includes the 200 ms input debounce. The server figure is the gateway's own work over a fake vault that does a substring filter; the real vault's full-text time is not in it.
 
-One behaviour seen while building the harness: after results first appear, the list is empty for a moment and then fills again (ranked results, then the blended list). Pressing Enter in that gap does nothing. Not investigated.
+One behaviour seen while building the harness: after results first appear, the list was empty for a moment and then filled again, and Enter in that gap did nothing. Cause: the palette dropped its rows whenever the typed text was ahead of the 200 ms debounce, and `useVaultSearch` hid its answer during every fetch. Fixed on `feat/w6-perf`: the rows on screen stay until the next answer arrives (same audience and filters, at most 10 s), and Enter opens the selected row. An answer from the query cache is still never shown on its own, and an error still clears the list (`notion-search.spec.ts` "⌘K keeps its rows…", `search.spec.ts`).
 
 ### NP-PF-06 — database with 5,000 rows
 
