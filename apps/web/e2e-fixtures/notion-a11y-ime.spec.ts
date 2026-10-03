@@ -28,15 +28,16 @@ async function newParagraph(page: Page) {
   await page.evaluate(() => (document.querySelector(".tiptap") as any).editor.commands.focus("end"));
   await page.keyboard.press("Enter");
 }
-const menus = (page: Page) => page.locator('[role="listbox"][aria-label="Insert block"], [role="listbox"][aria-label="Mention a person, page or date"], .wikilink-dropdown, [aria-label="Link to a page"]');
+const menus = (page: Page) => page.locator('[role="listbox"][aria-label="Insert block"], [role="listbox"][aria-label="Mention a person, page or date"], [role="listbox"][aria-label="Link to a document"]');
 
 test.describe("IME composition", () => {
   test("slash, @ and [[ menus stay closed mid-composition; nothing is inserted twice", async ({ page }) => {
     await page.goto("/e2e-fixtures/notion-mentions.html");
     const body = page.locator(".ProseMirror").first();
     await expect(body).toBeVisible();
+    await expect(body).toContainText("Write the plan here.");
     await body.click();
-    await page.keyboard.press("ControlOrMeta+End");
+    await page.evaluate(() => (document.querySelector(".ProseMirror") as any).editor.commands.focus("end"));
     await page.keyboard.press("Enter");
     const cdp = await page.context().newCDPSession(page);
     const blocks = () => page.evaluate(() => (document.querySelector(".ProseMirror") as any).editor.state.doc.childCount);
@@ -63,6 +64,30 @@ test.describe("IME composition", () => {
     await page.keyboard.type(" /");
     await expect(page.getByRole("listbox", { name: "Insert block" })).toBeVisible();
     await page.keyboard.press("Escape");
+  });
+
+  // Review fix 1: the trigger may be PRODUCED by a composition (Japanese IME in half-width mode, some
+  // Android keyboards). It must not open the menu while composing — and must open it once committed.
+  test("a \"/\" or \"[[\" committed by a composition opens its menu", async ({ page }) => {
+    await page.goto("/e2e-fixtures/notion-mentions.html");
+    const body = page.locator(".ProseMirror").first();
+    await expect(body).toBeVisible();
+    await expect(body).toContainText("Write the plan here.");
+    await body.click();
+    await page.evaluate(() => (document.querySelector(".ProseMirror") as any).editor.commands.focus("end"));
+    const cdp = await page.context().newCDPSession(page);
+    for (const [trigger, list] of [["/", "Insert block"], ["[[", "Link to a document"]] as const) {
+      await page.keyboard.press("Enter");
+      await compose(cdp, trigger);
+      await page.waitForTimeout(200);
+      await expect(menus(page), `closed while composing "${trigger}"`).toHaveCount(0);
+      await commit(cdp, trigger);
+      await expect(page.getByRole("listbox", { name: list }), `open after "${trigger}" is committed`).toBeVisible();
+      expect(await page.evaluate(() => (document.querySelector(".ProseMirror") as any).editor.state.selection.$from.parent.textContent)).toBe(trigger);
+      await page.keyboard.press("Escape");
+      await expect(page.getByRole("listbox", { name: list })).toHaveCount(0);
+      for (let i = 0; i < trigger.length; i++) await page.keyboard.press("Backspace");
+    }
   });
 
   test("Markdown input rules do not fire mid-composition", async ({ page }) => {

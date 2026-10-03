@@ -1,4 +1,5 @@
 import { Extension } from "@tiptap/core";
+import type { EditorView } from "@tiptap/pm/view";
 import { Plugin } from "@tiptap/pm/state";
 
 /**
@@ -43,6 +44,7 @@ export const SlashCommand = Extension.create<SlashCommandOptions, { dismissedFro
     const onStateChange = this.options.onStateChange;
     const storage = this.storage;
     let lastActive = false;
+    let recheck: ((view: EditorView) => void) | null = null;
 
     const clear = () => {
       if (lastActive) {
@@ -53,9 +55,21 @@ export const SlashCommand = Extension.create<SlashCommandOptions, { dismissedFro
 
     return [
       new Plugin({
+        // A trigger PRODUCED by a composition (IME half-width "/", some Android keyboards) is skipped
+        // by `update` while composing, and ProseMirror is not guaranteed to call `update` again once
+        // the composition ends. Re-run the same check shortly after `compositionend` (this handler
+        // runs before ProseMirror clears `view.composing`, hence the delay).
+        props: {
+          handleDOMEvents: {
+            compositionend: (view) => {
+              window.setTimeout(() => { if (!view.isDestroyed) recheck?.(view); }, 60);
+              return false;
+            },
+          },
+        },
         view() {
-          return {
-            update(view) {
+          const pluginView = {
+            update(view: EditorView) {
               const { selection } = view.state;
               if (!selection.empty) return clear();
               // NP-AX-08: a "/" that is part of an IME composition is not a command yet — the menu never
@@ -87,6 +101,8 @@ export const SlashCommand = Extension.create<SlashCommandOptions, { dismissedFro
               clear();
             },
           };
+          recheck = (view) => pluginView.update(view);
+          return pluginView;
         },
       }),
     ];

@@ -25,6 +25,8 @@ export function installImeKeyGuard(target: Window | undefined = typeof window ==
   // On `window`, first in line (this module is imported with the shell, before any component mounts):
   // several menus listen on window/document in the capture phase themselves.
   const guard = (e: KeyboardEvent) => { if (isImeKey(e)) e.stopImmediatePropagation(); };
+  // keydown only: ProseMirror clears its Shift flag on the Shift KEYUP — swallowing a keyup during a
+  // composition would leave it stuck (the next paste would be treated as plain text). No handler in
+  // the app acts on keyup.
   target.addEventListener("keydown", guard, true);
-  target.addEventListener("keyup", guard, true);
 }

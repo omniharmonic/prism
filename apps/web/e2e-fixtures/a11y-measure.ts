@@ -14,7 +14,7 @@ export type TargetOffender = { what: string; size: string; why: string };
 /**
  * A control passes when
  *  (a) its box is ≥ 44×44, or
- *  (b) its effective hit area is ≥ 44×44 (hit-slop: the points 21 px from its centre still land on it), or
+ *  (b) its effective hit area is ≥ 44×44 (hit-slop, measured outward from its centre; it need not be centred), or
  *  (c) its box is ≥ 24×24 and no OTHER control lies inside the 44×44 square centred on it (spacing).
  */
 export function touchTargets(page: Page, scaffold: string[] = []): Promise<TargetOffender[]> {
@@ -63,13 +63,18 @@ export function touchTargets(page: Page, scaffold: string[] = []): Promise<Targe
       const hit = document.elementFromPoint(cx, cy);
       const mine = (h: Element | null) => !!h && (el.contains(h) || h.contains(el) && h.closest(CONTROLS) === el || (el.matches("input") && !!h.closest("label")?.contains(el)));
       if (!hit || !(el.contains(hit) || mine(hit))) continue; // covered (a dialog above it) or clipped by a scroller
-      // (b) hit-slop
-      const pts = [[-21, 0], [21, 0], [0, -21], [0, 21]];
-      const slop = pts.every(([dx, dy]) => {
-        const x = cx + dx, y = cy + dy;
-        if (x < 0 || y < 0 || x >= vw || y >= vh) return true; // at the screen edge: nothing else can be there
-        return mine(document.elementFromPoint(x, y));
-      });
+      // (b) hit-slop: how far the hit area really extends from the centre, each way (it need not be
+      // centred — the phone block handle grows to the left only, away from the text).
+      const reach = (dx: number, dy: number) => {
+        let d = 0;
+        for (; d < 44; d += 2) {
+          const x = cx + dx * (d + 2), y = cy + dy * (d + 2);
+          if (x < 0 || y < 0 || x >= vw || y >= vh) return 44; // the screen edge: nothing else can be there
+          if (!mine(document.elementFromPoint(x, y))) break;
+        }
+        return d;
+      };
+      const slop = reach(-1, 0) + reach(1, 0) >= 42 && reach(0, -1) + reach(0, 1) >= 42;
       if (slop) continue;
       // (c) spacing
       const sq = { l: cx - 22, t: cy - 22, r: cx + 22, b: cy + 22 };

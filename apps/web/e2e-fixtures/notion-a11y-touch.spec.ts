@@ -36,3 +36,71 @@ test.describe("touch targets ≥44px", () => {
     });
   }
 });
+
+// Review fix 4: the phone block handle's enlarged hit area must not cover the text beside it.
+test("phone: a tap on the first character of a paragraph places the caret (the block handle does not take it)", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/e2e-fixtures/editor-blocks.html");
+  const para = page.getByText("Bravo paragraph", { exact: true });
+  await expect(para).toBeVisible();
+  // Put the caret in the block first: on a phone the handle shows for the caret's block.
+  const box = (await para.boundingBox())!;
+  await page.touchscreen.tap(box.x + 80, box.y + box.height / 2);
+  const grip = page.getByRole("button", { name: "Block actions" });
+  await expect(grip).toBeVisible();
+  // Where the first character starts.
+  const first = await para.evaluate((el) => { const r = document.createRange(); r.setStart(el.firstChild!, 0); r.setEnd(el.firstChild!, 1); const b = r.getBoundingClientRect(); return { x: b.left, y: b.top + b.height / 2, w: b.width }; });
+  for (const dx of [1, first.w / 2]) {
+    // Apart in time as well as place: two quick taps are a double tap (word selection).
+    await page.waitForTimeout(500);
+    await page.touchscreen.tap(box.x + 80, box.y + box.height / 2);
+    await page.waitForTimeout(500);
+    await page.touchscreen.tap(first.x + dx, first.y);
+    await expect(page.getByRole("menu", { name: "Block actions" }), `tap ${dx}px into the first character`).toHaveCount(0);
+    const read = () => page.evaluate(() => { const s = (document.querySelector(".tiptap") as any).editor.state.selection; return { text: s.$from.parent.textContent, offset: s.$from.parentOffset, empty: s.empty }; });
+    // The editor reads the new selection on `selectionchange`, a moment after the tap.
+    await expect.poll(async () => (await read()).offset, `caret at the start (${dx}px)`).toBeLessThanOrEqual(1);
+    const at = await read();
+    expect(at.text).toBe("Bravo paragraph");
+    expect(at.empty, `caret, not a selection (${dx}px)`).toBe(true);
+    expect(at.offset).toBeLessThanOrEqual(1);
+  }
+  // The handle itself still opens the menu, and still has a 44 px hit area (to its left).
+  const g = (await grip.boundingBox())!;
+  await page.touchscreen.tap(g.x + g.width / 2, g.y + g.height / 2);
+  await expect(page.getByRole("menu", { name: "Block actions" })).toBeVisible();
+});
+
+// Review fixes 2, 3 and the breadcrumb: what touch.css must NOT do.
+test("touch.css stays out of editor content and out of print; breadcrumbs keep their ellipsis", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/e2e-fixtures/editor-blocks.html");
+  const editor = page.locator(".tiptap[contenteditable=true]");
+  await expect(editor).toBeVisible();
+  // A to-do item of a document shown inside a dialog (a database row peek) is not a dialog form row.
+  await page.evaluate(() => { const e = (document.querySelector(".tiptap") as any).editor; e.chain().focus("end").insertContent('<ul data-type="taskList"><li data-type="taskItem" data-checked="false"><p>Task in a peek</p></li></ul>').run(); });
+  const label = editor.locator('ul[data-type="taskList"] li > label').last();
+  await expect(label).toHaveCount(1);
+  const style = (peek: boolean) => page.evaluate((peek) => {
+    const host = document.querySelector(".tiptap")!.parentElement!;
+    if (peek) host.setAttribute("role", "dialog"); else host.removeAttribute("role");
+    const l = Array.from(document.querySelectorAll('.tiptap ul[data-type="taskList"] li > label')).pop()!;
+    const st = getComputedStyle(l);
+    return `${st.display} ${st.minHeight} ${st.gap}`;
+  }, peek);
+  const plain = await style(false);
+  expect(await style(true), "task item label inside a dialog").toBe(plain);
+  await style(false);
+  // The control case: a real dialog form row IS sized.
+  expect(await page.evaluate(() => { const d = document.createElement("div"); d.setAttribute("role", "dialog"); d.innerHTML = '<label><input type="checkbox"> Row</label>'; document.body.append(d); const v = getComputedStyle(d.firstElementChild!).minHeight; d.remove(); return v; })).toBe("44px");
+  // Breadcrumb parts: 44 px tall, and still truncating (not a flex container).
+  const crumb = page.locator(".document-breadcrumb-part").first();
+  await expect(crumb).toBeVisible();
+  expect(await crumb.evaluate((el) => { const st = getComputedStyle(el); return { h: el.getBoundingClientRect().height >= 43.5, ellipsis: st.textOverflow === "ellipsis" && st.overflow.includes("hidden") && !st.display.includes("flex") }; })).toEqual({ h: true, ellipsis: true });
+  // Print (a portrait page is narrower than 768 px): none of the phone sizes apply.
+  const crumbHeight = () => crumb.evaluate((el) => getComputedStyle(el).minHeight);
+  expect(await crumbHeight()).toBe("44px");
+  await page.emulateMedia({ media: "print" });
+  expect(await crumbHeight()).not.toBe("44px");
+  expect(await page.evaluate(() => { const d = document.createElement("div"); d.setAttribute("role", "dialog"); d.innerHTML = '<label><input type="checkbox"> Row</label>'; document.body.append(d); const v = getComputedStyle(d.firstElementChild!).minHeight; d.remove(); return v; })).not.toBe("44px");
+});

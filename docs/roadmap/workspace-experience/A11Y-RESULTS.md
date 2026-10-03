@@ -215,3 +215,30 @@ All with `--workers=1 --reporter=line`, behind a host-load gate.
 
 Not run: the phone half of the axe sweep for surfaces this pass did not change; the full browser
 suite; server tests (no server code changed).
+
+## Pass 2 — review fixes (2026-10-03)
+
+Five should-fix items from the independent review, plus three small ones. "Failed first" = the new
+test was run against the code before the fix.
+
+| # | Fix | Spec › test | Failed first? |
+|---|---|---|---|
+| 1 | Slash and `[[` plugins re-run their check 60 ms after `compositionend`, so a trigger produced BY a composition opens its menu even if ProseMirror does not call `update` again | `notion-a11y-ime.spec.ts › a "/" or "[[" committed by a composition opens its menu` | **No.** With Chromium's CDP composition ProseMirror does call `update` after the commit, so the test passed before the fix too. The fix is defensive; the reported case (Japanese half-width input, Android keyboards) is not reproduced by any test here. |
+| 2 | Dialog checkbox-row rule excludes editor content (`:not(.tiptap *, .ProseMirror *)`). No other rule in `touch.css` selects inside editor content, except the `.db-*` rules, which also size inline database blocks (intended) | `notion-a11y-touch.spec.ts › touch.css stays out of editor content and out of print; breadcrumbs keep their ellipsis` | Yes (`flex 44px 8px` on a task item inside a dialog) |
+| 3 | Both media-query branches are `screen and …` | same test (print emulation) | Run against the old sheet only as part of the same test, which stopped at item 2 — not shown separately |
+| 4 | The phone block handle's hit area grows to the left only, never past its right edge | `notion-a11y-touch.spec.ts › phone: a tap on the first character of a paragraph places the caret` | Yes (the tap opened the block menu) |
+| 5 | The IME guard listens to `keydown` only | none — no test presses Shift during a composition | — |
+| — | Breadcrumb parts keep their ellipsis on phones (inline-block + line-height, not flex) | same test as 2 | Not run separately |
+| — | `touch.css` header comment corrected: the width branch also applies to a narrow desktop window | — | — |
+| — | Calendar dashboard: events on days outside the month are quiet chips (neutral fill, secondary text) in both themes; the day number stays on the muted token | axe `calendar-dashboard`, both themes and viewports | — |
+
+Also corrected in the specs: the IME test's menu locator named the `[[` list wrongly ("Link to a page";
+it is "Link to a document"), so the "stays closed mid-composition" assertion did not cover `[[` in the
+first Pass 2 run. It does now, and passes. The touch measure accepts a hit area that is not centred
+(it measures the reach each way from the control's centre).
+
+Runs after the fixes (`--workers=1`, gated): touch sweep + IME + keyboard 96 passed; the two new
+touch tests 2 passed; `editor-blocks`, `editor-slash`, `calendar`, `notion-mobile`,
+`agent-composer-growth` 42 passed; axe + reflow on six touched surfaces 35 passed; root typecheck
+and `typecheck:e2e` clean. Not re-run: the full reflow sweep, the full axe sweep, the motion and
+live specs (no code they cover changed).

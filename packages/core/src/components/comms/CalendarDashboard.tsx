@@ -394,7 +394,7 @@ function MonthView({ days, month, today, selectedDate, eventsByDate, onSelect, o
                 {day.getDate()}
               </button>
               {dayEvts.slice(0, 3).map((ev, j) => (
-                <button key={ev.vaultNoteId ?? j} onClick={(e) => { e.currentTarget.focus({ preventScroll: true }); onEventClick(ev); }} className="focus-ring text-left text-[10px] truncate px-1 py-1 rounded mt-0.5 hover:opacity-100" style={{ background: "var(--action-bg, var(--color-accent))", color: "var(--action-fg, #fff)" }}>{ev.summary || "Event"}</button>
+                <button key={ev.vaultNoteId ?? j} onClick={(e) => { e.currentTarget.focus({ preventScroll: true }); onEventClick(ev); }} className="focus-ring text-left text-[10px] truncate px-1 py-1 rounded mt-0.5" style={isMonth ? { background: "var(--action-bg, var(--color-accent))", color: "var(--action-fg, #fff)" } : { background: "var(--glass-hover)", color: "var(--text-secondary)" }}>{ev.summary || "Event"}</button>
               ))}
               {dayEvts.length > 3 && <button onClick={() => onSelect(day)} className="focus-ring text-left text-[10px] mt-0.5" style={{ color: "var(--text-muted)" }}>+{dayEvts.length - 3} more</button>}
             </div>
