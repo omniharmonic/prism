@@ -37,7 +37,7 @@ import { defaultConfig, duplicateView, MAX_VIEWS, moveView, newViewId, readDatab
 import { RowPeek } from "./RowPeek";
 import { BulkBar, UndoToast, type UndoAction } from "./BulkBar";
 import { createTemplateNote, isTemplateFor, NewButton, TemplateEditor, templateProps } from "./Templates";
-import { allRows, CsvImportDialog, downloadText, rowsToCsv } from "./Csv";
+import { allRows, CsvImportDialog, CsvNewDatabaseDialog, downloadText, rowsToCsv } from "./Csv";
 
 const VIEW_ICONS: Record<ViewType, typeof Table2> = { table: Table2, board: KanbanSquare, gallery: GalleryVerticalEnd, list: ListIcon, calendar: Calendar };
 const ROW_META = ["type", "prism_type", "icon", "cover", "coverY"];
@@ -289,6 +289,7 @@ export function DatabasePage({ note, readOnly, embedded }: RendererProps & {
     return out;
   }, [tags, schemas]);
   const [importing, setImporting] = useState(false);
+  const [importingNew, setImportingNew] = useState(false);
 
   const ctx: ViewContext | null = view ? {
     view,
@@ -376,7 +377,9 @@ export function DatabasePage({ note, readOnly, embedded }: RendererProps & {
         {configError ? (
           <div className="db-state" role="alert"><h2>This database can’t be shown</h2><p>{configError}</p></div>
         ) : !config ? (
-          <SetupDatabase canEdit={canEditDb} onPick={(tag) => saveConfig(defaultConfig(tag))} />
+          <SetupDatabase canEdit={canEditDb} onPick={(tag) => saveConfig(defaultConfig(tag))}
+            // A brand-new database can start from a CSV (owner: it creates the tag's properties).
+            onImport={ownerish && !!client.importCsv && !embedded ? () => setImportingNew(true) : undefined} />
         ) : view && ctx ? (
           <>
             <Toolbar
@@ -480,6 +483,7 @@ export function DatabasePage({ note, readOnly, embedded }: RendererProps & {
       {editingProp && schemas[editingProp.tag]?.fields[editingProp.key] && (
         <PropertyEditor propertyKey={editingProp.key} tag={editingProp.tag} field={schemas[editingProp.tag]!.fields[editingProp.key]!} rows={rows} onClose={() => setEditingProp(null)} />
       )}
+      {importingNew && <CsvNewDatabaseDialog adopt={{ id: note.id, path: note.path, updatedAt: note.updatedAt, title }} onClose={() => setImportingNew(false)} />}
       {importing && config && <CsvImportDialog tag={config.source.tags[0]!} dbPath={note.path} props={allProps} onClose={() => setImporting(false)} />}
     </>
   );
@@ -502,7 +506,7 @@ function EmptyRows({ ctx, filtered, tag }: { ctx: ViewContext; filtered: boolean
   );
 }
 
-function SetupDatabase({ canEdit, onPick }: { canEdit: boolean; onPick: (tag: string) => void }) {
+function SetupDatabase({ canEdit, onPick, onImport }: { canEdit: boolean; onPick: (tag: string) => void; onImport?: () => void }) {
   const client = useVaultClient();
   const [tags, setTags] = useState<Array<{ tag: string; count: number }>>([]);
   const [value, setValue] = useState("");
@@ -515,6 +519,7 @@ function SetupDatabase({ canEdit, onPick }: { canEdit: boolean; onPick: (tag: st
       <input list="db-setup-tags" className="db-control" aria-label="Source tag" placeholder="Tag, e.g. task" value={value} onChange={(e) => setValue(e.target.value)} />
       <datalist id="db-setup-tags">{tags.map((t) => <option key={t.tag} value={t.tag}>{t.count}</option>)}</datalist>
       <button type="submit" className="db-primary" disabled={!value.trim()}>Create database</button>
+      {onImport && <button type="button" className="db-ghost" onClick={onImport}><Upload size={13} aria-hidden="true" /> Or import a CSV as its rows…</button>}
     </form>
   );
 }

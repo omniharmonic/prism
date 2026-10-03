@@ -34,7 +34,12 @@ beforeEach(() => {
     const m = url.pathname.match(/^\/vault\/default\/api\/tags(?:\/([^/]+))?$/);
     if (m && !m[1] && (init?.method ?? "GET") === "GET") return Response.json(vaultTags);
     if (m && m[1] && init?.method === "PUT") {
-      tagPuts.push({ tag: decodeURIComponent(m[1]), body: JSON.parse(String(init.body)) });
+      const tag = decodeURIComponent(m[1]);
+      const body = JSON.parse(String(init.body));
+      tagPuts.push({ tag, body });
+      const row = vaultTags.find((t) => t.name === tag);
+      if (row) Object.assign(row, { description: body.description, fields: body.fields });
+      else vaultTags.push({ name: tag, count: 0, description: body.description, fields: body.fields });
       return Response.json({ ok: true });
     }
     return innerFetch(input, init);
@@ -226,4 +231,35 @@ test("non-owners never see or set the management hints beyond what GET /schemas 
   assert.equal(kai.canEdit, false);
   assert.equal(kai.schemas.recipe.fields.notes.deleted, true, "members get the hint so the property is hidden for them too");
   assert.equal((await put("recipe", { ui: { notes: { deleted: false } } }, login("kai@test.local"))).status, 403);
+});
+
+test("NP-DB-25: a CSV becomes a new database — a brand-new tag's schema, then typed rows through the import route", async () => {
+  const cookie = login(OWNER);
+  // 1. The properties of a tag nothing uses yet (what the client sends for the CSV's columns).
+  const schema = await put("book", {
+    fields: { author: { type: "string" }, pages: { type: "number" }, finished: { type: "boolean" }, genre: { type: "string", enum: ["nature", "fiction"] } },
+    ui: { author: { kind: "text", label: "Author" }, pages: { kind: "number", label: "Pages" }, finished: { kind: "checkbox", label: "Finished" }, genre: { kind: "select", label: "Genre" } },
+  }, cookie);
+  assert.equal(schema.status, 200);
+  assert.deepEqual(Object.keys(tagPuts.at(-1)!.body.fields), ["author", "pages", "finished", "genre"]);
+  // 2. The rows.
+  const csv = ["Title,Author,Pages,Finished,Genre", "Braiding Sweetgrass,Robin Wall Kimmerer,408,yes,nature", "The Overstory,Richard Powers,502,no,fiction", "Bad row,Someone,many,no,fiction"].join("\n");
+  const body = { tag: "book", csv, mapping: { Title: "$title", Author: "author", Pages: "pages", Finished: "finished", Genre: "genre" }, pathPrefix: "Library/Reading list" };
+  const imp = (dryRun: boolean) => req("/databases/import/csv", { method: "POST", cookie, headers: J, body: JSON.stringify({ ...body, dryRun }) });
+  const dry = (await (await imp(true)).json()) as any;
+  assert.deepEqual(dry.summary, { create: 2, update: 0, unchanged: 0, error: 1 });
+  assert.equal([...fv.notes.values()].filter((n) => n.tags?.includes("book")).length, 0, "the dry run wrote nothing");
+  const run = await imp(false);
+  assert.ok(run.status === 200 || run.status === 207);
+  const out = (await run.json()) as any;
+  assert.equal(out.result.created, 2);
+  const books = [...fv.notes.values()].filter((n) => n.tags?.includes("book"));
+  assert.equal(books.length, 2);
+  const sweet = books.find((n) => n.metadata?.title === "Braiding Sweetgrass")!;
+  assert.equal(sweet.path, "Library/Reading list/Braiding Sweetgrass");
+  assert.deepEqual({ author: sweet.metadata!.author, pages: sweet.metadata!.pages, finished: sweet.metadata!.finished, genre: sweet.metadata!.genre }, { author: "Robin Wall Kimmerer", pages: 408, finished: true, genre: "nature" });
+  // Re-running converges instead of duplicating.
+  const again = (await (await imp(false)).json()) as any;
+  assert.equal(again.result.created, 0);
+  assert.equal([...fv.notes.values()].filter((n) => n.tags?.includes("book")).length, 2);
 });

@@ -10,8 +10,12 @@ import { useMemo, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Upload } from "lucide-react";
 import { useVaultClient } from "../../data/VaultClientContext";
-import { CsvError, parseCsv, toCsv, type CsvCellValue } from "../../lib/database/csv";
-import { formatValue, propertyValue, type PropertyDef } from "../../lib/database/schema";
+import { coerceCsvValue, CsvError, parseCsv, toCsv, type CsvCellValue } from "../../lib/database/csv";
+import { formatValue, isSystemKey, looksLikeEmail, PROPERTY_KIND_LABELS, propertyValue, safeTitleLeaf, VAULT_TYPE_FOR_KIND, type PropertyDef, type PropertyKind, type SchemaPatch } from "../../lib/database/schema";
+import { isFieldKey } from "../../lib/database/query";
+import { queryKeys } from "../../lib/parachute/queries";
+import type { Note } from "../../lib/types";
+import { defaultConfig, type DatabaseConfig } from "./config";
 import { noteTitle, runQuery, type QueryRow, type QuerySpec } from "../../lib/database/query";
 import type { CsvImportResponse } from "../../lib/database/wire";
 import type { VaultClient } from "../../data/VaultClient";
@@ -218,6 +222,300 @@ export function CsvImportDialog({ tag, dbPath, props, onClose }: { tag: string; 
               {plan
                 ? <button type="button" className="db-primary" disabled={busy || plan.summary.create + plan.summary.update === 0} onClick={() => void run(false)}>{busy ? "Importing…" : `Import ${plan.summary.create + plan.summary.update} ${plan.summary.create + plan.summary.update === 1 ? "row" : "rows"}`}</button>
                 : <button type="button" className="db-primary" disabled={busy || !csv || !hasTitle || dupTargets.length > 0 || !!(parsed && "error" in parsed)} onClick={() => void run(true)}>{busy ? "Checking…" : "Preview import"}</button>}
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ── CSV → a NEW database (NP-DB-25) ──────────────────────────────────────────
+
+/** Kinds a CSV column can become (each maps to one vault type; see VAULT_TYPE_FOR_KIND). */
+export const CSV_COLUMN_KINDS: PropertyKind[] = ["text", "number", "select", "multi_select", "date", "checkbox", "url", "email"];
+export interface CsvColumnPlan {
+  /** The header text (the mapping key the import route uses). */
+  name: string;
+  /** "title" = the page title; "skip" = not imported; else the property kind to create. */
+  as: "title" | "skip" | PropertyKind;
+  /** The metadata key for a property column. */
+  key: string;
+}
+export interface CsvNewDatabasePlan {
+  header: string[];
+  rows: string[][];
+  columns: CsvColumnPlan[];
+}
+
+const TAG_NAME = /^[A-Za-z0-9][A-Za-z0-9_/-]{0,63}$/;
+const YES_NO = new Set(["true", "false", "yes", "no", "1", "0", "checked", "unchecked"]);
+
+/** A unique, valid property key for a column header. */
+function keyForHeader(header: string, taken: Set<string>): string {
+  let k = slug(header).slice(0, 56);
+  if (!/^[a-z]/.test(k)) k = `p_${k}`;
+  if (!isFieldKey(k) || isSystemKey(k)) k = `p_${k}`.slice(0, 60);
+  let out = k;
+  for (let i = 2; taken.has(out); i++) out = `${k}_${i}`;
+  taken.add(out);
+  return out;
+}
+
+/** Guess what a column holds from its values (the person can change it before anything is written). */
+export function guessColumnKind(values: string[]): PropertyKind {
+  const v = values.map((x) => x.trim()).filter(Boolean);
+  if (!v.length) return "text";
+  if (v.every((x) => Number.isFinite(Number(x.replace(/,/g, ""))) && /\d/.test(x))) return "number";
+  if (v.every((x) => YES_NO.has(x.toLowerCase()))) return "checkbox";
+  if (v.every((x) => /^\d{4}-\d{2}-\d{2}$/.test(x))) return "date";
+  if (v.every((x) => /^https?:\/\//i.test(x))) return "url";
+  if (v.every(looksLikeEmail)) return "email";
+  const distinct = new Set(v);
+  if (v.length >= 4 && distinct.size <= 12 && distinct.size <= v.length / 2 && v.every((x) => x.length <= 40)) return "select";
+  return "text";
+}
+
+/** Read a CSV and propose a title column and a property per other column. Pure: nothing is written. */
+export function planNewDatabase(csv: string): CsvNewDatabasePlan {
+  const all = parseCsv(csv, { maxRows: 2001, maxCols: 60 });
+  const header = (all[0] ?? []).map((h) => h.trim());
+  const rows = all.slice(1);
+  const titleAt = Math.max(0, header.findIndex((h) => /^(name|title|page)$/i.test(h)));
+  const taken = new Set<string>();
+  const seen = new Set<string>();
+  const columns = header.map((name, i): CsvColumnPlan => {
+    // A repeated or empty header cannot be mapped (the import addresses columns by name).
+    if (!name || seen.has(name)) return { name, as: "skip", key: "" };
+    seen.add(name);
+    if (i === titleAt) return { name, as: "title", key: "" };
+    return { name, as: guessColumnKind(rows.map((r) => r[i] ?? "")), key: keyForHeader(name, taken) };
+  });
+  return { header, rows, columns };
+}
+
+/** The vault field a column creates (a select gets its distinct values as options). */
+function fieldFor(col: CsvColumnPlan, values: string[]): { type: string; enum?: string[] } {
+  const kind = col.as as PropertyKind;
+  const type = VAULT_TYPE_FOR_KIND[kind];
+  if (kind !== "select") return { type };
+  const options = [...new Set(values.map((x) => x.trim()).filter(Boolean))].slice(0, 100);
+  return options.length ? { type, enum: options } : { type };
+}
+
+/** Rows whose value does not fit its column's type (they would be reported, not imported). */
+export function newDatabaseProblems(plan: CsvNewDatabasePlan): Array<{ row: number; column: string; error: string }> {
+  const out: Array<{ row: number; column: string; error: string }> = [];
+  plan.columns.forEach((col, i) => {
+    if (col.as === "title" || col.as === "skip") return;
+    const field = fieldFor(col, plan.rows.map((r) => r[i] ?? ""));
+    plan.rows.forEach((r, n) => {
+      const c = coerceCsvValue(r[i] ?? "", field);
+      if ("error" in c) out.push({ row: n + 2, column: col.name, error: c.error });
+    });
+  });
+  return out;
+}
+
+/**
+ * Create a database from a CSV: the tag's properties (owner-only schema write),
+ * the database page (or `adopt` an empty one), then the rows through the same
+ * owner/admin import route as "Import CSV…". Re-running the import on the new
+ * database converges (rows are matched by title).
+ */
+export async function importCsvAsNewDatabase(client: VaultClient, opts: {
+  csv: string; plan: CsvNewDatabasePlan; tag: string; title: string;
+  /** Folder for the new database page (ignored with `adopt`). */
+  folder?: string;
+  /** An existing, still unconfigured database page to turn into this database. */
+  adopt?: Pick<Note, "id" | "path" | "updatedAt">;
+}): Promise<{ note: Pick<Note, "id" | "path">; result: CsvImportResponse }> {
+  if (!client.updateSchema || !client.importCsv) throw new Error("Importing a CSV as a database needs the Prism Server.");
+  const cols = opts.plan.columns.filter((c) => c.as !== "title" && c.as !== "skip");
+  const index = (c: CsvColumnPlan) => opts.plan.header.indexOf(c.name);
+  // 1. Properties, in batches the schema route accepts (≤ 20 fields per write).
+  for (let i = 0; i < cols.length; i += 20) {
+    const patch: SchemaPatch = { fields: {}, ui: {} };
+    for (const c of cols.slice(i, i + 20)) {
+      patch.fields![c.key] = fieldFor(c, opts.plan.rows.map((r) => r[index(c)] ?? "")) as NonNullable<SchemaPatch["fields"]>[string];
+      patch.ui![c.key] = { kind: c.as as PropertyKind, label: c.name.slice(0, 80) };
+    }
+    await client.updateSchema(opts.tag, patch);
+  }
+  // 2. The database page: a Table over the tag, showing the imported columns in file order.
+  const config: DatabaseConfig = { ...defaultConfig(opts.tag), views: [{ id: "table", name: "Table", type: "table", ...(cols.length ? { visible: cols.map((c) => c.key) } : {}) }] };
+  let note: Pick<Note, "id" | "path">;
+  if (opts.adopt) {
+    await client.updateNote(opts.adopt.id, { metadata: { prism_database: config }, ifUpdatedAt: opts.adopt.updatedAt ?? undefined });
+    note = opts.adopt;
+  } else {
+    const path = `${opts.folder ? `${opts.folder.replace(/\/+$/, "")}/` : ""}${safeTitleLeaf(opts.title)}`;
+    note = await client.createNote({ content: "", path, metadata: { prism_type: "database", title: opts.title, prism_database: config } });
+  }
+  // 3. The rows.
+  const mapping: Record<string, string> = {};
+  for (const c of opts.plan.columns) if (c.name) mapping[c.name] = c.as === "title" ? "$title" : c.as === "skip" ? "" : c.key;
+  const pathPrefix = (note.path ?? `vault/${opts.tag}`).replace(/\.[^./]+$/, "");
+  const result = await client.importCsv({ tag: opts.tag, csv: opts.csv, mapping, pathPrefix, dryRun: false });
+  return { note, result };
+}
+
+/**
+ * "Import a CSV as a new database" — for an import entry (pass `folder`) or an
+ * empty database page (`adopt`). Choose a file → name it and its tag → check each
+ * column's type → Preview (nothing is written) → create + import.
+ */
+export function CsvNewDatabaseDialog({ folder = "", adopt, onClose, onCreated }: {
+  folder?: string;
+  adopt?: Pick<Note, "id" | "path" | "updatedAt"> & { title?: string };
+  onClose: () => void;
+  /** The new database page, once it exists (open it). */
+  onCreated?: (note: Pick<Note, "id" | "path">, title: string) => void;
+}) {
+  const client = useVaultClient();
+  const qc = useQueryClient();
+  const [csv, setCsv] = useState("");
+  const [fileName, setFileName] = useState("");
+  const [plan, setPlan] = useState<CsvNewDatabasePlan | null>(null);
+  const [title, setTitle] = useState(adopt?.title ?? "");
+  const [tag, setTag] = useState("");
+  const [checked, setChecked] = useState<{ problems: ReturnType<typeof newDatabaseProblems> } | null>(null);
+  const [done, setDone] = useState<{ note: Pick<Note, "id" | "path">; result: CsvImportResponse } | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const available = !!client.updateSchema && !!client.importCsv;
+
+  const load = async (file: File) => {
+    setError(""); setChecked(null); setPlan(null);
+    if (file.size > 2 * 1024 * 1024) { setError("The file is larger than 2 MB. Split it and import the parts."); return; }
+    const text = await file.text();
+    try {
+      const p = planNewDatabase(text);
+      if (!p.header.length || !p.rows.length) { setError("This file has no rows to import."); return; }
+      const base = file.name.replace(/\.csv$/i, "").trim() || "Imported";
+      setCsv(text);
+      setFileName(file.name);
+      setPlan(p);
+      if (!adopt?.title) setTitle((t) => t || base);
+      setTag((t) => t || slug(base).replace(/_/g, "-").slice(0, 40) || "imported");
+    } catch (e) {
+      setError(e instanceof CsvError ? e.message : "This file is not valid CSV.");
+    }
+  };
+  const setColumn = (i: number, as: CsvColumnPlan["as"]) => {
+    if (!plan) return;
+    setChecked(null);
+    // One title column: choosing another turns the previous one into text.
+    const taken = new Set(plan.columns.map((c) => c.key).filter(Boolean));
+    setPlan({ ...plan, columns: plan.columns.map((c, j) => {
+      if (j === i) return { ...c, as, key: as === "title" || as === "skip" ? c.key : c.key || keyForHeader(c.name, taken) };
+      if (as === "title" && c.as === "title") return { ...c, as: "text", key: c.key || keyForHeader(c.name, taken) };
+      return c;
+    }) });
+  };
+  const hasTitle = !!plan?.columns.some((c) => c.as === "title");
+  const tagOk = TAG_NAME.test(tag.trim());
+  const ready = !!plan && hasTitle && tagOk && !!title.trim();
+
+  const preview = async () => {
+    if (!plan) return;
+    setBusy(true); setError("");
+    try {
+      // The tag must be new: an existing tag's pages and properties belong to its own database.
+      const t = tag.trim();
+      const [schemas, tags] = await Promise.all([client.getSchemas ? client.getSchemas([t]) : Promise.resolve({ schemas: {} }), client.getTags()]);
+      const used = tags.find((x) => x.tag === t)?.count ?? 0;
+      if (used > 0 || Object.keys((schemas.schemas as Record<string, { fields?: object }>)[t]?.fields ?? {}).length) {
+        setError(`#${t} is already in use${used ? ` by ${used} ${used === 1 ? "page" : "pages"}` : ""}. Choose a new tag, or open that tag’s database and use “Import CSV…” there.`);
+        return;
+      }
+      setChecked({ problems: newDatabaseProblems(plan) });
+    } catch {
+      setError("Prism could not check that tag. Nothing was created.");
+    } finally {
+      setBusy(false);
+    }
+  };
+  const run = async () => {
+    if (!plan) return;
+    setBusy(true); setError("");
+    try {
+      const out = await importCsvAsNewDatabase(client, { csv, plan, tag: tag.trim(), title: title.trim(), folder, adopt });
+      setDone(out);
+      void qc.invalidateQueries({ predicate: (q) => q.queryKey[0] === "vault" && (q.queryKey[1] === "notes" || q.queryKey[1] === "tree" || q.queryKey[1] === "schemas" || q.queryKey[1] === "tags") });
+      if (adopt) void qc.invalidateQueries({ queryKey: queryKeys.vault.note(adopt.id) });
+    } catch (e) {
+      const raw = String((e as Error).message ?? "");
+      const detail = raw.slice(raw.indexOf("{")).match(/"(?:detail|reason)":"([^"]+)"/)?.[1];
+      setError(`${detail ?? "The import stopped before it finished."} Anything already created is kept: open the “${title.trim()}” database and use “Import CSV…” to bring in the rest (rows are matched by title, so nothing is duplicated).`);
+    } finally {
+      setBusy(false);
+    }
+  };
+  const propCount = plan?.columns.filter((c) => c.as !== "title" && c.as !== "skip").length ?? 0;
+  const badRows = new Set(checked?.problems.map((p) => p.row)).size;
+
+  return (
+    <div className="db-dialog-wrap" role="presentation" onKeyDown={(e) => { if (e.key === "Escape" && !busy) { e.preventDefault(); onClose(); } }}>
+      <div className="db-dialog db-dialog-wide" role="dialog" aria-modal="true" aria-label="Import CSV as a new database">
+        <header className="db-dialog-head"><h2>Import a CSV as a new database</h2><button type="button" className="db-icon-btn" aria-label="Close" onClick={onClose}>×</button></header>
+        {!available ? (
+          <p className="db-pop-empty">Importing a CSV as a database needs the Prism Server and an owner account.</p>
+        ) : done ? (
+          <div className="db-settings" role="status">
+            <p><strong>“{title.trim()}” is ready.</strong> Created {done.result.result?.created ?? 0} {(done.result.result?.created ?? 0) === 1 ? "page" : "pages"}{done.result.result?.updated ? `, updated ${done.result.result.updated}` : ""} with {propCount} {propCount === 1 ? "property" : "properties"}.</p>
+            {done.result.errors.length > 0 && <p className="db-error">Skipped rows: {done.result.errors.slice(0, 12).map((f) => `row ${f.row}${f.error ? ` (${f.error})` : ""}`).join(", ")}</p>}
+            {(done.result.result?.failed.length ?? 0) > 0 && <p className="db-error">Not written: {done.result.result!.failed.map((f) => `row ${f.row}`).join(", ")}</p>}
+            <div className="db-settings-row"><span /><button type="button" className="db-primary" onClick={() => { onCreated?.(done.note, title.trim()); onClose(); }}>{onCreated ? "Open database" : "Done"}</button></div>
+          </div>
+        ) : (
+          <>
+            <label className="db-file">
+              <Upload size={14} aria-hidden="true" />
+              <span>{fileName || "Choose a .csv file (≤ 2 MB, 2,000 rows)"}</span>
+              <input type="file" accept=".csv,text/csv" aria-label="CSV file" onChange={(e) => { const f = e.target.files?.[0]; if (f) void load(f); }} />
+            </label>
+            {plan && (
+              <>
+                <div className="db-date-row">
+                  <label className="db-field"><span>Database name</span><input aria-label="Database name" value={title} maxLength={120} disabled={busy || !!adopt?.title} onChange={(e) => { setTitle(e.target.value); setChecked(null); }} /></label>
+                  <label className="db-field"><span>Tag for its pages</span><input aria-label="Tag for its pages" value={tag} maxLength={64} disabled={busy} spellCheck={false} onChange={(e) => { setTag(e.target.value); setChecked(null); }} /></label>
+                </div>
+                {!tagOk && tag !== "" && <p className="db-error" role="alert">Use a tag name: letters, numbers, - or _.</p>}
+                <p className="db-pop-heading">{plan.rows.length} {plan.rows.length === 1 ? "row" : "rows"} · every row becomes a page tagged #{tag.trim() || "…"}; choose what each column becomes</p>
+                <table className="db-map" aria-label="Columns">
+                  <thead><tr><th scope="col">Column</th><th scope="col">Example</th><th scope="col">Becomes</th></tr></thead>
+                  <tbody>
+                    {plan.columns.map((c, i) => (
+                      <tr key={c.name + i}>
+                        <th scope="row">{c.name || <em>(no name)</em>}</th>
+                        <td className="db-map-example">{plan.rows.find((r) => (r[i] ?? "").trim())?.[i] ?? ""}</td>
+                        <td>
+                          <select aria-label={`Column ${c.name}`} value={c.as} disabled={busy || !c.name || plan.columns.findIndex((x) => x.name === c.name) !== i} onChange={(e) => setColumn(i, e.target.value as CsvColumnPlan["as"])}>
+                            <option value="title">Title</option>
+                            {CSV_COLUMN_KINDS.map((k) => <option key={k} value={k}>{PROPERTY_KIND_LABELS[k]}</option>)}
+                            <option value="skip">Skip</option>
+                          </select>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                {!hasTitle && <p className="db-error" role="alert">Choose which column is the Title.</p>}
+              </>
+            )}
+            {error && <p className="db-error" role="alert">{error}</p>}
+            {checked && plan && (
+              <div className="db-plan" role="status" aria-label="Import preview">
+                <p><strong>Preview:</strong> a new database “{title.trim()}” with {propCount} {propCount === 1 ? "property" : "properties"}, and {plan.rows.length - badRows} of {plan.rows.length} rows as pages tagged #{tag.trim()}{badRows ? `; ${badRows} ${badRows === 1 ? "row has" : "rows have"} a value that does not fit its column and will be skipped` : ""}.</p>
+                {checked.problems.length > 0 && <ul>{checked.problems.slice(0, 8).map((p, i) => <li key={i} className="db-error">Row {p.row}, {p.column}: {p.error}</li>)}</ul>}
+              </div>
+            )}
+            <div className="db-settings-row">
+              <span className="db-pop-empty">Nothing is created until you import.</span>
+              {checked
+                ? <button type="button" className="db-primary" disabled={busy || !ready} onClick={() => void run()}>{busy ? "Importing…" : `Create database and import ${plan!.rows.length - badRows} ${plan!.rows.length - badRows === 1 ? "row" : "rows"}`}</button>
+                : <button type="button" className="db-primary" disabled={busy || !ready} onClick={() => void preview()}>{busy ? "Checking…" : "Preview"}</button>}
             </div>
           </>
         )}
