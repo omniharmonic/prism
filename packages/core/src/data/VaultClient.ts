@@ -174,7 +174,10 @@ export interface VaultClient {
   listNotes(filters?: NoteFilters): Promise<Note[]>;
   listTree(): Promise<NoteTreeEntry[]>;
   /** fresh bypasses an offline read cache when current server access must be checked. */
-  getNote(id: string, options?: { fresh?: boolean }): Promise<Note>;
+  /** `fresh`: never answered from a device cache (an access check). `latest`: ask the
+   *  server for its CURRENT state — no reuse window, no HTTP cache — while still keeping
+   *  the device's offline copy up to date (a re-read because the note was reported changed). */
+  getNote(id: string, options?: { fresh?: boolean; latest?: boolean }): Promise<Note>;
   createNote(params: CreateNoteParams): Promise<Note>;
   updateNote(id: string, params: UpdateNoteParams, options?: { expectedScope?: string }): Promise<Note>;
   /** Preserve an unsent editor draft locally in its original audience; never send it. */

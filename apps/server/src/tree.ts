@@ -201,6 +201,17 @@ function rowFromNote(n: unknown): TreeRow | null {
 /** The permission-math view of a row (same shape the gateway's `ref()` builds). */
 export const rowRef = (r: TreeRow): NoteRef => ({ id: r.id, tags: r.tags, creator: r.creator, visibility: r.visibility, path: r.path });
 
+/**
+ * Did the row a client's SIDEBAR shows change — anything `emit` sends except
+ * `updatedAt`, plus trash state (a trashed row leaves the tree)? A plain content
+ * edit only moves `updatedAt`, and must not make every client refetch the tree (M1).
+ */
+export function treeRowChanged(prev: TreeRow | undefined, row: TreeRow): boolean {
+  if (!prev) return true;
+  const shape = (r: TreeRow) => JSON.stringify([r.path, [...r.tags].sort(), r.type ?? null, r.prismType ?? null, r.order ?? null, r.icon ?? null, !!r.trashedAt]);
+  return shape(prev) !== shape(row);
+}
+
 function emit(r: TreeRow): TreeEntry {
   const e: TreeEntry = { id: r.id, path: r.path, tags: r.tags, updatedAt: r.updatedAt };
   if (r.type !== undefined) e.type = r.type;

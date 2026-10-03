@@ -37,9 +37,12 @@ import type { Context } from "hono";
 import { streamSSE } from "hono/streaming";
 import type { VaultEntry } from "./config";
 import type { NoteRef } from "./permissions";
-import { rowRef, subscribeTreeChanges, type TreeChange } from "./tree";
+import { rowRef, subscribeTreeChanges, treeRowChanged, type TreeChange } from "./tree";
 
-export type InvalidationEvent = { type: "note"; id: string; op: "upsert" | "remove" } | { type: "resync" };
+/** `tree: true` = this viewer's sidebar row for the note changed (created, removed,
+ *  appeared / disappeared for them, or path / tags / type / icon / order / trash
+ *  state changed). Absent on a plain content edit. Still ids only. */
+export type InvalidationEvent = { type: "note"; id: string; op: "upsert" | "remove"; tree?: true } | { type: "resync" };
 
 const num = (k: string, d: number) => {
   const v = Number(process.env[k]);
@@ -64,12 +67,17 @@ export function eventFor(change: TreeChange, canView: (r: NoteRef) => boolean): 
   switch (change.kind) {
     case "resync":
       return { type: "resync" };
-    case "upsert":
-      return canView(rowRef(change.row)) || (change.prev && canView(rowRef(change.prev)))
-        ? { type: "note", id: change.row.id, op: "upsert" }
-        : null;
+    case "upsert": {
+      // Judged on the SAME view filter, before and after — so the flag says nothing
+      // about a note (or a state of it) this viewer cannot see.
+      const now = canView(rowRef(change.row));
+      const before = !!change.prev && canView(rowRef(change.prev));
+      if (!now && !before) return null;
+      const tree = now !== before || treeRowChanged(change.prev, change.row);
+      return tree ? { type: "note", id: change.row.id, op: "upsert", tree: true } : { type: "note", id: change.row.id, op: "upsert" };
+    }
     case "remove":
-      return canView(rowRef(change.prev)) ? { type: "note", id: change.id, op: "remove" } : null;
+      return canView(rowRef(change.prev)) ? { type: "note", id: change.id, op: "remove", tree: true } : null;
   }
 }
 

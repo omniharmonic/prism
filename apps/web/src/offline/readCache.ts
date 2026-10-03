@@ -244,6 +244,8 @@ export async function clearReadCache(): Promise<void> {
   try {
     for (const key of Object.keys(localStorage)) if (LOCAL_PREFIXES.some((p) => key.startsWith(p))) localStorage.removeItem(key);
   } catch { /* private mode */ }
+  // In-memory device-local state of the previous account goes too (the sidebar's open folders).
+  try { window.dispatchEvent(new Event("prism:signed-out")); } catch { /* no window */ }
   await clearLegacyApiCache();
   try {
     const db = await open();

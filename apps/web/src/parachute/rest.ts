@@ -264,14 +264,16 @@ export async function listTree(): Promise<NoteTreeEntry[]> {
   }
 }
 
-export async function getNote(id: string, options?: { fresh?: boolean }): Promise<Note> {
+export async function getNote(id: string, options?: { fresh?: boolean; latest?: boolean }): Promise<Note> {
   const resolved = await resolveLocalNoteId(id);
   if (resolved.startsWith("offline-")) {
     const draft = await localNote(resolved);
     if (!draft) throw new Error("This local draft is unavailable in the current workspace.");
     return draft;
   }
-  const resp = await req(`/notes/${encodeURIComponent(resolved)}`, options?.fresh ? { cache: "no-store" } : undefined);
+  // `reload` sends `Cache-Control: no-cache` (the gateway then skips its reuse window) and,
+  // unlike `no-store`, still goes through the device read cache (written on success, used offline).
+  const resp = await req(`/notes/${encodeURIComponent(resolved)}`, options?.fresh ? { cache: "no-store" } : options?.latest ? { cache: "reload" } : undefined);
   const note = await resp.json() as Note;
   const merged = await localNote(resolved, note).catch(() => note) ?? note;
   // Served from this device's copy (no connection): say so, with when it was saved (NP-OF-02).
@@ -353,7 +355,9 @@ export async function updateNote(id: string, params: UpdateNoteParams, options?:
     tags: null,
     createdAt: nowISO(),
     updatedAt: nowISO(),
-  }), undefined, options?.expectedScope);
+    // Not a server revision: the write is queued. Editors keep their own base (H1).
+    _queued: true,
+  } as Note), undefined, options?.expectedScope);
 }
 
 /**

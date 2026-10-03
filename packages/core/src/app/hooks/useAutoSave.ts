@@ -3,6 +3,7 @@ import { isAccessUnavailable, VaultRequestError } from "../../data/VaultClient";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useUpdateNote } from "./useParachute";
 import { markDirty, reportSaveFailure } from "../../lib/sync/syncState";
+import type { Note } from "../../lib/types";
 
 let autosaveInstances = 0;
 
@@ -15,11 +16,26 @@ let autosaveInstances = 0;
 interface PendingSaveHandle {
   flush: () => Promise<void>;
   discard: () => void;
-  /** Unsent or in-flight edits, a failed save, or a draft held for conflict review. */
-  busy: () => boolean;
+  /**
+   * What this editor holds that the server does not:
+   *  clean   nothing — what is on screen is what it mounted from or last saved
+   *  dirty   typed and not yet saved (debounced or in flight)
+   *  draft   typed in an editor that never writes (propose / governed / read-only):
+   *          the text exists ONLY here and must never be replaced from outside
+   *  parked  a save was refused as a conflict and the draft is in "Needs review"
+   *  failed  a save failed and the draft is only in this editor
+   */
+  state: () => EditorSaveState;
   /** The content this editor last wrote successfully (null = nothing written yet). */
   saved: () => string | null;
+  /** The revision (`updatedAt`) this editor's content is built on. */
+  base: () => string | null;
+  /** The stored content of that revision, as the server holds it (what it mounted from / last saved). */
+  baseContent: () => string | null;
+  /** The same content now has a newer revision (a metadata / path / tag write): build on that one. */
+  rebase: (updatedAt: string) => void;
 }
+export type EditorSaveState = "clean" | "dirty" | "draft" | "parked" | "failed";
 const pendingSaves = new Map<string, Set<PendingSaveHandle>>();
 
 /** Save any debounced-but-unsent edits to `noteId` now. */
@@ -32,20 +48,65 @@ export function discardPendingSaves(noteId: string): void {
   for (const h of pendingSaves.get(noteId) ?? []) h.discard();
 }
 
+const newer = (a: string | null | undefined, b: string | null | undefined): boolean => {
+  const x = a ? Date.parse(a) : NaN;
+  const y = b ? Date.parse(b) : NaN;
+  return Number.isFinite(x) && Number.isFinite(y) ? x > y : false;
+};
+
 /**
- * NP-OF-05: may an open plain editor adopt `remoteContent` (a re-read after a
- * change made elsewhere)? "adopt" only when an editor for the note is mounted,
- * every one of them is idle (nothing typed-and-unsent, no save in flight, no
- * failed save, no draft parked for conflict review) and the content is not just
- * the echo of this editor's own last save. With local edits the answer is
- * "keep": the draft stays and the existing 409 → "Needs review" path decides.
+ * NP-OF-05: what should happen with a re-read of `noteId` (content + revision)
+ * that differs from what the open plain editor shows?
+ *  none    no editor is mounted for the note
+ *  own     the echo of this editor's own save, or the revision it is already on
+ *  stale   NOT strictly newer than the editor's base (an older or equal copy from
+ *          a cache or a slow read) — never shown, never offered
+ *  clean   newer, and every editor is clean: may be adopted (silently only when
+ *          nobody is interacting with the page — the caller decides)
+ *  dirty   newer, and an editor holds unsaved typing: keep it; its next save names
+ *          its OWN base, so the server answers 409 and the draft goes to review
+ *  draft   newer, and an editor holds text that is never written (propose mode /
+ *          read-only draft): never adopt — the text exists nowhere else
+ *  parked / failed   newer; the draft is in "Needs review" / only in the editor
  */
-export function remoteAdoption(noteId: string, remoteContent: string): "adopt" | "own" | "keep" | "none" {
+export type RemoteVerdict = "none" | "own" | "stale" | EditorSaveState;
+export function remoteAdoption(noteId: string, remote: { content: string; updatedAt: string | null | undefined }): RemoteVerdict {
   const handles = [...(pendingSaves.get(noteId) ?? [])];
   if (handles.length === 0) return "none";
-  if (handles.some((h) => h.busy())) return "keep";
-  if (handles.some((h) => h.saved() === remoteContent)) return "own";
-  return "adopt";
+  // The SAME content under a newer revision (someone changed the icon, a property,
+  // the path): not a content change. Each editor built on exactly this content
+  // moves its base forward, so its next save does not conflict with a metadata write.
+  let same = 0;
+  for (const h of handles) {
+    if (h.baseContent() !== remote.content && h.saved() !== remote.content) continue;
+    same++;
+    const at = h.base();
+    if (remote.updatedAt && (at === null || newer(remote.updatedAt, at))) h.rebase(remote.updatedAt);
+  }
+  if (same === handles.length) return "own";
+  // Strictly newer than EVERY editor's base, or it is not news (H3: never an older copy).
+  if (handles.some((h) => { const at = h.base(); return at !== null && !newer(remote.updatedAt, at); })) return "stale";
+  const states = handles.map((h) => h.state());
+  for (const s of ["draft", "failed", "parked", "dirty"] as const) if (states.includes(s)) return s;
+  return "clean";
+}
+
+/** The save state of the editors mounted for a note ("clean" when there are none). */
+export function editorSaveState(noteId: string): EditorSaveState {
+  const states = [...(pendingSaves.get(noteId) ?? [])].map((h) => h.state());
+  for (const s of ["draft", "failed", "parked", "dirty"] as const) if (states.includes(s)) return s;
+  return "clean";
+}
+
+export interface AutoSaveOptions {
+  /** The `updatedAt` of the note this editor mounted from. The editor keeps its OWN
+   *  base from here on (advanced only by its own confirmed saves) and names it on
+   *  every save, so a change made elsewhere meanwhile is a 409 — never overwritten. */
+  base?: string | null;
+  /** The stored content of that revision (`note.content` at mount), to recognise the same content under a newer revision. */
+  content?: string | null;
+  /** This editor never writes (propose mode, read-only draft). Local changes still count as a draft. */
+  noWrite?: boolean;
 }
 
 export function useAutoSave(
@@ -53,6 +114,7 @@ export function useAutoSave(
   getContent: () => string,
   debounceMs = 2000,
   onSaved?: (content: string) => void,
+  options?: AutoSaveOptions,
 ) {
   const { mutateAsync } = useUpdateNote();
   const client = useVaultClient();
@@ -67,6 +129,17 @@ export function useAutoSave(
   const pendingRef = useRef(false);
   const inFlight = useRef<Promise<void> | null>(null);
   const wroteRef = useRef(false);
+  // H1: the editor's own base revision — set from the note it MOUNTED from, moved
+  // only by its own confirmed save. Never the query cache's `updatedAt`, which an
+  // event re-read advances while this editor still shows (and types on) older text.
+  const baseRef = useRef<{ id: string; base: string | null; content: string | null }>({ id: noteId, base: options?.base ?? null, content: options?.content ?? null });
+  if (baseRef.current.id !== noteId) baseRef.current = { id: noteId, base: options?.base ?? null, content: options?.content ?? null };
+  /** Changed locally since the last confirmed save (set even where nothing is ever written). */
+  const touchedRef = useRef(false);
+  const noWriteRef = useRef(!!options?.noWrite);
+  noWriteRef.current = !!options?.noWrite;
+  /** Parked for conflict review (as opposed to simply failed). */
+  const parkedRef = useRef(false);
   /** A save failed, or the draft was parked for review: remote content must not replace what is on screen. */
   const heldRef = useRef(false);
   // Shared sync state (NP-OF-01): debounced edits count as "Saving…" and a
@@ -87,10 +160,19 @@ export function useAutoSave(
     const operation = (async () => {
       try {
         if (sourceScope !== undefined && client.scope?.() !== sourceScope) throw new VaultRequestError(403, "Workspace changed before saving.");
-        await mutateAsync({ id: noteId, content, expectedScope: sourceScope });
+        const base = baseRef.current.base;
+        const saved = await mutateAsync({ id: noteId, content, expectedScope: sourceScope, ...(base ? { ifUpdatedAt: base } : {}) });
+        // A confirmed write moves the base to the revision it produced. A write that
+        // was only QUEUED (offline / behind other queued rows) has no revision yet:
+        // the base stays, and the host maps it once its own delivery is confirmed.
+        const result = saved as (Note & { _queued?: boolean }) | undefined;
+        if (result && !result._queued && typeof result.updatedAt === "string" && result.updatedAt) baseRef.current = { id: noteId, base: result.updatedAt, content };
+        else baseRef.current = { ...baseRef.current, content };
         lastContentRef.current = content;
         wroteRef.current = true;
         heldRef.current = false;
+        parkedRef.current = false;
+        if (!pendingRef.current) touchedRef.current = false;
         reportSaveFailure(syncKey, null);
         if (!pendingRef.current) markDirty(syncKey, false);
         setLastSaved(new Date());
@@ -114,6 +196,7 @@ export function useAutoSave(
           try {
             await client.preserveDraft(noteId, content, sourceScope, "conflict");
             pendingRef.current = false;
+            parkedRef.current = true;
             lastContentRef.current = content;
             setSaveError("This page changed somewhere else. Your version is saved on this device — open “Needs review” to compare before applying it.");
           } catch {
@@ -133,7 +216,10 @@ export function useAutoSave(
   }, [noteId, getContent, mutateAsync, client, sourceScope]);
 
   // Schedule a debounced save
+  /** A local change happened. Editors that never write call this alone (C1). */
+  const touch = useCallback(() => { touchedRef.current = true; }, []);
   const scheduleSave = useCallback(() => {
+    touchedRef.current = true;
     pendingRef.current = true;
     markDirty(syncKey, true);
     if (timerRef.current) clearTimeout(timerRef.current);
@@ -157,12 +243,22 @@ export function useAutoSave(
         if (timerRef.current) clearTimeout(timerRef.current);
         pendingRef.current = false;
         heldRef.current = false;
+        parkedRef.current = false;
+        touchedRef.current = false;
         markDirty(syncKey, false);
         reportSaveFailure(syncKey, null);
         lastContentRef.current = getContent();
       },
-      busy: () => pendingRef.current || inFlight.current !== null || heldRef.current,
+      state: () =>
+        noWriteRef.current && touchedRef.current ? "draft"
+        : parkedRef.current ? "parked"
+        : heldRef.current ? "failed"
+        : pendingRef.current || inFlight.current !== null || touchedRef.current ? "dirty"
+        : "clean",
       saved: () => (wroteRef.current ? lastContentRef.current : null),
+      base: () => baseRef.current.base,
+      baseContent: () => baseRef.current.content,
+      rebase: (updatedAt) => { baseRef.current = { ...baseRef.current, base: updatedAt }; },
     };
     const set = pendingSaves.get(noteId) ?? new Set<PendingSaveHandle>();
     set.add(handle);
@@ -182,5 +278,5 @@ export function useAutoSave(
     };
   }, [doSave, syncKey]);
 
-  return { isSaving, lastSaved, saveError, scheduleSave, saveNow };
+  return { isSaving, lastSaved, saveError, scheduleSave, saveNow, touch };
 }

@@ -40,6 +40,7 @@ import { usePageActions, pageLink } from "../../lib/pages/usePageActions";
 import type { Note } from "../../lib/types";
 import { PageInfo } from "../sharing/PageInfo";
 import "./pages.css";
+import { requestFindInPage } from "../../lib/editor/findInPage";
 
 export interface PageMenuItem {
   id: string;
@@ -179,13 +180,8 @@ export function usePageMenuItems(
           id: "find",
           label: "Find in page",
           icon: <Search size={15} />,
-          // The editors open their find bar on ⌘F from inside the page; this is that key, sent to the page.
-          onClick: run(() => onPage(() => {
-            const body = document.querySelector<HTMLElement>("#workspace-document .tiptap");
-            if (!body) return;
-            body.focus({ preventScroll: true });
-            body.dispatchEvent(new KeyboardEvent("keydown", { key: "f", code: "KeyF", metaKey: true, ctrlKey: true, bubbles: true, cancelable: true }));
-          })),
+          // The one "Find in page" entry point: the shared event the page's editor answers (lib/editor/findInPage.ts).
+          onClick: run(() => onPage(() => requestFindInPage(page.id))),
         }]
       : []),
     {

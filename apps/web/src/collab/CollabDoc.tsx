@@ -23,7 +23,7 @@ function vaultDocName(noteId: string): string {
 import { updateNote as restUpdateNote, getNote as restGetNote, hasPendingWrites, uploadAttachment, unfurl as restUnfurl } from "../parachute/rest";
 import { markUnsynced, clearUnsynced, setOpenHere, unsyncedDocs } from "./unsynced";
 import { reloadForUpdate } from "../offline/reloadForUpdate";
-import { reportSyncSource, BacklinksPill, EmptyPageStarters, notePageIconChanged, PageDiscussion } from "@prism/core";
+import { reportSyncSource, BacklinksPill, EmptyPageStarters, notePageIconChanged, pageIconWriteConfirmed, pageIconWriteFailed, PageDiscussion } from "@prism/core";
 
 /** Track a CSS breakpoint without per-render layout thrash. */
 function useIsNarrow(): boolean {
@@ -242,9 +242,15 @@ function ScopedCollabDoc({
   };
 
   const handleIconChange = (emoji: string | null) => {
+    const previousIcon = icon;
     setIcon(emoji);
     notePageIconChanged(noteId, emoji); // tabs, breadcrumbs, sidebar follow at once (NP-PG-01)
-    void restUpdateNote(noteId, { metadata: { icon: emoji } }).catch(() => {});
+    void restUpdateNote(noteId, { metadata: { icon: emoji } }).then(
+      // Confirmed: the server's `tree: true` event for this write refreshes the tree, which then replaces the override.
+      () => { pageIconWriteConfirmed(noteId); },
+      // Refused or lost: tabs, breadcrumbs and the sidebar go back to what the server has (review M3).
+      () => { pageIconWriteFailed(noteId); setIcon(previousIcon); },
+    );
   };
   // Page cover (metadata-only write, like the icon; the server reconciles it with the live doc).
   const handleCoverChange = (next: PageCoverValue | null) => {

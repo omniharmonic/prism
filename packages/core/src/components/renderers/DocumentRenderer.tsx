@@ -57,6 +57,8 @@ import { useUpdateNote } from "../../app/hooks/useParachute";
 import { reviewMode } from "../../lib/governance/review";
 import { ReviewBanner } from "./ReviewBanner";
 import "./editor-blocks.css";
+import { useRemoteUpdateHost, REMOTE_UPDATED, REMOTE_DRAFT_KEPT } from "../layout/RemoteUpdate";
+import { onFindInPage } from "../../lib/editor/findInPage";
 
 export default function DocumentRenderer({ note, onMetadataChange, readOnly }: RendererProps) {
   // ── P4 governed-editing gate (WEB, NON-OWNER ONLY) ────────────────────────
@@ -212,7 +214,14 @@ export default function DocumentRenderer({ note, onMetadataChange, readOnly }: R
   const lastKnownContent = useRef(note.content);
   const lastUserSavedContent = useRef<string | null>(null);
 
+  // Inside the workspace canvas the HOST decides what a newer version does (adopt
+  // silently when nobody is in the page, otherwise this same review preview) —
+  // see Canvas / RemoteUpdate. Elsewhere this renderer reviews every external change itself.
+  const remoteHost = useRemoteUpdateHost();
+  const claimReview = remoteHost?.claimReview;
+  useEffect(() => claimReview?.(), [claimReview]);
   useEffect(() => {
+    if (claimReview) return;
     if (note.content === lastKnownContent.current) return;
     if (!editorRef.current) return;
 
@@ -230,13 +239,15 @@ export default function DocumentRenderer({ note, onMetadataChange, readOnly }: R
       position: "end",
     });
     lastKnownContent.current = note.content;
-  }, [note.content, note.id]);
+  }, [note.content, note.id, claimReview]);
 
   const getContent = useCallback(() => contentRef.current, []);
   const onSaved = useCallback((content: string) => {
     lastUserSavedContent.current = content;
   }, []);
-  const { isSaving, lastSaved, saveError, scheduleSave: rawScheduleSave, saveNow: rawSaveNow } = useAutoSave(note.id, getContent, 2000, onSaved);
+  // The editor keeps its OWN base revision (the note it mounted from); in propose /
+  // read-only mode nothing is written, but a local change is still a draft (C1).
+  const { isSaving, lastSaved, saveError, scheduleSave: rawScheduleSave, saveNow: rawSaveNow, touch } = useAutoSave(note.id, getContent, 2000, onSaved, { base: note.updatedAt, content: note.content, noWrite: !!(readOnly || governed) });
   // Read-only surfaces (published Wiki / anonymous): never write back. Wrapping
   // the autosave triggers keeps every downstream call site unchanged while
   // guaranteeing no vault mutation when readOnly is set.
@@ -245,7 +256,7 @@ export default function DocumentRenderer({ note, onMetadataChange, readOnly }: R
   // the review banner instead. (`governed` is false whenever `_caps` is absent —
   // desktop and owners keep the exact previous behavior.)
   const noWrite = readOnly || governed;
-  const scheduleSave = useCallback(() => { if (!noWrite) rawScheduleSave(); }, [noWrite, rawScheduleSave]);
+  const scheduleSave = useCallback(() => { touch(); if (!noWrite) rawScheduleSave(); }, [noWrite, rawScheduleSave, touch]);
   const saveNow = useCallback(() => { if (!noWrite) rawSaveNow(); }, [noWrite, rawSaveNow]);
   // Editing stays LOCAL in "propose" mode — that is the point: type your change,
   // then submit it. Only "read-only" (view/comment caps) locks the editor.
@@ -358,6 +369,9 @@ export default function DocumentRenderer({ note, onMetadataChange, readOnly }: R
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [saveNow, editor, openInlinePrompt, inlineAgent, sessionAgent]);
+
+  // "Find in page" from outside the editor (phone page sheet): the shared event, not a fake key press.
+  useEffect(() => onFindInPage((d) => (!d.noteId || d.noteId === note.id) && !!containerRef.current?.closest("#workspace-document"), () => { setFindReplace(false); setFindOpen(true); }), [note.id]);
 
   // Cmd+F / Ctrl+F — scoped to the editor container. Only fires when focus is
   // inside this DocumentRenderer's subtree (or when document.activeElement is
@@ -526,6 +540,7 @@ function GhostTextOverlay({
 }) {
   const ghostText = useUIStore((s) => s.ghostText);
   const rejectGhostText = useUIStore((s) => s.rejectGhostText);
+  const remoteHost = useRemoteUpdateHost();
   const [previewHtml, setPreviewHtml] = useState<string | null>(null);
 
   // Convert ghost text content to HTML for preview
@@ -550,7 +565,13 @@ function GhostTextOverlay({
 
   if (!ghostText || ghostText.noteId !== noteId || !previewHtml) return null;
 
+  // Hosted (workspace canvas): "Show latest" is an adoption — the page is re-read
+  // from the server's version, nothing is written back. A draft that is never
+  // written (propose mode) is never replaced: only the notice is shown.
+  const hosted = !!remoteHost?.pending;
+  const canAdopt = remoteHost?.pending?.canAdopt !== false;
   const handleAccept = async () => {
+    if (hosted) { remoteHost!.showLatest(); return; }
     if (!editor) return;
     // Replace the entire document with the agent's version
     editor.commands.setContent(previewHtml);
@@ -561,6 +582,8 @@ function GhostTextOverlay({
 
   return (
     <div
+      role="status"
+      data-testid="remote-update-review"
       className="mx-6 mb-2 rounded-lg overflow-hidden"
       style={{ border: "2px dashed var(--color-accent)", background: "var(--glass)" }}
     >
@@ -570,22 +593,22 @@ function GhostTextOverlay({
         style={{ background: "rgba(var(--accent-rgb, 99,102,241), 0.1)", borderBottom: "1px solid var(--glass-border)" }}
       >
         <span className="text-xs font-medium" style={{ color: "var(--color-accent)" }}>
-          Agent edited this document — review changes
+          {hosted ? (canAdopt ? `${REMOTE_UPDATED} — review the latest version` : `${REMOTE_UPDATED}. ${REMOTE_DRAFT_KEPT}`) : "Agent edited this document — review changes"}
         </span>
         <div className="flex items-center gap-1.5">
-          <button
+          {canAdopt && <button
             onClick={handleAccept}
             className="px-3 py-1 rounded text-xs font-medium"
             style={{ background: "var(--color-accent)", color: "white" }}
           >
-            Accept
-          </button>
+            {hosted ? "Show latest" : "Accept"}
+          </button>}
           <button
-            onClick={rejectGhostText}
+            onClick={hosted ? remoteHost!.keepMine : rejectGhostText}
             className="px-3 py-1 rounded text-xs"
             style={{ color: "var(--text-secondary)", background: "var(--glass)" }}
           >
-            Reject
+            {hosted ? (canAdopt ? "Keep mine" : "Dismiss") : "Reject"}
           </button>
         </div>
       </div>

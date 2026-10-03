@@ -10,7 +10,7 @@ import { useVaultTree } from "../../app/hooks/useParachute";
 import { useOptionalVaultClient } from "../../data/VaultClientContext";
 
 import { pageIconOf, usePageIconOverride } from "./iconStore";
-export { pageIconOf, usePageIconOverride, notePageIconChanged } from "./iconStore";
+export { pageIconOf, usePageIconOverride, notePageIconChanged, pageIconWriteConfirmed, pageIconWriteFailed } from "./iconStore";
 
 function TreeIcon({ noteId, fallback }: { noteId: string; fallback: ReactNode }) {
   const { data: tree } = useVaultTree();

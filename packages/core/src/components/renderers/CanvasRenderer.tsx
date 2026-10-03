@@ -61,7 +61,7 @@ export default function CanvasRenderer({ note, readOnly }: RendererProps) {
   const connectionMode = useCanvasConnectionMode(apiRef, !readOnly);
 
   const getContent = useCallback(() => contentRef.current, []);
-  const { isSaving, lastSaved, saveError, saveNow, scheduleSave } = useAutoSave(note.id, getContent);
+  const { isSaving, lastSaved, saveError, saveNow, scheduleSave } = useAutoSave(note.id, getContent, undefined, undefined, { base: note.updatedAt, content: note.content });
   const scheduleSaveRef = useRef(scheduleSave);
   scheduleSaveRef.current = scheduleSave;
 

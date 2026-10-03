@@ -39,6 +39,7 @@ import { MentionSuggest, type MentionSuggestState } from "../../lib/tiptap/Menti
 import { MentionContext, setMentionNoteId } from "../../lib/tiptap/MentionContext";
 import { MentionMenu } from "../../lib/tiptap/MentionMenu";
 import { useCommentMentionPicker } from "../../lib/tiptap/MentionText";
+import { onFindInPage } from "../../lib/editor/findInPage";
 
 export interface CollabUser {
   name: string;
@@ -215,6 +216,13 @@ export function CollabEditor({
     editorProps: { attributes: { class: "prose-editor outline-none min-h-[300px]" } },
     onUpdate: handleUpdate,
   });
+
+  // "Find in page" from outside the editor (phone page sheet) — the shared `prism:find-in-page`
+  // event. Only the workspace page's own editor answers (several live editors may share a screen).
+  useEffect(() => {
+    if (!editor) return;
+    return onFindInPage(() => { try { return !!editor.view.dom.closest("#workspace-document"); } catch { return false; } }, () => setFind({ replace: false }));
+  }, [editor]);
 
   // ⌘F find / ⌘⇧H find + replace, while focus is in this editor (or its find bar).
   useEffect(() => {

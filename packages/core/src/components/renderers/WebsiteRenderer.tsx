@@ -9,7 +9,7 @@ export default function WebsiteRenderer({ note, readOnly }: RendererProps) {
   const contentRef = useRef(note.content || "");
 
   const getContent = useCallback(() => contentRef.current, []);
-  const { isSaving, lastSaved, saveError, saveNow, scheduleSave } = useAutoSave(note.id, getContent);
+  const { isSaving, lastSaved, saveError, saveNow, scheduleSave } = useAutoSave(note.id, getContent, undefined, undefined, { base: note.updatedAt, content: note.content });
 
   const handleChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     if (readOnly) return;

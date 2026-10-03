@@ -17,11 +17,11 @@ function TagPreview({ tag, noteId }: { tag: string; noteId: string }) {
   const [all, setAll] = useState(false);
   if (isLoading) return <p role="status">Loading the collection…</p>;
   const pages = (tree ?? []).filter((n) => (n.tags ?? []).includes(tag)).sort((a, b) => leaf(a.path).localeCompare(leaf(b.path)));
-  if (!pages.length) return <p>No pages you can see carry #{tag} yet.</p>;
+  if (!pages.length) return <p>None of the pages you can see carry #{tag} yet.</p>;
   const shown = all ? pages : pages.slice(0, SHOWN);
   return (
-    <div className="share-card publish-preview" role="group" aria-label={`Pages tagged ${tag}`}>
-      <h3>Preview · {pages.length} page{pages.length === 1 ? "" : "s"} tagged #{tag}</h3>
+    <div className="share-card publish-preview" role="group" aria-label={`Pages you can see tagged ${tag}`}>
+      <h3>{pages.length} page{pages.length === 1 ? "" : "s"} you can see with #{tag}</h3>
       <ul>
         {shown.map((p) => (
           <li key={p.id} aria-current={p.id === noteId ? "true" : undefined}>
@@ -36,7 +36,10 @@ function TagPreview({ tag, noteId }: { tag: string; noteId: string }) {
           {all ? "Show fewer" : `Show all ${pages.length}`}
         </button>
       )}
-      <p className="publish-preview-note">Private pages and pages in the Trash are never published. The site lists the pages its readers may see.</p>
+      <p className="publish-preview-note">
+        This is your own view of the tag, not the published set: the site shows only pages its readers may see, so private pages are left out and
+        pages you cannot see may be included. The Publishing studio shows exactly what goes live.
+      </p>
     </div>
   );
 }

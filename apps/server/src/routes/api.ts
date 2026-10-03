@@ -132,7 +132,7 @@ async function proxyToVault(c: Context) {
     // Writer stamp (`prism_last_writer`, ../writer-stamp.ts) on single-note creates/edits.
     if ((method === "POST" && path === "/notes") || (method === "PATCH" && /^\/notes\/[^/]+$/.test(path))) init.body = stampChangeJson(stampJsonBody(init.body as string, resolveActor(c)), requestVia(c) === "mcp" ? "agent" : "edit");
     // Any write may change what a cached read would return.
-    readCache.clear();
+    dropReadCache();
     // Owner/admin bypass of a page lock is allowed but audited (one line, no content).
     const lockedId = method === "PATCH" ? path.match(/^\/notes\/([^/?]+)$/)?.[1] : undefined;
     if (lockedId && treeRowLocked(entry, decodeURIComponent(lockedId)) && /"content"\s*:/.test(init.body as string)) {
@@ -142,7 +142,10 @@ async function proxyToVault(c: Context) {
   const t0 = Date.now();
   let res: ProxiedResponse;
   try {
-    res = method === "GET" ? await coalescedGet(target, init) : await forward(target, init);
+    // Only a single-note read may ask for a fresh answer: lists keep their protection
+    // against N copies of an expensive vault call.
+    const fresh = method === "GET" && /^\/notes\/[^/]+$/.test(path) && /\bno-(cache|store)\b/i.test(c.req.header("cache-control") ?? "");
+    res = method === "GET" ? await coalescedGet(target, init, fresh) : await forward(target, init);
   } catch (e) {
     console.warn(`[gateway] vault ${method} ${path} failed: ${(e as Error).message}`);
     return c.json({ error: "vault_unreachable" }, 502);
@@ -187,11 +190,31 @@ const inflight = new Map<string, Promise<ProxiedResponse>>();
 const readCache = new Map<string, { expires: number; res: ProxiedResponse }>();
 const READ_TTL_MS = Number(process.env.GATEWAY_READ_TTL_MS ?? 5000);
 
-async function coalescedGet(target: string, init: RequestInit): Promise<ProxiedResponse> {
-  const hit = readCache.get(target);
-  if (hit && hit.expires > Date.now()) return hit.res;
-  const pending = inflight.get(target);
-  if (pending) return pending;
+/**
+ * Write generation (H3). Bumped by every write that clears the cache. A read that
+ * STARTED before a write must not store its (pre-write) body after the clear, and
+ * a read issued after the write must not join it — so a clear also forgets the
+ * in-flight reads (their own callers still get their answers).
+ */
+let writeGeneration = 0;
+function dropReadCache(): void {
+  writeGeneration++;
+  readCache.clear();
+  inflight.clear();
+}
+
+/** `fresh`: the caller asked for the current state (`Cache-Control: no-cache|no-store`
+ *  on a single-note read — a client re-reading because it was TOLD the note changed).
+ *  Never answered from the reuse window or a read already in flight; its answer
+ *  replaces the cached one. */
+async function coalescedGet(target: string, init: RequestInit, fresh = false): Promise<ProxiedResponse> {
+  if (!fresh) {
+    const hit = readCache.get(target);
+    if (hit && hit.expires > Date.now()) return hit.res;
+    const pending = inflight.get(target);
+    if (pending) return pending;
+  }
+  const generation = writeGeneration;
   const p = (async () => {
     let res: ProxiedResponse;
     try {
@@ -201,18 +224,18 @@ async function coalescedGet(target: string, init: RequestInit): Promise<ProxiedR
       // so retry once on a fresh request before giving up.
       res = await forward(target, init);
     }
-    if (res.status === 200 && READ_TTL_MS > 0) readCache.set(target, { expires: Date.now() + READ_TTL_MS, res });
+    if (res.status === 200 && READ_TTL_MS > 0 && generation === writeGeneration) readCache.set(target, { expires: Date.now() + READ_TTL_MS, res });
     if (readCache.size > 200) {
       const now = Date.now();
       for (const [k, v] of readCache) if (v.expires <= now) readCache.delete(k);
     }
     return res;
   })();
-  inflight.set(target, p);
+  if (!fresh) inflight.set(target, p);
   try {
     return await p;
   } finally {
-    inflight.delete(target);
+    if (inflight.get(target) === p) inflight.delete(target);
   }
 }
 
@@ -233,25 +256,25 @@ api.use("/canvas/*", async (c, next) => {
   await next();
   // Projection writes bypass the transparent owner proxy. Never reuse a
   // pre-projection note/link response after a confirmed reconciliation.
-  readCache.clear();
+  dropReadCache();
 });
 api.route("/canvas", canvasApi);
 api.use("/transcripts/*", async (c, next) => {
   await next();
   // Link decisions write notes outside the owner proxy: drop cached owner reads.
-  if (c.req.method !== "GET") readCache.clear();
+  if (c.req.method !== "GET") dropReadCache();
 });
 api.route("/transcripts", transcriptsApi);
 // Pages (nested-page move, Trash, synced preferences): before the owner passthrough,
 // like /tree — these are Prism routes, not vault routes. Writes drop cached owner reads.
-api.route("/", createPagesApi({ onWrite: () => readCache.clear() }));
+api.route("/", createPagesApi({ onWrite: () => dropReadCache() }));
 // Sharing reads (shared-with-me, comment index, page activity, move access preview).
 api.route("/", sharingApi);
 // Typed properties + database views (schemas, lean query, property writes).
 // Their writes bypass the owner proxy: drop cached owner reads afterwards.
-api.use("/properties/*", async (c, next) => { await next(); readCache.clear(); });
-api.use("/schemas/*", async (c, next) => { await next(); if (c.req.method !== "GET") readCache.clear(); });
-api.use("/databases/*", async (c, next) => { await next(); if (c.req.method !== "GET") readCache.clear(); });
+api.use("/properties/*", async (c, next) => { await next(); dropReadCache(); });
+api.use("/schemas/*", async (c, next) => { await next(); if (c.req.method !== "GET") dropReadCache(); });
+api.use("/databases/*", async (c, next) => { await next(); if (c.req.method !== "GET") dropReadCache(); });
 api.route("/", databasesApi);
 // Attachments (upload/serve via vault storage) + link previews; before the owner passthrough.
 api.route("/", attachmentsApi);

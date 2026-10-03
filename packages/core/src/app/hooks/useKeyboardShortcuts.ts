@@ -18,7 +18,9 @@ export function useKeyboardShortcuts() {
       }
 
       // ⌘\ = sidebar, ⌘⇧\ = info panel (NP-SB-11). By physical key: Shift turns "\" into "|".
-      if (e.code === "Backslash" || e.key === "\\") {
+      // Matched by character as well as by physical key: on ISO layouts "\" is not on
+      // the ANSI Backslash key (IntlBackslash, or a different key altogether).
+      if (e.code === "Backslash" || e.code === "IntlBackslash" || e.key === "\\" || (e.shiftKey && e.key === "|")) {
         if (e.altKey) return;
         e.preventDefault();
         if (e.shiftKey) toggleContextPanel();

@@ -1,8 +1,9 @@
 import { isAccessUnavailable } from "../../data/VaultClient";
 import { noteLinkTitle } from "../../lib/wikilinks";
 import { isVaultNoteId } from "../../lib/noteIdentity";
-import { Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useSyncExternalStore } from "react";
-import { remoteAdoption } from "../../app/hooks/useAutoSave";
+import { Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { editorSaveState, flushPendingSaves, remoteAdoption } from "../../app/hooks/useAutoSave";
+import { RemoteUpdateBar, RemoteUpdateContext, type RemoteUpdateHost } from "./RemoteUpdate";
 import { Compass } from "lucide-react";
 import { useUIStore } from "../../app/stores/ui";
 import { useNote, useUpdateNote } from "../../app/hooks/useParachute";
@@ -118,24 +119,6 @@ export function Canvas() {
   // page leaves the live session too — its keystrokes must not reach the shared doc.
   const locked = !isVirtual && isLocked(effectiveNote);
   const isLiveDoc = collab.useLiveCollab(collabDocId) && collabDocId !== "" && !proposeOnly && !locked;
-  // NP-OF-05: an open PLAIN editor reads `note.content` once, at mount. When a
-  // re-read (events channel, focus refetch) brings content this editor neither
-  // shows nor wrote, an IDLE editor remounts on it; one with local edits keeps
-  // them (the save's 409 → "Needs review" path settles it). Live collab docs
-  // get remote edits through their socket and never come here.
-  const shown = useRef<{ id: string; content: string } | null>(null);
-  const plainNote = !isVirtual && !isLiveDoc && note ? note : null;
-  useEffect(() => {
-    if (!plainNote) { shown.current = null; return; }
-    const content = plainNote.content ?? "";
-    if (shown.current?.id !== plainNote.id) { shown.current = { id: plainNote.id, content }; return; }
-    if (shown.current.content === content) return;
-    const verdict = remoteAdoption(plainNote.id, content);
-    if (verdict === "keep" || verdict === "none") return; // re-judged on the next re-read
-    shown.current = { id: plainNote.id, content };
-    if (verdict === "adopt") useUIStore.getState().bumpNoteRevision(plainNote.id);
-  }, [plainNote]);
-
   // NP-SR-07: back/forward (⌘[ / ⌘], the header arrows, the phone edge swipe)
   // return to where the page was scrolled. Positions are remembered per tab for
   // this session; an ordinary open or tab click does not restore (a deep link to
@@ -145,7 +128,9 @@ export function Canvas() {
   const scrollTab = useRef<string | null>(null);
   const restoring = useRef(false);
   const navRestore = useUIStore((s) => s.navRestore);
-  const seenRestore = useRef(navRestore);
+  /** Bumped when a newer version is adopted: the remounted page returns to where it was. */
+  const [adoptTick, setAdoptTick] = useState(0);
+  const seenRestore = useRef(`${navRestore}:${adoptTick}`);
   // Renderers bring their own scroller (the writing column, the live editor), so
   // listen in the capture phase and remember the page-sized one, not a code block.
   useEffect(() => {
@@ -163,8 +148,8 @@ export function Canvas() {
   useLayoutEffect(() => {
     scrollTab.current = activeTabId;
     const main = mainRef.current;
-    const wanted = seenRestore.current !== navRestore;
-    seenRestore.current = navRestore;
+    const wanted = seenRestore.current !== `${navRestore}:${adoptTick}`;
+    seenRestore.current = `${navRestore}:${adoptTick}`;
     const saved = activeTabId ? scrolls.current.get(activeTabId) : undefined;
     if (!main || !wanted || !saved || saved.top <= 0) return;
     restoring.current = true;
@@ -193,7 +178,105 @@ export function Canvas() {
     for (const type of events) window.addEventListener(type, stop, { capture: true, passive: true });
     step();
     return stop;
-  }, [activeTabId, navRestore]);
+  }, [activeTabId, navRestore, adoptTick]);
+
+  // NP-OF-05 — live updates into an open PLAIN editor. Renderers read
+  // `note.content` once, at mount, and keep their OWN base revision. When a
+  // re-read brings a STRICTLY NEWER revision with different content:
+  //   • clean editor and nobody in the page  → adopt silently (remount, scroll kept)
+  //   • clean, but the reader is in the page (focus, selection, IME, a menu, the
+  //     title or find bar open)               → non-blocking "updated elsewhere"
+  //   • unsaved typing                        → the same notice; the draft stays and
+  //     its save names its own base, so the server answers 409 → "Needs review"
+  //   • a draft that is never written (propose mode) → notice only, never adopted
+  // The same content under a newer revision (a metadata/path write) just moves the
+  // editors' base. Live collab docs get remote edits through their socket.
+  const shown = useRef<{ key: string; content: string } | null>(null);
+  const composing = useRef(false);
+  const reviewClaims = useRef(0);
+  const [reviewClaimed, setReviewClaimed] = useState(false);
+  const [remotePending, setRemotePending] = useState<{ id: string; content: string; updatedAt: string | null; canAdopt: boolean } | null>(null);
+  const plainNote = !isVirtual && !isLiveDoc && note ? note : null;
+  const plainKey = plainNote ? `${plainNote.id}:${noteRevision}` : "";
+  useEffect(() => {
+    const main = mainRef.current;
+    if (!main) return;
+    const start = () => { composing.current = true; };
+    const end = () => { composing.current = false; };
+    main.addEventListener("compositionstart", start, true);
+    main.addEventListener("compositionend", end, true);
+    return () => { main.removeEventListener("compositionstart", start, true); main.removeEventListener("compositionend", end, true); };
+  }, []);
+  /** Is somebody working in the page right now? Then nothing is swapped under them. */
+  const interacting = useCallback((): boolean => {
+    const main = mainRef.current;
+    if (!main) return false;
+    if (composing.current) return true;
+    const active = document.activeElement;
+    if (active && active !== document.body && main.contains(active)) return true;
+    const selection = window.getSelection();
+    if (selection && !selection.isCollapsed && selection.anchorNode && main.contains(selection.anchorNode)) return true;
+    // An open menu, picker, find bar or dialog (slash menu, emoji picker, ⌘K, a sheet).
+    if (main.querySelector('[role="search"], [aria-label="Document title"]')) return true;
+    return !!document.querySelector('[role="menu"], [role="dialog"], dialog[open], .slash-menu, [data-editor-menu]');
+  }, []);
+  const clearGhost = (id: string) => { const ui = useUIStore.getState(); if (ui.ghostText?.noteId === id) ui.rejectGhostText(); };
+  /** Remount the editors on the latest version — only if, RIGHT NOW, nothing unsaved would be lost. */
+  const adopt = useCallback((id: string, content: string): boolean => {
+    if (editorSaveState(id) !== "clean") return false;
+    shown.current = { key: `${id}:${(useUIStore.getState().noteRevisions[id] ?? 0) + 1}`, content };
+    setRemotePending(null);
+    clearGhost(id);
+    useUIStore.getState().bumpNoteRevision(id);
+    setAdoptTick((n) => n + 1);
+    return true;
+  }, []);
+  useEffect(() => {
+    if (!plainNote) { shown.current = null; setRemotePending(null); return; }
+    const content = plainNote.content ?? "";
+    if (shown.current?.key !== plainKey) { shown.current = { key: plainKey, content }; setRemotePending(null); return; }
+    // Always judged: this is also where the same content under a newer revision rebases the editors.
+    const verdict = remoteAdoption(plainNote.id, { content, updatedAt: plainNote.updatedAt });
+    if (shown.current.content === content) return;
+    if (verdict === "none" || verdict === "stale") return; // no editor yet / not news
+    if (verdict === "own") { shown.current = { key: plainKey, content }; setRemotePending(null); clearGhost(plainNote.id); return; }
+    if (verdict === "clean" && !interacting() && adopt(plainNote.id, content)) return;
+    setRemotePending({ id: plainNote.id, content, updatedAt: plainNote.updatedAt ?? null, canAdopt: verdict !== "draft" });
+  }, [plainNote, plainKey, adopt, interacting]);
+  const pendingHere = remotePending && plainNote && remotePending.id === plainNote.id ? remotePending : null;
+  // A renderer with its own review surface (the document preview) shows the pending version there.
+  useEffect(() => {
+    if (!pendingHere || !reviewClaimed) return;
+    useUIStore.getState().setGhostText({ noteId: pendingHere.id, content: pendingHere.content, position: "end" });
+  }, [pendingHere, reviewClaimed]);
+  const latest = useRef(plainNote);
+  latest.current = plainNote;
+  const remoteHost = useMemo<RemoteUpdateHost>(() => ({
+    pending: pendingHere ? { content: pendingHere.content, updatedAt: pendingHere.updatedAt, canAdopt: pendingHere.canAdopt } : null,
+    showLatest: () => {
+      const current = latest.current;
+      if (!current) return;
+      const state = editorSaveState(current.id);
+      if (state === "draft") return; // never: the draft exists nowhere else
+      if (state === "clean") { adopt(current.id, current.content ?? ""); return; }
+      // Unsaved typing: send it now. Its base is the revision it was written on, so
+      // the server refuses (409) and the draft goes to "Needs review" — nothing is lost
+      // and nothing is overwritten. The page keeps showing the draft until that review.
+      setRemotePending(null);
+      clearGhost(current.id);
+      void flushPendingSaves(current.id).catch(() => {});
+    },
+    keepMine: () => {
+      const current = latest.current;
+      if (current) { shown.current = { key: `${current.id}:${useUIStore.getState().noteRevisions[current.id] ?? 0}`, content: current.content ?? "" }; clearGhost(current.id); }
+      setRemotePending(null);
+    },
+    claimReview: () => {
+      reviewClaims.current++;
+      setReviewClaimed(true);
+      return () => { if (--reviewClaims.current <= 0) { reviewClaims.current = 0; setReviewClaimed(false); } };
+    },
+  }), [pendingHere, adopt]);
 
   // NP-OF-02: this page came from the device's copy (no connection).
   // Either the host says so (read from its on-device cache), or the device is
@@ -238,14 +321,17 @@ export function Canvas() {
           // the server's reconciler, so it keeps its session).
           <RendererBoundary key={`${effectiveNote.id}:${noteRevision}:${locked ? "locked" : "open"}`}>
             {locked && <LockedBanner note={effectiveNote} />}
-            <Suspense fallback={<LoadingSkeleton />}>
-              <Renderer
-                note={effectiveNote}
-                onSave={locked ? undefined : handleSave}
-                onMetadataChange={locked ? undefined : handleMetadataChange}
-                readOnly={locked || undefined}
-              />
-            </Suspense>
+            {!reviewClaimed && <RemoteUpdateBar host={remoteHost} />}
+            <RemoteUpdateContext.Provider value={remoteHost}>
+              <Suspense fallback={<LoadingSkeleton />}>
+                <Renderer
+                  note={effectiveNote}
+                  onSave={locked ? undefined : handleSave}
+                  onMetadataChange={locked ? undefined : handleMetadataChange}
+                  readOnly={locked || undefined}
+                />
+              </Suspense>
+            </RemoteUpdateContext.Provider>
           </RendererBoundary>
         ) : (
           <div className="text-center pt-20" style={{ color: "var(--text-muted)" }}>

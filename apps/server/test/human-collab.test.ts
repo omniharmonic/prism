@@ -35,7 +35,7 @@ import { canonicalCollabState, humanCollabRevision, humanCollabRevisionInput, HU
 import { createApp } from "../src/app";
 import { config } from "../src/config";
 import { attachCollab, collabSchema, contentToYUpdate, hocuspocus, loadDocumentState, reconcileLoadedDocs, resetReconcileState, yDocToHtml } from "../src/collab";
-import { editFragment, findTextRange } from "../src/collab-ops";
+import { editFragment, findTextRange, listThreads } from "../src/collab-ops";
 import {
   addGrant,
   addVaultEntry,
@@ -1609,6 +1609,10 @@ test("page-comment: a suggest actor opens a page-level thread — no anchor, bod
   const thread = () => editor.getMap<Y.Map<unknown>>("comments").get(made.body.threadId);
   const items = () => (thread()!.get("comments") as Y.Array<any>).toArray();
   assert.equal(thread()!.get("page"), true, "marked as a page-level thread");
+  // Agents see it as such too (prism_list_comments reads this listing): a page thread, never "anchored".
+  const listed = listThreads(live("d1")!, true).find((t) => t.id === made.body.threadId)!;
+  assert.equal(listed.page, true);
+  assert.equal(listed.anchored, false);
   assert.equal(thread()!.get("quote"), "");
   assert.equal(thread()!.get("resolved"), false);
   assert.deepEqual(items().map((i) => [i.text, i.author, i.actorId, i.agent]), [["Should this page move to the handbook?", "Sue Gester", documentActorId(auth.identity), false]]);

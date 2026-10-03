@@ -1,3 +1,4 @@
+import { useEffect } from "react";
 import { isAccessUnavailable } from "../../data/VaultClient";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
@@ -10,8 +11,9 @@ import { useLivePollMs } from "../../lib/events/channelStatus";
 import { withoutTrashed } from "../../lib/pages/model";
 import { hasFilters, matchesFilters, queryTerms, type SearchFilters } from "../../lib/search/match";
 import { blendResults } from "../../lib/search/blend";
+import { takeFreshRead } from "../../lib/events/freshReads";
 import { inferContentType } from "../../lib/schemas/content-types";
-import { notePageIconChanged } from "../../lib/pages/iconStore";
+import { notePageIconChanged, pageIconWriteConfirmed, pageIconWriteFailed, reconcilePageIcons } from "../../lib/pages/iconStore";
 
 export function useNotes(filters?: NoteFilters) {
   const client = useVaultClient();
@@ -31,18 +33,22 @@ export function useNotes(filters?: NoteFilters) {
  */
 export function useVaultTree() {
   const client = useVaultClient();
-  return useQuery({
+  const result = useQuery({
     queryKey: ["vault", "tree"] as const,
     queryFn: () => client.listTree(),
     select: withoutTrashed,
   });
+  // A completed tree read replaces any confirmed local icon override (review M3).
+  useEffect(() => { if (result.dataUpdatedAt) reconcilePageIcons(result.dataUpdatedAt); }, [result.dataUpdatedAt]);
+  return result;
 }
 
 export function useNote(id: string | null) {
   const client = useVaultClient();
   const result = useQuery({
     queryKey: queryKeys.vault.note(id!),
-    queryFn: () => client.getNote(id!),
+    // A read caused by "this note changed" asks for the current state, not a reused answer.
+    queryFn: () => (takeFreshRead(id!) ? client.getNote(id!, { latest: true }) : client.getNote(id!)),
     enabled: !!id,
     retry: (count, error) => !isAccessUnavailable(error) && count < 1,
   });
@@ -217,7 +223,11 @@ export function useUpdateNote() {
       if (params.metadata && "icon" in params.metadata) notePageIconChanged(id, params.metadata.icon);
       return client.updateNote(id, params, { expectedScope });
     },
+    onError: (_e, { id, metadata }) => {
+      if (metadata && "icon" in metadata) pageIconWriteFailed(id);
+    },
     onSuccess: (_, { id, path, metadata }) => {
+      if (metadata && "icon" in metadata) pageIconWriteConfirmed(id);
       queryClient.invalidateQueries({ queryKey: queryKeys.vault.note(id) });
       queryClient.invalidateQueries({ queryKey: queryKeys.vault.notes() });
       // A rename/move changes the sidebar: don't wait for the events channel.

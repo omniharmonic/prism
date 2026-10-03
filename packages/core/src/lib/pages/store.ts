@@ -50,6 +50,8 @@ interface PagesUIState {
   /** Expand every ancestor of `path` (breadcrumb "show in sidebar"). */
   reveal: (path: string) => void;
   collapseAll: () => void;
+  /** Sign-out / account change: forget the in-memory expansion too (storage is cleared by the host). */
+  resetExpanded: () => void;
 
   movePage: PageRef | null;
   openMove: (page: PageRef | null) => void;
@@ -98,6 +100,7 @@ export const usePagesUI = create<PagesUIState>((set, get) => ({
       return { expanded: next };
     }),
   collapseAll: () => { writeExpanded(get().expandedScope, {}); set({ expanded: {} }); },
+  resetExpanded: () => set({ expanded: {}, expandedScope: null }),
 
   movePage: null,
   openMove: (page) => set({ movePage: page }),
@@ -119,3 +122,7 @@ export const usePagesUI = create<PagesUIState>((set, get) => ({
     if (id === undefined || get().toast?.id === id) set({ toast: null });
   },
 }));
+
+// The host announces sign-out / account change (`prism:signed-out`): the previous
+// account's open folders must not stay in memory for the next one.
+if (typeof window !== "undefined") window.addEventListener("prism:signed-out", () => usePagesUI.getState().resetExpanded());

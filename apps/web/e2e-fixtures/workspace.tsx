@@ -11,7 +11,7 @@ import { replyAgent } from "./reply-agent";
 import type { InvalidationHandlers, InvalidationSource } from "../../../packages/core/src/lib/events/invalidation";
 let eventHandlers: InvalidationHandlers | null = null;
 const eventSource: InvalidationSource = { open(handlers) { eventHandlers = handlers; handlers.onOpen(); return () => { if (eventHandlers === handlers) eventHandlers = null; }; } };
-Object.assign(window, { prismFixtureInvalidate: (id: string) => eventHandlers?.onEvent({ type: "note", id, op: "upsert" }) });
+Object.assign(window, { prismFixtureInvalidate: (id: string, tree = false) => eventHandlers?.onEvent(tree ? { type: "note", id, op: "upsert", tree: true } : { type: "note", id, op: "upsert" }) });
 const params = new URLSearchParams(location.search);
 if (params.has("dark")) { document.documentElement.classList.remove("light"); document.documentElement.classList.add("dark"); }
 const readGates = new Map<string, () => void>();

@@ -84,7 +84,7 @@ function EditableTitle({ name, onRename }: { name: string; onRename: (newName: s
         onChange={(e) => setDraft(e.target.value)}
         onBlur={() => { void commit(); }}
         onKeyDown={(e) => {
-          if (e.key === "Enter" && !e.nativeEvent.isComposing) { e.preventDefault(); void commit(true); }
+          if (e.key === "Enter" && !e.nativeEvent.isComposing && e.keyCode !== 229) { e.preventDefault(); void commit(true); }
           if (e.key === "Escape") { setDraft(name); setEditing(false); setError(""); }
         }}
         spellCheck={false}
