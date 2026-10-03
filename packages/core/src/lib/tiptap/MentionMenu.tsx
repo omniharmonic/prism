@@ -67,6 +67,14 @@ export function MentionMenu({ editor, state, notes }: { editor: Editor | null; s
     staleTime: 30_000,
     retry: false,
   });
+  // Workspace members with no person page (wave 3): mentioned by account.
+  const members = useQuery({
+    queryKey: ["vault", "people", "mention-members", debounced],
+    queryFn: () => notificationsApi.mentionMembers(debounced),
+    enabled: state.active,
+    staleTime: 30_000,
+    retry: false,
+  });
   const noteId = mentionNoteId(editor);
 
   const items = useMemo<Item[]>(() => {
@@ -77,6 +85,7 @@ export function MentionMenu({ editor, state, notes }: { editor: Editor | null; s
       for (const p of (people.data?.people ?? []).slice(0, 5)) {
         out.push({ kind: "person", id: p.id, label: p.name, detail: p.role ?? p.identities[0]?.value ?? "Person" });
       }
+      for (const m of (members.data ?? []).slice(0, Math.max(0, 6 - out.length))) out.push({ kind: "person", id: m.id, label: m.name, detail: "Workspace member" });
       const pages = notes
         .filter((n) => !(n.tags ?? []).includes("person") && n.id !== noteId)
         .filter((n) => !q || noteLinkTitle(n).toLowerCase().includes(q))
@@ -90,7 +99,7 @@ export function MentionMenu({ editor, state, notes }: { editor: Editor | null; s
       out.push({ kind: "remind", date: remindQuery && !dates.length ? parseDateQuery("tomorrow 9am")[0]! : target });
     }
     return out;
-  }, [raw, people.data, notes, noteId]);
+  }, [raw, people.data, members.data, notes, noteId]);
 
   const signature = `${state.from}:${raw}`;
   const [sel, setSel] = useState({ signature: "", index: 0 });

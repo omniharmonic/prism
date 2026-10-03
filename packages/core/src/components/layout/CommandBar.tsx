@@ -103,10 +103,19 @@ export function CommandBar() {
       setSelectedId(null);
       const previous = document.activeElement as HTMLElement | null;
       returnFocus.current = previous;
+      // Opened from inside an editor: remember the caret, because focus() alone
+      // puts it back at the start of the document (NP-SB-02).
+      const selection = window.getSelection();
+      const caret = previous?.isContentEditable && selection?.rangeCount && previous.contains(selection.anchorNode) ? selection.getRangeAt(0).cloneRange() : null;
       const dialog = dialogRef.current;
       dialog?.showModal();
       inputRef.current?.focus();
-      return () => { dialog?.close(); if (previous?.isConnected) previous.focus(); };
+      return () => {
+        dialog?.close();
+        if (!previous?.isConnected) return;
+        previous.focus();
+        if (caret && previous.contains(caret.startContainer)) { const s = window.getSelection(); s?.removeAllRanges(); s?.addRange(caret); }
+      };
     }
   }, [commandBarOpen]);
 

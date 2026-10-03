@@ -9,7 +9,7 @@ import { humanRevisionBody } from "../../../../packages/core/src/lib/collab/huma
 import { PageCover, parseCover, coverPatch, COVER_GRADIENTS, type PageCoverValue } from "@prism/core";
 import { COLLAB_SCHEMA_VERSION, useAgentDocumentSnapshot, CollabEditor, CommentsSidebar, collabAffordances, humanFailureText, HumanCommandFailure, PresenceAvatars, type CollabSocketScope, type CommentCommandActions, type HumanCommandChannel, CollabCodeEditor, CollabSpreadsheet, CollabCanvas, detectCodeLanguage, inferContentType, PageHeader, NotePropertyBar, PageProperties, renamePath, useUIStore, useAgentChatStore, type ContentFont, type Note, type Editor } from "@prism/core";
 import { MessageSquare, X, Lock } from "lucide-react";
-import { serverFetch, collabWsUrl, collabToken } from "../transport";
+import { serverFetch, collabWsUrl, collabToken, isNative } from "../transport";
 import { apiBase, agentScope, getCapabilityToken, getActiveVault, getMe, fetchMe, contextHeaders } from "../config";
 
 /** The vault-scoped collab documentName: the primary vault uses a BARE note id
@@ -329,6 +329,8 @@ function ScopedCollabDoc({
     const doc = new Y.Doc();
     let persistence: Awaited<ReturnType<typeof persistLocalDocument>> | undefined;
     let cancelled = false;
+    let socketUp = false;
+    let localUnavailable = false;
     const capToken = getCapabilityToken();
     const initialContext = JSON.stringify([contextHeaders(), capToken]);
     const current = () => !cancelled && initialContext === JSON.stringify([contextHeaders(), getCapabilityToken()]);
@@ -395,8 +397,8 @@ function ScopedCollabDoc({
         } catch { /* ordinary local note */ }
         if (!(await stillCurrent())) return;
         try {
-          persistence = await persistLocalDocument(localDocumentKey(context.scope, name), doc, (state) => { if (current()) setLocalSave(state); });
-        } catch { if (current()) setLocalSave("unavailable"); }
+          persistence = await persistLocalDocument(localDocumentKey(context.scope, name), doc, (state) => { localUnavailable = state === "unavailable"; if (current()) setLocalSave(state); });
+        } catch { localUnavailable = true; if (current()) setLocalSave("unavailable"); }
         if (!(await stillCurrent())) { persistence?.close(); return; }
         // Opening without the server is only safe on top of local state: an empty
         // local document would later be merged with the server's seed.
@@ -431,8 +433,8 @@ function ScopedCollabDoc({
         };
         p = new HocuspocusProvider({
           url: collabUrl(), name, token: collabToken(capToken), document: doc,
-          onStatus: ({ status }) => { if (current()) setConnected(status === "connected"); },
-          onSynced: () => { if (current()) { setSynced(true); setConnected(true); } },
+          onStatus: ({ status }) => { socketUp = status === "connected"; if (current()) setConnected(status === "connected"); },
+          onSynced: () => { socketUp = true; if (current()) { setSynced(true); setConnected(true); } },
           onAuthenticationFailed: ({ reason }) => {
             if (!current()) return;
             setLevel(null);
@@ -468,7 +470,35 @@ function ScopedCollabDoc({
         setConnection({ doc, provider: p });
       } catch { if (current()) setConnectionError(true); }
     })();
+    // ── Unload guard (wave 3) ────────────────────────────────────────────────
+    // Socket down + edits the server has not taken: the local IndexedDB write is
+    // asynchronous, and a navigation within a few ms of the last keystroke used to
+    // abort it. On the way out, whatever IndexedDB has not confirmed goes to
+    // localStorage synchronously (persistence.rescue) and the document is registered
+    // as unsynced; it is folded back in on the next open / background sync.
+    const leaving = () => {
+      const at = docRef.current;
+      if (!at || cancelled) return;
+      if (socketUp && (p?.unsyncedChanges ?? 0) === 0) return;
+      persistence?.rescue();
+      if ((p?.unsyncedChanges ?? 0) > 0) markUnsynced(at.scope, at.name, noteId);
+    };
+    const onHidden = () => { if (document.visibilityState === "hidden") leaving(); };
+    // The browser's own "Leave site?" prompt, only when the edits are neither on the
+    // server nor confirmed on this device. Web only: a native shell has no dialogs.
+    const onBeforeUnload = (event: BeforeUnloadEvent) => {
+      if (isNative || !docRef.current || socketUp || (p?.unsyncedChanges ?? 0) === 0) return;
+      if (persistence && !persistence.pending() && !localUnavailable) return;
+      event.preventDefault();
+      event.returnValue = "";
+    };
+    window.addEventListener("pagehide", leaving);
+    document.addEventListener("visibilitychange", onHidden);
+    window.addEventListener("beforeunload", onBeforeUnload);
     return () => {
+      window.removeEventListener("pagehide", leaving);
+      document.removeEventListener("visibilitychange", onHidden);
+      window.removeEventListener("beforeunload", onBeforeUnload);
       cancelled = true;
       // Leaving with edits the server has not acknowledged: they are in the local
       // store — remember the document so the badge says so and it syncs later.

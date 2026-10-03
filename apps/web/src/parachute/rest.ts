@@ -682,6 +682,25 @@ export async function uploadAttachment(noteId: string, file: File, opts?: { kind
   return (await resp.json()) as import("@prism/core").UploadedAttachment;
 }
 
+/** Copy the files a duplicated page references into the copy (POST /api/notes/:id/attachments/copy). */
+export async function copyAttachments(noteId: string): Promise<{ copied: number; failed: number; skipped: number; errors: number; more: boolean }> {
+  if (isOffline()) throw Object.assign(new Error("offline"), { userMessage: "you're offline" });
+  const total = { copied: 0, failed: 0, skipped: 0, errors: 0, more: false };
+  // The server copies up to 50 files (and a byte/time budget) per call and only
+  // counts work still to do, so every round either makes progress or we stop.
+  // `more` still true at exit = some files were NOT copied (the caller says so).
+  for (let round = 0; round < 40; round++) {
+    const r = (await (await req(`/notes/${encodeURIComponent(noteId)}/attachments/copy`, { method: "POST", body: "{}", cache: "no-store" })).json()) as Partial<typeof total>;
+    total.copied += r.copied ?? 0;
+    total.failed += r.failed ?? 0;
+    total.skipped = r.skipped ?? 0;
+    total.errors = r.errors ?? 0;
+    total.more = !!r.more;
+    if (!r.more || (r.copied ?? 0) + (r.failed ?? 0) === 0) break;
+  }
+  return total;
+}
+
 /** Link preview for a bookmark (GET /api/unfurl, signed-in only, SSRF-guarded server-side). */
 export async function unfurl(url: string): Promise<{ url: string; title?: string | null; description?: string | null; siteName?: string | null; image?: string | null; favicon?: string | null }> {
   return (await req(`/unfurl${qs({ u: url })}`, { cache: "no-store" })).json();

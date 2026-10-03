@@ -45,6 +45,29 @@ test.describe("plain editor selection toolbar", () => {
     await expect.poll(() => html(page)).toContain("<p><code>Foxtrot closing</code></p>");
   });
 
+  // NP-ED-05: the keyboard shortcuts themselves (the test above drives the buttons).
+  test("⌘B ⌘I ⌘U ⌘⇧S ⌘E toggle marks from the keyboard", async ({ page }) => {
+    const cases: Array<[string, string]> = [["b", "strong"], ["i", "em"], ["u", "u"], ["Shift+s", "s"], ["e", "code"]];
+    for (const [key, tag] of cases) {
+      await select(page, "Bravo paragraph");
+      await page.keyboard.press(`ControlOrMeta+${key}`);
+      await expect.poll(() => html(page), { message: `Mod+${key} applies <${tag}>` }).toContain(`<p><${tag}>Bravo paragraph</${tag}></p>`);
+      await expect(page.locator(".tiptap")).toBeFocused(); // the shortcut never moves focus to app chrome (⌘B is not "toggle sidebar" here)
+      await page.keyboard.press(`ControlOrMeta+${key}`);
+      await expect.poll(() => html(page), { message: `Mod+${key} again removes it` }).toContain("<p>Bravo paragraph</p>");
+    }
+  });
+
+  // PRODUCT GAPS (NP-ED-05): ⌘K inside the editor opens quick find (NP-SB-02 takes the key), and ⌘⇧H opens Replace
+  // (SearchHighlight claims Mod-Shift-H above Highlight), so neither does what this row requires.
+  test.fixme("⌘K link, ⌘⇧H highlight", async ({ page }) => {
+    await select(page, "Bravo paragraph");
+    await page.keyboard.press("ControlOrMeta+Shift+h");
+    await expect.poll(() => html(page)).toContain("<mark");
+    await page.keyboard.press("ControlOrMeta+k");
+    await expect(page.getByRole("textbox", { name: /link/i })).toBeFocused();
+  });
+
   test("links are typed inline, validated, applied and removable", async ({ page }) => {
     let bubble = await select(page, "Bravo paragraph");
     await bubble.getByRole("button", { name: "Link", exact: true }).click();

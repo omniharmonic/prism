@@ -34,6 +34,10 @@ test("home shows recents, upcoming events, my tasks", async ({ page }) => {
   await expect(tasks.getByRole("button", { name: /Write release notes/ })).toBeVisible();
   await expect(tasks.getByRole("button", { name: /Review access requests/ })).toBeVisible();
   await expect(tasks).not.toContainText("Old cleanup");
+  // Wave 3: only tasks assigned to the viewer (resolved server-side through /api/query).
+  await expect(tasks).toHaveAttribute("data-scope", "assigned");
+  await expect(tasks).not.toContainText("Order catering");
+  expect(await page.evaluate(() => (window as any).prismQueries?.some((q: { assignedToMe?: boolean; tags: string[] }) => q.assignedToMe === true && q.tags[0] === "task"))).toBe(true);
 
   const mentions = home(page).getByRole("region", { name: "Mentions of you" });
   await expect(mentions.getByRole("button", { name: /Ada Park · Roadmap/ })).toBeVisible();
@@ -57,4 +61,22 @@ test("home shows recents, upcoming events, my tasks", async ({ page }) => {
   await expect(home(page)).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1)).toBe(true);
   await shot(page, "home-390-light");
+});
+
+test("my tasks: an older server (no assignedToMe) keeps the list of every open task", async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem("prism-settings", JSON.stringify({ state: { startWithLastDocument: false }, version: 0 })));
+  await page.goto(url("?reset&oldserver"));
+  const tasks = home(page).getByRole("region", { name: "My tasks" });
+  await expect(tasks.getByRole("button", { name: /Order catering/ })).toBeVisible();
+  await expect(tasks).toHaveAttribute("data-scope", "all");
+});
+
+test("my tasks: an owner with no owner identity set sees every open task and a hint, never an empty list", async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem("prism-settings", JSON.stringify({ state: { startWithLastDocument: false }, version: 0 })));
+  await page.goto(url("?reset&ownerunset"));
+  const tasks = home(page).getByRole("region", { name: "My tasks" });
+  await expect(tasks.getByRole("button", { name: /Order catering/ })).toBeVisible();
+  await expect(tasks.getByRole("button", { name: /Write release notes/ })).toBeVisible();
+  await expect(tasks.getByTestId("my-tasks-hint")).toContainText("Set the owner identity");
+  await expect(tasks).toHaveAttribute("data-scope", "all");
 });

@@ -176,3 +176,27 @@ test('actual collaborative host hands off selected text and view-only selection 
     await page.goto('about:blank');
   } finally { for (const socket of sockets) socket.terminate(); await server.destroy(); }
 });
+
+// NP-AI-01: ⌘J and the slash entry land in the SAME document-bound session as the toolbar — never a second chat.
+test('⌘J and slash attach to the existing session without starting another', async ({ page }) => {
+  await page.goto('/e2e-fixtures/agent.html?context&snapshots&selection&history');
+  const message = page.getByRole('textbox', { name: 'Message the agent', exact: true });
+  await message.fill('Draft that must survive');
+  const state = () => page.evaluate(() => { const s = (window as any).prismAgentStore.getState(); return { id: s.activeSessionId as string }; });
+  const original = await state();
+  expect(original.id).toBeTruthy();
+  const editor = await select(page, 'Passage for the keyboard entry');
+  await editor.press('ControlOrMeta+j');
+  await expect(page.getByRole('button', { name: 'Selected passage', exact: true })).toHaveCount(1);
+  expect(await state()).toEqual(original);
+  await expect(message).toHaveValue('Draft that must survive');
+  await editor.fill('A document to discuss');
+  await editor.press('End'); await editor.press('Enter'); await editor.press('ControlOrMeta+Alt+0');
+  await editor.pressSequentially('/ask');
+  await page.getByRole('option', { name: 'Ask agent Discuss this page in your conversation' }).click();
+  await expect(page.getByRole('button', { name: 'Document snapshot', exact: true })).toHaveCount(1);
+  expect(await state()).toEqual(original);
+  await expect(message).toHaveValue('Draft that must survive');
+  await expect(page.getByRole('textbox', { name: 'Message the agent', exact: true })).toHaveCount(1); // one conversation, not two
+  await noSend(page);
+});

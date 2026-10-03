@@ -8,6 +8,7 @@ import {
   buildLinkIndex,
   renderWikiBody,
   extractToc,
+  rewritePublicAttachments,
   computeBacklinks,
   buildTree,
   ancestorFolders,
@@ -205,7 +206,8 @@ export default function WikiTemplate({
   const { html, toc } = useMemo(() => {
     if (!note) return { html: "", toc: [] as ReturnType<typeof extractToc>["toc"] };
     const dirty = renderWikiBody(note.content, linkIndex, slug);
-    const out = extractToc(sanitizeHtml(dirty));
+    // Files of a published page come from the publication's own attachment route.
+    const out = extractToc(rewritePublicAttachments(sanitizeHtml(dirty), slug));
     // Notes conventionally open with "# <Title>", and the chrome already shows
     // the title — drop the body's leading h1 when it just repeats it.
     const m = out.html.match(/^\s*<h1[^>]*>([\s\S]*?)<\/h1>/);
