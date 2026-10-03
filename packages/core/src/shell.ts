@@ -16,6 +16,11 @@ import "./styles/workspace.css";
 import "./styles/shell.css";
 import "./styles/touch.css";
 import "./styles/print.css";
+import { installImeKeyGuard } from "./lib/ime/keyGuard";
+
+// NP-AX-08: keys that belong to an IME composition never reach app handlers (see keyGuard.ts).
+installImeKeyGuard();
+export { installImeKeyGuard, isImeKey } from "./lib/ime/keyGuard";
 
 export { PrismMark, PrismAppIcon } from "./components/brand/PrismMark";
 

@@ -52,6 +52,9 @@ export const WikilinkAutocomplete = Extension.create<WikilinkAutocompleteOptions
                 return;
               }
 
+              // NP-AX-08: never open mid-composition (see SlashCommand); an open list keeps filtering.
+              if (view.composing && !lastActive) return;
+
               const pos = selection.$from;
               const textBefore = pos.parent.textContent.slice(0, pos.parentOffset);
 

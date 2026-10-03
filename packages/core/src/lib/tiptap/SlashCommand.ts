@@ -58,6 +58,10 @@ export const SlashCommand = Extension.create<SlashCommandOptions, { dismissedFro
             update(view) {
               const { selection } = view.state;
               if (!selection.empty) return clear();
+              // NP-AX-08: a "/" that is part of an IME composition is not a command yet — the menu never
+              // OPENS mid-composition (it may open when the text is committed). A menu that was already
+              // open keeps filtering: soft keyboards compose every word of the query.
+              if (view.composing && !lastActive) return;
 
               const $from = selection.$from;
               const textBefore = $from.parent.textContent.slice(0, $from.parentOffset);
