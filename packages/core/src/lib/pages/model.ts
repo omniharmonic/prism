@@ -237,11 +237,43 @@ export function sanitizePreferences(raw: unknown): PagePreferences {
   };
 }
 
+/**
+ * Reorder `list` so `id` sits at position `index` of the VISIBLE subsequence
+ * (`visible` defaults to the whole list). Ids not in `visible` are not shown to
+ * the user, so they are never chosen as a drop target; each stays attached
+ * behind the visible id that preceded it. Returns the same array when nothing moves.
+ */
+export function moveWithin(list: string[], id: string, index: number, visible?: string[]): string[] {
+  const shown = (visible ?? list).filter((x) => list.includes(x));
+  const from = shown.indexOf(id);
+  if (from < 0) return list;
+  const to = Math.max(0, Math.min(shown.length - 1, Math.trunc(index)));
+  if (to === from) return list;
+  // Group every hidden id with the visible id before it (leading hidden ids stay first).
+  const lead: string[] = [];
+  const groups = new Map<string, string[]>();
+  let current: string | null = null;
+  for (const x of list) {
+    if (shown.includes(x)) { current = x; groups.set(x, [x]); }
+    else if (current === null) lead.push(x);
+    else groups.get(current)!.push(x);
+  }
+  const order = shown.filter((x) => x !== id);
+  order.splice(to, 0, id);
+  return [...lead, ...order.flatMap((x) => groups.get(x)!)];
+}
+
 /** Pure edits the client applies (and re-applies after a revision conflict). */
 export const preferenceOps = {
   toggleFavorite(p: PagePreferences, id: string): PagePreferences {
     const has = p.favorites.includes(id);
     return { ...p, favorites: has ? p.favorites.filter((x) => x !== id) : [id, ...p.favorites].slice(0, PREFERENCE_LIMITS.favorites) };
+  },
+  /** Move a favorite to `index` among the favorites the caller can see (`visible`, in shown order).
+   *  Favorites hidden from the caller right now keep their place relative to the one before them. */
+  moveFavorite(p: PagePreferences, id: string, index: number, visible?: string[]): PagePreferences {
+    const next = moveWithin(p.favorites, id, index, visible);
+    return next === p.favorites ? p : { ...p, favorites: next };
   },
   pushRecent(p: PagePreferences, id: string): PagePreferences {
     if (p.recents[0] === id) return p;

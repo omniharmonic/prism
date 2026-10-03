@@ -44,6 +44,16 @@ export function Navigation() {
   const sidebarLabel = useSettingsStore((s) => s.sidebarLabel);
   const shortcuts = useNoteShortcuts();
   const { favorites, recents, toggleFavorite } = shortcuts;
+  // NP-SB-04: favorites reorder by drag, or Alt+Shift+↑/↓ on a focused row (the tab strip's keys).
+  const [favDrag, setFavDrag] = useState<{ id: string; over: string | null } | null>(null);
+  const [favNotice, setFavNotice] = useState("");
+  const moveFavorite = (id: string, index: number) => {
+    const to = Math.max(0, Math.min(favorites.length - 1, index));
+    const item = favorites.find((f) => f.id === id);
+    if (!item || !shortcuts.moveFavorite || favorites[to]?.id === id) return;
+    shortcuts.moveFavorite(id, to);
+    setFavNotice(`${item.title} moved to position ${to + 1} of ${favorites.length} in Favorites`);
+  };
   // Section open state: synced per user × vault when the server keeps preferences.
   const sectionProps = (id: string, defaultOpen: boolean) => shortcuts.synced && shortcuts.collapsed
     ? { open: !shortcuts.collapsed.includes(id), onToggle: (open: boolean) => shortcuts.setCollapsed(id, !open) }
@@ -201,7 +211,7 @@ export function Navigation() {
                 Star a page to pin it here.
               </p>
             )}
-            {favorites.map((f) => (
+            {favorites.map((f, index) => (
               <NavItem
                 key={f.id}
                 icon={<PageIcon noteId={f.id} fallback={<Star size={14} fill="var(--color-accent)" color="var(--color-accent)" />} />}
@@ -209,8 +219,18 @@ export function Navigation() {
                 active={openTabs.find((t) => t.id === activeTabId)?.noteId === f.id}
                 onClick={() => openTab(f.id, f.title, f.type)}
                 trailing={<RowAction title="Remove from Favorites" onClick={() => toggleFavorite(f)} icon={<X size={12} />} />}
+                reorder={shortcuts.moveFavorite && favorites.length > 1 ? {
+                  dragging: favDrag?.id === f.id,
+                  over: favDrag && favDrag.over === f.id && favDrag.id !== f.id ? (favorites.findIndex((x) => x.id === favDrag.id) < index ? "after" : "before") : null,
+                  onDragStart: () => setFavDrag({ id: f.id, over: null }),
+                  onDragOver: () => setFavDrag((d) => (d && d.over !== f.id ? { ...d, over: f.id } : d)),
+                  onDrop: () => { if (favDrag && favDrag.id !== f.id) moveFavorite(favDrag.id, index); setFavDrag(null); },
+                  onDragEnd: () => setFavDrag(null),
+                  onMove: (delta) => moveFavorite(f.id, index + delta),
+                } : undefined}
               />
             ))}
+            <span className="sr-only" role="status" aria-live="polite">{favNotice}</span>
           </NavSection>
 
           {/* Recently opened notes */}
@@ -318,18 +338,52 @@ export function Navigation() {
 }
 
 /** Primary action and trailing actions are sibling buttons for keyboard access. */
-function NavItem({ icon, label, onClick, trailing, active = false, ariaLabel }: {
+interface RowReorder {
+  dragging: boolean;
+  over: "before" | "after" | null;
+  onDragStart: () => void;
+  onDragOver: () => void;
+  onDrop: () => void;
+  onDragEnd: () => void;
+  /** Keyboard: -1 = up, +1 = down. */
+  onMove: (delta: number) => void;
+}
+
+function NavItem({ icon, label, onClick, trailing, active = false, ariaLabel, reorder }: {
   icon: React.ReactNode;
   label: string;
   onClick: () => void;
   trailing?: React.ReactNode;
   active?: boolean;
   ariaLabel?: string;
+  /** Present when the row can be reordered within its list (favorites). */
+  reorder?: RowReorder;
 }) {
+  const button = useRef<HTMLButtonElement>(null);
   return (
     <div data-active={active} className="workspace-nav-row group flex items-center"
-      style={{ color: active ? "var(--text-primary)" : "var(--text-secondary)", fontSize: "var(--text-base)", paddingRight: trailing ? 6 : 0 }}>
-      <button type="button" onClick={onClick} aria-current={active ? "page" : undefined} aria-label={ariaLabel}
+      draggable={reorder ? true : undefined}
+      data-reorder-over={reorder?.over ?? undefined}
+      onDragStart={reorder ? (e) => { e.dataTransfer.effectAllowed = "move"; e.dataTransfer.setData("text/plain", label); reorder.onDragStart(); } : undefined}
+      onDragOver={reorder ? (e) => { e.preventDefault(); e.dataTransfer.dropEffect = "move"; reorder.onDragOver(); } : undefined}
+      onDrop={reorder ? (e) => { e.preventDefault(); reorder.onDrop(); } : undefined}
+      onDragEnd={reorder?.onDragEnd}
+      style={{
+        color: active ? "var(--text-primary)" : "var(--text-secondary)", fontSize: "var(--text-base)", paddingRight: trailing ? 6 : 0,
+        opacity: reorder?.dragging ? 0.4 : undefined,
+        boxShadow: reorder?.over ? `inset 0 ${reorder.over === "before" ? "2px" : "-2px"} 0 0 var(--color-accent)` : undefined,
+      }}>
+      <button ref={button} type="button" onClick={onClick} aria-current={active ? "page" : undefined} aria-label={ariaLabel}
+        aria-keyshortcuts={reorder ? "Alt+Shift+ArrowUp Alt+Shift+ArrowDown" : undefined}
+        title={reorder ? "Drag to reorder, or press Alt+Shift+↑/↓" : undefined}
+        onKeyDown={reorder ? (e) => {
+          if (!e.altKey || !e.shiftKey || (e.key !== "ArrowUp" && e.key !== "ArrowDown")) return;
+          e.preventDefault();
+          e.stopPropagation();
+          reorder.onMove(e.key === "ArrowUp" ? -1 : 1);
+          // The row keeps its identity (keyed by page id), so focus stays on it after the move.
+          requestAnimationFrame(() => button.current?.focus());
+        } : undefined}
         className="interactive focus-ring flex flex-1 min-w-0 items-center gap-2.5 text-left"
         style={{ minHeight: "var(--workspace-control-height)", padding: "0 10px" }}>
         <span className="flex items-center justify-center flex-shrink-0" style={{ width: 16, color: "var(--text-muted)" }}>{icon}</span>

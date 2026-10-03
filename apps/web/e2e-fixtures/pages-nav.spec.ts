@@ -210,6 +210,39 @@ test("page ⋯ menu: favorite, duplicate, copy link, lock, export and history", 
   expect((await writes(page)).find((w) => w.create)).toMatchObject({ create: { path: "vault/Projects/Prism (copy)", tags: ["page"] } });
 });
 
+// NP-SB-04
+test("favorites reorder by drag and keyboard", async ({ page, browser }) => {
+  const seed = { favorites: ["plan", "archive", "weekly"], recents: [] };
+  await page.goto(url(`?prefs=${encodeURIComponent(JSON.stringify(seed))}`));
+  const favorites = page.getByRole("region", { name: "Favorites", exact: true });
+  const names = () => favorites.locator(".workspace-nav-row").evaluateAll((rows) => rows.map((r) => r.querySelector("button")!.textContent!.trim()));
+  await expect.poll(names).toEqual(["Plan", "Archive", "Weekly review"]);
+  // Keyboard: Alt+Shift+↓ moves the focused favorite down; focus stays on it and the move is announced.
+  const plan = favorites.getByRole("button", { name: "Plan", exact: true });
+  await plan.focus();
+  await page.keyboard.press("Alt+Shift+ArrowDown");
+  await expect.poll(names).toEqual(["Archive", "Plan", "Weekly review"]);
+  await expect(plan).toBeFocused();
+  await expect(favorites.getByRole("status")).toHaveText("Plan moved to position 2 of 3 in Favorites");
+  await page.keyboard.press("Alt+Shift+ArrowDown");
+  await page.keyboard.press("Alt+Shift+ArrowDown"); // already last: nothing happens
+  await expect.poll(names).toEqual(["Archive", "Weekly review", "Plan"]);
+  await page.keyboard.press("Alt+Shift+ArrowUp");
+  await expect.poll(names).toEqual(["Archive", "Plan", "Weekly review"]);
+  // Drag: "Weekly review" onto "Archive" puts it first.
+  await favorites.locator(".workspace-nav-row", { hasText: "Weekly review" }).dragTo(favorites.locator(".workspace-nav-row", { hasText: "Archive" }));
+  await expect.poll(names).toEqual(["Weekly review", "Archive", "Plan"]);
+  // The order is the synced record: the server has it, and another device shows it.
+  await expect.poll(async () => (await page.evaluate(() => (window as any).prismFixturePrefs())).prefs.favorites).toEqual(["weekly", "archive", "plan"]);
+  const server = await page.evaluate(() => (window as any).prismFixturePrefs());
+  const other = await browser.newContext();
+  const second = await other.newPage();
+  await second.goto(url(`?prefs=${encodeURIComponent(JSON.stringify(server.prefs))}`));
+  const there = second.getByRole("region", { name: "Favorites", exact: true });
+  await expect.poll(() => there.locator(".workspace-nav-row").evaluateAll((rows) => rows.map((r) => r.querySelector("button")!.textContent!.trim()))).toEqual(["Weekly review", "Archive", "Plan"]);
+  await other.close();
+});
+
 test("favorites and recents sync through the server and migrate this device's shortcuts once", async ({ page, browser }) => {
   const scope = (origin: string) => JSON.stringify([origin + "/api", "default", "primary", "owner@example.test"]);
   await page.addInitScript((key) => {

@@ -103,3 +103,32 @@ test("⌘\\ collapses and width persists", async ({ page }) => {
   await expect(nav).toBeVisible();
   expect(Math.abs((await nav.boundingBox())!.width - dragged)).toBeLessThanOrEqual(1);
 });
+
+/** NP-SB-05 */
+test("recents are capped at 12 in the sidebar", async ({ page }) => {
+  await page.goto("/e2e-fixtures/notion-shell.html");
+  await expect(page.locator(".tiptap[contenteditable=true]")).toBeVisible();
+  // Visit 14 more pages.
+  for (let i = 1; i <= 14; i++) {
+    await page.evaluate((n) => {
+      (window as any).prismShell.serverCreate(`Journal/Day ${n}`, `<p>Entry ${n}</p>`);
+      (window as any).prismShellUI.getState().openTab(`foreign-${n}`, `Day ${n}`, "document");
+    }, i);
+    await expect(page.locator(".tiptap")).toContainText(`Entry ${i}`);
+  }
+  await expect.poll(() => page.evaluate(() => (window as any).prismShell.preferences.recents.length)).toBe(15);
+  const recent = page.locator(".workspace-navigation").getByRole("region", { name: "Recent", exact: true });
+  const toggle = recent.getByRole("button", { name: "Recent", exact: true });
+  if ((await toggle.getAttribute("aria-expanded")) !== "true") await toggle.click();
+  const rows = recent.locator(".workspace-nav-row");
+  await expect(rows).toHaveCount(12);
+  // Most recent first; the oldest visits have dropped off the list.
+  await expect(rows.first()).toContainText("Day 14");
+  await expect(recent).not.toContainText("Day 2");
+  await expect(recent).not.toContainText("A living workspace");
+  // ⌘K's empty state lists recent pages too (its own, shorter cut).
+  await page.keyboard.press("ControlOrMeta+k");
+  const palette = page.getByRole("group", { name: "Recent pages" });
+  await expect(palette.getByRole("option").first()).toContainText("Day 14");
+  expect(await palette.getByRole("option").count()).toBeLessThanOrEqual(12);
+});
