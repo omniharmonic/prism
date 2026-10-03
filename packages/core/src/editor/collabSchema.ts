@@ -7,6 +7,7 @@ import TaskItem from "@tiptap/extension-task-item";
 import type { Extensions } from "@tiptap/core";
 import { suggestionMarks } from "./suggestionMarks";
 import { commentMarks } from "./commentMark";
+import { blockSchemaExtensions } from "./blocks";
 
 /**
  * The document schema shared by the collaborative editor (browser) and the
@@ -30,6 +31,9 @@ export function collabExtensions(): Extensions {
     Highlight.configure({ multicolor: true }),
     TaskList,
     TaskItem.configure({ nested: true }),
+    // Images, tables, callouts, toggles, columns and block/text colours —
+    // shared with the plain renderer so a note round-trips through either.
+    ...blockSchemaExtensions(),
     // Suggested-edit marks (insertion/deletion). Schema-only here so the server
     // can round-trip them through HTML; the suggest-mode behavior plugin is
     // added client-side in CollabEditor.

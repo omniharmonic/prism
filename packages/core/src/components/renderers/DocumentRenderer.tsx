@@ -16,14 +16,10 @@ import { WikilinkAutocomplete, type WikilinkAutocompleteState } from "../../lib/
 import { SlashCommand, type SlashCommandState } from "../../lib/tiptap/SlashCommand";
 import { SlashMenu } from "./SlashMenu";
 import { SearchHighlight } from "../../lib/tiptap/SearchHighlight";
+import { blockSchemaExtensions } from "../../editor/blocks";
 import { EditorFindBar } from "./EditorFindBar";
 import StarterKit from "@tiptap/starter-kit";
 import Placeholder from "@tiptap/extension-placeholder";
-import Image from "@tiptap/extension-image";
-import { Table } from "@tiptap/extension-table";
-import TableRow from "@tiptap/extension-table-row";
-import TableCell from "@tiptap/extension-table-cell";
-import TableHeader from "@tiptap/extension-table-header";
 import TaskList from "@tiptap/extension-task-list";
 import TaskItem from "@tiptap/extension-task-item";
 import Highlight from "@tiptap/extension-highlight";
@@ -110,9 +106,9 @@ export default function DocumentRenderer({ note, onMetadataChange, readOnly }: R
   const extensions = useMemo(() => [
     StarterKit.configure({ codeBlock: false, link: false }),
     Placeholder.configure({ placeholder: "Start writing, or press / for commands..." }),
-    Image,
-    Table.configure({ resizable: true }),
-    TableRow, TableCell, TableHeader,
+    // Images, tables, callouts, toggles, columns, colours: the SAME list the
+    // live editor and the server use, so a note round-trips through either.
+    ...blockSchemaExtensions(),
     TaskList,
     TaskItem.configure({ nested: true }),
     Highlight.configure({ multicolor: true }),
