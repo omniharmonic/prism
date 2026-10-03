@@ -469,6 +469,7 @@ function ScopedCollabDoc({
               setServerUnsaved(message.state === "unsaved" ? { permanent: true, reason } : message.state === "pending" ? { permanent: false, reason } : null);
             }
             else if (message.type === "prism:notice" && message.code === "external-replaced") setServerNotice("Changes made elsewhere replaced part of this page.");
+            else if (message.type === "prism:notice" && message.code === "unsaved-discarded") setServerNotice("Changes on this page that could not be saved were discarded by the workspace owner. You are looking at the stored page.");
           },
           onAuthenticationFailed: ({ reason }) => {
             if (!current()) return;

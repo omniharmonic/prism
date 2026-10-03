@@ -39,7 +39,7 @@ adminApi.use("*", async (c, next) => {
 
 // ── pages whose live changes are not in the vault (collab_unsaved) ────────────
 //   GET  /api/admin/collab/unsaved                       → {rows:[{vaultId,noteId,reason,permanent,since,attempts}]}
-//   POST /api/admin/collab/unsaved/:id/discard {confirm:true}
+//   POST /api/admin/collab/unsaved/:id/discard {confirm:true, force?:true}   (force: a row that is still being retried)
 // The way out of a page that can NEVER be saved as it is (too large to render,
 // refused by the vault, given up on): the live changes the vault lacks are
 // dropped and the document becomes the stored page again (collab.ts
@@ -58,7 +58,7 @@ adminApi.post("/collab/unsaved/:id/discard", async (c) => {
   const via = requestVia(c);
   if (via !== "session" && via !== "device") return c.json({ error: "agent_origin_refused" }, 403);
   const id = c.req.param("id");
-  const body = (await c.req.json<{ confirm?: unknown }>().catch(() => ({}))) as { confirm?: unknown };
+  const body = (await c.req.json<{ confirm?: unknown; force?: unknown }>().catch(() => ({}))) as { confirm?: unknown; force?: unknown };
   const collab = await import("../collab"); // lazily: collab ⇄ routes import cycle
   if (!collab.isNoteId(id)) return c.json({ error: "not_found" }, 404);
   if (body.confirm !== true) return c.json({ error: "confirm_required", detail: "send {\"confirm\": true} — the page's unsaved live changes are dropped for good" }, 400);
@@ -66,12 +66,16 @@ adminApi.post("/collab/unsaved/:id/discard", async (c) => {
     recordAction({ actorEmail: actor.email, via, origin: "human", action: "admin.collab-discard-unsaved", vaultId, target, status, error });
   let result: Awaited<ReturnType<typeof collab.discardUnsavedChanges>>;
   try {
-    result = await collab.discardUnsavedChanges(vaultId, id);
+    result = await collab.discardUnsavedChanges(vaultId, id, { force: body.force === true });
   } catch (e) {
     audit("failed", { discarded: 0 }, e instanceof Error ? e.message : "error");
     return c.json({ error: "upstream_error" }, 502);
   }
   if (result.reason === "none") return c.json({ error: "not_found", detail: "that page has no unsaved live changes" }, 404);
+  if (result.reason === "not_permanent") {
+    audit("refused", { discarded: 0, permanent: 0 }, "not_permanent");
+    return c.json({ error: "not_permanent", detail: "this page's changes are still being saved (the server keeps retrying) — discarding them needs {\"confirm\": true, \"force\": true}" }, 409);
+  }
   if (!result.discarded) {
     audit("refused", { discarded: 0, permanent: result.permanent ? 1 : 0 }, result.reason ?? undefined);
     return result.reason === "busy" ? c.json({ error: "busy", retry: true }, 503) : c.json({ error: "vault_unreachable", retry: true }, 502);

@@ -595,3 +595,70 @@ test("low: the owner's unsaved list filters by vault BEFORE its row limit", asyn
   const listed = (await (await app.request("/api/admin/collab/unsaved", { headers: ownerHeaders() })).json()) as { rows: Array<{ noteId: string }> };
   assert.deepEqual(listed.rows.map((r) => r.noteId), ["mine"]);
 });
+
+// ── M-5 ─────────────────────────────────────────────────────────────────────
+
+const discardRoute = (id: string, body: unknown) => app.request(`/api/admin/collab/unsaved/${id}/discard`, { method: "POST", headers: ownerHeaders(), body: JSON.stringify(body) });
+type Discard = (vaultId: string, noteId: string, opts?: { force?: boolean }) => Promise<{ discarded: boolean; reason: string | null }>;
+const discard = collab.discardUnsavedChanges as unknown as Discard;
+
+test("M-5: discarding is for pages that can NEVER be saved — one that is still being retried needs an explicit force", { timeout: 60_000 }, async () => {
+  await withUnsaved("m5a", 503, async () => {
+    assert.equal(unsavedRow("m5a")?.permanent, 0, "a retried row: the server is still trying to save it");
+    const refused = await discardRoute("m5a", { confirm: true });
+    assert.equal(refused.status, 409, await refused.clone().text());
+    assert.equal(((await refused.json()) as Record<string, unknown>).error, "not_permanent");
+    assert.ok(unsavedRow("m5a"), "nothing was discarded");
+    assert.match(text(await loadDocumentState("m5a", new Y.Doc())), /typed in the live editor/, "the typing is still there");
+    assert.equal((await discardRoute("m5a", { confirm: true, force: "yes" })).status, 409, "force must be exactly true");
+    const forced = await discardRoute("m5a", { confirm: true, force: true });
+    assert.equal(forced.status, 200, await forced.clone().text());
+    assert.equal(unsavedRow("m5a"), null);
+  });
+  assert.equal(vaultContent("m5a"), "<p>start</p>");
+});
+
+test("M-5: everyone on the page is TOLD when its unsaved changes are discarded", { timeout: 60_000 }, async () => {
+  fv.put({ id: "m5b", tags: ["garden"], content: "<p>start</p>", updatedAt: T0 });
+  const tab = open("m5b");
+  await until("synced", () => tab.synced());
+  await intercept(isPatch("m5b"), fail(413), async () => {
+    type(tab.doc, "too much to save");
+    await until("the page is recorded as unsaveable", () => unsavedRow("m5b")?.permanent === 1);
+    const ok = await discardRoute("m5b", { confirm: true });
+    assert.equal(ok.status, 200, await ok.clone().text());
+  });
+  await until("the tab is told its text was discarded", () => tab.messages.some((m) => m.type === "prism:notice" && m.code === "unsaved-discarded"));
+  await until("…and shows the stored page", () => !/too much to save/.test(text(tab.doc)));
+  assert.match(text(tab.doc), /start/);
+  assert.equal(tab.messages.filter((m) => m.type === "prism:unsaved").at(-1)?.state, "saved");
+  close(tab);
+});
+
+test("M-5: a discard waits for the document's store — a store that snapshotted before it can never write the discarded text afterwards", { timeout: 120_000 }, async () => {
+  fv.put({ id: "m5c", tags: ["garden"], content: "<p>start</p>", updatedAt: T0 });
+  const holder = await hocuspocus.openDirectConnection("m5c", {});
+  // Typing whose render goes to the worker (beyond the inline byte cap); its first store cannot reach the vault.
+  const conn = await hocuspocus.openDirectConnection("m5c", {});
+  await conn.transact((doc) => type(doc as unknown as Y.Doc, "typed and held " + "word ".repeat(6000)));
+  await intercept(isPatch("m5c"), fail(503), () => conn.disconnect());
+  assert.equal(unsavedRow("m5c")?.permanent, 0);
+  // The next store is under way — rendering, in a thread that still has to start — when the owner discards.
+  await stopConversionWorkers();
+  const rendering = conversionStats.worker;
+  const storing = collab.flushLiveDoc("primary", "m5c");
+  await until("the store is rendering", () => conversionStats.worker > rendering);
+  const result = await discard("primary", "m5c", { force: true });
+  const answered = fv.calls.length;
+  await storing;
+  await until("the store has finished", () => !(live("m5c") as unknown as { saveMutex: { isLocked(): boolean } }).saveMutex.isLocked(), 30_000);
+  await new Promise((r) => setTimeout(r, 400)); // (…and whatever store the discard itself set off)
+  const writtenAfter = fv.calls.slice(answered).filter((c) => c.method === "PATCH" && JSON.stringify((c as { body?: unknown }).body ?? "").includes("typed and held")).length;
+  assert.equal(writtenAfter, 0, "after the discard was answered, a store that had snapshotted before it wrote the discarded text to the vault");
+  // Serialised: the store finished FIRST (the text is saved — there was nothing left to discard).
+  assert.deepEqual([result.discarded, result.reason], [false, "none"]);
+  assert.match(vaultContent("m5c"), /typed and held/);
+  assert.match(text(live("m5c")!), /typed and held/, "the live document and the stored page agree");
+  assert.equal(unsavedRow("m5c"), null);
+  await holder.disconnect();
+});

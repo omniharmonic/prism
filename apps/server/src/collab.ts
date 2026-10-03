@@ -782,7 +782,9 @@ export type CollabClientMessage =
   | { type: "prism:unsaved"; state: "unsaved"; reason: string }
   | { type: "prism:unsaved"; state: "pending"; reason: string }
   | { type: "prism:unsaved"; state: "saved" }
-  | { type: "prism:notice"; code: "external-replaced" };
+  | { type: "prism:notice"; code: "external-replaced" }
+  /** The workspace owner discarded this page's unsaved live changes: what is shown is the stored page again. */
+  | { type: "prism:notice"; code: "unsaved-discarded" };
 /**
  * A one-off notice for a document that is still loading: delivered to the sockets
  * that connect to it NOW — the ones whose open triggered the load, within
@@ -1667,18 +1669,40 @@ export function unsavedPermanentBody(reason: string | null): { error: "unsaved_p
  * external edit without a base does), so the Yjs history and client ids stay:
  * a browser that still holds the old state locally converges on the stored
  * page instead of merging a second copy into a fresh document. Works on the
- * loaded document when the page is open (everyone on it sees the stored page).
+ * loaded document when the page is open (everyone on it sees the stored page —
+ * and is TOLD: `prism:notice unsaved-discarded`).
+ *
+ * Round 5 (M-5):
+ *  - Only for a page that can NEVER be saved (a permanent row). One the server is
+ *    still retrying needs `force` — it is not stuck, it is late (`not_permanent`).
+ *  - Serialised with the document's STORE (Hocuspocus' per-document save mutex):
+ *    a store that snapshotted the document before the discard used to finish
+ *    afterwards and write the discarded text to the vault. The discard now waits
+ *    for it and decides on what is true THEN (often: nothing left to discard).
+ *  - A document that is being LOADED right now is answered `busy`: its load has
+ *    already read the snapshot this would rewrite.
  * Returns what happened; throws nothing for a note without unsaved changes.
  */
-export async function discardUnsavedChanges(vaultId: string, noteId: string): Promise<{ discarded: boolean; live: boolean; permanent: boolean; reason: "none" | "unreadable" | "busy" | null }> {
+export type DiscardOutcome = { discarded: boolean; live: boolean; permanent: boolean; reason: "none" | "unreadable" | "busy" | "not_permanent" | null };
+export async function discardUnsavedChanges(vaultId: string, noteId: string, opts: { force?: boolean } = {}): Promise<DiscardOutcome> {
+  const documentName = getCollabUnsaved(noteId, vaultId)?.doc_name ?? docNameFor(vaultId, noteId);
+  const loaded = hocuspocus.documents.get(documentName);
+  if (hocuspocus.loadingDocuments.has(documentName) || loaded?.isLoading) return { discarded: false, live: false, permanent: !!getCollabUnsaved(noteId, vaultId)?.permanent, reason: "busy" };
+  if (!loaded) return discardNow(vaultId, noteId, documentName, null, opts.force === true);
+  return loaded.saveMutex.runExclusive(() => discardNow(vaultId, noteId, documentName, loaded, opts.force === true));
+}
+type LoadedDocument = typeof hocuspocus.documents extends Map<string, infer D> ? D : never;
+/** The discard itself. `held` = the loaded document whose save mutex the caller holds (null: none was loaded when it asked). */
+async function discardNow(vaultId: string, noteId: string, documentName: string, held: LoadedDocument | null, force: boolean): Promise<DiscardOutcome> {
+  // Read only now: a store that was in flight has finished, and may have saved everything.
   const row = getCollabUnsaved(noteId, vaultId);
   const snapshot = getDocState(noteId, vaultId);
   if (!row && !snapshot?.ahead) return { discarded: false, live: false, permanent: false, reason: "none" };
   const permanent = !!row?.permanent;
-  const documentName = row?.doc_name ?? docNameFor(vaultId, noteId);
+  if (!permanent && !force) return { discarded: false, live: false, permanent, reason: "not_permanent" };
   let note;
   try {
-    note = await vaultClient(vaultId).getNote(noteId);
+    note = await vaultClient(vaultId, { timeoutMs: 15_000 }).getNote(noteId);
   } catch {
     return { discarded: false, live: false, permanent, reason: "unreadable" };
   }
@@ -1692,17 +1716,22 @@ export async function discardUnsavedChanges(vaultId: string, noteId: string): Pr
     if (e.reason === "busy") return { discarded: false, live: false, permanent, reason: "busy" };
     convertible = false; // the note has no live document at all: the snapshot is simply dropped below
   }
+  // ── synchronous from here ──
+  // The document this works on must still be the one whose mutex is held; one that
+  // appeared (or is appearing) meanwhile has read the snapshot already.
+  const liveDoc = hocuspocus.documents.get(documentName) ?? null;
+  if (liveDoc !== held || hocuspocus.loadingDocuments.has(documentName) || liveDoc?.isLoading) return { discarded: false, live: false, permanent, reason: "busy" };
+  const live = !!liveDoc;
   const noteMs = toMs(note.updatedAt);
-  const liveDoc = hocuspocus.documents.get(documentName);
-  const live = !!liveDoc && !liveDoc.isLoading;
   cancelStoreRetry(documentName);
   if (!convertible) {
     if (live) dropConnections(documentName);
     deleteDocState(noteId, vaultId);
   } else {
     const doc = live ? (liveDoc as unknown as Y.Doc) : new Y.Doc();
-    if (!live && snapshot) Y.applyUpdate(doc, snapshot.state);
-    // ── synchronous: replace, then record the document as in step with the vault ──
+    const current = getDocState(noteId, vaultId); // (the awaits above: re-read)
+    if (!live && current) Y.applyUpdate(doc, current.state);
+    // Replace, then record the document as in step with the vault.
     applyExternalContent(doc, kind, note.content, prepared);
     saveDocState(noteId, Y.encodeStateAsUpdate(doc), noteMs, vaultId, contentHash(note.content));
     if (live) {
@@ -1712,7 +1741,10 @@ export async function discardUnsavedChanges(vaultId: string, noteId: string): Pr
     } else doc.destroy();
   }
   clearCollabUnsaved(noteId, vaultId);
-  if (live) tellClients(documentName, { type: "prism:unsaved", state: "saved" });
+  if (live) {
+    tellClients(documentName, { type: "prism:notice", code: "unsaved-discarded" });
+    tellClients(documentName, { type: "prism:unsaved", state: "saved" });
+  }
   console.warn(`[collab] ${documentName}: unsaved live changes were discarded on request — the document is the stored page again`);
   return { discarded: true, live, permanent, reason: null };
 }
