@@ -34,3 +34,51 @@ test("edge swipe goes back, else opens the drawer; mid-screen swipes are left to
   await expect.poll(() => page.evaluate(() => { const s = (window as any).prismShellUI.getState(); return s.openTabs.find((t: any) => t.id === s.activeTabId)?.noteId; })).toBe("workspace");
   await expect(drawer).toHaveCount(0);
 });
+
+test("keyboard toolbar complete", async ({ page }, info) => {
+  await page.goto("/e2e-fixtures/notion-shell.html");
+  const editor = page.locator(".tiptap[contenteditable=true]");
+  await expect(editor).toBeVisible();
+  await editor.locator("p").first().tap();
+  const toolbar = page.getByRole("toolbar", { name: "Editing toolbar" });
+  await expect(toolbar).toBeVisible();
+  for (const name of ["Insert block", "Turn into", "Bold", "Italic", "Underline", "Strikethrough", "Link", "To-do", "Indent", "Outdent", "Mention", "Image", "Undo", "Redo", "Dismiss keyboard"]) {
+    await expect(toolbar.getByRole("button", { name, exact: true })).toHaveCount(1);
+  }
+  for (const box of await toolbar.getByRole("button").evaluateAll((els) => els.map((e) => e.getBoundingClientRect().height))) expect(box).toBeGreaterThanOrEqual(44);
+  // A software keyboard (visualViewport shrinks): the toolbar rides on it, the bottom bar hides, the caret stays visible.
+  await page.evaluate(() => {
+    const vv = window.visualViewport!;
+    Object.defineProperty(vv, "height", { configurable: true, get: () => 480 });
+    vv.dispatchEvent(new Event("resize"));
+  });
+  await expect(toolbar).toHaveAttribute("data-keyboard-inset", String(844 - 480));
+  const bar = await toolbar.boundingBox();
+  expect(Math.round(bar!.y + bar!.height)).toBeLessThanOrEqual(481);
+  await expect(page.getByRole("navigation", { name: "Mobile workspace" })).toBeHidden();
+  // The caret's line is fully visible: above the toolbar and not under any other chrome.
+  await expect.poll(() => page.evaluate(() => {
+    const r = getSelection()!.getRangeAt(0).getBoundingClientRect();
+    const hit = document.elementFromPoint(40, r.top + r.height / 2);
+    return r.bottom <= document.querySelector('[aria-label="Editing toolbar"]')!.getBoundingClientRect().top && !!hit?.closest(".tiptap");
+  })).toBe(true);
+  await page.screenshot({ path: info.outputPath("keyboard-toolbar.png") });
+  // Commands act on the editor without losing it.
+  await page.keyboard.press("End");
+  await toolbar.getByRole("button", { name: "Bold", exact: true }).click();
+  await page.keyboard.type(" strong words");
+  await expect(editor.locator("strong")).toHaveText("strong words");
+  await toolbar.getByRole("button", { name: "Turn into", exact: true }).click();
+  await page.getByRole("group", { name: "Turn into" }).getByRole("button", { name: "Heading 3" }).click();
+  await expect(editor.locator("h3")).toContainText("strong words");
+  await toolbar.getByRole("button", { name: "Undo", exact: true }).click();
+  await expect(editor.locator("h3")).toHaveCount(0);
+  await toolbar.getByRole("button", { name: "To-do", exact: true }).click();
+  await expect(editor.locator("ul[data-type=taskList]")).toHaveCount(1);
+  await toolbar.getByRole("button", { name: "Insert block", exact: true }).click();
+  await expect(page.getByRole("listbox", { name: "Insert block" })).toBeVisible();
+  await page.keyboard.press("Escape");
+  await toolbar.getByRole("button", { name: "Dismiss keyboard", exact: true }).click();
+  await expect(toolbar).toHaveCount(0);
+  await expect(editor).not.toBeFocused();
+});

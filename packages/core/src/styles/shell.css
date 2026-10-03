@@ -100,3 +100,8 @@
 #workspace-document[data-page-full="true"] { --content-measure: min(100%, 1600px); --page-max-width: 100%; }
 #workspace-document[data-page-small="true"] .prose-editor { font-size: var(--text-base); line-height: 1.65; }
 #workspace-document[data-page-small="true"] { --document-title-size: clamp(28px, 2.6vw, 34px); }
+
+/* While the phone keyboard toolbar is up, the editor gains scroll room below
+   its last line (inside its own scroller, so no container shrinks) and the
+   caret can always be scrolled clear of the toolbar + keyboard. */
+.prose-editor[contenteditable="true"] { padding-bottom: var(--keyboard-toolbar-space, 0px); }

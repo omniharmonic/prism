@@ -38,6 +38,7 @@ import { useWikilinkNavigate } from "../../app/hooks/useWikilinkNavigate";
 import { convertApi } from "../../lib/parachute/client";
 import { DocumentOutline } from "./DocumentOutline";
 import { EditorToolbar } from "./EditorToolbar";
+import { KeyboardToolbar } from "./KeyboardToolbar";
 import { PageHeader, PageProperties, renamePath, type ContentFont } from "./DocumentChrome";
 import { PropertyBar } from "../database/PropertyBar";
 import { useUpdateNote } from "../../app/hooks/useParachute";
@@ -360,6 +361,7 @@ export default function DocumentRenderer({ note, onMetadataChange, readOnly }: R
       </BubbleMenu>}
       {/* Toolbar (hidden on read-only surfaces — no editing affordances) */}
       {editor && !notEditable && <EditorToolbar editor={editor} />}
+      {editor && !notEditable && <KeyboardToolbar editor={editor} />}
       {editor && notEditable && <div className="document-outline-readonly"><DocumentOutline editor={editor} /></div>}
 
       {/* Governed note (web, non-owner): the propose-for-review affordance, plus

@@ -16,3 +16,28 @@
 }
 
 .document-formatting-navigation { display: flex; align-items: center; flex-wrap: wrap; gap: 4px; min-width: 0; }
+
+/* Phone keyboard toolbar (NP-MB-04): pinned above the on-screen keyboard. */
+.keyboard-toolbar {
+  position: fixed; left: 0; right: 0; z-index: var(--z-overlay, 60);
+  padding: 4px 6px calc(4px + env(safe-area-inset-bottom, 0px));
+  background: var(--bg-elevated); border-top: 1px solid var(--glass-border);
+  box-shadow: 0 -6px 18px rgb(0 0 0 / 8%);
+  animation: prism-fade-in var(--motion-fast, 120ms) ease-out;
+}
+.keyboard-toolbar-row { display: flex; align-items: center; gap: 2px; overflow-x: auto; }
+.keyboard-toolbar-button {
+  display: grid; place-items: center; flex-shrink: 0; width: 44px; height: 44px; border-radius: 8px;
+  color: var(--text-secondary);
+}
+.keyboard-toolbar-button[aria-pressed=true] { background: var(--surface-active, var(--glass-active)); color: var(--text-primary); }
+.keyboard-toolbar-button:disabled { opacity: 0.35; }
+.keyboard-toolbar-chip {
+  display: inline-flex; align-items: center; gap: 5px; flex-shrink: 0; min-height: 44px; padding: 0 12px;
+  border-radius: 8px; font-size: 14px; color: var(--text-secondary); white-space: nowrap;
+}
+.keyboard-toolbar-chip:active, .keyboard-toolbar-button:active { background: var(--glass-hover); }
+.keyboard-toolbar-input {
+  flex: 1; min-width: 0; min-height: 40px; padding: 0 10px; font-size: 16px; border-radius: 8px;
+  background: var(--bg-base); color: var(--text-primary); border: 1px solid var(--glass-border);
+}
