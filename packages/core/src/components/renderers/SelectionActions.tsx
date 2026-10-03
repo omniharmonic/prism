@@ -16,7 +16,7 @@ export function normalizeLink(raw: string): string | null {
   const value = raw.trim();
   if (!value) return null;
   if (/^(https?:|mailto:)/i.test(value)) return value;
-  if (value.startsWith("/") || value.startsWith("#")) return value;
+  if (/^\/(?!\/)/.test(value) || value.startsWith("#")) return value; // "/page", never "//host"
   if (/^[\w.-]+\.[a-z]{2,}(\/|$)/i.test(value)) return `https://${value}`;
   return null;
 }
@@ -39,7 +39,7 @@ export function SelectionActions({ editor, allowFormatting, onComment }: { edito
     editor,
     selector: ({ editor: e }) => {
       const { from, to } = e.state.selection;
-      return `${from}:${to}:${["bold", "italic", "underline", "strike", "code", "link"].map((m) => (e.isActive(m) ? 1 : 0)).join("")}:${e.getAttributes("textColor").color ?? ""}:${e.getAttributes("highlight").color ?? ""}:${e.isEditable}`;
+      return `${from}:${to}:${["bold", "italic", "underline", "strike", "code", "link"].map((m) => (e.isActive(m) ? 1 : 0)).join("")}:${e.getAttributes("textColor").color ?? ""}:${e.getAttributes("highlight").color ?? ""}:${e.isEditable}:${(e.storage as unknown as Record<string, { suggesting?: boolean } | undefined>).suggestionMode?.suggesting ? 1 : 0}`;
     },
   });
   const turnRef = useRef<HTMLButtonElement>(null);
@@ -56,6 +56,10 @@ export function SelectionActions({ editor, allowFormatting, onComment }: { edito
   const { from, to } = editor.state.selection;
   const block = topBlockAt(editor.state.doc, selectionStart(editor.state.doc, from, to));
   const structural = allowFormatting && structuralEditsAllowed(editor);
+  // Tracked suggestions record text only: colour, highlight and links would be
+  // untracked edits, so they are off while suggesting.
+  const suggesting = !!(editor.storage as unknown as Record<string, { suggesting?: boolean } | undefined>).suggestionMode?.suggesting;
+  const decorate = allowFormatting && !suggesting;
   const turnable = structural && !!block && canTurnInto(block.node) && (topBlockAt(editor.state.doc, to)?.node ? canTurnInto(topBlockAt(editor.state.doc, to)!.node) : true);
   const currentKind = block ? blockKind(block.node) : null;
   const currentLabel = TURN_INTO.find((t) => t.kind === currentKind)?.label ?? "Turn into";
@@ -142,9 +146,9 @@ export function SelectionActions({ editor, allowFormatting, onComment }: { edito
     {turnable && <span className="selection-divider" aria-hidden="true" />}
     {allowFormatting && marks.map(item => <button key={item.name} type="button" aria-label={item.label} aria-pressed={editor.isActive(item.name)} title={`${item.label.replace(" selection", "")} (${item.hint})`}
       onMouseDown={event => event.preventDefault()} onClick={item.run}>{item.icon}</button>)}
-    {allowFormatting && <button ref={linkRef} type="button" aria-label="Link" aria-pressed={editor.isActive("link")} title="Link"
+    {decorate && <button ref={linkRef} type="button" aria-label="Link" aria-pressed={editor.isActive("link")} title="Link"
       onMouseDown={(e) => e.preventDefault()} onClick={openLink}><Link2 size={14} aria-hidden="true" /></button>}
-    {allowFormatting && <span className="selection-dropdown">
+    {decorate && <span className="selection-dropdown">
       <button ref={colorRef} type="button" data-editor-menu-anchor aria-label="Text color and highlight" aria-haspopup="menu" aria-expanded={menu === "color"} title="Color"
         onMouseDown={(e) => e.preventDefault()} onClick={() => setMenu(menu === "color" ? null : "color")}>
         <Baseline size={14} aria-hidden="true" /><ChevronDown size={12} aria-hidden="true" />

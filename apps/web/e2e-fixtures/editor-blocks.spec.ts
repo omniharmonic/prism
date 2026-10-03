@@ -351,3 +351,24 @@ test.describe("live collaborative editor: concurrent edits around block moves", 
     await a.context.close(); await b.context.close();
   });
 });
+
+test.describe("block menu safety", () => {
+  test("Turn into is refused for a callout holding an image; Unwrap keeps everything", async ({ page }) => {
+    await page.goto("/e2e-fixtures/editor-blocks.html?content=" + encodeURIComponent('<div data-type="callout" data-emoji="💡"><p>Caption text</p><img src="/e2e-fixtures/fixture-image.svg" alt="chart"></div><p>After</p>'));
+    const gutter = await gutterFor(page, "Caption text");
+    await gutter.getByRole("button", { name: /Drag to move/ }).click();
+    const menu = page.getByRole("menu", { name: "Block actions" });
+    await expect(menu.getByRole("menuitem", { name: "Turn into" })).toHaveCount(0);
+    await menu.getByRole("menuitem", { name: "Unwrap (keeps images and tables)" }).click();
+    expect(await blockTexts(page)).toEqual(["paragraph:Caption text", "image:", "paragraph:After"]);
+  });
+
+  test("dropping a dragged block outside the editor changes nothing", async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.goto("/e2e-fixtures/editor-blocks.html");
+    const before = await blockTexts(page);
+    const gutter = await gutterFor(page, "Echo quote");
+    await gutter.getByRole("button", { name: /Drag to move/ }).dragTo(page.getByRole("button", { name: "Outline", exact: true }));
+    expect(await blockTexts(page)).toEqual(before);
+  });
+});

@@ -15,7 +15,7 @@ const notes: Note[] = [
 ];
 const writes: Array<{ id: string; content?: string }> = [];
 const uploads: Array<{ noteId: string; name: string; type: string; size: number }> = [];
-const controls = { failUpload: false };
+const controls = { failUpload: false, hold: null as null | Promise<void>, release: () => {} };
 const client = {
   getNote: async (id: string) => notes.find((n) => n.id === id)!,
   listNotes: async () => notes,
@@ -31,6 +31,7 @@ const client = {
   ...(params.has("upload") ? {
     uploadAttachment: async (noteId: string, file: File) => {
       await new Promise((r) => setTimeout(r, 30)); // a real round-trip is async
+      if (controls.hold) await controls.hold;
       uploads.push({ noteId, name: file.name, type: file.type, size: file.size });
       if (controls.failUpload) throw new Error("fixture upload refused");
       return { id: `att-${uploads.length}`, url: `/e2e-fixtures/fixture-image.svg?u=${uploads.length}`, name: file.name, mimeType: file.type, size: file.size };
@@ -38,6 +39,7 @@ const client = {
   } : {}),
 } as unknown as VaultClient;
 Object.assign(window, {
+  prismHoldUploads: () => { controls.hold = new Promise<void>((r) => { controls.release = () => { controls.hold = null; r(); }; }); },
   prismBlockWrites: writes,
   prismBlockUploads: uploads,
   prismBlockControls: controls,

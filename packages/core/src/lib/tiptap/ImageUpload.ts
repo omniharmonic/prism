@@ -50,6 +50,13 @@ export async function uploadImages(editor: Editor, files: File[], pos?: number):
     try {
       const result = await upload(file);
       if (editor.isDestroyed) return inserted;
+      // The user may have lost edit access, entered suggest/comment-only mode, or
+      // the editor became read-only while the upload ran: insert nothing then.
+      if (!structuralEditsAllowed(editor)) {
+        editor.view.dispatch(editor.state.tr.setMeta(key, { remove: id }));
+        options?.onError?.(`${file.name} was uploaded but not added: this document is no longer editable here.`);
+        continue;
+      }
       const tracked = key.getState(editor.state)?.pending.find((p) => p.id === id);
       const target = tracked?.pos ?? editor.state.selection.from;
       editor.view.dispatch(editor.state.tr.setMeta(key, { remove: id }));

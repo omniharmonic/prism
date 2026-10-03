@@ -14,18 +14,40 @@ export function contentAsText(content: string | null | undefined): string {
   return content;
 }
 
-const BLOCK_END = /<\/(p|h[1-6]|li|blockquote|pre|tr|div|ul|ol|table)>|<br\s*\/?>|<hr\s*\/?>/gi;
+const BLOCK_END = /<\/(p|h[1-6]|li|blockquote|pre|tr|div|ul|ol|table|summary|details)>|<br\s*\/?>|<hr\s*\/?>/gi;
+
+const attr = (tag: string, name: string): string | null => tag.match(new RegExp(`\\s${name}="([^"]*)"`, "i"))?.[1] ?? null;
+
+/**
+ * Formatting that has no text of its own still has to show up as a changed
+ * line: an image, a callout's emoji, a block or text colour, a highlight. Turn
+ * each into a short visible token before the markup is dropped.
+ */
+function visibleFormatting(html: string): string {
+  return html
+    .replace(/<img\b[^>]*>/gi, (tag) => {
+      const label = attr(tag, "alt") || (attr(tag, "src") ?? "").split(/[/?#]/).filter(Boolean).pop() || "image";
+      return `[Image: ${label}]\n`;
+    })
+    .replace(/<div\b[^>]*data-type="callout"[^>]*>/gi, (tag) => `${tag}${attr(tag, "data-emoji") ?? "💡"} `)
+    .replace(/<details\b[^>]*>/gi, (tag) => `${tag}▸ `)
+    .replace(/<(p|h[1-6]|blockquote|ul|ol|div|details)\b[^>]*data-block-color="([a-z_]+)"[^>]*>/gi, (tag, _t, color: string) => `${tag}[${color.replace("_", " ")}] `)
+    .replace(/<span\b[^>]*data-text-color="([a-z]+)"[^>]*>/gi, (tag, color: string) => `${tag}[${color} text] `)
+    .replace(/<mark\b[^>]*>/gi, (tag) => `${tag}[highlight] `);
+}
 
 function htmlAsText(html: string): string {
   // Break after every block, bullet list items, then let the parser decode
   // entities and drop the remaining inline markup.
-  const marked = html
+  const marked = visibleFormatting(html)
     .replace(/<li[^>]*>/gi, "$&• ")
     .replace(/<h([1-6])[^>]*>/gi, (m, n: string) => `${m}${"#".repeat(Number(n))} `)
     .replace(BLOCK_END, "$&\n");
   let text: string;
-  if (typeof DOMParser !== "undefined") {
-    text = new DOMParser().parseFromString(marked, "text/html").body.textContent ?? "";
+  // Structural type: this module is also compiled for Node (no DOM lib) in tests.
+  const Parser = (globalThis as { DOMParser?: new () => { parseFromString(s: string, t: string): { body: { textContent: string | null } } } }).DOMParser;
+  if (Parser) {
+    text = new Parser().parseFromString(marked, "text/html").body.textContent ?? "";
   } else {
     text = marked.replace(/<[^>]+>/g, "").replace(/&nbsp;/g, " ").replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">");
   }

@@ -91,3 +91,14 @@ test("without an uploader the feature is hidden: no upload on paste, slash Image
   await page.keyboard.press("Enter");
   expect(await html(page)).not.toContain("javascript");
 });
+
+test("an upload that finishes after the document became read-only inserts nothing", async ({ page }) => {
+  await page.goto("/e2e-fixtures/editor-blocks.html?upload");
+  await caretAfter(page, "Bravo paragraph");
+  await page.evaluate(() => (window as any).prismHoldUploads());
+  await deliver(page, "paste", "late.png", "image/png");
+  await page.evaluate(() => (document.querySelector(".tiptap") as any).editor.setEditable(false));
+  await page.evaluate(() => (window as any).prismBlockControls.release());
+  await expect(page.getByRole("alert").filter({ hasText: "late.png was uploaded but not added" })).toBeVisible();
+  expect(await html(page)).not.toContain("<img");
+});

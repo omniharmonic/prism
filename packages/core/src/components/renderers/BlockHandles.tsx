@@ -9,7 +9,10 @@ import {
   blockKind,
   canColor,
   canTurnInto,
+  canUnwrap,
+  containsNonText,
   deleteTopBlock,
+  unwrapTopBlock,
   duplicateTopBlock,
   moveTopBlockIn,
   setTopBlockColor,
@@ -247,8 +250,15 @@ export function BlockHandles({ editor, enabled }: { editor: Editor; enabled: boo
       const top = index >= blocks.length ? r.bottom + (parseFloat(ms.marginBottom) || 0) / 2 : r.top - (parseFloat(ms.marginTop) || 0) / 2;
       return { index, top: top - 1, left: er.left, width: er.width };
     };
+    // Only the editor column (and its gutter) is a drop zone: anywhere else the
+    // drop is not accepted and the drag simply ends.
+    const overEditor = (event: DragEvent) => {
+      const er = editor.view.dom.getBoundingClientRect();
+      return event.clientX >= er.left - 72 && event.clientX <= er.right + 8 && event.clientY >= er.top - 24 && event.clientY <= er.bottom + 24;
+    };
     const onOver = (event: DragEvent) => {
       if (dragFrom.current === null || !viewReady(editor)) return;
+      if (!overEditor(event)) { setDrop(null); return; }
       event.preventDefault();
       event.stopPropagation();
       if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
@@ -256,6 +266,7 @@ export function BlockHandles({ editor, enabled }: { editor: Editor; enabled: boo
     };
     const onDrop = (event: DragEvent) => {
       if (dragFrom.current === null || !viewReady(editor)) return;
+      if (!overEditor(event)) { dragFrom.current = null; setDrop(null); return; }
       event.preventDefault();
       event.stopPropagation();
       const from = locateBlock(editor, dragFrom.current);
@@ -292,6 +303,8 @@ export function BlockHandles({ editor, enabled }: { editor: Editor; enabled: boo
     // Phones have no + button and no "/" key handy: insert lives in the menu.
     ...(narrow ? [{ id: "insert", label: "Insert block below", icon: <Plus size={15} />, onSelect: () => { setMenu(null); insertBelow(); } }] : []),
     ...(canTurnInto(block) ? [{ id: "turn", label: "Turn into", icon: <Repeat2 size={15} />, submenu: true, onSelect: () => setMenu("turn") }] : []),
+    // A wrapper holding images/tables cannot be re-shaped without loss: Unwrap keeps everything.
+    ...(canUnwrap(block) ? [{ id: "unwrap", label: containsNonText(block) ? "Unwrap (keeps images and tables)" : "Unwrap", icon: <Repeat2 size={15} />, onSelect: () => run((at) => unwrapTopBlock(editor.state, at.pos)) }] : []),
     ...(canColor(block) ? [{ id: "color", label: "Color", icon: <Palette size={15} />, submenu: true, onSelect: () => setMenu("color") }] : []),
     { id: "duplicate", label: "Duplicate", icon: <Copy size={15} />, onSelect: () => run((at) => duplicateTopBlock(editor.state, at.pos)) },
     { id: "up", label: "Move up", icon: <ArrowUp size={15} />, hint: isMac ? "⌥⇧↑" : "Alt+Shift+↑", disabled: hovered.index === 0, onSelect: () => run((at) => moveTopBlockIn(editor, at.index, at.index - 1)) },

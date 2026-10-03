@@ -63,7 +63,7 @@ function insertColumns(editor: Editor, count: 2 | 3) {
 function insertImageByUrl(editor: Editor) {
   const url = window.prompt("Image URL");
   if (!url) return;
-  if (!/^(https?:)?\/\//i.test(url) && !url.startsWith("/")) return; // no javascript:/data: URLs
+  if (!/^https?:\/\//i.test(url) && !/^\/(?!\/)/.test(url)) return; // http(s) or same-origin path; never javascript:/data:/protocol-relative
   editor.chain().focus().setImage({ src: url }).run();
 }
 

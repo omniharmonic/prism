@@ -201,3 +201,20 @@ test("in-process MCP dispatches (agents) are exempt", async () => {
   });
   assert.equal(res.status, 200);
 });
+
+// ── 4. Opening a document never rewrites it ─────────────────────────────────
+
+test("opening a live document with un-normalised block HTML writes nothing until someone edits", async () => {
+  const stored = '<div data-type="columns"><div data-type="column"><p>a</p></div><div data-type="column"><p>b</p></div></div><details open><summary>s</summary><p>t</p></details>';
+  fv.put({ id: "n1", content: stored, tags: ["team"] });
+  const reader = await open("n1", `?schema=${COLLAB_SCHEMA_VERSION}`);
+  assert.equal(reader.outcome, "synced");
+  await new Promise((r) => setTimeout(r, 300));
+  reader.provider.destroy();
+  await new Promise((r) => setTimeout(r, 200));
+  hocuspocus.flushPendingStores();
+  for (const d of [...hocuspocus.documents.values()]) await hocuspocus.unloadDocument(d);
+  await new Promise((r) => setTimeout(r, 200));
+  assert.equal(fv.calls.filter((c) => c.method === "PATCH").length, 0, "no vault write (and so no history version) from merely opening");
+  assert.equal(fv.notes.get("n1")!.content, stored);
+});

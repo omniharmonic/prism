@@ -54,6 +54,10 @@ test.describe("plain editor selection toolbar", () => {
     await field.press("Enter");
     await expect(page.getByRole("alert").filter({ hasText: "Use a web, mail or page link." })).toBeVisible();
     expect(await html(page)).not.toContain("javascript");
+    await field.fill("//evil.example.test/x");
+    await field.press("Enter");
+    await expect(page.getByRole("alert").filter({ hasText: "Use a web, mail or page link." })).toBeVisible();
+    expect(await html(page)).not.toContain("evil");
     await field.fill("example.test/docs");
     await field.press("Enter");
     expect(await html(page)).toContain('href="https://example.test/docs"');
@@ -139,6 +143,14 @@ test("live editor: the toolbar carries Comment, which anchors a thread on the se
     await page.getByPlaceholder(/Add a comment/).fill("Can we tighten this?");
     await page.getByRole("button", { name: "Comment", exact: true }).click();
     await expect.poll(() => html(page)).toMatch(/data-comment/);
+    // While suggesting, untracked decorations (link, colour) are not offered.
+    await page.getByRole("button", { name: "Editing", exact: true }).click();
+    await expect(page.getByRole("button", { name: "Suggesting", exact: true })).toBeVisible();
+    const suggestingBubble = await select(page, "Shared sentence to discuss");
+    await expect(suggestingBubble.getByRole("button", { name: "Bold selection" })).toBeVisible();
+    await expect(suggestingBubble.getByRole("button", { name: "Link", exact: true })).toHaveCount(0);
+    await expect(suggestingBubble.getByRole("button", { name: "Text color and highlight" })).toHaveCount(0);
+    await expect(suggestingBubble.getByRole("button", { name: /^Turn into/ })).toHaveCount(0);
     if (SHOTS) await page.screenshot({ path: `${SHOTS}/collab-comment-1280.png` });
   } finally {
     for (const s of sockets) s.close();

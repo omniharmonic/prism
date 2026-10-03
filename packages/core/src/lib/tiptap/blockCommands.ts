@@ -78,8 +78,41 @@ export function canColor(node: PMNode): boolean {
   return (COLORABLE_BLOCKS as readonly string[]).includes(node.type.name) && "blockColor" in node.attrs;
 }
 
+/** Content that "Turn into" would have to throw away (it keeps text only). */
+const NON_TEXT = new Set(["image", "table", "horizontalRule", "columns"]);
+export function containsNonText(node: PMNode): boolean {
+  let found = false;
+  node.descendants((child) => {
+    if (found) return false;
+    if (NON_TEXT.has(child.type.name)) found = true;
+    return !found;
+  });
+  return found;
+}
+
+/** Turn into only re-shapes text; a wrapper holding images/tables/etc. is refused (use Unwrap). */
 export function canTurnInto(node: PMNode): boolean {
-  return TEXTUAL.has(node.type.name);
+  return TEXTUAL.has(node.type.name) && !containsNonText(node);
+}
+
+const WRAPPERS = new Set(["callout", "toggle", "blockquote"]);
+export function canUnwrap(node: PMNode): boolean {
+  return WRAPPERS.has(node.type.name);
+}
+
+/** Replace a callout/toggle/quote with its contents (a toggle's summary becomes a paragraph). Keeps everything. */
+export function unwrapTopBlock(state: EditorState, pos: number): Transaction | null {
+  const node = state.doc.nodeAt(pos);
+  if (!node || !canUnwrap(node)) return null;
+  const children: PMNode[] = [];
+  node.forEach((child) => {
+    if (child.type.name === "toggleSummary") {
+      if (child.content.size) children.push(state.schema.nodes.paragraph.create(null, child.content));
+    } else children.push(child);
+  });
+  if (!children.length) children.push(state.schema.nodes.paragraph.create());
+  const tr = state.tr.replaceWith(pos, pos + node.nodeSize, Fragment.fromArray(children));
+  return placeCaret(tr, pos + 1);
 }
 
 function placeCaret(tr: Transaction, pos: number): Transaction {
