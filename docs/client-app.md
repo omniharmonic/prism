@@ -535,23 +535,42 @@ keychain item is per device, so nothing is shared with the Mac), home-screen nam
 (set only in App Store Connect), version `0.1.0` build `1`, deployment target **iOS 16.0**
 (ASWebAuthenticationSession and LocalAuthentication need 13; 16 is Tauri 2's practical floor
 for this WebKit/ES feature set). `Info.ios.plist` (merged by Tauri at build time):
-`ITSAppUsesNonExemptEncryption=false`, `NSFaceIDUsageDescription`, `NSAllowsLocalNetworking`
-(loopback test servers only; ATS stays on everywhere else). Entitlements
-(`gen/apple/prism-client_iOS/prism-client_iOS.entitlements`): only
-`aps-environment=production`. No associated domains, no URL types. Icons: full-bleed opaque
-render of `PrismAppIcon` (`scripts/build-ios-icon.ts`). **Re-running `tauri ios init`
-regenerates `gen/apple`**: re-apply the entitlements and icons (verify-client fails until you do).
+`ITSAppUsesNonExemptEncryption=false`, `NSFaceIDUsageDescription`, and **no ATS key**: Release
+has ATS fully on. Debug builds get `NSAllowsLocalNetworking` from a Debug-only build phase
+(`project.yml` "Debug-only ATS loopback exception") for a loopback test server, and
+`origin.rs` refuses `http://` on iOS release builds (`ALLOW_HTTP_LOOPBACK`). Entitlements:
+Release `prism-client_iOS.entitlements` = `aps-environment=production`, Debug
+`prism-client_iOS.debug.entitlements` = `development` (per-config `CODE_SIGN_ENTITLEMENTS`).
+No associated domains, no URL types. Privacy manifest `prism-client_iOS/PrivacyInfo.xcprivacy`
+(no tracking, no collected data; required-reason APIs: file timestamp `C617.1`, system boot
+time `35F9.1`; UserDefaults is not used). Icons: full-bleed opaque render of `PrismAppIcon`
+(`scripts/build-ios-icon.ts`).
+
+**`gen/apple` is generated, then customised — keep the customisations.** `tauri ios init`
+rewrites `gen/apple` from Tauri's template (project.yml, Info.plist, entitlements, icons,
+ExportOptions). Prefer NOT re-running it. If you must (a Tauri upgrade that needs a new
+template):
+1. Commit first, run `npx tauri ios init --ci`, then `git diff apps/client/src-tauri/gen/apple`.
+2. Restore from git: the two entitlements files, `PrivacyInfo.xcprivacy`, `ExportOptions.plist`,
+   the AppIcon PNGs, and in `project.yml` the `configs:` block (per-config
+   `CODE_SIGN_ENTITLEMENTS`) and the `postBuildScripts` "Debug-only ATS loopback exception".
+3. Regenerate the Xcode project with **no build outputs present** (otherwise xcodegen adds
+   `Externals/*/libapp.a` as resources and the build fails with "Multiple commands produce
+   libapp.a"): `cd apps/client/src-tauri/gen/apple && mv Externals /tmp/ext && mkdir Externals
+   && xcodegen generate --spec project.yml && rmdir Externals && mv /tmp/ext Externals`.
+4. `node apps/client/scripts/verify-client.mjs` must pass (it checks every item above).
+Info.plist keys never need re-applying: Tauri merges `src-tauri/Info.ios.plist` on every build.
 
 | Piece | Where | Notes |
 |---|---|---|
-| First run "Enter your server" | `apps/web/src/native/ServerSetupScreen.tsx` → `set_server_origin` | No built-in server. The shell parses (https, or http on loopback), probes `GET /health` (must answer `{ok:boolean}`, 200 or 503), saves, and applies **in place**: iOS can't restart itself, so `window.rs` rewrites every page's CSP (`origin::retarget_csp`) and injects `<meta name="prism-server-origin">` (+ a `maximum-scale=1` viewport) through `on_web_resource_request`; host.js's `apiOrigin` getter reads the meta. Unconfigured CSP = no remote origin at all. Only allowed while no server is set. |
-| Change server | Settings → Account → Server, `reset_server` | Native `UIAlertController` → `DELETE /api/push/apns` + revoke + forget token → server cleared → first-run screen. |
-| Sign-in | `signin.rs` iOS arm | `ASWebAuthenticationSession`, `prefersEphemeralWebBrowserSession=false` (shares Safari cookies), redirect `prism://auth/callback` (server default `DEVICE_REDIRECT_URIS`; no `Info.plist` URL type, the session takes the callback itself), callback checked by `pkce::code_from_redirect` (exact scheme/host/path + state), same PKCE + `exchange_code` + keychain as desktop. Label "Prism on iPhone". A password login works inside the sheet; the owner's magic link opens in Safari, so **the owner should set a password** (Settings → Account) or sign in once in Safari first. |
+| First run "Enter your server" | `apps/web/src/native/ServerSetupScreen.tsx` → `set_server_origin` | No built-in server. The shell parses (https; http on loopback only in debug builds; the host must be LDH labels after IDNA, IPv4 or [IPv6], so nothing like `*`, `;`, `'`, `,` can reach the CSP), probes `GET /health` (must answer `{ok:boolean}`, 200 or 503), saves, and applies **in place**: iOS can't restart itself, so `window.rs` rewrites every page's CSP (`origin::retarget_csp`) and injects `<meta name="prism-server-origin">` into `<head>` through `on_web_resource_request`; host.js's `apiOrigin` getter reads it from `document.head` (no build-time fallback on iOS). `get_token` takes the page's origin and returns nothing unless it is exactly the current server. Every server change reloads the page from Rust, also after a partial failure. Unconfigured CSP = no remote origin at all. Only allowed while no server is set. |
+| Change server | Settings → Account → Server, `reset_server` | Native `UIAlertController` → `DELETE /api/push/apns` + revoke (in parallel, 8 s overall timeout) + forget token → server cleared → reload into the first-run screen (each step runs even if an earlier one failed). |
+| Sign-in | `signin.rs` iOS arm | `ASWebAuthenticationSession`, `prefersEphemeralWebBrowserSession=false` (shares Safari cookies), redirect `prism://auth/callback` (server default `DEVICE_REDIRECT_URIS`; no `Info.plist` URL type, the session takes the callback itself), callback checked by `pkce::code_from_redirect` (exact scheme/host/path + state), same PKCE + `exchange_code` + keychain as desktop. Label "Prism on iPhone". If the server was changed while the sheet was up, the new token is revoked (best effort) instead of stored. A password login works inside the sheet; the owner's magic link opens in Safari, so **the owner should set a password** (Settings → Account) or sign in once in Safari first. |
 | Keychain | `secure_store.rs` | `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`, non-synchronizable. **No biometric access control on the item (deliberate):** a presence-bound item would need Face ID for every token read, including APNs re-registration at launch and a launch from a notification tap while the phone is locked; the lock is enforced in the UI instead (below). |
-| App lock | Swift `AppLock`, `set_app_lock`, Settings → Account → Security | Off (default) · When Prism opens · After 5/15/60 min in background · Every time. `LAContext.deviceOwnerAuthentication` (Face ID/Touch ID with passcode fallback). A cover view goes up on resign-active (also hides the app-switcher snapshot) and stays until unlocked; "Unlock" retries. Changing the setting while a lock is on asks for Face ID first. No device passcode = the lock can't be enforced (fails open, said in Settings). |
-| Push | Swift `PushRegistrar`, `apps/web/src/native/apnsPush.ts` | `PushClient` seam (Settings → Account → "Notify me…"): permission is asked once after sign-in (server owner only, never at launch), the hex token is POSTed to `/api/push/apns {token, environment}` with the device bearer on **every launch**; environment comes from the embedded profile's `aps-environment` (TestFlight/App Store → `production`). "Send a test notification" → `/api/push/apns/test`. Sign-out/reset deletes the row. A tap (ids only, `sessionId` / `url=/agent/<id>`, validated) is pulled through `push_take_opened` and dispatched as `prism:open-agent-session` (the existing deep-link seam), cold or warm. |
+| App lock | Swift `AppLock`, `set_app_lock`, Settings → Account → Security | Off (default) · When Prism opens · After 5/15/60 min in background · Every time. `LAContext.deviceOwnerAuthentication` (Face ID/Touch ID with passcode fallback). The background timer uses `mach_continuous_time` (monotonic, counts sleep; setting the clock back can't skip the lock; a backwards/NaN reading locks) — pure rule in `LockPolicy.swift`, tested by `scripts/ios-policy-tests/run.sh` (also run by verify-client). The cover is its own window at alert level + 1 (above alerts and the sign-in sheet; only the system Face ID/passcode UI shows over it), goes up on resign-active (hides the app-switcher snapshot) and stays until unlocked. While locked the webview has no interaction and no focus, presented alerts and an open sign-in sheet are dismissed, and `authenticate` / `confirm` / `verifyOwner` refuse. Changing the setting while a lock is on asks for Face ID first. No device passcode = the lock can't be enforced (fails open, said in Settings). |
+| Push | Swift `PushRegistrar`, `apps/web/src/native/apnsPush.ts` | `PushClient` seam (Settings → Account → "Notify me…"): the permission prompt only follows the user turning that toggle on (server owner only; never at launch or sign-in by itself). While it is on and iOS allows it, the hex token is POSTed to `/api/push/apns {token, environment}` with the device bearer on **every launch**. Environment (`mobile_cmds::apns_environment`, unit-tested): App Store/TestFlight installs have NO embedded profile, so no profile = `production`; only the simulator or a profile saying `development` = `sandbox`. Each registration waits with its own 30 s timeout. "Send a test notification" → `/api/push/apns/test`. Sign-out/reset deletes the row. A tap (ids only, `sessionId` / `url=/agent/<id>`, validated) is pulled through `push_take_opened` and dispatched as `prism:open-agent-session` (the existing deep-link seam), cold or warm. |
 | Links | `open_external` | Same validation; the confirmation is a `UIAlertController`; opens in Safari via the opener plugin. |
-| WebView | Swift `load(webview:)` | `contentInsetAdjustmentBehavior=.never` (the web UI owns safe areas via `viewport-fit=cover`), no scroll-view bounce, no back/forward swipe, no link previews; inputs are 16px and the injected viewport has `maximum-scale=1` (no focus zoom). |
+| WebView | Swift `load(webview:)` | `contentInsetAdjustmentBehavior=.never` (the web UI owns safe areas via `viewport-fit=cover`), no scroll-view bounce, no back/forward swipe, no link previews. Pinch zoom stays available; zoom-on-focus is avoided by the 16px input rule. |
 
 **IPC surface (iOS).** `capabilities/mobile.json` (platform iOS, window `main`): the six shared
 commands (`get_token`, `sign_in`, `sign_out`, `get_server_origin`, `set_server_origin`,
@@ -581,6 +600,9 @@ fake vault from `scripts/e2e/fake-vault.mjs`) — never the production server. E
 
 ### Build, sign, upload (TestFlight)
 
+**Owner rule: no TestFlight build until Notion parity.** Until then only simulator debug
+builds are made; the steps below are the runbook for when that changes.
+
 Prerequisites (one time, done): App ID `com.benjaminlife.prism.client` with Push Notifications;
 App Store Connect app "Prism Workspace"; the **Apple Distribution** identity in the login
 keychain; App Store Connect API key `AB84HRLBUA` (issuer `7c2856fc-0bdf-4d41-b95d-a2ffab2ba726`)
@@ -599,12 +621,12 @@ Xcode → Settings → Accounts, or from the developer portal.
    `APPLE_API_KEY_PATH` (Tauri passes them to xcodebuild as `-allowProvisioningUpdates
    -authenticationKeyPath … -authenticationKeyID … -authenticationKeyIssuerID …`), keeps the
    archive (Tauri's own export fails: the key's role can't use cloud signing), and exports it with
-   `xcodebuild -exportArchive -exportOptionsPlist apps/client/ios/ExportOptions-AppStore.plist`
+   `xcodebuild -exportArchive -exportOptionsPlist apps/client/src-tauri/gen/apple/ExportOptions.plist`
    (manual signing: Apple Distribution + the profile above). It prints the signing summary,
    profile name/expiry, entitlements (`aps-environment = production`) and the upload command.
-3. **Upload** → `apps/client/ios/build/export/Prism.ipa`:
+3. **Upload** → `apps/client/src-tauri/gen/apple/build/release/export/Prism.ipa`:
    ```bash
-   xcrun altool --upload-app --type ios --file apps/client/ios/build/export/Prism.ipa \
+   xcrun altool --upload-app --type ios --file apps/client/src-tauri/gen/apple/build/release/export/Prism.ipa \
      --apiKey AB84HRLBUA --apiIssuer 7c2856fc-0bdf-4d41-b95d-a2ffab2ba726
    ```
    (or drag the .ipa into Transporter). Processing takes 5–30 min; you get an email.

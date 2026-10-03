@@ -46,10 +46,5 @@
 	<false/>
 	<key>NSFaceIDUsageDescription</key>
 	<string>Prism uses Face ID to unlock your workspace when you turn on the app lock.</string>
-	<key>NSAppTransportSecurity</key>
-	<dict>
-		<key>NSAllowsLocalNetworking</key>
-		<true/>
-	</dict>
 </dict>
 </plist>

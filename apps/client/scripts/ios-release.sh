@@ -4,7 +4,7 @@
 # identity: codesign needs the login keychain, and the first run may show
 # "codesign wants to access key …" (click Always Allow). It never uploads.
 #
-#   apps/client/scripts/ios-release.sh            # → apps/client/ios/build/export/Prism.ipa
+#   apps/client/scripts/ios-release.sh            # → apps/client/src-tauri/gen/apple/build/release/export/Prism.ipa
 #
 # Env (defaults = the owner's App Store Connect API key; the .p8 is never read here,
 # only its path is handed to Apple's tools):
@@ -14,12 +14,12 @@
 # cloud signing, which this API key's role is not allowed to use ("Cloud signing
 # permission error"). So we export the archive ourselves with the local
 # distribution certificate and the "Prism Workspace App Store" profile
-# (apps/client/ios/ExportOptions-AppStore.plist).
+# (apps/client/src-tauri/gen/apple/ExportOptions.plist).
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
 CLIENT="$ROOT/apps/client"
 APPLE="$CLIENT/src-tauri/gen/apple"
-OUT="$CLIENT/ios/build"
+OUT="$APPLE/build/release"
 export APPLE_API_KEY="${ASC_KEY_ID:-AB84HRLBUA}"
 export APPLE_API_ISSUER="${ASC_ISSUER_ID:-7c2856fc-0bdf-4d41-b95d-a2ffab2ba726}"
 export APPLE_API_KEY_PATH="${ASC_KEY_PATH:-$HOME/.appstoreconnect/private_keys/AuthKey_${APPLE_API_KEY}.p8}"
@@ -37,7 +37,7 @@ echo "▶ building + archiving (release, aarch64)…"
 echo "▶ exporting with the local Apple Distribution identity…"
 xcodebuild -exportArchive \
   -archivePath "$ARCHIVE" \
-  -exportOptionsPlist "$CLIENT/ios/ExportOptions-AppStore.plist" \
+  -exportOptionsPlist "$APPLE/ExportOptions.plist" \
   -exportPath "$OUT/export" \
   -allowProvisioningUpdates \
   -authenticationKeyPath "$APPLE_API_KEY_PATH" \

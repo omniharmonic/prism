@@ -270,14 +270,39 @@ if (!existsSync(dist)) {
   check(value(info, "ITSAppUsesNonExemptEncryption") === false, "Info.ios.plist: ITSAppUsesNonExemptEncryption = false");
   check(/.{10,}/.test(value(info, "NSFaceIDUsageDescription") ?? ""), "Info.ios.plist: NSFaceIDUsageDescription present");
   check(value(info, "CFBundleDisplayName") === "Prism", "Info.ios.plist: display name Prism");
-  check(!/NSAllowsArbitraryLoads|NSExceptionDomains/.test(info), "Info.ios.plist: ATS stays on (no arbitrary loads, no exception domains)");
+  check(!/NSAppTransportSecurity|NSAllows|NSExceptionDomains/.test(info), "Info.ios.plist (merged into every build): no ATS key at all");
   check(!/CFBundleURLTypes/.test(info), "Info.ios.plist: no URL scheme registered (ASWebAuthenticationSession receives prism:// itself)");
 
   const apple = join(tauriDir, "gen/apple");
-  const ents = plist(join(apple, "prism-client_iOS/prism-client_iOS.entitlements"));
-  check(value(ents, "aps-environment") === "production", "entitlements: aps-environment = production (TestFlight/App Store)");
-  check(!/associated-domains|keychain-access-groups|get-task-allow/.test(ents), "entitlements: nothing but aps-environment (no associated domains yet)");
   const projectYml = readFileSync(join(apple, "project.yml"), "utf8");
+  const pbx = readFileSync(join(apple, "prism-client.xcodeproj/project.pbxproj"), "utf8");
+  const genInfo = plist(join(apple, "prism-client_iOS/Info.plist"));
+  check(!/NSAppTransportSecurity/.test(genInfo), "gen/apple Info.plist (Release): no ATS key");
+  check(
+    /Debug-only ATS loopback exception/.test(projectYml) && /if \[ "\$\{CONFIGURATION\}" = "debug" \]; then[\s\S]*NSAllowsLocalNetworking/.test(projectYml) && /Debug-only ATS loopback exception/.test(pbx),
+    "ATS loopback exception is added by a Debug-only build phase (never Release)",
+  );
+  const originSrc = readFileSync(join(tauriDir, "src/origin.rs"), "utf8");
+  check(/ALLOW_HTTP_LOOPBACK: bool = cfg!\(any\(not\(target_os = "ios"\), debug_assertions\)\)/.test(originSrc) && /loopback && ALLOW_HTTP_LOOPBACK/.test(originSrc), "origin.rs: http loopback refused in iOS release builds");
+  const ents = plist(join(apple, "prism-client_iOS/prism-client_iOS.entitlements"));
+  const dents = plist(join(apple, "prism-client_iOS/prism-client_iOS.debug.entitlements"));
+  check(value(ents, "aps-environment") === "production", "Release entitlements: aps-environment = production (TestFlight/App Store)");
+  check(value(dents, "aps-environment") === "development", "Debug entitlements: aps-environment = development");
+  for (const [n, e] of [["Release", ents], ["Debug", dents]]) {
+    check(!/associated-domains|keychain-access-groups|get-task-allow/.test(e), `${n} entitlements: nothing but aps-environment`);
+  }
+  check(
+    /CODE_SIGN_ENTITLEMENTS = "prism-client_iOS\/prism-client_iOS\.debug\.entitlements"/.test(pbx) && /CODE_SIGN_ENTITLEMENTS = "prism-client_iOS\/prism-client_iOS\.entitlements"/.test(pbx),
+    "Xcode project: Debug → development entitlements, Release → production",
+  );
+  const privacy = plist(join(apple, "prism-client_iOS/PrivacyInfo.xcprivacy"));
+  check(
+    /NSPrivacyAccessedAPICategoryFileTimestamp[\s\S]*C617\.1/.test(privacy) && /NSPrivacyAccessedAPICategorySystemBootTime[\s\S]*35F9\.1/.test(privacy) && value(privacy, "NSPrivacyTracking") === false,
+    "PrivacyInfo.xcprivacy: file timestamp C617.1, system boot time 35F9.1, no tracking",
+  );
+  check(/PrivacyInfo\.xcprivacy in Resources/.test(pbx), "PrivacyInfo.xcprivacy is copied into the bundle");
+  const exportOpts = plist(join(apple, "ExportOptions.plist"));
+  check(value(exportOpts, "method") === "app-store-connect" && value(exportOpts, "signingStyle") === "manual", "ExportOptions.plist: app-store-connect, manual signing (no stale 'debugging')");
   check(projectYml.includes(`PRODUCT_BUNDLE_IDENTIFIER: ${conf.identifier}`), "Xcode project bundle id matches");
   const icon = readFileSync(join(apple, "Assets.xcassets/AppIcon.appiconset/AppIcon-512@2x.png"));
   // PNG IHDR: width/height at 16/20, colour type at 25 (2 = RGB, no alpha; App Store rejects alpha).
@@ -298,6 +323,27 @@ if (!existsSync(dist)) {
     "Swift evaluates exactly one fixed, data-free script (the push-opened ping)",
   );
   check(/prefersEphemeralWebBrowserSession = false/.test(swift), "sign-in sheet shares Safari cookies (non-ephemeral)");
+  const lockSrc = readFileSync(join(pluginDir, "ios/Sources/PrismIos/LockPolicy.swift"), "utf8");
+  check(/mach_continuous_time\(\)/.test(lockSrc) && !/Date\(\)/.test(swift + lockSrc) && /LockPolicy\.shouldLock/.test(swift), "lock timer: monotonic clock that counts sleep (no wall clock)");
+  check(
+    /windowLevel = \.alert \+ 1/.test(swift) && /isUserInteractionEnabled = !value/.test(swift) && /endEditing\(true\)/.test(swift),
+    "lock cover: its own window above alerts/sheets; webview disabled + unfocused while locked",
+  );
+  check(
+    (swift.match(/AppLock\.shared\.isLocked/g) ?? []).length >= 3,
+    "authenticate / confirm / verifyOwner refuse while locked",
+  );
+  check(!/profileApsEnvironment\(\) \?\? "sandbox"|return "sandbox"/.test(swift), "Swift never decides 'sandbox' itself (Rust apns_environment: no profile = production)");
+  if (process.platform === "darwin") {
+    try {
+      execSync(`bash ${JSON.stringify(join(here, "ios-policy-tests/run.sh"))}`, { stdio: "pipe" });
+      ok("lock policy tests (swiftc) pass");
+    } catch (e) {
+      bad(`lock policy tests failed:\n${e.stdout ?? ""}${e.stderr ?? ""}`);
+    }
+  }
+  const hostJs = readFileSync(join(tauriDir, "src/host.js"), "utf8");
+  check(/ipc\("get_token", \{ origin: currentOrigin\(\) \}\)/.test(hostJs) && /document\.head\.querySelector\('meta\[name="prism-server-origin"\]'\)/.test(hostJs), "host.js: token asked for the page's origin; origin meta read from <head> only");
   check(/\.deviceOwnerAuthentication\b/.test(swift) && !/deviceOwnerAuthenticationWithBiometrics, localizedReason/.test(swift), "app lock uses deviceOwnerAuthentication (passcode fallback)");
   const lockScreenCover = /contentInsetAdjustmentBehavior = \.never/.test(swift) && /allowsBackForwardNavigationGestures = false/.test(swift);
   check(lockScreenCover, "webview: safe areas owned by the page, no back-swipe navigation");

@@ -32,9 +32,8 @@ export function ServerSetupScreen() {
     setBusy(true);
     setError(null);
     try {
+      // The shell saves it and reloads the page itself, under this server's CSP + origin.
       await shell.setServerOrigin(origin);
-      // The shell serves the next page load with this server's CSP + origin.
-      window.location.reload();
     } catch (err) {
       setError(shellError(err));
       setBusy(false);

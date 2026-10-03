@@ -18,7 +18,8 @@
   var IOS = PLATFORM === "ios";
   function currentOrigin() {
     if (!IOS) return ORIGIN;
-    var m = document.querySelector('meta[name="prism-server-origin"]');
+    // Only the shell-written meta in <head> counts (never one in the body).
+    var m = document.head && document.head.querySelector('meta[name="prism-server-origin"]');
     return (m && m.getAttribute("content")) || "";
   }
   // Capture the IPC entry point as early as possible (Tauri's own init
@@ -77,7 +78,8 @@
       return currentOrigin();
     },
     getToken: function () {
-      return ipc("get_token").catch(function () {
+      // The shell hands the token out only for the origin it is bound to.
+      return ipc("get_token", { origin: currentOrigin() }).catch(function () {
         return null;
       });
     },

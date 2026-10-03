@@ -12,13 +12,9 @@
 	<!-- The optional app lock (Settings → Security). -->
 	<key>NSFaceIDUsageDescription</key>
 	<string>Prism uses Face ID to unlock your workspace when you turn on the app lock.</string>
-	<!-- ATS stays on for every remote host. Local-network/loopback addresses only, so a
-	     test Prism Server on http://127.0.0.1 works in the simulator; the shell itself only
-	     ever accepts http:// for loopback (origin.rs). -->
-	<key>NSAppTransportSecurity</key>
-	<dict>
-		<key>NSAllowsLocalNetworking</key>
-		<true/>
-	</dict>
+	<!-- No App Transport Security exception here: ATS is fully on in Release. Debug builds
+	     get the local-networking exception from a Debug-only build phase (gen/apple/project.yml) so a
+	     local test server on http://127.0.0.1 works in the simulator; origin.rs refuses
+	     http:// on iOS release builds as well. -->
 </dict>
 </plist>

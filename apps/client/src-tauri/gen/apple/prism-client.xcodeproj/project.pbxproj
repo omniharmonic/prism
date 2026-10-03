@@ -17,6 +17,7 @@
 		9D9721E0BA520D46B9DF7352 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = D21F3A15F3F922A77D362C3D /* Assets.xcassets */; };
 		9FDFE1C190A9B15182050C69 /* QuartzCore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 136BA5359036A765C1C14AE3 /* QuartzCore.framework */; };
 		C5897253328F1FC2FBCF704D /* UIKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = D216ECD1D86987DFB515C60D /* UIKit.framework */; };
+		C9D81C57337677D8C703C6AB /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 10153CC6F48E73EF2CFF7E08 /* PrivacyInfo.xcprivacy */; };
 		D5A4DCEE65A4982AE79BED70 /* main.mm in Sources */ = {isa = PBXBuildFile; fileRef = 8B3E0F810B62789FB91C6DA4 /* main.mm */; };
 		DA9FFC299E559A9FB10C9D6E /* Metal.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 7EEF6C17B1EBFA6FC964CF57 /* Metal.framework */; };
 /* End PBXBuildFile section */
@@ -24,6 +25,7 @@
 /* Begin PBXFileReference section */
 		09BE5398C86C659B76431880 /* state.rs */ = {isa = PBXFileReference; path = state.rs; sourceTree = "<group>"; };
 		0B8E9A90CBFDDA2CFBA7F031 /* CoreGraphics.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreGraphics.framework; path = System/Library/Frameworks/CoreGraphics.framework; sourceTree = SDKROOT; };
+		10153CC6F48E73EF2CFF7E08 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		136BA5359036A765C1C14AE3 /* QuartzCore.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = QuartzCore.framework; path = System/Library/Frameworks/QuartzCore.framework; sourceTree = SDKROOT; };
 		1CA32C0D8B41E0C96DA0657C /* prism-client_iOS.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = "prism-client_iOS.entitlements"; sourceTree = "<group>"; };
 		1D37F6466225F4126F7C245F /* window.rs */ = {isa = PBXFileReference; path = window.rs; sourceTree = "<group>"; };
@@ -34,7 +36,9 @@
 		38A1078187D388F68EF3A3EB /* commands.rs */ = {isa = PBXFileReference; path = commands.rs; sourceTree = "<group>"; };
 		4DB9564944AB0F6C0C8B966F /* secure_store.rs */ = {isa = PBXFileReference; path = secure_store.rs; sourceTree = "<group>"; };
 		5433D2B0EF39ABCAB59749F9 /* dropfiles.rs */ = {isa = PBXFileReference; path = dropfiles.rs; sourceTree = "<group>"; };
+		5512DA5D1C8E401243AFA253 /* prism-client_iOS.debug.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = "prism-client_iOS.debug.entitlements"; sourceTree = "<group>"; };
 		61206EA259412CA5CB18C6B3 /* lib.rs */ = {isa = PBXFileReference; path = lib.rs; sourceTree = "<group>"; };
+		6315118036B5BB61CFD31972 /* mobile_cmds.rs */ = {isa = PBXFileReference; path = mobile_cmds.rs; sourceTree = "<group>"; };
 		64C6523C63585B86A86792FB /* pkce.rs */ = {isa = PBXFileReference; path = pkce.rs; sourceTree = "<group>"; };
 		746E540EABE421A9B419ACF8 /* assets */ = {isa = PBXFileReference; lastKnownFileType = folder; path = assets; sourceTree = SOURCE_ROOT; };
 		757A37DDADD9F055F629D27C /* confirm.rs */ = {isa = PBXFileReference; path = confirm.rs; sourceTree = "<group>"; };
@@ -50,6 +54,7 @@
 		A383C219A590E15C48026CF2 /* export.rs */ = {isa = PBXFileReference; path = export.rs; sourceTree = "<group>"; };
 		A45F025D9580C31387E72EC6 /* auth.rs */ = {isa = PBXFileReference; path = auth.rs; sourceTree = "<group>"; };
 		BAF6C30AFAF63EEBECD7B2E2 /* capture.rs */ = {isa = PBXFileReference; path = capture.rs; sourceTree = "<group>"; };
+		BF2C9B5C80E094C040AE8E53 /* ios.rs */ = {isa = PBXFileReference; path = ios.rs; sourceTree = "<group>"; };
 		CC5100C6A3C4250450DB9C01 /* Security.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Security.framework; path = System/Library/Frameworks/Security.framework; sourceTree = SDKROOT; };
 		CD3F47BD31DB3936CC33A28C /* capture_window.rs */ = {isa = PBXFileReference; path = capture_window.rs; sourceTree = "<group>"; };
 		CF4FC8EF1A3279A89CCF5310 /* notify.rs */ = {isa = PBXFileReference; path = notify.rs; sourceTree = "<group>"; };
@@ -104,7 +109,9 @@
 			isa = PBXGroup;
 			children = (
 				A1F3102BDA5C5BABE03F09AD /* Info.plist */,
+				5512DA5D1C8E401243AFA253 /* prism-client_iOS.debug.entitlements */,
 				1CA32C0D8B41E0C96DA0657C /* prism-client_iOS.entitlements */,
+				10153CC6F48E73EF2CFF7E08 /* PrivacyInfo.xcprivacy */,
 			);
 			path = "prism-client_iOS";
 			sourceTree = "<group>";
@@ -121,10 +128,12 @@
 				A383C219A590E15C48026CF2 /* export.rs */,
 				CF80ECE72DABF97CC341F1F9 /* host.js */,
 				D60690EC7AC92DD7FA5035DE /* host.rs */,
+				BF2C9B5C80E094C040AE8E53 /* ios.rs */,
 				61206EA259412CA5CB18C6B3 /* lib.rs */,
 				982FAAF41DD514B21615DD3D /* loopback.rs */,
 				216CE22D87428B5D4A975629 /* main.rs */,
 				DA16058A7A4FAF10E6097E66 /* menu.rs */,
+				6315118036B5BB61CFD31972 /* mobile_cmds.rs */,
 				EF4E3F86359B4776CA67DD35 /* native_cmds.rs */,
 				CF4FC8EF1A3279A89CCF5310 /* notify.rs */,
 				F9EE7E7404F0707460159494 /* origin.rs */,
@@ -205,6 +214,7 @@
 				DD56D3950E724D4363CDD0AE /* Sources */,
 				2CD9B1B3911B4FEC1D4AABC1 /* Resources */,
 				CB21BF42FCD176F1EAB07D22 /* Frameworks */,
+				86C7AEB6395C53C27221B274 /* Debug-only ATS loopback exception */,
 			);
 			buildRules = (
 			);
@@ -257,6 +267,7 @@
 			files = (
 				9D9721E0BA520D46B9DF7352 /* Assets.xcassets in Resources */,
 				538F5F15C91611F4B23A270F /* LaunchScreen.storyboard in Resources */,
+				C9D81C57337677D8C703C6AB /* PrivacyInfo.xcprivacy in Resources */,
 				09F7B0A6AEE92CD97778B507 /* assets in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -264,6 +275,25 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXShellScriptBuildPhase section */
+		86C7AEB6395C53C27221B274 /* Debug-only ATS loopback exception */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			name = "Debug-only ATS loopback exception";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "if [ \"${CONFIGURATION}\" = \"debug\" ]; then\n  PLIST=\"${TARGET_BUILD_DIR}/${INFOPLIST_PATH}\"\n  /usr/libexec/PlistBuddy -c \"Add :NSAppTransportSecurity dict\" \"$PLIST\" 2>/dev/null || true\n  /usr/libexec/PlistBuddy -c \"Add :NSAppTransportSecurity:NSAllowsLocalNetworking bool true\" \"$PLIST\" 2>/dev/null || true\nfi\n";
+		};
 		CB15A73B1BE2B4B8361A249E /* Build Rust Code */ = {
 			isa = PBXShellScriptBuildPhase;
 			alwaysOutOfDate = 1;
@@ -370,7 +400,7 @@
 					arm64,
 				);
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
-				CODE_SIGN_ENTITLEMENTS = "prism-client_iOS/prism-client_iOS.entitlements";
+				CODE_SIGN_ENTITLEMENTS = "prism-client_iOS/prism-client_iOS.debug.entitlements";
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				DEVELOPMENT_TEAM = "83Y42N33H8";
 				ENABLE_BITCODE = NO;

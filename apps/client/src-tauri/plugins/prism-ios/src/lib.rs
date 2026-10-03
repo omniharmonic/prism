@@ -95,8 +95,12 @@ pub struct Biometry {
 pub struct PushRegistration {
     /// The APNs device token, lowercase hex.
     pub token: String,
-    /// "sandbox" | "production", from the embedded provisioning profile.
-    pub environment: String,
+    /// Built for the simulator (`targetEnvironment(simulator)`).
+    pub simulator: bool,
+    /// `aps-environment` of the embedded provisioning profile; None when there
+    /// is none (App Store and TestFlight installs: Apple strips it).
+    #[serde(default)]
+    pub profile_environment: Option<String>,
 }
 
 #[derive(Deserialize, Serialize, Clone, Debug)]

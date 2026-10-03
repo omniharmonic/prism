@@ -6,7 +6,8 @@
 //    the device bearer (`serverFetch`), as `{token, environment}`.
 //  - It is re-registered on EVERY launch while notifications are on (APNs may
 //    rotate tokens; the server keeps one row per device and replaces it).
-//  - The permission prompt is shown once after sign-in, never at launch.
+//  - The permission prompt only ever follows a user action (the Settings toggle
+//    "Notify me when an agent finishes"), never a launch or a sign-in by itself.
 //  - A tapped notification (ids only) opens its agent session through the
 //    same `prism:open-agent-session` event the web push deep link uses.
 import type { PushClient, PushState } from "@prism/core";
@@ -116,16 +117,12 @@ export function initIosPush({ owner }: { owner: boolean }): void {
 
   if (!owner) return;
   void (async () => {
-    const pref = readPref();
+    // Re-register every launch so the server always has this app's current token —
+    // only when the user turned notifications on and iOS already allows them, so
+    // this never shows the permission prompt.
+    if (readPref() !== "on") return;
     const permission = await shell.pushStatus().catch(() => "denied");
-    if (pref === "off" || permission === "denied") return;
-    if (pref === null && permission === "notDetermined") {
-      // First launch after sign-in: ask once (iOS shows its own prompt).
-      await apnsPush.enable().catch(() => {});
-      return;
-    }
-    // Re-register every launch so the server always has this app's current token.
-    if (pref === null) writePref("on");
+    if (permission !== "authorized" && permission !== "provisional" && permission !== "ephemeral") return;
     await register().catch(() => {});
   })();
 }

@@ -11,10 +11,29 @@ use crate::state::AppState;
 use crate::{auth, confirm, settings, signin};
 
 /// The device token for the configured server, or null when signed out.
+///
+/// The page passes the origin it is about to send the token to (`apiOrigin`).
+/// If that is not EXACTLY the shell's current server (a stale page after a
+/// server change on iOS, or a tampered value), it gets nothing.
 #[tauri::command]
-pub async fn get_token(state: State<'_, AppState>) -> Result<Option<String>, String> {
+pub async fn get_token(
+    state: State<'_, AppState>,
+    origin: Option<String>,
+) -> Result<Option<String>, String> {
+    if !origin_matches(state.origin().as_ref(), origin.as_deref()) {
+        return Ok(None);
+    }
     state.token().await
 }
+
+/// `get_token`'s rule: a configured server, named exactly by the page.
+pub fn origin_matches(current: Option<&ServerOrigin>, asked: Option<&str>) -> bool {
+    matches!((current, asked), (Some(c), Some(a)) if c.as_str() == a)
+}
+
+/// Upper bound for the network part of a sign-out (APNs unregister + revoke):
+/// the local forget never waits longer than this on a dead network.
+const SIGN_OUT_NETWORK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(8);
 
 /// Run the PKCE sign-in in the system browser; resolves once the token is
 /// stored. A second call cancels the first.
@@ -39,16 +58,32 @@ pub async fn sign_out_inner(state: &AppState, revoke: bool) -> Result<(), String
     //    never skip the revoke.
     if let (true, Some(origin)) = (revoke, state.origin()) {
         if let Some(token) = state.known_token().await {
-            // iOS: drop this device's APNs registration first, while the bearer
-            // still works (revoking also deletes it server-side; belt and braces).
-            #[cfg(target_os = "ios")]
-            if let Err(e) = auth::delete_apns(&origin, &token).await {
-                log::warn!("{e}");
-            }
-            if let Err(e) = auth::revoke(&origin, &token).await {
-                // The token also dies on its own (idle expiry) and can be
-                // revoked in Account -> Signed-in devices.
-                log::warn!("{e}");
+            // iOS also drops this device's APNs registration (revoking deletes
+            // it server-side too; belt and braces). Both calls run in parallel
+            // under one overall timeout. A failed revoke is logged: the token
+            // also dies on its own (idle expiry) and can be revoked in
+            // Account -> Signed-in devices.
+            let network = async {
+                #[cfg(target_os = "ios")]
+                let (apns, revoked) = tokio::join!(
+                    auth::delete_apns(&origin, &token),
+                    auth::revoke(&origin, &token)
+                );
+                #[cfg(not(target_os = "ios"))]
+                let (apns, revoked) = (Ok::<(), String>(()), auth::revoke(&origin, &token).await);
+                for r in [apns, revoked] {
+                    if let Err(e) = r {
+                        log::warn!("{e}");
+                    }
+                }
+            };
+            if tokio::time::timeout(SIGN_OUT_NETWORK_TIMEOUT, network)
+                .await
+                .is_err()
+            {
+                log::warn!(
+                    "sign-out: the server didn't answer in time; forgetting the token anyway"
+                );
             }
         }
     }
@@ -132,7 +167,7 @@ pub async fn set_server_origin<R: Runtime>(
     let parsed = ServerOrigin::parse(&origin)?;
     #[cfg(mobile)]
     {
-        let _ = (&app, grant);
+        let _ = grant;
         if state.origin().is_some() {
             return Err("A server is already set. Use Settings → Sign out & change server.".into());
         }
@@ -146,6 +181,8 @@ pub async fn set_server_origin<R: Runtime>(
         })
         .map_err(|e| format!("could not save settings: {e}"))?;
         state.set_origin(Some(parsed.clone())).await;
+        // Boot the page again under this server's CSP + origin.
+        crate::mobile_cmds::reload_main(&app);
         Ok(parsed.as_str().to_string())
     }
     #[cfg(desktop)]
@@ -199,4 +236,29 @@ async fn set_server_origin_desktop<R: Runtime>(
         app.restart();
     });
     Ok(normalized)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn token_only_for_the_current_origin() {
+        let o = ServerOrigin::parse("https://prism.example.com").unwrap();
+        assert!(origin_matches(Some(&o), Some("https://prism.example.com")));
+        assert!(!origin_matches(
+            Some(&o),
+            Some("https://prism.example.com/")
+        ));
+        assert!(!origin_matches(Some(&o), Some("https://other.example.com")));
+        assert!(!origin_matches(Some(&o), Some("")));
+        assert!(
+            !origin_matches(Some(&o), None),
+            "a page that names no origin gets nothing"
+        );
+        assert!(
+            !origin_matches(None, Some("https://prism.example.com")),
+            "no server, no token"
+        );
+    }
 }

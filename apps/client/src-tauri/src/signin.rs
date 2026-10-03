@@ -79,6 +79,10 @@ pub async fn sign_in<R: Runtime>(app: &AppHandle<R>, state: &AppState) -> Result
     // The server may have been changed while the sheet was up: never file a
     // token under another server's keychain item.
     if state.origin().as_ref() != Some(&origin) {
+        // Don't leave a live, unstored device token behind on the old server.
+        if let Err(e) = crate::auth::revoke(&origin, &token).await {
+            log::warn!("{e}");
+        }
         return Err("The server changed during sign-in; sign in again.".into());
     }
     state.store_token(token).await

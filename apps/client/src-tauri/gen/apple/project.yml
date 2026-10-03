@@ -54,8 +54,6 @@ targets:
           - UIInterfaceOrientationLandscapeRight
         CFBundleShortVersionString: 0.1.0
         CFBundleVersion: "1"
-    entitlements:
-      path: prism-client_iOS/prism-client_iOS.entitlements
     scheme:
       environmentVariables:
         RUST_BACKTRACE: full
@@ -70,6 +68,13 @@ targets:
         ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES: true
         EXCLUDED_ARCHS[sdk=iphoneos*]: x86_64
       groups: [app]
+      # WP5 customisation (re-apply after `tauri ios init`, see docs/client-app.md):
+      # APNs production for Release, development (sandbox) for Debug.
+      configs:
+        debug:
+          CODE_SIGN_ENTITLEMENTS: prism-client_iOS/prism-client_iOS.debug.entitlements
+        release:
+          CODE_SIGN_ENTITLEMENTS: prism-client_iOS/prism-client_iOS.entitlements
     dependencies:
       - framework: libapp.a
         embed: false
@@ -87,3 +92,14 @@ targets:
         outputFiles:
           - $(SRCROOT)/Externals/x86_64/${CONFIGURATION}/libapp.a
           - $(SRCROOT)/Externals/arm64/${CONFIGURATION}/libapp.a
+    # WP5 customisation: plain http to a LOOPBACK test server, Debug builds only.
+    # Release Info.plists never carry an ATS key (verify-client checks).
+    postBuildScripts:
+      - script: |
+          if [ "${CONFIGURATION}" = "debug" ]; then
+            PLIST="${TARGET_BUILD_DIR}/${INFOPLIST_PATH}"
+            /usr/libexec/PlistBuddy -c "Add :NSAppTransportSecurity dict" "$PLIST" 2>/dev/null || true
+            /usr/libexec/PlistBuddy -c "Add :NSAppTransportSecurity:NSAllowsLocalNetworking bool true" "$PLIST" 2>/dev/null || true
+          fi
+        name: Debug-only ATS loopback exception
+        basedOnDependencyAnalysis: false

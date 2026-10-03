@@ -18,6 +18,38 @@ pub const DEFAULT_ORIGIN: &str = "https://prism.omniharmonic.com";
 /// pointed at them: that would put the vault itself in the CSP.
 const FORBIDDEN_LOOPBACK_PORTS: [u16; 2] = [1939, 1940];
 
+/// Plain-http loopback (a local test server) is a development affordance. In an
+/// iOS RELEASE build it is refused outright (and the release Info.plist carries
+/// no ATS exception for it either); desktop keeps it.
+const ALLOW_HTTP_LOOPBACK: bool = cfg!(any(not(target_os = "ios"), debug_assertions));
+
+/// A host that can go into a CSP source expression verbatim: after the URL
+/// parser's IDNA step, only LDH labels (letters, digits, hyphen; not at a label
+/// edge; 1–63 chars each, ≤253 in all), an IPv4 address, or a bracketed IPv6
+/// address. This keeps `*`, `;`, `'`, `,`, spaces and anything else out of the
+/// policy (`https://*.evil.com` would otherwise widen connect-src to a wildcard,
+/// and `x.com;frame-src` would add a directive).
+fn csp_safe_host(url: &Url) -> bool {
+    match url.host() {
+        Some(url::Host::Ipv4(_)) | Some(url::Host::Ipv6(_)) => true,
+        Some(url::Host::Domain(d)) => {
+            let d = d.strip_suffix('.').unwrap_or(d);
+            !d.is_empty()
+                && d.len() <= 253
+                && d.split('.').all(|label| {
+                    !label.is_empty()
+                        && label.len() <= 63
+                        && !label.starts_with('-')
+                        && !label.ends_with('-')
+                        && label
+                            .bytes()
+                            .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+                })
+        }
+        None => false,
+    }
+}
+
 /// A validated, normalized server origin: `scheme://host[:port]`, no path.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServerOrigin(String);
@@ -35,6 +67,11 @@ impl ServerOrigin {
             return Err("Enter a server address, e.g. https://prism.example.com".into());
         }
         let url = Url::parse(trimmed).map_err(|_| format!("Not a valid URL: {trimmed}"))?;
+        if url.scheme() == "https" || url.scheme() == "http" {
+            if url.host().is_some() && !csp_safe_host(&url) {
+                return Err("That server name isn't a valid host name".into());
+            }
+        }
         let host = url
             .host_str()
             .ok_or_else(|| "The server address needs a host name".to_string())?
@@ -42,7 +79,7 @@ impl ServerOrigin {
         let loopback = matches!(host.as_str(), "127.0.0.1" | "localhost" | "[::1]");
         match url.scheme() {
             "https" => {}
-            "http" if loopback => {}
+            "http" if loopback && ALLOW_HTTP_LOOPBACK => {}
             "http" => {
                 return Err(
                     "Use https:// (plain http is only allowed for 127.0.0.1/localhost)".into(),
@@ -68,6 +105,8 @@ impl ServerOrigin {
                 }
             }
         }
+        // A trailing root dot is the same host; keep the policy canonical.
+        let host = host.strip_suffix('.').map(str::to_string).unwrap_or(host);
         let mut out = format!("{}://{}", url.scheme(), host);
         if let Some(port) = url.port() {
             out.push_str(&format!(":{port}"));
@@ -202,11 +241,11 @@ pub fn retarget_csp(header: &str, origin: Option<&ServerOrigin>) -> String {
 }
 
 /// iOS: the live server origin travels with the page as
-/// `<meta name="prism-server-origin" content="…">` (the host hook's
-/// `apiOrigin` getter reads it), plus a viewport that disables focus zoom.
-/// Inserted right before `</head>` so it is the last viewport declaration (the
-/// one WebKit uses). An empty content means "no server yet" (first-run screen).
-/// The value is a validated origin, HTML-escaped anyway.
+/// `<meta name="prism-server-origin" content="…">` in `<head>` (the host hook's
+/// `apiOrigin` getter reads it from `document.head`). An empty content means
+/// "no server yet" (first-run screen). The value is a validated origin,
+/// HTML-escaped anyway. (Pinch zoom stays available: zoom-on-focus is avoided
+/// by the 16px input rule, not by disabling user scaling.)
 pub fn inject_head_meta(html: &[u8], origin: Option<&ServerOrigin>) -> Option<Vec<u8>> {
     let text = std::str::from_utf8(html).ok()?;
     let at = text.find("</head>")?;
@@ -216,10 +255,7 @@ pub fn inject_head_meta(html: &[u8], origin: Option<&ServerOrigin>) -> Option<Ve
         .replace('"', "&quot;")
         .replace('<', "&lt;")
         .replace('>', "&gt;");
-    let meta = format!(
-        "<meta name=\"prism-server-origin\" content=\"{escaped}\" />\
-         <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover\" />"
-    );
+    let meta = format!("<meta name=\"prism-server-origin\" content=\"{escaped}\" />");
     let mut out = String::with_capacity(text.len() + meta.len());
     out.push_str(&text[..at]);
     out.push_str(&meta);
@@ -365,16 +401,76 @@ mod tests {
         let meta = out
             .find("name=\"prism-server-origin\" content=\"https://prism.example.com\"")
             .unwrap();
-        let zoom = out.find("maximum-scale=1.0").unwrap();
         let head_end = out.find("</head>").unwrap();
-        assert!(meta < head_end && zoom < head_end);
+        assert!(meta < head_end, "the meta is inside <head>");
         assert!(
-            out.find("content=\"x\"").unwrap() < zoom,
-            "ours is the LAST viewport (the one WebKit uses)"
+            !out.contains("maximum-scale"),
+            "user scaling is never disabled"
+        );
+        assert_eq!(
+            out.matches("name=\"viewport\"").count(),
+            1,
+            "the page's viewport is untouched"
         );
         let empty = String::from_utf8(inject_head_meta(html, None).unwrap()).unwrap();
         assert!(empty.contains("name=\"prism-server-origin\" content=\"\""));
         assert!(inject_head_meta(b"no head here", Some(&o)).is_none());
+    }
+
+    #[test]
+    fn hosts_must_be_csp_safe() {
+        let long = format!("https://{}.com", "a".repeat(64));
+        for bad in [
+            "https://*.evil.com",
+            "https://x.com;frame-src",
+            "https://x.com;frame-src%20*",
+            "https://x'y.com",
+            "https://x\"y.com",
+            "https://a.com,b.com",
+            "https://-bad.example.com",
+            "https://bad-.example.com",
+            "https://a..b.com",
+            "https://user@prism.example.com",
+            "https://user:pw@prism.example.com",
+            long.as_str(),
+        ] {
+            assert!(ServerOrigin::parse(bad).is_err(), "should reject {bad:?}");
+        }
+        // IDN → punycode (LDH), IPv4, IPv6 and a trailing root dot are fine.
+        assert_eq!(
+            ServerOrigin::parse("https://bücher.example")
+                .unwrap()
+                .as_str(),
+            "https://xn--bcher-kva.example"
+        );
+        assert_eq!(
+            ServerOrigin::parse("https://203.0.113.7:8443")
+                .unwrap()
+                .as_str(),
+            "https://203.0.113.7:8443"
+        );
+        assert_eq!(
+            ServerOrigin::parse("https://[2001:db8::1]")
+                .unwrap()
+                .as_str(),
+            "https://[2001:db8::1]"
+        );
+        assert_eq!(
+            ServerOrigin::parse("https://prism.example.com.")
+                .unwrap()
+                .as_str(),
+            "https://prism.example.com"
+        );
+        // Whatever passes yields a CSP with no injected separators or wildcards.
+        for ok in [
+            "https://bücher.example",
+            "https://[2001:db8::1]",
+            "https://a-b.c-d.example",
+        ] {
+            let csp = build_csp(&ServerOrigin::parse(ok).unwrap());
+            assert_eq!(csp.matches(';').count(), 11, "{csp}");
+            assert!(!csp.contains('*') && !csp.contains(','), "{csp}");
+        }
     }
 
     #[test]

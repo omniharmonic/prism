@@ -55,6 +55,30 @@ pub fn valid_apns_token(t: &str) -> bool {
     (64..=200).contains(&t.len()) && t.len() % 2 == 0 && t.chars().all(|c| c.is_ascii_hexdigit())
 }
 
+/// The APNs environment of this install's token. App Store and TestFlight
+/// installs carry NO embedded provisioning profile (Apple strips it), so "no
+/// profile" means PRODUCTION; only the simulator, or a profile that says
+/// `development` (an Xcode/dev-signed build), is the sandbox. Getting this wrong
+/// = 400 BadDeviceToken = the server deletes the row on every launch.
+#[cfg_attr(not(target_os = "ios"), allow(dead_code))]
+pub fn apns_environment(profile_environment: Option<&str>, simulator: bool) -> &'static str {
+    if simulator || profile_environment == Some("development") {
+        "sandbox"
+    } else {
+        "production"
+    }
+}
+
+/// Reload the main webview: after any server change the page must boot again
+/// under the new CSP/origin (window.rs), whatever else happened.
+#[cfg(mobile)]
+pub(crate) fn reload_main<R: Runtime>(app: &AppHandle<R>) {
+    use tauri::Manager;
+    if let Some(w) = app.get_webview_window(crate::MAIN_WINDOW) {
+        let _ = w.eval("window.location.reload()");
+    }
+}
+
 /// "Sign out & change server": after a NATIVE confirmation, revoke this device
 /// (and its APNs registration), forget the token, and clear the saved server.
 /// The page then reloads into the first-run "Enter your server" screen.
@@ -85,15 +109,17 @@ pub async fn reset_server<R: Runtime>(
         if !ok {
             return Ok(false);
         }
+        // Every step runs even if an earlier one failed; the server is cleared
+        // in memory regardless and the page always reloads.
         let forget = crate::commands::sign_out_inner(&state, true).await;
-        let dir = state
-            .settings_dir
-            .clone()
-            .ok_or("no settings directory on this platform")?;
-        crate::settings::update(&dir, |s| s.server_origin = None)
-            .map_err(|e| format!("could not save settings: {e}"))?;
+        let saved = match state.settings_dir.clone() {
+            Some(dir) => crate::settings::update(&dir, |s| s.server_origin = None)
+                .map_err(|e| format!("could not save settings: {e}")),
+            None => Err("no settings directory on this platform".to_string()),
+        };
         state.set_origin(None).await;
-        forget.map(|_| true)
+        reload_main(&app);
+        forget.and(saved).map(|_| true)
     }
     #[cfg(not(target_os = "ios"))]
     {
@@ -183,11 +209,7 @@ pub async fn push_register<R: Runtime>(app: AppHandle<R>) -> Result<PushRegistra
         if !valid_apns_token(&token) {
             return Err("APNs returned an unexpected token.".into());
         }
-        let environment = if r.environment == "production" {
-            "production"
-        } else {
-            "sandbox"
-        };
+        let environment = apns_environment(r.profile_environment.as_deref(), r.simulator);
         Ok(PushRegistrationView {
             token,
             environment: environment.into(),
@@ -235,6 +257,19 @@ pub async fn push_take_opened<R: Runtime>(app: AppHandle<R>) -> Result<Option<St
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn apns_environment_defaults_to_production() {
+        // TestFlight / App Store: Apple strips embedded.mobileprovision.
+        assert_eq!(apns_environment(None, false), "production");
+        assert_eq!(apns_environment(Some("production"), false), "production");
+        // Xcode/dev-signed builds and the simulator use the sandbox.
+        assert_eq!(apns_environment(Some("development"), false), "sandbox");
+        assert_eq!(apns_environment(None, true), "sandbox");
+        assert_eq!(apns_environment(Some("production"), true), "sandbox");
+        // Anything unexpected is not "development": production.
+        assert_eq!(apns_environment(Some("Development "), false), "production");
+    }
 
     #[test]
     fn session_and_token_validation() {

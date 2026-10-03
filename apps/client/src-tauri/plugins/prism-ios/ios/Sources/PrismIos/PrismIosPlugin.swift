@@ -9,6 +9,10 @@
 //   pushRegister        notification permission + registerForRemoteNotifications -> hex token
 //   pushStatus          notification permission state
 //   takeOpenedSession   the agent session of the last tapped notification (ids only)
+//
+// While the app is LOCKED, nothing here presents UI or hands anything out:
+// authenticate / confirm / verifyOwner refuse, and the lock cover is its own
+// window above every other window (sheets included).
 
 import AuthenticationServices
 import Foundation
@@ -50,7 +54,8 @@ struct ConfigureLockArgs: Decodable {
 
 final class PushRegistrar {
   static let shared = PushRegistrar()
-  private var waiting: [Invoke] = []
+  /// Each caller waits on its own entry, with its own timeout.
+  private var waiting: [UUID: Invoke] = [:]
   private var installed = false
 
   func installDelegateMethods() {
@@ -62,10 +67,10 @@ final class PushRegistrar {
     let okSel = NSSelectorFromString("application:didRegisterForRemoteNotificationsWithDeviceToken:")
     let failSel = NSSelectorFromString("application:didFailToRegisterForRemoteNotificationsWithError:")
     let okBlock: @convention(block) (AnyObject, UIApplication, Data) -> Void = { _, _, token in
-      PushRegistrar.shared.finish(token: token, error: nil)
+      PushRegistrar.shared.finishAll(token: token, error: nil)
     }
     let failBlock: @convention(block) (AnyObject, UIApplication, NSError) -> Void = { _, _, error in
-      PushRegistrar.shared.finish(token: nil, error: error)
+      PushRegistrar.shared.finishAll(token: nil, error: error)
     }
     class_addMethod(cls, okSel, imp_implementationWithBlock(okBlock), "v@:@@")
     class_addMethod(cls, failSel, imp_implementationWithBlock(failBlock), "v@:@@")
@@ -74,23 +79,30 @@ final class PushRegistrar {
   func register(_ invoke: Invoke) {
     DispatchQueue.main.async {
       self.installDelegateMethods()
-      self.waiting.append(invoke)
+      let id = UUID()
+      self.waiting[id] = invoke
       UIApplication.shared.registerForRemoteNotifications()
-      // APNs normally answers within a second; never leave the caller hanging.
+      // APNs normally answers within a second; never leave THIS caller hanging.
       DispatchQueue.main.asyncAfter(deadline: .now() + 30) {
-        self.finish(token: nil, error: NSError(domain: "Prism", code: 1, userInfo: [NSLocalizedDescriptionKey: "APNs did not answer"]))
+        if let late = self.waiting.removeValue(forKey: id) {
+          late.reject("Couldn't register for notifications: APNs did not answer")
+        }
       }
     }
   }
 
-  private func finish(token: Data?, error: Error?) {
+  private func finishAll(token: Data?, error: Error?) {
     DispatchQueue.main.async {
       let pending = self.waiting
-      self.waiting = []
-      for invoke in pending {
+      self.waiting = [:]
+      for (_, invoke) in pending {
         if let token = token {
           let hex = token.map { String(format: "%02x", $0) }.joined()
-          invoke.resolve(["token": hex, "environment": PushRegistrar.apnsEnvironment()])
+          // The APNs environment is decided in Rust (mobile_cmds::apns_environment)
+          // from these two facts, so the rule is unit-tested there.
+          var result: JsonObject = ["token": hex, "simulator": PushRegistrar.isSimulator]
+          if let env = PushRegistrar.profileApsEnvironment() { result["profileEnvironment"] = env }
+          invoke.resolve(result)
         } else {
           invoke.reject("Couldn't register for notifications: \(error?.localizedDescription ?? "unknown error")")
         }
@@ -98,17 +110,25 @@ final class PushRegistrar {
     }
   }
 
-  /// The APNs environment this build's token belongs to: the `aps-environment`
-  /// entitlement as baked into the embedded provisioning profile (App Store and
-  /// TestFlight builds: production). No profile = simulator/dev = sandbox.
-  static func apnsEnvironment() -> String {
+  static var isSimulator: Bool {
+    #if targetEnvironment(simulator)
+      return true
+    #else
+      return false
+    #endif
+  }
+
+  /// `aps-environment` of the embedded provisioning profile, or nil when there is
+  /// none. App Store and TestFlight installs have NO embedded profile (Apple strips
+  /// it), so nil must mean production (decided in Rust).
+  static func profileApsEnvironment() -> String? {
     guard let path = Bundle.main.path(forResource: "embedded", ofType: "mobileprovision"),
       let data = try? Data(contentsOf: URL(fileURLWithPath: path)),
       let text = String(data: data, encoding: .isoLatin1),
       let start = text.range(of: "<?xml"),
       let end = text.range(of: "</plist>")
     else {
-      return "sandbox"
+      return nil
     }
     let xml = String(text[start.lowerBound..<end.upperBound])
     guard let plistData = xml.data(using: .isoLatin1),
@@ -116,9 +136,9 @@ final class PushRegistrar {
       let ents = plist["Entitlements"] as? [String: Any],
       let env = ents["aps-environment"] as? String
     else {
-      return "sandbox"
+      return nil
     }
-    return env == "production" ? "production" : "sandbox"
+    return env
   }
 }
 
@@ -127,34 +147,36 @@ final class PushRegistrar {
 final class AppLock: NSObject {
   static let shared = AppLock()
 
-  enum Mode: String {
-    case off, launch, background, always
-  }
-
-  private var mode: Mode = .off
+  private var mode: LockMode = .off
   private var minutes: Int = 5
   private var locked = false
   private var authenticating = false
-  private var backgroundedAt: Date?
-  private var cover: UIView?
+  /// `continuousSeconds()` when the app entered the background (monotonic, counts sleep).
+  private var backgroundedAt: Double?
+  private var coverWindow: UIWindow?
   private var statusLabel: UILabel?
   private var observing = false
   /// The Tauri view controller (set by the plugin; PluginManager.shared is internal).
   var viewController: () -> UIViewController? = { nil }
+  /// Called when the app locks: drop anything the plugin has on screen.
+  var onLock: () -> Void = {}
+
+  /// True while the app is locked (the plugin refuses UI and secrets then).
+  var isLocked: Bool { locked }
 
   func configure(mode raw: String, minutes: Int, atLaunch: Bool) {
     DispatchQueue.main.async {
       self.observe()
-      self.mode = Mode(rawValue: raw) ?? .off
+      self.mode = LockMode(rawValue: raw) ?? .off
       self.minutes = max(1, minutes)
       if self.mode == .off {
         // Turning the lock off from Settings (the app is unlocked to get there).
-        self.locked = false
+        self.setLocked(false)
         self.hideCover()
         return
       }
       if atLaunch {
-        self.locked = true
+        self.setLocked(true)
         self.showCover()
         if UIApplication.shared.applicationState == .active {
           self.authenticate()
@@ -179,7 +201,7 @@ final class AppLock: NSObject {
 
   @objc private func didEnterBackground() {
     if mode == .off { return }
-    if backgroundedAt == nil { backgroundedAt = Date() }
+    if backgroundedAt == nil { backgroundedAt = continuousSeconds() }
     showCover()
   }
 
@@ -189,17 +211,10 @@ final class AppLock: NSObject {
       hideCover()
       return
     }
-    if !locked {
-      switch mode {
-      case .always:
-        locked = backgroundedAt != nil
-      case .background:
-        if let at = backgroundedAt {
-          locked = Date().timeIntervalSince(at) >= Double(minutes * 60)
-        }
-      case .launch, .off:
-        break
-      }
+    if !locked
+      && LockPolicy.shouldLock(mode: mode, minutes: minutes, backgroundedAt: backgroundedAt, now: continuousSeconds())
+    {
+      setLocked(true)
     }
     backgroundedAt = nil
     if locked {
@@ -207,6 +222,20 @@ final class AppLock: NSObject {
       authenticate()
     } else {
       hideCover()
+    }
+  }
+
+  /// Locking disables the webview and drops its focus (no keyboard, no typing
+  /// into the page behind the cover), and closes whatever the plugin presented.
+  private func setLocked(_ value: Bool) {
+    locked = value
+    guard let main = viewController() else { return }
+    main.view.isUserInteractionEnabled = !value
+    if value {
+      main.view.window?.endEditing(true)
+      main.view.endEditing(true)
+      onLock()
+      if main.presentedViewController != nil { main.dismiss(animated: false) }
     }
   }
 
@@ -218,7 +247,7 @@ final class AppLock: NSObject {
     guard context.canEvaluatePolicy(.deviceOwnerAuthentication, error: &error) else {
       // No passcode on the device: there is nothing to authenticate against, and
       // locking would shut the owner out of their own data. Fail open, say so.
-      locked = false
+      setLocked(false)
       hideCover()
       NSLog("[prism] app lock: device has no passcode; lock not enforced")
       return
@@ -229,7 +258,7 @@ final class AppLock: NSObject {
       DispatchQueue.main.async {
         self.authenticating = false
         if ok {
-          self.locked = false
+          self.setLocked(false)
           self.hideCover()
         } else {
           self.statusLabel?.text = "Prism is locked"
@@ -253,19 +282,21 @@ final class AppLock: NSObject {
     authenticate()
   }
 
-  private func hostView() -> UIView? {
-    if let window = viewController()?.view.window { return window }
-    return viewController()?.view
-  }
-
+  /// The cover is its own window ABOVE every other window of the scene (alert
+  /// level + 1), so nothing the app presents (alerts, the sign-in sheet) can
+  /// show on top of it. Only system UI (the Face ID / passcode prompt) does.
   private func showCover() {
-    guard let host = hostView() else { return }
-    if let cover = cover {
-      host.bringSubviewToFront(cover)
+    if let w = coverWindow {
+      w.isHidden = false
       return
     }
-    let v = UIView(frame: host.bounds)
-    v.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+    guard let scene = viewController()?.view.window?.windowScene
+      ?? UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }).first
+    else { return }
+    let w = UIWindow(windowScene: scene)
+    w.windowLevel = .alert + 1
+    let vc = UIViewController()
+    let v = vc.view!
     v.backgroundColor = UIColor(red: 0.039, green: 0.039, blue: 0.043, alpha: 1)
     v.accessibilityViewIsModal = true
 
@@ -292,14 +323,15 @@ final class AppLock: NSObject {
       stack.centerXAnchor.constraint(equalTo: v.centerXAnchor),
       stack.centerYAnchor.constraint(equalTo: v.centerYAnchor),
     ])
-    host.addSubview(v)
-    cover = v
+    w.rootViewController = vc
+    w.isHidden = false
+    coverWindow = w
     statusLabel = status
   }
 
   private func hideCover() {
-    cover?.removeFromSuperview()
-    cover = nil
+    coverWindow?.isHidden = true
+    coverWindow = nil
     statusLabel = nil
   }
 }
@@ -311,6 +343,7 @@ class PrismIosPlugin: Plugin, ASWebAuthenticationPresentationContextProviding, U
   private weak var webview: WKWebView?
   private var openedSessionId: String?
   private static let sessionIdPattern = try! NSRegularExpression(pattern: "^[A-Za-z0-9_-]{8,64}$")
+  private static let lockedMessage = "Prism is locked."
 
   override init() {
     super.init()
@@ -319,6 +352,11 @@ class PrismIosPlugin: Plugin, ASWebAuthenticationPresentationContextProviding, U
     PushRegistrar.shared.installDelegateMethods()
     let manager = self.manager
     AppLock.shared.viewController = { manager.viewController }
+    AppLock.shared.onLock = { [weak self] in
+      // A sign-in sheet left open must not survive a lock.
+      self?.authSession?.cancel()
+      self?.authSession = nil
+    }
   }
 
   override func load(webview: WKWebView) {
@@ -344,6 +382,10 @@ class PrismIosPlugin: Plugin, ASWebAuthenticationPresentationContextProviding, U
       return
     }
     DispatchQueue.main.async {
+      if AppLock.shared.isLocked {
+        invoke.reject(PrismIosPlugin.lockedMessage)
+        return
+      }
       self.authSession?.cancel()
       let session = ASWebAuthenticationSession(url: url, callbackURLScheme: args.callbackScheme) {
         [weak self] callback, error in
@@ -376,23 +418,36 @@ class PrismIosPlugin: Plugin, ASWebAuthenticationPresentationContextProviding, U
 
   // MARK: native confirmation
 
+  /// Always resolves exactly once: true only on the confirm button; false on
+  /// Cancel, while locked, or when the alert could not be presented.
   @objc public func confirm(_ invoke: Invoke) throws {
     let args = try invoke.parseArgs(ConfirmArgs.self)
     DispatchQueue.main.async {
-      guard var top = self.manager.viewController else {
-        invoke.resolve(["confirmed": false])
+      var answered = false
+      let answer: (Bool) -> Void = { ok in
+        if answered { return }
+        answered = true
+        invoke.resolve(["confirmed": ok])
+      }
+      guard !AppLock.shared.isLocked, var top = self.manager.viewController, top.view.window != nil else {
+        answer(false)
         return
       }
-      while let presented = top.presentedViewController { top = presented }
+      while let presented = top.presentedViewController, !presented.isBeingDismissed { top = presented }
       let alert = UIAlertController(title: args.title, message: args.message, preferredStyle: .alert)
-      let cancel = UIAlertAction(title: "Cancel", style: .cancel) { _ in invoke.resolve(["confirmed": false]) }
+      let cancel = UIAlertAction(title: "Cancel", style: .cancel) { _ in answer(false) }
       let ok = UIAlertAction(title: args.confirm, style: args.destructive ? .destructive : .default) { _ in
-        invoke.resolve(["confirmed": true])
+        answer(true)
       }
       alert.addAction(cancel)
       alert.addAction(ok)
       alert.preferredAction = args.cancelIsDefault ? cancel : ok
       top.present(alert, animated: true)
+      // UIKit drops a presentation silently (e.g. another one is in flight):
+      // never leave the caller waiting.
+      DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+        if alert.presentingViewController == nil { answer(false) }
+      }
     }
   }
 
@@ -413,21 +468,28 @@ class PrismIosPlugin: Plugin, ASWebAuthenticationPresentationContextProviding, U
   /// Re-authenticate before a lock setting changes (so page script can't switch it off).
   @objc public func verifyOwner(_ invoke: Invoke) throws {
     let args = try invoke.parseArgs(VerifyOwnerArgs.self)
-    let context = LAContext()
-    guard context.canEvaluatePolicy(.deviceOwnerAuthentication, error: nil) else {
-      // No passcode: the lock was never enforceable, so there is nothing to protect.
-      invoke.resolve(["confirmed": true])
-      return
-    }
-    AppLock.shared.suspendFor { done in
-      context.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: args.reason) { ok, _ in
-        DispatchQueue.main.async {
-          done()
-          invoke.resolve(["confirmed": ok])
+    DispatchQueue.main.async {
+      if AppLock.shared.isLocked {
+        invoke.resolve(["confirmed": false])
+        return
+      }
+      let context = LAContext()
+      guard context.canEvaluatePolicy(.deviceOwnerAuthentication, error: nil) else {
+        // No passcode: the lock was never enforceable, so there is nothing to protect.
+        invoke.resolve(["confirmed": true])
+        return
+      }
+      AppLock.shared.suspendFor { done in
+        context.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: args.reason) { ok, _ in
+          DispatchQueue.main.async {
+            done()
+            invoke.resolve(["confirmed": ok])
+          }
         }
       }
     }
   }
+
 
   @objc public func biometry(_ invoke: Invoke) {
     let context = LAContext()

@@ -76,10 +76,10 @@ export function IosAppSettings() {
     setBusy(true);
     setMsg(null);
     try {
-      const done = await shell.resetServer();
-      if (!done) return; // cancelled in the native dialog
+      // Drop this server's cached reads first: on success the shell signs out,
+      // clears the server and reloads the page itself (also after a partial failure).
       await clearReadCache().catch(() => {});
-      window.location.reload();
+      await shell.resetServer(); // false = cancelled in the native dialog
     } catch (e) {
       setMsg(shellError(e));
     } finally {
