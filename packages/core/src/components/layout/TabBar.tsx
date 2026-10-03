@@ -48,6 +48,7 @@ function IconButton({
     <button
       onClick={disabled ? undefined : (event) => { event.currentTarget.focus({ preventScroll: true }); onClick(); }}
       title={title}
+      aria-pressed={active === undefined ? undefined : active}
       disabled={disabled}
       className="interactive focus-ring flex items-center justify-center flex-shrink-0"
       style={{
@@ -199,7 +200,7 @@ export function TabBar() {
       {/* Sidebar toggle */}
       <IconButton
         onClick={toggleSidebar}
-        title="Toggle sidebar (⌘B)"
+        title="Toggle sidebar (⌘\)"
         active={sidebarOpen}
       >
         <PanelLeft size={16} />
@@ -389,7 +390,7 @@ export function TabBar() {
             if (!contextPanelOpen) setContextPanelTab("metadata");
             toggleContextPanel();
           }}
-          title="Info panel (⌘\)"
+          title="Info panel (⌘⇧\)"
           active={contextPanelOpen}
         >
           <PanelRight size={16} />

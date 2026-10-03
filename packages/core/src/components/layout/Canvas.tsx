@@ -1,7 +1,7 @@
 import { isAccessUnavailable } from "../../data/VaultClient";
 import { noteLinkTitle } from "../../lib/wikilinks";
 import { isVaultNoteId } from "../../lib/noteIdentity";
-import { Suspense, useCallback, useEffect, useMemo, useRef } from "react";
+import { Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef } from "react";
 import { remoteAdoption } from "../../app/hooks/useAutoSave";
 import { Compass } from "lucide-react";
 import { useUIStore } from "../../app/stores/ui";
@@ -125,6 +125,65 @@ export function Canvas() {
     if (verdict === "adopt") useUIStore.getState().bumpNoteRevision(plainNote.id);
   }, [plainNote]);
 
+  // NP-SR-07: back/forward (⌘[ / ⌘], the header arrows, the phone edge swipe)
+  // return to where the page was scrolled. Positions are remembered per tab for
+  // this session; an ordinary open or tab click does not restore (a deep link to
+  // a comment or mention scrolls to its own target).
+  const mainRef = useRef<HTMLElement>(null);
+  const scrolls = useRef(new Map<string, { cls: string; tag: string; top: number }>());
+  const scrollTab = useRef<string | null>(null);
+  const restoring = useRef(false);
+  const navRestore = useUIStore((s) => s.navRestore);
+  const seenRestore = useRef(navRestore);
+  // Renderers bring their own scroller (the writing column, the live editor), so
+  // listen in the capture phase and remember the page-sized one, not a code block.
+  useEffect(() => {
+    const main = mainRef.current;
+    if (!main) return;
+    const onScroll = (event: Event) => {
+      const el = event.target as HTMLElement | null;
+      if (restoring.current || !scrollTab.current || !el || !(el instanceof HTMLElement)) return;
+      if (el !== main && el.clientHeight < main.clientHeight * 0.5) return;
+      scrolls.current.set(scrollTab.current, { cls: typeof el.className === "string" ? el.className : "", tag: el.tagName, top: el.scrollTop });
+    };
+    main.addEventListener("scroll", onScroll, { capture: true, passive: true });
+    return () => main.removeEventListener("scroll", onScroll, { capture: true });
+  }, []);
+  useLayoutEffect(() => {
+    scrollTab.current = activeTabId;
+    const main = mainRef.current;
+    const wanted = seenRestore.current !== navRestore;
+    seenRestore.current = navRestore;
+    const saved = activeTabId ? scrolls.current.get(activeTabId) : undefined;
+    if (!main || !wanted || !saved || saved.top <= 0) return;
+    restoring.current = true;
+    const started = performance.now();
+    let frame = 0;
+    const events = ["wheel", "touchstart", "keydown", "mousedown"];
+    const stop = () => {
+      cancelAnimationFrame(frame);
+      restoring.current = false;
+      for (const type of events) window.removeEventListener(type, stop, true);
+    };
+    const find = (): HTMLElement | null => {
+      if (main.tagName === saved.tag && main.className === saved.cls) return main;
+      for (const el of main.getElementsByTagName(saved.tag)) {
+        if (el instanceof HTMLElement && el.className === saved.cls && el.clientHeight >= main.clientHeight * 0.5) return el;
+      }
+      return null;
+    };
+    // The page may still be loading (lazy renderer, images): keep trying until it is tall enough.
+    const step = () => {
+      const el = find();
+      if (el) el.scrollTop = saved.top;
+      if ((el && Math.abs(el.scrollTop - saved.top) < 2) || performance.now() - started > 2000) { stop(); return; }
+      frame = requestAnimationFrame(step);
+    };
+    for (const type of events) window.addEventListener(type, stop, { capture: true, passive: true });
+    step();
+    return stop;
+  }, [activeTabId, navRestore]);
+
   // NP-PG-08: per-page small text / full width (styles/shell.css), any device, live or not.
   const pageStyle = isVirtual ? {} : pageStyleOf(effectiveNote);
 
@@ -132,7 +191,7 @@ export function Canvas() {
     <div className="flex flex-col h-full">
       <TabBar />
 
-      <main id="workspace-document" tabIndex={-1} className="flex-1 min-h-0 overflow-auto"
+      <main id="workspace-document" ref={mainRef} tabIndex={-1} className="flex-1 min-h-0 overflow-auto"
         data-page-small={pageStyle.small ? "true" : undefined} data-page-full={pageStyle.full ? "true" : undefined}>
         {!activeTab ? (
           <EmptyState />

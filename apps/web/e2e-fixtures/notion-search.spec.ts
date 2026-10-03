@@ -108,3 +108,35 @@ test("⌘K opens while typing in the editor and Esc returns to the caret", async
   await page.keyboard.type("-after");
   await expect(editor).toContainText("caret-before-after"); // same caret position, nothing lost
 });
+
+/** NP-SR-07 */
+test("back/forward restores scroll", async ({ page }) => {
+  await page.goto("/e2e-fixtures/notion-shell.html");
+  await expect(page.locator(".tiptap[contenteditable=true]")).toBeVisible();
+  await page.evaluate(() => {
+    const shell = (window as any).prismShell;
+    shell.note("agenda").content = Array.from({ length: 120 }, (_, i) => `<p>Agenda line ${i + 1}</p>`).join("");
+    (window as any).prismShellUI.getState().openTab("agenda", "Workshop agenda", "document");
+  });
+  const main = page.locator("#workspace-document .document-writing-scroll");
+  await expect(page.locator(".tiptap")).toContainText("Agenda line 120");
+  await main.evaluate((node) => { node.scrollTop = 900; });
+  await expect.poll(() => main.evaluate((node) => node.scrollTop)).toBe(900);
+  await page.evaluate(() => (window as any).prismShellUI.getState().openTab("field-notes", "Field notes", "document"));
+  await expect(page.locator(".tiptap")).toContainText("workshop budget");
+  expect(await main.evaluate((node) => node.scrollTop)).toBeLessThan(50);
+  // ⌘[ goes back to the agenda, at the line it was left on.
+  await page.keyboard.press("ControlOrMeta+BracketLeft");
+  await expect(page.locator(".tiptap")).toContainText("Agenda line 120");
+  await expect.poll(() => main.evaluate((node) => node.scrollTop)).toBe(900);
+  // ⌘] goes forward again; the header arrows do the same.
+  await page.keyboard.press("ControlOrMeta+BracketRight");
+  await expect(page.locator(".tiptap")).toContainText("workshop budget");
+  await page.getByRole("button", { name: "Back", exact: true }).click();
+  await expect(page.locator(".tiptap")).toContainText("Agenda line 120");
+  await expect.poll(() => main.evaluate((node) => node.scrollTop)).toBe(900);
+  // The restore lets go as soon as the reader scrolls.
+  await main.evaluate((node) => { node.scrollTop = 0; });
+  await page.waitForTimeout(300);
+  expect(await main.evaluate((node) => node.scrollTop)).toBe(0);
+});

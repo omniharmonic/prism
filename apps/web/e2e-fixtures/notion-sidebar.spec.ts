@@ -67,3 +67,39 @@ test("one action → focused untitled page", async ({ page }) => {
   await nav.getByRole("button", { name: "Choose page type", exact: true }).click();
   await expect(page.getByRole("dialog", { name: "New page", exact: true })).toBeVisible();
 });
+
+/** NP-SB-11 */
+test("⌘\\ collapses and width persists", async ({ page }) => {
+  await page.goto("/e2e-fixtures/notion-shell.html?persisted");
+  const editor = page.locator(".tiptap[contenteditable=true]");
+  await expect(editor).toBeVisible();
+  const nav = page.locator(".workspace-navigation");
+  await expect(nav).toBeVisible();
+  // ⌘\ works from inside the editor too (⌘B there is bold).
+  await editor.click();
+  await page.keyboard.press("ControlOrMeta+Backslash");
+  await expect(nav).toHaveCount(0);
+  await expect(page.getByTestId("sidebar-peek-zone")).toBeVisible();
+  // ⌘⇧\ is the info panel now; it leaves the sidebar alone.
+  await page.keyboard.press("ControlOrMeta+Shift+Backslash");
+  await expect(page.getByRole("button", { name: "Info panel (⌘⇧\\)", exact: true })).toHaveAttribute("aria-pressed", "true");
+  await expect(nav).toHaveCount(0);
+  await page.keyboard.press("ControlOrMeta+Shift+Backslash");
+  // Collapsed survives a reload.
+  await page.reload();
+  await expect(page.locator(".tiptap[contenteditable=true]")).toBeVisible();
+  await expect(nav).toHaveCount(0);
+  await page.keyboard.press("ControlOrMeta+Backslash");
+  await expect(nav).toBeVisible();
+  // Drag the divider: the new width survives a reload, clamped to 200–400.
+  const before = (await nav.boundingBox())!;
+  await page.mouse.move(before.x + before.width + 2, 300);
+  await page.mouse.down();
+  await page.mouse.move(before.x + before.width + 62, 300, { steps: 5 });
+  await page.mouse.up();
+  const dragged = (await nav.boundingBox())!.width;
+  expect(dragged).toBeGreaterThan(before.width + 40);
+  await page.reload();
+  await expect(nav).toBeVisible();
+  expect(Math.abs((await nav.boundingBox())!.width - dragged)).toBeLessThanOrEqual(1);
+});

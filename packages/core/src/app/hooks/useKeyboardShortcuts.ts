@@ -16,6 +16,23 @@ export function useKeyboardShortcuts() {
         return;
       }
 
+      // ⌘\ = sidebar, ⌘⇧\ = info panel (NP-SB-11). By physical key: Shift turns "\" into "|".
+      if (e.code === "Backslash" || e.key === "\\") {
+        if (e.altKey) return;
+        e.preventDefault();
+        if (e.shiftKey) toggleContextPanel();
+        else toggleSidebar();
+        return;
+      }
+      // ⌘[ / ⌘] walk the visited pages (NP-SR-07). An editor that uses the keys
+      // itself (code indent) has already claimed the event (defaultPrevented above).
+      if ((e.key === "[" || e.key === "]") && !e.shiftKey && !e.altKey) {
+        e.preventDefault();
+        if (e.key === "[") useUIStore.getState().navBack();
+        else useUIStore.getState().navForward();
+        return;
+      }
+
       switch (e.key) {
         case "w":
           // Close active tab instead of closing the window
@@ -27,10 +44,6 @@ export function useKeyboardShortcuts() {
           if ((e.target as HTMLElement | null)?.closest('[contenteditable="true"], input, textarea')) return;
           e.preventDefault();
           toggleSidebar();
-          break;
-        case "\\":
-          e.preventDefault();
-          toggleContextPanel();
           break;
         case "k":
           e.preventDefault();

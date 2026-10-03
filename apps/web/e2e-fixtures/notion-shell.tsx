@@ -198,7 +198,8 @@ window.fetch = async (input, init) => {
 setActiveVault("primary");
 await fetchMe();
 startOutboxSync();
-useUIStore.setState({ contextPanelOpen: false, sidebarWidth: 240, sidebarOpen: !params.has("collapsed") });
+// `?persisted` leaves the sidebar as the app restored it from this device (NP-SB-11).
+useUIStore.setState(params.has("persisted") ? { contextPanelOpen: false } : { contextPanelOpen: false, sidebarWidth: 240, sidebarOpen: !params.has("collapsed") });
 createRoot(document.getElementById("root")!).render(
   <React.StrictMode><PlatformProvider value="web"><VaultClientProvider client={httpVaultClient}><CollabSharingProvider value={{ ...(params.has("vaults") ? {
       listVaults: async () => [{ id: "primary", label: "Personal vault", vault: "personal", active: true }, { id: "research", label: "Shared research", vault: "research", active: false }],
