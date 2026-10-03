@@ -56,7 +56,9 @@ export interface Complexity {
    * table cannot run across an empty or spaces-only line (`marked`'s own rule — a
    * tab-only line does NOT end it), and its width is at most the pipes of a
    * delimiter-row candidate within it + 1. A miss here costs a worker thread, never
-   * the event loop.
+   * the event loop. A line counts `1 + its `>` and list markers` here — NOT its
+   * indentation (that is for `nodes` / `nestDepth`, the inline gate): an indented
+   * code block is not ten thousand nested containers.
    */
   parseNodes: number;
   /**
@@ -73,6 +75,34 @@ export interface Complexity {
    * mostly punctuation is never "obviously tiny").
    */
   specials: number;
+  /**
+   * Most (delimiter runs in a block) × (that block's length). Inline gate only.
+   * `marked` scans AHEAD from a delimiter for what closes it — `[a](` looks for
+   * its `)` to the end of the paragraph — so 200 openers in front of a 23 KB
+   * tail were 0.5–0.65 s on the event loop while every other counter called the
+   * body tiny (200 runs, 24 KB, one line). Runs × length bounds that scan.
+   */
+  scanCost: number;
+  /**
+   * The longest run of whitespace of any kind (blanks, tabs, NBSP, line breaks).
+   * Inline gate only. `marked`'s link rule is `\s*` href `(\s+ title)? \s*` — on a
+   * long run of `\s` it backtracks polynomially: 61 `[a](` in front of 4,342
+   * NBSP (4.5 KB in all) took 15.8 s. Nobody writes 256 blanks in a row.
+   */
+  blankRun: number;
+}
+
+/** The longest run of whitespace characters of any kind in `text`. One pass. */
+export function longestBlankRun(text: string): number {
+  let run = 0;
+  let max = 0;
+  for (let i = 0; i < text.length; i++) {
+    const c = text.charCodeAt(i);
+    if (c === 32 || c === 9 || c === 10 || c === 13 || isOtherBreak(c) || isBlank(c)) {
+      if (++run > max) max = run;
+    } else run = 0;
+  }
+  return max;
 }
 
 const STAR = 42; // *
@@ -136,7 +166,7 @@ const isBlank = (c: number): boolean =>
  * taken for a row of (the most `|` on any line of the document + 1) cells. Every
  * `|` counts — escaped or not.
  */
-export function markdownComplexity(md: string): Pick<Complexity, "delimiterRuns" | "quoteDepth" | "nodes" | "parseNodes" | "nestDepth" | "specials"> {
+export function markdownComplexity(md: string): Pick<Complexity, "delimiterRuns" | "quoteDepth" | "nodes" | "parseNodes" | "nestDepth" | "specials" | "scanCost"> {
   let nodes = 0; // every line (+ the containers it can open) + every delimiter run + autolinks (+ table cells, added at the end)
   let runs = 0; // since the last empty / spaces-only line
   let maxRuns = 0;
@@ -162,23 +192,35 @@ export function markdownComplexity(md: string): Pick<Complexity, "delimiterRuns"
   let regionPipes = 0; // most `|` on a candidate line of the region
   let regionLines = 0; // lines after its first candidate
   let regionCells = 0; // closed regions
+  let indentOnly = 0; // what `nodes` counted for indentation (not for `>` or list markers)
+  let blockStart = 0; // where the current block (since the last empty / spaces-only line) began
+  let maxScan = 0;
+  const endBlock = (at: number): void => {
+    const cost = runs * (at - blockStart);
+    if (cost > maxScan) maxScan = cost;
+    runs = 0;
+    blockStart = at;
+  };
   const closeRegion = (): void => {
     if (regionOpen) regionCells += 2 * (regionPipes + 2) * (regionLines + 1);
     regionOpen = false;
   };
   let prev = 0;
-  const endLine = (): void => {
+  const endLine = (pos: number): void => {
     const depth = quote + nest + (indent >> 1);
     if (depth > maxNest) maxNest = depth;
     // A line, and every container its leading run can open: `> > > x` + an empty line, 120 times
     // over, is 120 × 4 nodes (lines × depth is as multiplicative as a table).
     nodes += 1 + depth;
+    // …but indentation alone opens nothing for the count behind the REFUSAL: 10,000 lines of
+    // indented JSON / YAML / code are 10,000 lines (taken back out of `parseNodes` below).
+    indentOnly += indent >> 1;
     if (linePipes > maxPipes) maxPipes = linePipes;
     const candidate = lineTableChars && lineDash && linePipeOrColon;
     if (delimiterSeen) linesAfterDelimiter++;
     else if (candidate) delimiterSeen = true;
     if (lineSpacesOnly) {
-      runs = 0;
+      endBlock(pos);
       closeRegion();
     } else if (regionOpen) {
       regionLines++;
@@ -202,7 +244,7 @@ export function markdownComplexity(md: string): Pick<Complexity, "delimiterRuns"
     const c = md.charCodeAt(i);
     if (c === NL || c === CR) {
       // (`\r` is normalised away before this runs; counted as a break anyway.)
-      endLine();
+      endLine(i);
       prev = c;
       continue;
     }
@@ -268,13 +310,14 @@ export function markdownComplexity(md: string): Pick<Complexity, "delimiterRuns"
     else if (c === DOT && (prev | 32) === W && (md.charCodeAt(i - 2) | 32) === W && (md.charCodeAt(i - 3) | 32) === W) nodes++; // www.
     prev = c;
   }
-  endLine();
+  endLine(md.length);
+  endBlock(md.length);
   // (a cell is a `<td>` + its paragraph + its text: about two ordinary nodes' work each — and so
   // is the row itself; + the header row. Measured: 80 one-cell rows ≈ 80–130 ms on the event loop.)
   closeRegion();
-  const parseNodes = nodes + regionCells;
+  const parseNodes = nodes - indentOnly + regionCells;
   if (delimiterSeen) nodes += 2 * (maxPipes + 2) * (linesAfterDelimiter + 1);
-  return { delimiterRuns: maxRuns, quoteDepth: maxQuote, nodes, parseNodes, nestDepth: maxNest, specials };
+  return { delimiterRuns: maxRuns, quoteDepth: maxQuote, nodes, parseNodes, nestDepth: maxNest, specials, scanCost: maxScan };
 }
 
 /** Start tags in `html` (`<` + a letter). One pass. (Kept for callers that want elements only.) */
@@ -336,7 +379,7 @@ export function htmlNodeCount(html: string): number {
 
 /** Everything the service decides on, for a note body (`markdown` = it goes through marked). */
 export function complexityOf(content: string, markdown: boolean): Complexity {
-  const md = markdown ? markdownComplexity(content) : { delimiterRuns: 0, quoteDepth: 0, nodes: 0, parseNodes: 0, nestDepth: 0, specials: 0 };
+  const md = markdown ? markdownComplexity(content) : { delimiterRuns: 0, quoteDepth: 0, nodes: 0, parseNodes: 0, nestDepth: 0, specials: 0, scanCost: 0 };
   // Markdown may carry raw HTML, which marked passes through to the DOM parser —
   // whole BLOCKS of it, verbatim (`<div>` + 20 KB of lone `>` is 20 KB of lone `>`
   // for the DOM parser). So a Markdown body with any `<` is counted exactly like
@@ -344,7 +387,7 @@ export function complexityOf(content: string, markdown: boolean): Complexity {
   // too, which only errs towards the worker.
   const hasTags = content.includes("<");
   const pieces = hasTags || !markdown ? htmlNodeCount(content) : 0;
-  return { chars: content.length, ...md, nodes: md.nodes + pieces, parseNodes: md.parseNodes + pieces, htmlDepth: hasTags ? htmlDepth(content) : 0 };
+  return { chars: content.length, ...md, nodes: md.nodes + pieces, parseNodes: md.parseNodes + pieces, htmlDepth: hasTags ? htmlDepth(content) : 0, blankRun: longestBlankRun(content) };
 }
 
 /**

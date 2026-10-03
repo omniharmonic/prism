@@ -216,7 +216,7 @@ function prng(seed: number): () => number {
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
   };
 }
-const ALPHABET = ["|", "-", ":", "\t", "\r", "\n", ">", "*", "_", "[", "]", "(", ")", "<", ">", "&", "#", " ", "a"];
+const ALPHABET = ["|", "-", ":", "\t", "\r", "\n", ">", "*", "_", "[", "]", "(", ")", "<", ">", "&", "#", " ", "a", "`", "~", "!", "\\", "=", "@", "/", "www.", "0", "7", "+", "\v", "\u0085", "\u2028", "\u2029", "."];
 /** Fragments that build structure when repeated (what uniform characters almost never do). */
 const FRAGMENTS = ["|a", "|-", "|", "-|", ":-|", "- ", "> ", "  ", "\t", "1. ", "* ", "a\n", "\n", "\r", "\r\n", "\t\n", " \n", "x\n", "- a\n", "> a\n", "*a ", "_a ", "[a](", "[", "`a ", "<a ", "</a>", "<!--", "-->", "&amp;", "a ", "# ", "\n\n", "---\n", "===\n", "```\n", "    ", " ", "\f", " "];
 function randomBody(rand: () => number): string {
@@ -236,6 +236,17 @@ function randomBody(rand: () => number): string {
   }
   return out.slice(0, 4096);
 }
+/** ONE long line, up to the inline byte cap: a few hundred delimiters (or none) and a long tail — what a byte cap, not a line count, has to bound. */
+const OPENERS = ["*a ", "_a ", "[", "`a ", "~a ", "![", "[a](", "\\", "<", "&", "**a", "~~a", "`", "*", "_", "@", "a@b.cd ", "www.a.b ", "http://a.b ", "!", "=", "+ ", "1. ", "> ", "- ", "| ", "<a ", "</", "<!--", "&#", "]", ")", "(", "[a]", "[a]: ", "$", "^", "{", "#", ":", '"'];
+const TAILS = ["a", "word ", " ", "a ", "=", "/", "0", ".", "!", "\\", "~", "`", "+", "a_b ", "a*b ", "a/b ", "x=1 ", "\t", "\u00a0", "\v", "\u2028", "\u0085", "(", ")", "]", '"', "'", ">", "a>", "-", ":", "&"];
+function longLine(rand: () => number): string {
+  const opener = OPENERS[Math.floor(rand() * OPENERS.length)]!;
+  const tail = TAILS[Math.floor(rand() * TAILS.length)]!;
+  const size = 2000 + Math.floor(rand() * 22_000);
+  const head = opener.repeat(Math.floor(rand() * 200));
+  const body = head + tail.repeat(Math.ceil(Math.max(0, size - head.length) / tail.length));
+  return (rand() < 0.5 ? body : body + opener.repeat(Math.floor(rand() * 40))).slice(0, 24_000);
+}
 
 test("property: for random bodies the pre-check calls cheap, the parser's output is bounded by what was counted, and the conversion stays in budget", { timeout: 400_000 }, async () => {
   await contentToSeed("warm *up*\n\n- a\n\n| a |\n|-|\n| b |\n");
@@ -246,8 +257,9 @@ test("property: for random bodies the pre-check calls cheap, the parser's output
   let worstRatio = 0;
   let worstMs = 0;
   const failures: string[] = [];
-  for (let i = 0; i < 600; i++) {
-    const body = randomBody(rand);
+  for (let i = 0; i < 900; i++) {
+    const body = i < 600 ? randomBody(rand) : longLine(rand);
+    assert.ok(body.length <= 24_000);
     const text = precheck.normalizeLineBreaks(body);
     // (1) as Markdown: what marked makes of it is bounded by the count.
     if (isCheapContent(body, true)) {
@@ -256,7 +268,8 @@ test("property: for random bodies the pre-check calls cheap, the parser's output
       const tags = precheck.htmlTagCount(html);
       const ratio = tags / Math.max(1, nodes);
       if (ratio > worstRatio) worstRatio = ratio;
-      if (tags > TAGS_PER_NODE * nodes) failures.push(`#${i}: ${tags} elements from ${nodes} counted nodes (${body.length} B): ${JSON.stringify(body.slice(0, 120))}`);
+      // (a long run of one delimiter nests <em>/<strong> without adding counted nodes: bounded by `specials`, which the gate caps too)
+      if (tags > TAGS_PER_NODE * nodes + precheck.complexityOf(text, true).specials) failures.push(`#${i}: ${tags} elements from ${nodes} counted nodes (${body.length} B): ${JSON.stringify(body.slice(0, 120))}`);
     }
     // (2) as the service would take it (a body that starts with `<` is stored HTML): inline, in budget.
     const markdown = !core.isStoredHtml(text);
@@ -273,9 +286,45 @@ test("property: for random bodies the pre-check calls cheap, the parser's output
     if (ms > worstMs) worstMs = ms;
     if (ms >= BUDGET_MS) failures.push(`#${i}: ${ms.toFixed(0)} ms inline (${body.length} B): ${JSON.stringify(body.slice(0, 120))}`);
   }
-  console.log(`property: ${cheapBodies}/600 random bodies were cheap; worst elements-per-counted-node ${worstRatio.toFixed(2)}, worst inline conversion ${worstMs.toFixed(0)} ms`);
+  console.log(`property: ${cheapBodies}/900 random bodies (600 structured ≤ 4 KB, 300 single long lines ≤ 24 KB) were cheap; worst elements-per-counted-node ${worstRatio.toFixed(2)}, worst inline conversion ${worstMs.toFixed(0)} ms`);
   assert.ok(cheapBodies >= 120, `only ${cheapBodies} random bodies were cheap — the generator no longer exercises the inline path`);
   assert.deepEqual(failures, []);
+});
+
+test("S-6: look-ahead — 200 openers of every kind in front of a 24 KB tail of every kind: not cheap, or converted inline in budget", { timeout: 300_000 }, async () => {
+  await contentToSeed("warm *up* [a](b) `c`");
+  // The shape that prompted the bound: 200 link openers, then a long tail (0.5–0.65 s inline before `scanCost`).
+  const links = "[a](".repeat(200) + " ".repeat(23_000);
+  assert.ok(precheck.complexityOf(links, true).scanCost > 4_000_000);
+  assert.equal(isCheapContent(links, true), false, "runs × block length is bounded");
+  assert.equal(isCheapContent("Some *prose* with a [link](http://x.test) and `code`. ".repeat(20), true), true, "an ordinary long paragraph stays inline");
+  // …and the one the property test found: `\\s*` backtracking over a long run of whitespace — 61 openers + 4 KB of NBSP was 15.8 s inline.
+  for (const blank of [" ", "\t", "\u00a0", "\u2003", " \t", "\t\n"]) {
+    const body = "[a](".repeat(61) + blank.repeat(Math.ceil(4342 / blank.length));
+    assert.ok(precheck.complexityOf(body, true).blankRun >= 4000);
+    assert.equal(isCheapContent(body, true), false, `61 link openers + 4 KB of ${JSON.stringify(blank)}`);
+  }
+  assert.equal(isCheapContent("x" + " ".repeat(300) + "y", true), false, "no long run of blanks inline, whatever stands around it");
+  assert.equal(isCheapContent("<p>x" + "\u00a0".repeat(300) + "y</p>", false), false, "…in stored HTML either");
+  let measured = 0;
+  let worst: [string, number] = ["", 0];
+  const slow: string[] = [];
+  for (const opener of OPENERS) {
+    for (const tail of TAILS) {
+      const body = (opener.repeat(200) + tail.repeat(Math.ceil(23_000 / tail.length))).slice(0, 23_900);
+      if (!isCheapContent(body, !core.isStoredHtml(body))) continue;
+      const before = conversionStats.inline;
+      const started = performance.now();
+      await contentToSeed(body).catch((e) => assert.ok(e instanceof ConversionError, String(e)));
+      const ms = performance.now() - started;
+      assert.equal(conversionStats.inline, before + 1);
+      measured++;
+      if (ms > worst[1]) worst = [`${JSON.stringify(opener)}×200 + ${JSON.stringify(tail)}`, ms];
+      if (ms >= LOOP_BUDGET_MS) slow.push(`${JSON.stringify(opener)}×200 + ${JSON.stringify(tail)}: ${ms.toFixed(0)} ms`);
+    }
+  }
+  console.log(`look-ahead sweep: ${measured} cheap opener × tail bodies converted inline; worst ${worst[0]} ${worst[1].toFixed(0)} ms`);
+  assert.deepEqual(slow, []);
 });
 
 // ── S1 / S6 ─────────────────────────────────────────────────────────────────
@@ -301,20 +350,22 @@ function fakeWorkers(outcome: (message: { content?: string }) => "ok" | "die" | 
 /** Ordinary content that is not "tiny": handed to the (fake) worker. */
 const prose = (tag: string) => `${tag} ` + "word ".repeat(6000);
 
-test("S1: content that KILLED a conversion thread is remembered by its hash — the same body is refused without a thread, whoever sends it", async () => {
+test("S1 / S-5: content that KILLED a conversion thread TWICE is remembered by its hash — refused without a thread, whoever sends it; ONE death blames nobody's note", async () => {
   const fake = fakeWorkers((m) => (m.content?.startsWith("killer") ? "die" : "ok"));
   await service.setConversionWorkerFactory(fake.make);
   restore.push(() => service.setConversionWorkerFactory(null));
-  restore.push(configureConversion({ breakerFailures: 0, actorBreakerFailures: 0 }));
+  restore.push(configureConversion({ breakerFailures: 0, actorBreakerFailures: 0, loadStrikes: 0 }));
   const killer = prose("killer");
   const first = await service.markdownToHtml(killer, { actor: "user:mallory" }).then(() => null, (e) => e as ConversionError);
   assert.ok(first instanceof ConversionError && first.reason === "failed" && first.killedWorker, "the thread died while running it");
-  const runs = fake.runs;
+  // One death may have been an earlier task's doing: the body is tried again.
+  assert.equal(await reasonOf(service.markdownToHtml(killer, { actor: "user:alice" })), "failed");
+  assert.equal(fake.runs, 2, "after ONE death the body was handed to a thread again");
   const remembered = conversionStats.remembered;
   assert.equal(await reasonOf(service.markdownToHtml(killer, { actor: "user:mallory" })), "failed");
   assert.equal(await reasonOf(service.markdownToHtml(killer, { actor: "user:alice" })), "failed", "…whoever sends it");
   assert.equal(await reasonOf(service.markdownToHtml(killer)), "failed");
-  assert.equal(fake.runs, runs, "no thread was handed the body again");
+  assert.equal(fake.runs, 2, "after the second, no thread is handed the body again");
   assert.equal(conversionStats.remembered, remembered + 3);
   assert.equal(await reasonOf(service.markdownToHtml(prose("fine"))), "ok", "other content converts");
   // Far longer than a timeout's memory: still refused after the ordinary TTL would have passed.
@@ -322,9 +373,10 @@ test("S1: content that KILLED a conversion thread is remembered by its hash — 
   restore.push(configureConversion({ failureTtlMs: 40, killerTtlMs: 60_000 }));
   assert.equal(await reasonOf(service.markdownToHtml(killer)), "failed");
   await new Promise((r) => setTimeout(r, 120));
+  assert.equal(await reasonOf(service.markdownToHtml(killer)), "failed", "(the first death is not forgotten after the short TTL: this is the second)");
   const again = fake.runs;
   assert.equal(await reasonOf(service.markdownToHtml(killer)), "failed");
-  assert.equal(fake.runs, again, "still remembered after the timeout TTL");
+  assert.equal(fake.runs, again, "remembered");
 });
 
 test("S1: a thread that never CAME UP says nothing about the input — not remembered, not charged", async () => {
@@ -367,4 +419,38 @@ test("S6: a conversion marked `charge: false` (opening a STORED note) is never h
   const reasons: string[] = [];
   for (let i = 0; i < 4; i++) reasons.push(await reasonOf(service.markdownToHtml(prose(`killer write ${i}`), { actor: "user:victim" })));
   assert.deepEqual(reasons, ["failed", "failed", "failed", "busy"]);
+});
+
+test("S-4 (follow-up): load-path strikes are counted softly — an actor whose opens keep failing has further OPENS answered busy; its own writes and everyone else go on", async () => {
+  const fake = fakeWorkers((m) => (m.content?.startsWith("killer") ? "die" : "ok"));
+  await service.setConversionWorkerFactory(fake.make);
+  restore.push(() => service.setConversionWorkerFactory(null));
+  restore.push(configureConversion({ breakerFailures: 0, actorBreakerFailures: 3, loadStrikes: 6, loadStrikeWindowMs: 60_000, loadCooldownMs: 300 }));
+  const opens = { actor: "user:mallory", charge: false };
+  const reasons: string[] = [];
+  for (let i = 0; i < 7; i++) reasons.push(await reasonOf(service.markdownToHtml(prose(`killer note ${i}`), opens))); // distinct notes
+  assert.deepEqual(reasons, ["failed", "failed", "failed", "failed", "failed", "failed", "busy"], "six failed opens, then this actor's opens wait");
+  const runs = fake.runs;
+  assert.equal(await reasonOf(service.markdownToHtml(prose("a good note"), opens)), "busy", "any open that needs a worker");
+  assert.equal(fake.runs, runs, "no thread used");
+  assert.equal(await service.markdownToHtml("tiny *note*", opens), "<p>tiny <em>note</em></p>\n", "a tiny page still opens (inline)");
+  assert.equal(await reasonOf(service.markdownToHtml(prose("their own write"), { actor: "user:mallory" })), "ok", "what the actor submits is not touched by the soft limit");
+  assert.equal(await reasonOf(service.docJsonToHtml({ type: "doc", content: [{ type: "paragraph", content: [{ type: "text", text: prose("store") }] }] }, { lane: "store", actor: "doc:some-page" })), "ok", "stores are never affected");
+  assert.equal(await reasonOf(service.markdownToHtml(prose("a good note"), { actor: "user:alice", charge: false })), "ok", "nobody else's opens");
+  await new Promise((r) => setTimeout(r, 350));
+  assert.equal(await reasonOf(service.markdownToHtml(prose("a good note"), opens)), "ok", "after the cool-down");
+});
+
+test("S-2 (follow-up): a long INDENTED code block is not refused — indentation counts for the inline gate, not for the up-front refusal", () => {
+  const rows = Array.from({ length: 10_000 }, (_, i) => " ".repeat(2 + (i % 12) * 2) + `"key${i}": ${i},`);
+  for (const [label, body] of [["fenced JSON", "```json\n" + rows.join("\n") + "\n```\n"], ["indented YAML in prose", "Config:\n\n" + rows.join("\n") + "\n"]] as const) {
+    const c = precheck.complexityOf(body, true);
+    assert.ok(c.nodes > 51_200, `${label}: the inline gate's count is ${c.nodes}`);
+    assert.ok(c.parseNodes < 20_000, `${label}: the refusal's count is ${c.parseNodes} for 10,000 lines`);
+    assert.equal(service.conversionRefusal(body, true), null, `${label}: convertible — it keeps its live editor`);
+    assert.equal(isCheapContent(body, true), false, `${label}: …in the worker`);
+  }
+  // Real containers still count for the refusal: lines × (quote + list markers).
+  const deep = ("> ".repeat(30) + "x\n\n").repeat(2000);
+  assert.equal(service.conversionRefusal(deep, true), "too_many_nodes");
 });

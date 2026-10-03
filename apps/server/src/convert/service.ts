@@ -103,6 +103,10 @@ export const convertCfg = {
   inlineMaxNodes: envInt("CONVERT_INLINE_MAX_NODES", 250, 0),
   /** … (Markdown) this many characters `marked` gives a meaning to — the net under every shape the counters do not know … */
   inlineMaxSpecials: envInt("CONVERT_INLINE_MAX_SPECIALS", 600, 0),
+  /** … and (Markdown) this much look-ahead: delimiter runs in a block × the block's length (200 link openers before a 23 KB tail were 0.65 s). */
+  inlineMaxScan: envInt("CONVERT_INLINE_MAX_SCAN", 300_000, 0),
+  /** … and no run of whitespace longer than this (the link rule backtracks over `\s` runs: 4 KB of NBSP after 61 `[a](` was 15.8 s). */
+  inlineMaxBlankRun: envInt("CONVERT_INLINE_MAX_BLANK_RUN", 256, 0),
   /** A ProseMirror document with more nodes + marks than this is not rendered at all. */
   // (measured: happy-dom + ProseMirror need ~4–5 KB of heap per node, so the defaults follow the heap: 200 nodes per MB to render …)
   maxNodes: envInt("CONVERT_MAX_NODES", Math.min(400_000, HEAP_MB * 200), 1),
@@ -150,8 +154,17 @@ export const convertCfg = {
   idleMs: envInt("CONVERT_IDLE_MS", 5 * 60_000, 0),
   /** How long a failed input is remembered (by hash). */
   failureTtlMs: envInt("CONVERT_FAILURE_TTL_MS", 10 * 60_000, 0),
-  /** How long an input that KILLED a conversion thread is refused (by hash) — one death is enough. Only while `failureTtlMs` > 0. */
+  /** How long an input that KILLED a conversion thread TWICE is refused (by hash). Only while `failureTtlMs` > 0. */
   killerTtlMs: envInt("CONVERT_KILLER_TTL_MS", 6 * 3600_000, 0),
+  /**
+   * LOAD-path conversions (`charge: false`) charge nobody — but an actor whose opens keep
+   * timing out or killing workers (this many within the window) has further non-cheap OPENS
+   * answered `busy` for a cool-down. Nothing else of that actor is touched (its own writes,
+   * a document's stores). 0 = off.
+   */
+  loadStrikes: envInt("CONVERT_LOAD_STRIKES", 6, 0),
+  loadStrikeWindowMs: envInt("CONVERT_LOAD_STRIKE_WINDOW_MS", 10 * 60_000, 1),
+  loadCooldownMs: envInt("CONVERT_LOAD_COOLDOWN_MS", 60_000, 1),
 };
 export type ConvertConfig = typeof convertCfg;
 /** Test helper: override limits; returns a restore function. */
@@ -304,6 +317,38 @@ function actorResult(actor: string | null | undefined, outcome: "ok" | "strike" 
   }
 }
 
+// ── per-actor soft limit on LOADS (round 6 follow-up, S-4) ──────────────────
+// A load converts STORED content and is charged to nobody (S6) — so a member who
+// authors many distinct slow notes and opens each was never slowed down at all.
+// Strikes of uncharged conversions are counted per actor; `loadStrikes` of them
+// within `loadStrikeWindowMs` and that actor's further uncharged, non-cheap
+// conversions are answered `busy` for `loadCooldownMs`. Deliberately soft and
+// separate from the penalty above: someone who merely opened a few slow notes is
+// never refused anything else.
+const loadStrikesBy = new Map<string, { times: number[]; until: number }>();
+function loadPenalised(actor: string | null | undefined): boolean {
+  if (!actor || convertCfg.loadStrikes <= 0) return false;
+  const s = loadStrikesBy.get(actor);
+  return !!s && Date.now() < s.until;
+}
+function loadStrike(actor: string | null | undefined): void {
+  if (!actor || convertCfg.loadStrikes <= 0) return;
+  const at = Date.now();
+  let s = loadStrikesBy.get(actor);
+  if (!s) {
+    loadStrikesBy.set(actor, (s = { times: [], until: 0 }));
+    while (loadStrikesBy.size > PENALTIES_MAX) loadStrikesBy.delete(loadStrikesBy.keys().next().value!);
+  }
+  s.times = s.times.filter((t) => at - t < convertCfg.loadStrikeWindowMs);
+  s.times.push(at);
+  if (s.times.length >= convertCfg.loadStrikes) {
+    s.times = [];
+    s.until = at + convertCfg.loadCooldownMs;
+    conversionStats.actorPenalised++;
+    console.warn(`[convert] ${convertCfg.loadStrikes} of one actor's page opens timed out (or killed their worker) within ${Math.round(convertCfg.loadStrikeWindowMs / 60_000)} min — its further opens that need a worker are answered busy for ${Math.round(convertCfg.loadCooldownMs / 1000)} s`);
+  }
+}
+
 // ── per-actor fairness ──────────────────────────────────────────────────────
 // One account (or link) holds at most `perActorInflight` worker slots; its
 // further conversions wait in ITS OWN line (bounded), not in the shared queue —
@@ -353,16 +398,19 @@ export async function setConversionWorkerFactory(factory: (() => ConversionWorke
 // ── failure memory ──────────────────────────────────────────────────────────
 
 // Only what is (very likely) a property of the INPUT is remembered: an input
-// that timed out TWICE, or (round 6, S1) one that KILLED the thread running it —
-// once is enough, and for much longer (`killerTtlMs`): every death costs a
-// respawn and counts towards the breaker everyone shares. Never `busy`, never a
+// that timed out TWICE, or (round 6, S1) one that KILLED the thread running it
+// TWICE — refused for much longer (`killerTtlMs`): every death costs a respawn
+// and counts towards the breaker everyone shares. (Not on the first death: that
+// one may be an earlier task's doing, and would blame an innocent note for hours.) Never `busy`, never a
 // thread that did not come up (`failed` without `killedWorker`) — those describe
 // the server at that moment, and remembering them would keep a good note
 // unopenable for the whole TTL. Pre-check refusals need no memory: the pre-check
 // is linear and answers the same every time. (In memory only: a restart forgets.)
 const FAILURES_MAX = 500;
 const TIMEOUTS_TO_REMEMBER = 2;
-const failures = new Map<string, { timeouts: number; killed: boolean; until: number }>();
+/** One death may be an earlier task's doing (a leak, a stray throw surfacing late): an input is blamed on its SECOND. */
+const KILLS_TO_REMEMBER = 2;
+const failures = new Map<string, { timeouts: number; kills: number; until: number }>();
 function remembered(key: string): ConversionFailure | null {
   const hit = failures.get(key);
   if (!hit) return null;
@@ -370,22 +418,25 @@ function remembered(key: string): ConversionFailure | null {
     failures.delete(key);
     return null;
   }
-  return hit.killed ? "failed" : hit.timeouts >= TIMEOUTS_TO_REMEMBER ? "timeout" : null;
+  return hit.kills >= KILLS_TO_REMEMBER ? "failed" : hit.timeouts >= TIMEOUTS_TO_REMEMBER ? "timeout" : null;
 }
 function remember(key: string, e: ConversionError): void {
   if (convertCfg.failureTtlMs <= 0) return;
   const killed = e.killedWorker && convertCfg.killerTtlMs > 0;
   if (!killed && e.reason !== "timeout") return;
   const prev = failures.get(key);
-  const until = Date.now() + (killed || prev?.killed ? Math.max(convertCfg.killerTtlMs, convertCfg.failureTtlMs) : convertCfg.failureTtlMs);
+  const kills = (prev?.kills ?? 0) + (killed ? 1 : 0);
+  // (a first death is kept for the long TTL too: the second one, hours later, still counts)
+  const until = Date.now() + (kills > 0 ? Math.max(convertCfg.killerTtlMs, convertCfg.failureTtlMs) : convertCfg.failureTtlMs);
   failures.delete(key);
-  failures.set(key, { timeouts: (prev?.timeouts ?? 0) + (e.reason === "timeout" ? 1 : 0), killed: killed || !!prev?.killed, until });
+  failures.set(key, { timeouts: (prev?.timeouts ?? 0) + (e.reason === "timeout" ? 1 : 0), kills, until });
   while (failures.size > FAILURES_MAX) failures.delete(failures.keys().next().value!);
 }
 export function forgetConversionFailures(): void {
   failures.clear();
   breakers = new WeakMap(); // …and every thread's circuit breaker is closed again
   penalties.clear(); // …and nobody is cooling down
+  loadStrikesBy.clear();
 }
 const hashOf = (op: string, text: string): string => createHash("sha256").update(op).update("\0").update(text).digest("base64");
 
@@ -415,7 +466,9 @@ function cheap(c: Complexity): boolean {
     c.quoteDepth <= convertCfg.inlineMaxDepth &&
     c.nestDepth <= convertCfg.inlineMaxDepth &&
     c.htmlDepth <= convertCfg.inlineMaxDepth &&
-    c.specials <= convertCfg.inlineMaxSpecials
+    c.specials <= convertCfg.inlineMaxSpecials &&
+    c.scanCost <= convertCfg.inlineMaxScan &&
+    c.blankRun <= convertCfg.inlineMaxBlankRun
   );
 }
 
@@ -435,8 +488,9 @@ function offThread<T>(message: unknown, chars: number, opts: ConvertOptions | un
     conversionStats.busy++;
     throw new ConversionError("busy");
   };
+  const charge = opts?.charge !== false;
   // Refused before it takes a place in the actor's line…
-  if (actorPenalised(actor)) return Promise.reject(new Error()).catch(refuse);
+  if (actorPenalised(actor) || (!charge && loadPenalised(actor))) return Promise.reject(new Error()).catch(refuse);
   return withActorSlot(actor, async () => {
     // …and checked again once it is this task's turn: the penalty may have begun while it waited.
     const admitted = actorAdmit(actor) ?? refuse();
@@ -446,7 +500,8 @@ function offThread<T>(message: unknown, chars: number, opts: ConvertOptions | un
       return value;
     } catch (e) {
       const strike = e instanceof ConversionError && (e.reason === "timeout" || e.killedWorker);
-      actorResult(actor, strike && opts?.charge !== false ? "strike" : "neutral", admitted.trial);
+      actorResult(actor, strike && charge ? "strike" : "neutral", admitted.trial);
+      if (strike && !charge) loadStrike(actor);
       throw e;
     }
   });
