@@ -75,7 +75,9 @@ export function SharedWithMe({
   if (!client.listSharedWithMe) return null;
   const items = query.data?.items ?? [];
   const tags = query.data?.tags ?? [];
-  if (!guest && !query.isLoading && !query.isError && !items.length && !tags.length) return null;
+  // A member's sidebar shows this section only when there is something in it: no
+  // loading line, and a failed read (an older server has no such route) stays quiet.
+  if (!guest && !items.length && !tags.length) return null;
   return (
     <section className="prism-shared-with-me" aria-labelledby="prism-shared-with-me-heading">
       <style>{`
