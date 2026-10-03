@@ -30,3 +30,8 @@ export function useVaultClient(): VaultClient {
   }
   return client;
 }
+
+/** The host VaultClient, or null when none is mounted (standalone previews). */
+export function useOptionalVaultClient(): VaultClient | null {
+  return useContext(VaultClientContext);
+}

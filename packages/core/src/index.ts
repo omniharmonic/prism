@@ -235,3 +235,5 @@ export { PublicationPreviewProvider, type PublicationPreviewProps } from "./data
 export { TranscriptReviewClientProvider, useTranscriptReviewClient, type TranscriptReviewClient, type TranscriptReview, type TranscriptReviewItem, type TranscriptCandidate, type TranscriptDecision } from "./data/TranscriptReviewClientContext";
 
 export { eligiblePublicationNavigation, parsePublicationNavigation, type PublicationNavigation } from "./lib/publishing/navigation";
+// Pages: nested-page moves, Trash, synced preferences (lib/pages/model.ts).
+export { PagesRequestError, TRASH_TAG, sanitizePreferences, type MoveRequest, type MoveResult, type TrashItem, type TrashListing, type PreferencesSnapshot, type PagePreferences } from "./lib/pages/model";

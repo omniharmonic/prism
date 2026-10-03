@@ -19,22 +19,27 @@ import {
   Trash2,
   FilePlus,
   GitFork,
-  Square,
-  CheckSquare2,
   Radio,
   MapPin,
+  ChevronRight,
+  MoreHorizontal,
+  Plus,
 } from "lucide-react";
-import { listen } from "@tauri-apps/api/event";
-import { useVaultTree, useDeleteNote, useUpdateNote, useCreateNote } from "../../app/hooks/useParachute";
-import { vaultApi } from "../../lib/parachute/client";
+import { useVaultTree, useUpdateNote, useCreateNote } from "../../app/hooks/useParachute";
 import { GitHubSyncModal } from "../layout/GitHubSyncModal";
 import { useUIStore } from "../../app/stores/ui";
+import { useIsMobile } from "../../app/hooks/useIsMobile";
 import { inferContentType } from "../../lib/schemas/content-types";
 import type { ContentType, NoteTreeEntry } from "../../lib/types";
 import { NewContentMenu } from "./NewContentMenu";
 import { Spinner } from "../ui/Spinner";
-import { cn } from "../../lib/cn";
 import { useQueryClient } from "@tanstack/react-query";
+import { comparePages, isUnder, orderOf, parentOf, planReorder, protectionReason, withoutTrashed } from "../../lib/pages/model";
+import { usePagesUI, type PageRef } from "../../lib/pages/store";
+import { usePageActions } from "../../lib/pages/usePageActions";
+import { PageMenuPopover, usePageMenuItems } from "../pages/PageActionsMenu";
+import { renamePath } from "../renderers/DocumentChrome";
+import "../pages/pages.css";
 
 // Icon mapping for content types
 const TYPE_ICONS: Record<ContentType, React.ElementType> = {
@@ -58,7 +63,12 @@ const TYPE_ICONS: Record<ContentType, React.ElementType> = {
   "bioregion-entity": MapPin,
 };
 
-// Build a tree from flat notes list
+/**
+ * One sidebar row. NESTED PAGES (lib/pages/model.ts): a page note at `X` and the
+ * notes at `X/…` share ONE node — the page is the parent, so it opens on click and
+ * discloses its sub-pages with the chevron. A path prefix with no page note stays
+ * a plain folder node, so every existing vault renders exactly as before.
+ */
 interface TreeNode {
   name: string;
   fullPath: string;
@@ -73,102 +83,85 @@ const HIDDEN_PREFIXES = ["_templates", "_staging"];
 
 // Normalize a vault path: strip "vault/" prefix, clean up display
 function normalizePath(path: string): string {
-  if (path.startsWith("vault/")) {
-    path = path.slice(6);
-  }
-  return path;
+  return path.startsWith("vault/") ? path.slice(6) : path;
 }
 
-function buildTree(notes: NoteTreeEntry[]): TreeNode[] {
+export function buildTree(notes: NoteTreeEntry[]): TreeNode[] {
   const root: TreeNode = { name: "", fullPath: "", rawPath: "", children: [] };
-
-  for (const note of notes) {
+  for (const note of withoutTrashed(notes)) {
     const rawPath = note.path || "Unsorted";
     const normalized = normalizePath(rawPath);
-
-    // Filter out hidden paths
     if (HIDDEN_PREFIXES.some((p) => normalized.startsWith(p))) continue;
-
     const parts = normalized.split("/").filter(Boolean);
-    let current = root;
-
+    if (!parts.length) continue;
     // The personal vault's paths carry a literal "vault/" prefix (desktop
     // convention); other vaults (e.g. the commons) don't. A folder's OPERATIONAL
-    // path must mirror its notes' real paths, or every folder move/rename
-    // computes garbage prefixes in unprefixed vaults.
+    // path must mirror its notes' real paths.
     const rawPrefix = rawPath.startsWith("vault/") ? "vault/" : "";
-    for (let i = 0; i < parts.length - 1; i++) {
-      const part = parts[i];
-      let child = current.children.find((c) => c.name === part && !c.note);
+    let current = root;
+    for (let i = 0; i < parts.length; i++) {
+      const leaf = i === parts.length - 1;
+      const fp = parts.slice(0, i + 1).join("/");
+      let child = current.children.find((c) => c.name === parts[i] && !(leaf && c.note));
       if (!child) {
-        const fp = parts.slice(0, i + 1).join("/");
-        child = { name: part, fullPath: fp, rawPath: rawPrefix + fp, children: [] };
+        child = { name: parts[i]!, fullPath: fp, rawPath: leaf ? rawPath : rawPrefix + fp, children: [] };
         current.children.push(child);
+      }
+      if (leaf) {
+        child.note = note;
+        child.rawPath = rawPath;
       }
       current = child;
     }
-
-    const leafName = parts[parts.length - 1];
-    current.children.push({
-      name: leafName,
-      fullPath: normalized,
-      rawPath: rawPath,
-      children: [],
-      note,
-    });
   }
-
-  // Sort: folders first, then alphabetical
+  const order = (n: TreeNode) => (n.note ? orderOf(n.note) : null);
   function sortTree(nodes: TreeNode[]) {
     nodes.sort((a, b) => {
-      const aIsFolder = !a.note && a.children.length > 0;
-      const bIsFolder = !b.note && b.children.length > 0;
-      if (aIsFolder && !bIsFolder) return -1;
-      if (!aIsFolder && bIsFolder) return 1;
-      return a.name.localeCompare(b.name);
+      // Plain folders first (unchanged), then pages: manual order, then name.
+      if (!a.note !== !b.note) return a.note ? 1 : -1;
+      if (!a.note) return a.name.localeCompare(b.name);
+      return comparePages({ name: a.name, order: order(a) }, { name: b.name, order: order(b) });
     });
     nodes.forEach((n) => sortTree(n.children));
   }
   sortTree(root.children);
-
   return root.children;
 }
 
-/** Collect all note IDs under a tree node (for folder operations) */
-function collectNoteIds(node: TreeNode): string[] {
-  const ids: string[] = [];
-  if (node.note) ids.push(node.note.id);
-  for (const child of node.children) ids.push(...collectNoteIds(child));
-  return ids;
-}
-
-/** Collect all notes under a tree node */
+/** All notes under a node, the node's own page included. */
 function collectNotes(node: TreeNode): NoteTreeEntry[] {
-  const notes: NoteTreeEntry[] = [];
-  if (node.note) notes.push(node.note);
+  const notes: NoteTreeEntry[] = node.note ? [node.note] : [];
   for (const child of node.children) notes.push(...collectNotes(child));
   return notes;
 }
-
-/** Get a flat ordered list of note IDs from the tree (for shift-click range selection) */
-function getFlatNoteIds(nodes: TreeNode[]): string[] {
-  const ids: string[] = [];
-  for (const node of nodes) {
-    if (node.note) ids.push(node.note.id);
-    if (node.children.length > 0) ids.push(...getFlatNoteIds(node.children));
-  }
-  return ids;
+/** The pages a folder delete must trash: each top-most page (its sub-pages go with it). */
+function topPages(node: TreeNode): NoteTreeEntry[] {
+  return node.children.flatMap((c) => (c.note ? [c.note] : topPages(c)));
 }
+/** A flat ordered list of note IDs from the tree (for shift-click range selection) */
+function getFlatNoteIds(nodes: TreeNode[]): string[] {
+  return nodes.flatMap((n) => [...(n.note ? [n.note.id] : []), ...getFlatNoteIds(n.children)]);
+}
+function findNode(nodes: TreeNode[], pred: (n: TreeNode) => boolean): TreeNode | null {
+  for (const n of nodes) {
+    if (pred(n)) return n;
+    const hit = findNode(n.children, pred);
+    if (hit) return hit;
+  }
+  return null;
+}
+const pageRef = (node: TreeNode): PageRef => ({ id: node.note!.id, path: node.note!.path, title: node.name });
+const rawKey = (n: TreeNode) => `${n.rawPath}\u0000${n.note?.id ?? ""}`;
 
-// ─── Context Menu ────────────────────────────────────────────
+// ─── Folder context menu (plain folders only; pages use the page menu) ─────
 
-interface ContextMenuState {
+interface FolderMenuState {
   x: number;
   y: number;
   node: TreeNode;
 }
 
-function ContextMenu({
+function FolderMenu({
   state,
   onClose,
   onNewFolder,
@@ -178,7 +171,7 @@ function ContextMenu({
   onDelete,
   onSyncToGitFork,
 }: {
-  state: ContextMenuState;
+  state: FolderMenuState;
   onClose: () => void;
   onNewFolder: (node: TreeNode) => void;
   onNewNote: (node: TreeNode) => void;
@@ -188,8 +181,7 @@ function ContextMenu({
   onSyncToGitFork: (node: TreeNode) => void;
 }) {
   const menuRef = useRef<HTMLDivElement>(null);
-  const isFolder = !state.node.note;
-
+  const guarded = !!protectionReason({ path: state.node.rawPath });
   useEffect(() => {
     const handleClick = (e: MouseEvent) => {
       if (menuRef.current && !menuRef.current.contains(e.target as Node)) onClose();
@@ -204,37 +196,27 @@ function ContextMenu({
       document.removeEventListener("keydown", handleEsc);
     };
   }, [onClose]);
-
   const items = [
-    ...(isFolder
-      ? [
-          { icon: FolderPlus, label: "New folder", action: () => onNewFolder(state.node) },
-          { icon: FilePlus, label: "New note", action: () => onNewNote(state.node) },
-        ]
-      : []),
-    { icon: Pencil, label: "Rename", action: () => onRename(state.node) },
-    { icon: FolderInput, label: "Move to...", action: () => onMove(state.node) },
-    { icon: Trash2, label: "Delete", action: () => onDelete(state.node), danger: true },
-    ...(isFolder
-      ? [{ icon: GitFork, label: "Sync to GitHub...", action: () => onSyncToGitFork(state.node) }]
-      : []),
+    { icon: FolderPlus, label: "New folder", action: () => onNewFolder(state.node) },
+    { icon: FilePlus, label: "New note", action: () => onNewNote(state.node) },
+    ...(guarded
+      ? []
+      : [
+          { icon: Pencil, label: "Rename", action: () => onRename(state.node) },
+          { icon: FolderInput, label: "Move to...", action: () => onMove(state.node) },
+          { icon: Trash2, label: "Move to Trash", action: () => onDelete(state.node), danger: true },
+        ]),
+    { icon: GitFork, label: "Sync to GitHub...", action: () => onSyncToGitFork(state.node) },
   ];
-
   return (
-    <div
-      ref={menuRef}
-      className="fixed z-50 py-1 glass-elevated"
-      style={{
-        left: state.x,
-        top: state.y,
-        borderRadius: "var(--radius-md)",
-        minWidth: 160,
-      }}
-    >
+    <div ref={menuRef} className="fixed z-50 py-1 glass-elevated" style={{ left: state.x, top: state.y, borderRadius: "var(--radius-md)", minWidth: 160 }}>
       {items.map(({ icon: Icon, label, action, danger }) => (
         <button
           key={label}
-          onClick={() => { action(); onClose(); }}
+          onClick={() => {
+            action();
+            onClose();
+          }}
           className="w-full flex items-center gap-2 px-3 py-1.5 text-xs hover:bg-[var(--glass-hover)] transition-colors"
           style={{ color: danger ? "var(--color-danger)" : "var(--text-primary)" }}
         >
@@ -248,76 +230,50 @@ function ContextMenu({
 
 // ─── Inline Edit Input ───────────────────────────────────────
 
-function InlineEdit({
-  initialValue,
-  onConfirm,
-  onCancel,
-}: {
-  initialValue: string;
-  onConfirm: (value: string) => void;
-  onCancel: () => void;
-}) {
+function InlineEdit({ initialValue, onConfirm, onCancel, label }: { initialValue: string; onConfirm: (value: string) => void; onCancel: () => void; label: string }) {
   const [value, setValue] = useState(initialValue);
   const inputRef = useRef<HTMLInputElement>(null);
   const confirmedRef = useRef(false);
-
   useEffect(() => {
     inputRef.current?.select();
   }, []);
-
   const doConfirm = () => {
     if (confirmedRef.current) return; // prevent double-fire (Enter + unmount blur)
     confirmedRef.current = true;
-    if (value.trim()) onConfirm(value.trim());
+    if (value.trim() && value.trim() !== initialValue) onConfirm(value.trim());
     else onCancel();
   };
-
   return (
     <input
       ref={inputRef}
+      aria-label={label}
       value={value}
       onChange={(e) => setValue(e.target.value)}
       onKeyDown={(e) => {
         if (e.key === "Enter") doConfirm();
-        if (e.key === "Escape") onCancel();
+        if (e.key === "Escape") {
+          confirmedRef.current = true;
+          onCancel();
+        }
       }}
       onBlur={doConfirm}
       autoFocus
       className="w-full h-6 px-1.5 text-sm rounded outline-none"
-      style={{
-        background: "var(--glass)",
-        border: "1px solid var(--color-accent)",
-        color: "var(--text-primary)",
-      }}
+      style={{ background: "var(--glass)", border: "1px solid var(--color-accent)", color: "var(--text-primary)", fontSize: 16 }}
     />
   );
 }
 
-// ─── Move Dialog ─────────────────────────────────────────────
+// ─── Folder move dialog (plain folders: a prefix rename of every note inside) ─
 
-function MoveDialog({
-  node,
-  allPaths,
-  onMove,
-  onClose,
-}: {
-  node: TreeNode;
-  allPaths: string[];
-  onMove: (destPath: string) => void;
-  onClose: () => void;
-}) {
+function FolderMoveDialog({ node, allPaths, onMove, onClose }: { node: TreeNode; allPaths: string[]; onMove: (destPath: string) => void; onClose: () => void }) {
   const [query, setQuery] = useState("");
   const filtered = allPaths
-    .filter((p) => p.toLowerCase().includes(query.toLowerCase()) && p !== node.rawPath)
+    .filter((p) => p.toLowerCase().includes(query.toLowerCase()) && p !== node.rawPath && !isUnder(p, node.rawPath) && !protectionReason({ path: p }))
     .slice(0, 10);
-
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center" style={{ background: "rgba(0,0,0,0.4)" }}>
-      <div
-        className="glass-elevated w-full max-w-sm mx-4 p-4"
-        style={{ borderRadius: "var(--radius-lg)" }}
-        onClick={(e) => e.stopPropagation()}
-      >
+      <div className="glass-elevated w-full max-w-sm mx-4 p-4" style={{ borderRadius: "var(--radius-lg)" }} onClick={(e) => e.stopPropagation()}>
         <div className="text-sm font-medium mb-3" style={{ color: "var(--text-primary)" }}>
           Move "{node.name}" to...
         </div>
@@ -325,40 +281,23 @@ function MoveDialog({
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           placeholder="Search folders..."
+          aria-label="Search folders"
           autoFocus
           className="w-full h-8 rounded-md px-2.5 text-sm outline-none mb-2"
-          style={{
-            background: "var(--glass)",
-            border: "1px solid var(--glass-border)",
-            color: "var(--text-primary)",
-          }}
+          style={{ background: "var(--glass)", border: "1px solid var(--glass-border)", color: "var(--text-primary)" }}
         />
         <div className="max-h-48 overflow-auto space-y-0.5">
-          {/* Root option */}
-          <button
-            onClick={() => onMove("")}
-            className="w-full text-left px-2 py-1.5 rounded text-xs hover:bg-[var(--glass-hover)] transition-colors"
-            style={{ color: "var(--text-secondary)" }}
-          >
+          <button onClick={() => onMove("")} className="w-full text-left px-2 py-1.5 rounded text-xs hover:bg-[var(--glass-hover)] transition-colors" style={{ color: "var(--text-secondary)" }}>
             / (vault root)
           </button>
           {filtered.map((p) => (
-            <button
-              key={p}
-              onClick={() => onMove(p)}
-              className="w-full text-left px-2 py-1.5 rounded text-xs hover:bg-[var(--glass-hover)] transition-colors truncate"
-              style={{ color: "var(--text-secondary)" }}
-            >
+            <button key={p} onClick={() => onMove(p)} className="w-full text-left px-2 py-1.5 rounded text-xs hover:bg-[var(--glass-hover)] transition-colors truncate" style={{ color: "var(--text-secondary)" }}>
               {normalizePath(p)}
             </button>
           ))}
         </div>
         <div className="flex justify-end mt-3">
-          <button
-            onClick={onClose}
-            className="px-3 py-1.5 rounded-md text-xs hover:bg-[var(--glass-hover)]"
-            style={{ color: "var(--text-secondary)" }}
-          >
+          <button onClick={onClose} className="px-3 py-1.5 rounded-md text-xs hover:bg-[var(--glass-hover)]" style={{ color: "var(--text-secondary)" }}>
             Cancel
           </button>
         </div>
@@ -367,168 +306,22 @@ function MoveDialog({
   );
 }
 
-// ─── Delete Confirmation ─────────────────────────────────────
-
-function DeleteConfirm({
-  node,
-  onConfirm,
-  onCancel,
-}: {
-  node: TreeNode;
-  onConfirm: () => void;
-  onCancel: () => void;
-}) {
-  const isFolder = !node.note;
-  const noteCount = isFolder ? collectNoteIds(node).length : 1;
-
+function ConfirmDialog({ title, body, confirm, onConfirm, onCancel }: { title: string; body: string; confirm: string; onConfirm: () => void; onCancel: () => void }) {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center" style={{ background: "rgba(0,0,0,0.4)" }}>
-      <div
-        className="glass-elevated w-full max-w-xs mx-4 p-4"
-        style={{ borderRadius: "var(--radius-lg)" }}
-        onClick={(e) => e.stopPropagation()}
-      >
+      <div role="alertdialog" aria-label={title} className="glass-elevated w-full max-w-xs mx-4 p-4" style={{ borderRadius: "var(--radius-lg)" }} onClick={(e) => e.stopPropagation()}>
         <div className="text-sm font-medium mb-2" style={{ color: "var(--text-primary)" }}>
-          Delete {isFolder ? "folder" : "note"}?
+          {title}
         </div>
         <div className="text-xs mb-4" style={{ color: "var(--text-secondary)" }}>
-          {isFolder
-            ? `This will delete "${node.name}" and ${noteCount} note${noteCount !== 1 ? "s" : ""} inside it.`
-            : `This will delete "${node.name}". This cannot be undone.`}
+          {body}
         </div>
         <div className="flex justify-end gap-2">
-          <button
-            onClick={onCancel}
-            className="px-3 py-1.5 rounded-md text-xs hover:bg-[var(--glass-hover)]"
-            style={{ color: "var(--text-secondary)" }}
-          >
+          <button onClick={onCancel} className="px-3 py-1.5 rounded-md text-xs hover:bg-[var(--glass-hover)]" style={{ color: "var(--text-secondary)" }}>
             Cancel
           </button>
-          <button
-            onClick={onConfirm}
-            className="px-3 py-1.5 rounded-md text-xs font-medium"
-            style={{ background: "var(--color-danger)", color: "white" }}
-          >
-            Delete
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// ─── Batch Delete Confirmation ──────────────────────────────
-
-function BatchDeleteConfirm({
-  count,
-  onConfirm,
-  onCancel,
-}: {
-  count: number;
-  onConfirm: () => void;
-  onCancel: () => void;
-}) {
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center" style={{ background: "rgba(0,0,0,0.4)" }}>
-      <div
-        className="glass-elevated w-full max-w-xs mx-4 p-4"
-        style={{ borderRadius: "var(--radius-lg)" }}
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="text-sm font-medium mb-2" style={{ color: "var(--text-primary)" }}>
-          Delete {count} notes?
-        </div>
-        <div className="text-xs mb-4" style={{ color: "var(--text-secondary)" }}>
-          This will delete {count} selected note{count !== 1 ? "s" : ""}. This cannot be undone.
-        </div>
-        <div className="flex justify-end gap-2">
-          <button
-            onClick={onCancel}
-            className="px-3 py-1.5 rounded-md text-xs hover:bg-[var(--glass-hover)]"
-            style={{ color: "var(--text-secondary)" }}
-          >
-            Cancel
-          </button>
-          <button
-            onClick={onConfirm}
-            className="px-3 py-1.5 rounded-md text-xs font-medium"
-            style={{ background: "var(--color-danger)", color: "white" }}
-          >
-            Delete
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// ─── Batch Move Dialog ──────────────────────────────────────
-
-function BatchMoveDialog({
-  count,
-  allPaths,
-  onMove,
-  onClose,
-}: {
-  count: number;
-  allPaths: string[];
-  onMove: (destPath: string) => void;
-  onClose: () => void;
-}) {
-  const [query, setQuery] = useState("");
-  const filtered = allPaths
-    .filter((p) => p.toLowerCase().includes(query.toLowerCase()))
-    .slice(0, 10);
-
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center" style={{ background: "rgba(0,0,0,0.4)" }}>
-      <div
-        className="glass-elevated w-full max-w-sm mx-4 p-4"
-        style={{ borderRadius: "var(--radius-lg)" }}
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="text-sm font-medium mb-3" style={{ color: "var(--text-primary)" }}>
-          Move {count} note{count !== 1 ? "s" : ""} to...
-        </div>
-        <input
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          placeholder="Search folders..."
-          autoFocus
-          className="w-full h-8 rounded-md px-2.5 text-sm outline-none mb-2"
-          style={{
-            background: "var(--glass)",
-            border: "1px solid var(--glass-border)",
-            color: "var(--text-primary)",
-          }}
-        />
-        <div className="max-h-48 overflow-auto space-y-0.5">
-          {/* Root option */}
-          <button
-            onClick={() => onMove("")}
-            className="w-full text-left px-2 py-1.5 rounded text-xs hover:bg-[var(--glass-hover)] transition-colors"
-            style={{ color: "var(--text-secondary)" }}
-          >
-            / (vault root)
-          </button>
-          {filtered.map((p) => (
-            <button
-              key={p}
-              onClick={() => onMove(p)}
-              className="w-full text-left px-2 py-1.5 rounded text-xs hover:bg-[var(--glass-hover)] transition-colors truncate"
-              style={{ color: "var(--text-secondary)" }}
-            >
-              {normalizePath(p)}
-            </button>
-          ))}
-        </div>
-        <div className="flex justify-end mt-3">
-          <button
-            onClick={onClose}
-            className="px-3 py-1.5 rounded-md text-xs hover:bg-[var(--glass-hover)]"
-            style={{ color: "var(--text-secondary)" }}
-          >
-            Cancel
+          <button onClick={onConfirm} className="px-3 py-1.5 rounded-md text-xs font-medium" style={{ background: "var(--color-danger)", color: "white" }}>
+            {confirm}
           </button>
         </div>
       </div>
@@ -538,42 +331,58 @@ function BatchMoveDialog({
 
 // ─── Main Component ──────────────────────────────────────────
 
+type DropZone = "before" | "inside" | "after";
+
 export function ProjectTree() {
   const { data: notes, isLoading } = useVaultTree();
   const tree = useMemo(() => buildTree(notes || []), [notes]);
   const queryClient = useQueryClient();
-  const deleteNote = useDeleteNote();
   const updateNote = useUpdateNote();
   const createNote = useCreateNote();
+  const actions = usePageActions();
+  const isMobile = useIsMobile();
 
-  const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
+  const [folderMenu, setFolderMenu] = useState<FolderMenuState | null>(null);
+  const [pageMenu, setPageMenu] = useState<{ x: number; y: number; node: TreeNode } | null>(null);
   const [creationFolder, setCreationFolder] = useState<string | null>(null);
   const contextTrigger = useRef<HTMLElement | null>(null);
   const [renaming, setRenaming] = useState<TreeNode | null>(null);
   const [newFolder, setNewFolder] = useState<{ parentPath: string } | null>(null);
-  const [moveTarget, setMoveTarget] = useState<TreeNode | null>(null);
+  const [moveFolder, setMoveFolder] = useState<TreeNode | null>(null);
   const [moveProgress, setMoveProgress] = useState<{ done: number; total: number } | null>(null);
   const movingRef = useRef(false);
-  const [deleteTarget, setDeleteTarget] = useState<TreeNode | null>(null);
+  const [trashFolder, setTrashFolder] = useState<TreeNode | null>(null);
   const [githubSyncPath, setGitForkSyncPath] = useState<string | null>(null);
+  const [drag, setDrag] = useState<{ node: TreeNode; over: string | null; zone: DropZone | null } | null>(null);
 
   // Multi-select state
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [lastClickedId, setLastClickedId] = useState<string | null>(null);
-  const [batchDeleteConfirm, setBatchDeleteConfirm] = useState(false);
-  const [batchDeleteProgress, setBatchDeleteProgress] = useState<{ deleted: number; total: number } | null>(null);
-  const [batchMoveTarget, setBatchMoveTarget] = useState(false);
+  const [batchTrashConfirm, setBatchTrashConfirm] = useState(false);
 
-  // Gather all unique directory paths for move dialog
+  // "Collapse all" (any caller of collapseNav) bumps this counter.
+  const collapseSignal = useUIStore((s) => s.navCollapseSignal);
+  const lastSignal = useRef(collapseSignal);
+  useEffect(() => {
+    if (lastSignal.current === collapseSignal) return;
+    lastSignal.current = collapseSignal;
+    usePagesUI.getState().collapseAll();
+  }, [collapseSignal]);
+
+  // Reveal the open page in the tree (Notion-style): expand its ancestors.
+  const activeNoteId = useUIStore((s) => s.openTabs.find((t) => t.id === s.activeTabId)?.noteId);
+  useEffect(() => {
+    if (!activeNoteId || !notes) return;
+    const entry = notes.find((n) => n.id === activeNoteId);
+    if (entry?.path && entry.path.includes("/")) usePagesUI.getState().reveal(parentOf(entry.path));
+  }, [activeNoteId, notes]);
+
+  // Gather all unique directory paths for the folder move dialog
   const dirPaths = useMemo(() => {
     const paths = new Set<string>();
     for (const note of notes || []) {
-      const p = note.path || "";
-      const parts = p.split("/");
-      // Add each directory prefix
-      for (let i = 1; i < parts.length; i++) {
-        paths.add(parts.slice(0, i).join("/"));
-      }
+      const parts = (note.path || "").split("/");
+      for (let i = 1; i < parts.length; i++) paths.add(parts.slice(0, i).join("/"));
     }
     return Array.from(paths).sort();
   }, [notes]);
@@ -582,213 +391,168 @@ export function ProjectTree() {
     queryClient.invalidateQueries({ queryKey: ["vault"] });
   }, [queryClient]);
 
-  const handleContextMenu = useCallback((e: React.MouseEvent, node: TreeNode) => {
-    e.preventDefault();
-    e.stopPropagation();
-    contextTrigger.current = e.currentTarget as HTMLElement;
-    setContextMenu({ x: e.clientX, y: e.clientY, node });
-  }, []);
+  const handleContextMenu = useCallback(
+    (e: React.MouseEvent, node: TreeNode) => {
+      e.preventDefault();
+      e.stopPropagation();
+      contextTrigger.current = e.currentTarget as HTMLElement;
+      if (node.note) {
+        if (isMobile) usePagesUI.getState().openActions(pageRef(node));
+        else setPageMenu({ x: e.clientX, y: e.clientY, node });
+      } else setFolderMenu({ x: e.clientX, y: e.clientY, node });
+    },
+    [isMobile],
+  );
 
   // ─── Operations ──────────────────────────────────
 
-  const handleNewFolder = useCallback((parentNode: TreeNode) => {
-    setNewFolder({ parentPath: parentNode.rawPath });
-  }, []);
+  const handleNewFolderConfirm = useCallback(
+    async (name: string) => {
+      if (!newFolder) return;
+      await createNote.mutateAsync({ content: " ", path: `${newFolder.parentPath}/${name}/.keep` });
+      invalidate();
+      setNewFolder(null);
+    },
+    [newFolder, createNote, invalidate],
+  );
 
-  const handleNewFolderConfirm = useCallback(async (name: string) => {
-    if (!newFolder) return;
-    const path = `${newFolder.parentPath}/${name}/.keep`;
-    await createNote.mutateAsync({ content: " ", path });
-    invalidate();
-    setNewFolder(null);
-  }, [newFolder, createNote, invalidate]);
-
-  const handleNewNote = useCallback((parentNode: TreeNode) => {
-    setCreationFolder(parentNode.rawPath);
-  }, []);
-
-  const handleRename = useCallback(async (node: TreeNode, newName: string) => {
-    try {
-      const isFolder = !node.note;
-      if (isFolder) {
-        // Rename folder = update path prefix for all notes inside. The prefix
-        // swap must anchor at the START of the path, and a top-level folder's
-        // prefix has no "/" (the old regex silently no-oped there).
-        const notesInside = collectNotes(node);
+  const handleRename = useCallback(
+    async (node: TreeNode, newName: string) => {
+      setRenaming(null);
+      if (node.note) {
+        // A page rename is a move of the page AND its sub-pages (server-side, CAS).
+        const next = renamePath(node.note.path, newName);
+        if (next) await actions.move(pageRef(node), { newPath: next });
+        return;
+      }
+      try {
+        // Rename folder = update path prefix for all notes inside, anchored at the start.
         const oldPrefix = node.rawPath;
         const newPrefix = oldPrefix.includes("/") ? oldPrefix.replace(/\/[^/]+$/, `/${newName}`) : newName;
-        for (const n of notesInside) {
+        for (const n of collectNotes(node)) {
           if (!n.path?.startsWith(oldPrefix)) continue;
-          const newPath = newPrefix + n.path.slice(oldPrefix.length);
-          await updateNote.mutateAsync({ id: n.id, path: newPath });
+          await updateNote.mutateAsync({ id: n.id, path: newPrefix + n.path.slice(oldPrefix.length) });
         }
-      } else if (node.note) {
-        // Rename note = change last path segment
-        const parts = node.note.path!.split("/");
-        parts[parts.length - 1] = newName;
-        await updateNote.mutateAsync({ id: node.note.id, path: parts.join("/") });
-        // Update the tab title if this note is open
-        useUIStore.getState().renameTab(node.note.id, newName);
+      } catch (e) {
+        console.error("Rename failed:", e);
       }
-    } catch (e) {
-      console.error("Rename failed:", e);
-    }
-    invalidate();
-    setRenaming(null);
-  }, [updateNote, invalidate]);
+      invalidate();
+    },
+    [updateNote, invalidate, actions],
+  );
 
-  const handleMove = useCallback(async (node: TreeNode, destPath: string) => {
-    // Close the dialog IMMEDIATELY and refuse concurrent runs: a folder move is
-    // hundreds of sequential PATCHes, and a stuck-open dialog invited repeat
-    // clicks that stacked whole duplicate move storms into the offline outbox.
-    setMoveTarget(null);
-    if (movingRef.current) return;
-    movingRef.current = true;
-    try {
-      // destPath "" = vault root: keep the moved subtree's own path convention
-      // (a "vault/"-prefixed vault stays prefixed; the commons vault stays bare).
-      const isFolder = !node.note;
-      if (isFolder) {
+  const handleFolderMove = useCallback(
+    async (node: TreeNode, destPath: string) => {
+      // Close the dialog IMMEDIATELY and refuse concurrent runs (a folder move is
+      // many sequential PATCHes; repeat clicks stacked duplicate move storms).
+      setMoveFolder(null);
+      if (movingRef.current) return;
+      movingRef.current = true;
+      try {
         const rootPrefix = node.rawPath.startsWith("vault/") ? "vault/" : "";
-        const notesInside = collectNotes(node).filter((n) => n.path?.startsWith(node.rawPath));
-        setMoveProgress({ done: 0, total: notesInside.length });
+        const inside = collectNotes(node).filter((n) => n.path?.startsWith(node.rawPath));
+        setMoveProgress({ done: 0, total: inside.length });
         let done = 0;
-        for (const n of notesInside) {
+        for (const n of inside) {
           const relativePath = n.path!.slice(node.rawPath.length);
           const newPath = destPath ? `${destPath}/${node.name}${relativePath}` : `${rootPrefix}${node.name}${relativePath}`;
           await updateNote.mutateAsync({ id: n.id, path: newPath });
-          setMoveProgress({ done: ++done, total: notesInside.length });
+          setMoveProgress({ done: ++done, total: inside.length });
         }
-      } else if (node.note) {
-        const rootPrefix = node.note.path?.startsWith("vault/") ? "vault/" : "";
-        const newPath = destPath ? `${destPath}/${node.name}` : `${rootPrefix}${node.name}`;
-        await updateNote.mutateAsync({ id: node.note.id, path: newPath });
+      } finally {
+        movingRef.current = false;
+        setMoveProgress(null);
       }
-    } finally {
-      movingRef.current = false;
-      setMoveProgress(null);
-    }
-    invalidate();
-  }, [updateNote, invalidate]);
+      invalidate();
+    },
+    [updateNote, invalidate],
+  );
 
-  const handleDelete = useCallback(async (node: TreeNode) => {
-    const ids = node.note ? [node.note.id] : collectNoteIds(node);
-    const closeTabs = useUIStore.getState().closeTabs;
-    // Close any open tabs for deleted notes
-    if (closeTabs) {
-      for (const id of ids) closeTabs(id);
+  const handleFolderTrash = useCallback(
+    async (node: TreeNode) => {
+      setTrashFolder(null);
+      for (const n of topPages(node)) await actions.trash({ id: n.id, path: n.path, title: n.path?.split("/").pop() ?? n.id });
+    },
+    [actions],
+  );
+
+  // ─── Drag to reorder / reparent ──────────────────
+  const canDropOn = (target: TreeNode, dragged: TreeNode) =>
+    target !== dragged && !(dragged.note?.path && (target.rawPath === dragged.note.path || isUnder(target.rawPath, dragged.note.path))) && !protectionReason({ path: target.rawPath });
+
+  const siblingsOf = (parentRaw: string): TreeNode[] => {
+    if (!parentRaw || parentRaw === "vault") return tree;
+    return findNode(tree, (n) => n.rawPath === parentRaw)?.children ?? [];
+  };
+
+  const handleDrop = async (target: TreeNode, zone: DropZone) => {
+    const dragged = drag?.node;
+    setDrag(null);
+    if (!dragged?.note?.path || !canDropOn(target, dragged)) return;
+    const page = pageRef(dragged);
+    const currentParent = parentOf(dragged.note.path);
+    if (zone === "inside" || !target.note) {
+      if (target.rawPath !== currentParent) await actions.move(page, { parent: target.rawPath });
+      return;
     }
-    for (const id of ids) {
-      await deleteNote.mutateAsync(id);
+    const parent = parentOf(target.rawPath);
+    if (parent !== currentParent) {
+      if ((await actions.move(page, { parent })) !== "moved") return;
     }
-    invalidate();
-    setDeleteTarget(null);
-  }, [deleteNote, invalidate]);
+    const siblings = siblingsOf(parent).filter((n) => n.note);
+    const writes = planReorder(
+      siblings.map((n) => ({ id: n.note!.id, order: orderOf(n.note!) })),
+      dragged.note.id,
+      target.note.id,
+      zone,
+    );
+    for (const w of writes) await actions.reorder({ id: w.id, path: null, title: "" }, w.order);
+  };
 
   // ─── Multi-select click handler ──────────────────
-  const handleNodeClick = useCallback((e: React.MouseEvent, node: TreeNode): boolean => {
-    if (!node.note) return false; // folders don't participate in multi-select
-
-    const noteId = node.note.id;
-
-    if (e.metaKey || e.ctrlKey) {
-      // Toggle selection
-      e.preventDefault();
-      setSelectedIds(prev => {
-        const next = new Set(prev);
-        if (next.has(noteId)) next.delete(noteId);
-        else next.add(noteId);
-        return next;
-      });
-      setLastClickedId(noteId);
-      return true; // signal: handled, don't open
-    } else if (e.shiftKey && lastClickedId) {
-      // Range select
-      e.preventDefault();
-      const flatIds = getFlatNoteIds(tree);
-      const startIdx = flatIds.indexOf(lastClickedId);
-      const endIdx = flatIds.indexOf(noteId);
-      if (startIdx !== -1 && endIdx !== -1) {
-        const [from, to] = startIdx < endIdx ? [startIdx, endIdx] : [endIdx, startIdx];
-        const rangeIds = flatIds.slice(from, to + 1);
-        setSelectedIds(new Set(rangeIds));
-      }
-      return true; // signal: handled, don't open
-    } else {
-      // Normal click — clear selection, let default open behavior run
-      setSelectedIds(new Set());
-      setLastClickedId(noteId);
-      return false; // signal: not handled, proceed with open
-    }
-  }, [lastClickedId, tree]);
-
-  // ─── Toggle a single note's selection (from checkbox click) ───
-  const handleToggleSelect = useCallback((noteId: string, shiftKey?: boolean) => {
-    if (shiftKey && lastClickedId) {
-      // Range select from last clicked to this one
-      const flatIds = getFlatNoteIds(tree);
-      const startIdx = flatIds.indexOf(lastClickedId);
-      const endIdx = flatIds.indexOf(noteId);
-      if (startIdx !== -1 && endIdx !== -1) {
-        const [from, to] = startIdx < endIdx ? [startIdx, endIdx] : [endIdx, startIdx];
-        const rangeIds = flatIds.slice(from, to + 1);
-        setSelectedIds(prev => {
+  const handleNodeClick = useCallback(
+    (e: React.MouseEvent, node: TreeNode): boolean => {
+      if (!node.note) return false;
+      const noteId = node.note.id;
+      if (e.metaKey || e.ctrlKey) {
+        e.preventDefault();
+        setSelectedIds((prev) => {
           const next = new Set(prev);
-          for (const id of rangeIds) next.add(id);
+          if (next.has(noteId)) next.delete(noteId);
+          else next.add(noteId);
           return next;
         });
+        setLastClickedId(noteId);
+        return true;
       }
-    } else {
-      setSelectedIds(prev => {
-        const next = new Set(prev);
-        if (next.has(noteId)) next.delete(noteId);
-        else next.add(noteId);
-        return next;
-      });
-    }
-    setLastClickedId(noteId);
-  }, [lastClickedId, tree]);
-
-  // ─── Batch operations ──────────────────────────────
-  const handleBatchDelete = useCallback(async () => {
-    const closeTabs = useUIStore.getState().closeTabs;
-    const ids = Array.from(selectedIds);
-
-    // Close open tabs for notes being deleted
-    if (closeTabs) ids.forEach(id => closeTabs(id));
-
-    setBatchDeleteConfirm(false);
-    setBatchDeleteProgress({ deleted: 0, total: ids.length });
-
-    // Listen for progress events from Rust
-    const unlisten = await listen<{ deleted: number; failed: number; total: number }>(
-      "vault:batch-delete-progress",
-      (event) => setBatchDeleteProgress({ deleted: event.payload.deleted, total: event.payload.total }),
-    );
-
-    try {
-      await vaultApi.batchDelete(ids);
-    } finally {
-      unlisten();
-      setBatchDeleteProgress(null);
+      if (e.shiftKey && lastClickedId) {
+        e.preventDefault();
+        const flatIds = getFlatNoteIds(tree);
+        const a = flatIds.indexOf(lastClickedId);
+        const b = flatIds.indexOf(noteId);
+        if (a !== -1 && b !== -1) setSelectedIds(new Set(flatIds.slice(Math.min(a, b), Math.max(a, b) + 1)));
+        return true;
+      }
       setSelectedIds(new Set());
-      invalidate();
-    }
-  }, [selectedIds, invalidate]);
+      setLastClickedId(noteId);
+      return false;
+    },
+    [lastClickedId, tree],
+  );
 
-  const handleBatchMove = useCallback(async (destPath: string) => {
-    for (const id of selectedIds) {
-      const note = (notes || []).find(n => n.id === id);
-      if (!note) continue;
-      const name = (note.path || "Untitled").split("/").pop() || "Untitled";
-      const rootPrefix = (note.path || "").startsWith("vault/") ? "vault/" : "";
-      const newPath = destPath ? `${destPath}/${name}` : `${rootPrefix}${name}`;
-      await updateNote.mutateAsync({ id, path: newPath });
-    }
+  const handleBatchTrash = useCallback(async () => {
+    setBatchTrashConfirm(false);
+    const byId = new Map((notes ?? []).map((n) => [n.id, n]));
+    const ids = [...selectedIds];
     setSelectedIds(new Set());
-    setBatchMoveTarget(false);
-    invalidate();
-  }, [selectedIds, notes, updateNote, invalidate]);
+    // Skip a page whose ancestor page is also selected: trashing the ancestor takes it along.
+    const paths = ids.map((id) => byId.get(id)?.path).filter((p): p is string => !!p);
+    for (const id of ids) {
+      const n = byId.get(id);
+      if (!n || (n.path && paths.some((p) => isUnder(n.path, p)))) continue;
+      await actions.trash({ id, path: n.path, title: n.path?.split("/").pop() ?? id });
+    }
+  }, [selectedIds, notes, actions]);
 
   if (isLoading) {
     return (
@@ -801,84 +565,31 @@ export function ProjectTree() {
   if (tree.length === 0) {
     return (
       <div className="px-3 py-2 text-xs" style={{ color: "var(--text-muted)" }}>
-        No notes in vault
+        No pages yet. Use New page to start one.
       </div>
     );
   }
 
   return (
     <>
-      {/* Folder move progress */}
       {moveProgress && (
-        <div className="px-3 py-2 border-b text-xs" style={{ background: "var(--glass)", borderColor: "var(--glass-border)" }}>
+        <div className="px-3 py-2 border-b text-xs" role="status" style={{ background: "var(--glass)", borderColor: "var(--glass-border)" }}>
           <div className="flex items-center gap-2 mb-1">
             <Spinner size={12} />
             <span style={{ color: "var(--text-secondary)" }}>
               Moving {moveProgress.done} / {moveProgress.total}
             </span>
           </div>
-          <div className="w-full h-1 rounded-full overflow-hidden" style={{ background: "rgba(255,255,255,0.1)" }}>
-            <div
-              className="h-full rounded-full transition-all duration-200"
-              style={{
-                width: `${moveProgress.total ? (moveProgress.done / moveProgress.total) * 100 : 100}%`,
-                background: "var(--color-accent, #3b82f6)",
-              }}
-            />
-          </div>
         </div>
       )}
 
-      {/* Batch delete progress */}
-      {batchDeleteProgress && (
-        <div className="px-3 py-2 border-b text-xs" style={{ background: "var(--glass)", borderColor: "var(--glass-border)" }}>
-          <div className="flex items-center gap-2 mb-1">
-            <Spinner size={12} />
-            <span style={{ color: "var(--text-secondary)" }}>
-              Deleting {batchDeleteProgress.deleted} / {batchDeleteProgress.total}
-            </span>
-          </div>
-          <div className="w-full h-1 rounded-full overflow-hidden" style={{ background: "rgba(255,255,255,0.1)" }}>
-            <div
-              className="h-full rounded-full transition-all duration-200"
-              style={{
-                width: `${(batchDeleteProgress.deleted / batchDeleteProgress.total) * 100}%`,
-                background: "rgb(239,68,68)",
-              }}
-            />
-          </div>
-        </div>
-      )}
-
-      {/* Batch actions toolbar */}
-      {selectedIds.size > 0 && !batchDeleteProgress && (
+      {selectedIds.size > 0 && (
         <div className="flex items-center gap-2 px-3 py-2 border-b text-xs" style={{ background: "var(--glass)", borderColor: "var(--glass-border)" }}>
           <span style={{ color: "var(--text-secondary)" }}>{selectedIds.size} selected</span>
-          <button
-            onClick={() => setBatchDeleteConfirm(true)}
-            className="px-2 py-1 rounded transition-colors"
-            style={{ background: "rgba(239,68,68,0.15)", color: "rgb(252,165,165)" }}
-            onMouseEnter={(e) => { e.currentTarget.style.background = "rgba(239,68,68,0.25)"; }}
-            onMouseLeave={(e) => { e.currentTarget.style.background = "rgba(239,68,68,0.15)"; }}
-          >
-            Delete
+          <button onClick={() => setBatchTrashConfirm(true)} className="px-2 py-1 rounded" style={{ color: "var(--color-danger)" }}>
+            Move to Trash
           </button>
-          <button
-            onClick={() => setBatchMoveTarget(true)}
-            className="px-2 py-1 rounded transition-colors"
-            style={{ background: "var(--glass-hover)", color: "var(--text-secondary)" }}
-            onMouseEnter={(e) => { e.currentTarget.style.background = "var(--glass-hover-strong, rgba(255,255,255,0.15))"; }}
-            onMouseLeave={(e) => { e.currentTarget.style.background = "var(--glass-hover)"; }}
-          >
-            Move to...
-          </button>
-          <button
-            onClick={() => setSelectedIds(new Set())}
-            className="ml-auto transition-colors"
-            style={{ color: "var(--text-muted)" }}
-            onMouseEnter={(e) => { e.currentTarget.style.color = "var(--text-secondary)"; }}
-            onMouseLeave={(e) => { e.currentTarget.style.color = "var(--text-muted)"; }}
-          >
+          <button onClick={() => setSelectedIds(new Set())} className="ml-auto" style={{ color: "var(--text-muted)" }}>
             Clear
           </button>
         </div>
@@ -887,107 +598,95 @@ export function ProjectTree() {
       <div className="py-0.5">
         {tree.map((node) => (
           <TreeNodeView
-            key={node.fullPath}
+            key={rawKey(node)}
             node={node}
             depth={0}
-            onContextMenu={handleContextMenu}
-            renamingNode={renaming}
-            onRenameConfirm={handleRename}
-            onRenameCancel={() => setRenaming(null)}
-            newFolder={newFolder}
-            onNewFolderConfirm={handleNewFolderConfirm}
-            onNewFolderCancel={() => setNewFolder(null)}
-            selectedIds={selectedIds}
-            selectionMode={selectedIds.size > 0}
-            onToggleSelect={handleToggleSelect}
-            onNodeClick={handleNodeClick}
+            ctx={{
+              onContextMenu: handleContextMenu,
+              renamingNode: renaming,
+              onRenameConfirm: handleRename,
+              onRenameCancel: () => setRenaming(null),
+              newFolder,
+              onNewFolderConfirm: handleNewFolderConfirm,
+              onNewFolderCancel: () => setNewFolder(null),
+              selectedIds,
+              onNodeClick: handleNodeClick,
+              onAddInside: (n) => {
+                if (n.note) usePagesUI.getState().openCreate({ folder: n.note.path ?? n.rawPath });
+                else setCreationFolder(n.rawPath);
+              },
+              onMenu: (n, el) => {
+                contextTrigger.current = el;
+                const r = el.getBoundingClientRect();
+                if (n.note) {
+                  if (isMobile) usePagesUI.getState().openActions(pageRef(n));
+                  else setPageMenu({ x: r.left, y: r.bottom + 4, node: n });
+                } else setFolderMenu({ x: r.left, y: r.bottom + 4, node: n });
+              },
+              drag,
+              setDrag,
+              canDropOn,
+              onDrop: (n, z) => void handleDrop(n, z),
+              isMobile,
+            }}
           />
         ))}
       </div>
 
       {creationFolder !== null && <NewContentMenu initialFolder={creationFolder} returnFocus={contextTrigger.current} onClose={() => setCreationFolder(null)} />}
 
-      {/* Context menu */}
-      {contextMenu && (
-        <ContextMenu
-          state={contextMenu}
-          onClose={() => setContextMenu(null)}
-          onNewFolder={handleNewFolder}
-          onNewNote={handleNewNote}
+      {folderMenu && (
+        <FolderMenu
+          state={folderMenu}
+          onClose={() => setFolderMenu(null)}
+          onNewFolder={(n) => {
+            usePagesUI.getState().toggleExpanded(n.rawPath, true);
+            setNewFolder({ parentPath: n.rawPath });
+          }}
+          onNewNote={(n) => setCreationFolder(n.rawPath)}
           onRename={(n) => setRenaming(n)}
-          onMove={(n) => setMoveTarget(n)}
-          onDelete={(n) => setDeleteTarget(n)}
+          onMove={(n) => setMoveFolder(n)}
+          onDelete={(n) => setTrashFolder(n)}
           onSyncToGitFork={(n) => setGitForkSyncPath(n.rawPath)}
         />
       )}
+      {pageMenu && <TreePageMenu node={pageMenu.node} at={pageMenu} onRename={() => setRenaming(pageMenu.node)} onClose={() => {
+        setPageMenu(null);
+        contextTrigger.current?.focus({ preventScroll: true });
+      }} />}
 
-      {/* Move dialog (single item) */}
-      {moveTarget && (
-        <MoveDialog
-          node={moveTarget}
-          allPaths={dirPaths}
-          onMove={(dest) => handleMove(moveTarget, dest)}
-          onClose={() => setMoveTarget(null)}
+      {moveFolder && <FolderMoveDialog node={moveFolder} allPaths={dirPaths} onMove={(dest) => handleFolderMove(moveFolder, dest)} onClose={() => setMoveFolder(null)} />}
+
+      {trashFolder && (
+        <ConfirmDialog
+          title={`Move “${trashFolder.name}” to Trash?`}
+          body={`${collectNotes(trashFolder).length} page${collectNotes(trashFolder).length === 1 ? "" : "s"} inside will move to the Trash. You can restore them from the Trash.`}
+          confirm="Move to Trash"
+          onConfirm={() => void handleFolderTrash(trashFolder)}
+          onCancel={() => setTrashFolder(null)}
+        />
+      )}
+      {batchTrashConfirm && (
+        <ConfirmDialog
+          title={`Move ${selectedIds.size} pages to Trash?`}
+          body="Their sub-pages move with them. You can restore them from the Trash."
+          confirm="Move to Trash"
+          onConfirm={() => void handleBatchTrash()}
+          onCancel={() => setBatchTrashConfirm(false)}
         />
       )}
 
-      {/* Batch move dialog */}
-      {batchMoveTarget && (
-        <BatchMoveDialog
-          count={selectedIds.size}
-          allPaths={dirPaths}
-          onMove={handleBatchMove}
-          onClose={() => setBatchMoveTarget(false)}
-        />
-      )}
-
-      {/* Delete confirmation (single item) */}
-      {deleteTarget && (
-        <DeleteConfirm
-          node={deleteTarget}
-          onConfirm={() => handleDelete(deleteTarget)}
-          onCancel={() => setDeleteTarget(null)}
-        />
-      )}
-
-      {/* Batch delete confirmation */}
-      {batchDeleteConfirm && (
-        <BatchDeleteConfirm
-          count={selectedIds.size}
-          onConfirm={handleBatchDelete}
-          onCancel={() => setBatchDeleteConfirm(false)}
-        />
-      )}
-
-      {/* GitHub sync modal */}
-      {githubSyncPath && (
-        <GitHubSyncModal
-          isOpen={true}
-          onClose={() => setGitForkSyncPath(null)}
-          vaultPath={githubSyncPath}
-        />
-      )}
+      {githubSyncPath && <GitHubSyncModal isOpen={true} onClose={() => setGitForkSyncPath(null)} vaultPath={githubSyncPath} />}
     </>
   );
 }
 
-function TreeNodeView({
-  node,
-  depth,
-  onContextMenu,
-  renamingNode,
-  onRenameConfirm,
-  onRenameCancel,
-  newFolder,
-  onNewFolderConfirm,
-  onNewFolderCancel,
-  selectedIds,
-  selectionMode,
-  onToggleSelect,
-  onNodeClick,
-}: {
-  node: TreeNode;
-  depth: number;
+function TreePageMenu({ node, at, onRename, onClose }: { node: TreeNode; at: { x: number; y: number }; onRename: () => void; onClose: () => void }) {
+  const items = usePageMenuItems(pageRef(node), { entry: node.note, onRename, close: onClose });
+  return <PageMenuPopover label={`Actions for ${node.name}`} items={items} anchor={at} onClose={onClose} />;
+}
+
+interface TreeCtx {
   onContextMenu: (e: React.MouseEvent, node: TreeNode) => void;
   renamingNode: TreeNode | null;
   onRenameConfirm: (node: TreeNode, newName: string) => void;
@@ -996,153 +695,180 @@ function TreeNodeView({
   onNewFolderConfirm: (name: string) => void;
   onNewFolderCancel: () => void;
   selectedIds: Set<string>;
-  selectionMode: boolean;
-  onToggleSelect: (noteId: string, shiftKey?: boolean) => void;
   onNodeClick: (e: React.MouseEvent, node: TreeNode) => boolean;
-}) {
-  // Start every folder collapsed (including roots) so the tree opens tidy and
-  // the user expands only what they need — they asked not to wade through all
-  // root directories being open on every launch/reload.
-  const [open, setOpen] = useState(false);
+  onAddInside: (node: TreeNode) => void;
+  onMenu: (node: TreeNode, el: HTMLElement) => void;
+  drag: { node: TreeNode; over: string | null; zone: DropZone | null } | null;
+  setDrag: (d: { node: TreeNode; over: string | null; zone: DropZone | null } | null) => void;
+  canDropOn: (target: TreeNode, dragged: TreeNode) => boolean;
+  onDrop: (target: TreeNode, zone: DropZone) => void;
+  isMobile: boolean;
+}
+
+function TreeNodeView({ node, depth, ctx }: { node: TreeNode; depth: number; ctx: TreeCtx }) {
+  const open = usePagesUI((s) => !!s.expanded[node.rawPath]);
+  const toggle = () => usePagesUI.getState().toggleExpanded(node.rawPath);
   const openTab = useUIStore((s) => s.openTab);
-  // "Collapse all" (nav button) bumps this counter; close on every change.
-  // Setting false when already-closed is a no-op, so the initial mount is free.
-  const collapseSignal = useUIStore((s) => s.navCollapseSignal);
-  useEffect(() => {
-    setOpen(false);
-  }, [collapseSignal]);
-  const isFolder = !node.note && node.children.length > 0;
-  const isRenaming = renamingNode?.fullPath === node.fullPath && renamingNode?.note?.id === node.note?.id;
-  const showNewFolderInput = newFolder?.parentPath === node.rawPath && isFolder;
-  const isSelected = node.note ? selectedIds.has(node.note.id) : false;
+  const active = useUIStore((s) => !!node.note && s.openTabs.find((t) => t.id === s.activeTabId)?.noteId === node.note.id);
+  const longPress = useRef<{ timer: ReturnType<typeof setTimeout>; fired: boolean } | null>(null);
+  const isPage = !!node.note;
+  const hasChildren = node.children.length > 0;
+  const isRenaming = ctx.renamingNode === node || (!!ctx.renamingNode && rawKey(ctx.renamingNode) === rawKey(node));
+  const showNewFolderInput = ctx.newFolder?.parentPath === node.rawPath && !isPage;
+  const isSelected = isPage && ctx.selectedIds.has(node.note!.id);
+  const contentType = node.note ? inferContentType(node.note) : "document";
+  const emoji = typeof node.note?.metadata?.icon === "string" ? (node.note.metadata.icon as string) : null;
+  const Icon = isPage ? TYPE_ICONS[contentType] ?? FileText : open ? FolderOpen : Folder;
+  const key = rawKey(node);
+  const dropHere = ctx.drag && ctx.drag.over === key ? ctx.drag.zone : null;
 
   const handleClick = (e: React.MouseEvent) => {
-    if (isFolder) {
-      setOpen(!open);
+    if (longPress.current?.fired) {
+      longPress.current = null;
       return;
     }
-    // In selection mode, clicks toggle selection instead of opening
-    if (selectionMode && noteId) {
-      onToggleSelect(noteId, e.shiftKey);
+    if (!isPage) {
+      toggle();
       return;
     }
-    // Let multi-select handler run first (Cmd/Ctrl + Shift clicks)
-    const handled = onNodeClick(e, node);
-    if (!handled && node.note) {
-      // Normal click — open the note
-      const type = inferContentType(node.note);
-      openTab(node.note.id, node.name, type);
-    }
+    if (ctx.onNodeClick(e, node)) return;
+    openTab(node.note!.id, node.name, contentType);
   };
 
-  const contentType = node.note ? inferContentType(node.note) : "document";
-
-  function getIcon() {
-    if (isFolder) return open ? FolderOpen : Folder;
-    return TYPE_ICONS[contentType] ?? FileText;
-  }
-
-  const IconComponent = getIcon();
-
-  const isNote = !!node.note;
-  const showCheckbox = isNote && selectionMode;
-  const noteId = node.note?.id;
-
-  const handleCheckboxClick = (e: React.MouseEvent) => {
-    e.stopPropagation();
-    if (noteId) onToggleSelect(noteId, e.shiftKey);
+  const zoneFor = (e: React.DragEvent): DropZone => {
+    const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    const y = e.clientY - r.top;
+    if (!isPage) return "inside";
+    return y < r.height * 0.28 ? "before" : y > r.height * 0.72 ? "after" : "inside";
   };
 
   return (
-    <div>
-      <button
-        onClick={handleClick}
-        onContextMenu={(e) => onContextMenu(e, node)}
+    <div data-depth={depth}>
+      <div
+        className="page-tree-row"
+        data-active={active || undefined}
         data-selected={isSelected || undefined}
-        className="interactive focus-ring group w-full flex items-center gap-1.5 truncate"
-        style={{
-          height: 28,
-          paddingLeft: `${8 + depth * 14}px`,
-          paddingRight: 8,
-          fontSize: "var(--text-base)",
-          color: isSelected ? "var(--text-primary)" : "var(--text-secondary)",
+        data-drop={dropHere ?? undefined}
+        data-dragging={ctx.drag?.node === node || undefined}
+        style={{ paddingLeft: 4 + depth * 14 }}
+        draggable={isPage && !isRenaming && !ctx.isMobile}
+        onDragStart={(e) => {
+          if (!isPage) return;
+          e.dataTransfer.effectAllowed = "move";
+          e.dataTransfer.setData("text/plain", node.note!.id);
+          ctx.setDrag({ node, over: null, zone: null });
         }}
+        onDragOver={(e) => {
+          if (!ctx.drag || !ctx.canDropOn(node, ctx.drag.node)) return;
+          e.preventDefault();
+          e.dataTransfer.dropEffect = "move";
+          const zone = zoneFor(e);
+          if (ctx.drag.over !== key || ctx.drag.zone !== zone) ctx.setDrag({ ...ctx.drag, over: key, zone });
+        }}
+        onDragLeave={(e) => {
+          if (ctx.drag?.over === key && !(e.currentTarget as HTMLElement).contains(e.relatedTarget as Node)) ctx.setDrag({ ...ctx.drag, over: null, zone: null });
+        }}
+        onDrop={(e) => {
+          e.preventDefault();
+          if (ctx.drag) ctx.onDrop(node, zoneFor(e));
+        }}
+        onDragEnd={() => ctx.setDrag(null)}
       >
-        {/* Icon area: checkbox on hover (or always in selection mode) */}
-        <span className="relative flex-shrink-0 w-[14px] h-[14px]">
-          {isNote && (
-            <>
-              {/* Normal icon — hidden on hover or in selection mode */}
-              <span
-                className={cn(
-                  "absolute inset-0 flex items-center justify-center transition-opacity pointer-events-none",
-                  showCheckbox ? "opacity-0" : "opacity-100 group-hover:opacity-0",
-                )}
-              >
-                {IconComponent ? <IconComponent size={14} style={{ opacity: 0.7 }} /> : null}
-              </span>
-              {/* Checkbox — visible on hover or in selection mode, on top for clicks */}
-              <span
-                className={cn(
-                  "absolute inset-0 flex items-center justify-center z-10",
-                  showCheckbox ? "opacity-100" : "opacity-0 group-hover:opacity-100",
-                )}
-                onClick={handleCheckboxClick}
-              >
-                {isSelected
-                  ? <CheckSquare2 size={14} style={{ color: "var(--color-accent)" }} />
-                  : <Square size={14} style={{ opacity: 0.5 }} />
-                }
-              </span>
-            </>
-          )}
-          {!isNote && IconComponent && (
-            <IconComponent size={14} style={{ opacity: 0.7 }} />
-          )}
-        </span>
-        {isRenaming ? (
-          <InlineEdit
-            initialValue={node.name}
-            onConfirm={(val) => onRenameConfirm(node, val)}
-            onCancel={onRenameCancel}
-          />
+        {hasChildren ? (
+          <button
+            type="button"
+            className="page-tree-disclosure focus-ring"
+            aria-expanded={open}
+            aria-label={`${open ? "Collapse" : "Expand"} ${node.name}`}
+            onClick={toggle}
+            tabIndex={-1}
+          >
+            <ChevronRight size={13} />
+          </button>
         ) : (
-          <span className="truncate">{node.name}</span>
+          <span className="page-tree-spacer" />
         )}
-      </button>
-      {isFolder && open && (
-        <div>
-          {/* New folder inline input */}
-          {showNewFolderInput && (
-            <div
-              className="flex items-center gap-1.5 py-1"
-              style={{ paddingLeft: `${12 + (depth + 1) * 16}px` }}
+        {isRenaming ? (
+          <div className="flex-1 min-w-0 pr-2">
+            <InlineEdit label={`Rename ${node.name}`} initialValue={node.name} onConfirm={(val) => ctx.onRenameConfirm(node, val)} onCancel={ctx.onRenameCancel} />
+          </div>
+        ) : (
+          <button
+            type="button"
+            onClick={handleClick}
+            onContextMenu={(e) => ctx.onContextMenu(e, node)}
+            onKeyDown={(e) => {
+              if (hasChildren && e.key === "ArrowRight" && !open) {
+                e.preventDefault();
+                usePagesUI.getState().toggleExpanded(node.rawPath, true);
+              } else if (hasChildren && e.key === "ArrowLeft" && open) {
+                e.preventDefault();
+                usePagesUI.getState().toggleExpanded(node.rawPath, false);
+              }
+            }}
+            onPointerDown={(e) => {
+              if (e.pointerType !== "touch" || !isPage) return;
+              const el = e.currentTarget;
+              longPress.current = {
+                fired: false,
+                timer: setTimeout(() => {
+                  if (longPress.current) longPress.current.fired = true;
+                  ctx.onMenu(node, el);
+                }, 520),
+              };
+            }}
+            onPointerUp={() => longPress.current && !longPress.current.fired && (clearTimeout(longPress.current.timer), (longPress.current = null))}
+            onPointerMove={() => longPress.current && !longPress.current.fired && (clearTimeout(longPress.current.timer), (longPress.current = null))}
+            onPointerCancel={() => longPress.current && (clearTimeout(longPress.current.timer), (longPress.current = null))}
+            className="page-tree-open focus-ring"
+            aria-current={active ? "page" : undefined}
+          >
+            <span className="page-tree-icon">{emoji ? <span className="page-tree-emoji">{emoji}</span> : <Icon size={14} style={{ opacity: 0.75 }} />}</span>
+            <span>{node.name}</span>
+          </button>
+        )}
+        {!isRenaming && (
+          <span className="page-tree-actions">
+            {!protectionReason({ path: node.rawPath }) && (
+              <button
+                type="button"
+                className="page-tree-action focus-ring"
+                title={isPage ? "Add a page inside" : "New page in folder"}
+                aria-label={`${isPage ? "Add a page inside" : "New page in"} ${node.name}`}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  ctx.onAddInside(node);
+                }}
+              >
+                <Plus size={14} />
+              </button>
+            )}
+            <button
+              type="button"
+              className="page-tree-action focus-ring"
+              title={isPage ? "Page actions" : "Folder actions"}
+              aria-label={`${isPage ? "Page" : "Folder"} actions for ${node.name}`}
+              aria-haspopup="menu"
+              onClick={(e) => {
+                e.stopPropagation();
+                ctx.onMenu(node, e.currentTarget);
+              }}
             >
+              <MoreHorizontal size={14} />
+            </button>
+          </span>
+        )}
+      </div>
+      {open && (hasChildren || showNewFolderInput) && (
+        <div>
+          {showNewFolderInput && (
+            <div className="flex items-center gap-1.5 py-1" style={{ paddingLeft: `${24 + (depth + 1) * 14}px` }}>
               <FolderPlus size={14} className="flex-shrink-0" style={{ opacity: 0.7, color: "var(--text-secondary)" }} />
-              <InlineEdit
-                initialValue="New folder"
-                onConfirm={onNewFolderConfirm}
-                onCancel={onNewFolderCancel}
-              />
+              <InlineEdit label="Folder name" initialValue="New folder" onConfirm={ctx.onNewFolderConfirm} onCancel={ctx.onNewFolderCancel} />
             </div>
           )}
           {node.children.map((child) => (
-            <TreeNodeView
-              key={child.fullPath + (child.note?.id || "")}
-              node={child}
-              depth={depth + 1}
-              onContextMenu={onContextMenu}
-              renamingNode={renamingNode}
-              onRenameConfirm={onRenameConfirm}
-              onRenameCancel={onRenameCancel}
-              newFolder={newFolder}
-              onNewFolderConfirm={onNewFolderConfirm}
-              onNewFolderCancel={onNewFolderCancel}
-              selectedIds={selectedIds}
-              selectionMode={selectionMode}
-              onToggleSelect={onToggleSelect}
-              onNodeClick={onNodeClick}
-            />
+            <TreeNodeView key={rawKey(child)} node={child} depth={depth + 1} ctx={ctx} />
           ))}
         </div>
       )}

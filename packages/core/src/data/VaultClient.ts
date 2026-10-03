@@ -8,6 +8,7 @@ import type {
   VaultStats,
   VaultInfo,
 } from "../lib/types";
+import type { MoveRequest, MoveResult, TrashListing, PreferencesSnapshot, PagePreferences } from "../lib/pages/model";
 
 /** Transport status for recoverable UI states, without parsing diagnostic text. */
 export class VaultRequestError extends Error {
@@ -184,4 +185,16 @@ export interface VaultClient {
    *  a blind restore; a stale value throws {@link HistoryConflictError}. The
    *  replaced state is itself captured, so a restore is always undoable. */
   restoreNoteVersion?(noteId: string, versionIx: number, ifUpdatedAt: string): Promise<Note>;
+  /** Pages (lib/pages/model.ts). Optional per shell; without them the UI falls back
+   *  to plain vault writes (lib/pages/ops.ts). Move a page and its sub-pages. */
+  movePage?(noteId: string, request: MoveRequest): Promise<MoveResult>;
+  /** Soft-delete a page and its sub-pages (restorable from the Trash). */
+  trashPage?(noteId: string): Promise<{ rootId: string; trashed: string[] }>;
+  listTrash?(query?: string): Promise<TrashListing>;
+  restoreFromTrash?(noteId: string): Promise<{ restored: string[] }>;
+  /** Real delete of a page already in the Trash (and what was trashed with it). */
+  deleteFromTrash?(noteId: string): Promise<{ deleted: string[] }>;
+  /** Favorites / recents / sidebar state, synced per user × vault. */
+  getPreferences?(): Promise<PreferencesSnapshot>;
+  savePreferences?(preferences: PagePreferences, ifRevision?: number): Promise<PreferencesSnapshot>;
 }

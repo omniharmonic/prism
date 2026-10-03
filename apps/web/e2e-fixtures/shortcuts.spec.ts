@@ -31,7 +31,7 @@ test("each vault keeps its own favorites and recent history", async ({ page }) =
   await page.getByRole("button", { name: "Add to Favorites", exact: true }).click();
   await expect(page.getByRole("region", { name: "Favorites", exact: true })).toContainText("Field notes");
   await page.evaluate(() => (window as any).prismFixtureSwitchVault("secondary"));
-  await expect(page.getByRole("region", { name: "Favorites", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("region", { name: "Favorites", exact: true })).toContainText("Star a page to pin it here.");
   await expect(page.getByRole("region", { name: "Recent", exact: true })).toHaveCount(0);
   await open(page, "weekly-review");
   await page.getByRole("button", { name: "Add to Favorites", exact: true }).click();
@@ -46,10 +46,10 @@ test("denied saved shortcuts stay hidden and their IDs remain available for retr
   await seed(page);
   await page.goto(path + "&deny=field-notes");
   await expect(page.getByRole("button", { name: "Retry shortcuts" })).toBeVisible();
-  await expect(page.getByRole("region", { name: "Favorites", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("region", { name: "Favorites", exact: true })).toContainText("Star a page to pin it here.");
   expect((await stored(page))[0].favorites).toEqual(["field-notes"]);
   await page.getByRole("button", { name: "Retry shortcuts" }).click();
-  await expect(page.getByRole("region", { name: "Favorites", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("region", { name: "Favorites", exact: true })).toContainText("Star a page to pin it here.");
 });
 
 test("older global titles never appear or migrate without recovery, which rechecks access", async ({ page }) => {
@@ -70,7 +70,7 @@ test("late shortcut access reads cannot populate a different vault", async ({ pa
   await page.goto(path + "&hold=field-notes");
   await page.evaluate(() => (window as any).prismFixtureSwitchVault("secondary"));
   await page.evaluate(() => (window as any).prismFixtureReleaseRead("field-notes"));
-  await expect(page.getByRole("region", { name: "Favorites", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("region", { name: "Favorites", exact: true })).toContainText("Star a page to pin it here.");
   await open(page, "weekly-review");
   await page.getByRole("button", { name: "Recent", exact: true }).click();
   await expect(page.getByRole("region", { name: "Recent", exact: true })).toContainText("Weekly review");
@@ -100,7 +100,7 @@ test("targeted access invalidation hides an existing title and retry restores it
     (window as any).prismFixtureInvalidate("field-notes");
   });
   await expect(page.getByRole("button", { name: "Retry shortcuts" })).toBeVisible();
-  await expect(page.getByRole("region", { name: "Favorites", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("region", { name: "Favorites", exact: true })).toContainText("Star a page to pin it here.");
   await page.evaluate(() => (window as any).prismFixtureControls.peopleDenyOpen = false);
   await page.getByRole("button", { name: "Retry shortcuts" }).click();
   await expect(page.getByRole("region", { name: "Favorites", exact: true })).toContainText("Field notes");
@@ -112,7 +112,7 @@ test("switching accounts on the same vault cannot inherit saved favorites", asyn
   await page.goto(path);
   await expect(page.getByRole("region", { name: "Favorites", exact: true })).toContainText("Field notes");
   await page.evaluate(() => (window as any).prismFixtureSwitchActor("second@example.test"));
-  await expect(page.getByRole("region", { name: "Favorites", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("region", { name: "Favorites", exact: true })).toContainText("Star a page to pin it here.");
   await expect(page.getByRole("region", { name: "Recent", exact: true })).toHaveCount(0);
   await open(page, "weekly-review");
   await page.getByRole("button", { name: "Add to Favorites", exact: true }).click();

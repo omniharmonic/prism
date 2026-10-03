@@ -1,5 +1,5 @@
 import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from "react";
-import { useQueries } from "@tanstack/react-query";
+import { useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { VaultClient } from "../../data/VaultClient";
 import { useVaultClient } from "../../data/VaultClientContext";
 import { usePlatform } from "../../data/Platform";
@@ -9,6 +9,7 @@ import { useSettingsStore, type RecentItem } from "../../app/stores/settings";
 import { isVaultNoteId } from "../../lib/noteIdentity";
 import { inferContentType } from "../../lib/schemas/content-types";
 import { noteLinkTitle } from "../../lib/wikilinks";
+import { PagesRequestError, preferenceOps, type PagePreferences, type PreferencesSnapshot } from "../../lib/pages/model";
 
 const PREFIX = "prism:note-shortcuts:v1:";
 type RecordValue = { version: 1; favorites: string[]; recents: string[]; legacyHandled: boolean };
@@ -54,8 +55,13 @@ interface Shortcuts {
   dismissRecovery: () => void;
   storageUnavailable: boolean;
   recoveryMessage: string | null;
+  /** True when favorites/recents/sidebar state sync across devices (GET/PUT /api/me/preferences). */
+  synced: boolean;
+  /** Collapsed sidebar sections ("favorites" | "recent" | "pages" | "tools"); null = use defaults. */
+  collapsed: string[] | null;
+  setCollapsed: (section: string, collapsed: boolean) => void;
 }
-const NO_SHORTCUTS: Shortcuts = { favorites: [], recents: [], favoriteIds: [], toggleFavorite: () => {}, unavailable: false, retry: () => {}, recoverable: false, recovering: false, recover: () => {}, dismissRecovery: () => {}, storageUnavailable: false, recoveryMessage: null };
+const NO_SHORTCUTS: Shortcuts = { favorites: [], recents: [], favoriteIds: [], toggleFavorite: () => {}, unavailable: false, retry: () => {}, recoverable: false, recovering: false, recover: () => {}, dismissRecovery: () => {}, storageUnavailable: false, recoveryMessage: null, synced: false, collapsed: null, setCollapsed: () => {} };
 const Context = createContext<Shortcuts>(NO_SHORTCUTS);
 export function useNoteShortcuts() { return useContext(Context); }
 
@@ -65,7 +71,109 @@ export function NoteShortcutsProvider({ children }: { children: ReactNode }) {
   const audience = useAgentChatStore(state => state.scope);
   const scope = audience && client.scope?.() === audience ? audience : null;
   if (platform === "desktop" && !client.scope) return <LegacyShortcuts>{children}</LegacyShortcuts>;
+  // Server-synced preferences when the shell can reach them; per-device storage otherwise.
+  if (scope && client.getPreferences && client.savePreferences) return <SyncedOrLocal key={scope} scope={scope}>{children}</SyncedOrLocal>;
   return <ScopedShortcuts key={scope ?? "unconfirmed"} scope={scope}>{children}</ScopedShortcuts>;
+}
+
+/** A server without the preferences route (older Prism Server) or an offline start → per-device shortcuts. */
+const unsupported = (e: unknown) => e instanceof PagesRequestError && [0, 404, 405, 501].includes(e.status);
+const MIGRATED = "prism:prefs-migrated:v1:";
+
+function SyncedOrLocal({ scope, children }: { scope: string; children: ReactNode }) {
+  const client = useVaultClient();
+  const query = useQuery({
+    queryKey: ["vault", "preferences", scope],
+    queryFn: () => client.getPreferences!(),
+    retry: false,
+    staleTime: 30_000,
+  });
+  // Both hooks always run (one provider, one subtree): switching to per-device
+  // shortcuts must never remount the workspace below this provider.
+  const local = query.isError && unsupported(query.error);
+  const synced = useSyncedShortcuts(scope, query);
+  const scoped = useScopedShortcuts(scope, local);
+  return <Context.Provider value={local ? scoped : synced}>{children}</Context.Provider>;
+}
+
+function useSyncedShortcuts(scope: string, query: ReturnType<typeof useQuery<PreferencesSnapshot>>): Shortcuts {
+  const client = useVaultClient();
+  const queryClient = useQueryClient();
+  const key = ["vault", "preferences", scope];
+  const chain = useRef<Promise<unknown>>(Promise.resolve());
+  const [saveFailed, setSaveFailed] = useState(false);
+  const live = useRef(true);
+  useEffect(() => { live.current = true; return () => { live.current = false; }; }, []);
+  const current = () => live.current && client.scope?.() === scope && useAgentChatStore.getState().scope === scope;
+
+  /** Apply `op` optimistically, then persist it with revision CAS (re-applied once on a conflict). */
+  const apply = (op: (p: PagePreferences) => PagePreferences, item?: RecentItem) => {
+    const snap = queryClient.getQueryData<PreferencesSnapshot>(key);
+    if (!snap || !current()) return;
+    const optimistic = op(snap.preferences);
+    if (optimistic === snap.preferences) return;
+    const items = item && !snap.items[item.id] ? { ...snap.items, [item.id]: { path: null, title: item.title, tags: [], type: item.type } } : snap.items;
+    queryClient.setQueryData<PreferencesSnapshot>(key, { ...snap, preferences: optimistic, items });
+    chain.current = chain.current.then(async () => {
+      if (!current()) return;
+      const base = queryClient.getQueryData<PreferencesSnapshot>(key) ?? snap;
+      try {
+        const saved = await client.savePreferences!(base.preferences, base.revision);
+        if (current()) { queryClient.setQueryData(key, saved); setSaveFailed(false); }
+      } catch (e) {
+        if (e instanceof PagesRequestError && e.status === 409 && current()) {
+          try {
+            const fresh = await client.getPreferences!();
+            const saved = await client.savePreferences!(op(fresh.preferences), fresh.revision);
+            if (current()) { queryClient.setQueryData(key, saved); setSaveFailed(false); }
+            return;
+          } catch { /* fall through */ }
+        }
+        if (current()) { setSaveFailed(true); void queryClient.invalidateQueries({ queryKey: key }); }
+      }
+    });
+  };
+
+  // One-time, per device: carry this account's per-device shortcuts into the synced
+  // record. The server filters every id to what the account can view on each read.
+  useEffect(() => {
+    if (!query.isSuccess || !current()) return;
+    let flag: string | null = null;
+    try { flag = localStorage.getItem(MIGRATED + encodeURIComponent(scope)); } catch { flag = "1"; }
+    if (flag) return;
+    const local = read(scope);
+    try { localStorage.setItem(MIGRATED + encodeURIComponent(scope), "1"); } catch { /* best effort */ }
+    if (local.favorites.length || local.recents.length) apply((p) => preferenceOps.merge(p, local));
+  }, [query.isSuccess, scope]);
+
+  const active = useUIStore(state => state.activeTabId);
+  const tabs = useUIStore(state => state.openTabs);
+  const selected = tabs.find(tab => tab.id === active);
+  useEffect(() => {
+    if (!query.isSuccess || !selected || !isVaultNoteId(selected.noteId) || selected.noteId.startsWith("offline-")) return;
+    apply((p) => preferenceOps.pushRecent(p, selected.noteId), { id: selected.noteId, title: selected.title, type: selected.type });
+  }, [selected?.noteId, query.isSuccess]);
+
+  const snap = query.data;
+  const toItem = (id: string): RecentItem | null => {
+    const it = snap?.items[id];
+    if (!it) return null;
+    return { id, title: it.title, type: inferContentType({ path: it.path, tags: it.tags, metadata: { ...(it.type ? { type: it.type } : {}), ...(it.prismType ? { prism_type: it.prismType } : {}) } }) };
+  };
+  const list = (ids: string[], limit: number) => ids.flatMap((id) => { const i = toItem(id); return i ? [i] : []; }).slice(0, limit);
+  return {
+    ...NO_SHORTCUTS,
+    synced: true,
+    favorites: list(snap?.preferences.favorites ?? [], 100),
+    recents: list(snap?.preferences.recents ?? [], 12),
+    favoriteIds: snap?.preferences.favorites ?? [],
+    toggleFavorite: (item) => { if (isVaultNoteId(item.id)) apply((p) => preferenceOps.toggleFavorite(p, item.id), item); },
+    unavailable: query.isError,
+    retry: () => { void query.refetch(); },
+    storageUnavailable: saveFailed,
+    collapsed: snap ? snap.preferences.sidebar.collapsed : null,
+    setCollapsed: (section, collapsed) => apply((p) => preferenceOps.setCollapsed(p, section, collapsed)),
+  };
 }
 
 function LegacyShortcuts({ children }: { children: ReactNode }) {
@@ -82,9 +190,16 @@ function LegacyShortcuts({ children }: { children: ReactNode }) {
 }
 
 function ScopedShortcuts({ scope, children }: { scope: string | null; children: ReactNode }) {
+  return <Context.Provider value={useScopedShortcuts(scope, true)}>{children}</Context.Provider>;
+}
+
+/** Per-device shortcuts (localStorage). Inert (`enabled` false) while preferences sync. */
+function useScopedShortcuts(scopeArg: string | null, enabled: boolean): Shortcuts {
+  const scope = enabled ? scopeArg : null;
   const client = useVaultClient();
   const [record, setRecord] = useState(() => scope ? read(scope) : EMPTY);
   const recordRef = useRef(record);
+  useEffect(() => { if (scope) { const next = read(scope); recordRef.current = next; setRecord(next); } }, [scope]);
   const live = useRef(true);
   const [storageUnavailable, setStorageUnavailable] = useState(false);
   const [recovering, setRecovering] = useState(false);
@@ -161,7 +276,8 @@ function ScopedShortcuts({ scope, children }: { scope: string | null; children: 
     setRecoveryMessage(`${accessible.size} accessible shortcuts recovered. Unavailable notes were left out.`);
   };
   const old = legacy();
-  return <Context.Provider value={scope ? {
+  return scope ? {
+    ...NO_SHORTCUTS,
     favorites: materialize(record.favorites), recents: materialize(record.recents), favoriteIds: record.favorites,
     toggleFavorite: item => {
       if (!isVaultNoteId(item.id)) return;
@@ -171,5 +287,5 @@ function ScopedShortcuts({ scope, children }: { scope: string | null; children: 
     unavailable: queries.some(query => query.isError), retry: () => { for (const query of queries) void query.refetch(); },
     recoverable: !record.legacyHandled && !!(old.favorites.length || old.recents.length), recovering, recover: () => { void recover(); },
     dismissRecovery: () => { recoveryGeneration.current++; setRecovering(false); save({ ...recordRef.current, legacyHandled: true }); }, storageUnavailable, recoveryMessage,
-  } : NO_SHORTCUTS}>{children}</Context.Provider>;
+  } : NO_SHORTCUTS;
 }

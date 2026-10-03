@@ -1,5 +1,6 @@
 import type { VaultClient } from "@prism/core";
 import * as rest from "./rest";
+import * as pages from "./pages";
 import { agentScope } from "../config";
 
 /**
@@ -39,4 +40,11 @@ export const httpVaultClient: VaultClient = {
   listNoteVersions: rest.listNoteVersions,
   getNoteVersion: rest.getNoteVersion,
   restoreNoteVersion: rest.restoreNoteVersion,
+  movePage: pages.movePage,
+  trashPage: pages.trashPage,
+  listTrash: pages.listTrash,
+  restoreFromTrash: pages.restoreFromTrash,
+  deleteFromTrash: pages.deleteFromTrash,
+  getPreferences: pages.getPreferences,
+  savePreferences: pages.savePreferences,
 };
