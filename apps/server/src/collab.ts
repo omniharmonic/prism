@@ -1159,6 +1159,26 @@ export const hocuspocus = new Hocuspocus({
   onStoreDocument: (data) => storeDocumentState(data.documentName, data.document),
 });
 
+// Hocuspocus 4.1 unloads BY NAME: `unloadDocument(doc)` checks only that SOME document
+// is registered under `doc.name`, then deletes that entry and destroys `doc`. A late
+// unload of a document that is already gone (the `setTimeout(0)` after a store, a
+// released direct connection) therefore removed the NEWER document that had since been
+// loaded under the same name: it stayed alive but unregistered — the people connected to
+// it kept editing an orphan, the next open loaded a second copy from the vault, and its
+// Awareness interval was never cleared. Likewise an unload requested while another
+// document's unload under that name was still finishing was answered with THAT promise
+// and silently skipped. Both are closed here: only the registered document is unloaded,
+// and a request waits for an unload in progress before deciding.
+{
+  const unload = hocuspocus.unloadDocument.bind(hocuspocus);
+  hocuspocus.unloadDocument = async (document) => {
+    const pending = hocuspocus.unloadingDocuments.get(document.name);
+    if (pending) await pending.catch(() => {});
+    if (hocuspocus.documents.get(document.name) !== document) return;
+    return unload(document);
+  };
+}
+
 // Permission mutations invalidate sessions synchronously, before the response
 // confirms revocation. The provider reconnects and receives its current mode.
 // Scope to one vault when known; credential/peer revocations span vaults.

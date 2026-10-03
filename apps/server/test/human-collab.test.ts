@@ -1330,6 +1330,26 @@ test("LOW-b: unconfirmed receipts belong to ONE in-memory document — loading t
   assert.equal(getCollabReceipt("primary", "d1", "user:x", "r-1"), null, "its own document's load drops it");
 });
 
+// Hocuspocus unloads by NAME. A late unload of a document that is already gone (the timer
+// after a store; a released direct connection) used to remove the NEWER document loaded
+// under the same name — still alive, no longer registered: an orphan people keep editing,
+// a second copy for the next open, and an Awareness interval that never stops.
+test("a late unload of an already-unloaded document never unregisters the document that replaced it", { timeout: 20000 }, async () => {
+  const first = await hocuspocus.openDirectConnection("d1", {});
+  const old = first.document!;
+  await first.disconnect();
+  await unloaded("d1");
+  const second = await hocuspocus.openDirectConnection("d1", {});
+  const current = second.document!;
+  assert.notEqual(current, old);
+  await hocuspocus.unloadDocument(old); // the stale request, while someone is on the new document
+  assert.equal(hocuspocus.documents.get("d1"), current, "the registered document is untouched");
+  assert.equal(current.isDestroyed, false);
+  // Letting go of it still unloads and destroys it.
+  await second.disconnect();
+  await unloaded("d1");
+  assert.equal(current.isDestroyed, true);
+});
 // ── second review (store fold, text hygiene, budgets, cost, migration) ──────
 
 test("R1: a store that folds a newer vault copy does NOT confirm a command whose change the fold removed — 503, cleaned up, then stale", { timeout: 20000 }, async () => {
