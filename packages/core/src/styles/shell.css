@@ -35,16 +35,16 @@
   to { opacity: 1; transform: translateY(0); }
 }
 @keyframes prism-fade-in { from { opacity: 0; } to { opacity: 1; } }
-.prism-menu-enter,
-[role="menu"],
-[role="listbox"].prism-popover {
-  animation: prism-menu-in var(--motion-fast) var(--motion-ease);
-}
+/* Opt-in only: `prism-menu-in` animates `transform`, which would fight a menu
+   that is itself positioned with a transform (centred sheets, popovers). Menus
+   in general just fade. */
+.prism-menu-enter { animation: prism-menu-in var(--motion-fast) var(--motion-ease); }
+[role="menu"]:not(.prism-menu-enter) { animation: prism-fade-in var(--motion-fast) ease-out; }
 .workspace-mobile-drawer[open] { animation: prism-fade-in var(--motion-fast) ease-out; }
 .workspace-mobile-drawer[open] > div { animation: drawer-in-left var(--motion-slow) var(--motion-ease); }
 .workspace-mobile-drawer[data-side="right"][open] > div { animation-name: drawer-in-right; }
 @media (prefers-reduced-motion: reduce) {
-  .prism-menu-enter, [role="menu"], [role="listbox"].prism-popover,
+  .prism-menu-enter, [role="menu"],
   .workspace-mobile-drawer[open], .workspace-mobile-drawer[open] > div { animation: none; }
 }
 :root.reduce-motion .prism-menu-enter, :root.reduce-motion [role="menu"],
@@ -68,6 +68,14 @@
 .sidebar-peek-zone {
   position: absolute; top: 0; bottom: 0; left: 0; width: 10px; z-index: 40;
 }
+/* Keyboard entry to the peek: invisible until focused. */
+.sidebar-peek-trigger {
+  position: absolute; top: 8px; left: 8px; z-index: 42; white-space: nowrap;
+  padding: 6px 10px; border-radius: 6px; font-size: 12px;
+  background: var(--bg-elevated); color: var(--text-primary); border: 1px solid var(--glass-border);
+  opacity: 0; pointer-events: none;
+}
+.sidebar-peek-trigger:focus-visible { opacity: 1; pointer-events: auto; outline: 2px solid var(--focus-ring); }
 .sidebar-peek {
   position: absolute; top: 8px; bottom: 8px; left: 0; z-index: 41;
   width: min(300px, 80vw); overflow: hidden;

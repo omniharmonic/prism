@@ -33,7 +33,7 @@ import { searchApi } from "./search";
 import { stampJsonBody, stampMetadata, stripIdentity } from "../writer-stamp";
 import { graphNeighborhood } from "../graph";
 import { buildWikilinkIndex, resolveWikilink, noteLinkTitle } from "@prism/core/wikilinks";
-import { isTrashed, isLocked, isOwnerOnlyMeta, TRASH_TAG, TRASH_META, LOCK_KEY, ORDER_KEY } from "@prism/core/pages";
+import { isTrashed, isLocked, isOwnerOnlyMeta, TRASH_TAG, TRASH_META, LOCK_KEY, ORDER_KEY, PAGE_STYLE_KEY } from "@prism/core/pages";
 import { createPagesApi } from "../pages";
 import { notificationsRoutes, restMentionHook } from "./notifications";
 
@@ -528,7 +528,7 @@ api.post("/notes", async (c) => {
   // Owner-only keys (creator/visibility/trash state, lock) and the trash tag are never
   // accepted from a non-owner create (review H3/M1).
   // Narrowing is safe: a non-owner may create a note as private (e.g. a private task).
-  const metadata = Object.fromEntries(Object.entries(body.metadata ?? {}).filter(([k, v]) => (k === "prism_visibility" ? v === "private" : !isOwnerOnlyMeta(k) && k !== LOCK_KEY && k !== ORDER_KEY)));
+  const metadata = Object.fromEntries(Object.entries(body.metadata ?? {}).filter(([k, v]) => (k === "prism_visibility" ? v === "private" : !isOwnerOnlyMeta(k) && k !== LOCK_KEY && k !== ORDER_KEY && k !== PAGE_STYLE_KEY)));
   if (subject) metadata.prism_creator = subject;
   Object.assign(metadata, stampMetadata(undefined, actor));
   body.tags = (body.tags ?? []).filter((t) => t !== TRASH_TAG);
@@ -576,7 +576,8 @@ api.patch("/notes/:id", async (c) => {
     // never (re)assign the creator — a no-op restatement of either is fine.
     if (k === "prism_visibility") return !(meta[k] === "private" && noteRef.creator === subjectNow) && meta[k] !== note.metadata?.[k];
     if (k === "prism_creator") return meta[k] !== note.metadata?.[k];
-    return isOwnerOnlyMeta(k) || k === LOCK_KEY || k === ORDER_KEY;
+    // The page style has its own validated route (POST /notes/:id/meta).
+    return isOwnerOnlyMeta(k) || k === LOCK_KEY || k === ORDER_KEY || k === PAGE_STYLE_KEY;
   };
   if (Object.keys(meta).some(forbiddenKey)) {
     return c.json({ error: "forbidden", reason: "That property can only be changed through its own control." }, 403);

@@ -6,7 +6,7 @@ import { useVaultTree } from "../../app/hooks/useParachute";
 import { useUIStore } from "../../app/stores/ui";
 import { useAgentChatStore } from "../../lib/agent/chatStore";
 import { inferContentType } from "../../lib/schemas/content-types";
-import { buildSnippet, plainText, queryTerms } from "../../lib/search/match";
+import { buildSnippet, contentWindow, plainText, queryTerms } from "../../lib/search/match";
 import { isVaultNoteId } from "../../lib/noteIdentity";
 import { isTrashed } from "../../lib/pages/model";
 import "./backlinks.css";
@@ -44,7 +44,8 @@ export function BacklinksPill({ noteId, title }: { noteId: string; title: string
       return Object.fromEntries(await Promise.all(sources.slice(0, MAX_LISTED).map(async (id) => {
         try {
           const note = await client.getNote(id);
-          return [id, buildSnippet(plainText(note.content ?? ""), terms.length ? terms : [title.toLowerCase()], 140).snippet] as const;
+          const words = terms.length ? terms : [title.toLowerCase()];
+          return [id, buildSnippet(plainText(contentWindow(note.content ?? "", words)), words, 140).snippet] as const;
         } catch {
           return [id, ""] as const;
         }

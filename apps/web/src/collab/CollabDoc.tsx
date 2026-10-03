@@ -149,7 +149,10 @@ function ScopedCollabDoc({
     const key = `collab:${noteId}`;
     reportSyncSource(key, connected
       ? (unsynced > 0 ? "saving" : "idle")
-      : localSave === "unavailable" ? "failed" : localSave === "saved" && unsynced > 0 ? "local" : "idle");
+      // Socket down with edits the server hasn't taken: never "Saved". They are on
+      // this device (local), still being written locally (saving), or at risk (failed).
+      : unsynced > 0 ? (localSave === "unavailable" ? "failed" : localSave === "saved" ? "local" : "saving")
+        : localSave === "unavailable" ? "failed" : "idle");
     return () => reportSyncSource(key, null);
   }, [noteId, connected, unsynced, localSave]);
   const [level, setLevel] = useState<string | null>(null);

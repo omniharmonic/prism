@@ -112,12 +112,19 @@ function ShellLayout() {
           </>
         )}
 
+        {/* The pinned sidebar and the peek are mutually exclusive, so there is only
+            ever ONE <Navigation/> mounted on desktop. Keyboard: the first tab stop
+            after the skip link opens the peek and moves focus into it. */}
         {!isMobile && !sidebarOpen && (
-          <div key="sidebar-peek-zone" className="sidebar-peek-zone" data-testid="sidebar-peek-zone" aria-hidden onMouseEnter={peek.enter} onMouseLeave={peek.leave} />
+          <div key="sidebar-peek-zone" className="sidebar-peek-zone" data-testid="sidebar-peek-zone" onMouseEnter={peek.enter} onMouseLeave={peek.leave}>
+            <button ref={peek.trigger} type="button" className="sidebar-peek-trigger" aria-expanded={peek.open} aria-controls="sidebar-peek" onClick={peek.toggle}>
+              {peek.open ? "Hide sidebar preview" : "Show sidebar preview"}
+            </button>
+          </div>
         )}
         {!isMobile && !sidebarOpen && peek.open && (
-          <div key="sidebar-peek" className="sidebar-peek" role="complementary" aria-label="Sidebar preview"
-            onMouseEnter={peek.enter} onMouseLeave={peek.leave}>
+          <div key="sidebar-peek" id="sidebar-peek" ref={peek.panel} className="sidebar-peek" role="complementary" aria-label="Sidebar preview" tabIndex={-1}
+            onMouseEnter={peek.enter} onMouseLeave={peek.leave} onBlur={peek.blur}>
             <Navigation />
           </div>
         )}
@@ -258,22 +265,47 @@ function ResizeHandle({
 function useSidebarPeek(enabled: boolean) {
   const [open, setOpen] = useState(false);
   const timer = useRef<number | undefined>(undefined);
+  const trigger = useRef<HTMLButtonElement>(null);
+  const panel = useRef<HTMLDivElement>(null);
+  /** Opened from the keyboard: stays until Esc / focus leaves (mouse-out doesn't close it). */
+  const pinned = useRef(false);
   const activeTabId = useUIStore((s) => s.activeTabId);
   const clear = () => { if (timer.current !== undefined) window.clearTimeout(timer.current); timer.current = undefined; };
+  const close = useCallback((refocus: boolean) => {
+    clear();
+    const hadFocus = !!panel.current?.contains(document.activeElement);
+    pinned.current = false;
+    setOpen(false);
+    if (refocus && hadFocus) trigger.current?.focus();
+  }, []);
   const enter = useCallback(() => { clear(); timer.current = window.setTimeout(() => setOpen(true), 80); }, []);
-  const leave = useCallback(() => { clear(); timer.current = window.setTimeout(() => setOpen(false), 220); }, []);
-  useEffect(() => { if (!enabled) { clear(); setOpen(false); } }, [enabled]);
-  useEffect(() => { setOpen(false); }, [activeTabId]);
+  const leave = useCallback(() => { clear(); if (!pinned.current) timer.current = window.setTimeout(() => setOpen(false), 220); }, []);
+  const toggle = useCallback(() => {
+    clear();
+    if (pinned.current) { close(true); return; }
+    pinned.current = true;
+    setOpen(true);
+  }, [close]);
+  const blur = useCallback((event: React.FocusEvent) => {
+    const next = event.relatedTarget as Node | null;
+    if (pinned.current && next && !panel.current?.contains(next) && next !== trigger.current) close(false);
+  }, [close]);
+  // Keyboard open: move focus into the preview once it exists.
+  useEffect(() => {
+    if (open && pinned.current) (panel.current?.querySelector<HTMLElement>("button, [href], input, [tabindex]:not([tabindex='-1'])") ?? panel.current)?.focus();
+  }, [open]);
+  useEffect(() => { if (!enabled) { clear(); pinned.current = false; setOpen(false); } }, [enabled]);
+  useEffect(() => { pinned.current = false; setOpen(false); }, [activeTabId]);
   // Listen for the whole time the peek is possible (not only once it opened), so
   // an Esc in the first frame after it appears is never missed.
   useEffect(() => {
     if (!enabled) return;
-    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") { clear(); setOpen(false); } };
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") close(true); };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [enabled]);
+  }, [enabled, close]);
   useEffect(() => clear, []);
-  return { open: enabled && open, enter, leave };
+  return { open: enabled && open, enter, leave, toggle, blur, trigger, panel };
 }
 
 /**
@@ -295,6 +327,11 @@ function useEdgeSwipe(enabled: boolean): boolean {
       if (e.touches.length !== 1 || !t || t.clientX > EDGE_PX) { start = null; return; }
       const target = e.target as Element | null;
       if (target?.closest?.("dialog[open], [role=dialog], [data-no-edge-swipe]")) { start = null; return; }
+      // A table, board, code block or any other sideways scroller owns its own
+      // horizontal drag — even when it starts at the screen edge.
+      for (let node: Element | null = target; node && node !== document.body; node = node.parentElement) {
+        if (node.scrollWidth > node.clientWidth + 1 && /(auto|scroll)/.test(getComputedStyle(node).overflowX)) { start = null; return; }
+      }
       start = { x: t.clientX, y: t.clientY };
       tracking = true;
       setActive(true);

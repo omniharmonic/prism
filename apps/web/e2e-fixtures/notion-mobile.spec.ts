@@ -33,6 +33,18 @@ test("edge swipe goes back, else opens the drawer; mid-screen swipes are left to
   await swipe(page, 6, 220);
   await expect.poll(() => page.evaluate(() => { const s = (window as any).prismShellUI.getState(); return s.openTabs.find((t: any) => t.id === s.activeTabId)?.noteId; })).toBe("workspace");
   await expect(drawer).toHaveCount(0);
+  // A sideways scroller that reaches the screen edge keeps its own drag.
+  await page.evaluate(() => {
+    const scroller = document.createElement("div");
+    scroller.id = "wide";
+    scroller.style.cssText = "position:fixed;left:0;top:380px;width:200px;height:80px;overflow-x:auto;z-index:5";
+    scroller.innerHTML = '<div style="width:900px;height:60px"></div>';
+    document.body.append(scroller);
+  });
+  await swipe(page, 6, 220);
+  await page.waitForTimeout(200);
+  expect(await page.evaluate(() => { const s = (window as any).prismShellUI.getState(); return s.openTabs.find((t: any) => t.id === s.activeTabId)?.noteId; })).toBe("workspace");
+  await expect(drawer).toHaveCount(0);
 });
 
 test("keyboard toolbar complete", async ({ page }, info) => {

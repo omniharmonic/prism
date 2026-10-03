@@ -80,6 +80,9 @@ export function deriveSyncStatus(s: Pick<SyncStore, "online" | "inFlight" | "dir
   if (s.inFlight > 0 || Object.keys(s.dirty).length > 0 || sources.includes("saving")) {
     return { kind: "saving", label: "Saving…", footer: "Saving…" };
   }
+  // A live document whose socket is down while the browser thinks it is online
+  // is, for the user, offline: its edits are on this device only.
+  if (sources.includes("local")) return { kind: "local", label: "Offline · changes saved on this device", footer: "Offline · saved on this device" };
   if (local) return { kind: "waiting", label: "Waiting for server", footer: "Waiting for server" };
   return { kind: "saved", label: "Saved", footer: "Synced" };
 }

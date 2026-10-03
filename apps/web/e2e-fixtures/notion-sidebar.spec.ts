@@ -24,3 +24,24 @@ test("collapsed sidebar peeks on edge hover", async ({ page }, info) => {
   await page.keyboard.press("ControlOrMeta+b");
   await expect(page.getByTestId("sidebar-peek-zone")).toHaveCount(0);
 });
+
+test("the sidebar peek is reachable and dismissible from the keyboard", async ({ page }) => {
+  await page.goto("/e2e-fixtures/notion-shell.html?collapsed");
+  await expect(page.locator(".tiptap[contenteditable=true]")).toBeVisible();
+  const trigger = page.getByRole("button", { name: "Show sidebar preview" });
+  await trigger.focus();
+  await expect(trigger).toBeVisible();
+  await page.keyboard.press("Enter");
+  const peek = page.getByRole("complementary", { name: "Sidebar preview" });
+  await expect(peek).toBeVisible();
+  expect(await peek.evaluate((node) => node.contains(document.activeElement))).toBe(true);
+  // Mouse-out does not take a keyboard-opened preview away.
+  await page.mouse.move(900, 400);
+  await page.waitForTimeout(350);
+  await expect(peek).toBeVisible();
+  // Only one navigation exists at a time.
+  await expect(page.locator(".workspace-navigation")).toHaveCount(1);
+  await page.keyboard.press("Escape");
+  await expect(peek).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Show sidebar preview" })).toBeFocused();
+});

@@ -404,7 +404,8 @@ export async function removeTags(id: string, tags: string[]): Promise<void> {
 export async function getLinks(noteId?: string, relationship?: string): Promise<VaultLink[]> {
   if (!noteId) return [];
   const note = await (
-    await req(`/notes/${encodeURIComponent(noteId)}${qs({ include_links: true })}`)
+    // Lean: the links, not a second copy of the body (an older vault ignores the flag).
+    await req(`/notes/${encodeURIComponent(noteId)}${qs({ include_links: true, include_content: false })}`)
   ).json();
   const links: VaultLink[] = Array.isArray(note?.links) ? note.links : [];
   return relationship ? links.filter((l) => l.relationship === relationship) : links;

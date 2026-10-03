@@ -48,6 +48,7 @@ import {
   ORDER_KEY,
   PAGE_STYLE_KEY,
   parsePageStyle,
+  pageStyleOf,
   isLocked,
   PREFERENCE_LIMITS,
   EMPTY_PREFERENCES,
@@ -455,10 +456,11 @@ export function createPagesApi(opts: PagesApiOptions = {}) {
     if (LOCK_KEY in set && typeof set[LOCK_KEY] !== "boolean") return c.json({ error: "bad_request" }, 400);
     if (ORDER_KEY in set && (typeof set[ORDER_KEY] !== "number" || !Number.isFinite(set[ORDER_KEY] as number))) return c.json({ error: "bad_request" }, 400);
     // Per-page style (wave 2E, NP-PG-08): presentation only, needs `edit`; stored normalised.
+    let stylePatch: { small?: boolean; full?: boolean } | null = null;
     if (PAGE_STYLE_KEY in set) {
       const style = parsePageStyle(set[PAGE_STYLE_KEY]);
       if (!style) return c.json({ error: "bad_request", reason: `${PAGE_STYLE_KEY} is {small?: boolean, full?: boolean}` }, 400);
-      set[PAGE_STYLE_KEY] = style;
+      stylePatch = style;
     }
     const needsOrganize = LOCK_KEY in set || ORDER_KEY in set;
     const entry = entryFor(c, actor);
@@ -470,7 +472,12 @@ export function createPagesApi(opts: PagesApiOptions = {}) {
     }
     if (!canView(actor, noteRef(note))) return c.json({ error: "forbidden" }, 403);
     if (needsOrganize && !canOrganize(actor, noteRef(note))) return c.json({ error: "forbidden", reason: "Changing this needs organize access to the page." }, 403);
-    if (!needsOrganize && !(isAdmin(actor) || capsOf(actor, noteRef(note)).has("edit"))) return c.json({ error: "forbidden", reason: "Changing the page style needs edit access." }, 403);
+    // Each key is checked on its own: style + lock/order in one request needs edit AND organize.
+    if (stylePatch && !(isAdmin(actor) || capsOf(actor, noteRef(note)).has("edit"))) return c.json({ error: "forbidden", reason: "Changing the page style needs edit access." }, 403);
+    if (stylePatch) {
+      const current = pageStyleOf(note);
+      set[PAGE_STYLE_KEY] = { small: stylePatch.small ?? current.small === true, full: stylePatch.full ?? current.full === true };
+    }
     if (PAGE_STYLE_KEY in set && isLocked(note)) return c.json({ error: "locked", reason: "This page is locked." }, 423);
     if (typeof body!.if_updated_at !== "string") return c.json({ error: "precondition_required" }, 428);
     try {

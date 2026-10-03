@@ -368,15 +368,19 @@ export const PAGE_STYLE_KEY = "prism_page_style";
 export interface PageStyle { small?: boolean; full?: boolean }
 
 /** Strict: an object holding only boolean `small`/`full`; anything else → null.
- *  Both keys always come back as booleans: the vault MERGES nested metadata, so
- *  turning a flag off must write an explicit `false`. */
+ *  Returns just the keys given (a PATCH). The server merges it onto the stored
+ *  style and writes BOTH keys as explicit booleans — the vault merges nested
+ *  metadata, so turning a flag off must be stored as `false`. */
 export function parsePageStyle(value: unknown): PageStyle | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const v = value as Record<string, unknown>;
   const keys = Object.keys(v);
   if (keys.some((k) => k !== "small" && k !== "full")) return null;
   if (keys.some((k) => typeof v[k] !== "boolean")) return null;
-  return { small: v.small === true, full: v.full === true };
+  const out: PageStyle = {};
+  if (typeof v.small === "boolean") out.small = v.small;
+  if (typeof v.full === "boolean") out.full = v.full;
+  return out;
 }
 
 export function pageStyleOf(note: { metadata?: Record<string, unknown> | null } | null | undefined): PageStyle {
