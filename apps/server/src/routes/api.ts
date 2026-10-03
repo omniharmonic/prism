@@ -34,6 +34,7 @@ import { consumeRateLimit } from "../middleware/ratelimit";
 import { redactVersionForViewer, stripWriterMeta, changeValue, creatorNameFor, CHANGE_KEY, WRITER_META_KEYS, createCapsAt, forViewer } from "../sharing";
 import { writerNames, WRITER_AT_KEY } from "../writer-stamp";
 import { attachmentsApi } from "./attachments";
+import { blocksApi } from "./blocks";
 import { ingestKeyChanged } from "../ingest-keys";
 import { searchApi } from "./search";
 import { stampJsonBody, stampMetadata, stripIdentity } from "../writer-stamp";
@@ -255,6 +256,7 @@ api.use("/databases/*", async (c, next) => { await next(); if (c.req.method !== 
 api.route("/", databasesApi);
 // Attachments (upload/serve via vault storage) + link previews; before the owner passthrough.
 api.route("/", attachmentsApi);
+api.route("/", blocksApi); // POST /notes/:id/blocks/append ("Move to" a page, through the live doc when open; wave 4A)
 api.route("/", searchApi); // GET /search (all actors; filters + match offsets, wave 2E) — before the owner short-circuit
 // Notifications inbox, reminders, access requests (wave 2A): before the owner passthrough.
 api.route("/", notificationsRoutes);
@@ -354,9 +356,49 @@ api.get("/events", async (c) => {
 export const EDITOR_SCHEMA_HEADER = "x-prism-editor-schema";
 // v2 (callout/toggle/columns/colours), v3 (mention), v4 (attachment/embed/bookmark/toc/database blocks, image align/caption),
 // v5 (child-page rows, toggle headings, column widths, table cell colours — 4–5 columns are caught by the columns marker).
-const SCHEMA_MARKERS = /data-type="(?:callout|toggle|columns|column|mention|attachment|embed|bookmark|toc|child-page)"|data-prism-database=|<details[\s>]|data-block-color=|data-text-color=|data-align=|data-caption=|data-heading-level=|data-col-width=|data-cell-color=/;
+const MARKER_TYPES = new Set(["callout", "toggle", "columns", "column", "mention", "attachment", "embed", "bookmark", "toc", "child-page"]);
+const MARKER_ATTRS = ["data-prism-database", "data-block-color", "data-text-color", "data-align", "data-caption", "data-heading-level", "data-col-width", "data-cell-color"];
+const isWs = (c: number) => c === 32 || c === 9 || c === 10 || c === 13 || c === 12;
+/** After an attribute NAME at `i`: the value following `=` (whitespace and either quote style tolerated), or null when no `=`. */
+function attrValueAt(s: string, i: number): string | null {
+  while (i < s.length && isWs(s.charCodeAt(i))) i++;
+  if (s[i] !== "=") return null;
+  i++;
+  while (i < s.length && isWs(s.charCodeAt(i))) i++;
+  const q = s[i];
+  if (q === '"' || q === "'") {
+    const end = s.indexOf(q, i + 1);
+    return end === -1 ? s.slice(i + 1, i + 65) : s.slice(i + 1, Math.min(end, i + 65));
+  }
+  let end = i;
+  while (end < s.length && end < i + 64 && !isWs(s.charCodeAt(end)) && s[end] !== ">") end++;
+  return s.slice(i, end);
+}
+/**
+ * Does the stored body hold content an older editor schema cannot represent?
+ * A linear scan (indexOf per marker, no regex over the body) that reads HTML the
+ * way a parser does: attribute names in any case, single or double quotes or
+ * none, whitespace around `=` — an exact-string test let `data-type = 'callout'`
+ * through and a stale editor then deleted the block.
+ */
 export function needsEditorUpdate(storedContent: string | null | undefined): boolean {
-  return SCHEMA_MARKERS.test(storedContent ?? "");
+  const raw = storedContent ?? "";
+  if (raw.indexOf("<") === -1) return false;
+  const s = raw.toLowerCase();
+  for (let i = s.indexOf("data-type"); i !== -1; i = s.indexOf("data-type", i + 9)) {
+    const v = attrValueAt(s, i + 9);
+    if (v !== null && MARKER_TYPES.has(v.trim())) return true;
+  }
+  for (const name of MARKER_ATTRS) {
+    for (let i = s.indexOf(name); i !== -1; i = s.indexOf(name, i + name.length)) {
+      if (attrValueAt(s, i + name.length) !== null) return true;
+    }
+  }
+  for (let i = s.indexOf("<details"); i !== -1; i = s.indexOf("<details", i + 8)) {
+    const c = s.charCodeAt(i + 8);
+    if (Number.isNaN(c) || isWs(c) || c === 62 /* > */ || c === 47 /* / */) return true;
+  }
+  return false;
 }
 api.use("/notes/:id", async (c, next) => {
   const method = c.req.method;

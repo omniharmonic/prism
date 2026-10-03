@@ -14,6 +14,7 @@ const notes: Note[] = [
   { id: "roadmap", path: "Projects/Prism/Roadmap", content: "<p>Roadmap</p>", tags: [], metadata: { type: "document" }, createdAt: date, updatedAt: date },
 ];
 const writes: Array<{ id: string; content?: string; ifUpdatedAt?: string }> = [];
+const copies: string[] = [];
 const uploads: Array<{ noteId: string; name: string; type: string; size: number }> = [];
 const controls = { failMove: false, failUpload: false, hold: null as null | Promise<void>, release: () => {} };
 const client = {
@@ -29,6 +30,13 @@ const client = {
     Object.assign(note, changes, { updatedAt: new Date().toISOString() });
     return note;
   },
+  ...(params.has("copy") ? {
+    copyAttachments: async (noteId: string) => {
+      copies.push(noteId);
+      if (params.get("copy") === "fail") throw new Error("POST /attachments/copy failed: 409");
+      return { copied: 1, failed: 0, skipped: 0, errors: 0, more: false };
+    },
+  } : {}),
   ...(params.has("upload") ? {
     uploadAttachment: async (noteId: string, file: File) => {
       await new Promise((r) => setTimeout(r, 30)); // a real round-trip is async
@@ -43,6 +51,7 @@ Object.assign(window, {
   prismHoldUploads: () => { controls.hold = new Promise<void>((r) => { controls.release = () => { controls.hold = null; r(); }; }); },
   prismBlockWrites: writes,
   prismBlockUploads: uploads,
+  prismBlockCopies: copies,
   prismBlockControls: controls,
   prismEditor: () => (document.querySelector(".tiptap") as unknown as { editor: unknown })?.editor,
 });

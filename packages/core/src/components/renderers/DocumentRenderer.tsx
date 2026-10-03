@@ -37,7 +37,7 @@ import { PageCover } from "./PageCover";
 import { COVER_GRADIENTS, coverPatch, parseCover, type PageCover as Cover } from "../../lib/media/attachments";
 import { useVaultClient } from "../../data/VaultClientContext";
 import { ChildPages } from "../../lib/tiptap/childPage";
-import { createSubPage } from "../../lib/tiptap/subPages";
+import { createSubPage, describeSubPage } from "../../lib/tiptap/subPages";
 import { trashPage } from "../../lib/pages/ops";
 import { useQueryClient } from "@tanstack/react-query";
 import { EditorFindBar } from "./EditorFindBar";
@@ -172,6 +172,7 @@ export default function DocumentRenderer({ note, onMetadataChange, readOnly }: R
   const childPages = useMemo(() => ChildPages.configure(canSubPage ? {
     hostPath: () => pathRef.current,
     create: () => createSubPage(subPagesRef.current.client, subPagesRef.current.queryClient, pathRef.current ?? ""),
+    describe: describeSubPage(() => subPagesRef.current.client),
     trash: (id: string) => trashPage(subPagesRef.current.client, id).then(() => void subPagesRef.current.queryClient.invalidateQueries({ queryKey: ["vault"] })),
   } : {}), [canSubPage]);
 
@@ -275,6 +276,10 @@ export default function DocumentRenderer({ note, onMetadataChange, readOnly }: R
     extensions,
     content: initialHtml || "",
     editable: !notEditable,
+    // Pasted text is converted to Markdown blocks by ONE rule (EditorKeys / markdownClipboard:
+    // enough evidence, not program source). TipTap's per-mark paste rules would still turn
+    // `__init__` or a lone `*x*` in pasted text into bold/italic.
+    enablePasteRules: false,
     editorProps: {
       attributes: {
         class: "prose-editor outline-none min-h-[200px]",

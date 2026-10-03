@@ -25,8 +25,31 @@ const identityHtml = (attrs: Record<string, unknown>) => ({
   ...(attrs.turnId ? { "data-turn-id": attrs.turnId } : {}),
 });
 
+/**
+ * A suggestion renders with `text-decoration:underline|line-through` so plain HTML
+ * readers see it — and the underline/strike marks parse exactly that style, so
+ * every re-seed of stored HTML added a real <u>/<s> under the suggestion (not
+ * round-trip stable). ProseMirror style rules cannot see the element, so the
+ * suggestion's own `text-decoration-color` (which it always writes) is the
+ * signal: this rule runs LAST (lowest priority) and clears those two marks.
+ */
+/**
+ * Suggestion marks rank BEFORE the formatting marks, so their <span> renders
+ * OUTSIDE <s>/<u>/<strong>…: on parse the span's style is read first (and cleared),
+ * and a real <s>/<u> inside it is then added by its own tag — real formatting
+ * under a suggestion survives, and the output is byte-stable.
+ */
+const SUGGESTION_PRIORITY = 1200;
+const WINS_OVER_DECORATION = {
+  style: "text-decoration-color",
+  priority: 1,
+  consuming: false,
+  clearMark: (mark: { type: { name: string } }) => mark.type.name === "strike" || mark.type.name === "underline",
+};
+
 export const InsertionMark = Mark.create({
   name: "insertion",
+  priority: SUGGESTION_PRIORITY,
   inclusive: true,
   addAttributes() {
     return {
@@ -36,7 +59,7 @@ export const InsertionMark = Mark.create({
     };
   },
   parseHTML() {
-    return [{ tag: "span[data-suggestion='insert']" }];
+    return [{ tag: "span[data-suggestion='insert']" }, WINS_OVER_DECORATION];
   },
   renderHTML({ mark }) {
     const color = (mark.attrs.color as string) || "#22c55e";
@@ -56,6 +79,7 @@ export const InsertionMark = Mark.create({
 
 export const DeletionMark = Mark.create({
   name: "deletion",
+  priority: SUGGESTION_PRIORITY,
   inclusive: true,
   addAttributes() {
     return {
@@ -65,7 +89,7 @@ export const DeletionMark = Mark.create({
     };
   },
   parseHTML() {
-    return [{ tag: "span[data-suggestion='delete']" }];
+    return [{ tag: "span[data-suggestion='delete']" }, WINS_OVER_DECORATION];
   },
   renderHTML({ mark }) {
     const color = (mark.attrs.color as string) || "#ef4444";

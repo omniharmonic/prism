@@ -24,6 +24,9 @@ import { isTrashed } from "../pages/model";
 import { noteLinkTitle } from "../wikilinks";
 import { inferContentType } from "../schemas/content-types";
 import { structuralEditsAllowed } from "./blockCommands";
+import { editorNotice } from "./notice";
+import { SubPageError } from "./subPages";
+import { parentOf } from "../pages/model";
 
 const PAGE_ID = /^[A-Za-z0-9_-]{1,128}$/;
 /** Fired on `window` when a page was created somewhere in the app: `{ id, parentPath }`. */
@@ -81,6 +84,8 @@ export interface ChildPagesOptions {
   hostPath?: () => string | null | undefined;
   /** Move a page to Trash (offered when its row is deleted). Omitted → no offer. */
   trash?: (pageId: string) => Promise<unknown>;
+  /** The page behind a row, read with the DELETER's own access (null = they cannot view it). Needed for the Trash offer. */
+  describe?: (pageId: string) => Promise<{ title: string; path: string | null } | null>;
 }
 
 const options = (editor: Editor | null) =>
@@ -119,7 +124,12 @@ export async function createChildPage(editor: Editor): Promise<boolean> {
   editor.on("transaction", track);
   try {
     const id = await create();
+    // Never a temporary offline id in a document (review M2).
+    if (id && id.startsWith("offline-")) throw new SubPageError("Creating a page here needs a connection. Nothing was added.");
     return !!id && insertChildPageBlock(editor, id, pos);
+  } catch (e) {
+    editorNotice(e instanceof SubPageError ? e.message : "Couldn’t create a page here.");
+    return false;
   } finally {
     editor.off("transaction", track);
   }
@@ -133,14 +143,24 @@ function childPageIds(doc: PMNode): Set<string> {
 
 const removalKey = new PluginKey("childPageRemoval");
 
-/** A small standing offer after a row was deleted. Names no page (the reader may not see its title). */
-function offerTrash(editor: Editor, ids: string[], trash: (id: string) => Promise<unknown>): () => void {
+/**
+ * "Move to another page" removes a row here because it now lives THERE: the next
+ * local removal in this editor is not a deletion and must not offer Trash.
+ */
+export function suppressTrashOffer(editor: Editor): void {
+  const storage = (editor.storage as unknown as Record<string, { suppressUntil?: number } | undefined>).childPages;
+  if (storage) storage.suppressUntil = Date.now() + 1000;
+}
+
+/** A small standing offer after a sub-page's row was deleted. */
+function offerTrash(editor: Editor, pages: Array<{ id: string; title: string }>, trash: (id: string) => Promise<unknown>): () => void {
   const el = document.createElement("div");
   el.className = "prism-child-page-prompt";
   el.setAttribute("role", "alertdialog");
   el.setAttribute("aria-label", "Sub-page link removed");
   const text = document.createElement("span");
-  text.textContent = ids.length === 1 ? "The link is removed. Move the sub-page to Trash too?" : `${ids.length} links removed. Move those sub-pages to Trash too?`;
+  // The deleter can view these pages (that is how their titles were read).
+  text.textContent = pages.length === 1 ? `The link is removed. Move “${pages[0].title}” to Trash too?` : `${pages.length} links removed. Move those sub-pages to Trash too?`;
   const yes = document.createElement("button");
   yes.type = "button";
   yes.className = "is-danger";
@@ -157,7 +177,7 @@ function offerTrash(editor: Editor, ids: string[], trash: (id: string) => Promis
     no.disabled = true;
     // Only pages still absent from the document (an undo may have brought a row back).
     const present = editor.isDestroyed ? new Set<string>() : childPageIds(editor.state.doc);
-    void Promise.allSettled(ids.filter((id) => !present.has(id)).map((id) => trash(id))).then((results) => {
+    void Promise.allSettled(pages.filter((p) => !present.has(p.id)).map((p) => trash(p.id))).then((results) => {
       const failed = results.filter((r) => r.status === "rejected").length;
       text.textContent = failed ? "That page could not be moved to Trash." : "Moved to Trash.";
       yes.remove();
@@ -175,7 +195,7 @@ function offerTrash(editor: Editor, ids: string[], trash: (id: string) => Promis
 export const ChildPages = Extension.create<ChildPagesOptions>({
   name: "childPages",
   addOptions() {
-    return { create: undefined, hostPath: undefined, trash: undefined };
+    return { create: undefined, hostPath: undefined, trash: undefined, describe: undefined };
   },
   onCreate() {
     const editor = this.editor;
@@ -198,13 +218,13 @@ export const ChildPages = Extension.create<ChildPagesOptions>({
     (this.storage as { closePrompt?: () => void }).closePrompt?.();
   },
   addStorage() {
-    return {} as { off?: () => void; closePrompt?: () => void };
+    return {} as { off?: () => void; closePrompt?: () => void; suppressUntil?: number };
   },
   addProseMirrorPlugins() {
     const editor = this.editor;
-    const trash = this.options.trash;
-    const storage = this.storage as { closePrompt?: () => void };
-    if (!trash) return [];
+    const { trash, describe, hostPath } = this.options;
+    const storage = this.storage as { closePrompt?: () => void; suppressUntil?: number };
+    if (!trash || !describe || !hostPath) return [];
     let pending: Set<string> = new Set();
     let timer: ReturnType<typeof setTimeout> | undefined;
     return [
@@ -212,8 +232,9 @@ export const ChildPages = Extension.create<ChildPagesOptions>({
         key: removalKey,
         appendTransaction(transactions, oldState, newState) {
           // Local deletions only: a collaborator's change (y-sync) or history replay is not this user's decision.
-          const local = transactions.filter((tr) => tr.docChanged && !tr.getMeta("y-sync$") && tr.getMeta("addToHistory") !== false);
-          if (!local.length) return null;
+          // A cut (⌘X) is a move in progress, and "Move to" put the row on another page: neither is a deletion.
+          const local = transactions.filter((tr) => tr.docChanged && !tr.getMeta("y-sync$") && tr.getMeta("addToHistory") !== false && tr.getMeta("uiEvent") !== "cut");
+          if (!local.length || (storage.suppressUntil ?? 0) > Date.now()) return null;
           let touched = false;
           for (const tr of local) for (const map of tr.mapping.maps) map.forEach((from, to) => { if (to > from) touched = true; });
           if (!touched) return null;
@@ -229,9 +250,19 @@ export const ChildPages = Extension.create<ChildPagesOptions>({
             const now = childPageIds(editor.state.doc);
             const gone = [...pending].filter((id) => !now.has(id));
             pending = new Set();
-            if (!gone.length) return;
-            storage.closePrompt?.();
-            storage.closePrompt = offerTrash(editor, gone, trash);
+            const host = hostPath();
+            if (!gone.length || !host) return;
+            // Offer only for pages that really are THIS page's direct sub-pages, read with the
+            // deleter's own access (unviewable → no offer, and so nothing to name).
+            void Promise.all(gone.map((id) => describe(id).then((p) => (p && p.path && parentOf(p.path) === host ? { id, title: p.title } : null), () => null))).then((found) => {
+              const pages = found.filter((p): p is { id: string; title: string } => !!p);
+              if (!pages.length || editor.isDestroyed) return;
+              const still = childPageIds(editor.state.doc);
+              const offer = pages.filter((p) => !still.has(p.id));
+              if (!offer.length) return;
+              storage.closePrompt?.();
+              storage.closePrompt = offerTrash(editor, offer, trash);
+            });
           }, 250);
           return null;
         },

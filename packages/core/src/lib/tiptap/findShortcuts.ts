@@ -19,7 +19,21 @@ export function requestFindInPage(): void {
   window.dispatchEvent(new CustomEvent(FIND_IN_PAGE_EVENT));
 }
 
-/** Kept-alive tabs leave hidden editors mounted; only a visible one answers. */
+/**
+ * Which editor answers a find request: it must be on screen (kept-alive tabs leave
+ * hidden editors mounted), and when focus sits in ANOTHER editor (a row peek over
+ * the page, two live documents side by side) that one answers instead.
+ *
+ * Contract for shells: `window.dispatchEvent(new CustomEvent("prism:find-in-page"))`
+ * (or `requestFindInPage()`) opens the find bar of the focused editor, else of the
+ * editor on screen. No detail, no response.
+ */
 export function editorIsOnScreen(el: HTMLElement | null): boolean {
-  return !!el && el.isConnected && el.getClientRects().length > 0;
+  if (!el || !el.isConnected || el.getClientRects().length === 0) return false;
+  const active = typeof document !== "undefined" ? document.activeElement : null;
+  const focusedEditor = active?.closest?.(".tiptap") ?? null;
+  if (focusedEditor && !el.contains(focusedEditor) && focusedEditor !== el) return false;
+  // With several on screen and none focused, the top-most layer (a peek) wins.
+  if (!focusedEditor && !el.closest(".db-peek") && document.querySelector(".db-peek .tiptap")) return false;
+  return true;
 }

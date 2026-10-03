@@ -655,18 +655,57 @@ test("child page block appears in parent body", async ({ page }) => {
   await expect(ghost).toHaveText("No access");
   await expect(page.locator(".tiptap .prism-child-page")).toHaveCount(2);
   if (SHOTS) await page.screenshot({ path: `${SHOTS}/child-page-rows.png` });
-  // Deleting a row offers to move that page to Trash (it names no page); Keep leaves it alone.
-  const removeRow = (id: string) => page.evaluate((id) => {
-    const editor = (document.querySelector(".tiptap") as any).editor;
-    let at = -1;
-    editor.state.doc.descendants((n: any, pos: number) => { if (n.type.name === "childPage" && n.attrs.pageId === id) at = pos; });
-    editor.chain().focus().setNodeSelection(at).run();
-  }, id);
-  await removeRow("db1");
-  await page.keyboard.press("Backspace");
+  // Rows for pages that are NOT this page's own sub-pages (a linked page elsewhere, a page the reader
+  // cannot see) are just removed: no Trash offer (review M4).
+  const selectRow = async (id: string) => {
+    // Focus first and wait for it (TipTap's own .focus() is deferred a frame; a key pressed before it lands goes nowhere).
+    await page.locator(".tiptap").focus();
+    await expect(page.locator(".tiptap")).toBeFocused();
+    await page.evaluate((id) => {
+      const editor = (document.querySelector(".tiptap") as any).editor;
+      let at = -1;
+      editor.state.doc.descendants((n: any, pos: number) => { if (n.type.name === "childPage" && n.attrs.pageId === id) at = pos; });
+      editor.commands.setNodeSelection(at);
+    }, id);
+    await expect.poll(() => page.evaluate(() => (document.querySelector(".tiptap") as any).editor.state.selection.node?.attrs.pageId ?? null)).toBe(id);
+  };
   const offer = page.getByRole("alertdialog", { name: "Sub-page link removed" });
+  for (const id of ["db1", "ghost"]) {
+    await selectRow(id);
+    await page.keyboard.press("Backspace");
+    await expect(page.locator(`.tiptap [data-page-id="${id}"]`)).toHaveCount(0);
+  }
+  await page.waitForFunction(() => new Promise((r) => setTimeout(() => r(true), 600))); // past the offer's settle window
+  await expect(offer).toHaveCount(0);
+  // A real sub-page: created here with /page, so its path is directly under this page.
+  await page.locator(".tiptap").getByText("Top").click();
+  await page.keyboard.press("End");
+  await page.keyboard.press("Enter");
+  await page.keyboard.type("/page");
+  await page.getByRole("option", { name: /^Page Add a sub-page/ }).click();
+  const child = page.locator(".tiptap .prism-child-page[data-state=ready]");
+  await expect(child).toHaveCount(1);
+  const childId = (await child.getAttribute("data-page-id"))!;
+  // Cut (⌘X) is a move in progress, not a deletion: no offer.
+  await selectRow(childId);
+  await page.evaluate(() => {
+    const dt = new DataTransfer();
+    document.querySelector(".tiptap")!.dispatchEvent(new ClipboardEvent("cut", { clipboardData: dt, bubbles: true, cancelable: true }));
+  });
+  await expect(page.locator(".tiptap .prism-child-page")).toHaveCount(0);
+  await page.waitForFunction(() => new Promise((r) => setTimeout(() => r(true), 600)));
+  await expect(offer).toHaveCount(0);
+  // Put the row back (what a paste after the cut does).
+  await page.evaluate((id) => (document.querySelector(".tiptap") as any).editor.commands.insertContent({ type: "childPage", attrs: { pageId: id } }), childId);
+  await expect(child).toHaveCount(1);
+  // The editor groups changes made within 500 ms into one undo step; let that window close so the
+  // deletion below is its own step (this is the history's own constant, not a wait for the UI).
+  await page.waitForTimeout(650);
+  // Deleting the row offers Trash and NAMES the page (the deleter can view it); Keep leaves it alone.
+  await selectRow(childId);
+  await page.keyboard.press("Backspace");
   await expect(offer).toBeVisible();
-  await expect(offer).not.toContainText("Reading list");
+  await expect(offer).toContainText("Move “Untitled” to Trash too?");
   await offer.getByRole("button", { name: "Keep page" }).click();
   await expect(offer).toHaveCount(0);
   expect(await page.evaluate(() => (window as any).prismMediaTrashed)).toEqual([]);
@@ -674,22 +713,22 @@ test("child page block appears in parent body", async ({ page }) => {
   await page.locator(".tiptap").focus();
   await expect(page.locator(".tiptap")).toBeFocused();
   await page.keyboard.press("ControlOrMeta+z");
-  await expect(page.getByRole("button", { name: "Open sub-page: Reading list" })).toBeVisible();
-  await removeRow("db1");
+  await expect(child).toHaveCount(1);
+  await selectRow(childId);
   await page.keyboard.press("Backspace");
-  await page.getByRole("alertdialog", { name: "Sub-page link removed" }).getByRole("button", { name: "Move to Trash" }).click();
+  await offer.getByRole("button", { name: "Move to Trash" }).click();
   await expect(page.getByText("Moved to Trash.")).toBeVisible();
-  expect(await page.evaluate(() => (window as any).prismMediaTrashed)).toEqual(["db1"]);
+  expect(await page.evaluate(() => (window as any).prismMediaTrashed)).toEqual([childId]);
   // A page created inside this one elsewhere (tree +, "Add a page inside") gets its row too — once.
   await page.locator(".tiptap").getByText("Top").click();
   await page.evaluate(() => {
     const detail = { id: "b1", parentPath: "Projects/Prism/Field guide" };
     window.dispatchEvent(new CustomEvent("prism:page-created", { detail }));
     window.dispatchEvent(new CustomEvent("prism:page-created", { detail }));
-    window.dispatchEvent(new CustomEvent("prism:page-created", { detail: { id: "db1", parentPath: "Somewhere/Else" } }));
+    window.dispatchEvent(new CustomEvent("prism:page-created", { detail: { id: "book2", parentPath: "Somewhere/Else" } }));
   });
   await expect.poll(async () => ((await html(page)).match(/data-page-id="b1"/g) ?? []).length).toBe(1);
-  expect(await html(page)).not.toContain('data-page-id="db1"');
+  expect(await html(page)).not.toContain('data-page-id="book2"');
   // Read-only pages show the row as a link and offer no /page.
   await open(page, `?readonly&content=${enc('<div data-type="child-page" data-page-id="b1"></div>')}`);
   await expect(page.getByRole("button", { name: "Open sub-page: Braiding Sweetgrass" })).toBeVisible();
@@ -725,7 +764,7 @@ test("[[ create page from query", async ({ page }) => {
   await page.keyboard.press("End");
   await page.keyboard.type(" [[Private plan");
   await page.keyboard.press("Enter");
-  await expect(page.getByRole("alert").filter({ hasText: "Couldn’t create that page" })).toBeVisible();
+  await expect(page.getByRole("alert").filter({ hasText: "Couldn’t create that page" }).first()).toBeVisible();
   expect(await html(page)).toContain("[[Private plan");
   // Read-only pages offer no create.
 });
@@ -782,4 +821,127 @@ test("live document: block selection moves as a group; markdown undo restores th
   await page.keyboard.press("ControlOrMeta+z");
   await expect.poll(async () => (await blocks(0)).map((t) => t.trimEnd())).toContain("paragraph:##");
   await expect.poll(async () => (await blocks(1)).map((t) => t.trimEnd())).toContain("paragraph:##");
+});
+
+// Review M2: a page created while offline only has a temporary id — it is never stored in a document.
+test("sub-pages and [[ create refuse a temporary offline id", async ({ page, context }) => {
+  await open(page, "?offlinecreate");
+  await clickInto(page, "Closing heron note.");
+  await page.keyboard.press("End");
+  await page.keyboard.press("Enter");
+  await page.keyboard.type("/page");
+  await page.getByRole("option", { name: /^Page Add a sub-page/ }).click();
+  await expect(page.getByRole("alert").filter({ hasText: "Creating a page here needs a connection. Nothing was added." }).first()).toBeVisible();
+  expect(await html(page)).not.toMatch(/child-page|offline-/);
+  await page.keyboard.type("[[Offline title");
+  await page.getByRole("option", { name: /Create page/ }).click();
+  await expect(page.getByRole("alert").filter({ hasText: "needs a connection" }).first()).toBeVisible();
+  expect(await html(page)).not.toMatch(/offline-/);
+  expect(await html(page)).toContain("[[Offline title");
+  // Known-offline: nothing is even sent (no queued create left behind).
+  await open(page);
+  await clickInto(page, "Closing heron note.");
+  await page.keyboard.press("End");
+  await page.keyboard.press("Enter");
+  await context.setOffline(true);
+  await page.keyboard.type("/page");
+  await page.getByRole("option", { name: /^Page Add a sub-page/ }).click();
+  await expect(page.getByRole("alert").filter({ hasText: "needs a connection" })).toBeVisible();
+  expect(await page.evaluate(() => (window as any).prismMediaCreates.length)).toBe(0);
+  await context.setOffline(false);
+});
+
+// Review M1: the create is async — the link replaces `[[query` where it IS when the page exists, not where it was.
+test("[[ create page: typing elsewhere while the page is created does not misplace the link", async ({ page }) => {
+  await open(page, "?slowcreate");
+  await clickInto(page, "Closing heron note.");
+  await page.keyboard.press("End");
+  await page.keyboard.type(" [[Slow page");
+  await page.getByRole("option", { name: /Create page/ }).click();
+  await expect.poll(() => page.evaluate(() => (window as any).prismMediaCreates.length)).toBe(1);
+  // Meanwhile the document changes ABOVE the typed text (a collaborator, or the user).
+  await page.evaluate(() => (document.querySelector(".tiptap") as any).editor.commands.insertContentAt(1, "PREFIX-INSERTED-WHILE-CREATING "));
+  await page.evaluate(() => (window as any).prismMediaRelease());
+  await expect.poll(() => html(page)).toContain("<p>Closing heron note. [[new1|Slow page]] </p>");
+  expect(await html(page)).toContain("<h1>PREFIX-INSERTED-WHILE-CREATING Field guide</h1>");
+  expect(await html(page)).not.toContain("[[Slow page");
+  // If the typed text itself is gone when the page exists, nothing is replaced — and the user is told.
+  await open(page, "?slowcreate");
+  await clickInto(page, "Closing heron note.");
+  await page.keyboard.press("End");
+  await page.keyboard.type(" [[Gone");
+  await page.getByRole("option", { name: /Create page/ }).click();
+  await expect.poll(() => page.evaluate(() => (window as any).prismMediaCreates.length)).toBe(1);
+  await page.keyboard.press("Backspace");
+  await page.keyboard.press("Backspace");
+  await page.evaluate(() => (window as any).prismMediaRelease());
+  await expect(page.getByRole("status").filter({ hasText: "Created “Gone”. The text changed while it was being made" })).toBeVisible();
+  expect(await html(page)).toContain("Closing heron note. [[Go</p>");
+});
+
+// Review L3: paste as plain text (⌘⇧V) and a caret inside inline code never convert; one weak signal is not Markdown.
+test("paste heuristic: plain paste, inline code and single signals stay literal", async ({ page }) => {
+  await emptyDoc(page);
+  await page.evaluate(() => document.querySelector(".tiptap")!.dispatchEvent(new KeyboardEvent("keydown", { key: "v", code: "KeyV", shiftKey: true, ctrlKey: true, bubbles: true, cancelable: true })));
+  await pasteClipboard(page, { "text/plain": "## Plan\n\n- First\n- Second" });
+  expect(await html(page)).not.toMatch(/<h2|<ul/);
+  expect(await html(page)).toContain("## Plan");
+  await open(page, `?content=${enc("<p>use <code>x</code> here</p>")}`);
+  await page.evaluate(() => { const e = (document.querySelector(".tiptap") as any).editor; e.chain().focus().setTextSelection(6).run(); });
+  await expect(page.locator(".tiptap")).toBeFocused();
+  await pasteClipboard(page, { "text/plain": "- [x] a\n- [ ] b" });
+  expect(await html(page)).not.toMatch(/taskList/);
+  for (const text of ["- a single dash line", "# just one title", "def __init__(self):\n    self.__x__ = 1\n    return self.__x__"]) {
+    await emptyDoc(page);
+    await pasteClipboard(page, { "text/plain": text });
+    expect(await html(page), text).not.toMatch(/<ul|<h1|<strong|<em/);
+  }
+  // Too much Markdown to convert: pasted as plain text, with a notice.
+  await emptyDoc(page);
+  await pasteClipboard(page, { "text/plain": "## Heading\n\n- item\n".repeat(4000) });
+  await expect(page.getByRole("status").filter({ hasText: "Pasted as plain text" })).toBeVisible();
+  expect(await html(page)).not.toMatch(/<h2/);
+});
+
+// Review L5: in a database row peek, Escape typed in the page's editor closes the peek on the first press
+// (ProseMirror marks every editor Escape as used, so the peek never saw it; nothing is block-selected there).
+test("row peek: Esc from inside the peeked page's editor closes the peek", async ({ page }) => {
+  await page.goto("/e2e-fixtures/databases.html");
+  await page.getByRole("button", { name: "Refine onboarding copy", exact: true }).click();
+  const side = page.getByRole("dialog", { name: "Refine onboarding copy (side peek)" });
+  await expect(side).toBeVisible();
+  const body = side.locator(".tiptap[contenteditable=true]");
+  await body.getByText("Refine onboarding copy — fictional task.").click();
+  await expect(body).toBeFocused();
+  // An editor popup still owns Escape first.
+  await page.keyboard.press("End");
+  await page.keyboard.type(" /");
+  await expect(page.getByRole("listbox", { name: "Insert block" })).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("listbox", { name: "Insert block" })).toHaveCount(0);
+  await expect(side).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(side).toHaveCount(0);
+});
+
+// Review M4: a sub-page row that is MOVED to another page is not deleted — no Trash offer.
+test("moving a sub-page row to another page offers no Trash", async ({ page }) => {
+  await page.route("**/api/notes/*/blocks/append", (route) => route.fulfill({ status: 200, json: { ok: true, live: false } }));
+  await open(page);
+  await clickInto(page, "Closing heron note.");
+  await page.keyboard.press("End");
+  await page.keyboard.press("Enter");
+  await page.keyboard.type("/page");
+  await page.getByRole("option", { name: /^Page Add a sub-page/ }).click();
+  const row = page.locator(".tiptap .prism-child-page[data-state=ready]");
+  await expect(row).toHaveCount(1);
+  await row.hover();
+  await page.locator(".block-gutter").getByRole("button", { name: /Drag to move/ }).click();
+  await page.getByRole("menuitem", { name: "Move to" }).click();
+  await page.getByRole("menuitem", { name: "Braiding Sweetgrass" }).click();
+  await expect(page.getByRole("status").filter({ hasText: "Moved to Braiding Sweetgrass" })).toBeVisible();
+  await expect(page.locator(".tiptap .prism-child-page")).toHaveCount(0);
+  await page.waitForFunction(() => new Promise((r) => setTimeout(() => r(true), 600))); // past the offer's settle window
+  await expect(page.getByRole("alertdialog", { name: "Sub-page link removed" })).toHaveCount(0);
+  expect(await page.evaluate(() => (window as any).prismMediaTrashed)).toEqual([]);
 });

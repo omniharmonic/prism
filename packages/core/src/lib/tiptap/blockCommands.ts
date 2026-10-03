@@ -2,6 +2,7 @@ import { Extension } from "@tiptap/core";
 import { Fragment, type Node as PMNode, type Schema } from "@tiptap/pm/model";
 import { TextSelection, type EditorState, type Transaction } from "@tiptap/pm/state";
 import { COLORABLE_BLOCKS, isBlockColor, type BlockColorValue } from "../../editor/blocks";
+import { newMentionUid } from "./MentionNode";
 
 /**
  * Pure block operations for the block handle, the block menu, the selection
@@ -312,12 +313,62 @@ export function moveBlocksBeside(state: EditorState, fromIndex: number, count: n
   return placeCaret(tr, Math.min(tr.mapping.map(target.pos) + 3, tr.doc.content.size)).scrollIntoView();
 }
 
+/**
+ * Put blocks beside a block. Plain editor: one transaction (one undo step). LIVE
+ * document: delete the moving blocks, then replace the target in a SECOND
+ * transaction — y-prosemirror diffs documents, and a single delete+replace reads
+ * as "every block between the two was rewritten in place", so a collaborator
+ * typing into one of those unrelated blocks saw the text land in a neighbour or
+ * vanish (review H1). Split, Yjs deletes exactly the moving elements and swaps
+ * exactly the target; both fall inside Y.UndoManager's capture window.
+ */
+export function moveBlocksBesideIn(editor: MoveEditor, fromIndex: number, count: number, targetIndex: number, side: "left" | "right"): boolean {
+  if (!isCollaborative(editor)) {
+    const tr = moveBlocksBeside(editor.state, fromIndex, count, targetIndex, side);
+    if (tr) editor.view.dispatch(tr);
+    return !!tr;
+  }
+  if (!moveBlocksBeside(editor.state, fromIndex, count, targetIndex, side)) return false; // same refusals as the plain path
+  const { columns, column } = editor.state.schema.nodes;
+  const moving = topLevelBlocks(editor.state.doc).slice(fromIndex, fromIndex + count);
+  const last = moving[moving.length - 1];
+  editor.view.dispatch(editor.state.tr.delete(moving[0].pos, last.pos + last.node.nodeSize));
+  const target = topLevelBlocks(editor.view.state.doc)[targetIndex > fromIndex ? targetIndex - count : targetIndex];
+  if (!target) return true;
+  const dragged = column.create(null, moving.map((b) => b.node));
+  let layout: PMNode;
+  if (target.node.type.name === "columns") {
+    const cols: PMNode[] = [];
+    target.node.forEach((c) => cols.push(c));
+    layout = columns.create(target.node.attrs, side === "left" ? [dragged, ...cols] : [...cols, dragged]);
+  } else {
+    layout = columns.create(null, side === "left" ? [dragged, column.create(null, target.node)] : [column.create(null, target.node), dragged]);
+  }
+  const tr = editor.view.state.tr.replaceWith(target.pos, target.pos + target.node.nodeSize, layout);
+  editor.view.dispatch(placeCaret(tr, Math.min(target.pos + 3, tr.doc.content.size)).scrollIntoView());
+  return true;
+}
+
 export function duplicateTopBlock(state: EditorState, pos: number): Transaction | null {
   const node = state.doc.nodeAt(pos);
   if (!node) return null;
   const at = pos + node.nodeSize;
-  const tr = state.tr.insert(at, node);
+  const tr = state.tr.insert(at, freshCopy(node));
   return placeCaret(tr, at + 1);
+}
+
+/**
+ * A copy of `node` that is safe to put in the same document: every mention chip
+ * gets a NEW uid (the server tells new mentions from old by uid, and deep links
+ * target one) and loses its reminder (the reminder belongs to the original chip).
+ */
+export function freshCopy(node: PMNode): PMNode {
+  if (node.type.name === "mention") return node.type.create({ ...node.attrs, uid: newMentionUid(), reminder: null }, null, node.marks);
+  if (node.isLeaf || !node.content.size) return node;
+  const children: PMNode[] = [];
+  let changed = false;
+  node.forEach((child) => { const c = freshCopy(child); if (c !== child) changed = true; children.push(c); });
+  return changed ? node.copy(Fragment.fromArray(children)) : node;
 }
 
 /** Duplicate the caret's unit (a list item inside its list, else the top-level block); the caret moves into the copy. */
@@ -325,7 +376,7 @@ export function duplicateSelectionBlock(state: EditorState): Transaction | null 
   const unit = movableUnit(state);
   if (!unit) return null;
   const at = unit.from + unit.node.nodeSize;
-  const tr = state.tr.insert(at, unit.node);
+  const tr = state.tr.insert(at, freshCopy(unit.node));
   return placeCaret(tr, at + (state.selection.from - unit.from)).scrollIntoView();
 }
 
@@ -335,7 +386,7 @@ export function duplicateTopBlocks(state: EditorState, index: number, count = 1)
   if (!blocks.length) return null;
   const last = blocks[blocks.length - 1];
   const at = last.pos + last.node.nodeSize;
-  return state.tr.insert(at, Fragment.fromArray(blocks.map((b) => b.node)));
+  return state.tr.insert(at, Fragment.fromArray(blocks.map((b) => freshCopy(b.node))));
 }
 
 /** Delete `count` top-level blocks starting at `index` (an empty paragraph stays if nothing else would). One step. */

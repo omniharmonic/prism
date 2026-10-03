@@ -1446,7 +1446,9 @@ test("R3: a deletion-only suggestion is under the size budget too — per-comman
   assert.equal(Buffer.byteLength(vaultHtml("dense")), sizeBefore, "the note did not grow");
   assert.equal(writes(), 0);
   // A deletion that would cross the document budget is refused even though it adds no text.
-  const filler = `<p>${"word ".repeat((MAX_DOCUMENT_BYTES - 3000) / 5)}</p>`;
+  // (Suggestion marks render as ONE span around the formatted runs since wave 4A — they rank
+  // outside the formatting marks — so the deletion grows the note by a single span.)
+  const filler = `<p>${"word ".repeat((MAX_DOCUMENT_BYTES - 800) / 5)}</p>`;
   fv.put({ id: "edge", tags: ["garden"], content: `${filler}<p>${dense(40)}</p>`, updatedAt: T0 });
   const e = offlineDoc("edge");
   const some = (() => {

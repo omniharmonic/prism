@@ -12,7 +12,8 @@ import {
   topBlockAt,
   topLevelBlocks,
 } from "./blockCommands";
-import { looksLikeMarkdown, markdownToPasteHtml, normalizePastedTodos, sliceToMarkdown } from "./markdownClipboard";
+import { looksLikeMarkdown, markdownPasteRefusal, markdownToPasteHtml, normalizePastedTodos, sliceToMarkdown } from "./markdownClipboard";
+import { editorNotice } from "./notice";
 
 /**
  * Editor depth shared by the plain and the live editor (wave 4A). View-only: no
@@ -110,9 +111,33 @@ function decorating(editor: Editor): boolean {
   return editor.isEditable && !storage.suggestionMode?.suggesting && !storage.commentOnly?.active;
 }
 
-/** A menu the keyboard is currently driving (slash, `[[`, `@`, block menu…) owns Escape. */
+const EDITOR_POPUPS = ".slash-menu, .editor-menu, .prism-mention-menu, .prism-paste-menu, [role='listbox'][aria-label='Link to a document'], .prism-find-bar:focus-within";
+/**
+ * Escape belongs to a popup only when it is one of the EDITOR's own (slash, `[[`,
+ * `@`, paste-as, block / colour menus) and actually on screen — never to some
+ * unrelated listbox or menu mounted elsewhere in the app.
+ */
 function popupOpen(): boolean {
-  return typeof document !== "undefined" && !!document.querySelector('[role="listbox"], [role="menu"], dialog[open], [role="dialog"][aria-modal="true"]');
+  if (typeof document === "undefined") return false;
+  for (const el of Array.from(document.querySelectorAll(EDITOR_POPUPS))) if ((el as HTMLElement).getClientRects().length > 0) return true;
+  return false;
+}
+/**
+ * Inside a row peek (database side / centre peek) Escape closes the peek on the
+ * FIRST press — it is a transient layer, and nothing there is "selected as a
+ * block" by Escape. ProseMirror itself calls preventDefault on every Escape typed
+ * in an editor, and the peek ignores keys that were already used, so from inside
+ * the editor the peek never saw Escape: hand it one that is unused (the focus
+ * leaves the editor first, so it is not ours any more).
+ */
+function inPeek(editor: Editor): boolean {
+  try { return !!editor.view.dom.closest(".db-peek"); } catch { return false; }
+}
+function passEscapeToPeek(editor: Editor): void {
+  setTimeout(() => {
+    try { (editor.view.dom as HTMLElement).blur(); } catch { /* unmounted */ }
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", code: "Escape", bubbles: true, cancelable: true }));
+  }, 0);
 }
 
 export const EditorKeys = Extension.create({
@@ -176,7 +201,9 @@ export const EditorKeys = Extension.create({
 
     return {
       Escape: () => {
-        if (!structural() || popupOpen() || range()) return false;
+        if (popupOpen()) return false;
+        if (inPeek(editor)) { passEscapeToPeek(editor); return true; }
+        if (!structural() || range()) return false;
         const { doc, selection } = editor.state;
         const first = topBlockAt(doc, selectionStart(doc, selection.from, selection.to));
         const last = topBlockAt(doc, Math.max(selection.from, selection.to - (selection.empty ? 0 : 1)));
@@ -250,6 +277,7 @@ export const EditorKeys = Extension.create({
   addProseMirrorPlugins() {
     const editor = this.editor;
     let pastingMarkdown = false; // view.pasteHTML re-enters handlePaste with the parsed slice
+    let plainPasteAt = 0;
     return [
       new Plugin<RuleUndo | null>({
         key: ruleUndoKey,
@@ -286,14 +314,25 @@ export const EditorKeys = Extension.create({
           },
           transformPastedHTML: (html) => normalizePastedTodos(html),
           clipboardTextSerializer: (slice) => sliceToMarkdown(slice),
+          handleKeyDown(_view: EditorView, event: KeyboardEvent) {
+            // ⌘⇧V / Ctrl+Shift+V = paste as plain text: never converted.
+            if ((event.metaKey || event.ctrlKey) && event.shiftKey && event.key.toLowerCase() === "v") plainPasteAt = Date.now();
+            return false;
+          },
           handlePaste(view: EditorView, event: ClipboardEvent) {
             const data = event.clipboardData;
             if (pastingMarkdown || !data || data.files?.length || data.getData("text/html")) return false;
+            if (Date.now() - plainPasteAt < 1000) { plainPasteAt = 0; return false; }
             const text = data.getData("text/plain");
-            const $from = view.state.selection.$from;
-            if (!text || $from.parent.type.spec.code || !editor.isEditable || !looksLikeMarkdown(text)) return false;
+            const { $from, $to } = view.state.selection;
+            // Never inside code (block or inline mark): Markdown there is source.
+            const inCode = $from.parent.type.spec.code || $to.parent.type.spec.code || $from.marks().some((m) => m.type.spec.code);
+            if (!text || inCode || !editor.isEditable) return false;
+            const refusal = markdownPasteRefusal(text);
+            if (refusal) { editorNotice(refusal, "status"); return false; }
+            if (!looksLikeMarkdown(text)) return false;
             // A single bare URL belongs to the URL paste menu.
-            if (/^https?:\/\/\S+$/i.test(text.trim())) return false;
+            if (text.length < 2100 && text.indexOf("\n") === -1 && text.indexOf(" ") === -1 && (text.startsWith("http://") || text.startsWith("https://"))) return false;
             pastingMarkdown = true;
             try { view.pasteHTML(markdownToPasteHtml(text), event); } finally { pastingMarkdown = false; }
             return true;

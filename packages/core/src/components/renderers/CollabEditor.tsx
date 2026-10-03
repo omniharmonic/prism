@@ -42,7 +42,7 @@ import { MentionContext, setMentionNoteId } from "../../lib/tiptap/MentionContex
 import { MentionMenu } from "../../lib/tiptap/MentionMenu";
 import { useCommentMentionPicker } from "../../lib/tiptap/MentionText";
 import { ChildPages } from "../../lib/tiptap/childPage";
-import { createSubPage } from "../../lib/tiptap/subPages";
+import { createSubPage, describeSubPage } from "../../lib/tiptap/subPages";
 import { trashPage } from "../../lib/pages/ops";
 import { useOptionalVaultClient } from "../../data/VaultClientContext";
 import { QueryClientContext } from "@tanstack/react-query";
@@ -222,6 +222,7 @@ export function CollabEditor({
       ChildPages.configure(hostPath !== undefined && vaultClient ? {
         hostPath: () => hostPathRef.current,
         create: () => (subPagesRef.current.client && hostPathRef.current ? createSubPage(subPagesRef.current.client, subPagesRef.current.queryClient, hostPathRef.current) : Promise.resolve(null)),
+        describe: describeSubPage(() => subPagesRef.current.client),
         trash: (id: string) => (subPagesRef.current.client ? trashPage(subPagesRef.current.client, id).then(() => void subPagesRef.current.queryClient?.invalidateQueries({ queryKey: ["vault"] })) : Promise.reject(new Error("unavailable"))),
       } : {}),
       SuggestionMode.configure({ user }),
@@ -233,6 +234,7 @@ export function CollabEditor({
         : []),
     ],
     editable,
+    enablePasteRules: false, // one Markdown paste rule (EditorKeys); see DocumentRenderer
     editorProps: { attributes: { class: "prose-editor outline-none min-h-[300px]" } },
     onUpdate: handleUpdate,
   });

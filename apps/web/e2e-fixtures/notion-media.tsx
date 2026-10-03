@@ -37,6 +37,10 @@ const client = {
   createNote: async (params: { path?: string; content?: string; tags?: string[]; metadata?: Record<string, unknown> }) => {
     if (new URLSearchParams(location.search).has("nocreate")) throw new Error("POST /notes failed: 403");
     creates.push(params as Record<string, unknown>);
+    // ?slowcreate: the create stays in flight until the spec releases it (typing meanwhile).
+    if (new URLSearchParams(location.search).has("slowcreate")) await new Promise<void>((r) => { (window as unknown as { prismMediaRelease: () => void }).prismMediaRelease = r; });
+    // ?offlinecreate: what the web outbox answers when a create is only QUEUED — a temporary id.
+    if (new URLSearchParams(location.search).has("offlinecreate")) return { id: `offline-${creates.length}`, path: params.path ?? null, content: "", tags: [], metadata: {}, createdAt: date, updatedAt: date } as Note;
     const n: Note = { id: `new${creates.length}`, path: params.path ?? null, content: params.content ?? "", tags: params.tags ?? [], metadata: params.metadata ?? {}, createdAt: date, updatedAt: date } as Note;
     vault.push(n);
     return structuredClone(n);

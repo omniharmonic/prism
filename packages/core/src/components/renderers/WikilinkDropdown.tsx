@@ -6,7 +6,8 @@ import type { Note } from "../../lib/types";
 import { noteAliases, noteLinkTitle } from "../../lib/wikilinks";
 import type { WikilinkAutocompleteState } from "../../lib/tiptap/WikilinkAutocomplete";
 import { useOptionalVaultClient } from "../../data/VaultClientContext";
-import { createSubPage, pageNameFromQuery } from "../../lib/tiptap/subPages";
+import { createSubPage, pageNameFromQuery, SubPageError } from "../../lib/tiptap/subPages";
+import { editorNotice } from "../../lib/tiptap/notice";
 
 type Row = { kind: "note"; note: Note } | { kind: "create"; name: string };
 
@@ -41,24 +42,48 @@ export function WikilinkDropdown({ editor, notes, autocomplete, hostPath }: {
   const index = selection.signature===signature ? Math.min(selection.index,Math.max(0,rows.length-1)) : 0;
   const dismissed = selection.signature===signature && selection.dismissed;
   const visible = !!editor && autocomplete.active && !dismissed && rows.length>0;
-  const insertLink = useCallback((noteId: string, title: string)=>{
-    // IDs survive renames. A text node preserves portable syntax without
-    // interpreting a title containing <...> as editor HTML.
+  /** Replace `[from, to)` with the link text. IDs survive renames; a text node keeps a title containing <...> literal. */
+  const insertLinkAt = useCallback((noteId: string, title: string, from: number, to: number)=>{
     const label = title.replace(/[\[\]|]/g, "").trim() || noteId;
-    editor?.chain().focus().deleteRange({from:autocomplete.from,to:autocomplete.to})
-      .insertContent({type:"text",text:`[[${noteId}|${label}]] `}).run();
-  },[editor,autocomplete.from,autocomplete.to]);
+    // AT the range (not "at the caret": the caret may be elsewhere by the time an async create resolves).
+    editor?.chain().focus().insertContentAt({from,to},{type:"text",text:`[[${noteId}|${label}]] `}).run();
+  },[editor]);
   const select = useCallback((row: Row)=>{
-    if (row.kind === "note") { insertLink(row.note.id, noteLinkTitle(row.note)); return; }
+    if (!editor) return;
+    if (row.kind === "note") { insertLinkAt(row.note.id, noteLinkTitle(row.note), autocomplete.from, autocomplete.to); return; }
     if (!client || !hostPath || creating.current) return;
     creating.current = true;
     setError(null);
-    // The `[[query` text stays until the page exists: a refused create loses nothing.
+    // The create is async and the document keeps changing (typing, collaborators): follow the
+    // typed `[[query` through every transaction, and replace it only if it is still exactly
+    // there when the page exists (review M1). The text stays until then: a refused create loses nothing.
+    const typed = editor.state.doc.textBetween(autocomplete.from, autocomplete.to, "\n", "\ufffc");
+    let from = autocomplete.from;
+    let to = autocomplete.to;
+    let alive = true;
+    const track = ({ transaction }: { transaction: { docChanged: boolean; mapping: { mapResult: (p: number, assoc?: number) => { pos: number; deleted: boolean } } } }) => {
+      if (!transaction.docChanged || !alive) return;
+      const a = transaction.mapping.mapResult(from, 1);
+      const b = transaction.mapping.mapResult(to, -1);
+      if (a.deleted || b.deleted || b.pos < a.pos) alive = false;
+      from = a.pos;
+      to = b.pos;
+    };
+    editor.on("transaction", track);
     createSubPage(client, queryClient, hostPath, row.name)
-      .then((pageId) => { if (pageId) insertLink(pageId, row.name); else setError("Couldn’t create that page."); },
-        () => setError("Couldn’t create that page. You may not be able to add pages here."))
-      .finally(() => { creating.current = false; });
-  },[client,hostPath,queryClient,insertLink]);
+      .then((pageId) => {
+        if (!pageId) { setError("Couldn’t create that page."); return; }
+        let still = false;
+        try { still = alive && !editor.isDestroyed && to <= editor.state.doc.content.size && editor.state.doc.textBetween(from, to, "\n", "\ufffc") === typed; } catch { still = false; }
+        if (still) insertLinkAt(pageId, row.name, from, to);
+        else editorNotice(`Created “${row.name}”. The text changed while it was being made — type [[ to link it.`, "status");
+      }, (e) => {
+        const message = e instanceof SubPageError ? e.message : "Couldn’t create that page. You may not be able to add pages here.";
+        setError(message);
+        editorNotice(message);
+      })
+      .finally(() => { creating.current = false; editor.off("transaction", track); });
+  },[editor,client,hostPath,queryClient,insertLinkAt,autocomplete.from,autocomplete.to]);
   useEffect(() => setError(null), [signature]);
   useEffect(()=>{
     if (!editor || !visible) return;

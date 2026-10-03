@@ -78,8 +78,8 @@ test.describe("plain editor block handles", () => {
 
   test("the block menu turns blocks into every kind, colours, duplicates and deletes — keyboard first", async ({ page }) => {
     await clickInto(page, "Bravo paragraph");
-    // ⌘/ / Ctrl+/ opens the block menu for the caret's block.
-    await page.keyboard.press("ControlOrMeta+/");
+    // ⌘⇧/ / Ctrl+Shift+/ opens the block menu for the caret's block (⌘/ alone is the shortcut sheet).
+    await page.keyboard.press("ControlOrMeta+Shift+/");
     const menu = page.getByRole("menu", { name: "Block actions" });
     await expect(menu).toBeVisible();
     await expect(menu.getByRole("menuitem", { name: "Turn into" })).toBeFocused();
@@ -175,11 +175,18 @@ test.describe("plain editor block handles", () => {
     await expect(page.locator('.tiptap li[data-checked="true"]')).toHaveCount(1);
     await page.keyboard.press(`${mod}+Enter`);
     await expect(page.locator('.tiptap li[data-checked="true"]')).toHaveCount(0);
-    // ⌘/ in a block opens its menu on Turn into (the shortcut sheet is for ⌘/ OUTSIDE a block).
-    await page.keyboard.press(`${mod}+/`);
+    // ⌘⇧/ in a block opens its menu on Turn into; ⌘/ is the shortcut sheet everywhere, the editor included.
+    await page.keyboard.press(`${mod}+Shift+/`);
     await expect(page.getByRole("menu", { name: "Block actions" }).getByRole("menuitem", { name: "Turn into" })).toBeFocused();
     await expect(page.getByRole("dialog", { name: "Keyboard shortcuts" })).toHaveCount(0);
     await page.keyboard.press("Escape");
+    await expect(page.getByRole("menu")).toHaveCount(0);
+    await clickInto(page, "Ship it");
+    await page.keyboard.press(`${mod}+/`);
+    await expect(page.getByRole("dialog", { name: "Keyboard shortcuts" })).toBeVisible();
+    await expect(page.getByRole("menu", { name: "Block actions" })).toHaveCount(0);
+    await page.keyboard.press("Escape");
+    await expect(page.getByRole("dialog", { name: "Keyboard shortcuts" })).toHaveCount(0);
     // Tab / Shift+Tab nest and un-nest a list item.
     await page.goto("/e2e-fixtures/editor-blocks.html");
     await clickInto(page, "Delta item");
@@ -187,6 +194,69 @@ test.describe("plain editor block handles", () => {
     await expect.poll(() => page.evaluate(() => (document.querySelector(".tiptap") as any).editor.getHTML())).toContain("<li><p>Charlie item</p><ul><li><p>Delta item</p></li></ul></li>");
     await page.keyboard.press("Shift+Tab");
     await expect.poll(() => page.evaluate(() => (document.querySelector(".tiptap") as any).editor.getHTML())).toContain("<li><p>Charlie item</p></li><li><p>Delta item</p></li>");
+  });
+
+  // Review L5: Esc is taken only by the editor's OWN visible popups; inside a row peek Esc stays the peek's.
+  test("Esc block selection ignores unrelated popups and leaves a row peek's Esc alone", async ({ page }) => {
+    const selected = () => page.locator(".tiptap > .ProseMirror-selectednode").count();
+    // An unrelated listbox and menu mounted elsewhere in the app (and a hidden editor menu) do not block it.
+    await page.evaluate(() => {
+      const box = document.createElement("div"); box.setAttribute("role", "listbox"); box.textContent = "Unrelated list"; document.body.appendChild(box);
+      const menu = document.createElement("div"); menu.setAttribute("role", "menu"); menu.textContent = "Unrelated menu"; document.body.appendChild(menu);
+      const hidden = document.createElement("div"); hidden.className = "editor-menu"; hidden.style.display = "none"; document.body.appendChild(hidden);
+    });
+    await clickInto(page, "Bravo paragraph");
+    await page.keyboard.press("Escape");
+    await expect.poll(selected).toBe(1);
+    // The editor's own slash menu owns Escape: it closes, the block is not selected.
+    await clickInto(page, "Foxtrot closing");
+    await page.keyboard.press("End");
+    await page.keyboard.type(" /");
+    await expect(page.getByRole("listbox", { name: "Insert block" })).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(page.getByRole("listbox", { name: "Insert block" })).toHaveCount(0);
+    expect(await selected()).toBe(0);
+    // Inside a row peek the first Escape is the peek's: it closes the peek, no block selection.
+    await clickInto(page, "Bravo paragraph");
+    await page.evaluate(() => {
+      document.querySelector(".tiptap")!.closest("main")!.classList.add("db-peek"); // the editor now sits in a peek
+      (window as any).__esc = [];
+      window.addEventListener("keydown", (e) => { if (e.key === "Escape") (window as any).__esc.push(e.defaultPrevented); });
+    });
+    await expect(page.locator(".tiptap")).toBeFocused();
+    await page.keyboard.press("Escape");
+    // (ProseMirror marks every Escape typed in an editor as used; the peek gets a fresh, unused one.)
+    await expect.poll(() => page.evaluate(() => (window as any).__esc)).toEqual([true, false]);
+    expect(await selected()).toBe(0);
+    await expect(page.locator(".tiptap")).not.toBeFocused();
+  });
+
+  // Review L6: a duplicated block's mention chips get new uids and no reminder (both belong to the original chip).
+  test("duplicate gives mention chips new uids and drops reminders", async ({ page }) => {
+    await page.goto("/e2e-fixtures/editor-blocks.html?content=" + encodeURIComponent('<p>Ping <span data-type="mention" data-kind="date" data-date="2026-10-09" data-reminder="rem_1" data-mention-uid="uidoriginal00001">@2026-10-09</span> and <span data-type="mention" data-kind="page" data-id="roadmap" data-mention-uid="uidoriginal00002">@page</span></p><p>after</p>'));
+    const chips = () => page.evaluate(() => {
+      const out: Array<{ uid: string; reminder: string | null; kind: string }> = [];
+      (document.querySelector(".tiptap") as any).editor.state.doc.descendants((n: any) => { if (n.type.name === "mention") out.push({ uid: n.attrs.uid, reminder: n.attrs.reminder, kind: n.attrs.kind }); });
+      return out;
+    });
+    await page.locator(".tiptap p").first().click({ position: { x: 4, y: 8 } });
+    await expect(page.locator(".tiptap")).toBeFocused();
+    await page.keyboard.press("ControlOrMeta+d");
+    await expect.poll(async () => (await chips()).length).toBe(4);
+    let all = await chips();
+    expect(all.slice(0, 2)).toEqual([{ uid: "uidoriginal00001", reminder: "rem_1", kind: "date" }, { uid: "uidoriginal00002", reminder: null, kind: "page" }]);
+    expect(new Set(all.map((c) => c.uid)).size).toBe(4);
+    expect(all.slice(2).every((c) => c.reminder === null && /^[a-z0-9]{8,}$/i.test(c.uid))).toBe(true);
+    // The block menu's Duplicate and a duplicated block selection do the same.
+    const gutter = await gutterFor(page, "after");
+    await page.locator(".tiptap p").first().hover({ position: { x: 4, y: 8 } });
+    await page.locator(".block-gutter").getByRole("button", { name: /Drag to move/ }).click();
+    await page.getByRole("menuitem", { name: "Duplicate" }).click();
+    await expect.poll(async () => (await chips()).length).toBe(6);
+    all = await chips();
+    expect(new Set(all.map((c) => c.uid)).size).toBe(6);
+    expect(all.filter((c) => c.reminder).length).toBe(1);
+    void gutter;
   });
 
   // NP-ED-01: a multi-block selection drags as one, with a drop line, in one step.
@@ -276,10 +346,21 @@ test.describe("plain editor block handles", () => {
     expect(clip.html).toContain("<blockquote><p>Echo quote</p></blockquote>");
     expect(clip.text).toBe("> Echo quote");
     expect(await blockTexts(page)).toContain("blockquote:Echo quote"); // a copy, the block stays
-    // Move to: a searchable page list; the block lands on the other page, then leaves this one.
-    gutter = await gutterFor(page, "Echo quote");
-    await gutter.getByRole("button", { name: /Drag to move/ }).click();
-    await page.getByRole("menuitem", { name: "Move to" }).click();
+    // Move to: a searchable page list. The SERVER appends (POST /api/notes/:id/blocks/append — through the
+    // live document when that page is open); the block leaves this page only on a confirmed 200.
+    const calls: Array<{ url: string; body: { html: string; requestId: string } }> = [];
+    let answer: { status: number; body: unknown } | "abort" = { status: 200, body: { ok: true, live: true } };
+    await page.route("**/api/notes/*/blocks/append", async (route) => {
+      calls.push({ url: new URL(route.request().url()).pathname, body: route.request().postDataJSON() });
+      if (answer === "abort") return route.abort("internetdisconnected");
+      await route.fulfill({ status: answer.status, json: answer.body });
+    });
+    const moveTo = async (text: string) => {
+      const g = await gutterFor(page, text);
+      await g.getByRole("button", { name: /Drag to move/ }).click();
+      await page.getByRole("menuitem", { name: "Move to" }).click();
+    };
+    await moveTo("Echo quote");
     const pages = page.getByRole("menu", { name: "Move to" });
     await expect(pages.getByRole("menuitem", { name: "Roadmap" })).toBeVisible();
     await expect(pages.getByRole("menuitem", { name: "Block editor" })).toHaveCount(0); // never the page itself
@@ -288,20 +369,57 @@ test.describe("plain editor block handles", () => {
     await page.keyboard.press("Enter");
     await expect(page.getByRole("status").filter({ hasText: "Moved to Roadmap" })).toBeVisible();
     expect(await blockTexts(page)).not.toContain("blockquote:Echo quote");
-    const write = await page.evaluate(() => (window as any).prismBlockWrites.find((w: any) => w.id === "roadmap"));
-    expect(write.content).toBe("<p>Roadmap</p><blockquote><p>Echo quote</p></blockquote>");
-    expect(write.ifUpdatedAt).toBe("2026-10-02T12:00:00.000Z"); // compare-and-set on the revision that was read
-    // A refused write keeps the block where it is and says so.
-    await page.evaluate(() => { (window as any).prismBlockControls.failMove = true; });
-    gutter = await gutterFor(page, "Bravo paragraph");
-    await gutter.getByRole("button", { name: /Drag to move/ }).click();
-    await page.getByRole("menuitem", { name: "Move to" }).click();
-    await page.getByRole("menuitem", { name: "Roadmap" }).click();
-    await expect(page.getByRole("status").filter({ hasText: "Couldn’t move to Roadmap. The block is still here." })).toBeVisible();
-    expect(await blockTexts(page)).toContain("paragraph:Bravo paragraph");
+    expect(calls).toHaveLength(1);
+    expect(calls[0].url).toBe("/api/notes/roadmap/blocks/append");
+    expect(calls[0].body.html).toBe("<blockquote><p>Echo quote</p></blockquote>");
+    expect(calls[0].body.requestId).toMatch(/^[A-Za-z0-9_-]{8,64}$/);
+    // The page's own client never wrote the target (no GET → PATCH of its body, no outbox).
+    expect(await page.evaluate(() => (window as any).prismBlockWrites.filter((w: any) => w.id === "roadmap"))).toEqual([]);
+    // M3: anything but a confirmed 200 {ok:true} keeps the block — a queued/accepted answer, a refusal, no network.
+    for (const [reply, message] of [
+      [{ status: 202, body: { queued: true } }, "Couldn’t move to Roadmap. The block is still here."],
+      [{ status: 200, body: { queued: true } }, "Couldn’t move to Roadmap. The block is still here."],
+      [{ status: 409, body: { error: "locked" } }, "Roadmap is locked. The block is still here."],
+      [{ status: 403, body: { error: "forbidden" } }, "You can’t add to Roadmap. The block is still here."],
+      ["abort", "You’re offline — nothing was moved. The block is still here."],
+    ] as const) {
+      answer = reply as typeof answer;
+      await moveTo("Bravo paragraph");
+      await page.getByRole("menuitem", { name: "Roadmap" }).click();
+      await expect(page.getByRole("status").filter({ hasText: message })).toBeVisible();
+      expect(await blockTexts(page)).toContain("paragraph:Bravo paragraph");
+    }
+    // Each invocation carries its own idempotency key.
+    expect(new Set(calls.map((c) => c.body.requestId)).size).toBe(calls.length);
   });
 
-  // NP-ED-07: ⌘/ outside a block opens the shortcut sheet for the current platform.
+  // M6: a moved block's files are given to the target page (attachment copy route), or the limitation is said.
+  test("Move to carries the block's files to the target page, or says it could not", async ({ page }) => {
+    await page.route("**/api/notes/*/blocks/append", (route) => route.fulfill({ status: 200, json: { ok: true, live: false } }));
+    await page.goto("/e2e-fixtures/editor-blocks.html?copy&content=" + encodeURIComponent('<p>Intro</p><div data-type="attachment" data-kind="file" data-src="/api/attachments/a_0123456789abcdefghijkl" data-name="plan.zip" data-mime="application/zip"><a href="/api/attachments/a_0123456789abcdefghijkl">plan.zip</a></div><p>Tail</p>'));
+    const move = async () => {
+      await page.locator(".tiptap .prism-attachment, .tiptap [data-type=attachment]").first().hover();
+      await page.locator(".block-gutter").getByRole("button", { name: /Drag to move/ }).click();
+      await page.getByRole("menuitem", { name: "Move to" }).click();
+      await page.getByRole("menuitem", { name: "Roadmap" }).click();
+    };
+    await move();
+    await expect(page.getByRole("status").filter({ hasText: /^Moved to Roadmap$/ })).toBeVisible();
+    expect(await page.evaluate(() => (window as any).prismBlockCopies)).toEqual(["roadmap"]);
+    // The copy route refuses (the target is open live, a quota…): the move stands and the limitation is stated.
+    await page.goto("/e2e-fixtures/editor-blocks.html?copy=fail&content=" + encodeURIComponent('<p>Intro</p><div data-type="attachment" data-kind="file" data-src="/api/attachments/a_0123456789abcdefghijkl" data-name="plan.zip" data-mime="application/zip"><a href="/api/attachments/a_0123456789abcdefghijkl">plan.zip</a></div><p>Tail</p>'));
+    await move();
+    await expect(page.getByRole("status").filter({ hasText: "Moved to Roadmap. Its files still belong to the original page" })).toBeVisible();
+    // A block with no files asks for no copy.
+    await page.locator(".tiptap").getByText("Intro").hover();
+    await page.locator(".block-gutter").getByRole("button", { name: /Drag to move/ }).click();
+    await page.getByRole("menuitem", { name: "Move to" }).click();
+    await page.getByRole("menuitem", { name: "Roadmap" }).click();
+    await expect(page.getByRole("status").filter({ hasText: /^Moved to Roadmap$/ })).toBeVisible();
+    expect(await page.evaluate(() => (window as any).prismBlockCopies)).toEqual(["roadmap"]);
+  });
+
+  // NP-ED-07: ⌘/ opens the shortcut sheet for the current platform; no key is listed with two meanings.
   test("shortcut sheet lists editor shortcuts", async ({ page }) => {
     await page.getByRole("button", { name: "Outline", exact: true }).focus(); // focus is outside the editor
     await page.keyboard.press("ControlOrMeta+/");
@@ -316,7 +434,17 @@ test.describe("plain editor block handles", () => {
     await expect(row("Find and replace")).toContainText(mac ? "⌘⌥F" : "Ctrl+Alt+F");
     await expect(row("Duplicate block")).toContainText(mac ? "⌘D" : "Ctrl+D");
     await expect(row("Move block up")).toContainText(mac ? "⌘⇧↑" : "Ctrl+Shift+↑");
-    await expect(row("Quick find")).toContainText(mac ? "⌘K" : "Ctrl+K");
+    await expect(row("Quick find (no text selected)")).toContainText(mac ? "⌘K" : "Ctrl+K");
+    await expect(row("Toggle sidebar")).toContainText(mac ? "⌘\\" : "Ctrl+\\");
+    await expect(row("Toggle side panel")).toContainText(mac ? "⌘⇧\\" : "Ctrl+Shift+\\");
+    await expect(row("Block menu / Turn into")).toContainText(mac ? "⌘⇧/" : "Ctrl+Shift+/");
+    await expect(row("Keyboard shortcuts")).toContainText(mac ? "⌘/" : "Ctrl+/");
+    // No shortcut appears twice with two meanings (Markdown rows are typed text, not keys).
+    const keys = await sheet.locator(".prism-shortcuts-body section:not([aria-label='Markdown while typing']) kbd").allTextContents();
+    // Context keys only: Tab (lists vs tables), Esc/Enter (block vs peek), and ⌘K — link WITH a text selection, quick find without (the decided rule).
+    const allowed = new Set(["Tab", "Shift+Tab", "⇧Tab", "Esc", "Enter", "↵", "⌘K", "Ctrl+K"]);
+    const dup = keys.filter((k, i) => keys.indexOf(k) !== i && !allowed.has(k));
+    expect(dup).toEqual([]);
     await expect(row("Toggle")).toContainText(">>");
     await expect(row("Select all rows (table)")).toBeVisible();
     if (SHOTS) await page.screenshot({ path: `${SHOTS}/shortcut-sheet-1440.png` });

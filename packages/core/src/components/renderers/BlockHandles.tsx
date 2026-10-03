@@ -15,6 +15,7 @@ import {
   unwrapTopBlock,
   duplicateTopBlock,
   moveBlocksBeside,
+  moveBlocksBesideIn,
   moveTopBlockIn,
   setTopBlockColor,
   structuralEditsAllowed,
@@ -26,14 +27,15 @@ import { EditorMenu, type EditorMenuItem } from "./EditorMenu";
 import { blockRefAt, locateBlock, mapBlockRef, type BlockRef } from "../../lib/tiptap/blockRef";
 import { TURN_INTO_ICONS, colorLabel } from "./blockUi";
 import { blockSelectionActive, blockSelectionRange, selectBlocks } from "../../lib/tiptap/EditorKeys";
-import { appendBlocksToPage, blocksToHtml, copyBlocks } from "../../lib/tiptap/moveBlock";
+import { appendBlocksToPage, blocksToHtml, canMoveBlocksToPage, carryAttachments, copyBlocks, moveFailureText, newMoveRequestId } from "../../lib/tiptap/moveBlock";
+import { suppressTrashOffer } from "../../lib/tiptap/childPage";
 import { useSelectionAsk } from "../../lib/agent/useSelectionAsk";
 import { useOptionalVaultClient } from "../../data/VaultClientContext";
 import { noteLinkTitle } from "../../lib/wikilinks";
 import { inferContentType } from "../../lib/schemas/content-types";
 import { isTrashed, protectionReason } from "../../lib/pages/model";
 import type { Note } from "../../lib/types";
-import "./ShortcutSheet"; // installs ⌘/ → keyboard shortcuts wherever no block takes the key
+import "./ShortcutSheet"; // installs ⌘/ → keyboard shortcuts
 
 interface Hovered {
   index: number;
@@ -70,7 +72,7 @@ function scrollBounds(dom: HTMLElement): { top: number; bottom: number } {
  * `+` (insert below, opens the slash menu) and `⋮⋮` (drag to reorder, click for
  * the block menu). On touch / phone widths there is no hover: the handle follows
  * the block holding the caret and a tap opens the same menu (with Move up/down).
- * Keyboard: Alt/Option+Shift+↑/↓ moves the block (BlockKeymap), ⌘/ / Ctrl+/
+ * Keyboard: Alt/Option+Shift+↑/↓ moves the block (BlockKeymap), ⌘⇧/ / Ctrl+Shift+/
  * opens the block menu for the block holding the caret.
  *
  * Wave 4A: the menu is searchable and gains Copy, Move to (another page),
@@ -107,7 +109,7 @@ export function BlockHandles({ editor, enabled, notes, noteId, onComment }: Bloc
   const dragCount = useRef(1);
   useEffect(() => {
     if (!notice) return;
-    const t = setTimeout(() => setNotice(null), 3500);
+    const t = setTimeout(() => setNotice(null), Math.max(3500, notice.length * 70));
     return () => clearTimeout(t);
   }, [notice]);
   const menuOpen = menu !== null;
@@ -231,12 +233,12 @@ export function BlockHandles({ editor, enabled, notes, noteId, onComment }: Bloc
     return () => { editor.off("transaction", onUpdate); editor.off("selectionUpdate", onSelection); };
   }, [editor, place, coarse]);
 
-  // ⌘/ (Ctrl+/) opens the block menu for the caret's block.
+  // ⌘⇧/ (Ctrl+Shift+/) opens the block menu for the caret's block. (⌘/ alone is the shortcut sheet.)
   useEffect(() => {
     if (!enabled) return;
     const onKey = (event: KeyboardEvent) => {
       if (!viewReady(editor) || !editor.view.dom.contains(event.target as Node)) return;
-      if (event.key !== "/" || !(isMac ? event.metaKey : event.ctrlKey) || event.altKey || event.shiftKey) return;
+      if ((event.code !== "Slash" && event.key !== "/" && event.key !== "?") || !(isMac ? event.metaKey : event.ctrlKey) || event.altKey || !event.shiftKey) return;
       const block = topBlockAt(editor.state.doc, editor.state.selection.from);
       const at = block && place(block.index);
       if (!at) return;
@@ -339,8 +341,7 @@ export function BlockHandles({ editor, enabled, notes, noteId, onComment }: Bloc
       dragCount.current = 1;
       setDrop(null);
       if (from && where?.kind === "side") {
-        const tr = moveBlocksBeside(editor.state, from.index, count, where.index, where.side);
-        if (tr) editor.view.dispatch(tr);
+        moveBlocksBesideIn(editor, from.index, count, where.index, where.side);
       } else if (from && where) {
         const to = where.index;
         if (moveTopBlockIn(editor, from.index, to, count) && count > 1) {
@@ -379,7 +380,7 @@ export function BlockHandles({ editor, enabled, notes, noteId, onComment }: Bloc
   const textRange = { from: hovered.pos + 1, to: hovered.pos + block.nodeSize - 1 };
   const hasText = block.textContent.trim().length > 0 && textRange.to > textRange.from;
   const targets = (notes ?? []).filter((n) => n.id !== noteId && !isTrashed(n) && !protectionReason(n) && inferContentType(n) === "document");
-  const canMove = !!client && targets.length > 0 && structuralEditsAllowed(editor);
+  const canMove = canMoveBlocksToPage() && targets.length > 0 && structuralEditsAllowed(editor);
   const canAsk = agent.available && hasText;
 
   /** Select the block's text so Comment / Ask agent act on exactly this block. */
@@ -394,21 +395,26 @@ export function BlockHandles({ editor, enabled, notes, noteId, onComment }: Bloc
     const at = locateBlock(editor, hovered.ref);
     const node = at && editor.state.doc.nodeAt(at.pos);
     setMenu(null);
-    if (!at || !node || !client) { setHovered(null); return; }
+    if (!at || !node) { setHovered(null); return; }
     const ref = hovered.ref;
     const html = blocksToHtml(editor.schema, [node]);
     const title = noteLinkTitle(target);
+    const requestId = newMoveRequestId(); // one id per invocation: a resend appends once
     setNotice(`Moving to ${title}…`);
-    appendBlocksToPage(client, target.id, html).then(() => {
-      // Remove the block only once the target has it — and only if it is still here, unchanged.
+    appendBlocksToPage(target.id, html, requestId).then(async () => {
+      // CONFIRMED by the server (never a queued write). Remove the block here only
+      // if it is still here, unchanged; a sub-page row that moves is not "deleted".
       const now = editor.isDestroyed ? null : locateBlock(editor, ref);
       const still = now && editor.state.doc.nodeAt(now.pos);
-      if (now && still && still.eq(node)) {
-        const tr = deleteTopBlock(editor.state, now.pos);
+      const removed = !!(now && still && still.eq(node));
+      if (removed) {
+        suppressTrashOffer(editor);
+        const tr = deleteTopBlock(editor.state, now!.pos);
         if (tr) editor.view.dispatch(tr);
-        setNotice(`Moved to ${title}`);
-      } else setNotice(`Copied to ${title} — the block changed here, so it was kept`);
-    }, () => setNotice(`Couldn’t move to ${title}. The block is still here.`));
+      }
+      const files = await carryAttachments(client, target.id, html);
+      setNotice(`${removed ? `Moved to ${title}` : `Copied to ${title} — the block changed here, so it was kept`}${files ? `. ${files}` : ""}`);
+    }, (e) => setNotice(moveFailureText(e, title)));
   };
 
   const mainItems: EditorMenuItem[] = [

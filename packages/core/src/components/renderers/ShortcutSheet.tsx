@@ -1,13 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { X } from "lucide-react";
+import { APP_SHORTCUTS as K } from "../../lib/shortcuts";
 import "./editor-blocks.css";
 
 /**
  * Keyboard shortcut sheet (NP-ED-07): every editor, navigation and database
- * shortcut, written for the current platform. Opens with ⌘/ (Ctrl+/) whenever
- * the key was not taken by an editable block (there it opens the block menu),
- * and from Help → "Keyboard shortcuts" in the command bar.
+ * shortcut, written for the current platform. Opens with ⌘/ (Ctrl+/) anywhere —
+ * the editor included (the block menu is ⌘⇧/) — and from Help → "Keyboard
+ * shortcuts" in the command bar. App-level keys come from `lib/shortcuts.ts`.
  *
  * Self-mounting: `openShortcutSheet()` renders into its own root on <body>, so
  * every surface (workspace, share page, fixtures) gets it without a host mount.
@@ -36,7 +37,7 @@ export const SHORTCUT_SECTIONS: Section[] = [
     k("Link (with text selected)", "Mod-K"), k("Highlight (last colour)", "Mod-Shift-H"), k("Undo", "Mod-Z"), k("Redo", "Mod-Shift-Z"),
   ] },
   { title: "Blocks", rows: [
-    k("Insert a block", "/"), k("Block menu / Turn into", "Mod-/"), k("Select the current block", "Esc"),
+    k("Insert a block", "/"), k("Block menu / Turn into", K.blockMenu), k("Select the current block", "Esc"),
     k("Move the block selection", "Up", "Down"), k("Extend the block selection", "Shift-Up", "Shift-Down"),
     k("Move block up", "Mod-Shift-Up", "Alt-Shift-Up"), k("Move block down", "Mod-Shift-Down", "Alt-Shift-Down"),
     k("Duplicate block", "Mod-D"), k("Delete selected blocks", "Backspace"), k("Edit the selected block", "Enter"),
@@ -51,11 +52,11 @@ export const SHORTCUT_SECTIONS: Section[] = [
     typed("Link to a page", "[["), typed("Mention a person, page or date", "@"),
   ] },
   { title: "Find", rows: [
-    k("Find in page", "Mod-F"), k("Find and replace", "Mod-Alt-F"), k("Next / previous match", "Enter", "Shift-Enter"),
+    k("Find in page", K.find), k("Find and replace", K.replace), k("Next / previous match", "Enter", "Shift-Enter"),
   ] },
   { title: "Navigation", rows: [
-    k("Quick find", "Mod-K"), k("New page (desktop app)", "Mod-N"), k("Save now", "Mod-S"), k("Ask agent about the selection", "Mod-J"),
-    k("Toggle sidebar", "Mod-B"), k("Toggle side panel", "Mod-\\"), k("Close tab", "Mod-W"), k("Keyboard shortcuts", "Mod-/"),
+    k("Quick find (no text selected)", K.quickFind), k("New page (desktop app)", K.newPage), k("Save now", K.save), k("Ask agent about the selection", K.askAgent),
+    k("Toggle sidebar", K.toggleSidebar), k("Toggle side panel", K.toggleSidePanel), k("Close tab", K.closeTab), k("Keyboard shortcuts", K.shortcutSheet),
   ] },
   { title: "Databases", rows: [
     k("Select all rows (table)", "Mod-A"), k("Select a range of rows", "Shift-Click"), k("Open a row in a new tab", "Mod-Click"),
@@ -140,8 +141,7 @@ export function openShortcutSheet(): void {
   root.render(<Sheet onClose={closeShortcutSheet} />);
 }
 
-// ⌘/ (Ctrl+/) anywhere the key was not already used: an editable block's handler
-// (BlockHandles, capture phase) prevents default and opens its block menu instead.
+// ⌘/ (Ctrl+/) anywhere, the editor included. (The block menu is ⌘⇧/ — BlockHandles.)
 let installed = false;
 export function installShortcutSheetKey(): void {
   if (installed || typeof window === "undefined") return;
