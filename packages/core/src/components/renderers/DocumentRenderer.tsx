@@ -29,6 +29,8 @@ import { ImageUpload } from "../../lib/tiptap/ImageUpload";
 import "../../lib/tiptap/mediaViews";
 import { UrlPaste, type UrlPasteState, type Unfurler } from "../../lib/tiptap/UrlPaste";
 import { PasteUrlMenu } from "./PasteUrlMenu";
+import { DatabaseInsert, type DatabaseInsertRequest } from "../../lib/tiptap/databaseView";
+import { InsertDatabaseDialog } from "./InsertDatabaseDialog";
 import { PageCover } from "./PageCover";
 import { COVER_GRADIENTS, coverPatch, parseCover, type PageCover as Cover } from "../../lib/media/attachments";
 import { useVaultClient } from "../../data/VaultClientContext";
@@ -150,6 +152,7 @@ export default function DocumentRenderer({ note, onMetadataChange, readOnly }: R
   unfurlRef.current = vaultClient.unfurl ? (url) => vaultClient.unfurl!(url) : undefined;
   const unfurl = useMemo<Unfurler | undefined>(() => (vaultClient.unfurl ? (url) => unfurlRef.current!(url) : undefined), [!!vaultClient.unfurl]); // eslint-disable-line react-hooks/exhaustive-deps
   const [pasteState, setPasteState] = useState<UrlPasteState | null>(null);
+  const [dbInsert, setDbInsert] = useState<DatabaseInsertRequest | null>(null);
 
   const extensions = useMemo(() => [
     StarterKit.configure({ codeBlock: false, link: false }),
@@ -173,7 +176,9 @@ export default function DocumentRenderer({ note, onMetadataChange, readOnly }: R
     BlockKeymap,
     ImageUpload.configure({ upload, uploadFile, onError: setUploadError }),
     UrlPaste.configure({ onStateChange: setPasteState, unfurl }),
-  ], [handleWikilinkNavigate, upload, uploadFile, unfurl]);
+    // Inline/linked databases: only where the page itself may be written.
+    DatabaseInsert.configure({ onRequest: readOnly || governed ? undefined : setDbInsert }),
+  ], [handleWikilinkNavigate, upload, uploadFile, unfurl, readOnly, governed]);
   const [initialHtml, setInitialHtml] = useState<string | null>(null);
   const contentRef = useRef<string>(note.content);
   const editorRef = useRef<ReturnType<typeof useEditor>>(null);
@@ -451,6 +456,7 @@ export default function DocumentRenderer({ note, onMetadataChange, readOnly }: R
         )}
         {/* `@` mention menu: people, pages, dates, reminders */}
         {editor && mentionState?.active && <MentionMenu editor={editor} state={mentionState} notes={allNotes || []} />}
+        {editor && dbInsert && <InsertDatabaseDialog editor={editor} request={dbInsert} hostPath={note.path} onClose={() => setDbInsert(null)} />}
         {/* In-note find bar (Cmd+F / Ctrl+F) */}
         {editor && findOpen && (
           <EditorFindBar editor={editor} replaceOpen={findReplace} onClose={() => { setFindOpen(false); setFindReplace(false); editor.commands.focus(); }} />

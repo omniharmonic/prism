@@ -9,6 +9,7 @@ import { api } from "../src/routes/api";
 import { setResolver, clearDnsNegativeCache } from "../src/media/netguard";
 import type { Transport, TransportRequest } from "../src/media/fetcher";
 import { configureAttachments } from "../src/routes/attachments";
+import { configureMedia } from "../src/routes/media";
 import { parseUnfurl, decodeEntities } from "../src/media/unfurl-parse";
 import { resetDb, makeSession, sessionCookie, makeCapability, installFakeVault, type FakeVault } from "./helpers";
 import { issueDeviceToken } from "../src/auth/device";
@@ -90,8 +91,9 @@ test("parses og/title/description/site/image/favicon, resolving relative URLs ag
     title: 'The Real "Title"',
     description: "OG — description ✓",
     siteName: "Example",
-    image: "https://example.com/img/cover.png",
-    favicon: "https://example.com/dir/favicon.ico",
+    // Same-origin proxied paths — never a raw third-party URL.
+    image: `/api/media/proxy?u=${encodeURIComponent("https://example.com/img/cover.png")}`,
+    favicon: `/api/media/proxy?u=${encodeURIComponent("https://example.com/dir/favicon.ico")}`,
   });
   // Cached: a second call does not dial again.
   const before = dials.length;
@@ -149,4 +151,48 @@ test("the scanner is linear on pathological input and ignores unsafe URLs", () =
   assert.equal([...m.title!].length, 300);
   assert.equal([...m.description!].length, 600);
   assert.equal(decodeEntities("&lt;b&gt; &#0; &#x110000; &bogus; &amp"), "<b> &#0; &#x110000; &bogus; &amp");
+});
+
+test("M2: image/favicon the media proxy would refuse are omitted; nothing third-party leaks", async () => {
+  routes.set("example.com/p", html(`<head><title>T</title><meta property="og:image" content="http://example.com/plain-http.png"><link rel="icon" href="https://127.0.0.1/f.ico"></head>`));
+  const r = await unfurl("https://example.com/p", { cookie: signedIn() });
+  const body = (await r.json()) as Record<string, unknown>;
+  assert.equal(body.image, null, "plain http is not proxyable by default");
+  assert.equal(body.favicon, null, "IP literal refused");
+  assert.equal(JSON.stringify(body).includes("http://example.com/plain"), false);
+});
+
+test("M2: entity decoding is linear — 250k '&' in a title and in a meta value", () => {
+  const amps = "&".repeat(250_000);
+  for (const doc of [`<head><title>${amps}</title></head>`, `<head><meta property="og:description" content="${amps}"></head>`, `<head><title>x</title><meta property="og:image" content="${amps}"></head>`]) {
+    const t0 = performance.now();
+    parseUnfurl(doc, "https://example.com/");
+    assert.ok(performance.now() - t0 < 200, `took ${performance.now() - t0} ms`);
+  }
+  const t0 = performance.now();
+  decodeEntities(amps);
+  assert.ok(performance.now() - t0 < 200, `decodeEntities took ${performance.now() - t0} ms`);
+  assert.equal(decodeEntities("a &amp; b &#39;c&#39; &amp;amp; &verylongnotanentityname; &"), "a & b 'c' &amp; &verylongnotanentityname; &");
+});
+
+test("M2: unfurl fetches run inside the media proxy's in-flight pool → 503 busy past the wait", async () => {
+  configureMedia({ mediaPerUser: 1, queueWaitMs: 30 });
+  let release!: () => void;
+  const gate = new Promise<void>((r) => (release = r));
+  const slow: Transport = async (req) => {
+    await gate;
+    return transport(req);
+  };
+  configureAttachments({ transport: slow });
+  routes.set("example.com/s1", html(PAGE));
+  routes.set("example.com/s2", html(PAGE));
+  const c = signedIn();
+  const first = unfurl("https://example.com/s1", { cookie: c });
+  await new Promise((r) => setTimeout(r, 10));
+  const second = await unfurl("https://example.com/s2", { cookie: c });
+  assert.equal(second.status, 503);
+  assert.deepEqual(await second.json(), { error: "busy" });
+  release();
+  assert.equal((await first).status, 200);
+  configureMedia(null);
 });

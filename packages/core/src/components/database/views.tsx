@@ -24,6 +24,7 @@ import { isBlank, optionColor, propertyValue, type PropertyDef } from "../../lib
 import { OptionChip, PropertyDisplay, PropertyValue } from "./PropertyValue";
 import { Popover } from "./Popover";
 import { applyRank, reorderRank, type DatabaseView } from "./config";
+import { coverForNote, firstFileUrl } from "../../lib/media/attachments";
 
 export interface ViewContext {
   view: DatabaseView;
@@ -241,7 +242,7 @@ function TableBlock({ ctx, rows, preset, label }: { ctx: ViewContext; rows: Quer
               </th>
               {ctx.shown.map((p) => (
                 <td key={p.key}>
-                  <PropertyValue def={p} value={cell(r, p)} variant="cell" readOnly={!ctx.canEditRow(r) || !!p.system} onCommit={ctx.commit(r, p)} onCreateOption={ctx.createOption(p)} />
+                  <PropertyValue def={p} value={cell(r, p)} variant="cell" noteId={r.id} readOnly={!ctx.canEditRow(r) || !!p.system} onCommit={ctx.commit(r, p)} onCreateOption={ctx.createOption(p)} />
                 </td>
               ))}
             </tr>
@@ -436,13 +437,18 @@ export function GalleryView({ ctx }: { ctx: ViewContext }) {
   return (
     <div className="db-gallery" role="list" aria-label={`${ctx.view.name} gallery`}>
       {ctx.rows.map((r) => {
-        const cover = ctx.view.coverKey ? r.metadata[ctx.view.coverKey] : r.metadata.cover;
-        const url = typeof cover === "string" && /^https:\/\//i.test(cover) ? cover : null;
+        // Cover (NP-DB-05): the chosen property (a URL or a files value), else the page cover
+        // (image or brand gradient) — one resolver shared with the page header (`coverForNote`).
+        const picked = ctx.view.coverKey ? { metadata: { cover: firstFileUrl(r.metadata[ctx.view.coverKey]) } } : r;
+        const cover = coverForNote(picked);
+        const url = cover?.src ?? null;
         const icon = typeof r.metadata.icon === "string" ? r.metadata.icon : null;
         return (
           <article key={r.id} className="db-gcard" role="listitem" aria-label={title(r)}>
             <button type="button" className="db-cover" aria-hidden="true" tabIndex={-1} onClick={(e) => ctx.open(r, e)}>
-              {url ? <img src={url} alt="" loading="lazy" referrerPolicy="no-referrer" /> : <span>{icon ?? title(r).slice(0, 1).toUpperCase()}</span>}
+              {url ? <img src={url} alt="" loading="lazy" referrerPolicy="no-referrer" style={{ objectPosition: `50% ${cover!.y}%` }} />
+                : cover?.gradient ? <span className="db-cover-gradient" style={{ background: cover.gradient, width: "100%", height: "100%" }} />
+                : <span>{icon ?? title(r).slice(0, 1).toUpperCase()}</span>}
             </button>
             <div className="db-gcard-body">
               <button type="button" className="db-row-open db-card-title focus-ring" style={{ whiteSpace: "normal" }} onClick={(e) => ctx.open(r, e)}>{title(r)}</button>

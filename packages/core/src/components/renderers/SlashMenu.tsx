@@ -11,6 +11,7 @@ import { dismissSlashCommand, type SlashCommandState } from "../../lib/tiptap/Sl
 import { turnTopBlocksInto, type TurnIntoKind } from "../../lib/tiptap/blockCommands";
 import { canUploadImages, pickAndUploadImages, canUploadFiles, pickAndUploadFiles } from "../../lib/tiptap/ImageUpload";
 import { editorUnfurler, insertLinkBlock } from "../../lib/tiptap/UrlPaste";
+import { canInsertDatabase, requestDatabaseInsert } from "../../lib/tiptap/databaseView";
 import "./editor-blocks.css";
 
 const isMac = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform);
@@ -21,7 +22,7 @@ export function shortcutLabel(spec: string): string {
   return parts.map((p) => ({ Mod: "Ctrl" } as Record<string, string>)[p] ?? (p.length === 1 ? p.toUpperCase() : p)).join("+");
 }
 
-type Group = "Basic blocks" | "Media" | "Advanced" | "Agent";
+type Group = "Basic blocks" | "Media" | "Database" | "Advanced" | "Agent";
 
 interface SlashItem {
   id: string;
@@ -112,6 +113,15 @@ const FILE_ITEMS: SlashItem[] = [
   { id: "video", group: "Media", title: "Video", subtitle: "Upload a video to play inline", icon: <Film size={16} />, keywords: ["video", "movie", "mp4", "clip"], run: (e) => pickAndUploadFiles(e, "video/*") },
 ];
 
+const DATABASE_ITEMS: SlashItem[] = [
+  { id: "db-table", group: "Database", title: "Table view", subtitle: "A new database as a table", icon: <TableIcon size={16} />, keywords: ["database", "table view", "inline", "db"], run: (e) => requestDatabaseInsert(e, "new", "table") },
+  { id: "db-board", group: "Database", title: "Board view", subtitle: "A new database as a kanban board", icon: <Columns3 size={16} />, keywords: ["database", "board view", "kanban", "inline"], run: (e) => requestDatabaseInsert(e, "new", "board") },
+  { id: "db-gallery", group: "Database", title: "Gallery", subtitle: "A new database as cards", icon: <ImageIcon size={16} />, keywords: ["database", "gallery view", "cards", "inline"], run: (e) => requestDatabaseInsert(e, "new", "gallery") },
+  { id: "db-list", group: "Database", title: "List", subtitle: "A new database as a list", icon: <List size={16} />, keywords: ["database", "list view", "inline"], run: (e) => requestDatabaseInsert(e, "new", "list") },
+  { id: "db-calendar", group: "Database", title: "Calendar", subtitle: "A new database on a calendar", icon: <ListChecks size={16} />, keywords: ["database", "calendar view", "dates", "inline"], run: (e) => requestDatabaseInsert(e, "new", "calendar") },
+  { id: "db-linked", group: "Database", title: "Linked view of database", subtitle: "Show an existing database here", icon: <Link2 size={16} />, keywords: ["linked", "database", "view", "existing", "embed database"], run: (e) => requestDatabaseInsert(e, "linked", "table") },
+];
+
 const IMAGE_URL: SlashItem = { id: "image-url", group: "Media", title: "Image from URL", subtitle: "Embed an image by its address", icon: <ImageUp size={16} />, keywords: ["image", "url", "link", "embed"], run: insertImageByUrl };
 
 /** Fuzzy score: prefix > word prefix > substring > in-order letters. 0 = no match. */
@@ -155,10 +165,12 @@ export function SlashMenu({ editor, state, onClose }: { editor: Editor | null; s
   const canAsk = action.canAsk && editor?.isEditable && !!documentText?.trim();
   const uploads = canUploadImages(editor);
   const fileUploads = canUploadFiles(editor);
+  const databases = canInsertDatabase(editor);
   const items = useMemo(() => {
     const all: SlashItem[] = [...BASE];
     if (uploads) all.splice(all.findIndex((i) => i.id === "image") + 1, 0, IMAGE_URL);
     if (fileUploads) all.splice(all.findIndex((i) => i.id === (uploads ? "image-url" : "image")) + 1, 0, ...FILE_ITEMS);
+    if (databases) all.splice(all.findIndex((i) => i.id === "toc"), 0, ...DATABASE_ITEMS);
     if (canAsk) all.push({ id: "ask", agent: true, group: "Agent", title: "Ask agent", subtitle: "Discuss this page in your conversation", icon: <Sparkles size={16} />, keywords: ["ask", "agent", "ai", "assistant"], shortcut: "Mod-J", run: () => {} });
     if (!q.trim()) return all;
     return all
@@ -166,7 +178,7 @@ export function SlashMenu({ editor, state, onClose }: { editor: Editor | null; s
       .filter((r) => r.score > 0)
       .sort((a, b) => b.score - a.score || a.i - b.i)
       .map((r) => r.it);
-  }, [q, canAsk, uploads, fileUploads]);
+  }, [q, canAsk, uploads, fileUploads, databases]);
 
   useEffect(() => setSelected(0), [q]);
 

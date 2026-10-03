@@ -96,6 +96,7 @@ export function PropertyBar({ note, readOnly, onOpenAll, layout = "bar", trailin
           <PropertyValue
             def={def}
             value={meta[def.key]}
+            noteId={note.id}
             readOnly={!editable}
             variant={layout === "panel" ? "panel" : "bar"}
             onCommit={commit(def)}

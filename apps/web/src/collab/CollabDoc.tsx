@@ -597,6 +597,7 @@ function ScopedCollabDoc({
                 uploadFile={canReview ? uploadFile : undefined}
                 unfurl={getCapabilityToken() ? undefined : restUnfurl}
                 onUploadError={setUploadNotice}
+                hostPath={canReview && !getCapabilityToken() ? path : undefined}
                 noteId={noteId}
               />
             )}

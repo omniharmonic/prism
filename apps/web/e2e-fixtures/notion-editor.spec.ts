@@ -5,6 +5,11 @@ const SHOTS = process.env.PRISM_EDITOR_SHOTS;
 const html = (page: Page, i = 0) => page.evaluate((i) => (document.querySelectorAll(".tiptap")[i] as any).editor.getHTML() as string, i);
 const open = (page: Page, query = "") => page.goto(`/e2e-fixtures/notion-media.html${query}`);
 const enc = encodeURIComponent;
+/** Click into a block and wait until the caret is really there (a bare click races the editor under load). */
+async function clickInto(page: Page, text: string) {
+  await page.getByText(text, { exact: true }).click();
+  await expect.poll(() => page.evaluate(() => (document.querySelector(".tiptap") as any).editor.state.selection.$from.parent.textContent)).toBe(text);
+}
 
 test("code block language picker, copy, wrap", async ({ page, context }) => {
   await context.grantPermissions(["clipboard-read", "clipboard-write"]);
@@ -95,9 +100,11 @@ test("toc block tracks headings", async ({ page }) => {
   const pad = (name: string) => toc.getByRole("button", { name }).evaluate((b) => parseFloat(getComputedStyle(b.parentElement!).paddingInlineStart));
   expect(await pad("Waders")).toBeGreaterThan(await pad("Birds"));
   // Live: a new heading appears without reload.
-  await page.getByText("end", { exact: true }).click();
+  await expect(toc.getByRole("button")).toHaveCount(3);
+  await clickInto(page, "end");
   await page.keyboard.press("End");
   await page.keyboard.press("Enter");
+  await expect.poll(() => page.evaluate(() => (document.querySelector(".tiptap") as any).editor.state.selection.$from.parent.textContent)).toBe("");
   await page.keyboard.type("## Herons");
   await expect(toc.getByRole("button")).toHaveText(["Field guide", "Birds", "Waders", "Herons"]);
   // Click scrolls to the heading.
@@ -161,4 +168,74 @@ test("replace all in a live document reaches the other client as one undo step",
   await page.keyboard.press("ControlOrMeta+z");
   await expect.poll(async () => (await html(page, 1)).match(/heron/gi)?.length ?? 0).toBe(3);
   expect(await html(page, 1)).not.toContain("egret");
+});
+
+test("replace keeps offsets, deletes only the match, and never edits hidden link targets or chips", async ({ page }) => {
+  // "İ" lower-cases to two code units: offsets must come from the original text.
+  await open(page, `?content=${enc("<p>İİİ heron İ heron</p><p>heron</p><p>See [[heron|the bird]] and [[Projects/heron]] here: heron</p>")}`);
+  await clickInto(page, "heron");
+  await page.keyboard.press("ControlOrMeta+Shift+h");
+  const bar = page.getByRole("search", { name: "Find in note" });
+  await bar.getByRole("textbox", { name: "Find in note" }).fill("heron");
+  // 2 in the first paragraph, 1 alone, 1 after the links — the two inside [[…]] are not matches.
+  await expect(bar).toContainText("1 / 4");
+  const marked = await page.locator(".prism-search-match").allTextContents();
+  expect(marked).toEqual(["heron", "heron", "heron", "heron"]); // exact text, no off-by-one from "İ"
+  // Empty replacement = delete the match only: the paragraph that was just "heron" stays (empty).
+  await bar.getByRole("button", { name: "Replace all" }).click();
+  const after = await html(page);
+  expect(after).toContain("<p>İİİ  İ </p>");
+  expect(after).toContain("<p></p>");
+  expect(after).toContain("[[heron|the bird]]");
+  expect(after).toContain("[[Projects/heron]]");
+  expect((after.match(/<p/g) ?? []).length).toBe(3);
+});
+
+test("inline database: slash → new table view, and a linked view of an existing database", async ({ page }) => {
+  await open(page, `?content=${enc("<p>Plan</p><p></p>")}`);
+  await page.locator(".tiptap p").nth(1).click();
+  await page.keyboard.type("/database");
+  await expect(page.getByRole("option", { name: /^Table view/ })).toHaveAttribute("aria-selected", "true");
+  await page.keyboard.press("Enter");
+  const dialog = page.getByRole("dialog", { name: "New table database" });
+  await dialog.getByRole("textbox").fill("not a tag!");
+  await dialog.getByRole("button", { name: "Create database" }).click();
+  await expect(dialog.getByRole("alert")).toContainText("Use a tag name");
+  expect(await page.evaluate(() => (window as any).prismMediaCreates.length)).toBe(0);
+  await dialog.getByRole("textbox").fill("book");
+  await dialog.getByRole("button", { name: "Create database" }).click();
+  await expect(dialog).toHaveCount(0);
+  // Created as a sub-page of this page, embedded as an atom block that renders the database.
+  const created = await page.evaluate(() => (window as any).prismMediaCreates[0]);
+  expect(created.path).toBe("Projects/Prism/Field guide/book database");
+  expect(created.metadata.prism_type).toBe("database");
+  const block = page.locator(".prism-database-block");
+  await expect(block).toHaveCount(1);
+  await expect(block.getByRole("button", { name: "Braiding Sweetgrass" })).toBeVisible();
+  let stored = await html(page);
+  expect(stored).toMatch(/<div data-prism-database="new1" data-view="v[a-z0-9]+"><\/div>/);
+  expect(stored).not.toContain("Braiding"); // rows are never copied into the page
+
+  // Linked view of an existing database.
+  await page.evaluate(() => { const ed = (document.querySelector(".tiptap") as any).editor; ed.chain().focus("end").insertContent("<p></p>").run(); });
+  await expect(page.locator(".tiptap")).toBeFocused();
+  await expect.poll(() => page.evaluate(() => (document.querySelector(".tiptap") as any).editor.state.selection.$from.parent.textContent)).toBe("");
+  await page.keyboard.type("/linked");
+  await expect(page.getByRole("option", { name: /^Linked view of database/ })).toHaveAttribute("aria-selected", "true");
+  await page.keyboard.press("Enter");
+  const link = page.getByRole("dialog", { name: "Link a database" });
+  await link.getByRole("textbox", { name: "Search databases" }).fill("read");
+  await link.getByRole("option", { name: "Reading list" }).click();
+  await expect(page.locator(".prism-database-block")).toHaveCount(2);
+  stored = await html(page);
+  expect(stored).toMatch(/<div data-prism-database="db1" data-view="v[a-z0-9]+"><\/div>/);
+  // The linked view was added to the database itself (so the block keeps its own layout).
+  expect(await page.evaluate(() => (window as any).prismMediaVault.find((n: any) => n.id === "db1").metadata.prism_database.views.length)).toBe(2);
+
+  // Reload from stored HTML: both blocks come back. A database the reader cannot open says so (no title, no rows).
+  await open(page, `?readonly&content=${enc(stored)}`);
+  await expect(page.locator(".prism-database-block")).toHaveCount(2);
+  await expect(page.locator(".prism-database-block").first()).toContainText("This database is unavailable");
+  await expect(page.locator(".prism-database-block").nth(1).getByRole("button", { name: "Braiding Sweetgrass" })).toBeVisible();
+  expect(await html(page)).toBe(stored);
 });

@@ -40,6 +40,7 @@ import { roleAtLeast, roleFloor } from "./roles";
 import { vaultClient, VaultError, VaultConflictError, type Note } from "./parachute";
 import { ensureTree, treeUpsertNote, treeRemoveNote, rowRef, TREE_META_KEYS, type TreeRow } from "./tree";
 import type { VaultEntry } from "./config";
+import { purgeAttachmentsForNote } from "./attachments";
 import {
   TRASH_TAG,
   TRASH_META,
@@ -629,6 +630,8 @@ export function createPagesApi(opts: PagesApiOptions = {}) {
       // Deepest first, so a failure never leaves a child without its page.
       const order = [...group].sort((a, b) => (b.path ?? "").split("/").length - (a.path ?? "").split("/").length).map((g) => g.id);
       for (const id of [...order, root.id]) {
+        // Attachments die with their page (vault rows + files); best-effort, never blocks the delete.
+        await purgeAttachmentsForNote(entry.id, id).catch(() => {});
         try {
           await vaultClient(entry.id).deleteNote(id);
           treeRemoveNote(entry, id);
@@ -893,6 +896,7 @@ export async function runTrashPurgeOnce(now = Date.now()): Promise<{ purged: num
       continue;
     }
     budget--;
+    await purgeAttachmentsForNote(entry.id, note.id).catch(() => {});
     try {
       await vaultClient(entry.id).deleteNote(note.id);
       treeRemoveNote(entry, note.id);

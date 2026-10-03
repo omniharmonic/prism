@@ -71,6 +71,8 @@ export interface FakeVault {
   storage: Map<string, Buffer>;
   /** Attachment rows linked via `POST /notes/:id/attachments`. */
   attachments: Array<{ id: string; noteId: string; path: string; mimeType: string; body: unknown }>;
+  /** Make the next `POST /notes/:id/attachments` fail (upload succeeded, attach did not). */
+  failNextAttach?: boolean;
   put(note: Partial<FakeNote> & { id: string }): FakeNote;
   /** Serve an ADDITIONAL vault name at /vault/<name>/api with its own note
    *  store (multi-vault tests). The primary store (`notes`) keeps serving
@@ -247,8 +249,17 @@ export function installFakeVault(): FakeVault {
       }
       return new Response(new Uint8Array(bytes), { status: 200, headers: { "content-type": "application/octet-stream", "content-length": String(bytes.length) } });
     }
+    const attDel = sub.match(/^\/notes\/([^/]+)\/attachments\/([^/]+)$/);
+    if (attDel && method === "DELETE") {
+      const i = fv.attachments.findIndex((x) => x.noteId === decodeURIComponent(attDel[1]!) && x.id === decodeURIComponent(attDel[2]!));
+      if (i < 0) return json({ error: "Not found", error_type: "not_found" }, 404);
+      const [gone] = fv.attachments.splice(i, 1);
+      if (!fv.attachments.some((x) => x.path === gone!.path)) fv.storage.delete(gone!.path);
+      return new Response(null, { status: 204 });
+    }
     const att = sub.match(/^\/notes\/([^/]+)\/attachments$/);
     if (att && method === "POST") {
+      if (fv.failNextAttach) { fv.failNextAttach = false; return json({ error: "boom" }, 500); }
       const noteId = decodeURIComponent(att[1]!);
       if (!store.get(noteId)) return json({ error: "Not found", error_type: "not_found" }, 404);
       const b = (body ?? {}) as { path?: string; mimeType?: string };

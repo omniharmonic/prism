@@ -9,7 +9,10 @@
  * and offers Retry. Nothing is ever silently dropped.
  */
 import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from "react";
-import { Check, ExternalLink, Mail, Phone, Plus, Search, X } from "lucide-react";
+import { Check, ExternalLink, Mail, Paperclip, Phone, Plus, Search, Upload, X } from "lucide-react";
+import { useVaultClient } from "../../data/VaultClientContext";
+import { serverFetch } from "../../lib/transport/serverFetch";
+import { downloadOwnAttachment, fileRef, isImageFileName, parseFileRefs, MAX_FILE_BYTES } from "../../lib/media/attachments";
 import { PropertyConflictError } from "../../data/VaultClient";
 import { useLinkCandidates } from "../../lib/database/hooks";
 import {
@@ -66,6 +69,23 @@ export function PropertyDisplay({ def, value }: { def: PropertyDef; value: unkno
       return <span className="db-chips">{list(value).map((v) => <span key={v} className="db-link-chip" data-kind={def.kind}>{def.kind === "person" && <span className="db-avatar" aria-hidden="true">{linkLabel(v).slice(0, 1).toUpperCase()}</span>}{linkLabel(v)}</span>)}</span>;
     case "checkbox":
       return <span className="db-check" data-checked={value === true || undefined} role="img" aria-label={value === true ? "Checked" : "Unchecked"}>{value === true && <Check size={12} aria-hidden="true" />}</span>;
+    case "files": {
+      // Files & media (NP-DB-09): image thumbnails, other files as named chips; both download on click.
+      const files = parseFileRefs(value);
+      if (!files.length) return <span className="db-empty">Empty</span>;
+      return (
+        <span className="db-chips db-files">
+          {files.map((f) => (
+            <span key={f.url} role="link" tabIndex={0} className="db-file" title={`Download ${f.name}`}
+              onClick={(e) => { e.stopPropagation(); void downloadOwnAttachment(serverFetch, f.url, f.name).catch(() => {}); }}
+              onKeyDown={(e) => { if (e.key === "Enter") { e.stopPropagation(); void downloadOwnAttachment(serverFetch, f.url, f.name).catch(() => {}); } }}>
+              {isImageFileName(f.name) ? <img className="db-file-thumb" src={f.url} alt="" loading="lazy" /> : <Paperclip size={11} aria-hidden="true" />}
+              <span className="db-file-name">{f.name}</span>
+            </span>
+          ))}
+        </span>
+      );
+    }
     case "email": {
       const v = String(value);
       return looksLikeEmail(v) ? <a className="db-url" href={`mailto:${v.trim()}`} onClick={(e) => e.stopPropagation()}>{v}</a> : <span className="db-text">{v}</span>;
@@ -95,7 +115,10 @@ export function PropertyValue({
   onCreateOption,
   autoOpen,
   onDone,
+  noteId,
 }: {
+  /** The page this value belongs to: files & media uploads attach to it. Omitted → files are read-only. */
+  noteId?: string;
   def: PropertyDef;
   value: unknown;
   readOnly?: boolean;
@@ -261,11 +284,79 @@ export function PropertyValue({
           onCreateOption={onCreateOption}
           onPick={(next) => { void commit(next); }} />
       )}
+      {def.kind === "files" && (
+        <FilesPicker anchor={anchor} open={open} def={def} value={value} noteId={noteId} onClose={() => { setOpen(false); onDone?.(); }}
+          onPick={(next) => commit(next)} />
+      )}
       {(def.kind === "person" || def.kind === "relation") && (
         <LinkPicker anchor={anchor} open={open} def={def} value={value} onClose={() => { setOpen(false); onDone?.(); }}
           onPick={(next) => { void commit(next); }} />
       )}
     </span>
+  );
+}
+
+/** Files & media editor: list with remove, and upload (stored as attachments of the page). */
+function FilesPicker({ anchor, open, def, value, noteId, onClose, onPick }: {
+  anchor: React.RefObject<HTMLElement | null>; open: boolean; def: PropertyDef; value: unknown; noteId?: string;
+  onClose: () => void; onPick: (next: unknown) => Promise<void>;
+}) {
+  const client = useVaultClient();
+  const input = useRef<HTMLInputElement>(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const files = parseFileRefs(value);
+  const canUpload = !!noteId && !!client.uploadAttachment;
+  const add = async (picked: FileList | null) => {
+    const list = Array.from(picked ?? []);
+    if (!list.length || !noteId || !client.uploadAttachment) return;
+    setErr("");
+    setBusy(true);
+    try {
+      const next = files.map((f) => fileRef(f.name, f.url));
+      for (const file of list) {
+        if (file.size > MAX_FILE_BYTES) { setErr(`${file.name} is larger than ${Math.round(MAX_FILE_BYTES / 1_048_576)} MB.`); continue; }
+        try {
+          const a = await client.uploadAttachment(noteId, file, { kind: "file" });
+          next.push(fileRef(a.name || file.name, a.url));
+        } catch (e) {
+          const why = (e as { userMessage?: string })?.userMessage;
+          setErr(why ? `Couldn’t upload ${file.name}: ${why}.` : `Couldn’t upload ${file.name}. Nothing was added.`);
+        }
+      }
+      if (next.length !== files.length) await onPick(next);
+    } finally {
+      setBusy(false);
+      if (input.current) input.current.value = "";
+    }
+  };
+  return (
+    <Popover anchor={anchor} open={open} onClose={onClose} label={`${def.label} files`} width={300}>
+      <div className="db-files-picker">
+        {files.length === 0 && <p className="db-empty">No files yet.</p>}
+        <ul>
+          {files.map((f) => (
+            <li key={f.url}>
+              {isImageFileName(f.name) ? <img className="db-file-thumb" src={f.url} alt="" /> : <Paperclip size={13} aria-hidden="true" />}
+              <button type="button" className="db-file-name focus-ring" onClick={() => void downloadOwnAttachment(serverFetch, f.url, f.name).catch(() => setErr("Couldn’t download this file."))}>{f.name}</button>
+              <button type="button" className="db-opt-remove" aria-label={`Remove ${f.name}`} disabled={busy}
+                onClick={() => { const rest = files.filter((x) => x.url !== f.url).map((x) => fileRef(x.name, x.url)); void onPick(rest.length ? rest : null); }}>
+                <X size={12} aria-hidden="true" />
+              </button>
+            </li>
+          ))}
+        </ul>
+        {canUpload ? (
+          <>
+            <input ref={input} type="file" multiple hidden aria-label={`Upload to ${def.label}`} onChange={(e) => void add(e.target.files)} />
+            <button type="button" className="db-files-upload focus-ring" disabled={busy} onClick={() => input.current?.click()}>
+              <Upload size={13} aria-hidden="true" /> {busy ? "Uploading…" : "Upload a file"}
+            </button>
+          </>
+        ) : <p className="db-empty">Uploading isn’t available here.</p>}
+        {err && <p role="alert" className="db-error">{err}</p>}
+      </div>
+    </Popover>
   );
 }
 

@@ -30,6 +30,8 @@ import { SearchHighlight } from "../../lib/tiptap/SearchHighlight";
 import { UrlPaste, type UrlPasteState, type Unfurler } from "../../lib/tiptap/UrlPaste";
 import { EditorFindBar } from "./EditorFindBar";
 import { PasteUrlMenu } from "./PasteUrlMenu";
+import { DatabaseInsert, type DatabaseInsertRequest } from "../../lib/tiptap/databaseView";
+import { InsertDatabaseDialog } from "./InsertDatabaseDialog";
 import "../../lib/tiptap/MentionView";
 import { MentionSuggest, type MentionSuggestState } from "../../lib/tiptap/MentionSuggest";
 import { MentionContext, setMentionNoteId } from "../../lib/tiptap/MentionContext";
@@ -77,6 +79,7 @@ export function CollabEditor({
   uploadImage,
   uploadFile,
   unfurl,
+  hostPath,
   onUploadError,
   noteId,
 }: {
@@ -123,6 +126,8 @@ export function CollabEditor({
   uploadFile?: FileUploader;
   /** Link previews for bookmark blocks. Read at mount. */
   unfurl?: Unfurler;
+  /** This page's path: enables the inline-database slash items (a new database becomes its sub-page). Omitted → hidden. Read at mount. */
+  hostPath?: string | null;
   /** User-facing upload failure message. */
   onUploadError?: (message: string) => void;
   /** The note this editor shows (date-chip reminders are created for it). */
@@ -161,6 +166,9 @@ export function CollabEditor({
   useEffect(() => { unfurlRef.current = unfurl; }, [unfurl]);
   const [pasteState, setPasteState] = useState<UrlPasteState | null>(null);
   const [find, setFind] = useState<null | { replace: boolean }>(null);
+  const [dbInsert, setDbInsert] = useState<DatabaseInsertRequest | null>(null);
+  const hostPathRef = useRef(hostPath);
+  useEffect(() => { hostPathRef.current = hostPath; }, [hostPath]);
   const findRef = useRef<HTMLDivElement>(null);
   const uploadErrorRef = useRef(onUploadError);
   useEffect(() => { uploadErrorRef.current = onUploadError; }, [onUploadError]);
@@ -185,6 +193,7 @@ export function CollabEditor({
       }),
       UrlPaste.configure({ onStateChange: setPasteState, unfurl: unfurl ? (url) => unfurlRef.current!(url) : undefined }),
       SearchHighlight,
+      DatabaseInsert.configure({ onRequest: hostPath !== undefined ? setDbInsert : undefined }),
       SuggestionMode.configure({ user }),
       CommentOnly.configure({ active: !!commentOnly }),
       CommentInteraction.configure({ onActivate: (id) => commentActivateRef.current?.(id) }),
@@ -351,6 +360,10 @@ export function CollabEditor({
       {/* "Paste as" menu after a bare URL paste */}
       {editor && pasteState && editable && !commentOnly && !suggesting && (
         <PasteUrlMenu editor={editor} state={pasteState} unfurl={unfurl ? (url) => unfurlRef.current!(url) : undefined} onClose={() => setPasteState(null)} />
+      )}
+
+      {editor && dbInsert && editable && !commentOnly && !suggesting && (
+        <InsertDatabaseDialog editor={editor} request={dbInsert} hostPath={hostPathRef.current} onClose={() => setDbInsert(null)} />
       )}
 
       {/* In-note find / replace (works on the live shared document: one transaction per replace) */}

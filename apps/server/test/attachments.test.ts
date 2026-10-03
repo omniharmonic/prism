@@ -11,9 +11,12 @@ import { issueDeviceToken } from "../src/auth/device";
 import { INPROCESS_ACTOR, INPROCESS_CLIENT_KEY } from "../src/auth/actor";
 import { TRASH_TAG, LOCK_KEY } from "@prism/core/pages";
 import { resetTreeForTests } from "../src/tree";
-import { configureAttachments } from "../src/routes/attachments";
-import { resetAttachmentsForTests, sanitizeName, contentDisposition } from "../src/attachments";
-import { sniffAttachment, looksActive } from "../src/media/sniff-file";
+import { configureAttachments as configureRaw, type AttachmentsConfig } from "../src/routes/attachments";
+// One owner account uploads across the whole file: lift the per-minute rate unless a test sets it.
+const configureAttachments = (over: Partial<AttachmentsConfig> | null) => configureRaw({ uploadsPerMinute: 100_000, ...(over ?? {}) });
+import { resetAttachmentsForTests, sanitizeName, contentDisposition, purgeAttachmentsForNote, usedBytes } from "../src/attachments";
+import { sniffAttachment, looksActive, mpegFrameLength } from "../src/media/sniff-file";
+import { addVaultEntry, addGrant, db } from "../src/db";
 import { installFakeVault, resetDb, makeSession, sessionCookie, grantUser, makeCapability, type FakeVault } from "./helpers";
 
 const PNG = Buffer.from("89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000d4944415478da63f8ffff3f0005fe02fea7d6a4c80000000049454e44ae426082", "hex");
@@ -21,6 +24,8 @@ const PDF = Buffer.from("%PDF-1.4\n1 0 obj<<>>endobj\ntrailer<<>>\n%%EOF\n");
 const SVG = Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>');
 const HTML = Buffer.from("  \n<!DOCTYPE html><html><script>alert(1)</script></html>");
 const ZIPISH = Buffer.from("PK\x03\x04 some opaque archive bytes", "latin1");
+// One MPEG-1 Layer III frame header: 128 kbit/s, 44.1 kHz, no padding → 417 bytes.
+const MP3_FRAME = Buffer.concat([Buffer.from([0xff, 0xfb, 0x90, 0x00]), Buffer.alloc(413)]);
 const OWNER = "owner@test.local";
 const MEMBER = "member@test.local";
 const STRANGER = "stranger@test.local";
@@ -80,7 +85,12 @@ test("owner uploads a PNG: vault storage + note attachment, then GET streams it 
   assert.equal(r.headers.get("content-type"), "image/png");
   assert.equal(r.headers.get("x-content-type-options"), "nosniff");
   assert.equal(r.headers.get("cross-origin-resource-policy"), "same-origin");
-  assert.equal(r.headers.get("cache-control"), "private, max-age=300");
+  assert.equal(r.headers.get("cache-control"), "private, no-cache");
+  assert.equal(r.headers.get("vary"), "Authorization, Cookie");
+  assert.equal(r.headers.get("etag"), `"${body.id}"`);
+  const again = await get(body.id, { cookie: login(OWNER), headers: { "if-none-match": `"${body.id}"` } });
+  assert.equal(again.status, 304);
+  assert.equal((await get(body.id, { headers: { "if-none-match": `"${body.id}"` } })).status, 404, "304 only after the access check");
   assert.equal(r.headers.get("content-security-policy"), "default-src 'none'; sandbox");
   assert.match(r.headers.get("content-disposition")!, /^inline; filename="My photo.png"; filename\*=UTF-8''My%20photo.png$/);
 });
@@ -172,7 +182,7 @@ test("trashed → 404 for non-owners (upload and read); locked → 409; a path a
   assert.equal((await upload("n1", PNG, { cookie: login(OWNER) })).status, 201, "owner may still add to a locked page");
   fv.notes.get("n1")!.metadata = { title: "One" };
   fv.notes.get("n1")!.tags = ["doc", TRASH_TAG];
-  configureAttachments(null); // drop the 30 s owning-note cache
+  configureAttachments(null); // drop the owning-note cache
   assert.equal((await upload("n1", PNG, { cookie: m })).status, 404);
   assert.equal((await get(id, { cookie: m })).status, 404);
   assert.equal((await upload("Docs/One", PNG, { cookie: login(OWNER) })).status, 404);
@@ -222,7 +232,7 @@ test("capability links: edit link uploads, view link reads; MCP in-process is re
 });
 
 test("sniffing, active-content detection, name sanitising, Content-Disposition", () => {
-  assert.equal(sniffAttachment(Buffer.from("ID3\x03\x00", "latin1")), "audio/mpeg");
+  assert.equal(sniffAttachment(Buffer.concat([Buffer.from("ID3\x03\x00\x00\x00\x00\x00\x00", "latin1"), MP3_FRAME])), "audio/mpeg");
   assert.equal(sniffAttachment(Buffer.from("OggS\x00", "latin1")), "audio/ogg");
   assert.equal(sniffAttachment(Buffer.from("RIFF\x00\x00\x00\x00WAVEfmt ", "latin1")), "audio/wav");
   assert.equal(sniffAttachment(Buffer.from("fLaC\x00", "latin1")), "audio/flac");
@@ -239,4 +249,189 @@ test("sniffing, active-content detection, name sanitising, Content-Disposition",
   assert.equal(sanitizeName("\u0000"), "file");
   assert.equal(sanitizeName("x".repeat(500)).length, 200);
   assert.equal(contentDisposition("attachment", "résumé \"x\".pdf"), `attachment; filename="r_sum_ _x_.pdf"; filename*=UTF-8''r%C3%A9sum%C3%A9%20%22x%22.pdf`);
+});
+
+// ── security review fixes ────────────────────────────────────────────────────
+
+test("M1: a non-primary vault's attachment is authorized against ITS vault, with no X-Prism-Vault on the read", async () => {
+  addVaultEntry({ id: "team-b", label: "Team B", url: "http://vault.test", vault: "team-b", token: "t" });
+  fv.putIn("team-b", { id: "b1", path: "B/One", content: "", tags: ["bdoc"], metadata: {} });
+  const up = await upload("b1", PNG, { cookie: login(OWNER), headers: { "x-prism-vault": "team-b" } });
+  assert.equal(up.status, 201, await up.clone().text());
+  const { id } = (await up.json()) as { id: string };
+  // A person whose only access is a grant on that note IN vault B.
+  addGrant({ subject_type: "user", subject: MEMBER, resource_type: "note", resource: "b1", level: "view", created_by: OWNER, vault_id: "team-b" } as never);
+  const r = await get(id, { cookie: login(MEMBER) }); // exactly what an <img> sends: no vault header
+  assert.equal(r.status, 200);
+  assert.deepEqual(Buffer.from(await r.arrayBuffer()), PNG);
+  // Access only in the primary vault (same note id, same tag there) → 404.
+  fv.put({ id: "b1", content: "", tags: ["bdoc"] });
+  grantUser(STRANGER, "note", "b1", "edit");
+  grantUser(STRANGER, "tag", "bdoc", "edit");
+  assert.equal((await get(id, { cookie: login(STRANGER) })).status, 404);
+  // A capability link from another vault never crosses over.
+  const primaryLink = makeCapability("note", "b1", "view");
+  assert.equal((await get(id, { headers: { authorization: `Capability ${primaryLink}` } })).status, 404);
+  // An in-process MCP actor bound to the primary vault is not re-bound.
+  const env = { [INPROCESS_ACTOR]: { kind: "user", email: MEMBER, role: "guest", vaultId: "primary", grants: [] }, [INPROCESS_CLIENT_KEY]: "mcp:pat:x" };
+  assert.equal((await api.request(`/attachments/${id}`, {}, env as never)).status, 404);
+});
+
+test("M4: per-note and per-vault quotas → 413 quota_exceeded with only the scope", async () => {
+  configureAttachments({ noteQuotaBytes: PNG.length * 2 + 1 });
+  const c = login(OWNER);
+  assert.equal((await upload("n1", PNG, { cookie: c })).status, 201);
+  assert.equal((await upload("n1", PNG, { cookie: c })).status, 201);
+  const over = await upload("n1", PNG, { cookie: c });
+  assert.equal(over.status, 413);
+  assert.deepEqual(await over.json(), { error: "quota_exceeded", scope: "note" });
+  fv.put({ id: "n2", content: "", tags: [] });
+  assert.equal((await upload("n2", PNG, { cookie: c })).status, 201, "another note has its own quota");
+  configureAttachments({ vaultQuotaBytes: PNG.length * 3 + 1 });
+  const vault = await upload("n2", PNG, { cookie: c });
+  assert.equal(vault.status, 413);
+  assert.deepEqual(await vault.json(), { error: "quota_exceeded", scope: "vault" });
+  assert.equal(usedBytes("primary"), PNG.length * 3);
+});
+
+test("M4: capability-link uploads get a smaller cap and a lower rate, keyed by the link", async () => {
+  configureAttachments({ linkMaxBytes: 500, linkUploadsPerMinute: 2 });
+  const edit = makeCapability("note", "n1", "edit");
+  const h = { authorization: `Capability ${edit}` };
+  const big = await upload("n1", Buffer.concat([PNG, Buffer.alloc(20_000)]), { headers: h });
+  assert.equal(big.status, 413);
+  assert.equal(((await big.json()) as { limit: number }).limit, 500);
+  // (the refused upload above spent one of the two)
+  assert.equal((await upload("n1", PNG, { headers: h })).status, 201);
+  assert.equal((await upload("n1", PNG, { headers: h })).status, 429);
+  // A signed-in person is unaffected by the link limits.
+  assert.equal((await upload("n1", Buffer.concat([PNG, Buffer.alloc(20_000)]), { cookie: login(OWNER) })).status, 201);
+});
+
+test("M4: uploads beyond the global concurrency cap wait, then 503 busy", async () => {
+  configureAttachments({ maxConcurrentUploads: 1, uploadWaitMs: 30 });
+  const real = globalThis.fetch;
+  let release!: () => void;
+  const gate = new Promise<void>((r) => (release = r));
+  globalThis.fetch = (async (input: unknown, init?: RequestInit) => {
+    if (String(input).includes("/storage/upload")) await gate;
+    return real(input as never, init);
+  }) as typeof fetch;
+  try {
+    const c = login(OWNER);
+    const first = upload("n1", PNG, { cookie: c });
+    await new Promise((r) => setTimeout(r, 20));
+    const second = await upload("n1", PNG, { cookie: c });
+    assert.equal(second.status, 503);
+    assert.deepEqual(await second.json(), { error: "busy" });
+    release();
+    assert.equal((await first).status, 201);
+  } finally {
+    globalThis.fetch = real;
+  }
+});
+
+test("M4: a failed attach after a successful vault upload is recorded as an orphan, never served", async () => {
+  fv.failNextAttach = true;
+  const r = await upload("n1", PNG, { cookie: login(OWNER) });
+  assert.equal(r.status, 502);
+  const rows = db.prepare("SELECT id, status, storage_path, size FROM prism_attachments").all() as Array<{ id: string; status: string; storage_path: string; size: number }>;
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0]!.status, "orphan_attach_failed");
+  assert.ok(fv.storage.has(rows[0]!.storage_path), "the bytes are in vault storage");
+  assert.equal((await get(rows[0]!.id, { cookie: login(OWNER) })).status, 404);
+  assert.equal(usedBytes("primary"), PNG.length, "orphans still count against the quota");
+});
+
+test("M4: permanently deleting a page from the Trash purges its attachments (vault rows + files)", async () => {
+  const { id } = await ownerUpload();
+  assert.equal(fv.storage.size, 1);
+  fv.notes.get("n1")!.tags = ["doc", TRASH_TAG];
+  const del = await api.request("/trash/n1", { method: "DELETE", headers: { cookie: login(OWNER), "content-type": "application/json" } });
+  assert.ok(del.status === 200 || del.status === 204, `delete → ${del.status} ${await del.clone().text()}`);
+  assert.equal(fv.attachments.length, 0);
+  assert.equal(fv.storage.size, 0, "the vault unlinked the stored file");
+  const row = db.prepare("SELECT status, deleted_at FROM prism_attachments WHERE id = ?").get(id) as { status: string; deleted_at: string | null };
+  assert.equal(row.status, "deleted");
+  assert.ok(row.deleted_at);
+  assert.equal(usedBytes("primary"), 0);
+  // A row with no vault attachment id (or a vault failure) is kept for the sweep, never thrown.
+  fv.put({ id: "n3", content: "", tags: [] });
+  const again = await upload("n3", PNG, { cookie: login(OWNER) });
+  const id3 = ((await again.json()) as { id: string }).id;
+  fv.attachments.length = 0; // the vault row is already gone → DELETE 404
+  assert.deepEqual(await purgeAttachmentsForNote("primary", "n3"), { deleted: 0, orphaned: 1 });
+  assert.equal((db.prepare("SELECT status FROM prism_attachments WHERE id = ?").get(id3) as { status: string }).status, "orphan_note_deleted");
+});
+
+test("M4: owner sweep — dry run reports unreferenced attachments (ids only); a real run flags them, bytes stay", async () => {
+  const used = await ownerUpload(PNG, "used.png");
+  const cover = await ownerUpload(PNG, "cover.png");
+  const loose = await ownerUpload(PNG, "secret-name.png");
+  fv.notes.get("n1")!.content = `<p>x</p><img src="${used.url}">`;
+  fv.notes.get("n1")!.metadata = { title: "One", cover: cover.url };
+  const sweep = (body: unknown, cookie = login(OWNER), headers: Record<string, string> = {}) =>
+    api.request("/attachments/sweep", { method: "POST", headers: { cookie, "content-type": "application/json", ...headers }, body: JSON.stringify(body) });
+  grantUser(MEMBER, "note", "n1", "edit");
+  assert.equal((await sweep({}, login(MEMBER))).status, 403);
+  assert.equal((await sweep({}, login(OWNER), { "sec-fetch-site": "cross-site" })).status, 403);
+  const dry = await sweep({});
+  assert.equal(dry.status, 200);
+  const d = (await dry.json()) as { dryRun: boolean; checked: number; orphans: Array<Record<string, unknown>>; next: string | null };
+  assert.equal(d.dryRun, true);
+  assert.equal(d.checked, 3);
+  assert.deepEqual(d.orphans, [{ id: loose.id, noteId: "n1", size: PNG.length, reason: "unreferenced" }]);
+  assert.equal(JSON.stringify(d).includes("secret-name"), false);
+  assert.equal((db.prepare("SELECT status FROM prism_attachments WHERE id = ?").get(loose.id) as { status: string }).status, "live", "dry run writes nothing");
+  const real = await sweep({ dryRun: false });
+  assert.equal(((await real.json()) as { orphans: unknown[] }).orphans.length, 1);
+  assert.equal((db.prepare("SELECT status FROM prism_attachments WHERE id = ?").get(loose.id) as { status: string }).status, "orphan_unreferenced");
+  assert.equal(fv.storage.size, 3, "the sweep never deletes bytes");
+  assert.equal((await get(loose.id, { cookie: login(OWNER) })).status, 200, "a flagged attachment still serves (the block may be restored from history)");
+});
+
+test("LOW: a top-level navigation is always a download; a PDF is inline only for the app's frame", async () => {
+  const c = login(OWNER);
+  const png = await ownerUpload();
+  const pdf = await ownerUpload(PDF, "report.pdf");
+  const disp = async (id: string, dest?: string) => (await get(id, { cookie: c, headers: dest === undefined ? {} : { "sec-fetch-dest": dest } })).headers.get("content-disposition")!;
+  assert.match(await disp(png.id, "image"), /^inline;/);
+  assert.match(await disp(png.id, "document"), /^attachment;/);
+  assert.match(await disp(pdf.id, "document"), /^attachment;/);
+  assert.match(await disp(pdf.id, "iframe"), /^inline;/);
+  assert.match(await disp(pdf.id), /^inline;/);
+  assert.match(await disp(pdf.id, "image"), /^attachment;/);
+});
+
+test("LOW: bidi controls are stripped from filenames", () => {
+  assert.equal(sanitizeName("invoice\u202Efdp.exe"), "invoicefdp.exe");
+  assert.equal(sanitizeName("a\u2066b\u2069c\u200Ed\u200Fe\u061Cf\u202Ag\u202C.txt"), "abcdefg.txt");
+});
+
+test("LOW: MPEG audio needs two consecutive frames (or ID3 + a frame); UTF-16 HTML is active content, not audio", async () => {
+  assert.equal(mpegFrameLength(MP3_FRAME, 0), 417);
+  assert.equal(sniffAttachment(Buffer.concat([MP3_FRAME, MP3_FRAME])), "audio/mpeg");
+  assert.equal(sniffAttachment(MP3_FRAME), null, "one frame header alone is not enough");
+  assert.equal(sniffAttachment(Buffer.concat([Buffer.from([0xff, 0xfb, 0x90, 0x00]), Buffer.alloc(413, 0x41), Buffer.from("not a frame")])), null);
+  const utf16 = Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from("<html><script>alert(1)</script></html>", "utf16le")]);
+  assert.equal(sniffAttachment(utf16), null);
+  assert.equal(looksActive(utf16), true);
+  const utf16be = Buffer.concat([Buffer.from([0xfe, 0xff]), Buffer.from("<x-custom onload=alert(1)>", "utf16le").swap16()]);
+  assert.equal(looksActive(utf16be), true, "any UTF-16 text starting with < is markup");
+  const c = login(OWNER);
+  assert.equal((await upload("n1", utf16, { cookie: c, name: "song.mp3" })).status, 415);
+  assert.equal((await upload("n1", utf16, { cookie: c, name: "song.mp3", kind: "image" })).status, 415);
+  const ok = await upload("n1", Buffer.concat([MP3_FRAME, MP3_FRAME]), { cookie: c, name: "song.mp3" });
+  assert.equal(((await ok.json()) as { mimeType: string }).mimeType, "audio/mpeg");
+});
+
+test("LOW: the owning-note cache is at most 5 s — a trashed page stops serving without a restart", async (t) => {
+  const { id } = await ownerUpload();
+  grantUser(MEMBER, "note", "n1", "view");
+  const m = login(MEMBER);
+  t.mock.timers.enable({ apis: ["Date"] });
+  assert.equal((await get(id, { cookie: m })).status, 200);
+  fv.notes.get("n1")!.tags = ["doc", TRASH_TAG];
+  t.mock.timers.tick(5_001);
+  assert.equal((await get(id, { cookie: m })).status, 404);
 });

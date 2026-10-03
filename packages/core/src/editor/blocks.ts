@@ -3,7 +3,7 @@ import Image from "@tiptap/extension-image";
 import CodeBlockLowlight from "@tiptap/extension-code-block-lowlight";
 import { common, createLowlight } from "lowlight";
 import { Table, TableRow, TableCell, TableHeader } from "@tiptap/extension-table";
-import { safeMediaSrc, isAttachmentKind } from "../lib/media/attachments";
+import { safeAttachmentSrc, ownOrProxiedSrc, isDangerousImageSrc, isAttachmentKind } from "../lib/media/attachments";
 import { safeWebUrl } from "../lib/media/embeds";
 
 /**
@@ -25,6 +25,7 @@ import { safeWebUrl } from "../lib/media/embeds";
  *   embed    → <div data-type="embed" data-url data-height><a href>url</a></div>  (iframe src DERIVED from lib/media/embeds.ts)
  *   bookmark → <div data-type="bookmark" data-url data-title data-description data-image data-favicon data-site><a href>title</a></div>
  *   toc      → <div data-type="toc"></div>   (headings listed live by the view)
+ *   database → <div data-prism-database="<noteId>" data-view="<viewId>"></div>  (inline/linked database view)
  *   code     → <pre><code class="language-x">  (lowlight highlighting is a decoration, not content)
  *
  * Every URL attribute is re-validated on parse (`safeMediaSrc` / `safeWebUrl`):
@@ -263,7 +264,7 @@ export const Columns = Node.create({
 // frames, live TOC, code toolbar) need a DOM and only exist in the browser. The
 // client registers them once at import; on the server the registry stays empty
 // and every node renders through its plain renderHTML.
-type ViewName = "image" | "attachment" | "embed" | "bookmark" | "tableOfContents" | "codeBlock";
+type ViewName = "image" | "attachment" | "embed" | "bookmark" | "tableOfContents" | "codeBlock" | "databaseView";
 const VIEWS: Partial<Record<ViewName, NodeViewRenderer>> = {};
 export function registerBlockViews(views: Partial<Record<ViewName, NodeViewRenderer>>): void {
   Object.assign(VIEWS, views);
@@ -301,7 +302,10 @@ export const ImageBlock = Image.extend({
     };
   },
   parseHTML() {
-    return [{ tag: "img[src]", getAttrs: (el) => (safeMediaSrc((el as unknown as AttrSource).getAttribute("src")) ? null : false) }];
+    // Keep EVERY image except dangerous schemes: a relative Markdown image, `//cdn/x.png`,
+    // `cid:` or `blob:` must survive a live open / autosave even if it can't load here
+    // (dropping the node would delete it from the stored page for good).
+    return [{ tag: "img[src]", getAttrs: (el) => (isDangerousImageSrc((el as unknown as AttrSource).getAttribute("src")) ? false : null) }];
   },
   addNodeView() {
     return VIEWS.image ?? null;
@@ -318,7 +322,7 @@ export const Attachment = Node.create({
   addAttributes() {
     const a = (el: unknown) => el as AttrSource;
     return {
-      src: { default: null, parseHTML: (el) => safeMediaSrc(a(el).getAttribute("data-src")), renderHTML: (x) => ({ "data-src": x.src }) },
+      src: { default: null, parseHTML: (el) => safeAttachmentSrc(a(el).getAttribute("data-src")), renderHTML: (x) => ({ "data-src": x.src }) },
       name: { default: "Attachment", parseHTML: (el) => clip(a(el).getAttribute("data-name"), 200) ?? "Attachment", renderHTML: (x) => ({ "data-name": x.name }) },
       size: { default: null, parseHTML: (el) => intAttr(a(el).getAttribute("data-size"), 0, 10 * 1024 ** 3), renderHTML: (x) => (x.size != null ? { "data-size": String(x.size) } : {}) },
       mimeType: {
@@ -340,7 +344,7 @@ export const Attachment = Node.create({
     };
   },
   parseHTML() {
-    return [{ tag: 'div[data-type="attachment"]', priority: 60, getAttrs: (el) => (safeMediaSrc((el as unknown as AttrSource).getAttribute("data-src")) ? null : false) }];
+    return [{ tag: 'div[data-type="attachment"]', priority: 60, getAttrs: (el) => (safeAttachmentSrc((el as unknown as AttrSource).getAttribute("data-src")) ? null : false) }];
   },
   renderHTML({ node, HTMLAttributes }) {
     return ["div", mergeAttributes(HTMLAttributes, { "data-type": "attachment" }), ["a", { href: node.attrs.src, rel: "noopener noreferrer" }, String(node.attrs.name || "Attachment")]];
@@ -389,7 +393,7 @@ export const Bookmark = Node.create({
     });
     const link = (key: string, attr: string) => ({
       default: null,
-      parseHTML: (el: unknown) => safeMediaSrc((el as AttrSource).getAttribute(attr)),
+      parseHTML: (el: unknown) => ownOrProxiedSrc((el as AttrSource).getAttribute(attr)),
       renderHTML: (x: Record<string, unknown>) => (x[key] ? { [attr]: x[key] as string } : {}),
     });
     return {
@@ -430,6 +434,45 @@ export const TableOfContents = Node.create({
   },
 });
 
+const DB_NOTE_ID = /^[A-Za-z0-9_-]{1,128}$/;
+const DB_VIEW_ID = /^[A-Za-z0-9_-]{1,40}$/;
+/**
+ * An inline / linked database view (wave 2C's `DatabaseBlock`). Stores only the
+ * database note id and a view id: `<div data-prism-database="<noteId>" data-view="<viewId>"></div>`
+ * — the same shape as `databaseBlockHtml` / `parseDatabaseBlock` in
+ * components/database/DatabaseBlock.tsx (not imported here: this module must load in Node).
+ * An invalid id is not matched (the element is dropped as an empty div, never a live block).
+ */
+export const DatabaseView = Node.create({
+  name: "databaseView",
+  group: "block",
+  atom: true,
+  draggable: true,
+  selectable: true,
+  addAttributes() {
+    return {
+      noteId: { default: null, parseHTML: (el) => (el as unknown as AttrSource).getAttribute("data-prism-database"), renderHTML: (x) => ({ "data-prism-database": x.noteId }) },
+      viewId: {
+        default: null,
+        parseHTML: (el) => {
+          const v = (el as unknown as AttrSource).getAttribute("data-view");
+          return v && DB_VIEW_ID.test(v) ? v : null;
+        },
+        renderHTML: (x) => (x.viewId ? { "data-view": x.viewId } : {}),
+      },
+    };
+  },
+  parseHTML() {
+    return [{ tag: "div[data-prism-database]", priority: 60, getAttrs: (el) => (DB_NOTE_ID.test((el as unknown as AttrSource).getAttribute("data-prism-database") ?? "") ? null : false) }];
+  },
+  renderHTML({ HTMLAttributes }) {
+    return ["div", HTMLAttributes];
+  },
+  addNodeView() {
+    return VIEWS.databaseView ?? null;
+  },
+});
+
 const lowlight = createLowlight(common);
 /** Highlighted code (lowlight decorations, no stored markup) with a language attribute and Tab indent. */
 export const CodeBlock = CodeBlockLowlight.extend({
@@ -454,6 +497,7 @@ export function blockSchemaExtensions(): Extensions {
     Embed,
     Bookmark,
     TableOfContents,
+    DatabaseView,
     CodeBlock,
     Table.configure({ resizable: true }),
     TableRow,

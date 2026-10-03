@@ -63,6 +63,9 @@ export function ownAttachmentPath(src: string | null | undefined, apiOrigin: str
     return null;
   }
 }
+/** A server-relative media-proxy path (bookmark preview images the server already proxied). */
+const PROXY_PATH = /^\/api\/media\/proxy\?u=[A-Za-z0-9%._~!*'()-]{1,3000}$/;
+export const serverProxyPath = (src: string | null | undefined): string | null => (PROXY_PATH.test((src ?? "").trim()) ? (src as string).trim() : null);
 const MEDIA = /^(image\/(png|jpeg|gif|webp|avif)|audio\/[a-z0-9.+-]+|video\/[a-z0-9.+-]+)$/;
 
 interface Entry {
@@ -204,9 +207,10 @@ const ORIGINAL = "data-prism-src";
 const FAILED = "data-prism-src-failed";
 
 /** Re-point one <img>/<audio>/<video>/<source> holding a note attachment. Exported for tests. */
-export function proxyAttachmentElement(el: Element, cache: ImageBlobCache, apiOrigin: string): boolean {
+export function proxyAttachmentElement(el: Element, cache: ImageBlobCache, apiOrigin: string, proxied = false): boolean {
   const src = el.getAttribute("src");
-  const path = ownAttachmentPath(src, apiOrigin);
+  // `proxied` (native only): a relative /api/media/proxy path is relative to the SERVER too.
+  const path = ownAttachmentPath(src, apiOrigin) ?? (proxied && el.tagName === "IMG" ? serverProxyPath(src) : null);
   if (!path || !src) return false;
   el.setAttribute(ORIGINAL, src);
   el.removeAttribute(FAILED);
@@ -221,7 +225,7 @@ export function proxyAttachmentElement(el: Element, cache: ImageBlobCache, apiOr
 
 /** Re-point one <img> if it needs it. Exported for tests. */
 export function proxyImageElement(img: HTMLImageElement, cache: ImageBlobCache, apiOrigin: string): void {
-  if (proxyAttachmentElement(img, cache, apiOrigin)) return;
+  if (proxyAttachmentElement(img, cache, apiOrigin, true)) return;
   const src = img.getAttribute("src");
   if (!isExternalImageSrc(src, apiOrigin)) return;
   // srcset candidates are external too, and would win over our blob src.

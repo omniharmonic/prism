@@ -18,6 +18,8 @@ export interface UnfurlMeta {
 
 export const SCAN_LIMIT = 256 * 1024;
 const TAG_LIMIT = 4096;
+/** Title/meta values are cut to this many chars BEFORE entity decoding. */
+const VALUE_LIMIT = 4096;
 
 const isLetter = (c: string | undefined): boolean => !!c && ((c >= "a" && c <= "z") || (c >= "A" && c <= "Z"));
 const isSpace = (c: string | undefined): boolean => c === " " || c === "\t" || c === "\n" || c === "\r" || c === "\f";
@@ -36,8 +38,15 @@ export function decodeEntities(s: string): string {
       break;
     }
     out += s.slice(i, amp);
-    const semi = s.indexOf(";", amp + 1);
-    if (semi > amp && semi - amp <= 10) {
+    // Bounded lookahead: an entity is at most ~10 chars. An unbounded indexOf(";")
+    // per "&" made a run of 250k "&" quadratic (2.3 s).
+    let semi = -1;
+    for (let k = amp + 1, end = Math.min(s.length, amp + 11); k < end; k++) {
+      const ch = s[k];
+      if (ch === ";") { semi = k; break; }
+      if (ch === "&" || ch === "<" || ch === " ") break;
+    }
+    if (semi > amp) {
       const body = s.slice(amp + 1, semi);
       let rep: string | null = null;
       if (body[0] === "#") {
@@ -61,6 +70,8 @@ export function decodeEntities(s: string): string {
 /** Collapse whitespace, strip control characters, cap length (by code point). */
 export function clean(s: string | null | undefined, max: number): string | null {
   if (!s) return null;
+  // A few KB is far more than any cap below needs; never decode an unbounded value.
+  if (s.length > VALUE_LIMIT) s = s.slice(0, VALUE_LIMIT);
   let out = "";
   let space = false;
   for (const ch of decodeEntities(s)) {
@@ -81,7 +92,7 @@ export function clean(s: string | null | undefined, max: number): string | null 
 
 /** Absolute http(s) URL relative to `base`, ≤ 2048 chars, else null. */
 export function absoluteUrl(raw: string | null | undefined, base: string): string | null {
-  if (!raw) return null;
+  if (!raw || raw.length > VALUE_LIMIT) return null;
   const v = decodeEntities(raw).trim();
   if (!v || v.length > 2048) return null;
   try {
@@ -185,7 +196,7 @@ export function parseUnfurl(html: string, finalUrl: string): UnfurlMeta {
       if (close < 0 || close > s.length) {
         titleCloseMissing = true;
       } else {
-        title = s.slice(i, close);
+        title = s.slice(i, Math.min(close, i + VALUE_LIMIT));
         i = close;
       }
     }

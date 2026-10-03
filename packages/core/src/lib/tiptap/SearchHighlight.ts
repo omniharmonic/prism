@@ -36,20 +36,40 @@ export interface SearchHighlightMeta {
   clear?: boolean;
 }
 
+/**
+ * Case-insensitive matches inside text nodes, with offsets taken from the
+ * ORIGINAL text. (Lower-casing the haystack shifts offsets: "İ".toLowerCase()
+ * is two code units, so every later match would be off by one.) Matches never
+ * touch a `[[wikilink]]` span — its target is hidden text, and replacing inside
+ * it would silently re-point the link — and atoms (mentions, files, embeds)
+ * have no text to match.
+ */
+export function findMatchesInText(text: string, query: string): Array<{ from: number; to: number }> {
+  if (!query) return [];
+  const re = new RegExp(query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "giu");
+  const links: Array<[number, number]> = [];
+  for (let i = text.indexOf("[["); i !== -1; i = text.indexOf("[[", i + 2)) {
+    const end = text.indexOf("]]", i + 2);
+    if (end === -1) break;
+    links.push([i, end + 2]);
+    i = end;
+  }
+  const out: Array<{ from: number; to: number }> = [];
+  for (let m = re.exec(text); m; m = re.exec(text)) {
+    if (m[0].length === 0) { re.lastIndex++; continue; }
+    const from = m.index;
+    const to = from + m[0].length;
+    if (!links.some(([a, b]) => from < b && to > a)) out.push({ from, to });
+  }
+  return out;
+}
+
 function findMatches(state: EditorState, query: string): SearchMatch[] {
   if (!query) return [];
   const matches: SearchMatch[] = [];
-  const needle = query.toLowerCase();
   state.doc.descendants((node, pos) => {
     if (!node.isText || !node.text) return;
-    const haystack = node.text.toLowerCase();
-    let idx = 0;
-    while (idx <= haystack.length - needle.length) {
-      const found = haystack.indexOf(needle, idx);
-      if (found === -1) break;
-      matches.push({ from: pos + found, to: pos + found + needle.length });
-      idx = found + needle.length;
-    }
+    for (const m of findMatchesInText(node.text, query)) matches.push({ from: pos + m.from, to: pos + m.to });
   });
   return matches;
 }
@@ -134,7 +154,10 @@ export function replaceMatch(editor: ReplaceEditor, index: number, replacement: 
   const m = ps?.matches[index];
   if (!m) return false;
   // Replacement text takes the marks of the text it replaces, never a stray stored mark.
-  const tr = editor.state.tr.setStoredMarks(null).insertText(replacement, m.from, m.to);
+  // An empty replacement deletes exactly the match (`insertText("")` would call
+  // deleteRange, which removes the whole block when the match is all of its text).
+  const tr = editor.state.tr.setStoredMarks(null);
+  if (replacement) tr.insertText(replacement, m.from, m.to); else tr.delete(m.from, m.to);
   editor.view.dispatch(tr.scrollIntoView());
   return true;
 }
@@ -148,7 +171,10 @@ export function replaceAllMatches(editor: ReplaceEditor, replacement: string): n
   const ps = searchHighlightKey.getState(editor.state);
   if (!ps?.matches.length) return 0;
   const tr = editor.state.tr;
-  for (let i = ps.matches.length - 1; i >= 0; i--) tr.setStoredMarks(null).insertText(replacement, ps.matches[i].from, ps.matches[i].to);
+  for (let i = ps.matches.length - 1; i >= 0; i--) {
+    const m = ps.matches[i];
+    if (replacement) tr.setStoredMarks(null).insertText(replacement, m.from, m.to); else tr.delete(m.from, m.to);
+  }
   editor.view.dispatch(tr);
   return ps.matches.length;
 }

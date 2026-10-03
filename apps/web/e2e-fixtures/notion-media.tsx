@@ -21,30 +21,51 @@ const note: Note = { id: "media", path: "Projects/Prism/Field guide", content, t
 const metaWrites: Array<Record<string, unknown>> = [];
 const uploads: Array<{ noteId: string; name: string; type: string; kind?: string }> = [];
 const unfurls: string[] = [];
-const FILES: Record<string, string> = { "application/pdf": "/e2e-fixtures/media/brief.pdf", "audio/wav": "/e2e-fixtures/media/tone.wav", "video/webm": "/e2e-fixtures/media/clip.webm" };
+// Attachments live at the server's own route; the specs fulfil /api/attachments/* from fixture files.
+const FILES: Record<string, string> = { "application/pdf": "/api/attachments/a_pdf", "audio/wav": "/api/attachments/a_wav", "video/webm": "/api/attachments/a_webm" };
+// A tiny vault: the page, one existing database ("Reading list") and whatever a test creates.
+const db: Note = { id: "db1", path: "Projects/Prism/Reading list", content: "", tags: [], metadata: { title: "Reading list", prism_type: "database", prism_database: { version: 1, source: { tags: ["book"] }, views: [{ id: "vtable", name: "All books", type: "table" }] } }, createdAt: date, updatedAt: date };
+const book: Note = { id: "b1", path: "Books/Braiding Sweetgrass", content: "", tags: ["book"], metadata: { title: "Braiding Sweetgrass" }, createdAt: date, updatedAt: date };
+const vault: Note[] = [note, db, book];
+const creates: Array<Record<string, unknown>> = [];
 const client = {
-  getNote: async () => note,
-  listNotes: async () => [note],
-  listTree: async () => [{ id: note.id, path: note.path, tags: [], updatedAt: date }],
+  getNote: async (id: string) => { const n = vault.find((x) => x.id === id); if (!n) throw new Error("GET /notes failed: 404"); return structuredClone(n); },
+  listNotes: async (f?: { tag?: string }) => structuredClone(vault.filter((n) => !f?.tag || n.tags?.includes(f.tag))),
+  listTree: async () => vault.map((n) => ({ id: n.id, path: n.path, tags: n.tags, metadata: n.metadata, updatedAt: n.updatedAt })),
+  createNote: async (params: { path?: string; content?: string; tags?: string[]; metadata?: Record<string, unknown> }) => {
+    creates.push(params as Record<string, unknown>);
+    const n: Note = { id: `new${creates.length}`, path: params.path ?? null, content: params.content ?? "", tags: params.tags ?? [], metadata: params.metadata ?? {}, createdAt: date, updatedAt: date } as Note;
+    vault.push(n);
+    return structuredClone(n);
+  },
+  search: async () => [],
   getTags: async () => [],
   getLinks: async () => [],
-  updateNote: async (_id: string, changes: Partial<Note>) => { Object.assign(note, changes, { updatedAt: new Date().toISOString() }); return note; },
+  updateNote: async (id: string, changes: Partial<Note>) => {
+    const n = vault.find((x) => x.id === id)!;
+    const { metadata, ...rest } = changes;
+    Object.assign(n, rest, { updatedAt: new Date().toISOString() });
+    if (metadata) n.metadata = { ...n.metadata, ...metadata };
+    return structuredClone(n);
+  },
   uploadAttachment: async (noteId: string, file: File, opts?: { kind?: string }) => {
     await new Promise((r) => setTimeout(r, 20));
     uploads.push({ noteId, name: file.name, type: file.type, kind: opts?.kind });
-    const url = file.type.startsWith("image/") ? `/e2e-fixtures/media/cover.png?u=${uploads.length}` : FILES[file.type] ?? `/e2e-fixtures/media/brief.pdf?bin=${uploads.length}`;
+    const url = file.type.startsWith("image/") ? `/api/attachments/a_img${uploads.length}` : FILES[file.type] ?? `/api/attachments/a_bin${uploads.length}`;
     return { id: `a_${uploads.length}`, url, name: file.name, mimeType: FILES[file.type] ? file.type : file.type.startsWith("image/") ? file.type : "application/octet-stream", size: file.size };
   },
   unfurl: async (url: string) => {
     unfurls.push(url);
     await new Promise((r) => setTimeout(r, 20));
-    return { url, title: "Watershed atlas", description: "Maps and field notes for the Front Range watersheds.", siteName: "Atlas", image: "/e2e-fixtures/media/cover.png", favicon: "/e2e-fixtures/media/cover.png" };
+    return { url, title: "Watershed atlas", description: "Maps and field notes for the Front Range watersheds.", siteName: "Atlas", image: "/api/media/proxy?u=https%3A%2F%2Fatlas.example.org%2Fog.png", favicon: "/api/media/proxy?u=https%3A%2F%2Fatlas.example.org%2Ffavicon.ico" };
   },
 } as unknown as VaultClient;
 Object.assign(window, {
   prismMediaMeta: metaWrites,
   prismMediaUploads: uploads,
   prismMediaUnfurls: unfurls,
+  prismMediaCreates: creates,
+  prismMediaVault: vault,
   prismEditor: (i = 0) => (document.querySelectorAll(".tiptap")[i] as unknown as { editor: unknown })?.editor,
 });
 
@@ -67,8 +88,8 @@ function LivePair() {
             user={{ name: i === 0 ? "Ada" : "Ben", color: i === 0 ? "#3a7bd5" : "#f47c6b" }}
             seedReady={i === 0}
             seedContent={i === 0 ? async () => content : async () => null}
-            uploadImage={async (file) => ({ src: `/e2e-fixtures/media/cover.png?live=${file.name}` })}
-            uploadFile={async (file) => ({ src: FILES[file.type] ?? "/e2e-fixtures/media/brief.pdf", name: file.name, size: file.size, mimeType: file.type || "application/octet-stream" })}
+            uploadImage={async () => ({ src: "/api/attachments/a_img1" })}
+            uploadFile={async (file) => ({ src: FILES[file.type] ?? "/api/attachments/a_bin1", name: file.name, size: file.size, mimeType: file.type || "application/octet-stream" })}
           />
         </section>
       ))}

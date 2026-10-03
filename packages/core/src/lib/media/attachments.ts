@@ -9,22 +9,61 @@ export type AttachmentKind = "file" | "pdf" | "audio" | "video";
 /** Where an attachment's bytes may come from: our own access-checked route, or an https URL. */
 const OWN_ATTACHMENT = /^\/api\/attachments\/[A-Za-z0-9_-]{1,64}$/;
 
-/** A src an <img>/<audio>/<video>/download link may carry, or null. Never javascript:/data:/protocol-relative. */
-export function safeMediaSrc(raw: unknown): string | null {
-  if (typeof raw !== "string") return null;
-  const s = raw.trim();
-  if (!s || s.length > 2048) return null;
-  if (OWN_ATTACHMENT.test(s)) return s;
-  // Same-origin fixture/static paths (no scheme, no //, no backslash, no dot-segments).
-  if (/^\/(?![/\\])/.test(s) && !/(^|\/)\.\.?(\/|$)|\\/.test(s) && !/[\s"'<>]/.test(s)) return s;
+/** The media proxy path the server hands out for third-party preview images (bookmark image/favicon). */
+const PROXIED = /^\/api\/media\/proxy\?u=[A-Za-z0-9%._~!*'()-]{1,3000}$/;
+
+function httpUrl(s: string, httpsOnly = false): string | null {
   try {
     const u = new URL(s);
-    if (u.protocol !== "https:" && u.protocol !== "http:") return null;
+    if (u.protocol !== "https:" && (httpsOnly || u.protocol !== "http:")) return null;
     if (u.username || u.password) return null;
     return u.href;
   } catch {
     return null;
   }
+}
+const clean = (raw: unknown): string | null => {
+  if (typeof raw !== "string") return null;
+  const s = raw.trim();
+  return s && s.length <= 3100 ? s : null;
+};
+
+/**
+ * Where an ATTACHMENT block's bytes may come from: our own access-checked route,
+ * or an https URL (shown as a plain download/open link only — never framed, never
+ * played inline). Never a same-origin path (it could name any app route).
+ */
+export function safeAttachmentSrc(raw: unknown): string | null {
+  const s = clean(raw);
+  if (!s) return null;
+  return OWN_ATTACHMENT.test(s) ? s : httpUrl(s, true);
+}
+
+/** Preview images the SERVER produced (bookmark image / favicon): own attachment or the media proxy. Never a raw third-party URL. */
+export function ownOrProxiedSrc(raw: unknown): string | null {
+  const s = clean(raw);
+  return s && (OWN_ATTACHMENT.test(s) || PROXIED.test(s)) ? s : null;
+}
+export const isProxiedSrc = (src: string | null | undefined): boolean => !!src && PROXIED.test(src);
+
+/** A page cover / card image: own attachment, the media proxy, or an http(s) URL the user chose. Never javascript:/data:/any other same-origin path. */
+export function safeMediaSrc(raw: unknown): string | null {
+  const s = clean(raw);
+  if (!s) return null;
+  if (OWN_ATTACHMENT.test(s) || PROXIED.test(s)) return s;
+  return httpUrl(s);
+}
+
+/**
+ * Is this <img src> one the editor must refuse to KEEP? Only dangerous schemes:
+ * relative paths, `//cdn…`, `cid:` and `blob:` images are content (Markdown
+ * imports, mail) and must survive a round-trip even if they don't load here.
+ * `data:` stays refused as before (the base editor never accepted base64 images).
+ */
+export function isDangerousImageSrc(raw: unknown): boolean {
+  if (typeof raw !== "string") return true;
+  const s = raw.replace(/[\u0000-\u0020]+/g, "").toLowerCase();
+  return !s || /^(javascript|vbscript|data):/.test(s);
 }
 
 export const isOwnAttachment = (src: string | null | undefined): boolean => !!src && OWN_ATTACHMENT.test(src);
@@ -121,4 +160,52 @@ export function coverForNote(note: { metadata?: Record<string, unknown> | null; 
   const md = html ? null : /!\[[^\]\n]{0,300}\]\(\s*([^)\s]{1,2048})/.exec(body);
   const src = safeMediaSrc((html?.[1] ?? md?.[1] ?? "").replace(/&amp;/g, "&"));
   return src ? { src, y: 50 } : null;
+}
+
+// ── Files & media property values (NP-DB-09) ────────────────────────────────
+
+/**
+ * A "files" property stores a list of Markdown-style links, one per file:
+ *   `[Q3 report.pdf](/api/attachments/a_…)`
+ * Readable in the vault, CSV-safe, and the sweep for orphaned attachments finds
+ * the id in the note's metadata. Only OUR attachments are valid file values.
+ */
+export interface FileRef { name: string; url: string }
+const FILE_REF = /^\[([^\]\n]{1,200})\]\((\/api\/attachments\/[A-Za-z0-9_-]{1,64})\)$/;
+
+export function fileRef(name: string, url: string): string {
+  const clean = (name || "file").replace(/[\[\]\n\r]/g, " ").trim().slice(0, 200) || "file";
+  return `[${clean}](${url})`;
+}
+export function parseFileRef(value: unknown): FileRef | null {
+  if (typeof value !== "string") return null;
+  const m = FILE_REF.exec(value.trim());
+  return m ? { name: m[1]!, url: m[2]! } : null;
+}
+export function parseFileRefs(value: unknown): FileRef[] {
+  return (Array.isArray(value) ? value : value == null ? [] : [value]).map(parseFileRef).filter((x): x is FileRef => !!x);
+}
+const IMAGE_NAME = /\.(png|jpe?g|gif|webp|avif)$/i;
+export const isImageFileName = (name: string): boolean => IMAGE_NAME.test(name);
+/** For a gallery cover: the first image of a files value, or the value itself when it is a plain image URL. */
+export function firstFileUrl(value: unknown): string | null {
+  const files = parseFileRefs(value);
+  if (files.length) return (files.find((f) => isImageFileName(f.name)) ?? null)?.url ?? null;
+  return typeof value === "string" ? safeMediaSrc(value) : null;
+}
+
+/** Download one of OUR attachments through the installed transport (cookie in the PWA, bearer in the native client). */
+export async function downloadOwnAttachment(fetcher: (path: string) => Promise<Response>, url: string, name: string): Promise<void> {
+  if (!isOwnAttachment(url)) throw new Error("not an attachment");
+  const res = await fetcher(url);
+  if (!res.ok) throw new Error(`download ${res.status}`);
+  const href = URL.createObjectURL(await res.blob());
+  const a = document.createElement("a");
+  a.href = href;
+  a.download = name || "download";
+  a.rel = "noopener";
+  document.body.append(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(href), 30_000);
 }

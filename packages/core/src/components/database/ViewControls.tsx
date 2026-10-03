@@ -37,6 +37,7 @@ function opsFor(def?: PropertyDef): QueryOp[] {
     case "email":
     case "phone":
     case "url": return ["contains", "not_contains", "eq", "ne", "exists", "not_exists"];
+    case "files": return ["exists", "not_exists"];
     case "multi_select":
     case "person":
     case "relation": return ["contains", "not_contains", "exists", "not_exists"];

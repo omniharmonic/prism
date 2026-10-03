@@ -356,7 +356,7 @@ const scanMax = () => envInt("QUERY_SCAN_MAX", 20_000);
 const RAW_MAX = 50_000;
 const LIST_TTL_MS = Number(process.env.QUERY_LIST_TTL_MS ?? 4_000);
 const PERMISSION_KEYS = ["prism_creator", "prism_visibility"];
-const ROW_META = ["title", "type", "prism_type", "icon", "cover", WRITER_KEY, WRITER_AT_KEY];
+const ROW_META = ["title", "type", "prism_type", "icon", "cover", "coverY", WRITER_KEY, WRITER_AT_KEY];
 
 /**
  * Listing cache (review H1): ONE canonical listing per (vault, tag) — the tag's

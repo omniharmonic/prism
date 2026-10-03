@@ -4,6 +4,10 @@ import { test, expect, type Page } from "@playwright/test";
 const SHOTS = process.env.PRISM_EDITOR_SHOTS;
 const meta = (page: Page) => page.evaluate(() => (window as any).prismMediaMeta as Array<Record<string, unknown>>);
 
+test.beforeEach(async ({ page }) => {
+  await page.route("**/api/attachments/*", (r) => r.fulfill({ path: "e2e-fixtures/media/cover.png" }));
+});
+
 test("cover add, reposition, remove", async ({ page }) => {
   await page.goto("/e2e-fixtures/notion-media.html");
   await page.locator(".document-page-header").hover();
@@ -23,7 +27,7 @@ test("cover add, reposition, remove", async ({ page }) => {
   await page.getByRole("button", { name: "Change cover" }).click();
   await picker.getByRole("tab", { name: "Upload" }).click();
   await picker.locator('input[type="file"]').setInputFiles("e2e-fixtures/media/cover.png");
-  await expect(cover.locator("img")).toHaveAttribute("src", "/e2e-fixtures/media/cover.png?u=1");
+  await expect(cover.locator("img")).toHaveAttribute("src", "/api/attachments/a_img1");
   expect((await page.evaluate(() => (window as any).prismMediaUploads)).at(-1)).toMatchObject({ name: "cover.png", kind: "image" });
   // Reposition by drag, then Save.
   await cover.hover();
@@ -36,7 +40,7 @@ test("cover add, reposition, remove", async ({ page }) => {
   await page.mouse.up();
   await page.getByRole("button", { name: "Save position" }).click();
   const saved = (await meta(page)).at(-1)!;
-  expect(saved.cover).toBe("/e2e-fixtures/media/cover.png?u=1");
+  expect(saved.cover).toBe("/api/attachments/a_img1");
   expect(Number(saved.coverY)).toBeLessThan(35);
   await expect(cover.locator("img")).toHaveCSS("object-position", new RegExp(`50% ${saved.coverY}%`));
   // Keyboard reposition is available too (↑/↓ then Enter).
@@ -63,7 +67,7 @@ test("cover add, reposition, remove", async ({ page }) => {
 
 test("cover renders cropped on phone and in dark mode; read-only has no controls", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
-  await page.goto("/e2e-fixtures/notion-media.html?dark&cover=" + encodeURIComponent("/e2e-fixtures/media/cover.png"));
+  await page.goto("/e2e-fixtures/notion-media.html?dark&cover=" + encodeURIComponent("/api/attachments/a_cover"));
   const cover = page.locator(".document-cover");
   await expect(cover.locator("img")).toBeVisible();
   const box = (await cover.boundingBox())!;

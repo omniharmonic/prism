@@ -15,7 +15,7 @@ import type { Node as PMNode } from "@tiptap/pm/model";
 import { NodeSelection } from "@tiptap/pm/state";
 import { registerBlockViews, codeLanguages } from "../../editor/blocks";
 import { embedFor, EMBED_SANDBOX, isAllowedFrameSrc, safeWebUrl } from "../media/embeds";
-import { formatBytes, isOwnAttachment, safeMediaSrc } from "../media/attachments";
+import { formatBytes, isDangerousImageSrc, isOwnAttachment, ownOrProxiedSrc, safeAttachmentSrc } from "../media/attachments";
 import { serverFetch } from "../transport/serverFetch";
 import { structuralEditsAllowed } from "./blockCommands";
 
@@ -158,8 +158,10 @@ const imageView: NodeViewRenderer = ({ node, editor, getPos, view }) => {
   let editingCaption = false;
   const paint = () => {
     const a = current.attrs;
-    const src = safeMediaSrc(a.src) ?? "";
-    if (img.getAttribute("src") !== src) img.setAttribute("src", src);
+    // Neutralise at render: a dangerous scheme never reaches the DOM; anything else
+    // (relative, protocol-relative, cid:, blob:) is shown as the browser can.
+    const src = isDangerousImageSrc(a.src) ? "" : String(a.src);
+    if (img.getAttribute("src") !== src) { if (src) img.setAttribute("src", src); else img.removeAttribute("src"); }
     img.alt = a.alt ?? "";
     if (a.title) img.title = a.title; else img.removeAttribute("title");
     dom.dataset.align = a.align ?? "center";
@@ -261,7 +263,7 @@ const imageView: NodeViewRenderer = ({ node, editor, getPos, view }) => {
 async function download(src: string, name: string): Promise<void> {
   // Own attachments go through the installed transport (cookie in the PWA, the
   // device bearer in the native client), so the download works in both.
-  if (isOwnAttachment(src) || /^\/(?![/\\])/.test(src)) {
+  if (isOwnAttachment(src)) {
     const res = await serverFetch(src);
     if (!res.ok) throw new Error(`download ${res.status}`);
     const blob = await res.blob();
@@ -276,8 +278,9 @@ async function download(src: string, name: string): Promise<void> {
     setTimeout(() => URL.revokeObjectURL(url), 30_000);
     return;
   }
-  const safe = safeWebUrl(src);
-  if (safe) window.open(safe, "_blank", "noopener,noreferrer");
+  // Anything else is an https link: opened in a new tab, never fetched with our credentials.
+  const safe = safeAttachmentSrc(src);
+  if (safe && !isOwnAttachment(safe)) window.open(safe, "_blank", "noopener,noreferrer");
 }
 
 const attachmentView: NodeViewRenderer = ({ node, editor, getPos, view }) => {
@@ -286,7 +289,10 @@ const attachmentView: NodeViewRenderer = ({ node, editor, getPos, view }) => {
   const dom = h(doc, "div", "prism-attachment", { "data-type": "attachment", contenteditable: "false" });
   const render = () => {
     const a = current.attrs;
-    const src = safeMediaSrc(a.src) ?? "";
+    const src = safeAttachmentSrc(a.src) ?? "";
+    // Players and the PDF frame are ONLY for our own access-checked attachments: `data-kind`
+    // is independent of `data-src`, so an https "pdf"/"video" stays a plain link card.
+    const own = isOwnAttachment(src);
     dom.dataset.kind = a.kind;
     dom.replaceChildren();
     const head = h(doc, "div", "prism-attachment-head");
@@ -306,7 +312,7 @@ const attachmentView: NodeViewRenderer = ({ node, editor, getPos, view }) => {
     });
     head.append(glyph, meta, status, dl);
     dom.append(head);
-    if (!src) return;
+    if (!src || !own) return;
     if (a.kind === "audio") {
       const audio = h(doc, "audio", "prism-attachment-audio", { controls: "", preload: "metadata", "aria-label": a.name || "Audio" });
       audio.setAttribute("src", src);
@@ -366,7 +372,7 @@ function bookmarkCard(doc: Document, attrs: Record<string, Any>, note?: string):
     text.append(d);
   }
   const line = h(doc, "span", "prism-bookmark-url");
-  const fav = safeMediaSrc(attrs.favicon);
+  const fav = ownOrProxiedSrc(attrs.favicon);
   if (fav) {
     const f = h(doc, "img", "prism-bookmark-favicon", { alt: "", width: "16", height: "16", loading: "lazy", referrerpolicy: "no-referrer" });
     f.src = fav;
@@ -383,7 +389,7 @@ function bookmarkCard(doc: Document, attrs: Record<string, Any>, note?: string):
     text.append(n);
   }
   card.append(text);
-  const image = safeMediaSrc(attrs.image);
+  const image = ownOrProxiedSrc(attrs.image);
   if (image) {
     const wrap = h(doc, "span", "prism-bookmark-image");
     const img = h(doc, "img", undefined, { alt: "", loading: "lazy", referrerpolicy: "no-referrer" });

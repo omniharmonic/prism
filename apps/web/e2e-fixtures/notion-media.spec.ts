@@ -6,6 +6,13 @@ const html = (page: Page) => page.evaluate(() => (document.querySelector(".tipta
 const enc = encodeURIComponent;
 
 test.beforeEach(async ({ page }) => {
+  // The server's attachment + media-proxy routes, served from fixture files.
+  await page.route("**/api/attachments/*", (r) => {
+    const id = new URL(r.request().url()).pathname.split("/").pop()!;
+    const file = id === "a_pdf" ? "brief.pdf" : id === "a_wav" ? "tone.wav" : id === "a_webm" ? "clip.webm" : id.startsWith("a_img") ? "cover.png" : null;
+    return file ? r.fulfill({ path: `e2e-fixtures/media/${file}` }) : r.fulfill({ status: 200, contentType: "application/octet-stream", body: "PK data" });
+  });
+  await page.route("**/api/media/proxy?*", (r) => r.fulfill({ path: "e2e-fixtures/media/cover.png" }));
   // Never reach the internet from a fixture: embed frames get an empty page.
   await page.route(/^https:\/\/(www\.youtube-nocookie\.com|player\.vimeo\.com|www\.loom\.com|www\.figma\.com|docs\.google\.com|open\.spotify\.com|codepen\.io|platform\.twitter\.com)\//, (r) => r.fulfill({ status: 200, contentType: "text/html", body: "<!doctype html><title>embed</title>" }));
 });
@@ -46,12 +53,12 @@ test("file, pdf, audio, video blocks", async ({ page }) => {
   expect(uploads.map((u: any) => [u.name, u.kind])).toEqual([["brief.pdf", "file"], ["tone.wav", "file"], ["clip.webm", "file"], ["dataset.zip", "file"]]);
   // PDF previews inline (same-origin frame).
   const pdf = page.locator('.prism-attachment[data-kind="pdf"]');
-  await expect(pdf.locator("iframe")).toHaveAttribute("src", "/e2e-fixtures/media/brief.pdf");
+  await expect(pdf.locator("iframe")).toHaveAttribute("src", "/api/attachments/a_pdf");
   await expect(pdf).toContainText("brief.pdf");
   await expect(pdf).toContainText("PDF");
   // Audio and video players.
-  await expect(page.locator('.prism-attachment[data-kind="audio"] audio[controls]')).toHaveAttribute("src", "/e2e-fixtures/media/tone.wav");
-  await expect(page.locator('.prism-attachment[data-kind="video"] video[controls]')).toHaveAttribute("src", "/e2e-fixtures/media/clip.webm");
+  await expect(page.locator('.prism-attachment[data-kind="audio"] audio[controls]')).toHaveAttribute("src", "/api/attachments/a_wav");
+  await expect(page.locator('.prism-attachment[data-kind="video"] video[controls]')).toHaveAttribute("src", "/api/attachments/a_webm");
   // A generic file shows its name and size and downloads.
   const file = page.locator('.prism-attachment[data-kind="file"]');
   await expect(file).toContainText("dataset.zip");
@@ -63,7 +70,7 @@ test("file, pdf, audio, video blocks", async ({ page }) => {
   const stored = await html(page);
   expect(stored).toContain('data-type="attachment"');
   expect(stored).toContain('data-kind="pdf"');
-  expect(stored).toMatch(/<a href="\/e2e-fixtures\/media\/brief\.pdf"[^>]*>brief\.pdf<\/a>/);
+  expect(stored).toMatch(/<a href="\/api\/attachments\/a_pdf"[^>]*>brief\.pdf<\/a>/);
   // SVG / HTML files are refused before upload.
   await pasteFiles(page, [{ name: "logo.svg", type: "image/svg+xml", bytes: "<svg/>" }]);
   await expect(page.getByRole("alert").first()).toBeVisible();
@@ -125,7 +132,7 @@ test("allowlisted embeds render; others fall back", async ({ page }) => {
   const embed = page.locator('.prism-embed[data-provider="youtube"]');
   const frame = embed.locator("iframe");
   await expect(frame).toHaveAttribute("src", "https://www.youtube-nocookie.com/embed/dQw4w9WgXcQ?start=65");
-  await expect(frame).toHaveAttribute("sandbox", "allow-scripts allow-same-origin allow-popups allow-popups-to-escape-sandbox allow-presentation");
+  await expect(frame).toHaveAttribute("sandbox", "allow-scripts allow-same-origin allow-popups allow-presentation");
   await expect(frame).toHaveAttribute("referrerpolicy", "strict-origin-when-cross-origin");
   // Stored: only the pasted URL, never an iframe or its src.
   const stored = await html(page);
@@ -162,4 +169,43 @@ test("allowlisted embeds render; others fall back", async ({ page }) => {
   await expect(fallback).toContainText("can't be embedded");
   // A javascript: URL is not an embed at all (and never a frame).
   expect(await html(page)).not.toContain("javascript:");
+});
+
+test("H1: a 'pdf'/'video' block never frames or plays a URL that is not our own attachment", async ({ page, context }) => {
+  await context.route("https://evil.example/**", (r) => r.fulfill({ status: 200, contentType: "text/html", body: "<title>elsewhere</title>" }));
+  const hostile = [
+    '<div data-type="attachment" data-kind="pdf" data-src="https://evil.example/phish.html" data-name="invoice.pdf"><a href="https://evil.example/phish.html">invoice.pdf</a></div>',
+    '<div data-type="attachment" data-kind="video" data-src="https://evil.example/x.mp4" data-name="clip.mp4"><a href="https://evil.example/x.mp4">clip.mp4</a></div>',
+    '<div data-type="attachment" data-kind="pdf" data-src="/auth/logout" data-name="same-origin.pdf"><a href="/auth/logout">same-origin.pdf</a></div>',
+    '<div data-type="attachment" data-kind="pdf" data-src="/api/attachments/a_pdf" data-name="real.pdf"><a href="/api/attachments/a_pdf">real.pdf</a></div>',
+  ].join("");
+  const requests: string[] = [];
+  page.on("request", (r) => requests.push(r.url()));
+  await page.goto("/e2e-fixtures/notion-media.html?content=" + enc(hostile));
+  // Only the real attachment is framed.
+  await expect(page.locator(".prism-attachment iframe")).toHaveCount(1);
+  await expect(page.locator(".prism-attachment iframe")).toHaveAttribute("src", "/api/attachments/a_pdf");
+  await expect(page.locator(".prism-attachment video, .prism-attachment audio")).toHaveCount(0);
+  // The https ones stay plain cards; the same-origin path is not a block at all (its link text survives).
+  await expect(page.locator(".prism-attachment")).toHaveCount(3);
+  await expect(page.locator(".tiptap")).toContainText("same-origin.pdf");
+  expect(requests.filter((u) => new URL(u).hostname === "evil.example" || new URL(u).pathname === "/auth/logout")).toEqual([]);
+  // "Download" on an https card opens a new tab; it is never fetched with our credentials.
+  const popup = page.waitForEvent("popup");
+  await page.locator(".prism-attachment").first().getByRole("button", { name: /Download invoice.pdf/ }).click();
+  const opened = await popup;
+  await opened.waitForLoadState();
+  expect(opened.url()).toBe("https://evil.example/phish.html");
+  expect(requests.filter((u) => new URL(u).hostname === "evil.example").length).toBe(0); // only the popup (a separate page) goes there
+});
+
+test("H2: relative and odd-scheme images are kept in the document", async ({ page }) => {
+  const content = '<p>a</p><img src="images/diagram.png" alt="rel"><img src="//cdn.example.org/x.png" alt="pr"><img src="cid:part1@example.org" alt="cid"><p>b</p>';
+  await page.route("**/cdn.example.org/**", (r) => r.abort());
+  await page.goto("/e2e-fixtures/notion-media.html?content=" + enc(content));
+  await expect(page.locator("figure.prism-image")).toHaveCount(3);
+  await page.getByText("b", { exact: true }).click();
+  await page.keyboard.type(" edited");
+  const stored = await html(page);
+  for (const src of ["images/diagram.png", "//cdn.example.org/x.png", "cid:part1@example.org"]) expect(stored).toContain(`src="${src}"`);
 });

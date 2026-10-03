@@ -28,6 +28,18 @@ db.exec(`
   );
   CREATE INDEX IF NOT EXISTS prism_attachments_note ON prism_attachments(vault_id, note_id);
 `);
+// Additive columns (idempotent): lifecycle status, the vault's own attachment-row id
+// (needed to delete it), and when a row was purged / flagged.
+//   status: 'live' | 'orphan_attach_failed' | 'orphan_note_deleted' | 'orphan_unreferenced' | 'deleted'
+{
+  const have = new Set((db.prepare("PRAGMA table_info(prism_attachments)").all() as Array<{ name: string }>).map((c) => c.name));
+  if (!have.has("status")) db.exec("ALTER TABLE prism_attachments ADD COLUMN status TEXT NOT NULL DEFAULT 'live'");
+  if (!have.has("vault_attachment_id")) db.exec("ALTER TABLE prism_attachments ADD COLUMN vault_attachment_id TEXT");
+  if (!have.has("deleted_at")) db.exec("ALTER TABLE prism_attachments ADD COLUMN deleted_at TEXT");
+  if (!have.has("flagged_at")) db.exec("ALTER TABLE prism_attachments ADD COLUMN flagged_at TEXT");
+}
+
+export type AttachmentStatus = "live" | "orphan_attach_failed" | "orphan_note_deleted" | "orphan_unreferenced" | "deleted";
 
 export interface AttachmentRow {
   id: string;
@@ -39,6 +51,10 @@ export interface AttachmentRow {
   name: string;
   created_by: string;
   created_at: string;
+  status?: AttachmentStatus;
+  vault_attachment_id?: string | null;
+  deleted_at?: string | null;
+  flagged_at?: string | null;
 }
 
 const ID_RE = /^a_[A-Za-z0-9_-]{22}$/;
@@ -47,14 +63,93 @@ export const newAttachmentId = (): string => `a_${randomBytes(16).toString("base
 
 export function insertAttachment(row: AttachmentRow): void {
   db.prepare(
-    `INSERT INTO prism_attachments (id, vault_id, note_id, storage_path, mime, size, name, created_by, created_at)
-     VALUES (@id, @vault_id, @note_id, @storage_path, @mime, @size, @name, @created_by, @created_at)`,
-  ).run(row);
+    `INSERT INTO prism_attachments (id, vault_id, note_id, storage_path, mime, size, name, created_by, created_at, status, vault_attachment_id)
+     VALUES (@id, @vault_id, @note_id, @storage_path, @mime, @size, @name, @created_by, @created_at, @status, @vault_attachment_id)`,
+  ).run({ status: "live", vault_attachment_id: null, ...row });
 }
 
+/**
+ * A vault upload that could not be linked to its note: the bytes exist in vault
+ * storage with no attachment row (the vault's REST has no storage delete). Keep
+ * a record so the owner's sweep can report it. Never served.
+ */
+export function recordOrphan(row: AttachmentRow): void {
+  insertAttachment({ ...row, status: "orphan_attach_failed" });
+}
+
+/** Bytes counted against a quota: everything that still occupies vault storage. */
+export function usedBytes(vaultId: string, noteId?: string): number {
+  const r = (noteId === undefined
+    ? db.prepare("SELECT COALESCE(SUM(size), 0) AS n FROM prism_attachments WHERE vault_id = ? AND status != 'deleted'").get(vaultId)
+    : db.prepare("SELECT COALESCE(SUM(size), 0) AS n FROM prism_attachments WHERE vault_id = ? AND note_id = ? AND status != 'deleted'").get(vaultId, noteId)) as { n: number };
+  return r.n;
+}
+
+export function setAttachmentStatus(id: string, status: AttachmentStatus): void {
+  const now = new Date().toISOString();
+  db.prepare("UPDATE prism_attachments SET status = ?, deleted_at = CASE WHEN ? = 'deleted' THEN ? ELSE deleted_at END, flagged_at = CASE WHEN ? != 'deleted' THEN ? ELSE flagged_at END WHERE id = ?").run(status, status, now, status, now, id);
+}
+
+/** Live rows grouped for the sweep: one page of (vault, note) pairs after `cursor`. */
+export function liveRowsPage(cursor: string, limit: number): { rows: AttachmentRow[]; next: string | null } {
+  const notes = db
+    .prepare("SELECT DISTINCT vault_id || char(0) || note_id AS k FROM prism_attachments WHERE status = 'live' AND vault_id || char(0) || note_id > ? ORDER BY k LIMIT ?")
+    .all(cursor, limit + 1) as Array<{ k: string }>;
+  const page = notes.slice(0, limit);
+  if (!page.length) return { rows: [], next: null };
+  const rows = db
+    .prepare(`SELECT * FROM prism_attachments WHERE status = 'live' AND vault_id || char(0) || note_id IN (${page.map(() => "?").join(",")})`)
+    .all(...page.map((p) => p.k)) as AttachmentRow[];
+  return { rows, next: notes.length > limit ? page[page.length - 1]!.k : null };
+}
+
+/**
+ * A note is being permanently deleted: remove its attachments from the vault
+ * (the vault unlinks the stored file when no other row references it) and mark
+ * our rows. Best-effort — never throws; a row whose vault delete failed (or
+ * that has no vault attachment id) is kept as `orphan_note_deleted` for the sweep.
+ */
+export async function purgeAttachmentsForNote(vaultId: string, noteId: string): Promise<{ deleted: number; orphaned: number }> {
+  let deleted = 0;
+  let orphaned = 0;
+  let rows: AttachmentRow[] = [];
+  try {
+    rows = db.prepare("SELECT * FROM prism_attachments WHERE vault_id = ? AND note_id = ? AND status != 'deleted'").all(vaultId, noteId) as AttachmentRow[];
+  } catch {
+    return { deleted, orphaned };
+  }
+  for (const row of rows) {
+    let ok = false;
+    if (row.vault_attachment_id) {
+      try {
+        const { api, auth } = base(vaultId);
+        const r = await fetch(`${api}/notes/${encodeURIComponent(noteId)}/attachments/${encodeURIComponent(row.vault_attachment_id)}`, {
+          method: "DELETE",
+          headers: { Authorization: auth },
+          signal: AbortSignal.timeout(15_000),
+        });
+        await r.body?.cancel().catch(() => {});
+        ok = r.status === 204 || r.status === 200;
+      } catch {
+        ok = false;
+      }
+    }
+    try {
+      setAttachmentStatus(row.id, ok ? "deleted" : "orphan_note_deleted");
+    } catch {
+      /* best-effort */
+    }
+    if (ok) deleted++;
+    else orphaned++;
+  }
+  return { deleted, orphaned };
+}
+
+/** A SERVABLE attachment: live (or merely flagged unreferenced — a block may come back from history). */
 export function getAttachment(id: string): AttachmentRow | null {
   if (!isAttachmentId(id)) return null;
-  return (db.prepare("SELECT * FROM prism_attachments WHERE id = ?").get(id) as AttachmentRow | undefined) ?? null;
+  const row = (db.prepare("SELECT * FROM prism_attachments WHERE id = ?").get(id) as AttachmentRow | undefined) ?? null;
+  return row && (row.status === "live" || row.status === "orphan_unreferenced" || row.status == null) ? row : null;
 }
 
 /** Test helper. */
@@ -71,6 +166,8 @@ export function sanitizeName(raw: unknown): string {
   for (const ch of s) {
     const cp = ch.codePointAt(0)!;
     if (cp < 0x20 || cp === 0x7f || (cp >= 0x80 && cp < 0xa0) || ch === '"' || ch === "\\" || ch === "/" || cp === 0x2028 || cp === 0x2029) continue;
+    // Bidi / directional format controls: "invoice\u202Efdp.exe" must not display as "invoiceexe.pdf".
+    if ((cp >= 0x202a && cp <= 0x202e) || (cp >= 0x2066 && cp <= 0x2069) || cp === 0x200e || cp === 0x200f || cp === 0x061c) continue;
     out += ch;
   }
   out = out.trim().replace(/^\.+/, "");
@@ -98,16 +195,21 @@ function base(vaultId: string) {
   return { api: `${e.url}/vault/${e.vault}/api`, auth: `Bearer ${e.token}` };
 }
 
-/** Upload bytes into the vault's storage under a server-chosen file name. */
-export async function vaultUpload(vaultId: string, bytes: Buffer, filename: string): Promise<{ path: string; size: number }> {
+/**
+ * Upload into the vault's storage under a server-chosen file name. Takes the
+ * parsed upload Blob as-is (no extra copy): the vault's `/storage/upload` only
+ * accepts multipart, so the bytes are held once (the parsed request body) and
+ * re-framed by fetch.
+ */
+export async function vaultUpload(vaultId: string, bytes: Blob, filename: string): Promise<{ path: string; size: number }> {
   const { api, auth } = base(vaultId);
   const form = new FormData();
-  form.append("file", new Blob([new Uint8Array(bytes)]), filename);
+  form.append("file", bytes, filename);
   const r = await fetch(`${api}/storage/upload`, { method: "POST", headers: { Authorization: auth }, body: form, signal: AbortSignal.timeout(60_000) });
   if (!r.ok) throw new VaultIoError(r.status, `storage upload: ${r.status}`);
   const b = (await r.json()) as { path?: unknown; size?: unknown };
   if (typeof b.path !== "string" || !b.path) throw new VaultIoError(502, "storage upload: no path");
-  return { path: b.path, size: typeof b.size === "number" ? b.size : bytes.length };
+  return { path: b.path, size: typeof b.size === "number" ? b.size : bytes.size };
 }
 
 /** Link a stored file to a note (never auto-transcribed). */
