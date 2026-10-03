@@ -236,11 +236,54 @@ export function installFakeVault(): FakeVault {
         return json(list);
       }
       if (method === "POST") {
-        const b = (body ?? {}) as Partial<FakeNote>;
-        const id = `new-${++seq}`;
-        const n = fakeNote({ id, content: b.content ?? "", path: b.path ?? null, metadata: b.metadata ?? null, tags: b.tags ?? [] });
-        store.set(n.id, n);
-        return json(n);
+        // Like vault 0.7.9 (`routes.ts` POST /notes): a body is ONE note or a batch
+        // (`notes: [...]`); each item may choose its `id`, carry `links` and
+        // `created_at`, and say what happens when its path is taken — `if_exists`
+        // "error" (default → 409 path_conflict, whole batch rolled back), "ignore",
+        // "update" (merge) or "replace" (overwrite). Tags of an existing note are
+        // unioned. A gateway that forwards a raw body inherits all of it.
+        const b = (body ?? {}) as Record<string, unknown>;
+        if (b.notes !== undefined && !Array.isArray(b.notes)) return json({ error: "notes must be an array", error_type: "invalid_request" }, 400);
+        const items = (b.notes ?? [b]) as Array<Record<string, unknown>>;
+        const holderOf = (item: Record<string, unknown>) =>
+          typeof item.path === "string" && item.path ? [...store.values()].find((n) => !!n.path && n.path.toLowerCase() === (item.path as string).toLowerCase()) : undefined;
+        for (const item of items) {
+          const holder = holderOf(item);
+          if (holder && (item.if_exists ?? "error") === "error") {
+            return json({ error_type: "path_conflict", error: "path_conflict", path: holder.path, message: "a note already exists at this path" }, 409);
+          }
+        }
+        const out: Array<FakeNote & { existed?: boolean }> = [];
+        for (const item of items) {
+          const tags = Array.isArray(item.tags) ? (item.tags as string[]) : [];
+          const meta = item.metadata && typeof item.metadata === "object" ? (item.metadata as Record<string, unknown>) : undefined;
+          const links = Array.isArray(item.links) ? (item.links as Array<{ target: string; relationship: string }>) : undefined;
+          const holder = holderOf(item);
+          if (holder) {
+            if (item.if_exists !== "ignore") {
+              captureVersion(holder, "update");
+              if (item.if_exists === "replace") {
+                holder.content = typeof item.content === "string" ? item.content : "";
+                holder.metadata = meta ?? {};
+              } else {
+                if (typeof item.content === "string") holder.content = item.content;
+                if (meta) holder.metadata = mergeMetadata(holder.metadata, meta);
+              }
+              holder.tags = [...new Set([...(holder.tags ?? []), ...tags])];
+              if (links) holder.links = [...(holder.links ?? []), ...links.map((l) => ({ sourceId: holder.id, targetId: l.target, relationship: l.relationship }))];
+              holder.updatedAt = new Date(2026, 5, 1, 0, 0, seq++).toISOString();
+            }
+            out.push({ ...holder, existed: true });
+            continue;
+          }
+          const id = typeof item.id === "string" && item.id ? item.id : `new-${++seq}`;
+          const createdAt = (item.created_at ?? item.createdAt) as string | undefined;
+          const n = fakeNote({ id, content: typeof item.content === "string" ? item.content : "", path: typeof item.path === "string" ? item.path : null, metadata: meta ?? null, tags, ...(createdAt ? { createdAt } : {}) });
+          if (links) n.links = links.map((l) => ({ sourceId: id, targetId: l.target, relationship: l.relationship }));
+          store.set(n.id, n);
+          out.push(item.if_exists !== undefined && item.if_exists !== "error" ? { ...n, existed: false } : n);
+        }
+        return json(b.notes ? out : out[0]);
       }
     }
 
@@ -293,6 +336,11 @@ export function installFakeVault(): FakeVault {
         }
         const b = (body ?? {}) as Record<string, unknown>;
         if (b.if_updated_at !== undefined && b.if_updated_at !== existing.updatedAt) return json({error:"conflict"},409);
+        // Like the vault (UNIQUE(path), vault#126): a rename onto a held path is a 409 path_conflict.
+        if (typeof b.path === "string") {
+          const holder = [...store.values()].find((n) => n.id !== id && !!n.path && n.path.toLowerCase() === (b.path as string).toLowerCase());
+          if (holder) return json({ error_type: "path_conflict", error: "path_conflict", path: holder.path, message: "a note already exists at this path" }, 409);
+        }
         captureVersion(existing, "update");
         const linkOps = b.links as {add?: Array<{target:string;relationship:string}>;remove?: Array<{target:string;relationship:string}>} | undefined;
         if (linkOps) {

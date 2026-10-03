@@ -240,6 +240,44 @@ export function exportedLocation(vaultId: string, path: string): string | null {
   return null;
 }
 
+/** A tag with a public site on it: tagging a note with it publishes the note. */
+export function publishedTag(vaultId: string, tag: string): boolean {
+  return listPublications().some((p) => p.resource_type === "tag" && (p.vault_id ?? "primary") === vaultId && p.resource === tag);
+}
+
+/** One answer for "that path is taken" and "that path is under a trashed page": the
+ *  caller's own path, no word about what is there or whether they could see it. */
+export const pathUnavailable = (path: string) => ({ error: "path_conflict" as const, path, reason: "That location isn’t available. Choose another place." });
+
+export type PlacementRefusal = { status: 400 | 403 | 409 | 502; body: Record<string, unknown> };
+
+/**
+ * Where a NON-ADMIN may place a note by naming a path — the gateway's create
+ * (`POST /notes`), its path PATCH and a governed new entry. The move route's
+ * destination rules, minus its parent-page requirement: a clean page path
+ * (`normalizePagePath`), not a location an integration owns (`isProtectedPath`), not
+ * an exported folder (`exportedLocation`), not under a trashed page. Refusals name no
+ * note; a trashed ancestor answers exactly like a taken path.
+ */
+export async function placementRefusal(entry: VaultEntry, raw: unknown): Promise<{ path: string } | PlacementRefusal> {
+  const path = normalizePagePath(raw);
+  if (!path) return { status: 400, body: { error: "invalid_request", reason: "path is not a valid page location." } };
+  if (isProtectedPath(path)) return { status: 403, body: { error: "protected", reason: "That location is kept in sync by an integration." } };
+  const why = exportedLocation(entry.id, path);
+  if (why) return { status: 403, body: { error: "forbidden", reason: `${why} Only the workspace owner can add pages there.` } };
+  if (parentOf(path)) {
+    let trashed: Note[];
+    try {
+      trashed = await vaultClient(entry.id).listNotes({ tags: [TRASH_TAG], includeMetadata: [...TREE_META_KEYS] });
+    } catch {
+      return { status: 502, body: { error: "vault_unreachable" } };
+    }
+    const lower = path.toLowerCase();
+    if (trashed.some((n) => !!n.path && isUnder(lower, n.path.toLowerCase()))) return { status: 409, body: pathUnavailable(path) };
+  }
+  return { path };
+}
+
 /** Live docs that LINK INTO the moved notes: store them before the path writes (review M2). */
 async function flushLinkersLive(entry: VaultEntry, ids: string[]): Promise<void> {
   let collab: typeof import("./collab");

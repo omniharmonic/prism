@@ -170,9 +170,15 @@ export function vaultClient(vaultId?: string, opts: { /** Abort any single vault
     links?: NoteLinkInput[];
     ifExists?: IfExists;
   }): Promise<Note & { existed?: boolean }> {
-    const { ifExists, ...rest } = params;
-    const body: Record<string, unknown> = { ...rest };
-    if (ifExists !== undefined) body.if_exists = ifExists;
+    // Built key by key, never spread: the vault's POST also honours `notes` (batch),
+    // `id`, `created_at`, `extension` — a caller that hands over an object with more
+    // on it than the type says (a request body) must not be able to send them.
+    const body: Record<string, unknown> = { content: params.content };
+    if (params.path !== undefined) body.path = params.path;
+    if (params.metadata !== undefined) body.metadata = params.metadata;
+    if (params.tags !== undefined) body.tags = params.tags;
+    if (params.links !== undefined) body.links = params.links;
+    if (params.ifExists !== undefined) body.if_exists = params.ifExists;
     return (await req(`/notes`, { method: "POST", body: JSON.stringify(body) })).json() as Promise<Note & { existed?: boolean }>;
   },
 

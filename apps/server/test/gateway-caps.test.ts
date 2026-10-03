@@ -127,16 +127,16 @@ test("an `edit` grant cannot retag (organize is a separate power)", async () => 
 });
 
 test("organize also unlocks the note's path (previously admin-only), edit alone does not", async () => {
-  fv.put({ id: "n1", content: "v1", path: "/original", tags: ["team"] });
+  fv.put({ id: "n1", content: "v1", path: "original", tags: ["team"] });
   grantCaps("obi@test.local", "tag", "team", ["view", "edit", "organize"]);
-  const r = await req("/notes/n1", { method: "PATCH", cookie: login("obi@test.local"), headers: J, body: JSON.stringify({ content: "v2", path: "/filed" }) });
+  const r = await req("/notes/n1", { method: "PATCH", cookie: login("obi@test.local"), headers: J, body: JSON.stringify({ content: "v2", path: "filed" }) });
   assert.equal(r.status, 200);
-  assert.equal(fv.notes.get("n1")!.path, "/filed");
+  assert.equal(fv.notes.get("n1")!.path, "filed");
 
-  fv.put({ id: "n2", content: "v1", path: "/original", tags: ["team"] });
+  fv.put({ id: "n2", content: "v1", path: "original", tags: ["team"] });
   grantUser("eddy@test.local", "tag", "team", "edit");
-  await req("/notes/n2", { method: "PATCH", cookie: login("eddy@test.local"), headers: J, body: JSON.stringify({ content: "v2", path: "/hijacked" }) });
-  assert.equal(fv.notes.get("n2")!.path, "/original", "still silently dropped without organize");
+  await req("/notes/n2", { method: "PATCH", cookie: login("eddy@test.local"), headers: J, body: JSON.stringify({ content: "v2", path: "hijacked" }) });
+  assert.equal(fv.notes.get("n2")!.path, "original", "still silently dropped without organize");
 });
 
 // ------------------------------------------------- organize: anti-escalation
@@ -266,18 +266,18 @@ test("acl: a caps-less people-grant is unchanged, and GET /grants reports caps",
 });
 
 test("a path-only PATCH: organize applies it, edit no-ops it, view is still refused", async () => {
-  fv.put({ id: "n1", content: "v1", path: "/original", tags: ["team"] });
+  fv.put({ id: "n1", content: "v1", path: "original", tags: ["team"] });
   grantCaps("obi@test.local", "tag", "team", ["view", "organize"]);
-  assert.equal((await req("/notes/n1", { method: "PATCH", cookie: login("obi@test.local"), headers: J, body: JSON.stringify({ path: "/filed" }) })).status, 200);
-  assert.equal(fv.notes.get("n1")!.path, "/filed");
+  assert.equal((await req("/notes/n1", { method: "PATCH", cookie: login("obi@test.local"), headers: J, body: JSON.stringify({ path: "filed" }) })).status, 200);
+  assert.equal(fv.notes.get("n1")!.path, "filed");
 
   grantUser("eddy@test.local", "tag", "team", "edit");
-  const edit = await req("/notes/n1", { method: "PATCH", cookie: login("eddy@test.local"), headers: J, body: JSON.stringify({ path: "/hijacked" }) });
+  const edit = await req("/notes/n1", { method: "PATCH", cookie: login("eddy@test.local"), headers: J, body: JSON.stringify({ path: "hijacked" }) });
   assert.equal(edit.status, 200, "an editor's stray path change stays a silent no-op, not an error");
-  assert.equal(fv.notes.get("n1")!.path, "/filed");
+  assert.equal(fv.notes.get("n1")!.path, "filed");
 
   grantUser("val@test.local", "tag", "team", "view");
-  const view = await req("/notes/n1", { method: "PATCH", cookie: login("val@test.local"), headers: J, body: JSON.stringify({ path: "/nope" }) });
+  const view = await req("/notes/n1", { method: "PATCH", cookie: login("val@test.local"), headers: J, body: JSON.stringify({ path: "nope" }) });
   assert.equal(view.status, 403, "a write attempt is refused, never echoed back as a 200");
 });
 
