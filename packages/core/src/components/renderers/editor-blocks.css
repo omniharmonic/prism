@@ -465,3 +465,9 @@ a.prism-bookmark:hover { background: var(--glass-hover); border-color: var(--gla
 .prism-shortcuts-row dd { margin: 0; white-space: nowrap; }
 .prism-shortcuts-row kbd { font: 12px/1 var(--font-mono, ui-monospace, monospace); padding: 3px 6px; border-radius: 5px; border: 1px solid var(--glass-border); background: var(--glass); color: var(--text-primary); }
 @media (max-width: 640px) { .prism-shortcuts-body { columns: 1; } .prism-shortcuts-head input { font-size: 16px; } }
+.block-notice {
+  position: fixed; left: 50%; bottom: calc(24px + var(--workspace-bottom-inset, 0px)); transform: translateX(-50%); z-index: 80;
+  max-width: calc(100vw - 32px); padding: 8px 14px; border-radius: var(--radius-md); border: 1px solid var(--glass-border);
+  background: var(--bg-surface); color: var(--text-primary); box-shadow: var(--glass-shadow-elevated); font-size: 13px;
+}
+.block-drop-indicator.is-side { height: auto; }

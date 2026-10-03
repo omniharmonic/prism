@@ -270,6 +270,48 @@ export function moveTopBlockIn(editor: MoveEditor, fromIndex: number, toIndex: n
   return !!tr;
 }
 
+/**
+ * Drop `count` top-level blocks (from `fromIndex`) beside the block at
+ * `targetIndex` (NP-ED-09): a plain target becomes a two-column layout holding
+ * the target and the dragged blocks; a columns target (< 5 columns) gains one
+ * column on that side. One transaction. Null when it cannot be done (dropping
+ * on itself, a columns block dragged into columns, a full layout).
+ */
+export function moveBlocksBeside(state: EditorState, fromIndex: number, count: number, targetIndex: number, side: "left" | "right"): Transaction | null {
+  const { doc, schema } = state;
+  const { columns, column } = schema.nodes;
+  if (!columns || !column) return null;
+  const blocks = topLevelBlocks(doc);
+  const moving = blocks.slice(fromIndex, fromIndex + count);
+  const target = blocks[targetIndex];
+  if (!moving.length || !target || (targetIndex >= fromIndex && targetIndex < fromIndex + count)) return null;
+  if (moving.some((b) => b.node.type.name === "columns")) return null;
+  const dragged = column.create(null, moving.map((b) => b.node));
+  let layout: PMNode;
+  if (target.node.type.name === "columns") {
+    if (target.node.childCount >= 5) return null;
+    const cols: PMNode[] = [];
+    target.node.forEach((c) => cols.push(c));
+    layout = columns.create(target.node.attrs, side === "left" ? [dragged, ...cols] : [...cols, dragged]);
+  } else {
+    const own = column.create(null, target.node);
+    layout = columns.create(null, side === "left" ? [dragged, own] : [own, dragged]);
+  }
+  const tr = state.tr;
+  const from = moving[0].pos;
+  const last = moving[moving.length - 1];
+  const to = last.pos + last.node.nodeSize;
+  // Later range first, so the earlier positions stay valid.
+  if (target.pos > from) {
+    tr.replaceWith(target.pos, target.pos + target.node.nodeSize, layout);
+    tr.delete(from, to);
+  } else {
+    tr.delete(from, to);
+    tr.replaceWith(target.pos, target.pos + target.node.nodeSize, layout);
+  }
+  return placeCaret(tr, Math.min(tr.mapping.map(target.pos) + 3, tr.doc.content.size)).scrollIntoView();
+}
+
 export function duplicateTopBlock(state: EditorState, pos: number): Transaction | null {
   const node = state.doc.nodeAt(pos);
   if (!node) return null;

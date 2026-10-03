@@ -13,17 +13,18 @@ const notes: Note[] = [
   { id: "blocks", path: "Projects/Prism/Block editor", content, tags: [], metadata: { type: "document" }, createdAt: date, updatedAt: date },
   { id: "roadmap", path: "Projects/Prism/Roadmap", content: "<p>Roadmap</p>", tags: [], metadata: { type: "document" }, createdAt: date, updatedAt: date },
 ];
-const writes: Array<{ id: string; content?: string }> = [];
+const writes: Array<{ id: string; content?: string; ifUpdatedAt?: string }> = [];
 const uploads: Array<{ noteId: string; name: string; type: string; size: number }> = [];
-const controls = { failUpload: false, hold: null as null | Promise<void>, release: () => {} };
+const controls = { failMove: false, failUpload: false, hold: null as null | Promise<void>, release: () => {} };
 const client = {
   getNote: async (id: string) => notes.find((n) => n.id === id)!,
   listNotes: async () => notes,
   listTree: async () => notes.map(({ id, path, tags, updatedAt }) => ({ id, path, tags, updatedAt })),
   getTags: async () => [],
   getLinks: async () => [],
-  updateNote: async (id: string, changes: Partial<Note>) => {
-    writes.push({ id, content: changes.content });
+  updateNote: async (id: string, changes: Partial<Note> & { ifUpdatedAt?: string }) => {
+    if (controls.failMove && id !== "blocks") throw new Error("PATCH /notes failed: 409");
+    writes.push({ id, content: changes.content, ifUpdatedAt: changes.ifUpdatedAt });
     const note = notes.find((n) => n.id === id)!;
     Object.assign(note, changes, { updatedAt: new Date().toISOString() });
     return note;

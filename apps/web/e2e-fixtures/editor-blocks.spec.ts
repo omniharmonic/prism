@@ -121,6 +121,222 @@ test.describe("plain editor block handles", () => {
       .toContain('<p data-block-color="blue_background">Bravo paragraph</p><p data-block-color="blue_background">Bravo paragraph</p>');
   });
 
+  // NP-ED-06: block keyboard. Esc selects the block; ↑/↓ move the selection; ⌘⇧↑/↓ move the block;
+  // ⌘D duplicates; ⌘↵ checks a to-do; Backspace deletes the selected block; ⌘/ opens Turn into.
+  test("⌘⇧↑↓, ⌘D, ⌘/, Esc block selection", async ({ page }) => {
+    const mod = "ControlOrMeta";
+    const selected = () => page.evaluate(() => [...document.querySelectorAll(".tiptap > .ProseMirror-selectednode, .tiptap > .prism-block-selected")].map((el) => el.textContent));
+    await clickInto(page, "Bravo paragraph");
+    await page.keyboard.press("Escape");
+    await expect.poll(selected).toEqual(["Bravo paragraph"]);
+    await expect(page.locator(".document-selection-actions:visible")).toHaveCount(0); // a block selection is not a text selection
+    await page.keyboard.press("ArrowUp");
+    await expect.poll(selected).toEqual(["Alpha"]);
+    await page.keyboard.press("ArrowDown");
+    await page.keyboard.press("ArrowDown");
+    await expect.poll(selected).toEqual(["Charlie itemDelta item"]);
+    // ⌘⇧↑ moves the SELECTED block and keeps it selected; one step each.
+    await recordTransactions(page);
+    await page.keyboard.press(`${mod}+Shift+ArrowUp`);
+    expect((await blockTexts(page)).slice(1, 3)).toEqual(["bulletList:Charlie itemDelta item", "paragraph:Bravo paragraph"]);
+    await expect.poll(selected).toEqual(["Charlie itemDelta item"]);
+    await page.keyboard.press(`${mod}+Shift+ArrowDown`);
+    expect((await blockTexts(page)).slice(1, 3)).toEqual(["paragraph:Bravo paragraph", "bulletList:Charlie itemDelta item"]);
+    expect((await txLog(page)).every((steps) => steps === 1)).toBe(true);
+    // Shift+↓ extends the selection; ⌘D duplicates both blocks after them.
+    await page.keyboard.press("ArrowUp");
+    await page.keyboard.press("Shift+ArrowDown");
+    await expect.poll(selected).toEqual(["Bravo paragraph", "Charlie itemDelta item"]);
+    await page.keyboard.press(`${mod}+d`);
+    expect(await blockTexts(page)).toEqual([
+      "heading:Alpha", "paragraph:Bravo paragraph", "bulletList:Charlie itemDelta item", "paragraph:Bravo paragraph", "bulletList:Charlie itemDelta item", "blockquote:Echo quote", "paragraph:Foxtrot closing",
+    ]);
+    // Backspace deletes the selected blocks (the copies stay selected after ⌘D).
+    await expect.poll(selected).toEqual(["Bravo paragraph", "Charlie itemDelta item"]);
+    await page.keyboard.press("Backspace");
+    expect(await blockTexts(page)).toEqual(["heading:Alpha", "paragraph:Bravo paragraph", "bulletList:Charlie itemDelta item", "blockquote:Echo quote", "paragraph:Foxtrot closing"]);
+    // Enter returns to the text of a selected block; typing then edits it.
+    await clickInto(page, "Foxtrot closing");
+    await page.keyboard.press("Escape");
+    await page.keyboard.press("Enter");
+    await page.keyboard.type("!");
+    expect((await blockTexts(page)).at(-1)).toBe("paragraph:Foxtrot closing!");
+    // With only a caret: ⌘⇧↑ moves the block, ⌘D duplicates the list ITEM, not the whole list.
+    await clickInto(page, "Bravo paragraph");
+    await page.keyboard.press(`${mod}+Shift+ArrowUp`);
+    expect((await blockTexts(page)).slice(0, 2)).toEqual(["paragraph:Bravo paragraph", "heading:Alpha"]);
+    await clickInto(page, "Delta item");
+    await page.keyboard.press(`${mod}+d`);
+    expect(await blockTexts(page)).toContain("bulletList:Charlie itemDelta itemDelta item");
+    // ⌘↵ checks and unchecks a to-do.
+    await page.goto("/e2e-fixtures/editor-blocks.html?content=" + encodeURIComponent('<ul data-type="taskList"><li data-type="taskItem" data-checked="false"><p>Ship it</p></li></ul><p>after</p>'));
+    await clickInto(page, "Ship it");
+    await page.keyboard.press(`${mod}+Enter`);
+    await expect(page.locator('.tiptap li[data-checked="true"]')).toHaveCount(1);
+    await page.keyboard.press(`${mod}+Enter`);
+    await expect(page.locator('.tiptap li[data-checked="true"]')).toHaveCount(0);
+    // ⌘/ in a block opens its menu on Turn into (the shortcut sheet is for ⌘/ OUTSIDE a block).
+    await page.keyboard.press(`${mod}+/`);
+    await expect(page.getByRole("menu", { name: "Block actions" }).getByRole("menuitem", { name: "Turn into" })).toBeFocused();
+    await expect(page.getByRole("dialog", { name: "Keyboard shortcuts" })).toHaveCount(0);
+    await page.keyboard.press("Escape");
+    // Tab / Shift+Tab nest and un-nest a list item.
+    await page.goto("/e2e-fixtures/editor-blocks.html");
+    await clickInto(page, "Delta item");
+    await page.keyboard.press("Tab");
+    await expect.poll(() => page.evaluate(() => (document.querySelector(".tiptap") as any).editor.getHTML())).toContain("<li><p>Charlie item</p><ul><li><p>Delta item</p></li></ul></li>");
+    await page.keyboard.press("Shift+Tab");
+    await expect.poll(() => page.evaluate(() => (document.querySelector(".tiptap") as any).editor.getHTML())).toContain("<li><p>Charlie item</p></li><li><p>Delta item</p></li>");
+  });
+
+  // NP-ED-01: a multi-block selection drags as one, with a drop line, in one step.
+  test("a multi-block selection drags as one block group in one undo step", async ({ page }) => {
+    await clickInto(page, "Bravo paragraph");
+    await page.keyboard.press("Escape");
+    await page.keyboard.press("Shift+ArrowDown");
+    const gutter = await gutterFor(page, "Charlie item");
+    await recordTransactions(page);
+    const grip = gutter.getByRole("button", { name: /Drag to move/ });
+    // Drive the drag by hand to see the drop line mid-flight.
+    const from = (await grip.boundingBox())!;
+    const target = (await page.getByText("Foxtrot closing", { exact: true }).boundingBox())!;
+    await page.mouse.move(from.x + from.width / 2, from.y + from.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(target.x + 4, target.y + target.height - 3, { steps: 8 });
+    await expect(page.locator('.block-drop-indicator[data-drop="line"]')).toBeVisible();
+    await page.mouse.up();
+    await expect.poll(() => blockTexts(page)).toEqual([
+      "heading:Alpha", "blockquote:Echo quote", "paragraph:Foxtrot closing", "paragraph:Bravo paragraph", "bulletList:Charlie itemDelta item", "paragraph:",
+    ]);
+    expect((await txLog(page))[0]).toBe(1); // one replace step for both blocks
+    await expect(page.locator(".block-drop-indicator")).toHaveCount(0);
+    // The moved blocks stay selected; one ⌘Z puts both back.
+    await expect.poll(() => page.evaluate(() => [...document.querySelectorAll(".tiptap > .prism-block-selected")].map((el) => el.textContent))).toEqual(["Bravo paragraph", "Charlie itemDelta item"]);
+    await page.keyboard.press("ControlOrMeta+z");
+    await page.keyboard.press("ControlOrMeta+z"); // (the trailing paragraph the list needed at the end)
+    expect((await blockTexts(page)).slice(0, 5)).toEqual(["heading:Alpha", "paragraph:Bravo paragraph", "bulletList:Charlie itemDelta item", "blockquote:Echo quote", "paragraph:Foxtrot closing"]);
+  });
+
+  // NP-ED-09: dropping a block on the far right (or the left margin) of another makes columns.
+  test("drag block to side creates columns", async ({ page }) => {
+    const html = () => page.evaluate(() => (document.querySelector(".tiptap") as any).editor.getHTML() as string);
+    const dragBeside = async (text: string, onto: string, side: "left" | "right") => {
+      const gutter = await gutterFor(page, text);
+      const grip = (await gutter.getByRole("button", { name: /Drag to move/ }).boundingBox())!;
+      const target = (await page.locator(".tiptap > *", { hasText: onto }).first().boundingBox())!;
+      const editor = (await page.locator(".tiptap").boundingBox())!;
+      await page.mouse.move(grip.x + grip.width / 2, grip.y + grip.height / 2);
+      await page.mouse.down();
+      const x = side === "right" ? editor.x + editor.width - 12 : editor.x - 80;
+      await page.mouse.move(grip.x + grip.width / 2 + 2, grip.y + grip.height / 2 - 4, { steps: 2 }); // starts the drag
+      await page.mouse.move(x, target.y + target.height / 2, { steps: 8 });
+      await page.mouse.move(x, target.y + target.height / 2 + 1);
+      await page.mouse.up();
+    };
+    await recordTransactions(page);
+    await dragBeside("Foxtrot closing", "Bravo paragraph", "right");
+    await expect.poll(html).toContain('<div data-type="columns" data-count="2"><div data-type="column"><p>Bravo paragraph</p></div><div data-type="column"><p>Foxtrot closing</p></div></div>');
+    expect(await txLog(page)).toHaveLength(1); // one transaction → one undo step
+    // A third block dropped on the left margin of the layout becomes its first column.
+    await dragBeside("Echo quote", "Bravo paragraph", "left");
+    await expect.poll(html).toMatch(/<div data-type="columns" data-count="3"><div data-type="column"><blockquote><p>Echo quote<\/p><\/blockquote><\/div><div data-type="column"><p>Bravo paragraph<\/p><\/div><div data-type="column"><p>Foxtrot closing<\/p><\/div><\/div>/);
+    expect(await html()).not.toMatch(/<\/div><blockquote>/); // moved, not copied
+    if (SHOTS) await page.screenshot({ path: `${SHOTS}/columns-from-drag-1440.png` });
+    await page.getByText("Alpha", { exact: true }).click();
+    await page.keyboard.press("ControlOrMeta+z");
+    await expect.poll(html).toContain('data-count="2"');
+    await expect.poll(() => page.evaluate(() => (window as any).prismBlockWrites.at(-1)?.content ?? ""), { timeout: 6000 }).toContain('data-type="columns"');
+  });
+
+  // NP-ED-02: the block menu is searchable and has Copy and Move to (another page).
+  test("block menu Move to another page", async ({ page, context }) => {
+    await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+    let gutter = await gutterFor(page, "Echo quote");
+    await gutter.getByRole("button", { name: /Drag to move/ }).click();
+    const menu = page.getByRole("menu", { name: "Block actions" });
+    await expect(menu.getByRole("menuitem").evaluateAll((els) => els.map((el) => el.querySelector(".editor-menu-label")?.textContent))).resolves.toEqual(
+      ["Turn into", "Unwrap", "Color", "Duplicate", "Copy", "Move to", "Move up", "Move down", "Delete"],
+    );
+    // Type to search from the focused item: actions, Turn into kinds and colours are all found.
+    await expect(menu.getByRole("menuitem", { name: "Turn into" })).toBeFocused();
+    await page.keyboard.type("head");
+    const search = menu.getByRole("searchbox", { name: "Search actions" });
+    await expect(search).toBeFocused();
+    await expect(search).toHaveValue("head");
+    await expect(menu.getByRole("menuitem")).toHaveText(["Turn into Heading 1", "Turn into Heading 2", "Turn into Heading 3"]);
+    await search.fill("zzz");
+    await expect(menu.getByRole("status")).toHaveText("No results");
+    await search.fill("copy");
+    await page.keyboard.press("Enter"); // runs the first match
+    await expect(page.getByRole("status").filter({ hasText: "Copied block" })).toBeVisible();
+    const clip = await page.evaluate(async () => {
+      const [item] = await navigator.clipboard.read();
+      return { html: await (await item.getType("text/html")).text(), text: await (await item.getType("text/plain")).text() };
+    });
+    expect(clip.html).toContain("<blockquote><p>Echo quote</p></blockquote>");
+    expect(clip.text).toBe("> Echo quote");
+    expect(await blockTexts(page)).toContain("blockquote:Echo quote"); // a copy, the block stays
+    // Move to: a searchable page list; the block lands on the other page, then leaves this one.
+    gutter = await gutterFor(page, "Echo quote");
+    await gutter.getByRole("button", { name: /Drag to move/ }).click();
+    await page.getByRole("menuitem", { name: "Move to" }).click();
+    const pages = page.getByRole("menu", { name: "Move to" });
+    await expect(pages.getByRole("menuitem", { name: "Roadmap" })).toBeVisible();
+    await expect(pages.getByRole("menuitem", { name: "Block editor" })).toHaveCount(0); // never the page itself
+    await pages.getByRole("searchbox", { name: "Search pages" }).fill("road");
+    if (SHOTS) await page.screenshot({ path: `${SHOTS}/block-move-to-1440.png` });
+    await page.keyboard.press("Enter");
+    await expect(page.getByRole("status").filter({ hasText: "Moved to Roadmap" })).toBeVisible();
+    expect(await blockTexts(page)).not.toContain("blockquote:Echo quote");
+    const write = await page.evaluate(() => (window as any).prismBlockWrites.find((w: any) => w.id === "roadmap"));
+    expect(write.content).toBe("<p>Roadmap</p><blockquote><p>Echo quote</p></blockquote>");
+    expect(write.ifUpdatedAt).toBe("2026-10-02T12:00:00.000Z"); // compare-and-set on the revision that was read
+    // A refused write keeps the block where it is and says so.
+    await page.evaluate(() => { (window as any).prismBlockControls.failMove = true; });
+    gutter = await gutterFor(page, "Bravo paragraph");
+    await gutter.getByRole("button", { name: /Drag to move/ }).click();
+    await page.getByRole("menuitem", { name: "Move to" }).click();
+    await page.getByRole("menuitem", { name: "Roadmap" }).click();
+    await expect(page.getByRole("status").filter({ hasText: "Couldn’t move to Roadmap. The block is still here." })).toBeVisible();
+    expect(await blockTexts(page)).toContain("paragraph:Bravo paragraph");
+  });
+
+  // NP-ED-07: ⌘/ outside a block opens the shortcut sheet for the current platform.
+  test("shortcut sheet lists editor shortcuts", async ({ page }) => {
+    await page.getByRole("button", { name: "Outline", exact: true }).focus(); // focus is outside the editor
+    await page.keyboard.press("ControlOrMeta+/");
+    const sheet = page.getByRole("dialog", { name: "Keyboard shortcuts" });
+    await expect(sheet).toBeVisible();
+    for (const title of ["Text formatting", "Blocks", "Markdown while typing", "Find", "Navigation", "Databases"]) await expect(sheet.getByRole("region", { name: title })).toBeVisible();
+    const mac = await page.evaluate(() => /Mac|iPhone|iPad/.test(navigator.platform));
+    const row = (label: string) => sheet.locator(".prism-shortcuts-row").filter({ has: page.getByText(label, { exact: true }) });
+    await expect(row("Bold")).toContainText(mac ? "⌘B" : "Ctrl+B");
+    await expect(row("Link (with text selected)")).toContainText(mac ? "⌘K" : "Ctrl+K");
+    await expect(row("Highlight (last colour)")).toContainText(mac ? "⌘⇧H" : "Ctrl+Shift+H");
+    await expect(row("Find and replace")).toContainText(mac ? "⌘⌥F" : "Ctrl+Alt+F");
+    await expect(row("Duplicate block")).toContainText(mac ? "⌘D" : "Ctrl+D");
+    await expect(row("Move block up")).toContainText(mac ? "⌘⇧↑" : "Ctrl+Shift+↑");
+    await expect(row("Quick find")).toContainText(mac ? "⌘K" : "Ctrl+K");
+    await expect(row("Toggle")).toContainText(">>");
+    await expect(row("Select all rows (table)")).toBeVisible();
+    if (SHOTS) await page.screenshot({ path: `${SHOTS}/shortcut-sheet-1440.png` });
+    // Searchable; Esc closes and gives focus back.
+    await expect(sheet.getByRole("searchbox", { name: "Search shortcuts" })).toBeFocused();
+    await page.keyboard.type("duplic");
+    await expect(sheet.locator(".prism-shortcuts-row")).toHaveCount(1);
+    await page.keyboard.press("Escape");
+    await expect(sheet).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Outline", exact: true })).toBeFocused();
+    // Phone: fits the screen.
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.keyboard.press("ControlOrMeta+/");
+    await expect(sheet).toBeVisible();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    const box = (await sheet.boundingBox())!;
+    expect(box.x).toBeGreaterThanOrEqual(0);
+    expect(box.x + box.width).toBeLessThanOrEqual(390);
+  });
+
   test("+ inserts an empty block below and opens the slash menu there", async ({ page }) => {
     const gutter = await gutterFor(page, "Bravo paragraph");
     await gutter.getByRole("button", { name: "Insert block below" }).click();
