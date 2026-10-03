@@ -102,6 +102,18 @@ export function OfflineIndicator() {
     );
   }, [items]);
   useEffect(() => { startOfflineAvailability(); }, []);
+  // Writes Prism refuses to queue offline (rename, move, delete) say so plainly.
+  const [refused, setRefused] = useState("");
+  useEffect(() => {
+    let timer: number | undefined;
+    const show = (event: Event) => {
+      setRefused(String((event as CustomEvent<{ message?: string }>).detail?.message ?? "You’re offline. Reconnect and try again."));
+      window.clearTimeout(timer);
+      timer = window.setTimeout(() => setRefused(""), 6000);
+    };
+    window.addEventListener("prism:offline-refused", show);
+    return () => { window.removeEventListener("prism:offline-refused", show); window.clearTimeout(timer); };
+  }, []);
   useEffect(() => {
     const show = () => setOpen(true);
     window.addEventListener(OPEN_SAVED_CHANGES_EVENT, show);
@@ -159,7 +171,12 @@ export function OfflineIndicator() {
   const attention = items.filter(
     (i) => i.state !== "queued" && i.state !== "sending",
   ).length;
-  if (online && !items.length && !legacy && !error && !open) return null;
+  const toast = refused && (
+    <p role="status" className="offline-refused-toast fixed left-1/2 z-[101] -translate-x-1/2 rounded-lg border border-[var(--glass-border)] bg-[var(--bg-elevated)] px-4 py-2 text-sm text-[var(--text-primary)] shadow-lg" style={{ bottom: "calc(env(safe-area-inset-bottom, 0px) + 132px)", maxWidth: "min(92vw, 30rem)" }}>
+      {refused}
+    </p>
+  );
+  if (online && !items.length && !legacy && !error && !open) return toast || null;
   const label = error
     ? "Save needs attention"
     : attention
@@ -171,6 +188,7 @@ export function OfflineIndicator() {
           : "Offline";
   return (
     <>
+      {toast}
       <button
         type="button"
         onClick={() => setOpen(true)}

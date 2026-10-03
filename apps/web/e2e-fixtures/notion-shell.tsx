@@ -38,9 +38,15 @@ const controls = {
   preferences: { favorites: params.has("favorites") ? ["agenda"] : [] as string[], recents: [] as string[] },
   revision: 1,
   reads: [] as string[],
+  actor: "owner@example.test",
+  /** Another device/agent changed the page on the server. */
+  serverEdit: (id: string, content: string) => { const n = notes.find((x) => x.id === id)!; n.content = content; n.updatedAt = bump(); },
+  note: (id: string) => notes.find((x) => x.id === id),
+  switchActor: async (email: string) => { controls.actor = email; await fetchMe(); },
 };
-Object.assign(window, { prismShell: controls, prismShellUI: useUIStore });
 let seq = 0;
+const bump = () => `2026-10-02T00:${String(Math.floor(++seq / 60)).padStart(2, "0")}:${String(seq % 60).padStart(2, "0")}.000Z`;
+Object.assign(window, { prismShell: controls, prismShellUI: useUIStore, prismShellClient: httpVaultClient });
 const nativeFetch = window.fetch.bind(window);
 window.fetch = async (input, init) => {
   const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url, location.origin);
@@ -48,7 +54,7 @@ window.fetch = async (input, init) => {
   const path = url.pathname;
   const method = init?.method ?? "GET";
   if (!navigator.onLine && (path.startsWith("/api/") || path.startsWith("/auth/"))) throw new TypeError("Failed to fetch");
-  if (path === "/auth/me") return Response.json({ authenticated: true, email: "owner@example.test", name: "You", isOwner: true, vaultId: "primary", workspace: { id: "default", name: "Personal workspace" } });
+  if (path === "/auth/me") return Response.json({ authenticated: true, email: controls.actor, name: "You", isOwner: true, vaultId: "primary", workspace: { id: "default", name: "Personal workspace" } });
   if (path === "/api/me/preferences") {
     if (method === "PUT") { const body = JSON.parse(String(init?.body)); controls.preferences = { ...controls.preferences, ...body.preferences }; controls.revision++; }
     const items = Object.fromEntries(notes.map((n) => [n.id, { path: n.path, title: n.path!.split("/").pop()!, tags: n.tags ?? [], type: n.metadata?.type as string | undefined }]));
@@ -76,21 +82,38 @@ window.fetch = async (input, init) => {
     controls.writes.push({ method, path, body });
     if (body.if_updated_at !== note.updatedAt) return Response.json({ error: "conflict" }, { status: 409 });
     note.metadata = { ...note.metadata, ...body.set };
-    note.updatedAt = `2026-10-02T00:01:${String(++seq).padStart(2, "0")}.000Z`;
+    note.updatedAt = bump();
     persistMeta(note);
     return Response.json({ ok: true, id: note.id, updatedAt: note.updatedAt, metadata: body.set });
+  }
+  const propsId = path.match(/^\/api\/properties\/([^/]+)$/)?.[1];
+  if (propsId && method === "POST") {
+    const note = notes.find((n) => n.id === decodeURIComponent(propsId));
+    if (!note) return Response.json({ error: "not_found" }, { status: 404 });
+    const body = JSON.parse(String(init?.body));
+    controls.writes.push({ method, path, body });
+    note.metadata = { ...note.metadata, ...body.set };
+    note.updatedAt = bump();
+    persistMeta(note);
+    return Response.json({ id: note.id, updatedAt: note.updatedAt, metadata: note.metadata });
   }
   const noteId = path.match(/^\/api\/notes\/([^/]+)$/)?.[1];
   if (noteId) {
     const note = notes.find((n) => n.id === decodeURIComponent(noteId));
     if (!note) return Response.json({ error: "not_found" }, { status: 404 });
     if (method === "GET") controls.reads.push(note.id);
+    if (method === "DELETE") { controls.writes.push({ method, path, body: null }); notes.splice(notes.indexOf(note), 1); return Response.json({ ok: true }); }
     if (method === "PATCH") {
       const body = JSON.parse(String(init?.body));
       controls.writes.push({ method, path, body });
       if (controls.hold) await new Promise<void>((resolve) => controls.release.push(resolve));
       if (controls.failStatus) return Response.json({ error: "fixture_failure" }, { status: controls.failStatus });
-      Object.assign(note, body, { metadata: { ...note.metadata, ...body.metadata }, updatedAt: `2026-10-02T00:00:${String(++seq).padStart(2, "0")}.000Z` });
+      // The vault's contract: a content/metadata/path write names its base revision or says `force`.
+      const guarded = ["content", "metadata", "path"].some((k) => k in body);
+      if (guarded && !body.force && !body.if_updated_at) return Response.json({ error: "precondition_required" }, { status: 428 });
+      if (body.if_updated_at && body.if_updated_at !== note.updatedAt) return Response.json({ error: "conflict", current: { updatedAt: note.updatedAt } }, { status: 409 });
+      const { if_updated_at: _base, force: _force, ...fields } = body;
+      Object.assign(note, fields, { metadata: { ...note.metadata, ...body.metadata }, updatedAt: bump() });
       if (body.metadata) persistMeta(note);
     }
     if (url.searchParams.get("include_links") === "true") {

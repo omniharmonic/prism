@@ -113,6 +113,10 @@ export function useRestoreVersion() {
       if (!client.restoreNoteVersion) throw new HistoryUnavailableError();
       assertAudience(client, expectedScope);
       await flushPendingSaves(noteId);
+      // The flush must have REACHED the server: a save parked on this device
+      // (offline / awaiting review) would be silently skipped by the restore.
+      if (typeof navigator !== "undefined" && !navigator.onLine) throw new Error("You’re offline. Reconnect before restoring a version.");
+      if (await client.hasPendingWrites?.()) throw new Error("Some changes on this device haven’t reached the server yet. Wait for “Saved” (or review them) before restoring a version.");
       const current = await freshSource(client, noteId, expectedScope);
       if (reviewMode(current) !== "none") throw new Error("Restoring this page requires edit access.");
       if (!current.updatedAt) throw new Error("This note has no modification time to restore against.");

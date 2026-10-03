@@ -175,7 +175,7 @@ export interface VaultClient {
   createNote(params: CreateNoteParams): Promise<Note>;
   updateNote(id: string, params: UpdateNoteParams, options?: { expectedScope?: string }): Promise<Note>;
   /** Preserve an unsent editor draft locally in its original audience; never send it. */
-  preserveDraft?(id: string, content: string, audience: string): Promise<void>;
+  preserveDraft?(id: string, content: string, audience: string, reason?: "access" | "conflict"): Promise<void>;
   /** True while this audience has deferred or uncertain writes awaiting sync/review. */
   hasPendingWrites?(): Promise<boolean>;
   deleteNote(id: string): Promise<void>;

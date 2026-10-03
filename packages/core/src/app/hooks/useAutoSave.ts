@@ -81,6 +81,18 @@ export function useAutoSave(
           } catch {
             setSaveError("Your draft could not be saved on this device. Keep this page open and copy your changes before leaving.");
           }
+        } else if (sourceScope && client.preserveDraft && error instanceof VaultRequestError && (error.status === 409 || error.status === 428)) {
+          // The page changed somewhere else. A retry would re-read the newer
+          // revision and overwrite it, so this version goes to conflict review
+          // instead (saved on this device; "Needs review" in the header).
+          try {
+            await client.preserveDraft(noteId, content, sourceScope, "conflict");
+            pendingRef.current = false;
+            lastContentRef.current = content;
+            setSaveError("This page changed somewhere else. Your version is saved on this device — open “Needs review” to compare before applying it.");
+          } catch {
+            setSaveError("This page changed somewhere else and your version could not be saved on this device. Copy your changes before leaving.");
+          }
         } else setSaveError("Changes could not be saved. Keep this page open and retry when ready.");
         if (pendingRef.current) reportSaveFailure(syncKey, { message: "Changes could not be saved.", retry: () => retryRef.current() });
         else markDirty(syncKey, false);

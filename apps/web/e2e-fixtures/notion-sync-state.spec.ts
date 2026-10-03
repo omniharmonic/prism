@@ -78,3 +78,20 @@ test("footer reflects sync state", async ({ page }) => {
   await page.evaluate(() => { const s = (window as any).prismShell; s.hold = false; s.release.splice(0).forEach((r: () => void) => r()); });
   await expect(footer).toHaveText("Synced", { timeout: 8000 });
 });
+
+test("a save that conflicts with a newer server copy goes to review, never to an overwriting Retry", async ({ page }) => {
+  await page.goto("/e2e-fixtures/notion-shell.html");
+  await expect(page.locator(".sync-state-header")).toHaveText("Saved");
+  await expect(page.locator(".tiptap[contenteditable=true]")).toBeVisible();
+  await page.evaluate(() => (window as any).prismShell.serverEdit("workspace", "<p>Changed on another device.</p>"));
+  await typeInEditor(page, " My conflicting edit.");
+  await expect(page.getByRole("button", { name: "Needs review: review saved changes" })).toBeVisible({ timeout: 8000 });
+  await expect(page.getByRole("button", { name: /Retry: retry saving/ })).toHaveCount(0);
+  await expect(page.getByRole("alert").filter({ hasText: "This page changed somewhere else" })).toBeVisible();
+  // The footer's own Retry cannot overwrite either: the server copy is untouched, the draft is kept for review.
+  await page.getByRole("button", { name: "Retry save" }).click();
+  await page.waitForTimeout(400);
+  expect(await page.evaluate(() => (window as any).prismShell.note("workspace").content)).toBe("<p>Changed on another device.</p>");
+  await page.getByRole("button", { name: "Needs review: review saved changes" }).click();
+  await expect(page.getByRole("dialog").getByText("Needs review")).toBeVisible();
+});

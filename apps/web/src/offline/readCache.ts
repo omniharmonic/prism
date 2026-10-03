@@ -19,11 +19,19 @@ const MAX_BYTES = 64 * 1024 * 1024;
 // cached. The lean /api/tree projection (WP7.1, ~2-3 MB raw for ~14k notes) fits.
 const MAX_BODY = 4 * 1024 * 1024;
 const USER_KEY = "prism-cache-user";
+/** Cached pages are a convenience, not an archive: nothing older is ever served. */
+export const MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
+/** "Available offline" pages have their own budget and never push out the tree/lists. */
+const PINNED_MAX_BYTES = 200 * 1024 * 1024;
+/** Device-local records that name pages or queries; dropped with the cache. */
+const LOCAL_PREFIXES = ["prism:offline-pinned:", "prism:offline-recent:", "prism:offline-stamps:", "prism:recent-searches:"];
 
 interface IndexRow {
   key: string;
   size: number;
   at: number;
+  /** When the body was last confirmed by the server (rows written before this field: `at`). */
+  stored?: number;
 }
 interface BodyRow {
   key: string;
@@ -78,7 +86,13 @@ export async function cacheGet(key: string): Promise<{ body: string; contentType
     const row = await result<BodyRow | undefined>(t.objectStore("bodies").get(key));
     if (!row) return null;
     const idx = await result<IndexRow | undefined>(t.objectStore("index").get(key));
-    if (idx) t.objectStore("index").put({ ...idx, at: Date.now() }); // LRU touch
+    if (!idx || Date.now() - (idx.stored ?? idx.at) > MAX_AGE_MS) {
+      // Too old to trust offline: it is re-validated on reconnect or gone.
+      t.objectStore("bodies").delete(key);
+      t.objectStore("index").delete(key);
+      return null;
+    }
+    t.objectStore("index").put({ ...idx, at: Date.now() }); // LRU touch
     return { body: row.body, contentType: row.contentType };
   } catch {
     return null;
@@ -91,7 +105,7 @@ export async function cachePut(key: string, body: string, contentType: string): 
     const db = await open();
     const t = db.transaction(["bodies", "index"], "readwrite");
     t.objectStore("bodies").put({ key, body, contentType } satisfies BodyRow);
-    t.objectStore("index").put({ key, size: body.length, at: Date.now() } satisfies IndexRow);
+    t.objectStore("index").put({ key, size: body.length, at: Date.now(), stored: Date.now() } satisfies IndexRow);
     await done(t);
     await evict(db);
   } catch {
@@ -113,20 +127,79 @@ export async function cacheDelete(key: string): Promise<void> {
 
 async function evict(db: IDBDatabase): Promise<void> {
   const rows = await result<IndexRow[]>(db.transaction("index").objectStore("index").getAll());
-  let count = rows.length;
-  let bytes = rows.reduce((n, r) => n + r.size, 0);
-  if (count <= MAX_ENTRIES && bytes <= MAX_BYTES) return;
-  rows.sort((a, b) => a.at - b.at); // oldest first
+  const now = Date.now();
+  const expired = rows.filter((r) => now - (r.stored ?? r.at) > MAX_AGE_MS);
+  const live = rows.filter((r) => !expired.includes(r)).sort((a, b) => a.at - b.at); // oldest first
+  // Two budgets: pinned ("Available offline") pages count against their own hard
+  // cap, everything else against the LRU — so pins never evict the tree or lists.
+  const drop: IndexRow[] = [...expired];
+  const trim = (set: IndexRow[], maxEntries: number, maxBytes: number) => {
+    let count = set.length;
+    let bytes = set.reduce((n, r) => n + r.size, 0);
+    for (const r of set) {
+      if (count <= maxEntries && bytes <= maxBytes) break;
+      drop.push(r);
+      count--;
+      bytes -= r.size;
+    }
+  };
+  trim(live.filter((r) => !protectedKeys.has(r.key)), MAX_ENTRIES, MAX_BYTES);
+  trim(live.filter((r) => protectedKeys.has(r.key)), Number.MAX_SAFE_INTEGER, PINNED_MAX_BYTES);
+  if (!drop.length) return;
   const t = db.transaction(["bodies", "index"], "readwrite");
-  for (const r of rows) {
-    if (count <= MAX_ENTRIES && bytes <= MAX_BYTES) break;
-    if (protectedKeys.has(r.key)) continue;
+  for (const r of drop) {
     t.objectStore("bodies").delete(r.key);
     t.objectStore("index").delete(r.key);
-    count--;
-    bytes -= r.size;
   }
   await done(t);
+}
+
+/** Delete every cached entry whose key starts with `prefix` (e.g. one note, with any query). */
+export async function cacheDeletePrefix(prefix: string): Promise<void> {
+  try {
+    const db = await open();
+    const keys = (await result<IDBValidKey[]>(db.transaction("index").objectStore("index").getAllKeys())) as string[];
+    const hit = keys.filter((k) => k === prefix || k.startsWith(prefix + "?"));
+    if (!hit.length) return;
+    const t = db.transaction(["bodies", "index"], "readwrite");
+    for (const k of hit) { t.objectStore("bodies").delete(k); t.objectStore("index").delete(k); }
+    await done(t);
+  } catch {
+    /* ignore */
+  }
+}
+
+/**
+ * Access reconciliation (review M4): after a successful tree fetch, any cached
+ * page of this audience that the tree no longer lists (access revoked, trashed,
+ * deleted) is evicted — and, because list/graph responses may embed its text,
+ * those are dropped too when anything was revoked.
+ */
+export async function reconcileCachedNotes(scopePrefix: string, visibleIds: Set<string>): Promise<number> {
+  try {
+    const db = await open();
+    const keys = (await result<IDBValidKey[]>(db.transaction("index").objectStore("index").getAllKeys())) as string[];
+    const mine = keys.filter((k) => k.startsWith(scopePrefix + "|"));
+    const revoked = mine.filter((k) => {
+      const m = k.slice(scopePrefix.length + 1).match(/^\/notes\/([^/?]+)/);
+      if (!m) return false;
+      const id = decodeURIComponent(m[1]!);
+      return !id.startsWith("offline-") && !visibleIds.has(id);
+    });
+    if (!revoked.length) return 0;
+    const lists = mine.filter((k) => /^\/(notes\?|notes$|graph)/.test(k.slice(scopePrefix.length + 1)));
+    const t = db.transaction(["bodies", "index"], "readwrite");
+    for (const k of [...revoked, ...lists]) { t.objectStore("bodies").delete(k); t.objectStore("index").delete(k); }
+    await done(t);
+    return revoked.length;
+  } catch {
+    return 0;
+  }
+}
+
+/** Expire old entries now (start-up and on reconnect). */
+export async function sweepReadCache(): Promise<void> {
+  try { await evict(await open()); } catch { /* ignore */ }
 }
 
 /** Remove the old URL-only service-worker API cache on upgrade/sign-out. */
@@ -138,6 +211,9 @@ export async function clearLegacyApiCache(): Promise<void> {
 /** Drop everything (sign-out, 401, account switch). */
 export async function clearReadCache(): Promise<void> {
   protectedKeys = new Set();
+  try {
+    for (const key of Object.keys(localStorage)) if (LOCAL_PREFIXES.some((p) => key.startsWith(p))) localStorage.removeItem(key);
+  } catch { /* private mode */ }
   await clearLegacyApiCache();
   try {
     const db = await open();

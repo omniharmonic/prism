@@ -29,6 +29,16 @@ export interface QueuedWrite {
   state?: WriteState;
   detail?: string;
   temporaryId?: string;
+  /** "meta": a metadata-only merge with no base revision. Replayed as a per-key
+   *  merge against the CURRENT note (properties route, else read + CAS), never forced. */
+  kind?: "meta";
+}
+
+/** The note a row targets (or its temporary id for a queued create); other paths key on themselves. */
+export function noteKey(item: Pick<QueuedWrite, "method" | "path" | "temporaryId">): string {
+  if (item.method === "POST" && item.path === "/notes" && item.temporaryId) return item.temporaryId;
+  const id = item.path.match(/^\/notes\/([^/?]+)/)?.[1];
+  return id ? decodeURIComponent(id) : item.path;
 }
 interface IdMapping {
   key: string;
@@ -163,6 +173,16 @@ export async function hasPending(context: WriteContext): Promise<boolean> {
     sameScope(item.scope, context.scope),
   );
 }
+/** Rows for ONE note in this audience: a later write to it must queue behind them;
+ *  writes to other notes go straight to the server. */
+export async function hasPendingFor(context: WriteContext, key: string): Promise<boolean> {
+  const ids = await mappings(context.scope);
+  return (await allQueued()).some((item) => {
+    if (!sameScope(item.scope, context.scope)) return false;
+    const k = noteKey(item);
+    return k === key || ids.get(k)?.noteId === key;
+  });
+}
 export async function discard(id: number): Promise<void> {
   const context = await captureWriteContext();
   const db = await openDb();
@@ -202,27 +222,57 @@ export async function enqueue(
   path: string,
   body: string | undefined,
   context: WriteContext,
-  options: { unknown?: boolean; temporaryId?: string } = {},
+  options: { unknown?: boolean; temporaryId?: string; kind?: "meta" } = {},
 ): Promise<void> {
-  const review = requiresReview(method, body) && !path.includes("offline-");
-  await transaction("readwrite", (s) =>
-    s.add({
-      version: 2,
-      operationId: crypto.randomUUID(),
-      scope: context.scope,
-      method,
-      path,
-      body,
-      queuedAt: Date.now(),
-      temporaryId: options.temporaryId,
-      state: options.unknown ? "unknown" : review ? "conflict" : "queued",
-      detail: options.unknown
-        ? "The server may have received this change. Check the note before applying it again."
-        : review
-          ? "This change has no base revision. Review it against the current note before applying it."
-          : undefined,
-    } satisfies QueuedWrite),
-  );
+  const review = !options.kind && requiresReview(method, body) && !path.includes("offline-");
+  const fresh: QueuedWrite = {
+    version: 2,
+    operationId: crypto.randomUUID(),
+    scope: context.scope,
+    method,
+    path,
+    body,
+    queuedAt: Date.now(),
+    temporaryId: options.temporaryId,
+    kind: options.kind,
+    state: options.unknown ? "unknown" : review ? "conflict" : "queued",
+    detail: options.unknown
+      ? "The server may have received this change. Check the note before applying it again."
+      : review
+        ? "This change has no base revision. Review it against the current note before applying it."
+        : undefined,
+  };
+  const patch = method === "PATCH" && body ? (JSON.parse(body) as Record<string, unknown>) : null;
+  // Coalesce (review H2/H3): several offline saves of one page are ONE queued
+  // write. Content rows keep the FIRST base revision (later saves were typed on
+  // top of the earlier local state, not on a newer server copy) and the latest
+  // content; metadata merges fold key by key. Only a still-`queued` row of the
+  // same shape is folded into — never one being sent or awaiting review.
+  const foldable = fresh.state === "queued" && patch && !("path" in patch) &&
+    (options.kind === "meta" || (typeof patch.content === "string" && Object.keys(patch).every((k) => k === "content" || k === "if_updated_at")));
+  const db = await openDb();
+  await new Promise<void>((resolve, reject) => {
+    const tx = db.transaction(STORE, "readwrite");
+    const store = tx.objectStore(STORE);
+    if (!foldable) { store.add(fresh); }
+    else {
+      const all = store.getAll();
+      all.onsuccess = () => {
+        const rows = (all.result as QueuedWrite[]).filter((r) => sameScope(r.scope, context.scope) && r.method === "PATCH" && r.path === path);
+        const last = rows[rows.length - 1];
+        const lastPatch = last?.body ? (JSON.parse(last.body) as Record<string, unknown>) : null;
+        const sameShape = last && last.state === "queued" && lastPatch && (last.kind ?? null) === (options.kind ?? null) &&
+          (options.kind === "meta" || (typeof lastPatch.content === "string" && Object.keys(lastPatch).every((k) => k === "content" || k === "if_updated_at")));
+        if (!sameShape) { store.add(fresh); return; }
+        const merged = options.kind === "meta"
+          ? { metadata: { ...(lastPatch!.metadata as Record<string, unknown>), ...(patch!.metadata as Record<string, unknown>) } }
+          : { ...lastPatch, content: patch!.content };
+        store.put({ ...last, body: JSON.stringify(merged), operationId: crypto.randomUUID() });
+      };
+    }
+    tx.oncomplete = () => resolve();
+    tx.onerror = tx.onabort = () => reject(tx.error ?? new Error("Could not save this change on this device."));
+  });
   notify();
 }
 
@@ -302,13 +352,15 @@ export async function localNote(
       item.body
     ) {
       const body = JSON.parse(item.body) as Record<string, unknown>;
+      // Overlay, never replace: a queued metadata write holds only the keys it
+      // sets (a database/canvas note must keep prism_type and render as itself).
       note = {
         ...note,
-        ...Object.fromEntries(
-          Object.entries(body).filter(([key]) =>
-            ["content", "path", "metadata"].includes(key),
-          ),
-        ),
+        ...(typeof body.content === "string" ? { content: body.content } : {}),
+        ...(typeof body.path === "string" ? { path: body.path } : {}),
+        ...(body.metadata && typeof body.metadata === "object"
+          ? { metadata: { ...(note.metadata ?? {}), ...(body.metadata as Record<string, unknown>) } }
+          : {}),
       };
     }
   }
@@ -379,7 +431,22 @@ async function confirm(item: QueuedWrite, response: Response): Promise<void> {
         noteId,
         revision: result?.updatedAt,
       });
-    tx.objectStore(STORE).delete(item.id!);
+    const store = tx.objectStore(STORE);
+    store.delete(item.id!);
+    if (result?.updatedAt && item.method === "PATCH" && item.scope) rememberRevision(item, result.updatedAt);
+    // Re-base (review H2): a content save queued for the SAME note while this one
+    // was in flight was typed on top of it. Its base is the revision we just got.
+    if (result?.updatedAt && item.method === "PATCH") {
+      const all = store.getAll();
+      all.onsuccess = () => {
+        for (const row of all.result as QueuedWrite[]) {
+          if (row.id === item.id || row.state !== "queued" || row.kind || row.method !== "PATCH" || row.path !== item.path || !sameScope(row.scope, item.scope) || !row.body) continue;
+          const patch = JSON.parse(row.body) as Record<string, unknown>;
+          if (typeof patch.if_updated_at !== "string") continue;
+          store.put({ ...row, body: JSON.stringify({ ...patch, if_updated_at: result.updatedAt }) });
+        }
+      };
+    }
     tx.oncomplete = () => resolve();
     tx.onerror = tx.onabort = () => reject(tx.error);
   });
@@ -399,36 +466,88 @@ async function confirm(item: QueuedWrite, response: Response): Promise<void> {
   }
 }
 
+/** Send one row. A metadata merge has no base revision: per-key merge through
+ *  the properties route (CAS + live-doc safe); keys it refuses (prism_*, gov_*),
+ *  or an older server, fall back to read-current + CAS PATCH. Never `force`. */
+async function send(item: QueuedWrite, resolved: { path: string; body?: string }, headers: Record<string, string>): Promise<Response> {
+  const base = item.scope!.api;
+  const signal = () => AbortSignal.timeout(30_000);
+  if (item.kind !== "meta") return serverFetch(`${base}${resolved.path}`, { method: item.method, headers, body: resolved.body, signal: signal() });
+  const set = (JSON.parse(resolved.body ?? "{}") as { metadata?: Record<string, unknown> }).metadata ?? {};
+  const id = resolved.path.match(/^\/notes\/([^/?]+)/)?.[1] ?? "";
+  if (!Object.keys(set).some((k) => /^(prism_|gov_)/.test(k))) {
+    const viaProperties = await serverFetch(`${base}/properties/${id}`, { method: "POST", headers, body: JSON.stringify({ set }), signal: signal() });
+    if (![400, 403, 404, 405, 501].includes(viaProperties.status)) return viaProperties;
+  }
+  let last: Response | null = null;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const current = await serverFetch(`${base}${resolved.path}`, { headers, cache: "no-store", signal: signal() });
+    if (!current.ok) return current;
+    const note = (await current.json()) as { updatedAt?: string };
+    if (!note.updatedAt) return new Response(null, { status: 409 });
+    last = await serverFetch(`${base}${resolved.path}`, { method: "PATCH", headers, body: JSON.stringify({ metadata: set, if_updated_at: note.updatedAt }), signal: signal() });
+    if (last.status !== 409) return last;
+  }
+  return last!;
+}
+
+/**
+ * The app's in-memory note cache does not learn the revision a replayed write
+ * produced, so its next save would name the superseded base and conflict with
+ * ITSELF. Per note (this tab only): the bases our own confirmed writes replaced
+ * → the revision they produced. A genuinely newer server revision is in neither
+ * set, so a real conflict still surfaces.
+ */
+const superseded = new Map<string, { from: Set<string>; to: string }>();
+function rememberRevision(item: QueuedWrite, updatedAt: string): void {
+  const key = `${scopeKey(item.scope!)}|${noteKey(item)}`;
+  const entry = superseded.get(key) ?? { from: new Set<string>(), to: updatedAt };
+  entry.from.add(entry.to);
+  const base = item.body ? (JSON.parse(item.body) as { if_updated_at?: unknown }).if_updated_at : undefined;
+  if (typeof base === "string") entry.from.add(base);
+  entry.to = updatedAt;
+  entry.from.delete(updatedAt);
+  superseded.set(key, entry);
+}
+/** The revision to name for a write whose caller still holds one of our own superseded bases. */
+export function currentBase(scope: WriteScope, noteId: string, base: string): string {
+  const entry = superseded.get(`${scopeKey(scope)}|${noteId}`);
+  return entry?.from.has(base) ? entry.to : base;
+}
+
 let flushing = false;
+let flushAgain = false;
 export async function flush(): Promise<void> {
-  if (flushing || !navigator.onLine) return;
+  if (flushing) { flushAgain = true; return; }
+  if (!navigator.onLine) return;
   flushing = true;
   try {
     const initial = await captureWriteContext(true);
+    // A row that is stuck (needs review, unknown result, waiting on an
+    // unconfirmed new note) holds back only LATER rows for the SAME note
+    // (review H2): every other note keeps saving.
+    const held = new Set<string>();
     for (const saved of await allQueued()) {
       if (!sameScope(saved.scope, initial.scope)) continue;
-      if (saved.state !== "queued") break; // Keep dependent operations in order.
+      const ids = await mappings(initial.scope);
+      const key = noteKey(saved);
+      const canonical = ids.get(key)?.noteId ?? key;
+      if (saved.state !== "queued") { held.add(key); held.add(canonical); continue; }
+      if (held.has(key) || held.has(canonical)) continue;
       const current = await captureWriteContext(true);
       if (!sameScope(initial.scope, current.scope)) break;
       let resolved: { path: string; body?: string };
       try {
-        resolved = resolveReferences(saved, await mappings(current.scope));
+        resolved = resolveReferences(saved, ids);
       } catch {
-        break;
+        held.add(key); held.add(canonical);
+        continue;
       }
       const item = await claim(saved.id!);
-      if (!item) break; // Another tab claimed it atomically.
+      if (!item) { held.add(key); held.add(canonical); continue; } // another tab has it
       notify();
       try {
-        const response = await serverFetch(
-          `${item.scope!.api}${resolved.path}`,
-          {
-            method: item.method,
-            headers: current.headers,
-            body: resolved.body,
-            signal: AbortSignal.timeout(30_000),
-          },
-        );
+        const response = await send(item, resolved, current.headers);
         if (response.ok) {
           await confirm(item, response);
           continue;
@@ -460,13 +579,15 @@ export async function flush(): Promise<void> {
           detail:
             "The result could not be confirmed. Your saved change is preserved; it will not be sent twice automatically.",
         });
+        if (!navigator.onLine) break; // the connection dropped: stop, don't mark everything unknown
       }
-      break;
+      held.add(key); held.add(canonical);
     }
   } catch {
     /* Offline, signed out, or switched scope: leave durable records intact. */
   } finally {
     flushing = false;
+    if (flushAgain) { flushAgain = false; void flush(); }
   }
 }
 
@@ -538,21 +659,25 @@ export function startOutboxSync(): void {
 /** Local-only recovery for an editor whose original audience/access changed.
  * Never queued for automatic replay. Identical repeated cleanup attempts coalesce
  * with the last retained draft for this note; distinct later edits stay ordered. */
-export async function retainDraft(noteId: string, content: string, scope: WriteScope): Promise<void> {
+export async function retainDraft(noteId: string, content: string, scope: WriteScope, reason: "access" | "conflict" = "access"): Promise<void> {
+  const state: WriteState = reason === "conflict" ? "conflict" : "blocked";
+  const detail = reason === "conflict"
+    ? "This page changed somewhere else while you were editing. Your version is saved only on this device. Review it against the current page before applying it."
+    : "Your workspace or access changed. This draft is saved only on this device. Review it in the original workspace before applying it.";
   const path = `/notes/${encodeURIComponent(noteId)}`;
   const body = JSON.stringify({ content });
   const db = await openDb();
   await new Promise<void>((resolve, reject) => {
     const tx = db.transaction(STORE, "readwrite");
     const store = tx.objectStore(STORE);
-    const add = () => store.add({ version: 2, operationId: crypto.randomUUID(), scope, method: "PATCH", path, body, queuedAt: Date.now(), state: "blocked", detail: "Your workspace or access changed. This draft is saved only on this device. Review it in the original workspace before applying it." } satisfies QueuedWrite);
+    const add = () => store.add({ version: 2, operationId: crypto.randomUUID(), scope, method: "PATCH", path, body, queuedAt: Date.now(), state, detail } satisfies QueuedWrite);
     const cursor = store.openCursor(null, "prev");
     cursor.onsuccess = () => {
       const row = cursor.result;
       if (!row) { add(); return; }
       const item = row.value as QueuedWrite;
       if (!sameScope(item.scope, scope) || item.path !== path) { row.continue(); return; }
-      if (item.state !== "blocked" || item.method !== "PATCH" || item.body !== body) add();
+      if (item.state !== state || item.method !== "PATCH" || item.body !== body) add();
     };
     tx.oncomplete = () => resolve();
     tx.onerror = tx.onabort = () => reject(tx.error ?? Error("Draft could not be saved on this device."));
