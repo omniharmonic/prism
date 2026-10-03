@@ -204,9 +204,11 @@ export function useUpdateNote() {
       }
       return client.updateNote(id, params, { expectedScope });
     },
-    onSuccess: (_, { id }) => {
+    onSuccess: (_, { id, path }) => {
       queryClient.invalidateQueries({ queryKey: queryKeys.vault.note(id) });
       queryClient.invalidateQueries({ queryKey: queryKeys.vault.notes() });
+      // A rename/move changes the sidebar: don't wait for the events channel.
+      if (path !== undefined) queryClient.invalidateQueries({ queryKey: ["vault", "tree"] });
 
       // Auto-sync to GitHub: trigger push for matching sync configs
       // TODO: Match note path against config.vaultPath and call githubSyncApi.pushFile()

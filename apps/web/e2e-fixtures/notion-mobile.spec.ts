@@ -117,3 +117,26 @@ test("without a notifications inbox the bar keeps Messages", async ({ page }) =>
   await expect(bar.getByRole("button", { name: "Messages", exact: true })).toBeVisible();
   await expect(bar.getByRole("button", { name: /Inbox/ })).toHaveCount(0);
 });
+
+/** NP-MB-02 */
+test("phone new page focuses title", async ({ page, context }) => {
+  await page.goto("/e2e-fixtures/notion-shell.html");
+  await expect(page.locator(".tiptap[contenteditable=true]")).toBeVisible();
+  const bar = page.getByRole("navigation", { name: "Mobile workspace" });
+  await bar.getByRole("button", { name: "More", exact: true }).click();
+  await page.getByRole("button", { name: "New page", exact: true }).click();
+  const title = page.getByRole("textbox", { name: "Document title" });
+  await expect(title).toBeFocused();
+  await expect(title).toHaveValue("Untitled (2)");
+  await expect(page.locator(".sync-state-phone")).toHaveAttribute("data-sync-state", "saved");
+  await title.press("Escape");
+  // Offline, the new page is a local draft and the header says so.
+  await context.setOffline(true);
+  await bar.getByRole("button", { name: "More", exact: true }).click();
+  await page.getByRole("button", { name: "New page", exact: true }).click();
+  await expect(page.getByRole("textbox", { name: "Document title" })).toBeFocused();
+  await expect(page.locator(".sync-state-phone")).toHaveText("Saved on this device");
+  await context.setOffline(false);
+  await expect(page.locator(".sync-state-phone")).toHaveAttribute("data-sync-state", "saved", { timeout: 15000 });
+  expect(await page.evaluate(() => (window as any).prismShell.writes.filter((w: any) => w.method === "POST" && w.path === "/api/notes").length)).toBe(2);
+});

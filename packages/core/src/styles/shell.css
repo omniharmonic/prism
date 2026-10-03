@@ -113,3 +113,12 @@
    its last line (inside its own scroller, so no container shrinks) and the
    caret can always be scrolled clear of the toolbar + keyboard. */
 .prose-editor[contenteditable="true"] { padding-bottom: var(--keyboard-toolbar-space, 0px); }
+
+/* One-action New page with the type chooser beside it (NP-SB-13). */
+.workspace-new-page-row { display: flex; gap: 1px; }
+.workspace-new-page-row .workspace-new-page { flex: 1; min-width: 0; border-radius: 7px 0 0 7px; }
+.workspace-new-page-more {
+  display: grid; place-items: center; width: 34px; min-height: 40px; border: 0; border-radius: 0 7px 7px 0;
+  background: var(--action-bg); color: var(--action-fg);
+}
+.workspace-new-page-more:hover { background: var(--action-hover); }

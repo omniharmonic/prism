@@ -33,10 +33,12 @@ test("home shows recents, upcoming events, my tasks", async ({ page }) => {
   await expect(home(page).getByRole("button", { name: "Inbox · 2 unread" })).toBeVisible();
   await shot(page, "home-1440-light");
 
-  // Quick create opens the new-page dialog.
+  // Quick create: one action → an "Untitled" page with its title focused (NP-SB-13, wave 2E).
   await home(page).getByRole("button", { name: "New page", exact: true }).click();
-  await expect(page.getByRole("dialog", { name: "New page", exact: true })).toBeVisible();
+  await expect(page.getByRole("textbox", { name: "Document title" })).toBeFocused();
+  await expect(page.getByRole("textbox", { name: "Document title" })).toHaveValue("Untitled");
   await page.keyboard.press("Escape");
+  await page.locator(".workspace-navigation").first().getByRole("button", { name: "Home", exact: true }).click();
 
   // Recents open the page.
   await recents.getByRole("button", { name: "Field notes" }).click();

@@ -93,6 +93,7 @@ test("More retains every page action and transitions to creation without focus l
   await openMore(page);
   for (const name of [
     "New page",
+    "Choose page type",
     "Open documents",
     "Details & metadata",
     "Ask about this note",
@@ -106,7 +107,8 @@ test("More retains every page action and transitions to creation without focus l
       sheet(page).getByRole("button", { name: new RegExp("^" + name.replace("&", "&")) }),
     ).toBeVisible();
   await expect(sheet(page).getByText("Reading font")).toBeVisible();
-  await sheet(page).getByRole("button", { name: "New page", exact: true }).click();
+  // "New page" creates at once (NP-MB-02); the title-first chooser is its own row.
+  await sheet(page).getByRole("button", { name: "Choose page type", exact: true }).click();
   await expect(page.getByRole("textbox", { name: "Page title" })).toBeFocused();
   await page.getByRole("textbox", { name: "Page title" }).fill("Unsent page idea");
   await page.keyboard.press("Escape");

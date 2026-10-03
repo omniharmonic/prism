@@ -31,8 +31,9 @@ interface PagesUIState {
   trashOpen: boolean;
   openTrash: (open: boolean) => void;
   /** "Add a page inside" / "New page from template": the creation dialog's start state. */
-  create: { folder?: string; template?: boolean } | null;
-  openCreate: (create: { folder?: string; template?: boolean } | null) => void;
+  /** `{}`/`{folder}` = create "Untitled" at once (NP-SB-13); `template`/`chooser` open the dialog. */
+  create: { folder?: string; template?: boolean; chooser?: boolean } | null;
+  openCreate: (create: { folder?: string; template?: boolean; chooser?: boolean } | null) => void;
   /** Phone: the page-actions sheet for this page. */
   actionsFor: PageRef | null;
   openActions: (page: PageRef | null) => void;

@@ -49,6 +49,7 @@ const controls = {
   switchActor: async (email: string) => { controls.actor = email; await fetchMe(); },
 };
 let seq = 0;
+let createdSeq = 0;
 const bump = () => `2026-10-02T00:${String(Math.floor(++seq / 60)).padStart(2, "0")}:${String(seq % 60).padStart(2, "0")}.000Z`;
 Object.assign(window, { prismShell: controls, prismShellUI: useUIStore, prismShellClient: httpVaultClient });
 const nativeFetch = window.fetch.bind(window);
@@ -101,6 +102,13 @@ window.fetch = async (input, init) => {
     note.updatedAt = bump();
     persistMeta(note);
     return Response.json({ id: note.id, updatedAt: note.updatedAt, metadata: note.metadata });
+  }
+  if (path === "/api/notes" && method === "POST") {
+    const body = JSON.parse(String(init?.body));
+    controls.writes.push({ method, path, body });
+    const created: Note = { id: `created-${++createdSeq}`, content: " ", metadata: {}, tags: [], ...body, createdAt: bump(), updatedAt: bump() };
+    notes.push(created);
+    return Response.json(created);
   }
   const noteId = path.match(/^\/api\/notes\/([^/]+)$/)?.[1];
   if (noteId) {

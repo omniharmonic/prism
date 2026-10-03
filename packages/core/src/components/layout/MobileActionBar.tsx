@@ -1,5 +1,5 @@
 import { isVaultNoteId } from "../../lib/noteIdentity";
-import { useEffect, useRef, useState, type RefObject } from "react";
+import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
 import type { ContentType } from "../../lib/types";
 import "../ui/mobile-workspace.css";
 import {
@@ -17,12 +17,14 @@ import {
   FilePlus,
   History,
   Sparkles,
+  LayoutTemplate,
 } from "lucide-react";
 import { useUIStore } from "../../app/stores/ui";
 import { useNoteShortcuts } from "../navigation/NoteShortcuts";
 import { BottomSheet, type SheetItem } from "../ui/BottomSheet";
 import { NewContentMenu } from "../navigation/NewContentMenu";
 import { InboxNavButton } from "../inbox/InboxNavButton";
+import { useQuickCreatePage } from "../../lib/pages/quickCreate";
 import { useUnreadCount } from "../../lib/notifications/hooks";
 import { Settings } from "./Settings";
 import { FontSwitch } from "../renderers/DocumentChrome";
@@ -71,6 +73,8 @@ export function MobileActionBar() {
     setMoreOpen(false);
   };
 
+  const openNew = useCallback(() => setNewOpen(true), []);
+  const quickCreate = useQuickCreatePage(openNew);
   const openMessages = () => {
     setMoreOpen(false);
     useUIStore.setState({ sidebarOpen: false, contextPanelOpen: false });
@@ -80,8 +84,17 @@ export function MobileActionBar() {
   const moreItems: SheetItem[] = [
     ...(inbox.available ? [{ icon: <MessageSquare size={19} />, label: "Messages", onClick: openMessages }] : []),
     {
+      // NP-MB-02: one tap → an "Untitled" page with its title focused.
       icon: <FilePlus size={19} />,
       label: "New page",
+      onClick: () => {
+        setMoreOpen(false);
+        quickCreate.create();
+      },
+    },
+    {
+      icon: <LayoutTemplate size={19} />,
+      label: "Choose page type",
       onClick: () => {
         setMoreOpen(false);
         setNewOpen(true);
@@ -261,7 +274,7 @@ export function MobileActionBar() {
           <button
             onClick={() => {
               setTabsOpen(false);
-              setNewOpen(true);
+              quickCreate.create();
             }}
             type="button"
             className="prism-mobile-new-page"

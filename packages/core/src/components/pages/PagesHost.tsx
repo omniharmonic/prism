@@ -1,4 +1,8 @@
+import { useEffect, useRef } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { X } from "lucide-react";
+import { useVaultClient } from "../../data/VaultClientContext";
+import { createUntitledPage } from "../../lib/pages/quickCreate";
 import { BottomSheet } from "../ui/BottomSheet";
 import { NewContentMenu } from "../navigation/NewContentMenu";
 import { usePagesUI, type PageRef } from "../../lib/pages/store";
@@ -18,7 +22,11 @@ export function PagesHost() {
     <>
       {movePage && <MovePageDialog page={movePage} onClose={() => ui.openMove(null)} />}
       {trashOpen && <TrashDialog onClose={() => ui.openTrash(false)} />}
-      {create && <NewContentMenu initialFolder={create.folder} startWithTemplates={create.template} onClose={() => ui.openCreate(null)} />}
+      {/* NP-SB-13: "+" on a tree row, "Add a page inside", Home and ⌘N create the
+          page at once; only "from template" (or a failed create) opens the dialog. */}
+      {create && (create.template || create.chooser
+        ? <NewContentMenu initialFolder={create.folder} startWithTemplates={create.template} onClose={() => ui.openCreate(null)} />
+        : <QuickCreate key={create.folder ?? ""} folder={create.folder} />)}
       {actionsFor && <PageActionsSheet page={actionsFor} onClose={() => ui.openActions(null)} />}
       <PageToastView />
     </>
@@ -61,4 +69,18 @@ function PageToastView() {
       </button>
     </div>
   );
+}
+
+function QuickCreate({ folder }: { folder?: string }) {
+  const client = useVaultClient();
+  const queryClient = useQueryClient();
+  const started = useRef(false);
+  useEffect(() => {
+    if (started.current) return; // StrictMode runs effects twice: still ONE page
+    started.current = true;
+    const ui = usePagesUI.getState();
+    createUntitledPage(client, queryClient, folder === undefined ? {} : { folder })
+      .then(() => ui.openCreate(null), () => ui.openCreate({ folder, chooser: true }));
+  }, [client, queryClient, folder]);
+  return null;
 }

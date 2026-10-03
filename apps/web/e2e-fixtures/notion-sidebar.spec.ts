@@ -45,3 +45,25 @@ test("the sidebar peek is reachable and dismissible from the keyboard", async ({
   await expect(peek).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Show sidebar preview" })).toBeFocused();
 });
+
+/** NP-SB-13 */
+test("one action → focused untitled page", async ({ page }) => {
+  await page.goto("/e2e-fixtures/notion-shell.html");
+  await expect(page.locator(".tiptap[contenteditable=true]")).toBeVisible();
+  const nav = page.locator(".workspace-navigation");
+  const started = Date.now();
+  await nav.getByRole("button", { name: "New page", exact: true }).click();
+  const title = page.getByRole("textbox", { name: "Document title" });
+  await expect(title).toBeFocused();
+  expect(Date.now() - started).toBeLessThan(1500); // fixture + Playwright overhead; no dialog in between
+  await expect(title).toHaveValue("Untitled (2)"); // "Untitled" already exists beside the open page
+  await expect(page.getByRole("dialog", { name: "New page", exact: true })).toHaveCount(0);
+  // Created next to the page you were on, and you can just type the name.
+  await title.fill("Sprint notes");
+  await title.press("Enter");
+  await expect(page.getByRole("button", { name: "Rename Sprint notes", exact: true })).toBeVisible();
+  expect(await page.evaluate(() => (window as any).prismShell.note("created-1")?.path)).toBe("Projects/Prism/Sprint notes");
+  // The type/location chooser is one click away, never in the way.
+  await nav.getByRole("button", { name: "Choose page type", exact: true }).click();
+  await expect(page.getByRole("dialog", { name: "New page", exact: true })).toBeVisible();
+});
