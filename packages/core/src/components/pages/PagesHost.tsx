@@ -8,6 +8,7 @@ import { NewContentMenu } from "../navigation/NewContentMenu";
 import { usePagesUI, type PageRef } from "../../lib/pages/store";
 import { MovePageDialog } from "./MovePageDialog";
 import { TrashDialog } from "./TrashDialog";
+import { TemplatesGallery } from "./TemplatesGallery";
 import { usePageMenuItems } from "./PageActionsMenu";
 import "./pages.css";
 
@@ -17,6 +18,7 @@ export function PagesHost() {
   const trashOpen = usePagesUI((s) => s.trashOpen);
   const create = usePagesUI((s) => s.create);
   const actionsFor = usePagesUI((s) => s.actionsFor);
+  const templatesOpen = usePagesUI((s) => s.templatesOpen);
   const ui = usePagesUI.getState();
   return (
     <>
@@ -24,8 +26,9 @@ export function PagesHost() {
       {trashOpen && <TrashDialog onClose={() => ui.openTrash(false)} />}
       {/* NP-SB-13: "+" on a tree row, "Add a page inside", Home and ⌘N create the
           page at once; only "from template" (or a failed create) opens the dialog. */}
-      {create && (create.template || create.chooser
-        ? <NewContentMenu initialFolder={create.folder} startWithTemplates={create.template} onClose={() => ui.openCreate(null)} />
+      {templatesOpen && <TemplatesGallery onClose={() => ui.openTemplates(false)} />}
+      {create && (create.template || create.chooser || create.use
+        ? <NewContentMenu key={create.use?.id ?? "new"} initialFolder={create.folder} startWithTemplates={create.template} initialTemplate={create.use} onClose={() => ui.openCreate(null)} />
         : <QuickCreate key={create.folder ?? ""} folder={create.folder} />)}
       {actionsFor && <PageActionsSheet page={actionsFor} onClose={() => ui.openActions(null)} />}
       <PageToastView />

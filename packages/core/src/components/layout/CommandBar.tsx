@@ -177,6 +177,12 @@ export function CommandBar() {
       action: () => { closeCommandBar(); usePagesUI.getState().openCreate({ template: true }); },
     },
     {
+      // NP-TX-01: the Templates gallery (list, use, edit, rename, delete).
+      id: "templates", label: "Templates", category: "navigate" as const,
+      icon: <LayoutTemplate size={15} />,
+      action: () => { closeCommandBar(); usePagesUI.getState().openTemplates(true); },
+    },
+    {
       // Help → Keyboard shortcuts (NP-ED-07; also ⌘/ outside a block).
       id: "keyboard-shortcuts", label: "Keyboard Shortcuts", category: "navigate" as const, keys: shortcutKeys("shortcutSheet"),
       icon: <Settings size={15} />,

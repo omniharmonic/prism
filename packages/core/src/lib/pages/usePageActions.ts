@@ -10,7 +10,10 @@ import { queryKeys } from "../parachute/queries";
 import { convertApi } from "../parachute/client";
 import { inferContentType } from "../schemas/content-types";
 import type { Note } from "../types";
-import { LOCK_KEY, ORDER_KEY, PAGE_STYLE_KEY, duplicateCopy, referencesAttachments, copyFilesNotice, isLocked, pageStyleOf, pageTitle, type MoveResult } from "./model";
+import { LOCK_KEY, ORDER_KEY, PAGE_STYLE_KEY, TEMPLATES_FOLDER, duplicateCopy, templateSource, parentOf, referencesAttachments, copyFilesNotice, isLocked, pageStyleOf, pageTitle, type MoveResult } from "./model";
+import { flushPendingSaves } from "../../app/hooks/useAutoSave";
+import { registeredEditor } from "../agent/documentSnapshots";
+import { editorBodyForCopy } from "./liveContent";
 import * as ops from "./ops";
 import { usePagesUI, type PageRef } from "./store";
 
@@ -149,6 +152,37 @@ export function usePageActions() {
         toast(`Duplicated “${page.title}”${filesNote ? `. ${filesNote}` : ""}`);
       } catch (e) {
         fail(e, "Couldn’t duplicate this page.");
+      }
+    },
+
+    /**
+     * NP-TX-01 "Save as template": the page's body, icon, cover, properties and tags
+     * become a note tagged `template` — what the New page chooser and the Templates
+     * gallery list. The original is not changed. A LIVE page's body comes from its
+     * editor (the vault copy lags it); a plain page's unsaved typing is saved first.
+     */
+    saveAsTemplate: async (page: PageRef) => {
+      try {
+        const open = registeredEditor(page.id);
+        if (!open?.live) await flushPendingSaves(page.id).catch(() => {});
+        const [note, tree] = await Promise.all([client.getNote(page.id, { fresh: true }), client.listTree()]);
+        const content = open?.live ? await editorBodyForCopy(open.editor) : note.content;
+        // Someone who may create anywhere keeps templates together; anyone else saves
+        // beside the page (where their standing to create most plausibly holds) — the
+        // server decides either way.
+        const limited = Array.isArray((note as Note & { _caps?: string[] })._caps);
+        const folder = limited ? (note.path ? parentOf(note.path) : "") : TEMPLATES_FOLDER;
+        const name = pageTitle(note.path) || page.title || "Untitled";
+        const template = templateSource({ content, metadata: note.metadata, tags: note.tags }, limited ? `${name} template` : name, folder, tree.map((t) => t.path));
+        const created = await client.createNote(template);
+        let filesNote = "";
+        if (client.copyAttachments && referencesAttachments(template)) filesNote = copyFilesNotice(await client.copyAttachments(created.id).catch(() => null));
+        await refresh();
+        toast(`Saved “${name}” as a template${filesNote ? `. ${filesNote}` : ""}`, { action: { label: "Templates", run: () => ui.getState().openTemplates(true) } });
+        return created;
+      } catch (e) {
+        fail(e, "Couldn’t save this page as a template. Nothing was changed.");
+        return null;
       }
     },
 

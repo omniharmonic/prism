@@ -310,6 +310,62 @@ export function templateCopy(
   return { content: template.content || " ", path: (folder ? `${folder}/` : "") + title, metadata, tags };
 }
 
+/** Where "Save as template" puts a template for someone who may create anywhere. */
+export const TEMPLATES_FOLDER = "Templates";
+/** The `prism_*` keys that say what KIND of page this is (never identity, access or state). */
+const TEMPLATE_PRISM_KEYS: ReadonlySet<string> = new Set(["prism_type", "prism_page_style", "prism_database"]);
+/** The keys ingesters, the skill scheduler and the importer match notes by — the server's
+ *  `INGEST_KEYS` (apps/server/src/ingest-keys.ts; pinned equal in test/template-keys.test.ts). */
+export const TEMPLATE_INGEST_KEYS: ReadonlySet<string> = new Set([
+  "source_id", "sourceId", "calendarEventId", "messageId", "threadId", "matrixRoomId",
+  "skillName", "runner", "lastRun", "executionMode",
+  "merged_into", "mergedInto", "superseded_by", "prism_merge_history", "prism_merged_from", "prism_merged_into_prev",
+  "prism_import",
+]);
+const TEMPLATE_INGEST_SOURCES: ReadonlySet<string> = new Set(["clickup", "fireflies", "fathom", "proton-bridge", "github", "gmail", "matrix", "calendar", "notion"]);
+
+/** May "Save as template" carry this metadata key into the template? Properties, icon,
+ *  cover and the page kind: yes. Identity, visibility, lock, order, trash, writer stamps,
+ *  governance, integration bindings (`sync`) and every ingest-matching key: never. */
+export function templateKeepsKey(key: string, value: unknown): boolean {
+  if (key === "__proto__" || key === "constructor" || key === "prototype") return false;
+  if (TEMPLATE_INGEST_KEYS.has(key)) return false;
+  if (key.startsWith("prism_")) return TEMPLATE_PRISM_KEYS.has(key);
+  if (key.startsWith("gov_") || key.startsWith("_")) return false;
+  if (key === "title" || key === "sync" || key === "forked_by" || key.startsWith("template")) return false;
+  if (key === "source" && typeof value === "string" && TEMPLATE_INGEST_SOURCES.has(value.trim().toLowerCase())) return false;
+  return true;
+}
+
+/** A free name under `folder`, given the paths already taken (case-insensitive, like the vault). */
+export function freePagePath(folder: string, name: string, takenPaths: Iterable<string | null>): { path: string; name: string } {
+  const taken = new Set([...takenPaths].filter((p): p is string => !!p).map((p) => p.toLowerCase()));
+  const at = (n: string) => (folder ? `${folder}/` : "") + n;
+  let free = name;
+  for (let i = 2; taken.has(at(free).toLowerCase()); i++) free = `${name} ${i}`;
+  return { path: at(free), name: free };
+}
+
+/**
+ * The create payload for "Save as template": the page's body, icon, cover, properties
+ * and tags as a note tagged `template` — what the New page chooser and the Templates
+ * gallery list. `content` is what the caller read (the live editor's for a live page).
+ */
+export function templateSource(
+  page: { content: string; metadata?: Record<string, unknown> | null; tags?: string[] | null },
+  name: string,
+  folder: string,
+  takenPaths: Iterable<string | null>,
+): { content: string; path: string; metadata: Record<string, unknown>; tags: string[] } {
+  const free = freePagePath(folder, name.split("/").join("-").trim() || "Untitled", takenPaths);
+  const metadata: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(page.metadata ?? {})) if (templateKeepsKey(k, v)) metadata[k] = v;
+  metadata.title = free.name;
+  const system = (t: string) => t === TRASH_TAG || t === TEMPLATE_TAG || (PROTECTED_TAGS as readonly string[]).includes(t) || t.startsWith("governance-");
+  const tags = [...new Set([...(page.tags ?? []).filter((t) => !system(t)), TEMPLATE_TAG])];
+  return { content: page.content || " ", path: free.path, metadata, tags };
+}
+
 /** The payload for "Duplicate": a copy beside the original with a free "(copy)" name. */
 export function duplicateCopy(
   note: { content: string; path: string | null; metadata?: Record<string, unknown> | null; tags?: string[] | null },

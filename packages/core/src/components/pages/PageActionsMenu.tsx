@@ -24,6 +24,7 @@ import {
   Share2,
   Search,
   Bot,
+  LayoutTemplate,
 } from "lucide-react";
 import { requestFindInPage } from "../../lib/tiptap/findShortcuts";
 import { useCollabSharing } from "../../data/CollabSharing";
@@ -36,7 +37,8 @@ import { useUIStore } from "../../app/stores/ui";
 import { useIsMobile } from "../../app/hooks/useIsMobile";
 import { useNoteShortcuts } from "../navigation/NoteShortcuts";
 import { isVaultNoteId } from "../../lib/noteIdentity";
-import { isLocked, pageStyleOf, protectionReason } from "../../lib/pages/model";
+import { TEMPLATE_TAG, isLocked, isTrashed, pageStyleOf, protectionReason } from "../../lib/pages/model";
+import { useViewerIsGuest } from "../sharing/SharedWithMe";
 import { usePagesUI, type PageRef } from "../../lib/pages/store";
 import { usePageActions, pageLink } from "../../lib/pages/usePageActions";
 import { printCurrentPage, useTransferUI } from "../../lib/import-export/store";
@@ -74,6 +76,10 @@ export function usePageMenuItems(
   const caps = (note as (Note & { _caps?: string[] }) | undefined)?._caps;
   const canEdit = !caps || caps.includes("edit");
   const protectedReason = protectionReason(subject);
+  // NP-TX-01 "Save as template": for people who may create pages — never a guest, a
+  // view/comment-only reader, a page that is already a template, or one in the Trash.
+  const guest = useViewerIsGuest();
+  const canTemplate = !!note && !guest && (!caps || caps.includes("create")) && !(note.tags ?? []).includes(TEMPLATE_TAG) && !isTrashed(note);
   const isFav = favoriteIds.includes(page.id);
   const offline = useOfflineAvailability(real ? page.id : null);
   // Per-page style (NP-PG-08): font = the page's own contentFont (the open
@@ -122,6 +128,9 @@ export function usePageMenuItems(
     },
     ...(opts.onRename ? [{ id: "rename", label: "Rename", icon: <Pencil size={15} />, disabled: !!protectedReason || !canEdit, onClick: run(opts.onRename) }] : []),
     { id: "duplicate", label: "Duplicate", icon: <Copy size={15} />, disabled: !!protectedReason, onClick: run(() => void actions.duplicate(page)) },
+    ...(canTemplate
+      ? [{ id: "save-template", label: "Save as template", icon: <LayoutTemplate size={15} />, disabled: !!protectedReason, detail: protectedReason ?? undefined, onClick: run(() => void actions.saveAsTemplate(page)) }]
+      : []),
     {
       id: "move",
       label: "Move to…",
@@ -234,7 +243,11 @@ export function PageMenuPopover({
     left = Math.max(8, Math.min(left, window.innerWidth - width - 8));
     const top = Math.max(8, Math.min(anchor.y, window.innerHeight - height - 8));
     setPos({ left, top });
-    node.querySelector<HTMLButtonElement>("button:not(:disabled)")?.focus({ preventScroll: true });
+    // Items that depend on the page itself (lock, save as template) arrive once it has
+    // loaded: the menu is placed again, or its last rows would hang below the window.
+  }, [anchor.x, anchor.y, anchor.align, items.length]);
+  useLayoutEffect(() => {
+    ref.current?.querySelector<HTMLButtonElement>("button:not(:disabled)")?.focus({ preventScroll: true });
   }, [anchor.x, anchor.y, anchor.align]);
   useEffect(() => {
     const down = (e: MouseEvent) => {

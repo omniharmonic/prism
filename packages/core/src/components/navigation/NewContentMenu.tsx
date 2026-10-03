@@ -19,6 +19,7 @@ import {
   ArrowRight,
   LayoutTemplate,
   Database,
+  Settings2,
 } from "lucide-react";
 import { useVaultClient } from "../../data/VaultClientContext";
 import { useUIStore } from "../../app/stores/ui";
@@ -30,6 +31,7 @@ import { TEMPLATE_TAG, pageTitle, referencesAttachments, templateCopy, withoutTr
 import { inferContentType } from "../../lib/schemas/content-types";
 import { applyTemplateVariables, templateCreator } from "../../lib/pages/templates";
 import { serverFetch } from "../../lib/transport/serverFetch";
+import { usePagesUI } from "../../lib/pages/store";
 import { ComposeMessage } from "../comms/ComposeMessage";
 import {
   folderLabel,
@@ -118,6 +120,8 @@ export interface NewContentMenuProps {
   returnFocus?: HTMLElement | null;
   /** "New page from template": open with the template list showing. */
   startWithTemplates?: boolean;
+  /** The Templates gallery's "Use": open with this template already picked. */
+  initialTemplate?: { id: string; title: string };
 }
 export function NewContentMenu(props: NewContentMenuProps) {
   const client = useVaultClient();
@@ -137,6 +141,7 @@ function CreateContent({
   initialType = "document",
   returnFocus,
   startWithTemplates,
+  initialTemplate,
 }: NewContentMenuProps) {
   const client = useVaultClient();
   const queryClient = useQueryClient();
@@ -179,7 +184,7 @@ function CreateContent({
     queryFn: async () => withoutTrashed(await client.listNotes({ tag: TEMPLATE_TAG })).filter((n) => n.tags?.includes(TEMPLATE_TAG)),
     retry: false,
   });
-  const [template, setTemplate] = useState<{ id: string; title: string } | null>(null);
+  const [template, setTemplate] = useState<{ id: string; title: string } | null>(initialTemplate ?? null);
   const [showTemplates, setShowTemplates] = useState(!!startWithTemplates);
   const [showFolders, setShowFolders] = useState(false);
   const [search, setSearch] = useState("");
@@ -466,7 +471,7 @@ function CreateContent({
               ))}
             </div>
           )}
-          {(type === "document" && (startWithTemplates || (templates.data?.length ?? 0) > 0)) && (
+          {(type === "document" && (startWithTemplates || !!template || (templates.data?.length ?? 0) > 0)) && (
             <div className="mb-3 flex flex-wrap items-center gap-2">
               <span className="w-14 text-xs" style={{ color: "var(--text-muted)" }}>
                 Template
@@ -533,9 +538,23 @@ function CreateContent({
               })}
               {templates.isSuccess && !templates.data.length && (
                 <p className="px-2 py-2 text-xs sm:col-span-2" style={{ color: "var(--text-muted)" }}>
-                  No templates yet. Add the tag “template” to any page to offer it here.
+                  No templates yet. Open a page and choose “Save as template” in its ⋯ menu.
                 </p>
               )}
+              <button
+                type="button"
+                disabled={pending}
+                onClick={() => {
+                  // The gallery replaces this dialog (one modal at a time); it lists, edits and deletes templates.
+                  onClose();
+                  usePagesUI.getState().openTemplates(true);
+                }}
+                className="focus-ring flex min-h-11 items-center gap-2 rounded-lg px-3 text-left text-sm hover:bg-[var(--glass-hover)] sm:col-span-2"
+                style={{ color: "var(--text-secondary)" }}
+              >
+                <Settings2 size={16} />
+                Manage templates…
+              </button>
               {templates.isError && (
                 <p className="px-2 py-2 text-xs sm:col-span-2" style={{ color: "var(--text-muted)" }}>
                   Templates couldn’t load. You can still start from a blank page.
