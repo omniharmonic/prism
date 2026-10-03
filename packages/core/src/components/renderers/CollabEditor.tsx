@@ -25,6 +25,7 @@ import { BlockKeymap } from "../../lib/tiptap/blockCommands";
 import { BlockHandles } from "./BlockHandles";
 import { TableControls } from "./TableControls";
 import { ImageUpload, type ImageUploader } from "../../lib/tiptap/ImageUpload";
+import { HumanSuggestionComposer, type ComposerKind, type HumanCommandChannel } from "./HumanSuggestionComposer";
 
 export interface CollabUser {
   name: string;
@@ -66,6 +67,7 @@ export function CollabEditor({
   wikilinkNotes,
   uploadImage,
   onUploadError,
+  humanCommands,
 }: {
   ydoc: Y.Doc;
   provider: AwarenessProvider | null;
@@ -108,11 +110,17 @@ export function CollabEditor({
   uploadImage?: ImageUploader;
   /** User-facing upload failure message. */
   onUploadError?: (message: string) => void;
+  /** Suggest-only (NP-CO-12): the socket is read-only, so suggestions and
+   *  comments go through server-authored commands. Implies `editable={false}`. */
+  humanCommands?: HumanCommandChannel;
 }) {
   const suggestionBubble = useRef<HTMLDivElement>(null);
   // Inline comment composer anchored to a captured selection range.
   const [composer, setComposer] = useState<{ from: number; to: number; top: number; left: number } | null>(null);
   const [draft, setDraft] = useState("");
+  // Suggest-only command composer (anchored at the selection) + its last outcome.
+  const [human, setHuman] = useState<{ kind: ComposerKind; empty: boolean; top: number; left: number } | null>(null);
+  const [humanNotice, setHumanNotice] = useState("");
   // `[[` autocomplete state, surfaced by the WikilinkAutocomplete plugin.
   const [autocomplete, setAutocomplete] = useState<WikilinkAutocompleteState | null>(null);
   // `/` slash-command menu state.
@@ -240,7 +248,8 @@ export function CollabEditor({
             <SelectionActions
               editor={editor}
               allowFormatting={editable && !commentOnly}
-              onComment={canComment ? () => {
+              onSuggest={humanCommands ? () => openHuman("suggest") : undefined}
+              onComment={humanCommands ? (canComment ? () => openHuman("comment") : undefined) : canComment ? () => {
                 const sel = editor.state.selection;
                 const c = editor.view.coordsAtPos(sel.to);
                 setComposer({
@@ -274,7 +283,34 @@ export function CollabEditor({
         </BubbleMenu>
       )}
 
+      {humanCommands && editor && (
+        <div className="prism-suggest-banner" role="note" style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", margin: "0 0 12px", padding: "8px 12px", borderRadius: 10, border: "1px solid var(--glass-border)", background: "color-mix(in srgb, var(--color-accent) 6%, transparent)", fontSize: 12.5, color: "var(--text-secondary)" }}>
+          <span style={{ flex: 1, minWidth: 200 }}>You can suggest changes. Select text, then choose <strong>Suggest edit</strong> or <strong>Comment</strong>. An editor reviews each suggestion.</span>
+          {editor.state.doc.childCount === 1 && editor.state.doc.firstChild?.isTextblock && editor.state.doc.firstChild.content.size === 0 && (
+            <button type="button" onClick={() => openHuman("suggest", true)} style={{ minHeight: 30, padding: "4px 10px", borderRadius: 7, border: "1px solid var(--glass-border)", background: "var(--bg-surface)", color: "var(--text-primary)", cursor: "pointer", fontSize: 12.5 }}>
+              Suggest text
+            </button>
+          )}
+        </div>
+      )}
+      {humanNotice && <p role="status" style={{ margin: "0 0 8px", fontSize: 12.5, color: "var(--text-secondary)" }}>{humanNotice}</p>}
       <EditorContent editor={editor} />
+      {human && editor && humanCommands && (
+        <HumanSuggestionComposer
+          editor={editor}
+          ydoc={ydoc}
+          channel={humanCommands}
+          kind={human.kind}
+          initialAction={human.empty ? "empty" : "replace"}
+          anchorRect={{ top: human.top, left: human.left }}
+          onClose={() => setHuman(null)}
+          onDone={(message) => {
+            setHuman(null);
+            setHumanNotice(message);
+            window.setTimeout(() => setHumanNotice(""), 4000);
+          }}
+        />
+      )}
 
       {/* Block gutter. Structural moves are raw edits, so it is off while
           suggesting (tracked changes) or comment-only. */}
@@ -360,6 +396,20 @@ export function CollabEditor({
       )}
     </>
   );
+
+  /** Open the command composer at the current selection (captured inside it, synchronously). */
+  function openHuman(kind: ComposerKind, empty = false) {
+    if (!editor) return;
+    const sel = editor.state.selection;
+    let top = 120, left = 16;
+    try {
+      const c = editor.view.coordsAtPos(empty ? 1 : sel.to);
+      top = c.bottom + 8;
+      left = Math.max(8, Math.min(c.left, window.innerWidth - 348));
+    } catch { /* keep defaults */ }
+    setHumanNotice("");
+    setHuman({ kind, empty, top, left });
+  }
 
   function submitComment() {
     if (!editor || !composer || !draft.trim()) return;

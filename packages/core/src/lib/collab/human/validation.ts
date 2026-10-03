@@ -1,6 +1,9 @@
-import type { Node as ProseNode } from "@tiptap/pm/model";
+import type { Node as ProseNode, Schema } from "@tiptap/pm/model";
 import type { Editor } from "@tiptap/react";
 import type * as Y from "yjs";
+import { getSchema } from "@tiptap/core";
+import { initProseMirrorDoc } from "@tiptap/y-tiptap";
+import { collabExtensions } from "../../../editor/collabSchema";
 import {
   HUMAN_COLLAB_LIMITS,
   humanCollabRevision,
@@ -119,6 +122,10 @@ export type HumanSelectionAction =
   | "comment";
 export interface CapturedHumanSelection extends HumanCollabRange {
   revision: string;
+  /** "match": the editor's JSON equals the server's projection of the shared
+   *  fragment, so it was hashed; "fragment": they differed (a client-only
+   *  attribute/mark) and the fragment projection was hashed instead. */
+  parity: "match" | "fragment";
   originalQuote: string;
   action: HumanSelectionAction;
   /** Immutable captured body for text-edge validation; never applied to Yjs. */
@@ -265,8 +272,8 @@ export async function captureHumanSelection(
   );
   if (insertionProblem) throw Error(insertionProblem);
   const quote = doc.textBetween(from, to, "\n", "\ufffc");
-  const body = doc.toJSON(),
-    comments = ydoc.getMap("comments").toJSON();
+  const { body, parity } = humanRevisionBody(doc, ydoc);
+  const comments = ydoc.getMap("comments").toJSON();
   return {
     action,
     doc,
@@ -274,6 +281,34 @@ export async function captureHumanSelection(
     to,
     quote,
     originalQuote,
+    parity,
     revision: await humanCollabRevision(body, comments),
   };
+}
+
+let sharedSchema: Schema | null = null;
+/** The schema the SERVER projects the shared fragment with (no client-only extensions). */
+function serverSchema(): Schema {
+  return (sharedSchema ??= getSchema(collabExtensions()));
+}
+
+/**
+ * The ProseMirror JSON a command revision hashes. The server hashes
+ * `initProseMirrorDoc(fragment, sharedSchema).doc.toJSON()`; the browser's
+ * `editor.state.doc.toJSON()` is the same document when no client-only extension
+ * adds an attribute or mark. Synchronous (call it in the same tick as the range
+ * capture). When the two differ the fragment projection is used (positions are
+ * still the editor's — a structural difference would surface as a 409/400, never
+ * as a misplaced change).
+ */
+export function humanRevisionBody(doc: ProseNode, ydoc: Y.Doc): { body: unknown; parity: "match" | "fragment" } {
+  const editorJson = doc.toJSON();
+  const fragment = ydoc.getXmlFragment("default");
+  let projected: unknown = editorJson;
+  try {
+    projected = initProseMirrorDoc(fragment, serverSchema()).doc.toJSON();
+  } catch {
+    return { body: editorJson, parity: "match" };
+  }
+  return JSON.stringify(projected) === JSON.stringify(editorJson) ? { body: editorJson, parity: "match" } : { body: projected, parity: "fragment" };
 }

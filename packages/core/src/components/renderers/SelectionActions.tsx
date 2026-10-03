@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useEditorState, type Editor } from "@tiptap/react";
-import { Bold, Italic, Underline, Strikethrough, Code, Sparkles, Link2, ChevronDown, MessageSquarePlus, Unlink, Baseline } from "lucide-react";
+import { Bold, Italic, Underline, Strikethrough, Code, Sparkles, Link2, ChevronDown, MessageSquarePlus, Unlink, Baseline, PenLine } from "lucide-react";
 import { useSelectionAsk, useSelectionAskShortcut } from "../../lib/agent/useSelectionAsk";
 import { BLOCK_COLORS, type BlockColorName } from "../../editor/blocks";
 import { TURN_INTO, blockKind, canTurnInto, selectionStart, structuralEditsAllowed, topBlockAt, turnTopBlocksInto } from "../../lib/tiptap/blockCommands";
@@ -26,7 +26,7 @@ export function normalizeLink(raw: string): string | null {
  * B I U S code · link · colour · Comment. Formatting is hidden when the user
  * cannot edit; Ask agent and Comment follow their own capabilities.
  */
-export function SelectionActions({ editor, allowFormatting, onComment }: { editor: Editor; allowFormatting: boolean; onComment?: () => void }) {
+export function SelectionActions({ editor, allowFormatting, onComment, onSuggest }: { editor: Editor; allowFormatting: boolean; onComment?: () => void; /** Suggest-only people: open the suggestion composer (NP-CO-12). */ onSuggest?: () => void }) {
   const action = useSelectionAsk(editor);
   useSelectionAskShortcut(editor, action.ask, action.hasClient);
   const [menu, setMenu] = useState<null | "turn" | "color">(null);
@@ -135,7 +135,7 @@ export function SelectionActions({ editor, allowFormatting, onComment }: { edito
       disabled={!action.canAsk || !action.selected} onMouseDown={event => event.preventDefault()} onClick={() => action.ask()}>
       <Sparkles size={14} aria-hidden="true" /> Ask agent
     </button>}
-    {action.available && (allowFormatting || onComment) && <span className="selection-divider" aria-hidden="true" />}
+    {action.available && (allowFormatting || onComment || onSuggest) && <span className="selection-divider" aria-hidden="true" />}
     {turnable && <span className="selection-dropdown">
       <button ref={turnRef} type="button" data-editor-menu-anchor aria-label={`Turn into (now ${currentLabel})`} aria-haspopup="menu" aria-expanded={menu === "turn"}
         title="Turn into" onMouseDown={(e) => e.preventDefault()} onClick={() => setMenu(menu === "turn" ? null : "turn")}>
@@ -155,6 +155,9 @@ export function SelectionActions({ editor, allowFormatting, onComment }: { edito
       </button>
       {menu === "color" && <EditorMenu label="Color" items={colorItems} onClose={() => closeMenu(colorRef)} className="selection-menu" style={{ maxHeight: 320 }} />}
     </span>}
+    {onSuggest && <button type="button" aria-label="Suggest an edit to the selection" title="Suggest edit" onMouseDown={(e) => e.preventDefault()} onClick={onSuggest}>
+      <PenLine size={14} aria-hidden="true" /> Suggest edit
+    </button>}
     {onComment && <>
       {allowFormatting && <span className="selection-divider" aria-hidden="true" />}
       <button type="button" aria-label="Comment on selection" title="Comment" onMouseDown={(e) => e.preventDefault()} onClick={onComment}>

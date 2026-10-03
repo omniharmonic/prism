@@ -18,7 +18,7 @@
  * enforces whatever the socket was actually granted.
  */
 export interface CollabAffordances {
-  /** Body is editable (directly, or as tracked suggestions). */
+  /** Body is editable (directly, or as tracked suggestions typed into the doc). */
   editable: boolean;
   /** Edits are forced into suggestion mode (suggest level). */
   suggestOnly: boolean;
@@ -26,16 +26,37 @@ export interface CollabAffordances {
   canComment: boolean;
   /** May accept/reject suggestions, rename, etc. */
   canReview: boolean;
+  /**
+   * Suggest-only enforcement (NP-CO-12): the socket is read-only, so suggestions
+   * and comments go through server-authored commands
+   * (`POST /api/collab/:id/commands`) and the body is NEVER locally editable —
+   * keystrokes would be refused by the server and linger in the local Y.Doc.
+   */
+  commands: boolean;
 }
 
-export function collabAffordances(level: string | null): CollabAffordances {
+/** What the server granted this socket (`provider.authorizedScope`); undefined = not yet known. */
+export type CollabSocketScope = "read-write" | "readonly" | undefined;
+
+/**
+ * `socketScope` is the scope the live socket was ACTUALLY authorized with. A
+ * suggest-level person gets a writable socket only while the server runs with
+ * `COLLAB_SUGGEST_ENFORCED=false` (the rollback switch); otherwise — and while
+ * the scope is still unknown — they use commands and the body stays read-only.
+ * A read-only socket for an editor (a locked page) is read-only too.
+ */
+export function collabAffordances(level: string | null, socketScope?: CollabSocketScope): CollabAffordances {
   if (level === null || level === "edit" || level === "own") {
-    return { editable: true, suggestOnly: false, canComment: true, canReview: true };
+    const editable = socketScope !== "readonly";
+    return { editable, suggestOnly: false, canComment: editable, canReview: editable, commands: false };
   }
   if (level === "suggest") {
-    return { editable: true, suggestOnly: true, canComment: true, canReview: false };
+    if (socketScope === "read-write") {
+      return { editable: true, suggestOnly: true, canComment: true, canReview: false, commands: false };
+    }
+    return { editable: false, suggestOnly: true, canComment: true, canReview: false, commands: true };
   }
   // "view", "comment", or anything unrecognized: read-only on the socket, so
   // offer nothing that writes to the shared doc.
-  return { editable: false, suggestOnly: false, canComment: false, canReview: false };
+  return { editable: false, suggestOnly: false, canComment: false, canReview: false, commands: false };
 }

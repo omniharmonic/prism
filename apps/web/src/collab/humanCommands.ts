@@ -1,7 +1,11 @@
 import {
   humanCollabCommandPath,
+  type HumanCollabCommand,
+  type HumanCollabErrorCode,
   type HumanCollabResult,
 } from "@prism/core/collab-commands";
+import { HumanCommandFailure } from "@prism/core";
+import { contextHeaders } from "../config";
 import {
   humanNoteId,
   parseHumanCommand,
@@ -201,6 +205,61 @@ export function humanCommandsFor(
         "unknown",
         response.status,
       );
+    return payload as unknown as HumanCollabResult;
+  };
+}
+
+/**
+ * The command transport the live editor uses (NP-CO-12 activation). One POST per
+ * call, never retried automatically: the composer decides, and a retry passes
+ * the SAME command object (same requestId and body), which the server applies at
+ * most once. Throws `HumanCommandFailure` for anything but a confirmed 200 whose
+ * ids match this exact request — ids are only ever read from a 200.
+ *
+ * Credentials ride the normal transport (cookie on the PWA, device bearer in the
+ * native shell); a capability link's token is sent as `?t=` exactly like the
+ * socket's. The workspace headers are the active context's (absent for a link
+ * guest, so the server binds the request to the link's own vault).
+ */
+export function sendHumanCommand(noteId: string, capabilityToken: string | null) {
+  return async (command: HumanCollabCommand): Promise<HumanCollabResult> => {
+    const body = JSON.stringify(command);
+    if (!humanNoteId(noteId) || !parseHumanCommand(body))
+      throw new HumanCommandFailure("This change can’t be sent as written.", "invalid_command", "not-sent");
+    const query = capabilityToken ? `?t=${encodeURIComponent(capabilityToken)}` : "";
+    let response: Response;
+    try {
+      response = await serverFetch(`${humanCollabCommandPath(noteId)}${query}`, {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json", ...(capabilityToken ? {} : contextHeaders()) },
+        body,
+      });
+    } catch {
+      throw new HumanCommandFailure("You appear to be offline.", "network_error", "unknown");
+    }
+    let payload: Record<string, unknown> = {};
+    try {
+      const parsed = await response.json();
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) payload = parsed as Record<string, unknown>;
+    } catch {
+      /* a malformed body cannot confirm anything */
+    }
+    if (!response.ok) {
+      const code = (typeof payload.error === "string" ? payload.error : "upstream_error") as HumanCollabErrorCode;
+      const message = typeof payload.message === "string" ? payload.message.slice(0, 500) : "The change could not be confirmed.";
+      const unknown = response.status >= 500 || !payload.error;
+      throw new HumanCommandFailure(message, code, unknown ? "unknown" : "refused", response.status, retryTime(response, payload) ? retryTime(response, payload)! - Date.now() : undefined);
+    }
+    const validId = (value: unknown) => typeof value === "string" && /^[A-Za-z0-9_-]{1,200}$/.test(value);
+    const ok =
+      payload.requestId === command.requestId &&
+      payload.kind === command.kind &&
+      (command.kind === "suggest" ? validId(payload.suggestionId) : validId(payload.threadId)) &&
+      (command.kind === "suggest" || command.kind === "comment" || payload.threadId === command.threadId) &&
+      (!["comment", "reply"].includes(command.kind) || validId(payload.commentId)) &&
+      (command.kind !== "resolve" || payload.resolved === command.resolved);
+    if (!ok) throw new HumanCommandFailure("The reply did not confirm this change.", "invalid_response", "unknown", response.status);
     return payload as unknown as HumanCollabResult;
   };
 }

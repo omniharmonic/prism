@@ -5,6 +5,21 @@ import { MessageSquarePlus, Check, Trash2 } from "lucide-react";
 import { useThreads, addReply, setResolved, deleteThread, type Thread } from "../../editor/comments";
 
 /**
+ * Server-authored thread actions for suggest-only people (NP-CO-12): their socket
+ * is read-only, so a reply/resolve/delete must go through the command endpoint
+ * instead of the shared Y.Doc. Each resolves on a confirmed change and throws
+ * (with a message safe to show) otherwise; the live thread list updates from
+ * the server's own write.
+ */
+export interface CommentCommandActions {
+  reply(threadId: string, text: string): Promise<void>;
+  resolve(threadId: string, resolved: boolean): Promise<void>;
+  remove(threadId: string): Promise<void>;
+  /** Show Delete only where this person may delete (the server still decides). */
+  canDelete?(thread: Thread): boolean;
+}
+
+/**
  * Google-Docs-style comments sidebar: live thread list (Yjs `comments` map) with
  * Open / Resolved tabs. Resolved threads drop out of the Open view and their doc
  * highlight clears (the mark's resolved flag is synced on resolve). Clicking a
@@ -18,12 +33,14 @@ export function CommentsSidebar({
   canComment,
   editor,
   focusedThreadId,
+  actions,
 }: {
   ydoc: Y.Doc;
   user: { name: string; color: string };
   canComment: boolean;
   editor?: Editor | null;
   focusedThreadId?: string | null;
+  actions?: CommentCommandActions;
 }) {
   const threads = useThreads(ydoc);
   const [tab, setTab] = useState<"open" | "resolved">("open");
@@ -90,6 +107,7 @@ export function CommentsSidebar({
             canComment={canComment}
             editor={editor}
             focused={t.id === focusedThreadId}
+            actions={actions}
           />
         ))}
       </div>
@@ -104,6 +122,7 @@ function ThreadCard({
   canComment,
   editor,
   focused,
+  actions,
 }: {
   ydoc: Y.Doc;
   thread: Thread;
@@ -111,9 +130,38 @@ function ThreadCard({
   canComment: boolean;
   editor?: Editor | null;
   focused?: boolean;
+  actions?: CommentCommandActions;
 }) {
   const [reply, setReply] = useState("");
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [failure, setFailure] = useState("");
+  // Commands keep the typed reply until the server confirms it.
+  const act = async (fn: () => Promise<void>, after?: () => void) => {
+    if (busy) return;
+    setBusy(true);
+    setFailure("");
+    try {
+      await fn();
+      after?.();
+    } catch (e) {
+      setFailure(e instanceof Error && e.message ? e.message : "That didn’t go through. Try again.");
+    } finally {
+      setBusy(false);
+    }
+  };
+  const sendReply = () => {
+    const text = reply.trim();
+    if (!text) return;
+    if (actions) void act(() => actions.reply(thread.id, text), () => setReply(""));
+    else {
+      addReply(ydoc, thread.id, { author: user.name, color: user.color, text, createdAt: Date.now() });
+      setReply("");
+    }
+  };
+  const resolve = (value: boolean) => (actions ? void act(() => actions.resolve(thread.id, value)) : setResolved(ydoc, thread.id, value, editor));
+  const remove = () => (actions ? void act(() => actions.remove(thread.id)) : deleteThread(ydoc, thread.id, editor));
+  const mayDelete = !actions || (actions.canDelete?.(thread) ?? true);
   const cardRef = useRef<HTMLDivElement>(null);
 
   // When the matching comment is clicked in the doc, bring this card into view.
@@ -165,30 +213,30 @@ function ThreadCard({
             value={reply}
             onChange={(e) => setReply(e.target.value)}
             onKeyDown={(e) => {
-              if (e.key === "Enter" && reply.trim()) {
-                addReply(ydoc, thread.id, { author: user.name, color: user.color, text: reply.trim(), createdAt: Date.now() });
-                setReply("");
-              }
+              if (e.key === "Enter" && reply.trim()) sendReply();
             }}
             placeholder="Reply…"
+            aria-label="Reply"
+            disabled={busy}
             /* 16px so iOS doesn't zoom the viewport when this field is focused */
             style={{ flex: 1, fontSize: 16, padding: "5px 8px", borderRadius: 6, background: "var(--glass)", border: "1px solid var(--glass-border)", color: "var(--text-primary)", outline: "none" }}
           />
-          <button onClick={() => setResolved(ydoc, thread.id, true, editor)} title="Resolve" className="p-1 rounded" style={{ color: "#22c55e" }}>
+          <button onClick={() => resolve(true)} disabled={busy} title="Resolve" aria-label="Resolve thread" className="p-1 rounded" style={{ color: "#22c55e" }}>
             <Check size={14} />
           </button>
-          <DeleteButton confirm={confirmDelete} setConfirm={setConfirmDelete} onDelete={() => deleteThread(ydoc, thread.id, editor)} />
+          {mayDelete && <DeleteButton confirm={confirmDelete} setConfirm={setConfirmDelete} onDelete={remove} />}
         </div>
       )}
 
       {thread.resolved && canComment && (
         <div style={{ display: "flex", gap: 10, marginTop: 4, alignItems: "center" }}>
-          <button onClick={() => setResolved(ydoc, thread.id, false, editor)} className="text-xs" style={{ color: "var(--text-muted)" }}>
+          <button onClick={() => resolve(false)} disabled={busy} className="text-xs" style={{ color: "var(--text-muted)" }}>
             Reopen
           </button>
-          <DeleteButton confirm={confirmDelete} setConfirm={setConfirmDelete} onDelete={() => deleteThread(ydoc, thread.id, editor)} />
+          {mayDelete && <DeleteButton confirm={confirmDelete} setConfirm={setConfirmDelete} onDelete={remove} />}
         </div>
       )}
+      {failure && <p role="alert" style={{ margin: "6px 0 0", fontSize: 12, color: "var(--color-danger, #ef4444)" }}>{failure}</p>}
     </div>
   );
 }

@@ -180,17 +180,19 @@ test("UI table: comment affordances only at suggest and above", () => {
     assert.equal(a.editable, false, `${lvl}: read-only`);
     assert.equal(a.canReview, false);
   }
-  // The SHIPPED table still says a suggest body is editable (typed-in tracked
-  // changes over the raw socket). With enforcement on that socket is read-only,
-  // so the client must switch this row to `editable: false` and send commands
-  // instead — a frontend-owned change, specified in
-  // docs/roadmap/workspace-experience/BACKEND-STATUS.md. Pinned here as shipped
-  // so the change is deliberate when it lands.
-  const s = collabAffordances("suggest");
-  assert.deepEqual(s, { editable: true, suggestOnly: true, canComment: true, canReview: false });
+  // Suggest-only activation (NP-CO-12): a suggest body is NEVER locally editable
+  // unless the socket really is read-write (the COLLAB_SUGGEST_ENFORCED=false
+  // rollback); while the scope is unknown or read-only it goes through commands.
+  assert.deepEqual(collabAffordances("suggest"), { editable: false, suggestOnly: true, canComment: true, canReview: false, commands: true });
+  assert.deepEqual(collabAffordances("suggest", "readonly"), { editable: false, suggestOnly: true, canComment: true, canReview: false, commands: true });
+  assert.deepEqual(collabAffordances("suggest", "read-write"), { editable: true, suggestOnly: true, canComment: true, canReview: false, commands: false });
   for (const lvl of ["edit", "own", null]) {
-    assert.deepEqual(collabAffordances(lvl), { editable: true, suggestOnly: false, canComment: true, canReview: true });
+    assert.deepEqual(collabAffordances(lvl), { editable: true, suggestOnly: false, canComment: true, canReview: true, commands: false });
+    assert.deepEqual(collabAffordances(lvl, "read-write"), { editable: true, suggestOnly: false, canComment: true, canReview: true, commands: false });
+    // A locked page (read-only socket for an editor) offers no raw writes.
+    assert.equal(collabAffordances(lvl, "readonly").editable, false);
   }
+  for (const lvl of ["view", "comment"]) assert.equal(collabAffordances(lvl, "readonly").commands, false);
   // Unknown strings fail closed.
   assert.equal(collabAffordances("administrate").canComment, false);
 });

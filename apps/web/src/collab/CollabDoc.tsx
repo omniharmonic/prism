@@ -1,9 +1,12 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import * as Y from "yjs";
 import { HocuspocusProvider } from "@hocuspocus/provider";
 import { persistLocalDocument, localDocumentKey, type LocalSaveState } from "./localDocument";
 import { captureWriteContext, scopeKey } from "../offline/writeScope";
-import { COLLAB_SCHEMA_VERSION, useAgentDocumentSnapshot, CollabEditor, CommentsSidebar, collabAffordances, CollabCodeEditor, CollabSpreadsheet, CollabCanvas, detectCodeLanguage, inferContentType, PageHeader, NotePropertyBar, PageProperties, renamePath, useUIStore, useAgentChatStore, type ContentFont, type Note, type Editor } from "@prism/core";
+import { humanCollabRevision } from "@prism/core/collab-commands";
+import { sendHumanCommand } from "./humanCommands";
+import { humanRevisionBody } from "../../../../packages/core/src/lib/collab/human/validation";
+import { COLLAB_SCHEMA_VERSION, useAgentDocumentSnapshot, CollabEditor, CommentsSidebar, collabAffordances, humanFailureText, HumanCommandFailure, PresenceAvatars, type CollabSocketScope, type CommentCommandActions, type HumanCommandChannel, CollabCodeEditor, CollabSpreadsheet, CollabCanvas, detectCodeLanguage, inferContentType, PageHeader, NotePropertyBar, PageProperties, renamePath, useUIStore, useAgentChatStore, type ContentFont, type Note, type Editor } from "@prism/core";
 import { MessageSquare, X, Lock } from "lucide-react";
 import { serverFetch, collabWsUrl, collabToken } from "../transport";
 import { apiBase, agentScope, getCapabilityToken, getActiveVault, getMe, fetchMe, contextHeaders } from "../config";
@@ -137,6 +140,11 @@ function ScopedCollabDoc({
   const [synced, setSynced] = useState(false);
   const [online, setOnline] = useState(() => typeof navigator === "undefined" || navigator.onLine);
   const [level, setLevel] = useState<string | null>(null);
+  // The local collaborator identity (cursor + comment/suggestion authorship),
+  // seeded from the cached session and confirmed via fetchMe() before the editor mounts.
+  const [user, setUser] = useState<PresenceUser>(() => identityFrom(getMe(), getCapabilityToken()));
+  // What the server actually granted THIS socket (re-read on every authentication).
+  const [socketScope, setSocketScope] = useState<CollabSocketScope>(undefined);
   const [title, setTitle] = useState("Shared document");
   const [titleNotice, setTitleNotice] = useState("");
   const mounted = useRef(false);
@@ -146,7 +154,6 @@ function ScopedCollabDoc({
   const [icon, setIcon] = useState<string | null>(null);
   const [kind, setKind] = useState<CollabKind>("document");
   const [language, setLanguage] = useState("plaintext");
-  const [presence, setPresence] = useState<PresenceUser[]>([]);
   const [suggesting, setSuggesting] = useState(false);
   const narrow = useIsNarrow();
   // Comments shown by default on desktop, collapsed on mobile (doc gets full width).
@@ -195,8 +202,37 @@ function ScopedCollabDoc({
   // allows: below "suggest" the connection is read-only, so a "comment"-level
   // viewer gets NO write affordances — comments need suggest (WP0.2); offering
   // them would let a comment vanish on reload.
-  const { canReview, canComment, editable } = collabAffordances(level);
-  const effectiveSuggesting = isSuggestLevel ? true : suggesting;
+  const { canReview, canComment, editable, commands } = collabAffordances(level, socketScope);
+  // Suggest-only (NP-CO-12): commands instead of typing; no local suggestion mode.
+  const useCommands = commands && kind === "document";
+  const effectiveSuggesting = useCommands ? false : isSuggestLevel ? true : suggesting;
+  const send = useMemo(() => sendHumanCommand(noteId, getCapabilityToken()), [noteId]);
+  const humanChannel: HumanCommandChannel | undefined = useCommands ? { send, ready: connected && synced } : undefined;
+  const commentActions: CommentCommandActions | undefined = useMemo(() => {
+    if (!useCommands || !ydoc) return undefined;
+    const revision = async () => {
+      const doc = editor?.state.doc;
+      if (!doc || !connected || !synced) throw new HumanCommandFailure("Wait for the page to finish connecting.", "not_ready", "not-sent");
+      const { body } = humanRevisionBody(doc, ydoc);
+      return humanCollabRevision(body, ydoc.getMap("comments").toJSON());
+    };
+    const base = async () => ({ requestId: crypto.randomUUID(), createdAt: Date.now(), revision: await revision() });
+    const run = async (make: () => Promise<Parameters<typeof send>[0]>) => {
+      try {
+        await send(await make());
+      } catch (e) {
+        throw new Error(humanFailureText(e));
+      }
+    };
+    return {
+      reply: (threadId, text) => run(async () => ({ ...(await base()), kind: "reply", threadId, text })),
+      resolve: (threadId, resolved) => run(async () => ({ ...(await base()), kind: "resolve", threadId, resolved })),
+      remove: (threadId) => run(async () => ({ ...(await base()), kind: "delete-comment", threadId })),
+      // The server decides (only threads whose every comment is yours); hide it elsewhere.
+      canDelete: (thread) => thread.comments.length > 0 && thread.comments.every((c) => c.author === user.name),
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [useCommands, ydoc, editor, connected, synced, send, user.name]);
 
   useEffect(() => {
     if (isSuggestLevel) setSuggesting(true);
@@ -307,13 +343,15 @@ function ScopedCollabDoc({
             if (reason?.startsWith("update_required")) { setUpdateRequired(true); p?.disconnect(); }
             else setDenied(true);
           },
-          onAuthenticated: () => {
+          onAuthenticated: ({ scope }) => {
+            if (current()) setSocketScope(scope === "read-write" ? "read-write" : "readonly");
             void refreshAccess().then(ok => { if (ok && current()) { setCheckingAccess(false); } });
           },
           onClose: ({ event }) => {
             if (!current() || !event.reason?.startsWith("Access changed.")) return;
             setCheckingAccess(true);
             setLevel(null);
+            setSocketScope(undefined);
             setConnected(false);
             setSynced(false);
             const transport = p?.configuration.websocketProvider;
@@ -342,28 +380,12 @@ function ScopedCollabDoc({
     };
   }, [noteId]);
 
-  useEffect(() => {
-    if (!provider?.awareness) return;
-    const aw = provider.awareness;
-    const update = () => {
-      const users: PresenceUser[] = [];
-      aw.getStates().forEach((s) => {
-        const u = (s as { user?: PresenceUser }).user;
-        if (u?.name) users.push(u);
-      });
-      setPresence(users);
-    };
-    aw.on("change", update);
-    update();
-    return () => aw.off("change", update);
-  }, [provider]);
 
   // The local collaborator identity (cursor + comment/suggestion authorship).
   // Seeded synchronously from the cached session (usually already populated), then
   // confirmed via fetchMe() in the provider effect BEFORE the editor mounts, so
   // authorship is correct from the first keystroke. Was hardcoded "You" for
   // everyone — the bug that collapsed all collaborators into one identity.
-  const [user, setUser] = useState<PresenceUser>(() => identityFrom(getMe(), getCapabilityToken()));
 
   if (updateRequired) {
     return (
@@ -438,7 +460,9 @@ function ScopedCollabDoc({
     ? online
       ? "Connecting…"
       : localSave === "saved" ? "Offline · saved on this device" : localSave === "saving" ? "Offline · saving…" : "Offline · local save unavailable"
-    : !editable
+    : useCommands
+      ? "Suggesting"
+      : !editable
       ? "View only"
       : !isDocument
         ? "Editing"
@@ -448,7 +472,7 @@ function ScopedCollabDoc({
 
   // Comments + suggestions are prose-only; code/spreadsheets are pure collab data.
   const showComments = isDocument;
-  const sidebar = <CommentsSidebar ydoc={ydoc} user={user} canComment={canComment} editor={editor} focusedThreadId={focusedThread} />;
+  const sidebar = <CommentsSidebar ydoc={ydoc} user={user} canComment={canComment} editor={editor} focusedThreadId={focusedThread} actions={commentActions} />;
 
   return (
     <div style={outer}>
@@ -469,7 +493,7 @@ function ScopedCollabDoc({
                 <span style={{ width: 7, height: 7, borderRadius: 999, background: connected ? "#22c55e" : online ? "#eab308" : "#ef4444" }} />
                 {connected ? "Live · " : ""}{statusText}
               </span>
-              <PresenceAvatars users={presence} />
+              <PresenceAvatars awareness={provider.awareness as never} editor={editor} compact={narrow} />
               {showComments && (
                 <button
                   onClick={() => setCommentsOpen((o) => !o)}
@@ -545,6 +569,7 @@ function ScopedCollabDoc({
                 editable={editable}
                 suggesting={effectiveSuggesting}
                 onSetSuggesting={isSuggestLevel ? undefined : canReview ? setSuggesting : undefined}
+                humanCommands={humanChannel}
                 canReview={canReview}
                 canComment={canComment}
                 onEditor={setEditor}
@@ -588,40 +613,6 @@ function ScopedCollabDoc({
           </div>
         </>
       )}
-    </div>
-  );
-}
-
-function PresenceAvatars({ users }: { users: PresenceUser[] }) {
-  return (
-    <div style={{ display: "flex" }}>
-      {users.slice(0, 5).map((u, i) => (
-        <div
-          key={`${u.name}-${i}`}
-          title={u.name}
-          style={{
-            width: 26,
-            height: 26,
-            borderRadius: 999,
-            background: u.color,
-            color: "#fff",
-            fontSize: 11,
-            fontWeight: 700,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            border: "2px solid var(--bg-base, #0d0d0f)",
-            marginLeft: i === 0 ? 0 : -8,
-            overflow: "hidden",
-          }}
-        >
-          {u.avatar ? (
-            <img src={u.avatar} alt={u.name} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
-          ) : (
-            u.name.charAt(0).toUpperCase()
-          )}
-        </div>
-      ))}
     </div>
   );
 }
