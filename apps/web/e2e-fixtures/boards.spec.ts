@@ -1004,3 +1004,67 @@ test("phone starts with a readable list without rewriting the saved board view",
   await page.reload();
   await expect(page.getByRole("button", { name: "Board", exact: true })).toHaveAttribute("aria-pressed", "true");
 });
+
+test("per-column add, card menu, due chips", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto("/e2e-fixtures/boards.html?due");
+  const fx = () => page.evaluate(() => (window as any).prismBoardFixture);
+  const todo = page.getByRole("region", { name: "To do", exact: true });
+
+  // Due chips: overdue and today read differently from a plain date.
+  const editor = todo.getByRole("article", { name: "Polish the editor" });
+  await expect(editor.locator("[data-board-field='due']")).toHaveAttribute("data-due", "overdue");
+  await expect(editor.locator("[data-board-field='due']")).toContainText("Overdue");
+  await expect(todo.getByRole("article", { name: "Review with collaborators" }).locator("[data-board-field='due']")).toContainText("Due today");
+
+  // Per-column "+ Add task" creates the task IN that column.
+  await page.getByRole("button", { name: "Add task to Blocked" }).click();
+  const dialog = page.getByRole("dialog", { name: "New task in Blocked" });
+  await dialog.getByLabel("Task title").fill("Wait on legal review");
+  await dialog.getByRole("button", { name: "Create task" }).click();
+  await expect(page.getByRole("region", { name: "Blocked", exact: true }).getByRole("article", { name: "Wait on legal review" })).toBeVisible();
+  expect((await fx()).creates.at(-1).metadata).toMatchObject({ title: "Wait on legal review", status: "blocked" });
+
+  // Card ⋯ menu: Move to…, Move earlier/later, Open.
+  await editor.getByRole("button", { name: "Actions for Polish the editor" }).click();
+  const menu = page.getByRole("dialog", { name: "Actions for Polish the editor" });
+  await expect(menu.getByRole("menuitem", { name: "Move earlier" })).toBeDisabled();
+  await menu.getByRole("menuitem", { name: "Move later" }).click();
+  await expect(todo.getByRole("article").first()).toHaveAccessibleName("Review with collaborators");
+  const order = (await fx()).writes.at(-1);
+  expect(order.metadata.prism_board.order.slice(0, 2)).toEqual(["custom", "design"]);
+  await todo.getByRole("article", { name: "Polish the editor" }).getByRole("button", { name: "Actions for Polish the editor" }).click();
+  await page.getByRole("menuitem", { name: "Move to…" }).click();
+  await page.getByRole("menuitem", { name: "In review" }).click();
+  await expect(page.getByRole("region", { name: "In review", exact: true }).getByRole("article", { name: "Polish the editor" })).toBeVisible();
+  expect((await fx()).writes.at(-1)).toMatchObject({ id: "design", metadata: { status: "review" } });
+  await page.getByRole("region", { name: "In review", exact: true }).getByRole("button", { name: "Actions for Polish the editor" }).click();
+  await page.getByRole("menuitem", { name: "Open" }).click();
+  await expect.poll(() => page.evaluate(() => (window as any).prismBoardFixture.open().some((t: any) => t.noteId === "design"))).toBe(true);
+
+  // Six columns at 1440: the last one is never silently cut off.
+  const columns = page.getByRole("region", { name: "Board columns" });
+  const overflowing = await columns.evaluate((el) => el.scrollWidth > el.clientWidth);
+  if (overflowing) {
+    await expect(page.getByRole("button", { name: "Scroll columns right" })).toBeVisible();
+    await page.getByRole("button", { name: "Scroll columns right" }).click();
+    await expect(page.getByRole("button", { name: "Scroll columns left" })).toBeVisible();
+  }
+  await page.getByRole("region", { name: "Ungrouped", exact: true }).scrollIntoViewIfNeeded();
+  const box = (await page.getByRole("region", { name: "Ungrouped", exact: true }).boundingBox())!;
+  const area = (await columns.boundingBox())!;
+  expect(box.x + box.width).toBeLessThanOrEqual(area.x + area.width + 1);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+});
+
+test("a task board opens as a database without rewriting a task", async ({ page }) => {
+  await page.goto("/e2e-fixtures/boards.html");
+  await page.getByRole("button", { name: "Open as database" }).click();
+  const fx = await page.evaluate(() => (window as any).prismBoardFixture);
+  const db = fx.creates.at(-1);
+  expect(db.metadata).toMatchObject({ prism_type: "database", prism_database: { version: 1, source: { tags: ["task"] }, views: [{ type: "board", groupBy: "status" }, { type: "table" }] } });
+  expect(db.tags).toEqual([]);
+  expect(fx.writes).toEqual([]);
+  expect(await page.evaluate(() => (window as any).prismBoardFixture.open().some((t: any) => t.type === "database"))).toBe(true);
+  await expect(page.getByText("Database created.")).toBeVisible();
+});
