@@ -138,7 +138,7 @@ export function ShareButton() {
                 <button
                   onClick={copy}
                   className="px-2 py-1.5 rounded text-xs flex items-center gap-1"
-                  style={{ background: "var(--color-accent)", color: "white" }}
+                  style={{ background: "var(--action-bg, var(--color-accent))", color: "var(--action-fg, #fff)" }}
                 >
                   {status === "copied" ? <Check size={13} /> : <Copy size={13} />}
                   {status === "copied" ? "Copied" : "Copy"}

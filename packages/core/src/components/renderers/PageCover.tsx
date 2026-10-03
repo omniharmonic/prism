@@ -173,19 +173,21 @@ export function CoverPicker({
     <>
       <div style={{ position: "fixed", inset: 0, zIndex: 70 }} onClick={onClose} />
       <div ref={panelRef} role="dialog" aria-label="Page cover" className="document-cover-picker glass-elevated" style={{ position: "fixed", top, left, width, zIndex: 71 }}>
-        <div className="document-cover-picker-tabs" role="tablist" aria-label="Cover source">
-          {tabs.map(([id, label]) => (
-            <button key={id} type="button" role="tab" aria-selected={tab === id} className="focus-ring" onClick={() => { setTab(id); setError(""); }}>{label}</button>
-          ))}
+        <div className="document-cover-picker-tabs">
+          {/* The tablist owns only the tabs; "Remove" is an action beside it. */}
+          <div role="tablist" aria-label="Cover source" style={{ display: "flex", alignItems: "center", gap: 2 }}>
+            {tabs.map(([id, label]) => (
+              <button key={id} type="button" role="tab" aria-selected={tab === id} className="focus-ring" onClick={() => { setTab(id); setError(""); }}>{label}</button>
+            ))}
+          </div>
           {onRemove && current && <button type="button" className="document-cover-picker-remove focus-ring" onClick={onRemove}>Remove</button>}
         </div>
         {tab === "gallery" && (
-          <div className="document-cover-gallery" role="list" aria-label="Brand gradients">
+          <div className="document-cover-gallery" role="group" aria-label="Brand gradients">
             {COVER_GRADIENTS.map((g) => (
               <button
                 key={g.name}
                 type="button"
-                role="listitem"
                 className="document-cover-swatch focus-ring"
                 aria-label={`${g.label} gradient`}
                 aria-pressed={current?.kind === "gradient" && current.value === g.name}

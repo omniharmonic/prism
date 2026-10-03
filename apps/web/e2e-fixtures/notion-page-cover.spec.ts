@@ -20,7 +20,7 @@ test("cover add, reposition, remove", async ({ page }) => {
   await cover.hover();
   await page.getByRole("button", { name: "Change cover" }).click();
   const picker = page.getByRole("dialog", { name: "Page cover" });
-  await picker.getByRole("listitem", { name: "Lagoon gradient" }).click();
+  await picker.getByRole("button", { name: "Lagoon gradient" }).click();
   await expect.poll(async () => (await meta(page)).at(-1)).toEqual({ cover: "gradient:lagoon", coverY: 50 });
   // Change → Upload.
   await cover.hover();

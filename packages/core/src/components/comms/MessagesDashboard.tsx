@@ -201,7 +201,7 @@ function CollapsiblePlatformSection({
         </span>
         <span className="text-xs" style={{ color: "var(--text-muted)" }}>{rooms.length}</span>
         {unreadCount > 0 && (
-          <span className="text-[10px] px-1.5 rounded-full ml-auto" style={{ background: "var(--color-accent)", color: "white" }}>
+          <span className="text-[10px] px-1.5 rounded-full ml-auto" style={{ background: "var(--action-bg, var(--color-accent))", color: "var(--action-fg, #fff)" }}>
             {unreadCount}
           </span>
         )}
@@ -241,7 +241,7 @@ function ConversationRow({ room, onClick }: { room: MatrixRoom; onClick: () => v
         )}
       </div>
       {room.unread_count > 0 && (
-        <span className="text-[11px] px-1.5 py-0.5 rounded-full flex-shrink-0 mt-1" style={{ background: "var(--color-accent)", color: "white", minWidth: 20, textAlign: "center" }}>
+        <span className="text-[11px] px-1.5 py-0.5 rounded-full flex-shrink-0 mt-1" style={{ background: "var(--action-bg, var(--color-accent))", color: "var(--action-fg, #fff)", minWidth: 20, textAlign: "center" }}>
           {room.unread_count}
         </span>
       )}

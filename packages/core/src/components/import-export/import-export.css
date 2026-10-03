@@ -30,8 +30,8 @@
 .transfer-btn { min-height: 36px; padding: 0 14px; border-radius: var(--radius-md); border: 1px solid var(--glass-border-strong); color: var(--text-primary); font-size: var(--text-sm); display: inline-flex; align-items: center; gap: 6px; }
 .transfer-btn:hover:not(:disabled) { background: var(--surface-hover); }
 .transfer-btn:disabled { opacity: .5; cursor: default; }
-.transfer-btn[data-primary="true"] { background: var(--color-accent); border-color: var(--color-accent); color: #fff; font-weight: 600; }
-.transfer-btn[data-primary="true"]:hover:not(:disabled) { background: var(--color-accent); filter: brightness(1.06); }
+.transfer-btn[data-primary="true"] { background: var(--action-bg, var(--color-accent)); border-color: var(--action-bg, var(--color-accent)); color: #fff; font-weight: 600; }
+.transfer-btn[data-primary="true"]:hover:not(:disabled) { background: var(--action-bg, var(--color-accent)); filter: brightness(1.06); }
 
 .transfer-progress { display: grid; gap: 8px; padding: 6px 0 2px; }
 .transfer-progress-bar { height: 6px; border-radius: 999px; background: var(--surface-active, rgba(127,127,127,.18)); overflow: hidden; }

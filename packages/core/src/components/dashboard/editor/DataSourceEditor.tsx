@@ -77,8 +77,8 @@ export function DataSourceEditor({ value, onChange }: DataSourceEditorProps) {
               key={tag}
               className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-xs"
               style={{
-                background: "var(--color-accent)",
-                color: "white",
+                background: "var(--action-bg, var(--color-accent))",
+                color: "var(--action-fg, #fff)",
               }}
             >
               {tag}

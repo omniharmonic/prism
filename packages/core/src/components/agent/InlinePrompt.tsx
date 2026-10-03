@@ -146,7 +146,7 @@ export function InlinePrompt({ noteId, selection, position, onAccept, onReject }
             <button
               onClick={() => onAccept(result)}
               className="flex items-center gap-1 px-2 py-1 rounded text-xs"
-              style={{ background: "var(--color-accent)", color: "white" }}
+              style={{ background: "var(--action-bg, var(--color-accent))", color: "var(--action-fg, #fff)" }}
             >
               <Check size={12} /> Accept
             </button>

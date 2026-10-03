@@ -75,6 +75,13 @@ span[data-suggestion="insert"] {
 span[data-suggestion="delete"] {
   background: rgba(239, 68, 68, 0.1);
 }
+/* NP-AX-04: a suggestion is told apart by its underline / strike and its tint, in the author's colour;
+   the words keep reading contrast. The stored mark carries an inline colour (any collaborator colour,
+   so not guaranteed AA on the tint) — it is overridden here, never rewritten in the document. The
+   agent's default green/red map to the status tokens, which are AA in both themes. */
+span[data-suggestion="insert"], span[data-suggestion="delete"] { color: var(--text-primary) !important; }
+span[data-suggestion="insert"][data-color="#22c55e"] { color: var(--color-success) !important; }
+span[data-suggestion="delete"][data-color="#ef4444"] { color: var(--color-danger) !important; }
 .cd-bubble {
   display: flex;
   gap: 2px;

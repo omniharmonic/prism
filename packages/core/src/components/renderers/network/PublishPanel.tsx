@@ -377,8 +377,8 @@ function PublicationRow({
             display: "flex",
             alignItems: "center",
             justifyContent: "center",
-            background: "var(--color-accent)",
-            color: "white",
+            background: "var(--action-bg, var(--color-accent))",
+            color: "var(--action-fg, #fff)",
           }}
         >
           <Globe size={17} />

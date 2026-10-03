@@ -269,7 +269,7 @@ function AgentChatView({ client }: { client: AgentClient }) {
             <p className="text-sm" style={{ color: "var(--text-muted)" }}>
               Chat with the agent on your Prism server. Conversations keep running when you close the tab.
             </p>
-            <button onClick={startNew} className="press flex items-center gap-1.5 rounded-full px-4 py-2 text-sm" style={{ background: "var(--color-accent)", color: "#fff" }}>
+            <button onClick={startNew} className="press flex items-center gap-1.5 rounded-full px-4 py-2 text-sm" style={{ background: "var(--action-bg, var(--color-accent))", color: "var(--action-fg, #fff)" }}>
               <Plus size={15} /> New session
             </button>
           </div>
@@ -734,7 +734,7 @@ export function Conversation({
             disabled={conv.cancelling}
             data-testid="agent-cancel"
             className="press flex flex-shrink-0 items-center justify-center rounded-full"
-            style={{ width: 44, height: 44, borderRadius: 9, background: "var(--color-danger)", color: "#fff" }}
+            style={{ width: 44, height: 44, borderRadius: 9, background: "var(--danger-bg, var(--color-danger))", color: "#fff" }}
           >
             {conv.cancelling ? <Loader2 size={15} className="animate-spin" /> : <Square size={14} fill="#fff" />}
           </button>

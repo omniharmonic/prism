@@ -353,7 +353,7 @@ a.prism-bookmark:hover { background: var(--glass-hover); border-color: var(--gla
 .prism-db-insert-actions { display: flex; justify-content: flex-end; gap: 8px; }
 .prism-db-insert-actions button { height: 32px; padding: 0 12px; border-radius: var(--radius-sm); font-size: 13px; color: var(--text-secondary); }
 .prism-db-insert-actions button:hover { background: var(--glass-hover); }
-.prism-db-insert-primary { color: #fff !important; background: var(--color-accent) !important; font-weight: 600; }
+.prism-db-insert-primary { color: #fff !important; background: var(--action-bg, var(--color-accent)) !important; font-weight: 600; }
 .prism-db-insert-primary:disabled { opacity: .5; }
 .prism-db-insert-error { margin: 0; font-size: 12px; color: var(--color-danger); }
 @media (max-width: 767px) { .prism-db-insert input { font-size: 16px; height: 40px; } .prism-db-insert li button { min-height: 44px; } }

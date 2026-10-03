@@ -82,9 +82,9 @@ export function CommentsSidebar({
         fontSize: 12,
         fontWeight: 600,
         borderRadius: 7,
-        border: "1px solid " + (tab === key ? "var(--color-accent)" : "var(--glass-border)"),
-        background: tab === key ? "var(--color-accent)" : "transparent",
-        color: tab === key ? "#fff" : "var(--text-secondary)",
+        border: "1px solid " + (tab === key ? "var(--action-bg, var(--color-accent))" : "var(--glass-border)"),
+        background: tab === key ? "var(--action-bg, var(--color-accent))" : "transparent",
+        color: tab === key ? "var(--action-fg, #fff)" : "var(--text-secondary)",
         cursor: "pointer",
       }}
     >

@@ -262,32 +262,35 @@ export function PageMenuPopover({
     const next = e.key === "Home" ? 0 : e.key === "End" ? buttons.length - 1 : (i + (e.key === "ArrowDown" ? 1 : -1) + buttons.length) % buttons.length;
     buttons[next]?.focus();
   };
-  return (
-    <div ref={ref} role="menu" aria-label={label} className="page-menu" style={pos} onKeyDown={onKeyDown}>
-      {items.map((item) => (
-        <div key={item.id}>
-          {item.startsGroup && <div className="page-menu-sep" role="separator" />}
-          <button
-            type="button"
-            role="menuitem"
-            className="page-menu-item"
-            data-danger={item.danger || undefined}
-            disabled={item.disabled}
-            title={item.detail}
-            onClick={item.onClick}
-          >
-            {item.icon}
-            <span className="page-menu-label">
-              {item.label}
-              {/* A disabled action says why (a tooltip never shows on a disabled control). */}
-              {item.disabled && item.detail && <small className="page-menu-detail">{item.detail}</small>}
-            </span>
-          </button>
-        </div>
-      ))}
+  const rows = items.map((item) => (
+    <div key={item.id}>
+      {item.startsGroup && <div className="page-menu-sep" role="separator" />}
+      <button
+        type="button"
+        role="menuitem"
+        className="page-menu-item"
+        data-danger={item.danger || undefined}
+        disabled={item.disabled}
+        title={item.detail}
+        onClick={item.onClick}
+      >
+        {item.icon}
+        <span className="page-menu-label">
+          {item.label}
+          {/* A disabled action says why (a tooltip never shows on a disabled control). */}
+          {item.disabled && item.detail && <small className="page-menu-detail">{item.detail}</small>}
+        </span>
+      </button>
+    </div>
+  ));
+  // A footer (page info) is not a menu item: with one, the popup holds the menu and the footer side by side.
+  if (footer) return (
+    <div ref={ref} className="page-menu" style={pos} onKeyDown={onKeyDown}>
+      <div role="menu" aria-label={label}>{rows}</div>
       {footer}
     </div>
   );
+  return <div ref={ref} role="menu" aria-label={label} className="page-menu" style={pos} onKeyDown={onKeyDown}>{rows}</div>;
 }
 
 /** The `⋯` button for the active page (top bar). Desktop: popover; phone: the actions sheet.

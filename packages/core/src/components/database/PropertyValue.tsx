@@ -107,7 +107,7 @@ const colorOf = (def: PropertyDef, v: string): OptionColor => def.options.find((
 const list = (v: unknown): string[] => (Array.isArray(v) ? v.map(String) : isBlank(v) ? [] : [String(v)]);
 
 /** Read-only rendering (cards, read-only pages, cells of rows you cannot edit). */
-export function PropertyDisplay({ def, value, openLinks = true }: { def: PropertyDef; value: unknown; /** Relation/person chips open their page on a plain click (off inside an editable cell, where the click edits). */ openLinks?: boolean }) {
+export function PropertyDisplay({ def, value, openLinks = true, links = true }: { def: PropertyDef; value: unknown; /** Relation/person chips open their page on a plain click (off inside an editable cell, where the click edits). */ openLinks?: boolean; /** URL / email / phone render as real links. Off inside the cell's own button (a link inside a button is invalid and unreachable by keyboard); the cell renders the link beside the button instead. */ links?: boolean }) {
   if (isBlank(value)) return <span className="db-empty">Empty</span>;
   if (def.system === "created_time" || def.system === "edited_time") {
     const v = String(value);
@@ -146,15 +146,16 @@ export function PropertyDisplay({ def, value, openLinks = true }: { def: Propert
     }
     case "email": {
       const v = String(value);
-      return looksLikeEmail(v) ? <a className="db-url" href={`mailto:${v.trim()}`} onClick={(e) => e.stopPropagation()}>{v}</a> : <span className="db-text">{v}</span>;
+      return links && looksLikeEmail(v) ? <a className="db-url" href={`mailto:${v.trim()}`} onClick={(e) => e.stopPropagation()}>{v}</a> : <span className="db-text">{v}</span>;
     }
     case "phone": {
       const v = String(value);
-      return looksLikePhone(v) ? <a className="db-url" href={`tel:${v.replace(/[^\d+]/g, "")}`} onClick={(e) => e.stopPropagation()}>{v}</a> : <span className="db-text">{v}</span>;
+      return links && looksLikePhone(v) ? <a className="db-url" href={`tel:${v.replace(/[^\d+]/g, "")}`} onClick={(e) => e.stopPropagation()}>{v}</a> : <span className="db-text">{v}</span>;
     }
     case "url": {
       const href = String(value);
       const safe = /^https?:\/\//i.test(href);
+      if (safe && !links) return <span className="db-text">{href.replace(/^https?:\/\//, "")}</span>;
       return safe ? <a className="db-url" href={href} target="_blank" rel="noreferrer noopener" onClick={(e) => e.stopPropagation()}>{href.replace(/^https?:\/\//, "")}</a> : <span>{href}</span>;
     }
     default:
@@ -336,8 +337,21 @@ export function PropertyValue({
     );
   }
 
+  const raw = isBlank(value) ? "" : String(value);
+  const valueLink = def.kind === "url" && /^https?:\/\//i.test(raw) ? { href: raw, name: raw.replace(/^https?:\/\//, "") }
+    : def.kind === "email" && looksLikeEmail(raw) ? { href: `mailto:${raw.trim()}`, name: raw }
+    : def.kind === "phone" && looksLikePhone(raw) ? { href: `tel:${raw.replace(/[^\d+]/g, "")}`, name: raw }
+    : null;
+  const readOnlyLinks = !!readOnly && (def.kind === "relation" || def.kind === "person") && !isBlank(value);
   return (
-    <span className={`db-value db-value-${variant}`}>
+    <span className={`db-value db-value-${variant}`} data-linked={valueLink ? "" : undefined}>
+      {readOnlyLinks ? (
+        /* A reader's relation / person chips are links to those pages. Links may not sit inside a
+           button, and a read-only cell has nothing else to do — so here it is a labelled group. */
+        <span className="db-value-button" role="group" data-readonly aria-label={`${def.label}: ${formatValue(def, value) || "Empty"}`}>
+          <PropertyDisplay def={def} value={value} openLinks links={false} />
+        </span>
+      ) : (
       <button
         ref={anchor}
         type="button"
@@ -355,12 +369,17 @@ export function PropertyValue({
         {def.kind === "checkbox" ? (
           <span className="db-check" data-checked={value === true || undefined} aria-hidden="true">{value === true && <Check size={12} />}</span>
         ) : (
-          <PropertyDisplay def={def} value={value} openLinks={!!readOnly} />
+          <PropertyDisplay def={def} value={value} openLinks={false} links={false} />
         )}
-        {def.kind === "url" && !isBlank(value) && /^https?:\/\//i.test(String(value)) && <ExternalLink size={11} aria-hidden="true" className="db-muted-icon" />}
-        {def.kind === "email" && !isBlank(value) && <Mail size={11} aria-hidden="true" className="db-muted-icon" />}
-        {def.kind === "phone" && !isBlank(value) && <Phone size={11} aria-hidden="true" className="db-muted-icon" />}
       </button>
+      )}
+      {/* The link sits BESIDE the cell's button (never inside it): a real, keyboard-reachable link named by its value. */}
+      {valueLink && (
+        <a className="db-value-link focus-ring" href={valueLink.href} aria-label={valueLink.name} title={`Open ${valueLink.name}`}
+          {...(def.kind === "url" ? { target: "_blank", rel: "noreferrer noopener" } : {})} onClick={(e) => e.stopPropagation()}>
+          {def.kind === "url" ? <ExternalLink size={12} aria-hidden="true" /> : def.kind === "email" ? <Mail size={12} aria-hidden="true" /> : <Phone size={12} aria-hidden="true" />}
+        </a>
+      )}
       <span id={id}>{feedback}</span>
       {(def.kind === "select" || def.kind === "status" || def.kind === "multi_select") && (
         <OptionPicker anchor={anchor} open={open} def={def} value={value} onClose={() => { setOpen(false); onDone?.(); }}
@@ -560,8 +579,8 @@ function OptionPicker({ anchor, open, def, value, onClose, onPick, onCreateOptio
           const head = grouped && (i === 0 || (groupOf(ordered[i - 1]!) ?? "in_progress") !== g);
           return [
             head ? <li key={`g:${g}`} role="presentation" className="db-pop-heading db-status-group" data-status-group={g}>{STATUS_GROUP_LABELS[g]}</li> : null,
-            <li key={o} role="option" aria-selected={selected.has(o)} data-group={grouped ? g : undefined}>
-              <button type="button" onClick={() => choose(o)}>
+            <li key={o} role="presentation" data-group={grouped ? g : undefined}>
+              <button type="button" role="option" aria-selected={selected.has(o)} onClick={() => choose(o)}>
                 {multi && <span className="db-check" data-checked={selected.has(o) || undefined} aria-hidden="true">{selected.has(o) && <Check size={12} />}</span>}
                 <OptionChip value={o} label={optionLabel(def, o)} color={colorOf(def, o)} />
                 {!multi && selected.has(o) && <Check size={14} className="db-pop-tick" aria-hidden="true" />}
@@ -623,8 +642,8 @@ function LinkPicker({ anchor, open, def, value, onClose, onPick }: {
       </div>
       <ul className="db-pop-list" role="listbox" aria-label={`${def.label} candidates`}>
         {(candidates.data ?? []).filter((c) => c.path).map((c) => (
-          <li key={c.id} role="option" aria-selected={current.some((v) => linkLabel(v) === linkLabel(asWikilink(c.path!)))}>
-            <button type="button" onClick={() => toggle(c.path!)}>
+          <li key={c.id} role="presentation">
+            <button type="button" role="option" aria-selected={current.some((v) => linkLabel(v) === linkLabel(asWikilink(c.path!)))} onClick={() => toggle(c.path!)}>
               {def.kind === "person" && <span className="db-avatar" aria-hidden="true">{c.title.slice(0, 1).toUpperCase()}</span>}
               <span className="db-pop-title">{c.title}</span>
               <span className="db-pop-path">{c.path}</span>

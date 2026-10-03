@@ -15,8 +15,8 @@
   background: transparent; border: 1px solid transparent; cursor: pointer; transition: background var(--transition-fast, 120ms);
 }
 .prism-inbox-btn:hover { background: var(--glass-hover, var(--surface-hover)); color: var(--text-primary); }
-.prism-inbox-btn[data-variant="primary"] { background: var(--color-accent); color: #fff; }
-.prism-inbox-btn[data-variant="primary"]:hover { filter: brightness(1.06); background: var(--color-accent); color: #fff; }
+.prism-inbox-btn[data-variant="primary"] { background: var(--action-bg, var(--color-accent)); color: #fff; }
+.prism-inbox-btn[data-variant="primary"]:hover { filter: brightness(1.06); background: var(--action-bg, var(--color-accent)); color: #fff; }
 .prism-inbox-btn[data-variant="outline"] { border-color: var(--glass-border); }
 .prism-inbox-btn:disabled { opacity: 0.55; cursor: default; }
 .prism-inbox-tabs { display: flex; gap: 2px; margin-top: 20px; border-bottom: 1px solid var(--glass-border); }
@@ -80,7 +80,7 @@
 .prism-inbox-settings input[type="checkbox"] { width: 18px; height: 18px; }
 .prism-inbox-badge {
   min-width: 18px; height: 18px; padding: 0 5px; border-radius: 999px; font-size: 11px; font-weight: 650; line-height: 18px;
-  text-align: center; background: var(--color-accent); color: #fff;
+  text-align: center; background: var(--action-bg, var(--color-accent)); color: #fff;
 }
 .prism-anchor-flash { outline: 2px solid var(--color-accent); outline-offset: 2px; border-radius: 4px; transition: outline-color 0.6s; }
 .prism-request-access { display: inline-flex; flex-direction: column; align-items: center; gap: 8px; }

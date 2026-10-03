@@ -13,6 +13,7 @@
     "./governance-prose": "./src/lib/governance/prose.ts",
     "./dashboard-engine": "./src/lib/dashboard/filter-engine.ts",
     "./database": "./src/lib/database/index.ts",
+    "./map": "./src/components/map/CommonsMap.tsx",
     "./collab-access": "./src/lib/collab/access.ts",
     "./collab-commands": "./src/lib/collab/commands.ts",
     "./wikilinks": "./src/lib/wikilinks.ts",

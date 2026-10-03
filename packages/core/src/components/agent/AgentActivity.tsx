@@ -390,7 +390,7 @@ export default function AgentActivity(_props: RendererProps) {
                 }}
                 disabled={!customPrompt.trim()}
                 className="p-2 rounded-lg transition-colors disabled:opacity-30"
-                style={{ background: "var(--color-accent)", color: "white" }}
+                style={{ background: "var(--action-bg, var(--color-accent))", color: "var(--action-fg, #fff)" }}
                 title="Start an agent chat"
               >
                 <Send size={14} />
@@ -415,7 +415,7 @@ export default function AgentActivity(_props: RendererProps) {
                 onClick={handleCustomDispatch}
                 disabled={!customPrompt.trim()}
                 className="p-2 rounded-lg transition-colors disabled:opacity-30"
-                style={{ background: "var(--color-accent)", color: "white" }}
+                style={{ background: "var(--action-bg, var(--color-accent))", color: "var(--action-fg, #fff)" }}
               >
                 <Send size={14} />
               </button>
@@ -727,7 +727,7 @@ function SkillBuilder({ onCreated, onCancel }: { onCreated: () => void; onCancel
           onClick={handleCreate}
           disabled={!name.trim() || !prompt.trim() || saving}
           className="w-full py-1.5 rounded text-xs font-medium transition-colors disabled:opacity-50"
-          style={{ background: "var(--color-accent)", color: "white" }}
+          style={{ background: "var(--action-bg, var(--color-accent))", color: "var(--action-fg, #fff)" }}
         >
           {saving ? "Creating..." : "Create Skill"}
         </button>
@@ -980,7 +980,7 @@ function SkillConfigCard({
               onClick={handleSavePrompt}
               disabled={saving}
               className="px-3 py-1 rounded text-[10px] font-medium"
-              style={{ background: "var(--color-accent)", color: "white" }}
+              style={{ background: "var(--action-bg, var(--color-accent))", color: "var(--action-fg, #fff)" }}
             >
               {saving ? "Saving..." : "Save Prompt"}
             </button>
@@ -1005,7 +1005,7 @@ function SkillConfigCard({
                   onClick={handleSaveStructured}
                   disabled={saving}
                   className="px-3 py-1 rounded text-[10px] font-medium"
-                  style={{ background: "var(--color-accent)", color: "white" }}
+                  style={{ background: "var(--action-bg, var(--color-accent))", color: "var(--action-fg, #fff)" }}
                 >
                   {saving ? "Saving..." : "Save Structured Config"}
                 </button>

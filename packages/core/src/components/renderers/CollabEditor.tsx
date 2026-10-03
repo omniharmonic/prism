@@ -523,8 +523,8 @@ export function CollabEditor({
               onClick={submitComment}
               disabled={!draft.trim()}
               style={{
-                background: "var(--color-accent)",
-                color: "#fff",
+                background: "var(--action-bg, var(--color-accent))",
+                color: "var(--action-fg, #fff)",
                 border: "none",
                 borderRadius: 7,
                 fontSize: 12.5,

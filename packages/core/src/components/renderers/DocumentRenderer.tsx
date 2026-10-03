@@ -622,7 +622,7 @@ function GhostTextOverlay({
           {canAdopt && <button
             onClick={handleAccept}
             className="px-3 py-1 rounded text-xs font-medium"
-            style={{ background: "var(--color-accent)", color: "white" }}
+            style={{ background: "var(--action-bg, var(--color-accent))", color: "var(--action-fg, #fff)" }}
           >
             {hosted ? "Show latest" : "Accept"}
           </button>}

@@ -394,7 +394,7 @@ function MonthView({ days, month, today, selectedDate, eventsByDate, onSelect, o
                 {day.getDate()}
               </button>
               {dayEvts.slice(0, 3).map((ev, j) => (
-                <button key={ev.vaultNoteId ?? j} onClick={(e) => { e.currentTarget.focus({ preventScroll: true }); onEventClick(ev); }} className="focus-ring text-left text-[10px] truncate px-1 py-1 rounded mt-0.5 hover:opacity-100" style={{ background: "var(--color-accent)", color: "white", opacity: 0.85 }}>{ev.summary || "Event"}</button>
+                <button key={ev.vaultNoteId ?? j} onClick={(e) => { e.currentTarget.focus({ preventScroll: true }); onEventClick(ev); }} className="focus-ring text-left text-[10px] truncate px-1 py-1 rounded mt-0.5 hover:opacity-100" style={{ background: "var(--action-bg, var(--color-accent))", color: "var(--action-fg, #fff)", opacity: 0.85 }}>{ev.summary || "Event"}</button>
               ))}
               {dayEvts.length > 3 && <button onClick={() => onSelect(day)} className="focus-ring text-left text-[10px] mt-0.5" style={{ color: "var(--text-muted)" }}>+{dayEvts.length - 3} more</button>}
             </div>
@@ -461,7 +461,7 @@ function WeekView({ days, today, selectedDate, eventsByDate, onSelect, onEventCl
                 {layoutCalendarDay(dayEvts, d).map(({ event: ev, start, end, column, columns }, ei) => {
                   return (
                     <button key={ei} onClick={(e) => { e.currentTarget.focus({ preventScroll: true }); onEventClick(ev); }} className="focus-ring absolute rounded px-1 py-0.5 text-left text-[10px] overflow-hidden hover:opacity-100 transition-opacity"
-                      style={{ top: start * 0.8 + 2, height: (end - start) * 0.8 - 4, left: `calc(${column / columns * 100}% + 2px)`, width: `calc(${100 / columns}% - 4px)`, background: "var(--color-accent)", color: "white", opacity: 0.9 }}>
+                      style={{ top: start * 0.8 + 2, height: (end - start) * 0.8 - 4, left: `calc(${column / columns * 100}% + 2px)`, width: `calc(${100 / columns}% - 4px)`, background: "var(--action-bg, var(--color-accent))", color: "var(--action-fg, #fff)", opacity: 0.9 }}>
                       <div className="font-medium truncate">{ev.summary || "Event"}</div>
                       <div className="opacity-75">{formatTime(ev.start?.dateTime)}</div>
                     </button>
@@ -519,7 +519,7 @@ function DayView({ date, today, events, onEventClick }: { date: Date; today: Dat
           {layoutCalendarDay(events, date).map(({ event: ev, start, end, column, columns }, i) => {
             return (
               <button key={i} onClick={(e) => { e.currentTarget.focus({ preventScroll: true }); onEventClick(ev); }} className="focus-ring absolute rounded-md px-2 py-1 text-left overflow-hidden hover:opacity-100 transition-opacity"
-                style={{ top: start * 0.8, height: (end - start) * 0.8, left: `calc(${column / columns * 100}% + 4px)`, width: `calc(${100 / columns}% - 8px)`, background: "var(--color-accent)", color: "white", opacity: 0.9 }}>
+                style={{ top: start * 0.8, height: (end - start) * 0.8, left: `calc(${column / columns * 100}% + 4px)`, width: `calc(${100 / columns}% - 8px)`, background: "var(--action-bg, var(--color-accent))", color: "var(--action-fg, #fff)", opacity: 0.9 }}>
                 <div className="text-xs font-medium truncate">{ev.summary || "Event"}</div>
                 <div className="text-[10px] opacity-80">{formatTime(ev.start?.dateTime)} – {formatTime(ev.end?.dateTime)}</div>
                 {ev.location && <div className="text-[10px] opacity-70 truncate mt-0.5">{ev.location}</div>}
@@ -714,7 +714,7 @@ function EventDetailPanel({ event, onClose, onEdit, onDelete, onOpenNotes, onOpe
               onClick={() => void doDelete()}
               disabled={deleting}
               className="focus-ring min-h-11 px-3 py-2 rounded-lg text-sm font-medium disabled:opacity-50"
-              style={{ background: "var(--color-danger)", color: "white" }}
+              style={{ background: "var(--danger-bg, var(--color-danger))", color: "#fff" }}
             >
               {deleting ? "Deleting..." : "Delete this occurrence"}
             </button>
@@ -732,7 +732,7 @@ function EventDetailPanel({ event, onClose, onEdit, onDelete, onOpenNotes, onOpe
                 onClick={() => void doDelete("all")}
                 disabled={deleting}
                 className="focus-ring min-h-11 px-3 py-2 rounded-lg text-sm font-medium disabled:opacity-50"
-                style={{ background: "var(--color-danger)", color: "white" }}
+                style={{ background: "var(--danger-bg, var(--color-danger))", color: "#fff" }}
                 data-testid="delete-all-occurrences"
               >
                 Delete ALL occurrences
@@ -920,7 +920,7 @@ function EventFormPanel({ event, defaultDate, onClose, onSaved, live }: {
         onClick={() => void handleSave()}
         disabled={!summary.trim() || saving || !canSave}
         className="w-full py-2 rounded text-xs font-medium transition-colors disabled:opacity-50"
-        style={{ background: "var(--color-accent)", color: "white" }}
+        style={{ background: "var(--action-bg, var(--color-accent))", color: "var(--action-fg, #fff)" }}
       >
         {saving ? "Saving..." : isEdit ? "Update Event" : "Create Event"}
       </button>
@@ -931,7 +931,7 @@ function EventFormPanel({ event, defaultDate, onClose, onSaved, live }: {
           onClick={() => void handleSave(true)}
           disabled={saving}
           className="w-full py-1.5 rounded text-xs font-medium disabled:opacity-50"
-          style={{ background: "var(--color-danger)", color: "white" }}
+          style={{ background: "var(--danger-bg, var(--color-danger))", color: "#fff" }}
           data-testid="update-all-occurrences"
         >
           Apply to ALL occurrences of the series

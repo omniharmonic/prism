@@ -11,6 +11,7 @@ import { dismissMentionSuggest, type MentionSuggestState } from "./MentionSugges
 import { mentionNoteId, updateMentionByUid } from "./MentionContext";
 import { notificationsApi, localTimeZone } from "../notifications/client";
 import { mentionToast } from "./MentionToast";
+import { describeEditorPopup } from "./popupAria";
 import "./mention.css";
 
 type Item =
@@ -124,9 +125,7 @@ export function MentionMenu({ editor, state, notes }: { editor: Editor | null; s
   useEffect(() => {
     if (!editor || !visible) return;
     const el = editor.view.dom;
-    el.setAttribute("aria-controls", id);
-    el.setAttribute("aria-autocomplete", "list");
-    el.setAttribute("aria-activedescendant", `${id}-${index}`);
+    const undescribe = describeEditorPopup(el, id, `${id}-${index}`);
     const keydown = (e: KeyboardEvent) => {
       if (e.isComposing) return;
       if (e.key === "ArrowDown" || e.key === "ArrowUp") {
@@ -149,7 +148,7 @@ export function MentionMenu({ editor, state, notes }: { editor: Editor | null; s
     el.addEventListener("keydown", keydown, true);
     return () => {
       el.removeEventListener("keydown", keydown, true);
-      for (const n of ["aria-controls", "aria-autocomplete", "aria-activedescendant"]) el.removeAttribute(n);
+      undescribe();
     };
   }, [editor, visible, id, index, items, choose, signature, state.from]);
 

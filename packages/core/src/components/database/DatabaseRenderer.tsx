@@ -559,7 +559,8 @@ function Toolbar({ config, view, props, search, onSearch, isMobile, canEditDb, c
   const titles = { filter: "Filter", sort: "Sort", settings: "View settings", add: "Add a view", more: "More", "": "" } as const;
   return (
     <div className="db-toolbar">
-      <div className="db-tabs" role="tablist" aria-label="Views">
+      <div className="db-tabs">
+       <div className="db-tablist" role="tablist" aria-label="Views">
         {config.views.map((v) => {
           const Icon = VIEW_ICONS[v.type];
           return (
@@ -573,6 +574,7 @@ function Toolbar({ config, view, props, search, onSearch, isMobile, canEditDb, c
             </button>
           );
         })}
+       </div>
         {canEditDb && (
           <button ref={addBtn} type="button" className="db-tab focus-ring" aria-label="Add a view" aria-haspopup="menu" aria-expanded={panel === "add"} onClick={() => setPanel(panel === "add" ? "" : "add")}><Plus size={14} aria-hidden="true" /></button>
         )}

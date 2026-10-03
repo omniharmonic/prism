@@ -330,12 +330,12 @@ test.describe("plain editor block handles", () => {
     // Type to search from the focused item: actions, Turn into kinds and colours are all found.
     await expect(menu.getByRole("menuitem", { name: "Turn into" })).toBeFocused();
     await page.keyboard.type("head");
-    const search = menu.getByRole("searchbox", { name: "Search actions" });
+    const search = page.getByRole("searchbox", { name: "Search actions" }); // above the menu, not one of its items
     await expect(search).toBeFocused();
     await expect(search).toHaveValue("head");
     await expect(menu.getByRole("menuitem")).toHaveText(["Turn into Heading 1", "Turn into Heading 2", "Turn into Heading 3"]);
     await search.fill("zzz");
-    await expect(menu.getByRole("status")).toHaveText("No results");
+    await expect(page.locator(".editor-menu").getByRole("status")).toHaveText("No results");
     await search.fill("copy");
     await page.keyboard.press("Enter"); // runs the first match
     await expect(page.getByRole("status").filter({ hasText: "Copied block" })).toBeVisible();
@@ -364,7 +364,7 @@ test.describe("plain editor block handles", () => {
     const pages = page.getByRole("menu", { name: "Move to" });
     await expect(pages.getByRole("menuitem", { name: "Roadmap" })).toBeVisible();
     await expect(pages.getByRole("menuitem", { name: "Block editor" })).toHaveCount(0); // never the page itself
-    await pages.getByRole("searchbox", { name: "Search pages" }).fill("road");
+    await page.getByRole("searchbox", { name: "Search pages" }).fill("road"); // above the menu, not one of its items
     if (SHOTS) await page.screenshot({ path: `${SHOTS}/block-move-to-1440.png` });
     await page.keyboard.press("Enter");
     await expect(page.getByRole("status").filter({ hasText: "Moved to Roadmap" })).toBeVisible();

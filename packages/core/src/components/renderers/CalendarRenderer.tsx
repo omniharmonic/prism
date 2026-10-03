@@ -164,8 +164,8 @@ function WeekView({ days, events }: { days: Date[]; events: CalendarEvent[] }) {
                     style={{
                       top: `${top}px`,
                       height: `${height}px`,
-                      background: "var(--color-accent)",
-                      color: "white",
+                      background: "var(--action-bg, var(--color-accent))",
+                      color: "var(--action-fg, #fff)",
                       opacity: 0.9,
                     }}
                     title={`${event.summary}\n${format(startTime, "h:mm a")} – ${format(endTime, "h:mm a")}`}
@@ -220,7 +220,7 @@ function DayView({ date, events }: { date: Date; events: CalendarEvent[] }) {
                   target="_blank"
                   rel="noopener noreferrer"
                   className="text-xs px-2 py-1 rounded"
-                  style={{ background: "var(--color-accent)", color: "white" }}
+                  style={{ background: "var(--action-bg, var(--color-accent))", color: "var(--action-fg, #fff)" }}
                 >
                   Join Meet
                 </a>

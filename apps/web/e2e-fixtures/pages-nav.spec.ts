@@ -439,7 +439,7 @@ test("page ⋯ menu ends with the page info footer", async ({ page }) => {
   await page.goto(url("?open=living"));
   await expect(page.getByRole("heading", { name: "Rename A living workspace", exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Page actions", exact: true }).click();
-  const info = page.getByRole("menu").locator("dl.prism-page-info");
+  const info = page.locator(".page-menu dl.prism-page-info"); // beside the menu, not one of its items
   await expect(info).toBeVisible();
   const value = (label: string) => info.locator("div", { has: page.locator("dt", { hasText: new RegExp(`^${label}$`) }) }).locator("dd");
   // "Purpose" + "A shared place to think, write, and build with the same context."

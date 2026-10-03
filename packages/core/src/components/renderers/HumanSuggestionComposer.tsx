@@ -262,7 +262,7 @@ export function HumanSuggestionComposer({
           </button>
         )}
         {canRetry && pending ? (
-          <button type="button" disabled={busy} onClick={() => void submit(true)} style={{ minHeight: 32, padding: "5px 12px", borderRadius: 7, border: "none", background: "var(--color-accent)", color: "#fff", fontWeight: 600, cursor: "pointer", fontSize: 12.5 }}>
+          <button type="button" disabled={busy} onClick={() => void submit(true)} style={{ minHeight: 32, padding: "5px 12px", borderRadius: 7, border: "none", background: "var(--action-bg, var(--color-accent))", color: "var(--action-fg, #fff)", fontWeight: 600, cursor: "pointer", fontSize: 12.5 }}>
             {busy ? "Retrying…" : "Retry"}
           </button>
         ) : (
@@ -270,7 +270,7 @@ export function HumanSuggestionComposer({
             type="button"
             disabled={busy || !anchor || !!problem || empty || !channel.ready}
             onClick={() => void submit(false)}
-            style={{ minHeight: 32, padding: "5px 12px", borderRadius: 7, border: "none", background: "var(--color-accent)", color: "#fff", fontWeight: 600, cursor: "pointer", fontSize: 12.5, opacity: busy || !anchor || !!problem || empty || !channel.ready ? 0.5 : 1 }}
+            style={{ minHeight: 32, padding: "5px 12px", borderRadius: 7, border: "none", background: "var(--action-bg, var(--color-accent))", color: "var(--action-fg, #fff)", fontWeight: 600, cursor: "pointer", fontSize: 12.5, opacity: busy || !anchor || !!problem || empty || !channel.ready ? 0.5 : 1 }}
           >
             {busy ? "Sending…" : kind === "comment" ? "Comment" : "Suggest"}
           </button>

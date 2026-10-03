@@ -302,15 +302,16 @@ export function Settings({ open, onClose }: SettingsProps) {
                 </div>
                 <div className="mt-2 glass-inset p-2 rounded-lg space-y-1.5">
                   <div className="flex gap-1">
-                    <input value={newVaultName} onChange={(e) => setNewVaultName(e.target.value)} placeholder="Name"
+                    <input value={newVaultName} onChange={(e) => setNewVaultName(e.target.value)} placeholder="Name" aria-label="Vault name"
                       className="flex-1 h-6 rounded px-2 text-xs outline-none"
                       style={{ background: "var(--glass)", border: "1px solid var(--glass-border)", color: "var(--text-primary)" }} />
-                    <input value={newVaultUrl} onChange={(e) => setNewVaultUrl(e.target.value)} placeholder="http://localhost:1940"
+                    <input value={newVaultUrl} onChange={(e) => setNewVaultUrl(e.target.value)} placeholder="http://localhost:1940" aria-label="Vault address"
                       className="flex-1 h-6 rounded px-2 text-xs outline-none"
                       style={{ background: "var(--glass)", border: "1px solid var(--glass-border)", color: "var(--text-primary)", fontFamily: "var(--font-mono)" }} />
                     <button onClick={() => { if (newVaultName && newVaultUrl) { addVault(newVaultName, newVaultUrl); setNewVaultName(""); setNewVaultUrl(""); } }}
+                      aria-label="Add vault" title="Add vault"
                       className="px-2 py-1 rounded text-xs hover:bg-[var(--glass-hover)]" style={{ color: "var(--color-accent)" }}>
-                      <Plus size={11} />
+                      <Plus size={11} aria-hidden="true" />
                     </button>
                   </div>
                 </div>
@@ -383,7 +384,7 @@ export function Settings({ open, onClose }: SettingsProps) {
                               }}
                               disabled={vaultDescriptionLoading}
                               className="px-3 py-1 rounded text-[10px] font-medium"
-                              style={{ background: "var(--color-accent)", color: "white" }}
+                              style={{ background: "var(--action-bg, var(--color-accent))", color: "var(--action-fg, #fff)" }}
                             >
                               {vaultDescriptionLoading ? "Saving..." : "Save"}
                             </button>
@@ -397,7 +398,7 @@ export function Settings({ open, onClose }: SettingsProps) {
 
               <Section title="Sync">
                 <Row label="Default direction">
-                  <select value={defaultSyncDirection} onChange={(e) => setDefaultSyncDirection(e.target.value as "push"|"pull"|"bidirectional")}
+                  <select aria-label="Default sync direction" value={defaultSyncDirection} onChange={(e) => setDefaultSyncDirection(e.target.value as "push"|"pull"|"bidirectional")}
                     className="h-7 rounded-md px-2 text-xs outline-none"
                     style={{ background: "var(--glass)", border: "1px solid var(--glass-border)", color: "var(--text-primary)" }}>
                     <option value="push" style={{ background: "var(--bg-elevated)" }}>Push</option>
@@ -436,6 +437,7 @@ export function Settings({ open, onClose }: SettingsProps) {
                       <div key={skill} className="grid grid-cols-[1fr_100px_1fr] gap-2 items-center px-3 py-1.5" style={{ borderBottom: "1px solid var(--glass-border)" }}>
                         <span className="text-xs capitalize" style={{ color: "var(--text-primary)" }}>{skill}</span>
                         <select
+                          aria-label={`${skill} provider`}
                           value={current.provider}
                           onChange={(e) => handleSkillModelChange(skill, e.target.value, "")}
                           className="h-6 rounded px-1 text-[10px] outline-none"
@@ -445,6 +447,7 @@ export function Settings({ open, onClose }: SettingsProps) {
                           <option value="local" style={{ background: "var(--bg-elevated)" }}>Local</option>
                         </select>
                         <select
+                          aria-label={`${skill} model`}
                           value={current.model}
                           onChange={(e) => handleSkillModelChange(skill, current.provider, e.target.value)}
                           className="h-6 rounded px-1 text-[10px] outline-none"
@@ -772,7 +775,7 @@ function LocalAiSettings({ config, onSave, saving, savedKeys }: {
             />
             {urlDraft !== baseUrl && (
               <button onClick={() => onSave("local_ai_base_url", urlDraft)} disabled={saving === "local_ai_base_url"}
-                className="px-2 py-0.5 rounded text-[10px] font-medium" style={{ background: "var(--color-accent)", color: "white" }}>
+                className="px-2 py-0.5 rounded text-[10px] font-medium" style={{ background: "var(--action-bg, var(--color-accent))", color: "var(--action-fg, #fff)" }}>
                 {saving === "local_ai_base_url" ? "..." : "Save"}
               </button>
             )}
@@ -787,6 +790,7 @@ function LocalAiSettings({ config, onSave, saving, savedKeys }: {
           <div className="flex items-center gap-1.5">
             <span className="text-[10px] w-12 flex-shrink-0" style={{ color: "var(--text-muted)" }}>Model</span>
             <select
+              aria-label="Local model"
               value={model}
               onChange={(e) => onSave("local_ai_model", e.target.value)}
               className="flex-1 h-6 rounded px-1 text-[10px] outline-none"
@@ -848,7 +852,7 @@ function SecretInput({ fieldKey, placeholder, isSet, editValues, saving, savedKe
       {value.trim() && (
         <button onClick={() => onSave(fieldKey, value)} disabled={saving === fieldKey}
           className="px-2 py-0.5 rounded text-[10px] font-medium"
-          style={{ background: "var(--color-accent)", color: "white" }}>
+          style={{ background: "var(--action-bg, var(--color-accent))", color: "var(--action-fg, #fff)" }}>
           {saving === fieldKey ? "..." : "Save"}
         </button>
       )}
@@ -927,7 +931,7 @@ function ServiceField({ icon, label, desc, fields, isSet, editValues, saving, sa
                 {isEditing && editValues[f.key] && (
                   <button onClick={() => onSave(f.key, editValues[f.key])} disabled={saving === f.key}
                     className="px-2 py-0.5 rounded text-[10px] font-medium"
-                    style={{ background: "var(--color-accent)", color: "white" }}>
+                    style={{ background: "var(--action-bg, var(--color-accent))", color: "var(--action-fg, #fff)" }}>
                     {saving === f.key ? "..." : "Save"}
                   </button>
                 )}
@@ -999,7 +1003,7 @@ function SourceField({ icon, label, desc, fieldKey, placeholder, sensitive, valu
         {isEditing && editValues[fieldKey] && (
           <button onClick={() => onSave(fieldKey, editValues[fieldKey])} disabled={saving === fieldKey}
             className="px-2 py-0.5 rounded text-[10px] font-medium"
-            style={{ background: "var(--color-accent)", color: "white" }}>
+            style={{ background: "var(--action-bg, var(--color-accent))", color: "var(--action-fg, #fff)" }}>
             {saving === fieldKey ? "..." : "Save"}
           </button>
         )}

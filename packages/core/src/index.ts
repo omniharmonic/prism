@@ -13,7 +13,8 @@ export { PrismMark, PrismAppIcon } from "./components/brand/PrismMark";
 // App shell
 export { default as App, type InitialTab } from "./App";
 export { GovernancePanel } from "./components/renderers/network/governance/GovernancePanel";
-export { CommonsMap } from "./components/map/CommonsMap";
+// CommonsMap is NOT re-exported here: a static export pulls maplibre-gl (~780 KB) into the
+// app's initial JavaScript (NP-PF-08). Load it lazily: `import("@prism/core/map")`.
 export type { MapFeature, CommonsMapProps } from "./components/map/CommonsMap";
 export { BASEMAPS, DEFAULT_BASEMAP, resolveBasemap, kindColor } from "./components/map/basemaps";
 export { setMapProxyFetch, mapProxyActive, proxiedStyle, protocolUrlToPath, localizeStyle, createMapProtocolHandler, MAP_PROTOCOL } from "./components/map/mapProxy";
@@ -119,7 +120,7 @@ export { parseCover, coverPatch, coverForNote, gradientCss, COVER_GRADIENTS, saf
 export type { PageCover as PageCoverValue, AttachmentKind } from "./lib/media/attachments";
 export { embedFor, isAllowedFrameSrc, safeWebUrl, EMBED_FRAME_ORIGINS, EMBED_FRAME_SOURCES, EMBED_SANDBOX } from "./lib/media/embeds";
 export type { EmbedTarget, EmbedProvider } from "./lib/media/embeds";
-export { useUpdateNote, useNotes } from "./app/hooks/useParachute";
+export { useUpdateNote, useNotes, useVaultTree } from "./app/hooks/useParachute";
 export { useUIStore } from "./app/stores/ui";
 export { useWikilinkNavigate } from "./app/hooks/useWikilinkNavigate";
 export { CollabDocumentProvider, useCollabDocumentSeam } from "./data/CollabDocumentContext";
