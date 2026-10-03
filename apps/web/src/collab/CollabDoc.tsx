@@ -24,7 +24,7 @@ import { updateNote as restUpdateNote, getNote as restGetNote, hasPendingWrites,
 import { markUnsynced, clearUnsynced, setOpenHere, unsyncedDocs } from "./unsynced";
 import { reloadForUpdate } from "../offline/reloadForUpdate";
 import { PlainTextPage } from "./PlainTextPage";
-import { reportSyncSource, BacklinksPill, EmptyPageStarters } from "@prism/core";
+import { reportSyncSource, NOT_SAVED_TO_PAGE, BacklinksPill, EmptyPageStarters } from "@prism/core";
 
 /** Track a CSS breakpoint without per-render layout thrash. */
 function useIsNarrow(): boolean {
@@ -145,6 +145,10 @@ function ScopedCollabDoc({
   // The server has no live document for this page (its content cannot be converted
   // for the live editor): the stored page is shown as plain text instead.
   const [tooComplex, setTooComplex] = useState<null | "edit" | "view">(null);
+  // What the SERVER says about this page (stateless messages, repeated on every connect):
+  // its latest changes cannot be written to the stored page / a one-off notice.
+  const [serverUnsaved, setServerUnsaved] = useState(false);
+  const [serverNotice, setServerNotice] = useState<string | null>(null);
   // Bumped to open the document afresh (new local document, new socket) without a page reload.
   const [attempt, setAttempt] = useState(0);
   const [checkingAccess, setCheckingAccess] = useState(false);
@@ -174,13 +178,14 @@ function ScopedCollabDoc({
     const key = `collab:${noteId}`;
     const waiting = unsynced > 0 || registered;
     reportSyncSource(key, connected
-      ? (unsynced > 0 ? "saving" : "idle")
+      // The server holds the changes but cannot write them to the page: never "Saved".
+      ? (serverUnsaved ? "unsaved" : unsynced > 0 ? "saving" : "idle")
       // Socket down with edits the server hasn't taken: never "Saved". They are on
       // this device (local), still being written locally (saving), or at risk (failed).
       : waiting ? (localSave === "unavailable" ? "failed" : localSave === "saved" ? "local" : "saving")
         : localSave === "unavailable" ? "failed" : "idle");
     return () => reportSyncSource(key, null);
-  }, [noteId, connected, unsynced, localSave, registered]);
+  }, [noteId, connected, unsynced, localSave, registered, serverUnsaved]);
   const [level, setLevel] = useState<string | null>(null);
   // The local collaborator identity (cursor + comment/suggestion authorship),
   // seeded from the cached session and confirmed via fetchMe() before the editor mounts.
@@ -445,6 +450,13 @@ function ScopedCollabDoc({
           url: collabUrl(), name, token: collabToken(capToken), document: doc,
           onStatus: ({ status }) => { socketUp = status === "connected"; if (current()) setConnected(status === "connected"); },
           onSynced: () => { socketUp = true; if (current()) { setSynced(true); setConnected(true); } },
+          onStateless: ({ payload }) => {
+            if (!current()) return;
+            let message: { type?: unknown; state?: unknown; code?: unknown };
+            try { message = JSON.parse(payload); } catch { return; }
+            if (message.type === "prism:unsaved") setServerUnsaved(message.state === "unsaved");
+            else if (message.type === "prism:notice" && message.code === "external-replaced") setServerNotice("Changes made elsewhere replaced part of this page.");
+          },
           onAuthenticationFailed: ({ reason }) => {
             if (!current()) return;
             setLevel(null);
@@ -637,6 +649,17 @@ function ScopedCollabDoc({
   return (
     <div style={outer}>
       {localSave === "unavailable" && <p role="alert" className="rounded-lg border p-3 text-sm">Local saving is unavailable. Keep this document open and copy any unsynced changes before leaving.</p>}
+      {serverUnsaved && (
+        <p role="alert" data-testid="collab-not-saved" className="rounded-lg border p-3 text-sm">
+          {NOT_SAVED_TO_PAGE}. Your changes are kept on the server and open with this page, but the stored page does not have them until it is smaller.
+        </p>
+      )}
+      {serverNotice && (
+        <p role="status" data-testid="collab-notice" className="rounded-lg border p-3 text-sm">
+          {serverNotice}{" "}
+          <button type="button" className="underline" onClick={() => setServerNotice(null)}>Dismiss</button>
+        </p>
+      )}
       {/* Extra bottom padding on narrow viewports clears the floating command pill. */}
       <div style={{ maxWidth: "var(--page-max-width, 1080px)", margin: "0 auto", padding: narrow ? "12px 14px 124px" : "16px 20px 96px" }}>
         {/* Cover band — same component and metadata as the non-collab view */}

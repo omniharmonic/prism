@@ -17,7 +17,11 @@ import type { VaultClient } from "../../data/VaultClient";
  * - `sources`: live documents (collab) that report their own state.
  */
 /** `device`: a live document NOT open right now still has edits only on this device. */
-export type SyncSourceState = "saving" | "local" | "device" | "failed" | "idle";
+/** `unsaved`: the server holds a live document's changes but CANNOT write them to the stored page (too large / refused). */
+export type SyncSourceState = "saving" | "local" | "device" | "failed" | "unsaved" | "idle";
+
+/** What the badge says while a live page's changes cannot be written to the stored page. */
+export const NOT_SAVED_TO_PAGE = "Not saved to the page — too large or complex; copy your changes or split the page";
 
 export interface SyncFailure {
   message: string;
@@ -70,6 +74,12 @@ export function deriveSyncStatus(s: Pick<SyncStore, "online" | "inFlight" | "dir
   const sources = Object.values(s.sources);
   if (failure || sources.includes("failed")) {
     return { kind: "failed", label: "Save failed · Retry", footer: "Save failed", failure: failure ?? { message: "A live document could not be saved." } };
+  }
+  // The server told a live document that its changes are NOT in the stored page and
+  // cannot be written as the page is. Never "Saved" (they are safe on the server, and
+  // reopen with the page — but the page itself does not have them).
+  if (sources.includes("unsaved")) {
+    return { kind: "failed", label: NOT_SAVED_TO_PAGE, footer: "Not saved to the page", failure: { message: `${NOT_SAVED_TO_PAGE}.` } };
   }
   if (s.attention > 0) return { kind: "review", label: "Needs review", footer: "Saved changes need review" };
   const local = s.pending > 0 || sources.includes("local");

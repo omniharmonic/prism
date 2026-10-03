@@ -22,6 +22,7 @@ import { serve } from "@hono/node-server";
 import type { Server } from "node:http";
 import { createApp } from "../../src/app";
 import { attachCollab } from "../../src/collab";
+import { configureConversion } from "../../src/convert/service";
 import { addGrant, setAccount, setUserProfile } from "../../src/db";
 import { installFakeVault, makeSession } from "../helpers";
 
@@ -80,6 +81,7 @@ const server = serve({ fetch: app.fetch, port: 0, hostname: "127.0.0.1" }, (info
 attachCollab(server as unknown as Server);
 
 // Test hooks over stdin: one JSON command per line → one JSON line back.
+let restoreLimits: (() => void) | null = null;
 let buffer = "";
 process.stdin.setEncoding("utf8");
 process.stdin.on("data", (chunk: string) => {
@@ -89,7 +91,7 @@ process.stdin.on("data", (chunk: string) => {
     const line = buffer.slice(0, i);
     buffer = buffer.slice(i + 1);
     try {
-      const cmd = JSON.parse(line) as { op: string; id?: string; content?: string };
+      const cmd = JSON.parse(line) as { op: string; id?: string; content?: string; limits?: Parameters<typeof configureConversion>[0] | null };
       if (cmd.op === "note") {
         const n = fv.notes.get(cmd.id ?? "");
         process.stdout.write(JSON.stringify({ op: "note", note: n ?? null }) + "\n");
@@ -98,6 +100,11 @@ process.stdin.on("data", (chunk: string) => {
         const n = fv.notes.get(cmd.id ?? "");
         if (n) fv.put({ ...n, content: cmd.content ?? "", updatedAt: new Date().toISOString() });
         process.stdout.write(JSON.stringify({ op: "put", ok: !!n }) + "\n");
+      } else if (cmd.op === "limits") {
+        // Change the conversion limits (e.g. so nothing can be rendered for the vault: a page "too large to save"); null restores them.
+        restoreLimits?.();
+        restoreLimits = cmd.limits ? configureConversion(cmd.limits) : null;
+        process.stdout.write(JSON.stringify({ op: "limits", ok: true }) + "\n");
       } else if (cmd.op === "patches") {
         const calls = fv.calls.filter((c) => c.method === "PATCH" && c.path.includes(cmd.id ?? "")).length;
         process.stdout.write(JSON.stringify({ op: "patches", count: calls }) + "\n");

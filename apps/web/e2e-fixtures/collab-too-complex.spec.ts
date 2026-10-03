@@ -124,3 +124,35 @@ test("a live page whose content becomes too complex falls back to plain text and
   await expect(liveEditor(page).getByRole("heading", { name: "Purpose" })).toHaveCount(1);
   await expect(page.getByText("Update required")).toHaveCount(0);
 });
+
+test("a live page whose changes cannot be saved says so (never silently), still says so after a reload, and stops once it saves", async ({ page }) => {
+  test.setTimeout(120_000);
+  await connect(page, page.context(), server, "eve");
+  await page.goto("/e2e-fixtures/collab-route.html?target=plan");
+  await expect(liveEditor(page)).toBeVisible();
+  await expect(page.getByText(/Live · Editing/)).toBeVisible();
+  const notSaved = page.getByTestId("collab-not-saved");
+  await expect(notSaved).toHaveCount(0);
+  // From now on the server can render nothing for the vault: the page is "too large to save".
+  await server.limits({ inlineMaxNodes: 0, maxNodes: 1 });
+  try {
+    await liveEditor(page).click();
+    await page.keyboard.press("ControlOrMeta+End");
+    await page.keyboard.type(" Typed into a page too large to save.");
+    await expect(notSaved).toBeVisible({ timeout: 20_000 });
+    await expect(notSaved).toContainText("Not saved to the page");
+    expect((await server.note("plan"))!.content).not.toContain("too large to save");
+    // A reload: the typing opens with the page (it is kept on the server), and the tab is told again.
+    await reopen(page, "plan");
+    await expect(liveEditor(page)).toContainText("Typed into a page too large to save.", { timeout: 20_000 });
+    await expect(notSaved).toBeVisible({ timeout: 20_000 });
+  } finally {
+    await server.limits(null);
+  }
+  await liveEditor(page).click();
+  await page.keyboard.press("ControlOrMeta+End");
+  await page.keyboard.type(" Shorter now.");
+  await expect.poll(async () => (await server.note("plan"))!.content, { timeout: 20_000 }).toContain("Shorter now.");
+  expect((await server.note("plan"))!.content).toContain("too large to save");
+  await expect(notSaved).toHaveCount(0, { timeout: 20_000 });
+});

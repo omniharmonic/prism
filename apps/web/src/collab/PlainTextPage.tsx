@@ -88,6 +88,7 @@ export function PlainTextPage({ noteId, canEdit, embedded, onOpenLive }: { noteI
         <div role="status" style={{ marginTop: 12, padding: "10px 12px", borderRadius: "var(--radius-md)", border: "1px solid var(--border-subtle, #3334)", color: "var(--text-secondary)", fontSize: "var(--text-sm)", lineHeight: 1.55 }}>
           This page is too large or complex for the live editor, so it is shown as plain text. Nothing in it has been changed.
           {canEdit ? " You can edit it as plain text — shortening or splitting it brings the live editor back." : ""}
+          {note && isStoredHtml(note.content) ? " This page's stored format is HTML: the text is shown here, and the plain-text editor shows its HTML source." : ""}
         </div>
         <div style={{ display: "flex", gap: 8, marginTop: 12, flexWrap: "wrap" }}>
           {canEdit && note && !editing && (
