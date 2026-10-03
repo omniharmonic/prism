@@ -2,11 +2,13 @@
  * Content that cannot be converted in budget, end to end: real Hocuspocus over a
  * real WebSocket, the human command endpoint and the Prism MCP.
  *
- *  - Opening such a note stalls nothing (a timer keeps firing), shows its text
- *    read-only, and leaves the stored note byte-for-byte unchanged — whatever the
- *    client, a command or an agent then tries.
- *  - A tab still holding the plain-text copy after the note was fixed can never
- *    merge it into the healthy document (it is told to reload).
+ *  - Opening such a note stalls nothing (a timer keeps firing) and is refused
+ *    `too_complex`: no live document exists, NOTHING reaches the client's Y.Doc
+ *    (so nothing can be persisted in a browser and poison a later open), and the
+ *    stored note is byte-for-byte unchanged whatever a command or an agent tries.
+ *  - Once the note is fixed, the very same client document opens it live.
+ *  - A live document whose note becomes unconvertible is closed, never stored
+ *    over the note, and comes back when the note is fixed.
  *  - The MCP note resource converts in the worker, with the raw body as fallback.
  */
 import { COLLAB_SCHEMA_VERSION } from "@prism/core/editor-schema";
@@ -24,19 +26,15 @@ import { addGrant, ensureUser, getDocState } from "../src/db";
 import { issuePat } from "../src/auth/pat";
 import {
   attachCollab,
-  carriesDegradedSeed,
-  degradedDocJson,
   hocuspocus,
-  isDocDegraded,
+  isDocBlocked,
   isDocLive,
   reconcileLoadedDocs,
-  resetDegradedState,
+  resetConversionState,
   resetReconcileState,
-  yDocToDocJson,
   yDocToHtml,
 } from "../src/collab";
 import { configureConversion, forgetConversionFailures, stopConversionWorkers } from "../src/convert/service";
-import * as core from "../src/convert/core";
 import { installFakeVault, makeCapability, makeSession, resetDb, sessionCookie, type FakeVault } from "./helpers";
 
 const EDITOR = "editor@test.local";
@@ -44,6 +42,7 @@ const SUGGESTER = "suggester@test.local";
 const T0 = "2026-02-01T00:00:00.000Z";
 const T1 = "2026-02-02T00:00:00.000Z";
 const BOMB = "*a ".repeat(6000); // 18 KB the Markdown parser needs seconds for
+const QUOTE_BOMB = "> ".repeat(5000) + "x"; // refused by the pre-check (the parser overflows its stack on it)
 const DEEP_HTML = "<div>".repeat(6000) + "deep text" + "</div>".repeat(6000); // 66 KB the DOM walkers overflow on
 
 let fv: FakeVault;
@@ -66,7 +65,7 @@ const saved = { debounce: hocuspocus.configuration.debounce, maxDebounce: hocusp
 beforeEach(async () => {
   resetDb();
   resetReconcileState();
-  resetDegradedState();
+  resetConversionState();
   forgetConversionFailures();
   restoreLimits = configureConversion({ timeoutMs: 400, timeoutPerMbMs: 0, timeoutMaxMs: 400 });
   fv = installFakeVault();
@@ -121,7 +120,6 @@ const until = async (what: string, cond: () => boolean, ms = 15_000) => {
 const settle = (ms = 400) => new Promise((r) => setTimeout(r, ms));
 const editToken = () => makeCapability("tag", "garden", "edit");
 const vaultWrites = () => fv.calls.filter((c) => c.method !== "GET");
-const norm = (json: unknown) => JSON.stringify(core.schema.nodeFromJSON(json).toJSON());
 const live = (name: string) => hocuspocus.documents.get(name) as Y.Doc | undefined;
 const unloaded = (name: string) => until(`${name} unloads`, () => !hocuspocus.documents.has(name));
 
@@ -209,43 +207,38 @@ async function call(cl: Client, name: string, args: Record<string, unknown>): Pr
 
 // ── tests ───────────────────────────────────────────────────────────────────
 
+const tooComplex = (t: Tab) => t.refused.some((r) => r.startsWith("too_complex"));
+
 for (const [id, body] of [
   ["bomb", BOMB],
   ["deep", DEEP_HTML],
 ] as const) {
-  test(`live open of "${id}": the server stays responsive, the tab is read-only plain text, the note is never rewritten`, { timeout: 90_000 }, async () => {
+  test(`live open of "${id}": refused too_complex, the server stays responsive, NOTHING reaches the client document or any store`, { timeout: 90_000 }, async () => {
     const { value: tab, maxLagMs } = await lagDuring(async () => {
       const t = open(id, editToken());
-      // First contact loads the document; the server then makes the socket reconnect read-only.
-      await until("a read-only, synced socket", () => t.synced() && t.provider.authorizedScope === "readonly", 30_000);
+      await until("the socket is refused too_complex", () => tooComplex(t), 30_000);
       return t;
     });
     assert.ok(maxLagMs < LOOP_BUDGET_MS, `event loop stalled ${maxLagMs.toFixed(0)} ms while the note was opened`);
-    assert.equal(isDocDegraded(id), true);
-    assert.equal(isDocLive("primary", id), false, "not a live document for anyone deciding how to write the note");
-    assert.equal(carriesDegradedSeed(live(id)!), true);
-    await until("the client holds the text", () => norm(yDocToDocJson(tab.doc)) === norm(degradedDocJson(body)));
-
-    // The tab types anyway (a stale or hostile client): the server takes none of it.
-    const para = new Y.XmlElement("paragraph");
-    para.insert(0, [new Y.XmlText("typed into the plain-text view")]);
-    tab.doc.getXmlFragment("default").insert(0, [para]);
-    await settle(800); // well past the store debounce
-    assert.equal(norm(yDocToDocJson(live(id)!)), norm(degradedDocJson(body)), "the server document did not take the edit");
+    await settle(300);
+    // No live document, and not one Yjs item in the client's: nothing a browser
+    // could persist locally (IndexedDB) and bring back later.
+    assert.equal(hocuspocus.documents.has(id), false);
+    assert.equal(tab.doc.store.clients.size, 0, "the client's Y.Doc is empty");
+    assert.equal(tab.synced(), false);
+    assert.equal(isDocLive("primary", id), false);
+    assert.equal(getDocState(id), null, "no CRDT snapshot");
     assert.deepEqual(vaultWrites(), []);
-
-    // Closing unloads it — still nothing written, no CRDT snapshot of the degraded form.
-    close(tab);
-    await unloaded(id);
-    assert.deepEqual(vaultWrites(), []);
-    assert.equal(getDocState(id), null);
     assert.equal(fv.notes.get(id)!.content, body, "byte-for-byte the stored note");
+    close(tab);
   });
 }
 
-test("a degraded document takes no commands and no agent writes; reads fall back to the stored note", { timeout: 90_000 }, async () => {
+test("an unconvertible note takes no commands and no agent writes; once it is fixed the SAME client document opens it live", { timeout: 90_000 }, async () => {
   const tab = open("bomb", editToken());
-  await until("read-only", () => tab.synced() && tab.provider.authorizedScope === "readonly", 30_000);
+  await until("refused", () => tooComplex(tab), 30_000);
+  const kept = tab.doc; // what the browser would have kept (and persisted) of this attempt
+  close(tab);
 
   // The human command endpoint (a suggest-level person's only way to change a page).
   const res = await app.request("/api/collab/bomb/commands", {
@@ -256,57 +249,66 @@ test("a degraded document takes no commands and no agent writes; reads fall back
   assert.equal(res.status, 413);
   assert.equal(((await res.json()) as { error: string }).error, "document_too_large");
 
-  // The Prism MCP: comments / suggestions are refused, with or without the page open.
+  // The Prism MCP: comments / suggestions are refused; reads give the stored note.
   const ed = await connectMcp(EDITOR);
   const comment = await call(ed, "prism_add_comment", { id: "bomb", quote: "a", text: "hello" });
   assert.equal(comment.ok, false);
   assert.equal((comment as { error: string }).error, "invalid_request");
   const got = await call(ed, "prism_get_note", { id: "bomb" });
   assert.equal(got.ok && got.data.collab.live, false);
-  assert.equal(got.ok && got.data.content, BOMB, "an agent reads the stored note, never the plain-text view");
+  assert.equal(got.ok && got.data.content, BOMB);
   assert.deepEqual(vaultWrites(), []);
   assert.equal(fv.notes.get("bomb")!.content, BOMB);
+  assert.equal(hocuspocus.documents.has("bomb"), false);
 
-  // An agent FIXES the note: an ordinary REST write (the degraded document is not "live").
+  // The plain REST path works on such a note (the stored content is intact): an agent — or the
+  // client's plain-text editor — FIXES it with an ordinary compare-and-set write.
   const fixed = await call(ed, "prism_update_note", { id: "bomb", content: "now *fine*", if_updated_at: T0 });
   assert.equal(fixed.ok, true, JSON.stringify(fixed));
   assert.equal(fv.notes.get("bomb")!.content, "now *fine*");
-  // The reconciler drops the plain-text readers; the page reopens as a normal document.
-  await reconcileLoadedDocs(hocuspocus as never);
-  close(tab);
-  await unloaded("bomb");
-  const fresh = open("bomb", editToken());
-  await until("a writable, synced socket", () => fresh.synced() && fresh.provider.authorizedScope === "read-write" && !isDocDegraded("bomb"), 30_000);
+
+  // The same client document (same Y.Doc, as after a reload from its local store) opens it live.
+  const again = open("bomb", editToken(), kept);
+  await until("a writable, synced socket", () => again.synced() && again.provider.authorizedScope === "read-write", 30_000);
+  assert.deepEqual(again.refused, [], "never refused, never told to reload");
   assert.equal(yDocToHtml(live("bomb")!), "<p>now <em>fine</em></p>");
-  assert.equal(carriesDegradedSeed(live("bomb")!), false);
+  await until("the client holds the document", () => yDocToHtml(again.doc) === "<p>now <em>fine</em></p>");
+  // And it can edit: the change reaches the server document and the note.
+  const para = new Y.XmlElement("paragraph");
+  para.insert(0, [new Y.XmlText("typed after the fix")]);
+  again.doc.getXmlFragment("default").insert(1, [para]);
+  await until("the edit is stored", () => fv.notes.get("bomb")!.content === "<p>now <em>fine</em></p><p>typed after the fix</p>");
   await ed.close();
 });
 
-test("a tab that kept the plain-text copy cannot merge it into the fixed document: refused at sync, told to reload", { timeout: 90_000 }, async () => {
-  const stale = open("bomb", editToken());
-  await until("read-only", () => stale.synced() && stale.provider.authorizedScope === "readonly", 30_000);
-  await until("the stale tab holds the plain text", () => carriesDegradedSeed(stale.doc));
-  const kept = stale.doc; // the browser's Y.Doc outlives its socket
-  close(stale);
-  await unloaded("bomb");
+test("a LIVE document whose note becomes unconvertible is closed (never stored over the note) and comes back when the note is fixed", { timeout: 90_000 }, async () => {
+  const tab = open("ok", editToken());
+  await until("live", () => tab.synced() && isDocLive("primary", "ok"));
+  // Unsaved typing in the live document…
+  const para = new Y.XmlElement("paragraph");
+  para.insert(0, [new Y.XmlText("unsaved typing")]);
+  tab.doc.getXmlFragment("default").insert(2, [para]);
+  await until("the server document has it", () => /unsaved typing/.test(yDocToHtml(live("ok")!)));
+  // …while the note is replaced, elsewhere, by something no parser can take.
+  fv.put({ id: "ok", tags: ["garden"], content: QUOTE_BOMB, updatedAt: T1 });
+  const writesBefore = vaultWrites().length;
+  await reconcileLoadedDocs(hocuspocus as never);
+  assert.equal(isDocBlocked("ok"), true);
+  assert.equal(isDocLive("primary", "ok"), false);
+  await until("the tab is refused too_complex", () => tooComplex(tab), 30_000);
+  await until("the document unloads", () => !hocuspocus.documents.has("ok"));
+  assert.equal(vaultWrites().length, writesBefore, "the unload did not write the live state over the note");
+  assert.equal(fv.notes.get("ok")!.content, QUOTE_BOMB, "the external edit is intact");
+  assert.equal(isDocBlocked("ok"), false, "the flag goes with the document");
 
-  // The note is fixed elsewhere; someone opens and edits the healthy document.
-  fv.put({ id: "bomb", tags: ["garden"], content: "<p>healthy body</p>", updatedAt: T1 });
-  const good = open("bomb", editToken());
-  await until("healthy", () => good.synced() && good.provider.authorizedScope === "read-write" && !isDocDegraded("bomb"), 30_000);
-  assert.equal(yDocToHtml(live("bomb")!), "<p>healthy body</p>");
-
-  // The stale tab comes back with its old Y.Doc and (now) full edit rights.
-  const back = open("bomb", editToken(), kept);
-  await until("the stale tab is told to reload", () => back.refused.some((r) => r.startsWith("update_required")), 30_000);
-  await settle(600);
-  const serverDoc = live("bomb")!;
-  assert.equal(carriesDegradedSeed(serverDoc), false, "no plain-text seed item reached the healthy document");
-  assert.equal(yDocToHtml(serverDoc), "<p>healthy body</p>");
-  close(back);
-  close(good);
-  await unloaded("bomb");
-  assert.equal(fv.notes.get("bomb")!.content, "<p>healthy body</p>", "the note was not rewritten with a duplicated plain-text copy");
+  // Fixed: the same tab (it still holds the old document) reconnects and converges on the new note.
+  fv.put({ id: "ok", tags: ["garden"], content: "<p>rewritten</p>", updatedAt: "2026-02-03T00:00:00.000Z" });
+  const kept = tab.doc; // as after a reload: the browser's local copy of the OLD document
+  close(tab);
+  const back = open("ok", editToken(), kept);
+  await until("live again", () => back.synced() && back.provider.authorizedScope === "read-write", 30_000);
+  await until("converged", () => yDocToHtml(back.doc) === "<p>rewritten</p>" && yDocToHtml(live("ok")!) === "<p>rewritten</p>");
+  assert.deepEqual(back.refused, []);
 });
 
 test("an agent's update with unconvertible content never reaches a live document, and stalls nothing", { timeout: 90_000 }, async () => {
@@ -319,7 +321,7 @@ test("an agent's update with unconvertible content never reaches a live document
   assert.equal((r as { error: string }).error, "invalid_request");
   assert.equal(yDocToHtml(live("ok")!), "<p>alpha</p><p>beta</p>");
   assert.equal(fv.notes.get("ok")!.content, "<p>alpha</p><p>beta</p>");
-  assert.equal(isDocDegraded("ok"), false);
+  assert.equal(isDocBlocked("ok"), false);
   await ed.close();
 });
 

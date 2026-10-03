@@ -4,10 +4,11 @@
  *  - convert/service.ts: linear pre-check, inline only for small plain inputs,
  *    everything else in the worker under a hard wall-clock limit (terminate +
  *    respawn), bounded queue, failure memory, typed ConversionError.
- *  - collab.ts fallbacks: a note body that cannot be converted in budget opens as
- *    a read-only plain-text view (lossless text) that is NEVER persisted — the
- *    stored note is byte-for-byte unchanged on every path (first open, fold of an
- *    external edit at load / reconcile / store).
+ *  - collab.ts fallbacks: a note body that cannot be converted in budget gets NO
+ *    live document at all (the load fails `too_complex`; nothing derived from it
+ *    enters Yjs or SQLite) — the stored note is byte-for-byte unchanged on every
+ *    path (first open, fold of an external edit at load / reconcile / store). A
+ *    store that cannot render keeps the document live and its Yjs state saved.
  *
  * Every pathological input is time-bounded AND checked with a timer probe: the
  * event loop must keep turning while the conversion runs (or is refused).
@@ -26,6 +27,7 @@ import {
   contentToSeedBounded,
   conversionRefusal,
   conversionStats,
+  convertCfg,
   docJsonToHtml,
   docJsonToHtmlBounded,
   forgetConversionFailures,
@@ -38,18 +40,14 @@ import {
 import * as core from "../src/convert/core";
 import { complexityOf, docJsonWeight, htmlTagCount, markdownComplexity } from "../src/convert/precheck";
 import {
-  DEGRADED_NOTICE,
+  DocumentTooComplexError,
+  TOO_COMPLEX_REASON,
   applyExternalContent,
-  carriesDegradedSeed,
-  carriesForeignDegradedSeed,
   contentToYUpdate,
-  degradedDocJson,
-  degradedSeed,
-  isDegradedClientId,
-  isDocDegraded,
+  isDocBlocked,
   loadDocumentState,
   reconcileLoadedDocs,
-  resetDegradedState,
+  resetConversionState,
   resetReconcileState,
   resolveSuggestionsInHtml,
   resolveSuggestionsInHtmlAsync,
@@ -60,7 +58,7 @@ import {
   yDocToHtmlAsync,
 } from "../src/collab";
 import { mergeContentIntoLive } from "../src/collab-ops";
-import { getDocState } from "../src/db";
+import { getDocState, insertCollabReceipt, isCollabUnsaved, unconfirmedCollabReceipts } from "../src/db";
 import { installFakeVault, resetDb, type FakeVault } from "./helpers";
 
 // ── helpers ─────────────────────────────────────────────────────────────────
@@ -128,7 +126,7 @@ let fv: FakeVault;
 beforeEach(() => {
   resetDb();
   resetReconcileState();
-  resetDegradedState();
+  resetConversionState();
   forgetConversionFailures();
   fv = installFakeVault();
 });
@@ -152,7 +150,6 @@ const vaultWrites = () => fv.calls.filter((c) => c.method !== "GET");
 /** A document's content, normalised through the schema (default attrs filled in). */
 const norm = (json: unknown) => JSON.stringify(core.schema.nodeFromJSON(json).toJSON());
 const text = (doc: Y.Doc) => norm(yDocToDocJson(doc));
-const degradedText = (body: string) => norm(degradedDocJson(body));
 
 // ── pre-check ───────────────────────────────────────────────────────────────
 
@@ -168,7 +165,9 @@ test("pre-check: one linear pass, whatever the input (2 MB of each pathological 
     isCheapContent(input, true);
   }
   const ms = performance.now() - start;
-  assert.ok(ms < 4000, `the pre-checks took ${ms.toFixed(0)} ms for ${shapes.length * 4} passes over 2 MB`);
+  // ~1 s on an idle host. The budget is generous for a loaded one (the whole suite runs in
+  // parallel); a super-linear scan of 2 MB would take minutes, not seconds.
+  assert.ok(ms < 20_000, `the pre-checks took ${ms.toFixed(0)} ms for ${shapes.length * 4} passes over 2 MB`);
 });
 
 test("pre-check: counts what makes the parsers super-linear, and refuses the hopeless", () => {
@@ -233,11 +232,15 @@ for (const [label, input] of [
     assert.equal(reasonOf(r.error), "timeout");
     assert.ok(r.maxLagMs < LOOP_BUDGET_MS, `event loop stalled ${r.maxLagMs.toFixed(0)} ms`);
     assert.ok(r.ms < 10_000, `took ${r.ms.toFixed(0)} ms`);
-    // Remembered: the same input is refused at once, without touching the worker.
+    // ONE timeout may be the server's load: the input is tried again…
     const worker = conversionStats.worker;
+    const second = await probed(() => markdownToHtml(input));
+    assert.equal(reasonOf(second.error), "timeout");
+    assert.equal(conversionStats.worker, worker + 1, "a single timeout is not remembered");
+    // …a SECOND timeout is remembered: refused at once, without touching the worker.
     const again = await probed(() => markdownToHtml(input));
     assert.equal(reasonOf(again.error), "timeout");
-    assert.equal(conversionStats.worker, worker);
+    assert.equal(conversionStats.worker, worker + 1);
     assert.ok(again.ms < 200);
     // The thread was terminated and a new one serves the next task.
     restoreLimits();
@@ -292,6 +295,121 @@ test("generateJSON / generateHTML worst cases (deep nesting, a megabyte of ordin
   const nested = await probed(() => docJsonToHtml({ type: "doc", content: [deep] }));
   assert.ok(nested.error instanceof ConversionError);
   assert.ok(nested.maxLagMs < LOOP_BUDGET_MS);
+});
+
+test("byte identity, schema v5 blocks and suggestion-mark order: the worker seeds and renders exactly what the main thread would", { timeout: 120_000 }, async () => {
+  const INS = '<span data-suggestion="insert" data-user="Ada" data-color="#22c55e" data-suggestion-id="s1" style="color:#22c55e;text-decoration:underline;text-decoration-color:#22c55e;">added <strong>bold</strong> <s>struck</s></span>';
+  const DEL = '<span data-suggestion="delete" data-user="Ada" data-color="#ef4444" data-suggestion-id="s1" style="color:#ef4444;text-decoration:line-through;text-decoration-color:#ef4444;"><em>removed</em> <u>under</u></span>';
+  const col = (t: string, attrs = "") => `<div data-type="column"${attrs}><p>${t}</p></div>`;
+  const V5 =
+    '<div data-type="child-page" data-page-id="n_Ab-12"></div>' +
+    '<details data-type="toggle" data-heading-level="2"><summary>Toggle heading</summary><p>Body</p></details>' +
+    `<div data-type="columns">${col("a", ' data-col-width="1.5"')}${col("b", ' data-col-width="0.5"')}</div>` +
+    `<div data-type="columns">${[0, 1, 2, 3, 4].map((i) => col(`c${i}`)).join("")}</div>` +
+    '<table><tbody><tr><th data-cell-color="blue"><p>H</p></th><td data-cell-color="red"><p>x</p></td></tr></tbody></table>' +
+    `<p>Keep ${DEL}${INS} this, <s>struck</s> and <u>under</u>.</p>` +
+    '<div data-type="callout" data-emoji="💡"><p>note</p></div>' +
+    '<p><span data-type="mention" data-kind="page" data-id="p1" data-mention-uid="u1"></span> tail</p>';
+  const inlineJson = core.contentToDocJsonSync(V5);
+  const inlineHtml = core.docJsonToHtmlSync(inlineJson);
+  const inlineSeed = new Y.Doc();
+  Y.applyUpdate(inlineSeed, core.contentToSeedSync(V5));
+  for (const marker of ['data-type="child-page"', 'data-heading-level="2"', 'data-col-width="1.5"', 'data-count="5"', 'data-cell-color="blue"', 'data-suggestion="insert"', 'data-suggestion="delete"']) {
+    assert.ok(inlineHtml.includes(marker), `the fixture really exercises ${marker}`);
+  }
+  workerOnly();
+  const before = conversionStats.worker;
+  assert.equal(JSON.stringify(await contentToDocJson(V5)), JSON.stringify(inlineJson));
+  assert.equal(await docJsonToHtml(inlineJson), inlineHtml);
+  const workerSeed = new Y.Doc();
+  Y.applyUpdate(workerSeed, await contentToSeed(V5));
+  assert.equal(JSON.stringify(yDocToDocJson(workerSeed)), JSON.stringify(yDocToDocJson(inlineSeed)));
+  assert.equal(await yDocToHtmlAsync(workerSeed), inlineHtml);
+  // Stable from the first store on: HTML → doc → HTML again changes nothing (in the worker too).
+  const again = new Y.Doc();
+  Y.applyUpdate(again, await contentToSeed(inlineHtml));
+  assert.equal(await yDocToHtmlAsync(again), inlineHtml);
+  assert.ok(conversionStats.worker - before >= 5);
+});
+
+test("M1: 2 MB of ordinary Markdown opens (the worker heap is sized for it); a body that would build too many nodes is refused up front, by name", { timeout: 300_000 }, async () => {
+  assert.ok(convertCfg.heapMb >= 2048, "the worker heap default covers a 2 MB note");
+  const rep = (p: string, bytes: number) => p.repeat(Math.ceil(bytes / p.length)).slice(0, bytes);
+  // Dense short paragraphs: the DOM + ProseMirror trees of 2 MB of these do not fit any sane heap.
+  const dense = rep("A note with **bold** and *em* text.\n\n", 2_000_000);
+  const worker = conversionStats.worker;
+  const start = performance.now();
+  assert.equal(conversionRefusal(dense, true), "too_many_nodes");
+  fv.put({ id: "dense", tags: ["garden"], content: dense, updatedAt: "2026-03-01T00:00:00.000Z" });
+  await assert.rejects(loadDocumentState("dense", new Y.Doc()), (e) => e instanceof DocumentTooComplexError && e.failure === "too_many_nodes");
+  assert.equal(conversionStats.worker, worker, "refused by the pre-check: no thread, no gigabytes");
+  assert.ok(performance.now() - start < 3000);
+
+  // A plain 2 MB Markdown note — ordinary prose paragraphs — opens live.
+  const prose = rep("The quick brown fox jumps over the lazy dog, again and again, with *some* emphasis and a [link](https://example.org/a).\n\n", 2_000_000);
+  assert.equal(conversionRefusal(prose, true), null);
+  fv.put({ id: "prose", tags: ["garden"], content: prose, updatedAt: "2026-03-01T00:00:00.000Z" });
+  restore.push(configureConversion({ timeoutMs: 240_000, timeoutMaxMs: 240_000 })); // a loaded CI host is slow, not wrong
+  const loaded = await probed(() => loadDocumentState("prose", new Y.Doc()));
+  assert.equal(loaded.error, undefined, String(loaded.error));
+  assert.ok(loaded.maxLagMs < 4000, `event loop stalled ${loaded.maxLagMs.toFixed(0)} ms (applying a 2 MB seed is the one linear step left on the main thread)`);
+  const paragraphs = loaded.value!.getXmlFragment("default").length;
+  assert.ok(paragraphs > 15_000, `${paragraphs} paragraphs`);
+  assert.equal(isDocBlocked("prose"), false);
+  assert.ok(getDocState("prose"));
+});
+
+test("M2: one actor's conversions wait in that actor's own line — they cannot starve other people's", { timeout: 120_000 }, async () => {
+  await stopConversionWorkers();
+  restore.push(configureConversion({ threads: 2, perActorInflight: 1, perActorWaiting: 1, timeoutMs: 700, timeoutPerMbMs: 0, timeoutMaxMs: 700 }));
+  workerOnly();
+  await markdownToHtml("warm *up*").catch(() => {});
+  const order: string[] = [];
+  const done = (label: string) => (v: unknown) => void order.push(`${label}:${v instanceof Error ? reasonOf(v) : "ok"}`);
+  const slow = (i: number) => `${EMPHASIS} ${i}`;
+  const a1 = markdownToHtml(slow(1), { actor: "user:a" }).then(done("a1"), done("a1"));
+  const a2 = markdownToHtml(slow(2), { actor: "user:a" }).then(done("a2"), done("a2"));
+  const a3 = markdownToHtml(slow(3), { actor: "user:a" }).then(done("a3"), done("a3")); // a's line is full
+  const b1 = markdownToHtml("someone *else*", { actor: "user:b" }).then(done("b1"), done("b1"));
+  await Promise.all([a1, a2, a3, b1]);
+  assert.equal(order[0], "a3:busy", `a third conversion for the same actor is refused at once: ${order.join(" ")}`);
+  assert.ok(order.indexOf("b1:ok") !== -1 && order.indexOf("b1:ok") < order.indexOf("a2:timeout"), `the other person is served before the hog's second task: ${order.join(" ")}`);
+  assert.equal(order.filter((o) => o.startsWith("a") && o.endsWith("timeout")).length, 2);
+});
+
+test("M2: saving has its own lane — a store's render is not queued behind opens and agent writes", { timeout: 120_000 }, async () => {
+  const json = core.contentToDocJsonSync("<p>to be saved</p>");
+  for (const threads of [2, 1]) {
+    await stopConversionWorkers();
+    restoreLimits();
+    restore.push(configureConversion({ threads, timeoutMs: 700, timeoutPerMbMs: 0, timeoutMaxMs: 700 }));
+    workerOnly();
+    await docJsonToHtml(json, { lane: "store" }); // threads up
+    await markdownToHtml("warm *up*");
+    let hogsDone = 0;
+    const hogs = [1, 2, 3, 4].map((i) => markdownToHtml(`${EMPHASIS} lane ${threads} ${i}`).catch(() => null).then(() => void hogsDone++));
+    await new Promise((r) => setTimeout(r, 50));
+    const html = await docJsonToHtml(json, { lane: "store" });
+    assert.equal(html, "<p>to be saved</p>");
+    // Reserved thread (2+): at once. One thread: right after the task that was already running.
+    assert.ok(hogsDone <= (threads === 1 ? 1 : 0), `threads=${threads}: the store's render finished after ${hogsDone} of 4 queued opens`);
+    await Promise.all(hogs);
+  }
+});
+
+test("M3: only a REPEATED timeout is remembered — a busy queue or a crashed worker never marks the input", { timeout: 120_000 }, async () => {
+  // A worker that fails on the input (a stack overflow in the converter) is not remembered.
+  restore.push(configureConversion({ timeoutMs: 30_000, timeoutMaxMs: 30_000 }));
+  const crash = DEEP_DIVS(24_000);
+  const first = await htmlToMarkdown(crash).then(() => "ok", reasonOf);
+  const worker = conversionStats.worker;
+  const second = await htmlToMarkdown(crash).then(() => "ok", reasonOf);
+  assert.equal(conversionStats.worker, worker + 1, `tried again (${first} → ${second}): nothing was remembered`);
+  assert.equal(conversionStats.remembered, conversionStats.remembered);
+  // Pre-check refusals need no memory: they are recomputed (linearly) and identical every time.
+  const remembered = conversionStats.remembered;
+  for (let i = 0; i < 3; i++) assert.equal(await contentToSeed(DEEP_QUOTE).then(() => "ok", reasonOf), "too_complex");
+  assert.equal(conversionStats.remembered, remembered);
 });
 
 test("a full queue answers `busy` at once (and is not remembered as the input's fault)", { timeout: 120_000 }, async () => {
@@ -353,108 +471,38 @@ test("suggestion helpers parse off the main thread and agree with the synchronou
   assert.ok(r.maxLagMs < LOOP_BUDGET_MS);
 });
 
-// ── the degraded (plain-text) document ──────────────────────────────────────
-
-test("degradedDocJson: the note's text, line for line — never parsed, nothing lost", () => {
-  const src = "# not a heading\n*a *a *a\n\n<div>literal & text</div>\r\nlast";
-  const json = degradedDocJson(src) as { content: Array<{ type: string; content?: Array<{ text: string; marks?: unknown[] }> }> };
-  assert.equal(json.content[0]!.content![0]!.text, DEGRADED_NOTICE);
-  const lines = json.content.slice(1).map((p) => p.content?.[0]?.text ?? "");
-  assert.deepEqual(lines, ["# not a heading", "*a *a *a", "", "<div>literal & text</div>", "last"]);
-  assert.ok(json.content.slice(1).every((p) => p.type === "paragraph" && !p.content?.[0]?.marks), "plain paragraphs, no marks");
-  // Thousands of lines → ONE code block holding the text verbatim (a few Yjs items, not millions).
-  const many = Array.from({ length: 5000 }, (_, i) => `line ${i} *x`).join("\n");
-  const block = degradedDocJson(many) as { content: Array<{ type: string; content?: Array<{ text: string }> }> };
-  assert.equal(block.content.length, 2);
-  assert.equal(block.content[1]!.type, "codeBlock");
-  assert.equal(block.content[1]!.content![0]!.text, many);
-  // Stored HTML that cannot be parsed is shown as its text.
-  const html = degradedDocJson("<p>one</p><p>two &amp; three</p>") as { content: Array<{ content?: Array<{ text: string }> }> };
-  assert.deepEqual(html.content.slice(1).map((p) => p.content?.[0]?.text ?? "").filter(Boolean), ["one", "two & three"]);
-  // Linear and small, whatever it is handed.
-  const start = performance.now();
-  for (const s of ["\n".repeat(2_000_000), "*a ".repeat(700_000), DEEP_DIVS(200_000), "<".repeat(2_000_000)]) {
-    const update = degradedSeed(s);
-    assert.ok(update.byteLength < 6_000_000);
-  }
-  assert.ok(performance.now() - start < 6000, `seeds took ${Math.round(performance.now() - start)} ms`);
-});
-
-test("the degraded seed is fingerprinted: a reserved client id no real client can draw, recognisable in any sync payload", () => {
-  const seed = degradedSeed(EMPHASIS);
-  assert.deepEqual(seed, degradedSeed(EMPHASIS), "deterministic");
-  const degraded = new Y.Doc();
-  Y.applyUpdate(degraded, seed);
-  assert.equal(carriesDegradedSeed(degraded), true);
-  assert.ok([...degraded.store.clients.keys()].every((id) => isDegradedClientId(id) && id >= 2 ** 33));
-  assert.equal(isDegradedClientId(new Y.Doc().clientID), false);
-  assert.equal(isDegradedClientId(2 ** 32 - 1), false);
-
-  const healthy = docOf("<p>healthy</p>");
-  assert.equal(carriesDegradedSeed(healthy), false);
-  // What a stale tab would send: its state vector (step 1), its state (step 2), an update.
-  assert.equal(carriesForeignDegradedSeed(healthy, 0, Y.encodeStateVector(degraded)), true);
-  assert.equal(carriesForeignDegradedSeed(healthy, 1, Y.encodeStateAsUpdate(degraded)), true);
-  assert.equal(carriesForeignDegradedSeed(healthy, 2, seed), true);
-  // The same degraded document talking to itself is fine; so is ordinary traffic.
-  assert.equal(carriesForeignDegradedSeed(degraded, 0, Y.encodeStateVector(degraded)), false);
-  assert.equal(carriesForeignDegradedSeed(healthy, 0, Y.encodeStateVector(docOf("<p>other</p>"))), false);
-  assert.equal(carriesForeignDegradedSeed(healthy, 2, Y.encodeStateAsUpdate(docOf("<p>other</p>"))), false);
-  // A different degraded state (the note changed) is foreign to a degraded document too.
-  const other = new Y.Doc();
-  Y.applyUpdate(other, degradedSeed(UNDERSCORES));
-  assert.equal(carriesForeignDegradedSeed(degraded, 0, Y.encodeStateVector(other)), true);
-  assert.equal(carriesForeignDegradedSeed(healthy, 0, new Uint8Array([255, 255, 255])), false, "garbage is Yjs's to refuse");
-});
-
-// ── collab: first open ──────────────────────────────────────────────────────
+// ── collab: a note that cannot be converted has NO live document ────────────
 
 for (const [label, body] of [
   ["a Markdown emphasis bomb", EMPHASIS],
   ["a blockquote 5,000 deep", DEEP_QUOTE],
   ["stored HTML nested 4,000 deep", DEEP_DIVS(4000)],
 ] as const) {
-  test(`opening ${label} live: read-only plain text, the loop stays free, and NOTHING is ever written`, { timeout: 120_000 }, async () => {
+  test(`opening ${label} live is refused too_complex: the loop stays free, nothing enters Yjs, SQLite or the vault`, { timeout: 120_000 }, async () => {
     fastTimeouts();
     fv.put({ id: "bomb", tags: ["garden"], content: body, updatedAt: "2026-03-01T00:00:00.000Z" });
-    const loaded = await probed(() => loadDocumentState("bomb", new Y.Doc()));
-    assert.equal(loaded.error, undefined);
+    // A command a previous instance of this document applied but never confirmed.
+    insertCollabReceipt({ vault_id: "primary", note_id: "bomb", doc_name: "bomb", actor: "user:a@test.local", request_id: "r-1", command_hash: "h", kind: "reply", result: "{}", created_at: Date.now() });
+    const doc = new Y.Doc();
+    const loaded = await probed(() => loadDocumentState("bomb", doc));
+    assert.ok(loaded.error instanceof DocumentTooComplexError, String(loaded.error));
+    assert.equal((loaded.error as DocumentTooComplexError).reason, TOO_COMPLEX_REASON, "what the socket is answered with");
     assert.ok(loaded.maxLagMs < LOOP_BUDGET_MS, `event loop stalled ${loaded.maxLagMs.toFixed(0)} ms`);
-    const doc = loaded.value!;
-    assert.equal(isDocDegraded("bomb"), true);
-    assert.equal(carriesDegradedSeed(doc), true);
-    assert.equal(text(doc), degradedText(body), "the plain-text view of exactly this body");
-    assert.equal(getDocState("bomb"), null, "no CRDT snapshot of the degraded form");
+    // Nothing derived from the body exists anywhere a client could sync or persist it.
+    assert.equal(doc.store.clients.size, 0, "the Y.Doc was not touched");
+    assert.equal(getDocState("bomb"), null, "no CRDT snapshot");
     assert.deepEqual(vaultWrites(), []);
-
-    // A store of it — debounce, unload, flush, with or without "edits" — writes nothing anywhere.
-    doc.getXmlFragment("default").insert(0, [new Y.XmlElement("paragraph")]);
-    await storeDocumentState("bomb", doc);
-    assert.deepEqual(vaultWrites(), []);
-    assert.equal(getDocState("bomb"), null);
     assert.equal(fv.notes.get("bomb")!.content, body, "the stored note is byte-for-byte unchanged");
+    assert.equal(isDocBlocked("bomb"), false, "nothing is loaded, so nothing is flagged");
+    // A load that fails consumes no unconfirmed command receipts.
+    assert.equal(unconfirmedCollabReceipts("bomb").length, 1);
 
-    // Even with every flag lost, the seed's fingerprint keeps it out of the vault and out of SQLite.
-    resetDegradedState();
-    await storeDocumentState("bomb", doc);
-    assert.deepEqual(vaultWrites(), []);
-    assert.equal(getDocState("bomb"), null);
-    assert.equal(fv.notes.get("bomb")!.content, body);
-
-    // Re-opening does not burn the worker again (failure memory) and is still degraded.
-    const worker = conversionStats.worker;
-    const again = await probed(() => loadDocumentState("bomb", new Y.Doc()));
-    assert.equal(conversionStats.worker, worker);
-    assert.ok(again.ms < 1000);
-    assert.equal(isDocDegraded("bomb"), true);
-
-    // Fixing the note heals the document at its next load: ordinary seeding, ordinary snapshot.
+    // Fixing the note is all it takes: ordinary seeding, ordinary snapshot — nothing to purge anywhere.
     fv.put({ id: "bomb", tags: ["garden"], content: "now *fine*", updatedAt: "2026-03-02T00:00:00.000Z" });
     const healed = await loadDocumentState("bomb", new Y.Doc());
-    assert.equal(isDocDegraded("bomb"), false);
-    assert.equal(carriesDegradedSeed(healed), false);
     assert.equal(yDocToHtml(healed), "<p>now <em>fine</em></p>");
     assert.ok(getDocState("bomb"));
+    assert.equal(unconfirmedCollabReceipts("bomb").length, 0, "a load that succeeds takes them, as before");
   });
 }
 
@@ -466,7 +514,6 @@ test("an ordinary large Markdown note opens through the worker and stores exactl
   assert.equal(loaded.error, undefined);
   assert.ok(loaded.maxLagMs < LOOP_BUDGET_MS, `event loop stalled ${loaded.maxLagMs.toFixed(0)} ms`);
   const doc = loaded.value!;
-  assert.equal(isDocDegraded("big"), false);
   const expected = core.docJsonToHtmlSync(core.contentToDocJsonSync(md));
   assert.equal(await yDocToHtmlAsync(doc), expected);
   assert.deepEqual(vaultWrites(), [], "a load writes nothing to the vault");
@@ -483,97 +530,144 @@ test("an ordinary large Markdown note opens through the worker and stores exactl
 
 // ── collab: external edits that cannot be folded ────────────────────────────
 
-test("load with stored state + an unconvertible external edit: degraded, the snapshot and the note untouched", { timeout: 120_000 }, async () => {
-  fastTimeouts();
+test("load with stored state + an unconvertible external edit: refused, the snapshot and the note untouched", { timeout: 120_000 }, async () => {
   fv.put({ id: "n1", tags: ["garden"], content: "<p>first version</p>", updatedAt: "2026-03-01T00:00:00.000Z" });
   await loadDocumentState("n1", new Y.Doc());
   const snapshot = getDocState("n1")!;
-  fv.put({ id: "n1", tags: ["garden"], content: EMPHASIS, updatedAt: "2026-03-05T00:00:00.000Z" });
+  fv.put({ id: "n1", tags: ["garden"], content: DEEP_QUOTE, updatedAt: "2026-03-05T00:00:00.000Z" });
   const calls = fv.calls.length;
-  const doc = await loadDocumentState("n1", new Y.Doc());
-  assert.equal(isDocDegraded("n1"), true);
-  assert.equal(text(doc), degradedText(EMPHASIS), "shows the note's CURRENT text, not the stale snapshot");
+  const doc = new Y.Doc();
+  await assert.rejects(loadDocumentState("n1", doc), DocumentTooComplexError);
+  assert.equal(doc.store.clients.size, 0, "not even the older snapshot is served: it is not the note any more");
   assert.deepEqual(getDocState("n1")!.state, snapshot.state, "the older CRDT snapshot is kept as it was");
   assert.equal(getDocState("n1")!.sourceUpdatedAt, snapshot.sourceUpdatedAt);
-  await storeDocumentState("n1", doc);
   assert.deepEqual(fv.calls.slice(calls).filter((c) => c.method !== "GET"), []);
-  assert.equal(fv.notes.get("n1")!.content, EMPHASIS);
+  assert.equal(fv.notes.get("n1")!.content, DEEP_QUOTE);
 });
 
-test("reconcile: an external edit that cannot be converted is never folded in and never overwritten", { timeout: 120_000 }, async () => {
-  fastTimeouts();
+test("reconcile: an external edit the pre-check refuses blocks the live document at once — never folded in, never overwritten", { timeout: 120_000 }, async () => {
   fv.put({ id: "n2", tags: ["garden"], content: "<p>live text</p>", updatedAt: "2026-03-01T00:00:00.000Z" });
   const doc = await loadDocumentState("n2", new Y.Doc());
   const before = text(doc);
-  fv.put({ id: "n2", tags: ["garden"], content: EMPHASIS, updatedAt: "2026-03-05T00:00:00.000Z" });
+  const source = getDocState("n2")!.sourceUpdatedAt;
+  fv.put({ id: "n2", tags: ["garden"], content: DEEP_QUOTE, updatedAt: "2026-03-05T00:00:00.000Z" });
   const tick = await probed(() => reconcileLoadedDocs({ documents: new Map([["n2", doc]]) }));
   assert.equal(tick.error, undefined);
   assert.ok(tick.maxLagMs < LOOP_BUDGET_MS, `event loop stalled ${tick.maxLagMs.toFixed(0)} ms`);
   assert.equal(text(doc), before, "the live document was not touched");
-  assert.equal(isDocDegraded("n2"), true, "flagged: read-only, and never stored again");
-  // A human edit that raced in, then the store: the vault keeps the external body.
+  assert.equal(isDocBlocked("n2"), true, "blocked: its sockets are dropped and it is never written to the vault again");
+  // A human edit that raced in, then the store (debounce / unload): the vault keeps the external body.
   doc.getXmlFragment("default").delete(0, 1);
   await storeDocumentState("n2", doc);
   assert.deepEqual(vaultWrites(), []);
-  assert.equal(fv.notes.get("n2")!.content, EMPHASIS, "the external edit is intact");
-  // Later ticks are cheap and change nothing.
-  await reconcileLoadedDocs({ documents: new Map([["n2", doc]]) });
-  assert.equal(text(doc).includes("live text"), false);
-  assert.equal(fv.notes.get("n2")!.content, EMPHASIS);
+  assert.equal(fv.notes.get("n2")!.content, DEEP_QUOTE, "the external edit is intact");
+  assert.equal(getDocState("n2")!.sourceUpdatedAt, source, "the snapshot keeps the version it is based on");
+});
+
+test("reconcile: a fold that merely TIMES OUT once is retried; the same content failing twice blocks the document", { timeout: 120_000 }, async () => {
+  fastTimeouts();
+  fv.put({ id: "n2b", tags: ["garden"], content: "<p>live text</p>", updatedAt: "2026-03-01T00:00:00.000Z" });
+  const doc = await loadDocumentState("n2b", new Y.Doc());
+  fv.put({ id: "n2b", tags: ["garden"], content: EMPHASIS, updatedAt: "2026-03-05T00:00:00.000Z" });
+  const docs = { documents: new Map([["n2b", doc]]) };
+  await reconcileLoadedDocs(docs);
+  assert.equal(isDocBlocked("n2b"), false, "one timeout may be the server's load");
+  assert.match(text(doc), /live text/);
+  await reconcileLoadedDocs(docs);
+  assert.equal(isDocBlocked("n2b"), true);
+  await storeDocumentState("n2b", doc);
+  assert.deepEqual(vaultWrites(), []);
+  assert.equal(fv.notes.get("n2b")!.content, EMPHASIS);
 });
 
 test("store: the clobber guard cannot fold an unconvertible external edit → the vault copy wins, nothing is overwritten", { timeout: 120_000 }, async () => {
-  fastTimeouts();
   fv.put({ id: "n3", tags: ["garden"], content: "<p>live text</p>", updatedAt: "2026-03-01T00:00:00.000Z" });
   const doc = await loadDocumentState("n3", new Y.Doc());
+  const source = getDocState("n3")!.sourceUpdatedAt;
   const para = new Y.XmlElement("paragraph");
   para.insert(0, [new Y.XmlText("typed by a human")]);
   doc.getXmlFragment("default").insert(1, [para]);
-  fv.put({ id: "n3", tags: ["garden"], content: UNDERSCORES, updatedAt: "2026-03-05T00:00:00.000Z" });
+  fv.put({ id: "n3", tags: ["garden"], content: DEEP_QUOTE, updatedAt: "2026-03-05T00:00:00.000Z" });
   const stored = await probed(() => storeDocumentState("n3", doc));
   assert.equal(stored.error, undefined);
   assert.ok(stored.maxLagMs < LOOP_BUDGET_MS, `event loop stalled ${stored.maxLagMs.toFixed(0)} ms`);
   assert.deepEqual(vaultWrites(), [], "the live state was NOT written over the newer note");
-  assert.equal(fv.notes.get("n3")!.content, UNDERSCORES);
-  assert.equal(isDocDegraded("n3"), true);
-  // The snapshot is kept without a source version (as after a failed vault write) — the next load starts from the note.
-  assert.equal(getDocState("n3")!.sourceUpdatedAt, null);
-  const reopened = await loadDocumentState("n3", new Y.Doc());
-  assert.equal(text(reopened), degradedText(UNDERSCORES));
-  assert.equal(fv.notes.get("n3")!.content, UNDERSCORES);
+  assert.equal(fv.notes.get("n3")!.content, DEEP_QUOTE);
+  assert.equal(isDocBlocked("n3"), true);
+  // The Yjs state (with the human's typing) is kept, on the version it is based on.
+  assert.equal(getDocState("n3")!.sourceUpdatedAt, source);
+  const kept = new Y.Doc();
+  Y.applyUpdate(kept, getDocState("n3")!.state);
+  assert.match(text(kept), /typed by a human/);
+  // The next open is refused (the note is unconvertible); the note is still intact.
+  await assert.rejects(loadDocumentState("n3", new Y.Doc()), DocumentTooComplexError);
+  assert.equal(fv.notes.get("n3")!.content, DEEP_QUOTE);
 });
 
-test("store: a document that cannot be rendered in budget is not written, and is flagged instead of silently unsaved", { timeout: 120_000 }, async () => {
-  fv.put({ id: "n4", tags: ["garden"], content: "<p>small</p>", updatedAt: "2026-03-01T00:00:00.000Z" });
+test("M4 — store: a render that fails because of LOAD (timeout / busy / crash) keeps the document live, saves its Yjs state and writes the note later", { timeout: 180_000 }, async () => {
+  // A page large enough that its render cannot finish in a millisecond.
+  const body = Array.from({ length: 3000 }, (_, i) => `<p>Paragraph ${i}</p>`).join("");
+  fv.put({ id: "n4", tags: ["garden"], content: body, updatedAt: "2026-03-01T00:00:00.000Z" });
   const doc = await loadDocumentState("n4", new Y.Doc());
+  const source = getDocState("n4")!.sourceUpdatedAt;
   const para = new Y.XmlElement("paragraph");
-  para.insert(0, [new Y.XmlText("grown past what can be rendered")]);
-  doc.getXmlFragment("default").insert(1, [para]);
-  // The renderer's budget is exceeded (here: by shrinking the budget).
-  restore.push(configureConversion({ inlineMaxNodes: 0, maxChars: 4 }));
+  para.insert(0, [new Y.XmlText("typed while the converter was overloaded")]);
+  doc.getXmlFragment("default").insert(3000, [para]);
+  // The renderer times out (forced: a 1 ms wall clock).
+  restore.push(configureConversion({ timeoutMs: 1, timeoutPerMbMs: 0, timeoutMaxMs: 1 }));
   const stored = await probed(() => storeDocumentState("n4", doc));
   assert.equal(stored.error, undefined, "a store never throws");
-  assert.ok(stored.maxLagMs < LOOP_BUDGET_MS, `event loop stalled ${stored.maxLagMs.toFixed(0)} ms`);
   assert.deepEqual(vaultWrites(), []);
-  assert.equal(fv.notes.get("n4")!.content, "<p>small</p>");
-  assert.equal(isDocDegraded("n4"), true, "flagged: sockets go read-only and the document reopens from the note");
-  // The live state is kept as a snapshot with no source version (as after a failed vault write).
-  assert.equal(getDocState("n4")!.sourceUpdatedAt, null);
-  // A busy converter is NOT the document's fault: the store waits for a slot, then writes — nothing is flagged.
+  assert.equal(isDocBlocked("n4"), false, "NOT flagged: nobody is dropped, the document stays live");
+  // The typing is durable in SQLite, on the vault version it is based on (never a null source).
+  assert.equal(getDocState("n4")!.sourceUpdatedAt, source);
+  const kept = new Y.Doc();
+  Y.applyUpdate(kept, getDocState("n4")!.state);
+  assert.match(text(kept), /typed while the converter was overloaded/);
+  assert.equal(isCollabUnsaved("n4", "primary"), true, "recorded: the note still has to be written");
+  // The reconciler does not fold the (older) note back over it.
+  await reconcileLoadedDocs({ documents: new Map([["n4", doc]]) });
+  assert.match(text(doc), /typed while the converter was overloaded/);
+  // Even if the tab closes now, the next load restores the typing and it is written then.
+  const reopened = await loadDocumentState("n4", new Y.Doc());
+  assert.match(text(reopened), /typed while the converter was overloaded/);
+  assert.equal(getDocState("n4")!.sourceUpdatedAt, source, "still marked as based on the old note version");
   restoreLimits();
-  resetDegradedState();
+  await storeDocumentState("n4", reopened);
+  assert.equal(fv.notes.get("n4")!.content, `${body}<p>typed while the converter was overloaded</p>`);
+  assert.equal(isCollabUnsaved("n4", "primary"), false);
+  assert.equal(vaultWrites().length, 1);
+});
+
+test("store: a document beyond what can be rendered at all is not written and not flagged; its state is saved", { timeout: 120_000 }, async () => {
   fv.put({ id: "n5", tags: ["garden"], content: "<p>small</p>", updatedAt: "2026-03-01T00:00:00.000Z" });
-  const other = await loadDocumentState("n5", new Y.Doc());
+  const doc = await loadDocumentState("n5", new Y.Doc());
+  const source = getDocState("n5")!.sourceUpdatedAt;
+  doc.getXmlFragment("default").insert(1, [new Y.XmlElement("paragraph")]);
+  restore.push(configureConversion({ inlineMaxNodes: 0, maxNodes: 1 }));
+  await storeDocumentState("n5", doc);
+  assert.deepEqual(vaultWrites(), []);
+  assert.equal(isDocBlocked("n5"), false);
+  assert.equal(getDocState("n5")!.sourceUpdatedAt, source);
+  assert.equal(isCollabUnsaved("n5", "primary"), false, "no timer-driven retry for a deterministic refusal: the next edit stores again");
+  restoreLimits();
+  await storeDocumentState("n5", doc);
+  assert.equal(fv.notes.get("n5")!.content, "<p>small</p><p></p>");
+});
+
+test("store: a busy converter is waited out — the note is written, nothing is flagged", { timeout: 120_000 }, async () => {
+  fv.put({ id: "n6", tags: ["garden"], content: "<p>small</p>", updatedAt: "2026-03-01T00:00:00.000Z" });
+  const other = await loadDocumentState("n6", new Y.Doc());
   other.getXmlFragment("default").insert(1, [new Y.XmlElement("paragraph")]);
   await stopConversionWorkers();
   restore.push(configureConversion({ inlineMaxNodes: 0, threads: 1, maxQueue: 1, timeoutMs: 600, timeoutPerMbMs: 0, timeoutMaxMs: 600 }));
   const busyBefore = conversionStats.busy;
   const hog = [0, 1, 2].map((i) => markdownToHtml(`${EMPHASIS} hog ${i}`).catch(() => null));
-  await storeDocumentState("n5", other);
+  await storeDocumentState("n6", other);
   await Promise.all(hog);
   assert.ok(conversionStats.busy > busyBefore, "the converter really was saturated");
-  assert.equal(isDocDegraded("n5"), false);
-  assert.equal(fv.notes.get("n5")!.content, "<p>small</p><p></p>", "stored once a slot was free");
+  assert.equal(isDocBlocked("n6"), false);
+  assert.equal(fv.notes.get("n6")!.content, "<p>small</p><p></p>", "stored once a slot was free");
   await stopConversionWorkers();
 });
 

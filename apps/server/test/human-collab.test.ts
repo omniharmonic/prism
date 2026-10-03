@@ -886,7 +886,7 @@ for (const actor of ACTORS) {
     // Case 1 — someone still has the document open, so it stays in memory.
     const me = await client("d1", auth.socket);
     const cmd = await command(me, () => ({ kind: "suggest", ...select(me, "alpha"), text: "omega" }));
-    fv.conflictOnNextWrite = true; // the store's vault write fails once
+    fv.failNextWrite = true; // the store's vault write fails once
     const first = await post("d1", cmd, auth);
     assert.equal(first.status, 503, JSON.stringify(first.body));
     assert.equal(first.body.error, "not_confirmed");
@@ -907,7 +907,7 @@ for (const actor of ACTORS) {
     fv.put({ id: "d3", tags: ["garden"], content: BODY, updatedAt: T0 });
     const off = offlineDoc("d3");
     const cmd3 = await command(off, () => ({ kind: "suggest", ...select(off, "beta"), text: "gamma" }));
-    fv.conflictOnNextWrite = true;
+    fv.failNextWrite = true;
     const lost = await post("d3", cmd3, auth);
     assert.equal(lost.status, 503);
     await unloaded("d3");
@@ -1120,7 +1120,7 @@ test("M1: a command applied WHILE another store's vault write is in flight is no
     if ((init?.method ?? "GET").toUpperCase() === "PATCH" && url.pathname.endsWith("/notes/d1")) {
       patches++;
       if (patches === 1) await gate;
-      if (patches === 2) fv.conflictOnNextWrite = true;
+      if (patches === 2) fv.failNextWrite = true;
     }
     return inner(input, init);
   }) as typeof fetch;
@@ -1284,7 +1284,7 @@ for (const kind of ["comment", "reply"] as const) {
     if (kind === "comment") {
       // The command's own store fails: the half-saved snapshot keeps the thread
       // in the comments map while the reload folds the body back from the vault.
-      fv.conflictOnNextWrite = true;
+      fv.failNextWrite = true;
       const lost = await post("d1", cmd, auth);
       assert.equal(lost.status, 503);
       await unloaded("d1");

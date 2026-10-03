@@ -14,6 +14,7 @@
  *   vault/Shared/Plan            "plan"   prose; sam = suggest (page share), eve = edit
  *   vault/Shared/Plan/Notes      "notes"  sub-page of the shared page
  *   vault/Shared/Rich            "rich"   rich prose for revision parity; sam = suggest
+ *   vault/Shared/Bomb            "bomb"   content the live editor cannot convert; eve = edit, sam = view
  *   vault/Private/Budget         "secret" nobody but the owner
  *   gina: a guest with ONE page share ("plan", view) and nothing else
  */
@@ -46,6 +47,9 @@ fv.put({ id: "plan", path: "vault/Shared/Plan", content: "<p>Alpha beta gamma</p
 fv.put({ id: "notes", path: "vault/Shared/Plan/Notes", content: "<p>Child notes about the plan.</p>", tags: ["team"] });
 fv.put({ id: "rich", path: "vault/Shared/Rich", content: RICH, tags: ["team"] });
 fv.put({ id: "blank", path: "vault/Shared/Blank", content: "" }); // an empty page: sam = suggest (note share)
+// A page whose body no parser can take (a blockquote 300 deep: refused by the conversion
+// pre-check, deterministically and at once) — the live editor is refused `too_complex`.
+fv.put({ id: "bomb", path: "vault/Shared/Bomb", content: `${"> ".repeat(300)}deep words`, tags: ["team"] });
 fv.put({ id: "secret", path: "vault/Private/Budget", content: "<p>Fictional budget for the plan.</p>", tags: ["team"] });
 
 for (const [email, name] of [[SAM, "Sam Chen"], [EVE, "Eve Editor"], [GINA, "Gina Guest"]] as const) {
@@ -60,6 +64,8 @@ grant(SAM, "note", "rich", "suggest");
 grant(SAM, "note", "blank", "suggest");
 grant(EVE, "page", "plan", "edit");
 grant(EVE, "note", "rich", "edit");
+grant(EVE, "note", "bomb", "edit");
+grant(SAM, "note", "bomb", "view");
 grant(GINA, "page", "plan", "view");
 
 const app = createApp();
@@ -83,10 +89,15 @@ process.stdin.on("data", (chunk: string) => {
     const line = buffer.slice(0, i);
     buffer = buffer.slice(i + 1);
     try {
-      const cmd = JSON.parse(line) as { op: string; id?: string };
+      const cmd = JSON.parse(line) as { op: string; id?: string; content?: string };
       if (cmd.op === "note") {
         const n = fv.notes.get(cmd.id ?? "");
         process.stdout.write(JSON.stringify({ op: "note", note: n ?? null }) + "\n");
+      } else if (cmd.op === "put") {
+        // An external writer replaces a note's body (a newer version).
+        const n = fv.notes.get(cmd.id ?? "");
+        if (n) fv.put({ ...n, content: cmd.content ?? "", updatedAt: new Date().toISOString() });
+        process.stdout.write(JSON.stringify({ op: "put", ok: !!n }) + "\n");
       } else if (cmd.op === "patches") {
         const calls = fv.calls.filter((c) => c.method === "PATCH" && c.path.includes(cmd.id ?? "")).length;
         process.stdout.write(JSON.stringify({ op: "patches", count: calls }) + "\n");
