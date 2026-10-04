@@ -8,7 +8,8 @@
  * item once the (Playwright-controlled) clock passes its time.
  *
  * Query flags: ?open=<id> initial page · ?comments → the live editor + comments
- * sidebar on a local Y.Doc (comment mentions, edit own, resolve / reopen) ·
+ * sidebar on a local Y.Doc (comment mentions, edit own, resolve / reopen; `&review` adds the
+ * toolbar with the Editing / Suggesting switch and Accept all / Reject all) ·
  * ?live → the live editor fed by the SAME tree-backed page list the workspace gives a
  * live document (`useLinkNotes`: `[[` and `@` match a page's title and aliases).
  */
@@ -172,6 +173,9 @@ function CommentsFixture() {
   const [ydoc] = useState(() => new Y.Doc());
   const [editor, setEditor] = useState<Editor | null>(null);
   const [focused, setFocused] = useState<string | null>(null);
+  // ?comments&review (NP-CO-12): the toolbar with the Editing / Suggesting switch and Accept all / Reject all.
+  const [suggesting, setSuggesting] = useState(false);
+  const review = params.has("review");
   const user = { name: "You", color: "#6d5bd0" };
   Object.assign(window, {
     prismMentionsFixture: {
@@ -189,7 +193,7 @@ function CommentsFixture() {
   return (
     <div style={{ display: "flex", gap: 24, padding: 24, minHeight: "100vh", background: "var(--bg-base)", color: "var(--text-primary)", flexWrap: "wrap" }}>
       <div style={{ flex: "1 1 420px", minWidth: 0 }}>
-        <CollabEditor ydoc={ydoc} provider={null} user={user} seedReady seedContent={async () => "<p>The rollout plan is ready for review.</p>"} canComment canReview onEditor={setEditor} onCommentActivate={setFocused} noteId="plan" />
+        <CollabEditor ydoc={ydoc} provider={null} user={user} seedReady seedContent={async () => "<p>The rollout plan is ready for review.</p>"} canComment canReview onEditor={setEditor} onCommentActivate={setFocused} noteId="plan" {...(review ? { toolbar: true, suggesting, onSetSuggesting: setSuggesting } : {})} />
       </div>
       <aside style={{ flex: "1 1 300px", minWidth: 0 }} aria-label="Comments panel">
         <CommentsSidebar ydoc={ydoc} user={user} canComment editor={editor} focusedThreadId={focused} />
