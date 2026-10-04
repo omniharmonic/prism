@@ -312,6 +312,8 @@ export function templateCopy(
 
 /** Where "Save as template" puts a template for someone who may create anywhere. */
 export const TEMPLATES_FOLDER = "Templates";
+/** Where a template remembers the tags of the page it was saved from (re-applied on Use). */
+export const TEMPLATE_TAGS_KEY = "prism_template_tags";
 /** The `prism_*` keys that say what KIND of page this is (never identity, access or state). */
 const TEMPLATE_PRISM_KEYS: ReadonlySet<string> = new Set(["prism_type", "prism_page_style", "prism_database"]);
 /** The keys ingesters, the skill scheduler and the importer match notes by — the server's
