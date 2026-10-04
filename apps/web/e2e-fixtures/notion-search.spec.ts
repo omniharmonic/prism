@@ -372,3 +372,65 @@ test("phone search recents", async ({ page }, info) => {
   await dialog.getByRole("button", { name: "Close search" }).click();
   await expect(dialog).toHaveCount(0);
 });
+
+/** A mouse press is on an ITEM, not on a place: results that land between down and up move the row. */
+test("⌘K: a press on a command runs it when page results land between mouse down and up", async ({ page }) => {
+  const input = await openPalette(page);
+  const dialog = page.getByRole("dialog", { name: "Search workspace" });
+  await page.evaluate(() => {
+    const shell = (window as any).prismShell;
+    shell.serverCreate("Library/Theme ideas", "<p>A theme for the season.</p>");
+    shell.serverCreate("Library/Theme colours", "<p>Every theme has colours.</p>");
+    shell.searchHold = true;
+  });
+  const dark = () => page.evaluate(() => document.documentElement.classList.contains("light"));
+  const before = await dark();
+  await input.fill("theme");
+  const command = dialog.getByRole("option", { name: "Toggle Theme" });
+  await expect(command).toBeVisible();
+  await expect.poll(() => page.evaluate(() => (window as any).prismShell.searchWaiting.length as number)).toBeGreaterThan(0);
+  const at = (await command.boundingBox())!;
+  await page.mouse.move(at.x + at.width / 2, at.y + at.height / 2);
+  await page.mouse.down();
+  // The page results arrive while the button is down: the command row is pushed down the list.
+  await page.evaluate(() => (window as any).prismShell.releaseSearch());
+  await expect(page.getByRole("group", { name: "Notes" }).getByRole("option")).toHaveCount(2);
+  expect((await command.boundingBox())!.y).toBeGreaterThan(at.y + at.height);
+  await page.mouse.up();
+  // The pressed command ran, once; the page row the pointer ended on did not open.
+  await expect(dialog).toHaveCount(0);
+  expect(await dark()).toBe(!before);
+  await expect(page.getByRole("navigation", { name: "Open document tabs" }).getByRole("button", { name: /Theme (ideas|colours)/ })).toHaveCount(0);
+
+  // An ordinary press (nothing moves) runs once too.
+  await page.keyboard.press("ControlOrMeta+k");
+  await page.getByRole("combobox", { name: "Search notes and commands" }).fill("toggle theme");
+  await dialog.getByRole("option", { name: "Toggle Theme" }).click();
+  await expect(dialog).toHaveCount(0);
+  expect(await dark()).toBe(before);
+});
+
+test("⌘K: dragging from one row to another, or out of the list, opens nothing", async ({ page }) => {
+  const input = await openPalette(page);
+  const dialog = page.getByRole("dialog", { name: "Search workspace" });
+  await input.fill("workshop");
+  const rows = page.getByRole("group", { name: "Notes" }).getByRole("option");
+  await expect(rows).toHaveCount(4);
+  await expect(dialog).not.toContainText("Searching…");
+  const tabs = page.getByRole("navigation", { name: "Open document tabs" }).getByRole("button", { name: /^Open / });
+  const open = await tabs.count();
+  const first = (await rows.nth(0).boundingBox())!;
+  const second = (await rows.nth(1).boundingBox())!;
+  await page.mouse.move(first.x + 40, first.y + first.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(second.x + 40, second.y + second.height / 2, { steps: 4 });
+  await page.mouse.up();
+  await expect(dialog).toBeVisible();
+  await page.mouse.move(first.x + 40, first.y + first.height / 2);
+  await page.mouse.down();
+  const field = (await input.boundingBox())!;
+  await page.mouse.move(field.x + 30, field.y + field.height / 2, { steps: 4 });
+  await page.mouse.up();
+  await expect(dialog).toBeVisible();
+  await expect(tabs).toHaveCount(open);
+});
