@@ -8,7 +8,7 @@ import { useUIStore } from "../../app/stores/ui";
 import { inferContentType } from "../../lib/schemas/content-types";
 import { noteLinkTitle } from "../../lib/wikilinks";
 import { EDIT_LINK_EVENT, LINK_CARD_FOCUS_EVENT } from "../../lib/tiptap/EditorKeys";
-import { linkTarget, openInNewTab, openLinkTarget, type LinkTarget } from "../../lib/tiptap/prismLinks";
+import { linkTarget, openInNewTab, openLinkTarget, sharePageLink, type LinkTarget } from "../../lib/tiptap/prismLinks";
 import { structuralEditsAllowed } from "../../lib/tiptap/blockCommands";
 import { pageLink } from "../../lib/pages/usePageActions";
 import { walkTab } from "../../lib/a11y/tabWalk";
@@ -99,7 +99,9 @@ export function LinkCard({ editor }: { editor: Editor }) {
     const open = (title: string, type: Parameters<ReturnType<typeof useUIStore.getState>["openTab"]>[2]) => useUIStore.getState().openTab(id, title, type);
     // No workspace shell around this editor (the share route `/collab/:id` has no tabs): the page's
     // own address, in a new tab that cannot reach this window. Never a navigation of this one.
-    if (!client || !document.getElementById("workspace-document")) { openInNewTab(pageLink(id)); return; }
+    // A share-link viewer gets the share route for the target with the same link (`sharePageLink`):
+    // `/page/<id>` would ask them to sign in.
+    if (!client || !document.getElementById("workspace-document")) { openInNewTab(sharePageLink(id) ?? pageLink(id)); return; }
     // The reader's own read decides the title and type; a page they cannot see opens as "no access".
     void client.getNote(id).then((n) => open(noteLinkTitle(n), inferContentType(n)), () => open("Page", "document"));
   };

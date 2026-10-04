@@ -23,7 +23,8 @@ import type { Server } from "node:http";
 import { createApp } from "../../src/app";
 import { attachCollab } from "../../src/collab";
 import { configureConversion } from "../../src/convert/service";
-import { addGrant, setAccount, setUserProfile } from "../../src/db";
+import { addGrant, createCapability, setAccount, setUserProfile } from "../../src/db";
+import { signCapability } from "../../src/auth/capability";
 import { installFakeVault, makeSession } from "../helpers";
 import { resetTreeForTests } from "../../src/tree";
 
@@ -112,6 +113,14 @@ process.stdin.on("data", (chunk: string) => {
           resetTreeForTests();
         }
         process.stdout.write(JSON.stringify({ op: "add", ok: fresh }) + "\n");
+      } else if (cmd.op === "link") {
+        // An anyone-with-the-link capability (what Share → Link access mints), for a note or a page subtree.
+        const l = (cmd as unknown as { link: { resourceType: "note" | "page"; resource: string; level: "view" | "suggest" | "edit" } }).link;
+        const id = `cap-${Math.random().toString(36).slice(2, 12)}`;
+        const exp = Date.now() + 86_400_000;
+        createCapability({ id, resource_type: l.resourceType, resource: l.resource, level: l.level, label: null, expires_at: exp });
+        addGrant({ subject_type: "link", subject: id, resource_type: l.resourceType, resource: l.resource, level: l.level, created_by: OWNER });
+        process.stdout.write(JSON.stringify({ op: "link", token: signCapability({ id, exp }) }) + "\n");
       } else if (cmd.op === "limits") {
         // Change the conversion limits (e.g. so nothing can be rendered for the vault: a page "too large to save"); null restores them.
         restoreLimits?.();
