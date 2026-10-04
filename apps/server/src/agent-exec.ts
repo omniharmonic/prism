@@ -348,6 +348,18 @@ export interface MemorySample {
   memTotalMb?: number | null;
   /** Current total swap in MB (0 = no swap). Linux free swap = this × (1 − used%). */
   swapTotalMb?: number | null;
+  /** macOS only (`vm_stat`): pages SWAPPED OUT per second between this probe and
+   *  the previous one — a RATE, so it is ~0 on a healthy Mac however full its swap
+   *  is, and in the thousands during a swap storm. null = no earlier sample (or
+   *  one too close to divide by); undefined = no vm_stat on this platform. */
+  swapoutPerS?: number | null;
+  /** Seconds that rate was measured over (null with it). */
+  pagingWindowS?: number | null;
+  /** macOS only (`vm_stat`): MB that can be handed out WITHOUT paging anonymous
+   *  memory out — free + speculative + purgeable + file-backed (cache) pages.
+   *  `memory_pressure`'s "free %" is far more generous (2026-10-03: 70 % "free" of
+   *  16 GB while this read 6.4 GB). */
+  reclaimableMb?: number | null;
 }
 export type MemoryProbe = () => MemorySample | null;
 
@@ -375,6 +387,52 @@ export function parseSwapTotalMb(s: string): number | null {
   if (!t) return null;
   return Number(t[1]) * ({ K: 1 / 1024, M: 1, G: 1024, T: 1024 * 1024 }[t[2]!.toUpperCase()] ?? 1);
 }
+
+export interface VmStat {
+  pageSize: number;
+  free: number;
+  speculative: number;
+  purgeable: number;
+  fileBacked: number;
+  /** Cumulative since boot. */
+  swapouts: number;
+  pageouts: number;
+}
+/** Parse `vm_stat` (page counts; "Swapouts"/"Pageouts" are cumulative). null if it is not vm_stat output. */
+export function parseVmStat(s: string): VmStat | null {
+  const size = /page size of (\d+) bytes/.exec(s);
+  const n = (label: string): number | null => {
+    const at = s.indexOf(`${label}:`);
+    if (at === -1) return null;
+    const eol = s.indexOf("\n", at);
+    const m = /^\s*(\d+)/.exec(s.slice(at + label.length + 1, eol === -1 ? undefined : eol));
+    return m ? Number(m[1]) : null;
+  };
+  const swapouts = n("Swapouts");
+  const free = n("Pages free");
+  if (!size || swapouts === null || free === null) return null;
+  return {
+    pageSize: Number(size[1]),
+    free,
+    speculative: n("Pages speculative") ?? 0,
+    purgeable: n("Pages purgeable") ?? 0,
+    fileBacked: n("File-backed pages") ?? 0,
+    swapouts,
+    pageouts: n("Pageouts") ?? 0,
+  };
+}
+
+/** Swap-outs per second between two vm_stat samples. null when there is no usable
+ *  earlier sample: none, less than 0.5 s ago, or a counter that went backwards (reboot). */
+export function swapoutRate(prev: { at: number; swapouts: number } | null, cur: { at: number; swapouts: number }): { perS: number; windowS: number } | null {
+  if (!prev) return null;
+  const windowS = (cur.at - prev.at) / 1000;
+  if (!(windowS >= 0.5) || cur.swapouts < prev.swapouts) return null;
+  return { perS: (cur.swapouts - prev.swapouts) / windowS, windowS };
+}
+
+/** The darwin prober's previous vm_stat sample (the rate needs two). */
+let lastPaging: { at: number; swapouts: number } | null = null;
 
 /** Parse `memory_pressure -Q` ("System-wide memory free percentage: 63%"). */
 export function parseMemoryPressure(s: string): number | null {
@@ -431,7 +489,20 @@ export const defaultMemoryProbe: MemoryProbe = () => {
       swapDiskFreeMb,
       memTotalMb: totalmem() / (1024 * 1024),
       swapTotalMb: swap ? parseSwapTotalMb(swap) : null,
+      swapoutPerS: null,
+      pagingWindowS: null,
+      reclaimableMb: null,
     };
+    const vmRaw = run("/usr/bin/vm_stat", []);
+    const vm = vmRaw ? parseVmStat(vmRaw) : null;
+    if (vm) {
+      const cur = { at: Date.now(), swapouts: vm.swapouts };
+      const rate = swapoutRate(lastPaging, cur);
+      lastPaging = cur;
+      sample.swapoutPerS = rate ? rate.perS : null;
+      sample.pagingWindowS = rate ? rate.windowS : null;
+      sample.reclaimableMb = ((vm.free + vm.speculative + vm.purgeable + vm.fileBacked) * vm.pageSize) / (1024 * 1024);
+    }
     return sample.swapUsedPct == null && sample.freePct == null ? null : sample;
   }
   if (process.platform === "linux") {

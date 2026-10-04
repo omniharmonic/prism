@@ -193,11 +193,11 @@ test("dispatch routed LOCAL is refused (dispatch error, never a silent claude fa
   lmLoaded = false;
   d = await run();
   assert.match(d.error!, /not loaded .* refusing to JIT-load/);
-  // Interactive local AI shares the skills' JIT-load rule: healthy free %, swap nearly full.
-  setLocalAiMemoryProbeForTests(() => ({ swapUsedPct: 85, freePct: 60, swapFreeMb: 920, swapTotalMb: 6144, swapDiskFreeMb: 160_000, memTotalMb: 16_384, pressureLevel: 1 }));
+  // Interactive local AI shares the skills' JIT-load rule (macOS sample: a swap storm in progress).
+  setLocalAiMemoryProbeForTests(() => ({ swapUsedPct: 85, freePct: 60, swapFreeMb: 920, swapTotalMb: 6144, swapDiskFreeMb: 160_000, memTotalMb: 16_384, pressureLevel: 1, swapoutPerS: 6000, pagingWindowS: 2, reclaimableMb: 6000 }));
   setLocalAiSettingsForTests({ localBaseUrl: "http://lm.test/v1", swapMaxPct: null, freeMinPct: 15, loadFreeMinPct: 35 });
   d = await run();
-  assert.match(d.error!, /local model refused: .*not loaded and swap is already 85% used .* refusing to JIT-load/);
+  assert.match(d.error!, /local model refused: .*not loaded and the system is swapping out 6000 pages\/s .* refusing to JIT-load/);
   lmLoaded = true;
   d = await run();
   assert.equal(d.status, "done", "a resident model is unaffected by the swap rule");

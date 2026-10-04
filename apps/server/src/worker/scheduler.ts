@@ -819,21 +819,39 @@ async function tick(): Promise<void> {
 
 let skillsInFlight = false;
 
+/** Consecutive skill passes in which a model load was refused (jitLoadRefusal). */
+let jitRefusedPasses = 0;
+export function _resetJitRefusalsForTests(): void {
+  jitRefusedPasses = 0;
+}
+
 /**
  * One skills pass with health reporting (source "skills", kind server). A pass
  * that could not list skills, or a run that FAILED, is an error; a finished run,
  * an accepted claude dispatch, or an idle pass (nothing due) is a success; a pass
- * whose only due skills were refused admission records NOTHING — so memory
- * pressure that persists past WORKER_STALE_SKILLS_MS surfaces as "stale" instead
- * of a failure storm.
+ * whose only due skills were refused admission for memory pressure / a busy slot
+ * records NOTHING — so that surfaces as "stale" past WORKER_STALE_SKILLS_MS instead
+ * of a failure storm. The exception is a refused model LOAD (see below).
  */
 export async function runSkillsPass(deps: SkillsDeps = defaultSkillsDeps()): Promise<PassResult | null> {
   try {
     const res = await runSkillsOnce(deps, (r) =>
       recordSourceOutcome("primary", "skills", r.status === "failed" ? new Error(r.error ?? "skill run failed") : null),
     );
-    if (res.finished.length === 0 && (res.refused.length === 0 || res.dispatched.length > 0)) {
-      recordSourceOutcome("primary", "skills", null);
+    // A refused model LOAD is not "memory pressure, try later": on this host it can
+    // persist for as long as the model is not resident. Each such pass is a failure
+    // outcome, so the third in a row reads `failing` WITH the reason in /acl/workers
+    // (one alert per episode) instead of `stale` six hours later. The next pass that
+    // admits a run / finishes one / has nothing due records the recovery.
+    const jit = res.refused.find((r) => r.jit);
+    if (jit) {
+      jitRefusedPasses++;
+      recordSourceOutcome("primary", "skills", new Error(`local model load refused ${jitRefusedPasses} pass(es) in a row — ${jit.reason}`));
+    } else {
+      jitRefusedPasses = 0;
+      if (res.finished.length === 0 && (res.refused.length === 0 || res.dispatched.length > 0)) {
+        recordSourceOutcome("primary", "skills", null);
+      }
     }
     return res;
   } catch (e) {

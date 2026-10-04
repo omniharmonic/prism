@@ -341,14 +341,25 @@ export const config = {
   skillsLoadFreeMinPct: Number(process.env.SKILLS_LOAD_FREE_MIN_PCT ?? 35),
   // JIT-load guard, part 2 (2026-10-03 host stall: free % was 54–76 while swap was
   // nearly full; loading the ~7 GB model paged the server and the vault out). A model
-  // that is not resident loads only when (a) swap is at most
-  // SKILLS_LOAD_MAX_SWAP_USED_PCT used (≥100 = off) and (b) free RAM + usable free
-  // swap ≥ model size × SKILLS_LOAD_HEADROOM + SKILLS_LOAD_RESERVE_MB. Model size =
-  // what the model server reports, else SKILLS_LOCAL_MODEL_MB.
+  // that is not resident loads only when
+  //  (a) memory free now ≥ model size × SKILLS_LOAD_HEADROOM + SKILLS_LOAD_RESERVE_MB
+  //      (no credit for swap on macOS). "Free now" = memory_pressure free % × RAM, or
+  //      with SKILLS_LOAD_HEADROOM_SOURCE=reclaimable the vm_stat figure (free +
+  //      cache pages — what can be handed out without paging anything out; stricter);
+  //  (b) the system is not already swapping out faster than
+  //      SKILLS_LOAD_MAX_SWAPOUT_PER_S pages/s (macOS vm_stat rate; 0 = off). When the
+  //      prober's last sample is stale, admission waits SKILLS_LOAD_PAGING_WINDOW_MS
+  //      and probes again (0 = never wait);
+  //  (c) swap used ≤ SKILLS_LOAD_MAX_SWAP_USED_PCT — unset = OFF on macOS (dynamic
+  //      swap total makes the % meaningless), 80 elsewhere.
+  // Model size = what the model server reports, else SKILLS_LOCAL_MODEL_MB.
   skillsLoadHeadroom: Number(process.env.SKILLS_LOAD_HEADROOM || 1.0),
-  skillsLoadReserveMb: Number(process.env.SKILLS_LOAD_RESERVE_MB || 1024),
+  skillsLoadReserveMb: Number(process.env.SKILLS_LOAD_RESERVE_MB || 2048),
   skillsLocalModelMb: Number(process.env.SKILLS_LOCAL_MODEL_MB || 7168),
-  skillsLoadMaxSwapUsedPct: Number(process.env.SKILLS_LOAD_MAX_SWAP_USED_PCT || 70),
+  skillsLoadMaxSwapUsedPct: process.env.SKILLS_LOAD_MAX_SWAP_USED_PCT?.trim() ? Number(process.env.SKILLS_LOAD_MAX_SWAP_USED_PCT) : (null as number | null),
+  skillsLoadMaxSwapoutPerS: Number(process.env.SKILLS_LOAD_MAX_SWAPOUT_PER_S ?? 2000),
+  skillsLoadPagingWindowMs: Number(process.env.SKILLS_LOAD_PAGING_WINDOW_MS ?? 2000),
+  skillsLoadHeadroomSource: (process.env.SKILLS_LOAD_HEADROOM_SOURCE === "reclaimable" ? "reclaimable" : "free-pct") as "free-pct" | "reclaimable",
   // null = unset: darwin uses memory_pressure + absolute free swap, linux falls back to 80%.
   skillsSwapMaxPct: process.env.AGENT_SWAP_MAX_PCT?.trim() ? Number(process.env.AGENT_SWAP_MAX_PCT) : (null as number | null),
   skillsSwapMinFreeMb: Number(process.env.AGENT_SWAP_MIN_FREE_MB || 512),
