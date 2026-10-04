@@ -1,4 +1,10 @@
 /**
+ * VERBATIM copy of apps/server/src/worker/matrix.ts at main 3c1df0a5 — the ingester
+ * that listed every thread WITH its body each pass. Only the four import paths were
+ * changed. matrix-lean.test.ts runs the same scripted syncs through this and through
+ * the lean ingester and requires identical vault contents. Never import it from src.
+ */
+/**
  * Matrix → vault ingester (Phase 3 — server-first runtime). A Node port of the
  * desktop's message_sync, so a tenant's bridged messaging (WhatsApp/Telegram/…
  * via mautrix) lands in their vault from the SERVER, with no desktop running.
@@ -10,10 +16,10 @@
  *   tags: ["message-thread"], path: vault/messages/<platform>/<room>,
  *   metadata: { type:"message-thread", platform, matrixRoomId, lastMessageAt }.
  */
-import type { Note } from "../parachute";
-import { byteLen, isArchiveNote, isTooLarge, parseThread, rolloverLimits, rolloverThread } from "./matrix-rollover";
-import { PeopleIndex, type PersonReview } from "./people";
-import type { IfExists, NoteLinkInput } from "../parachute";
+import type { Note } from "../../src/parachute";
+import { byteLen, isArchiveNote, isTooLarge, rolloverLimits, rolloverThread } from "../../src/worker/matrix-rollover";
+import { PeopleIndex, type PersonReview } from "../../src/worker/people";
+import type { IfExists, NoteLinkInput } from "../../src/parachute";
 
 export interface MatrixCreds {
   homeserver: string;
@@ -60,15 +66,10 @@ export class MatrixClient {
   private url(path: string): string {
     return `${this.creds.homeserver.replace(/\/+$/, "")}/_matrix/client/v3${path}`;
   }
-  /** Every request of the ingest client is bounded by `readTimeoutMs` (reads AND the
-   *  join / leave / management-room send): one that never answers must not hold a pass. */
-  private bounded(): { signal?: AbortSignal } {
-    return this.readTimeoutMs ? { signal: AbortSignal.timeout(this.readTimeoutMs) } : {};
-  }
   private async get(path: string): Promise<unknown> {
     const r = await this.fetchImpl(this.url(path), {
       headers: { Authorization: `Bearer ${this.creds.accessToken}` },
-      ...this.bounded(),
+      ...(this.readTimeoutMs ? { signal: AbortSignal.timeout(this.readTimeoutMs) } : {}),
     });
     if (!r.ok) throw new Error(`matrix ${path} → ${r.status}`);
     return r.json();
@@ -148,16 +149,10 @@ export class MatrixClient {
     const filter = encodeURIComponent(JSON.stringify({ types: ["m.room.message"] }));
     const out: MatrixMessage[] = [];
     let from = opts.from;
-    // A caller that wants at most `cap` messages (the reconcile probe asks for ONE)
-    // gets a first page of that size — 1,300 rooms x 100 events an hour was pure
-    // waste. Every later page is a full 100, and a small first page that held no
-    // usable message never ends the search while the server offers more (a
-    // redacted / body-less newest event, or a server that filters after paging).
-    let limit = Math.min(100, Math.max(1, Math.floor(cap)));
     for (;;) {
       const qs = [
         "dir=b",
-        `limit=${limit}`,
+        "limit=100",
         `filter=${filter}`,
         from ? `from=${encodeURIComponent(from)}` : "",
         opts.to ? `to=${encodeURIComponent(opts.to)}` : "",
@@ -177,11 +172,9 @@ export class MatrixClient {
         out.push(m);
         if (out.length >= cap) return { messages: out.reverse(), capped: true };
       }
-      const smallPage = limit < 100;
-      if ((!chunk.length && !smallPage) || !page.end || page.end === from)
+      if (!chunk.length || !page.end || page.end === from)
         return { messages: out.reverse(), capped: false };
       from = page.end;
-      limit = 100;
     }
   }
 
@@ -239,7 +232,6 @@ export class MatrixClient {
           "Content-Type": "application/json",
         },
         body: "{}",
-        ...this.bounded(),
       },
     );
     if (!r.ok) throw new Error(`matrix join ${roomId} → ${r.status}`);
@@ -257,7 +249,6 @@ export class MatrixClient {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({ msgtype: "m.text", body }),
-        ...this.bounded(),
       },
     );
     if (!r.ok) throw new Error(`matrix send ${roomId} → ${r.status}`);
@@ -295,7 +286,6 @@ export class MatrixClient {
       method: "POST",
       headers: { Authorization: `Bearer ${this.creds.accessToken}`, "Content-Type": "application/json" },
       body: "{}",
-      ...this.bounded(),
     });
     if (!r.ok) throw new Error(`matrix leave ${roomId} → ${r.status}`);
   }
@@ -479,7 +469,6 @@ export interface IngestVault {
     tags?: string[];
     pathPrefix?: string;
     includeContent?: boolean;
-    includeMetadata?: string[];
   }): Promise<Note[]>;
   createNote(p: {
     content: string;
@@ -500,68 +489,8 @@ export interface IngestVault {
   ): Promise<Note>;
   /** Optional: strip tags (used to clear stale triage verdicts on append). */
   removeTags?(id: string, tags: string[]): Promise<void>;
-  /** Re-read one note: the body of a thread about to be written (the listing is
-   *  lean), and the rollover's 409 retry. Optional only for test fakes whose
-   *  listing still carries bodies. */
+  /** Optional: re-read one note (thread rollover retries on a 409 with it). */
   getNote?(id: string): Promise<Note>;
-}
-
-/**
- * THE LEAN THREAD LISTING (2026-10-03 host stall). Every 60 s pass used to list
- * every `message-thread` note WITH its body — ~1,300 threads, up to 1 MB each —
- * pinning the single-threaded vault 1–2 s a tick. A pass now lists rows only:
- * no content, and exactly the metadata keys it reads from the LISTING:
- *   - `matrixRoomId`  the room → note map
- *   - `lastMessageAt` gap-fill lower bound + the reconcile comparison
- *   - `archiveOf`     never adopt an archive as a thread (`isArchiveNote`)
- * plus the row's own id / path / tags / updatedAt / `byteSize`. Everything a
- * WRITE needs (body, messageCount, participants, participantIds, the rest of the
- * metadata, tags) comes from `loadThread` — one fresh read of that one note,
- * immediately before its write. Never read a body or a write input off a row.
- */
-export const THREAD_LIST_KEYS = ["matrixRoomId", "lastMessageAt", "archiveOf"];
-
-function listThreadRows(vault: IngestVault): Promise<Note[]> {
-  return vault.listNotes({ tags: ["message-thread"], includeContent: false, includeMetadata: THREAD_LIST_KEYS });
-}
-
-/**
- * The full, CURRENT note behind a listing row — the only place a thread body is
- * read. Called right before a write to that note (append, dedupe, rollover), so
- * the write is built on what the vault holds now, not on the pass's listing.
- */
-async function loadThread(vault: IngestVault, row: Note): Promise<Note> {
-  if (vault.getNote) {
-    const note = await vault.getNote(row.id);
-    if (!note || typeof note.content !== "string") throw new Error(`thread ${row.id} could not be read (no body)`);
-    return note;
-  }
-  // A vault with no single-note read (test fakes): usable only if its listing
-  // carried the body anyway. Never write on top of a body we do not have.
-  if (typeof row.content === "string") return row;
-  throw new Error(`thread ${row.id}: the listing is lean and this vault cannot re-read a note`);
-}
-
-/** Size of a thread from its listing row, in UTF-8 bytes: the vault's lean
- *  `byteSize` (0.7.x `NoteIndex`), else a body the listing carried anyway.
- *  null = this listing does not say. */
-function rowBytes(row: Note): number | null {
-  const b = (row as unknown as { byteSize?: unknown }).byteSize;
-  if (typeof b === "number" && Number.isFinite(b)) return b;
-  return typeof row.content === "string" && row.content !== "" ? byteLen(row.content) : null;
-}
-
-/** Sizes learned by reading a body, for vaults whose lean rows carry no `byteSize`:
- *  note id → the size at that `updatedAt` (one body read per version, at most). */
-const probedSizes = new Map<string, { updatedAt: string; bytes: number }>();
-/** Rotates which size-less rows a pass may probe, so none starves. */
-let sizeProbeCursor = 0;
-/** Body reads a pass may spend on rows whose size the listing does not give. */
-export const SIZE_PROBES_PER_PASS = 10;
-
-export function _resetThreadSizeCacheForTests(): void {
-  probedSizes.clear();
-  sizeProbeCursor = 0;
 }
 
 /**
@@ -581,75 +510,39 @@ function threadsByRoom(notes: Note[]): Map<string, Note> {
 /**
  * Roll over every thread already past MATRIX_THREAD_MAX_BYTES (the pre-upgrade
  * sweep: on vault ≥0.7.9 a >2 MB thread can no longer be updated at all, so this
- * must have run on 0.6.1 first). Sizes come from the lean listing (`byteSize`);
- * a body is read only for a thread the listing says is oversized (and re-checked
- * on that fresh body). Rows with no size (a vault without `byteSize`) are probed
- * a few per pass, each at most once per `updatedAt`. Independently of this sweep,
- * `ingestRoom` measures the fresh body before every append and rolls over in
- * that same write. Updates `byRoom` in place.
+ * must have run on 0.6.1 first). Piggybacks on the full thread listing each pass
+ * already loads — no extra reads unless a thread is actually oversized. Updates
+ * `byRoom` in place so the same pass appends to the trimmed note.
  */
 export async function sweepOversizedThreads(
   vault: IngestVault,
   byRoom: Map<string, Note>,
-  opts: { maxPerPass?: number; maxSizeProbes?: number } = {},
+  opts: { maxPerPass?: number } = {},
 ): Promise<{ rolled: number; archives: number }> {
   const { maxBytes } = rolloverLimits();
   let rolled = 0;
   let archives = 0;
-  const roll = async (roomId: string, row: Note, loaded?: Note): Promise<void> => {
-    let note = loaded ?? row;
+  for (const [roomId, note] of byRoom) {
+    if (rolled >= (opts.maxPerPass ?? 10)) break;
+    if (byteLen(note.content ?? "") <= maxBytes) continue;
     try {
-      note = loaded ?? (await loadThread(vault, row));
-      if (byteLen(note.content ?? "") <= maxBytes) return; // the listing was stale
       const out = await rolloverThread(vault, note);
-      if (!out) return;
+      if (!out) continue;
       byRoom.set(roomId, out.note);
-      if (out.note.updatedAt) probedSizes.set(row.id, { updatedAt: out.note.updatedAt, bytes: byteLen(out.note.content ?? "") });
       rolled++;
       archives += out.created;
       console.log(
         `[worker] matrix: rolled over ${note.path ?? note.id} (${byteLen(note.content ?? "")} bytes) → ${out.created} new archive note(s)${out.recovered ? `, ${out.recovered} already-archived message(s) trimmed` : ""}`,
       );
     } catch (e) {
-      logRolloverFailure(note, e, rowBytes(row));
+      logRolloverFailure(note, e);
     }
-  };
-  const sizeless: Array<[string, Note]> = [];
-  for (const [roomId, row] of byRoom) {
-    if (rolled >= (opts.maxPerPass ?? 10)) break;
-    let bytes = rowBytes(row);
-    if (bytes === null) {
-      const seen = probedSizes.get(row.id);
-      if (seen && row.updatedAt && seen.updatedAt === row.updatedAt) bytes = seen.bytes;
-      else {
-        sizeless.push([roomId, row]);
-        continue;
-      }
-    }
-    if (bytes <= maxBytes) continue;
-    await roll(roomId, row);
   }
-  // Size-less rows: a bounded number of body reads per pass, rotating.
-  const probes = Math.min(sizeless.length, opts.maxSizeProbes ?? SIZE_PROBES_PER_PASS);
-  for (let i = 0; i < probes && rolled < (opts.maxPerPass ?? 10); i++) {
-    const [roomId, row] = sizeless[(sizeProbeCursor + i) % sizeless.length]!;
-    let note: Note;
-    try {
-      note = await loadThread(vault, row);
-    } catch (e) {
-      console.warn(`[worker] matrix: could not size ${row.path ?? row.id}: ${String(e)}`);
-      continue;
-    }
-    const bytes = byteLen(note.content ?? "");
-    if (note.updatedAt) probedSizes.set(row.id, { updatedAt: note.updatedAt, bytes });
-    if (bytes > maxBytes) await roll(roomId, row, note);
-  }
-  if (sizeless.length) sizeProbeCursor = (sizeProbeCursor + probes) % sizeless.length;
   return { rolled, archives };
 }
 
-function logRolloverFailure(note: Note, e: unknown, listedBytes?: number | null): void {
-  const size = typeof note.content === "string" && note.content !== "" ? byteLen(note.content) : (listedBytes ?? 0);
+function logRolloverFailure(note: Note, e: unknown): void {
+  const size = byteLen(note.content ?? "");
   if (isTooLarge(e))
     console.error(
       `[worker] matrix: ERROR thread ${note.path ?? note.id} (${size} bytes) cannot be updated — the vault refused it (413). ` +
@@ -674,18 +567,6 @@ export interface IngestResult {
   peopleLinked: number;
   /** Person notes created this pass (0 unless opts.linkPeople). */
   peopleCreated: number;
-  /** Rooms whose messages from THIS pass may not all be in the vault (the write,
-   *  the body read or the gap-fill failed) although the cursor advances. The caller
-   *  must persist them with this pass's `since` and hand them back as `replay`. */
-  failedRooms: string[];
-  /** Outcome of `opts.replay`: rooms now complete / rooms that failed again. */
-  replayed: { ok: string[]; failed: string[]; messages: number };
-}
-
-/** A room an earlier pass could not finish; `since` = that pass's cursor (absent: it had none). */
-export interface RoomReplay {
-  roomId: string;
-  since?: string;
 }
 
 /** Above this many joined members a room is a group chat, not a relationship:
@@ -746,7 +627,7 @@ export async function ingestMatrix(
     Partial<
       Pick<
         MatrixClient,
-        "join" | "pendingInvites" | "joinedRooms" | "leave" | "messagesBefore" | "joinedMembers" | "profileName" | "roomName"
+        "join" | "pendingInvites" | "joinedRooms" | "leave" | "messagesBefore" | "joinedMembers" | "profileName"
       >
     >,
   vault: IngestVault,
@@ -768,9 +649,6 @@ export async function ingestMatrix(
     ownerPersonId?: (people: PeopleIndex) => string | null;
     /** PEOPLE_QUEUE_ON_INGEST: collects unresolved DM counterparts; flushed with the thread's note id. */
     reviewSink?: { collect(roomId: string): (r: PersonReview) => void; flush(roomId: string, noteId: string | null | undefined): void };
-    /** Rooms an EARLIER pass failed on (its `failedRooms`), replayed before this
-     *  pass's own rooms: everything between that pass's cursor and this one's. */
-    replay?: RoomReplay[];
   } = {},
 ): Promise<IngestResult> {
   const { nextBatch, rooms, invites: fresh } = await client.sync(opts.since);
@@ -825,49 +703,12 @@ export async function ingestMatrix(
       }
     }
   }
-  // Lean: rows only. A body is read by `loadThread`, for a note about to be written.
-  const existing = await listThreadRows(vault);
+  const existing = await vault.listNotes({
+    tags: ["message-thread"],
+    includeContent: true,
+  });
   const byRoom = threadsByRoom(existing);
   await sweepOversizedThreads(vault, byRoom);
-
-  // S2 — the no-drop layer under a failed room. A room that failed in an earlier
-  // pass lost that pass's messages while the cursor moved on; once NEWER messages
-  // land, `lastMessageAt` passes the lost ones and the reconcile sweep reads "not
-  // behind". So before anything else, re-fetch exactly that window — the failed
-  // pass's cursor up to this pass's — and append what the note does not hold.
-  const replayed = { ok: [] as string[], failed: [] as string[], messages: 0 };
-  for (const p of opts.replay ?? []) {
-    try {
-      if (!client.messagesBefore || !opts.since) throw new Error("no cursor to replay up to");
-      // A room with NO thread note yet (a newly joined portal whose first write or
-      // gap-fill failed) has its whole history before the failed pass's cursor: page
-      // to the room's start, exactly like the new-room gap-fill — a window bounded by
-      // that cursor would fetch one pass's worth and leave the rest "not behind".
-      const window = byRoom.has(p.roomId) && p.since ? { to: p.since } : { sinceTs: 0 };
-      const gap = await client.messagesBefore(p.roomId, { from: opts.since, ...window });
-      if (gap.capped) console.warn(`[worker] matrix: replay of ${p.roomId} hit its cap — oldest messages of the window skipped`);
-      if (gap.messages.length) {
-        // NOT swallowed: without the member list the lines would be rendered with
-        // fallback ids; fail the replay and try again next pass instead.
-        const members = client.joinedMembers ? await client.joinedMembers(p.roomId) : {};
-        const rb: RoomBatch = {
-          roomId: p.roomId,
-          name: byRoom.has(p.roomId) || !client.roomName ? null : await client.roomName(p.roomId).catch(() => null),
-          memberIds: Object.keys(members),
-          displayNames: Object.fromEntries(Object.entries(members).filter(([, v]) => v)),
-          messages: gap.messages,
-        };
-        await resolveDisplayNames(client, rb);
-        // A thread created here must be the one this pass's own batch appends to.
-        if (await ingestRoom(rb, vault, byRoom, { dedupe: true, onCreated: (n) => byRoom.set(p.roomId, n) })) replayed.messages += gap.messages.length;
-      }
-      replayed.ok.push(p.roomId);
-    } catch (e) {
-      replayed.failed.push(p.roomId);
-      console.warn(`[worker] matrix: replay of ${p.roomId} failed (kept for the next pass): ${String(e)}`);
-    }
-  }
-  if (replayed.ok.length) console.log(`[worker] matrix: replayed ${replayed.ok.length} room(s) an earlier pass failed on (+${replayed.messages} message(s) fetched)`);
 
   let messages = 0;
   let created = 0;
@@ -876,7 +717,6 @@ export async function ingestMatrix(
   let failed = 0;
   let gapFilled = 0;
   let peopleLinked = 0;
-  const failedRooms = new Set<string>();
   // Built lazily, once per pass, only when a room actually needs linking.
   let people: PeopleIndex | null = null;
   const peopleBefore = () => people?.created ?? 0;
@@ -911,10 +751,8 @@ export async function ingestMatrix(
         // boundary message may already be in the note — dedupe by line.
         dedupe = !exact;
       } catch (e) {
-        // The tail is written below, which moves lastMessageAt past the gap.
-        failedRooms.add(rb.roomId);
         console.warn(
-          `[worker] matrix: gap-fill for ${rb.roomId} failed (tail only; the window is replayed next pass): ${String(e)}`,
+          `[worker] matrix: gap-fill for ${rb.roomId} failed (tail only): ${String(e)}`,
         );
       }
     }
@@ -956,9 +794,8 @@ export async function ingestMatrix(
       opts.reviewSink?.flush(rb.roomId, byRoom.get(rb.roomId)?.id);
     } catch (e) {
       failed++;
-      failedRooms.add(rb.roomId);
       console.warn(
-        `[worker] matrix: room ${rb.roomId} (${rb.name ?? "?"}) failed (replayed next pass): ${String(e)}`,
+        `[worker] matrix: room ${rb.roomId} (${rb.name ?? "?"}) failed: ${String(e)}`,
       );
       continue;
     }
@@ -983,63 +820,7 @@ export async function ingestMatrix(
     joined,
     peopleLinked,
     peopleCreated: peopleBefore() - peopleAtStart,
-    failedRooms: [...failedRooms],
-    replayed,
   };
-}
-
-/** A vault 409/428 — by the error's status, never by its text (a body or a path may contain "409"). */
-const isConflict = (e: unknown): boolean => {
-  const st = (e as { status?: unknown })?.status;
-  return st === 409 || st === 428;
-};
-
-/**
- * DEDUPE IDENTITY of a message in a thread: its stamp + its body — NOT the
- * rendered sender. The same event is rendered "251731455: hi" by a pass whose
- * member lookup failed and "Rin: hi" by the next one; comparing whole lines made
- * a replay / a 409 retry append the batch a second time. The note stores no event
- * id, so this is as exact as it gets (see the residuals in CLAUDE.md). Trailing
- * whitespace is ignored on both sides (the append `trimEnd`s the body it extends).
- */
-const messageKey = (m: MatrixMessage): string => `${formatStamp(m.ts)} ${m.body.trimEnd()}`;
-/** The same key, read back from a stored entry (`[stamp] Sender: body`). */
-function entryKey(entry: string): string | null {
-  const close = entry.indexOf("] ");
-  if (!entry.startsWith("[") || close === -1) return null;
-  const sep = entry.indexOf(": ", close + 2);
-  // A sender with an empty body is stored as "…Sender:" — never written (toMessage drops it).
-  if (sep === -1) return null;
-  return `${entry.slice(0, close + 1)} ${entry.slice(sep + 2).trimEnd()}`;
-}
-/** How many times each message key occurs among the entries of `content`. */
-function keyCounts(content: string): Map<string, number> {
-  const out = new Map<string, number>();
-  for (const e of parseThread(content).entries) {
-    const k = entryKey(e);
-    if (k !== null) out.set(k, (out.get(k) ?? 0) + 1);
-  }
-  return out;
-}
-/** The pairs whose message is NOT accounted for by `have` — each stored copy cancels
- *  ONE incoming copy, so two genuinely identical messages still land twice. */
-function notIn<T extends { key: string }>(items: T[], have: Map<string, number>): T[] {
-  return items.filter((it) => {
-    const n = have.get(it.key) ?? 0;
-    if (n > 0) have.set(it.key, n - 1);
-    return n === 0;
-  });
-}
-
-/**
- * After a 409: which of our messages did SOMEONE ELSE already put in the note since
- * we read it? When the fresh body is our copy plus an appended tail, only the tail
- * counts; otherwise (trimmed by a rollover, edited) the whole body does.
- */
-function notYetWritten<T extends { key: string }>(items: T[], loaded: Note, fresh: Note): T[] {
-  const before = (loaded.content ?? "").trimEnd();
-  const now = fresh.content ?? "";
-  return notIn(items, keyCounts(now.startsWith(before) ? now.slice(before.length) : now));
 }
 
 /**
@@ -1092,58 +873,85 @@ async function ingestRoom(
   rb: RoomBatch,
   vault: IngestVault,
   byRoom: Map<string, Note>,
-  opts: {
-    dedupe?: boolean;
-    links?: NoteLinkInput[];
-    /** Stable member ids to keep on the note (MATRIX_STORE_PARTICIPANT_IDS). */
-    participantIds?: string[];
-    /** Told the thread note this call created (the replay keeps the room → note map current). */
-    onCreated?: (n: Note) => void;
-  } = {},
+  opts: { dedupe?: boolean; links?: NoteLinkInput[]; /** Stable member ids to keep on the note (MATRIX_STORE_PARTICIPANT_IDS). */ participantIds?: string[] } = {},
 ): Promise<boolean> {
   const linkAdd = opts.links?.length ? { links: { add: opts.links } } : {};
   const platform = detectPlatform(rb.memberIds);
-  let items = rb.messages.map((m) => ({ line: formatLine(m, rb.displayNames), key: messageKey(m) }));
-  if (!items.length) return false;
-  // The listing row carries no body: read the note NOW, once, and build the
-  // dedupe, the append, the metadata merge and any rollover on that fresh copy.
-  const row = byRoom.get(rb.roomId);
-  let note = row ? await loadThread(vault, row) : undefined;
-  if (opts.dedupe) items = notIn(items, keyCounts(note?.content ?? ""));
-  if (!items.length) return false;
-  let lines = items.map((it) => it.line);
+  let lines = rb.messages.map((m) => formatLine(m, rb.displayNames));
+  if (opts.dedupe) {
+    const have = new Set((byRoom.get(rb.roomId)?.content ?? "").split("\n"));
+    lines = lines.filter((l) => !have.has(l));
+  }
+  if (!lines.length) return false;
   const lastMessageAt = Math.max(...rb.messages.map((m) => m.ts));
   const participants = rb.memberIds.map(
     (id) => rb.displayNames[id] ?? shortSender(id),
   );
-  if (note && row) {
-    // The append is COMPARE-AND-SET on the copy just read. Reading the body right
-    // before the write made a second writer visible (a listing-time body used to
-    // make an overlapping pass rewrite the same text; a fresh one would append the
-    // same events again), so: on a 409, re-read, drop what is already there,
-    // recount, and try ONCE more. A second 409 fails the room for this pass (it is
-    // replayed by the next one).
-    const wanted = items;
-    for (let attempt = 0; ; attempt++) {
+  const note = byRoom.get(rb.roomId);
+  if (note) {
+    const prev = note.metadata ?? {};
+    const prevCount =
+      typeof prev.messageCount === "number" ? prev.messageCount : 0;
+    // Incremental /sync only carries member DELTAS — union with the stored list
+    // (which the desktop seeded from full room state) rather than replacing it.
+    const prevParticipants = Array.isArray(prev.participants)
+      ? (prev.participants as unknown[]).filter(
+          (x): x is string => typeof x === "string",
+        )
+      : [];
+    const mergedParticipants = [
+      ...new Set([...prevParticipants, ...participants]),
+    ];
+    const metadata = {
+      ...prev,
+      type: "message-thread",
+      platform,
+      matrixRoomId: rb.roomId,
+      // Monotonic: a bridge backfilling a gap posts OLD timestamps late, and
+      // must not rewind the high-water mark the repair sweep compares against.
+      lastMessageAt: Math.max(lastMessageAt, lastMessageAtOf(note)),
+      messageCount: prevCount + lines.length,
+      ...(mergedParticipants.length
+        ? { participants: mergedParticipants }
+        : {}),
+      ...(opts.participantIds ? { participantIds: mergeIds(prev.participantIds, opts.participantIds) } : {}),
+    };
+    const content = `${note.content.trimEnd()}\n${lines.join("\n")}`;
+    // Past the size limit, append + archive the oldest messages in ONE live
+    // write (archives first — see matrix-rollover.ts).
+    const rolled =
+      byteLen(content) > rolloverLimits().maxBytes
+        ? await rolloverThread(vault, note, { appendEntries: lines, metadata }).catch((e) => {
+            logRolloverFailure(note, e);
+            throw e;
+          })
+        : null;
+    if (rolled) byRoom.set(rb.roomId, rolled.note);
+    else {
       try {
-        await appendToThread(rb, vault, byRoom, note, lines, { platform, lastMessageAt, participants, linkAdd, participantIds: opts.participantIds });
-        break;
+        await vault.updateNote(note.id, { content, metadata, ...linkAdd });
       } catch (e) {
-        if (!isConflict(e) || attempt >= 1) throw e;
-        const fresh = await loadThread(vault, row);
-        lines = notYetWritten(wanted, note, fresh).map((it) => it.line);
-        note = fresh;
-        if (!lines.length) return false; // someone else already wrote every one of them
+        if (!isTooLarge(e)) throw e;
+        // The vault refused the write as too large (history_overflow on ≥0.7.9).
+        // Say so loudly, then try to shed the oldest messages in the same write.
+        console.error(
+          `[worker] matrix: ERROR vault refused append to ${note.path ?? note.id} for room ${rb.roomId} (${byteLen(content)} bytes, 413) — attempting rollover`,
+        );
+        const out = await rolloverThread(vault, note, { appendEntries: lines, metadata, force: true }).catch((re) => {
+          logRolloverFailure(note, re);
+          throw re;
+        });
+        if (!out) throw e;
+        byRoom.set(rb.roomId, out.note);
       }
     }
-    const stale = TRIAGE_TAGS.filter((t) => note!.tags?.includes(t));
+    const stale = TRIAGE_TAGS.filter((t) => note.tags?.includes(t));
     if (stale.length && vault.removeTags) {
-      const id = note.id;
       await vault
-        .removeTags(id, stale)
+        .removeTags(note.id, stale)
         .catch((e) =>
           console.warn(
-            `[worker] matrix: could not clear triage tags on ${id}: ${String(e)}`,
+            `[worker] matrix: could not clear triage tags on ${note.id}: ${String(e)}`,
           ),
         );
     }
@@ -1168,84 +976,19 @@ async function ingestRoom(
     // (WA)" DMs, say) is known from the listing — take the room-id path up front
     // instead of eating a 409 first. The catch below stays as the race backstop.
     const taken = [...byRoom.values()].some((n) => n.path === base);
-    let made: Note;
     try {
-      made = await vault.createNote({ ...params, path: taken ? `${base}-${roomSlug(rb.roomId)}` : base });
+      await vault.createNote({ ...params, path: taken ? `${base}-${roomSlug(rb.roomId)}` : base });
     } catch (e) {
       // 409 = a note already lives at that path (another room with the same
       // name — several "Unknown user (WA)" DMs, say). Disambiguate by room id.
       if (!/409/.test(String(e)) || taken) throw e;
-      made = await vault.createNote({
+      await vault.createNote({
         ...params,
         path: `${base}-${roomSlug(rb.roomId)}`,
       });
     }
-    if (made?.id) opts.onCreated?.({ ...made, path: made.path ?? null, tags: made.tags ?? params.tags, metadata: made.metadata ?? params.metadata });
   }
   return true;
-}
-
-/** One attempt at appending `lines` to `note` (the copy just read): metadata merge,
- *  then a plain compare-and-set write — or, past the size limit, the rollover write. */
-async function appendToThread(
-  rb: RoomBatch,
-  vault: IngestVault,
-  byRoom: Map<string, Note>,
-  note: Note,
-  lines: string[],
-  ctx: { platform: string; lastMessageAt: number; participants: string[]; linkAdd: { links?: { add: NoteLinkInput[] } }; participantIds?: string[] },
-): Promise<void> {
-  const { platform, lastMessageAt, participants, linkAdd } = ctx;
-  const cas = note.updatedAt ? { ifUpdatedAt: note.updatedAt } : {};
-  const prev = note.metadata ?? {};
-  const prevCount = typeof prev.messageCount === "number" ? prev.messageCount : 0;
-  // Incremental /sync only carries member DELTAS — union with the stored list
-  // (which the desktop seeded from full room state) rather than replacing it.
-  const prevParticipants = Array.isArray(prev.participants) ? (prev.participants as unknown[]).filter((x): x is string => typeof x === "string") : [];
-  const mergedParticipants = [...new Set([...prevParticipants, ...participants])];
-  const metadata = {
-    ...prev,
-    type: "message-thread",
-    platform,
-    matrixRoomId: rb.roomId,
-    // Monotonic: a bridge backfilling a gap posts OLD timestamps late, and
-    // must not rewind the high-water mark the repair sweep compares against.
-    lastMessageAt: Math.max(lastMessageAt, lastMessageAtOf(note)),
-    messageCount: prevCount + lines.length,
-    ...(mergedParticipants.length ? { participants: mergedParticipants } : {}),
-    ...(ctx.participantIds ? { participantIds: mergeIds(prev.participantIds, ctx.participantIds) } : {}),
-  };
-  const content = `${note.content.trimEnd()}\n${lines.join("\n")}`;
-  // Past the size limit, append + archive the oldest messages in ONE live
-  // write (archives first — see matrix-rollover.ts). `noRetry`: a 409 comes back
-  // here so the caller re-reads and recounts instead of re-appending blindly.
-  const rolled =
-    byteLen(content) > rolloverLimits().maxBytes
-      ? await rolloverThread(vault, note, { appendEntries: lines, metadata, noRetry: true }).catch((e) => {
-          if (!isConflict(e)) logRolloverFailure(note, e);
-          throw e;
-        })
-      : null;
-  if (rolled) {
-    byRoom.set(rb.roomId, rolled.note);
-    return;
-  }
-  try {
-    await vault.updateNote(note.id, { content, metadata, ...cas, ...linkAdd });
-  } catch (e) {
-    if (!isTooLarge(e)) throw e;
-    // The vault refused the write as too large (history_overflow on ≥0.7.9).
-    // Say so loudly, then try to shed the oldest messages in the same write.
-    console.error(
-      `[worker] matrix: ERROR vault refused append to ${note.path ?? note.id} for room ${rb.roomId} (${byteLen(content)} bytes, 413) — attempting rollover`,
-    );
-    const out = await rolloverThread(vault, note, { appendEntries: lines, metadata, force: true, noRetry: true }).catch((re) => {
-      if (!isConflict(re)) logRolloverFailure(note, re);
-      throw re;
-    });
-    if (!out) throw e;
-    byRoom.set(rb.roomId, out.note);
-  }
 }
 
 export interface ReconcileResult {
@@ -1256,9 +999,6 @@ export interface ReconcileResult {
   messages: number;
   /** Rooms still behind after this sweep (over the per-sweep repair budget). */
   deferred: number;
-  /** Present (> 0) only when the sweep hit its deadline: joined rooms it never
-   *  probed, plus behind rooms it had no time to repair. Left for the next sweep. */
-  unprobed?: number;
 }
 
 /**
@@ -1279,24 +1019,13 @@ export async function reconcileMatrix(
   > &
     Partial<Pick<MatrixClient, "profileName">>,
   vault: IngestVault,
-  opts: {
-    upTo: string;
-    maxRepairs?: number;
-    cap?: number;
-    concurrency?: number;
-    /** Overall budget for the sweep (MATRIX_RECONCILE_DEADLINE_MS). Past it no further
-     *  room is probed or repaired; what is left waits for the next sweep. */
-    deadlineMs?: number;
-    now?: () => number;
-  },
+  opts: { upTo: string; maxRepairs?: number; cap?: number; concurrency?: number },
 ): Promise<ReconcileResult> {
-  const clock = opts.now ?? Date.now;
-  const deadlineAt = opts.deadlineMs && opts.deadlineMs > 0 ? clock() + opts.deadlineMs : Infinity;
-  const expired = () => clock() >= deadlineAt;
-  let unprobed = 0;
   const joined = await client.joinedRooms();
-  // Lean: rows only. A body is read by `loadThread`, for a note about to be written.
-  const existing = await listThreadRows(vault);
+  const existing = await vault.listNotes({
+    tags: ["message-thread"],
+    includeContent: true,
+  });
   const byRoom = threadsByRoom(existing);
   await sweepOversizedThreads(vault, byRoom);
 
@@ -1305,11 +1034,6 @@ export async function reconcileMatrix(
   const queue = [...joined];
   const worker = async () => {
     for (let id = queue.shift(); id; id = queue.shift()) {
-      if (expired()) {
-        unprobed += queue.length + 1;
-        queue.length = 0;
-        return;
-      }
       try {
         const { messages } = await client.messagesBefore(id, { from: opts.upTo, cap: 1 });
         const latest = messages[0]?.ts;
@@ -1328,13 +1052,7 @@ export async function reconcileMatrix(
   const budget = opts.maxRepairs ?? 25;
   let repaired = 0;
   let messages = 0;
-  const todo = behind.slice(0, budget);
-  for (let i = 0; i < todo.length; i++) {
-    const b = todo[i]!;
-    if (expired()) {
-      unprobed += todo.length - i;
-      break;
-    }
+  for (const b of behind.slice(0, budget)) {
     try {
       const gap = await client.messagesBefore(b.roomId, {
         from: opts.upTo,
@@ -1369,6 +1087,5 @@ export async function reconcileMatrix(
     repaired,
     messages,
     deferred: Math.max(0, behind.length - budget),
-    ...(unprobed > 0 ? { unprobed } : {}),
   };
 }

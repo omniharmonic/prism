@@ -193,14 +193,25 @@ test("dispatch routed LOCAL is refused (dispatch error, never a silent claude fa
   lmLoaded = false;
   d = await run();
   assert.match(d.error!, /not loaded .* refusing to JIT-load/);
+  // Interactive local AI shares the skills' JIT-load rule (macOS sample: a swap storm in progress).
+  setLocalAiMemoryProbeForTests(() => ({ swapUsedPct: 85, freePct: 60, swapFreeMb: 920, swapTotalMb: 6144, swapDiskFreeMb: 160_000, memTotalMb: 16_384, pressureLevel: 1, swapoutPerS: 6000, pagingWindowS: 2, reclaimableMb: 6000 }));
+  setLocalAiSettingsForTests({ localBaseUrl: "http://lm.test/v1", swapMaxPct: null, freeMinPct: 15, loadFreeMinPct: 35 });
+  d = await run();
+  assert.match(d.error!, /local model refused: .*not loaded and the system is swapping out 6000 pages\/s .* refusing to JIT-load/);
   lmLoaded = true;
+  d = await run();
+  assert.equal(d.status, "done", "a resident model is unaffected by the swap rule");
+  const ranLocal = lmCalls.filter((c) => c.url.endsWith("/chat/completions")).length;
+  setLocalAiSettingsForTests({ localBaseUrl: "http://lm.test/v1", swapMaxPct: 80, freeMinPct: 15, loadFreeMinPct: 35 });
+  setLocalAiMemoryProbeForTests(() => ({ swapUsedPct: 5, freePct: 25 }));
   const held = tryAcquireLocalModel();
   assert.ok(held, "a skill run holds the local slot");
   d = await run();
   assert.match(d.error!, /another local-model run is in progress/);
   releaseLocalModel(held);
   assert.equal(spawned.length, 0, "never fell back to claude");
-  assert.equal(lmCalls.filter((c) => c.url.endsWith("/chat/completions")).length, 0);
+  assert.equal(lmCalls.filter((c) => c.url.endsWith("/chat/completions")).length, ranLocal);
+  assert.equal(ranLocal, 1, "only the resident-model run reached the model");
 });
 
 test("dispatch routed CLAUDE: the chosen --model is passed; full-tools dispatches and non-interactive skills ignore routing", async () => {

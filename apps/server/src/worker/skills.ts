@@ -71,6 +71,7 @@ import { VaultConflictError, vaultClient, type Note } from "../parachute";
 import { resolveVaultEntry } from "../db";
 import {
   admissionVerdict,
+  DARWIN_SWAP_DISK_MIN_FREE_MB,
   defaultMemoryProbe,
   startDispatch,
   subscribe,
@@ -112,6 +113,8 @@ export interface LocalStatus {
   /** true = the model is resident; false = a request would JIT-load it; null = unknown. */
   loaded: boolean | null;
   error?: string;
+  /** The model's size in bytes, when the server reports one (else SKILLS_LOCAL_MODEL_MB). */
+  sizeBytes?: number;
 }
 
 /** The local OpenAI-compatible model server (LM Studio). */
@@ -152,6 +155,26 @@ export interface SkillsSettings {
    *  start threshold stopped every run after a note or two). The swap floor still applies. */
   runFreeMinPct?: number;
   loadFreeMinPct: number;
+  /** JIT-load headroom (a model that is NOT resident): memory that is free now must
+   *  cover `modelSize × loadHeadroom + loadReserveMb`. Defaults 1.0 / 2048 MB. */
+  loadHeadroom?: number;
+  loadReserveMb?: number;
+  /** Model size used when the model server reports none. Default 7168 MB. */
+  localModelMb?: number;
+  /** Never JIT-load while swap is more than this % used. null/unset = the platform
+   *  default: OFF on macOS (its swap total is resized on demand, so the % means
+   *  nothing — a healthy Mac sits at 80–95 %), 80 elsewhere. ≥100 = off. */
+  loadMaxSwapUsedPct?: number | null;
+  /** macOS: never JIT-load while the system is swapping OUT faster than this many
+   *  pages/s (a storm already in progress). Default 2000; 0 = off. */
+  loadMaxSwapoutPerS?: number;
+  /** How long `admitLocal` waits between two probes to get a FRESH swap-out rate
+   *  when the prober's last sample is stale. Default 2000 ms; 0 = never wait. */
+  loadPagingWindowMs?: number;
+  /** What "free now" means for the headroom rule: `free-pct` (memory_pressure's
+   *  free % × RAM — the default) or `reclaimable` (macOS vm_stat: free + cache
+   *  pages, i.e. what can be handed out without paging anything out; stricter). */
+  loadHeadroomSource?: "free-pct" | "reclaimable";
   localRunTimeoutMs: number;
 }
 
@@ -545,21 +568,113 @@ export function structuredFallbackPrompt(rubric: string): string {
 
 // ── local admission ──────────────────────────────────────────────────────────
 
-/** Decide whether a local-model run may start now. Pure. */
+export const DEFAULT_LOAD_HEADROOM = 1.0;
+export const DEFAULT_LOAD_RESERVE_MB = 2048;
+export const DEFAULT_LOCAL_MODEL_MB = 7168;
+/** Swap-used ceiling for a JIT load on NON-darwin samples (darwin: off). */
+export const DEFAULT_LOAD_MAX_SWAP_USED_PCT = 80;
+export const DEFAULT_LOAD_MAX_SWAPOUT_PER_S = 2000;
+export const DEFAULT_LOAD_PAGING_WINDOW_MS = 2000;
+/** A swap-out rate measured over more than this is not "recent". */
+export const PAGING_SAMPLE_MAX_AGE_S = 120;
+
+type AdmissionSettings = Pick<
+  SkillsSettings,
+  "swapMaxPct" | "freeMinPct" | "loadFreeMinPct" | "loadHeadroom" | "loadReserveMb" | "localModelMb" | "loadMaxSwapUsedPct" | "loadMaxSwapoutPerS" | "loadHeadroomSource"
+> & { swapMinFreeMb?: number };
+
+const posOr = (n: number | null | undefined, d: number): number => (typeof n === "number" && Number.isFinite(n) && n >= 0 ? n : d);
+
+/**
+ * May a model that is NOT resident be JIT-loaded now? Pure; called only when the
+ * model's state is "not loaded" or unknown, after the ordinary admission passed
+ * (which already refuses a kernel pressure level of warn/critical).
+ *
+ * The 2026-10-03 stall: 54–76 % memory "free" while swap was nearly full; the
+ * scheduler's request made LM Studio load a ~7 GB model and macOS paged the Prism
+ * server and the vault out (RSS 357 → 39 MB) — /health dead for > 10 s.
+ *
+ *  1. HEADROOM, with no credit for swap on macOS: memory free now ≥ model ×
+ *     headroom + reserve. "Free now" = memory_pressure free % × RAM by default, or
+ *     vm_stat's reclaimable MB with `loadHeadroomSource: "reclaimable"`. (Linux:
+ *     MemAvailable + free swap, as before.)
+ *  2. A SWAP STORM ALREADY RUNNING (macOS): swap-outs per second over the prober's
+ *     last interval above `loadMaxSwapoutPerS`. A rate, so a healthy Mac sitting at
+ *     80–95 % swap used reads ~0.
+ *  3. Swap-used % — only where the number means something: OFF on macOS (the OS
+ *     resizes swap, and `admissionVerdict` ignores it there too), 80 % elsewhere.
+ *
+ * HONEST LIMIT: every signal here is read BEFORE the load. A calm machine with
+ * "enough" free memory is admitted, and the load itself can still start the
+ * storm. This guard refuses the cases it can see; it does not make a 7 GB load on
+ * a 16 GB host safe. Keeping the model resident is what does.
+ *
+ * Any quantity the probe did not report skips the rule that needs it (fail-open).
+ */
+export function jitLoadRefusal(sample: MemorySample | null, model: string, sizeBytes: number | undefined, s: AdmissionSettings): string | null {
+  if (!sample) return null;
+  const darwin = sample.swapFreeMb !== undefined;
+  const refuse = (why: string) => `model '${model}' is not loaded and ${why} — refusing to JIT-load it`;
+
+  const maxOut = posOr(s.loadMaxSwapoutPerS, DEFAULT_LOAD_MAX_SWAPOUT_PER_S);
+  if (
+    maxOut > 0 &&
+    typeof sample.swapoutPerS === "number" &&
+    typeof sample.pagingWindowS === "number" &&
+    sample.pagingWindowS <= PAGING_SAMPLE_MAX_AGE_S &&
+    sample.swapoutPerS > maxOut
+  ) {
+    return refuse(`the system is swapping out ${sample.swapoutPerS.toFixed(0)} pages/s (> ${maxOut}) over the last ${sample.pagingWindowS.toFixed(0)} s`);
+  }
+
+  const maxSwap = posOr(s.loadMaxSwapUsedPct, darwin ? 100 : DEFAULT_LOAD_MAX_SWAP_USED_PCT);
+  if (maxSwap < 100 && sample.swapUsedPct != null && sample.swapUsedPct > maxSwap) {
+    return refuse(`swap is already ${sample.swapUsedPct.toFixed(0)}% used (> ${maxSwap}%)`);
+  }
+
+  const modelMb = typeof sizeBytes === "number" && Number.isFinite(sizeBytes) && sizeBytes > 0 ? sizeBytes / (1024 * 1024) : posOr(s.localModelMb, DEFAULT_LOCAL_MODEL_MB);
+  const need = modelMb * posOr(s.loadHeadroom, DEFAULT_LOAD_HEADROOM) + posOr(s.loadReserveMb, DEFAULT_LOAD_RESERVE_MB);
+  if (s.loadHeadroomSource === "reclaimable" && typeof sample.reclaimableMb === "number") {
+    if (sample.reclaimableMb < need) {
+      return refuse(`only ${sample.reclaimableMb.toFixed(0)} MB can be freed without paging other processes out (< ${need.toFixed(0)} MB needed to load it)`);
+    }
+    return null;
+  }
+  if (sample.freePct == null || sample.memTotalMb == null || !(sample.memTotalMb > 0)) return null;
+  let have = (sample.freePct / 100) * sample.memTotalMb;
+  let what = "free memory";
+  if (!darwin) {
+    // Linux: free swap is real, fixed headroom.
+    if (sample.swapTotalMb == null) return null;
+    have += sample.swapTotalMb * (1 - (sample.swapUsedPct ?? 0) / 100);
+    what = "free memory + free swap";
+  }
+  if (have < need) return refuse(`${what} is ${have.toFixed(0)} MB (< ${need.toFixed(0)} MB needed to load it)`);
+  return null;
+}
+
+/** Decide whether a local-model run may start now. Pure. THE one rule for both the
+ *  skill scheduler and interactive local AI (both call `admitLocal`). `jit` marks a
+ *  refusal of the model LOAD (as opposed to general memory pressure / reachability). */
 export function localAdmission(
   sample: MemorySample | null,
   status: LocalStatus,
   model: string,
-  s: Pick<SkillsSettings, "swapMaxPct" | "freeMinPct" | "loadFreeMinPct"> & { swapMinFreeMb?: number },
-): { ok: boolean; reason: string | null } {
+  s: AdmissionSettings,
+): { ok: boolean; reason: string | null; jit?: true } {
   if (!status.reachable) return { ok: false, reason: `local model server unreachable${status.error ? ` (${status.error})` : ""}` };
   const v = admissionVerdict(sample, s.swapMaxPct, s.freeMinPct, s.swapMinFreeMb);
   if (!v.ok) return { ok: false, reason: v.reason };
   if (status.loaded !== true && sample?.freePct != null && sample.freePct < s.loadFreeMinPct) {
     return {
       ok: false,
+      jit: true,
       reason: `model '${model}' is not loaded and only ${sample.freePct.toFixed(0)}% memory is free (< ${s.loadFreeMinPct}%) — refusing to JIT-load it`,
     };
+  }
+  if (status.loaded !== true) {
+    const refusal = jitLoadRefusal(sample, model, status.sizeBytes, s);
+    if (refusal) return { ok: false, jit: true, reason: refusal };
   }
   return { ok: true, reason: null };
 }
@@ -605,7 +720,7 @@ export interface PassResult {
   /** Skills whose run was accepted this pass (lastRun written). */
   dispatched: string[];
   /** Skills that were due but refused admission (stay due). */
-  refused: Array<{ skill: string; reason: string }>;
+  refused: Array<{ skill: string; reason: string; /** The refusal was of the model LOAD (jitLoadRefusal). */ jit?: true }>;
   /** Skills leased to the server this pass. */
   leased: string[];
   /** `agent-skill` notes skipped as untrusted (wrong location or a non-owner creator). */
@@ -829,7 +944,7 @@ export async function runSkillsOnce(deps: SkillsDeps, onOutcome?: (r: RunResult)
       const slot = verdict.ok ? tryAcquireLocalModel() : null;
       if (!verdict.ok || !slot) {
         const reason = verdict.ok ? "another local-model run is in progress" : verdict.reason!;
-        res.refused.push({ skill: skillName, reason });
+        res.refused.push({ skill: skillName, reason, ...(!verdict.ok && verdict.jit ? { jit: true as const } : {}) });
         if (lastRefusal.get(skillName) !== reason) {
           lastRefusal.set(skillName, reason);
           deps.log(`[skills] '${skillName}' deferred: ${reason} (stays due; retried next tick)`);
@@ -906,7 +1021,10 @@ function safeProbe(p: MemoryProbe): MemorySample | null {
   }
 }
 
-export async function admitLocal(deps: Pick<SkillsDeps, "local" | "memoryProbe" | "settings">, model: string): Promise<{ ok: boolean; reason: string | null }> {
+export async function admitLocal(
+  deps: Pick<SkillsDeps, "local" | "memoryProbe" | "settings"> & { sleep?: (ms: number) => Promise<void> },
+  model: string,
+): Promise<{ ok: boolean; reason: string | null; jit?: true }> {
   // Advisory early-out only; the authoritative check is tryAcquireLocalModel().
   if (localModelBusy()) return { ok: false, reason: "another local-model run is in progress" };
   let status: LocalStatus;
@@ -915,7 +1033,18 @@ export async function admitLocal(deps: Pick<SkillsDeps, "local" | "memoryProbe" 
   } catch (e) {
     status = { reachable: false, loaded: null, error: (e as Error).message };
   }
-  return localAdmission(safeProbe(deps.memoryProbe), status, model, deps.settings);
+  let sample = safeProbe(deps.memoryProbe);
+  // A JIT load is judged on a RECENT swap-out rate. The prober keeps one earlier
+  // vm_stat sample; when that is missing or old (the scheduler asks hourly), take
+  // a second probe a moment later. Only on this path, only when the prober reports
+  // paging at all (macOS), never for a resident model.
+  const windowMs = posOr(deps.settings.loadPagingWindowMs, DEFAULT_LOAD_PAGING_WINDOW_MS);
+  const stale = sample != null && sample.swapoutPerS !== undefined && (sample.pagingWindowS == null || sample.pagingWindowS > PAGING_SAMPLE_MAX_AGE_S);
+  if (status.reachable && status.loaded !== true && stale && windowMs > 0 && posOr(deps.settings.loadMaxSwapoutPerS, DEFAULT_LOAD_MAX_SWAPOUT_PER_S) > 0) {
+    await (deps.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms))))(windowMs);
+    sample = safeProbe(deps.memoryProbe) ?? sample;
+  }
+  return localAdmission(sample, status, model, deps.settings);
 }
 
 // ── real implementations ────────────────────────────────────────────────────
@@ -934,9 +1063,11 @@ export function lmStudioClient(baseUrl: string, fetchImpl: FetchLike = (u, i) =>
       try {
         const r = await get(`${root}/api/v0/models`);
         if (r.ok) {
-          const j = (await r.json()) as { data?: Array<{ id?: string; state?: string }> };
+          const j = (await r.json()) as { data?: Array<{ id?: string; state?: string; size_bytes?: unknown; size?: unknown }> };
           const m = (j.data ?? []).find((x) => x.id === model);
-          return { reachable: true, loaded: m ? m.state === "loaded" : false };
+          // LM Studio's v0 listing carries no size today; honour one if it ever does.
+          const size = [m?.size_bytes, m?.size].find((n): n is number => typeof n === "number" && Number.isFinite(n) && n > 0);
+          return { reachable: true, loaded: m ? m.state === "loaded" : false, ...(size ? { sizeBytes: size } : {}) };
         }
         const r2 = await get(`${base}/models`);
         return r2.ok ? { reachable: true, loaded: null } : { reachable: false, loaded: null, error: `HTTP ${r2.status}` };
@@ -1029,6 +1160,13 @@ export function settingsFromConfig(): SkillsSettings {
     freeMinPct: config.skillsFreeMinPct,
     runFreeMinPct: config.skillsRunFreeMinPct,
     loadFreeMinPct: config.skillsLoadFreeMinPct,
+    loadHeadroom: config.skillsLoadHeadroom,
+    loadReserveMb: config.skillsLoadReserveMb,
+    localModelMb: config.skillsLocalModelMb,
+    loadMaxSwapUsedPct: config.skillsLoadMaxSwapUsedPct,
+    loadMaxSwapoutPerS: config.skillsLoadMaxSwapoutPerS,
+    loadPagingWindowMs: config.skillsLoadPagingWindowMs,
+    loadHeadroomSource: config.skillsLoadHeadroomSource,
     localRunTimeoutMs: config.skillsLocalRunTimeoutMs,
   };
 }

@@ -17,9 +17,10 @@ import { config } from "../config";
 import { getSourceHealth } from "../worker/health";
 import { calendarMode, readCalendarIntents, readCalendarLastPass, verifyCalendarIntents } from "../worker/calendar";
 import { protonMode, readProtonIntents, readProtonLastPass, verifyProtonIntents } from "../worker/proton";
-import { listActionAudit } from "../actions/store";
+import { listActionAudit, recordAction } from "../actions/store";
 import { vault, vaultClient, VaultConflictError, VaultError } from "../parachute";
-import { resolveActor } from "../auth/actor";
+import { resolveActor, requestVia } from "../auth/actor";
+import { csrfRefusal } from "./actions";
 import { signCapability } from "../auth/capability";
 import { tokenExpiries } from "../auth/vault-token";
 import { EDITABLE_ENV, applyEnvEdit, validateEnvEdit } from "../env-edit";
@@ -103,7 +104,7 @@ import {
   type Publication,
 } from "../db";
 import { runVaultMirrorOnce } from "../worker/vault-mirror";
-import { startWorker } from "../worker/scheduler";
+import { startWorker, lostMatrixRooms, clearLostMatrixRooms } from "../worker/scheduler";
 import { vaultRegistry } from "../config";
 import { createVaultViaCli, seedVault } from "../vault-provision";
 import { noteKind, resolveSuggestionsInHtmlAsync, settleUnsaved, unsavedPermanentBody, unsavedPermanentReason } from "../collab";
@@ -1190,6 +1191,26 @@ async function tunnelStatus(): Promise<Record<string, unknown>> {
 acl.get("/workers", async (c) => {
   if (!isServerOwner(c)) return c.json({ error: "forbidden" }, 403);
   return c.json({ sources: await getSourceHealth(), checkedAt: new Date().toISOString() });
+});
+
+/** Matrix rooms the ingester gave up replaying (worker/scheduler.ts): while any is
+ *  listed the `matrix` source reads `failing`. GET to look (ids + cursors only, never
+ *  a room name); DELETE once looked at — the rooms may then be replayed again if they
+ *  fail again. Server-owner only; the DELETE is CSRF-guarded and audited (counts). */
+acl.get("/workers/matrix/lost", (c) => {
+  if (!isServerOwner(c)) return c.json({ error: "forbidden" }, 403);
+  const vaultId = resolveActor(c).vaultId;
+  return c.json({ vaultId, rooms: lostMatrixRooms(vaultId) });
+});
+acl.delete("/workers/matrix/lost", (c) => {
+  if (!isServerOwner(c)) return c.json({ error: "forbidden" }, 403);
+  const via = requestVia(c);
+  const csrf = csrfRefusal(c, via);
+  if (csrf) return csrf;
+  const actor = resolveActor(c);
+  const cleared = clearLostMatrixRooms(actor.vaultId);
+  recordAction({ actorEmail: config.ownerEmail, via, origin: via === "session" || via === "device" ? "human" : "agent", action: "admin.matrix-lost-clear", vaultId: actor.vaultId, target: { cleared }, idempotencyKey: null, status: "ok", error: null });
+  return c.json({ ok: true, cleared });
 });
 
 /** Server calendar ingest (WP1.3): the last persisted intents (what the server

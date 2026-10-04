@@ -91,3 +91,66 @@ test("GET /api/vaults: owner sees the single primary vault (no token); anon deni
   assert.equal("token" in body[0]!, false);
   assert.equal("url" in body[0]!, false);
 });
+
+// ── /health is bounded and has a vault-free liveness form (host-stall fix) ────
+
+test("GET /health with a vault that never answers → 503 {ok:false, vault:false} within ~2.5 s", async () => {
+  const app = createApp();
+  const prev = globalThis.fetch;
+  let aborted = false;
+  // A vault that accepts the request and never responds; it only settles when aborted.
+  globalThis.fetch = ((_input: unknown, init?: RequestInit) =>
+    new Promise((_resolve, reject) => {
+      init?.signal?.addEventListener("abort", () => {
+        aborted = true;
+        reject(init.signal!.reason);
+      });
+    })) as typeof fetch;
+  try {
+    const t0 = Date.now();
+    // (A ref'd guard timer: AbortSignal.timeout's own timer does not hold the loop open.)
+    let guard: NodeJS.Timeout | undefined;
+    const r = (await Promise.race([
+      app.request("/health"),
+      new Promise((_r, rej) => { guard = setTimeout(() => rej(new Error("GET /health hung with the vault")), 4000); }),
+    ]).finally(() => clearTimeout(guard))) as Response;
+    const took = Date.now() - t0;
+    assert.equal(r.status, 503);
+    assert.deepEqual(await r.json(), { ok: false, vault: false });
+    assert.ok(took < 2600, `answered in ${took} ms`);
+    assert.ok(aborted, "the vault request was aborted, not left pending");
+  } finally {
+    globalThis.fetch = prev;
+  }
+});
+
+test("GET /health?live=1 answers 200 at once and never calls the vault", async () => {
+  const app = createApp();
+  const prev = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = (() => {
+    calls++;
+    return new Promise(() => {});
+  }) as typeof fetch;
+  try {
+    const t0 = Date.now();
+    const r = await app.request("/health?live=1");
+    assert.equal(r.status, 200);
+    assert.deepEqual(await r.json(), { ok: true, live: true });
+    assert.ok(Date.now() - t0 < 200);
+    assert.equal(calls, 0, "no vault call");
+  } finally {
+    globalThis.fetch = prev;
+  }
+});
+
+test("GET /health keeps its shape: healthy vault 200 {ok,vault}, down vault 503", async () => {
+  const app = createApp();
+  let r = await app.request("/health");
+  assert.equal(r.status, 200);
+  assert.deepEqual(await r.json(), { ok: true, vault: true });
+  fv.healthy = false;
+  r = await app.request("/health");
+  assert.equal(r.status, 503);
+  assert.deepEqual(await r.json(), { ok: false, vault: false });
+});

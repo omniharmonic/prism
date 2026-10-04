@@ -11,7 +11,7 @@ import { roleAtLeast } from "../roles";
 import { config } from "../config";
 import { resolveVaultEntry } from "../db";
 import { putSecret, getSecret, deleteSecret, secretsConfigured } from "../secrets";
-import { runMatrixOnce, runFathomOnce, runFirefliesOnce, runClickUpOnce } from "../worker/scheduler";
+import { runMatrixOnce, matrixPassRunning, runFathomOnce, runFirefliesOnce, runClickUpOnce } from "../worker/scheduler";
 import { BridgeCertDetectError, PROTON_CREDENTIAL, detectBridgeCert, validateDetectTarget, normalizeFingerprint, protonMode, protonPassRunning, runProtonOnce, validateProtonCredential } from "../worker/proton";
 import { consumeRateLimit } from "../middleware/ratelimit";
 
@@ -72,6 +72,9 @@ integrations.delete("/matrix", (c) => {
 // its interval). Returns the message count ingested this pass.
 integrations.post("/matrix/sync", async (c) => {
   const actor = resolveActor(c);
+  // One pass per vault at a time: a second one started from the same cursor would
+  // append the same events again. Never queued — the running pass covers it.
+  if (matrixPassRunning(resolveVaultEntry(actor.vaultId).id)) return c.json({ error: "busy", detail: "a Matrix pass is already running for this vault" }, 409);
   try {
     const messages = await runMatrixOnce(resolveVaultEntry(actor.vaultId));
     return c.json({ ok: true, messages });

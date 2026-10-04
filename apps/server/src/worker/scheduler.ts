@@ -21,7 +21,7 @@ import { getVaultRegistry, getWorkerCursor, setWorkerCursor, listVaultMirrors } 
 import { getSecret, secretsConfigured, otherSecretOwners } from "../secrets";
 import { config, type VaultEntry } from "../config";
 import { vault, vaultClient } from "../parachute";
-import { MatrixClient, ingestMatrix, reconcileMatrix, type IngestVault, type MatrixCreds } from "./matrix";
+import { MatrixClient, ingestMatrix, reconcileMatrix, type IngestVault, type MatrixCreds, type RoomReplay } from "./matrix";
 import { FathomClient, ingestFathom } from "./fathom";
 import { FirefliesClient, ingestAndCleanupFireflies, type FirefliesBudget, type FirefliesVault } from "./fireflies";
 import { ClickUpClient, ingestClickUp, type ClickUpCredential, type ClickUpVault } from "./clickup";
@@ -201,28 +201,115 @@ let matrixPass = 0;
 const matrixSelf = new Map<string, string>();
 const lastMatrixReconcileAt = new Map<string, number>();
 const lastBridgeResyncAt = new Map<string, number>();
-export async function runMatrixOnce(entry: VaultEntry): Promise<number> {
-  // The workspace's Matrix integration is owned by the operator (config.ownerEmail)
-  // for now; a per-member model can key it differently later.
-  const raw = getSecret(entry.id, config.ownerEmail, "matrix");
-  if (!raw) {
-    warnMissingSecret(entry.id, "matrix");
-    return 0;
+
+/** What a Matrix pass talks to. Tests inject both; production builds them from the stored credential. */
+export interface MatrixPassDeps {
+  client?: Parameters<typeof ingestMatrix>[0] & Partial<Parameters<typeof reconcileMatrix>[0]> & { whoami?: () => Promise<string>; sendText?: (roomId: string, text: string) => Promise<unknown> };
+  vault?: IngestVault;
+}
+
+/** A room a pass failed on, kept until a later pass has replayed its window. */
+interface PendingReplay extends RoomReplay {
+  tries: number;
+}
+const MATRIX_REPLAY_CURSOR = "matrix-replay";
+const MATRIX_LOST_CURSOR = "matrix-lost";
+const MATRIX_REPLAY_CAP = 2000;
+
+function readJsonCursor<T>(vaultId: string, kind: string): T[] {
+  try {
+    const v = JSON.parse(getWorkerCursor(vaultId, kind) ?? "[]");
+    return Array.isArray(v) ? (v as T[]) : [];
+  } catch {
+    return [];
   }
-  const creds = JSON.parse(raw) as MatrixCreds;
-  const client = new MatrixClient(creds);
+}
+/** A room given up on after MATRIX_REPLAY_MAX_TRIES failed replays. */
+export interface LostMatrixRoom {
+  roomId: string;
+  since: string | null;
+  tries: number;
+  at: string;
+}
+/** Rooms given up on and not yet cleared by the owner: the `matrix` source reads
+ *  `failing` while this is non-empty (worker/health.ts), and they are not replayed
+ *  again (a room that fails forever must not cycle try → give up → try). */
+export const lostMatrixRooms = (vaultId: string): LostMatrixRoom[] =>
+  readJsonCursor<LostMatrixRoom>(vaultId, MATRIX_LOST_CURSOR).filter((p) => p && typeof p.roomId === "string");
+/** The owner looked: forget the given-up rooms (they may be replayed again if they fail again). */
+export function clearLostMatrixRooms(vaultId: string): number {
+  const n = lostMatrixRooms(vaultId).length;
+  if (n) setWorkerCursor(vaultId, MATRIX_LOST_CURSOR, "[]");
+  return n;
+}
+
+/** Rooms waiting for a replay (diagnostics + tests). */
+export const pendingMatrixReplays = (vaultId: string): Array<{ roomId: string; since?: string; tries: number }> =>
+  readJsonCursor<PendingReplay>(vaultId, MATRIX_REPLAY_CURSOR).filter((p) => p && typeof p.roomId === "string");
+
+/** One pass per vault at a time. The tick fires every 60 s whether or not the last
+ *  one finished, and `POST /api/integrations/matrix/sync` runs a pass on demand; two
+ *  passes started from the same cursor would each append the same events. */
+const matrixInFlight = new Map<string, Promise<number>>();
+export const matrixPassRunning = (vaultId: string): boolean => matrixInFlight.has(vaultId);
+
+/** The hourly reconcile sweep (+ the bridge resync) has its OWN per-vault guard and
+ *  runs AFTER the ingest guard is released: it can take minutes (one probe per joined
+ *  room), and ingest must keep its 60 s cadence meanwhile. The two may write the same
+ *  thread at once — the compare-and-set append + `notYetWritten` make that safe. */
+const matrixReconcileInFlight = new Map<string, Promise<void>>();
+export const matrixReconcileRunning = (vaultId: string): boolean => matrixReconcileInFlight.has(vaultId);
+/** Resolves when the vault's background reconcile (if any) has finished. */
+export const matrixReconcileSettled = (vaultId: string): Promise<void> => matrixReconcileInFlight.get(vaultId) ?? Promise.resolve();
+
+/**
+ * One Matrix pass for a vault. If one is already running, this JOINS it (returns
+ * the running pass's promise) — it never starts a second. The tick skips instead
+ * (and records no outcome, so a pass that hangs shows up as `stale`); the manual
+ * route answers 409 `busy`.
+ */
+export function runMatrixOnce(entry: VaultEntry, deps: MatrixPassDeps = {}): Promise<number> {
+  const running = matrixInFlight.get(entry.id);
+  if (running) return running;
+  const pass = runMatrixPass(entry, deps).finally(() => {
+    if (matrixInFlight.get(entry.id) === pass) matrixInFlight.delete(entry.id);
+  });
+  matrixInFlight.set(entry.id, pass);
+  return pass;
+}
+
+async function runMatrixPass(entry: VaultEntry, deps: MatrixPassDeps): Promise<number> {
+  await Promise.resolve(); // never run any of the pass in the caller's synchronous frame
+  let client = deps.client;
+  if (!client) {
+    // The workspace's Matrix integration is owned by the operator (config.ownerEmail)
+    // for now; a per-member model can key it differently later.
+    const raw = getSecret(entry.id, config.ownerEmail, "matrix");
+    if (!raw) {
+      warnMissingSecret(entry.id, "matrix");
+      return 0;
+    }
+    // Every homeserver read is bounded: with the one-pass-at-a-time guard, a read
+    // that never answers would otherwise stop Matrix ingest until a restart.
+    client = new MatrixClient(JSON.parse(raw) as MatrixCreds, fetch, config.matrixReadTimeoutMs > 0 ? config.matrixReadTimeoutMs : undefined);
+  }
+  // …and so is every vault call (a pass makes one body read per active room).
+  const ingestVault = deps.vault ?? (vaultClient(entry.id, config.matrixVaultTimeoutMs > 0 ? { timeoutMs: config.matrixVaultTimeoutMs } : {}) as unknown as IngestVault);
   const since = getWorkerCursor(entry.id, "matrix") ?? undefined;
+  const pending = pendingMatrixReplays(entry.id);
   // MATRIX_LINK_PEOPLE: the sync user is never linked as a participant.
   let selfUserId: string | null = null;
   if (config.matrixLinkPeople || config.matrixLinkExisting) {
     selfUserId = matrixSelf.get(entry.id) ?? null;
     if (!selfUserId) {
-      selfUserId = await client.whoami().catch(() => null);
+      selfUserId = client.whoami ? await client.whoami().catch(() => null) : null;
       if (selfUserId) matrixSelf.set(entry.id, selfUserId);
     }
   }
-  const res = await ingestMatrix(client, vaultClient(entry.id) as unknown as IngestVault, {
+  const res = await ingestMatrix(client, ingestVault, {
     since,
+    // Replay needs a cursor to page back from; with none (first pass ever) the rows wait.
+    ...(since && pending.length ? { replay: pending.map((p) => ({ roomId: p.roomId, ...(p.since ? { since: p.since } : {}) })) } : {}),
     autoJoin: config.matrixAutoJoin,
     maxJoinsPerRun: config.matrixAutoJoinPerRun,
     // Probe the full invite backlog every 10th pass (~10 min) — or every pass
@@ -242,6 +329,29 @@ export async function runMatrixOnce(entry: VaultEntry): Promise<number> {
       : {}),
   });
   if (res.peopleCreated > 0) console.log(`[worker] matrix ${entry.id}: ${res.peopleCreated} person note(s) created (MATRIX_LINK_PEOPLE)`);
+  // Failed rooms are persisted BEFORE the cursor moves past them: a crash between
+  // the two re-runs the pass, it never forgets a room.
+  const next: PendingReplay[] = [];
+  const gaveUp: PendingReplay[] = [];
+  for (const p of pending) {
+    if (res.replayed.ok.includes(p.roomId)) continue;
+    if (!res.replayed.failed.includes(p.roomId)) next.push(p); // not attempted this pass
+    else if (p.tries + 1 >= config.matrixReplayMaxTries) gaveUp.push({ ...p, tries: p.tries + 1 });
+    else next.push({ ...p, tries: p.tries + 1 });
+  }
+  const alreadyLost = new Set(lostMatrixRooms(entry.id).map((l) => l.roomId));
+  for (const roomId of res.failedRooms) {
+    // Given up on and not cleared yet: not queued again (it would cycle forever).
+    if (alreadyLost.has(roomId)) continue;
+    // A room already waiting keeps its OLDER cursor (the wider window).
+    if (!next.some((p) => p.roomId === roomId)) next.push({ roomId, ...(since ? { since } : {}), tries: 0 });
+  }
+  while (next.length > MATRIX_REPLAY_CAP) gaveUp.push(next.shift()!);
+  if (pending.length || next.length) setWorkerCursor(entry.id, MATRIX_REPLAY_CURSOR, JSON.stringify(next));
+  if (gaveUp.length) {
+    const lost = [...lostMatrixRooms(entry.id), ...gaveUp.map((p) => ({ roomId: p.roomId, since: p.since ?? null, tries: p.tries, at: new Date().toISOString() }))].slice(-200);
+    setWorkerCursor(entry.id, MATRIX_LOST_CURSOR, JSON.stringify(lost));
+  }
   if (res.nextBatch) setWorkerCursor(entry.id, "matrix", res.nextBatch);
   if (res.messages > 0 || res.joined > 0) {
     console.log(`[worker] matrix ${entry.id}: +${res.messages} msgs (${res.created} new threads, ${res.updated} updated, ${res.joined} rooms joined)`);
@@ -254,33 +364,54 @@ export async function runMatrixOnce(entry: VaultEntry): Promise<number> {
 
   // The repair sweep, bounded to the cursor just persisted so it never overlaps
   // the next incremental pass. Runs on boot too (the map starts empty) — which
-  // is exactly when a downtime gap needs closing.
+  // is exactly when a downtime gap needs closing. It is STARTED here and runs in
+  // the background under its own guard: this pass (and the ingest guard) end now.
   const now = Date.now();
-  if (res.nextBatch && config.matrixReconcileMs > 0 && now - (lastMatrixReconcileAt.get(entry.id) ?? 0) >= config.matrixReconcileMs) {
-    lastMatrixReconcileAt.set(entry.id, now);
-    try {
-      const r = await reconcileMatrix(client, vaultClient(entry.id) as unknown as IngestVault, {
-        upTo: res.nextBatch,
-        maxRepairs: config.matrixReconcilePerSweep,
-      });
-      const line = `[worker] matrix ${entry.id} reconcile: ${r.scanned} rooms scanned, ${r.behind} behind, ${r.repaired} repaired (+${r.messages} msgs), ${r.deferred} deferred`;
-      if (r.behind > 0) console.warn(line);
-      else console.log(line);
-      // Deferred rooms are still missing messages — come back in 5 min, not an hour.
-      if (r.deferred > 0) lastMatrixReconcileAt.set(entry.id, now - config.matrixReconcileMs + 300_000);
-    } catch (e) {
-      console.warn(`[worker] matrix ${entry.id} reconcile failed: ${String(e)}`);
-    }
+  const canReconcile = !!(client.joinedRooms && client.messagesBefore && client.joinedMembers && client.roomName);
+  const reconcileDue = canReconcile && !!res.nextBatch && config.matrixReconcileMs > 0 && now - (lastMatrixReconcileAt.get(entry.id) ?? 0) >= config.matrixReconcileMs;
+  const resyncDue = !!client.sendText && config.matrixBridgeResync.length > 0 && config.matrixBridgeResyncMs > 0 && now - (lastBridgeResyncAt.get(entry.id) ?? 0) >= config.matrixBridgeResyncMs;
+  if ((reconcileDue || resyncDue) && !matrixReconcileInFlight.has(entry.id)) {
+    if (reconcileDue) lastMatrixReconcileAt.set(entry.id, now);
+    if (resyncDue) lastBridgeResyncAt.set(entry.id, now);
+    const upTo = res.nextBatch;
+    const background = (async () => {
+      await Promise.resolve();
+      if (reconcileDue) {
+        try {
+          const r = await reconcileMatrix(client as Parameters<typeof reconcileMatrix>[0], ingestVault, {
+            upTo,
+            maxRepairs: config.matrixReconcilePerSweep,
+            deadlineMs: config.matrixReconcileDeadlineMs,
+          });
+          const line = `[worker] matrix ${entry.id} reconcile: ${r.scanned} rooms scanned, ${r.behind} behind, ${r.repaired} repaired (+${r.messages} msgs), ${r.deferred} deferred${r.unprobed ? `, ${r.unprobed} not reached before the deadline` : ""}`;
+          if (r.behind > 0 || r.unprobed) console.warn(line);
+          else console.log(line);
+          // Deferred / unreached rooms may still miss messages — come back in 5 min, not an hour.
+          if (r.deferred > 0 || r.unprobed) lastMatrixReconcileAt.set(entry.id, now - config.matrixReconcileMs + 300_000);
+        } catch (e) {
+          console.warn(`[worker] matrix ${entry.id} reconcile failed: ${String(e)}`);
+        }
+      }
+      if (resyncDue && client.sendText) {
+        for (const b of config.matrixBridgeResync) {
+          await client.sendText(b.roomId, b.command).then(
+            () => console.log(`[worker] matrix ${entry.id}: bridge resync "${b.command}" → ${b.roomId}`),
+            (e) => console.warn(`[worker] matrix ${entry.id}: bridge resync to ${b.roomId} failed: ${String(e)}`),
+          );
+        }
+      }
+    })().finally(() => {
+      if (matrixReconcileInFlight.get(entry.id) === background) matrixReconcileInFlight.delete(entry.id);
+    });
+    matrixReconcileInFlight.set(entry.id, background);
   }
-
-  if (config.matrixBridgeResync.length && config.matrixBridgeResyncMs > 0 && now - (lastBridgeResyncAt.get(entry.id) ?? 0) >= config.matrixBridgeResyncMs) {
-    lastBridgeResyncAt.set(entry.id, now);
-    for (const b of config.matrixBridgeResync) {
-      await client.sendText(b.roomId, b.command).then(
-        () => console.log(`[worker] matrix ${entry.id}: bridge resync "${b.command}" → ${b.roomId}`),
-        (e) => console.warn(`[worker] matrix ${entry.id}: bridge resync to ${b.roomId} failed: ${String(e)}`),
-      );
-    }
+  // Never silent: a room whose window could not be replayed in N passes is given
+  // up on, and THIS pass is reported as failed (everything above is already done
+  // and persisted). The rooms are listed under the `matrix-lost` worker cursor.
+  if (gaveUp.length) {
+    const msg = `gave up replaying ${gaveUp.length} room(s) after ${config.matrixReplayMaxTries} attempt(s) — their messages from the failed pass may be missing (rooms: ${gaveUp.slice(0, 5).map((p) => p.roomId).join(", ")}${gaveUp.length > 5 ? ", …" : ""}; full list in settings cursor:${MATRIX_LOST_CURSOR}:${entry.id})`;
+    console.error(`[worker] matrix ${entry.id}: ERROR ${msg}`);
+    throw new Error(`matrix: ${msg}`);
   }
   return res.messages;
 }
@@ -733,6 +864,10 @@ async function tick(): Promise<void> {
         // Proton Bridge mail (WP1.2b): "proton" while shadowing OR live. Off → not run.
         ...(protonMode() !== "off" ? ([["proton", runProtonOnce]] as const) : []),
       ] as const) {
+        // A Matrix pass still running (a slow vault, the hourly reconcile, a manual
+        // sync) is not started again and records no outcome: if it never finishes,
+        // the source goes `stale` instead of reading healthy.
+        if (name === "matrix" && matrixPassRunning(entry.id)) continue;
         try {
           await run(entry);
           noteIngestOutcome(entry.id, name, null);
@@ -819,21 +954,39 @@ async function tick(): Promise<void> {
 
 let skillsInFlight = false;
 
+/** Consecutive skill passes in which a model load was refused (jitLoadRefusal). */
+let jitRefusedPasses = 0;
+export function _resetJitRefusalsForTests(): void {
+  jitRefusedPasses = 0;
+}
+
 /**
  * One skills pass with health reporting (source "skills", kind server). A pass
  * that could not list skills, or a run that FAILED, is an error; a finished run,
  * an accepted claude dispatch, or an idle pass (nothing due) is a success; a pass
- * whose only due skills were refused admission records NOTHING — so memory
- * pressure that persists past WORKER_STALE_SKILLS_MS surfaces as "stale" instead
- * of a failure storm.
+ * whose only due skills were refused admission for memory pressure / a busy slot
+ * records NOTHING — so that surfaces as "stale" past WORKER_STALE_SKILLS_MS instead
+ * of a failure storm. The exception is a refused model LOAD (see below).
  */
 export async function runSkillsPass(deps: SkillsDeps = defaultSkillsDeps()): Promise<PassResult | null> {
   try {
     const res = await runSkillsOnce(deps, (r) =>
       recordSourceOutcome("primary", "skills", r.status === "failed" ? new Error(r.error ?? "skill run failed") : null),
     );
-    if (res.finished.length === 0 && (res.refused.length === 0 || res.dispatched.length > 0)) {
-      recordSourceOutcome("primary", "skills", null);
+    // A refused model LOAD is not "memory pressure, try later": on this host it can
+    // persist for as long as the model is not resident. Each such pass is a failure
+    // outcome, so the third in a row reads `failing` WITH the reason in /acl/workers
+    // (one alert per episode) instead of `stale` six hours later. The next pass that
+    // admits a run / finishes one / has nothing due records the recovery.
+    const jit = res.refused.find((r) => r.jit);
+    if (jit) {
+      jitRefusedPasses++;
+      recordSourceOutcome("primary", "skills", new Error(`local model load refused ${jitRefusedPasses} pass(es) in a row — ${jit.reason}`));
+    } else {
+      jitRefusedPasses = 0;
+      if (res.finished.length === 0 && (res.refused.length === 0 || res.dispatched.length > 0)) {
+        recordSourceOutcome("primary", "skills", null);
+      }
     }
     return res;
   } catch (e) {

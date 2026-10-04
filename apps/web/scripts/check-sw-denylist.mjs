@@ -73,6 +73,15 @@ if (missing.length > 0) {
   );
 }
 
+// Workbox tests a denylist entry against pathname + SEARCH, so `/^\/health$/` did
+// not cover the watchdog probe `/health?live=1`. Evaluate the real entries.
+const entries = [...denylistBody.matchAll(/\/((?:\\.|[^/\\])+)\/([a-z]*)/g)].map((x) => new RegExp(x[1], x[2]));
+const denied = (url) => entries.some((re) => re.test(url));
+for (const url of ["/health", "/health?live=1", "/health?live=0"]) {
+  if (!denied(url)) fail(`navigateFallbackDenylist does not cover ${url} (entries are tested against pathname + search) — use /^\\/health(\\?|$)/.`);
+}
+if (denied("/healthy") || denied("/health/notes")) fail("the /health denylist entry is too wide: it must not swallow client routes that merely start with /health.");
+
 // The publication data path must fall under a denylisted prefix.
 if (!covered(PUBLICATION_DATA_PATH)) {
   fail(

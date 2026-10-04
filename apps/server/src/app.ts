@@ -189,7 +189,13 @@ export function createApp(): Hono {
   // passed while the vault was unreachable (audit 2026-08-13, F8). Unauthenticated
   // on purpose — it discloses one boolean and no vault content. `/api/health` is
   // kept as-is so existing callers don't break.
+  //
+  // `?live=1` = process liveness only (constant work, no vault call) — what a
+  // watchdog deciding whether to restart THIS process should poll. The plain
+  // form is bounded by `VAULT_HEALTH_TIMEOUT_MS`: a slow vault is a prompt 503.
   app.get("/health", async (c) => {
+    const live = c.req.query("live");
+    if (live !== undefined && live !== "0" && live !== "false") return c.json({ ok: true, live: true });
     const ok = await vault.health();
     return c.json({ ok, vault: ok }, ok ? 200 : 503);
   });

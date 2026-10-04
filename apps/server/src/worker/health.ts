@@ -223,6 +223,17 @@ function iso(t: number | null): string | null {
   return t === null ? null : new Date(t).toISOString();
 }
 
+/** Room ids under the `matrix-lost` worker cursor (written by worker/scheduler.ts; read
+ *  here straight from settings — the scheduler imports this module, not the reverse). */
+function matrixLost(vaultId: string): string[] {
+  try {
+    const v = JSON.parse(getWorkerCursor(vaultId, "matrix-lost") ?? "[]");
+    return Array.isArray(v) ? v.map((x) => (x && typeof x.roomId === "string" ? x.roomId : null)).filter((x): x is string => !!x) : [];
+  } catch {
+    return [];
+  }
+}
+
 export async function getSourceHealth(opts: { now?: number; list?: Lister } = {}): Promise<SourceHealth[]> {
   const now = opts.now ?? Date.now();
   const out: SourceHealth[] = [];
@@ -233,15 +244,21 @@ export async function getSourceHealth(opts: { now?: number; list?: Lister } = {}
       const configured = secretsConfigured() && !!getSecret(entry.id, config.ownerEmail, src);
       const interval = src === "clickup" ? config.clickupIntervalMs : src === "fathom" ? config.fathomIntervalMs : 1;
       const staleAfterMs = interval <= 0 ? 0 : config.workerStaleMs[src];
+      // Matrix rooms given up on after N failed replays (their messages from a failed
+      // pass may be missing): `failing` — durably, across restarts — until the owner
+      // has looked and cleared them (DELETE /acl/workers/matrix/lost). Ids only.
+      const lost = src === "matrix" ? matrixLost(entry.id) : [];
       out.push({
         name: entry.id === "primary" ? src : `${src}@${entry.id}`,
         kind: "server",
         vaultId: entry.id,
         lastSuccessAt: iso(r?.lastSuccessAt ?? null),
-        lastError: r?.lastError ?? null,
+        lastError: lost.length
+          ? `${lost.length} room(s) given up on after repeated failed replays — messages may be missing (${lost.slice(0, 5).join(", ")}${lost.length > 5 ? ", …" : ""}); review, then clear with DELETE /acl/workers/matrix/lost`
+          : (r?.lastError ?? null),
         failureStreak: r?.streak ?? 0,
         staleAfterMs,
-        status: computeStatus({ configured, lastSuccessAt: r?.lastSuccessAt ?? null, streak: r?.streak ?? 0, staleAfterMs, now, baselineAt: BOOT_AT }),
+        status: lost.length ? "failing" : computeStatus({ configured, lastSuccessAt: r?.lastSuccessAt ?? null, streak: r?.streak ?? 0, staleAfterMs, now, baselineAt: BOOT_AT }),
       });
     }
   }
