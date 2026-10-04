@@ -19,7 +19,7 @@ import * as Y from "yjs";
 import { generateJSON, generateHTML, getSchema } from "@tiptap/core";
 import { prosemirrorJSONToYDoc } from "@tiptap/y-tiptap";
 import { collabExtensions } from "@prism/core/editor-schema";
-import { taskListsInHtml } from "@prism/core/task-lists";
+import { addTaskListRule, taskListsInHtml } from "@prism/core/task-lists";
 import { marked } from "marked";
 import TurndownService from "turndown";
 import { normalizeLineBreaks } from "./precheck";
@@ -88,7 +88,7 @@ let blocksTurndown: TurndownService | null = null;
  */
 export function blocksHtmlToMarkdownSync(html: string): string {
   if (!blocksTurndown) {
-    blocksTurndown = new TurndownService({ headingStyle: "atx", codeBlockStyle: "fenced", bulletListMarker: "-" });
+    blocksTurndown = addTaskListRule(new TurndownService({ headingStyle: "atx", codeBlockStyle: "fenced", bulletListMarker: "-" }));
     blocksTurndown.keep(((node: { nodeName: string; getAttribute(name: string): string | null }) =>
       (node.nodeName === "DIV" && (!!node.getAttribute("data-type") || !!node.getAttribute("data-prism-database"))) || node.nodeName === "DETAILS") as never);
   }
@@ -98,6 +98,7 @@ export function blocksHtmlToMarkdownSync(html: string): string {
 let plainTurndown: TurndownService | null = null;
 /** HTML → Markdown for an agent reading a document note (the MCP resource's flavour). */
 export function htmlToMarkdownSync(html: string): string {
-  plainTurndown ??= new TurndownService({ headingStyle: "atx", codeBlockStyle: "fenced" });
+  // To-do items are written `- [x]` / `- [ ]` (the reader above makes to-dos of them again).
+  plainTurndown ??= addTaskListRule(new TurndownService({ headingStyle: "atx", codeBlockStyle: "fenced" }));
   return plainTurndown.turndown(normalizeLineBreaks(html));
 }
