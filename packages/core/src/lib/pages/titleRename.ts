@@ -12,12 +12,14 @@
 import type { VaultClient } from "../../data/VaultClient";
 import { PagesRequestError, pageTitle, renamePath, type MoveResult } from "./model";
 import * as ops from "./ops";
+import { flushPendingSaves } from "../../app/hooks/useAutoSave";
 import { usePagesUI } from "./store";
 
 /**
- * A rename refused because the name is taken / the page changed (409) or the
- * device is offline: the title editor shows `message` and puts the old title
- * back (`revertTitle`). Anything else thrown keeps the typed title for a retry.
+ * A rename a retry cannot fix — the name is taken / the page changed (409), no
+ * permission (403), the page is gone (404) or locked (423), or the device is
+ * offline: the title editor shows `message` and puts the old title back
+ * (`revertTitle`). Anything else thrown keeps the typed title for a retry.
  */
 export class TitleRenameRefused extends Error {
   readonly revertTitle = true;
@@ -42,22 +44,27 @@ function refusalOf(e: unknown, title: string): TitleRenameRefused | null {
   if (!(e instanceof PagesRequestError)) return null;
   if (e.code === "offline" || e.status === 0) return offlineRefusal();
   if (e.code === "path_conflict") return new TitleRenameRefused(`A page named “${title}” already exists here. Choose another title.`, e.code);
-  // Any other 409: the page changed, or the name is not available (no existence oracle).
-  if (e.status === 409 && e.code !== "pending_writes") return new TitleRenameRefused(e.message, e.code);
-  // Everything else (403, 5xx, unsent changes…) keeps the typed title; the editor shows the reason.
+  // Unsent changes of this page: saved in a moment — the typed title stays for a retry.
+  if (e.code === "pending_writes") return null;
+  // No permission (403), page gone or hidden (404), locked (423), changed or name unavailable (409):
+  // a retry cannot fix any of them. The title goes back with the server's own reason.
+  if ([403, 404, 409, 423].includes(e.status)) return new TitleRenameRefused(e.message, e.code);
+  // Everything else (5xx, a bad answer) keeps the typed title; the editor shows the reason.
   return null;
 }
 
-/** Finish a rename whose sub-pages did not all move (the toast's action). */
-async function finishRename(client: VaultClient, id: string, title: string, moveId: string, onDone?: () => void): Promise<void> {
+/** Finish a rename whose sub-pages did not all move. True when everything has moved. */
+async function finishRename(client: VaultClient, id: string, title: string, moveId: string, onDone?: () => void): Promise<boolean> {
   try {
     const fresh = await client.getNote(id, { fresh: true });
     const result = await ops.movePage(client, id, { moveId, ...(fresh?.updatedAt ? { ifUpdatedAt: fresh.updatedAt } : {}) });
     onDone?.();
     partialNotice(client, id, title, result, onDone);
     if (result.ok) usePagesUI.getState().showToast({ message: `Renamed “${title}” and its sub-pages` });
+    return result.ok;
   } catch (e) {
     usePagesUI.getState().showToast({ message: ops.pageErrorText(e, "Couldn’t finish the rename. Try again."), tone: "error" });
+    return false;
   }
 }
 
@@ -71,6 +78,14 @@ function partialNotice(client: VaultClient, id: string, title: string, result: M
   });
 }
 
+export interface TitleRenameResult {
+  path: string;
+  /** Some sub-pages have not moved yet. */
+  partial: boolean;
+  /** Present while `partial` and resumable: finishes the move (the toast's "Finish move"; hosts without toasts render their own button). */
+  finish?: () => Promise<boolean>;
+}
+
 /**
  * Rename `page` to `newName`. Resolves with the confirmed path (null when the
  * name is empty or unchanged). Throws {@link TitleRenameRefused} when the title
@@ -82,11 +97,14 @@ export async function renamePageFromTitle(
   page: { id: string; path: string | null | undefined },
   newName: string,
   onChanged?: () => void,
-): Promise<{ path: string; partial: boolean } | null> {
+): Promise<TitleRenameResult | null> {
   const next = renamePath(page.path, newName);
   if (!next) return null;
   const title = newName.trim();
   if (typeof navigator !== "undefined" && navigator.onLine === false) throw offlineRefusal();
+  // What was just typed in the body goes first: a debounced autosave landing between our fresh
+  // read and the move would make the move conflict with the page's own save.
+  await flushPendingSaves(page.id).catch(() => {});
   let result: MoveResult;
   try {
     // CAS against the page as the server has it NOW (the tree's Rename does the same).
@@ -97,5 +115,7 @@ export async function renamePageFromTitle(
   }
   onChanged?.();
   partialNotice(client, page.id, pageTitle(result.path) || title, result, onChanged);
-  return { path: result.path, partial: !result.ok };
+  const name = pageTitle(result.path) || title;
+  const moveId = !result.ok ? result.partial?.resume.moveId : undefined;
+  return { path: result.path, partial: !result.ok, ...(moveId ? { finish: () => finishRename(client, page.id, name, moveId, onChanged) } : {}) };
 }

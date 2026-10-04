@@ -11,7 +11,8 @@ test("page properties preserve the editor and failed title changes remain recove
   await expect(page.locator('.document-properties-content')).toContainText('Projects/Prism/A living workspace');
   await expect(page.locator('.document-property-tag')).toHaveText('project');
   expect(await editor.evaluate(node => node === (window as any).originalWritingEditor)).toBe(true);
-  await page.evaluate(() => { (window as any).prismFixtureControls.rejectWrite = true; });
+  // A failure the person can retry (the server broke): the typed title stays. (A 403 reverts it — parity2-pages.)
+  await page.evaluate(() => { (window as any).prismFixtureControls.rejectWriteStatus = 500; (window as any).prismFixtureControls.rejectWrite = true; });
   await page.getByRole('button', { name: 'Rename A living workspace', exact: true }).click();
   const title = page.getByRole('textbox', { name: 'Document title' });
   await title.fill('A clearer workspace');
@@ -108,6 +109,8 @@ test("real collaborative host shares properties and readable mobile header witho
   let releaseRename: (() => void) | undefined;
   let holdRename = false;
   let uncertainRename = false;
+  let partialRename = false;
+  const finished: string[] = [];
   let level = 'own';
   try {
     await page.routeWebSocket(/\/collab(\?|$)/, route => {
@@ -123,9 +126,13 @@ test("real collaborative host shares properties and readable mobile header witho
     await page.route('**/api/notes/denied-note/move', async route => {
       renameRequests++;
       if (uncertainRename) return route.fulfill({ status: 503, json: { error: 'fixture_unavailable' } });
-      if (rejectRename) return route.fulfill({ status: 403, json: { error: 'fixture_denied' } });
+      if (rejectRename) return route.fulfill({ status: 500, json: { error: 'fixture_failed' } });
       if (holdRename) await new Promise<void>(resolve => { releaseRename = resolve; });
-      path = route.request().postDataJSON().newPath;
+      const sent = route.request().postDataJSON();
+      if (sent.moveId) { finished.push(sent.moveId); return route.fulfill({ json: { ok: true, path, moved: [] } }); }
+      path = sent.newPath;
+      // A rename whose sub-pages did not all move (207): the page is renamed, the rest waits for "Finish move".
+      if (partialRename) return route.fulfill({ status: 207, json: { error: 'partial_move', moveId: 'move-1', moved: [{ id: 'denied-note', from: '', to: path }], failed: { id: 'child', from: 'a', to: 'b', reason: 'vault_500' }, remaining: 1, resume: { moveId: 'move-1', newPath: path } } });
       await route.fulfill({ json: { ok: true, path, moved: [{ id: 'denied-note', from: '', to: path }] } });
     });
     await page.route('**/api/notes/denied-note', async route => {
@@ -201,6 +208,15 @@ test("real collaborative host shares properties and readable mobile header witho
     await expect(renameTitle).toHaveValue('A locally queued title');
     await expect(page.getByText('Title change saved on this device. Waiting to sync.', { exact: true })).toHaveCount(0);
     expect(path).toBe('Projects/Prism/A clearer shared workspace');
+    // Review H3: a partial rename offers a working "Finish move" on this page (the share route has no toasts).
+    uncertainRename = false; partialRename = true;
+    await renameTitle.press('Enter');
+    await expect(page.getByRole('button', { name: 'Rename A locally queued title', exact: true })).toBeVisible();
+    const finish = page.getByRole('button', { name: 'Finish move', exact: true });
+    await expect(finish).toBeVisible();
+    await finish.click();
+    await expect.poll(() => finished).toEqual(['move-1']);
+    await expect(finish).toHaveCount(0);
     level = 'view';
     await page.reload();
     await expect(page.locator('.tiptap[contenteditable=false]')).toBeVisible();

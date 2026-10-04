@@ -50,10 +50,19 @@ function EditableTitle({ name, onRename }: { name: string; onRename: (newName: s
       if (body) { body.focus(); return; }
     }
   };
+  // The title whose rename last failed and was kept: a BLUR with it sends nothing again (Enter is the retry) —
+  // one request per attempted title, so nobody is held in the field hammering the server.
+  const lastFailed = useRef<string | null>(null);
   const commit = async (thenBody = false) => {
     if (savingRef.current) return;
     const v = draft.trim();
-    if (!v || v === name) { if (thenBody) toBody(); setDraft(name); setEditing(false); setError(""); return; }
+    if (!v || v === name) { if (thenBody) toBody(); lastFailed.current = null; setDraft(name); setEditing(false); setError(""); return; }
+    if (!thenBody && lastFailed.current === v) return;
+    // After Enter the person is in the body: once they do anything there, a failure must not pull them back.
+    let movedOn = false;
+    const moved = () => { movedOn = true; };
+    const watch = ["keydown", "pointerdown", "input"] as const;
+    if (thenBody) for (const type of watch) document.addEventListener(type, moved, true);
     savingRef.current = true;
     setSaving(true);
     setError("");
@@ -62,10 +71,13 @@ function EditableTitle({ name, onRename }: { name: string; onRename: (newName: s
     if (thenBody) toBody();
     try {
       await onRename(v);
+      lastFailed.current = null;
       setEditing(false);
     } catch (e) {
-      // Name taken / page changed / offline: say why and put the title back.
+      if (thenBody) for (const type of watch) document.removeEventListener(type, moved, true);
+      // Name taken / page changed / no permission / page gone / offline: say why and put the title back.
       if (e instanceof Error && (e as { revertTitle?: unknown }).revertTitle === true) {
+        lastFailed.current = null;
         setDraft(name);
         setEditing(false);
         setRefused(e.message);
@@ -74,10 +86,12 @@ function EditableTitle({ name, onRename }: { name: string; onRename: (newName: s
       // The server's own reason (no permission here, unsent changes…) when it gave one.
       const why = e instanceof Error && e.name === "PagesRequestError" && e.message ? ` ${e.message.replace(/[.\s]+$/, "")}.` : "";
       setError(`Could not rename this page.${why} Your title is still here; press Enter to retry.`);
-      // The input stays mounted and enabled (readOnly while saving), so focus is
-      // normally still here; this only restores it if the user clicked away.
-      inputRef.current?.focus();
+      lastFailed.current = v;
+      // Focus comes back to the title only for an Enter the person has not moved on from. A blur means
+      // they went somewhere else on purpose: the typed title and the reason stay, focus is theirs.
+      if (thenBody && !movedOn) inputRef.current?.focus();
     } finally {
+      if (thenBody) for (const type of watch) document.removeEventListener(type, moved, true);
       savingRef.current = false;
       setSaving(false);
     }
@@ -274,6 +288,7 @@ function IconTile({
 export type ContentFont = "sans" | "serif" | "mono";
 
 export { renamePath } from "../../lib/pages/model";
+import { withoutExtension } from "../../lib/pages/model";
 
 /** Notion-style page header: breadcrumb of the folder path + a large sans title
  *  derived from the filename. `right` is an optional slot for status/actions
@@ -317,7 +332,7 @@ export function PageHeader({
 }) {
   const stripped = (path || "").replace(/^vault\//, "");
   const parts = stripped.split("/").filter(Boolean);
-  const baseName = parts.length ? parts[parts.length - 1].replace(/\.[^.]+$/, "") : "";
+  const baseName = parts.length ? withoutExtension(parts[parts.length - 1]) : "";
   const name = baseName || fallbackName || "Untitled";
   const crumbs = parts.slice(0, -1);
   return (

@@ -196,6 +196,9 @@ function ScopedCollabDoc({
   const [socketScope, setSocketScope] = useState<CollabSocketScope>(undefined);
   const [title, setTitle] = useState("Shared document");
   const [titleNotice, setTitleNotice] = useState("");
+  // A rename whose sub-pages did not all move: the working "Finish move" (this page has no toasts on the share route).
+  const [finishRename, setFinishRename] = useState<(() => Promise<boolean>) | null>(null);
+  const [finishing, setFinishing] = useState(false);
   const mounted = useRef(false);
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
   const [path, setPath] = useState<string | null>(null);
@@ -241,13 +244,17 @@ function ScopedCollabDoc({
   const handleRename = async (newName: string) => {
     const audience = agentScope();
     setTitleNotice("");
+    setFinishRename(null);
     const done = await renamePageFromTitle(httpVaultClient, { id: noteId, path }, newName);
     if (!done || !mounted.current || agentScope() !== audience) return;
     setPath(done.path);
     const name = done.path.split("/").pop() || newName.trim();
     setTitle(name);
     useUIStore.getState().renameTab(noteId, name);
-    if (done.partial) setTitleNotice("Some sub-pages still need moving. Rename again or use Move to… to finish.");
+    if (done.partial) {
+      setTitleNotice(done.finish ? "The page is renamed. Some sub-pages still need moving." : "The page is renamed. Some sub-pages still need moving — use Move to… on them to finish.");
+      setFinishRename(() => done.finish ?? null);
+    }
   };
 
   const handleIconChange = (emoji: string | null) => {
@@ -723,7 +730,10 @@ function ScopedCollabDoc({
           }
         />
 
-        {titleNotice && <p role="status" className="mb-4 text-xs text-[var(--text-secondary)]">{titleNotice}</p>}
+        {titleNotice && <p role="status" className="mb-4 text-xs text-[var(--text-secondary)]">{titleNotice}
+          {finishRename && <> <button type="button" className="focus-ring underline" disabled={finishing} aria-busy={finishing || undefined}
+            onClick={() => { setFinishing(true); void finishRename().then((ok) => { if (!mounted.current) return; setFinishing(false); if (ok) { setFinishRename(null); setTitleNotice(""); } else setTitleNotice("Some sub-pages still need moving. Try Finish move again."); }); }}>Finish move</button></>}
+        </p>}
         {uploadNotice && <p role="alert" className="mb-4 text-xs text-[var(--text-secondary)]">{uploadNotice} <button type="button" className="underline" onClick={() => setUploadNotice(null)}>Dismiss</button></p>}
         {embedded && isDocument && <div style={{ maxWidth: "var(--content-measure)", margin: "0 auto" }}><BacklinksPill noteId={noteId} title={title} /></div>}
 

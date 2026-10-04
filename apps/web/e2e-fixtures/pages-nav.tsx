@@ -59,7 +59,8 @@ let revision = kept?.revision ?? (params.has("prefs") ? 1 : 0);
 const failOnce = new Set(params.getAll("fail-move"));
 const moves = new Map<string, { from: string; to: string }>();
 const reads = { trash: 0, tree: 0 };
-Object.assign(window, { prismFixtureUI: useUIStore, prismFixtureNotes: notes, prismFixtureWrites: writes, prismFixtureReads: reads, prismFixturePrefs: () => ({ prefs, revision }) });
+const fixtureControls = { moveStatus: Number(params.get("move-status") ?? 0) };
+Object.assign(window, { prismFixtureUI: useUIStore, prismFixtureNotes: notes, prismFixtureWrites: writes, prismFixtureReads: reads, prismFixtureControls: fixtureControls, prismFixturePrefs: () => ({ prefs, revision }) });
 // Wave 3A: `notion-transfer.html` loads this fixture with an extension (extra seed
 // notes, the import/export routes, a viewer role). Absent → nothing changes.
 const extension = (window as unknown as { prismFixtureExtension?: { seed?: (notes: Note[], make: typeof doc, stamp: () => string) => void; fetch?: (url: URL, method: string, init?: RequestInit) => Promise<Response | null>; sharing?: Record<string, unknown> } }).prismFixtureExtension;
@@ -148,6 +149,8 @@ window.fetch = async (input, init) => {
     const root = byId(decodeURIComponent(op[1]!));
     if (!root) return json({ error: "not_found" }, 404);
     writes.push({ [op[2]!]: root.id, ...body });
+    // Test control: every move answers this status (403 = no permission here, 500 = the server failed).
+    if (op[2] === "move" && fixtureControls.moveStatus) return json(fixtureControls.moveStatus === 403 ? { error: "forbidden", reason: "Only the workspace owner can add pages at the top level or into a plain folder." } : { error: "fixture_failure" }, fixtureControls.moveStatus);
     const reason = protectionReason(root);
     if (op[2] === "trash") {
       if (reason) return json({ error: "protected", reason }, 403);

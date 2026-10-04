@@ -157,3 +157,20 @@ test("queued writes are never replayed under another account", async ({ page, co
   await expect.poll(async () => (await serverNote(page, "workspace")).content, { timeout: 15000 }).toContain("Written by the owner offline.");
   expect(await outbox(page)).toHaveLength(0);
 });
+
+/** Review H2: the page's own unsent typing is saved BEFORE the rename's move, so the move never conflicts with our autosave. */
+test("a title rename first saves what was just typed in the body, then moves the page", async ({ page }) => {
+  await ready(page);
+  await editor(page).click();
+  await page.keyboard.press("ControlOrMeta+End");
+  await page.keyboard.type(" Typed just before the rename.");
+  await page.getByRole("button", { name: "Rename A living workspace", exact: true }).click();
+  const title = page.getByRole("textbox", { name: "Document title" });
+  await title.fill("Renamed with a draft");
+  await title.press("Enter");
+  await expect(page.getByRole("button", { name: "Rename Renamed with a draft", exact: true })).toBeVisible();
+  const sent = (await writes(page)).filter((w) => w.path === "/api/notes/workspace" || w.path === "/api/notes/workspace/move");
+  expect(sent.map((w) => (w.path.endsWith("/move") ? "move" : w.body.content ? "content" : "other"))).toEqual(["content", "move"]);
+  expect((await serverNote(page, "workspace")).content).toContain("Typed just before the rename.");
+  await expect(page.getByText("Needs review")).toHaveCount(0);
+});
