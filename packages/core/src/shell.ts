@@ -168,6 +168,8 @@ export { serverFetch, setServerFetch, type ServerFetch } from "./lib/transport/s
 // Import / export / print (wave 3A).
 export { setTransferContextHeaders, transferApi, transferAvailable, TransferError } from "./lib/import-export/client";
 export { useTransferUI, printCurrentPage } from "./lib/import-export/store";
+// Recovered text (server owner): what a page held when a newer copy replaced unsaved typing.
+export { RecoveredText, RecoverTextLink } from "./components/recovered/RecoveredText";
 export { ImportExportHost, useCanManageTransfers } from "./components/import-export/ImportExportHost";
 export { streamSSE, SSEParser, type SSEMessage, type StreamSSEOptions } from "./lib/transport/sse";
 

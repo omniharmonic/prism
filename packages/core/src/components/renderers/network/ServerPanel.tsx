@@ -45,6 +45,7 @@ import {
 } from "../../../data/CollabSharing";
 
 import { useAgentChatStore } from "../../../lib/agent/chatStore";
+import { RecoveredText } from "../../recovered/RecoveredText";
 import "./server-connections.css";
 
 const EDITABLE: { key: string; label: string; help: string }[] = [
@@ -1424,6 +1425,10 @@ function ScopedServerPanel({ sharing }: { sharing: CollabSharing | null }) {
               </div>
             )}
           </div>
+
+          {/* What a page held when a newer copy replaced typing that was not saved, and pages
+          that cannot be saved. Renders nothing unless the viewer is the server owner. */}
+          <RecoveredText />
 
           {/* Legacy whole-vault member MCP tokens (WP6.5) — superseded by Prism access
           tokens ("Connect your agent"). Owner reviews, then revokes (optionally

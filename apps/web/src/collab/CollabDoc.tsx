@@ -24,6 +24,7 @@ import { updateNote as restUpdateNote, getNote as restGetNote, uploadAttachment,
 import { markUnsynced, clearUnsynced, setOpenHere, unsyncedDocs } from "./unsynced";
 import { reloadForUpdate } from "../offline/reloadForUpdate";
 import { PlainTextPage } from "./PlainTextPage";
+import { RecoverTextLink } from "@prism/core";
 import { httpVaultClient } from "../parachute/HttpVaultClient";
 import { reportSyncSource, NOT_SAVED_TO_PAGE, unsavedExplanation, BacklinksPill, EmptyPageStarters, notePageIconChanged, pageIconWriteConfirmed, pageIconWriteFailed, PageDiscussion } from "@prism/core";
 
@@ -675,6 +676,9 @@ function ScopedCollabDoc({
       {serverNotice && (
         <p role="status" data-testid="collab-notice" className="rounded-lg border p-3 text-sm">
           {serverNotice}{" "}
+          {/* "…replaced part of this page" (prism:notice external-replaced): the replaced text was set aside on
+              the server (Recovered text) — the owner gets it here, everyone else is told who has it. */}
+          {serverNotice.startsWith("Changes made elsewhere replaced") && <><RecoverTextLink noteId={noteId} owner={!!getMe()?.isOwner && !getCapabilityToken()} />{" "}</>}
           <button type="button" className="underline" onClick={() => setServerNotice(null)}>Dismiss</button>
         </p>
       )}
