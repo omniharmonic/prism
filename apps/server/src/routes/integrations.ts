@@ -11,7 +11,7 @@ import { roleAtLeast } from "../roles";
 import { config } from "../config";
 import { resolveVaultEntry } from "../db";
 import { putSecret, getSecret, deleteSecret, secretsConfigured } from "../secrets";
-import { runMatrixOnce, matrixPassRunning, runFathomOnce, runFirefliesOnce, runClickUpOnce } from "../worker/scheduler";
+import { runMatrixOnce, matrixPassRunning, ingestPassRunning, runFathomOnce, runFirefliesOnce, runClickUpOnce } from "../worker/scheduler";
 import { BridgeCertDetectError, PROTON_CREDENTIAL, detectBridgeCert, validateDetectTarget, normalizeFingerprint, protonMode, protonPassRunning, runProtonOnce, validateProtonCredential } from "../worker/proton";
 import { consumeRateLimit } from "../middleware/ratelimit";
 
@@ -109,6 +109,8 @@ integrations.delete("/fathom", (c) => {
 
 integrations.post("/fathom/sync", async (c) => {
   const actor = resolveActor(c);
+  // One pass per vault at a time (never queued, never a second writer beside the running one).
+  if (ingestPassRunning("fathom", resolveVaultEntry(actor.vaultId).id)) return c.json({ error: "busy", detail: "a Fathom pass is already running for this vault" }, 409);
   try {
     const transcripts = await runFathomOnce(resolveVaultEntry(actor.vaultId));
     return c.json({ ok: true, transcripts });
@@ -145,6 +147,8 @@ integrations.delete("/fireflies", (c) => {
 // honors the daily budget). Repeat-call ≥1/min to drain a backlog on Pro.
 integrations.post("/fireflies/sync", async (c) => {
   const actor = resolveActor(c);
+  // One pass per vault at a time (never queued, never a second writer beside the running one).
+  if (ingestPassRunning("fireflies", resolveVaultEntry(actor.vaultId).id)) return c.json({ error: "busy", detail: "a Fireflies pass is already running for this vault" }, 409);
   try {
     const transcripts = await runFirefliesOnce(resolveVaultEntry(actor.vaultId), { force: true });
     return c.json({ ok: true, transcripts });
@@ -199,6 +203,8 @@ integrations.delete("/clickup", (c) => {
 // count of tasks created+updated this pass.
 integrations.post("/clickup/sync", async (c) => {
   const actor = resolveActor(c);
+  // One pass per vault at a time (never queued, never a second writer beside the running one).
+  if (ingestPassRunning("clickup", resolveVaultEntry(actor.vaultId).id)) return c.json({ error: "busy", detail: "a ClickUp pass is already running for this vault" }, 409);
   try {
     const tasks = await runClickUpOnce(resolveVaultEntry(actor.vaultId), { force: true });
     return c.json({ ok: true, tasks });

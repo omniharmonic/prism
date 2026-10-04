@@ -186,9 +186,9 @@ export function ingestFailureState(): Array<{ vaultId: string; source: string; c
  *  Returns the message count ingested (0 if not configured / nothing new). */
 /** The identity layer's forward linker for one ingest pass — undefined (= the
  *  ingester behaves exactly as before) unless that source's link flag is on. */
-function forwardLinker(entry: VaultEntry, origin: string, enabled: boolean): ForwardLinker | undefined {
+function forwardLinker(entry: VaultEntry, origin: string, enabled: boolean, timeoutMs = 0): ForwardLinker | undefined {
   if (!enabled) return undefined;
-  return new ForwardLinker(vaultClient(entry.id), {
+  return new ForwardLinker(vaultClient(entry.id, timeoutMs > 0 ? { timeoutMs } : {}), {
     vaultId: entry.id,
     origin,
     owner: ownerConfigFor(entry.id),
@@ -441,6 +441,37 @@ async function runMatrixPass(entry: VaultEntry, deps: MatrixPassDeps): Promise<n
   return res.messages;
 }
 
+/** The ingesters that share the per-(source, vault) guard below. */
+export type GuardedSource = "fathom" | "fireflies" | "clickup";
+const GUARDED_SOURCES: ReadonlySet<string> = new Set<GuardedSource>(["fathom", "fireflies", "clickup"]);
+
+/**
+ * One pass per (source, vault) at a time — the guard Matrix has. The tick fires
+ * every 60 s whether or not the last one finished: a pass that overran its slot
+ * used to be started a second time (two writers creating the same notes), and the
+ * extra call returned at once and recorded a SUCCESS while the first was still
+ * hung. A call while one runs JOINS it; the tick skips instead (no outcome, so a
+ * pass that never finishes reads `stale`); the manual sync routes answer 409 `busy`.
+ */
+const ingestInFlight = new Map<string, Promise<number>>();
+const flightKey = (source: string, vaultId: string): string => `${source}:${vaultId}`;
+export const ingestPassRunning = (source: GuardedSource, vaultId: string): boolean => ingestInFlight.has(flightKey(source, vaultId));
+function onePass(source: GuardedSource, entry: VaultEntry, pass: () => Promise<number>): Promise<number> {
+  const key = flightKey(source, entry.id);
+  const running = ingestInFlight.get(key);
+  if (running) return running;
+  const p = (async () => {
+    await Promise.resolve(); // never run any of the pass in the caller's synchronous frame
+    return pass();
+  })().finally(() => {
+    if (ingestInFlight.get(key) === p) ingestInFlight.delete(key);
+  });
+  ingestInFlight.set(key, p);
+  return p;
+}
+/** The vault client of a ClickUp / Fathom / Fireflies pass: every call bounded (INGEST_VAULT_TIMEOUT_MS). */
+const boundedVault = (entry: VaultEntry) => vaultClient(entry.id, config.ingestVaultTimeoutMs > 0 ? { timeoutMs: config.ingestVaultTimeoutMs } : {});
+
 /**
  * Run one Fathom transcript ingest pass for a vault, if it has a stored key.
  * Create-only + dedup by source_id (safe to run alongside the desktop).
@@ -453,7 +484,10 @@ async function runMatrixPass(entry: VaultEntry, deps: MatrixPassDeps): Promise<n
  * indistinguishable from a correctly idle one. Now: one run per interval, and one
  * line per run whatever the outcome, exactly like the Fireflies ingester.
  */
-export async function runFathomOnce(entry: VaultEntry, opts: { force?: boolean } = {}): Promise<number> {
+export function runFathomOnce(entry: VaultEntry, opts: { force?: boolean } = {}): Promise<number> {
+  return onePass("fathom", entry, () => runFathomPass(entry, opts));
+}
+async function runFathomPass(entry: VaultEntry, opts: { force?: boolean }): Promise<number> {
   const raw = getSecret(entry.id, config.ownerEmail, "fathom");
   if (!raw) {
     warnMissingSecret(entry.id, "fathom");
@@ -466,7 +500,9 @@ export async function runFathomOnce(entry: VaultEntry, opts: { force?: boolean }
   }
   const { apiKey } = JSON.parse(raw) as { apiKey: string };
   const client = new FathomClient(apiKey);
-  const res = await ingestFathom(client, vaultClient(entry.id) as unknown as IngestVault, { forward: forwardLinker(entry, "ingest:fathom", config.transcriptLinkPeople) });
+  const res = await ingestFathom(client, boundedVault(entry) as unknown as IngestVault, {
+    forward: forwardLinker(entry, "ingest:fathom", config.transcriptLinkPeople, config.ingestVaultTimeoutMs),
+  });
   console.log(
     `[worker] fathom ${entry.id}: +${res.created} transcripts (${res.skipped} skipped)` +
       (opts.force ? " [forced]" : ""),
@@ -480,7 +516,10 @@ export async function runFathomOnce(entry: VaultEntry, opts: { force?: boolean }
  *  The cursor is the max task `date_updated` (ms) from the last CLEAN pass —
  *  never Date.now() — advanced only forward; each incremental run re-covers a
  *  120s overlap so a task updated during the previous pass can't be missed. */
-export async function runClickUpOnce(entry: VaultEntry, opts: { force?: boolean } = {}): Promise<number> {
+export function runClickUpOnce(entry: VaultEntry, opts: { force?: boolean } = {}): Promise<number> {
+  return onePass("clickup", entry, () => runClickUpPass(entry, opts));
+}
+async function runClickUpPass(entry: VaultEntry, opts: { force?: boolean }): Promise<number> {
   const raw = getSecret(entry.id, config.ownerEmail, "clickup");
   if (!raw) {
     warnMissingSecret(entry.id, "clickup");
@@ -496,7 +535,11 @@ export async function runClickUpOnce(entry: VaultEntry, opts: { force?: boolean 
   const client = new ClickUpClient(credential.apiKey);
   const cursor = getWorkerCursor(entry.id, "clickup");
   const sinceMs = cursor ? Number(cursor) - 120_000 : null;
-  const res = await ingestClickUp(client, vaultClient(entry.id) as unknown as ClickUpVault, { credential, sinceMs, forward: forwardLinker(entry, "ingest:clickup", config.clickupLinkEnabled) });
+  const res = await ingestClickUp(client, boundedVault(entry) as unknown as ClickUpVault, {
+    credential,
+    sinceMs,
+    forward: forwardLinker(entry, "ingest:clickup", config.clickupLinkEnabled, config.ingestVaultTimeoutMs),
+  });
   const prev = cursor ? Number(cursor) : 0;
   const next = Math.max(res.maxDateUpdatedMs, prev); // clean-pass value only, never backward
   if (next > 0) setWorkerCursor(entry.id, "clickup", String(next));
@@ -601,7 +644,10 @@ function makeFirefliesBudget(vaultId: string, dailyBudget: number): FirefliesBud
  *  Gated to fixed LOCAL hours (once per slot, DB-persisted) unless `force` (the
  *  on-demand route / backlog drain). Deletes each transcript from Fireflies once
  *  its note is confirmed in the vault. Returns the count newly ingested. */
-export async function runFirefliesOnce(entry: VaultEntry, opts: { force?: boolean } = {}): Promise<number> {
+export function runFirefliesOnce(entry: VaultEntry, opts: { force?: boolean } = {}): Promise<number> {
+  return onePass("fireflies", entry, () => runFirefliesPass(entry, opts));
+}
+async function runFirefliesPass(entry: VaultEntry, opts: { force?: boolean }): Promise<number> {
   const raw = getSecret(entry.id, config.ownerEmail, "fireflies");
   if (!raw) {
     warnMissingSecret(entry.id, "fireflies");
@@ -637,9 +683,9 @@ export async function runFirefliesOnce(entry: VaultEntry, opts: { force?: boolea
   }
 
   const budget = makeFirefliesBudget(entry.id, config.firefliesDailyBudget);
-  const res = await ingestAndCleanupFireflies(client, vaultClient(entry.id) as unknown as FirefliesVault, {
+  const res = await ingestAndCleanupFireflies(client, boundedVault(entry) as unknown as FirefliesVault, {
     budget,
-    forward: forwardLinker(entry, "ingest:fireflies", config.transcriptLinkPeople),
+    forward: forwardLinker(entry, "ingest:fireflies", config.transcriptLinkPeople, config.ingestVaultTimeoutMs),
     skipSet: skip,
     ownerEmail: owner,
     deleteEnabled: config.firefliesDeleteEnabled,
@@ -870,6 +916,13 @@ export async function runGovernanceReconcileOnce(): Promise<ReconcileResult | nu
 /** One full tick: every configured ingester for every vault. Per-vault, per-source
  *  errors are isolated so one bad credential can't stall the rest. */
 async function tick(): Promise<void> {
+  await runIngestersOnce();
+  await tickRest();
+}
+
+/** The ingest half of a tick: every configured ingester for every vault, one after
+ *  the other. Exported for tests; `tick` is its only production caller. */
+export async function runIngestersOnce(): Promise<void> {
   // Secret-backed ingesters keep their original gate: on a mirrors-only server
   // (no SECRETS_KEY) they would otherwise throw per vault × source on every
   // tick, flooding the logs while appearing configured.
@@ -893,6 +946,9 @@ async function tick(): Promise<void> {
         // sync) is not started again and records no outcome: if it never finishes,
         // the source goes `stale` instead of reading healthy.
         if (name === "matrix" && matrixPassRunning(entry.id)) continue;
+        // …and the same for ClickUp / Fathom / Fireflies: an overrun pass is neither
+        // started twice nor reported as a success by the tick that found it running.
+        if (GUARDED_SOURCES.has(name) && ingestInFlight.has(flightKey(name, entry.id))) continue;
         try {
           await run(entry);
           noteIngestOutcome(entry.id, name, null);
@@ -902,6 +958,9 @@ async function tick(): Promise<void> {
       }
     }
   }
+}
+
+async function tickRest(): Promise<void> {
   // Vault mirrors are per-PAIR (source vault × dest vault), not per-vault-entry,
   // hence their own iteration. Each mirror throttles itself (last_run_at), so a
   // 60s tick costs one SELECT when nothing is due.
