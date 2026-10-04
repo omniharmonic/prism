@@ -338,9 +338,17 @@ function CommentRow({ item, own, onSave, onDelete }: {
 
 /** Trash icon that asks for one confirmation click before deleting. */
 function DeleteButton({ confirm, setConfirm, onDelete, label = "Delete comment" }: { confirm: boolean; setConfirm: (v: boolean) => void; onDelete: () => void; label?: string }) {
+  // Safari does not focus a button on click, and React keeps the same <button> for both states
+  // (so `autoFocus` never runs): without this the confirmation had no focus to lose and
+  // "moving away cancels" never happened there. For the same reason the confirming press must
+  // not move focus (Safari would blur the button on mousedown and cancel before the click).
+  const button = useRef<HTMLButtonElement>(null);
+  useEffect(() => { if (confirm && document.activeElement !== button.current) button.current?.focus(); }, [confirm]);
   if (confirm) {
     return (
       <button
+        ref={button}
+        onMouseDown={(e) => e.preventDefault()}
         onClick={onDelete}
         onBlur={() => setConfirm(false)}
         autoFocus
@@ -353,7 +361,7 @@ function DeleteButton({ confirm, setConfirm, onDelete, label = "Delete comment" 
     );
   }
   return (
-    <button onClick={() => setConfirm(true)} onBlur={() => setConfirm(false)} title={label} aria-label={label} className="p-1 rounded prism-comment-icon" style={{ color: "var(--text-muted)" }}>
+    <button ref={button} onClick={() => setConfirm(true)} onBlur={() => setConfirm(false)} title={label} aria-label={label} className="p-1 rounded prism-comment-icon" style={{ color: "var(--text-muted)" }}>
       <Trash2 size={13} />
     </button>
   );
