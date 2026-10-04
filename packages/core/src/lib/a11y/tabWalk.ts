@@ -42,20 +42,40 @@ export function nextTabStop(root: HTMLElement, from: Element, back = false): HTM
   return null;
 }
 
-interface TabKey { key: string; shiftKey: boolean; altKey: boolean; ctrlKey: boolean; metaKey: boolean; defaultPrevented: boolean; preventDefault(): void }
+interface TabKey {
+  key: string; shiftKey: boolean; altKey: boolean; ctrlKey: boolean; metaKey: boolean; defaultPrevented: boolean;
+  /** A DOM event carries these itself; a React event carries them on `nativeEvent`. */
+  isComposing?: boolean; keyCode?: number; nativeEvent?: { isComposing?: boolean; keyCode?: number };
+  preventDefault(): void;
+}
+
+/** How many stops in a row may refuse focus before the key is handed back to the browser. */
+const MAX_REFUSALS = 16;
 
 /**
  * Handle a plain Tab / Shift+Tab keydown inside `root`. Returns true when focus moved to another
- * stop of the widget (the event is then consumed); false when the key is not a plain Tab, focus is
- * not inside `root`, or there is no further stop in that direction (the browser takes the key).
+ * stop of the widget (the event is then consumed); false when the key is not a plain Tab, belongs to
+ * an IME composition, focus is not inside `root`, or there is no further stop in that direction that
+ * TAKES focus (the browser takes the key). A stop can look focusable and refuse — a control inside
+ * `<fieldset disabled>` — so the key is consumed only once `document.activeElement` is the new stop.
  */
 export function walkTab(e: TabKey, root: HTMLElement | null): boolean {
   if (e.key !== "Tab" || e.altKey || e.ctrlKey || e.metaKey || e.defaultPrevented || !root) return false;
-  const from = root.ownerDocument.activeElement;
+  // Mid-composition the key is the input method's (keyCode 229 is the older signal for the same thing).
+  if (e.isComposing || e.nativeEvent?.isComposing || e.keyCode === 229 || e.nativeEvent?.keyCode === 229) return false;
+  const doc = root.ownerDocument;
+  const from = doc.activeElement;
   if (!from || from === root || !root.contains(from)) return false;
-  const next = nextTabStop(root, from, e.shiftKey);
-  if (!next) return false;
-  e.preventDefault();
-  next.focus();
-  return true;
+  let at: Element = from;
+  for (let tries = 0; tries < MAX_REFUSALS; tries++) {
+    const next = nextTabStop(root, at, e.shiftKey);
+    if (!next) return false;
+    next.focus();
+    if (doc.activeElement === next) {
+      e.preventDefault();
+      return true;
+    }
+    at = next;
+  }
+  return false;
 }
