@@ -1,6 +1,8 @@
 import React, { useState } from "react";
 import { createRoot } from "react-dom/client";
 import { PublicationView } from "../src/publish/PublicationView";
+// NP-ED-24: one instance of every block type, the same data the server test uses.
+import { PARITY_PAGE_HTML } from "../../server/test/fixtures/parity-blocks";
 const params = new URLSearchParams(location.search);
 const longTitle = "PRISM_SITE_STUDIO_UI_VERIFIED".repeat(4);
 const pageTitle = (id: string) =>
@@ -126,6 +128,7 @@ window.fetch = async (input, init) => {
           ? "<h2>Reading together</h2><pre><code>const source = true;</code></pre>"
           : "") +
         (params.has("attachments") ? `<p><img src="/api/attachments/a_fixtureImage0000000000" alt="Field photo"></p><p><a href="/api/attachments/a_fixtureImage0000000000">Download the photo</a></p><p><img src="https://example.test/api/attachments/a_other" alt="Elsewhere"></p>` : "") +
+        (params.has("blocks") ? PARITY_PAGE_HTML : "") +
         (params.has("typography") ? `<h1>A place for shared understanding</h1><h2>Working together</h2><p>Shared context makes our notes easier to read and revisit.</p><p>${"UNBROKEN_TOKEN_".repeat(12)}</p>` : "") +
         (params.has("long-content")
           ? `<h2>${longTitle}</h2><p><a href="https://example.test/">${longTitle}</a></p><pre><code>${longTitle.repeat(4)}</code></pre>`
