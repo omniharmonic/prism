@@ -80,13 +80,18 @@ test("save page as template", async ({ page }) => {
   const created = all.find((w) => w.create)!.create as Record<string, any>;
   // The template is a note tagged `template` (what the chooser and the gallery read), in Templates/.
   expect(created.path).toBe("Templates/Prism");
-  expect(created.tags).toEqual(["page", "template"]);
-  // Body and properties come along; identity never does.
+  // 🔒 Only `template`: the page's own tags are remembered, not carried (a template sits in nobody's shared or published tag)…
+  expect(created.tags).toEqual(["template"]);
+  expect(created.metadata.prism_template_tags).toEqual(["page"]);
+  // …and it is PRIVATE to the person who saved it.
+  expect(created.metadata.prism_visibility).toBe("private");
+  expect(created.metadata.prism_creator).toBe("owner@example.test");
+  // Body and properties come along.
   expect(created.content).toContain("<h2>About</h2>");
   expect(created.content).toContain('src="/api/attachments/a_fixtureImage0000000001"');
   expect(created.metadata).toMatchObject({ title: "Prism", status: "active", type: "document" });
   // (`prism_client_op` is the transport's own idempotency stamp on every create.)
-  expect(Object.keys(created.metadata).filter((k) => k.startsWith("prism_"))).toEqual(["prism_client_op"]);
+  expect(Object.keys(created.metadata).filter((k) => k.startsWith("prism_")).sort()).toEqual(["prism_client_op", "prism_creator", "prism_template_tags", "prism_visibility"]);
   // The template gets its OWN copies of the page's files.
   const template = (await page.evaluate(() => (window as any).prismFixtureNotes.find((n: any) => n.path === "Templates/Prism"))) as { id: string };
   expect(all.filter((w) => w.copyAttachments)).toEqual([{ copyAttachments: template.id }]);
@@ -127,7 +132,9 @@ test("a page saved as a template can be used: its files are copied to the new pa
   const made = all.filter((w) => w.create).map((w) => w.create as Record<string, any>);
   expect(made).toHaveLength(2);
   expect(made[1]!.metadata).toMatchObject({ title: "Launch notes", status: "active" });
-  expect(made[1]!.tags).toEqual(["page"]); // `template` is not carried into the page
+  expect(made[1]!.tags).toEqual(["page"]); // the remembered tags are re-applied; `template` is not carried
+  // The page is an ordinary page: not private, not the saver's, no template bookkeeping.
+  for (const k of ["prism_visibility", "prism_creator", "prism_template_tags"]) expect(k in made[1]!.metadata, k).toBe(false);
   expect(made[1]!.content).toContain("/api/attachments/");
   const page2 = (await page.evaluate(() => (window as any).prismFixtureNotes.find((n: any) => n.metadata?.title === "Launch notes"))) as { id: string };
   expect(all.filter((w) => w.copyAttachments).map((w) => w.copyAttachments)).toContain(page2.id);
@@ -285,3 +292,127 @@ for (const theme of ["", "&dark"]) {
     await shot(page, `templates-gallery-phone${theme ? "-dark" : ""}`);
   });
 }
+
+// ── Review round 2 (B1, 2, 3, 7, rename) ─────────────────────────────────────
+test("B1: a PRIVATE page with a published tag becomes a private, untagged template with a clean body", async ({ page }) => {
+  await page.goto(transferUrl("?open=secret"));
+  await expect(page.getByRole("heading", { name: "Rename Secret plan", exact: true })).toBeVisible();
+  await (await pageMenu(page)).getByRole("menuitem", { name: "Save as template", exact: true }).click();
+  await expect(page.locator(".page-toast")).toContainText("as a template");
+  const created = (await writes(page)).find((w) => w.create)!.create as Record<string, any>;
+  expect(created.tags).toEqual(["template"]); // not `wiki`: never on the public site, never in the shared tag
+  expect(created.metadata.prism_visibility).toBe("private");
+  expect(created.metadata.prism_creator).toBe("owner@example.test");
+  expect(created.metadata.prism_template_tags).toEqual(["page", "wiki"]);
+  // Mentions: a new uid and no reminder (nobody is notified by a copy); no sub-page row; no review state.
+  expect(created.content).toContain('data-type="mention"');
+  expect(created.content).not.toContain("uid-original");
+  expect(created.content).not.toContain("data-reminder");
+  expect(created.content).not.toContain("child-page");
+  expect(created.content).not.toContain("data-suggestion");
+  expect(created.content).not.toContain("data-comment-id");
+  expect(created.content).not.toContain("suggested");
+  expect(created.content).toContain("kept commented");
+});
+
+test("B1(3): a member's template goes to Templates/ as a private note — never beside the shared page", async ({ page }) => {
+  await page.goto(transferUrl("?open=plan&caps=view,edit,create"));
+  await expect(page.getByRole("heading", { name: "Rename Plan", exact: true })).toBeVisible();
+  await (await pageMenu(page)).getByRole("menuitem", { name: "Save as template", exact: true }).click();
+  await expect(page.locator(".page-toast")).toContainText("as a template");
+  const created = (await writes(page)).find((w) => w.create)!.create as Record<string, any>;
+  expect(created.path).toBe("Templates/Plan");
+  expect(created.path.startsWith("vault/Projects/Prism")).toBe(false);
+  expect(created.tags).toEqual(["template"]);
+  expect(created.metadata.prism_visibility).toBe("private");
+});
+
+test("Use: tags the person has no standing in are dropped with a notice — the page is still created", async ({ page }) => {
+  await page.goto(transferUrl());
+  await openGallery(page);
+  await page.evaluate(() => { (window as any).prismTransfer.control.denyTags = true; });
+  await gallery(page).getByRole("button", { name: "Use Meeting notes", exact: true }).click();
+  const create = page.getByRole("dialog", { name: "New page", exact: true });
+  await create.getByLabel("Page title").fill("Standup");
+  await create.getByRole("button", { name: "Create page", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Rename Standup", exact: true })).toBeVisible();
+  const all = await writes(page);
+  expect((all.find((w) => w.refusedCreate)!.refusedCreate as any).tags).toEqual(["meeting"]);
+  const made = all.filter((w) => w.create).map((w) => w.create as Record<string, any>);
+  expect(made).toHaveLength(1);
+  expect(made[0]!.tags).toEqual([]);
+  expect(made[0]!.metadata).toMatchObject({ title: "Standup", status: "draft" });
+  await expect(page.locator(".page-toast")).toContainText("“meeting”");
+  await expect(page.locator(".page-toast")).toContainText("not applied");
+});
+
+test("gallery: sharing a template with the workspace is an explicit toggle", async ({ page }) => {
+  await page.goto(transferUrl("?open=prism"));
+  await (await pageMenu(page)).getByRole("menuitem", { name: "Save as template", exact: true }).click();
+  await expect(page.locator(".page-toast")).toContainText("as a template");
+  await openGallery(page);
+  const row = gallery(page).getByRole("listitem", { name: "Prism", exact: true });
+  await expect(row).toContainText("Private to you");
+  await row.getByRole("button", { name: "Share Prism with the workspace", exact: true }).click();
+  await expect(row).toContainText("Shared with the workspace");
+  const stored = () => page.evaluate(() => (window as any).prismFixtureNotes.find((n: any) => n.path === "Templates/Prism").metadata);
+  expect("prism_visibility" in (await stored())).toBe(false);
+  await row.getByRole("button", { name: "Make Prism private", exact: true }).click();
+  await expect(row).toContainText("Private to you");
+  expect((await stored()).prism_visibility).toBe("private");
+  expect((await stored()).prism_creator).toBe("owner@example.test");
+  // A member (their reads carry caps) cannot widen a template: no toggle.
+  await page.goto(transferUrl("?caps=view,edit,create,delete"));
+  await openGallery(page);
+  await expect(gallery(page).getByRole("button", { name: /with the workspace|private$/ })).toHaveCount(0);
+});
+
+test("gallery Rename sends ONE request (Enter, then the field's blur)", async ({ page }) => {
+  await page.goto(transferUrl());
+  await openGallery(page);
+  const g = gallery(page);
+  await g.getByRole("button", { name: "Rename Task", exact: true }).click();
+  const field = g.getByRole("textbox", { name: "New name for Task" });
+  await field.fill("Chore");
+  await field.press("Enter");
+  await expect(g.getByRole("listitem", { name: "Chore", exact: true })).toBeVisible();
+  await page.waitForTimeout(300);
+  const all = await writes(page);
+  expect(all.filter((w) => w.patch === "tpl-task" && w.metadata?.title === "Chore")).toHaveLength(1);
+  expect(all.filter((w) => w.move === "tpl-task")).toHaveLength(1);
+});
+
+test("B1(5): duplicating a private page keeps the copy private, with the duplicator as its creator and a clean body", async ({ page }) => {
+  await page.goto(transferUrl("?open=secret"));
+  await expect(page.getByRole("heading", { name: "Rename Secret plan", exact: true })).toBeVisible();
+  await (await pageMenu(page)).getByRole("menuitem", { name: "Duplicate", exact: true }).click();
+  await expect(page.locator(".page-toast")).toContainText("Duplicated");
+  const created = (await writes(page)).find((w) => w.create)!.create as Record<string, any>;
+  expect(created.path).toBe("vault/Drafts/Secret plan (copy)");
+  expect(created.metadata.prism_visibility).toBe("private");
+  expect(created.metadata.prism_creator).toBe("owner@example.test");
+  expect(created.tags).toEqual(["page", "wiki"]);
+  expect(created.content).not.toContain("uid-original");
+  expect(created.content).not.toContain("data-reminder");
+  expect(created.content).not.toContain("child-page");
+});
+
+test("lock: when the page's unsaved typing cannot be saved, the page is NOT locked and the person is told", async ({ page }) => {
+  await page.goto(transferUrl("?open=plan"));
+  const editor = page.locator("#workspace-document .tiptap").first();
+  await expect(editor).toBeVisible();
+  await page.evaluate(() => { (window as any).prismTransfer.control.failSaves = true; });
+  await editor.click();
+  await page.keyboard.type(" unsaved words");
+  await (await pageMenu(page)).getByRole("menuitem", { name: "Lock page", exact: true }).click();
+  await expect(page.locator(".page-toast")).toContainText("was not locked");
+  expect((await writes(page)).filter((w) => w.meta === "plan")).toHaveLength(0);
+  expect((await page.evaluate(() => (window as any).prismFixtureNotes.find((n: any) => n.id === "plan").metadata.prism_locked)) ?? false).toBe(false);
+  // Once saving works again the lock goes through, with the typing saved first.
+  await page.evaluate(() => { (window as any).prismTransfer.control.failSaves = false; });
+  await (await pageMenu(page)).getByRole("menuitem", { name: "Lock page", exact: true }).click();
+  await expect(page.locator(".page-toast")).toContainText("Page locked");
+  const stored = await page.evaluate(() => (window as any).prismFixtureNotes.find((n: any) => n.id === "plan"));
+  expect(stored.metadata.prism_locked).toBe(true);
+  expect(stored.content).toContain("unsaved words");
+});
