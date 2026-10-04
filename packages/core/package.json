@@ -24,7 +24,8 @@
     "./search": "./src/lib/search/match.ts",
     "./import-export": "./src/lib/import-export/index.ts",
     "./styles/*": "./src/styles/*",
-    "./messages": "./src/lib/matrix/types.ts"
+    "./messages": "./src/lib/matrix/types.ts",
+    "./task-lists": "./src/lib/html/taskLists.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit -p tsconfig.json"

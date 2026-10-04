@@ -19,6 +19,7 @@ import * as Y from "yjs";
 import { generateJSON, generateHTML, getSchema } from "@tiptap/core";
 import { prosemirrorJSONToYDoc } from "@tiptap/y-tiptap";
 import { collabExtensions } from "@prism/core/editor-schema";
+import { taskListsInHtml } from "@prism/core/task-lists";
 import { marked } from "marked";
 import TurndownService from "turndown";
 import { normalizeLineBreaks } from "./precheck";
@@ -47,9 +48,13 @@ export const isStoredHtml = (content: string): boolean => content.trim().startsW
 // costs nothing here): what a parser reads is byte for byte what was pre-checked,
 // in the worker as on the main thread.
 
-/** Markdown → HTML, exactly as collab seeds a document (marked defaults, unsanitised). */
+/**
+ * Markdown → HTML, exactly as collab seeds a document (marked defaults, unsanitised) — plus GFM
+ * task items: a list whose every item is `- [ ]` / `- [x]` becomes the editor's to-do list
+ * (`taskListsInHtml`, one linear pass over marked's output; nothing new is parsed).
+ */
 export function markdownToHtmlSync(md: string): string {
-  return marked.parse(normalizeLineBreaks(md)) as string;
+  return taskListsInHtml(marked.parse(normalizeLineBreaks(md)) as string);
 }
 
 /** A note body (stored HTML, or Markdown) → ProseMirror JSON. */
