@@ -101,14 +101,21 @@ button, input, select, textarea { font: inherit; }
 select:not([multiple]):not([size]) {
   -webkit-appearance: none;
   appearance: none;
+  /* The chevron: two small gradient halves in the select's OWN text colour (`currentColor`, softened),
+     so it follows every theme and surface without a fixed colour. */
+  --select-chevron: color-mix(in srgb, currentColor 62%, transparent);
   padding-inline-end: 26px !important;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' fill='none' stroke='%23888888' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m3 4.5 3 3 3-3'/%3E%3C/svg%3E") !important;
+  background-image:
+    linear-gradient(45deg, transparent 50%, var(--select-chevron) 50%),
+    linear-gradient(135deg, var(--select-chevron) 50%, transparent 50%) !important;
   background-repeat: no-repeat !important;
-  background-position: right 8px center !important;
-  background-size: 12px 12px !important;
+  background-position: right 13px top 50%, right 8px top 50% !important;
+  background-size: 5px 5px, 5px 5px !important;
   text-overflow: ellipsis;
 }
-[dir="rtl"] select:not([multiple]):not([size]) { background-position: left 8px center !important; }
+/* Right-to-left: the chevron sits at the inline end (`:dir()` where the engine has it; the attribute otherwise). */
+[dir="rtl"] select:not([multiple]):not([size]) { background-position: left 8px top 50%, left 13px top 50% !important; }
+select:not([multiple]):not([size]):dir(rtl) { background-position: left 8px top 50%, left 13px top 50% !important; }
 :where(select):disabled { opacity: .5; cursor: not-allowed; }
 /* Forced colours: the system draws the control and its arrow (a background image may not show). */
 @media (forced-colors: active) {
