@@ -146,7 +146,8 @@ release builds don't.
 The origin is JSON-injected by `host.rs`. It defines a frozen `window.__PRISM_HOST__` with
 `apiOrigin`, `getToken`, `onUnauthorized`, `signIn` and `onSignedOut` (the WP2.2
 contract). It also defines `window.__PRISM_SHELL__` (`showServerSettings(grant)`,
-`signOut()`, `toast()`), which the native menu drives. It uses Tauri's
+`signOut()`, `toast()`, and since NP-NA-04 `openLink(path)` / `takePendingLink()` — see
+"Links and New Page"), which the native menu and the shell's link handler drive. It uses Tauri's
 `__TAURI_INTERNALS__.invoke`, captured at startup. `withGlobalTauri` is off, and the web
 build aliases `@tauri-apps/api/core` to its own shim.
 
@@ -240,6 +241,174 @@ reached by the page: paths exist only inside the OS event, never as an argument.
 commands; quick-capture never holds `get_token`; the capture page calls only
 `quick_capture`; no notification/dialog plugin). Manual checklist:
 `apps/client/scripts/verify-client-flow.md` §8.
+
+## Links and New Page (NP-NA-04, NP-SB-13)
+
+### Universal links and `prism://`
+
+Three pieces, one allowlist — **keep them in step**:
+
+| Where | File | Role |
+|---|---|---|
+| Server | `apps/server/src/routes/app-links.ts` | `GET /.well-known/apple-app-site-association` (and `/apple-app-site-association`): what the OS may hand to the app |
+| Shell | `apps/client/src-tauri/src/links.rs` | validates what the OS handed over; holds one pending link |
+| Page | `apps/web/src/native/appLinks.ts` | opens the validated path as a tab |
+
+**Routes that open in the app:** `/page/<id>`, `/collab/<id>` (opens the same page in the
+workspace), `/inbox[/<notification id>]`, `/agent[/<session uuid>]`. Nothing else.
+**Never captured:** `/auth/*`, `/accept-invite`, `/api/*`, `/acl/*`, `/mcp`, `/health`,
+`/.well-known/*`, `/p/*` (published sites are public web pages) and **any `/collab/<id>?t=…`**
+capability link (the app acts as the signed-in account and would drop the token, and with it
+the access the link carries — those stay in the browser). The sign-in flow opens
+`/auth/device/authorize` in the SYSTEM browser and returns through a loopback redirect
+(macOS) or `prism://auth/callback` (iOS, WP5): the association file excludes `/auth/*`
+explicitly, and `links.rs` refuses everything under `prism://auth` (silently, and without
+logging the URL — it can carry a code).
+
+**Server.** `APPLE_APP_ID` = `<TeamID>.<bundle id>` (comma-separated for several apps);
+unset = `83Y42N33H8.com.benjaminlife.prism.client`; set to an empty string → both paths
+answer 404 (the host advertises no app). The file is public JSON (`application/json`, no
+redirect, no auth, `Cache-Control: public, max-age=3600`), `applinks` only — no
+`webcredentials`. Exclusions come first (Apple takes the first matching component). Both
+paths are in the PWA's `navigateFallbackDenylist` (`npm run check:sw -w @prism/web`).
+Apple fetches the file through its CDN and caches it (up to ~a day; a new install re-fetches),
+so it must be reachable at `https://<host>/.well-known/apple-app-site-association` on the
+PUBLIC host name before the app is installed.
+
+**Shell.** tao delivers both a custom-scheme open and a universal link (NSUserActivity
+`webpageURL`) as `RunEvent::Opened { urls }` on macOS and iOS — no deep-link plugin, no new
+dependency, no new IPC command. `links::parse(raw, origin)`:
+- `https://…` — scheme + host + port must **equal** the configured server origin (compared in
+  `ServerOrigin`'s normalized form, never by prefix); no userinfo; **no query**; path exactly
+  `/<route>[/<id>]` (optional trailing slash) after the URL parser resolved it;
+- `prism://<route>[/<id>]` — no userinfo, port or query;
+- ids are `[A-Za-z0-9_-]` only (page ≤ 128, notification ≤ 64, session = a uuid); a raw value
+  with a backslash, a character ≤ 0x20 or DEL, or longer than 2048 bytes is refused before
+  parsing.
+
+The result is a canonical PATH rebuilt from the validated parts (`/page/<id>`,
+`/inbox[/<id>]`, `/agent[/<id>]`) — the original URL is never passed on and **nothing ever
+navigates**. Delivery is `window.__PRISM_SHELL__.openLink(path)` (host.js): the hook keeps
+the path and fires a payload-free `prism:open-link` event; the signed-in app takes it with
+`takePendingLink()` and opens a tab (`openTab`), so access is the account's own — a page it
+cannot view shows "Document unavailable". A refused link shows the shell toast "This link
+can’t be opened in Prism." (not for `prism://auth/…`).
+
+**Signed out / cold start.** The shell keeps ONE pending link (`LinkState`, newest wins) and
+hands it over only when the main window's page has finished loading AND a device token
+exists; it re-checks on every page load, so a link that arrived at the sign-in screen opens
+after the sign-in reload. Undelivered after 10 minutes → dropped. A token the server then
+rejects (401) lands on the sign-in screen with the link already handed over: it is lost
+(dropped safely), not replayed.
+
+**The `prism://` scheme** is registered by `src-tauri/Info.plist` (merged by the Tauri
+bundler; `verify-client.mjs` pins it to exactly that one scheme).
+
+**The Associated Domains entitlement is generated per install** — the server host is
+configuration, so no host is committed:
+
+```bash
+node apps/client/scripts/universal-links.mjs                       # show (hosts: --hosts, PRISM_ASSOCIATED_DOMAINS, PRISM_SERVER_ORIGIN, DEFAULT_ORIGIN)
+node apps/client/scripts/universal-links.mjs --write --profile <Prism Client .provisionprofile>
+cd apps/client && npm run tauri build -- --bundles app --config src-tauri/gen/universal-links/tauri.macos.conf.json
+node apps/client/scripts/universal-links.mjs --ios                 # iOS (WP5): patches gen/apple/prism-client_iOS/*.entitlements, keeps aps-environment
+```
+
+- **macOS:** `com.apple.developer.associated-domains` is a *restricted* entitlement. The app
+  only launches when it is signed by the team AND embeds a provisioning profile whose App ID
+  (`83Y42N33H8.com.benjaminlife.prism.client`) has the Associated Domains capability
+  (`--profile` → `bundle.macOS.files["embedded.provisionprofile"]`). An ad-hoc/unsigned build
+  carrying it is killed at launch — hence an opt-in overlay (`gen/universal-links/`,
+  git-ignored), never `tauri.conf.json`. Without the overlay the app still handles
+  `prism://` links.
+- **iOS (after `feat/native-ios` is merged):** run `--ios` before `ios-release.sh`; enable
+  Associated Domains on the App ID and regenerate the "Prism Workspace App Store" profile.
+  The iOS app asks for its server at first run, but the entitlement is fixed at build time:
+  a build lists the hosts it may open links for, and the runtime rule (origin = configured
+  server) picks among them.
+- `--developer` adds `?mode=developer` (development-signed builds only; never for
+  distribution; on iOS it is written to the debug entitlements only).
+
+**Not verified without a signed build + device** (state this in any hand-off): that the OS
+hands the link to the app at all. Universal links work only when the installed app is signed
+with an entitlement naming a host that serves the association file over https with the same
+app id. Everything after the OS hand-off is covered: `cargo test` (`links::tests`),
+`apps/server/test/app-links.test.ts`, `apps/web/e2e-fixtures/native-shell.spec.ts` (the
+shell's real `host.js` in a browser, against the real server fixture).
+
+**Device check (owner).**
+1. Server: `curl -sI https://<host>/.well-known/apple-app-site-association` → `200`,
+   `content-type: application/json`, no redirect; the body names
+   `83Y42N33H8.com.benjaminlife.prism.client`. Apple's view:
+   `curl -s https://app-site-association.cdn-apple.com/a/v1/<host>`.
+2. Build with the entitlement (above), install, sign in.
+3. macOS: `open "prism://page/<id>"` → the page opens as a tab. `open
+   "https://<host>/page/<id>"` (or click it in Notes/Mail; Safari's address bar never
+   triggers a universal link) → the app, not the browser. `swcutil dl -d <host>` /
+   `sudo swcutil show` shows what the OS cached.
+4. iOS: tap an `https://<host>/page/<id>` link in Messages/Mail/Notes → the app opens the
+   page; long-press shows "Open in Prism". A `…/collab/<id>?t=…` share link, `/p/<slug>`,
+   an invite link and the sign-in page open in Safari. Sign out, tap a page link, sign in →
+   the page opens after sign-in.
+5. A page you cannot view → "Document unavailable"; a link to another host or
+   `prism://auth/callback` → nothing opens (the first shows the toast).
+
+### New Page (⌘N)
+
+File → **New Page** (`CmdOrCtrl+N`, `menu.rs`) evals a payload-free
+`window.dispatchEvent(new CustomEvent("prism:new-page"))`. `useKeyboardShortcuts`
+(`@prism/core`) answers it — and the key itself, where the webview receives it — with the
+one-action create (`usePagesUI.openCreate({})`: an "Untitled" page beside the open one,
+title focused). Never behind an open dialog. A menu item and a keydown for the same key
+press make ONE page (`openCreate({})` during a create in flight is the same request). On
+Apple platforms the key binding is ⌘N only (Ctrl+N is "next line" in text fields). The
+shortcut sheet and the ⌘K hint list ⌘N only in a native shell
+(`lib/shortcuts.ts` `NATIVE_ONLY_SHORTCUTS` / `shortcutAvailable`): a browser tab never
+receives it. **iOS (hardware keyboard):** there is no menu bar in the Tauri iOS shell; ⌘N
+reaches the WKWebView as a keydown and the same handler takes it — NOT verified on a device.
+A discoverable entry in the iPad ⌘-hold overlay needs a `UIKeyCommand` in the Swift plugin
+(`plugins/prism-ios` on `feat/native-ios`) that evals the same event.
+
+### Saving an export archive (design — NOT built)
+
+**Today, in the Prism Client, a multi-page export finishes and nothing is saved.**
+`ExportDialog` hands the ZIP to `saveBlob()` (an `<a download href="blob:…">` click). wry
+attaches a WKDownloadDelegate only when the window has a download handler; this shell sets
+none, so WKWebView's `shouldPerformDownload` navigation is answered `Cancel`
+(`wry/src/wkwebview/navigation.rs`) — on macOS and on iOS alike. (A single page without
+sub-pages or files is unaffected: it goes through `export_note`, text only.) Adding a
+download handler is the wrong fix: it would let page script start downloads of arbitrary
+URLs to a path the page influences.
+
+Proposed, same shape as `export_note` (the page never supplies a path or a URL):
+
+- **IPC** `save_export { jobId, suggestedName }` → `Option<String>` (the saved file's name),
+  main window only (`require_label`), declared in `build.rs`, granted in
+  `capabilities/default.json` (the main window then has 9 commands — update
+  `verify-client.mjs`, this doc's table and CLAUDE.md).
+- **Rust** builds the URL itself: `origin.join("/api/export/<jobId>/download")` with `jobId`
+  matching the server's id shape exactly (reject anything else before any I/O); `GET` with
+  `Authorization: Bearer <device token>` from `AppState` (the token never passes through
+  this call's arguments), **redirects disabled** (`reqwest::redirect::Policy::none()`), a
+  connect + idle timeout, `Content-Type` must be `application/zip`, and a hard size cap
+  (the server's `EXPORT_MAX_BYTES`, 2 GB) enforced on the declared length AND while
+  streaming. Bytes are streamed to disk in chunks — never buffered, never base64 over IPC.
+- **macOS:** native save panel first (`rfd`, name from `export::sanitize_stem` + `.zip`);
+  stream to `<chosen>.part` in the same folder, `fsync`, rename; delete the part on any
+  failure or cancel.
+- **iOS:** stream to `<app tmp>/exports/<random>/<sanitised name>.zip` (0600; the folder is
+  emptied at launch and after the sheet closes), then present `UIActivityViewController`
+  (Save to Files / AirDrop) from the Swift plugin, anchored for iPad. The path never
+  reaches JS.
+- **Page:** `ExportDialog` calls `__PRISM_SHELL__.saveExport(jobId, fileName)` when the
+  shell offers it (instead of `transferApi.exportDownload` + `saveBlob`), shows
+  "Saved <name>" / the error, and keeps the job until the save finished. The active vault
+  needs no header: an export job is bound to the account and its id.
+- **Tests:** Rust against a loopback fake (id shapes, a 302 is refused, wrong content type,
+  declared and streamed overflow, cancel leaves no `.part`, the bearer goes only to the
+  configured origin); a fixture spec for the dialog with a stub shell.
+- Size: M for macOS, plus the Swift half once the iOS shell is on main. Until then the
+  honest state is: **multi-page export does not save in the native shell; use the web app.**
 
 ## Security surface
 
