@@ -7,7 +7,8 @@
  *
  * Bounded: two stores — `bodies` (key → response text) and `index` (key →
  * {size, at}) — so eviction walks only the small index. LRU by last access,
- * capped at MAX_ENTRIES and MAX_BYTES; a single body over MAX_BODY is not cached.
+ * capped at MAX_ENTRIES and MAX_BYTES; a single body over MAX_BODY is not cached
+ * (the `/tree` projection has its own, larger limit — TREE_MAX_BODY).
  * Cleared on sign-out, on a native 401, and when the signed-in account changes.
  * Every IDB failure degrades to "no cache", never to an error.
  */
@@ -18,6 +19,16 @@ const MAX_BYTES = 64 * 1024 * 1024;
 // rewrite into IndexedDB on every reload, so it (and any other huge body) is not
 // cached. The lean /api/tree projection (WP7.1, ~2-3 MB raw for ~14k notes) fits.
 const MAX_BODY = 4 * 1024 * 1024;
+// The projection grows ~170 bytes per note and crosses 4 MB at ~20–29k notes; past
+// that an offline start had no sidebar at all. It gets its own limit — still inside
+// the MAX_BYTES budget — and the LRU drops every other entry before a tree: a
+// cached page nobody can navigate to is worth less than the list of pages.
+const TREE_MAX_BODY = 16 * 1024 * 1024;
+/** `<scope>|/tree` (with or without a query) — the sidebar's projection. */
+export const isTreeKey = (key: string): boolean => {
+  const path = key.slice(key.indexOf("|") + 1);
+  return path === "/tree" || path.startsWith("/tree?");
+};
 const USER_KEY = "prism-cache-user";
 /** Cached pages are a convenience, not an archive: nothing older is ever served. */
 export const MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
@@ -114,7 +125,7 @@ export async function cacheGet(key: string): Promise<{ body: string; contentType
 }
 
 export async function cachePut(key: string, body: string, contentType: string): Promise<void> {
-  if (body.length > MAX_BODY) return;
+  if (body.length > (isTreeKey(key) ? TREE_MAX_BODY : MAX_BODY)) return;
   try {
     const db = await open();
     const t = db.transaction(["bodies", "index"], "readwrite");
@@ -158,7 +169,9 @@ async function evict(db: IDBDatabase): Promise<void> {
     }
   };
   // Only once the pinned set is known; expiry above never depends on it.
-  if (protectedReady) trim(live.filter((r) => !protectedKeys.has(r.key)), MAX_ENTRIES, MAX_BYTES);
+  // Trees go last: within the shared budget everything else is dropped first.
+  const ordinary = live.filter((r) => !protectedKeys.has(r.key));
+  if (protectedReady) trim([...ordinary.filter((r) => !isTreeKey(r.key)), ...ordinary.filter((r) => isTreeKey(r.key))], MAX_ENTRIES, MAX_BYTES);
   trim(live.filter((r) => protectedKeys.has(r.key)), Number.MAX_SAFE_INTEGER, PINNED_MAX_BYTES);
   if (!drop.length) return;
   const t = db.transaction(["bodies", "index"], "readwrite");

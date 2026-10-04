@@ -50,3 +50,44 @@ test("pinned pages are protected from the LRU from the first write after a reloa
   }, mod);
   expect(kept).toBe(true);
 });
+
+test("the tree has its own 16 MB limit: a 6 MB tree is cached for an offline start, other bodies keep the 4 MB cap, and the LRU drops pages before the tree", async ({ page }) => {
+  test.setTimeout(120_000); // 6 MB and 17 MB bodies through IndexedDB, then 305 writes to overflow the entry cap
+  await page.goto("/e2e-fixtures/harness.html");
+  const result = await page.evaluate(async (mod) => {
+    const cache = await import(/* @vite-ignore */ mod);
+    cache.setProtectedCacheKeys([]);
+    const scope = JSON.stringify(["http://x/api", "w", "v", "user:a@test.local"]);
+    // ~35k rows of the projection's shape: a little over 6 MB of JSON.
+    const rows = Array.from({ length: 35_000 }, (_, i) => ({ id: `n${String(i).padStart(22, "0")}`, path: `Projects/Area ${i % 97}/A page with an ordinary sort of title ${i}`, tags: ["page", `area-${i % 40}`], updatedAt: "2026-10-01T10:00:00.000Z", type: "document" }));
+    const tree = JSON.stringify(rows);
+    const respond = (body: string) => () => Promise.resolve(new Response(body, { status: 200, headers: { "content-type": "application/json" } }));
+    // Through the real read path, online: the tree, a big list and one page.
+    await (await cache.readThrough(`${scope}|/tree`, respond(tree))).text();
+    await (await cache.readThrough(`${scope}|/notes?limit=50000`, respond(tree))).text();
+    await (await cache.readThrough(`${scope}|/notes/a`, respond('{"id":"a"}'))).text();
+    await new Promise((r) => setTimeout(r, 1500));
+    // Offline start: no network at all.
+    const offline = () => Promise.reject(new TypeError("Failed to fetch"));
+    const read = async (key: string) => { try { return (await (await cache.readThrough(key, offline)).text()).length; } catch { return -1; } };
+    const treeBytes = await read(`${scope}|/tree`);
+    const listBytes = await read(`${scope}|/notes?limit=50000`);
+    const huge = "x".repeat(17 * 1024 * 1024);
+    await cache.cachePut(`${scope}|/tree?big`, huge, "application/json");
+    const hugeTree = !!(await cache.cacheGet(`${scope}|/tree?big`));
+    // Make the tree the OLDEST entry, then overflow the entry cap: pages go, the tree stays.
+    await new Promise<void>((resolve) => {
+      const open = indexedDB.open("prism-read-cache");
+      open.onsuccess = () => { const s = open.result.transaction("index", "readwrite").objectStore("index"); const g = s.get(`${scope}|/tree`); g.onsuccess = () => { s.put({ ...g.result, at: 1 }); s.transaction.oncomplete = () => resolve(); }; };
+    });
+    for (let i = 0; i < 305; i++) await cache.cachePut(`${scope}|/notes/n${i}`, "{}", "application/json");
+    return { size: tree.length, treeBytes, listBytes, hugeTree, treeAfterOverflow: await read(`${scope}|/tree`), oldestPage: await read(`${scope}|/notes/a`), newestPage: await read(`${scope}|/notes/n304`) };
+  }, mod);
+  expect(result.size).toBeGreaterThan(6 * 1024 * 1024);
+  expect(result.treeBytes, "the 6 MB tree is served offline").toBe(result.size);
+  expect(result.listBytes, "any other body over 4 MB is still not cached").toBe(-1);
+  expect(result.hugeTree, "a tree over 16 MB is not cached").toBe(false);
+  expect(result.treeAfterOverflow, "the LRU drops pages before the tree").toBe(result.size);
+  expect(result.oldestPage).toBe(-1);
+  expect(result.newestPage).toBe(2);
+});
