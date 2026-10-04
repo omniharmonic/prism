@@ -524,13 +524,23 @@ export function CommandBar() {
   // since the press — rows are also pushed by what loads ABOVE the list. A deliberate drag off
   // the row while nothing moved cancels, and the row the pointer ended on is never opened.
   // Touch and keyboard keep the ordinary click.
-  const pressRef = useRef<{ id: string; top: number | null } | null>(null);
+  // "Moved" is judged in the LIST's own coordinates: the row's offset inside the scroller's content
+  // (scrolling the list — a wheel, or `scrollIntoView` when the pointer selects a clipped row — is not
+  // the row moving) plus where the scroller itself sits (the filter bar appearing above it is).
+  const pressRef = useRef<{ id: string; at: { offset: number; list: number } | null } | null>(null);
   const itemsRef = useRef(items);
   itemsRef.current = items;
   const rowOf = (id: string) => document.querySelector<HTMLElement>(`#prism-command-results [data-command-item="${CSS.escape(id)}"]`);
+  const placeOf = (id: string): { offset: number; list: number } | null => {
+    const row = rowOf(id);
+    const list = document.getElementById("prism-command-results");
+    if (!row || !list) return null;
+    const top = list.getBoundingClientRect().top;
+    return { offset: row.getBoundingClientRect().top - top + list.scrollTop, list: top };
+  };
   const pressRow = (id: string, e: React.PointerEvent) => {
     if (e.pointerType === "touch" || e.button !== 0) { pressRef.current = null; return; }
-    pressRef.current = { id, top: rowOf(id)?.getBoundingClientRect().top ?? null };
+    pressRef.current = { id, at: placeOf(id) };
   };
   /** The row's click: everything except the mouse press handled above (touch, assistive tech, script). */
   const clickRow = (id: string) => {
@@ -551,12 +561,31 @@ export function CommandBar() {
       if (!target || !dialogRef.current?.contains(target)) return;
       const row = rowOf(press.id);
       const onRow = !!row && row.contains(target);
-      const moved = !row || press.top === null || Math.abs(row.getBoundingClientRect().top - press.top) > 1;
+      const now = placeOf(press.id);
+      const moved = !now || !press.at || Math.abs(now.offset - press.at.offset) > 1 || Math.abs(now.list - press.at.list) > 1;
       if (onRow || moved) item.action();
     };
+    // A press whose release never reached us (the button came up outside the window, a context menu
+    // took it) must not wait for the next release: any new press that is not on a row, a context
+    // menu, and the window going away all forget it. (Window capture runs before the row's own
+    // `pointerdown`, which then records the new press.)
+    const forget = () => { pressRef.current = null; };
+    const pressElsewhere = (e: PointerEvent) => { if (!(e.target instanceof Element && e.target.closest("[data-command-item]"))) forget(); };
+    const hidden = () => { if (document.visibilityState !== "visible") forget(); };
     window.addEventListener("pointerup", release, true);
     window.addEventListener("pointercancel", release, true);
-    return () => { window.removeEventListener("pointerup", release, true); window.removeEventListener("pointercancel", release, true); };
+    window.addEventListener("pointerdown", pressElsewhere, true);
+    window.addEventListener("contextmenu", forget, true);
+    window.addEventListener("blur", forget);
+    document.addEventListener("visibilitychange", hidden);
+    return () => {
+      window.removeEventListener("pointerup", release, true);
+      window.removeEventListener("pointercancel", release, true);
+      window.removeEventListener("pointerdown", pressElsewhere, true);
+      window.removeEventListener("contextmenu", forget, true);
+      window.removeEventListener("blur", forget);
+      document.removeEventListener("visibilitychange", hidden);
+    };
   }, [commandBarOpen]);
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); closeCommandBar(); return; }
@@ -567,6 +596,8 @@ export function CommandBar() {
     }
     if (e.key === "Enter") {
       e.preventDefault();
+      // The keyboard decided: a mouse press still waiting for its release is dropped (it would run a second item).
+      pressRef.current = null;
       // ⌘↵ / Ctrl+↵ on a page: open it in a new tab and stay on this one (NP-SR-01).
       const note = (e.metaKey || e.ctrlKey) ? orderedNotes.find((item) => item.id === items[selectedIndex]?.id) : undefined;
       if (note?.sameVault) { rememberSearch(searchScope, debouncedQuery); closeCommandBar(); openInNewTab(note.noteId, note.label, note.type); return; }

@@ -434,3 +434,100 @@ test("⌘K: dragging from one row to another, or out of the list, opens nothing"
   await expect(dialog).toBeVisible();
   await expect(tabs).toHaveCount(open);
 });
+
+/** Review: "moved" is judged in the list's own coordinates — scrolling the list is not the row moving. */
+test("⌘K: scrolling the list while the button is down does not run the pressed row", async ({ page }) => {
+  await openPalette(page);
+  const dialog = page.getByRole("dialog", { name: "Search workspace" });
+  await dialog.getByRole("button", { name: "Commands", exact: true }).click();
+  const list = dialog.getByRole("listbox", { name: "Notes and commands" });
+  const rows = list.getByRole("option");
+  await expect(rows.first()).toBeVisible();
+  // The list is taller than its box (otherwise there is nothing to scroll).
+  expect(await list.evaluate((el) => el.scrollHeight - el.clientHeight)).toBeGreaterThan(120);
+  const first = (await rows.first().boundingBox())!;
+  await page.mouse.move(first.x + 60, first.y + first.height / 2);
+  await page.mouse.down();
+  await page.mouse.wheel(0, 160);
+  await expect.poll(() => list.evaluate((el) => el.scrollTop)).toBeGreaterThan(100);
+  await page.mouse.up();
+  // The pointer came up over another row of an UNCHANGED list: nothing ran.
+  await page.waitForTimeout(150);
+  await expect(dialog).toBeVisible();
+  await expect(page.getByRole("combobox", { name: "Search notes and commands" })).toHaveValue("");
+  await page.keyboard.press("Escape");
+  await expect(dialog).toHaveCount(0);
+});
+
+test("⌘K: a press that never got its release is forgotten — a later click elsewhere does not run it", async ({ page }) => {
+  const input = await openPalette(page);
+  const dialog = page.getByRole("dialog", { name: "Search workspace" });
+  await page.evaluate(() => {
+    const shell = (window as any).prismShell;
+    shell.serverCreate("Library/Theme ideas", "<p>A theme for the season.</p>");
+    shell.searchHold = true;
+  });
+  const light = () => page.evaluate(() => document.documentElement.classList.contains("light"));
+  const before = await light();
+  await input.fill("theme");
+  const command = dialog.getByRole("option", { name: "Toggle Theme" });
+  await expect(command).toBeVisible();
+  await expect.poll(() => page.evaluate(() => (window as any).prismShell.searchWaiting.length as number)).toBeGreaterThan(0);
+  // A press whose release the page never sees (the button came up outside the window).
+  await command.evaluate((el) => el.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, cancelable: true, pointerType: "mouse", button: 0, pointerId: 1 })));
+  await page.evaluate(() => (window as any).prismShell.releaseSearch());
+  await expect(page.getByRole("group", { name: "Notes" }).getByRole("option")).toHaveCount(1); // the row has moved
+  // Clicking the search field is a new press somewhere else.
+  await input.click();
+  await page.waitForTimeout(150);
+  await expect(dialog).toBeVisible();
+  expect(await light()).toBe(before);
+  // The same for a right-click and for the window losing focus.
+  for (const forget of ["contextmenu", "blur"] as const) {
+    await command.evaluate((el) => el.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, cancelable: true, pointerType: "mouse", button: 0, pointerId: 1 })));
+    await page.evaluate((type) => (type === "blur" ? window.dispatchEvent(new Event("blur")) : document.querySelector('[role="listbox"]')!.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true }))), forget);
+    await input.evaluate((el) => el.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, cancelable: true, pointerType: "mouse", button: 0, pointerId: 1 })));
+    await page.waitForTimeout(100);
+    await expect(dialog, `after ${forget}`).toBeVisible();
+    expect(await light(), `after ${forget}`).toBe(before);
+  }
+});
+
+test("⌘K: Enter while a mouse press is pending runs the selected row only", async ({ page }) => {
+  // A recent search "theme" and a page that matches it.
+  const input = await openPalette(page);
+  const dialog = page.getByRole("dialog", { name: "Search workspace" });
+  await page.evaluate(() => (window as any).prismShell.serverCreate("Library/Theme ideas", "<p>A theme for the season.</p>"));
+  await input.fill("theme");
+  await page.getByRole("group", { name: "Notes" }).getByRole("option", { name: /Theme ideas/ }).click();
+  await expect(dialog).toHaveCount(0);
+  const light = () => page.evaluate(() => document.documentElement.classList.contains("light"));
+  const before = await light();
+
+  await page.keyboard.press("ControlOrMeta+k");
+  const field = page.getByRole("combobox", { name: "Search notes and commands" });
+  const recent = page.getByRole("group", { name: "Recent searches" }).getByRole("option", { name: "theme" });
+  await expect(recent).toBeVisible();
+  const command = dialog.getByRole("option", { name: "Toggle Theme" });
+  await command.scrollIntoViewIfNeeded();
+  const at = (await command.boundingBox())!;
+  await page.mouse.move(at.x + 60, at.y + at.height / 2);
+  await page.mouse.down();
+  // Safari leaves focus in the search field on a mouse press; Chromium moves it to the row. Same start for both.
+  await field.focus();
+  // The pointer rests on the search field (rows scrolling under a still pointer would re-select themselves,
+  // and the top of the sheet is the part that does not move when the list changes).
+  const rest = (await field.boundingBox())!;
+  await page.mouse.move(rest.x + rest.width - 30, rest.y + rest.height / 2, { steps: 3 });
+  // With the button still down, the keyboard goes to the recent search and runs it.
+  for (let i = 0; i < 40 && (await recent.getAttribute("aria-selected")) !== "true"; i++) await page.keyboard.press("ArrowUp");
+  await expect(recent).toHaveAttribute("aria-selected", "true");
+  await page.keyboard.press("Enter");
+  await expect(field).toHaveValue("theme");
+  await page.mouse.up();
+  // Only the recent search ran: the palette is open on "theme" and the pressed command did not run.
+  await page.waitForTimeout(150);
+  await expect(dialog).toBeVisible();
+  await expect(field).toHaveValue("theme");
+  expect(await light()).toBe(before);
+});
