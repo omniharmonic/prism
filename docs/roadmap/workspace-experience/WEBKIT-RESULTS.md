@@ -126,6 +126,8 @@ One file per command, one worker, behind the host gate. Each fix's spec was seen
 | 6 · selects | `notion-a11y-touch` (WebKit: 12 failed) | `notion-a11y-touch` 69, `boards` 27, `notion-db-views` 9 | `notion-a11y-touch` 69, `boards` 27, `sharing` 12, `canvas` 14 |
 | Markdown to-dos (PARITY-GAPS slice N) | `markdown-todos` (Chromium: 2 failed) | `markdown-todos` 2 | `markdown-todos` 2, `notion-editor` 27 (paste) |
 
+**Review round (same branch).** Palette: "moved" is judged in the list's own coordinates (scrolling is not a move), a pending press is forgotten by Enter / a press elsewhere / a context menu / the window blurring (`notion-search` 18 on each engine). `walkTab`: IME guard, a stop that refuses focus is stepped over (`tab-walk` 2 on each engine; `editor-links` 15, `databases` 27 on each). The intermittent `parity2-mentions › @ menu dates: next Monday` had a product cause — the @ menu listed the people of an OLDER (debounced) query above a just-typed date and Enter took a person — fixed in `MentionMenu.tsx`, with a deterministic spec (`parity2-mentions` 3 on each engine; `notion-mentions` 9, `parity3-mentions` 9 on Chromium). Select chevron: `currentColor`-based, mirrored in RTL (`notion-a11y-touch` 69 on each engine).
+
 Not re-run after these changes: `notion-a11y-axe` (either engine), the rest of the suite, and a second complete WebKit pass. Root `npm run typecheck` and `npm run typecheck:e2e -w @prism/web`: clean.
 
 ## Not reached
