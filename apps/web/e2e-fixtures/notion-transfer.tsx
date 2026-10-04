@@ -31,7 +31,7 @@ const IMAGE_ID = "a_fixtureImage0000000001";
 const attachments = new Map<string, FixtureAttachment>([[IMAGE_ID, { name: "Team photo.png", mime: "image/png", bytes: PNG }]]);
 let server: ReturnType<typeof createTransferServer> | null = null;
 let seeded: Note[] = [];
-const control = { failSaves: false, denyTags: false };
+const control = { failSaves: false, failSavesFor: null as string | null, denyTags: false };
 const readCaps = params.has("viewer") ? ["view"] : params.get("caps")?.split(",") ?? null;
 
 Object.assign(window, {
@@ -46,11 +46,14 @@ Object.assign(window, {
       seeded = notes;
       // A PRIVATE draft that carries a tag someone publishes, a mention with a reminder,
       // a sub-page row and review state — everything a copy must not leak or repeat.
-      notes.push(doc("secret", "vault/Drafts/Secret plan",
+      // (Only for the specs that open it: the export specs count the workspace's pages.)
+      if (params.get("open") === "secret") notes.push(doc("secret", "vault/Drafts/Secret plan",
         '<p>Plan for <span data-type="mention" class="prism-mention" data-kind="person" data-id="p-ada" data-label="Ada" data-reminder="2026-10-09T09:00:00Z" data-mention-uid="uid-original">@Ada</span></p>' +
         '<div data-type="child-page" data-page-id="week1"></div>' +
         '<p>kept<span data-suggestion="insert" data-user="Bo" data-color="#22c55e"> suggested</span><span data-comment-id="c1" data-resolved="false"> commented</span></p>',
         { tags: ["page", "wiki"], metadata: { type: "document", status: "draft", prism_visibility: "private", prism_creator: "owner@example.test" } }));
+      // A template someone ELSE made, remembering tags (the reviewer's escalation: a published tag).
+      notes.push(doc("tpl-foreign", "Templates/Team update", "<p>Update</p>", { tags: ["template"], metadata: { type: "document", title: "Team update", prism_template_tags: ["wiki", "updates"], prism_creator: "someone@example.test" } }));
       server = createTransferServer({ notes, stamp, attachments });
       Object.assign(window, { prismTransfer: { requests: server.requests, attachments, ui: useTransferUI, pages: usePagesUI, control } });
     },
@@ -80,7 +83,7 @@ Object.assign(window, {
         return Response.json(seeded.filter((n) => !tag || n.tags?.includes(tag)).map((n) => ({ ...n, content: undefined, _caps: readCaps })));
       }
       const body = typeof init?.body === "string" && init.body ? (JSON.parse(init.body) as Record<string, unknown>) : {};
-      if (one && method === "PATCH" && control.failSaves && typeof body.content === "string") return Response.json({ error: "vault_unreachable" }, { status: 502 });
+      if (one && method === "PATCH" && typeof body.content === "string" && (control.failSaves || control.failSavesFor === decodeURIComponent(one[1]!))) return Response.json({ error: "vault_unreachable" }, { status: 502 });
       if (url.pathname === "/api/notes" && method === "POST" && control.denyTags && Array.isArray(body.tags) && body.tags.some((t) => t !== "template")) {
         (window as unknown as { prismFixtureWrites: Array<Record<string, unknown>> }).prismFixtureWrites.push({ refusedCreate: body });
         return Response.json({ error: "forbidden", reason: "You can only add tags you can create or organize in." }, { status: 403 });

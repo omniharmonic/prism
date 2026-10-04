@@ -24,6 +24,7 @@ const control = {
   calls: [] as Array<{ prompt: string; skill?: string; noteId?: string; textOnly?: boolean }>,
   reply: "First point of the summary.\n\nSecond point of the summary.",
   fail: false,
+  oldServer: false,
   hold: false,
   release: () => {},
   aborted: 0,
@@ -38,7 +39,8 @@ const host = {
       const finish = () => {
         if (settled) return;
         settled = true;
-        if (control.fail) reject(new HostServiceError(502, "agent_failed", "the model is unavailable"));
+        if (control.oldServer && o?.textOnly) reject(new HostServiceError(400, "bad_request", "profile may only be \"vault-ro\""));
+        else if (control.fail) reject(new HostServiceError(502, "agent_failed", "the model is unavailable"));
         else resolve(control.reply);
       };
       o?.signal?.addEventListener("abort", () => {

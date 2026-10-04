@@ -393,3 +393,15 @@ test("command bar: the agent entries exist only for a page that is open in a tex
   await search.getByRole("combobox").fill("Summarize Page");
   await expect(search.getByRole("option", { name: "Summarize Page", exact: true })).toHaveCount(0);
 });
+
+test("an older server (no text-only runs): a clear message, never a dead spinner", async ({ page }) => {
+  await open(page, "brief");
+  await set(page, { oldServer: true });
+  await pageAction(page, "Summarize page");
+  const p = panel(page);
+  await expect(p.getByRole("alert")).toContainText("Update the server to use page AI actions");
+  await expect(p).not.toContainText("Working…");
+  await expect(p.getByRole("button", { name: "Try again" })).toHaveCount(0);
+  await p.getByRole("button", { name: "Close", exact: true }).click();
+  await expect(p).toHaveCount(0);
+});

@@ -13,6 +13,7 @@ test("date variables resolve on create", async ({ page }) => {
   await nav(page).getByRole("button", { name: "New page from template", exact: true }).click();
   const create = page.getByRole("dialog", { name: "New page", exact: true });
   await create.getByRole("group", { name: "Templates" }).getByRole("button", { name: "Daily log" }).click();
+  await create.getByRole("group", { name: "Tags from this template" }).getByRole("checkbox", { name: "journal" }).check();
   await create.getByLabel("Page title").fill("Friday @today");
   await create.getByRole("button", { name: "Create page", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Rename Friday @today", exact: true })).toBeVisible();
@@ -103,7 +104,7 @@ test("save page as template", async ({ page }) => {
   // It appears in the gallery (the toast's action opens it)…
   await toast.getByRole("button", { name: "Templates", exact: true }).click();
   await expect(gallery(page).getByRole("listitem", { name: "Prism", exact: true })).toBeVisible();
-  await expect(gallery(page).getByRole("listitem")).toHaveCount(5);
+  await expect(gallery(page).getByRole("listitem")).toHaveCount(6);
   await page.keyboard.press("Escape");
   await expect(gallery(page)).toHaveCount(0);
   // …and in the New page chooser.
@@ -174,7 +175,7 @@ test("gallery lists templates; edit, rename and delete with undo; keyboard", asy
   const g = gallery(page);
   const rows = g.getByRole("listitem");
   // Name + edited date for each template the viewer can see, in name order.
-  await expect(rows).toHaveCount(4);
+  await expect(rows).toHaveCount(5);
   await expect(rows.nth(0)).toContainText("Daily log");
   await expect(rows.nth(0)).toContainText(/Edited .*2026/);
   await expect(rows.nth(1)).toContainText("Meeting notes");
@@ -204,11 +205,11 @@ test("gallery lists templates; edit, rename and delete with undo; keyboard", asy
   // Delete = a move to the Trash, with Undo in the dialog.
   await g.getByRole("button", { name: "Delete Project brief", exact: true }).click();
   await expect(g.getByRole("status")).toContainText("Moved “Project brief” to Trash.");
-  await expect(rows).toHaveCount(3);
+  await expect(rows).toHaveCount(4);
   expect((await writes(page)).some((w) => w.trash === "tpl-brief")).toBe(true);
   await g.getByRole("status").getByRole("button", { name: "Undo", exact: true }).click();
   await expect(g.getByRole("status")).toContainText("Restored “Project brief”.");
-  await expect(rows).toHaveCount(4);
+  await expect(rows).toHaveCount(5);
   const restored = await page.evaluate(() => (window as any).prismFixtureNotes.find((n: any) => n.id === "tpl-brief"));
   expect(restored.tags).not.toContain("prism-trashed");
 
@@ -328,22 +329,61 @@ test("B1(3): a member's template goes to Templates/ as a private note — never 
 });
 
 test("Use: tags the person has no standing in are dropped with a notice — the page is still created", async ({ page }) => {
-  await page.goto(transferUrl());
+  await page.goto(transferUrl("?open=prism"));
+  await (await pageMenu(page)).getByRole("menuitem", { name: "Save as template", exact: true }).click();
+  await expect(page.locator(".page-toast")).toContainText("as a template");
   await openGallery(page);
   await page.evaluate(() => { (window as any).prismTransfer.control.denyTags = true; });
-  await gallery(page).getByRole("button", { name: "Use Meeting notes", exact: true }).click();
+  await gallery(page).getByRole("button", { name: "Use Prism", exact: true }).click();
   const create = page.getByRole("dialog", { name: "New page", exact: true });
   await create.getByLabel("Page title").fill("Standup");
   await create.getByRole("button", { name: "Create page", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Rename Standup", exact: true })).toBeVisible();
   const all = await writes(page);
-  expect((all.find((w) => w.refusedCreate)!.refusedCreate as any).tags).toEqual(["meeting"]);
-  const made = all.filter((w) => w.create).map((w) => w.create as Record<string, any>);
+  expect((all.find((w) => w.refusedCreate)!.refusedCreate as any).tags).toEqual(["page"]);
+  const made = all.filter((w) => w.create).map((w) => w.create as Record<string, any>).filter((c) => c.metadata.title === "Standup");
   expect(made).toHaveLength(1);
   expect(made[0]!.tags).toEqual([]);
-  expect(made[0]!.metadata).toMatchObject({ title: "Standup", status: "draft" });
-  await expect(page.locator(".page-toast")).toContainText("“meeting”");
+  await expect(page.locator(".page-toast")).toContainText("“page”");
   await expect(page.locator(".page-toast")).toContainText("not applied");
+});
+
+// Review round 3 — BLOCKER (client half): tags a template REMEMBERS are data someone else may have written.
+test("Use of someone else's template: its tags are listed and applied only when ticked", async ({ page }) => {
+  await page.goto(transferUrl());
+  await openGallery(page);
+  await gallery(page).getByRole("button", { name: "Use Team update", exact: true }).click();
+  let create = page.getByRole("dialog", { name: "New page", exact: true });
+  const apply = create.getByRole("group", { name: "Tags from this template" });
+  await expect(apply).toContainText("made by someone else");
+  await expect(apply.getByRole("checkbox")).toHaveCount(2);
+  await expect(apply.getByRole("checkbox", { name: "wiki" })).not.toBeChecked();
+  await expect(apply.getByRole("checkbox", { name: "updates" })).not.toBeChecked();
+  await create.getByLabel("Page title").fill("No tags");
+  await create.getByRole("button", { name: "Create page", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Rename No tags", exact: true })).toBeVisible();
+  let made = (await writes(page)).filter((w) => w.create).map((w) => w.create as Record<string, any>);
+  expect(made.at(-1)!.tags).toEqual([]); // nothing applied silently — not even the published `wiki`
+  expect("prism_template_tags" in made.at(-1)!.metadata).toBe(false);
+
+  await openGallery(page);
+  await gallery(page).getByRole("button", { name: "Use Team update", exact: true }).click();
+  create = page.getByRole("dialog", { name: "New page", exact: true });
+  await create.getByRole("group", { name: "Tags from this template" }).getByRole("checkbox", { name: "updates" }).check();
+  await create.getByLabel("Page title").fill("One tag");
+  await create.getByRole("button", { name: "Create page", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Rename One tag", exact: true })).toBeVisible();
+  made = (await writes(page)).filter((w) => w.create).map((w) => w.create as Record<string, any>);
+  expect(made.at(-1)!.tags).toEqual(["updates"]);
+  // A hand-made template (tag `template` beside its own, no creator) is someone else's too; an ingest tag is never offered.
+  await openGallery(page);
+  await gallery(page).getByRole("button", { name: "Use Meeting notes", exact: true }).click();
+  create = page.getByRole("dialog", { name: "New page", exact: true });
+  await expect(create.getByRole("group", { name: "Tags from this template" })).toHaveCount(0); // `meeting` is ingest-owned
+  await create.getByRole("button", { name: "Close new page" }).click();
+  await openGallery(page);
+  await gallery(page).getByRole("button", { name: "Use Project brief", exact: true }).click();
+  await expect(page.getByRole("dialog", { name: "New page", exact: true }).getByRole("group", { name: "Tags from this template" }).getByRole("checkbox", { name: "project" })).not.toBeChecked();
 });
 
 test("gallery: sharing a template with the workspace is an explicit toggle", async ({ page }) => {
@@ -404,6 +444,7 @@ test("lock: when the page's unsaved typing cannot be saved, the page is NOT lock
   await page.evaluate(() => { (window as any).prismTransfer.control.failSaves = true; });
   await editor.click();
   await page.keyboard.type(" unsaved words");
+  await page.waitForTimeout(1200);
   await (await pageMenu(page)).getByRole("menuitem", { name: "Lock page", exact: true }).click();
   await expect(page.locator(".page-toast")).toContainText("was not locked");
   expect((await writes(page)).filter((w) => w.meta === "plan")).toHaveLength(0);
@@ -417,4 +458,20 @@ test("lock: when the page's unsaved typing cannot be saved, the page is NOT lock
   const stored = await page.evaluate(() => (window as any).prismFixtureNotes.find((n: any) => n.id === "plan"));
   expect(stored.metadata.prism_locked).toBe(true);
   expect(stored.content).toContain("unsaved words");
+});
+
+test("lock: an unsent change to ANOTHER page does not stop this page from being locked", async ({ page }) => {
+  await page.goto(transferUrl("?open=plan"));
+  const editor = page.locator("#workspace-document .tiptap").first();
+  await expect(editor).toBeVisible();
+  await page.evaluate(() => { (window as any).prismTransfer.control.failSavesFor = "plan"; });
+  await editor.click();
+  await page.keyboard.type(" stuck words");
+  await page.waitForTimeout(1500); // the save is refused by the server and kept on this device
+  // Another page: nothing of ITS content is unsent.
+  await page.evaluate(() => (window as any).prismFixtureUI.getState().openTab("archive", "Archive", "document"));
+  await expect(page.getByRole("heading", { name: "Rename Archive", exact: true })).toBeVisible();
+  await (await pageMenu(page)).getByRole("menuitem", { name: "Lock page", exact: true }).click();
+  await expect(page.locator(".page-toast")).toContainText("Page locked");
+  expect(await page.evaluate(() => (window as any).prismFixtureNotes.find((n: any) => n.id === "archive").metadata.prism_locked)).toBe(true);
 });

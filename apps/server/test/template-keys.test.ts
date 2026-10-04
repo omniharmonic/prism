@@ -7,7 +7,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { INGEST_KEYS, INGEST_SOURCES } from "../src/ingest-keys";
 import { IDENTITY_KEYS } from "../src/identity-keys";
-import { TEMPLATE_INGEST_KEYS, TEMPLATE_TAG, TEMPLATES_FOLDER, TEMPLATE_TAGS_KEY, templateKeepsKey, templateSource, templateCopy, duplicateCopy, freePagePath } from "@prism/core/pages";
+import { isTemplateNote, TEMPLATE_INGEST_KEYS, TEMPLATE_TAG, TEMPLATES_FOLDER, TEMPLATE_TAGS_KEY, templateKeepsKey, templateSource, templateCopy, duplicateCopy, freePagePath } from "@prism/core/pages";
 import { cleanCopyBody } from "../../../packages/core/src/lib/pages/copyBody";
 
 test("the client's ingest-key list is the server's", () => {
@@ -110,4 +110,30 @@ test("cleanCopyBody is linear: hostile bodies finish at once", () => {
     cleanCopyBody(body);
     assert.ok(Date.now() - t < 1500, `took ${Date.now() - t} ms`);
   }
+});
+
+// ── Review round 3 (blocker client half, 5, 6) ───────────────────────────────
+test("remembered tags never include ingest tags; isTemplateNote is the one predicate", () => {
+  const t = templateSource({ content: "<p>x</p>", tags: ["project", "task", "meeting", "email", "person", "clickup"], metadata: {} }, "T", TEMPLATES_FOLDER, []);
+  assert.deepEqual(t.metadata[TEMPLATE_TAGS_KEY], ["project"]);
+  assert.deepEqual(templateCopy({ content: "x", tags: ["template", "meeting", "notes"], metadata: { [TEMPLATE_TAGS_KEY]: ["task", "ok"] } }, "N", "").tags, ["ok", "notes"]);
+  assert.equal(isTemplateNote({ tags: ["a", "template"] }), true);
+  assert.equal(isTemplateNote({ tags: ["a"] }), false);
+  assert.equal(isTemplateNote({ tags: null }), false);
+});
+
+test("5: only DOCUMENT bodies are cleaned — a code / spreadsheet / canvas / website note is copied byte for byte", () => {
+  const markup = `<p>x</p><div data-type="child-page" data-page-id="k"></div><span data-suggestion="insert">y</span><span data-type="mention" data-mention-uid="u1" data-reminder="r">@a</span>`;
+  for (const note of [
+    { content: markup, path: "src/widget.html", tags: ["code"], metadata: { type: "code" } },
+    { content: markup, path: "data/table.csv", tags: [], metadata: { prism_type: "spreadsheet" } },
+    { content: markup, path: "art/board", tags: [], metadata: { prism_type: "canvas" } },
+    { content: markup, path: "site/index", tags: [], metadata: { type: "website" } },
+  ]) {
+    assert.equal(duplicateCopy(note, []).content, markup, note.path);
+    assert.equal(templateSource(note, "T", TEMPLATES_FOLDER, []).content, markup, note.path);
+    assert.equal(templateCopy({ ...note, tags: [...note.tags, "template"] }, "N", "").content, markup, note.path);
+  }
+  // A document is still cleaned.
+  assert.ok(!duplicateCopy({ content: markup, path: "Docs/A", tags: ["page"], metadata: { type: "document" } }, []).content.includes("child-page"));
 });

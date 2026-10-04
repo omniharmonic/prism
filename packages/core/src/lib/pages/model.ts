@@ -38,6 +38,9 @@ export const LOCK_KEY = "prism_locked";
 export const ORDER_KEY = "prism_order";
 /** Notes carrying this tag are offered by "New page from template". */
 export const TEMPLATE_TAG = "template";
+/** A page TEMPLATE (reserved tag `template`): a blueprint — never a row, a task, public
+ *  content or a mention source. THE predicate for every such rule. */
+export const isTemplateNote = (n: { tags?: readonly string[] | null } | null | undefined): boolean => !!n?.tags?.includes(TEMPLATE_TAG);
 /** Days a trashed page waits before the (opt-in) purge worker deletes it. */
 export const TRASH_RETENTION_DAYS = 30;
 
