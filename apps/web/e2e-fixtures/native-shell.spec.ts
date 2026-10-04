@@ -27,7 +27,6 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const HOST_JS = fs.readFileSync(path.resolve(here, "../../client/src-tauri/src/host.js"), "utf8");
 
 let server: RealServer;
-test.describe.configure({ mode: "serial" });
 test.beforeAll(async ({}, info) => {
   server = await startRealServer(String(info.project.use.baseURL ?? "http://127.0.0.1:5188"));
 });

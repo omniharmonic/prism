@@ -51,7 +51,8 @@ export function openAppLink(path: unknown): boolean {
     useUIStore.getState().openTab(target.id, "Page", "document");
   } else if (target.kind === "inbox") {
     if (target.id) setPendingNotification(target.id);
-    useUIStore.getState().openTab("notifications", "Inbox", "notifications");
+    // "notifications" is a virtual tab (not in the ContentType union) — the same cast as lib/notifications/anchor.ts.
+    useUIStore.getState().openTab("notifications", "Inbox", "notifications" as never);
     window.dispatchEvent(new Event("prism:notifications-changed"));
   } else {
     openAgentChat(target.id ? { sessionId: target.id } : {});
