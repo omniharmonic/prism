@@ -71,6 +71,7 @@ import { VaultConflictError, vaultClient, type Note } from "../parachute";
 import { resolveVaultEntry } from "../db";
 import {
   admissionVerdict,
+  DARWIN_SWAP_DISK_MIN_FREE_MB,
   defaultMemoryProbe,
   startDispatch,
   subscribe,
@@ -112,6 +113,8 @@ export interface LocalStatus {
   /** true = the model is resident; false = a request would JIT-load it; null = unknown. */
   loaded: boolean | null;
   error?: string;
+  /** The model's size in bytes, when the server reports one (else SKILLS_LOCAL_MODEL_MB). */
+  sizeBytes?: number;
 }
 
 /** The local OpenAI-compatible model server (LM Studio). */
@@ -152,6 +155,14 @@ export interface SkillsSettings {
    *  start threshold stopped every run after a note or two). The swap floor still applies. */
   runFreeMinPct?: number;
   loadFreeMinPct: number;
+  /** JIT-load headroom (a model that is NOT resident): free RAM + usable free swap must
+   *  cover `modelSize × loadHeadroom + loadReserveMb`. Defaults 1.0 / 1024 MB. */
+  loadHeadroom?: number;
+  loadReserveMb?: number;
+  /** Model size used when the model server reports none. Default 7168 MB. */
+  localModelMb?: number;
+  /** Never JIT-load while swap is already more than this % used (default 70; ≥100 = off). */
+  loadMaxSwapUsedPct?: number;
   localRunTimeoutMs: number;
 }
 
@@ -545,12 +556,71 @@ export function structuredFallbackPrompt(rubric: string): string {
 
 // ── local admission ──────────────────────────────────────────────────────────
 
-/** Decide whether a local-model run may start now. Pure. */
+export const DEFAULT_LOAD_HEADROOM = 1.0;
+export const DEFAULT_LOAD_RESERVE_MB = 1024;
+export const DEFAULT_LOCAL_MODEL_MB = 7168;
+export const DEFAULT_LOAD_MAX_SWAP_USED_PCT = 70;
+
+type AdmissionSettings = Pick<SkillsSettings, "swapMaxPct" | "freeMinPct" | "loadFreeMinPct" | "loadHeadroom" | "loadReserveMb" | "localModelMb" | "loadMaxSwapUsedPct"> & { swapMinFreeMb?: number };
+
+const posOr = (n: number | undefined, d: number): number => (typeof n === "number" && Number.isFinite(n) && n >= 0 ? n : d);
+
+/**
+ * May a model that is NOT resident be JIT-loaded now? Pure; called only when the
+ * model's state is "not loaded" or unknown, after the ordinary admission passed.
+ *
+ * The 2026-10-03 stall: 54–76 % memory "free" while swap was nearly full, the
+ * scheduler's request made LM Studio load a ~7 GB model, and macOS paged the Prism
+ * server and the vault out (RSS 357 → 39 MB) — /health dead for > 10 s. Free % alone
+ * cannot see that, so two more conditions:
+ *
+ *  1. swap already more than `loadMaxSwapUsedPct` used → refuse. On macOS swap can
+ *     grow, so the load would "fit" — by paging other processes out, which is the
+ *     stall itself. A swap total of 0 / unknown is not a signal.
+ *  2. free RAM + usable free swap ≥ model × headroom + reserve. "Usable free swap":
+ *     macOS with ≥ 4 GB free on the swap volume (the AGENT_SWAP_MIN_FREE_MB rule's
+ *     "swap can grow") counts the disk space above that floor too; otherwise only
+ *     the swap that is free now. Linux: total × (1 − used %).
+ *
+ * Any quantity the probe did not report skips the rule that needs it (fail-open,
+ * like the rest of admission).
+ */
+export function jitLoadRefusal(sample: MemorySample | null, model: string, sizeBytes: number | undefined, s: AdmissionSettings): string | null {
+  if (!sample) return null;
+  const maxSwap = posOr(s.loadMaxSwapUsedPct, DEFAULT_LOAD_MAX_SWAP_USED_PCT);
+  if (maxSwap < 100 && sample.swapUsedPct != null && sample.swapUsedPct > maxSwap) {
+    return `model '${model}' is not loaded and swap is already ${sample.swapUsedPct.toFixed(0)}% used (> ${maxSwap}%) — refusing to JIT-load it (loading would page other processes out)`;
+  }
+  if (sample.freePct == null || sample.memTotalMb == null || !(sample.memTotalMb > 0)) return null;
+  const darwin = sample.swapFreeMb !== undefined;
+  let swapFree: number | null;
+  if (darwin) {
+    swapFree = sample.swapFreeMb ?? null;
+    if (swapFree != null && sample.swapDiskFreeMb != null && sample.swapDiskFreeMb >= DARWIN_SWAP_DISK_MIN_FREE_MB) {
+      swapFree += sample.swapDiskFreeMb - DARWIN_SWAP_DISK_MIN_FREE_MB;
+    }
+  } else if (sample.swapTotalMb != null) {
+    swapFree = sample.swapTotalMb * (1 - (sample.swapUsedPct ?? 0) / 100);
+  } else {
+    swapFree = null;
+  }
+  if (swapFree == null) return null;
+  const modelMb = typeof sizeBytes === "number" && Number.isFinite(sizeBytes) && sizeBytes > 0 ? sizeBytes / (1024 * 1024) : posOr(s.localModelMb, DEFAULT_LOCAL_MODEL_MB);
+  const need = modelMb * posOr(s.loadHeadroom, DEFAULT_LOAD_HEADROOM) + posOr(s.loadReserveMb, DEFAULT_LOAD_RESERVE_MB);
+  const have = (sample.freePct / 100) * sample.memTotalMb + swapFree;
+  if (have < need) {
+    return `model '${model}' is not loaded and free RAM + swap headroom is ${have.toFixed(0)} MB (< ${need.toFixed(0)} MB needed to load it) — refusing to JIT-load it`;
+  }
+  return null;
+}
+
+/** Decide whether a local-model run may start now. Pure. THE one rule for both the
+ *  skill scheduler and interactive local AI (both call `admitLocal`). */
 export function localAdmission(
   sample: MemorySample | null,
   status: LocalStatus,
   model: string,
-  s: Pick<SkillsSettings, "swapMaxPct" | "freeMinPct" | "loadFreeMinPct"> & { swapMinFreeMb?: number },
+  s: AdmissionSettings,
 ): { ok: boolean; reason: string | null } {
   if (!status.reachable) return { ok: false, reason: `local model server unreachable${status.error ? ` (${status.error})` : ""}` };
   const v = admissionVerdict(sample, s.swapMaxPct, s.freeMinPct, s.swapMinFreeMb);
@@ -560,6 +630,10 @@ export function localAdmission(
       ok: false,
       reason: `model '${model}' is not loaded and only ${sample.freePct.toFixed(0)}% memory is free (< ${s.loadFreeMinPct}%) — refusing to JIT-load it`,
     };
+  }
+  if (status.loaded !== true) {
+    const refusal = jitLoadRefusal(sample, model, status.sizeBytes, s);
+    if (refusal) return { ok: false, reason: refusal };
   }
   return { ok: true, reason: null };
 }
@@ -934,9 +1008,11 @@ export function lmStudioClient(baseUrl: string, fetchImpl: FetchLike = (u, i) =>
       try {
         const r = await get(`${root}/api/v0/models`);
         if (r.ok) {
-          const j = (await r.json()) as { data?: Array<{ id?: string; state?: string }> };
+          const j = (await r.json()) as { data?: Array<{ id?: string; state?: string; size_bytes?: unknown; size?: unknown }> };
           const m = (j.data ?? []).find((x) => x.id === model);
-          return { reachable: true, loaded: m ? m.state === "loaded" : false };
+          // LM Studio's v0 listing carries no size today; honour one if it ever does.
+          const size = [m?.size_bytes, m?.size].find((n): n is number => typeof n === "number" && Number.isFinite(n) && n > 0);
+          return { reachable: true, loaded: m ? m.state === "loaded" : false, ...(size ? { sizeBytes: size } : {}) };
         }
         const r2 = await get(`${base}/models`);
         return r2.ok ? { reachable: true, loaded: null } : { reachable: false, loaded: null, error: `HTTP ${r2.status}` };
@@ -1029,6 +1105,10 @@ export function settingsFromConfig(): SkillsSettings {
     freeMinPct: config.skillsFreeMinPct,
     runFreeMinPct: config.skillsRunFreeMinPct,
     loadFreeMinPct: config.skillsLoadFreeMinPct,
+    loadHeadroom: config.skillsLoadHeadroom,
+    loadReserveMb: config.skillsLoadReserveMb,
+    localModelMb: config.skillsLocalModelMb,
+    loadMaxSwapUsedPct: config.skillsLoadMaxSwapUsedPct,
     localRunTimeoutMs: config.skillsLocalRunTimeoutMs,
   };
 }

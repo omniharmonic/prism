@@ -343,6 +343,11 @@ export interface MemorySample {
   /** macOS only: free MB on the swap volume (/System/Volumes/VM). macOS adds swap
    *  files on demand, so low free swap only matters when the disk can't grow it. */
   swapDiskFreeMb?: number | null;
+  /** Physical RAM in MB (free RAM = freePct × this). Absent/unknown → the JIT-load
+   *  headroom rule (worker/skills.ts `localAdmission`) is skipped. */
+  memTotalMb?: number | null;
+  /** Current total swap in MB (0 = no swap). Linux free swap = this × (1 − used%). */
+  swapTotalMb?: number | null;
 }
 export type MemoryProbe = () => MemorySample | null;
 
@@ -364,6 +369,13 @@ export function parseSwapFreeMb(s: string): number | null {
   return Number(f[1]) * ({ K: 1 / 1024, M: 1, G: 1024, T: 1024 * 1024 }[f[2]!.toUpperCase()] ?? 1);
 }
 
+/** Parse total swap in MB from `sysctl -n vm.swapusage` (null if unparseable). */
+export function parseSwapTotalMb(s: string): number | null {
+  const t = /total\s*=\s*([\d.]+)([KMGT])/i.exec(s);
+  if (!t) return null;
+  return Number(t[1]) * ({ K: 1 / 1024, M: 1, G: 1024, T: 1024 * 1024 }[t[2]!.toUpperCase()] ?? 1);
+}
+
 /** Parse `memory_pressure -Q` ("System-wide memory free percentage: 63%"). */
 export function parseMemoryPressure(s: string): number | null {
   const m = /free percentage:\s*(\d+(?:\.\d+)?)%/i.exec(s);
@@ -383,6 +395,8 @@ export function parseMeminfo(s: string): MemorySample {
   return {
     freePct: total && avail != null ? (avail / total) * 100 : null,
     swapUsedPct: swapTotal && swapFree != null ? ((swapTotal - swapFree) / swapTotal) * 100 : null,
+    memTotalMb: total != null ? total / 1024 : null,
+    swapTotalMb: swapTotal != null ? swapTotal / 1024 : null,
   };
 }
 
@@ -415,6 +429,8 @@ export const defaultMemoryProbe: MemoryProbe = () => {
       swapFreeMb: swap ? parseSwapFreeMb(swap) : null,
       pressureLevel: level,
       swapDiskFreeMb,
+      memTotalMb: totalmem() / (1024 * 1024),
+      swapTotalMb: swap ? parseSwapTotalMb(swap) : null,
     };
     return sample.swapUsedPct == null && sample.freePct == null ? null : sample;
   }

@@ -339,6 +339,16 @@ export const config = {
   skillsLocalBaseUrl: (process.env.SKILLS_LOCAL_BASE_URL ?? "http://127.0.0.1:1234/v1").replace(/\/+$/, ""),
   skillsLocalModel: process.env.SKILLS_LOCAL_MODEL ?? "",
   skillsLoadFreeMinPct: Number(process.env.SKILLS_LOAD_FREE_MIN_PCT ?? 35),
+  // JIT-load guard, part 2 (2026-10-03 host stall: free % was 54–76 while swap was
+  // nearly full; loading the ~7 GB model paged the server and the vault out). A model
+  // that is not resident loads only when (a) swap is at most
+  // SKILLS_LOAD_MAX_SWAP_USED_PCT used (≥100 = off) and (b) free RAM + usable free
+  // swap ≥ model size × SKILLS_LOAD_HEADROOM + SKILLS_LOAD_RESERVE_MB. Model size =
+  // what the model server reports, else SKILLS_LOCAL_MODEL_MB.
+  skillsLoadHeadroom: Number(process.env.SKILLS_LOAD_HEADROOM || 1.0),
+  skillsLoadReserveMb: Number(process.env.SKILLS_LOAD_RESERVE_MB || 1024),
+  skillsLocalModelMb: Number(process.env.SKILLS_LOCAL_MODEL_MB || 7168),
+  skillsLoadMaxSwapUsedPct: Number(process.env.SKILLS_LOAD_MAX_SWAP_USED_PCT || 70),
   // null = unset: darwin uses memory_pressure + absolute free swap, linux falls back to 80%.
   skillsSwapMaxPct: process.env.AGENT_SWAP_MAX_PCT?.trim() ? Number(process.env.AGENT_SWAP_MAX_PCT) : (null as number | null),
   skillsSwapMinFreeMb: Number(process.env.AGENT_SWAP_MIN_FREE_MB || 512),

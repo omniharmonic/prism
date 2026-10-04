@@ -49,7 +49,7 @@ import {
 } from "../src/worker/skills";
 import { runSkillsPass } from "../src/worker/scheduler";
 import { getSourceHealth, resetSourceHealth } from "../src/worker/health";
-import { _resetDispatches, configureAgentRunner, ensureAgentCwd, type MemorySample, type SpawnedProc } from "../src/agent-exec";
+import { _resetDispatches, configureAgentRunner, ensureAgentCwd, parseMeminfo, parseSwapTotalMb, type MemorySample, type SpawnedProc } from "../src/agent-exec";
 
 // ── fakes ────────────────────────────────────────────────────────────────────
 
@@ -520,6 +520,93 @@ test("localAdmission: unreachable / swap / free / JIT-load thresholds", () => {
   assert.equal(localAdmission({ swapUsedPct: 10, freePct: 20 }, { reachable: true, loaded: null }, "m", s).ok, false);
   // Unreadable memory probe admits (fail-open, like the runner).
   assert.equal(localAdmission(null, { reachable: true, loaded: false }, "m", s).ok, true);
+});
+
+// The production host, 2026-10-03 (16 GB mini): memory "free" 54–76 % while swap was
+// nearly full; the hourly skill made LM Studio JIT-load a ~7 GB model and macOS paged
+// the server and the vault out. darwin sample = has `swapFreeMb`.
+const GB = 1024;
+const MEASURED = { freePct: 60, swapUsedPct: 85, swapFreeMb: 0.15 * 6 * GB, swapTotalMb: 6 * GB, swapDiskFreeMb: 159 * GB, memTotalMb: 16 * GB, pressureLevel: 1 };
+const LOAD_S = { swapMaxPct: null, swapMinFreeMb: 512, freeMinPct: 15, loadFreeMinPct: 35 };
+
+test("localAdmission (JIT load): the measured state — 60% free RAM, swap 85% used, model not loaded — is deferred, naming swap", () => {
+  const notLoaded: LocalStatus = { reachable: true, loaded: false };
+  const r = localAdmission(MEASURED, notLoaded, "gemma-12b", LOAD_S);
+  assert.equal(r.ok, false);
+  assert.match(r.reason!, /not loaded and swap is already 85% used \(> 70%\).*refusing to JIT-load/);
+  // Unknown state is treated as "would load".
+  assert.equal(localAdmission(MEASURED, { reachable: true, loaded: null }, "gemma-12b", LOAD_S).ok, false);
+  // The same memory state with the model RESIDENT is admitted — nothing loads.
+  assert.deepEqual(localAdmission(MEASURED, { reachable: true, loaded: true }, "gemma-12b", LOAD_S), { ok: true, reason: null });
+  // Plenty of swap → the load is admitted.
+  assert.deepEqual(localAdmission({ ...MEASURED, swapUsedPct: 20, swapFreeMb: 0.8 * 6 * GB }, notLoaded, "gemma-12b", LOAD_S), { ok: true, reason: null });
+  // The ceiling is a setting; ≥100 turns it off.
+  assert.equal(localAdmission(MEASURED, notLoaded, "m", { ...LOAD_S, loadMaxSwapUsedPct: 90 }).ok, true);
+  assert.equal(localAdmission({ ...MEASURED, swapUsedPct: 99 }, notLoaded, "m", { ...LOAD_S, loadMaxSwapUsedPct: 100 }).ok, true);
+  // No swap configured (used % unknown) is not a swap signal.
+  assert.equal(localAdmission({ ...MEASURED, swapUsedPct: null, swapFreeMb: 0, swapTotalMb: 0 }, notLoaded, "m", LOAD_S).ok, true);
+});
+
+test("localAdmission (JIT load): free RAM + usable swap must cover model × headroom + reserve", () => {
+  const notLoaded: LocalStatus = { reachable: true, loaded: false };
+  // 40% of 16 GB = 6554 MB free RAM; the swap volume cannot grow (2 GB disk free) and
+  // 600 MB of swap is free → 7154 MB < 7168 + 1024.
+  const tight = { freePct: 40, swapUsedPct: 40, swapFreeMb: 600, swapTotalMb: 1000, swapDiskFreeMb: 2 * GB, memTotalMb: 16 * GB, pressureLevel: 1 };
+  const r = localAdmission(tight, notLoaded, "m", LOAD_S);
+  assert.equal(r.ok, false);
+  assert.match(r.reason!, /free RAM \+ swap headroom is 7154 MB \(< 8192 MB needed/);
+  // A swap volume with ≥ 4 GB free can grow: the space above that floor counts.
+  assert.equal(localAdmission({ ...tight, swapDiskFreeMb: 100 * GB }, notLoaded, "m", LOAD_S).ok, true);
+  // The size the model server reports wins over SKILLS_LOCAL_MODEL_MB; knobs apply.
+  assert.equal(localAdmission(tight, { ...notLoaded, sizeBytes: 3 * GB * 1024 * 1024 }, "m", LOAD_S).ok, true);
+  assert.equal(localAdmission(tight, notLoaded, "m", { ...LOAD_S, localModelMb: 4096 }).ok, true);
+  assert.equal(localAdmission(tight, notLoaded, "m", { ...LOAD_S, loadReserveMb: 0, loadHeadroom: 0.9 }).ok, true);
+  assert.equal(localAdmission({ ...tight, swapDiskFreeMb: 100 * GB }, notLoaded, "m", { ...LOAD_S, loadHeadroom: 20 }).ok, false);
+  // Linux sample (no swapFreeMb): free swap = total × (1 − used %).
+  const linux = { freePct: 40, swapUsedPct: 50, swapTotalMb: 1000, memTotalMb: 16 * GB };
+  assert.match(localAdmission(linux, notLoaded, "m", { ...LOAD_S, swapMaxPct: 80 }).reason!, /headroom is 7054 MB/);
+  assert.equal(localAdmission({ ...linux, swapTotalMb: 8 * GB }, notLoaded, "m", { ...LOAD_S, swapMaxPct: 80 }).ok, true);
+  // Fail-open: a probe that reports no totals skips the headroom rule; no probe admits.
+  assert.equal(localAdmission({ freePct: 40, swapUsedPct: 40 }, notLoaded, "m", LOAD_S).ok, true);
+  assert.equal(localAdmission(null, notLoaded, "m", LOAD_S).ok, true);
+  // A resident model is never subject to it.
+  assert.equal(localAdmission(tight, { reachable: true, loaded: true }, "m", LOAD_S).ok, true);
+});
+
+test("pass: the measured swap state defers the skill (no lastRun, no model call, logged once) and it runs once swap drains", async () => {
+  const { deps, vault, local, logs, setMemory } = makeDeps();
+  seedCandidates(vault);
+  classifierSkill(vault, { runner: "server" });
+  local.status_ = { reachable: true, loaded: false };
+  deps.settings = { ...deps.settings, swapMaxPct: null };
+  setMemory(MEASURED);
+  const r1 = await runSkillsOnce(deps);
+  const r2 = await runSkillsOnce(deps);
+  assert.match(r1.refused[0]!.reason, /swap is already 85% used/);
+  assert.equal(r2.refused.length, 1);
+  assert.equal(vault.notes.get("skill-classify")!.metadata!.lastRun, null);
+  assert.equal(vault.dispatchNotes().length, 0);
+  assert.equal(local.calls.length, 0);
+  assert.equal(logs.filter((l) => l.includes("deferred")).length, 1);
+  setMemory({ ...MEASURED, swapUsedPct: 30, swapFreeMb: 0.7 * 6 * GB });
+  assert.deepEqual((await runSkillsOnce(deps)).dispatched, ["test-classify"]);
+});
+
+test("lmStudioClient.status reports a model size only when the server sends one", async () => {
+  const a = fakeFetch({ "http://lm.test/api/v0/models": () => json({ data: [{ id: "m", state: "not-loaded", size_bytes: 7_000_000_000 }, { id: "n", state: "not-loaded", size_bytes: "big" }] }) });
+  const c = lmStudioClient("http://lm.test/v1", a.f);
+  assert.deepEqual(await c.status("m"), { reachable: true, loaded: false, sizeBytes: 7_000_000_000 });
+  assert.deepEqual(await c.status("n"), { reachable: true, loaded: false });
+});
+
+test("memory probes report the totals the JIT-load rule needs (parsers only — no real probe)", () => {
+  assert.equal(parseSwapTotalMb("total = 6144.00M  used = 5222.40M  free = 921.60M  (encrypted)"), 6144);
+  assert.equal(parseSwapTotalMb("total = 2.00G  used = 0.00M  free = 2.00G"), 2048);
+  assert.equal(parseSwapTotalMb("garbage"), null);
+  const m = parseMeminfo("MemTotal:       16384000 kB\nMemAvailable:    8192000 kB\nSwapTotal:       2048000 kB\nSwapFree:        1024000 kB\n");
+  assert.equal(m.memTotalMb, 16000);
+  assert.equal(m.swapTotalMb, 2000);
+  assert.equal(m.swapFreeMb, undefined, "a linux sample must not look like a darwin one");
 });
 
 test("pass: admission refusal keeps the skill due (no lastRun, no dispatch note, no model call), logs once, runs when memory frees", async () => {
