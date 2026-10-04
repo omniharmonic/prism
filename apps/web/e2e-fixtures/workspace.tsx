@@ -10,6 +10,7 @@ import { replyAgent } from "./reply-agent";
 
 import type { InvalidationHandlers, InvalidationSource } from "../../../packages/core/src/lib/events/invalidation";
 import { fakeMove } from "./fake-move";
+import { queryTerms, searchMatches } from "@prism/core/search";
 let eventHandlers: InvalidationHandlers | null = null;
 const eventSource: InvalidationSource = { open(handlers) { eventHandlers = handlers; handlers.onOpen(); return () => { if (eventHandlers === handlers) eventHandlers = null; }; } };
 Object.assign(window, { prismFixtureInvalidate: (id: string, tree = false) => eventHandlers?.onEvent(tree ? { type: "note", id, op: "upsert", tree: true } : { type: "note", id, op: "upsert" }) });
@@ -40,6 +41,14 @@ const fixturePeople = [
     ];
 
 let identityRevision=0;
+/** `?vaultdata` (NP-SB-01): the second vault holds DIFFERENT pages, the sidebar's switch is the
+ *  real one (apps/web/src/collab/grant.ts), and every page-data request is logged with its vault. */
+const researchNotes: Note[] = [
+  { id: "study", path: "Studies/Tidepool study", content: "<p>Observations from the tidepool survey.</p>", tags: ["note"], metadata: { type: "document" }, createdAt: date, updatedAt: date },
+  { id: "methods", path: "Studies/Methods", content: "<p>How the survey was carried out.</p>", tags: ["note"], metadata: { type: "document" }, createdAt: date, updatedAt: date },
+];
+const vaultRequests: Array<{ path: string; vault: string | null }> = [];
+Object.assign(window, { prismFixtureVaultRequests: vaultRequests });
 const nativeFetch = window.fetch.bind(window);
 window.fetch = async (input, init) => {
   const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url, location.origin);
@@ -67,6 +76,21 @@ window.fetch = async (input, init) => {
     const person=people.find(p=>p.id===path.split("/").at(-1));
     if(!person)return Response.json({error:"not_found"},{status:404});
     return Response.json({ person, related: [{id:"field-notes",title:"Project conversation",path:"Projects/Prism/Field notes",category:"conversations",relationships:["email_from"]},{id:"weekly-review",title:"Weekly planning",path:"Journal/Weekly review",category:"meetings",relationships:["attendee"]}], next:null });
+  }
+  if (params.has("vaultdata") && path.startsWith("/api/")) {
+    const vault = new Headers(init?.headers).get("X-Prism-Vault");
+    vaultRequests.push({ path: path + url.search, vault });
+    const set = vault === "secondary" ? researchNotes : notes;
+    if (path === "/api/search") {
+      const terms = queryTerms(url.searchParams.get("q") ?? "");
+      return Response.json(set.filter((n) => terms.every((t) => (n.path + " " + n.content).toLowerCase().includes(t))).map((n) => ({ ...n, content: undefined, _matches: searchMatches(n, terms) })));
+    }
+    if (vault === "secondary") {
+      if (path === "/api/tree") return Response.json(set.map((n) => ({ ...n, content: undefined, type: "document" })));
+      if (path === "/api/notes" && method === "GET") return Response.json(set);
+      const one = method === "GET" ? path.match(/^\/api\/notes\/([^/]+)$/)?.[1] : undefined;
+      if (one) { const hit = set.find((n) => n.id === decodeURIComponent(one)); return hit ? Response.json(hit) : Response.json({ error: "not_found" }, { status: 404 }); }
+    }
   }
   if (path === "/auth/me") return Response.json({ authenticated: true, email: controls.actor, name: "You", isOwner: true, vaultId: getActiveVault() ?? "primary", workspace: { id: "default", name: "Personal workspace" } });
   if (path === "/api/threads/thread/live") return Response.json({ messages: [{ event_id: "$fixture", sender: "@fixture:example.test", sender_name: "Fixture", body: "LIVE_RESPONSIVE_THREAD_FIXTURE", timestamp: Date.UTC(2026, 9, 1), is_outgoing: false, msg_type: "m.text", media_url: null, media_info: null }], start: null, end: null, has_more: false });
@@ -124,9 +148,15 @@ const agent = params.has("agent") ? replyAgent(() => agentScope() ?? "") : null;
 useUIStore.setState({ contextPanelOpen: true, contextPanelTab: "agent", sidebarWidth: 240, contextPanelWidth: 360 });
 createRoot(document.getElementById("root")!).render(
   <React.StrictMode><AgentClientProvider client={agent}><InvalidationSourceProvider source={params.has("events") ? eventSource : null}><PlatformProvider value="web"><VaultClientProvider client={httpVaultClient}><CollabSharingProvider value={{ ...(params.has("navigation") ? {
-      listVaults: async () => [{ id: "primary", label: "Personal vault", vault: "personal", active: true }, { id: "secondary", label: "Shared research", vault: "research", active: false }],
-      getActiveVault: () => "primary",
-      setActiveVault: (id: string) => { writes.push({ switchedVault: id }); },
+      listVaults: async () => { const chosen = params.has("vaultdata") ? getActiveVault() ?? "primary" : "primary"; return [{ id: "primary", label: "Personal vault", vault: "personal", active: chosen === "primary" }, { id: "secondary", label: "Shared research", vault: "research", active: chosen === "secondary" }]; },
+      getActiveVault: () => params.has("vaultdata") ? getActiveVault() ?? "primary" : "primary",
+      setActiveVault: (id: string) => {
+        writes.push({ switchedVault: id });
+        if (!params.has("vaultdata")) return;
+        setActiveVault(id);
+        window.dispatchEvent(new CustomEvent("prism:vault-changed", { detail: id }));
+        void fetchMe();
+      },
       listWorkspaceEntities: async () => [{ id: "default", name: "Personal workspace", hostname: null, isDefault: true, vaults: [{ id: "primary", label: "Personal vault", vault: "personal" }] }],
       setActiveWorkspace: (id: string) => { writes.push({ switchedWorkspace: id }); },
     } : {}), createShareLink: async () => "", getAccess: async () => ({ note: { id: "workspace", title: "A living workspace", tags: [], visibility: "private" }, people: [], links: [], tagAccess: [], canManageLinks: true, allowedLevels: ["view", "comment", "suggest", "edit"] }) }}>
