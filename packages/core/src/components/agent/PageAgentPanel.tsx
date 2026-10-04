@@ -71,6 +71,7 @@ function PageAgentPanel({ host, request }: { host: HostServices; request: PageAg
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [copied, setCopied] = useState(false);
+  const [outdated, setOutdated] = useState(false);
   const controller = useRef<AbortController | null>(null);
   const runSeq = useRef(0);
   const panel = useRef<HTMLDivElement>(null);
@@ -108,7 +109,12 @@ function PageAgentPanel({ host, request }: { host: HostServices; request: PageAg
       (e) => {
         if (seq !== runSeq.current) return;
         if (e instanceof HostServiceError && (e.code === "aborted" || e.code === "agent_cancelled")) return; // stopped by the person
-        setError(`${hostServiceErrorText(e)} Nothing was changed.`);
+        // An older server does not know text-only runs (400 on `profile: "text"`): say so,
+        // and offer no retry — it cannot succeed until the server is updated.
+        if (e instanceof HostServiceError && e.status === 400) {
+          setOutdated(true);
+          setError("Update the server to use page AI actions. This app is newer than the Prism Server it is talking to. Nothing was changed.");
+        } else setError(`${hostServiceErrorText(e)} Nothing was changed.`);
         setPhase("error");
       },
     );
@@ -274,7 +280,7 @@ function PageAgentPanel({ host, request }: { host: HostServices; request: PageAg
         <div className="page-agent-body">
           <p className="page-agent-error" role="alert">{error}</p>
           <div className="page-agent-actions">
-            <button type="button" className="page-agent-button focus-ring" data-primary="true" onClick={() => (needsChoice && !option ? setPhase("choose") : run(option))}>Try again</button>
+            {!outdated && <button type="button" className="page-agent-button focus-ring" data-primary="true" onClick={() => (needsChoice && !option ? setPhase("choose") : run(option))}>Try again</button>}
             <button type="button" className="page-agent-button focus-ring" onClick={() => dismiss()}>Close</button>
           </div>
         </div>

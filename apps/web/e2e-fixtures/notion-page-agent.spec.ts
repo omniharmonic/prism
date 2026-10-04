@@ -402,6 +402,6 @@ test("an older server (no text-only runs): a clear message, never a dead spinner
   await expect(p.getByRole("alert")).toContainText("Update the server to use page AI actions");
   await expect(p).not.toContainText("Working…");
   await expect(p.getByRole("button", { name: "Try again" })).toHaveCount(0);
-  await p.getByRole("button", { name: "Close", exact: true }).click();
+  await p.getByText("Close", { exact: true }).click();
   await expect(p).toHaveCount(0);
 });
