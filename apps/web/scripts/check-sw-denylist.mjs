@@ -25,7 +25,7 @@ const VITE_CONFIG = resolve(__dirname, "../vite.config.ts");
 /** Route prefixes the SERVER owns. Each must be in navigateFallbackDenylist or
  *  it will be shadowed by the SPA shell in the browser. Keep in sync with the
  *  server mounts in apps/server/src/app.ts (`app.route("/auth"...)`, etc.). */
-const SERVER_ROUTE_PREFIXES = ["/auth", "/api", "/health", "/mcp", "/.well-known"];
+const SERVER_ROUTE_PREFIXES = ["/auth", "/api", "/health", "/mcp", "/.well-known", "/apple-app-site-association"];
 
 /** The public publication JSON path. It must live under one of the denylisted
  *  prefixes (it's /api/p/*), NOT be its own un-denylisted prefix like /p. */
@@ -79,6 +79,13 @@ const entries = [...denylistBody.matchAll(/\/((?:\\.|[^/\\])+)\/([a-z]*)/g)].map
 const denied = (url) => entries.some((re) => re.test(url));
 for (const url of ["/health", "/health?live=1", "/health?live=0"]) {
   if (!denied(url)) fail(`navigateFallbackDenylist does not cover ${url} (entries are tested against pathname + search) — use /^\\/health(\\?|$)/.`);
+}
+// Universal links: Apple's association file (both locations) is server-owned; client routes are not.
+for (const url of ["/.well-known/apple-app-site-association", "/apple-app-site-association"]) {
+  if (!denied(url)) fail(`navigateFallbackDenylist does not cover ${url}.`);
+}
+for (const url of ["/page/abc", "/inbox", "/agent", "/collab/abc"]) {
+  if (denied(url)) fail(`navigateFallbackDenylist swallows the client route ${url}.`);
 }
 if (denied("/healthy") || denied("/health/notes")) fail("the /health denylist entry is too wide: it must not swallow client routes that merely start with /health.");
 
