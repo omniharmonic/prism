@@ -7,17 +7,22 @@ import { TURN_INTO, blockKind, canTurnInto, selectionStart, structuralEditsAllow
 import { EditorMenu, type EditorMenuItem } from "./EditorMenu";
 import { TURN_INTO_ICONS, colorLabel, highlightValue } from "./blockUi";
 import { EDIT_LINK_EVENT, rememberHighlightColor } from "../../lib/tiptap/EditorKeys";
+import { hasUnsafeLinkChar, linkTarget } from "../../lib/tiptap/prismLinks";
 import "./SelectionActions.css";
 
 const isMac = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform);
 const mod = isMac ? "⌘" : "Ctrl+";
 
-/** Only web, mail and in-app links; never javascript:/data:. */
+/**
+ * Only web, mail and in-app links; never javascript:/data:. The same rule decides what a
+ * click may follow (`prismLinks.linkTarget`): no backslash, control character or space
+ * anywhere (`/\evil.tld` and `/<TAB>/evil.tld` resolve to another origin), no `user:pass@`.
+ */
 export function normalizeLink(raw: string): string | null {
   const value = raw.trim();
-  if (!value) return null;
-  if (/^(https?:|mailto:)/i.test(value)) return value;
-  if (/^\/(?!\/)/.test(value) || value.startsWith("#")) return value; // "/page", never "//host"
+  if (!value || hasUnsafeLinkChar(value)) return null;
+  if (/^(https?:|mailto:)/i.test(value)) return linkTarget(value, [], undefined).kind === "external" ? value : null;
+  if (/^\/(?!\/)/.test(value) || (value.startsWith("#") && value.length > 1)) return value; // "/page", never "//host"
   if (/^[\w.-]+\.[a-z]{2,}(\/|$)/i.test(value)) return `https://${value}`;
   return null;
 }

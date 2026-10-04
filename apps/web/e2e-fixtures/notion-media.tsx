@@ -96,6 +96,7 @@ function LivePair() {
       {docs.map((doc, i) => (
         <section key={i} aria-label={i === 0 ? "Client A" : "Client B"} style={{ position: "relative", minWidth: 0 }}>
           <CollabEditor
+            commentOnly={params.has("commentonly")}
             ydoc={doc}
             provider={null}
             user={{ name: i === 0 ? "Ada" : "Ben", color: i === 0 ? "#3a7bd5" : "#f47c6b" }}
@@ -115,8 +116,8 @@ createRoot(document.getElementById("root")!).render(
     <PlatformProvider value="web">
       <QueryClientProvider client={new QueryClient()}>
         <VaultClientProvider client={client}>
-          {params.has("live") ? <LivePair /> : (
-            <main style={{ background: "var(--bg-base)", color: "var(--text-primary)", height: "100dvh", display: "flex", flexDirection: "column" }}>
+          {params.has("live") ? <div id={params.has("noshell") ? undefined : "workspace-document"}><LivePair /></div> : (
+            <main id={params.has("noshell") ? undefined : "workspace-document"} style={{ background: "var(--bg-base)", color: "var(--text-primary)", height: "100dvh", display: "flex", flexDirection: "column" }}>
               <DocumentRenderer
                 note={note}
                 readOnly={params.has("readonly")}

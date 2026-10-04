@@ -189,6 +189,18 @@ test("only web, mail and in-app targets are ever opened; a page link is ours onl
       vbs: linkTarget("vbscript:msgbox(1)").kind,
       schemeless: linkTarget("//evil.example.test/x").kind,
       file: linkTarget("file:///etc/passwd").kind,
+      // Review A1: anything a browser would resolve to ANOTHER origin, or that hides one, is never followed.
+      backslash: linkTarget("/\\evil.example.test/login").kind,
+      tab: linkTarget("/\t/evil.example.test").kind,
+      backslashT: linkTarget("/\\t/evil").kind,
+      twoBackslashes: linkTarget("\\\\evil").kind,
+      newline: linkTarget("/a\nb").kind,
+      del: linkTarget("/a\u007fb").kind,
+      encoded: linkTarget("/%5Cevil").kind,
+      dots: linkTarget("/../../x").kind,
+      logout: linkTarget("/auth/logout").kind,
+      anchor: linkTarget("#section").kind,
+      credentials: linkTarget("https://user:pass@example.test/a").kind,
       web: linkTarget("https://example.test/a").kind,
       mail: linkTarget("mailto:ada@example.test").kind,
       inApp: linkTarget("/page/db1"),
@@ -207,6 +219,8 @@ test("only web, mail and in-app targets are ever opened; a page link is ours onl
   });
   expect(out).toEqual({
     js: "blocked", jsCase: "blocked", data: "blocked", vbs: "blocked", schemeless: "blocked", file: "blocked",
+    backslash: "blocked", tab: "blocked", backslashT: "blocked", twoBackslashes: "blocked", newline: "blocked", del: "blocked",
+    encoded: "tab", dots: "tab", logout: "tab", anchor: "anchor", credentials: "blocked",
     web: "external", mail: "external", inApp: { kind: "page", id: "db1" },
     ours: "db1", oursSlash: "db1", otherHost: null, lookAlike: null, lookAlikePrefix: null, userinfo: null, userinfo2: null, badId: null, deeper: null, query: null, otherPath: null,
   });
@@ -287,4 +301,145 @@ test("live document: the link card works, and a pasted page link is a mention ch
   await a.getByRole("link", { name: "the reading list" }).hover();
   await card(page).getByRole("button", { name: "Open page" }).click();
   await expect.poll(() => tabs(page)).toContain("db1:Reading list");
+});
+
+/** Review A1: a stored link can never take THIS window somewhere else. */
+test("a link never navigates the app window: look-alike paths are blocked, other in-app paths open in a new tab", async ({ page, context }) => {
+  await page.setViewportSize({ width: 1280, height: 900 });
+  const content =
+    '<p><a href="/&#92;evil.example.test/login">backslash</a> · <a href="/&#9;/evil.example.test">tabbed</a> · <a href="/auth/logout">logout</a> · <a href="/../../x">dots</a> · <a href="#top">anchor</a></p>';
+  await page.goto(`/e2e-fixtures/notion-media.html?content=${enc(content)}&readonly`);
+  await expect(page.locator(".tiptap[contenteditable=false]")).toBeVisible();
+  const here = page.url();
+  const navigations: string[] = [];
+  page.on("framenavigated", (f) => { if (f === page.mainFrame()) navigations.push(f.url()); });
+  const popups: string[] = [];
+  context.on("page", (p) => { popups.push(p.url()); });
+  await context.route("**/auth/logout", (r) => r.fulfill({ contentType: "text/html", body: "<p>signed out page</p>" }));
+  await context.route("**/x", (r) => r.fulfill({ contentType: "text/html", body: "<p>x</p>" }));
+
+  for (const name of ["backslash", "tabbed"]) {
+    const link = page.getByRole("link", { name });
+    if (await link.count()) {
+      await link.hover();
+      // If the editor kept the link at all, the card says it cannot be opened…
+      await expect(card(page)).toContainText("This link can’t be opened");
+      await expect(card(page).getByRole("button", { name: /Open/ })).toBeDisabled();
+      // …and a click goes nowhere.
+      await link.click();
+      await page.mouse.move(5, 5);
+      await expect(card(page)).toHaveCount(0);
+    }
+  }
+  await page.waitForTimeout(300);
+  expect(page.url()).toBe(here);
+  expect(popups).toEqual([]);
+
+  // Same-origin paths other than a page: a NEW tab that cannot reach this window — never this one.
+  const [logout] = await Promise.all([context.waitForEvent("page"), page.getByRole("link", { name: "logout" }).click()]);
+  await logout.waitForLoadState();
+  expect(new URL(logout.url()).pathname).toBe("/auth/logout");
+  expect(await logout.evaluate(() => window.opener)).toBeNull();
+  await logout.close();
+  const [dots] = await Promise.all([context.waitForEvent("page"), page.getByRole("link", { name: "dots" }).click()]);
+  expect(new URL(dots.url()).origin).toBe(new URL(here).origin);
+  await dots.close();
+  // An anchor stays in the page.
+  await page.getByRole("link", { name: "anchor" }).click();
+  await page.waitForTimeout(200);
+  expect(page.url().split("#")[0]).toBe(here.split("#")[0]);
+  expect(navigations.filter((u) => u.split("#")[0] !== here.split("#")[0])).toEqual([]);
+});
+
+test("the inline link field refuses backslash and control-character paths", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await open(page);
+  await page.getByText("Closing line.", { exact: true }).selectText();
+  await page.locator(".document-selection-actions:visible").getByRole("button", { name: "Link", exact: true }).click();
+  const field = page.getByRole("textbox", { name: "Link address" });
+  for (const bad of ["/\\evil.example.test/login", "\\\\evil", "/a\\b", "https://user:pass@example.test/a"]) {
+    await field.fill(bad);
+    await field.press("Enter");
+    await expect(page.getByRole("alert").filter({ hasText: "Use a web, mail or page link." })).toBeVisible();
+    expect(await html(page)).not.toContain("evil");
+    expect(await html(page)).not.toContain("user:pass");
+  }
+  await field.fill("/page/db1");
+  await field.press("Enter");
+  await expect.poll(() => html(page)).toContain('href="/page/db1"');
+});
+
+/** Review A2: the Prism Client's host script handles every http(s) anchor click at the document. */
+test("with a host that opens outside links itself, a link opens exactly once and a page link stays in the app", async ({ page, baseURL }) => {
+  await page.addInitScript(() => {
+    (window as any).hostOpened = [] as string[];
+    // What apps/client/src-tauri/src/host.js does: document capture, skip handled clicks, take http(s) anchors.
+    document.addEventListener("click", (e) => {
+      if (e.defaultPrevented || e.button !== 0) return;
+      const a = (e.target as Element | null)?.closest?.("a[href]") as HTMLAnchorElement | null;
+      if (!a || !/^https?:/.test(a.href)) return;
+      e.preventDefault();
+      (window as any).hostOpened.push(a.href);
+    }, true);
+  });
+  await page.setViewportSize({ width: 1280, height: 900 });
+  const origin = new URL(baseURL!).origin;
+  const content = `<p><a href="https://example.test/docs">outside</a> and <a href="${origin}/page/db1">our page</a></p>`;
+  await page.goto(`/e2e-fixtures/notion-media.html?content=${enc(content)}&readonly`);
+  await expect(page.locator(".tiptap[contenteditable=false]")).toBeVisible();
+  let popups = 0;
+  page.on("popup", () => { popups++; });
+  await page.getByRole("link", { name: "outside" }).click();
+  await expect.poll(() => page.evaluate(() => (window as any).hostOpened as string[])).toEqual(["https://example.test/docs"]);
+  await page.getByRole("link", { name: "our page" }).click();
+  await expect.poll(() => tabs(page)).toContain("db1:Reading list");
+  await page.waitForTimeout(200);
+  expect(await page.evaluate(() => (window as any).hostOpened as string[])).toEqual(["https://example.test/docs"]);
+  expect(popups).toBe(0);
+});
+
+/** Review A3: the share route has no tabs — a page link opens the page's own address in a new tab. */
+test("without a workspace shell a page link opens in a new tab", async ({ page, context }) => {
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await context.route("**/page/db1", (r) => r.fulfill({ contentType: "text/html", body: "<p>page</p>" }));
+  await open(page, "&readonly&noshell");
+  const [opened] = await Promise.all([context.waitForEvent("page"), page.getByRole("link", { name: "the reading list" }).click()]);
+  await opened.waitForLoadState();
+  expect(new URL(opened.url()).pathname).toBe("/page/db1");
+  expect(await opened.evaluate(() => window.opener)).toBeNull();
+  expect(page.url()).toContain("/e2e-fixtures/notion-media.html");
+});
+
+/** Review A4: an edit while the card is still on its way must not bring it up on a stale range. */
+test("typing while a hover card is pending cancels it", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await open(page);
+  await caretAtEnd(page, "Closing line.");
+  await page.keyboard.press("ControlOrMeta+Home");
+  await page.getByRole("link", { name: "the docs" }).hover();
+  await page.keyboard.type("X"); // before the card's delay has passed; every position after it shifts
+  await page.waitForTimeout(600);
+  await expect(card(page)).toHaveCount(0);
+});
+
+/** Review A5: someone who may only comment gets no Edit / Remove. */
+test("comment-only live editor: the card offers Open and Copy, never Edit or Remove", async ({ page }) => {
+  await page.setViewportSize({ width: 1500, height: 900 });
+  await open(page, "&live&commentonly");
+  const a = page.getByRole("region", { name: "Client A" });
+  await a.getByRole("link", { name: "the docs" }).hover();
+  await expect(card(page)).toBeVisible();
+  await expect(card(page).getByRole("button")).toHaveText(["Open", "Copy"]);
+});
+
+/** Review A6: keyboard focus on a link in a read-only page shows the card; moving on takes it away. */
+test("read-only: the card that keyboard focus brings up goes when focus leaves the link", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await open(page, "&readonly");
+  await page.getByRole("link", { name: "the docs" }).focus();
+  await expect(card(page)).toBeVisible();
+  await page.getByRole("link", { name: "the reading list" }).focus();
+  await expect(card(page)).toContainText("/page/db1");
+  await page.evaluate(() => (document.activeElement as HTMLElement).blur());
+  await expect(card(page)).toHaveCount(0);
 });

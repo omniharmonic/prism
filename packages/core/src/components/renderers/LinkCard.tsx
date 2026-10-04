@@ -8,7 +8,9 @@ import { useUIStore } from "../../app/stores/ui";
 import { inferContentType } from "../../lib/schemas/content-types";
 import { noteLinkTitle } from "../../lib/wikilinks";
 import { EDIT_LINK_EVENT, LINK_CARD_FOCUS_EVENT } from "../../lib/tiptap/EditorKeys";
-import { linkTarget, openLinkTarget, type LinkTarget } from "../../lib/tiptap/prismLinks";
+import { linkTarget, openInNewTab, openLinkTarget, type LinkTarget } from "../../lib/tiptap/prismLinks";
+import { structuralEditsAllowed } from "../../lib/tiptap/blockCommands";
+import { pageLink } from "../../lib/pages/usePageActions";
 import "./LinkCard.css";
 
 /**
@@ -20,14 +22,16 @@ import "./LinkCard.css";
  *  - It never takes focus by itself, so it cannot interrupt typing; any edit hides it.
  *    From the keyboard: ⌘K with the caret in a link moves into the card; Tab walks on
  *    (no trap); Esc closes it and returns to the text.
- *  - Open: a Prism page opens in the app, an outside link in a new tab that cannot
- *    reach this window (`noopener noreferrer`). `javascript:` / `data:` / `vbscript:`
- *    are never opened (`linkTarget`, the rule the inline link field enforces).
+ *  - Open (`prismLinks.linkTarget`, the rule the inline link field enforces): a Prism page
+ *    opens in the app (in a new tab where no workspace shell is mounted), an `#anchor`
+ *    scrolls, every other allowed link opens in a new tab that cannot reach this window
+ *    (`noopener noreferrer`). THIS window is never navigated; `javascript:` / `data:` /
+ *    `vbscript:`, backslash / control-character paths and `user:pass@` URLs are never opened.
  *  - A click on a link never navigates this window. Where the page is not editable the
  *    click (tap) opens the link; where it is, it places the caret and the card shows —
  *    ⌘/Ctrl-click opens at once.
  */
-interface CardState { href: string; from: number; to: number; left: number; top: number; via: "hover" | "caret" | "keys" }
+interface CardState { href: string; from: number; to: number; left: number; top: number; via: "hover" | "caret" | "keys" | "focus" }
 
 const SHOW_MS = 280;
 const HIDE_MS = 220;
@@ -90,7 +94,9 @@ export function LinkCard({ editor }: { editor: Editor }) {
 
   const openPage = (id: string) => {
     const open = (title: string, type: Parameters<ReturnType<typeof useUIStore.getState>["openTab"]>[2]) => useUIStore.getState().openTab(id, title, type);
-    if (!client) { location.assign(`/page/${encodeURIComponent(id)}`); return; }
+    // No workspace shell around this editor (the share route `/collab/:id` has no tabs): the page's
+    // own address, in a new tab that cannot reach this window. Never a navigation of this one.
+    if (!client || !document.getElementById("workspace-document")) { openInNewTab(pageLink(id)); return; }
     // The reader's own read decides the title and type; a page they cannot see opens as "no access".
     void client.getNote(id).then((n) => open(noteLinkTitle(n), inferContentType(n)), () => open("Page", "document"));
   };
@@ -133,12 +139,19 @@ export function LinkCard({ editor }: { editor: Editor }) {
     };
     const onLeave = () => { if (state.current?.via === "hover") hideSoon(); else clear("show"); };
 
-    // A click on a link never navigates this window.
+    // A click on a link never navigates this window. Listened for at the WINDOW (capture), ahead of
+    // any document-level handler: the Prism Client's host script takes every http(s) anchor click it
+    // finds un-handled and opens it natively — it would open our own page links outside the app, and
+    // an outside link twice. Handled here first, it leaves the click alone; an outside link then
+    // reaches it exactly once, through `openInNewTab`.
     const onClick = (e: MouseEvent) => {
       const a = (e.target as Element | null)?.closest?.("a[href]");
       const link = a && dom.contains(a) ? linkOfAnchor(editor, a) : null;
       if (!link) return;
+      const handledElsewhere = e.defaultPrevented;
       e.preventDefault();
+      // Someone ahead of us already took this click (an older host): do not open an outside link again.
+      if (handledElsewhere && linkTarget(link.href).kind === "external") return;
       if (editor.isEditable && !(e.metaKey || e.ctrlKey)) {
         // The caret lands in the link and the card follows — also when the caret was already there
         // (no selection change to hear about).
@@ -167,7 +180,12 @@ export function LinkCard({ editor }: { editor: Editor }) {
       if (editor.isEditable) return;
       const a = (e.target as Element | null)?.closest?.("a[href]");
       const link = a && dom.contains(a) ? linkOfAnchor(editor, a) : null;
-      if (link) show(link, "hover");
+      if (link) show(link, "focus");
+    };
+    // …and leaving the link takes that card away (unless focus went into the card itself).
+    const onFocusOut = (e: FocusEvent) => {
+      if (state.current?.via !== "focus" || cardRef.current?.contains(e.relatedTarget as Node | null)) return;
+      hide();
     };
     const onFocusCard = () => {
       const { selection } = editor.state;
@@ -178,8 +196,10 @@ export function LinkCard({ editor }: { editor: Editor }) {
     };
     const onTransaction = ({ transaction }: { transaction: { docChanged: boolean; selectionSet: boolean; getMeta(key: string): unknown } }) => {
       if (transaction.docChanged) {
-        // Typing (or a collaborator's edit) never fights a card: it goes, and comes back with the next caret move.
-        if (state.current) hide();
+        // Typing (or a collaborator's edit) never fights a card — and every position may have moved, so a
+        // card on screen AND one still on its way (the hover delay) both go; the next caret move or hover
+        // looks the link up afresh. Edit / Remove can never act on a stale range.
+        hide();
         return;
       }
       if (!transaction.selectionSet) return;
@@ -193,9 +213,10 @@ export function LinkCard({ editor }: { editor: Editor }) {
 
     dom.addEventListener("mouseover", onOver);
     dom.addEventListener("mouseleave", onLeave);
-    dom.addEventListener("click", onClick, true);
+    window.addEventListener("click", onClick, true);
     dom.addEventListener("keydown", onKey, true);
     dom.addEventListener("focusin", onFocusIn);
+    dom.addEventListener("focusout", onFocusOut);
     dom.addEventListener(LINK_CARD_FOCUS_EVENT, onFocusCard);
     editor.on("transaction", onTransaction);
     editor.on("blur", onBlur);
@@ -205,9 +226,10 @@ export function LinkCard({ editor }: { editor: Editor }) {
       clear("show"); clear("hide");
       dom.removeEventListener("mouseover", onOver);
       dom.removeEventListener("mouseleave", onLeave);
-      dom.removeEventListener("click", onClick, true);
+      window.removeEventListener("click", onClick, true);
       dom.removeEventListener("keydown", onKey, true);
       dom.removeEventListener("focusin", onFocusIn);
+      dom.removeEventListener("focusout", onFocusOut);
       dom.removeEventListener(LINK_CARD_FOCUS_EVENT, onFocusCard);
       editor.off("transaction", onTransaction);
       editor.off("blur", onBlur);
@@ -219,8 +241,8 @@ export function LinkCard({ editor }: { editor: Editor }) {
 
   if (!card) return null;
   const target = linkTarget(card.href);
-  const editable = editor.isEditable && !!editor.schema.marks.link
-    && !(editor.storage as unknown as Record<string, { suggesting?: boolean } | undefined>).suggestionMode?.suggesting;
+  // Edit / Remove only where the person may change the document itself (not comment-only, not while suggesting).
+  const editable = !!editor.schema.marks.link && structuralEditsAllowed(editor);
   const close = (refocus: boolean) => { overCard.current = false; setCard(null); if (refocus) editor.commands.focus(); };
   const edit = () => {
     const { from, to } = card;
@@ -250,7 +272,7 @@ export function LinkCard({ editor }: { editor: Editor }) {
       onMouseEnter={() => { overCard.current = true; window.clearTimeout(timers.current.hide); timers.current.hide = undefined; }}
       onMouseLeave={() => { overCard.current = false; if (card.via === "hover" && !cardRef.current?.contains(document.activeElement)) setCard(null); }}
       onKeyDown={(e) => { if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); close(true); } }}
-      onBlur={(e) => { if (card.via === "keys" && !e.currentTarget.contains(e.relatedTarget as Node | null)) setCard(null); }}
+      onBlur={(e) => { if ((card.via === "keys" || card.via === "focus") && !e.currentTarget.contains(e.relatedTarget as Node | null)) setCard(null); }}
     >
       <span className="prism-link-card-url" title={card.href}>
         {target.kind === "page" ? <FileText size={13} aria-hidden="true" /> : null}
