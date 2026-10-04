@@ -81,11 +81,12 @@ export function usePageMenuItems(
   const caps = (note as (Note & { _caps?: string[] }) | undefined)?._caps;
   const canEdit = !caps || caps.includes("edit");
   const protectedReason = protectionReason(subject);
-  // NP-TX-01 "Save as template": for people who may create pages — never a guest, a
-  // view/comment-only reader, a page that is already a template, or one in the Trash;
+  // NP-TX-01 "Save as template": every workspace MEMBER may keep a private template of a
+  // page they can read (the server allows exactly that) — never a guest, a page that is
+  // already a template, or one in the Trash;
   // and only where the shell can say WHO is saving (a template is private to its saver).
   const guest = useViewerIsGuest();
-  const canTemplate = !!note && !guest && !!sharing?.getViewer && (!caps || caps.includes("create")) && !(note.tags ?? []).includes(TEMPLATE_TAG) && !isTrashed(note);
+  const canTemplate = !!note && !guest && !!sharing?.getViewer && !(note.tags ?? []).includes(TEMPLATE_TAG) && !isTrashed(note);
   // NP-AI-03: Summarize / Draft / Transform for the page that is open in a text editor —
   // only where this viewer has the agent (host services: the server owner today).
   const agentHost = useHostServices();

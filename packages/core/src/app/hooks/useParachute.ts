@@ -8,7 +8,7 @@ import { queryKeys } from "../../lib/parachute/queries";
 import type { Note, NoteFilters, CreateNoteParams, UpdateNoteParams } from "../../lib/types";
 import { useAgentChatStore } from "../../lib/agent/chatStore";
 import { useLivePollMs } from "../../lib/events/channelStatus";
-import { TEMPLATE_TAG, withoutTrashed } from "../../lib/pages/model";
+import { TEMPLATE_TAG, isTemplateNote, withoutTrashed } from "../../lib/pages/model";
 import { hasFilters, matchesFilters, queryTerms, type SearchFilters } from "../../lib/search/match";
 import { blendResults } from "../../lib/search/blend";
 import { takeFreshRead } from "../../lib/events/freshReads";
@@ -26,7 +26,7 @@ export function useNotes(filters?: NoteFilters) {
     // a task) — unless the list asks for templates.
     select: (list: Note[]) => {
       const live = withoutTrashed(list);
-      return filters?.tag && filters.tag !== TEMPLATE_TAG ? live.filter((n) => !(n.tags ?? []).includes(TEMPLATE_TAG)) : live;
+      return filters?.tag && filters.tag !== TEMPLATE_TAG ? live.filter((n) => !isTemplateNote(n)) : live;
     },
   });
 }

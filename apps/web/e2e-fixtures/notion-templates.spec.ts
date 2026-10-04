@@ -104,7 +104,7 @@ test("save page as template", async ({ page }) => {
   // It appears in the gallery (the toast's action opens it)…
   await toast.getByRole("button", { name: "Templates", exact: true }).click();
   await expect(gallery(page).getByRole("listitem", { name: "Prism", exact: true })).toBeVisible();
-  await expect(gallery(page).getByRole("listitem")).toHaveCount(6);
+  await expect(gallery(page).getByRole("listitem")).toHaveCount(5);
   await page.keyboard.press("Escape");
   await expect(gallery(page)).toHaveCount(0);
   // …and in the New page chooser.
@@ -175,7 +175,7 @@ test("gallery lists templates; edit, rename and delete with undo; keyboard", asy
   const g = gallery(page);
   const rows = g.getByRole("listitem");
   // Name + edited date for each template the viewer can see, in name order.
-  await expect(rows).toHaveCount(5);
+  await expect(rows).toHaveCount(4);
   await expect(rows.nth(0)).toContainText("Daily log");
   await expect(rows.nth(0)).toContainText(/Edited .*2026/);
   await expect(rows.nth(1)).toContainText("Meeting notes");
@@ -205,11 +205,11 @@ test("gallery lists templates; edit, rename and delete with undo; keyboard", asy
   // Delete = a move to the Trash, with Undo in the dialog.
   await g.getByRole("button", { name: "Delete Project brief", exact: true }).click();
   await expect(g.getByRole("status")).toContainText("Moved “Project brief” to Trash.");
-  await expect(rows).toHaveCount(4);
+  await expect(rows).toHaveCount(3);
   expect((await writes(page)).some((w) => w.trash === "tpl-brief")).toBe(true);
   await g.getByRole("status").getByRole("button", { name: "Undo", exact: true }).click();
   await expect(g.getByRole("status")).toContainText("Restored “Project brief”.");
-  await expect(rows).toHaveCount(5);
+  await expect(rows).toHaveCount(4);
   const restored = await page.evaluate(() => (window as any).prismFixtureNotes.find((n: any) => n.id === "tpl-brief"));
   expect(restored.tags).not.toContain("prism-trashed");
 
@@ -250,12 +250,13 @@ test("empty gallery says how to make a template; focus returns on close", async 
   await expect(opener).toBeFocused();
 });
 
-test("permissions: a view-only reader and a guest have no Save as template", async ({ page }) => {
+test("permissions: a member who can only READ a page may keep a private template of it; a guest has no Save as template", async ({ page }) => {
   await page.goto(transferUrl("?open=prism&viewer"));
   await expect(page.getByRole("heading", { name: "Prism" })).toBeVisible();
   const menu = await pageMenu(page);
   await expect(menu.getByRole("menuitem", { name: "Copy link", exact: true })).toBeVisible();
-  await expect(menu.getByRole("menuitem", { name: "Save as template" })).toHaveCount(0);
+  await expect(menu.getByRole("menuitem", { name: "Save as template", exact: true })).toBeVisible();
+  await page.keyboard.press("Escape");
 
   await page.goto(transferUrl("?open=prism&guest"));
   await expect(page.getByRole("heading", { name: "Prism" })).toBeVisible();
@@ -350,7 +351,7 @@ test("Use: tags the person has no standing in are dropped with a notice — the 
 
 // Review round 3 — BLOCKER (client half): tags a template REMEMBERS are data someone else may have written.
 test("Use of someone else's template: its tags are listed and applied only when ticked", async ({ page }) => {
-  await page.goto(transferUrl());
+  await page.goto(transferUrl("?foreign"));
   await openGallery(page);
   await gallery(page).getByRole("button", { name: "Use Team update", exact: true }).click();
   let create = page.getByRole("dialog", { name: "New page", exact: true });

@@ -50,13 +50,13 @@ test("B1: a template is PRIVATE to its saver, carries only the `template` tag, a
 });
 
 test("B1: Use re-applies the remembered tags; the new page is not private, not the saver's, and holds no template bookkeeping", () => {
-  const t = templateSource({ content: "<p>Body</p>", tags: ["project", "task"], metadata: { status: "active" } }, "T", TEMPLATES_FOLDER, [], { creator: "saver@example.test" });
+  const t = templateSource({ content: "<p>Body</p>", tags: ["project", "notes"], metadata: { status: "active" } }, "T", TEMPLATES_FOLDER, [], { creator: "saver@example.test" });
   const made = templateCopy(t, "New", "vault/Projects");
-  assert.deepEqual(made.tags, ["project", "task"]);
+  assert.deepEqual(made.tags, ["project", "notes"]);
   assert.deepEqual(made.metadata, { status: "active", title: "New" });
   assert.equal(made.path, "vault/Projects/New");
   // A hand-made template (tag `template` beside its own tags, the older convention) still works.
-  assert.deepEqual(templateCopy({ content: "x", tags: ["template", "meeting"], metadata: { status: "draft" } }, "M", "").tags, ["meeting"]);
+  assert.deepEqual(templateCopy({ content: "x", tags: ["template", "minutes"], metadata: { status: "draft" } }, "M", "").tags, ["minutes"]);
   // Remembered tags are data from a note: only strings, canonical, never a system tag.
   const odd = templateCopy({ content: "x", tags: ["template"], metadata: { [TEMPLATE_TAGS_KEY]: ["#ok", 7, "agent-skill", "prism-trashed", "template", " ", "governance-role", "ok"] } }, "O", "");
   assert.deepEqual(odd.tags, ["ok"]);

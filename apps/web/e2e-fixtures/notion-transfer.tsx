@@ -53,7 +53,7 @@ Object.assign(window, {
         '<p>kept<span data-suggestion="insert" data-user="Bo" data-color="#22c55e"> suggested</span><span data-comment-id="c1" data-resolved="false"> commented</span></p>',
         { tags: ["page", "wiki"], metadata: { type: "document", status: "draft", prism_visibility: "private", prism_creator: "owner@example.test" } }));
       // A template someone ELSE made, remembering tags (the reviewer's escalation: a published tag).
-      notes.push(doc("tpl-foreign", "Templates/Team update", "<p>Update</p>", { tags: ["template"], metadata: { type: "document", title: "Team update", prism_template_tags: ["wiki", "updates"], prism_creator: "someone@example.test" } }));
+      if (params.has("foreign")) notes.push(doc("tpl-foreign", "Templates/Team update", "<p>Update</p>", { tags: ["template"], metadata: { type: "document", title: "Team update", prism_template_tags: ["wiki", "updates"], prism_creator: "someone@example.test" } }));
       server = createTransferServer({ notes, stamp, attachments });
       Object.assign(window, { prismTransfer: { requests: server.requests, attachments, ui: useTransferUI, pages: usePagesUI, control } });
     },

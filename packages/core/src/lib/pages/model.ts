@@ -23,6 +23,8 @@
  */
 
 import { cleanCopyBody } from "./copyBody";
+import { INGEST_TAGS } from "../database/schema";
+import { inferContentType } from "../schemas/content-types";
 
 export const TRASH_TAG = "prism-trashed";
 export const TRASH_META = {
@@ -323,7 +325,18 @@ const TEMPLATE_DROP = /^(prism_(creator|visibility|trashed_.*|locked|order|merge
 
 /** Tags a copy never carries on its own authority (system / ingest-owned / bookkeeping). */
 const copyRefusesTag = (t: string): boolean =>
-  t === TRASH_TAG || t === TEMPLATE_TAG || (PROTECTED_TAGS as readonly string[]).includes(t) || t.startsWith("governance-");
+  t === TRASH_TAG || t === TEMPLATE_TAG || (PROTECTED_TAGS as readonly string[]).includes(t) || t.startsWith("governance-") || INGEST_TAGS.has(t);
+
+/** Kinds whose body is NOT editor HTML: copied byte for byte (a code note may hold HTML,
+ *  XML or SVG that only looks like our markup; sheets and canvases are data). */
+const RAW_BODY_KINDS: ReadonlySet<string> = new Set(["code", "spreadsheet", "canvas", "website", "presentation", "dashboard", "database"]);
+type CopySubject = { content: string; path?: string | null; metadata?: Record<string, unknown> | null; tags?: string[] | null };
+/** The body of a copy: cleaned (`cleanCopyBody`) for DOCUMENT kinds only. */
+export function copyBodyOf(note: CopySubject): string {
+  const body = note.content || " ";
+  const kind = inferContentType({ id: "", content: "", createdAt: "", path: note.path ?? null, metadata: note.metadata ?? {}, tags: note.tags ?? [] } as never);
+  return RAW_BODY_KINDS.has(kind) ? body : cleanCopyBody(body) || " ";
+}
 /** The vault's tag canonical form (`apps/server/src/tags.ts`): leading `#`/blanks off, tail trimmed. */
 const canonicalTagName = (raw: string): string => {
   let i = 0;
@@ -343,6 +356,15 @@ export function templateTagsOf(metadata: Record<string, unknown> | null | undefi
   return out;
 }
 
+/** The tags a template would put on a page made from it: what it remembers, plus a
+ *  hand-made template's own other tags — never a system or ingest-owned tag.
+ *  🔒 These are DATA from a note someone else may have written: `templateCopy` returns
+ *  them, and the CALLER decides which are applied (silently only for the viewer's own
+ *  template; otherwise each one must be ticked — `NewContentMenu`). */
+export function templateWantsTags(template: { metadata?: Record<string, unknown> | null; tags?: string[] | null }): string[] {
+  return [...new Set([...templateTagsOf(template.metadata), ...(template.tags ?? []).map(canonicalTagName).filter((t) => t && !copyRefusesTag(t))])];
+}
+
 /**
  * The create payload for a new page made from a template note ("Use"). The page gets
  * the tags the template REMEMBERS (`prism_template_tags`) plus, for hand-made
@@ -350,15 +372,14 @@ export function templateTagsOf(metadata: Record<string, unknown> | null | undefi
  * Never the template's privacy or creator; its body as a fresh copy (`cleanCopyBody`).
  */
 export function templateCopy(
-  template: { content: string; metadata?: Record<string, unknown> | null; tags?: string[] | null },
+  template: CopySubject,
   title: string,
   folder: string,
 ): { content: string; path: string; metadata: Record<string, unknown>; tags: string[] } {
   const metadata: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(template.metadata ?? {})) if (!TEMPLATE_DROP.test(k) && k !== TEMPLATE_TAGS_KEY) metadata[k] = v;
   metadata.title = title;
-  const tags = [...new Set([...templateTagsOf(template.metadata), ...(template.tags ?? []).filter((t) => t !== TEMPLATE_TAG && t !== TRASH_TAG)])];
-  return { content: cleanCopyBody(template.content || " ") || " ", path: (folder ? `${folder}/` : "") + title, metadata, tags };
+  return { content: copyBodyOf(template), path: (folder ? `${folder}/` : "") + title, metadata, tags: templateWantsTags(template) };
 }
 
 /** Where "Save as template" puts a template for someone who may create anywhere. */
@@ -413,7 +434,7 @@ export function freePagePath(folder: string, name: string, takenPaths: Iterable<
  *    re-applied when a page is made from it (`templateCopy`).
  */
 export function templateSource(
-  page: { content: string; metadata?: Record<string, unknown> | null; tags?: string[] | null },
+  page: CopySubject,
   name: string,
   folder: string,
   takenPaths: Iterable<string | null>,
@@ -427,7 +448,7 @@ export function templateSource(
   if (remembered.length) metadata[TEMPLATE_TAGS_KEY] = remembered;
   metadata.prism_visibility = "private";
   if (opts.creator) metadata.prism_creator = opts.creator;
-  return { content: cleanCopyBody(page.content || " ") || " ", path: free.path, metadata, tags: [TEMPLATE_TAG] };
+  return { content: copyBodyOf(page), path: free.path, metadata, tags: [TEMPLATE_TAG] };
 }
 
 /**
@@ -446,7 +467,7 @@ export function duplicateCopy(
   const base = `${pageTitle(note.path)} (copy)`;
   let name = base;
   for (let i = 2; taken.has(((parent ? `${parent}/` : "") + name).toLowerCase()); i++) name = `${base} ${i}`;
-  const copy = templateCopy({ content: note.content, metadata: { ...(note.metadata ?? {}), [TEMPLATE_TAGS_KEY]: undefined }, tags: note.tags }, name, parent);
+  const copy = templateCopy({ content: note.content, path: note.path, metadata: { ...(note.metadata ?? {}), [TEMPLATE_TAGS_KEY]: undefined }, tags: note.tags }, name, parent);
   // A duplicate keeps the original's tags (a template copy drops `template`; keep it for a duplicated template).
   copy.tags = (note.tags ?? []).filter((t) => t !== TRASH_TAG);
   // …and a duplicated template keeps what it remembers.

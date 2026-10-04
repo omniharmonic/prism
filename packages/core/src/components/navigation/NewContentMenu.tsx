@@ -27,7 +27,8 @@ import { useAgentChatStore } from "../../lib/agent/chatStore";
 import { useIsMobile } from "../../app/hooks/useIsMobile";
 import type { ContentType } from "../../lib/types";
 import { TaskCreateDialog } from "../tasks/TaskCreateDialog";
-import { TEMPLATE_TAG, pageTitle, referencesAttachments, templateCopy, withoutTrashed } from "../../lib/pages/model";
+import { TEMPLATE_TAG, pageTitle, referencesAttachments, templateCopy, templateWantsTags, withoutTrashed } from "../../lib/pages/model";
+import { useCollabSharing } from "../../data/CollabSharing";
 import { inferContentType } from "../../lib/schemas/content-types";
 import { applyTemplateVariables, templateCreator } from "../../lib/pages/templates";
 import { serverFetch } from "../../lib/transport/serverFetch";
@@ -186,6 +187,18 @@ function CreateContent({
   });
   const [template, setTemplate] = useState<{ id: string; title: string } | null>(initialTemplate ?? null);
   const [showTemplates, setShowTemplates] = useState(!!startWithTemplates);
+  // 🔒 The tags a template would apply are DATA from a note someone else may have
+  // written (a member can edit a shared template). They are applied silently only for
+  // the viewer's OWN template; for anyone else's each tag must be ticked, default off.
+  const sharing = useCollabSharing();
+  const viewer = useQuery({ queryKey: ["viewer-role", client.scope?.() ?? scope], enabled: !!sharing?.getViewer, queryFn: () => sharing!.getViewer!(), staleTime: 5 * 60_000, retry: 1 });
+  const me = viewer.data?.email?.toLowerCase() ?? null;
+  const isMine = (n: { metadata?: Record<string, unknown> | null } & { _creator?: { me?: boolean } }): boolean =>
+    n._creator?.me === true || (!!me && typeof n.metadata?.prism_creator === "string" && n.metadata.prism_creator.toLowerCase() === me);
+  const chosenRow = template ? (templates.data ?? []).find((t) => t.id === template.id) : undefined;
+  const foreignTags = chosenRow && !isMine(chosenRow) ? templateWantsTags(chosenRow) : [];
+  const [tickedTags, setTickedTags] = useState<string[]>([]);
+  useEffect(() => { setTickedTags([]); }, [template?.id]);
   const [showFolders, setShowFolders] = useState(false);
   const [search, setSearch] = useState("");
   const [pending, setPending] = useState(false);
@@ -289,6 +302,8 @@ function CreateContent({
         const creator = await templateCreator(() => serverFetch("/auth/me"));
         if (!alive.current || !current()) return;
         const copy = applyTemplateVariables(templateCopy(source, input.title, selectedFolder), { now: new Date(), creator });
+        // Judged on the FRESH template: its own maker's tags apply; anyone else's only if ticked here.
+        if (!isMine(source as never)) copy.tags = copy.tags.filter((t) => tickedTags.includes(t));
         params = copy;
         openType = inferContentType({ ...source, metadata: copy.metadata, tags: copy.tags });
       }
@@ -301,7 +316,8 @@ function CreateContent({
         // person has no standing in one of them the page is still created — without
         // the tags — and they are told which (never a failed create).
         const tags = (params as { tags?: string[] }).tags ?? [];
-        if (!template || !tags.length || !(e instanceof Error) || !/\b403\b/.test(e.message)) throw e;
+        // (The HTTP status the transport reports — never a number that happens to be in a message.)
+        if (!template || !tags.length || (e as { status?: unknown } | null)?.status !== 403) throw e;
         note = await client.createNote({ ...params, tags: [] });
         droppedTags = tags;
       }
@@ -574,6 +590,27 @@ function CreateContent({
                 </p>
               )}
             </div>
+          )}
+          {type === "document" && template && foreignTags.length > 0 && (
+            <fieldset role="group" aria-label="Tags from this template" className="mb-3 rounded-xl border px-3 py-2" style={{ borderColor: "var(--glass-border)" }}>
+              <legend className="px-1 text-xs" style={{ color: "var(--text-muted)" }}>Tags</legend>
+              <p className="mb-1 text-xs" style={{ color: "var(--text-secondary)" }}>
+                This template was made by someone else. Tick the tags the new page should get — a tag can share or publish a page.
+              </p>
+              <div className="flex flex-wrap gap-x-4 gap-y-1">
+                {foreignTags.map((t) => (
+                  <label key={t} className="flex min-h-11 items-center gap-2 text-sm">
+                    <input
+                      type="checkbox"
+                      disabled={pending}
+                      checked={tickedTags.includes(t)}
+                      onChange={(e) => setTickedTags((now) => (e.target.checked ? [...now, t] : now.filter((x) => x !== t)))}
+                    />
+                    {t}
+                  </label>
+                ))}
+              </div>
+            </fieldset>
           )}
           <div className="flex items-center gap-2">
             <span

@@ -225,7 +225,10 @@ export function usePageActions() {
           const state = editorSaveState(note.id);
           // A save the server did not take may sit in this device's queue ("saved on this
           // device"): it would be refused once the page is locked, so it counts as unsaved.
-          const unsent = (await client.hasPendingWrites?.().catch(() => false)) ?? false;
+          // THIS page's queue only: an unsent change to another page is no reason not to lock this one.
+          const unsent = client.hasPendingWritesFor
+            ? await client.hasPendingWritesFor(note.id).catch(() => false)
+            : ((await client.hasPendingWrites?.().catch(() => false)) ?? false);
           if (!flushed || unsent || state === "failed" || state === "dirty" || state === "parked") {
             toast("Your latest changes couldn’t be saved, so the page was not locked. Check the save state and try again.", { tone: "error" });
             return;
