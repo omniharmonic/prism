@@ -92,7 +92,7 @@ export function ShareButton() {
     <div ref={ref} className="relative h-full">
       <button
         onClick={() => (open ? setOpen(false) : generate())}
-        className="px-2 h-full hover:bg-[var(--glass-hover)] transition-colors"
+        className="share-trigger px-2 h-full hover:bg-[var(--glass-hover)] transition-colors"
         title="Share for collaboration"
       >
         <Share2 size={15} style={{ color: "var(--text-muted)" }} />
@@ -143,6 +143,7 @@ export function ShareButton() {
                   {status === "copied" ? <Check size={13} /> : <Copy size={13} />}
                   {status === "copied" ? "Copied" : "Copy"}
                 </button>
+                <span className="sr-only" aria-live="polite" aria-atomic="true">{status === "copied" ? "Link copied" : ""}</span>
               </div>
               <p className="text-[11px] mt-2" style={{ color: "var(--text-muted)" }}>
                 Anyone with this link can edit <strong>this note only</strong> — the rest of your
@@ -164,7 +165,7 @@ function RichShareButton({ noteId }: { noteId: string }) {
     <button
       onClick={() => openSharingDialog(noteId)}
       data-prism-share-trigger
-      className={isMobile ? "px-2 h-full hover:bg-[var(--glass-hover)] transition-colors" : "tabbar-labelled interactive focus-ring"}
+      className={isMobile ? "share-trigger px-2 h-full hover:bg-[var(--glass-hover)] transition-colors" : "tabbar-labelled interactive focus-ring"}
       title="Share"
     >
       <Share2 size={15} style={{ color: isMobile ? "var(--text-muted)" : undefined }} aria-hidden={!isMobile || undefined} />

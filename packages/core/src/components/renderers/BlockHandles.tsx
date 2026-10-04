@@ -244,6 +244,7 @@ export function BlockHandles({ editor, enabled, notes, noteId, onComment }: Bloc
       if (!at) return;
       event.preventDefault();
       setHovered(at);
+      fromKeyboard.current = true;
       setMenu("main");
     };
     document.addEventListener("keydown", onKey, true);
@@ -252,10 +253,14 @@ export function BlockHandles({ editor, enabled, notes, noteId, onComment }: Bloc
 
   useEffect(() => { if (!enabled) { setHovered(null); setMenu(null); } }, [enabled]);
 
+  /** The menu was opened by the shortcut while the caret was in the text: closing it returns there. */
+  const fromKeyboard = useRef(false);
   const closeMenu = useCallback((refocusEditor = false) => {
     setMenu(null);
-    if (refocusEditor) editor.commands.focus();
-    else handleRef.current?.focus({ preventScroll: true });
+    const handle = handleRef.current;
+    if (refocusEditor || fromKeyboard.current || !handle || !handle.isConnected) editor.commands.focus();
+    else handle.focus({ preventScroll: true });
+    fromKeyboard.current = false;
   }, [editor]);
 
   /** Act on the hovered block where it is NOW; refuse if it no longer exists. */
@@ -498,8 +503,8 @@ export function BlockHandles({ editor, enabled, notes, noteId, onComment }: Bloc
           // Desktop: no preventDefault on mousedown — it would cancel the native
           // drag. Narrow: keep the editor focused so the caret-following handle stays.
           onMouseDown={narrow ? (event) => event.preventDefault() : undefined}
-          onClick={() => setMenu((m) => (m ? null : "main"))}
-          onKeyDown={(event) => { if (event.key === "ArrowDown") { event.preventDefault(); setMenu("main"); } }}
+          onClick={() => { fromKeyboard.current = false; setMenu((m) => (m ? null : "main")); }}
+          onKeyDown={(event) => { if (event.key === "ArrowDown") { event.preventDefault(); fromKeyboard.current = false; setMenu("main"); } }}
           onDragStart={(event) => {
             // Inside a block selection the handle carries every selected block (NP-ED-01).
             const range = blockSelectionRange(editor.state);

@@ -57,7 +57,10 @@ test.describe("axe: no serious violations", () => {
         }
         return out.slice(0, 12);
       }) : [];
-      if (REPORT) { mkdirSync(REPORT, { recursive: true }); writeFileSync(`${REPORT}/${s.id}_${vp}_${theme}.json`, JSON.stringify({ bad, white }, null, 1)); }
+      // Moderate and minor findings are recorded (A11Y_REPORT), not asserted: see A11Y-RESULTS.md "Pass 2".
+      const lesser = result.violations.filter((v) => v.impact === "moderate" || v.impact === "minor")
+        .map((v) => ({ rule: v.id, impact: v.impact, nodes: v.nodes.slice(0, 6).map((n) => ({ target: n.target.join(" "), html: n.html.slice(0, 160) })), count: v.nodes.length }));
+      if (REPORT) { mkdirSync(REPORT, { recursive: true }); writeFileSync(`${REPORT}/${s.id}_${vp}_${theme}.json`, JSON.stringify({ bad, white, lesser }, null, 1)); }
       expect.soft(white, "light panels in dark mode").toEqual([]);
       expect(bad, "serious/critical axe violations").toEqual([]);
     });

@@ -182,7 +182,7 @@
 
 /* calendar */
 .db-cal-head { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
-.db-cal-head h3 { margin: 0 8px 0 0; font-size: 15px; font-weight: 650; }
+.db-cal-head h2, .db-cal-head h3 { margin: 0 8px 0 0; font-size: 15px; font-weight: 650; }
 .db-cal { border-top: 1px solid var(--glass-border); border-left: 1px solid var(--glass-border); }
 /* A week is one grid row: seven day cells, with multi-day bars laid over them (NP-DB-07). */
 .db-cal-week { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); }

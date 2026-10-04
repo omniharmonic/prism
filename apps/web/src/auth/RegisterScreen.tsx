@@ -58,7 +58,7 @@ export function RegisterScreen({ token }: { token: string }) {
   };
 
   return (
-    <div style={{ minHeight: "100dvh", display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }}>
+    <div role="main" style={{ minHeight: "100dvh", display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }}>
       <form
         onSubmit={submit}
         className="glass-elevated"

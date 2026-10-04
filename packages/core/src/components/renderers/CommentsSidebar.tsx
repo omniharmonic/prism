@@ -246,9 +246,9 @@ export function ThreadCard({
             placeholder="Reply…"
             disabled={busy}
             /* 16px so iOS doesn't zoom the viewport when this field is focused */
-            style={{ flex: 1, fontSize: 16, padding: "5px 8px", borderRadius: 6, background: "var(--glass)", border: "1px solid var(--glass-border)", color: "var(--text-primary)", outline: "none" }}
+            style={{ flex: 1, minWidth: 0, fontSize: 16, padding: "5px 8px", borderRadius: 6, background: "var(--glass)", border: "1px solid var(--glass-border)", color: "var(--text-primary)", outline: "none" }}
           />
-          <button onClick={() => resolve(true)} disabled={busy} title="Resolve" aria-label="Resolve thread" className="p-1 rounded" style={{ color: "#22c55e" }}>
+          <button onClick={() => resolve(true)} disabled={busy} title="Resolve" aria-label="Resolve thread" className="p-1 rounded prism-comment-icon" style={{ color: "#22c55e" }}>
             <Check size={14} />
           </button>
           {mayDelete && <DeleteButton confirm={confirmDelete} setConfirm={setConfirmDelete} onDelete={remove} label="Delete thread" />}
@@ -297,7 +297,7 @@ function CommentRow({ item, own, onSave, onDelete }: {
         {item.editedAt && <span style={{ fontSize: 11, color: "var(--text-muted)" }}>(edited)</span>}
         {own && !editing && (
           <span style={{ marginLeft: "auto", display: "flex", gap: 2 }}>
-            <button onClick={() => { setText(item.text); setEditing(true); }} title="Edit comment" aria-label="Edit comment" className="p-1 rounded" style={{ color: "var(--text-muted)" }}>
+            <button onClick={() => { setText(item.text); setEditing(true); }} title="Edit comment" aria-label="Edit comment" className="p-1 rounded prism-comment-icon" style={{ color: "var(--text-muted)" }}>
               <Pencil size={12} />
             </button>
             <DeleteButton confirm={confirm} setConfirm={setConfirm} onDelete={onDelete} label="Delete comment" />
@@ -353,7 +353,7 @@ function DeleteButton({ confirm, setConfirm, onDelete, label = "Delete comment" 
     );
   }
   return (
-    <button onClick={() => setConfirm(true)} onBlur={() => setConfirm(false)} title={label} aria-label={label} className="p-1 rounded" style={{ color: "var(--text-muted)" }}>
+    <button onClick={() => setConfirm(true)} onBlur={() => setConfirm(false)} title={label} aria-label={label} className="p-1 rounded prism-comment-icon" style={{ color: "var(--text-muted)" }}>
       <Trash2 size={13} />
     </button>
   );

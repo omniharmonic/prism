@@ -1,4 +1,5 @@
 import { Extension } from "@tiptap/core";
+import type { EditorView } from "@tiptap/pm/view";
 import { Plugin } from "@tiptap/pm/state";
 
 /**
@@ -35,12 +36,25 @@ export const WikilinkAutocomplete = Extension.create<WikilinkAutocompleteOptions
   addProseMirrorPlugins() {
     const onStateChange = this.options.onStateChange;
     let lastActive = false;
+    let recheck: ((view: EditorView) => void) | null = null;
 
     return [
       new Plugin({
+        // A trigger PRODUCED by a composition (IME half-width "/", some Android keyboards) is skipped
+        // by `update` while composing, and ProseMirror is not guaranteed to call `update` again once
+        // the composition ends. Re-run the same check shortly after `compositionend` (this handler
+        // runs before ProseMirror clears `view.composing`, hence the delay).
+        props: {
+          handleDOMEvents: {
+            compositionend: (view) => {
+              window.setTimeout(() => { if (!view.isDestroyed) recheck?.(view); }, 60);
+              return false;
+            },
+          },
+        },
         view() {
-          return {
-            update(view) {
+          const pluginView = {
+            update(view: EditorView) {
               const { state } = view;
               const { selection } = state;
 
@@ -51,6 +65,9 @@ export const WikilinkAutocomplete = Extension.create<WikilinkAutocompleteOptions
                 }
                 return;
               }
+
+              // NP-AX-08: never open mid-composition (see SlashCommand); an open list keeps filtering.
+              if (view.composing && !lastActive) return;
 
               const pos = selection.$from;
               const textBefore = pos.parent.textContent.slice(0, pos.parentOffset);
@@ -82,6 +99,8 @@ export const WikilinkAutocomplete = Extension.create<WikilinkAutocompleteOptions
               }
             },
           };
+          recheck = (view) => pluginView.update(view);
+          return pluginView;
         },
       }),
     ];

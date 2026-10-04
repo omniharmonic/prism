@@ -55,7 +55,7 @@ export function LoginScreen({ notice }: { notice?: string }) {
   };
 
   return (
-    <div style={{ minHeight: "100dvh", display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }}>
+    <div role="main" style={{ minHeight: "100dvh", display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }}>
       <form
         onSubmit={submit}
         className="workspace-auth-card"
@@ -126,7 +126,7 @@ export function LoginScreen({ notice }: { notice?: string }) {
                 setStatus("idle");
                 setError("");
               }}
-              style={{ background: "none", border: "none", color: "var(--text-muted, #888)", fontSize: 12, cursor: "pointer", textAlign: "center" }}
+              style={{ background: "none", border: "none", color: "var(--text-muted, #888)", fontSize: 12, cursor: "pointer", textAlign: "center", minHeight: 44 }}
             >
               {linkMode ? "← Back to password login" : "Owner? Email me a sign-in link instead"}
             </button>

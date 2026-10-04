@@ -404,6 +404,55 @@ export const SURFACES: Surface[] = [
     await page.getByRole("navigation", { name: "Mobile workspace" }).getByRole("button", { name: "More", exact: true }).click();
     await expect(page.locator("dialog.prism-mobile-sheet")).toBeVisible();
   } },
+  // ── Pass 2: surfaces the first sweep skipped ─────────────────────────────────────────────
+  { id: "sign-in", path: "/e2e-fixtures/auth-screens.html", open: async (page) => {
+    await expect(page.getByRole("button", { name: /Sign in|Log in/ }).first()).toBeVisible();
+  } },
+  { id: "accept-invite", path: "/e2e-fixtures/auth-screens.html?screen=register", before: async (page) => {
+    await page.route("**/auth/invite-info**", (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ valid: true, email: "guest@example.test" }) }));
+  }, open: async (page) => {
+    await expect(page.getByText("guest@example.test").first()).toBeVisible();
+  } },
+  { id: "published-wiki", path: "/e2e-fixtures/publication.html", open: async (page) => {
+    await expect(page.getByText("PRISM_PUBLICATION_guide_first_BODY", { exact: true })).toBeVisible();
+  } },
+  { id: "published-wiki-locked", path: "/e2e-fixtures/publication.html?protected&empty", open: async (page) => {
+    await expect(page.locator("input[type=password]").first()).toBeVisible();
+  } },
+  { id: "people-directory", path: "/e2e-fixtures/workspace.html?people", open: async (page) => {
+    await expect(page.getByRole("region", { name: "People workspace" }).getByRole("heading", { name: "People", exact: true })).toBeVisible();
+  } },
+  { id: "people-profile", path: "/e2e-fixtures/people-profile.html", open: async (page) => {
+    await expect(page.locator("main, #root > *").first()).toBeVisible();
+    await page.waitForLoadState("networkidle").catch(() => {});
+  } },
+  { id: "messages-inbox", path: "/e2e-fixtures/inbox.html", open: async (page) => {
+    await expect(page.getByRole("heading", { name: "Messages" })).toBeVisible();
+  } },
+  { id: "message-thread", path: "/e2e-fixtures/messages.html", open: async (page) => {
+    await expect(page.getByRole("textbox", { name: "Message", exact: true })).toBeVisible();
+  } },
+  { id: "email-thread", path: "/e2e-fixtures/messages.html?email-visual&agent", open: async (page) => {
+    await expect(page.getByText("Show quoted history", { exact: true })).toBeVisible();
+  } },
+  { id: "calendar-dashboard", path: "/e2e-fixtures/calendar.html", open: async (page) => {
+    // The phone opens on the day view; the desktop on the month with its events.
+    await expect(page.getByRole("button", { name: "Create event" })).toBeVisible();
+  } },
+  { id: "governance", path: "/e2e-fixtures/governance-workspace.html", open: async (page) => {
+    await expect(page.getByTestId("gov-your-access")).toBeVisible();
+  } },
+  { id: "governance-proposals", path: "/e2e-fixtures/governance-workspace.html", open: async (page) => {
+    await expect(page.getByTestId("gov-your-access")).toBeVisible();
+    await page.getByRole("tab", { name: /Proposals/ }).click();
+    await expect(page.getByTestId("gov-proposal-card").first()).toBeVisible();
+  } },
+  { id: "map-fallback", path: "/e2e-fixtures/renderer-preservation.html?kind=map", before: async (page) => {
+    // No WebGL (as on a headless runner or a locked-down device): the map shows its list fallback.
+    await page.addInitScript(() => { const get = HTMLCanvasElement.prototype.getContext; HTMLCanvasElement.prototype.getContext = function (this: HTMLCanvasElement, type: any, ...args: any[]) { if (String(type).includes("webgl")) return null; return (get as any).call(this, type, ...args); } as any; });
+  }, open: async (page) => {
+    await expect(page.getByTestId("vault-map")).toHaveAttribute("data-map-fallback", "true");
+  } },
 ];
 
 /** Force the theme the same way Settings → Appearance does (class on <html>), after the fixture booted. */

@@ -112,3 +112,133 @@ five slices with one worker.
 See the hand-off report for the exact commands and counts. All browser runs: fixture config
 (`playwright.config.ts`), `E2E_PORT=5362`, headless Chromium only. No WebKit/Safari, no Firefox,
 no real device.
+
+---
+
+# Pass 2 (branch `feat/w7-a11y`, 2026-10-03)
+
+Pass 1 left NP-AX-02, -05, -07 and -08 unchecked and -06 unchanged. Pass 2 writes the missing specs,
+fixes what they found, and adds the surfaces Pass 1 skipped. Everything below was run in headless
+Chromium against the fixture config (`E2E_PORT=5362`, one worker). No WebKit, no Firefox, no device,
+no screen reader, no real IME. The full browser suite was **not** run by this pass.
+
+## Per row
+
+| Row | What was checked | Spec › test | Result | Human-only / not verified |
+|---|---|---|---|---|
+| NP-AX-01 dark parity | The 13 added surfaces in dark, desktop + phone: no serious axe finding, no light panel | `notion-a11y-axe.spec.ts › axe: no serious violations › <surface> · <vp> · dark` | Pass | Native launch screen; the Light/Dark/System control itself; a person looking at it. |
+| NP-AX-02 keyboard only | 8 journeys driven with `page.keyboard` only after load, plus 14 menus/dialogs that must close on Esc with focus back on the opener. At each stop a focus indicator; Tab leaves every non-modal widget | `notion-a11y-keyboard.spec.ts › keyboard-only journey › …` (8) and `› Esc closes and focus returns to the opener › …` (14) | **Pass, 22/22** after the fixes below | Chromium only. "Focus indicator" = a computed outline or box-shadow; for a text field or the editor a caret is accepted; for an `aria-activedescendant` list the marked option is accepted. Whether the ring is *visible enough* (non-text contrast) is not measured. History panel journey is covered only as "open version viewer, Esc, focus returns". |
+| NP-AX-03 screen readers | Live regions exist and carry the text for: save state (saving / failed + retry / saved / offline), moved to Trash + Undo, Link copied, share-dialog copy, inbox archive (focus kept). Axe on the 13 added surfaces | `notion-a11y-live.spec.ts` (4); axe sweep | Pass | **VoiceOver / TalkBack were not run.** A live region in the markup is not proof it is spoken (toasts are inserted with their text, which some readers skip). |
+| NP-AX-04 contrast | Added surfaces only (calendar dashboard fixed) | axe `color-contrast` in the sweep | Pass on what was run | Same gaps as Pass 1 (non-text contrast, text over images, hover states). |
+| NP-AX-05 200 % zoom | Every surface: desktop opened at 1440×900 then set to 720×450; phone opened at 390×844 then set to 320×568. No sideways page scroll (document, main, dialogs, panels), no control off the side, no control under another control, WCAG 1.4.12 text spacing does not clip | `notion-a11y-reflow.spec.ts › 200% zoom no overflow › <surface> · <vp>` (149) + a self-test that the measures detect a broken page | **Pass, 150/150** | It is a viewport change, not a browser zoom. **iOS Dynamic Type XXL was not checked.** The text-spacing check only sees text cut off by an `overflow: hidden` box; text that spills out of a box and overlaps a neighbour is not detected. Overlap is only detected between controls in the same scroller. Tables, boards and code scroll inside their own scroller by design. |
+| NP-AX-06 motion | 18 popups (page menu, tree menu, block menu, slash menu, selection toolbar, database popover, side + center peek, share dialog, sidebar peek, ⌘K, Trash + toast, shortcut sheet, account menu; phone: More sheet, drawer, page sheet, filter sheet): entrance ≤ 180 ms; under `prefers-reduced-motion` and under the in-app setting the entrance is ≤ 1 ms and nothing on the page keeps animating | `notion-a11y.spec.ts › reduced motion disables transitions: menus, sheets, peeks › …` (18) + the Pass 1 test | Pass, 19/19 | Only the upper bound is asserted: a popup with no entrance at all passes (the measured value is in each test's `entrance-ms` annotation). Exit animations are not measured. |
+| NP-AX-07 touch targets | Every surface at 390×844 with touch + coarse pointer. A control passes at ≥ 44×44, or with a ≥ 44×44 hit area, or at ≥ 24×24 with no other control inside the 44 px square around it | `notion-a11y-touch.spec.ts › touch targets ≥44px › <surface> · phone` (67) | **Pass, 67/67, with one pinned exception:** the database month grid (40 controls: per-day "+" 19–22 px, page chips 42×18) | **Only controls in the first screenful of each surface are measured** (off-screen and covered controls are skipped), and an opener whose popup is open is skipped. Unstyled buttons that the fixture pages add are excluded by name. Not measured: Excalidraw, the emoji picker, the map, inline links in text. No real finger. |
+| NP-AX-08 IME | Composition via Chromium `Input.imeSetComposition`: slash / @ / `[[` menus stay closed, candidate-list keys do nothing, Markdown input rules do not fire, committed text lands once; the committing Enter (both browser shapes, dispatched) does not split a block, pick a slash row, commit a title, open a ⌘K row, post a page comment or send a reply; a remote update and the autosave debounce during a composition leave it running and the page unadopted | `notion-a11y-ime.spec.ts › IME composition › …` (5); existing `agent-composer-growth.spec.ts` still passes | Pass, 5/5 | **No real Japanese/Chinese IME, no iOS dictation, no autocorrect.** The committing Enter is a dispatched event, not a key the input method swallowed. Safari's behaviour is modelled, not run. |
+
+## Found → fixed in Pass 2
+
+**Keyboard (NP-AX-02)**
+- Database popovers (Filter, Sort, View settings, column menu, More actions, cell editors, templates,
+  card menus — one `Popover`): opened with no focus inside. They focus their first control and give
+  focus back to the anchor when they close with focus inside.
+- Block menu opened with ⌘⇧/: Esc left focus on nothing. It returns to the text.
+- ⌘K on a selection: the link field appeared but the caret stayed in the document, so typing the
+  address replaced the selected words. Cause: the bubble is attached to the page about 250 ms after a
+  selection or format change, and focusing a detached field does nothing.
+- Inbox: archiving the row that has focus dropped focus to `<body>`; it moves to the next row's
+  button. The notification settings panel takes focus, closes on Esc, and returns focus.
+- Page ⋯ and tree ⋯ menu items showed only the hover fill when focused; they have a ring.
+
+**IME (NP-AX-08)**
+- One guard at window capture (`lib/ime/keyGuard.ts`) stops composition key events before any handler.
+  Before it, the comment reply field sent on the committing Enter and the slash menu picked a row on
+  Safari's key shape.
+- A composed "/" opened the slash menu (and `[[` the page list). They no longer open mid-composition.
+  An already open menu keeps filtering, so Android keyboards (which compose every word) still filter.
+
+**Reflow and touch (NP-AX-05 / -07)**
+- Live-document selection toolbar on a phone was 560 px wide in a 390 px screen: "Comment" was off
+  screen. It wraps inside the screen.
+- Comment reply row overflowed its card at narrow widths.
+- `styles/touch.css` (one media query, phones / coarse pointers only): top bar, breadcrumbs, title and
+  icon controls, tree disclosure and row actions, sidebar section buttons, block handle hit area, find
+  bar, comment icon buttons, database tabs / row titles / cells / checkboxes / icon buttons / option
+  remove, dialog checkbox rows, notification-settings checkboxes, share invite field, messages search
+  field, sign-in "email me a link".
+
+**Surfaces Pass 1 skipped** — now in `a11y-surfaces.ts` (axe, touch, reflow): sign-in, accept-invite,
+published wiki, locked published wiki, people directory, person profile, messages inbox, message
+thread, email thread, calendar dashboard, governance, governance proposals, map (no-WebGL fallback).
+Serious findings: calendar dashboard only — days outside the month (2.45:1 light, 3.43:1 dark) and
+event chips (3.83:1). Fixed.
+Still not swept: set-password and reconnect screens, native sign-in, network/federation panels, the
+map with WebGL, the canvas (Excalidraw), the graph.
+
+**Announcements** — Share dialog and share popover: "Copy" only swapped its own label; a polite live
+text now says "… copied".
+
+## Moderate axe findings (recorded, not asserted)
+
+From the desktop half of the sweep (both themes). The phone half was collected only for the 27
+surfaces re-run at the end.
+
+| Rule | Where | Status |
+|---|---|---|
+| `landmark-no-duplicate-banner` | database row peeks | **Fixed** (database and peek headers are plain containers). |
+| `heading-order` | database calendar (h1 → h3) | **Fixed** (month is an h2). |
+| `aria-allowed-role` (minor) | gallery cards (`article` + `listitem`) | **Fixed**. |
+| `landmark-one-main`, `region` | sign-in, accept-invite | **Fixed** (`role="main"`). |
+| `region` | sidebar brand row, popup menus portaled to `<body>`, shortcut sheet, sidebar peek | Open. The sidebar is not inside a landmark of its own; menus are portaled. |
+| `landmark-one-main`, `page-has-heading-one`, `region` | agent chat, messages, email, calendar, search, live-editor fixtures | Fixture pages mount the component without the app shell (`<main>` comes from the shell). Not checked in the shell. |
+| `landmark-no-duplicate-main`, `landmark-main-is-top-level`, `landmark-unique` | database fixtures, comments fixture | The fixture page wraps the app in its own `<main>`; the comments fixture renders two views side by side. Fixture artefacts. |
+
+## Open
+
+- Database month grid on phones: 40 controls under 44 px (seven 51 px columns). Needs a design
+  decision (e.g. day tap opens a list), not padding.
+- `region` findings on the sidebar and portaled menus.
+- Everything in the "Human-only" column above.
+
+## Verification runs (Pass 2)
+
+All with `--workers=1 --reporter=line`, behind a host-load gate.
+
+| Run | Result |
+|---|---|
+| `notion-a11y-keyboard`, `-ime`, `-live`, `notion-a11y` (motion) | 50 passed |
+| `notion-a11y-touch` (67 phone surfaces) | 67 passed (month grid pinned as known) |
+| `notion-a11y-reflow` (149 surface runs + self-test) | 150 passed |
+| `notion-a11y-axe`, desktop half, all surfaces | 162 passed, 2 failed (calendar dashboard — fixed, re-run below) |
+| `notion-a11y-axe`, 27 new/changed surfaces, both viewports and themes | 105 passed |
+| Existing specs for changed components: `databases`, `notion-db-views/props/inline/csv`, `boards`, `page-properties`, `notion-inbox`, `notion-comments`, `notion-mentions`, `inbox`, `messages`, `calendar`, `notion-swipe`, `agent-composer-growth`, `editor-toolbar`, `editor-slash`, `editor-blocks`, `shortcuts`, `pages-nav`, `sharing`, `notion-sharing`, `notion-sidebar`, `notion-mobile`, `mobile-navigation`, `publication`, `notion-page`, `notion-editor` | all passed after three corrections: a `databases.spec` assertion that looked the month up by heading level 3; a block-menu focus regression introduced and fixed in this pass; a `sharing.spec` strict-mode clash with a new `role="status"` (now `aria-live` only) |
+| `npm run typecheck` (root), `npm run typecheck:e2e -w @prism/web` | clean |
+
+Not run: the phone half of the axe sweep for surfaces this pass did not change; the full browser
+suite; server tests (no server code changed).
+
+## Pass 2 — review fixes (2026-10-03)
+
+Five should-fix items from the independent review, plus three small ones. "Failed first" = the new
+test was run against the code before the fix.
+
+| # | Fix | Spec › test | Failed first? |
+|---|---|---|---|
+| 1 | Slash and `[[` plugins re-run their check 60 ms after `compositionend`, so a trigger produced BY a composition opens its menu even if ProseMirror does not call `update` again | `notion-a11y-ime.spec.ts › a "/" or "[[" committed by a composition opens its menu` | **No.** With Chromium's CDP composition ProseMirror does call `update` after the commit, so the test passed before the fix too. The fix is defensive; the reported case (Japanese half-width input, Android keyboards) is not reproduced by any test here. |
+| 2 | Dialog checkbox-row rule excludes editor content (`:not(.tiptap *, .ProseMirror *)`). No other rule in `touch.css` selects inside editor content, except the `.db-*` rules, which also size inline database blocks (intended) | `notion-a11y-touch.spec.ts › touch.css stays out of editor content and out of print; breadcrumbs keep their ellipsis` | Yes (`flex 44px 8px` on a task item inside a dialog) |
+| 3 | Both media-query branches are `screen and …` | same test (print emulation) | Run against the old sheet only as part of the same test, which stopped at item 2 — not shown separately |
+| 4 | The phone block handle's hit area grows to the left only, never past its right edge | `notion-a11y-touch.spec.ts › phone: a tap on the first character of a paragraph places the caret` | Yes (the tap opened the block menu) |
+| 5 | The IME guard listens to `keydown` only | none — no test presses Shift during a composition | — |
+| — | Breadcrumb parts keep their ellipsis on phones (inline-block + line-height, not flex) | same test as 2 | Not run separately |
+| — | `touch.css` header comment corrected: the width branch also applies to a narrow desktop window | — | — |
+| — | Calendar dashboard: events on days outside the month are quiet chips (neutral fill, secondary text) in both themes; the day number stays on the muted token | axe `calendar-dashboard`, both themes and viewports | — |
+
+Also corrected in the specs: the IME test's menu locator named the `[[` list wrongly ("Link to a page";
+it is "Link to a document"), so the "stays closed mid-composition" assertion did not cover `[[` in the
+first Pass 2 run. It does now, and passes. The touch measure accepts a hit area that is not centred
+(it measures the reach each way from the control's centre).
+
+Runs after the fixes (`--workers=1`, gated): touch sweep + IME + keyboard 96 passed; the two new
+touch tests 2 passed; `editor-blocks`, `editor-slash`, `calendar`, `notion-mobile`,
+`agent-composer-growth` 42 passed; axe + reflow on six touched surfaces 35 passed; root typecheck
+and `typecheck:e2e` clean. Not re-run: the full reflow sweep, the full axe sweep, the motion and
+live specs (no code they cover changed).

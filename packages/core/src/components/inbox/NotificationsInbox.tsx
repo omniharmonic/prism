@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Archive, ArchiveRestore, Bell, Check, CheckCheck, RefreshCw, Settings2, WifiOff, Inbox as InboxIcon } from "lucide-react";
 import type { RendererProps } from "../renderers/RendererProps";
 import { useArchive, useMarkRead, useNotifications, useOnline, useUnreadCount, isNotificationsUnavailable, announceNotificationsChanged } from "../../lib/notifications/hooks";
@@ -53,11 +53,36 @@ function sentence(n: NotificationItem): { who: string | null; text: string; page
   }
 }
 
+/**
+ * A row that is archived leaves the list. When its own button had keyboard focus, focus would fall to
+ * <body> (the next Tab restarts from the top of the page): hand it to the same button of the row that
+ * takes its place — next, else previous, else the Inbox heading.
+ */
+function keepFocusAfterRemoval(row: HTMLElement | null) {
+  if (!row || !row.contains(document.activeElement)) return;
+  const scope = row.closest<HTMLElement>("[data-testid=notifications-inbox]");
+  const rows = Array.from(scope?.querySelectorAll<HTMLElement>("[data-testid=notification-row]") ?? []);
+  const at = rows.indexOf(row);
+  const label = (document.activeElement as HTMLElement).getAttribute("aria-label");
+  const neighbour = rows[at + 1] ?? rows[at - 1];
+  const id = neighbour?.dataset.rowId;
+  let tries = 0;
+  const move = () => {
+    if (document.activeElement && document.activeElement !== document.body && document.activeElement.isConnected && !row.isConnected) return;
+    if (row.isConnected && tries++ < 40) { window.setTimeout(move, 50); return; }
+    const next = id ? scope?.querySelector<HTMLElement>(`[data-row-id="${CSS.escape(id)}"]`) : null;
+    const target = next?.querySelector<HTMLElement>(`button[aria-label="${label}"]`) ?? next?.querySelector<HTMLElement>("button") ?? scope?.querySelector<HTMLElement>("h1");
+    target?.focus();
+  };
+  window.setTimeout(move, 0);
+}
+
 /** Notion-style notifications inbox (NP-CO-03): Inbox / Archived, grouped, read state, deep links. */
 export default function NotificationsInbox(_props: RendererProps) {
   const [box, setBox] = useState<"inbox" | "archived">("inbox");
   const [filter, setFilter] = useState<Filter>("all");
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const settingsButton = useRef<HTMLButtonElement>(null);
   const online = useOnline();
   const list = useNotifications(box);
   const markRead = useMarkRead();
@@ -105,7 +130,7 @@ export default function NotificationsInbox(_props: RendererProps) {
       {pull.indicator}
       <div className="prism-inbox-inner">
         <header className="prism-inbox-header">
-          <h1>Inbox</h1>
+          <h1 tabIndex={-1}>Inbox</h1>
           <div className="prism-inbox-actions">
             {box === "inbox" && (
               <button type="button" className="prism-inbox-btn" disabled={unread === 0 || markRead.isPending} onClick={() => markRead.mutate({ all: true })}>
@@ -115,13 +140,13 @@ export default function NotificationsInbox(_props: RendererProps) {
             <button type="button" className="prism-inbox-btn" aria-label="Refresh" title="Refresh" aria-busy={pull.refreshing || undefined} disabled={pull.refreshing || unavailable} onClick={pull.refresh}>
               <RefreshCw size={15} />
             </button>
-            <button type="button" className="prism-inbox-btn" aria-label="Notification settings" aria-expanded={settingsOpen} onClick={() => setSettingsOpen((v) => !v)}>
+            <button ref={settingsButton} type="button" className="prism-inbox-btn" aria-label="Notification settings" aria-expanded={settingsOpen} onClick={() => setSettingsOpen((v) => !v)}>
               <Settings2 size={15} />
             </button>
           </div>
         </header>
 
-        {settingsOpen && <NotificationSettingsPanel onClose={() => setSettingsOpen(false)} />}
+        {settingsOpen && <NotificationSettingsPanel onClose={() => { setSettingsOpen(false); settingsButton.current?.focus(); }} />}
 
         <div className="prism-inbox-tabs" role="tablist" aria-label="Inbox folders">
           {(["inbox", "archived"] as const).map((b) => (
@@ -163,7 +188,7 @@ export default function NotificationsInbox(_props: RendererProps) {
                 {g.items.map((n) => (
                   <NotificationRow key={n.id} n={n} box={box} onOpen={() => open(n)}
                     onRead={() => markRead.mutate({ ids: [n.id] })}
-                    onArchive={() => archive.mutate({ ids: [n.id], archived: box === "inbox" })} />
+                    onArchive={(row) => { keepFocusAfterRemoval(row); archive.mutate({ ids: [n.id], archived: box === "inbox" }); }} />
                 ))}
               </ul>
             </section>
@@ -187,18 +212,18 @@ function initials(name: string | null): string {
 }
 
 function NotificationRow({ n, box, onOpen, onRead, onArchive }: {
-  n: NotificationItem; box: "inbox" | "archived"; onOpen: () => void; onRead: () => void; onArchive: () => void;
+  n: NotificationItem; box: "inbox" | "archived"; onOpen: () => void; onRead: () => void; onArchive: (row: HTMLElement | null) => void;
 }) {
   const s = sentence(n);
   const canOpen = !!n.noteId;
   // Phone (touch): swipe left to archive / restore, right to mark read. The row's
   // buttons below do the same for keyboard, mouse and screen readers.
   const swipe = useSwipeActions<HTMLLIElement>({
-    left: { label: box === "inbox" ? "Archive" : "Move to Inbox", run: onArchive },
+    left: { label: box === "inbox" ? "Archive" : "Move to Inbox", run: () => onArchive(null) },
     right: n.readAt ? null : { label: "Mark as read", run: onRead, tone: "accent" },
   });
   return (
-    <li ref={swipe.ref} className="prism-inbox-row prism-swipe-row" data-unread={!n.readAt} data-testid="notification-row" data-type={n.type}>
+    <li ref={swipe.ref} className="prism-inbox-row prism-swipe-row" data-unread={!n.readAt} data-testid="notification-row" data-row-id={n.id} data-type={n.type}>
       {swipe.hint}
       <span className="prism-inbox-avatar" aria-hidden>{n.type === "reminder" ? <Bell size={14} /> : initials(s.who)}</span>
       <div className="flex-1 min-w-0">
@@ -216,7 +241,7 @@ function NotificationRow({ n, box, onOpen, onRead, onArchive }: {
         {!n.readAt && (
           <button type="button" className="prism-inbox-icon-btn focus-ring" aria-label="Mark as read" title="Mark as read" onClick={onRead}><Check size={15} /></button>
         )}
-        <button type="button" className="prism-inbox-icon-btn focus-ring" aria-label={box === "inbox" ? "Archive" : "Move to Inbox"} title={box === "inbox" ? "Archive" : "Move to Inbox"} onClick={onArchive}>
+        <button type="button" className="prism-inbox-icon-btn focus-ring" aria-label={box === "inbox" ? "Archive" : "Move to Inbox"} title={box === "inbox" ? "Archive" : "Move to Inbox"} onClick={(e) => onArchive(e.currentTarget.closest<HTMLElement>("[data-testid=notification-row]"))}>
           {box === "inbox" ? <Archive size={15} /> : <ArchiveRestore size={15} />}
         </button>
       </div>
