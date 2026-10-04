@@ -7,7 +7,7 @@
  * camelCase notes; PATCH needs if_updated_at or force).
  */
 import { canonicalTagsStrict } from "./tags";
-import { type VaultEntry } from "./config";
+import { config, type VaultEntry } from "./config";
 import { resolveVaultEntry } from "./db";
 
 export interface Note {
@@ -272,9 +272,13 @@ export function vaultClient(vaultId?: string, opts: { /** Abort any single vault
     return (await raw).map((t) => ({ tag: t.tag ?? t.name ?? "", count: t.count }));
   },
 
+  /** Vault reachability. BOUNDED: a vault that does not answer within
+   *  `VAULT_HEALTH_TIMEOUT_MS` (2 s) reads as down — the fetch used to have no
+   *  timeout, so a paged-out vault made `GET /health` hang with it. */
   async health(): Promise<boolean> {
     try {
-      const r = await fetch(`${entry.url}/health`);
+      const ms = config.vaultHealthTimeoutMs;
+      const r = await fetch(`${entry.url}/health`, ms > 0 ? { signal: AbortSignal.timeout(ms) } : undefined);
       return r.ok;
     } catch {
       return false;

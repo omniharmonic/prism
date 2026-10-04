@@ -113,6 +113,9 @@ export const config = {
     .filter(Boolean),
   // Per-credential request budget on /mcp (per minute), and the per-IP budget of
   // FAILED authentications (per 10 minutes) before the IP is refused outright.
+  // How long `GET /health` (and `/api/health`) waits for the vault's own /health
+  // before answering 503. 0 = no timeout (the old behaviour: hangs with the vault).
+  vaultHealthTimeoutMs: Number(process.env.VAULT_HEALTH_TIMEOUT_MS ?? 2000),
   mcpRatePerMinute: Number(process.env.MCP_RATE_PER_MINUTE ?? 120),
   mcpAuthFailuresPer10Min: Number(process.env.MCP_AUTH_FAILURES_PER_10MIN ?? 20),
 
