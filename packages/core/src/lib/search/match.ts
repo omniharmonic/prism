@@ -11,14 +11,14 @@ export interface SearchFilters {
   types?: string[];
   /** Every listed tag must be present. */
   tags?: string[];
-  /** Created or last edited by this account (email, case-insensitive). */
+  /** CREATED by this account (`prism_creator`, an email, case-insensitive). On the wire: an address or `me`. */
   author?: string;
   /**
-   * Client-only (NP-SR-04 "created by me"): sent as `author=me` (the server's one
-   * identity filter — creator OR last editor), then narrowed to pages the caller
-   * CREATED by {@link isCreatedByMe} on the rows that come back. Never a param.
+   * LAST EDITED by this account. On the wire: `me` (or, from an admin, an address); the server
+   * turns it into the opaque writer-stamp id (`u_…`) it compares with `prism_last_writer` — the
+   * stamp is never an address, so only the server can answer this filter.
    */
-  createdByMe?: boolean;
+  editor?: string;
   /** Inclusive ISO date bounds (YYYY-MM-DD or full ISO). */
   after?: string;
   before?: string;
@@ -260,6 +260,8 @@ export function parseSearchFilters(get: (name: string) => string | undefined): S
   if (tags.length) f.tags = tags;
   const author = (get("author") ?? "").trim().toLowerCase();
   if (author && author.length <= 254 && /^[^\s<>"]+$/.test(author)) f.author = author;
+  const editor = (get("editor") ?? "").trim().toLowerCase();
+  if (editor && editor.length <= 254 && /^[^\s<>"]+$/.test(editor)) f.editor = editor;
   const after = get("after"); const before = get("before");
   if (after && day(after, false) !== null) f.after = after;
   if (before && day(before, true) !== null) f.before = before;
@@ -268,18 +270,7 @@ export function parseSearchFilters(get: (name: string) => string | undefined): S
 }
 
 export function hasFilters(f: SearchFilters): boolean {
-  return !!(f.titleOnly || f.types?.length || f.tags?.length || f.author || f.createdByMe || f.after || f.before || f.vault);
-}
-
-/**
- * Did the caller create this page? A non-admin's rows carry `_creator.me` (never
- * someone else's address); an admin's rows carry the raw `prism_creator`, compared
- * with the caller's own address (`me`). Unknown → false: never a guess.
- */
-export function isCreatedByMe(note: { metadata?: Record<string, unknown> | null; _creator?: { me?: unknown } | null }, me?: string | null): boolean {
-  if (note._creator && typeof note._creator === "object") return note._creator.me === true;
-  const creator = note.metadata?.prism_creator;
-  return typeof creator === "string" && !!me && creator.toLowerCase() === me.toLowerCase();
+  return !!(f.titleOnly || f.types?.length || f.tags?.length || f.author || f.editor || f.after || f.before || f.vault);
 }
 
 /** Does `note` pass every filter? `typeOf` = inferContentType (kept injectable). */
@@ -291,12 +282,11 @@ export function matchesFilters(note: NoteLike, f: SearchFilters, terms: string[]
   if (f.types?.length && !f.types.includes(typeOf(note))) return false;
   if (f.tags?.length && !f.tags.every((t) => note.tags?.includes(t))) return false;
   if (f.author) {
-    const meta = note.metadata ?? {};
-    const who = [meta.prism_creator, meta.prism_last_writer].filter((v): v is string => typeof v === "string").map((v) => v.toLowerCase());
-    if (!who.includes(f.author)) return false;
+    const creator = note.metadata?.prism_creator;
+    if (typeof creator !== "string" || creator.toLowerCase() !== f.author) return false;
   }
-  // Client-side fallback only (the server never parses this): the caller's address is `author` when it is one.
-  if (f.createdByMe && !isCreatedByMe(note, f.author && f.author !== "me" ? f.author : null)) return false;
+  // `editor` arrives here already resolved by the caller (the server: the writer-stamp id of the account).
+  if (f.editor && note.metadata?.prism_last_writer !== f.editor) return false;
   if (f.after || f.before) {
     const stamp = Date.parse((f.dateField === "created" ? note.createdAt : note.updatedAt) ?? "");
     if (!Number.isFinite(stamp)) return false;
@@ -312,7 +302,8 @@ export function filtersToParams(f: SearchFilters, params: URLSearchParams): URLS
   if (f.titleOnly) params.set("title", "1");
   if (f.types?.length) params.set("type", f.types.join(","));
   if (f.tags?.length) params.set("tag", f.tags.join(","));
-  if (f.author || f.createdByMe) params.set("author", f.author ?? "me");
+  if (f.author) params.set("author", f.author);
+  if (f.editor) params.set("editor", f.editor);
   if (f.after) params.set("after", f.after);
   if (f.before) params.set("before", f.before);
   if (f.dateField === "created") params.set("date", "created");

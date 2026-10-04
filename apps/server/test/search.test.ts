@@ -8,6 +8,7 @@ import assert from "node:assert/strict";
 import { api } from "../src/routes/api";
 import { resetTreeForTests } from "../src/tree";
 import { installFakeVault, resetDb, makeSession, sessionCookie, grantUser, makeCapability, type FakeVault } from "./helpers";
+import { writerIdFor } from "../src/writer-stamp";
 import { buildSnippet, findMatches, plainText, queryTerms, searchMatches } from "@prism/core/search";
 
 let fv: FakeVault;
@@ -71,8 +72,8 @@ test("filters only narrow: title, type, tag, author, date range", async () => {
   assert.deepEqual(await q("type=project&tag=project"), ["w1", "w4"]);
   assert.deepEqual(await q("type=document"), ["w2", "w3"], "type is inferContentType, not a tag");
   assert.deepEqual(await q(`author=${encodeURIComponent(MEMBER.toUpperCase())}`), ["w2"]);
-  assert.deepEqual(await q(`author=${encodeURIComponent(OWNER)}`), ["w1", "w2", "w4"], "creator OR last writer");
-  assert.deepEqual(await q("author=me"), ["w1", "w2", "w4"], "me = the signed-in account");
+  assert.deepEqual(await q(`author=${encodeURIComponent(OWNER)}`), ["w1", "w4"], "author = the CREATOR only");
+  assert.deepEqual(await q("author=me"), ["w1", "w4"], "me = the signed-in account");
   assert.deepEqual(await q("after=2026-09-21"), ["w3", "w4"]);
   assert.deepEqual(await q("before=2026-08-01"), ["w2"]);
   assert.deepEqual(await q("date=created&after=2026-08-01&before=2026-09-01"), ["w1"]);
@@ -81,6 +82,32 @@ test("filters only narrow: title, type, tag, author, date range", async () => {
   // A filter never widens what a member can read.
   grantUser(MEMBER, "tag", "project", "view");
   assert.deepEqual(ids((await (await get("/search?q=workshop&tag=secret", login(MEMBER))).json()) as Array<any>), []);
+});
+
+test("editor=me matches the opaque last-writer stamp; author= is the creator; non-admins and links cannot probe others", async () => {
+  // The stamp the gateway writes: an opaque id, never an address (w2's legacy email stamp matches nobody).
+  fv.put({ id: "w8", path: "Library/Edited by owner", tags: ["note"], content: "<p>workshop notes edited by the owner</p>", metadata: { prism_creator: MEMBER, prism_last_writer: writerIdFor(OWNER) }, updatedAt: "2026-09-26T10:00:00.000Z" });
+  fv.put({ id: "w9", path: "Library/Edited by member", tags: ["note"], content: "<p>workshop notes edited by the member</p>", metadata: { prism_creator: OWNER, prism_last_writer: writerIdFor(MEMBER) }, updatedAt: "2026-09-27T10:00:00.000Z" });
+  const owner = login(OWNER);
+  const q = async (qs: string, cookie: string | null = owner, headers: Record<string, string> = {}) => ids((await (await get(`/search?q=workshop&${qs}`, cookie ?? undefined, headers)).json()) as Array<any>);
+  assert.deepEqual(await q("editor=me"), ["w8"]);
+  assert.deepEqual(await q("author=me"), ["w1", "w4", "w9"]);
+  assert.deepEqual(await q("author=me&editor=me"), [], "both filters apply");
+  assert.deepEqual(await q(`editor=${encodeURIComponent(MEMBER)}`), ["w9"], "an admin may name another account");
+  // A member: `me` only, and only among what they can view.
+  grantUser(MEMBER, "tag", "note", "view");
+  const member = login(MEMBER);
+  assert.deepEqual(await q("editor=me", member), ["w9"]);
+  assert.deepEqual(await q("author=me", member), ["w2", "w8"]);
+  assert.deepEqual(await q(`editor=${encodeURIComponent(OWNER)}`, member), [], "no oracle for who edited a page");
+  assert.deepEqual(await q(`editor=${writerIdFor(OWNER)}`, member), [], "nor by a raw stamp id");
+  // A link has no "me" and may not filter by anyone.
+  const cap = makeCapability("note", "w8", "view");
+  assert.deepEqual(await q("editor=me", null, { authorization: `Capability ${cap}` }), []);
+  assert.deepEqual(await q(`editor=${encodeURIComponent(OWNER)}`, null, { authorization: `Capability ${cap}` }), []);
+  // What the route can filter by, for clients talking to servers of different ages.
+  assert.deepEqual(await (await get("/search/filters", owner)).json(), { filters: ["author", "editor"], identity: true });
+  assert.deepEqual(await (await get("/search/filters", undefined, { authorization: `Capability ${cap}` })).json(), { filters: ["author", "editor"], identity: false });
 });
 
 test("bounds: empty query, long query, limit, lean rows, invalid filters ignored", async () => {

@@ -7,7 +7,9 @@
  *
  * Query: `q` (≤200 chars, required), `limit` (1–100, default 50), `title=1`
  * (match titles only), `type=document,database` (inferContentType), `tag=a,b`
- * (all required), `author=<email>|me` (prism_creator or prism_last_writer),
+ * (all required), `author=<email>|me` (the CREATOR, `prism_creator`), `editor=me|<email>`
+ * (the LAST EDITOR: the account's opaque writer-stamp id against `prism_last_writer`;
+ * signed-in users only, anyone but an admin may only say `me`),
  * `after`/`before` (YYYY-MM-DD or ISO, inclusive), `date=created` (default:
  * updated), `lean=1` (drop `content` from rows; the snippet still comes back).
  *
@@ -26,6 +28,7 @@ import { effectiveCaps, type Cap, type NoteRef } from "../permissions";
 import { roleAtLeast, roleFloor } from "../roles";
 import { consumeRateLimit } from "../middleware/ratelimit";
 import { forViewer } from "../sharing";
+import { writerIdFor } from "../writer-stamp";
 import { isTrashed } from "@prism/core/pages";
 import { inferContentType } from "@prism/core/content-types";
 import { hasFilters, matchesFilters, MAX_QUERY_LENGTH, parseSearchFilters, queryTerms, searchMatches } from "@prism/core/search";
@@ -63,6 +66,17 @@ function sharedVaultSearch(vaultId: string, q: string, limit: number): Promise<N
   return pending;
 }
 
+/**
+ * What this route can filter by — so a client can tell a server that knows `editor=` from an
+ * older one that would silently ignore it (and hide the control instead of misleading).
+ * `identity` = the caller is a signed-in account ("created / edited by me" mean something).
+ */
+searchApi.get("/search/filters", (c: Context) => {
+  const actor = resolveActor(c);
+  if (actor.kind === "anon") return c.json({ error: "unauthorized" }, 401);
+  return c.json({ filters: ["author", "editor"], identity: actor.kind === "user" });
+});
+
 searchApi.get("/search", async (c: Context) => {
   const actor = resolveActor(c);
   const admin = roleAtLeast(actor.role, "admin");
@@ -86,6 +100,15 @@ searchApi.get("/search", async (c: Context) => {
   // Someone else's address would be an oracle for who created a page (emails are
   // not shown to non-admins): a non-admin may only filter by their own.
   if (filters.author && !admin && (actor.kind !== "user" || filters.author !== actor.email.toLowerCase())) return c.json([]);
+  // `editor` = who last edited. The stamp is an opaque id (writer-stamp.ts), so the address is turned
+  // into that id here. Signed-in users only; anyone but an admin may only ask about themselves (no
+  // oracle for who edited a page), and a raw stamp id from a client is never honoured.
+  if (filters.editor) {
+    if (actor.kind !== "user") return c.json([]);
+    const who = filters.editor === "me" ? actor.email.toLowerCase() : filters.editor;
+    if (!who.includes("@") || (!admin && who !== actor.email.toLowerCase())) return c.json([]);
+    filters.editor = writerIdFor(who);
+  }
   const lean = c.req.query("lean") === "1";
   const terms = queryTerms(q);
   // Filters and the view filter both narrow after the vault answers, so ask for

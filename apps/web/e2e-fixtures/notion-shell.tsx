@@ -31,7 +31,7 @@ const notes: Note[] = [
   { id: "tpl", path: "Templates/Meeting notes", content: "<h2>Agenda</h2><p>Topics to cover.</p>", tags: ["template"], metadata: { type: "document" }, createdAt: recent, updatedAt: recent },
 ];
 // ?authors (NP-SR-04): the agenda was created by someone else and last edited by the owner.
-if (params.has("authors")) notes.find((n) => n.id === "agenda")!.metadata = { ...notes.find((n) => n.id === "agenda")!.metadata, prism_last_writer: "owner@example.test" };
+if (params.has("authors")) notes.find((n) => n.id === "agenda")!.metadata = { ...notes.find((n) => n.id === "agenda")!.metadata, prism_last_writer: "u_00000000000000aa" };
 // Metadata written by the app survives reloads ("another device" = a fresh page).
 const savedMeta = JSON.parse(sessionStorage.getItem("notion-shell-meta") ?? "{}") as Record<string, Record<string, unknown>>;
 for (const n of notes) if (savedMeta[n.id]) n.metadata = { ...n.metadata, ...savedMeta[n.id] };
@@ -118,6 +118,8 @@ window.fetch = async (input, init) => {
   }
   if (path === "/api/tree") controls.treeReads++;
   if (path === "/api/tree") return Response.json(notes.filter((n) => !controls.hidden.includes(n.id)).map((n) => ({ id: n.id, path: n.path, tags: n.tags, updatedAt: n.updatedAt, type: n.metadata?.type, prismType: n.metadata?.prism_type, ...(typeof n.metadata?.icon === "string" ? { icon: n.metadata.icon } : {}) })));
+  // What the search route can filter by (absent on an older server: ?oldserver).
+  if (path === "/api/search/filters") return params.has("oldserver") ? Response.json({ error: "not_found" }, { status: 404 }) : Response.json({ filters: ["author", "editor"], identity: !params.has("linkviewer") });
   if (path === "/api/search") {
     controls.searches.push(url.search);
     if (controls.searchHold) await new Promise<void>((resolve) => controls.searchWaiting.push(resolve));
@@ -125,6 +127,9 @@ window.fetch = async (input, init) => {
     const terms = queryTerms(q);
     const f = parseSearchFilters((k) => url.searchParams.get(k) ?? undefined);
     if (f.author === "me") f.author = "owner@example.test";
+    // The last-writer stamp is an opaque id, never an address; an older server knows no `editor`.
+    if (f.editor === "me") f.editor = "u_00000000000000aa";
+    if (params.has("oldserver")) delete f.editor;
     // Vault scope arrives as a header; the "research" vault holds one other page.
     const vault = new Headers(init?.headers).get("X-Prism-Vault");
     if (vault === "research") return Response.json(terms.every((t) => "workshop field study".includes(t)) ? [{ id: "study", path: "Studies/Workshop field study", tags: [], metadata: { type: "document" }, createdAt: recent, updatedAt: recent, _matches: searchMatches({ id: "study", path: "Studies/Workshop field study", content: "<p>A study of the workshop.</p>" }, terms) }] : []);

@@ -8,7 +8,7 @@ import { Spinner } from "../ui/Spinner";
 import { searchModeLabel, searchResultGroup } from "./searchPresentation";
 import { Highlighted, resultHighlights } from "./searchHighlight";
 import { useMemo, useState } from "react";
-import { EMPTY_FILTERS, SearchFilterBar, toSearchFilters } from "./searchFilters";
+import { EMPTY_FILTERS, SearchFilterBar, toSearchFilters, useSearchIdentityFilters } from "./searchFilters";
 import { rememberSearch } from "./searchRecents";
 import { useAgentChatStore } from "../../lib/agent/chatStore";
 
@@ -16,12 +16,13 @@ interface SearchPanelProps { query: string; onClose: () => void }
 
 export function SearchPanel({ query, onClose }: SearchPanelProps) {
   const [filters, setFilters] = useState(EMPTY_FILTERS);
-  const wire = useMemo(() => toSearchFilters(filters), [filters]);
+  const identity = useSearchIdentityFilters();
+  const wire = useMemo(() => toSearchFilters(filters, identity), [filters, identity]);
   const { data: results, isFetching, isError, mode, refetch } = useVaultSearch(query, wire);
   const openTab = useUIStore((s) => s.openTab);
   const scope = useAgentChatStore((s) => s.scope);
   return <section aria-label="Search results" className="min-w-0 flex-1 overflow-auto">
-    {query.trim() && <SearchFilterBar value={filters} onChange={setFilters} />}
+    {query.trim() && <SearchFilterBar value={filters} identity={identity} onChange={setFilters} />}
     <div role="status" className="px-3 py-3 text-xs" style={{ color: "var(--text-muted)" }}>
       {!query.trim() ? "Search your workspace" : isFetching ? "Searching…" : isError ? "Search unavailable" : `${results?.length ?? 0} results shown · ${searchModeLabel(mode)}`}
     </div>

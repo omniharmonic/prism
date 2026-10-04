@@ -20,7 +20,7 @@ import { buildTransformPrompt, hostServiceErrorText, runWikilinkJobToEnd, wikili
 import { addSyncConfig, resolveWikilinks } from "../../lib/host/vaultOps";
 import { searchModeLabel, searchResultGroup } from "../navigation/searchPresentation";
 import { Highlighted, resultHighlights } from "../navigation/searchHighlight";
-import { EMPTY_FILTERS, SearchFilterBar, activeFilterCount, toSearchFilters, type SearchFilterState } from "../navigation/searchFilters";
+import { EMPTY_FILTERS, SearchFilterBar, activeFilterCount, toSearchFilters, useSearchIdentityFilters, type SearchFilterState } from "../navigation/searchFilters";
 import { recentSearches, rememberSearch } from "../navigation/searchRecents";
 import { useAgentChatStore } from "../../lib/agent/chatStore";
 import type { Range } from "../../lib/search/match";
@@ -58,7 +58,8 @@ export function CommandBar() {
   const [filter, setFilter] = useState<"all" | "notes" | "messages" | "commands">("all");
   const [debouncedQuery] = useDebounce(query, 200);
   const [searchFilters, setSearchFilters] = useState<SearchFilterState>(EMPTY_FILTERS);
-  const wireFilters = useMemo(() => toSearchFilters(searchFilters), [searchFilters]);
+  const searchIdentity = useSearchIdentityFilters();
+  const wireFilters = useMemo(() => toSearchFilters(searchFilters, searchIdentity), [searchFilters, searchIdentity]);
   const searchScope = useAgentChatStore((s) => s.scope);
   const [recentQueries, setRecentQueries] = useState<string[]>([]);
   // Vault scope (NP-SR-04): the vaults this account can reach on this server.
@@ -533,8 +534,8 @@ export function CommandBar() {
     {([['all', 'All'], ['notes', 'Notes'], ['messages', 'Messages'], ['commands', 'Commands']] as const).map(([id, label]) =>
       <button key={id} tabIndex={0} type="button" aria-pressed={filter === id} className="focus-ring" onClick={() => { setFilter(id); setSelectedId(null); inputRef.current?.focus({ preventScroll: true }); }}>{label}</button>)}
   </div>;
-  const filterCount = activeFilterCount(searchFilters);
-  const filterBar = filter !== "commands" && <SearchFilterBar value={searchFilters} vaults={searchVaults} onChange={(next) => { setSearchFilters(next); setSelectedId(null); }} />;
+  const filterCount = activeFilterCount(searchFilters, searchIdentity);
+  const filterBar = filter !== "commands" && <SearchFilterBar value={searchFilters} vaults={searchVaults} identity={searchIdentity} onChange={(next) => { setSearchFilters(next); setSelectedId(null); }} />;
   const status = <div className="prism-search-status" role="status">
     <span>{searchFilters.vault ? searchVaults?.find((v) => v.id === searchFilters.vault)?.label ?? "Another vault" : "Current workspace"}</span><span>{!query.trim() ? "Search notes or choose an action" : searchingNow ? "Searching…" : searchFailed ? "Search unavailable" : `${vaultItems.length} results shown · ${searchModeLabel(searchMode)}${filterCount ? ` · ${filterCount} filter${filterCount === 1 ? "" : "s"}` : ""}`}</span>
   </div>;

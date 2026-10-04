@@ -28,7 +28,7 @@ import type {
 } from "@prism/core/shell";
 import { VaultRequestError, HistoryUnavailableError, HistoryConflictError, PropertyConflictError, toNoteVersion } from "@prism/core/shell";
 import type { QueryPage, QuerySpec, SchemaMap, SchemaPatch, TagSchema, PropertyWriteResult } from "@prism/core/shell";
-import { filtersToParams, isCreatedByMe, type SearchFilters } from "@prism/core/search";
+import { filtersToParams, type SearchFilters } from "@prism/core/search";
 import type { PropertyBatchItem, PropertyBatchResult, CsvImportRequest, CsvImportResponse, RemoveValuesResult } from "@prism/core/database";
 import { agentScope, apiBase, DEFAULT_VAULT_NAME, capabilityHeader, contextHeaders, getMe } from "../config";
 import { retainDraft, enqueue, hasPending, hasPendingFor, noteKey, currentBase, flush, localNote, resolveLocalNoteId, retrySafe, queuedCreates } from "../offline/outbox";
@@ -436,11 +436,29 @@ export async function searchNotes(query: string, filters: SearchFilters = {}, li
     // Vault scope (NP-SR-04): another vault is named by header; the server
     // re-resolves the caller's role and grants for THAT vault. Never cached.
     const rows = (await (await req(`/search?${sp.toString()}`, filters.vault ? { headers: { "X-Prism-Vault": filters.vault }, cache: "no-store" } : undefined)).json()) as Note[];
-    // "Created by me": the server narrowed to created-or-edited by me; keep the pages I created.
-    const mine = filters.createdByMe ? rows.filter((n) => isCreatedByMe(n, getMe()?.email)) : rows;
-    return filters.vault ? mine.map((n) => ({ ...n, _vault: filters.vault })) : mine;
+    return filters.vault ? rows.map((n) => ({ ...n, _vault: filters.vault })) : rows;
   } catch (error) {
     if (error instanceof VaultRequestError && [404, 405, 501].includes(error.status)) return null;
+    throw error;
+  }
+}
+
+/**
+ * Which identity filters ("Created by me" / "Edited by me") the search can answer for THIS
+ * viewer. The server does both filters (`author=me` = creator, `editor=me` = last editor; the
+ * client never narrows rows itself — after the server's 100-row cap that would drop results).
+ * A share-link viewer has no "me": neither. An older server (no `/search/filters`) knows no
+ * `editor=` and would silently ignore it: "Edited by me" is not offered.
+ */
+export async function searchFilterSupport(): Promise<{ createdBy: boolean; editedBy: boolean }> {
+  if (Object.keys(capabilityHeader()).length || !getMe()) return { createdBy: false, editedBy: false };
+  try {
+    const body = (await (await req("/search/filters", { cache: "no-store" })).json()) as { filters?: unknown; identity?: unknown };
+    const filters = Array.isArray(body.filters) ? body.filters : [];
+    const identity = body.identity === true;
+    return { createdBy: identity && filters.includes("author"), editedBy: identity && filters.includes("editor") };
+  } catch (error) {
+    if (error instanceof VaultRequestError && [401, 403, 404, 405, 501].includes(error.status)) return { createdBy: true, editedBy: false };
     throw error;
   }
 }
