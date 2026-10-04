@@ -228,9 +228,12 @@ interface ListItemNode {
   nextSibling: unknown;
   getAttribute(name: string): string | null;
 }
-interface TurndownLike {
-  addRule(key: string, rule: { filter: string | ((node: ListItemNode) => boolean); replacement(content: string, node: ListItemNode, options: { bulletListMarker?: string }): string }): unknown;
+interface ListItemRule {
+  filter: string;
+  replacement(content: string, node: ListItemNode, options: { bulletListMarker?: string }): string;
 }
+/** Any turndown service: only `addRule` is used (typed loosely — the server and the web shell bring their own turndown types). */
+interface TurndownLike { addRule(key: string, rule: never): unknown }
 
 /** `text` without its leading and trailing line breaks (linear; no regex over content). */
 function trimLineBreaks(text: string): string {
@@ -258,7 +261,7 @@ function leadingLiteralBox(body: string): string | null {
  *    marker `[x] ` / `[ ] ` keeps it unescaped.
  */
 export function addTaskListRule<T extends TurndownLike>(service: T): T {
-  service.addRule("prismListItem", {
+  const rule: ListItemRule = {
     filter: "li",
     replacement(content, node, options) {
       const bullet = options.bulletListMarker ?? "*";
@@ -285,6 +288,7 @@ export function addTaskListRule<T extends TurndownLike>(service: T): T {
       const indent = `\n${" ".repeat(prefix.length)}`;
       return prefix + body.split("\n").join(indent) + (node.nextSibling ? "\n" : "");
     },
-  });
+  };
+  service.addRule("prismListItem", rule as never);
   return service;
 }
