@@ -90,6 +90,35 @@ html.light {
   box-shadow: none;
 }
 button, input, select, textarea { font: inherit; }
+/* ── Drop-down selects: ONE rule for every native <select> ──
+   Desktop Safari draws a select as a macOS pop-up button, 20–23 px tall whatever `height` /
+   `min-height` its surface gives it. `appearance: none` hands the box back to CSS — the heights,
+   borders and backgrounds the surfaces already declare now apply in every engine — and the
+   chevron is drawn here. Still a native select: the menu, typing and the keyboard are the
+   browser's. The chevron and its room are `!important` because surfaces set `background:` /
+   `padding:` shorthands (and inline styles) that would otherwise erase them; everything else
+   stays the surface's. List boxes (`multiple`, `size`) keep their native look. */
+select:not([multiple]):not([size]) {
+  -webkit-appearance: none;
+  appearance: none;
+  padding-inline-end: 26px !important;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' fill='none' stroke='%23888888' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m3 4.5 3 3 3-3'/%3E%3C/svg%3E") !important;
+  background-repeat: no-repeat !important;
+  background-position: right 8px center !important;
+  background-size: 12px 12px !important;
+  text-overflow: ellipsis;
+}
+[dir="rtl"] select:not([multiple]):not([size]) { background-position: left 8px center !important; }
+:where(select):disabled { opacity: .5; cursor: not-allowed; }
+/* Forced colours: the system draws the control and its arrow (a background image may not show). */
+@media (forced-colors: active) {
+  select:not([multiple]):not([size]) {
+    -webkit-appearance: auto;
+    appearance: auto;
+    padding-inline-end: 4px !important;
+    background-image: none !important;
+  }
+}
 button:not(:disabled), [role="button"] { cursor: pointer; }
 button:disabled { cursor: not-allowed; }
 :where(button, a, input, select, textarea, [tabindex]):focus-visible {

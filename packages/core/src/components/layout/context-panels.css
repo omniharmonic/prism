@@ -53,7 +53,7 @@
   .prism-context-metadata input, .prism-context-metadata select { font-size: 16px; }
 }
 
-.prism-context-metadata select { appearance: none; padding-right: 28px; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' fill='none' stroke='%23888888'%3E%3Cpath d='m3 4 3 3 3-3'/%3E%3C/svg%3E"); background-repeat: no-repeat; background-position: right 9px center; }
+/* (The chevron of a select is the shared rule in styles/workspace.css.) */
 .prism-context-switch { min-width: 44px; min-height: 44px; display: grid; place-items: center; }
 .prism-context-switch-track { display: block; width: 28px; height: 16px; border-radius: 9px; padding: 2px; }
 .prism-context-switch-track > span { display: block; width: 12px; height: 12px; border-radius: 50%; background: white; }

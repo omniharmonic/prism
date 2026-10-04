@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { ChevronDown, FileText, Search, X } from "lucide-react";
+import { FileText, Search, X } from "lucide-react";
 import { useVaultClient } from "../../data/VaultClientContext";
 import { useAgentChatStore } from "../../lib/agent/chatStore";
 import type { Note, NoteTreeEntry } from "../../lib/types";
@@ -69,7 +69,7 @@ function Drawer({ onAddNote, canvasNoteIds, onClose, scope }: Props & { scope: s
     <div className="space-y-3 p-4">
       <p className="prism-canvas-copy-notice text-xs text-[var(--text-secondary)]">Cards copy a title and properties into this canvas. Copy preview also includes saved text, visible to everyone with canvas access.</p>
       <label className="flex min-h-11 items-center gap-2 rounded-lg border border-[var(--glass-border)] px-3"><Search size={16}/><span className="sr-only">Find canvas notes</span><input autoFocus value={query} onChange={e=>{setQuery(e.target.value);setLimit(50);}} placeholder="Find a note…" className="min-w-0 flex-1 bg-transparent py-2 text-base outline-none"/></label>
-      <div className="prism-canvas-filter"><select aria-label="Filter canvas notes by tag" value={tag} onChange={e=>{setTag(e.target.value);setLimit(50);}} className={control+" w-full bg-[var(--bg-surface)]"}><option value="">All tags</option>{tags.map(t=><option key={t} value={t}>{t}</option>)}</select><ChevronDown aria-hidden="true" size={15}/></div>
+      <div className="prism-canvas-filter"><select aria-label="Filter canvas notes by tag" value={tag} onChange={e=>{setTag(e.target.value);setLimit(50);}} className={control+" w-full bg-[var(--bg-surface)]"}><option value="">All tags</option>{tags.map(t=><option key={t} value={t}>{t}</option>)}</select></div>
       {selected.size > 0 && <button className={control+" w-full"} disabled={busy || notes.isFetching || notes.isError} onClick={()=>void add([...selected])}>{busy ? "Adding…" : `Add ${selected.size} selected`}</button>}
       {error && <p role="alert" className="text-sm">{error}</p>}
     </div>
