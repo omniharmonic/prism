@@ -26,6 +26,7 @@ import { OptionChip, PropertyDisplay, PropertyValue } from "./PropertyValue";
 import { Popover } from "./Popover";
 import { applyRank, reorderRank, type DatabaseView } from "./config";
 import { coverForNote, firstFileUrl } from "../../lib/media/attachments";
+import { walkTab } from "../../lib/a11y/tabWalk";
 
 export interface ViewContext {
   view: DatabaseView;
@@ -213,10 +214,19 @@ function HeaderCell({ def, ctx, width, onResize }: { def: PropertyDef; ctx: View
 /**
  * Spreadsheet-style keyboard navigation (NP-DB-03): arrow keys move between the
  * cells of a table body; Enter on a cell edits it (the cell's own button), Esc
- * leaves the editor and returns to the cell, Tab walks cells in reading order
- * (native tab order). Keys typed inside an editor or a popover are never taken.
+ * leaves the editor and returns to the cell, Tab / Shift+Tab walk the table's
+ * stops in reading order — handled here (`walkTab`), because Safari's default Tab
+ * skips buttons: from a cell's text editor it used to commit and leave the table.
+ * Moving focus blurs the editor, which commits it. At the table's first / last
+ * stop the key is the browser's (Tab leaves; never a trap). Other keys typed
+ * inside an editor or a popover are never taken.
  */
 function onGridKey(e: React.KeyboardEvent<HTMLTableElement>) {
+  if (e.key === "Tab") {
+    // Portaled popovers bubble here through React but are not inside the table: theirs to handle.
+    if (e.currentTarget.contains(e.target as Node)) walkTab(e, e.currentTarget);
+    return;
+  }
   if (e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return;
   const dir = e.key === "ArrowLeft" ? [0, -1] : e.key === "ArrowRight" ? [0, 1] : e.key === "ArrowUp" ? [-1, 0] : e.key === "ArrowDown" ? [1, 0] : null;
   if (!dir) return;
