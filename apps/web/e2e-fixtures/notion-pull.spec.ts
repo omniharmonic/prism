@@ -1,4 +1,5 @@
 import { test, expect, type Locator, type Page } from "@playwright/test";
+import { touchDrag, touchRelease } from "./browser-compat";
 
 /**
  * NP-MB-06 — phone gestures with synthesized touch events:
@@ -12,17 +13,9 @@ async function drag(page: Page, target: Locator, dx: number, dy: number, opts: {
   const box = (await target.boundingBox())!;
   const x = box.x + box.width / 2;
   const y = box.y + (opts.yOffset ?? Math.min(box.height / 2, 24));
-  await page.evaluate(({ x, y, dx, dy, hold }) => {
-    const el = document.elementFromPoint(x, y) ?? document.body;
-    const touch = (cx: number, cy: number) => new Touch({ identifier: 1, target: el, clientX: cx, clientY: cy });
-    const fire = (type: string, cx: number, cy: number, end = false) =>
-      el.dispatchEvent(new TouchEvent(type, { bubbles: true, cancelable: true, touches: end ? [] : [touch(cx, cy)], changedTouches: [touch(cx, cy)] }));
-    fire("touchstart", x, y);
-    for (let i = 1; i <= 8; i++) fire("touchmove", x + (dx * i) / 8, y + (dy * i) / 8);
-    if (!hold) fire("touchend", x + dx, y + dy, true);
-  }, { x, y, dx, dy, hold: !!opts.hold });
+  await touchDrag(page, { x, y, dx, dy, hold: !!opts.hold });
 }
-const release = (target: Locator) => target.evaluate((el) => el.dispatchEvent(new TouchEvent("touchend", { bubbles: true, touches: [], changedTouches: [] })));
+const release = (target: Locator) => touchRelease(target);
 const ptr = (scope: Page | Locator) => scope.getByTestId("pull-to-refresh");
 const said = (scope: Page | Locator) => ptr(scope).locator(".prism-ptr-status");
 

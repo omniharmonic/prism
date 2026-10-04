@@ -1,4 +1,5 @@
 import { test, expect, type Page, type Locator } from "@playwright/test";
+import { grantClipboard } from "./browser-compat";
 import { Server } from "@hocuspocus/server";
 import WebSocket from "ws";
 
@@ -319,8 +320,8 @@ test.describe("plain editor block handles", () => {
   });
 
   // NP-ED-02: the block menu is searchable and has Copy and Move to (another page).
-  test("block menu Move to another page", async ({ page, context }) => {
-    await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+  test("block menu Move to another page", async ({ page, context, browserName }) => {
+    await grantClipboard(context, browserName);
     let gutter = await gutterFor(page, "Echo quote");
     await gutter.getByRole("button", { name: /Drag to move/ }).click();
     const menu = page.getByRole("menu", { name: "Block actions" });

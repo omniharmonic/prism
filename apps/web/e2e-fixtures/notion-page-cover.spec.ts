@@ -71,7 +71,11 @@ test("cover renders cropped on phone and in dark mode; read-only has no controls
   const cover = page.locator(".document-cover");
   await expect(cover.locator("img")).toBeVisible();
   const box = (await cover.boundingBox())!;
-  expect(box.width).toBeGreaterThanOrEqual(388); // edge to edge
+  // Edge to edge of the page's scroller. (Desktop WebKit at this width draws a classic 10px
+  // scrollbar beside the content, where Chromium and a phone overlay it: the edge is the scroller's.)
+  const room = await cover.evaluate((el) => el.parentElement!.clientWidth);
+  expect(room).toBeGreaterThanOrEqual(380);
+  expect(box.width).toBeGreaterThanOrEqual(room - 2);
   expect(box.height).toBe(132);
   await expect(cover.locator("img")).toHaveCSS("object-fit", "cover");
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);

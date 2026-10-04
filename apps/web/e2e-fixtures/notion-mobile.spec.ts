@@ -1,20 +1,12 @@
 import { test, expect, type Page } from "@playwright/test";
+import { touchDrag } from "./browser-compat";
 
 /** Wave 2E · NP-MB-06 edge swipe (synthetic touch events; the visible Back and
  *  Browse buttons stay the alternatives). */
 test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
 
 async function swipe(page: Page, fromX: number, toX: number, y = 420) {
-  await page.evaluate(({ fromX, toX, y }) => {
-    const target = document.elementFromPoint(fromX, y) ?? document.body;
-    const touch = (x: number) => new Touch({ identifier: 1, target, clientX: x, clientY: y });
-    target.dispatchEvent(new TouchEvent("touchstart", { bubbles: true, touches: [touch(fromX)], changedTouches: [touch(fromX)] }));
-    for (let i = 1; i <= 6; i++) {
-      const x = fromX + ((toX - fromX) * i) / 6;
-      target.dispatchEvent(new TouchEvent("touchmove", { bubbles: true, touches: [touch(x)], changedTouches: [touch(x)] }));
-    }
-    target.dispatchEvent(new TouchEvent("touchend", { bubbles: true, touches: [], changedTouches: [touch(toX)] }));
-  }, { fromX, toX, y });
+  await touchDrag(page, { x: fromX, y, dx: toX - fromX, steps: 6, cancelable: false });
 }
 
 test("edge swipe goes back, else opens the drawer; mid-screen swipes are left to the page", async ({ page }) => {

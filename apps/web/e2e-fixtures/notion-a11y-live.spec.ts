@@ -1,4 +1,5 @@
 import { test, expect, type Page } from "@playwright/test";
+import { grantClipboard } from "./browser-compat";
 
 /**
  * NP-AX-03 (live regions): outcomes that happen without a focus change are in a live region
@@ -30,8 +31,8 @@ test.describe("live regions announce async outcomes", () => {
     await context.setOffline(false);
   });
 
-  test("moved to Trash (with Undo) and Link copied", async ({ page, context }) => {
-    await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+  test("moved to Trash (with Undo) and Link copied", async ({ page, context, browserName }) => {
+    await grantClipboard(context, browserName);
     await page.goto("/e2e-fixtures/pages-nav.html");
     const nav = page.locator(".workspace-navigation").first();
     await nav.getByRole("button", { name: "Page actions for Plan", exact: true }).click();
@@ -46,8 +47,8 @@ test.describe("live regions announce async outcomes", () => {
     await expect(nav.getByRole("button", { name: "Plan", exact: true })).toBeVisible();
   });
 
-  test("share dialog: copying a link is announced", async ({ page, context }) => {
-    await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+  test("share dialog: copying a link is announced", async ({ page, context, browserName }) => {
+    await grantClipboard(context, browserName);
     await page.goto("/e2e-fixtures/sharing.html?page");
     await page.getByRole("button", { name: "Share fixture", exact: true }).click();
     const dialog = page.getByRole("dialog", { name: "Share document" });

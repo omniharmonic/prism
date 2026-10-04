@@ -1,4 +1,5 @@
 import { test, expect, type Page } from "@playwright/test";
+import { grantClipboard } from "./browser-compat";
 
 /** Wave 2B editor depth: code blocks (ED-11), images (ED-12), TOC (ED-19), find & replace (ED-23). */
 const SHOTS = process.env.PRISM_EDITOR_SHOTS;
@@ -11,8 +12,8 @@ async function clickInto(page: Page, text: string) {
   await expect.poll(() => page.evaluate(() => (document.querySelector(".tiptap") as any).editor.state.selection.$from.parent.textContent)).toBe(text);
 }
 
-test("code block language picker, copy, wrap", async ({ page, context }) => {
-  await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+test("code block language picker, copy, wrap", async ({ page, context, browserName }) => {
+  await grantClipboard(context, browserName);
   await open(page, `?content=${enc('<pre><code class="language-javascript">const answer = 42;\nfunction go() { return answer; }</code></pre><p>after</p>')}`);
   const block = page.locator(".prism-code-block");
   await expect(block).toBeVisible();

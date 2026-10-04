@@ -1,4 +1,5 @@
 import { test, expect, type CDPSession, type Locator, type Page } from "@playwright/test";
+import { chromiumOnly } from "./browser-compat";
 
 /**
  * NP-AX-08 — IME composition (Japanese/Chinese input, dictation).
@@ -31,7 +32,8 @@ async function newParagraph(page: Page) {
 const menus = (page: Page) => page.locator('[role="listbox"][aria-label="Insert block"], [role="listbox"][aria-label="Mention a person, page or date"], [role="listbox"][aria-label="Link to a document"]');
 
 test.describe("IME composition", () => {
-  test("slash, @ and [[ menus stay closed mid-composition; nothing is inserted twice", async ({ page }) => {
+  test("slash, @ and [[ menus stay closed mid-composition; nothing is inserted twice", async ({ page, browserName }) => {
+    chromiumOnly(browserName, "the composition is synthesised with CDP Input.imeSetComposition");
     await page.goto("/e2e-fixtures/notion-mentions.html");
     const body = page.locator(".ProseMirror").first();
     await expect(body).toBeVisible();
@@ -68,7 +70,8 @@ test.describe("IME composition", () => {
 
   // Review fix 1: the trigger may be PRODUCED by a composition (Japanese IME in half-width mode, some
   // Android keyboards). It must not open the menu while composing — and must open it once committed.
-  test("a \"/\" or \"[[\" committed by a composition opens its menu", async ({ page }) => {
+  test("a \"/\" or \"[[\" committed by a composition opens its menu", async ({ page, browserName }) => {
+    chromiumOnly(browserName, "the composition is synthesised with CDP Input.imeSetComposition");
     await page.goto("/e2e-fixtures/notion-mentions.html");
     const body = page.locator(".ProseMirror").first();
     await expect(body).toBeVisible();
@@ -90,7 +93,8 @@ test.describe("IME composition", () => {
     }
   });
 
-  test("Markdown input rules do not fire mid-composition", async ({ page }) => {
+  test("Markdown input rules do not fire mid-composition", async ({ page, browserName }) => {
+    chromiumOnly(browserName, "the composition is synthesised with CDP Input.imeSetComposition");
     await page.goto("/e2e-fixtures/editor-blocks.html");
     await newParagraph(page);
     const cdp = await page.context().newCDPSession(page);
@@ -174,7 +178,8 @@ test.describe("IME composition", () => {
     await expect(mine.locator("[data-comment-id]").first()).toContainText("返信");
   });
 
-  test("autosave and a remote update do not interrupt a composition", async ({ page }) => {
+  test("autosave and a remote update do not interrupt a composition", async ({ page, browserName }) => {
+    chromiumOnly(browserName, "the composition is synthesised with CDP Input.imeSetComposition");
     await page.goto("/e2e-fixtures/workspace.html?session&events");
     await page.evaluate(() => (window as any).prismFixtureUI.getState().openTab("field-notes", "Field notes", "document"));
     const body = page.locator(".tiptap");

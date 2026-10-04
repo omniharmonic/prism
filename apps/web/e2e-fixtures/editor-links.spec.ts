@@ -1,4 +1,5 @@
-import { test, expect, type Page } from "@playwright/test";
+import { type Page } from "@playwright/test";
+import { test, expect, lineEndKey } from "./browser-compat";
 
 /**
  * NP-ED-18 — links in the editor, plain and live:
@@ -98,7 +99,7 @@ test("hovering a link shows its address with Open, Edit and Remove; chips and wi
   expect(await html(page)).toContain("Read the docs first.");
 });
 
-test("keyboard: the caret in a link shows the card; ⌘K moves into it, Tab walks on, Esc returns to the text", async ({ page }) => {
+test("keyboard: the caret in a link shows the card; ⌘K moves into it, Tab walks on, Esc returns to the text", async ({ page, browserName }) => {
   await page.setViewportSize({ width: 1280, height: 900 });
   await open(page);
   // A click in the link places the caret (it does not navigate) and the card follows.
@@ -125,7 +126,7 @@ test("keyboard: the caret in a link shows the card; ⌘K moves into it, Tab walk
   // Leaving the link with the arrow keys leaves no card behind.
   await page.getByRole("link", { name: "the docs" }).click();
   await expect(card(page)).toBeVisible();
-  await page.keyboard.press("End");
+  await page.keyboard.press(lineEndKey(browserName));
   await expect(card(page)).toHaveCount(0);
 });
 

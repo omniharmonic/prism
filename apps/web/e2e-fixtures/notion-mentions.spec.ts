@@ -23,7 +23,7 @@ async function typeAtEnd(page: Page, editor: ReturnType<Page["locator"]>, text: 
 
 const saved = (page: Page, id: string) => page.evaluate((noteId) => (window as any).prismFixtureNotes.find((n: any) => n.id === noteId).content as string, id);
 
-test("@ menu offers people, pages, dates", async ({ page }) => {
+test("@ menu offers people, pages, dates", async ({ page, browserName }) => {
   const editor = await openEditor(page);
   await typeAtEnd(page, editor, "Owner: @");
   const menu = page.getByRole("listbox", { name: "Mention a person, page or date" });
@@ -68,6 +68,8 @@ test("@ menu offers people, pages, dates", async ({ page }) => {
   await expect(menu).toHaveCount(0);
 
   // Not mid-IME composition: the trigger stays closed while composing.
+  // (Composition is synthesised over CDP, so this last step runs on Chromium only.)
+  if (browserName !== "chromium") return;
   await page.keyboard.type(" ");
   const cdp = await page.context().newCDPSession(page);
   await cdp.send("Input.imeSetComposition", { text: "@か", selectionStart: 2, selectionEnd: 2 });

@@ -1,4 +1,5 @@
 import { test, expect, type Page } from "@playwright/test";
+import { grantClipboard } from "./browser-compat";
 import { serveAttachments, transferRequests, transferUrl, unzip } from "./transfer-helpers";
 
 /** Pages & navigation (nested pages, move, Trash, page menu, synced favorites/recents, breadcrumbs, templates). */
@@ -217,8 +218,8 @@ test("page ⋯ menu: Open in new tab opens the page's own address", async ({ pag
   expect((await popup).url()).toMatch(/\/page\/prism$/);
 });
 
-test("page ⋯ menu: favorite, duplicate, copy link, lock, export and history", async ({ page, context }) => {
-  await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+test("page ⋯ menu: favorite, duplicate, copy link, lock, export and history", async ({ page, context, browserName }) => {
+  await grantClipboard(context, browserName);
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto(url("?open=prism"));
   await expect(page.getByRole("heading", { name: "Rename Prism", exact: true })).toBeVisible();

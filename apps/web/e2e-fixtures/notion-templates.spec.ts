@@ -277,7 +277,7 @@ for (const theme of ["", "&dark"]) {
     await expect(g).toBeVisible();
     const box = (await g.boundingBox())!;
     expect(box.width).toBe(390);
-    expect(box.height).toBe(844);
+    expect(Math.round(box.height)).toBe(844); // WebKit lays out in 1/64 px: 843.98
     // No sideways scrolling, and every action is a 44 px target.
     expect(await g.evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(true);
     for (const name of ["Use Prism", "Edit Prism", "Rename Prism", "Delete Prism"]) {

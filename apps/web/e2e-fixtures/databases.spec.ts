@@ -1,4 +1,5 @@
-import { test, expect, type Page } from "@playwright/test";
+import { type Page } from "@playwright/test";
+import { test, expect } from "./browser-compat";
 
 const fx = (page: Page) => page.evaluate(() => { const f = (window as any).dbFixture; return { creates: f.creates, schemaWrites: f.schemaWrites }; });
 const writes = (page: Page) => page.evaluate(() => (window as any).dbFixture.writes);

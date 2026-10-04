@@ -1,4 +1,5 @@
 import { test, expect, type Locator, type Page } from "@playwright/test";
+import { touchDrag, touchRelease } from "./browser-compat";
 
 /** Wave 3 gaps #11: swipe actions on list rows on a phone (synthetic touch events).
  *  Inbox rows: left = archive, right = mark read. Page-tree rows: right = favorite,
@@ -15,17 +16,9 @@ async function swipe(page: Page, row: Locator, dx: number, opts: { dy?: number; 
   const box = (await row.boundingBox())!;
   const x = opts.fromX ?? box.x + box.width / 2;
   const y = box.y + Math.min(box.height / 2, 20);
-  await page.evaluate(({ x, y, dx, dy, hold }) => {
-    const target = document.elementFromPoint(x, y) ?? document.body;
-    const touch = (cx: number, cy: number) => new Touch({ identifier: 1, target, clientX: cx, clientY: cy });
-    const fire = (type: string, cx: number, cy: number, end = false) =>
-      target.dispatchEvent(new TouchEvent(type, { bubbles: true, cancelable: true, touches: end ? [] : [touch(cx, cy)], changedTouches: [touch(cx, cy)] }));
-    fire("touchstart", x, y);
-    for (let i = 1; i <= 8; i++) fire("touchmove", x + (dx * i) / 8, y + (dy * i) / 8);
-    if (!hold) fire("touchend", x + dx, y + dy, true);
-  }, { x, y, dx, dy: opts.dy ?? 0, hold: !!opts.hold });
+  await touchDrag(page, { x, y, dx, dy: opts.dy ?? 0, hold: !!opts.hold });
 }
-const release = (_page: Page, row: Locator) => row.evaluate((el) => el.dispatchEvent(new TouchEvent("touchend", { bubbles: true, touches: [], changedTouches: [] })));
+const release = (_page: Page, row: Locator) => touchRelease(row);
 const writes = (page: Page) => page.evaluate(() => (window as any).prismFixtureWrites as Array<Record<string, unknown>>);
 
 test("inbox rows: swipe right marks read, swipe left archives; short or vertical drags do nothing", async ({ page }) => {

@@ -1,4 +1,5 @@
 import { test, expect, type Page } from "@playwright/test";
+import { grantClipboard } from "./browser-compat";
 
 /**
  * NP-AI-03 — Summarize, Draft and Transform a page or a selection through the agent,
@@ -62,8 +63,8 @@ test("summarize page: sources shown, result is a proposal, Insert at top writes 
   await expect(doc(page)).not.toContainText("First point of the summary.");
 });
 
-test("copy and discard leave the page untouched", async ({ page, context }) => {
-  await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+test("copy and discard leave the page untouched", async ({ page, context, browserName }) => {
+  await grantClipboard(context, browserName);
   await open(page, "brief");
   const before = await doc(page).innerText();
   await pageAction(page, "Summarize page");
@@ -228,6 +229,9 @@ test("block menu and command bar run the same actions", async ({ page }) => {
   expect((await calls(page))[0]!.prompt).toContain("<selected_text>\nThe team agreed on three milestones and one open risk.\n</selected_text>");
   await panel(page).getByRole("button", { name: "Discard", exact: true }).click();
 
+  // Safari does not move focus to a clicked button, so the editor still holds the selection the
+  // block action made — and ⌘K with a text selection is "add link". Leave the editor first.
+  await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
   await page.keyboard.press("ControlOrMeta+k");
   const search = page.getByRole("dialog", { name: "Search workspace" });
   await search.getByRole("combobox").fill("Summarize Page");
