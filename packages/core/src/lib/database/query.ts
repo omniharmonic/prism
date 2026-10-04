@@ -529,8 +529,13 @@ export function runQuery(
   if (offset === null) throw new CursorMismatchError();
   const now = opts.now ?? new Date();
   const needle = spec.search?.trim().toLowerCase();
+  // A page TEMPLATE (tag `template`) is a blueprint, not a row: a template of a task is
+  // not a task. It is a row only for a view that asks for templates by tag. (One rule for
+  // the server's /api/query and the client fallback; `lib/pages/model.ts` TEMPLATE_TAG.)
+  const wantsTemplates = spec.tags.includes("template");
   const matched = notes.filter(
     (n) =>
+      (wantsTemplates || !(n.tags ?? []).includes("template")) &&
       spec.tags.every((t) => (n.tags ?? []).includes(t)) &&
       matchesFilter(n, spec.filter, now, spec.tzOffset ?? 0) &&
       (!needle || matchesSearch(n, needle, spec.fields)),

@@ -726,8 +726,12 @@ databasesApi.post("/query", async (c) => {
     }
     return { ...n, metadata: out };
   };
+  // Nor is a page TEMPLATE a row of a view that did not ask for templates (the engine
+  // has the same rule; here it also keeps templates out of the scan cap).
+  const wantsTemplates = spec.tags.includes("template");
   for (const n of notes) {
     if (!wantsTrash && (n.tags ?? []).includes("prism-trashed")) continue;
+    if (!wantsTemplates && (n.tags ?? []).includes("template")) continue;
     if (mine && !assignedToMe(n.metadata, mine)) continue;
     if (owner) {
       visible.push({ ...present(n), canEdit: true });

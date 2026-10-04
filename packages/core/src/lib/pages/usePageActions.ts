@@ -13,7 +13,6 @@ import type { Note } from "../types";
 import { LOCK_KEY, ORDER_KEY, PAGE_STYLE_KEY, TEMPLATES_FOLDER, duplicateCopy, templateSource, parentOf, referencesAttachments, copyFilesNotice, isLocked, pageStyleOf, pageTitle, type MoveResult } from "./model";
 import { flushPendingSaves } from "../../app/hooks/useAutoSave";
 import { registeredEditor } from "../agent/documentSnapshots";
-import { editorBodyForCopy } from "./liveContent";
 import * as ops from "./ops";
 import { usePagesUI, type PageRef } from "./store";
 
@@ -166,7 +165,7 @@ export function usePageActions() {
         const open = registeredEditor(page.id);
         if (!open?.live) await flushPendingSaves(page.id).catch(() => {});
         const [note, tree] = await Promise.all([client.getNote(page.id, { fresh: true }), client.listTree()]);
-        const content = open?.live ? await editorBodyForCopy(open.editor) : note.content;
+        const content = open?.live ? open.editor.getHTML() : note.content;
         // Someone who may create anywhere keeps templates together; anyone else saves
         // beside the page (where their standing to create most plausibly holds) — the
         // server decides either way.
