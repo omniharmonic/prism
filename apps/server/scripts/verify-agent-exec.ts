@@ -115,6 +115,29 @@ async function main() {
     if ((result.permission_denials ?? []).length > 0) problems.push(`permission denials: ${JSON.stringify(result.permission_denials)}`);
   }
 
+  // ── text-only run (`POST /dispatch {profile: "text"}`): NO tool, NO MCP server ──
+  // The page AI actions (summarize / draft / transform) run like this; the UI tells the
+  // person "the agent was given only this text", so the CLI must really have nothing.
+  const t = startDispatch(entry, { prompt: "Reply with exactly: TEXT_ONLY_OK" }, { outputFormat: "stream-json", textOnly: true });
+  console.log(`\n  text-only dispatch ${t.id} ${t.status}; polling…`);
+  const textDeadline = Date.now() + 180_000;
+  let text = getDispatch(t.id)!;
+  while ((text.status === "running" || text.status === "queued") && Date.now() < textDeadline) {
+    await sleep(2000);
+    text = getDispatch(t.id)!;
+  }
+  const textInit = findInitEvent(text.output);
+  if (text.status !== "done") problems.push(`text-only dispatch ended ${text.status}${text.error ? ` — ${text.error}` : ""} (does this CLI accept an MCP config with no server and no --allowedTools?)`);
+  if (!textInit) problems.push("text-only: no system/init event in the CLI output");
+  else {
+    console.log(`  text-only init tools: ${JSON.stringify(textInit.tools)}`);
+    console.log(`  text-only init MCP servers: ${JSON.stringify(textInit.mcp_servers)}`);
+    if ((textInit.tools ?? []).length > 0) problems.push(`text-only: the run has tools: ${JSON.stringify(textInit.tools)}`);
+    if ((textInit.mcp_servers ?? []).length > 0) problems.push(`text-only: the run lists MCP servers: ${JSON.stringify(textInit.mcp_servers)}`);
+    if (textInit.permissionMode !== "dontAsk") problems.push(`text-only: permissionMode ${textInit.permissionMode}`);
+  }
+  if (!text.output.includes("TEXT_ONLY_OK")) problems.push("text-only: the reply lacks TEXT_ONLY_OK");
+
   if (problems.length) {
     console.log("\n=== FAIL ===");
     for (const p of problems) console.log(`  - ${p}`);

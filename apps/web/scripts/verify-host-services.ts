@@ -126,6 +126,14 @@ const noSleep = async () => {};
   ok("agentText dispatches with profile vault-ro and polls to done");
 }
 {
+  // Review 10: a text-only run asks for the "text" profile (no tools at all) and never names a note.
+  const s = fakeServer((c) => (c.path === "/api/agent/dispatch" ? json(200, { id: "d2", status: "queued" }) : json(200, { status: "done", output: "ok" })));
+  const h = createHttpHostServices({ fetch: s.fetch, sleep: noSleep });
+  await h.agentText("PROMPT", { noteId: "n1", skill: "generate", textOnly: true });
+  assert.deepEqual(s.calls[0]!.body, { prompt: "PROMPT", skill: "generate", profile: "text" }, "text-only: profile text, no noteId");
+  ok("agentText textOnly dispatches with profile text and no note id");
+}
+{
   const s = fakeServer((c) => (c.path === "/api/agent/dispatch" ? json(200, { id: "d2", status: "queued" }) : json(200, { status: "error", error: "boom" })));
   const h = createHttpHostServices({ fetch: s.fetch, sleep: noSleep });
   await assert.rejects(h.agentText("x"), (e: unknown) => e instanceof HostServiceError && e.code === "agent_failed" && e.detail === "boom");

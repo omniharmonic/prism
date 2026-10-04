@@ -41,5 +41,7 @@ export function pathPublicationIncludes(
 ): boolean {
   // A trashed page leaves its folder publication too (review H1).
   if ((note.tags ?? []).includes("prism-trashed")) return false;
+  // A template is a blueprint, never public content — whatever its visibility says.
+  if ((note.tags ?? []).includes("template")) return false;
   return note.metadata?.prism_visibility !== "private" && pathInPrefix(note.path, prefix);
 }

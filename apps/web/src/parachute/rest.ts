@@ -88,6 +88,10 @@ const isOffline = () => typeof navigator !== "undefined" && !navigator.onLine;
 export async function hasPendingWrites(): Promise<boolean> {
   return hasPending(await captureWriteContext());
 }
+/** The same, for ONE note (e.g. "may this page be locked now?"). */
+export async function hasPendingWritesFor(noteId: string): Promise<boolean> {
+  return hasPendingFor(await captureWriteContext(), noteId);
+}
 
 /**
  * Mutation whose JSON response we return (create/update note). When offline or

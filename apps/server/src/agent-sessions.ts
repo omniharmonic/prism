@@ -37,7 +37,7 @@ import { join } from "node:path";
 import { db } from "./db";
 import type { VaultEntry } from "./config";
 import type { Grant } from "./db";
-import { vaultClient, type Note } from "./parachute";
+import { vaultClient, VaultError, type Note } from "./parachute";
 import { effectiveCaps, type NoteRef } from "./permissions";
 import { roleFloor, type Role } from "./roles";
 import { mintVaultToken, revokeVaultToken } from "./mcp-token";
@@ -540,6 +540,37 @@ export class SessionBudgetError extends Error {}
 export class DailyBudgetError extends Error {}
 export class ProfileUnavailableError extends Error {}
 export class NoteForbiddenError extends Error {}
+/** The turn's page is locked and the session could write it around Prism (NP-PG-09). */
+export class NoteLockedError extends Error {}
+export const LOCKED_TURN_MESSAGE = "This page is locked — unlock it or use a read-only session.";
+
+/**
+ * Profiles that write with the VAULT token through the vault's own MCP, where a
+ * page lock (`metadata.prism_locked`, a Prism concept) does not exist. The prism-*
+ * profiles write through the gateway, which refuses a locked page itself.
+ */
+export const bypassesPageLock = (profile: AgentProfile): boolean => profile === "vault-rw" || profile === "skill";
+
+/** The lock could not be read (vault error / timeout): the run is refused, retryable. */
+export class NoteLockUnknownError extends Error {}
+export const LOCK_UNKNOWN_MESSAGE = "Couldn’t check whether this page is locked. Nothing was started — try again.";
+export type AgentLockState = "locked" | "unlocked" | "missing" | "unknown";
+
+/**
+ * Lock state of a note, as far as an agent run is concerned — read from the vault at
+ * the moment the run starts. FAIL CLOSED: only a definite answer lets a write-capable
+ * run start. A note that does not exist (a definite 404) has nothing to protect; any
+ * other read failure is "unknown" and refuses the run.
+ */
+export async function agentNoteLock(vaultId: string, noteId: string): Promise<AgentLockState> {
+  try {
+    const n = await deps.vaultFor(vaultId).getNote(noteId);
+    if (!n) return "missing";
+    return n.metadata?.prism_locked === true ? "locked" : "unlocked";
+  } catch (e) {
+    return e instanceof VaultError && e.status === 404 ? "missing" : "unknown";
+  }
+}
 export class ReadTokenError extends Error {}
 
 /** vault-ro read tokens outlive the turn's 30-min wall clock plus a queue wait;
@@ -715,6 +746,28 @@ export async function startTurn(
   } catch {
     rollback();
     throw new AgentContextError("An attached note is unavailable or your access has changed. Remove it or retry.");
+  }
+  // NP-PG-09: a locked page refuses edits for everyone. A vault-rw turn would write it
+  // with the vault token, around every Prism check — so a turn whose page (the one it
+  // names, or the one the session is bound to) is locked does not run on that profile.
+  // Read HERE, at turn start: locking a page mid-session stops the next turn.
+  // The same holds for every page the turn brings along: attached notes and the
+  // source pages of captured snapshots (the agent is told their ids).
+  if (bypassesPageLock(s.profile)) {
+    const pages = new Set([noteId, s.note_id, ...(req.contextNoteIds ?? []), ...snapshots.map((x) => x.noteId)].filter((x): x is string => !!x));
+    let unknown = false;
+    for (const id of pages) {
+      const state = await agentNoteLock(s.vault_id, id);
+      if (state === "locked") {
+        rollback();
+        throw new NoteLockedError(LOCKED_TURN_MESSAGE);
+      }
+      if (state === "unknown") unknown = true;
+    }
+    if (unknown) {
+      rollback();
+      throw new NoteLockUnknownError(LOCK_UNKNOWN_MESSAGE);
+    }
   }
   if (firstTurn && noteId && s.profile !== "skill") {
     let n: Note | null = null;

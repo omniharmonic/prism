@@ -11,6 +11,9 @@ export interface PageRef {
   title: string;
 }
 
+/** `use` = open the chooser with this template already picked (the gallery's "Use"). */
+export interface PageCreateRequest { folder?: string; template?: boolean; chooser?: boolean; use?: { id: string; title: string } }
+
 export interface PageToast {
   id: number;
   message: string;
@@ -59,8 +62,11 @@ interface PagesUIState {
   openTrash: (open: boolean) => void;
   /** "Add a page inside" / "New page from template": the creation dialog's start state. */
   /** `{}`/`{folder}` = create "Untitled" at once (NP-SB-13); `template`/`chooser` open the dialog. */
-  create: { folder?: string; template?: boolean; chooser?: boolean } | null;
-  openCreate: (create: { folder?: string; template?: boolean; chooser?: boolean } | null) => void;
+  create: PageCreateRequest | null;
+  openCreate: (create: PageCreateRequest | null) => void;
+  /** The Templates gallery (NP-TX-01). */
+  templatesOpen: boolean;
+  openTemplates: (open: boolean) => void;
   /** Phone: the page-actions sheet for this page. */
   actionsFor: PageRef | null;
   openActions: (page: PageRef | null) => void;
@@ -108,6 +114,8 @@ export const usePagesUI = create<PagesUIState>((set, get) => ({
   openTrash: (open) => set({ trashOpen: open }),
   create: null,
   openCreate: (create) => set({ create }),
+  templatesOpen: false,
+  openTemplates: (open) => set({ templatesOpen: open }),
   actionsFor: null,
   openActions: (page) => set({ actionsFor: page }),
 

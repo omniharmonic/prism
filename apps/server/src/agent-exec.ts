@@ -132,7 +132,14 @@ export interface ArgOptions {
   server?: McpServerKind;
   /** `--model` alias (default "sonnet"). Allowlisted: never free text. */
   model?: ClaudeModel;
+  /** A text-only run: NO tool is allowed (no `--allowedTools` at all). The caller
+   *  also hands it an MCP config with no server (`NO_MCP_CONFIG`). */
+  textOnly?: boolean;
 }
+
+/** The MCP config of a text-only run: no server at all (still `--strict-mcp-config`,
+ *  so nothing from the user's or a repo's config loads either). */
+export const NO_MCP_CONFIG = { mcpServers: {} } as const;
 
 /** The claude model aliases a routing choice may name. */
 export const CLAUDE_MODELS = ["sonnet", "opus", "haiku"] as const;
@@ -150,7 +157,8 @@ export function buildClaudeArgs(prompt: string, mcpConfigPath: string, opts: Arg
   const server = opts.server ?? "vault";
   const allowed = opts.allowedTools ?? [server === "prism" ? PRISM_MCP_ALLOW : VAULT_MCP_ALLOW];
   const toolRe = server === "prism" ? PRISM_TOOL_RE : VAULT_TOOL_RE;
-  if (allowed.length === 0 || allowed.some((t) => !toolRe.test(t))) {
+  if (opts.textOnly && opts.allowedTools !== undefined) throw new Error("a text-only run takes no tool allowlist");
+  if (!opts.textOnly && (allowed.length === 0 || allowed.some((t) => !toolRe.test(t)))) {
     throw new Error(`allowedTools may only name the ${server} MCP server or its tools`);
   }
   if (opts.session && !UUID_RE.test(opts.session.id)) throw new Error("session id must be a uuid");
@@ -178,8 +186,9 @@ export function buildClaudeArgs(prompt: string, mcpConfigPath: string, opts: Arg
     "",
     // Auto-approve exactly the vault MCP; dontAsk denies everything else; nobody is prompted.
     // (A comma-joined list is one argv element — verified against CLI 2.1.x.)
-    "--allowedTools",
-    allowed.join(","),
+    // (A text-only run allows nothing: with no MCP server and no built-in tools there is
+    // no tool to name, and dontAsk denies whatever else might appear.)
+    ...(opts.textOnly ? [] : ["--allowedTools", allowed.join(",")]),
     "--permission-mode",
     "dontAsk",
     "--permission-prompts",
@@ -899,6 +908,9 @@ export interface DispatchOptions {
   allowedTools?: readonly string[];
   /** Server-internal: the `--model` alias (interactive routing, parity A). */
   model?: ClaudeModel;
+  /** A text-only run (`profile: "text"`): no MCP server, no tools, the prompt exactly
+   *  as given (no vault preamble, no note id). */
+  textOnly?: boolean;
 }
 
 const dispatches = new Map<string, Dispatch>();
@@ -967,14 +979,15 @@ export function startDispatch(
     runStartedAt: null,
     endedAt: null,
   };
-  const prompt = buildPrompt(req.prompt, d.skill, d.noteId);
+  const prompt = opts.textOnly ? req.prompt : buildPrompt(req.prompt, d.skill, d.noteId);
   dispatches.set(d.id, d);
   let h: RunHandle;
   try {
     h = enqueueRun({
       entry,
       spawner: opts.spawner,
-      args: (mcpPath) => buildClaudeArgs(prompt, mcpPath, { outputFormat: opts.outputFormat, maxBudgetUsd: cfg.maxBudgetUsd, allowedTools: opts.allowedTools, model: opts.model }),
+      ...(opts.textOnly ? { mcpConfig: () => NO_MCP_CONFIG } : {}),
+      args: (mcpPath) => buildClaudeArgs(prompt, mcpPath, { outputFormat: opts.outputFormat, maxBudgetUsd: cfg.maxBudgetUsd, allowedTools: opts.textOnly ? undefined : opts.allowedTools, model: opts.model, textOnly: opts.textOnly }),
       onQueued: (reason) => {
         if (d.status !== "queued") return;
         d.queuedReason = reason;

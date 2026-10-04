@@ -8,7 +8,7 @@ import { queryKeys } from "../../lib/parachute/queries";
 import type { Note, NoteFilters, CreateNoteParams, UpdateNoteParams } from "../../lib/types";
 import { useAgentChatStore } from "../../lib/agent/chatStore";
 import { useLivePollMs } from "../../lib/events/channelStatus";
-import { withoutTrashed } from "../../lib/pages/model";
+import { TEMPLATE_TAG, isTemplateNote, withoutTrashed } from "../../lib/pages/model";
 import { hasFilters, matchesFilters, queryTerms, type SearchFilters } from "../../lib/search/match";
 import { blendResults } from "../../lib/search/blend";
 import { takeFreshRead } from "../../lib/events/freshReads";
@@ -21,8 +21,13 @@ export function useNotes(filters?: NoteFilters) {
     queryKey: queryKeys.vault.notes(filters),
     queryFn: () => client.listNotes(filters),
     // Trashed pages are hidden from every list (owner passthrough and desktop
-    // return them; the gateway already drops them for everyone else).
-    select: withoutTrashed,
+    // return them; the gateway already drops them for everyone else). And a list BY TAG
+    // never shows a page TEMPLATE as one of that tag's notes (a template of a task is not
+    // a task) — unless the list asks for templates.
+    select: (list: Note[]) => {
+      const live = withoutTrashed(list);
+      return filters?.tag && filters.tag !== TEMPLATE_TAG ? live.filter((n) => !isTemplateNote(n)) : live;
+    },
   });
 }
 

@@ -1,3 +1,4 @@
+import { TEMPLATE_TAG, isTemplateNote } from "../../lib/pages/model";
 import "./boards/BoardWorkspace.css";
 import { dueSummary } from "../../lib/database/dates";
 import "../database/database.css";
@@ -130,7 +131,8 @@ function Board({
         limit: 2000,
       });
       if (!current()) throw new Error("Workspace changed");
-      return result;
+      // A page TEMPLATE is a blueprint, never a card (a template of a task is not a task).
+      return source?.tags?.[0] === TEMPLATE_TAG ? result : result.filter((n) => !isTemplateNote(n));
     },
     retry: false,
   });

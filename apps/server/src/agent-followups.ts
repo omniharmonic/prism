@@ -11,6 +11,8 @@ import {
   startTurn,
   validContextNoteIds,
   TurnConflictError,
+  NoteLockedError,
+  NoteLockUnknownError,
 } from "./agent-sessions";
 import {
   canonicalSnapshot,
@@ -299,6 +301,7 @@ export async function drainFollowups(sessionId: string) {
         db.prepare(
           "UPDATE agent_followups SET status='waiting',updated_at=? WHERE id=?",
         ).run(Date.now(), row.id);
+      else if (e instanceof NoteLockedError || e instanceof NoteLockUnknownError) block(e.message);
       else
         block(
           "Could not start this message. Review its sources, budget and permissions before retrying.",

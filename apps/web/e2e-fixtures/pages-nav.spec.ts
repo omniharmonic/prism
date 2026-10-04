@@ -369,16 +369,18 @@ test("New page from template copies the template's body, properties and tags", a
   await nav(page).getByRole("button", { name: "New page from template", exact: true }).click();
   const create = page.getByRole("dialog", { name: "New page", exact: true });
   const templates = create.getByRole("group", { name: "Templates" });
-  await expect(templates.getByRole("button")).toHaveText(["Blank page", "Meeting notes", "Project brief", "Task"]);
+  await expect(templates.getByRole("button")).toHaveText(["Blank page", "Meeting notes", "Project brief", "Task", "Manage templates…"]);
   await shot(page, "templates-1440");
-  await templates.getByRole("button", { name: "Meeting notes" }).click();
+  await templates.getByRole("button", { name: "Project brief" }).click();
+  // A template somebody else made: its tags are applied only when ticked (never silently).
+  await create.getByRole("group", { name: "Tags from this template" }).getByRole("checkbox", { name: "project" }).check();
   await create.getByLabel("Page title").fill("Design sync");
   await create.getByRole("button", { name: "Create page", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Rename Design sync", exact: true })).toBeVisible();
-  await expect(page.locator(".tiptap")).toContainText("Attendees");
+  await expect(page.locator(".tiptap")).toContainText("Problem");
   const created = (await writes(page)).find((w) => w.create)!.create as Record<string, any>;
-  expect(created.tags).toEqual(["meeting"]);
-  expect(created.metadata).toMatchObject({ title: "Design sync", status: "draft", type: "document" });
+  expect(created.tags).toEqual(["project"]);
+  expect(created.metadata).toMatchObject({ title: "Design sync", status: "planning", type: "document" });
   expect(created.path).toBe("vault/Projects/Prism/Design sync");
 });
 

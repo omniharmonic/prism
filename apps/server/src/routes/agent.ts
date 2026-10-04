@@ -99,6 +99,10 @@ import {
   SessionNotFoundError,
   SessionBudgetError,
   NoteForbiddenError,
+  NoteLockedError,
+  NoteLockUnknownError,
+  LOCK_UNKNOWN_MESSAGE,
+  agentNoteLock,
   ReadTokenError,
   type LiveMessage,
   type SessionRow,
@@ -126,10 +130,16 @@ agentApi.use("*", async (c, next) => {
  * the default (the whole vault MCP server): `profile: "vault-ro"` = the read-only
  * vault tools (WP4.3: the client's inline edit / transform, which only needs
  * text back). Anything else → undefined = the unchanged default. Never widens.
+ * (`profile: "text"` narrows further — NO tools at all — and is not an allowlist:
+ * see `isTextOnly`.)
  */
 export function dispatchAllowedTools(profile: unknown): string[] | undefined {
   return profile === "vault-ro" ? profileAllowedTools("vault-ro") : undefined;
 }
+/** `profile: "text"`: the run gets the prompt and NOTHING else — no MCP server (not
+ *  even the vault), no tool, no vault preamble, no note id. For text transforms whose
+ *  whole input is in the prompt (page summarize / draft / transform). */
+export const isTextOnly = (profile: unknown): boolean => profile === "text";
 
 agentApi.post("/dispatch", async (c) => {
   const actor = resolveActor(c);
@@ -141,17 +151,27 @@ agentApi.post("/dispatch", async (c) => {
   }
   // L5: bounded prompt (a transform carries ≤60k chars of note + the template).
   if (body.prompt.length > MAX_DISPATCH_PROMPT) return c.json({ error: "bad_request", detail: "prompt too long" }, 400);
-  if (body.profile !== undefined && body.profile !== "vault-ro") {
-    return c.json({ error: "bad_request", detail: "profile may only be \"vault-ro\"" }, 400);
+  if (body.profile !== undefined && body.profile !== "vault-ro" && body.profile !== "text") {
+    return c.json({ error: "bad_request", detail: "profile may only be \"vault-ro\" or \"text\"" }, 400);
   }
   const entry = resolveVaultEntry(actor.vaultId);
   const skill = typeof body.skill === "string" ? body.skill : null;
-  const noteId = typeof body.noteId === "string" ? body.noteId : null;
+  const textOnly = isTextOnly(body.profile);
+  // A text-only run is bound to no note: it could not read one anyway.
+  const noteId = !textOnly && typeof body.noteId === "string" ? body.noteId : null;
+  // NP-PG-09: a one-shot run with the vault's WRITE tools, bound to a locked page,
+  // is refused — it would write that page with the vault token, around the lock.
+  // The narrowed runs (`vault-ro`, `text`) cannot write and are unaffected.
+  // FAIL CLOSED: a lock that cannot be read refuses the run (503, retryable).
+  if (noteId && body.profile === undefined) {
+    const lock = await agentNoteLock(entry.id, noteId);
+    if (lock === "locked") return c.json({ error: "locked", detail: "This page is locked — unlock it, or run this as a read-only request." }, 423);
+    if (lock === "unknown") return c.json({ error: "lock_unknown", detail: LOCK_UNKNOWN_MESSAGE }, 503);
+  }
   // Interactive routing (parity A): the client's read-only inline AI (edit /
   // transform / generate / chat) follows the server-side per-skill routing.
-  // Only the narrowed `vault-ro` one-shot is routed — a full-tools dispatch
-  // always stays on claude.
-  const route = body.profile === "vault-ro" && isInteractiveSkill(skill) ? routeFor(skill) : null;
+  // Only the narrowed one-shots are routed — a full-tools dispatch always stays on claude.
+  const route = body.profile !== undefined && isInteractiveSkill(skill) ? routeFor(skill) : null;
   if (route?.provider === "local") {
     const prompt = body.prompt;
     const d = startExternalDispatch(entry, { skill, noteId }, (signal) => runLocalInteractive(route.model, prompt, signal));
@@ -166,6 +186,7 @@ agentApi.post("/dispatch", async (c) => {
       { prompt: body.prompt, skill, noteId },
       {
         ...(allowedTools ? { allowedTools } : {}),
+        ...(textOnly ? { textOnly: true } : {}),
         ...(route?.provider === "claude" && isClaudeModel(route.model) ? { model: route.model } : {}),
       },
     );
@@ -516,6 +537,8 @@ agentApi.post("/sessions/:id/turns", async (c) => {
     if (e instanceof DailyBudgetError) return c.json({ error: "daily_budget_exceeded", detail: e.message }, 409);
     if (e instanceof ProfileUnavailableError) return c.json({ error: "profile_unavailable", detail: e.message }, 409);
     if (e instanceof NoteForbiddenError) return c.json({ error: "forbidden", detail: e.message }, 403);
+    if (e instanceof NoteLockedError) return c.json({ error: "locked", detail: e.message }, 423);
+    if (e instanceof NoteLockUnknownError) return c.json({ error: "lock_unknown", detail: e.message }, 503);
     if (e instanceof SessionNotFoundError) return c.json({ error: "not_found" }, 404);
     if (e instanceof AgentBusyError) return c.json({ error: "busy", detail: e.message }, 503);
     if (e instanceof ReadTokenError) return c.json({ error: "unavailable", detail: e.message }, 503);

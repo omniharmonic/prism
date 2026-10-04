@@ -134,6 +134,10 @@ export interface AgentTextOptions {
   skill?: InteractiveSkill;
   /** The note the text task is about (context only; the run is read-only). */
   noteId?: string;
+  /** A TEXT-ONLY run (`profile: "text"`): the agent gets the prompt and nothing else —
+   *  no vault tools, no note id. For tasks whose whole input is in the prompt; it is
+   *  what makes "the agent was given only this text" true. `noteId` is not sent. */
+  textOnly?: boolean;
   /** Give up (and cancel the run) after this long. Default 5 minutes. */
   timeoutMs?: number;
   signal?: AbortSignal;
@@ -394,9 +398,9 @@ export function createHttpHostServices(opts: HttpHostServicesOptions): HostServi
     agentText: async (prompt, o = {}) => {
       const started = await call<{ id: string; status: string }>("POST", "/api/agent/dispatch", {
         prompt,
-        ...(o.noteId ? { noteId: o.noteId } : {}),
+        ...(o.noteId && !o.textOnly ? { noteId: o.noteId } : {}),
         ...(o.skill ? { skill: o.skill } : {}),
-        profile: "vault-ro",
+        profile: o.textOnly ? "text" : "vault-ro",
       });
       const deadline = Date.now() + (o.timeoutMs ?? 5 * 60_000);
       const cancel = () => call("POST", `/api/agent/dispatches/${enc(started.id)}/cancel`, {}).catch(() => {});

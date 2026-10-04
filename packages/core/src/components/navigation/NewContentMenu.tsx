@@ -19,6 +19,7 @@ import {
   ArrowRight,
   LayoutTemplate,
   Database,
+  Settings2,
 } from "lucide-react";
 import { useVaultClient } from "../../data/VaultClientContext";
 import { useUIStore } from "../../app/stores/ui";
@@ -26,10 +27,12 @@ import { useAgentChatStore } from "../../lib/agent/chatStore";
 import { useIsMobile } from "../../app/hooks/useIsMobile";
 import type { ContentType } from "../../lib/types";
 import { TaskCreateDialog } from "../tasks/TaskCreateDialog";
-import { TEMPLATE_TAG, pageTitle, referencesAttachments, templateCopy, withoutTrashed } from "../../lib/pages/model";
+import { TEMPLATE_TAG, pageTitle, referencesAttachments, templateCopy, templateWantsTags, withoutTrashed } from "../../lib/pages/model";
+import { useCollabSharing } from "../../data/CollabSharing";
 import { inferContentType } from "../../lib/schemas/content-types";
 import { applyTemplateVariables, templateCreator } from "../../lib/pages/templates";
 import { serverFetch } from "../../lib/transport/serverFetch";
+import { usePagesUI } from "../../lib/pages/store";
 import { ComposeMessage } from "../comms/ComposeMessage";
 import {
   folderLabel,
@@ -118,6 +121,8 @@ export interface NewContentMenuProps {
   returnFocus?: HTMLElement | null;
   /** "New page from template": open with the template list showing. */
   startWithTemplates?: boolean;
+  /** The Templates gallery's "Use": open with this template already picked. */
+  initialTemplate?: { id: string; title: string };
 }
 export function NewContentMenu(props: NewContentMenuProps) {
   const client = useVaultClient();
@@ -137,6 +142,7 @@ function CreateContent({
   initialType = "document",
   returnFocus,
   startWithTemplates,
+  initialTemplate,
 }: NewContentMenuProps) {
   const client = useVaultClient();
   const queryClient = useQueryClient();
@@ -179,8 +185,20 @@ function CreateContent({
     queryFn: async () => withoutTrashed(await client.listNotes({ tag: TEMPLATE_TAG })).filter((n) => n.tags?.includes(TEMPLATE_TAG)),
     retry: false,
   });
-  const [template, setTemplate] = useState<{ id: string; title: string } | null>(null);
+  const [template, setTemplate] = useState<{ id: string; title: string } | null>(initialTemplate ?? null);
   const [showTemplates, setShowTemplates] = useState(!!startWithTemplates);
+  // 🔒 The tags a template would apply are DATA from a note someone else may have
+  // written (a member can edit a shared template). They are applied silently only for
+  // the viewer's OWN template; for anyone else's each tag must be ticked, default off.
+  const sharing = useCollabSharing();
+  const viewer = useQuery({ queryKey: ["viewer-role", client.scope?.() ?? scope], enabled: !!sharing?.getViewer, queryFn: () => sharing!.getViewer!(), staleTime: 5 * 60_000, retry: 1 });
+  const me = viewer.data?.email?.toLowerCase() ?? null;
+  const isMine = (n: { metadata?: Record<string, unknown> | null } & { _creator?: { me?: boolean } }): boolean =>
+    n._creator?.me === true || (!!me && typeof n.metadata?.prism_creator === "string" && n.metadata.prism_creator.toLowerCase() === me);
+  const chosenRow = template ? (templates.data ?? []).find((t) => t.id === template.id) : undefined;
+  const foreignTags = chosenRow && !isMine(chosenRow) ? templateWantsTags(chosenRow) : [];
+  const [tickedTags, setTickedTags] = useState<string[]>([]);
+  useEffect(() => { setTickedTags([]); }, [template?.id]);
   const [showFolders, setShowFolders] = useState(false);
   const [search, setSearch] = useState("");
   const [pending, setPending] = useState(false);
@@ -284,16 +302,32 @@ function CreateContent({
         const creator = await templateCreator(() => serverFetch("/auth/me"));
         if (!alive.current || !current()) return;
         const copy = applyTemplateVariables(templateCopy(source, input.title, selectedFolder), { now: new Date(), creator });
+        // Judged on the FRESH template: its own maker's tags apply; anyone else's only if ticked here.
+        if (!isMine(source as never)) copy.tags = copy.tags.filter((t) => tickedTags.includes(t));
         params = copy;
         openType = inferContentType({ ...source, metadata: copy.metadata, tags: copy.tags });
       }
-      const note = await client.createNote(params);
+      let note;
+      let droppedTags: string[] = [];
+      try {
+        note = await client.createNote(params);
+      } catch (e) {
+        // A template's remembered tags go through the normal create rules. If this
+        // person has no standing in one of them the page is still created — without
+        // the tags — and they are told which (never a failed create).
+        const tags = (params as { tags?: string[] }).tags ?? [];
+        // (The HTTP status the transport reports — never a number that happens to be in a message.)
+        if (!template || !tags.length || (e as { status?: unknown } | null)?.status !== 403) throw e;
+        note = await client.createNote({ ...params, tags: [] });
+        droppedTags = tags;
+      }
       // A page made from a template gets its OWN copies of the template's files (its links
       // otherwise name the template's attachments, which only the template's viewers load).
       if (template && client.copyAttachments && referencesAttachments(params)) await client.copyAttachments(note.id).catch(() => null);
       if (!alive.current || !current()) return;
       void queryClient.invalidateQueries({ queryKey: ["vault"] });
       useUIStore.getState().openTab(note.id, input.title, openType);
+      if (droppedTags.length) usePagesUI.getState().showToast({ message: `Created without the template’s tag${droppedTags.length === 1 ? "" : "s"} ${droppedTags.map((t) => `“${t}”`).join(", ")} — not applied, because you can’t add pages to ${droppedTags.length === 1 ? "it" : "them"}.` });
       onClose();
     } catch (e) {
       if (alive.current && current())
@@ -466,7 +500,7 @@ function CreateContent({
               ))}
             </div>
           )}
-          {(type === "document" && (startWithTemplates || (templates.data?.length ?? 0) > 0)) && (
+          {(type === "document" && (startWithTemplates || !!template || (templates.data?.length ?? 0) > 0)) && (
             <div className="mb-3 flex flex-wrap items-center gap-2">
               <span className="w-14 text-xs" style={{ color: "var(--text-muted)" }}>
                 Template
@@ -533,15 +567,50 @@ function CreateContent({
               })}
               {templates.isSuccess && !templates.data.length && (
                 <p className="px-2 py-2 text-xs sm:col-span-2" style={{ color: "var(--text-muted)" }}>
-                  No templates yet. Add the tag “template” to any page to offer it here.
+                  No templates yet. Open a page and choose “Save as template” in its ⋯ menu.
                 </p>
               )}
+              <button
+                type="button"
+                disabled={pending}
+                onClick={() => {
+                  // The gallery replaces this dialog (one modal at a time); it lists, edits and deletes templates.
+                  onClose();
+                  usePagesUI.getState().openTemplates(true);
+                }}
+                className="focus-ring flex min-h-11 items-center gap-2 rounded-lg px-3 text-left text-sm hover:bg-[var(--glass-hover)] sm:col-span-2"
+                style={{ color: "var(--text-secondary)" }}
+              >
+                <Settings2 size={16} />
+                Manage templates…
+              </button>
               {templates.isError && (
                 <p className="px-2 py-2 text-xs sm:col-span-2" style={{ color: "var(--text-muted)" }}>
                   Templates couldn’t load. You can still start from a blank page.
                 </p>
               )}
             </div>
+          )}
+          {type === "document" && template && foreignTags.length > 0 && (
+            <fieldset role="group" aria-label="Tags from this template" className="mb-3 rounded-xl border px-3 py-2" style={{ borderColor: "var(--glass-border)" }}>
+              <legend className="px-1 text-xs" style={{ color: "var(--text-muted)" }}>Tags</legend>
+              <p className="mb-1 text-xs" style={{ color: "var(--text-secondary)" }}>
+                This template was made by someone else. Tick the tags the new page should get — a tag can share or publish a page.
+              </p>
+              <div className="flex flex-wrap gap-x-4 gap-y-1">
+                {foreignTags.map((t) => (
+                  <label key={t} className="flex min-h-11 items-center gap-2 text-sm">
+                    <input
+                      type="checkbox"
+                      disabled={pending}
+                      checked={tickedTags.includes(t)}
+                      onChange={(e) => setTickedTags((now) => (e.target.checked ? [...now, t] : now.filter((x) => x !== t)))}
+                    />
+                    {t}
+                  </label>
+                ))}
+              </div>
+            </fieldset>
           )}
           <div className="flex items-center gap-2">
             <span

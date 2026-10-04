@@ -737,6 +737,9 @@ export async function noteContentStored(e: StoredContent): Promise<{ notified: n
     const authors = new Set(e.authors.map((a) => a.toLowerCase()));
     const info = await noteInfo(e.vaultId, e.noteId, { fresh: true });
     if (!info || info.trashed) return out;
+    // A TEMPLATE's chips are part of a blueprint: nobody was mentioned, and nothing
+    // links from it. (A page made from the template gets fresh chip uids and notifies.)
+    if (info.ref.tags.includes("template")) return out;
     // A crafted chip can name any id: link/notify only for targets some author may view.
     const authorCanView = async (id: string) => {
       const t = await noteInfo(e.vaultId, id);
