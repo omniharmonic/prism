@@ -724,3 +724,89 @@ export function CalendarView({ ctx, month, onMonth, onPickDate }: { ctx: ViewCon
     </div>
   );
 }
+
+// ── calendar on a phone: one week, a day per row ─────────────────────────────
+
+/** The Monday of the week that holds `d` (local time). */
+export const weekStart = (d: Date): Date => new Date(d.getFullYear(), d.getMonth(), d.getDate() - ((d.getDay() + 6) % 7));
+
+/**
+ * The calendar view on a phone (NP-AX-07): seven day columns in 390 px leave 51 px per day,
+ * too little for a 44 px "+" and 44 px page chips. So a week is a LIST — one full-width row
+ * per day with its pages, each with the same date editor a table cell has (that is how a
+ * page is rescheduled here; dragging is the month grid's). The month grid stays one tap
+ * away (`DatabaseRenderer`), and the saved view is the same either way.
+ *
+ * Rows are queried for `month`'s 6-week grid, so moving to a week outside it moves `month`.
+ */
+export function CalendarAgenda({ ctx, month, onMonth }: { ctx: ViewContext; month: Date; onMonth: (d: Date) => void }) {
+  const key = ctx.view.dateKey ?? "";
+  const [start, setStart] = useState(() => {
+    const now = new Date();
+    return weekStart(now.getFullYear() === month.getFullYear() && now.getMonth() === month.getMonth() ? now : month);
+  });
+  const [adding, setAdding] = useState<string | null>(null);
+  const go = (next: Date) => {
+    setStart(next);
+    setAdding(null);
+    if (next.getFullYear() !== month.getFullYear() || next.getMonth() !== month.getMonth()) onMonth(new Date(next.getFullYear(), next.getMonth(), 1));
+  };
+  const days = Array.from({ length: 7 }, (_, i) => new Date(start.getFullYear(), start.getMonth(), start.getDate() + i));
+  const keys = days.map(ymd);
+  // Every page on each day it covers (a range is listed on each of its days in this week).
+  const byDay = useMemo(() => {
+    const m = new Map<string, QueryRow[]>();
+    for (const r of ctx.rows) {
+      const v = propertyValue(r, key);
+      const span = typeof v === "string" ? daySpan(v) : null;
+      if (!span) continue;
+      for (const k of keys) if (k >= span[0] && k <= span[1]) m.set(k, [...(m.get(k) ?? []), r]);
+    }
+    return m;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ctx.rows, key, keys[0]]);
+  const today = ymd(new Date());
+  const editableKey = key !== "$createdAt";
+  const dateDef = ctx.props.find((p) => p.key === key) ?? ({ key, label: editableKey ? key : "Created", kind: "date", options: [], tag: null, multiple: false, enumValues: [] } satisfies PropertyDef);
+  const canMove = (r: QueryRow) => editableKey && !dateDef.system && ctx.canEditRow(r) && !integrationOwned(r);
+  const locked = (r: QueryRow) => editableKey && !dateDef.system && ctx.canEditRow(r) && integrationOwned(r);
+  const last = days[6]!;
+  const range = `${start.toLocaleDateString(undefined, { month: "short", day: "numeric" })} – ${last.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })}`;
+  return (
+    <div className="db-agenda">
+      <div className="db-cal-head">
+        <h2>{range}</h2>
+        <button type="button" className="db-control db-agenda-nav" aria-label="Previous week" onClick={() => go(new Date(start.getFullYear(), start.getMonth(), start.getDate() - 7))}><ChevronLeft size={16} aria-hidden="true" /></button>
+        <button type="button" className="db-control" onClick={() => go(weekStart(new Date()))}>Today</button>
+        <button type="button" className="db-control db-agenda-nav" aria-label="Next week" onClick={() => go(new Date(start.getFullYear(), start.getMonth(), start.getDate() + 7))}><ChevronRight size={16} aria-hidden="true" /></button>
+      </div>
+      <ol className="db-agenda-days" aria-label={`${ctx.view.name} week`}>
+        {days.map((d, i) => {
+          const k = keys[i]!;
+          const rows = byDay.get(k) ?? [];
+          const name = d.toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" });
+          return (
+            <li key={k} className="db-agenda-day" data-day={k} data-today={k === today || undefined} aria-current={k === today ? "date" : undefined}>
+              <div className="db-agenda-date">
+                <h3>{name}{k === today && <span className="db-agenda-today">Today</span>}</h3>
+                {ctx.canCreate && editableKey && adding !== k && <button type="button" className="db-control db-agenda-nav" aria-label={`New page on ${k}`} onClick={() => setAdding(k)}><Plus size={16} aria-hidden="true" /></button>}
+              </div>
+              {adding === k && <NewRowForm label={`New page on ${k}`} onCreate={(t) => ctx.create(t, { [key]: k })} onCancel={() => setAdding(null)} />}
+              {rows.length ? (
+                <ul className="db-agenda-items" aria-label={name}>
+                  {rows.map((r) => (
+                    <li key={r.id} data-agenda-item={r.id}>
+                      <button type="button" className="db-agenda-open focus-ring" onClick={(e) => ctx.open(r, e)}>{title(r)}</button>
+                      <PropertyValue def={dateDef} value={propertyValue(r, key)} variant="bar" noteId={r.id} readOnly={!canMove(r)} onCommit={ctx.commit(r, dateDef)} />
+                      {locked(r) && <span className="db-agenda-note">Its date is {LOCKED_WHY}.</span>}
+                    </li>
+                  ))}
+                </ul>
+              ) : adding !== k && <p className="db-agenda-empty">Nothing on this day</p>}
+            </li>
+          );
+        })}
+      </ol>
+    </div>
+  );
+}

@@ -32,7 +32,7 @@ import { PropertyEditor } from "./PropertyEditor";
 import { BottomSheet } from "../ui/BottomSheet";
 import { Popover } from "./Popover";
 import { FilterEditor, SortEditor, ViewSettings } from "./ViewControls";
-import { BoardView, CalendarView, GalleryView, ListView, TableView, monthGrid, type RowSelection, type ViewContext } from "./views";
+import { BoardView, CalendarAgenda, CalendarView, GalleryView, ListView, TableView, monthGrid, type RowSelection, type ViewContext } from "./views";
 import { defaultConfig, duplicateView, MAX_VIEWS, moveView, newViewId, readDatabaseConfig, rowPath, VIEW_LABELS, VIEW_TYPES, type DatabaseConfig, type DatabaseTemplate, type DatabaseView, type OpenMode, type ViewType } from "./config";
 import { RowPeek } from "./RowPeek";
 import { BulkBar, UndoToast, type UndoAction } from "./BulkBar";
@@ -88,6 +88,8 @@ export function DatabasePage({ note, readOnly, embedded }: RendererProps & {
   }, [search]);
   // Phones show a board as a grouped list first (NP-DB-23); the saved view is not changed.
   const [phoneBoard, setPhoneBoard] = useState(false);
+  // …and a calendar as a week list (a day per row); the month grid is one tap away. Device-local, like the board.
+  const [phoneMonth, setPhoneMonth] = useState(false);
   const [month, setMonth] = useState(() => new Date(new Date().getFullYear(), new Date().getMonth(), 1));
   const [saveState, setSaveState] = useState<"" | "saving" | "error" | "conflict" | "local">("");
   const saveSeq = useRef(0);
@@ -464,7 +466,15 @@ export function DatabasePage({ note, readOnly, embedded }: RendererProps & {
                   : <BoardView ctx={ctx} onPickGroup={(k) => updateView({ groupBy: k })} />)}
                 {view.type === "gallery" && <GalleryView ctx={ctx} />}
                 {view.type === "list" && <ListView ctx={ctx} />}
-                {view.type === "calendar" && <CalendarView ctx={ctx} month={month} onMonth={setMonth} onPickDate={(k) => updateView({ dateKey: k })} />}
+                {view.type === "calendar" && isMobile && view.dateKey && (
+                  <p className="db-notice db-phone-layout" role="status">
+                    {phoneMonth ? "Month grid: days are small on this screen." : "Shown as a week list on this screen."}{" "}
+                    <button type="button" className="db-ghost" aria-pressed={phoneMonth} onClick={() => setPhoneMonth((v) => !v)}>Month</button>
+                  </p>
+                )}
+                {view.type === "calendar" && (isMobile && view.dateKey && !phoneMonth
+                  ? <CalendarAgenda ctx={ctx} month={month} onMonth={setMonth} />
+                  : <CalendarView ctx={ctx} month={month} onMonth={setMonth} onPickDate={(k) => updateView({ dateKey: k })} />)}
               </>
             )}
             <p className="db-count" role="status">
