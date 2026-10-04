@@ -85,7 +85,8 @@ export function TrashDialog({ onClose }: { onClose: () => void }) {
           <Search size={15} aria-hidden="true" />
           <input ref={input} aria-label="Search the Trash" placeholder="Search pages in Trash…" value={query} onChange={(e) => setQuery(e.target.value)} />
         </label>
-        <div className="page-dialog-list" aria-label="Pages in Trash" role="list" ref={pull.ref} style={{ overflowX: "hidden" }}>
+        {/* The scroller holds the pull indicator and messages; the LIST holds list items only. */}
+        <div className="page-dialog-list" ref={pull.ref} style={{ overflowX: "hidden" }}>
           {pull.indicator}
           {trash.isLoading && <p className="page-dialog-empty">Loading the Trash…</p>}
           {trash.isError && (
@@ -104,6 +105,7 @@ export function TrashDialog({ onClose }: { onClose: () => void }) {
               {debounced ? "Try another name." : "Pages you delete stay here until you restore them or delete them for good."}
             </div>
           )}
+          <div role="list" aria-label="Pages in Trash">
           {items.map((item) => (
             <TrashRow key={item.id} item={item} busy={busy === item.id} onRestore={() => void act(item, "restore")}>
               <div className="trash-row-main">
@@ -140,6 +142,7 @@ export function TrashDialog({ onClose }: { onClose: () => void }) {
               )}
             </TrashRow>
           ))}
+          </div>
         </div>
         {trash.data && (
           <div className="page-dialog-foot">

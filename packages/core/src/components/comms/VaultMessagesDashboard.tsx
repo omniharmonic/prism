@@ -29,6 +29,7 @@ import {
   Inbox,
   Check,
   RefreshCw,
+  MailOpen,
 } from "lucide-react";
 import { useVaultClient } from "../../data/VaultClientContext";
 import { useIsWeb } from "../../data/Platform";
@@ -979,7 +980,7 @@ function TriageTier({
 
 function TriageRow({ note, onOpen }: { note: Note; onOpen: () => void }) {
   const selectedId = useContext(SelectedConversation);
-  const swipe = useEmailRowSwipe(note);
+  const swipe = useEmailRowActions(note);
           const meta = (note.metadata || {}) as Record<string, unknown>;
           const platform = getPlatform(note);
           const config = getPlatformConfig(platform);
@@ -995,6 +996,7 @@ function TriageRow({ note, onOpen }: { note: Note; onOpen: () => void }) {
           const lastLine = lines[lines.length - 1] || "";
 
           return (
+            <div style={{ position: "relative" }}>
             <button
               ref={swipe.ref}
               onClick={onOpen}
@@ -1051,33 +1053,53 @@ function TriageRow({ note, onOpen }: { note: Note; onOpen: () => void }) {
                 )}
               </div>
             </button>
+            {swipe.markRead && <MarkReadButton name={name} onClick={swipe.markRead} />}
+            </div>
           );
 }
 
+/** Emails marked read from the list in this session: read at once, before the next mail ingest updates the note. */
+const markedRead = new Set<string>();
+
 /**
- * Phone (touch) swipes on an EMAIL row — left: archive, right: mark read — only where
- * the live email actions are on for this viewer (else the row has no swipe at all).
- * The same two actions are buttons in the opened conversation (EmailRenderer).
+ * Mark-as-read for an unread EMAIL row — a swipe right on a phone and a small button on the row
+ * (the same action; a gesture is never the only way) — only where the live email actions are on
+ * for this viewer. ARCHIVE is deliberately not a swipe: it moves the message in the real mailbox
+ * and cannot be undone from here; it stays a button in the opened email.
  */
-function useEmailRowSwipe(note: Note) {
+function useEmailRowActions(note: Note) {
   const live = useLiveActions("email");
   const queryClient = useQueryClient();
-  const isEmail = !!live && (note.tags ?? []).includes("email");
-  const unread = (note.metadata as Record<string, unknown> | null | undefined)?.isUnread === true;
-  const run = (action: () => Promise<unknown>, done: string) => {
-    void action().then(
+  const unread = !!live && (note.tags ?? []).includes("email")
+    && (note.metadata as Record<string, unknown> | null | undefined)?.isUnread === true && !markedRead.has(note.id);
+  const markRead = unread ? () => {
+    void live!.emailMarkRead({ noteId: note.id }, true).then(
       () => {
-        usePagesUI.getState().showToast({ message: done });
+        markedRead.add(note.id);
+        usePagesUI.getState().showToast({ message: "Marked read" });
+        // The lists this row lives in: updated in place now, re-read in the background.
+        queryClient.setQueriesData<unknown>({ queryKey: ["vault", "inbox"] }, (old: unknown) =>
+          Array.isArray(old) ? old.map((n: Note) => (n?.id === note.id ? { ...n, metadata: { ...(n.metadata ?? {}), isUnread: false } } : n)) : old);
         void queryClient.invalidateQueries({ queryKey: ["vault", "inbox"] });
       },
       (e) => usePagesUI.getState().showToast({ message: liveActionErrorText(e), tone: "error" }),
     );
-  };
-  return useSwipeActions<HTMLButtonElement>({
-    disabled: !isEmail,
-    left: isEmail ? { label: "Archive", run: () => run(() => live!.emailArchive({ noteId: note.id }), "Archived") } : null,
-    right: isEmail && unread ? { label: "Mark as read", tone: "accent", run: () => run(() => live!.emailMarkRead({ noteId: note.id }, true), "Marked read") } : null,
+  } : null;
+  const swipe = useSwipeActions<HTMLButtonElement>({
+    disabled: !markRead,
+    right: markRead ? { label: "Mark as read", tone: "accent", run: markRead } : null,
   });
+  return { ...swipe, markRead };
+}
+
+/** The row's own "Mark as read" control (keyboard, mouse, screen readers). */
+function MarkReadButton({ name, onClick }: { name: string; onClick: () => void }) {
+  return (
+    <button type="button" className="focus-ring" aria-label={`Mark ${name} as read`} title="Mark as read" onClick={onClick}
+      style={{ position: "absolute", right: 14, bottom: 8, width: 32, height: 32, display: "flex", alignItems: "center", justifyContent: "center", borderRadius: 8, color: "var(--text-secondary)" }}>
+      <MailOpen size={15} aria-hidden="true" />
+    </button>
+  );
 }
 
 // ─── People View ─────────────────────────────────────────────
@@ -1491,9 +1513,10 @@ function ConversationRow({
     .split("\n")
     .filter((l) => l.trim() && !l.startsWith("#"));
   const lastLine = lines[lines.length - 1] || "";
-  const swipe = useEmailRowSwipe(note);
+  const swipe = useEmailRowActions(note);
 
   return (
+    <div style={{ position: "relative" }}>
     <button
       ref={swipe.ref}
       onClick={onClick}
@@ -1555,5 +1578,7 @@ function ConversationRow({
         </div>
       </div>
     </button>
+    {swipe.markRead && <MarkReadButton name={name} onClick={swipe.markRead} />}
+    </div>
   );
 }
