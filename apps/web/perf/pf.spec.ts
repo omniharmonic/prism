@@ -1,6 +1,6 @@
 /**
  * NP-PF-01…09 + NP-SB-13 against a production build. Every number is recorded in
- * test-results/perf/results.json (best of PERF_RUNS + median); a budget miss does NOT
+ * test-results/perf/results.json (best, median, and p50 / p95 over PERF_RUNS samples); a budget miss does NOT
  * fail the test — the report is the deliverable. See docs/roadmap/workspace-experience/PERF-RESULTS.md.
  */
 import { test, expect, devices, type Page, type CDPSession } from "@playwright/test";
@@ -71,7 +71,8 @@ test("PF-02 open a page from the tree / ⌘K", async ({ browser }) => {
   const page = await openApp(ctx, server.ids.blank, 0);
   await page.waitForFunction(TREE_ROWS + " > 0");
   await page.waitForTimeout(2500); // boot traffic settles
-  const names = server.ids.uncached; // 12 pages with unique one-word names
+  const names = server.ids.uncached; // 26 pages with unique one-word names (PERF_RUNS up to 26)
+  expect(names.length, "one never-read page per run: raise the perf server's NAMES for a larger PERF_RUNS").toBeGreaterThanOrEqual(RUNS);
   // Uncached: a 50 KB page this browser has never read, opened from ⌘K.
   const uncached: number[] = [];
   for (let i = 0; i < RUNS; i++) {
@@ -83,7 +84,7 @@ test("PF-02 open a page from the tree / ⌘K", async ({ browser }) => {
   // Cached: pages already opened in this session, reopened from ⌘K and from the tree.
   const cached: number[] = [];
   for (let i = 0; i < RUNS; i++) {
-    const name = names[(i + 1) % RUNS]!;
+    const name = names[(i + 1) % Math.min(RUNS, names.length)]!;
     await quickOpen(page, `${name} page`, `${name} page`);
     cached.push((await until(page, editorHas(`Uncached ${name} page`, 40000))).ms);
     await page.waitForTimeout(500);
@@ -92,7 +93,7 @@ test("PF-02 open a page from the tree / ⌘K", async ({ browser }) => {
   // From the tree: the open page's folder is revealed; click a sibling row.
   const tree: number[] = [];
   for (let i = 0; i < RUNS; i++) {
-    const name = names[(i + 2) % RUNS]!;
+    const name = names[(i + 2) % Math.min(RUNS, names.length)]!;
     const row = page.locator(".page-tree-open", { hasText: new RegExp(`^${name} page$`) }).first();
     await row.scrollIntoViewIfNeeded();
     await arm(page, "click");

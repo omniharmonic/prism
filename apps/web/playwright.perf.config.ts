@@ -10,7 +10,9 @@ import { defineConfig, devices } from "@playwright/test";
  *   PERF_PORT=5363 npx playwright test -c playwright.perf.config.ts            # all rows
  *   PERF_PORT=5363 npx playwright test -c playwright.perf.config.ts -g PF-04   # one row
  *
- * PERF_RUNS (5) samples per number; PERF_OUT (test-results/perf/results.json);
+ * PERF_RUNS (5) samples per number — the checklist's method is `PERF_RUNS=20`: with 20 or more samples
+ * every budget row is judged on p50 AND p95 (reported in the results file and the log); fewer samples
+ * give the quick best / median verdict, marked "not the row's method". PERF_OUT (test-results/perf/results.json);
  * PERF_IDLE_S (120) idle window for PF-09; PERF_SOAK_OPENS (50) for PF-07.
  */
 export default defineConfig({

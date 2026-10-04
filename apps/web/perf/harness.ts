@@ -163,9 +163,12 @@ export const EDITOR_TEXT = `(document.querySelector('.ProseMirror[contenteditabl
 export const round = (n: number, d = 0) => Math.round(n * 10 ** d) / 10 ** d;
 export function stats(samples: number[]) {
   const s = [...samples].sort((a, b) => a - b);
-  const q = (p: number) => s[Math.min(s.length - 1, Math.floor(s.length * p))]!;
-  return { best: round(s[0]!, 1), median: round(s[Math.floor((s.length - 1) / 2)]!, 1), p95: round(q(0.95), 1), worst: round(s[s.length - 1]!, 1), n: s.length, samples: s.map((x) => round(x, 1)) };
+  // Nearest-rank percentiles: p95 of 20 samples is the 19th smallest, p05 the smallest.
+  const rank = (p: number) => s[Math.min(s.length - 1, Math.max(0, Math.ceil(s.length * p) - 1))]!;
+  return { best: round(s[0]!, 1), median: round(s[Math.floor((s.length - 1) / 2)]!, 1), p50: round(rank(0.5), 1), p05: round(rank(0.05), 1), p95: round(rank(0.95), 1), worst: round(s[s.length - 1]!, 1), n: s.length, samples: s.map((x) => round(x, 1)) };
 }
+/** The checklist's method for the budget rows: p50 AND p95 over at least this many runs (`PERF_RUNS=20`). */
+export const METHOD_RUNS = 20;
 export const loadAvg = () => { try { return execSync("uptime").toString().trim().replace(/^.*load averages?:\s*/, ""); } catch { return "?"; } };
 
 export interface Row {
@@ -176,7 +179,15 @@ export interface Row {
   best: number;
   median: number;
   samples?: number[];
-  /** best ≤ budget AND median ≤ budget → pass; best ≤ budget only → pass(best); else miss. */
+  /** From `samples`: the median and the tail (95th percentile; the 5th for higher-is-better metrics such as fps). */
+  p50?: number;
+  p95?: number;
+  n?: number;
+  /**
+   * Fewer than METHOD_RUNS samples (a quick run): best ≤ budget AND median ≤ budget → pass;
+   * best ≤ budget only → pass(best); else miss — and the row is marked "(n < 20)".
+   * With METHOD_RUNS or more: p50 AND p95 within budget → pass; p50 only → "pass (p50 only)"; else MISS.
+   */
   verdict?: string;
   note?: string;
   load?: string;
@@ -184,15 +195,22 @@ export interface Row {
 }
 export function record(row: Omit<Row, "verdict" | "load"> & { higherIsBetter?: boolean }): Row {
   const ok = (v: number) => (row.budget === undefined ? true : row.higherIsBetter ? v >= row.budget : v <= row.budget);
-  const verdict = row.budget === undefined ? "info" : ok(row.median) ? "pass" : ok(row.best) ? "pass (best only)" : "MISS";
-  const out: Row = { ...row, verdict, load: loadAvg() };
+  const st = row.samples?.length ? stats(row.samples) : null;
+  const p50 = st ? st.p50 : undefined;
+  const p95 = st ? (row.higherIsBetter ? st.p05 : st.p95) : undefined;
+  const n = st?.n;
+  const byMethod = n !== undefined && n >= METHOD_RUNS && p50 !== undefined && p95 !== undefined;
+  const verdict = row.budget === undefined ? "info"
+    : byMethod ? (ok(p50!) && ok(p95!) ? "pass" : ok(p50!) ? "pass (p50 only)" : "MISS")
+    : `${ok(row.median) ? "pass" : ok(row.best) ? "pass (best only)" : "MISS"}${n !== undefined ? ` (n=${n} < ${METHOD_RUNS}: not the row's method)` : ""}`;
+  const out: Row = { ...row, ...(st ? { p50, p95, n } : {}), verdict, load: loadAvg() };
   delete (out as { higherIsBetter?: boolean }).higherIsBetter;
   mkdirSync(path.dirname(OUT), { recursive: true });
   const all: Row[] = existsSync(OUT) ? (JSON.parse(readFileSync(OUT, "utf8")) as Row[]) : [];
   const i = all.findIndex((r) => r.id === row.id && r.metric === row.metric);
   if (i >= 0) all[i] = out; else all.push(out);
   writeFileSync(OUT, JSON.stringify(all, null, 2));
-  console.log(`\n[perf] ${row.id} ${row.metric}: best ${out.best} ${row.unit}, median ${out.median} ${row.unit}${row.budget !== undefined ? ` (budget ${row.higherIsBetter ? "≥" : "≤"} ${row.budget}) → ${verdict}` : ""}  load ${out.load}${row.note ? `  — ${row.note}` : ""}`);
+  console.log(`\n[perf] ${row.id} ${row.metric}: best ${out.best} ${row.unit}, median ${out.median} ${row.unit}${st ? `, p50 ${p50} / ${row.higherIsBetter ? "p05" : "p95"} ${p95} ${row.unit} over ${n} runs` : ""}${row.budget !== undefined ? ` (budget ${row.higherIsBetter ? "≥" : "≤"} ${row.budget}) → ${verdict}` : ""}  load ${out.load}${row.note ? `  — ${row.note}` : ""}`);
   return out;
 }
 export const recordSamples = (id: string, metric: string, samples: number[], rest: Partial<Row> & { higherIsBetter?: boolean } = {}) => {

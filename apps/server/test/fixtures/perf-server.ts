@@ -86,7 +86,8 @@ let fifty = "<h1>Fifty kilobyte page</h1>";
 while (Buffer.byteLength(fifty) < 50_000) fifty += `<h2>${title()}</h2>${body(4)}<ul><li><p>${sentence(12)}</p></li><li><p>${sentence(12)}</p></li></ul>`;
 put({ id: "perf-50k", path: "Perf/Fifty kilobyte page", tags: ["note"], metadata: { type: "document" }, content: fifty });
 // A second 50 KB page so "uncached" opens have a body the browser has never seen.
-const NAMES = ["Alpha", "Bravo", "Charlie", "Delta", "Echo", "Foxtrot", "Golf", "Hotel", "India", "Juliet", "Kilo", "Lima"];
+// One per run of PF-02's "uncached" loop: 26 names so the row's method (PERF_RUNS=20) has a never-read page for every sample.
+const NAMES = ["Alpha", "Bravo", "Charlie", "Delta", "Echo", "Foxtrot", "Golf", "Hotel", "India", "Juliet", "Kilo", "Lima", "Mike", "November", "Oscar", "Papa", "Quebec", "Romeo", "Sierra", "Tango", "Uniform", "Victor", "Whiskey", "Xray", "Yankee", "Zulu"];
 for (const name of NAMES) put({ id: `perf-50k-${name.toLowerCase()}`, path: `Perf/Uncached/${name} page`, tags: ["note"], metadata: { type: "document" }, content: fifty.replace("Fifty kilobyte page", `Uncached ${name} page`) });
 
 // 10,000 words in 200+ blocks, with every newer block kind (NP-PF-03).
