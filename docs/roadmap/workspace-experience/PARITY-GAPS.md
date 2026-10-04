@@ -1,18 +1,18 @@
 # Notion parity — what is left to reach 161 / 161
 
-Written 2026-10-03 from the second verification pass at main `d4a7d00`. Evidence per row: [PARITY-EVIDENCE.md](PARITY-EVIDENCE.md). The gate itself: [NOTION-PARITY-CHECKLIST.md](NOTION-PARITY-CHECKLIST.md).
+Written 2026-10-03 from the second verification pass at main `d4a7d00`; updated the same day by the third-pass spec slice (slice G, `feat/w8-specs` on main `3c1df0a`). Evidence per row: [PARITY-EVIDENCE.md](PARITY-EVIDENCE.md). The gate itself: [NOTION-PARITY-CHECKLIST.md](NOTION-PARITY-CHECKLIST.md).
 
-| Status | Rows | First pass |
-|---|---|---|
-| passed | 52 | 20 |
-| deviation (built; owner decision pending) | 5 | — |
-| needs-screenshot | 30 | 19 |
-| needs-device | 26 | 18 |
-| partial | 43 | 83 |
-| missing | 4 | 12 |
-| not-measured | 1 | 9 |
+| Status | Rows (after slice G) | Second pass | First pass |
+|---|---|---|---|
+| passed | 59 | 52 | 20 |
+| deviation (built; owner decision pending) | 6 | 5 | — |
+| needs-screenshot | 35 | 30 | 19 |
+| needs-device | 29 | 26 | 18 |
+| partial | 27 | 43 | 83 |
+| missing | 4 | 4 | 12 |
+| not-measured | 1 | 1 | 9 |
 
-So **109 rows are not passed**. Of those: 56 wait only for a person (30 screenshot reviews, 26 device checks), 5 for an owner decision, and 48 need work (43 partial, 4 missing, 1 not measured). "Passed" means passed on Chromium; one WebKit run of the whole suite is still owed (b.1).
+So **102 rows are not passed**. Of those: 64 wait only for a person (35 screenshot reviews, 29 device checks), 6 for an owner decision, and 32 need work (27 partial, 4 missing, 1 not measured). Slice G moved 16 rows out of `partial` (7 to passed, 5 to needs-screenshot, 3 to needs-device, 1 to deviation) and found 8 behaviour gaps that had been listed as test gaps (slices I–M below). "Passed" means passed on Chromium; one WebKit run of the whole suite is still owed (b.1).
 
 Nothing here is marked done to improve a number. A row leaves this file only when its evidence is on main.
 
@@ -41,23 +41,41 @@ Each slice owns the files named. Nothing here touches the collab schema, so no `
 | **E · Native links and shortcuts** | NP-NA-04 · universal links | The server serves no `apple-app-site-association`; the client declares no associated domain; nothing tests that a page URL opens the page. | `apps/server/src/app.ts` (AASA route + SW denylist entry `/.well-known/` is already there), `apps/client/**` (associated domains, `prism://` handler), `apps/web/src/main.tsx` routing. New fixture + `notion-links.spec.ts › "page URL routes to page"` — this also closes the `[T]` of NP-PG-16. | M |
 | | NP-SB-13 · "⌘N creates a page" | No binding. A browser tab cannot take ⌘N; the native shell has no New Page menu item. | `apps/client/src-tauri` menu accelerator → the existing `usePagesUI.openCreate({})`. | S |
 | **F · Search filter** | ~~NP-SR-04 · "created/edited by"~~ | ~~The UI offers "Edited by me" only. The server already takes `author=` (creator).~~ **Closed on `feat/w8-gaps-a`** (awaiting re-verification): "Created by" beside "Edited by" in `searchFilters.tsx` (client narrows the server's `author=me` rows to pages the caller created). Spec `notion-search.spec.ts › "created by me and edited by me…"`, which also asserts the date range. "Edited by me" is the server's new `editor=me` (the opaque writer stamp), "Created by me" its `author=me` (creator only); the control is hidden where the server cannot answer it. | `components/navigation/searchFilters.tsx`. Spec: `notion-search.spec.ts › "filters narrow results"` (assert the date range narrowing in the same change). | S |
+| **I · Live title** *(found by slice G)* | NP-PG-03 · "a collab title edit syncs to other clients" | A rename reaches the server and the renamer's screen; another client that has the page OPEN as a live document keeps the old title until it reopens the page. `CollabDoc` sets its title/path once, at open (and after its own rename). `test.fixme`: parity3-collab › "NP-PG-03: a title edit in a live document reaches another client…". | `apps/web/src/collab/CollabDoc.tsx` (follow the page's path: the tree row in the workspace, or a Hocuspocus stateless "renamed" message from the move route so the share route gets it too — then `apps/server/src/routes/pages.ts` / `collab.ts`). | S–M |
+| **J · Suggesting mode** *(found by slice G)* | NP-CO-12 · "marks inserts and deletes with attribution" | While Suggesting, typing (or pasting) over a selection removes the selected text outright: only Backspace / Delete are tracked. The new words are marked, the replaced ones are gone with nothing to reject. `test.fixme`: parity3-suggestions › "…typing over a selection while Suggesting keeps the replaced text as a tracked deletion". | `packages/core/src/editor/suggestions.ts` (`appendTransaction`: for a replaced range, put the removed slice back with a `deletion` mark; cover cut and paste). | S–M |
+| | NP-CO-12 · "a stale suggestion shows Needs refresh" and NP-AI-02 · "refresh-when-stale" | No such state or control exists. A change that was reviewed or edited elsewhere leaves the queue with "This change has already been reviewed or changed." (tested in suggestion-review.spec). Either build the label + a refresh action, or the owner accepts the current behaviour by editing both rows. | `components/renderers/SuggestionReview.tsx`. | S |
+| **K · Colours** *(found by slice G)* | NP-ED-08 · callout "colour" and NP-ED-16 · "background colour per block" | A callout's BACKGROUND colour is stored (`data-block-color="blue_background"`) but not shown: `.prose-editor div[data-type="callout"] { background … }` outranks `[data-block-color$="_background"]`. Text colour works. `test.fixme`: parity3-editor › "…a callout background colour changes the callout's background". | `packages/core/src/components/renderers/editor-blocks.css` (callout rules per colour). | S |
+| | NP-CO-10 · "colour-distinct from agent identity" | An agent has no colour of its own: its marks carry `colorFor(<account email>)` — the caret colour of the person it acts for — and the seven-colour caret palette contains the agent's default green and red (`#22c55e`, `#ef4444`). `test.fixme`: parity3-collab › "NP-CO-10: an agent's marks never share a collaborator's caret colour". | `apps/server/src/mcp/tool-collab.ts` `authorOf` + `collab-ops.ts` (a reserved agent colour), `apps/web/src/collab/CollabDoc.tsx` `COLORS` (keep that colour out of the palette). | S |
+| **L · Export and publish fidelity** *(found by slice G)* | NP-ED-24 · "survives … export" | The **Markdown** export keeps every block's words but exports to-dos as plain bullets (checked state lost), flattens a table to one paragraph per cell, and drops an image's caption and a bookmark card's description. The HTML export keeps every block. `todo`: server block-roundtrip.test › "…blocks the Markdown / HTML export does not keep as blocks". | `apps/server/src/convert/core.ts` (the export's turndown rules: GFM task items and tables; caption → a line under the image; bookmark → link + description). | M |
+| | NP-ED-24 · "survives … the publishing render" (NP-ED-19) | A published page does not draw the table-of-contents block: it is an empty element (the site has its own outline in the chrome). `test.fixme`: parity3-publication › "…published page draws every block (known gaps: table of contents)". | `apps/web/src/publish/templates/WikiTemplate.tsx` + `wiki-utils.ts` (fill `div[data-type="toc"]` from `extractToc`). | S |
+| **M · Database row title** *(found by slice G)* | NP-DB-20 · "Renaming the row updates the view" | True for a row named by its page. A row CREATED IN the view (and every ingest row) carries `metadata.title`, which the view shows first; the title rename moves the path only, so the view keeps the old name. `test.fixme`: parity3-databases › "…renaming a row that was created in the view updates the row in the view". | `packages/core/src/lib/pages/titleRename.ts` (also write `metadata.title` when the page has one — a metadata write, CAS), or stop storing the title on created rows (`DatabaseRenderer.createRow`). | S |
 
 ### a.2 Test gaps — the behaviour exists, an assertion does not
 
-These rows stay `partial` until a spec asserts the clause. One slice (**G · verification specs**, fixtures and specs only, no product files) can close them. Grouped by the fixture that can host the test.
+**Slice G (verification specs) ran on `feat/w8-specs`** — specs and fixtures only, no product code. Struck = asserted (spec in brackets; evidence per row in PARITY-EVIDENCE "Third pass"). Where the behaviour turned out to be missing, the clause moved to §a.1 (slice letter in brackets) and its test is kept as `test.fixme`.
 
 | Fixture | Row · clause to assert |
 |---|---|
-| `workspace.html?navigation` / session fixture | NP-SB-01 tree contents and search scope after a vault switch |
-| `notion-shell.html` | NP-PG-02 a cover from a valid https link · NP-PG-06 Agent activity dot (needs a seeded agent session list) · NP-PG-14 "Ask agent" starter (needs an `AgentClientProvider` in the fixture) · ~~NP-SR-04 date range narrowing~~ (asserted in `notion-search.spec.ts`, `feat/w8-gaps-a`) · NP-SR-06 "Ask agent" command row · NP-OF-05 an open database view refreshing on a remote change |
-| `collab-route.html?app` (real server) | NP-PG-03 a title edit reaching the second client (~~and, in `pages-nav.html`, the breadcrumbs following a rename~~ — asserted in `parity2-pages.spec.ts` on `feat/w8-gaps-a`) · NP-PG-08 page style on a live document · NP-CO-10 `"remote caret name tags"` (several collaborators, colour distinct from the agent) · NP-CO-14 guest ⌘K, @ menu, Inbox and database UI · NP-CO-12 Accept all, Undo after accept, "Needs refresh" |
-| history fixture (`context-history`) | NP-PG-12 day groups, "compare with the version before", the consequence line, phone compare |
-| `editor-blocks.html` (live mode) | NP-ED-02 block menu → Comment · NP-ED-10 column resize · NP-ED-16 block text colour + dark values · NP-ED-08 numbered continuation, checked to-do style, callout colour |
-| server test + publication fixture | NP-ED-24 `"block round-trip through publish and export"`: every block of ED-08…ED-19 through the publishing renderer, the Markdown / HTML export and a `prism_update_note` edit |
-| `notion-mentions.html` | NP-RF-02 an ISO date through the @ menu (an attempt in this pass produced no chip — check whether it is a behaviour gap) · NP-RF-06 inbox item opens scrolled to the chip; edit a reminder's time · NP-CO-01 delete own comment, phone sheet · NP-CO-03 accepted / rejected-suggestion item in the Inbox |
-| `databases.html` | NP-DB-07 calendar on another date property (`dateKey`) · NP-DB-08 multi-select and URL editors · NP-DB-20 edit the row's body; rename the row and see the view update |
-| agent fixtures | NP-AI-02 an agent turn producing suggestions end to end; refresh-when-stale |
-| a main.tsx routing fixture (new) | NP-PG-16 a `/page/<id>` URL opens the page and respects access (with slice E) |
+| `workspace.html?navigation` / session fixture | ~~NP-SB-01 tree contents and search scope after a vault switch~~ (parity3-vaults) |
+| `notion-shell.html` | ~~NP-PG-02 a cover from a valid https link~~ · ~~NP-PG-06 Agent activity dot~~ · ~~NP-PG-14 "Ask agent" starter~~ · ~~NP-SR-04 date range narrowing~~ · ~~NP-SR-06 "Ask agent" command row~~ · ~~NP-OF-05 an open database view refreshing on a remote change~~ (parity3-shell) |
+| `collab-route.html?app` (real server) | NP-PG-03 a title edit reaching the second client → **behaviour gap, slice I** · ~~NP-PG-08 page style on a live document~~ · ~~NP-CO-10 `"remote caret name tags"` (several collaborators~~, colour distinct from the agent → **slice K**) · ~~NP-CO-14 guest ⌘K, @ menu, Inbox and database UI~~ (parity3-collab) · NP-CO-12 ~~Accept all, Undo after accept~~ (parity3-suggestions), "Needs refresh" → **slice J** |
+| history fixture (`context-history`) | ~~NP-PG-12 day groups, "compare with the version before", the consequence line, phone compare~~ (parity3-history) |
+| `editor-blocks.html` | ~~NP-ED-02 block menu → Comment~~ (already on main: editor-toolbar › "live editor…") · ~~NP-ED-10 column resize~~ · ~~NP-ED-16 block text colour + dark values~~ · NP-ED-08 ~~numbered continuation, checked to-do style, callout~~ text ~~colour~~ (parity3-editor); callout BACKGROUND colour → **slice K** |
+| server test + publication fixture | ~~NP-ED-24 `"block round-trip through publish and export"`~~ (server block-roundtrip.test + parity3-publication) — it found the Markdown-export and published-TOC gaps → **slice L** |
+| `notion-mentions.html` | ~~NP-RF-02 an ISO date through the @ menu~~ (not a behaviour gap: the earlier attempt failed under Playwright's fake clock) · ~~NP-RF-06 inbox item opens scrolled to the chip; edit a reminder's time~~ · ~~NP-CO-01 delete own comment~~, ~~phone sheet~~ (parity3-collab) · ~~NP-CO-03 accepted / rejected-suggestion item in the Inbox~~ (parity3-mentions) · ~~NP-RF-07 person-mention backlink in the browser~~ (a fixture limit, not a behaviour gap) |
+| `databases.html` | ~~NP-DB-07 calendar on another date property (`dateKey`)~~ · ~~NP-DB-08 multi-select and URL editors~~ · NP-DB-20 ~~edit the row's body; rename the row and see the view update~~ for a row named by its page (parity3-databases); a row created in the view → **slice M** |
+| agent fixtures | ~~NP-AI-02 an agent's suggestions end to end~~ (parity3-collab, real server + Prism MCP); refresh-when-stale → **slice J** |
+| a main.tsx routing fixture | ~~NP-PG-16 a `/page/<id>` URL opens the page and respects access~~ (parity3-links, `collab-route.html?page=<id>`; the iOS half waits for slice E) |
+
+**Still open after slice G (test gaps):**
+
+| Row · clause | Why it is open | Where |
+|---|---|---|
+| NP-CO-03 · a REPLY item landing on the commented passage | The anchor (`[data-comment-id]`) exists only in a live document; the inbox fixture renders the plain editor. Mention and reminder deep links are asserted. | A real-server journey (parity3-collab): one person comments, another replies, the first opens the item from the Inbox. |
+| NP-DB-08 · sorting per type through the UI | Sort semantics per type are engine-tested on the server; the UI sort is asserted for date and select only. | `databases.html`: the Sort dialog once per property kind. |
+| NP-AI-02 · the agent TURN itself | The browser test makes the MCP calls a Suggested-edits turn makes; the CLI runner is not driven in a browser (it cannot be, on a fixture). | Covered by server tests (`agent-sessions`, `agent-profiles`) + the device / production smoke. |
+
+Noted for the a11y pass (not changed here): the phone comments panel's close button in `apps/web/src/collab/CollabDoc.tsx` is an icon with no accessible name.
 
 ### a.3 Accessibility rows (owned by the pass-2 a11y branch, not by this list)
 
@@ -139,7 +157,7 @@ Each of these is built and tested; the row reads `deviation` (or carries an `[O]
 | c.7 | NP-ED-15 | embeds "work in the iOS app" | In the native build an embed is an "Open in <provider>" card: the client CSP has no `frame-src`. | S after the decision: set `frameOrigins` in the host + the client CSP (reviewer's minimal set: youtube-nocookie, player.vimeo). |
 | c.8 | NP-PG-05 | "3–5 pinned values, the rest behind + Add property" | Every filled property shows; empty ones are behind "+ Add property". No cap, no pinning. | S–M: a per-tag pin list in the schema-ui hints. |
 | c.9 | NP-PG-09 | a locked page refuses edits "for everyone, including the owner" | The editor and MCP refuse for everyone. The owner / admin REST passthrough lets a content PATCH through and logs `[pages] lock bypass`. | S: refuse in `proxyToVault` instead of logging (decide together with slice C). |
-| c.10 | NP-PG-06 | the header bar "shows breadcrumb" | The breadcrumb sits above the title, not in the bar. | S–M: move `Breadcrumbs` into `TabBar`. |
+| c.10 | NP-PG-06 (now `deviation`: its last test gap, the Agent activity dot, is asserted) | the header bar "shows breadcrumb" | The breadcrumb sits above the title, not in the bar. | S–M: move `Breadcrumbs` into `TabBar`. |
 | c.11 | NP-RF-07 | "a page or person mention adds a vault link" | A member mentioned by **account** (no person page) gets no backlink — there is no page to link to. | None needed unless every member must have a person page. |
 
 ---
@@ -152,14 +170,14 @@ Each of these is built and tested; the row reads `deviation` (or carries an `[O]
 | NP-PF-01 | Desktop warm cache 419 / 427 ms; iPhone figure is a desktop proxy. | iPhone 13-class device, Safari Web Inspector, p50 / p95 over 20 cold starts. |
 | NP-PF-03 | Desktop p50 13.1 ms, no long task. | Safari timeline on the device; 10k-word page. |
 | NP-PF-07 | Web proxy only (60.8 MB JS heap). | Xcode Instruments, 30 minutes and 50 page opens. |
-| NP-PF-02, 04, 05, 06 | All inside budget, but 5 samples each (best / median) against the fixture server. | The row's method: production build, a vault of ≥ 14k notes, p50 and p95 over 20 runs on a quiet machine — **not this host while it serves production**. PF-02 and PF-05 also in the production smoke. PF-06: scroll with all 5,000 rows loaded. |
+| NP-PF-02, 04, 05, 06 | All inside budget, but 5 samples each (best / median) against the fixture server. **Slice G made the harness ready, and did not run it:** `PERF_RUNS=20 PERF_PORT=5363 npx playwright test -c playwright.perf.config.ts` now records p50 and p95 per metric (the 5th percentile for fps) and judges each budget on BOTH; a run with fewer than 20 samples is marked "not the row's method". The perf server has 26 never-read pages so PF-02 has one per run. | Run exactly that command after `npx vite build`, on a quiet machine — **not this host while it serves production** — and copy p50 / p95 into PERF-RESULTS and the rows. PF-02 and PF-05 also in the production smoke. PF-06: scroll with all 5,000 rows loaded. |
 
 ---
 
 ## Order of work proposed
 
-1. **Slice G (specs only)** and the WebKit harness fixes — no product risk, moves the most rows.
+1. ~~**Slice G (specs only)**~~ — done on `feat/w8-specs` (16 rows moved; 8 behaviour gaps found → slices I–M, all S or M). The WebKit harness fixes are still owed.
 2. **Owner decisions c.1 – c.11** — several rows flip on a yes.
-3. Slice **H** first (a data-shape bug: sub-pages left behind by a title rename), then **A, B, F** (small, independent files), then **C** (agent; touches the server) and **D** (phone).
+3. Slice **H** first (a data-shape bug: sub-pages left behind by a title rename), then **A, B, F** (small, independent files), then **C** (agent; touches the server) and **D** (phone). Then the slices slice G found: **J** first (Suggesting mode loses replaced text — a review-integrity bug), **M** and **K** (small), **L** (export fidelity), **I** (live title).
 4. Slice **E** (native) with the device session, which also clears b.3.
 5. Screenshot session b.2, then measurements (d) on a quiet machine and a device.
