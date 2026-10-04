@@ -582,9 +582,19 @@ function CalChip({ row, ctx, anchorDay, className, style, label, editable, onLoc
       onContextMenu={onLocked ? (e) => { e.preventDefault(); onLocked(); } : undefined}
       style={{ ...style, ...(drag.transform ? { transform: `translate3d(${drag.transform.x}px, ${drag.transform.y}px, 0)`, zIndex: 6, position: "relative" } : {}) }}
       {...drag.listeners}
-      onClick={(e) => ctx.open(row, e)}>{title(row)}</button>
+      onClick={(e) => { if (isDragRelease(e)) { e.preventDefault(); return; } ctx.open(row, e); }}>{title(row)}</button>
   );
 }
+/** Where and when the last calendar drag was released. The click a browser sends after that
+ *  mouseup must not open the page: dnd-kit swallows it only for 50 ms and Safari can deliver it
+ *  later. Only a click at the release point, right after it, is that click. */
+let lastCalendarDrop = { at: 0, x: NaN, y: NaN };
+const noteCalendarDrop = (e: { activatorEvent: Event | null; delta: { x: number; y: number } }) => {
+  const start = e.activatorEvent as MouseEvent | null;
+  lastCalendarDrop = { at: Date.now(), x: (start?.clientX ?? NaN) + e.delta.x, y: (start?.clientY ?? NaN) + e.delta.y };
+};
+const isDragRelease = (e: { clientX: number; clientY: number }) =>
+  Date.now() - lastCalendarDrop.at < 400 && Math.abs(e.clientX - lastCalendarDrop.x) <= 4 && Math.abs(e.clientY - lastCalendarDrop.y) <= 4;
 
 function CalDay({ k, col, children, ...rest }: { k: string; col: number; children: ReactNode } & React.HTMLAttributes<HTMLDivElement>) {
   const drop = useDroppable({ id: `day:${k}`, data: { day: k } });
@@ -641,6 +651,7 @@ export function CalendarView({ ctx, month, onMonth, onPickDate }: { ctx: ViewCon
   // Drag to reschedule (NP-DB-07): the item moves by whole days — its time of day and a
   // range's length are kept — through the same per-field compare-and-set as a cell edit.
   const onDragEnd = (e: DragEndEvent) => {
+    noteCalendarDrop(e);
     const data = e.active.data.current as { row: QueryRow; anchorDay: string } | undefined;
     const target = (e.over?.data.current as { day?: string } | undefined)?.day;
     if (!data || !target || !canMove(data.row)) return;
@@ -662,7 +673,7 @@ export function CalendarView({ ctx, month, onMonth, onPickDate }: { ctx: ViewCon
         <button type="button" className="db-icon-btn" aria-label="Next month" onClick={() => onMonth(new Date(month.getFullYear(), month.getMonth() + 1, 1))}><ChevronRight size={16} /></button>
       </div>
       {problem && <p className="db-notice" role="alert">{problem}</p>}
-      <DndContext sensors={sensors} collisionDetection={pointerWithin} onDragEnd={onDragEnd}>
+      <DndContext sensors={sensors} collisionDetection={pointerWithin} onDragEnd={onDragEnd} onDragCancel={noteCalendarDrop}>
         <div className="db-cal" role="grid" aria-label={`${ctx.view.name} calendar`}>
           <div className="db-cal-week db-cal-dows" role="row">
             {["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map((d) => <div key={d} className="db-cal-dow" role="columnheader">{d}</div>)}
