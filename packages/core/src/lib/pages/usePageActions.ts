@@ -189,6 +189,9 @@ export function usePageActions() {
     toggleLock: async (note: Pick<Note, "id" | "metadata" | "path">) => {
       const locked = isLocked(note);
       try {
+        // Typing that has not been saved yet goes in BEFORE the lock: once locked the
+        // server refuses a content write from everyone, the owner included.
+        if (!locked) await flushPendingSaves(note.id).catch(() => {});
         await ops.setPageMeta(client, note.id, { [LOCK_KEY]: !locked });
         await queryClient.invalidateQueries({ queryKey: queryKeys.vault.note(note.id) });
         toast(locked ? "Page unlocked — anyone with edit access can change it." : "Page locked — editing is off until it’s unlocked.");

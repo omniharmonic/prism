@@ -540,6 +540,30 @@ export class SessionBudgetError extends Error {}
 export class DailyBudgetError extends Error {}
 export class ProfileUnavailableError extends Error {}
 export class NoteForbiddenError extends Error {}
+/** The turn's page is locked and the session could write it around Prism (NP-PG-09). */
+export class NoteLockedError extends Error {}
+export const LOCKED_TURN_MESSAGE = "This page is locked — unlock it or use a read-only session.";
+
+/**
+ * Profiles that write with the VAULT token through the vault's own MCP, where a
+ * page lock (`metadata.prism_locked`, a Prism concept) does not exist. The prism-*
+ * profiles write through the gateway, which refuses a locked page itself.
+ */
+export const bypassesPageLock = (profile: AgentProfile): boolean => profile === "vault-rw" || profile === "skill";
+
+/**
+ * Is this note locked, as far as an agent run is concerned? Read from the vault at
+ * the moment the run starts. A note that cannot be read is not "locked" (a missing
+ * note has nothing to protect; an unreachable vault fails the run anyway).
+ */
+export async function agentNoteLocked(vaultId: string, noteId: string): Promise<boolean> {
+  try {
+    const n = await deps.vaultFor(vaultId).getNote(noteId);
+    return n?.metadata?.prism_locked === true;
+  } catch {
+    return false;
+  }
+}
 export class ReadTokenError extends Error {}
 
 /** vault-ro read tokens outlive the turn's 30-min wall clock plus a queue wait;
@@ -715,6 +739,18 @@ export async function startTurn(
   } catch {
     rollback();
     throw new AgentContextError("An attached note is unavailable or your access has changed. Remove it or retry.");
+  }
+  // NP-PG-09: a locked page refuses edits for everyone. A vault-rw turn would write it
+  // with the vault token, around every Prism check — so a turn whose page (the one it
+  // names, or the one the session is bound to) is locked does not run on that profile.
+  // Read HERE, at turn start: locking a page mid-session stops the next turn.
+  if (bypassesPageLock(s.profile)) {
+    for (const id of new Set([noteId, s.note_id].filter((x): x is string => !!x))) {
+      if (await agentNoteLocked(s.vault_id, id)) {
+        rollback();
+        throw new NoteLockedError(LOCKED_TURN_MESSAGE);
+      }
+    }
   }
   if (firstTurn && noteId && s.profile !== "skill") {
     let n: Note | null = null;

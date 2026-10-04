@@ -798,6 +798,10 @@ export function treeRevisions(): (vaultId: string, noteId: string) => { live: bo
 }
 
 /** Is this note locked, per the projection (best effort; false when unknown). */
-export function treeRowLocked(entry: VaultEntry, id: string): boolean {
-  return states.get(entry.id)?.rows.get(id)?.locked === true;
+/** Lock state of a note BY ID as the projection knows it: true / false, or null when
+ *  the projection cannot say (not loaded, or no row under that id — e.g. a path alias). */
+export function treeLockState(entry: VaultEntry, id: string): boolean | null {
+  const st = states.get(entry.id);
+  const row = st?.rows.get(id);
+  return row ? row.locked === true : null;
 }

@@ -110,3 +110,11 @@ export function registeredEditor(noteId: string): { editor: Editor; live: boolea
   if (!capture?.editor || capture.editor.isDestroyed) return null;
   return { editor: capture.editor, live: capture.document.baseUpdatedAt == null };
 }
+
+/** Which note a registered editor shows (id + its title as registered). */
+export function noteForEditor(editor: Editor | null): { noteId: string; title: string } | null {
+  const state = useDocumentSnapshots.getState();
+  if (!editor || editor.isDestroyed || !state.scope || state.scope !== useAgentChatStore.getState().scope) return null;
+  for (const [noteId, capture] of Object.entries(state.notes)) if (capture.editor === editor) return { noteId, title: capture.document.label };
+  return null;
+}

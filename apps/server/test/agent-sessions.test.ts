@@ -1366,3 +1366,74 @@ test('queue capacity, actor isolation and stale permission reviews fail before a
  assert.equal((await patchFollowup(sid,row.id,{version:row.version,action:'resume',policyVersion:0,payload:row.payload})).status,409);
  assert.equal(listFollowups(sid)[0]!.status,'blocked');assert.equal(calls.length,1);
 });
+
+// ── NP-PG-09: a locked page and agents that write with the vault token ───────
+const lockedNote = (id: string, locked: boolean): Note => ({ id, content: "BODY", path: `pages/${id}`, metadata: locked ? { prism_locked: true } : {}, createdAt: "", updatedAt: null, tags: [] });
+
+test("NP-PG-09: a vault-rw turn bound to a LOCKED page is refused 423 — nothing spawns, the turn is rolled back; unlocking lets it run", async () => {
+  vaultNotes.set("doc", lockedNote("doc", true));
+  const sid = await newSession({ noteId: "doc", profile: "vault-rw" });
+  const r = await postTurn(sid, { prompt: "rewrite the intro" });
+  assert.equal(r.status, 423);
+  const body = (await r.json()) as { error: string; detail: string };
+  assert.equal(body.error, "locked");
+  assert.match(body.detail, /This page is locked — unlock it or use a read-only session/);
+  assert.equal(calls.length, 0, "no claude process was spawned");
+  assert.equal(listTurns(sid).length, 0, "the reserved turn was rolled back");
+  assert.equal(getSession(sid)!.status, "idle");
+  // Unlocked: the very same request runs.
+  vaultNotes.set("doc", lockedNote("doc", false));
+  await runTurn(sid, "rewrite the intro", "agent-stream-turn1.jsonl");
+  assert.equal(calls.length, 1);
+});
+
+test("NP-PG-09: the lock is read at EVERY turn start — locking mid-session stops the next vault-rw turn, also when only the session is bound to the page", async () => {
+  vaultNotes.set("doc", lockedNote("doc", false));
+  const sid = await newSession({ noteId: "doc", profile: "vault-rw" });
+  await runTurn(sid, "first", "agent-stream-turn1.jsonl");
+  vaultNotes.set("doc", lockedNote("doc", true));
+  // A later turn carries no noteId of its own: the session's page still counts.
+  assert.equal((await postTurn(sid, { prompt: "second" })).status, 423);
+  assert.equal(calls.length, 1);
+  assert.equal(listTurns(sid).length, 1);
+});
+
+test("NP-PG-09: a vault-rw turn that NAMES another locked page is refused; an unlocked or unreadable page is not", async () => {
+  vaultNotes.set("free", lockedNote("free", false));
+  vaultNotes.set("other", lockedNote("other", true));
+  const sid = await newSession({ noteId: "free", profile: "vault-rw" });
+  assert.equal((await postTurn(sid, { prompt: "edit that one", noteId: "other" })).status, 423);
+  assert.equal(calls.length, 0);
+  // A note that does not exist has nothing to protect (the open-note read tolerates it too).
+  const r = await postTurn(sid, { prompt: "edit", noteId: "gone" });
+  assert.equal(r.status, 200);
+  assert.equal(calls.length, 1);
+});
+
+test("NP-PG-09: a READ-ONLY session on a locked page runs (it cannot write)", async () => {
+  vaultNotes.set("doc", lockedNote("doc", true));
+  const sid = await newSession({ noteId: "doc", profile: "vault-ro" });
+  await runTurn(sid, "summarize", "agent-stream-turn1.jsonl");
+  assert.equal(calls.length, 1);
+  assert.match(calls[0]!.args.at(-1)!, /<open_note>\nBODY/);
+});
+
+test("NP-PG-09: a one-shot dispatch with the vault's write tools on a locked page is refused 423; the read-only narrowing runs", async () => {
+  vaultNotes.set("doc", lockedNote("doc", true));
+  vaultNotes.set("free", lockedNote("free", false));
+  const dispatch = (body: Record<string, unknown>) => agentApi.request("/dispatch", { method: "POST", headers: { ...J, ...owner() }, body: JSON.stringify(body) });
+  const refused = await dispatch({ prompt: "tidy this page", noteId: "doc" });
+  assert.equal(refused.status, 423);
+  assert.equal(((await refused.json()) as { error: string }).error, "locked");
+  assert.equal(calls.length, 0);
+  // Read-only (what the client's summarize / transform / inline edit use): allowed.
+  assert.equal((await dispatch({ prompt: "summarize", noteId: "doc", profile: "vault-ro", skill: "generate" })).status, 200);
+  assert.equal(calls.length, 1);
+  assert.doesNotMatch(flag(calls[0]!.args, "--allowedTools")!, /update-note|create-note|delete-note/);
+  children.at(-1)!.exit(0);
+  // An unlocked page, or no page at all: unchanged.
+  assert.equal((await dispatch({ prompt: "tidy", noteId: "free" })).status, 200);
+  children.at(-1)!.exit(0);
+  assert.equal((await dispatch({ prompt: "tidy" })).status, 200);
+  children.at(-1)!.exit(0);
+});

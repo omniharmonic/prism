@@ -15,6 +15,7 @@ import { Hono } from "hono";
 import { createHash } from "node:crypto";
 import type { Context } from "hono";
 import { resolveVaultEntry, grantsForResource, isCollabUnsaved, deleteCollabSetAsideForNote, hasCollabSetAside } from "../db";
+import type { VaultEntry } from "../config";
 import { vault, vaultClient, VaultError, VaultConflictError, type Note } from "../parachute";
 import { resolveActor, requestVia, type Actor } from "../auth/actor";
 import { COLLAB_SCHEMA_VERSION } from "@prism/core/editor-schema";
@@ -22,7 +23,7 @@ import { effectiveLevel, effectiveCaps, governedReview, grantedTags, resolvePage
 import { roleAtLeast, roleFloor } from "../roles";
 import { compress } from "hono/compress";
 import { openEventStream } from "../events";
-import { ensureTree, renderTree, etagMatches, treeUpsertNote, treeRemoveNote, treeAfterOwnerWrite, treeRowLocked, warmPageAnchors } from "../tree";
+import { ensureTree, renderTree, etagMatches, treeUpsertNote, treeRemoveNote, treeAfterOwnerWrite, treeLockState, warmPageAnchors } from "../tree";
 import { canvasApi } from "./canvas";
 import { threadsApi } from "./threads";
 import { peopleApi } from "./people";
@@ -137,10 +138,13 @@ async function proxyToVault(c: Context) {
     if ((method === "POST" && path === "/notes") || (method === "PATCH" && /^\/notes\/[^/]+$/.test(path))) init.body = stampChangeJson(stampJsonBody(init.body as string, resolveActor(c)), requestVia(c) === "mcp" ? "agent" : "edit");
     // Any write may change what a cached read would return.
     dropReadCache();
-    // Owner/admin bypass of a page lock is allowed but audited (one line, no content).
-    const lockedId = method === "PATCH" ? path.match(/^\/notes\/([^/?]+)$/)?.[1] : undefined;
-    if (lockedId && treeRowLocked(entry, decodeURIComponent(lockedId)) && /"content"\s*:/.test(init.body as string)) {
-      console.warn(`[pages] lock bypass: ${resolveActor(c).kind === "user" ? (resolveActor(c) as { email: string }).email : "?"} edited locked note ${decodeURIComponent(lockedId)} (vault ${entry.id})`);
+    // NP-PG-09: a locked page refuses CONTENT edits for everyone, the owner and admins
+    // included, until it is unlocked (it used to pass here with a log line). Metadata,
+    // tags and path stay writable through the passthrough, and unlocking has its own
+    // route (POST /notes/:id/meta). Refused before anything reaches the vault.
+    const lockedId = method === "PATCH" || method === "PUT" ? path.match(/^\/notes\/([^/?]+)$/)?.[1] : undefined;
+    if (lockedId && writesContent(init.body as string) && (await ownerWriteLocked(entry, lockedId))) {
+      return c.json({ error: "locked", reason: "This page is locked. Unlock it to edit." }, 423);
     }
   }
   // DELETE /notes/<id or PATH alias>: set-aside rows are keyed by note ID, so an alias is
@@ -181,6 +185,38 @@ async function proxyToVault(c: Context) {
     console.log(`[trace] proxy ${method} ${path}${url.search} → ${res.status} ${res.body.length}B ${Date.now() - t0}ms ua=${(c.req.header("user-agent") ?? "").slice(0, 40)}`);
   }
   return new Response(res.body, { status: res.status, headers: { "Content-Type": res.contentType } });
+}
+
+/** Does this note-write body change the page's BODY (`content`, or the vault's `append` / `prepend`)? */
+export function writesContent(raw: string): boolean {
+  let body: unknown;
+  try {
+    body = JSON.parse(raw);
+  } catch {
+    return false; // not JSON: the vault refuses it
+  }
+  if (!body || typeof body !== "object" || Array.isArray(body)) return false;
+  const b = body as Record<string, unknown>;
+  return b.content !== undefined || b.append !== undefined || b.prepend !== undefined;
+}
+
+/** Is the note an owner/admin write names LOCKED? The tree projection answers when it
+ *  knows the row; otherwise (projection not loaded, or the URL names the note by PATH)
+ *  the note is read. A note that cannot be read is left to the vault to answer. */
+async function ownerWriteLocked(entry: VaultEntry, rawId: string): Promise<boolean> {
+  let id: string;
+  try {
+    id = decodeURIComponent(rawId);
+  } catch {
+    return false;
+  }
+  const known = treeLockState(entry, id);
+  if (known !== null) return known;
+  try {
+    return isLocked(await vaultClient(entry.id, { timeoutMs: 5000 }).getNote(id));
+  } catch {
+    return false;
+  }
 }
 
 interface ProxiedResponse {

@@ -25,6 +25,7 @@ import {
   Search,
   Bot,
   LayoutTemplate,
+  Sparkles,
 } from "lucide-react";
 import { requestFindInPage } from "../../lib/tiptap/findShortcuts";
 import { useCollabSharing } from "../../data/CollabSharing";
@@ -39,6 +40,10 @@ import { useNoteShortcuts } from "../navigation/NoteShortcuts";
 import { isVaultNoteId } from "../../lib/noteIdentity";
 import { TEMPLATE_TAG, isLocked, isTrashed, pageStyleOf, protectionReason } from "../../lib/pages/model";
 import { useViewerIsGuest } from "../sharing/SharedWithMe";
+import { useHostServices } from "../../data/HostServicesContext";
+import { useDocumentSnapshots } from "../../lib/agent/documentSnapshots";
+import { pageAgentReady, requestPageAgent, type PageAgentKind } from "../../lib/agent/pageActions";
+import { useSyncStore } from "../../lib/sync/syncState";
 import { usePagesUI, type PageRef } from "../../lib/pages/store";
 import { usePageActions, pageLink } from "../../lib/pages/usePageActions";
 import { printCurrentPage, useTransferUI } from "../../lib/import-export/store";
@@ -80,6 +85,11 @@ export function usePageMenuItems(
   // view/comment-only reader, a page that is already a template, or one in the Trash.
   const guest = useViewerIsGuest();
   const canTemplate = !!note && !guest && (!caps || caps.includes("create")) && !(note.tags ?? []).includes(TEMPLATE_TAG) && !isTrashed(note);
+  // NP-AI-03: Summarize / Draft / Transform for the page that is open in a text editor —
+  // only where this viewer has the agent (host services: the server owner today).
+  const agentHost = useHostServices();
+  useDocumentSnapshots((st) => st.notes[page.id]?.editor);
+  const online = useSyncStore((st) => st.online);
   const isFav = favoriteIds.includes(page.id);
   const offline = useOfflineAvailability(real ? page.id : null);
   // Per-page style (NP-PG-08): font = the page's own contentFont (the open
@@ -191,6 +201,18 @@ export function usePageMenuItems(
         if (!useUIStore.getState().contextPanelOpen) ui.toggleContextPanel();
       }),
     },
+    ...(agentHost && isActive && pageAgentReady(page.id)
+      ? ([["summarize", "Summarize page"], ["draft", "Draft with agent…"], ["transform", "Transform with agent…"]] as Array<[PageAgentKind, string]>).map(([kind, label], i) => ({
+          id: `agent-${kind}`,
+          label,
+          icon: <Sparkles size={15} />,
+          startsGroup: i === 0,
+          disabled: !online,
+          detail: online ? undefined : "You’re offline",
+          // After the menu has closed and handed focus back (the panel then takes it).
+          onClick: run(() => { window.setTimeout(() => requestPageAgent(page.id, page.title, kind, "page"), 60); }),
+        }))
+      : []),
     {
       id: "trash",
       label: "Move to Trash",

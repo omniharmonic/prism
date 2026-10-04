@@ -178,6 +178,45 @@ test("LOCK: content writes and restores on a locked note → 423; toggling needs
   assert.equal(fv.notes.get("n")!.content, "c");
 });
 
+// NP-PG-09: "refuses edits for everyone, including the owner, until unlocked".
+test("LOCK: the owner passthrough refuses CONTENT writes on a locked note → 423; metadata and unlock still work", async () => {
+  fv.put({ id: "n", path: "Team/N", content: "c", tags: ["team"], metadata: { prism_locked: true, status: "draft" } });
+  fv.put({ id: "free", path: "Team/Free", content: "f", tags: ["team"] });
+  const owner = as(OWNER);
+  const put = (id: string, body: unknown) => req(`/notes/${id}`, { method: "PUT", cookie: owner, headers: J, body: JSON.stringify(body) });
+  const before = fv.calls.length;
+  const refused = await patch("n", { content: "changed", if_updated_at: stamp("n") }, owner);
+  assert.equal(refused.status, 423);
+  assert.equal(((await refused.json()) as { error: string }).error, "locked");
+  assert.equal((await patch("n", { append: "more" }, owner)).status, 423, "append is a body write");
+  assert.equal((await patch("n", { content: "changed", metadata: { status: "x" } }, owner)).status, 423, "a mixed write is refused whole");
+  assert.equal((await put("n", { content: "changed" })).status, 423, "PUT too");
+  assert.equal((await patch(encodeURIComponent("Team/N"), { content: "changed" }, owner)).status, 423, "named by its path");
+  assert.equal(fv.notes.get("n")!.content, "c");
+  assert.equal(fv.calls.slice(before).filter((c) => c.method !== "GET").length, 0, "no write reached the vault");
+  // Not content: properties and tags stay writable while locked.
+  assert.equal((await patch("n", { metadata: { status: "final" }, if_updated_at: stamp("n") }, owner)).status, 200);
+  assert.equal(fv.notes.get("n")!.metadata!.status, "final");
+  assert.equal(fv.notes.get("n")!.metadata!.prism_locked, true);
+  // Another page is unaffected.
+  assert.equal((await patch("free", { content: "f2", if_updated_at: stamp("free") }, owner)).status, 200);
+  // Unlock (its own route), then the same write goes through.
+  assert.equal((await post("/notes/n/meta", { set: { prism_locked: false }, if_updated_at: stamp("n") }, owner)).status, 200);
+  assert.equal((await patch("n", { content: "changed", if_updated_at: stamp("n") }, owner)).status, 200);
+  assert.equal(fv.notes.get("n")!.content, "changed");
+});
+
+test("LOCK: the lock is honoured from the tree projection once it is loaded (no extra vault read)", async () => {
+  fv.put({ id: "n", path: "Team/N", content: "c", tags: ["team"], metadata: { prism_locked: true } });
+  const owner = as(OWNER);
+  assert.equal((await req("/tree", { cookie: owner })).status, 200); // builds the projection
+  const before = fv.calls.length;
+  assert.equal((await patch("n", { content: "changed", if_updated_at: stamp("n") }, owner)).status, 423);
+  // (The editor-schema gate reads the stored note for every content write; the lock check adds no read of its own.)
+  assert.deepEqual(fv.calls.slice(before).map((c) => c.method), ["GET"], "one read (the schema gate), no write, none for the lock");
+  assert.equal(fv.notes.get("n")!.content, "c");
+});
+
 test("LOCK: the collab socket is read-only on a locked note", async () => {
   fv.put({ id: "lk", path: "Team/Lk", content: "<p>x</p>", tags: ["team"], metadata: { prism_locked: true } });
   grantUser("ed@test.local", "tag", "team", "edit");

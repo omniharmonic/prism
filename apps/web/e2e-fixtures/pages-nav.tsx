@@ -60,7 +60,7 @@ const moves = new Map<string, { from: string; to: string }>();
 Object.assign(window, { prismFixtureUI: useUIStore, prismFixtureNotes: notes, prismFixtureWrites: writes, prismFixturePrefs: () => ({ prefs, revision }) });
 // Wave 3A: `notion-transfer.html` loads this fixture with an extension (extra seed
 // notes, the import/export routes, a viewer role). Absent → nothing changes.
-const extension = (window as unknown as { prismFixtureExtension?: { seed?: (notes: Note[], make: typeof doc, stamp: () => string) => void; fetch?: (url: URL, method: string, init?: RequestInit) => Promise<Response | null>; sharing?: Record<string, unknown> } }).prismFixtureExtension;
+const extension = (window as unknown as { prismFixtureExtension?: { seed?: (notes: Note[], make: typeof doc, stamp: () => string) => void; fetch?: (url: URL, method: string, init?: RequestInit) => Promise<Response | null>; sharing?: Record<string, unknown>; /** Extra providers around the app (e.g. host services, an agent client). */ wrap?: (app: React.ReactNode) => React.ReactNode } }).prismFixtureExtension;
 extension?.seed?.(notes, doc, stamp);
 
 const json = (body: unknown, status = 200) => Response.json(body, { status });
@@ -237,6 +237,6 @@ useUIStore.setState({ contextPanelOpen: false, sidebarWidth: 260, sidebarOpen: t
 const open = byId(params.get("open") ?? "living");
 createRoot(document.getElementById("root")!).render(
   <React.StrictMode><PlatformProvider value="web"><VaultClientProvider client={httpVaultClient}><CollabSharingProvider value={{ createShareLink: async () => "", ...(extension?.sharing ?? {}), ...(params.has("guest") ? { getViewer: async () => ({ email: "guest@example.test", role: "guest" as const, isServerOwner: false, vaultId: "primary" }) } : {}) }}>
-    <App skipOnboarding initialTab={open ? { id: open.id, title: pageTitle(open.path), type: "document" } : undefined} />
+    {(extension?.wrap ?? ((app: React.ReactNode) => app))(<App skipOnboarding initialTab={open ? { id: open.id, title: pageTitle(open.path), type: "document" } : undefined} />)}
   </CollabSharingProvider></VaultClientProvider></PlatformProvider></React.StrictMode>,
 );

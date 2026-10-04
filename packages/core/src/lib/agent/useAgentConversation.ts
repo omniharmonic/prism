@@ -50,6 +50,8 @@ export function agentErrorText(e: unknown): string {
     if (e.code === "budget_exceeded") return "This session reached its spending cap. Start a new session to keep going.";
     if (e.code === "daily_budget_exceeded") return "You've reached today's agent budget. It resets at midnight.";
     if (e.code === "profile_unavailable") return "That agent profile is turned off on the server. Start a new session with another profile.";
+    // NP-PG-09: a Read-write (vault) session does not run on a locked page.
+    if (e.code === "locked") return e.detail ?? "This page is locked — unlock it or use a read-only session.";
     if (e.code === "busy") return "The agent queue is full right now. Try again in a minute.";
     if (e.code === "unavailable") return "The agent is temporarily unavailable. Try again shortly.";
     if (e.status === 403) return e.detail ? `Not allowed: ${e.detail}` : "You don't have access to the agent.";

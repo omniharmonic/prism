@@ -99,6 +99,8 @@ import {
   SessionNotFoundError,
   SessionBudgetError,
   NoteForbiddenError,
+  NoteLockedError,
+  agentNoteLocked,
   ReadTokenError,
   type LiveMessage,
   type SessionRow,
@@ -151,6 +153,13 @@ agentApi.post("/dispatch", async (c) => {
   // transform / generate / chat) follows the server-side per-skill routing.
   // Only the narrowed `vault-ro` one-shot is routed — a full-tools dispatch
   // always stays on claude.
+  // NP-PG-09: a one-shot run with the vault's WRITE tools, bound to a locked page,
+  // is refused — it would write that page with the vault token, around the lock.
+  // The read-only narrowing (`vault-ro`: inline edit / summarize / transform, which
+  // only return text) is unaffected.
+  if (noteId && body.profile !== "vault-ro" && (await agentNoteLocked(entry.id, noteId))) {
+    return c.json({ error: "locked", detail: "This page is locked — unlock it, or run this as a read-only request." }, 423);
+  }
   const route = body.profile === "vault-ro" && isInteractiveSkill(skill) ? routeFor(skill) : null;
   if (route?.provider === "local") {
     const prompt = body.prompt;
@@ -516,6 +525,7 @@ agentApi.post("/sessions/:id/turns", async (c) => {
     if (e instanceof DailyBudgetError) return c.json({ error: "daily_budget_exceeded", detail: e.message }, 409);
     if (e instanceof ProfileUnavailableError) return c.json({ error: "profile_unavailable", detail: e.message }, 409);
     if (e instanceof NoteForbiddenError) return c.json({ error: "forbidden", detail: e.message }, 403);
+    if (e instanceof NoteLockedError) return c.json({ error: "locked", detail: e.message }, 423);
     if (e instanceof SessionNotFoundError) return c.json({ error: "not_found" }, 404);
     if (e instanceof AgentBusyError) return c.json({ error: "busy", detail: e.message }, 503);
     if (e instanceof ReadTokenError) return c.json({ error: "unavailable", detail: e.message }, 503);

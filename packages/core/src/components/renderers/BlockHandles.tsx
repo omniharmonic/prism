@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import type { Editor } from "@tiptap/react";
 import { TextSelection, type Transaction } from "@tiptap/pm/state";
-import { GripVertical, Plus, Copy, CopyPlus, Trash2, ArrowUp, ArrowDown, Repeat2, Palette, FolderInput, MessageSquarePlus, Sparkles, FileText } from "lucide-react";
+import { GripVertical, Plus, Copy, CopyPlus, Trash2, ArrowUp, ArrowDown, Repeat2, Palette, FolderInput, MessageSquarePlus, Sparkles, FileText, Wand2 } from "lucide-react";
 import { BLOCK_COLORS, type BlockColorValue } from "../../editor/blocks";
 import {
   TURN_INTO,
@@ -30,6 +30,10 @@ import { blockSelectionActive, blockSelectionRange, selectBlocks } from "../../l
 import { appendBlocksToPage, blocksToHtml, canMoveBlocksToPage, carryAttachments, copyBlocks, moveFailureText, newMoveRequestId } from "../../lib/tiptap/moveBlock";
 import { suppressTrashOffer } from "../../lib/tiptap/childPage";
 import { useSelectionAsk } from "../../lib/agent/useSelectionAsk";
+import { useHostServices } from "../../data/HostServicesContext";
+import { noteForEditor } from "../../lib/agent/documentSnapshots";
+import { requestPageAgent, type PageAgentKind } from "../../lib/agent/pageActions";
+import { useSyncStore } from "../../lib/sync/syncState";
 import { useOptionalVaultClient } from "../../data/VaultClientContext";
 import { noteLinkTitle } from "../../lib/wikilinks";
 import { inferContentType } from "../../lib/schemas/content-types";
@@ -101,6 +105,8 @@ export function BlockHandles({ editor, enabled, notes, noteId, onComment }: Bloc
   const [notice, setNotice] = useState<string | null>(null);
   const client = useOptionalVaultClient();
   const agent = useSelectionAsk(editor);
+  const agentHost = useHostServices();
+  const online = useSyncStore((st) => st.online);
   const [coarse, setCoarse] = useState(() => typeof window !== "undefined" && window.matchMedia(COARSE).matches);
   const [drop, setDrop] = useState<Drop | null>(null);
   const handleRef = useRef<HTMLButtonElement>(null);
@@ -448,6 +454,14 @@ export function BlockHandles({ editor, enabled, notes, noteId, onComment }: Bloc
       // The block's text becomes the selection context of the SAME document-bound session.
       if (at && selectBlockText(at)) agent.ask("selection");
     } }] : []),
+    // NP-AI-03: the block as the agent's selection — the result is a proposal to review.
+    ...(agentHost && hasText ? ([["summarize", "Summarize with agent"], ["draft", "Draft with agent…"], ["transform", "Transform with agent…"]] as Array<[PageAgentKind, string]>).map(([kind, label]) => ({
+      id: `agent-${kind}`, label, icon: <Wand2 size={15} />, keywords: "ai rewrite shorter longer grammar tone translate continue expand", disabled: !online, onSelect: () => {
+        const at = locateBlock(editor, hovered.ref);
+        setMenu(null);
+        const open = noteForEditor(editor);
+        if (open && at && selectBlockText(at)) requestPageAgent(open.noteId, open.title, kind, "selection");
+      } })) : []),
     { id: "up", label: "Move up", icon: <ArrowUp size={15} />, hint: isMac ? "⌘⇧↑" : "Ctrl+Shift+↑", disabled: hovered.index === 0, onSelect: () => run((at) => moveTopBlockIn(editor, at.index, at.index - 1)) },
     { id: "down", label: "Move down", icon: <ArrowDown size={15} />, hint: isMac ? "⌘⇧↓" : "Ctrl+Shift+↓", disabled: hovered.index >= editor.state.doc.childCount - 1, onSelect: () => run((at) => moveTopBlockIn(editor, at.index, at.index + 2)) },
     { id: "delete", label: "Delete", icon: <Trash2 size={15} />, danger: true, onSelect: () => run((at) => deleteTopBlock(editor.state, at.pos)) },

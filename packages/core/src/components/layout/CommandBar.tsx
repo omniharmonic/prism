@@ -34,6 +34,7 @@ import { printCurrentPage, useTransferUI } from "../../lib/import-export/store";
 import { useCanManageTransfers } from "../import-export/ImportExportHost";
 import { useNoteShortcuts } from "../navigation/NoteShortcuts";
 import { usePagesUI } from "../../lib/pages/store";
+import { requestPageAgent, type PageAgentKind } from "../../lib/agent/pageActions";
 import { openShortcutSheet } from "../renderers/ShortcutSheet";
 import { shortcutKeys } from "../../lib/shortcuts";
 import { openInNewTab } from "../../lib/pages/openInNewTab";
@@ -222,6 +223,18 @@ export function CommandBar() {
       icon: <Printer size={15} />,
       action: () => { closeCommandBar(); printCurrentPage(); },
     }] : []),
+    // NP-AI-03: agent actions on the open page (or its selection) — where this viewer has the agent.
+    ...(host && activeIsNote && activeTab ? ([["summarize", "Summarize Page"], ["draft", "Draft with Agent…"], ["transform", "Transform with Agent…"]] as Array<[PageAgentKind, string]>).map(([kind, label]) => ({
+      id: `agent-${kind}`, label, category: "agent" as const,
+      icon: <Sparkles size={15} />,
+      action: () => {
+        closeCommandBar();
+        // A selection in the page is the subject when there is one; else the whole page.
+        window.setTimeout(() => {
+          if (kind === "summarize" || !requestPageAgent(activeTab.noteId, activeTab.title, kind, "selection")) requestPageAgent(activeTab.noteId, activeTab.title, kind, "page");
+        }, 60);
+      },
+    })) : []),
     ...(activeIsNote && activeTab ? [{
       id: "move-page", label: "Move Page To…", category: "navigate" as const,
       icon: <FolderInput size={15} />,
