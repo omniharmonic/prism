@@ -410,6 +410,8 @@ test("lock: when the page's unsaved typing cannot be saved, the page is NOT lock
   expect((await page.evaluate(() => (window as any).prismFixtureNotes.find((n: any) => n.id === "plan").metadata.prism_locked)) ?? false).toBe(false);
   // Once saving works again the lock goes through, with the typing saved first.
   await page.evaluate(() => { (window as any).prismTransfer.control.failSaves = false; });
+  // The kept save goes out on its own once the server answers again.
+  await expect.poll(() => page.evaluate(() => (window as any).prismFixtureNotes.find((n: any) => n.id === "plan").content.includes("unsaved words")), { timeout: 20_000 }).toBe(true);
   await (await pageMenu(page)).getByRole("menuitem", { name: "Lock page", exact: true }).click();
   await expect(page.locator(".page-toast")).toContainText("Page locked");
   const stored = await page.evaluate(() => (window as any).prismFixtureNotes.find((n: any) => n.id === "plan"));

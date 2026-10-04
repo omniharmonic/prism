@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { LayoutTemplate, X } from "lucide-react";
 import { useVaultClient } from "../../data/VaultClientContext";
+import { useCollabSharing } from "../../data/CollabSharing";
 import { useAgentChatStore } from "../../lib/agent/chatStore";
 import { useUIStore } from "../../app/stores/ui";
 import { inferContentType } from "../../lib/schemas/content-types";
@@ -44,6 +45,12 @@ export function TemplatesGallery({ onClose }: { onClose: () => void }) {
   const [busy, setBusy] = useState<string | null>(null);
   const [notice, setNotice] = useState<{ message: string; tone?: "error"; undo?: PageRef } | null>(null);
   const pendingUndo = useRef<PageRef | null>(null);
+  // Who is looking: decides "Private to you" and whether the share toggle is offered.
+  const sharing = useCollabSharing();
+  const viewer = useQuery({ queryKey: ["viewer-role", client.scope?.() ?? audience], enabled: !!sharing?.getViewer, queryFn: () => sharing!.getViewer!(), staleTime: 5 * 60_000, retry: 1 });
+  const me = viewer.data?.email?.toLowerCase() ?? null;
+  // One rename per commit: Enter and the field's blur can both fire for the same edit.
+  const renameSent = useRef<string | null>(null);
   const templates = useQuery({
     queryKey: ["vault", "templates", "gallery", scope],
     queryFn: async () => (withoutTrashed(await client.listNotes({ tag: TEMPLATE_TAG })) as Row[]).filter((n) => n.tags?.includes(TEMPLATE_TAG)),
@@ -120,7 +127,28 @@ export function TemplatesGallery({ onClose }: { onClose: () => void }) {
       setBusy(null);
     }
   };
+  /** 🔒 Sharing a template is a deliberate act: it is private until someone says otherwise. */
+  const setShared = async (n: Row, shared: boolean) => {
+    if (!me) return;
+    setBusy(n.id);
+    try {
+      const fresh = await client.getNote(n.id, { fresh: true });
+      await client.updateNote(n.id, {
+        metadata: shared ? { prism_visibility: null } : { prism_visibility: "private", prism_creator: me },
+        ...(fresh.updatedAt ? { ifUpdatedAt: fresh.updatedAt } : {}),
+      });
+      await refresh();
+      setNotice({ message: shared ? `“${templateName(n)}” is now shared with the workspace.` : `“${templateName(n)}” is private to you again.` });
+    } catch (e) {
+      setNotice({ message: ops.pageErrorText(e, "Couldn’t change who can use this template. Nothing was changed."), tone: "error" });
+    } finally {
+      setBusy(null);
+    }
+  };
   const rename = async (n: Row, index: number) => {
+    const token = `${n.id}\u0000${renaming?.value ?? ""}`;
+    if (!renaming || renaming.id !== n.id || renameSent.current === token) return;
+    renameSent.current = token;
     const name = (renaming?.value ?? "").split("/").join("-").trim().slice(0, 200);
     setRenaming(null);
     if (!name || name === templateName(n)) { focusRow(index, "rename"); return; }
@@ -217,6 +245,11 @@ export function TemplatesGallery({ onClose }: { onClose: () => void }) {
             const canEdit = !caps || caps.includes("edit");
             const canDelete = (!caps || caps.includes("delete")) && !protectionReason(n);
             const editing = renaming?.id === n.id;
+            const isPrivate = n.metadata?.prism_visibility === "private";
+            const creator = typeof n.metadata?.prism_creator === "string" ? n.metadata.prism_creator.toLowerCase() : null;
+            const mine = !!me && (creator === me || (n as Row & { _creator?: { me?: boolean } })._creator?.me === true);
+            // Only someone who may change a page's visibility (no caps on the read = owner/admin) is offered the toggle.
+            const canShare = !caps && !!me && (!isPrivate || mine || !creator);
             return (
               <div key={n.id} role="listitem" data-template-row={n.id} className="template-row" aria-label={name}>
                 <span className="template-row-icon" aria-hidden="true">{icon ?? <LayoutTemplate size={16} />}</span>
@@ -239,7 +272,7 @@ export function TemplatesGallery({ onClose }: { onClose: () => void }) {
                   ) : (
                     <div className="label">{name}</div>
                   )}
-                  <div className="crumb">{edited(n.updatedAt)}</div>
+                  <div className="crumb">{[isPrivate ? (mine ? "Private to you" : "Private to its creator") : "Shared with the workspace", edited(n.updatedAt)].filter(Boolean).join(" · ")}</div>
                 </div>
                 <div className="template-row-actions">
                   <button type="button" data-action="use" className="trash-action focus-ring" data-primary="true" aria-label={`Use ${name}`} disabled={busy === n.id} onClick={() => use(n)}>
@@ -249,8 +282,15 @@ export function TemplatesGallery({ onClose }: { onClose: () => void }) {
                     Edit
                   </button>
                   {canEdit && (
-                    <button type="button" data-action="rename" className="trash-action focus-ring" aria-label={`Rename ${name}`} disabled={busy === n.id || editing} onClick={() => setRenaming({ id: n.id, value: name })}>
+                    <button type="button" data-action="rename" className="trash-action focus-ring" aria-label={`Rename ${name}`} disabled={busy === n.id || editing} onClick={() => { renameSent.current = null; setRenaming({ id: n.id, value: name }); }}>
                       Rename
+                    </button>
+                  )}
+                  {canShare && (
+                    <button type="button" data-action="share" className="trash-action focus-ring" aria-pressed={!isPrivate}
+                      aria-label={isPrivate ? `Share ${name} with the workspace` : `Make ${name} private`} disabled={busy === n.id}
+                      onClick={() => void setShared(n, isPrivate)}>
+                      {isPrivate ? "Share" : "Make private"}
                     </button>
                   )}
                   {canDelete && (

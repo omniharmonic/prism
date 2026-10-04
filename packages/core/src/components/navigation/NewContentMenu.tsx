@@ -292,13 +292,26 @@ function CreateContent({
         params = copy;
         openType = inferContentType({ ...source, metadata: copy.metadata, tags: copy.tags });
       }
-      const note = await client.createNote(params);
+      let note;
+      let droppedTags: string[] = [];
+      try {
+        note = await client.createNote(params);
+      } catch (e) {
+        // A template's remembered tags go through the normal create rules. If this
+        // person has no standing in one of them the page is still created — without
+        // the tags — and they are told which (never a failed create).
+        const tags = (params as { tags?: string[] }).tags ?? [];
+        if (!template || !tags.length || !(e instanceof Error) || !/\b403\b/.test(e.message)) throw e;
+        note = await client.createNote({ ...params, tags: [] });
+        droppedTags = tags;
+      }
       // A page made from a template gets its OWN copies of the template's files (its links
       // otherwise name the template's attachments, which only the template's viewers load).
       if (template && client.copyAttachments && referencesAttachments(params)) await client.copyAttachments(note.id).catch(() => null);
       if (!alive.current || !current()) return;
       void queryClient.invalidateQueries({ queryKey: ["vault"] });
       useUIStore.getState().openTab(note.id, input.title, openType);
+      if (droppedTags.length) usePagesUI.getState().showToast({ message: `Created without the template’s tag${droppedTags.length === 1 ? "" : "s"} ${droppedTags.map((t) => `“${t}”`).join(", ")} — not applied, because you can’t add pages to ${droppedTags.length === 1 ? "it" : "them"}.` });
       onClose();
     } catch (e) {
       if (alive.current && current())

@@ -74,6 +74,11 @@ Object.assign(window, {
         const note = seeded.find((n) => n.id === id || n.path === id);
         if (note) return Response.json({ ...note, _caps: readCaps });
       }
+      // …and so do list rows (the gallery reads its affordances from them).
+      if (url.pathname === "/api/notes" && method === "GET" && readCaps) {
+        const tag = url.searchParams.get("tag");
+        return Response.json(seeded.filter((n) => !tag || n.tags?.includes(tag)).map((n) => ({ ...n, content: undefined, _caps: readCaps })));
+      }
       const body = typeof init?.body === "string" && init.body ? (JSON.parse(init.body) as Record<string, unknown>) : {};
       if (one && method === "PATCH" && control.failSaves && typeof body.content === "string") return Response.json({ error: "vault_unreachable" }, { status: 502 });
       if (url.pathname === "/api/notes" && method === "POST" && control.denyTags && Array.isArray(body.tags) && body.tags.some((t) => t !== "template")) {

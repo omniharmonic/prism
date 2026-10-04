@@ -191,6 +191,6 @@ button.page-crumb:hover { background: var(--surface-hover); color: var(--text-pr
   /* Phone: the name on its own line, the actions under it (44 px targets). */
   .template-row { flex-wrap: wrap; padding: 8px 6px 8px 10px; }
   .template-row .trash-row-main { flex: 1 1 calc(100% - 40px); }
-  .template-row-actions { flex: 1 1 100%; padding-left: 32px; gap: 4px; }
+  .template-row-actions { flex: 1 1 100%; flex-wrap: wrap; padding-left: 32px; gap: 4px; }
   .template-row-actions .trash-action { min-height: 44px; padding: 0 12px; }
 }

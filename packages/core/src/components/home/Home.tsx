@@ -71,7 +71,7 @@ export default function Home(_props: RendererProps) {
   const allTasks = useQuery({
     queryKey: queryKeys.vault.notes({ tag: "task", limit: 300 }),
     queryFn: () => client.listNotes({ tag: "task", limit: 300 }),
-    select: (list: Note[]) => list.filter((n) => !(n.tags ?? []).includes("prism-trashed")),
+    select: (list: Note[]) => list.filter((n) => !(n.tags ?? []).includes("prism-trashed") && !(n.tags ?? []).includes("template")),
     enabled: !scoped,
   });
   const tasks = scoped
