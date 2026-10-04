@@ -831,7 +831,7 @@ function ScopedCollabDoc({
             }}
           >
             <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 6 }}>
-              <button onClick={() => setCommentsOpen(false)} style={{ background: "none", border: "none", color: "var(--text-muted)", cursor: "pointer", padding: 4 }}>
+              <button type="button" aria-label="Close comments" onClick={() => setCommentsOpen(false)} style={{ background: "none", border: "none", color: "var(--text-muted)", cursor: "pointer", padding: 4 }}>
                 <X size={18} />
               </button>
             </div>
