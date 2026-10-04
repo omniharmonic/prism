@@ -34,7 +34,8 @@ import { printCurrentPage, useTransferUI } from "../../lib/import-export/store";
 import { useCanManageTransfers } from "../import-export/ImportExportHost";
 import { useNoteShortcuts } from "../navigation/NoteShortcuts";
 import { usePagesUI } from "../../lib/pages/store";
-import { requestPageAgent, type PageAgentKind } from "../../lib/agent/pageActions";
+import { pageAgentReady, requestPageAgent, type PageAgentKind } from "../../lib/agent/pageActions";
+import { useDocumentSnapshots } from "../../lib/agent/documentSnapshots";
 import { openShortcutSheet } from "../renderers/ShortcutSheet";
 import { shortcutKeys } from "../../lib/shortcuts";
 import { openInNewTab } from "../../lib/pages/openInNewTab";
@@ -157,6 +158,9 @@ export function CommandBar() {
   const { toggleContextPanel, setContextPanelTab, openTabs, activeTabId } = useUIStore();
   const activeTab = openTabs.find((t) => t.id === activeTabId);
   const activeIsNote = isAskableNoteId(activeTab?.noteId);
+  // Is the page in front open in a text editor? (Re-read when an editor registers or leaves.)
+  const activeEditor = useDocumentSnapshots((st) => (activeTab?.noteId ? st.notes[activeTab.noteId]?.editor : undefined));
+  const agentReady = !!activeEditor && pageAgentReady(activeTab?.noteId);
 
   const commands: Command[] = useMemo(() => [
     // Create commands
@@ -223,8 +227,9 @@ export function CommandBar() {
       icon: <Printer size={15} />,
       action: () => { closeCommandBar(); printCurrentPage(); },
     }] : []),
-    // NP-AI-03: agent actions on the open page (or its selection) — where this viewer has the agent.
-    ...(host && activeIsNote && activeTab ? ([["summarize", "Summarize Page"], ["draft", "Draft with Agent…"], ["transform", "Transform with Agent…"]] as Array<[PageAgentKind, string]>).map(([kind, label]) => ({
+    // NP-AI-03: agent actions on the open page (or its selection) — where this viewer has the agent
+    // AND the page is open in a text editor (never on a sheet, canvas, code or virtual tab: no dead entries).
+    ...(host && activeIsNote && activeTab && agentReady ? ([["summarize", "Summarize Page"], ["draft", "Draft with Agent…"], ["transform", "Transform with Agent…"]] as Array<[PageAgentKind, string]>).map(([kind, label]) => ({
       id: `agent-${kind}`, label, category: "agent" as const,
       icon: <Sparkles size={15} />,
       action: () => {
@@ -423,7 +428,7 @@ export function CommandBar() {
         closeCommandBar();
       },
     }] : []),
-  ], [favoriteIds, toggleFavorite, createCommand, activeTab, activeIsNote, agentChat, canTransfer, closeCommandBar, toggleContextPanel, setContextPanelTab, createNote, openTab, hostCmds, host, vaultClient, surface, transformNote]);
+  ], [favoriteIds, toggleFavorite, createCommand, activeTab, activeIsNote, agentReady, agentChat, canTransfer, closeCommandBar, toggleContextPanel, setContextPanelTab, createNote, openTab, hostCmds, host, vaultClient, surface, transformNote]);
 
   // Filter commands by query
   const filteredCommands = useMemo(() => {

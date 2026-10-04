@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import { Check, Copy, FileText, Loader2, Sparkles, TextSelect, X } from "lucide-react";
 import { useHostServices } from "../../data/HostServicesContext";
 import { hostServiceErrorText, HostServiceError, type HostServices } from "../../lib/host/services";
@@ -18,7 +18,7 @@ import {
   optionLabel,
   pageAgentSkill,
   resultParagraphs,
-  selectionIntact,
+  replaceRefusal,
   usePageAgent,
   validOption,
   writeRefusal,
@@ -92,7 +92,9 @@ function PageAgentPanel({ host, request }: { host: HostServices; request: PageAg
     setPhase("running");
     const abort = new AbortController();
     controller.current = abort;
-    host.agentText(built.prompt, { skill: pageAgentSkill(request.kind), noteId: request.noteId, timeoutMs: 3 * 60_000, signal: abort.signal }).then(
+    // A TEXT-ONLY run: the agent gets this prompt and nothing else — no vault tools, no
+    // note id (review 10). That is what makes the "Sources" list below complete.
+    host.agentText(built.prompt, { skill: pageAgentSkill(request.kind), textOnly: true, timeoutMs: 3 * 60_000, signal: abort.signal }).then(
       (text) => {
         if (seq !== runSeq.current) return;
         if (!resultParagraphs(text).length) {
@@ -154,14 +156,23 @@ function PageAgentPanel({ host, request }: { host: HostServices; request: PageAg
   const locked = isLocked(note);
   const refusal = writeRefusal(editor, locked);
   const selectionWhole = !!request.selection && request.selection.text.length <= PAGE_AGENT_MAX_SELECTION;
-  const canReplace = !refusal && !!editor && !!request.selection && selectionWhole && selectionIntact(editor, request.selection);
+  // Where the selection is NOW (positions are mapped through every change to the page),
+  // and whether replacing it would lose anything. Re-judged on every editor transaction.
+  const [, rejudge] = useReducer((n: number) => n + 1, 0);
+  useEffect(() => {
+    if (!editor) return;
+    editor.on("transaction", rejudge);
+    return () => { editor.off("transaction", rejudge); };
+  }, [editor]);
+  const whyNotReplace = !request.selection ? "" : !selectionWhole ? "" : editor && !refusal ? replaceRefusal(request, editor) : "";
+  const canReplace = !refusal && !!editor && !!request.selection && selectionWhole && !whyNotReplace;
 
   const apply = (placement: PageAgentPlacement) => {
     const now = registeredEditor(request.noteId)?.editor ?? null;
     const why = writeRefusal(now, isLocked(note));
     if (why || !now) { setNotice(why || "The page is no longer open."); return; }
     if (!applyPageAgentResult(now, result, placement, request)) {
-      setNotice(placement === "replace" ? "The selected text changed while the agent was working, so it was not replaced. Insert the result below, or copy it." : "The result could not be inserted here. Copy it instead.");
+      setNotice(placement === "replace" ? `${replaceRefusal(request, now) || "The selection could not be replaced."} Insert the result below, or copy it.` : "The result could not be inserted here. Copy it instead.");
       return;
     }
     usePagesUI.getState().showToast({ message: placement === "replace" ? "Selection replaced. Undo brings the original back." : "Inserted into the page. Undo removes it." });
@@ -289,6 +300,7 @@ function PageAgentPanel({ host, request }: { host: HostServices; request: PageAg
           )}
           <Sources sources={sources} />
           {refusal && <p className="page-agent-note" role="note">{refusal}</p>}
+          {!refusal && whyNotReplace && <p className="page-agent-note" role="note">{whyNotReplace} You can insert the result below it, or copy it.</p>}
           {notice && <p className="page-agent-note" role="alert">{notice}</p>}
           <div className="page-agent-actions">
             {!refusal && placements.map((p, i) => (
