@@ -21,6 +21,10 @@
  *  8. Client parity C: img-src stays exactly 'self' data: blob: + the server (external images and the
  *     basemap come through the server's /api/media + /api/map proxies, never a widened CSP), and the
  *     bundle carries the proxy wiring (blob-URL image proxy, prismmap:// basemap protocol).
+ *  9. Links + New Page (NP-NA-04 / NP-SB-13): the prism:// scheme is the only registered URL type; no
+ *     Associated Domains host is committed (the entitlement is generated per install by universal-links.mjs,
+ *     whose self-test runs here); an incoming link reaches the page only as a validated path through the
+ *     host hook — no new IPC command, no navigation; the File menu has "New Page" on CmdOrCtrl+N.
  * Dependency-free (node:fs + child_process).
  */
 import { readFileSync, readdirSync, statSync, existsSync } from "node:fs";
@@ -218,6 +222,37 @@ if (!existsSync(dist)) {
     !/case\s+"(update_config|get_collab_config|set_anthropic_key|api_request|acl_request)"/.test(shim),
     "web shim routes none of the desktop config/credential commands (update_config, get_collab_config, …)",
   );
+}
+
+// 9. Links + New Page (NP-NA-04 / NP-SB-13)
+{
+  const plist = readFileSync(join(tauriDir, "Info.plist"), "utf8");
+  const schemes = [...(/<key>CFBundleURLSchemes<\/key>\s*<array>([\s\S]*?)<\/array>/.exec(plist)?.[1] ?? "").matchAll(/<string>([^<]*)<\/string>/g)].map((m) => m[1]);
+  check(JSON.stringify(schemes) === JSON.stringify(["prism"]), "Info.plist registers exactly the prism:// scheme", `URL schemes: ${schemes.join(", ")}`);
+  // The server host is per-install: nothing committed may carry an Associated Domains entitlement.
+  const committed = [JSON.stringify(conf), plist, ...readdirSync(tauriDir).filter((f) => /\.(entitlements|plist|json)$/.test(f)).map((f) => readFileSync(join(tauriDir, f), "utf8"))].join("\n");
+  check(!/associated-domains|applinks:/.test(committed) && !conf.bundle?.macOS?.entitlements, "no Associated Domains entitlement is committed (generated per install)");
+  const ignore = readFileSync(join(tauriDir, ".gitignore"), "utf8");
+  check(/^\/gen\/universal-links$/m.test(ignore), "gen/universal-links (the generated entitlement) is git-ignored");
+  try {
+    execSync(`node ${JSON.stringify(join(here, "universal-links.mjs"))} --self-test`, { stdio: "pipe" });
+    ok("universal-links.mjs self-test (host validation, entitlement generation, idempotent iOS patch)");
+  } catch (e) {
+    bad(`universal-links.mjs self-test failed: ${String(e.stderr ?? e.message).trim()}`);
+  }
+  const src = (f) => readFileSync(join(tauriDir, "src", f), "utf8").split("#[cfg(test)]")[0];
+  const links = src("links.rs");
+  const code = links.replace(/^\s*\/\/.*$/gm, "");
+  check(/RunEvent::Opened/.test(src("lib.rs")) && /links::on_opened/.test(src("lib.rs")), "lib.rs routes RunEvent::Opened to links::on_opened");
+  check(/on_page_load/.test(src("window.rs")), "the main window re-offers a pending link after a page load (sign-in reload)");
+  check(!/\.navigate\(|open_url|opener\(|location/.test(code), "links.rs never navigates and never opens a URL");
+  check(/__PRISM_SHELL__\.openLink\(/.test(code) && !/tauri::command/.test(code), "an incoming link is a DOM handoff of a validated path — no IPC command");
+  const hostJs = readFileSync(join(tauriDir, "src/host.js"), "utf8");
+  check(/openLink: openLink/.test(hostJs) && /takePendingLink: takePendingLink/.test(hostJs) && /new CustomEvent\("prism:open-link"\)/.test(hostJs), "host hook exposes openLink/takePendingLink and a payload-free prism:open-link event");
+  const menu = src("menu.rs");
+  check(/NEW_PAGE_ACCELERATOR: &str = "CmdOrCtrl\+N"/.test(menu) && /"New Page"/.test(menu) && /new CustomEvent\(\\"prism:new-page\\"\)/.test(menu), "File menu: New Page on CmdOrCtrl+N → prism:new-page");
+  const webLinks = readFileSync(resolve(root, "apps/web/src/native/appLinks.ts"), "utf8");
+  check(/takePendingLink/.test(webLinks) && /prism:open-link/.test(webLinks) && !/location\.(assign|replace|href\s*=)/.test(webLinks), "web: appLinks.ts takes the path from the shell and opens a tab — never a navigation");
 }
 
 if (failed) {
