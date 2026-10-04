@@ -5,7 +5,7 @@
  */
 import { isUnder, movedPath, normalizePagePath, planSubtreeMove } from "../../../packages/core/src/lib/pages/model";
 
-type Row = { id: string; path?: string | null; updatedAt?: string };
+type Row = { id: string; path?: string | null; updatedAt?: string | null };
 
 export function fakeMove(notes: Row[], id: string, body: Record<string, unknown>, stamp: () => string): { status: number; body: Record<string, unknown> } {
   const root = notes.find((n) => n.id === id);
