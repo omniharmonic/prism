@@ -81,7 +81,7 @@ export default defineConfig(({ mode }) => {
         // BACK to index.html (the SPA), which then fetches /api/p/:slug.
         // /mcp (the Prism MCP endpoint) and /.well-known/ (its RFC 9728
         // protected-resource metadata) are server-owned too (WP6.1).
-        navigateFallbackDenylist: [/^\/auth\//, /^\/api\//, /^\/health$/, /^\/mcp(\/|$)/, /^\/\.well-known\//],
+        navigateFallbackDenylist: [/^\/auth\//, /^\/api\//, /^\/health(\?|$)/, /^\/mcp(\/|$)/, /^\/\.well-known\//],
         runtimeCaching: [
           // Authenticated vault responses use the account/vault-scoped IndexedDB
           // cache. A URL-only service-worker cache can mix accounts and vaults.
