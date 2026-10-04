@@ -60,10 +60,15 @@ export class MatrixClient {
   private url(path: string): string {
     return `${this.creds.homeserver.replace(/\/+$/, "")}/_matrix/client/v3${path}`;
   }
+  /** Every request of the ingest client is bounded by `readTimeoutMs` (reads AND the
+   *  join / leave / management-room send): one that never answers must not hold a pass. */
+  private bounded(): { signal?: AbortSignal } {
+    return this.readTimeoutMs ? { signal: AbortSignal.timeout(this.readTimeoutMs) } : {};
+  }
   private async get(path: string): Promise<unknown> {
     const r = await this.fetchImpl(this.url(path), {
       headers: { Authorization: `Bearer ${this.creds.accessToken}` },
-      ...(this.readTimeoutMs ? { signal: AbortSignal.timeout(this.readTimeoutMs) } : {}),
+      ...this.bounded(),
     });
     if (!r.ok) throw new Error(`matrix ${path} → ${r.status}`);
     return r.json();
@@ -234,6 +239,7 @@ export class MatrixClient {
           "Content-Type": "application/json",
         },
         body: "{}",
+        ...this.bounded(),
       },
     );
     if (!r.ok) throw new Error(`matrix join ${roomId} → ${r.status}`);
@@ -251,6 +257,7 @@ export class MatrixClient {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({ msgtype: "m.text", body }),
+        ...this.bounded(),
       },
     );
     if (!r.ok) throw new Error(`matrix send ${roomId} → ${r.status}`);
@@ -288,6 +295,7 @@ export class MatrixClient {
       method: "POST",
       headers: { Authorization: `Bearer ${this.creds.accessToken}`, "Content-Type": "application/json" },
       body: "{}",
+      ...this.bounded(),
     });
     if (!r.ok) throw new Error(`matrix leave ${roomId} → ${r.status}`);
   }
@@ -831,10 +839,17 @@ export async function ingestMatrix(
   for (const p of opts.replay ?? []) {
     try {
       if (!client.messagesBefore || !opts.since) throw new Error("no cursor to replay up to");
-      const gap = await client.messagesBefore(p.roomId, { from: opts.since, ...(p.since ? { to: p.since } : {}) });
+      // A room with NO thread note yet (a newly joined portal whose first write or
+      // gap-fill failed) has its whole history before the failed pass's cursor: page
+      // to the room's start, exactly like the new-room gap-fill — a window bounded by
+      // that cursor would fetch one pass's worth and leave the rest "not behind".
+      const window = byRoom.has(p.roomId) && p.since ? { to: p.since } : { sinceTs: 0 };
+      const gap = await client.messagesBefore(p.roomId, { from: opts.since, ...window });
       if (gap.capped) console.warn(`[worker] matrix: replay of ${p.roomId} hit its cap — oldest messages of the window skipped`);
       if (gap.messages.length) {
-        const members = client.joinedMembers ? await client.joinedMembers(p.roomId).catch(() => ({}) as Record<string, string>) : {};
+        // NOT swallowed: without the member list the lines would be rendered with
+        // fallback ids; fail the replay and try again next pass instead.
+        const members = client.joinedMembers ? await client.joinedMembers(p.roomId) : {};
         const rb: RoomBatch = {
           roomId: p.roomId,
           name: byRoom.has(p.roomId) || !client.roomName ? null : await client.roomName(p.roomId).catch(() => null),
@@ -973,34 +988,58 @@ export async function ingestMatrix(
   };
 }
 
-const isConflict = (e: unknown): boolean => (e as { status?: number })?.status === 409 || /\b409\b/.test(String(e));
+/** A vault 409/428 — by the error's status, never by its text (a body or a path may contain "409"). */
+const isConflict = (e: unknown): boolean => {
+  const st = (e as { status?: unknown })?.status;
+  return st === 409 || st === 428;
+};
 
-/** Lines AND whole message entries of a thread body (a multi-line message is one entry). */
-function linesAndEntries(content: string): Set<string> {
-  return new Set([...content.split("\n"), ...parseThread(content).entries]);
+/**
+ * DEDUPE IDENTITY of a message in a thread: its stamp + its body — NOT the
+ * rendered sender. The same event is rendered "251731455: hi" by a pass whose
+ * member lookup failed and "Rin: hi" by the next one; comparing whole lines made
+ * a replay / a 409 retry append the batch a second time. The note stores no event
+ * id, so this is as exact as it gets (see the residuals in CLAUDE.md). Trailing
+ * whitespace is ignored on both sides (the append `trimEnd`s the body it extends).
+ */
+const messageKey = (m: MatrixMessage): string => `${formatStamp(m.ts)} ${m.body.trimEnd()}`;
+/** The same key, read back from a stored entry (`[stamp] Sender: body`). */
+function entryKey(entry: string): string | null {
+  const close = entry.indexOf("] ");
+  if (!entry.startsWith("[") || close === -1) return null;
+  const sep = entry.indexOf(": ", close + 2);
+  // A sender with an empty body is stored as "…Sender:" — never written (toMessage drops it).
+  if (sep === -1) return null;
+  return `${entry.slice(0, close + 1)} ${entry.slice(sep + 2).trimEnd()}`;
+}
+/** How many times each message key occurs among the entries of `content`. */
+function keyCounts(content: string): Map<string, number> {
+  const out = new Map<string, number>();
+  for (const e of parseThread(content).entries) {
+    const k = entryKey(e);
+    if (k !== null) out.set(k, (out.get(k) ?? 0) + 1);
+  }
+  return out;
+}
+/** The pairs whose message is NOT accounted for by `have` — each stored copy cancels
+ *  ONE incoming copy, so two genuinely identical messages still land twice. */
+function notIn<T extends { key: string }>(items: T[], have: Map<string, number>): T[] {
+  return items.filter((it) => {
+    const n = have.get(it.key) ?? 0;
+    if (n > 0) have.set(it.key, n - 1);
+    return n === 0;
+  });
 }
 
 /**
- * After a 409: which of `lines` did SOMEONE ELSE already put in the note since we
- * read it? Identity is the formatted entry (stamp + sender + body) — the note does
- * not store event ids. When the fresh body is our copy plus an appended tail, each
- * tail entry cancels ONE of ours (so two genuinely identical messages still land
- * twice); otherwise (trimmed by a rollover, edited) anything the body holds is dropped.
+ * After a 409: which of our messages did SOMEONE ELSE already put in the note since
+ * we read it? When the fresh body is our copy plus an appended tail, only the tail
+ * counts; otherwise (trimmed by a rollover, edited) the whole body does.
  */
-function notYetWritten(lines: string[], loaded: Note, fresh: Note): string[] {
+function notYetWritten<T extends { key: string }>(items: T[], loaded: Note, fresh: Note): T[] {
   const before = (loaded.content ?? "").trimEnd();
   const now = fresh.content ?? "";
-  if (now.startsWith(before)) {
-    const tail = new Map<string, number>();
-    for (const e of parseThread(now.slice(before.length)).entries) tail.set(e, (tail.get(e) ?? 0) + 1);
-    return lines.filter((l) => {
-      const n = tail.get(l) ?? 0;
-      if (n > 0) tail.set(l, n - 1);
-      return n === 0;
-    });
-  }
-  const have = linesAndEntries(now);
-  return lines.filter((l) => !have.has(l));
+  return notIn(items, keyCounts(now.startsWith(before) ? now.slice(before.length) : now));
 }
 
 /**
@@ -1064,17 +1103,15 @@ async function ingestRoom(
 ): Promise<boolean> {
   const linkAdd = opts.links?.length ? { links: { add: opts.links } } : {};
   const platform = detectPlatform(rb.memberIds);
-  let lines = rb.messages.map((m) => formatLine(m, rb.displayNames));
-  if (!lines.length) return false;
+  let items = rb.messages.map((m) => ({ line: formatLine(m, rb.displayNames), key: messageKey(m) }));
+  if (!items.length) return false;
   // The listing row carries no body: read the note NOW, once, and build the
   // dedupe, the append, the metadata merge and any rollover on that fresh copy.
   const row = byRoom.get(rb.roomId);
   let note = row ? await loadThread(vault, row) : undefined;
-  if (opts.dedupe) {
-    const have = linesAndEntries(note?.content ?? "");
-    lines = lines.filter((l) => !have.has(l));
-  }
-  if (!lines.length) return false;
+  if (opts.dedupe) items = notIn(items, keyCounts(note?.content ?? ""));
+  if (!items.length) return false;
+  let lines = items.map((it) => it.line);
   const lastMessageAt = Math.max(...rb.messages.map((m) => m.ts));
   const participants = rb.memberIds.map(
     (id) => rb.displayNames[id] ?? shortSender(id),
@@ -1086,7 +1123,7 @@ async function ingestRoom(
     // same events again), so: on a 409, re-read, drop what is already there,
     // recount, and try ONCE more. A second 409 fails the room for this pass (it is
     // replayed by the next one).
-    const wanted = lines;
+    const wanted = items;
     for (let attempt = 0; ; attempt++) {
       try {
         await appendToThread(rb, vault, byRoom, note, lines, { platform, lastMessageAt, participants, linkAdd, participantIds: opts.participantIds });
@@ -1094,7 +1131,7 @@ async function ingestRoom(
       } catch (e) {
         if (!isConflict(e) || attempt >= 1) throw e;
         const fresh = await loadThread(vault, row);
-        lines = notYetWritten(wanted, note, fresh);
+        lines = notYetWritten(wanted, note, fresh).map((it) => it.line);
         note = fresh;
         if (!lines.length) return false; // someone else already wrote every one of them
       }
@@ -1219,6 +1256,9 @@ export interface ReconcileResult {
   messages: number;
   /** Rooms still behind after this sweep (over the per-sweep repair budget). */
   deferred: number;
+  /** Present (> 0) only when the sweep hit its deadline: joined rooms it never
+   *  probed, plus behind rooms it had no time to repair. Left for the next sweep. */
+  unprobed?: number;
 }
 
 /**
@@ -1239,8 +1279,21 @@ export async function reconcileMatrix(
   > &
     Partial<Pick<MatrixClient, "profileName">>,
   vault: IngestVault,
-  opts: { upTo: string; maxRepairs?: number; cap?: number; concurrency?: number },
+  opts: {
+    upTo: string;
+    maxRepairs?: number;
+    cap?: number;
+    concurrency?: number;
+    /** Overall budget for the sweep (MATRIX_RECONCILE_DEADLINE_MS). Past it no further
+     *  room is probed or repaired; what is left waits for the next sweep. */
+    deadlineMs?: number;
+    now?: () => number;
+  },
 ): Promise<ReconcileResult> {
+  const clock = opts.now ?? Date.now;
+  const deadlineAt = opts.deadlineMs && opts.deadlineMs > 0 ? clock() + opts.deadlineMs : Infinity;
+  const expired = () => clock() >= deadlineAt;
+  let unprobed = 0;
   const joined = await client.joinedRooms();
   // Lean: rows only. A body is read by `loadThread`, for a note about to be written.
   const existing = await listThreadRows(vault);
@@ -1252,6 +1305,11 @@ export async function reconcileMatrix(
   const queue = [...joined];
   const worker = async () => {
     for (let id = queue.shift(); id; id = queue.shift()) {
+      if (expired()) {
+        unprobed += queue.length + 1;
+        queue.length = 0;
+        return;
+      }
       try {
         const { messages } = await client.messagesBefore(id, { from: opts.upTo, cap: 1 });
         const latest = messages[0]?.ts;
@@ -1270,7 +1328,13 @@ export async function reconcileMatrix(
   const budget = opts.maxRepairs ?? 25;
   let repaired = 0;
   let messages = 0;
-  for (const b of behind.slice(0, budget)) {
+  const todo = behind.slice(0, budget);
+  for (let i = 0; i < todo.length; i++) {
+    const b = todo[i]!;
+    if (expired()) {
+      unprobed += todo.length - i;
+      break;
+    }
     try {
       const gap = await client.messagesBefore(b.roomId, {
         from: opts.upTo,
@@ -1305,5 +1369,6 @@ export async function reconcileMatrix(
     repaired,
     messages,
     deferred: Math.max(0, behind.length - budget),
+    ...(unprobed > 0 ? { unprobed } : {}),
   };
 }

@@ -404,6 +404,9 @@ export const config = {
   // that pass's cursor and the current one); after this many failed replays it is
   // given up on — loudly (a failed pass outcome + cursor `matrix-lost`).
   matrixReplayMaxTries: Math.max(1, Number(process.env.MATRIX_REPLAY_MAX_TRIES ?? 10)),
+  // Overall budget of one reconcile sweep (it runs in the background, under its own
+  // guard, one probe per joined room). Past it the rest waits for the next sweep. 0 = none.
+  matrixReconcileDeadlineMs: Number(process.env.MATRIX_RECONCILE_DEADLINE_MS ?? 20 * 60_000),
   // Link message-thread notes to person notes (`messages-with`), as the desktop's
   // message_sync did via person_linker before Matrix ingest moved server-side
   // (the server ingester never ported it). OFF by default: see CLAUDE.md

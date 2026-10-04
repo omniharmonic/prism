@@ -224,6 +224,25 @@ function readJsonCursor<T>(vaultId: string, kind: string): T[] {
     return [];
   }
 }
+/** A room given up on after MATRIX_REPLAY_MAX_TRIES failed replays. */
+export interface LostMatrixRoom {
+  roomId: string;
+  since: string | null;
+  tries: number;
+  at: string;
+}
+/** Rooms given up on and not yet cleared by the owner: the `matrix` source reads
+ *  `failing` while this is non-empty (worker/health.ts), and they are not replayed
+ *  again (a room that fails forever must not cycle try → give up → try). */
+export const lostMatrixRooms = (vaultId: string): LostMatrixRoom[] =>
+  readJsonCursor<LostMatrixRoom>(vaultId, MATRIX_LOST_CURSOR).filter((p) => p && typeof p.roomId === "string");
+/** The owner looked: forget the given-up rooms (they may be replayed again if they fail again). */
+export function clearLostMatrixRooms(vaultId: string): number {
+  const n = lostMatrixRooms(vaultId).length;
+  if (n) setWorkerCursor(vaultId, MATRIX_LOST_CURSOR, "[]");
+  return n;
+}
+
 /** Rooms waiting for a replay (diagnostics + tests). */
 export const pendingMatrixReplays = (vaultId: string): Array<{ roomId: string; since?: string; tries: number }> =>
   readJsonCursor<PendingReplay>(vaultId, MATRIX_REPLAY_CURSOR).filter((p) => p && typeof p.roomId === "string");
@@ -233,6 +252,15 @@ export const pendingMatrixReplays = (vaultId: string): Array<{ roomId: string; s
  *  passes started from the same cursor would each append the same events. */
 const matrixInFlight = new Map<string, Promise<number>>();
 export const matrixPassRunning = (vaultId: string): boolean => matrixInFlight.has(vaultId);
+
+/** The hourly reconcile sweep (+ the bridge resync) has its OWN per-vault guard and
+ *  runs AFTER the ingest guard is released: it can take minutes (one probe per joined
+ *  room), and ingest must keep its 60 s cadence meanwhile. The two may write the same
+ *  thread at once — the compare-and-set append + `notYetWritten` make that safe. */
+const matrixReconcileInFlight = new Map<string, Promise<void>>();
+export const matrixReconcileRunning = (vaultId: string): boolean => matrixReconcileInFlight.has(vaultId);
+/** Resolves when the vault's background reconcile (if any) has finished. */
+export const matrixReconcileSettled = (vaultId: string): Promise<void> => matrixReconcileInFlight.get(vaultId) ?? Promise.resolve();
 
 /**
  * One Matrix pass for a vault. If one is already running, this JOINS it (returns
@@ -311,14 +339,17 @@ async function runMatrixPass(entry: VaultEntry, deps: MatrixPassDeps): Promise<n
     else if (p.tries + 1 >= config.matrixReplayMaxTries) gaveUp.push({ ...p, tries: p.tries + 1 });
     else next.push({ ...p, tries: p.tries + 1 });
   }
+  const alreadyLost = new Set(lostMatrixRooms(entry.id).map((l) => l.roomId));
   for (const roomId of res.failedRooms) {
+    // Given up on and not cleared yet: not queued again (it would cycle forever).
+    if (alreadyLost.has(roomId)) continue;
     // A room already waiting keeps its OLDER cursor (the wider window).
     if (!next.some((p) => p.roomId === roomId)) next.push({ roomId, ...(since ? { since } : {}), tries: 0 });
   }
   while (next.length > MATRIX_REPLAY_CAP) gaveUp.push(next.shift()!);
   if (pending.length || next.length) setWorkerCursor(entry.id, MATRIX_REPLAY_CURSOR, JSON.stringify(next));
   if (gaveUp.length) {
-    const lost = [...readJsonCursor<Record<string, unknown>>(entry.id, MATRIX_LOST_CURSOR), ...gaveUp.map((p) => ({ roomId: p.roomId, since: p.since ?? null, tries: p.tries, at: new Date().toISOString() }))].slice(-200);
+    const lost = [...lostMatrixRooms(entry.id), ...gaveUp.map((p) => ({ roomId: p.roomId, since: p.since ?? null, tries: p.tries, at: new Date().toISOString() }))].slice(-200);
     setWorkerCursor(entry.id, MATRIX_LOST_CURSOR, JSON.stringify(lost));
   }
   if (res.nextBatch) setWorkerCursor(entry.id, "matrix", res.nextBatch);
@@ -333,34 +364,46 @@ async function runMatrixPass(entry: VaultEntry, deps: MatrixPassDeps): Promise<n
 
   // The repair sweep, bounded to the cursor just persisted so it never overlaps
   // the next incremental pass. Runs on boot too (the map starts empty) — which
-  // is exactly when a downtime gap needs closing.
+  // is exactly when a downtime gap needs closing. It is STARTED here and runs in
+  // the background under its own guard: this pass (and the ingest guard) end now.
   const now = Date.now();
   const canReconcile = !!(client.joinedRooms && client.messagesBefore && client.joinedMembers && client.roomName);
-  if (canReconcile && res.nextBatch && config.matrixReconcileMs > 0 && now - (lastMatrixReconcileAt.get(entry.id) ?? 0) >= config.matrixReconcileMs) {
-    lastMatrixReconcileAt.set(entry.id, now);
-    try {
-      const r = await reconcileMatrix(client as Parameters<typeof reconcileMatrix>[0], ingestVault, {
-        upTo: res.nextBatch,
-        maxRepairs: config.matrixReconcilePerSweep,
-      });
-      const line = `[worker] matrix ${entry.id} reconcile: ${r.scanned} rooms scanned, ${r.behind} behind, ${r.repaired} repaired (+${r.messages} msgs), ${r.deferred} deferred`;
-      if (r.behind > 0) console.warn(line);
-      else console.log(line);
-      // Deferred rooms are still missing messages — come back in 5 min, not an hour.
-      if (r.deferred > 0) lastMatrixReconcileAt.set(entry.id, now - config.matrixReconcileMs + 300_000);
-    } catch (e) {
-      console.warn(`[worker] matrix ${entry.id} reconcile failed: ${String(e)}`);
-    }
-  }
-
-  if (client.sendText && config.matrixBridgeResync.length && config.matrixBridgeResyncMs > 0 && now - (lastBridgeResyncAt.get(entry.id) ?? 0) >= config.matrixBridgeResyncMs) {
-    lastBridgeResyncAt.set(entry.id, now);
-    for (const b of config.matrixBridgeResync) {
-      await client.sendText(b.roomId, b.command).then(
-        () => console.log(`[worker] matrix ${entry.id}: bridge resync "${b.command}" → ${b.roomId}`),
-        (e) => console.warn(`[worker] matrix ${entry.id}: bridge resync to ${b.roomId} failed: ${String(e)}`),
-      );
-    }
+  const reconcileDue = canReconcile && !!res.nextBatch && config.matrixReconcileMs > 0 && now - (lastMatrixReconcileAt.get(entry.id) ?? 0) >= config.matrixReconcileMs;
+  const resyncDue = !!client.sendText && config.matrixBridgeResync.length > 0 && config.matrixBridgeResyncMs > 0 && now - (lastBridgeResyncAt.get(entry.id) ?? 0) >= config.matrixBridgeResyncMs;
+  if ((reconcileDue || resyncDue) && !matrixReconcileInFlight.has(entry.id)) {
+    if (reconcileDue) lastMatrixReconcileAt.set(entry.id, now);
+    if (resyncDue) lastBridgeResyncAt.set(entry.id, now);
+    const upTo = res.nextBatch;
+    const background = (async () => {
+      await Promise.resolve();
+      if (reconcileDue) {
+        try {
+          const r = await reconcileMatrix(client as Parameters<typeof reconcileMatrix>[0], ingestVault, {
+            upTo,
+            maxRepairs: config.matrixReconcilePerSweep,
+            deadlineMs: config.matrixReconcileDeadlineMs,
+          });
+          const line = `[worker] matrix ${entry.id} reconcile: ${r.scanned} rooms scanned, ${r.behind} behind, ${r.repaired} repaired (+${r.messages} msgs), ${r.deferred} deferred${r.unprobed ? `, ${r.unprobed} not reached before the deadline` : ""}`;
+          if (r.behind > 0 || r.unprobed) console.warn(line);
+          else console.log(line);
+          // Deferred / unreached rooms may still miss messages — come back in 5 min, not an hour.
+          if (r.deferred > 0 || r.unprobed) lastMatrixReconcileAt.set(entry.id, now - config.matrixReconcileMs + 300_000);
+        } catch (e) {
+          console.warn(`[worker] matrix ${entry.id} reconcile failed: ${String(e)}`);
+        }
+      }
+      if (resyncDue && client.sendText) {
+        for (const b of config.matrixBridgeResync) {
+          await client.sendText(b.roomId, b.command).then(
+            () => console.log(`[worker] matrix ${entry.id}: bridge resync "${b.command}" → ${b.roomId}`),
+            (e) => console.warn(`[worker] matrix ${entry.id}: bridge resync to ${b.roomId} failed: ${String(e)}`),
+          );
+        }
+      }
+    })().finally(() => {
+      if (matrixReconcileInFlight.get(entry.id) === background) matrixReconcileInFlight.delete(entry.id);
+    });
+    matrixReconcileInFlight.set(entry.id, background);
   }
   // Never silent: a room whose window could not be replayed in N passes is given
   // up on, and THIS pass is reported as failed (everything above is already done
