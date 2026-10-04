@@ -1259,6 +1259,10 @@ export interface ReconcileResult {
   /** Present (> 0) only when the sweep hit its deadline: joined rooms it never
    *  probed, plus behind rooms it had no time to repair. Left for the next sweep. */
   unprobed?: number;
+  /** Present only when the deadline cut the PROBE short: the last room id probed
+   *  (rooms are probed in sorted order). Hand it back as `resumeAfter` and the next
+   *  sweep continues behind it instead of starting at the front again. */
+  resumeAfter?: string;
 }
 
 /**
@@ -1287,6 +1291,11 @@ export async function reconcileMatrix(
     /** Overall budget for the sweep (MATRIX_RECONCILE_DEADLINE_MS). Past it no further
      *  room is probed or repaired; what is left waits for the next sweep. */
     deadlineMs?: number;
+    /** Where the previous sweep's probe stopped (its `resumeAfter`): this sweep probes
+     *  only the rooms sorted AFTER that id, to the end of the list. A sweep that
+     *  reaches the end returns no `resumeAfter`, so the one after starts at the front
+     *  — every room is probed once per cycle however many sweeps a cycle takes. */
+    resumeAfter?: string | null;
     now?: () => number;
   },
 ): Promise<ReconcileResult> {
@@ -1302,14 +1311,23 @@ export async function reconcileMatrix(
 
   // Probe: newest message per room (one cheap /messages call each).
   const behind: Array<{ roomId: string; latest: number; cutoff: number }> = [];
-  const queue = [...joined];
+  // Sorted, so "after room X" means the same thing in every sweep whatever order
+  // the homeserver lists rooms in, and whatever was joined or left in between.
+  const order = [...joined].sort();
+  const after = opts.resumeAfter ?? null;
+  const from = after === null ? 0 : Math.max(0, order.findIndex((id) => id > after));
+  const queue = order.slice(from);
+  let lastProbed: string | null = after;
+  let cut = false;
   const worker = async () => {
     for (let id = queue.shift(); id; id = queue.shift()) {
       if (expired()) {
         unprobed += queue.length + 1;
         queue.length = 0;
+        cut = true;
         return;
       }
+      lastProbed = id;
       try {
         const { messages } = await client.messagesBefore(id, { from: opts.upTo, cap: 1 });
         const latest = messages[0]?.ts;
@@ -1370,5 +1388,6 @@ export async function reconcileMatrix(
     messages,
     deferred: Math.max(0, behind.length - budget),
     ...(unprobed > 0 ? { unprobed } : {}),
+    ...(cut && lastProbed !== null ? { resumeAfter: lastProbed } : {}),
   };
 }

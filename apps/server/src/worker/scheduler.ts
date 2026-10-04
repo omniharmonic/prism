@@ -262,6 +262,35 @@ export const matrixReconcileRunning = (vaultId: string): boolean => matrixReconc
 /** Resolves when the vault's background reconcile (if any) has finished. */
 export const matrixReconcileSettled = (vaultId: string): Promise<void> => matrixReconcileInFlight.get(vaultId) ?? Promise.resolve();
 
+/** Where the last reconcile sweep's probe stopped (a room id; rooms are probed in
+ *  sorted order). Empty = the next sweep starts at the front. */
+const MATRIX_RECONCILE_CURSOR = "matrix-reconcile-after";
+
+/**
+ * One reconcile sweep that CONTINUES where the previous one was cut off by its
+ * deadline. Probing used to start at the front of the joined-rooms list every time,
+ * so with more rooms than one deadline covers the tail was never reached. The
+ * resume point is persisted per vault (worker cursor), so a restart continues too.
+ */
+export async function runMatrixReconcileSweep(
+  entry: VaultEntry,
+  client: Parameters<typeof reconcileMatrix>[0],
+  ingestVault: IngestVault,
+  upTo: string,
+  overrides: { deadlineMs?: number; now?: () => number; concurrency?: number } = {},
+): Promise<Awaited<ReturnType<typeof reconcileMatrix>>> {
+  const r = await reconcileMatrix(client, ingestVault, {
+    upTo,
+    maxRepairs: config.matrixReconcilePerSweep,
+    deadlineMs: overrides.deadlineMs ?? config.matrixReconcileDeadlineMs,
+    resumeAfter: getWorkerCursor(entry.id, MATRIX_RECONCILE_CURSOR) || null,
+    ...(overrides.now ? { now: overrides.now } : {}),
+    ...(overrides.concurrency ? { concurrency: overrides.concurrency } : {}),
+  });
+  setWorkerCursor(entry.id, MATRIX_RECONCILE_CURSOR, r.resumeAfter ?? "");
+  return r;
+}
+
 /**
  * One Matrix pass for a vault. If one is already running, this JOINS it (returns
  * the running pass's promise) — it never starts a second. The tick skips instead
@@ -378,11 +407,7 @@ async function runMatrixPass(entry: VaultEntry, deps: MatrixPassDeps): Promise<n
       await Promise.resolve();
       if (reconcileDue) {
         try {
-          const r = await reconcileMatrix(client as Parameters<typeof reconcileMatrix>[0], ingestVault, {
-            upTo,
-            maxRepairs: config.matrixReconcilePerSweep,
-            deadlineMs: config.matrixReconcileDeadlineMs,
-          });
+          const r = await runMatrixReconcileSweep(entry, client as Parameters<typeof reconcileMatrix>[0], ingestVault, upTo);
           const line = `[worker] matrix ${entry.id} reconcile: ${r.scanned} rooms scanned, ${r.behind} behind, ${r.repaired} repaired (+${r.messages} msgs), ${r.deferred} deferred${r.unprobed ? `, ${r.unprobed} not reached before the deadline` : ""}`;
           if (r.behind > 0 || r.unprobed) console.warn(line);
           else console.log(line);

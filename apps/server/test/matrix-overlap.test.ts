@@ -520,7 +520,7 @@ test("R3: reconcileMatrix has an overall deadline — unreached rooms are left f
     roomName: async () => null,
   };
   const r = await reconcileMatrix(client, v.vault, { upTo: "c", concurrency: 1, deadlineMs: 450, now: () => clock });
-  assert.deepEqual(probed, rooms.slice(0, 5));
+  assert.deepEqual(probed, [...rooms].sort().slice(0, 5), "rooms are probed in sorted order");
   assert.equal(r.unprobed, 7);
   assert.equal(r.scanned, 12);
   // No deadline → every room, and no `unprobed` key at all.
