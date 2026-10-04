@@ -54,7 +54,8 @@ let note: Note = {
 const version = (ix: number): NoteVersion => ({
   versionIx: ix,
   op: ix === 2 ? "restore" : "update",
-  supersededAt: new Date(Date.UTC(2026, 8, 30 - ix, 12)).toISOString(),
+  // `?days` (NP-PG-12): six saves five hours apart, so several fall on the same day.
+  supersededAt: new Date(params.has("days") ? Date.UTC(2026, 8, 29, 20 - 5 * (ix - 1)) : Date.UTC(2026, 8, 30 - ix, 12)).toISOString(),
   path: "Workspace/Research brief",
   metadata: { type: "document" },
   contentLength: 55,
@@ -76,7 +77,7 @@ const client = {
   listNoteVersions: async (_id: string, { offset = 0, limit = 50 } = {}) => {
     controls.offsets.push(offset);
     if (controls.failList) throw Error("private diagnostics");
-    const total = params.has("empty") ? 0 : params.has("paged") ? 52 : 3;
+    const total = params.has("empty") ? 0 : params.has("paged") ? 52 : params.has("days") ? 6 : 3;
     return {
       versions: Array.from({ length: Math.min(limit, total - offset) }, (_, i) => version(i + offset + 1)),
       total,
