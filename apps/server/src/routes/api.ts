@@ -139,12 +139,17 @@ async function proxyToVault(c: Context) {
     // Any write may change what a cached read would return.
     dropReadCache();
     // NP-PG-09: a locked page refuses CONTENT edits for everyone, the owner and admins
-    // included, until it is unlocked (it used to pass here with a log line). Metadata,
-    // tags and path stay writable through the passthrough, and unlocking has its own
-    // route (POST /notes/:id/meta). Refused before anything reaches the vault.
-    const lockedId = method === "PATCH" || method === "PUT" ? path.match(/^\/notes\/([^/?]+)$/)?.[1] : undefined;
-    if (lockedId && writesContent(init.body as string) && (await ownerWriteLocked(entry, lockedId))) {
-      return c.json({ error: "locked", reason: "This page is locked. Unlock it to edit." }, 423);
+    // included, until it is unlocked (it used to pass here with a log line). Every way
+    // the passthrough can change a page's body is covered: PATCH/PUT with content,
+    // a version RESTORE, and a create that overwrites (`if_exists: replace|update`,
+    // single or batch). Metadata, tags and path stay writable, and unlocking has its
+    // own route (POST /notes/:id/meta). Refused before anything reaches the vault.
+    // FAIL CLOSED: when the lock cannot be read the write is refused as retryable.
+    const refusal = await ownerLockRefusal(entry, method, path, init.body as string);
+    if (refusal === "locked") return c.json({ error: "locked", reason: "This page is locked. Unlock it to edit." }, 423);
+    if (refusal === "unknown") {
+      c.header("Retry-After", "2");
+      return c.json({ error: "lock_unknown", reason: "Couldn’t check whether this page is locked. Nothing was changed — try again." }, 503);
     }
   }
   // DELETE /notes/<id or PATH alias>: set-aside rows are keyed by note ID, so an alias is
@@ -200,23 +205,68 @@ export function writesContent(raw: string): boolean {
   return b.content !== undefined || b.append !== undefined || b.prepend !== undefined;
 }
 
-/** Is the note an owner/admin write names LOCKED? The tree projection answers when it
- *  knows the row; otherwise (projection not loaded, or the URL names the note by PATH)
- *  the note is read. A note that cannot be read is left to the vault to answer. */
-async function ownerWriteLocked(entry: VaultEntry, rawId: string): Promise<boolean> {
-  let id: string;
+type LockAnswer = "locked" | "unlocked" | "missing" | "unknown";
+
+/** Lock state of the note an owner/admin write names (by id or by PATH). The tree
+ *  projection answers when it knows the row; otherwise the note is read. Only a
+ *  definite answer counts: a read that FAILS is "unknown", never "unlocked". */
+async function ownerLockState(entry: VaultEntry, idOrPath: string): Promise<LockAnswer> {
+  const known = treeLockState(entry, idOrPath);
+  if (known !== null) return known ? "locked" : "unlocked";
   try {
-    id = decodeURIComponent(rawId);
-  } catch {
-    return false;
+    return isLocked(await vaultClient(entry.id, { timeoutMs: 5000 }).getNote(idOrPath)) ? "locked" : "unlocked";
+  } catch (e) {
+    return e instanceof VaultError && e.status === 404 ? "missing" : "unknown";
   }
-  const known = treeLockState(entry, id);
-  if (known !== null) return known;
+}
+
+const decoded = (raw: string): string | null => {
   try {
-    return isLocked(await vaultClient(entry.id, { timeoutMs: 5000 }).getNote(id));
+    return decodeURIComponent(raw);
   } catch {
-    return false;
+    return null;
   }
+};
+
+/** The notes a `POST /notes` body could OVERWRITE the body of: items (single, or the
+ *  `notes: [...]` batch) with `if_exists: replace|update` that carry content. */
+function overwriteTargets(raw: string): string[] {
+  let body: unknown;
+  try {
+    body = JSON.parse(raw);
+  } catch {
+    return [];
+  }
+  if (!body || typeof body !== "object" || Array.isArray(body)) return [];
+  const b = body as Record<string, unknown>;
+  const items = Array.isArray(b.notes) ? b.notes : [b];
+  const out: string[] = [];
+  for (const item of items.slice(0, 5000)) {
+    if (!item || typeof item !== "object") continue;
+    const it = item as Record<string, unknown>;
+    if (it.if_exists !== "replace" && it.if_exists !== "update") continue;
+    if (it.content === undefined && it.append === undefined && it.prepend === undefined) continue;
+    for (const key of [it.id, it.path]) if (typeof key === "string" && key) out.push(key);
+  }
+  return [...new Set(out)];
+}
+
+/** Would this owner/admin write change the BODY of a locked page? (`null` = no.) */
+async function ownerLockRefusal(entry: VaultEntry, method: string, path: string, raw: string): Promise<"locked" | "unknown" | null> {
+  const targets: string[] = [];
+  const note = path.match(/^\/notes\/([^/?]+)$/)?.[1];
+  const restore = path.match(/^\/notes\/([^/?]+)\/restore$/)?.[1];
+  if (note && (method === "PATCH" || method === "PUT") && writesContent(raw)) targets.push(decoded(note) ?? "");
+  else if (restore && method === "POST") targets.push(decoded(restore) ?? "");
+  else if (path === "/notes" && method === "POST") targets.push(...overwriteTargets(raw));
+  let unknown = false;
+  for (const target of targets) {
+    if (!target) continue;
+    const state = await ownerLockState(entry, target);
+    if (state === "locked") return "locked";
+    if (state === "unknown") unknown = true;
+  }
+  return unknown ? "unknown" : null;
 }
 
 interface ProxiedResponse {
