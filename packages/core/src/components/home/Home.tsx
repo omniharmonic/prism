@@ -1,3 +1,4 @@
+import { isTemplateNote } from "../../lib/pages/model";
 import { useMemo } from "react";
 import { dueSortKey } from "../../lib/database/dates";
 import { useQuery } from "@tanstack/react-query";
@@ -71,7 +72,7 @@ export default function Home(_props: RendererProps) {
   const allTasks = useQuery({
     queryKey: queryKeys.vault.notes({ tag: "task", limit: 300 }),
     queryFn: () => client.listNotes({ tag: "task", limit: 300 }),
-    select: (list: Note[]) => list.filter((n) => !(n.tags ?? []).includes("prism-trashed")),
+    select: (list: Note[]) => list.filter((n) => !(n.tags ?? []).includes("prism-trashed") && !isTemplateNote(n)),
     enabled: !scoped,
   });
   const tasks = scoped

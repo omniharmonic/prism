@@ -178,6 +178,107 @@ test("LOCK: content writes and restores on a locked note → 423; toggling needs
   assert.equal(fv.notes.get("n")!.content, "c");
 });
 
+// NP-PG-09: "refuses edits for everyone, including the owner, until unlocked".
+test("LOCK: the owner passthrough refuses CONTENT writes on a locked note → 423; metadata and unlock still work", async () => {
+  fv.put({ id: "n", path: "Team/N", content: "c", tags: ["team"], metadata: { prism_locked: true, status: "draft" } });
+  fv.put({ id: "free", path: "Team/Free", content: "f", tags: ["team"] });
+  const owner = as(OWNER);
+  const put = (id: string, body: unknown) => req(`/notes/${id}`, { method: "PUT", cookie: owner, headers: J, body: JSON.stringify(body) });
+  const before = fv.calls.length;
+  const refused = await patch("n", { content: "changed", if_updated_at: stamp("n") }, owner);
+  assert.equal(refused.status, 423);
+  assert.equal(((await refused.json()) as { error: string }).error, "locked");
+  assert.equal((await patch("n", { append: "more" }, owner)).status, 423, "append is a body write");
+  assert.equal((await patch("n", { content: "changed", metadata: { status: "x" } }, owner)).status, 423, "a mixed write is refused whole");
+  assert.equal((await put("n", { content: "changed" })).status, 423, "PUT too");
+  assert.equal((await patch(encodeURIComponent("Team/N"), { content: "changed" }, owner)).status, 423, "named by its path");
+  assert.equal(fv.notes.get("n")!.content, "c");
+  assert.equal(fv.calls.slice(before).filter((c) => c.method !== "GET").length, 0, "no write reached the vault");
+  // Not content: properties and tags stay writable while locked.
+  assert.equal((await patch("n", { metadata: { status: "final" }, if_updated_at: stamp("n") }, owner)).status, 200);
+  assert.equal(fv.notes.get("n")!.metadata!.status, "final");
+  assert.equal(fv.notes.get("n")!.metadata!.prism_locked, true);
+  // Another page is unaffected.
+  assert.equal((await patch("free", { content: "f2", if_updated_at: stamp("free") }, owner)).status, 200);
+  // Unlock (its own route), then the same write goes through.
+  assert.equal((await post("/notes/n/meta", { set: { prism_locked: false }, if_updated_at: stamp("n") }, owner)).status, 200);
+  assert.equal((await patch("n", { content: "changed", if_updated_at: stamp("n") }, owner)).status, 200);
+  assert.equal(fv.notes.get("n")!.content, "changed");
+});
+
+test("LOCK: the lock is honoured from the tree projection once it is loaded (no extra vault read)", async () => {
+  fv.put({ id: "n", path: "Team/N", content: "c", tags: ["team"], metadata: { prism_locked: true } });
+  const owner = as(OWNER);
+  assert.equal((await req("/tree", { cookie: owner })).status, 200); // builds the projection
+  const before = fv.calls.length;
+  assert.equal((await patch("n", { content: "changed", if_updated_at: stamp("n") }, owner)).status, 423);
+  // (The editor-schema gate reads the stored note for every content write; the lock check adds no read of its own.)
+  assert.deepEqual(fv.calls.slice(before).map((c) => c.method), ["GET"], "one read (the schema gate), no write, none for the lock");
+  assert.equal(fv.notes.get("n")!.content, "c");
+});
+
+// Review round 2 (5, 6, 8): the owner passthrough's other ways to change a locked page's body.
+test("LOCK: the owner cannot RESTORE a version of a locked note (423); unlocked it works", async () => {
+  fv.put({ id: "n", path: "Team/N", content: "v1", tags: ["team"] });
+  const owner = as(OWNER);
+  assert.equal((await patch("n", { content: "v2", if_updated_at: stamp("n") }, owner)).status, 200); // v1 is now version 0
+  assert.equal((await post("/notes/n/meta", { set: { prism_locked: true }, if_updated_at: stamp("n") }, owner)).status, 200);
+  const refused = await post("/notes/n/restore", { version_ix: 0, if_updated_at: stamp("n") }, owner);
+  assert.equal(refused.status, 423);
+  assert.equal(fv.notes.get("n")!.content, "v2");
+  assert.equal((await post("/notes/n/meta", { set: { prism_locked: false }, if_updated_at: stamp("n") }, owner)).status, 200);
+  assert.equal((await post("/notes/n/restore", { version_ix: 0, if_updated_at: stamp("n") }, owner)).status, 200);
+  assert.equal(fv.notes.get("n")!.content, "v1");
+});
+
+test("LOCK: the owner's POST /notes cannot overwrite a locked note through if_exists replace/update — single or batch", async () => {
+  fv.put({ id: "n", path: "Team/N", content: "c", tags: ["team"], metadata: { prism_locked: true } });
+  fv.put({ id: "free", path: "Team/Free", content: "f", tags: ["team"] });
+  const owner = as(OWNER);
+  const create = (body: unknown) => req("/notes", { method: "POST", cookie: owner, headers: J, body: JSON.stringify(body) });
+  for (const mode of ["replace", "update"]) {
+    const single = await create({ path: "Team/N", content: "overwritten", if_exists: mode });
+    assert.equal(single.status, 423, `single ${mode}`);
+    assert.equal(((await single.json()) as { error: string }).error, "locked");
+    assert.equal((await create({ path: "team/n", content: "overwritten", if_exists: mode })).status, 423, `case-insensitive path, ${mode}`);
+    assert.equal((await create({ id: "n", content: "overwritten", if_exists: mode })).status, 423, `by id, ${mode}`);
+    assert.equal((await create({ notes: [{ path: "Team/Other", content: "ok" }, { path: "Team/N", content: "overwritten", if_exists: mode }] })).status, 423, `batch ${mode}: refused whole`);
+  }
+  assert.equal(fv.notes.get("n")!.content, "c");
+  assert.equal([...fv.notes.values()].some((x) => x.path === "Team/Other"), false, "nothing of a refused batch was written");
+  // What cannot overwrite a body passes: no if_exists (a taken path is the vault's 409), ignore, a metadata-only upsert, another page.
+  assert.equal((await create({ path: "Team/N", content: "x" })).status, 409);
+  assert.equal((await create({ path: "Team/N", content: "x", if_exists: "ignore" })).status, 200);
+  assert.equal((await create({ path: "Team/Free", content: "f2", if_exists: "replace" })).status, 200);
+  assert.equal((await create({ path: "Team/New", content: "new" })).status, 200);
+  assert.equal(fv.notes.get("n")!.content, "c");
+});
+
+test("LOCK: a body the gateway does not need to change is forwarded byte for byte (big integers intact)", async () => {
+  fv.put({ id: "n", path: "Team/N", content: "c", tags: ["team"], metadata: { prism_locked: true } });
+  const raw = '{"path":"Team/Big","tags":["team"],"links":[],"created_at":"2026-01-01T00:00:00Z","big":12345678901234567890123}';
+  const before = fv.calls.length;
+  assert.equal((await req("/notes", { method: "POST", cookie: as(OWNER), headers: J, body: raw })).status, 200);
+  const sent = fv.calls.slice(before).find((c) => c.method === "POST");
+  assert.equal(sent?.rawBody, raw);
+});
+
+test("LOCK: fail CLOSED — when the lock cannot be read, a content write is refused 503 lock_unknown (retryable), never let through", async () => {
+  fv.put({ id: "n", path: "Team/N", content: "c", tags: ["team"], metadata: { prism_locked: true } });
+  const owner = as(OWNER);
+  fv.failReads = true;
+  const before = fv.calls.length;
+  const r = await patch("n", { content: "changed" }, owner);
+  assert.equal(r.status, 503);
+  assert.equal(((await r.json()) as { error: string }).error, "lock_unknown");
+  assert.ok(r.headers.get("retry-after"));
+  assert.equal(fv.calls.slice(before).filter((c) => c.method !== "GET").length, 0);
+  fv.failReads = false;
+  assert.equal(fv.notes.get("n")!.content, "c");
+  // A note that does not exist is not "unknown": the vault answers (404) as before.
+  assert.equal((await patch("missing", { content: "x" }, owner)).status, 404);
+});
+
 test("LOCK: the collab socket is read-only on a locked note", async () => {
   fv.put({ id: "lk", path: "Team/Lk", content: "<p>x</p>", tags: ["team"], metadata: { prism_locked: true } });
   grantUser("ed@test.local", "tag", "team", "edit");

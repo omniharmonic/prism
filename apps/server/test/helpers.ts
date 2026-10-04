@@ -52,6 +52,8 @@ export interface VaultCall {
   path: string; // pathname only, e.g. "/vault/default/api/notes/abc"
   search: string;
   body: unknown;
+  /** The body exactly as it was sent (string bodies only). */
+  rawBody?: string;
   authorization: string | null;
 }
 
@@ -64,6 +66,8 @@ export interface FakeVault {
   healthy: boolean;
   /** Force the next note write to 409 (optimistic-concurrency conflict). */
   conflictOnNextWrite: boolean;
+  /** Make every single-note READ fail (500) — a vault that cannot answer. */
+  failReads?: boolean;
   /** Make the next note write FAIL (500) — a vault that could not save. (A 409 is not a failure for a collab store: it re-reads and retries.) */
   failNextWrite?: boolean;
   /** Vault ≥0.7.9 note history: prior states captured on every PATCH, newest
@@ -226,6 +230,7 @@ export function installFakeVault(): FakeVault {
       path: url.pathname,
       search: url.search,
       body,
+      ...(typeof init?.body === "string" ? { rawBody: init.body } : {}),
       authorization: headers["Authorization"] ?? headers["authorization"] ?? null,
     });
 
@@ -413,6 +418,7 @@ export function installFakeVault(): FakeVault {
       const existing = store.get(asked) ?? byPath[0] ?? (titled.length === 1 ? titled[0] : undefined);
       const id = existing?.id ?? asked;
       if (method === "GET") {
+        if (fv.failReads) return new Response("vault error", { status: 500 });
         return existing ? json(existing) : new Response("not found", { status: 404 });
       }
       if (method === "PATCH") {

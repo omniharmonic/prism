@@ -99,3 +99,22 @@ export function captureForEditor(editor: Editor | null) {
   if (!editor || editor.isDestroyed || !state.scope || state.scope !== useAgentChatStore.getState().scope) return null;
   return Object.values(state.notes).find(capture => capture.editor === editor) ?? null;
 }
+
+/** The editor registered for a note (the page that is open), with whether it is a LIVE
+ *  (collaborative) document: live hosts register without a base revision. Null when the
+ *  page is not open in an editor, or belongs to another audience. */
+export function registeredEditor(noteId: string): { editor: Editor; live: boolean } | null {
+  const state = useDocumentSnapshots.getState();
+  if (!state.scope || state.scope !== useAgentChatStore.getState().scope) return null;
+  const capture = state.notes[noteId];
+  if (!capture?.editor || capture.editor.isDestroyed) return null;
+  return { editor: capture.editor, live: capture.document.baseUpdatedAt == null };
+}
+
+/** Which note a registered editor shows (id + its title as registered). */
+export function noteForEditor(editor: Editor | null): { noteId: string; title: string } | null {
+  const state = useDocumentSnapshots.getState();
+  if (!editor || editor.isDestroyed || !state.scope || state.scope !== useAgentChatStore.getState().scope) return null;
+  for (const [noteId, capture] of Object.entries(state.notes)) if (capture.editor === editor) return { noteId, title: capture.document.label };
+  return null;
+}

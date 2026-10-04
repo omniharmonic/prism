@@ -53,7 +53,7 @@ import { issueInternalPat } from "../src/auth/pat";
 import { enterAgentTool, agentToolAllowed } from "../src/agent-policy";
 import type { McpPrincipal } from "../src/mcp/auth";
 import { issueDeviceToken } from "../src/auth/device";
-import type { Note } from "../src/parachute";
+import { VaultError, type Note } from "../src/parachute";
 
 const J = { "content-type": "application/json" };
 const owner = () => ({ cookie: sessionCookie(makeSession(config.ownerEmail)) });
@@ -115,10 +115,12 @@ let cliExists: Set<string>;
 let vaultNotes: Map<string, Note>;
 let vaultWrites: Array<{ op: "create" | "update"; id?: string; p: Record<string, unknown> }>;
 
+let vaultReadFails = false;
 const fakeVault: SessionVault = {
   getNote: async (id) => {
+    if (vaultReadFails) throw new VaultError(502, "vault unreachable");
     const n = vaultNotes.get(id);
-    if (!n) throw new Error("404");
+    if (!n) throw new VaultError(404, "not found");
     return n;
   },
   createNote: async (p) => {
@@ -143,6 +145,7 @@ function setup(opts: { maxConcurrent?: number; maxQueue?: number } = {}) {
   purged = [];
   cliExists = new Set();
   vaultNotes = new Map();
+  vaultReadFails = false;
   vaultWrites = [];
   const spawner: Spawner = (_cmd, args, o) => {
     const mcpPath = args[args.indexOf("--mcp-config") + 1]!;
@@ -1365,4 +1368,134 @@ test('queue capacity, actor isolation and stale permission reviews fail before a
  recoverFollowups();const row=listFollowups(sid)[0]!;
  assert.equal((await patchFollowup(sid,row.id,{version:row.version,action:'resume',policyVersion:0,payload:row.payload})).status,409);
  assert.equal(listFollowups(sid)[0]!.status,'blocked');assert.equal(calls.length,1);
+});
+
+// ── NP-PG-09: a locked page and agents that write with the vault token ───────
+const lockedNote = (id: string, locked: boolean): Note => ({ id, content: "BODY", path: `pages/${id}`, metadata: locked ? { prism_locked: true } : {}, createdAt: "", updatedAt: null, tags: [] });
+
+test("NP-PG-09: a vault-rw turn bound to a LOCKED page is refused 423 — nothing spawns, the turn is rolled back; unlocking lets it run", async () => {
+  vaultNotes.set("doc", lockedNote("doc", true));
+  const sid = await newSession({ noteId: "doc", profile: "vault-rw" });
+  const r = await postTurn(sid, { prompt: "rewrite the intro" });
+  assert.equal(r.status, 423);
+  const body = (await r.json()) as { error: string; detail: string };
+  assert.equal(body.error, "locked");
+  assert.match(body.detail, /This page is locked — unlock it or use a read-only session/);
+  assert.equal(calls.length, 0, "no claude process was spawned");
+  assert.equal(listTurns(sid).length, 0, "the reserved turn was rolled back");
+  assert.equal(getSession(sid)!.status, "idle");
+  // Unlocked: the very same request runs.
+  vaultNotes.set("doc", lockedNote("doc", false));
+  await runTurn(sid, "rewrite the intro", "agent-stream-turn1.jsonl");
+  assert.equal(calls.length, 1);
+});
+
+test("NP-PG-09: the lock is read at EVERY turn start — locking mid-session stops the next vault-rw turn, also when only the session is bound to the page", async () => {
+  vaultNotes.set("doc", lockedNote("doc", false));
+  const sid = await newSession({ noteId: "doc", profile: "vault-rw" });
+  await runTurn(sid, "first", "agent-stream-turn1.jsonl");
+  vaultNotes.set("doc", lockedNote("doc", true));
+  // A later turn carries no noteId of its own: the session's page still counts.
+  assert.equal((await postTurn(sid, { prompt: "second" })).status, 423);
+  assert.equal(calls.length, 1);
+  assert.equal(listTurns(sid).length, 1);
+});
+
+test("NP-PG-09: a vault-rw turn that NAMES another locked page is refused; an unlocked or unreadable page is not", async () => {
+  vaultNotes.set("free", lockedNote("free", false));
+  vaultNotes.set("other", lockedNote("other", true));
+  const sid = await newSession({ noteId: "free", profile: "vault-rw" });
+  assert.equal((await postTurn(sid, { prompt: "edit that one", noteId: "other" })).status, 423);
+  assert.equal(calls.length, 0);
+  // A note that does not exist has nothing to protect (the open-note read tolerates it too).
+  const r = await postTurn(sid, { prompt: "edit", noteId: "gone" });
+  assert.equal(r.status, 200);
+  assert.equal(calls.length, 1);
+});
+
+test("NP-PG-09: a READ-ONLY session on a locked page runs (it cannot write)", async () => {
+  vaultNotes.set("doc", lockedNote("doc", true));
+  const sid = await newSession({ noteId: "doc", profile: "vault-ro" });
+  await runTurn(sid, "summarize", "agent-stream-turn1.jsonl");
+  assert.equal(calls.length, 1);
+  assert.match(calls[0]!.args.at(-1)!, /<open_note>\nBODY/);
+});
+
+test("NP-PG-09: a one-shot dispatch with the vault's write tools on a locked page is refused 423; the read-only narrowing runs", async () => {
+  vaultNotes.set("doc", lockedNote("doc", true));
+  vaultNotes.set("free", lockedNote("free", false));
+  const dispatch = (body: Record<string, unknown>) => agentApi.request("/dispatch", { method: "POST", headers: { ...J, ...owner() }, body: JSON.stringify(body) });
+  const refused = await dispatch({ prompt: "tidy this page", noteId: "doc" });
+  assert.equal(refused.status, 423);
+  assert.equal(((await refused.json()) as { error: string }).error, "locked");
+  assert.equal(calls.length, 0);
+  // Read-only (what the client's summarize / transform / inline edit use): allowed.
+  assert.equal((await dispatch({ prompt: "summarize", noteId: "doc", profile: "vault-ro", skill: "generate" })).status, 200);
+  assert.equal(calls.length, 1);
+  assert.doesNotMatch(flag(calls[0]!.args, "--allowedTools")!, /update-note|create-note|delete-note/);
+  children.at(-1)!.exit(0);
+  // An unlocked page, or no page at all: unchanged.
+  assert.equal((await dispatch({ prompt: "tidy", noteId: "free" })).status, 200);
+  children.at(-1)!.exit(0);
+  assert.equal((await dispatch({ prompt: "tidy" })).status, 200);
+  children.at(-1)!.exit(0);
+});
+
+// ── Review round 2 (8, 9, 10) ────────────────────────────────────────────────
+test("NP-PG-09 fail CLOSED: when the lock cannot be read, a vault-rw turn is refused 503 (nothing spawns); a page that does not exist is not 'unknown'", async () => {
+  vaultNotes.set("doc", lockedNote("doc", false));
+  const sid = await newSession({ noteId: "doc", profile: "vault-rw" });
+  vaultReadFails = true;
+  const r = await postTurn(sid, { prompt: "rewrite" });
+  assert.equal(r.status, 503);
+  assert.equal(((await r.json()) as { error: string }).error, "lock_unknown");
+  assert.equal(calls.length, 0);
+  assert.equal(listTurns(sid).length, 0, "rolled back");
+  // The one-shot dispatch too.
+  const d = await agentApi.request("/dispatch", { method: "POST", headers: { ...J, ...owner() }, body: JSON.stringify({ prompt: "tidy", noteId: "doc" }) });
+  assert.equal(d.status, 503);
+  assert.equal(calls.length, 0);
+  vaultReadFails = false;
+  // A definite "no such note" (404) has nothing to protect.
+  assert.equal((await postTurn(sid, { prompt: "edit", noteId: "gone" })).status, 200);
+  assert.equal(calls.length, 1);
+});
+
+test("NP-PG-09: a vault-rw turn is also refused when an ATTACHED note or a snapshot's source page is locked", async () => {
+  vaultNotes.set("free", lockedNote("free", false));
+  vaultNotes.set("held", lockedNote("held", true));
+  const sid = await newSession({ noteId: "free", profile: "vault-rw" });
+  const attached = await postTurn(sid, { prompt: "use this", contextNoteIds: ["held"] });
+  assert.equal(attached.status, 423);
+  assert.equal(((await attached.json()) as { error: string }).error, "locked");
+  const snapshot = { kind: "selection", noteId: "held", label: "Held", text: "some selected text", capturedAt: "2026-10-01T10:05:00Z", baseUpdatedAt: null, truncated: false };
+  assert.equal((await postTurn(sid, { prompt: "rewrite this", contextSnapshots: [snapshot] })).status, 423);
+  assert.equal(calls.length, 0);
+  assert.equal(listTurns(sid).length, 0);
+  // Read-only: the same context is fine.
+  vaultNotes.set("ro", lockedNote("ro", false));
+  const ro = await newSession({ noteId: "ro", profile: "vault-ro" });
+  assert.equal((await postTurn(ro, { prompt: "summarize", contextNoteIds: ["held"] })).status, 200);
+});
+
+test("text-only dispatch (profile \"text\"): NO MCP server, no tool allowlist, no vault preamble, no note id — the run is given the prompt and nothing else", async () => {
+  vaultNotes.set("doc", lockedNote("doc", true));
+  const r = await agentApi.request("/dispatch", { method: "POST", headers: { ...J, ...owner() }, body: JSON.stringify({ prompt: "Summarize this text: hello", profile: "text", skill: "generate", noteId: "doc" }) });
+  assert.equal(r.status, 200, await r.clone().text());
+  assert.equal(calls.length, 1);
+  const call = calls[0]!;
+  assert.deepEqual(JSON.parse(call.mcpJson), { mcpServers: {} }, "no MCP server at all — not even the vault");
+  assert.equal(call.args.includes("--allowedTools"), false, "nothing is allowed");
+  assert.equal(flag(call.args, "--tools"), "", "no built-in tools");
+  assert.ok(call.args.includes("--strict-mcp-config"));
+  assert.equal(flag(call.args, "--permission-mode"), "dontAsk");
+  assert.equal(call.args.at(-1), "Summarize this text: hello", "the prompt as sent: no vault preamble, no 'Active note'");
+  assert.equal(call.args.at(-2), "--");
+  assert.doesNotMatch(call.mcpJson, /Bearer|token/i, "no credential in the run's config");
+  const id = ((await r.json()) as { id: string }).id;
+  const got = (await (await agentApi.request(`/dispatches/${id}`, { headers: owner() })).json()) as { noteId: string | null };
+  assert.equal(got.noteId, null, "the dispatch is bound to no note");
+  children.at(-1)!.exit(0);
+  // Still only a narrowing: any other profile name is refused.
+  assert.equal((await agentApi.request("/dispatch", { method: "POST", headers: { ...J, ...owner() }, body: JSON.stringify({ prompt: "x", profile: "vault-rw" }) })).status, 400);
 });

@@ -1,6 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import { useEditorState, type Editor } from "@tiptap/react";
-import { AtSign, Bold, Italic, Underline, Strikethrough, Code, Sparkles, Link2, ChevronDown, MessageSquarePlus, Unlink, Baseline, PenLine } from "lucide-react";
+import { AtSign, Bold, Italic, Underline, Strikethrough, Code, Sparkles, Link2, ChevronDown, MessageSquarePlus, Unlink, Baseline, PenLine, Wand2 } from "lucide-react";
+import { useHostServices } from "../../data/HostServicesContext";
+import { noteForEditor } from "../../lib/agent/documentSnapshots";
+import { requestPageAgent, type PageAgentKind } from "../../lib/agent/pageActions";
+import { useSyncStore } from "../../lib/sync/syncState";
 import { useSelectionAsk, useSelectionAskShortcut } from "../../lib/agent/useSelectionAsk";
 import { BLOCK_COLORS, type BlockColorName } from "../../editor/blocks";
 import { TURN_INTO, blockKind, canTurnInto, selectionStart, structuralEditsAllowed, topBlockAt, turnTopBlocksInto } from "../../lib/tiptap/blockCommands";
@@ -36,7 +40,12 @@ export function normalizeLink(raw: string): string | null {
 export function SelectionActions({ editor, allowFormatting, onComment, onSuggest }: { editor: Editor; allowFormatting: boolean; onComment?: () => void; /** Suggest-only people: open the suggestion composer (NP-CO-12). */ onSuggest?: () => void }) {
   const action = useSelectionAsk(editor);
   useSelectionAskShortcut(editor, action.ask, action.hasClient);
-  const [menu, setMenu] = useState<null | "turn" | "color">(null);
+  const [menu, setMenu] = useState<null | "turn" | "color" | "agent">(null);
+  // NP-AI-03: Summarize / Draft / Transform the selection — only where this viewer has
+  // the agent (host services). The result is a proposal; nothing is replaced silently.
+  const agentHost = useHostServices();
+  const online = useSyncStore((st) => st.online);
+  const agentRef = useRef<HTMLButtonElement>(null);
   const [linking, setLinking] = useState(false);
   const [href, setHref] = useState("");
   const [linkError, setLinkError] = useState(false);
@@ -83,7 +92,21 @@ export function SelectionActions({ editor, allowFormatting, onComment, onSuggest
     },
   }));
 
-  const activeText = editor.getAttributes("textColor").color as BlockColorName | undefined;
+  const agentRun = (kind: PageAgentKind, option?: string) => () => {
+    setMenu(null);
+    const open = noteForEditor(editor);
+    if (open) requestPageAgent(open.noteId, open.title, kind, "selection", option);
+  };
+  const agentItems: EditorMenuItem[] = [
+    { id: "summarize", label: "Summarize", keywords: "summary tldr", onSelect: agentRun("summarize") },
+    { id: "continue", section: "Draft", label: "Continue writing", onSelect: agentRun("draft", "continue") },
+    { id: "expand", label: "Expand", keywords: "elaborate", onSelect: agentRun("draft", "expand") },
+    { id: "shorter", section: "Transform", label: "Make shorter", onSelect: agentRun("transform", "shorter") },
+    { id: "longer", label: "Make longer", onSelect: agentRun("transform", "longer") },
+    { id: "grammar", label: "Fix spelling and grammar", onSelect: agentRun("transform", "grammar") },
+    { id: "more", label: "Change tone or translate…", keywords: "tone translate language", onSelect: agentRun("transform") },
+  ];
+    const activeText = editor.getAttributes("textColor").color as BlockColorName | undefined;
   const activeHighlight = editor.getAttributes("highlight").color as string | undefined;
   const colorItems: EditorMenuItem[] = [
     { id: "text-default", section: "Text color", label: "Default", checked: !activeText, icon: <span className="block-color-swatch">A</span>, onSelect: () => { editor.chain().focus().unsetTextColor().run(); setMenu(null); } },
@@ -179,7 +202,15 @@ export function SelectionActions({ editor, allowFormatting, onComment, onSuggest
       disabled={!action.canAsk || !action.selected} onMouseDown={event => event.preventDefault()} onClick={() => action.ask()}>
       <Sparkles size={14} aria-hidden="true" /> Ask agent
     </button>}
-    {action.available && (allowFormatting || onComment || onSuggest) && <span className="selection-divider" aria-hidden="true" />}
+    {agentHost && <span className="selection-dropdown">
+      <button ref={agentRef} type="button" data-editor-menu-anchor aria-label="Agent actions for the selection" aria-haspopup="menu" aria-expanded={menu === "agent"}
+        title={online ? "Summarize, draft or transform with the agent" : "You’re offline — the agent needs a connection"} disabled={!online || !noteForEditor(editor)}
+        onMouseDown={(e) => e.preventDefault()} onClick={() => setMenu(menu === "agent" ? null : "agent")}>
+        <Wand2 size={14} aria-hidden="true" /> AI <ChevronDown size={12} aria-hidden="true" />
+      </button>
+      {menu === "agent" && <EditorMenu label="Agent actions" items={agentItems} onClose={() => closeMenu(agentRef)} className="selection-menu" style={{ maxHeight: 320 }} />}
+    </span>}
+    {(action.available || agentHost) && (allowFormatting || onComment || onSuggest) && <span className="selection-divider" aria-hidden="true" />}
     {turnable && <span className="selection-dropdown">
       <button ref={turnRef} type="button" data-editor-menu-anchor aria-label={`Turn into (now ${currentLabel})`} aria-haspopup="menu" aria-expanded={menu === "turn"}
         title="Turn into" onMouseDown={(e) => e.preventDefault()} onClick={() => setMenu(menu === "turn" ? null : "turn")}>

@@ -24,6 +24,8 @@ import {
   Share2,
   Search,
   Bot,
+  LayoutTemplate,
+  Sparkles,
 } from "lucide-react";
 import { requestFindInPage } from "../../lib/tiptap/findShortcuts";
 import { useCollabSharing } from "../../data/CollabSharing";
@@ -36,7 +38,12 @@ import { useUIStore } from "../../app/stores/ui";
 import { useIsMobile } from "../../app/hooks/useIsMobile";
 import { useNoteShortcuts } from "../navigation/NoteShortcuts";
 import { isVaultNoteId } from "../../lib/noteIdentity";
-import { isLocked, pageStyleOf, protectionReason } from "../../lib/pages/model";
+import { TEMPLATE_TAG, isLocked, isTrashed, pageStyleOf, protectionReason } from "../../lib/pages/model";
+import { useViewerIsGuest } from "../sharing/SharedWithMe";
+import { useHostServices } from "../../data/HostServicesContext";
+import { useDocumentSnapshots } from "../../lib/agent/documentSnapshots";
+import { pageAgentReady, requestPageAgent, type PageAgentKind } from "../../lib/agent/pageActions";
+import { useSyncStore } from "../../lib/sync/syncState";
 import { usePagesUI, type PageRef } from "../../lib/pages/store";
 import { usePageActions, pageLink } from "../../lib/pages/usePageActions";
 import { printCurrentPage, useTransferUI } from "../../lib/import-export/store";
@@ -74,6 +81,17 @@ export function usePageMenuItems(
   const caps = (note as (Note & { _caps?: string[] }) | undefined)?._caps;
   const canEdit = !caps || caps.includes("edit");
   const protectedReason = protectionReason(subject);
+  // NP-TX-01 "Save as template": every workspace MEMBER may keep a private template of a
+  // page they can read (the server allows exactly that) — never a guest, a page that is
+  // already a template, or one in the Trash;
+  // and only where the shell can say WHO is saving (a template is private to its saver).
+  const guest = useViewerIsGuest();
+  const canTemplate = !!note && !guest && !!sharing?.getViewer && !(note.tags ?? []).includes(TEMPLATE_TAG) && !isTrashed(note);
+  // NP-AI-03: Summarize / Draft / Transform for the page that is open in a text editor —
+  // only where this viewer has the agent (host services: the server owner today).
+  const agentHost = useHostServices();
+  useDocumentSnapshots((st) => st.notes[page.id]?.editor);
+  const online = useSyncStore((st) => st.online);
   const isFav = favoriteIds.includes(page.id);
   const offline = useOfflineAvailability(real ? page.id : null);
   // Per-page style (NP-PG-08): font = the page's own contentFont (the open
@@ -122,6 +140,9 @@ export function usePageMenuItems(
     },
     ...(opts.onRename ? [{ id: "rename", label: "Rename", icon: <Pencil size={15} />, disabled: !!protectedReason || !canEdit, onClick: run(opts.onRename) }] : []),
     { id: "duplicate", label: "Duplicate", icon: <Copy size={15} />, disabled: !!protectedReason, onClick: run(() => void actions.duplicate(page)) },
+    ...(canTemplate
+      ? [{ id: "save-template", label: "Save as template", icon: <LayoutTemplate size={15} />, disabled: !!protectedReason, detail: protectedReason ?? undefined, onClick: run(() => void actions.saveAsTemplate(page)) }]
+      : []),
     {
       id: "move",
       label: "Move to…",
@@ -182,6 +203,18 @@ export function usePageMenuItems(
         if (!useUIStore.getState().contextPanelOpen) ui.toggleContextPanel();
       }),
     },
+    ...(agentHost && isActive && pageAgentReady(page.id)
+      ? ([["summarize", "Summarize page"], ["draft", "Draft with agent…"], ["transform", "Transform with agent…"]] as Array<[PageAgentKind, string]>).map(([kind, label], i) => ({
+          id: `agent-${kind}`,
+          label,
+          icon: <Sparkles size={15} />,
+          startsGroup: i === 0,
+          disabled: !online,
+          detail: online ? undefined : "You’re offline",
+          // After the menu has closed and handed focus back (the panel then takes it).
+          onClick: run(() => { window.setTimeout(() => requestPageAgent(page.id, page.title, kind, "page"), 60); }),
+        }))
+      : []),
     {
       id: "trash",
       label: "Move to Trash",
@@ -234,7 +267,11 @@ export function PageMenuPopover({
     left = Math.max(8, Math.min(left, window.innerWidth - width - 8));
     const top = Math.max(8, Math.min(anchor.y, window.innerHeight - height - 8));
     setPos({ left, top });
-    node.querySelector<HTMLButtonElement>("button:not(:disabled)")?.focus({ preventScroll: true });
+    // Items that depend on the page itself (lock, save as template) arrive once it has
+    // loaded: the menu is placed again, or its last rows would hang below the window.
+  }, [anchor.x, anchor.y, anchor.align, items.length]);
+  useLayoutEffect(() => {
+    ref.current?.querySelector<HTMLButtonElement>("button:not(:disabled)")?.focus({ preventScroll: true });
   }, [anchor.x, anchor.y, anchor.align]);
   useEffect(() => {
     const down = (e: MouseEvent) => {

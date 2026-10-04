@@ -797,7 +797,30 @@ export function treeRevisions(): (vaultId: string, noteId: string) => { live: bo
   };
 }
 
-/** Is this note locked, per the projection (best effort; false when unknown). */
-export function treeRowLocked(entry: VaultEntry, id: string): boolean {
-  return states.get(entry.id)?.rows.get(id)?.locked === true;
+export function treeLockState(entry: VaultEntry, id: string): boolean | null {
+  const st = states.get(entry.id);
+  const row = st?.rows.get(id);
+  return row ? row.locked === true : null;
+}
+
+/**
+ * Lock lookup for MANY targets (ids or paths) from the projection, with ONE pass over
+ * its rows: `true` locked · `false` known and unlocked · `"missing"` the projection is
+ * loaded and holds no such note (a new path) · `null` cannot say (not loaded).
+ * Paths match like the vault's own lookup: case-insensitive, NFC, a trailing `.md` ignored.
+ */
+export function treeLockLookup(entry: VaultEntry): (idOrPath: string) => boolean | "missing" | null {
+  const st = states.get(entry.id);
+  if (!st?.loaded) return () => null;
+  const key = (p: string) => p.normalize("NFC").toLowerCase().replace(/\.md$/, "");
+  let byPath: Map<string, boolean> | null = null;
+  return (idOrPath) => {
+    const row = st.rows.get(idOrPath);
+    if (row) return row.locked === true;
+    if (!byPath) {
+      byPath = new Map();
+      for (const r of st.rows.values()) if (r.path) byPath.set(key(r.path), byPath.get(key(r.path)) === true || r.locked === true);
+    }
+    return byPath.get(key(idOrPath)) ?? "missing";
+  };
 }

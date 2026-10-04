@@ -184,6 +184,9 @@ export interface VaultClient {
   preserveDraft?(id: string, content: string, audience: string, reason?: "access" | "conflict"): Promise<void>;
   /** True while this audience has deferred or uncertain writes awaiting sync/review. */
   hasPendingWrites?(): Promise<boolean>;
+  /** Is anything for THIS note still unsent on this device? (Absent → callers fall back
+   *  to the audience-wide `hasPendingWrites`.) */
+  hasPendingWritesFor?(noteId: string): Promise<boolean>;
   deleteNote(id: string): Promise<void>;
   search(query: string, tags?: string[], limit?: number): Promise<Note[]>;
   /** Filtered full-text search with `_matches` offsets (wave 2E). Optional;

@@ -15,6 +15,7 @@ import { Hono } from "hono";
 import { createHash } from "node:crypto";
 import type { Context } from "hono";
 import { resolveVaultEntry, grantsForResource, isCollabUnsaved, deleteCollabSetAsideForNote, hasCollabSetAside } from "../db";
+import type { VaultEntry } from "../config";
 import { vault, vaultClient, VaultError, VaultConflictError, type Note } from "../parachute";
 import { resolveActor, requestVia, type Actor } from "../auth/actor";
 import { COLLAB_SCHEMA_VERSION } from "@prism/core/editor-schema";
@@ -22,7 +23,7 @@ import { effectiveLevel, effectiveCaps, governedReview, grantedTags, resolvePage
 import { roleAtLeast, roleFloor } from "../roles";
 import { compress } from "hono/compress";
 import { openEventStream } from "../events";
-import { ensureTree, renderTree, etagMatches, treeUpsertNote, treeRemoveNote, treeAfterOwnerWrite, treeRowLocked, warmPageAnchors } from "../tree";
+import { ensureTree, renderTree, etagMatches, treeUpsertNote, treeRemoveNote, treeAfterOwnerWrite, treeLockState, treeLockLookup, warmPageAnchors } from "../tree";
 import { canvasApi } from "./canvas";
 import { threadsApi } from "./threads";
 import { peopleApi } from "./people";
@@ -137,10 +138,19 @@ async function proxyToVault(c: Context) {
     if ((method === "POST" && path === "/notes") || (method === "PATCH" && /^\/notes\/[^/]+$/.test(path))) init.body = stampChangeJson(stampJsonBody(init.body as string, resolveActor(c)), requestVia(c) === "mcp" ? "agent" : "edit");
     // Any write may change what a cached read would return.
     dropReadCache();
-    // Owner/admin bypass of a page lock is allowed but audited (one line, no content).
-    const lockedId = method === "PATCH" ? path.match(/^\/notes\/([^/?]+)$/)?.[1] : undefined;
-    if (lockedId && treeRowLocked(entry, decodeURIComponent(lockedId)) && /"content"\s*:/.test(init.body as string)) {
-      console.warn(`[pages] lock bypass: ${resolveActor(c).kind === "user" ? (resolveActor(c) as { email: string }).email : "?"} edited locked note ${decodeURIComponent(lockedId)} (vault ${entry.id})`);
+    // NP-PG-09: a locked page refuses CONTENT edits for everyone, the owner and admins
+    // included, until it is unlocked (it used to pass here with a log line). Every way
+    // the passthrough can change a page's body is covered: PATCH/PUT with content,
+    // a version RESTORE, and a create that overwrites (`if_exists: replace|update`,
+    // single or batch). Metadata, tags and path stay writable, and unlocking has its
+    // own route (POST /notes/:id/meta). Refused before anything reaches the vault.
+    // FAIL CLOSED: when the lock cannot be read the write is refused as retryable.
+    const refusal = await ownerLockRefusal(entry, method, path, init.body as string);
+    if (refusal === "locked") return c.json({ error: "locked", reason: "This page is locked. Unlock it to edit." }, 423);
+    if (refusal === "too_large") return c.json({ error: "batch_too_large", reason: `A batch may overwrite at most ${MAX_OVERWRITE_ITEMS} existing notes. Send it in smaller parts.` }, 413);
+    if (refusal === "unknown") {
+      c.header("Retry-After", "2");
+      return c.json({ error: "lock_unknown", reason: "Couldn’t check whether this page is locked. Nothing was changed — try again." }, 503);
     }
   }
   // DELETE /notes/<id or PATH alias>: set-aside rows are keyed by note ID, so an alias is
@@ -181,6 +191,103 @@ async function proxyToVault(c: Context) {
     console.log(`[trace] proxy ${method} ${path}${url.search} → ${res.status} ${res.body.length}B ${Date.now() - t0}ms ua=${(c.req.header("user-agent") ?? "").slice(0, 40)}`);
   }
   return new Response(res.body, { status: res.status, headers: { "Content-Type": res.contentType } });
+}
+
+/** Does this note-write body change the page's BODY (`content`, or the vault's `append` / `prepend`)? */
+export function writesContent(raw: string): boolean {
+  let body: unknown;
+  try {
+    body = JSON.parse(raw);
+  } catch {
+    return false; // not JSON: the vault refuses it
+  }
+  if (!body || typeof body !== "object" || Array.isArray(body)) return false;
+  const b = body as Record<string, unknown>;
+  return b.content !== undefined || b.append !== undefined || b.prepend !== undefined;
+}
+
+type LockAnswer = "locked" | "unlocked" | "missing" | "unknown";
+
+/** Lock state of the note an owner/admin write names (by id or by PATH). The tree
+ *  projection answers when it knows the row; otherwise the note is read. Only a
+ *  definite answer counts: a read that FAILS is "unknown", never "unlocked". */
+async function ownerLockState(entry: VaultEntry, idOrPath: string): Promise<LockAnswer> {
+  const known = treeLockState(entry, idOrPath);
+  if (known !== null) return known ? "locked" : "unlocked";
+  try {
+    return isLocked(await vaultClient(entry.id, { timeoutMs: 5000 }).getNote(idOrPath)) ? "locked" : "unlocked";
+  } catch (e) {
+    return e instanceof VaultError && e.status === 404 ? "missing" : "unknown";
+  }
+}
+
+const decoded = (raw: string): string | null => {
+  try {
+    return decodeURIComponent(raw);
+  } catch {
+    return null;
+  }
+};
+
+/** How many body-overwriting items one `POST /notes` batch may carry. Above it the
+ *  batch is REFUSED — never partly checked (item 501 must not skip the lock). */
+export const MAX_OVERWRITE_ITEMS = 500;
+
+/** The notes a `POST /notes` body could OVERWRITE the body of: items (single, or the
+ *  `notes: [...]` batch) with `if_exists: replace|update` that carry content.
+ *  `count` = how many such items there are (every one, no truncation). */
+function overwriteTargets(raw: string): { targets: string[]; count: number } {
+  let body: unknown;
+  try {
+    body = JSON.parse(raw);
+  } catch {
+    return { targets: [], count: 0 };
+  }
+  if (!body || typeof body !== "object" || Array.isArray(body)) return { targets: [], count: 0 };
+  const b = body as Record<string, unknown>;
+  const items = Array.isArray(b.notes) ? b.notes : [b];
+  const out = new Set<string>();
+  let count = 0;
+  for (const item of items) {
+    if (!item || typeof item !== "object") continue;
+    const it = item as Record<string, unknown>;
+    if (it.if_exists !== "replace" && it.if_exists !== "update") continue;
+    if (it.content === undefined && it.append === undefined && it.prepend === undefined) continue;
+    count++;
+    for (const key of [it.id, it.path]) if (typeof key === "string" && key) out.add(key);
+  }
+  return { targets: [...out], count };
+}
+
+/** Would this owner/admin write change the BODY of a locked page? (`null` = no.) */
+async function ownerLockRefusal(entry: VaultEntry, method: string, path: string, raw: string): Promise<"locked" | "unknown" | "too_large" | null> {
+  const targets: string[] = [];
+  const note = path.match(/^\/notes\/([^/?]+)$/)?.[1];
+  const restore = path.match(/^\/notes\/([^/?]+)\/restore$/)?.[1];
+  if (note && (method === "PATCH" || method === "PUT") && writesContent(raw)) targets.push(decoded(note) ?? "");
+  else if (restore && method === "POST") targets.push(decoded(restore) ?? "");
+  else if (path === "/notes" && method === "POST") {
+    const over = overwriteTargets(raw);
+    if (over.count > MAX_OVERWRITE_ITEMS) return "too_large";
+    targets.push(...over.targets);
+  }
+  // The tree projection answers for every row it knows (ids AND paths, one pass); only
+  // what it cannot answer is read from the vault, a few at a time.
+  const lookup = treeLockLookup(entry);
+  const unresolved: string[] = [];
+  for (const target of targets) {
+    if (!target) continue;
+    const known = lookup(target);
+    if (known === true) return "locked";
+    if (known === null) unresolved.push(target);
+  }
+  let unknown = false;
+  for (let i = 0; i < unresolved.length; i += 4) {
+    const states = await Promise.all(unresolved.slice(i, i + 4).map((t) => ownerLockState(entry, t)));
+    if (states.includes("locked")) return "locked";
+    if (states.includes("unknown")) unknown = true;
+  }
+  return unknown ? "unknown" : null;
 }
 
 interface ProxiedResponse {
@@ -822,6 +929,38 @@ const canAddTag = (actor: Actor, t: string): boolean => {
 /** A tag somebody's access hangs on: any grant (person, link, anyone, governance role) names it. */
 const tagGoverned = (vaultId: string, t: string): boolean => grantsForResource("tag", t, vaultId).length > 0 || publishedTag(vaultId, t);
 
+/** `metadata.prism_template_tags`: the tags a page TEMPLATE re-applies to every page made
+ *  from it — so, for a non-owner, it is a list of TAGS and follows the tag rules. */
+const TEMPLATE_TAGS_META = "prism_template_tags";
+const MAX_TEMPLATE_TAGS = 20;
+const sameJson = (a: unknown, b: unknown): boolean => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
+
+/**
+ * 🔒 Review round 3 (blocker). A non-owner's value for `prism_template_tags` is checked
+ * EXACTLY like tags they add: an array of ≤ 20 tag names, canonical, no system tag, and
+ * each one either ungoverned (no grant names it, nothing is published from it) or one
+ * they could add themselves (`canAddTag`). Otherwise a member could make an owner's
+ * "Use template" drop a page into a published tag or another group's shared folder.
+ * Restating the stored value (an editor round-trips metadata) and clearing it pass.
+ */
+function templateTagsCheck(actor: Actor, vaultKey: string, value: unknown, current: unknown): { tags: string[] | null } | { status: 400 | 403; reason: string } {
+  if (value === null) return { tags: null };
+  if (current !== undefined && sameJson(value, current)) return { tags: current as string[] };
+  if (!Array.isArray(value) || value.length > MAX_TEMPLATE_TAGS || value.some((t) => typeof t !== "string")) return { status: 400, reason: "prism_template_tags must be a list of at most 20 tag names." };
+  const tags = [...new Set((value as string[]).map(canonicalTag))];
+  if (tags.some((t) => t.length === 0 || t.length > 200)) return { status: 400, reason: "prism_template_tags must be a list of at most 20 tag names." };
+  if (tags.includes(TRASH_TAG) || tags.includes("template") || systemTags(tags).length) return { status: 403, reason: "A template cannot apply a system tag." };
+  if (tags.some((t) => tagGoverned(vaultKey, t) && !canAddTag(actor, t))) return { status: 403, reason: "A template can only apply tags you can create or organize in." };
+  return { tags };
+}
+
+/** Where every page template is saved (`@prism/core/pages` TEMPLATES_FOLDER): exactly one segment below it. */
+const isTemplateSlot = (path: string | null): boolean => {
+  if (!path) return false;
+  const parts = path.split("/");
+  return parts.length === 2 && parts[0] === "Templates" && parts[1]!.length > 0;
+};
+
 api.post("/notes", async (c) => {
   const actor = resolveActor(c);
   // Owners/admins are short-circuited to the passthrough upstream; this handler
@@ -848,7 +987,13 @@ api.post("/notes", async (c) => {
     const at = normalizePagePath(raw.path);
     if (at) canCreate = (await createCapsAt(actor, at, slice.tags)).has("create");
   }
-  if (!canCreate) {
+  // A workspace MEMBER (never a guest or a link) may always save a page TEMPLATE of their
+  // own: a note whose ONLY tag is `template`, one segment below Templates/. It is forced
+  // private to them below, so it is in nobody else's view and needs no tag grant.
+  const ownTemplate =
+    actor.kind === "user" && roleAtLeast(actor.role, "member") && slice.tags.length === 1 && slice.tags[0] === "template" &&
+    typeof raw.path === "string" && isTemplateSlot(normalizePagePath(raw.path));
+  if (!canCreate && !ownTemplate) {
     return c.json({ error: "forbidden", reason: "create requires the create capability on the target tag/folder" }, 403);
   }
   // Strict schema: one note, four fields. Refusals name keys' roles, never values.
@@ -871,7 +1016,8 @@ api.post("/notes", async (c) => {
   // names it, nothing is published from it). Otherwise `create` in one folder would
   // drop notes into every other shared folder and onto public sites.
   const vaultKey = resolveVaultEntry(actor.vaultId).id;
-  const outside = tags.filter((t) => tagGoverned(vaultKey, t) && !canAddTag(actor, t));
+  // (`template` on a member's own private template is exempt: see `ownTemplate` above.)
+  const outside = tags.filter((t) => !(ownTemplate && !canCreate && t === "template") && tagGoverned(vaultKey, t) && !canAddTag(actor, t));
   if (outside.length) return c.json({ error: "forbidden", reason: "You can only add tags you can create or organize in." }, 403);
 
   // PATH: the pages API's destination rules — protected / exported / under the Trash —
@@ -891,6 +1037,16 @@ api.post("/notes", async (c) => {
   // Narrowing is safe: a non-owner may create a note as private (e.g. a private task).
   const metadata = Object.fromEntries(Object.entries((body.metadata as Record<string, unknown> | null | undefined) ?? {}).filter(([k, v]) => (k === "prism_visibility" ? v === "private" : !isOwnerOnlyMeta(k) && k !== LOCK_KEY && k !== ORDER_KEY && k !== PAGE_STYLE_KEY && !ingestKeyChanged(k, v, undefined) && !(WRITER_META_KEYS as readonly string[]).includes(k))));
   if (subject) metadata.prism_creator = subject;
+  // The tags a template re-applies are tags: same rule as `tags` above.
+  if (TEMPLATE_TAGS_META in metadata) {
+    const checked = templateTagsCheck(actor, vaultKey, metadata[TEMPLATE_TAGS_META], undefined);
+    if ("status" in checked) return c.json({ error: checked.status === 400 ? "invalid_request" : "forbidden", reason: checked.reason }, checked.status);
+    if (checked.tags?.length) metadata[TEMPLATE_TAGS_META] = checked.tags;
+    else delete metadata[TEMPLATE_TAGS_META];
+  }
+  // 🔒 A non-owner's TEMPLATE is always private to its creator, whatever the client sent:
+  // sharing a template is the owner's deliberate act (the gallery's toggle).
+  if (tags.includes("template")) metadata.prism_visibility = "private";
   // The writer stamp is server-owned: client values were dropped above, ours is applied here.
   Object.assign(metadata, stampChange(stampMetadata(undefined, actor), requestVia(c) === "mcp" ? "agent" : "edit"));
   try {
@@ -973,6 +1129,12 @@ api.patch("/notes/:id", async (c) => {
   };
   if (Object.keys(meta).some(forbiddenKey)) {
     return c.json({ error: "forbidden", reason: "That property can only be changed through its own control." }, 403);
+  }
+  // The tags a template re-applies are TAGS (review round 3): same rule as `add_tags`.
+  if (body.metadata && TEMPLATE_TAGS_META in body.metadata) {
+    const checked = templateTagsCheck(actor, resolveVaultEntry(actor.vaultId).id, body.metadata[TEMPLATE_TAGS_META], note.metadata?.[TEMPLATE_TAGS_META]);
+    if ("status" in checked) return c.json({ error: checked.status === 400 ? "invalid_request" : "forbidden", reason: checked.reason }, checked.status);
+    body.metadata[TEMPLATE_TAGS_META] = checked.tags;
   }
   if (addTags.includes(TRASH_TAG) || removeTags.includes(TRASH_TAG)) {
     return c.json({ error: "forbidden", reason: "Use Move to Trash / Restore." }, 403);

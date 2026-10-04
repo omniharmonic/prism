@@ -10,7 +10,10 @@ import { queryKeys } from "../parachute/queries";
 import { convertApi } from "../parachute/client";
 import { inferContentType } from "../schemas/content-types";
 import type { Note } from "../types";
-import { LOCK_KEY, ORDER_KEY, PAGE_STYLE_KEY, duplicateCopy, referencesAttachments, copyFilesNotice, isLocked, pageStyleOf, pageTitle, type MoveResult } from "./model";
+import { LOCK_KEY, ORDER_KEY, PAGE_STYLE_KEY, TEMPLATES_FOLDER, duplicateCopy, templateSource, referencesAttachments, copyFilesNotice, isLocked, pageStyleOf, pageTitle, type MoveResult } from "./model";
+import { editorSaveState, flushPendingSaves } from "../../app/hooks/useAutoSave";
+import { useCollabSharing } from "../../data/CollabSharing";
+import { registeredEditor } from "../agent/documentSnapshots";
 import * as ops from "./ops";
 import { usePagesUI, type PageRef } from "./store";
 
@@ -43,6 +46,16 @@ export function usePageActions() {
     ui.getState().showToast({ message, ...extra });
   const refresh = () => queryClient.invalidateQueries({ queryKey: queryKeys.vault.all });
   const fail = (e: unknown, fallback: string) => toast(ops.pageErrorText(e, fallback), { tone: "error" });
+  const sharing = useCollabSharing();
+  /** The signed-in account (null where the shell has no viewer read, or it failed). */
+  const viewerEmail = async (): Promise<string | null> => {
+    try {
+      return (await sharing?.getViewer?.())?.email ?? null;
+    } catch {
+      return null;
+    }
+  };
+  const isPathTaken = (e: unknown): boolean => e instanceof Error && /\b409\b/.test(e.message);
 
   const restore = async (page: PageRef) => {
     try {
@@ -138,7 +151,10 @@ export function usePageActions() {
     duplicate: async (page: PageRef) => {
       try {
         const [note, tree] = await Promise.all([client.getNote(page.id, { fresh: true }), client.listTree()]);
-        const copy = duplicateCopy(note, tree.map((t) => t.path));
+        // A private page's duplicate stays private — to the person duplicating it.
+        const priv = note.metadata?.prism_visibility === "private";
+        const limited = Array.isArray((note as Note & { _caps?: string[] })._caps);
+        const copy = duplicateCopy(note, tree.map((t) => t.path), { creator: priv && !limited ? await viewerEmail() : null });
         const created = await client.createNote(copy);
         // The copy gets its OWN files (before it opens): until then its links name the
         // original page's attachments, which only people who can see the original load.
@@ -152,9 +168,72 @@ export function usePageActions() {
       }
     },
 
+    /**
+     * NP-TX-01 "Save as template": the page's body, icon, cover, properties and tags
+     * become a note tagged `template` — what the New page chooser and the Templates
+     * gallery list. The original is not changed. A LIVE page's body comes from its
+     * editor (the vault copy lags it); a plain page's unsaved typing is saved first.
+     */
+    saveAsTemplate: async (page: PageRef) => {
+      try {
+        const open = registeredEditor(page.id);
+        if (!open?.live) await flushPendingSaves(page.id).catch(() => {});
+        const [note, tree] = await Promise.all([client.getNote(page.id, { fresh: true }), client.listTree()]);
+        const content = open?.live ? open.editor.getHTML() : note.content;
+        // 🔒 A template is PRIVATE to the person who saves it and carries no source tag
+        // (`templateSource`), and it always goes to the Templates folder — never beside
+        // the page, where it would inherit whoever the page's parent is shared with.
+        // A member's creator is stamped by the server; an owner/admin's is sent here.
+        const limited = Array.isArray((note as Note & { _caps?: string[] })._caps);
+        const creator = limited ? null : await viewerEmail();
+        if (!limited && !creator) {
+          toast("Couldn’t save this page as a template: your account couldn’t be confirmed, so it could not be kept private. Nothing was changed.", { tone: "error" });
+          return null;
+        }
+        const name = pageTitle(note.path) || page.title || "Untitled";
+        const build = (label: string) => templateSource({ content, metadata: note.metadata, tags: note.tags }, label, TEMPLATES_FOLDER, tree.map((t) => t.path), { creator });
+        let template = build(name);
+        let created: Note;
+        try {
+          created = await client.createNote(template);
+        } catch (e) {
+          // The name is held by a template this person cannot see: one retry under a distinct name.
+          if (!isPathTaken(e)) throw e;
+          template = build(`${name} ${Date.now().toString(36).slice(-4)}`);
+          created = await client.createNote(template);
+        }
+        let filesNote = "";
+        if (client.copyAttachments && referencesAttachments(template)) filesNote = copyFilesNotice(await client.copyAttachments(created.id).catch(() => null));
+        await refresh();
+        toast(`Saved “${name}” as a template${filesNote ? `. ${filesNote}` : ""}`, { action: { label: "Templates", run: () => ui.getState().openTemplates(true) } });
+        return created;
+      } catch (e) {
+        fail(e, "Couldn’t save this page as a template. Nothing was changed.");
+        return null;
+      }
+    },
+
     toggleLock: async (note: Pick<Note, "id" | "metadata" | "path">) => {
       const locked = isLocked(note);
       try {
+        // Typing that has not been saved yet goes in BEFORE the lock: once locked the
+        // server refuses a content write from everyone, the owner included.
+        // If that save does not land, the page is NOT locked (the typing would be stranded).
+        if (!locked) {
+          let flushed = true;
+          await flushPendingSaves(note.id).catch(() => { flushed = false; });
+          const state = editorSaveState(note.id);
+          // A save the server did not take may sit in this device's queue ("saved on this
+          // device"): it would be refused once the page is locked, so it counts as unsaved.
+          // THIS page's queue only: an unsent change to another page is no reason not to lock this one.
+          const unsent = client.hasPendingWritesFor
+            ? await client.hasPendingWritesFor(note.id).catch(() => false)
+            : ((await client.hasPendingWrites?.().catch(() => false)) ?? false);
+          if (!flushed || unsent || state === "failed" || state === "dirty" || state === "parked") {
+            toast("Your latest changes couldn’t be saved, so the page was not locked. Check the save state and try again.", { tone: "error" });
+            return;
+          }
+        }
         await ops.setPageMeta(client, note.id, { [LOCK_KEY]: !locked });
         await queryClient.invalidateQueries({ queryKey: queryKeys.vault.note(note.id) });
         toast(locked ? "Page unlocked — anyone with edit access can change it." : "Page locked — editing is off until it’s unlocked.");

@@ -20,6 +20,26 @@ import { QueryClientContext } from "@tanstack/react-query";
 import { agentKeys, useAgentClient } from "../../data/AgentClientContext";
 import type { AgentSessionSummary } from "../../lib/agent/sessions";
 import { PageIcon } from "../../lib/pages/icons";
+import type { Editor } from "@tiptap/react";
+import { useDocumentSnapshots } from "../../lib/agent/documentSnapshots";
+import { useSelectionAsk } from "../../lib/agent/useSelectionAsk";
+
+/**
+ * NP-AI-01: the header Agent button opens the SAME document-bound conversation with
+ * the page's current selection attached — exactly what the selection toolbar, the
+ * block menu, slash and ⌘J do (`useSelectionAsk().ask("selection")`). This renders
+ * nothing; it hands the button a function that attaches the selection when there is
+ * one (false = nothing selected / not possible → the button just opens the panel).
+ * Mounted only for a page that is open in an editor, inside a query client.
+ */
+function HeaderSelectionAsk({ editor, register }: { editor: Editor; register: (attach: (() => boolean) | null) => void }) {
+  const action = useSelectionAsk(editor);
+  useEffect(() => {
+    register(() => action.selected && action.canAsk && action.ask("selection"));
+    return () => register(null);
+  });
+  return null;
+}
 
 /** True while a cached agent session has a queued/running turn. Reads the
  *  cache only (AgentChat/AgentActivity own the polling) — never adds a request. */
@@ -104,6 +124,11 @@ export function TabBar() {
 
   const isMobile = useIsMobile();
   const agentActive = useAgentActive();
+  const agentClient = useAgentClient();
+  const queries = useContext(QueryClientContext);
+  const activeNoteForAgent = useUIStore((st) => st.openTabs.find((t) => t.id === st.activeTabId)?.noteId ?? null);
+  const activeEditor = useDocumentSnapshots((st) => (activeNoteForAgent ? st.notes[activeNoteForAgent]?.editor ?? null : null));
+  const attachSelection = useRef<(() => boolean) | null>(null);
   const strip = useRef<HTMLDivElement>(null);
   const [announcement, setAnnouncement] = useState("");
   useEffect(() => {
@@ -370,13 +395,19 @@ export function TabBar() {
       <ShareButton key="share" />
       {isRealNote && <PageActionsButton key="page-actions" page={{ id: activeTab!.noteId, path: null, title: activeTab!.title }} />}
       <div className="flex items-center gap-0.5 flex-shrink-0">
+        {queries && agentClient && activeEditor && !activeEditor.isDestroyed && (
+          <HeaderSelectionAsk key="agent-selection" editor={activeEditor} register={(attach) => { attachSelection.current = attach; }} />
+        )}
         {/* Labelled Agent button with an activity dot while a turn runs. */}
         <button
           type="button"
           onClick={(event) => {
             event.currentTarget.focus({ preventScroll: true });
+            // With text selected in the page, the selection rides along (unsent, like
+            // every other "Ask agent" entry); otherwise the panel opens on the page.
+            attachSelection.current?.();
             setContextPanelTab("agent");
-            if (!contextPanelOpen) toggleContextPanel();
+            if (!useUIStore.getState().contextPanelOpen) toggleContextPanel();
           }}
           title="AI Agent"
           aria-label={agentActive ? "AI Agent (working)" : "AI Agent"}

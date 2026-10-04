@@ -1,5 +1,5 @@
 /** Publication membership shared by the public reader and owner preview. */
-import { TRASH_TAG } from "@prism/core/pages";
+import { TRASH_TAG, TEMPLATE_TAG } from "@prism/core/pages";
 import { vaultClient, type Note } from "./parachute";
 import type { Actor } from "./auth/actor";
 import {
@@ -57,7 +57,8 @@ export function publicationActor(pub: Publication): Actor {
  */
 export const canPublicView = (grants: Actor["grants"], note: Note): boolean =>
   // A trashed page leaves its public site too (restoring brings it back).
-  !(note.tags ?? []).includes(TRASH_TAG) && effectiveCaps(grants, ref(note), null).has("view");
+  // …and a TEMPLATE is a blueprint, never public content (it may hold a private page's text).
+  !(note.tags ?? []).includes(TRASH_TAG) && !(note.tags ?? []).includes(TEMPLATE_TAG) && effectiveCaps(grants, ref(note), null).has("view");
 
 /** The vault client bound to the publication's own vault — EVERY vault read on
  *  the public path goes through this, never the primary singleton. */
