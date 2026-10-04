@@ -7,11 +7,11 @@ import React from "react";
 import { createRoot } from "react-dom/client";
 import { InvalidationSourceProvider } from "../../../packages/core/src/data/InvalidationContext";
 import type { InvalidationHandlers, InvalidationSource } from "../../../packages/core/src/lib/events/invalidation";
-import { App, AccountProvider, CollabDocumentProvider, CollabSharingProvider, PlatformProvider, VaultClientProvider, useUIStore, type Note } from "@prism/core";
+import { App, AccountProvider, AgentClientProvider, CollabDocumentProvider, CollabSharingProvider, PlatformProvider, VaultClientProvider, useAgentChatStore, useUIStore, type AgentClient, type AgentSessionSummary, type Note } from "@prism/core";
 import { filtersToParams, matchesFilters, parseSearchFilters, queryTerms, searchMatches } from "@prism/core/search";
 import { inferContentType } from "../../../packages/core/src/lib/schemas/content-types";
 import { httpVaultClient } from "../src/parachute/HttpVaultClient";
-import { fetchMe, setActiveVault } from "../src/config";
+import { agentScope, fetchMe, setActiveVault } from "../src/config";
 import { OfflineIndicator } from "../src/offline/OfflineIndicator";
 import { startOutboxSync, setStaleSendingMsForTests } from "../src/offline/outbox";
 import { logout } from "../src/config";
@@ -32,6 +32,14 @@ const notes: Note[] = [
 ];
 // ?authors (NP-SR-04): the agenda was created by someone else and last edited by the owner.
 if (params.has("authors")) notes.find((n) => n.id === "agenda")!.metadata = { ...notes.find((n) => n.id === "agenda")!.metadata, prism_last_writer: "u_00000000000000aa" };
+// ?dbrows (NP-OF-05): the tracker is a configured database over two task pages.
+if (params.has("dbrows")) {
+  notes.find((n) => n.id === "tracker")!.metadata = { prism_type: "database", prism_creator: "owner@example.test", prism_database: { version: 1, source: { tags: ["task"] }, views: [{ id: "v-table", name: "All tasks", type: "table", visible: ["status"] }] } };
+  notes.push(
+    { id: "task-venue", path: "Projects/Prism/Tasks/Book the venue", content: "", tags: ["task"], metadata: { status: "todo", priority: "medium" }, createdAt: recent, updatedAt: recent },
+    { id: "task-invites", path: "Projects/Prism/Tasks/Send invitations", content: "", tags: ["task"], metadata: { status: "todo", priority: "low" }, createdAt: recent, updatedAt: recent },
+  );
+}
 // Metadata written by the app survives reloads ("another device" = a fresh page).
 const savedMeta = JSON.parse(sessionStorage.getItem("notion-shell-meta") ?? "{}") as Record<string, Record<string, unknown>>;
 for (const n of notes) if (savedMeta[n.id]) n.metadata = { ...n.metadata, ...savedMeta[n.id] };
@@ -84,6 +92,22 @@ let createdSeq = 0;
 const bump = () => `2026-10-02T00:${String(Math.floor(++seq / 60)).padStart(2, "0")}:${String(seq % 60).padStart(2, "0")}.000Z`;
 if (params.has("stale")) setStaleSendingMsForTests(Number(params.get("stale")));
 Object.assign(window, { prismShellLogout: logout, prismShell: controls, prismShellUI: useUIStore, prismShellClient: httpVaultClient });
+/** `?agent[=running|queued|done]` (NP-PG-06 / PG-14 / SR-06): an AgentClient like the one main.tsx
+ *  provides to the server owner, over one seeded session. `prismShellAgent.status` is what the
+ *  server would answer for its latest turn; creates and turns are recorded, never run. */
+const agentFixture = { status: (params.get("agent") || "done") as "running" | "queued" | "done", lists: 0, creates: [] as unknown[], turns: [] as unknown[] };
+const agentSession = (): AgentSessionSummary => ({ id: "11111111-1111-4111-8111-111111111111", vault_id: "primary", owner_email: "owner@example.test", title: "Draft the workshop plan", profile: "vault-ro", note_id: null, cli_session_id: null, status: agentFixture.status === "done" ? "idle" : "running", transcript_note_id: null, cost_usd: 0, created_at: Date.parse(recent), updated_at: Date.parse(recent), turnCount: 1, lastTurnAt: Date.parse(recent), lastTurnStatus: agentFixture.status });
+const agentClient: AgentClient | null = params.has("agent") ? {
+  scope: () => agentScope() ?? "",
+  listSessions: async () => { agentFixture.lists++; return [agentSession()]; },
+  getSession: async () => ({ session: agentSession(), turns: [] }),
+  createSession: async (p) => { agentFixture.creates.push(p ?? null); return { sessionId: agentSession().id, session: agentSession() }; },
+  sendTurn: async (_id, prompt, opts) => { agentFixture.turns.push({ prompt, opts: opts ?? null }); return { turnId: "fixture-turn", status: "done" }; },
+  streamSession: () => () => {},
+  cancelTurn: async () => true,
+  archiveSession: async () => {},
+} : null;
+Object.assign(window, { prismShellAgent: agentFixture, prismShellAgentStore: useAgentChatStore });
 const nativeFetch = window.fetch.bind(window);
 window.fetch = async (input, init) => {
   const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url, location.origin);
@@ -268,7 +292,7 @@ createRoot(document.getElementById("root")!).render(
       getActiveVault: () => "primary",
       setActiveVault: (id: string) => { (controls as unknown as { switchedVault?: string }).switchedVault = id; },
     } : {}), createShareLink: async () => "", getAccess: async () => ({ note: { id: "workspace", title: "A living workspace", tags: [], visibility: "private" }, people: [], links: [], tagAccess: [], canManageLinks: true, allowedLevels: ["view", "comment", "suggest", "edit"] }) }}>
-    <AccountProvider value={params.has("account") ? webAccount : null}><Live><InvalidationSourceProvider source={params.has("events") ? eventSource : null}><App skipOnboarding initialTab={{ id: "workspace", title: "A living workspace", type: "document" }} /></InvalidationSourceProvider></Live></AccountProvider>
+    <AccountProvider value={params.has("account") ? webAccount : null}><AgentClientProvider client={agentClient}><Live><InvalidationSourceProvider source={params.has("events") ? eventSource : null}><App skipOnboarding initialTab={{ id: "workspace", title: "A living workspace", type: "document" }} /></InvalidationSourceProvider></Live></AgentClientProvider></AccountProvider>
     <OfflineIndicator />
   </CollabSharingProvider></VaultClientProvider></PlatformProvider></React.StrictMode>,
 );
