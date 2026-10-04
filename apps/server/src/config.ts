@@ -395,6 +395,15 @@ export const config = {
   // repaired rooms per sweep (each one re-queues local-model triage).
   matrixReconcileMs: Number(process.env.MATRIX_RECONCILE_MS ?? 3_600_000),
   matrixReconcilePerSweep: Number(process.env.MATRIX_RECONCILE_PER_SWEEP ?? 25),
+  // One Matrix pass per vault at a time (worker/scheduler.ts), so every call in a
+  // pass is bounded: a hung read would otherwise stop Matrix ingest until a restart.
+  // 0 = no timeout.
+  matrixVaultTimeoutMs: Number(process.env.MATRIX_VAULT_TIMEOUT_MS ?? 30_000),
+  matrixReadTimeoutMs: Number(process.env.MATRIX_READ_TIMEOUT_MS ?? 120_000),
+  // A room a pass failed on is replayed by the following passes (the window between
+  // that pass's cursor and the current one); after this many failed replays it is
+  // given up on — loudly (a failed pass outcome + cursor `matrix-lost`).
+  matrixReplayMaxTries: Math.max(1, Number(process.env.MATRIX_REPLAY_MAX_TRIES ?? 10)),
   // Link message-thread notes to person notes (`messages-with`), as the desktop's
   // message_sync did via person_linker before Matrix ingest moved server-side
   // (the server ingester never ported it). OFF by default: see CLAUDE.md

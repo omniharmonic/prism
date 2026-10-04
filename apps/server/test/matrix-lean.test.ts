@@ -247,8 +247,17 @@ test("GOLDEN: the lean ingester leaves the vault exactly as the body-listing ing
     const oldR = await run(legacy as never, oldV);
     const newR = await run({ ingestMatrix, reconcileMatrix }, newV);
 
-    assert.deepEqual(newR, oldR, "same counts reported");
-    assert.deepEqual(newV.writes, oldV.writes, "the same writes, in the same order, with the same bodies and metadata");
+    // (The lean ingester also reports failed/replayed rooms — none here — and its plain
+    // appends are compare-and-set; the old one's were unconditional. Everything else is equal.)
+    const counts = (r: Record<string, unknown>) => Object.fromEntries(Object.entries(r).filter(([k]) => k !== "failedRooms" && k !== "replayed"));
+    for (const k of ["r1", "r3"] as const) {
+      assert.deepEqual(counts(newR[k] as never), counts(oldR[k] as never), "same counts reported");
+      assert.deepEqual((newR[k] as { failedRooms: string[] }).failedRooms, []);
+    }
+    assert.deepEqual(newR.r2, oldR.r2);
+    const uncas = (ws: Array<Record<string, unknown>>) => ws.map(({ ifUpdatedAt: _cas, ...w }) => w);
+    assert.deepEqual(uncas(newV.writes), uncas(oldV.writes), "the same writes, in the same order, with the same bodies and metadata");
+    assert.ok(newV.writes.filter((w) => w.op === "update").every((w) => typeof w.ifUpdatedAt === "string"), "every lean write names the version it read");
     assert.deepEqual(snapshot(newV.notes), snapshot(oldV.notes), "identical vault contents");
 
     // …and the run really exercised what it claims to.

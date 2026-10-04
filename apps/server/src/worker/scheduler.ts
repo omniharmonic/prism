@@ -21,7 +21,7 @@ import { getVaultRegistry, getWorkerCursor, setWorkerCursor, listVaultMirrors } 
 import { getSecret, secretsConfigured, otherSecretOwners } from "../secrets";
 import { config, type VaultEntry } from "../config";
 import { vault, vaultClient } from "../parachute";
-import { MatrixClient, ingestMatrix, reconcileMatrix, type IngestVault, type MatrixCreds } from "./matrix";
+import { MatrixClient, ingestMatrix, reconcileMatrix, type IngestVault, type MatrixCreds, type RoomReplay } from "./matrix";
 import { FathomClient, ingestFathom } from "./fathom";
 import { FirefliesClient, ingestAndCleanupFireflies, type FirefliesBudget, type FirefliesVault } from "./fireflies";
 import { ClickUpClient, ingestClickUp, type ClickUpCredential, type ClickUpVault } from "./clickup";
@@ -201,28 +201,87 @@ let matrixPass = 0;
 const matrixSelf = new Map<string, string>();
 const lastMatrixReconcileAt = new Map<string, number>();
 const lastBridgeResyncAt = new Map<string, number>();
-export async function runMatrixOnce(entry: VaultEntry): Promise<number> {
-  // The workspace's Matrix integration is owned by the operator (config.ownerEmail)
-  // for now; a per-member model can key it differently later.
-  const raw = getSecret(entry.id, config.ownerEmail, "matrix");
-  if (!raw) {
-    warnMissingSecret(entry.id, "matrix");
-    return 0;
+
+/** What a Matrix pass talks to. Tests inject both; production builds them from the stored credential. */
+export interface MatrixPassDeps {
+  client?: Parameters<typeof ingestMatrix>[0] & Partial<Parameters<typeof reconcileMatrix>[0]> & { whoami?: () => Promise<string>; sendText?: (roomId: string, text: string) => Promise<unknown> };
+  vault?: IngestVault;
+}
+
+/** A room a pass failed on, kept until a later pass has replayed its window. */
+interface PendingReplay extends RoomReplay {
+  tries: number;
+}
+const MATRIX_REPLAY_CURSOR = "matrix-replay";
+const MATRIX_LOST_CURSOR = "matrix-lost";
+const MATRIX_REPLAY_CAP = 2000;
+
+function readJsonCursor<T>(vaultId: string, kind: string): T[] {
+  try {
+    const v = JSON.parse(getWorkerCursor(vaultId, kind) ?? "[]");
+    return Array.isArray(v) ? (v as T[]) : [];
+  } catch {
+    return [];
   }
-  const creds = JSON.parse(raw) as MatrixCreds;
-  const client = new MatrixClient(creds);
+}
+/** Rooms waiting for a replay (diagnostics + tests). */
+export const pendingMatrixReplays = (vaultId: string): Array<{ roomId: string; since?: string; tries: number }> =>
+  readJsonCursor<PendingReplay>(vaultId, MATRIX_REPLAY_CURSOR).filter((p) => p && typeof p.roomId === "string");
+
+/** One pass per vault at a time. The tick fires every 60 s whether or not the last
+ *  one finished, and `POST /api/integrations/matrix/sync` runs a pass on demand; two
+ *  passes started from the same cursor would each append the same events. */
+const matrixInFlight = new Map<string, Promise<number>>();
+export const matrixPassRunning = (vaultId: string): boolean => matrixInFlight.has(vaultId);
+
+/**
+ * One Matrix pass for a vault. If one is already running, this JOINS it (returns
+ * the running pass's promise) — it never starts a second. The tick skips instead
+ * (and records no outcome, so a pass that hangs shows up as `stale`); the manual
+ * route answers 409 `busy`.
+ */
+export function runMatrixOnce(entry: VaultEntry, deps: MatrixPassDeps = {}): Promise<number> {
+  const running = matrixInFlight.get(entry.id);
+  if (running) return running;
+  const pass = runMatrixPass(entry, deps).finally(() => {
+    if (matrixInFlight.get(entry.id) === pass) matrixInFlight.delete(entry.id);
+  });
+  matrixInFlight.set(entry.id, pass);
+  return pass;
+}
+
+async function runMatrixPass(entry: VaultEntry, deps: MatrixPassDeps): Promise<number> {
+  await Promise.resolve(); // never run any of the pass in the caller's synchronous frame
+  let client = deps.client;
+  if (!client) {
+    // The workspace's Matrix integration is owned by the operator (config.ownerEmail)
+    // for now; a per-member model can key it differently later.
+    const raw = getSecret(entry.id, config.ownerEmail, "matrix");
+    if (!raw) {
+      warnMissingSecret(entry.id, "matrix");
+      return 0;
+    }
+    // Every homeserver read is bounded: with the one-pass-at-a-time guard, a read
+    // that never answers would otherwise stop Matrix ingest until a restart.
+    client = new MatrixClient(JSON.parse(raw) as MatrixCreds, fetch, config.matrixReadTimeoutMs > 0 ? config.matrixReadTimeoutMs : undefined);
+  }
+  // …and so is every vault call (a pass makes one body read per active room).
+  const ingestVault = deps.vault ?? (vaultClient(entry.id, config.matrixVaultTimeoutMs > 0 ? { timeoutMs: config.matrixVaultTimeoutMs } : {}) as unknown as IngestVault);
   const since = getWorkerCursor(entry.id, "matrix") ?? undefined;
+  const pending = pendingMatrixReplays(entry.id);
   // MATRIX_LINK_PEOPLE: the sync user is never linked as a participant.
   let selfUserId: string | null = null;
   if (config.matrixLinkPeople || config.matrixLinkExisting) {
     selfUserId = matrixSelf.get(entry.id) ?? null;
     if (!selfUserId) {
-      selfUserId = await client.whoami().catch(() => null);
+      selfUserId = client.whoami ? await client.whoami().catch(() => null) : null;
       if (selfUserId) matrixSelf.set(entry.id, selfUserId);
     }
   }
-  const res = await ingestMatrix(client, vaultClient(entry.id) as unknown as IngestVault, {
+  const res = await ingestMatrix(client, ingestVault, {
     since,
+    // Replay needs a cursor to page back from; with none (first pass ever) the rows wait.
+    ...(since && pending.length ? { replay: pending.map((p) => ({ roomId: p.roomId, ...(p.since ? { since: p.since } : {}) })) } : {}),
     autoJoin: config.matrixAutoJoin,
     maxJoinsPerRun: config.matrixAutoJoinPerRun,
     // Probe the full invite backlog every 10th pass (~10 min) — or every pass
@@ -242,6 +301,26 @@ export async function runMatrixOnce(entry: VaultEntry): Promise<number> {
       : {}),
   });
   if (res.peopleCreated > 0) console.log(`[worker] matrix ${entry.id}: ${res.peopleCreated} person note(s) created (MATRIX_LINK_PEOPLE)`);
+  // Failed rooms are persisted BEFORE the cursor moves past them: a crash between
+  // the two re-runs the pass, it never forgets a room.
+  const next: PendingReplay[] = [];
+  const gaveUp: PendingReplay[] = [];
+  for (const p of pending) {
+    if (res.replayed.ok.includes(p.roomId)) continue;
+    if (!res.replayed.failed.includes(p.roomId)) next.push(p); // not attempted this pass
+    else if (p.tries + 1 >= config.matrixReplayMaxTries) gaveUp.push({ ...p, tries: p.tries + 1 });
+    else next.push({ ...p, tries: p.tries + 1 });
+  }
+  for (const roomId of res.failedRooms) {
+    // A room already waiting keeps its OLDER cursor (the wider window).
+    if (!next.some((p) => p.roomId === roomId)) next.push({ roomId, ...(since ? { since } : {}), tries: 0 });
+  }
+  while (next.length > MATRIX_REPLAY_CAP) gaveUp.push(next.shift()!);
+  if (pending.length || next.length) setWorkerCursor(entry.id, MATRIX_REPLAY_CURSOR, JSON.stringify(next));
+  if (gaveUp.length) {
+    const lost = [...readJsonCursor<Record<string, unknown>>(entry.id, MATRIX_LOST_CURSOR), ...gaveUp.map((p) => ({ roomId: p.roomId, since: p.since ?? null, tries: p.tries, at: new Date().toISOString() }))].slice(-200);
+    setWorkerCursor(entry.id, MATRIX_LOST_CURSOR, JSON.stringify(lost));
+  }
   if (res.nextBatch) setWorkerCursor(entry.id, "matrix", res.nextBatch);
   if (res.messages > 0 || res.joined > 0) {
     console.log(`[worker] matrix ${entry.id}: +${res.messages} msgs (${res.created} new threads, ${res.updated} updated, ${res.joined} rooms joined)`);
@@ -256,10 +335,11 @@ export async function runMatrixOnce(entry: VaultEntry): Promise<number> {
   // the next incremental pass. Runs on boot too (the map starts empty) — which
   // is exactly when a downtime gap needs closing.
   const now = Date.now();
-  if (res.nextBatch && config.matrixReconcileMs > 0 && now - (lastMatrixReconcileAt.get(entry.id) ?? 0) >= config.matrixReconcileMs) {
+  const canReconcile = !!(client.joinedRooms && client.messagesBefore && client.joinedMembers && client.roomName);
+  if (canReconcile && res.nextBatch && config.matrixReconcileMs > 0 && now - (lastMatrixReconcileAt.get(entry.id) ?? 0) >= config.matrixReconcileMs) {
     lastMatrixReconcileAt.set(entry.id, now);
     try {
-      const r = await reconcileMatrix(client, vaultClient(entry.id) as unknown as IngestVault, {
+      const r = await reconcileMatrix(client as Parameters<typeof reconcileMatrix>[0], ingestVault, {
         upTo: res.nextBatch,
         maxRepairs: config.matrixReconcilePerSweep,
       });
@@ -273,7 +353,7 @@ export async function runMatrixOnce(entry: VaultEntry): Promise<number> {
     }
   }
 
-  if (config.matrixBridgeResync.length && config.matrixBridgeResyncMs > 0 && now - (lastBridgeResyncAt.get(entry.id) ?? 0) >= config.matrixBridgeResyncMs) {
+  if (client.sendText && config.matrixBridgeResync.length && config.matrixBridgeResyncMs > 0 && now - (lastBridgeResyncAt.get(entry.id) ?? 0) >= config.matrixBridgeResyncMs) {
     lastBridgeResyncAt.set(entry.id, now);
     for (const b of config.matrixBridgeResync) {
       await client.sendText(b.roomId, b.command).then(
@@ -281,6 +361,14 @@ export async function runMatrixOnce(entry: VaultEntry): Promise<number> {
         (e) => console.warn(`[worker] matrix ${entry.id}: bridge resync to ${b.roomId} failed: ${String(e)}`),
       );
     }
+  }
+  // Never silent: a room whose window could not be replayed in N passes is given
+  // up on, and THIS pass is reported as failed (everything above is already done
+  // and persisted). The rooms are listed under the `matrix-lost` worker cursor.
+  if (gaveUp.length) {
+    const msg = `gave up replaying ${gaveUp.length} room(s) after ${config.matrixReplayMaxTries} attempt(s) — their messages from the failed pass may be missing (rooms: ${gaveUp.slice(0, 5).map((p) => p.roomId).join(", ")}${gaveUp.length > 5 ? ", …" : ""}; full list in settings cursor:${MATRIX_LOST_CURSOR}:${entry.id})`;
+    console.error(`[worker] matrix ${entry.id}: ERROR ${msg}`);
+    throw new Error(`matrix: ${msg}`);
   }
   return res.messages;
 }
@@ -733,6 +821,10 @@ async function tick(): Promise<void> {
         // Proton Bridge mail (WP1.2b): "proton" while shadowing OR live. Off → not run.
         ...(protonMode() !== "off" ? ([["proton", runProtonOnce]] as const) : []),
       ] as const) {
+        // A Matrix pass still running (a slow vault, the hourly reconcile, a manual
+        // sync) is not started again and records no outcome: if it never finishes,
+        // the source goes `stale` instead of reading healthy.
+        if (name === "matrix" && matrixPassRunning(entry.id)) continue;
         try {
           await run(entry);
           noteIngestOutcome(entry.id, name, null);

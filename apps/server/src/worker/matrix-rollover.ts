@@ -110,7 +110,17 @@ export interface RolloverOutcome {
 export async function rolloverThread(
   vault: RolloverVault,
   thread: Note,
-  opts: { appendEntries?: string[]; metadata?: Record<string, unknown>; limits?: RolloverLimits; force?: boolean } = {},
+  opts: {
+    appendEntries?: string[];
+    metadata?: Record<string, unknown>;
+    limits?: RolloverLimits;
+    force?: boolean;
+    /** Let a 409 on the trim reach the caller instead of re-reading and redoing
+     *  here. The ingester's append sets it: `appendEntries` + `metadata` were
+     *  computed from the note as it was, so on a conflict IT must reload, drop
+     *  what someone else already appended and recount (matrix.ts `ingestRoom`). */
+    noRetry?: boolean;
+  } = {},
 ): Promise<RolloverOutcome | null> {
   const limits = opts.limits ?? rolloverLimits();
   let note = thread;
@@ -120,7 +130,7 @@ export async function rolloverThread(
     } catch (e) {
       const status = (e as { status?: number }).status;
       const conflict = status === 409 || /\b409\b/.test(String(e));
-      if (!conflict || attempt >= 2 || !vault.getNote) throw e;
+      if (!conflict || opts.noRetry || attempt >= 2 || !vault.getNote) throw e;
       // Someone else wrote the thread between our read and our trim. Re-read and
       // redo — archives already created are recognised, not duplicated.
       note = await vault.getNote(thread.id);
