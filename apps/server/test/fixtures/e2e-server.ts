@@ -25,6 +25,7 @@ import { attachCollab } from "../../src/collab";
 import { configureConversion } from "../../src/convert/service";
 import { addGrant, setAccount, setUserProfile } from "../../src/db";
 import { installFakeVault, makeSession } from "../helpers";
+import { resetTreeForTests } from "../../src/tree";
 
 const fv = installFakeVault();
 const OWNER = "owner@test.local";
@@ -100,6 +101,17 @@ process.stdin.on("data", (chunk: string) => {
         const n = fv.notes.get(cmd.id ?? "");
         if (n) fv.put({ ...n, content: cmd.content ?? "", updatedAt: new Date().toISOString() });
         process.stdout.write(JSON.stringify({ op: "put", ok: !!n }) + "\n");
+      } else if (cmd.op === "add") {
+        // A spec seeds a note of its own (never one of the notes above): other specs' seed is untouched.
+        const note = (cmd as unknown as { note?: Parameters<typeof fv.put>[0] }).note;
+        const fresh = !!note && typeof note.id === "string" && !fv.notes.has(note.id);
+        if (fresh) {
+          fv.put(note!);
+          // The tree projection has no vault socket here (TREE_SUBSCRIBE=0): rebuild it on the next
+          // read so a note seeded behind the gateway's back is listed like any other.
+          resetTreeForTests();
+        }
+        process.stdout.write(JSON.stringify({ op: "add", ok: fresh }) + "\n");
       } else if (cmd.op === "limits") {
         // Change the conversion limits (e.g. so nothing can be rendered for the vault: a page "too large to save"); null restores them.
         restoreLimits?.();
