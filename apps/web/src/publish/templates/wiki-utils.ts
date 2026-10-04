@@ -1,4 +1,5 @@
 import { marked } from "marked";
+import { taskListsInHtml } from "@prism/core/task-lists";
 import type { NavNote, PubGraph } from "./types";
 
 /**
@@ -88,7 +89,9 @@ export function renderWikiBody(content: string, idx: LinkIndex, slug: string): s
   // Drop broken empty-text links — Substack/Medium image exports that lost their
   // image leave `[\n\n](url)`, which marked emits as a literal `<p>[</p>`.
   const cleaned = sub.replace(/\[\s*\]\([^)]*\)/g, "");
-  return marked.parse(cleaned) as string;
+  // `- [x]` items become the to-do list the editor shows, by the one rule every Markdown reader
+  // follows (`taskListsInHtml`); a stored to-do list (`<li><label><input>…`) is left as it is.
+  return taskListsInHtml(marked.parse(cleaned) as string);
 }
 
 // ---------------------------------------------------------------------------
