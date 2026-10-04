@@ -1,11 +1,13 @@
 import { useEffect, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Search, Trash2, X } from "lucide-react";
+import { RefreshCw, Search, Trash2, X } from "lucide-react";
 import { useDebounce } from "use-debounce";
 import { useVaultClient } from "../../data/VaultClientContext";
 import { listTrash, pageErrorText } from "../../lib/pages/ops";
 import { usePageActions } from "../../lib/pages/usePageActions";
 import type { TrashItem } from "../../lib/pages/model";
+import { useSwipeActions } from "../../lib/gestures/useSwipeActions";
+import { usePullToRefresh } from "../../lib/gestures/usePullToRefresh";
 import "./pages.css";
 
 const when = (iso: string | null) => {
@@ -35,7 +37,8 @@ export function TrashDialog({ onClose }: { onClose: () => void }) {
     const node = dialog.current;
     const previous = document.activeElement as HTMLElement | null;
     node?.showModal();
-    input.current?.focus();
+    // Not on touch devices: focusing the field there only raises the keyboard over the list.
+    if (!window.matchMedia?.("(pointer: coarse)").matches) input.current?.focus();
     return () => {
       node?.close();
       if (previous?.isConnected) previous.focus({ preventScroll: true });
@@ -50,6 +53,8 @@ export function TrashDialog({ onClose }: { onClose: () => void }) {
     if (ok) await queryClient.invalidateQueries({ queryKey: ["vault", "trash"] });
   };
   const items = trash.data?.items ?? [];
+  // Phone: pull the list down to refetch it; the Refresh button does the same.
+  const pull = usePullToRefresh<HTMLDivElement>({ onRefresh: () => trash.refetch(), label: "Trash" });
   return (
     <dialog
       ref={dialog}
@@ -69,6 +74,9 @@ export function TrashDialog({ onClose }: { onClose: () => void }) {
             <h2 id="trash-title">Trash</h2>
             <p>Restore a page with everything that was inside it.</p>
           </div>
+          <button type="button" className="page-dialog-close focus-ring" aria-label="Refresh the Trash" title="Refresh" aria-busy={pull.refreshing || undefined} disabled={pull.refreshing} onClick={pull.refresh} style={{ marginLeft: "auto" }}>
+            <RefreshCw size={16} />
+          </button>
           <button type="button" className="page-dialog-close focus-ring" aria-label="Close Trash" onClick={onClose}>
             <X size={18} />
           </button>
@@ -77,7 +85,9 @@ export function TrashDialog({ onClose }: { onClose: () => void }) {
           <Search size={15} aria-hidden="true" />
           <input ref={input} aria-label="Search the Trash" placeholder="Search pages in Trash…" value={query} onChange={(e) => setQuery(e.target.value)} />
         </label>
-        <div className="page-dialog-list" aria-label="Pages in Trash" role="list">
+        {/* The scroller holds the pull indicator and messages; the LIST holds list items only. */}
+        <div className="page-dialog-list" ref={pull.ref} style={{ overflowX: "hidden" }}>
+          {pull.indicator}
           {trash.isLoading && <p className="page-dialog-empty">Loading the Trash…</p>}
           {trash.isError && (
             <div role="alert" className="page-dialog-empty">
@@ -95,8 +105,9 @@ export function TrashDialog({ onClose }: { onClose: () => void }) {
               {debounced ? "Try another name." : "Pages you delete stay here until you restore them or delete them for good."}
             </div>
           )}
+          <div role="list" aria-label="Pages in Trash">
           {items.map((item) => (
-            <div key={item.id} role="listitem" className="trash-row" aria-label={item.title}>
+            <TrashRow key={item.id} item={item} busy={busy === item.id} onRestore={() => void act(item, "restore")}>
               <div className="trash-row-main">
                 <div className="label">{item.title}</div>
                 <div className="crumb">
@@ -129,8 +140,9 @@ export function TrashDialog({ onClose }: { onClose: () => void }) {
                   )}
                 </>
               )}
-            </div>
+            </TrashRow>
           ))}
+          </div>
         </div>
         {trash.data && (
           <div className="page-dialog-foot">
@@ -141,5 +153,21 @@ export function TrashDialog({ onClose }: { onClose: () => void }) {
         )}
       </div>
     </dialog>
+  );
+}
+
+/**
+ * One row of the Trash. Phone (touch): swipe either way to restore — the same as
+ * the row's Restore button, which stays for keyboard, mouse and screen readers.
+ * Deleting for good is never a swipe (it needs its explicit confirmation).
+ */
+function TrashRow({ item, busy, onRestore, children }: { item: TrashItem; busy: boolean; onRestore: () => void; children: React.ReactNode }) {
+  const restore = item.canRestore && !busy ? { label: "Restore", run: onRestore, tone: "accent" as const } : null;
+  const swipe = useSwipeActions<HTMLDivElement>({ left: restore, right: restore });
+  return (
+    <div ref={swipe.ref} role="listitem" className="trash-row prism-swipe-row" aria-label={item.title} style={{ position: "relative" }}>
+      {swipe.hint}
+      {children}
+    </div>
   );
 }

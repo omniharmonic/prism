@@ -11,8 +11,14 @@ export interface SearchFilters {
   types?: string[];
   /** Every listed tag must be present. */
   tags?: string[];
-  /** Created or last edited by this account (email, case-insensitive). */
+  /** CREATED by this account (`prism_creator`, an email, case-insensitive). On the wire: an address or `me`. */
   author?: string;
+  /**
+   * LAST EDITED by this account. On the wire: `me` (or, from an admin, an address); the server
+   * turns it into the opaque writer-stamp id (`u_…`) it compares with `prism_last_writer` — the
+   * stamp is never an address, so only the server can answer this filter.
+   */
+  editor?: string;
   /** Inclusive ISO date bounds (YYYY-MM-DD or full ISO). */
   after?: string;
   before?: string;
@@ -254,6 +260,8 @@ export function parseSearchFilters(get: (name: string) => string | undefined): S
   if (tags.length) f.tags = tags;
   const author = (get("author") ?? "").trim().toLowerCase();
   if (author && author.length <= 254 && /^[^\s<>"]+$/.test(author)) f.author = author;
+  const editor = (get("editor") ?? "").trim().toLowerCase();
+  if (editor && editor.length <= 254 && /^[^\s<>"]+$/.test(editor)) f.editor = editor;
   const after = get("after"); const before = get("before");
   if (after && day(after, false) !== null) f.after = after;
   if (before && day(before, true) !== null) f.before = before;
@@ -262,7 +270,7 @@ export function parseSearchFilters(get: (name: string) => string | undefined): S
 }
 
 export function hasFilters(f: SearchFilters): boolean {
-  return !!(f.titleOnly || f.types?.length || f.tags?.length || f.author || f.after || f.before || f.vault);
+  return !!(f.titleOnly || f.types?.length || f.tags?.length || f.author || f.editor || f.after || f.before || f.vault);
 }
 
 /** Does `note` pass every filter? `typeOf` = inferContentType (kept injectable). */
@@ -274,10 +282,11 @@ export function matchesFilters(note: NoteLike, f: SearchFilters, terms: string[]
   if (f.types?.length && !f.types.includes(typeOf(note))) return false;
   if (f.tags?.length && !f.tags.every((t) => note.tags?.includes(t))) return false;
   if (f.author) {
-    const meta = note.metadata ?? {};
-    const who = [meta.prism_creator, meta.prism_last_writer].filter((v): v is string => typeof v === "string").map((v) => v.toLowerCase());
-    if (!who.includes(f.author)) return false;
+    const creator = note.metadata?.prism_creator;
+    if (typeof creator !== "string" || creator.toLowerCase() !== f.author) return false;
   }
+  // `editor` arrives here already resolved by the caller (the server: the writer-stamp id of the account).
+  if (f.editor && note.metadata?.prism_last_writer !== f.editor) return false;
   if (f.after || f.before) {
     const stamp = Date.parse((f.dateField === "created" ? note.createdAt : note.updatedAt) ?? "");
     if (!Number.isFinite(stamp)) return false;
@@ -294,6 +303,7 @@ export function filtersToParams(f: SearchFilters, params: URLSearchParams): URLS
   if (f.types?.length) params.set("type", f.types.join(","));
   if (f.tags?.length) params.set("tag", f.tags.join(","));
   if (f.author) params.set("author", f.author);
+  if (f.editor) params.set("editor", f.editor);
   if (f.after) params.set("after", f.after);
   if (f.before) params.set("before", f.before);
   if (f.dateField === "created") params.set("date", "created");

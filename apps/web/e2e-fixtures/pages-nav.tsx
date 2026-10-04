@@ -7,7 +7,8 @@
  * Query flags: ?open=<id> initial page · ?prefs=<json> server preferences ·
  * ?legacy (no preferences route → per-device shortcuts) · ?fail-move=<id> (that
  * note's path writes fail once, for partial-move recovery) · ?shared (pages shared
- * with the viewer + a move that changes access) · ?guest[=empty] (a guest account).
+ * with the viewer + a move that changes access) · ?guest[=empty] (a guest account) ·
+ * ?member (the gateway rule for non-owners: a path PATCH is refused `move_required`).
  */
 import React from "react";
 import { createRoot } from "react-dom/client";
@@ -57,7 +58,9 @@ let prefs: PagePreferences = kept?.prefs ?? (params.has("prefs") ? sanitizePrefe
 let revision = kept?.revision ?? (params.has("prefs") ? 1 : 0);
 const failOnce = new Set(params.getAll("fail-move"));
 const moves = new Map<string, { from: string; to: string }>();
-Object.assign(window, { prismFixtureUI: useUIStore, prismFixtureNotes: notes, prismFixtureWrites: writes, prismFixturePrefs: () => ({ prefs, revision }) });
+const reads = { trash: 0, tree: 0 };
+const fixtureControls = { moveStatus: Number(params.get("move-status") ?? 0) };
+Object.assign(window, { prismFixtureUI: useUIStore, prismFixtureNotes: notes, prismFixtureWrites: writes, prismFixtureReads: reads, prismFixtureControls: fixtureControls, prismFixturePrefs: () => ({ prefs, revision }) });
 // Wave 3A: `notion-transfer.html` loads this fixture with an extension (extra seed
 // notes, the import/export routes, a viewer role). Absent → nothing changes.
 const extension = (window as unknown as { prismFixtureExtension?: { seed?: (notes: Note[], make: typeof doc, stamp: () => string) => void; fetch?: (url: URL, method: string, init?: RequestInit) => Promise<Response | null>; sharing?: Record<string, unknown>; /** Extra providers around the app (e.g. host services, an agent client). */ wrap?: (app: React.ReactNode) => React.ReactNode } }).prismFixtureExtension;
@@ -96,6 +99,7 @@ window.fetch = async (input, init) => {
   const extended = await extension?.fetch?.(url, method, init);
   if (extended) return extended;
   if (path === "/auth/me") return json({ authenticated: true, email: "owner@example.test", name: "You", isOwner: true, vaultId: "primary", workspace: { id: "default", name: "Personal workspace" } });
+  if (path === "/api/tree") reads.tree++;
   if (path === "/api/tree") return json(notes.filter((n) => !isTrashed(n)).map((n) => ({ id: n.id, path: n.path, tags: n.tags, updatedAt: n.updatedAt, type: n.metadata?.type, ...(typeof n.metadata?.prism_order === "number" ? { order: n.metadata.prism_order } : {}) })));
   if (path === "/api/me/preferences") {
     if (params.has("legacy")) return json({ error: "unsupported_fixture_route" }, 501);
@@ -109,6 +113,7 @@ window.fetch = async (input, init) => {
     return json(prefsResponse());
   }
   if (path === "/api/trash" && method === "GET") {
+    reads.trash++;
     const q = (url.searchParams.get("q") ?? "").toLowerCase();
     const trashed = notes.filter(isTrashed);
     const items = trashed
@@ -144,6 +149,8 @@ window.fetch = async (input, init) => {
     const root = byId(decodeURIComponent(op[1]!));
     if (!root) return json({ error: "not_found" }, 404);
     writes.push({ [op[2]!]: root.id, ...body });
+    // Test control: every move answers this status (403 = no permission here, 500 = the server failed).
+    if (op[2] === "move" && fixtureControls.moveStatus) return json(fixtureControls.moveStatus === 403 ? { error: "forbidden", reason: "Only the workspace owner can add pages at the top level or into a plain folder." } : { error: "fixture_failure" }, fixtureControls.moveStatus);
     const reason = protectionReason(root);
     if (op[2] === "trash") {
       if (reason) return json({ error: "protected", reason }, 403);
@@ -194,6 +201,8 @@ window.fetch = async (input, init) => {
     if (!note) return json({ error: "not_found" }, 404);
     if (method === "PATCH") {
       writes.push({ patch: note.id, ...body });
+      // The gateway's rule for everyone but the owner: a PATCH never moves a page.
+      if (params.has("member") && typeof body.path === "string" && body.path !== note.path) return json({ error: "move_required", reason: "Move pages with Move to… (POST /api/notes/:id/move)." }, 403);
       if (body.if_updated_at && body.if_updated_at !== note.updatedAt) return json({ error: "conflict" }, 409);
       patch(note, body);
     }

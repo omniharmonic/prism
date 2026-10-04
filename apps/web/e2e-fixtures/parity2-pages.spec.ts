@@ -57,12 +57,10 @@ test("a rename shows live in the tree and the tabs", async ({ page }) => {
 });
 
 /**
- * NP-PG-03 — NOT MET (recorded in PARITY-GAPS.md): renaming a page that HAS sub-pages from its title
- * writes only that note's path (DocumentRenderer.handleRename → updateNote), so its sub-pages stay
- * behind under a plain folder with the old name and their breadcrumbs do not name the renamed page.
- * The tree's "Move to…" uses the server move route and carries them along.
+ * NP-PG-03: renaming a page from its TITLE is the tree's Rename — a move of the page AND its
+ * sub-pages (it used to PATCH only that note's path, leaving the sub-pages under a plain folder).
  */
-test.fixme("renaming a page with sub-pages from its title keeps them under it", async ({ page }) => {
+test("renaming a page with sub-pages from its title keeps them under it", async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto(url("?open=plan"));
   await page.getByRole("button", { name: "Rename Plan", exact: true }).click();
@@ -72,6 +70,134 @@ test.fixme("renaming a page with sub-pages from its title keeps them under it", 
   await expect(row(page, "Delivery plan")).toBeVisible();
   await expect.poll(() => page.evaluate(() => (window as any).prismFixtureNotes.find((n: any) => n.id === "week1")?.path)).toBe("vault/Projects/Prism/Delivery plan/Week 1");
   await expect(row(page, "Plan")).toHaveCount(0);
+  // One move, no path PATCH; the tab and the sub-page's breadcrumbs follow.
+  const sent = await writes(page);
+  expect(sent.filter((w) => w.move === "plan").map((w) => w.newPath)).toEqual(["vault/Projects/Prism/Delivery plan"]);
+  expect(sent.some((w) => w.patch && typeof w.path === "string")).toBe(false);
+  await expect(page.getByRole("navigation", { name: "Open document tabs" }).getByRole("button", { name: "Open Delivery plan", exact: true })).toBeVisible();
+  await expand(page, "Delivery plan");
+  await row(page, "Week 1").click();
+  await expect(page.getByRole("navigation", { name: "Document location" })).toContainText("Delivery plan");
+});
+
+/** NP-PG-03: the gateway refuses a non-owner's path PATCH (`move_required`) — their title rename is the move route too. */
+test("a member's title rename goes through the move route, never a path PATCH", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto(url("?open=week1&member"));
+  await page.getByRole("button", { name: "Rename Week 1", exact: true }).click();
+  const title = page.getByRole("textbox", { name: "Document title" });
+  await title.fill("Sprint one");
+  await title.press("Enter");
+  await expect(page.getByRole("heading", { name: "Rename Sprint one", exact: true })).toBeVisible();
+  await expect(row(page, "Sprint one")).toBeVisible();
+  await expect(page.getByRole("alert")).toHaveCount(0);
+  const sent = await writes(page);
+  expect(sent.some((w) => w.move === "week1")).toBe(true);
+  expect(sent.some((w) => w.patch && typeof w.path === "string")).toBe(false);
+});
+
+/** NP-PG-03: a title another page already has is refused where it was typed, and the title goes back. */
+test("a title that is already taken is refused inline and the title reverts", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto(url("?open=plan"));
+  await page.getByRole("button", { name: "Rename Plan", exact: true }).click();
+  const title = page.getByRole("textbox", { name: "Document title" });
+  await title.fill("A living workspace");
+  await title.press("Enter");
+  await expect(page.locator("[data-title-refused]")).toHaveText("A page named “A living workspace” already exists here. Choose another title.");
+  await expect(page.getByRole("heading", { name: "Rename Plan", exact: true })).toBeVisible();
+  await expect(row(page, "Plan")).toBeVisible();
+  expect(await page.evaluate(() => (window as any).prismFixtureNotes.find((n: any) => n.id === "plan").path)).toBe("vault/Projects/Prism/Plan");
+  expect(await page.evaluate(() => (window as any).prismFixtureNotes.find((n: any) => n.id === "week1").path)).toBe("vault/Projects/Prism/Plan/Week 1");
+  // The notice goes when the title is edited again.
+  await page.getByRole("button", { name: "Rename Plan", exact: true }).click();
+  await expect(page.locator("[data-title-refused]")).toHaveCount(0);
+});
+
+/** NP-PG-03: offline, a rename is refused (never queued) and the title goes back. */
+test("offline, a title rename is refused and the title reverts", async ({ page, context }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto(url("?open=plan"));
+  await expect(page.getByRole("button", { name: "Rename Plan", exact: true })).toBeVisible();
+  await context.setOffline(true);
+  await page.getByRole("button", { name: "Rename Plan", exact: true }).click();
+  const title = page.getByRole("textbox", { name: "Document title" });
+  await title.fill("Renamed offline");
+  await title.press("Enter");
+  await expect(page.locator("[data-title-refused]")).toContainText("You’re offline");
+  await expect(page.getByRole("heading", { name: "Rename Plan", exact: true })).toBeVisible();
+  await context.setOffline(false);
+  expect((await writes(page)).some((w) => w.move || (w.patch && typeof w.path === "string"))).toBe(false);
+  expect(await page.evaluate(() => (window as any).prismFixtureNotes.find((n: any) => n.id === "plan").path)).toBe("vault/Projects/Prism/Plan");
+});
+
+/** Review H1: no permission (403) is not something a retry fixes — the title goes back, with the server's reason, after ONE request. */
+test("a rename the server refuses for lack of permission reverts the title and is not re-sent on blur", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto(url("?open=week1&member&move-status=403"));
+  await page.getByRole("button", { name: "Rename Week 1", exact: true }).click();
+  const title = page.getByRole("textbox", { name: "Document title" });
+  await title.fill("Sprint one");
+  await title.press("Enter");
+  await expect(page.locator("[data-title-refused]")).toContainText("Only the workspace owner can add pages");
+  await expect(page.getByRole("heading", { name: "Rename Week 1", exact: true })).toBeVisible();
+  await expect(title).toHaveCount(0); // not trapped in the field
+  await page.locator(".tiptap").first().click();
+  await page.waitForTimeout(300);
+  expect((await writes(page)).filter((w) => w.move === "week1")).toHaveLength(1);
+});
+
+/** Review H1: a failure that keeps the typed title (the server broke) is not re-sent by a blur and never takes focus back from the body. */
+test("a failed rename keeps the typed title but a blur neither re-sends it nor pulls focus back", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto(url("?open=week1&move-status=500"));
+  await page.getByRole("button", { name: "Rename Week 1", exact: true }).click();
+  const title = page.getByRole("textbox", { name: "Document title" });
+  await title.fill("Sprint one");
+  // Leaving the field commits (a blur): one request, the title is kept, focus stays where the person went.
+  await page.locator(".tiptap").first().click();
+  await expect(page.getByRole("alert").filter({ hasText: "Could not rename this page" })).toBeVisible();
+  await expect(title).toHaveValue("Sprint one");
+  await expect(title).not.toBeFocused();
+  // Back into the field and out again with the SAME title: nothing is sent.
+  await title.focus();
+  await page.locator(".tiptap").first().click();
+  await page.waitForTimeout(300);
+  expect((await writes(page)).filter((w) => w.move === "week1")).toHaveLength(1);
+  await expect(title).not.toBeFocused();
+  // Enter is the explicit retry; once the server is back it goes through.
+  await page.evaluate(() => { (window as any).prismFixtureControls.moveStatus = 0; });
+  await title.focus();
+  await title.press("Enter");
+  await expect(page.getByRole("heading", { name: "Rename Sprint one", exact: true })).toBeVisible();
+  expect((await writes(page)).filter((w) => w.move === "week1")).toHaveLength(2);
+});
+
+/** Review: a title's last ".something" is not a file extension ("Plan v1.5" → "Final", never "Final.5"). */
+test("a dot in a title is not treated as a file extension, from the title and from the tree", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto(url("?open=week1"));
+  const pathOf = (id: string) => page.evaluate((id) => (window as any).prismFixtureNotes.find((n: any) => n.id === id).path as string, id);
+  await page.getByRole("button", { name: "Rename Week 1", exact: true }).click();
+  const title = page.getByRole("textbox", { name: "Document title" });
+  await title.fill("Plan v1.5");
+  await title.press("Enter");
+  await expect.poll(() => pathOf("week1")).toBe("vault/Projects/Prism/Plan/Plan v1.5");
+  await page.getByRole("button", { name: "Rename Plan v1.5", exact: true }).click();
+  await title.fill("Final");
+  await title.press("Enter");
+  await expect.poll(() => pathOf("week1")).toBe("vault/Projects/Prism/Plan/Final");
+  // The tree's Rename uses the same rule.
+  await page.getByRole("button", { name: "Rename Final", exact: true }).click();
+  await title.fill("Budget 2.0");
+  await title.press("Enter");
+  await expect.poll(() => pathOf("week1")).toBe("vault/Projects/Prism/Plan/Budget 2.0");
+  await nav(page).getByRole("button", { name: "Page actions for Budget 2.0", exact: true }).click();
+  await page.getByRole("menuitem", { name: "Rename", exact: true }).click();
+  const field = nav(page).getByRole("textbox", { name: "Rename Budget 2.0", exact: true });
+  await field.fill("Budget");
+  await field.press("Enter");
+  await expect.poll(() => pathOf("week1")).toBe("vault/Projects/Prism/Plan/Budget");
 });
 
 /** NP-SB-08: while dragging, the tree shows where the page will land — a line between rows, a highlight on a parent. */

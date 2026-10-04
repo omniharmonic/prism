@@ -1,0 +1,29 @@
+/* Link card (NP-ED-18): the address of the link under the pointer / caret + its actions. */
+.prism-link-card {
+  position: fixed; z-index: 70; display: flex; align-items: center; gap: 2px;
+  max-width: min(360px, calc(100vw - 16px)); padding: 3px 4px 3px 8px;
+  border-radius: var(--radius-md); border: 1px solid var(--glass-border);
+  background: var(--bg-elevated); color: var(--text-primary); box-shadow: var(--glass-shadow-elevated);
+  font-size: 12px; line-height: 1.3;
+  animation: prism-link-card-in var(--motion-fast, 120ms) ease-out;
+}
+@keyframes prism-link-card-in { from { opacity: 0; } to { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .prism-link-card { animation: none; } }
+html.reduce-motion .prism-link-card { animation: none; }
+.prism-link-card-url {
+  display: inline-flex; align-items: center; gap: 5px; min-width: 0; flex: 1 1 auto; margin-right: 4px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-secondary);
+}
+.prism-link-card-action {
+  display: inline-flex; align-items: center; gap: 4px; flex: none; min-height: 28px; padding: 0 7px;
+  border: 0; border-radius: 5px; background: none; color: var(--text-primary); font: inherit; cursor: pointer;
+}
+.prism-link-card-action:hover { background: var(--surface-hover, var(--surface-active)); }
+.prism-link-card-action:focus-visible { outline: none; box-shadow: inset 0 0 0 1px var(--focus-ring); }
+.prism-link-card-action:disabled { opacity: 0.45; cursor: default; }
+/* Touch: finger-sized targets. */
+@media (pointer: coarse) {
+  .prism-link-card { padding: 4px 6px 4px 10px; font-size: 13px; }
+  .prism-link-card-action { min-height: 40px; padding: 0 10px; }
+}
+@media print { .prism-link-card { display: none; } }

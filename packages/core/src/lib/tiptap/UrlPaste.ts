@@ -2,6 +2,8 @@ import { Extension, type Editor } from "@tiptap/core";
 import { Plugin, PluginKey } from "@tiptap/pm/state";
 import { structuralEditsAllowed } from "./blockCommands";
 import { embedFor, safeWebUrl } from "../media/embeds";
+import { pageIdFromUrl } from "./prismLinks";
+import { newMentionUid } from "./MentionNode";
 
 /**
  * Paste a bare URL (NP-ED-14): it lands as a link immediately (so nothing is
@@ -9,10 +11,18 @@ import { embedFor, safeWebUrl } from "../media/embeds";
  * a Mention (link titled with the page's title), keep it as a URL, a Bookmark
  * card, or an Embed when the URL is on the embed allowlist.
  *
+ * NP-ED-18: a link to one of OUR pages (`<app origin>/page/<id>`, see
+ * `prismLinks.pageIdFromUrl`) lands as a page MENTION chip instead, and the menu
+ * offers to make it a plain URL. No schema change: the existing `mention` node.
+ *
  * The plugin tracks the pasted range through later edits; any typing or a
  * selection move away dismisses the offer (the link stays).
  */
-export interface UrlPasteState { url: string; from: number; to: number }
+export interface UrlPasteState {
+  url: string; from: number; to: number;
+  /** Set when the URL named a Prism page and landed as a PAGE MENTION chip (NP-ED-18): the note id. The menu then offers "URL" instead. */
+  page?: string;
+}
 export const urlPasteKey = new PluginKey<UrlPasteState | null>("urlPaste");
 
 export interface UnfurlResult {
@@ -99,6 +109,17 @@ export const UrlPaste = Extension.create<UrlPasteOptions>({
               return true;
             }
             const from = state.selection.from;
+            // One of OUR page links (same origin, strict id) becomes a page mention chip: it stores the
+            // id only, and resolves its title through each reader's own access ("No access" otherwise).
+            const pageId = pageIdFromUrl(url);
+            const mention = state.schema.nodes.mention;
+            if (pageId && mention) {
+              const chip = mention.create({ kind: "page", id: pageId, label: null, date: null, reminder: null, uid: newMentionUid() });
+              const tr = state.tr.replaceSelectionWith(chip, false);
+              tr.setMeta(urlPasteKey, { set: { url, from, to: from + chip.nodeSize, page: pageId } });
+              view.dispatch(tr.scrollIntoView());
+              return true;
+            }
             const tr = state.tr.replaceSelectionWith(state.schema.text(url, [link.create({ href: url })]), false);
             const to = from + url.length;
             tr.setMeta(urlPasteKey, { set: { url, from, to } });
@@ -115,9 +136,13 @@ export function dismissUrlPaste(editor: Editor): void {
   if (urlPasteKey.getState(editor.state)) editor.view.dispatch(editor.state.tr.setMeta(urlPasteKey, { clear: true }));
 }
 
-/** Does the pasted range still hold exactly the URL? */
+/** Does the pasted range still hold exactly the URL (or, for a page link, its mention chip)? */
 function rangeHolds(editor: Editor, s: UrlPasteState): boolean {
   try {
+    if (s.page) {
+      const node = editor.state.doc.nodeAt(s.from);
+      return node?.type.name === "mention" && node.attrs.kind === "page" && node.attrs.id === s.page && s.to - s.from === node.nodeSize;
+    }
     return editor.state.doc.textBetween(s.from, s.to, "") === s.url;
   } catch {
     return false;
@@ -130,7 +155,7 @@ function rangeHolds(editor: Editor, s: UrlPasteState): boolean {
  * removed and the block goes right after the paragraph. One transaction.
  */
 export function convertPastedUrl(editor: Editor, s: UrlPasteState, type: "bookmark" | "embed", attrs: Record<string, unknown> = {}): boolean {
-  if (!rangeHolds(editor, s) || !structuralEditsAllowed(editor)) return false;
+  if (s.page || !rangeHolds(editor, s) || !structuralEditsAllowed(editor)) return false;
   const { state } = editor;
   const nodeType = state.schema.nodes[type];
   if (!nodeType) return false;
@@ -151,9 +176,20 @@ export function convertPastedUrl(editor: Editor, s: UrlPasteState, type: "bookma
   return true;
 }
 
+/** "Paste as → URL" after a page link became a mention: put the link back in place of the chip. */
+export function urlInsteadOfMention(editor: Editor, s: UrlPasteState): boolean {
+  if (!s.page || !rangeHolds(editor, s) || !structuralEditsAllowed(editor)) return false;
+  const link = editor.state.schema.marks.link;
+  if (!link) return false;
+  const tr = editor.state.tr.replaceWith(s.from, s.to, editor.state.schema.text(s.url, [link.create({ href: s.url })]));
+  tr.setMeta(urlPasteKey, { clear: true });
+  editor.view.dispatch(tr.scrollIntoView());
+  return true;
+}
+
 /** Replace the pasted URL's TEXT with a title, keeping the link (a "mention" of the page). */
 export function titlePastedUrl(editor: Editor, s: UrlPasteState, title: string): boolean {
-  if (!rangeHolds(editor, s) || !structuralEditsAllowed(editor)) return false;
+  if (s.page || !rangeHolds(editor, s) || !structuralEditsAllowed(editor)) return false;
   const link = editor.state.schema.marks.link;
   const text = title.trim().slice(0, 300);
   if (!text || !link) return false;

@@ -9,6 +9,7 @@ import { fetchMe, setActiveVault, getActiveVault, agentScope } from "../src/conf
 import { replyAgent } from "./reply-agent";
 
 import type { InvalidationHandlers, InvalidationSource } from "../../../packages/core/src/lib/events/invalidation";
+import { fakeMove } from "./fake-move";
 let eventHandlers: InvalidationHandlers | null = null;
 const eventSource: InvalidationSource = { open(handlers) { eventHandlers = handlers; handlers.onOpen(); return () => { if (eventHandlers === handlers) eventHandlers = null; }; } };
 Object.assign(window, { prismFixtureInvalidate: (id: string, tree = false) => eventHandlers?.onEvent(tree ? { type: "note", id, op: "upsert", tree: true } : { type: "note", id, op: "upsert" }) });
@@ -79,6 +80,14 @@ window.fetch = async (input, init) => {
     const note: Note = { id: `created-${notes.length}`, content: " ", metadata: {}, tags: [], ...body, createdAt: date, updatedAt: date };
     notes.push(note);
     return Response.json(note);
+  }
+  const moveOf = method === "POST" ? path.match(/^\/api\/notes\/([^/]+)\/move$/)?.[1] : undefined;
+  if (moveOf) {
+    const body = JSON.parse(String(init?.body));
+    writes.push(body);
+    if (controls.rejectWrite) return Response.json({ error: "fixture_write_denied" }, { status: controls.rejectWriteStatus });
+    const moved = fakeMove(notes, decodeURIComponent(moveOf), body, () => new Date().toISOString());
+    return Response.json(moved.body, { status: moved.status });
   }
   const noteId = path.match(/^\/api\/notes\/([^/]+)$/)?.[1];
   if (noteId) {

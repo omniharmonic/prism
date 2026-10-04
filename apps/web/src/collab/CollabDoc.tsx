@@ -7,7 +7,7 @@ import { humanCollabRevision } from "@prism/core/collab-commands";
 import { sendHumanCommand } from "./humanCommands";
 import { humanRevisionBody } from "../../../../packages/core/src/lib/collab/human/validation";
 import { PageCover, parseCover, coverPatch, COVER_GRADIENTS, type PageCoverValue } from "@prism/core";
-import { COLLAB_SCHEMA_VERSION, useAgentDocumentSnapshot, CollabEditor, CommentsSidebar, collabAffordances, humanFailureText, HumanCommandFailure, PresenceAvatars, type CollabSocketScope, type CommentCommandActions, type HumanCommandChannel, CollabCodeEditor, CollabSpreadsheet, CollabCanvas, detectCodeLanguage, inferContentType, PageHeader, NotePropertyBar, PageProperties, renamePath, useUIStore, useAgentChatStore, type ContentFont, type Note, type Editor } from "@prism/core";
+import { COLLAB_SCHEMA_VERSION, useAgentDocumentSnapshot, CollabEditor, CommentsSidebar, collabAffordances, humanFailureText, HumanCommandFailure, PresenceAvatars, type CollabSocketScope, type CommentCommandActions, type HumanCommandChannel, CollabCodeEditor, CollabSpreadsheet, CollabCanvas, detectCodeLanguage, inferContentType, PageHeader, NotePropertyBar, PageProperties, renamePageFromTitle, useUIStore, useAgentChatStore, type ContentFont, type Note, type Editor } from "@prism/core";
 import { MessageSquare, X, Lock } from "lucide-react";
 import { serverFetch, collabWsUrl, collabToken, isNative } from "../transport";
 import { apiBase, agentScope, getCapabilityToken, getActiveVault, getMe, fetchMe, contextHeaders } from "../config";
@@ -20,10 +20,11 @@ function vaultDocName(noteId: string): string {
   const v = getActiveVault();
   return v && v !== "primary" ? `${v}::${noteId}` : noteId;
 }
-import { updateNote as restUpdateNote, getNote as restGetNote, hasPendingWrites, uploadAttachment, unfurl as restUnfurl } from "../parachute/rest";
+import { updateNote as restUpdateNote, getNote as restGetNote, uploadAttachment, unfurl as restUnfurl } from "../parachute/rest";
 import { markUnsynced, clearUnsynced, setOpenHere, unsyncedDocs } from "./unsynced";
 import { reloadForUpdate } from "../offline/reloadForUpdate";
 import { PlainTextPage } from "./PlainTextPage";
+import { httpVaultClient } from "../parachute/HttpVaultClient";
 import { reportSyncSource, NOT_SAVED_TO_PAGE, unsavedExplanation, BacklinksPill, EmptyPageStarters, notePageIconChanged, pageIconWriteConfirmed, pageIconWriteFailed, PageDiscussion } from "@prism/core";
 
 /** Track a CSS breakpoint without per-render layout thrash. */
@@ -195,6 +196,9 @@ function ScopedCollabDoc({
   const [socketScope, setSocketScope] = useState<CollabSocketScope>(undefined);
   const [title, setTitle] = useState("Shared document");
   const [titleNotice, setTitleNotice] = useState("");
+  // A rename whose sub-pages did not all move: the working "Finish move" (this page has no toasts on the share route).
+  const [finishRename, setFinishRename] = useState<(() => Promise<boolean>) | null>(null);
+  const [finishing, setFinishing] = useState(false);
   const mounted = useRef(false);
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
   const [path, setPath] = useState<string | null>(null);
@@ -233,24 +237,24 @@ function ScopedCollabDoc({
     return () => registerDocFont(null, null);
   }, [kind, contentFont, registerDocFont]);
 
-  // Rename via the editable page title (preserves folder + extension). Uses the
-  // REST client directly (no VaultClient provider on the full-page share route).
+  // Rename via the editable page title = the tree's Rename: a MOVE of the page and its
+  // sub-pages (POST /api/notes/:id/move), never a bare path PATCH (it left sub-pages behind
+  // and the gateway refuses it for non-owners). The live document is named by the note id,
+  // so the open Y.Doc is untouched. Never queued: offline it is refused and the title reverts.
   const handleRename = async (newName: string) => {
-    const next = renamePath(path, newName);
-    if (!next) return;
     const audience = agentScope();
     setTitleNotice("");
-    // Await the scoped REST write so PageHeader retains failed drafts and
-    // prevents double activation. Offline acceptance remains distinct from sync.
-    const saved = await restUpdateNote(noteId, { path: next }, { expectedScope: audience ?? undefined });
-    const pending = await hasPendingWrites();
-    if (!mounted.current || agentScope() !== audience) return;
-    const confirmedPath = saved.path ?? next;
-    setPath(confirmedPath);
-    const name = confirmedPath.split("/").pop() || newName.trim();
+    setFinishRename(null);
+    const done = await renamePageFromTitle(httpVaultClient, { id: noteId, path }, newName);
+    if (!done || !mounted.current || agentScope() !== audience) return;
+    setPath(done.path);
+    const name = done.path.split("/").pop() || newName.trim();
     setTitle(name);
     useUIStore.getState().renameTab(noteId, name);
-    setTitleNotice(pending ? "Title change saved on this device. Waiting to sync." : "");
+    if (done.partial) {
+      setTitleNotice(done.finish ? "The page is renamed. Some sub-pages still need moving." : "The page is renamed. Some sub-pages still need moving — use Move to… on them to finish.");
+      setFinishRename(() => done.finish ?? null);
+    }
   };
 
   const handleIconChange = (emoji: string | null) => {
@@ -726,7 +730,10 @@ function ScopedCollabDoc({
           }
         />
 
-        {titleNotice && <p role="status" className="mb-4 text-xs text-[var(--text-secondary)]">{titleNotice}</p>}
+        {titleNotice && <p role="status" className="mb-4 text-xs text-[var(--text-secondary)]">{titleNotice}
+          {finishRename && <> <button type="button" className="focus-ring underline" disabled={finishing} aria-busy={finishing || undefined}
+            onClick={() => { setFinishing(true); void finishRename().then((ok) => { if (!mounted.current) return; setFinishing(false); if (ok) { setFinishRename(null); setTitleNotice(""); } else setTitleNotice("Some sub-pages still need moving. Try Finish move again."); }); }}>Finish move</button></>}
+        </p>}
         {uploadNotice && <p role="alert" className="mb-4 text-xs text-[var(--text-secondary)]">{uploadNotice} <button type="button" className="underline" onClick={() => setUploadNotice(null)}>Dismiss</button></p>}
         {embedded && isDocument && <div style={{ maxWidth: "var(--content-measure)", margin: "0 auto" }}><BacklinksPill noteId={noteId} title={title} /></div>}
 

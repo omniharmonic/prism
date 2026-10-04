@@ -92,7 +92,9 @@ test("offline rename and delete are refused with a clear message; nothing is que
   await title.fill("Renamed offline");
   await title.press("Enter");
   await expect(page.getByRole("status").filter({ hasText: "You’re offline. Renaming or moving a page needs a connection" })).toBeVisible();
-  await expect(title).toHaveValue("Renamed offline"); // the typed title is kept for a retry
+  // NP-PG-03: a rename is never queued — the title goes back and says why.
+  await expect(page.getByRole("button", { name: "Rename A living workspace", exact: true })).toBeVisible();
+  await expect(page.locator("[data-title-refused]")).toContainText("You’re offline");
   const refused = await page.evaluate(() => (window as any).prismShellClient.deleteNote("agenda").then(() => "deleted", (e: Error) => e.message));
   expect(refused).toContain("Deleting a page needs a connection");
   expect(await outbox(page)).toHaveLength(0);
@@ -100,9 +102,12 @@ test("offline rename and delete are refused with a clear message; nothing is que
   await page.waitForTimeout(500);
   expect(await writes(page)).toHaveLength(0);
   expect((await serverNote(page, "agenda")).content).toContain("Saturday");
-  // Online, the same rename goes through.
+  // Online, the same rename goes through — as a move of the page (and any sub-pages).
+  await page.getByRole("button", { name: "Rename A living workspace", exact: true }).click();
+  await title.fill("Renamed offline");
   await title.press("Enter");
   await expect(page.getByRole("button", { name: "Rename Renamed offline", exact: true })).toBeVisible();
+  expect((await writes(page)).map((w) => w.path)).toEqual(["/api/notes/workspace/move"]);
 });
 
 test("a real conflict needs review for that page only; other pages keep saving", async ({ page, context }) => {
@@ -151,4 +156,21 @@ test("queued writes are never replayed under another account", async ({ page, co
   await page.evaluate(() => window.dispatchEvent(new Event("online")));
   await expect.poll(async () => (await serverNote(page, "workspace")).content, { timeout: 15000 }).toContain("Written by the owner offline.");
   expect(await outbox(page)).toHaveLength(0);
+});
+
+/** Review H2: the page's own unsent typing is saved BEFORE the rename's move, so the move never conflicts with our autosave. */
+test("a title rename first saves what was just typed in the body, then moves the page", async ({ page }) => {
+  await ready(page);
+  await editor(page).click();
+  await page.keyboard.press("ControlOrMeta+End");
+  await page.keyboard.type(" Typed just before the rename.");
+  await page.getByRole("button", { name: "Rename A living workspace", exact: true }).click();
+  const title = page.getByRole("textbox", { name: "Document title" });
+  await title.fill("Renamed with a draft");
+  await title.press("Enter");
+  await expect(page.getByRole("button", { name: "Rename Renamed with a draft", exact: true })).toBeVisible();
+  const sent = (await writes(page)).filter((w) => w.path === "/api/notes/workspace" || w.path === "/api/notes/workspace/move");
+  expect(sent.map((w) => (w.path.endsWith("/move") ? "move" : w.body.content ? "content" : "other"))).toEqual(["content", "move"]);
+  expect((await serverNote(page, "workspace")).content).toContain("Typed just before the rename.");
+  await expect(page.getByText("Needs review")).toHaveCount(0);
 });

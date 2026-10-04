@@ -49,10 +49,10 @@ test("filters narrow results", async ({ page }, info) => {
   await expect(results).not.toContainText("Field notes");
   await expect(results).not.toContainText("A living workspace");
   await panel.getByRole("checkbox", { name: "Title only" }).uncheck();
-  await panel.getByRole("combobox", { name: "Edited by" }).selectOption("me");
+  await panel.getByRole("combobox", { name: "Created by" }).selectOption("me");
   await expect(results.getByRole("option")).toHaveCount(3);
   await expect(results).not.toContainText("Workshop agenda");
-  await panel.getByRole("combobox", { name: "Edited by" }).selectOption("anyone");
+  await panel.getByRole("combobox", { name: "Created by" }).selectOption("anyone");
   await panel.getByRole("combobox", { name: "Date" }).selectOption("year");
   await expect(page.getByRole("status").filter({ hasText: "1 filter" })).toBeVisible();
   await page.screenshot({ path: info.outputPath("search-filters-desktop.png") });
@@ -60,6 +60,82 @@ test("filters narrow results", async ({ page }, info) => {
   await expect(results.getByRole("option")).toHaveCount(4);
   await page.setViewportSize({ width: 390, height: 844 });
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+});
+
+/** NP-SR-04: "Created by me" beside "Edited by me"; the two combine; the date range narrows. */
+test("created by me and edited by me are separate filters that combine; the date range narrows", async ({ page }) => {
+  // ?authors: "Workshop agenda" was created by someone else and last edited by this account.
+  await page.goto("/e2e-fixtures/notion-shell.html?authors");
+  await expect(page.locator(".tiptap[contenteditable=true]")).toBeVisible();
+  await page.keyboard.press("ControlOrMeta+k");
+  await page.getByRole("combobox", { name: "Search notes and commands" }).fill("workshop");
+  const results = page.getByRole("group", { name: "Notes" });
+  await expect(results.getByRole("option")).toHaveCount(4);
+  await page.getByRole("button", { name: "Filters" }).click();
+  const panel = page.getByRole("group", { name: "Search filters" });
+  const created = panel.getByRole("combobox", { name: "Created by" });
+  const edited = panel.getByRole("combobox", { name: "Edited by" });
+  await expect(created.locator("option")).toHaveText(["Created by anyone", "Created by me"]);
+  await expect(edited.locator("option")).toHaveText(["Edited by anyone", "Edited by me"]);
+
+  const lastSearch = async () => new URLSearchParams((await page.evaluate(() => (window as any).prismShell.searches as string[])).at(-1));
+  // Edited by me = the SERVER's `editor=me` (the last-writer stamp is an opaque id the client cannot compare).
+  await edited.selectOption("me");
+  await expect(results.getByRole("option")).toHaveCount(1);
+  await expect(results).toContainText("Workshop agenda");
+  expect((await lastSearch()).get("editor")).toBe("me");
+  expect((await lastSearch()).get("author")).toBeNull();
+  // Created by me = `author=me` (creator only): the page I only edited is out.
+  await edited.selectOption("anyone");
+  await created.selectOption("me");
+  await expect(results.getByRole("option")).toHaveCount(3);
+  await expect(results).not.toContainText("Workshop agenda");
+  expect((await lastSearch()).get("author")).toBe("me");
+  expect((await lastSearch()).get("editor")).toBeNull();
+  // Both: created by me AND last edited by me — the server applies both; two filters are counted.
+  await edited.selectOption("me");
+  await expect(results.getByRole("option")).toHaveCount(0);
+  expect([(await lastSearch()).get("author"), (await lastSearch()).get("editor")]).toEqual(["me", "me"]);
+  await expect(page.getByRole("button", { name: "Filters · 2" })).toBeVisible();
+  // They combine with the other filters.
+  await edited.selectOption("anyone");
+  await panel.getByRole("combobox", { name: "Type" }).selectOption("database");
+  await expect(results.getByRole("option")).toHaveCount(1);
+  await expect(results.getByRole("option")).toContainText("Workshop tracker");
+
+  // Date range: three of the four were edited on 2026-10-01, the agenda on 2026-05-02. What each
+  // range keeps is worked out from today's date, so the assertion holds whenever the suite runs.
+  await page.getByRole("button", { name: "Clear filters" }).click();
+  await expect(results.getByRole("option")).toHaveCount(4);
+  const stamps = ["2026-10-01T12:00:00.000Z", "2026-10-01T12:00:00.000Z", "2026-10-01T12:00:00.000Z", "2026-05-02T09:00:00.000Z"];
+  const within = (days: number) => {
+    const from = Date.parse(`${new Date(Date.now() - days * 86_400_000).toISOString().slice(0, 10)}T00:00:00.000Z`);
+    return stamps.filter((s) => Date.parse(s) >= from).length;
+  };
+  expect(within(365)).toBeGreaterThan(within(30)); // the fixture's dates still tell the two ranges apart
+  await panel.getByRole("combobox", { name: "Date" }).selectOption("year");
+  await expect(results.getByRole("option")).toHaveCount(within(365));
+  await panel.getByRole("combobox", { name: "Date" }).selectOption("month");
+  await expect(results.getByRole("option")).toHaveCount(within(30));
+  await expect(results).not.toContainText("Workshop agenda");
+  const monthAgo = new Date(Date.now() - 30 * 86_400_000).toISOString().slice(0, 10);
+  expect((await page.evaluate(() => (window as any).prismShell.searches as string[])).at(-1)).toContain(`after=${monthAgo}`);
+});
+
+/** Review F1: an identity filter is offered only where the server can answer it. */
+test("an older server offers no \"Edited by\"; a share-link viewer gets neither identity filter", async ({ page }) => {
+  for (const [query, has] of [["?oldserver", { created: 1, edited: 0 }], ["?linkviewer", { created: 0, edited: 0 }], ["", { created: 1, edited: 1 }]] as const) {
+    await page.goto(`/e2e-fixtures/notion-shell.html${query}`);
+    await expect(page.locator(".tiptap[contenteditable=true]")).toBeVisible();
+    await page.keyboard.press("ControlOrMeta+k");
+    await page.getByRole("combobox", { name: "Search notes and commands" }).fill("workshop");
+    await expect(page.getByRole("group", { name: "Notes" }).getByRole("option")).toHaveCount(4);
+    await page.getByRole("button", { name: "Filters" }).click();
+    const panel = page.getByRole("group", { name: "Search filters" });
+    await expect(panel.getByRole("combobox", { name: "Type" })).toBeVisible();
+    await expect(panel.getByRole("combobox", { name: "Created by" }), query).toHaveCount(has.created);
+    await expect(panel.getByRole("combobox", { name: "Edited by" }), query).toHaveCount(has.edited);
+  }
 });
 
 test("vault scope searches another vault the account can reach", async ({ page }) => {

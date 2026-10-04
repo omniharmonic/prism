@@ -30,7 +30,7 @@ import { VaultRequestError, HistoryUnavailableError, HistoryConflictError, Prope
 import type { QueryPage, QuerySpec, SchemaMap, SchemaPatch, TagSchema, PropertyWriteResult } from "@prism/core/shell";
 import { filtersToParams, type SearchFilters } from "@prism/core/search";
 import type { PropertyBatchItem, PropertyBatchResult, CsvImportRequest, CsvImportResponse, RemoveValuesResult } from "@prism/core/database";
-import { agentScope, apiBase, DEFAULT_VAULT_NAME, capabilityHeader, contextHeaders } from "../config";
+import { agentScope, apiBase, DEFAULT_VAULT_NAME, capabilityHeader, contextHeaders, getMe } from "../config";
 import { retainDraft, enqueue, hasPending, hasPendingFor, noteKey, currentBase, flush, localNote, resolveLocalNoteId, retrySafe, queuedCreates } from "../offline/outbox";
 import { captureWriteContext, scopeKey } from "../offline/writeScope";
 import { serverFetch } from "../transport";
@@ -439,6 +439,26 @@ export async function searchNotes(query: string, filters: SearchFilters = {}, li
     return filters.vault ? rows.map((n) => ({ ...n, _vault: filters.vault })) : rows;
   } catch (error) {
     if (error instanceof VaultRequestError && [404, 405, 501].includes(error.status)) return null;
+    throw error;
+  }
+}
+
+/**
+ * Which identity filters ("Created by me" / "Edited by me") the search can answer for THIS
+ * viewer. The server does both filters (`author=me` = creator, `editor=me` = last editor; the
+ * client never narrows rows itself — after the server's 100-row cap that would drop results).
+ * A share-link viewer has no "me": neither. An older server (no `/search/filters`) knows no
+ * `editor=` and would silently ignore it: "Edited by me" is not offered.
+ */
+export async function searchFilterSupport(): Promise<{ createdBy: boolean; editedBy: boolean }> {
+  if (Object.keys(capabilityHeader()).length || !getMe()) return { createdBy: false, editedBy: false };
+  try {
+    const body = (await (await req("/search/filters", { cache: "no-store" })).json()) as { filters?: unknown; identity?: unknown };
+    const filters = Array.isArray(body.filters) ? body.filters : [];
+    const identity = body.identity === true;
+    return { createdBy: identity && filters.includes("author"), editedBy: identity && filters.includes("editor") };
+  } catch (error) {
+    if (error instanceof VaultRequestError && [401, 403, 404, 405, 501].includes(error.status)) return { createdBy: true, editedBy: false };
     throw error;
   }
 }

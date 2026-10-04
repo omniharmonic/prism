@@ -1,0 +1,23 @@
+/* Pull-to-refresh (lib/gestures/usePullToRefresh). */
+.prism-ptr-scroller { overscroll-behavior-y: contain; }
+.prism-ptr { position: sticky; top: 0; height: 0; z-index: 5; pointer-events: none; }
+.prism-ptr-pill {
+  position: absolute; left: 50%; top: -34px; transform: translate(-50%, 0);
+  display: inline-flex; align-items: center; gap: 8px; height: 30px; padding: 0 12px; white-space: nowrap;
+  border-radius: 999px; border: 1px solid var(--glass-border); background: var(--bg-elevated, var(--bg-base));
+  color: var(--text-secondary); font-size: 12px; font-weight: 550; box-shadow: var(--glass-shadow-elevated);
+}
+.prism-ptr[data-state="armed"] .prism-ptr-pill { color: var(--text-primary); }
+.prism-ptr[data-state="refreshing"] .prism-ptr-pill,
+.prism-ptr[data-state="done"] .prism-ptr-pill,
+.prism-ptr[data-state="failed"] .prism-ptr-pill { transition: transform var(--motion-base, 160ms) ease, opacity var(--motion-base, 160ms) ease; }
+.prism-ptr-spin {
+  width: 12px; height: 12px; border-radius: 50%; border: 2px solid var(--border-subtle, currentColor); border-top-color: var(--color-accent, currentColor);
+}
+.prism-ptr[data-state="refreshing"] .prism-ptr-spin { animation: prism-ptr-spin 0.8s linear infinite; }
+@keyframes prism-ptr-spin { to { transform: rotate(360deg); } }
+/* Reduced motion: no rubber band, no spinner — the label sits at the top of the list. */
+.prism-ptr[data-still] .prism-ptr-pill { top: 6px; transform: translate(-50%, 0); opacity: 1; transition: none; }
+.prism-ptr[data-still] .prism-ptr-spin { animation: none; }
+.prism-ptr-status { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+@media print { .prism-ptr { display: none; } }

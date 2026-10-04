@@ -189,6 +189,12 @@ export interface VaultClient {
   /** Filtered full-text search with `_matches` offsets (wave 2E). Optional;
    *  `null` = this server can't, use {@link search} + client-side filters. */
   searchNotes?(query: string, filters?: import("../lib/search/match").SearchFilters, limit?: number): Promise<Note[] | null>;
+  /**
+   * Which identity filters the search can answer for this viewer ("Created by me" → `author=me`,
+   * "Edited by me" → `editor=me`). Absent, or false: the control is not offered (a share-link
+   * viewer has no "me"; an older server ignores `editor=`).
+   */
+  searchFilterSupport?(): Promise<{ createdBy: boolean; editedBy: boolean }>;
   /** Hybrid semantic search (dense vectors + full-text), when the host provides
    *  it. Optional: shells without a RAG backend omit it, and callers fall back
    *  to {@link search}. Results are relevance-ranked with score + snippet. */

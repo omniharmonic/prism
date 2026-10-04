@@ -143,8 +143,27 @@ export const parentOf = (path: string): string => (path.includes("/") ? path.sli
 export const isUnder = (path: string | null | undefined, ancestor: string): boolean =>
   !!path && path.length > ancestor.length && path.startsWith(`${ancestor}/`);
 /** A page's display title: its path leaf without a file extension. */
+/**
+ * File extensions a note path really carries. A title's own last ".something" is NOT one:
+ * "Plan v1.5" and "Budget 2.0" are whole titles (stripping ".5" showed "Plan v1" and renamed
+ * the page to "New.5").
+ */
+const FILE_EXTENSIONS = new Set([
+  "md", "markdown", "txt", "csv", "tsv", "json", "yaml", "yml", "toml", "xml", "html", "htm", "css", "scss",
+  "js", "jsx", "mjs", "cjs", "ts", "tsx", "py", "rb", "rs", "go", "java", "kt", "swift", "c", "h", "cpp", "hpp", "cs", "php",
+  "sh", "bash", "zsh", "sql", "lua", "excalidraw", "canvas", "svg", "pdf", "ipynb", "tex", "doc", "docx",
+]);
+/** The extension of a file name (with its dot), only when it is a known one; else "". */
+export function fileExtension(name: string): string {
+  const dot = name.lastIndexOf(".");
+  if (dot <= 0 || dot === name.length - 1) return "";
+  return FILE_EXTENSIONS.has(name.slice(dot + 1).toLowerCase()) ? name.slice(dot) : "";
+}
+/** A file name without its (known) extension. */
+export const withoutExtension = (name: string): string => name.slice(0, name.length - fileExtension(name).length);
+
 export const pageTitle = (path: string | null | undefined): string =>
-  (path ? leafName(path).replace(/\.[a-z0-9]{1,8}$/i, "") : "") || "Untitled";
+  (path ? withoutExtension(leafName(path)) : "") || "Untitled";
 
 /**
  * Where a page lands when moved under `parent` ("" = top level). Top level keeps
@@ -573,4 +592,19 @@ export function parsePageStyle(value: unknown): PageStyle | null {
 
 export function pageStyleOf(note: { metadata?: Record<string, unknown> | null } | null | undefined): PageStyle {
   return parsePageStyle(note?.metadata?.[PAGE_STYLE_KEY]) ?? {};
+}
+
+/** Build the new note path when a title is renamed: swap the filename's base
+ *  name (preserving folder + a KNOWN file extension — see `fileExtension`),
+ *  sanitizing path separators. Returns null if the name is empty or unchanged. */
+export function renamePath(oldPath: string | null | undefined, newName: string): string | null {
+  if (!oldPath) return null;
+  const slash = oldPath.lastIndexOf("/");
+  const dir = slash >= 0 ? oldPath.slice(0, slash) : "";
+  const file = slash >= 0 ? oldPath.slice(slash + 1) : oldPath;
+  const ext = fileExtension(file);
+  const safe = newName.trim().replace(/[\\/]/g, "-");
+  if (!safe) return null;
+  const next = (dir ? `${dir}/` : "") + safe + ext;
+  return next === oldPath ? null : next;
 }

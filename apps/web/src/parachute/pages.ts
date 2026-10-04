@@ -15,6 +15,19 @@ import {
 } from "@prism/core/shell";
 import { captureWriteContext } from "../offline/writeScope";
 import { serverFetch } from "../transport";
+import { flush, hasPendingFor } from "../offline/outbox";
+
+/** True when this page still has unsent rows after one flush attempt. Offline: unknown here — the request itself fails. */
+async function unsentAfterFlush(noteId: string): Promise<boolean> {
+  try {
+    const context = await captureWriteContext();
+    if (!(await hasPendingFor(context, noteId))) return false;
+    await flush();
+    return await hasPendingFor(context, noteId);
+  } catch {
+    return false;
+  }
+}
 
 const MESSAGES: Record<number, string> = {
   401: "Sign in again to change pages.",
@@ -55,6 +68,9 @@ async function call<T>(method: string, path: string, body?: unknown): Promise<{ 
 const id = (noteId: string) => encodeURIComponent(noteId);
 
 export async function movePage(noteId: string, request: MoveRequest): Promise<MoveResult> {
+  // Unsent changes for this page go first (the rule a path PATCH always had): a move is
+  // never sent around a queued save, which would then be based on a replaced revision.
+  if (await unsentAfterFlush(noteId)) throw new PagesRequestError(409, "pending_writes", "This page has changes that haven’t reached the server yet. Rename or move it once they’re saved.");
   const body = {
     ...(request.newPath !== undefined ? { newPath: request.newPath } : { newParentPath: request.newParentPath ?? "" }),
     ...(request.ifUpdatedAt ? { if_updated_at: request.ifUpdatedAt } : {}),

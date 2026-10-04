@@ -10,7 +10,7 @@ import {
   useContext,
   type CSSProperties,
 } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ArrowLeft,
   ArrowUpRight,
@@ -28,6 +28,8 @@ import {
   Clock,
   Inbox,
   Check,
+  RefreshCw,
+  MailOpen,
 } from "lucide-react";
 import { useVaultClient } from "../../data/VaultClientContext";
 import { useIsWeb } from "../../data/Platform";
@@ -44,6 +46,10 @@ import { Spinner } from "../ui/Spinner";
 import type { Note } from "../../lib/types";
 import type { RendererProps } from "../renderers/RendererProps";
 import { useLivePollMs } from "../../lib/events/channelStatus";
+import { useSwipeActions } from "../../lib/gestures/useSwipeActions";
+import { usePullToRefresh } from "../../lib/gestures/usePullToRefresh";
+import { usePagesUI } from "../../lib/pages/store";
+import { liveActionErrorText } from "../../lib/actions/client";
 
 interface LinkData {
   sourceId: string;
@@ -349,6 +355,13 @@ function ScopedMessagesDashboard() {
   }, [peopleWithThreads, searchQuery]);
 
   const handleOpenThread = (note: Note) => setSelectedId(note.id);
+  // Phone: pull the conversation list down to refetch it (the Refresh button does the same).
+  const pull = usePullToRefresh<HTMLDivElement>({
+    label: "Messages",
+    onRefresh: () => Promise.all([reloadThreads(), reloadEmails(), reloadPeople(), reloadGraph()]).then((all) => {
+      if (all.some((r) => r.isError)) throw new Error("refresh failed");
+    }),
+  });
 
   const platforms = useMemo(
     () => Array.from(platformCounts.keys()).sort(),
@@ -390,6 +403,19 @@ function ScopedMessagesDashboard() {
                 {viewMode === "people" && ` · ${filteredPeople.length} people`}
               </p>
             </div>
+
+            <button
+              type="button"
+              className="focus-ring flex h-11 w-11 flex-none items-center justify-center rounded-lg"
+              aria-label="Refresh"
+              title="Refresh"
+              aria-busy={pull.refreshing || undefined}
+              disabled={pull.refreshing}
+              onClick={pull.refresh}
+              style={{ color: "var(--text-secondary)" }}
+            >
+              <RefreshCw size={15} />
+            </button>
 
             {/* View toggle */}
             <div
@@ -557,7 +583,8 @@ function ScopedMessagesDashboard() {
               </button>
             </div>
           )}
-          <div className="flex-1 min-h-0 overflow-auto">
+          <div className="flex-1 min-h-0 overflow-auto" style={{ overflowX: "hidden" }} ref={pull.ref} data-testid="messages-scroller">
+            {pull.indicator}
             {viewMode === "triage" ? (
               <TriageView
                 messages={allMessages}
@@ -920,7 +947,6 @@ function TriageTier({
     () => !(forceExpanded || defaultExpanded || !tier.defaultCollapsed),
   );
   const Icon = tier.icon;
-  const selectedId = useContext(SelectedConversation);
 
   return (
     <div>
@@ -945,7 +971,16 @@ function TriageTier({
       </button>
 
       {!collapsed &&
-        notes.map((note) => {
+        notes.map((note) => (
+          <TriageRow key={note.id} note={note} onOpen={() => onOpenThread(note)} />
+        ))}
+    </div>
+  );
+}
+
+function TriageRow({ note, onOpen }: { note: Note; onOpen: () => void }) {
+  const selectedId = useContext(SelectedConversation);
+  const swipe = useEmailRowActions(note);
           const meta = (note.metadata || {}) as Record<string, unknown>;
           const platform = getPlatform(note);
           const config = getPlatformConfig(platform);
@@ -961,12 +996,15 @@ function TriageTier({
           const lastLine = lines[lines.length - 1] || "";
 
           return (
+            <div style={{ position: "relative" }}>
             <button
-              key={note.id}
-              onClick={() => onOpenThread(note)}
-              className="prism-message-row flex items-start gap-3 text-left"
+              ref={swipe.ref}
+              onClick={onOpen}
+              className="prism-message-row prism-swipe-row flex items-start gap-3 text-left"
+              style={{ position: "relative" }}
               aria-current={selectedId === note.id ? "true" : undefined}
             >
+              {swipe.hint}
               <div
                 aria-hidden="true"
                 className="prism-message-avatar"
@@ -1015,9 +1053,52 @@ function TriageTier({
                 )}
               </div>
             </button>
+            {swipe.markRead && <MarkReadButton name={name} onClick={swipe.markRead} />}
+            </div>
           );
-        })}
-    </div>
+}
+
+/** Emails marked read from the list in this session: read at once, before the next mail ingest updates the note. */
+const markedRead = new Set<string>();
+
+/**
+ * Mark-as-read for an unread EMAIL row — a swipe right on a phone and a small button on the row
+ * (the same action; a gesture is never the only way) — only where the live email actions are on
+ * for this viewer. ARCHIVE is deliberately not a swipe: it moves the message in the real mailbox
+ * and cannot be undone from here; it stays a button in the opened email.
+ */
+function useEmailRowActions(note: Note) {
+  const live = useLiveActions("email");
+  const queryClient = useQueryClient();
+  const unread = !!live && (note.tags ?? []).includes("email")
+    && (note.metadata as Record<string, unknown> | null | undefined)?.isUnread === true && !markedRead.has(note.id);
+  const markRead = unread ? () => {
+    void live!.emailMarkRead({ noteId: note.id }, true).then(
+      () => {
+        markedRead.add(note.id);
+        usePagesUI.getState().showToast({ message: "Marked read" });
+        // The lists this row lives in: updated in place now, re-read in the background.
+        queryClient.setQueriesData<unknown>({ queryKey: ["vault", "inbox"] }, (old: unknown) =>
+          Array.isArray(old) ? old.map((n: Note) => (n?.id === note.id ? { ...n, metadata: { ...(n.metadata ?? {}), isUnread: false } } : n)) : old);
+        void queryClient.invalidateQueries({ queryKey: ["vault", "inbox"] });
+      },
+      (e) => usePagesUI.getState().showToast({ message: liveActionErrorText(e), tone: "error" }),
+    );
+  } : null;
+  const swipe = useSwipeActions<HTMLButtonElement>({
+    disabled: !markRead,
+    right: markRead ? { label: "Mark as read", tone: "accent", run: markRead } : null,
+  });
+  return { ...swipe, markRead };
+}
+
+/** The row's own "Mark as read" control (keyboard, mouse, screen readers). */
+function MarkReadButton({ name, onClick }: { name: string; onClick: () => void }) {
+  return (
+    <button type="button" className="focus-ring" aria-label={`Mark ${name} as read`} title="Mark as read" onClick={onClick}
+      style={{ position: "absolute", right: 14, bottom: 8, width: 32, height: 32, display: "flex", alignItems: "center", justifyContent: "center", borderRadius: 8, color: "var(--text-secondary)" }}>
+      <MailOpen size={15} aria-hidden="true" />
+    </button>
   );
 }
 
@@ -1432,13 +1513,18 @@ function ConversationRow({
     .split("\n")
     .filter((l) => l.trim() && !l.startsWith("#"));
   const lastLine = lines[lines.length - 1] || "";
+  const swipe = useEmailRowActions(note);
 
   return (
+    <div style={{ position: "relative" }}>
     <button
+      ref={swipe.ref}
       onClick={onClick}
-      className="prism-message-row flex items-start gap-3 text-left"
+      className="prism-message-row prism-swipe-row flex items-start gap-3 text-left"
+      style={{ position: "relative" }}
       aria-current={selectedId === note.id ? "true" : undefined}
     >
+      {swipe.hint}
       <div
         aria-hidden="true"
         className="prism-message-avatar"
@@ -1492,5 +1578,7 @@ function ConversationRow({
         </div>
       </div>
     </button>
+    {swipe.markRead && <MarkReadButton name={name} onClick={swipe.markRead} />}
+    </div>
   );
 }

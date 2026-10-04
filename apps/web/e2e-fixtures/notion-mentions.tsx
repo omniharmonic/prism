@@ -27,6 +27,7 @@ import "../../../packages/core/src/styles/glass.css";
 import "../../../packages/core/src/styles/typography.css";
 import "../../../packages/core/src/styles/workspace.css";
 import "../../../packages/core/src/styles/collab.css";
+import { fakeMove } from "./fake-move";
 
 const params = new URLSearchParams(location.search);
 let tick = Date.UTC(2026, 9, 1, 12);
@@ -130,6 +131,12 @@ window.fetch = async (input, init) => {
   if (path.startsWith("/api/notifications/")) return json({ ok: true, unread: 0 });
   if (path === "/api/access-requests") return json({ items: [] });
   if (path === "/api/notes" && method === "GET") return json(visible().map((n) => ({ ...n, content: undefined })));
+  const moveOf = method === "POST" ? path.match(/^\/api\/notes\/([^/]+)\/move$/)?.[1] : undefined;
+  if (moveOf) {
+    writes.push({ move: decodeURIComponent(moveOf), ...body });
+    const moved = fakeMove(notes, decodeURIComponent(moveOf), body, stamp);
+    return json(moved.body, moved.status);
+  }
   const one = path.match(/^\/api\/notes\/([^/]+)$/);
   if (one) {
     const id = decodeURIComponent(one[1]!);

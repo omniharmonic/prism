@@ -1,15 +1,15 @@
 import { useEffect, useId, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 import type { Editor } from "@tiptap/react";
-import { AtSign, Link2, Bookmark as BookmarkIcon, PlayCircle } from "lucide-react";
+import { AtSign, FileText, Link2, Bookmark as BookmarkIcon, PlayCircle } from "lucide-react";
 import { embedFor } from "../../lib/media/embeds";
 import {
-  applyUnfurl, convertPastedUrl, dismissUrlPaste, titlePastedUrl,
+  applyUnfurl, convertPastedUrl, dismissUrlPaste, titlePastedUrl, urlInsteadOfMention,
   type UnfurlResult, type Unfurler, type UrlPasteState,
 } from "../../lib/tiptap/UrlPaste";
 import "./editor-blocks.css";
 
-type Choice = "mention" | "url" | "bookmark" | "embed";
+type Choice = "mention" | "url" | "bookmark" | "embed" | "page";
 
 /**
  * The "Paste as" menu shown right after a bare URL is pasted (NP-ED-14).
@@ -21,16 +21,24 @@ export function PasteUrlMenu({ editor, state, unfurl, onClose }: { editor: Edito
   const embed = useMemo(() => embedFor(state.url), [state.url]);
   const options = useMemo(() => {
     const out: Array<{ id: Choice; label: string; hint: string; icon: React.ReactNode }> = [];
+    // A link to a Prism page already landed as a page mention; the only other form is the plain URL.
+    if (state.page) {
+      out.push({ id: "page", label: "Page mention", hint: "Shows the page’s current title", icon: <FileText size={15} /> });
+      out.push({ id: "url", label: "URL", hint: "Paste the link instead", icon: <Link2 size={15} /> });
+      return out;
+    }
     if (unfurl) out.push({ id: "mention", label: "Mention", hint: "Link with the page title", icon: <AtSign size={15} /> });
     out.push({ id: "url", label: "URL", hint: "Keep the link as pasted", icon: <Link2 size={15} /> });
     out.push({ id: "bookmark", label: "Bookmark", hint: "Card with title, description and image", icon: <BookmarkIcon size={15} /> });
     if (embed) out.push({ id: "embed", label: `Embed ${embed.label}`, hint: "Show it in the page", icon: <PlayCircle size={15} /> });
     return out;
-  }, [embed, unfurl]);
-  const [active, setActive] = useState(() => Math.max(0, options.findIndex((o) => o.id === "url")));
+  }, [embed, unfurl, state.page]);
+  const [active, setActive] = useState(() => Math.max(0, options.findIndex((o) => o.id === (state.page ? "page" : "url"))));
   const [busy, setBusy] = useState(false);
 
   const choose = (id: Choice) => {
+    if (id === "page") { dismissUrlPaste(editor); onClose(); return; }
+    if (id === "url" && state.page) { if (!urlInsteadOfMention(editor, state)) dismissUrlPaste(editor); onClose(); return; }
     if (id === "url") { dismissUrlPaste(editor); onClose(); return; }
     if (id === "embed") { convertPastedUrl(editor, state, "embed"); onClose(); return; }
     if (id === "bookmark") {
