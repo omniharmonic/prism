@@ -1,4 +1,10 @@
 /**
+ * VERBATIM copy of apps/server/src/worker/matrix.ts at main 3c1df0a5 — the ingester
+ * that listed every thread WITH its body each pass. Only the four import paths were
+ * changed. matrix-lean.test.ts runs the same scripted syncs through this and through
+ * the lean ingester and requires identical vault contents. Never import it from src.
+ */
+/**
  * Matrix → vault ingester (Phase 3 — server-first runtime). A Node port of the
  * desktop's message_sync, so a tenant's bridged messaging (WhatsApp/Telegram/…
  * via mautrix) lands in their vault from the SERVER, with no desktop running.
@@ -10,10 +16,10 @@
  *   tags: ["message-thread"], path: vault/messages/<platform>/<room>,
  *   metadata: { type:"message-thread", platform, matrixRoomId, lastMessageAt }.
  */
-import type { Note } from "../parachute";
-import { byteLen, isArchiveNote, isTooLarge, rolloverLimits, rolloverThread } from "./matrix-rollover";
-import { PeopleIndex, type PersonReview } from "./people";
-import type { IfExists, NoteLinkInput } from "../parachute";
+import type { Note } from "../../src/parachute";
+import { byteLen, isArchiveNote, isTooLarge, rolloverLimits, rolloverThread } from "../../src/worker/matrix-rollover";
+import { PeopleIndex, type PersonReview } from "../../src/worker/people";
+import type { IfExists, NoteLinkInput } from "../../src/parachute";
 
 export interface MatrixCreds {
   homeserver: string;
@@ -143,16 +149,10 @@ export class MatrixClient {
     const filter = encodeURIComponent(JSON.stringify({ types: ["m.room.message"] }));
     const out: MatrixMessage[] = [];
     let from = opts.from;
-    // A caller that wants at most `cap` messages (the reconcile probe asks for ONE)
-    // gets a first page of that size — 1,300 rooms x 100 events an hour was pure
-    // waste. Every later page is a full 100, and a small first page that held no
-    // usable message never ends the search while the server offers more (a
-    // redacted / body-less newest event, or a server that filters after paging).
-    let limit = Math.min(100, Math.max(1, Math.floor(cap)));
     for (;;) {
       const qs = [
         "dir=b",
-        `limit=${limit}`,
+        "limit=100",
         `filter=${filter}`,
         from ? `from=${encodeURIComponent(from)}` : "",
         opts.to ? `to=${encodeURIComponent(opts.to)}` : "",
@@ -172,11 +172,9 @@ export class MatrixClient {
         out.push(m);
         if (out.length >= cap) return { messages: out.reverse(), capped: true };
       }
-      const smallPage = limit < 100;
-      if ((!chunk.length && !smallPage) || !page.end || page.end === from)
+      if (!chunk.length || !page.end || page.end === from)
         return { messages: out.reverse(), capped: false };
       from = page.end;
-      limit = 100;
     }
   }
 
@@ -471,7 +469,6 @@ export interface IngestVault {
     tags?: string[];
     pathPrefix?: string;
     includeContent?: boolean;
-    includeMetadata?: string[];
   }): Promise<Note[]>;
   createNote(p: {
     content: string;
@@ -492,68 +489,8 @@ export interface IngestVault {
   ): Promise<Note>;
   /** Optional: strip tags (used to clear stale triage verdicts on append). */
   removeTags?(id: string, tags: string[]): Promise<void>;
-  /** Re-read one note: the body of a thread about to be written (the listing is
-   *  lean), and the rollover's 409 retry. Optional only for test fakes whose
-   *  listing still carries bodies. */
+  /** Optional: re-read one note (thread rollover retries on a 409 with it). */
   getNote?(id: string): Promise<Note>;
-}
-
-/**
- * THE LEAN THREAD LISTING (2026-10-03 host stall). Every 60 s pass used to list
- * every `message-thread` note WITH its body — ~1,300 threads, up to 1 MB each —
- * pinning the single-threaded vault 1–2 s a tick. A pass now lists rows only:
- * no content, and exactly the metadata keys it reads from the LISTING:
- *   - `matrixRoomId`  the room → note map
- *   - `lastMessageAt` gap-fill lower bound + the reconcile comparison
- *   - `archiveOf`     never adopt an archive as a thread (`isArchiveNote`)
- * plus the row's own id / path / tags / updatedAt / `byteSize`. Everything a
- * WRITE needs (body, messageCount, participants, participantIds, the rest of the
- * metadata, tags) comes from `loadThread` — one fresh read of that one note,
- * immediately before its write. Never read a body or a write input off a row.
- */
-export const THREAD_LIST_KEYS = ["matrixRoomId", "lastMessageAt", "archiveOf"];
-
-function listThreadRows(vault: IngestVault): Promise<Note[]> {
-  return vault.listNotes({ tags: ["message-thread"], includeContent: false, includeMetadata: THREAD_LIST_KEYS });
-}
-
-/**
- * The full, CURRENT note behind a listing row — the only place a thread body is
- * read. Called right before a write to that note (append, dedupe, rollover), so
- * the write is built on what the vault holds now, not on the pass's listing.
- */
-async function loadThread(vault: IngestVault, row: Note): Promise<Note> {
-  if (vault.getNote) {
-    const note = await vault.getNote(row.id);
-    if (!note || typeof note.content !== "string") throw new Error(`thread ${row.id} could not be read (no body)`);
-    return note;
-  }
-  // A vault with no single-note read (test fakes): usable only if its listing
-  // carried the body anyway. Never write on top of a body we do not have.
-  if (typeof row.content === "string") return row;
-  throw new Error(`thread ${row.id}: the listing is lean and this vault cannot re-read a note`);
-}
-
-/** Size of a thread from its listing row, in UTF-8 bytes: the vault's lean
- *  `byteSize` (0.7.x `NoteIndex`), else a body the listing carried anyway.
- *  null = this listing does not say. */
-function rowBytes(row: Note): number | null {
-  const b = (row as unknown as { byteSize?: unknown }).byteSize;
-  if (typeof b === "number" && Number.isFinite(b)) return b;
-  return typeof row.content === "string" && row.content !== "" ? byteLen(row.content) : null;
-}
-
-/** Sizes learned by reading a body, for vaults whose lean rows carry no `byteSize`:
- *  note id → the size at that `updatedAt` (one body read per version, at most). */
-const probedSizes = new Map<string, { updatedAt: string; bytes: number }>();
-/** Rotates which size-less rows a pass may probe, so none starves. */
-let sizeProbeCursor = 0;
-/** Body reads a pass may spend on rows whose size the listing does not give. */
-export const SIZE_PROBES_PER_PASS = 10;
-
-export function _resetThreadSizeCacheForTests(): void {
-  probedSizes.clear();
-  sizeProbeCursor = 0;
 }
 
 /**
@@ -573,75 +510,39 @@ function threadsByRoom(notes: Note[]): Map<string, Note> {
 /**
  * Roll over every thread already past MATRIX_THREAD_MAX_BYTES (the pre-upgrade
  * sweep: on vault ≥0.7.9 a >2 MB thread can no longer be updated at all, so this
- * must have run on 0.6.1 first). Sizes come from the lean listing (`byteSize`);
- * a body is read only for a thread the listing says is oversized (and re-checked
- * on that fresh body). Rows with no size (a vault without `byteSize`) are probed
- * a few per pass, each at most once per `updatedAt`. Independently of this sweep,
- * `ingestRoom` measures the fresh body before every append and rolls over in
- * that same write. Updates `byRoom` in place.
+ * must have run on 0.6.1 first). Piggybacks on the full thread listing each pass
+ * already loads — no extra reads unless a thread is actually oversized. Updates
+ * `byRoom` in place so the same pass appends to the trimmed note.
  */
 export async function sweepOversizedThreads(
   vault: IngestVault,
   byRoom: Map<string, Note>,
-  opts: { maxPerPass?: number; maxSizeProbes?: number } = {},
+  opts: { maxPerPass?: number } = {},
 ): Promise<{ rolled: number; archives: number }> {
   const { maxBytes } = rolloverLimits();
   let rolled = 0;
   let archives = 0;
-  const roll = async (roomId: string, row: Note, loaded?: Note): Promise<void> => {
-    let note = loaded ?? row;
+  for (const [roomId, note] of byRoom) {
+    if (rolled >= (opts.maxPerPass ?? 10)) break;
+    if (byteLen(note.content ?? "") <= maxBytes) continue;
     try {
-      note = loaded ?? (await loadThread(vault, row));
-      if (byteLen(note.content ?? "") <= maxBytes) return; // the listing was stale
       const out = await rolloverThread(vault, note);
-      if (!out) return;
+      if (!out) continue;
       byRoom.set(roomId, out.note);
-      if (out.note.updatedAt) probedSizes.set(row.id, { updatedAt: out.note.updatedAt, bytes: byteLen(out.note.content ?? "") });
       rolled++;
       archives += out.created;
       console.log(
         `[worker] matrix: rolled over ${note.path ?? note.id} (${byteLen(note.content ?? "")} bytes) → ${out.created} new archive note(s)${out.recovered ? `, ${out.recovered} already-archived message(s) trimmed` : ""}`,
       );
     } catch (e) {
-      logRolloverFailure(note, e, rowBytes(row));
+      logRolloverFailure(note, e);
     }
-  };
-  const sizeless: Array<[string, Note]> = [];
-  for (const [roomId, row] of byRoom) {
-    if (rolled >= (opts.maxPerPass ?? 10)) break;
-    let bytes = rowBytes(row);
-    if (bytes === null) {
-      const seen = probedSizes.get(row.id);
-      if (seen && row.updatedAt && seen.updatedAt === row.updatedAt) bytes = seen.bytes;
-      else {
-        sizeless.push([roomId, row]);
-        continue;
-      }
-    }
-    if (bytes <= maxBytes) continue;
-    await roll(roomId, row);
   }
-  // Size-less rows: a bounded number of body reads per pass, rotating.
-  const probes = Math.min(sizeless.length, opts.maxSizeProbes ?? SIZE_PROBES_PER_PASS);
-  for (let i = 0; i < probes && rolled < (opts.maxPerPass ?? 10); i++) {
-    const [roomId, row] = sizeless[(sizeProbeCursor + i) % sizeless.length]!;
-    let note: Note;
-    try {
-      note = await loadThread(vault, row);
-    } catch (e) {
-      console.warn(`[worker] matrix: could not size ${row.path ?? row.id}: ${String(e)}`);
-      continue;
-    }
-    const bytes = byteLen(note.content ?? "");
-    if (note.updatedAt) probedSizes.set(row.id, { updatedAt: note.updatedAt, bytes });
-    if (bytes > maxBytes) await roll(roomId, row, note);
-  }
-  if (sizeless.length) sizeProbeCursor = (sizeProbeCursor + probes) % sizeless.length;
   return { rolled, archives };
 }
 
-function logRolloverFailure(note: Note, e: unknown, listedBytes?: number | null): void {
-  const size = typeof note.content === "string" && note.content !== "" ? byteLen(note.content) : (listedBytes ?? 0);
+function logRolloverFailure(note: Note, e: unknown): void {
+  const size = byteLen(note.content ?? "");
   if (isTooLarge(e))
     console.error(
       `[worker] matrix: ERROR thread ${note.path ?? note.id} (${size} bytes) cannot be updated — the vault refused it (413). ` +
@@ -802,8 +703,10 @@ export async function ingestMatrix(
       }
     }
   }
-  // Lean: rows only. A body is read by `loadThread`, for a note about to be written.
-  const existing = await listThreadRows(vault);
+  const existing = await vault.listNotes({
+    tags: ["message-thread"],
+    includeContent: true,
+  });
   const byRoom = threadsByRoom(existing);
   await sweepOversizedThreads(vault, byRoom);
 
@@ -975,13 +878,8 @@ async function ingestRoom(
   const linkAdd = opts.links?.length ? { links: { add: opts.links } } : {};
   const platform = detectPlatform(rb.memberIds);
   let lines = rb.messages.map((m) => formatLine(m, rb.displayNames));
-  if (!lines.length) return false;
-  // The listing row carries no body: read the note NOW, once, and build the
-  // dedupe, the append, the metadata merge and any rollover on that fresh copy.
-  const row = byRoom.get(rb.roomId);
-  const note = row ? await loadThread(vault, row) : undefined;
   if (opts.dedupe) {
-    const have = new Set((note?.content ?? "").split("\n"));
+    const have = new Set((byRoom.get(rb.roomId)?.content ?? "").split("\n"));
     lines = lines.filter((l) => !have.has(l));
   }
   if (!lines.length) return false;
@@ -989,6 +887,7 @@ async function ingestRoom(
   const participants = rb.memberIds.map(
     (id) => rb.displayNames[id] ?? shortSender(id),
   );
+  const note = byRoom.get(rb.roomId);
   if (note) {
     const prev = note.metadata ?? {};
     const prevCount =
@@ -1123,8 +1022,10 @@ export async function reconcileMatrix(
   opts: { upTo: string; maxRepairs?: number; cap?: number; concurrency?: number },
 ): Promise<ReconcileResult> {
   const joined = await client.joinedRooms();
-  // Lean: rows only. A body is read by `loadThread`, for a note about to be written.
-  const existing = await listThreadRows(vault);
+  const existing = await vault.listNotes({
+    tags: ["message-thread"],
+    includeContent: true,
+  });
   const byRoom = threadsByRoom(existing);
   await sweepOversizedThreads(vault, byRoom);
 
