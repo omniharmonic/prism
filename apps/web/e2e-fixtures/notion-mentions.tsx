@@ -22,6 +22,7 @@ import { fetchMe, setActiveVault } from "../src/config";
 import { useLinkNotes } from "../src/collab/linkNotes";
 import { extractMentions } from "../../../packages/core/src/lib/tiptap/MentionParse";
 import { TRASH_TAG } from "../../../packages/core/src/lib/pages/model";
+import { addReply } from "../../../packages/core/src/editor/comments";
 import "../../../packages/core/src/styles/tokens.css";
 import "../../../packages/core/src/styles/glass.css";
 import "../../../packages/core/src/styles/typography.css";
@@ -105,7 +106,10 @@ window.fetch = async (input, init) => {
   const person = path.match(/^\/api\/people\/([^/]+)$/);
   if (person) {
     const p = people.find((x) => x.id === decodeURIComponent(person[1]!));
-    return p ? json({ person: p, related: [], next: null }) : json({ error: "not_found" }, 404);
+    // Like the server (routes/people.ts): the profile lists every viewable page linked to the
+    // person — here the `mentions` links the fake server derives from saved chips (NP-RF-07).
+    const related = p ? [...new Set(links(p.id).filter((l) => l.targetId === p.id).map((l) => l.sourceId))].map((id) => byId(id)!).filter((n) => !forbidden.has(n.id)).map((n) => ({ id: n.id, title: title(n), path: n.path, category: "notes", relationships: ["mentions"] })) : [];
+    return p ? json({ person: p, related, next: null }) : json({ error: "not_found" }, 404);
   }
   if (path === "/api/reminders" && method === "GET") return json({ items: reminders.filter((r) => r.status === "scheduled").map(reminderOut) });
   if (path === "/api/reminders" && method === "POST") {
@@ -178,6 +182,8 @@ function CommentsFixture() {
         editor!.chain().focus().setTextSelection({ from: at, to: at + text.length }).run();
       },
       comments: () => ydoc.getMap("comments").toJSON(),
+      /** Someone else's reply on a thread (NP-CO-01: only your OWN comments can be deleted). */
+      foreignReply: (threadId: string, text: string) => addReply(ydoc, threadId, { author: "Lee Chen", color: "#0e7490", text, createdAt: Date.now() }),
     },
   });
   return (
