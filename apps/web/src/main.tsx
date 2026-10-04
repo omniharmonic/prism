@@ -29,6 +29,7 @@ import { UpdatePrompt } from "./offline/UpdatePrompt";
 import { webPush } from "./push/webPush";
 import { initAgentDeepLink } from "./push/deeplink";
 import { initNativeExtras } from "./native/extras";
+import { initAppLinks } from "./native/appLinks";
 import { installExternalImageProxy } from "./native/externalImages";
 import { installChunkReloadRecovery } from "./chunkReload";
 
@@ -255,6 +256,9 @@ export async function start() {
   });
   startOutboxSync();
   if (!capability && isNative) initNativeExtras(); // WP4.2: export + drag-drop (page half)
+  // Universal / prism:// links (NP-NA-04): the shell hands over a validated path; it becomes a
+  // tab. Starts only where a host shell provides the bridge, and only for a signed-in workspace.
+  if (!capability) initAppLinks();
   // Client parity C: external note images via the server's SSRF-guarded proxy
   // (blob: URLs; the client CSP only allows its own server). PWA loads directly.
   if (!capability && isNative) installExternalImageProxy({ fetch: serverFetch, apiOrigin: gatewayOrigin });
