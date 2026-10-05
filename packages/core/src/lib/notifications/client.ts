@@ -11,6 +11,8 @@
  *   POST /api/notifications/archive   { ids: string[], archived }     → { ok, unread }
  *   GET  /api/notifications/settings                                  → NotificationSettingsResponse
  *   PUT  /api/notifications/settings  { settings }                    → NotificationSettingsResponse
+ *   GET  /api/notifications/pages/:id                                 → { level }   (your level for one page)
+ *   PUT  /api/notifications/pages/:id { level }                       → { level }
  *   GET  /api/reminders                                               → { items: Reminder[] }
  *   POST /api/reminders   { noteId, at, tz, uid?, dateOnly? }         → { reminder }
  *   PATCH /api/reminders/:id { at, tz, dateOnly? }                    → { reminder }
@@ -32,7 +34,11 @@ export type NotificationType =
   | "access_denied"
   | "suggestion_accepted"
   | "suggestion_rejected"
-  | "suggestion_resolved";
+  | "suggestion_resolved"
+  /** Someone else added you to a person property of a page (NP-CO-16). */
+  | "assigned"
+  /** A new comment thread or page comment on a page you follow ("All updates"). */
+  | "comment_thread";
 
 export interface NotificationItem {
   id: string;
@@ -43,8 +49,8 @@ export interface NotificationItem {
   title: string | null;
   /** Display name of whoever caused it (never an email). */
   actor: { name: string } | null;
-  /** Deep-link anchor: a mention chip uid, a comment thread id, or a reminder id. */
-  anchor: { mention?: string; thread?: string; reminder?: string } | null;
+  /** Deep-link anchor: a mention chip uid, a comment thread id, a reminder id, or a property key. */
+  anchor: { mention?: string; thread?: string; reminder?: string; property?: string } | null;
   /** Short, already-safe preview (comment text; never page content). */
   preview: string | null;
   /** access_request only: the request to decide. */
@@ -66,7 +72,17 @@ export interface NotificationSettings {
   comment: NotificationChannel;
   reminder: NotificationChannel;
   access: NotificationChannel;
+  /** Absent on a server from before assignment notifications (the row is then not offered). */
+  assignment?: NotificationChannel;
 }
+
+/** What one page may tell you about (NP-CO-04). `mentions` is the default. */
+export type PageNotificationLevel = "all" | "mentions" | "none";
+export const PAGE_NOTIFICATION_LEVELS: ReadonlyArray<{ id: PageNotificationLevel; label: string; hint: string }> = [
+  { id: "all", label: "All updates", hint: "New comment threads and page comments, even ones you took no part in" },
+  { id: "mentions", label: "Replies and @mentions", hint: "Replies to your threads and mentions of you" },
+  { id: "none", label: "Nothing", hint: "No comment notifications from this page. Mentions of you, assignments and answers to your suggestions still arrive." },
+];
 export interface NotificationSettingsResponse {
   settings: NotificationSettings;
   /** What delivery is available on this server (not per device). */
@@ -140,6 +156,9 @@ export const notificationsApi = {
   getSettings: () => call<NotificationSettingsResponse>("/api/notifications/settings"),
   putSettings: (settings: NotificationSettings) =>
     call<NotificationSettingsResponse>("/api/notifications/settings", { method: "PUT", body: JSON.stringify({ settings }) }),
+  getPageLevel: (noteId: string) => call<{ level: PageNotificationLevel }>(`/api/notifications/pages/${encodeURIComponent(noteId)}`),
+  setPageLevel: (noteId: string, level: PageNotificationLevel) =>
+    call<{ level: PageNotificationLevel }>(`/api/notifications/pages/${encodeURIComponent(noteId)}`, { method: "PUT", body: JSON.stringify({ level }) }),
 
   listReminders: () => call<{ items: Reminder[] }>("/api/reminders"),
   createReminder: (o: { noteId: string; at: string; tz: string; uid?: string | null; dateOnly?: boolean }) =>

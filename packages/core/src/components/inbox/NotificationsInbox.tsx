@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Archive, ArchiveRestore, Bell, Check, CheckCheck, RefreshCw, Settings2, WifiOff, Inbox as InboxIcon } from "lucide-react";
+import { Archive, ArchiveRestore, Bell, Check, CheckCheck, RefreshCw, Settings2, UserCheck, WifiOff, Inbox as InboxIcon } from "lucide-react";
 import type { RendererProps } from "../renderers/RendererProps";
 import { useArchive, useMarkRead, useNotifications, useOnline, useUnreadCount, isNotificationsUnavailable, announceNotificationsChanged } from "../../lib/notifications/hooks";
 import { openNotification, takePendingNotification, clearPendingNotification } from "../../lib/notifications/anchor";
@@ -9,14 +9,18 @@ import { useSwipeActions } from "../../lib/gestures/useSwipeActions";
 import { usePullToRefresh } from "../../lib/gestures/usePullToRefresh";
 import "./inbox.css";
 
-type Filter = "all" | "mentions" | "replies" | "reminders" | "requests";
-const FILTERS: Array<{ id: Filter; label: string; types: NotificationType[] | null }> = [
-  { id: "all", label: "All", types: null },
-  { id: "mentions", label: "Mentions", types: ["mention", "comment_mention"] },
-  { id: "replies", label: "Replies", types: ["comment_reply"] },
-  { id: "reminders", label: "Reminders", types: ["reminder"] },
-  { id: "requests", label: "Requests", types: ["access_request", "access_granted", "access_denied", "share"] },
+type Filter = "all" | "mentions" | "assigned" | "replies" | "reminders" | "requests";
+/** `empty` = what the filter says when it holds nothing: a title and what would show up there. */
+const FILTERS: Array<{ id: Filter; label: string; types: NotificationType[] | null; empty: [string, string] }> = [
+  { id: "all", label: "All", types: null, empty: ["You’re all caught up", "Mentions, assignments, replies, reminders and access requests show up here."] },
+  { id: "mentions", label: "Mentions", types: ["mention", "comment_mention"], empty: ["No mentions", "When someone @mentions you on a page or in a comment, it shows up here."] },
+  { id: "assigned", label: "Assigned", types: ["assigned"], empty: ["Nothing assigned to you", "When someone adds you to a task or a person property, it shows up here."] },
+  { id: "replies", label: "Replies", types: ["comment_reply", "comment_thread"], empty: ["No replies", "Replies to your comment threads, and new comments on pages you follow, show up here."] },
+  { id: "reminders", label: "Reminders", types: ["reminder"], empty: ["No reminders", "Reminders you set on dates show up here when they are due."] },
+  { id: "requests", label: "Requests", types: ["access_request", "access_granted", "access_denied", "share"], empty: ["No requests", "Pages shared with you and access requests show up here."] },
 ];
+/** "Mark all read": Shift+A while the Inbox has focus (never while typing in a field). */
+const MARK_ALL_KEYS = "Shift+A";
 
 const DAY = 86_400_000;
 function groupOf(ts: number, now = Date.now()): "Today" | "Yesterday" | "Earlier" {
@@ -49,6 +53,9 @@ function sentence(n: NotificationItem): { who: string | null; text: string; page
     case "suggestion_accepted": return { who, text: "accepted your suggestion on", page };
     case "suggestion_rejected": return { who, text: "declined your suggestion on", page };
     case "suggestion_resolved": return { who, text: "resolved your suggestion on", page };
+    // "Someone" when there is no account to name (a share-link guest).
+    case "assigned": return { who: who ?? "Someone", text: "assigned you to", page };
+    case "comment_thread": return { who: who ?? "Someone", text: "commented on", page };
     default: return { who, text: "updated", page };
   }
 }
@@ -125,16 +132,31 @@ export default function NotificationsInbox(_props: RendererProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [list.data]);
 
+  // Shift+A marks everything read (the hint is on the button). Only while the Inbox itself has
+  // focus — a keystroke in a field, or anywhere else in the app, is never taken.
+  const onKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key !== "A" || !e.shiftKey || e.metaKey || e.ctrlKey || e.altKey || e.defaultPrevented) return;
+    const t = e.target as HTMLElement;
+    if (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName)) return;
+    if (box !== "inbox" || unread === 0 || markRead.isPending) return;
+    e.preventDefault();
+    markRead.mutate({ all: true });
+  };
+  const current = FILTERS.find((f) => f.id === filter)!;
+
   return (
-    <div className="prism-inbox" data-testid="notifications-inbox" ref={pull.ref}>
+    <div className="prism-inbox" data-testid="notifications-inbox" ref={pull.ref} onKeyDown={onKeyDown}>
       {pull.indicator}
       <div className="prism-inbox-inner">
         <header className="prism-inbox-header">
           <h1 tabIndex={-1}>Inbox</h1>
           <div className="prism-inbox-actions">
             {box === "inbox" && (
-              <button type="button" className="prism-inbox-btn" disabled={unread === 0 || markRead.isPending} onClick={() => markRead.mutate({ all: true })}>
+              <button type="button" className="prism-inbox-btn" disabled={unread === 0 || markRead.isPending} onClick={() => markRead.mutate({ all: true })}
+                aria-keyshortcuts={MARK_ALL_KEYS} title={`Mark all read (${MARK_ALL_KEYS.replace("+", " + ")})`}>
                 <CheckCheck size={15} /> <span>Mark all read</span>
+                {/* The shortcut is said by aria-keyshortcuts; the visible hint is decoration. */}
+                <kbd className="prism-inbox-kbd" aria-hidden="true">⇧A</kbd>
               </button>
             )}
             <button type="button" className="prism-inbox-btn" aria-label="Refresh" title="Refresh" aria-busy={pull.refreshing || undefined} disabled={pull.refreshing || unavailable} onClick={pull.refresh}>
@@ -175,10 +197,10 @@ export default function NotificationsInbox(_props: RendererProps) {
             <div className="mt-4"><button type="button" className="prism-inbox-btn" data-variant="outline" onClick={() => void list.refetch()}>Retry</button></div>
           </div>
         ) : items.length === 0 ? (
-          <div className="prism-inbox-empty" data-testid="inbox-empty">
+          <div className="prism-inbox-empty" data-testid="inbox-empty" data-filter={filter}>
             <InboxIcon size={28} />
-            <strong>{box === "archived" ? "Nothing archived" : filter === "all" ? "You’re all caught up" : "Nothing here"}</strong>
-            {box === "inbox" ? "Mentions, replies, reminders and access requests show up here." : "Archived notifications stay here for reference."}
+            <strong>{box === "inbox" ? current.empty[0] : filter === "all" ? "Nothing archived" : `Nothing archived under ${current.label}`}</strong>
+            {box === "inbox" ? current.empty[1] : "Archived notifications stay here for reference."}
           </div>
         ) : (
           groups.map((g) => (
@@ -225,7 +247,7 @@ function NotificationRow({ n, box, onOpen, onRead, onArchive }: {
   return (
     <li ref={swipe.ref} className="prism-inbox-row prism-swipe-row" data-unread={!n.readAt} data-testid="notification-row" data-row-id={n.id} data-type={n.type}>
       {swipe.hint}
-      <span className="prism-inbox-avatar" aria-hidden>{n.type === "reminder" ? <Bell size={14} /> : initials(s.who)}</span>
+      <span className="prism-inbox-avatar" aria-hidden data-icon={n.type === "assigned" ? "assigned" : undefined}>{n.type === "reminder" ? <Bell size={14} /> : n.type === "assigned" ? <UserCheck size={14} /> : initials(s.who)}</span>
       <div className="flex-1 min-w-0">
         <button type="button" className="prism-inbox-open focus-ring" onClick={onOpen} disabled={!canOpen}
           aria-label={`${s.who ? `${s.who} ` : ""}${s.text} ${s.page}${n.readAt ? "" : ", unread"}`}>

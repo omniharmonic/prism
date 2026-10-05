@@ -82,6 +82,19 @@
   min-width: 18px; height: 18px; padding: 0 5px; border-radius: 999px; font-size: 11px; font-weight: 650; line-height: 18px;
   text-align: center; background: var(--action-bg, var(--color-accent)); color: #fff;
 }
+.prism-inbox-kbd { font: inherit; font-size: 11px; color: var(--text-muted); border: 1px solid var(--glass-border); border-radius: 4px; padding: 0 4px; line-height: 16px; }
+@media (max-width: 640px) { .prism-inbox-kbd { display: none; } }
+.prism-page-level { position: relative; display: inline-flex; align-items: center; gap: 6px; }
+.prism-page-level[hidden] { display: none; }
+.prism-page-level-btn { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; border-radius: 7px; border: 1px solid var(--glass-border); background: transparent; color: var(--text-secondary); cursor: pointer; }
+.prism-page-level-btn:hover { background: var(--glass-hover, rgba(127,127,127,0.12)); }
+.prism-page-level-menu { position: absolute; right: 0; top: 34px; z-index: var(--z-popover, 60); width: 280px; max-width: calc(100vw - 32px); padding: 6px; border-radius: 10px; border: 1px solid var(--glass-border); background: var(--bg-elevated, var(--bg-primary)); box-shadow: 0 12px 32px rgba(0,0,0,0.22); display: flex; flex-direction: column; gap: 2px; }
+.prism-page-level-item { display: flex; align-items: flex-start; gap: 8px; width: 100%; padding: 8px; border: 0; border-radius: 7px; background: transparent; color: var(--text-primary); text-align: left; cursor: pointer; min-height: 44px; }
+.prism-page-level-item:hover, .prism-page-level-item:focus-visible { background: var(--glass-hover, rgba(127,127,127,0.12)); }
+.prism-page-level-item strong { display: block; font-size: 13px; font-weight: 600; }
+.prism-page-level-item small { display: block; font-size: 12px; color: var(--text-muted); line-height: 1.4; margin-top: 2px; }
+.prism-page-level-check { width: 16px; flex: none; padding-top: 2px; color: var(--color-accent); }
+.prism-page-level-error { font-size: 12px; color: var(--color-danger); }
 .prism-anchor-flash { outline: 2px solid var(--color-accent); outline-offset: 2px; border-radius: 4px; transition: outline-color 0.6s; }
 .prism-request-access { display: inline-flex; flex-direction: column; align-items: center; gap: 8px; }
 .prism-request-access-inline { display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap; }
