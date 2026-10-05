@@ -37,6 +37,7 @@ import { redactVersionForViewer, stripWriterMeta, changeValue, creatorNameFor, C
 import { writerNames, WRITER_AT_KEY } from "../writer-stamp";
 import { attachmentsApi } from "./attachments";
 import { blocksApi } from "./blocks";
+import { createDuplicateApi } from "./duplicate";
 import { ingestKeyChanged } from "../ingest-keys";
 import { searchApi } from "./search";
 import { stampJsonBody, stampMetadata, stripIdentity } from "../writer-stamp";
@@ -397,6 +398,7 @@ api.route("/transcripts", transcriptsApi);
 // Pages (nested-page move, Trash, synced preferences): before the owner passthrough,
 // like /tree — these are Prism routes, not vault routes. Writes drop cached owner reads.
 api.route("/", createPagesApi({ onWrite: () => dropReadCache() }));
+api.route("/", createDuplicateApi({ onWrite: () => dropReadCache() })); // POST /notes/:id/duplicate (a page WITH its sub-pages, NP-PG-18) — before the owner short-circuit
 // Sharing reads (shared-with-me, comment index, page activity, move access preview).
 api.route("/", sharingApi);
 // Typed properties + database views (schemas, lean query, property writes).

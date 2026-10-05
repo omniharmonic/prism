@@ -552,7 +552,7 @@ export async function destinationParentRefusal(actor: Actor, entry: VaultEntry, 
 }
 
 /** The nearest LIVE ancestor page of `target` that carries a page share (anyone's), or null. */
-async function sharedAncestor(entry: VaultEntry, target: string): Promise<TreeRow | null> {
+export async function sharedAncestor(entry: VaultEntry, target: string): Promise<TreeRow | null> {
   const tree = await ensureTree(entry);
   const byPath = new Map<string, TreeRow>();
   for (const r of tree.rows()) if (r.path) byPath.set(pathKey(r.path), r);

@@ -450,9 +450,31 @@ attachmentsApi.post("/notes/:id/attachments/copy", bodyLimit({ maxSize: 1024, on
     if (systemNoteReason(note)) return c.json({ error: "protected", detail: "this is a system note" }, 403);
     if (isLocked(note)) return c.json({ error: "locked", detail: "this page is locked" }, 409);
   } else if (isTrashed(note)) return c.json(NOT_FOUND, 404);
+  const out = await copyNoteAttachments(entry, actor, note);
+  if ("error" in out) {
+    if (out.error === "busy") { c.header("Retry-After", "5"); return c.json({ error: "busy" }, 503); }
+    if (out.error === "live") return c.json({ error: "live", detail: "close the page before copying its files" }, 409);
+    if (out.error === "conflict") return c.json({ error: "conflict" }, 409);
+    return c.json({ error: "vault_unreachable" }, 502);
+  }
+  return c.json({ ok: true, ...out });
+});
+
+export interface AttachmentCopyResult { copied: number; failed: number; skipped: number; errors: number; more: boolean; updatedAt: string | null }
+export type AttachmentCopyError = { error: "busy" | "live" | "conflict" | "vault_unreachable" };
+
+/**
+ * The work of the copy route, after its request checks — also what "Duplicate with
+ * sub-pages" (`routes/duplicate.ts`) runs for each copy it made, so there is ONE
+ * implementation of the ownership, quota, size and slot rules. `note` is the COPY
+ * (fresh from the vault); the caller has established that `actor` may write it.
+ */
+export async function copyNoteAttachments(entry: VaultEntry, actor: Actor & { kind: "user" }, note: Note): Promise<AttachmentCopyResult | AttachmentCopyError> {
+  const admin = isAdmin(actor);
+  const client = vaultClient(entry.id, { timeoutMs: 15_000 });
   // Every write below is a compare-and-set on this revision — never forced.
-  if (!note.updatedAt) return c.json({ error: "conflict" }, 409);
-  if (isDocLive(entry.id, note.id)) return c.json({ error: "live", detail: "close the page before copying its files" }, 409);
+  if (!note.updatedAt) return { error: "conflict" };
+  if (isDocLive(entry.id, note.id)) return { error: "live" };
 
   const metaJson = JSON.stringify(note.metadata ?? {});
   const referenced = [...new Set([...(note.content ?? "").matchAll(ATTACHMENT_REF), ...metaJson.matchAll(ATTACHMENT_REF)].map((m) => m[1]!))];
@@ -536,13 +558,13 @@ attachmentsApi.post("/notes/:id/attachments/copy", bodyLimit({ maxSize: 1024, on
       release();
     }
   }
-  if (busy && done === 0) { c.header("Retry-After", "5"); return c.json({ error: "busy" }, 503); }
+  if (busy && done === 0) return { error: "busy" };
   // Anything still to do: files past this round, past the scan cap, or that hit a transient error.
   const more = candidates.length > done || errors > 0 || referenced.length > COPY_SCAN_MAX;
-  if (replace.size === 0) return c.json({ ok: true, copied, failed, skipped, errors, more, updatedAt: note.updatedAt });
+  if (replace.size === 0) return { copied, failed, skipped, errors, more, updatedAt: note.updatedAt };
   // The page may have been opened while files were copied (review low 3): a body
   // write under a live document would be folded over what is being typed.
-  if (isDocLive(entry.id, note.id)) return c.json({ error: "live", detail: "close the page before copying its files" }, 409);
+  if (isDocLive(entry.id, note.id)) return { error: "live" };
   const swap = (text: string) => text.replace(ATTACHMENT_REF, (m, old: string) => (replace.has(old) ? `/api/attachments/${replace.get(old)}` : m));
   const content = swap(note.content ?? "");
   const changedMeta: Record<string, unknown> = {};
@@ -558,14 +580,14 @@ attachmentsApi.post("/notes/:id/attachments/copy", bodyLimit({ maxSize: 1024, on
       ifUpdatedAt: note.updatedAt,
     });
     noteCache.delete(`${entry.id}\u0000${note.id}`);
-    return c.json({ ok: true, copied, failed, skipped, errors, more, updatedAt: saved.updatedAt });
+    return { copied, failed, skipped, errors, more, updatedAt: saved.updatedAt ?? null };
   } catch (e) {
     // The page changed under us (or the vault refused): the new rows exist but nothing
     // references them yet — the owner's sweep flags them. The caller may simply retry.
-    if (e instanceof VaultConflictError || (e instanceof VaultError && e.status === 409)) return c.json({ error: "conflict" }, 409);
-    return c.json({ error: "vault_unreachable" }, 502);
+    if (e instanceof VaultConflictError || (e instanceof VaultError && e.status === 409)) return { error: "conflict" };
+    return { error: "vault_unreachable" };
   }
-});
+}
 
 // ── GET /attachments/:id ────────────────────────────────────────────────────
 

@@ -22,7 +22,7 @@
  * writers find them by path or tag and would re-create, duplicate or orphan them.
  */
 
-import { cleanCopyBody } from "./copyBody";
+import { cleanCopyBody, repointWikilinks } from "./copyBody";
 import { INGEST_TAGS } from "../database/schema";
 import { inferContentType } from "../schemas/content-types";
 
@@ -331,11 +331,21 @@ const copyRefusesTag = (t: string): boolean =>
  *  XML or SVG that only looks like our markup; sheets and canvases are data). */
 const RAW_BODY_KINDS: ReadonlySet<string> = new Set(["code", "spreadsheet", "canvas", "website", "presentation", "dashboard", "database"]);
 type CopySubject = { content: string; path?: string | null; metadata?: Record<string, unknown> | null; tags?: string[] | null };
+/** What a copy's links are re-pointed at when the page is copied WITH its sub-pages. */
+export interface CopyLinks {
+  /** The copy of page `id` (sub-page rows, page mentions), or null when it was not copied. */
+  pageId?: (id: string) => string | null | undefined;
+  /** The copy's path for a `[[full/path]]` wikilink target, or null. */
+  path?: (target: string) => string | null | undefined;
+  uid?: () => string;
+}
 /** The body of a copy: cleaned (`cleanCopyBody`) for DOCUMENT kinds only. */
-export function copyBodyOf(note: CopySubject): string {
+export function copyBodyOf(note: CopySubject, links: CopyLinks = {}): string {
   const body = note.content || " ";
   const kind = inferContentType({ id: "", content: "", createdAt: "", path: note.path ?? null, metadata: note.metadata ?? {}, tags: note.tags ?? [] } as never);
-  return RAW_BODY_KINDS.has(kind) ? body : cleanCopyBody(body) || " ";
+  if (RAW_BODY_KINDS.has(kind)) return body;
+  const cleaned = cleanCopyBody(body, links.uid, { pageId: links.pageId }) || " ";
+  return links.path ? repointWikilinks(cleaned, links.path) : cleaned;
 }
 /** The vault's tag canonical form (`apps/server/src/tags.ts`): leading `#`/blanks off, tail trimmed. */
 const canonicalTagName = (raw: string): string => {
@@ -510,6 +520,45 @@ export interface MoveResult {
   moved: Array<{ id: string; from: string; to: string }>;
   /** Present when only part of the subtree moved; call again with `resume` to finish. */
   partial?: { failed: { id: string; from: string; to: string; reason: string }; resume: { moveId: string; newPath: string }; remaining: number };
+}
+/** `POST /api/notes/:id/duplicate` — a page copied WITH its sub-pages (NP-PG-18). */
+export interface DuplicateRequest {
+  /** One id per user action; sending it again FINISHES that duplicate, never makes a second copy. */
+  requestId: string;
+  withSubpages?: boolean;
+  /** The copy lands under a shared page and holds private pages: the person has confirmed. */
+  confirmShared?: boolean;
+}
+export interface DuplicateResult {
+  /** False = only part of the pages were copied; send the same request again to finish, or trash `id` to undo. */
+  ok: boolean;
+  /** The copy of the page itself (the root of the copied group). */
+  id: string;
+  path: string;
+  title: string;
+  /** Pages that exist in the copy now. */
+  created: number;
+  /** Pages still to copy (only when `ok` is false). */
+  remaining: number;
+  /** Sub-pages left out because this person cannot view or copy them — a count, nothing else. */
+  skipped: number;
+  /** Rows of a database page inside (the copy shows the same rows; they are not copied). */
+  rows: number;
+  /** Tags left off the copies because this person may not add them. */
+  droppedTags: number;
+  /** Private pages copied — they stayed private, to this person. */
+  privateKept: number;
+  /** Copies whose files are not all their own yet: continue with `copyAttachments(id)`. */
+  filesPending: string[];
+  filesFailed: number;
+}
+/** What the toast says after a duplicate: "Duplicated “X”" / "Duplicated 4 pages (1 skipped)". */
+export function duplicateSummary(title: string, r: Pick<DuplicateResult, "created" | "skipped" | "droppedTags" | "privateKept">): string {
+  const skipped = r.skipped ? ` (${r.skipped} skipped)` : "";
+  let text = r.created > 1 || r.skipped ? `Duplicated ${r.created} ${r.created === 1 ? "page" : "pages"}${skipped}` : `Duplicated “${title}”`;
+  if (r.privateKept) text += `. ${r.privateKept === 1 ? "A private page" : `${r.privateKept} private pages`} stayed private to you`;
+  if (r.droppedTags) text += `. ${r.droppedTags === 1 ? "A tag you can’t add was" : `${r.droppedTags} tags you can’t add were`} left off`;
+  return text;
 }
 export interface TrashItem {
   id: string;
