@@ -9,7 +9,10 @@
  * localStorage "fixture-inbox"; `?reset` clears it.
  *
  * Query flags: ?as=owner|member · ?open=<id|notifications|home> · ?reset ·
- * ?notification=<id> (push deep link) · ?theme=dark · ?no-push (server has no push). "Start with last open document" off
+ * ?notification=<id> (push deep link) · ?theme=dark · ?no-push (server has no push) ·
+ * ?assign (with ?reset: seeds an "assigned you" item and a followed-page comment) ·
+ * ?nolevels (the per-page level route answers 401, as it does for a share-link guest) ·
+ * ?oldsettings (a server from before the `assignment` category). "Start with last open document" off
  * is set by the spec via addInitScript (the settings store hydrates when
  * @prism/core is imported, before this module runs).
  */
@@ -56,6 +59,8 @@ type State = {
   settings: Record<string, { push: boolean; email: boolean }>;
   requests: Array<{ id: string; noteId: string; level: string; requester: { name: string; email: string }; message: string | null; createdAt: number; status: string; decided?: string }>;
   grants: Record<string, string>;
+  /** Per-page notification level, keyed `<email>:<noteId>` (absent = "mentions"). */
+  levels?: Record<string, string>;
 };
 const initial = (): State => ({
   items: [
@@ -64,8 +69,14 @@ const initial = (): State => ({
     { id: "n3", type: "share", noteId: "field", actor: { name: "Ada Park" }, anchor: null, preview: null, createdAt: NOW - DAY - HOUR, readAt: NOW - DAY, archivedAt: null, to: "owner" },
     { id: "n4", type: "reminder", noteId: "roadmap", actor: null, anchor: { reminder: "r-old" }, preview: null, createdAt: NOW - 5 * DAY, readAt: NOW - 4 * DAY, archivedAt: null, to: "owner" },
     { id: "n5", type: "comment_mention", noteId: "launch", actor: { name: "Lee Chen" }, anchor: { thread: "t1" }, preview: "@Robin Vale can you sign off?", createdAt: NOW - 6 * DAY, readAt: NOW - 6 * DAY, archivedAt: NOW - 5 * DAY, to: "owner" },
+    // NP-CO-16 / NP-CO-04 (only with ?assign, so the older specs keep their counts).
+    ...(params.has("assign") ? [
+      { id: "n6", type: "assigned", noteId: "task-1", actor: { name: "Ada Park" }, anchor: { property: "assigned" }, preview: null, createdAt: NOW - 5 * MIN, readAt: null, archivedAt: null, to: "owner" as const },
+      { id: "n7", type: "assigned", noteId: "task-2", actor: null, anchor: { property: "assigned" }, preview: null, createdAt: NOW - 3 * HOUR, readAt: NOW - 2 * HOUR, archivedAt: null, to: "owner" as const },
+      { id: "n8", type: "comment_thread", noteId: "launch", actor: { name: "Lee Chen" }, anchor: { thread: "t1" }, preview: "Should we move the date?", createdAt: NOW - 4 * HOUR, readAt: NOW - 3 * HOUR, archivedAt: null, to: "owner" as const },
+    ] : []),
   ],
-  settings: { mention: { push: true, email: true }, comment: { push: true, email: false }, reminder: { push: true, email: false }, access: { push: true, email: true } },
+  settings: { mention: { push: true, email: true }, comment: { push: true, email: false }, reminder: { push: true, email: false }, access: { push: true, email: true }, ...(params.has("oldsettings") ? {} : { assignment: { push: true, email: true } }) },
   requests: [],
   grants: {},
 });
@@ -128,6 +139,21 @@ window.fetch = async (input, init) => {
   if (path === "/api/notifications/settings") {
     if (method === "PUT") { writes.push({ settings: body.settings }); state.settings = body.settings; save(); }
     return json({ settings: state.settings, available: { webPush: !params.has("no-push"), apns: false, email: true } });
+  }
+  const pageLevel = path.match(/^\/api\/notifications\/pages\/([^/]+)$/);
+  if (pageLevel) {
+    const note = byId(decodeURIComponent(pageLevel[1]!));
+    if (params.has("nolevels")) return json({ error: "unauthorized" }, 401);
+    if (!note || !canView(note)) return json({ error: "not_found" }, 404);
+    state.levels ??= {};
+    const key = `${me.email}:${note.id}`;
+    if (method === "PUT") {
+      if (!["all", "mentions", "none"].includes(body.level)) return json({ error: "bad_request" }, 400);
+      writes.push({ pageLevel: note.id, level: body.level });
+      if (body.level === "mentions") delete state.levels[key]; else state.levels[key] = body.level;
+      save();
+    }
+    return json({ level: state.levels[key] ?? "mentions" });
   }
   if (path === "/api/reminders" && method === "GET") {
     return json({ items: [{ id: "r1", noteId: "roadmap", title: "Roadmap", at: NOW + 3 * HOUR, tz: "UTC", dateOnly: false, uid: "m1", status: "scheduled" }] });

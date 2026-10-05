@@ -5,6 +5,7 @@ import "./inbox.css";
 
 const ROWS: Array<{ key: keyof NotificationSettings; label: string; hint: string }> = [
   { key: "mention", label: "Mentions", hint: "Someone @mentions you on a page" },
+  { key: "assignment", label: "Assignments", hint: "Someone adds you to a task or a person property" },
   { key: "comment", label: "Comments", hint: "Replies to your threads and mentions in comments" },
   { key: "reminder", label: "Reminders", hint: "Reminders you set on dates" },
   { key: "access", label: "Access", hint: "Shares and access requests" },
@@ -20,7 +21,7 @@ export function NotificationSettingsPanel({ onClose }: { onClose: () => void }) 
   }, [q.data, draft]);
   const available = q.data?.available;
   const set = (key: keyof NotificationSettings, channel: "push" | "email", value: boolean) =>
-    setDraft((d) => (d ? { ...d, [key]: { ...d[key], [channel]: value } } : d));
+    setDraft((d) => (d && d[key] ? { ...d, [key]: { ...d[key]!, [channel]: value } } : d));
   const pushAvailable = !!available && (available.webPush || available.apns);
 
   // Keyboard: the panel takes focus when it opens; Esc closes it (the opener gets focus back).
@@ -44,14 +45,15 @@ export function NotificationSettingsPanel({ onClose }: { onClose: () => void }) 
               <tr><th>Type</th><th style={{ width: 72 }}>Push</th><th style={{ width: 72 }}>Email</th></tr>
             </thead>
             <tbody>
-              {ROWS.map((r) => (
+              {/* A category this server does not know (older server) is not offered. */}
+              {ROWS.filter((r) => !!draft[r.key]).map((r) => (
                 <tr key={r.key}>
                   <td>
                     <div className="font-medium">{r.label}</div>
                     <div className="text-xs text-[var(--text-muted)]">{r.hint}</div>
                   </td>
-                  <td><input type="checkbox" aria-label={`${r.label} push`} checked={draft[r.key].push} disabled={!pushAvailable} onChange={(e) => set(r.key, "push", e.target.checked)} /></td>
-                  <td><input type="checkbox" aria-label={`${r.label} email`} checked={draft[r.key].email} disabled={!available?.email} onChange={(e) => set(r.key, "email", e.target.checked)} /></td>
+                  <td><input type="checkbox" aria-label={`${r.label} push`} checked={draft[r.key]!.push} disabled={!pushAvailable} onChange={(e) => set(r.key, "push", e.target.checked)} /></td>
+                  <td><input type="checkbox" aria-label={`${r.label} email`} checked={draft[r.key]!.email} disabled={!available?.email} onChange={(e) => set(r.key, "email", e.target.checked)} /></td>
                 </tr>
               ))}
             </tbody>
