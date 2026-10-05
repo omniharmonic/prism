@@ -277,3 +277,64 @@ test("row peek: Previous / Next walk the view's rows in its order, stop at the e
   await page.keyboard.press("Escape");
   await expect(peek).toHaveCount(0);
 });
+
+/** Table A 11: image actions — replace, download, copy. */
+test("image actions: Replace keeps size, alignment and caption in one change; Download and Copy work for readers too", async ({ page }) => {
+  await page.route("**/api/attachments/*", (r) => r.fulfill({ path: "e2e-fixtures/media/cover.png" }));
+  await page.addInitScript(() => {
+    const log: any[] = ((window as any).clip = []);
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: {
+      write: async (items: any[]) => { for (const item of items) for (const type of item.types) { const blob = await item.getType(type); log.push({ type, size: blob.size }); } },
+      writeText: async (text: string) => { log.push({ text }); },
+    } });
+  });
+  const content = '<p>Before</p><img src="/api/attachments/a_img9" alt="Team: photo/2026" data-align="left" width="240" data-caption="At the workshop"><p>After</p>';
+  await page.goto(`/e2e-fixtures/notion-media.html?content=${encodeURIComponent(content)}`);
+  const figure = page.locator("figure.prism-image");
+  await expect(figure.locator("img")).toHaveJSProperty("complete", true);
+  await figure.hover();
+  const bar = figure.getByRole("toolbar", { name: "Image options" });
+  const html = () => page.evaluate(() => (document.querySelector(".tiptap") as any).editor.getHTML() as string);
+
+  // Download: a safe file name from the alt text; the page does not navigate.
+  const [download] = await Promise.all([page.waitForEvent("download"), bar.getByRole("button", { name: "Download image" }).click()]);
+  expect(download.suggestedFilename()).toBe("Team photo2026.png");
+
+  // Copy: PNG bytes on the clipboard.
+  await bar.getByRole("button", { name: "Copy image" }).click();
+  await expect(page.getByRole("status").filter({ hasText: "Copied image" })).toBeVisible();
+  const clip = await page.evaluate(() => (window as any).clip as any[]);
+  expect(clip).toHaveLength(1);
+  expect(clip[0].type).toBe("image/png");
+  expect(clip[0].size).toBeGreaterThan(50);
+
+  // Replace: the same block gets the new file; width, alignment, caption and alt stay.
+  const [chooser] = await Promise.all([page.waitForEvent("filechooser"), bar.getByRole("button", { name: "Replace image" }).click()]);
+  await chooser.setFiles({ name: "new.png", mimeType: "image/png", buffer: Buffer.from("89504e470d0a1a0a", "hex") });
+  await expect(figure.locator("img")).toHaveAttribute("src", "/api/attachments/a_img1");
+  const after = await html();
+  expect(after.match(/<img/g)).toHaveLength(1);
+  expect(after).toContain('src="/api/attachments/a_img1"');
+  expect(after).toContain('data-align="left"');
+  expect(after).toContain('width="240"');
+  expect(after).toContain("At the workshop");
+  expect(await page.evaluate(() => (window as any).prismMediaUploads.at(-1))).toMatchObject({ name: "new.png", kind: "image" });
+  // One undo step brings the old image back.
+  await page.getByText("Before", { exact: true }).click();
+  await page.keyboard.press("ControlOrMeta+z");
+  await expect(figure.locator("img")).toHaveAttribute("src", "/api/attachments/a_img9");
+  // A file that is not an image is refused, and the image stays.
+  await figure.hover();
+  const [again] = await Promise.all([page.waitForEvent("filechooser"), bar.getByRole("button", { name: "Replace image" }).click()]);
+  await again.setFiles({ name: "notes.txt", mimeType: "text/plain", buffer: Buffer.from("hello") });
+  await expect(page.getByRole("alert").filter({ hasText: "Only PNG, JPEG, GIF, WebP and AVIF" })).toBeVisible();
+  await expect(figure.locator("img")).toHaveAttribute("src", "/api/attachments/a_img9");
+
+  // A reader: Download and Copy, no Replace.
+  await page.goto(`/e2e-fixtures/notion-media.html?readonly&content=${encodeURIComponent(content)}`);
+  await expect(figure.locator("img")).toHaveJSProperty("complete", true);
+  await figure.hover();
+  await expect(bar.getByRole("button", { name: "Download image" })).toBeVisible();
+  await expect(bar.getByRole("button", { name: "Copy image" })).toBeVisible();
+  await expect(bar.getByRole("button", { name: "Replace image" })).toBeHidden();
+});

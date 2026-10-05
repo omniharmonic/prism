@@ -18,6 +18,8 @@ import { embedFor, EMBED_SANDBOX, isAllowedFrameSrc, safeWebUrl } from "../media
 import { formatBytes, isDangerousImageSrc, isOwnAttachment, ownOrProxiedSrc, safeAttachmentSrc } from "../media/attachments";
 import { serverFetch } from "../transport/serverFetch";
 import { structuralEditsAllowed } from "./blockCommands";
+import { canUploadImages, IMAGE_TYPES, type ImageUploadOptions } from "./ImageUpload";
+import { editorNotice } from "./notice";
 // Wave 4A views register themselves alongside the media views (one import in each editor).
 import "./columnsView";
 import "./childPage";
@@ -37,6 +39,7 @@ const SVG: Record<string, string> = {
   wide: '<path d="M3 12h18"/><path d="m6 9-3 3 3 3M18 9l3 3-3 3"/>',
   caption: '<path d="M4 6h16v9H4z"/><path d="M7 19h10"/>',
   copy: '<rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a1 1 0 0 1 1-1h10"/>',
+  replace: '<path d="M4 9a8 8 0 0 1 14-4l2 2"/><path d="M20 3v4h-4"/><path d="M20 15a8 8 0 0 1-14 4l-2-2"/><path d="M4 21v-4h4"/>',
   wrap: '<path d="M4 6h16M4 12h13a3 3 0 0 1 0 6h-4"/><path d="m14 16-2 2 2 2"/><path d="M4 18h5"/>',
   chevron: '<path d="m7 10 5 5 5-5"/>',
   link: '<path d="M10 14a4 4 0 0 0 5.66 0l3-3a4 4 0 0 0-5.66-5.66l-1 1"/><path d="M14 10a4 4 0 0 0-5.66 0l-3 3a4 4 0 0 0 5.66 5.66l1-1"/>',
@@ -134,6 +137,118 @@ export function openLightbox(src: string, alt: string, caption?: string | null):
 
 // ── Image ────────────────────────────────────────────────────────────────────
 
+/** A file name for a saved image: its alt text (or "image"), made safe, plus the type's extension. */
+export function imageFileName(alt: string | null | undefined, type?: string | null): string {
+  let base = "";
+  for (const ch of (alt ?? "").normalize("NFC")) {
+    const c = ch.codePointAt(0)!;
+    // No path separators, control or bidi-control characters, nor characters file systems refuse.
+    if (c < 0x20 || c === 0x7f || '\\/:*?"<>|'.includes(ch) || (c >= 0x202a && c <= 0x202e) || (c >= 0x2066 && c <= 0x2069)) continue;
+    base += ch;
+    if (base.length >= 80) break;
+  }
+  base = base.trim().replace(/^\.+/, "") || "image";
+  const ext = ({ "image/png": "png", "image/jpeg": "jpg", "image/gif": "gif", "image/webp": "webp", "image/avif": "avif", "image/bmp": "bmp" } as Record<string, string>)[type ?? ""];
+  return ext && !base.toLowerCase().endsWith(`.${ext}`) ? `${base}.${ext}` : base;
+}
+
+/**
+ * Save the image. Our own attachment (through the server transport) or the `blob:` a native shell /
+ * share link swapped in is read once more so the file gets its real type's extension; an outside
+ * image is handed to the browser — `download` is ignored cross-origin, so it opens in a new tab
+ * that cannot reach this window. This window never navigates.
+ */
+async function downloadImage(doc: Document, img: HTMLImageElement, original: string): Promise<void> {
+  const shown = img.currentSrc || img.src;
+  if (!shown) return;
+  const click = (href: string, name: string) => {
+    const a = doc.createElement("a");
+    a.href = href;
+    a.download = name;
+    a.target = "_blank";
+    a.rel = "noopener noreferrer";
+    a.style.display = "none";
+    doc.body.append(a);
+    a.click();
+    a.remove();
+  };
+  try {
+    const res = shown.startsWith("blob:") ? await fetch(shown) : isOwnAttachment(original) ? await serverFetch(original) : null;
+    if (res?.ok) {
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      click(url, imageFileName(img.alt, blob.type));
+      setTimeout(() => URL.revokeObjectURL(url), 60_000);
+      return;
+    }
+  } catch { /* fall through: let the browser fetch it */ }
+  click(shown, imageFileName(img.alt));
+}
+
+/**
+ * Put the image on the clipboard as PNG (the one image type every browser's clipboard takes).
+ * The bytes are read from the element that is already painted — no second request — so an
+ * outside image without CORS headers taints the canvas: then its ADDRESS is copied instead and
+ * the caller says so. Returns what was copied, or null when the clipboard refused.
+ */
+async function copyImage(img: HTMLImageElement): Promise<"image" | "address" | null> {
+  const src = img.currentSrc || img.src;
+  const clip = typeof navigator !== "undefined" ? navigator.clipboard : undefined;
+  if (!src || !clip) return null;
+  const Item = (globalThis as Any).ClipboardItem;
+  if (Item && clip.write && img.naturalWidth) {
+    try {
+      const png = new Promise<Blob>((resolve, reject) => {
+        const canvas = img.ownerDocument.createElement("canvas");
+        // Bounded: a huge image is copied at most 4096 px on its long side.
+        const scale = Math.min(1, 4096 / Math.max(img.naturalWidth, img.naturalHeight));
+        canvas.width = Math.max(1, Math.round(img.naturalWidth * scale));
+        canvas.height = Math.max(1, Math.round(img.naturalHeight * scale));
+        canvas.getContext("2d")!.drawImage(img, 0, 0, canvas.width, canvas.height);
+        canvas.toBlob((b) => (b ? resolve(b) : reject(new Error("no image"))), "image/png"); // throws when tainted
+      });
+      // Safari needs the ClipboardItem made inside the gesture, with a promise for the bytes.
+      await clip.write([new Item({ "image/png": png })]);
+      return "image";
+    } catch { /* tainted canvas, or no image clipboard here: fall through to the address */ }
+  }
+  // A blob: address means nothing outside this tab.
+  if (src.startsWith("blob:")) return null;
+  try { await clip.writeText(new URL(src, img.ownerDocument.baseURI).href); return "address"; } catch { return null; }
+}
+
+/** Pick a file and swap it in: same node, same width / alignment / caption; ONE transaction. */
+function replaceImage(editor: Editor, getPos: NodeViewRendererProps["getPos"], dom: HTMLElement): void {
+  const options = editor.extensionManager.extensions.find((e) => e.name === "imageUpload")?.options as ImageUploadOptions | undefined;
+  const upload = options?.upload;
+  if (!upload || !canEdit(editor) || dom.hasAttribute("data-replacing")) return;
+  const input = document.createElement("input");
+  input.type = "file";
+  input.accept = IMAGE_TYPES.join(",");
+  input.style.display = "none";
+  input.setAttribute("data-prism-replace-image", "");
+  input.addEventListener("change", () => {
+    const file = input.files?.[0];
+    input.remove();
+    if (!file) return;
+    if (!IMAGE_TYPES.includes(file.type)) return editorNotice("Only PNG, JPEG, GIF, WebP and AVIF images can be added here.");
+    if (file.size > (options?.maxBytes ?? Infinity)) return editorNotice(`${file.name} is larger than ${Math.round((options?.maxBytes ?? 0) / 1_048_576)} MB.`);
+    dom.setAttribute("data-replacing", "");
+    upload(file).then((result) => {
+      if (editor.isDestroyed) return;
+      // The old image stays unless this is still an image we may edit (it may have been deleted,
+      // or the page became read-only, while the upload ran).
+      const pos = typeof getPos === "function" ? getPos() : undefined;
+      const node = typeof pos === "number" ? editor.state.doc.nodeAt(pos) : null;
+      if (!node || node.type.name !== "image" || !canEdit(editor)) return editorNotice(`${file.name} was uploaded but the image was not replaced: it is no longer editable here.`);
+      setAttrs(editor, getPos, { src: result.src });
+    }, () => { if (!editor.isDestroyed) editorNotice(`Couldn't upload ${file.name}. The image was not replaced.`); })
+      .finally(() => dom.removeAttribute("data-replacing"));
+  });
+  document.body.appendChild(input);
+  input.click();
+}
+
 const imageView: NodeViewRenderer = ({ node, editor, getPos, view }) => {
   const doc = (view.dom as HTMLElement).ownerDocument;
   let current: PMNode = node;
@@ -152,7 +267,12 @@ const imageView: NodeViewRenderer = ({ node, editor, getPos, view }) => {
   });
   const captionBtn = button(doc, "Caption", "caption");
   const openBtn = button(doc, "View full screen", "expand");
-  bar.append(...alignButtons, captionBtn, openBtn);
+  // Image actions (Notion's replace / download / copy). Download and Copy are for every reader;
+  // Replace needs edit rights AND an uploader (the same one a dropped image goes through).
+  const replaceBtn = button(doc, "Replace image", "replace");
+  const downloadBtn = button(doc, "Download image", "download");
+  const copyBtn = button(doc, "Copy image", "copy");
+  bar.append(...alignButtons, captionBtn, replaceBtn, openBtn, downloadBtn, copyBtn);
   const caption = h(doc, "figcaption", "prism-image-caption", { contenteditable: "false" });
   const input = h(doc, "input", "prism-image-caption-input", { type: "text", "aria-label": "Image caption", placeholder: "Write a caption…", maxlength: "500" });
   frame.append(img, left, right);
@@ -173,6 +293,8 @@ const imageView: NodeViewRenderer = ({ node, editor, getPos, view }) => {
     dom.toggleAttribute("data-editable", editable);
     for (const b of alignButtons) b.setAttribute("aria-pressed", String((a.align ?? "center") === b.dataset.align));
     captionBtn.hidden = !editable;
+    replaceBtn.hidden = !editable || !canUploadImages(editor);
+    downloadBtn.hidden = copyBtn.hidden = !src;
     for (const b of alignButtons) b.hidden = !editable;
     if (!editingCaption) {
       caption.replaceChildren();
@@ -204,6 +326,9 @@ const imageView: NodeViewRenderer = ({ node, editor, getPos, view }) => {
   captionBtn.addEventListener("click", editCaption);
   caption.addEventListener("click", editCaption);
   openBtn.addEventListener("click", () => openLightbox(img.currentSrc || img.src, img.alt, current.attrs.caption));
+  downloadBtn.addEventListener("click", () => { void downloadImage(doc, img, String(current.attrs.src ?? "")); });
+  copyBtn.addEventListener("click", () => { void copyImage(img).then((how) => editorNotice(how === "image" ? "Copied image" : how === "address" ? "Copied the image address — this image cannot be copied from here" : "Couldn’t copy — the browser refused clipboard access", how ? "status" : "alert")); });
+  replaceBtn.addEventListener("click", () => replaceImage(editor, getPos, dom));
   img.addEventListener("click", (e) => {
     if (!canEdit(editor) || e.detail >= 2) openLightbox(img.currentSrc || img.src, img.alt, current.attrs.caption);
     else selectThis(editor, getPos);
