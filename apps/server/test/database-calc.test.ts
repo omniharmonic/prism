@@ -196,8 +196,8 @@ test("engine: 20,000 rows, every function, grouped — within the budget", () =>
 
 test("config: a view's calculations are validated; an unknown function fails closed", () => {
   const cfg = (view: Record<string, unknown>) => ({ prism_database: { version: 1, source: { tags: ["deal"] }, views: [{ id: "t", name: "Table", type: "table", ...view }] } });
-  assert.deepEqual(readDatabaseConfig(cfg({ calculations: { amount: "sum", $createdAt: "earliest" } }))!.views[0]!.calculations, { amount: "sum", $createdAt: "earliest" });
-  for (const bad of [{ calculations: { amount: "total" } }, { calculations: ["sum"] }, { calculations: { "a b": "sum" } }, { calculations: { amount: 1 } }, { calculations: Object.fromEntries(Array.from({ length: 21 }, (_, i) => [`k${i}`, "sum"])) }]) {
+  assert.deepEqual(readDatabaseConfig(cfg({ calculations: { amount: "sum", $createdAt: "earliest" }, wrap: true }))!.views[0]!.calculations, { amount: "sum", $createdAt: "earliest" });
+  for (const bad of [{ calculations: { amount: "total" } }, { calculations: ["sum"] }, { calculations: { "a b": "sum" } }, { calculations: { amount: 1 } }, { calculations: Object.fromEntries(Array.from({ length: 21 }, (_, i) => [`k${i}`, "sum"])) }, { wrap: "yes" }]) {
     assert.throws(() => readDatabaseConfig(cfg(bad)), /does not understand/, JSON.stringify(bad));
   }
 });

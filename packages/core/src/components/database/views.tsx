@@ -259,7 +259,7 @@ function TableBlock({ ctx, rows, preset, label, group }: { ctx: ViewContext; row
   const someOn = !!sel && rows.some((r) => sel.ids.has(r.id));
   return (
     <div className="db-table-wrap">
-      <table className="db-table" style={{ width: total }} aria-label={label} data-multiselect={sel ? "" : undefined} onKeyDown={(e) => { if (!calcGridKey(e)) onGridKey(e); }}>
+      <table className="db-table" style={{ width: total }} aria-label={label} data-multiselect={sel ? "" : undefined} data-wrap={ctx.view.wrap ? "" : undefined} onKeyDown={(e) => { if (!calcGridKey(e)) onGridKey(e); }}>
         <colgroup>
           <col className="db-col-title" style={{ width: w("$title", 280) }} />
           {ctx.shown.map((p) => <col key={p.key} style={{ width: w(p.key, 180) }} />)}

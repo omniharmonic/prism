@@ -244,6 +244,11 @@ export function ViewSettings({ view, props, canDelete, onChange, onDelete, tabs,
           <input type="checkbox" checked={view.hideEmptyGroups === true} onChange={(e) => onChange({ hideEmptyGroups: e.target.checked || undefined })} /> Hide empty groups
         </label>
       )}
+      {view.type === "table" && (
+        <label className="db-radio">
+          <input type="checkbox" checked={view.wrap === true} onChange={(e) => onChange({ wrap: e.target.checked || undefined })} /> Wrap cells
+        </label>
+      )}
       {view.type === "gallery" && (
         <label className="db-field">
           <span>Card size</span>

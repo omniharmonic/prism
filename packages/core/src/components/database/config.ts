@@ -9,7 +9,7 @@
  *     source: { tags: ["task"] },            // rows = notes carrying ALL these tags
  *     views: [{ id, name, type: table|board|gallery|list|calendar,
  *               filter?, sort?, groupBy?, visible?, widths?, dateKey?, coverKey?,
- *               order?, calculations? }] }
+ *               order?, calculations?, wrap? }] }
  *
  * Rows are never copied: they ARE the tagged notes, and a row's cells are that
  * note's `metadata` (typed by the tag's vault schema). The note's body is the
@@ -52,6 +52,8 @@ export interface DatabaseView {
    * figure is computed over every row the viewer can see, never stored.
    */
   calculations?: Record<string, AggregateFn>;
+  /** Table: wrap cell text so a row grows instead of cutting it (default off). */
+  wrap?: boolean;
 }
 
 export const CARD_SIZES = ["small", "medium", "large"] as const;
@@ -107,6 +109,7 @@ function viewOk(v: unknown): v is DatabaseView {
   if (v.coverKey !== undefined && !keyOk(v.coverKey)) return false;
   if (v.hideEmptyGroups !== undefined && typeof v.hideEmptyGroups !== "boolean") return false;
   if (v.cardSize !== undefined && !(CARD_SIZES as readonly string[]).includes(v.cardSize as string)) return false;
+  if (v.wrap !== undefined && typeof v.wrap !== "boolean") return false;
   if (v.calculations !== undefined) {
     if (!rec(v.calculations)) return false;
     const entries = Object.entries(v.calculations);

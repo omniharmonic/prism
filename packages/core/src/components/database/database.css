@@ -422,6 +422,10 @@
 .db-calc-footer .db-calc-summary { margin-left: 0; }
 .db-col-head .db-calc-summary { flex-basis: 100%; margin-left: 0; }
 .db-col-head { flex-wrap: wrap; }
+/* Wrap cells (per table view; default off): one line per cell, or rows that grow. */
+.db-table:not([data-wrap]) .db-value-cell .db-text, .db-table:not([data-wrap]) .db-value-cell .db-url { display: block; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.db-table[data-wrap] .db-row-open { white-space: normal; overflow-wrap: anywhere; }
+.db-table[data-wrap] .db-title-cell { align-items: flex-start; }
 @media (max-width: 767px) {
   .db-calc-btn, .db-calc-static { min-height: 44px; }
   .db-calc-btn[data-empty] .db-calc-prompt { opacity: 1; }
