@@ -16,15 +16,18 @@
  *    native sign-in opens `/auth/device/authorize` in the SYSTEM browser and
  *    comes back through `prism://auth/callback` or a loopback redirect
  *    (docs/native-auth.md); an app that captured those would break PKCE;
- *  - a capability link (`/collab/<id>?t=…`) carries its own access: the app has
- *    no use for the token (it acts as the signed-in account), so the link would
- *    lose its access there — it stays in the browser;
+ *  - ANY link with a query stays in the browser: a capability link
+ *    (`/collab/<id>?t=…`) carries its own access, which the app (acting as the
+ *    signed-in account) would drop; and the app refuses every query, so a
+ *    `/page/<id>?utm=…` handed to it would dead-end;
+ *  - paths deeper than `/<route>/<id>` stay in the browser too;
  *  - `/p/*` (published wikis) are public web pages and are simply not listed.
  * The app re-validates every link it is handed against the same allowlist
  * (apps/client/src-tauri/src/links.rs) — this file is not a security boundary.
  *
  * `APPLE_APP_ID` = `<TeamID>.<bundle id>` (comma-separated for several apps).
- * Empty → 404: a deploy that sets it to "" advertises nothing.
+ * Empty → 404: a deploy that sets it to "" advertises nothing. Served only on
+ * the public host (`APP_ORIGIN`'s host name): any other Host answers 404.
  */
 import type { Hono } from "hono";
 import { config } from "../config";
@@ -47,12 +50,17 @@ export function parseAppIds(raw: string | undefined | null): string[] {
   return out;
 }
 
-type Component = { "/": string; "?"?: Record<string, string>; exclude?: true; comment?: string };
+type Component = { "/": string; "?"?: Record<string, string> | string; exclude?: true; comment?: string };
 
 export function appLinkComponents(): Component[] {
   const out: Component[] = APP_LINK_EXCLUDED.map((path) => ({ "/": path, exclude: true as const }));
-  // A share link with a capability token keeps its access only in the browser.
-  out.push({ "/": "/collab/*", "?": { t: "?*" }, exclude: true, comment: "capability links stay in the browser" });
+  // ANY URL with a query stays in the browser. The app refuses every query
+  // (a capability link `/collab/<id>?t=…` would lose its access there, and
+  // `/page/<id>?utm=…` would dead-end on "can't be opened"), so the OS must
+  // not hand such a link over in the first place. `?*` = one character or more.
+  out.push({ "/": "*", "?": "?*", exclude: true, comment: "links with a query stay in the browser" });
+  // Deeper paths than the app knows (`/page/a/b`, and a trailing slash): the browser's too.
+  for (const route of APP_LINK_ROUTES) out.push({ "/": `/${route}/*/*`, exclude: true });
   for (const route of APP_LINK_ROUTES) {
     if (route === "inbox" || route === "agent") out.push({ "/": `/${route}` });
     out.push({ "/": `/${route}/*` });
@@ -68,11 +76,25 @@ export function appSiteAssociation(appIds: readonly string[] = parseAppIds(confi
 
 export const APP_SITE_ASSOCIATION_PATHS = ["/.well-known/apple-app-site-association", "/apple-app-site-association"] as const;
 
+/**
+ * Is this request addressed to the public host (`APP_ORIGIN`)? The file claims
+ * links for ONE host; an alias the server also answers on (a tunnel hostname,
+ * `localhost`, an IP) must not serve it — Apple would associate that name too.
+ * Host NAME only: a proxy in front may drop or change the port.
+ */
+export function isAppHost(requestUrl: string, appOrigin: string = config.appOrigin): boolean {
+  try {
+    return new URL(requestUrl).hostname.toLowerCase() === new URL(appOrigin).hostname.toLowerCase();
+  } catch {
+    return false;
+  }
+}
+
 /** Mount both paths. MUST come before the SPA fallback (it would answer 200 + index.html). */
 export function mountAppSiteAssociation(app: Hono): void {
   for (const path of APP_SITE_ASSOCIATION_PATHS) {
     app.get(path, (c) => {
-      const body = appSiteAssociation();
+      const body = isAppHost(c.req.url) ? appSiteAssociation() : null;
       if (!body) return c.json({ error: "not_found" }, 404);
       return c.body(JSON.stringify(body), 200, {
         "Content-Type": "application/json",

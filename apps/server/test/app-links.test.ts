@@ -13,7 +13,7 @@ import { test, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { createApp } from "../src/app";
 import { config } from "../src/config";
-import { appLinkComponents, appSiteAssociation, parseAppIds, APP_LINK_ROUTES } from "../src/routes/app-links";
+import { appLinkComponents, appSiteAssociation, isAppHost, parseAppIds, APP_LINK_ROUTES } from "../src/routes/app-links";
 import { installFakeVault, resetDb, type FakeVault } from "./helpers";
 
 let fv: FakeVault;
@@ -39,8 +39,12 @@ function decide(url: string): "app" | "browser" {
   };
   for (const c of appLinkComponents()) {
     if (!glob(c["/"], u.pathname)) continue;
-    if (c["?"]) {
-      const all = Object.entries(c["?"]).every(([k, v]) => u.searchParams.has(k) && glob(v, u.searchParams.get(k)!));
+    const q = c["?"];
+    if (typeof q === "string") {
+      // String form: one pattern for the WHOLE query string.
+      if (!glob(q, u.search.replace(/^\?/, ""))) continue;
+    } else if (q) {
+      const all = Object.entries(q).every(([k, v]) => u.searchParams.has(k) && glob(v, u.searchParams.get(k)!));
       if (!all) continue;
     }
     return c.exclude ? "browser" : "app";
@@ -71,7 +75,7 @@ test("AASA: served at both locations as JSON, without auth, redirect or cookie, 
 });
 
 test("AASA: only content routes open in the app; sign-in, invite, API, MCP, published sites and capability links stay in the browser", () => {
-  for (const url of ["/page/abc123", "/page/abc/", "/collab/abc123", "/inbox", "/inbox/n_1", "/agent", "/agent/0b0e0c9e-2f0e-4c59-9a55-0a5b3d5f1a11"]) {
+  for (const url of ["/page/abc123", "/collab/abc123", "/inbox", "/inbox/n_1", "/agent", "/agent/0b0e0c9e-2f0e-4c59-9a55-0a5b3d5f1a11"]) {
     assert.equal(decide(url), "app", url);
   }
   for (const url of [
@@ -83,6 +87,11 @@ test("AASA: only content routes open in the app; sign-in, invite, API, MCP, publ
     "/p/site", "/p/site/notes/abc",
     // A share link with a capability token: the app would drop the token and with it the access.
     "/collab/abc123?t=cap.token", "/collab/a/b?t=x",
+    // ANY query keeps the link in the browser: the app refuses every query, so handing
+    // such a link over would dead-end on "can't be opened" with no way back to the web.
+    "/page/abc123?utm_source=mail", "/page/abc123?x", "/inbox?tab=all", "/inbox/n_1?ref=push", "/agent?new=1",
+    // Deeper than the app knows, and the trailing-slash form: the browser's too.
+    "/page/a/b", "/page/abc/", "/collab/a/b", "/inbox/a/b", "/agent/a/b/c",
     // Look-alikes of the allowed prefixes.
     "/pages/abc", "/pagex", "/inboxes", "/agents/x", "/collaborate/x",
   ]) {
@@ -109,6 +118,33 @@ test("AASA: no configured app id → 404 JSON at both locations, never the SPA s
     }
   }
   assert.equal(appSiteAssociation([]), null);
+});
+
+test("AASA: served only on the public host (APP_ORIGIN) — an alias, tunnel name or IP answers 404", async () => {
+  const origin = config.appOrigin;
+  (config as { appOrigin: string }).appOrigin = "https://prism.example.com";
+  try {
+    const app = createApp();
+    for (const path of PATHS) {
+      for (const ok of ["https://prism.example.com", "https://PRISM.example.com", "https://prism.example.com:443", "http://prism.example.com:8787"]) {
+        const r = await app.request(ok + path);
+        assert.equal(r.status, 200, ok + path);
+        assert.deepEqual(await r.json(), appSiteAssociation());
+      }
+      for (const alias of [
+        "http://localhost:8787", "http://127.0.0.1:8787", "https://tunnel-abc.trycloudflare.com", "https://prism.example.com.evil.example",
+        "https://evil.example", "https://sub.prism.example.com", "https://xprism.example.com", "http://[::1]:8787",
+      ]) {
+        const r = await app.request(alias + path);
+        assert.equal(r.status, 404, alias + path);
+        assert.deepEqual(await r.json(), { error: "not_found" });
+      }
+    }
+    assert.equal(isAppHost("not a url"), false);
+    assert.equal(isAppHost("https://prism.example.com/x", "also not a url"), false);
+  } finally {
+    (config as { appOrigin: string }).appOrigin = origin;
+  }
 });
 
 test("AASA: several app ids, ill-formed ones dropped, duplicates collapsed", () => {
