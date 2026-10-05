@@ -4,6 +4,7 @@ import { NodeViewWrapper, ReactNodeViewRenderer, type NodeViewProps } from "@tip
 import { useQuery } from "@tanstack/react-query";
 import { Bell, CalendarDays, FileText, Lock, Trash2, User } from "lucide-react";
 import { setMentionNodeView, type MentionAttrs } from "./MentionNode";
+import { openPageFromDocument } from "./openPage";
 import { formatChipDate, formatChipDateLong, isDateOnly, chipDate, ymd, localIso } from "./MentionDates";
 import { mentionNoteId } from "./MentionContext";
 import { isAccountMentionId } from "./MentionParse";
@@ -122,7 +123,8 @@ function PageChip({ id, chip }: { id: string | null; chip: React.RefObject<HTMLS
   const icon = state === "ready" && typeof data!.metadata?.icon === "string" ? (data!.metadata.icon as string) : null;
   const open = () => {
     if (state !== "ready") return;
-    openTab(data!.id, noteLinkTitle(data!), inferContentType(data!));
+    // No workspace around this editor (the share route): a new tab, with the share link kept for a link viewer.
+    openPageFromDocument(data!.id, () => openTab(data!.id, noteLinkTitle(data!), inferContentType(data!)));
   };
   return (
     <>

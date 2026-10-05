@@ -11,6 +11,7 @@ import { EDIT_LINK_EVENT, LINK_CARD_FOCUS_EVENT } from "../../lib/tiptap/EditorK
 import { linkTarget, openInNewTab, openLinkTarget, sharePageLink, type LinkTarget } from "../../lib/tiptap/prismLinks";
 import { structuralEditsAllowed } from "../../lib/tiptap/blockCommands";
 import { pageLink } from "../../lib/pages/usePageActions";
+import { inWorkspace } from "../../lib/tiptap/openPage";
 import { walkTab } from "../../lib/a11y/tabWalk";
 import "./LinkCard.css";
 
@@ -101,7 +102,7 @@ export function LinkCard({ editor }: { editor: Editor }) {
     // own address, in a new tab that cannot reach this window. Never a navigation of this one.
     // A share-link viewer gets the share route for the target with the same link (`sharePageLink`):
     // `/page/<id>` would ask them to sign in.
-    if (!client || !document.getElementById("workspace-document")) { openInNewTab(sharePageLink(id) ?? pageLink(id)); return; }
+    if (!client || !inWorkspace()) { openInNewTab(sharePageLink(id) ?? pageLink(id)); return; }
     // The reader's own read decides the title and type; a page they cannot see opens as "no access".
     void client.getNote(id).then((n) => open(noteLinkTitle(n), inferContentType(n)), () => open("Page", "document"));
   };

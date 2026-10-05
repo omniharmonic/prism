@@ -91,6 +91,31 @@ test("a share-link viewer's page link opens the share route for the target with 
   await member.close();
 });
 
+test("a page mention chip and a sub-page row on the share route open the target like a link does — the share route, with the same link", async ({ browser, baseURL }) => {
+  expect(await server.add({ id: "hub2", path: "vault/Shared/Plan/Hub two", content: '<p>See <span data-type="mention" data-kind="page" data-id="notes" data-mention-uid="m1">@page</span> for details.</p><div data-type="child-page" data-page-id="notes"></div>' })).toBe(true);
+  const token = await server.link({ resourceType: "page", resource: "plan", level: "view" });
+  const origin = new URL(baseURL!).origin;
+  const guest = await browser.newContext();
+  await guest.route((url) => url.pathname.startsWith("/collab/") || url.pathname.startsWith("/page/"), (route) => route.fulfill({ status: 200, contentType: "text/html", body: "<title>opened</title>" }));
+  const page = await guest.newPage();
+  await connectLink(page, server);
+  await page.goto(`/e2e-fixtures/collab-route.html?target=hub2&token=${encodeURIComponent(token)}`);
+  const chip = page.getByRole("link", { name: "Page: Notes", exact: true });
+  const row = page.getByRole("button", { name: "Open sub-page: Notes", exact: true });
+  await expect(chip).toBeVisible(); // resolved through the link viewer's own read
+  await expect(row).toBeVisible();
+  for (const control of [chip, row]) {
+    const [tab] = await Promise.all([guest.waitForEvent("page", { timeout: 8000 }), control.click()]);
+    await tab.waitForURL((url) => url.origin === origin);
+    const url = new URL(tab.url());
+    await tab.close();
+    expect(url.pathname).toBe("/collab/notes");
+    expect(url.searchParams.get("t")).toBe(token);
+  }
+  expect(new URL(page.url()).pathname).toBe("/collab/hub2"); // this window never moved
+  await guest.close();
+});
+
 async function opened2(page: Page, context: import("@playwright/test").BrowserContext, back: string, name: string, origin: string): Promise<URL> {
   await page.goto(back);
   await expect(editor(page)).toContainText(name);
