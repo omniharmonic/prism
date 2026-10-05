@@ -5,11 +5,25 @@ import WebSocket from "ws";
 const SHOTS = process.env.PRISM_EDITOR_SHOTS;
 const html = (page: Page) => page.evaluate(() => (document.querySelector(".tiptap") as any).editor.getHTML() as string);
 
-/** Select a block's text and wait for the editor state (selectionchange is async). */
+const selected = (page: Page) => page.evaluate(() => { const e = (document.querySelector(".tiptap") as any).editor; const { from, to } = e.state.selection; return e.state.doc.textBetween(from, to) as string; });
+
+/**
+ * Select a block's text and wait until the EDITOR holds that selection.
+ *
+ * `selectText()` writes the DOM selection from outside, which no person can do. ProseMirror
+ * re-syncs the DOM to its own selection ~20 ms after it gains focus, and TipTap refocuses the
+ * editor one frame after a toolbar command: a scripted selection made in that moment is undone
+ * before the editor reads it (the editor then keeps the caret, or the previous selection, for
+ * good — this was the intermittent failure of this file). So the selection is made again until
+ * the editor's state has it; what is asserted afterwards is unchanged.
+ */
 async function select(page: Page, text: string) {
-  await page.getByText(text, { exact: true }).click();
-  await page.getByText(text, { exact: true }).selectText();
-  await expect.poll(() => page.evaluate(() => { const e = (document.querySelector(".tiptap") as any).editor; const { from, to } = e.state.selection; return e.state.doc.textBetween(from, to); })).toBe(text);
+  const target = page.getByText(text, { exact: true });
+  await expect(async () => {
+    await target.click();
+    await target.selectText();
+    await expect.poll(() => selected(page), { timeout: 1000 }).toBe(text);
+  }).toPass({ timeout: 10_000 });
   const bubble = page.locator(".document-selection-actions:visible, .cd-bubble:visible").first();
   await expect(bubble).toBeVisible();
   return bubble;
