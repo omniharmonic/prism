@@ -12,7 +12,7 @@ access**. Everything it can see or change goes through the server gateway, so
 |---|---|---|
 | Trust model | Holds the vault JWT, talks to `localhost:1940` | Holds a per-device `pd_…` token, talks to one Prism Server |
 | Status | **Legacy since WP4.3** (rollback path only, `apps/desktop/README.md`) | The client for every Mac, the Mac mini included |
-| Backend | ~100 Rust commands, sync services, `claude`/`gog`/`gh` subprocesses | 8 commands for the main window (`get_token`, `sign_in`, `sign_out`, `get_server_origin`, `set_server_origin`, `open_external`, `notify`, `export_note`) + `quick_capture` for the capture window |
+| Backend | ~100 Rust commands, sync services, `claude`/`gog`/`gh` subprocesses | 9 commands for the main window (`get_token`, `sign_in`, `sign_out`, `get_server_origin`, `set_server_origin`, `open_external`, `notify`, `export_note`, `save_export`) + `quick_capture` for the capture window |
 | UI | Desktop build of `@prism/core` | `apps/web` built with `--mode native` |
 | Identity | `Prism`, `com.benjaminlife.prism` | **`Prism Client`**, `com.benjaminlife.prism.client` |
 | Agent / ingest | Local | Server-side (`/api/agent/*`, server workers) |
@@ -166,6 +166,7 @@ surface.
 | Quick capture | `quick_capture {text}` | `quick-capture` window only, `capabilities/quick-capture.json` (grants `allow-quick-capture` and nothing else) | POSTs from Rust. The window never gets `get_token`. |
 | Notifications | `notify {title, body, sessionId?}` | `main`, `capabilities/default.json` | Shown only while the main window is NOT focused. |
 | Export | `export_note {content, suggestedName, format}` | `main`, `capabilities/default.json` | Destination comes from the native save panel only. |
+| Export archive | `save_export {jobId, suggestedName, cancel?}` | `main`, `capabilities/default.json` | Rust downloads from the configured server (no redirects) and writes only where the save panel says. |
 | Tray / global shortcut | none (Rust only) | none | No page-callable surface at all. |
 | Drag-drop | none (OS event, Rust only) | none | Content reaches the page as a DOM event. |
 
@@ -257,9 +258,11 @@ Three pieces, one allowlist — **keep them in step**:
 **Routes that open in the app:** `/page/<id>`, `/collab/<id>` (opens the same page in the
 workspace), `/inbox[/<notification id>]`, `/agent[/<session uuid>]`. Nothing else.
 **Never captured:** `/auth/*`, `/accept-invite`, `/api/*`, `/acl/*`, `/mcp`, `/health`,
-`/.well-known/*`, `/p/*` (published sites are public web pages) and **any `/collab/<id>?t=…`**
-capability link (the app acts as the signed-in account and would drop the token, and with it
-the access the link carries — those stay in the browser). The sign-in flow opens
+`/.well-known/*`, `/p/*` (published sites are public web pages), **every URL with a query**
+(`{"/": "*", "?": "?*", "exclude": true}` — a `/collab/<id>?t=…` capability link would lose
+its access in the app, and since the app refuses every query a `/page/<id>?utm=…` handed to
+it would dead-end with no way back to the browser) and paths deeper than `/<route>/<id>`
+(`/page/*/*` …, which also keeps the trailing-slash form in the browser). The sign-in flow opens
 `/auth/device/authorize` in the SYSTEM browser and returns through a loopback redirect
 (macOS) or `prism://auth/callback` (iOS, WP5): the association file excludes `/auth/*`
 explicitly, and `links.rs` refuses everything under `prism://auth` (silently, and without
@@ -269,7 +272,11 @@ logging the URL — it can carry a code).
 unset = `83Y42N33H8.com.benjaminlife.prism.client`; set to an empty string → both paths
 answer 404 (the host advertises no app). The file is public JSON (`application/json`, no
 redirect, no auth, `Cache-Control: public, max-age=3600`), `applinks` only — no
-`webcredentials`. Exclusions come first (Apple takes the first matching component). Both
+`webcredentials`. Exclusions come first (Apple takes the first matching component). The file
+is served only when the request's host NAME equals `APP_ORIGIN`'s (`isAppHost`): an alias the
+server also answers on (a tunnel hostname, `localhost`, an IP) gets 404, so Apple can never
+associate the app with it. **After a deploy, check the public host with `curl`** — a proxy
+that rewrites `Host` would turn the file into a 404. Both
 paths are in the PWA's `navigateFallbackDenylist` (`npm run check:sw -w @prism/web`).
 Apple fetches the file through its CDN and caches it (up to ~a day; a new install re-fetches),
 so it must be reachable at `https://<host>/.well-known/apple-app-site-association` on the
@@ -289,17 +296,27 @@ dependency, no new IPC command. `links::parse(raw, origin)`:
 The result is a canonical PATH rebuilt from the validated parts (`/page/<id>`,
 `/inbox[/<id>]`, `/agent[/<id>]`) — the original URL is never passed on and **nothing ever
 navigates**. Delivery is `window.__PRISM_SHELL__.openLink(path)` (host.js): the hook keeps
-the path and fires a payload-free `prism:open-link` event; the signed-in app takes it with
+the path and fires a payload-free `prism:open-link` event; the app takes it with
 `takePendingLink()` and opens a tab (`openTab`), so access is the account's own — a page it
-cannot view shows "Document unavailable". A refused link shows the shell toast "This link
-can’t be opened in Prism." (not for `prism://auth/…`).
+cannot view shows "Document unavailable".
 
-**Signed out / cold start.** The shell keeps ONE pending link (`LinkState`, newest wins) and
-hands it over only when the main window's page has finished loading AND a device token
-exists; it re-checks on every page load, so a link that arrived at the sign-in screen opens
-after the sign-in reload. Undelivered after 10 minutes → dropped. A token the server then
-rejects (401) lands on the sign-in screen with the link already handed over: it is lost
-(dropped safely), not replayed.
+**Validate first, then act** (`links::classify` / `accept`, the pure half of `on_opened`):
+only a VALID link brings the window to the front. A refused `https` link (one the OS routed
+here as a universal link) shows the shell toast "This link can’t be opened in Prism." in the
+window as it is; an unknown `prism://…` — which any web page can fire — and a sign-in
+redirect (`prism://auth/…`, any case, also the host-less `prism:auth/…` spelling) have no
+visible effect at all. In a batch, a valid link is kept and an auth redirect beside it is
+skipped; nothing of a refused URL is stored or logged (the decision type carries no URL).
+
+**Signed out / stale token / cold start.** The shell keeps ONE pending link (`LinkState`,
+newest wins) and hands it over when the main window's page has finished loading AND a device
+token exists; undelivered after 10 minutes → dropped. The shell cannot know whether the
+server still accepts that token, so the PAGE covers the rest (`native/appLinks.ts`):
+`captureAppLinks()` runs before the sign-in gate and takes the link at once; while nobody is
+signed in it keeps the validated PATH (never a URL, never a token) in `sessionStorage`
+(`prism:pending-link`, ≤ 10 minutes) across the sign-in reload, and `initAppLinks()` opens it
+once the signed-in workspace is up, then removes it. (host.js itself may not use web
+storage; the page half may.)
 
 **The `prism://` scheme** is registered by `src-tauri/Info.plist` (merged by the Tauri
 bundler; `verify-client.mjs` pins it to exactly that one scheme).
@@ -369,46 +386,63 @@ reaches the WKWebView as a keydown and the same handler takes it — NOT verifie
 A discoverable entry in the iPad ⌘-hold overlay needs a `UIKeyCommand` in the Swift plugin
 (`plugins/prism-ios` on `feat/native-ios`) that evals the same event.
 
-### Saving an export archive (design — NOT built)
+### Saving an export archive (`save_export`; macOS/desktop built, iOS designed)
 
-**Today, in the Prism Client, a multi-page export finishes and nothing is saved.**
-`ExportDialog` hands the ZIP to `saveBlob()` (an `<a download href="blob:…">` click). wry
-attaches a WKDownloadDelegate only when the window has a download handler; this shell sets
-none, so WKWebView's `shouldPerformDownload` navigation is answered `Cancel`
-(`wry/src/wkwebview/navigation.rs`) — on macOS and on iOS alike. (A single page without
-sub-pages or files is unaffected: it goes through `export_note`, text only.) Adding a
-download handler is the wrong fix: it would let page script start downloads of arbitrary
-URLs to a path the page influences.
+`ExportDialog` used to hand the ZIP to `saveBlob()` (an `<a download href="blob:…">` click).
+wry attaches a WKDownloadDelegate only when the window has a download handler; this shell
+sets none, so WKWebView's `shouldPerformDownload` navigation is answered `Cancel`
+(`wry/src/wkwebview/navigation.rs`): a multi-page export finished and nothing was saved.
+Adding a download handler would be the wrong fix — it would let page script start downloads
+of arbitrary URLs — and `verify-client.mjs` fails if `window.rs` gains one.
 
-Proposed, same shape as `export_note` (the page never supplies a path or a URL):
+**IPC** `save_export { jobId, suggestedName, cancel? }` → the saved file's NAME, or null
+(the person cancelled / the save was stopped). The ninth main-window command
+(`native_cmds.rs`, `build.rs`, `capabilities/default.json`; `verify-client.mjs` §9 pins the
+whole list). Module `src-tauri/src/export_archive.rs`:
 
-- **IPC** `save_export { jobId, suggestedName }` → `Option<String>` (the saved file's name),
-  main window only (`require_label`), declared in `build.rs`, granted in
-  `capabilities/default.json` (the main window then has 9 commands — update
-  `verify-client.mjs`, this doc's table and CLAUDE.md).
-- **Rust** builds the URL itself: `origin.join("/api/export/<jobId>/download")` with `jobId`
-  matching the server's id shape exactly (reject anything else before any I/O); `GET` with
-  `Authorization: Bearer <device token>` from `AppState` (the token never passes through
-  this call's arguments), **redirects disabled** (`reqwest::redirect::Policy::none()`), a
-  connect + idle timeout, `Content-Type` must be `application/zip`, and a hard size cap
-  (the server's `EXPORT_MAX_BYTES`, 2 GB) enforced on the declared length AND while
-  streaming. Bytes are streamed to disk in chunks — never buffered, never base64 over IPC.
-- **macOS:** native save panel first (`rfd`, name from `export::sanitize_stem` + `.zip`);
-  stream to `<chosen>.part` in the same folder, `fsync`, rename; delete the part on any
-  failure or cancel.
-- **iOS:** stream to `<app tmp>/exports/<random>/<sanitised name>.zip` (0600; the folder is
-  emptied at launch and after the sheet closes), then present `UIActivityViewController`
-  (Save to Files / AirDrop) from the Swift plugin, anchored for iPad. The path never
-  reaches JS.
-- **Page:** `ExportDialog` calls `__PRISM_SHELL__.saveExport(jobId, fileName)` when the
-  shell offers it (instead of `transferApi.exportDownload` + `saveBlob`), shows
-  "Saved <name>" / the error, and keeps the job until the save finished. The active vault
-  needs no header: an export job is bound to the account and its id.
-- **Tests:** Rust against a loopback fake (id shapes, a 302 is refused, wrong content type,
-  declared and streamed overflow, cancel leaves no `.part`, the bearer goes only to the
-  configured origin); a fixture spec for the dialog with a stub shell.
-- Size: M for macOS, plus the Swift half once the iOS shell is on main. Until then the
-  honest state is: **multi-page export does not save in the native shell; use the web app.**
+- **The page supplies a job id and a suggested name — no URL, no path, no token**
+  (unit test on the command's signature). The id must be the server's shape exactly (22
+  base64url characters, `transfer/jobs.ts`); anything else is refused before any I/O.
+- **Rust builds the only URL it requests:** `<configured origin>/api/export/<id>/download`,
+  `Authorization: Bearer <device token>` from the keychain cache. **Redirects are never
+  followed** (`redirect::Policy::none()`; a 3xx is "the server tried to send the download
+  somewhere else"), so neither the bearer nor the bytes can be steered to another host.
+- The answer must be `200` + `Content-Type: application/zip`; the declared length and the
+  streamed total are capped at `MAX_ARCHIVE_BYTES` (0xF0000000, the server's own hard limit);
+  more bytes than declared, or fewer, is a failure. 15 s to connect, 60 s without a byte = stalled.
+- **Destination = what the native save panel returned** (`rfd`, name pre-filled from
+  `zip_name`: `export::sanitize_stem` + `.zip`), `.zip` added only when no extension was
+  typed; a folder is refused. Bytes stream (never buffered, never over IPC) into a fresh
+  hidden sibling `.<name>.<random>.part` (`create_new`), which is fsynced and RENAMED over
+  the target only when the whole body arrived; on any failure or stop it is removed and an
+  existing file at the target is untouched.
+- **Progress + stop:** the shell evals `prism:export-save-progress {jobId, received, total}`
+  (numbers + the id, ≤ 5/s); `save_export {jobId, cancel: true}` stops the running save of
+  THAT job (`SaveState`: one save at a time; another job's id cancels nothing).
+- **Page** (`@prism/core` `lib/import-export/client.ts` `nativeExportSaver()`, used by
+  `ExportDialog` only when `__PRISM_SHELL__.saveExport` exists — the browser path is
+  unchanged): after the job is done it calls `saveExport(jobId, fileName)` — it never fetches
+  the archive — shows "Choose where to save…" / "Saving x of y…" with Stop, then "Export
+  saved … in <chosen name>", or "Export ready — Not saved yet" + **Save…** when the panel was
+  cancelled, or the shell's reason + Save… when it failed. Closing the dialog stops the save.
+  The export job lives 15 minutes on the server; a later Save… answers "This export has expired".
+- **Tests:** `cargo test --lib export_archive::` (a loopback fake server: bearer + exact
+  path, a 30x is refused and its target never contacted, wrong type, declared and streamed
+  overflow, a short body, cancel before and mid-stream leaves no `.part` and keeps the old
+  file, id shapes, names/paths); `apps/web/e2e-fixtures/native-export.spec.ts` (the real
+  `host.js` over a scripted IPC: what crosses the bridge, no page download, progress, stop,
+  panel cancel, failure, retry).
+- **Not verified without a built app:** the save panel itself (`rfd` on the main thread) and
+  a real multi-GB stream. Check on a Mac: export a page with sub-pages → pick a folder →
+  the ZIP opens; Stop mid-save leaves no `.part`; with the server stopped mid-download the
+  dialog says the download was interrupted.
+
+**iOS (design, not built — needs the Swift plugin on `feat/native-ios`).** Same command and
+the same `download()`; instead of a save panel, stream to `<app tmp>/exports/<random>/<sanitised
+name>.zip` (0600; the folder is emptied at launch and when the sheet closes), then present
+`UIActivityViewController` (Save to Files / AirDrop) from the Swift plugin, anchored for
+iPad. The path never reaches JS. Until then `save_export` answers "isn't available on this
+platform yet" on iOS and the dialog shows that reason.
 
 ## Security surface
 
