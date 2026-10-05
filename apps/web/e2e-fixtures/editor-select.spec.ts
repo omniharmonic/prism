@@ -1,5 +1,5 @@
 import { type Page } from "@playwright/test";
-import { test, expect } from "./browser-compat";
+import { test, expect, grantClipboard } from "./browser-compat";
 
 /**
  * NP-ED-26 — block selection with the mouse, plain editor and live (Yjs) editor.
@@ -15,6 +15,18 @@ const column = (page: Page, i = 0) => api<Box>(page, "column", i);
 const selectedDom = (page: Page, i = 0) => page.locator(".tiptap").nth(i).locator("> .prism-block-selected, > .ProseMirror-selectednode");
 const live = (page: Page) => page.locator("[data-block-selection-live]");
 const mid = (b: Box) => b.y + b.h / 2;
+const htmlOf = (page: Page, i = 0) => api<string>(page, "html", i);
+/** The HTML of each top-level block, in order. */
+const blockHtml = async (page: Page, i = 0) => page.evaluate((i) => Array.from(document.querySelectorAll(".tiptap")[i]!.children).filter((el) => !el.classList.contains("ProseMirror-trailingBreak")).map((el) => el.outerHTML), i);
+const toolbar = (page: Page, mode: string) => page.locator(mode === "plain" ? ".document-selection-actions" : ".cd-bubble").first();
+async function pasteText(page: Page, text: string, i = 0) {
+  await page.evaluate(({ text, i }) => {
+    const dt = new DataTransfer();
+    dt.setData("text/plain", text);
+    document.querySelectorAll(".tiptap")[i]!.dispatchEvent(new ClipboardEvent("paste", { clipboardData: dt, bubbles: true, cancelable: true }));
+  }, { text, i });
+}
+const ALL = ["One", "Two", "Three", "Four", "Five", "Six"];
 
 async function open(page: Page, query = "") {
   await page.setViewportSize({ width: 1440, height: 900 });
@@ -280,6 +292,12 @@ test.describe("mouse block selection — read-only and shared views", () => {
     const b5 = await rect(page, 5);
     await modClick(page, b5.x + 80, mid(b5), ["ControlOrMeta", "Shift"]);
     await expect.poll(() => blocks(page)).toEqual([1, 2, 3, 5]);
+    // A cut that reaches the editor itself with a set selected: copied, nothing removed (the plugin's own guard).
+    const inside = await copyFrom(page, ".tiptap", "cut");
+    expect(inside.handled).toBe(true);
+    expect(inside.text).toContain("Six paragraph");
+    expect(await texts(page)).toEqual(ALL);
+    expect(await blocks(page)).toEqual([1, 2, 3, 5]);
     await page.keyboard.press("Escape");
     await expect.poll(() => blocks(page)).toEqual([]);
     expect(await texts(page)).toEqual(["One", "Two", "Three", "Four", "Five", "Six"]);
@@ -302,13 +320,72 @@ test.describe("mouse block selection — read-only and shared views", () => {
     expect(copied.text).not.toContain("Four paragraph");
   });
 
-  test("while Suggesting: blocks can be selected, structural keys do not remove them", async ({ page }) => {
+  test("while Suggesting: Backspace, Delete, typing over and cut on a set become suggestions on EVERY selected block — nothing is removed", async ({ page }) => {
     await open(page, "live&suggesting");
-    await marquee(page, "live", 1, 2);
-    await expect.poll(() => blocks(page)).toEqual([1, 2]);
+    const struck = async (i: number) => (await blockHtml(page, i)).map((h) => h.includes('data-suggestion="delete"'));
+    const select = async (a: number, b: number) => {
+      await marquee(page, "live", a, a);
+      const r = await rect(page, b);
+      await modClick(page, r.x + 80, mid(r), ["ControlOrMeta", "Shift"]);
+      await expect.poll(() => blocks(page)).toEqual([a, b]);
+    };
+    // ⌘D stays a no-op.
+    await select(0, 2);
     await page.keyboard.press("ControlOrMeta+d");
-    expect(await texts(page)).toEqual(["One", "Two", "Three", "Four", "Five", "Six"]);
+    expect(await texts(page)).toEqual(ALL);
+    // Backspace: both blocks struck (not only the run the browser has selected), on the peer too.
+    await page.keyboard.press("Backspace");
+    await expect.poll(() => struck(1)).toEqual([true, false, true, false, false, false]);
+    expect(await texts(page, 1)).toEqual(ALL);
+    // Delete.
+    await select(1, 3);
+    await page.keyboard.press("Delete");
+    await expect.poll(() => struck(1)).toEqual([true, true, true, true, false, false]);
+    // Cut: copied, and struck — never removed.
+    await select(4, 5);
+    const cut = await copyFrom(page, ".tiptap", "cut");
+    expect(cut.handled).toBe(true);
+    expect(cut.text).toContain("Five paragraph");
+    await expect.poll(() => struck(1)).toEqual([true, true, true, true, true, true]);
+    expect(await texts(page, 1)).toEqual(ALL);
+    expect((await api<string[]>(page, "texts", 1)).join("|")).toBe(ALL.map((w) => `${w} paragraph with some words in it.`).join("|"));
+  });
+
+  test("while Suggesting: typing over selected blocks strikes them all and suggests the typed text", async ({ page }) => {
+    await open(page, "live&suggesting");
+    await marquee(page, "live", 1, 1);
+    const r = await rect(page, 3);
+    await modClick(page, r.x + 80, mid(r), ["ControlOrMeta", "Shift"]);
+    await expect.poll(() => blocks(page)).toEqual([1, 3]);
+    await page.keyboard.type("Q");
+    await expect.poll(async () => (await blockHtml(page, 1)).map((h) => h.includes('data-suggestion="delete"'))).toEqual([false, true, false, true, false, false]);
+    const two = (await blockHtml(page, 1))[1]!;
+    expect(two).toMatch(/data-suggestion="insert"[^>]*>Q</);
+    expect(two).toContain("Two paragraph with some words in it.");
     expect(await api<string[]>(page, "texts", 1)).toHaveLength(6);
+    // A contiguous block selection, too (the browser's own replacement would have removed the text).
+    await marquee(page, "live", 4, 5);
+    await expect.poll(() => blocks(page)).toEqual([4, 5]);
+    await page.keyboard.type("Z");
+    await expect.poll(async () => (await blockHtml(page, 1)).slice(4).map((h) => h.includes('data-suggestion="delete"'))).toEqual([true, true]);
+    expect((await api<string[]>(page, "texts", 1))[4]).toContain("Five paragraph with some words in it.");
+  });
+
+  test("comment-only: a set can be selected and copied; no key, cut or paste changes the page", async ({ page }) => {
+    await open(page, "live&commentonly");
+    await marquee(page, "live", 1, 1);
+    const r = await rect(page, 3);
+    await modClick(page, r.x + 80, mid(r), ["ControlOrMeta", "Shift"]);
+    await expect.poll(() => blocks(page)).toEqual([1, 3]);
+    await page.locator(".tiptap").first().focus();
+    for (const key of ["Backspace", "Delete", "ControlOrMeta+d", "z"]) await page.keyboard.press(key);
+    const cut = await copyFrom(page, ".tiptap", "cut");
+    expect(cut.text).toContain("Two paragraph");
+    await pasteText(page, "Pasted");
+    await page.waitForTimeout(150);
+    expect(await texts(page, 0)).toEqual(ALL);
+    expect(await texts(page, 1)).toEqual(ALL);
+    expect(await htmlOf(page, 1)).not.toContain("data-suggestion");
   });
 
   test("a collaborator's edits keep the selection on the same blocks; a block they delete drops out", async ({ page }) => {
@@ -367,5 +444,235 @@ test.describe("mouse block selection — read-only and shared views", () => {
     expect(await blocks(page)).toEqual([]);
     await expect(page.locator(".prism-block-marquee")).toHaveCount(0);
     await context.close();
+  });
+});
+
+test.describe("mouse block selection — review round", () => {
+  test("S1: copy and cut typed in a field inside a block are that field's — the selected blocks stay", async ({ page }) => {
+    await open(page);
+    await marquee(page, "plain", 0, 0);
+    const b2 = await rect(page, 2);
+    await modClick(page, b2.x + 80, mid(b2), ["ControlOrMeta", "Shift"]);
+    await expect.poll(() => blocks(page)).toEqual([0, 2]);
+    await api(page, "field", 0, 4);
+    const cell = page.getByLabel("Cell");
+    await cell.fill("cell text");
+    await cell.evaluate((el: HTMLInputElement) => el.select());
+    expect(await blocks(page)).toEqual([0, 2]);
+    for (const type of ["copy", "cut"] as const) {
+      const out = await page.evaluate((type) => {
+        const dt = new DataTransfer();
+        const event = new ClipboardEvent(type, { clipboardData: dt, bubbles: true, cancelable: true });
+        document.querySelector('input[aria-label="Cell"]')!.dispatchEvent(event);
+        return { handled: event.defaultPrevented, text: dt.getData("text/plain") };
+      }, type);
+      expect(out).toEqual({ handled: false, text: "" });
+    }
+    expect(await texts(page)).toEqual(ALL);
+    expect(await blocks(page)).toEqual([0, 2]);
+  });
+
+  test("S2: a merged remote update never moves the selection onto a block nobody selected", async ({ page }) => {
+    await open(page, "live");
+    const remote = (fn: string) => page.evaluate(`(() => { const editor = window.prismSelect.editor(1); (${fn})(editor); })()`);
+    const start = `(e, n) => { let pos = 0; for (let k = 0; k < n; k++) pos += e.state.doc.child(k).nodeSize; return pos; }`;
+    // The peer deletes "Two" and splits "Three"; both arrive as ONE update (a reconnect).
+    await marquee(page, "live", 1, 1);
+    await expect.poll(() => blocks(page)).toEqual([1]);
+    await api(page, "hold");
+    await remote(`(e) => { const at = (${start})(e, 1); e.commands.deleteRange({ from: at, to: at + e.state.doc.child(1).nodeSize }); }`);
+    await remote(`(e) => { const at = (${start})(e, 1); e.chain().setTextSelection(at + 6).splitBlock().run(); }`);
+    await api(page, "release");
+    await expect.poll(() => texts(page)).toEqual(["One", "Three", "paragraph", "Four", "Five", "Six"]);
+    await expect.poll(() => blocks(page)).toEqual([]);
+    await expect(selectedDom(page)).toHaveCount(0);
+    // Replaced in place: the peer deletes the selected block and puts another where it was.
+    await marquee(page, "live", 3, 3);
+    await expect.poll(() => blocks(page)).toEqual([3]);
+    await api(page, "hold");
+    await remote(`(e) => { const at = (${start})(e, 3); e.commands.deleteRange({ from: at, to: at + e.state.doc.child(3).nodeSize }); e.commands.insertContentAt(at, "<p>Peer block</p>"); }`);
+    await api(page, "release");
+    await expect.poll(() => texts(page)).toEqual(["One", "Three", "paragraph", "Peer", "Five", "Six"]);
+    await expect.poll(() => blocks(page)).toEqual([]);
+    await expect(selectedDom(page)).toHaveCount(0);
+    // A block the peer only EDITED (and split) stays selected — itself, not its new half.
+    await marquee(page, "live", 4, 5);
+    await expect.poll(() => blocks(page)).toEqual([4, 5]);
+    await api(page, "hold");
+    await remote(`(e) => { const at = (${start})(e, 4); e.chain().setTextSelection(at + 5).splitBlock().run(); }`);
+    await api(page, "release");
+    await expect.poll(() => texts(page)).toEqual(["One", "Three", "paragraph", "Peer", "Five", "paragraph", "Six"]);
+    await expect.poll(() => blocks(page)).toEqual([4, 6]);
+  });
+
+  test("S3: resizing a table column is never a block selection", async ({ page }) => {
+    const content = "<p>One paragraph.</p><table><tbody><tr><th>Name</th><th>Role</th></tr><tr><td>Ada</td><td>Lead</td></tr></tbody></table><p>After the table.</p><p>Six paragraph</p>";
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.goto(`/e2e-fixtures/editor-select.html?content=${encodeURIComponent(content)}`);
+    const body = page.locator(".tiptap").first();
+    await expect(body).toContainText("After the table.");
+    const cell = (await body.locator("th").first().boundingBox())!;
+    const after = (await body.getByText("After the table.").boundingBox())!;
+    await page.mouse.move(cell.x + cell.width - 1, cell.y + cell.height / 2);
+    await page.mouse.move(cell.x + cell.width, cell.y + cell.height / 2);
+    await expect(body).toHaveClass(/resize-cursor/);
+    await page.mouse.down();
+    await page.mouse.move(cell.x + cell.width + 30, cell.y + cell.height / 2, { steps: 4 });
+    await page.mouse.move(cell.x + cell.width + 40, after.y + after.height / 2, { steps: 8 });
+    await page.waitForTimeout(120);
+    expect(await blocks(page)).toEqual([]);
+    await page.mouse.up();
+    await page.waitForTimeout(150);
+    expect(await blocks(page)).toEqual([]);
+    await expect(selectedDom(page)).toHaveCount(0);
+  });
+
+  test("S4: a click in the margin commits a title being edited", async ({ page }) => {
+    await open(page);
+    await page.getByRole("button", { name: /^Rename / }).click();
+    const title = page.getByLabel("Document title");
+    await expect(title).toBeFocused();
+    await title.fill("Selection renamed");
+    const x = await gutterX(page, "plain");
+    await page.mouse.click(x, mid(await rect(page, 3)));
+    await expect(title).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Rename Selection renamed" })).toBeVisible();
+  });
+
+  for (const query of ["readonly", "live&suggesting", "live&commentonly"]) {
+    test(`S8a: a text drag across blocks stays a text selection for somebody who cannot restructure the page (${query})`, async ({ page }) => {
+      await open(page, query);
+      const b1 = await rect(page, 1);
+      const b3 = await rect(page, 3);
+      await page.mouse.move(b1.x + 40, mid(b1));
+      await page.mouse.down();
+      await page.mouse.move(b1.x + 160, mid(b1), { steps: 5 });
+      await page.mouse.move(b3.x + 120, mid(b3), { steps: 12 });
+      await page.waitForTimeout(150);
+      expect(await blocks(page)).toEqual([]);
+      await page.mouse.up();
+      await page.waitForTimeout(150);
+      expect(await blocks(page)).toEqual([]);
+      await expect(selectedDom(page)).toHaveCount(0);
+      // The browser's own selection: part of the first block, all of the middle one, part of the last.
+      const selected = await page.evaluate(() => String(getSelection()));
+      expect(selected).toContain("Three paragraph with some words in it.");
+      expect(selected).not.toContain("Two paragraph");
+      expect(selected).not.toContain("Four paragraph with some words in it.");
+    });
+  }
+
+  for (const mode of ["plain", "live"]) {
+    const q = mode === "live" ? "live" : "";
+    test(`S8b: the selection toolbar acts on mouse-selected blocks — format, Turn into, Copy, Delete (${mode})`, async ({ page, context, browserName }) => {
+      await grantClipboard(context, browserName);
+      await open(page, q);
+      const bar = toolbar(page, mode);
+      // A keyboard-made block selection keeps the toolbar away, as before.
+      const b0 = await rect(page, 0);
+      await page.mouse.click(b0.x + 40, mid(b0));
+      await page.keyboard.press("Escape");
+      await expect.poll(() => blocks(page)).toEqual([0]);
+      await page.waitForTimeout(400);
+      await expect(bar).toBeHidden();
+      await page.keyboard.press("Escape");
+      // Marquee → toolbar. Bold reaches ALL text of both blocks and they stay selected.
+      await marquee(page, mode, 1, 2);
+      await expect.poll(() => blocks(page)).toEqual([1, 2]);
+      await expect(bar).toBeVisible();
+      await bar.getByRole("button", { name: "Bold selection" }).click();
+      const strong = async (i: number) => (await blockHtml(page, i)).map((h) => /<strong>[^<]*paragraph with some words in it\.<\/strong>/.test(h));
+      await expect.poll(() => strong(0)).toEqual([false, true, true, false, false, false]);
+      if (mode === "live") await expect.poll(() => strong(1)).toEqual([false, true, true, false, false, false]);
+      expect(await blocks(page)).toEqual([1, 2]);
+      await expect(bar.getByRole("button", { name: "Bold selection" })).toHaveAttribute("aria-pressed", "true");
+      // A set: the added block is formatted too.
+      const b4 = await rect(page, 4);
+      await modClick(page, b4.x + 80, mid(b4), ["ControlOrMeta", "Shift"]);
+      await expect.poll(() => blocks(page)).toEqual([1, 2, 4]);
+      await expect(bar.getByRole("button", { name: "Bold selection" })).toHaveAttribute("aria-pressed", "false");
+      await bar.getByRole("button", { name: "Bold selection" }).click();
+      await expect.poll(() => strong(mode === "live" ? 1 : 0)).toEqual([false, true, true, false, true, false]);
+      expect(await blocks(page)).toEqual([1, 2, 4]);
+      // Copy.
+      await bar.getByRole("button", { name: "Copy blocks" }).click();
+      await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toContain("Five paragraph with some words in it.");
+      expect(await page.evaluate(() => navigator.clipboard.readText())).not.toContain("Four paragraph");
+      // Turn into.
+      await bar.getByRole("button", { name: /^Turn into/ }).click();
+      await page.getByRole("menuitemradio", { name: "Heading 2" }).or(page.getByRole("menuitem", { name: "Heading 2" })).first().click();
+      const tags = async (i: number) => (await blockHtml(page, i)).map((h) => /^<([a-z0-9]+)/.exec(h)?.[1] ?? "");
+      await expect.poll(() => tags(0)).toEqual(["p", "h2", "h2", "p", "h2", "p"]);
+      if (mode === "live") await expect.poll(() => tags(1)).toEqual(["p", "h2", "h2", "p", "h2", "p"]);
+      // Delete.
+      await marquee(page, mode, 4, 5);
+      await expect.poll(() => blocks(page)).toEqual([4, 5]);
+      await bar.getByRole("button", { name: "Delete blocks" }).click();
+      await expect.poll(() => texts(page)).toEqual(["One", "Two", "Three", "Four"]);
+      if (mode === "live") await expect.poll(() => texts(page, 1)).toEqual(["One", "Two", "Three", "Four"]);
+    });
+  }
+
+  test("S8b: Comment on selected blocks anchors the thread on the first block's text (live)", async ({ page }) => {
+    await open(page, "live");
+    await marquee(page, "live", 1, 2);
+    await expect.poll(() => blocks(page)).toEqual([1, 2]);
+    await toolbar(page, "live").getByRole("button", { name: "Comment on selection" }).click();
+    const field = page.getByLabel("Comment", { exact: true });
+    await field.fill("About these blocks");
+    await field.press("ControlOrMeta+Enter");
+    await expect.poll(async () => (await blockHtml(page, 1)).map((h) => /comment/i.test(h))).toEqual([false, true, false, false, false, false]);
+  });
+
+  for (const mode of ["plain", "live"]) {
+    const q = mode === "live" ? "live" : "";
+    test(`S9: one ⌘Z brings back every block of a deleted set; a paste over a set replaces all of it (${mode})`, async ({ page }) => {
+      await open(page, q);
+      const pick = async (...n: number[]) => {
+        await marquee(page, mode, n[0]!, n[0]!);
+        for (const k of n.slice(1)) { const r = await rect(page, k); await modClick(page, r.x + 80, mid(r), ["ControlOrMeta", "Shift"]); }
+        await expect.poll(() => blocks(page)).toEqual(n);
+      };
+      await pick(0, 2, 4);
+      await page.keyboard.press("Backspace");
+      await expect.poll(() => texts(page)).toEqual(["Two", "Four", "Six"]);
+      if (mode === "live") await expect.poll(() => texts(page, 1)).toEqual(["Two", "Four", "Six"]);
+      await page.keyboard.press("ControlOrMeta+z");
+      await expect.poll(() => texts(page)).toEqual(ALL);
+      if (mode === "live") await expect.poll(() => texts(page, 1)).toEqual(ALL);
+      await pick(1, 3);
+      await pasteText(page, "Pasted");
+      await expect.poll(() => texts(page)).toEqual(["One", "Pasted", "Three", "Five", "Six"]);
+      if (mode === "live") await expect.poll(() => texts(page, 1)).toEqual(["One", "Pasted", "Three", "Five", "Six"]);
+    });
+  }
+
+  test("S9: deleting a set while the peer types in a block between its runs keeps the peer's text", async ({ page }) => {
+    await open(page, "live");
+    await marquee(page, "live", 1, 1);
+    const r = await rect(page, 3);
+    await modClick(page, r.x + 80, mid(r), ["ControlOrMeta", "Shift"]);
+    await expect.poll(() => blocks(page)).toEqual([1, 3]);
+    await api(page, "hold");
+    await page.evaluate(() => { const e = (window as any).prismSelect.editor(1); let pos = 0; for (let k = 0; k < 2; k++) pos += e.state.doc.child(k).nodeSize; e.commands.insertContentAt(pos + 1, "PEER "); });
+    await page.keyboard.press("Backspace");
+    await expect.poll(() => texts(page)).toEqual(["One", "Three", "Five", "Six"]);
+    await api(page, "release");
+    for (const i of [0, 1]) await expect.poll(() => api<string[]>(page, "texts", i)).toEqual(["One paragraph with some words in it.", "PEER Three paragraph with some words in it.", "Five paragraph with some words in it.", "Six paragraph with some words in it."]);
+  });
+
+  test("a click right after a drag is the person's: the caret lands and the blocks are released", async ({ page }) => {
+    await open(page);
+    const b1 = await rect(page, 1);
+    const b3 = await rect(page, 3);
+    const b5 = await rect(page, 5);
+    await page.mouse.move(b1.x + 40, mid(b1));
+    await page.mouse.down();
+    await page.mouse.move(b3.x + 90, mid(b3), { steps: 8 });
+    await expect.poll(() => blocks(page)).toEqual([1, 2, 3]);
+    await page.mouse.up();
+    await page.mouse.click(b5.x + 60, mid(b5)); // well inside the 80 ms the drag's guard used to hold
+    await expect.poll(() => blocks(page)).toEqual([]);
+    await expect.poll(() => page.evaluate(() => { const s = (window as any).prismSelect.editor(0).state.selection; return s.empty ? s.$from.parent.textContent.split(" ")[0] : "range"; })).toBe("Six");
   });
 });

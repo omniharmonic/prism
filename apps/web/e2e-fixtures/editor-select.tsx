@@ -1,7 +1,8 @@
 /**
  * Fixture for mouse block selection (NP-ED-26) and inline emoji (NP-ED-27): the plain
  * document editor (default; `?readonly`) or two LIVE editors on one in-page Y.Doc pair
- * (`?live`; `?viewer` makes client B read-only). Never talks to a server.
+ * (`?live`; `?viewer` makes client B read-only, `?suggesting` / `?commentonly` put client A in
+ * that mode). Never talks to a server.
  */
 import React from "react";
 import { createRoot } from "react-dom/client";
@@ -37,6 +38,10 @@ interface PmEditor {
 const editor = (i = 0) => (document.querySelectorAll(".tiptap")[i] as unknown as { editor: PmEditor }).editor;
 const box = (r: DOMRect) => ({ x: r.x, y: r.y, w: r.width, h: r.height, right: r.right, bottom: r.bottom });
 const logs: number[][] = [];
+// The relay between the two live clients can be HELD: what each side did meanwhile then arrives
+// as ONE merged update — what a reconnect after a dropped socket delivers.
+const relay = { held: false, queue: [] as Array<{ to: Y.Doc; update: Uint8Array }> };
+const deliver = (to: Y.Doc, update: Uint8Array) => { if (relay.held) relay.queue.push({ to, update }); else Y.applyUpdate(to, update, "remote"); };
 Object.assign(window, {
   prismSelect: {
     editor,
@@ -52,6 +57,29 @@ Object.assign(window, {
     /** Record how many blocks are selected after every transaction (a flicker shows as a 0 between two counts). */
     watch: (i = 0) => { const log: number[] = []; logs[i] = log; editor(i).on("transaction", () => { log.push(selectedBlockIndices(editor(i).state).length); }); },
     log: (i = 0) => logs[i] ?? [],
+    /** A text field INSIDE block `n`, as an inline database cell or a caption is: its own keys and clipboard events stay in it. */
+    field: (i: number, n: number) => {
+      const ed = editor(i);
+      const view = ed.view as unknown as { nodeDOM(pos: number): Node | null; domObserver: { stop(): void; start(): void } };
+      let pos = 0;
+      for (let k = 0; k < n; k++) pos += ed.state.doc.child(k).nodeSize;
+      const wrap = document.createElement("span");
+      wrap.contentEditable = "false";
+      const input = document.createElement("input");
+      input.setAttribute("aria-label", "Cell");
+      wrap.appendChild(input);
+      for (const type of ["keydown", "keypress", "keyup", "beforeinput", "input", "mousedown", "copy", "cut", "paste"]) wrap.addEventListener(type, (e) => e.stopPropagation());
+      view.domObserver.stop();
+      (view.nodeDOM(pos) as HTMLElement).appendChild(wrap);
+      view.domObserver.start();
+    },
+    html: (i = 0) => (editor(i) as unknown as { getHTML(): string }).getHTML(),
+    hold: () => { relay.held = true; },
+    release: () => {
+      relay.held = false;
+      const queued = relay.queue.splice(0);
+      for (const to of new Set(queued.map((q) => q.to))) Y.applyUpdate(to, Y.mergeUpdates(queued.filter((q) => q.to === to).map((q) => q.update)), "remote");
+    },
     emojiSetIsFull,
   },
 });
@@ -60,8 +88,8 @@ function LivePair() {
   const [docs] = React.useState(() => {
     const a = new Y.Doc();
     const b = new Y.Doc();
-    a.on("update", (u: Uint8Array, origin: unknown) => { if (origin !== "remote") Y.applyUpdate(b, u, "remote"); });
-    b.on("update", (u: Uint8Array, origin: unknown) => { if (origin !== "remote") Y.applyUpdate(a, u, "remote"); });
+    a.on("update", (u: Uint8Array, origin: unknown) => { if (origin !== "remote") deliver(b, u); });
+    b.on("update", (u: Uint8Array, origin: unknown) => { if (origin !== "remote") deliver(a, u); });
     return [a, b];
   });
   return (
@@ -73,6 +101,8 @@ function LivePair() {
             provider={null}
             editable={!(i === 1 && params.has("viewer"))}
             suggesting={i === 0 && params.has("suggesting")}
+            commentOnly={i === 0 && params.has("commentonly")}
+            canComment
             user={{ name: i === 0 ? "Ada" : "Ben", color: i === 0 ? "#3a7bd5" : "#f47c6b" }}
             seedReady={i === 0}
             seedContent={i === 0 ? async () => content : async () => null}

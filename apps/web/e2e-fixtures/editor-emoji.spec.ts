@@ -260,3 +260,133 @@ test.describe("inline emoji — data, memory, picker, phone", () => {
     await context.close();
   });
 });
+
+test.describe("inline emoji — review round", () => {
+  test("S5: a picker that fails to download closes with a notice, leaves the `:` list working, and can be opened again", async ({ page, browserName }) => {
+    await page.route(/deps\/emoji-picker-react\.js/, (route) => route.abort());
+    await open(page);
+    await page.keyboard.type(" /emoji");
+    await page.keyboard.press("Enter");
+    await expect(page.locator(".block-notice")).toContainText("emoji picker");
+    await expect(page.getByRole("dialog", { name: "Emoji picker" })).toHaveCount(0);
+    // The list is alive.
+    await page.keyboard.type(":sm");
+    await expect(options(page).first()).toHaveAttribute("data-emoji", "😄");
+    await page.keyboard.press("Enter");
+    expect(await text(page)).toBe("Start 😄");
+    // Back online: the next open asks for the picker again.
+    await page.unroute(/deps\/emoji-picker-react\.js/);
+    await page.keyboard.type(" /emoji");
+    await page.keyboard.press("Enter");
+    const picker = page.getByRole("dialog", { name: "Emoji picker" });
+    await expect(picker).toBeVisible();
+    // (WebKit remembers a failed module download for the page's lifetime; there the notice shows again.)
+    if (browserName === "chromium") await expect(picker.getByPlaceholder("Search emoji")).toBeVisible();
+  });
+
+  test("S6: a collaborator's insert before the trigger between the list opening and Enter — the emoji still replaces exactly `:sm`", async ({ page }) => {
+    await open(page, "&live");
+    await page.keyboard.type(" :sm");
+    await expect(options(page).first()).toHaveAttribute("data-emoji", "😄");
+    await page.evaluate(() => {
+      const w = window as any;
+      w.prismSelect.editor(1).commands.insertContentAt(1, "Hey ");
+      // Same task: nothing has re-rendered since the peer's insert.
+      document.querySelectorAll(".tiptap")[0]!.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", code: "Enter", bubbles: true, cancelable: true }));
+    });
+    await expect.poll(() => text(page, 1)).toBe("Hey Start 😄");
+    expect(await text(page, 0)).toBe("Hey Start 😄");
+    await expect(menu(page)).toHaveCount(0);
+  });
+
+  for (const mode of ["plain", "live"]) {
+    test(`S7: ⌘Z after \`:smile:\` gives the typed text back; a second ⌘Z removes it (${mode})`, async ({ page }) => {
+      await open(page, mode === "live" ? "&live" : "");
+      await page.keyboard.type(" :smile:");
+      expect(await text(page)).toBe("Start 😄");
+      await page.keyboard.press("ControlOrMeta+z");
+      await expect.poll(() => text(page)).toBe("Start :smile:");
+      if (mode === "live") await expect.poll(() => text(page, 1)).toBe("Start :smile:");
+      await expect(menu(page)).toHaveCount(0);
+      await page.keyboard.press("ControlOrMeta+z");
+      await expect.poll(async () => (await text(page)).includes(":smile:")).toBe(false);
+      expect(await text(page)).not.toContain("😄");
+      if (mode === "live") await expect.poll(async () => (await text(page, 1)).includes(":smile")).toBe(false);
+    });
+  }
+
+  test("S7: only a built-in shortcode converts on its own; a full-set name converts while its list is open", async ({ page }) => {
+    await open(page);
+    await page.keyboard.type(" :uni");
+    await expect.poll(() => page.evaluate(() => (window as any).prismSelect.emojiSetIsFull())).toBe(true);
+    await expect(options(page).first()).toBeVisible();
+    await page.keyboard.press("Escape"); // list dismissed for this word
+    await page.keyboard.type("corn: and");
+    expect(await text(page)).toBe("Start :unicorn: and");
+    // The list open for exactly that name: the closing colon converts.
+    await page.keyboard.type(" :unicorn");
+    await expect(options(page).first()).toHaveAttribute("data-emoji", "🦄");
+    await page.keyboard.type(":");
+    expect(await text(page)).toBe("Start :unicorn: and 🦄");
+    // A built-in converts even with the list dismissed.
+    await page.keyboard.type(" :ta");
+    await page.keyboard.press("Escape");
+    await page.keyboard.type("da:");
+    expect(await text(page)).toBe("Start :unicorn: and 🦄 🎉");
+  });
+
+  test("the list opens on typing only — not on putting the caret after existing text, not inside `[[`, not beside another popup", async ({ page }) => {
+    await open(page, "", "<p>Start :sm</p>");
+    await page.waitForTimeout(250);
+    await expect(menu(page)).toHaveCount(0);
+    await page.keyboard.press("ArrowLeft");
+    await page.keyboard.press("ArrowRight");
+    await page.waitForTimeout(150);
+    await expect(menu(page)).toHaveCount(0);
+    await page.keyboard.type("i");
+    await expect(menu(page)).toBeVisible();
+    await page.keyboard.press("Escape");
+    // Inside an unclosed [[ a colon is part of the page name: no list, no conversion.
+    await reset(page);
+    await page.keyboard.type(" [[Plan :smi");
+    await page.waitForTimeout(150);
+    await expect(menu(page)).toHaveCount(0);
+    await page.keyboard.type("le:");
+    expect(await text(page)).toBe("Start [[Plan :smile:");
+    await page.keyboard.press("Escape");
+    // Beside the @ menu.
+    await reset(page);
+    await page.keyboard.type(" @rem");
+    await expect(page.getByRole("listbox", { name: "Mention a person, page or date" })).toBeVisible();
+    await page.keyboard.type(" :sm");
+    await page.waitForTimeout(150);
+    if (await page.getByRole("listbox", { name: "Mention a person, page or date" }).isVisible()) await expect(menu(page)).toHaveCount(0);
+  });
+
+  test("Esc and Enter typed right behind the trigger are the list's, before anything has rendered", async ({ page }) => {
+    await open(page);
+    const out = await page.evaluate(() => {
+      const w = window as any;
+      const editor = w.prismSelect.editor(0);
+      const dom = document.querySelector(".tiptap")!;
+      const key = (k: string) => dom.dispatchEvent(new KeyboardEvent("keydown", { key: k, code: k, bubbles: true, cancelable: true }));
+      editor.commands.insertContent(" :sm");
+      key("Escape");
+      const afterEsc = { blocks: w.prismSelect.blocks(0), text: editor.state.doc.textContent };
+      editor.commands.insertContent(" :tad");
+      key("Enter");
+      return { afterEsc, text: editor.state.doc.textContent, count: editor.state.doc.childCount };
+    });
+    expect(out.afterEsc).toEqual({ blocks: [], text: "Start :sm" });
+    expect(out).toMatchObject({ text: "Start :sm 🎉", count: 1 });
+    await expect(menu(page)).toHaveCount(0);
+  });
+
+  test("comment-only: no list and no conversion (nothing may be typed there)", async ({ page }) => {
+    await open(page, "&live&commentonly");
+    await page.keyboard.type(" :smile:");
+    await page.waitForTimeout(150);
+    await expect(menu(page)).toHaveCount(0);
+    expect(await text(page, 1)).toBe("Start");
+  });
+});
