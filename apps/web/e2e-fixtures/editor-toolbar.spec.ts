@@ -212,7 +212,16 @@ test("live editor: the toolbar carries Comment, which anchors a thread on the se
     await page.getByText("A second block to comment on", { exact: true }).hover();
     await page.locator(".block-gutter").getByRole("button", { name: /Drag to move/ }).click();
     await page.getByRole("menuitem", { name: "Comment" }).click();
-    await page.getByPlaceholder(/Add a comment/).fill("Whole block");
+    // The composer HOLDS the keyboard — also a frame later. Selecting the block's text used to
+    // schedule an editor focus for the next frame, which took the keyboard back with the block
+    // selected: the comment a person typed replaced the block's text in the document.
+    const composer = page.getByPlaceholder(/Add a comment/);
+    await expect(composer).toBeFocused();
+    await page.evaluate(() => new Promise<void>((r) => requestAnimationFrame(() => requestAnimationFrame(() => r()))));
+    await expect(composer).toBeFocused();
+    await page.keyboard.type("Whole block");
+    await expect(composer).toHaveValue("Whole block");
+    expect(await html(page)).toContain("A second block to comment on");
     await page.getByRole("button", { name: "Comment", exact: true }).click();
     await expect.poll(() => html(page)).toMatch(/<span[^>]*data-comment[^>]*>A second block to comment on<\/span>/);
     const bubble = await select(page, "Shared sentence to discuss");
