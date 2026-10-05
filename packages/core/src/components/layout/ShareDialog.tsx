@@ -357,13 +357,18 @@ function SharingDocument({ noteId, sharing, onClose }: Props) {
       .prism-share-dialog .share-person .share-who small { font-size:12px; color:var(--text-muted); overflow-wrap:anywhere; }
       .prism-share-dialog .share-person .share-owner { font-size:12.5px; color:var(--text-muted); padding:0 4px; }
       .prism-share-dialog .share-tabs { display:flex; gap:20px; padding:0 20px; border-bottom:1px solid var(--glass-border); overflow-x:auto; }
-      .prism-share-dialog .share-tabs button[role=tab] { border:0; border-radius:0; background:none; padding:10px 2px; min-height:44px; margin-bottom:-1px; color:var(--text-muted); border-bottom:2px solid transparent; font-weight:500; white-space:nowrap; }
+      .prism-share-dialog .share-tabs button[role=tab] { border:0; border-radius:0; background:none; padding:10px 2px; min-height:44px; margin-bottom:-1px; color:var(--text-secondary); border-bottom:2px solid transparent; font-weight:500; white-space:nowrap; }
       .prism-share-dialog .share-tabs button[role=tab]:hover { color:var(--text-primary); }
-      .prism-share-dialog .share-tabs button[aria-selected=true] { color:var(--color-accent); border-bottom-color:var(--color-accent); font-weight:600; }
+      .prism-share-dialog .share-tabs button[aria-selected=true] { color:var(--text-primary); border-bottom-color:var(--text-primary); font-weight:600; }
       .prism-share-dialog .share-subtle { font-size:12px; color:var(--text-muted); }
       .prism-share-dialog .share-check { display:flex; align-items:center; gap:8px; font-size:12.5px; color:var(--text-secondary); }
       .prism-share-dialog .share-check input { min-height:auto; width:16px; height:16px; padding:0; accent-color:var(--color-accent); }
       .prism-share-dialog .share-invite { display:grid; grid-template-columns:minmax(0,1fr) auto auto; gap:8px; }
+      /* A person row is a line of text with two quiet controls, not a form row of boxes. */
+      .prism-share-dialog .share-person select { border-color:transparent; background-color:transparent; color:var(--text-secondary); }
+      .prism-share-dialog .share-person select:hover,.prism-share-dialog .share-person select:focus-visible { background-color:var(--glass-hover); color:var(--text-primary); }
+      .prism-share-dialog .share-person button { border-color:transparent; background:transparent; color:var(--text-muted); min-width:44px; padding:8px; }
+      .prism-share-dialog .share-person button:hover:not(:disabled) { background:var(--glass-hover); color:var(--color-danger); }
       @media(max-width:480px) {
         .prism-share-dialog { width:100vw; max-width:100vw; margin:auto 0 0; border-radius:16px 16px 0 0; max-height:92dvh; border-bottom:0; }
         .prism-share-dialog .share-invite { grid-template-columns:1fr auto; }
@@ -759,7 +764,8 @@ function SharingDocument({ noteId, sharing, onClose }: Props) {
                       </h3>
                       <p>
                         {link.expiresAt <= Date.now() ? "Expired" : "Expires"}{" "}
-                        {new Date(link.expiresAt).toLocaleDateString()}
+                        {/* "Oct 6", like every other date in the app (the year only when it is not this one). */}
+                        {new Date(link.expiresAt).toLocaleDateString(undefined, new Date(link.expiresAt).getFullYear() === new Date().getFullYear() ? { month: "short", day: "numeric" } : { month: "short", day: "numeric", year: "numeric" })}
                       </p>
                     </div>
                     <div className="share-row">

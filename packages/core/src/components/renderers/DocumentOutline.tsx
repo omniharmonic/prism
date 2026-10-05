@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import type { Editor } from "@tiptap/react";
 import { ListTree } from "lucide-react";
 import "./DocumentOutline.css";
@@ -83,12 +83,27 @@ export function DocumentOutline({ editor }: { editor: Editor }) {
     document.addEventListener("keydown", escape, true);
     return () => { document.removeEventListener("pointerdown", outside); document.removeEventListener("keydown", escape, true); };
   }, [open]);
+  // The outline opens in the margin beside the text column when the margin can hold it (it then
+  // covers no text, breadcrumb or title); only a window too narrow for that gets the overlay.
+  const [fit, setFit] = useState<number | undefined>(undefined);
+  useLayoutEffect(() => {
+    if (!open) return;
+    const place = () => {
+      const from = root.current?.getBoundingClientRect().left;
+      const column = (editor.view.dom as HTMLElement).getBoundingClientRect().left;
+      const margin = from === undefined ? 0 : column - from - 16;
+      setFit(margin >= 168 ? Math.min(280, Math.floor(margin)) : undefined);
+    };
+    place();
+    window.addEventListener("resize", place);
+    return () => window.removeEventListener("resize", place);
+  }, [open, editor]);
   return <div ref={root} className="document-outline">
     <button ref={button} type="button" className="document-outline-toggle focus-ring" aria-expanded={open} aria-controls={id}
       onMouseDown={event => event.preventDefault()} onClick={() => setOpen(value => !value)}>
       <ListTree size={15} aria-hidden="true" /> Outline
     </button>
-    {open && <nav id={id} aria-label="Document outline" className="document-outline-popover">
+    {open && <nav id={id} aria-label="Document outline" className="document-outline-popover" data-beside={fit ? "" : undefined} style={fit ? { width: fit } : undefined}>
       <div className="document-outline-title">On this page</div>
       {headings.length ? headings.map(heading => <button key={heading.position} type="button" className="focus-ring"
         aria-current={heading.position === current ? "location" : undefined}
