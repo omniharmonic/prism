@@ -24,6 +24,8 @@ import { MentionContext, setMentionNoteId } from "../../lib/tiptap/MentionContex
 import { MentionMenu } from "../../lib/tiptap/MentionMenu";
 import { BlockKeymap } from "../../lib/tiptap/blockCommands";
 import { EditorKeys, editorPlaceholder, blockSelectionActive } from "../../lib/tiptap/EditorKeys";
+import { BlockMouseSelect } from "../../lib/tiptap/BlockMouseSelect";
+import { EmojiSuggest } from "../../lib/tiptap/EmojiSuggest";
 import { FIND_IN_PAGE_EVENT, isReplaceShortcut, editorIsOnScreen } from "../../lib/tiptap/findShortcuts";
 import { BlockHandles } from "./BlockHandles";
 import { TableControls } from "./TableControls";
@@ -199,6 +201,8 @@ export default function DocumentRenderer({ note, onMetadataChange, readOnly }: R
     SearchHighlight,
     BlockKeymap,
     EditorKeys,
+    BlockMouseSelect,
+    EmojiSuggest,
     ImageUpload.configure({ upload, uploadFile, onError: setUploadError }),
     UrlPaste.configure({ onStateChange: setPasteState, unfurl }),
     // Inline/linked databases: only where the page itself may be written.

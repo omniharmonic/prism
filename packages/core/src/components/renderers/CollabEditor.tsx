@@ -24,6 +24,8 @@ import { SuggestionReview } from "./SuggestionReview";
 import "./editor-blocks.css";
 import { BlockKeymap } from "../../lib/tiptap/blockCommands";
 import { EditorKeys, editorPlaceholder, blockSelectionActive } from "../../lib/tiptap/EditorKeys";
+import { BlockMouseSelect } from "../../lib/tiptap/BlockMouseSelect";
+import { EmojiSuggest } from "../../lib/tiptap/EmojiSuggest";
 import { FIND_IN_PAGE_EVENT, isReplaceShortcut, editorIsOnScreen } from "../../lib/tiptap/findShortcuts";
 import { BlockHandles } from "./BlockHandles";
 import { TableControls } from "./TableControls";
@@ -212,6 +214,8 @@ export function CollabEditor({
       MentionContext.configure({ noteId: noteId ?? null }),
       BlockKeymap,
       EditorKeys,
+      BlockMouseSelect,
+      EmojiSuggest,
       ImageUpload.configure({
         upload: uploadImage ? (file) => uploadRef.current!(file) : undefined,
         uploadFile: uploadFile ? (file) => uploadFileRef.current!(file) : undefined,

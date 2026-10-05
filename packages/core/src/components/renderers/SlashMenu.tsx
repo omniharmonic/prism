@@ -4,7 +4,7 @@ import type { Editor } from "@tiptap/react";
 import {
   Sparkles, Type, Heading1, Heading2, Heading3, List, ListOrdered, ListChecks, Quote, Code2, Minus,
   ChevronRight, MessageSquareText, Table as TableIcon, Image as ImageIcon, Link2, Columns2, Columns3, ImageUp,
-  Paperclip, FileText, Music, Film, Bookmark as BookmarkIcon, PlayCircle, ListTree, FilePlus, Columns4,
+  Paperclip, FileText, Music, Film, Bookmark as BookmarkIcon, PlayCircle, ListTree, FilePlus, Columns4, Smile,
 } from "lucide-react";
 import { canCreateChildPage, createChildPage } from "../../lib/tiptap/childPage";
 import { useSelectionAsk } from "../../lib/agent/useSelectionAsk";
@@ -14,6 +14,7 @@ import { canUploadImages, pickAndUploadImages, canUploadFiles, pickAndUploadFile
 import { editorUnfurler, insertLinkBlock } from "../../lib/tiptap/UrlPaste";
 import { canInsertDatabase, requestDatabaseInsert } from "../../lib/tiptap/databaseView";
 import { describeEditorPopup } from "../../lib/tiptap/popupAria";
+import { openEmojiPicker } from "../../lib/tiptap/EmojiSuggest";
 import "./editor-blocks.css";
 
 const isMac = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform);
@@ -124,6 +125,7 @@ const BASE: SlashItem[] = [
   { id: "toc", group: "Advanced", title: "Table of contents", subtitle: "Jump to a heading on this page", icon: <ListTree size={16} />, keywords: ["toc", "table of contents", "contents", "outline", "headings"], run: insertToc },
   { id: "code", group: "Advanced", title: "Code", subtitle: "Capture a code snippet", icon: <Code2 size={16} />, keywords: ["code", "codeblock", "pre", "snippet"], shortcut: "Mod-Alt-C", markdown: "```", run: (e) => e.chain().focus().toggleCodeBlock().run() },
   { id: "table", group: "Advanced", title: "Table", subtitle: "Rows and columns with a header", icon: <TableIcon size={16} />, keywords: ["table", "grid", "rows", "columns", "spreadsheet"], run: (e) => e.chain().focus().insertTable({ rows: 3, cols: 3, withHeaderRow: true }).run() },
+  { id: "emoji", group: "Advanced", title: "Emoji", subtitle: "Search every emoji", icon: <Smile size={16} />, keywords: ["emoji", "emoticon", "smiley", "symbol"], markdown: ":", run: (e) => openEmojiPicker(e) },
   { id: "link", group: "Advanced", title: "Link to page", subtitle: "Link to another page with [[", icon: <Link2 size={16} />, keywords: ["link", "page", "wikilink", "mention", "reference"], markdown: "[[", run: (e) => e.chain().focus().insertContent("[[").run() },
   { id: "columns2", group: "Advanced", title: "2 columns", subtitle: "Side-by-side blocks", icon: <Columns2 size={16} />, keywords: ["columns", "column", "layout", "side", "2"], run: (e) => insertColumns(e, 2) },
   { id: "columns3", group: "Advanced", title: "3 columns", subtitle: "Three blocks side by side", icon: <Columns3 size={16} />, keywords: ["columns", "column", "layout", "side", "3"], run: (e) => insertColumns(e, 3) },
