@@ -9,7 +9,7 @@
  *     source: { tags: ["task"] },            // rows = notes carrying ALL these tags
  *     views: [{ id, name, type: table|board|gallery|list|calendar,
  *               filter?, sort?, groupBy?, visible?, widths?, dateKey?, coverKey?,
- *               order? }] }
+ *               order?, calculations? }] }
  *
  * Rows are never copied: they ARE the tagged notes, and a row's cells are that
  * note's `metadata` (typed by the tag's vault schema). The note's body is the
@@ -18,7 +18,7 @@
  * data in the notes themselves. Unknown/newer configs fail closed (shown, never
  * overwritten), exactly like `readBoardConfig`.
  */
-import { isFieldKey, QUERY_OPS, type QueryFilter, type QuerySort } from "../../lib/database/query";
+import { isAggregateFn, isFieldKey, MAX_AGGREGATES, QUERY_OPS, type AggregateFn, type QueryFilter, type QuerySort } from "../../lib/database/query";
 import { safeTitleLeaf } from "../../lib/database/schema";
 
 export const VIEW_TYPES = ["table", "board", "gallery", "list", "calendar"] as const;
@@ -46,6 +46,12 @@ export interface DatabaseView {
   hideEmptyGroups?: boolean;
   /** Gallery: card size (default medium). */
   cardSize?: CardSize;
+  /**
+   * Calculations (NP-DB-26): property key → function. A table shows each under its
+   * column; boards, lists and galleries show them per group / in the footer. The
+   * figure is computed over every row the viewer can see, never stored.
+   */
+  calculations?: Record<string, AggregateFn>;
 }
 
 export const CARD_SIZES = ["small", "medium", "large"] as const;
@@ -101,6 +107,11 @@ function viewOk(v: unknown): v is DatabaseView {
   if (v.coverKey !== undefined && !keyOk(v.coverKey)) return false;
   if (v.hideEmptyGroups !== undefined && typeof v.hideEmptyGroups !== "boolean") return false;
   if (v.cardSize !== undefined && !(CARD_SIZES as readonly string[]).includes(v.cardSize as string)) return false;
+  if (v.calculations !== undefined) {
+    if (!rec(v.calculations)) return false;
+    const entries = Object.entries(v.calculations);
+    if (entries.length > MAX_AGGREGATES || !entries.every(([k, fn]) => keyOk(k) && isAggregateFn(fn))) return false;
+  }
   if (v.visible !== undefined && (!Array.isArray(v.visible) || v.visible.length > 60 || !v.visible.every(keyOk))) return false;
   if (v.widths !== undefined && (!rec(v.widths) || !Object.entries(v.widths).every(([k, w]) => keyOk(k) && typeof w === "number" && w >= 60 && w <= 1200))) return false;
   if (v.order !== undefined && (!Array.isArray(v.order) || v.order.length > 10000 || !v.order.every((x) => typeof x === "string"))) return false;

@@ -8,6 +8,7 @@ import { ArrowLeft, ArrowRight, Copy, Plus, Trash2, X } from "lucide-react";
 import type { QueryCondition, QueryFilter, QueryFilterGroup, QueryOp, QuerySort } from "../../lib/database/query";
 import { STATUS_GROUP_LABELS, STATUS_GROUPS, SYSTEM_PROPERTIES, type PropertyDef } from "../../lib/database/schema";
 import { CARD_SIZES, VIEW_LABELS, VIEW_TYPES, type CardSize, type DatabaseView, type ViewType } from "./config";
+import { CalcSettings } from "./Calculations";
 
 /** Title + timestamps + every property, as filter/sort targets. */
 export function filterTargets(props: PropertyDef[]): Array<{ key: string; label: string; def?: PropertyDef }> {
@@ -292,6 +293,7 @@ export function ViewSettings({ view, props, canDelete, onChange, onDelete, tabs,
           {!props.length && <li className="db-pop-empty">This tag has no properties yet.</li>}
         </ul>
       </div>
+      {view.type !== "calendar" && <CalcSettings view={view} props={props} onChange={onChange} />}
       {deleted && deleted.props.length > 0 && (
         <div>
           <p className="db-pop-heading">Deleted properties</p>

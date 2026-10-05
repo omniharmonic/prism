@@ -132,6 +132,8 @@ if (params.has("ingest")) {
   notes.push(task("g3", "Notion mirror", { status: "todo", due: day(1), source: "notion" }));
   notes.push(task("g4", "Hand-made", { status: "todo", due: day(3), source: "book" }));
 }
+// More rows than one page of a table (100): a calculation must cover all of them.
+if (params.has("many") && !persisted) for (let i = 0; i < 150; i++) notes.push(task(`m${i}`, `Bulk task ${String(i).padStart(3, "0")}`, { status: "todo", estimate: 1 }));
 if (params.has("tz")) notes.push(task("t7", "Late call", { status: "todo", due: `${day(3)}T05:00:00Z` }));
 if (link) notes = notes.map((n) => ({ ...n, _level: "view" }));
 if (viewer) notes = notes.map((n) => (n.id === "t6" ? n : { ...n, _caps: ["view"] }));

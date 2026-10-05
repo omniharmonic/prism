@@ -25,7 +25,7 @@ import { useUIStore } from "../../app/stores/ui";
 import { useIsMobile } from "../../app/hooks/useIsMobile";
 import { inferContentType } from "../../lib/schemas/content-types";
 import { queryKeys } from "../../lib/parachute/queries";
-import { noteAccess, useDatabaseRows, usePropertyWriter, useSchemas, useScope, useUpdateSchema } from "../../lib/database/hooks";
+import { noteAccess, useDatabaseAggregates, useDatabaseRows, usePropertyWriter, useSchemas, useScope, useUpdateSchema } from "../../lib/database/hooks";
 import { filterConditions, noteTitle, QUERY_MAX_LIMIT, type QueryRow, type QuerySpec } from "../../lib/database/query";
 import { deletedKeys, isSystemKey, propertyFromField, resolveProperties, SYSTEM_PROPERTIES, type PropertyDef } from "../../lib/database/schema";
 import { PropertyEditor } from "./PropertyEditor";
@@ -40,6 +40,7 @@ import { createTemplateNote, isTemplateFor, NewButton, TemplateEditor, templateP
 import { resolveTemplateContent, resolveTemplateMetadata, templateCreator } from "../../lib/pages/templates";
 import { serverFetch } from "../../lib/transport/serverFetch";
 import { allRows, CsvImportDialog, CsvNewDatabaseDialog, downloadText, rowsToCsv } from "./Csv";
+import { calcRequests, withCalculation, type CalcState } from "./Calculations";
 
 const VIEW_ICONS: Record<ViewType, typeof Table2> = { table: Table2, board: KanbanSquare, gallery: GalleryVerticalEnd, list: ListIcon, calendar: Calendar };
 const ROW_META = ["type", "prism_type", "icon", "cover", "coverY"];
@@ -172,6 +173,13 @@ export function DatabasePage({ note, readOnly, embedded }: RendererProps & {
     if (view && !embedded) try { localStorage.setItem(viewKey, view.id); } catch { /* private mode */ }
   }, [view, viewKey, embedded]);
 
+  // Calculations (NP-DB-26): asked of the query route over the WHOLE view — never summed
+  // from the rows loaded so far — and per group when the layout groups.
+  const calcWanted = useMemo(() => (view && view.type !== "calendar" ? calcRequests(view, allProps) : []), [view, allProps]);
+  const calcGroupDef = view && view.type !== "calendar" && view.type !== "gallery" && view.groupBy ? allProps.find((p) => p.key === view.groupBy) : undefined;
+  const calcGroupBy = useMemo(() => (calcGroupDef ? { key: calcGroupDef.key, ...(calcGroupDef.kind === "checkbox" ? { checkbox: true } : {}) } : undefined), [calcGroupDef?.key, calcGroupDef?.kind]);
+  const calcQuery = useDatabaseAggregates(spec, calcWanted, calcGroupBy);
+
   async function saveConfig(next: DatabaseConfig) {
     setLocal(next);
     if (!canEditDb) {
@@ -299,6 +307,17 @@ export function DatabasePage({ note, readOnly, embedded }: RendererProps & {
   const [importing, setImporting] = useState(false);
   const [importingNew, setImportingNew] = useState(false);
 
+  const calcData = calcWanted.length ? calcQuery.data : undefined;
+  // An older server answers the rows but no figures: no footer rather than one that never fills.
+  const calc: CalcState | undefined = view && view.type !== "calendar" && !calcData?.unsupported ? {
+    chosen: Object.fromEntries(calcWanted.map((a) => [a.key, a.fn])),
+    total: calcData?.aggregates ?? (calcWanted.length ? null : {}),
+    groups: calcData?.groups ? new Map(calcData.groups.map((g) => [g.value, g])) : null,
+    count: calcData?.total ?? (pages.length ? total : null),
+    partial: calcData?.truncated ?? truncated,
+    set: (key, fn) => updateView({ calculations: withCalculation(view.calculations, key, fn) }),
+  } : undefined;
+
   const ctx: ViewContext | null = view ? {
     view,
     rows,
@@ -326,6 +345,7 @@ export function DatabasePage({ note, readOnly, embedded }: RendererProps & {
     },
     create: async (titleText, preset) => { await createRow(titleText, preset); },
     updateView,
+    ...(calc ? { calc } : {}),
     ...(ownerish && !readOnly ? { editProperty: (def: PropertyDef) => { if (def.tag) setEditingProp({ tag: def.tag, key: def.key }); } } : {}),
     // Selection only for people who can act on something (Notion viewers can't select).
     ...(view.type === "table" && !readOnly && (canCreate || rows.some(canEditRow)) ? { selection } : {}),

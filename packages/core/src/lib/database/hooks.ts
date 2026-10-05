@@ -8,14 +8,14 @@
  * per-field compare-and-set done client-side.
  */
 import { useCallback } from "react";
-import { useInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-query";
+import { keepPreviousData, useInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useVaultClient } from "../../data/VaultClientContext";
 import { PropertyConflictError, VaultRequestError, type PropertyWriteResult, type VaultClient } from "../../data/VaultClient";
 import { useAgentChatStore } from "../agent/chatStore";
 import { queryKeys } from "../parachute/queries";
 import type { Note } from "../types";
 import tagSchemas from "../schemas/tag-schemas.json";
-import { runQuery, type QueryPage, type QuerySpec } from "./query";
+import { runQuery, type AggregateGroup, type AggregateGroupBy, type AggregateRequest, type AggregateValues, type QueryPage, type QuerySpec } from "./query";
 import type { SchemaMap, SchemaPatch, TagSchema } from "./schema";
 import type { PropertyBatchItem, PropertyBatchResult } from "./wire";
 
@@ -254,6 +254,51 @@ export function useDatabaseRows(spec: QuerySpec | null) {
       const notes = await client.listNotes({ tag: spec!.tags[0], limit: 5000 });
       const limited = notes.some((n) => Array.isArray(n._caps));
       return runQuery(notes, s, { limited });
+    },
+  });
+}
+
+/** The answer to a view's calculations: figures over every matching row the viewer can see. */
+export interface DatabaseAggregates {
+  total: number;
+  truncated: boolean;
+  aggregates: AggregateValues;
+  groups: AggregateGroup[] | null;
+  /** The server is older than calculations: it answered the rows but no figures. */
+  unsupported: boolean;
+}
+
+/**
+ * A view's calculations (NP-DB-26). `spec` is the view's ROW query: the figures
+ * use exactly its tags, filter, search and `fields` (the fields decide what a
+ * search reads), never its page size — so they cover the whole view. A separate,
+ * one-row request: changing a calculation never reloads the rows, and on the
+ * server it reuses the listing the rows came from. Keyed under
+ * ["vault","notes",…] so every row change refreshes it with the rows.
+ */
+export function useDatabaseAggregates(spec: QuerySpec | null, aggregates: AggregateRequest[], groupBy: AggregateGroupBy | undefined) {
+  const client = useVaultClient();
+  const scope = useScope();
+  const base = spec ? { tags: spec.tags, ...(spec.filter ? { filter: spec.filter } : {}), ...(spec.search ? { search: spec.search } : {}), ...(spec.fields ? { fields: spec.fields } : {}) } : null;
+  return useQuery({
+    queryKey: ["vault", "notes", { databaseCalc: scope, spec: base, aggregates, groupBy: groupBy ?? null }],
+    enabled: !!base && aggregates.length > 0,
+    placeholderData: keepPreviousData,
+    queryFn: async (): Promise<DatabaseAggregates> => {
+      const s: QuerySpec = { ...base!, limit: 1, tzOffset: new Date().getTimezoneOffset(), aggregates, ...(groupBy ? { groupBy } : {}) };
+      let page: QueryPage | null = null;
+      if (client.queryNotes) {
+        try {
+          page = await client.queryNotes(s);
+        } catch (e) {
+          if (!unsupported(e)) throw e;
+        }
+      }
+      if (!page) {
+        const notes = await client.listNotes({ tag: s.tags[0], limit: 5000 });
+        page = runQuery(notes, s, { limited: notes.some((n) => Array.isArray(n._caps)) });
+      }
+      return { total: page.total, truncated: page.truncated, aggregates: page.aggregates ?? {}, groups: page.groups ?? null, unsupported: page.aggregates === undefined };
     },
   });
 }

@@ -826,6 +826,12 @@ databasesApi.post("/query", async (c) => {
   // The cut happens AFTER permission filtering (review M2) on a deterministic
   // updated_at-desc order, so a non-owner's "truncated" counts only rows they see.
   const truncated = visible.length > cap || (owner && notes.length >= RAW_MAX);
+  // Calculations (NP-DB-26) run inside the engine over `visible` — the rows this caller
+  // may see, identity already presented for them — so a hidden row never moves a figure.
+  // The access keys are answered only to someone who would also receive them in a row.
+  const hiddenKey = (k: string) => PERMISSION_KEYS.includes(k) && (actor.kind === "link" || (spec.fields ? !spec.fields.includes(k) : !owner));
+  if (spec.aggregates) spec.aggregates = spec.aggregates.filter((a) => !hiddenKey(a.key));
+  if (spec.groupBy && hiddenKey(spec.groupBy.key)) delete spec.groupBy;
   try {
     const page = runQuery(visible.slice(0, cap), spec, { limited: !owner, truncated });
     // Whether a person page stands for the caller (else only their address matched).
