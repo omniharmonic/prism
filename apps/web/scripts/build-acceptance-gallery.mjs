@@ -49,9 +49,10 @@ for (const line of read("PARITY-EVIDENCE.md").split("\n")) {
   const cells = line.split("|").slice(1, -1).map((c) => c.trim());
   evidence.set(cells[0], { status: cells[1], note: cells[cells.length - 1] });
 }
-const gaps = read("PARITY-GAPS.md");
+// --gaps <file>: a newer PARITY-GAPS.md (e.g. `git show <branch>:…/PARITY-GAPS.md > file`) than the one in this tree.
+const gaps = arg("gaps") ? fs.readFileSync(path.resolve(arg("gaps")), "utf8") : read("PARITY-GAPS.md");
 const b2 = gaps.slice(gaps.indexOf("### b.2"), gaps.indexOf("### b.3"));
-const failRule = (b2.match(/Fail on ([^.]+)\./) ?? [])[1] ?? "clipped text, sideways page scroll, white panels in dark, overlapping bottom controls, focus rings around the writing surface, or icon-only controls the board labels";
+const failRule = (b2.match(/Fail on:?\*{0,2} ([^\n]+?)\.\s*(\n|$)/) ?? b2.match(/Fail on ([^.]+)\./) ?? [])[1] ?? "clipped text, sideways page scroll, white panels in dark, overlapping bottom controls, focus rings around the writing surface, or icon-only controls the board labels";
 const boards = new Map();
 for (const line of b2.split("\n")) {
   if (!line.startsWith("|") || /^\|\s*(Board|---)/.test(line)) continue;
@@ -60,6 +61,14 @@ for (const line of b2.split("\n")) {
     const id = `NP-${m[1]}`;
     boards.set(id, [...(boards.get(id) ?? []), m[2] ? `${board} — for this row: ${m[2]}` : board]);
   }
+}
+// The machine-usable form of §b.2: `row | fixture + query | viewport | theme | what to verify`.
+const captures = new Map();
+for (const line of b2.split("\n")) {
+  const m = /^(NP-[A-Z]{2}-\d{2}) \| (.+)$/.exec(line.trim());
+  if (!m) continue;
+  const parts = m[2].split(" | ");
+  if (parts.length >= 4) captures.set(m[1], [...(captures.get(m[1]) ?? []), parts.slice(3).join(" | ")]);
 }
 const boardFiles = (() => { try { return fs.readdirSync(path.join(docs, "assets")).filter((f) => f.endsWith(".png")); } catch { return []; } })();
 const boardName = (n) => boardFiles.find((f) => f.startsWith(`${n}-`) || f === `${n}.png`)?.replace(/\.png$/, "") ?? n;
@@ -123,6 +132,7 @@ function cardHtml(card) {
   const b = boards.get(card.id);
   const status = ev?.status?.replace(/\*/g, "") ?? row?.status ?? "";
   const verify = [
+    ...(captures.get(card.id) ?? []).map((t) => t.replace(/^board /, "Board ").replace(/\.?$/, ".")),
     b ? `Compare with ${b.map((x) => x.replace(/\b(\d{2})\b/g, (_, n) => boardName(n))).join("; ")} (docs/roadmap/workspace-experience/assets).` : "",
     ev?.note && /\[S\]/.test(ev.note) ? `Evidence log: ${ev.note}` : "",
     `Fail on ${failRule}.`,

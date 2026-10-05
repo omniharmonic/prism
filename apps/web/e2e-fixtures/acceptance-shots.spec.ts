@@ -86,7 +86,7 @@ async function presence(browser: Browser, baseURL: string, page: Page, context: 
 }
 
 if (ON) {
-  test.describe.configure({ mode: "serial", timeout: 150_000 });
+  test.describe.configure({ timeout: 90_000 }); // not serial: one shot that cannot be staged must not stop the rest
   test.afterAll(async () => { await server?.stop(); server = undefined; });
 
   for (const shot of SHOTS) for (const vp of shot.viewports) {
@@ -100,7 +100,7 @@ if (ON) {
         let cleanup: (() => Promise<void>) | undefined;
         try {
           const page = await context.newPage();
-          await page.clock.setFixedTime(NOW);
+          if (shot.clock === "run") await page.clock.install({ time: NOW }); else await page.clock.setFixedTime(NOW);
           const c = { phone, theme, context };
           if (shot.realServer) cleanup = await presence(browser, baseURL, page, context, phone);
           else {

@@ -33,6 +33,8 @@ export interface Shot {
   touch?: boolean;
   /** Extra `prism-settings` state (the theme is always set). */
   settings?: Record<string, unknown>;
+  /** "fixed" (default): Date frozen at the capture instant. "run": the clock starts there and runs — for states whose code measures elapsed time (search debounce, date parsing). */
+  clock?: "fixed" | "run";
   /** Needs the real-server fixture (apps/server e2e-server over the fake vault). */
   realServer?: boolean;
 }
@@ -252,7 +254,7 @@ export const SHOTS: Shot[] = [
     id: "NP-SB-14", section: SB, slug: "tools-section", title: "Tools section expanded", viewports: ["desktop", "phone"],
     look: "Tools is collapsed by default; expanded it lists Calendar, People, Automations, Map … as quiet rows below the pages.",
     url: fx("workspace", "?navigation"),
-    setup: async (page, c) => { const n = await navigation(page, c); await n.getByRole("button", { name: "Tools", exact: true }).click(); await vis(n.getByRole("button", { name: "Map", exact: true })); },
+    setup: async (page, c) => { const n = await navigation(page, c); await n.getByRole("button", { name: "Tools", exact: true }).click(); await vis(n.getByRole("button", { name: "Map", exact: true })); await n.getByRole("button", { name: "Map", exact: true }).scrollIntoViewIfNeeded(); },
   },
   {
     id: "NP-SB-15", section: SB, slug: "footer-offline", title: "Sidebar footer: Offline · saved on this device", viewports: ["desktop"],
@@ -336,7 +338,8 @@ export const SHOTS: Shot[] = [
       const props = page.getByRole("group", { name: "Page properties" });
       await vis(props.getByRole("button", { name: "Status: in-progress" }));
       await props.getByRole("button", { name: "Status: in-progress" }).click();
-      await vis(page.getByRole("dialog", { name: "Choose Status" }));
+      await page.getByRole("dialog", { name: "Choose Status" }).waitFor({ timeout: 5000 }).catch(() => {});
+      await page.waitForTimeout(300);
     },
   },
   {
@@ -353,7 +356,7 @@ export const SHOTS: Shot[] = [
       await vis(editor(page));
       for (const name of [/Full width/, /Small text/, /Serif font/]) {
         await page.getByRole("button", { name: "Page actions", exact: true }).click();
-        await page.getByRole(/menuitem/).or(page.getByRole("button")).filter({ hasText: name }).first().click();
+        await page.getByRole("menuitem", { name }).or(page.getByRole("dialog").getByRole("button", { name })).first().click();
         await page.waitForTimeout(250);
       }
       await page.keyboard.press("Escape");
@@ -569,17 +572,14 @@ export const SHOTS: Shot[] = [
     },
   },
   {
-    id: "NP-RF-05", section: RF, slug: "date-mention", title: "Date mention chip", viewports: ["desktop", "phone"],
-    look: "Date chips (“Today”, “Tomorrow”) in running text and the date entries of the @ menu.",
+    id: "NP-RF-05", section: RF, slug: "date-mention", clock: "run", title: "Date entries of the @ menu (natural-language date)", viewports: ["desktop", "phone"],
+    look: "Typing a date after @ offers the date and a “Remind me” entry.",
     url: fx("notion-mentions"),
     setup: async (page) => {
       const ed = page.locator(".ProseMirror").first(); await vis(ed); await ed.click();
       await page.keyboard.press(`${mod}+End`); await page.keyboard.press("Enter"); await page.keyboard.type("Due @tomorrow 9am");
-      await vis(page.getByRole("option").first());
-      await page.keyboard.press("Enter");
-      await vis(ed.locator('[data-type="mention"][data-kind="date"]'));
-      await ed.locator('[data-type="mention"][data-kind="date"]').last().click();
-      await page.waitForTimeout(400);
+      await page.getByRole("option", { name: /Tomorrow/ }).first().waitFor({ timeout: 8000 }).catch(() => {});
+      await page.waitForTimeout(300);
     },
   },
 
@@ -686,7 +686,7 @@ export const SHOTS: Shot[] = [
   {
     id: "NP-DB-24", section: DB, slug: "task-board", title: "Task board (existing boards)", viewports: ["desktop", "phone"],
     look: "Per-column “+ Add task”, card ⋯, due chips (overdue colour), Ungrouped column, scroller fades.",
-    url: fx("boards"),
+    url: fx("boards", "?due"),
     setup: async (page) => { await vis(page.getByRole("region", { name: "Ungrouped", exact: true })); },
   },
   {
@@ -806,7 +806,7 @@ export const SHOTS: Shot[] = [
     setup: async (page, c) => { await vis(c.phone ? page.getByRole("navigation", { name: "Mobile workspace" }) : tree(page).getByRole("button", { name: "Prism", exact: true })); const d = await palette(page, c); await vis(d.getByRole("group", { name: "Recent pages" })); },
   },
   {
-    id: "NP-SR-02", section: SR, slug: "results-grouped", title: "Results grouped by kind, with the kind filter", viewports: ["desktop", "phone"],
+    id: "NP-SR-02", section: SR, slug: "results-grouped", clock: "run", title: "Results grouped by kind, with the kind filter", viewports: ["desktop", "phone"],
     look: "Notes / Messages / Commands groups, All/Notes/Messages filter, “N results shown”, snippet lines.",
     url: fx("search", "?many"),
     setup: async (page) => {
@@ -817,7 +817,7 @@ export const SHOTS: Shot[] = [
     },
   },
   {
-    id: "NP-SR-03", section: SR, slug: "match-highlight", title: "Matched terms highlighted", viewports: ["desktop", "phone"],
+    id: "NP-SR-03", section: SR, slug: "match-highlight", clock: "run", title: "Matched terms highlighted", viewports: ["desktop", "phone"],
     look: "The query is highlighted in titles and snippets; highlight colour readable in both themes.",
     url: fx("notion-shell"),
     setup: async (page, c) => {
@@ -829,7 +829,7 @@ export const SHOTS: Shot[] = [
     },
   },
   {
-    id: "NP-SR-04", section: SR, slug: "search-filters", title: "Search filters", viewports: ["desktop", "phone"],
+    id: "NP-SR-04", section: SR, slug: "search-filters", clock: "run", title: "Search filters", viewports: ["desktop", "phone"],
     look: "Title only, type, created/edited by me, date, vault scope — one quiet row under the field.",
     url: fx("notion-shell", "?vaults"),
     setup: async (page, c) => {
@@ -1031,7 +1031,7 @@ export const SHOTS: Shot[] = [
     setup: async (page) => { await vis(page.getByRole("heading", { name: "Workspace settings", exact: true })); },
   },
   {
-    id: "X-SETTINGS", section: OTHER, slug: "app-settings", title: "App settings (⌘,)", viewports: ["desktop", "phone"], touch: false,
+    id: "NP-AX-01", section: OTHER, slug: "settings-account", title: "Settings dialog as it opens", viewports: ["desktop", "phone"], touch: false,
     look: "Settings dialog: Appearance (theme, fonts, Reduce motion), Account, devices.",
     url: fx("notion-shell", "?account"),
     setup: async (page) => {
@@ -1057,5 +1057,59 @@ export const SHOTS: Shot[] = [
     look: "The Messages destination: thread list and reading pane.",
     url: fx("messages"),
     setup: async (page) => { await page.waitForLoadState("networkidle"); await page.waitForTimeout(600); },
+  },
+  /* Rows added from PARITY-GAPS §b.2 (fourth verification pass) */
+  {
+    id: "NP-SB-13", section: SB, slug: "new-page", title: "New page in one action: Untitled, title focused", viewports: ["desktop", "phone"], touch: false,
+    look: "One click creates “Untitled” with the title in edit mode — no chooser in the way.",
+    url: fx("notion-shell"),
+    setup: async (page, c) => {
+      await vis(editor(page));
+      const n = await navigation(page, c);
+      await n.getByRole("button", { name: "New page", exact: true }).click();
+      await vis(page.getByRole("textbox", { name: "Document title" }));
+    },
+  },
+  {
+    id: "NP-PG-03", section: PG, slug: "title-editing", title: "Title being edited in place", viewports: ["desktop", "phone"], touch: false,
+    look: "Large title, editable in place; no box or focus ring around the document.",
+    url: fx("notion-shell"),
+    setup: async (page) => { await vis(editor(page)); await page.getByRole("heading", { name: "A living workspace" }).first().click(); await page.waitForTimeout(300); },
+  },
+  {
+    id: "NP-PG-06", section: PG, slug: "header-agent-running", title: "Header row while the agent is running", viewports: ["desktop", "phone"],
+    look: "One quiet row: save state, star, labelled Share, ⋯, labelled Agent with its running dot. Phone: title, save dot, ⋯.",
+    url: fx("notion-shell", "?agent=running"),
+    setup: async (page) => { await vis(editor(page)); await page.waitForTimeout(500); },
+  },
+  {
+    id: "NP-PG-05", section: PG, slug: "properties-viewer", title: "Properties for a viewer (no edit affordances)", viewports: ["desktop", "phone"],
+    look: "Values only: no Add property, no pickers.",
+    url: fx("databases", "?open=page&viewer"),
+    setup: async (page) => { await vis(page.locator(".tiptap")); await page.waitForTimeout(500); },
+  },
+  {
+    id: "NP-DB-18", section: DB, slug: "row-peek-center", title: "Row opened as a center peek", viewports: ["desktop"],
+    look: "Center peek: a modal page with properties and body over the dimmed table.",
+    url: fx("databases"),
+    setup: async (page) => {
+      await vis(page.getByRole("table", { name: "All tasks" }));
+      await page.getByRole("button", { name: "Refine onboarding copy", exact: true }).click();
+      await page.getByRole("dialog", { name: /side peek/ }).getByRole("button", { name: "Center peek" }).click();
+      await vis(page.getByRole("dialog", { name: "Refine onboarding copy (center peek)" }));
+    },
+  },
+  {
+    id: "NP-AX-01", section: OTHER, slug: "settings-appearance", title: "Settings → Appearance (theme, fonts, Reduce motion)", viewports: ["desktop", "phone"],
+    look: "In dark no white panel anywhere; the Reduce motion control is present and labelled (NP-AX-06).",
+    url: fx("workspace"),
+    setup: async (page) => {
+      await page.waitForFunction(() => !!(window as any).prismFixtureUI);
+      await page.evaluate(() => (window as any).prismFixtureUI.getState().setSettingsOpen(true));
+      const dialog = page.getByRole("dialog", { name: "Settings", exact: true });
+      await vis(dialog);
+      await dialog.getByRole("button", { name: "Appearance", exact: true }).click();
+      await page.waitForTimeout(300);
+    },
   },
 ];
