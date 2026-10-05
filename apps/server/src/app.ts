@@ -29,6 +29,7 @@ import { adminApi } from "./routes/admin";
 import { mcp } from "./routes/mcp";
 import { pats } from "./routes/pats";
 import { mountPrismMcp } from "./mcp/router";
+import { mountAppSiteAssociation } from "./routes/app-links";
 import { media, map as mapProxy } from "./routes/media";
 import { rateLimit } from "./middleware/ratelimit";
 import { EMBED_FRAME_SOURCES } from "@prism/core/media-embeds";
@@ -206,6 +207,11 @@ export function createApp(): Hono {
   // the router. MUST be above the SPA fallback, and both prefixes are in the web
   // service worker's navigateFallbackDenylist (apps/web/vite.config.ts).
   mountPrismMcp(app, "/mcp");
+
+  // Universal links (NP-NA-04): the Apple App Site Association file, at both
+  // locations Apple reads. Public, no redirect, above the SPA fallback; the
+  // root path is in the SW navigateFallbackDenylist beside /.well-known/.
+  mountAppSiteAssociation(app);
 
   // Static web app + SPA fallback (relative to cwd = apps/server).
   // Cache strategy: Vite content-hashes everything under /assets, so those are

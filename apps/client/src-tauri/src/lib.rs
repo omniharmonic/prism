@@ -18,7 +18,9 @@ mod commands;
 mod confirm;
 mod dropfiles;
 mod export;
+mod export_archive;
 mod host;
+mod links;
 #[cfg(desktop)]
 mod loopback;
 #[cfg(desktop)]
@@ -74,6 +76,8 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .manage(state)
         .manage(notify::NotifyState::default())
+        .manage(links::LinkState::default())
+        .manage(export_archive::SaveState::default())
         .invoke_handler(tauri::generate_handler![
             commands::get_token,
             commands::sign_in,
@@ -84,6 +88,7 @@ pub fn run() {
             native_cmds::quick_capture,
             native_cmds::notify,
             native_cmds::export_note,
+            native_cmds::save_export,
         ])
         .setup(|app| {
             #[cfg(desktop)]
@@ -117,6 +122,12 @@ pub fn run() {
         .build(context)
         .expect("error while building Prism Client");
     app.run(|_app, _event| {
+        // A universal link or a prism:// deep link (NP-NA-04). Validated in
+        // links.rs; the app never navigates to what it is handed.
+        #[cfg(any(target_os = "macos", target_os = "ios"))]
+        if let tauri::RunEvent::Opened { urls } = &_event {
+            links::on_opened(_app, urls);
+        }
         #[cfg(desktop)]
         match _event {
             tauri::RunEvent::ExitRequested { .. } => save_geometry(_app),

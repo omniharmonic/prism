@@ -9,6 +9,8 @@
  *   POST   /api/notifications/archive   { ids: string[], archived }     → { ok, unread }
  *   GET    /api/notifications/settings                                  → { settings, available }
  *   PUT    /api/notifications/settings  { settings }                    → { settings, available }
+ *   GET    /api/notifications/pages/:id                                 → { level: all|mentions|none }
+ *   PUT    /api/notifications/pages/:id { level }                       → { level }   (view required, else 404)
  *   GET    /api/reminders                                               → { items }
  *   POST   /api/reminders   { noteId, at, tz, uid?, dateOnly? }         → 201 { reminder }
  *   PATCH  /api/reminders/:id { at, tz, dateOnly? }                     → { reminder }
@@ -37,6 +39,7 @@ import { csrfRefusal } from "./actions";
 import { isNoteId } from "../collab";
 import type { ParsedMention } from "@prism/core/mentions";
 import { vaultClient } from "../parachute";
+import { mayAssignPeople, notifyAssignments, personPropertyKeys } from "./databases";
 import {
   TYPE_GROUPS,
   isNotificationType,
@@ -67,6 +70,9 @@ import {
   noteContentStored,
   cachedChips,
   mentionableMembers,
+  getPageLevel,
+  setPageLevel,
+  isPageLevel,
   type NotificationType,
   type ReminderRow,
   type RequestLevel,
@@ -219,6 +225,32 @@ notificationsRoutes.put("/notifications/settings", SMALL, async (c) => {
   if (!s) return c.json({ error: "bad_request" }, 400);
   putSettings(w.email, s);
   return c.json({ settings: s, available: available() });
+});
+
+// Per-page notification level (NP-CO-04): the caller's own choice for a page they
+// can VIEW — an unviewable, trashed or missing page answers 404 like any other.
+async function pageOf(c: Context, w: Who): Promise<string | null> {
+  const id = c.req.param("id") ?? "";
+  if (!isNoteId(id)) return null;
+  return userCanView(w.email, w.vaultId, await noteInfo(w.vaultId, id, { fresh: true })) ? id : null;
+}
+notificationsRoutes.get("/notifications/pages/:id", async (c) => {
+  const w = who(c)!;
+  const id = await pageOf(c, w);
+  if (!id) return notFound(c);
+  c.header("Cache-Control", "private, no-store");
+  return c.json({ level: getPageLevel(w.email, w.vaultId, id) });
+});
+notificationsRoutes.put("/notifications/pages/:id", SMALL, async (c) => {
+  const csrf = csrfRefusal(c, requestVia(c));
+  if (csrf) return csrf;
+  const w = who(c)!;
+  const b = await json(c);
+  if (!b || !isPageLevel(b.level) || Object.keys(b).some((k) => k !== "level")) return c.json({ error: "bad_request" }, 400);
+  const id = await pageOf(c, w);
+  if (!id) return notFound(c);
+  setPageLevel(w.email, w.vaultId, id, b.level);
+  return c.json({ level: getPageLevel(w.email, w.vaultId, id) });
 });
 
 // ── reminders ────────────────────────────────────────────────────────────────
@@ -457,4 +489,70 @@ export const restMentionHook: MiddlewareHandler = async (c, next) => {
       }
     })();
   }, 1000);
+};
+
+// ── REST metadata writes → assignment notifications (NP-CO-16) ───────────────
+/**
+ * Mounted beside `restMentionHook` (before the owner short-circuit): a metadata
+ * PATCH/PUT that sets a PERSON property — the owner passthrough, the member route
+ * and the Prism MCP's in-process dispatch alike. Creates are NOT covered on
+ * purpose (a template copy, a duplicate or an import row assigns nobody anew).
+ *
+ * Costs nothing for other writes, and never waits on the tree projection: the
+ * body must carry `metadata` with a people-shaped value under an assignee key, a
+ * people-named key or a key some tag presents as a person (`mayAssignPeople` —
+ * synchronous, no vault call); only then is the stored note read ONCE, lean (no
+ * body, only the keys being written; its tags and path come with it), for the
+ * previous value (per-user budget; past it, or if the read fails, this write is
+ * simply not diffed). Never changes the response.
+ */
+export const restAssignmentHook: MiddlewareHandler = async (c, next) => {
+  const method = c.req.method;
+  const id = c.req.param("id");
+  if ((method !== "PATCH" && method !== "PUT") || !id || !isNoteId(id)) return next();
+  let raw: string;
+  try {
+    raw = await c.req.text();
+  } catch {
+    return next();
+  }
+  if (raw.length > 4_000_000 || raw.indexOf("metadata") < 0) return next();
+  let set: Record<string, unknown> | null = null;
+  try {
+    const b = JSON.parse(raw) as { metadata?: unknown };
+    set = b?.metadata && typeof b.metadata === "object" && !Array.isArray(b.metadata) ? (b.metadata as Record<string, unknown>) : null;
+  } catch {
+    return next();
+  }
+  if (!set) return next();
+  const actor = resolveActor(c);
+  if (actor.kind !== "user") return next();
+  const entry = resolveVaultEntry(roleAtLeast(actor.role, "admin") ? c.req.header("x-prism-vault") : actor.vaultId);
+  // An icon, a cover, a status: decided here, synchronously, with no read of any kind.
+  if (!mayAssignPeople(entry.id, set)) return next();
+  let before: Awaited<ReturnType<ReturnType<typeof vaultClient>["getNote"]>> | null = null;
+  if (consumeRateLimit(`assign-hook:${actor.email}`, 120, 60_000) === null) {
+    try {
+      const keys = Object.keys(set).filter((k) => typeof k === "string" && k.length <= 200).slice(0, 50);
+      const n = await vaultClient(entry.id, { timeoutMs: 5_000 }).getNote(id, { includeContent: false, includeMetadata: keys });
+      before = n.id === id && !(n.tags ?? []).includes("prism-trashed") && (await personPropertyKeys(entry, n.tags ?? [], set)).length ? n : null;
+    } catch {
+      before = null;
+    }
+  }
+  await next();
+  if (!before) return;
+  const status = c.res.status;
+  if (status < 200 || status >= 300) return;
+  // What the route actually stored (a member's PATCH drops keys it may not set).
+  let stored: Record<string, unknown> | null = null;
+  try {
+    const body = (await c.res.clone().json()) as { metadata?: unknown };
+    stored = body?.metadata && typeof body.metadata === "object" ? (body.metadata as Record<string, unknown>) : null;
+  } catch {
+    /* no JSON body */
+  }
+  const written: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(set)) if (!stored || JSON.stringify(stored[k] ?? null) === JSON.stringify(v ?? null)) written[k] = v;
+  notifyAssignments(actor, entry, before, written, requestVia(c));
 };

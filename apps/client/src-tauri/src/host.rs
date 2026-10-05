@@ -48,9 +48,16 @@ mod tests {
             "\"open_external\"",
             "\"notify\"",
             "\"export_note\"",
+            "\"save_export\"",
         ] {
             assert!(js.contains(cmd));
         }
+        // Incoming links: handed over as a path through the frozen shell
+        // object and a payload-free event; the hook itself never navigates.
+        for k in ["openLink", "takePendingLink", "\"prism:open-link\""] {
+            assert!(js.contains(k), "host hook must define {k}");
+        }
+        assert!(!js.contains("location.assign") && !js.contains("location.href ="));
         assert!(
             !js.contains("localStorage"),
             "the token never touches web storage"
