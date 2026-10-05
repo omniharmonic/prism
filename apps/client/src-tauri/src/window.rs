@@ -75,6 +75,12 @@ pub fn create_main_window<R: Runtime>(app: &mut App<R>) -> tauri::Result<Webview
         WebviewWindowBuilder::new(app, MAIN_WINDOW, WebviewUrl::App("index.html".into()))
             .title("Prism")
             .initialization_script(script)
+            // An incoming link waits for the page (host.js) before it is
+            // handed over, and is offered again after the sign-in reload.
+            .on_page_load(|window, payload| {
+                let finished = matches!(payload.event(), tauri::webview::PageLoadEvent::Finished);
+                crate::links::on_page_loaded(window.app_handle(), finished);
+            })
             .on_navigation(|url| {
                 let d = navigation_decision(url);
                 if d == NavDecision::Deny {
