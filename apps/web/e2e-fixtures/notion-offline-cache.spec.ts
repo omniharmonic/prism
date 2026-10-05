@@ -91,3 +91,43 @@ test("the tree has its own 16 MB limit: a 6 MB tree is cached for an offline sta
   expect(result.oldestPage).toBe(-1);
   expect(result.newestPage).toBe(2);
 });
+
+test("trees share a 32 MB total (newest kept) and an unchanged tree is not written to IndexedDB again", async ({ page }) => {
+  test.setTimeout(120_000);
+  await page.goto("/e2e-fixtures/harness.html");
+  const result = await page.evaluate(async (mod) => {
+    const cache = await import(/* @vite-ignore */ mod);
+    cache.setProtectedCacheKeys([]);
+    const stats = () => ({ ...(cache.cacheStats ?? { bodyWrites: -1, unchangedSkips: -1 }) });
+    const scope = (n: number) => JSON.stringify(["http://x/api", "w", `vault-${n}`, "user:a@test.local"]);
+    const tree = (n: number) => JSON.stringify({ vault: n, rows: "r".repeat(11 * 1024 * 1024) });
+    const has = async (key: string) => !!(await cache.cacheGet(key));
+    // The same tree arrives three times (a start, an event refetch, another start): written once.
+    const first = tree(1);
+    await cache.cachePut(`${scope(1)}|/tree`, first, "application/json");
+    const afterFirst = stats();
+    await cache.cachePut(`${scope(1)}|/tree`, first, "application/json");
+    await cache.cachePut(`${scope(1)}|/tree`, first, "application/json");
+    const afterRepeats = stats();
+    const stillServed = (await cache.cacheGet(`${scope(1)}|/tree`))?.body.length === first.length;
+    // A changed tree IS written.
+    const changed = first.replace('"vault":1', '"vault":9');
+    await cache.cachePut(`${scope(1)}|/tree`, changed, "application/json");
+    const afterChange = stats();
+    const servesChange = (await cache.cacheGet(`${scope(1)}|/tree`))?.body === changed;
+    // Two more vaults' trees: 3 × 11 MB is over the trees' 32 MB — the OLDEST goes, a cached page stays.
+    await cache.cachePut(`${scope(1)}|/notes/a`, '{"id":"a"}', "application/json");
+    await new Promise((r) => setTimeout(r, 20));
+    await cache.cachePut(`${scope(2)}|/tree`, tree(2), "application/json");
+    await new Promise((r) => setTimeout(r, 20));
+    await cache.cachePut(`${scope(3)}|/tree`, tree(3), "application/json");
+    return { afterFirst, afterRepeats, afterChange, stillServed, servesChange, t1: await has(`${scope(1)}|/tree`), t2: await has(`${scope(2)}|/tree`), t3: await has(`${scope(3)}|/tree`), pageKept: await has(`${scope(1)}|/notes/a`) };
+  }, mod);
+  expect(result.afterFirst.bodyWrites).toBe(1);
+  expect(result.afterRepeats, "the same tree again: no second write of the body").toEqual({ bodyWrites: 1, unchangedSkips: 2 });
+  expect(result.stillServed).toBe(true);
+  expect(result.afterChange.bodyWrites).toBe(2);
+  expect(result.servesChange).toBe(true);
+  expect([result.t1, result.t2, result.t3], "the oldest tree is dropped, the two newest stay").toEqual([false, true, true]);
+  expect(result.pageKept, "trees never push a cached page out for their own total").toBe(true);
+});

@@ -24,6 +24,21 @@ const MAX_BODY = 4 * 1024 * 1024;
 // the MAX_BYTES budget — and the LRU drops every other entry before a tree: a
 // cached page nobody can navigate to is worth less than the list of pages.
 const TREE_MAX_BODY = 16 * 1024 * 1024;
+/** All cached trees together (several vaults / accounts on one device): the NEWEST are kept. Without
+ *  this four 16 MB trees would be the whole shared budget and no page would stay cached. */
+const TREES_MAX_BYTES = 32 * 1024 * 1024;
+/** Counters for tests and diagnostics. */
+export const cacheStats = { bodyWrites: 0, unchangedSkips: 0 };
+/** A cheap content fingerprint (two FNV-1a passes): "is this the body already stored?" — never a security check. */
+function fingerprint(body: string): string {
+  let a = 0x811c9dc5, b = 0x01000193;
+  for (let i = 0; i < body.length; i++) {
+    const c = body.charCodeAt(i);
+    a = Math.imul(a ^ c, 0x01000193);
+    b = Math.imul(b + c, 0x85ebca6b) ^ (b >>> 13);
+  }
+  return `${body.length}:${(a >>> 0).toString(16)}:${(b >>> 0).toString(16)}`;
+}
 /** `<scope>|/tree` (with or without a query) — the sidebar's projection. */
 export const isTreeKey = (key: string): boolean => {
   const path = key.slice(key.indexOf("|") + 1);
@@ -43,6 +58,8 @@ interface IndexRow {
   at: number;
   /** When the body was last confirmed by the server (rows written before this field: `at`). */
   stored?: number;
+  /** Fingerprint of the stored body (trees only): an unchanged tree is not written again. */
+  print?: string;
 }
 interface BodyRow {
   key: string;
@@ -128,10 +145,24 @@ export async function cachePut(key: string, body: string, contentType: string): 
   if (body.length > (isTreeKey(key) ? TREE_MAX_BODY : MAX_BODY)) return;
   try {
     const db = await open();
+    // A tree is megabytes and is fetched on every start and every sidebar change that reaches this
+    // device: when the server sent the SAME body again, only its freshness is recorded.
+    const print = isTreeKey(key) ? fingerprint(body) : undefined;
+    if (print) {
+      const t0 = db.transaction(["bodies", "index"], "readwrite");
+      const idx = await result<IndexRow | undefined>(t0.objectStore("index").get(key));
+      if (idx?.print === print && (await result<number>(t0.objectStore("bodies").count(key))) === 1) {
+        t0.objectStore("index").put({ ...idx, at: Date.now(), stored: Date.now() });
+        await done(t0);
+        cacheStats.unchangedSkips++;
+        return;
+      }
+    }
     const t = db.transaction(["bodies", "index"], "readwrite");
     t.objectStore("bodies").put({ key, body, contentType } satisfies BodyRow);
-    t.objectStore("index").put({ key, size: body.length, at: Date.now(), stored: Date.now() } satisfies IndexRow);
+    t.objectStore("index").put({ key, size: body.length, at: Date.now(), stored: Date.now(), ...(print ? { print } : {}) } satisfies IndexRow);
     await done(t);
+    cacheStats.bodyWrites++;
     await evict(db);
   } catch {
     /* cache is best-effort */
@@ -169,8 +200,14 @@ async function evict(db: IDBDatabase): Promise<void> {
     }
   };
   // Only once the pinned set is known; expiry above never depends on it.
+  // Trees have a total of their own (newest kept), so they can never be the whole shared budget.
+  let treeBytes = 0;
+  for (const r of live.filter((r) => isTreeKey(r.key)).sort((a, b) => (b.stored ?? b.at) - (a.stored ?? a.at))) {
+    treeBytes += r.size;
+    if (treeBytes > TREES_MAX_BYTES) drop.push(r);
+  }
   // Trees go last: within the shared budget everything else is dropped first.
-  const ordinary = live.filter((r) => !protectedKeys.has(r.key));
+  const ordinary = live.filter((r) => !protectedKeys.has(r.key) && !drop.includes(r));
   if (protectedReady) trim([...ordinary.filter((r) => !isTreeKey(r.key)), ...ordinary.filter((r) => isTreeKey(r.key))], MAX_ENTRIES, MAX_BYTES);
   trim(live.filter((r) => protectedKeys.has(r.key)), Number.MAX_SAFE_INTEGER, PINNED_MAX_BYTES);
   if (!drop.length) return;
