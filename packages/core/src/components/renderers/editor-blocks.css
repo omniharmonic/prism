@@ -381,6 +381,18 @@ a.prism-bookmark:hover { background: var(--glass-hover); border-color: var(--gla
 }
 .prose-editor > .prism-block-selected ::selection { background: transparent; }
 
+/* Mouse block selection (NP-ED-26): the marquee, and a text drag that turned into blocks. */
+.prism-block-marquee {
+  position: fixed;
+  z-index: var(--z-popover, 70);
+  pointer-events: none;
+  background: color-mix(in srgb, var(--color-accent, #4f8ff7) 14%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-accent, #4f8ff7) 45%, transparent);
+  border-radius: 2px;
+}
+html.prism-marquee-active, html.prism-marquee-active * { user-select: none !important; -webkit-user-select: none !important; cursor: default !important; }
+.prose-editor.prism-block-dragging ::selection { background: transparent; }
+
 /* ── Toggle headings (NP-ED-08) ── */
 .prose-editor .prism-toggle[data-heading-level] > .prism-toggle-body > summary,
 .prose-editor details[data-heading-level] > summary { font-weight: 650; line-height: 1.25; letter-spacing: -0.01em; }
