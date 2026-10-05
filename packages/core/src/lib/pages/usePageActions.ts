@@ -193,6 +193,15 @@ export function usePageActions() {
       }
       // A server from before this route: the vault (owner) answers a plain 404/405.
       if (e instanceof PagesRequestError && (e.status === 405 || e.status === 501 || (e.status === 404 && e.code !== "not_found"))) return duplicateSingle(page);
+      // No answer, a server error or "busy": the copy may exist in part or still be running.
+      // Never "nothing was changed" — and the retry is THIS request (same id), so it can
+      // only finish that copy, never start a second one.
+      const status = e instanceof PagesRequestError ? e.status : 0;
+      const unknown = !(e instanceof PagesRequestError) || status === 0 || status >= 500 || e.code === "busy" || e.code === "offline";
+      if (unknown) {
+        toast(`Couldn’t confirm the copy of “${page.title}”. The copy may still be running — finish it in a moment.`, { tone: "error", action: { label: "Finish", run: () => again() } });
+        return;
+      }
       fail(e, "Couldn’t duplicate this page. Nothing was changed.");
     }
   };

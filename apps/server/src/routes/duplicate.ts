@@ -17,14 +17,15 @@
  * strict note id (an alias that resolves to another id is a 404).
  *
  * SOURCE. The caller must VIEW the page (unviewable = missing = trashed → 404).
- * System notes are never duplicated (403, everyone — a copied skill note would be a
- * second scheduled skill, a copied governance record is unsigned); ingest-owned
- * notes (`protectionReason`) only by an admin, as before this route existed.
- * A DESCENDANT is copied only when it is live, viewable, not a system / (non-admin)
- * ingest note, and — for a non-admin — a page they could create at its new path.
- * Everything else is left out and only COUNTED (`skipped`): no name, no id.
- * Rows of a database page inside the subtree (descendants carrying every source tag
- * of that database) are not copied (`rows`): the copy shows the same rows by tag.
+ * 🔒 Someone ELSE's private page is never copied, for any role (an admin included),
+ * as the root (404) or as a sub-page (left out, not counted). System notes and
+ * ingest-owned notes (`protectionReason`) are never duplicated, for any role (403 as
+ * the root; left out and counted as a sub-page). A DESCENDANT is copied only when it
+ * is live, viewable, not system/ingest, and — for a non-admin — a page they could
+ * create at its new path. `skipped` counts the pages the caller CAN see that were
+ * not copied — never the ones they cannot see. Rows of a database page inside the
+ * subtree (descendants carrying every source tag of that database) are not copied
+ * (`rows`): the copy shows the same rows by tag.
  *
  * DESTINATION = exactly the rules of a new page there (the member `POST /notes`):
  * the `create` cap from the copy's tags or at the place (`createCapsAt`),
@@ -38,14 +39,23 @@
  * reminder) — a linear scanner; nothing here parses Markdown or HTML. Sub-page rows,
  * page mentions and full-path `[[wikilinks]]` that point INSIDE the duplicated
  * subtree are re-pointed at the copies; everything else stays. Metadata by allowlist
- * (`templateKeepsKey` + the ingest-key rule): never identity, lock, trash, writer
- * stamps or ingest keys. Creator = the duplicator. A PRIVATE page's copy is private
- * to the duplicator. Sub-pages keep their `prism_order`; the root does not.
+ * (`templateKeepsKey` + the ingest-key rule + `NEVER_COPIED`): never identity, lock,
+ * trash, writer stamps or ingest keys. Creator = the duplicator. A PRIVATE page's
+ * copy is private to the duplicator. Sub-pages keep their `prism_order`; the root
+ * does not.
  *
- * AUDIENCE. The copy sits beside its source, so whoever a page share or tag reaches
- * there could already read the source — except private pages, which stay private.
- * When the destination lies under a shared page AND the subtree holds private pages,
- * the caller confirms first (`confirmShared: true`), like an import under a share.
+ * AUDIENCE. A copy is NOT automatically read by the same people as its source: page
+ * grants are anchored on note ids and the nearest one wins, so a sub-page can be
+ * RESTRICTED for someone who inherits more from above — and the copy has no grant.
+ * Under a shared destination, every copy whose source (or a page above it, up to the
+ * duplicated root) carries a page grant is created PRIVATE to the duplicator
+ * (`sharingKept`), like private pages are; both are counted in `audience.private`,
+ * and the caller confirms first (`confirmShared: true`, 409 `confirm_shared`).
+ *
+ * LOAD. One duplicate per account and `DUPLICATE_MAX_RUNNING` (2) server-wide (409
+ * `busy` + Retry-After); creates are paced (`DUPLICATE_PAUSE_MS`) and one request
+ * creates for at most `DUPLICATE_PASS_BUDGET_MS` (20 s) — then, or when the client
+ * has gone, it answers 207 and the same requestId continues.
  *
  * NOT TRANSACTIONAL. Copies are written in path order (root first). A failure
  * midway answers 207; the journal (`page_duplicates`) and each copy's
@@ -105,12 +115,21 @@ export interface DuplicateConfig {
   perMinute: number;
   /** How long one request may spend giving copies their own files. */
   filesBudgetMs: number;
+  /** How long one request may spend CREATING copies; past it → 207, the same requestId continues. */
+  passBudgetMs: number;
+  /** Pause between creates: the vault is single-threaded and shared with everyone. */
+  pauseMs: number;
+  /** Duplicates running at once, server-wide (one per account). */
+  maxRunning: number;
 }
 const defaults = (): DuplicateConfig => ({
   maxNotes: Number(process.env.DUPLICATE_MAX_NOTES ?? 500),
   maxBytes: Number(process.env.DUPLICATE_MAX_BYTES ?? 50 * 1024 * 1024),
   perMinute: Number(process.env.DUPLICATE_PER_MINUTE ?? 20),
   filesBudgetMs: Number(process.env.DUPLICATE_FILES_BUDGET_MS ?? 15_000),
+  passBudgetMs: Number(process.env.DUPLICATE_PASS_BUDGET_MS ?? 20_000),
+  pauseMs: Number(process.env.DUPLICATE_PAUSE_MS ?? 25),
+  maxRunning: Number(process.env.DUPLICATE_MAX_RUNNING ?? 2),
 });
 let cfg = defaults();
 /** Tests: override limits (null = back to the environment's). */
@@ -189,6 +208,10 @@ const canAddTag = (a: User, t: string): boolean => {
 /** `tagGoverned` of routes/api.ts: a grant names the tag, or a public site is published from it. */
 const tagGoverned = (vaultId: string, t: string): boolean => grantsForResource("tag", t, vaultId).length > 0 || publishedTag(vaultId, t);
 const isPrivate = (n: { metadata?: Record<string, unknown> | null }): boolean => n.metadata?.prism_visibility === "private";
+const creatorOf = (n: { metadata?: Record<string, unknown> | null }): string => (typeof n.metadata?.prism_creator === "string" ? n.metadata.prism_creator.toLowerCase() : "");
+/** Keys an ingester or the identity layer matches notes by that the shared ingest-key list does not name. */
+const NEVER_COPIED: ReadonlySet<string> = new Set(["archiveOf", "uid", "mailbox", "transcriptNoteId", "emails", "channels", "participantIds", "matrixRoomIds"]);
+const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 const isPlain = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
 const sourceTagsOf = (n: { metadata?: Record<string, unknown> | null }): string[] | null => {
   if (n.metadata?.prism_type !== "database") return null;
@@ -215,7 +238,9 @@ async function mayCreate(actor: User, path: string, tags: string[]): Promise<boo
 }
 
 /** Pages open in the live editor hold typing the vault has not seen: store them first (best-effort, bounded). */
+/** 🔒 `ids` = pages the CALLER may edit: someone with only `view` never forces a store. */
 async function flushLive(entry: VaultEntry, ids: string[]): Promise<boolean> {
+  if (!ids.length) return false;
   let flushed = false;
   try {
     const collab = await import("../collab");
@@ -231,9 +256,9 @@ async function flushLive(entry: VaultEntry, ids: string[]): Promise<boolean> {
 }
 
 /** The copy's metadata, key by key. */
-function copyMetadata(actor: User, vaultId: string, source: Note, tags: string[], opts: { title?: string; keepOrder: boolean; op: string }): Record<string, unknown> {
+function copyMetadata(actor: User, vaultId: string, source: Note, tags: string[], opts: { title?: string; keepOrder: boolean; op: string; forcePrivate?: boolean }): Record<string, unknown> {
   const out: Record<string, unknown> = {};
-  const keep = (k: string, v: unknown) => templateKeepsKey(k, v) && !ingestKeyChanged(k, v, undefined);
+  const keep = (k: string, v: unknown) => templateKeepsKey(k, v) && !ingestKeyChanged(k, v, undefined) && !NEVER_COPIED.has(k);
   for (const [k, v] of Object.entries(source.metadata ?? {})) if (keep(k, v)) out[k] = v;
   if (PAGE_STYLE_KEY in out) {
     const style = parsePageStyle(out[PAGE_STYLE_KEY]);
@@ -253,13 +278,15 @@ function copyMetadata(actor: User, vaultId: string, source: Note, tags: string[]
   if (isPlain(props)) out[TEMPLATE_PROPS_KEY] = Object.fromEntries(Object.entries(props).filter(([k, v]) => keep(k, v)));
   // 🔒 Private stays private — to the person duplicating. A non-admin's template is
   // always private (the member create rule).
-  if (isPrivate(source) || (!isAdmin(actor) && tags.includes(TEMPLATE_TAG))) out.prism_visibility = "private";
+  // `forcePrivate`: the source (or a page above it) had its OWN sharing, which the copy cannot carry.
+  if (isPrivate(source) || opts.forcePrivate || (!isAdmin(actor) && tags.includes(TEMPLATE_TAG))) out.prism_visibility = "private";
   out.prism_creator = actor.email;
   out[CLIENT_OP] = opts.op;
   Object.assign(out, writerStamp(actor.email, "edit"));
   return out;
 }
 
+/** Accounts with a duplicate running now (one each; `cfg.maxRunning` in all). */
 const inFlight = new Set<string>();
 const opFor = (requestId: string, sourceId: string): string => `${requestId}:${createHash("sha256").update(`${requestId}\u0000${sourceId}`).digest("hex").slice(0, 16)}`;
 async function pool<T>(items: T[], size: number, fn: (item: T) => Promise<void>): Promise<void> {
@@ -308,19 +335,47 @@ export function createDuplicateApi(opts: DuplicateApiOptions = {}) {
     }
     if (root.id !== id) return c.json(NOT_FOUND, 404);
     if (!admin) await warmPageAnchors(actor.grants);
-    const canView = (n: Pick<Note, "id" | "tags" | "metadata"> & { path?: string | null }) => admin || capsFor(actor, refOf(n)).has("view");
-    if (!canView(root) || isTrashed(root)) return c.json(NOT_FOUND, 404);
-    if (!root.path) return c.json({ error: "bad_request", reason: "This page has no location to copy beside." }, 400);
-    const system = systemNoteReason(root);
-    if (system) return c.json({ error: "protected", reason: "This is a system note, so it can’t be duplicated." }, 403);
-    if (!admin && protectionReason(root)) return c.json({ error: "protected", reason: "This page is kept in sync by an integration, so it can’t be duplicated here." }, 403);
-    const from = root.path;
-
     const who = actor.email.toLowerCase();
-    const flightKey = `${entry.id}\u0000${who}\u0000${requestId}`;
-    if (inFlight.has(flightKey)) return c.json({ error: "busy", reason: "This duplicate is still running." }, 409);
-    inFlight.add(flightKey);
+    type Ref = Pick<Note, "id" | "tags" | "metadata"> & { path?: string | null };
+    // 🔒 Someone ELSE's private page is never copied — for any role, root or sub-page. An
+    // admin can read it, but a copy would re-own it (creator = the duplicator), and with
+    // that hand it to whatever that admin's exports and sync configs may carry.
+    const canView = (n: Ref) => (isPrivate(n) && creatorOf(n) !== who ? false : admin || capsFor(actor, refOf(n)).has("view"));
+    const canEdit = (n: Ref) => canView(n) && (admin || capsFor(actor, refOf(n)).has("edit"));
+    /** The refusal for a root that may not be duplicated, or null. */
+    const rootRefusal = (n: Note): Response | null => {
+      if (n.id !== id || !canView(n) || isTrashed(n)) return c.json(NOT_FOUND, 404);
+      if (!n.path) return c.json({ error: "bad_request", reason: "This page has no location to copy beside." }, 400);
+      if (systemNoteReason(n)) return c.json({ error: "protected", reason: "This is a system note, so it can’t be duplicated." }, 403);
+      // Ingest-owned notes (people, mail, meetings, threads) for EVERY role: a second copy
+      // pollutes identity matching and the classify skills.
+      if (protectionReason(n)) return c.json({ error: "protected", reason: "This page is kept in sync by an integration, so it can’t be duplicated." }, 403);
+      return null;
+    };
+    const refused = rootRefusal(root);
+    if (refused) return refused;
+
+    // One duplicate per account, a few server-wide: each is hundreds of vault calls.
+    if (inFlight.has(who) || inFlight.size >= cfg.maxRunning) {
+      c.header("Retry-After", "5");
+      return c.json({ error: "busy", reason: inFlight.has(who) ? "Another duplicate of yours is still running." : "The server is busy copying other pages. Try again in a moment." }, 409);
+    }
+    inFlight.add(who);
     try {
+      // The root open in the live editor holds typing the vault has not seen: stored first
+      // (only for someone who may edit it), then read AGAIN and judged again as a whole —
+      // a page made private or trashed in that window is treated as what it is now.
+      if (canEdit(root) && (await flushLive(entry, [root.id]))) {
+        try {
+          root = await vc.getNote(id);
+        } catch (e) {
+          if (e instanceof VaultError && e.status === 404) return c.json(NOT_FOUND, 404);
+          return c.json({ error: "vault_unreachable" }, 502);
+        }
+        const now = rootRefusal(root);
+        if (now) return now;
+      }
+      const from = root.path!;
       let job = getJob(entry.id, who, requestId);
       if (job && (job.source_id !== root.id || !!job.with_subpages !== withSubpages)) return c.json({ error: "request_mismatch", reason: "That requestId was used for another duplicate." }, 422);
 
@@ -343,10 +398,13 @@ export function createDuplicateApi(opts: DuplicateApiOptions = {}) {
       const isRow = (n: Note): boolean => databases.some((d) => isUnder(n.path, d.path) && d.tags.every((t) => (n.tags ?? []).includes(t)));
       let skipped = 0;
       let rows = 0;
+      // `skipped` counts only pages the caller CAN see but that are not copied (system,
+      // integration-owned, not creatable there). A page they cannot view is not counted:
+      // the number of hidden pages under a page is not theirs to learn.
       const eligible = (n: Note): "copy" | "skip" | "row" | "gone" => {
         if (isTrashed(n) || !n.path || !isUnder(n.path, from)) return "gone";
-        if (!canView(n)) return "skip";
-        if (systemNoteReason(n) || (!admin && protectionReason(n))) return "skip";
+        if (!canView(n)) return "gone";
+        if (systemNoteReason(n) || protectionReason(n)) return "skip";
         return isRow(n) ? "row" : "copy";
       };
       const candidates: Note[] = [];
@@ -388,13 +446,8 @@ export function createDuplicateApi(opts: DuplicateApiOptions = {}) {
       }
 
       // ── read every source in full (bytes are counted before any write) ─────
-      if (await flushLive(entry, [root.id, ...candidates.map((n) => n.id)])) {
-        try {
-          const fresh = await vc.getNote(root.id);
-          // Only the BODY is taken from the re-read: every check above was made on `root`.
-          if (fresh.id === root.id && fresh.path === root.path) root = { ...root, content: fresh.content, updatedAt: fresh.updatedAt };
-        } catch { /* keep the copy read above */ }
-      }
+      // (Live sub-pages the caller may edit are stored first; each is read fresh below.)
+      await flushLive(entry, candidates.filter(canEdit).map((n) => n.id));
       const sources = new Map<string, Note>([[root.id, root]]);
       let bytes = Buffer.byteLength(root.content ?? "", "utf8");
       let unreadable = false;
@@ -417,7 +470,7 @@ export function createDuplicateApi(opts: DuplicateApiOptions = {}) {
       if (unreadable) return c.json({ error: "vault_unreachable" }, 502);
 
       // ── the plan: root first, then by path; each with its tags and place ───
-      interface Item { source: Note; path: string; tags: string[]; isRoot: boolean; op: string }
+      interface Item { source: Note; path: string; tags: string[]; isRoot: boolean; op: string; forcePrivate?: boolean }
       const plan: Item[] = [{ source: root, path: target, tags: rootTags.tags, isRoot: true, op: opFor(requestId, root.id) }];
       let droppedTags = rootTags.dropped;
       for (const candidate of candidates) {
@@ -433,11 +486,27 @@ export function createDuplicateApi(opts: DuplicateApiOptions = {}) {
         plan.push({ source, path, tags: t.tags, isRoot: false, op: opFor(requestId, source.id) });
       }
       const privateKept = plan.filter((p) => isPrivate(p.source)).length;
-      let shared = false;
-      try { shared = !!(await sharedAncestor(entry, target)); } catch { /* the tree is unavailable: treated as not shared, private pages stay private either way */ }
-      const audience = { sharedPage: shared, private: privateKept };
-      if (shared && privateKept > 0 && body.confirmShared !== true) {
-        return c.json({ error: "confirm_shared", reason: "This copy lands inside a page that is shared with other people. The private pages in it stay private to you; the rest is shared like the original.", audience }, 409);
+      // 🔒 Fail CLOSED: if the tree cannot say whether the destination is shared, it is.
+      let shared = true;
+      try { shared = !!(await sharedAncestor(entry, target)); } catch { shared = true; }
+      // 🔒 A page grant is anchored on a note ID and the NEAREST one wins — it can give a
+      // person LESS than they inherit from above. The copy has no such grant, so under a
+      // shared destination it would hand that person the ancestor's wider access. Every
+      // copy whose source — or a page above it, up to the duplicated root — carries a page
+      // grant is therefore created PRIVATE to the duplicator (who may share it again).
+      let sharingKept = 0;
+      if (shared) {
+        const anchors = [root, ...lean].filter((n) => !!n.path && grantsForResource("page", n.id, entry.id).length > 0).map((n) => n.path!);
+        for (const item of plan) {
+          const at = item.source.path!;
+          if (!anchors.some((a) => a === at || isUnder(at, a))) continue;
+          item.forcePrivate = true;
+          if (!isPrivate(item.source)) sharingKept++;
+        }
+      }
+      const audience = { sharedPage: shared, private: privateKept + sharingKept };
+      if (shared && audience.private > 0 && body.confirmShared !== true) {
+        return c.json({ error: "confirm_shared", reason: sharingKept ? `This copy lands inside a page that is shared with other people. ${audience.private === 1 ? "One page" : `${audience.private} pages`} in it will be private to you (private pages, and pages that had their own sharing); the rest is shared like the original.` : "This copy lands inside a page that is shared with other people. The private pages in it stay private to you; the rest is shared like the original.", audience }, 409);
       }
 
       // ── what already exists of this request (a retry adopts it) ────────────
@@ -448,13 +517,19 @@ export function createDuplicateApi(opts: DuplicateApiOptions = {}) {
         return c.json({ error: "vault_unreachable" }, 502);
       }
       const present = new Map(existing.map((n) => [n.id, n]));
-      const byOp = new Map(existing.filter((n) => typeof n.metadata?.[CLIENT_OP] === "string").map((n) => [n.metadata![CLIENT_OP] as string, n]));
+      // 🔒 Adopted by op id only when it is THIS account's live note: an op id is ordinary
+      // metadata, and a note somebody else put at that path is simply a taken path.
+      const mine = (n: Note): boolean => !isTrashed(n) && creatorOf(n) === who;
+      const byOp = new Map(existing.filter((n) => typeof n.metadata?.[CLIENT_OP] === "string" && mine(n)).map((n) => [n.metadata![CLIENT_OP] as string, n]));
       const firstRun = !job;
+      // "Finish" after "Undo": the copy is in the Trash — never adopted, never continued.
+      const undone = job?.copies[root.id] ? present.get(job.copies[root.id]!.id) : undefined;
+      if (undone && isTrashed(undone)) return c.json({ error: "undone", reason: "This copy was moved to Trash. Restore it from the Trash, or duplicate the page again." }, 409);
       job ??= { source_id: root.id, with_subpages: withSubpages ? 1 : 0, to_path: target, copies: {}, status: "running" };
       for (const [src, copy] of Object.entries(job.copies)) if (!present.has(copy.id)) delete job.copies[src];
       for (const item of plan) {
-        const mine = byOp.get(item.op);
-        if (mine && !job.copies[item.source.id]) job.copies[item.source.id] = { id: mine.id, stamp: mine.updatedAt ?? mine.createdAt ?? null, linked: false };
+        const held = byOp.get(item.op);
+        if (held && !job.copies[item.source.id]) job.copies[item.source.id] = { id: held.id, stamp: held.updatedAt ?? held.createdAt ?? null, linked: false };
       }
       job.status = "running";
       putJob(entry.id, who, requestId, job);
@@ -493,14 +568,21 @@ export function createDuplicateApi(opts: DuplicateApiOptions = {}) {
       let failed: { reason: string } | null = null;
       let failure: unknown = null;
       const relink = new Set<string>();
+      const passStarted = Date.now();
+      const gone = c.req.raw.signal;
       for (const item of plan) {
         const known = job.copies[item.source.id];
         if (known) {
           if (!known.linked) relink.add(item.source.id);
           continue;
         }
+        // Bounded: past the budget, or once the client is gone, the request stops here —
+        // what exists is journaled and the same requestId continues ("Finish").
+        if (gone?.aborted) { failed = { reason: "client_gone" }; break; }
+        if (createdNow > 0 && Date.now() - passStarted > cfg.passBudgetMs) { failed = { reason: "time_budget" }; break; }
+        if (createdNow > 0 && cfg.pauseMs > 0) await sleep(cfg.pauseMs);
         const { content, pending } = bodyOf(item);
-        const metadata = copyMetadata(actor, entry.id, item.source, item.tags, { ...(item.isRoot ? { title: name } : {}), keepOrder: !item.isRoot, op: item.op });
+        const metadata = copyMetadata(actor, entry.id, item.source, item.tags, { ...(item.isRoot ? { title: name } : {}), keepOrder: !item.isRoot, op: item.op, forcePrivate: item.forcePrivate });
         let created: Note | null = null;
         try {
           created = await vc.createNote({ content, path: item.path, tags: item.tags, metadata, ifExists: "error" });
@@ -510,7 +592,7 @@ export function createDuplicateApi(opts: DuplicateApiOptions = {}) {
           if (!(e instanceof VaultConflictError)) {
             try {
               const at = await vc.getNote(item.path);
-              if (at.path === item.path && at.metadata?.[CLIENT_OP] === item.op) created = at;
+              if (at.path === item.path && at.metadata?.[CLIENT_OP] === item.op && mine(at)) created = at;
             } catch { /* still unknown: reported as failed, a retry looks again */ }
           }
           if (!created) { failed = { reason: failReason(e) }; failure = e; break; }
@@ -525,7 +607,7 @@ export function createDuplicateApi(opts: DuplicateApiOptions = {}) {
       const copyRoot = job.copies[root.id];
       const made = plan.filter((p) => job!.copies[p.source.id]).length;
       const audit = (status: "ok" | "failed", error: string | null) =>
-        recordAction({ actorEmail: actor.email, via, origin: "human", action: "pages.duplicate", vaultId: entry.id, target: { sourceId: root.id, copyId: copyRoot?.id ?? null, pages: made, planned: plan.length, skipped, rows, droppedTags, privateKept }, idempotencyKey: requestId, status, error });
+        recordAction({ actorEmail: actor.email, via, origin: "human", action: "pages.duplicate", vaultId: entry.id, target: { sourceId: root.id, copyId: copyRoot?.id ?? null, pages: made, planned: plan.length, skipped, rows, droppedTags, privateKept, sharingKept }, idempotencyKey: requestId, status, error });
 
       if (failed && !copyRoot) {
         // Nothing exists: forget the journal so a later try may pick another name.
@@ -539,10 +621,17 @@ export function createDuplicateApi(opts: DuplicateApiOptions = {}) {
       // ── pass 2: links to copies that did not exist yet when their page was written ──
       let unlinked = 0;
       if (!failed) {
+        // A body write around a live document would be folded over what is being typed
+        // (the rule for every body writer): a copy that is open keeps its links as they are.
+        let liveState: ((vaultId: string, noteId: string) => boolean) | null = null;
+        if (relink.size) {
+          try { liveState = (await import("../collab")).hasLiveState; } catch { liveState = null; }
+        }
         for (const item of plan) {
           if (!relink.has(item.source.id)) continue;
           const copy = job.copies[item.source.id]!;
           const { content, touched } = bodyOf(item);
+          if (touched && liveState?.(entry.id, copy.id)) { unlinked++; copy.linked = true; continue; }
           if (touched && copy.stamp) {
             try {
               const saved = await vc.updateNote(copy.id, { content, ifUpdatedAt: copy.stamp });
@@ -564,7 +653,7 @@ export function createDuplicateApi(opts: DuplicateApiOptions = {}) {
         putJob(entry.id, who, requestId, job);
         audit("failed", failed.reason);
         return c.json(
-          { error: "partial_duplicate", reason: "Some pages were copied and some were not. Finish the copy, or undo it.", requestId, id: copyRoot!.id, path: target, title: name, created: made, remaining: plan.length - made, failed, skipped, rows, droppedTags, privateKept, audience },
+          { error: "partial_duplicate", reason: "Some pages were copied and some were not. Finish the copy, or undo it.", requestId, id: copyRoot!.id, path: target, title: name, created: made, remaining: plan.length - made, failed, skipped, rows, droppedTags, privateKept, sharingKept, audience },
           207,
         );
       }
@@ -593,9 +682,9 @@ export function createDuplicateApi(opts: DuplicateApiOptions = {}) {
       job.status = "done";
       putJob(entry.id, who, requestId, job);
       audit("ok", null);
-      return c.json({ ok: true, id: copyRoot!.id, path: target, title: name, created: made, skipped, rows, droppedTags, privateKept, unlinked, files, filesPending, audience });
+      return c.json({ ok: true, id: copyRoot!.id, path: target, title: name, created: made, skipped, rows, droppedTags, privateKept, sharingKept, unlinked, files, filesPending, audience });
     } finally {
-      inFlight.delete(flightKey);
+      inFlight.delete(who);
     }
   });
 

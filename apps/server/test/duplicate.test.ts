@@ -6,6 +6,7 @@
  * idempotent retry, re-pointed links, a failure midway, files.
  */
 import { test, beforeEach, afterEach } from "node:test";
+import { createHash } from "node:crypto";
 import assert from "node:assert/strict";
 import { api } from "../src/routes/api";
 import { resetTreeForTests } from "../src/tree";
@@ -35,7 +36,7 @@ beforeEach(() => {
   resetPagesForTests();
   resetAttachmentsForTests();
   resetDuplicateForTests();
-  configureDuplicate({ perMinute: 1_000_000 });
+  configureDuplicate({ perMinute: 1_000_000, pauseMs: 0 });
   configureAttachments({ uploadsPerMinute: 100_000 });
   fv = installFakeVault();
   for (const e of [BOB, CAROL]) setAccount(e, e, "hash");
@@ -212,7 +213,7 @@ test("a viewer who cannot create there gets 403; with edit on the parent page th
   for (const p of ["Docs/Plan (copy)", "Docs/Plan (copy)/Alpha", "Docs/Plan (copy)/Alpha/Deep", "Docs/Plan (copy)/Beta"]) assert.equal(byPath(p)!.metadata!.prism_creator, BOB);
 });
 
-test("sub-pages the caller cannot view are skipped and only COUNTED — no name, no id in the answer", async () => {
+test("sub-pages the caller cannot view are left out and NOT counted; viewable ones that cannot be copied are counted — no name, no id", async () => {
   fv.put({ id: "docs", path: "Docs", content: "<p>folder page</p>" });
   pageGrant(BOB, "docs", "edit");
   // Carol's private sub-page (and a system note) inside the subtree.
@@ -222,7 +223,8 @@ test("sub-pages the caller cannot view are skipped and only COUNTED — no name,
   assert.equal(r.status, 200, await r.clone().text());
   const text = await r.clone().text();
   const body = await json(r);
-  assert.deepEqual([body.created, body.skipped], [4, 2]);
+  // Only the page Bob CAN see (the system note) is counted; the hidden one is not even a number.
+  assert.deepEqual([body.created, body.skipped], [4, 1]);
   assert.ok(!text.includes("Salaries") && !text.includes("secret") && !text.includes("Runner"));
   assert.equal(byPath("Docs/Plan (copy)/Salaries"), undefined);
   assert.equal(byPath("Docs/Plan (copy)/Runner"), undefined);
@@ -244,10 +246,126 @@ test("a private page's copy stays private — to the person duplicating; under a
   const diary = byPath("Docs/Plan (copy)/Diary")!;
   assert.equal(diary.metadata!.prism_visibility, "private");
   assert.equal(diary.metadata!.prism_creator, BOB);
-  // An admin duplicating someone else's private page: private to the ADMIN, never public.
-  const admin = await json(await dup("mine", OWNER, { confirmShared: true }));
-  assert.equal(fv.notes.get(admin.id)!.metadata!.prism_visibility, "private");
-  assert.equal(fv.notes.get(admin.id)!.metadata!.prism_creator, OWNER);
+});
+
+// ── security review B1 / B2 ─────────────────────────────────────────────────
+
+test("B1: someone else's PRIVATE page is never copied — not by an admin, not as the root, not as a sub-page, and it is not counted", async () => {
+  fv.put({ id: "secret", path: "Docs/Plan/Carol notes", metadata: { prism_visibility: "private", prism_creator: CAROL }, content: "<p>carol only</p>" });
+  const r = await dup("p", OWNER);
+  assert.equal(r.status, 200, await r.clone().text());
+  const body = await json(r);
+  assert.deepEqual([body.created, body.skipped], [4, 0]);
+  assert.equal(byPath("Docs/Plan (copy)/Carol notes"), undefined);
+  assert.ok(![...fv.notes.values()].some((n) => n.id !== "secret" && n.content.includes("carol only")), "her text exists once");
+  // As the root: the same answer as a page that does not exist.
+  const root = await dup("secret", OWNER, { confirmShared: true });
+  assert.equal(root.status, 404);
+  assert.deepEqual(await json(root), { error: "not_found" });
+  // The admin's OWN private page is still theirs to copy.
+  fv.put({ id: "own", path: "Docs/Mine", metadata: { prism_visibility: "private", prism_creator: OWNER }, content: "<p>mine</p>" });
+  assert.equal((await dup("own", OWNER)).status, 200);
+});
+
+test("B2: under a shared destination, a sub-page with its OWN page sharing (a restriction) is copied PRIVATE with its sub-pages — never silently widened", async () => {
+  fv.put({ id: "docs", path: "Docs", content: "<p>folder page</p>" });
+  pageGrant(BOB, "docs", "edit"); // Bob reads everything under Docs…
+  addGrant({ subject_type: "user", subject: BOB, resource_type: "page", resource: "c1", level: "view", caps: ["comment"], created_by: OWNER }); // …except Alpha, where the nearer grant gives him no view
+  const ask = await dup("p", OWNER);
+  assert.equal(ask.status, 409);
+  const asked = await json(ask);
+  assert.equal(asked.error, "confirm_shared");
+  assert.deepEqual(asked.audience, { sharedPage: true, private: 2 });
+  assert.equal(paths().some((x) => x!.includes("(copy)")), false);
+  const body = await json(await dup("p", OWNER, { confirmShared: true }));
+  assert.deepEqual([body.created, body.sharingKept, body.privateKept], [4, 2, 0]);
+  for (const path of ["Docs/Plan (copy)/Alpha", "Docs/Plan (copy)/Alpha/Deep"]) {
+    assert.equal(byPath(path)!.metadata!.prism_visibility, "private", path);
+    assert.equal(byPath(path)!.metadata!.prism_creator, OWNER);
+  }
+  assert.equal(byPath("Docs/Plan (copy)")!.metadata!.prism_visibility, undefined);
+  assert.equal(byPath("Docs/Plan (copy)/Beta")!.metadata!.prism_visibility, undefined);
+  // What Bob actually gets: the restricted page's copy is not his to read.
+  const alpha = byPath("Docs/Plan (copy)/Alpha")!;
+  assert.equal((await api.request(`/notes/${alpha.id}`, { headers: { cookie: as(BOB) } })).status, 404);
+  assert.equal((await api.request(`/notes/${byPath("Docs/Plan (copy)/Beta")!.id}`, { headers: { cookie: as(BOB) } })).status, 200);
+  // The duplicated ROOT being a grant anchor: the whole copy is private.
+  addGrant({ subject_type: "user", subject: CAROL, resource_type: "page", resource: "p", level: "view", created_by: OWNER });
+  const whole = await json(await dup("p", OWNER, { confirmShared: true }));
+  assert.equal(whole.sharingKept, 4);
+  assert.equal(fv.notes.get(whole.id)!.metadata!.prism_visibility, "private");
+});
+
+test("review 5: integration-owned sub-pages are left out for an admin too, and matching keys never travel", async () => {
+  fv.put({ id: "ada", path: "Docs/Plan/Ada", tags: ["person"], content: "<p>Ada</p>" });
+  fv.put({ ...fv.notes.get("c2")!, metadata: { uid: 7, mailbox: "INBOX", emails: ["a@b.c"], channels: { email: "a@b.c" }, archiveOf: "x", transcriptNoteId: "t1", colour: "red" } });
+  const body = await json(await dup("p", OWNER));
+  assert.deepEqual([body.created, body.skipped], [4, 1]);
+  assert.equal(byPath("Docs/Plan (copy)/Ada"), undefined);
+  const m = byPath("Docs/Plan (copy)/Beta")!.metadata!;
+  assert.equal(m.colour, "red");
+  for (const k of ["uid", "mailbox", "emails", "channels", "archiveOf", "transcriptNoteId"]) assert.equal(m[k], undefined, k);
+});
+
+/** Slow every vault call a little, so two requests really overlap. */
+function slowVault(ms: number): () => void {
+  const inner = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => { await new Promise((r) => setTimeout(r, ms)); return inner(input, init); }) as typeof fetch;
+  return () => { globalThis.fetch = inner; };
+}
+
+test("review 1: one duplicate per account and a server-wide cap — the second answers 409 busy with Retry-After and writes nothing", async () => {
+  fv.put({ id: "docs", path: "Docs", content: "<p>folder page</p>" });
+  pageGrant(BOB, "docs", "edit");
+  const restore = slowVault(15);
+  try {
+    const [a, b] = await Promise.all([dup("p", OWNER), dup("out", OWNER)]);
+    assert.deepEqual([a.status, b.status], [200, 409]);
+    assert.equal((await json(b)).error, "busy");
+    assert.equal(b.headers.get("retry-after"), "5");
+    assert.equal(byPath("Docs/Outside (copy)"), undefined);
+    configureDuplicate({ perMinute: 1_000_000, pauseMs: 0, maxRunning: 1 });
+    const [c1, c2] = await Promise.all([dup("p", OWNER), dup("out", BOB)]);
+    assert.deepEqual([c1.status, c2.status], [200, 409]);
+  } finally { restore(); }
+  assert.equal((await dup("out", OWNER)).status, 200, "the slot is free again");
+});
+
+test("review 1: past the create budget the request answers 207 and the same requestId continues", async () => {
+  configureDuplicate({ perMinute: 1_000_000, pauseMs: 0, passBudgetMs: -1 });
+  const requestId = rid();
+  const first = await dup("p", OWNER, { requestId });
+  assert.equal(first.status, 207);
+  const f = await json(first);
+  assert.deepEqual([f.created, f.remaining, f.failed.reason], [1, 3, "time_budget"]);
+  let last = first;
+  for (let i = 0; i < 3; i++) last = await dup("p", OWNER, { requestId });
+  assert.equal(last.status, 200, await last.clone().text());
+  assert.equal((await json(last)).created, 4);
+  assert.equal(paths().filter((x) => x!.startsWith("Docs/Plan (copy)")).length, 4);
+});
+
+const opOf = (requestId: string, sourceId: string) => `${requestId}:${createHash("sha256").update(`${requestId}\u0000${sourceId}`).digest("hex").slice(0, 16)}`;
+
+test("review 4: a note carrying the op id is adopted only when it is the caller's own live note; Finish after Undo answers 409 undone", async () => {
+  const requestId = rid();
+  const restore = failCreate(2);
+  try { assert.equal((await dup("p", OWNER, { requestId })).status, 207); } finally { restore(); }
+  // Somebody else plants a note at the next copy's path, with this request's op id.
+  fv.put({ id: "planted", path: "Docs/Plan (copy)/Alpha", metadata: { prism_client_op: opOf(requestId, "c1"), prism_creator: CAROL }, content: "<p>planted</p>" });
+  const again = await dup("p", OWNER, { requestId });
+  assert.equal(again.status, 207, await again.clone().text());
+  assert.equal((await json(again)).failed.reason, "path_conflict");
+  assert.equal(fv.notes.get("planted")!.content, "<p>planted</p>", "never taken over, never rewritten");
+  // Undo, then Finish: the trashed copy is not adopted and not continued.
+  fv.notes.delete("planted");
+  const root = byPath("Docs/Plan (copy)")!;
+  fv.put({ ...root, tags: [...(root.tags ?? []), TRASH_TAG] });
+  const before = fv.notes.size;
+  const undone = await dup("p", OWNER, { requestId });
+  assert.equal(undone.status, 409);
+  assert.equal((await json(undone)).error, "undone");
+  assert.equal(fv.notes.size, before);
 });
 
 test("a tag the caller may not add is DROPPED from the copy and counted — never a failed duplicate, never a side-effect share", async () => {
@@ -267,7 +385,7 @@ test("a tag the caller may not add is DROPPED from the copy and counted — neve
   assert.deepEqual([...fv.notes.get(mine.id)!.tags!].sort(), ["board", "doc"]);
 });
 
-test("system notes are never duplicated; ingest-owned notes only by an admin", async () => {
+test("system notes and ingest-owned notes are never duplicated, by anyone", async () => {
   fv.put({ id: "sk", path: "vault/agent/skills/triage", tags: ["agent-skill"], content: "prompt" });
   fv.put({ id: "gov", path: "Gov/Role", tags: ["governance-role"], content: "role" });
   for (const id of ["sk", "gov"]) {
@@ -278,7 +396,8 @@ test("system notes are never duplicated; ingest-owned notes only by an admin", a
   fv.put({ id: "who", path: "People/Ada", tags: ["person"], content: "<p>Ada</p>" });
   grantUser(BOB, "note", "who", "edit");
   assert.equal((await dup("who", BOB)).status, 403);
-  assert.equal((await dup("who", OWNER)).status, 200);
+  assert.equal((await dup("who", OWNER)).status, 403, "for every role: a second person/mail/meeting note pollutes identity matching");
+  assert.equal(paths().some((x) => x!.includes("(copy)")), false);
 });
 
 test("a database page is copied with its config but without its rows; a row duplicates as a row", async () => {

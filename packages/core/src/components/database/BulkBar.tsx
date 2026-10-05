@@ -124,8 +124,30 @@ export function BulkBar({ rows, props, dbPath, canEditRow, canCreate, onDone, on
     const made: string[] = [];
     const failed: Array<{ title: string; error: string }> = [];
     let filesMissed = 0;
+    let keptPrivate = 0;
     for (const r of rows.slice(0, 50)) {
       try {
+        // The server route (NP-PG-18): permissions, sub-pages, links and files in one
+        // retryable request per row. A shell or server without it copies the row here.
+        if (client.duplicatePage) {
+          const request = { requestId: `dup-${(globalThis.crypto?.randomUUID?.() ?? `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 12)}`).replace(/-/g, "")}`, confirmShared: true };
+          try {
+            let result = await client.duplicatePage(r.id, request);
+            // Partly copied (a row with many sub-pages): the same request finishes it.
+            for (let i = 0; !result.ok && i < 5; i++) result = await client.duplicatePage(r.id, request);
+            made.push(result.id);
+            keptPrivate += result.privateKept + result.sharingKept;
+            if (!result.ok) failed.push({ title: noteTitle(r), error: "error" });
+            let missed = result.filesFailed > 0;
+            for (const id of result.filesPending) if (copyFilesNotice(client.copyAttachments ? await client.copyAttachments(id).catch(() => null) : null)) missed = true;
+            if (missed) filesMissed++;
+            continue;
+          } catch (e) {
+            const status = (e as { status?: number }).status;
+            const code = (e as { code?: string }).code;
+            if (!(status === 405 || status === 501 || (status === 404 && code !== "not_found"))) throw e;
+          }
+        }
         const src = await client.getNote(r.id, { fresh: true });
         const meta: Record<string, unknown> = {};
         for (const [k, v] of Object.entries(src.metadata ?? {})) if (!isSystemKey(k) || k === "icon" || k === "cover") meta[k] = v;
@@ -149,7 +171,7 @@ export function BulkBar({ rows, props, dbPath, canEditRow, canCreate, onDone, on
     setBusy(false);
     refresh();
     onClear();
-    const capped = (rows.length > 50 ? " Only the first 50 were duplicated." : "") + (filesMissed ? ` Some files were not copied on ${filesMissed} ${filesMissed === 1 ? "page" : "pages"}.` : "");
+    const capped = (rows.length > 50 ? " Only the first 50 were duplicated." : "") + (keptPrivate ? ` ${keptPrivate} ${keptPrivate === 1 ? "copy is" : "copies are"} private to you.` : "") + (filesMissed ? ` Some files were not copied on ${filesMissed} ${filesMissed === 1 ? "page" : "pages"}.` : "");
     onDone((failed.length ? `Duplicated ${made.length} of ${Math.min(rows.length, 50)}. Not copied: ${describe(failed)}.` : `Duplicated ${made.length} ${made.length === 1 ? "page" : "pages"}.`) + capped, made.length && client.trashPage ? {
       label: "Undo duplicate",
       run: async () => {
