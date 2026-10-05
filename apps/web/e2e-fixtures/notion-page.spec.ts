@@ -32,6 +32,104 @@ test("header carries save state, Share, Agent, ⋯", async ({ page }, info) => {
   await page.screenshot({ path: info.outputPath("header-phone-dark.png") });
 });
 
+/**
+ * NP-PG-06, the clause that was a deviation: the header bar SHOWS THE BREADCRUMB — in the bar's one row, beside
+ * save state / star / Share / ⋯ / Agent (not above the title, and not twice). Ancestors are clickable and in the
+ * tab order, middle segments sit behind a “…” menu, page ancestors carry their icon; it gives way as the window
+ * narrows and never pushes the row wider than the window (1440, 1024, 768, 390). Phone: the page's name is the
+ * control (with Back beside it) and lists the trail.
+ */
+test("NP-PG-06: the breadcrumb is in the header bar — one row, overflow menu, icons, keyboard, every width", async ({ page }, info) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto("/e2e-fixtures/notion-shell.html");
+  await expect(page.locator(".tiptap[contenteditable=true]")).toBeVisible();
+  const ui = () => page.evaluate(() => { const s = (window as any).prismShellUI.getState(); return s.openTabs.find((t: any) => t.id === s.activeTabId)?.noteId as string; });
+  const strip = page.getByRole("navigation", { name: "Open document tabs" });
+  const crumbs = page.getByRole("navigation", { name: "Document location" });
+  const share = page.getByRole("button", { name: "Share", exact: true });
+
+  // The page in front ("Projects/Prism/A living workspace"): its trail is in the bar, once, and not above the title.
+  await expect(crumbs).toHaveCount(1);
+  expect(await crumbs.evaluate((el) => !!el.closest('[aria-label="Open document tabs"]'))).toBe(true);
+  await expect(crumbs.getByRole("button")).toHaveText(["Projects", "Prism"]);
+  await expect(page.locator(".document-page-header .document-breadcrumb")).toHaveCount(0);
+  // One quiet row: the trail, the tab's own name and every header action share a centre line.
+  const row = [crumbs, strip.getByRole("button", { name: "Open A living workspace", exact: true }), page.locator(".sync-state-header"), page.getByRole("button", { name: "Add to Favorites" }), share,
+    page.getByRole("button", { name: "Page actions", exact: true }), page.getByRole("button", { name: "AI Agent", exact: true })];
+  const boxes = await Promise.all(row.map((l) => l.boundingBox()));
+  const centre = boxes[4]!.y + boxes[4]!.height / 2;
+  for (const b of boxes) expect(Math.abs(b!.y + b!.height / 2 - centre)).toBeLessThanOrEqual(3);
+  expect(boxes[0]!.x + boxes[0]!.width).toBeLessThanOrEqual(boxes[1]!.x + 1); // the trail leads into the page's name
+
+  // A deep page: first · … · last two; the page ancestor carries its icon and opens; the menu holds the middle.
+  await page.evaluate(() => {
+    const w = window as any;
+    w.prismShell.serverCreate("Projects/Prism/A living workspace/Decisions/Budget", "<p>Numbers.</p>");
+    w.prismShellUI.getState().openTab("foreign-1", "Budget", "document");
+  });
+  await expect(crumbs.getByRole("button")).toHaveText(["Projects", "", "A living workspace", "Decisions"]);
+  await expect(crumbs.getByRole("button", { name: "A living workspace" })).toHaveAttribute("title", "Open A living workspace");
+  await expect(crumbs.getByRole("button", { name: "Decisions" })).toHaveAttribute("title", "Show Decisions in the sidebar");
+  await expect(page.locator(".document-page-header .document-breadcrumb")).toHaveCount(0);
+  await page.screenshot({ path: info.outputPath("header-breadcrumb-1440.png") });
+  // Keyboard only: the “…” button opens the menu of hidden ancestors; Escape closes it.
+  const more = crumbs.getByRole("button", { name: "Show 1 more location" });
+  await more.focus();
+  await page.keyboard.press("Enter");
+  const menu = page.getByRole("menu", { name: "More locations" });
+  await expect(menu.getByRole("menuitem")).toHaveText(["Prism"]);
+  await page.keyboard.press("Escape");
+  await expect(menu).toHaveCount(0);
+  // …and a page ancestor opens from the keyboard.
+  await crumbs.getByRole("button", { name: "A living workspace" }).focus();
+  await page.keyboard.press("Enter");
+  await expect.poll(ui).toBe("workspace");
+  await expect(crumbs.getByRole("button")).toHaveText(["Projects", "Prism"]);
+  await page.evaluate(() => (window as any).prismShellUI.getState().openTab("foreign-1", "Budget", "document"));
+  await expect(crumbs.getByRole("button", { name: "Decisions" })).toBeVisible();
+
+  // Narrower windows: the bar never outgrows the window, every action stays on screen, and the trail stays
+  // reachable (whole, shortened, or as its “…” menu).
+  for (const width of [1440, 1024, 768]) {
+    await page.setViewportSize({ width, height: 900 });
+    await expect(crumbs).toHaveCount(1);
+    // The trail is never why the tab strip scrolls: where the tabs do not fit, it has already folded into its menu.
+    await expect.poll(() => strip.evaluate((el) => el.scrollWidth <= el.clientWidth + 1 || el.querySelector(".tabbar-crumbs")?.getAttribute("data-room") === "menu"), { message: `the trail gives way at ${width}` }).toBe(true);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), `no page overflow at ${width}`).toBe(true);
+    expect(await crumbs.getByRole("button").count(), `the trail is reachable at ${width}`).toBeGreaterThan(0);
+    for (const l of [page.locator(".sync-state-header"), page.getByRole("button", { name: "Add to Favorites" }), share, page.getByRole("button", { name: "Page actions", exact: true }), page.getByRole("button", { name: "AI Agent", exact: true })]) {
+      const b = (await l.boundingBox())!;
+      expect(b.x >= 0 && b.x + b.width <= width, `header action inside the window at ${width}`).toBe(true);
+    }
+  }
+  // With no room for names the whole trail is one menu.
+  await page.evaluate(() => { const st = (window as any).prismShellUI.getState(); for (const [id, title] of [["agenda", "Workshop agenda"], ["field-notes", "Field notes"], ["blank", "Untitled"], ["tracker", "Workshop tracker"]]) st.openTab(id, title, "document"); st.openTab("foreign-1", "Budget", "document"); });
+  const all = crumbs.getByRole("button", { name: "Show 4 locations" });
+  await expect(all).toBeVisible();
+  await all.click();
+  await expect(page.getByRole("menu", { name: "More locations" }).getByRole("menuitem")).toHaveText(["Projects", "Prism", "A living workspace", "Decisions"]);
+  await page.keyboard.press("Escape");
+  await page.screenshot({ path: info.outputPath("header-breadcrumb-768.png") });
+
+  // Phone: the page's name with Back beside it; the name lists the trail; nothing overflows; the row's other parts stay.
+  await page.setViewportSize({ width: 390, height: 844 });
+  const where = crumbs.getByRole("button", { name: "Budget — show 4 locations" });
+  await expect(where).toBeVisible();
+  await expect(page.getByRole("button", { name: "Back", exact: true })).toBeVisible();
+  await expect(page.locator(".sync-state-phone .sync-state-dot")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Page actions", exact: true })).toBeVisible();
+  expect((await where.boundingBox())!.height).toBeGreaterThanOrEqual(44);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await expect(page.locator(".document-page-header .document-breadcrumb")).toHaveCount(0);
+  await where.click();
+  const trail = page.getByRole("menu", { name: "Locations" });
+  await expect(trail.getByRole("menuitem")).toHaveText(["Projects", "Prism", "A living workspace", "Decisions"]);
+  await page.screenshot({ path: info.outputPath("header-breadcrumb-390.png") });
+  await trail.getByRole("menuitem", { name: "A living workspace" }).click();
+  await expect.poll(ui).toBe("workspace");
+  await expect(crumbs.getByRole("button", { name: "A living workspace — show 2 locations" })).toBeVisible();
+});
+
 /** Wave 2E · NP-PG-08 */
 test("full width, small text, font persist per page", async ({ page }, info) => {
   await page.goto("/e2e-fixtures/notion-shell.html");

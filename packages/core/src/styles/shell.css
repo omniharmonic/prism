@@ -63,6 +63,17 @@
   border-radius: 999px; background: var(--color-accent);
 }
 
+/* The breadcrumb in the bar (NP-PG-06): the active tab leads with its ancestors. */
+.tabbar-crumbs { flex: 0 0 auto; gap: 2px; font-size: 12.5px; }
+.tabbar-crumbs .page-crumb { max-width: 132px; }
+.tabbar-crumbs[data-room="narrow"] .page-crumb { max-width: 96px; }
+.tabbar-phone-crumbs { display: flex; min-width: 0; max-width: 100%; }
+.tabbar-phone-title {
+  display: inline-flex; align-items: center; gap: 3px; min-width: 0; max-width: 100%;
+  font-size: var(--text-sm); font-weight: 550; color: var(--text-primary); text-align: center;
+}
+button.tabbar-phone-title { min-height: 44px; padding: 0 6px; border-radius: 6px; }
+
 /* Collapsed-sidebar peek (NP-SB-12): a thin hover strip on the left edge
    reveals the sidebar as a floating overlay; it leaves on mouse-out or Esc. */
 .sidebar-peek-zone {

@@ -361,7 +361,12 @@ test("breadcrumbs open parent pages, reveal folders, and collapse long trails", 
   await expect(page.getByRole("heading", { name: "Rename Prism", exact: true })).toBeVisible();
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(url("?open=watersheds"));
-  await expect(page.getByRole("navigation", { name: "Document location" }).getByRole("button", { name: "Show 3 more locations" })).toBeVisible();
+  // Phone (NP-PG-06): the header shows the page's name; tapping it lists the whole trail.
+  const where = page.getByRole("navigation", { name: "Document location" }).getByRole("button", { name: "South Platte — show 4 locations" });
+  await expect(where).toBeVisible();
+  await where.click();
+  await expect(page.getByRole("menu", { name: "Locations" }).getByRole("menuitem")).toHaveText(["Areas", "Research", "Bioregions", "Watersheds"]);
+  await page.keyboard.press("Escape");
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(390);
 });
 
