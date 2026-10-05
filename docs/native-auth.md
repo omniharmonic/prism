@@ -63,6 +63,14 @@ Approve, `error=access_denied` on Deny.
   - `localhost` is not accepted.
   - Set `DEVICE_ALLOW_LOOPBACK=false` to disable loopback redirects.
 
+**Universal links never capture this flow.** The server's apple-app-site-association file
+(`routes/app-links.ts`) excludes `/auth/*` and `/accept-invite`, and the client's link
+handler (`apps/client/src-tauri/src/links.rs`) refuses every path outside
+`/page`, `/collab`, `/inbox`, `/agent` and everything under `prism://auth` — the authorize
+and consent pages must open in the system browser, and a `prism://auth/callback` redirect
+is consumed only by the sign-in session that started it (docs/client-app.md § Links and New
+Page). If a redirect URI is ever made a universal link, it must stay out of that allowlist.
+
 ### Consent page
 
 The `label` is chosen by the client, so the page presents it as a claim: *An

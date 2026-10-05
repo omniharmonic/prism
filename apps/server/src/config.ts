@@ -153,6 +153,13 @@ export const config = {
   // Sliding idle expiry and absolute lifetime of a device token, in days.
   deviceTokenIdleDays: Number(process.env.DEVICE_TOKEN_IDLE_DAYS ?? 90),
   deviceTokenMaxDays: Number(process.env.DEVICE_TOKEN_MAX_DAYS ?? 365),
+  // Universal links (NP-NA-04, routes/app-links.ts): the Apple app id(s) —
+  // `<TeamID>.<bundle id>`, comma-separated — named in
+  // /.well-known/apple-app-site-association. UNSET = the Prism Client app;
+  // set to "" and the file answers 404 (this host advertises no app). Public
+  // by nature (Apple fetches the file anonymously); not a secret.
+  // Parsed + validated by `parseAppIds` (an ill-formed id is dropped).
+  appleAppId: process.env.APPLE_APP_ID ?? "83Y42N33H8.com.benjaminlife.prism.client",
   // Browser origins of native shells (Tauri iOS/macOS = tauri://localhost,
   // Windows/Android = http://tauri.localhost). They get NON-credentialed CORS on
   // /api, /auth, /acl — bearer device tokens only; cookies stay same-origin.

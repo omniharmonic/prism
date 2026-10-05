@@ -28,12 +28,8 @@ export async function runCommand(page: Page, name: string) {
   await page.keyboard.press("ControlOrMeta+k");
   const search = page.getByRole("dialog", { name: "Search workspace" });
   await search.getByRole("combobox").fill(name);
-  // The row can move while page results are still arriving; a press that straddles that move
-  // (WebKit's down→up takes ~10 ms) produces no click. Press again until the command has run.
-  await expect(async () => {
-    if (await search.count()) await search.getByRole("option", { name }).first().click({ timeout: 2000 });
-    await expect(search).toHaveCount(0, { timeout: 1000 });
-  }).toPass({ timeout: 15_000 });
+  await search.getByRole("option", { name }).first().click();
+  await expect(search).toHaveCount(0);
 }
 
 /** The fixture's attachment bytes for <img> elements (which do not go through window.fetch). */
