@@ -259,7 +259,7 @@ test("bulk duplicate uses the Duplicate route per row, waits out a 429 with the 
   expect(calls[1]!.requestId).toBe(calls[2]!.requestId);
   expect(calls[0]!.requestId).not.toBe(calls[1]!.requestId);
   expect(state.creates).toHaveLength(0); // nothing was copied on the device
-  await page.locator(".db-toast").getByRole("button", { name: "Undo duplicate" }).click();
+  await page.locator(".db-toast").getByRole("button", { name: "Undo" }).click();
   await expect(page.locator(".db-toast")).toContainText("Moved 2 copies to Trash.");
   expect(((await fx(page)).trashed as string[]).sort()).toEqual(["dup-1", "dup-3"]);
 });
