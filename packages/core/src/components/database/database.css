@@ -107,8 +107,8 @@
 .db-tabs { display: flex; align-items: flex-end; gap: 18px; min-width: 0; overflow-x: auto; scrollbar-width: none; }
 .db-tabs::-webkit-scrollbar { display: none; }
 .db-tablist { display: flex; align-items: flex-end; gap: 18px; min-width: 0; }
-.db-tab { display: inline-flex; align-items: center; gap: 6px; min-height: 40px; padding: 0 2px; border-bottom: 2px solid transparent; margin-bottom: -1px; color: var(--text-secondary); font-size: 13.5px; font-weight: 500; white-space: nowrap; }
-.db-tab[aria-selected="true"] { border-bottom-color: var(--text-primary); color: var(--text-primary); font-weight: 650; }
+.db-tab { display: inline-flex; align-items: center; gap: 6px; min-height: 40px; padding: 0 2px; border-bottom: 2px solid transparent; margin-bottom: -1px; color: var(--text-secondary); font-size: 13px; font-weight: 500; white-space: nowrap; }
+.db-tab[aria-selected="true"] { border-bottom-color: var(--text-primary); color: var(--text-primary); font-weight: 600; }
 .db-tab:hover { color: var(--text-primary); }
 .db-actions { display: flex; align-items: center; gap: 6px; padding-bottom: 8px; flex-wrap: wrap; }
 .db-control { display: inline-flex; align-items: center; gap: 6px; min-height: 34px; padding: 0 11px; border-radius: 8px; border: 1px solid var(--glass-border); background: var(--bg-surface); color: var(--text-secondary); font-size: 13px; }
@@ -400,3 +400,49 @@
   .db-gallery[data-size="large"] .db-cover { height: 160px; }
 }
 @media (max-width: 420px) { .db-gallery[data-size="small"] { grid-template-columns: 1fr 1fr; } }
+
+/* ── Phone table (w14 visual, defect 2) ──
+   The frozen title column kept room for a hover-only arrow, and the 44 px title button was a flex
+   box (no ellipsis): titles were cut hard after ~12 letters. Same sizes, the text gets the room. */
+@media screen and (max-width: 767px), screen and (hover: none) and (pointer: coarse) {
+  .db-table .db-row-open-icon { display: none; }
+  /* Block + line-height (not flex): a flex container loses the ellipsis. Still ≥ 44 px tall. */
+  html .db-table .db-row-open { display: block; min-height: 44px; line-height: 44px; }
+  .db-table .db-title-cell { gap: 4px; padding: 0 8px 0 2px; }
+  .db-table .db-sticky .db-th { padding-left: 2px; gap: 4px; }
+  /* The frozen column reads as a layer above the columns that slide under it. */
+  .db-table .db-sticky { box-shadow: 1px 0 0 var(--glass-border-strong); }
+}
+
+/* ── Properties under the title (w14 visual, defect 7): ONE quiet style ──
+   A label over a value, no boxes: values, tags, "Add tag" and "Add property" were three control
+   styles and a vertical rule — it read as a form. Hover and focus still show what can be edited. */
+.db-props-bar .db-value-bar .db-value-button:not([data-readonly]) { border-color: transparent; background: transparent; margin-left: -8px; }
+.db-props-bar .db-prop:not(.db-prop-tags):not(.db-prop-trailing) { flex: 0 0 auto; }
+.db-props-bar .db-value-bar .db-value-button:not([data-readonly]):hover,
+.db-props-bar .db-value-bar .db-value-button[aria-expanded="true"] { background: var(--glass-hover); }
+.db-props-bar .db-prop-tags, .db-props-bar .db-prop-updated { padding-left: 0; border-left: 0; }
+.db-props-bar .db-add-tag { border-color: transparent; background: transparent; color: var(--text-muted); padding: 0 8px; }
+.db-props-bar .db-add-tag:hover, .db-props-bar .db-add-tag[aria-expanded="true"] { background: var(--glass-hover); color: var(--text-primary); }
+@media (max-width: 767px) {
+  .db-props-bar { gap: 4px 14px; padding-bottom: 10px; }
+  .db-props-bar .db-prop { gap: 0; }
+  .db-props-bar .db-value-bar .db-value-button:not([data-readonly]) { width: calc(100% + 8px); }
+}
+
+/* ── Phone database toolbar (w14 visual, defect 16): tabs, search, ONE row of actions ──
+   Filter / Sort / settings / ⋯ are 44 px icon buttons (their names stay for assistive tech) and New
+   sits at the end of the same row at its own size — it was a fourth, full-width row. */
+@media (max-width: 767px) {
+  .db-actions { gap: 6px; }
+  .db-actions .db-control { flex: 0 0 44px; min-width: 44px; padding: 0; font-size: 0; gap: 0; }
+  .db-actions .db-split { flex: 0 0 auto; margin-left: auto; }
+  .db-actions .db-split-main { flex: 0 0 auto; padding: 0 16px; }
+  .db-actions > .db-primary { flex: 0 0 auto; margin-left: auto; }
+}
+
+/* w14 visual, defect 24: a row peek is a narrow panel ON its database — no breadcrumb back to where
+   the reader already is, a title sized for 640 px, less air above it. */
+.db-peek .document-writing-scroll { padding-top: 20px; }
+.db-peek .document-page-header { --document-title-size: 28px; margin-bottom: 20px; }
+.db-peek .document-breadcrumb { display: none; }

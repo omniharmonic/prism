@@ -208,7 +208,7 @@ export function SelectionActions({ editor, allowFormatting, onComment, onSuggest
         onMouseDown={(e) => e.preventDefault()} onClick={() => setMenu(menu === "agent" ? null : "agent")}>
         <Wand2 size={14} aria-hidden="true" /> AI <ChevronDown size={12} aria-hidden="true" />
       </button>
-      {menu === "agent" && <EditorMenu label="Agent actions" items={agentItems} onClose={() => closeMenu(agentRef)} className="selection-menu" style={{ maxHeight: 320 }} />}
+      {menu === "agent" && <EditorMenu label="Agent actions" items={agentItems} onClose={() => closeMenu(agentRef)} className="selection-menu" style={{ maxHeight: "min(480px, 70vh)" }} />}
     </span>}
     {(action.available || agentHost) && (allowFormatting || onComment || onSuggest) && <span className="selection-divider" aria-hidden="true" />}
     {turnable && <span className="selection-dropdown">
@@ -228,7 +228,7 @@ export function SelectionActions({ editor, allowFormatting, onComment, onSuggest
         onMouseDown={(e) => e.preventDefault()} onClick={() => setMenu(menu === "color" ? null : "color")}>
         <Baseline size={14} aria-hidden="true" /><ChevronDown size={12} aria-hidden="true" />
       </button>
-      {menu === "color" && <EditorMenu label="Color" items={colorItems} onClose={() => closeMenu(colorRef)} className="selection-menu" style={{ maxHeight: 320 }} />}
+      {menu === "color" && <EditorMenu label="Color" items={colorItems} onClose={() => closeMenu(colorRef)} className="selection-menu" style={{ maxHeight: "min(480px, 70vh)" }} />}
     </span>}
     {decorate && canMention && <button type="button" aria-label="Mention a person, page or date" title="Mention (@)"
       onMouseDown={(e) => e.preventDefault()} onClick={mention}><AtSign size={14} aria-hidden="true" /></button>}

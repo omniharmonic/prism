@@ -403,7 +403,7 @@ export default function WikiTemplate({
             <div style={{ maxWidth: safeTheme.contentWidth, margin: "0 auto", padding: "20px 0 calc(env(safe-area-inset-bottom) + 56px)" }}>
               {introduction}
               {note && (
-                <h1 style={{ margin: "0 0 12px", fontSize: "var(--pubwiki-narrow-heading, clamp(24px, 6.4vw, 30px))", lineHeight: 1.25, color: "var(--text-primary, #fff)" }}>
+                <h1 style={{ margin: "0 0 12px", fontSize: "var(--pubwiki-narrow-heading, clamp(26px, 7vw, 32px))", fontWeight: 700, letterSpacing: "-0.02em", lineHeight: 1.25, color: "var(--text-primary, #fff)" }}>
                   {note.title}
                 </h1>
               )}
@@ -591,7 +591,7 @@ export default function WikiTemplate({
           <div style={{ maxWidth: safeTheme.contentWidth, margin: "0 auto", padding: "40px 0 96px" }}>
             {introduction}
             {note && (
-              <h1 style={{ marginTop: 0, fontSize: 28, color: "var(--text-primary, #fff)" }}>
+              <h1 style={{ marginTop: 0, fontSize: 34, fontWeight: 700, letterSpacing: "-0.02em", lineHeight: 1.2, color: "var(--text-primary, #fff)" }}>
                 {note.title}
               </h1>
             )}
