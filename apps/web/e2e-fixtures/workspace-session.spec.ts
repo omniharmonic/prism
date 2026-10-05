@@ -106,10 +106,10 @@ test("phone: a workspace restored late leaves the drawer the reader opened meanw
   await expect.poll(() => ids(page)).toEqual(["field-notes", "weekly-review"]);
   await expect(page.getByText("Reopening your workspace…")).toHaveCount(0);
   await expect(drawer).toBeVisible();
-  // A page the reader opens from the drawer still dismisses it.
-  await drawer.getByRole("tree", { name: "Pages" }).getByRole("treeitem", { name: "Field notes", exact: true }).click();
+  // A page that is OPENED (not restored) still dismisses it.
+  await open(page, "workspace");
   await expect(drawer).toHaveCount(0);
-  await expect(page.getByRole("heading", { name: "Field notes", exact: true }).first()).toBeVisible();
+  await expect(page.getByRole("heading", { name: /A living workspace/ }).first()).toBeVisible();
 });
 
 test("explicit deep link takes precedence over saved tabs", async ({ page }) => {

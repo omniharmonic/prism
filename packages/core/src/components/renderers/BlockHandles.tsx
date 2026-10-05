@@ -361,6 +361,10 @@ export function BlockHandles({ editor, enabled, notes, noteId, onComment }: Bloc
           selectBlocks(editor.view, start, start + count - 1);
         }
       }
+      // At once, not a frame later (TipTap's focus command waits for the next frame): until the
+      // editor has focus again the keyboard belongs to nothing, and ⌘Z right after a drop went to
+      // the browser instead of undoing the move.
+      editor.view.focus();
       editor.commands.focus();
     };
     document.addEventListener("dragover", onOver, true);
