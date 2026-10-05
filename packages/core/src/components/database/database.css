@@ -439,3 +439,7 @@
   .db-table tfoot { display: table-row-group; }
   .db-table tfoot th, .db-table tfoot td { border-top: 1px solid #999; }
 }
+/* "Me" as a person filter value */
+.db-cond-me { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.db-cond-me > input { flex: 1; min-width: 0; }
+.db-cond-me > .db-control[aria-pressed="true"] { background: color-mix(in srgb, var(--color-accent) 16%, var(--bg-surface)); border-color: var(--color-accent); color: var(--text-primary); }

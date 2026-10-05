@@ -5,7 +5,7 @@
  */
 import { useState } from "react";
 import { ArrowLeft, ArrowRight, Copy, Plus, Trash2, X } from "lucide-react";
-import type { QueryCondition, QueryFilter, QueryFilterGroup, QueryOp, QuerySort } from "../../lib/database/query";
+import { ME_TOKEN, type QueryCondition, type QueryFilter, type QueryFilterGroup, type QueryOp, type QuerySort } from "../../lib/database/query";
 import { STATUS_GROUP_LABELS, STATUS_GROUPS, SYSTEM_PROPERTIES, type PropertyDef } from "../../lib/database/schema";
 import { CARD_SIZES, VIEW_LABELS, VIEW_TYPES, type CardSize, type DatabaseView, type ViewType } from "./config";
 import { CalcSettings } from "./Calculations";
@@ -46,6 +46,10 @@ function opsFor(def?: PropertyDef): QueryOp[] {
   }
 }
 
+const ME_OPS: QueryOp[] = ["eq", "ne", "contains", "not_contains"];
+/** Properties that name a person: a person property, "Created by", "Last edited by". */
+export const meFilterable = (def?: PropertyDef): boolean => !!def && (def.kind === "person" || def.system === "created_by" || def.system === "edited_by");
+
 function ValueInput({ def, cond, onChange }: { def?: PropertyDef; cond: QueryCondition; onChange: (v: unknown) => void }) {
   if (cond.op === "exists" || cond.op === "not_exists") return <span />;
   if (def?.kind === "checkbox") {
@@ -67,6 +71,17 @@ function ValueInput({ def, cond, onChange }: { def?: PropertyDef; cond: QueryCon
             })
           : def.options.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
       </select>
+    );
+  }
+  // A person / created-by / edited-by filter can be "Me": stored as the token `@me` and
+  // resolved for whoever is looking (never an address in the saved view).
+  if (meFilterable(def) && ME_OPS.includes(cond.op)) {
+    const me = cond.value === ME_TOKEN;
+    return (
+      <span className="db-cond-me">
+        <button type="button" className="db-control" aria-pressed={me} aria-label="Filter by me" title="Whoever is viewing" onClick={() => onChange(me ? "" : ME_TOKEN)}>Me</button>
+        {!me && <input aria-label="Filter value" type="text" placeholder="or a name" value={String(cond.value ?? "")} onChange={(e) => onChange(e.target.value)} />}
+      </span>
     );
   }
   const date = def?.kind === "date" || cond.key === "$createdAt" || cond.key === "$updatedAt";

@@ -457,7 +457,23 @@ function ordered(actual: unknown, expected: unknown, test: (c: number) => boolea
   return values.some((v) => !isEmpty(v) && test(compareValues(typeof v === "string" ? rangeEnd(v, side) : v, expected, tz)));
 }
 
-export function evaluateCondition(n: QueryInput, c: QueryCondition, now = new Date(), tzOffset = 0): boolean {
+/**
+ * "Me" as a filter value: a view stores this token, never an address, and it is
+ * resolved for whoever is looking — by the server, which knows the caller
+ * (`eq` / `contains` = the property names me, `ne` / `not_contains` = it does not).
+ */
+export const ME_TOKEN = "@me";
+/** Does `key` of this row name the caller? Supplied by whoever knows the caller. */
+export type MeResolver = (n: QueryInput, key: string) => boolean;
+const ME_POSITIVE: ReadonlySet<QueryOp> = new Set(["eq", "contains"]);
+const ME_NEGATIVE: ReadonlySet<QueryOp> = new Set(["ne", "not_contains"]);
+
+export function evaluateCondition(n: QueryInput, c: QueryCondition, now = new Date(), tzOffset = 0, me?: MeResolver): boolean {
+  if (c.value === ME_TOKEN && (ME_POSITIVE.has(c.op) || ME_NEGATIVE.has(c.op))) {
+    // Nobody to resolve it for (a shell without the server route): no row is "mine".
+    const mine = me ? me(n, c.key) : false;
+    return ME_POSITIVE.has(c.op) ? mine : !mine;
+  }
   const actual = readKey(n, c.key);
   const value = resolveRelative(c.value, now, tzOffset);
   const tz = tzOffset;
@@ -477,19 +493,19 @@ export function evaluateCondition(n: QueryInput, c: QueryCondition, now = new Da
   }
 }
 
-function matchesGroup(n: QueryInput, g: QueryFilterGroup, now: Date, tzOffset: number): boolean {
+function matchesGroup(n: QueryInput, g: QueryFilterGroup, now: Date, tzOffset: number, me?: MeResolver): boolean {
   if (!g.conditions.length) return true;
   return g.match === "all"
-    ? g.conditions.every((c) => evaluateCondition(n, c, now, tzOffset))
-    : g.conditions.some((c) => evaluateCondition(n, c, now, tzOffset));
+    ? g.conditions.every((c) => evaluateCondition(n, c, now, tzOffset, me))
+    : g.conditions.some((c) => evaluateCondition(n, c, now, tzOffset, me));
 }
 
-export function matchesFilter(n: QueryInput, f: QueryFilter | undefined, now = new Date(), tzOffset = 0): boolean {
+export function matchesFilter(n: QueryInput, f: QueryFilter | undefined, now = new Date(), tzOffset = 0, me?: MeResolver): boolean {
   if (!f) return true;
   // Empty groups are no-ops (a half-built group in the editor never empties a view).
   const terms: Array<() => boolean> = [
-    ...f.conditions.map((c) => () => evaluateCondition(n, c, now, tzOffset)),
-    ...(f.groups ?? []).filter((g) => g.conditions.length).map((g) => () => matchesGroup(n, g, now, tzOffset)),
+    ...f.conditions.map((c) => () => evaluateCondition(n, c, now, tzOffset, me)),
+    ...(f.groups ?? []).filter((g) => g.conditions.length).map((g) => () => matchesGroup(n, g, now, tzOffset, me)),
   ];
   if (!terms.length) return true;
   return f.match === "all" ? terms.every((t) => t()) : terms.some((t) => t());
@@ -805,7 +821,7 @@ export function projectRow(n: QueryInput, fields: string[] | undefined): QueryRo
 export function runQuery(
   notes: QueryInput[],
   spec: QuerySpec,
-  opts: { limited: boolean; truncated?: boolean; now?: Date },
+  opts: { limited: boolean; truncated?: boolean; now?: Date; /** Resolves the `@me` filter value for the caller. */ me?: MeResolver },
 ): QueryPage {
   const offset = decodeCursor(spec);
   if (offset === null) throw new CursorMismatchError();
@@ -819,7 +835,7 @@ export function runQuery(
     (n) =>
       (wantsTemplates || !isTemplateNote(n)) &&
       spec.tags.every((t) => (n.tags ?? []).includes(t)) &&
-      matchesFilter(n, spec.filter, now, spec.tzOffset ?? 0) &&
+      matchesFilter(n, spec.filter, now, spec.tzOffset ?? 0, opts.me) &&
       (!needle || matchesSearch(n, needle, spec.fields)),
   );
   const sorted = sortRows(matched, spec.sort, spec.tzOffset ?? 0);

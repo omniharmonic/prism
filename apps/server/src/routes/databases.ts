@@ -47,7 +47,7 @@ import { docNameFor, isDocLive, isNoteId, markReconciled } from "../collab";
 import { consumeRateLimit } from "../middleware/ratelimit";
 import { mintEphemeralAdminToken } from "../mcp-token";
 import { csrfRefusal } from "./actions";
-import { resolveWriter, stampMetadata, stripIdentity, WRITER_AT_KEY, WRITER_KEY, writerNames } from "../writer-stamp";
+import { resolveWriter, stampMetadata, stripIdentity, WRITER_AT_KEY, WRITER_KEY, writerIdFor, writerNames } from "../writer-stamp";
 import { CHANGE_KEY, creatorNameFor, stripWriterMeta } from "../sharing";
 import {
   safeTitleLeaf,
@@ -67,16 +67,19 @@ import {
   optionNameClash,
   PROPERTY_KIND_LABELS,
   metadataKeysFor,
+  filterConditions,
+  ME_TOKEN,
   runQuery,
   validateQuerySpec,
   validateSchemaPatch,
   type FieldHints,
+  type MeResolver,
   type QueryInput,
   type SchemaField,
   type TagSchema,
 } from "@prism/core/database";
 
-import { assignedToMe, myIdentity, resetMyTasksForTests, type MyIdentity } from "../my-tasks";
+import { assignedToMe, myIdentity, resetMyTasksForTests, valueNamesMe, type MyIdentity } from "../my-tasks";
 import { assignmentsStored } from "../notifications";
 
 export const databasesApi = new Hono();
@@ -778,6 +781,20 @@ databasesApi.post("/query", async (c) => {
     // behaviour — every task — and `identity: "unset"` so the UI can say why.
     if (mine.ownerUnset) { ownerUnset = true; mine = null; }
   }
+  // "is Me" in a saved view (`@me`): resolved for THIS caller, against what the rows
+  // really hold (before identity is presented) — the view never stores an address.
+  // A link has no account, so nothing is "theirs".
+  const usesMe = filterConditions(spec.filter).some((cnd) => cnd.value === ME_TOKEN);
+  const meIdentity = usesMe && actor.kind === "user" ? mine ?? (await myIdentity(actor, entry)) : null;
+  const rawById = usesMe ? new Map<string, Note>() : null;
+  const myWriterId = usesMe && actor.kind === "user" ? writerIdFor(actor.email) : null;
+  const isMe: MeResolver = (row, key) => {
+    const raw = rawById?.get(row.id)?.metadata;
+    if (!meIdentity || !raw) return false;
+    if (key === WRITER_KEY) return typeof raw[WRITER_KEY] === "string" && raw[WRITER_KEY] === myWriterId;
+    if (key === "prism_creator") return typeof raw.prism_creator === "string" && meIdentity.emails.has(raw.prism_creator.trim().toLowerCase());
+    return Object.hasOwn(raw, key) && valueNamesMe(raw[key], meIdentity);
+  };
   const cap = scanMax();
   const stamp = actor.kind === "user" && !owner;
   const visible: QueryInput[] = [];
@@ -816,11 +833,13 @@ databasesApi.post("/query", async (c) => {
     if (!wantsTemplates && (n.tags ?? []).includes("template")) continue;
     if (mine && !assignedToMe(n.metadata, mine)) continue;
     if (owner) {
+      rawById?.set(n.id, n);
       visible.push({ ...present(n), canEdit: true });
       continue;
     }
     const caps = capsFor(actor, ref(n));
     if (!caps.has("view")) continue;
+    rawById?.set(n.id, n);
     visible.push({ ...present(n), canEdit: caps.has("edit"), ...(stamp ? { _caps: [...caps] } : {}) });
   }
   // The cut happens AFTER permission filtering (review M2) on a deterministic
@@ -833,7 +852,7 @@ databasesApi.post("/query", async (c) => {
   if (spec.aggregates) spec.aggregates = spec.aggregates.filter((a) => !hiddenKey(a.key));
   if (spec.groupBy && hiddenKey(spec.groupBy.key)) delete spec.groupBy;
   try {
-    const page = runQuery(visible.slice(0, cap), spec, { limited: !owner, truncated });
+    const page = runQuery(visible.slice(0, cap), spec, { limited: !owner, truncated, ...(usesMe ? { me: isMe } : {}) });
     // Whether a person page stands for the caller (else only their address matched).
     if (mine) page.identity = mine.person ? "person" : "account";
     else if (ownerUnset) page.identity = "unset";

@@ -271,7 +271,15 @@ if (!legacy) {
     controls.queries.push(clone(spec));
     if (params.has("forbidden")) throw new VaultRequestError(403, "POST /query failed: 403 forbidden");
     const rows = visible().map((n) => ({ ...n, content: "", canEdit: !link && (!viewer || !!n._caps?.includes("edit")) }));
-    return runQuery(rows, spec, { limited: viewer || link });
+    // "is Me" in a view filter: the server resolves the caller; here the caller is Mira
+    // (her person page, her account as creator / last editor). A link is nobody.
+    const me = (n: { metadata: Record<string, unknown> | null }, key: string) => {
+      if (link) return false;
+      const v = n.metadata?.[key];
+      if (key === "prism_creator" || key === "prism_last_writer") return v === "mira@example.test";
+      return (Array.isArray(v) ? v : [v]).some((x) => typeof x === "string" && x.includes("People/Mira Chen"));
+    };
+    return runQuery(rows, spec, { limited: viewer || link, me });
   };
   client.updateProperties = async (id, set, expect) => {
     controls.writes.push(clone({ id, set, expect }));

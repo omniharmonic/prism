@@ -212,8 +212,31 @@ export async function assigneeResolver(entry: VaultEntry): Promise<((values: str
   };
 }
 
+/** `assigned`-style values of ONE property (a string or a list), split the same way. */
+function personValues(raw: unknown): string[] {
+  const out: string[] = [];
+  for (const s of strings(raw)) {
+    if (s.length > 2000) continue;
+    for (const part of s.split(/[,;&]/)) for (const v of part.includes("[[") ? [part] : part.split(/\s+and\s+/i)) if (v.trim()) out.push(v.trim());
+  }
+  return out.slice(0, 20);
+}
+
+/**
+ * Does this property value name the caller ("is Me" in a saved view filter)? The
+ * same rule as "assigned to me", for any person property: one of their addresses,
+ * a `[[wikilink]]`/path to their person note, or that note's name.
+ */
+export function valueNamesMe(raw: unknown, me: MyIdentity): boolean {
+  return namesMe(personValues(raw), me);
+}
+
 export function assignedToMe(metadata: Record<string, unknown> | null | undefined, me: MyIdentity): boolean {
-  for (const v of assigneeValues(metadata ?? {})) {
+  return namesMe(assigneeValues(metadata ?? {}), me);
+}
+
+function namesMe(values: string[], me: MyIdentity): boolean {
+  for (const v of values) {
     const open = v.indexOf("[[");
     if (open >= 0) {
       const close = v.indexOf("]]", open + 2);
