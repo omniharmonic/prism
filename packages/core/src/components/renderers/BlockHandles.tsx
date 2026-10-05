@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import type { Editor } from "@tiptap/react";
 import { TextSelection, type Transaction } from "@tiptap/pm/state";
-import { GripVertical, Plus, Copy, CopyPlus, Trash2, ArrowUp, ArrowDown, Repeat2, Palette, FolderInput, MessageSquarePlus, Sparkles, FileText, Wand2 } from "lucide-react";
+import { GripVertical, Plus, Copy, CopyPlus, Trash2, ArrowUp, ArrowDown, Repeat2, Palette, FolderInput, Link2, MessageSquarePlus, Sparkles, FileText, Wand2 } from "lucide-react";
 import { BLOCK_COLORS, type BlockColorValue } from "../../editor/blocks";
 import {
   TURN_INTO,
@@ -29,6 +29,7 @@ import { TURN_INTO_ICONS, colorLabel } from "./blockUi";
 import { blockSelectionActive, blockSelectionRange, selectBlocks } from "../../lib/tiptap/EditorKeys";
 import { appendBlocksToPage, blocksToHtml, canMoveBlocksToPage, carryAttachments, copyBlocks, moveFailureText, newMoveRequestId } from "../../lib/tiptap/moveBlock";
 import { suppressTrashOffer } from "../../lib/tiptap/childPage";
+import { copyHeadingLink } from "../../lib/pages/headingLinks";
 import { useSelectionAsk } from "../../lib/agent/useSelectionAsk";
 import { useHostServices } from "../../data/HostServicesContext";
 import { noteForEditor } from "../../lib/agent/documentSnapshots";
@@ -428,6 +429,7 @@ export function BlockHandles({ editor, enabled, notes, noteId, onComment }: Bloc
     }, (e) => setNotice(moveFailureText(e, title)));
   };
 
+  const headingNoteId = noteId ?? noteForEditor(editor)?.noteId ?? null;
   const mainItems: EditorMenuItem[] = [
     // Phones have no + button and no "/" key handy: insert lives in the menu.
     ...(narrow ? [{ id: "insert", label: "Insert block below", icon: <Plus size={15} />, onSelect: () => { setMenu(null); insertBelow(); } }] : []),
@@ -441,6 +443,13 @@ export function BlockHandles({ editor, enabled, notes, noteId, onComment }: Bloc
       if (node) void copyBlocks(editor.schema, [node]).then((ok) => setNotice(ok ? "Copied block" : "Couldn’t copy — the browser refused clipboard access"));
       return null;
     }) },
+    // A heading has a shareable address (`<page link>#h-<slug>`); the slug comes from its text.
+    ...(block?.type.name === "heading" && block.textContent.trim() && headingNoteId ? [{ id: "copy-heading-link", label: "Copy link to heading", icon: <Link2 size={15} />, keywords: "url anchor section share", onSelect: () => run((at) => {
+      let dom: Node | null = null;
+      try { dom = editor.view.nodeDOM(at.pos); } catch { dom = null; }
+      void copyHeadingLink(headingNoteId, dom instanceof Element ? dom : null).then((ok) => setNotice(ok ? "Copied link to heading" : "Couldn’t copy — the browser refused clipboard access"));
+      return null;
+    }) }] : []),
     ...(canMove ? [{ id: "move", label: "Move to", icon: <FolderInput size={15} />, keywords: "another page", submenu: true, onSelect: () => setMenu("move") }] : []),
     ...(onComment && hasText ? [{ id: "comment", label: "Comment", icon: <MessageSquarePlus size={15} />, onSelect: () => {
       const at = locateBlock(editor, hovered.ref);
