@@ -130,7 +130,7 @@
   .prism-inbox-row { padding: 12px 4px 12px 20px; }
   .prism-inbox-row-actions { opacity: 1; }
   .prism-inbox-filters { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
-  .prism-inbox-chip { flex-shrink: 0; min-height: 36px; }
+  .prism-inbox-chip { flex-shrink: 0; min-height: 44px; min-width: 44px; /* a touch target wherever the row lands (the settings panel can push it beside the bottom bar) */ }
   .prism-inbox-btn { min-height: 44px; }
   .prism-inbox-icon-btn { width: 44px; height: 44px; }
   .prism-home-grid { grid-template-columns: minmax(0, 1fr); }
