@@ -11,6 +11,7 @@ import { EDIT_LINK_EVENT, LINK_CARD_FOCUS_EVENT } from "../../lib/tiptap/EditorK
 import { linkTarget, openInNewTab, openLinkTarget, type LinkTarget } from "../../lib/tiptap/prismLinks";
 import { structuralEditsAllowed } from "../../lib/tiptap/blockCommands";
 import { pageLink } from "../../lib/pages/usePageActions";
+import { walkTab } from "../../lib/a11y/tabWalk";
 import "./LinkCard.css";
 
 /**
@@ -20,8 +21,10 @@ import "./LinkCard.css";
  *  - Only for LINK MARKS: never a `[[wikilink]]`, a mention chip, or the anchor inside
  *    a bookmark / attachment block (looked up in the document, not by class name).
  *  - It never takes focus by itself, so it cannot interrupt typing; any edit hides it.
- *    From the keyboard: ⌘K with the caret in a link moves into the card; Tab walks on
- *    (no trap); Esc closes it and returns to the text.
+ *    From the keyboard: ⌘K with the caret in a link moves into the card; Tab / Shift+Tab walk
+ *    its actions (handled here — `walkTab` — so it also works where the browser's Tab skips
+ *    buttons, Safari's default) and leave it at either end (no trap); Esc closes it and
+ *    returns to the text.
  *  - Open (`prismLinks.linkTarget`, the rule the inline link field enforces): a Prism page
  *    opens in the app (in a new tab where no workspace shell is mounted), an `#anchor`
  *    scrolls, every other allowed link opens in a new tab that cannot reach this window
@@ -271,7 +274,11 @@ export function LinkCard({ editor }: { editor: Editor }) {
       style={{ left: card.left, top: card.top }}
       onMouseEnter={() => { overCard.current = true; window.clearTimeout(timers.current.hide); timers.current.hide = undefined; }}
       onMouseLeave={() => { overCard.current = false; if (card.via === "hover" && !cardRef.current?.contains(document.activeElement)) setCard(null); }}
-      onKeyDown={(e) => { if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); close(true); } }}
+      onKeyDown={(e) => {
+        if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); close(true); return; }
+        // Tab walks the card's own actions (Safari's default Tab skips buttons); at either end it is the browser's.
+        if (walkTab(e, e.currentTarget)) e.stopPropagation();
+      }}
       onBlur={(e) => { if ((card.via === "keys" || card.via === "focus") && !e.currentTarget.contains(e.relatedTarget as Node | null)) setCard(null); }}
     >
       <span className="prism-link-card-url" title={card.href}>
