@@ -1,5 +1,4 @@
-import { type Page } from "@playwright/test";
-import { test, expect } from "./browser-compat";
+import { test, expect, type Page } from "@playwright/test";
 
 const fx = (page: Page) => page.evaluate(() => { const f = (window as any).dbFixture; return { creates: f.creates, schemaWrites: f.schemaWrites }; });
 const writes = (page: Page) => page.evaluate(() => (window as any).dbFixture.writes);
@@ -443,6 +442,10 @@ test("column reorder and cell keyboard nav", async ({ page }) => {
   await page.keyboard.press("Tab");
   await expect.poll(async () => (await writes(page)).at(-1)).toEqual({ id: "t3", set: { estimate: 4 }, expect: { estimate: 9 } });
   await expect.poll(focused).toMatch(/^Labels:/);
+  expect(await focusedRow()).toBe(here);
+  // Shift+Tab walks back to the cell that was edited (the table moves focus itself: no browser setting needed).
+  await page.keyboard.press("Shift+Tab");
+  await expect.poll(focused).toBe("Estimate (h): 4");
   expect(await focusedRow()).toBe(here);
 
   // Columns reorder from View settings and the order is saved.

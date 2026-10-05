@@ -29,6 +29,7 @@ import { UpdatePrompt } from "./offline/UpdatePrompt";
 import { webPush } from "./push/webPush";
 import { initAgentDeepLink } from "./push/deeplink";
 import { initNativeExtras } from "./native/extras";
+import { captureAppLinks, initAppLinks } from "./native/appLinks";
 import { installExternalImageProxy } from "./native/externalImages";
 import { installChunkReloadRecovery } from "./chunkReload";
 
@@ -57,6 +58,9 @@ export async function start() {
   // Capture a ?t= capability token early so every route (incl. /collab) can use
   // it — a share/collab link is the recipient's only credential.
   const capability = initCapability();
+  // Native shell: take incoming links from BEFORE the sign-in gate, so one that arrives with a
+  // missing or stale token survives the sign-in reload (opened by initAppLinks below).
+  if (!capability) captureAppLinks();
 
   // Accept-invite route: create an account from an owner-issued invite link.
   if (window.location.pathname === "/accept-invite") {
@@ -255,6 +259,9 @@ export async function start() {
   });
   startOutboxSync();
   if (!capability && isNative) initNativeExtras(); // WP4.2: export + drag-drop (page half)
+  // Universal / prism:// links (NP-NA-04): the shell hands over a validated path; it becomes a
+  // tab. Starts only where a host shell provides the bridge, and only for a signed-in workspace.
+  if (!capability) initAppLinks();
   // Client parity C: external note images via the server's SSRF-guarded proxy
   // (blob: URLs; the client CSP only allows its own server). PWA loads directly.
   if (!capability && isNative) installExternalImageProxy({ fetch: serverFetch, apiOrigin: gatewayOrigin });

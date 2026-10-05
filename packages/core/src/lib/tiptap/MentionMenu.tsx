@@ -83,10 +83,16 @@ export function MentionMenu({ editor, state, notes }: { editor: Editor | null; s
     const remindQuery = q.match(/^rem(?:i(?:n(?:d(?: me)?)?)?)?(?: (.*))?$/);
     const out: Item[] = [];
     if (!remindQuery) {
-      for (const p of (people.data?.people ?? []).slice(0, 5)) {
+      // People are looked up for the DEBOUNCED query. Until that catches up with what is typed, the
+      // answer on hand is for an older query (after "@": everyone): only the people whose name fits
+      // the text typed NOW are offered — never a row that Enter would take in place of the date or
+      // page the person just typed.
+      const inStep = debounced === raw.trim();
+      const fits = (name: string) => inStep || !q || name.toLowerCase().includes(q);
+      for (const p of (people.data?.people ?? []).filter((x) => fits(x.name)).slice(0, 5)) {
         out.push({ kind: "person", id: p.id, label: p.name, detail: p.role ?? p.identities[0]?.value ?? "Person" });
       }
-      for (const m of (members.data ?? []).slice(0, Math.max(0, 6 - out.length))) out.push({ kind: "person", id: m.id, label: m.name, detail: "Workspace member" });
+      for (const m of (members.data ?? []).filter((x) => fits(x.name)).slice(0, Math.max(0, 6 - out.length))) out.push({ kind: "person", id: m.id, label: m.name, detail: "Workspace member" });
       const pages = notes
         .filter((n) => !(n.tags ?? []).includes("person") && n.id !== noteId)
         // A page answers to its title, its file name and its aliases.
@@ -101,7 +107,7 @@ export function MentionMenu({ editor, state, notes }: { editor: Editor | null; s
       out.push({ kind: "remind", date: remindQuery && !dates.length ? parseDateQuery("tomorrow 9am")[0]! : target });
     }
     return out;
-  }, [raw, people.data, members.data, notes, noteId]);
+  }, [raw, debounced, people.data, members.data, notes, noteId]);
 
   const signature = `${state.from}:${raw}`;
   const [sel, setSel] = useState({ signature: "", index: 0 });

@@ -3,11 +3,13 @@ import { CheckCircle2, Download, Printer } from "lucide-react";
 import { useVaultTree } from "../../app/hooks/useParachute";
 import { isUnder } from "../../lib/pages/model";
 import { usePageActions } from "../../lib/pages/usePageActions";
-import { canDownloadDirectly, DIRECT_DOWNLOAD_BYTES, downloadExportDirectly, pollJob, saveBlob, transferApi, transferAvailable, TransferError } from "../../lib/import-export/client";
+import { canDownloadDirectly, DIRECT_DOWNLOAD_BYTES, downloadExportDirectly, EXPORT_SAVE_PROGRESS_EVENT, nativeExportSaver, pollJob, saveBlob, transferApi, transferAvailable, TransferError } from "../../lib/import-export/client";
 import { printCurrentPage, type ExportTarget } from "../../lib/import-export/store";
 import type { ExportJob } from "../../lib/import-export/wire";
 import { useUIStore } from "../../app/stores/ui";
 import { plural, ProgressBar, TransferDialog } from "./TransferDialog";
+
+const formatBytes = (n: number): string => (n >= 1024 * 1024 ? `${(n / (1024 * 1024)).toFixed(n >= 100 * 1024 * 1024 ? 0 : 1)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`);
 
 type Format = "markdown" | "html" | "pdf";
 const FORMATS: Array<{ id: Format; label: string }> = [
@@ -33,11 +35,45 @@ export function ExportDialog({ target, onClose }: { target: ExportTarget; onClos
   const [subpages, setSubpages] = useState(true);
   const [files, setFiles] = useState(true);
   const [job, setJob] = useState<ExportJob | null>(null);
-  const [phase, setPhase] = useState<"form" | "running" | "done">("form");
+  const [phase, setPhase] = useState<"form" | "running" | "saving" | "done">("form");
+  // Native shell only: the shell saves the archive itself (see nativeExportSaver).
+  const [saved, setSaved] = useState<{ name: string | null; error: string | null } | null>(null);
+  const [saveBytes, setSaveBytes] = useState<{ received: number; total: number | null }>({ received: 0, total: null });
+  const saving = useRef<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const abort = useRef<AbortController | null>(null);
   const blob = useRef<{ name: string; data: Blob | null; id: string } | null>(null);
-  useEffect(() => () => abort.current?.abort(), []);
+  useEffect(() => () => {
+    abort.current?.abort();
+    if (saving.current) nativeExportSaver()?.cancel(saving.current);
+  }, []);
+  useEffect(() => {
+    const onProgress = (e: Event) => {
+      const d = (e as CustomEvent<{ jobId?: unknown; received?: unknown; total?: unknown }>).detail;
+      if (!d || d.jobId !== saving.current || typeof d.received !== "number") return;
+      setSaveBytes({ received: d.received, total: typeof d.total === "number" ? d.total : null });
+    };
+    window.addEventListener(EXPORT_SAVE_PROGRESS_EVENT, onProgress);
+    return () => window.removeEventListener(EXPORT_SAVE_PROGRESS_EVENT, onProgress);
+  }, []);
+
+  /** Native shell: ask where to save, then let the shell stream the archive there. Never throws. */
+  const saveNatively = async (id: string, name: string) => {
+    const native = nativeExportSaver();
+    if (!native || saving.current) return;
+    saving.current = id;
+    setSaveBytes({ received: 0, total: null });
+    setPhase("saving");
+    try {
+      const file = await native.save(id, name);
+      setSaved({ name: file, error: null });
+    } catch (e) {
+      setSaved({ name: null, error: e instanceof TransferError ? e.message : "The export couldn’t be saved. Try again." });
+    } finally {
+      saving.current = null;
+      setPhase("done");
+    }
+  };
 
   const pdf = format === "pdf";
   const withSub = !vault && subpages && subCount > 0;
@@ -68,6 +104,12 @@ export function ExportDialog({ target, onClose }: { target: ExportTarget; onClos
       setJob({ id, state: "queued", scope: target.scope, format, done: 0, total: started.total, attachments: 0, skipped: 0, bytes: 0, fileName: null, error: null, expiresAt: null });
       const done = await pollJob(() => transferApi.exportStatus(id!), setJob, ctl.signal);
       if (done.state !== "done") throw new TransferError(0, done.error ?? done.state, done.error === "too_large" ? "This export is too large for one archive. Export a smaller part, or leave out images and files." : done.state === "cancelled" ? "Export stopped." : "The export couldn’t be finished. Try again.");
+      if (nativeExportSaver()) {
+        // The Prism Client: the shell downloads and saves the archive (no bytes pass through the page).
+        blob.current = { name: done.fileName ?? "export.zip", data: null, id };
+        await saveNatively(id, blob.current.name);
+        return;
+      }
       if (done.bytes > DIRECT_DOWNLOAD_BYTES && canDownloadDirectly()) {
         // A large archive goes straight from the server to disk.
         blob.current = { name: done.fileName ?? "export.zip", data: null, id };
@@ -87,6 +129,7 @@ export function ExportDialog({ target, onClose }: { target: ExportTarget; onClos
     }
   };
   const close = () => {
+    if (saving.current) nativeExportSaver()?.cancel(saving.current);
     if (phase === "running") {
       abort.current?.abort();
       if (job) void transferApi.cancelExport(job.id).catch(() => {});
@@ -156,23 +199,46 @@ export function ExportDialog({ target, onClose }: { target: ExportTarget; onClos
           </div>
         </>
       )}
+      {phase === "saving" && (
+        <>
+          <div className="transfer-body">
+            <ProgressBar
+              done={saveBytes.received}
+              total={saveBytes.total ?? 0}
+              label={saveBytes.total ? `Saving ${formatBytes(saveBytes.received)} of ${formatBytes(saveBytes.total)}…` : saveBytes.received ? `Saving ${formatBytes(saveBytes.received)}…` : "Choose where to save the archive…"}
+            />
+            <p className="transfer-hint">The archive is saved straight to the place you choose.</p>
+          </div>
+          <div className="transfer-foot">
+            <button type="button" className="transfer-btn focus-ring" onClick={() => saving.current && nativeExportSaver()?.cancel(saving.current)}>Stop</button>
+          </div>
+        </>
+      )}
       {phase === "done" && job && (
         <>
           <div className="transfer-body">
             <div className="transfer-done" role="status">
               <CheckCircle2 size={28} aria-hidden="true" />
-              <h3>Export ready</h3>
+              <h3>{saved?.name ? "Export saved" : "Export ready"}</h3>
               <p>
                 {plural(job.total - job.skipped, "page")}
-                {job.attachments > 0 ? ` and ${plural(job.attachments, "file")}` : ""} in {blob.current?.name ?? "the archive"}.
+                {job.attachments > 0 ? ` and ${plural(job.attachments, "file")}` : ""} in {saved?.name ?? blob.current?.name ?? "the archive"}.
               </p>
+              {saved && !saved.name && !saved.error && <p className="transfer-hint" data-export-unsaved>Not saved yet. Choose “Save…” to pick a place for it.</p>}
               {job.skipped > 0 && <p className="transfer-hint">{plural(job.skipped, "page")} couldn’t be included; they are listed in _export.json inside the archive.</p>}
             </div>
           </div>
           <div className="transfer-foot">
-            <button type="button" className="transfer-btn focus-ring" onClick={() => blob.current && (blob.current.data ? saveBlob(blob.current.name, blob.current.data) : downloadExportDirectly(blob.current.id))}>
-              <Download size={15} aria-hidden="true" /> Download again
-            </button>
+            {saved?.error && <div className="transfer-note" data-tone="error" role="alert" style={{ flex: 1 }}>{saved.error}</div>}
+            {saved ? (
+              <button type="button" className="transfer-btn focus-ring" onClick={() => blob.current && void saveNatively(blob.current.id, blob.current.name)}>
+                <Download size={15} aria-hidden="true" /> {saved.name ? "Save another copy…" : "Save…"}
+              </button>
+            ) : (
+              <button type="button" className="transfer-btn focus-ring" onClick={() => blob.current && (blob.current.data ? saveBlob(blob.current.name, blob.current.data) : downloadExportDirectly(blob.current.id))}>
+                <Download size={15} aria-hidden="true" /> Download again
+              </button>
+            )}
             <button type="button" className="transfer-btn focus-ring" data-primary="true" onClick={onClose}>Done</button>
           </div>
         </>

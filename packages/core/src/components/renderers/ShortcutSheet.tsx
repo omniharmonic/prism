@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { X } from "lucide-react";
-import { APP_SHORTCUTS as K, PENDING_SHORTCUTS } from "../../lib/shortcuts";
+import { APP_SHORTCUTS as K, PENDING_SHORTCUTS, shortcutAvailable, type AppShortcut } from "../../lib/shortcuts";
 import "./editor-blocks.css";
 
 /**
@@ -29,7 +29,15 @@ export function formatShortcut(spec: string): string {
   return parts.map((p) => names[p]?.[isMac ? 0 : 1] ?? (p.length === 1 ? p.toUpperCase() : p)).join(isMac ? "" : "+");
 }
 
-interface Row { label: string; keys: string[]; literal?: boolean; /** Not bound yet (its feature is on another branch): never rendered. */ pending?: boolean }
+interface Row {
+  label: string;
+  keys: string[];
+  literal?: boolean;
+  /** Listed only where this app-level binding works (`shortcutAvailable`: ⌘N is the native app's). */
+  only?: AppShortcut;
+  /** Not bound yet (its feature is on another branch): never rendered. */
+  pending?: boolean;
+}
 interface Section { title: string; rows: Row[] }
 
 const k = (label: string, ...keys: string[]): Row => ({ label, keys });
@@ -59,7 +67,7 @@ const BASE_SECTIONS: Section[] = [
     k("Find in page", K.find), k("Find and replace", K.replace), k("Next / previous match", "Enter", "Shift-Enter"),
   ] },
   { title: "Navigation", rows: [
-    k("Quick find (no text selected)", K.quickFind), k("New page (desktop app)", K.newPage), k("Save now", K.save), k("Ask agent about the selection", K.askAgent),
+    k("Quick find (no text selected)", K.quickFind), { label: "New page", keys: [K.newPage], only: "newPage" }, k("Save now", K.save), k("Ask agent about the selection", K.askAgent),
     k("Toggle sidebar", K.toggleSidebar), k("Toggle side panel", K.toggleSidePanel), k("Back / forward", K.navBack, K.navForward),
     k("Settings", K.settings), k("Toggle theme", K.toggleTheme), k("Close tab", K.closeTab), k(`Keyboard shortcuts (also ${formatShortcut(K.blockMenu)} outside a block)`, K.shortcutSheet, "?"),
   ] },
@@ -75,6 +83,11 @@ export const SHORTCUT_SECTIONS: Section[] = BASE_SECTIONS.map((s) => ({
   rows: [...s.rows, ...PENDING_SHORTCUTS.filter((p) => p.section === s.title && !p.pending).map((p): Row => ({ label: p.label, keys: p.keys, literal: p.literal }))],
 }));
 
+/** The sections as shown HERE: a binding that cannot work in this shell (⌘N in a browser tab) is not listed. */
+export function visibleShortcutSections(): Section[] {
+  return SHORTCUT_SECTIONS.map((s) => ({ ...s, rows: s.rows.filter((r) => !r.only || shortcutAvailable(r.only)) }));
+}
+
 function Sheet({ onClose }: { onClose: () => void }) {
   const [query, setQuery] = useState("");
   const search = useRef<HTMLInputElement>(null);
@@ -86,8 +99,9 @@ function Sheet({ onClose }: { onClose: () => void }) {
   }, []);
   const sections = useMemo(() => {
     const q = query.trim().toLowerCase();
-    if (!q) return SHORTCUT_SECTIONS;
-    return SHORTCUT_SECTIONS.map((s) => ({ ...s, rows: s.rows.filter((r) => `${r.label} ${r.keys.map((x) => (r.literal ? x : formatShortcut(x))).join(" ")} ${s.title}`.toLowerCase().includes(q)) })).filter((s) => s.rows.length);
+    const all = visibleShortcutSections();
+    if (!q) return all;
+    return all.map((s) => ({ ...s, rows: s.rows.filter((r) => `${r.label} ${r.keys.map((x) => (r.literal ? x : formatShortcut(x))).join(" ")} ${s.title}`.toLowerCase().includes(q)) })).filter((s) => s.rows.length);
   }, [query]);
   return (
     <div className="prism-shortcuts-backdrop" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>

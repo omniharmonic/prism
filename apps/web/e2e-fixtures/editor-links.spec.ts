@@ -1,5 +1,5 @@
-import { type Page } from "@playwright/test";
-import { test, expect, lineEndKey } from "./browser-compat";
+import { test, expect, type Page } from "@playwright/test";
+import { lineEndKey } from "./browser-compat";
 
 /**
  * NP-ED-18 — links in the editor, plain and live:
@@ -117,6 +117,11 @@ test("keyboard: the caret in a link shows the card; ⌘K moves into it, Tab walk
   await expect(card(page).getByRole("button", { name: "Open link" })).toBeFocused();
   await expect(page.getByRole("combobox", { name: "Search notes and commands" })).toHaveCount(0);
   await page.keyboard.press("Tab");
+  await expect(card(page).getByRole("button", { name: "Edit link" })).toBeFocused();
+  await page.keyboard.press("Tab");
+  await expect(card(page).getByRole("button", { name: "Remove link" })).toBeFocused();
+  // …and back. (The card walks its own actions: no browser setting is needed for Tab to reach a button.)
+  await page.keyboard.press("Shift+Tab");
   await expect(card(page).getByRole("button", { name: "Edit link" })).toBeFocused();
   await page.keyboard.press("Tab");
   await expect(card(page).getByRole("button", { name: "Remove link" })).toBeFocused();

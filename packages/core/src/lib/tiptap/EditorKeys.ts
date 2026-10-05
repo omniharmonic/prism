@@ -113,7 +113,7 @@ function decorating(editor: Editor): boolean {
   return editor.isEditable && !storage.suggestionMode?.suggesting && !storage.commentOnly?.active;
 }
 
-const EDITOR_POPUPS = ".slash-menu, .editor-menu, .prism-mention-menu, .prism-paste-menu, .prism-link-card, [role='listbox'][aria-label='Link to a document'], .prism-find-bar:focus-within";
+const EDITOR_POPUPS = ".slash-menu, .editor-menu, .prism-mention-menu, .prism-emoji-menu, .prism-paste-menu, .prism-link-card, [role='listbox'][aria-label='Link to a document'], .prism-find-bar:focus-within";
 /**
  * Escape belongs to a popup only when it is one of the EDITOR's own (slash, `[[`,
  * `@`, paste-as, block / colour menus) and actually on screen — never to some
