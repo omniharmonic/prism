@@ -39,7 +39,7 @@ import { csrfRefusal } from "./actions";
 import { isNoteId } from "../collab";
 import type { ParsedMention } from "@prism/core/mentions";
 import { vaultClient } from "../parachute";
-import { notifyAssignments, personPropertyKeys } from "./databases";
+import { mayAssignPeople, notifyAssignments, personPropertyKeys } from "./databases";
 import {
   TYPE_GROUPS,
   isNotificationType,
@@ -498,10 +498,13 @@ export const restMentionHook: MiddlewareHandler = async (c, next) => {
  * and the Prism MCP's in-process dispatch alike. Creates are NOT covered on
  * purpose (a template copy, a duplicate or an import row assigns nobody anew).
  *
- * Costs nothing for other writes: the body must carry `metadata` with a
- * people-shaped value, the page's tags come from the tree projection, and only
- * then is the stored note read once for the previous value (per-user budget;
- * past it this write is simply not diffed). Never changes the response.
+ * Costs nothing for other writes, and never waits on the tree projection: the
+ * body must carry `metadata` with a people-shaped value under an assignee key, a
+ * people-named key or a key some tag presents as a person (`mayAssignPeople` —
+ * synchronous, no vault call); only then is the stored note read ONCE, lean (no
+ * body, only the keys being written; its tags and path come with it), for the
+ * previous value (per-user budget; past it, or if the read fails, this write is
+ * simply not diffed). Never changes the response.
  */
 export const restAssignmentHook: MiddlewareHandler = async (c, next) => {
   const method = c.req.method;
@@ -525,16 +528,17 @@ export const restAssignmentHook: MiddlewareHandler = async (c, next) => {
   const actor = resolveActor(c);
   if (actor.kind !== "user") return next();
   const entry = resolveVaultEntry(roleAtLeast(actor.role, "admin") ? c.req.header("x-prism-vault") : actor.vaultId);
+  // An icon, a cover, a status: decided here, synchronously, with no read of any kind.
+  if (!mayAssignPeople(entry.id, set)) return next();
   let before: Awaited<ReturnType<ReturnType<typeof vaultClient>["getNote"]>> | null = null;
-  try {
-    const info = await noteInfo(entry.id, id);
-    if (!info || info.trashed) return next();
-    if (!(await personPropertyKeys(entry, info.ref.tags, set)).length) return next();
-    if (consumeRateLimit(`assign-hook:${actor.email}`, 120, 60_000) !== null) return next();
-    const n = await vaultClient(entry.id, { timeoutMs: 10_000 }).getNote(id);
-    before = n.id === id ? n : null;
-  } catch {
-    before = null;
+  if (consumeRateLimit(`assign-hook:${actor.email}`, 120, 60_000) === null) {
+    try {
+      const keys = Object.keys(set).filter((k) => typeof k === "string" && k.length <= 200).slice(0, 50);
+      const n = await vaultClient(entry.id, { timeoutMs: 5_000 }).getNote(id, { includeContent: false, includeMetadata: keys });
+      before = n.id === id && !(n.tags ?? []).includes("prism-trashed") && (await personPropertyKeys(entry, n.tags ?? [], set)).length ? n : null;
+    } catch {
+      before = null;
+    }
   }
   await next();
   if (!before) return;

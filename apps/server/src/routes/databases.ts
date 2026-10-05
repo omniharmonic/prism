@@ -158,6 +158,7 @@ async function vaultSchemas(entry: VaultEntry): Promise<Map<string, TagSchema>> 
 /** Test-only: forget cached vault schemas + listings. */
 export function resetDatabaseCachesForTests(): void {
   resetMyTasksForTests();
+  personHintCache.clear();
   schemaCache.clear();
   listCache.clear();
   listRows = 0;
@@ -198,6 +199,38 @@ function present(schema: TagSchema | undefined, hints: Record<string, FieldHints
   return { description: schema?.description ?? null, fields };
 }
 
+// Hints for the assignment hooks (S5): every property write used to scan + parse
+// every schema-ui row. Cached per vault (tag → hints), dropped by the one writer of
+// those rows (PUT /schemas/:tag) and after a short TTL (a second server process, tests).
+const PERSON_HINT_TTL_MS = 30_000;
+const personHintCache = new Map<string, { expires: number; hints: Map<string, Record<string, FieldHints>> }>();
+function cachedHints(vaultId: string): Map<string, Record<string, FieldHints>> {
+  const hit = personHintCache.get(vaultId);
+  if (hit && hit.expires > Date.now()) return hit.hints;
+  const hints = readHints(vaultId);
+  personHintCache.set(vaultId, { expires: Date.now() + PERSON_HINT_TTL_MS, hints });
+  return hints;
+}
+/** A value that could name someone: a non-blank string, or a list holding one. */
+const peopleShaped = (v: unknown): boolean => (typeof v === "string" && v.trim() !== "") || (Array.isArray(v) && v.some((x) => typeof x === "string" && x.trim() !== ""));
+/**
+ * The CHEAP, synchronous half of `personPropertyKeys` — no tags, no vault: could
+ * any key of `values` be a person property of SOME page in this vault? An assignee
+ * key or a people-named key (no lookup at all), else a key some tag's hint
+ * presents as a person. False = the write certainly assigns nobody.
+ */
+export function mayAssignPeople(vaultId: string, values: Record<string, unknown>): boolean {
+  const rest: string[] = [];
+  for (const [k, v] of Object.entries(values)) {
+    if (!peopleShaped(v)) continue;
+    if (ASSIGNEE_KEYS.has(k) || isPeopleKeyName(k)) return true;
+    if (isFieldKey(k) && !isSystemKey(k)) rest.push(k);
+  }
+  if (!rest.length) return false;
+  for (const hints of cachedHints(vaultId).values()) for (const k of rest) if (Object.hasOwn(hints, k) && hints[k]?.kind === "person") return true;
+  return false;
+}
+
 /** The task fields that always name people, whatever a schema says (my-tasks.ts reads the same four). */
 const ASSIGNEE_KEYS: ReadonlySet<string> = new Set(["assigned", "assignee", "assigneeEmail", "assignee_email"]);
 /**
@@ -209,9 +242,10 @@ const ASSIGNEE_KEYS: ReadonlySet<string> = new Set(["assigned", "assignee", "ass
  * A schema that cannot be read leaves the assignee keys and free keys.
  */
 export async function personPropertyKeys(entry: VaultEntry, tags: string[], values: Record<string, unknown>): Promise<string[]> {
-  const candidates = Object.entries(values).filter(([, v]) => (typeof v === "string" && v.trim() !== "") || (Array.isArray(v) && v.some((x) => typeof x === "string" && x.trim() !== "")));
-  if (!candidates.length) return [];
-  const hints = readHints(entry.id);
+  // Names first: a write that cannot assign anyone reads neither hints nor schema.
+  if (!mayAssignPeople(entry.id, values)) return [];
+  const candidates = Object.entries(values).filter(([, v]) => peopleShaped(v));
+  const hints = cachedHints(entry.id);
   // Without a hint, only a people-named key can be a person (`inferKind`): an
   // ordinary write (status, due, a text field) reads no schema and costs nothing.
   const hinted = (k: string) => tags.some((t) => hints.get(t)?.[k]?.kind !== undefined);
@@ -490,6 +524,7 @@ async function applySchemaPatch(c: Context, entry: VaultEntry, tag: string, patc
       all[field] = next;
     }
     upsertHints.run(hintKey(entry.id, tag), JSON.stringify(all));
+    personHintCache.delete(entry.id); // the assignment hooks read hints from a cache
   }
   schemaCache.delete(entry.id);
   const fresh = vaultChange ? { description: description || null, fields: merged.fields } : current;
@@ -917,7 +952,7 @@ async function writeProperties(actor: Actor, entry: VaultEntry, id: string, entr
  * written. Called by the property routes and the gateway's metadata PATCH hook
  * only — the CSV import, creates and every ingester deliberately do not.
  */
-export function notifyAssignments(actor: Actor, entry: VaultEntry, before: Pick<Note, "id" | "tags" | "metadata">, set: Record<string, unknown>, via: ReturnType<typeof requestVia>): void {
+export function notifyAssignments(actor: Actor, entry: VaultEntry, before: Pick<Note, "id" | "tags" | "metadata"> & { path?: string | null }, set: Record<string, unknown>, via: ReturnType<typeof requestVia>): void {
   if (actor.kind === "anon") return;
   void (async () => {
     const keys = await personPropertyKeys(entry, before.tags ?? [], set);
@@ -925,6 +960,7 @@ export function notifyAssignments(actor: Actor, entry: VaultEntry, before: Pick<
     await assignmentsStored({
       vaultId: entry.id,
       noteId: before.id,
+      path: before.path ?? null,
       fields: keys.map((key) => ({ key, prev: before.metadata?.[key] ?? null, next: set[key] })),
       author: actor.kind === "user" ? actor.email : null,
       senderKey: actor.kind === "link" ? `link:${actor.capabilityId}` : undefined,

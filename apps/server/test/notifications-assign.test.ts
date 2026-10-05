@@ -507,3 +507,110 @@ test("level 'all' adds new threads and page comments you took no part in — nev
   await commentsStored("lv-all", "primary", "task", doc, [BOB]);
   assert.equal((await inbox(ADA, "?type=comment_thread")).items.length, 8);
 });
+
+// ── review round (S1–S6) ─────────────────────────────────────────────────────
+
+test("S1: comments with NO account author (a share-link guest's commands) are budgeted like one sender per page — followers and participants get at most 8 an hour", async () => {
+  grantUser(EVE, "tag", "team", "view");
+  const doc = new Y.Doc();
+  primeComments("s1", doc);
+  const t1 = thread(doc, "t1", { id: "c1", actorId: by(ADA), author: "Ada", text: "Mine", createdAt: 1 });
+  await commentsStored("s1", "primary", "task", doc, [ADA]); // Ada takes part in t1
+  assert.equal((await putLevel(EVE, "task", "all")).status, 200);
+  // A guest's burst: the store has no editor (the command ran as `capability:<id>`).
+  for (let i = 0; i < 15; i++) {
+    thread(doc, `g${i}`, { id: `g${i}`, author: "Guest", text: `page comment ${i}`, createdAt: 10 + i }, true);
+    t1.push([{ id: `r${i}`, author: "Guest", text: `reply ${i}`, createdAt: 40 + i }]);
+  }
+  await commentsStored("s1", "primary", "task", doc, []);
+  const eve = (await inbox(EVE, "?limit=100")).items;
+  assert.equal(eve.length, 8, "a follower: the per-page budget, not one row per guest comment");
+  assert.ok(eve.every((i) => i.type === "comment_thread" && i.actor === null));
+  const ada = (await inbox(ADA, "?limit=100")).items;
+  assert.equal(ada.length, 8, "a participant's replies are budgeted the same way");
+  assert.ok(ada.every((i) => i.type === "comment_reply" && i.actor === null));
+  // An account author is unaffected by the guest's spent budget.
+  thread(doc, "bob1", { id: "b1", actorId: by(BOB), author: "Bob", text: "A real thread", createdAt: 99 });
+  assert.equal(await commentsStored("s1", "primary", "task", doc, [BOB]), 1);
+});
+
+test("S2/S3: a metadata PATCH that names nobody costs no read at all (the tree is never awaited); a person write pre-reads ONCE, lean", async () => {
+  resetTreeForTests();
+  clearNoteInfoCache();
+  let at = fv.calls.length;
+  assert.equal((await req("/notes/task", OWNER, { method: "PATCH", body: JSON.stringify({ metadata: { icon: "🚀", cover: "gradient:dawn", status: "doing", summary: "Ada Lovelace" } }) })).status, 200);
+  const gets = fv.calls.slice(at).filter((c) => c.method === "GET");
+  assert.deepEqual(gets.map((c) => c.path + c.search), [], "no tree build, no pre-read, no schema read before an icon/cover/status write");
+  // A person property: one lean read of the note (no body, only the written keys).
+  at = fv.calls.length;
+  assert.equal((await req("/notes/task", OWNER, { method: "PATCH", body: JSON.stringify({ metadata: { assigned: "Ada Lovelace", status: "todo" } }) })).status, 200);
+  const patchAt = fv.calls.slice(at).findIndex((c) => c.method === "PATCH");
+  const before = fv.calls.slice(at, at + patchAt).filter((c) => c.method === "GET");
+  assert.equal(before.length, 1, `exactly one read before the write: ${before.map((c) => c.path + c.search).join(" | ")}`);
+  assert.ok(before[0]!.path.endsWith("/notes/task"));
+  const q = new URLSearchParams(before[0]!.search);
+  assert.equal(q.get("include_content"), "false", "the body is not fetched");
+  assert.equal(q.get("include_metadata"), "assigned,status");
+  assert.equal((await until(() => assigned(ADA), (v) => v.length === 1)).length, 1);
+});
+
+test("S4: when the people listing cannot be read nothing is diffed (an unreadable 'before' never makes someone look newly added)", async () => {
+  // Ada is already assigned, by a link to her person page.
+  fv.notes.get("task")!.metadata = { assigned: "[[p-ada]]" };
+  const inner = globalThis.fetch;
+  let failing = true;
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const u = String(typeof input === "string" || input instanceof URL ? input : input.url);
+    if (failing && u.includes("tag=person")) return new Response("{}", { status: 500 });
+    return inner(input, init);
+  }) as typeof fetch;
+  try {
+    // Bob rewrites the value as her address while the people listing is down: the
+    // link cannot be resolved, so "before" is unknown — NOT empty.
+    assert.equal((await setProp(BOB, "task", { assigned: ADA })).status, 200);
+    assert.equal((await settled(ADA)).length, 0);
+    // The listing is back: a real assignment on another page is told as usual.
+    failing = false;
+    resetDatabaseCachesForTests();
+    assert.equal((await setProp(BOB, "task2", { assigned: "[[p-ada]]" })).status, 200);
+    assert.equal((await until(() => assigned(ADA), (v) => v.length === 1)).length, 1);
+  } finally {
+    globalThis.fetch = inner;
+  }
+});
+
+test("S6: a database ROW template (a page under <db>/Templates/, not tagged `template`) assigns nobody — by the property route or a PATCH", async () => {
+  fv.put({ id: "rowtpl", path: "vault/Projects/Bugs/Templates/Bug report", tags: ["team"], metadata: { prism_template_for: "bugs-db" }, content: "" });
+  fv.put({ id: "rowreal", path: "vault/Projects/Bugs/Crash on save", tags: ["team"], metadata: {}, content: "" });
+  resetTreeForTests();
+  assert.equal((await setProp(BOB, "rowtpl", { assigned: ADA })).status, 200);
+  assert.equal((await req("/notes/rowtpl", OWNER, { method: "PATCH", body: JSON.stringify({ metadata: { assignee: "Ada Lovelace" } }) })).status, 200);
+  assert.equal((await settled(ADA)).length, 0);
+  // A real row beside it still notifies.
+  assert.equal((await setProp(BOB, "rowreal", { assigned: ADA })).status, 200);
+  assert.equal((await until(() => assigned(ADA), (v) => v.length === 1)).length, 1);
+});
+
+test("long people lists are compared whole: reordering 25 people adds nobody, and someone added at position 30 is told", async () => {
+  const others = Array.from({ length: 24 }, (_, i) => `Person ${i + 1}`);
+  fv.notes.get("task")!.metadata = { assigned: [...others.slice(0, 21), "Ada Lovelace", ...others.slice(21)] };
+  // Ada moves from position 22 to the front: she was already assigned.
+  assert.equal((await setProp(BOB, "task", { assigned: ["Ada Lovelace", ...others] })).status, 200);
+  assert.equal((await settled(ADA)).length, 0);
+  // Added at the END of a long list on another page: still an assignment.
+  const many = Array.from({ length: 29 }, (_, i) => `Guest ${i + 1}`);
+  assert.equal((await setProp(BOB, "task2", { assigned: [...many, "Ada Lovelace"] })).status, 200);
+  assert.equal((await until(() => assigned(ADA), (v) => v.length === 1)).length, 1);
+});
+
+test("a page deleted for good takes everyone's notification level for it along", async () => {
+  assert.equal((await putLevel(ADA, "task", "none")).status, 200);
+  assert.equal((await putLevel(BOB, "task", "all")).status, 200);
+  assert.equal((await putLevel(ADA, "task2", "all")).status, 200);
+  grantUser(BOB, "note", "task", "own");
+  const del = await req("/notes/task", BOB, { method: "DELETE" });
+  assert.equal(del.status, 200, await del.clone().text());
+  assert.ok(!fv.notes.has("task"), "the page is really gone");
+  const left = db.prepare("SELECT note_id FROM notification_page_levels").all() as Array<{ note_id: string }>;
+  assert.deepEqual(left.map((r) => r.note_id), ["task2"]);
+});
