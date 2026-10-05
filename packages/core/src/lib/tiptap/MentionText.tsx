@@ -82,6 +82,11 @@ export function useCommentMentionPicker(ref: RefObject<Field | null>, value: str
   const open = (!!active && dismissed !== active.start) && (!!client?.listPeople || (members.data?.length ?? 0) > 0);
   const items: Array<{ id: string; name: string; role?: string | null }> = open ? [...(people.data?.people ?? []), ...(members.data ?? []).map((m) => ({ ...m, role: "Workspace member" }))].slice(0, 6) : [];
   useEffect(() => setIndex(0), [active?.query]);
+  // The lookup for the name at the caret has not answered yet. Enter / Tab pressed now means "this
+  // person": it used to find no row to take and fell through to the field — in a reply box that
+  // POSTED the comment with a raw "@gra" in it. The key waits for the answer instead (bounded).
+  const looking = !!active && dismissed !== active.start && ((peopleOpen && people.isLoading) || members.isLoading);
+  const [wanted, setWanted] = useState<{ start: number; query: string } | null>(null);
   // Place the caret after an inserted token in the same commit as the new value,
   // so typing straight on never lands before it.
   const pendingCaret = useRef<number | null>(null);
@@ -103,11 +108,29 @@ export function useCommentMentionPicker(ref: RefObject<Field | null>, value: str
     pendingCaret.current = active.start + token.length;
   };
 
+  useEffect(() => {
+    if (!wanted) return;
+    if (!active || active.start !== wanted.start || active.query !== wanted.query) { setWanted(null); return; } // typed on: the press is void
+    if (looking) {
+      const timer = setTimeout(() => setWanted(null), 3000); // a lookup that never answers must not hold the key
+      return () => clearTimeout(timer);
+    }
+    setWanted(null);
+    if (items.length) pick(items[0]!);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [wanted, looking, active?.start, active?.query, items.length]);
+
   const sync = () => setCaret(ref.current?.selectionStart ?? value.length);
   return {
     /** True when the key was consumed by the picker. */
     onKeyDown(e: KeyboardEvent<Field>): boolean {
-      if (!open || !items.length || e.nativeEvent.isComposing) return false;
+      if (e.nativeEvent.isComposing) return false;
+      if (looking && index === 0 && (e.key === "Enter" || e.key === "Tab") && !e.shiftKey && !e.metaKey && !e.ctrlKey && !e.altKey) {
+        e.preventDefault();
+        setWanted({ start: active!.start, query: active!.query });
+        return true;
+      }
+      if (!open || !items.length) return false;
       if (e.key === "ArrowDown" || e.key === "ArrowUp") {
         e.preventDefault();
         setIndex((i) => (i + (e.key === "ArrowDown" ? 1 : -1) + items.length) % items.length);
