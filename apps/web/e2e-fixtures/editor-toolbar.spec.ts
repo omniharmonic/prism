@@ -88,6 +88,66 @@ test.describe("plain editor selection toolbar", () => {
     await expect(page.getByRole("textbox", { name: "Replace with" })).toBeVisible();
   });
 
+  // NP-ED-05, every clause: each binding of the row with the platform's modifier (⌘ on Apple, Ctrl on
+  // Windows/Linux — the other modifier family does nothing), each consumed by the page so no browser
+  // menu acts on it, and ⌘K as Notion has it: the link field with text selected, quick find without.
+  for (const os of ["apple", "windows"] as const) {
+    test(`NP-ED-05: ⌘B ⌘I ⌘U ⌘⇧S ⌘E ⌘K ⌘⇧H as written — ${os} modifiers`, async ({ page }) => {
+      await page.addInitScript((platform) => { Object.defineProperty(navigator, "platform", { get: () => platform }); }, os === "apple" ? "MacIntel" : "Win32");
+      await page.goto("/e2e-fixtures/editor-blocks.html");
+      await expect(page.locator(".tiptap[contenteditable=true]")).toBeVisible();
+      const mod = os === "apple" ? "Meta" : "Control";
+      const other = os === "apple" ? "Control" : "Meta";
+      // What reached the window, and whether the page had consumed it by then.
+      await page.evaluate(() => {
+        (window as any).prismKeys = [];
+        window.addEventListener("keydown", (e) => { if (!["Meta", "Control", "Shift", "Alt"].includes(e.key)) (window as any).prismKeys.push([e.key.toLowerCase(), e.defaultPrevented]); });
+      });
+      const consumed = async (key: string) => (await page.evaluate(() => (window as any).prismKeys as Array<[string, boolean]>)).filter(([k]) => k === key).at(-1)?.[1];
+      const cases: Array<[string, string, string]> = [["b", "b", "strong"], ["i", "i", "em"], ["u", "u", "u"], ["Shift+s", "s", "s"], ["e", "e", "code"], ["Shift+h", "h", "mark"]];
+      for (const [chord, key, tag] of cases) {
+        await select(page, "Bravo paragraph");
+        await page.keyboard.press(`${mod}+${chord}`);
+        await expect.poll(() => html(page), { message: `${mod}+${chord} applies <${tag}>` }).toContain(`<p><${tag}>Bravo paragraph</${tag}></p>`);
+        expect(await consumed(key), `${mod}+${chord} is consumed by the editor`).toBe(true);
+        await page.keyboard.press(`${mod}+${chord}`);
+        await expect.poll(() => html(page), { message: `${mod}+${chord} again removes it` }).toContain("<p>Bravo paragraph</p>");
+      }
+      // ⌘K with text selected: the link field, applied from the keyboard.
+      await select(page, "Echo quote");
+      await page.keyboard.press(`${mod}+k`);
+      expect(await consumed("k")).toBe(true);
+      const field = page.getByRole("textbox", { name: /link/i });
+      await expect(field).toBeFocused();
+      await page.keyboard.type("example.test/np-ed-05");
+      await page.keyboard.press("Enter");
+      await expect.poll(() => html(page)).toMatch(/<a [^>]*href="https:\/\/example\.test\/np-ed-05"[^>]*>Echo quote<\/a>/);
+      // ⌘K with only a caret is not "link" (it is the shell's quick find — NP-SB-02): no link field, nothing linked.
+      await page.getByText("Alpha", { exact: true }).click();
+      await page.keyboard.press(`${mod}+k`);
+      await expect(field).toHaveCount(0);
+      expect((await html(page)).match(/<a /g)).toHaveLength(1);
+      await page.keyboard.press("Escape");
+      await page.getByText("Alpha", { exact: true }).click();
+      // The sheet writes each key once, in this platform's notation.
+      await page.keyboard.press(`${mod}+Shift+/`);
+      const sheet = page.getByRole("dialog", { name: "Keyboard shortcuts" });
+      const row = (label: string) => sheet.locator(".prism-shortcuts-row").filter({ has: page.getByText(label, { exact: true }) }).locator("kbd");
+      const apple = os === "apple";
+      for (const [label, keys] of [["Bold", apple ? "⌘B" : "Ctrl+B"], ["Italic", apple ? "⌘I" : "Ctrl+I"], ["Underline", apple ? "⌘U" : "Ctrl+U"], ["Strikethrough", apple ? "⌘⇧S" : "Ctrl+Shift+S"], ["Inline code", apple ? "⌘E" : "Ctrl+E"], ["Link (with text selected)", apple ? "⌘K" : "Ctrl+K"], ["Highlight (last colour)", apple ? "⌘⇧H" : "Ctrl+Shift+H"], ["Quick find (no text selected)", apple ? "⌘K" : "Ctrl+K"]] as const) {
+        await expect(row(label)).toHaveText([keys]);
+      }
+      await page.keyboard.press("Escape");
+      // The other modifier family is not a second binding. (Checked with Apple's modifiers only: under the emulated
+      // Windows platform this Mac's own browser would still act on ⌘B natively.)
+      if (os === "apple") {
+        await select(page, "Bravo paragraph");
+        await page.keyboard.press(`${other}+b`);
+        expect(await html(page)).toContain("<p>Bravo paragraph</p>");
+      }
+    });
+  }
+
   // NP-ED-17: Mention in the selection toolbar opens the @ menu right after the selection.
   test("the Mention button opens the @ menu after the selection", async ({ page }) => {
     const bubble = await select(page, "Bravo paragraph");

@@ -121,7 +121,7 @@ test("⌘\\ collapses and width persists", async ({ page }) => {
 });
 
 /**
- * The shortcut sheet (⌘/) and the handler read one table (`lib/shortcuts.ts`):
+ * The shortcut sheet (⌘⇧/, or ?) and the handler read one table (`lib/shortcuts.ts`):
  * every shell row the sheet lists is pressed exactly as written, and must work.
  * ⌘B is Bold only — it never moves the sidebar, inside an editor or out.
  */
@@ -134,7 +134,7 @@ test("the shortcut sheet's shell rows are the working bindings", async ({ page }
   const ui = () => page.evaluate(() => { const s = (window as any).prismShellUI.getState(); return { panel: s.contextPanelOpen as boolean, settings: s.settingsOpen as boolean, tab: s.activeTabId as string | null }; });
 
   await page.getByRole("button", { name: "Page actions", exact: true }).focus(); // outside the editor
-  await page.keyboard.press("ControlOrMeta+/");
+  await page.keyboard.press("ControlOrMeta+Shift+/");
   const sheet = page.getByRole("dialog", { name: "Keyboard shortcuts" });
   await expect(sheet).toBeVisible();
   const keysOf = async (label: string) => sheet.locator(".prism-shortcuts-row").filter({ has: page.getByText(label, { exact: true }) }).locator("kbd").allTextContents();
@@ -154,7 +154,8 @@ test("the shortcut sheet's shell rows are the working bindings", async ({ page }
     panel: await keysOf("Toggle side panel"),
     history: await keysOf("Back / forward"),
     settings: await keysOf("Settings"),
-    sheet: await keysOf("Keyboard shortcuts"),
+    // Its row names the ⌘/ exception ("also ⌘/ outside a block"); its own keys are ⌘⇧/ and ?.
+    sheet: await sheet.locator(".prism-shortcuts-row").filter({ hasText: /^Keyboard shortcuts \(also / }).locator("kbd").allTextContents(),
     bold: await keysOf("Bold"),
   };
   expect(rows.sidebar).toHaveLength(1);

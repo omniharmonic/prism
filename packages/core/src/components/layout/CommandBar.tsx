@@ -189,7 +189,7 @@ export function CommandBar() {
       action: () => { closeCommandBar(); usePagesUI.getState().openTemplates(true); },
     },
     {
-      // Help → Keyboard shortcuts (NP-ED-07; also ⌘/ outside a block).
+      // Help → Keyboard shortcuts (NP-ED-07; also ⌘⇧/, ? outside a text field, ⌘/ outside a block).
       id: "keyboard-shortcuts", label: "Keyboard Shortcuts", category: "navigate" as const, keys: shortcutKeys("shortcutSheet"),
       icon: <Settings size={15} />,
       action: () => { closeCommandBar(); openShortcutSheet(); },

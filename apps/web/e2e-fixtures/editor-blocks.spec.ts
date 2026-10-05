@@ -79,8 +79,8 @@ test.describe("plain editor block handles", () => {
 
   test("the block menu turns blocks into every kind, colours, duplicates and deletes — keyboard first", async ({ page }) => {
     await clickInto(page, "Bravo paragraph");
-    // ⌘⇧/ / Ctrl+Shift+/ opens the block menu for the caret's block (⌘/ alone is the shortcut sheet).
-    await page.keyboard.press("ControlOrMeta+Shift+/");
+    // ⌘/ / Ctrl+/ opens the block menu for the caret's block (the shortcut sheet is ⌘⇧/).
+    await page.keyboard.press("ControlOrMeta+/");
     const menu = page.getByRole("menu", { name: "Block actions" });
     await expect(menu).toBeVisible();
     await expect(menu.getByRole("menuitem", { name: "Turn into" })).toBeFocused();
@@ -176,16 +176,30 @@ test.describe("plain editor block handles", () => {
     await expect(page.locator('.tiptap li[data-checked="true"]')).toHaveCount(1);
     await page.keyboard.press(`${mod}+Enter`);
     await expect(page.locator('.tiptap li[data-checked="true"]')).toHaveCount(0);
-    // ⌘⇧/ in a block opens its menu on Turn into; ⌘/ is the shortcut sheet everywhere, the editor included.
-    await page.keyboard.press(`${mod}+Shift+/`);
+    // ⌘/ in a block opens its menu on Turn into (the row's own words) — never the shortcut sheet.
+    await page.keyboard.press(`${mod}+/`);
     await expect(page.getByRole("menu", { name: "Block actions" }).getByRole("menuitem", { name: "Turn into" })).toBeFocused();
     await expect(page.getByRole("dialog", { name: "Keyboard shortcuts" })).toHaveCount(0);
-    await page.keyboard.press("Escape");
+    await page.keyboard.press("ArrowRight");
+    await page.getByRole("menu", { name: "Turn into" }).getByRole("menuitemradio", { name: "Bulleted list" }).click();
+    await expect(page.locator(".tiptap > ul:not([data-type])").filter({ hasText: "Ship it" })).toHaveCount(1);
     await expect(page.getByRole("menu")).toHaveCount(0);
+    // The shortcut sheet stays reachable from inside the editor: ⌘⇧/ opens it; "?" there types.
     await clickInto(page, "Ship it");
-    await page.keyboard.press(`${mod}+/`);
+    await page.keyboard.press(`${mod}+Shift+/`);
     await expect(page.getByRole("dialog", { name: "Keyboard shortcuts" })).toBeVisible();
     await expect(page.getByRole("menu", { name: "Block actions" })).toHaveCount(0);
+    await page.keyboard.press("Escape");
+    await expect(page.getByRole("dialog", { name: "Keyboard shortcuts" })).toHaveCount(0);
+    await clickInto(page, "after");
+    await page.keyboard.press("End");
+    await page.keyboard.type("?");
+    await expect(page.locator(".tiptap").getByText("after?", { exact: true })).toBeVisible();
+    await expect(page.getByRole("dialog", { name: "Keyboard shortcuts" })).toHaveCount(0);
+    // Outside a text field a bare "?" opens it.
+    await page.getByRole("button", { name: "Outline", exact: true }).focus();
+    await page.keyboard.press("?");
+    await expect(page.getByRole("dialog", { name: "Keyboard shortcuts" })).toBeVisible();
     await page.keyboard.press("Escape");
     await expect(page.getByRole("dialog", { name: "Keyboard shortcuts" })).toHaveCount(0);
     // Tab / Shift+Tab nest and un-nest a list item.
@@ -420,10 +434,12 @@ test.describe("plain editor block handles", () => {
     expect(await page.evaluate(() => (window as any).prismBlockCopies)).toEqual(["roadmap"]);
   });
 
-  // NP-ED-07: ⌘/ opens the shortcut sheet for the current platform; no key is listed with two meanings.
+  // NP-ED-07: ⌘/ outside a block (and ⌘⇧/ or ? anywhere outside a text field) opens the shortcut sheet for the
+  // current platform; no key is listed with two meanings.
   test("shortcut sheet lists editor shortcuts", async ({ page }) => {
     await page.getByRole("button", { name: "Outline", exact: true }).focus(); // focus is outside the editor
-    await page.keyboard.press("ControlOrMeta+/");
+    await page.keyboard.press("ControlOrMeta+/"); // outside a block (NP-ED-07): the sheet — and no block menu
+    await expect(page.getByRole("menu", { name: "Block actions" })).toHaveCount(0);
     const sheet = page.getByRole("dialog", { name: "Keyboard shortcuts" });
     await expect(sheet).toBeVisible();
     for (const title of ["Text formatting", "Blocks", "Markdown while typing", "Find", "Navigation", "Databases"]) await expect(sheet.getByRole("region", { name: title })).toBeVisible();
@@ -438,8 +454,10 @@ test.describe("plain editor block handles", () => {
     await expect(row("Quick find (no text selected)")).toContainText(mac ? "⌘K" : "Ctrl+K");
     await expect(row("Toggle sidebar")).toContainText(mac ? "⌘\\" : "Ctrl+\\");
     await expect(row("Toggle side panel")).toContainText(mac ? "⌘⇧\\" : "Ctrl+Shift+\\");
-    await expect(row("Block menu / Turn into")).toContainText(mac ? "⌘⇧/" : "Ctrl+Shift+/");
-    await expect(row("Keyboard shortcuts")).toContainText(mac ? "⌘/" : "Ctrl+/");
+    // ⌘/ is the one key with two contexts, like ⌘K: listed ONCE as a key (the block menu, with its context in the
+    // row) and named in the sheet's own row, whose keys are ⌘⇧/ and ?.
+    await expect(row("Block menu / Turn into (caret in a block)").locator("kbd")).toHaveText([mac ? "⌘/" : "Ctrl+/"]);
+    await expect(row(`Keyboard shortcuts (also ${mac ? "⌘/" : "Ctrl+/"} outside a block)`).locator("kbd")).toHaveText([mac ? "⌘⇧/" : "Ctrl+Shift+/", "?"]);
     // No shortcut appears twice with two meanings (Markdown rows are typed text, not keys).
     const keys = await sheet.locator(".prism-shortcuts-body section:not([aria-label='Markdown while typing']) kbd").allTextContents();
     // Context keys only: Tab (lists vs tables), Esc/Enter (block vs peek), and ⌘K — link WITH a text selection, quick find without (the decided rule).
@@ -458,7 +476,7 @@ test.describe("plain editor block handles", () => {
     await expect(page.getByRole("button", { name: "Outline", exact: true })).toBeFocused();
     // Phone: fits the screen.
     await page.setViewportSize({ width: 390, height: 844 });
-    await page.keyboard.press("ControlOrMeta+/");
+    await page.keyboard.press("ControlOrMeta+Shift+/");
     await expect(sheet).toBeVisible();
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
     const box = (await sheet.boundingBox())!;

@@ -1,14 +1,18 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { X } from "lucide-react";
-import { APP_SHORTCUTS as K } from "../../lib/shortcuts";
+import { APP_SHORTCUTS as K, PENDING_SHORTCUTS } from "../../lib/shortcuts";
 import "./editor-blocks.css";
 
 /**
  * Keyboard shortcut sheet (NP-ED-07): every editor, navigation and database
- * shortcut, written for the current platform. Opens with ⌘/ (Ctrl+/) anywhere —
- * the editor included (the block menu is ⌘⇧/) — and from Help → "Keyboard
- * shortcuts" in the command bar. App-level keys come from `lib/shortcuts.ts`.
+ * shortcut, written for the current platform. Opens with ⌘⇧/ (Ctrl+Shift+/)
+ * anywhere — the editor included —, with a bare `?` outside text fields, with ⌘/
+ * OUTSIDE a block (NP-ED-07's own words), and from "Keyboard Shortcuts" in the
+ * command bar. With the caret in an editable block ⌘/ is that block's menu
+ * (NP-ED-06, as in Notion) — `BlockHandles` takes the key first. The sheet says so:
+ * ⌘/ is listed once, as the block menu, and the sheet's row names the exception.
+ * App-level keys come from `lib/shortcuts.ts`.
  *
  * Self-mounting: `openShortcutSheet()` renders into its own root on <body>, so
  * every surface (workspace, share page, fixtures) gets it without a host mount.
@@ -25,19 +29,19 @@ export function formatShortcut(spec: string): string {
   return parts.map((p) => names[p]?.[isMac ? 0 : 1] ?? (p.length === 1 ? p.toUpperCase() : p)).join(isMac ? "" : "+");
 }
 
-interface Row { label: string; keys: string[]; literal?: boolean }
+interface Row { label: string; keys: string[]; literal?: boolean; /** Not bound yet (its feature is on another branch): never rendered. */ pending?: boolean }
 interface Section { title: string; rows: Row[] }
 
 const k = (label: string, ...keys: string[]): Row => ({ label, keys });
 const typed = (label: string, ...keys: string[]): Row => ({ label, keys, literal: true });
 
-export const SHORTCUT_SECTIONS: Section[] = [
+const BASE_SECTIONS: Section[] = [
   { title: "Text formatting", rows: [
     k("Bold", "Mod-B"), k("Italic", "Mod-I"), k("Underline", "Mod-U"), k("Strikethrough", "Mod-Shift-S"), k("Inline code", "Mod-E"),
     k("Link (with text selected)", "Mod-K"), k("Highlight (last colour)", "Mod-Shift-H"), k("Undo", "Mod-Z"), k("Redo", "Mod-Shift-Z"),
   ] },
   { title: "Blocks", rows: [
-    k("Insert a block", "/"), k("Block menu / Turn into", K.blockMenu), k("Select the current block", "Esc"),
+    k("Insert a block", "/"), k("Block menu / Turn into (caret in a block)", K.blockMenu), k("Select the current block", "Esc"),
     k("Move the block selection", "Up", "Down"), k("Extend the block selection", "Shift-Up", "Shift-Down"),
     k("Move block up", "Mod-Shift-Up", "Alt-Shift-Up"), k("Move block down", "Mod-Shift-Down", "Alt-Shift-Down"),
     k("Duplicate block", "Mod-D"), k("Delete selected blocks", "Backspace"), k("Edit the selected block", "Enter"),
@@ -57,13 +61,19 @@ export const SHORTCUT_SECTIONS: Section[] = [
   { title: "Navigation", rows: [
     k("Quick find (no text selected)", K.quickFind), k("New page (desktop app)", K.newPage), k("Save now", K.save), k("Ask agent about the selection", K.askAgent),
     k("Toggle sidebar", K.toggleSidebar), k("Toggle side panel", K.toggleSidePanel), k("Back / forward", K.navBack, K.navForward),
-    k("Settings", K.settings), k("Toggle theme", K.toggleTheme), k("Close tab", K.closeTab), k("Keyboard shortcuts", K.shortcutSheet),
+    k("Settings", K.settings), k("Toggle theme", K.toggleTheme), k("Close tab", K.closeTab), k(`Keyboard shortcuts (also ${formatShortcut(K.blockMenu)} outside a block)`, K.shortcutSheet, "?"),
   ] },
   { title: "Databases", rows: [
     k("Select all rows (table)", "Mod-A"), k("Select a range of rows", "Shift-Click"), k("Open a row in a new tab", "Mod-Click"),
     k("Close the row peek / clear selection", "Esc"), k("Next cell (simple table)", "Tab"), k("Previous cell (simple table)", "Shift-Tab"),
   ] },
 ];
+
+/** Every section, with the rows from `PENDING_SHORTCUTS` whose feature has been bound (`pending: false`) added. */
+export const SHORTCUT_SECTIONS: Section[] = BASE_SECTIONS.map((s) => ({
+  ...s,
+  rows: [...s.rows, ...PENDING_SHORTCUTS.filter((p) => p.section === s.title && !p.pending).map((p): Row => ({ label: p.label, keys: p.keys, literal: p.literal }))],
+}));
 
 function Sheet({ onClose }: { onClose: () => void }) {
   const [query, setQuery] = useState("");
@@ -142,15 +152,23 @@ export function openShortcutSheet(): void {
   root.render(<Sheet onClose={closeShortcutSheet} />);
 }
 
-// ⌘/ (Ctrl+/) anywhere, the editor included. (The block menu is ⌘⇧/ — BlockHandles.)
+// ⌘⇧/ (Ctrl+Shift+/) anywhere, the editor included; a bare "?" wherever it would not type a character;
+// ⌘/ wherever no block took it (BlockHandles listens first, in the capture phase, and prevents it).
 let installed = false;
 export function installShortcutSheetKey(): void {
   if (installed || typeof window === "undefined") return;
   installed = true;
   window.addEventListener("keydown", (event) => {
-    if (event.key !== "/" || !(isMac ? event.metaKey : event.ctrlKey) || event.altKey || event.shiftKey || event.defaultPrevented) return;
+    if (event.defaultPrevented || event.altKey) return;
+    const mod = isMac ? event.metaKey : event.ctrlKey;
+    const slash = event.code === "Slash" || event.key === "/" || event.key === "?";
     const target = event.target as HTMLElement | null;
-    if (target?.closest?.('input, textarea, select, [contenteditable="true"]') && !target.closest(".tiptap, [data-prism-shortcuts]")) return; // typing in a field (the sheet's own search box still closes it)
+    const field = !!target?.closest?.('input, textarea, select, [contenteditable="true"]');
+    const chord = slash && mod; // ⌘⇧/ — and ⌘/ when no block menu took it (defaultPrevented above)
+    const bare = event.key === "?" && !event.metaKey && !event.ctrlKey && !field; // "?" types in a field
+    if (!chord && !bare) return;
+    if (chord && field && !target!.closest(".tiptap, [data-prism-shortcuts]")) return; // typing in a form field (the sheet's own search box still closes it)
+    if (chord && !event.shiftKey && target?.closest?.('[role="menu"]')) return; // ⌘/ again inside the block menu it opened
     if (!root && document.querySelector('dialog[open], [role="dialog"][aria-modal="true"]')) return; // another modal owns the moment
     event.preventDefault();
     if (root) closeShortcutSheet(); else openShortcutSheet();

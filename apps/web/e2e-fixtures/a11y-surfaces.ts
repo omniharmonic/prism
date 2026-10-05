@@ -48,7 +48,7 @@ async function blockMenu(page: Page, vp: Viewport) {
   await page.getByText("Bravo paragraph", { exact: true }).click();
   await expect.poll(() => page.evaluate(() => (document.querySelector(".tiptap") as any).editor.state.selection.$from.parent.textContent)).toBe("Bravo paragraph");
   if (vp === "phone") await page.getByRole("button", { name: "Block actions" }).click();
-  else await page.keyboard.press("ControlOrMeta+Shift+/");
+  else await page.keyboard.press("ControlOrMeta+/");
   await expect(page.getByRole("menu", { name: "Block actions" })).toBeVisible();
 }
 async function command(page: Page, name: string) {
@@ -380,7 +380,7 @@ export const SURFACES: Surface[] = [
   { id: "shortcut-sheet", path: "/e2e-fixtures/notion-shell.html", open: async (page) => {
     await editorReady(page);
     await page.getByRole("button", { name: "Page actions", exact: true }).focus();
-    await page.keyboard.press("ControlOrMeta+/");
+    await page.keyboard.press("ControlOrMeta+Shift+/");
     await expect(page.getByRole("dialog", { name: "Keyboard shortcuts" })).toBeVisible();
   } },
   // ── Agent ─────────────────────────────────────────────────────────────────────────────────
