@@ -13,7 +13,7 @@ import { httpHostServices } from "./host/HttpHostServices";
 import { httpInvalidationSource } from "./events/httpInvalidationSource";
 import { webCollabSharing } from "./collab/grant";
 import { CollabDocument, useLiveCollab, preloadCollabEditor, preloadCollabEditorWhenIdle } from "./collab/lazyCollab";
-import { fetchMe, initCapability, isOwner, postLoginTarget, capabilityHeader, contextHeaders } from "./config";
+import { fetchMe, confirmAudience, initCapability, isOwner, postLoginTarget, capabilityHeader, contextHeaders } from "./config";
 import { setTransferContextHeaders } from "@prism/core/shell";
 import { ReconnectScreen } from "./auth/ReconnectScreen";
 import { LoginScreen as WebLoginScreen } from "./auth/LoginScreen";
@@ -245,7 +245,7 @@ export async function start() {
   }
 
   if (!capability && agentLink?.[1]) useAgentChatStore.getState().setActiveSession(agentLink[1]);
-  window.addEventListener("prism:vault-changed", () => { void fetchMe(); });
+  window.addEventListener("prism:vault-changed", () => { void confirmAudience(); });
   window.addEventListener("prism:offline-note-resolved", (event) => {
     const { temporaryId, noteId } = (event as CustomEvent<{ temporaryId: string; noteId: string }>).detail;
     // Keep tab IDs/history stable; only its resource identity changes.

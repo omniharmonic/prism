@@ -45,12 +45,29 @@ export interface InitialTab {
   type: string;
 }
 
+/** Shown for the moment between a vault switch and the server's answer. Quiet at first: a fast
+ *  answer never flashes text (it is announced to assistive tech either way). */
+function AudiencePending() {
+  const [slow, setSlow] = useState(false);
+  useEffect(() => { const timer = setTimeout(() => setSlow(true), 300); return () => clearTimeout(timer); }, []);
+  return (
+    <div role="status" aria-live="polite" style={{ height: "100dvh", display: "grid", placeItems: "center", background: "var(--bg-base)", color: "var(--text-secondary)", fontSize: "var(--text-base)" }}>
+      <span style={{ opacity: slow ? 1 : 0, transition: "opacity var(--motion-base, 150ms) ease" }}>Switching vault…</span>
+    </div>
+  );
+}
+
 function App({ skipOnboarding, initialTab }: { skipOnboarding?: boolean; initialTab?: InitialTab } = {}) {
   // Show onboarding for first-time users, skip for returning users.
   // `skipOnboarding` lets a shell force-skip the (Tauri-only) wizard — the web
   // shell passes it for capability-link viewers and invited non-owners, who must
   // never see the desktop owner setup flow. Desktop passes nothing → unchanged.
   const audience = useAgentChatStore(state => state.scope);
+  // A vault switch drops the audience until the host has asked the server who we are there
+  // (one round trip). The workspace is NOT mounted in between: mounted for "nobody yet", it was
+  // thrown away again at the confirmation — with the drawer, menu or search text the person had
+  // opened in it meanwhile — and it fetched the new vault's tree twice.
+  const switching = useAgentChatStore(state => state.audiencePending) && audience === null;
   // A newly confirmed account/vault must not inherit in-memory query results.
   // The keyed provider recreates observers as well as their cache; persistent
   // drafts remain in the separately scoped host stores.
@@ -100,7 +117,7 @@ function App({ skipOnboarding, initialTab }: { skipOnboarding?: boolean; initial
     <ErrorBoundary>
       <QueryClientProvider key={audience ?? "unconfirmed"} client={queryClient}>
         <InvalidationSubscriber />
-        {(onboarded || skipOnboarding) ? <Shell /> : <Onboarding onComplete={handleOnboardingComplete} />}
+        {switching ? <AudiencePending /> : (onboarded || skipOnboarding) ? <Shell /> : <Onboarding onComplete={handleOnboardingComplete} />}
       </QueryClientProvider>
     </ErrorBoundary>
   );
