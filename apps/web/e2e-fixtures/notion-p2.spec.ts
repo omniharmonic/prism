@@ -236,3 +236,44 @@ test("⌘L copies the page link; Reopen Closed Tab brings back the tab closed la
   await input.fill("reopen");
   await expect(page.getByRole("option", { name: /Reopen Closed Tab/ })).toHaveCount(0);
 });
+
+/** Table A 51: previous / next row while a peek is open. */
+test("row peek: Previous / Next walk the view's rows in its order, stop at the ends, and keep the peek", async ({ page }) => {
+  await page.goto("/e2e-fixtures/databases.html");
+  await expect(page.locator(".db-row-open").first()).toBeVisible();
+  const titles = (await page.locator(".db-row-open").allTextContents()).map((t) => t.trim());
+  expect(titles.length).toBeGreaterThan(2);
+  await page.getByRole("button", { name: titles[0]!, exact: true }).click();
+  const peek = page.getByRole("dialog", { name: /side peek/ });
+  await expect(peek).toHaveAccessibleName(`${titles[0]} (side peek)`);
+  const steps = peek.getByRole("group", { name: "Go to another page of this view" });
+  const prev = steps.getByRole("button", { name: "Previous page" });
+  const next = steps.getByRole("button", { name: "Next page" });
+  await expect(steps).toContainText(`1 of ${titles.length}`);
+  await expect(prev).toHaveAttribute("aria-disabled", "true");
+  // At the first row Previous does nothing.
+  await prev.click({ force: true }); // aria-disabled: a person can still press it; nothing happens
+  await expect(peek).toHaveAccessibleName(`${titles[0]} (side peek)`);
+
+  await next.click();
+  await expect(peek).toHaveAccessibleName(`${titles[1]} (side peek)`);
+  await expect(steps).toContainText(`2 of ${titles.length}`);
+  // Keyboard: the button keeps focus across the change of page (Safari does not focus a clicked button).
+  await next.focus();
+  await page.keyboard.press("Enter");
+  await expect(next).toBeFocused();
+  await expect(peek).toHaveAccessibleName(`${titles[2]} (side peek)`);
+  await prev.click();
+  await expect(peek).toHaveAccessibleName(`${titles[1]} (side peek)`);
+  // The database underneath never became a tab, and the peek shows the row's own page.
+  expect(await page.evaluate(() => (window as any).prismUI.getState().openTabs.map((t: any) => t.noteId))).toEqual(["db"]);
+  // To the last row: Next stops there.
+  for (let i = 2; i < titles.length; i++) await next.click();
+  await expect(peek).toHaveAccessibleName(`${titles.at(-1)} (side peek)`);
+  await expect(next).toHaveAttribute("aria-disabled", "true");
+  await next.click({ force: true });
+  await expect(peek).toHaveAccessibleName(`${titles.at(-1)} (side peek)`);
+  // Esc still closes the peek.
+  await page.keyboard.press("Escape");
+  await expect(peek).toHaveCount(0);
+});
