@@ -11,7 +11,7 @@
  */
 import React from "react";
 import { createRoot } from "react-dom/client";
-import { RecoveredText, RecoverTextLink, setServerFetch, setTransferContextHeaders } from "@prism/core/shell";
+import { RecoveredText, ReplacedNotice, setServerFetch, setTransferContextHeaders } from "@prism/core/shell";
 import "../../../packages/core/src/styles/tokens.css";
 import "../../../packages/core/src/styles/glass.css";
 import "../../../packages/core/src/styles/typography.css";
@@ -29,12 +29,21 @@ const KEPT: Kept[] = [
 const UNSAVED: Unsaved[] = [
   { vaultId: "primary", noteId: "huge", reason: "too_many_nodes", permanent: true, since: at, attempts: 4 },
   { vaultId: "primary", noteId: "slow", reason: "vault_unreachable", permanent: false, since: at, attempts: 2 },
+  { vaultId: "primary", noteId: "blank", reason: "vault_413", permanent: true, since: at, attempts: 1 },
 ];
 const state = {
   setAside: params.has("empty") ? [] : KEPT,
   rows: params.has("empty") ? [] : UNSAVED,
   bodies: { 7: "Launch plan\n\nThe paragraph I was typing when the newer copy arrived.", 8: "Old text of a page that no longer exists." } as Record<number, string>,
-  notes: { plan: { id: "plan", path: "Projects/Launch plan" }, huge: { id: "huge", path: "Archive/Everything.md", metadata: { title: "Everything we know" } }, slow: { id: "slow", path: "Notes/Standup" } } as Record<string, unknown>,
+  // What GET /api/tree lists for this viewer: ids, paths and (where it differs from the file name) titles. No bodies.
+  tree: [
+    { id: "plan", path: "Projects/Launch plan", tags: [], updatedAt: "2026-10-02T15:00:00.000Z" },
+    { id: "huge", path: "Archive/Everything.md", title: "Everything we know", tags: [], updatedAt: "2026-10-02T15:00:00.000Z" },
+    { id: "slow", path: "Notes/Standup", tags: [], updatedAt: "2026-10-02T15:00:00.000Z" },
+    { id: "blank", path: "Notes/Untitled", tags: [], updatedAt: "2026-10-02T15:00:00.000Z" },
+  ] as Array<Record<string, unknown>>,
+  /** The tree answers only once this is released (a slow name lookup). */
+  holdTree: params.has("slow-names"),
 };
 const calls: Array<{ method: string; path: string; body: unknown; headers: Record<string, string> }> = [];
 Object.assign(window, { prismRecovered: { calls, state } });
@@ -66,8 +75,10 @@ setServerFetch(async (input, init = {}) => {
     state.rows = state.rows.filter((r) => r !== row);
     return json({ ok: true, discarded: true, live: false });
   }
-  const note = /^\/api\/notes\/([^/?]+)$/.exec(url.pathname);
-  if (note) return state.notes[note[1]!] ? json(state.notes[note[1]!]) : json({ error: "not_found" }, 404);
+  if (url.pathname === "/api/tree") {
+    while (state.holdTree) await new Promise((r) => setTimeout(r, 50));
+    return json(state.tree);
+  }
   return json({ error: "not_found" }, 404);
 });
 
@@ -76,10 +87,7 @@ createRoot(document.getElementById("root")!).render(
     <main style={{ maxWidth: 760, margin: "0 auto", padding: 16, minHeight: "100dvh", background: "var(--bg-base)", color: "var(--text-primary)" }}>
       <h1 style={{ fontSize: 18 }}>Server operations</h1>
       {params.has("notice") ? (
-        <p role="status" data-testid="collab-notice" className="rounded-lg border p-3 text-sm">
-          Changes made elsewhere replaced part of this page.{" "}
-          <RecoverTextLink noteId="plan" owner={params.has("owner")} />
-        </p>
+        <ReplacedNotice noteId="plan" owner={params.has("owner")} text="Changes made elsewhere replaced part of this page." onDismiss={() => undefined} />
       ) : <RecoveredText />}
       <p data-testid="after">End of the panel.</p>
     </main>

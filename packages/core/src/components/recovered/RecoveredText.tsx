@@ -37,10 +37,12 @@ export function RecoveredText({ noteId, vaultHeaders, fallback = null, bare = fa
   const headingId = useId();
   const [state, setState] = useState<"loading" | "ready" | "unavailable" | "error">("loading");
   const [list, setList] = useState<RecoveredList>({ setAside: [], unsaved: [] });
-  const [titles, setTitles] = useState<Record<string, string | null>>({});
+  // null until the names have been looked up (the tree); an id missing from the map afterwards has no readable name.
+  const [titles, setTitles] = useState<Record<string, string> | null>(null);
   const [open, setOpen] = useState<{ id: number; body: string | null; error?: string } | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<number | null>(null);
-  const [discard, setDiscard] = useState<{ noteId: string; typed: string } | null>(null);
+  // `expect` is fixed when the form opens: what must be typed never changes under the person typing it.
+  const [discard, setDiscard] = useState<{ noteId: string; typed: string; expect: string } | null>(null);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<{ text: string; error: boolean } | null>(null);
   const alive = useRef(true);
@@ -49,15 +51,17 @@ export function RecoveredText({ noteId, vaultHeaders, fallback = null, bare = fa
   const load = useCallback(async () => {
     try {
       const next = await api.list();
-      if (!alive.current) return;
+      if (!alive.current) return null;
       const mine = noteId ? { setAside: next.setAside.filter((e) => e.noteId === noteId), unsaved: next.unsaved.filter((e) => e.noteId === noteId) } : next;
       setList(mine);
       setState("ready");
-      const ids = [...new Set([...mine.setAside, ...mine.unsaved].map((e) => e.noteId))].slice(0, 40);
-      for (const id of ids) void api.title(id).then((t) => { if (alive.current) setTitles((prev) => (id in prev ? prev : { ...prev, [id]: t })); });
+      const ids = [...new Set([...mine.setAside, ...mine.unsaved].map((e) => e.noteId))];
+      void api.titles(ids).then((t) => { if (alive.current) setTitles((prev) => ({ ...(prev ?? {}), ...t })); });
+      return mine;
     } catch (e) {
       if (!alive.current) return;
       setState(e instanceof RecoveredUnavailable ? "unavailable" : "error");
+      return null;
     }
   }, [api, noteId]);
   useEffect(() => { if (!isDesktop) void load(); }, [load]);
@@ -65,9 +69,13 @@ export function RecoveredText({ noteId, vaultHeaders, fallback = null, bare = fa
   if (isDesktop || state === "unavailable") return <>{fallback}</>;
   if (state === "loading") return bare ? <p role="status" className="text-xs text-[var(--text-secondary)]">Looking for kept text…</p> : null;
 
-  const name = (id: string): string => titles[id] ?? `Page ${id}`;
-  /** What must be typed to discard: the page's name, or its id when it cannot be read. */
-  const confirmName = (id: string): string => titles[id] ?? id;
+  const name = (id: string): string => titles?.[id] ?? `Page ${id}`;
+  /** What must be typed to discard: the page's own name — or, for a page with no name of its own
+   *  ("Untitled", unreadable, deleted), the fixed word DISCARD (a name every such page shares proves nothing). */
+  const confirmPhrase = (id: string): string => {
+    const t = (titles?.[id] ?? "").trim();
+    return t && t.toLowerCase() !== "untitled" ? t : "DISCARD";
+  };
   const say = (text: string, error = false) => setMessage({ text, error });
   const failText = (e: unknown, what: string) => (e instanceof RecoveredError ? e.message : what);
 
@@ -100,10 +108,19 @@ export function RecoveredText({ noteId, vaultHeaders, fallback = null, bare = fa
   const runDiscard = async (entry: UnsavedEntry) => {
     setBusy(true);
     try {
-      await api.discard(entry.noteId, !entry.permanent);
+      // The list on screen may be minutes old. Ask again, and act on what is true NOW: a page that
+      // was saved meanwhile is left alone, and `force` goes only to a page still listed as retrying.
+      const fresh = (await load())?.unsaved.find((u) => u.noteId === entry.noteId);
+      if (!alive.current) return;
+      if (!fresh) {
+        setDiscard(null);
+        say(`“${name(entry.noteId)}” has been saved in the meantime. Nothing was discarded.`);
+        return;
+      }
+      await api.discard(entry.noteId, !fresh.permanent);
       if (!alive.current) return;
       setDiscard(null);
-      say(`Unsaved changes on “${name(entry.noteId)}” were discarded. The page shows what is stored.`);
+      say(`Unsaved changes on “${name(entry.noteId)}” were discarded. The page shows what is stored; what it held is kept above for 90 days.`);
       await load();
     } catch (e) {
       if (alive.current) say(e instanceof RecoveredError && e.code === "not_permanent" ? "The server is saving this page again. Nothing was discarded." : failText(e, "The changes could not be discarded."), true);
@@ -177,16 +194,16 @@ export function RecoveredText({ noteId, vaultHeaders, fallback = null, bare = fa
                         {entry.permanent ? "Cannot be saved as it is" : "The server is still trying to save it"} · {unsavedReason(entry.reason)} · since {when(entry.since)}
                       </div>
                     </div>
-                    {!typing && <button type="button" className={btn} onClick={() => setDiscard({ noteId: entry.noteId, typed: "" })}>{entry.permanent ? "Discard unsaved changes…" : "Discard anyway…"}<span className="sr-only"> on {name(entry.noteId)}</span></button>}
+                    {!typing && <button type="button" className={btn} disabled={titles === null} title={titles === null ? "Looking up the page’s name…" : undefined} onClick={() => setDiscard({ noteId: entry.noteId, typed: "", expect: confirmPhrase(entry.noteId) })}>{entry.permanent ? "Discard unsaved changes…" : "Discard anyway…"}<span className="sr-only"> on {name(entry.noteId)}</span></button>}
                   </div>
                   {typing && (
-                    <form className="mt-2 flex flex-wrap items-end gap-2" onSubmit={(e) => { e.preventDefault(); if (typing.typed.trim() === confirmName(entry.noteId) && !busy) void runDiscard(entry); }}>
+                    <form className="mt-2 flex flex-wrap items-end gap-2" onSubmit={(e) => { e.preventDefault(); if (typing.typed.trim() === typing.expect && !busy) void runDiscard(entry); }}>
                       <label htmlFor={fieldId} className="basis-full text-xs text-[var(--text-primary)]">
-                        This drops the changes for good{entry.permanent ? "" : " — the server has not given up on saving them"}; the page becomes the stored page again. Type <strong>{confirmName(entry.noteId)}</strong> to confirm.
+                        This drops the changes for good{entry.permanent ? "" : " — the server has not given up on saving them"}; the page becomes the stored page again (what it holds now is kept under Recovered text). Type <strong>{typing.expect}</strong> to confirm.
                       </label>
-                      <input id={fieldId} autoComplete="off" spellCheck={false} value={typing.typed} onChange={(e) => setDiscard({ noteId: entry.noteId, typed: e.target.value })}
+                      <input id={fieldId} autoComplete="off" spellCheck={false} value={typing.typed} onChange={(e) => setDiscard({ ...typing, typed: e.target.value })}
                         className="focus-ring min-h-9 min-w-0 flex-1 rounded-lg border border-[var(--glass-border)] bg-[var(--bg-base)] px-2 text-base text-[var(--text-primary)] sm:text-sm" />
-                      <button type="submit" className={danger} disabled={busy || typing.typed.trim() !== confirmName(entry.noteId)}>Discard changes</button>
+                      <button type="submit" className={danger} disabled={busy || typing.typed.trim() !== typing.expect}>Discard changes</button>
                       <button type="button" className={btn} disabled={busy} onClick={() => setDiscard(null)}>Cancel</button>
                     </form>
                   )}
@@ -212,17 +229,29 @@ export function RecoveredText({ noteId, vaultHeaders, fallback = null, bare = fa
 }
 
 /**
- * Under a live document's "Changes made elsewhere replaced part of this page." notice:
- * the server owner gets the page's kept text in place; everyone else is told who has it.
+ * A live document's "Changes made elsewhere replaced part of this page." notice. The sentence is
+ * the live region; the kept text opens BELOW it, outside the region (a list and a text block do
+ * not belong inside a status paragraph, and must not be re-announced with every change).
+ * The server owner recovers the text in place; everyone else is told who has it.
  */
-export function RecoverTextLink({ noteId, owner, vaultHeaders }: { noteId: string; owner: boolean; vaultHeaders?: () => Record<string, string> }) {
+export function ReplacedNotice({ noteId, owner, text, onDismiss, vaultHeaders }: { noteId: string; owner: boolean; text: string; onDismiss: () => void; vaultHeaders?: () => Record<string, string> }) {
   const [open, setOpen] = useState(false);
+  const [refused, setRefused] = useState(false);
   const ask = <span data-testid="recover-ask">Ask the workspace owner — the text was kept.</span>;
-  if (!owner || isDesktop) return ask;
+  const canRecover = owner && !isDesktop && !refused;
   return (
-    <>
-      <button type="button" className="focus-ring underline" aria-expanded={open} onClick={() => setOpen((o) => !o)}>Recover text</button>
-      {open && <div className="mt-2"><RecoveredText noteId={noteId} vaultHeaders={vaultHeaders} bare fallback={ask} /></div>}
-    </>
+    <div className="rounded-lg border p-3 text-sm">
+      <p role="status" data-testid="collab-notice" className="m-0">
+        {text}{" "}
+        {canRecover ? <button type="button" className="focus-ring underline" aria-expanded={open} onClick={() => setOpen((o) => !o)}>Recover text</button> : ask}{" "}
+        <button type="button" className="underline" onClick={onDismiss}>Dismiss</button>
+      </p>
+      {canRecover && open && <div className="mt-2" data-testid="recover-panel"><RecoveredText noteId={noteId} vaultHeaders={vaultHeaders} bare fallback={<Unavailable onShown={() => setRefused(true)} />} /></div>}
+    </div>
   );
+}
+/** Rendered by RecoveredText when the server says this viewer is not the owner: flips the notice to "ask the owner". */
+function Unavailable({ onShown }: { onShown: () => void }) {
+  useEffect(() => { onShown(); }, [onShown]);
+  return null;
 }

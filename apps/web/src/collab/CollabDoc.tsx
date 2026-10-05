@@ -24,7 +24,7 @@ import { updateNote as restUpdateNote, getNote as restGetNote, uploadAttachment,
 import { markUnsynced, clearUnsynced, setOpenHere, unsyncedDocs } from "./unsynced";
 import { reloadForUpdate } from "../offline/reloadForUpdate";
 import { PlainTextPage } from "./PlainTextPage";
-import { RecoverTextLink } from "@prism/core";
+import { ReplacedNotice } from "@prism/core";
 import { httpVaultClient } from "../parachute/HttpVaultClient";
 import { reportSyncSource, NOT_SAVED_TO_PAGE, unsavedExplanation, BacklinksPill, EmptyPageStarters, notePageIconChanged, pageIconWriteConfirmed, pageIconWriteFailed, PageDiscussion } from "@prism/core";
 
@@ -152,6 +152,7 @@ function ScopedCollabDoc({
   // `permanent`: it cannot be written as the page is; else the server is still trying.
   const [serverUnsaved, setServerUnsaved] = useState<null | { permanent: boolean; reason: string | null }>(null);
   const [serverNotice, setServerNotice] = useState<string | null>(null);
+  const [noticeCode, setNoticeCode] = useState<string | null>(null); // the `prism:notice` code behind `serverNotice`
   // Bumped to open the document afresh (new local document, new socket) without a page reload.
   const [attempt, setAttempt] = useState(0);
   const [checkingAccess, setCheckingAccess] = useState(false);
@@ -475,6 +476,7 @@ function ScopedCollabDoc({
             }
             else if (message.type === "prism:notice" && message.code === "external-replaced") setServerNotice("Changes made elsewhere replaced part of this page.");
             else if (message.type === "prism:notice" && message.code === "unsaved-discarded") setServerNotice("Changes on this page that could not be saved were discarded by the workspace owner. You are looking at the stored page.");
+            if (message.type === "prism:notice") setNoticeCode(typeof message.code === "string" ? message.code : null);
           },
           onAuthenticationFailed: ({ reason }) => {
             if (!current()) return;
@@ -673,12 +675,14 @@ function ScopedCollabDoc({
           {NOT_SAVED_TO_PAGE}. {unsavedExplanation(serverUnsaved.reason)}
         </p>
       )}
-      {serverNotice && (
+      {/* external-replaced: the replaced text was set aside on the server (Recovered text) — the owner gets
+          it here, everyone else is told who has it. */}
+      {serverNotice && noticeCode === "external-replaced" && (
+        <ReplacedNotice noteId={noteId} text={serverNotice} owner={!!getMe()?.isOwner && !getCapabilityToken()} onDismiss={() => setServerNotice(null)} />
+      )}
+      {serverNotice && noticeCode !== "external-replaced" && (
         <p role="status" data-testid="collab-notice" className="rounded-lg border p-3 text-sm">
           {serverNotice}{" "}
-          {/* "…replaced part of this page" (prism:notice external-replaced): the replaced text was set aside on
-              the server (Recovered text) — the owner gets it here, everyone else is told who has it. */}
-          {serverNotice.startsWith("Changes made elsewhere replaced") && <><RecoverTextLink noteId={noteId} owner={!!getMe()?.isOwner && !getCapabilityToken()} />{" "}</>}
           <button type="button" className="underline" onClick={() => setServerNotice(null)}>Dismiss</button>
         </p>
       )}

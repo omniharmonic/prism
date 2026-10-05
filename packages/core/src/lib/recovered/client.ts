@@ -90,17 +90,29 @@ export function recoveredApi(vaultHeaders: () => Record<string, string> = server
       const r = await call(`/api/admin/collab/unsaved/${encodeURIComponent(noteId)}/discard`, { method: "POST", headers: JSON_HEADERS, body: JSON.stringify(force ? { confirm: true, force: true } : { confirm: true }) });
       if (!r.ok) return fail(r, r.status === 503 ? "The page is busy. Try again in a moment." : "The changes could not be discarded.");
     },
-    /** The page's name through the VIEWER's own read; null when they cannot read it (deleted, trashed for good, no access). */
-    async title(noteId: string): Promise<string | null> {
+    /**
+     * Page names for the listed ids, from the TREE projection (`GET /api/tree`: ids, paths and the
+     * titles this viewer may see) — one request, and NO page body is read: a body is fetched only by
+     * an explicit View of a kept text, which the server audits. An id the tree does not list
+     * (deleted, purged) is absent from the answer.
+     */
+    async titles(ids: readonly string[]): Promise<Record<string, string>> {
+      const want = new Set(ids);
+      const out: Record<string, string> = {};
+      if (!want.size) return out;
       try {
-        const r = await call(`/api/notes/${encodeURIComponent(noteId)}`);
-        if (!r.ok) return null;
-        const note = (await r.json()) as { path?: unknown; metadata?: { title?: unknown } | null };
-        const own = str(note.metadata?.title).trim();
-        return own || pageTitle(str(note.path));
+        const r = await call("/api/tree");
+        if (!r.ok) return out;
+        const rows = (await r.json()) as unknown;
+        if (!Array.isArray(rows)) return out;
+        for (const row of rows as Array<{ id?: unknown; path?: unknown; title?: unknown }>) {
+          if (typeof row?.id !== "string" || !want.has(row.id)) continue;
+          out[row.id] = str(row.title).trim() || pageTitle(str(row.path));
+        }
       } catch {
-        return null;
+        /* names are a nicety: the rows still show, by id */
       }
+      return out;
     },
   };
 }

@@ -27,6 +27,9 @@ test("the owner sees what was kept (page name by their own read, date, size), vi
   await expect(kept.nth(1)).toContainText("12k characters");
   // The list never fetches a body: only an explicit View does (the server audits each read).
   expect((await calls(page)).filter((c) => c.path.includes("/set-aside/"))).toEqual([]);
+  // …and page NAMES come from the tree: no page is read (not its body, not anybody's private page) to show a title.
+  expect((await calls(page)).filter((c) => c.path.startsWith("/api/notes"))).toEqual([]);
+  expect((await calls(page)).some((c) => c.path === "/api/tree")).toBe(true);
   expect((await calls(page)).every((c) => c.headers["x-prism-vault"] === "primary")).toBe(true);
 
   await kept.nth(0).getByRole("button", { name: /^View/ }).click();
@@ -57,10 +60,10 @@ test("the owner sees what was kept (page name by their own read, date, size), vi
   expect(bad.filter((v) => !v.startsWith("document-title") && !v.startsWith("html-has-lang"))).toEqual([]);
 });
 
-test("discarding a page's unsaved changes needs the page name typed; a page still being retried is sent with force", async ({ page }) => {
+test("discarding needs the page's name typed — fixed when the form opens; an unnamed page needs the word DISCARD; force only for a page STILL listed as retrying", async ({ page }) => {
   await page.goto(fixture);
   const rows = card(page).getByRole("list", { name: "Pages with changes that are not saved" }).getByRole("listitem");
-  await expect(rows).toHaveCount(2);
+  await expect(rows).toHaveCount(3);
   const huge = rows.filter({ hasText: "Everything we know" });
   await expect(huge).toContainText("Cannot be saved as it is");
   await expect(huge).toContainText("too large or complex");
@@ -75,21 +78,52 @@ test("discarding a page's unsaved changes needs the page name typed; a page stil
   await field.fill("Everything we know");
   await expect(go).toBeEnabled();
   await go.click();
-  await expect(rows).toHaveCount(1);
+  await expect(rows).toHaveCount(2);
   await expect(card(page).getByRole("status")).toContainText("were discarded");
   let posts = (await calls(page)).filter((c) => c.method === "POST");
   expect(posts.map((c) => [c.path, c.body])).toEqual([["/api/admin/collab/unsaved/huge/discard", { confirm: true }]]);
+  // The list was asked again right before the discard was sent.
+  const order = (await calls(page)).map((c) => `${c.method} ${c.path}`);
+  const sent = order.lastIndexOf("POST /api/admin/collab/unsaved/huge/discard");
+  expect(order.slice(sent - 2, sent)).toContain("GET /api/admin/collab/unsaved");
 
-  // A page the server is still trying to save: said so, and discarded only with force.
+  // A page with no name of its own ("Untitled"): its name proves nothing — the word DISCARD is required.
+  const blank = rows.filter({ hasText: "Untitled" });
+  await blank.getByRole("button", { name: /^Discard unsaved changes…/ }).click();
+  await expect(blank).toContainText("Type DISCARD to confirm");
+  await blank.getByRole("textbox").fill("Untitled");
+  await expect(blank.getByRole("button", { name: "Discard changes" })).toBeDisabled();
+  await blank.getByRole("button", { name: "Cancel" }).click();
+
+  // A page the server is still trying to save: said so, and discarded with force only while it is STILL listed so.
   const slow = rows.filter({ hasText: "Standup" });
   await expect(slow).toContainText("still trying to save");
   await slow.getByRole("button", { name: /^Discard anyway…/ }).click();
   await expect(slow).toContainText("has not given up");
   await slow.getByRole("textbox").fill("Standup");
+  // Meanwhile the retry landed: the server no longer lists the page (and someone may be typing in it again).
+  await page.evaluate(() => { const s = (window as any).prismRecovered.state; s.rows = s.rows.filter((r: any) => r.noteId !== "slow"); });
   await slow.getByRole("button", { name: "Discard changes" }).click();
-  await expect(card(page).getByRole("list", { name: "Pages with changes that are not saved" })).toHaveCount(0);
+  await expect(card(page).getByRole("status")).toContainText("has been saved in the meantime. Nothing was discarded.");
   posts = (await calls(page)).filter((c) => c.method === "POST");
-  expect(posts[1]!.body).toEqual({ confirm: true, force: true });
+  expect(posts, "no forced discard was sent on a stale list").toHaveLength(1);
+  await expect(rows).toHaveCount(1);
+});
+
+test("a retrying page that is still retrying is discarded with force; while names are being looked up nothing can be discarded", async ({ page }) => {
+  await page.goto(`${fixture}?slow-names`);
+  const rows = card(page).getByRole("list", { name: "Pages with changes that are not saved" }).getByRole("listitem");
+  await expect(rows).toHaveCount(3);
+  // Names not resolved yet: the rows show ids, and no discard form can be opened (what must be typed is not known).
+  for (const b of await rows.getByRole("button", { name: /^Discard/ }).all()) await expect(b).toBeDisabled();
+  await page.evaluate(() => { (window as any).prismRecovered.state.holdTree = false; });
+  const slow = rows.filter({ hasText: "Standup" });
+  await slow.getByRole("button", { name: /^Discard anyway…/ }).click();
+  await slow.getByRole("textbox").fill("Standup");
+  await slow.getByRole("button", { name: "Discard changes" }).click();
+  await expect(rows).toHaveCount(2);
+  const posts = (await calls(page)).filter((c) => c.method === "POST");
+  expect(posts.map((c) => c.body)).toEqual([{ confirm: true, force: true }]);
 });
 
 test("anyone but the server owner gets nothing at all; an empty list says what would appear here", async ({ page }) => {
@@ -104,18 +138,21 @@ test("anyone but the server owner gets nothing at all; an empty list says what w
   await expect(card(page).getByRole("list")).toHaveCount(0);
 });
 
-test("the document's \"replaced part of this page\" notice: the owner recovers the text in place, everyone else is told who has it", async ({ page }) => {
+test("the document's \"replaced part of this page\" notice: the owner recovers the text in place — outside the live region — and everyone else is told who has it", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(`${fixture}?notice&owner`);
   const notice = page.getByTestId("collab-notice");
   await expect(notice).toContainText("Changes made elsewhere replaced part of this page.");
   expect(await calls(page)).toEqual([]); // nothing is asked until the owner wants it
   await notice.getByRole("button", { name: "Recover text" }).click();
-  const kept = notice.getByRole("list", { name: "Recovered text" }).getByRole("listitem");
+  const panel = page.getByTestId("recover-panel");
+  const kept = panel.getByRole("list", { name: "Recovered text" }).getByRole("listitem");
   await expect(kept).toHaveCount(1); // this page's only
   await expect(kept).toContainText("Launch plan");
   await kept.getByRole("button", { name: /^View/ }).click();
-  await expect(notice.getByRole("region", { name: "Text of Launch plan as it was" })).toContainText("The paragraph I was typing");
+  await expect(panel.getByRole("region", { name: "Text of Launch plan as it was" })).toContainText("The paragraph I was typing");
+  // The status paragraph holds the sentence and its buttons only: no list, no text block, no region inside it.
+  expect(await notice.evaluate((p) => ({ tag: p.tagName, blocks: p.querySelectorAll("ul, ol, pre, div, section, form, h4, p").length, holdsPanel: !!p.querySelector("[data-testid=recover-panel]") }))).toEqual({ tag: "P", blocks: 0, holdsPanel: false });
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 
   await page.goto(`${fixture}?notice`);
@@ -127,4 +164,5 @@ test("the document's \"replaced part of this page\" notice: the owner recovers t
   await page.goto(`${fixture}?notice&owner&forbidden`);
   await page.getByRole("button", { name: "Recover text" }).click();
   await expect(page.getByTestId("recover-ask")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Recover text" })).toHaveCount(0);
 });
