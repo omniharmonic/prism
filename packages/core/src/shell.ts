@@ -306,6 +306,7 @@ export { PageIcon, notePageIconChanged, pageIconWriteConfirmed, pageIconWriteFai
 export { extractMentions, newMentions, extractCommentMentions, splitCommentMentions, commentMentionToken, type ParsedMention } from "./lib/tiptap/MentionParse";
 export * from "./lib/notifications/client";
 export * from "./lib/notifications/hooks";
-export { openNotification, focusAnchor, anchorSelector, listenForInboxOpenRequests, setPendingNotification, ANCHOR_FLASH_CLASS } from "./lib/notifications/anchor";
+export { openNotification, focusAnchor, anchorSelector, listenForInboxOpenRequests, setPendingNotification, ANCHOR_FLASH_CLASS, REVEAL_PROPERTY_EVENT } from "./lib/notifications/anchor";
 export { InboxBadge, InboxNavButton, openInbox } from "./components/inbox/InboxNavButton";
 export { RequestAccessButton } from "./components/inbox/RequestAccessButton";
+export { PageNotificationLevelButton } from "./components/inbox/PageNotificationLevel";

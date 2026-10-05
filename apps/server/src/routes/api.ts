@@ -45,7 +45,7 @@ import { graphNeighborhood } from "../graph";
 import { buildWikilinkIndex, resolveWikilink, noteLinkTitle } from "@prism/core/wikilinks";
 import { isTrashed, isLocked, isOwnerOnlyMeta, protectionReason, systemNoteReason, TRASH_TAG, TRASH_META, LOCK_KEY, ORDER_KEY, PAGE_STYLE_KEY, normalizePagePath } from "@prism/core/pages";
 import { createPagesApi, placementRefusal, pathUnavailable, publishedTag } from "../pages";
-import { notificationsRoutes, restMentionHook } from "./notifications";
+import { notificationsRoutes, restMentionHook, restAssignmentHook } from "./notifications";
 import { canonicalTag, canonicalTags, canonicalTagsStrict } from "../tags";
 import { exportApi } from "./export";
 import { createImportApi } from "./import";
@@ -647,6 +647,9 @@ api.use("/notes/:id/restore", async (c, next) => (c.req.method === "POST" ? ((aw
 // changes the response). After the schema gate, before the owner short-circuit.
 api.use("/notes", restMentionHook);
 api.use("/notes/:id", restMentionHook);
+// NP-CO-16: a metadata write that adds someone to a person property → "assigned
+// you" (owner passthrough, member route and MCP dispatch; creates never notify).
+api.use("/notes/:id", restAssignmentHook);
 
 // Owner short-circuit: full vault access, token-free. Registered before the
 // authorized routes so the owner bypasses per-note filtering entirely.
