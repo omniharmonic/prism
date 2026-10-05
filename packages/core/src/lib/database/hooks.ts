@@ -71,7 +71,9 @@ export function useUpdateSchema() {
     void qc.invalidateQueries({ queryKey: schemaKey(scope) });
     return schema;
   }, [client, qc, scope]);
-  return { available, update };
+  /** Re-read every schema (a server job changed fields + hints, e.g. a type conversion). */
+  const refresh = useCallback(() => qc.invalidateQueries({ queryKey: schemaKey(scope) }), [qc, scope]);
+  return { available, update, refresh };
 }
 
 // ── property writes ──────────────────────────────────────────────────────────

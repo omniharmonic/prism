@@ -9,7 +9,7 @@ import type {
   VaultInfo,
 } from "../lib/types";
 import type { MoveRequest, MoveResult, TrashListing, PreferencesSnapshot, PagePreferences } from "../lib/pages/model";
-import type { QueryPage, QuerySpec, SchemaMap, SchemaPatch, TagSchema, PropertyBatchItem, PropertyBatchResult, CsvImportRequest, CsvImportResponse, RemoveValuesResult } from "../lib/database";
+import type { QueryPage, QuerySpec, SchemaMap, SchemaPatch, TagSchema, PropertyBatchItem, PropertyBatchResult, CsvImportRequest, CsvImportResponse, RemoveValuesResult, ConvertPropertyResult } from "../lib/database";
 
 /** Transport status for recoverable UI states, without parsing diagnostic text. */
 export class VaultRequestError extends Error {
@@ -254,6 +254,9 @@ export interface VaultClient {
   /** Owner-only: clear a DELETED (hidden-everywhere) property's values on the pages of a
    *  tag — dry-run unless `dryRun: false`, one CAS write per page. Optional. */
   removePropertyValues?(tag: string, field: string, opts?: { dryRun?: boolean; limit?: number }): Promise<RemoveValuesResult>;
+  /** Owner-only: "change type" across stored types as a conversion into a NEW field (the old
+   *  one is then marked deleted) — dry-run unless `dryRun: false`, one CAS write per page. Optional. */
+  convertProperty?(tag: string, field: string, opts: { to: string; dryRun?: boolean; limit?: number; label?: string }): Promise<ConvertPropertyResult>;
   /** Owner-only: may `tag` start a NEW database (unused, unshared, unpublished, not an integration's)? The server decides. */
   checkNewTag?(tag: string): Promise<{ tag: string; available: boolean; reason?: string; detail?: string }>;
   /** Lean, permission-filtered, paged rows for a database view. Optional: the

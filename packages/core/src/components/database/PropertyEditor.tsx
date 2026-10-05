@@ -7,9 +7,16 @@
  * stored by the Prism Server — no stored value and no vault type ever changes:
  *
  *   rename            → `label`            (the metadata key stays)
- *   change type       → `kind`             (only between presentations of the same
- *                                            vault type; the preview shows how the
- *                                            current values will read)
+ *   change type       → `kind`             (between presentations of the same vault
+ *                                            type; the preview shows how the current
+ *                                            values will read)
+ *                     → a CONVERSION       (any other type: the server adds a NEW field
+ *                                            of that type, copies each page's value
+ *                                            coerced — one compare-and-set write per
+ *                                            page —, then shows it under this name and
+ *                                            marks this field deleted. Dry run first;
+ *                                            values that do not convert are listed and
+ *                                            stay on the old, restorable property.)
  *   option rename     → `optionLabels`     (stored value → display name)
  *   option colour     → `colors`
  *   option reorder    → `optionOrder`
@@ -27,10 +34,12 @@ import { useQueryClient } from "@tanstack/react-query";
 import { ArrowDown, ArrowUp, Plus, RotateCcw, Trash2 } from "lucide-react";
 import { useVaultClient } from "../../data/VaultClientContext";
 import { useUpdateSchema } from "../../lib/database/hooks";
-import type { RemoveValuesResult } from "../../lib/database/wire";
+import type { ConvertPropertyResult, RemoveValuesResult } from "../../lib/database/wire";
+import { needsConversion } from "../../lib/database/convert";
 import { parseFileRef } from "../../lib/media/attachments";
 import {
   compatibleKinds,
+  INGEST_TAGS,
   isBlank,
   looksLikeEmail,
   looksLikePhone,
@@ -86,7 +95,7 @@ export function fitsKind(kind: PropertyKind, v: unknown): boolean {
   });
 }
 
-export function PropertyEditor({ propertyKey, field, tag, rows, onClose }: {
+export function PropertyEditor({ propertyKey, field, tag, rows, onClose, onConverted }: {
   propertyKey: string;
   /** The field as `GET /api/schemas` returns it (vault definition + hints). */
   field: SchemaField;
@@ -94,6 +103,8 @@ export function PropertyEditor({ propertyKey, field, tag, rows, onClose }: {
   /** Loaded pages, for the change-type preview (their values are never written here). */
   rows: Array<{ metadata?: Record<string, unknown> | null }>;
   onClose: () => void;
+  /** A conversion finished: the property now lives under `to` (a host rewrites its own view settings). */
+  onConverted?: (from: string, to: string) => void;
 }) {
   const client = useVaultClient();
   const qc = useQueryClient();
@@ -105,8 +116,12 @@ export function PropertyEditor({ propertyKey, field, tag, rows, onClose }: {
   const [notice, setNotice] = useState("");
   const [pendingKind, setPendingKind] = useState<PropertyKind | null>(null);
   const [newOption, setNewOption] = useState("");
+  const [reverseName, setReverseName] = useState(field.reverseLabel ?? "");
   const [deleting, setDeleting] = useState<null | "keep" | "remove">(null);
   const [plan, setPlan] = useState<RemoveValuesResult | null>(null);
+  /** A type the stored values are not: the server's dry run, then its result. */
+  const [conversion, setConversion] = useState<ConvertPropertyResult | null>(null);
+  const [converted, setConverted] = useState<ConvertPropertyResult | null>(null);
 
   const apply = async (hints: FieldHints, fields?: Record<string, { enum?: string[] }>): Promise<boolean> => {
     setBusy(true);
@@ -174,7 +189,59 @@ export function PropertyEditor({ propertyKey, field, tag, rows, onClose }: {
     else setDeleting(null);
   };
 
-  const previewDef: PropertyDef | null = pendingKind ? propertyFromField(propertyKey, { ...field, kind: pendingKind }, tag) : null;
+  // Never on a tag an integration writes (the server refuses it): its rows are the ingester's.
+  const canConvert = !!client.convertProperty && !INGEST_TAGS.has(tag);
+  const converts = (k: PropertyKind) => !allowed.includes(k) && k !== def.kind && needsConversion(field.type, k);
+  const pickKind = async (k: PropertyKind) => {
+    setError("");
+    setNotice("");
+    setConversion(null);
+    if (k === def.kind) return setPendingKind(null);
+    setPendingKind(k);
+    if (!converts(k) || !client.convertProperty) return;
+    setBusy(true);
+    try {
+      setConversion(await client.convertProperty(tag, propertyKey, { to: k, dryRun: true }));
+    } catch (e) {
+      setPendingKind(null);
+      setError(serverDetail(e, "Prism could not check how the values would convert. Nothing was changed."));
+    } finally {
+      setBusy(false);
+    }
+  };
+  const convertNow = async () => {
+    if (!client.convertProperty || !pendingKind) return;
+    setBusy(true);
+    setError("");
+    try {
+      // Short requests, like removing values: the server writes a few hundred pages per call and says `more`.
+      let last: ConvertPropertyResult | null = null;
+      let total = 0;
+      for (let round = 0; round < 60; round++) {
+        last = await client.convertProperty(tag, propertyKey, { to: pendingKind, dryRun: false, limit: 500, label: def.label });
+        total += last.converted ?? 0;
+        setNotice(`Converting… ${total} ${total === 1 ? "page" : "pages"} so far.`);
+        if (last.done || !(last.converted ?? 0)) break;
+      }
+      void qc.invalidateQueries({ predicate: (q) => q.queryKey[0] === "vault" && (q.queryKey[1] === "notes" || q.queryKey[1] === "note") });
+      setNotice("");
+      if (last?.done) {
+        setConverted({ ...last, converted: total });
+        await schema.refresh();
+        onConverted?.(propertyKey, last.target);
+      } else {
+        const left = (last?.conflicts ?? 0) + (last?.failed ?? 0);
+        setConversion(last);
+        setError(`${total} ${total === 1 ? "page was" : "pages were"} converted, but ${left || "some"} changed meanwhile or could not be written. “${def.label}” is unchanged — convert again to finish.`);
+      }
+    } catch (e) {
+      setError(serverDetail(e, "The conversion did not finish. “" + def.label + "” is unchanged; convert again to continue."));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const previewDef: PropertyDef | null = pendingKind && !conversion ? propertyFromField(propertyKey, { ...field, kind: pendingKind }, tag) : null;
   const fit = pendingKind ? withValue.filter((v) => fitsKind(pendingKind, v)).length : 0;
 
   // Portaled: the editor is opened from inside a property bar / table header, and must not inherit their layout or roles.
@@ -187,7 +254,17 @@ export function PropertyEditor({ propertyKey, field, tag, rows, onClose }: {
         </header>
         <p className="db-pop-empty">Applies to every page tagged <code>#{tag}</code>. Stored as <code>{propertyKey}</code>.</p>
 
-        {field.deleted ? (
+        {converted ? (
+          <section className="db-settings" aria-label="Type changed">
+            <p role="status">
+              <strong>“{def.label}” is now {PROPERTY_KIND_LABELS[converted.to as PropertyKind] ?? converted.to}.</strong>{" "}
+              {converted.total} {converted.total === 1 ? "value was" : "values were"} converted.
+              {converted.uncoercible > 0 && ` ${converted.uncoercible} could not be read as ${PROPERTY_KIND_LABELS[converted.to as PropertyKind] ?? converted.to} and ${converted.uncoercible === 1 ? "was" : "were"} left out.`}
+            </p>
+            <p className="db-pop-empty">The earlier values are kept on the old property, which is now under “Deleted properties” — restore it there to undo this, or remove its values for good.</p>
+            <div className="db-settings-row"><button type="button" className="db-primary" onClick={onClose}>Done</button></div>
+          </section>
+        ) : field.deleted ? (
           <section className="db-settings" aria-label="Deleted property">
             <p>“{def.label}” is deleted: it is hidden on every page, view and filter. Its values are still stored on the pages that had one.</p>
             <div className="db-settings-row">
@@ -217,13 +294,43 @@ export function PropertyEditor({ propertyKey, field, tag, rows, onClose }: {
             <section className="db-settings" aria-label="Type">
               <label className="db-field">
                 <span>Type</span>
-                <select aria-label="Property type" value={pendingKind ?? def.kind} disabled={busy} onChange={(e) => setPendingKind(e.target.value === def.kind ? null : (e.target.value as PropertyKind))}>
-                  {PROPERTY_KINDS.map((k) => <option key={k} value={k} disabled={!allowed.includes(k) && k !== def.kind}>{PROPERTY_KIND_LABELS[k]}{!allowed.includes(k) && k !== def.kind ? " — needs a new property" : ""}</option>)}
+                <select aria-label="Property type" value={pendingKind ?? def.kind} disabled={busy} onChange={(e) => void pickKind(e.target.value as PropertyKind)}>
+                  {PROPERTY_KINDS.map((k) => {
+                    const other = !allowed.includes(k) && k !== def.kind;
+                    return <option key={k} value={k} disabled={other && !(canConvert && converts(k))}>{PROPERTY_KIND_LABELS[k]}{other ? (canConvert && converts(k) ? " — converts the values" : " — needs a new property") : ""}</option>;
+                  })}
                 </select>
               </label>
               <p className="db-pop-empty">
-                This property is stored as {field.type ?? "text"} for every <code>#{tag}</code> page, so it can be shown as {allowed.map((k) => PROPERTY_KIND_LABELS[k]).join(", ")}. Other types would change stored values; Prism never does that — add a new property instead.
+                This property is stored as {field.type ?? "text"} for every <code>#{tag}</code> page, so it can be shown as {allowed.map((k) => PROPERTY_KIND_LABELS[k]).join(", ")} without touching a value. {canConvert ? "Any other type converts the values: you see what will happen first, and the current values are kept." : "Other types would change stored values; Prism never does that — add a new property instead."}
               </p>
+              {pendingKind && conversion && (
+                <div className="db-plan" role="group" aria-label="Conversion preview">
+                  <p role="status">
+                    <strong>{conversion.total} of {conversion.total + conversion.uncoercible} {conversion.total + conversion.uncoercible === 1 ? "value" : "values"} will convert to {PROPERTY_KIND_LABELS[pendingKind]}.</strong>{" "}
+                    {conversion.uncoercible > 0
+                      ? `${conversion.uncoercible} cannot be read as ${PROPERTY_KIND_LABELS[pendingKind]} and will be left out of the new property.`
+                      : conversion.total === 0 ? "No page has a value yet." : "Every value converts."}
+                  </p>
+                  {conversion.samples.length > 0 && (
+                    <ul aria-label="Values that cannot be converted">
+                      {conversion.samples.map((v) => <li key={v}><code>{v}</code></li>)}
+                    </ul>
+                  )}
+                  <p className="db-pop-empty">
+                    Nothing is overwritten: “{def.label}” gets a new {PROPERTY_KIND_LABELS[pendingKind]} property with the converted values, and the current one is deleted — hidden everywhere, with its values intact, so you can restore it from “Deleted properties”.
+                    {(() => {
+                      const kept = conversion.skipped.shared + conversion.skipped.trashed + conversion.skipped.system + conversion.skipped.ingest + conversion.skipped.private;
+                      return kept > 0 ? ` ${kept} ${kept === 1 ? "page is" : "pages are"} left alone (in the Trash, kept in sync by an integration, a system page, someone else’s private page, or the value also belongs to another tag’s property).` : "";
+                    })()}
+                    {conversion.truncated && " This tag is very large; only the first pages were counted."}
+                  </p>
+                  <div className="db-settings-row">
+                    <button type="button" className="db-ghost" disabled={busy} onClick={() => { setPendingKind(null); setConversion(null); }}>Cancel</button>
+                    <button type="button" className="db-primary" disabled={busy} onClick={() => void convertNow()}>{busy ? "Converting…" : `Convert to ${PROPERTY_KIND_LABELS[pendingKind]}`}</button>
+                  </div>
+                </div>
+              )}
               {pendingKind && previewDef && (
                 <div className="db-plan" role="group" aria-label="Type change preview">
                   <p><strong>Preview:</strong> {withValue.length === 0
@@ -242,6 +349,23 @@ export function PropertyEditor({ propertyKey, field, tag, rows, onClose }: {
                 </div>
               )}
             </section>
+
+            {def.kind === "relation" && def.target && (
+              // NP-DB-12: the reverse property is optional — named here, it appears on the target's pages
+              // (computed from this property and editable there); cleared, it is not shown.
+              <form className="db-settings" aria-label="Reverse property" onSubmit={(e) => { e.preventDefault(); if (reverseName.trim() !== (field.reverseLabel ?? "")) void apply({ reverseLabel: reverseName.trim() }); }}>
+                <label className="db-field">
+                  <span>Show on #{def.target} pages as</span>
+                  <input aria-label="Reverse property name" value={reverseName} maxLength={80} disabled={busy} placeholder="Not shown" onChange={(e) => setReverseName(e.target.value)} />
+                </label>
+                <p className="db-pop-empty">
+                  {field.reverseLabel
+                    ? `Every #${def.target} page lists the #${tag} pages that link to it under “${field.reverseLabel}”, and they can be added or removed from there. Clear the name to stop showing it.`
+                    : `Name it to list, on every #${def.target} page, the #${tag} pages that link to it. It is the same relation seen from the other side: editing either side changes both.`}
+                </p>
+                {reverseName.trim() !== (field.reverseLabel ?? "") && <button type="submit" className="db-primary" disabled={busy}>{reverseName.trim() ? "Show on target pages" : "Stop showing it"}</button>}
+              </form>
+            )}
 
             {def.kind === "number" && (
               <label className="db-field">

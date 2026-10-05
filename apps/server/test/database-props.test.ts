@@ -10,7 +10,7 @@ import { api } from "../src/routes/api";
 import { resetTreeForTests } from "../src/tree";
 import { resetDatabaseCachesForTests, setSchemaAdminMinter } from "../src/routes/databases";
 import { listActionAudit } from "../src/actions/store";
-import { resolveProperties } from "@prism/core/database";
+import { coerceToKind, resolveProperties } from "@prism/core/database";
 import { installFakeVault, resetDb, makeSession, sessionCookie, grantUser, type FakeVault } from "./helpers";
 
 let fv: FakeVault;
@@ -49,6 +49,7 @@ beforeEach(() => {
   // One process, one owner: the per-owner limits are tested on their own (L5).
   process.env.SCHEMA_WRITES_PER_MINUTE = "1000000";
   process.env.SCHEMA_REMOVE_PER_MINUTE = "1000000";
+  process.env.SCHEMA_CONVERT_PER_MINUTE = "1000000";
 });
 afterEach(() => {
   setSchemaAdminMinter(null);
@@ -405,4 +406,158 @@ test("L3: a property deleted on one tag does not hide another tag's live propert
   assert.deepEqual(resolveProperties(["favourite", "recipe"], schemas, { notes: "x" }).map((p) => p.key), ["notes", "course"]);
   // Deleted by its only declaring tag: hidden even though the page holds a value.
   assert.deepEqual(resolveProperties(["recipe"], schemas, { notes: "x" }).map((p) => p.key), ["course"]);
+});
+
+// ── NP-DB-11: "change type" across vault types = a guided conversion into a NEW field ──────────────
+
+const convert = (tag: string, field: string, body: unknown, cookie = login(OWNER), headers: Record<string, string> = J) =>
+  req(`/schemas/${encodeURIComponent(tag)}/fields/${encodeURIComponent(field)}/convert`, { method: "POST", cookie, headers, body: JSON.stringify(body) });
+
+function seedScores() {
+  fv.put({ id: "s1", path: "Recipes/A", tags: ["recipe"], content: "A-BODY", metadata: { title: "A", notes: "12" }, updatedAt: "2026-10-01T10:00:00.000Z" });
+  fv.put({ id: "s2", path: "Recipes/B", tags: ["recipe"], content: "B-BODY", metadata: { title: "B", notes: " $1,250.50 " }, updatedAt: "2026-10-01T11:00:00.000Z" });
+  fv.put({ id: "s3", path: "Recipes/C", tags: ["recipe"], content: "", metadata: { title: "C", notes: "a pinch" }, updatedAt: "2026-10-01T12:00:00.000Z" });
+  fv.put({ id: "s4", path: "Recipes/D", tags: ["recipe", "prism-trashed"], content: "", metadata: { title: "D", notes: "7" }, updatedAt: "2026-10-01T13:00:00.000Z" });
+  fv.put({ id: "s5", path: "Recipes/E", tags: ["recipe", "favourite"], content: "", metadata: { title: "E", notes: "9" }, updatedAt: "2026-10-01T14:00:00.000Z" });
+  fv.put({ id: "s6", path: "Recipes/F", tags: ["recipe"], content: "", metadata: { title: "F", notes: "3", prism_visibility: "private", prism_creator: "kai@test.local" }, updatedAt: "2026-10-01T15:00:00.000Z" });
+  fv.put({ id: "s7", path: "Recipes/G", tags: ["recipe"], content: "", metadata: { title: "G" }, updatedAt: "2026-10-01T16:00:00.000Z" });
+}
+
+test("convert: dry run by default — counts, uncoercible samples, nothing written, no schema change", async () => {
+  seedScores();
+  await put("recipe", { ui: { notes: { label: "Chef notes" } } });
+  const r = await convert("recipe", "notes", { to: "number" });
+  assert.equal(r.status, 200);
+  assert.deepEqual(await r.json(), {
+    dryRun: true, tag: "recipe", field: "notes", to: "number", target: "notes_number", total: 2, uncoercible: 1, samples: ["a pinch"],
+    skipped: { trashed: 1, shared: 1, system: 0, ingest: 0, private: 1 }, truncated: false, pending: 2,
+  });
+  assert.equal(tagPuts.length, 0, "no vault schema write on a dry run");
+  assert.equal("notes_number" in (await fieldsOf("recipe")), false);
+  assert.equal(fv.notes.get("s1")!.updatedAt, "2026-10-01T10:00:00.000Z");
+});
+
+test("convert: a NEW field of the target type, one CAS write per page, old values kept, then the swap; re-running converges", async () => {
+  seedScores();
+  await put("recipe", { ui: { notes: { label: "Chef notes" } } });
+  // s2 is edited between the listing and its write: a conflict, never forced — so the swap does not happen yet.
+  const realFetch = globalThis.fetch;
+  let bumped = false;
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    if (!bumped && init?.method === "PATCH" && url.includes("/notes/")) {
+      bumped = true;
+      fv.put({ ...fv.notes.get("s2")!, content: "B-EDITED", updatedAt: "2026-10-02T09:00:00.000Z" });
+    }
+    return realFetch(input, init);
+  }) as typeof fetch;
+  const first = await convert("recipe", "notes", { to: "number", dryRun: false });
+  globalThis.fetch = realFetch;
+  assert.equal(first.status, 200);
+  const a = (await first.json()) as any;
+  assert.equal(a.converted + a.conflicts, 2);
+  assert.equal(a.conflicts, 1);
+  assert.equal(a.done, false);
+  assert.equal(a.more, true);
+  // The vault schema gained ONE field, additively: the old field's type is untouched.
+  assert.equal(tagPuts.length, 1);
+  assert.equal(tagPuts[0]!.body.fields.notes.type, "string");
+  assert.equal(tagPuts[0]!.body.fields.notes_number.type, "number");
+  // While the copy is incomplete the new property is hidden and the old one is still the visible one.
+  let f = await fieldsOf("recipe");
+  assert.equal(f.notes_number.deleted, true);
+  assert.notEqual(f.notes.deleted, true);
+  assert.equal(fv.notes.get("s2")!.content, "B-EDITED");
+  assert.equal("notes_number" in fv.notes.get("s2")!.metadata!, false);
+
+  const second = (await (await convert("recipe", "notes", { to: "number", dryRun: false })).json()) as any;
+  assert.equal(second.converted, 1);
+  assert.equal(second.done, true);
+  assert.equal(second.more, false);
+  assert.equal(tagPuts.length, 1, "the destination field is created once");
+  // Values: numbers in the new field; every old value still stored; bodies never written.
+  assert.equal(fv.notes.get("s1")!.metadata!.notes_number, 12);
+  assert.equal(fv.notes.get("s2")!.metadata!.notes_number, 1250.5);
+  assert.equal(fv.notes.get("s1")!.metadata!.notes, "12");
+  assert.equal(fv.notes.get("s2")!.metadata!.notes, " $1,250.50 ");
+  assert.equal(fv.notes.get("s1")!.content, "A-BODY");
+  for (const id of ["s3", "s4", "s5", "s6", "s7"]) assert.equal("notes_number" in fv.notes.get(id)!.metadata!, false, `${id} is left alone`);
+  assert.equal(fv.notes.get("s3")!.metadata!.notes, "a pinch", "an unconvertible value stays on the old property");
+  // The swap: the new property carries the old NAME and is shown; the old one is deleted (hidden, restorable).
+  f = await fieldsOf("recipe");
+  assert.deepEqual({ type: f.notes_number.type, kind: f.notes_number.kind, label: f.notes_number.label, deleted: f.notes_number.deleted, convertedFrom: f.notes_number.convertedFrom },
+    { type: "number", kind: "number", label: "Chef notes", deleted: false, convertedFrom: "notes" });
+  assert.equal(f.notes.deleted, true);
+  assert.equal(f.notes.type, "string");
+  const shown = resolveProperties(["recipe"], { recipe: { description: null, fields: f } }, {}).map((p) => p.key);
+  assert.equal(shown.includes("notes_number"), true);
+  assert.equal(shown.includes("notes"), false);
+  // Converges: nothing left to write, nothing written.
+  const stamp = fv.notes.get("s1")!.updatedAt;
+  const third = (await (await convert("recipe", "notes", { to: "number", dryRun: false })).json()) as any;
+  assert.deepEqual({ converted: third.converted, done: third.done, pending: third.pending }, { converted: 0, done: true, pending: 0 });
+  assert.equal(fv.notes.get("s1")!.updatedAt, stamp);
+  // Undo = restore the old property (a hint); its values were never touched.
+  assert.equal((await put("recipe", { ui: { notes: { deleted: false } } })).status, 200);
+  // Audited with counts and names only — never a value.
+  const audit = listActionAudit({ action: ["schema.convert"] });
+  assert.equal(audit.length, 3);
+  assert.equal(JSON.stringify(audit).includes("pinch"), false);
+  assert.equal(JSON.stringify(audit).includes("1,250"), false);
+});
+
+test("convert: other directions coerce faithfully or leave the value out", async () => {
+  fv.put({ id: "n1", path: "Recipes/N1", tags: ["recipe"], content: "", metadata: { title: "N1", serves: 4, vegan: true, labels: ["quick", "winter"], notes: "yes" }, updatedAt: "2026-10-01T10:00:00.000Z" });
+  fv.put({ id: "n2", path: "Recipes/N2", tags: ["recipe"], content: "", metadata: { title: "N2", serves: 2.5, vegan: false, labels: ["solo"], notes: "maybe" }, updatedAt: "2026-10-01T11:00:00.000Z" });
+  const run = async (field: string, to: string) => (await (await convert("recipe", field, { to, dryRun: false })).json()) as any;
+  assert.equal((await run("serves", "text")).done, true); // number → text
+  assert.deepEqual([fv.notes.get("n1")!.metadata!.serves_text, fv.notes.get("n2")!.metadata!.serves_text], ["4", "2.5"]);
+  assert.equal((await run("vegan", "text")).done, true); // checkbox → text
+  assert.deepEqual([fv.notes.get("n1")!.metadata!.vegan_text, fv.notes.get("n2")!.metadata!.vegan_text], ["Yes", "No"]);
+  assert.equal((await run("labels", "text")).done, true); // multi-select → text
+  assert.equal(fv.notes.get("n1")!.metadata!.labels_text, "quick, winter");
+  const sel = await run("labels", "select"); // several values are not ONE option
+  assert.deepEqual([sel.total, sel.uncoercible, fv.notes.get("n2")!.metadata!.labels_select, "labels_select" in fv.notes.get("n1")!.metadata!], [1, 1, "solo", false]);
+  const box = await run("notes", "checkbox"); // text → checkbox: only words that mean yes/no
+  assert.deepEqual([box.total, box.uncoercible, box.samples, fv.notes.get("n1")!.metadata!.notes_checkbox], [1, 1, ["maybe"], true]);
+  const multi = await run("notes", "multi_select"); // text → multi-select
+  assert.deepEqual([multi.done, fv.notes.get("n2")!.metadata!.notes_multi_select], [true, ["maybe"]]);
+});
+
+test("convert: owner + human + same-origin only; refused for presentations, ingest/managed tags, system keys and a taken destination", async () => {
+  seedScores();
+  grantUser("kai@test.local", "tag", "recipe", "edit");
+  assert.equal((await convert("recipe", "notes", { to: "number", dryRun: false }, login("kai@test.local"))).status, 403);
+  assert.equal((await convert("recipe", "notes", { to: "number" }, login(OWNER), { "content-type": "text/plain" })).status, 415);
+  assert.equal((await convert("recipe", "notes", { to: "number" }, login(OWNER), { ...J, "sec-fetch-site": "cross-site" })).status, 403);
+  assert.equal((await convert("recipe", "notes", { to: "number" }, login(OWNER), { ...J, origin: "https://evil.example" })).status, 403);
+  assert.equal((await req("/schemas/recipe/fields/notes/convert", { method: "POST", headers: J, body: '{"to":"number"}' })).status, 403, "anon");
+  // A presentation of the stored type is not a conversion: the hint route does it.
+  const same = await convert("recipe", "notes", { to: "url" });
+  assert.equal(same.status, 409);
+  assert.equal(((await same.json()) as any).error, "compatible_kind");
+  assert.equal((await convert("task", "estimate", { to: "text" })).status, 409, "ingest tag");
+  assert.equal((await convert("agent-skill", "notes", { to: "number" })).status, 403);
+  assert.equal((await convert("recipe", "nope", { to: "number" })).status, 404);
+  for (const key of ["prism_creator", "title", "source_id", "source", "__proto__", "a b"]) assert.equal((await convert("recipe", key, { to: "number" })).status, 400, key);
+  assert.equal((await convert("recipe", "notes", { to: "formula" })).status, 400);
+  assert.equal((await convert("recipe", "notes", {})).status, 400);
+  assert.equal((await convert("recipe", "notes", { to: "number", dryRun: "no" })).status, 400);
+  assert.equal((await convert("recipe", "notes", { to: "number", limit: 5000 })).status, 400);
+  // The destination key already belongs to a property nobody converted into: never taken over.
+  vaultTags.find((t) => t.name === "recipe")!.fields.notes_number = { type: "number" };
+  resetDatabaseCachesForTests();
+  const taken = await convert("recipe", "notes", { to: "number", dryRun: false });
+  assert.equal(taken.status, 409);
+  assert.equal(((await taken.json()) as any).error, "target_taken");
+  assert.equal("notes_number" in fv.notes.get("s1")!.metadata!, false);
+  assert.equal(tagPuts.length, 0);
+});
+
+test("convert: the coercion is linear on hostile values", () => {
+  const started = Date.now();
+  for (const v of ["1".repeat(200_000), ",".repeat(200_000), " ".repeat(200_000) + "x", "[[".repeat(100_000), "a,".repeat(100_000)]) {
+    for (const k of ["number", "checkbox", "multi_select", "date", "url", "email", "phone", "select", "relation", "text"] as const) coerceToKind(v, k);
+  }
+  assert.ok(Date.now() - started < 1500, `took ${Date.now() - started} ms`);
 });

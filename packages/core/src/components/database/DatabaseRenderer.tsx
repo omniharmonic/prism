@@ -33,7 +33,7 @@ import { BottomSheet } from "../ui/BottomSheet";
 import { Popover } from "./Popover";
 import { FilterEditor, SortEditor, ViewSettings } from "./ViewControls";
 import { BoardView, CalendarView, GalleryView, ListView, TableView, monthGrid, type RowSelection, type ViewContext } from "./views";
-import { defaultConfig, duplicateView, MAX_VIEWS, moveView, newViewId, readDatabaseConfig, rowPath, VIEW_LABELS, VIEW_TYPES, type DatabaseConfig, type DatabaseTemplate, type DatabaseView, type OpenMode, type ViewType } from "./config";
+import { defaultConfig, duplicateView, MAX_VIEWS, moveView, newViewId, renamePropertyKey, readDatabaseConfig, rowPath, VIEW_LABELS, VIEW_TYPES, type DatabaseConfig, type DatabaseTemplate, type DatabaseView, type OpenMode, type ViewType } from "./config";
 import { RowPeek } from "./RowPeek";
 import { BulkBar, UndoToast, type UndoAction } from "./BulkBar";
 import { createTemplateNote, isTemplateFor, NewButton, TemplateEditor, templateProps } from "./Templates";
@@ -489,7 +489,8 @@ export function DatabasePage({ note, readOnly, embedded }: RendererProps & {
           onClose={() => setEditingTemplate(null)} />
       )}
       {editingProp && schemas[editingProp.tag]?.fields[editingProp.key] && (
-        <PropertyEditor propertyKey={editingProp.key} tag={editingProp.tag} field={schemas[editingProp.tag]!.fields[editingProp.key]!} rows={rows} onClose={() => setEditingProp(null)} />
+        <PropertyEditor propertyKey={editingProp.key} tag={editingProp.tag} field={schemas[editingProp.tag]!.fields[editingProp.key]!} rows={rows} onClose={() => setEditingProp(null)}
+          onConverted={(from, to) => { const next = config && renamePropertyKey(config, from, to); if (next) void saveConfig(next); invalidateRows(); }} />
       )}
       {importingNew && <CsvNewDatabaseDialog adopt={{ id: note.id, path: note.path, title }} onClose={() => setImportingNew(false)} />}
       {importing && config && <CsvImportDialog tag={config.source.tags[0]!} dbPath={note.path} props={allProps} onClose={() => setImporting(false)} />}

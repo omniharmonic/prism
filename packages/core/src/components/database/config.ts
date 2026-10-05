@@ -184,6 +184,38 @@ export function duplicateView(config: DatabaseConfig, viewId: string): { config:
   return { config: { ...config, views }, id: copy.id };
 }
 
+/**
+ * A property moved to another key (a type conversion, NP-DB-11): every view keeps
+ * showing, sorting, grouping and filtering by it. Null when nothing names `from`.
+ */
+export function renamePropertyKey(config: DatabaseConfig, from: string, to: string): DatabaseConfig | null {
+  let changed = false;
+  const key = (k: string) => (k === from ? ((changed = true), to) : k);
+  const conds = <T extends { key: string }>(list: T[]) => list.map((c) => ({ ...c, key: key(c.key) }));
+  const views = config.views.map((v) => {
+    const next: DatabaseView = { ...v };
+    if (v.visible) next.visible = [...new Set(v.visible.map(key))];
+    if (v.sort) next.sort = conds(v.sort);
+    if (v.groupBy) next.groupBy = key(v.groupBy);
+    if (v.dateKey) next.dateKey = key(v.dateKey);
+    if (v.coverKey) next.coverKey = key(v.coverKey);
+    if (v.widths && Object.prototype.hasOwnProperty.call(v.widths, from)) {
+      const { [from]: w, ...rest } = v.widths;
+      next.widths = { ...rest, [to]: w! };
+      changed = true;
+    }
+    if (v.filter) {
+      next.filter = {
+        ...v.filter,
+        conditions: conds(v.filter.conditions),
+        ...(v.filter.groups ? { groups: v.filter.groups.map((g) => ({ ...g, conditions: conds(g.conditions) })) } : {}),
+      };
+    }
+    return next;
+  });
+  return changed ? { ...config, views } : null;
+}
+
 /** Move a view tab to `to` (an index in the current order). */
 export function moveView(config: DatabaseConfig, viewId: string, to: number): DatabaseConfig | null {
   const from = config.views.findIndex((v) => v.id === viewId);

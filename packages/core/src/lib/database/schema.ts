@@ -82,6 +82,8 @@ export interface FieldHints {
   format?: NumberFormat;
   /** Status: option value → group. */
   statusGroups?: Record<string, StatusGroup>;
+  /** Set by the server on a field a type conversion created: the key its values were converted from. */
+  convertedFrom?: string;
 }
 
 /** One field as `GET /api/schemas` returns it: vault def + Prism hints. */
