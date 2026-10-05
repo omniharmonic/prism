@@ -2170,8 +2170,16 @@ export function hasCollabSetAside(vaultId: string): boolean {
   }
 }
 const deleteSetAsideOfNote = db.prepare("DELETE FROM collab_set_aside WHERE vault_id = ? AND name = ?");
+/** Other per-note rows that go with a purged note (tables owned by other modules, e.g. notification_page_levels). */
+const notePurgedListeners: Array<(vaultId: string, noteId: string) => void> = [];
+export function onNotePurged(fn: (vaultId: string, noteId: string) => void): void {
+  notePurgedListeners.push(fn);
+}
 /** The note is gone for good (purged from the Trash, deleted): what its page once held goes with it. Never throws. */
 export function deleteCollabSetAsideForNote(vaultId: string, noteId: string): number {
+  for (const fn of notePurgedListeners) {
+    try { fn(vaultId, noteId); } catch { /* another module's cleanup never blocks the purge */ }
+  }
   try {
     return deleteSetAsideOfNote.run(vaultId, noteId).changes;
   } catch {
