@@ -131,8 +131,8 @@ test("NP-PG-06: the breadcrumb is in the header bar — one row, overflow menu, 
 });
 
 /** NP-PG-06 × NP-AX-07: on a WIDE touch screen (a tablet: coarse pointer, no hover) every crumb in the bar is a 44 px target. */
-test("NP-PG-06: header-bar crumbs are 44 px targets on a wide coarse-pointer screen", async ({ browser }) => {
-  const context = await browser.newContext({ viewport: { width: 1180, height: 820 }, hasTouch: true });
+test("NP-PG-06: header-bar crumbs are 44 px targets on a wide coarse-pointer screen", async ({ browser, baseURL }) => {
+  const context = await browser.newContext({ baseURL, viewport: { width: 1180, height: 820 }, hasTouch: true });
   const page = await context.newPage();
   await page.goto("/e2e-fixtures/notion-shell.html");
   await expect(page.locator(".tiptap[contenteditable=true]")).toBeVisible();
