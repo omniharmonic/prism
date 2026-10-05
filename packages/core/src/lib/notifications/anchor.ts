@@ -6,6 +6,7 @@
  *   mention  → [data-mention-uid="<uid>"]       (MentionNode)
  *   reminder → [data-reminder="<reminder id>"]  (date chip with a reminder)
  *   thread   → [data-comment-id="<thread id>"]  (comment anchor mark)
+ *   property → [data-property-key="<key>"]      (the page's property bar row; `assigned`)
  * For a thread we also dispatch `prism:open-comment-thread` {threadId} so a
  * comments sidebar can open that thread. Values are matched with CSS.escape —
  * they come from the server but are never trusted as selectors.
@@ -15,6 +16,8 @@ import type { ContentType } from "../types";
 import type { NotificationItem } from "./client";
 
 export const ANCHOR_FLASH_CLASS = "prism-anchor-flash";
+/** `{noteId, key}`: show this property in the page's property bar (it may be hidden while empty). */
+export const REVEAL_PROPERTY_EVENT = "prism:reveal-property";
 const WAIT_MS = 8_000;
 
 function esc(v: string): string {
@@ -26,6 +29,7 @@ export function anchorSelector(anchor: NotificationItem["anchor"]): string | nul
   if (anchor.mention) return `[data-mention-uid="${esc(anchor.mention)}"]`;
   if (anchor.reminder) return `[data-reminder="${esc(anchor.reminder)}"]`;
   if (anchor.thread) return `[data-comment-id="${esc(anchor.thread)}"]`;
+  if (anchor.property) return `[data-property-key="${esc(anchor.property)}"]`;
   return null;
 }
 
@@ -68,6 +72,12 @@ export function openNotification(item: NotificationItem): boolean {
   useUIStore.getState().openTab(item.noteId, item.title ?? "Page", "document" as ContentType);
   if (item.anchor?.thread) {
     window.dispatchEvent(new CustomEvent("prism:open-comment-thread", { detail: { noteId: item.noteId, threadId: item.anchor.thread } }));
+  }
+  // A property the bar keeps folded away is brought out first (PropertyBar listens).
+  if (item.anchor?.property) {
+    const detail = { noteId: item.noteId, key: item.anchor.property };
+    window.dispatchEvent(new CustomEvent(REVEAL_PROPERTY_EVENT, { detail }));
+    window.setTimeout(() => window.dispatchEvent(new CustomEvent(REVEAL_PROPERTY_EVENT, { detail })), 600);
   }
   const selector = anchorSelector(item.anchor);
   if (selector) void focusAnchor(selector);

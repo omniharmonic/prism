@@ -85,7 +85,7 @@ function Fixture() {
         <PageDiscussion ydoc={mine} user={me} canComment={level !== "view"} actions={actions} />
         <p style={{ color: "var(--text-secondary)" }}>The brief for the spring launch: goals, scope and milestones.</p>
         <aside aria-label="Comments sidebar" style={{ marginTop: 24, maxWidth: 320 }}>
-          <CommentsSidebar ydoc={mine} user={me} canComment={level !== "view"} actions={actions} />
+          <CommentsSidebar ydoc={mine} user={me} canComment={level !== "view"} actions={actions} noteId={new URLSearchParams(location.search).get("note")} />
         </aside>
       </main>
       <main aria-label="Other person's view">

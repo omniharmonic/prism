@@ -91,3 +91,26 @@ Branches NOT merged (worktree → branch → state):
 - `w3-import` → `feat/w12-flakes`: intermittent-failure hunt (10 tests listed in its brief), `FLAKE-LOG.md` (running).
 Queued, not started: regional preferences (week start/date/time format — after db-calc and backlog merge; shares `views.tsx`), merge of `feat/native-ios` (2 conflicts, then an iOS rebuild + device pass), AI for members (owner decision), formulas/timeline (later wave).
 Each branch: merge main → root typecheck → `both-run.sh <worktree> <port> <tag>` detached (server one file at a time, then 10 browser shards) → independent review → `git merge --ff-only`.
+
+## In flight at 2026-10-04 late evening (usage limit reached again) — READ FIRST
+
+Main = this commit's parent `acc7f8f9` (assignment notifications `feat/w12-notify` merged; server 2,415/0, browser all passed). Nothing deployed.
+
+| Worktree | Branch | State / next step |
+|---|---|---|
+| w4-db | feat/w11-backlog | Review found B1 (reconcile rotation never repairs cut sweeps) + S1–S5; fixes sent to the agent. Then: merge main, both suites, merge. |
+| w2-mentions | feat/w12-duplicate | Re-review found B3 (copy re-publishes a page excluded from a public site) + S1–S6; fixes sent. Baseline suites: server 2,420/0; browser 2 failures not in duplicate code. |
+| w3-gaps | feat/w12-editor-select | Review: no blocker, S1–S9 (cut in embedded field deletes blocks; selection jumps after merged remote update; table resize arms takeover; …) sent. Suites were queued (`esel` logs in scratchpad). |
+| w4-editor | feat/w11-deviations | Built; must merge main itself (5 conflicts; rules sent), run a11y + WebKit, conversion follow-ups. |
+| w4-shell | feat/w14-visual (on feat/w11-shots) | Fixing 48 visual defects from `ACCEPTANCE-SHOTS.md`. Gallery files in `apps/web/acceptance-gallery-{1,2,3}.html` (sent to owner). |
+| w2-sharing | feat/w14-icons | Custom page icons (uploaded image) + per-device toggle memory. Just started. |
+| collab-convert | feat/w9-gaps | Suggesting mode etc.; WIP `bdfbccd0`, awaiting final report → suites → review → merge. |
+| w3-import | feat/w12-flakes | Five root-cause commits (vault switcher race, three @-menu races, …); last verification chain queued. Add `notion-a11y-keyboard.spec.ts:51` and `:179`, `editor-blocks.spec.ts:264`, axe `page-cover-dialog` to its list. |
+| w2-media | feat/w12-db-calc | Table calculations, "Me" filter, wrap cells — running. |
+| w5-a11y | feat/w12-p2 | P2 conveniences — verifying. |
+| w3-verify | feat/w13-appearance | System theme, phone sheet animation, regional prefs (settings half) — running. |
+| w2-shell | feat/w13-ios-merge | Merge committed `18da6c7c`; cargo lib 101 passed; remaining spec runs queued. No builds. |
+
+Process per branch: merge main → root typecheck → `scratchpad/both-run.sh` (or `after-run.sh <prev log> …` to chain) → independent review → fixes → `git merge --ff-only`. Never start suites on an unresolved merge (CLAUDE.md conflicts are common: keep both sides).
+
+Open items: one unexplained `/health` miss at 21:54 with 77% memory free (recovered at once, no pm2 restart). Owner decisions added this session: ingest-owned pages cannot be duplicated by anyone (owner exception?); property type conversion not offered on ingest tags incl. `task`; block selection — non-editors keep native text selection across blocks, editors get the toolbar on block selections. Queued, not started: database regional-prefs call sites, timeline view sizing, verification pass 4, AI for members (owner decision).

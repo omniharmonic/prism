@@ -52,6 +52,9 @@ import { usePageActions, pageLink } from "../../lib/pages/usePageActions";
 import { printCurrentPage, useTransferUI } from "../../lib/import-export/store";
 import type { Note } from "../../lib/types";
 import { PageInfo } from "../sharing/PageInfo";
+import { usePageNotificationLevel } from "../../lib/notifications/hooks";
+import { PAGE_NOTIFICATION_LEVELS } from "../../lib/notifications/client";
+import { pageLevelIcon } from "../inbox/PageNotificationLevel";
 import "./pages.css";
 
 export interface PageMenuItem {
@@ -63,6 +66,8 @@ export interface PageMenuItem {
   startsGroup?: boolean;
   disabled?: boolean;
   detail?: string;
+  /** Always shown under the label (unlike `detail`, a tooltip / a disabled action's reason). */
+  hint?: string;
 }
 
 /**
@@ -72,7 +77,7 @@ export interface PageMenuItem {
  */
 export function usePageMenuItems(
   page: PageRef,
-  opts: { entry?: { path: string | null; tags: string[] | null } | null; onRename?: () => void; close: () => void; /** Phone page sheet: adds Share, Find and Agent (the desktop header has them as buttons). */ sheet?: boolean },
+  opts: { entry?: { path: string | null; tags: string[] | null } | null; onRename?: () => void; close: () => void; /** Phone page sheet: adds Share, Find and Agent (the desktop header has them as buttons). */ sheet?: boolean; /** False while the menu is closed (the top bar computes its items all the time): nothing is fetched for it. */ open?: boolean },
 ): PageMenuItem[] {
   const sharing = useCollabSharing();
   const actions = usePageActions();
@@ -103,6 +108,9 @@ export function usePageMenuItems(
   const docFontSetter = useUIStore((s) => s.docFontSetter);
   const activeNoteId = useUIStore((s) => s.openTabs.find((t) => t.id === s.activeTabId)?.noteId);
   const style = pageStyleOf(note);
+  // NP-CO-04: this viewer's notification level for the page. Unavailable (share-link
+  // guest, older server, desktop) → the group is simply not there.
+  const notify = usePageNotificationLevel(real ? page.id : null, opts.open !== false);
   const run = (fn: () => void) => () => {
     opts.close();
     fn();
@@ -194,6 +202,18 @@ export function usePageMenuItems(
           { id: "small-text", label: "Small text", icon: style.small ? <Check size={15} /> : <Type size={13} />, detail: style.small ? "On" : undefined, startsGroup: !(docFontSetter && activeNoteId === page.id), onClick: run(() => void actions.setPageStyle(note, { small: !style.small })) },
           { id: "full-width", label: "Full width", icon: style.full ? <Check size={15} /> : <MoveHorizontal size={15} />, detail: style.full ? "On" : undefined, onClick: run(() => void actions.setPageStyle(note, { full: !style.full })) },
         ]
+      : []),
+    // The "Notifications" group: the current level is ticked; choosing another saves it.
+    ...(notify.available
+      ? PAGE_NOTIFICATION_LEVELS.map((l, i) => ({
+          id: `notify-${l.id}`,
+          label: `Notify me: ${l.label.charAt(0).toLowerCase()}${l.label.slice(1)}`,
+          icon: notify.level === l.id ? <Check size={15} /> : pageLevelIcon(l.id),
+          startsGroup: i === 0,
+          detail: l.hint,
+          hint: [notify.level === l.id ? "Current" : "", l.id === "none" ? "Mentions of you and assignments still arrive" : ""].filter(Boolean).join(" · ") || undefined,
+          onClick: run(() => { if (notify.level !== l.id) notify.set(l.id); }),
+        }))
       : []),
     { id: "export-md", label: "Export as Markdown", icon: <FileDown size={15} />, onClick: run(() => void actions.exportPage(page, "markdown")) },
     { id: "export-html", label: "Export as HTML", icon: <FileDown size={15} />, onClick: run(() => void actions.exportPage(page, "html")) },
@@ -324,6 +344,7 @@ export function PageMenuPopover({
           {item.label}
           {/* A disabled action says why (a tooltip never shows on a disabled control). */}
           {item.disabled && item.detail && <small className="page-menu-detail">{item.detail}</small>}
+          {!item.disabled && item.hint && <small className="page-menu-detail">{item.hint}</small>}
         </span>
       </button>
     </div>
@@ -354,7 +375,7 @@ function PageActionsTrigger({ page, size = 16 }: { page: PageRef; size?: number 
     setAnchor(null);
     requestAnimationFrame(() => trigger.current?.focus({ preventScroll: true }));
   };
-  const items = usePageMenuItems(page, { close });
+  const items = usePageMenuItems(page, { close, open: !!anchor });
   if (!items.length) return null;
   return (
     <>
