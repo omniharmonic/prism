@@ -5,7 +5,7 @@ import "./canvas-workspace.css";
 import { Link2, Link2Off, PanelLeftOpen, PanelLeftClose, ExternalLink } from "lucide-react";
 import type { RendererProps } from "./RendererProps";
 import { useAutoSave } from "../../app/hooks/useAutoSave";
-import { useSettingsStore } from "../../app/stores/settings";
+import { useEffectiveTheme } from "../../app/stores/settings";
 import { useUIStore } from "../../app/stores/ui";
 import { inferContentType } from "../../lib/schemas/content-types";
 import { useVaultClient } from "../../data/VaultClientContext";
@@ -46,7 +46,7 @@ export default function CanvasRenderer({ note, readOnly }: RendererProps) {
   const presentation = useCanvasPresentation();
   const editableRef = useRef(!readOnly);
   editableRef.current = !readOnly;
-  const theme = useSettingsStore((s) => s.theme);
+  const theme = useEffectiveTheme();
   const isDark = theme === "dark";
   const contentRef = useRef(note.content || "");
   const apiRef = useRef<ExcalidrawAPI | null>(null);

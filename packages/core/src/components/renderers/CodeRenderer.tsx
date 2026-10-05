@@ -16,7 +16,7 @@ import { rust } from "@codemirror/lang-rust";
 import { sql } from "@codemirror/lang-sql";
 import type { RendererProps } from "./RendererProps";
 import { useAutoSave } from "../../app/hooks/useAutoSave";
-import { useSettingsStore } from "../../app/stores/settings";
+import { useEffectiveTheme } from "../../app/stores/settings";
 import type { Extension } from "@codemirror/state";
 
 function getLanguageExtension(lang: string): Extension | null {
@@ -79,7 +79,7 @@ export default function CodeRenderer({ note, readOnly }: RendererProps) {
   const contentRef = useRef(note.content || "");
   const editorRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
-  const theme = useSettingsStore((s) => s.theme);
+  const theme = useEffectiveTheme();
   const isDark = theme === "dark";
 
   const getContent = useCallback(() => contentRef.current, []);

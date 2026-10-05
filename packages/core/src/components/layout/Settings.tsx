@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from "react";
-import { X, Database, MessageSquare, Mail, Cloud, Bot, Sun, Moon, Plus, Trash2, Check, Video, Mic, Cpu, FileText, Zap } from "lucide-react";
+import { X, Database, MessageSquare, Mail, Cloud, Bot, Sun, Moon, Monitor, Plus, Trash2, Check, Video, Mic, Cpu, FileText, Zap } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { useUIStore } from "../../app/stores/ui";
 import { useSettingsStore, type Theme } from "../../app/stores/settings";
@@ -521,15 +521,18 @@ export function Settings({ open, onClose }: SettingsProps) {
             <>
               <Section title="Theme">
                 <div className="flex rounded-lg overflow-hidden" style={{ border: "1px solid var(--glass-border)" }}>
-                  {(["dark", "light"] as Theme[]).map((t) => (
+                  {(["system", "light", "dark"] as Theme[]).map((t) => (
                     <button key={t} aria-pressed={theme === t} onClick={() => setTheme(t)}
                       className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 text-xs"
                       style={{ background: theme === t ? "var(--glass-active)" : "transparent", color: "var(--text-primary)" }}>
-                      {t === "dark" ? <Moon size={12} /> : <Sun size={12} />}
+                      {t === "dark" ? <Moon size={12} /> : t === "light" ? <Sun size={12} /> : <Monitor size={12} />}
                       {t.charAt(0).toUpperCase() + t.slice(1)}
                     </button>
                   ))}
                 </div>
+                {theme === "system" && (
+                  <p className="mt-2 text-xs" style={{ color: "var(--text-muted)" }}>Follows this device’s light or dark setting.</p>
+                )}
               </Section>
 
               <Section title="Motion">
