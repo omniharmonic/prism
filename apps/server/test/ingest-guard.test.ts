@@ -58,7 +58,7 @@ function upstreamAnswer(url: string): Response {
  * The fake network. `hold`: upstream calls wait for `release()`. `vault`: "ok" answers
  * an empty list; "hang" never answers (it only rejects when the caller's signal aborts).
  */
-function fakeNetwork(o: { hold?: boolean; vault?: "ok" | "hang" } = {}) {
+function fakeNetwork(o: { hold?: boolean; vault?: "ok" | "hang"; upstream?: "hang" } = {}) {
   const upstream: string[] = [];
   const vault: string[] = [];
   const waiting: Array<() => void> = [];
@@ -68,6 +68,8 @@ function fakeNetwork(o: { hold?: boolean; vault?: "ok" | "hang" } = {}) {
     const url = String(input instanceof Request ? input.url : input);
     if (Object.values(UPSTREAM).some((re) => re.test(url))) {
       upstream.push(url);
+      // A stalled upstream: no answer, ever — only the caller's own abort ends the request.
+      if (o.upstream === "hang") return new Promise<Response>((_res, rej) => init?.signal?.addEventListener("abort", () => rej(init.signal!.reason)));
       if (held) await new Promise<void>((r) => waiting.push(r));
       return upstreamAnswer(url);
     }
@@ -99,7 +101,7 @@ const until = async (cond: () => boolean, what: string) => {
 const lastSuccess = async (source: Source) => (await getSourceHealth({ list: async () => [] })).find((s) => s.name === source)!.lastSuccessAt;
 
 const logs = { warn: console.warn, error: console.error, log: console.log };
-const prev = { hours: config.firefliesSyncHours, timeout: (config as { ingestVaultTimeoutMs?: number }).ingestVaultTimeoutMs };
+const prev = { hours: config.firefliesSyncHours, timeout: (config as { ingestVaultTimeoutMs?: number }).ingestVaultTimeoutMs, upstream: (config as { ingestUpstreamTimeoutMs?: number }).ingestUpstreamTimeoutMs };
 let net: ReturnType<typeof fakeNetwork> | null = null;
 beforeEach(() => {
   resetDb();
@@ -117,6 +119,7 @@ afterEach(() => {
   net = null;
   (config as { firefliesSyncHours: number[] }).firefliesSyncHours = prev.hours;
   (config as { ingestVaultTimeoutMs?: number }).ingestVaultTimeoutMs = prev.timeout;
+  (config as { ingestUpstreamTimeoutMs?: number }).ingestUpstreamTimeoutMs = prev.upstream;
 });
 
 for (const source of ["clickup", "fathom", "fireflies"] as const) {
@@ -186,3 +189,38 @@ for (const source of ["clickup", "fathom", "fireflies"] as const) {
     assert.equal(sched.ingestPassRunning?.(source, entry().id), false);
   });
 }
+
+// ── review round S2: a stalled UPSTREAM must not hold the guard for ever ──────
+
+for (const source of ["clickup", "fathom", "fireflies"] as const) {
+  test(`${source}: an upstream that never answers fails the pass at INGEST_UPSTREAM_TIMEOUT_MS, records a failure and frees the guard`, async () => {
+    putSecret(entry().id, config.ownerEmail, source, JSON.stringify(SECRET[source]));
+    (config as { ingestUpstreamTimeoutMs?: number }).ingestUpstreamTimeoutMs = 150;
+    net = fakeNetwork({ upstream: "hang" });
+    // Through the tick: the outcome it records is what /acl/workers shows.
+    await within(tickIngesters(), 3000, "the tick hung on the upstream");
+    assert.ok(net.upstream.length >= 1);
+    assert.equal(sched.ingestPassRunning?.(source, entry().id), false, "the guard is free again");
+    const health = (await getSourceHealth({ list: async () => [] })).find((s) => s.name === source)!;
+    // Fireflies swallows a failed identity lookup and fails on the listing that follows; either way it is a failure.
+    assert.equal(health.failureStreak, 1, "a recorded failure — not silence");
+    assert.match(String(health.lastError), /did not answer within/);
+    assert.equal(health.lastSuccessAt, null);
+  });
+}
+
+test("fireflies: a pass that died on OUR side (the vault listing timed out) hands its scheduled slot back — at most twice", async () => {
+  putSecret(entry().id, config.ownerEmail, "fireflies", JSON.stringify(SECRET.fireflies));
+  (config as { ingestVaultTimeoutMs?: number }).ingestVaultTimeoutMs = 100;
+  net = fakeNetwork({ vault: "hang" });
+  const listings = () => net!.upstream.length;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    const before = listings();
+    await assert.rejects(within(scheduler.runFirefliesOnce(entry()), 3000, "the pass hung on the vault"));
+    assert.ok(listings() > before, `attempt ${attempt} ran (the slot was not spent by the failure before it)`);
+  }
+  // The slot was handed back twice; the third failure keeps it — no retry storm against the API.
+  const before = listings();
+  assert.equal(await within(scheduler.runFirefliesOnce(entry()), 3000, "a throttled call"), 0);
+  assert.equal(listings(), before, "the fourth call in the slot does not touch Fireflies");
+});

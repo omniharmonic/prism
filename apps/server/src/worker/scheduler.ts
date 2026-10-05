@@ -23,7 +23,7 @@ import { config, type VaultEntry } from "../config";
 import { vault, vaultClient } from "../parachute";
 import { MatrixClient, ingestMatrix, reconcileMatrix, type IngestVault, type MatrixCreds, type RoomReplay } from "./matrix";
 import { FathomClient, ingestFathom } from "./fathom";
-import { FirefliesClient, ingestAndCleanupFireflies, type FirefliesBudget, type FirefliesVault } from "./fireflies";
+import { FirefliesClient, FirefliesError, ingestAndCleanupFireflies, type FirefliesBudget, type FirefliesVault } from "./fireflies";
 import { ClickUpClient, ingestClickUp, type ClickUpCredential, type ClickUpVault } from "./clickup";
 import { GmailClient, ingestGmail, type GmailVault, type GogRunner } from "./gmail";
 import { calendarMode, calendarSourceName, runCalendarOnce } from "./calendar";
@@ -83,6 +83,8 @@ const firefliesSkip = new Map<string, Set<string>>();
 // The API key's own email, resolved once per process. Deletion compares meeting
 // ownership against it, and re-fetching it every run would waste daily quota.
 const firefliesOwnerEmail = new Map<string, string>();
+/** How often the current Fireflies slot was handed back after a failure on our side (`<vault>:<slot>` → count). */
+const firefliesSlotReturns = new Map<string, number>();
 
 // A missing credential is the one failure that produces NO output at all: every
 // ingester returns 0 before it can log, mirrors stay quiet when nothing is due,
@@ -265,6 +267,9 @@ export const matrixReconcileSettled = (vaultId: string): Promise<void> => matrix
 /** Where the last reconcile sweep's probe stopped (a room id; rooms are probed in
  *  sorted order). Empty = the next sweep starts at the front. */
 const MATRIX_RECONCILE_CURSOR = "matrix-reconcile-after";
+/** Rooms the last sweep left unsettled (probe threw, repair failed / over budget / out of
+ *  time): the next sweep probes them first, wherever the resume point is. */
+const MATRIX_RECONCILE_RETRY_CURSOR = "matrix-reconcile-retry";
 
 /**
  * One reconcile sweep that CONTINUES where the previous one was cut off by its
@@ -277,17 +282,20 @@ export async function runMatrixReconcileSweep(
   client: Parameters<typeof reconcileMatrix>[0],
   ingestVault: IngestVault,
   upTo: string,
-  overrides: { deadlineMs?: number; now?: () => number; concurrency?: number } = {},
+  overrides: { deadlineMs?: number; now?: () => number; concurrency?: number; probeShare?: number; maxRepairs?: number } = {},
 ): Promise<Awaited<ReturnType<typeof reconcileMatrix>>> {
   const r = await reconcileMatrix(client, ingestVault, {
     upTo,
-    maxRepairs: config.matrixReconcilePerSweep,
+    maxRepairs: overrides.maxRepairs ?? config.matrixReconcilePerSweep,
     deadlineMs: overrides.deadlineMs ?? config.matrixReconcileDeadlineMs,
     resumeAfter: getWorkerCursor(entry.id, MATRIX_RECONCILE_CURSOR) || null,
+    retry: readJsonCursor<string>(entry.id, MATRIX_RECONCILE_RETRY_CURSOR).filter((id) => typeof id === "string"),
+    ...(overrides.probeShare ? { probeShare: overrides.probeShare } : {}),
     ...(overrides.now ? { now: overrides.now } : {}),
     ...(overrides.concurrency ? { concurrency: overrides.concurrency } : {}),
   });
   setWorkerCursor(entry.id, MATRIX_RECONCILE_CURSOR, r.resumeAfter ?? "");
+  setWorkerCursor(entry.id, MATRIX_RECONCILE_RETRY_CURSOR, JSON.stringify(r.retry ?? []));
   return r;
 }
 
@@ -408,11 +416,11 @@ async function runMatrixPass(entry: VaultEntry, deps: MatrixPassDeps): Promise<n
       if (reconcileDue) {
         try {
           const r = await runMatrixReconcileSweep(entry, client as Parameters<typeof reconcileMatrix>[0], ingestVault, upTo);
-          const line = `[worker] matrix ${entry.id} reconcile: ${r.scanned} rooms scanned, ${r.behind} behind, ${r.repaired} repaired (+${r.messages} msgs), ${r.deferred} deferred${r.unprobed ? `, ${r.unprobed} not reached before the deadline` : ""}`;
+          const line = `[worker] matrix ${entry.id} reconcile: ${r.scanned} of ${r.rooms} rooms probed, ${r.behind} behind, ${r.repaired} repaired (+${r.messages} msgs), ${r.deferred} deferred${r.unprobed ? `, ${r.unprobed} not reached before the deadline` : ""}`;
           if (r.behind > 0 || r.unprobed) console.warn(line);
           else console.log(line);
           // Deferred / unreached rooms may still miss messages — come back in 5 min, not an hour.
-          if (r.deferred > 0 || r.unprobed) lastMatrixReconcileAt.set(entry.id, now - config.matrixReconcileMs + 300_000);
+          if (r.deferred > 0 || r.unprobed || r.retry?.length) lastMatrixReconcileAt.set(entry.id, now - config.matrixReconcileMs + 300_000);
         } catch (e) {
           console.warn(`[worker] matrix ${entry.id} reconcile failed: ${String(e)}`);
         }
@@ -469,6 +477,29 @@ function onePass(source: GuardedSource, entry: VaultEntry, pass: () => Promise<n
   ingestInFlight.set(key, p);
   return p;
 }
+/** An upstream API (ClickUp / Fathom / Fireflies) did not answer within INGEST_UPSTREAM_TIMEOUT_MS. */
+export class UpstreamTimeoutError extends Error {
+  constructor(host: string, ms: number) {
+    super(`${host} did not answer within ${Math.round(ms / 1000)} s`);
+    this.name = "UpstreamTimeoutError";
+  }
+}
+/** `fetch` for those clients: every request bounded, so a stalled upstream fails the pass
+ *  (a recorded failure, the guard released) instead of holding it for ever. */
+const upstreamFetch: typeof fetch = async (input, init) => {
+  const ms = config.ingestUpstreamTimeoutMs;
+  if (!(ms > 0) || init?.signal) return fetch(input, init);
+  try {
+    return await fetch(input, { ...init, signal: AbortSignal.timeout(ms) });
+  } catch (e) {
+    if ((e as Error)?.name === "TimeoutError" || (e as Error)?.name === "AbortError") {
+      let host = "upstream";
+      try { host = new URL(String(input instanceof Request ? input.url : input)).host; } catch { /* keep */ }
+      throw new UpstreamTimeoutError(host, ms);
+    }
+    throw e;
+  }
+};
 /** The vault client of a ClickUp / Fathom / Fireflies pass: every call bounded (INGEST_VAULT_TIMEOUT_MS). */
 const boundedVault = (entry: VaultEntry) => vaultClient(entry.id, config.ingestVaultTimeoutMs > 0 ? { timeoutMs: config.ingestVaultTimeoutMs } : {});
 
@@ -499,7 +530,7 @@ async function runFathomPass(entry: VaultEntry, opts: { force?: boolean }): Prom
     setWorkerCursor(entry.id, "fathom-slot", String(slot)); // claim up front
   }
   const { apiKey } = JSON.parse(raw) as { apiKey: string };
-  const client = new FathomClient(apiKey);
+  const client = new FathomClient(apiKey, upstreamFetch);
   const res = await ingestFathom(client, boundedVault(entry) as unknown as IngestVault, {
     forward: forwardLinker(entry, "ingest:fathom", config.transcriptLinkPeople, config.ingestVaultTimeoutMs),
   });
@@ -532,7 +563,7 @@ async function runClickUpPass(entry: VaultEntry, opts: { force?: boolean }): Pro
     setWorkerCursor(entry.id, "clickup-slot", String(slot)); // claim up front
   }
   const credential = JSON.parse(raw) as ClickUpCredential;
-  const client = new ClickUpClient(credential.apiKey);
+  const client = new ClickUpClient(credential.apiKey, upstreamFetch);
   const cursor = getWorkerCursor(entry.id, "clickup");
   const sinceMs = cursor ? Number(cursor) - 120_000 : null;
   const res = await ingestClickUp(client, boundedVault(entry) as unknown as ClickUpVault, {
@@ -671,7 +702,7 @@ async function runFirefliesPass(entry: VaultEntry, opts: { force?: boolean }): P
     firefliesSkip.set(entry.id, skip);
   }
 
-  const client = new FirefliesClient(apiKey);
+  const client = new FirefliesClient(apiKey, upstreamFetch);
   let owner = firefliesOwnerEmail.get(entry.id);
   if (!owner) {
     try {
@@ -683,7 +714,23 @@ async function runFirefliesPass(entry: VaultEntry, opts: { force?: boolean }): P
   }
 
   const budget = makeFirefliesBudget(entry.id, config.firefliesDailyBudget);
-  const res = await ingestAndCleanupFireflies(client, boundedVault(entry) as unknown as FirefliesVault, {
+  const res = await runFirefliesLoop().catch((e: unknown) => {
+    // The slot was claimed so that Fireflies' API is touched once per scheduled hour. A pass
+    // that died on OUR side (the vault listing timed out, the vault was down) has not done
+    // its work: give the slot back so the next tick tries again — at most twice per slot,
+    // and never for a failure Fireflies itself answered or timed out on.
+    const ours = !(e instanceof FirefliesError) && !(e instanceof UpstreamTimeoutError);
+    const key = `${entry.id}:${slot}`;
+    const given = firefliesSlotReturns.get(key) ?? 0;
+    if (!opts.force && ours && given < 2 && getWorkerCursor(entry.id, "fireflies-slot") === slot) {
+      for (const k of firefliesSlotReturns.keys()) if (k.startsWith(`${entry.id}:`) && k !== key) firefliesSlotReturns.delete(k); // only the current slot matters
+      firefliesSlotReturns.set(key, given + 1);
+      setWorkerCursor(entry.id, "fireflies-slot", "");
+    }
+    throw e;
+  });
+  function runFirefliesLoop() {
+    return ingestAndCleanupFireflies(client, boundedVault(entry) as unknown as FirefliesVault, {
     budget,
     forward: forwardLinker(entry, "ingest:fireflies", config.transcriptLinkPeople, config.ingestVaultTimeoutMs),
     skipSet: skip,
@@ -707,6 +754,7 @@ async function runFirefliesPass(entry: VaultEntry, opts: { force?: boolean }): P
       else if (e.kind === "undeletable") console.warn(`${p} cannot delete ${e.id} "${e.title}" — ${e.reason}`);
     },
   });
+  }
   // ALWAYS log one line per run (<=4/day). A quiet run is the norm once the
   // backlog is drained — everything falls into the in-memory skip-set and no
   // counter moves — and a silently-quiet run is indistinguishable from a run

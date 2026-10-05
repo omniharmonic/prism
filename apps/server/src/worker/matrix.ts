@@ -1249,7 +1249,14 @@ async function appendToThread(
 }
 
 export interface ReconcileResult {
+  /** Rooms actually PROBED by this sweep (not the number joined — that is `rooms`). */
   scanned: number;
+  /** Joined rooms in all. */
+  rooms: number;
+  /** Rooms still owed after this sweep — a probe that threw, a repair that failed, ran out
+   *  of time or was over the per-sweep budget. Hand it back as `retry`: the next sweep
+   *  probes them FIRST, wherever the resume point is. */
+  retry?: string[];
   /** Joined rooms whose newest message is not in the vault. */
   behind: number;
   repaired: number;
@@ -1296,12 +1303,23 @@ export async function reconcileMatrix(
      *  reaches the end returns no `resumeAfter`, so the one after starts at the front
      *  — every room is probed once per cycle however many sweeps a cycle takes. */
     resumeAfter?: string | null;
+    /** The previous sweep's `retry`: rooms probed first, before the rotation continues. */
+    retry?: string[];
+    /** Share of `deadlineMs` that probing may use (default 0.6); the rest is kept for repairs. */
+    probeShare?: number;
     now?: () => number;
   },
 ): Promise<ReconcileResult> {
   const clock = opts.now ?? Date.now;
-  const deadlineAt = opts.deadlineMs && opts.deadlineMs > 0 ? clock() + opts.deadlineMs : Infinity;
+  const startedAt = clock();
+  const bounded = !!opts.deadlineMs && opts.deadlineMs > 0;
+  const deadlineAt = bounded ? startedAt + opts.deadlineMs! : Infinity;
+  // Probing gets only PART of the budget: what a sweep finds behind must still be
+  // repaired in that sweep (probing to the very deadline left every finding unrepaired
+  // while the resume point moved past it).
+  const probeUntil = bounded ? startedAt + opts.deadlineMs! * Math.min(1, Math.max(0.05, opts.probeShare ?? 0.6)) : Infinity;
   const expired = () => clock() >= deadlineAt;
+  const probeExpired = () => clock() >= probeUntil;
   let unprobed = 0;
   const joined = await client.joinedRooms();
   // Lean: rows only. A body is read by `loadThread`, for a note about to be written.
@@ -1314,20 +1332,35 @@ export async function reconcileMatrix(
   // Sorted, so "after room X" means the same thing in every sweep whatever order
   // the homeserver lists rooms in, and whatever was joined or left in between.
   const order = [...joined].sort();
+  const isJoined = new Set(order);
   const after = opts.resumeAfter ?? null;
   const from = after === null ? 0 : Math.max(0, order.findIndex((id) => id > after));
-  const queue = order.slice(from);
+  // Rooms an earlier sweep left unsettled (probe threw, repair failed / ran out of time /
+  // was over the per-sweep budget) come FIRST, whatever their place in the rotation: the
+  // resume point has already moved past them, and it must not have to come round again.
+  const retryFirst = [...new Set(opts.retry ?? [])].filter((id) => isJoined.has(id));
+  const again = new Set(retryFirst);
+  const queue: Array<{ id: string; rotation: boolean }> = [
+    ...retryFirst.map((id) => ({ id, rotation: false })),
+    ...order.slice(from).filter((id) => !again.has(id)).map((id) => ({ id, rotation: true })),
+  ];
+  /** Still owed after this sweep → probed first by the next one. */
+  const unsettled = new Set<string>();
   let lastProbed: string | null = after;
   let cut = false;
+  let probed = 0;
   const worker = async () => {
-    for (let id = queue.shift(); id; id = queue.shift()) {
-      if (expired()) {
-        unprobed += queue.length + 1;
-        queue.length = 0;
-        cut = true;
+    for (let next = queue.shift(); next; next = queue.shift()) {
+      if (probeExpired()) {
+        const left = [next, ...queue.splice(0)];
+        unprobed += left.length;
+        for (const l of left) if (!l.rotation) unsettled.add(l.id);
+        cut = left.some((l) => l.rotation) || cut;
         return;
       }
-      lastProbed = id;
+      const id = next.id;
+      if (next.rotation) lastProbed = id;
+      probed++;
       try {
         const { messages } = await client.messagesBefore(id, { from: opts.upTo, cap: 1 });
         const latest = messages[0]?.ts;
@@ -1336,6 +1369,7 @@ export async function reconcileMatrix(
         const cutoff = note ? lastMessageAtOf(note) : -1;
         if (latest > cutoff) behind.push({ roomId: id, latest, cutoff: Math.max(cutoff, 0) });
       } catch (e) {
+        unsettled.add(id); // not known to be in step: asked again first thing next sweep
         console.warn(`[worker] matrix reconcile: probe ${id} failed: ${String(e)}`);
       }
     }
@@ -1347,10 +1381,12 @@ export async function reconcileMatrix(
   let repaired = 0;
   let messages = 0;
   const todo = behind.slice(0, budget);
+  for (const over of behind.slice(budget)) unsettled.add(over.roomId); // over this sweep's repair budget
   for (let i = 0; i < todo.length; i++) {
     const b = todo[i]!;
     if (expired()) {
       unprobed += todo.length - i;
+      for (const rest of todo.slice(i)) unsettled.add(rest.roomId);
       break;
     }
     try {
@@ -1378,16 +1414,23 @@ export async function reconcileMatrix(
         messages += gap.messages.length;
       }
     } catch (e) {
+      unsettled.add(b.roomId);
       console.warn(`[worker] matrix reconcile: repair ${b.roomId} failed: ${String(e)}`);
     }
   }
+  const retry = [...unsettled].sort();
+  if (retry.length > RECONCILE_RETRY_CAP) console.warn(`[worker] matrix reconcile: ${retry.length} rooms owed — only ${RECONCILE_RETRY_CAP} are kept for the next sweep, the rest wait for the rotation`);
   return {
-    scanned: joined.length,
+    scanned: probed,
+    rooms: joined.length,
     behind: behind.length,
     repaired,
     messages,
     deferred: Math.max(0, behind.length - budget),
     ...(unprobed > 0 ? { unprobed } : {}),
     ...(cut && lastProbed !== null ? { resumeAfter: lastProbed } : {}),
+    ...(retry.length ? { retry: retry.slice(0, RECONCILE_RETRY_CAP) } : {}),
   };
 }
+/** Most rooms a sweep hands on as "probe these first next time". */
+const RECONCILE_RETRY_CAP = 2000;
