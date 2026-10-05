@@ -8,7 +8,7 @@ import { createRoot } from "react-dom/client";
 import { InvalidationSourceProvider } from "../../../packages/core/src/data/InvalidationContext";
 import type { InvalidationHandlers, InvalidationSource } from "../../../packages/core/src/lib/events/invalidation";
 import { App, AccountProvider, AgentClientProvider, CollabDocumentProvider, CollabSharingProvider, PlatformProvider, VaultClientProvider, useAgentChatStore, useUIStore, type AgentClient, type AgentSessionSummary, type Note } from "@prism/core";
-import { filtersToParams, matchesFilters, parseSearchFilters, queryTerms, searchMatches } from "@prism/core/search";
+import { filtersToParams, matchesFilters, parseSearchFilters, queryTerms, searchMatches, sortSearchRows } from "@prism/core/search";
 import { inferContentType } from "../../../packages/core/src/lib/schemas/content-types";
 import { httpVaultClient } from "../src/parachute/HttpVaultClient";
 import { agentScope, fetchMe, setActiveVault } from "../src/config";
@@ -32,6 +32,12 @@ const notes: Note[] = [
 ];
 // ?authors (NP-SR-04): the agenda was created by someone else and last edited by the owner.
 if (params.has("authors")) notes.find((n) => n.id === "agenda")!.metadata = { ...notes.find((n) => n.id === "agenda")!.metadata, prism_last_writer: "u_00000000000000aa" };
+// ?headings (copy link to heading, expand/collapse all toggles): the agenda is a long page whose
+// "Next steps" heading appears twice, with three toggles (one nested).
+if (params.has("headings")) {
+  const filler = Array.from({ length: 30 }, (_, i) => `<p>Line ${i + 1} of the agenda.</p>`).join("");
+  notes.find((n) => n.id === "agenda")!.content = `<h2>Plan</h2>${filler}<h2>Next steps</h2>${filler}<h3>Next steps</h3><p>The second one.</p><details data-type="toggle"><summary>First toggle</summary><p>Inside the first toggle.</p><details data-type="toggle"><summary>Nested toggle</summary><p>Inside the nested toggle.</p></details></details><details data-type="toggle"><summary>Second toggle</summary><p>Inside the second toggle.</p></details>${filler}`;
+}
 // ?dbrows (NP-OF-05): the tracker is a configured database over two task pages.
 if (params.has("dbrows")) {
   notes.find((n) => n.id === "tracker")!.metadata = { prism_type: "database", prism_creator: "owner@example.test", prism_database: { version: 1, source: { tags: ["task"] }, views: [{ id: "v-table", name: "All tasks", type: "table", visible: ["status"] }] } };
@@ -160,7 +166,8 @@ window.fetch = async (input, init) => {
     const hits = notes.filter((n) => terms.every((t) => (n.path + " " + n.content).toLowerCase().includes(t)))
       .filter((n) => matchesFilters(n, f, terms, (x) => inferContentType(x as Note)))
       .map((n) => ({ ...n, content: undefined, _matches: searchMatches(n, terms) }));
-    return Response.json(hits);
+    // An older server (?oldserver) knows no `sort=` and answers in its own order.
+    return Response.json(params.has("oldserver") ? hits : sortSearchRows(hits, f.sort));
   }
   if (path === "/api/search/semantic") return Response.json({ error: "semantic_index_primary_only" }, { status: 409 });
   if (path === "/api/notes" && method === "GET") return Response.json(notes
@@ -282,6 +289,8 @@ function viewerNote(note: Note): Note {
 /** A stand-in for the web shell's live editor: proves WHICH editor Canvas routes to. */
 const liveStub = { useLiveCollab: (id: string) => !!id, CollabDocument: ({ noteId }: { noteId: string }) => <div data-testid="live-collab-doc" data-note={noteId}>Live collaborative document</div> };
 const Live = ({ children }: { children: React.ReactNode }) => params.has("as") ? <CollabDocumentProvider value={liveStub}>{children}</CollabDocumentProvider> : <>{children}</>;
+// `?open=<id>`: boot into that page, as main.tsx does for `/page/<id>` (the hash stays in the address).
+const openAt = { id: notes.find((n) => n.id === params.get("open"))?.id ?? "workspace", title: params.has("open") ? "Page" : "A living workspace", type: "document" };
 await fetchMe();
 startOutboxSync();
 // `?persisted` leaves the sidebar as the app restored it from this device (NP-SB-11).
@@ -292,7 +301,7 @@ createRoot(document.getElementById("root")!).render(
       getActiveVault: () => "primary",
       setActiveVault: (id: string) => { (controls as unknown as { switchedVault?: string }).switchedVault = id; },
     } : {}), createShareLink: async () => "", getAccess: async () => ({ note: { id: "workspace", title: "A living workspace", tags: [], visibility: "private" }, people: [], links: [], tagAccess: [], canManageLinks: true, allowedLevels: ["view", "comment", "suggest", "edit"] }) }}>
-    <AccountProvider value={params.has("account") ? webAccount : null}><AgentClientProvider client={agentClient}><Live><InvalidationSourceProvider source={params.has("events") ? eventSource : null}><App skipOnboarding initialTab={{ id: "workspace", title: "A living workspace", type: "document" }} /></InvalidationSourceProvider></Live></AgentClientProvider></AccountProvider>
+    <AccountProvider value={params.has("account") ? webAccount : null}><AgentClientProvider client={agentClient}><Live><InvalidationSourceProvider source={params.has("events") ? eventSource : null}><App skipOnboarding initialTab={openAt} /></InvalidationSourceProvider></Live></AgentClientProvider></AccountProvider>
     <OfflineIndicator />
   </CollabSharingProvider></VaultClientProvider></PlatformProvider></React.StrictMode>,
 );
