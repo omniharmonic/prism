@@ -516,6 +516,77 @@ export function CommandBar() {
   useEffect(() => {
     if (commandBarOpen) document.getElementById(`prism-command-${selectedIndex}`)?.scrollIntoView({ block: "nearest", inline: "nearest" });
   }, [commandBarOpen, selectedIndex, totalItems]);
+  // A mouse press on a row acts on THAT item when the button comes up, wherever the row is by
+  // then. Results that land between down and up push rows down the list: the button then comes
+  // up over another row and the browser produces no click (it needs both on one element), so
+  // the press used to be lost. The pressed item is remembered by id; it runs if the pointer
+  // comes up on its row, or anywhere in the dialog once its row has moved (or left the screen)
+  // since the press — rows are also pushed by what loads ABOVE the list. A deliberate drag off
+  // the row while nothing moved cancels, and the row the pointer ended on is never opened.
+  // Touch and keyboard keep the ordinary click.
+  // "Moved" is judged in the LIST's own coordinates: the row's offset inside the scroller's content
+  // (scrolling the list — a wheel, or `scrollIntoView` when the pointer selects a clipped row — is not
+  // the row moving) plus where the scroller itself sits (the filter bar appearing above it is).
+  const pressRef = useRef<{ id: string; at: { offset: number; list: number } | null } | null>(null);
+  const itemsRef = useRef(items);
+  itemsRef.current = items;
+  const rowOf = (id: string) => document.querySelector<HTMLElement>(`#prism-command-results [data-command-item="${CSS.escape(id)}"]`);
+  const placeOf = (id: string): { offset: number; list: number } | null => {
+    const row = rowOf(id);
+    const list = document.getElementById("prism-command-results");
+    if (!row || !list) return null;
+    const top = list.getBoundingClientRect().top;
+    return { offset: row.getBoundingClientRect().top - top + list.scrollTop, list: top };
+  };
+  const pressRow = (id: string, e: React.PointerEvent) => {
+    if (e.pointerType === "touch" || e.button !== 0) { pressRef.current = null; return; }
+    pressRef.current = { id, at: placeOf(id) };
+  };
+  /** The row's click: everything except the mouse press handled above (touch, assistive tech, script). */
+  const clickRow = (id: string) => {
+    if (pressRef.current) { pressRef.current = null; return; }
+    itemsRef.current.find((item) => item.id === id)?.action();
+  };
+  useEffect(() => {
+    if (!commandBarOpen) { pressRef.current = null; return; }
+    const release = (e: PointerEvent) => {
+      const press = pressRef.current;
+      if (!press) return;
+      // The click that may follow this release belongs to the press: let `clickRow` drop it, then forget.
+      window.setTimeout(() => { if (pressRef.current === press) pressRef.current = null; }, 0);
+      if (e.type === "pointercancel" || e.button !== 0) return;
+      const item = itemsRef.current.find((candidate) => candidate.id === press.id);
+      if (!item) return;
+      const target = e.target instanceof Element ? e.target : null;
+      if (!target || !dialogRef.current?.contains(target)) return;
+      const row = rowOf(press.id);
+      const onRow = !!row && row.contains(target);
+      const now = placeOf(press.id);
+      const moved = !now || !press.at || Math.abs(now.offset - press.at.offset) > 1 || Math.abs(now.list - press.at.list) > 1;
+      if (onRow || moved) item.action();
+    };
+    // A press whose release never reached us (the button came up outside the window, a context menu
+    // took it) must not wait for the next release: any new press that is not on a row, a context
+    // menu, and the window going away all forget it. (Window capture runs before the row's own
+    // `pointerdown`, which then records the new press.)
+    const forget = () => { pressRef.current = null; };
+    const pressElsewhere = (e: PointerEvent) => { if (!(e.target instanceof Element && e.target.closest("[data-command-item]"))) forget(); };
+    const hidden = () => { if (document.visibilityState !== "visible") forget(); };
+    window.addEventListener("pointerup", release, true);
+    window.addEventListener("pointercancel", release, true);
+    window.addEventListener("pointerdown", pressElsewhere, true);
+    window.addEventListener("contextmenu", forget, true);
+    window.addEventListener("blur", forget);
+    document.addEventListener("visibilitychange", hidden);
+    return () => {
+      window.removeEventListener("pointerup", release, true);
+      window.removeEventListener("pointercancel", release, true);
+      window.removeEventListener("pointerdown", pressElsewhere, true);
+      window.removeEventListener("contextmenu", forget, true);
+      window.removeEventListener("blur", forget);
+      document.removeEventListener("visibilitychange", hidden);
+    };
+  }, [commandBarOpen]);
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); closeCommandBar(); return; }
     if (e.key === "ArrowDown" || e.key === "ArrowUp") {
@@ -525,6 +596,8 @@ export function CommandBar() {
     }
     if (e.key === "Enter") {
       e.preventDefault();
+      // The keyboard decided: a mouse press still waiting for its release is dropped (it would run a second item).
+      pressRef.current = null;
       // ⌘↵ / Ctrl+↵ on a page: open it in a new tab and stay on this one (NP-SR-01).
       const note = (e.metaKey || e.ctrlKey) ? orderedNotes.find((item) => item.id === items[selectedIndex]?.id) : undefined;
       if (note?.sameVault) { rememberSearch(searchScope, debouncedQuery); closeCommandBar(); openInNewTab(note.noteId, note.label, note.type); return; }
@@ -565,21 +638,21 @@ export function CommandBar() {
   </div>;
   const renderNotes = (notes: typeof vaultItems, label: string) => notes.length > 0 && <div role="group" aria-label={label}>
     <div className="prism-search-group">{label}</div>
-    {notes.map(item => { const index = items.findIndex(candidate => candidate.id === item.id); return <CmdRow key={item.id} id={`prism-command-${index}`} selected={selectedIndex === index} onClick={item.action} onHover={() => setSelectedId(item.id)}
+    {notes.map(item => { const index = items.findIndex(candidate => candidate.id === item.id); return <CmdRow key={item.id} id={`prism-command-${index}`} itemId={item.id} selected={selectedIndex === index} onPress={pressRow} onClick={clickRow} onHover={() => setSelectedId(item.id)}
       icon={item.icon ? <span>{item.icon}</span> : item.group === "messages" ? <MessageSquare size={18} /> : <PageIcon noteId={item.noteId} fallback={<FileText size={18} />} />}
       label={item.label} labelRanges={item.labelRanges} sublabel={item.edited ? `${item.sublabel} · ${item.edited}` : item.sublabel} preview={item.preview} previewRanges={item.previewRanges} trailing={<span className="prism-search-open">Open <ArrowRight size={13} /></span>} />; })}
   </div>;
   const body = <>
     {recentQueryItems.length > 0 && <div role="group" aria-label="Recent searches"><div className="prism-search-group">Recent searches</div>{recentQueryItems.map(item => {
       const index = items.findIndex(candidate => candidate.id === item.id);
-      return <CmdRow key={item.id} id={`prism-command-${index}`} selected={selectedIndex === index} onClick={item.action} onHover={() => setSelectedId(item.id)} icon={<Search size={16} />} label={item.query} />;
+      return <CmdRow key={item.id} id={`prism-command-${index}`} itemId={item.id} selected={selectedIndex === index} onPress={pressRow} onClick={clickRow} onHover={() => setSelectedId(item.id)} icon={<Search size={16} />} label={item.query} />;
     })}</div>}
     {recentItems.length > 0 ? renderNotes(noteItems, "Recent pages") : renderNotes(noteItems, "Notes")}{renderNotes(messageItems, "Messages")}
     {filteredCommands.length > 0 && <div role="group" aria-label="Commands"><div className="prism-search-group">Commands</div>{filteredCommands.map(cmd => {
       const index = items.findIndex(item => item.id === cmd.id);
-      return <CmdRow key={cmd.id} id={`prism-command-${index}`} selected={selectedIndex === index} onClick={cmd.action} onHover={() => setSelectedId(cmd.id)} icon={cmd.icon} label={cmd.label} keys={cmd.keys} />;
+      return <CmdRow key={cmd.id} id={`prism-command-${index}`} itemId={cmd.id} selected={selectedIndex === index} onPress={pressRow} onClick={clickRow} onHover={() => setSelectedId(cmd.id)} icon={cmd.icon} label={cmd.label} keys={cmd.keys} />;
     })}</div>}
-    {showAsk && <CmdRow id={`prism-command-${items.length - 1}`} selected={selectedIndex === items.length - 1} onClick={askClaude} onHover={() => setSelectedId("ask-agent")} icon={<Bot size={18} />} label={`Ask your agent: "${query}"`} accent trailing={<ArrowRight size={13} />} />}
+    {showAsk && <CmdRow key="ask-agent" id={`prism-command-${items.length - 1}`} itemId="ask-agent" selected={selectedIndex === items.length - 1} onPress={pressRow} onClick={clickRow} onHover={() => setSelectedId("ask-agent")} icon={<Bot size={18} />} label={`Ask your agent: "${query}"`} accent trailing={<ArrowRight size={13} />} />}
   </>;
   const selectedNote = orderedNotes.find(item => item.id === (selectedId ?? defaultId));
   // Selected page actions: star it without opening it (NP-SB-04), hand it to the agent.
@@ -649,7 +722,9 @@ export function CommandBar() {
 /** A single command-palette row: quiet at rest, surface-fill when selected. */
 function CmdRow({
   id,
+  itemId,
   selected,
+  onPress,
   onClick,
   onHover,
   icon,
@@ -663,8 +738,11 @@ function CmdRow({
   keys,
 }: {
   id: string;
+  /** The item's identity (stable while the list changes; `id` is its position). */
+  itemId: string;
   selected: boolean;
-  onClick?: () => void;
+  onPress: (itemId: string, e: React.PointerEvent) => void;
+  onClick: (itemId: string) => void;
   onHover: () => void;
   icon: React.ReactNode;
   label: string;
@@ -684,8 +762,10 @@ function CmdRow({
       id={id}
       aria-selected={selected}
       aria-keyshortcuts={keys ? ariaKeys(...keys) : undefined}
+      data-command-item={itemId}
       tabIndex={-1}
-      onClick={onClick}
+      onPointerDown={(e) => onPress(itemId, e)}
+      onClick={() => onClick(itemId)}
       onMouseEnter={onHover}
       className="prism-search-result interactive focus-ring flex w-full items-center gap-3"
       style={{

@@ -9,10 +9,12 @@
  */
 import { marked } from "marked";
 import TurndownService from "turndown";
+import { addTaskListRule } from "@prism/core/task-lists";
 import type { NoteFilters, CreateNoteParams, UpdateNoteParams } from "@prism/core/shell";
 import * as rest from "../parachute/rest";
 
-const turndown = new TurndownService({ headingStyle: "atx", codeBlockStyle: "fenced" });
+// To-do items are written `- [x]` / `- [ ]` (the shared list-item rule; `convertApi.markdownToHtml` reads them back).
+const turndown = addTaskListRule(new TurndownService({ headingStyle: "atx", codeBlockStyle: "fenced" }));
 
 type Args = Record<string, unknown>;
 
