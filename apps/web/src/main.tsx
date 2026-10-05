@@ -29,7 +29,7 @@ import { UpdatePrompt } from "./offline/UpdatePrompt";
 import { webPush } from "./push/webPush";
 import { initAgentDeepLink } from "./push/deeplink";
 import { initNativeExtras } from "./native/extras";
-import { initAppLinks } from "./native/appLinks";
+import { captureAppLinks, initAppLinks } from "./native/appLinks";
 import { installExternalImageProxy } from "./native/externalImages";
 import { installChunkReloadRecovery } from "./chunkReload";
 
@@ -58,6 +58,9 @@ export async function start() {
   // Capture a ?t= capability token early so every route (incl. /collab) can use
   // it — a share/collab link is the recipient's only credential.
   const capability = initCapability();
+  // Native shell: take incoming links from BEFORE the sign-in gate, so one that arrives with a
+  // missing or stale token survives the sign-in reload (opened by initAppLinks below).
+  if (!capability) captureAppLinks();
 
   // Accept-invite route: create an account from an owner-issued invite link.
   if (window.location.pathname === "/accept-invite") {

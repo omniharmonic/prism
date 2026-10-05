@@ -87,6 +87,52 @@ test("native link: one delivered before the app mounted is opened once the works
   expect(new URL(page.url()).pathname).toBe("/");
 });
 
+test("native link: one that arrives at the sign-in screen (no session, or a token the server rejects) opens after sign-in", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await installHostHook(page);
+  await connect(page, page.context(), server, "owner");
+  await page.context().clearCookies(); // the server answers /auth/me with "not signed in"
+  const me = page.waitForResponse((r) => new URL(r.url()).pathname === "/auth/me");
+  await page.goto("/e2e-fixtures/collab-route.html?app");
+  await me;
+  await expect(page.locator(".workspace-navigation")).toHaveCount(0);
+
+  // The shell hands the link over (it only knows that A token exists): nothing opens, nothing navigates…
+  await deliver(page, "/page/plan");
+  await expect.poll(() => page.evaluate(() => sessionStorage.getItem("prism:pending-link"))).toContain('"/page/plan"');
+  await expect(page.locator(".workspace-navigation")).toHaveCount(0);
+  // …and what is kept is the validated path only.
+  const kept = JSON.parse((await page.evaluate(() => sessionStorage.getItem("prism:pending-link")))!);
+  expect(Object.keys(kept).sort()).toEqual(["at", "path"]);
+  // A refused value is never kept, signed out or not.
+  await deliver(page, "/auth/logout");
+  expect(JSON.parse((await page.evaluate(() => sessionStorage.getItem("prism:pending-link")))!).path).toBe("/page/plan");
+
+  // Sign-in completes and the shell reloads the page (host.js signIn): the hook's own copy is gone.
+  await page.context().addCookies([{ name: "prism_session", value: server.sessions.owner, domain: "127.0.0.1", path: "/" }]);
+  await page.goto("/e2e-fixtures/collab-route.html?app");
+  await expect(page.locator("#workspace-document .tiptap").first()).toContainText("Alpha beta gamma");
+  await expect(tabs(page).getByRole("button", { name: "Open Plan", exact: true })).toBeVisible();
+  // Opened once: nothing is left to replay on the next reload.
+  expect(await page.evaluate(() => sessionStorage.getItem("prism:pending-link"))).toBeNull();
+});
+
+test("native link: a link kept for sign-in expires", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await installHostHook(page);
+  await page.addInitScript(() => {
+    if (window.top !== window || sessionStorage.getItem("seeded")) return;
+    sessionStorage.setItem("seeded", "1");
+    sessionStorage.setItem("prism:pending-link", JSON.stringify({ path: "/page/plan", at: Date.now() - 11 * 60_000 }));
+  });
+  await connect(page, page.context(), server, "owner");
+  await page.goto("/e2e-fixtures/collab-route.html?app");
+  await expect(page.locator(".workspace-navigation").first()).toBeVisible();
+  await expect.poll(() => page.evaluate(() => sessionStorage.getItem("prism:pending-link"))).toBeNull();
+  await page.waitForTimeout(300);
+  await expect(tabs(page).getByRole("button", { name: "Open Plan", exact: true })).toHaveCount(0);
+});
+
 test("native link respects access: a page that was not shared says nothing about itself", async ({ browser }) => {
   for (const [who, id] of [["gina", "secret"], ["sam", "secret"], ["gina", "no-such-page"]] as const) {
     const context = await browser.newContext();

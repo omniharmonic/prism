@@ -9,9 +9,10 @@
 // a TAB, opened through the app's own data layer, so access is whatever the
 // signed-in account has (a page it cannot view shows "Document unavailable").
 //
-// The shell delivers only while someone is signed in and only to a loaded page;
-// this module is started only for a signed-in workspace (main.tsx), so a link
-// that arrives at the sign-in screen stays with the shell until after sign-in.
+// The shell delivers to a loaded page once a device token EXISTS — it cannot know
+// the server still accepts it. So the page takes links from before the sign-in
+// gate (`captureAppLinks`) and keeps one across the sign-in reload; it OPENS them
+// only once the signed-in workspace is up (`initAppLinks`).
 //
 // The same allowlist lives in three places — keep them in step:
 //   apps/server/src/routes/app-links.ts   (what the OS may hand to the app)
@@ -69,19 +70,72 @@ const shell = (): LinkShell | undefined => (window as unknown as { __PRISM_SHELL
 /** Does a host shell provide the link bridge? (Only the Prism Client does.) */
 export const hasAppLinkBridge = (): boolean => typeof shell()?.takePendingLink === "function";
 
-let started = false;
+// A link taken while nobody is signed in (no token, or a token the server no longer
+// accepts — the shell cannot tell a stale token from a good one) waits HERE, in
+// sessionStorage, across the sign-in reload: host.js keeps its copy in memory only.
+// What is stored is the validated client path (never a URL, never a token), for at
+// most STASH_TTL_MS; it is removed the moment it is opened.
+const STASH_KEY = "prism:pending-link";
+const STASH_TTL_MS = 10 * 60_000;
+
+function stash(path: string): void {
+  try {
+    sessionStorage.setItem(STASH_KEY, JSON.stringify({ path, at: Date.now() }));
+  } catch {
+    /* no storage: the link is lost, safely */
+  }
+}
+function unstash(): string | null {
+  try {
+    const raw = sessionStorage.getItem(STASH_KEY);
+    if (raw === null) return null;
+    sessionStorage.removeItem(STASH_KEY);
+    const v = JSON.parse(raw) as { path?: unknown; at?: unknown };
+    if (typeof v.path !== "string" || typeof v.at !== "number") return null;
+    const age = Date.now() - v.at;
+    return age >= 0 && age <= STASH_TTL_MS && appLinkTarget(v.path) ? v.path : null;
+  } catch {
+    return null;
+  }
+}
+
+let capturing = false;
+let ready = false;
+
+function take(): void {
+  const path = shell()?.takePendingLink?.();
+  if (path == null) return;
+  if (!appLinkTarget(path)) {
+    shell()?.toast?.("This link can’t be opened in Prism.");
+    return;
+  }
+  if (ready) openAppLink(path);
+  else stash(path); // newest wins
+}
+
 /**
- * Take links from the shell: the one already waiting (cold start, or delivered
- * while the app was still booting) and every later one. Idempotent.
+ * Start taking links from the shell. Call BEFORE the sign-in gate: a link that
+ * arrives (or is already waiting) while the sign-in screen is up is kept for
+ * after sign-in instead of dying with the reload. Opens nothing by itself.
+ * Idempotent; a no-op without a host shell.
+ */
+export function captureAppLinks(): void {
+  if (capturing || !hasAppLinkBridge()) return;
+  capturing = true;
+  window.addEventListener("prism:open-link", take);
+  take();
+}
+
+/**
+ * The signed-in workspace is up: open the link that was waiting (from before
+ * sign-in, or delivered while the app was booting) and every later one at once.
  */
 export function initAppLinks(): void {
-  if (started || !hasAppLinkBridge()) return;
-  started = true;
-  const take = () => {
-    const path = shell()?.takePendingLink?.();
-    if (path == null) return;
-    if (!openAppLink(path)) shell()?.toast?.("This link can’t be opened in Prism.");
-  };
-  window.addEventListener("prism:open-link", take);
+  if (!hasAppLinkBridge()) return;
+  ready = true;
+  captureAppLinks();
+  // The one kept from before sign-in first, then anything newer the shell holds (it ends up in front).
+  const waiting = unstash();
+  if (waiting) openAppLink(waiting);
   take();
 }
