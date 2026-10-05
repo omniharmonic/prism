@@ -31,6 +31,7 @@ import { vaultClient } from "./parachute";
 import { setPageAnchorResolver, type NoteRef } from "./permissions";
 import { getVaultRegistry } from "./db";
 import { TRASH_TAG, TRASH_META, ORDER_KEY, LOCK_KEY } from "@prism/core/pages";
+import { pageIconOf } from "@prism/core/page-icon";
 
 /** Metadata keys the projection reads — the ONLY ones requested from the vault. */
 export const TREE_META_KEYS = [
@@ -38,7 +39,7 @@ export const TREE_META_KEYS = [
   "prism_type",
   "prism_creator",
   "prism_visibility",
-  // The page's emoji (NP-PG-01): shown in the sidebar, tabs, breadcrumbs, favorites.
+  // The page's icon (NP-PG-01): shown in the sidebar, tabs, breadcrumbs, favorites.
   "icon",
   // What `[[` / `@` suggestions match besides the path name (a page is often known by
   // a title or an alias that differs from its file name).
@@ -65,7 +66,8 @@ export interface TreeEntry {
   prismType?: string;
   /** `metadata.prism_order`: the page's fractional sibling order, when set. */
   order?: number;
-  /** `metadata.icon`: the page's emoji (a short string; anything longer is not an icon and is dropped). */
+  /** `metadata.icon` when it is an icon (`@prism/core/page-icon`): an emoji (≤ 32 chars), the page's own
+   *  attachment path, or a built-in `icon:<name>:<color>` token. Anything else is dropped. */
   icon?: string;
   /** `metadata.title` (≤ 200 chars, else dropped; control/bidi characters stripped; omitted when it
    *  equals the file name): what page suggestions match besides the path name. */
@@ -192,7 +194,6 @@ const log = (msg: string) => {
 // ── row construction ────────────────────────────────────────────────────────
 
 /** An emoji (incl. ZWJ sequences) is well under this; a longer value is not sent to every tree reader. */
-const ICON_MAX = 32;
 /** Bounds for the two matching fields: the tree goes to every reader, so neither may grow without limit. */
 const TITLE_MAX = 200;
 const ALIAS_MAX = 100;
@@ -251,7 +252,11 @@ function rowFromNote(n: unknown): TreeRow | null {
   if (typeof m.prism_type === "string") row.prismType = m.prism_type;
   const order = m[ORDER_KEY];
   if (typeof order === "number" && Number.isFinite(order)) row.order = order;
-  if (typeof m.icon === "string" && m.icon !== "" && m.icon.length <= ICON_MAX) row.icon = m.icon;
+  // An emoji, the page's own uploaded image (`/api/attachments/a_<22>`, exact shape) or an
+  // allowlisted `icon:<name>:<color>` token — anything else is not an icon and is dropped:
+  // the value becomes an <img src> / a glyph on every surface that lists the page.
+  const icon = pageIconOf(m.icon);
+  if (icon) row.icon = icon;
   if (typeof m.title === "string" && m.title.length <= TITLE_MAX) {
     const title = cleanText(m.title);
     // A title that only repeats the file name tells a reader nothing new: not carried (tree size).

@@ -29,6 +29,7 @@ import { BlockHandles } from "./BlockHandles";
 import { TableControls } from "./TableControls";
 import { ImageUpload, type ImageUploader, type FileUploader } from "../../lib/tiptap/ImageUpload";
 import "../../lib/tiptap/mediaViews";
+import { setToggleMemoryScope } from "../../lib/tiptap/toggleMemory";
 import { SearchHighlight } from "../../lib/tiptap/SearchHighlight";
 import { UrlPaste, type UrlPasteState, type Unfurler } from "../../lib/tiptap/UrlPaste";
 import { EditorFindBar } from "./EditorFindBar";
@@ -189,6 +190,8 @@ export function CollabEditor({
   useEffect(() => { hostPathRef.current = hostPath; }, [hostPath]);
   // Sub-pages (NP-PG-15): where the host gave this page's path AND a vault client exists.
   const vaultClient = useOptionalVaultClient();
+  // Toggle open state is remembered per device for this account + vault (NP-ED-08).
+  if (vaultClient?.scope) setToggleMemoryScope(vaultClient.scope());
   const queryClient = useContext(QueryClientContext) ?? null;
   const subPagesRef = useRef({ client: vaultClient, queryClient });
   subPagesRef.current = { client: vaultClient, queryClient };

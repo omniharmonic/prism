@@ -167,6 +167,23 @@ export const ToggleSummary = Node.create({
   },
 });
 
+/**
+ * Per-device memory of which toggles the reader closed (NP-ED-08). Browser-only:
+ * `lib/tiptap/toggleMemory.ts` installs it at import; on the server (and in any
+ * shell that never imports it) a toggle simply starts open, as before.
+ */
+export interface ToggleMemoryHooks {
+  attach(
+    editor: import("@tiptap/core").Editor,
+    getPos: () => number | undefined,
+    api: { isOpen(): boolean; setOpen(open: boolean): void },
+  ): { /** The reader opened / closed this toggle. */ toggled(): void; /** Its summary text changed. */ changed(): void; destroy(): void };
+}
+let TOGGLE_MEMORY: ToggleMemoryHooks | null = null;
+export function registerToggleMemory(hooks: ToggleMemoryHooks | null): void {
+  TOGGLE_MEMORY = hooks;
+}
+
 /** A collapsible block: a summary line plus nested blocks. */
 export const Toggle = Node.create({
   name: "toggle",
@@ -196,7 +213,7 @@ export const Toggle = Node.create({
     return ["details", mergeAttributes(HTMLAttributes, { "data-type": "toggle" }), 0];
   },
   addNodeView() {
-    return ({ node }) => {
+    return ({ node, editor, getPos }) => {
       let current = node;
       let open = true;
       // Not `editor.view.dom.ownerDocument`: while the INITIAL document's views are built the
@@ -222,13 +239,23 @@ export const Toggle = Node.create({
         if (current.attrs.level) dom.setAttribute("data-heading-level", String(current.attrs.level));
         else dom.removeAttribute("data-heading-level");
       };
+      // Remembered per device, never in the document: no transaction, no attribute on `body`
+      // (the contentDOM). The memory closes this toggle again in a microtask — it must not
+      // look at the editor's view or state while the initial document's views are being built.
+      const memory = TOGGLE_MEMORY?.attach(editor, getPos as () => number | undefined, {
+        isOpen: () => open,
+        setOpen: (next) => { if (next !== open) { open = next; paint(); } },
+      });
+      const flip = () => { open = !open; paint(); memory?.toggled(); };
       // ⌘↵ (EditorKeys) flips the toggle that holds the caret through this event.
-      dom.addEventListener("prism:toggle-open", () => { open = !open; paint(); });
+      dom.addEventListener("prism:toggle-open", flip);
+      // Find, a comment / mention anchor, the outline: show what is inside (`toggleReveal.ts`).
+      // Not remembered — the reader did not open it, they went to something in it.
+      dom.addEventListener("prism:toggle-reveal", () => { if (!open) { open = true; paint(); } });
       arrow.addEventListener("mousedown", (event: DomNode) => event.preventDefault());
       arrow.addEventListener("click", (event: DomNode) => {
         event.preventDefault();
-        open = !open;
-        paint();
+        flip();
       });
       paint();
       return {
@@ -236,9 +263,14 @@ export const Toggle = Node.create({
         contentDOM: body,
         update(next) {
           if (next.type !== current.type) return false;
+          const renamed = next.firstChild?.textContent !== current.firstChild?.textContent;
           current = next;
           paint();
+          if (renamed) memory?.changed();
           return true;
+        },
+        destroy() {
+          memory?.destroy();
         },
         ignoreMutation(mutation) {
           return mutation.type === "attributes" && (mutation.target === dom || mutation.target === arrow);

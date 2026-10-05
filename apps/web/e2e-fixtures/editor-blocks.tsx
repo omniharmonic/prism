@@ -4,6 +4,7 @@ import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { PlatformProvider, VaultClientProvider, type Note, type VaultClient } from "@prism/core";
 import DocumentRenderer from "../../../packages/core/src/components/renderers/DocumentRenderer";
+import { focusAnchor } from "../../../packages/core/src/lib/notifications/anchor";
 
 const params = new URLSearchParams(location.search);
 if (params.has("dark")) { document.documentElement.classList.remove("light"); document.documentElement.classList.add("dark"); }
@@ -53,6 +54,8 @@ Object.assign(window, {
   prismBlockUploads: uploads,
   prismBlockCopies: copies,
   prismBlockControls: controls,
+  // A notification deep link (comment / mention / reminder anchor) lands through this.
+  prismFocusAnchor: (selector: string) => focusAnchor(selector),
   prismEditor: () => (document.querySelector(".tiptap") as unknown as { editor: unknown })?.editor,
 });
 createRoot(document.getElementById("root")!).render(

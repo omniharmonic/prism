@@ -21,6 +21,9 @@ import { structuralEditsAllowed } from "./blockCommands";
 // Wave 4A views register themselves alongside the media views (one import in each editor).
 import "./columnsView";
 import "./childPage";
+// Per-device toggle memory (NP-ED-08): installs itself into the toggle node view.
+import "./toggleMemory";
+import { revealInToggles } from "./toggleReveal";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Any = any;
@@ -584,6 +587,7 @@ const tocView: NodeViewRenderer = ({ editor, getPos, view }) => {
       b.addEventListener("click", () => {
         try {
           const at = view.nodeDOM(head.pos) as HTMLElement | null;
+          revealInToggles(at);
           at?.scrollIntoView({ block: "start", behavior: "smooth" });
           const sel = editor.state.doc.resolve(Math.min(head.pos + 1, editor.state.doc.content.size));
           if (editor.isEditable) editor.chain().setTextSelection(sel.pos).run();

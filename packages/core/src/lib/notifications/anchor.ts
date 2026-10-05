@@ -12,6 +12,7 @@
  * they come from the server but are never trusted as selectors.
  */
 import { useUIStore } from "../../app/stores/ui";
+import { revealInToggles } from "../tiptap/toggleReveal";
 import type { ContentType } from "../types";
 import type { NotificationItem } from "./client";
 
@@ -41,6 +42,7 @@ export function focusAnchor(selector: string, root: ParentNode = document): Prom
       const scope = (root as Document).getElementById?.("workspace-document") ?? root;
       const el = scope.querySelector<HTMLElement>(selector);
       if (el) {
+        revealInToggles(el); // the anchor may sit inside a toggle the reader closed
         el.scrollIntoView({ block: "center", behavior: "smooth" });
         el.classList.add(ANCHOR_FLASH_CLASS);
         el.setAttribute("data-anchor-target", "true");

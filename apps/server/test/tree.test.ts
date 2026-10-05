@@ -81,6 +81,87 @@ test("page icon (NP-PG-01): a short emoji is emitted and follows a metadata writ
   assert.equal(body.find((e) => e.id === "c")?.icon, "📌");
 });
 
+test("page icon shapes (NP-PG-01): an emoji, the exact own-attachment path or an allowlisted icon token is emitted; every other value is dropped", async () => {
+  const own = `/api/attachments/a_${"A".repeat(22)}`;
+  const emitted: Record<string, string> = { emoji: "🌱", flag: "🇨🇦", zwj: "👩‍👩‍👧‍👦", letter: "A", image: own, glyph: "icon:rocket:blue" };
+  const dropped: Record<string, unknown> = {
+    https: "https://evil.example/x.png",
+    http: "http://evil.example/x.png",
+    protocolRelative: "//evil.example/x.png",
+    data: "data:image/png;base64,AAAA",
+    dataShort: "data:,",
+    javascript: "javascript:alert(1)",
+    otherRoute: "/api/notes/secret",
+    proxy: "/api/media/proxy?u=https%3A%2F%2Fx.example%2Fa.png",
+    shortId: "/api/attachments/a_short",
+    longId: `/api/attachments/a_${"A".repeat(23)}`,
+    noPrefixId: `/api/attachments/${"A".repeat(24)}`,
+    query: `${own}?x=1`,
+    fragment: `${own}#x`,
+    trailingSlash: `${own}/`,
+    dotSegment: `/api/attachments/../notes/a_${"A".repeat(13)}`,
+    absolute: `https://prism.example${own}`,
+    backslash: "\\\\evil\\x",
+    spaceBefore: ` ${own}`,
+    newline: `${own}\n`,
+    upperPath: `/API/attachments/a_${"A".repeat(22)}`,
+    unknownGlyph: "icon:skull:blue",
+    unknownColor: "icon:rocket:chartreuse",
+    extraPart: "icon:rocket:blue:x",
+    bareToken: "icon:",
+    protoGlyph: "icon:constructor:toString",
+    markup: "<img src=x>",
+    control: "a\u0000b",
+    blank: "   ",
+    empty: "",
+    long: "x".repeat(33),
+    number: 7,
+    object: { src: own },
+    array: [own],
+    nul: null,
+  };
+  for (const [id, icon] of Object.entries(emitted)) fv.put({ id: `ok-${id}`, path: `ok/${id}.md`, content: "", tags: [], metadata: { icon } });
+  for (const [id, icon] of Object.entries(dropped)) fv.put({ id: `no-${id}`, path: `no/${id}.md`, content: "", tags: [], metadata: { icon } });
+  const body = await tree(await ownerReq("/tree"));
+  for (const [id, icon] of Object.entries(emitted)) assert.equal(body.find((e) => e.id === `ok-${id}`)?.icon, icon, `emitted: ${id}`);
+  for (const id of Object.keys(dropped)) assert.ok(!("icon" in body.find((e) => e.id === `no-${id}`)!), `dropped: ${id}`);
+  // An image icon follows a write like any other, and changes the ETag (clients refetch the tree).
+  const before = (await ownerReq("/tree")).headers.get("etag");
+  const r = await ownerReq("/notes/no-https", { method: "PATCH", body: JSON.stringify({ metadata: { icon: own }, force: true }) });
+  assert.equal(r.status, 200);
+  const after = await ownerReq("/tree");
+  assert.equal((await tree(after)).find((e) => e.id === "no-https")?.icon, own);
+  assert.notEqual(after.headers.get("etag"), before);
+  // Non-owners get the same rule through the same filter.
+  const member = makeSession("icon-member@test.local");
+  grantUser("icon-member@test.local", "note", "ok-image", "view");
+  grantUser("icon-member@test.local", "note", "no-data", "view");
+  const seen = await tree(await req("/tree", { cookie: sessionCookie(member) }));
+  assert.equal(seen.find((e) => e.id === "ok-image")?.icon, own);
+  assert.ok(!("icon" in seen.find((e) => e.id === "no-data")!));
+});
+
+test("page icon parsing is bounded: hostile values are judged in linear time", async () => {
+  const { parsePageIcon } = await import("@prism/core/page-icon");
+  const hostile = [
+    "/api/attachments/" + "a_".repeat(500_000),
+    "icon:" + ":".repeat(1_000_000),
+    "icon:" + "rocket:".repeat(200_000),
+    "/".repeat(1_000_000),
+    "🌱".repeat(500_000),
+    "\u202e".repeat(1_000_000),
+  ];
+  const started = performance.now();
+  for (let i = 0; i < 200; i++) for (const v of hostile) assert.equal(parsePageIcon(v), null);
+  assert.ok(performance.now() - started < 500, `took ${performance.now() - started} ms`);
+  // And through the projection: 2,000 rows with hostile icons build promptly.
+  for (let i = 0; i < 2000; i++) fv.put({ id: `h${i}`, path: `h/${i}.md`, content: "", tags: [], metadata: { icon: hostile[i % hostile.length]!.slice(0, 50_000) } });
+  const t0 = performance.now();
+  const body = await tree(await ownerReq("/tree"));
+  assert.ok(performance.now() - t0 < 3000, `tree took ${performance.now() - t0} ms`);
+  assert.ok(body.every((e) => !("icon" in e)));
+});
+
 test("title + aliases (wikilink/mention matching): emitted only when present and within bounds, follow a write, change the ETag, never for an unviewable note", async () => {
   fv.put({ id: "a", path: "docs/q3-plan.md", content: "", tags: ["doc"], metadata: { title: "Quarterly Roadmap", aliases: ["Q3", "  ", 7, "x".repeat(101), "roadmap"] } });
   fv.put({ id: "b", path: "b.md", content: "", tags: [], metadata: { title: "t".repeat(201), aliases: "not-a-list" } });

@@ -1,9 +1,9 @@
 /** Device-local page icon overrides (NP-PG-01). No React/query imports: the data hooks use it too. */
 import { create } from "zustand";
 
-/** An icon is a short emoji string; anything else is ignored. */
-export const pageIconOf = (value: unknown): string | null =>
-  typeof value === "string" && value.trim() !== "" && value.length <= 32 ? value : null;
+import { pageIconOf } from "./iconValue";
+/** An icon is an emoji, the page's own uploaded image or a built-in glyph (`iconValue.ts`); anything else is ignored. */
+export { pageIconOf };
 
 /**
  * An override bridges the moment between "this client changed the icon" and "the

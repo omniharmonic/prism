@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { PageIconView } from "../../lib/pages/PageIconView";
 import { createPortal } from "react-dom";
 import type { Editor } from "@tiptap/react";
 import { TextSelection, type Transaction } from "@tiptap/pm/state";
@@ -483,7 +484,7 @@ export function BlockHandles({ editor, enabled, notes, noteId, onComment }: Bloc
     id: n.id,
     label: noteLinkTitle(n),
     keywords: n.path ?? "",
-    icon: typeof n.metadata?.icon === "string" ? <span aria-hidden="true">{n.metadata.icon as string}</span> : <FileText size={15} />,
+    icon: <PageIconView value={n.metadata?.icon} fallback={<FileText size={15} />} />,
     onSelect: () => moveTo(n),
   }));
   // Searching the main menu also finds the Turn into kinds and colours.

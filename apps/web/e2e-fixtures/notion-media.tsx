@@ -97,6 +97,9 @@ function LivePair() {
         <section key={i} aria-label={i === 0 ? "Client A" : "Client B"} style={{ position: "relative", minWidth: 0 }}>
           <CollabEditor
             commentOnly={params.has("commentonly")}
+            // ?memory (NP-ED-08): each client is its own reader of the page — in the app that is two
+            // devices; here two page ids keep their per-device toggle memory apart in one browser.
+            noteId={params.has("memory") ? (i === 0 ? "media" : "media-peer") : undefined}
             ydoc={doc}
             provider={null}
             user={{ name: i === 0 ? "Ada" : "Ben", color: i === 0 ? "#3a7bd5" : "#f47c6b" }}

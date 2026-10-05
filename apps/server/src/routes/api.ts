@@ -36,6 +36,7 @@ import { settleKeyForUser, takeUnsavedSettle } from "../unsaved-settle";
 import { redactVersionForViewer, stripWriterMeta, changeValue, creatorNameFor, CHANGE_KEY, WRITER_META_KEYS, createCapsAt, forViewer } from "../sharing";
 import { writerNames, WRITER_AT_KEY } from "../writer-stamp";
 import { attachmentsApi } from "./attachments";
+import { iconForCreate, iconWriteRefusal } from "../page-icon";
 import { blocksApi } from "./blocks";
 import { ingestKeyChanged } from "../ingest-keys";
 import { searchApi } from "./search";
@@ -1040,6 +1041,11 @@ api.post("/notes", async (c) => {
   // Narrowing is safe: a non-owner may create a note as private (e.g. a private task).
   const metadata = Object.fromEntries(Object.entries((body.metadata as Record<string, unknown> | null | undefined) ?? {}).filter(([k, v]) => (k === "prism_visibility" ? v === "private" : !isOwnerOnlyMeta(k) && k !== LOCK_KEY && k !== ORDER_KEY && k !== PAGE_STYLE_KEY && !ingestKeyChanged(k, v, undefined) && !(WRITER_META_KEYS as readonly string[]).includes(k))));
   if (subject) metadata.prism_creator = subject;
+  // A page icon is an emoji, a built-in glyph or an own-attachment path (`../page-icon.ts`).
+  if ("icon" in metadata) {
+    const icon = iconForCreate(metadata.icon);
+    if (icon === undefined) delete metadata.icon;
+  }
   // The tags a template re-applies are tags: same rule as `tags` above.
   if (TEMPLATE_TAGS_META in metadata) {
     const checked = templateTagsCheck(actor, vaultKey, metadata[TEMPLATE_TAGS_META], undefined);
@@ -1132,6 +1138,11 @@ api.patch("/notes/:id", async (c) => {
   };
   if (Object.keys(meta).some(forbiddenKey)) {
     return c.json({ error: "forbidden", reason: "That property can only be changed through its own control." }, 403);
+  }
+  // The page icon (NP-PG-01): an image icon must be an image uploaded to THIS page.
+  if (body.metadata && "icon" in body.metadata) {
+    const refused = iconWriteRefusal(resolveVaultEntry(actor.vaultId).id, note.id, body.metadata.icon, note.metadata?.icon);
+    if (refused) return c.json({ error: refused.error, reason: refused.reason }, refused.status);
   }
   // The tags a template re-applies are TAGS (review round 3): same rule as `add_tags`.
   if (body.metadata && TEMPLATE_TAGS_META in body.metadata) {

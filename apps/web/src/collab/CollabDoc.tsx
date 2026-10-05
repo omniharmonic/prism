@@ -694,6 +694,7 @@ function ScopedCollabDoc({
           onRename={canReview ? handleRename : undefined}
           icon={icon}
           onIconChange={canReview ? handleIconChange : undefined}
+          onIconUpload={canReview && !getCapabilityToken() ? async (file) => (await uploadAttachment(noteId, file, { kind: "image" })).url : undefined}
           onAddCover={canReview && isDocument && !cover ? () => handleCoverChange({ kind: "gradient", value: COVER_GRADIENTS[Math.floor(Math.random() * COVER_GRADIENTS.length)]!.name, y: 50 }) : undefined}
           presence={<PresenceAvatars awareness={provider.awareness as never} editor={editor} compact={narrow} />}
           right={

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { PageIconView } from "../../lib/pages/PageIconView";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { LayoutTemplate, X } from "lucide-react";
 import { useVaultClient } from "../../data/VaultClientContext";
@@ -252,7 +253,7 @@ export function TemplatesGallery({ onClose }: { onClose: () => void }) {
             const canShare = !caps && !!me && (!isPrivate || mine || !creator);
             return (
               <div key={n.id} role="listitem" data-template-row={n.id} className="template-row" aria-label={name}>
-                <span className="template-row-icon" aria-hidden="true">{icon ?? <LayoutTemplate size={16} />}</span>
+                <span className="template-row-icon" aria-hidden="true">{icon ? <PageIconView value={icon} fallback={<LayoutTemplate size={16} />} /> : <LayoutTemplate size={16} />}</span>
                 <div className="trash-row-main">
                   {editing ? (
                     <input

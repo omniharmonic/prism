@@ -1,4 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { PageIconView } from "../pages/PageIconView";
+import { pageIconOf } from "../pages/iconValue";
 import { createPortal } from "react-dom";
 import { NodeViewWrapper, ReactNodeViewRenderer, type NodeViewProps } from "@tiptap/react";
 import { useQuery } from "@tanstack/react-query";
@@ -119,7 +121,7 @@ function PageChip({ id, chip }: { id: string | null; chip: React.RefObject<HTMLS
   const data = note.data && note.data.id === id ? note.data : undefined;
   const state = !id || !client ? "missing" : data ? (isTrashed(data) ? "deleted" : "ready") : note.error ? (isAccessUnavailable(note.error) ? "missing" : "error") : "loading";
   const title = state === "ready" ? noteLinkTitle(data!) : state === "deleted" ? "Deleted page" : state === "missing" ? "No access" : state === "error" ? "Page unavailable" : "Loading page…";
-  const icon = state === "ready" && typeof data!.metadata?.icon === "string" ? (data!.metadata.icon as string) : null;
+  const icon = state === "ready" ? pageIconOf(data!.metadata?.icon) : null;
   const open = () => {
     if (state !== "ready") return;
     openTab(data!.id, noteLinkTitle(data!), inferContentType(data!));
@@ -140,13 +142,13 @@ function PageChip({ id, chip }: { id: string | null; chip: React.RefObject<HTMLS
         {...hover.handlers}
       >
         <span className="prism-mention-icon" aria-hidden="true">
-          {icon ? icon : state === "missing" ? <Lock size={12} /> : state === "deleted" ? <Trash2 size={12} /> : <FileText size={13} />}
+          {icon ? <PageIconView value={icon} fallback={<FileText size={13} />} /> : state === "missing" ? <Lock size={12} /> : state === "deleted" ? <Trash2 size={12} /> : <FileText size={13} />}
         </span>
         <span className="prism-mention-text">{title}</span>
       </span>
       {hover.open && state === "ready" && (
         <Floating anchor={chip.current} label={`Preview of ${title}`} onMouseEnter={() => hover.setOpen(true)} onMouseLeave={hover.handlers.onMouseLeave}>
-          <div className="prism-mention-card-title">{icon && <span aria-hidden="true">{icon} </span>}{title}</div>
+          <div className="prism-mention-card-title">{icon && <><PageIconView value={icon} />{" "}</>}{title}</div>
           {data!.path && <div className="prism-mention-card-detail">{data!.path}</div>}
           {plainPreview(data!.content) && <p className="prism-mention-card-body">{plainPreview(data!.content)}</p>}
         </Floating>

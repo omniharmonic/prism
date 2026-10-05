@@ -10,6 +10,8 @@
  *    deleting a row offers to move that page to Trash.
  */
 import { Extension, type Editor } from "@tiptap/core";
+import { PageIconView } from "../pages/PageIconView";
+import { pageIconOf } from "../pages/iconValue";
 import { Plugin, PluginKey } from "@tiptap/pm/state";
 import type { Node as PMNode } from "@tiptap/pm/model";
 import { NodeViewWrapper, ReactNodeViewRenderer, type NodeViewProps } from "@tiptap/react";
@@ -45,7 +47,7 @@ function ChildPageRow({ node, selected }: NodeViewProps) {
   const data = !isAccessUnavailable(query.error) && query.data && query.data.id === id ? query.data : undefined;
   const state = !id || !client ? "missing" : data ? (isTrashed(data) ? "deleted" : "ready") : query.error ? (isAccessUnavailable(query.error) ? "missing" : "error") : "loading";
   const title = state === "ready" ? noteLinkTitle(data!) : state === "deleted" ? "Deleted page" : state === "missing" ? "No access" : state === "error" ? "Page unavailable" : "Loading page…";
-  const icon = state === "ready" && typeof data!.metadata?.icon === "string" ? (data!.metadata.icon as string) : null;
+  const icon = state === "ready" ? pageIconOf(data!.metadata?.icon) : null;
   const open = () => { if (state === "ready") openTab(data!.id, noteLinkTitle(data!), inferContentType(data!)); };
   return (
     <NodeViewWrapper className={`prism-child-page${selected ? " ProseMirror-selectednode" : ""}`} data-type="child-page" data-page-id={id ?? undefined} data-state={state} contentEditable={false}>
@@ -58,7 +60,7 @@ function ChildPageRow({ node, selected }: NodeViewProps) {
         onClick={open}
       >
         <span className="prism-child-page-icon" aria-hidden="true">
-          {icon ? icon : state === "missing" ? <Lock size={15} /> : state === "deleted" ? <Trash2 size={15} /> : <FileText size={16} />}
+          {icon ? <PageIconView value={icon} fallback={<FileText size={16} />} /> : state === "missing" ? <Lock size={15} /> : state === "deleted" ? <Trash2 size={15} /> : <FileText size={16} />}
         </span>
         <span className="prism-child-page-title">{title}</span>
       </button>

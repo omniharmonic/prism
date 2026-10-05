@@ -1,4 +1,5 @@
 import { useEffect, useId, useRef, useState } from "react";
+import { revealInToggles } from "../../lib/tiptap/toggleReveal";
 import type { Editor } from "@tiptap/react";
 import { ListTree } from "lucide-react";
 import "./DocumentOutline.css";
@@ -96,7 +97,7 @@ export function DocumentOutline({ editor }: { editor: Editor }) {
         onMouseDown={event => event.preventDefault()} onClick={() => {
           // Use this editor's current heading DOM; never change content or cursor.
           const node = editor.view.nodeDOM(heading.position);
-          if (node instanceof HTMLElement) node.scrollIntoView({ block: "start", behavior: "auto" });
+          if (node instanceof HTMLElement) { revealInToggles(node); node.scrollIntoView({ block: "start", behavior: "auto" }); }
           setOpen(false);
           button.current?.focus({ preventScroll: true });
         }}>{heading.text}</button>) : <p>Add headings to navigate this page.</p>}

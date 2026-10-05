@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { revealInToggles } from "../../lib/tiptap/toggleReveal";
 import * as Y from "yjs";
 import { relativePositionToAbsolutePosition, ySyncPluginKey } from "@tiptap/y-tiptap";
 import type { Editor } from "@tiptap/react";
@@ -66,6 +67,7 @@ export function jumpToCaret(editor: Editor, awareness: PresenceAwareness, person
   } catch {
     target = null;
   }
+  revealInToggles(target);
   target?.scrollIntoView({ block: "center", behavior: "smooth" });
   // Flash the caret widget(s) drawn for this person (name label matches).
   for (const caret of view.dom.querySelectorAll<HTMLElement>(".collaboration-carets__caret")) {

@@ -17,6 +17,7 @@ import { startOutboxSync, setStaleSendingMsForTests } from "../src/offline/outbo
 import { logout } from "../src/config";
 import { webAccount } from "../src/account";
 import { fakeMove } from "./fake-move";
+import { parsePageIcon, pageIconOf } from "@prism/core/page-icon";
 
 void filtersToParams;
 const params = new URLSearchParams(location.search);
@@ -40,12 +41,31 @@ if (params.has("dbrows")) {
     { id: "task-invites", path: "Projects/Prism/Tasks/Send invitations", content: "", tags: ["task"], metadata: { status: "todo", priority: "low" }, createdAt: recent, updatedAt: recent },
   );
 }
+// ?toggles (NP-ED-08): a page with three toggles, one of them holding a second one.
+if (params.has("toggles")) notes.push({ id: "handbook", path: "Library/Handbook", content: '<p>Intro</p><details data-type="toggle"><summary>Travel</summary><p>Book trains early.</p></details><details data-type="toggle"><summary>Expenses</summary><p>Keep every receipt.</p><details data-type="toggle"><summary>Limits</summary><p>Ask above fifty.</p></details></details>', tags: ["note"], metadata: { type: "document" }, createdAt: recent, updatedAt: recent });
+/** Uploaded files (NP-PG-01): attachment id → the page it was uploaded to. Survives reloads like the metadata. */
+const attachmentOwners = JSON.parse(sessionStorage.getItem("notion-shell-attachments") ?? "{}") as Record<string, string>;
+/** The server's icon write rule (`apps/server/src/page-icon.ts`): an image icon is an image uploaded to THAT page. */
+function iconRefusal(note: Note, value: unknown): Response | null {
+  if (value === null || value === undefined || value === note.metadata?.icon) return null;
+  const icon = parsePageIcon(value);
+  if (!icon) return Response.json({ error: "invalid_request", reason: "That is not a page icon." }, { status: 400 });
+  if (icon.kind === "image" && attachmentOwners[icon.attachmentId] !== note.id) return Response.json({ error: "forbidden", reason: "A page icon image must be an image uploaded to this page." }, { status: 403 });
+  return null;
+}
 // Metadata written by the app survives reloads ("another device" = a fresh page).
 const savedMeta = JSON.parse(sessionStorage.getItem("notion-shell-meta") ?? "{}") as Record<string, Record<string, unknown>>;
 for (const n of notes) if (savedMeta[n.id]) n.metadata = { ...n.metadata, ...savedMeta[n.id] };
 const persistMeta = (n: Note) => { savedMeta[n.id] = { ...(n.metadata ?? {}) }; sessionStorage.setItem("notion-shell-meta", JSON.stringify(savedMeta)); };
 const controls = {
   writes: [] as Array<{ method: string; path: string; body: unknown }>,
+  /** Attachment uploads (POST /api/notes/:id/attachments). `failUpload` = the next one is refused with this status. */
+  uploads: [] as Array<{ noteId: string; id: string; name: string; type: string; size: number; kind: string | null }>,
+  failUpload: 0,
+  /** The next upload answers with this URL instead of the new attachment's (a host that returns something else). */
+  uploadUrl: "" as string,
+  /** "Another page's file": an attachment id that exists on the server, owned by `noteId`. */
+  serverAttachment: (noteId: string) => { const id = `a_${String(Object.keys(attachmentOwners).length).padStart(4, "0")}foreignfileABCDEFG`; attachmentOwners[id] = noteId; sessionStorage.setItem("notion-shell-attachments", JSON.stringify(attachmentOwners)); return `/api/attachments/${id}`; },
   searches: [] as string[],
   /** A slow search: while set, every /api/search answer waits for releaseSearch(). */
   searchHold: false,
@@ -141,7 +161,7 @@ window.fetch = async (input, init) => {
     return Response.json({ preferences: { version: 1, favorites: controls.preferences.favorites, recents: controls.preferences.recents, sidebar: { order: [], collapsed: [] } }, revision: controls.revision, items });
   }
   if (path === "/api/tree") controls.treeReads++;
-  if (path === "/api/tree") return Response.json(notes.filter((n) => !controls.hidden.includes(n.id)).map((n) => ({ id: n.id, path: n.path, tags: n.tags, updatedAt: n.updatedAt, type: n.metadata?.type, prismType: n.metadata?.prism_type, ...(typeof n.metadata?.icon === "string" ? { icon: n.metadata.icon } : {}) })));
+  if (path === "/api/tree") return Response.json(notes.filter((n) => !controls.hidden.includes(n.id)).map((n) => ({ id: n.id, path: n.path, tags: n.tags, updatedAt: n.updatedAt, type: n.metadata?.type, prismType: n.metadata?.prism_type, ...(pageIconOf(n.metadata?.icon) ? { icon: n.metadata!.icon } : {}) })));
   // What the search route can filter by (absent on an older server: ?oldserver).
   if (path === "/api/search/filters") return params.has("oldserver") ? Response.json({ error: "not_found" }, { status: 404 }) : Response.json({ filters: ["author", "editor"], identity: !params.has("linkviewer") });
   if (path === "/api/search") {
@@ -167,6 +187,22 @@ window.fetch = async (input, init) => {
     .filter((n) => !controls.hidden.includes(n.id))
     .filter((n) => !url.searchParams.has("path") || n.path === url.searchParams.get("path"))
     .filter((n) => !url.searchParams.has("search") || (n.content ?? "").includes(url.searchParams.get("search")!)));
+  // Attachment upload: stored "on the server" under the page; the bytes are served by the spec (page.route).
+  const uploadTo = method === "POST" ? path.match(/^\/api\/notes\/([^/]+)\/attachments$/)?.[1] : undefined;
+  if (uploadTo) {
+    const note = notes.find((n) => n.id === decodeURIComponent(uploadTo));
+    if (!note) return Response.json({ error: "not_found" }, { status: 404 });
+    if (new Headers(init?.headers).get("X-Prism-Upload") !== "1") return Response.json({ error: "csrf_refused" }, { status: 403 });
+    if (controls.failUpload) { const status = controls.failUpload; controls.failUpload = 0; return Response.json({ error: "fixture_failure" }, { status }); }
+    const file = (init?.body as FormData).get("file") as File;
+    const id = `a_${String(Object.keys(attachmentOwners).length).padStart(4, "0")}uploadedfileABCDEF`;
+    attachmentOwners[id] = note.id;
+    sessionStorage.setItem("notion-shell-attachments", JSON.stringify(attachmentOwners));
+    controls.uploads.push({ noteId: note.id, id, name: file.name, type: file.type, size: file.size, kind: url.searchParams.get("kind") });
+    const answered = controls.uploadUrl || `/api/attachments/${id}`;
+    controls.uploadUrl = "";
+    return Response.json({ id, url: answered, name: file.name, mimeType: file.type, size: file.size }, { status: 201 });
+  }
   const metaId = path.match(/^\/api\/notes\/([^/]+)\/meta$/)?.[1];
   if (metaId && method === "POST") {
     const note = notes.find((n) => n.id === decodeURIComponent(metaId));
@@ -188,6 +224,7 @@ window.fetch = async (input, init) => {
     // Per-field CAS, like the server: a field whose current value differs from `expect` → 409.
     const stale = Object.keys(body.expect ?? {}).filter((k) => JSON.stringify(note.metadata?.[k] ?? null) !== JSON.stringify(body.expect[k] ?? null));
     if (stale.length) return Response.json({ error: "conflict", fields: stale, current: Object.fromEntries(stale.map((k) => [k, note.metadata?.[k] ?? null])) }, { status: 409 });
+    if ("icon" in (body.set ?? {})) { const refused = iconRefusal(note, body.set.icon); if (refused) return refused; }
     note.metadata = { ...note.metadata, ...body.set };
     note.updatedAt = bump();
     persistMeta(note);
@@ -242,6 +279,7 @@ window.fetch = async (input, init) => {
       const guarded = ["content", "metadata", "path"].some((k) => k in body);
       if (guarded && !body.force && !body.if_updated_at) return Response.json({ error: "precondition_required" }, { status: 428 });
       if (body.if_updated_at && body.if_updated_at !== note.updatedAt) return Response.json({ error: "conflict", current: { updatedAt: note.updatedAt } }, { status: 409 });
+      if (body.metadata && "icon" in body.metadata) { const refused = iconRefusal(note, body.metadata.icon); if (refused) return refused; }
       const { if_updated_at: _base, force: _force, tags: tagDelta, ...fields } = body;
       const tags = new Set(note.tags ?? []);
       for (const t of tagDelta?.add ?? []) tags.add(t);
@@ -268,6 +306,8 @@ window.fetch = async (input, init) => {
   if (path === "/api/vault" || path === "/api/vault/info") return Response.json({ name: "Personal vault", description: "", stats: { totalNotes: notes.length, totalTags: 2, totalLinks: 0 } });
   if (path === "/api/vault/stats" || path === "/api/stats") return Response.json({ totalNotes: notes.length, totalTags: 2, totalLinks: 0 });
   if (path === "/api/graph") return Response.json({ nodes: notes.map((n) => ({ id: n.id, path: n.path, tags: n.tags })), edges: [] });
+  // Attachment bytes: answered by the spec at the network layer (page.route), like the server would.
+  if (method === "GET" && /^\/api\/attachments\/[A-Za-z0-9_-]+$/.test(path)) return nativeFetch(input, init);
   if (path.startsWith("/api/") || path.startsWith("/acl/") || path.startsWith("/auth/")) return Response.json({ error: "unsupported_fixture_route", path }, { status: 501 });
   return nativeFetch(input, init);
 };

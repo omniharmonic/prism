@@ -13,6 +13,7 @@
  * the database, the chosen view first, and everything else unchanged.
  */
 import "./database.css";
+import { PageIconView } from "../../lib/pages/PageIconView";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Calendar, ChevronRight, Database, Download, Filter, GalleryVerticalEnd, KanbanSquare, List as ListIcon, MoreHorizontal, Plus, Search, Settings2, SortAsc, Table2, Upload, ArrowUpRight } from "lucide-react";
@@ -365,7 +366,7 @@ export function DatabasePage({ note, readOnly, embedded }: RendererProps & {
       {embedded ? (
         <header className="db-block-head">
           <button type="button" className="db-block-title focus-ring" onClick={() => openFull({ id: note.id, path: note.path, metadata: { ...(note.metadata ?? {}), prism_type: "database" }, tags: note.tags ?? [], createdAt: note.createdAt, updatedAt: note.updatedAt })}>
-            <span aria-hidden="true">{typeof note.metadata?.icon === "string" ? note.metadata.icon : <Database size={15} />}</span>
+            <span aria-hidden="true"><PageIconView value={note.metadata?.icon} fallback={<Database size={15} />} /></span>
             {title}
             <ArrowUpRight size={13} aria-hidden="true" className="db-muted-icon" />
           </button>
@@ -374,7 +375,7 @@ export function DatabasePage({ note, readOnly, embedded }: RendererProps & {
         <div className="db-head">
           {crumbs.length > 0 && <nav className="db-crumbs" aria-label="Database location">{crumbs.map((c, i) => <span key={i}>{i > 0 && <ChevronRight size={12} aria-hidden="true" />} {c}</span>)}</nav>}
           <div className="db-title-row">
-            <span className="db-title-icon" aria-hidden="true">{typeof note.metadata?.icon === "string" ? note.metadata.icon : <Database size={18} />}</span>
+            <span className="db-title-icon" aria-hidden="true"><PageIconView value={note.metadata?.icon} fallback={<Database size={18} />} /></span>
             <h1 className="db-title">{title}</h1>
           </div>
           {description && <p className="db-desc">{description.slice(0, 400)}</p>}

@@ -29,6 +29,7 @@ import { BlockHandles } from "./BlockHandles";
 import { TableControls } from "./TableControls";
 import { ImageUpload } from "../../lib/tiptap/ImageUpload";
 import "../../lib/tiptap/mediaViews";
+import { setToggleMemoryScope } from "../../lib/tiptap/toggleMemory";
 import { UrlPaste, type UrlPasteState, type Unfurler } from "../../lib/tiptap/UrlPaste";
 import { PasteUrlMenu } from "./PasteUrlMenu";
 import { LinkCard } from "./LinkCard";
@@ -116,6 +117,8 @@ export default function DocumentRenderer({ note, onMetadataChange, readOnly }: R
   }, [contentFont, changeFont, registerDocFont]);
 
   const vaultClient = useVaultClient();
+  // Toggle open state is remembered per device for this account + vault (NP-ED-08).
+  if (vaultClient.scope) setToggleMemoryScope(vaultClient.scope());
   // Page cover (NP-PG-02): metadata `cover` + `coverY`, optimistic locally.
   const [cover, setCover] = useState<Cover | null>(() => parseCover(note.metadata));
   useEffect(() => { setCover(parseCover(note.metadata)); }, [note.id, note.metadata?.cover, note.metadata?.coverY]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -477,6 +480,7 @@ export default function DocumentRenderer({ note, onMetadataChange, readOnly }: R
             onRename={readOnly || governed ? undefined : handleRename}
             icon={note.metadata?.icon as string | undefined}
             onIconChange={persistMetadata ? (emoji) => persistMetadata({ icon: emoji }) : undefined}
+            onIconUpload={persistMetadata && canUpload ? uploadCover : undefined}
             onAddCover={persistMetadata && !cover ? () => changeCover({ kind: "gradient", value: COVER_GRADIENTS[Math.floor(Math.random() * COVER_GRADIENTS.length)].name, y: 50 }) : undefined}
           />
           {!readOnly && <BacklinksPill noteId={note.id} title={note.path?.split("/").pop() ?? ""} />}

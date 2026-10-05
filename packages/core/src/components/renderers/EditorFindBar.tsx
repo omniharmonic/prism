@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { revealInToggles } from "../../lib/tiptap/toggleReveal";
 import { X, ChevronUp, ChevronDown, ChevronRight } from "lucide-react";
 import type { useEditor } from "@tiptap/react";
 import { searchHighlightKey, replaceMatch, replaceAllMatches } from "../../lib/tiptap/SearchHighlight";
@@ -170,6 +171,8 @@ function scrollActiveIntoView(
     const domAt = editor.view.domAtPos(match.from);
     const node = domAt.node instanceof Element ? domAt.node : domAt.node.parentElement;
     if (node && "scrollIntoView" in node) {
+      // A match inside a closed toggle: open it (view state only), then go there.
+      revealInToggles(node as HTMLElement);
       (node as HTMLElement).scrollIntoView({ block: "center", behavior: "smooth" });
     }
   } catch {

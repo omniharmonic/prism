@@ -39,7 +39,7 @@ import { useDocumentSnapshots } from "../../lib/agent/documentSnapshots";
 import { openShortcutSheet } from "../renderers/ShortcutSheet";
 import { shortcutKeys } from "../../lib/shortcuts";
 import { openInNewTab } from "../../lib/pages/openInNewTab";
-import { PageIcon } from "../../lib/pages/icons";
+import { PageIcon, PageIconView, pageIconOf } from "../../lib/pages/icons";
 import { ariaKeys, editedLabel, hint } from "../../lib/shortcutHints";
 import { toggleTheme } from "../../app/stores/settings";
 import { useVaultTree } from "../../app/hooks/useParachute";
@@ -639,7 +639,7 @@ export function CommandBar() {
   const renderNotes = (notes: typeof vaultItems, label: string) => notes.length > 0 && <div role="group" aria-label={label}>
     <div className="prism-search-group">{label}</div>
     {notes.map(item => { const index = items.findIndex(candidate => candidate.id === item.id); return <CmdRow key={item.id} id={`prism-command-${index}`} itemId={item.id} selected={selectedIndex === index} onPress={pressRow} onClick={clickRow} onHover={() => setSelectedId(item.id)}
-      icon={item.icon ? <span>{item.icon}</span> : item.group === "messages" ? <MessageSquare size={18} /> : <PageIcon noteId={item.noteId} fallback={<FileText size={18} />} />}
+      icon={pageIconOf(item.icon) ? <PageIconView value={item.icon} fallback={<FileText size={18} />} /> : item.group === "messages" ? <MessageSquare size={18} /> : <PageIcon noteId={item.noteId} fallback={<FileText size={18} />} />}
       label={item.label} labelRanges={item.labelRanges} sublabel={item.edited ? `${item.sublabel} · ${item.edited}` : item.sublabel} preview={item.preview} previewRanges={item.previewRanges} trailing={<span className="prism-search-open">Open <ArrowRight size={13} /></span>} />; })}
   </div>;
   const body = <>

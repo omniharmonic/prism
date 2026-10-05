@@ -37,7 +37,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { comparePages, isUnder, orderOf, parentOf, planReorder, protectionReason, withoutTrashed } from "../../lib/pages/model";
 import { usePagesUI, type PageRef } from "../../lib/pages/store";
 import { useOptionalVaultClient } from "../../data/VaultClientContext";
-import { pageIconOf, usePageIconOverride } from "../../lib/pages/icons";
+import { pageIconOf, parsePageIcon, usePageIconOverride, PageIconView } from "../../lib/pages/icons";
 import { usePageActions } from "../../lib/pages/usePageActions";
 import { PageMenuPopover, usePageMenuItems } from "../pages/PageActionsMenu";
 import { renamePath } from "../renderers/DocumentChrome";
@@ -727,7 +727,7 @@ function TreeNodeView({ node, depth, ctx }: { node: TreeNode; depth: number; ctx
   const isSelected = isPage && ctx.selectedIds.has(node.note!.id);
   const contentType = node.note ? inferContentType(node.note) : "document";
   const iconOverride = usePageIconOverride(node.note?.id);
-  const emoji = iconOverride !== undefined ? iconOverride : pageIconOf(node.note?.metadata?.icon);
+  const pageIcon = iconOverride !== undefined ? iconOverride : pageIconOf(node.note?.metadata?.icon);
   const Icon = isPage ? TYPE_ICONS[contentType] ?? FileText : open ? FolderOpen : Folder;
   const key = rawKey(node);
   const dropHere = ctx.drag && ctx.drag.over === key ? ctx.drag.zone : null;
@@ -854,7 +854,7 @@ function TreeNodeView({ node, depth, ctx }: { node: TreeNode; depth: number; ctx
             className="page-tree-open focus-ring"
             aria-current={active ? "page" : undefined}
           >
-            <span className="page-tree-icon">{emoji ? <span className="page-tree-emoji">{emoji}</span> : <Icon size={14} style={{ opacity: 0.75 }} />}</span>
+            <span className="page-tree-icon">{pageIcon ? (parsePageIcon(pageIcon)?.kind === "emoji" ? <span className="page-tree-emoji">{pageIcon}</span> : <PageIconView value={pageIcon} fallback={<Icon size={14} style={{ opacity: 0.75 }} />} />) : <Icon size={14} style={{ opacity: 0.75 }} />}</span>
             <span>{node.name}</span>
           </button>
         )}

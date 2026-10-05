@@ -1,4 +1,6 @@
 import { useState, useMemo, useEffect, useId, useCallback, useContext, useRef } from "react";
+import { PageIconView } from "../../lib/pages/PageIconView";
+import { pageIconOf } from "../../lib/pages/iconValue";
 import type { Editor } from "@tiptap/react";
 import { QueryClientContext } from "@tanstack/react-query";
 import { FileText, Plus } from "lucide-react";
@@ -117,11 +119,11 @@ export function WikilinkDropdown({ editor, notes, autocomplete, hostPath }: {
   return <div id={id} role="listbox" aria-label="Link to a document" className="fixed glass-elevated overflow-auto rounded-xl p-1 shadow-lg"
     style={{left:Math.max(8,Math.min(coords.left,window.innerWidth-width-8)),top,width,maxHeight:height,zIndex:70}}>
     {rows.map((row,i)=>{
-      const icon = row.kind === "note" && typeof row.note.metadata?.icon === "string" ? row.note.metadata.icon as string : null;
+      const icon = row.kind === "note" ? pageIconOf(row.note.metadata?.icon) : null;
       return <button key={row.kind === "note" ? row.note.id : "create"} id={`${id}-${i}`} role="option" aria-selected={i===index} tabIndex={-1}
         onMouseDown={event=>event.preventDefault()} onClick={()=>select(row)} onMouseEnter={()=>setSelection({signature,index:i,dismissed:false})}
         className="flex w-full items-start gap-2 rounded-lg px-3 py-2 text-left" style={{background:i===index?"var(--surface-selected)":"transparent",color:"var(--text-primary)",borderTop:row.kind==="create"&&i>0?"1px solid var(--glass-border)":undefined}}>
-        <span aria-hidden="true" data-wikilink-icon className="mt-0.5 inline-flex w-5 shrink-0 justify-center text-[var(--text-secondary)]">{row.kind === "create" ? <Plus size={15}/> : icon ?? <FileText size={15}/>}</span>
+        <span aria-hidden="true" data-wikilink-icon className="mt-0.5 inline-flex w-5 shrink-0 justify-center text-[var(--text-secondary)]">{row.kind === "create" ? <Plus size={15}/> : icon ? <PageIconView value={icon} fallback={<FileText size={15}/>}/> : <FileText size={15}/>}</span>
         {row.kind === "note"
           ? <span className="flex min-w-0 flex-col gap-1"><span className="max-w-full truncate text-sm font-medium">{noteLinkTitle(row.note)}</span><span className="max-w-full truncate text-xs text-[var(--text-secondary)]">{row.note.path??row.note.id}</span></span>
           : <span className="flex min-w-0 flex-col gap-1"><span className="max-w-full truncate text-sm font-medium">Create page “{row.name}”</span><span className="max-w-full truncate text-xs text-[var(--text-secondary)]">A new page inside this one</span></span>}
