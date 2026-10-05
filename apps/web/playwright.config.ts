@@ -23,7 +23,8 @@ export default defineConfig({
     command: `npm run dev -- --host 127.0.0.1 --port ${port} --strictPort --mode fixture`,
     url: `http://127.0.0.1:${port}/e2e-fixtures/harness.html`,
     reuseExistingServer: false,
-    env: { PRISM_SERVER: "http://127.0.0.1:1", VITE_GATEWAY_URL: "" },
+    // PRISM_FIXTURE_FROZEN: no file watching — a file saved during the run must not reload the pages under test (vite.config.ts).
+    env: { PRISM_SERVER: "http://127.0.0.1:1", VITE_GATEWAY_URL: "", PRISM_FIXTURE_FROZEN: "1" },
   },
   projects: [
     { name: "chromium", use: { ...devices["Desktop Chrome"] } },

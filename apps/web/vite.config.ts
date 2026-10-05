@@ -132,6 +132,12 @@ export default defineConfig(({ mode }) => {
   },
   server: {
     port: 5180,
+    // A test run serves ONE snapshot of the code. With the watcher on, any file written under
+    // apps/web or packages/core while tests run (an editor save, a checkout, a report) reaches
+    // every open page as a full reload — Tailwind scans all of it, specs included — and the tests
+    // that are mid-step fail in ways that look like product races ("execution context was
+    // destroyed", a theme class that flips back, a selection that vanishes). Playwright sets this.
+    ...(process.env.PRISM_FIXTURE_FROZEN === "1" ? { watch: null } : {}),
     // Dev-only: proxy the server-owned routes to a locally running Prism Server
     // so `npm run dev -w @prism/web` is fully functional (sign-in, the gateway,
     // /api/governance, and the collab websocket) without building + serving via
