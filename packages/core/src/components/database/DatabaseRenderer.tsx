@@ -27,7 +27,7 @@ import { inferContentType } from "../../lib/schemas/content-types";
 import { queryKeys } from "../../lib/parachute/queries";
 import { noteAccess, useDatabaseRows, usePropertyWriter, useSchemas, useScope, useUpdateSchema } from "../../lib/database/hooks";
 import { filterConditions, noteTitle, QUERY_MAX_LIMIT, type QueryRow, type QuerySpec } from "../../lib/database/query";
-import { deletedKeys, isSystemKey, propertyFromField, resolveProperties, SYSTEM_PROPERTIES, type PropertyDef } from "../../lib/database/schema";
+import { deletedKeys, isListableKey, isSystemKey, propertyFromField, resolveProperties, SYSTEM_PROPERTIES, type PropertyDef } from "../../lib/database/schema";
 import { PropertyEditor } from "./PropertyEditor";
 import { BottomSheet } from "../ui/BottomSheet";
 import { Popover } from "./Popover";
@@ -157,7 +157,7 @@ export function DatabasePage({ note, readOnly, embedded }: RendererProps & {
     // A deleted property stays hidden even where rows still hold a value for it.
     const seen = new Set([...base.map((p) => p.key), ...deletedKeys(tags, schemas)]);
     for (const r of rows) for (const [k, v] of Object.entries(r.metadata)) {
-      if (seen.has(k) || isSystemKey(k) || v === null || (typeof v === "object" && !Array.isArray(v))) continue;
+      if (seen.has(k) || !isListableKey(k) || v === null || (typeof v === "object" && !Array.isArray(v))) continue;
       seen.add(k);
       base.push(propertyFromField(k, {}, null, v));
     }
