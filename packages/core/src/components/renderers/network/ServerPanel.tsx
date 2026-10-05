@@ -1427,8 +1427,9 @@ function ScopedServerPanel({ sharing }: { sharing: CollabSharing | null }) {
           </div>
 
           {/* What a page held when a newer copy replaced typing that was not saved, and pages
-          that cannot be saved. Renders nothing unless the viewer is the server owner. */}
-          <RecoveredText />
+          that cannot be saved. Renders nothing unless the viewer is the server owner; asked for
+          only once this tab is open. */}
+          {section === "server" && <RecoveredText />}
 
           {/* Legacy whole-vault member MCP tokens (WP6.5) — superseded by Prism access
           tokens ("Connect your agent"). Owner reviews, then revokes (optionally
