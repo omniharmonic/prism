@@ -16,6 +16,8 @@ fn main() {
             "quick_capture",
             "notify",
             "export_note",
+            // Export archives (docs/client-app.md "Saving an export archive")
+            "save_export",
         ]),
     ))
     .expect("failed to run tauri-build");

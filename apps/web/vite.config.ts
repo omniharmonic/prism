@@ -80,8 +80,9 @@ export default defineConfig(({ mode }) => {
         // published Wiki URL /p/:slug is a CLIENT route — it intentionally FALLS
         // BACK to index.html (the SPA), which then fetches /api/p/:slug.
         // /mcp (the Prism MCP endpoint) and /.well-known/ (its RFC 9728
-        // protected-resource metadata) are server-owned too (WP6.1).
-        navigateFallbackDenylist: [/^\/auth\//, /^\/api\//, /^\/health(\?|$)/, /^\/mcp(\/|$)/, /^\/\.well-known\//],
+        // protected-resource metadata) are server-owned too (WP6.1), and so is the
+        // Apple App Site Association file at its legacy root path (NP-NA-04).
+        navigateFallbackDenylist: [/^\/auth\//, /^\/api\//, /^\/health(\?|$)/, /^\/mcp(\/|$)/, /^\/\.well-known\//, /^\/apple-app-site-association(\/|\?|$)/],
         runtimeCaching: [
           // Authenticated vault responses use the account/vault-scoped IndexedDB
           // cache. A URL-only service-worker cache can mix accounts and vaults.

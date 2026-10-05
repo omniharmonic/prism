@@ -163,8 +163,13 @@ export function vaultClient(vaultId?: string, opts: { /** Abort any single vault
     return (await req(`/notes?${sp.toString()}`)).json() as Promise<Note[]>;
   },
 
-  async getNote(id: string, opts?: { includeLinks?: boolean }): Promise<Note> {
-    return (await req(`/notes/${encodeURIComponent(id)}${opts?.includeLinks ? "?include_links=true" : ""}`)).json() as Promise<Note>;
+  async getNote(id: string, opts?: { includeLinks?: boolean; /** false = a lean read: no body (and, with `includeMetadata`, only those metadata keys). */ includeContent?: boolean; includeMetadata?: string[] }): Promise<Note> {
+    const sp = new URLSearchParams();
+    if (opts?.includeLinks) sp.set("include_links", "true");
+    if (opts?.includeContent === false) sp.set("include_content", "false");
+    if (opts?.includeMetadata?.length) sp.set("include_metadata", opts.includeMetadata.join(","));
+    const q = sp.toString();
+    return (await req(`/notes/${encodeURIComponent(id)}${q ? `?${q}` : ""}`)).json() as Promise<Note>;
   },
 
   /**

@@ -71,3 +71,46 @@ Last full runs: server 2366/2366 (169 files); browser 1603 passed / 7 skipped (1
 **Small backlog:** Matrix reconcile should rotate its starting room (a sweep that always hits its deadline never reaches the end of the list); tree offline cache cap (the tree crosses the 4 MB read-cache limit at ~20–29k notes); set-aside has no UI (owner API only); other ingesters (ClickUp, Fathom, Fireflies) have no in-flight guard; share-route page links open without the share token; phone comments panel close button has no accessible name.
 
 **Waiting on the owner:** (1) LM Studio: keep the model resident or 1 parallel slot. (2) Release timing — order: server (pm2 restart; additive DB migrations run at boot) → PWA → Prism Client; the page-agent actions and "Edited by me" need the new server first; run production with a low inline conversion limit. (3) `CONVERT_HEAP_MB` default 512 (dense Markdown past ~0.4 MB opens as plain text) — keep or raise. (4) Make `prism-rw` the default read-write agent profile (closes the remaining page-lock gap for agents). (5) Phone database month view: 40 day cells under 44 px — needs a design choice (e.g. week view on phones). (6) One screenshot review session (35 rows) and one device session (29 rows), steps in `PARITY-GAPS.md` §b. (7) Earlier items still open: parity exclusions §1.3, move permission (organize vs edit), graph cleanup on the live vault, nightly skill install, native embed CSP, sending the Parachute request doc, editor shortcut choices, DB-11/DB-12/CO-08 deviations, moving `AuthKey_P2648BP7K4.p8` into the password manager, the booted iOS simulator.
+
+## In flight at 2026-10-04 evening (usage limit reached mid-run) — resume here
+
+Main is `1ca8396f` + docs (`c3b7c523` discovery report is an ancestor). On main since the section above: WebKit project + fixes, the five fixes (palette press, Safari Tab, selects, settings column, Markdown to-dos, @-menu date race). Agent brief rules: scratchpad `AGENT-RULES.md` pattern (own gate script; tests serialized; assert against a second client / the Y.Doc, not local editor state). A repeated "flake" has twice been a real product race — investigate, never wave through.
+
+Branches NOT merged (worktree → branch → state):
+- `collab-convert` → `feat/w9-gaps`: Suggesting mode tracks removals (chips/images/breaks REFUSED — y-tiptap carries marks only on text), callout colours, export round trip + published TOC, live title on other clients, row names. Round-4 fixes in a WIP commit, verification was queued. Needs: full suites, one more focused review, merge. Also check `editor-toolbar.spec.ts:63`.
+- `w2-shell` → `feat/w11-native`: association file, link handling, ⌘N. Review GO; should-fix items + macOS export save in progress. Then suites, merge.
+- `w2-sharing` → `feat/w12-notify`: assignment notifications + per-page level. Review: S1 (budget author-less comment batches) REQUIRED, S2–S6 sent. Suites were running.
+- `w3-verify` → `feat/w11-verify`: verification pass 3 DONE (62 passed / 7 deviation / 39 screenshot / 31 device / 20 partial / 1 missing / 1 not measured). Merge it (docs + specs; expect a PARITY-GAPS.md conflict with w9). Two new S gaps to dispatch: phone sheets have no entrance animation (NP-AX-06, `mobile-workspace.css`), no System theme choice (NP-AX-01, `stores/settings.ts` + `Settings.tsx`).
+- `w4-shell` → `feat/w11-shots`: screenshot gallery + visual defect list (running; publish the gallery as an Artifact for the owner; dispatch its defect list).
+- `w4-db` → `feat/w11-backlog`: Matrix reconcile rotation, ingester guards, tree cache cap, share-route links, set-aside UI, phone calendar week list (running).
+- `w4-editor` → `feat/w11-deviations`: breadcrumb in header, ⌘/ = block menu, two-way relations, change property type, publish flow (running). Owns `EditorKeys.ts`, `lib/shortcuts.ts`, `ShortcutSheet.tsx` — add ⌘L, ⌘⌥T, ⌘⇧T and the mouse-selection/emoji lines at integration.
+- `w3-gaps` → `feat/w12-editor-select`: mouse block selection, ⌘A escalation, inline emoji (running).
+- `w2-media` → `feat/w12-db-calc`: table calculations, "Me" filter, wrap cells (running).
+- `w2-mentions` → `feat/w12-duplicate`: duplicate with sub-pages (running).
+- `w5-a11y` → `feat/w12-p2`: search sort, copy link to heading, expand/collapse toggles, ⌘L, reopen tab, peek prev/next, image actions — written as WIP commits, not yet verified.
+- `w3-import` → `feat/w12-flakes`: intermittent-failure hunt (10 tests listed in its brief), `FLAKE-LOG.md` (running).
+Queued, not started: regional preferences (week start/date/time format — after db-calc and backlog merge; shares `views.tsx`), merge of `feat/native-ios` (2 conflicts, then an iOS rebuild + device pass), AI for members (owner decision), formulas/timeline (later wave).
+Each branch: merge main → root typecheck → `both-run.sh <worktree> <port> <tag>` detached (server one file at a time, then 10 browser shards) → independent review → `git merge --ff-only`.
+
+## In flight at 2026-10-04 late evening (usage limit reached again) — READ FIRST
+
+Main = this commit's parent `acc7f8f9` (assignment notifications `feat/w12-notify` merged; server 2,415/0, browser all passed). Nothing deployed.
+
+| Worktree | Branch | State / next step |
+|---|---|---|
+| w4-db | feat/w11-backlog | Review found B1 (reconcile rotation never repairs cut sweeps) + S1–S5; fixes sent to the agent. Then: merge main, both suites, merge. |
+| w2-mentions | feat/w12-duplicate | Re-review found B3 (copy re-publishes a page excluded from a public site) + S1–S6; fixes sent. Baseline suites: server 2,420/0; browser 2 failures not in duplicate code. |
+| w3-gaps | feat/w12-editor-select | Review: no blocker, S1–S9 (cut in embedded field deletes blocks; selection jumps after merged remote update; table resize arms takeover; …) sent. Suites were queued (`esel` logs in scratchpad). |
+| w4-editor | feat/w11-deviations | Built; must merge main itself (5 conflicts; rules sent), run a11y + WebKit, conversion follow-ups. |
+| w4-shell | feat/w14-visual (on feat/w11-shots) | Fixing 48 visual defects from `ACCEPTANCE-SHOTS.md`. Gallery files in `apps/web/acceptance-gallery-{1,2,3}.html` (sent to owner). |
+| w2-sharing | feat/w14-icons | Custom page icons (uploaded image) + per-device toggle memory. Just started. |
+| collab-convert | feat/w9-gaps | Suggesting mode etc.; WIP `bdfbccd0`, awaiting final report → suites → review → merge. |
+| w3-import | feat/w12-flakes | Five root-cause commits (vault switcher race, three @-menu races, …); last verification chain queued. Add `notion-a11y-keyboard.spec.ts:51` and `:179`, `editor-blocks.spec.ts:264`, axe `page-cover-dialog` to its list. |
+| w2-media | feat/w12-db-calc | Table calculations, "Me" filter, wrap cells — running. |
+| w5-a11y | feat/w12-p2 | P2 conveniences — verifying. |
+| w3-verify | feat/w13-appearance | System theme, phone sheet animation, regional prefs (settings half) — running. |
+| w2-shell | feat/w13-ios-merge | Merge committed `18da6c7c`; cargo lib 101 passed; remaining spec runs queued. No builds. |
+
+Process per branch: merge main → root typecheck → `scratchpad/both-run.sh` (or `after-run.sh <prev log> …` to chain) → independent review → fixes → `git merge --ff-only`. Never start suites on an unresolved merge (CLAUDE.md conflicts are common: keep both sides).
+
+Open items: one unexplained `/health` miss at 21:54 with 77% memory free (recovered at once, no pm2 restart). Owner decisions added this session: ingest-owned pages cannot be duplicated by anyone (owner exception?); property type conversion not offered on ingest tags incl. `task`; block selection — non-editors keep native text selection across blocks, editors get the toolbar on block selections. Queued, not started: database regional-prefs call sites, timeline view sizing, verification pass 4, AI for members (owner decision).

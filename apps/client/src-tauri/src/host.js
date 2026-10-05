@@ -255,6 +255,37 @@
     return ipc("export_note", { content: String(content), suggestedName: String(suggestedName), format: String(format) });
   }
 
+  // Incoming links (links.rs): the shell hands over ONE validated client path
+  // ("/page/<id>", "/inbox[/<id>]", "/agent[/<id>]") — never a URL, and never
+  // by navigating. It is held here until the signed-in app takes it (the app
+  // may not have mounted yet), and announced with a payload-free DOM event so
+  // the path can only come from this frozen object. Kept in memory only: a
+  // link that nobody took before a reload is the shell's to deliver again.
+  var pendingLink = null;
+  function openLink(path) {
+    if (typeof path !== "string" || path.length > 256 || path.charAt(0) !== "/") return;
+    pendingLink = path;
+    window.dispatchEvent(new CustomEvent("prism:open-link"));
+  }
+  function takePendingLink() {
+    var p = pendingLink;
+    pendingLink = null;
+    return p;
+  }
+
+  // Export archives (export_archive.rs): the shell downloads the finished job's
+  // ZIP itself and writes it where the user says in a native save panel. We pass
+  // the job id and a suggested name — never a URL, a path or the token.
+  // Resolves with the saved file's name, or null when the user cancelled.
+  function saveExport(jobId, suggestedName) {
+    return ipc("save_export", { jobId: String(jobId), suggestedName: String(suggestedName), cancel: false });
+  }
+  function cancelExportSave(jobId) {
+    return ipc("save_export", { jobId: String(jobId), suggestedName: "", cancel: true }).catch(function () {
+      return null;
+    });
+  }
+
   Object.defineProperty(window, "__PRISM_SHELL__", {
     value: Object.freeze({
       showServerSettings: showServerSettings,
@@ -262,6 +293,10 @@
       toast: toast,
       notify: notify,
       exportNote: exportNote,
+      openLink: openLink,
+      takePendingLink: takePendingLink,
+      saveExport: saveExport,
+      cancelExportSave: cancelExportSave,
     }),
     writable: false,
     configurable: false,
