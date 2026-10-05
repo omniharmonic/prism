@@ -1,10 +1,15 @@
-//! Process-wide client state: the server origin (fixed for the process: the
-//! CSP is built from it at startup, so changing it restarts the app), the
-//! device-token cache in front of the keychain, the in-flight sign-in, and the
-//! single-use grant for the Server settings dialog.
+//! Process-wide client state: the server origin, the device-token cache in
+//! front of the keychain, the in-flight sign-in, and the single-use grant for
+//! the Server settings dialog.
+//!
+//! The origin is fixed for the process on desktop (the CSP is built from it at
+//! startup, so changing it restarts the app). On iOS a process can't restart
+//! itself, so the origin may be unset (first run: "Enter your server") and is
+//! set or cleared in place; the main webview's CSP and origin meta follow it on
+//! the next page load (window.rs `on_web_resource_request`).
 
 use std::path::PathBuf;
-use std::sync::Mutex;
+use std::sync::{Mutex, RwLock};
 use std::time::{Duration, Instant};
 
 use tokio::sync::oneshot;
@@ -23,7 +28,7 @@ struct TokenCache {
 }
 
 pub struct AppState {
-    pub origin: ServerOrigin,
+    origin: RwLock<Option<ServerOrigin>>,
     /// Keychain service name = the app identifier.
     service: String,
     pub settings_dir: Option<PathBuf>,
@@ -33,9 +38,13 @@ pub struct AppState {
 }
 
 impl AppState {
-    pub fn new(origin: ServerOrigin, service: String, settings_dir: Option<PathBuf>) -> Self {
+    pub fn new(
+        origin: Option<ServerOrigin>,
+        service: String,
+        settings_dir: Option<PathBuf>,
+    ) -> Self {
         Self {
-            origin,
+            origin: RwLock::new(origin),
             service,
             settings_dir,
             token: Default::default(),
@@ -44,13 +53,42 @@ impl AppState {
         }
     }
 
+    /// The configured server, or None before the iOS first-run screen saved one.
+    pub fn origin(&self) -> Option<ServerOrigin> {
+        self.origin
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
+    /// The configured server, or the error every server-bound command returns
+    /// while none is set.
+    pub fn require_origin(&self) -> Result<ServerOrigin, String> {
+        self.origin()
+            .ok_or_else(|| "No Prism Server is set up yet.".to_string())
+    }
+
+    /// Point the client at another server (or none). The token cache is reset,
+    /// so the next `token()` reads the keychain item of the NEW origin (each
+    /// origin has its own item). Mobile only: desktop restarts instead.
+    #[cfg_attr(not(mobile), allow(dead_code))]
+    pub async fn set_origin(&self, origin: Option<ServerOrigin>) {
+        let mut cache = self.token.lock().await;
+        *self.origin.write().unwrap_or_else(|e| e.into_inner()) = origin;
+        cache.token = None;
+        cache.loaded = false;
+    }
+
     /// The device token for this origin. The keychain is read once per
     /// process; after that the in-memory copy serves every request (getToken is
     /// called per fetch).
     pub async fn token(&self) -> Result<Option<String>, String> {
         let mut cache = self.token.lock().await;
         if !cache.loaded {
-            let (service, account) = (self.service.clone(), self.origin.as_str().to_string());
+            let Some(origin) = self.origin() else {
+                return Ok(None);
+            };
+            let (service, account) = (self.service.clone(), origin.as_str().to_string());
             let t = blocking(move || secure_store::get(&service, &account)).await?;
             cache.token = t;
             cache.loaded = true;
@@ -60,9 +98,10 @@ impl AppState {
 
     pub async fn store_token(&self, token: String) -> Result<(), String> {
         let mut cache = self.token.lock().await;
+        let origin = self.require_origin()?;
         let (service, account, t) = (
             self.service.clone(),
-            self.origin.as_str().to_string(),
+            origin.as_str().to_string(),
             token.clone(),
         );
         blocking(move || secure_store::set(&service, &account, &t)).await?;
@@ -82,7 +121,8 @@ impl AppState {
             }
         }
         drop(cache);
-        let (service, account) = (self.service.clone(), self.origin.as_str().to_string());
+        let origin = self.origin()?;
+        let (service, account) = (self.service.clone(), origin.as_str().to_string());
         blocking(move || secure_store::get(&service, &account))
             .await
             .ok()
@@ -96,7 +136,10 @@ impl AppState {
         let mut cache = self.token.lock().await;
         cache.token = None;
         cache.loaded = true;
-        let (service, account) = (self.service.clone(), self.origin.as_str().to_string());
+        let Some(origin) = self.origin() else {
+            return Ok(());
+        };
+        let (service, account) = (self.service.clone(), origin.as_str().to_string());
         blocking(move || secure_store::delete(&service, &account)).await
     }
 
@@ -140,7 +183,7 @@ mod tests {
 
     fn state() -> AppState {
         AppState::new(
-            ServerOrigin::parse("https://prism.example.com").unwrap(),
+            Some(ServerOrigin::parse("https://prism.example.com").unwrap()),
             "test".into(),
             None,
         )
@@ -165,6 +208,40 @@ mod tests {
         assert!(!s.take_settings_grant(&g2), "and the failed try burned it");
         let g3 = s.mint_settings_grant();
         assert!(s.take_settings_grant(&g3));
+    }
+
+    #[tokio::test]
+    async fn unconfigured_origin_has_no_token_and_refuses_to_store() {
+        let s = AppState::new(None, "test".into(), None);
+        assert_eq!(s.origin(), None);
+        assert!(s.require_origin().is_err());
+        assert_eq!(
+            s.token().await,
+            Ok(None),
+            "no server = signed out, no keychain read"
+        );
+        assert!(s.store_token("pd_x".into()).await.is_err());
+        assert_eq!(s.known_token().await, None);
+        assert_eq!(s.forget_token().await, Ok(()));
+    }
+
+    #[tokio::test]
+    async fn set_origin_resets_the_token_cache() {
+        let s = AppState::new(None, "test".into(), None);
+        // Prime the cache as "loaded, no token" for the unconfigured state.
+        {
+            let mut c = s.token.lock().await;
+            c.loaded = true;
+            c.token = Some("pd_old-server".into());
+        }
+        let o = ServerOrigin::parse("https://prism.example.com").unwrap();
+        s.set_origin(Some(o.clone())).await;
+        assert_eq!(s.origin(), Some(o));
+        let c = s.token.lock().await;
+        assert!(
+            !c.loaded && c.token.is_none(),
+            "the old server's token is never served for the new one"
+        );
     }
 
     #[test]

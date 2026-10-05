@@ -2,9 +2,9 @@
 //! so they are what stands between a compromised page and an action the user
 //! did not intend (opening a URL, repointing the app at another server).
 //!
-//! macOS: an app-modal `NSAlert` on the main thread. Any other platform, or any
-//! failure to show the dialog, answers **no**. iOS gets a `UIAlertController`
-//! here in WP5.
+//! macOS: an app-modal `NSAlert` on the main thread. iOS: a `UIAlertController`
+//! (plugins/prism-ios). Any other platform, or any failure to show the dialog,
+//! answers **no**.
 
 use tauri::{AppHandle, Runtime};
 
@@ -18,6 +18,25 @@ pub struct Prompt {
 }
 
 /// Ask the user; `true` only on an explicit click on the confirm button.
+#[cfg(target_os = "ios")]
+pub async fn ask<R: Runtime>(app: &AppHandle<R>, prompt: Prompt) -> bool {
+    let Ok(ios) = crate::ios::plugin(app) else {
+        return false;
+    };
+    // A sign-out / server change is destructive; opening a link is not.
+    let destructive = prompt.cancel_is_default;
+    ios.confirm(tauri_plugin_prism_ios::ConfirmArgs {
+        title: &prompt.title,
+        message: &prompt.body,
+        confirm: &prompt.confirm,
+        cancel_is_default: prompt.cancel_is_default,
+        destructive,
+    })
+    .await
+}
+
+/// Ask the user; `true` only on an explicit click on the confirm button.
+#[cfg(not(target_os = "ios"))]
 pub async fn ask<R: Runtime>(app: &AppHandle<R>, prompt: Prompt) -> bool {
     let (tx, rx) = tokio::sync::oneshot::channel();
     let scheduled = app.run_on_main_thread(move || {
@@ -57,7 +76,7 @@ fn show(p: &Prompt) -> bool {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "ios")))]
 fn show(_p: &Prompt) -> bool {
     false
 }

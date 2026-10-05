@@ -51,6 +51,10 @@ const PWA_ORIGIN = (import.meta.env.VITE_GATEWAY_URL as string | undefined)?.rep
 export function gatewayOrigin(): string {
   if (!isNative) return PWA_ORIGIN;
   const fromHost = getHost()?.apiOrigin;
+  // The iOS shell starts with no server (first run) and owns the origin entirely:
+  // never fall back to a build-time one there.
+  const iosShell = (window as unknown as { __PRISM_SHELL__?: { platform?: string } }).__PRISM_SHELL__?.platform === "ios";
+  if (iosShell) return (fromHost || "").replace(/\/+$/, "");
   const fromBuild = import.meta.env.VITE_PRISM_API_ORIGIN as string | undefined;
   return (fromHost || fromBuild || "").replace(/\/+$/, "");
 }

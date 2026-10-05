@@ -38,7 +38,8 @@ async function installShell(page: Page) {
         return Promise.resolve(null);
       },
     };
-    new Function(source.replace("__PRISM_ORIGIN__", JSON.stringify(location.origin)))();
+    // host.rs replaces both placeholders with JSON string literals, once each.
+    new Function(source.replace("__PRISM_ORIGIN__", JSON.stringify(location.origin)).replace("__PRISM_PLATFORM__", JSON.stringify("macos")))();
   }, HOST_JS);
 }
 const saves = (page: Page) => page.evaluate(() => ((window as any).ipcCalls as Call[]).filter((c) => c.cmd === "save_export"));
