@@ -10,7 +10,7 @@ import { queryKeys } from "../parachute/queries";
 import { convertApi } from "../parachute/client";
 import { inferContentType } from "../schemas/content-types";
 import type { Note } from "../types";
-import { LOCK_KEY, ORDER_KEY, PAGE_STYLE_KEY, TEMPLATES_FOLDER, duplicateCopy, templateSource, referencesAttachments, copyFilesNotice, isLocked, pageStyleOf, pageTitle, type MoveResult } from "./model";
+import { LOCK_KEY, ORDER_KEY, PAGE_STYLE_KEY, TEMPLATES_FOLDER, PagesRequestError, duplicateCopy, duplicateSummary, templateSource, referencesAttachments, copyFilesNotice, isLocked, isTrashed, isUnder, pageStyleOf, pageTitle, type MoveResult } from "./model";
 import { editorSaveState, flushPendingSaves } from "../../app/hooks/useAutoSave";
 import { useCollabSharing } from "../../data/CollabSharing";
 import { registeredEditor } from "../agent/documentSnapshots";
@@ -38,11 +38,17 @@ function download(name: string, body: string, type: string) {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
+/** One id per Duplicate click: the server finishes THAT copy when it is sent again. */
+const newRequestId = (): string => {
+  const c = (globalThis as { crypto?: { randomUUID?: () => string } }).crypto;
+  return `dup-${c?.randomUUID ? c.randomUUID().replace(/-/g, "") : `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 12)}`}`;
+};
+
 export function usePageActions() {
   const client = useVaultClient();
   const queryClient = useQueryClient();
   const ui = usePagesUI;
-  const toast = (message: string, extra?: { tone?: "info" | "error"; action?: { label: string; run: () => void } }) =>
+  const toast = (message: string, extra?: { tone?: "info" | "error"; action?: { label: string; run: () => void }; secondary?: { label: string; run: () => void } }) =>
     ui.getState().showToast({ message, ...extra });
   const refresh = () => queryClient.invalidateQueries({ queryKey: queryKeys.vault.all });
   const fail = (e: unknown, fallback: string) => toast(ops.pageErrorText(e, fallback), { tone: "error" });
@@ -107,6 +113,93 @@ export function usePageActions() {
     }
   };
 
+  // ── Duplicate (NP-PG-18) ───────────────────────────────────────────────────
+  /** Shells without the server route (the legacy desktop): the ONE page is copied on
+   *  the device, as before — and the toast says so when it has sub-pages. */
+  const duplicateSingle = async (page: PageRef) => {
+    try {
+      const [note, tree] = await Promise.all([client.getNote(page.id, { fresh: true }), client.listTree()]);
+      // A private page's duplicate stays private — to the person duplicating it.
+      const priv = note.metadata?.prism_visibility === "private";
+      const limited = Array.isArray((note as Note & { _caps?: string[] })._caps);
+      const copy = duplicateCopy(note, tree.map((t) => t.path), { creator: priv && !limited ? await viewerEmail() : null });
+      const created = await client.createNote(copy);
+      // The copy gets its OWN files (before it opens): until then its links name the
+      // original page's attachments, which only people who can see the original load.
+      let filesNote = "";
+      if (client.copyAttachments && referencesAttachments(copy)) filesNote = copyFilesNotice(await client.copyAttachments(created.id).catch(() => null));
+      await refresh();
+      useUIStore.getState().openTab(created.id, pageTitle(created.path ?? copy.path), inferContentType(created));
+      const left = note.path ? tree.filter((t) => isUnder(t.path, note.path!) && !isTrashed(t)).length : 0;
+      toast(`Duplicated “${page.title}”${left ? `. Its ${left === 1 ? "sub-page was" : `${left} sub-pages were`} not copied` : ""}${filesNote ? `. ${filesNote}` : ""}`);
+    } catch (e) {
+      fail(e, "Couldn’t duplicate this page.");
+    }
+  };
+
+  /** Move a finished (or half-finished) copy to the Trash: the root takes its group with it. */
+  const undoDuplicate = async (copyId: string, title: string) => {
+    try {
+      const { trashed } = await ops.trashPage(client, copyId);
+      for (const id of trashed.length ? trashed : [copyId]) useUIStore.getState().closeTabs(id);
+      await refresh();
+      toast(`Moved the copy of “${title}” to Trash`);
+    } catch (e) {
+      fail(e, "Couldn’t undo the duplicate. The copy is still there.");
+    }
+  };
+
+  /**
+   * The page AND its sub-pages, copied by the server in one retryable request
+   * (`requestId`): "Finish" after a partial copy sends the same id again and can
+   * never make a second copy; "Undo" moves the whole copy to the Trash.
+   */
+  const duplicateTree = async (page: PageRef, request: { requestId: string; confirmShared?: boolean }): Promise<void> => {
+    const again = (extra: { confirmShared?: boolean } = {}) => void duplicateTree(page, { ...request, ...extra });
+    try {
+      // Unsaved typing goes in first, so the copy holds what is on screen.
+      await flushPendingSaves(page.id).catch(() => {});
+      // A large group takes a while: say what is happening until the answer is in.
+      const below = (await client.listTree().catch(() => [])).filter((t) => {
+        const self = t.id === page.id;
+        return !self && !!page.path && isUnder(t.path, page.path) && !isTrashed(t);
+      }).length;
+      if (below >= 10) toast(`Duplicating “${page.title}” and its ${below} sub-pages…`);
+      const result = await client.duplicatePage!(page.id, request);
+      // Files the server did not get to within its budget: the existing per-page route.
+      let filesNote = result.filesFailed ? "Some files were not copied." : "";
+      for (const id of result.filesPending) {
+        const note = copyFilesNotice(client.copyAttachments ? await client.copyAttachments(id).catch(() => null) : null);
+        if (note) filesNote = "Some files were not copied.";
+      }
+      await refresh();
+      if (!result.ok) {
+        toast(`Copied ${result.created} of ${result.created + result.remaining} pages of “${page.title}”.`, {
+          tone: "error",
+          action: { label: "Finish", run: () => again() },
+          secondary: { label: "Undo", run: () => void undoDuplicate(result.id, page.title) },
+        });
+        return;
+      }
+      const title = result.title || pageTitle(result.path);
+      ui.getState().reveal(result.path.includes("/") ? result.path.slice(0, result.path.lastIndexOf("/")) : result.path);
+      const opened = await client.getNote(result.id).catch(() => null);
+      useUIStore.getState().openTab(result.id, title, opened ? inferContentType(opened) : "document");
+      toast(`${duplicateSummary(page.title, result)}${filesNote ? `. ${filesNote}` : ""}`, { action: { label: "Undo", run: () => void undoDuplicate(result.id, page.title) } });
+    } catch (e) {
+      if (e instanceof PagesRequestError && e.code === "confirm_shared") {
+        toast(e.message, { action: { label: "Duplicate", run: () => again({ confirmShared: true }) } });
+        return;
+      }
+      // A server from before this route: the vault (owner) answers a plain 404/405.
+      if (e instanceof PagesRequestError && (e.status === 405 || e.status === 501 || (e.status === 404 && e.code !== "not_found"))) return duplicateSingle(page);
+      fail(e, "Couldn’t duplicate this page. Nothing was changed.");
+    }
+  };
+
+  const duplicate = (page: PageRef): Promise<void> =>
+    client.duplicatePage ? duplicateTree(page, { requestId: newRequestId() }) : duplicateSingle(page);
+
   return {
     move,
     restore,
@@ -148,25 +241,7 @@ export function usePageActions() {
       }
     },
 
-    duplicate: async (page: PageRef) => {
-      try {
-        const [note, tree] = await Promise.all([client.getNote(page.id, { fresh: true }), client.listTree()]);
-        // A private page's duplicate stays private — to the person duplicating it.
-        const priv = note.metadata?.prism_visibility === "private";
-        const limited = Array.isArray((note as Note & { _caps?: string[] })._caps);
-        const copy = duplicateCopy(note, tree.map((t) => t.path), { creator: priv && !limited ? await viewerEmail() : null });
-        const created = await client.createNote(copy);
-        // The copy gets its OWN files (before it opens): until then its links name the
-        // original page's attachments, which only people who can see the original load.
-        let filesNote = "";
-        if (client.copyAttachments && referencesAttachments(copy)) filesNote = copyFilesNotice(await client.copyAttachments(created.id).catch(() => null));
-        await refresh();
-        useUIStore.getState().openTab(created.id, pageTitle(created.path ?? copy.path), inferContentType(created));
-        toast(`Duplicated “${page.title}”${filesNote ? `. ${filesNote}` : ""}`);
-      } catch (e) {
-        fail(e, "Couldn’t duplicate this page.");
-      }
-    },
+    duplicate,
 
     /**
      * NP-TX-01 "Save as template": the page's body, icon, cover, properties and tags

@@ -282,7 +282,7 @@ export { TranscriptReviewClientProvider, useTranscriptReviewClient, type Transcr
 export { eligiblePublicationNavigation, parsePublicationNavigation, type PublicationNavigation } from "./lib/publishing/navigation";
 // Pages: nested-page moves, Trash, synced preferences (lib/pages/model.ts).
 export { renamePageFromTitle, TitleRenameRefused } from "./lib/pages/titleRename";
-export { PagesRequestError, TRASH_TAG, sanitizePreferences, type MoveRequest, type MoveResult, type TrashItem, type TrashListing, type PreferencesSnapshot, type PagePreferences } from "./lib/pages/model";
+export { PagesRequestError, TRASH_TAG, sanitizePreferences, type MoveRequest, type MoveResult, type DuplicateRequest, type DuplicateResult, type TrashItem, type TrashListing, type PreferencesSnapshot, type PagePreferences } from "./lib/pages/model";
 
 // Sharing / review reads (wave 2D)
 export type { SharedItem, SharedWithMeListing, IndexedThread, IndexedComment, WriterInfo, PageActivity, AccessPreview } from "./lib/sharing/types";
