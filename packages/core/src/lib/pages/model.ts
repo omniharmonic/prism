@@ -548,18 +548,24 @@ export interface DuplicateResult {
   droppedTags: number;
   /** Private pages copied — they stayed private, to this person. */
   privateKept: number;
-  /** Copies made private because their original (or a page above it) had its own sharing. */
+  /** Copies made private because their original (or a page above it) had its own sharing, or was left out of a public site. */
   sharingKept: number;
+  /** Very large pages copied as they are (suggestions, comment anchors and links to the originals included). */
+  uncleaned: number;
+  /** A page open in an editor could not be saved first: its copy may lack the latest typing. */
+  liveIncomplete: boolean;
   /** Copies whose files are not all their own yet: continue with `copyAttachments(id)`. */
   filesPending: string[];
   filesFailed: number;
 }
 /** What the toast says after a duplicate: "Duplicated “X”" / "Duplicated 4 pages (1 skipped)". */
-export function duplicateSummary(title: string, r: Pick<DuplicateResult, "created" | "skipped" | "droppedTags" | "privateKept"> & { sharingKept?: number }): string {
+export function duplicateSummary(title: string, r: Pick<DuplicateResult, "created" | "skipped" | "droppedTags" | "privateKept"> & { sharingKept?: number; uncleaned?: number; liveIncomplete?: boolean }): string {
   const skipped = r.skipped ? ` (${r.skipped} skipped)` : "";
   let text = r.created > 1 || r.skipped ? `Duplicated ${r.created} ${r.created === 1 ? "page" : "pages"}${skipped}` : `Duplicated “${title}”`;
   if (r.privateKept) text += `. ${r.privateKept === 1 ? "A private page" : `${r.privateKept} private pages`} stayed private to you`;
   if (r.sharingKept) text += `. ${r.sharingKept === 1 ? "1 page" : `${r.sharingKept} pages`} kept private because ${r.sharingKept === 1 ? "it" : "they"} had ${r.sharingKept === 1 ? "its" : "their"} own sharing`;
+  if (r.uncleaned) text += `. ${r.uncleaned === 1 ? "1 very large page was" : `${r.uncleaned} very large pages were`} copied as ${r.uncleaned === 1 ? "it is" : "they are"}`;
+  if (r.liveIncomplete) text += ". Pages open in an editor may be copied without their latest typing";
   if (r.droppedTags) text += `. ${r.droppedTags === 1 ? "A tag you can’t add was" : `${r.droppedTags} tags you can’t add were`} left off`;
   return text;
 }

@@ -56,6 +56,8 @@ export function BulkBar({ rows, props, dbPath, canEditRow, canCreate, onDone, on
   const [editOpen, setEditOpen] = useState(false);
   const [field, setField] = useState<string>("");
   const [busy, setBusy] = useState(false);
+  /** What a long bulk action is doing right now ("Duplicating 21 of 50…"), or "". */
+  const [progress, setProgress] = useState("");
   const editable = props.filter((p) => !p.system && !isSystemKey(p.key));
   const def = editable.find((p) => p.key === field) ?? editable[0];
   const titleOf = new Map(rows.map((r) => [r.id, noteTitle(r)]));
@@ -125,16 +127,36 @@ export function BulkBar({ rows, props, dbPath, canEditRow, canCreate, onDone, on
     const failed: Array<{ title: string; error: string }> = [];
     let filesMissed = 0;
     let keptPrivate = 0;
-    for (const r of rows.slice(0, 50)) {
+    const picked = rows.slice(0, 50);
+    /** One row through the server route. The server allows a limited number per minute and
+     *  one at a time: a 429 / "busy" is WAITED out (its Retry-After, ≤ 65 s, a few times)
+     *  and the SAME request is sent again — never a new copy, never a generic failure. */
+    const viaRoute = async (id: string, request: { requestId: string; confirmShared: boolean }, label: string) => {
+      for (let waits = 0; ; waits++) {
+        try {
+          return await client.duplicatePage!(id, request);
+        } catch (e) {
+          const err = e as { status?: number; code?: string; body?: { retryAfter?: unknown } };
+          const wait = err.status === 429 || err.code === "busy" ? Math.min(65, Math.max(1, Number(err.body?.retryAfter) || 5)) : 0;
+          if (!wait || waits >= 6) throw e;
+          setProgress(`${label} — waiting for the server (${wait} s)`);
+          await new Promise((r) => setTimeout(r, wait * 1000));
+          setProgress(label);
+        }
+      }
+    };
+    for (const [index, r] of picked.entries()) {
+      const label = `Duplicating ${index + 1} of ${picked.length}…`;
+      if (picked.length > 1) setProgress(label);
       try {
         // The server route (NP-PG-18): permissions, sub-pages, links and files in one
         // retryable request per row. A shell or server without it copies the row here.
         if (client.duplicatePage) {
           const request = { requestId: `dup-${(globalThis.crypto?.randomUUID?.() ?? `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 12)}`).replace(/-/g, "")}`, confirmShared: true };
           try {
-            let result = await client.duplicatePage(r.id, request);
+            let result = await viaRoute(r.id, request, label);
             // Partly copied (a row with many sub-pages): the same request finishes it.
-            for (let i = 0; !result.ok && i < 5; i++) result = await client.duplicatePage(r.id, request);
+            for (let i = 0; !result.ok && i < 5; i++) result = await viaRoute(r.id, request, label);
             made.push(result.id);
             keptPrivate += result.privateKept + result.sharingKept;
             if (!result.ok) failed.push({ title: noteTitle(r), error: "error" });
@@ -169,6 +191,7 @@ export function BulkBar({ rows, props, dbPath, canEditRow, canCreate, onDone, on
       }
     }
     setBusy(false);
+    setProgress("");
     refresh();
     onClear();
     const capped = (rows.length > 50 ? " Only the first 50 were duplicated." : "") + (keptPrivate ? ` ${keptPrivate} ${keptPrivate === 1 ? "copy is" : "copies are"} private to you.` : "") + (filesMissed ? ` Some files were not copied on ${filesMissed} ${filesMissed === 1 ? "page" : "pages"}.` : "");
@@ -188,7 +211,7 @@ export function BulkBar({ rows, props, dbPath, canEditRow, canCreate, onDone, on
   const editableCount = rows.filter(canEditRow).length;
   return (
     <div className="db-bulk" role="toolbar" aria-label="Selected pages">
-      <span className="db-bulk-count" aria-live="polite">{rows.length} selected</span>
+      <span className="db-bulk-count" aria-live="polite">{progress || `${rows.length} selected`}</span>
       {editable.length > 0 && editableCount > 0 && (
         <button ref={editAnchor} type="button" className="db-control" aria-haspopup="dialog" aria-expanded={editOpen} disabled={busy} onClick={() => setEditOpen((o) => !o)}><Pencil size={13} aria-hidden="true" /> Edit property</button>
       )}

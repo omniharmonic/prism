@@ -117,6 +117,8 @@ export async function duplicatePage(noteId: string, request: DuplicateRequest): 
     droppedTags: n(data.droppedTags),
     privateKept: n(data.privateKept),
     sharingKept: n(data.sharingKept),
+    uncleaned: n(data.uncleaned),
+    liveIncomplete: data.liveIncomplete === true,
     filesPending: Array.isArray(data.filesPending) ? data.filesPending.filter((x): x is string => typeof x === "string") : [],
     filesFailed: n((data.files as { failed?: unknown } | undefined)?.failed),
   };

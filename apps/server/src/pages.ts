@@ -427,7 +427,7 @@ export const pathKey = (p: string): string => p.normalize("NFC").toLowerCase();
  * Looked up in both Unicode forms (the vault does not normalise). "ambiguous" = the
  * vault already holds two notes on that key.
  */
-async function noteAtPath(entry: VaultEntry, path: string): Promise<Note | "ambiguous" | null> {
+export async function noteAtPath(entry: VaultEntry, path: string): Promise<Note | "ambiguous" | null> {
   const vc = vaultClient(entry.id);
   for (const form of new Set([path.normalize("NFC"), path.normalize("NFD")])) {
     try {

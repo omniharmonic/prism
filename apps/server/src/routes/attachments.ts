@@ -460,6 +460,20 @@ attachmentsApi.post("/notes/:id/attachments/copy", bodyLimit({ maxSize: 1024, on
   return c.json({ ok: true, ...out });
 });
 
+/**
+ * The copy route's own gate, for a caller that runs {@link copyNoteAttachments} without
+ * going through the route ("Duplicate with sub-pages"): the same caps on the COPY and
+ * the same rate bucket — spent here exactly as a request would spend it.
+ */
+export function attachmentCopyGate(actor: Actor & { kind: "user" }, note: Note): "ok" | "limited" | "denied" {
+  if (isTrashed(note)) return "denied";
+  if (!isAdmin(actor)) {
+    const caps = capsFor(actor, ref(note));
+    if (!caps.has("view") || !caps.has("edit") || systemNoteReason(note) || isLocked(note)) return "denied";
+  }
+  return consumeRateLimit(`attach-copy:${actorKey(actor)}`, Math.max(1, Math.floor(cfg.uploadsPerMinute / 3)), 60_000) === null ? "ok" : "limited";
+}
+
 export interface AttachmentCopyResult { copied: number; failed: number; skipped: number; errors: number; more: boolean; updatedAt: string | null }
 export type AttachmentCopyError = { error: "busy" | "live" | "conflict" | "vault_unreachable" };
 

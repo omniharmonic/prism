@@ -9,12 +9,13 @@ import { test, beforeEach, afterEach } from "node:test";
 import { createHash } from "node:crypto";
 import assert from "node:assert/strict";
 import { api } from "../src/routes/api";
+import { publish } from "../src/routes/publish";
 import { resetTreeForTests } from "../src/tree";
 import { resetPagesForTests } from "../src/pages";
 import { configureDuplicate, resetDuplicateForTests } from "../src/routes/duplicate";
 import { configureAttachments } from "../src/routes/attachments";
 import { resetAttachmentsForTests, getAttachment } from "../src/attachments";
-import { addGrant, setAccount, setMembership } from "../src/db";
+import { addGrant, setAccount, setMembership, createPublication, updatePublication, addVaultEntry } from "../src/db";
 import { listActionAudit } from "../src/actions/store";
 import { cleanCopyBody, repointWikilinks } from "../../../packages/core/src/lib/pages/copyBody";
 import { TRASH_TAG, LOCK_KEY, ORDER_KEY } from "@prism/core/pages";
@@ -46,7 +47,7 @@ beforeEach(() => {
     id: "p",
     path: "Docs/Plan",
     tags: ["doc"],
-    metadata: { icon: "🗺️", cover: "gradient:dawn", [LOCK_KEY]: true, [ORDER_KEY]: 5, prism_creator: CAROL, prism_last_writer: "u_abc", source_id: "ext-1", status: "open" },
+    metadata: { icon: "🗺️", cover: "gradient:dawn", [LOCK_KEY]: true, [ORDER_KEY]: 5, prism_creator: CAROL, prism_last_writer: "u_abc", status: "open" },
     content:
       '<p>Intro <span data-type="mention" data-kind="page" data-id="c2" data-mention-uid="uidA" data-reminder="2030-01-01">x</span> and <span data-type="mention" data-kind="page" data-id="out" data-mention-uid="uidB">y</span></p>' +
       '<div data-type="child-page" data-page-id="c1"></div><div data-type="child-page" data-page-id="c2"></div><div data-type="child-page" data-page-id="out"></div>' +
@@ -124,7 +125,6 @@ test("metadata is an allowlist: properties, icon and cover travel; identity, loc
   assert.equal(m.status, "open");
   assert.equal(m.title, "Plan (copy)");
   assert.equal(m[LOCK_KEY], undefined);
-  assert.equal(m.source_id, undefined);
   assert.equal(m.prism_creator, OWNER, "the creator is the person duplicating");
   assert.notEqual(m.prism_last_writer, "u_abc");
   assert.match(String(m.prism_client_op), /^req-dup-\d+:[0-9a-f]{16}$/);
@@ -307,28 +307,53 @@ test("review 5: integration-owned sub-pages are left out for an admin too, and m
   for (const k of ["uid", "mailbox", "emails", "channels", "archiveOf", "transcriptNoteId"]) assert.equal(m[k], undefined, k);
 });
 
-/** Slow every vault call a little, so two requests really overlap. */
-function slowVault(ms: number): () => void {
+/** Hold the FIRST note create the server sends until `release()` — the request is then provably in flight. */
+function holdFirstCreate(): { reached: Promise<void>; release: () => void; restore: () => void } {
   const inner = globalThis.fetch;
-  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => { await new Promise((r) => setTimeout(r, ms)); return inner(input, init); }) as typeof fetch;
-  return () => { globalThis.fetch = inner; };
+  let hit!: () => void;
+  let open!: () => void;
+  const reached = new Promise<void>((r) => { hit = r; });
+  const gate = new Promise<void>((r) => { open = r; });
+  let held = false;
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = new URL(String(input instanceof Request ? input.url : input));
+    if (!held && (init?.method ?? "GET") === "POST" && url.pathname.endsWith("/api/notes")) { held = true; hit(); await gate; }
+    return inner(input, init);
+  }) as typeof fetch;
+  return { reached, release: open, restore: () => { globalThis.fetch = inner; } };
 }
 
 test("review 1: one duplicate per account and a server-wide cap — the second answers 409 busy with Retry-After and writes nothing", async () => {
   fv.put({ id: "docs", path: "Docs", content: "<p>folder page</p>" });
   pageGrant(BOB, "docs", "edit");
-  const restore = slowVault(15);
+  configureDuplicate({ perMinute: 1_000_000, pauseMs: 0, maxRunning: 1 });
+  const hold = holdFirstCreate();
   try {
-    const [a, b] = await Promise.all([dup("p", OWNER), dup("out", OWNER)]);
-    assert.deepEqual([a.status, b.status], [200, 409]);
-    assert.equal((await json(b)).error, "busy");
-    assert.equal(b.headers.get("retry-after"), "5");
+    const first = dup("p", OWNER);
+    await hold.reached; // the first duplicate is inside its create: in flight, by construction
+    const sameAccount = await dup("out", OWNER);
+    assert.equal(sameAccount.status, 409);
+    assert.equal((await json(sameAccount)).error, "busy");
+    assert.equal(sameAccount.headers.get("retry-after"), "5");
+    const otherAccount = await dup("out", BOB);
+    assert.equal(otherAccount.status, 409, "the server-wide cap");
     assert.equal(byPath("Docs/Outside (copy)"), undefined);
-    configureDuplicate({ perMinute: 1_000_000, pauseMs: 0, maxRunning: 1 });
-    const [c1, c2] = await Promise.all([dup("p", OWNER), dup("out", BOB)]);
-    assert.deepEqual([c1.status, c2.status], [200, 409]);
-  } finally { restore(); }
+    hold.release();
+    assert.equal((await first).status, 200);
+  } finally { hold.release(); hold.restore(); }
   assert.equal((await dup("out", OWNER)).status, 200, "the slot is free again");
+});
+
+test("S6: a vault call that throws does not leave the account's slot taken", async () => {
+  const inner = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = new URL(String(input instanceof Request ? input.url : input));
+    if (url.searchParams.has("path_prefix")) throw new TypeError("socket hang up");
+    return inner(input, init);
+  }) as typeof fetch;
+  try { assert.equal((await dup("p", OWNER)).status, 502); } finally { globalThis.fetch = inner; }
+  assert.equal(paths().some((x) => x!.includes("(copy)")), false);
+  assert.equal((await dup("p", OWNER)).status, 200);
 });
 
 test("review 1: past the create budget the request answers 207 and the same requestId continues", async () => {
@@ -569,4 +594,241 @@ test("repointWikilinks: full paths only, alias and anchor kept, linear on unmatc
   const tags = "<span ".repeat(100_000);
   cleanCopyBody(`<p>${tags}`, () => "u", { pageId: () => "z" });
   assert.ok(Date.now() - t0 < 2000, `took ${Date.now() - t0} ms`);
+});
+
+// ── re-review: B3, S2–S6 ─────────────────────────────────────────────────────
+
+function publishTag(slug: string, tag: string, excluded: string[] = []) {
+  createPublication({ id: slug, resource_type: "tag", resource: tag, template: "wiki", title: null, home_note_id: null, password_hash: null, theme: null, expires_at: null, created_by: OWNER });
+  addGrant({ subject_type: "anyone", subject: "*", resource_type: "tag", resource: tag, level: "view", created_by: "test" });
+  if (excluded.length) updatePublication(slug, { excluded_note_ids: JSON.stringify(excluded) });
+}
+const publicNote = (slug: string, id: string) => publish.request(`/${slug}/notes/${id}`);
+const publicSite = async (slug: string) => (await publish.request(`/${slug}`)).text();
+/** The public site refuses the note (403 or 404 — whatever it answers for a page outside the set) and sends none of its text. */
+async function notPublic(slug: string, id: string, text: string) {
+  const r = await publicNote(slug, id);
+  assert.ok(r.status === 403 || r.status === 404, `status ${r.status}`);
+  assert.ok(!(await r.text()).includes(text));
+}
+
+test("B3: the copy of a page EXCLUDED from a public site is private — the site serves neither the copy nor its text; a published page's copy is published as before", async () => {
+  fv.put({ id: "pub1", path: "Site/Public page", tags: ["site"], content: "<p>for everyone</p>" });
+  fv.put({ id: "hid1", path: "Site/Held back", tags: ["site"], content: "<p>embargoed-text</p>" });
+  publishTag("wiki", "site", ["hid1"]);
+  assert.equal((await publicNote("wiki", "pub1")).status, 200);
+  await notPublic("wiki", "hid1", "embargoed-text");
+  const copy = await json(await dup("hid1", OWNER));
+  assert.equal(copy.sharingKept, 1);
+  const stored = fv.notes.get(copy.id)!;
+  assert.deepEqual(stored.tags, ["site"], "the tag is kept — the copy is simply private");
+  assert.equal(stored.metadata!.prism_visibility, "private");
+  await notPublic("wiki", copy.id, "embargoed-text");
+  const listing = await publicSite("wiki");
+  assert.ok(!listing.includes(copy.id) && !listing.includes("Held back (copy)") && !listing.includes("embargoed-text"));
+  // Control: an ordinary published page's copy is public, as a new page with that tag would be.
+  const open = await json(await dup("pub1", OWNER));
+  assert.equal(open.sharingKept, 0);
+  assert.equal((await publicNote("wiki", open.id)).status, 200);
+  // As a SUB-page of a duplicated page, and in a folder publication.
+  fv.put({ id: "hid2", path: "Site/Public page/Draft", tags: ["site"], content: "<p>also-embargoed</p>" });
+  updatePublication("wiki", { excluded_note_ids: JSON.stringify(["hid1", "hid2"]) });
+  const tree = await json(await dup("pub1", OWNER));
+  const draft = byPath(`${tree.path}/Draft`)!;
+  assert.equal(draft.metadata!.prism_visibility, "private");
+  await notPublic("wiki", draft.id, "also-embargoed");
+  assert.ok(!(await publicSite("wiki")).includes("also-embargoed"));
+});
+
+test("S2: Finish after the copy was moved keeps it (no second copy); after a copy was deleted it answers 409 moved_or_deleted and re-creates nothing", async () => {
+  const requestId = rid();
+  const done = await json(await dup("p", OWNER, { requestId }));
+  // Renamed / moved elsewhere: the journaled id still exists — it is done.
+  fv.put({ ...fv.notes.get(done.id)!, path: "Docs/Renamed copy" });
+  const count = fv.notes.size;
+  const again = await dup("p", OWNER, { requestId });
+  assert.equal(again.status, 200, await again.clone().text());
+  assert.equal(fv.notes.size, count);
+  assert.equal(byPath("Docs/Plan (copy)"), undefined);
+  // A partial copy whose root was moved cannot be continued under a path with no page.
+  const partialId = rid();
+  const restore = failCreate(2);
+  let partial: Response;
+  try { partial = await dup("out", OWNER, { requestId: partialId, withSubpages: false }); } finally { restore(); }
+  assert.equal(partial.status, 200); // one page: nothing to fail at the second create
+  const twoId = rid();
+  const restore2 = failCreate(2);
+  try { assert.equal((await dup("c1", OWNER, { requestId: twoId })).status, 207); } finally { restore2(); }
+  const half = byPath("Docs/Plan/Alpha (copy)")!;
+  fv.put({ ...half, path: "Docs/Moved half" });
+  const before = fv.notes.size;
+  const refused = await dup("c1", OWNER, { requestId: twoId });
+  assert.equal(refused.status, 409);
+  assert.equal((await json(refused)).error, "moved_or_deleted");
+  assert.equal(fv.notes.size, before);
+  // Deleted for good: never silently made again.
+  const goneId = rid();
+  const made = await json(await dup("c2", OWNER, { requestId: goneId }));
+  fv.notes.delete(made.id);
+  const size = fv.notes.size;
+  const gone = await dup("c2", OWNER, { requestId: goneId });
+  assert.equal(gone.status, 409);
+  assert.equal((await json(gone)).error, "moved_or_deleted");
+  assert.equal(fv.notes.size, size);
+});
+
+test("S3: the byte limit is decided from the listing — no source body is read before a 413; sources are read one at a time", async () => {
+  configureDuplicate({ perMinute: 1_000_000, pauseMs: 0, maxBytes: 40 });
+  fv.calls.length = 0;
+  assert.equal((await dup("p", OWNER)).status, 413);
+  const single = fv.calls.filter((c) => c.method === "GET" && /\/api\/notes\/(c1|c2|g1)$/.test(c.path));
+  assert.equal(single.length, 0, "no sub-page was read in full for the dry count");
+});
+
+test("S3: a 6 MB subtree is copied without holding the event loop; a body over 1 MB is copied as it is and counted", async () => {
+  const para = "<p>" + "word ".repeat(40) + '<span data-type="mention" data-kind="page" data-id="big-0" data-mention-uid="u">x</span></p>';
+  const body = para.repeat(Math.ceil(200_000 / para.length));
+  fv.put({ id: "bigroot", path: "Big/Root", content: "<p>root</p>" });
+  for (let i = 0; i < 30; i++) fv.put({ id: `big-${i}`, path: `Big/Root/Page ${String(i).padStart(2, "0")}`, content: body });
+  const huge = '<p><span data-suggestion="insert">pending</span>kept</p>' + "<p>filler text</p>".repeat(70_000);
+  assert.ok(Buffer.byteLength(huge) > 1_000_000);
+  fv.put({ id: "huge", path: "Big/Root/Zz huge", content: huge });
+  let worst = 0;
+  let last = performance.now();
+  const probe = setInterval(() => { const now = performance.now(); worst = Math.max(worst, now - last - 5); last = now; }, 5);
+  let r: Response;
+  try { r = await dup("bigroot", OWNER); } finally { clearInterval(probe); }
+  assert.equal(r.status, 200, await r.clone().text());
+  const out = await json(r);
+  assert.deepEqual([out.created, out.uncleaned], [32, 1]);
+  assert.ok(worst < 250, `the event loop was held for ${Math.round(worst)} ms`);
+  assert.equal(byPath("Big/Root (copy)/Zz huge")!.content, huge, "copied byte for byte");
+  // A cleaned page: its mention of a copied sibling points at the copy.
+  assert.ok(byPath("Big/Root (copy)/Page 05")!.content.includes(`data-id="${byPath("Big/Root (copy)/Page 00")!.id}"`));
+});
+
+test("S4: a note an integration owns by its METADATA is never duplicated, wherever it is filed — but an imported page is an ordinary page", async () => {
+  fv.put({ id: "tr", path: "Docs/Plan/Call notes", tags: ["transcript"], metadata: { source: "fireflies" }, content: "<p>transcript</p>" });
+  fv.put({ id: "ev", path: "Docs/Plan/Standup", metadata: { calendarEventId: "evt-1" }, content: "<p>meeting</p>" });
+  fv.put({ id: "imp", path: "Docs/Plan/Imported", metadata: { prism_import: { v: 1, src: "a.md", hash: "h" }, source: "book" }, content: "<p>imported</p>" });
+  const body = await json(await dup("p", OWNER));
+  assert.deepEqual([body.created, body.skipped], [5, 2]);
+  assert.equal(byPath("Docs/Plan (copy)/Call notes"), undefined);
+  assert.equal(byPath("Docs/Plan (copy)/Standup"), undefined);
+  const imported = byPath("Docs/Plan (copy)/Imported")!;
+  assert.equal(imported.metadata!.prism_import, undefined, "the importer's stamp does not travel");
+  assert.equal(imported.metadata!.source, "book");
+  for (const id of ["tr", "ev"]) {
+    const r = await dup(id, OWNER);
+    assert.equal(r.status, 403);
+    assert.equal((await json(r)).error, "protected");
+  }
+});
+
+test("S5: files copied inside a duplicate spend the copy route's rate bucket and need its caps", async () => {
+  const who = "files@test.local";
+  setAccount(who, who, "hash");
+  fv.put({ id: "docs", path: "Docs", content: "<p>folder page</p>" });
+  pageGrant(who, "docs", "edit");
+  const upload = async (noteId: string) => {
+    const f = new FormData();
+    f.append("file", new Blob([new Uint8Array(PNG)]), "pic.png");
+    const up = await api.request(`/notes/${noteId}/attachments`, { method: "POST", headers: { cookie: as(OWNER), "x-prism-upload": "1" }, body: f });
+    assert.equal(up.status, 201, await up.clone().text());
+    return (await json(up)).id as string;
+  };
+  const a = await upload("c1");
+  const b = await upload("c2");
+  fv.put({ ...fv.notes.get("c1")!, content: `<p>alpha</p><img src="/api/attachments/${a}">` });
+  fv.put({ ...fv.notes.get("c2")!, content: `<p>beta</p><img src="/api/attachments/${b}">` });
+  configureAttachments({ uploadsPerMinute: 3 }); // the copy bucket = 1 per minute
+  const body = await json(await dup("p", who));
+  assert.equal(body.created, 4);
+  assert.deepEqual(body.files, { copied: 1, failed: 0 });
+  const beta = byPath("Docs/Plan (copy)/Beta")!;
+  assert.deepEqual(body.filesPending, [beta.id], "the second page is left to the copy route");
+  assert.ok(beta.content.includes(b), "untouched");
+  // …and that route's bucket for this account is spent.
+  const direct = await api.request(`/notes/${beta.id}/attachments/copy`, { method: "POST", headers: { ...J, cookie: as(who) }, body: "{}" });
+  assert.equal(direct.status, 429);
+});
+
+test("S6: what a SECOND account gets through the gateway — private copies, dropped tags and template copies are not theirs", async () => {
+  fv.put({ id: "docs", path: "Docs", content: "<p>folder page</p>" });
+  pageGrant(BOB, "docs", "edit");
+  pageGrant(CAROL, "docs", "view");
+  const seenBy = async (who: string, id: string) => (await api.request(`/notes/${id}`, { headers: { cookie: as(who) } })).status;
+  // Private stays private.
+  fv.put({ id: "mine", path: "Docs/Plan/Diary", metadata: { prism_visibility: "private", prism_creator: BOB }, content: "<p>dear diary</p>" });
+  assert.equal((await dup("p", BOB, { confirmShared: true })).status, 200);
+  const diary = byPath("Docs/Plan (copy)/Diary")!;
+  assert.equal(await seenBy(CAROL, diary.id), 404);
+  assert.equal(await seenBy(BOB, diary.id), 200);
+  assert.equal(await seenBy(CAROL, byPath("Docs/Plan (copy)/Beta")!.id), 200, "an ordinary copy is shared like its original");
+  // A dropped tag gives nobody the copy through that tag.
+  const dana = "dana@test.local";
+  setAccount(dana, dana, "hash");
+  grantUser(dana, "tag", "board", "view");
+  fv.put({ id: "tagged", path: "Loose/Tagged", tags: ["board", "open"], content: "<p>t</p>" });
+  grantUser(BOB, "tag", "open", "edit");
+  assert.equal(await seenBy(dana, "tagged"), 200);
+  const t = await json(await dup("tagged", BOB));
+  assert.equal(t.droppedTags, 1);
+  assert.equal(await seenBy(dana, t.id), 404);
+  // A member's template copy.
+  setMembership("primary", BOB, "member", OWNER);
+  fv.put({ id: "tpl", path: "Templates/Brief", tags: ["template"], metadata: { prism_visibility: "private", prism_creator: BOB }, content: "<h2>Problem</h2>" });
+  const tpl = await json(await dup("tpl", BOB));
+  assert.equal(await seenBy(CAROL, tpl.id), 404);
+  assert.equal(await seenBy(BOB, tpl.id), 200);
+});
+
+test("S6: an admin's X-Prism-Vault picks the vault — the copy is made there and nowhere else", async () => {
+  addVaultEntry({ id: "team-b", label: "Team B", url: "http://vault.test", vault: "team-b", token: "t" });
+  const store = fv.addVault("team-b");
+  fv.putIn("team-b", { id: "b1", path: "B/One", content: "<p>b</p>" });
+  fv.putIn("team-b", { id: "b2", path: "B/One/Two", content: "<p>b2</p>" });
+  const before = fv.notes.size;
+  const r = await dup("b1", OWNER, {}, { ...J, "x-prism-vault": "team-b" });
+  assert.equal(r.status, 200, await r.clone().text());
+  assert.equal((await json(r)).created, 2);
+  assert.deepEqual([...store.values()].map((n) => n.path).sort(), ["B/One", "B/One (copy)", "B/One (copy)/Two", "B/One/Two"]);
+  assert.equal(fv.notes.size, before, "nothing in the primary vault");
+  assert.equal((await dup("b1", OWNER)).status, 404, "without the header the id is looked up in the primary vault");
+});
+
+test("S6: a note at the next path that carries the op id AND is the caller's own is adopted — one page there, never two", async () => {
+  const requestId = rid();
+  const restore = failCreate(2);
+  try { assert.equal((await dup("p", OWNER, { requestId })).status, 207); } finally { restore(); }
+  fv.put({ id: "own-alpha", path: "Docs/Plan (copy)/Alpha", metadata: { prism_client_op: opOf(requestId, "c1"), prism_creator: OWNER }, content: "<p>alpha</p>" });
+  const done = await dup("p", OWNER, { requestId });
+  assert.equal(done.status, 200, await done.clone().text());
+  assert.equal((await json(done)).created, 4);
+  assert.equal([...fv.notes.values()].filter((n) => n.path === "Docs/Plan (copy)/Alpha").length, 1);
+  assert.equal(byPath("Docs/Plan (copy)/Alpha")!.id, "own-alpha");
+});
+
+test("S6 + nits: a sub-page whose new path is exported is not copied by a member, and nothing under it is created as an orphan", async () => {
+  fv.put({ id: "docs", path: "Docs", content: "<p>folder page</p>" });
+  pageGrant(BOB, "docs", "edit");
+  createPublication({ id: "folder-site", resource_type: "path", resource: "Docs/Plan (copy)/Alpha", template: "wiki", title: null, home_note_id: null, password_hash: null, theme: null, expires_at: null, created_by: OWNER });
+  const body = await json(await dup("p", BOB));
+  assert.deepEqual([body.created, body.skipped], [2, 2]);
+  assert.equal(byPath("Docs/Plan (copy)/Alpha"), undefined);
+  assert.equal(byPath("Docs/Plan (copy)/Alpha/Deep"), undefined, "no orphan under a page that was not copied");
+  assert.ok(byPath("Docs/Plan (copy)/Beta"));
+});
+
+test("nits: a hidden or trashed parent takes its sub-pages out of the copy; a path that differs only by case counts as taken", async () => {
+  fv.put({ ...fv.notes.get("c1")!, tags: [TRASH_TAG] });
+  const body = await json(await dup("p", OWNER));
+  assert.deepEqual([body.created, body.skipped], [2, 1], "Deep is visible but its parent was not copied");
+  assert.equal(byPath("Docs/Plan (copy)/Alpha/Deep"), undefined);
+  // Case: an admin skips the placement rules, not the vault's lookup.
+  fv.put({ id: "shadow", path: "docs/outside (COPY)", content: "<p>x</p>" });
+  resetTreeForTests();
+  const r = await dup("out", OWNER);
+  assert.equal(r.status, 200);
+  assert.equal((await json(r)).path, "Docs/Outside (copy) 2");
 });

@@ -193,6 +193,8 @@ export function usePageActions() {
       }
       // A server from before this route: the vault (owner) answers a plain 404/405.
       if (e instanceof PagesRequestError && (e.status === 405 || e.status === 501 || (e.status === 404 && e.code !== "not_found"))) return duplicateSingle(page);
+      // A page with no location has no "beside": the one page is copied here, as before.
+      if (e instanceof PagesRequestError && e.code === "no_path") return duplicateSingle(page);
       // No answer, a server error or "busy": the copy may exist in part or still be running.
       // Never "nothing was changed" — and the retry is THIS request (same id), so it can
       // only finish that copy, never start a second one.
