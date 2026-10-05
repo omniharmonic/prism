@@ -21,7 +21,7 @@ import { applyTheme } from "../../../packages/core/src/app/stores/settings";
 import { NewContentMenu } from "../../../packages/core/src/components/navigation/NewContentMenu";
 import { OpenAsDatabaseButton } from "../../../packages/core/src/components/database/OpenAsDatabaseButton";
 import { CsvNewDatabaseDialog } from "../../../packages/core/src/components/database/Csv";
-import { coerceToKind, conversionKey, humanize, needsConversion, sampleText, VAULT_TYPE_FOR_KIND, type ConvertPropertyResult, type PropertyKind } from "@prism/core/database";
+import { coerceToKind, conversionKey, humanize, needsConversion, optionColor, sampleText, VAULT_TYPE_FOR_KIND, type ConvertPropertyResult, type PropertyKind } from "@prism/core/database";
 import { coerceCsvValue, compatibleKinds, mergeSchemaFields, parseCsv, runQuery, type CsvImportRequest, type CsvImportResponse, type CsvImportRow, type PropertyBatchResult, type QuerySpec, type SchemaMap, type SchemaPatch } from "@prism/core/database";
 
 const params = new URLSearchParams(location.search);
@@ -134,6 +134,8 @@ if (params.has("convert")) {
     notes.push({ id: "comet", path: "Projects/Comet", content: "", tags: ["initiative"], metadata: { title: "Comet", stage: "planning", score: "n/a" }, createdAt: at, updatedAt: at });
     const db2 = notes.find((n) => n.id === "db2")!;
     db2.metadata = { ...db2.metadata, prism_database: { version: 1, source: { tags: ["initiative"] }, views: [{ id: "table", name: "All initiatives", type: "table", visible: ["stage", "budget", "score"], sort: [{ key: "score", dir: "desc" }] }] } };
+    // Another database over the same tag: its saved view names the property too.
+    notes.push({ id: "db3", path: "Projects/Scoreboard", content: "", tags: [], metadata: { prism_type: "database", title: "Scoreboard", prism_database: { version: 1, source: { tags: ["initiative"] }, views: [{ id: "table", name: "By score", type: "table", visible: ["score"], sort: [{ key: "score", dir: "desc" }], filter: { match: "all", conditions: [{ key: "score", op: "exists" }] } }] } }, createdAt: at, updatedAt: at });
   }
 }
 if (params.has("ingest")) {
@@ -308,7 +310,14 @@ if (!legacy) {
     const batch = controls.convertChunk ? todo.slice(0, controls.convertChunk) : todo;
     for (const { n, value } of batch) { n.metadata = { ...(n.metadata ?? {}), [target]: value }; bump(n); }
     const done = batch.length === todo.length;
-    if (done) { fields[target] = { ...fields[target]!, deleted: false }; fields[field] = { ...src, deleted: true }; }
+    if (done) {
+      fields[target] = { ...fields[target]!, deleted: false };
+      if (to === "select" || to === "status" || to === "multi_select") {
+        const options = [...new Set(live.map((n) => coerceToKind(n.metadata![field], to)).flatMap((o) => (o.ok ? (Array.isArray(o.value) ? o.value : [o.value]) : [])) as string[])].slice(0, 100);
+        fields[target] = { ...fields[target]!, colors: Object.fromEntries(options.map((o) => [o, optionColor(o)])), optionOrder: options };
+      }
+      fields[field] = { ...src, deleted: true };
+    }
     sessionStorage.setItem("db-fixture-schemas", JSON.stringify(schemas));
     return { dryRun: false, ...base, converted: batch.length, conflicts: 0, failed: 0, pending: todo.length - batch.length, more: !done, done };
   };

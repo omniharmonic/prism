@@ -69,6 +69,7 @@ import {
   sampleText,
   cleanLabel,
   humanize,
+  optionColor,
   PROPERTY_KINDS,
   VAULT_TYPE_FOR_KIND,
   type PropertyKind,
@@ -595,6 +596,8 @@ databasesApi.post("/schemas/:tag/fields/:field/remove-values", bodyLimit({ maxSi
 // ── "change type" across vault types: a guided conversion (NP-DB-11) ─────────
 
 const sameValue = (a: unknown, b: unknown) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
+/** Options a conversion gives a select-like property (the vault enum is not used: later values stay free). */
+const CONVERT_MAX_OPTIONS = 100;
 
 /**
  * `POST /api/schemas/:tag/fields/:field/convert {to, dryRun=true, limit?, label?}`
@@ -609,6 +612,10 @@ const sameValue = (a: unknown, b: unknown) => JSON.stringify(a ?? null) === JSON
  *   3. when every convertible page is done, ONE hints write shows the new property
  *      (under the old name) and marks the old one deleted (hidden, restorable; its
  *      values go only through the separate `remove-values` run).
+ * A select / status / multi-select made this way gets its options from the converted
+ * values (distinct, first seen first, ≤ 100) as presentation hints. Saved views are
+ * not rewritten: clients read a view that names the old key as naming the new one
+ * (`followConversions`, driven by the `convertedFrom` hint), in every database.
  * A value with no faithful reading is never guessed: it is counted (`uncoercible`,
  * with a few samples for the owner) and stays on the old property.
  *
@@ -681,6 +688,10 @@ databasesApi.post("/schemas/:tag/fields/:field/convert", bodyLimit({ maxSize: 40
   const skipped = { trashed: 0, shared: 0, system: 0, ingest: 0, private: 0 };
   const todo: Array<{ note: Note; value: unknown }> = [];
   const samples: string[] = [];
+  // A select-like target gets its option list from the values themselves: distinct, first seen first, capped.
+  const wantsOptions = to === "select" || to === "status" || to === "multi_select";
+  const options: string[] = [];
+  const seenOptions = new Set<string>();
   let total = 0;
   let uncoercible = 0;
   for (const n of holding) {
@@ -696,9 +707,16 @@ databasesApi.post("/schemas/:tag/fields/:field/convert", bodyLimit({ maxSize: 40
       continue;
     }
     total++;
+    if (wantsOptions) {
+      for (const v of Array.isArray(out.value) ? out.value : [out.value]) {
+        if (typeof v !== "string" || seenOptions.has(v) || isPrototypeName(v) || options.length >= CONVERT_MAX_OPTIONS) continue;
+        seenOptions.add(v);
+        options.push(v);
+      }
+    }
     if (!sameValue(own(n.metadata, target), out.value)) todo.push({ note: n, value: out.value });
   }
-  const base = { tag, field, to, target, total, uncoercible, samples, skipped, truncated: rows.length >= RAW_MAX };
+  const base = { tag, field, to, target, total, uncoercible, samples, skipped, truncated: rows.length >= RAW_MAX, ...(wantsOptions ? { options: options.length } : {}) };
   c.header("Cache-Control", "private, no-store");
   if (dryRun) return c.json({ dryRun: true, ...base, pending: todo.length });
 
@@ -748,6 +766,14 @@ databasesApi.post("/schemas/:tag/fields/:field/convert", bodyLimit({ maxSize: 40
     if (out.converted === todo.length) {
       const all = readHints(entry.id).get(tag) ?? {};
       all[target] = { ...(all[target] ?? {}), deleted: false };
+      if (wantsOptions && options.length) {
+        // Options the owner already coloured or ordered keep their settings; new ones follow in first-seen order.
+        const colors = { ...(all[target]!.colors ?? {}) };
+        for (const o of options) if (!Object.hasOwn(colors, o)) colors[o] = optionColor(o);
+        const order = [...(all[target]!.optionOrder ?? [])];
+        for (const o of options) if (!order.includes(o)) order.push(o);
+        all[target] = { ...all[target]!, colors, optionOrder: order };
+      }
       all[field] = { ...(all[field] ?? {}), deleted: true };
       upsertHints.run(hintKey(entry.id, tag), JSON.stringify(all));
       done = true;

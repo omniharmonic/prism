@@ -86,6 +86,8 @@ export interface ConvertPropertyResult {
   /** Pages holding a value that are left alone, by reason. */
   skipped: { trashed: number; shared: number; system: number; ingest: number; private: number };
   truncated: boolean;
+  /** A select-like target: how many options the converted values give it. */
+  options?: number;
   /** Convertible pages not yet written. */
   pending: number;
   converted?: number;

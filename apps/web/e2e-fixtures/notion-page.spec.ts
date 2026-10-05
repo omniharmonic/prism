@@ -130,6 +130,33 @@ test("NP-PG-06: the breadcrumb is in the header bar — one row, overflow menu, 
   await expect(crumbs.getByRole("button", { name: "A living workspace — show 2 locations" })).toBeVisible();
 });
 
+/** NP-PG-06 × NP-AX-07: on a WIDE touch screen (a tablet: coarse pointer, no hover) every crumb in the bar is a 44 px target. */
+test("NP-PG-06: header-bar crumbs are 44 px targets on a wide coarse-pointer screen", async ({ browser }) => {
+  const context = await browser.newContext({ viewport: { width: 1180, height: 820 }, hasTouch: true });
+  const page = await context.newPage();
+  await page.goto("/e2e-fixtures/notion-shell.html");
+  await expect(page.locator(".tiptap[contenteditable=true]")).toBeVisible();
+  expect(await page.evaluate(() => matchMedia("(hover: none) and (pointer: coarse)").matches)).toBe(true);
+  await page.evaluate(() => {
+    const w = window as any;
+    w.prismShell.serverCreate("Projects/Prism/A living workspace/Decisions/Budget", "<p>Numbers.</p>");
+    w.prismShellUI.getState().openTab("foreign-1", "Budget", "document");
+  });
+  const crumbs = page.getByRole("navigation", { name: "Document location" });
+  await expect(crumbs.getByRole("button").first()).toBeVisible();
+  await expect.poll(() => crumbs.getByRole("button").count()).toBeGreaterThan(0);
+  const sizes = await crumbs.getByRole("button").evaluateAll((els) => els.map((el) => { const r = el.getBoundingClientRect(); return { name: el.getAttribute("aria-label") ?? el.textContent, w: Math.round(r.width), h: Math.round(r.height) }; }));
+  for (const s of sizes) expect(s.w >= 44 && s.h >= 44, `${s.name}: ${s.w}×${s.h}`).toBe(true);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  // Folded to its “…” menu (many tabs), that one button is a 44 px target too.
+  await page.evaluate(() => { const st = (window as any).prismShellUI.getState(); for (const [id, title] of [["agenda", "Workshop agenda"], ["field-notes", "Field notes"], ["blank", "Untitled"], ["tracker", "Workshop tracker"]]) st.openTab(id, title, "document"); st.openTab("foreign-1", "Budget", "document"); });
+  const all = crumbs.getByRole("button", { name: /^Show \d+ (more )?locations?$/ }).first();
+  await expect(all).toBeVisible();
+  const box = (await all.boundingBox())!;
+  expect(box.width >= 44 && box.height >= 44, `… ${box.width}×${box.height}`).toBe(true);
+  await context.close();
+});
+
 /** Wave 2E · NP-PG-08 */
 test("full width, small text, font persist per page", async ({ page }, info) => {
   await page.goto("/e2e-fixtures/notion-shell.html");

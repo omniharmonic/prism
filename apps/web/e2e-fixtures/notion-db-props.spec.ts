@@ -420,22 +420,54 @@ test("NP-DB-11: change type converts the values — preview, new field, old prop
   await expect(table.getByRole("button", { name: "Score", exact: true })).toHaveCount(1);
   await expect(row(page, "Beacon").getByRole("button", { name: "Score: 1,250", exact: true })).toBeVisible();
   await expect(row(page, "Comet").getByRole("button", { name: "Score: Empty" })).toBeVisible();
-  const view = (await meta("db2")).prism_database.views[0];
-  expect(view.visible).toEqual(["stage", "budget", "score_number"]);
-  expect(view.sort).toEqual([{ key: "score_number", dir: "desc" }]);
   await expect(table.locator("tbody tr[data-row-id]").first()).toContainText("Beacon"); // 1250 > 12 as NUMBERS ("12" > "1,250" as text)
+  // No database note was rewritten for that: a saved view that names the old key is READ under the new one.
+  expect((await meta("db2")).prism_database.views[0].visible).toEqual(["stage", "budget", "score"]);
+  expect(((await fx(page)).writes as any[]).filter((w: any) => w.metadata?.prism_database)).toEqual([]);
+  expect(((await fx(page)).queries as any[]).at(-1).sort).toEqual([{ key: "score_number", dir: "desc" }]);
   await row(page, "Atlas").getByRole("button", { name: "Score: 12", exact: true }).click();
   const input = page.getByRole("textbox", { name: "Score" });
   await input.fill("40");
   await input.press("Enter");
   expect((await writes(page)).at(-1)).toEqual({ id: "atlas", set: { score_number: 40 }, expect: { score_number: 12 } });
 
+  // EVERY database over the tag follows — here another one whose view shows, sorts and filters by the property.
+  await page.goto("/e2e-fixtures/databases.html?open=db3&convert");
+  const board = page.getByRole("table", { name: "By score" });
+  await expect(board.getByRole("button", { name: "Score", exact: true })).toHaveCount(1);
+  await expect(board.locator("tbody tr[data-row-id]")).toHaveCount(2); // the filter (has a value) reads the NEW field: Comet has no number
+  await expect(board.locator("tbody tr[data-row-id]").first()).toContainText("Beacon");
+  await expect(row(page, "Atlas").getByRole("button", { name: "Score: 40", exact: true })).toBeVisible();
+  expect(((await fx(page)).queries as any[]).at(-1)).toMatchObject({ sort: [{ key: "score_number", dir: "desc" }], filter: { conditions: [{ key: "score_number", op: "exists" }] } });
+  // Saving a view stores it under the new key from then on.
+  await showColumns(page, ["Stage"]);
+  await expect.poll(async () => (await meta("db3")).prism_database.views[0]).toMatchObject({ visible: ["score_number", "stage"], sort: [{ key: "score_number", dir: "desc" }] });
+
   // Undo: the old property is under "Deleted properties" with every value, and can be restored.
+  await page.goto("/e2e-fixtures/databases.html?open=db2&convert");
   await page.getByRole("button", { name: "View settings" }).click();
   await page.getByRole("dialog", { name: "View settings" }).getByRole("button", { name: "Manage deleted property Score" }).click();
   await page.getByRole("dialog", { name: "Edit property Score" }).getByRole("button", { name: "Restore property" }).click();
   expect((await schemaFields()).score.deleted).toBe(false);
   expect((await meta("comet")).score).toBe("n/a");
+});
+
+// NP-DB-11 — a select made by conversion has its options: the distinct converted values, first seen first.
+test("NP-DB-11: a number converted to a select gets its option list", async ({ page }) => {
+  await page.goto("/e2e-fixtures/databases.html?open=db2");
+  const table = page.getByRole("table", { name: "All initiatives" });
+  await table.getByRole("button", { name: "Budget", exact: true }).click();
+  await page.getByRole("menuitem", { name: "Edit property…" }).click();
+  const editor = page.getByRole("dialog", { name: "Edit property Budget" });
+  await editor.getByLabel("Property type").selectOption("select");
+  await editor.getByRole("group", { name: "Conversion preview" }).getByRole("button", { name: "Convert to Select" }).click();
+  await editor.getByRole("region", { name: "Type changed" }).getByRole("button", { name: "Done" }).click();
+  await expect(row(page, "Atlas").locator('.db-opt[data-value="12500"]')).toBeVisible();
+  // The picker offers both values as options (not an empty list).
+  await row(page, "Atlas").getByRole("button", { name: /^Budget: / }).click();
+  const picker = page.getByRole("dialog", { name: "Choose Budget" });
+  await expect(picker.locator('.db-opt[data-value="800.5"]')).toBeVisible(); // the OTHER page's value is offered
+  expect(await page.evaluate(() => (window as any).dbFixture.schemas().initiative.fields.budget_select)).toMatchObject({ kind: "select", optionOrder: ["12500", "800.5"] });
 });
 
 // NP-DB-08 — a date holds a day, a time, or a range; status options are grouped. Editors, filters and sorts all understand them.

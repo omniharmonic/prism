@@ -18,6 +18,8 @@
   /* inline-block + line-height (not flex): a flex container would lose the crumb's ellipsis. */
   html .document-breadcrumb-part { display: inline-block; min-width: 44px; min-height: 44px; line-height: 44px; vertical-align: middle; }
   html .document-page-heading button { min-height: 44px; }
+  /* The header bar's breadcrumb (NP-PG-06): its “…” button is an icon, so it is sized as one. */
+  html .tabbar-crumbs button.page-crumb:not(.document-breadcrumb-part) { display: inline-flex; align-items: center; justify-content: center; min-width: 44px; min-height: 44px; }
 
   /* ── Sidebar ── */
   html .page-tree-action, html .page-tree-disclosure, html .workspace-new-page-more { min-width: 44px; min-height: 44px; }

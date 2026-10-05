@@ -561,3 +561,42 @@ test("convert: the coercion is linear on hostile values", () => {
   }
   assert.ok(Date.now() - started < 1500, `took ${Date.now() - started} ms`);
 });
+
+test("convert: a select-like target gets its options from the converted values — distinct, first seen first", async () => {
+  for (const [i, v] of ["blue", "green", "blue", "red, green"].entries()) {
+    fv.put({ id: `o${i}`, path: `Recipes/O${i}`, tags: ["recipe"], content: "", metadata: { title: `O${i}`, serves: i < 3 ? [3, 5, 3][i] : 7, notes: v }, updatedAt: `2026-10-01T1${i}:00:00.000Z` });
+  }
+  const sel = (await (await convert("recipe", "serves", { to: "select", dryRun: false })).json()) as any;
+  assert.deepEqual([sel.done, sel.options], [true, 3]);
+  let f = await fieldsOf("recipe");
+  assert.deepEqual([...f.serves_select.optionOrder].sort(), ["3", "5", "7"], "distinct values, each once");
+  assert.deepEqual(Object.keys(f.serves_select.colors).sort(), ["3", "5", "7"]);
+  assert.equal(f.serves_select.enum, undefined, "no vault enum: later values stay free");
+  const multi = (await (await convert("recipe", "notes", { to: "multi_select", dryRun: false })).json()) as any;
+  assert.equal(multi.options, 3);
+  f = await fieldsOf("recipe");
+  assert.deepEqual([...f.notes_multi_select.optionOrder].sort(), ["blue", "green", "red"]);
+  // A dry run reports the count and stores nothing.
+  const dry = (await (await convert("recipe", "serves", { to: "status" })).json()) as any;
+  assert.equal(dry.options, 3);
+  assert.equal("serves_status" in (await fieldsOf("recipe")), false);
+});
+
+test("convert: bounded like remove-values — pages per run, `more`, one bulk job server-wide, per-owner rate limit", async () => {
+  for (let i = 0; i < 5; i++) fv.put({ id: `c${i}`, path: `Recipes/C${i}`, tags: ["recipe"], content: "", metadata: { title: `C${i}`, notes: String(i + 1) }, updatedAt: `2026-10-01T1${i}:00:00.000Z` });
+  const a = (await (await convert("recipe", "notes", { to: "number", dryRun: false, limit: 2 })).json()) as any;
+  assert.deepEqual({ converted: a.converted, pending: a.pending, more: a.more, done: a.done }, { converted: 2, pending: 3, more: true, done: false });
+  assert.notEqual((await fieldsOf("recipe")).notes.deleted, true, "the old property stays the visible one until every page is done");
+  // Two runs at once: one works, the other is told a bulk job is running (and writes nothing).
+  const [x, y] = await Promise.all([convert("recipe", "notes", { to: "number", dryRun: false, limit: 2 }), convert("recipe", "notes", { to: "number", dryRun: false, limit: 2 })]);
+  assert.deepEqual([x.status, y.status].sort(), [200, 409]);
+  assert.equal(((await (x.status === 409 ? x : y).json()) as any).error, "busy");
+  const c = (await (await convert("recipe", "notes", { to: "number", dryRun: false, limit: 2 })).json()) as any;
+  assert.deepEqual({ converted: c.converted, more: c.more, done: c.done }, { converted: 1, more: false, done: true });
+  assert.deepEqual([0, 1, 2, 3, 4].map((i) => fv.notes.get(`c${i}`)!.metadata!.notes_number), [1, 2, 3, 4, 5]);
+  // Rate limited per owner (dry runs count too).
+  process.env.SCHEMA_CONVERT_PER_MINUTE = "3";
+  let limited = 0;
+  for (let i = 0; i < 40; i++) if ((await convert("recipe", "notes", { to: "number" })).status === 429) limited++;
+  assert.ok(limited > 0, "convert is rate limited");
+});
