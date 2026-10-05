@@ -10,7 +10,7 @@
  *  2. CSP (tauri.conf.json): no localhost / :1940 / :1939, no wildcard http(s)/ws(s) sources,
  *     connect-src is exactly 'self' + Tauri IPC + one https origin + its wss twin;
  *  3. the frontend is the native web build (no devUrl, no localhost dev server);
- *  4. each capability file lists exactly its window's commands (main: 8; quick-capture: 1, never get_token);
+ *  4. each capability file lists exactly its window's commands (main: 9; quick-capture: 1, never get_token);
  *     no core:*, fs, shell, opener, http, dialog, notification, global-shortcut or remote grants (WP4.2);
  *  5. Rust: no process spawning, no vault port, no fs/shell/http/sql plugins;
  *  6. dist-native: no service worker; the only `localhost:1940` strings are the known inert
@@ -100,7 +100,7 @@ check(JSON.stringify(conf.build).includes("build:native"), "before{Dev,Build}Com
 const EXPECTED_CAPS = {
   "default.json": {
     windows: ["main"],
-    permissions: ["allow-get-token", "allow-sign-in", "allow-sign-out", "allow-get-server-origin", "allow-set-server-origin", "allow-open-external", "allow-notify", "allow-export-note"],
+    permissions: ["allow-get-token", "allow-sign-in", "allow-sign-out", "allow-get-server-origin", "allow-set-server-origin", "allow-open-external", "allow-notify", "allow-export-note", "allow-save-export"],
   },
   // The capture window gets ONE command and never get_token: the bearer must not enter that webview.
   "quick-capture.json": { windows: ["quick-capture"], permissions: ["allow-quick-capture"] },
@@ -141,7 +141,7 @@ check((granted.get("allow-quick-capture") ?? []).join() === "quick-capture", "qu
 const buildRs = readFileSync(join(tauriDir, "build.rs"), "utf8");
 const declared = [...buildRs.matchAll(/^\s*"([a-z_]+)",\s*(?:\/\/.*)?$/gm)].map((m) => `allow-${m[1].replace(/_/g, "-")}`);
 check(
-  declared.length === 9 && declared.every((d) => granted.has(d)) && [...granted.keys()].every((g) => declared.includes(g)),
+  declared.length === 10 && declared.every((d) => granted.has(d)) && [...granted.keys()].every((g) => declared.includes(g)),
   `build.rs declares ${declared.length} commands, each granted to a window, none extra`,
   `build.rs commands [${declared.join(", ")}] vs granted [${[...granted.keys()].join(", ")}]`,
 );
@@ -251,6 +251,25 @@ if (!existsSync(dist)) {
   check(/openLink: openLink/.test(hostJs) && /takePendingLink: takePendingLink/.test(hostJs) && /new CustomEvent\("prism:open-link"\)/.test(hostJs), "host hook exposes openLink/takePendingLink and a payload-free prism:open-link event");
   const menu = src("menu.rs");
   check(/NEW_PAGE_ACCELERATOR: &str = "CmdOrCtrl\+N"/.test(menu) && /"New Page"/.test(menu) && /new CustomEvent\(\\"prism:new-page\\"\)/.test(menu), "File menu: New Page on CmdOrCtrl+N → prism:new-page");
+  // The IPC surface is pinned: links and New Page added NO command; `save_export` (export archives) is the
+  // ninth main-window command, added deliberately. Anything else here is a change to review.
+  const MAIN = ["get_token", "sign_in", "sign_out", "get_server_origin", "set_server_origin", "open_external", "notify", "export_note", "save_export"];
+  const declaredNames = [...buildRs.matchAll(/^\s*"([a-z_]+)",\s*(?:\/\/.*)?$/gm)].map((m) => m[1]);
+  check(
+    JSON.stringify(declaredNames) === JSON.stringify([...MAIN.slice(0, 6), "quick_capture", ...MAIN.slice(6)]),
+    `IPC surface is exactly ${MAIN.length} main-window commands + quick_capture`,
+    `build.rs declares [${declaredNames.join(", ")}]`,
+  );
+  const handlers = [...readFileSync(join(tauriDir, "src/lib.rs"), "utf8").matchAll(/^\s*(?:commands|native_cmds)::([a-z_]+),$/gm)].map((m) => m[1]).sort();
+  check(JSON.stringify(handlers) === JSON.stringify([...declaredNames].sort()), "lib.rs registers exactly the declared commands", `handlers: ${handlers.join(", ")}`);
+  const hostCmds = [...new Set([...hostJs.matchAll(/ipc\(\s*"([a-z_]+)"/g)].map((m) => m[1]))].sort();
+  check(hostCmds.every((c) => MAIN.includes(c)), "host.js invokes only main-window commands", `host.js invokes: ${hostCmds.join(", ")}`);
+  // save_export: the page passes an id and a name; Rust builds the URL, refuses redirects, and no download handler exists.
+  const archive = src("export_archive.rs").replace(/^\s*\/\/.*$/gm, "");
+  const saveSig = /pub async fn save_export[\s\S]*?\) ->/.exec(src("native_cmds.rs"))?.[0] ?? "";
+  check(saveSig !== "" && !/path|url|token|origin/i.test(saveSig), "save_export takes no path, URL, token or origin from the page");
+  check(/redirect\(reqwest::redirect::Policy::none\(\)\)/.test(archive) && /create_new\(true\)/.test(archive) && /origin\.join\(/.test(archive), "export_archive.rs: no redirects, a fresh temp file, URL built from the configured origin");
+  check(!/on_download|download_started|download_completed/.test(src("window.rs")), "the webview has NO download handler (page script cannot start downloads)");
   const webLinks = readFileSync(resolve(root, "apps/web/src/native/appLinks.ts"), "utf8");
   check(/takePendingLink/.test(webLinks) && /prism:open-link/.test(webLinks) && !/location\.(assign|replace|href\s*=)/.test(webLinks), "web: appLinks.ts takes the path from the shell and opens a tab — never a navigation");
 }

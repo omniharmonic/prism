@@ -48,6 +48,7 @@ mod tests {
             "\"open_external\"",
             "\"notify\"",
             "\"export_note\"",
+            "\"save_export\"",
         ] {
             assert!(js.contains(cmd));
         }

@@ -273,6 +273,19 @@
     return p;
   }
 
+  // Export archives (export_archive.rs): the shell downloads the finished job's
+  // ZIP itself and writes it where the user says in a native save panel. We pass
+  // the job id and a suggested name — never a URL, a path or the token.
+  // Resolves with the saved file's name, or null when the user cancelled.
+  function saveExport(jobId, suggestedName) {
+    return ipc("save_export", { jobId: String(jobId), suggestedName: String(suggestedName), cancel: false });
+  }
+  function cancelExportSave(jobId) {
+    return ipc("save_export", { jobId: String(jobId), suggestedName: "", cancel: true }).catch(function () {
+      return null;
+    });
+  }
+
   Object.defineProperty(window, "__PRISM_SHELL__", {
     value: Object.freeze({
       showServerSettings: showServerSettings,
@@ -282,6 +295,8 @@
       exportNote: exportNote,
       openLink: openLink,
       takePendingLink: takePendingLink,
+      saveExport: saveExport,
+      cancelExportSave: cancelExportSave,
     }),
     writable: false,
     configurable: false,

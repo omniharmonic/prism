@@ -18,6 +18,7 @@ mod commands;
 mod confirm;
 mod dropfiles;
 mod export;
+mod export_archive;
 mod host;
 mod links;
 #[cfg(desktop)]
@@ -76,6 +77,7 @@ pub fn run() {
         .manage(state)
         .manage(notify::NotifyState::default())
         .manage(links::LinkState::default())
+        .manage(export_archive::SaveState::default())
         .invoke_handler(tauri::generate_handler![
             commands::get_token,
             commands::sign_in,
@@ -86,6 +88,7 @@ pub fn run() {
             native_cmds::quick_capture,
             native_cmds::notify,
             native_cmds::export_note,
+            native_cmds::save_export,
         ])
         .setup(|app| {
             #[cfg(desktop)]
