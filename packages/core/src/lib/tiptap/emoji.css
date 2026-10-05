@@ -1,0 +1,40 @@
+/* Inline emoji list (`:`) and the full picker (`/emoji`) — NP-ED-27. */
+.prism-emoji-menu {
+  position: fixed;
+  z-index: var(--z-popover, 70);
+  overflow: auto;
+  padding: 4px;
+  border-radius: var(--radius-lg);
+  box-shadow: var(--glass-shadow-elevated);
+}
+.prism-emoji-option {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 10px;
+  min-height: 40px;
+  padding: 4px 10px;
+  border-radius: var(--radius-md);
+  text-align: left;
+  color: var(--text-primary);
+  background: transparent;
+}
+.prism-emoji-option[aria-selected="true"] { background: var(--surface-selected); }
+.prism-emoji-glyph { flex-shrink: 0; width: 24px; font-size: 20px; line-height: 1; text-align: center; }
+.prism-emoji-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--text-sm); color: var(--text-secondary); }
+.prism-emoji-picker-backdrop { position: fixed; inset: 0; z-index: var(--z-popover, 70); }
+.prism-emoji-picker {
+  position: fixed;
+  z-index: calc(var(--z-popover, 70) + 1);
+  overflow: hidden;
+  border-radius: var(--radius-lg);
+  box-shadow: var(--glass-shadow-elevated);
+}
+.prism-emoji-picker-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg-surface);
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+}
