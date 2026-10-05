@@ -1,7 +1,7 @@
 import { NoteShortcutsProvider } from "../navigation/NoteShortcuts";
-import { useWorkspaceSession } from "../../app/hooks/useWorkspaceSession";
+import { takeAutomaticTab, useWorkspaceSession } from "../../app/hooks/useWorkspaceSession";
 import { X } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useUIStore, persistSidebar } from "../../app/stores/ui";
 import { useKeyboardShortcuts } from "../../app/hooks/useKeyboardShortcuts";
 import { useIsMobile } from "../../app/hooks/useIsMobile";
@@ -95,16 +95,20 @@ function ShellLayout() {
   ) : null;
 
   // When the viewport becomes mobile, collapse the panels so the canvas is
-  // visible; they reopen as overlay drawers on demand.
-  useEffect(() => {
+  // visible; they reopen as overlay drawers on demand. Before paint: a workspace mounted on a
+  // phone with the desktop's "sidebar open" flag showed the drawer for a frame and shut it.
+  useLayoutEffect(() => {
     if (isMobile) useUIStore.setState({ sidebarOpen: false, contextPanelOpen: false });
   }, [isMobile]);
 
-  // On mobile, opening a document should dismiss the sidebar drawer.
+  // On mobile, opening a document should dismiss the sidebar drawer — when a PERSON opened
+  // it. A workspace being restored (or Home after a vault switch) becomes the active tab
+  // whenever the server answers; that used to shut a drawer the reader had opened meanwhile.
   const prevTab = useRef(activeTabId);
   useEffect(() => {
-    if (isMobile && activeTabId && activeTabId !== prevTab.current) {
-      useUIStore.setState({ sidebarOpen: false });
+    if (activeTabId !== prevTab.current) {
+      const automatic = takeAutomaticTab(activeTabId);
+      if (isMobile && activeTabId && !automatic) useUIStore.setState({ sidebarOpen: false });
     }
     prevTab.current = activeTabId;
   }, [activeTabId, isMobile]);
