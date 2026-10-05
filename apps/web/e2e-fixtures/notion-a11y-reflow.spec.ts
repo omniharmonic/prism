@@ -20,11 +20,7 @@ test.describe("200% zoom no overflow", () => {
   for (const s of SURFACES) for (const vp of ["desktop", "phone"] as Viewport[]) {
     if (s.only && s.only !== vp) continue;
     if (only.length && !only.includes(s.id)) continue;
-    test(`${s.id} · ${vp}`, async ({ page, browserName }) => {
-      // WebKit: when the settings section column comes to need its vertical scrollbar (text-spacing
-      // override at 720×450) the engine keeps the flex items at their old width, so the column
-      // also scrolls sideways by the scrollbar's 10 px. Open product bug, see WEBKIT-RESULTS.md.
-      test.fixme(browserName === "webkit" && s.id === "settings-account" && vp === "desktop", "WebKit: settings section column scrolls sideways by its own scrollbar width under text spacing");
+    test(`${s.id} · ${vp}`, async ({ page }) => {
       await openSurface(page, s, vp, "light");
       await page.setViewportSize(ZOOMED[vp]);
       await page.waitForTimeout(350);

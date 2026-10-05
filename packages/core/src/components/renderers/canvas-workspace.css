@@ -23,8 +23,7 @@
 .prism-canvas-drawer label:has(input:focus-visible) { outline: 2px solid var(--color-accent); outline-offset: 2px; }
 .prism-canvas-drawer label input:focus-visible { outline: none; }
 .prism-canvas-filter { position: relative; }
-.prism-canvas-filter select { appearance: none; min-height: 44px; padding-right: 36px; }
-.prism-canvas-filter > svg { position: absolute; right: 12px; top: 50%; transform: translateY(-50%); pointer-events: none; color: var(--text-muted); }
+.prism-canvas-filter select { min-height: 44px; }
 .prism-canvas-drawer input:focus-visible, .prism-canvas-drawer select:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
 .prism-canvas-copy-notice { border-radius: 8px; background: var(--glass-hover); padding: 10px 12px; line-height: 1.6; }
 .prism-canvas-picker-row { gap: 8px; border-bottom: 1px solid var(--glass-border); border-radius: 0; }

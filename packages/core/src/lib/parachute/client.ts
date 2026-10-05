@@ -10,6 +10,7 @@ import type {
   VaultInfo,
   ServiceStatus,
 } from "../types";
+import { taskListsInHtml } from "../html/taskLists";
 
 export const vaultApi = {
   listNotes: (filters?: NoteFilters) =>
@@ -160,8 +161,10 @@ export const agentApi = {
 };
 
 export const convertApi = {
+  // Every shell's Markdown parser renders a GFM task item as a bullet with a disabled checkbox;
+  // `taskListsInHtml` makes the editor's to-do list of it (the rule the server's reader follows).
   markdownToHtml: (markdown: string) =>
-    invoke<string>("markdown_to_html", { markdown }),
+    invoke<string>("markdown_to_html", { markdown }).then(taskListsInHtml),
 
   htmlToMarkdown: (html: string) =>
     invoke<string>("html_to_markdown", { html }),

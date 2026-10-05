@@ -1,5 +1,6 @@
 import type { Fragment, Node as PMNode, Slice } from "@tiptap/pm/model";
 import { marked } from "marked";
+import { taskListsInHtml } from "../html/taskLists";
 
 /**
  * Clipboard fidelity (NP-ED-21), pure helpers:
@@ -247,14 +248,16 @@ export function markdownToPasteHtml(input: string): string {
     i = close + 2;
   }
   source += text.slice(i);
-  const html = marked.parse(source, { gfm: true, breaks: false, async: false }) as string;
+  // Task items become to-do lists by the one rule the stored-Markdown reader follows (`taskListsInHtml`).
+  const html = taskListsInHtml(marked.parse(source, { gfm: true, breaks: false, async: false }) as string);
   return html.replace(/\n<\/code><\/pre>/g, "</code></pre>").replace(/\u0001(\d+)\u0002/g, (_, n: string) => escapeHtml(links[Number(n)] ?? ""));
 }
 
 /**
- * Checkbox lists → Prism to-do lists (browser only). Recognises a list whose EVERY
- * item starts with a checkbox: `<input type=checkbox>` (Markdown/GitHub/Google
- * Docs exports), or Notion's `<div class="checkbox checkbox-on">`.
+ * Checkbox lists → Prism to-do lists (browser only), for pasted HTML. Recognises a list
+ * whose EVERY item starts with a checkbox: `<input type=checkbox>` (GitHub / Google
+ * Docs exports), or Notion's `<div class="checkbox checkbox-on">`. (Pasted MARKDOWN and
+ * stored Markdown follow the same rule through `lib/html/taskLists.ts`.)
  */
 export function normalizePastedTodos(html: string): string {
   if (typeof DOMParser === "undefined" || !/checkbox/i.test(html)) return html;

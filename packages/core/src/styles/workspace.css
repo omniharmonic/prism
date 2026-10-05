@@ -90,6 +90,42 @@ html.light {
   box-shadow: none;
 }
 button, input, select, textarea { font: inherit; }
+/* ── Drop-down selects: ONE rule for every native <select> ──
+   Desktop Safari draws a select as a macOS pop-up button, 20–23 px tall whatever `height` /
+   `min-height` its surface gives it. `appearance: none` hands the box back to CSS — the heights,
+   borders and backgrounds the surfaces already declare now apply in every engine — and the
+   chevron is drawn here. Still a native select: the menu, typing and the keyboard are the
+   browser's. The chevron and its room are `!important` because surfaces set `background:` /
+   `padding:` shorthands (and inline styles) that would otherwise erase them; everything else
+   stays the surface's. List boxes (`multiple`, `size`) keep their native look. */
+select:not([multiple]):not([size]) {
+  -webkit-appearance: none;
+  appearance: none;
+  /* The chevron: two small gradient halves in the select's OWN text colour (`currentColor`, softened),
+     so it follows every theme and surface without a fixed colour. */
+  --select-chevron: color-mix(in srgb, currentColor 62%, transparent);
+  padding-inline-end: 26px !important;
+  background-image:
+    linear-gradient(45deg, transparent 50%, var(--select-chevron) 50%),
+    linear-gradient(135deg, var(--select-chevron) 50%, transparent 50%) !important;
+  background-repeat: no-repeat !important;
+  background-position: right 13px top 50%, right 8px top 50% !important;
+  background-size: 5px 5px, 5px 5px !important;
+  text-overflow: ellipsis;
+}
+/* Right-to-left: the chevron sits at the inline end (`:dir()` where the engine has it; the attribute otherwise). */
+[dir="rtl"] select:not([multiple]):not([size]) { background-position: left 8px top 50%, left 13px top 50% !important; }
+select:not([multiple]):not([size]):dir(rtl) { background-position: left 8px top 50%, left 13px top 50% !important; }
+:where(select):disabled { opacity: .5; cursor: not-allowed; }
+/* Forced colours: the system draws the control and its arrow (a background image may not show). */
+@media (forced-colors: active) {
+  select:not([multiple]):not([size]) {
+    -webkit-appearance: auto;
+    appearance: auto;
+    padding-inline-end: 4px !important;
+    background-image: none !important;
+  }
+}
 button:not(:disabled), [role="button"] { cursor: pointer; }
 button:disabled { cursor: not-allowed; }
 :where(button, a, input, select, textarea, [tabindex]):focus-visible {

@@ -19,28 +19,18 @@ const SCAFFOLD = ["Toggle panel", "Alex", "Morgan", "Switch workspace", "Switch 
  * views and "New" (44 px) creates a page. Reported in A11Y-RESULTS.md as open.
  */
 const KNOWN = [/^button\.db-cal-add/, /^button\.db-cal-item/];
-/**
- * WebKit project only (desktop macOS engine at phone width): a native `<select>` is drawn as the
- * macOS pop-up button, whose height is fixed (20–23 px) whatever CSS `height` / `min-height` says.
- * iOS Safari sizes a select by its CSS box, so this is not what a phone shows; Playwright's WebKit
- * cannot draw iOS form controls. Selects are therefore not judged here on WebKit (every other
- * control is); Chromium still measures them. Reported in WEBKIT-RESULTS.md.
- */
-const MAC_NATIVE_SELECT = /^select(\.|\s|$)/;
 const only = (process.env.A11Y_ONLY ?? "").split(",").filter(Boolean);
 
 test.describe("touch targets ≥44px", () => {
   for (const s of SURFACES) {
     if (s.only === "desktop") continue;
     if (only.length && !only.includes(s.id)) continue;
-    test(`${s.id} · phone`, async ({ page, browserName }) => {
+    test(`${s.id} · phone`, async ({ page }) => {
       await openSurface(page, s, "phone", "light");
       const offenders = await touchTargets(page, SCAFFOLD);
       if (REPORT) { mkdirSync(REPORT, { recursive: true }); writeFileSync(`${REPORT}/touch_${s.id}.json`, JSON.stringify(offenders, null, 1)); }
       const known = offenders.filter((o) => KNOWN.some((k) => k.test(o.what)));
-      const nativeSelects = browserName === "webkit" ? offenders.filter((o) => MAC_NATIVE_SELECT.test(o.what)) : [];
-      if (nativeSelects.length) test.info().annotations.push({ type: "webkit-native-select", description: `${nativeSelects.length} not judged (macOS pop-up button height is fixed)` });
-      const bad = offenders.filter((o) => !known.includes(o) && !nativeSelects.includes(o));
+      const bad = offenders.filter((o) => !known.includes(o));
       if (known.length) test.info().annotations.push({ type: "known-small-targets", description: `${known.length} (month grid)` });
       expect(bad, "controls smaller than a touch target").toEqual([]);
     });
