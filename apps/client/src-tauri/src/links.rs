@@ -172,10 +172,74 @@ pub fn parse(raw: &str, origin: &ServerOrigin) -> Option<AppLink> {
 /// Is this the sign-in redirect (or anything else under `prism://auth`)? It is
 /// refused like every non-route, but silently: no "can't open" message for a
 /// stray browser redirect, and its query (an auth code) is never logged.
+/// Matched generously — any case, and the host-less `prism:auth/…` and
+/// `prism:///auth/…` spellings — because the only effect is MORE silence.
 pub fn is_auth_redirect(raw: &str) -> bool {
-    Url::parse(raw)
-        .map(|u| u.scheme() == SCHEME && u.host_str() == Some("auth"))
-        .unwrap_or(false)
+    let Ok(u) = Url::parse(raw) else {
+        return false;
+    };
+    if u.scheme() != SCHEME {
+        return false;
+    }
+    match u.host_str() {
+        Some(h) if !h.is_empty() => h.eq_ignore_ascii_case("auth"),
+        _ => u
+            .path()
+            .trim_start_matches('/')
+            .split('/')
+            .next()
+            .is_some_and(|seg| seg.eq_ignore_ascii_case("auth")),
+    }
+}
+
+/// What a batch of opened URLs amounts to. Carries no part of a refused URL:
+/// there is nothing here to log, store or forward by accident.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Opened {
+    /// The first URL that validated, as its canonical path.
+    Link(String),
+    /// Nothing valid, and a sign-in redirect was among them: stay silent.
+    AuthRedirect,
+    /// Nothing valid; an `https` link the OS routed here (a universal link)
+    /// was among them: the person tapped a link, so say it can't be opened.
+    RefusedWebLink,
+    /// Nothing valid, nothing to say (an unknown `prism://…`, a file, …):
+    /// any web page can fire a custom scheme, so it gets no visible effect.
+    Nothing,
+}
+
+/// Decide what to do with the URLs of one `RunEvent::Opened`, BEFORE anything
+/// visible happens. A valid link wins over everything else in the batch; an
+/// auth redirect is skipped (never the result, never stored).
+pub fn classify<S: AsRef<str>>(urls: &[S], origin: &ServerOrigin) -> Opened {
+    if let Some(path) = urls
+        .iter()
+        .find_map(|u| parse(u.as_ref(), origin).map(|l| l.path()))
+    {
+        return Opened::Link(path);
+    }
+    if urls.iter().any(|u| is_auth_redirect(u.as_ref())) {
+        return Opened::AuthRedirect;
+    }
+    let web = urls.iter().any(|u| {
+        let u = u.as_ref();
+        u.get(..8).is_some_and(|p| p.eq_ignore_ascii_case("https://"))
+            || u.get(..7).is_some_and(|p| p.eq_ignore_ascii_case("http://"))
+    });
+    if web {
+        Opened::RefusedWebLink
+    } else {
+        Opened::Nothing
+    }
+}
+
+/// Classify and, for a valid link only, remember it. Returns the decision.
+pub fn accept<S: AsRef<str>>(urls: &[S], origin: &ServerOrigin, links: &LinkState, now: Instant) -> Opened {
+    let decision = classify(urls, origin);
+    if let Opened::Link(path) = &decision {
+        links.set(path.clone(), now);
+    }
+    decision
 }
 
 /// JS that hands a validated path to the page (host.js `openLink`). A DOM
@@ -228,31 +292,32 @@ impl LinkState {
     }
 }
 
-/// `RunEvent::Opened`: keep the first link that validates; refuse the rest.
+/// `RunEvent::Opened`: validate FIRST. Only a valid link brings the window to
+/// the front; a refused universal link gets a toast in the window as it is;
+/// everything else (an unknown `prism://…`, a sign-in redirect) has no visible
+/// effect at all. Never logs a URL (a sign-in redirect carries a code).
 pub fn on_opened<R: Runtime>(app: &AppHandle<R>, urls: &[Url]) {
-    let state = app.state::<AppState>();
-    let found = urls
-        .iter()
-        .find_map(|u| parse(u.as_str(), &state.origin).map(|l| l.path()));
-    #[cfg(desktop)]
-    crate::tray::show_main(app);
-    match found {
-        Some(path) => {
-            app.state::<LinkState>().set(path, Instant::now());
+    let raw: Vec<&str> = urls.iter().map(|u| u.as_str()).collect();
+    let decision = accept(
+        &raw,
+        &app.state::<AppState>().origin,
+        &app.state::<LinkState>(),
+        Instant::now(),
+    );
+    match decision {
+        Opened::Link(_) => {
+            #[cfg(desktop)]
+            crate::tray::show_main(app);
             deliver(app);
         }
-        None => {
-            // Never log the URL (a sign-in redirect carries a code).
-            let auth = urls.iter().any(|u| is_auth_redirect(u.as_str()));
-            let linkish = urls
-                .iter()
-                .any(|u| matches!(u.scheme(), "https" | "http" | SCHEME));
+        Opened::RefusedWebLink => {
             log::info!("ignored an incoming link (not an allowed route)");
-            if linkish && !auth {
-                if let Some(w) = app.get_webview_window(MAIN_WINDOW) {
-                    let _ = w.eval(REFUSED_JS);
-                }
+            if let Some(w) = app.get_webview_window(MAIN_WINDOW) {
+                let _ = w.eval(REFUSED_JS);
             }
+        }
+        Opened::AuthRedirect | Opened::Nothing => {
+            log::info!("ignored an incoming link (not an allowed route)");
         }
     }
 }
@@ -475,6 +540,86 @@ mod tests {
             let path = p(raw).unwrap();
             assert!(path.starts_with("/page/") || path.starts_with("/inbox") || path.starts_with("/agent"), "{path}");
             assert!(!path.contains("//") && !path.contains('?') && !path.contains('#'));
+        }
+    }
+
+    #[test]
+    fn the_auth_redirect_is_recognised_in_every_spelling() {
+        for yes in [
+            "prism://auth/callback?code=abc&state=def",
+            "prism://AUTH/callback?code=abc",
+            "prism://Auth",
+            "prism:auth/callback?code=abc",
+            "prism:AUTH/callback",
+            "prism:/auth/callback?code=abc",
+            "prism:///auth/callback?code=abc",
+        ] {
+            assert!(is_auth_redirect(yes), "{yes}");
+            assert_eq!(p(yes), None, "{yes} is never a route");
+        }
+        for no in [
+            "prism://page/abc",
+            "prism://authx/callback",
+            "prism:page/auth",
+            "https://prism.example.com/auth/callback",
+            "other://auth/callback",
+            "not a url",
+        ] {
+            assert!(!is_auth_redirect(no), "{no}");
+        }
+    }
+
+    #[test]
+    fn a_batch_keeps_a_valid_link_and_never_the_auth_redirect_beside_it() {
+        let o = origin();
+        let t0 = Instant::now();
+        const CODE: &str = "s3cr3t-auth-code";
+        let auth = format!("prism://auth/callback?code={CODE}&state=xyz");
+
+        // The redirect comes first: it is skipped, the valid sibling is kept.
+        let s = LinkState::default();
+        let d = accept(&[auth.as_str(), "prism://page/abc"], &o, &s, t0);
+        assert_eq!(d, Opened::Link("/page/abc".into()));
+        s.set_page_ready(true);
+        let stored = s.take_deliverable(true, t0).unwrap();
+        assert_eq!(stored, "/page/abc");
+        assert!(!format!("{d:?}{stored}").contains(CODE), "the code is nowhere in what is kept");
+
+        // The redirect alone (in every spelling): silent, nothing stored, nothing to log.
+        for raw in [auth.clone(), format!("prism:auth/callback?code={CODE}"), format!("prism://AUTH/callback?code={CODE}")] {
+            let s = LinkState::default();
+            let d = accept(&[raw.as_str()], &o, &s, t0);
+            assert_eq!(d, Opened::AuthRedirect);
+            assert!(!s.has_pending());
+            assert!(!format!("{d:?}").contains(CODE));
+        }
+        // A redirect beside a refused web link is still silent (no toast for a sign-in).
+        let s = LinkState::default();
+        assert_eq!(accept(&[auth.as_str(), "https://evil.example/page/x"], &o, &s, t0), Opened::AuthRedirect);
+        assert!(!s.has_pending());
+
+        // An unknown custom-scheme URL — what any web page can fire — does nothing visible.
+        for raw in ["prism://x", "prism://settings/open", "prism://page/a/b", "file:///etc/passwd", "mailto:a@b.c"] {
+            let s = LinkState::default();
+            assert_eq!(accept(&[raw], &o, &s, t0), Opened::Nothing, "{raw}");
+            assert!(!s.has_pending());
+        }
+        // A universal link the OS routed here but the app refuses: a toast, nothing stored.
+        let s = LinkState::default();
+        assert_eq!(accept(&["https://prism.example.com/page/abc?utm=1"], &o, &s, t0), Opened::RefusedWebLink);
+        assert_eq!(accept(&["HTTPS://other.example/page/abc"], &o, &s, t0), Opened::RefusedWebLink);
+        assert!(!s.has_pending());
+        let empty: [&str; 0] = [];
+        assert_eq!(accept(&empty, &o, &s, t0), Opened::Nothing);
+
+        // The handler validates before anything visible, and logs constants only.
+        let src = include_str!("links.rs");
+        let handler = &src[src.find("pub fn on_opened").unwrap()..src.find("pub fn on_page_loaded").unwrap()];
+        assert!(handler.find("accept(").unwrap() < handler.find("show_main").unwrap(), "validate first");
+        assert_eq!(handler.matches("show_main").count(), 1, "only a valid link foregrounds the app");
+        let prod = src.split("#[cfg(test)]\nmod tests").next().unwrap();
+        for line in prod.lines().filter(|l| l.contains("log::")) {
+            assert!(!line.contains('{'), "a log line formats nothing: {line}");
         }
     }
 
