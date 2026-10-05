@@ -1,4 +1,5 @@
-//! Native app menu (desktop). File: Quick Capture, Export Note (WP4.2).
+//! Native app menu (desktop). File: New Page (⌘N, NP-SB-13), Quick Capture,
+//! Export Note (WP4.2).
 //!
 //! Besides Prism's own items it carries the standard Edit menu: on macOS the
 //! clipboard shortcuts (Cmd-C/V/X/A/Z) only reach the webview through it.
@@ -12,11 +13,14 @@ use crate::MAIN_WINDOW;
 const ID_RELOAD: &str = "prism.reload";
 const ID_SIGN_OUT: &str = "prism.sign_out";
 const ID_SERVER: &str = "prism.server_settings";
+const ID_NEW_PAGE: &str = "prism.new_page";
 const ID_CAPTURE: &str = "prism.quick_capture";
 const ID_EXPORT_MD: &str = "prism.export_markdown";
 const ID_EXPORT_HTML: &str = "prism.export_html";
 
 pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
+    // A browser tab cannot take ⌘N (it opens a window); the app can.
+    let new_page = MenuItem::with_id(app, ID_NEW_PAGE, "New Page", true, Some(NEW_PAGE_ACCELERATOR))?;
     let capture = MenuItem::with_id(app, ID_CAPTURE, "Quick Capture…", true, None::<&str>)?;
     let export_md = MenuItem::with_id(
         app,
@@ -32,7 +36,18 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
         true,
         None::<&str>,
     )?;
-    let file = Submenu::with_items(app, "File", true, &[&capture, &export_md, &export_html])?;
+    let file = Submenu::with_items(
+        app,
+        "File",
+        true,
+        &[
+            &new_page,
+            &PredefinedMenuItem::separator(app)?,
+            &capture,
+            &export_md,
+            &export_html,
+        ],
+    )?;
 
     let server = MenuItem::with_id(
         app,
@@ -96,6 +111,13 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
     Menu::with_items(app, &[&app_menu, &file, &edit, &view, &window])
 }
 
+pub const NEW_PAGE_ACCELERATOR: &str = "CmdOrCtrl+N";
+
+/// "New Page": a payload-free DOM event. The app creates the page through its
+/// own data layer (the same one-action create as the sidebar button), so the
+/// shell decides nothing about where it goes or who may create it.
+pub const NEW_PAGE_JS: &str = "window.dispatchEvent(new CustomEvent(\"prism:new-page\"));";
+
 fn export_js(format: &str) -> String {
     format!(
         "window.dispatchEvent(new CustomEvent(\"prism:export-note\",{{detail:{{format:\"{format}\"}}}}));"
@@ -109,10 +131,17 @@ pub fn on_event<R: Runtime>(app: &AppHandle<R>, id: &str) {
         }
         return;
     }
+    if id == ID_NEW_PAGE {
+        // The main window may be hidden (closed to the menu bar): show it first.
+        crate::tray::show_main(app);
+    }
     let Some(w) = app.get_webview_window(MAIN_WINDOW) else {
         return;
     };
     match id {
+        ID_NEW_PAGE => {
+            let _ = w.eval(NEW_PAGE_JS);
+        }
         ID_RELOAD => {
             let _ = w.eval("window.location.reload()");
         }
@@ -134,5 +163,34 @@ pub fn on_event<R: Runtime>(app: &AppHandle<R>, id: &str) {
             let _ = w.eval(export_js("html"));
         }
         _ => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn new_page_is_a_payload_free_dom_event_on_cmd_n() {
+        assert_eq!(NEW_PAGE_ACCELERATOR, "CmdOrCtrl+N");
+        assert_eq!(
+            NEW_PAGE_JS,
+            r#"window.dispatchEvent(new CustomEvent("prism:new-page"));"#
+        );
+        assert!(!NEW_PAGE_JS.contains("detail"), "nothing for the page to trust");
+        assert!(!NEW_PAGE_JS.contains("location"), "never a navigation");
+        // The item exists in the File menu with that accelerator and its own id.
+        let src = include_str!("menu.rs");
+        assert!(src.contains(r#"MenuItem::with_id(app, ID_NEW_PAGE, "New Page", true, Some(NEW_PAGE_ACCELERATOR))"#));
+        assert!(src.contains("&new_page,"));
+        assert!(src.contains("ID_NEW_PAGE => {"));
+    }
+
+    #[test]
+    fn export_event_names_only_the_format() {
+        assert_eq!(
+            export_js("markdown"),
+            r#"window.dispatchEvent(new CustomEvent("prism:export-note",{detail:{format:"markdown"}}));"#
+        );
     }
 }

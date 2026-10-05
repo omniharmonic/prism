@@ -129,6 +129,37 @@ export function downloadExportDirectly(id: string): void {
   a.remove();
 }
 
+/**
+ * The Prism Client's native save for a finished export (apps/client `save_export`):
+ * the SHELL downloads the archive from its configured server and writes it where the
+ * person says in a native save panel — the webview cancels anchor downloads, and an
+ * archive is too large to pass through the page. We hand over the job id and a
+ * suggested name only. Null in a browser and in shells without the command.
+ */
+export interface NativeExportSaver {
+  /** Resolves with the saved file's name, or null when the person cancelled. Rejects with a readable reason. */
+  save(jobId: string, suggestedName: string): Promise<string | null>;
+  cancel(jobId: string): void;
+}
+export const EXPORT_SAVE_PROGRESS_EVENT = "prism:export-save-progress";
+export function nativeExportSaver(): NativeExportSaver | null {
+  if (typeof window === "undefined") return null;
+  const shell = (window as unknown as { __PRISM_SHELL__?: { saveExport?: (id: string, name: string) => Promise<unknown>; cancelExportSave?: (id: string) => unknown } }).__PRISM_SHELL__;
+  if (typeof shell?.saveExport !== "function") return null;
+  return {
+    save: async (jobId, suggestedName) => {
+      try {
+        const name = await shell.saveExport!(jobId, suggestedName);
+        return typeof name === "string" && name ? name : null;
+      } catch (e) {
+        const reason = typeof e === "string" ? e : e instanceof Error ? e.message : "";
+        throw new TransferError(0, "save_failed", reason || "The export couldn’t be saved. Try again.");
+      }
+    },
+    cancel: (jobId) => { try { void shell.cancelExportSave?.(jobId); } catch { /* nothing to stop */ } },
+  };
+}
+
 /** Hand a finished file to the person: the browser's download (or the native shell's save panel when it offers one). */
 export function saveBlob(name: string, blob: Blob): void {
   const safe = name.replace(/[\\/:*?"<>|\u0000-\u001f]/g, "-") || "export.zip";
