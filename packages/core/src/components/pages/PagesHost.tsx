@@ -43,7 +43,7 @@ function PageActionsSheet({ page, onClose }: { page: PageRef; onClose: () => voi
       open
       onClose={onClose}
       title={page.title}
-      items={items.map((i) => ({ icon: i.icon, label: i.label, onClick: i.onClick, danger: i.danger, startsGroup: i.startsGroup, detail: i.disabled ? i.detail ?? "Not available for this page" : undefined }))
+      items={items.map((i) => ({ icon: i.icon, label: i.label, onClick: i.onClick, danger: i.danger, startsGroup: i.startsGroup, detail: i.disabled ? i.detail ?? "Not available for this page" : i.hint }))
         .filter((_, idx) => !items[idx]!.disabled)}
     />
   );
