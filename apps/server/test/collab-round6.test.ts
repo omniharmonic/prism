@@ -451,3 +451,63 @@ test("S6: opening slow notes someone else wrote does not leave the OPENER busy �
   const conn = await hocuspocus.openDirectConnection("s6ok", { email: victim } as never);
   await conn.disconnect();
 });
+
+// ── w11 review S3: a discard keeps what it discards ─────────────────────────
+
+type DiscardFn = (vaultId: string, noteId: string, opts?: { force?: boolean }) => Promise<{ discarded: boolean; reason: string | null }>;
+const discardNow = collab.discardUnsavedChanges as unknown as DiscardFn;
+const asideBody = async (id: number): Promise<string> =>
+  ((await (await app.request(`/api/admin/collab/set-aside/${id}`, { headers: ownerHeaders() })).json()) as { body: string }).body;
+
+test("w11 S3: a forced discard sets the page's text aside FIRST — and discards nothing when that row cannot be written", { timeout: 60_000 }, async () => {
+  fv.put({ id: "d1", tags: ["garden"], content: "<p>stored</p>", updatedAt: T0 });
+  const doc = await loadDocumentState("d1", new Y.Doc());
+  type(doc, "typed and still being retried");
+  await intercept(isPatch("d1"), fail(503), () => storeDocumentState("d1", doc));
+  assert.equal(unsavedRow("d1")?.permanent, 0, "a retried row");
+
+  // The set-aside table cannot be written: nothing may be discarded.
+  db.exec("CREATE TRIGGER w11_no_aside BEFORE INSERT ON collab_set_aside BEGIN SELECT RAISE(ABORT, 'disk full'); END");
+  restore.push(() => void db.exec("DROP TRIGGER IF EXISTS w11_no_aside"));
+  const refused = await discardNow("primary", "d1", { force: true });
+  assert.deepEqual([refused.discarded, refused.reason], [false, "set_aside_failed"]);
+  assert.ok(unsavedRow("d1"), "the row is still there");
+  assert.match(yDocToHtml(await loadDocumentState("d1", new Y.Doc())), /typed and still being retried/, "…and so is the typing");
+  const route = await app.request("/api/admin/collab/unsaved/d1/discard", { method: "POST", headers: ownerHeaders(), body: JSON.stringify({ confirm: true, force: true }) });
+  assert.equal(route.status, 503);
+  assert.equal(((await route.json()) as { error: string }).error, "set_aside_failed");
+
+  // The table works: the text is kept, THEN the page becomes the stored page.
+  db.exec("DROP TRIGGER w11_no_aside");
+  assert.deepEqual(await setAsideList(), []);
+  const done = await discardNow("primary", "d1", { force: true });
+  assert.equal(done.discarded, true);
+  const kept = (await setAsideList()).filter((r) => r.noteId === "d1");
+  assert.deepEqual(kept.map((r) => r.reason), ["discarded"]);
+  assert.match(await asideBody(kept[0]!.id), /typed and still being retried/);
+  assert.doesNotMatch(yDocToHtml(await loadDocumentState("d1", new Y.Doc())), /typed and still being retried/);
+  assert.equal(unsavedRow("d1"), null);
+});
+
+test("w11 S3: the race — the retried row cleared and the page is ahead again from FRESH typing: a late forced discard keeps that typing", { timeout: 60_000 }, async () => {
+  fv.put({ id: "d2", tags: ["garden"], content: "<p>stored</p>", updatedAt: T0 });
+  const doc = await loadDocumentState("d2", new Y.Doc());
+  type(doc, "first try");
+  await intercept(isPatch("d2"), fail(503), () => storeDocumentState("d2", doc));
+  assert.ok(unsavedRow("d2"), "the owner's list shows the page as still being retried");
+  await storeDocumentState("d2", doc); // …the retry lands: saved, the row is gone
+  assert.equal(unsavedRow("d2"), null);
+  assert.match(vaultContent("d2"), /first try/);
+  // Somebody types again; the snapshot is ahead of the vault, with no row (an ordinary unsaved moment).
+  type(doc, "fresh typing nobody has saved");
+  dbm.saveDocAhead("d2", Y.encodeStateAsUpdate(doc));
+  // The owner's click, made on the OLD list, arrives now.
+  const late = await discardNow("primary", "d2", { force: true });
+  if (late.discarded) {
+    const kept = (await setAsideList()).filter((r) => r.noteId === "d2");
+    assert.equal(kept.length, 1, "what was replaced is in Recovered text");
+    assert.match(await asideBody(kept[0]!.id), /fresh typing nobody has saved/);
+  } else {
+    assert.match(yDocToHtml(await loadDocumentState("d2", new Y.Doc())), /fresh typing nobody has saved/);
+  }
+});

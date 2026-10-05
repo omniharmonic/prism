@@ -2124,8 +2124,13 @@ export function unsavedPermanentBody(reason: string | null): { error: "unsaved_p
  *  - A document that is being LOADED right now is answered `busy`: its load has
  *    already read the snapshot this would rewrite.
  * Returns what happened; throws nothing for a note without unsaved changes.
+ *
+ * Review round (w11): what the document held is SET ASIDE first (`collab_set_aside`, reason
+ * `discarded`) — the same rule as a vault copy replacing unsaved typing. If that row cannot
+ * be written nothing is discarded (`set_aside_failed`). A forced discard can race a store
+ * that just landed and typing made since: that typing is then in the set-aside row, not gone.
  */
-export type DiscardOutcome = { discarded: boolean; live: boolean; permanent: boolean; reason: "none" | "unreadable" | "busy" | "not_permanent" | null };
+export type DiscardOutcome = { discarded: boolean; live: boolean; permanent: boolean; reason: "none" | "unreadable" | "busy" | "not_permanent" | "set_aside_failed" | null };
 export async function discardUnsavedChanges(vaultId: string, noteId: string, opts: { force?: boolean } = {}): Promise<DiscardOutcome> {
   const documentName = getCollabUnsaved(noteId, vaultId)?.doc_name ?? docNameFor(vaultId, noteId);
   const loaded = hocuspocus.documents.get(documentName);
@@ -2165,14 +2170,26 @@ async function discardNow(vaultId: string, noteId: string, documentName: string,
   if (liveDoc !== held || hocuspocus.loadingDocuments.has(documentName) || liveDoc?.isLoading) return { discarded: false, live: false, permanent, reason: "busy" };
   const live = !!liveDoc;
   const noteMs = toMs(note.updatedAt);
+  // What the document holds is kept BEFORE anything is replaced or dropped. Not kept → not discarded.
+  const current = getDocState(noteId, vaultId); // (the awaits above: re-read)
+  const doc = live ? (liveDoc as unknown as Y.Doc) : new Y.Doc();
+  if (!live && current) Y.applyUpdate(doc, current.state);
+  if (live || current) {
+    try {
+      collabStats.setAsideInserts++;
+      addCollabSetAside(noteId, vaultId, "discarded", kind, plainBody(doc, kind), Y.encodeStateAsUpdate(doc));
+    } catch (e) {
+      if (!live) doc.destroy();
+      console.error(`[collab] ${documentName}: could not set the page's unsaved content aside — nothing was discarded:`, e instanceof Error ? e.message : "unknown");
+      return { discarded: false, live, permanent, reason: "set_aside_failed" };
+    }
+  }
   cancelStoreRetry(documentName);
   if (!convertible) {
     if (live) dropConnections(documentName);
+    else doc.destroy();
     deleteDocState(noteId, vaultId);
   } else {
-    const doc = live ? (liveDoc as unknown as Y.Doc) : new Y.Doc();
-    const current = getDocState(noteId, vaultId); // (the awaits above: re-read)
-    if (!live && current) Y.applyUpdate(doc, current.state);
     // Replace, then record the document as in step with the vault.
     applyExternalContent(doc, kind, note.content, prepared);
     saveDocState(noteId, Y.encodeStateAsUpdate(doc), noteMs, vaultId, contentHash(note.content));

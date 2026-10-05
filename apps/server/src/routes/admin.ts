@@ -130,6 +130,7 @@ adminApi.post("/collab/unsaved/:id/discard", async (c) => {
   }
   if (!result.discarded) {
     audit("refused", { discarded: 0, permanent: result.permanent ? 1 : 0 }, result.reason ?? undefined);
+    if (result.reason === "set_aside_failed") return c.json({ error: "set_aside_failed", retry: true, detail: "the page's unsaved text could not be kept first, so nothing was discarded" }, 503);
     return result.reason === "busy" ? c.json({ error: "busy", retry: true }, 503) : c.json({ error: "vault_unreachable", retry: true }, 502);
   }
   audit("ok", { discarded: 1, permanent: result.permanent ? 1 : 0, live: result.live ? 1 : 0 });
