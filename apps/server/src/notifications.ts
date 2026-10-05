@@ -35,7 +35,7 @@
  */
 import { randomUUID } from "node:crypto";
 import type * as Y from "yjs";
-import { db, getUser, listMemberships, listUsers, grantsForUser, grantsForResource, resolveVaultEntry, hasAccount, upsertGrant } from "./db";
+import { db, onNotePurged, getUser, listMemberships, listUsers, grantsForUser, grantsForResource, resolveVaultEntry, hasAccount, upsertGrant } from "./db";
 import { config, emailEnabled } from "./config";
 import { effectiveCaps, expandLevel, levelRank, type Cap, type NoteRef, type Level } from "./permissions";
 import { workspaceRole, roleAtLeast, roleFloor } from "./roles";
@@ -49,7 +49,7 @@ import { apnsEnabled, sendApnsToOwner, notificationAlert } from "./apns";
 import { sendEmail } from "./auth/email";
 import { documentActorId } from "./human-collab";
 import { writerIdFor } from "./writer-stamp";
-import { personNotesForEmail, assigneeAddresses, peopleValues } from "./my-tasks";
+import { personNotesForEmail, assigneeResolver, peopleValues } from "./my-tasks";
 import { onAccessChanged } from "./access-events";
 import { docNameFor, federationTarget, suggestionViewOfHtml, isDocLive, markReconciled, setDocumentStoreListener, type DocumentStoredEvent } from "./collab";
 
@@ -944,6 +944,11 @@ export async function commentsStored(docName: string, vaultId: string, noteId: s
       const authors = author ? new Set([author]) : editorSet;
       const text = typeof c.text === "string" ? c.text : "";
       const preview = stripTokens(text).slice(0, PREVIEW_MAX) || null;
+      // S1: a batch with NO account behind it (a share-link guest's command opens the
+      // document as `capability:<id>`, which is not an editor) is budgeted as one
+      // sender per page — otherwise an anonymous link holder could fill every
+      // follower's inbox at the command rate.
+      const senderKey = author ? undefined : `doc:${noteId}`;
       const mentioned = new Set<string>();
       for (const m of extractCommentMentions(text).slice(0, 10)) {
         // L3: the same rule as document chips — only people some author can see
@@ -960,7 +965,7 @@ export async function commentsStored(docName: string, vaultId: string, noteId: s
         for (const email of targets) {
           if (authors.has(email) || mentioned.has(email) || !userCanView(email, vaultId, info)) continue;
           mentioned.add(email);
-          if (createNotification({ vaultId, recipient: email, type: "comment_mention", noteId, actorEmail: author, anchor: { thread: threadId }, preview, dedupe: `comment:${noteId}:${key}` })) sent++;
+          if (createNotification({ vaultId, recipient: email, type: "comment_mention", noteId, actorEmail: author, senderKey, anchor: { thread: threadId }, preview, dedupe: `comment:${noteId}:${key}` })) sent++;
         }
       }
       const participants = new Set<string>((cp.list.all(vaultId, noteId, threadId) as Array<{ email: string }>).map((r) => r.email));
@@ -968,7 +973,7 @@ export async function commentsStored(docName: string, vaultId: string, noteId: s
         if (authors.has(email) || mentioned.has(email) || !userCanView(email, vaultId, info)) continue;
         // Per-page level "Nothing": no replies from this page (a mention of them, above, still arrives).
         if (getPageLevel(email, vaultId, noteId) === "none") continue;
-        if (createNotification({ vaultId, recipient: email, type: "comment_reply", noteId, actorEmail: author, anchor: { thread: threadId }, preview, dedupe: `comment:${noteId}:${key}` })) sent++;
+        if (createNotification({ vaultId, recipient: email, type: "comment_reply", noteId, actorEmail: author, senderKey, anchor: { thread: threadId }, preview, dedupe: `comment:${noteId}:${key}` })) sent++;
       }
       // Per-page level "All updates": a NEW thread (its first item) and every page
       // comment reach people who follow the page, whether or not they took part.
@@ -976,7 +981,7 @@ export async function commentsStored(docName: string, vaultId: string, noteId: s
       if (i === 0 || t.page === true) {
         for (const email of pageFollowers(vaultId, noteId)) {
           if (authors.has(email) || mentioned.has(email) || participants.has(email) || !isAccount(email) || !userCanView(email, vaultId, info)) continue;
-          if (createNotification({ vaultId, recipient: email, type: "comment_thread", noteId, actorEmail: author, anchor: { thread: threadId }, preview, dedupe: `comment:${noteId}:${key}` })) sent++;
+          if (createNotification({ vaultId, recipient: email, type: "comment_thread", noteId, actorEmail: author, senderKey, anchor: { thread: threadId }, preview, dedupe: `comment:${noteId}:${key}` })) sent++;
         }
       }
       if (author) cp.add.run(vaultId, noteId, threadId, author);
@@ -1081,8 +1086,11 @@ const pl = {
     "INSERT INTO notification_page_levels (email, vault_id, note_id, level, updated_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(email, vault_id, note_id) DO UPDATE SET level = excluded.level, updated_at = excluded.updated_at",
   ),
   del: db.prepare("DELETE FROM notification_page_levels WHERE email = ? AND vault_id = ? AND note_id = ?"),
-  followers: db.prepare("SELECT email FROM notification_page_levels WHERE vault_id = ? AND note_id = ? AND level = 'all' LIMIT ?"),
+  followers: db.prepare("SELECT email FROM notification_page_levels WHERE vault_id = ? AND note_id = ? AND level = 'all' ORDER BY updated_at ASC, email ASC LIMIT ?"),
+  purge: db.prepare("DELETE FROM notification_page_levels WHERE vault_id = ? AND note_id = ?"),
 };
+// A page purged for good (Trash purge, delete) takes everyone's level for it along.
+onNotePurged((vaultId, noteId) => void pl.purge.run(vaultId, noteId));
 export function getPageLevel(email: string, vaultId: string, noteId: string): PageLevel {
   const row = pl.get.get(email.toLowerCase(), vaultId, noteId) as { level: string } | undefined;
   return row && isPageLevel(row.level) ? row.level : "mentions";
@@ -1097,6 +1105,12 @@ const pageFollowers = (vaultId: string, noteId: string): string[] =>
 
 // ── assignments (NP-CO-16) ───────────────────────────────────────────────────
 const MAX_ASSIGN_RECIPIENTS = 25;
+const MAX_PEOPLE_VALUES = 200;
+/** A database row template: a page directly inside a folder named `Templates` (`<db>/Templates/<name>`). */
+const isRowTemplatePath = (path: string | null | undefined): boolean => {
+  const parts = (path ?? "").split("/");
+  return parts.length >= 2 && parts[parts.length - 2] === "Templates";
+};
 const ASSIGN_QUIET_MS = 3_600_000;
 const recentAssigned = db.prepare(
   "SELECT anchor FROM notifications WHERE recipient = ? AND vault_id = ? AND type = 'assigned' AND note_id = ? AND created_at > ? LIMIT 50",
@@ -1107,6 +1121,8 @@ export interface AssignmentWrite {
   noteId: string;
   /** PERSON-kind properties this write set: the value stored before and the value written. */
   fields: Array<{ key: string; prev: unknown; next: unknown }>;
+  /** The page's path as read for this write (a database ROW TEMPLATE under `<db>/Templates/` assigns nobody). */
+  path?: string | null;
   /** The account that made the write; null = a share-link guest ("Someone"). */
   author: string | null;
   /** Budget key when there is no account (the link's id). */
@@ -1119,10 +1135,11 @@ export interface AssignmentWrite {
  * "X assigned you to <page>": notify the accounts ADDED to a person property.
  *
  *  - Both the previous and the new value are resolved to accounts with the My
- *    tasks identity rules (`assigneeAddresses`), so rewriting "Ada Lovelace" as
+ *    tasks identity rules (`assigneeResolver`), so rewriting "Ada Lovelace" as
  *    `[[people/Ada Lovelace]]` adds nobody.
  *  - Never the author; only someone who can VIEW the page (re-checked at delivery
- *    and at read time like every other item); never for a template or the Trash.
+ *    and at read time like every other item); never for a template (a page
+ *    template, or a database row template under `<db>/Templates/`) or the Trash.
  *  - Removed and re-added within an hour: one item (a look-back over the
  *    reader's own `assigned` rows for that page + property, plus an hourly
  *    dedupe key against a concurrent double write).
@@ -1138,17 +1155,22 @@ export async function assignmentsStored(e: AssignmentWrite): Promise<number> {
     if (entry.id !== e.vaultId) return 0;
     const author = e.author?.toLowerCase() ?? null;
     const added = new Map<string, string>(); // account → the first property they were added to
+    if (isRowTemplatePath(e.path)) return 0;
+    // ONE people snapshot for "before" and "after"; unreadable → no diff at all.
+    const resolve = await assigneeResolver(entry);
+    if (!resolve) return 0;
     for (const f of e.fields.slice(0, 20)) {
-      const next = peopleValues(f.next);
+      // Whole lists are compared (up to MAX_PEOPLE_VALUES): only how many are NOTIFIED is capped below.
+      const next = peopleValues(f.next, MAX_PEOPLE_VALUES);
       if (!next.length) continue;
-      const after = await assigneeAddresses(entry, next);
+      const after = resolve(next);
       if (!after.size) continue;
-      const before = await assigneeAddresses(entry, peopleValues(f.prev));
+      const before = resolve(peopleValues(f.prev, MAX_PEOPLE_VALUES));
       for (const email of after) if (!before.has(email) && !added.has(email)) added.set(email, f.key);
     }
     if (!added.size) return 0;
     const info = await noteInfo(e.vaultId, e.noteId, { fresh: true });
-    if (!info || info.trashed || info.ref.tags.includes("template")) return 0;
+    if (!info || info.trashed || info.ref.tags.includes("template") || isRowTemplatePath(info.ref.path)) return 0;
     const now = Date.now();
     const ownerAccount = config.ownerEmail ? config.ownerEmail.toLowerCase() : null;
     let n = 0;
