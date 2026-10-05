@@ -16,6 +16,13 @@
  *    `comment_reply`, people @-mentioned in the text get `comment_mention`.
  *  - Reminders: a bounded, idempotent worker (`runRemindersOnce`).
  *  - Sharing: `notifyShare` (acl.ts) and access-request decisions.
+ *  - Assignments (NP-CO-16): `assignmentsStored` runs after a PERSON wrote a
+ *    person-kind property through the gateway (`POST /api/properties/:id`, the
+ *    batch route, a metadata PATCH — owner passthrough and member route alike).
+ *    People ADDED to the field get `assigned`. Creates (templates, duplicates),
+ *    the CSV import and every ingester write nothing here: they never call it.
+ *  - Per-page level (`notification_page_levels`): `none` drops comment replies
+ *    for that reader on that page; `all` adds new threads and page comments.
  *
  * RULES (every producer)
  *  - never notify the author (every editor of the batch is an author);
@@ -42,7 +49,7 @@ import { apnsEnabled, sendApnsToOwner, notificationAlert } from "./apns";
 import { sendEmail } from "./auth/email";
 import { documentActorId } from "./human-collab";
 import { writerIdFor } from "./writer-stamp";
-import { personNotesForEmail } from "./my-tasks";
+import { personNotesForEmail, assigneeAddresses, peopleValues } from "./my-tasks";
 import { onAccessChanged } from "./access-events";
 import { docNameFor, federationTarget, suggestionViewOfHtml, isDocLive, markReconciled, setDocumentStoreListener, type DocumentStoredEvent } from "./collab";
 
@@ -112,9 +119,18 @@ db.exec(`
     PRIMARY KEY (vault_id, note_id, thread_id, email)
   );
   CREATE UNIQUE INDEX IF NOT EXISTS access_requests_pending ON access_requests(vault_id, note_id, requester) WHERE status = 'pending';
+  CREATE TABLE IF NOT EXISTS notification_page_levels (
+    email TEXT NOT NULL,
+    vault_id TEXT NOT NULL,
+    note_id TEXT NOT NULL,
+    level TEXT NOT NULL,
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY (email, vault_id, note_id)
+  );
+  CREATE INDEX IF NOT EXISTS notification_page_levels_note ON notification_page_levels(vault_id, note_id, level);
 `);
 
-export const NOTIFICATION_TABLES = ["notifications", "notification_settings", "notification_email_log", "reminders", "access_requests", "comment_participants"] as const;
+export const NOTIFICATION_TABLES = ["notifications", "notification_settings", "notification_email_log", "reminders", "access_requests", "comment_participants", "notification_page_levels"] as const;
 /** Tests: wipe this module's tables and in-memory state. */
 export function _resetNotifications(): void {
   for (const t of NOTIFICATION_TABLES) db.exec(`DELETE FROM ${t}`);
@@ -141,25 +157,33 @@ export type NotificationType =
   | "access_denied"
   | "suggestion_accepted"
   | "suggestion_rejected"
-  | "suggestion_resolved";
-const TYPES: readonly NotificationType[] = ["mention", "comment_reply", "comment_mention", "reminder", "share", "access_request", "access_granted", "access_denied", "suggestion_accepted", "suggestion_rejected", "suggestion_resolved"];
+  | "suggestion_resolved"
+  | "assigned"
+  | "comment_thread";
+const TYPES: readonly NotificationType[] = ["mention", "comment_reply", "comment_mention", "reminder", "share", "access_request", "access_granted", "access_denied", "suggestion_accepted", "suggestion_rejected", "suggestion_resolved", "assigned", "comment_thread"];
 export const isNotificationType = (t: unknown): t is NotificationType => typeof t === "string" && (TYPES as readonly string[]).includes(t);
 /** Filter groups the inbox offers (also accepts an exact type). */
 export const TYPE_GROUPS: Record<string, NotificationType[]> = {
   mention: ["mention", "comment_mention"],
-  comment: ["comment_reply", "comment_mention", "suggestion_accepted", "suggestion_rejected", "suggestion_resolved"],
+  comment: ["comment_reply", "comment_mention", "comment_thread", "suggestion_accepted", "suggestion_rejected", "suggestion_resolved"],
   reminder: ["reminder"],
   access: ["access_request", "access_granted", "access_denied", "share"],
+  assignment: ["assigned"],
 };
 
-export type Category = "mention" | "comment" | "reminder" | "access";
+export type Category = "mention" | "comment" | "reminder" | "access" | "assignment";
 const categoryOf = (t: NotificationType): Category =>
-  t === "mention" || t === "comment_mention" ? "mention" : t === "comment_reply" || t === "suggestion_accepted" || t === "suggestion_rejected" || t === "suggestion_resolved" ? "comment" : t === "reminder" ? "reminder" : "access";
+  t === "assigned" ? "assignment"
+    : t === "mention" || t === "comment_mention" ? "mention"
+    : t === "comment_reply" || t === "comment_thread" || t === "suggestion_accepted" || t === "suggestion_rejected" || t === "suggestion_resolved" ? "comment"
+    : t === "reminder" ? "reminder" : "access";
 
 export interface Anchor {
   mention?: string;
   thread?: string;
   reminder?: string;
+  /** `assigned`: the property the reader was added to (the page's property bar row). */
+  property?: string;
 }
 
 interface Row {
@@ -202,8 +226,11 @@ export const DEFAULT_SETTINGS: Settings = {
   comment: { push: true, email: true },
   reminder: { push: true, email: false },
   access: { push: true, email: true },
+  // Added after the first release: a stored row without this key reads as the
+  // default (`sanitizeSettings` starts from DEFAULT_SETTINGS), so nobody is migrated.
+  assignment: { push: true, email: true },
 };
-const CATEGORIES: readonly Category[] = ["mention", "comment", "reminder", "access"];
+const CATEGORIES: readonly Category[] = ["mention", "comment", "reminder", "access", "assignment"];
 
 export function sanitizeSettings(raw: unknown): Settings | null {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
@@ -472,6 +499,10 @@ export interface NewNotification {
   preview?: string | null;
   requestId?: string | null;
   dedupe: string;
+  /** Written by the account's agent (Prism MCP): the actor reads "<name> (agent)". */
+  agent?: boolean;
+  /** Budget key for a spammable item with NO account behind it (a share-link guest). */
+  senderKey?: string;
 }
 
 // Budgets (review M1). Spent only AFTER a row was actually inserted (a dedupe hit
@@ -481,7 +512,7 @@ export interface NewNotification {
 // hourly budget only ever skips the PUSH, never the inbox item.
 const PER_SENDER_HOUR = Number(process.env.NOTIFY_PER_SENDER_HOUR ?? 20);
 const PER_SENDER_NOTE_HOUR = Number(process.env.NOTIFY_PER_SENDER_NOTE_HOUR ?? 8);
-const SPAMMABLE: ReadonlySet<NotificationType> = new Set(["mention", "comment_reply", "comment_mention", "suggestion_accepted", "suggestion_rejected", "suggestion_resolved"]);
+const SPAMMABLE: ReadonlySet<NotificationType> = new Set(["mention", "comment_reply", "comment_mention", "comment_thread", "assigned", "suggestion_accepted", "suggestion_rejected", "suggestion_resolved"]);
 const budgets = new Map<string, { n: number; reset: number }>();
 function budgetLeft(key: string, max: number): boolean {
   const b = budgets.get(key);
@@ -508,16 +539,17 @@ export function createNotification(n: NewNotification): string | null {
     type: n.type,
     note_id: n.noteId,
     actor_email: actor,
-    anchor: n.anchor ? JSON.stringify(n.anchor) : null,
+    anchor: n.anchor || n.agent ? JSON.stringify({ ...(n.anchor ?? {}), ...(n.agent ? { agent: true } : {}) }) : null,
     preview: n.preview ? n.preview.slice(0, PREVIEW_MAX) : null,
     request_id: n.requestId ?? null,
     dedupe_key: n.dedupe.slice(0, 400),
     created_at: Date.now(),
   });
   if (r.changes !== 1) return null; // duplicate: no budget spent
-  if (actor && SPAMMABLE.has(n.type)) {
-    const k1 = `s:${actor}:${recipient}`;
-    const k2 = `n:${actor}:${n.noteId ?? ""}:${recipient}`;
+  const sender = actor ?? (n.senderKey ? `key:${n.senderKey}` : null);
+  if (sender && SPAMMABLE.has(n.type)) {
+    const k1 = `s:${sender}:${recipient}`;
+    const k2 = `n:${sender}:${n.noteId ?? ""}:${recipient}`;
     if (!budgetLeft(k1, PER_SENDER_HOUR) || !budgetLeft(k2, PER_SENDER_NOTE_HOUR)) {
       st.del.run(id);
       return null;
@@ -561,14 +593,22 @@ function forgetUnread(email: string): void {
 onAccessChanged(() => unreadCache.clear());
 
 // ── read side ────────────────────────────────────────────────────────────────
-const parseAnchor = (s: string | null): Anchor | null => {
+type StoredAnchor = Anchor & { agent?: boolean };
+const parseStoredAnchor = (s: string | null): StoredAnchor | null => {
   if (!s) return null;
   try {
-    const a = JSON.parse(s) as Anchor;
+    const a = JSON.parse(s) as StoredAnchor;
     return a && typeof a === "object" ? a : null;
   } catch {
     return null;
   }
+};
+/** The anchor a reader gets: the stored one without the server's own `agent` flag. */
+const parseAnchor = (s: string | null): Anchor | null => {
+  const a = parseStoredAnchor(s);
+  if (!a) return null;
+  const { agent: _agent, ...rest } = a;
+  return Object.keys(rest).length ? rest : null;
 };
 
 /** Project one row for its recipient, or null when it must stay hidden. */
@@ -587,7 +627,7 @@ async function view(row: Row): Promise<NotificationView | null> {
     type: row.type,
     noteId: row.note_id,
     title,
-    actor: row.actor_email ? { name: displayName(row.actor_email) } : null,
+    actor: row.actor_email ? { name: `${displayName(row.actor_email)}${parseStoredAnchor(row.anchor)?.agent ? " (agent)" : ""}` } : null,
     anchor: parseAnchor(row.anchor),
     preview: row.preview,
     requestId: row.request_id,
@@ -828,7 +868,7 @@ interface StoredComment {
   text?: unknown;
   createdAt?: unknown;
 }
-type ThreadJson = { id?: unknown; comments?: StoredComment[] };
+type ThreadJson = { id?: unknown; page?: unknown; comments?: StoredComment[] };
 const commentBaselines = new Map<string, Set<string>>();
 const itemKey = (threadId: string, c: StoredComment, i: number) =>
   typeof c.id === "string" && c.id ? `${threadId}:${c.id}` : `${threadId}:${i}:${typeof c.createdAt === "number" ? c.createdAt : 0}`;
@@ -926,7 +966,18 @@ export async function commentsStored(docName: string, vaultId: string, noteId: s
       const participants = new Set<string>((cp.list.all(vaultId, noteId, threadId) as Array<{ email: string }>).map((r) => r.email));
       for (const email of participants) {
         if (authors.has(email) || mentioned.has(email) || !userCanView(email, vaultId, info)) continue;
+        // Per-page level "Nothing": no replies from this page (a mention of them, above, still arrives).
+        if (getPageLevel(email, vaultId, noteId) === "none") continue;
         if (createNotification({ vaultId, recipient: email, type: "comment_reply", noteId, actorEmail: author, anchor: { thread: threadId }, preview, dedupe: `comment:${noteId}:${key}` })) sent++;
+      }
+      // Per-page level "All updates": a NEW thread (its first item) and every page
+      // comment reach people who follow the page, whether or not they took part.
+      // Same dedupe key as the reply/mention above, so nobody gets two items for one comment.
+      if (i === 0 || t.page === true) {
+        for (const email of pageFollowers(vaultId, noteId)) {
+          if (authors.has(email) || mentioned.has(email) || participants.has(email) || !isAccount(email) || !userCanView(email, vaultId, info)) continue;
+          if (createNotification({ vaultId, recipient: email, type: "comment_thread", noteId, actorEmail: author, anchor: { thread: threadId }, preview, dedupe: `comment:${noteId}:${key}` })) sent++;
+        }
       }
       if (author) cp.add.run(vaultId, noteId, threadId, author);
     }
@@ -1012,6 +1063,114 @@ export async function suggestionsResolved(o: { vaultId: string; noteId: string; 
     const outcome = suggestionOutcome(s, prevPlain, nextPlain);
     const preview = (s.ins || s.del).replace(/\s+/g, " ").trim().slice(0, PREVIEW_MAX) || null;
     if (createNotification({ vaultId: o.vaultId, recipient: suggester, type: outcome === "accepted" ? "suggestion_accepted" : outcome === "rejected" ? "suggestion_rejected" : "suggestion_resolved", noteId: o.noteId, actorEmail: decider, preview, dedupe: `suggestion:${o.noteId}:${id}` })) sent++;
+  }
+  return sent;
+}
+
+// ── per-page notification level (NP-CO-04) ───────────────────────────────────
+// "All updates" / "Replies and @mentions" (the default: no row) / "Nothing", per
+// (account, vault, page). Enforced in `commentsStored`. A mention of the reader and
+// an assignment always arrive, whatever the level.
+export type PageLevel = "all" | "mentions" | "none";
+export const PAGE_LEVELS: readonly PageLevel[] = ["all", "mentions", "none"];
+export const isPageLevel = (v: unknown): v is PageLevel => typeof v === "string" && (PAGE_LEVELS as readonly string[]).includes(v);
+const MAX_PAGE_FOLLOWERS = 200;
+const pl = {
+  get: db.prepare("SELECT level FROM notification_page_levels WHERE email = ? AND vault_id = ? AND note_id = ?"),
+  put: db.prepare(
+    "INSERT INTO notification_page_levels (email, vault_id, note_id, level, updated_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(email, vault_id, note_id) DO UPDATE SET level = excluded.level, updated_at = excluded.updated_at",
+  ),
+  del: db.prepare("DELETE FROM notification_page_levels WHERE email = ? AND vault_id = ? AND note_id = ?"),
+  followers: db.prepare("SELECT email FROM notification_page_levels WHERE vault_id = ? AND note_id = ? AND level = 'all' LIMIT ?"),
+};
+export function getPageLevel(email: string, vaultId: string, noteId: string): PageLevel {
+  const row = pl.get.get(email.toLowerCase(), vaultId, noteId) as { level: string } | undefined;
+  return row && isPageLevel(row.level) ? row.level : "mentions";
+}
+/** The default level is "no row": setting it deletes the choice. */
+export function setPageLevel(email: string, vaultId: string, noteId: string, level: PageLevel): void {
+  if (level === "mentions") pl.del.run(email.toLowerCase(), vaultId, noteId);
+  else pl.put.run(email.toLowerCase(), vaultId, noteId, level, Date.now());
+}
+const pageFollowers = (vaultId: string, noteId: string): string[] =>
+  (pl.followers.all(vaultId, noteId, MAX_PAGE_FOLLOWERS) as Array<{ email: string }>).map((r) => r.email);
+
+// ── assignments (NP-CO-16) ───────────────────────────────────────────────────
+const MAX_ASSIGN_RECIPIENTS = 25;
+const ASSIGN_QUIET_MS = 3_600_000;
+const recentAssigned = db.prepare(
+  "SELECT anchor FROM notifications WHERE recipient = ? AND vault_id = ? AND type = 'assigned' AND note_id = ? AND created_at > ? LIMIT 50",
+);
+
+export interface AssignmentWrite {
+  vaultId: string;
+  noteId: string;
+  /** PERSON-kind properties this write set: the value stored before and the value written. */
+  fields: Array<{ key: string; prev: unknown; next: unknown }>;
+  /** The account that made the write; null = a share-link guest ("Someone"). */
+  author: string | null;
+  /** Budget key when there is no account (the link's id). */
+  senderKey?: string;
+  /** The write came through the account's agent (Prism MCP). */
+  agent?: boolean;
+}
+
+/**
+ * "X assigned you to <page>": notify the accounts ADDED to a person property.
+ *
+ *  - Both the previous and the new value are resolved to accounts with the My
+ *    tasks identity rules (`assigneeAddresses`), so rewriting "Ada Lovelace" as
+ *    `[[people/Ada Lovelace]]` adds nobody.
+ *  - Never the author; only someone who can VIEW the page (re-checked at delivery
+ *    and at read time like every other item); never for a template or the Trash.
+ *  - Removed and re-added within an hour: one item (a look-back over the
+ *    reader's own `assigned` rows for that page + property, plus an hourly
+ *    dedupe key against a concurrent double write).
+ *  - Within the per-sender budgets shared with mentions. One item per reader per
+ *    write, even when they were added to two properties at once.
+ * Never throws.
+ */
+export async function assignmentsStored(e: AssignmentWrite): Promise<number> {
+  let sent = 0;
+  try {
+    if (!e.fields.length) return 0;
+    const entry = resolveVaultEntry(e.vaultId);
+    if (entry.id !== e.vaultId) return 0;
+    const author = e.author?.toLowerCase() ?? null;
+    const added = new Map<string, string>(); // account → the first property they were added to
+    for (const f of e.fields.slice(0, 20)) {
+      const next = peopleValues(f.next);
+      if (!next.length) continue;
+      const after = await assigneeAddresses(entry, next);
+      if (!after.size) continue;
+      const before = await assigneeAddresses(entry, peopleValues(f.prev));
+      for (const email of after) if (!before.has(email) && !added.has(email)) added.set(email, f.key);
+    }
+    if (!added.size) return 0;
+    const info = await noteInfo(e.vaultId, e.noteId, { fresh: true });
+    if (!info || info.trashed || info.ref.tags.includes("template")) return 0;
+    const now = Date.now();
+    const ownerAccount = config.ownerEmail ? config.ownerEmail.toLowerCase() : null;
+    let n = 0;
+    for (const [email, key] of added) {
+      if (n++ >= MAX_ASSIGN_RECIPIENTS) break;
+      if (email === author || !(isAccount(email) || email === ownerAccount) || !userCanView(email, e.vaultId, info)) continue;
+      const recent = (recentAssigned.all(email, e.vaultId, e.noteId, now - ASSIGN_QUIET_MS) as Array<{ anchor: string | null }>).some((r) => parseStoredAnchor(r.anchor)?.property === key);
+      if (recent) continue;
+      if (createNotification({
+        vaultId: e.vaultId,
+        recipient: email,
+        type: "assigned",
+        noteId: e.noteId,
+        actorEmail: author,
+        anchor: { property: key },
+        agent: e.agent,
+        senderKey: author ? undefined : e.senderKey,
+        dedupe: `assigned:${e.noteId}:${key}:${Math.floor(now / ASSIGN_QUIET_MS)}`,
+      })) sent++;
+    }
+  } catch (err) {
+    console.error(`[notify] assignment processing failed: ${(err as Error).message}`);
   }
   return sent;
 }

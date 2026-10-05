@@ -106,15 +106,87 @@ export async function myIdentity(actor: Actor, entry: VaultEntry): Promise<MyIde
   return me;
 }
 
-/** `assigned` values: CSV, " & ", " and ", wikilinks kept whole (as the linking job reads them). */
-function assigneeValues(md: Record<string, unknown>): string[] {
-  const raw = [...strings(md.assigned), ...strings(md.assignee), ...strings(md.assigneeEmail), ...strings(md.assignee_email)];
+/** One stored people value → the people it names: CSV, " & ", " and ", wikilinks kept whole (as the linking job reads them). */
+export function peopleValues(value: unknown): string[] {
   const out: string[] = [];
-  for (const s of raw) {
+  for (const s of strings(value)) {
     if (s.length > 2000) continue;
     for (const part of s.split(/[,;&]/)) for (const v of part.includes("[[") ? [part] : part.split(/\s+and\s+/i)) if (v.trim()) out.push(v.trim());
   }
   return out.slice(0, 20);
+}
+/** `assigned` values of a task (the four assignee keys). */
+function assigneeValues(md: Record<string, unknown>): string[] {
+  return [md.assigned, md.assignee, md.assigneeEmail, md.assignee_email].flatMap(peopleValues).slice(0, 20);
+}
+
+/**
+ * The INVERSE of `assignedToMe` (assignment notifications): the addresses the
+ * people named by `values` could sign in with — the same identity rules, read the
+ * other way round. A value is
+ *  - an address → that address (one of the owner's configured addresses → the
+ *    server owner's account address);
+ *  - a `[[wikilink]]` / path / id of a live human person note → that note's email
+ *    identities (the owner's configured person note → the server owner);
+ *  - a name → the email identities of the ONE live human person note with that
+ *    name or file name (two people with one name → nobody: a notification is not
+ *    a guess), or the server owner for a configured alias.
+ * An account's self-chosen display name is NOT used. The caller keeps only the
+ * addresses that are accounts. Linear in the people listing (cached 60 s).
+ */
+export async function assigneeAddresses(entry: VaultEntry, values: string[]): Promise<Set<string>> {
+  const out = new Set<string>();
+  if (!values.length) return out;
+  const ownerEmail = config.ownerEmail ? lower(config.ownerEmail) : "";
+  const owner = ownerSettings(entry.id);
+  const ownerAddresses = new Set(owner.emails.map(lower));
+  const ownerAliases = new Set(owner.aliases.map(lower).filter(Boolean));
+  const ownerRef = owner.person ? lower(owner.person.replace(/\.md$/i, "")) : "";
+  let list: Note[] = [];
+  try {
+    list = await people(entry);
+  } catch {
+    /* the vault is busy: addresses still resolve */
+  }
+  const byRef = new Map<string, Note>();
+  const byName = new Map<string, Note[]>();
+  for (const n of list) {
+    if (isTombstone(n) || isNonHumanPerson(n)) continue;
+    const path = lower((n.path ?? "").replace(/\.md$/i, ""));
+    byRef.set(n.id.toLowerCase(), n);
+    if (path) byRef.set(path, n);
+    const names = new Set([lower(leafOf(n.path)), typeof n.metadata?.name === "string" ? lower(n.metadata.name) : ""]);
+    for (const name of names) if (name) byName.set(name, [...(byName.get(name) ?? []), n]);
+  }
+  const take = (n: Note) => {
+    for (const e of personEmails(n)) out.add(e);
+    const path = lower((n.path ?? "").replace(/\.md$/i, ""));
+    if (ownerEmail && ownerRef && (n.id.toLowerCase() === ownerRef || path === ownerRef)) out.add(ownerEmail);
+  };
+  const byNameOne = (name: string) => {
+    const hits = byName.get(name) ?? [];
+    return hits.length === 1 ? hits[0]! : null;
+  };
+  for (const v of values.slice(0, 40)) {
+    const open = v.indexOf("[[");
+    if (open >= 0) {
+      const close = v.indexOf("]]", open + 2);
+      if (close < 0) continue;
+      const target = lower(v.slice(open + 2, close).split("|")[0]!.replace(/\.md$/i, ""));
+      const n = byRef.get(target) ?? byNameOne(target);
+      if (n) take(n);
+      continue;
+    }
+    const value = lower(v);
+    if (value.includes("@")) {
+      if (value.length <= 320 && EMAIL.test(value)) out.add(ownerEmail && ownerAddresses.has(value) ? ownerEmail : value);
+      continue;
+    }
+    const n = byRef.get(value.replace(/\.md$/i, "")) ?? byNameOne(value);
+    if (n) take(n);
+    if (ownerEmail && ownerAliases.has(value)) out.add(ownerEmail);
+  }
+  return out;
 }
 
 export function assignedToMe(metadata: Record<string, unknown> | null | undefined, me: MyIdentity): boolean {

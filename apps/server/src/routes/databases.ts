@@ -58,6 +58,8 @@ import {
   parseCsv,
   isFieldKey,
   isSystemKey,
+  inferKind,
+  isPeopleKeyName,
   mergeSchemaFields,
   compatibleKinds,
   INGEST_TAGS,
@@ -75,6 +77,7 @@ import {
 } from "@prism/core/database";
 
 import { assignedToMe, myIdentity, resetMyTasksForTests, type MyIdentity } from "../my-tasks";
+import { assignmentsStored } from "../notifications";
 
 export const databasesApi = new Hono();
 
@@ -193,6 +196,50 @@ function present(schema: TagSchema | undefined, hints: Record<string, FieldHints
   }
   for (const [k, h] of Object.entries(hints ?? {})) fields[k] = { ...(fields[k] ?? {}), ...h };
   return { description: schema?.description ?? null, fields };
+}
+
+/** The task fields that always name people, whatever a schema says (my-tasks.ts reads the same four). */
+const ASSIGNEE_KEYS: ReadonlySet<string> = new Set(["assigned", "assignee", "assigneeEmail", "assignee_email"]);
+/**
+ * Which of `values`' keys are PERSON properties of a note carrying `tags`
+ * (assignment notifications): the four task assignee keys, a key some tag of the
+ * note declares and the UI presents as a person (`inferKind` over the vault type +
+ * the schema-ui hint), or an undeclared key the UI would read as a person (a
+ * people-named key holding a wikilink). Only keys whose value could name someone.
+ * A schema that cannot be read leaves the assignee keys and free keys.
+ */
+export async function personPropertyKeys(entry: VaultEntry, tags: string[], values: Record<string, unknown>): Promise<string[]> {
+  const candidates = Object.entries(values).filter(([, v]) => (typeof v === "string" && v.trim() !== "") || (Array.isArray(v) && v.some((x) => typeof x === "string" && x.trim() !== "")));
+  if (!candidates.length) return [];
+  const hints = readHints(entry.id);
+  // Without a hint, only a people-named key can be a person (`inferKind`): an
+  // ordinary write (status, due, a text field) reads no schema and costs nothing.
+  const hinted = (k: string) => tags.some((t) => hints.get(t)?.[k]?.kind !== undefined);
+  const undecided = candidates.filter(([k]) => !ASSIGNEE_KEYS.has(k) && isFieldKey(k) && !isSystemKey(k) && (isPeopleKeyName(k) || hinted(k)));
+  let schemas = new Map<string, TagSchema>();
+  if (undecided.length) {
+    try {
+      schemas = await vaultSchemas(entry);
+    } catch {
+      /* no schema: names and values decide */
+    }
+  }
+  const out: string[] = [];
+  for (const [k, v] of candidates) {
+    if (ASSIGNEE_KEYS.has(k)) { out.push(k); continue; }
+    if (!undecided.some(([u]) => u === k)) continue;
+    let declared = false;
+    let person = false;
+    for (const t of tags) {
+      const schemaField = schemas.get(t)?.fields?.[k];
+      const hint = hints.get(t)?.[k];
+      if (!schemaField && !hint) continue;
+      declared = true;
+      if (inferKind(k, { ...(schemaField ?? {}), ...(hint ?? {}) }, v) === "person") person = true;
+    }
+    if (declared ? person : inferKind(k, undefined, v) === "person") out.push(k);
+  }
+  return out;
 }
 
 /** Tags a non-owner may learn the schema of (see the module header). */
@@ -798,7 +845,7 @@ function parseWrite(set: unknown, expect: unknown): { error: string } | { entrie
  * per-field CAS → 409, vault `if_updated_at` retried once, writer stamp,
  * `markReconciled` for a live doc. Leaves listing-cache eviction to the caller.
  */
-async function writeProperties(actor: Actor, entry: VaultEntry, id: string, entries: Array<[string, unknown]>, expected: Array<[string, unknown]>): Promise<WriteOutcome> {
+async function writeProperties(actor: Actor, entry: VaultEntry, id: string, entries: Array<[string, unknown]>, expected: Array<[string, unknown]>, via: ReturnType<typeof requestVia>): Promise<WriteOutcome> {
   const vc = vaultClient(entry.id);
   const patch = stampMetadata(Object.fromEntries(entries), actor)!;
   for (let attempt = 0; attempt < 2; attempt++) {
@@ -854,11 +901,36 @@ async function writeProperties(actor: Actor, entry: VaultEntry, id: string, entr
       if (Number.isFinite(prev) && Number.isFinite(next)) markReconciled(docNameFor(entry.id, id), prev, next);
     }
     treeUpsertNote(entry, updated);
+    // NP-CO-16: people ADDED to a person property hear about it (after the write
+    // landed; fire-and-forget — never part of the response).
+    notifyAssignments(actor, entry, note, Object.fromEntries(entries), via);
     const metadata: Record<string, unknown> = { ...(actor.kind === "link" ? stripIdentity(updated.metadata ?? {}) : updated.metadata ?? {}) };
     if (!isAdmin(actor)) for (const k of ACCESS_KEYS) delete metadata[k];
     return { ok: true, id: updated.id, updatedAt: updated.updatedAt, metadata };
   }
   return { ok: false, id, status: 409, error: "conflict", fields: [] };
+}
+
+/**
+ * Assignment notifications for one landed property write by a PERSON (or their
+ * agent): `before` is the note as it was read for this write, `set` what was
+ * written. Called by the property routes and the gateway's metadata PATCH hook
+ * only — the CSV import, creates and every ingester deliberately do not.
+ */
+export function notifyAssignments(actor: Actor, entry: VaultEntry, before: Pick<Note, "id" | "tags" | "metadata">, set: Record<string, unknown>, via: ReturnType<typeof requestVia>): void {
+  if (actor.kind === "anon") return;
+  void (async () => {
+    const keys = await personPropertyKeys(entry, before.tags ?? [], set);
+    if (!keys.length) return;
+    await assignmentsStored({
+      vaultId: entry.id,
+      noteId: before.id,
+      fields: keys.map((key) => ({ key, prev: before.metadata?.[key] ?? null, next: set[key] })),
+      author: actor.kind === "user" ? actor.email : null,
+      senderKey: actor.kind === "link" ? `link:${actor.capabilityId}` : undefined,
+      agent: via === "mcp",
+    });
+  })().catch((e) => console.error(`[notify] assignment hook failed: ${(e as Error).message}`));
 }
 
 const evictVaultListings = (entry: VaultEntry) => {
@@ -912,13 +984,14 @@ databasesApi.post("/properties/batch", bodyLimit({ maxSize: 512 * 1024, onError:
     return c.json({ error: "rate_limited", retryAfter: wait }, 429);
   }
   const entry = entryFor(c, actor);
+  const via = requestVia(c);
   const results: WriteOutcome[] = new Array(parsed.length);
   let next = 0;
   await Promise.all(Array.from({ length: Math.min(BATCH_CONCURRENCY, parsed.length) }, async () => {
     while (next < parsed.length) {
       const i = next++;
       const w = parsed[i]!;
-      results[i] = await writeProperties(actor, entry, w.id, w.entries, w.expected);
+      results[i] = await writeProperties(actor, entry, w.id, w.entries, w.expected, via);
     }
   }));
   if (results.some((r) => r.ok)) evictVaultListings(entry);
@@ -949,7 +1022,7 @@ databasesApi.post("/properties/:id", async (c) => {
     return c.json({ error: "rate_limited", retryAfter: wait }, 429);
   }
   const entry = entryFor(c, actor);
-  const out = await writeProperties(actor, entry, id, parsed.entries, parsed.expected);
+  const out = await writeProperties(actor, entry, id, parsed.entries, parsed.expected, requestVia(c));
   if (out.ok) evictVaultListings(entry);
   if (out.ok) return c.json({ id: out.id, updatedAt: out.updatedAt, metadata: out.metadata });
   const { ok: _ok, id: _id, status, ...rest } = out;
