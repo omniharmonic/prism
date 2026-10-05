@@ -128,3 +128,111 @@ test("copy link to heading: block menu and outline copy `<page link>#h-<slug>`; 
   await expect(steps.first()).toBeInViewport();
   await expect(editor.getByRole("heading", { name: "Plan" })).not.toBeInViewport();
 });
+
+const stubClipboard = (page: Page) => page.addInitScript(() => {
+  Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText: async (text: string) => { (window as any).copied = text; } } });
+});
+const noteWrites = (page: Page) => page.evaluate(() => (window as any).prismShell.writes.filter((w: any) => String(w.path).includes("/notes")).length);
+
+/** Table A 7: expand / collapse all toggles (⌘⌥T, page ⋯, ⌘K). Open state is view state: nothing is written. */
+test("expand or collapse all toggles: ⌘⌥T, the page menu and the palette; nested toggles follow; nothing is saved", async ({ page }) => {
+  await page.goto("/e2e-fixtures/notion-shell.html?headings&open=agenda");
+  const editor = page.locator(".tiptap[contenteditable=true]");
+  const toggles = editor.locator('.prism-toggle[data-type="toggle"]');
+  await expect(toggles).toHaveCount(3);
+  const closed = editor.locator('.prism-toggle[data-open="false"]');
+  const inside = editor.getByText("Inside the nested toggle.");
+  await expect(closed).toHaveCount(0);
+  await expect(inside).toBeVisible();
+  const html = () => page.evaluate(() => (document.querySelector(".tiptap") as any).editor.getHTML() as string);
+  const before = await html();
+
+  // ⌘⌥T with the caret in the page: all open → all closed (the nested one too).
+  await editor.getByText("The second one.").click();
+  await page.keyboard.press("ControlOrMeta+Alt+t");
+  await expect(closed).toHaveCount(3);
+  await expect(inside).toBeHidden();
+  // Again: all open.
+  await page.keyboard.press("ControlOrMeta+Alt+t");
+  await expect(closed).toHaveCount(0);
+  await expect(inside).toBeVisible();
+  // Mixed (one closed by hand) → the key EXPANDS.
+  await toggles.first().locator("> .prism-toggle-arrow").click();
+  await expect(closed).toHaveCount(1);
+  await page.keyboard.press("ControlOrMeta+Alt+t");
+  await expect(closed).toHaveCount(0);
+
+  // Page ⋯: the item names what it will do.
+  const more = page.getByRole("button", { name: "Page actions", exact: true });
+  await more.click();
+  await page.getByRole("menuitem", { name: "Collapse all toggles" }).click();
+  await expect(closed).toHaveCount(3);
+  await more.click();
+  await expect(page.getByRole("menuitem", { name: "Collapse all toggles" })).toHaveCount(0);
+  await page.getByRole("menuitem", { name: "Expand all toggles" }).click();
+  await expect(closed).toHaveCount(0);
+
+  // ⌘K has the same action, with its key.
+  await page.keyboard.press("ControlOrMeta+k");
+  await page.getByRole("combobox", { name: "Search notes and commands" }).fill("toggles");
+  await page.getByRole("option", { name: /Expand or Collapse All Toggles/ }).click();
+  await expect(closed).toHaveCount(3);
+
+  // View state only: the document is unchanged and nothing was sent.
+  expect(await html()).toBe(before);
+  expect(await noteWrites(page)).toBe(0);
+
+  // A page without toggles: no menu item, and the key is left alone.
+  await page.goto("/e2e-fixtures/notion-shell.html");
+  await expect(editor).toBeVisible();
+  await more.click();
+  await expect(page.getByRole("menuitem", { name: "Copy link", exact: true })).toBeVisible();
+  await expect(page.getByRole("menuitem", { name: /all toggles/ })).toHaveCount(0);
+});
+
+/** Table A 23: ⌘L copies the open page's link. Table A 28: a closed tab can be reopened. */
+test("⌘L copies the page link; Reopen Closed Tab brings back the tab closed last, where it was", async ({ page }) => {
+  await stubClipboard(page);
+  await page.goto("/e2e-fixtures/notion-shell.html");
+  const editor = page.locator(".tiptap[contenteditable=true]");
+  await expect(editor).toBeVisible();
+  const origin = new URL(page.url()).origin;
+  const copied = () => page.evaluate(() => (window as any).copied as string | undefined);
+  await editor.locator("p").first().click();
+  await page.keyboard.press("ControlOrMeta+l");
+  await expect.poll(copied).toBe(`${origin}/page/workspace`);
+  await expect(page.getByText("Link copied")).toBeVisible();
+  // The palette lists it with the key; nothing was typed into or written to the page.
+  await page.keyboard.press("ControlOrMeta+k");
+  const input = page.getByRole("combobox", { name: "Search notes and commands" });
+  await input.fill("copy link");
+  await expect(page.getByRole("option", { name: /Copy Link to Page/ })).toBeVisible();
+  // No tab was closed yet: nothing to reopen.
+  await input.fill("reopen");
+  await expect(page.getByRole("option", { name: /Reopen Closed Tab/ })).toHaveCount(0);
+  expect(await noteWrites(page)).toBe(0);
+
+  // Open two more pages, then close the MIDDLE one.
+  const tabs = page.getByRole("navigation", { name: "Open document tabs" });
+  const order = () => page.evaluate(() => (window as any).prismShellUI.getState().openTabs.map((t: any) => t.noteId) as string[]);
+  for (const [q, name] of [["agenda", /Workshop agenda/], ["budget", /Field notes/]] as const) {
+    await input.fill(q);
+    await page.getByRole("group", { name: "Notes" }).getByRole("option", { name }).first().click();
+    await page.keyboard.press("ControlOrMeta+k");
+  }
+  await page.keyboard.press("Escape");
+  expect(await order()).toEqual(["workspace", "agenda", "field-notes"]);
+  await tabs.getByRole("button", { name: "Open Workshop agenda", exact: true }).click();
+  await page.evaluate(() => { const ui = (window as any).prismShellUI.getState(); ui.closeTab(ui.activeTabId); });
+  expect(await order()).toEqual(["workspace", "field-notes"]);
+
+  await page.keyboard.press("ControlOrMeta+k");
+  await input.fill("reopen");
+  await page.getByRole("option", { name: /Reopen Closed Tab/ }).click();
+  expect(await order()).toEqual(["workspace", "agenda", "field-notes"]);
+  await expect(tabs.getByRole("button", { name: "Open Workshop agenda", exact: true })).toHaveAttribute("aria-current", "page");
+  // Used up: the command is gone again.
+  await page.keyboard.press("ControlOrMeta+k");
+  await input.fill("reopen");
+  await expect(page.getByRole("option", { name: /Reopen Closed Tab/ })).toHaveCount(0);
+});

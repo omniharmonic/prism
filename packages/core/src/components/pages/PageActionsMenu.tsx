@@ -26,8 +26,11 @@ import {
   Bot,
   LayoutTemplate,
   Sparkles,
+  ChevronsDownUp,
+  ChevronsUpDown,
 } from "lucide-react";
 import { requestFindInPage } from "../../lib/tiptap/findShortcuts";
+import { setAllToggles, toggleState } from "../../lib/tiptap/toggleAll";
 import { useCollabSharing } from "../../data/CollabSharing";
 import { openSharingDialog } from "../layout/SharingDialogHost";
 import { openInNewTab } from "../../lib/pages/openInNewTab";
@@ -106,6 +109,9 @@ export function usePageMenuItems(
   };
   if (!real) return [];
   const isActive = activeNoteId === page.id;
+  // Read when the menu is built (it is rebuilt each time it opens): the open page's own editor.
+  const pageEditor = () => (typeof document === "undefined" ? null : document.querySelector<HTMLElement>("#workspace-document .tiptap"));
+  const toggles = isActive ? toggleState(pageEditor()) : { total: 0, closed: 0 };
   const native = typeof window !== "undefined" && !!(window as unknown as { __PRISM_HOST__?: unknown }).__PRISM_HOST__;
   /** Open this page (if it isn't the one in front) and run `then` once it is. */
   const onPage = (then: () => void) => {
@@ -154,6 +160,8 @@ export function usePageMenuItems(
     { id: "copy-link", label: "Copy link", icon: <Link2 size={15} />, startsGroup: true, onClick: run(() => void actions.copyLink(page)) },
     // NP-ED-22: find in page without a keyboard (the open page's editor answers).
     ...(activeNoteId === page.id ? [{ id: "find-in-page", label: "Find in page", icon: <Search size={15} />, onClick: run(() => { setTimeout(requestFindInPage, 60); }) }] : []),
+    // Expand / collapse all toggles (⌘⌥T): view state of THIS device's open page, nothing is saved.
+    ...(activeNoteId === page.id && toggles.total ? [{ id: "toggle-all", label: toggles.closed ? "Expand all toggles" : "Collapse all toggles", icon: toggles.closed ? <ChevronsUpDown size={15} /> : <ChevronsDownUp size={15} />, onClick: run(() => { setAllToggles(toggles.closed > 0, pageEditor()); }) }] : []),
     ...(canEdit && note
       ? [{
           id: "lock",

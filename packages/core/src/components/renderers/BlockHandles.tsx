@@ -41,6 +41,7 @@ import { inferContentType } from "../../lib/schemas/content-types";
 import { isTrashed, protectionReason } from "../../lib/pages/model";
 import type { Note } from "../../lib/types";
 import "./ShortcutSheet"; // installs ⌘/ → keyboard shortcuts
+import "../../lib/tiptap/toggleAll"; // installs ⌘⌥T → expand / collapse all toggles (view state only)
 
 interface Hovered {
   index: number;
