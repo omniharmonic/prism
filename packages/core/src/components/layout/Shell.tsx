@@ -2,6 +2,7 @@ import { NoteShortcutsProvider } from "../navigation/NoteShortcuts";
 import { useWorkspaceSession } from "../../app/hooks/useWorkspaceSession";
 import { X } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useRegionPrefs } from "../../lib/datetime/useRegionPrefs";
 import { useUIStore, persistSidebar } from "../../app/stores/ui";
 import { useKeyboardShortcuts } from "../../app/hooks/useKeyboardShortcuts";
 import { useIsMobile } from "../../app/hooks/useIsMobile";
@@ -36,6 +37,9 @@ export function Shell() {
 }
 
 function ShellLayout() {
+  // Dates everywhere under the shell are written by lib/datetime/format, which reads the regional
+  // preferences synchronously: re-render the workspace when one changes (NP-AX-09).
+  useRegionPrefs();
   const {
     sidebarOpen,
     sidebarWidth,

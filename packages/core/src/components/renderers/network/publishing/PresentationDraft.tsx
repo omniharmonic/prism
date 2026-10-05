@@ -15,6 +15,7 @@ import { Button } from "../../../ui/Button";
 import { Input } from "../../../ui/Input";
 import { ErrText, Field } from "./shared";
 
+import { formatDateTime as fmtDateTime } from "../../../../lib/datetime/format";
 export function PresentationDraft({
   pub,
   sharing,
@@ -557,7 +558,7 @@ export function PresentationDraft({
                     Revision {item.revision} ·{" "}
                     {item.presentation.title || "Untitled site"}
                     <small className="block text-[var(--text-secondary)]">
-                      {new Date(item.createdAt).toLocaleString()}
+                      {fmtDateTime(new Date(item.createdAt))}
                     </small>
                   </span>
                   <Button

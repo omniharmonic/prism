@@ -6,6 +6,7 @@ import { Badge } from "../ui/Badge";
 import type { Note } from "../../lib/types";
 import { OpenAsDatabaseButton } from "../database/OpenAsDatabaseButton";
 
+import { formatDate as fmtDate } from "../../lib/datetime/format";
 interface TagViewProps {
   tag: string;
 }
@@ -112,10 +113,10 @@ export function TagView({ tag }: TagViewProps) {
 
 function formatShortDate(iso: string): string {
   try {
-    return new Date(iso).toLocaleDateString("en-US", {
+    return fmtDate(new Date(iso), {
       month: "short",
       day: "numeric",
-    });
+    }, { locale: "en-US" });
   } catch {
     return "";
   }

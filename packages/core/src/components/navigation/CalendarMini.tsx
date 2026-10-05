@@ -2,6 +2,10 @@ import { useQuery } from "@tanstack/react-query";
 import { Clock } from "lucide-react";
 import { format } from "date-fns";
 import { calendarApi } from "../../lib/sync/client";
+import { formatTime, usesSystemTime } from "../../lib/datetime/format";
+
+/** "system" keeps the string this always showed; a chosen 12/24-hour format replaces it (NP-AX-09). */
+const clock = (d: Date): string => (usesSystemTime() ? format(d, "h:mm a") : formatTime(d, { hour: "numeric", minute: "2-digit" }));
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type GogEvent = any; // gog returns standard Google Calendar event JSON
@@ -45,7 +49,7 @@ export function CalendarMini() {
           <div key={event?.id || i} className="flex items-center gap-2 px-3 py-1 text-xs">
             <Clock size={11} style={{ color: "var(--text-muted)" }} />
             <span style={{ color: "var(--text-secondary)" }}>
-              {startTime ? format(new Date(startTime), "h:mm a") : "All day"}
+              {startTime ? clock(new Date(startTime)) : "All day"}
             </span>
             <span className="truncate" style={{ color: "var(--text-primary)" }}>
               {event?.summary || "Untitled"}

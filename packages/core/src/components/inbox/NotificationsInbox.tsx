@@ -9,6 +9,7 @@ import { useSwipeActions } from "../../lib/gestures/useSwipeActions";
 import { usePullToRefresh } from "../../lib/gestures/usePullToRefresh";
 import "./inbox.css";
 
+import { formatDate as fmtDate, formatTime as fmtTime } from "../../lib/datetime/format";
 type Filter = "all" | "mentions" | "replies" | "reminders" | "requests";
 const FILTERS: Array<{ id: Filter; label: string; types: NotificationType[] | null }> = [
   { id: "all", label: "All", types: null },
@@ -29,8 +30,8 @@ function groupOf(ts: number, now = Date.now()): "Today" | "Yesterday" | "Earlier
 function timeLabel(ts: number): string {
   const d = new Date(ts);
   const g = groupOf(ts);
-  if (g === "Earlier") return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
-  return d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+  if (g === "Earlier") return fmtDate(d, { month: "short", day: "numeric" });
+  return fmtTime(d, { hour: "numeric", minute: "2-digit" });
 }
 
 /** One plain sentence per type. Names and titles are text nodes (never HTML). */

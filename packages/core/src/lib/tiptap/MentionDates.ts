@@ -8,6 +8,7 @@
  *               (shown in each reader's own time zone).
  * Pure: `now` is injected so tests and the fixture clock control it.
  */
+import { formatDate, formatDateTime, formatTime, usesSystemTime } from "../datetime/format";
 
 export interface DateCandidate {
   /** Menu label, e.g. "Tomorrow 9:00" or "Friday, Oct 9". */
@@ -51,7 +52,8 @@ const startOfDay = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDat
 const addDays = (d: Date, n: number) => new Date(d.getFullYear(), d.getMonth(), d.getDate() + n);
 
 function timeLabel(d: Date): string {
-  return `${d.getHours()}:${pad(d.getMinutes())}`;
+  // The chip's own compact 24-hour form unless the person chose a time format (NP-AX-09).
+  return usesSystemTime() ? `${d.getHours()}:${pad(d.getMinutes())}` : formatTime(d, { hour: "numeric", minute: "2-digit" });
 }
 
 /** Relative display for a chip: "Today", "Tomorrow 9:00", "Yesterday", "Friday", "Oct 9", "Oct 9, 2027". */
@@ -65,7 +67,7 @@ export function formatChipDate(value: string | null | undefined, now: Date = new
   else if (days === 1) day = "Tomorrow";
   else if (days === -1) day = "Yesterday";
   else if (days > 1 && days < 7) day = d.toLocaleDateString(undefined, { weekday: "long" });
-  else day = d.toLocaleDateString(undefined, d.getFullYear() === now.getFullYear() ? { month: "short", day: "numeric" } : { month: "short", day: "numeric", year: "numeric" });
+  else day = formatDate(d, d.getFullYear() === now.getFullYear() ? { month: "short", day: "numeric" } : { month: "short", day: "numeric", year: "numeric" });
   return timed ? `${day} ${timeLabel(d)}` : day;
 }
 
@@ -75,7 +77,7 @@ export function formatChipDateLong(value: string | null | undefined): string {
   if (!d) return "Date";
   const opts: Intl.DateTimeFormatOptions = { weekday: "long", year: "numeric", month: "long", day: "numeric" };
   if (!isDateOnly(value)) Object.assign(opts, { hour: "numeric", minute: "2-digit", timeZoneName: "short" });
-  return d.toLocaleString(undefined, opts);
+  return formatDateTime(d, opts);
 }
 
 /** "9", "9am", "9:30", "14:00", "9.30pm" → [h, m] or null. */

@@ -4,6 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { useUIStore } from "../../app/stores/ui";
 import { useSettingsStore, type Theme } from "../../app/stores/settings";
 import { useReduceMotion } from "../../lib/motion";
+import { RegionSettings } from "./RegionSettings";
 import { ollamaApi, localAiApi } from "../../lib/parachute/client";
 import { useIsWeb } from "../../data/Platform";
 import { useAccount } from "../../data/Account";
@@ -538,6 +539,8 @@ export function Settings({ open, onClose }: SettingsProps) {
               <Section title="Motion">
                 <ReduceMotionRow />
               </Section>
+
+              <RegionSettings />
 
               <Section title="Typography">
                 <Row label="UI Font">

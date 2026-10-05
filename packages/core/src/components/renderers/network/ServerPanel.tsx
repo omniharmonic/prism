@@ -47,6 +47,7 @@ import {
 import { useAgentChatStore } from "../../../lib/agent/chatStore";
 import "./server-connections.css";
 
+import { formatDate as fmtDate } from "../../../lib/datetime/format";
 const EDITABLE: { key: string; label: string; help: string }[] = [
   {
     key: "MAGIC_FROM",
@@ -1461,8 +1462,8 @@ function ScopedServerPanel({ sharing }: { sharing: CollabSharing | null }) {
                     style={{ display: "flex", gap: 8, alignItems: "center" }}
                   >
                     <span style={{ color: "var(--text-muted)", fontSize: 12 }}>
-                      created {new Date(t.createdAt).toLocaleDateString()} ·
-                      expires {new Date(t.expiresAt).toLocaleDateString()}
+                      created {fmtDate(new Date(t.createdAt))} ·
+                      expires {fmtDate(new Date(t.expiresAt))}
                     </span>
                     <Button
                       variant="ghost"
@@ -1531,7 +1532,7 @@ function ScopedServerPanel({ sharing }: { sharing: CollabSharing | null }) {
                       <span
                         style={{ color: "var(--text-muted)", fontSize: 12 }}
                       >
-                        {new Date(tk.expiresAt).toLocaleDateString()}
+                        {fmtDate(new Date(tk.expiresAt))}
                       </span>
                     )}
                     {tk.status === "expired" ? (

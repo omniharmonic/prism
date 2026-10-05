@@ -19,6 +19,7 @@ import type { Note } from "../../lib/types";
 import { NoteDrawer } from "./NoteDrawer";
 import { getCanvasNoteIds, findNoteElement, buildNoteCardElements, eid } from "./canvas-cards";
 
+import { formatTime as fmtTime } from "../../lib/datetime/format";
 type ExcalidrawAPI = {
   getSceneElements: () => readonly any[];
   updateScene: (scene: { elements: readonly any[] }) => void;
@@ -281,7 +282,7 @@ export default function CanvasRenderer({ note, readOnly }: RendererProps) {
           {presentation.control}
         </div>
         <span className="prism-canvas-save" style={{ color: "var(--text-muted)" }}>
-          {isSaving ? "Saving..." : lastSaved ? `Saved ${lastSaved.toLocaleTimeString()}` : ""}
+          {isSaving ? "Saving..." : lastSaved ? `Saved ${fmtTime(lastSaved)}` : ""}
         </span>
       </div>
 

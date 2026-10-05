@@ -19,6 +19,7 @@ import type {
   TranscriptReview,
 } from "../../data/TranscriptReviewClientContext";
 
+import { formatDate as fmtDate, formatDateTime as fmtDateTime } from "../../lib/datetime/format";
 type Draft = {
   item: TranscriptReviewItem;
   action: "link" | "unlink";
@@ -34,8 +35,8 @@ function dateLabel(start?: string) {
   const date = calendarDate(start);
   if (!Number.isFinite(date.getTime())) return null;
   return /^\d{4}-\d{2}-\d{2}$/.test(start)
-    ? date.toLocaleDateString(undefined, { dateStyle: "medium" })
-    : date.toLocaleString(undefined, {
+    ? fmtDate(date, { dateStyle: "medium" })
+    : fmtDateTime(date, {
         dateStyle: "medium",
         timeStyle: "short",
       });
