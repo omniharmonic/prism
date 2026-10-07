@@ -52,6 +52,8 @@ import {
 import { freemem, homedir, tmpdir, totalmem } from "node:os";
 import { dirname, join } from "node:path";
 import type { VaultEntry } from "./config";
+import { scrubSecrets } from "./agent-events";
+import { AUTH_RETRY_DELAY_MS, authRetryAllowed, classifyRunFailure, describeRunFailure, noteRunOutcome, queuedReasonCode, runHealth, _resetRunHealth, type AgentErrorCode } from "./agent-failure";
 
 export type DispatchStatus = "queued" | "running" | "done" | "error" | "cancelled";
 
@@ -63,8 +65,14 @@ export interface Dispatch {
   status: DispatchStatus;
   /** Why a queued dispatch has not started yet (slot wait / memory pressure). */
   queuedReason: string | null;
+  /** "memory" while the run waits for memory admission (null: a busy slot / not waiting). */
+  queuedCode?: "memory" | null;
   output: string;
   error: string | null;
+  /** Stable failure class when status is "error" (see agent-failure.ts). */
+  errorCode?: AgentErrorCode | null;
+  /** The run was re-spawned once after a sign-in failure. */
+  retried?: boolean;
   /** When the dispatch was ACCEPTED (queued). */
   startedAt: number;
   /** When the process was actually spawned (null while queued). */
@@ -606,6 +614,8 @@ export interface RunnerConfig {
   admissionRetryMs: number;
   timeoutMs: number;
   maxBudgetUsd: number | null;
+  /** Wait before the one automatic re-spawn after a sign-in failure. */
+  authRetryDelayMs: number;
 }
 
 function defaultConfig(): RunnerConfig {
@@ -624,6 +634,7 @@ function defaultConfig(): RunnerConfig {
     admissionRetryMs: Math.max(250, num(process.env.AGENT_ADMISSION_RETRY_MS, 15_000)),
     timeoutMs: DISPATCH_TIMEOUT_MS,
     maxBudgetUsd: Number.isFinite(budget) && budget > 0 ? budget : null,
+    authRetryDelayMs: AUTH_RETRY_DELAY_MS,
   };
 }
 
@@ -652,6 +663,11 @@ export function runnerBudgetUsd(): number | null {
   return cfg.maxBudgetUsd;
 }
 
+/** The wait before the one automatic re-spawn after a sign-in failure. */
+export function runnerAuthRetryDelayMs(): number {
+  return Math.max(0, cfg.authRetryDelayMs);
+}
+
 // ── generic run queue (shared by one-shot dispatches and session turns) ─────
 //
 // ONE semaphore + memory-admission queue for every `claude` process this server
@@ -665,6 +681,8 @@ export interface RunEndInfo {
   error: string | null;
   /** The run was cancelled via its handle (queued or running). */
   cancelled: boolean;
+  /** Spawn → end (null: it never spawned). */
+  elapsedMs?: number | null;
 }
 
 export interface RunSpec {
@@ -819,10 +837,12 @@ function launch(run: Run): void {
   const gen = generation;
   let mcpDir: string | null = null;
   let timeout: ReturnType<typeof setTimeout> | null = null;
+  let spawnedAt: number | null = null;
 
-  const finish = (info: RunEndInfo) => {
+  const finish = (end: RunEndInfo) => {
     if (run.state === "ended") return;
     run.state = "ended";
+    const info: RunEndInfo = spawnedAt === null ? end : { ...end, elapsedMs: Date.now() - spawnedAt };
     if (timeout) clearTimeout(timeout);
     if (mcpDir) {
       try {
@@ -857,6 +877,7 @@ function launch(run: Run): void {
     return;
   }
   run.child = child;
+  spawnedAt = Date.now();
   safe(() => spec.onSpawned?.(typeof child.pid === "number" ? child.pid : null));
 
   child.stdout?.on("data", (c) => spec.onData?.(c.toString(), "stdout"));
@@ -892,8 +913,12 @@ export function runnerStatus(): {
   maxConcurrent: number;
   maxQueue: number;
   admission: AdmissionVerdict | null;
+  /** How the last failed run ended — a code and a time, never the CLI's text. */
+  lastFailure: { code: AgentErrorCode; at: number } | null;
+  /** The last two runs both failed to sign in: the owner should log in to Claude on the server. */
+  signInProblem: boolean;
 } {
-  return { running, queued: queue.length, maxConcurrent: cfg.maxConcurrent, maxQueue: cfg.maxQueue, admission: lastAdmission };
+  return { running, queued: queue.length, maxConcurrent: cfg.maxConcurrent, maxQueue: cfg.maxQueue, admission: lastAdmission, ...runHealth() };
 }
 
 // ── one-shot dispatches (the /api/agent/dispatch alias + the skill scheduler) ─
@@ -981,9 +1006,20 @@ export function startDispatch(
   };
   const prompt = opts.textOnly ? req.prompt : buildPrompt(req.prompt, d.skill, d.noteId);
   dispatches.set(d.id, d);
-  let h: RunHandle;
-  try {
-    h = enqueueRun({
+  const fail = (code: AgentErrorCode, info: { code: number | null; error: string | null }): void => {
+    d.status = "error";
+    d.errorCode = code;
+    d.error = describeRunFailure(code, { exitCode: info.code, runnerError: info.error });
+    // An unexplained failure with a SHORT output: that output is the CLI's own complaint
+    // (a usage error, a refused flag) — keep it with the record so it can be diagnosed.
+    const said = d.output.trim();
+    if (code === "unknown" && said && said.length <= 300 && !said.startsWith("{")) d.error += ` — ${scrubSecrets(said)}`;
+    d.endedAt = Date.now();
+    noteRunOutcome(code, d.endedAt);
+    emitStatus(d);
+  };
+  const run = (attempt: number): RunHandle =>
+    enqueueRun({
       entry,
       spawner: opts.spawner,
       ...(opts.textOnly ? { mcpConfig: () => NO_MCP_CONFIG } : {}),
@@ -991,12 +1027,14 @@ export function startDispatch(
       onQueued: (reason) => {
         if (d.status !== "queued") return;
         d.queuedReason = reason;
+        d.queuedCode = queuedReasonCode(reason);
         emitStatus(d);
       },
       onStart: () => {
         d.status = "running";
         d.queuedReason = null;
-        d.runStartedAt = Date.now();
+        d.queuedCode = null;
+        d.runStartedAt ??= Date.now();
         emitStatus(d);
       },
       onData: (text) => {
@@ -1004,14 +1042,43 @@ export function startDispatch(
         d.output += text;
         fire(d.id, { type: "output", text });
       },
-      onEnd: ({ code, error }) => {
+      onEnd: (info) => {
         if (d.status !== "running") return; // cancelled (already marked)
-        d.status = code === 0 && !error ? "done" : "error";
-        if (d.status === "error") d.error = error ?? `claude exited ${code}`;
-        d.endedAt = Date.now();
-        emitStatus(d);
+        if (info.code === 0 && !info.error) {
+          d.status = "done";
+          d.endedAt = Date.now();
+          noteRunOutcome(null, d.endedAt);
+          emitStatus(d);
+          return;
+        }
+        const code = classifyRunFailure({ exitCode: info.code, runnerError: info.error, texts: [d.output.slice(-4000)] });
+        // ONE automatic retry, and only where a second spawn provably repeats nothing:
+        // a TEXT-ONLY run (no tools exist) whose whole output is the CLI's sign-in error
+        // line (so no model turn finished, no cost). Tool-capable one-shots print only
+        // their final text, so what they did cannot be known — they are never retried.
+        const nothingDone = !!opts.textOnly && d.output.trim().length <= 400;
+        if (nothingDone && authRetryAllowed({ code, attempt, exitCode: info.code, elapsedMs: info.elapsedMs ?? -1, costUsd: null, sawTool: false })) {
+          d.retried = true;
+          d.output = "";
+          emitStatus(d);
+          const gen = generation;
+          const timer = setTimeout(() => {
+            if (gen !== generation || d.status !== "running") return; // cancelled / reset while waiting
+            try {
+              handles.set(d.id, run(attempt + 1));
+            } catch {
+              fail(code, info); // the queue filled meanwhile: report the sign-in failure
+            }
+          }, runnerAuthRetryDelayMs());
+          timer.unref();
+          return;
+        }
+        fail(code, info);
       },
     });
+  let h: RunHandle;
+  try {
+    h = run(1);
   } catch (e) {
     dispatches.delete(d.id);
     throw e;
@@ -1094,5 +1161,6 @@ export function _resetDispatches(): void {
   running = 0;
   generation++;
   lastAdmission = null;
+  _resetRunHealth();
   cfg = defaultConfig();
 }

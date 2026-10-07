@@ -20,6 +20,8 @@
  * write whose tool_result SUCCEEDED (a denied/failed write touched nothing).
  */
 
+import { cliErrorLineCode, failureCodeOfText, sdkErrorCode, type AgentErrorCode } from "./agent-failure";
+
 export type AgentTurnStatus = "queued" | "running" | "done" | "error" | "cancelled" | "interrupted";
 
 export type AgentEvent =
@@ -29,8 +31,13 @@ export type AgentEvent =
   | { t: "tool_use"; id: string; name: string; input: unknown }
   | { t: "tool_result"; toolUseId: string; ok: boolean; summary: string }
   | { t: "note_touched"; noteId: string; op: "create" | "update" | "delete" }
-  | { t: "status"; status: AgentTurnStatus; reason?: string }
-  | { t: "result"; ok: boolean; costUsd?: number; durationMs: number; numTurns?: number; error?: string };
+  /** The CLI reporting a failure of its own (sign-in, usage limit) — NOT assistant text:
+   *  it is never part of a turn's reply (`finalText` reads `text` only). */
+  | { t: "error"; code: AgentErrorCode; text: string }
+  /** `errorCode` on a terminal error (and "memory" on a queued wait); `retry` marks the
+   *  one automatic re-spawn after a sign-in failure (the client clears the failed attempt). */
+  | { t: "status"; status: AgentTurnStatus; reason?: string; errorCode?: AgentErrorCode; retry?: boolean }
+  | { t: "result"; ok: boolean; costUsd?: number; durationMs: number; numTurns?: number; error?: string; errorCode?: AgentErrorCode };
 
 export const MAX_INPUT_JSON = 2000;
 export const MAX_INPUT_STRING = 300;
@@ -167,6 +174,12 @@ export class StreamNormalizer {
   private finalTextIx = new Map<string, number>();
   /** tool_use id → {name, input} (raw, in memory only) for note_touched. */
   private tools = new Map<string, { name: string; input: unknown }>();
+  /** The first error line the CLI reported in place of a reply (code + scrubbed text). */
+  failure: { code: AgentErrorCode; text: string } | null = null;
+  /** A tool was called (a run that did something is never retried). */
+  sawTool = false;
+  /** A tool call came back refused. */
+  deniedTool = false;
   /** The final result event, once seen. */
   result: Extract<AgentEvent, { t: "result" }> | null = null;
   cliSessionId: string | null = null;
@@ -250,15 +263,28 @@ export class StreamNormalizer {
         if (!msg) return [];
         this.msgId = str(msg.id) ?? this.msgId;
         const out: AgentEvent[] = [];
+        // The CLI answers an API failure with a SYNTHETIC assistant message (model
+        // "<synthetic>", an `error` field). Its text is the CLI's error line, not a reply.
+        const marked = sdkErrorCode(ev.error) ?? sdkErrorCode(msg.error);
+        const synthetic = marked !== null || msg.model === "<synthetic>";
         for (const b of Array.isArray(msg.content) ? msg.content : []) {
           const block = asObj(b);
           if (!block) continue;
           if (block.type === "text" && typeof block.text === "string") {
+            const lineCode = synthetic ? (failureCodeOfText(block.text) ?? marked ?? "unknown") : this.sawTool ? null : cliErrorLineCode(block.text);
+            if (lineCode) {
+              const text = truncate(scrubSecrets(block.text.trim()), 500);
+              this.failure ??= { code: lineCode, text };
+              this.blockIdFor(this.finalTextIx); // keep block numbering in step with the deltas
+              out.push({ t: "error", code: lineCode, text });
+              continue;
+            }
             out.push({ t: "text", blockId: this.blockIdFor(this.finalTextIx), text: truncate(scrubSecrets(block.text), MAX_TEXT) });
           } else if (block.type === "tool_use") {
             const id = str(block.id) ?? "";
             const name = str(block.name) ?? "";
             this.tools.set(id, { name, input: block.input });
+            this.sawTool = true;
             out.push({ t: "tool_use", id, name, input: redactToolInput(block.input) });
           }
         }
@@ -272,6 +298,7 @@ export class StreamNormalizer {
           if (block?.type !== "tool_result") continue;
           const toolUseId = str(block.tool_use_id) ?? "";
           const ok = block.is_error !== true;
+          if (!ok && /permission|not allowed|denied/i.test(toolResultText(block.content).slice(0, 2000))) this.deniedTool = true;
           out.push({ t: "tool_result", toolUseId, ok, summary: summarizeToolResult(block.content) });
           const call = this.tools.get(toolUseId);
           const tool = call ? vaultToolName(call.name) : null;
@@ -291,8 +318,15 @@ export class StreamNormalizer {
         if (typeof ev.total_cost_usd === "number") r.costUsd = ev.total_cost_usd;
         if (typeof ev.num_turns === "number") r.numTurns = ev.num_turns;
         if (!ok) {
+          // `subtype` is "success" when the CLI itself failed (is_error with its error
+          // line as `result`) — never report that word as the error.
           const errs = Array.isArray(ev.errors) ? ev.errors.map(String).join("; ") : "";
-          r.error = truncate(scrubSecrets(errs || String(ev.subtype ?? "error")), 500);
+          const said = typeof ev.result === "string" ? ev.result.trim() : "";
+          const subtype = typeof ev.subtype === "string" && ev.subtype !== "success" ? ev.subtype : "";
+          r.error = truncate(scrubSecrets(errs || said || subtype || "the run reported an error"), 500);
+          const code = /max_budget/.test(subtype) ? "budget" : (this.failure?.code ?? failureCodeOfText(errs || said));
+          if (code) r.errorCode = code;
+          if (code && !this.failure && code !== "budget") this.failure = { code, text: r.error };
         }
         this.result = r;
         return [r];

@@ -1499,3 +1499,181 @@ test("text-only dispatch (profile \"text\"): NO MCP server, no tool allowlist, n
   // Still only a narrowing: any other profile name is refused.
   assert.equal((await agentApi.request("/dispatch", { method: "POST", headers: { ...J, ...owner() }, body: JSON.stringify({ prompt: "x", profile: "vault-rw" }) })).status, 400);
 });
+
+// ── w16: honest failures + the ONE automatic retry after a sign-in failure ────
+// The auth fixtures are MODELLED on the 2026-10 incident (not CLI recordings).
+
+const AUTH_LINE = "Failed to authenticate: OAuth token revoked. Please log in again or contact your administrator.";
+type Detail = { session: { cli_session_id: string | null }; turns: Array<{ id: string; status: string; error: string | null; errorCode: string | null; finalText: string }> };
+const detailOf = async (sid: string) => (await (await agentApi.request(`/sessions/${sid}`, { headers: owner() })).json()) as Detail;
+/** Start a turn and fail its first process the way the incident did. */
+async function authFailingTurn(sid: string, fx = "agent-stream-auth-failed.jsonl"): Promise<string> {
+  const r = await postTurn(sid, { prompt: "Summarize the thread" });
+  assert.equal(r.status, 200);
+  const { turnId } = (await r.json()) as { turnId: string };
+  const c = children.at(-1)!;
+  c.out(turnFixture(fx, sid));
+  c.exit(1);
+  return turnId;
+}
+
+test("auth failure: the first attempt fails to sign in, ONE re-spawn succeeds → turn done; the CLI's error line is never the reply", async () => {
+  configureAgentRunner({ authRetryDelayMs: 5 });
+  const sid = await newSession({ profile: "vault-ro" });
+  const turnId = await authFailingTurn(sid);
+  assert.equal(getTurn(turnId)!.status, "running", "not failed while the retry is pending");
+  await sleep(30);
+  assert.equal(calls.length, 2, "exactly one re-spawn");
+  // Turn 1, and the failed attempt left no conversation file: --session-id again.
+  assert.equal(flag(calls[0]!.args, "--session-id"), sid);
+  assert.equal(flag(calls[1]!.args, "--session-id"), sid);
+  assert.equal(flag(calls[1]!.args, "--resume"), undefined);
+  const strip = (a: string[]) => a.map((x) => (x.includes("mcp.json") ? "<mcp>" : x));
+  assert.deepEqual(strip(calls[1]!.args), strip(calls[0]!.args), "the same argv");
+  children[1]!.out(turnFixture("agent-stream-turn1.jsonl", sid));
+  children[1]!.exit(0);
+  await sleep(5);
+  const t = getTurn(turnId)!;
+  assert.equal(t.status, "done");
+  assert.equal(t.error, null);
+  const evs = eventsAfter(sid, 0).map((e) => e.event);
+  const err = evs.find((e) => e.t === "error") as { code: string; text: string };
+  assert.equal(err.code, "auth");
+  assert.equal(err.text, AUTH_LINE);
+  assert.ok(!evs.some((e) => e.t === "text" && e.text.includes("Failed to authenticate")), "not stored as assistant text");
+  const retry = evs.find((e) => e.t === "status" && e.retry) as { status: string; errorCode: string; reason: string };
+  assert.equal(retry.status, "running");
+  assert.equal(retry.errorCode, "auth");
+  assert.equal(evs.filter((e) => e.t === "status" && e.retry).length, 1);
+  assert.equal((evs.at(-1) as { status: string }).status, "done");
+  const d = await detailOf(sid);
+  assert.equal(d.turns[0]!.errorCode, null);
+  assert.ok(d.turns[0]!.finalText.length > 0 && !d.turns[0]!.finalText.includes("authenticate"));
+  // The vault-ro read token lived across both attempts and was revoked once, at the end.
+  assert.equal(minted.length, 1);
+  assert.deepEqual(revoked, ["jti-1"]);
+  const st = (await (await agentApi.request("/runner", { headers: owner() })).json()) as { lastFailure: unknown; signInProblem: boolean };
+  assert.equal(st.lastFailure, null);
+  assert.equal(st.signInProblem, false);
+});
+
+test("auth failure: when the failed first attempt DID write its conversation file, the re-spawn uses --resume", async () => {
+  configureAgentRunner({ authRetryDelayMs: 5 });
+  const sid = await newSession();
+  const r = await postTurn(sid, { prompt: "x" });
+  const { turnId } = (await r.json()) as { turnId: string };
+  children[0]!.out(turnFixture("agent-stream-auth-failed.jsonl", sid));
+  cliExists.add(sid); // the CLI kept the session before failing
+  children[0]!.exit(1);
+  await sleep(30);
+  assert.equal(calls.length, 2);
+  assert.equal(flag(calls[0]!.args, "--session-id"), sid);
+  assert.equal(flag(calls[1]!.args, "--resume"), sid);
+  assert.equal(flag(calls[1]!.args, "--session-id"), undefined);
+  children[1]!.out(turnFixture("agent-stream-turn2-resume.jsonl", sid));
+  children[1]!.exit(0);
+  await sleep(5);
+  assert.equal(getTurn(turnId)!.status, "done");
+});
+
+test("auth failure: both attempts fail → error with errorCode auth and a truthful sentence; never a third spawn; the next turn starts clean", async () => {
+  configureAgentRunner({ authRetryDelayMs: 5 });
+  const sid = await newSession();
+  const turnId = await authFailingTurn(sid);
+  await sleep(30);
+  assert.equal(calls.length, 2);
+  children[1]!.out(turnFixture("agent-stream-auth-plain.jsonl", sid));
+  children[1]!.exit(1);
+  await sleep(40);
+  assert.equal(calls.length, 2, "never retried twice");
+  const t = getTurn(turnId)!;
+  assert.equal(t.status, "error");
+  assert.match(t.error ?? "", /^Claude sign-in failed on the server \(claude exited 1\)\. — Failed to authenticate/);
+  assert.doesNotMatch(t.error ?? "", /— success/);
+  const last = eventsAfter(sid, 0).at(-1)!.event as { t: string; status: string; errorCode?: string; reason?: string };
+  assert.equal(last.status, "error");
+  assert.equal(last.errorCode, "auth");
+  const d = await detailOf(sid);
+  assert.equal(d.turns[0]!.errorCode, "auth");
+  assert.equal(d.turns[0]!.finalText, "", "no reply was produced");
+  assert.equal(d.session.cli_session_id, null, "the CLI kept no conversation: the id from init is forgotten");
+  assert.equal(getSession(sid)!.status, "idle");
+  // Two failed runs in a row → the runner says so (codes only).
+  const second = await authFailingTurn(sid);
+  assert.equal(flag(calls[2]!.args, "--session-id"), sid, "nothing to resume");
+  await sleep(30);
+  children[3]!.out(turnFixture("agent-stream-auth-failed.jsonl", sid));
+  children[3]!.exit(1);
+  await sleep(10);
+  assert.equal(getTurn(second)!.status, "error");
+  const st = (await (await agentApi.request("/runner", { headers: owner() })).json()) as { lastFailure: { code: string; at: number }; signInProblem: boolean };
+  assert.equal(st.lastFailure.code, "auth");
+  assert.equal(st.signInProblem, true);
+  assert.doesNotMatch(JSON.stringify(st), /OAuth|authenticate/i);
+});
+
+test("auth failure AFTER a tool ran (cost incurred) is never retried", async () => {
+  configureAgentRunner({ authRetryDelayMs: 5 });
+  const sid = await newSession();
+  const turnId = await authFailingTurn(sid, "agent-stream-auth-after-tool.jsonl");
+  await sleep(40);
+  assert.equal(calls.length, 1);
+  const t = getTurn(turnId)!;
+  assert.equal(t.status, "error");
+  assert.equal((await detailOf(sid)).turns[0]!.errorCode, "auth");
+  assert.ok(!eventsAfter(sid, 0).some((e) => e.event.t === "status" && e.event.retry));
+});
+
+test("a failure that is not a sign-in failure is never retried, and reads truthfully (usage limit; plain exit 1)", async () => {
+  configureAgentRunner({ authRetryDelayMs: 5 });
+  const sid = await newSession();
+  const a = await authFailingTurn(sid, "agent-stream-usage-limit.jsonl");
+  await sleep(30);
+  assert.equal(calls.length, 1);
+  assert.equal((await detailOf(sid)).turns[0]!.errorCode, "usage_limit");
+  assert.match(getTurn(a)!.error ?? "", /^Claude's usage limit was reached/);
+  const r = await postTurn(sid, { prompt: "again" });
+  const { turnId } = (await r.json()) as { turnId: string };
+  children.at(-1)!.exit(1);
+  await sleep(30);
+  assert.equal(calls.length, 2);
+  assert.equal(getTurn(turnId)!.error, "The agent run failed (claude exited 1).");
+  assert.equal((await detailOf(sid)).turns[1]!.errorCode, "unknown");
+});
+
+test("Stop during the retry wait closes the turn, spawns nothing more and frees the user's slot", async () => {
+  configureAgentRunner({ authRetryDelayMs: 40 });
+  const sid = await newSession({ profile: "vault-ro" });
+  const turnId = await authFailingTurn(sid);
+  assert.equal(cancelTurn(turnId), true);
+  assert.equal(getTurn(turnId)!.status, "cancelled");
+  await sleep(80);
+  assert.equal(calls.length, 1);
+  assert.deepEqual(revoked, ["jti-1"]);
+  const r = await postTurn(sid, { prompt: "next" });
+  assert.equal(r.status, 200);
+  assert.equal(calls.length, 2, "the slot was released: the next turn spawned at once");
+});
+
+test("prism-ro (the incident's profile): each spawn gets its own per-turn PAT; both are revoked; the retry points at the same /mcp", async () => {
+  process.env.AGENT_PRISM_PROFILES = "true";
+  try {
+    configureAgentRunner({ authRetryDelayMs: 5 });
+    const sid = await newSession({ profile: "prism-ro" });
+    const turnId = await authFailingTurn(sid);
+    assert.deepEqual(patRevoked, ["pat-1"], "the failed attempt's credential is revoked at once");
+    await sleep(30);
+    assert.equal(calls.length, 2);
+    assert.equal(patMinted.length, 2);
+    assert.match(calls[1]!.mcpJson, /pp_fake_pat-2/);
+    assert.doesNotMatch(calls[1]!.mcpJson, /pp_fake_pat-1|parachute/);
+    assert.equal(flag(calls[1]!.args, "--allowedTools"), profileAllowedTools("prism-ro").join(","));
+    children[1]!.out(turnFixture("agent-stream-turn1.jsonl", sid));
+    children[1]!.exit(0);
+    await sleep(5);
+    assert.equal(getTurn(turnId)!.status, "done");
+    assert.deepEqual(patRevoked, ["pat-1", "pat-2"]);
+  } finally {
+    delete process.env.AGENT_PRISM_PROFILES;
+  }
+});
