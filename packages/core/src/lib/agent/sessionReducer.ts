@@ -15,6 +15,7 @@
  *    first seq (`seedConversation` returns that resume point), so nothing is
  *    double-counted and nothing already persisted is lost.
  */
+import { failureOfRun, type AgentFailure } from "./failure";
 import { isTerminalTurn, type AgentContextRecord, type AgentSessionDetail, type AgentStreamMessage, type AgentTurn, type AgentTurnStatus } from "./sessions";
 
 export interface TextBlockView {
@@ -40,6 +41,10 @@ export interface TurnView {
   status: AgentTurnStatus;
   /** Status reason (e.g. "waiting for your other agent turn to finish"). */
   reason?: string;
+  /** Why the turn failed (terminal) or why it is waiting ("memory"). */
+  errorCode?: string;
+  /** The server is re-spawning the run once after a sign-in failure. */
+  retrying?: boolean;
   blocks: TextBlockView[];
   tools: ToolView[];
   touched: Array<{ noteId: string; op: string }>;
@@ -76,6 +81,7 @@ function turnFromDetail(t: AgentTurn): TurnView {
     costUsd: t.cost_usd ?? undefined,
     durationMs: t.started_at && t.ended_at ? Math.max(0, t.ended_at - t.started_at) : undefined,
     error: t.error ?? undefined,
+    errorCode: t.errorCode ?? undefined,
     startedAt: t.started_at,
   };
 }
@@ -205,8 +211,19 @@ export function applyAgentMessage(state: ConversationState, msg: AgentStreamMess
             : { ...t, touched: [...t.touched, { noteId: msg.noteId, op: msg.op }] },
         ),
       );
+    // The CLI's own failure line: it is NOT a reply. Drop any block that streamed it;
+    // the terminal status carries the code and the copy comes from `failureOfRun`.
+    case "error":
+      return seqd(updateTurn(state, msg.turnId, (t) => ({ ...t, blocks: t.blocks.filter((b) => !b.streaming), error: msg.text, errorCode: msg.code })));
     case "status":
-      return seqd(updateTurn(state, msg.turnId, (t) => ({ ...t, status: msg.status, reason: msg.reason })));
+      return seqd(
+        updateTurn(state, msg.turnId, (t) =>
+          msg.retry
+            ? // One automatic re-spawn: the failed attempt left nothing worth showing.
+              { ...t, status: msg.status, reason: msg.reason, errorCode: undefined, error: undefined, blocks: [], tools: [], retrying: true }
+            : { ...t, status: msg.status, reason: msg.reason, errorCode: msg.errorCode ?? (isTerminalTurn(msg.status) ? t.errorCode : undefined), retrying: isTerminalTurn(msg.status) ? false : t.retrying },
+        ),
+      );
     case "result":
       return seqd(
         updateTurn(state, msg.turnId, (t) => ({
@@ -214,6 +231,7 @@ export function applyAgentMessage(state: ConversationState, msg: AgentStreamMess
           costUsd: msg.costUsd ?? t.costUsd,
           durationMs: msg.durationMs,
           error: msg.ok ? t.error : (msg.error ?? t.error),
+          errorCode: msg.ok ? t.errorCode : (msg.errorCode ?? t.errorCode),
         })),
       );
     case "init":
@@ -222,19 +240,8 @@ export function applyAgentMessage(state: ConversationState, msg: AgentStreamMess
   }
 }
 
-/** Human copy for a turn that did not finish normally (null when it did / is running). */
-export function turnProblem(t: TurnView): { tone: "error" | "muted"; text: string } | null {
-  switch (t.status) {
-    case "error": {
-      const e = (t.error ?? t.reason ?? "").toLowerCase();
-      if (e.includes("budget")) return { tone: "error", text: "Stopped: this turn hit its spending cap." };
-      return { tone: "error", text: t.error || t.reason ? `The agent hit an error: ${t.error ?? t.reason}` : "The agent hit an error." };
-    }
-    case "cancelled":
-      return { tone: "muted", text: "Cancelled." };
-    case "interrupted":
-      return { tone: "muted", text: "Interrupted — the server restarted mid-turn. Send again to continue." };
-    default:
-      return null;
-  }
+/** Human copy for a turn that did not finish normally (null when it did / is running):
+ *  what happened, and whether "Try again" can help. Never a bare status word. */
+export function turnProblem(t: TurnView): AgentFailure | null {
+  return failureOfRun(t);
 }

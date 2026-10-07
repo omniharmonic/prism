@@ -106,8 +106,11 @@ export function InlinePrompt({ noteId, selection, position, onAccept, onReject }
 
       {/* Error */}
       {error && (
-        <div className="px-3 pb-2 text-xs" style={{ color: "var(--color-danger)" }}>
-          {error}
+        <div className="flex flex-wrap items-center gap-2 px-3 pb-2 text-xs" role="alert" style={{ color: "var(--color-danger)" }} data-testid="inline-prompt-error">
+          <span>{error} Your text is unchanged.</span>
+          <button type="button" className="focus-ring rounded-md border border-[var(--glass-border)] px-2 py-1" style={{ color: "var(--text-primary)" }} onClick={() => void handleSubmit()} disabled={loading || !prompt.trim()}>
+            Try again
+          </button>
         </div>
       )}
 

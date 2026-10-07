@@ -18,7 +18,11 @@ import { openAgentChat, isAskableNoteId } from "../../lib/agent/chatStore";
 import { isDesktop } from "../../lib/platform";
 import { useHostServices } from "../../data/HostServicesContext";
 import { useVaultClient } from "../../data/VaultClientContext";
-import { buildTransformPrompt, hostServiceErrorText, runWikilinkJobToEnd, wikilinkJobSummary } from "../../lib/host/services";
+import { buildTransformPrompt, hostServiceErrorText, HostServiceError, runWikilinkJobToEnd, wikilinkJobSummary } from "../../lib/host/services";
+import { failureOfError } from "../../lib/agent/failure";
+
+/** The person was told what failed and chose not to try again — nothing more to say. */
+class Declined extends Error {}
 import { addSyncConfig, resolveWikilinks } from "../../lib/host/vaultOps";
 import { searchModeLabel, searchResultGroup } from "../navigation/searchPresentation";
 import { Highlighted, resultHighlights } from "../navigation/searchHighlight";
@@ -109,14 +113,24 @@ export function CommandBar() {
     try {
       await fn();
     } catch (e) {
-      alert(hostServiceErrorText(e));
+      if (!(e instanceof Declined)) alert(hostServiceErrorText(e));
     }
   }, []);
 
   const transformNote = useCallback(async (noteId: string, targetType: string): Promise<string> => {
     if (isDesktop) return invoke<string>("agent_transform", { noteId, targetType });
     const note = await vaultClient.getNote(noteId);
-    return host!.agentText(buildTransformPrompt(note, targetType), { skill: "transform", noteId, timeoutMs: 10 * 60_000 });
+    for (;;) {
+      try {
+        return await host!.agentText(buildTransformPrompt(note, targetType), { skill: "transform", noteId, timeoutMs: 10 * 60_000 });
+      } catch (e) {
+        // "Turn into…" has no panel of its own: say what failed and offer the retry here.
+        if (!(e instanceof HostServiceError) && !(e instanceof TypeError)) throw e;
+        const failure = failureOfError(e);
+        if (!failure.retry) throw e; // surfaced once, by `surface`
+        if (!window.confirm(`${failure.text}\n\nNothing was created and your page is unchanged. Try again?`)) throw new Declined();
+      }
+    }
   }, [host, vaultClient]);
 
   const { data: searchResults, mode: searchMode, isFetching: searching, isError: searchFailed, refetch: retrySearch } = useVaultSearch(commandBarOpen ? debouncedQuery : "", wireFilters);
