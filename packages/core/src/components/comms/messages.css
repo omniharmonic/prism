@@ -584,3 +584,9 @@
 .prism-agent-draft-text { margin-top: 12px; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.7; font-size: 14px; }
 .prism-agent-draft-confirm { margin-top: 14px; padding: 12px; border: 1px solid var(--glass-border); border-radius: 10px; font-size: 13px; }
 @media (max-width: 480px) { .prism-agent-draft-dialog { padding: 16px; } }
+
+/* Phone: the view switch must never widen the page (200% zoom + WCAG text spacing). */
+@media (max-width: 480px) {
+  .prism-message-views { flex-wrap: wrap; min-width: 0; }
+  .prism-message-views button { white-space: normal; padding-inline: 8px; flex: 1 1 auto; min-width: 0; }
+}
