@@ -399,11 +399,14 @@ export function BlockHandles({ editor, enabled, notes, noteId, onComment }: Bloc
   const canAsk = agent.available && hasText;
 
   /** Select the block's text so Comment / Ask agent act on exactly this block. */
-  const selectBlockText = (at: { pos: number }) => {
+  // `focus: false` for callers that open their own field (the comment composer): TipTap focuses a frame later
+  // and would take the keyboard back, so the typed comment replaced the block's text.
+  const selectBlockText = (at: { pos: number }, focus = true) => {
     const node = editor.state.doc.nodeAt(at.pos);
     if (!node) return null;
     const range = { from: at.pos + 1, to: at.pos + node.nodeSize - 1 };
-    editor.chain().focus().setTextSelection(range).run();
+    if (focus) editor.chain().focus().setTextSelection(range).run();
+    else editor.chain().setTextSelection(range).run();
     return range;
   };
   const moveTo = (target: Note) => {
@@ -449,7 +452,7 @@ export function BlockHandles({ editor, enabled, notes, noteId, onComment }: Bloc
     ...(onComment && hasText ? [{ id: "comment", label: "Comment", icon: <MessageSquarePlus size={15} />, onSelect: () => {
       const at = locateBlock(editor, hovered.ref);
       setMenu(null);
-      const range = at && selectBlockText(at);
+      const range = at && selectBlockText(at, false);
       if (range) onComment(range);
     } }] : []),
     ...(canAsk ? [{ id: "ask", label: "Ask agent", icon: <Sparkles size={15} />, keywords: "ai assistant", disabled: !agent.canAsk, onSelect: () => {
