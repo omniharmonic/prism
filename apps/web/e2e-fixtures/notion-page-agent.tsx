@@ -24,6 +24,8 @@ const control = {
   calls: [] as Array<{ prompt: string; skill?: string; noteId?: string; textOnly?: boolean }>,
   reply: "First point of the summary.\n\nSecond point of the summary.",
   fail: false,
+  /** With `fail`: the server's failure class for the run (w16), e.g. "auth". */
+  failCode: "" as string,
   oldServer: false,
   hold: false,
   release: () => {},
@@ -40,6 +42,7 @@ const host = {
         if (settled) return;
         settled = true;
         if (control.oldServer && o?.textOnly) reject(new HostServiceError(400, "bad_request", "profile may only be \"vault-ro\""));
+        else if (control.fail && control.failCode) reject(new HostServiceError(502, "agent_failed", "Claude sign-in failed on the server (claude exited 1).", control.failCode));
         else if (control.fail) reject(new HostServiceError(502, "agent_failed", "the model is unavailable"));
         else resolve(control.reply);
       };

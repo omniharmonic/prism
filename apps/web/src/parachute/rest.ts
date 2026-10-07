@@ -20,6 +20,8 @@ import type {
   VaultGraph,
   VaultNeighborhood,
   PeoplePage,
+  PeopleConversationsPage,
+  PersonConversationsPage,
   PersonSummary,
   PersonPage,
   SemanticHit,
@@ -626,6 +628,13 @@ export async function listPeople(query = "", after?: string): Promise<PeoplePage
 }
 export async function getPerson(id: string, after?: string): Promise<PersonPage> {
   return (await req(`/people/${encodeURIComponent(id)}${qs({ after })}`)).json();
+}
+
+export async function listPeopleConversations(query = ""): Promise<PeopleConversationsPage> {
+  return (await req(`/people/conversations${qs({ q: query.trim() || undefined })}`)).json();
+}
+export async function getPersonConversations(id: string, before?: number): Promise<PersonConversationsPage> {
+  return (await req(`/people/${encodeURIComponent(id)}/conversations${qs({ before })}`)).json();
 }
 
 export async function changePersonIdentity(id: string, change: { kind: "email" | "matrix"; value: string; action: "add" | "remove"; ifUpdatedAt: string }): Promise<{ person: PersonSummary }> {

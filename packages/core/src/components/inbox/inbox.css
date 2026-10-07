@@ -19,9 +19,9 @@
 .prism-inbox-btn[data-variant="primary"]:hover { filter: brightness(1.06); background: var(--action-bg, var(--color-accent)); color: #fff; }
 .prism-inbox-btn[data-variant="outline"] { border-color: var(--glass-border); }
 .prism-inbox-btn:disabled { opacity: 0.55; cursor: default; }
-.prism-inbox-tabs { display: flex; gap: 2px; margin-top: 20px; border-bottom: 1px solid var(--glass-border); }
+.prism-inbox-tabs { display: flex; gap: 18px; margin-top: 20px; border-bottom: 1px solid var(--glass-border); }
 .prism-inbox-tab {
-  min-height: 40px; padding: 0 12px; font-size: var(--text-sm, 13px); color: var(--text-muted);
+  min-height: 40px; padding: 0 2px; font-size: var(--text-sm, 13px); font-weight: 500; color: var(--text-secondary);
   border-bottom: 2px solid transparent; margin-bottom: -1px; background: none; cursor: pointer;
 }
 .prism-inbox-tab[aria-selected="true"] { color: var(--text-primary); border-bottom-color: var(--text-primary); font-weight: 600; }
@@ -141,3 +141,11 @@
 @media (prefers-reduced-motion: reduce) {
   .prism-anchor-flash { transition: none; }
 }
+
+/* w14 visual, defect 22: Home's recent pages are compact one-line cards that fill the row
+   (they were 92 px tiles holding an icon and a title, leaving half the row empty). */
+.prism-home-recents { grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 8px; }
+.prism-home-card { flex-direction: row; align-items: center; gap: 10px; min-height: 48px; padding: 8px 12px; border-radius: var(--radius-md); }
+.prism-home-card svg { flex: none; }
+.prism-home-card span { -webkit-line-clamp: 1; line-clamp: 1; min-width: 0; }
+@media (max-width: 767px) { .prism-home-recents { grid-template-columns: repeat(2, minmax(0, 1fr)); } }

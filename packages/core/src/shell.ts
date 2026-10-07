@@ -57,6 +57,10 @@ export type {
   PersonSummary,
   PeoplePage,
   PersonPage,
+  PeopleConversationsPage,
+  PersonConversationsPage,
+  PersonConversationRow,
+  PersonConversationItem,
   VaultLink,
   VaultGraph,
   VaultNeighborhood,
@@ -163,13 +167,15 @@ export type {
 export { vaultApi } from "./lib/parachute/client";
 
 // Settings bootstrap (theme/fonts) invoked by the host entry before render.
-export { initializeSettings } from "./app/stores/settings";
+export { initializeSettings, useSettingsStore, useWritingFont } from "./app/stores/settings";
 
 // Transport seams (WP2.2): how shared UI reaches the Prism Server in any shell.
 export { serverFetch, setServerFetch, type ServerFetch } from "./lib/transport/serverFetch";
 // Import / export / print (wave 3A).
 export { setTransferContextHeaders, transferApi, transferAvailable, TransferError } from "./lib/import-export/client";
 export { useTransferUI, printCurrentPage } from "./lib/import-export/store";
+// Recovered text (server owner): what a page held when a newer copy replaced unsaved typing.
+export { RecoveredText, ReplacedNotice } from "./components/recovered/RecoveredText";
 export { ImportExportHost, useCanManageTransfers } from "./components/import-export/ImportExportHost";
 export { streamSSE, SSEParser, type SSEMessage, type StreamSSEOptions } from "./lib/transport/sse";
 

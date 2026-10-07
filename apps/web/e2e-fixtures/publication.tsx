@@ -129,6 +129,8 @@ window.fetch = async (input, init) => {
           : "") +
         (params.has("attachments") ? `<p><img src="/api/attachments/a_fixtureImage0000000000" alt="Field photo"></p><p><a href="/api/attachments/a_fixtureImage0000000000">Download the photo</a></p><p><img src="https://example.test/api/attachments/a_other" alt="Elsewhere"></p>` : "") +
         (params.has("blocks") ? PARITY_PAGE_HTML : "") +
+        // Markdown task items after an HTML block, a mixed list, and a to-do list the editor stored.
+        (params.has("todos") ? `\n\n- [x] Booked the room\n- [ ] Send the agenda\n\nAlso:\n\n- an ordinary point\n- [x] done, in a mixed list\n\n<ul data-type="taskList"><li data-type="taskItem" data-checked="true"><label><input type="checkbox" checked="checked"><span></span></label><div><p>Stored task</p></div></li></ul>\n` : "") +
         (params.has("typography") ? `<h1>A place for shared understanding</h1><h2>Working together</h2><p>Shared context makes our notes easier to read and revisit.</p><p>${"UNBROKEN_TOKEN_".repeat(12)}</p>` : "") +
         (params.has("long-content")
           ? `<h2>${longTitle}</h2><p><a href="https://example.test/">${longTitle}</a></p><pre><code>${longTitle.repeat(4)}</code></pre>`

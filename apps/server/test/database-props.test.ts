@@ -599,4 +599,67 @@ test("convert: bounded like remove-values — pages per run, `more`, one bulk jo
   let limited = 0;
   for (let i = 0; i < 40; i++) if ((await convert("recipe", "notes", { to: "number" })).status === 429) limited++;
   assert.ok(limited > 0, "convert is rate limited");
+
+// ── pinned properties (per-tag `pinned` hint: what a page shows at the top) ──────────────
+
+const schemaOf = async (tag: string, cookie = login(OWNER)) => ((await (await req(`/schemas?tags=${tag}`, { cookie })).json()) as any).schemas[tag] as { fields: Record<string, any>; pinned?: string[] };
+
+test("pinned: an ordered per-tag hint, stored beside the field hints and merged into GET /schemas", async () => {
+  seed();
+  assert.equal((await schemaOf("recipe")).pinned, undefined, "no hint → no key (today's behaviour)");
+  const r = await put("recipe", { pinned: ["serves", "course"] });
+  assert.equal(r.status, 200);
+  assert.deepEqual(((await r.json()) as any).schema.pinned, ["serves", "course"]);
+  assert.equal(tagPuts.length, 0, "presentation only: no vault schema write");
+  assert.deepEqual((await schemaOf("recipe")).pinned, ["serves", "course"], "order is kept");
+  // A later field-hint write keeps the pins, and a pin write keeps the field hints.
+  assert.equal((await put("recipe", { ui: { course: { label: "Course of the meal" } } })).status, 200);
+  assert.deepEqual((await schemaOf("recipe")).pinned, ["serves", "course"]);
+  assert.equal((await put("recipe", { pinned: ["course"] })).status, 200);
+  const s = await schemaOf("recipe");
+  assert.deepEqual(s.pinned, ["course"]);
+  assert.equal(s.fields.course.label, "Course of the meal");
+  assert.equal(s.fields.$pinned, undefined, "the pin list is never presented as a field");
+  // A field that exists only through a hint (a free key given a label) can be pinned too.
+  assert.equal((await put("recipe", { ui: { mood: { label: "Mood" } }, pinned: ["mood", "course"] })).status, 200);
+  assert.deepEqual((await schemaOf("recipe")).pinned, ["mood", "course"]);
+  // [] clears it.
+  assert.equal((await put("recipe", { pinned: [] })).status, 200);
+  assert.equal((await schemaOf("recipe")).pinned, undefined);
+  assert.equal(fv.notes.get("r2")!.updatedAt, "2026-10-01T11:00:00.000Z", "no note was written");
+});
+
+test("pinned: validated — unknown, prototype, system and repeated keys, more than 12, wrong shapes are refused; nothing is stored", async () => {
+  seed();
+  for (const bad of [
+    ["nope"], // not a property of this tag
+    ["constructor"], ["__proto__"], ["toString"], // prototype names
+    ["prism_creator"], ["title"], // system keys
+    ["course", "course"], // repeated
+    ["course", 3], "course", { course: true }, [""], ["a b"],
+    Array.from({ length: 13 }, (_, i) => `p${i}`),
+  ]) {
+    const r = await put("recipe", { pinned: bad });
+    assert.equal(r.status, 400, `refused: ${JSON.stringify(bad)}`);
+  }
+  assert.equal((await schemaOf("recipe")).pinned, undefined);
+  // Twelve is allowed when they exist.
+  const many = Object.fromEntries(Array.from({ length: 12 }, (_, i) => [`p${i}`, { label: `P ${i}` }]));
+  assert.equal((await put("recipe", { ui: many, pinned: Object.keys(many) })).status, 200);
+  assert.equal((await schemaOf("recipe")).pinned!.length, 12);
+  // Prism-managed tags take no pins either.
+  assert.equal((await put("agent-skill", { pinned: ["course"] })).status, 403);
+});
+
+test("pinned: owner-only write; members read the layout for tags they can see and nothing else", async () => {
+  seed();
+  assert.equal((await put("recipe", { pinned: ["course"] })).status, 200);
+  grantUser("member@test.local", "tag", "recipe", "edit");
+  const member = login("member@test.local");
+  assert.equal((await put("recipe", { pinned: ["serves"] }, member)).status, 403);
+  const seen = (await (await req("/schemas?tags=recipe,task", { cookie: member })).json()) as any;
+  assert.equal(seen.canEdit, false);
+  assert.deepEqual(seen.schemas.recipe.pinned, ["course"], "the member sees the pinned layout");
+  assert.equal(seen.schemas.task, undefined, "but no tag they cannot see");
+  assert.deepEqual((await schemaOf("recipe")).pinned, ["course"], "the refused write changed nothing");
 });

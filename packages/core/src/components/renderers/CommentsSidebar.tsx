@@ -80,20 +80,7 @@ export function CommentsSidebar({
   const list = tab === "open" ? open : resolved;
 
   const tabBtn = (key: "open" | "resolved", label: string, count: number) => (
-    <button
-      onClick={() => setTab(key)}
-      style={{
-        flex: 1,
-        height: 28,
-        fontSize: 12,
-        fontWeight: 600,
-        borderRadius: 7,
-        border: "1px solid " + (tab === key ? "var(--action-bg, var(--color-accent))" : "var(--glass-border)"),
-        background: tab === key ? "var(--action-bg, var(--color-accent))" : "transparent",
-        color: tab === key ? "var(--action-fg, #fff)" : "var(--text-secondary)",
-        cursor: "pointer",
-      }}
-    >
+    <button type="button" className="prism-tab" aria-pressed={tab === key} onClick={() => setTab(key)}>
       {label}
       {count > 0 ? ` · ${count}` : ""}
     </button>
@@ -107,7 +94,7 @@ export function CommentsSidebar({
         <PageNotificationLevelButton noteId={noteId} />
       </div>
 
-      <div style={{ display: "flex", gap: 6 }}>
+      <div className="prism-tabs" role="group" aria-label="Comment threads">
         {tabBtn("open", "Open", open.length)}
         {tabBtn("resolved", "Resolved", resolved.length)}
       </div>
@@ -256,9 +243,9 @@ export function ThreadCard({
             placeholder="Reply…"
             disabled={busy}
             /* 16px so iOS doesn't zoom the viewport when this field is focused */
-            style={{ flex: 1, minWidth: 0, fontSize: 16, padding: "5px 8px", borderRadius: 6, background: "var(--glass)", border: "1px solid var(--glass-border)", color: "var(--text-primary)", outline: "none" }}
+            className="prism-comment-input" style={{ flex: 1, minWidth: 0, padding: "5px 8px", borderRadius: 6, background: "var(--glass)", border: "1px solid var(--glass-border)", color: "var(--text-primary)", outline: "none" }}
           />
-          <button onClick={() => resolve(true)} disabled={busy} title="Resolve" aria-label="Resolve thread" className="p-1 rounded prism-comment-icon" style={{ color: "#22c55e" }}>
+          <button onClick={() => resolve(true)} disabled={busy} title="Resolve" aria-label="Resolve thread" className="p-1 rounded prism-comment-icon" style={{ color: "var(--color-success)" }}>
             <Check size={14} />
           </button>
           {mayDelete && <DeleteButton confirm={confirmDelete} setConfirm={setConfirmDelete} onDelete={remove} label="Delete thread" />}
@@ -308,7 +295,7 @@ function CommentRow({ item, own, onSave, onDelete }: {
         {own && !editing && (
           <span style={{ marginLeft: "auto", display: "flex", gap: 2 }}>
             <button onClick={() => { setText(item.text); setEditing(true); }} title="Edit comment" aria-label="Edit comment" className="p-1 rounded prism-comment-icon" style={{ color: "var(--text-muted)" }}>
-              <Pencil size={12} />
+              <Pencil size={14} />
             </button>
             <DeleteButton confirm={confirm} setConfirm={setConfirm} onDelete={onDelete} label="Delete comment" />
           </span>
@@ -331,7 +318,7 @@ function CommentRow({ item, own, onSave, onDelete }: {
               if (e.key === "Escape") setEditing(false);
               if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) save();
             }}
-            style={{ width: "100%", boxSizing: "border-box", fontSize: 16, padding: "5px 8px", borderRadius: 6, background: "var(--glass)", border: "1px solid var(--glass-border)", color: "var(--text-primary)", outline: "none", resize: "vertical" }}
+            className="prism-comment-input" style={{ width: "100%", boxSizing: "border-box", padding: "5px 8px", borderRadius: 6, background: "var(--glass)", border: "1px solid var(--glass-border)", color: "var(--text-primary)", outline: "none", resize: "vertical" }}
           />
           {mentions.menu}
           <div style={{ display: "flex", justifyContent: "flex-end", gap: 6, marginTop: 4 }}>
@@ -372,7 +359,7 @@ function DeleteButton({ confirm, setConfirm, onDelete, label = "Delete comment" 
   }
   return (
     <button ref={button} onClick={() => setConfirm(true)} onBlur={() => setConfirm(false)} title={label} aria-label={label} className="p-1 rounded prism-comment-icon" style={{ color: "var(--text-muted)" }}>
-      <Trash2 size={13} />
+      <Trash2 size={14} />
     </button>
   );
 }

@@ -7,7 +7,7 @@ import { humanCollabRevision } from "@prism/core/collab-commands";
 import { sendHumanCommand } from "./humanCommands";
 import { humanRevisionBody } from "../../../../packages/core/src/lib/collab/human/validation";
 import { PageCover, parseCover, coverPatch, COVER_GRADIENTS, type PageCoverValue } from "@prism/core";
-import { COLLAB_SCHEMA_VERSION, useAgentDocumentSnapshot, CollabEditor, CommentsSidebar, collabAffordances, humanFailureText, HumanCommandFailure, PresenceAvatars, type CollabSocketScope, type CommentCommandActions, type HumanCommandChannel, CollabCodeEditor, CollabSpreadsheet, CollabCanvas, detectCodeLanguage, inferContentType, PageHeader, NotePropertyBar, PageProperties, renamePageFromTitle, useUIStore, useAgentChatStore, type ContentFont, type Note, type Editor } from "@prism/core";
+import { COLLAB_SCHEMA_VERSION, useAgentDocumentSnapshot, CollabEditor, CommentsSidebar, collabAffordances, humanFailureText, HumanCommandFailure, PresenceAvatars, type CollabSocketScope, type CommentCommandActions, type HumanCommandChannel, CollabCodeEditor, CollabSpreadsheet, CollabCanvas, detectCodeLanguage, inferContentType, PageHeader, NotePropertyBar, PageProperties, renamePageFromTitle, useUIStore, useWritingFont, useAgentChatStore, type ContentFont, type Note, type Editor } from "@prism/core";
 import { MessageSquare, X, Lock } from "lucide-react";
 import { serverFetch, collabWsUrl, collabToken, isNative } from "../transport";
 import { apiBase, agentScope, getCapabilityToken, getActiveVault, getMe, fetchMe, contextHeaders } from "../config";
@@ -24,6 +24,7 @@ import { updateNote as restUpdateNote, getNote as restGetNote, uploadAttachment,
 import { markUnsynced, clearUnsynced, setOpenHere, unsyncedDocs } from "./unsynced";
 import { reloadForUpdate } from "../offline/reloadForUpdate";
 import { PlainTextPage } from "./PlainTextPage";
+import { ReplacedNotice } from "@prism/core";
 import { httpVaultClient } from "../parachute/HttpVaultClient";
 import { reportSyncSource, NOT_SAVED_TO_PAGE, unsavedExplanation, BacklinksPill, EmptyPageStarters, notePageIconChanged, pageIconWriteConfirmed, pageIconWriteFailed, PageDiscussion } from "@prism/core";
 
@@ -151,6 +152,7 @@ function ScopedCollabDoc({
   // `permanent`: it cannot be written as the page is; else the server is still trying.
   const [serverUnsaved, setServerUnsaved] = useState<null | { permanent: boolean; reason: string | null }>(null);
   const [serverNotice, setServerNotice] = useState<string | null>(null);
+  const [noticeCode, setNoticeCode] = useState<string | null>(null); // the `prism:notice` code behind `serverNotice`
   // Bumped to open the document afresh (new local document, new socket) without a page reload.
   const [attempt, setAttempt] = useState(0);
   const [checkingAccess, setCheckingAccess] = useState(false);
@@ -202,7 +204,10 @@ function ScopedCollabDoc({
   const mounted = useRef(false);
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
   const [path, setPath] = useState<string | null>(null);
-  const [contentFont, setContentFont] = useState<ContentFont>("sans");
+  // The page's own font, else the device's writing font (Settings → Appearance).
+  const writingFont = useWritingFont();
+  const [ownFont, setContentFont] = useState<ContentFont | null>(null);
+  const contentFont: ContentFont = ownFont ?? writingFont;
   const [icon, setIcon] = useState<string | null>(null);
   const [cover, setCover] = useState<PageCoverValue | null>(null);
   const [uploadNotice, setUploadNotice] = useState<string | null>(null);
@@ -474,6 +479,8 @@ function ScopedCollabDoc({
             }
             else if (message.type === "prism:notice" && message.code === "external-replaced") setServerNotice("Changes made elsewhere replaced part of this page.");
             else if (message.type === "prism:notice" && message.code === "unsaved-discarded") setServerNotice("Changes on this page that could not be saved were discarded by the workspace owner. You are looking at the stored page.");
+            // Only for a notice shown above: an unknown code leaves the standing notice (text AND code) as it is.
+            if (message.type === "prism:notice" && (message.code === "external-replaced" || message.code === "unsaved-discarded")) setNoticeCode(message.code);
           },
           onAuthenticationFailed: ({ reason }) => {
             if (!current()) return;
@@ -672,7 +679,12 @@ function ScopedCollabDoc({
           {NOT_SAVED_TO_PAGE}. {unsavedExplanation(serverUnsaved.reason)}
         </p>
       )}
-      {serverNotice && (
+      {/* external-replaced: the replaced text was set aside on the server (Recovered text) — the owner gets
+          it here, everyone else is told who has it. */}
+      {serverNotice && noticeCode === "external-replaced" && (
+        <ReplacedNotice noteId={noteId} text={serverNotice} owner={!!getMe()?.isOwner && !getCapabilityToken()} onDismiss={() => setServerNotice(null)} />
+      )}
+      {serverNotice && noticeCode !== "external-replaced" && (
         <p role="status" data-testid="collab-notice" className="rounded-lg border p-3 text-sm">
           {serverNotice}{" "}
           <button type="button" className="underline" onClick={() => setServerNotice(null)}>Dismiss</button>
@@ -831,7 +843,7 @@ function ScopedCollabDoc({
             }}
           >
             <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 6 }}>
-              <button onClick={() => setCommentsOpen(false)} style={{ background: "none", border: "none", color: "var(--text-muted)", cursor: "pointer", padding: 4 }}>
+              <button type="button" aria-label="Close comments" onClick={() => setCommentsOpen(false)} style={{ background: "none", border: "none", color: "var(--text-muted)", cursor: "pointer", padding: 4 }}>
                 <X size={18} />
               </button>
             </div>

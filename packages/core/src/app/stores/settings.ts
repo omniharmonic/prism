@@ -8,6 +8,15 @@ export type Theme = "dark" | "light" | "system";
 /** What is on screen: the class on `<html>`. */
 export type EffectiveTheme = "dark" | "light";
 
+export type WritingFont = "sans" | "serif" | "mono";
+export type PageWidth = "standard" | "wide";
+const WRITING_FONTS: readonly string[] = ["sans", "serif", "mono"];
+/** The device's default writing font (a stored value from an older build has none → sans). */
+export function useWritingFont(): WritingFont {
+  const f = useSettingsStore((s) => s.writingFont);
+  return WRITING_FONTS.includes(f) ? f : "sans";
+}
+
 /** A recently-opened note, for the sidebar Recent widget. */
 export interface RecentItem {
   id: string;
@@ -28,6 +37,10 @@ interface SettingsStore {
   fontSize: number;
   editorFontFamily: string;
   monoFontFamily: string;
+  /** The font a page is written in when the page has not chosen its own (page ⋯ → Sans/Serif/Mono). */
+  writingFont: WritingFont;
+  /** Width of the writing column for pages that are not set to "Full width". */
+  pageWidth: PageWidth;
 
   // Vaults
   vaults: VaultConfig[];
@@ -58,6 +71,8 @@ interface SettingsStore {
   setFontSize: (size: number) => void;
   setEditorFontFamily: (font: string) => void;
   setMonoFontFamily: (font: string) => void;
+  setWritingFont: (font: WritingFont) => void;
+  setPageWidth: (width: PageWidth) => void;
   addVault: (name: string, url: string) => void;
   removeVault: (url: string) => void;
   setActiveVault: (url: string) => void;
@@ -82,6 +97,8 @@ export const useSettingsStore = create<SettingsStore>()(
       fontSize: 14,
       editorFontFamily: "Newsreader",
       monoFontFamily: "JetBrains Mono",
+      writingFont: "sans",
+      pageWidth: "standard",
 
       vaults: [
         { name: "Default", url: "http://localhost:1940", isActive: true },
@@ -111,7 +128,7 @@ export const useSettingsStore = create<SettingsStore>()(
       },
       setFontSize: (fontSize) => {
         set({ fontSize });
-        document.documentElement.style.setProperty("--text-base", `${fontSize / 16}rem`);
+        applyFontSize(fontSize);
       },
       setEditorFontFamily: (editorFontFamily) => {
         set({ editorFontFamily });
@@ -120,6 +137,11 @@ export const useSettingsStore = create<SettingsStore>()(
       setMonoFontFamily: (monoFontFamily) => {
         set({ monoFontFamily });
         document.documentElement.style.setProperty("--font-mono", `'${monoFontFamily}', 'SF Mono', monospace`);
+      },
+      setWritingFont: (writingFont) => set({ writingFont }),
+      setPageWidth: (pageWidth) => {
+        set({ pageWidth });
+        applyPageWidth(pageWidth);
       },
       addVault: (name, url) => {
         const { vaults } = get();
@@ -241,15 +263,38 @@ if (typeof window !== "undefined" && window.matchMedia) {
 
 // Initialize theme on app load
 export function initializeSettings() {
-  const state = useSettingsStore.getState();
-  applyTheme(state.theme);
+  applyTheme(useSettingsStore.getState().theme);
+  applyTypography();
+}
 
-  // Apply font settings
+/**
+ * Fonts, size and page width from the stored settings. Also run when this module loads, so
+ * every host (and every fixture) shows the device's typography without calling
+ * `initializeSettings` — the theme stays the host's call (it has its own first-paint script).
+ */
+function applyTypography() {
+  const state = useSettingsStore.getState();
   const root = document.documentElement;
   root.style.setProperty("--font-sans", `'${state.fontFamily}', system-ui, sans-serif`);
   root.style.setProperty("--font-serif", `'${state.editorFontFamily}', Georgia, serif`);
   root.style.setProperty("--font-mono", `'${state.monoFontFamily}', 'SF Mono', monospace`);
-  if (state.fontSize !== 14) {
-    root.style.setProperty("--text-base", `${state.fontSize / 16}rem`);
-  }
+  if (state.fontSize !== 14) applyFontSize(state.fontSize);
+  applyPageWidth(state.pageWidth);
+}
+if (typeof document !== "undefined") applyTypography();
+
+/**
+ * Font size is ONE setting for the interface and the writing surface: `--text-base` is the
+ * interface text, `--text-lg` (2px larger, 16px at the default 14) is what `.prose-editor` reads.
+ */
+function applyFontSize(size: number) {
+  const root = document.documentElement;
+  root.style.setProperty("--text-base", `${size / 16}rem`);
+  root.style.setProperty("--text-lg", `${(size + 2) / 16}rem`);
+}
+
+/** `html[data-page-width="wide"]` widens the writing column (styles/shell.css); a page set to Full width keeps its own. */
+function applyPageWidth(width: PageWidth | undefined) {
+  if (width === "wide") document.documentElement.dataset.pageWidth = "wide";
+  else delete document.documentElement.dataset.pageWidth;
 }

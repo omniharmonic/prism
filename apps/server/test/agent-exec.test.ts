@@ -44,6 +44,8 @@ import {
   type DispatchEvent,
 } from "../src/agent-exec";
 import type { VaultEntry } from "../src/config";
+import { StreamNormalizer, type AgentEvent } from "../src/agent-events";
+import { authRetryAllowed, classifyRunFailure, describeRunFailure, queuedReasonCode } from "../src/agent-failure";
 
 const ENTRY: VaultEntry = { id: "primary", label: "Default", url: "http://localhost:1940", vault: "default", token: "tok_abc" };
 const FAKE_CLAUDE = "/opt/fake/bin/claude";
@@ -612,4 +614,184 @@ test("parseSwapFreeMb", () => {
   assert.equal(parseSwapFreeMb("total = 4096.00M  used = 2597.50M  free = 1498.50M  (encrypted)"), 1498.5);
   assert.equal(parseSwapFreeMb("total = 2.00G  used = 1.00G  free = 1.00G"), 1024);
   assert.equal(parseSwapFreeMb("garbage"), null);
+});
+
+// ── failure classification, the one sign-in retry, runner health (w16) ────────
+// Fixtures agent-stream-auth-*.jsonl / -usage-limit.jsonl are MODELLED on the
+// 2026-10 incident's stored turn (init fine → the CLI's error line as an assistant
+// block → result {is_error, subtype "success", cost 0, 1 turn} → exit 1); they
+// are not recordings of the real CLI.
+
+const fx = (name: string) => readFileSync(join(import.meta.dirname, "fixtures", name), "utf8");
+const AUTH_LINE = "Failed to authenticate: OAuth token revoked. Please log in again or contact your administrator.";
+
+test("failure: the incident stream is an ERROR LINE (never assistant text), result says what the CLI said, code auth", () => {
+  for (const name of ["agent-stream-auth-failed.jsonl", "agent-stream-auth-plain.jsonl"]) {
+    const n = new StreamNormalizer();
+    const evs = [...n.push(fx(name)), ...n.end()];
+    assert.deepEqual(evs.map((e) => e.t), ["init", "error", "result"], name);
+    assert.equal(evs.filter((e) => e.t === "text").length, 0, "the CLI's error line is not a reply");
+    const err = evs[1] as Extract<AgentEvent, { t: "error" }>;
+    assert.equal(err.code, "auth");
+    assert.equal(err.text, AUTH_LINE);
+    assert.equal(n.result!.ok, false);
+    assert.equal(n.result!.error, AUTH_LINE, 'never the subtype word "success"');
+    assert.equal(n.result!.errorCode, "auth");
+    assert.equal(n.sawTool, false);
+    const code = classifyRunFailure({ exitCode: 1, runnerError: "claude exited 1", streamCode: n.failure?.code, resultError: n.result!.error });
+    assert.equal(code, "auth");
+    const sentence = describeRunFailure(code, { exitCode: 1, runnerError: "claude exited 1" });
+    assert.equal(sentence, "Claude sign-in failed on the server (claude exited 1).");
+    assert.doesNotMatch(sentence, /success/);
+  }
+});
+
+test("failure: usage limit, a failure after a tool, and an ordinary reply that mentions signing in", () => {
+  const limit = new StreamNormalizer();
+  limit.push(fx("agent-stream-usage-limit.jsonl"));
+  assert.equal(limit.failure?.code, "usage_limit");
+  assert.equal(classifyRunFailure({ exitCode: 1, streamCode: limit.failure?.code }), "usage_limit");
+
+  const tool = new StreamNormalizer();
+  const evs = tool.push(fx("agent-stream-auth-after-tool.jsonl"));
+  assert.equal(tool.sawTool, true);
+  assert.equal(tool.failure?.code, "auth");
+  assert.equal(tool.result!.costUsd, 0.012);
+  assert.ok(evs.some((e) => e.t === "tool_use") && evs.some((e) => e.t === "error"));
+
+  // A real assistant reply (a real model, longer than an error line) stays text.
+  const reply = "Here is the summary. Ana wrote that she failed to authenticate with the VPN twice and asks whether the OAuth token " +
+    "was rotated; Ben answered that everybody must log in again after Thursday's change. ".repeat(6);
+  const ok = new StreamNormalizer();
+  const out = ok.push(JSON.stringify({ type: "assistant", message: { id: "m1", model: "claude-sonnet-5-5", content: [{ type: "text", text: reply }] } }) + "\n");
+  assert.deepEqual(out.map((e) => e.t), ["text"]);
+  assert.equal(ok.failure, null);
+});
+
+test("failure: classification table (pure)", () => {
+  const c = classifyRunFailure;
+  assert.equal(c({ cancelled: true, exitCode: null }), "cancelled");
+  assert.equal(c({ exitCode: null, runnerError: "timed out after 30m" }), "timeout");
+  assert.equal(c({ exitCode: null, runnerError: "spawn claude ENOENT" }), "cli_missing");
+  assert.equal(c({ exitCode: 1, runnerError: "claude exited 1", resultError: "error_max_budget_usd" }), "budget");
+  assert.equal(c({ exitCode: 1, texts: ["Invalid API key · Please run /login"] }), "auth");
+  assert.equal(c({ exitCode: 1, texts: ['API Error: 401 {"type":"error","error":{"type":"authentication_error"}}'] }), "auth");
+  assert.equal(c({ exitCode: 1, texts: ["API Error: 529 Overloaded"] }), "usage_limit");
+  assert.equal(c({ exitCode: 1, texts: ["API Error: 429 rate_limit_error"] }), "usage_limit");
+  assert.equal(c({ exitCode: 1, texts: ["Credit balance is too low"] }), "usage_limit");
+  assert.equal(c({ exitCode: 1, deniedTool: true }), "tool_denied");
+  assert.equal(c({ exitCode: 1, runnerError: "claude exited 1" }), "unknown");
+  assert.equal(c({ exitCode: 1, texts: ["page 401 of the manual"] }), "unknown", "a bare number is not a sign-in failure");
+  assert.equal(describeRunFailure("unknown", { exitCode: 1, runnerError: "claude exited 1" }), "The agent run failed (claude exited 1).");
+  assert.equal(queuedReasonCode("memory pressure: 12% free (< 15%)"), "memory");
+  assert.equal(queuedReasonCode("swap nearly exhausted: 300 MB free (< 512 MB)"), "memory");
+  assert.equal(queuedReasonCode("waiting for a free agent slot (1/1 running)"), null);
+});
+
+test("retry rule (pure): sign-in only, first attempt, fast, no cost, no tool", () => {
+  const base = { code: "auth" as const, attempt: 1, exitCode: 1, elapsedMs: 2300, costUsd: 0, sawTool: false };
+  assert.equal(authRetryAllowed(base), true);
+  assert.equal(authRetryAllowed({ ...base, costUsd: null }), true);
+  assert.equal(authRetryAllowed({ ...base, attempt: 2 }), false, "never more than once");
+  assert.equal(authRetryAllowed({ ...base, code: "usage_limit" }), false);
+  assert.equal(authRetryAllowed({ ...base, code: "unknown" }), false);
+  assert.equal(authRetryAllowed({ ...base, elapsedMs: 10_001 }), false);
+  assert.equal(authRetryAllowed({ ...base, elapsedMs: -1 }), false, "never spawned");
+  assert.equal(authRetryAllowed({ ...base, costUsd: 0.001 }), false);
+  assert.equal(authRetryAllowed({ ...base, sawTool: true }), false);
+  assert.equal(authRetryAllowed({ ...base, exitCode: 0 }), false);
+  assert.equal(authRetryAllowed({ ...base, exitCode: null }), false);
+  assert.equal(authRetryAllowed({ ...base, cancelled: true }), false);
+});
+
+test("dispatch: a failed run carries errorCode + a truthful sentence; the runner reports the last failure", () => {
+  const fc = fakeChild();
+  const d = startDispatch(ENTRY, { prompt: "p" }, { spawner: () => fc.proc });
+  fc.out(AUTH_LINE + "\n");
+  fc.exit(1);
+  const after = getDispatch(d.id)!;
+  assert.equal(after.status, "error");
+  assert.equal(after.errorCode, "auth");
+  assert.equal(after.error, "Claude sign-in failed on the server (claude exited 1).");
+  const st = runnerStatus();
+  assert.equal(st.lastFailure?.code, "auth");
+  assert.equal(typeof st.lastFailure?.at, "number");
+  assert.equal(st.signInProblem, false, "one failure is not a pattern");
+  assert.doesNotMatch(JSON.stringify(st), /OAuth|token/i, "codes and times only");
+});
+
+test("dispatch: a tool-capable one-shot is NEVER re-spawned after a sign-in failure", async () => {
+  configureAgentRunner({ authRetryDelayMs: 5 });
+  const rec = recordingSpawner();
+  const d = startDispatch(ENTRY, { prompt: "p" }, { spawner: rec.spawner });
+  rec.children[0]!.out(AUTH_LINE + "\n");
+  rec.children[0]!.exit(1);
+  await sleep(30);
+  assert.equal(rec.calls.length, 1);
+  assert.equal(getDispatch(d.id)!.errorCode, "auth");
+});
+
+test("dispatch (text-only): sign-in failure → ONE re-spawn with the same argv → done, output is the second run's only", async () => {
+  configureAgentRunner({ authRetryDelayMs: 5 });
+  const rec = recordingSpawner();
+  const d = startDispatch(ENTRY, { prompt: "summarise" }, { spawner: rec.spawner, textOnly: true });
+  rec.children[0]!.out(AUTH_LINE + "\n");
+  rec.children[0]!.exit(1);
+  assert.equal(getDispatch(d.id)!.status, "running", "not failed while the retry is pending");
+  assert.equal(getDispatch(d.id)!.retried, true);
+  await sleep(30);
+  assert.equal(rec.calls.length, 2);
+  const strip = (a: string[]) => a.map((x) => (x.includes("mcp.json") ? "<mcp>" : x));
+  assert.deepEqual(strip(rec.calls[1]!.args), strip(rec.calls[0]!.args));
+  rec.children[1]!.out("The summary.");
+  rec.children[1]!.exit(0);
+  const after = getDispatch(d.id)!;
+  assert.equal(after.status, "done");
+  assert.equal(after.output, "The summary.");
+  assert.equal(runnerStatus().lastFailure, null, "a run that succeeded after its retry is not a failure");
+});
+
+test("dispatch (text-only): both attempts fail → error auth, never a third spawn; two in a row = signInProblem", async () => {
+  configureAgentRunner({ authRetryDelayMs: 5 });
+  const rec = recordingSpawner();
+  const runOnce = async () => {
+    const d = startDispatch(ENTRY, { prompt: "x" }, { spawner: rec.spawner, textOnly: true });
+    const first = rec.children.length - 1;
+    rec.children[first]!.out(AUTH_LINE);
+    rec.children[first]!.exit(1);
+    await sleep(30);
+    rec.children[first + 1]!.out(AUTH_LINE);
+    rec.children[first + 1]!.exit(1);
+    await sleep(30);
+    return getDispatch(d.id)!;
+  };
+  const a = await runOnce();
+  assert.equal(a.status, "error");
+  assert.equal(a.errorCode, "auth");
+  assert.equal(rec.calls.length, 2);
+  assert.equal(runnerStatus().signInProblem, false);
+  await runOnce();
+  assert.equal(rec.calls.length, 4);
+  assert.equal(runnerStatus().signInProblem, true);
+});
+
+test("dispatch (text-only): cancelling during the retry wait never spawns again", async () => {
+  configureAgentRunner({ authRetryDelayMs: 20 });
+  const rec = recordingSpawner();
+  const d = startDispatch(ENTRY, { prompt: "x" }, { spawner: rec.spawner, textOnly: true });
+  rec.children[0]!.out(AUTH_LINE);
+  rec.children[0]!.exit(1);
+  assert.equal(cancelDispatch(d.id), true);
+  await sleep(50);
+  assert.equal(rec.calls.length, 1);
+  assert.equal(getDispatch(d.id)!.status, "cancelled");
+});
+
+test("dispatch: a queued run says WHY it waits (memory vs a busy slot)", () => {
+  probeSample = { swapUsedPct: 10, freePct: 5 };
+  const rec = recordingSpawner();
+  const d = startDispatch(ENTRY, { prompt: "x" }, { spawner: rec.spawner });
+  assert.equal(d.status, "queued");
+  assert.equal(d.queuedCode, "memory");
+  assert.equal(rec.calls.length, 0);
 });

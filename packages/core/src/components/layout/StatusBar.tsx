@@ -12,13 +12,11 @@ import { formatTime as fmtTime } from "../../lib/datetime/format";
 export function StatusBar() {
   const { data: stats } = useVaultStats();
   const { data: services } = useServiceStatus();
-  const { openTabs, activeTabId } = useUIStore();
   const docFont = useUIStore((s) => s.docFont);
   const docFontSetter = useUIStore((s) => s.docFontSetter);
   const settingsOpen = useUIStore((s) => s.settingsOpen);
   const setSettingsOpen = useUIStore((s) => s.setSettingsOpen);
 
-  const activeTab = openTabs.find((t) => t.id === activeTabId);
   const noteCount = stats?.totalNotes ?? 0;
 
   const { data: bgServices } = useQuery({
@@ -40,8 +38,7 @@ export function StatusBar() {
       >
         {/* Left */}
         <div className="flex items-center gap-3">
-          <span>Vault: {noteCount} notes</span>
-          {activeTab && <span>{activeTab.type}</span>}
+          <span>{noteCount} {noteCount === 1 ? "note" : "notes"}</span>
         </div>
 
         {/* Right */}

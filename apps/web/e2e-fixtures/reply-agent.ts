@@ -13,6 +13,9 @@ export const agentControls = {
   unsubscribes: 0,
   cancellations: 0,
   deferred: [] as Array<() => void>,
+  /** The NEXT new turn ends the way the 2026-10 incident's did: the CLI could not sign in
+   *  (status error + errorCode auth, no reply text). `?authfail` arms it for the first turn. */
+  failNext: location.search.includes("authfail"),
   complete() {
     for (let index = 0; index < localStorage.length; index++) {
       const key = localStorage.key(index)!;
@@ -86,23 +89,29 @@ export function replyAgent(scope: () => string): AgentClient {
       const id = `turn-${opts?.requestId}`;
       let turn = detail.turns.find((item) => item.id === id);
       if (!turn) {
+        const failed = agentControls.failNext;
+        agentControls.failNext = false;
         turn = {
           id,
           session_id: sessionId,
           prompt,
           note_id: opts?.noteId ?? null,
-          status:
-            location.search.includes("pending") ||
-            location.search.includes("deferred")
+          status: failed
+            ? "error"
+            : location.search.includes("pending") ||
+                location.search.includes("deferred")
               ? "running"
               : "done",
           pid: null,
-          exit_code: null,
-          error: null,
+          exit_code: failed ? 1 : null,
+          error: failed
+            ? "Claude sign-in failed on the server (claude exited 1). — Failed to authenticate: OAuth token revoked. Please log in again or contact your administrator."
+            : null,
+          errorCode: failed ? "auth" : null,
           cost_usd: 0,
           started_at: 1,
           ended_at: 2,
-          finalText: detail.session.title?.startsWith("Conversation summary:") ? "The team agreed to meet Tuesday. The agenda is still an open question." :
+          finalText: failed ? "" : detail.session.title?.startsWith("Conversation summary:") ? "The team agreed to meet Tuesday. The agenda is still an open question." :
             "Thanks, Morgan. Tuesday afternoon works well. I’ll send the agenda beforehand.",
           tools: [],
           touched: [],

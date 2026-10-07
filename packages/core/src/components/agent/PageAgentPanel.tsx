@@ -2,6 +2,7 @@ import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import { Check, Copy, FileText, Loader2, Sparkles, TextSelect, X } from "lucide-react";
 import { useHostServices } from "../../data/HostServicesContext";
 import { hostServiceErrorText, HostServiceError, type HostServices } from "../../lib/host/services";
+import { failureOfError } from "../../lib/agent/failure";
 import { useNote } from "../../app/hooks/useParachute";
 import { isLocked } from "../../lib/pages/model";
 import { usePagesUI } from "../../lib/pages/store";
@@ -69,6 +70,8 @@ function PageAgentPanel({ host, request }: { host: HostServices; request: PageAg
   const [result, setResult] = useState("");
   const [sources, setSources] = useState<PageAgentSource[]>([]);
   const [error, setError] = useState("");
+  const [canRetry, setCanRetry] = useState(true);
+  const [errorCode, setErrorCode] = useState("");
   const [notice, setNotice] = useState("");
   const [copied, setCopied] = useState(false);
   const [outdated, setOutdated] = useState(false);
@@ -83,6 +86,8 @@ function PageAgentPanel({ host, request }: { host: HostServices; request: PageAg
     setOption(chosen);
     setNotice("");
     setCopied(false);
+    setCanRetry(true);
+    setErrorCode("");
     if (typeof navigator !== "undefined" && navigator.onLine === false) {
       setError("You’re offline. The agent needs a connection — nothing was changed.");
       setPhase("error");
@@ -114,7 +119,14 @@ function PageAgentPanel({ host, request }: { host: HostServices; request: PageAg
         if (e instanceof HostServiceError && e.status === 400) {
           setOutdated(true);
           setError("Update the server to use page AI actions. This app is newer than the Prism Server it is talking to. Nothing was changed.");
-        } else setError(`${hostServiceErrorText(e)} Nothing was changed.`);
+        } else {
+          // One helper for every agent entry point: what happened, what to do, and
+          // whether trying again can help (lib/agent/failure.ts).
+          const failure = e instanceof HostServiceError || e instanceof TypeError ? failureOfError(e) : null;
+          setCanRetry(failure ? failure.retry : true);
+          setErrorCode(failure?.code ?? "");
+          setError(`${failure ? failure.text : hostServiceErrorText(e)} Nothing was changed.`);
+        }
         setPhase("error");
       },
     );
@@ -278,9 +290,9 @@ function PageAgentPanel({ host, request }: { host: HostServices; request: PageAg
 
       {phase === "error" && (
         <div className="page-agent-body">
-          <p className="page-agent-error" role="alert">{error}</p>
+          <p className="page-agent-error" role="alert" data-error-code={errorCode || undefined}>{error}</p>
           <div className="page-agent-actions">
-            {!outdated && <button type="button" className="page-agent-button focus-ring" data-primary="true" onClick={() => (needsChoice && !option ? setPhase("choose") : run(option))}>Try again</button>}
+            {!outdated && canRetry && <button type="button" className="page-agent-button focus-ring" data-primary="true" onClick={() => (needsChoice && !option ? setPhase("choose") : run(option))}>Try again</button>}
             <button type="button" className="page-agent-button focus-ring" onClick={() => dismiss()}>Close</button>
           </div>
         </div>
