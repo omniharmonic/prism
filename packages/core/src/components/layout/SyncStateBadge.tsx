@@ -53,9 +53,11 @@ export function SyncStateBadge({ variant = "header" }: { variant?: "header" | "p
     "data-sync-state": status.kind,
     title: status.kind === "failed" ? status.failure?.message ?? text : text,
   };
-  // The live region announces changes without stealing focus (NP-AX-03).
+  // The live region announces changes without stealing focus (NP-AX-03). ONE region speaks: the
+  // header's. The sidebar footer shows the same state silently — two regions said everything twice.
+  const live = variant === "footer" ? {} : { role: "status", "aria-live": "polite" } as const;
   return (
-    <span role="status" aria-live="polite" className="sync-state-region">
+    <span {...live} className="sync-state-region">
       {action
         ? <button type="button" {...common} onClick={act} aria-label={action === "retry" ? `${text}: retry saving` : `${text}: review saved changes`}>{body}</button>
         : <span {...common}>{body}</span>}

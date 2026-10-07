@@ -37,6 +37,12 @@ function eventStart(e: CalendarEvent): number {
   return Date.parse(e.start.dateTime ?? e.start.date ?? "");
 }
 
+/** A stored status value as words: "in-progress" → "In progress" (display only; nothing is written). */
+function statusWords(value: string): string {
+  const words = value.replace(/[-_]+/g, " ").trim();
+  return words ? words.charAt(0).toUpperCase() + words.slice(1) : value;
+}
+
 /**
  * Home (NP-SB-03): recently visited pages, upcoming reminders + calendar events,
  * open tasks, unread updates and mentions of you, quick create. Every list reads
@@ -163,7 +169,7 @@ export default function Home(_props: RendererProps) {
                 <button key={t.id} type="button" className="prism-home-item focus-ring" onClick={() => openTab(t.id, noteLinkTitle(t), "task")}>
                   <CheckSquare size={14} color="var(--text-muted)" />
                   <span className="label">{noteLinkTitle(t)}</span>
-                  {typeof t.metadata?.status === "string" && <span className="when">{t.metadata.status}</span>}
+                  {typeof t.metadata?.status === "string" && <span className="when">{statusWords(t.metadata.status)}</span>}
                 </button>
               ))}
           </section>

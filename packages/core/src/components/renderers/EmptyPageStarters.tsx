@@ -62,7 +62,7 @@ export function EmptyPageStarters({ editor, noteId, title }: { editor: Editor; n
   };
   return (
     <div className="empty-page-starters" role="group" aria-label="Start this page">
-      <p className="empty-page-starters-hint">Press Enter to write, or start with</p>
+      <p className="empty-page-starters-hint">Or start with</p>
       <div className="empty-page-starters-row">
         <button type="button" className="empty-page-starter focus-ring" onClick={() => editor.commands.focus()}><FileText size={15} aria-hidden /> Empty page</button>
         <button type="button" className="empty-page-starter focus-ring" aria-expanded={choosing} onClick={() => setChoosing((c) => !c)}><LayoutTemplate size={15} aria-hidden /> Template</button>
