@@ -4,6 +4,7 @@
  */
 export type Range = [start: number, end: number];
 
+export type SearchSort = "edited" | "created";
 export interface SearchFilters {
   /** Match the query against titles only. */
   titleOnly?: boolean;
@@ -23,6 +24,8 @@ export interface SearchFilters {
   after?: string;
   before?: string;
   dateField?: "updated" | "created";
+  /** Order of the rows: absent = best match (the search's own order); newest edit / newest created first. */
+  sort?: SearchSort;
   /** Client-only: search this vault instead of the active one (sent as X-Prism-Vault, never as a param). */
   vault?: string;
 }
@@ -266,11 +269,24 @@ export function parseSearchFilters(get: (name: string) => string | undefined): S
   if (after && day(after, false) !== null) f.after = after;
   if (before && day(before, true) !== null) f.before = before;
   if (get("date") === "created") f.dateField = "created";
+  const sort = get("sort");
+  if (sort === "edited" || sort === "created") f.sort = sort;
   return f;
 }
 
+/** Anything that makes this a keyword-only search (ranked search knows neither filters nor a date order). */
 export function hasFilters(f: SearchFilters): boolean {
-  return !!(f.titleOnly || f.types?.length || f.tags?.length || f.author || f.editor || f.after || f.before || f.vault);
+  return !!(f.titleOnly || f.types?.length || f.tags?.length || f.author || f.editor || f.after || f.before || f.vault || f.sort);
+}
+
+/**
+ * Rows in the chosen order (a copy; stable, so equal stamps keep the search's own order).
+ * A row without a readable stamp goes last. No sort = the rows as they came.
+ */
+export function sortSearchRows<T extends { createdAt?: string | null; updatedAt?: string | null }>(rows: T[], sort: SearchSort | undefined): T[] {
+  if (!sort) return rows;
+  const stamp = (r: T) => { const t = Date.parse((sort === "created" ? r.createdAt : r.updatedAt) ?? ""); return Number.isFinite(t) ? t : -Infinity; };
+  return rows.map((row, i) => ({ row, i, t: stamp(row) })).sort((a, b) => (b.t === a.t ? a.i - b.i : b.t > a.t ? 1 : -1)).map((x) => x.row);
 }
 
 /** Does `note` pass every filter? `typeOf` = inferContentType (kept injectable). */
@@ -307,5 +323,6 @@ export function filtersToParams(f: SearchFilters, params: URLSearchParams): URLS
   if (f.after) params.set("after", f.after);
   if (f.before) params.set("before", f.before);
   if (f.dateField === "created") params.set("date", "created");
+  if (f.sort) params.set("sort", f.sort);
   return params;
 }

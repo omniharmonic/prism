@@ -9,8 +9,13 @@
 //!
 //! Apple (macOS + iOS) goes through Security.framework's `SecItem*` API via the
 //! `security-framework` crate. The item is marked non-synchronizable, so it
-//! never goes to iCloud Keychain. WP5.2 adds a `ThisDeviceOnly` accessibility
-//! class and a biometric access-control on iOS here, and nowhere else.
+//! never goes to iCloud Keychain. On iOS it is also created with the
+//! `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly` accessibility class: it
+//! never leaves this device (no backup restore onto another phone) and is
+//! readable after the first unlock since boot, so APNs re-registration and
+//! a launch from a notification work while the phone is locked. There is
+//! deliberately NO biometric access control on the item: the optional app lock
+//! (Face ID) is enforced in the UI (plugins/prism-ios), see docs/client-app.md.
 //!
 //! Every call is blocking (the keychain may show a system prompt), so callers
 //! run it on a blocking thread.
@@ -57,6 +62,16 @@ mod imp {
         // current app binary, and there is never a stale duplicate.
         delete(service, account)?;
         let mut o = options(service, account);
+        #[cfg(target_os = "ios")]
+        {
+            use security_framework::access_control::{ProtectionMode, SecAccessControl};
+            let ac = SecAccessControl::create_with_protection(
+                Some(ProtectionMode::AccessibleAfterFirstUnlockThisDeviceOnly),
+                0,
+            )
+            .map_err(err)?;
+            o.set_access_control(ac);
+        }
         o.set_label("Prism device token");
         o.set_description("Prism Client sign-in (revocable in Prism → Account → Devices)");
         set_generic_password_options(secret.as_bytes(), o).map_err(err)

@@ -144,20 +144,15 @@ const entrance = (page: Page, root: string) => page.evaluate((root) => {
   return { found: roots.length, ms };
 }, root);
 
-/**
- * `gap` = BEHAVIOUR GAP, kept as `test.fixme` (both seen failing, 0 ms): the phone sheets — the "More"
- * sheet (`dialog.prism-mobile-sheet`, components/ui/mobile-workspace.css) and the page-actions sheet
- * (a `dialog[open]` on a phone) — have no opacity / translate entrance at all: they appear at once.
- * Desktop menus and peeks do enter with the motion token.
- */
-const RANGE: Array<{ kind: string; id: string; vp: Viewport; root: string; gap?: boolean }> = [
+/** The phone sheets (the "More" sheet and the page-actions sheet, both `BottomSheet`) were a gap until w13: 0 ms. */
+const RANGE: Array<{ kind: string; id: string; vp: Viewport; root: string }> = [
   { kind: "menu", id: "page-actions-menu", vp: "desktop", root: ".page-menu" },
   { kind: "peek", id: "db-row-peek-side", vp: "desktop", root: ".db-peek" },
-  { kind: "sheet", id: "page-actions-menu", vp: "phone", root: "dialog[open], .sheet-panel", gap: true },
-  { kind: "sheet", id: "phone-more-sheet", vp: "phone", root: "dialog.prism-mobile-sheet", gap: true },
+  { kind: "sheet", id: "page-actions-menu", vp: "phone", root: "dialog[open], .sheet-panel" },
+  { kind: "sheet", id: "phone-more-sheet", vp: "phone", root: "dialog.prism-mobile-sheet" },
 ];
 for (const m of RANGE) {
-  (m.gap ? test.fixme : test)(`NP-AX-06: a ${m.kind} enters in 120–180 ms (${m.id} · ${m.vp})`, async ({ page }) => {
+  test(`NP-AX-06: a ${m.kind} enters in 120–180 ms (${m.id} · ${m.vp})`, async ({ page }) => {
     const s = SURFACES.find((x) => x.id === m.id)!;
     await openSurface(page, s, m.vp, "light");
     const e = await entrance(page, m.root);

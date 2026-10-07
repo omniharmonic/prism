@@ -5,9 +5,11 @@
  */
 import { useState } from "react";
 import { ArrowLeft, ArrowRight, Copy, Plus, Trash2, X } from "lucide-react";
-import type { QueryCondition, QueryFilter, QueryFilterGroup, QueryOp, QuerySort } from "../../lib/database/query";
+import { ME_TOKEN, type QueryCondition, type QueryFilter, type QueryFilterGroup, type QueryOp, type QuerySort } from "../../lib/database/query";
 import { STATUS_GROUP_LABELS, STATUS_GROUPS, SYSTEM_PROPERTIES, type PropertyDef } from "../../lib/database/schema";
 import { CARD_SIZES, VIEW_LABELS, VIEW_TYPES, type CardSize, type DatabaseView, type ViewType } from "./config";
+import { CalcSettings } from "./Calculations";
+import { useVaultClient } from "../../data/VaultClientContext";
 
 /** Title + timestamps + every property, as filter/sort targets. */
 export function filterTargets(props: PropertyDef[]): Array<{ key: string; label: string; def?: PropertyDef }> {
@@ -45,7 +47,15 @@ function opsFor(def?: PropertyDef): QueryOp[] {
   }
 }
 
+const ME_OPS: QueryOp[] = ["eq", "ne", "contains", "not_contains"];
+/** Properties that name a person: a person property, "Created by", "Last edited by". */
+export const meFilterable = (def?: PropertyDef): boolean => !!def && (def.kind === "person" || def.system === "created_by" || def.system === "edited_by");
+
 function ValueInput({ def, cond, onChange }: { def?: PropertyDef; cond: QueryCondition; onChange: (v: unknown) => void }) {
+  // "Me" is resolved by the query route for whoever asks. A shell without the route
+  // filters on the device, where nobody could resolve it: not offered there (a saved
+  // token still shows, so it can be cleared).
+  const canResolveMe = !!useVaultClient().queryNotes;
   if (cond.op === "exists" || cond.op === "not_exists") return <span />;
   if (def?.kind === "checkbox") {
     return (
@@ -66,6 +76,17 @@ function ValueInput({ def, cond, onChange }: { def?: PropertyDef; cond: QueryCon
             })
           : def.options.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
       </select>
+    );
+  }
+  // A person / created-by / edited-by filter can be "Me": stored as the token `@me` and
+  // resolved for whoever is looking (never an address in the saved view).
+  if (meFilterable(def) && ME_OPS.includes(cond.op) && (canResolveMe || cond.value === ME_TOKEN)) {
+    const me = cond.value === ME_TOKEN;
+    return (
+      <span className="db-cond-me">
+        <button type="button" className="db-control" aria-pressed={me} aria-label="Filter by me" title="Whoever is viewing" onClick={() => onChange(me ? "" : ME_TOKEN)}>Me</button>
+        {!me && <input aria-label="Filter value" type="text" placeholder="or a name" value={String(cond.value ?? "")} onChange={(e) => onChange(e.target.value)} />}
+      </span>
     );
   }
   const date = def?.kind === "date" || cond.key === "$createdAt" || cond.key === "$updatedAt";
@@ -243,6 +264,11 @@ export function ViewSettings({ view, props, canDelete, onChange, onDelete, tabs,
           <input type="checkbox" checked={view.hideEmptyGroups === true} onChange={(e) => onChange({ hideEmptyGroups: e.target.checked || undefined })} /> Hide empty groups
         </label>
       )}
+      {view.type === "table" && (
+        <label className="db-radio">
+          <input type="checkbox" checked={view.wrap === true} onChange={(e) => onChange({ wrap: e.target.checked || undefined })} /> Wrap cells
+        </label>
+      )}
       {view.type === "gallery" && (
         <label className="db-field">
           <span>Card size</span>
@@ -292,6 +318,7 @@ export function ViewSettings({ view, props, canDelete, onChange, onDelete, tabs,
           {!props.length && <li className="db-pop-empty">This tag has no properties yet.</li>}
         </ul>
       </div>
+      {view.type !== "calendar" && <CalcSettings view={view} props={props} onChange={onChange} />}
       {deleted && deleted.props.length > 0 && (
         <div>
           <p className="db-pop-heading">Deleted properties</p>

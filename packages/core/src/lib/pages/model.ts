@@ -25,6 +25,7 @@
 import { cleanCopyBody, repointWikilinks } from "./copyBody";
 import { INGEST_TAGS } from "../database/schema";
 import { inferContentType } from "../schemas/content-types";
+import { sanitizeRegion, type StoredRegion } from "../datetime/preferences";
 
 export const TRASH_TAG = "prism-trashed";
 export const TRASH_META = {
@@ -237,6 +238,9 @@ export interface PagePreferences {
   /** Note ids, most recently opened first. */
   recents: string[];
   sidebar: { order: string[]; collapsed: string[] };
+  /** Regional preferences (NP-AX-09): start of week, date format, 12/24-hour — newest `at` wins.
+   *  Absent = never set through this document (an older client, or all "system" from the start). */
+  region?: StoredRegion;
 }
 
 export const EMPTY_PREFERENCES: PagePreferences = { version: 1, favorites: [], recents: [], sidebar: { order: [], collapsed: [] } };
@@ -260,6 +264,7 @@ export function sanitizePreferences(raw: unknown): PagePreferences {
     favorites: idList(o.favorites, PREFERENCE_LIMITS.favorites),
     recents: idList(o.recents, PREFERENCE_LIMITS.recents),
     sidebar: { order: sections(sidebar.order), collapsed: sections(sidebar.collapsed) },
+    ...(o.region && typeof o.region === "object" && !Array.isArray(o.region) ? { region: sanitizeRegion(o.region) } : {}),
   };
 }
 
@@ -311,6 +316,12 @@ export const preferenceOps = {
       favorites: [...p.favorites, ...local.favorites.filter((id) => !p.favorites.includes(id))],
       recents: [...p.recents, ...local.recents.filter((id) => !p.recents.includes(id))],
     });
+  },
+  /** Carry this device's regional preferences into the synced document (newest `at` wins). */
+  setRegion(p: PagePreferences, region: StoredRegion): PagePreferences {
+    const next = sanitizeRegion(region);
+    if (!next.at || next.at <= (p.region?.at ?? 0)) return p;
+    return { ...p, region: next };
   },
   setCollapsed(p: PagePreferences, section: string, collapsed: boolean): PagePreferences {
     const rest = p.sidebar.collapsed.filter((s) => s !== section);

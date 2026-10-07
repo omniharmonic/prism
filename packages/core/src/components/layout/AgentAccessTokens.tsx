@@ -11,6 +11,7 @@ import { Button } from "../ui/Button";
 import { Input } from "../ui/Input";
 import { useAccount, type AgentToken, type CreatedAgentToken } from "../../data/Account";
 
+import { formatDate as fmtDate } from "../../lib/datetime/format";
 const cardStyle = { border: "1px solid var(--glass-border)", borderRadius: 10, padding: 16, marginBottom: 16, background: "var(--glass-bg)" } as const;
 const labelStyle = { fontSize: 12, fontWeight: 600, color: "var(--text-secondary)", marginBottom: 6 } as const;
 const mutedStyle = { fontSize: 11.5, color: "var(--text-muted)" } as const;
@@ -138,7 +139,7 @@ export function AgentAccessTokens() {
   }, [account, created, load]);
 
   if (!account?.listAgentTokens || tokens === null) return null;
-  const fmt = (ms: number | null) => (ms ? new Date(ms).toLocaleDateString(undefined, { dateStyle: "medium" }) : "never");
+  const fmt = (ms: number | null) => (ms ? fmtDate(new Date(ms), { dateStyle: "medium" }) : "never");
 
   return (
     <div style={cardStyle}>

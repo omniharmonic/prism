@@ -9,7 +9,7 @@ import type { Note, NoteFilters, CreateNoteParams, UpdateNoteParams } from "../.
 import { useAgentChatStore } from "../../lib/agent/chatStore";
 import { useLivePollMs } from "../../lib/events/channelStatus";
 import { TEMPLATE_TAG, isTemplateNote, withoutTrashed } from "../../lib/pages/model";
-import { hasFilters, matchesFilters, queryTerms, type SearchFilters } from "../../lib/search/match";
+import { hasFilters, matchesFilters, queryTerms, sortSearchRows, type SearchFilters } from "../../lib/search/match";
 import { blendResults } from "../../lib/search/blend";
 import { takeFreshRead } from "../../lib/events/freshReads";
 import { inferContentType } from "../../lib/schemas/content-types";
@@ -81,11 +81,12 @@ export function useVaultSearch(query: string, filters?: SearchFilters) {
       // older server, the same results client-side). Ranked search has no filters.
       const keywordSearch = async (): Promise<Note[]> => {
         const filtered = client.searchNotes ? await client.searchNotes(text, active) : null;
-        if (filtered) return filtered;
+        // Sorted here too: a server from before `sort=` ignores it and answers in its own order.
+        if (filtered) return sortSearchRows(filtered, active?.sort);
         // Another vault can only be searched by the server; never answer from the active one.
         if (active?.vault) throw new Error("This server cannot search another vault.");
         const notes = await client.search(text);
-        return active ? notes.filter((n) => matchesFilters(n, active, terms, (x) => inferContentType(x as Note))) : notes;
+        return active ? sortSearchRows(notes.filter((n) => matchesFilters(n, active, terms, (x) => inferContentType(x as Note))), active.sort) : notes;
       };
       if (!active && client.semanticSearch) {
         // NP-SR-05: ranked and keyword run together and are blended. Either may

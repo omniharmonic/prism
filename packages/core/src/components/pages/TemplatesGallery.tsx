@@ -14,6 +14,7 @@ import { queryKeys } from "../../lib/parachute/queries";
 import type { Note } from "../../lib/types";
 import "./pages.css";
 
+import { formatDate as fmtDate } from "../../lib/datetime/format";
 type Row = Note & { _caps?: string[] };
 
 export const templateName = (n: Pick<Note, "path" | "metadata">): string =>
@@ -22,7 +23,7 @@ export const templateName = (n: Pick<Note, "path" | "metadata">): string =>
 const edited = (iso: string | null | undefined): string => {
   if (!iso) return "";
   const d = new Date(iso);
-  return Number.isNaN(d.getTime()) ? "" : `Edited ${d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })}`;
+  return Number.isNaN(d.getTime()) ? "" : `Edited ${fmtDate(d, { month: "short", day: "numeric", year: "numeric" })}`;
 };
 
 /**

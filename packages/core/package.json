@@ -21,6 +21,8 @@
     "./media-embeds": "./src/lib/media/embeds.ts",
     "./mentions": "./src/lib/tiptap/MentionParse.ts",
     "./pages": "./src/lib/pages/model.ts",
+    "./datetime": "./src/lib/datetime/format.ts",
+    "./datetime-preferences": "./src/lib/datetime/preferences.ts",
     "./search": "./src/lib/search/match.ts",
     "./import-export": "./src/lib/import-export/index.ts",
     "./styles/*": "./src/styles/*",

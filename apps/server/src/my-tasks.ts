@@ -212,8 +212,24 @@ export async function assigneeResolver(entry: VaultEntry): Promise<((values: str
   };
 }
 
+/** How many people ONE property value is read for (a multi-person property; the write route caps a list at 200). */
+const MAX_PROPERTY_PEOPLE = 200;
+
+/**
+ * Does this property value name the caller ("is Me" in a saved view filter)? The
+ * same rule as "assigned to me", for any person property: one of their addresses,
+ * a `[[wikilink]]`/path to their person note, or that note's name.
+ */
+export function valueNamesMe(raw: unknown, me: MyIdentity): boolean {
+  return namesMe(peopleValues(raw, MAX_PROPERTY_PEOPLE), me);
+}
+
 export function assignedToMe(metadata: Record<string, unknown> | null | undefined, me: MyIdentity): boolean {
-  for (const v of assigneeValues(metadata ?? {})) {
+  return namesMe(assigneeValues(metadata ?? {}), me);
+}
+
+function namesMe(values: string[], me: MyIdentity): boolean {
+  for (const v of values) {
     const open = v.indexOf("[[");
     if (open >= 0) {
       const close = v.indexOf("]]", open + 2);

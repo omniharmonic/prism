@@ -12,6 +12,7 @@ import { EMPTY_FILTERS, SearchFilterBar, toSearchFilters, useSearchIdentityFilte
 import { rememberSearch } from "./searchRecents";
 import { useAgentChatStore } from "../../lib/agent/chatStore";
 
+import { formatDate as fmtDate } from "../../lib/datetime/format";
 interface SearchPanelProps { query: string; onClose: () => void }
 
 export function SearchPanel({ query, onClose }: SearchPanelProps) {
@@ -40,7 +41,7 @@ export function SearchPanel({ query, onClose }: SearchPanelProps) {
           <span className="block break-words text-sm font-medium [overflow-wrap:anywhere]" style={{ color: "var(--text-primary)" }}><Highlighted text={title} ranges={marks.title} /></span>
           {note.path && <span className="mt-1 block truncate text-xs" style={{ color: "var(--text-muted)" }}>{note.path}</span>}
           <span className="mt-2 block line-clamp-3 break-words text-xs leading-relaxed [overflow-wrap:anywhere]" style={{ color: "var(--text-secondary)" }}><Highlighted text={marks.snippet} ranges={marks.snippetRanges} /></span>
-          <span className="mt-2 block text-[11px] capitalize" style={{ color: "var(--text-muted)" }}>{type.replace(/-/g, " ")}{updated && Number.isFinite(updated.getTime()) ? ` · Updated ${updated.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}` : ""}</span>
+          <span className="mt-2 block text-[11px] capitalize" style={{ color: "var(--text-muted)" }}>{type.replace(/-/g, " ")}{updated && Number.isFinite(updated.getTime()) ? ` · Updated ${fmtDate(updated, { month: "short", day: "numeric", year: "numeric" }, { locale: "en-US" })}` : ""}</span>
         </span>
       </button><div className="flex justify-end px-3"><AddSavedNoteContextButton noteId={note.id} label={title} onAdded={onClose} /></div></div>;
     })}

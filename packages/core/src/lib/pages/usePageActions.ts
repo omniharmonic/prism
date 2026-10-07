@@ -16,16 +16,11 @@ import { useCollabSharing } from "../../data/CollabSharing";
 import { registeredEditor } from "../agent/documentSnapshots";
 import * as ops from "./ops";
 import { usePagesUI, type PageRef } from "./store";
+import { pageLink } from "./pageLink";
 
 const HTMLISH = /^\s*<(p|h[1-6]|ul|ol|div|blockquote|pre|table|section|article|figure|hr)\b/i;
 
-/** The shareable in-app address of a page (a client route: `/page/<id>`). */
-export const pageLink = (id: string): string => {
-  // Prism Client: the app origin is the Tauri shell; a shareable link names the SERVER.
-  const host = typeof window !== "undefined" ? (window as unknown as { __PRISM_HOST__?: { apiOrigin?: string } }).__PRISM_HOST__ : undefined;
-  const origin = host?.apiOrigin && /^https?:\/\//.test(host.apiOrigin) ? host.apiOrigin.replace(/\/+$/, "") : typeof location !== "undefined" ? location.origin : "";
-  return `${origin}/page/${encodeURIComponent(id)}`;
-};
+export { pageLink };
 
 function download(name: string, body: string, type: string) {
   const url = URL.createObjectURL(new Blob([body], { type }));

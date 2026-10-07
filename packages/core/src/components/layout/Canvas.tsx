@@ -292,6 +292,7 @@ export function Canvas() {
       <TabBar />
 
       <main id="workspace-document" ref={mainRef} tabIndex={-1} className="flex-1 min-h-0 overflow-auto"
+        data-note-id={activeTab && !isVirtual && !isTagView ? activeTab.noteId : undefined}
         data-page-small={pageStyle.small ? "true" : undefined} data-page-full={pageStyle.full ? "true" : undefined}>
         {!isVirtual && !isTagView && offlineAt && <OfflineCopyNotice at={offlineAt} />}
         {!activeTab ? (

@@ -39,8 +39,8 @@ async function installHostHook(page: Page, early?: string) {
       if (window.top !== window) return;
       (window as any).__TAURI_INTERNALS__ = { invoke: () => Promise.resolve(null) };
       const origin = JSON.stringify(location.origin);
-      // host.rs replaces the placeholder with a JSON string literal, once.
-      new Function(source.replace("__PRISM_ORIGIN__", origin))();
+      // host.rs replaces both placeholders with JSON string literals, once each.
+      new Function(source.replace("__PRISM_ORIGIN__", origin).replace("__PRISM_PLATFORM__", JSON.stringify("macos")))();
       if (early) (window as any).__PRISM_SHELL__.openLink(early);
     },
     { source: HOST_JS, early: early ?? null },

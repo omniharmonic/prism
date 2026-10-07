@@ -2,7 +2,8 @@ import { test, expect } from "@playwright/test";
 import { readFileSync } from "node:fs";
 
 const hostSource = readFileSync(new URL("../../client/src-tauri/src/host.js", import.meta.url), "utf8")
-  .replace("__PRISM_ORIGIN__", JSON.stringify("https://fixture.example.test"));
+  .replace("__PRISM_ORIGIN__", JSON.stringify("https://fixture.example.test"))
+  .replace("__PRISM_PLATFORM__", JSON.stringify("macos")); // host.rs replaces both placeholders
 
 test.beforeEach(async ({ page }) => {
   await page.route("**/*", (route) => route.request().url().startsWith("http://127.0.0.1:5189/") ? route.continue() : route.abort());

@@ -8,6 +8,7 @@ import { useUIStore } from "../../app/stores/ui";
 import { inferContentType } from "../../lib/schemas/content-types";
 import { AgentMarkdown } from "./AgentMarkdown";
 
+import { formatDate as fmtDate } from "../../lib/datetime/format";
 /** A fresh, read-only source inspection; never changes a conversation binding. */
 export function AgentSourcePreview({ noteId, onClose }: { noteId: string; onClose: () => void }) {
   const client = useVaultClient();
@@ -43,7 +44,7 @@ export function AgentSourcePreview({ noteId, onClose }: { noteId: string; onClos
     onClick={(event) => { if (event.target === event.currentTarget) onClose(); }}>
     <div className="flex max-h-[85dvh] min-h-0 flex-col">
       <div className="flex shrink-0 items-center gap-3 border-b px-4 py-3" style={{ borderColor: "var(--glass-border)" }}>
-        <div className="min-w-0 flex-1"><h2 className="break-words text-lg font-semibold">{name}</h2><p className="mt-1 text-xs" style={{ color: "var(--text-muted)" }}>Saved text preview{note?.updatedAt && <span> · Updated <time dateTime={note.updatedAt} title={note.updatedAt}>{Number.isNaN(Date.parse(note.updatedAt)) ? note.updatedAt : new Date(/^\d{4}-\d{2}-\d{2}$/.test(note.updatedAt) ? `${note.updatedAt}T12:00:00` : note.updatedAt).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })}</time></span>}</p></div>
+        <div className="min-w-0 flex-1"><h2 className="break-words text-lg font-semibold">{name}</h2><p className="mt-1 text-xs" style={{ color: "var(--text-muted)" }}>Saved text preview{note?.updatedAt && <span> · Updated <time dateTime={note.updatedAt} title={note.updatedAt}>{Number.isNaN(Date.parse(note.updatedAt)) ? note.updatedAt : fmtDate(new Date(/^\d{4}-\d{2}-\d{2}$/.test(note.updatedAt) ? `${note.updatedAt}T12:00:00` : note.updatedAt), { month: "short", day: "numeric", year: "numeric" })}</time></span>}</p></div>
         <button onClick={onClose} aria-label="Close source preview" className="interactive focus-ring flex h-10 w-10 items-center justify-center rounded-lg"><X size={18} /></button>
       </div>
       <div className="prism-agent-source-body min-h-0 overflow-y-auto p-5 text-sm leading-relaxed">

@@ -1,6 +1,8 @@
 import { useEffect, useId, useRef, useState } from "react";
 import type { Editor } from "@tiptap/react";
-import { ListTree } from "lucide-react";
+import { Check, Link2, ListTree } from "lucide-react";
+import { noteForEditor } from "../../lib/agent/documentSnapshots";
+import { copyHeadingLink } from "../../lib/pages/headingLinks";
 import "./DocumentOutline.css";
 
 type Heading = { position: number; level: number; text: string };
@@ -53,6 +55,21 @@ export function DocumentOutline({ editor }: { editor: Editor }) {
   const root = useRef<HTMLDivElement>(null);
   const button = useRef<HTMLButtonElement>(null);
   const id = useId();
+  // "Copy link to heading": available to readers too (the outline is the one heading affordance
+  // a read-only page has). `copied` = the row that just answered, announced politely.
+  const noteId = open ? noteForEditor(editor)?.noteId ?? null : null;
+  const [copied, setCopied] = useState<{ position: number; ok: boolean } | null>(null);
+  useEffect(() => {
+    if (!copied) return;
+    const t = setTimeout(() => setCopied(null), 2500);
+    return () => clearTimeout(t);
+  }, [copied]);
+  const copyLink = (heading: Heading) => {
+    if (!noteId) return;
+    let node: Node | null = null;
+    try { node = editor.view.nodeDOM(heading.position); } catch { node = null; }
+    void copyHeadingLink(noteId, node instanceof Element ? node : null).then((ok) => setCopied({ position: heading.position, ok }));
+  };
   useEffect(() => {
     const update = () => setHeadings(headingsIn(editor));
     update();
@@ -90,16 +107,24 @@ export function DocumentOutline({ editor }: { editor: Editor }) {
     </button>
     {open && <nav id={id} aria-label="Document outline" className="document-outline-popover">
       <div className="document-outline-title">On this page</div>
-      {headings.length ? headings.map(heading => <button key={heading.position} type="button" className="focus-ring"
-        aria-current={heading.position === current ? "location" : undefined}
-        style={{ paddingLeft: 10 + (heading.level - 1) * 12 }}
-        onMouseDown={event => event.preventDefault()} onClick={() => {
-          // Use this editor's current heading DOM; never change content or cursor.
-          const node = editor.view.nodeDOM(heading.position);
-          if (node instanceof HTMLElement) node.scrollIntoView({ block: "start", behavior: "auto" });
-          setOpen(false);
-          button.current?.focus({ preventScroll: true });
-        }}>{heading.text}</button>) : <p>Add headings to navigate this page.</p>}
+      {headings.length ? headings.map(heading => <div key={heading.position} className="document-outline-row">
+        <button type="button" id={`${id}-h${heading.position}`} className="document-outline-go focus-ring"
+          aria-current={heading.position === current ? "location" : undefined}
+          style={{ paddingLeft: 10 + (heading.level - 1) * 12 }}
+          onMouseDown={event => event.preventDefault()} onClick={() => {
+            // Use this editor's current heading DOM; never change content or cursor.
+            const node = editor.view.nodeDOM(heading.position);
+            if (node instanceof HTMLElement) node.scrollIntoView({ block: "start", behavior: "auto" });
+            setOpen(false);
+            button.current?.focus({ preventScroll: true });
+          }}>{heading.text}</button>
+        {noteId && heading.text.trim() && heading.text !== "Untitled heading" && <button type="button" className="document-outline-link focus-ring"
+          aria-label="Copy link to heading" aria-describedby={`${id}-h${heading.position}`} title="Copy link to heading"
+          onMouseDown={event => event.preventDefault()} onClick={() => copyLink(heading)}>
+          {copied?.position === heading.position && copied.ok ? <Check size={13} aria-hidden="true" /> : <Link2 size={13} aria-hidden="true" />}
+        </button>}
+      </div>) : <p>Add headings to navigate this page.</p>}
+      <span className="sr-only" aria-live="polite">{copied ? (copied.ok ? "Copied link to heading" : "Couldn’t copy the link") : ""}</span>
     </nav>}
   </div>;
 }
