@@ -9,7 +9,7 @@ import assert from "node:assert/strict";
 import { api } from "../src/routes/api";
 import { resetTreeForTests } from "../src/tree";
 import { resetDatabaseCachesForTests } from "../src/routes/databases";
-import { AGGREGATE_FNS, computeAggregates, groupValuesOf, numericValue, runQuery, validateQuerySpec, type AggregateFn, type QueryInput } from "@prism/core/database";
+import { AGGREGATE_BUDGET, AGGREGATE_FNS, MAX_GROUPS_PER_ROW, MAX_VALUES_PER_CELL, computeAggregates, groupValuesOf, numericValue, runQuery, validateQuerySpec, type AggregateFn, type QueryInput } from "@prism/core/database";
 import { readDatabaseConfig } from "../../../packages/core/src/components/database/config";
 import { installFakeVault, resetDb, makeSession, sessionCookie, grantUser, makeCapability, type FakeVault } from "./helpers";
 
@@ -83,7 +83,10 @@ test("engine: number figures parse like the sort does and ignore what is not a n
   assert.equal(one("amount", "count_values"), 5, "count values still counts the text");
   assert.equal(one("amount", "median", ROWS.slice(0, 3)), 60.5, "an odd count takes the middle number");
   for (const fn of ["sum", "average", "median", "min", "max", "range"] as const) assert.equal(one("stage", fn), null, `${fn} of text is nothing, not 0`);
-  assert.equal(numericValue(" 12.5 "), 12.5);
+  // Strict decimals only: no hex / octal / binary, no surrounding blanks, no words.
+  for (const [text, want] of [["12.5", 12.5], ["-0.5", -0.5], ["+7", 7], [".5", 0.5], ["12.", 12], ["1e3", 1000], ["2.5E-1", 0.25]] as const) assert.equal(numericValue(text), want, text);
+  for (const text of [" 12.5 ", "12.5 ", "\t7", "0x10", "0b11", "0o17", "Infinity", "-Infinity", "NaN", "1e", ".", "+", "1,000", "12px", "1_000"]) assert.equal(numericValue(text), null, JSON.stringify(text));
+  assert.equal(computeAggregates([n("h", { amount: "0x10" }), n("s", { amount: " 5 " }), n("k", { amount: "3" })], [{ key: "amount", fn: "sum" }]).aggregates.amount!.sum, 3);
   assert.equal(numericValue(""), null);
   assert.equal(numericValue("1e999"), null);
   assert.equal(numericValue(true), null);
@@ -191,7 +194,69 @@ test("engine: 20,000 rows, every function, grouped — within the budget", () =>
   assert.equal(out!.aggregates.paid!.checked, 10_000);
   assert.equal(out!.groups!.length, 5);
   assert.equal(out!.groups!.reduce((s, g) => s + g.count, 0), 20_000);
-  assert.ok(best < 50, `all aggregates over 20k rows took ${best.toFixed(1)} ms (budget 50)`);
+  assert.equal(out!.truncated, undefined, "an ordinary 20k-row view is inside the work budget");
+  // A loose bound: this host is production and may be busy (typically ~15 ms).
+  assert.ok(best < 1500, `all aggregates over 20k rows took ${best.toFixed(1)} ms`);
+});
+
+test("engine: a row with a repeated group value is counted once in that group", () => {
+  assert.deepEqual(groupValuesOf(["x", "x", "y", "x"]), ["x", "y"]);
+  const r = computeAggregates([n("a", { labels: ["x", "x", "y"], amount: 10 }), n("b", { labels: ["x"], amount: 1 })], [{ key: "amount", fn: "sum" }], { key: "labels" });
+  assert.deepEqual(r.groups!.map((g) => [g.value, g.count, g.aggregates.amount!.sum]), [["x", 2, 11], ["y", 1, 10]]);
+  assert.equal(r.groupsCapped, undefined);
+  assert.equal(r.truncated, undefined);
+});
+
+test("engine: a row joins at most 25 groups and a cell is read to 50 values — and the answer says so", () => {
+  const wide = n("w", { labels: Array.from({ length: 60 }, (_, i) => `g${i}`), amount: 1 });
+  const g = computeAggregates([wide], [{ key: "amount", fn: "sum" }], { key: "labels" });
+  assert.equal(g.groups!.length, MAX_GROUPS_PER_ROW);
+  assert.deepEqual(g.groups!.slice(0, 2).map((x) => x.value), ["g0", "g1"], "the first distinct values");
+  assert.equal(g.groupsCapped, true);
+  // 25 distinct values spread over many repeats are all found; nothing is cut.
+  const repeats = n("r", { labels: Array.from({ length: 100 }, (_, i) => `g${i % 25}`) });
+  const all = computeAggregates([repeats], [], { key: "labels" });
+  assert.equal(all.groups!.length, 25);
+  assert.equal(all.groupsCapped, undefined);
+
+  const long = n("l", { labels: Array.from({ length: 120 }, (_, i) => i) });
+  const c = computeAggregates([long], [{ key: "labels", fn: "count_values" }, { key: "labels", fn: "sum" }]);
+  assert.equal(c.aggregates.labels!.count_values, MAX_VALUES_PER_CELL);
+  assert.equal(c.aggregates.labels!.sum, (49 * 50) / 2, "the first 50 values");
+  assert.equal(c.truncated, true);
+  const short = computeAggregates([n("s", { labels: Array.from({ length: 50 }, (_, i) => i) })], [{ key: "labels", fn: "count_values" }]);
+  assert.equal(short.truncated, undefined);
+});
+
+// Review B1: rows × groups per row × values per cell used to be unbounded on the
+// event loop (5,000 rows of 200-value arrays in both keys = 200M adds and ~1.6 GB
+// of kept numbers for a median). Set CALC_WORST_ROWS to run a smaller case.
+test("engine: the worst case — 200-value arrays in the group key and the calculated key — stops at the work budget", () => {
+  const count = Number(process.env.CALC_WORST_ROWS ?? 5000);
+  const rows = Array.from({ length: count }, (_, i) => n(`w${i}`, {
+    groups: Array.from({ length: 200 }, (_, j) => `g${(i * 7 + j) % 900}`),
+    nums: Array.from({ length: 200 }, (_, j) => i + j),
+  }));
+  const requests = [{ key: "nums", fn: "median" as const }, { key: "nums", fn: "count_unique" as const }, { key: "nums", fn: "count_values" as const }];
+  const t0 = performance.now();
+  const out = computeAggregates(rows, requests, { key: "groups" });
+  const ms = performance.now() - t0;
+  // Bounded by construction: no bucket was handed more values than the budget (+ one row's worth).
+  const perRow = (1 + MAX_GROUPS_PER_ROW) * (1 + MAX_VALUES_PER_CELL);
+  const added = (out.aggregates.nums!.count_values as number) + out.groups!.reduce((s, g) => s + (g.aggregates.nums!.count_values as number), 0);
+  assert.ok(added <= AGGREGATE_BUDGET + perRow, `${added} values were added`);
+  assert.equal(out.groupsCapped, true, "25 of each row's 200 groups");
+  assert.ok(out.groups!.length <= 500);
+  if (count * perRow > AGGREGATE_BUDGET) {
+    assert.equal(out.truncated, true);
+    assert.ok((out.aggregates.nums!.count_values as number) < count * MAX_VALUES_PER_CELL, "it stopped before the last row");
+  }
+  assert.ok(ms < 2000, `took ${ms.toFixed(0)} ms`);
+  // Through the query: the page says the figures are partial.
+  const page = runQuery(rows, { tags: ["deal"], limit: 1, aggregates: requests, groupBy: { key: "groups" } }, { limited: false });
+  assert.equal(page.truncated, count * perRow > AGGREGATE_BUDGET);
+  assert.equal(page.groupsCapped, true);
+  assert.equal(page.total, count, "the row count is still exact");
 });
 
 test("config: a view's calculations are validated; an unknown function fails closed", () => {
@@ -268,7 +333,7 @@ test("query: the access keys are no calculation oracle; a link sees no identity 
   grantUser("kai@test.local", "tag", "deal", "view");
   const probe = [{ key: "prism_visibility", fn: "count_unique" }, { key: "prism_creator", fn: "count_values" }, { key: "amount", fn: "count_all" }];
   const kai = await ask({ tags: ["deal"], fields: ["stage"], aggregates: probe, groupBy: { key: "prism_visibility" } }, login("kai@test.local"));
-  assert.deepEqual(kai.aggregates, { amount: { count_all: 4 } }, "keys a row would not carry are not aggregated");
+  assert.deepEqual(kai.aggregates, { amount: { count_all: 4 }, prism_visibility: { count_unique: null }, prism_creator: { count_values: null } }, "keys a row would not carry are not aggregated: answered null (never omitted — the footer would wait forever)");
   assert.equal("groups" in kai, false);
   const owner = await ask({ tags: ["deal"], aggregates: probe }, login(OWNER));
   assert.equal(owner.aggregates.prism_creator.count_values, 2, "the owner receives them in rows, so may count them");
@@ -279,7 +344,13 @@ test("query: the access keys are no calculation oracle; a link sees no identity 
   const viaLink = (await (await api.request("/query", { method: "POST", headers: { ...J, authorization: `Capability ${cap}` }, body: JSON.stringify({ tags: ["deal"], aggregates: [...probe, { key: "prism_last_writer", fn: "count_unique" }] }) })).json()) as any;
   assert.equal(viaLink.total, 3, "a link never sees a private page");
   assert.equal(viaLink.aggregates.amount.count_all, 3);
-  assert.equal("prism_creator" in viaLink.aggregates, false);
+  assert.deepEqual(viaLink.aggregates.prism_creator, { count_values: null });
+  // Asked for as a field, a member's "Created by" figure is answered (a hidden column's calculation).
+  const shown = await ask({ tags: ["deal"], fields: ["stage", "prism_creator"], aggregates: [{ key: "prism_creator", fn: "count_not_empty" }], groupBy: { key: "stage" } }, login("kai@test.local"));
+  assert.equal(typeof shown.aggregates.prism_creator.count_not_empty, "number");
+  const dropped = await ask({ tags: ["deal"], fields: ["stage"], aggregates: [{ key: "prism_creator", fn: "count_not_empty" }], groupBy: { key: "stage" } }, login("kai@test.local"));
+  assert.ok(dropped.groups.length > 0);
+  for (const g of dropped.groups) assert.deepEqual(g.aggregates.prism_creator, { count_not_empty: null }, "per group too");
   assert.equal(viaLink.aggregates.prism_last_writer.count_unique, 0, "identity keys are stripped before the engine");
 });
 

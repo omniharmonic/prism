@@ -97,6 +97,17 @@ export const isAggregateFn = (v: unknown): v is AggregateFn => typeof v === "str
 export const MAX_AGGREGATES = 20;
 /** Groups answered per query; more distinct values than this are left out (`groupsCapped`). */
 export const MAX_AGGREGATE_GROUPS = 500;
+/**
+ * Work bounds of one calculation request (it runs on the server's event loop):
+ * a row joins at most this many groups (its first distinct values)…
+ */
+export const MAX_GROUPS_PER_ROW = 25;
+/** …a multi-value cell is read up to this many values… */
+export const MAX_VALUES_PER_CELL = 50;
+/** …and one request adds at most this many values to its figures; then it stops and says `truncated`. */
+export const AGGREGATE_BUDGET = 2_000_000;
+/** How far into a multi-value group cell the distinct values are looked for. */
+const GROUP_SCAN = 200;
 
 export interface AggregateRequest {
   key: string;
@@ -163,16 +174,24 @@ export interface QueryPage {
    * was hidden" — that would leak the existence of notes the caller cannot see.
    */
   limited: boolean;
-  /** True when the server stopped scanning at its inventory cap. */
+  /**
+   * True when the server stopped scanning at its inventory cap — or, for a
+   * calculation request, when the figures stopped at their work bounds
+   * ({@link AGGREGATE_BUDGET}, {@link MAX_VALUES_PER_CELL}).
+   */
   truncated: boolean;
   /**
    * The requested calculations over every matching row the caller may see. When
-   * `truncated` they cover only the scanned rows (a lower bound for counts).
+   * `truncated` they cover only part of them (a lower bound for counts). A
+   * calculation the server will not answer for this caller is null, never absent.
    */
   aggregates?: AggregateValues;
   /** With `groupBy`: the same calculations (and a row count) per group. */
   groups?: AggregateGroup[];
-  /** More than {@link MAX_AGGREGATE_GROUPS} distinct group values: the rest are left out. */
+  /**
+   * Groups are missing or incomplete: more than {@link MAX_AGGREGATE_GROUPS} distinct
+   * values, a row with more than {@link MAX_GROUPS_PER_ROW}, or the work budget ran out.
+   */
   groupsCapped?: boolean;
 }
 
@@ -555,15 +574,21 @@ export function sortRows<T extends QueryInput>(rows: T[], sort: QuerySort[] | un
 
 // ── calculations ─────────────────────────────────────────────────────────────
 
-/** A number as the sort reads one: a finite number, or a numeric string. Else null. */
+/**
+ * A number for a calculation: a finite number, or a string that is exactly a
+ * decimal (`12`, `-0.5`, `.5`, `1e3`). Not `Number()`'s reading: no hex / octal /
+ * binary, no surrounding blanks, no "Infinity". Else null.
+ */
+const DECIMAL = /^[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?$/;
 export function numericValue(v: unknown): number | null {
   if (typeof v === "number") return Number.isFinite(v) ? v : null;
-  if (typeof v !== "string" || v.length > 64) return null;
-  const t = v.trim();
-  if (t === "") return null;
-  const n = Number(t);
+  if (typeof v !== "string" || v.length > 64 || !DECIMAL.test(v)) return null;
+  const n = Number(v);
   return Number.isFinite(n) ? n : null;
 }
+
+/** What one calculation request may still spend, and whether anything was cut. */
+interface AggregateRun { left: number; cut: boolean }
 
 const FAMILY: Record<AggregateFn, "count" | "number" | "date" | "check"> = {
   count_all: "count", count_values: "count", count_unique: "count", count_empty: "count", count_not_empty: "count", percent_empty: "count", percent_not_empty: "count",
@@ -595,13 +620,20 @@ class Collector {
     this.nums = need.median ? [] : null;
     this.unique = need.unique ? new Set() : null;
   }
-  add(v: unknown, tz: number): void {
+  add(v: unknown, tz: number, run: AggregateRun): void {
     this.rows++;
     if (v === true) this.checked++;
-    if (isEmpty(v)) { this.empty++; return; }
+    if (isEmpty(v)) { this.empty++; run.left--; return; }
     if (Array.isArray(v)) {
-      for (const x of v) if (!isEmpty(x)) this.one(x, tz);
-    } else this.one(v, tz);
+      // The first values only: a cell is never read further, however long it is.
+      const end = Math.min(v.length, MAX_VALUES_PER_CELL);
+      if (v.length > end) run.cut = true;
+      run.left -= end;
+      for (let i = 0; i < end; i++) if (!isEmpty(v[i])) this.one(v[i], tz);
+    } else {
+      run.left--;
+      this.one(v, tz);
+    }
   }
   private one(v: unknown, tz: number): void {
     this.values++;
@@ -700,10 +732,11 @@ class Bucket {
   count = 0;
   readonly cols: Collector[];
   constructor(plans: Plan[]) { this.cols = plans.map((p) => new Collector(p.need)); }
-  add(vals: unknown[], tz: number): void {
+  add(vals: unknown[], tz: number, run: AggregateRun): void {
     this.count++;
+    run.left--;
     for (let i = 0; i < vals.length; i++) {
-      this.cols[i]!.add(vals[i], tz);
+      this.cols[i]!.add(vals[i], tz, run);
     }
   }
   result(plans: Plan[], tz: number): AggregateValues {
@@ -720,43 +753,78 @@ class Bucket {
 /** The group value(s) a row belongs to — the same rule the grouped layouts draw by. */
 export function groupValuesOf(v: unknown, checkbox = false): Array<string | null> {
   if (checkbox) return [String(v === true)];
-  if (Array.isArray(v)) return v.length ? v.map(String) : [null];
+  // A value a cell repeats is one membership: the row is in that group once.
+  if (Array.isArray(v)) return v.length ? [...new Set(v.map(String))] : [null];
   return isEmpty(v) ? [null] : [String(v)];
+}
+
+/**
+ * The groups ONE row is counted in: its first {@link MAX_GROUPS_PER_ROW} distinct
+ * values, looked for in the first {@link GROUP_SCAN} entries of the cell. `cut`
+ * when the cell held more.
+ */
+function rowGroups(v: unknown, checkbox: boolean | undefined): { values: Array<string | null>; cut: boolean } {
+  if (checkbox || !Array.isArray(v)) return { values: groupValuesOf(v, checkbox), cut: false };
+  if (!v.length) return { values: [null], cut: false };
+  const end = Math.min(v.length, GROUP_SCAN);
+  const seen = new Set<string>();
+  let cut = v.length > end;
+  for (let i = 0; i < end; i++) {
+    const s = String(v[i]);
+    if (seen.has(s)) continue;
+    if (seen.size >= MAX_GROUPS_PER_ROW) { cut = true; break; }
+    seen.add(s);
+  }
+  return { values: [...seen], cut };
 }
 
 /**
  * Calculations over `rows` (already filtered — and, on the server, already
  * permission-filtered: a row the caller cannot see is never in here). One pass;
  * `median` sorts the numbers it kept, `count_unique` keeps a set.
+ *
+ * Bounded work, whatever the rows hold (this runs on the server's event loop): a
+ * row joins ≤ {@link MAX_GROUPS_PER_ROW} groups, a cell is read to
+ * {@link MAX_VALUES_PER_CELL} values, and the whole request adds at most
+ * `budget` values (+ one row's worth) to its figures — which also bounds what
+ * `median` and `count_unique` keep. Past the budget it stops: `truncated` (the
+ * figures cover the rows read so far) and, when grouped, `groupsCapped`.
  */
 export function computeAggregates(
   rows: QueryInput[],
   requests: AggregateRequest[] | undefined,
   groupBy?: AggregateGroupBy,
   tzOffset = 0,
-): { aggregates: AggregateValues; groups?: AggregateGroup[]; groupsCapped?: boolean } {
+  budget = AGGREGATE_BUDGET,
+): { aggregates: AggregateValues; groups?: AggregateGroup[]; groupsCapped?: boolean; truncated?: boolean } {
   const plans = planAggregates(requests ?? []);
   const total = new Bucket(plans);
   const groups = groupBy ? new Map<string | null, Bucket>() : null;
   let capped = false;
+  let spent = false;
+  const run: AggregateRun = { left: budget, cut: false };
   const vals: unknown[] = new Array(plans.length);
   for (const n of rows) {
+    if (run.left <= 0) { spent = true; break; }
     for (let i = 0; i < plans.length; i++) vals[i] = readKey(n, plans[i]!.key);
-    total.add(vals, tzOffset);
+    total.add(vals, tzOffset, run);
     if (!groups) continue;
-    for (const g of groupValuesOf(readKey(n, groupBy!.key), groupBy!.checkbox)) {
+    const mine = rowGroups(readKey(n, groupBy!.key), groupBy!.checkbox);
+    if (mine.cut) capped = true;
+    for (const g of mine.values) {
       let b = groups.get(g);
       if (!b) {
         if (groups.size >= MAX_AGGREGATE_GROUPS) { capped = true; continue; }
         groups.set(g, (b = new Bucket(plans)));
       }
-      b.add(vals, tzOffset);
+      b.add(vals, tzOffset, run);
     }
   }
   return {
     aggregates: total.result(plans, tzOffset),
     ...(groups ? { groups: [...groups.entries()].map(([value, b]) => ({ value, count: b.count, aggregates: b.result(plans, tzOffset) })) } : {}),
-    ...(capped ? { groupsCapped: true } : {}),
+    ...(capped || (spent && groups) ? { groupsCapped: true } : {}),
+    ...(spent || run.cut ? { truncated: true } : {}),
   };
 }
 
@@ -842,14 +910,15 @@ export function runQuery(
   const limit = spec.limit ?? QUERY_DEFAULT_LIMIT;
   const page = sorted.slice(offset, offset + limit);
   const end = offset + page.length;
+  // Over every MATCHING row (not the page): the footer of a view is about the view.
+  const { truncated: partial, ...figures } = spec.aggregates || spec.groupBy ? computeAggregates(matched, spec.aggregates, spec.groupBy, spec.tzOffset ?? 0) : { truncated: false };
   return {
     rows: page.map((n) => projectRow(n, spec.fields)),
     next: end < sorted.length ? encodeCursor(end, spec) : null,
     total: sorted.length,
     limited: opts.limited,
-    truncated: !!opts.truncated,
-    // Over every MATCHING row (not the page): the footer of a view is about the view.
-    ...(spec.aggregates || spec.groupBy ? computeAggregates(matched, spec.aggregates, spec.groupBy, spec.tzOffset ?? 0) : {}),
+    truncated: !!opts.truncated || !!partial,
+    ...figures,
   };
 }
 

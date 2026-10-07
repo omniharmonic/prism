@@ -9,6 +9,7 @@ import { api } from "../src/routes/api";
 import { resetTreeForTests } from "../src/tree";
 import { resetDatabaseCachesForTests } from "../src/routes/databases";
 import { saveOwnerSettings } from "../src/people-owner";
+import { setUserProfile } from "../src/db";
 import { valueNamesMe, type MyIdentity } from "../src/my-tasks";
 import { writerIdFor } from "../src/writer-stamp";
 import { evaluateCondition, ME_TOKEN, runQuery, validateQuerySpec, type QueryInput } from "@prism/core/database";
@@ -73,6 +74,8 @@ test("engine: `@me` needs someone to resolve it; without one no row is mine", ()
 test("valueNamesMe: an address, a link to my person page, or its name — never a look-alike", () => {
   const me: MyIdentity = { emails: new Set([MIRA]), names: new Set(["mira park"]), refs: new Set(["p-mira", "vault/people/mira park", "mira park"]), person: true, ownerUnset: false };
   for (const v of [MIRA, "Mira Park", "[[vault/people/Mira Park]]", "[[vault/people/Mira Park|Mira]]", ["Sam", "mira park"], "Sam, Mira Park", "Sam & [[vault/people/Mira Park]]"]) assert.equal(valueNamesMe(v, me), true, JSON.stringify(v));
+  // A long people list is read whole (the assignee reader, not a 20-name cut).
+  assert.equal(valueNamesMe([...Array.from({ length: 30 }, (_, i) => `Person ${i}`), "Mira Park"], me), true);
   for (const v of ["Mira", "Mira Parker", "mira@other.test", "[[vault/people/Mira P]]", ["Sam"], "", null, undefined, 7, { name: "Mira Park" }, "x".repeat(5000)]) assert.equal(valueNamesMe(v, me), false, JSON.stringify(v)?.slice(0, 40));
 });
 
@@ -91,6 +94,7 @@ test("query: `is Me` on a person property is resolved per caller", async () => {
 
 test("query: `is Me` on created by / last edited by compares the account, whatever the row shows", async () => {
   grantUser(MIRA, "tag", "story", "view");
+  setUserProfile(MIRA, { name: "Mira Park" });
   assert.deepEqual(await ids(is("prism_creator"), login(MIRA)), ["s2", "s4"]);
   assert.deepEqual(await ids(is("prism_creator"), login(OWNER)), ["s1"]);
   assert.deepEqual(await ids(is("prism_last_writer"), login(MIRA)), ["s1"]);
@@ -108,4 +112,18 @@ test("query: a share link is nobody — `is Me` matches nothing and leaks nothin
   assert.deepEqual(await ids(is("prism_creator"), undefined, via), []);
   assert.deepEqual(await ids(is("lead", "ne"), undefined, via), ["s1", "s2", "s3", "s4"]);
   assert.equal((await query({ tags: ["story"], filter: is("lead") })).status, 401);
+});
+
+test("query: `last edited by Me` never returns a row whose \"Last edited by\" shows nobody", async () => {
+  grantUser(MIRA, "tag", "story", "view");
+  setUserProfile(MIRA, { name: "Mira Park" });
+  // Stamped by Mira, then written again much later by something that leaves no stamp
+  // (ingest, a collab store): the row's "Last edited by" is empty for everyone.
+  fv.put({ id: "s6", path: "Stories/Six", tags: ["story"], metadata: { title: "Six", prism_last_writer: writerIdFor(MIRA), prism_last_write_at: "2026-09-01T00:00:00.000Z" }, updatedAt: "2026-09-02T00:00:00.000Z" });
+  // Stamped by Mira and still current.
+  fv.put({ id: "s7", path: "Stories/Seven", tags: ["story"], metadata: { title: "Seven", prism_last_writer: writerIdFor(MIRA), prism_last_write_at: "2026-09-02T00:00:00.000Z" }, updatedAt: "2026-09-02T00:00:01.000Z" });
+  resetDatabaseCachesForTests();
+  const res = (await (await query({ tags: ["story"], filter: is("prism_last_writer"), fields: ["prism_last_writer"] }, login(MIRA))).json()) as any;
+  assert.deepEqual(res.rows.map((r: any) => r.id).sort(), ["s1", "s7"]);
+  assert.ok(res.rows.every((r: any) => r.metadata.prism_last_writer === "Mira Park"), "every returned row shows her as the last editor");
 });

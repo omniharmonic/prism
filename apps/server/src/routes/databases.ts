@@ -791,7 +791,9 @@ databasesApi.post("/query", async (c) => {
   const isMe: MeResolver = (row, key) => {
     const raw = rawById?.get(row.id)?.metadata;
     if (!meIdentity || !raw) return false;
-    if (key === WRITER_KEY) return typeof raw[WRITER_KEY] === "string" && raw[WRITER_KEY] === myWriterId;
+    // Only while the stamp is what the row SHOWS as "Last edited by": a stale stamp (the
+    // page was written again by something unstamped) or an unnamed account shows nobody.
+    if (key === WRITER_KEY) return typeof raw[WRITER_KEY] === "string" && raw[WRITER_KEY] === myWriterId && !!names && resolveWriter(raw, rawById?.get(row.id)?.updatedAt, names) !== null;
     if (key === "prism_creator") return typeof raw.prism_creator === "string" && meIdentity.emails.has(raw.prism_creator.trim().toLowerCase());
     return Object.hasOwn(raw, key) && valueNamesMe(raw[key], meIdentity);
   };
@@ -849,10 +851,16 @@ databasesApi.post("/query", async (c) => {
   // may see, identity already presented for them — so a hidden row never moves a figure.
   // The access keys are answered only to someone who would also receive them in a row.
   const hiddenKey = (k: string) => PERMISSION_KEYS.includes(k) && (actor.kind === "link" || (spec.fields ? !spec.fields.includes(k) : !owner));
+  const refused = (spec.aggregates ?? []).filter((a) => hiddenKey(a.key));
   if (spec.aggregates) spec.aggregates = spec.aggregates.filter((a) => !hiddenKey(a.key));
   if (spec.groupBy && hiddenKey(spec.groupBy.key)) delete spec.groupBy;
   try {
     const page = runQuery(visible.slice(0, cap), spec, { limited: !owner, truncated, ...(usesMe ? { me: isMe } : {}) });
+    // A calculation that is not answered is answered NULL, never left out (a client
+    // waiting for the key would wait forever) — the same constant for every caller.
+    for (const set of refused.length ? [page.aggregates, ...(page.groups ?? []).map((g) => g.aggregates)] : []) {
+      if (set) for (const a of refused) (set[a.key] ??= {})[a.fn] = null;
+    }
     // Whether a person page stands for the caller (else only their address matched).
     if (mine) page.identity = mine.person ? "person" : "account";
     else if (ownerUnset) page.identity = "unset";

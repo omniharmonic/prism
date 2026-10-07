@@ -212,15 +212,8 @@ export async function assigneeResolver(entry: VaultEntry): Promise<((values: str
   };
 }
 
-/** `assigned`-style values of ONE property (a string or a list), split the same way. */
-function personValues(raw: unknown): string[] {
-  const out: string[] = [];
-  for (const s of strings(raw)) {
-    if (s.length > 2000) continue;
-    for (const part of s.split(/[,;&]/)) for (const v of part.includes("[[") ? [part] : part.split(/\s+and\s+/i)) if (v.trim()) out.push(v.trim());
-  }
-  return out.slice(0, 20);
-}
+/** How many people ONE property value is read for (a multi-person property; the write route caps a list at 200). */
+const MAX_PROPERTY_PEOPLE = 200;
 
 /**
  * Does this property value name the caller ("is Me" in a saved view filter)? The
@@ -228,7 +221,7 @@ function personValues(raw: unknown): string[] {
  * a `[[wikilink]]`/path to their person note, or that note's name.
  */
 export function valueNamesMe(raw: unknown, me: MyIdentity): boolean {
-  return namesMe(personValues(raw), me);
+  return namesMe(peopleValues(raw, MAX_PROPERTY_PEOPLE), me);
 }
 
 export function assignedToMe(metadata: Record<string, unknown> | null | undefined, me: MyIdentity): boolean {
