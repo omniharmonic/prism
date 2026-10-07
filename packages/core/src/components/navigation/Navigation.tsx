@@ -1,8 +1,9 @@
 import { NavigationPreferences, useNavigationPreferences, TOOL_NAMES, type NavigationTool } from "./NavigationPreferences";
 import { useNoteShortcuts } from "./NoteShortcuts";
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Search, Calendar, MessageSquare, PenSquare, Bot, RefreshCw, ChevronRight, FileText, Star, X, MapPin, FolderPlus, ChevronsDownUp, Sparkles, Users, Plus, Settings2, Trash2, LayoutTemplate, ChevronDown } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
+import { useIsMobile } from "../../app/hooks/useIsMobile";
 import { usePullToRefresh } from "../../lib/gestures/usePullToRefresh";
 import { PrismMark } from "../brand/PrismMark";
 import { Input } from "../ui/Input";
@@ -43,6 +44,8 @@ export function Navigation() {
   const folderPending = useRef(false);
   const [folderError, setFolderError] = useState("");
   const collapseNav = useUIStore((s) => s.collapseNav);
+  // A phone has no ⌘K: the search field's hint is for keyboards only.
+  const isPhone = useIsMobile();
   // Phone: pull the sidebar / Browse drawer down to refetch the tree and the open vault
   // queries — what the "Refresh vault" button beside Pages does.
   const pullClient = useQueryClient();
@@ -166,7 +169,7 @@ export function Navigation() {
       <div style={{ padding: "0 10px 8px" }}>
         <Input
           icon={<Search size={14} />}
-          placeholder="Search... (&#8984;K)"
+          placeholder={isPhone ? "Search…" : "Search… (\u2318K)"}
           value={searchQuery}
           onChange={(e) => setSearchQuery(e.target.value)}
         />
@@ -176,7 +179,7 @@ export function Navigation() {
       {debouncedQuery.length > 0 ? (
         <SearchPanel query={debouncedQuery} onClose={() => setSearchQuery("")} />
       ) : (
-        <div className="flex-1 overflow-auto" style={{ padding: "0 8px" }} ref={pull.ref}>
+        <div className="workspace-nav-scroll flex-1 overflow-auto" style={{ padding: "0 8px 20px" }} ref={pull.ref}>
           {pull.indicator}
           {/* Quick-access items */}
           <nav aria-label="Workspace destinations" style={{ display: "flex", flexDirection: "column", gap: 1, paddingBottom: 4 }}>
@@ -270,13 +273,14 @@ export function Navigation() {
 
       {/* Primary creation and workspace administration stay within reach. */}
       <div
+        className="workspace-nav-footer"
         style={{
           padding: 8,
           position: "relative",
           borderTop: "1px solid var(--glass-border)",
           display: "flex",
           flexDirection: "column",
-          gap: 8,
+          gap: 2,
         }}
       >
         {/* New-folder inline input (path-based vault: an empty folder can't
@@ -330,10 +334,13 @@ export function Navigation() {
           </button>
         </div>}
         {!guest && <NavItem icon={<Trash2 size={16} />} label="Trash" active={false} onClick={() => usePagesUI.getState().openTrash(true)} />}
-        {/* NP-SB-15: the one truthful sync state, in the sidebar footer. */}
-        <SyncStateBadge variant="footer" />
         <NavItem icon={<Settings2 size={16} />} label="Workspace settings" active={openTabs.find(t => t.id === activeTabId)?.noteId === "network"} onClick={handleOpenNetwork} />
-        <AccountMenu />
+        {/* NP-SB-15: the one truthful sync state, in the sidebar footer — beside the account while it
+            is short ("Synced"), on its own line when it has more to say. */}
+        <div className="workspace-footer-status">
+          <AccountMenu />
+          <SyncStateBadge variant="footer" />
+        </div>
         {showNewMenu && <NewContentMenu onClose={() => setShowNewMenu(false)} />}
 
       </div>
@@ -469,10 +476,20 @@ function NavSection({
 }) {
   const [localOpen, setLocalOpen] = useState(defaultOpen);
   const open = controlledOpen ?? localOpen;
-  const setOpen = (next: boolean) => (onToggle ? onToggle(next) : setLocalOpen(next));
+  const section = useRef<HTMLElement>(null);
+  // A section opened by its header must show what it opened: the last section (Tools) used to
+  // open below the fold of the sidebar's scroller, behind the footer.
+  const reveal = useRef(false);
+  const setOpen = (next: boolean) => { reveal.current = next; return onToggle ? onToggle(next) : setLocalOpen(next); };
+  useEffect(() => {
+    if (!open || !reveal.current) return;
+    reveal.current = false;
+    const reduce = document.documentElement.classList.contains("reduce-motion") || window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+    section.current?.scrollIntoView({ block: "nearest", behavior: reduce ? "auto" : "smooth" });
+  }, [open]);
 
   return (
-    <section aria-label={label} style={{ marginTop: 18 }}>
+    <section ref={section} aria-label={label} style={{ marginTop: 18, scrollMarginBottom: 20 }}>
       {/* Header row: the toggle takes the full width; the action sits beside it
           (kept outside the toggle <button> so it's not a nested button). */}
       <div className="flex items-center group" style={{ paddingRight: 4 }}>

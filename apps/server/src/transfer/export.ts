@@ -161,7 +161,11 @@ const escapeHtml = (s: string): string => s.split("&").join("&amp;").split("<").
 const HTML_STYLE =
   "body{font:16px/1.6 -apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;color:#1f1f1f;background:#fff;max-width:760px;margin:40px auto;padding:0 24px}" +
   "img,video{max-width:100%;height:auto}pre{background:#f5f5f4;padding:12px 14px;border-radius:6px;overflow:auto}code{font-family:ui-monospace,Menlo,monospace;font-size:.92em}" +
-  "blockquote{border-left:3px solid #d6d3d1;margin-left:0;padding-left:16px;color:#57534e}table{border-collapse:collapse}td,th{border:1px solid #d6d3d1;padding:6px 10px}h1{font-size:2em;line-height:1.2}";
+  "blockquote{border-left:3px solid #d6d3d1;margin-left:0;padding-left:16px;color:#57534e}table{border-collapse:collapse}td,th{border:1px solid #d6d3d1;padding:6px 10px}h1{font-size:2em;line-height:1.2}" +
+  // To-do lists (the editor's, and a Markdown page's `- [x]` items): the sanitiser keeps no <input>, so the state is drawn from `data-checked`.
+  "ul[data-type=taskList]{list-style:none;padding-left:0}li[data-type=taskItem]{position:relative;padding-left:1.7em}" +
+  "li[data-type=taskItem]::before{content:'\\2610';position:absolute;left:0}li[data-type=taskItem][data-checked=true]::before{content:'\\2611'}" +
+  "li[data-type=taskItem]>label{display:none}li[data-type=taskItem]>div>p{margin:0}";
 
 /** A standalone HTML file. The CSP meta means a script in a page's stored HTML cannot run when the file is opened. */
 function htmlShell(title: string, body: string): string {

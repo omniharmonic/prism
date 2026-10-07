@@ -66,6 +66,16 @@ export interface PageMenuItem {
   startsGroup?: boolean;
   disabled?: boolean;
   detail?: string;
+  /**
+   * Desktop popover only: consecutive items of one group share ONE row (the three fonts, the two
+   * layout switches, the three exports) — the menu fits the window instead of scrolling a 520 px
+   * box with the page info below the fold. Each stays a `menuitem` named by `label`; `short` is
+   * the text shown inside the row. The phone sheet ignores both.
+   */
+  group?: "font" | "layout" | "export";
+  short?: string;
+  /** In a group: this choice is the current one / this switch is on. */
+  on?: boolean;
   /** Always shown under the label (unlike `detail`, a tooltip / a disabled action's reason). */
   hint?: string;
 }
@@ -194,13 +204,16 @@ export function usePageMenuItems(
           icon: docFont === font ? <Check size={15} /> : <Type size={15} />,
           startsGroup: i === 0,
           detail: docFont === font ? "Current" : undefined,
+          group: "font" as const,
+          short: font === "sans" ? "Default" : font === "serif" ? "Serif" : "Mono",
+          on: docFont === font,
           onClick: run(() => docFontSetter(font)),
         }))
       : []),
     ...(canEdit && note && !locked && activeNoteId === page.id
       ? [
-          { id: "small-text", label: "Small text", icon: style.small ? <Check size={15} /> : <Type size={13} />, detail: style.small ? "On" : undefined, startsGroup: !(docFontSetter && activeNoteId === page.id), onClick: run(() => void actions.setPageStyle(note, { small: !style.small })) },
-          { id: "full-width", label: "Full width", icon: style.full ? <Check size={15} /> : <MoveHorizontal size={15} />, detail: style.full ? "On" : undefined, onClick: run(() => void actions.setPageStyle(note, { full: !style.full })) },
+          { id: "small-text", label: "Small text", icon: style.small ? <Check size={15} /> : <Type size={15} />, detail: style.small ? "On" : undefined, group: "layout" as const, on: !!style.small, startsGroup: !(docFontSetter && activeNoteId === page.id), onClick: run(() => void actions.setPageStyle(note, { small: !style.small })) },
+          { id: "full-width", label: "Full width", icon: style.full ? <Check size={15} /> : <MoveHorizontal size={15} />, detail: style.full ? "On" : undefined, group: "layout" as const, on: !!style.full, onClick: run(() => void actions.setPageStyle(note, { full: !style.full })) },
         ]
       : []),
     // The "Notifications" group: the current level is ticked; choosing another saves it.
@@ -215,10 +228,10 @@ export function usePageMenuItems(
           onClick: run(() => { if (notify.level !== l.id) notify.set(l.id); }),
         }))
       : []),
-    { id: "export-md", label: "Export as Markdown", icon: <FileDown size={15} />, onClick: run(() => void actions.exportPage(page, "markdown")) },
-    { id: "export-html", label: "Export as HTML", icon: <FileDown size={15} />, onClick: run(() => void actions.exportPage(page, "html")) },
+    { id: "export-md", label: "Export as Markdown", icon: <FileDown size={15} />, group: "export" as const, short: "Markdown", startsGroup: true, onClick: run(() => void actions.exportPage(page, "markdown")) },
+    { id: "export-html", label: "Export as HTML", icon: <FileDown size={15} />, group: "export" as const, short: "HTML", onClick: run(() => void actions.exportPage(page, "html")) },
     // Wave 3A: sub-pages + images as a ZIP, PDF via print (components/import-export).
-    { id: "export-more", label: "Export…", icon: <FileDown size={15} />, detail: "Sub-pages, images, PDF", onClick: run(() => useTransferUI.getState().openExport({ scope: "page", page: { id: page.id, title: page.title, path: subject.path ?? page.path } })) },
+    { id: "export-more", label: "Export…", icon: <FileDown size={15} />, detail: "Sub-pages, images, PDF", group: "export" as const, short: "More…", onClick: run(() => useTransferUI.getState().openExport({ scope: "page", page: { id: page.id, title: page.title, path: subject.path ?? page.path } })) },
     ...(activeNoteId === page.id ? [{ id: "print", label: "Print", icon: <Printer size={15} />, onClick: run(printCurrentPage) }] : []),
     {
       id: "history",
@@ -271,6 +284,8 @@ export function usePageMenuItems(
   return items;
 }
 
+const GROUP_LABEL: Record<NonNullable<PageMenuItem["group"]>, string> = { font: "Font", layout: "Layout", export: "Export" };
+
 /** A positioned desktop menu (role=menu) with arrow-key navigation. */
 export function PageMenuPopover({
   label,
@@ -320,14 +335,40 @@ export function PageMenuPopover({
     };
   }, [onClose]);
   const onKeyDown = (e: React.KeyboardEvent) => {
-    if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(e.key)) return;
+    if (!["ArrowDown", "ArrowUp", "ArrowLeft", "ArrowRight", "Home", "End"].includes(e.key)) return;
+    const active = document.activeElement as HTMLButtonElement;
+    // Left / Right walk the choices of a grouped row only.
+    const sideways = e.key === "ArrowLeft" || e.key === "ArrowRight";
+    if (sideways && !active?.classList.contains("page-menu-choice")) return;
     e.preventDefault();
     const buttons = [...(ref.current?.querySelectorAll<HTMLButtonElement>("button:not(:disabled)") ?? [])];
-    const i = buttons.indexOf(document.activeElement as HTMLButtonElement);
-    const next = e.key === "Home" ? 0 : e.key === "End" ? buttons.length - 1 : (i + (e.key === "ArrowDown" ? 1 : -1) + buttons.length) % buttons.length;
+    const i = buttons.indexOf(active);
+    const back = e.key === "ArrowUp" || e.key === "ArrowLeft";
+    const next = e.key === "Home" ? 0 : e.key === "End" ? buttons.length - 1 : (i + (back ? -1 : 1) + buttons.length) % buttons.length;
     buttons[next]?.focus();
   };
-  const rows = items.map((item) => (
+  // Consecutive items of one group → one row of choices.
+  const blocks: PageMenuItem[][] = [];
+  for (const item of items) {
+    const last = blocks[blocks.length - 1];
+    if (item.group && last?.[0]?.group === item.group) last.push(item); else blocks.push([item]);
+  }
+  const rows = blocks.map((block) => block[0].group ? (
+    <div key={block[0].id}>
+      {block[0].startsGroup && <div className="page-menu-sep" role="separator" />}
+      <div className="page-menu-group" role="group" aria-label={GROUP_LABEL[block[0].group]} data-group={block[0].group}>
+        {block[0].group !== "layout" && <span className="page-menu-group-label">{GROUP_LABEL[block[0].group]}</span>}
+        <span className="page-menu-choices">
+          {block.map((item) => (
+            <button key={item.id} type="button" role="menuitem" className="page-menu-choice" aria-label={item.label} aria-current={item.on ? "true" : undefined}
+              disabled={item.disabled} title={item.detail ?? item.label} onClick={item.onClick}>
+              <span>{item.short ?? item.label}</span>
+            </button>
+          ))}
+        </span>
+      </div>
+    </div>
+  ) : block.map((item) => (
     <div key={item.id}>
       {item.startsGroup && <div className="page-menu-sep" role="separator" />}
       <button
@@ -348,15 +389,16 @@ export function PageMenuPopover({
         </span>
       </button>
     </div>
-  ));
-  // A footer (page info) is not a menu item: with one, the popup holds the menu and the footer side by side.
+  )));
+  // A footer (page info) is not a menu item: with one, the popup holds the menu (which scrolls if
+  // the window is short) and the footer under it — always in view, never below the fold.
   if (footer) return (
-    <div ref={ref} className="page-menu" style={pos} onKeyDown={onKeyDown}>
-      <div role="menu" aria-label={label}>{rows}</div>
+    <div ref={ref} className="page-menu" data-footer="" style={pos} onKeyDown={onKeyDown}>
+      <div role="menu" aria-label={label} className="page-menu-list">{rows}</div>
       {footer}
     </div>
   );
-  return <div ref={ref} role="menu" aria-label={label} className="page-menu" style={pos} onKeyDown={onKeyDown}>{rows}</div>;
+  return <div ref={ref} role="menu" aria-label={label} className="page-menu page-menu-list" style={pos} onKeyDown={onKeyDown}>{rows}</div>;
 }
 
 /** The `⋯` button for the active page (top bar). Desktop: popover; phone: the actions sheet.

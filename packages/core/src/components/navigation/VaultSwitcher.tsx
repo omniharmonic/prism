@@ -7,7 +7,7 @@
 // desktop shell (no listVaults) it returns null, so the footer keeps its plain
 // New button.
 import { useEffect, useRef, useState } from "react";
-import { ChevronsUpDown, Check, Database, Settings2, Plus, Boxes } from "lucide-react";
+import { ChevronsUpDown, Check, Database, Settings2, Boxes } from "lucide-react";
 import { useCollabSharing, useVaultChangeSignal, type VaultSummary, type WorkspaceEntity } from "../../data/CollabSharing";
 
 export function VaultSwitcher({ onManage, placement = "above" }: { onManage: () => void; placement?: "above" | "below" }) {
@@ -217,6 +217,7 @@ export function VaultSwitcher({ onManage, placement = "above" }: { onManage: () 
 
           <button
             role="menuitem"
+            aria-label="Manage workspaces & vaults…"
             onClick={() => {
               setOpen(false);
               onManage();
@@ -237,9 +238,9 @@ export function VaultSwitcher({ onManage, placement = "above" }: { onManage: () 
             onMouseEnter={(e) => (e.currentTarget.style.background = "var(--glass-hover)")}
             onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
           >
-            <Plus size={14} style={{ flexShrink: 0 }} />
-            <span style={{ flex: 1, fontSize: "var(--text-base)" }}>Manage workspaces & vaults…</span>
-            <Settings2 size={13} style={{ flexShrink: 0, color: "var(--text-muted)" }} />
+            {/* One line in the 214 px menu: the gear says "manage", the name stays whole for assistive tech. */}
+            <Settings2 size={14} style={{ flexShrink: 0 }} aria-hidden="true" />
+            <span style={{ flex: 1, minWidth: 0, fontSize: "var(--text-base)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>Workspaces & vaults…</span>
           </button>
         </div>
       )}

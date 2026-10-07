@@ -7,7 +7,8 @@
  *
  * Bounded: two stores — `bodies` (key → response text) and `index` (key →
  * {size, at}) — so eviction walks only the small index. LRU by last access,
- * capped at MAX_ENTRIES and MAX_BYTES; a single body over MAX_BODY is not cached.
+ * capped at MAX_ENTRIES and MAX_BYTES; a single body over MAX_BODY is not cached
+ * (the `/tree` projection has its own, larger limit — TREE_MAX_BODY).
  * Cleared on sign-out, on a native 401, and when the signed-in account changes.
  * Every IDB failure degrades to "no cache", never to an error.
  */
@@ -18,6 +19,52 @@ const MAX_BYTES = 64 * 1024 * 1024;
 // rewrite into IndexedDB on every reload, so it (and any other huge body) is not
 // cached. The lean /api/tree projection (WP7.1, ~2-3 MB raw for ~14k notes) fits.
 const MAX_BODY = 4 * 1024 * 1024;
+// The projection grows ~170 bytes per note and crosses 4 MB at ~20–29k notes; past
+// that an offline start had no sidebar at all. It gets its own limit — still inside
+// the MAX_BYTES budget — and the LRU drops every other entry before a tree: a
+// cached page nobody can navigate to is worth less than the list of pages.
+const TREE_MAX_BODY = 16 * 1024 * 1024;
+/** All cached trees together (several vaults / accounts on one device): the NEWEST are kept. Without
+ *  this four 16 MB trees would be the whole shared budget and no page would stay cached. */
+const TREES_MAX_BYTES = 32 * 1024 * 1024;
+/** Counters for tests and diagnostics. */
+export const cacheStats = { bodyWrites: 0, unchangedSkips: 0, /** Fingerprints computed to COMPARE an arriving tree with the stored one. */ compared: 0 };
+/** A stored tree's fingerprint is computed after its write, not in it (megabytes hashed on the path
+ *  every start waits on). The next put of that key waits for it, so "the same body again" is still seen. */
+const pendingPrints = new Map<string, Promise<void>>();
+function printLater(key: string, body: string, stored: number): void {
+  const run = async (): Promise<void> => {
+    try {
+      const print = fingerprint(body);
+      const db = await open();
+      const t = db.transaction("index", "readwrite");
+      const row = await result<IndexRow | undefined>(t.objectStore("index").get(key));
+      if (row && row.stored === stored && row.size === body.length) t.objectStore("index").put({ ...row, print });
+      await done(t);
+    } catch {
+      /* best-effort: without a print the next identical tree is simply written again */
+    }
+  };
+  const p: Promise<void> = new Promise<void>((resolve) => setTimeout(resolve, 0)).then(run).finally(() => {
+    if (pendingPrints.get(key) === p) pendingPrints.delete(key);
+  });
+  pendingPrints.set(key, p);
+}
+/** A cheap content fingerprint (two FNV-1a passes): "is this the body already stored?" — never a security check. */
+function fingerprint(body: string): string {
+  let a = 0x811c9dc5, b = 0x01000193;
+  for (let i = 0; i < body.length; i++) {
+    const c = body.charCodeAt(i);
+    a = Math.imul(a ^ c, 0x01000193);
+    b = Math.imul(b + c, 0x85ebca6b) ^ (b >>> 13);
+  }
+  return `${body.length}:${(a >>> 0).toString(16)}:${(b >>> 0).toString(16)}`;
+}
+/** `<scope>|/tree` (with or without a query) — the sidebar's projection. */
+export const isTreeKey = (key: string): boolean => {
+  const path = key.slice(key.indexOf("|") + 1);
+  return path === "/tree" || path.startsWith("/tree?");
+};
 const USER_KEY = "prism-cache-user";
 /** Cached pages are a convenience, not an archive: nothing older is ever served. */
 export const MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
@@ -32,6 +79,8 @@ interface IndexRow {
   at: number;
   /** When the body was last confirmed by the server (rows written before this field: `at`). */
   stored?: number;
+  /** Fingerprint of the stored body (trees only): an unchanged tree is not written again. */
+  print?: string;
 }
 interface BodyRow {
   key: string;
@@ -114,13 +163,34 @@ export async function cacheGet(key: string): Promise<{ body: string; contentType
 }
 
 export async function cachePut(key: string, body: string, contentType: string): Promise<void> {
-  if (body.length > MAX_BODY) return;
+  if (body.length > (isTreeKey(key) ? TREE_MAX_BODY : MAX_BODY)) return;
   try {
     const db = await open();
+    // A tree is megabytes and is fetched on every start and every sidebar change that reaches this
+    // device: when the server sent the SAME body again, only its freshness is recorded.
+    const tree = isTreeKey(key);
+    if (tree) {
+      await pendingPrints.get(key);
+      const t0 = db.transaction(["bodies", "index"], "readwrite");
+      const idx = await result<IndexRow | undefined>(t0.objectStore("index").get(key));
+      // Hashed only when it CAN be the same body: same length as the one stored (and that one has a print).
+      if (idx?.print && idx.size === body.length) {
+        cacheStats.compared++;
+        if (idx.print === fingerprint(body) && (await result<number>(t0.objectStore("bodies").count(key))) === 1) {
+          t0.objectStore("index").put({ ...idx, at: Date.now(), stored: Date.now() });
+          await done(t0);
+          cacheStats.unchangedSkips++;
+          return;
+        }
+      }
+    }
+    const stored = Date.now();
     const t = db.transaction(["bodies", "index"], "readwrite");
     t.objectStore("bodies").put({ key, body, contentType } satisfies BodyRow);
-    t.objectStore("index").put({ key, size: body.length, at: Date.now(), stored: Date.now() } satisfies IndexRow);
+    t.objectStore("index").put({ key, size: body.length, at: stored, stored } satisfies IndexRow);
     await done(t);
+    cacheStats.bodyWrites++;
+    if (tree) printLater(key, body, stored);
     await evict(db);
   } catch {
     /* cache is best-effort */
@@ -158,7 +228,15 @@ async function evict(db: IDBDatabase): Promise<void> {
     }
   };
   // Only once the pinned set is known; expiry above never depends on it.
-  if (protectedReady) trim(live.filter((r) => !protectedKeys.has(r.key)), MAX_ENTRIES, MAX_BYTES);
+  // Trees have a total of their own (newest kept), so they can never be the whole shared budget.
+  let treeBytes = 0;
+  for (const r of live.filter((r) => isTreeKey(r.key)).sort((a, b) => (b.stored ?? b.at) - (a.stored ?? a.at))) {
+    treeBytes += r.size;
+    if (treeBytes > TREES_MAX_BYTES) drop.push(r);
+  }
+  // Trees go last: within the shared budget everything else is dropped first.
+  const ordinary = live.filter((r) => !protectedKeys.has(r.key) && !drop.includes(r));
+  if (protectedReady) trim([...ordinary.filter((r) => !isTreeKey(r.key)), ...ordinary.filter((r) => isTreeKey(r.key))], MAX_ENTRIES, MAX_BYTES);
   trim(live.filter((r) => protectedKeys.has(r.key)), Number.MAX_SAFE_INTEGER, PINNED_MAX_BYTES);
   if (!drop.length) return;
   const t = db.transaction(["bodies", "index"], "readwrite");

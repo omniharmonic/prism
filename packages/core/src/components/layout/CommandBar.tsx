@@ -505,7 +505,8 @@ export function CommandBar() {
     id: `recent-${r.id}`,
     noteId: r.id,
     label: r.title,
-    sublabel: "Recently opened",
+    // Where the page lives (the group heading already says "Recent pages" — every row repeated it).
+    sublabel: (tree?.find((n) => n.id === r.id)?.path ?? "").split("/").slice(0, -1).join(" / "),
     edited: editedLabel(tree?.find((n) => n.id === r.id)?.updatedAt),
     type: r.type,
     sameVault: true,
@@ -658,7 +659,7 @@ export function CommandBar() {
     <div className="prism-search-group">{label}</div>
     {notes.map(item => { const index = items.findIndex(candidate => candidate.id === item.id); return <CmdRow key={item.id} id={`prism-command-${index}`} itemId={item.id} selected={selectedIndex === index} onPress={pressRow} onClick={clickRow} onHover={() => setSelectedId(item.id)}
       icon={item.icon ? <span>{item.icon}</span> : item.group === "messages" ? <MessageSquare size={18} /> : <PageIcon noteId={item.noteId} fallback={<FileText size={18} />} />}
-      label={item.label} labelRanges={item.labelRanges} sublabel={item.edited ? `${item.sublabel} · ${item.edited}` : item.sublabel} preview={item.preview} previewRanges={item.previewRanges} trailing={<span className="prism-search-open">Open <ArrowRight size={13} /></span>} />; })}
+      label={item.label} labelRanges={item.labelRanges} sublabel={item.edited ? (item.sublabel ? `${item.sublabel} · ${item.edited}` : item.edited) : item.sublabel} preview={item.preview} previewRanges={item.previewRanges} trailing={<span className="prism-search-open">Open <ArrowRight size={13} /></span>} />; })}
   </div>;
   const body = <>
     {recentQueryItems.length > 0 && <div role="group" aria-label="Recent searches"><div className="prism-search-group">Recent searches</div>{recentQueryItems.map(item => {

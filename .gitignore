@@ -64,3 +64,7 @@ docs/roadmap/parachute-upgrade/rehearsal-tools/
 
 # Durable isolated implementation checkouts
 /.worktrees/
+
+# Acceptance screenshots (generated: PRISM_SHOTS=1 … acceptance-shots.spec.ts) and the gallery built from them
+apps/web/acceptance-shots/
+apps/web/acceptance-gallery*.html

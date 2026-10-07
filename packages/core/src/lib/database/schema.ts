@@ -218,6 +218,14 @@ export const SYSTEM_KEYS = new Set([
 ]);
 export const isSystemKey = (k: string): boolean =>
   SYSTEM_KEYS.has(k) || k.startsWith("prism_") || k.startsWith("gov_") || k.startsWith("_");
+/**
+ * Presentation state stored beside the properties (the page's own font). Never LISTED as a property —
+ * but deliberately not a system key: `POST /api/properties/:id` refuses system keys, and the queued
+ * font write replays through that route.
+ */
+export const PRESENTATION_KEYS = new Set(["contentFont"]);
+/** A metadata key no schema declares may be shown as a free property. */
+export const isListableKey = (k: string): boolean => !isSystemKey(k) && !PRESENTATION_KEYS.has(k);
 
 const PERSON_KEYS = /^(assigned|assignee|assignees|owner|owners|person|people|author|authors|lead|attendees|participants|collaborators|reviewer|reviewers|contact)$/i;
 /** A property name that reads as people ("assignee", "owner", "reviewer", …) — `inferKind`'s own rule. */
@@ -384,7 +392,7 @@ export function resolveProperties(
   }
   for (const [key, value] of Object.entries(meta)) {
     if (gone.has(key)) continue;
-    if (seen.has(key) || isSystemKey(key) || value === null || typeof value === "object" && !Array.isArray(value)) continue;
+    if (seen.has(key) || !isListableKey(key) || value === null || typeof value === "object" && !Array.isArray(value)) continue;
     seen.add(key);
     out.push(propertyFromField(key, {}, null, value));
   }

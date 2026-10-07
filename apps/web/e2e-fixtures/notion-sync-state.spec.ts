@@ -36,8 +36,14 @@ test("desktop header: Saving… until the server confirms, Save failed · Retry,
   await context.setOffline(true);
   await typeInEditor(page, " Offline edit.");
   await expect(page.getByRole("button", { name: /Offline · changes saved on this device/ })).toBeVisible({ timeout: 8000 });
-  // Truthful: the change really is in the durable on-device outbox, not paused in memory.
-  await expect(page.locator(".offline-indicator-pill")).toContainText("1 change saved on this device");
+  // Truthful: the change really is in the durable on-device outbox, not paused in memory — the
+  // header says "saved on this device" only then, and it opens the list (no second, floating pill).
+  await expect(page.locator(".offline-indicator-pill")).toHaveCount(0);
+  await page.getByRole("button", { name: /Offline · changes saved on this device/ }).click();
+  const saved = page.getByRole("dialog", { name: "Saved changes" });
+  await expect(saved.getByRole("listitem")).toHaveCount(1);
+  await expect(saved).not.toContainText("No pending changes");
+  await saved.getByRole("button", { name: "Close" }).click();
   await page.screenshot({ path: info.outputPath("header-offline.png") });
   await context.setOffline(false);
   await expect(badge).toHaveText("Saved", { timeout: 15000 });
@@ -54,12 +60,8 @@ test("phone header sync state", async ({ page, context }, info) => {
   await context.setOffline(true);
   await typeInEditor(page, " Phone offline edit.");
   await expect(page.locator(".sync-state-phone")).toHaveText("Saved on this device", { timeout: 8000 });
-  // The saved-changes pill sits above the bottom bar, never on it.
-  const pill = page.locator(".offline-indicator-pill");
-  await expect(pill).toBeVisible();
-  const bar = await page.getByRole("navigation").last().boundingBox();
-  const pillBox = await pill.boundingBox();
-  if (bar && pillBox && bar.y > 600) expect(pillBox.y + pillBox.height).toBeLessThanOrEqual(bar.y + 1);
+  // Offline with healthy queued changes is the header's to say: nothing floats over the page or the bottom bar.
+  await expect(page.locator(".offline-indicator-pill")).toHaveCount(0);
   await page.screenshot({ path: info.outputPath("phone-offline.png") });
   await context.setOffline(false);
   await expect(page.locator(".sync-state-phone")).toHaveAttribute("data-sync-state", "saved", { timeout: 15000 });
@@ -92,4 +94,19 @@ test("a save that conflicts with a newer server copy goes to review, never to an
   expect(await page.evaluate(() => (window as any).prismShell.note("workspace").content)).toBe("<p>Changed on another device.</p>");
   await page.getByRole("button", { name: "Needs review: review saved changes" }).click();
   await expect(page.getByRole("dialog").getByText("Needs review")).toBeVisible();
+});
+
+/** w14 visual · defect 20: "saved on this device" is never claimed before the change is in the on-device queue. */
+test("offline: the header and the Saved changes dialog never contradict each other", async ({ page, context }) => {
+  await page.goto("/e2e-fixtures/notion-shell.html");
+  await expect(page.locator(".tiptap[contenteditable=true]")).toBeVisible();
+  await context.setOffline(true);
+  await typeInEditor(page, " Offline, just typed.");
+  // The moment the header first claims the change is saved on this device, the dialog must list it.
+  await page.locator(".sync-state-header", { hasText: "changes saved on this device" }).waitFor({ timeout: 8000 });
+  await page.evaluate(() => window.dispatchEvent(new CustomEvent("prism:open-saved-changes")));
+  const dialog = page.getByRole("dialog", { name: "Saved changes" });
+  await expect(dialog).toBeVisible();
+  expect(await dialog.innerText()).not.toContain("No pending changes");
+  await expect(dialog.getByRole("listitem")).toHaveCount(1);
 });
