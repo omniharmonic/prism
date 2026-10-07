@@ -1,4 +1,4 @@
-import { Hono } from "hono";
+import { Hono, type Context } from "hono";
 import { randomUUID } from "node:crypto";
 import { resolveActor, type Actor } from "../auth/actor";
 import { resolveVaultEntry } from "../db";
@@ -13,6 +13,8 @@ import {
 import { treeUpsertNote } from "../tree";
 import { PeopleIndex } from "../worker/people";
 import { IdentityIndex, isNonHumanPerson, isTombstone } from "../identity";
+import { consumeRateLimit } from "../middleware/ratelimit";
+import { conversationIndex, listPeopleWithConversations, personTimeline, resetConversationIndex } from "../people-conversations";
 import {
   isPerson,
   personCategory,
@@ -112,6 +114,55 @@ peopleApi.get("/", async (c) => {
   }
 });
 
+/**
+ * Messages → People. A person's conversations are resolved at READ time from
+ * identity keys (see ../people-conversations.ts) — no stored link is required.
+ * Signed-in accounts only; every person and every conversation in an answer
+ * passed THIS caller's `view` check (a hidden thread is neither listed nor counted).
+ */
+function conversationCaller(c: Context): { actor: Extract<Actor, { kind: "user" }> } | { refusal: Response } {
+  const actor = resolveActor(c);
+  if (actor.kind !== "user") return { refusal: c.json({ error: actor.kind === "anon" ? "unauthorized" : "forbidden" }, actor.kind === "anon" ? 401 : 403) };
+  if (c.req.header("x-prism-vault") && c.req.header("x-prism-vault") !== actor.vaultId)
+    return { refusal: c.json({ error: "vault_unavailable" }, 409) };
+  const limited = consumeRateLimit(`people-conversations:${actor.email}`, 120, 60_000);
+  if (limited) {
+    c.header("Retry-After", String(limited));
+    return { refusal: c.json({ error: "rate_limited" }, 429) };
+  }
+  return { actor };
+}
+
+peopleApi.get("/conversations", async (c) => {
+  const who = conversationCaller(c);
+  if ("refusal" in who) return who.refusal;
+  const query = c.req.query("q") ?? "";
+  if (query.length > 200) return c.json({ error: "bad_request" }, 400);
+  try {
+    const index = await conversationIndex(who.actor.vaultId);
+    c.header("Cache-Control", "private, no-store");
+    return c.json(listPeopleWithConversations(index, (note) => capsFor(who.actor, note).has("view"), { query }));
+  } catch {
+    return c.json({ error: "people_unavailable" }, 503);
+  }
+});
+
+peopleApi.get("/:id/conversations", async (c) => {
+  const who = conversationCaller(c);
+  if ("refusal" in who) return who.refusal;
+  const raw = c.req.query("before");
+  const before = raw === undefined ? undefined : Number(raw);
+  if (before !== undefined && (!Number.isFinite(before) || before < 0)) return c.json({ error: "bad_request" }, 400);
+  try {
+    const index = await conversationIndex(who.actor.vaultId);
+    const page = personTimeline(index, c.req.param("id"), (note) => capsFor(who.actor, note).has("view"), { before });
+    c.header("Cache-Control", "private, no-store");
+    return page ? c.json(page) : c.json({ error: "not_found" }, 404);
+  } catch {
+    return c.json({ error: "person_unavailable" }, 503);
+  }
+});
+
 peopleApi.post("/:id/identities", async (c) => {
   const actor = resolveActor(c);
   if (actor.kind !== "user") return c.json({ error: "forbidden" }, 403);
@@ -204,6 +255,8 @@ peopleApi.post("/:id/identities", async (c) => {
           ifUpdatedAt: note.updatedAt,
         });
         treeUpsertNote(resolveVaultEntry(actor.vaultId), updated);
+        // A new address or handle changes whose conversations these are — now, not in a minute.
+        resetConversationIndex(actor.vaultId);
         return c.json({
           person: { ...personSummary(updated), canManageIdentities: true },
         });
