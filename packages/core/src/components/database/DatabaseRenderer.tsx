@@ -211,6 +211,8 @@ export function DatabasePage({ note, readOnly, embedded }: RendererProps & {
   });
   const openMode: OpenMode = localOpen ?? config?.openIn ?? "side";
   const [peek, setPeek] = useState<string | null>(null);
+  // Previous / next in the peek walk the view's loaded rows, in the order the view shows them.
+  const peekIndex = peek ? rows.findIndex((r) => r.id === peek) : -1;
   const openFull = (r: Pick<QueryRow, "id" | "path" | "metadata" | "tags" | "createdAt" | "updatedAt">) => useUIStore.getState().openTab(r.id, noteTitle(r), inferContentType({ ...r, content: "" } as Note));
   const setOpenMode = (m: OpenMode) => {
     // The database's own preference when you may edit it; yours otherwise.
@@ -479,6 +481,7 @@ export function DatabasePage({ note, readOnly, embedded }: RendererProps & {
       </div>
       {peek && (
         <RowPeek noteId={peek} mode={openMode === "center" ? "center" : "side"} canSetMode={canEditDb}
+          steps={peekIndex < 0 ? undefined : { index: peekIndex, total: rows.length, go: (delta) => { const r = rows[peekIndex + delta]; if (r) setPeek(r.id); } }}
           onMode={(m) => { setOpenMode(m); if (m === "page") setPeek(null); }}
           onClose={() => { setPeek(null); invalidateRows(); }} />
       )}

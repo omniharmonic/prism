@@ -111,7 +111,8 @@ export const UrlPaste = Extension.create<UrlPasteOptions>({
             const from = state.selection.from;
             // One of OUR page links (same origin, strict id) becomes a page mention chip: it stores the
             // id only, and resolves its title through each reader's own access ("No access" otherwise).
-            const pageId = pageIdFromUrl(url);
+            // A link to a HEADING (`…/page/<id>#h-<slug>`) stays a link: a chip names the page only.
+            const pageId = url.includes("#") ? null : pageIdFromUrl(url);
             const mention = state.schema.nodes.mention;
             if (pageId && mention) {
               const chip = mention.create({ kind: "page", id: pageId, label: null, date: null, reminder: null, uid: newMentionUid() });

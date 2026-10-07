@@ -5,6 +5,7 @@ import { Shell } from "./components/layout/Shell";
 import { Onboarding } from "./components/layout/Onboarding";
 import { useAgentChatStore } from "./lib/agent/chatStore";
 import { useUIStore } from "./app/stores/ui";
+import { focusHeading, parseHeadingHash } from "./lib/pages/headingLinks";
 
 
 
@@ -111,6 +112,9 @@ function App({ skipOnboarding, initialTab }: { skipOnboarding?: boolean; initial
   useEffect(() => {
     if (!initialTab) return;
     useUIStore.getState().openTab(initialTab.id, initialTab.title, initialTab.type as never);
+    // `/page/<id>#h-<slug>` ("Copy link to heading"): land on that heading once the page is up.
+    const heading = initialTab.type === "document" && typeof location !== "undefined" ? parseHeadingHash(location.hash) : null;
+    if (heading) void focusHeading(heading, initialTab.id, 20_000);
   }, [initialTab]);
 
   return (

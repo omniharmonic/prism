@@ -283,6 +283,9 @@
 .db-peek-scrim { position: absolute; inset: 0; pointer-events: auto; background: rgba(15, 15, 20, .32); }
 .db-peek-head { display: flex; align-items: center; gap: 6px; min-height: 44px; padding: 4px 10px; border-bottom: 1px solid var(--glass-border); }
 .db-peek-head .db-ghost { margin-left: auto; }
+.db-peek-steps { display: inline-flex; align-items: center; gap: 2px; padding-left: 6px; border-left: 1px solid var(--glass-border); }
+.db-peek-steps [aria-disabled="true"] { opacity: .4; cursor: default; }
+.db-peek-count { padding: 0 6px; font-size: 12px; color: var(--text-muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .db-peek-modes { display: inline-flex; gap: 2px; padding-left: 6px; border-left: 1px solid var(--glass-border); }
 .db-peek-modes [aria-pressed="true"] { background: var(--glass-active, var(--glass-hover)); color: var(--text-primary); }
 .db-peek-body { flex: 1; min-height: 0; overflow: auto; }
