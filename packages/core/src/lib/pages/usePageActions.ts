@@ -116,13 +116,24 @@ export function usePageActions() {
   // ── Duplicate (NP-PG-18) ───────────────────────────────────────────────────
   /** Shells without the server route (the legacy desktop): the ONE page is copied on
    *  the device, as before — and the toast says so when it has sub-pages. */
-  const duplicateSingle = async (page: PageRef) => {
+  const duplicateSingle = async (page: PageRef, opts: { keepPrivate?: boolean } = {}) => {
     try {
       const [note, tree] = await Promise.all([client.getNote(page.id, { fresh: true }), client.listTree()]);
       // A private page's duplicate stays private — to the person duplicating it.
-      const priv = note.metadata?.prism_visibility === "private";
+      // `keepPrivate`: the server could not make this copy itself, so nothing here can tell
+      // who the copy would reach (its tags may publish it) — it is made private, and said so.
+      const priv = opts.keepPrivate || note.metadata?.prism_visibility === "private";
       const limited = Array.isArray((note as Note & { _caps?: string[] })._caps);
-      const copy = duplicateCopy(note, tree.map((t) => t.path), { creator: priv && !limited ? await viewerEmail() : null });
+      const creator = priv && !limited ? await viewerEmail() : null;
+      if (opts.keepPrivate && !limited && !creator) {
+        toast("Couldn’t duplicate this page: your account couldn’t be confirmed, so the copy could not be kept private. Nothing was changed.", { tone: "error" });
+        return;
+      }
+      const copy = duplicateCopy(note, tree.map((t) => t.path), { creator });
+      if (opts.keepPrivate) {
+        copy.metadata.prism_visibility = "private";
+        if (creator) copy.metadata.prism_creator = creator;
+      }
       const created = await client.createNote(copy);
       // The copy gets its OWN files (before it opens): until then its links name the
       // original page's attachments, which only people who can see the original load.
@@ -131,7 +142,7 @@ export function usePageActions() {
       await refresh();
       useUIStore.getState().openTab(created.id, pageTitle(created.path ?? copy.path), inferContentType(created));
       const left = note.path ? tree.filter((t) => isUnder(t.path, note.path!) && !isTrashed(t)).length : 0;
-      toast(`Duplicated “${page.title}”${left ? `. Its ${left === 1 ? "sub-page was" : `${left} sub-pages were`} not copied` : ""}${filesNote ? `. ${filesNote}` : ""}`);
+      toast(`Duplicated “${page.title}”${opts.keepPrivate ? ". The copy is private to you" : ""}${left ? `. Its ${left === 1 ? "sub-page was" : `${left} sub-pages were`} not copied` : ""}${filesNote ? `. ${filesNote}` : ""}`);
     } catch (e) {
       fail(e, "Couldn’t duplicate this page.");
     }
@@ -194,7 +205,7 @@ export function usePageActions() {
       // A server from before this route: the vault (owner) answers a plain 404/405.
       if (e instanceof PagesRequestError && (e.status === 405 || e.status === 501 || (e.status === 404 && e.code !== "not_found"))) return duplicateSingle(page);
       // A page with no location has no "beside": the one page is copied here, as before.
-      if (e instanceof PagesRequestError && e.code === "no_path") return duplicateSingle(page);
+      if (e instanceof PagesRequestError && e.code === "no_path") return duplicateSingle(page, { keepPrivate: true });
       // No answer, a server error or "busy": the copy may exist in part or still be running.
       // Never "nothing was changed" — and the retry is THIS request (same id), so it can
       // only finish that copy, never start a second one.

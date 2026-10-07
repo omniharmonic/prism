@@ -263,3 +263,18 @@ test("bulk duplicate uses the Duplicate route per row, waits out a 429 with the 
   await expect(page.locator(".db-toast")).toContainText("Moved 2 copies to Trash.");
   expect(((await fx(page)).trashed as string[]).sort()).toEqual(["dup-1", "dup-3"]);
 });
+
+test("bulk duplicate can be stopped while it waits for the server: what was copied stays, the rest is reported as not copied", async ({ page }) => {
+  await page.goto("/e2e-fixtures/databases.html?dup-route=slow");
+  await table(page).getByRole("checkbox", { name: "Select Private planning note" }).click();
+  await table(page).getByRole("checkbox", { name: "Select Update pricing page" }).click();
+  const bar = page.getByRole("toolbar", { name: "Selected pages" });
+  await bar.getByRole("button", { name: "Duplicate" }).click();
+  await expect(bar).toContainText("waiting for the server (60 s)");
+  await bar.getByRole("button", { name: "Stop", exact: true }).click();
+  await expect(page.locator(".db-toast")).toContainText("Duplicated 1 of 2.");
+  await expect(page.locator(".db-toast")).toContainText("Stopped — 1 page was not copied.");
+  const state = await fx(page);
+  expect(state.duplicates).toHaveLength(2); // the refused request was not sent again
+  expect(state.creates).toHaveLength(0);
+});

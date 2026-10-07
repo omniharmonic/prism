@@ -832,3 +832,121 @@ test("nits: a hidden or trashed parent takes its sub-pages out of the copy; a pa
   assert.equal(r.status, 200);
   assert.equal((await json(r)).path, "Docs/Outside (copy) 2");
 });
+
+// ── round 3 ──────────────────────────────────────────────────────────────────
+
+test("round 3 (1): a note with no location — an excluded or integration-owned one is refused 403 `protected`, never `no_path` (the code the client's own copy keys on)", async () => {
+  fv.put({ id: "np-plain", path: null, content: "<p>loose</p>" });
+  fv.put({ id: "np-held", path: null, tags: ["site"], content: "<p>held back</p>" });
+  fv.put({ id: "np-mail", path: null, metadata: { source: "matrix" }, content: "<p>thread</p>" });
+  fv.put({ id: "np-flag", path: null, metadata: { runner: false, lastRun: 0, source_id: "" }, content: "<p>ordinary values</p>" });
+  publishTag("wiki", "site", ["np-held"]);
+  const code = async (id: string) => { const r = await dup(id, OWNER); return [r.status, (await json(r)).error]; };
+  assert.deepEqual(await code("np-plain"), [400, "no_path"]);
+  assert.deepEqual(await code("np-held"), [403, "protected"]);
+  assert.deepEqual(await code("np-mail"), [403, "protected"]);
+  assert.deepEqual(await code("np-flag"), [400, "no_path"], "false / 0 / empty values on such keys are not an ingester's mark");
+  assert.equal(fv.calls.filter((c) => c.method === "POST").length, 0);
+});
+
+test("round 3 (5): B3 for a FOLDER site — the copy of a page left out of it lands in the folder and is not served", async () => {
+  fv.put({ id: "f-open", path: "Folder/Open", content: "<p>folder-open</p>" });
+  fv.put({ id: "f-held", path: "Folder/Kept out", content: "<p>folder-embargo</p>" });
+  createPublication({ id: "fsite", resource_type: "path", resource: "Folder", template: "wiki", title: null, home_note_id: null, password_hash: null, theme: null, expires_at: null, created_by: OWNER });
+  updatePublication("fsite", { excluded_note_ids: JSON.stringify(["f-held"]) });
+  assert.equal((await publicNote("fsite", "f-open")).status, 200, "the folder site serves its pages");
+  await notPublic("fsite", "f-held", "folder-embargo");
+  const copy = await json(await dup("f-held", OWNER));
+  assert.equal(copy.path, "Folder/Kept out (copy)");
+  assert.equal(fv.notes.get(copy.id)!.metadata!.prism_visibility, "private");
+  await notPublic("fsite", copy.id, "folder-embargo");
+  assert.ok(!(await publicSite("fsite")).includes("folder-embargo"));
+});
+
+async function withFile(noteId: string): Promise<string> {
+  const f = new FormData();
+  f.append("file", new Blob([new Uint8Array(PNG)]), "pic.png");
+  const up = await api.request(`/notes/${noteId}/attachments`, { method: "POST", headers: { cookie: as(OWNER), "x-prism-upload": "1" }, body: f });
+  assert.equal(up.status, 201, await up.clone().text());
+  const id = (await json(up)).id as string;
+  fv.put({ ...fv.notes.get(noteId)!, content: `${fv.notes.get(noteId)!.content}<img src="/api/attachments/${id}">` });
+  return id;
+}
+const copyReads = () => fv.calls.filter((c) => c.method === "GET" && /\/api\/notes\/new-\d+$/.test(c.path)).length;
+
+test("round 3 (3): files — past the budget a copy is handed over WITHOUT being read; a copy that cannot be read is handed over, never dropped; a page with no file is never read", async () => {
+  await withFile("c1");
+  configureDuplicate({ perMinute: 1_000_000, pauseMs: 0, filesBudgetMs: -1 });
+  fv.calls.length = 0;
+  const late = await json(await dup("p", OWNER));
+  assert.deepEqual(late.filesPending, [byPath("Docs/Plan (copy)/Alpha")!.id]);
+  assert.equal(copyReads(), 0, "no copy was read for the files phase");
+  configureDuplicate({ perMinute: 1_000_000, pauseMs: 0 });
+  fv.calls.length = 0;
+  const inner = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = new URL(String(input instanceof Request ? input.url : input));
+    if ((init?.method ?? "GET") === "GET" && /\/api\/notes\/new-\d+$/.test(url.pathname)) return new Response("down", { status: 500 });
+    return inner(input, init);
+  }) as typeof fetch;
+  let r: Response;
+  try { r = await dup("p", OWNER); } finally { globalThis.fetch = inner; }
+  assert.equal(r.status, 200, await r.clone().text());
+  const body = await json(r);
+  assert.deepEqual(body.files, { copied: 0, failed: 0 });
+  assert.deepEqual(body.filesPending, [byPath("Docs/Plan (copy) 2/Alpha")!.id]);
+  // Only the ONE page with a file was looked at.
+  const ok = await json(await dup("p", OWNER));
+  assert.deepEqual([ok.files.copied, ok.filesPending.length], [1, 0]);
+});
+
+test("round 3 (5): S5 — someone who can create but not EDIT their copy gets no files through the duplicate (the copy route's caps)", async () => {
+  const who = "dropbox@test.local";
+  setAccount(who, who, "hash");
+  fv.put({ id: "docs", path: "Docs", content: "<p>folder page</p>" });
+  addGrant({ subject_type: "user", subject: who, resource_type: "page", resource: "docs", level: "view", caps: ["view", "create"], created_by: OWNER });
+  const att = await withFile("c1");
+  const body = await json(await dup("p", who));
+  assert.equal(body.created, 4);
+  assert.deepEqual(body.files, { copied: 0, failed: 0 });
+  const alpha = byPath("Docs/Plan (copy)/Alpha")!;
+  assert.deepEqual(body.filesPending, [alpha.id]);
+  assert.ok(alpha.content.includes(att), "left as it was");
+});
+
+test("round 3 (5): S3 — sources are read ONE at a time", async () => {
+  for (let i = 0; i < 12; i++) fv.put({ id: `seq-${i}`, path: `Docs/Plan/Seq ${i}`, content: `<p>${i}</p>` });
+  const inner = globalThis.fetch;
+  let open = 0;
+  let most = 0;
+  let reads = 0;
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = new URL(String(input instanceof Request ? input.url : input));
+    const body = (init?.method ?? "GET") === "GET" && /\/api\/notes\/(seq-\d+|c1|c2|g1)$/.test(url.pathname);
+    if (!body) return inner(input, init);
+    reads++;
+    most = Math.max(most, ++open);
+    try { await new Promise((r) => setTimeout(r, 3)); return await inner(input, init); } finally { open--; }
+  }) as typeof fetch;
+  let r: Response;
+  try { r = await dup("p", OWNER); } finally { globalThis.fetch = inner; }
+  assert.equal((await json(r)).created, 16);
+  assert.ok(reads >= 15, `${reads} source reads`);
+  assert.equal(most, 1);
+});
+
+test("round 3 (5): a page open in the live editor that could not be stored in time → liveIncomplete: true", async () => {
+  const { hocuspocus, docNameFor } = await import("../src/collab");
+  const conn = await hocuspocus.openDirectConnection(docNameFor("primary", "c2"), {});
+  try {
+    configureDuplicate({ perMinute: 1_000_000, pauseMs: 0, flushDeadlineMs: 0 });
+    const body = await json(await dup("p", OWNER));
+    assert.equal(body.created, 4);
+    assert.equal(body.liveIncomplete, true);
+    configureDuplicate({ perMinute: 1_000_000, pauseMs: 0 });
+    const calm = await json(await dup("out", OWNER));
+    assert.equal(calm.liveIncomplete, false, "nothing of that page is open");
+  } finally {
+    await conn.disconnect();
+  }
+});

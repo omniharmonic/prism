@@ -303,7 +303,7 @@ if (params.has("dup-route")) {
     controls.duplicates.push(clone({ id, ...request }));
     if (!limited && controls.duplicates.length === 2) {
       limited = true;
-      throw Object.assign(new Error("rate limited"), { status: 429, code: "rate_limited", body: { error: "rate_limited", retryAfter: 1 } });
+      throw Object.assign(new Error("rate limited"), { status: 429, code: "rate_limited", body: { error: "rate_limited", retryAfter: params.get("dup-route") === "slow" ? 60 : 1 } });
     }
     const src = find(id)!;
     const priv = src.metadata?.prism_visibility === "private";

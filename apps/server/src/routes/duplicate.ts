@@ -175,7 +175,14 @@ db.exec(`
 `);
 const JOURNAL_DAYS = 14;
 /** One copy the journal knows: its id, the revision it was created at, and whether its links are final. */
-interface CopyEntry { id: string; stamp: string | null; linked: boolean }
+interface CopyEntry {
+  id: string;
+  stamp: string | null;
+  linked: boolean;
+  /** Does the copy reference uploaded files that are not its own yet? Decided when it is
+   *  written, from the body in hand; absent = unknown (a copy adopted by its op id). */
+  files?: boolean;
+}
 interface Job { source_id: string; with_subpages: number; to_path: string; copies: Record<string, CopyEntry>; status: string }
 function getJob(vaultId: string, actor: string, requestId: string): Job | null {
   const row = db.prepare("SELECT source_id, with_subpages, to_path, copies, status FROM page_duplicates WHERE vault_id = ? AND actor = ? AND request_id = ?").get(vaultId, actor, requestId) as
@@ -342,8 +349,18 @@ function ingestMarked(n: { metadata?: Record<string, unknown> | null }): boolean
   if (!m) return false;
   const source = m.source;
   if (typeof source === "string" && INGEST_SOURCES.has(source.trim().toLowerCase())) return true;
-  for (const k of INGEST_KEYS) if (k !== "prism_import" && m[k] !== undefined && m[k] !== null && m[k] !== "") return true;
+  // "Set" = an id-like value: a non-empty string, a non-zero number, a non-empty list or
+  // object. `false`, `0` and "" on a key a person happens to use are not an ingester's mark.
+  const set = (v: unknown): boolean =>
+    typeof v === "string" ? v.trim() !== "" : typeof v === "number" ? Number.isFinite(v) && v !== 0 : Array.isArray(v) ? v.length > 0 : !!v && typeof v === "object" ? Object.keys(v).length > 0 : false;
+  for (const k of INGEST_KEYS) if (k !== "prism_import" && set(m[k])) return true;
   return false;
+}
+/** Ids left OUT of a public site of this vault (`excluded_note_ids`, tag and folder sites alike). */
+function excludedFromSites(vaultId: string): Set<string> {
+  const out = new Set<string>();
+  for (const pub of listPublications()) if ((pub.vault_id ?? "primary") === vaultId) for (const x of excludedNoteIds(pub)) out.add(x);
+  return out;
 }
 const LEAN_KEYS = [...TREE_META_KEYS, "prism_database", "source", ...INGEST_KEYS];
 
@@ -398,11 +415,17 @@ export function createDuplicateApi(opts: DuplicateApiOptions = {}) {
     /** The refusal for a root that may not be duplicated, or null. */
     const rootRefusal = (n: Note): Response | null => {
       if (n.id !== id || !canView(n) || isTrashed(n)) return c.json(NOT_FOUND, 404);
-      // The client copies a path-less note itself (there is no "beside" to copy it to).
-      if (!n.path) return c.json({ error: "no_path", reason: "This page has no location to copy beside." }, 400);
       if (systemNoteReason(n)) return c.json({ error: "protected", reason: "This is a system note, so it can’t be duplicated." }, 403);
       // A second person/mail/meeting/thread/transcript note pollutes identity matching and the classify skills.
       if (protectionReason(n) || ingestMarked(n)) return c.json({ error: "protected", reason: "This page is kept in sync by an integration, so it can’t be duplicated." }, 403);
+      // A note with no location has no "beside": the client copies that one page itself
+      // (`no_path` is the code it keys on) — so every never-duplicated rule is decided
+      // ABOVE this line, and a page left out of a public site is refused outright: the
+      // client's own copy could not be told to stay off that site.
+      if (!n.path) {
+        if (excludedFromSites(entry.id).has(n.id)) return c.json({ error: "protected", reason: "This page is left out of a public site, so it can’t be duplicated from here." }, 403);
+        return c.json({ error: "no_path", reason: "This page has no location to copy beside." }, 400);
+      }
       return null;
     };
     const refused = rootRefusal(root);
@@ -503,13 +526,13 @@ export function createDuplicateApi(opts: DuplicateApiOptions = {}) {
       const rootCopyId = job?.copies[root.id]?.id;
       if (!admin) {
         if (!(await mayCreate(actor, target, rootTags.tags))) return c.json({ error: "forbidden", reason: "You can’t add pages here." }, 403);
-        const placed = await placementRefusal(entry, target, { actor, tags: rootTags.tags, ...(rootCopyId ? { exceptId: rootCopyId } : {}) });
+        const placed = await placementRefusal(entry, target, { actor, tags: rootTags.tags, timeoutMs: 15_000, ...(rootCopyId ? { exceptId: rootCopyId } : {}) });
         if ("status" in placed) return c.json(placed.body, placed.status);
       } else {
         // An admin skips the placement rules, never the vault's own: the path as the vault
         // would look it up (case-insensitive, either Unicode form) must be free.
         try {
-          const holder = await noteAtPath(entry, target);
+          const holder = await noteAtPath(entry, target, { timeoutMs: 15_000 });
           if (holder === "ambiguous" || (holder && holder.id !== rootCopyId)) return c.json(pathUnavailable(target), 409);
         } catch {
           return c.json({ error: "vault_unreachable" }, 502);
@@ -572,12 +595,11 @@ export function createDuplicateApi(opts: DuplicateApiOptions = {}) {
       // 🔒 A page EXCLUDED from a public site is excluded by its id; its copy has a new id,
       // the same published tag and the same folder — it would be published. Whatever the
       // destination: the copy of an excluded page is private to the duplicator.
-      const excluded = new Set<string>();
-      for (const pub of listPublications()) if ((pub.vault_id ?? "primary") === entry.id) for (const x of excludedNoteIds(pub)) excluded.add(x);
+      const excluded = excludedFromSites(entry.id);
       if (excluded.size) for (const item of plan) if (excluded.has(item.id)) keepPrivate(item);
       const audience = { sharedPage: shared, private: privateKept + sharingKept };
       if (shared && audience.private > 0 && body.confirmShared !== true) {
-        return c.json({ error: "confirm_shared", reason: sharingKept ? `This copy lands inside a page that is shared with other people. ${audience.private === 1 ? "One page" : `${audience.private} pages`} in it will be private to you (private pages, and pages that had their own sharing); the rest is shared like the original.` : "This copy lands inside a page that is shared with other people. The private pages in it stay private to you; the rest is shared like the original.", audience }, 409);
+        return c.json({ error: "confirm_shared", reason: sharingKept ? `This copy lands inside a page that is shared with other people. ${audience.private === 1 ? "One page" : `${audience.private} pages`} in it will be private to you (private pages, pages that had their own sharing, and pages left out of a public site); the rest is shared like the original.` : "This copy lands inside a page that is shared with other people. The private pages in it stay private to you; the rest is shared like the original.", audience }, 409);
       }
 
       // ── what already exists of this request (a retry adopts it) ────────────
@@ -728,7 +750,7 @@ export function createDuplicateApi(opts: DuplicateApiOptions = {}) {
           if (!created) { failed = { reason: failReason(e) }; failure = e; break; }
         }
         createdNow++;
-        job.copies[item.id] = { id: created.id, stamp: created.updatedAt ?? created.createdAt ?? null, linked: !pending };
+        job.copies[item.id] = { id: created.id, stamp: created.updatedAt ?? created.createdAt ?? null, linked: !pending, files: content.includes("/api/attachments/") || JSON.stringify(metadata).includes("/api/attachments/") };
         if (pending) relink.add(item.id);
         putJob(entry.id, who, requestId, job);
         treeUpsertNote(entry, created);
@@ -813,14 +835,18 @@ export function createDuplicateApi(opts: DuplicateApiOptions = {}) {
       let filesStopped = false;
       for (const item of copies) {
         const copy = job.copies[item.id]!;
+        // Known since the copy was written (the body was in hand): no file → nothing to read.
+        if (copy.files === false) continue;
+        // Past the budget (or the rate limit): handed to the client WITHOUT another read.
+        if (filesStopped || Date.now() - started > cfg.filesBudgetMs) { filesPending.push(copy.id); continue; }
         let fresh: Note;
         try {
           fresh = await vc.getNote(copy.id);
         } catch {
-          continue; // moved away or unreadable: nothing to say about its files here
+          filesPending.push(copy.id); // unreadable now: never silently dropped
+          continue;
         }
-        if (!(fresh.content ?? "").includes("/api/attachments/") && !JSON.stringify(fresh.metadata ?? {}).includes("/api/attachments/")) continue;
-        if (filesStopped || Date.now() - started > cfg.filesBudgetMs) { filesPending.push(copy.id); continue; }
+        if (!(fresh.content ?? "").includes("/api/attachments/") && !JSON.stringify(fresh.metadata ?? {}).includes("/api/attachments/")) { copy.files = false; continue; }
         // 🔒 The same gate as `POST /notes/:id/attachments/copy`: its caps on the copy and its
         // rate bucket — a duplicate is not a way around either.
         const gate = attachmentCopyGate(actor, fresh);
@@ -831,6 +857,7 @@ export function createDuplicateApi(opts: DuplicateApiOptions = {}) {
           files.copied += out.copied;
           files.failed += out.failed;
           if (out.more) filesPending.push(copy.id);
+          else copy.files = false; // done: a replay of this request spends nothing on it again
         } catch {
           filesPending.push(copy.id);
         }
