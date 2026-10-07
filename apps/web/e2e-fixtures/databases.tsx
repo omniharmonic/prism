@@ -248,7 +248,10 @@ if (!legacy) {
       }
     }
     for (const [k, h] of Object.entries(patch.ui ?? {})) merged.fields[k] = { ...(merged.fields[k] ?? {}), ...h, ...(h.colors ? { colors: { ...(merged.fields[k]?.colors ?? {}), ...h.colors } } : {}) };
-    schemas[tag] = { description: patch.description ?? cur.description, fields: merged.fields };
+    // `pinned` (what a page shows at the top): a property of the tag, ≤ 12, replaced whole; [] clears.
+    for (const k of patch.pinned ?? []) if (!merged.fields[k]) throw new VaultRequestError(400, `PUT /schemas failed: 400 ${JSON.stringify({ error: "bad_request", detail: `pinned: “${k}” is not a property of this tag` })}`);
+    const pinned = patch.pinned ?? cur.pinned;
+    schemas[tag] = { description: patch.description ?? cur.description, fields: merged.fields, ...(pinned?.length ? { pinned } : {}) };
     sessionStorage.setItem("db-fixture-schemas", JSON.stringify(schemas));
     return clone(schemas[tag]!);
   };

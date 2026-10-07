@@ -16,9 +16,9 @@ for (const width of [1440, 390, 320]) {
     await dialog.getByLabel("Editor Font", { exact: true }).selectOption("Georgia");
     await dialog.getByLabel("Code Font", { exact: true }).selectOption("Menlo");
     await dialog.getByLabel("Sidebar Label", { exact: true }).fill("Knowledge");
-    await dialog.getByRole("button", { name: "Services", exact: true }).click();
-    await expect(dialog.getByRole("button", { name: "Services", exact: true })).toHaveAttribute("aria-pressed", "true");
-    await expect(dialog.getByRole("button", { name: "Data Sources", exact: true })).toHaveCount(0);
+    await dialog.getByRole("button", { name: "AI & agent", exact: true }).click();
+    await expect(dialog.getByRole("button", { name: "AI & agent", exact: true })).toHaveAttribute("aria-pressed", "true");
+    await expect(dialog.getByRole("alert")).toHaveCount(0); // a server-backed shell has no host config to fail on
     await dialog.getByRole("button", { name: "Appearance", exact: true }).click();
     await expect(dialog.getByLabel("Editor Font", { exact: true })).toHaveValue("Georgia");
     await expect(dialog.getByLabel("Sidebar Label", { exact: true })).toHaveValue("Knowledge");

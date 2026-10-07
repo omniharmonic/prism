@@ -7,7 +7,7 @@ import { humanCollabRevision } from "@prism/core/collab-commands";
 import { sendHumanCommand } from "./humanCommands";
 import { humanRevisionBody } from "../../../../packages/core/src/lib/collab/human/validation";
 import { PageCover, parseCover, coverPatch, COVER_GRADIENTS, type PageCoverValue } from "@prism/core";
-import { COLLAB_SCHEMA_VERSION, useAgentDocumentSnapshot, CollabEditor, CommentsSidebar, collabAffordances, humanFailureText, HumanCommandFailure, PresenceAvatars, type CollabSocketScope, type CommentCommandActions, type HumanCommandChannel, CollabCodeEditor, CollabSpreadsheet, CollabCanvas, detectCodeLanguage, inferContentType, PageHeader, NotePropertyBar, PageProperties, renamePageFromTitle, useUIStore, useAgentChatStore, type ContentFont, type Note, type Editor } from "@prism/core";
+import { COLLAB_SCHEMA_VERSION, useAgentDocumentSnapshot, CollabEditor, CommentsSidebar, collabAffordances, humanFailureText, HumanCommandFailure, PresenceAvatars, type CollabSocketScope, type CommentCommandActions, type HumanCommandChannel, CollabCodeEditor, CollabSpreadsheet, CollabCanvas, detectCodeLanguage, inferContentType, PageHeader, NotePropertyBar, PageProperties, renamePageFromTitle, useUIStore, useWritingFont, useAgentChatStore, type ContentFont, type Note, type Editor } from "@prism/core";
 import { MessageSquare, X, Lock } from "lucide-react";
 import { serverFetch, collabWsUrl, collabToken, isNative } from "../transport";
 import { apiBase, agentScope, getCapabilityToken, getActiveVault, getMe, fetchMe, contextHeaders } from "../config";
@@ -202,7 +202,10 @@ function ScopedCollabDoc({
   const mounted = useRef(false);
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
   const [path, setPath] = useState<string | null>(null);
-  const [contentFont, setContentFont] = useState<ContentFont>("sans");
+  // The page's own font, else the device's writing font (Settings → Appearance).
+  const writingFont = useWritingFont();
+  const [ownFont, setContentFont] = useState<ContentFont | null>(null);
+  const contentFont: ContentFont = ownFont ?? writingFont;
   const [icon, setIcon] = useState<string | null>(null);
   const [cover, setCover] = useState<PageCoverValue | null>(null);
   const [uploadNotice, setUploadNotice] = useState<string | null>(null);
