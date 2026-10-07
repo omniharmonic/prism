@@ -254,7 +254,7 @@ export const SHOTS: Shot[] = [
     id: "NP-SB-14", section: SB, slug: "tools-section", title: "Tools section expanded", viewports: ["desktop", "phone"],
     look: "Tools is collapsed by default; expanded it lists Calendar, People, Automations, Map … as quiet rows below the pages.",
     url: fx("workspace", "?navigation"),
-    setup: async (page, c) => { const n = await navigation(page, c); await n.getByRole("button", { name: "Tools", exact: true }).click(); await vis(n.getByRole("button", { name: "Map", exact: true })); await n.getByRole("button", { name: "Map", exact: true }).scrollIntoViewIfNeeded(); },
+    setup: async (page, c) => { const n = await navigation(page, c); await n.getByRole("button", { name: "Tools", exact: true }).click(); await vis(n.getByRole("button", { name: "Map", exact: true })); await page.waitForTimeout(400); /* the section reveals itself — no scrolling by hand */ },
   },
   {
     id: "NP-SB-15", section: SB, slug: "footer-offline", title: "Sidebar footer: Offline · saved on this device", viewports: ["desktop"],
@@ -264,7 +264,7 @@ export const SHOTS: Shot[] = [
       await vis(editor(page));
       await c.context.setOffline(true);
       await typeAtEnd(page, " Footer offline edit.");
-      await page.locator(".workspace-navigation .sync-state-footer", { hasText: "Offline" }).waitFor({ timeout: 12_000 });
+      await page.locator(".workspace-navigation .sync-state-footer", { hasText: "saved on this device" }).waitFor({ timeout: 12_000 });
     },
   },
 
@@ -376,6 +376,18 @@ export const SHOTS: Shot[] = [
     setup: async (page) => {
       await vis(editor(page));
       await editor(page).locator("h2").first().click();
+      await page.getByRole("button", { name: "Outline", exact: true }).click();
+      await vis(page.getByRole("navigation", { name: "Document outline" }));
+    },
+  },
+  {
+    id: "NP-PG-11", section: PG, slug: "outline-beside", title: "Outline in the page margin (no side panel open)", viewports: ["desktop"],
+    look: "With room beside the text column the outline opens in the margin: it covers no breadcrumb, title or text.",
+    url: fx("workspace"),
+    setup: async (page) => {
+      await vis(editor(page));
+      // The fixture opens with the document panel; close it so the page has its margins.
+      await page.getByRole("button", { name: "Close document panel" }).click().catch(() => {});
       await page.getByRole("button", { name: "Outline", exact: true }).click();
       await vis(page.getByRole("navigation", { name: "Document outline" }));
     },
@@ -679,7 +691,8 @@ export const SHOTS: Shot[] = [
     url: fx("databases"),
     setup: async (page) => {
       await vis(page.getByRole("button", { name: "Review workspace navigation", exact: true }));
-      await page.locator(".db-table-wrap").first().evaluate((el) => { el.scrollLeft = 260; });
+      // One whole column slides under the frozen title column: the next column starts at its edge.
+      await page.locator(".db-table-wrap").first().evaluate((el) => { const th = el.querySelectorAll<HTMLElement>("thead th"); el.scrollLeft = th[2] && th[0] ? th[2].offsetLeft - th[0].offsetWidth : 260; });
       await page.waitForTimeout(300);
     },
   },
@@ -1006,7 +1019,7 @@ export const SHOTS: Shot[] = [
       await vis(editor(page));
       await c.context.setOffline(true);
       await typeAtEnd(page, " Offline edit.");
-      await page.locator(".sync-state-header, .sync-state-phone", { hasText: /Offline|this device/ }).first().waitFor({ timeout: 12_000 });
+      await page.locator(".sync-state-header, .sync-state-phone", { hasText: /[Ss]aved on this device/ }).first().waitFor({ timeout: 12_000 });
     },
   },
   {
@@ -1017,9 +1030,9 @@ export const SHOTS: Shot[] = [
       await vis(editor(page));
       await c.context.setOffline(true);
       await typeAtEnd(page, " Offline edit.");
-      await page.locator(".sync-state-header, .sync-state-phone", { hasText: /Offline|this device/ }).first().waitFor({ timeout: 12_000 });
+      await page.locator(".sync-state-header, .sync-state-phone", { hasText: /[Ss]aved on this device/ }).first().waitFor({ timeout: 12_000 });
       await page.evaluate(() => window.dispatchEvent(new CustomEvent("prism:open-saved-changes")));
-      await page.waitForTimeout(500);
+      await page.getByRole("dialog", { name: "Saved changes" }).getByRole("listitem").first().waitFor({ timeout: 12_000 });
     },
   },
 

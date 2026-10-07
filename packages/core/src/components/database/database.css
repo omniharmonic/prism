@@ -418,15 +418,15 @@
    A label over a value, no boxes: values, tags, "Add tag" and "Add property" were three control
    styles and a vertical rule — it read as a form. Hover and focus still show what can be edited. */
 .db-props-bar .db-value-bar .db-value-button:not([data-readonly]) { border-color: transparent; background: transparent; margin-left: -8px; }
-.db-props-bar .db-prop:not(.db-prop-tags):not(.db-prop-trailing) { flex: 0 0 auto; }
+@media (min-width: 768px) { .db-props-bar .db-prop:not(.db-prop-tags):not(.db-prop-trailing) { flex: 0 0 auto; } }
 .db-props-bar .db-value-bar .db-value-button:not([data-readonly]):hover,
 .db-props-bar .db-value-bar .db-value-button[aria-expanded="true"] { background: var(--glass-hover); }
 .db-props-bar .db-prop-tags, .db-props-bar .db-prop-updated { padding-left: 0; border-left: 0; }
 .db-props-bar .db-add-tag { border-color: transparent; background: transparent; color: var(--text-muted); padding: 0 8px; }
 .db-props-bar .db-add-tag:hover, .db-props-bar .db-add-tag[aria-expanded="true"] { background: var(--glass-hover); color: var(--text-primary); }
 @media (max-width: 767px) {
-  .db-props-bar { gap: 4px 14px; padding-bottom: 10px; }
-  .db-props-bar .db-prop { gap: 0; }
+  .db-props-bar { gap: 6px 14px; padding-bottom: 10px; }
+  .db-props-bar .db-prop { gap: 0; white-space: nowrap; }
   .db-props-bar .db-value-bar .db-value-button:not([data-readonly]) { width: calc(100% + 8px); }
 }
 

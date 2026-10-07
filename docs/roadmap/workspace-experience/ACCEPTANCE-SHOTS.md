@@ -35,7 +35,7 @@ node scripts/build-acceptance-gallery.mjs --max-mb 13
 
 ## Rows covered
 
-182 shot tests → 364 images (each test = light + dark). 104 states over 82 gallery cards.
+183 shot tests → 366 images (each test = light + dark). 105 states over 82 gallery cards (w14 added `NP-PG-11 outline-beside`).
 
 | Section | Rows | States | Images |
 |---|---|---|---|
@@ -137,6 +137,59 @@ Seen by reading the captured PNGs (about 110 of the 364: at least one per state,
 | 46 | NP-MB-01 | `NP-MB-01__more-sheet__*` | Sheet titled with the page name but mixes destinations with page actions; last row cut. |
 | 47 | NP-AX-01 | `NP-AX-01__settings-appearance__*` | 12 px native checkbox for Reduce motion at the far right of a full-width row; last row cut by the dialog edge. |
 | 48 | Header | every workspace shot | "Open 1 ⌄" has no label that says what it counts. |
+
+### Status after the w14 visual pass (branch `feat/w14-visual`)
+
+Fixed = changed in product code and the state recaptured and looked at (light and dark; desktop and phone where the state has both) unless the row says otherwise. "Before" images are the ones this list was written from.
+
+| # | Status | What changed / why not |
+|---|---|---|
+| 1 | **fixed** | A plain `<mark>` uses `--highlight-bg` (themed tint, AA text) instead of the browser's `#ff0` — `styles/workspace.css` `:where(mark)`. |
+| 2 | **fixed (CSS)** / rest → track db-calc | Phone table: the hover-only arrow no longer takes room, the 44 px title button is a block (ellipsis works), tighter checkbox gutter, stronger edge line — `database.css`. The "blank Status column" in the old shot was one column scrolled partly under the frozen one (the recipe now scrolls a whole column). Still needed in `views.tsx` (db-calc): the table's inline `width` keeps the 280 px title column while phone CSS forces 168 px, so the difference is spread over every column — compute the total from the phone title width. |
+| 3 | **fixed** (spec failed first) | `contentFont` is presentation state, never listed as a property: `PRESENTATION_KEYS` / `isListableKey` in `lib/database/schema.ts`. |
+| 4 | **fixed** | Sidebar footer ~180 px (was ~250): tighter rows, sync state beside the account (it wraps to its own line when long); the tree ends in a fade (a sticky gradient, not a mask — a mask hid the tree row menus). |
+| 5 | **fixed** (spec failed first) | A section opened from its header scrolls itself into view (`NavSection`). |
+| 6 | **fixed** | Header badge = the state and the one live region; the sidebar footer mirrors it silently; "Offline copy from …" is the one page line (caption, no band); the floating pill no longer appears for plain offline / healthy queued changes. |
+| 7 | **fixed** | Properties under the title: one quiet style (label over value, no boxes, no vertical rule, ghost "Add tag"). |
+| 8 | **fixed** | Page ⋯ menu: font / layout / export are one row each; the list fits the window and the page info is pinned under it. |
+| 9 | **partly** | With room beside the text column the outline opens IN the margin (covers nothing) — new state `NP-PG-11 outline-beside`. In a window too narrow for that (document panel open, as in `NP-PG-11 outline`) it is still an overlay over the top-left of the page. A never-covering outline there needs a docked panel that stays open — a product decision. |
+| 10 | **fixed** | Icon picker wears Prism tokens (surface, search field, focus ring, type scale, round tone swatch). It still opens over the title (a transient picker). |
+| 11 | **fixed** | Phone selection toolbar: one row that scrolls sideways with a fading end. It still sits above the selection (a bubble covers what is above it). |
+| 12 | **partly** | Selects carry the app's one chevron (main's form-control rule, after the old capture); person rows use quiet controls (no boxed select / trash). Not changed: the amount of explanation text and the dialog's height. |
+| 13 | **fixed** | Comments: the one tabs style, 28 px thread actions with 14 px icons, 13 px fields (16 px on touch). |
+| 14 | **partly** / rest → CollabDoc tracks | "Accept all" / "Reject all" are labelled. The toolbar's position and width on `/collab` are laid out in `apps/web/src/collab/CollabDoc.tsx` (not edited here): mount the bar above the page header, full width and sticky, as the workspace does. |
+| 15 | **partly** | Card controls are quiet text until pointed at. Removing the per-card status select and the Earlier / Later buttons (the ⋯ menu and drag already do both) is a `TaskBoardRenderer` change that `boards.spec.ts` drives — not done. |
+| 16 | **fixed (CSS)** | Phone database toolbar: tabs, search, one row of 44 px icon actions + New. |
+| 17 | **partly** | Filters sits in the kinds row, the status line is slim, recent rows show where the page lives instead of repeating "Recently opened". Not changed: Title Case command names (specs select commands by name) and the two footer rows. |
+| 18 | **fixed** (highlight) | A match is tinted (`--highlight-bg`) as well as bold. The snippet's heading-to-body join is unchanged. |
+| 19 | **fixed (CSS)** | Phone search filters: one row of chips that scrolls sideways. |
+| 20 | **fixed — product bug** (spec failed first) | The header said "saved on this device" during the autosave debounce, before the change was in the on-device queue; the dialog lists that queue. Now: `Offline · saving on this device…` until it is queued, and the dialog says "Saving your latest edit on this device…" in the gap. |
+| 21 | **fixed** | ONE tabs style: `.prism-tabs` / `.prism-tab` (`styles/workspace.css`), applied to workspace settings, the document panel, History, Comments, the version viewer, ⌘K kinds; Share / Inbox / database views aligned to the same look. |
+| 22 | **fixed** | Home: recent pages are compact one-line cards that fill the row; task status reads as words. |
+| 23 | **not changed — owner's call** | Status bar and second toolbar row. |
+| 24 | **fixed (CSS)** | Row peek: no breadcrumb, 28 px title, less air above. The toolbar row remains. |
+| 25 | **fixed** | One line ("Workspaces & vaults…", full name kept for assistive tech). |
+| 26 | **partly** | The three exports are one row in the tree row menu too. The phone sheet still has no Rename. |
+| 27 | **partly** | Phone: the row detail wraps to two lines. Desktop scrim unchanged. |
+| 28 | **partly** | No "(⌘K)" on a phone. The strip under the sticky search field and the chevron's pressed square are unchanged. |
+| 29 | **partly** | The two switches use the tabs style. "50/50" and the repeated dates are unchanged. |
+| 30 | **fixed** | One prompt (the starters line reads "Or start with"). |
+| 31 | **partly** | List items sit closer; nested bullets use circle / square. The toggle arrow is unchanged. |
+| 32 | not changed | Slash menu placement on a phone. |
+| 33 | **fixed** | The colour menu shows both groups (taller). |
+| 34 | → track deviations | `ShortcutSheet.tsx` is theirs. |
+| 35 | not changed | Link card placement. |
+| 36 | not changed | Showing "In progress" for `in-progress` in database cells changes what many specs read; needs an owner decision (option labels exist as a schema hint). |
+| 37 | not changed | Needs an `onError` fallback in the gallery card (`views.tsx`). |
+| 38 | **fixed** | "Expires Oct 6". |
+| 39 | **partly** | Accept uses the action tokens in both themes. Per-author colours unchanged. |
+| 40 | **partly** | The heavy outline was `--border-subtle`, used in 16 places and defined nowhere (borders fell back to the text colour) — now defined. The header's save dot / star / share on an unavailable page are unchanged. |
+| 41 | **fixed** | Published page title: 34 px, bold. |
+| 42–43, 46 | not changed | |
+| 44 | **partly** | The keyboard toolbar's end fades. Grip spacing unchanged. |
+| 45 | not changed | The footer sentence is the only place the server's reason is shown and four specs drive its Retry. |
+| 47 | → track appearance | Settings → Appearance is theirs. |
+| 48 | → track deviations | `TabBar` header is theirs. |
 
 Not seen in any capture: a white panel in dark mode, sideways page scroll, a focus ring around the writing surface, bottom controls over content.
 
