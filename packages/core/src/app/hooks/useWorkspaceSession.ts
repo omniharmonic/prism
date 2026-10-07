@@ -20,6 +20,16 @@ type Panel = ReturnType<typeof useUIStore.getState>["contextPanelTab"];
 type Session = { version: 1; ids: string[]; active: string | null; panel: Panel; panelOpen: boolean };
 type Restore = { state: "idle" | "loading" | "partial"; retry: () => void; dismiss: () => void };
 const IDLE: Restore = { state: "idle", retry: () => {}, dismiss: () => {} };
+// The tab this layer — not a person — made active last (a restored workspace, or Home after
+// a vault switch). It lands whenever the network answers, so anything that reacts to "a page
+// was opened" (the phone drawer closing) must be able to tell it from a deliberate open.
+let automaticTab: string | null = null;
+/** True once for the tab the session layer itself just made active; any other id clears the mark. */
+export function takeAutomaticTab(tabId: string | null): boolean {
+  const hit = tabId !== null && automaticTab === tabId;
+  automaticTab = null;
+  return hit;
+}
 function eligible(id: unknown): id is string {
   return typeof id === "string" && id.length > 0 && id.length <= 2048 &&
     !/[\u0000-\u001f]/.test(id) && (isVaultNoteId(id) || Object.prototype.hasOwnProperty.call(VIRTUAL, id));
@@ -99,6 +109,7 @@ export function useWorkspaceSession(): Restore {
       const tabs = [...state.openTabs, ...results.filter((tab): tab is TabState => !!tab && !existing.has(tab.noteId))];
       const active = state.activeTabId ?? tabs.find(t => t.noteId === desired?.active)?.id ?? tabs[0]?.id ?? null;
       applying = true;
+      if (!state.activeTabId) automaticTab = active;
       useUIStore.setState({ openTabs: tabs, activeTabId: active,
         ...(state.activeTabId ? {} : { navHistory: active ? [active] : [], navIndex: active ? 0 : -1 }),
         ...(!retry && desired ? { contextPanelTab: desired.panel,
@@ -126,6 +137,7 @@ export function useWorkspaceSession(): Restore {
       else if (!useSettingsStore.getState().startWithLastDocument) {
         // "Start with last open document" off → launch on Home (NP-SB-03).
         desired = null; ready = true; show("idle");
+        automaticTab = "tab-home";
         useUIStore.getState().openTab("home", "Home", "home" as ContentType);
       }
       else void reopen();

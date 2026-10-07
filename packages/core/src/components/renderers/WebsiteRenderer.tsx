@@ -3,6 +3,7 @@ import { Eye, Code, Columns } from "lucide-react";
 import type { RendererProps } from "./RendererProps";
 import { useAutoSave } from "../../app/hooks/useAutoSave";
 
+import { formatTime as fmtTime } from "../../lib/datetime/format";
 export default function WebsiteRenderer({ note, readOnly }: RendererProps) {
   const [view, setView] = useState<"split" | "code" | "preview">("split");
   const [content, setContent] = useState(note.content || "");
@@ -43,7 +44,7 @@ export default function WebsiteRenderer({ note, readOnly }: RendererProps) {
             ))}
           </div>
           <span className="text-xs" style={{ color: "var(--text-muted)" }}>
-            {isSaving ? "Saving..." : lastSaved ? `Saved ${lastSaved.toLocaleTimeString()}` : ""}
+            {isSaving ? "Saving..." : lastSaved ? `Saved ${fmtTime(lastSaved)}` : ""}
           </span>
         </div>
       </div>

@@ -4,6 +4,7 @@ import { useUIStore } from "../../../app/stores/ui";
 import { inferContentType } from "../../../lib/schemas/content-types";
 import type { Note } from "../../../lib/types";
 
+import { formatDate as fmtDate } from "../../../lib/datetime/format";
 interface NoteListWidgetProps {
   filter?: Record<string, unknown>;
 }
@@ -75,10 +76,10 @@ export function NoteListWidget({ filter }: NoteListWidgetProps) {
 
 function formatShortDate(iso: string): string {
   try {
-    return new Date(iso).toLocaleDateString("en-US", {
+    return fmtDate(new Date(iso), {
       month: "short",
       day: "numeric",
-    });
+    }, { locale: "en-US" });
   } catch {
     return "";
   }

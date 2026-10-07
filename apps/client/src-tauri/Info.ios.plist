@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Merged by Tauri into gen/apple/prism-client_iOS/Info.plist on every iOS build (WP5). -->
+<plist version="1.0">
+<dict>
+	<!-- Home-screen name; the App Store name ("Prism Workspace") lives in App Store Connect. -->
+	<key>CFBundleDisplayName</key>
+	<string>Prism</string>
+	<!-- Only standard HTTPS/TLS (Apple's exemption): no export-compliance documents needed. -->
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
+	<!-- The optional app lock (Settings → Security). -->
+	<key>NSFaceIDUsageDescription</key>
+	<string>Prism uses Face ID to unlock your workspace when you turn on the app lock.</string>
+	<!-- The prism:// deep-link scheme (NP-NA-04): prism://page/<id>, prism://inbox[/<id>],
+	     prism://agent[/<id>], validated in src/links.rs. The same entry as src-tauri/Info.plist
+	     (macOS), repeated here so the iOS build registers it whether or not the bundler merges
+	     that file too. The sign-in redirect prism://auth/callback is NOT handled as a link:
+	     ASWebAuthenticationSession hands it straight back to signin.rs, and links.rs refuses
+	     everything under prism://auth. -->
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleTypeRole</key>
+			<string>Viewer</string>
+			<key>CFBundleURLName</key>
+			<string>com.benjaminlife.prism.client</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>prism</string>
+			</array>
+		</dict>
+	</array>
+	<!-- No App Transport Security exception here: ATS is fully on in Release. Debug builds
+	     get the local-networking exception from a Debug-only build phase (gen/apple/project.yml) so a
+	     local test server on http://127.0.0.1 works in the simulator; origin.rs refuses
+	     http:// on iOS release builds as well. -->
+</dict>
+</plist>

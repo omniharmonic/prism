@@ -297,9 +297,12 @@ test.describe("plain editor block handles", () => {
     await expect(page.locator(".block-drop-indicator")).toHaveCount(0);
     // The moved blocks stay selected; one ⌘Z puts both back.
     await expect.poll(() => page.evaluate(() => [...document.querySelectorAll(".tiptap > .prism-block-selected")].map((el) => el.textContent))).toEqual(["Bravo paragraph", "Charlie itemDelta item"]);
+    // After a drop the keyboard belongs to the editor again (it returns a frame later: until
+    // then the keys would go to the handle that was dragged, and nothing would be undone).
+    await expect(page.locator(".tiptap")).toBeFocused();
     await page.keyboard.press("ControlOrMeta+z");
     await page.keyboard.press("ControlOrMeta+z"); // (the trailing paragraph the list needed at the end)
-    expect((await blockTexts(page)).slice(0, 5)).toEqual(["heading:Alpha", "paragraph:Bravo paragraph", "bulletList:Charlie itemDelta item", "blockquote:Echo quote", "paragraph:Foxtrot closing"]);
+    await expect.poll(async () => (await blockTexts(page)).slice(0, 5)).toEqual(["heading:Alpha", "paragraph:Bravo paragraph", "bulletList:Charlie itemDelta item", "blockquote:Echo quote", "paragraph:Foxtrot closing"]);
   });
 
   // NP-ED-09: dropping a block on the far right (or the left margin) of another makes columns.

@@ -290,6 +290,7 @@ export type ContentFont = "sans" | "serif" | "mono";
 export { renamePath } from "../../lib/pages/model";
 import { withoutExtension } from "../../lib/pages/model";
 
+import { formatDate as fmtDate, formatDateTime as fmtDateTime } from "../../lib/datetime/format";
 /** Notion-style page header: breadcrumb of the folder path + a large sans title
  *  derived from the filename. `right` is an optional slot for status/actions
  *  (e.g. collab presence + comments toggle). Display-only. */
@@ -414,14 +415,14 @@ export function PageProperties({path, tags, updatedAt, onOpenAll}: {
 }) {
   const date = updatedAt && !Number.isNaN(new Date(updatedAt).getTime()) ? new Date(updatedAt) : null;
   return <>
-    {date && <time dateTime={updatedAt!} title={date.toLocaleString()}>Updated {date.toLocaleDateString(undefined,{month:"short",day:"numeric"})}</time>}
+    {date && <time dateTime={updatedAt!} title={fmtDateTime(date)}>Updated {fmtDate(date, {month:"short",day:"numeric"})}</time>}
     <details className="document-properties-disclosure">
       <summary className="focus-ring">Properties <ChevronRight size={14} aria-hidden="true" /></summary>
       <div className="document-properties-content">
         <dl>
           {path && <><dt>Location</dt><dd>{path}</dd></>}
           {tags && <><dt>Tags</dt><dd>{tags.length ? tags.map(tag => <span className="document-property-tag" key={tag}>{tag}</span>) : "No tags"}</dd></>}
-          {date && <><dt>Updated</dt><dd>{date.toLocaleString()}</dd></>}
+          {date && <><dt>Updated</dt><dd>{fmtDateTime(date)}</dd></>}
         </dl>
         {onOpenAll && <button type="button" className="document-properties-control focus-ring" onClick={onOpenAll}>Open all properties <ChevronRight size={14} aria-hidden="true" /></button>}
       </div>

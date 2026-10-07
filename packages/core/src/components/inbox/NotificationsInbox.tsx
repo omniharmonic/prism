@@ -7,6 +7,7 @@ import { notificationsApi, type AccessLevel, type NotificationItem, type Notific
 import { NotificationSettingsPanel } from "./NotificationSettingsPanel";
 import { useSwipeActions } from "../../lib/gestures/useSwipeActions";
 import { usePullToRefresh } from "../../lib/gestures/usePullToRefresh";
+import { formatDate as fmtDate, formatTime as fmtTime } from "../../lib/datetime/format";
 import "./inbox.css";
 
 type Filter = "all" | "mentions" | "assigned" | "replies" | "reminders" | "requests";
@@ -33,8 +34,8 @@ function groupOf(ts: number, now = Date.now()): "Today" | "Yesterday" | "Earlier
 function timeLabel(ts: number): string {
   const d = new Date(ts);
   const g = groupOf(ts);
-  if (g === "Earlier") return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
-  return d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+  if (g === "Earlier") return fmtDate(d, { month: "short", day: "numeric" });
+  return fmtTime(d, { hour: "numeric", minute: "2-digit" });
 }
 
 /** One plain sentence per type. Names and titles are text nodes (never HTML). */

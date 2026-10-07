@@ -26,6 +26,7 @@ import { OptionChip, PropertyDisplay, PropertyValue } from "./PropertyValue";
 import { Popover } from "./Popover";
 import { applyRank, reorderRank, type DatabaseView } from "./config";
 import { coverForNote, firstFileUrl } from "../../lib/media/attachments";
+import { CalcCell, CalcCountCell, CalcFooter, CalcSummary, calcGridKey, type CalcState } from "./Calculations";
 import { walkTab } from "../../lib/a11y/tabWalk";
 
 export interface ViewContext {
@@ -47,6 +48,8 @@ export interface ViewContext {
   updateView: (patch: Partial<DatabaseView>) => void;
   /** Open the property editor (only for people who may change the schema). */
   editProperty?: (def: PropertyDef) => void;
+  /** Calculations over the whole view (NP-DB-26); absent where a layout has none. */
+  calc?: CalcState;
 }
 
 const title = (r: QueryRow) => noteTitle(r);
@@ -76,7 +79,7 @@ function useCollapsed(viewId: string) {
 }
 
 /** A collapsible group header with its count (table and list). */
-function GroupHeader({ g, def, open, onToggle }: { g: { value: string | null; label: string; rows: QueryRow[] }; def: PropertyDef; open: boolean; onToggle: () => void }) {
+function GroupHeader({ g, def, open, onToggle, extra }: { g: { value: string | null; label: string; rows: QueryRow[] }; def: PropertyDef; open: boolean; onToggle: () => void; extra?: ReactNode }) {
   return (
     <h3 className="db-group-head">
       <button type="button" className="db-group-toggle focus-ring" aria-expanded={open} aria-label={`${open ? "Collapse" : "Expand"} ${g.label}`} onClick={onToggle}>
@@ -84,6 +87,7 @@ function GroupHeader({ g, def, open, onToggle }: { g: { value: string | null; la
       </button>
       {g.value !== null && def.kind !== "checkbox" && def.kind !== "person" ? <OptionChip value={g.value} label={g.label} color={def.options.find((o) => o.value === g.value)?.color ?? optionColor(g.value)} /> : <span>{g.label}</span>}
       <span className="db-badge-count" aria-label={`${g.rows.length} ${g.rows.length === 1 ? "page" : "pages"}`}>{g.rows.length}</span>
+      {extra}
     </h3>
   );
 }
@@ -150,7 +154,7 @@ function groupRows(rows: QueryRow[], def: PropertyDef | undefined): Array<{ valu
   for (const v of order) buckets.set(v, []);
   for (const r of rows) {
     const raw = cell(r, def);
-    const vals = def.kind === "checkbox" ? [String(raw === true)] : Array.isArray(raw) ? raw.map(String) : isBlank(raw) ? [null] : [String(raw)];
+    const vals = def.kind === "checkbox" ? [String(raw === true)] : Array.isArray(raw) ? [...new Set(raw.map(String))] : isBlank(raw) ? [null] : [String(raw)];
     for (const v of vals.length ? vals : [null]) {
       if (!buckets.has(v)) buckets.set(v, []);
       buckets.get(v)!.push(r);
@@ -244,7 +248,7 @@ function onGridKey(e: React.KeyboardEvent<HTMLTableElement>) {
   target?.focus();
 }
 
-function TableBlock({ ctx, rows, preset, label }: { ctx: ViewContext; rows: QueryRow[]; preset?: Record<string, unknown>; label: string }) {
+function TableBlock({ ctx, rows, preset, label, group }: { ctx: ViewContext; rows: QueryRow[]; preset?: Record<string, unknown>; label: string; /** A grouped table's section: its footer is the group's. */ group?: { value: string | null; label: string } }) {
   const [widths, setWidths] = useState<Record<string, number>>(ctx.view.widths ?? {});
   const [adding, setAdding] = useState(false);
   const w = (k: string, d: number) => widths[k] ?? ctx.view.widths?.[k] ?? d;
@@ -255,7 +259,7 @@ function TableBlock({ ctx, rows, preset, label }: { ctx: ViewContext; rows: Quer
   const someOn = !!sel && rows.some((r) => sel.ids.has(r.id));
   return (
     <div className="db-table-wrap">
-      <table className="db-table" style={{ width: total }} aria-label={label} data-multiselect={sel ? "" : undefined} onKeyDown={onGridKey}>
+      <table className="db-table" style={{ width: total }} aria-label={label} data-multiselect={sel ? "" : undefined} data-wrap={ctx.view.wrap ? "" : undefined} onKeyDown={(e) => { if (!calcGridKey(e)) onGridKey(e); }}>
         <colgroup>
           <col className="db-col-title" style={{ width: w("$title", 280) }} />
           {ctx.shown.map((p) => <col key={p.key} style={{ width: w(p.key, 180) }} />)}
@@ -302,6 +306,14 @@ function TableBlock({ ctx, rows, preset, label }: { ctx: ViewContext; rows: Quer
             </tr>
           )}
         </tbody>
+        {ctx.calc && (
+          <tfoot>
+            <tr className="db-calc-row">
+              <CalcCountCell calc={ctx.calc} group={group} loaded={rows.length} />
+              {ctx.shown.map((p) => <CalcCell key={p.key} def={p} calc={ctx.calc!} group={group} />)}
+            </tr>
+          </tfoot>
+        )}
       </table>
     </div>
   );
@@ -317,11 +329,12 @@ export function TableView({ ctx }: { ctx: ViewContext }) {
         const open = !collapsed.has(groupKey(g.value));
         return (
           <section key={groupKey(g.value)} aria-label={g.label} className="db-group">
-            <GroupHeader g={g} def={groupDef} open={open} onToggle={() => toggle(groupKey(g.value))} />
-            {open && <TableBlock ctx={ctx} rows={g.rows} label={g.label} preset={groupPreset(groupDef, g.value)} />}
+            <GroupHeader g={g} def={groupDef} open={open} onToggle={() => toggle(groupKey(g.value))} extra={!open && ctx.calc ? <CalcSummary calc={ctx.calc} props={ctx.props} group={g} /> : undefined} />
+            {open && <TableBlock ctx={ctx} rows={g.rows} label={g.label} preset={groupPreset(groupDef, g.value)} group={g} />}
           </section>
         );
       })}
+      {ctx.calc && Object.keys(ctx.calc.chosen).length > 0 && <CalcFooter calc={ctx.calc} props={ctx.props} loaded={ctx.rows.length} label={`Totals for ${ctx.view.name}`} />}
     </>
   );
 }
@@ -397,14 +410,14 @@ function BoardCard({ row, ctx, columns, groupDef, colRows }: {
   );
 }
 
-function BoardColumn({ value, label, def, children, count, onAdd }: { value: string | null; label: string; def: PropertyDef; children: ReactNode; count: number; onAdd?: () => void }) {
+function BoardColumn({ value, label, def, children, count, onAdd, extra }: { value: string | null; label: string; def: PropertyDef; children: ReactNode; count: number; onAdd?: () => void; extra?: ReactNode }) {
   const drop = useDroppable({ id: `col:${value ?? ""}`, data: { value } });
   const color = value === null ? "gray" : def.options.find((o) => o.value === value)?.color ?? optionColor(value);
   return (
     /* The board is a list of columns: each column region sits in a box-less list item. */
     <div role="listitem" style={{ display: "contents" }}>
     <section ref={drop.setNodeRef} className="db-col" aria-label={label} data-over={drop.isOver || undefined} style={{ ["--hue" as string]: `var(--db-hue-${color}, ${HUES[color]})` }}>
-      <header className="db-col-head"><span className="db-dot" aria-hidden="true" /> {label} <span className="db-badge-count">{count}</span></header>
+      <header className="db-col-head"><span className="db-dot" aria-hidden="true" /> {label} <span className="db-badge-count">{count}</span>{extra}</header>
       {onAdd && <button type="button" className="db-col-add" onClick={onAdd}><Plus size={14} aria-hidden="true" /> Add {def.kind === "status" ? "item" : "page"}</button>}
       {children}
     </section>
@@ -463,7 +476,8 @@ export function BoardView({ ctx, onPickGroup }: { ctx: ViewContext; onPickGroup:
     <DndContext sensors={sensors} collisionDetection={boardCollision} onDragEnd={onDragEnd}>
       <div className="db-board" role="list" aria-label={`${ctx.view.name} board`}>
         {shownGroups(groups, ctx.view, adding).map((g) => (
-          <BoardColumn key={g.value ?? "∅"} value={g.value} label={g.label} def={groupDef} count={g.rows.length}
+          <BoardColumn key={g.value ?? "∅"} value={g.value} label={g.label} def={groupDef} count={ctx.calc?.groups?.get(g.value)?.count ?? g.rows.length}
+            extra={ctx.calc && <CalcSummary calc={ctx.calc} props={ctx.props} group={g} />}
             onAdd={ctx.canCreate ? () => setAdding(g.value) : undefined}>
             {adding === g.value && (
               <div className="db-card"><NewRowForm label={`New page in ${g.label}`} onCancel={() => setAdding(undefined)}
@@ -513,6 +527,7 @@ export function GalleryView({ ctx }: { ctx: ViewContext }) {
           {adding ? <NewRowForm onCreate={(t) => ctx.create(t)} onCancel={() => setAdding(false)} /> : <button type="button" className="db-new-row" style={{ justifyContent: "center", minHeight: 120 }} onClick={() => setAdding(true)}><Plus size={14} aria-hidden="true" /> New</button>}
         </article>
       )}
+      {ctx.calc && Object.keys(ctx.calc.chosen).length > 0 && <CalcFooter calc={ctx.calc} props={ctx.props} loaded={ctx.rows.length} label={`Totals for ${ctx.view.name}`} />}
     </div>
   );
 }
@@ -538,18 +553,20 @@ function ListRows({ ctx, rows, preset, label }: { ctx: ViewContext; rows: QueryR
 export function ListView({ ctx }: { ctx: ViewContext }) {
   const groupDef = ctx.props.find((p) => p.key === ctx.view.groupBy);
   const { collapsed, toggle } = useCollapsed(ctx.view.id);
-  if (!groupDef) return <ListRows ctx={ctx} rows={ctx.rows} label={`${ctx.view.name} list`} />;
+  const totals = ctx.calc && Object.keys(ctx.calc.chosen).length > 0 ? <CalcFooter calc={ctx.calc} props={ctx.props} loaded={ctx.rows.length} label={`Totals for ${ctx.view.name}`} /> : null;
+  if (!groupDef) return <><ListRows ctx={ctx} rows={ctx.rows} label={`${ctx.view.name} list`} />{totals}</>;
   return (
     <>
       {shownGroups(groupRows(ctx.rows, groupDef), ctx.view).map((g) => {
         const open = !collapsed.has(groupKey(g.value));
         return (
           <section key={groupKey(g.value)} aria-label={g.label} className="db-group">
-            <GroupHeader g={g} def={groupDef} open={open} onToggle={() => toggle(groupKey(g.value))} />
+            <GroupHeader g={g} def={groupDef} open={open} onToggle={() => toggle(groupKey(g.value))} extra={ctx.calc && <CalcSummary calc={ctx.calc} props={ctx.props} group={g} />} />
             {open && <ListRows ctx={ctx} rows={g.rows} label={`${g.label} list`} preset={groupPreset(groupDef, g.value)} />}
           </section>
         );
       })}
+      {totals}
     </>
   );
 }

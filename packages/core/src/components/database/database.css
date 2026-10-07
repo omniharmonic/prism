@@ -283,6 +283,9 @@
 .db-peek-scrim { position: absolute; inset: 0; pointer-events: auto; background: rgba(15, 15, 20, .32); }
 .db-peek-head { display: flex; align-items: center; gap: 6px; min-height: 44px; padding: 4px 10px; border-bottom: 1px solid var(--glass-border); }
 .db-peek-head .db-ghost { margin-left: auto; }
+.db-peek-steps { display: inline-flex; align-items: center; gap: 2px; padding-left: 6px; border-left: 1px solid var(--glass-border); }
+.db-peek-steps [aria-disabled="true"] { opacity: .4; cursor: default; }
+.db-peek-count { padding: 0 6px; font-size: 12px; color: var(--text-muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .db-peek-modes { display: inline-flex; gap: 2px; padding-left: 6px; border-left: 1px solid var(--glass-border); }
 .db-peek-modes [aria-pressed="true"] { background: var(--glass-active, var(--glass-hover)); color: var(--text-primary); }
 .db-peek-body { flex: 1; min-height: 0; overflow: auto; }
@@ -400,3 +403,46 @@
   .db-gallery[data-size="large"] .db-cover { height: 160px; }
 }
 @media (max-width: 420px) { .db-gallery[data-size="small"] { grid-template-columns: 1fr 1fr; } }
+
+/* calculations (NP-DB-26): the footer row of a table, and read-only figures elsewhere */
+.db-sr-only { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
+.db-table tfoot th, .db-table tfoot td { border-bottom: 0; height: 34px; font-weight: 400; vertical-align: middle; }
+.db-calc-btn, .db-calc-static { display: flex; align-items: baseline; justify-content: flex-end; gap: 6px; width: 100%; min-height: 34px; padding: 6px 10px; color: var(--text-secondary); font-size: 12.5px; text-align: right; }
+.db-calc-static { justify-content: flex-start; }
+.db-calc-btn:hover, .db-calc-btn[aria-expanded="true"] { background: var(--glass-hover); }
+.db-calc-prompt { display: inline-flex; align-items: center; gap: 4px; }
+.db-calc-btn[data-empty] .db-calc-prompt { opacity: 0; transition: opacity var(--motion-fast, .12s); }
+.db-calc-row:hover .db-calc-btn[data-empty] .db-calc-prompt, .db-calc-btn[data-empty]:focus-visible .db-calc-prompt, .db-calc-btn[data-empty][aria-expanded="true"] .db-calc-prompt { opacity: 1; }
+.db-calc-label { color: var(--text-muted); font-size: 10.5px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; white-space: nowrap; }
+.db-calc-value { color: var(--text-primary); font-size: 13px; font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.db-calc-menu > button, .db-calc-family > button { display: flex; align-items: center; gap: 8px; width: 100%; min-height: 32px; padding: 0 8px; border-radius: 6px; text-align: left; font-size: 13px; }
+.db-calc-family > button:hover { background: var(--glass-hover); }
+.db-calc-family { display: grid; border-top: 1px solid var(--glass-border); margin-top: 4px; padding-top: 2px; }
+.db-calc-check { display: inline-flex; width: 14px; flex: none; color: var(--color-accent); }
+.db-calc-summary { display: inline-flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; margin-left: 4px; font-weight: 400; }
+.db-calc-chip { display: inline-flex; align-items: baseline; gap: 5px; }
+.db-calc-footer { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 14px; margin: 10px 2px 0; padding-top: 8px; border-top: 1px solid var(--glass-border); grid-column: 1 / -1; }
+.db-calc-footer .db-calc-summary { margin-left: 0; }
+.db-col-head .db-calc-summary { flex-basis: 100%; margin-left: 0; }
+.db-col-head { flex-wrap: wrap; }
+/* Wrap cells (per table view; default off): one line per cell, or rows that grow. */
+.db-table:not([data-wrap]) .db-value-cell .db-text, .db-table:not([data-wrap]) .db-value-cell .db-url { display: block; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.db-table[data-wrap] .db-row-open { white-space: normal; overflow-wrap: anywhere; }
+.db-table[data-wrap] .db-title-cell { align-items: flex-start; }
+@media (max-width: 767px) {
+  .db-calc-btn, .db-calc-static { min-height: 44px; }
+  .db-calc-btn[data-empty] .db-calc-prompt { opacity: 1; }
+  .db-calc-menu > button, .db-calc-family > button { min-height: 44px; }
+  .db-group-head { flex-wrap: wrap; }
+}
+@media (hover: none) { .db-calc-btn[data-empty] .db-calc-prompt { opacity: 1; } }
+@media print {
+  .db-calc-btn[data-empty] .db-calc-prompt { display: none; }
+  /* A footer group would be repeated on every printed page: print it once, after the last row. */
+  .db-table tfoot { display: table-row-group; }
+  .db-table tfoot th, .db-table tfoot td { border-top: 1px solid #999; }
+}
+/* "Me" as a person filter value */
+.db-cond-me { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.db-cond-me > input { flex: 1; min-width: 0; }
+.db-cond-me > .db-control[aria-pressed="true"] { background: color-mix(in srgb, var(--color-accent) 16%, var(--bg-surface)); border-color: var(--color-accent); color: var(--text-primary); }

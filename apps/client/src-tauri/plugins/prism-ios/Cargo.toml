@@ -1,0 +1,14 @@
+[package]
+name = "tauri-plugin-prism-ios"
+version = "0.1.0"
+description = "Prism Client's iOS glue (WP5): ASWebAuthenticationSession sign-in, native confirmations, APNs registration, Face ID app lock. Rust-only API: no webview-callable commands."
+edition = "2021"
+publish = false
+links = "tauri-plugin-prism-ios"
+
+[dependencies]
+tauri = { version = "2" }
+serde = { version = "1", features = ["derive"] }
+
+[build-dependencies]
+tauri-plugin = { version = "2", features = ["build"] }

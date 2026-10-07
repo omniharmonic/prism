@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import type { Editor } from "@tiptap/react";
 import { TextSelection, type Transaction } from "@tiptap/pm/state";
-import { GripVertical, Plus, Copy, CopyPlus, Trash2, ArrowUp, ArrowDown, Repeat2, Palette, FolderInput, MessageSquarePlus, Sparkles, FileText, Wand2 } from "lucide-react";
+import { GripVertical, Plus, Copy, CopyPlus, Trash2, ArrowUp, ArrowDown, Repeat2, Palette, FolderInput, Link2, MessageSquarePlus, Sparkles, FileText, Wand2 } from "lucide-react";
 import { BLOCK_COLORS, type BlockColorValue } from "../../editor/blocks";
 import {
   TURN_INTO,
@@ -29,6 +29,7 @@ import { TURN_INTO_ICONS, colorLabel } from "./blockUi";
 import { blockSelectionActive, blockSelectionRange, selectBlocks } from "../../lib/tiptap/EditorKeys";
 import { appendBlocksToPage, blocksToHtml, canMoveBlocksToPage, carryAttachments, copyBlocks, moveFailureText, newMoveRequestId } from "../../lib/tiptap/moveBlock";
 import { suppressTrashOffer } from "../../lib/tiptap/childPage";
+import { copyHeadingLink } from "../../lib/pages/headingLinks";
 import { useSelectionAsk } from "../../lib/agent/useSelectionAsk";
 import { useHostServices } from "../../data/HostServicesContext";
 import { noteForEditor } from "../../lib/agent/documentSnapshots";
@@ -40,6 +41,7 @@ import { inferContentType } from "../../lib/schemas/content-types";
 import { isTrashed, protectionReason } from "../../lib/pages/model";
 import type { Note } from "../../lib/types";
 import "./ShortcutSheet"; // installs ⌘⇧/, ? and (outside a block) ⌘/ → keyboard shortcuts
+import "../../lib/tiptap/toggleAll"; // installs ⌘⌥T → expand / collapse all toggles (view state only)
 
 interface Hovered {
   index: number;
@@ -362,6 +364,10 @@ export function BlockHandles({ editor, enabled, notes, noteId, onComment }: Bloc
           selectBlocks(editor.view, start, start + count - 1);
         }
       }
+      // At once, not a frame later (TipTap's focus command waits for the next frame): until the
+      // editor has focus again the keyboard belongs to nothing, and ⌘Z right after a drop went to
+      // the browser instead of undoing the move.
+      editor.view.focus();
       editor.commands.focus();
     };
     document.addEventListener("dragover", onOver, true);
@@ -396,11 +402,14 @@ export function BlockHandles({ editor, enabled, notes, noteId, onComment }: Bloc
   const canAsk = agent.available && hasText;
 
   /** Select the block's text so Comment / Ask agent act on exactly this block. */
-  const selectBlockText = (at: { pos: number }) => {
+  // `focus: false` for callers that open their own field (the comment composer): TipTap focuses a frame later
+  // and would take the keyboard back, so the typed comment replaced the block's text.
+  const selectBlockText = (at: { pos: number }, focus = true) => {
     const node = editor.state.doc.nodeAt(at.pos);
     if (!node) return null;
     const range = { from: at.pos + 1, to: at.pos + node.nodeSize - 1 };
-    editor.chain().focus().setTextSelection(range).run();
+    if (focus) editor.chain().focus().setTextSelection(range).run();
+    else editor.chain().setTextSelection(range).run();
     return range;
   };
   const moveTo = (target: Note) => {
@@ -429,6 +438,7 @@ export function BlockHandles({ editor, enabled, notes, noteId, onComment }: Bloc
     }, (e) => setNotice(moveFailureText(e, title)));
   };
 
+  const headingNoteId = noteId ?? noteForEditor(editor)?.noteId ?? null;
   const mainItems: EditorMenuItem[] = [
     // Phones have no + button and no "/" key handy: insert lives in the menu.
     ...(narrow ? [{ id: "insert", label: "Insert block below", icon: <Plus size={15} />, onSelect: () => { setMenu(null); insertBelow(); } }] : []),
@@ -442,11 +452,18 @@ export function BlockHandles({ editor, enabled, notes, noteId, onComment }: Bloc
       if (node) void copyBlocks(editor.schema, [node]).then((ok) => setNotice(ok ? "Copied block" : "Couldn’t copy — the browser refused clipboard access"));
       return null;
     }) },
+    // A heading has a shareable address (`<page link>#h-<slug>`); the slug comes from its text.
+    ...(block?.type.name === "heading" && block.textContent.trim() && headingNoteId ? [{ id: "copy-heading-link", label: "Copy link to heading", icon: <Link2 size={15} />, keywords: "url anchor section share", onSelect: () => run((at) => {
+      let dom: Node | null = null;
+      try { dom = editor.view.nodeDOM(at.pos); } catch { dom = null; }
+      void copyHeadingLink(headingNoteId, dom instanceof Element ? dom : null).then((ok) => setNotice(ok ? "Copied link to heading" : "Couldn’t copy — the browser refused clipboard access"));
+      return null;
+    }) }] : []),
     ...(canMove ? [{ id: "move", label: "Move to", icon: <FolderInput size={15} />, keywords: "another page", submenu: true, onSelect: () => setMenu("move") }] : []),
     ...(onComment && hasText ? [{ id: "comment", label: "Comment", icon: <MessageSquarePlus size={15} />, onSelect: () => {
       const at = locateBlock(editor, hovered.ref);
       setMenu(null);
-      const range = at && selectBlockText(at);
+      const range = at && selectBlockText(at, false);
       if (range) onComment(range);
     } }] : []),
     ...(canAsk ? [{ id: "ask", label: "Ask agent", icon: <Sparkles size={15} />, keywords: "ai assistant", disabled: !agent.canAsk, onSelect: () => {

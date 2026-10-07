@@ -18,6 +18,13 @@ fn main() {
             "export_note",
             // Export archives (docs/client-app.md "Saving an export archive")
             "save_export",
+            // WP5 (iOS only; capabilities/mobile.json)
+            "reset_server",
+            "get_app_settings",
+            "set_app_lock",
+            "push_register",
+            "push_status",
+            "push_take_opened",
         ]),
     ))
     .expect("failed to run tauri-build");

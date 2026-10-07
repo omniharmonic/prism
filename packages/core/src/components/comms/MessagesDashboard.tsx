@@ -10,6 +10,7 @@ import type { MatrixRoom } from "../../lib/matrix/types";
 import type { RendererProps } from "../renderers/RendererProps";
 import { useLivePollMs } from "../../lib/events/channelStatus";
 
+import { formatDate as fmtDate } from "../../lib/datetime/format";
 function formatRelativeTime(ts: number): string {
   try {
     const date = new Date(ts);
@@ -22,7 +23,7 @@ function formatRelativeTime(ts: number): string {
     if (diffHr < 24) return `${diffHr}h ago`;
     const diffDay = Math.floor(diffHr / 24);
     if (diffDay < 7) return `${diffDay}d ago`;
-    return date.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+    return fmtDate(date, { month: "short", day: "numeric" }, { locale: "en-US" });
   } catch {
     return "";
   }

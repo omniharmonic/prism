@@ -227,7 +227,7 @@ test("NP-DB-20: renaming a row from its page title updates the row in the view",
   await expect(table.getByRole("button", { name: "Update pricing page", exact: true })).toHaveCount(0);
   await expect(page.locator("tr", { has: page.getByRole("button", { name: "Publish the new pricing", exact: true }) }).getByRole("button", { name: "Status: done" })).toBeVisible();
   // The row count is unchanged (a rename, not a copy).
-  await expect(table.getByRole("row")).toHaveCount(1 + 7 + 1);
+  await expect(table.getByRole("row")).toHaveCount(1 + 7 + 1 + 1);
 });
 
 /**

@@ -60,6 +60,17 @@ const MOTION: Array<{ id: string; vp: Viewport; root: string }> = [
   { id: "tree", vp: "phone", root: ".workspace-mobile-drawer" },
   { id: "page-actions-menu", vp: "phone", root: "dialog[open], .sheet-panel" },
   { id: "db-filter", vp: "phone", root: ".db-popover, dialog[open], .sheet-panel" },
+  // Every other phone layer (w13): full-screen search, the agent drawer, dialogs laid out as sheets.
+  { id: "command-bar", vp: "phone", root: ".prism-search-sheet" },
+  { id: "agent-companion-phone", vp: "phone", root: ".workspace-mobile-drawer" },
+  { id: "new-page-chooser", vp: "phone", root: "dialog[open]" },
+  { id: "new-page-chooser", vp: "desktop", root: "dialog[open]" },
+  { id: "share-people", vp: "phone", root: "dialog[open]" },
+  { id: "tree-row-menu", vp: "phone", root: "dialog[open], .page-menu" },
+  { id: "shortcut-sheet", vp: "phone", root: '[role="dialog"][aria-label="Keyboard shortcuts"]' },
+  { id: "settings-appearance", vp: "phone", root: 'dialog[aria-label="Settings"]' },
+  { id: "settings-appearance", vp: "desktop", root: 'dialog[aria-label="Settings"]' },
+  { id: "import-dialog", vp: "phone", root: 'dialog[open], [role="dialog"]' },
 ];
 const durations = (page: Page, root: string) => page.evaluate((root) => {
   const toMs = (v: string) => Math.max(0, ...v.split(",").map((x) => (x.trim().endsWith("ms") ? parseFloat(x) : parseFloat(x) * 1000)).filter((n) => !Number.isNaN(n)));
@@ -85,6 +96,8 @@ test.describe("reduced motion disables transitions: menus, sheets, peeks", () =>
     const normal = await durations(page, m.root);
     expect(normal.found, `${m.root} is on screen`).toBeGreaterThan(0);
     expect(normal.entrance, "entrance at most 180 ms").toBeLessThanOrEqual(180);
+    // …and it exists: a popup that appears at once (0 ms) is as much a miss as a slow one.
+    expect(normal.entrance, "an entrance of at least 100 ms").toBeGreaterThanOrEqual(100);
     test.info().annotations.push({ type: "entrance-ms", description: String(normal.entrance) });
     // In-app setting.
     // Toggling the setting can itself restart an entrance; let stragglers finish (a spinner would not).

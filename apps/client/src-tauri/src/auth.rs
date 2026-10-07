@@ -122,6 +122,102 @@ pub async fn revoke(origin: &ServerOrigin, token: &str) -> Result<(), String> {
     }
 }
 
+/// Is this a Prism Server? (iOS first-run screen, before the address is saved.)
+///
+/// `GET /health?live=1` — the server's liveness probe: `200 {"ok":true,"live":true}`
+/// with no vault call behind it. A server from before that form ignores the query
+/// and answers the plain `/health` (`{"ok":…,"vault":…}`, 200 when the vault is
+/// up, 503 when it isn't); every one of these means "a Prism Server is here".
+///
+/// 🔒 This is the ONLY request made to an address nobody has confirmed yet, so it
+/// carries nothing: no bearer (none exists while no server is set, and this
+/// function takes none), no cookies (the client has no cookie store), and it
+/// follows no redirect. The answer is read up to [`PROBE_MAX_BYTES`] and only
+/// its shape is looked at.
+#[cfg_attr(not(mobile), allow(dead_code))]
+pub async fn probe_server(origin: &ServerOrigin) -> Result<(), String> {
+    let unreachable = || {
+        format!(
+            "Couldn't reach {}. Check the address and your connection.",
+            origin.as_str()
+        )
+    };
+    let mut resp = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(Duration::from_secs(10))
+        .user_agent(concat!("PrismClient/", env!("CARGO_PKG_VERSION")))
+        .build()
+        .map_err(|e| format!("http client: {e}"))?
+        .get(origin.join("/health?live=1"))
+        .header("Accept", "application/json")
+        .send()
+        .await
+        .map_err(|_| unreachable())?;
+    let status = resp.status().as_u16();
+    let mut body: Vec<u8> = Vec::new();
+    while let Some(chunk) = resp.chunk().await.map_err(|_| unreachable())? {
+        if body.len() + chunk.len() > PROBE_MAX_BYTES {
+            body.clear();
+            break;
+        }
+        body.extend_from_slice(&chunk);
+    }
+    let looks_like_prism = matches!(status, 200 | 503)
+        && serde_json::from_slice::<serde_json::Value>(&body)
+            .map(|v| v.get("ok").is_some_and(|ok| ok.is_boolean()))
+            .unwrap_or(false);
+    if looks_like_prism {
+        Ok(())
+    } else {
+        Err(format!(
+            "{} doesn't look like a Prism Server.",
+            origin.as_str()
+        ))
+    }
+}
+
+/// The health answer is a few dozen bytes; anything longer is not one.
+#[cfg_attr(not(mobile), allow(dead_code))]
+const PROBE_MAX_BYTES: usize = 4096;
+
+/// Remove this device's APNs registration (`DELETE /api/push/apns`) before the
+/// token is revoked. Best effort: revoking the device deletes the row
+/// server-side anyway (docs/push.md, "Lifecycle").
+#[cfg_attr(not(mobile), allow(dead_code))]
+pub async fn delete_apns(origin: &ServerOrigin, token: &str) -> Result<(), String> {
+    let resp = client()?
+        .delete(origin.join("/api/push/apns"))
+        .bearer_auth(token)
+        .send()
+        .await
+        .map_err(|e| format!("could not reach the server: {}", e.without_url()))?;
+    if resp.status().is_success() {
+        Ok(())
+    } else {
+        Err(format!(
+            "push unregister failed: HTTP {}",
+            resp.status().as_u16()
+        ))
+    }
+}
+
+/// The consent-page label on iOS ("Prism on iPhone"). The model comes from
+/// `UIDevice`; anything odd falls back to a generic label.
+#[cfg_attr(not(mobile), allow(dead_code))]
+pub fn mobile_device_label(model: &str) -> String {
+    let model: String = model
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == ' ')
+        .take(24)
+        .collect();
+    let model = model.trim();
+    if model.is_empty() {
+        "Prism on iOS".into()
+    } else {
+        format!("Prism on {model}")
+    }
+}
+
 /// The device label shown on the consent page and in Account → Devices.
 /// A claim, not an identity: the server presents it as such.
 pub fn device_label() -> String {
@@ -286,6 +382,61 @@ mod tests {
             fake_server("302 Found\r\nLocation: https://elsewhere.example/steal", "").await;
         let r = exchange_code(&origin, "c", "v", "http://127.0.0.1:1/callback").await;
         assert_eq!(r, Err("sign-in failed: HTTP 302".into()));
+    }
+
+    #[tokio::test]
+    async fn probe_accepts_a_prism_health_answer() {
+        let (origin, seen) = fake_server("200 OK", r#"{"ok":true,"vault":true}"#).await;
+        probe_server(&origin).await.unwrap();
+        let req = seen.await.unwrap();
+        assert!(req.starts_with("GET /health?live=1 HTTP/1.1"), "{req}");
+        // Nothing but the request goes to an unconfirmed address.
+        let lower = req.to_ascii_lowercase();
+        assert!(!lower.contains("authorization:") && !lower.contains("cookie:"), "{req}");
+        // The liveness form's own answer.
+        let (origin, _) = fake_server("200 OK", r#"{"ok":true,"live":true}"#).await;
+        probe_server(&origin).await.unwrap();
+        // Not JSON-with-ok, however long: refused (and never buffered whole).
+        let big: &'static str =
+            Box::leak(format!(r#"{{"ok":true,"pad":"{}"}}"#, "x".repeat(PROBE_MAX_BYTES)).into_boxed_str());
+        let (origin, _) = fake_server("200 OK", big).await;
+        assert!(probe_server(&origin).await.is_err(), "an oversized answer is not a health answer");
+        // A dead address reads as unreachable.
+        let dead = ServerOrigin::parse("http://127.0.0.1:9").unwrap();
+        assert!(probe_server(&dead).await.unwrap_err().starts_with("Couldn't reach"));
+        let (origin, _) =
+            fake_server("503 Service Unavailable", r#"{"ok":false,"vault":false}"#).await;
+        assert!(
+            probe_server(&origin).await.is_ok(),
+            "vault down is still a Prism Server"
+        );
+        let (origin, _) = fake_server("200 OK", "<html>hello</html>").await;
+        assert!(probe_server(&origin).await.is_err());
+        let (origin, _) =
+            fake_server("302 Found\r\nLocation: https://elsewhere.example/", "").await;
+        assert!(
+            probe_server(&origin).await.is_err(),
+            "redirects are not followed"
+        );
+    }
+
+    #[tokio::test]
+    async fn delete_apns_sends_the_bearer() {
+        let (origin, seen) = fake_server("200 OK", r#"{"ok":true}"#).await;
+        delete_apns(&origin, "pd_tok").await.unwrap();
+        let req = seen.await.unwrap();
+        assert!(req.starts_with("DELETE /api/push/apns HTTP/1.1"));
+        assert!(req
+            .to_ascii_lowercase()
+            .contains("\r\nauthorization: bearer pd_tok\r\n"));
+    }
+
+    #[test]
+    fn mobile_label() {
+        assert_eq!(mobile_device_label("iPhone"), "Prism on iPhone");
+        assert_eq!(mobile_device_label("iPad"), "Prism on iPad");
+        assert_eq!(mobile_device_label("<b>\u{202e}"), "Prism on b");
+        assert_eq!(mobile_device_label(""), "Prism on iOS");
     }
 
     #[tokio::test]

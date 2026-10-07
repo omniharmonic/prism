@@ -20,6 +20,7 @@ import { fetchRevisions, type NoteRevision, type ReviewMode } from "../../lib/go
 import { submitForReview } from "../../lib/governance/review";
 import { RequestAccessButton } from "../inbox/RequestAccessButton";
 
+import { formatDateTime as fmtDateTime } from "../../lib/datetime/format";
 const wrap: React.CSSProperties = {
   margin: "0 auto",
   maxWidth: "var(--content-measure)",
@@ -217,5 +218,5 @@ function RevisionList({ revisions, error }: { revisions: NoteRevision[] | null; 
 function formatTime(iso: string): string {
   const t = Date.parse(iso);
   if (Number.isNaN(t)) return iso || "";
-  return new Date(t).toLocaleString();
+  return fmtDateTime(new Date(t));
 }

@@ -4,7 +4,7 @@ import { createRoot } from "react-dom/client";
 import { AgentClientProvider, App, InvalidationSourceProvider, PageHeader, CollabSharingProvider, VaultClientProvider, PlatformProvider, useUIStore, type Note } from "@prism/core";
 import { navigateWikilink } from "../../../packages/core/src/lib/wikilinkNavigation";
 import { httpVaultClient } from "../src/parachute/HttpVaultClient";
-import { fetchMe, setActiveVault, getActiveVault, agentScope } from "../src/config";
+import { fetchMe, confirmAudience, setActiveVault, getActiveVault, agentScope } from "../src/config";
 
 import { replyAgent } from "./reply-agent";
 
@@ -25,7 +25,9 @@ const notes: Note[] = [
   { id: "weekly-review", path: "Journal/Weekly review", content: "<h1>Weekly review</h1><p>What moved forward this week?</p>", tags: ["note"], metadata: { type: "document" }, createdAt: date, updatedAt: date },
 ];
 const writes: Array<Record<string, unknown>> = [];
-const controls = { noteStatus: {} as Record<string, number>, rejectWriteStatus: 403, actor: "owner@example.test", rejectWrite: false, peopleFail: false, peopleDenyOpen: false, peopleHold: false, peopleRelease: null as (() => void) | null };
+const controls = { noteStatus: {} as Record<string, number>, rejectWriteStatus: 403, actor: "owner@example.test", rejectWrite: false, peopleFail: false, peopleDenyOpen: false, peopleHold: false, peopleRelease: null as (() => void) | null,
+  /** Hold the next identity checks (`/auth/me`) until `meRelease()` — a slow account check after a vault switch. */
+  meHold: false, meRelease: null as (() => void) | null };
 Object.assign(window, {
   prismFixtureUI: useUIStore,
   prismFixtureReads: reads,
@@ -92,6 +94,7 @@ window.fetch = async (input, init) => {
       if (one) { const hit = set.find((n) => n.id === decodeURIComponent(one)); return hit ? Response.json(hit) : Response.json({ error: "not_found" }, { status: 404 }); }
     }
   }
+  if (path === "/auth/me" && controls.meHold) await new Promise<void>((resolve) => { const earlier = controls.meRelease; controls.meRelease = () => { earlier?.(); resolve(); }; });
   if (path === "/auth/me") return Response.json({ authenticated: true, email: controls.actor, name: "You", isOwner: true, vaultId: getActiveVault() ?? "primary", workspace: { id: "default", name: "Personal workspace" } });
   if (path === "/api/threads/thread/live") return Response.json({ messages: [{ event_id: "$fixture", sender: "@fixture:example.test", sender_name: "Fixture", body: "LIVE_RESPONSIVE_THREAD_FIXTURE", timestamp: Date.UTC(2026, 9, 1), is_outgoing: false, msg_type: "m.text", media_url: null, media_info: null }], start: null, end: null, has_more: false });
   if (path === "/api/wikilinks/resolve") return Response.json({ kind: "ambiguous", candidates: notes.slice(1,3).map(n => ({ id: n.id, path: n.path, title: "Duplicate" })) });
@@ -155,7 +158,7 @@ createRoot(document.getElementById("root")!).render(
         if (!params.has("vaultdata")) return;
         setActiveVault(id);
         window.dispatchEvent(new CustomEvent("prism:vault-changed", { detail: id }));
-        void fetchMe();
+        void confirmAudience(); // what main.tsx does on this event
       },
       listWorkspaceEntities: async () => [{ id: "default", name: "Personal workspace", hostname: null, isDefault: true, vaults: [{ id: "primary", label: "Personal vault", vault: "personal" }] }],
       setActiveWorkspace: (id: string) => { writes.push({ switchedWorkspace: id }); },

@@ -1,0 +1,27 @@
+{
+  "$schema": "../gen/schemas/mobile-schema.json",
+  "identifier": "mobile",
+  "description": "iOS (WP5): the bundled app in the main window may call the shell's sign-in/token/server/link commands, export_note and save_export (a note / an export archive → the system share sheet) and the six iOS commands (server reset, app lock, APNs), and nothing else: no core:* plugin APIs, no opener, no fs, no shell, no prism-ios plugin commands (the Swift plugin is reached only from Rust), and no quick capture or desktop notifications. Remote origins get no IPC at all (no `remote` block).",
+  "windows": [
+    "main"
+  ],
+  "platforms": [
+    "iOS"
+  ],
+  "permissions": [
+    "allow-get-token",
+    "allow-sign-in",
+    "allow-sign-out",
+    "allow-get-server-origin",
+    "allow-set-server-origin",
+    "allow-open-external",
+    "allow-export-note",
+    "allow-save-export",
+    "allow-reset-server",
+    "allow-get-app-settings",
+    "allow-set-app-lock",
+    "allow-push-register",
+    "allow-push-status",
+    "allow-push-take-opened"
+  ]
+}

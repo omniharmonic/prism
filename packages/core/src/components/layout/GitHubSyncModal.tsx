@@ -15,6 +15,7 @@ import { useGitHubSyncApi } from "../../lib/host/folderSync";
 import { hostServiceErrorText, type GitHubSyncInfo } from "../../lib/host/services";
 import { DesktopOnlyNotice } from "../ui/DesktopOnlyNotice";
 
+import { formatDateTime as fmtDateTime } from "../../lib/datetime/format";
 interface GitHubSyncModalProps {
   isOpen: boolean;
   onClose: () => void;
@@ -259,7 +260,7 @@ export function GitHubSyncModal({
                       </div>
                     </div>
                     <div className="flex items-center justify-between text-xs text-white/40">
-                      <span>{c.lastSynced ? `Last synced ${new Date(c.lastSynced).toLocaleString()}` : "Never synced from here"}</span>
+                      <span>{c.lastSynced ? `Last synced ${fmtDateTime(new Date(c.lastSynced))}` : "Never synced from here"}</span>
                       {api.update && (
                         <label className="flex items-center gap-1.5 cursor-pointer">
                           <input

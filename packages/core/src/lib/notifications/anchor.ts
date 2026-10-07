@@ -33,15 +33,20 @@ export function anchorSelector(anchor: NotificationItem["anchor"]): string | nul
   return null;
 }
 
-/** Wait for `selector` inside the workspace document, scroll to it and flash it. */
-export function focusAnchor(selector: string, root: ParentNode = document): Promise<boolean> {
+/**
+ * Wait for `selector` inside the workspace document, scroll to it and flash it. `selector` may be a
+ * finder instead (heading links: a heading has no attribute to select by — `lib/pages/headingLinks`).
+ */
+export function focusAnchor(selector: string | ((scope: ParentNode) => HTMLElement | null), root: ParentNode = document, opts: { block?: ScrollLogicalPosition; waitMs?: number; flash?: boolean } = {}): Promise<boolean> {
   return new Promise((resolve) => {
     const started = Date.now();
     const tick = () => {
       const scope = (root as Document).getElementById?.("workspace-document") ?? root;
-      const el = scope.querySelector<HTMLElement>(selector);
+      const el = typeof selector === "string" ? scope.querySelector<HTMLElement>(selector) : selector(scope);
       if (el) {
-        el.scrollIntoView({ block: "center", behavior: "smooth" });
+        el.scrollIntoView({ block: opts.block ?? "center", behavior: "smooth" });
+        // An element ProseMirror owns (a heading) cannot carry a foreign class: the editor redraws it.
+        if (opts.flash === false) return resolve(true);
         el.classList.add(ANCHOR_FLASH_CLASS);
         el.setAttribute("data-anchor-target", "true");
         window.setTimeout(() => {
@@ -51,7 +56,7 @@ export function focusAnchor(selector: string, root: ParentNode = document): Prom
         resolve(true);
         return;
       }
-      if (Date.now() - started > WAIT_MS) return resolve(false);
+      if (Date.now() - started > (opts.waitMs ?? WAIT_MS)) return resolve(false);
       window.setTimeout(tick, 120);
     };
     tick();

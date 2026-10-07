@@ -9,6 +9,7 @@ import {
 import { useVaultClient } from "../../data/VaultClientContext";
 import { useAgentChatStore } from "../../lib/agent/chatStore";
 
+import { formatDateTime as fmtDateTime } from "../../lib/datetime/format";
 const control =
   "interactive focus-ring min-h-10 rounded-lg px-2 py-2 text-xs disabled:opacity-40";
 export function AgentSnapshotAttachments({
@@ -240,7 +241,7 @@ export function AgentSnapshotPreview({
               {state === "ready" ? snapshot.label : "Captured context"}
             </h2>
             <p className="text-xs text-[var(--text-muted)]">
-              {snapshot.kind} · {new Date(snapshot.capturedAt).toLocaleString()}
+              {snapshot.kind} · {fmtDateTime(new Date(snapshot.capturedAt))}
               {snapshot.truncated ? " · truncated" : ""}
             </p>
           </div>
