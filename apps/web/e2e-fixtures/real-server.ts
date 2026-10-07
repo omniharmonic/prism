@@ -25,6 +25,8 @@ export interface RealServer {
   put(id: string, content: string): Promise<void>;
   /** Seed one more note in the fake vault (a NEW id; the shared seed is never changed). */
   add(note: { id: string; path: string; content?: string; tags?: string[]; metadata?: Record<string, unknown> }): Promise<boolean>;
+  /** Mint an anyone-with-the-link capability token for one note, or for a page and its sub-pages. */
+  link(grant: { resourceType: "note" | "page"; resource: string; level: "view" | "suggest" | "edit" }): Promise<string>;
   /** Override the server's conversion limits (null restores them) — e.g. `{ inlineMaxNodes: 0, maxNodes: 1 }` makes every page "too large to save". */
   limits(patch: Record<string, number> | null): Promise<void>;
   stop(): Promise<void>;
@@ -84,6 +86,10 @@ export async function startRealServer(appOrigin: string): Promise<RealServer> {
       child.stdin.write(JSON.stringify({ op: "add", note }) + "\n");
       return (JSON.parse(await nextLine()) as { ok: boolean }).ok;
     },
+    async link(grant) {
+      child.stdin.write(JSON.stringify({ op: "link", link: grant }) + "\n");
+      return (JSON.parse(await nextLine()) as { token: string }).token;
+    },
     async limits(patch) {
       child.stdin.write(JSON.stringify({ op: "limits", limits: patch }) + "\n");
       await nextLine();
@@ -132,4 +138,31 @@ export async function connect(page: Page, context: BrowserContext, server: RealS
     upstream.on("close", (code, reason) => ws.close({ code: code === 1005 || code === 1006 ? 1000 : code, reason: reason.toString() }));
   });
   return { sockets };
+}
+
+/** Wire a page to the fixture as a SHARE-LINK viewer: no session cookie anywhere — the capability
+ *  token the page itself sends (`?t=` → `Authorization: Capability …`, the collab auth message) is
+ *  its only credential. */
+export async function connectLink(page: Page, server: RealServer): Promise<void> {
+  await page.route((url) => /^\/(api|auth|acl)(\/|$)/.test(url.pathname), async (route) => {
+    const url = new URL(route.request().url());
+    try {
+      const response = await route.fetch({ url: `http://127.0.0.1:${server.port}${url.pathname}${url.search}` });
+      await route.fulfill({ response });
+    } catch (error) {
+      if (!page.isClosed()) throw error;
+    }
+  });
+  await page.routeWebSocket(/\/collab(\?|$)/, (ws) => {
+    const url = new URL(ws.url());
+    const upstream = new WebSocket(`ws://127.0.0.1:${server.port}/collab${url.search}`);
+    const pending: Array<string | Buffer> = [];
+    ws.onMessage((m) => (upstream.readyState === WebSocket.OPEN ? upstream.send(m) : pending.push(m as never)));
+    upstream.on("open", () => {
+      for (const m of pending) upstream.send(m);
+    });
+    upstream.on("message", (m, binary) => ws.send(binary ? Buffer.from(m as Buffer) : m.toString()));
+    ws.onClose((code, reason) => upstream.close(code && code >= 3000 ? code : 1000, reason));
+    upstream.on("close", (code, reason) => ws.close({ code: code === 1005 || code === 1006 ? 1000 : code, reason: reason.toString() }));
+  });
 }

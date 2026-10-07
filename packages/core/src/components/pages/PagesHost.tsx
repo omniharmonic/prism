@@ -67,6 +67,18 @@ function PageToastView() {
           {toast.action.label}
         </button>
       )}
+      {toast.secondary && (
+        <button
+          type="button"
+          className="focus-ring"
+          onClick={() => {
+            usePagesUI.getState().dismissToast(toast.id);
+            toast.secondary!.run();
+          }}
+        >
+          {toast.secondary.label}
+        </button>
+      )}
       <button type="button" className="focus-ring" aria-label="Dismiss" onClick={() => usePagesUI.getState().dismissToast(toast.id)}>
         <X size={14} />
       </button>

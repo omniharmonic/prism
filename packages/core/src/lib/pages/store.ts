@@ -19,6 +19,8 @@ export interface PageToast {
   message: string;
   tone?: "info" | "error";
   action?: { label: string; run: () => void };
+  /** A second choice beside `action` (a partial duplicate: Finish / Undo). */
+  secondary?: { label: string; run: () => void };
 }
 
 /** NP-SB-06: expansion persists on this device, per account + vault (`VaultClient.scope()`). */

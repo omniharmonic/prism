@@ -8,13 +8,17 @@
  * ?legacy (no preferences route → per-device shortcuts) · ?fail-move=<id> (that
  * note's path writes fail once, for partial-move recovery) · ?shared (pages shared
  * with the viewer + a move that changes access) · ?guest[=empty] (a guest account) ·
- * ?member (the gateway rule for non-owners: a path PATCH is refused `move_required`).
+ * ?member (the gateway rule for non-owners: a path PATCH is refused `move_required`) ·
+ * ?dup (the server's Duplicate-with-sub-pages route; without it the route answers 501
+ * and the app copies the one page itself) · ?dup-skip=<id> (a sub-page this viewer
+ * cannot see) · ?dup-fail=<id> (that page's copy fails once → a partial duplicate).
  */
 import React from "react";
 import { createRoot } from "react-dom/client";
 import { App, PlatformProvider, VaultClientProvider, CollabSharingProvider, useUIStore, type Note } from "@prism/core";
 import { httpVaultClient } from "../src/parachute/HttpVaultClient";
 import { fetchMe, setActiveVault } from "../src/config";
+import { fakeDuplicate } from "./fake-duplicate";
 import {
   TRASH_TAG,
   TRASH_META,
@@ -57,6 +61,10 @@ const kept = JSON.parse(sessionStorage.getItem("fixture-prefs") ?? "null") as { 
 let prefs: PagePreferences = kept?.prefs ?? (params.has("prefs") ? sanitizePreferences(JSON.parse(params.get("prefs")!)) : EMPTY_PREFERENCES);
 let revision = kept?.revision ?? (params.has("prefs") ? 1 : 0);
 const failOnce = new Set(params.getAll("fail-move"));
+const dupSkip = new Set(params.getAll("dup-skip"));
+const dupFailOnce = new Set(params.getAll("dup-fail"));
+// ?dup: Prism's sub-pages carry an explicit order that is NOT alphabetical.
+if (params.has("dup")) for (const [id, order] of [["plan", 1], ["living", 2]] as const) { const n = notes.find((x) => x.id === id)!; n.metadata = { ...(n.metadata ?? {}), prism_order: order }; }
 const moves = new Map<string, { from: string; to: string }>();
 const reads = { trash: 0, tree: 0 };
 const fixtureControls = { moveStatus: Number(params.get("move-status") ?? 0) };
@@ -143,6 +151,12 @@ window.fetch = async (input, init) => {
     if (body.if_updated_at !== n.updatedAt) return json({ error: "conflict" }, 409);
     patch(n, { metadata: body.set });
     return json({ ok: true, id: n.id, updatedAt: n.updatedAt, metadata: body.set });
+  }
+  const dup = path.match(/^\/api\/notes\/([^/]+)\/duplicate$/);
+  if (dup && method === "POST" && params.has("dup")) {
+    writes.push({ duplicate: decodeURIComponent(dup[1]!), ...body });
+    const out = fakeDuplicate(notes, decodeURIComponent(dup[1]!), body, stamp, { skip: dupSkip, failOnce: dupFailOnce });
+    return json(out.body, out.status);
   }
   const op = path.match(/^\/api\/notes\/([^/]+)\/(move|trash)$/);
   if (op) {
