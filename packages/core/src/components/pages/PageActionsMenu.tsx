@@ -26,8 +26,11 @@ import {
   Bot,
   LayoutTemplate,
   Sparkles,
+  ChevronsDownUp,
+  ChevronsUpDown,
 } from "lucide-react";
 import { requestFindInPage } from "../../lib/tiptap/findShortcuts";
+import { setAllToggles, toggleState } from "../../lib/tiptap/toggleAll";
 import { useCollabSharing } from "../../data/CollabSharing";
 import { openSharingDialog } from "../layout/SharingDialogHost";
 import { openInNewTab } from "../../lib/pages/openInNewTab";
@@ -49,6 +52,9 @@ import { usePageActions, pageLink } from "../../lib/pages/usePageActions";
 import { printCurrentPage, useTransferUI } from "../../lib/import-export/store";
 import type { Note } from "../../lib/types";
 import { PageInfo } from "../sharing/PageInfo";
+import { usePageNotificationLevel } from "../../lib/notifications/hooks";
+import { PAGE_NOTIFICATION_LEVELS } from "../../lib/notifications/client";
+import { pageLevelIcon } from "../inbox/PageNotificationLevel";
 import "./pages.css";
 
 export interface PageMenuItem {
@@ -70,6 +76,8 @@ export interface PageMenuItem {
   short?: string;
   /** In a group: this choice is the current one / this switch is on. */
   on?: boolean;
+  /** Always shown under the label (unlike `detail`, a tooltip / a disabled action's reason). */
+  hint?: string;
 }
 
 /**
@@ -79,7 +87,7 @@ export interface PageMenuItem {
  */
 export function usePageMenuItems(
   page: PageRef,
-  opts: { entry?: { path: string | null; tags: string[] | null } | null; onRename?: () => void; close: () => void; /** Phone page sheet: adds Share, Find and Agent (the desktop header has them as buttons). */ sheet?: boolean },
+  opts: { entry?: { path: string | null; tags: string[] | null } | null; onRename?: () => void; close: () => void; /** Phone page sheet: adds Share, Find and Agent (the desktop header has them as buttons). */ sheet?: boolean; /** False while the menu is closed (the top bar computes its items all the time): nothing is fetched for it. */ open?: boolean },
 ): PageMenuItem[] {
   const sharing = useCollabSharing();
   const actions = usePageActions();
@@ -110,12 +118,18 @@ export function usePageMenuItems(
   const docFontSetter = useUIStore((s) => s.docFontSetter);
   const activeNoteId = useUIStore((s) => s.openTabs.find((t) => t.id === s.activeTabId)?.noteId);
   const style = pageStyleOf(note);
+  // NP-CO-04: this viewer's notification level for the page. Unavailable (share-link
+  // guest, older server, desktop) → the group is simply not there.
+  const notify = usePageNotificationLevel(real ? page.id : null, opts.open !== false);
   const run = (fn: () => void) => () => {
     opts.close();
     fn();
   };
   if (!real) return [];
   const isActive = activeNoteId === page.id;
+  // Read when the menu is built (it is rebuilt each time it opens): the open page's own editor.
+  const pageEditor = () => (typeof document === "undefined" ? null : document.querySelector<HTMLElement>("#workspace-document .tiptap"));
+  const toggles = isActive ? toggleState(pageEditor()) : { total: 0, closed: 0 };
   const native = typeof window !== "undefined" && !!(window as unknown as { __PRISM_HOST__?: unknown }).__PRISM_HOST__;
   /** Open this page (if it isn't the one in front) and run `then` once it is. */
   const onPage = (then: () => void) => {
@@ -164,6 +178,8 @@ export function usePageMenuItems(
     { id: "copy-link", label: "Copy link", icon: <Link2 size={15} />, startsGroup: true, onClick: run(() => void actions.copyLink(page)) },
     // NP-ED-22: find in page without a keyboard (the open page's editor answers).
     ...(activeNoteId === page.id ? [{ id: "find-in-page", label: "Find in page", icon: <Search size={15} />, onClick: run(() => { setTimeout(requestFindInPage, 60); }) }] : []),
+    // Expand / collapse all toggles (⌘⌥T): view state of THIS device's open page, nothing is saved.
+    ...(activeNoteId === page.id && toggles.total ? [{ id: "toggle-all", label: toggles.closed ? "Expand all toggles" : "Collapse all toggles", icon: toggles.closed ? <ChevronsUpDown size={15} /> : <ChevronsDownUp size={15} />, onClick: run(() => { setAllToggles(toggles.closed > 0, pageEditor()); }) }] : []),
     ...(canEdit && note
       ? [{
           id: "lock",
@@ -199,6 +215,18 @@ export function usePageMenuItems(
           { id: "small-text", label: "Small text", icon: style.small ? <Check size={15} /> : <Type size={15} />, detail: style.small ? "On" : undefined, group: "layout" as const, on: !!style.small, startsGroup: !(docFontSetter && activeNoteId === page.id), onClick: run(() => void actions.setPageStyle(note, { small: !style.small })) },
           { id: "full-width", label: "Full width", icon: style.full ? <Check size={15} /> : <MoveHorizontal size={15} />, detail: style.full ? "On" : undefined, group: "layout" as const, on: !!style.full, onClick: run(() => void actions.setPageStyle(note, { full: !style.full })) },
         ]
+      : []),
+    // The "Notifications" group: the current level is ticked; choosing another saves it.
+    ...(notify.available
+      ? PAGE_NOTIFICATION_LEVELS.map((l, i) => ({
+          id: `notify-${l.id}`,
+          label: `Notify me: ${l.label.charAt(0).toLowerCase()}${l.label.slice(1)}`,
+          icon: notify.level === l.id ? <Check size={15} /> : pageLevelIcon(l.id),
+          startsGroup: i === 0,
+          detail: l.hint,
+          hint: [notify.level === l.id ? "Current" : "", l.id === "none" ? "Mentions of you and assignments still arrive" : ""].filter(Boolean).join(" · ") || undefined,
+          onClick: run(() => { if (notify.level !== l.id) notify.set(l.id); }),
+        }))
       : []),
     { id: "export-md", label: "Export as Markdown", icon: <FileDown size={15} />, group: "export" as const, short: "Markdown", startsGroup: true, onClick: run(() => void actions.exportPage(page, "markdown")) },
     { id: "export-html", label: "Export as HTML", icon: <FileDown size={15} />, group: "export" as const, short: "HTML", onClick: run(() => void actions.exportPage(page, "html")) },
@@ -357,6 +385,7 @@ export function PageMenuPopover({
           {item.label}
           {/* A disabled action says why (a tooltip never shows on a disabled control). */}
           {item.disabled && item.detail && <small className="page-menu-detail">{item.detail}</small>}
+          {!item.disabled && item.hint && <small className="page-menu-detail">{item.hint}</small>}
         </span>
       </button>
     </div>
@@ -388,7 +417,7 @@ function PageActionsTrigger({ page, size = 16 }: { page: PageRef; size?: number 
     setAnchor(null);
     requestAnimationFrame(() => trigger.current?.focus({ preventScroll: true }));
   };
-  const items = usePageMenuItems(page, { close });
+  const items = usePageMenuItems(page, { close, open: !!anchor });
   if (!items.length) return null;
   return (
     <>

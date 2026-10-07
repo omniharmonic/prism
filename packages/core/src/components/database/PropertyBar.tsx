@@ -6,7 +6,7 @@
  * with per-field compare-and-set (metadata-only — the body is never written, and
  * on a live collaborative document the server tells the reconciler).
  */
-import { useMemo, useRef, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ChevronRight, Plus, Search, Check, Tag as TagIcon, X } from "lucide-react";
 import type { Note } from "../../lib/types";
@@ -28,11 +28,13 @@ import { PropertyConflictError } from "../../data/VaultClient";
 import { useUIStore } from "../../app/stores/ui";
 import { queryKeys } from "../../lib/parachute/queries";
 import { PropertyValue } from "./PropertyValue";
+import { REVEAL_PROPERTY_EVENT } from "../../lib/notifications/anchor";
 import { PropertyEditor } from "./PropertyEditor";
 import { propertyFromField } from "../../lib/database/schema";
 import { Popover } from "./Popover";
 import "./database.css";
 
+import { formatDate as fmtDate, formatDateTime as fmtDateTime } from "../../lib/datetime/format";
 const FREE_KINDS: PropertyKind[] = ["text", "number", "checkbox", "url"];
 
 function keyFromLabel(label: string): string {
@@ -97,11 +99,20 @@ export function PropertyBar({ note, readOnly, onOpenAll, layout = "bar", trailin
     setRevealed((r) => (r.includes(key) ? r : [...r, key]));
     setJustAdded(key);
   };
+  // An "assigned you" notification lands on its property: bring it out if it is folded away.
+  useEffect(() => {
+    const h = (e: Event) => {
+      const d = (e as CustomEvent<{ noteId?: string; key?: string }>).detail;
+      if (d?.noteId === note.id && typeof d.key === "string") setRevealed((r) => (r.includes(d.key!) ? r : [...r, d.key!]));
+    };
+    window.addEventListener(REVEAL_PROPERTY_EVENT, h);
+    return () => window.removeEventListener(REVEAL_PROPERTY_EVENT, h);
+  }, [note.id]);
 
   return (
     <div className={`db-props db-props-${layout}`} role="group" aria-label="Page properties">
       {shown.map((def) => (
-        <div className="db-prop" key={def.key} data-kind={def.kind}>
+        <div className="db-prop" key={def.key} data-kind={def.kind} data-property-key={def.key}>
           {canEditSchema && def.tag ? (
             <button type="button" className="db-prop-label db-prop-label-edit focus-ring" title={`Edit the “${def.label}” property`} aria-label={`Edit property ${def.label}`} onClick={() => setEditingProp({ tag: def.tag!, key: def.key })}>{def.label}</button>
           ) : <span className="db-prop-label" title={def.description || def.label}>{def.label}</span>}
@@ -128,7 +139,7 @@ export function PropertyBar({ note, readOnly, onOpenAll, layout = "bar", trailin
       {layout === "bar" && !trailing && note.updatedAt && !Number.isNaN(Date.parse(note.updatedAt)) && (
         <div className="db-prop db-prop-updated">
           <span className="db-prop-label">Updated</span>
-          <time dateTime={note.updatedAt} title={new Date(note.updatedAt).toLocaleString()}>{relativeDay(note.updatedAt)}</time>
+          <time dateTime={note.updatedAt} title={fmtDateTime(new Date(note.updatedAt))}>{relativeDay(note.updatedAt)}</time>
         </div>
       )}
       {(editable || (onOpenAll && !trailing)) && (
@@ -196,7 +207,7 @@ function relativeDay(iso: string): string {
   const days = Math.round((new Date(today.toDateString()).getTime() - new Date(d.toDateString()).getTime()) / 86_400_000);
   if (days === 0) return "Today";
   if (days === 1) return "Yesterday";
-  return d.toLocaleDateString(undefined, { month: "short", day: "numeric", ...(d.getFullYear() === today.getFullYear() ? {} : { year: "numeric" }) });
+  return fmtDate(d, { month: "short", day: "numeric", ...(d.getFullYear() === today.getFullYear() ? {} : { year: "numeric" }) });
 }
 
 function AddProperty({ empty, canCreate, canEditSchema, firstTag, existing, showEmpty, hiddenCount, onToggleEmpty, onReveal, onCreateSchemaField, onCreateFree, deleted, onManageDeleted }: {

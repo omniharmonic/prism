@@ -99,6 +99,15 @@ function unstash(): string | null {
   }
 }
 
+/** Forget a link kept for after sign-in (the server it belonged to was signed out of and replaced). */
+export function forgetPendingAppLink(): void {
+  try {
+    sessionStorage.removeItem(STASH_KEY);
+  } catch {
+    /* no storage: nothing was kept */
+  }
+}
+
 let capturing = false;
 let ready = false;
 

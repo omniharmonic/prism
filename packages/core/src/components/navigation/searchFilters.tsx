@@ -14,6 +14,8 @@ export interface SearchFilterState {
   /** "Created by": anyone, or pages this account created (the server's `author=me`). Combines with `editor`. */
   creator: "anyone" | "me";
   date: DateRange;
+  /** Order of the results. Not a filter: it narrows nothing and is not counted as one. */
+  sort: "best" | "edited" | "created";
   /** "" = the vault you are in. */
   vault: string;
 }
@@ -21,7 +23,7 @@ export interface SearchVault { id: string; label: string; active: boolean }
 /** Which identity filters this viewer's search can answer (see `VaultClient.searchFilterSupport`). */
 export interface SearchIdentitySupport { createdBy: boolean; editedBy: boolean }
 const NO_IDENTITY: SearchIdentitySupport = { createdBy: false, editedBy: false };
-export const EMPTY_FILTERS: SearchFilterState = { titleOnly: false, type: "", editor: "anyone", creator: "anyone", date: "any", vault: "" };
+export const EMPTY_FILTERS: SearchFilterState = { titleOnly: false, type: "", editor: "anyone", creator: "anyone", date: "any", sort: "best", vault: "" };
 
 const TYPES: Array<[string, string]> = [
   ["", "Any type"], ["document", "Pages"], ["database", "Databases"], ["task", "Tasks"],
@@ -62,6 +64,7 @@ export function toSearchFilters(state: SearchFilterState, identity: SearchIdenti
   if (state.editor === "me" && identity.editedBy) f.editor = "me";
   if (state.date !== "any") f.after = isoDaysAgo(state.date === "week" ? 7 : state.date === "month" ? 30 : 365);
   if (state.vault) f.vault = state.vault;
+  if (state.sort !== "best") f.sort = state.sort;
   return f;
 }
 
@@ -70,8 +73,8 @@ export function activeFilterCount(state: SearchFilterState, identity: SearchIden
 }
 
 /**
- * NP-SR-04: title-only, type, created-by, edited-by and date filters for ⌘K and the phone
- * Search tab. Native controls only, so keyboard and screen readers work as-is.
+ * NP-SR-04: title-only, type, created-by, edited-by and date filters — plus the sort order
+ * (best match / last edited / created) — for ⌘K and the phone Search tab. Native controls only, so keyboard and screen readers work as-is.
  */
 export function SearchFilterBar({ value, onChange, onDone, vaults, identity = NO_IDENTITY }: { value: SearchFilterState; onChange: (next: SearchFilterState) => void; onDone?: () => void; vaults?: SearchVault[]; identity?: SearchIdentitySupport }) {
   const [open, setOpen] = useState(() => activeFilterCount(value, identity) > 0);
@@ -109,6 +112,11 @@ export function SearchFilterBar({ value, onChange, onDone, vaults, identity = NO
             <option value="week">Edited in the past week</option>
             <option value="month">Edited in the past month</option>
             <option value="year">Edited in the past year</option>
+          </select>
+          <select aria-label="Sort" value={value.sort} onChange={(e) => set({ sort: e.target.value as SearchFilterState["sort"] })}>
+            <option value="best">Best match</option>
+            <option value="edited">Last edited</option>
+            <option value="created">Created</option>
           </select>
           {vaults && vaults.length > 1 && (
             <select aria-label="Vault" value={value.vault} onChange={(e) => set({ vault: e.target.value })}>

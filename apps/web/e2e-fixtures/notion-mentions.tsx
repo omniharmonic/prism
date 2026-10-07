@@ -57,7 +57,10 @@ const people = [
 ];
 const writes: Array<Record<string, unknown>> = [];
 const reminders: Array<{ id: string; noteId: string; at: number; tz: string; dateOnly: boolean; uid: string | null; status: "scheduled" | "fired" | "cancelled" }> = [];
-Object.assign(window, { prismFixtureUI: useUIStore, prismFixtureNotes: notes, prismFixtureWrites: writes, prismFixtureReminders: reminders });
+/** `holdPeople`: people / member lookups do not answer until `releasePeople()` (a slow connection). */
+const lookups = { holdPeople: false, waiting: [] as Array<() => void>, releasePeople() { lookups.holdPeople = false; for (const go of lookups.waiting.splice(0)) go(); } };
+const peopleGate = () => (lookups.holdPeople ? new Promise<void>((resolve) => lookups.waiting.push(resolve)) : Promise.resolve());
+Object.assign(window, { prismFixtureUI: useUIStore, prismFixtureNotes: notes, prismFixtureWrites: writes, prismFixtureReminders: reminders, prismFixtureLookups: lookups });
 
 const json = (body: unknown, status = 200) => Response.json(body, { status });
 const byId = (id: string) => notes.find((n) => n.id === id || n.path === id);
@@ -95,6 +98,7 @@ window.fetch = async (input, init) => {
   const body = typeof init?.body === "string" && init.body ? JSON.parse(init.body) : {};
   if (path === "/auth/me") return json({ authenticated: true, email: "owner@example.test", name: "You", isOwner: true, vaultId: "primary", workspace: { id: "default", name: "Personal workspace" } });
   if (path === "/api/tree") return json(visible().map((n) => ({ id: n.id, path: n.path, tags: n.tags, updatedAt: n.updatedAt, type: n.metadata?.type, ...(n.metadata?.title ? { title: n.metadata.title } : {}), ...(n.metadata?.aliases ? { aliases: n.metadata.aliases } : {}) })));
+  if (path === "/api/people" || path === "/api/mentions/members") await peopleGate();
   if (path === "/api/people") {
     const q = (url.searchParams.get("q") ?? "").toLowerCase();
     return json({ people: people.filter((p) => !q || p.name.toLowerCase().includes(q)), next: null });

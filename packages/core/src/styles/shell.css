@@ -51,6 +51,40 @@
 :root.reduce-motion .workspace-mobile-drawer[open],
 :root.reduce-motion .workspace-mobile-drawer[open] > div { animation: none; }
 
+/* Every popup ENTERS (NP-AX-06, w13: the lower bound). Until here these appeared at once (0 ms):
+   modal dialogs (Share, Settings, New page, Templates, Trash, Move, Import/Export — full-screen
+   layers on a phone), the shortcut sheet, the centred row peek, phone full-screen search, the
+   phone agent conversation, toasts, the slash menu and the selection toolbar.
+   One rule each, on the motion tokens (so both reduced-motion switches zero them). Fade only where
+   the surface is positioned with its own transform or is a full-screen layer (a transform there
+   would re-anchor its fixed children for the length of the animation). `:where()` keeps the
+   generic dialog rule at zero specificity: any surface with its own entrance keeps it. Nothing
+   animates on the way out — a closed popup is gone at once and can catch no tap. */
+@keyframes prism-toast-in {
+  from { opacity: 0; transform: translate(-50%, 8px); }
+  to { opacity: 1; transform: translate(-50%, 0); }
+}
+:where(dialog[open]) { animation: prism-fade-in var(--motion-base) ease-out; }
+:where(dialog[open])::backdrop { animation: prism-fade-in var(--motion-fast) ease-out; }
+.prism-shortcuts-backdrop { animation: prism-fade-in var(--motion-fast) ease-out; }
+.prism-shortcuts { animation: prism-menu-in var(--motion-base) var(--motion-ease); }
+.db-peek-center { animation: prism-fade-in var(--motion-base) ease-out; }
+.prism-search-sheet-full { animation: prism-fade-in var(--motion-base) ease-out; }
+.prism-agent-conversation.fixed { animation: prism-fade-in var(--motion-base) ease-out; }
+.page-toast { animation: prism-toast-in var(--motion-base) var(--motion-ease); }
+[role="listbox"][aria-label="Insert block"],
+.document-selection-actions, .cd-bubble { animation: prism-fade-in var(--motion-fast) ease-out; }
+@media (prefers-reduced-motion: reduce) {
+  :where(dialog[open]), :where(dialog[open])::backdrop, .prism-shortcuts-backdrop, .prism-shortcuts, .db-peek-center,
+  .prism-search-sheet-full, .prism-agent-conversation.fixed, .page-toast,
+  [role="listbox"][aria-label="Insert block"], .document-selection-actions, .cd-bubble { animation: none; }
+}
+:root.reduce-motion :where(dialog[open]), :root.reduce-motion :where(dialog[open])::backdrop,
+:root.reduce-motion .prism-shortcuts-backdrop, :root.reduce-motion .prism-shortcuts, :root.reduce-motion .db-peek-center,
+:root.reduce-motion .prism-search-sheet-full, :root.reduce-motion .prism-agent-conversation.fixed, :root.reduce-motion .page-toast,
+:root.reduce-motion [role="listbox"][aria-label="Insert block"],
+:root.reduce-motion .document-selection-actions, :root.reduce-motion .cd-bubble { animation: none; }
+
 /* Header bar (NP-PG-06): labelled actions stay one quiet row. */
 .tabbar-labelled {
   position: relative; display: inline-flex; align-items: center; gap: 6px;

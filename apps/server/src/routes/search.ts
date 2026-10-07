@@ -11,12 +11,16 @@
  * (the LAST EDITOR: the account's opaque writer-stamp id against `prism_last_writer`;
  * signed-in users only, anyone but an admin may only say `me`),
  * `after`/`before` (YYYY-MM-DD or ISO, inclusive), `date=created` (default:
- * updated), `lean=1` (drop `content` from rows; the snippet still comes back).
+ * updated), `sort=edited|created` (newest first; absent/unknown = the vault's
+ * best-match order), `lean=1` (drop `content` from rows; the snippet still comes back).
  *
  * Security: every row passes `effectiveCaps(...).has("view")` (owner/admin:
  * all), trashed pages are excluded, the private-note rule applies through the
  * same caps. Filters run AFTER the view filter, so a filter can only narrow
- * what the caller can already read and no count/total is returned. One vault
+ * what the caller can already read and no count/total is returned. A sort
+ * orders the rows that passed both, BEFORE the limit cuts them (so a hidden
+ * note neither appears nor takes a slot); it is over the vault's ≤100 best
+ * matches, not over every match in the vault. One vault
  * call per request (≤100 rows, identical in-flight queries coalesced); snippets
  * read ≤20 KB per note through a linear scanner; per-actor rate limit
  * `SEARCH_RATE_PER_MINUTE` (owner 600, others 120).
@@ -31,7 +35,7 @@ import { forViewer } from "../sharing";
 import { writerIdFor } from "../writer-stamp";
 import { isTrashed } from "@prism/core/pages";
 import { inferContentType } from "@prism/core/content-types";
-import { hasFilters, matchesFilters, MAX_QUERY_LENGTH, parseSearchFilters, queryTerms, searchMatches } from "@prism/core/search";
+import { hasFilters, matchesFilters, MAX_QUERY_LENGTH, parseSearchFilters, queryTerms, searchMatches, sortSearchRows } from "@prism/core/search";
 
 export const searchApi = new Hono();
 
@@ -113,7 +117,9 @@ searchApi.get("/search", async (c: Context) => {
   const terms = queryTerms(q);
   // Filters and the view filter both narrow after the vault answers, so ask for
   // more than we return — but never more than 100 rows (the vault returns bodies).
-  const fetchLimit = Math.min(FETCH_MAX, admin && !hasFilters(filters) ? limit : limit * 4);
+  // A date order is over the widest pool one call may fetch: the newest page must not be lost
+  // because the vault ranked it 60th.
+  const fetchLimit = filters.sort ? FETCH_MAX : Math.min(FETCH_MAX, admin && !hasFilters(filters) ? limit : limit * 4);
   let results: Note[];
   try {
     results = await sharedVaultSearch(actor.vaultId, q, fetchLimit);
@@ -122,9 +128,10 @@ searchApi.get("/search", async (c: Context) => {
     return c.json({ error: "server_error" }, 500);
   }
   const stamp = actor.kind === "user" && !admin;
-  const out: Array<Record<string, unknown>> = [];
+  const passed: Array<{ note: Note; caps: Set<Cap> | null }> = [];
   for (const n of results) {
-    if (out.length >= limit) break;
+    // Unsorted: the first `limit` rows that pass are the answer. Sorted: every row is judged first.
+    if (!filters.sort && passed.length >= limit) break;
     if (!n || typeof n.id !== "string" || isTrashed(n)) continue;
     let caps: Set<Cap> | null = null;
     if (!admin) {
@@ -132,6 +139,13 @@ searchApi.get("/search", async (c: Context) => {
       if (!caps.has("view")) continue;
     }
     if (!matchesFilters(n, filters, terms, (note) => inferContentType(note as Note))) continue;
+    passed.push({ note: n, caps });
+  }
+  const ordered = filters.sort
+    ? sortSearchRows(passed.map((p) => ({ ...p, createdAt: p.note.createdAt, updatedAt: p.note.updatedAt })), filters.sort).slice(0, limit)
+    : passed;
+  const out: Array<Record<string, unknown>> = [];
+  for (const { note: n, caps } of ordered) {
     // A non-admin never receives attribution keys or a creator email (2D review M3/M-B).
     const row: Record<string, unknown> = { ...(admin ? n : forViewer(actor, n)), _matches: searchMatches(n, terms) };
     if (lean) delete row.content;

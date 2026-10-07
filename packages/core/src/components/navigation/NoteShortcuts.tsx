@@ -9,6 +9,8 @@ import { useSettingsStore, type RecentItem } from "../../app/stores/settings";
 import { isVaultNoteId } from "../../lib/noteIdentity";
 import { inferContentType } from "../../lib/schemas/content-types";
 import { noteLinkTitle } from "../../lib/wikilinks";
+import { adoptSyncedRegion, getStoredRegion } from "../../lib/datetime/preferences";
+import { useRegionPrefs } from "../../lib/datetime/useRegionPrefs";
 import { PagesRequestError, moveWithin, preferenceOps, type PagePreferences, type PreferencesSnapshot } from "../../lib/pages/model";
 
 const PREFIX = "prism:note-shortcuts:v1:";
@@ -147,6 +149,24 @@ function useSyncedShortcuts(scope: string, query: ReturnType<typeof useQuery<Pre
     try { localStorage.setItem(MIGRATED + encodeURIComponent(scope), "1"); } catch { /* best effort */ }
     if (local.favorites.length || local.recents.length) apply((p) => preferenceOps.merge(p, local));
   }, [query.isSuccess, scope]);
+
+  // Regional preferences (NP-AX-09) ride in the same synced document. They are READ from the
+  // device (`lib/datetime/preferences`), so this is a two-way bridge keyed on `at`: a newer
+  // synced copy is adopted here, a newer local choice is sent. A server that predates the key
+  // drops it and never sends one back — then the choice simply stays on this device.
+  const region = useRegionPrefs();
+  const sentRegion = useRef(0);
+  const remoteRegion = query.data?.preferences.region;
+  useEffect(() => {
+    if (!query.isSuccess || !current()) return;
+    if (adoptSyncedRegion(remoteRegion)) return;
+    const mine = getStoredRegion();
+    // Sent at most once per change: an older server answers without the key, which must not
+    // read as "the server still lacks my choice" on every answer.
+    if (!mine.at || mine.at <= (remoteRegion?.at ?? 0) || sentRegion.current === mine.at) return;
+    sentRegion.current = mine.at;
+    apply((p) => preferenceOps.setRegion(p, mine));
+  }, [query.isSuccess, remoteRegion?.at, region, scope]);
 
   const active = useUIStore(state => state.activeTabId);
   const tabs = useUIStore(state => state.openTabs);

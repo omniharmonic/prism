@@ -17,6 +17,7 @@ import { noteLinkTitle } from "../../lib/wikilinks";
 import type { ContentType, Note } from "../../lib/types";
 import "../inbox/inbox.css";
 
+import { formatDate as fmtDate, formatTime as fmtTime } from "../../lib/datetime/format";
 const DONE = new Set(["done", "complete", "completed", "cancelled", "canceled", "archived", "closed"]);
 
 function greeting(d = new Date()): string {
@@ -27,10 +28,10 @@ function when(ts: number): string {
   const d = new Date(ts);
   const today = new Date();
   const tomorrow = new Date(today.getTime() + 86_400_000);
-  const time = d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+  const time = fmtTime(d, { hour: "numeric", minute: "2-digit" });
   if (d.toDateString() === today.toDateString()) return `Today ${time}`;
   if (d.toDateString() === tomorrow.toDateString()) return `Tomorrow ${time}`;
-  return `${d.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" })} ${time}`;
+  return `${fmtDate(d, { weekday: "short", month: "short", day: "numeric" })} ${time}`;
 }
 function eventStart(e: CalendarEvent): number {
   return Date.parse(e.start.dateTime ?? e.start.date ?? "");
@@ -181,7 +182,7 @@ export default function Home(_props: RendererProps) {
                   <button key={n.id} type="button" className="prism-home-item focus-ring" onClick={() => openNotification(n)} data-unread={!n.readAt}>
                     <AtSign size={14} color={n.readAt ? "var(--text-muted)" : "var(--color-accent)"} />
                     <span className="label">{n.actor?.name ? `${n.actor.name} · ` : ""}{n.title ?? "a page"}</span>
-                    <span className="when">{new Date(n.createdAt).toLocaleDateString(undefined, { month: "short", day: "numeric" })}</span>
+                    <span className="when">{fmtDate(new Date(n.createdAt), { month: "short", day: "numeric" })}</span>
                   </button>
                 ))}
             </section>

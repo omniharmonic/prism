@@ -99,6 +99,8 @@ interface UIStore {
   /** NP-SB-07 "Open in new tab": add the page as a tab WITHOUT leaving the current one. */
   openTabInBackground: (noteId: string, title: string, type: ContentType) => void;
   closeTab: (tabId: string) => void;
+  /** Reopen the tab closed last (and not open again since), where it was. False when there is none. */
+  reopenClosedTab: () => boolean;
   closeTabs: (noteId: string) => void;
   closeAllTabs: () => void;
   setActiveTab: (tabId: string) => void;
@@ -133,6 +135,13 @@ interface UIStore {
   acceptGhostText: () => void;
   rejectGhostText: () => void;
 }
+
+/** Tabs closed in this session, newest last, with where each stood ("Reopen closed tab"). In memory
+ *  only, and emptied with the tabs when the account or vault changes (`closeAllTabs`). */
+const CLOSED_TABS_MAX = 20;
+let closedTabs: Array<{ tab: TabState; index: number }> = [];
+/** Is there a closed tab to bring back? (Not reactive: read when a menu or palette is built.) */
+export const hasClosedTab = (): boolean => closedTabs.some((c) => !useUIStore.getState().openTabs.some((t) => t.noteId === c.tab.noteId));
 
 export const useUIStore = create<UIStore>((set, get) => ({
   sidebarOpen: savedSidebar.open,
@@ -214,10 +223,27 @@ export const useUIStore = create<UIStore>((set, get) => ({
       }
     }
 
+    // Remembered for "Reopen closed tab" (this session only; `closeTabs` — a page that was
+    // trashed or lost — deliberately is not).
+    const closed = openTabs[idx];
+    if (closed) closedTabs = [...closedTabs.filter((c) => c.tab.noteId !== closed.noteId), { tab: { ...closed, isDirty: false }, index: idx }].slice(-CLOSED_TABS_MAX);
     set({ openTabs: filtered, activeTabId: nextActive });
   },
 
-  closeAllTabs: () => set({ openTabs: [], activeTabId: null, navHistory: [], navIndex: -1 }),
+  reopenClosedTab: () => {
+    const s = get();
+    for (;;) {
+      const last = closedTabs.pop();
+      if (!last) return false;
+      if (s.openTabs.some((t) => t.noteId === last.tab.noteId)) continue; // opened again since
+      const openTabs = s.openTabs.slice();
+      openTabs.splice(Math.min(last.index, openTabs.length), 0, last.tab);
+      set({ openTabs, activeTabId: last.tab.id, ...pushNav(s.navHistory, s.navIndex, last.tab.id) });
+      return true;
+    }
+  },
+
+  closeAllTabs: () => { closedTabs = []; set({ openTabs: [], activeTabId: null, navHistory: [], navIndex: -1 }); },
 
   closeTabs: (noteId) => {
     const { openTabs, activeTabId } = get();

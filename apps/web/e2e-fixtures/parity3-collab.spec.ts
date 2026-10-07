@@ -83,8 +83,10 @@ test("remote caret name tags", async ({ browser }) => {
     await expect(tag(name)).toHaveCount(1);
     await expect(tag(name).locator(".collaboration-carets__label")).toHaveText(name);
   }
-  expect(await tag("Olive Owner").evaluate((el) => el.closest("p")?.textContent ?? "")).toContain("Alpha beta gamma");
-  expect(await tag("Eve Editor").evaluate((el) => el.closest("p")?.textContent ?? "")).toContain("Second paragraph here.");
+  // A caret is first published where its owner's selection started (the top of the page) and moves
+  // when the click arrives: wait for the place, do not read it once.
+  await expect.poll(() => tag("Olive Owner").evaluate((el) => el.closest("p")?.textContent ?? "")).toContain("Alpha beta gamma");
+  await expect.poll(() => tag("Eve Editor").evaluate((el) => el.closest("p")?.textContent ?? "")).toContain("Second paragraph here.");
   // Each caret and its name tag are drawn in that person's own, stable colour — and the two differ.
   const colourOf = (name: string) => tag(name).evaluate((el) => ({ caret: getComputedStyle(el).borderLeftColor, label: getComputedStyle(el.querySelector(".collaboration-carets__label")!).backgroundColor }));
   const [o, e] = [await colourOf("Olive Owner"), await colourOf("Eve Editor")];

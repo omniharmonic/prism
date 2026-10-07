@@ -85,6 +85,8 @@ export type { GraphNode, GraphLink, GraphData } from "./components/layout/GraphC
 export { CollabSharingProvider, useCollabSharing, useVaultChangeSignal } from "./data/CollabSharing";
 export { AccountProvider, useAccount } from "./data/Account";
 export { PushProvider, usePush } from "./data/PushNotifications";
+// Native shell section in Settings → Account (WP5: the iOS app's lock + server). No editor code.
+export { ShellSettingsProvider } from "./data/ShellSettings";
 export type { PushClient, PushState } from "./data/PushNotifications";
 export type { AccountClient, AccountProfile, SignedInDevice, AgentToken, AgentTokenList, CreatedAgentToken } from "./data/Account";
 export { PlatformProvider, usePlatform, useIsWeb, type Platform } from "./data/Platform";
@@ -306,6 +308,7 @@ export { PageIcon, notePageIconChanged, pageIconWriteConfirmed, pageIconWriteFai
 export { extractMentions, newMentions, extractCommentMentions, splitCommentMentions, commentMentionToken, type ParsedMention } from "./lib/tiptap/MentionParse";
 export * from "./lib/notifications/client";
 export * from "./lib/notifications/hooks";
-export { openNotification, focusAnchor, anchorSelector, listenForInboxOpenRequests, setPendingNotification, ANCHOR_FLASH_CLASS } from "./lib/notifications/anchor";
+export { openNotification, focusAnchor, anchorSelector, listenForInboxOpenRequests, setPendingNotification, ANCHOR_FLASH_CLASS, REVEAL_PROPERTY_EVENT } from "./lib/notifications/anchor";
 export { InboxBadge, InboxNavButton, openInbox } from "./components/inbox/InboxNavButton";
 export { RequestAccessButton } from "./components/inbox/RequestAccessButton";
+export { PageNotificationLevelButton } from "./components/inbox/PageNotificationLevel";

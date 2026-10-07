@@ -7,6 +7,7 @@ import {
 } from "../../../lib/boards/filters";
 import { safeBoardField } from "../../../lib/boards/config";
 
+import { formatDateTime as fmtDateTime } from "../../../lib/datetime/format";
 const control =
   "min-h-11 min-w-0 w-full rounded-lg border border-[var(--glass-border)] bg-[var(--bg-surface)] px-3 text-sm";
 const remove =
@@ -16,7 +17,7 @@ function dateLabel(value: string | undefined, fallback: string) {
   if (!value) return fallback;
   const date = new Date(value);
   return Number.isFinite(date.getTime())
-    ? date.toLocaleString(undefined, {
+    ? fmtDateTime(date, {
         year: "numeric",
         month: "short",
         day: "numeric",

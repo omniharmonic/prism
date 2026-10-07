@@ -318,8 +318,16 @@ signed in it keeps the validated PATH (never a URL, never a token) in `sessionSt
 once the signed-in workspace is up, then removes it. (host.js itself may not use web
 storage; the page half may.)
 
-**The `prism://` scheme** is registered by `src-tauri/Info.plist` (merged by the Tauri
-bundler; `verify-client.mjs` pins it to exactly that one scheme).
+**The `prism://` scheme** is registered by `src-tauri/Info.plist` (macOS) and, with the same
+entry, `src-tauri/Info.ios.plist` (iOS) — merged by the Tauri bundler; `verify-client.mjs` pins
+each to exactly that one scheme. On iOS the sign-in redirect `prism://auth/callback` still does
+not come through here: `ASWebAuthenticationSession` returns it to `signin.rs` (see the iOS
+section).
+
+**iOS differences** (`links.rs`; macOS is unchanged): with no server configured (first run, or
+after "Sign out & change server") every link is refused silently and nothing is kept; and a
+link is handed to the page only while the app is UNLOCKED — see "Links behind the lock" in the
+iOS section.
 
 **The Associated Domains entitlement is generated per install** — the server host is
 configuration, so no host is committed:
@@ -338,8 +346,9 @@ node apps/client/scripts/universal-links.mjs --ios                 # iOS (WP5): 
   carrying it is killed at launch — hence an opt-in overlay (`gen/universal-links/`,
   git-ignored), never `tauri.conf.json`. Without the overlay the app still handles
   `prism://` links.
-- **iOS (after `feat/native-ios` is merged):** run `--ios` before `ios-release.sh`; enable
-  Associated Domains on the App ID and regenerate the "Prism Workspace App Store" profile.
+- **iOS:** run `--ios` before `ios-release.sh` and restore the two entitlements files after
+  the build (owner procedure, steps 4 and 7 — the patched files must not be committed); enable
+  Associated Domains on the App ID and regenerate the provisioning profiles.
   The iOS app asks for its server at first run, but the entitlement is fixed at build time:
   a build lists the hosts it may open links for, and the runtime rule (origin = configured
   server) picks among them.
@@ -386,7 +395,7 @@ reaches the WKWebView as a keydown and the same handler takes it — NOT verifie
 A discoverable entry in the iPad ⌘-hold overlay needs a `UIKeyCommand` in the Swift plugin
 (`plugins/prism-ios` on `feat/native-ios`) that evals the same event.
 
-### Saving an export archive (`save_export`; macOS/desktop built, iOS designed)
+### Saving an export archive (`save_export`; macOS: save panel, iOS: share sheet)
 
 `ExportDialog` used to hand the ZIP to `saveBlob()` (an `<a download href="blob:…">` click).
 wry attaches a WKDownloadDelegate only when the window has a download handler; this shell
@@ -437,12 +446,16 @@ whole list). Module `src-tauri/src/export_archive.rs`:
   the ZIP opens; Stop mid-save leaves no `.part`; with the server stopped mid-download the
   dialog says the download was interrupted.
 
-**iOS (design, not built — needs the Swift plugin on `feat/native-ios`).** Same command and
-the same `download()`; instead of a save panel, stream to `<app tmp>/exports/<random>/<sanitised
-name>.zip` (0600; the folder is emptied at launch and when the sheet closes), then present
-`UIActivityViewController` (Save to Files / AirDrop) from the Swift plugin, anchored for
-iPad. The path never reaches JS. Until then `save_export` answers "isn't available on this
-platform yet" on iOS and the dialog shows that reason.
+**iOS (built with `feat/w13-ios-merge`; NOT compiled or run yet — owner procedure step 2).**
+Same command, same `download()`; instead of a save panel the archive streams into
+`<app tmp>/prism-exports/<random>/<sanitised name>.zip` (the folder is 0700, removed when the
+sheet closes and purged at launch), then the Swift plugin presents `UIActivityViewController`
+(Save to Files / AirDrop), anchored for iPad, for a file under that folder only. The path never
+reaches JS. `export_note` (one note as `.md` / `.html`) takes the same route. The command
+returns the file's name when an activity completed and null when the sheet was dismissed, so the
+dialog reads "Export saved …" or "Export ready — Not saved yet" + **Save…** exactly as on the
+Mac. On iOS the dialog's "Choose where to save…" line is shown while the download runs (the
+sheet comes after it); the wording is the Mac's.
 
 ## Security surface
 
@@ -476,8 +489,8 @@ platform yet" on iOS and the dialog shows that reason.
   - Rust checks the scheme (`http`/`https`/`mailto` only, no userinfo, ≤4096 chars; never a
     bundle, `javascript:`, `file:` or custom-scheme URL).
   - It then shows a **native** `NSAlert` with the URL (`confirm.rs`). Only the user's click
-    on **Open** reaches the opener. On non-macOS platforms the dialog answers "no" until
-    WP5 adds one.
+    on **Open** reaches the opener. On iOS it is a `UIAlertController`; on other platforms
+    the dialog answers "no".
 - **The token is readable by page script, so XSS = token theft.** The WP2.2 contract gives
   `getToken()` to the page, because its `fetch` needs it.
   - The CSP (`connect-src`/`img-src`) limits where the page can *fetch*, but it is **not a
@@ -732,8 +745,9 @@ Any future node/mark/attribute change must bump the version; `apps/server/test/c
   (native-auth.md).
 - A collab WebSocket that is already open survives revocation until it reconnects (a server
   property).
-- `dirs::config_dir()` is used for settings because the CSP must be known before the Tauri
-  app exists. On iOS (WP5.1) this must move to the app's sandbox container.
+- `dirs::config_dir()` is used for settings on desktop because the CSP must be known before
+  the Tauri app exists. On iOS the same file lives in the app's sandbox container
+  (`$HOME/Library/Application Support/<identifier>/client-settings.json`).
 - **L3: keychain hardening.** Blocked on Apple signing (D1). The item currently lives in the
   file-based login keychain with an app-ACL. With a Developer ID/team signature, move it to
   the data-protection keychain (`use_protected_keychain`) with
@@ -744,19 +758,224 @@ Any future node/mark/attribute change must bump the version; `apps/server/test/c
   `https://fonts.gstatic.com` and `https://esm.sh` from the CSP, leaving the server as the
   only remote origin.
 
-## What WP5 (iOS) adds to this shell
+## iOS app (WP5) — "Prism" / App Store "Prism Workspace"
 
-- `tauri ios init` in `apps/client` (it creates `gen/apple`). Add the `iOS` platform to the
-  capability; it is already listed.
-- **WP5.2 sign-in**: an `ASWebAuthenticationSession` (small Swift plugin, or
-  `tauri-plugin-deep-link` + `prism://auth/callback`) in the `#[cfg(mobile)]` arm of
-  `signin.rs`, returning the redirect URL to `pkce::parse_callback_query`. Everything after
-  that is shared. If the redirect is a universal link, register it in the server's
-  `DEVICE_REDIRECT_URIS`.
-- **Keychain**: `secure_store.rs` already compiles for iOS. Add
-  `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly` and optional biometric access control
-  (Face ID) there.
-- **Settings path**: resolve the settings directory from the iOS app container (see
-  Known limits). There is no window-geometry or menu code on mobile (`#[cfg(desktop)]`).
-- APNs registration (WP5.3) as a separate plugin/command. It must be declared in `build.rs`
-  and granted in the capability.
+The same shell, built for iOS from `apps/client` (`gen/apple`, generated by `tauri ios init`
+and committed). Merged into main's line with `feat/w13-ios-merge`; **the iOS-only code of that
+merge has been read and unit-tested on the Mac host but never compiled for iOS or run on a
+device** — the owner procedure below starts with exactly that.
+
+Identity: bundle id `com.benjaminlife.prism.client` (the registered App ID; the keychain item is
+per device, so nothing is shared with the Mac), team `83Y42N33H8`, home-screen name **Prism**
+(`tauri.ios.conf.json` `productName` + `Info.ios.plist`), App Store name **Prism Workspace** (set
+only in App Store Connect), version `0.1.0` build `1`, deployment target **iOS 16.0**.
+`Info.ios.plist` (merged by Tauri at build time): `ITSAppUsesNonExemptEncryption=false`,
+`NSFaceIDUsageDescription`, the `prism` URL scheme (the same entry as the macOS `Info.plist`),
+and **no ATS key**: Release has ATS fully on. Debug builds get `NSAllowsLocalNetworking` from a
+Debug-only build phase (`project.yml` "Debug-only ATS loopback exception") for a loopback test
+server, and `origin.rs` refuses `http://` on iOS release builds (`ALLOW_HTTP_LOOPBACK`). No
+background modes (pushes are visible alerts). Entitlements as committed: Release
+`prism-client_iOS.entitlements` = `aps-environment=production`, Debug
+`prism-client_iOS.debug.entitlements` = `development` (per-config `CODE_SIGN_ENTITLEMENTS`) and
+nothing else — **Associated Domains is written per build by `universal-links.mjs --ios` and
+never committed** (`verify-client.mjs` fails while a host is in those files). Privacy manifest
+`prism-client_iOS/PrivacyInfo.xcprivacy` (no tracking, no collected data; required-reason APIs:
+file timestamp `C617.1`, system boot time `35F9.1`; UserDefaults is not used). Icons:
+full-bleed opaque render of `PrismAppIcon` (`scripts/build-ios-icon.ts`).
+
+**`gen/apple` is generated, then customised — keep the customisations.** `tauri ios init`
+rewrites `gen/apple` from Tauri's template (project.yml, Info.plist, entitlements, icons,
+ExportOptions). Prefer NOT re-running it. If you must (a Tauri upgrade that needs a new
+template):
+1. Commit first, run `npx tauri ios init --ci`, then `git diff apps/client/src-tauri/gen/apple`.
+2. Restore from git: the two entitlements files, `PrivacyInfo.xcprivacy`, `ExportOptions.plist`,
+   `ExportOptions.adhoc.plist`, the AppIcon PNGs, and in `project.yml` the `configs:` block
+   (per-config `CODE_SIGN_ENTITLEMENTS`) and the `postBuildScripts` "Debug-only ATS loopback
+   exception".
+3. Regenerate the Xcode project with **no build outputs present** (otherwise xcodegen adds
+   `Externals/*/libapp.a` as resources and the build fails with "Multiple commands produce
+   libapp.a"): `cd apps/client/src-tauri/gen/apple && mv Externals /tmp/ext && mkdir Externals
+   && xcodegen generate --spec project.yml && rmdir Externals && mv /tmp/ext Externals`.
+4. `node apps/client/scripts/verify-client.mjs` must pass (it checks every item above).
+Info.plist keys never need re-applying: Tauri merges `src-tauri/Info.ios.plist` on every build.
+
+### How the pieces fit
+
+| Piece | Where | Notes |
+|---|---|---|
+| First run "Enter your server" | `apps/web/src/native/ServerSetupScreen.tsx` → `set_server_origin` | No built-in server. The PAGE only gives a quick answer for obvious mistakes (`serverInputProblem`: not an address, plain `http://` off-device, sign-in details / a path / a query in the address) and contacts nothing — while no server is set its CSP reaches no remote origin at all. The SHELL decides: `ServerOrigin::parse` (https; http on loopback only in debug builds; the host must be LDH labels after IDNA, IPv4 or [IPv6], so nothing like `*`, `;`, `'`, `,` can reach the CSP), then `auth::probe_server`: `GET /health?live=1` (the liveness form: no vault call; an older server answers the plain `/health`), **no credential, no cookie, no redirect**, ≤ 4 KB read, must be `{ok: boolean}` with 200 or 503. Only then is it saved and applied **in place**: iOS can't restart itself, so `window.rs` rewrites every page's CSP (`origin::retarget_csp`) and injects `<meta name="prism-server-origin">` into `<head>` through `on_web_resource_request`; host.js's `apiOrigin` getter reads it from `document.head` (no build-time fallback on iOS). `get_token` takes the page's origin and returns nothing unless it is exactly the current server. Every server change reloads the page from Rust, also after a partial failure. Only allowed while no server is set. |
+| Change server | Settings → Account → Server, `reset_server` | Native `UIAlertController` → `DELETE /api/push/apns` + revoke (in parallel, 8 s overall timeout) + forget token → server cleared → a link that was waiting is dropped (`LinkState::clear`, and the page's `prism:pending-link`) → reload into the first-run screen (each step runs even if an earlier one failed). |
+| Sign-in | `signin.rs` iOS arm | `ASWebAuthenticationSession`, `prefersEphemeralWebBrowserSession=false` (shares Safari cookies), redirect `prism://auth/callback` (server default `DEVICE_REDIRECT_URIS`). **The callback never passes through `links.rs`**: the session's completion handler returns the URL to Swift → Rust (`PrismIos::authenticate`) → `pkce::code_from_redirect` (exact scheme/host/path, no fragment, our `state`) → `exchange_code` with the PKCE verifier → keychain. The app also REGISTERS the `prism` scheme (for `prism://page/…` links), which changes nothing here: iOS hands a redirect that matches a running session's `callbackURLScheme` to that session, and if a `prism://auth/…` URL ever did arrive as an ordinary open, `links.rs` drops it silently and stores nothing. Label "Prism on iPhone". If the server was changed while the sheet was up, the new token is revoked (best effort) instead of stored. A password login works inside the sheet; the owner's magic link opens in Safari, so **the owner should set a password** (Settings → Account) or sign in once in Safari first. |
+| Keychain | `secure_store.rs` | `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`, non-synchronizable. **No biometric access control on the item (deliberate):** a presence-bound item would need Face ID for every token read, including APNs re-registration at launch and a launch from a notification tap while the phone is locked; the lock is enforced in the UI instead (below). |
+| App lock | Swift `AppLock`, `set_app_lock`, Settings → Account → Security | Off (default) · When Prism opens · After 5/15/60 min in background · Every time. `LAContext.deviceOwnerAuthentication` (Face ID/Touch ID with passcode fallback). The background timer uses `mach_continuous_time` (monotonic, counts sleep; setting the clock back can't skip the lock; a backwards/NaN reading locks) — pure rule in `LockPolicy.swift`, tested by `scripts/ios-policy-tests/run.sh` (also run by verify-client). The cover is its own window at alert level + 1 (above alerts and the sign-in sheet; only the system Face ID/passcode UI shows over it), goes up on resign-active (hides the app-switcher snapshot) and stays until unlocked. While locked the webview has no interaction and no focus, presented alerts, an open sign-in sheet and an open share sheet are dismissed, and `authenticate` / `confirm` / `verifyOwner` / `shareFile` refuse. Changing the setting while a lock is on asks for Face ID first. No device passcode = the lock can't be enforced (fails open, said in Settings). |
+| Links behind the lock | `links.rs` + Swift `waitUnlocked` | The page keeps running behind the cover, so **nothing is handed to it while locked**. `LinkState` delivers only when `lock_ready` (the saved lock was applied at launch — `lib.rs` sets it after `configure_lock`) AND the Swift side answers `waitUnlocked` (`LockPolicy.mayDeliverLink`: no lock, or unlocked + app active + no background trip still waiting for its lock decision — a link that brings the app back reaches it BEFORE `didBecomeActive` decides). A link still expires 10 minutes after it arrived, also behind the lock. The same gate holds a tapped notification: `takeOpenedSession` answers nothing while locked and the page is pinged after the unlock. |
+| Links with no server | `links::accept(…, None, …)` | First run / after "Sign out & change server": every link is refused, silently, and nothing is kept. macOS always has an origin (saved or built-in), so its validation is unchanged. |
+| Push | Swift `PushRegistrar`, `apps/web/src/native/apnsPush.ts` | `PushClient` seam (Settings → Account → "Notify me…"): the permission prompt only follows the user turning that toggle on (never at launch or sign-in by itself). **Every signed-in account** may register (the routes take any user with the app's `pd_` device credential; a cookie → 403); the choice is remembered per account on the device (`prism:apns:<16-hex tag>` — no address in web storage). While it is on and iOS allows it, the hex token is POSTed to `/api/push/apns {token, environment}` with the device bearer on **every launch** (token refresh). Environment (`mobile_cmds::apns_environment`, unit-tested): App Store/TestFlight installs have NO embedded profile, so no profile = `production`; a profile saying `development` or the simulator = `sandbox`; an ad hoc build embeds a distribution profile = `production`. Each registration waits with its own 30 s timeout. "Send a test notification" → `/api/push/apns/test`. Turning it off → `DELETE /api/push/apns`; sign-out and reset delete the row too (the shell's `delete_apns`, and the server's `revokeDevice`). A tap (ids only: `sessionId` / `url=/agent/<id>`, or `notificationId` / `url=/inbox/<id>`) is pulled through `push_take_opened`, which answers the canonical client PATH built by `links::notification_path` (the same id rules as a link), and the page opens it as a tab through `appLinks.openAppLink`, cold or warm. |
+| External links | `open_external` | Same validation; the confirmation is a `UIAlertController`; opens in Safari via the opener plugin. |
+| Export | `export_note`, `save_export` (`native_cmds.rs` iOS arms) + Swift `shareFile` | No save panel on iOS. The shell writes the note / streams the archive (same `export_archive::download`: bearer to the configured origin only, no redirect, size caps) into `<app tmp>/prism-exports/<random>/<name>` (0700), presents `UIActivityViewController` (Save to Files, AirDrop; popover anchored for iPad) and **deletes the folder when the sheet closes**, whatever happened; leftovers are purged at launch. Swift shares only a `.zip`/`.md`/`.html` under that folder; the path never reaches JS. Result: the file's name when an activity completed, null when the sheet was dismissed (the dialog then offers "Save…" again — the job lives 15 minutes on the server). |
+| WebView | Swift `load(webview:)` | `contentInsetAdjustmentBehavior=.never` (the web UI owns safe areas via `viewport-fit=cover`), no scroll-view bounce, no back/forward swipe, no link previews. Pinch zoom stays available; zoom-on-focus is avoided by the 16px input rule. |
+
+**IPC surface (iOS) — pinned separately from the desktop's.** `capabilities/mobile.json`
+(platform iOS, window `main`), 14 commands: the six shared ones (`get_token`, `sign_in`,
+`sign_out`, `get_server_origin`, `set_server_origin`, `open_external`), `export_note` and
+`save_export` (both end in the share sheet), and six iOS-only ones — `reset_server`,
+`get_app_settings`, `set_app_lock`, `push_register`, `push_status`, `push_take_opened`
+(`src/mobile_cmds.rs`; on desktop they return an error and no desktop capability grants them).
+No quick capture and no desktop `notify` on iOS. The desktop list is unchanged: 9 main-window
+commands + `quick_capture` (`capabilities/default.json` is desktop-only since this merge). The
+Swift plugin (`src-tauri/plugins/prism-ios`, linked for iOS only) registers **no**
+webview-callable command; only Rust calls it. Its single `evaluateJavaScript` is the fixed,
+data-free `prism:native-push-opened` ping. `verify-client.mjs` §9–§10 pin all of this.
+
+**Not in the first build (deferred).** QR pairing (needs the server pairing routes,
+`one-download-setup.md` §5), share extension, `GET /api/version` skew check, quick
+capture/widgets, a `UIKeyCommand` so ⌘N shows in the iPad ⌘-hold overlay, embeds (the client CSP
+has no frame sources: an embed is an "Open in …" card — owner decision c.7).
+
+### Owner procedure: build and device pass
+
+For a Mac with Xcode. Nothing here uploads anything; TestFlight is the LAST step and is not
+part of the device pass. Work from the repository root unless a step says otherwise. Stop at
+the first step that fails and fix it before going on.
+
+**0. Prerequisites (once per machine).**
+- Xcode 15.3 or newer with the iOS platform installed (`xcodebuild -version`; the ad hoc export
+  method name `release-testing` needs 15.3 — on an older Xcode change it to `ad-hoc` in
+  `gen/apple/ExportOptions.adhoc.plist`), command line tools selected (`xcode-select -p`).
+- Rust iOS targets: `rustup target add aarch64-apple-ios aarch64-apple-ios-sim`.
+- `npm ci` at the repository root (the Tauri CLI comes from `apps/client`'s dev dependencies).
+- Signing (already on the owner's Mac): the **Apple Distribution** identity in the login
+  keychain (`security find-identity -v -p codesigning | grep "Apple Distribution"`), the App
+  Store Connect API key `AuthKey_<KEY ID>.p8` in `~/.appstoreconnect/private_keys/` (the key id
+  and issuer are the defaults in `ios-release.sh`; the `.p8` itself is never in the repository).
+- App ID `com.benjaminlife.prism.client` in the developer portal with **Push Notifications**
+  and **Associated Domains** enabled. Enabling a capability invalidates existing profiles:
+  regenerate and download **"Prism Workspace App Store"** afterwards.
+- For the device pass: register each test device's UDID (portal → Devices) and create an
+  **Ad Hoc** profile for the App ID named exactly **"Prism Workspace Ad Hoc"** that includes
+  them; download it (Xcode → Settings → Accounts → Download Manual Profiles, or double-click it).
+- Server: APNs configured (`docs/push.md` § Owner setup: `APNS_KEY_PATH/KEY_ID/TEAM_ID`, boot
+  banner `apns: ON`), and the association file reachable on the PUBLIC host:
+  `curl -sI https://<host>/.well-known/apple-app-site-association` → `200`,
+  `content-type: application/json`, no redirect; body names
+  `83Y42N33H8.com.benjaminlife.prism.client`.
+
+**1. Preflight (no Xcode involved).**
+```bash
+node apps/client/scripts/verify-client.mjs --build     # builds the native web bundle, then every invariant; must print "all checks passed"
+(cd apps/client/src-tauri && cargo test --lib)         # host tests: links, origin/CSP, PKCE, export, settings, probe
+bash apps/client/scripts/ios-policy-tests/run.sh       # the lock rules (Swift, on the Mac)
+```
+
+**2. First iOS compile (this merge has never been compiled for iOS).** A debug simulator
+build compiles every `cfg(target_os = "ios")` line of Rust and the whole Swift plugin:
+```bash
+cd apps/client && CARGO_TARGET_DIR=$PWD/src-tauri/target npx tauri ios build --target aarch64-sim --debug --ci
+```
+If it fails, the likely places are the code written without a compiler: `links.rs`
+(`app_unlocked`, iOS arm), `native_cmds.rs` (the two iOS arms of `export_note` / `save_export`),
+`lib.rs` (the iOS block in `setup`), `plugins/prism-ios/src/lib.rs` (`wait_unlocked`,
+`share_file`) and `PrismIosPlugin.swift` (`whenUnlocked`, `waitUnlocked`, `shareFile`, the
+notification `didReceive`). Fix, re-run step 1, repeat.
+
+**3. Simulator smoke (5 minutes; simulator results do not count for the checklist).**
+```bash
+xcrun simctl boot "iPhone 17 Pro"; open -a Simulator
+xcrun simctl install booted apps/client/src-tauri/gen/apple/build/arm64-sim/Prism.app
+xcrun simctl launch booted com.benjaminlife.prism.client
+```
+A local test server: `apps/server` with its own env file (`PORT`, `DB_PATH`,
+`APP_ORIGIN=http://127.0.0.1:<port>`, fake vault from `scripts/e2e/fake-vault.mjs`) — never the
+production server. Check: the first-run screen appears; `http://127.0.0.1:<port>` is accepted
+(debug build) and `http://example.com` is not; sign-in sheet → signed in; `xcrun simctl openurl
+booted "prism://page/<id>"` opens that page; with the lock on "Every time", background the app,
+run the same `openurl`, and the page opens only AFTER the unlock (in the simulator: Features →
+Face ID → Enrolled, then Matching Face).
+
+**4. Associated Domains for THIS build (universal links).** Writes the server host into the
+two entitlements files in the working tree — do not commit that change:
+```bash
+node apps/client/scripts/universal-links.mjs --ios --hosts <your server host>     # e.g. prism.example.com
+git diff --stat apps/client/src-tauri/gen/apple/prism-client_iOS/                 # exactly the two .entitlements files
+```
+
+**5. Bump the build number** if a build with this number was ever installed or uploaded:
+`bundle.iOS.bundleVersion` in `apps/client/src-tauri/tauri.ios.conf.json` (1, 2, 3…).
+
+**6. Build the device-pass app (Release, production APNs, ad hoc — nothing is uploaded).** In
+your own Terminal (codesign needs the login keychain; the first time click *Always Allow*):
+```bash
+apps/client/scripts/ios-release.sh -adhoc
+```
+It archives with `tauri ios build`, exports with the local Apple Distribution identity and the
+"Prism Workspace Ad Hoc" profile, and prints what it made. **Read the summary before
+installing:** `Authority=Apple Distribution`, team `83Y42N33H8`, the profile name and expiry,
+entitlements with `aps-environment = production` AND
+`com.apple.developer.associated-domains = applinks:<your host>`, `CFBundleVersion` = the number
+from step 5, `ITSAppUsesNonExemptEncryption = false`, a Face ID usage string, **no**
+`NSAppTransportSecurity`, URL schemes = exactly `prism`.
+
+**7. Restore the working tree** (the host must not be committed):
+```bash
+git checkout -- apps/client/src-tauri/gen/apple/prism-client_iOS/prism-client_iOS.entitlements \
+                apps/client/src-tauri/gen/apple/prism-client_iOS/prism-client_iOS.debug.entitlements
+node apps/client/scripts/verify-client.mjs      # passes again
+```
+
+**8. Install on the test devices.**
+```bash
+xcrun devicectl list devices
+xcrun devicectl device install app --device <device id> apps/client/src-tauri/gen/apple/build/release/adhoc/Prism.ipa
+```
+(or drag the `.ipa` onto the device in Finder). A device whose UDID is not in the Ad Hoc
+profile refuses the install.
+
+**9. Device pass.** Run `docs/roadmap/workspace-experience/PARITY-GAPS.md` §b.3 (Parts A–D for
+the iPhone/iPad; record device, OS, build number, result per row), against the production
+server with synthetic `_test` pages. The rows this merge adds or changes, and what to look for:
+
+| Row | On the device | Expected |
+|---|---|---|
+| First run | Fresh install → launch. Type `not an address`, `http://<host>`, `https://<host>/page/x`, a host that does not exist, `example.com`, then your server (also without `https://`). | The first three are refused at once with a reason; the unknown host says it could not be reached; `example.com` "doesn't look like a Prism Server"; your server → the sign-in screen. Airplane mode → "Couldn't reach …", and the app is usable again once back online. |
+| NP-NA-01 | Sign in (sheet), Settings → Account → Sign out, sign in again; then "Sign out & change server…": Cancel, then confirm. | Back in the app signed in; after sign-out the device is gone from "Signed-in devices" on the web; Cancel changes nothing; confirm → the first-run screen, and the old server's pages are not shown. |
+| NP-NA-02 | Lock = "When Prism opens": kill, relaunch. Lock = "After 5 minutes": background 6 minutes. Lock = "Every time": app switcher, then return. Cancel the Face ID prompt. Try to change the lock setting. | Face ID (passcode fallback) each time; the switcher shows the cover, not the page; after Cancel the cover stays with "Unlock"; changing the setting asks for Face ID first. |
+| Lock × links | Lock = "Every time". With the app in the background, tap an `https://<host>/page/<id>` link in Notes, and separately a `prism://page/<id>` link. Do the same with the app killed. Then tap a link, do NOT unlock for 11 minutes, unlock. | The app comes forward LOCKED; the page opens only after Face ID; nothing of the page is visible before it. The link left for 11 minutes does not open. |
+| Lock × push | Lock on. Get a mention from the second account; tap the notification on the lock screen. | The app opens locked; after Face ID the Inbox opens at that item. |
+| NP-NA-04 | Tap `https://<host>/page/<id>` in Messages and Mail; long-press it; tap a `…/collab/<id>?t=…` share link, a `/p/<slug>` link, an invite link. Sign out, tap a page link, sign in. Tap a page link for a page the account cannot view, and a link to another host. | Page links open in the app ("Open in Prism" on long-press); the share / published / invite links open in Safari; the link tapped while signed out opens after sign-in; an unviewable page shows "Document unavailable"; another host never opens in the app. |
+| NP-NA-03 | Settings → Account → turn notifications on (first time: the iOS prompt appears HERE, not at launch). "Send a test notification". From the second account: mention the owner; start an agent turn and background the app. Then sign in as the MEMBER on the device, turn notifications on, and mention them. Turn the toggle off and repeat a mention. | The test arrives; a push for the mention and the finished turn (generic text); tapping opens the Inbox item / the agent session; the member gets their own pushes; after turning it off nothing arrives. On the server `apns_tokens` holds one row per device and loses it on sign-out. |
+| NP-TX-03 | Page ⋯ → Export as Markdown. Page ⋯ → Export… with sub-pages. Workspace export (owner). Dismiss the sheet once without saving, then "Save…". Start a large export and lock the phone. | The share sheet opens with the `.md` / `.zip` (iPad: a centred popover); Save to Files stores it and the archive opens; dismissing reads "Not saved yet" and Save… brings the sheet back; no copy stays in the app (Settings → General → iPhone Storage → Prism does not grow by the archive's size after closing the sheet). |
+| NP-MB-10 (iPad) | Hardware keyboard: ⌘N, ⌘K, ⌘\, ⌘/. | Each reaches the app. (⌘N is not listed in the ⌘-hold overlay — deferred.) |
+
+Device-only facts no test here can show — confirm each once and note it in the hand-off:
+that iOS hands the `prism://auth/callback` redirect to the sign-in sheet although the app also
+registers the `prism` scheme (sign-in completing IS the proof); that a universal link reaches
+the app at all; that the cover is up before the first frame after a cold start with a lock on;
+that `UIActivityViewController`'s completion fires when the lock dismisses the sheet (no stuck
+"Saving…" in the dialog).
+
+**10. TestFlight — ONLY after full parity sign-off (owner rule).** Not part of the device
+pass. When, and only when, Notion parity is signed off on main:
+1. Repeat steps 1, 4, 5 (a NEW build number) on the release commit.
+2. `apps/client/scripts/ios-release.sh` (no flag) → `gen/apple/build/release/export/Prism.ipa`,
+   signed with the "Prism Workspace App Store" profile. Read the summary as in step 6 (an App
+   Store build has no `get-task-allow` and `aps-environment = production`). Then step 7.
+3. Upload:
+   ```bash
+   xcrun altool --upload-app --type ios --file apps/client/src-tauri/gen/apple/build/release/export/Prism.ipa \
+     --apiKey <KEY ID> --apiIssuer <ISSUER ID>
+   ```
+   (the script prints the exact command; or drag the .ipa into Transporter). Processing takes
+   5–30 min; you get an email.
+4. **Export compliance**: the binary declares `ITSAppUsesNonExemptEncryption=false` (HTTPS/TLS
+   only), so App Store Connect doesn't ask. If it ever does: "None of the algorithms mentioned
+   above" / standard encryption exempt.
+5. **TestFlight**: App Store Connect → Apps → Prism Workspace → TestFlight. Internal testing →
+   "+" create a group (e.g. "Owners") → add testers (users of your App Store Connect team) → add
+   the processed build to the group. Testers install the **TestFlight** app and accept the email
+   invite. External testing needs a short Beta App Review.
+6. TestFlight tokens are **production** APNs tokens (the server needs nothing new).
+
+Why `ios-release.sh` has two steps: `tauri ios build` archives fine, but its own export uses
+Xcode cloud signing, which the API key's role may not use ("Cloud signing permission error"), so
+the script exports the archive itself with the local distribution certificate and a named profile
+(`gen/apple/ExportOptions.plist` / `ExportOptions.adhoc.plist`, manual signing).

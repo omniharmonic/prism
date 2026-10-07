@@ -13,7 +13,7 @@
  * dates by value. A missing value never satisfies a comparison except
  * `ne` / `nin` / `not_contains` / `not_exists`, and always sorts last.
  */
-import { dateRange } from "./dates";
+import { dateRange, dayDiff } from "./dates";
 import { TEMPLATE_TAG, isTemplateNote } from "../pages/model";
 
 export const QUERY_OPS = [
@@ -74,6 +74,64 @@ export interface QuerySpec {
    *  whose `assigned`/`assignee` value names them. Signed-in users only; ignored
    *  by the pure engine (the server narrows its input). */
   assignedToMe?: boolean;
+  /**
+   * Calculations over EVERY matching row the caller may see (not only the page):
+   * ≤ 20 `{key, fn}` pairs. Answered in `QueryPage.aggregates`.
+   */
+  aggregates?: AggregateRequest[];
+  /** Also answer the calculations (and a row count) per group of this property. */
+  groupBy?: AggregateGroupBy;
+}
+
+// ── calculations ─────────────────────────────────────────────────────────────
+
+/** Every calculation a view footer can show. Unknown names are refused everywhere. */
+export const AGGREGATE_FNS = [
+  "count_all", "count_values", "count_unique", "count_empty", "count_not_empty", "percent_empty", "percent_not_empty",
+  "sum", "average", "median", "min", "max", "range",
+  "earliest", "latest", "date_range",
+  "checked", "unchecked", "percent_checked",
+] as const;
+export type AggregateFn = (typeof AGGREGATE_FNS)[number];
+export const isAggregateFn = (v: unknown): v is AggregateFn => typeof v === "string" && (AGGREGATE_FNS as readonly string[]).includes(v);
+export const MAX_AGGREGATES = 20;
+/** Groups answered per query; more distinct values than this are left out (`groupsCapped`). */
+export const MAX_AGGREGATE_GROUPS = 500;
+/**
+ * Work bounds of one calculation request (it runs on the server's event loop):
+ * a row joins at most this many groups (its first distinct values)…
+ */
+export const MAX_GROUPS_PER_ROW = 25;
+/** …a multi-value cell is read up to this many values… */
+export const MAX_VALUES_PER_CELL = 50;
+/** …and one request adds at most this many values to its figures; then it stops and says `truncated`. */
+export const AGGREGATE_BUDGET = 2_000_000;
+/** How far into a multi-value group cell the distinct values are looked for. */
+const GROUP_SCAN = 200;
+
+export interface AggregateRequest {
+  key: string;
+  fn: AggregateFn;
+}
+export interface AggregateGroupBy {
+  key: string;
+  /** A checkbox property: a missing value belongs to the "false" group (never the empty one). */
+  checkbox?: boolean;
+}
+/**
+ * A figure: a count / sum / … (number), a share 0–1 (`percent_*`), whole days
+ * (`date_range`), a stored date string (`earliest` / `latest`), or null when the
+ * rows hold nothing to calculate from.
+ */
+export type AggregateValue = number | string | null;
+/** `{[propertyKey]: {[fn]: value}}` */
+export type AggregateValues = Record<string, Partial<Record<AggregateFn, AggregateValue>>>;
+export interface AggregateGroup {
+  /** The group's stored value (`"true"`/`"false"` for a checkbox); null = rows without one. */
+  value: string | null;
+  /** Matching rows in the group. */
+  count: number;
+  aggregates: AggregateValues;
 }
 
 /** The lean note shape the engine evaluates (no content). */
@@ -116,8 +174,25 @@ export interface QueryPage {
    * was hidden" — that would leak the existence of notes the caller cannot see.
    */
   limited: boolean;
-  /** True when the server stopped scanning at its inventory cap. */
+  /**
+   * True when the server stopped scanning at its inventory cap — or, for a
+   * calculation request, when the figures stopped at their work bounds
+   * ({@link AGGREGATE_BUDGET}, {@link MAX_VALUES_PER_CELL}).
+   */
   truncated: boolean;
+  /**
+   * The requested calculations over every matching row the caller may see. When
+   * `truncated` they cover only part of them (a lower bound for counts). A
+   * calculation the server will not answer for this caller is null, never absent.
+   */
+  aggregates?: AggregateValues;
+  /** With `groupBy`: the same calculations (and a row count) per group. */
+  groups?: AggregateGroup[];
+  /**
+   * Groups are missing or incomplete: more than {@link MAX_AGGREGATE_GROUPS} distinct
+   * values, a row with more than {@link MAX_GROUPS_PER_ROW}, or the work budget ran out.
+   */
+  groupsCapped?: boolean;
 }
 
 export const QUERY_MAX_LIMIT = 500;
@@ -212,6 +287,22 @@ export function validateQuerySpec(raw: unknown): { ok: true; spec: QuerySpec } |
     if (typeof raw.search !== "string" || raw.search.length > 200) return { ok: false, error: "search must be ≤200 chars" };
     spec.search = raw.search;
   }
+  if (raw.aggregates !== undefined && raw.aggregates !== null) {
+    if (!Array.isArray(raw.aggregates) || raw.aggregates.length > MAX_AGGREGATES) return { ok: false, error: `aggregates must be ≤${MAX_AGGREGATES} {key, fn} pairs` };
+    const aggregates: AggregateRequest[] = [];
+    for (const a of raw.aggregates) {
+      if (!record(a) || !isKey(a.key) || !isAggregateFn(a.fn) || Object.keys(a).some((k) => k !== "key" && k !== "fn")) return { ok: false, error: "each aggregate needs a valid key and fn" };
+      if (!aggregates.some((x) => x.key === a.key && x.fn === a.fn)) aggregates.push({ key: a.key as string, fn: a.fn });
+    }
+    if (aggregates.length) spec.aggregates = aggregates;
+  }
+  if (raw.groupBy !== undefined && raw.groupBy !== null) {
+    const g = raw.groupBy;
+    if (!record(g) || !isKey(g.key) || (g.checkbox !== undefined && typeof g.checkbox !== "boolean") || Object.keys(g).some((k) => k !== "key" && k !== "checkbox")) {
+      return { ok: false, error: "groupBy must be {key, checkbox?}" };
+    }
+    spec.groupBy = { key: g.key as string, ...(g.checkbox ? { checkbox: true } : {}) };
+  }
   return { ok: true, spec };
 }
 
@@ -250,6 +341,8 @@ export function metadataKeysFor(spec: QuerySpec): string[] | null {
   for (const k of spec.fields ?? []) keys.add(k);
   for (const c of filterConditions(spec.filter)) if (isFieldKey(c.key)) keys.add(c.key);
   for (const s of spec.sort ?? []) if (isFieldKey(s.key)) keys.add(s.key);
+  for (const a of spec.aggregates ?? []) if (isFieldKey(a.key)) keys.add(a.key);
+  if (spec.groupBy && isFieldKey(spec.groupBy.key)) keys.add(spec.groupBy.key);
   return [...keys];
 }
 
@@ -383,7 +476,23 @@ function ordered(actual: unknown, expected: unknown, test: (c: number) => boolea
   return values.some((v) => !isEmpty(v) && test(compareValues(typeof v === "string" ? rangeEnd(v, side) : v, expected, tz)));
 }
 
-export function evaluateCondition(n: QueryInput, c: QueryCondition, now = new Date(), tzOffset = 0): boolean {
+/**
+ * "Me" as a filter value: a view stores this token, never an address, and it is
+ * resolved for whoever is looking — by the server, which knows the caller
+ * (`eq` / `contains` = the property names me, `ne` / `not_contains` = it does not).
+ */
+export const ME_TOKEN = "@me";
+/** Does `key` of this row name the caller? Supplied by whoever knows the caller. */
+export type MeResolver = (n: QueryInput, key: string) => boolean;
+const ME_POSITIVE: ReadonlySet<QueryOp> = new Set(["eq", "contains"]);
+const ME_NEGATIVE: ReadonlySet<QueryOp> = new Set(["ne", "not_contains"]);
+
+export function evaluateCondition(n: QueryInput, c: QueryCondition, now = new Date(), tzOffset = 0, me?: MeResolver): boolean {
+  if (c.value === ME_TOKEN && (ME_POSITIVE.has(c.op) || ME_NEGATIVE.has(c.op))) {
+    // Nobody to resolve it for (a shell without the server route): no row is "mine".
+    const mine = me ? me(n, c.key) : false;
+    return ME_POSITIVE.has(c.op) ? mine : !mine;
+  }
   const actual = readKey(n, c.key);
   const value = resolveRelative(c.value, now, tzOffset);
   const tz = tzOffset;
@@ -403,19 +512,19 @@ export function evaluateCondition(n: QueryInput, c: QueryCondition, now = new Da
   }
 }
 
-function matchesGroup(n: QueryInput, g: QueryFilterGroup, now: Date, tzOffset: number): boolean {
+function matchesGroup(n: QueryInput, g: QueryFilterGroup, now: Date, tzOffset: number, me?: MeResolver): boolean {
   if (!g.conditions.length) return true;
   return g.match === "all"
-    ? g.conditions.every((c) => evaluateCondition(n, c, now, tzOffset))
-    : g.conditions.some((c) => evaluateCondition(n, c, now, tzOffset));
+    ? g.conditions.every((c) => evaluateCondition(n, c, now, tzOffset, me))
+    : g.conditions.some((c) => evaluateCondition(n, c, now, tzOffset, me));
 }
 
-export function matchesFilter(n: QueryInput, f: QueryFilter | undefined, now = new Date(), tzOffset = 0): boolean {
+export function matchesFilter(n: QueryInput, f: QueryFilter | undefined, now = new Date(), tzOffset = 0, me?: MeResolver): boolean {
   if (!f) return true;
   // Empty groups are no-ops (a half-built group in the editor never empties a view).
   const terms: Array<() => boolean> = [
-    ...f.conditions.map((c) => () => evaluateCondition(n, c, now, tzOffset)),
-    ...(f.groups ?? []).filter((g) => g.conditions.length).map((g) => () => matchesGroup(n, g, now, tzOffset)),
+    ...f.conditions.map((c) => () => evaluateCondition(n, c, now, tzOffset, me)),
+    ...(f.groups ?? []).filter((g) => g.conditions.length).map((g) => () => matchesGroup(n, g, now, tzOffset, me)),
   ];
   if (!terms.length) return true;
   return f.match === "all" ? terms.every((t) => t()) : terms.some((t) => t());
@@ -461,6 +570,262 @@ export function sortRows<T extends QueryInput>(rows: T[], sort: QuerySort[] | un
     }
     return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
   });
+}
+
+// ── calculations ─────────────────────────────────────────────────────────────
+
+/**
+ * A number for a calculation: a finite number, or a string that is exactly a
+ * decimal (`12`, `-0.5`, `.5`, `1e3`). Not `Number()`'s reading: no hex / octal /
+ * binary, no surrounding blanks, no "Infinity". Else null.
+ */
+const DECIMAL = /^[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?$/;
+export function numericValue(v: unknown): number | null {
+  if (typeof v === "number") return Number.isFinite(v) ? v : null;
+  if (typeof v !== "string" || v.length > 64 || !DECIMAL.test(v)) return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+/** What one calculation request may still spend, and whether anything was cut. */
+interface AggregateRun { left: number; cut: boolean }
+
+const FAMILY: Record<AggregateFn, "count" | "number" | "date" | "check"> = {
+  count_all: "count", count_values: "count", count_unique: "count", count_empty: "count", count_not_empty: "count", percent_empty: "count", percent_not_empty: "count",
+  sum: "number", average: "number", median: "number", min: "number", max: "number", range: "number",
+  earliest: "date", latest: "date", date_range: "date",
+  checked: "check", unchecked: "check", percent_checked: "check",
+};
+
+/** One property's running figures over one set of rows. Only what its requested fns need is kept. */
+class Collector {
+  rows = 0;
+  empty = 0;
+  values = 0;
+  checked = 0;
+  sum = 0;
+  /** Numbers seen (what `average` divides by). */
+  numbers = 0;
+  min = Infinity;
+  max = -Infinity;
+  nums: number[] | null;
+  unique: Set<string> | null;
+  first: string | null = null;
+  last: string | null = null;
+  private firstAt = Infinity;
+  private lastAt = -Infinity;
+  readonly need: Plan["need"];
+  constructor(need: Plan["need"]) {
+    this.need = need;
+    this.nums = need.median ? [] : null;
+    this.unique = need.unique ? new Set() : null;
+  }
+  add(v: unknown, tz: number, run: AggregateRun): void {
+    this.rows++;
+    if (v === true) this.checked++;
+    if (isEmpty(v)) { this.empty++; run.left--; return; }
+    if (Array.isArray(v)) {
+      // The first values only: a cell is never read further, however long it is.
+      const end = Math.min(v.length, MAX_VALUES_PER_CELL);
+      if (v.length > end) run.cut = true;
+      run.left -= end;
+      for (let i = 0; i < end; i++) if (!isEmpty(v[i])) this.one(v[i], tz);
+    } else {
+      run.left--;
+      this.one(v, tz);
+    }
+  }
+  private one(v: unknown, tz: number): void {
+    this.values++;
+    if (this.unique) this.unique.add(typeof v === "string" ? norm(v) : String(v));
+    if (this.need.number) {
+      const n = numericValue(v);
+      if (n !== null) {
+        this.sum += n;
+        this.numbers++;
+        if (n < this.min) this.min = n;
+        if (n > this.max) this.max = n;
+        this.nums?.push(n);
+      }
+    }
+    if (this.need.date && typeof v === "string") {
+      const d = dateSpan(v, tz);
+      if (!d) return;
+      if (d.from < this.firstAt) { this.firstAt = d.from; this.first = d.start; }
+      if (d.to > this.lastAt) { this.lastAt = d.to; this.last = d.end; }
+    }
+  }
+  value(fn: AggregateFn, tz: number): AggregateValue {
+    const share = (part: number) => (this.rows ? part / this.rows : null);
+    const any = this.max !== -Infinity;
+    switch (fn) {
+      case "count_all": return this.rows;
+      case "count_values": return this.values;
+      case "count_unique": return this.unique?.size ?? 0;
+      case "count_empty": return this.empty;
+      case "count_not_empty": return this.rows - this.empty;
+      case "percent_empty": return share(this.empty);
+      case "percent_not_empty": return share(this.rows - this.empty);
+      case "checked": return this.checked;
+      case "unchecked": return this.rows - this.checked;
+      case "percent_checked": return share(this.checked);
+      case "sum": return any ? this.sum : null;
+      case "min": return any ? this.min : null;
+      case "max": return any ? this.max : null;
+      case "range": return any ? this.max - this.min : null;
+      case "average": return this.numbers ? this.sum / this.numbers : null;
+      case "median": {
+        const a = this.nums;
+        if (!a?.length) return null;
+        const sorted = Float64Array.from(a).sort();
+        const mid = sorted.length >> 1;
+        return sorted.length % 2 ? sorted[mid]! : (sorted[mid - 1]! + sorted[mid]!) / 2;
+      }
+      case "earliest": return this.first;
+      case "latest": return this.last;
+      case "date_range": return this.first !== null && this.last !== null ? Math.abs(dayDiff(localDay(this.first, tz), localDay(this.last, tz))) : null;
+    }
+  }
+}
+
+/**
+ * When a date value starts and ends, as instants: a plain day runs from its local
+ * midnight to the end of that day in the caller's zone; a range from its start
+ * (earliest) to its end (latest), like the filter operators read one. Null when
+ * the text is not a date. The last answer is kept: a row's value is asked for
+ * once per set it belongs to (the view, its group).
+ */
+let spanMemo: { v: string; tz: number; out: { start: string; end: string; from: number; to: number } | null } | null = null;
+function dateSpan(v: string, tz: number): { start: string; end: string; from: number; to: number } | null {
+  if (spanMemo && spanMemo.v === v && spanMemo.tz === tz) return spanMemo.out;
+  let out: { start: string; end: string; from: number; to: number } | null = null;
+  if (v.length <= 80) {
+    const s = v.trim();
+    const r = s.length > 10 ? dateRange(s) : null;
+    const start = r ? r[0] : s;
+    const end = r ? r[1] : s;
+    if (ISO_DATE.test(start) && ISO_DATE.test(end)) {
+      const from = DATE_ONLY.test(start) ? Date.parse(`${start}T00:00:00Z`) + tz * 60_000 : instant(start, tz);
+      const to = DATE_ONLY.test(end) ? Date.parse(`${end}T00:00:00Z`) + tz * 60_000 + 86_399_999 : instant(end, tz);
+      if (!Number.isNaN(from) && !Number.isNaN(to)) out = { start, end, from, to };
+    }
+  }
+  spanMemo = { v, tz, out };
+  return out;
+}
+
+interface Plan { key: string; fns: AggregateFn[]; need: { unique: boolean; number: boolean; median: boolean; date: boolean } }
+function planAggregates(requests: AggregateRequest[]): Plan[] {
+  const byKey = new Map<string, Plan>();
+  for (const r of requests) {
+    let p = byKey.get(r.key);
+    if (!p) byKey.set(r.key, (p = { key: r.key, fns: [], need: { unique: false, number: false, median: false, date: false } }));
+    if (!p.fns.includes(r.fn)) p.fns.push(r.fn);
+    if (r.fn === "count_unique") p.need.unique = true;
+    if (FAMILY[r.fn] === "number") p.need.number = true;
+    if (r.fn === "median") p.need.median = true;
+    if (FAMILY[r.fn] === "date") p.need.date = true;
+  }
+  return [...byKey.values()];
+}
+class Bucket {
+  count = 0;
+  readonly cols: Collector[];
+  constructor(plans: Plan[]) { this.cols = plans.map((p) => new Collector(p.need)); }
+  add(vals: unknown[], tz: number, run: AggregateRun): void {
+    this.count++;
+    run.left--;
+    for (let i = 0; i < vals.length; i++) {
+      this.cols[i]!.add(vals[i], tz, run);
+    }
+  }
+  result(plans: Plan[], tz: number): AggregateValues {
+    const out: AggregateValues = {};
+    plans.forEach((p, i) => {
+      const fns: Partial<Record<AggregateFn, AggregateValue>> = {};
+      for (const fn of p.fns) fns[fn] = this.cols[i]!.value(fn, tz);
+      out[p.key] = fns;
+    });
+    return out;
+  }
+}
+
+/** The group value(s) a row belongs to — the same rule the grouped layouts draw by. */
+export function groupValuesOf(v: unknown, checkbox = false): Array<string | null> {
+  if (checkbox) return [String(v === true)];
+  // A value a cell repeats is one membership: the row is in that group once.
+  if (Array.isArray(v)) return v.length ? [...new Set(v.map(String))] : [null];
+  return isEmpty(v) ? [null] : [String(v)];
+}
+
+/**
+ * The groups ONE row is counted in: its first {@link MAX_GROUPS_PER_ROW} distinct
+ * values, looked for in the first {@link GROUP_SCAN} entries of the cell. `cut`
+ * when the cell held more.
+ */
+function rowGroups(v: unknown, checkbox: boolean | undefined): { values: Array<string | null>; cut: boolean } {
+  if (checkbox || !Array.isArray(v)) return { values: groupValuesOf(v, checkbox), cut: false };
+  if (!v.length) return { values: [null], cut: false };
+  const end = Math.min(v.length, GROUP_SCAN);
+  const seen = new Set<string>();
+  let cut = v.length > end;
+  for (let i = 0; i < end; i++) {
+    const s = String(v[i]);
+    if (seen.has(s)) continue;
+    if (seen.size >= MAX_GROUPS_PER_ROW) { cut = true; break; }
+    seen.add(s);
+  }
+  return { values: [...seen], cut };
+}
+
+/**
+ * Calculations over `rows` (already filtered — and, on the server, already
+ * permission-filtered: a row the caller cannot see is never in here). One pass;
+ * `median` sorts the numbers it kept, `count_unique` keeps a set.
+ *
+ * Bounded work, whatever the rows hold (this runs on the server's event loop): a
+ * row joins ≤ {@link MAX_GROUPS_PER_ROW} groups, a cell is read to
+ * {@link MAX_VALUES_PER_CELL} values, and the whole request adds at most
+ * `budget` values (+ one row's worth) to its figures — which also bounds what
+ * `median` and `count_unique` keep. Past the budget it stops: `truncated` (the
+ * figures cover the rows read so far) and, when grouped, `groupsCapped`.
+ */
+export function computeAggregates(
+  rows: QueryInput[],
+  requests: AggregateRequest[] | undefined,
+  groupBy?: AggregateGroupBy,
+  tzOffset = 0,
+  budget = AGGREGATE_BUDGET,
+): { aggregates: AggregateValues; groups?: AggregateGroup[]; groupsCapped?: boolean; truncated?: boolean } {
+  const plans = planAggregates(requests ?? []);
+  const total = new Bucket(plans);
+  const groups = groupBy ? new Map<string | null, Bucket>() : null;
+  let capped = false;
+  let spent = false;
+  const run: AggregateRun = { left: budget, cut: false };
+  const vals: unknown[] = new Array(plans.length);
+  for (const n of rows) {
+    if (run.left <= 0) { spent = true; break; }
+    for (let i = 0; i < plans.length; i++) vals[i] = readKey(n, plans[i]!.key);
+    total.add(vals, tzOffset, run);
+    if (!groups) continue;
+    const mine = rowGroups(readKey(n, groupBy!.key), groupBy!.checkbox);
+    if (mine.cut) capped = true;
+    for (const g of mine.values) {
+      let b = groups.get(g);
+      if (!b) {
+        if (groups.size >= MAX_AGGREGATE_GROUPS) { capped = true; continue; }
+        groups.set(g, (b = new Bucket(plans)));
+      }
+      b.add(vals, tzOffset, run);
+    }
+  }
+  return {
+    aggregates: total.result(plans, tzOffset),
+    ...(groups ? { groups: [...groups.entries()].map(([value, b]) => ({ value, count: b.count, aggregates: b.result(plans, tzOffset) })) } : {}),
+    ...(capped || (spent && groups) ? { groupsCapped: true } : {}),
+    ...(spent || run.cut ? { truncated: true } : {}),
+  };
 }
 
 // ── cursor ───────────────────────────────────────────────────────────────────
@@ -524,7 +889,7 @@ export function projectRow(n: QueryInput, fields: string[] | undefined): QueryRo
 export function runQuery(
   notes: QueryInput[],
   spec: QuerySpec,
-  opts: { limited: boolean; truncated?: boolean; now?: Date },
+  opts: { limited: boolean; truncated?: boolean; now?: Date; /** Resolves the `@me` filter value for the caller. */ me?: MeResolver },
 ): QueryPage {
   const offset = decodeCursor(spec);
   if (offset === null) throw new CursorMismatchError();
@@ -538,19 +903,22 @@ export function runQuery(
     (n) =>
       (wantsTemplates || !isTemplateNote(n)) &&
       spec.tags.every((t) => (n.tags ?? []).includes(t)) &&
-      matchesFilter(n, spec.filter, now, spec.tzOffset ?? 0) &&
+      matchesFilter(n, spec.filter, now, spec.tzOffset ?? 0, opts.me) &&
       (!needle || matchesSearch(n, needle, spec.fields)),
   );
   const sorted = sortRows(matched, spec.sort, spec.tzOffset ?? 0);
   const limit = spec.limit ?? QUERY_DEFAULT_LIMIT;
   const page = sorted.slice(offset, offset + limit);
   const end = offset + page.length;
+  // Over every MATCHING row (not the page): the footer of a view is about the view.
+  const { truncated: partial, ...figures } = spec.aggregates || spec.groupBy ? computeAggregates(matched, spec.aggregates, spec.groupBy, spec.tzOffset ?? 0) : { truncated: false };
   return {
     rows: page.map((n) => projectRow(n, spec.fields)),
     next: end < sorted.length ? encodeCursor(end, spec) : null,
     total: sorted.length,
     limited: opts.limited,
-    truncated: !!opts.truncated,
+    truncated: !!opts.truncated || !!partial,
+    ...figures,
   };
 }
 

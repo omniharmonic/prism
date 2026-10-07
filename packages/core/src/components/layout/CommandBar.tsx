@@ -3,8 +3,10 @@ import { useState, useCallback, useEffect, useRef, useMemo } from "react";
 import {
   Search, X, FileText, MonitorPlay, Code, Mail, Table2, Globe,
   CheckSquare, MessageSquare, Bot, ArrowRight, Settings, RefreshCw, Wand2, History, Sparkles, Trash2, FolderInput, Upload, Download, Printer,
-  Star, SunMoon, PanelLeft, PanelRight, ChevronLeft, ChevronRight, FilePlus2, Home as HomeIcon, Inbox as InboxIcon, LayoutTemplate } from "lucide-react";
-import { useUIStore } from "../../app/stores/ui";
+  Star, SunMoon, PanelLeft, PanelRight, ChevronLeft, ChevronRight, FilePlus2, Home as HomeIcon, Inbox as InboxIcon, LayoutTemplate, Link2, ChevronsUpDown, Undo2 } from "lucide-react";
+import { copyPageLink } from "../../lib/pages/copyPageLink";
+import { expandOrCollapseAllToggles, toggleState } from "../../lib/tiptap/toggleAll";
+import { hasClosedTab, useUIStore } from "../../app/stores/ui";
 import { useIsMobile } from "../../app/hooks/useIsMobile";
 import { useVaultSearch, useCreateNote } from "../../app/hooks/useParachute";
 import { inferContentType } from "../../lib/schemas/content-types";
@@ -242,6 +244,20 @@ export function CommandBar() {
       },
     })) : []),
     ...(activeIsNote && activeTab ? [{
+      id: "copy-page-link", label: "Copy Link to Page", category: "navigate" as const, keys: ["mod", "L"],
+      icon: <Link2 size={15} />,
+      action: () => { closeCommandBar(); void copyPageLink(activeTab.noteId); },
+    }, ...(toggleState().total ? [{
+      id: "toggle-all-toggles", label: "Expand or Collapse All Toggles", category: "navigate" as const, keys: ["mod", "alt", "T"],
+      icon: <ChevronsUpDown size={15} />,
+      action: () => { closeCommandBar(); expandOrCollapseAllToggles(document.querySelector<HTMLElement>("#workspace-document .tiptap")); },
+    }] : [])] : []),
+    ...(hasClosedTab() ? [{
+      id: "reopen-closed-tab", label: "Reopen Closed Tab", category: "navigate" as const, keys: ["mod", "shift", "T"],
+      icon: <Undo2 size={15} />,
+      action: () => { closeCommandBar(); useUIStore.getState().reopenClosedTab(); },
+    }] : []),
+    ...(activeIsNote && activeTab ? [{
       id: "move-page", label: "Move Page To…", category: "navigate" as const,
       icon: <FolderInput size={15} />,
       action: () => { closeCommandBar(); usePagesUI.getState().openMove({ id: activeTab.noteId, path: null, title: activeTab.title }); },
@@ -429,7 +445,9 @@ export function CommandBar() {
         closeCommandBar();
       },
     }] : []),
-  ], [favoriteIds, toggleFavorite, createCommand, activeTab, activeIsNote, agentReady, agentChat, canTransfer, closeCommandBar, toggleContextPanel, setContextPanelTab, createNote, openTab, hostCmds, host, vaultClient, surface, transformNote]);
+    // `commandBarOpen`: "Reopen Closed Tab" and the toggles command read state that is not in a
+    // store (the closed-tab stack, the page's DOM) — rebuilt each time the palette opens.
+  ], [commandBarOpen, favoriteIds, toggleFavorite, createCommand, activeTab, activeIsNote, agentReady, agentChat, canTransfer, closeCommandBar, toggleContextPanel, setContextPanelTab, createNote, openTab, hostCmds, host, vaultClient, surface, transformNote]);
 
   // Filter commands by query
   const filteredCommands = useMemo(() => {

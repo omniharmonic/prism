@@ -1,6 +1,7 @@
 import { usePagesUI } from "../../lib/pages/store";
 import { useEffect } from "react";
-import { useUIStore } from "../stores/ui";
+import { hasClosedTab, useUIStore } from "../stores/ui";
+import { copyPageLink, isPageTab } from "../../lib/pages/copyPageLink";
 import { toggleTheme } from "../stores/settings";
 
 /**
@@ -51,6 +52,23 @@ export function useKeyboardShortcuts() {
         e.preventDefault();
         if (e.key === "[") useUIStore.getState().navBack();
         else useUIStore.getState().navForward();
+        return;
+      }
+
+      // ⌘L copies the open page's link (Notion's "copy page URL"). Pages only: a tool tab has no address.
+      if (!e.shiftKey && !e.altKey && e.key.toLowerCase() === "l") {
+        const tab = useUIStore.getState().openTabs.find((t) => t.id === useUIStore.getState().activeTabId);
+        if (!tab || !isPageTab(tab.noteId)) return;
+        e.preventDefault();
+        void copyPageLink(tab.noteId);
+        return;
+      }
+      // ⌘⇧T reopens the tab closed last. Browsers keep the combination for their own tabs, so it
+      // only arrives in the native app; the command palette has the same action everywhere.
+      if (e.shiftKey && !e.altKey && e.key.toLowerCase() === "t") {
+        if (!hasClosedTab()) return;
+        e.preventDefault();
+        useUIStore.getState().reopenClosedTab();
         return;
       }
 

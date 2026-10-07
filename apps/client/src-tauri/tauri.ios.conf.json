@@ -1,0 +1,11 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Prism",
+  "bundle": {
+    "iOS": {
+      "minimumSystemVersion": "16.0",
+      "developmentTeam": "83Y42N33H8",
+      "bundleVersion": "1"
+    }
+  }
+}

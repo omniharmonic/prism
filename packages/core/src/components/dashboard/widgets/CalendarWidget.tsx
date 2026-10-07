@@ -4,6 +4,10 @@ import { format } from "date-fns";
 import { useVaultClient } from "../../../data/VaultClientContext";
 import { useAgentChatStore } from "../../../lib/agent/chatStore";
 import { calendarApi } from "../../../lib/sync/client";
+import { formatTime, usesSystemTime } from "../../../lib/datetime/format";
+
+/** "system" keeps the string this always showed; a chosen 12/24-hour format replaces it (NP-AX-09). */
+const clock = (d: Date): string => (usesSystemTime() ? format(d, "h:mm a") : formatTime(d, { hour: "numeric", minute: "2-digit" }));
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type GogEvent = any;
@@ -72,7 +76,7 @@ export function CalendarWidget() {
           >
             <Clock size={13} style={{ color: "var(--text-muted)" }} />
             <span className="text-xs flex-shrink-0 w-20" style={{ color: "var(--text-secondary)" }}>
-              {startTime ? format(new Date(startTime), "h:mm a") : "All day"}
+              {startTime ? clock(new Date(startTime)) : "All day"}
               {endTime && startTime ? ` - ${format(new Date(endTime), "h:mm")}` : ""}
             </span>
             <span className="text-sm truncate" style={{ color: "var(--text-primary)" }}>

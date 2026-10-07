@@ -56,6 +56,7 @@ import type { VaultClient } from "../../../data/VaultClient";
 import type { Note, TagCount } from "../../../lib/types";
 import { TagPicker } from "./TagPicker";
 
+import { formatDate as regionDate, formatDateTime as fmtDateTime } from "../../../lib/datetime/format";
 // The full share ladder for space peer grants (4.3): "comment" was already
 // honored by permissions.ts / effectiveLevel, just never offered in the UI.
 const SPACE_LEVELS: ShareLevel[] = ["view", "comment", "suggest", "edit"];
@@ -104,7 +105,7 @@ function msg(e: unknown): string {
 function fmtDate(ts: number | null | undefined): string {
   if (!ts) return "—";
   const ms = ts < 1e12 ? ts * 1000 : ts; // tolerate seconds or millis
-  return new Date(ms).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+  return regionDate(new Date(ms), { month: "short", day: "numeric", year: "numeric" });
 }
 function timeAgo(ts: number): string {
   const ms = ts < 1e12 ? ts * 1000 : ts; // tolerate seconds or millis
@@ -1233,7 +1234,7 @@ function PeerEditsCard({ sharing }: { sharing: CollabSharing }) {
             <div key={i} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, padding: "4px 0", borderBottom: "1px solid var(--glass-border)" }}>
               <code style={{ color: "var(--text-primary)" }}>{e.peerFingerprint}</code>
               <span style={{ flex: 1, color: "var(--text-secondary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>note {e.localId}</span>
-              <span style={{ color: "var(--text-muted)" }}>{new Date(e.editedAt).toLocaleString()}</span>
+              <span style={{ color: "var(--text-muted)" }}>{fmtDateTime(new Date(e.editedAt))}</span>
             </div>
           ))}
         </div>

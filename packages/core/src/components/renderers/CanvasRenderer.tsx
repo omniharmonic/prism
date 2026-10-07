@@ -5,7 +5,7 @@ import "./canvas-workspace.css";
 import { Link2, Link2Off, PanelLeftOpen, PanelLeftClose, ExternalLink } from "lucide-react";
 import type { RendererProps } from "./RendererProps";
 import { useAutoSave } from "../../app/hooks/useAutoSave";
-import { useSettingsStore } from "../../app/stores/settings";
+import { useEffectiveTheme } from "../../app/stores/settings";
 import { useUIStore } from "../../app/stores/ui";
 import { inferContentType } from "../../lib/schemas/content-types";
 import { useVaultClient } from "../../data/VaultClientContext";
@@ -19,6 +19,7 @@ import type { Note } from "../../lib/types";
 import { NoteDrawer } from "./NoteDrawer";
 import { getCanvasNoteIds, findNoteElement, buildNoteCardElements, eid } from "./canvas-cards";
 
+import { formatTime as fmtTime } from "../../lib/datetime/format";
 type ExcalidrawAPI = {
   getSceneElements: () => readonly any[];
   updateScene: (scene: { elements: readonly any[] }) => void;
@@ -46,7 +47,7 @@ export default function CanvasRenderer({ note, readOnly }: RendererProps) {
   const presentation = useCanvasPresentation();
   const editableRef = useRef(!readOnly);
   editableRef.current = !readOnly;
-  const theme = useSettingsStore((s) => s.theme);
+  const theme = useEffectiveTheme();
   const isDark = theme === "dark";
   const contentRef = useRef(note.content || "");
   const apiRef = useRef<ExcalidrawAPI | null>(null);
@@ -281,7 +282,7 @@ export default function CanvasRenderer({ note, readOnly }: RendererProps) {
           {presentation.control}
         </div>
         <span className="prism-canvas-save" style={{ color: "var(--text-muted)" }}>
-          {isSaving ? "Saving..." : lastSaved ? `Saved ${lastSaved.toLocaleTimeString()}` : ""}
+          {isSaving ? "Saving..." : lastSaved ? `Saved ${fmtTime(lastSaved)}` : ""}
         </span>
       </div>
 

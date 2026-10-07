@@ -662,7 +662,7 @@ function ScopedCollabDoc({
 
   // Comments + suggestions are prose-only; code/spreadsheets are pure collab data.
   const showComments = isDocument;
-  const sidebar = <CommentsSidebar ydoc={ydoc} user={user} canComment={canComment} editor={editor} focusedThreadId={focusedThread} actions={commentActions} />;
+  const sidebar = <CommentsSidebar noteId={noteId} ydoc={ydoc} user={user} canComment={canComment} editor={editor} focusedThreadId={focusedThread} actions={commentActions} />;
 
   return (
     <div style={outer}>

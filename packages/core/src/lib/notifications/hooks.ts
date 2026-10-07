@@ -15,6 +15,7 @@ import {
   type NotificationPage,
   type NotificationSettings,
   type NotificationType,
+  type PageNotificationLevel,
 } from "./client";
 
 export const notificationKeys = {
@@ -22,6 +23,7 @@ export const notificationKeys = {
   unread: ["notifications", "unread"] as const,
   list: (box: "inbox" | "archived", type?: NotificationType) => ["notifications", "list", box, type ?? "all"] as const,
   settings: ["notifications", "settings"] as const,
+  pageLevel: (noteId: string) => ["notifications", "page-level", noteId] as const,
   reminders: ["notifications", "reminders"] as const,
   accessRequests: ["notifications", "access-requests"] as const,
 };
@@ -142,6 +144,29 @@ export function useSaveNotificationSettings() {
     mutationFn: (s: NotificationSettings) => notificationsApi.putSettings(s),
     onSuccess: (r) => qc.setQueryData(notificationKeys.settings, r),
   });
+}
+
+/**
+ * Your notification level for one page (NP-CO-04). `available` is false while
+ * unknown and wherever the server has no such thing for this viewer — a share-link
+ * guest (401), an older server (404), the desktop shell — so the control hides.
+ */
+export function usePageNotificationLevel(noteId: string | null, enabled = true) {
+  const qc = useQueryClient();
+  const q = useQuery({
+    queryKey: notificationKeys.pageLevel(noteId ?? ""),
+    queryFn: () => notificationsApi.getPageLevel(noteId!),
+    enabled: enabled && !!noteId,
+    retry: false,
+    staleTime: 60_000,
+    refetchOnWindowFocus: false,
+  });
+  const save = useMutation({
+    mutationFn: (level: PageNotificationLevel) => notificationsApi.setPageLevel(noteId!, level),
+    onSuccess: (r) => qc.setQueryData(notificationKeys.pageLevel(noteId ?? ""), r),
+  });
+  const level = q.data?.level === "all" || q.data?.level === "mentions" || q.data?.level === "none" ? q.data.level : null;
+  return { level, available: q.isSuccess && level !== null, set: save.mutate, saving: save.isPending, failed: save.isError };
 }
 
 export function useReminders() {

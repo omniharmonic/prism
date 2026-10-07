@@ -4,6 +4,8 @@ import type { Editor } from "@tiptap/react";
 import { MessageSquarePlus, Check, Trash2, Pencil } from "lucide-react";
 import { useThreads, addReply, setResolved, deleteThread, type Thread, type CommentItem } from "../../editor/comments";
 import { MentionText, useCommentMentionPicker } from "../../lib/tiptap/MentionText";
+import { PageNotificationLevelButton } from "../inbox/PageNotificationLevel";
+import "../inbox/inbox.css";
 
 /** Edit (text) or delete one comment of a thread; deleting the last one deletes the thread. */
 function changeComment(ydoc: Y.Doc, threadId: string, index: number, text: string | null, editor?: Editor | null): void {
@@ -50,6 +52,7 @@ export function CommentsSidebar({
   editor,
   focusedThreadId,
   actions,
+  noteId,
 }: {
   ydoc: Y.Doc;
   user: { name: string; color: string };
@@ -57,6 +60,9 @@ export function CommentsSidebar({
   editor?: Editor | null;
   focusedThreadId?: string | null;
   actions?: CommentCommandActions;
+  /** The page these comments belong to (the per-page notification level). When a host
+   *  does not pass it, the control works out the page from where it is mounted. */
+  noteId?: string | null;
 }) {
   const threads = useThreads(ydoc);
   const [tab, setTab] = useState<"open" | "resolved">("open");
@@ -82,7 +88,11 @@ export function CommentsSidebar({
 
   return (
     <div style={{ width: "100%", display: "flex", flexDirection: "column", gap: 12 }}>
-      <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-primary)" }}>Comments</div>
+      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        <div style={{ flex: 1, fontSize: 13, fontWeight: 600, color: "var(--text-primary)" }}>Comments</div>
+        {/* NP-CO-04: what this page may tell you about. Hidden for share-link guests (no inbox). */}
+        <PageNotificationLevelButton noteId={noteId} />
+      </div>
 
       <div className="prism-tabs" role="group" aria-label="Comment threads">
         {tabBtn("open", "Open", open.length)}

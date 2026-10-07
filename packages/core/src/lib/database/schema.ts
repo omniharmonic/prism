@@ -224,6 +224,8 @@ export const PRESENTATION_KEYS = new Set(["contentFont"]);
 export const isListableKey = (k: string): boolean => !isSystemKey(k) && !PRESENTATION_KEYS.has(k);
 
 const PERSON_KEYS = /^(assigned|assignee|assignees|owner|owners|person|people|author|authors|lead|attendees|participants|collaborators|reviewer|reviewers|contact)$/i;
+/** A property name that reads as people ("assignee", "owner", "reviewer", …) — `inferKind`'s own rule. */
+export const isPeopleKeyName = (key: string): boolean => PERSON_KEYS.test(key);
 const RELATION_KEYS = /^(project|projects|parent|related|relates_to|organization|organizations|org|epic|area)$/i;
 const URL_KEYS = /(^|_)(url|link|website|href)$/i;
 const DATE_KEYS = /^(date|due|deadline|start|end|scheduled|completed|completed_at|due_date|start_date|end_date|first-met|last-contact|published)$/i;

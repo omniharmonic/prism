@@ -20,6 +20,7 @@ import { reportPendingWrites, useSyncStore, OPEN_SAVED_CHANGES_EVENT } from "@pr
 import { startOfflineAvailability } from "./availableOffline";
 import { startUnsyncedDocs } from "../collab/unsynced";
 
+import { formatDateTime as fmtDateTime } from "@prism/core/datetime";
 const stateLabels = {
   queued: "Saved on this device",
   sending: "Confirming with the server",
@@ -344,7 +345,7 @@ export function OfflineIndicator() {
                 {stateLabels[item.state ?? "quarantined"]}
               </p>
               <p className="mt-1 text-xs text-[var(--text-secondary)]">
-                {new Date(item.queuedAt).toLocaleString()} ·{" "}
+                {fmtDateTime(new Date(item.queuedAt))} ·{" "}
                 {item.method === "POST"
                   ? "New note"
                   : item.method === "DELETE"

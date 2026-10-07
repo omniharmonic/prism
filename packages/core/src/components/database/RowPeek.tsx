@@ -11,7 +11,7 @@
  */
 import { Suspense, useCallback, useEffect, useRef } from "react";
 import { createPortal } from "react-dom";
-import { Maximize2, PanelRight, Square, X } from "lucide-react";
+import { ChevronDown, ChevronUp, Maximize2, PanelRight, Square, X } from "lucide-react";
 import { useNote, useUpdateNote } from "../../app/hooks/useParachute";
 import { useUIStore } from "../../app/stores/ui";
 import { inferContentType } from "../../lib/schemas/content-types";
@@ -25,13 +25,17 @@ import type { OpenMode } from "./config";
 
 const COLLAB_TYPES = new Set(["document", "task", "code", "spreadsheet", "canvas"]);
 
-export function RowPeek({ noteId, mode, onMode, onClose, canSetMode }: {
+export function RowPeek({ noteId, mode, onMode, onClose, canSetMode, steps }: {
   noteId: string;
   mode: Exclude<OpenMode, "page">;
   /** Switch layout (or "page" = open as a full page and close the peek). */
   onMode: (m: OpenMode) => void;
   onClose: () => void;
   canSetMode: boolean;
+  /** Previous / next row of the view the peek was opened from (its current order): `index` of
+   *  this row among `total` loaded rows, `go(±1)` shows the neighbour in the same peek. Omitted
+   *  when the row is not (or no longer) in the view. */
+  steps?: { index: number; total: number; go: (delta: -1 | 1) => void };
 }) {
   const panel = useRef<HTMLDivElement>(null);
   const returnTo = useRef<Element | null>(typeof document !== "undefined" ? document.activeElement : null);
@@ -72,6 +76,14 @@ export function RowPeek({ noteId, mode, onMode, onClose, canSetMode }: {
       <div ref={panel} tabIndex={-1} className="db-peek-panel">
         <div className="db-peek-head">
           <button type="button" className="db-icon-btn" aria-label="Close peek" title="Close (Esc)" onClick={onClose}><X size={16} /></button>
+          {steps && steps.total > 1 && (
+            // aria-disabled, not disabled: at either end the button keeps the focus it was pressed with.
+            <div className="db-peek-steps" role="group" aria-label="Go to another page of this view">
+              <button type="button" className="db-icon-btn" aria-label="Previous page" title="Previous page" aria-disabled={steps.index <= 0 || undefined} onClick={() => { if (steps.index > 0) steps.go(-1); }}><ChevronUp size={16} /></button>
+              <button type="button" className="db-icon-btn" aria-label="Next page" title="Next page" aria-disabled={steps.index >= steps.total - 1 || undefined} onClick={() => { if (steps.index < steps.total - 1) steps.go(1); }}><ChevronDown size={16} /></button>
+              <span className="db-peek-count" aria-live="polite">{steps.index + 1} of {steps.total}</span>
+            </div>
+          )}
           <div className="db-peek-modes" role="group" aria-label="Open pages in">
             <button type="button" className="db-icon-btn" aria-pressed={mode === "side"} title="Side peek" aria-label="Side peek" onClick={() => onMode("side")}><PanelRight size={15} /></button>
             <button type="button" className="db-icon-btn" aria-pressed={mode === "center"} title="Center peek" aria-label="Center peek" onClick={() => onMode("center")}><Square size={15} /></button>
