@@ -5,6 +5,7 @@ import { SelectionActions } from "./SelectionActions";
 import { useAgentClient } from "../../data/AgentClientContext";
 import { useEditor, EditorContent } from "@tiptap/react";
 import { useUIStore } from "../../app/stores/ui";
+import { useWritingFont } from "../../app/stores/settings";
 import { useNotes } from "../../app/hooks/useParachute";
 import { WikilinkDropdown } from "./WikilinkDropdown";
 import { sanitizeHtml } from "../../lib/html/sanitize";
@@ -92,12 +93,15 @@ export default function DocumentRenderer({ note, onMetadataChange, readOnly }: R
 
   // Per-document content font (Notion-style "Aa" switch). Defaults to sans;
   // the choice is persisted in note metadata so it travels with the doc.
-  const [contentFont, setContentFont] = useState<ContentFont>(
-    (note.metadata?.contentFont as ContentFont) || "sans",
+  // A page that never chose one follows the device's writing font (Settings → Appearance).
+  const writingFont = useWritingFont();
+  const [ownFont, setContentFont] = useState<ContentFont | null>(
+    (note.metadata?.contentFont as ContentFont) || null,
   );
   useEffect(() => {
-    setContentFont((note.metadata?.contentFont as ContentFont) || "sans");
+    setContentFont((note.metadata?.contentFont as ContentFont) || null);
   }, [note.id]); // re-sync when switching documents
+  const contentFont: ContentFont = ownFont ?? writingFont;
   // A governed reader may still flip their own reading font — it just cannot be
   // PERSISTED to a note they may not write. `persistMetadata` is the single
   // choke point for that; when `_caps` is absent it is `onMetadataChange`

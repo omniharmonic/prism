@@ -324,7 +324,14 @@ export const SURFACES: Surface[] = [
   }, open: async (page) => { await expect(page.getByTestId("home").getByRole("region", { name: "Recently visited" })).toBeVisible(); } },
   // ── Settings ──────────────────────────────────────────────────────────────────────────────
   { id: "settings-appearance", path: "/e2e-fixtures/workspace.html", open: (page) => settings(page, "Appearance") },
-  { id: "settings-services", path: "/e2e-fixtures/workspace.html", open: (page) => settings(page, "Services") },
+  { id: "settings-inputs", path: "/e2e-fixtures/workspace.html?connections", open: (page) => settings(page, "Inputs & integrations") },
+  { id: "settings-ai", path: "/e2e-fixtures/workspace.html", open: (page) => settings(page, "AI & agent") },
+  { id: "settings-advanced", path: "/e2e-fixtures/workspace.html", open: (page) => settings(page, "Advanced") },
+  { id: "page-properties-customize", path: "/e2e-fixtures/databases.html?open=page", open: async (page) => {
+    await page.getByRole("group", { name: "Page properties" }).getByRole("button", { name: "Customize…" }).click();
+    await page.getByRole("dialog", { name: "Customize properties" }).getByLabel("Show Due at top").check();
+    await expect(page.getByRole("dialog", { name: "Customize properties" }).getByRole("button", { name: "Move Due up" })).toBeVisible();
+  } },
   { id: "settings-account", only: "desktop", path: "/e2e-fixtures/notion-shell.html?account", open: async (page) => {
     await editorReady(page);
     await page.getByRole("button", { name: "Account menu" }).click();

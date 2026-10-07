@@ -36,3 +36,9 @@
  .prism-settings button { min-height:44px; }
  .prism-settings__row { gap:8px; }
 }
+.prism-settings__hint { display:block; margin-top:2px; font-size:12px; line-height:1.45; color:var(--text-secondary); }
+.prism-settings__list { display:grid; gap:0; border:1px solid var(--glass-border); border-radius:8px; overflow:hidden; }
+.prism-settings__list li { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:8px; padding:11px 14px; font-size:13px; }
+.prism-settings__list li + li { border-top:1px solid var(--glass-border); }
+.prism-settings__badge { font-size:12px; color:var(--text-secondary); }
+.prism-settings__badge[data-on=true] { color:var(--color-success-text, var(--text-primary)); font-weight:500; }

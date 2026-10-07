@@ -163,7 +163,7 @@ export type {
 export { vaultApi } from "./lib/parachute/client";
 
 // Settings bootstrap (theme/fonts) invoked by the host entry before render.
-export { initializeSettings } from "./app/stores/settings";
+export { initializeSettings, useSettingsStore, useWritingFont } from "./app/stores/settings";
 
 // Transport seams (WP2.2): how shared UI reaches the Prism Server in any shell.
 export { serverFetch, setServerFetch, type ServerFetch } from "./lib/transport/serverFetch";
