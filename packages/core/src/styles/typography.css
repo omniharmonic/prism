@@ -127,12 +127,6 @@ html.light .prose-editor code:not(pre code) {
 .prose-editor ul { list-style-type: disc; }
 .prose-editor ol { list-style-type: decimal; }
 .prose-editor ul[data-type="taskList"] { list-style-type: none; padding-left: 0; }
-/* A to-do list read from Markdown (`- [x]`) on a read-only surface (a published page) carries its state in
-   `data-checked` and has no checkbox element — `taskListsInHtml`; the editor's own items always have a label. */
-.prose-editor ul[data-type="taskList"] > li[data-type="taskItem"]:not(:has(> label)) { position: relative; padding-left: 1.7em; }
-.prose-editor ul[data-type="taskList"] > li[data-type="taskItem"]:not(:has(> label))::before { content: "\2610"; position: absolute; left: 0; color: var(--text-secondary); }
-.prose-editor ul[data-type="taskList"] > li[data-type="taskItem"][data-checked="true"]:not(:has(> label))::before { content: "\2611"; }
-.prose-editor ul[data-type="taskList"] > li[data-type="taskItem"]:not(:has(> label)) > p { margin: 0; }
 
 .prose-editor ul, .prose-editor ol {
   padding-left: 1.5em;
@@ -241,11 +235,3 @@ kbd {
 /* ─── Excalidraw style isolation ─── */
 /* Excalidraw's own CSS (imported via @excalidraw/excalidraw/index.css)
    handles everything. No overrides needed here. */
-
-/* w14 visual, defect 31: list rhythm. A list item's paragraph carried the full paragraph margin on
-   top of the item's own (items sat ~40 px apart); nested bullets repeated the parent's marker. */
-.prose-editor li > p, .prose-editor li > div > p { margin: 0.1em 0; }
-.prose-editor li { margin: 0.2em 0; }
-.prose-editor li > ul, .prose-editor li > ol { margin: 0.1em 0; }
-.prose-editor ul ul:not([data-type="taskList"]) { list-style-type: circle; }
-.prose-editor ul ul ul:not([data-type="taskList"]) { list-style-type: square; }

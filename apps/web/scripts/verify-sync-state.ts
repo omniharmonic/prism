@@ -45,12 +45,4 @@ assert.equal(action(sync.deriveSyncStatus({ ...base, attention: 1 })), "review")
 assert.equal(action(sync.deriveSyncStatus({ ...base, online: false, pending: 1 })), "review");
 assert.equal(action(status({})), null);
 assert.equal(action(retrying), null);
-// Offline: "saved on this device" only once the change IS in the on-device queue (or a live
-// document's local state). Typed-but-not-yet-stored is "saving", and not a button.
-const typedOffline = sync.deriveSyncStatus({ ...base, online: false, dirty: { n: true } });
-assert.equal(typedOffline.kind, "saving");
-assert.doesNotMatch(typedOffline.label, /changes saved on this device/);
-assert.equal(action(typedOffline), null);
-assert.equal(sync.deriveSyncStatus({ ...base, online: false, dirty: { n: true }, pending: 1 }).label, "Offline · changes saved on this device");
-assert.equal(sync.deriveSyncStatus({ ...base, online: false }).label, "Offline");
 console.log("verify-sync-state: OK");

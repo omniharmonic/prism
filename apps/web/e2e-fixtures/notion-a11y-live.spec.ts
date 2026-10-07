@@ -13,11 +13,9 @@ test.describe("live regions announce async outcomes", () => {
     await page.goto("/e2e-fixtures/notion-shell.html");
     const editor = page.locator(".tiptap[contenteditable=true]");
     await expect(editor).toBeVisible();
-    // ONE region speaks the save state: the header's. The sidebar footer mirrors it silently.
-    const region = page.locator(".sync-state-region", { has: page.locator(".sync-state-header") });
+    const region = page.locator(".sync-state-region").first();
     await expect(region).toHaveAttribute("role", "status");
     await expect(region).toHaveAttribute("aria-live", "polite");
-    await expect(page.locator('.sync-state-region[role="status"]')).toHaveCount(1);
     await expect(live(page, "Saved").first()).toBeVisible();
     await page.evaluate(() => { (window as any).prismShell.failStatus = 422; });
     await editor.click();

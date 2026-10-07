@@ -115,25 +115,6 @@ test("without sub-pages only the page itself; HTML format is a standalone file t
   assert.match(md.files.get("Plan.html")!, /<strong>plan<\/strong>/);
 });
 
-test("HTML format: a Markdown page's `- [x]` items are the to-do list the editor shows — state kept, no literal brackets, nothing for a mixed list lost", async () => {
-  fv.notes.get("plan")!.content = "Before the meeting:\n\n- [x] Booked the room\n- [ ] Send the agenda\n\nAlso:\n\n- an ordinary point\n- [x] done, in a mixed list\n";
-  // A page stored as HTML by the editor keeps its own to-do list as it is.
-  fv.notes.get("week")!.content = '<ul data-type="taskList"><li data-type="taskItem" data-checked="true"><label><input type="checkbox" checked="checked"><span></span></label><div><p>Stored task</p></div></li></ul>';
-  const { files } = await exportZip({ scope: "page", noteId: "plan", format: "html" });
-  const html = files.get("Plan.html")!;
-  assert.match(html, /<ul data-type="taskList">\s*<li data-type="taskItem" data-checked="true">Booked the room<\/li>\s*<li data-type="taskItem" data-checked="false">Send the agenda<\/li>\s*<\/ul>/);
-  assert.equal(html.includes("[x] Booked"), false);
-  assert.equal(html.includes("<input"), false, "the standalone file carries no form control");
-  // A mixed list stays a bullet list and keeps each box as its Markdown text.
-  assert.match(html, /<ul>\s*<li>an ordinary point<\/li>\s*<li>\[x\] done, in a mixed list<\/li>\s*<\/ul>/);
-  // The state is DRAWN from data-checked (the sanitiser keeps no checkbox), for both kinds of page.
-  for (const file of [html, files.get("Plan/Week 1.html")!]) {
-    assert.match(file, /li\[data-type=taskItem\]::before\{content:'\\2610'/);
-    assert.match(file, /li\[data-type=taskItem\]\[data-checked=true\]::before\{content:'\\2611'/);
-  }
-  assert.match(files.get("Plan/Week 1.html")!, /<li data-type="taskItem" data-checked="true">.*Stored task/);
-});
-
 test("images: included once, links rewritten to relative paths; another page's image only when that page is viewable", async () => {
   const own = await uploadPng("root");
   const foreign = await uploadPng("secret", login(OWNER)); // owner uploads into someone's private page? owner role floor does not reach it

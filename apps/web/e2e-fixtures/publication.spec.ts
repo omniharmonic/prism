@@ -231,29 +231,3 @@ test("published pages load note attachments from the publication-scoped route", 
   // The signed-in route is never requested from a public page.
   expect(requested.filter((p) => p.startsWith("/api/attachments/"))).toEqual([]);
 });
-
-test("a published Markdown page shows `- [x]` items as the to-do list the editor shows, not as bullets with a stray box", async ({ page }) => {
-  await page.goto("/e2e-fixtures/publication.html?todos");
-  const article = page.locator("article.prose-editor");
-  await expect(article.getByText("PRISM_PUBLICATION_guide_first_BODY", { exact: true })).toBeVisible();
-  // The two task items are ONE to-do list: state in data-checked, no bullet, no literal brackets.
-  const todo = article.locator('ul[data-type="taskList"]').first();
-  const items = todo.locator('> li[data-type="taskItem"]');
-  await expect(items).toHaveCount(2);
-  await expect(items.nth(0)).toHaveText("Booked the room");
-  await expect(items.nth(0)).toHaveAttribute("data-checked", "true");
-  await expect(items.nth(1)).toHaveText("Send the agenda");
-  await expect(items.nth(1)).toHaveAttribute("data-checked", "false");
-  await expect(todo.locator("input")).toHaveCount(0);
-  const drawn = (i: number) => items.nth(i).evaluate((li) => ({ box: getComputedStyle(li, "::before").content, bullet: getComputedStyle(li.parentElement!).listStyleType }));
-  expect(await drawn(0)).toEqual({ box: '"☑"', bullet: "none" });
-  expect(await drawn(1)).toEqual({ box: '"☐"', bullet: "none" });
-  // A mixed list stays a bullet list; its box is kept as the Markdown text, so nothing is lost.
-  const mixed = article.locator("ul:not([data-type])").filter({ hasText: "an ordinary point" });
-  await expect(mixed.locator("> li")).toHaveText(["an ordinary point", "[x] done, in a mixed list"]);
-  await expect(mixed.locator("input")).toHaveCount(0);
-  // A to-do list the editor stored is left exactly as it was (its own checkbox, no second drawn box).
-  const stored = article.locator('ul[data-type="taskList"]').filter({ hasText: "Stored task" }).locator("> li");
-  await expect(stored.locator("input[type=checkbox]")).toBeChecked();
-  expect(await stored.evaluate((li) => getComputedStyle(li, "::before").content)).toBe("none");
-});

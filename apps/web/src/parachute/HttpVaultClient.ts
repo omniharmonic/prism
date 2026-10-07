@@ -15,6 +15,8 @@ export const httpVaultClient: VaultClient = {
   listPeople: rest.listPeople,
   changePersonIdentity: rest.changePersonIdentity,
   getPerson: rest.getPerson,
+  listPeopleConversations: rest.listPeopleConversations,
+  getPersonConversations: rest.getPersonConversations,
   resolveWikilink: rest.resolveWikilink,
   listTree: rest.listTree,
   getNote: rest.getNote,

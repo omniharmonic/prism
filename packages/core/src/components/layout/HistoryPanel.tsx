@@ -62,7 +62,7 @@ function ScopedHistory({ note }: HistoryPanelProps) {
   return (
     <section className="prism-context-history space-y-3" aria-label="Page history">
       <header><h2>Version history</h2><p>Saved versions of this page</p></header>
-      <div role="tablist" aria-label="History view" className="prism-history-tabs prism-tabs">
+      <div role="tablist" aria-label="History view" className="prism-history-tabs" style={{ display: "flex", gap: 16, borderBottom: "1px solid var(--glass-border)" }}>
         {(["versions", "updates"] as const).map((id) => (
           <button
             key={id}
@@ -70,7 +70,7 @@ function ScopedHistory({ note }: HistoryPanelProps) {
             role="tab"
             aria-selected={tab === id}
             onClick={() => setTab(id)}
-            className="prism-tab"
+            style={{ border: 0, background: "none", padding: "6px 0 8px", marginBottom: -1, font: "inherit", fontSize: 13, cursor: "pointer", color: tab === id ? "var(--text-primary)" : "var(--text-muted)", fontWeight: tab === id ? 600 : 450, borderBottom: tab === id ? "2px solid var(--color-accent)" : "2px solid transparent" }}
           >
             {id === "versions" ? "Versions" : "Updates"}
           </button>

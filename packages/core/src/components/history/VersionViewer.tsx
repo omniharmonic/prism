@@ -306,7 +306,7 @@ function Segmented<T extends string>({
   options: Array<{ id: T; label: string; disabled?: boolean }>;
 }) {
   return (
-    <div className="prism-tabs" data-inline="">
+    <div className="inline-flex rounded-md p-0.5" style={{ background: "var(--glass)" }}>
       {options.map((o) => (
         <button
           key={o.id}
@@ -314,7 +314,12 @@ function Segmented<T extends string>({
           disabled={o.disabled}
           aria-pressed={value === o.id}
           onClick={() => onChange(o.id)}
-          className="prism-tab"
+          className="px-2 py-1 rounded text-xs transition-colors disabled:opacity-40"
+          style={{
+            background: value === o.id ? "var(--bg-elevated)" : "transparent",
+            color: value === o.id ? "var(--text-primary)" : "var(--text-secondary)",
+            boxShadow: value === o.id ? "0 1px 2px rgba(0,0,0,0.15)" : undefined,
+          }}
         >
           {o.label}
         </button>

@@ -254,11 +254,7 @@ test("GOLDEN: the lean ingester leaves the vault exactly as the body-listing ing
       assert.deepEqual(counts(newR[k] as never), counts(oldR[k] as never), "same counts reported");
       assert.deepEqual((newR[k] as { failedRooms: string[] }).failedRooms, []);
     }
-    // The reconcile RESULT gained one field since the fixture was taken: `rooms` (rooms joined;
-    // `scanned` is the number probed — the same without a deadline). The counts must still agree.
-    const { rooms: joinedRooms, ...r2 } = newR.r2 as typeof newR.r2 & { rooms: number };
-    assert.deepEqual(r2, oldR.r2);
-    assert.equal(joinedRooms, (oldR.r2 as { scanned: number }).scanned);
+    assert.deepEqual(newR.r2, oldR.r2);
     const uncas = (ws: Array<Record<string, unknown>>) => ws.map(({ ifUpdatedAt: _cas, ...w }) => w);
     assert.deepEqual(uncas(newV.writes), uncas(oldV.writes), "the same writes, in the same order, with the same bodies and metadata");
     assert.ok(newV.writes.filter((w) => w.op === "update").every((w) => typeof w.ifUpdatedAt === "string"), "every lean write names the version it read");

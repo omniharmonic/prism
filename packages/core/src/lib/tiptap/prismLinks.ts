@@ -118,30 +118,6 @@ export function linkTarget(href: string | null | undefined, origins: readonly st
   return BLOCKED;
 }
 
-/**
- * The share route (`/collab/:id?t=…`) has no workspace and its viewer may hold only a
- * capability link, so `/page/<id>` would land them on sign-in. The host installs how a
- * page opens THERE; the answer is used only if it is our own origin's `/collab/<id>`
- * (the one address a link token may ride on). Whether the link's grant covers the target
- * is the gateway's decision — a page outside it opens as the ordinary no-access page.
- */
-let sharePageHref: ((id: string) => string | null) | null = null;
-export function setSharePageHref(fn: (id: string) => string | null): () => void {
-  sharePageHref = fn;
-  return () => { if (sharePageHref === fn) sharePageHref = null; };
-}
-export function sharePageLink(id: string): string | null {
-  if (!sharePageHref || typeof location === "undefined" || !MENTION_ID.test(id)) return null;
-  try {
-    const href = sharePageHref(id);
-    if (!href) return null;
-    const url = new URL(href, location.origin);
-    if (url.origin !== location.origin || url.username || url.password) return null;
-    if (url.pathname !== `/collab/${encodeURIComponent(id)}`) return null;
-    return url.href;
-  } catch { return null; }
-}
-
 /** Open `url` in a new tab that gets no handle on this window. An anchor click, not window.open: `rel` is honoured everywhere. */
 export function openInNewTab(url: string): void {
   const a = document.createElement("a");

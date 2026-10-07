@@ -24,8 +24,8 @@ export function Tabs({ tabs, activeTab, onChange, className }: TabsProps) {
     <div
       role="tablist"
       aria-label="Views"
-      className={cn("prism-tabs", className)}
-      style={{ WebkitOverflowScrolling: "touch" }}
+      className={cn("flex gap-0.5 overflow-x-auto scrollbar-none", className)}
+      style={{ scrollbarWidth: "none", WebkitOverflowScrolling: "touch" }}
     >
       {tabs.map((tab, index) => (
         <button
@@ -45,7 +45,12 @@ export function Tabs({ tabs, activeTab, onChange, className }: TabsProps) {
             buttons.current[next]?.focus();
           }}
           onClick={() => onChange(tab.id)}
-          className="prism-tab"
+          className={cn(
+            "flex shrink-0 items-center gap-1.5 whitespace-nowrap px-3 py-1.5 text-sm font-medium rounded-md transition-colors",
+            activeTab === tab.id
+              ? "text-[var(--text-primary)] bg-[var(--glass-active)]"
+              : "text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--glass-hover)]",
+          )}
         >
           {tab.icon}
           {tab.label}

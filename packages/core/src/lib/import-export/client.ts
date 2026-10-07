@@ -20,8 +20,6 @@ let contextHeaders: () => Record<string, string> = () => ({});
 export function setTransferContextHeaders(fn: () => Record<string, string>): void {
   contextHeaders = fn;
 }
-/** The shell's active-vault headers, for other owner tools that act on "the vault I am looking at" (Recovered text). */
-export const serverContextHeaders = (): Record<string, string> => contextHeaders();
 
 export const transferAvailable = (): boolean => !isDesktop;
 

@@ -46,11 +46,7 @@ export class FathomClient {
     try {
       const r = await this.fetchImpl(`${API}${path}`, { headers: { "X-Api-Key": this.apiKey } });
       return r.ok ? await r.json() : null;
-    } catch (e) {
-      // A TIMEOUT is not "this recording has no summary": the note is create-only, so one
-      // written now would stay summary-less (or transcript-less) for good. Fail the meeting —
-      // the pass is retried and the note is written whole. (By name: the class lives in the scheduler.)
-      if ((e as Error)?.name === "UpstreamTimeoutError" || (e as Error)?.name === "TimeoutError") throw e;
+    } catch {
       return null;
     }
   }

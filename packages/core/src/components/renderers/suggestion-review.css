@@ -18,8 +18,7 @@
 .prism-review-before p { text-decoration: line-through; }
 .prism-review-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
 .prism-review-actions [data-review-show] { margin-right: auto; }
-/* The primary action wears the action tokens in both themes (it was pale blue with dark text in dark). */
-.prism-suggestion-review .prism-review-accept { background: var(--action-bg, var(--color-accent)); color: var(--action-fg, var(--bg-base)); border-color: transparent; }
-.prism-suggestion-review .prism-review-accept:hover:not(:disabled) { background: var(--action-hover, var(--color-accent)); }
+.prism-suggestion-review .prism-review-accept { background: var(--color-accent); color: var(--bg-base); border-color: transparent; }
+.prism-suggestion-review .prism-review-accept:hover { background: var(--color-accent); filter: brightness(.94); }
 .prism-review-complete { margin-bottom: 16px; font-size: 12px; color: var(--text-secondary); }
 @media (max-width: 420px) { .prism-review-body { padding: 0 12px 12px; } .prism-review-actions [data-review-show] { flex-basis: 100%; margin-right: 0; } }

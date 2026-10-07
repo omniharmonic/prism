@@ -165,25 +165,3 @@
 .remote-update-bar button { min-height: 28px; padding: 0 10px; border-radius: 6px; border: 1px solid var(--glass-border); color: var(--text-secondary); }
 .remote-update-bar .remote-update-primary { background: var(--action-bg, var(--color-accent)); border-color: var(--action-bg, var(--color-accent)); color: #fff; font-weight: 600; }
 @media (max-width: 767px) { .remote-update-bar button { min-height: 44px; } }
-
-/* ── w14 visual pass ── */
-/* Sidebar footer (defect 4): four tight rows instead of five loose ones — the tree keeps ~2.5 more
-   rows at 900 px. The sync state sits beside the account while it is short and wraps to its own
-   line when it has more to say. */
-.workspace-nav-footer .workspace-new-page-row { margin-bottom: 4px; }
-.workspace-footer-status { display: flex; flex-wrap: wrap; align-items: center; column-gap: 4px; min-width: 0; }
-.workspace-footer-status .workspace-account { flex: 1 1 96px; min-width: 0; }
-.workspace-footer-status .sync-state-region { flex: 0 1 auto; max-width: 100%; }
-/* The tree ends in a fade, never a row cut in half at the footer's edge. The fade is a sticky
-   element at the end of the scroller's content (NOT a mask: a mask clips and traps the row menus,
-   which are fixed-position descendants). Its natural place is the scroller's own bottom padding, so
-   at the end of the list it covers nothing. */
-.workspace-nav-scroll::after {
-  content: ""; display: block; position: sticky; bottom: 0; z-index: 1; height: 20px; margin: 0 -8px -20px;
-  background: linear-gradient(to bottom, transparent, var(--bg-sidebar, var(--bg-surface))); pointer-events: none;
-}
-@media (forced-colors: active) { .workspace-nav-scroll::after { display: none; } }
-
-/* Offline (defect 6): the header carries the state; this line is the one announcement, and a quiet
-   one — a caption, not a band that pushes the page down. */
-.offline-copy-notice { padding: 6px 16px 0; background: transparent; border-bottom: 0; color: var(--text-muted); }

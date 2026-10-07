@@ -220,21 +220,3 @@ test("icon propagates to tree, tabs, ⌘K", async ({ page }) => {
   await expect(page.locator(".tiptap[contenteditable=true]")).toBeVisible();
   await expect(page.getByRole("navigation", { name: "Open document tabs" }).locator('[data-page-icon="workspace"]')).toHaveText(emoji);
 });
-
-/** w14 visual · defect 3: the page font is presentation state, never a property under the title. */
-test("choosing a page font shows no property for it", async ({ page }) => {
-  await page.goto("/e2e-fixtures/notion-shell.html");
-  await expect(page.locator(".tiptap[contenteditable=true]")).toBeVisible();
-  await page.getByRole("button", { name: "Page actions", exact: true }).click();
-  await page.getByRole("menuitem", { name: /Serif font/ }).click();
-  await expect(page.locator("[data-content-font=serif]").first()).toBeVisible();
-  // The write lands as metadata.contentFont; the header must not render that key.
-  await expect.poll(async () => (await page.evaluate(() => (window as any).prismShell.writes as Array<{ body: any }>)).some((w) => JSON.stringify(w.body).includes("contentFont"))).toBe(true);
-  await page.waitForTimeout(600);
-  await expect(page.locator(".document-page-heading").getByText(/Content ?Font/i)).toHaveCount(0);
-  await expect(page.locator("#workspace-document").getByText(/Content ?Font/i)).toHaveCount(0);
-  await page.reload();
-  await expect(page.locator(".tiptap[contenteditable=true]")).toBeVisible();
-  await expect(page.locator("[data-content-font=serif]").first()).toBeVisible();
-  await expect(page.locator("#workspace-document").getByText(/Content ?Font/i)).toHaveCount(0);
-});

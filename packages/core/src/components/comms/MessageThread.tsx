@@ -86,11 +86,9 @@ function ScopedMessageThread({
               <div
                 role="separator"
                 aria-label={dayLabel(group[0])}
-                className="flex items-center gap-3 py-2 text-[11px] text-[var(--text-muted)]"
+                className="prism-day-separator"
               >
-                <span className="h-px flex-1 bg-[var(--glass-border)]" />
                 <span>{dayLabel(group[0])}</span>
-                <span className="h-px flex-1 bg-[var(--glass-border)]" />
               </div>
             )}
             <MessageGroup
@@ -161,6 +159,7 @@ function MessageGroup({
   return (
     <article
       className={`prism-message-group flex ${outgoing ? "prism-message-outgoing flex-row-reverse" : ""}`}
+      data-outgoing={outgoing || undefined}
       aria-label={`Messages from ${outgoing ? "You" : name}`}
     >
       <div
@@ -181,6 +180,11 @@ function MessageGroup({
           <span
             className="prism-sender font-semibold break-all"
             title={first.sender}
+            style={
+              outgoing
+                ? undefined
+                : ({ "--sender-tone": messageColor(first.sender || name) } as CSSProperties)
+            }
           >
             {outgoing ? "You" : name}
           </span>
@@ -259,7 +263,7 @@ function formatTimestamp(message: MatrixMessage): string {
 
 function dayLabel(message: MatrixMessage): string {
   if (!validTime(message.timestamp)) return "Date unavailable";
-  return fmtDate(message.timestamp, { weekday: "short", month: "short", day: "numeric", year: "numeric" });
+  return fmtDate(message.timestamp, { weekday: "long", month: "long", day: "numeric", year: "numeric" });
 }
 
 /** Preserve plain source text exactly, including markup; only web URLs become links. */

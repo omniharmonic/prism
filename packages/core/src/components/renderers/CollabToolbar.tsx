@@ -118,13 +118,12 @@ export function CollabToolbar({
 
           {canReview && (
             <>
-              {/* Labelled: a bare green tick and red cross did not say they act on EVERY suggestion. */}
-              <button type="button" className="document-review-all" title="Accept all suggestions" aria-label="Accept all suggestions" onMouseDown={(e) => e.preventDefault()} onClick={() => c().acceptAllSuggestions().run()}>
-                <Check size={15} color="var(--color-success)" aria-hidden="true" /> <span>Accept all</span>
-              </button>
-              <button type="button" className="document-review-all" title="Reject all suggestions" aria-label="Reject all suggestions" onMouseDown={(e) => e.preventDefault()} onClick={() => c().rejectAllSuggestions().run()}>
-                <X size={15} color="var(--color-danger)" aria-hidden="true" /> <span>Reject all</span>
-              </button>
+              <Btn label="Accept all suggestions" on={() => c().acceptAllSuggestions().run()}>
+                <Check size={16} color="#22c55e" />
+              </Btn>
+              <Btn label="Reject all suggestions" on={() => c().rejectAllSuggestions().run()}>
+                <X size={16} color="#ef4444" />
+              </Btn>
             </>
           )}
         </div>

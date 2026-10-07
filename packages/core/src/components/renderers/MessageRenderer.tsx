@@ -1,3 +1,4 @@
+import { ConversationBack, ConversationOpenPage } from "../comms/conversationChrome";
 import { AgentConversationSummary, AgentReplyDraft } from "../comms/AgentReplyDraft";
 import { messageInitials, messageColor } from "../comms/messageAppearance";
 import type { CSSProperties } from "react";
@@ -174,6 +175,7 @@ function ScopedMessageRenderer({
   return (
     <div className="prism-conversation flex flex-col h-full min-h-0">
       <header className="prism-conversation-heading">
+        <ConversationBack />
         <div
           aria-hidden="true"
           className="prism-message-avatar"
@@ -185,7 +187,7 @@ function ScopedMessageRenderer({
           <h2>{title}</h2>
           <div className="prism-conversation-meta">
             <PlatformBadge platform={platform} />
-            <span>{showLive ? "Live conversation" : "Saved conversation"}</span>
+            <span className="prism-conversation-state">{showLive ? "Live conversation" : "Saved conversation"}</span>
             {roomId && !readOnly && (
               <button
                 type="button"
@@ -220,6 +222,7 @@ function ScopedMessageRenderer({
             ))}
           </select>
         </label>
+        <ConversationOpenPage />
       </header>
       {triageError && (
         <p role="alert" className="px-4 py-2 text-xs">

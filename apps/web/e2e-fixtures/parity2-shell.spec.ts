@@ -14,10 +14,6 @@ async function typeInEditor(page: Page, text: string) {
 
 /** NP-SB-15 / NP-OF-01: the footer (and the header) say "offline" and "waiting for the server" truthfully. */
 test("footer reflects offline and waiting-for-server states", async ({ page, context }) => {
-  // The last step waits for the outbox to deliver a row that was queued while OFFLINE (the footer
-  // says "saved on this device" only once the row exists): after a reconnect to a server that does
-  // not answer, such a row's next try is the outbox's 30 s pass — the 90 s wait below needs the room.
-  test.setTimeout(150_000);
   await page.goto("/e2e-fixtures/notion-shell.html");
   const nav = page.locator(".workspace-navigation");
   const footer = nav.locator(".sync-state-footer");

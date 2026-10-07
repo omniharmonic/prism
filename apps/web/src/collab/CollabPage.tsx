@@ -6,14 +6,6 @@ import { apiBase, contextHeaders, getCapabilityToken } from "../config";
 import { httpVaultClient } from "../parachute/HttpVaultClient";
 import { navigateWikilink } from "../../../../packages/core/src/lib/wikilinkNavigation";
 import { WikilinkChooser } from "../../../../packages/core/src/components/layout/WikilinkChooser";
-import { setSharePageHref } from "../../../../packages/core/src/lib/tiptap/prismLinks";
-
-/** Where a page link opens for a share-link viewer: this route for the target, with the SAME link.
- *  Signed-in people (no token) keep `/page/<id>`. The token goes nowhere but our own `/collab/` URL. */
-const sharePageHref = (id: string): string | null => {
-  const t = getCapabilityToken();
-  return t ? `${location.origin}/collab/${encodeURIComponent(id)}?t=${encodeURIComponent(t)}` : null;
-};
 
 /** Full-page share/collab route (/collab/:id) — just the document, Google-Docs
  *  style. Thin wrapper over the shared CollabDoc. */
@@ -40,7 +32,6 @@ function ScopedCollabPage({ noteId }: { noteId: string }) {
     }).catch(() => { if (current) setFailed(true); });
     return () => { current = false; queries.clear(); };
   }, [noteId, retry, queries]);
-  useEffect(() => setSharePageHref(sharePageHref), []);
   // Resolve only within the recipient’s accessible documents. Never turn an
   // unresolved path into a guessed ID; retain the capability on navigation.
   const navigate = (target: string) => {

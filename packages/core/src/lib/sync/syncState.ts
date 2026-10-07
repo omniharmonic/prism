@@ -108,11 +108,8 @@ export function deriveSyncStatus(s: Pick<SyncStore, "online" | "inFlight" | "dir
   if (s.attention > 0) return { kind: "review", label: "Needs review", footer: "Saved changes need review" };
   const local = s.pending > 0 || sources.includes("local");
   if (!s.online) {
-    if (local || sources.includes("device")) return { kind: "local", label: "Offline · changes saved on this device", footer: "Offline · saved on this device" };
-    // Typed, not yet stored: "saved on this device" would be untrue until the change is in the
-    // on-device queue (the recovery dialog, which lists that queue, said "No pending changes").
-    return s.inFlight > 0 || Object.keys(s.dirty).length > 0
-      ? { kind: "saving", label: "Offline · saving on this device…", footer: "Offline · saving on this device…" }
+    return local || sources.includes("device") || s.inFlight > 0 || Object.keys(s.dirty).length > 0
+      ? { kind: "local", label: "Offline · changes saved on this device", footer: "Offline · saved on this device" }
       : { kind: "offline", label: "Offline", footer: "Offline" };
   }
   if (s.inFlight > 0 || Object.keys(s.dirty).length > 0 || sources.includes("saving")) {

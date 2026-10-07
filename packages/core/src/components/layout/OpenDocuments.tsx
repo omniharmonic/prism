@@ -78,7 +78,8 @@ export function OpenDocuments() {
           setOpen(true);
         }}
       >
-        <span>{openTabs.length} {openTabs.length === 1 ? "tab" : "tabs"}</span>
+        <span>Open</span>
+        <span>{openTabs.length}</span>
         <ChevronDown size={15} />
       </button>
       {open && (

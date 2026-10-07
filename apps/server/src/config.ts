@@ -406,14 +406,6 @@ export const config = {
   // pass is bounded: a hung read would otherwise stop Matrix ingest until a restart.
   // 0 = no timeout.
   matrixVaultTimeoutMs: Number(process.env.MATRIX_VAULT_TIMEOUT_MS ?? 30_000),
-  // ClickUp / Fathom / Fireflies passes: every vault call is bounded too. With one
-  // pass per (source, vault) at a time, a vault call that never answers would
-  // otherwise stop that source until a restart. 0 = no timeout.
-  ingestVaultTimeoutMs: Number(process.env.INGEST_VAULT_TIMEOUT_MS ?? 60_000),
-  // …and so is every request to ClickUp / Fathom / Fireflies themselves: an upstream that
-  // never answers would hold the one-pass guard for good (and Fathom has no staleness
-  // threshold to show it). 0 = no timeout.
-  ingestUpstreamTimeoutMs: Number(process.env.INGEST_UPSTREAM_TIMEOUT_MS ?? 120_000),
   matrixReadTimeoutMs: Number(process.env.MATRIX_READ_TIMEOUT_MS ?? 120_000),
   // A room a pass failed on is replayed by the following passes (the window between
   // that pass's cursor and the current one); after this many failed replays it is

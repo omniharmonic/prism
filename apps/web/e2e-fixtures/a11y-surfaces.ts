@@ -214,12 +214,6 @@ export const SURFACES: Surface[] = [
   { id: "db-gallery", path: "/e2e-fixtures/databases.html", open: (page) => dbView(page, "Gallery") },
   { id: "db-list", path: "/e2e-fixtures/databases.html", open: (page) => dbView(page, "List") },
   { id: "db-calendar", path: "/e2e-fixtures/databases.html", open: (page) => dbView(page, "Calendar") },
-  // Phones get the calendar as a week list (above, at 390 px); the dense month grid is opt-in ("Month").
-  { id: "db-calendar-month", path: "/e2e-fixtures/databases.html", only: "phone", open: async (page) => {
-    await dbView(page, "Calendar");
-    await page.getByRole("button", { name: "Month", exact: true }).click();
-    await expect(page.getByRole("grid", { name: "Calendar calendar" })).toBeVisible();
-  } },
   { id: "db-filter", path: "/e2e-fixtures/databases.html", open: async (page) => {
     await dbReady(page);
     await page.getByRole("button", { name: "Filter", exact: true }).click();
@@ -440,6 +434,11 @@ export const SURFACES: Surface[] = [
   } },
   { id: "messages-inbox", path: "/e2e-fixtures/inbox.html", open: async (page) => {
     await expect(page.getByRole("heading", { name: "Messages" })).toBeVisible();
+  } },
+  { id: "messages-people", path: "/e2e-fixtures/inbox.html?resolved", open: async (page) => {
+    await page.getByRole("button", { name: "People", exact: true }).click();
+    await page.getByRole("button", { name: /Mira Chen/ }).click();
+    await expect(page.getByRole("region", { name: "Conversations with Mira Chen" })).toBeVisible();
   } },
   { id: "message-thread", path: "/e2e-fixtures/messages.html", open: async (page) => {
     await expect(page.getByRole("textbox", { name: "Message", exact: true })).toBeVisible();

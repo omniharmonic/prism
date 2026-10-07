@@ -25,7 +25,7 @@
 .document-companion-header { display: flex; align-items: center; justify-content: space-between; gap: 4px; flex-shrink: 0; min-height: 52px; padding: 0 10px 0 14px; border-bottom: 1px solid var(--glass-border); }
 .document-companion-tabs { gap: 16px; min-width: 0; }
 .document-companion-tabs > [role="tab"] { min-height: 51px; padding: 0 1px; border-radius: 0; border-bottom: 2px solid transparent; background: transparent; font-size: 13px; font-weight: 500; color: var(--text-secondary); }
-.document-companion-tabs > [role="tab"][aria-selected="true"] { border-bottom-color: var(--text-primary); background: transparent; color: var(--text-primary); font-weight: 600; }
+.document-companion-tabs > [role="tab"][aria-selected="true"] { border-bottom-color: var(--color-accent); background: transparent; color: var(--text-primary); font-weight: 650; }
 .document-companion-tabs > [role="tab"]:hover { background: transparent; color: var(--text-primary); }
 .document-companion-close { display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; width: 34px; height: 34px; border-radius: 6px; color: var(--text-muted); }
 .document-companion-close:hover { background: var(--glass-hover); color: var(--text-primary); }
@@ -103,50 +103,3 @@ html.dark .document-cover-button:hover { background: rgba(20,21,26,.92); }
   .document-add-cover { height: 36px; }
 }
 @media (prefers-reduced-motion: reduce) { .document-cover-controls { transition: none; } }
-
-/* ── Icon picker (w14 visual, defect 10): the third-party picker wears Prism's tokens ──
-   Its dark theme drew a pure-black search field with a white border and its own type scale. */
-.prism-emoji-picker { border: 1px solid var(--glass-border-strong); background: var(--bg-elevated); }
-.prism-emoji-picker .EmojiPickerReact.epr-main {
-  --epr-bg-color: var(--bg-elevated);
-  --epr-category-label-bg-color: var(--bg-elevated);
-  --epr-text-color: var(--text-secondary);
-  --epr-category-label-text-color: var(--text-muted);
-  --epr-search-input-bg-color: var(--glass-hover);
-  --epr-search-input-bg-color-active: var(--bg-surface);
-  --epr-search-border-color: var(--glass-border);
-  --epr-search-border-color-active: var(--focus-ring);
-  --epr-search-input-text-color: var(--text-primary);
-  --epr-search-input-placeholder-color: var(--text-muted);
-  --epr-search-input-border-radius: var(--radius-sm);
-  --epr-search-input-height: 34px;
-  --epr-picker-border-color: transparent;
-  --epr-picker-border-radius: 0;
-  --epr-hover-bg-color: var(--surface-hover);
-  --epr-focus-bg-color: var(--surface-active);
-  --epr-highlight-color: var(--color-accent);
-  --epr-category-icon-active-color: var(--color-accent);
-  --epr-skin-tone-picker-menu-color: var(--bg-elevated);
-  --epr-category-label-height: 30px;
-  font-family: inherit;
-}
-.prism-emoji-picker .epr-emoji-category-label { font-size: 12px; font-weight: 600; letter-spacing: .01em; }
-.prism-emoji-picker .epr-search-container input { font-size: 13px; }
-.prism-emoji-picker .epr-tone { border-radius: 999px; }
-@media (max-width: 767px) { .prism-emoji-picker .epr-search-container input { font-size: 16px; } }
-
-/* w15 visual (defect 23): the save line under the page is not a bar. With nothing to say it takes
-   no room (it was an empty 24 px strip with a rule above the status bar); an error keeps its rule. */
-.document-save-footer:not(:has(span)) { display: none; }
-.document-save-footer:has([role="alert"]) { border-top: 1px solid var(--glass-border); }
-
-/* w15 visual: "Add icon" / "Add cover" wait for the pointer or the keyboard on devices that hover
-   (their room is kept, so nothing moves); touch devices show them always. */
-@media (hover: hover) and (pointer: fine) {
-  .document-page-header .document-icon-control:not(.has-icon),
-  .document-page-header .document-add-cover { opacity: 0; transition: opacity var(--motion-fast, 120ms); }
-  .document-page-header:hover .document-icon-control:not(.has-icon),
-  .document-page-header:hover .document-add-cover,
-  .document-page-header:focus-within .document-icon-control:not(.has-icon),
-  .document-page-header:focus-within .document-add-cover { opacity: 1; }
-}

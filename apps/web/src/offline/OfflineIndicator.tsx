@@ -16,7 +16,7 @@ import { LEAVE_EVENT, type LeaveChoice } from "./leave";
 import { captureWriteContext, sameScope } from "./writeScope";
 import { serverFetch } from "../transport";
 import { getMe } from "../config";
-import { reportPendingWrites, useSyncStore, OPEN_SAVED_CHANGES_EVENT } from "@prism/core/shell";
+import { reportPendingWrites, OPEN_SAVED_CHANGES_EVENT } from "@prism/core/shell";
 import { startOfflineAvailability } from "./availableOffline";
 import { startUnsyncedDocs } from "../collab/unsynced";
 
@@ -212,8 +212,6 @@ export function OfflineIndicator() {
   const attention = items.filter(
     (i) => i.state !== "queued" && i.state !== "sending",
   ).length;
-  // An edit typed a moment ago is on its way into the queue (autosave debounce): say so, never "No pending changes".
-  const storing = useSyncStore((s) => s.inFlight > 0 || Object.keys(s.dirty).length > 0);
   const toast = refused && (
     <p role="status" className="offline-refused-toast fixed left-1/2 z-[101] -translate-x-1/2 rounded-lg border border-[var(--glass-border)] bg-[var(--bg-elevated)] px-4 py-2 text-sm text-[var(--text-primary)] shadow-lg" style={{ bottom: "calc(env(safe-area-inset-bottom, 0px) + 132px)", maxWidth: "min(92vw, 30rem)" }}>
       {refused}
@@ -253,10 +251,7 @@ export function OfflineIndicator() {
   return (
     <>
       {toast}{storageBanner}{leavePrompt}
-      {/* The pill is for what the header's sync state cannot say or do. Plain "Offline" and healthy
-          queued changes are the header's (it opens this same dialog): a second, floating "Offline"
-          over the page said it twice. */}
-      {(error || attention > 0 || legacy > 0 || elsewhere.count > 0) && <button
+      <button
         type="button"
         onClick={() => setOpen(true)}
         aria-haspopup="dialog"
@@ -267,7 +262,7 @@ export function OfflineIndicator() {
           {!online && items.length ? "Offline · " : ""}
           {label}
         </span>
-      </button>}
+      </button>
       <dialog
         ref={dialog}
         onCancel={() => setOpen(false)}
@@ -324,10 +319,8 @@ export function OfflineIndicator() {
           </div>
         )}
         {!items.length && (
-          <p className="my-5 text-sm" role="status">
-            {storing
-              ? "Saving your latest edit on this device…"
-              : "No pending changes for this account and workspace."}
+          <p className="my-5 text-sm">
+            No pending changes for this account and workspace.
           </p>
         )}
         {elsewhere.count > 0 && (

@@ -1025,12 +1025,12 @@ function SourceField({ icon, label, desc, fieldKey, placeholder, sensitive, valu
 function ReduceMotionRow() {
   const [reduce, setReduce] = useReduceMotion();
   return (
-    <label className="flex min-h-11 items-center justify-between gap-4 text-sm" style={{ color: "var(--text-primary)" }}>
+    <label className="flex min-h-11 items-center justify-between gap-3 text-xs" style={{ color: "var(--text-primary)" }}>
       <span>
         <span className="block">Reduce motion</span>
-        <span className="block text-xs" style={{ color: "var(--text-muted)", marginTop: 2 }}>Turns off menu, sheet and panel animations on this device. Your system setting is always honoured.</span>
+        <span className="block" style={{ color: "var(--text-muted)" }}>Turns off menu, sheet and panel animations on this device. Your system setting is always honoured.</span>
       </span>
-      <input type="checkbox" checked={reduce} onChange={(e) => setReduce(e.target.checked)} aria-label="Reduce motion" style={{ width: 16, height: 16, flexShrink: 0, accentColor: "var(--color-accent)" }} />
+      <input type="checkbox" checked={reduce} onChange={(e) => setReduce(e.target.checked)} aria-label="Reduce motion" />
     </label>
   );
 }

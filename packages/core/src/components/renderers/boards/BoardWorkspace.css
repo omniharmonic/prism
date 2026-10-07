@@ -64,17 +64,3 @@
   .board-card-menu { opacity: 1; min-height: 44px; width: 44px; }
   .board-workspace .board-card select { min-height: 44px; }
 }
-
-/* w14 visual, defect 15: a card is its title and chips; the order buttons and the column picker stay
-   (keyboard and touch paths, and the specs drive them) but read as quiet text until pointed at. */
-@media (hover: hover) and (pointer: fine) {
-  .board-columns .board-card [role="group"][aria-label^="Order "] { gap: 2px; margin-bottom: 4px; }
-  .board-columns .board-card [role="group"][aria-label^="Order "] button {
-    flex: 0 0 auto; min-height: 26px; padding: 0 6px; border-color: transparent; background: transparent;
-    color: var(--text-muted); font-size: 12px;
-  }
-  .board-columns .board-card [role="group"][aria-label^="Order "] button:hover:not(:disabled) { background: var(--glass-hover); color: var(--text-primary); }
-  .board-columns .board-card select { background-color: transparent; color: var(--text-muted); padding-left: 0; min-height: 26px; }
-  .board-columns .board-card select:hover, .board-columns .board-card select:focus-visible { color: var(--text-primary); }
-  .board-columns .board-card dl { margin-bottom: 6px; }
-}

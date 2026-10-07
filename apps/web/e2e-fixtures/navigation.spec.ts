@@ -92,17 +92,3 @@ test("phone sidebar customization is keyboard dismissible and fits narrow screen
   await expect(dialog).toHaveCount(0);
   await expect(opener).toBeFocused();
 });
-
-/** w14 visual · defect 5: a section opened from its header shows what it opened (Tools used to open under the footer). */
-test("opening Tools brings its rows into view above the footer", async ({ page }) => {
-  await page.setViewportSize({ width: 1440, height: 700 });
-  await page.goto("/e2e-fixtures/workspace.html?navigation");
-  const nav = page.locator(".workspace-navigation");
-  await expect(nav.getByRole("button", { name: "New page", exact: true })).toBeVisible();
-  await nav.getByRole("button", { name: "Tools", exact: true }).click();
-  const last = nav.getByRole("button", { name: "Customize sidebar…", exact: true });
-  await expect(last).toBeVisible();
-  const footerTop = (await nav.getByRole("button", { name: "New page", exact: true }).boundingBox())!.y;
-  await expect.poll(async () => { const b = await last.boundingBox(); return b ? b.y + b.height : Infinity; }).toBeLessThanOrEqual(footerTop);
-  for (const name of ["Calendar", "People", "Automations", "Map"]) await expect(nav.getByRole("button", { name, exact: true })).toBeInViewport({ ratio: 1 });
-});

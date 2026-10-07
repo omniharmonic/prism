@@ -9,7 +9,6 @@
  *    pages created inside this page elsewhere (tree `+`) get a row too, and
  *    deleting a row offers to move that page to Trash.
  */
-import { openPageFromDocument } from "./openPage";
 import { Extension, type Editor } from "@tiptap/core";
 import { Plugin, PluginKey } from "@tiptap/pm/state";
 import type { Node as PMNode } from "@tiptap/pm/model";
@@ -47,7 +46,7 @@ function ChildPageRow({ node, selected }: NodeViewProps) {
   const state = !id || !client ? "missing" : data ? (isTrashed(data) ? "deleted" : "ready") : query.error ? (isAccessUnavailable(query.error) ? "missing" : "error") : "loading";
   const title = state === "ready" ? noteLinkTitle(data!) : state === "deleted" ? "Deleted page" : state === "missing" ? "No access" : state === "error" ? "Page unavailable" : "Loading page…";
   const icon = state === "ready" && typeof data!.metadata?.icon === "string" ? (data!.metadata.icon as string) : null;
-  const open = () => { if (state === "ready") openPageFromDocument(data!.id, () => openTab(data!.id, noteLinkTitle(data!), inferContentType(data!))); };
+  const open = () => { if (state === "ready") openTab(data!.id, noteLinkTitle(data!), inferContentType(data!)); };
   return (
     <NodeViewWrapper className={`prism-child-page${selected ? " ProseMirror-selectednode" : ""}`} data-type="child-page" data-page-id={id ?? undefined} data-state={state} contentEditable={false}>
       <button

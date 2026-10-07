@@ -8,7 +8,6 @@
 import { parentPort, workerData } from "node:worker_threads";
 import { marked } from "marked";
 import { sanitizeHtml } from "@prism/core/import-export";
-import { taskListsInHtml } from "@prism/core/task-lists";
 import { ImportError, newTurndown, planUpload, type PlanRequest } from "./import-plan";
 
 export type WorkerRequest =
@@ -52,10 +51,8 @@ async function handle(req: WorkerRequest): Promise<{ value: unknown; transfer?: 
     case "to-markdown":
       return { value: turndown.turndown(req.html) };
     case "to-html":
-      // Stored HTML and rendered Markdown alike leave through the allowlist sanitiser. A Markdown
-      // page's `- [x]` items become the to-do list the editor shows (`taskListsInHtml`: one linear
-      // pass over marked's output) — bare `marked` left a bullet whose checkbox the sanitiser dropped.
-      return { value: sanitizeHtml(req.isHtml ? req.content : taskListsInHtml(marked.parse(req.content) as string)) };
+      // Stored HTML and rendered Markdown alike leave through the allowlist sanitiser.
+      return { value: sanitizeHtml(req.isHtml ? req.content : (marked.parse(req.content) as string)) };
     case "import-plan": {
       const result = planUpload(req);
       return { value: result, transfer: result.assets.map((a) => a.bytes.buffer as ArrayBuffer) };
