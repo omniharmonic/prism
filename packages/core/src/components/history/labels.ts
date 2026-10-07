@@ -1,4 +1,5 @@
 import { format, formatDistanceToNow, isToday, isYesterday } from "date-fns";
+import { formatDate, formatTime, usesSystemDate, usesSystemTime } from "../../lib/datetime/format";
 import type { NoteVersionSummary } from "../../data/VaultClient";
 
 /** What replaced a version, phrased for the timeline ("…then it was edited"). */
@@ -30,12 +31,18 @@ export function savedAt(versions: NoteVersionSummary[], i: number): string | nul
   return versions[i + 1]?.supersededAt ?? null;
 }
 
+// With the regional preferences on "system" these are the strings history always showed
+// (date-fns patterns); a chosen date or time format replaces that part (NP-AX-09).
+const clock = (d: Date): string => (usesSystemTime() ? format(d, "h:mm a") : formatTime(d, { hour: "numeric", minute: "2-digit" }));
+const monthDay = (d: Date, year: boolean): string =>
+  usesSystemDate() ? format(d, year ? "MMM d, yyyy" : "MMM d") : formatDate(d, { month: "short", day: "numeric", ...(year ? { year: "numeric" } : {}) });
+
 export function formatWhen(iso: string): string {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return iso;
-  if (isToday(d)) return `Today, ${format(d, "h:mm a")}`;
-  if (isYesterday(d)) return `Yesterday, ${format(d, "h:mm a")}`;
-  return format(d, d.getFullYear() === new Date().getFullYear() ? "MMM d, h:mm a" : "MMM d, yyyy, h:mm a");
+  if (isToday(d)) return `Today, ${clock(d)}`;
+  if (isYesterday(d)) return `Yesterday, ${clock(d)}`;
+  return `${monthDay(d, d.getFullYear() !== new Date().getFullYear())}, ${clock(d)}`;
 }
 
 export function ago(iso: string): string {
@@ -49,7 +56,8 @@ export function dayLabel(iso: string): string {
   if (Number.isNaN(d.getTime())) return "Earlier";
   if (isToday(d)) return "Today";
   if (isYesterday(d)) return "Yesterday";
-  return format(d, d.getFullYear() === new Date().getFullYear() ? "EEEE, MMM d" : "MMM d, yyyy");
+  const year = d.getFullYear() !== new Date().getFullYear();
+  return year ? monthDay(d, true) : `${format(d, "EEEE")}, ${monthDay(d, false)}`;
 }
 
 /** Signed character-count change, e.g. "+1.2k" / "−40" / "±0". */

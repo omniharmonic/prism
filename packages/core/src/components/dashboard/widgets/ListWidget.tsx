@@ -7,6 +7,7 @@ import { sortNotes } from "../../../lib/dashboard/filter-engine";
 import type { DashboardWidgetConfig, WidgetColumn } from "../../../lib/dashboard/widget-registry";
 import type { Note } from "../../../lib/types";
 
+import { formatDate as fmtDate } from "../../../lib/datetime/format";
 interface ListWidgetProps {
   config: DashboardWidgetConfig;
 }
@@ -21,11 +22,11 @@ function getCellValue(note: Note, field: string): string {
       const val = field === "createdAt" ? note.createdAt : note.updatedAt;
       if (!val) return "—";
       try {
-        return new Date(val).toLocaleDateString("en-US", {
+        return fmtDate(new Date(val), {
           month: "short",
           day: "numeric",
           year: "numeric",
-        });
+        }, { locale: "en-US" });
       } catch {
         return "—";
       }

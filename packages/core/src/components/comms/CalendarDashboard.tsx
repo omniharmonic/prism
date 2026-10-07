@@ -15,6 +15,8 @@ import { EventTranscripts } from "./EventTranscripts";
 import { calendarDayKey as dateKey, groupCalendarDays, layoutCalendarDay } from "./calendarLayout";
 import type { RendererProps } from "../renderers/RendererProps";
 
+import { formatDate as fmtDate, formatTime as fmtTime, weekColumn, weekdayOrder, weekStartsOn } from "../../lib/datetime/format";
+import { useRegionPrefs } from "../../lib/datetime/useRegionPrefs";
 type CalEvent = {
   id?: string;
   vaultNoteId?: string;
@@ -42,28 +44,29 @@ function isSameDay(a: Date, b: Date): boolean {
 
 function formatTime(dateStr?: string): string {
   if (!dateStr) return "";
-  try { return new Date(dateStr).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" }); }
+  try { return fmtTime(new Date(dateStr), { hour: "numeric", minute: "2-digit" }, { locale: "en-US" }); }
   catch { return ""; }
 }
 
 /** Include the day when a displayed time belongs to a neighboring day. */
 function timeOnDay(value: string, day: Date): string {
   const date = calendarDate(value);
-  return isSameDay(date, day) ? formatTime(value) : `${date.toLocaleDateString("en-US", { weekday: "short" })}, ${formatTime(value)}`;
+  return isSameDay(date, day) ? formatTime(value) : `${fmtDate(date, { weekday: "short" }, { locale: "en-US" })}, ${formatTime(value)}`;
 }
 
+/** The first day of the week row `d` is in (Settings → Start week on; NP-AX-09). */
 function startOfWeek(d: Date): Date {
-  const day = d.getDay();
-  return new Date(d.getFullYear(), d.getMonth(), d.getDate() - day);
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate() - weekColumn(d));
 }
 
 function getMonthDays(year: number, month: number): Date[] {
   const first = new Date(year, month, 1);
   const last = new Date(year, month + 1, 0);
   const days: Date[] = [];
-  for (let i = first.getDay() - 1; i >= 0; i--) days.push(new Date(year, month, -i));
+  const lead = weekColumn(first);
+  for (let i = lead - 1; i >= 0; i--) days.push(new Date(year, month, -i));
   for (let d = 1; d <= last.getDate(); d++) days.push(new Date(year, month, d));
-  while (days.length % 7 !== 0) days.push(new Date(year, month + 1, days.length - last.getDate() - first.getDay() + 1));
+  while (days.length % 7 !== 0) days.push(new Date(year, month + 1, days.length - last.getDate() - lead + 1));
   return days;
 }
 
@@ -88,6 +91,9 @@ function ScopedCalendarDashboard() {
   const [year, setYear] = useState(today.getFullYear());
   const [month, setMonth] = useState(today.getMonth());
   const [weekStart, setWeekStart] = useState(startOfWeek(today));
+  // "Start week on" changed while the calendar is open: the week on screen keeps its days' week.
+  const firstDay = weekStartsOn({ prefs: useRegionPrefs() });
+  useEffect(() => { setWeekStart((current) => { const next = startOfWeek(new Date(current.getFullYear(), current.getMonth(), current.getDate() + 3)); return next.getTime() === current.getTime() ? current : next; }); }, [firstDay]);
   const [dayDate, setDayDate] = useState(today);
   const [selectedDate, setSelectedDate] = useState<Date | null>(null);
   const [selectedEvent, setSelectedEvent] = useState<CalEvent | null>(null);
@@ -118,7 +124,7 @@ function ScopedCalendarDashboard() {
       end.setHours(23, 59, 59);
       return { rangeStart: new Date(dayDate.getFullYear(), dayDate.getMonth(), dayDate.getDate()), rangeEnd: end };
     }
-  }, [view, year, month, weekStart, dayDate]);
+  }, [view, year, month, weekStart, dayDate, firstDay]);
 
   const { data, isLoading, isError } = useQuery({
     queryKey: ["calendar", scope, view, rangeStart.toISOString(), rangeEnd.toISOString()],
@@ -233,8 +239,8 @@ function ScopedCalendarDashboard() {
 
   // Title based on view
   const title = view === "month" ? `${MONTH_NAMES[month]} ${year}`
-    : view === "week" ? `Week of ${weekStart.toLocaleDateString("en-US", { month: "short", day: "numeric" })}`
-    : dayDate.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric", year: "numeric" });
+    : view === "week" ? `Week of ${fmtDate(weekStart, { month: "short", day: "numeric" }, { locale: "en-US" })}`
+    : fmtDate(dayDate, { weekday: "long", month: "long", day: "numeric", year: "numeric" }, { locale: "en-US" });
 
   const selectedEvents = selectedDate ? eventsByDate.get(dateKey(selectedDate)) || [] : [];
 
@@ -325,7 +331,7 @@ function ScopedCalendarDashboard() {
             <div className="p-3">
               <div className="flex items-center justify-between mb-3">
                 <div className="text-sm font-medium" style={{ color: "var(--text-primary)" }}>
-                  {selectedDate.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" })}
+                  {fmtDate(selectedDate, { weekday: "long", month: "long", day: "numeric" }, { locale: "en-US" })}
                 </div>
                 {canCreate && (
                   <button onClick={() => handleCreateClick(selectedDate)} className="p-1 rounded hover:bg-[var(--glass-hover)]" title="Add event">
@@ -378,7 +384,7 @@ function MonthView({ days, month, today, selectedDate, eventsByDate, onSelect, o
   return (
     <div className="flex-1 flex flex-col min-h-0 p-2">
       <div className="grid grid-cols-7 mb-1">
-        {WEEKDAYS.map((d) => <div key={d} className="text-center text-[10px] font-medium py-1" style={{ color: "var(--text-muted)" }}>{d}</div>)}
+        {weekdayOrder().map((d) => <div key={d} className="text-center text-[10px] font-medium py-1" style={{ color: "var(--text-muted)" }}>{WEEKDAYS[d]}</div>)}
       </div>
       <div className="grid grid-cols-7 flex-1 gap-px" style={{ background: "var(--glass-border)" }}>
         {days.map((day, i) => {
@@ -422,7 +428,7 @@ function WeekView({ days, today, selectedDate, eventsByDate, onSelect, onEventCl
           return (
             <button key={i} onClick={() => onSelect(d)} className="text-center py-2 hover:bg-[var(--glass-hover)] transition-colors"
               style={{ background: isSel ? "var(--glass-active)" : "transparent", borderLeft: "1px solid var(--glass-border)" }}>
-              <div className="text-[10px]" style={{ color: "var(--text-muted)" }}>{WEEKDAYS[i]}</div>
+              <div className="text-[10px]" style={{ color: "var(--text-muted)" }}>{WEEKDAYS[d.getDay()]}</div>
               <div className="text-sm font-medium w-7 h-7 mx-auto flex items-center justify-center rounded-full"
                 style={{ color: isToday ? "var(--action-fg, white)" : "var(--text-primary)", background: isToday ? "var(--action-bg, var(--color-accent))" : "transparent" }}>
                 {d.getDate()}
@@ -620,7 +626,7 @@ function EventDetailPanel({ event, onClose, onEdit, onDelete, onOpenNotes, onOpe
       <div className="flex items-center gap-2">
         <Clock size={12} style={{ color: "var(--text-muted)" }} />
         <div className="text-sm" style={{ color: "var(--text-secondary)" }}>
-          <div>{event.start?.dateTime || event.start?.date ? calendarDate(event.start.dateTime || event.start.date!).toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" }) : "Date unavailable"}</div>
+          <div>{event.start?.dateTime || event.start?.date ? fmtDate(calendarDate(event.start.dateTime || event.start.date!), { weekday: "long", month: "long", day: "numeric" }, { locale: "en-US" }) : "Date unavailable"}</div>
           <div>
             {formatTime(event.start?.dateTime) || "All day"}
             {event.end?.dateTime && ` – ${event.start?.dateTime ? timeOnDay(event.end.dateTime, calendarDate(event.start.dateTime)) : formatTime(event.end.dateTime)}`}

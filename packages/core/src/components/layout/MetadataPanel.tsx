@@ -22,6 +22,7 @@ import { PropertyBar } from "../database/PropertyBar";
 import { useSchemas } from "../../lib/database/hooks";
 import { resolveProperties } from "../../lib/database/schema";
 
+import { formatDate as fmtDate } from "../../lib/datetime/format";
 interface MetadataPanelProps {
   note: Note;
 }
@@ -1179,13 +1180,13 @@ function NotionPagePicker({ noteId, metadata, search, bind, onDone, onCancel, on
 
 function formatDate(iso: string) {
   try {
-    return new Date(iso).toLocaleDateString("en-US", {
+    return fmtDate(new Date(iso), {
       month: "short",
       day: "numeric",
       year: "numeric",
       hour: "numeric",
       minute: "2-digit",
-    });
+    }, { locale: "en-US" });
   } catch {
     return iso;
   }

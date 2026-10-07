@@ -4,6 +4,7 @@ import type { RendererProps } from "./RendererProps";
 import { useAutoSave } from "../../app/hooks/useAutoSave";
 import { Button } from "../ui/Button";
 
+import { formatTime as fmtTime } from "../../lib/datetime/format";
 // Parse CSV content into a 2D array
 function parseCSV(content: string): string[][] {
   if (!content.trim()) return [[""]];
@@ -147,7 +148,7 @@ export default function SpreadsheetRenderer({ note, readOnly }: RendererProps) {
         className="flex items-center justify-end px-4 py-1 text-xs"
         style={{ color: "var(--text-muted)", borderTop: "1px solid var(--glass-border)" }}
       >
-        {isSaving ? "Saving..." : lastSaved ? `Saved ${lastSaved.toLocaleTimeString()}` : ""}
+        {isSaving ? "Saving..." : lastSaved ? `Saved ${fmtTime(lastSaved)}` : ""}
       </div>
     </div>
   );

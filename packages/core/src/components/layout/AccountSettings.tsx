@@ -12,6 +12,7 @@ import { useAccount, type AccountProfile, type SignedInDevice } from "../../data
 import { AgentAccessTokens } from "./AgentAccessTokens";
 import { PushSettings } from "./PushSettings";
 
+import { formatDateTime as fmtDateTime } from "../../lib/datetime/format";
 /** Downscale a picked image to a small square avatar (data URL) so it stays well
  *  under the server's size cap and renders crisply at cursor/comment sizes. */
 async function fileToAvatar(file: File, size = 128): Promise<string> {
@@ -124,7 +125,7 @@ export function AccountSettings() {
 
   if (!account) return null;
 
-  const fmt = (ms: number | null) => (ms ? new Date(ms).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" }) : "never");
+  const fmt = (ms: number | null) => (ms ? fmtDateTime(new Date(ms), { dateStyle: "medium", timeStyle: "short" }) : "never");
 
   const cardStyle = { border: "1px solid var(--glass-border)", borderRadius: 10, padding: 16, marginBottom: 16, background: "var(--glass-bg)" } as const;
   const labelStyle = { fontSize: 12, fontWeight: 600, color: "var(--text-secondary)", marginBottom: 6 } as const;

@@ -1,3 +1,4 @@
+import { formatDate as fmtDate, formatTime as fmtTime } from "../datetime/format";
 /**
  * Template variables (NP-TX-02).
  *
@@ -31,8 +32,8 @@ export const TEMPLATE_VARIABLES = ["@today", "@now", "@me"] as const;
 const pad = (n: number) => String(n).padStart(2, "0");
 /** The creator's LOCAL calendar day, `YYYY-MM-DD`. */
 export const localDay = (d: Date): string => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
-const longDay = (d: Date): string => d.toLocaleDateString(undefined, { year: "numeric", month: "long", day: "numeric" });
-const longMoment = (d: Date): string => `${longDay(d)} ${d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })}`;
+const longDay = (d: Date): string => fmtDate(d, { year: "numeric", month: "long", day: "numeric" });
+const longMoment = (d: Date): string => `${longDay(d)} ${fmtTime(d, { hour: "numeric", minute: "2-digit" })}`;
 const escapeHtml = (s: string): string => s.split("&").join("&amp;").split("<").join("&lt;").split(">").join("&gt;").split('"').join("&quot;");
 const defaultUid = (): string => {
   const c = (globalThis as { crypto?: { randomUUID?: () => string } }).crypto;
