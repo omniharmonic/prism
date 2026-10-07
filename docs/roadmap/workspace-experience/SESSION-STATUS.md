@@ -114,3 +114,15 @@ Main = this commit's parent `acc7f8f9` (assignment notifications `feat/w12-notif
 Process per branch: merge main → root typecheck → `scratchpad/both-run.sh` (or `after-run.sh <prev log> …` to chain) → independent review → fixes → `git merge --ff-only`. Never start suites on an unresolved merge (CLAUDE.md conflicts are common: keep both sides).
 
 Open items: one unexplained `/health` miss at 21:54 with 77% memory free (recovered at once, no pm2 restart). Owner decisions added this session: ingest-owned pages cannot be duplicated by anyone (owner exception?); property type conversion not offered on ingest tags incl. `task`; block selection — non-editors keep native text selection across blocks, editors get the toolbar on block selections. Queued, not started: database regional-prefs call sites, timeline view sizing, verification pass 4, AI for members (owner decision).
+
+## Update 2026-10-07 — READ FIRST (credit-conscious run)
+
+Merged to main this run, all on green typecheck + full server + full browser suites: `feat/w12-flakes` (+ the block-menu Comment focus fix), `feat/w12-p2`, `feat/w13-appearance`, `feat/w13-ios-merge` (integration branch `integ/w15`), then `feat/w12-db-calc` (reviewed; B1 work bounds + S1–S6 fixed). P2 and appearance merged WITHOUT an independent review (owner agreed). Nothing deployed.
+
+Still unmerged, each needs ONE small fresh agent (do not resume the old agents — their contexts are huge) and then `scratchpad/after-run.sh` + ff-merge:
+- `feat/w11-backlog` (w4-db, 20 uncommitted files): round-2 list — retry-only reconcile sweep + per-room tries/backoff, retry share cap, no Fireflies slot hand-back after an upstream mutation, body-read timeouts, Fathom getSoft rethrow, RecoveredText re-list failure copy, nits; update `matrix-lean.test.ts` expectation for the new `rooms` field only.
+- `feat/w12-duplicate` (w2-mentions, 8 uncommitted): round-3 list — `no_path` reorder (protection checks first, 403 `protected` for excluded ids), BulkBar Stop + batch budget, files-phase ids from pass 1, `noteAtPath` timeout, test gaps.
+- `feat/w11-deviations` (w4-editor, clean, main merged at b18395a4): needs a11y + WebKit runs, conversion follow-ups (select options, saved views alias, bounds), then suites.
+- `feat/w9-gaps` (collab-convert, 4 uncommitted): fixture `diverged()` JSON compare, `noteLinkTitle` blank-title fix, old-code proof for round-3 suggesting fixes, WebKit, split WIP.
+- `feat/w12-editor-select` (w3-gaps): review S1–S9 pending. `feat/w14-visual` (w4-shell, 5 uncommitted): visual defects in progress. `feat/w14-icons` (w2-sharing): WIP, unverified.
+Open: unexplained `/health` misses with plenty of free memory (2026-10-04 21:54, 2026-10-06 22:46) — check pm2 logs around those times.
