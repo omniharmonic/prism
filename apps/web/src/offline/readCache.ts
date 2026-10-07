@@ -28,7 +28,28 @@ const TREE_MAX_BODY = 16 * 1024 * 1024;
  *  this four 16 MB trees would be the whole shared budget and no page would stay cached. */
 const TREES_MAX_BYTES = 32 * 1024 * 1024;
 /** Counters for tests and diagnostics. */
-export const cacheStats = { bodyWrites: 0, unchangedSkips: 0 };
+export const cacheStats = { bodyWrites: 0, unchangedSkips: 0, /** Fingerprints computed to COMPARE an arriving tree with the stored one. */ compared: 0 };
+/** A stored tree's fingerprint is computed after its write, not in it (megabytes hashed on the path
+ *  every start waits on). The next put of that key waits for it, so "the same body again" is still seen. */
+const pendingPrints = new Map<string, Promise<void>>();
+function printLater(key: string, body: string, stored: number): void {
+  const run = async (): Promise<void> => {
+    try {
+      const print = fingerprint(body);
+      const db = await open();
+      const t = db.transaction("index", "readwrite");
+      const row = await result<IndexRow | undefined>(t.objectStore("index").get(key));
+      if (row && row.stored === stored && row.size === body.length) t.objectStore("index").put({ ...row, print });
+      await done(t);
+    } catch {
+      /* best-effort: without a print the next identical tree is simply written again */
+    }
+  };
+  const p: Promise<void> = new Promise<void>((resolve) => setTimeout(resolve, 0)).then(run).finally(() => {
+    if (pendingPrints.get(key) === p) pendingPrints.delete(key);
+  });
+  pendingPrints.set(key, p);
+}
 /** A cheap content fingerprint (two FNV-1a passes): "is this the body already stored?" — never a security check. */
 function fingerprint(body: string): string {
   let a = 0x811c9dc5, b = 0x01000193;
@@ -147,22 +168,29 @@ export async function cachePut(key: string, body: string, contentType: string): 
     const db = await open();
     // A tree is megabytes and is fetched on every start and every sidebar change that reaches this
     // device: when the server sent the SAME body again, only its freshness is recorded.
-    const print = isTreeKey(key) ? fingerprint(body) : undefined;
-    if (print) {
+    const tree = isTreeKey(key);
+    if (tree) {
+      await pendingPrints.get(key);
       const t0 = db.transaction(["bodies", "index"], "readwrite");
       const idx = await result<IndexRow | undefined>(t0.objectStore("index").get(key));
-      if (idx?.print === print && (await result<number>(t0.objectStore("bodies").count(key))) === 1) {
-        t0.objectStore("index").put({ ...idx, at: Date.now(), stored: Date.now() });
-        await done(t0);
-        cacheStats.unchangedSkips++;
-        return;
+      // Hashed only when it CAN be the same body: same length as the one stored (and that one has a print).
+      if (idx?.print && idx.size === body.length) {
+        cacheStats.compared++;
+        if (idx.print === fingerprint(body) && (await result<number>(t0.objectStore("bodies").count(key))) === 1) {
+          t0.objectStore("index").put({ ...idx, at: Date.now(), stored: Date.now() });
+          await done(t0);
+          cacheStats.unchangedSkips++;
+          return;
+        }
       }
     }
+    const stored = Date.now();
     const t = db.transaction(["bodies", "index"], "readwrite");
     t.objectStore("bodies").put({ key, body, contentType } satisfies BodyRow);
-    t.objectStore("index").put({ key, size: body.length, at: Date.now(), stored: Date.now(), ...(print ? { print } : {}) } satisfies IndexRow);
+    t.objectStore("index").put({ key, size: body.length, at: stored, stored } satisfies IndexRow);
     await done(t);
     cacheStats.bodyWrites++;
+    if (tree) printLater(key, body, stored);
     await evict(db);
   } catch {
     /* cache is best-effort */

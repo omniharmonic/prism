@@ -124,10 +124,40 @@ test("trees share a 32 MB total (newest kept) and an unchanged tree is not writt
     return { afterFirst, afterRepeats, afterChange, stillServed, servesChange, t1: await has(`${scope(1)}|/tree`), t2: await has(`${scope(2)}|/tree`), t3: await has(`${scope(3)}|/tree`), pageKept: await has(`${scope(1)}|/notes/a`) };
   }, mod);
   expect(result.afterFirst.bodyWrites).toBe(1);
-  expect(result.afterRepeats, "the same tree again: no second write of the body").toEqual({ bodyWrites: 1, unchangedSkips: 2 });
+  expect(result.afterRepeats, "the same tree again: no second write of the body").toMatchObject({ bodyWrites: 1, unchangedSkips: 2 });
   expect(result.stillServed).toBe(true);
   expect(result.afterChange.bodyWrites).toBe(2);
   expect(result.servesChange).toBe(true);
   expect([result.t1, result.t2, result.t3], "the oldest tree is dropped, the two newest stay").toEqual([false, true, true]);
   expect(result.pageKept, "trees never push a cached page out for their own total").toBe(true);
+});
+
+test("tree cache: an arriving tree is fingerprinted only when it has the stored tree's length (a different length cannot be the same body)", async ({ page }) => {
+  test.setTimeout(120_000);
+  await page.goto("/e2e-fixtures/harness.html");
+  const mod = "/src/offline/readCache.ts";
+  const result = await page.evaluate(async (mod) => {
+    const cache = await import(/* @vite-ignore */ mod);
+    cache.setProtectedCacheKeys([]);
+    const stats = () => ({ compared: -1, ...cache.cacheStats });
+    const key = `${JSON.stringify(["http://x/api", "w", "vault-9", "user:a@test.local"])}|/tree`;
+    const a = JSON.stringify({ rows: "a".repeat(3 * 1024 * 1024) });
+    const longer = JSON.stringify({ rows: "a".repeat(3 * 1024 * 1024 + 7) });
+    const sameLength = JSON.stringify({ rows: "b".repeat(3 * 1024 * 1024 + 7) });
+    const base = stats();
+    await cache.cachePut(key, a, "application/json");
+    await cache.cachePut(key, longer, "application/json"); // another length: written without hashing to compare
+    const afterGrow = stats();
+    await cache.cachePut(key, longer, "application/json"); // the same body: one comparison, no write
+    const afterSame = stats();
+    await cache.cachePut(key, sameLength, "application/json"); // same length, other content: compared, written
+    const afterOther = stats();
+    const served = (await cache.cacheGet(key))?.body === sameLength;
+    const d = (x: ReturnType<typeof stats>) => ({ bodyWrites: x.bodyWrites - base.bodyWrites, unchangedSkips: x.unchangedSkips - base.unchangedSkips, compared: x.compared - base.compared });
+    return { afterGrow: d(afterGrow), afterSame: d(afterSame), afterOther: d(afterOther), served };
+  }, mod);
+  expect(result.afterGrow).toEqual({ bodyWrites: 2, unchangedSkips: 0, compared: 0 });
+  expect(result.afterSame).toEqual({ bodyWrites: 2, unchangedSkips: 1, compared: 1 });
+  expect(result.afterOther).toEqual({ bodyWrites: 3, unchangedSkips: 1, compared: 2 });
+  expect(result.served).toBe(true);
 });
