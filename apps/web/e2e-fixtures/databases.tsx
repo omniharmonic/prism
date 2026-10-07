@@ -153,6 +153,8 @@ const controls = {
   notes: () => notes,
   trashed: [] as string[],
   restored: [] as string[],
+  /** ?dup-route: every call to the server's Duplicate route (`VaultClient.duplicatePage`). */
+  duplicates: [] as Array<Record<string, unknown>>,
   batches: [] as unknown[],
   imports: [] as unknown[],
   removals: [] as unknown[],
@@ -315,6 +317,26 @@ if (!legacy) {
     n.metadata = meta;
     bump(n);
     return { id: n.id, updatedAt: n.updatedAt, metadata: clone(meta) };
+  };
+}
+
+// ?dup-route: this client HAS the server's Duplicate route (NP-PG-18), so the bulk bar goes
+// through it. The second call is refused once with a 429 + Retry-After, like the server's
+// per-minute budget; the bar must wait and send the SAME request again.
+if (params.has("dup-route")) {
+  let limited = false;
+  client.duplicatePage = async (id, request) => {
+    controls.duplicates.push(clone({ id, ...request }));
+    if (!limited && controls.duplicates.length === 2) {
+      limited = true;
+      throw Object.assign(new Error("rate limited"), { status: 429, code: "rate_limited", body: { error: "rate_limited", retryAfter: params.get("dup-route") === "slow" ? 60 : 1 } });
+    }
+    const src = find(id)!;
+    const priv = src.metadata?.prism_visibility === "private";
+    const copy: Note = { ...clone(src), id: `dup-${controls.duplicates.length}`, path: `${src.path} (copy)`, metadata: { ...clone(src.metadata ?? {}), title: `${String(src.metadata?.title ?? "")} (copy)` } };
+    notes.push(copy);
+    save();
+    return { ok: true, id: copy.id, path: copy.path!, title: String(copy.metadata?.title), created: 1, remaining: 0, skipped: 0, rows: 0, droppedTags: 0, privateKept: priv ? 1 : 0, sharingKept: 0, uncleaned: 0, liveIncomplete: false, filesPending: [], filesFailed: 0 };
   };
 }
 

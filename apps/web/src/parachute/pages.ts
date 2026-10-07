@@ -9,6 +9,8 @@ import {
   PagesRequestError,
   type MoveRequest,
   type MoveResult,
+  type DuplicateRequest,
+  type DuplicateResult,
   type PagePreferences,
   type PreferencesSnapshot,
   type TrashListing,
@@ -87,6 +89,39 @@ export async function movePage(noteId: string, request: MoveRequest): Promise<Mo
     };
   }
   return { ok: true, path: String(data.path), moved: (data.moved as MoveResult["moved"]) ?? [] };
+}
+
+/**
+ * Duplicate a page with its sub-pages (POST /api/notes/:id/duplicate). A 207 is a
+ * PARTIAL copy (`ok: false`): the same `requestId` finishes it. Unsent changes of
+ * the page go first, so the copy holds what the person sees.
+ */
+export async function duplicatePage(noteId: string, request: DuplicateRequest): Promise<DuplicateResult> {
+  if (await unsentAfterFlush(noteId)) throw new PagesRequestError(409, "pending_writes", "This page has changes that haven’t reached the server yet. Duplicate it once they’re saved.");
+  const { status, data } = await call<Record<string, unknown>>("POST", `/notes/${id(noteId)}/duplicate`, {
+    requestId: request.requestId,
+    ...(request.withSubpages === false ? { withSubpages: false } : {}),
+    ...(request.confirmShared ? { confirmShared: true } : {}),
+  });
+  if (typeof data?.id !== "string" || typeof data.path !== "string") throw new PagesRequestError(502, "bad_response", "Something went wrong. Try again.");
+  const n = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : 0);
+  return {
+    ok: status !== 207,
+    id: data.id,
+    path: data.path,
+    title: typeof data.title === "string" ? data.title : "",
+    created: n(data.created),
+    remaining: n(data.remaining),
+    skipped: n(data.skipped),
+    rows: n(data.rows),
+    droppedTags: n(data.droppedTags),
+    privateKept: n(data.privateKept),
+    sharingKept: n(data.sharingKept),
+    uncleaned: n(data.uncleaned),
+    liveIncomplete: data.liveIncomplete === true,
+    filesPending: Array.isArray(data.filesPending) ? data.filesPending.filter((x): x is string => typeof x === "string") : [],
+    filesFailed: n((data.files as { failed?: unknown } | undefined)?.failed),
+  };
 }
 
 export async function setPageMeta(noteId: string, set: { prism_locked?: boolean; prism_order?: number; prism_page_style?: { small: boolean; full: boolean } }, ifUpdatedAt: string): Promise<{ updatedAt: string | null }> {
