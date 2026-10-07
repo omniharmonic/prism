@@ -8,7 +8,7 @@ import type {
   VaultStats,
   VaultInfo,
 } from "../lib/types";
-import type { MoveRequest, MoveResult, TrashListing, PreferencesSnapshot, PagePreferences } from "../lib/pages/model";
+import type { MoveRequest, DuplicateRequest, DuplicateResult, MoveResult, TrashListing, PreferencesSnapshot, PagePreferences } from "../lib/pages/model";
 import type { QueryPage, QuerySpec, SchemaMap, SchemaPatch, TagSchema, PropertyBatchItem, PropertyBatchResult, CsvImportRequest, CsvImportResponse, RemoveValuesResult, ConvertPropertyResult } from "../lib/database";
 
 /** Transport status for recoverable UI states, without parsing diagnostic text. */
@@ -235,6 +235,10 @@ export interface VaultClient {
   /** Pages (lib/pages/model.ts). Optional per shell; without them the UI falls back
    *  to plain vault writes (lib/pages/ops.ts). Move a page and its sub-pages. */
   movePage?(noteId: string, request: MoveRequest): Promise<MoveResult>;
+  /** Duplicate a page WITH its sub-pages, server-side (NP-PG-18): permissions, links
+   *  re-pointed at the copies, files, one retryable request. Optional: shells without
+   *  it copy the one page and say that sub-pages were not copied. */
+  duplicatePage?(noteId: string, request: DuplicateRequest): Promise<DuplicateResult>;
   /** Soft-delete a page and its sub-pages (restorable from the Trash). */
   trashPage?(noteId: string): Promise<{ rootId: string; trashed: string[] }>;
   listTrash?(query?: string): Promise<TrashListing>;

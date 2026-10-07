@@ -11,7 +11,7 @@
  * - Trash goes through the pages API (`trashPage`, restorable); Undo restores.
  * - Duplicate copies body + properties (≤ 50 rows); Undo moves the copies to Trash.
  */
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Copy, Pencil, Trash2, Undo2, X } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useVaultClient } from "../../data/VaultClientContext";
@@ -56,6 +56,11 @@ export function BulkBar({ rows, props, dbPath, canEditRow, canCreate, onDone, on
   const [editOpen, setEditOpen] = useState(false);
   const [field, setField] = useState<string>("");
   const [busy, setBusy] = useState(false);
+  /** What a long bulk action is doing right now ("Duplicating 21 of 50…"), or "". */
+  const [progress, setProgress] = useState("");
+  /** Stops a running bulk duplicate: checked before each row and each wait; aborted on unmount. */
+  const stop = useRef<AbortController | null>(null);
+  useEffect(() => () => stop.current?.abort(), []);
   const editable = props.filter((p) => !p.system && !isSystemKey(p.key));
   const def = editable.find((p) => p.key === field) ?? editable[0];
   const titleOf = new Map(rows.map((r) => [r.id, noteTitle(r)]));
@@ -124,8 +129,66 @@ export function BulkBar({ rows, props, dbPath, canEditRow, canCreate, onDone, on
     const made: string[] = [];
     const failed: Array<{ title: string; error: string }> = [];
     let filesMissed = 0;
-    for (const r of rows.slice(0, 50)) {
+    let keptPrivate = 0;
+    const picked = rows.slice(0, 50);
+    /** One row through the server route. The server allows a limited number per minute and
+     *  one at a time: a 429 / "busy" is WAITED out (its Retry-After, ≤ 65 s, a few times)
+     *  and the SAME request is sent again — never a new copy, never a generic failure. */
+    const ctrl = new AbortController();
+    stop.current = ctrl;
+    /** Seconds this batch may spend WAITING for the server in all; past it the batch stops. */
+    let waitLeft = 300;
+    let stopped = false;
+    const pause = (seconds: number) => new Promise<void>((resolve) => {
+      const done = () => { clearTimeout(timer); ctrl.signal.removeEventListener("abort", done); resolve(); };
+      const timer = setTimeout(done, seconds * 1000);
+      ctrl.signal.addEventListener("abort", done);
+    });
+    const viaRoute = async (id: string, request: { requestId: string; confirmShared: boolean }, label: string) => {
+      for (;;) {
+        try {
+          return await client.duplicatePage!(id, request);
+        } catch (e) {
+          const err = e as { status?: number; code?: string; body?: { retryAfter?: unknown } };
+          const wait = err.status === 429 || err.code === "busy" ? Math.min(65, Math.max(1, Number(err.body?.retryAfter) || 5)) : 0;
+          if (!wait) throw e;
+          if (ctrl.signal.aborted || wait > waitLeft) { stopped = true; throw e; }
+          waitLeft -= wait;
+          setProgress(`${label} — waiting for the server (${wait} s)`);
+          await pause(wait);
+          if (ctrl.signal.aborted) { stopped = true; throw e; }
+          setProgress(label);
+        }
+      }
+    };
+    let attempted = 0;
+    for (const [index, r] of picked.entries()) {
+      if (ctrl.signal.aborted || stopped) { stopped = true; break; }
+      attempted++;
+      const label = `Duplicating ${index + 1} of ${picked.length}…`;
+      if (picked.length > 1) setProgress(label);
       try {
+        // The server route (NP-PG-18): permissions, sub-pages, links and files in one
+        // retryable request per row. A shell or server without it copies the row here.
+        if (client.duplicatePage) {
+          const request = { requestId: `dup-${(globalThis.crypto?.randomUUID?.() ?? `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 12)}`).replace(/-/g, "")}`, confirmShared: true };
+          try {
+            let result = await viaRoute(r.id, request, label);
+            // Partly copied (a row with many sub-pages): the same request finishes it.
+            for (let i = 0; !result.ok && i < 5; i++) result = await viaRoute(r.id, request, label);
+            made.push(result.id);
+            keptPrivate += result.privateKept + result.sharingKept;
+            if (!result.ok) failed.push({ title: noteTitle(r), error: "error" });
+            let missed = result.filesFailed > 0;
+            for (const id of result.filesPending) if (copyFilesNotice(client.copyAttachments ? await client.copyAttachments(id).catch(() => null) : null)) missed = true;
+            if (missed) filesMissed++;
+            continue;
+          } catch (e) {
+            const status = (e as { status?: number }).status;
+            const code = (e as { code?: string }).code;
+            if (!(status === 405 || status === 501 || (status === 404 && code !== "not_found"))) throw e;
+          }
+        }
         const src = await client.getNote(r.id, { fresh: true });
         const meta: Record<string, unknown> = {};
         for (const [k, v] of Object.entries(src.metadata ?? {})) if (!isSystemKey(k) || k === "icon" || k === "cover") meta[k] = v;
@@ -143,14 +206,21 @@ export function BulkBar({ rows, props, dbPath, canEditRow, canCreate, onDone, on
           if (copyFilesNotice(await client.copyAttachments(n.id).catch(() => null))) filesMissed++;
         }
       } catch {
+        // Stopped (by the person, or the batch's waiting budget ran out) while the server
+        // had not taken this row: it was not copied, and it is not an error either.
+        if (stopped) { attempted--; break; }
         failed.push({ title: noteTitle(r), error: "error" });
       }
     }
+    stop.current = null;
+    const notTried = picked.length - attempted;
     setBusy(false);
+    setProgress("");
     refresh();
     onClear();
-    const capped = (rows.length > 50 ? " Only the first 50 were duplicated." : "") + (filesMissed ? ` Some files were not copied on ${filesMissed} ${filesMissed === 1 ? "page" : "pages"}.` : "");
-    onDone((failed.length ? `Duplicated ${made.length} of ${Math.min(rows.length, 50)}. Not copied: ${describe(failed)}.` : `Duplicated ${made.length} ${made.length === 1 ? "page" : "pages"}.`) + capped, made.length && client.trashPage ? {
+    const capped = (rows.length > 50 ? " Only the first 50 were duplicated." : "") + (keptPrivate ? ` ${keptPrivate} ${keptPrivate === 1 ? "copy is" : "copies are"} private to you.` : "") + (filesMissed ? ` Some files were not copied on ${filesMissed} ${filesMissed === 1 ? "page" : "pages"}.` : "");
+    const halted = notTried ? ` Stopped — ${notTried} ${notTried === 1 ? "page was" : "pages were"} not copied.` : "";
+    onDone((failed.length || notTried ? `Duplicated ${made.length} of ${picked.length}.${failed.length ? ` Not copied: ${describe(failed)}.` : ""}` : `Duplicated ${made.length} ${made.length === 1 ? "page" : "pages"}.`) + halted + capped, made.length && client.trashPage ? {
       label: "Undo duplicate",
       run: async () => {
         let n = 0;
@@ -166,7 +236,8 @@ export function BulkBar({ rows, props, dbPath, canEditRow, canCreate, onDone, on
   const editableCount = rows.filter(canEditRow).length;
   return (
     <div className="db-bulk" role="toolbar" aria-label="Selected pages">
-      <span className="db-bulk-count" aria-live="polite">{rows.length} selected</span>
+      <span className="db-bulk-count" aria-live="polite">{progress || `${rows.length} selected`}</span>
+      {progress && <button type="button" className="db-control" onClick={() => stop.current?.abort()}>Stop</button>}
       {editable.length > 0 && editableCount > 0 && (
         <button ref={editAnchor} type="button" className="db-control" aria-haspopup="dialog" aria-expanded={editOpen} disabled={busy} onClick={() => setEditOpen((o) => !o)}><Pencil size={13} aria-hidden="true" /> Edit property</button>
       )}

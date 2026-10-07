@@ -239,3 +239,42 @@ test("bulk duplicate keeps a private page private", async ({ page }) => {
   expect(priv.metadata.prism_visibility).toBe("private");
   expect(pub.metadata.prism_visibility).toBeUndefined();
 });
+
+// NP-PG-18 (re-review S1): the bulk bar goes through the server's Duplicate route where the
+// client has one, waits out a rate limit, and re-sends the SAME request.
+test("bulk duplicate uses the Duplicate route per row, waits out a 429 with the same requestId, and Undo trashes the copies", async ({ page }) => {
+  await page.goto("/e2e-fixtures/databases.html?dup-route");
+  await table(page).getByRole("checkbox", { name: "Select Private planning note" }).click();
+  await table(page).getByRole("checkbox", { name: "Select Update pricing page" }).click();
+  const bar = page.getByRole("toolbar", { name: "Selected pages" });
+  await bar.getByRole("button", { name: "Duplicate" }).click();
+  // The second row is refused once (Retry-After 1 s): the bar says it is waiting — it does not fail the row.
+  await expect(bar).toContainText("Duplicating 2 of 2… — waiting for the server");
+  await expect(page.locator(".db-toast")).toContainText("Duplicated 2 pages.");
+  await expect(page.locator(".db-toast")).toContainText("1 copy is private to you.");
+  const state = await fx(page);
+  const calls = state.duplicates as Array<{ id: string; requestId: string; confirmShared: boolean }>;
+  expect(calls).toHaveLength(3);
+  expect(calls[1]!.id).toBe(calls[2]!.id);
+  expect(calls[1]!.requestId).toBe(calls[2]!.requestId);
+  expect(calls[0]!.requestId).not.toBe(calls[1]!.requestId);
+  expect(state.creates).toHaveLength(0); // nothing was copied on the device
+  await page.locator(".db-toast").getByRole("button", { name: "Undo" }).click();
+  await expect(page.locator(".db-toast")).toContainText("Moved 2 copies to Trash.");
+  expect(((await fx(page)).trashed as string[]).sort()).toEqual(["dup-1", "dup-3"]);
+});
+
+test("bulk duplicate can be stopped while it waits for the server: what was copied stays, the rest is reported as not copied", async ({ page }) => {
+  await page.goto("/e2e-fixtures/databases.html?dup-route=slow");
+  await table(page).getByRole("checkbox", { name: "Select Private planning note" }).click();
+  await table(page).getByRole("checkbox", { name: "Select Update pricing page" }).click();
+  const bar = page.getByRole("toolbar", { name: "Selected pages" });
+  await bar.getByRole("button", { name: "Duplicate" }).click();
+  await expect(bar).toContainText("waiting for the server (60 s)");
+  await bar.getByRole("button", { name: "Stop", exact: true }).click();
+  await expect(page.locator(".db-toast")).toContainText("Duplicated 1 of 2.");
+  await expect(page.locator(".db-toast")).toContainText("Stopped — 1 page was not copied.");
+  const state = await fx(page);
+  expect(state.duplicates).toHaveLength(2); // the refused request was not sent again
+  expect(state.creates).toHaveLength(0);
+});

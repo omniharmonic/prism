@@ -427,8 +427,8 @@ export const pathKey = (p: string): string => p.normalize("NFC").toLowerCase();
  * Looked up in both Unicode forms (the vault does not normalise). "ambiguous" = the
  * vault already holds two notes on that key.
  */
-async function noteAtPath(entry: VaultEntry, path: string): Promise<Note | "ambiguous" | null> {
-  const vc = vaultClient(entry.id);
+export async function noteAtPath(entry: VaultEntry, path: string, opts: { timeoutMs?: number } = {}): Promise<Note | "ambiguous" | null> {
+  const vc = opts.timeoutMs ? vaultClient(entry.id, { timeoutMs: opts.timeoutMs }) : vaultClient(entry.id);
   for (const form of new Set([path.normalize("NFC"), path.normalize("NFD")])) {
     try {
       const n = await vc.getNote(form);
@@ -455,7 +455,7 @@ async function noteAtPath(entry: VaultEntry, path: string): Promise<Note | "ambi
 export async function placementRefusal(
   entry: VaultEntry,
   raw: unknown,
-  opts: { actor?: Actor; tags?: string[]; exceptId?: string } = {},
+  opts: { actor?: Actor; tags?: string[]; exceptId?: string; timeoutMs?: number } = {},
 ): Promise<{ path: string } | PlacementRefusal> {
   const path = normalizePagePath(raw);
   if (!path) return { status: 400, body: { error: "invalid_request", reason: "path is not a valid page location." } };
@@ -464,15 +464,15 @@ export async function placementRefusal(
   if (why) return { status: 403, body: { error: "forbidden", reason: `${why} Only the workspace owner can add pages there.` } };
   try {
     if (parentOf(path)) {
-      const trashed = await vaultClient(entry.id).listNotes({ tags: [TRASH_TAG], includeMetadata: [...TREE_META_KEYS] });
+      const trashed = await (opts.timeoutMs ? vaultClient(entry.id, { timeoutMs: opts.timeoutMs }) : vaultClient(entry.id)).listNotes({ tags: [TRASH_TAG], includeMetadata: [...TREE_META_KEYS] });
       const key = pathKey(path);
       if (trashed.some((n) => !!n.path && isUnder(key, pathKey(n.path)))) return { status: 409, body: pathUnavailable(path) };
     }
     if (opts.actor) {
-      const refused = await destinationParentRefusal(opts.actor, entry, path, { tags: opts.tags });
+      const refused = await destinationParentRefusal(opts.actor, entry, path, { tags: opts.tags, timeoutMs: opts.timeoutMs });
       if (refused) return refused;
     }
-    const holder = await noteAtPath(entry, path);
+    const holder = await noteAtPath(entry, path, { timeoutMs: opts.timeoutMs });
     if (holder === "ambiguous" || (holder && holder.id !== opts.exceptId)) return { status: 409, body: pathUnavailable(path) };
   } catch {
     return { status: 502, body: { error: "vault_unreachable" } };
@@ -509,13 +509,13 @@ function databaseSourceTags(page: Note): string[] | null {
  * so the creator needs `create` there (404 when they cannot see the shared page —
  * the same answer as a missing place — else 403).
  */
-export async function destinationParentRefusal(actor: Actor, entry: VaultEntry, target: string, opts: { requirePage?: boolean; tags?: string[] } = {}): Promise<PlacementRefusal | null> {
+export async function destinationParentRefusal(actor: Actor, entry: VaultEntry, target: string, opts: { requirePage?: boolean; tags?: string[]; timeoutMs?: number } = {}): Promise<PlacementRefusal | null> {
   if (isAdmin(actor)) return null;
   const parent = parentOf(target);
   let found: Note | "ambiguous" | null = null;
   if (parent && parent !== "vault") {
     try {
-      found = await noteAtPath(entry, parent);
+      found = await noteAtPath(entry, parent, { timeoutMs: opts.timeoutMs });
     } catch {
       found = "ambiguous"; // unreadable: never assume "no page there"
     }
@@ -552,7 +552,7 @@ export async function destinationParentRefusal(actor: Actor, entry: VaultEntry, 
 }
 
 /** The nearest LIVE ancestor page of `target` that carries a page share (anyone's), or null. */
-async function sharedAncestor(entry: VaultEntry, target: string): Promise<TreeRow | null> {
+export async function sharedAncestor(entry: VaultEntry, target: string): Promise<TreeRow | null> {
   const tree = await ensureTree(entry);
   const byPath = new Map<string, TreeRow>();
   for (const r of tree.rows()) if (r.path) byPath.set(pathKey(r.path), r);

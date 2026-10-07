@@ -582,3 +582,92 @@ test("phone: the page actions sheet lists every page action with 44px rows and c
   });
   await expect(sheet).toHaveCount(0);
 });
+
+// ── NP-PG-18: Duplicate copies the sub-pages too ─────────────────────────────
+const fixtureNotes = (page: Page) => page.evaluate(() => ((window as any).prismFixtureNotes as Array<{ id: string; path: string; tags: string[]; metadata: Record<string, unknown> }>).map((n) => ({ id: n.id, path: n.path, trashed: n.tags.includes("prism-trashed"), order: n.metadata?.prism_order ?? null })));
+const copies = async (page: Page) => (await fixtureNotes(page)).filter((n) => n.path.startsWith("vault/Projects/Prism (copy)"));
+
+test("Duplicate on a page with two levels of sub-pages copies them all, keeps their order, and one Undo trashes the whole copy", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto(url("?dup"));
+  await expect(row(page, "Prism")).toBeVisible();
+  await nav(page).getByRole("button", { name: "Page actions for Prism", exact: true }).click();
+  await page.getByRole("menuitem", { name: "Duplicate", exact: true }).click();
+  const toast = page.getByRole("status").filter({ hasText: "Duplicated 4 pages" });
+  await expect(toast).toBeVisible();
+  // ONE request did it; the app created nothing itself.
+  const sent = await writes(page);
+  expect(sent.filter((w) => w.duplicate)).toHaveLength(1);
+  expect(sent.find((w) => w.duplicate)).toMatchObject({ duplicate: "prism" });
+  expect(String(sent.find((w) => w.duplicate)!.requestId)).toMatch(/^dup-[0-9a-z]{10,}$/);
+  expect(sent.some((w) => w.create)).toBe(false);
+  // What exists on the "server": the page, both sub-pages and the sub-sub-page, with the same order keys.
+  expect((await copies(page)).map((n) => [n.path, n.order]).sort()).toEqual([
+    ["vault/Projects/Prism (copy)", null],
+    ["vault/Projects/Prism (copy)/A living workspace", 2],
+    ["vault/Projects/Prism (copy)/Plan", 1],
+    ["vault/Projects/Prism (copy)/Plan/Week 1", null],
+  ]);
+  // The copy opens, and the sidebar shows it with its sub-pages in the ORIGINAL's order (Plan before "A living workspace").
+  await expect(page.getByRole("heading", { name: "Rename Prism (copy)", exact: true })).toBeVisible();
+  await expand(page, "Prism (copy)");
+  await expect.poll(async () => {
+    const text = await tree(page).innerText();
+    const after = text.slice(text.indexOf("Prism (copy)"));
+    return after.indexOf("Plan") > 0 && after.indexOf("Plan") < after.indexOf("A living workspace");
+  }).toBe(true);
+  await shot(page, "duplicate-subtree-1440");
+  // The original is untouched.
+  expect(await notePath(page, "week1")).toBe("vault/Projects/Prism/Plan/Week 1");
+
+  await toast.getByRole("button", { name: "Undo" }).click();
+  await expect(page.getByRole("status").filter({ hasText: "Moved the copy of “Prism” to Trash" })).toBeVisible();
+  await expect(row(page, "Prism (copy)")).toHaveCount(0);
+  expect((await copies(page)).map((n) => n.trashed)).toEqual([true, true, true, true]);
+  expect((await writes(page)).filter((w) => w.trash)).toHaveLength(1);
+  await expect(row(page, "Prism")).toBeVisible();
+});
+
+test("Duplicate says how many sub-pages were skipped; a partial copy offers Finish and Undo, and Finish never makes a second copy", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto(url("?dup&dup-skip=living&dup-fail=week1"));
+  await nav(page).getByRole("button", { name: "Page actions for Prism", exact: true }).click();
+  await page.getByRole("menuitem", { name: "Duplicate", exact: true }).click();
+  const partial = page.getByRole("alert").filter({ hasText: "Copied 2 of 3 pages of “Prism”." });
+  await expect(partial).toBeVisible();
+  await expect(partial.getByRole("button", { name: "Undo" })).toBeVisible();
+  expect((await copies(page)).map((n) => n.path).sort()).toEqual(["vault/Projects/Prism (copy)", "vault/Projects/Prism (copy)/Plan"]);
+  await partial.getByRole("button", { name: "Finish" }).click();
+  await expect(page.getByRole("status").filter({ hasText: "Duplicated 3 pages (1 skipped)" })).toBeVisible();
+  const sent = (await writes(page)).filter((w) => w.duplicate);
+  expect(sent).toHaveLength(2);
+  expect(sent[0]!.requestId).toBe(sent[1]!.requestId);
+  expect((await copies(page)).map((n) => n.path).sort()).toEqual(["vault/Projects/Prism (copy)", "vault/Projects/Prism (copy)/Plan", "vault/Projects/Prism (copy)/Plan/Week 1"]);
+  expect((await fixtureNotes(page)).filter((n) => n.path.includes("(copy) 2"))).toHaveLength(0);
+});
+
+test("without the server route the one page is copied and the toast says its sub-pages were not", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto(url());
+  await nav(page).getByRole("button", { name: "Page actions for Prism", exact: true }).click();
+  await page.getByRole("menuitem", { name: "Duplicate", exact: true }).click();
+  await expect(page.getByRole("status").filter({ hasText: "Duplicated “Prism”. Its 3 sub-pages were not copied" })).toBeVisible();
+  expect((await copies(page)).map((n) => n.path)).toEqual(["vault/Projects/Prism (copy)"]);
+});
+
+test("phone: Duplicate from the page sheet copies the sub-pages and Undo works", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(url("?dup"));
+  await page.getByRole("button", { name: "Notes", exact: true }).click();
+  const drawer = page.getByRole("dialog", { name: "Workspace navigation" });
+  await drawer.getByRole("button", { name: "Page actions for Prism", exact: true }).click();
+  await page.getByRole("dialog", { name: "Prism" }).getByRole("button", { name: "Duplicate" }).click();
+  const toast = page.getByRole("status").filter({ hasText: "Duplicated 4 pages" });
+  await expect(toast).toBeVisible();
+  expect(await copies(page)).toHaveLength(4);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(390);
+  await shot(page, "duplicate-subtree-390");
+  await toast.getByRole("button", { name: "Undo" }).click();
+  await expect(page.getByRole("status").filter({ hasText: "Moved the copy of “Prism” to Trash" })).toBeVisible();
+  expect((await copies(page)).every((n) => n.trashed)).toBe(true);
+});

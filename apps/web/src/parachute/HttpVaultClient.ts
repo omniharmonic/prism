@@ -46,6 +46,7 @@ export const httpVaultClient: VaultClient = {
   restoreNoteVersion: rest.restoreNoteVersion,
   movePage: pages.movePage,
   setPageMeta: pages.setPageMeta,
+  duplicatePage: pages.duplicatePage,
   trashPage: pages.trashPage,
   listTrash: pages.listTrash,
   listSharedWithMe: sharing.listSharedWithMe,

@@ -6,7 +6,9 @@
  *    suggested deletion keeps its text (nothing was deleted yet), and comment
  *    anchors are unwrapped (their threads stay with the original);
  *  - sub-page rows (`<div data-type="child-page">`): they name the ORIGINAL's
- *    sub-pages, which the copy does not have;
+ *    sub-pages, which the copy does not have — unless the copy brings its sub-pages
+ *    along (`pageId`, "Duplicate with sub-pages"): then a row whose page was copied
+ *    is kept and re-pointed at the copy, and a page-mention chip likewise;
  *  - mention identity: every chip gets a NEW `data-mention-uid` (the server tells
  *    new mentions from old by uid — a copied uid would never notify, or notify for
  *    the wrong page) and loses its `data-reminder` (the reminder belongs to the
@@ -95,8 +97,23 @@ function startsAsHtml(body: string): boolean {
 
 type Frame = "keep" | "unwrap";
 
-export function cleanCopyBody(body: string, uid: () => string = defaultUid): string {
+export interface CopyBodyOptions {
+  /** The copy of page `id` when that page is copied along with this one, else null.
+   *  Sub-page rows and page mentions that name it are re-pointed at the copy. */
+  pageId?: (id: string) => string | null | undefined;
+}
+
+/** A tag as written, with one attribute's value replaced (the value must be attribute-safe). */
+const withAttr = (tag: Tag, name: string, value: string): string =>
+  `<${tag.name} ${tag.attrs.map((a) => (a.name === name ? `${name}="${value}"` : a.raw)).join(" ")}>`;
+const SAFE_ID = /^[A-Za-z0-9_-]{1,128}$/;
+
+export function cleanCopyBody(body: string, uid: () => string = defaultUid, opts: CopyBodyOptions = {}): string {
   if (!body || !startsAsHtml(body)) return body;
+  const copyOf = (id: string | undefined): string | null => {
+    const next = id && opts.pageId ? opts.pageId(id) : null;
+    return next && SAFE_ID.test(next) ? next : null;
+  };
   let out = "";
   let copied = 0; // everything before this index is already in `out` (or dropped)
   // One entry per OPEN <span>: whether its closing tag is written. (Only spans are tracked.)
@@ -134,16 +151,21 @@ export function cleanCopyBody(body: string, uid: () => string = defaultUid): str
         } else {
           spans.push("keep");
           if (attr(tag, "data-type") === "mention") {
-            const kept = tag.attrs.filter((a) => a.name !== "data-reminder" && a.name !== "data-mention-uid").map((a) => a.raw);
+            const target = attr(tag, "data-kind") === "page" ? copyOf(attr(tag, "data-id")) : null;
+            const kept = tag.attrs.filter((a) => a.name !== "data-reminder" && a.name !== "data-mention-uid").map((a) => (target && a.name === "data-id" ? `data-id="${target}"` : a.raw));
             replacement = `<span ${[...kept, `data-mention-uid="${uid()}"`].join(" ")}>`;
           }
         }
       }
     } else if (tag.name === "div" && !tag.closing && attr(tag, "data-type") === "child-page") {
-      out += body.slice(copied, at);
-      dropping = { name: "div", depth: 1 };
-      at = body.indexOf("<", tag.end);
-      continue;
+      const target = copyOf(attr(tag, "data-page-id"));
+      if (target) replacement = withAttr(tag, "data-page-id", target);
+      else {
+        out += body.slice(copied, at);
+        dropping = { name: "div", depth: 1 };
+        at = body.indexOf("<", tag.end);
+        continue;
+      }
     }
     if (replacement !== null) {
       out += body.slice(copied, at) + replacement;
@@ -153,4 +175,40 @@ export function cleanCopyBody(body: string, uid: () => string = defaultUid): str
   }
   // An element being dropped that never closed: nothing after it is kept (it was all inside).
   return dropping ? out : out + body.slice(copied);
+}
+
+/**
+ * `[[wikilinks]]` whose target is a page that was copied along (full PATH targets
+ * only — a bare name is resolved by the vault and may mean another page) re-pointed
+ * at the copy; `|alias` and `#anchor` are kept. `pathOf(target)` gets the target with
+ * a trailing `.md` removed and returns the copy's path or null. Linear: one
+ * `indexOf` walk, a link is at most 600 characters on one line.
+ */
+export function repointWikilinks(body: string, pathOf: (target: string) => string | null | undefined): string {
+  if (!body || !body.includes("[[")) return body;
+  let out = "";
+  let copied = 0;
+  let at = body.indexOf("[[");
+  while (at !== -1) {
+    const limit = Math.min(body.length, at + 602);
+    let end = -1;
+    for (let i = at + 2; i < limit; i++) {
+      const c = body.charCodeAt(i);
+      if (c === 10 || c === 13 || c === 91) break; // a line break or another "[" — not a link
+      if (c === 93) { if (body.charCodeAt(i + 1) === 93) end = i; break; }
+    }
+    if (end === -1) { at = body.indexOf("[[", at + 2); continue; }
+    const inner = body.slice(at + 2, end);
+    let cut = inner.length;
+    for (let i = 0; i < inner.length; i++) { const c = inner.charCodeAt(i); if (c === 124 || c === 35) { cut = i; break; } }
+    const raw = inner.slice(0, cut);
+    const target = raw.trim();
+    const next = target ? pathOf(target.toLowerCase().endsWith(".md") ? target.slice(0, -3) : target) : null;
+    if (next && !next.includes("]") && !next.includes("[") && !next.includes("|") && !next.includes("#")) {
+      out += body.slice(copied, at) + "[[" + next + inner.slice(cut) + "]]";
+      copied = end + 2;
+    }
+    at = body.indexOf("[[", end + 2);
+  }
+  return out + body.slice(copied);
 }
