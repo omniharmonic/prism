@@ -2139,20 +2139,37 @@ export interface CollabSetAsideRow {
 }
 const SET_ASIDE_BODY_MAX = 2_000_000;
 const SET_ASIDE_PER_NOTE = 5;
+const SET_ASIDE_DISCARDS_PER_NOTE = 3;
 const SET_ASIDE_MAX_AGE_MS = 90 * 24 * 3600_000;
 const insertSetAside = db.prepare("INSERT INTO collab_set_aside (vault_id, name, at, reason, kind, body, state) VALUES (?, ?, ?, ?, ?, ?, ?)");
 const pruneSetAsideAge = db.prepare("DELETE FROM collab_set_aside WHERE at < ?");
+/** Keep the newest N rows of one KIND per note: rows an owner made by discarding (`discarded`) are counted
+ *  apart from the rows the system made, so a few discards can never push out an unread `external-replaced` row. */
 const pruneSetAsideNote = db.prepare(
-  "DELETE FROM collab_set_aside WHERE vault_id = ? AND name = ? AND id NOT IN (SELECT id FROM collab_set_aside WHERE vault_id = ? AND name = ? ORDER BY id DESC LIMIT ?)",
+  "DELETE FROM collab_set_aside WHERE vault_id = @v AND name = @n AND (reason = 'discarded') = @d AND id NOT IN (SELECT id FROM collab_set_aside WHERE vault_id = @v AND name = @n AND (reason = 'discarded') = @d ORDER BY id DESC LIMIT @keep)",
 );
+const newestDiscardStmt = db.prepare("SELECT id, body FROM collab_set_aside WHERE vault_id = ? AND name = ? AND reason = 'discarded' ORDER BY id DESC LIMIT 1");
+const refreshSetAside = db.prepare("UPDATE collab_set_aside SET at = ?, kind = ?, state = ? WHERE id = ?");
 const listSetAsideStmt = db.prepare("SELECT id, vault_id, name, at, reason, kind, length(body) AS bytes FROM collab_set_aside WHERE vault_id = ? ORDER BY id DESC LIMIT ?");
 const getSetAsideStmt = db.prepare("SELECT id, vault_id, name, at, reason, kind, body, length(body) AS bytes FROM collab_set_aside WHERE vault_id = ? AND id = ?");
 const deleteSetAsideStmt = db.prepare("DELETE FROM collab_set_aside WHERE vault_id = ? AND id = ?");
-/** Keep what a document held before the vault's copy replaced it. The newest few per note, for 90 days. */
+/** Keep what a document held before the vault's copy replaced it (or before an owner discarded it). Per note the
+ *  newest 5 system rows and the newest 3 `discarded` rows, for 90 days. */
 export const addCollabSetAside = db.transaction((name: string, vaultId: string, reason: string, kind: string, body: string, state: Uint8Array | null): number => {
   const at = now();
-  const id = Number(insertSetAside.run(vaultId, name, at, reason, kind, body.length > SET_ASIDE_BODY_MAX ? body.slice(0, SET_ASIDE_BODY_MAX) : body, state ? Buffer.from(state) : null).lastInsertRowid);
-  pruneSetAsideNote.run(vaultId, name, vaultId, name, SET_ASIDE_PER_NOTE);
+  const text = body.length > SET_ASIDE_BODY_MAX ? body.slice(0, SET_ASIDE_BODY_MAX) : body;
+  const blob = state ? Buffer.from(state) : null;
+  if (reason === "discarded") {
+    // A discard that kept the text and then failed is asked for again: the SAME text is one row, not two.
+    const last = newestDiscardStmt.get(vaultId, name) as { id: number; body: string } | undefined;
+    if (last && last.body === text) {
+      refreshSetAside.run(at, kind, blob, last.id);
+      return last.id;
+    }
+  }
+  const id = Number(insertSetAside.run(vaultId, name, at, reason, kind, text, blob).lastInsertRowid);
+  pruneSetAsideNote.run({ v: vaultId, n: name, d: 0, keep: SET_ASIDE_PER_NOTE });
+  pruneSetAsideNote.run({ v: vaultId, n: name, d: 1, keep: SET_ASIDE_DISCARDS_PER_NOTE });
   pruneSetAsideAge.run(at - SET_ASIDE_MAX_AGE_MS);
   return id;
 });

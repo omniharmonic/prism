@@ -44,6 +44,10 @@ const state = {
   ] as Array<Record<string, unknown>>,
   /** The tree answers only once this is released (a slow name lookup). */
   holdTree: params.has("slow-names"),
+  /** The next N reads of the list fail (the server cannot be reached). */
+  failLists: 0,
+  /** What a discard answers: the server kept the text first (`kept`), or could not (`set_aside_failed`). */
+  discard: "kept" as "kept" | "nothing-kept" | "set_aside_failed",
 };
 const calls: Array<{ method: string; path: string; body: unknown; headers: Record<string, string> }> = [];
 Object.assign(window, { prismRecovered: { calls, state } });
@@ -56,7 +60,10 @@ setServerFetch(async (input, init = {}) => {
   const headers = Object.fromEntries(new Headers(init.headers).entries());
   calls.push({ method, path: url.pathname, body: typeof init.body === "string" ? JSON.parse(init.body) : null, headers });
   if (url.pathname.startsWith("/api/admin/") && params.has("forbidden")) return json({ error: "forbidden" }, 403);
-  if (url.pathname === "/api/admin/collab/unsaved") return json({ rows: state.rows, setAside: state.setAside });
+  if (url.pathname === "/api/admin/collab/unsaved") {
+    if (state.failLists > 0) { state.failLists--; throw new TypeError("Failed to fetch"); }
+    return json({ rows: state.rows, setAside: state.setAside });
+  }
   const kept = /^\/api\/admin\/collab\/set-aside\/(\d+)$/.exec(url.pathname);
   if (kept) {
     const id = Number(kept[1]);
@@ -72,8 +79,9 @@ setServerFetch(async (input, init = {}) => {
     if (!row) return json({ error: "not_found" }, 404);
     if (body.confirm !== true) return json({ error: "confirm_required" }, 400);
     if (!row.permanent && body.force !== true) return json({ error: "not_permanent" }, 409);
+    if (state.discard === "set_aside_failed") return json({ error: "set_aside_failed", retry: true, detail: "the page's unsaved text could not be kept first, so nothing was discarded" }, 503);
     state.rows = state.rows.filter((r) => r !== row);
-    return json({ ok: true, discarded: true, live: false });
+    return json({ ok: true, discarded: true, live: false, kept: state.discard === "kept" });
   }
   if (url.pathname === "/api/tree") {
     while (state.holdTree) await new Promise((r) => setTimeout(r, 50));

@@ -134,7 +134,7 @@ adminApi.post("/collab/unsaved/:id/discard", async (c) => {
     return result.reason === "busy" ? c.json({ error: "busy", retry: true }, 503) : c.json({ error: "vault_unreachable", retry: true }, 502);
   }
   audit("ok", { discarded: 1, permanent: result.permanent ? 1 : 0, live: result.live ? 1 : 0 });
-  return c.json({ ok: true, discarded: true, live: result.live });
+  return c.json({ ok: true, discarded: true, live: result.live, kept: result.kept === true });
 });
 
 adminApi.get("/wikilinks/resolve", (c) => {

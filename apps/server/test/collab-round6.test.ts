@@ -503,11 +503,32 @@ test("w11 S3: the race — the retried row cleared and the page is ahead again f
   dbm.saveDocAhead("d2", Y.encodeStateAsUpdate(doc));
   // The owner's click, made on the OLD list, arrives now.
   const late = await discardNow("primary", "d2", { force: true });
-  if (late.discarded) {
-    const kept = (await setAsideList()).filter((r) => r.noteId === "d2");
-    assert.equal(kept.length, 1, "what was replaced is in Recovered text");
-    assert.match(await asideBody(kept[0]!.id), /fresh typing nobody has saved/);
-  } else {
-    assert.match(yDocToHtml(await loadDocumentState("d2", new Y.Doc())), /fresh typing nobody has saved/);
-  }
+  // Pinned: a forced discard of an ahead snapshot DOES discard — and what it replaced is kept first.
+  assert.equal(late.discarded, true);
+  assert.equal((late as { kept?: boolean }).kept, true, "the outcome says the text was kept");
+  const kept = (await setAsideList()).filter((r) => r.noteId === "d2");
+  assert.equal(kept.length, 1, "what was replaced is in Recovered text");
+  assert.match(await asideBody(kept[0]!.id), /fresh typing nobody has saved/);
+  assert.doesNotMatch(yDocToHtml(await loadDocumentState("d2", new Y.Doc())), /fresh typing nobody has saved/);
+});
+
+test("w11 nit: discards are counted apart (newest 3) and never push out `external-replaced` rows; the same text asked for twice is ONE row", () => {
+  const add = dbm.addCollabSetAside as (name: string, vaultId: string, reason: string, kind: string, body: string, state: Uint8Array | null) => number;
+  for (let i = 1; i <= 5; i++) add("p1", "primary", "external-replaced", "document", `replaced ${i}`, null);
+  for (let i = 1; i <= 4; i++) add("p1", "primary", "discarded", "document", `discarded ${i}`, null);
+  const rows = dbm.listCollabSetAside("primary").filter((r) => r.name === "p1");
+  assert.equal(rows.filter((r) => r.reason === "external-replaced").length, 5, "every unread replaced row is still there");
+  assert.deepEqual(rows.filter((r) => r.reason === "discarded").map((r) => dbm.getCollabSetAside(r.id, "primary")!.body).sort(), ["discarded 2", "discarded 3", "discarded 4"]);
+  // A sixth system row still drops the oldest system row — not a discard.
+  add("p1", "primary", "external-replaced", "document", "replaced 6", null);
+  const after = dbm.listCollabSetAside("primary").filter((r) => r.name === "p1");
+  assert.equal(after.filter((r) => r.reason === "external-replaced").length, 5);
+  assert.equal(after.filter((r) => r.reason === "discarded").length, 3);
+
+  // A discard that kept the text and then failed is retried: the same row, refreshed.
+  const first = add("p2", "primary", "discarded", "document", "the same text", null);
+  const again = add("p2", "primary", "discarded", "document", "the same text", new Uint8Array([1, 2]));
+  assert.equal(again, first);
+  assert.equal(dbm.listCollabSetAside("primary").filter((r) => r.name === "p2").length, 1);
+  assert.notEqual(add("p2", "primary", "discarded", "document", "other text", null), first, "different text is another row");
 });

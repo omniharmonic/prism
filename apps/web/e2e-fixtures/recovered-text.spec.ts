@@ -166,3 +166,87 @@ test("the document's \"replaced part of this page\" notice: the owner recovers t
   await expect(page.getByTestId("recover-ask")).toBeVisible();
   await expect(page.getByRole("button", { name: "Recover text" })).toHaveCount(0);
 });
+
+// ── review round 2 ───────────────────────────────────────────────────────────
+
+test("discard: a re-check that FAILS says so and sends nothing; a page whose state changed since the form opened is asked about again, never forced", async ({ page }) => {
+  await page.goto(fixture);
+  const rows = card(page).getByRole("list", { name: "Pages with changes that are not saved" }).getByRole("listitem");
+  await expect(rows).toHaveCount(3);
+  const posts = async () => (await calls(page)).filter((c) => c.method === "POST");
+  const set = (fn: string) => page.evaluate(`(() => { const s = window.prismRecovered.state; ${fn} })()`);
+
+  // 1. The list cannot be read again: not knowing is not "saved".
+  const huge = rows.filter({ hasText: "Everything we know" });
+  await huge.getByRole("button", { name: /^Discard unsaved changes…/ }).click();
+  await huge.getByRole("textbox").fill("Everything we know");
+  await set("s.failLists = 1;");
+  await huge.getByRole("button", { name: "Discard changes" }).click();
+  await expect(card(page).getByRole("alert")).toContainText("Could not check the page’s current state. Nothing was discarded.");
+  expect(await posts()).toEqual([]);
+  await expect(rows).toHaveCount(3);
+  await expect(huge.getByRole("textbox"), "the form is still there: the click can be repeated").toHaveValue("Everything we know");
+
+  // 2. The form said "cannot be saved"; the server has started saving the page again. Force is NOT sent on that confirmation.
+  await set("s.rows = s.rows.map((r) => (r.noteId === 'huge' ? { ...r, permanent: false, reason: 'vault_unreachable' } : r));");
+  await huge.getByRole("button", { name: "Discard changes" }).click();
+  await expect(card(page).getByRole("alert")).toContainText("is saving “Everything we know” again. Nothing was discarded");
+  expect(await posts(), "no forced discard on a confirmation given for something else").toEqual([]);
+  await expect(huge.getByRole("textbox")).toHaveCount(0);
+  await expect(huge).toContainText("still trying to save");
+  // Asked again, with the true state in the form: now it is a forced discard.
+  await huge.getByRole("button", { name: /^Discard anyway…/ }).click();
+  await expect(huge).toContainText("has not given up");
+  await huge.getByRole("textbox").fill("Everything we know");
+  await huge.getByRole("button", { name: "Discard changes" }).click();
+  await expect(rows).toHaveCount(2);
+  expect((await posts()).map((c) => c.body)).toEqual([{ confirm: true, force: true }]);
+
+  // 3. The other way round: "still being saved" became "cannot be saved" — asked again too.
+  const slow = rows.filter({ hasText: "Standup" });
+  await slow.getByRole("button", { name: /^Discard anyway…/ }).click();
+  await slow.getByRole("textbox").fill("Standup");
+  await set("s.rows = s.rows.map((r) => (r.noteId === 'slow' ? { ...r, permanent: true, reason: 'gave_up' } : r));");
+  await slow.getByRole("button", { name: "Discard changes" }).click();
+  await expect(card(page).getByRole("alert")).toContainText("has stopped trying to save “Standup”. Nothing was discarded");
+  expect(await posts()).toHaveLength(1);
+  await expect(slow).toContainText("Cannot be saved as it is");
+});
+
+test("discard copy: a text that could not be kept first means nothing was discarded; \"kept above\" is said only when the server kept it", async ({ page }) => {
+  await page.goto(fixture);
+  const rows = card(page).getByRole("list", { name: "Pages with changes that are not saved" }).getByRole("listitem");
+  const huge = rows.filter({ hasText: "Everything we know" });
+  const confirm = async () => {
+    await huge.getByRole("button", { name: /^Discard unsaved changes…/ }).click();
+    await huge.getByRole("textbox").fill("Everything we know");
+    await huge.getByRole("button", { name: "Discard changes" }).click();
+  };
+  await page.evaluate(() => { (window as any).prismRecovered.state.discard = "set_aside_failed"; });
+  await confirm();
+  await expect(card(page).getByRole("alert")).toHaveText("The page’s unsaved text could not be kept first, so nothing was discarded. Try again in a moment.");
+  await expect(rows).toHaveCount(3);
+
+  // A server that discarded with nothing to keep (or an older one that keeps nothing) is not said to have kept it.
+  await page.evaluate(() => { (window as any).prismRecovered.state.discard = "nothing-kept"; });
+  if (await huge.getByRole("textbox").count()) await huge.getByRole("button", { name: "Cancel" }).click();
+  await confirm();
+  await expect(rows).toHaveCount(2);
+  await expect(card(page).getByRole("status")).toHaveText("Unsaved changes on “Everything we know” were discarded. The page shows what is stored.");
+});
+
+test("names that never arrive do not disable Discard for ever: after the lookup's time limit the word DISCARD is asked for", async ({ page }) => {
+  test.setTimeout(60_000);
+  await page.goto(`${fixture}?slow-names`); // the tree never answers
+  const rows = card(page).getByRole("list", { name: "Pages with changes that are not saved" }).getByRole("listitem");
+  await expect(rows).toHaveCount(3);
+  const first = rows.first();
+  const open = first.getByRole("button", { name: /^Discard unsaved changes…/ });
+  await expect(open).toBeDisabled();
+  await expect(open).toBeEnabled({ timeout: 20_000 });
+  await open.click();
+  await expect(first).toContainText("Type DISCARD to confirm");
+  await first.getByRole("textbox").fill("DISCARD");
+  await first.getByRole("button", { name: "Discard changes" }).click();
+  await expect(rows).toHaveCount(2);
+});

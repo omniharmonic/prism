@@ -476,7 +476,8 @@ function ScopedCollabDoc({
             }
             else if (message.type === "prism:notice" && message.code === "external-replaced") setServerNotice("Changes made elsewhere replaced part of this page.");
             else if (message.type === "prism:notice" && message.code === "unsaved-discarded") setServerNotice("Changes on this page that could not be saved were discarded by the workspace owner. You are looking at the stored page.");
-            if (message.type === "prism:notice") setNoticeCode(typeof message.code === "string" ? message.code : null);
+            // Only for a notice shown above: an unknown code leaves the standing notice (text AND code) as it is.
+            if (message.type === "prism:notice" && (message.code === "external-replaced" || message.code === "unsaved-discarded")) setNoticeCode(message.code);
           },
           onAuthenticationFailed: ({ reason }) => {
             if (!current()) return;

@@ -45,6 +45,8 @@ export class RecoveredError extends Error {
   }
 }
 
+/** How long the name lookup may take before the rows go on without names (Discard then asks for the word DISCARD). */
+export const TITLES_TIMEOUT_MS = 8000;
 const JSON_HEADERS = { "Content-Type": "application/json" };
 const num = (v: unknown): number => (typeof v === "number" && Number.isFinite(v) ? v : 0);
 const str = (v: unknown): string => (typeof v === "string" ? v : "");
@@ -86,29 +88,44 @@ export function recoveredApi(vaultHeaders: () => Record<string, string> = server
       if (!r.ok && r.status !== 404) return fail(r, "The text could not be deleted.");
     },
     /** Drop a page's unsaved live changes: the page becomes the stored page again. `force` = a page the server is still retrying. */
-    async discard(noteId: string, force: boolean): Promise<void> {
+    async discard(noteId: string, force: boolean): Promise<{ kept: boolean }> {
       const r = await call(`/api/admin/collab/unsaved/${encodeURIComponent(noteId)}/discard`, { method: "POST", headers: JSON_HEADERS, body: JSON.stringify(force ? { confirm: true, force: true } : { confirm: true }) });
-      if (!r.ok) return fail(r, r.status === 503 ? "The page is busy. Try again in a moment." : "The changes could not be discarded.");
+      if (!r.ok) {
+        const body = (await r.json().catch(() => ({}))) as { error?: unknown };
+        const code = str(body.error) || "error";
+        // The server's `detail` is written for a log; say it in the panel's words.
+        throw new RecoveredError(r.status, code, code === "set_aside_failed" ? "The page’s unsaved text could not be kept first, so nothing was discarded. Try again in a moment." : r.status === 503 ? "The page is busy. Nothing was discarded. Try again in a moment." : "The changes could not be discarded.");
+      }
+      // `kept`: what the page held is now under Recovered text. An older server does not say — and did not keep it.
+      const body = (await r.json().catch(() => ({}))) as { kept?: unknown };
+      return { kept: body.kept === true };
     },
     /**
      * Page names for the listed ids, from the TREE projection (`GET /api/tree`: ids, paths and the
      * titles this viewer may see) — one request, and NO page body is read: a body is fetched only by
      * an explicit View of a kept text, which the server audits. An id the tree does not list
-     * (deleted, purged) is absent from the answer.
+     * (deleted, purged) is absent from the answer. `cached` = the tree rows the app already holds
+     * (the `["vault","tree"]` query); the request is made only for what they do not name, and is
+     * given up after `TITLES_TIMEOUT_MS` — the answer always comes.
      */
-    async titles(ids: readonly string[]): Promise<Record<string, string>> {
+    async titles(ids: readonly string[], cached?: unknown): Promise<Record<string, string>> {
       const want = new Set(ids);
       const out: Record<string, string> = {};
       if (!want.size) return out;
-      try {
-        const r = await call("/api/tree");
-        if (!r.ok) return out;
-        const rows = (await r.json()) as unknown;
-        if (!Array.isArray(rows)) return out;
-        for (const row of rows as Array<{ id?: unknown; path?: unknown; title?: unknown }>) {
+      const take = (rows: unknown): boolean => {
+        if (!Array.isArray(rows)) return false;
+        for (const row of rows as Array<{ id?: unknown; path?: unknown; title?: unknown; metadata?: { title?: unknown } | null }>) {
           if (typeof row?.id !== "string" || !want.has(row.id)) continue;
-          out[row.id] = str(row.title).trim() || pageTitle(str(row.path));
+          out[row.id] = (str(row.title) || str(row.metadata?.title)).trim() || pageTitle(str(row.path));
         }
+        return true;
+      };
+      // The app's own tree (already in memory where a workspace is mounted): no request at all.
+      if (take(cached) && [...want].every((id) => id in out)) return out;
+      try {
+        // Bounded: a tree that never answers must not leave Discard waiting for names for ever.
+        const r = await Promise.race([call("/api/tree"), new Promise<null>((resolve) => setTimeout(() => resolve(null), TITLES_TIMEOUT_MS))]);
+        if (r?.ok) take((await r.json()) as unknown);
       } catch {
         /* names are a nicety: the rows still show, by id */
       }
@@ -122,6 +139,7 @@ export type RecoveredApi = ReturnType<typeof recoveredApi>;
 export function setAsideReason(reason: string): string {
   if (reason === "uncertain_base") return "A newer copy and unsaved typing could not be merged";
   if (reason === "no_base") return "A newer copy replaced unsaved typing";
+  if (reason === "discarded") return "Unsaved changes were discarded by the owner";
   return "A newer copy replaced unsaved changes";
 }
 /** Why a page's live changes are not in the stored page. */

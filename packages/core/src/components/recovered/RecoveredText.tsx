@@ -10,7 +10,8 @@
  * Reading a kept text is audited by the server; nothing here stores it (it lives in
  * component state until the row is closed).
  */
-import { useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useContext, useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
+import { QueryClientContext } from "@tanstack/react-query";
 import { isDesktop } from "../../lib/platform";
 import { serverContextHeaders } from "../../lib/import-export/client";
 import { RecoveredError, RecoveredUnavailable, recoveredApi, setAsideReason, sizeLabel, unsavedReason, type RecoveredList, type SetAsideEntry, type UnsavedEntry } from "../../lib/recovered/client";
@@ -42,7 +43,10 @@ export function RecoveredText({ noteId, vaultHeaders, fallback = null, bare = fa
   const [open, setOpen] = useState<{ id: number; body: string | null; error?: string } | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<number | null>(null);
   // `expect` is fixed when the form opens: what must be typed never changes under the person typing it.
-  const [discard, setDiscard] = useState<{ noteId: string; typed: string; expect: string } | null>(null);
+  // …and `permanent` is what the form SAID about the page ("cannot be saved" / "still being saved").
+  const [discard, setDiscard] = useState<{ noteId: string; typed: string; expect: string; permanent: boolean } | null>(null);
+  // The workspace's own tree, where there is one (no provider on the share route / in a bare mount).
+  const queryClient = useContext(QueryClientContext);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<{ text: string; error: boolean } | null>(null);
   const alive = useRef(true);
@@ -56,14 +60,15 @@ export function RecoveredText({ noteId, vaultHeaders, fallback = null, bare = fa
       setList(mine);
       setState("ready");
       const ids = [...new Set([...mine.setAside, ...mine.unsaved].map((e) => e.noteId))];
-      void api.titles(ids).then((t) => { if (alive.current) setTitles((prev) => ({ ...(prev ?? {}), ...t })); });
+      // Always settles (cached tree, else one bounded request): Discard is never left waiting for names.
+      void api.titles(ids, queryClient?.getQueryData(["vault", "tree"])).catch(() => ({})).then((t) => { if (alive.current) setTitles((prev) => ({ ...(prev ?? {}), ...t })); });
       return mine;
     } catch (e) {
       if (!alive.current) return;
       setState(e instanceof RecoveredUnavailable ? "unavailable" : "error");
       return null;
     }
-  }, [api, noteId]);
+  }, [api, noteId, queryClient]);
   useEffect(() => { if (!isDesktop) void load(); }, [load]);
 
   if (isDesktop || state === "unavailable") return <>{fallback}</>;
@@ -105,22 +110,39 @@ export function RecoveredText({ noteId, vaultHeaders, fallback = null, bare = fa
     } catch (e) { if (alive.current) say(failText(e, "The text could not be deleted."), true); }
     finally { if (alive.current) setBusy(false); }
   };
-  const runDiscard = async (entry: UnsavedEntry) => {
+  const runDiscard = async (entry: UnsavedEntry, form: { permanent: boolean }) => {
     setBusy(true);
     try {
       // The list on screen may be minutes old. Ask again, and act on what is true NOW: a page that
       // was saved meanwhile is left alone, and `force` goes only to a page still listed as retrying.
-      const fresh = (await load())?.unsaved.find((u) => u.noteId === entry.noteId);
+      let now: RecoveredList;
+      try {
+        now = await api.list();
+      } catch {
+        // Not knowing is not "saved": nothing is sent, and nothing is claimed about the page.
+        if (alive.current) say("Could not check the page’s current state. Nothing was discarded.", true);
+        return;
+      }
       if (!alive.current) return;
+      const fresh = now.unsaved.find((u) => u.noteId === entry.noteId);
       if (!fresh) {
         setDiscard(null);
         say(`“${name(entry.noteId)}” has been saved in the meantime. Nothing was discarded.`);
+        await load();
         return;
       }
-      await api.discard(entry.noteId, !fresh.permanent);
+      if (fresh.permanent !== form.permanent) {
+        // What was confirmed is no longer what would be done (the server gave up on a page it was
+        // still saving, or started saving one it had given up on): show the row as it is and ask again.
+        setDiscard(null);
+        say(fresh.permanent ? `The server has stopped trying to save “${name(entry.noteId)}”. Nothing was discarded — check the page and confirm again.` : `The server is saving “${name(entry.noteId)}” again. Nothing was discarded — confirm again to discard it anyway.`, true);
+        await load();
+        return;
+      }
+      const done = await api.discard(entry.noteId, !fresh.permanent);
       if (!alive.current) return;
       setDiscard(null);
-      say(`Unsaved changes on “${name(entry.noteId)}” were discarded. The page shows what is stored; what it held is kept above for 90 days.`);
+      say(`Unsaved changes on “${name(entry.noteId)}” were discarded. The page shows what is stored${done.kept ? "; what it held is kept above for 90 days" : ""}.`);
       await load();
     } catch (e) {
       if (alive.current) say(e instanceof RecoveredError && e.code === "not_permanent" ? "The server is saving this page again. Nothing was discarded." : failText(e, "The changes could not be discarded."), true);
@@ -194,12 +216,12 @@ export function RecoveredText({ noteId, vaultHeaders, fallback = null, bare = fa
                         {entry.permanent ? "Cannot be saved as it is" : "The server is still trying to save it"} · {unsavedReason(entry.reason)} · since {when(entry.since)}
                       </div>
                     </div>
-                    {!typing && <button type="button" className={btn} disabled={titles === null} title={titles === null ? "Looking up the page’s name…" : undefined} onClick={() => setDiscard({ noteId: entry.noteId, typed: "", expect: confirmPhrase(entry.noteId) })}>{entry.permanent ? "Discard unsaved changes…" : "Discard anyway…"}<span className="sr-only"> on {name(entry.noteId)}</span></button>}
+                    {!typing && <button type="button" className={btn} disabled={titles === null} title={titles === null ? "Looking up the page’s name…" : undefined} onClick={() => setDiscard({ noteId: entry.noteId, typed: "", expect: confirmPhrase(entry.noteId), permanent: entry.permanent })}>{entry.permanent ? "Discard unsaved changes…" : "Discard anyway…"}<span className="sr-only"> on {name(entry.noteId)}</span></button>}
                   </div>
                   {typing && (
-                    <form className="mt-2 flex flex-wrap items-end gap-2" onSubmit={(e) => { e.preventDefault(); if (typing.typed.trim() === typing.expect && !busy) void runDiscard(entry); }}>
+                    <form className="mt-2 flex flex-wrap items-end gap-2" onSubmit={(e) => { e.preventDefault(); if (typing.typed.trim() === typing.expect && !busy) void runDiscard(entry, typing); }}>
                       <label htmlFor={fieldId} className="basis-full text-xs text-[var(--text-primary)]">
-                        This drops the changes for good{entry.permanent ? "" : " — the server has not given up on saving them"}; the page becomes the stored page again (what it holds now is kept under Recovered text). Type <strong>{typing.expect}</strong> to confirm.
+                        This drops the changes for good{typing.permanent ? "" : " — the server has not given up on saving them"}; the page becomes the stored page again (what it holds now is kept under Recovered text). Type <strong>{typing.expect}</strong> to confirm.
                       </label>
                       <input id={fieldId} autoComplete="off" spellCheck={false} value={typing.typed} onChange={(e) => setDiscard({ ...typing, typed: e.target.value })}
                         className="focus-ring min-h-9 min-w-0 flex-1 rounded-lg border border-[var(--glass-border)] bg-[var(--bg-base)] px-2 text-base text-[var(--text-primary)] sm:text-sm" />

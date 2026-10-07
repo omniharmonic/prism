@@ -2130,7 +2130,7 @@ export function unsavedPermanentBody(reason: string | null): { error: "unsaved_p
  * be written nothing is discarded (`set_aside_failed`). A forced discard can race a store
  * that just landed and typing made since: that typing is then in the set-aside row, not gone.
  */
-export type DiscardOutcome = { discarded: boolean; live: boolean; permanent: boolean; reason: "none" | "unreadable" | "busy" | "not_permanent" | "set_aside_failed" | null };
+export type DiscardOutcome = { discarded: boolean; live: boolean; permanent: boolean; reason: "none" | "unreadable" | "busy" | "not_permanent" | "set_aside_failed" | null; /** The text it held was set aside (false: there was no state to keep). */ kept?: boolean };
 export async function discardUnsavedChanges(vaultId: string, noteId: string, opts: { force?: boolean } = {}): Promise<DiscardOutcome> {
   const documentName = getCollabUnsaved(noteId, vaultId)?.doc_name ?? docNameFor(vaultId, noteId);
   const loaded = hocuspocus.documents.get(documentName);
@@ -2174,10 +2174,12 @@ async function discardNow(vaultId: string, noteId: string, documentName: string,
   const current = getDocState(noteId, vaultId); // (the awaits above: re-read)
   const doc = live ? (liveDoc as unknown as Y.Doc) : new Y.Doc();
   if (!live && current) Y.applyUpdate(doc, current.state);
+  let kept = false;
   if (live || current) {
     try {
       collabStats.setAsideInserts++;
       addCollabSetAside(noteId, vaultId, "discarded", kind, plainBody(doc, kind), Y.encodeStateAsUpdate(doc));
+      kept = true;
     } catch (e) {
       if (!live) doc.destroy();
       console.error(`[collab] ${documentName}: could not set the page's unsaved content aside — nothing was discarded:`, e instanceof Error ? e.message : "unknown");
@@ -2205,7 +2207,7 @@ async function discardNow(vaultId: string, noteId: string, documentName: string,
     tellClients(documentName, { type: "prism:unsaved", state: "saved" });
   }
   console.warn(`[collab] ${documentName}: unsaved live changes were discarded on request — the document is the stored page again`);
-  return { discarded: true, live, permanent, reason: null };
+  return { discarded: true, live, permanent, reason: null, kept };
 }
 /** Must a body write to this note go through (or wait for) the live document? Loaded, or holding unsaved live state. */
 export function hasLiveState(vaultId: string, noteId: string): boolean {
