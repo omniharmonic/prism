@@ -18,6 +18,7 @@
  *    same-origin path opens in a NEW tab that cannot reach this window.
  */
 import { MENTION_ID } from "./MentionParse";
+import { parseHeadingHash } from "../pages/headingSlug";
 
 /** The origins a shareable page link may carry: this page's, and (Prism Client) the configured server's. */
 export function appOrigins(): string[] {
@@ -70,7 +71,7 @@ export function pageIdFromHref(href: string | null | undefined, origins: readonl
 
 /**
  * What following a link does:
- *  - `page`     one of our pages → a tab in the app;
+ *  - `page`     one of our pages → a tab in the app (`heading`: the `#h-<slug>` it names, if any);
  *  - `anchor`   `#id` → scroll within this page;
  *  - `tab`      another path on OUR origin → a new tab (never this window);
  *  - `external` http(s) without credentials, or mailto → a new tab;
@@ -78,7 +79,7 @@ export function pageIdFromHref(href: string | null | undefined, origins: readonl
  *               control characters, `user:pass@` URLs, relative values that leave our origin).
  */
 export type LinkTarget =
-  | { kind: "page"; id: string }
+  | { kind: "page"; id: string; heading?: string }
   | { kind: "anchor"; id: string }
   | { kind: "tab"; url: string }
   | { kind: "external"; url: string }
@@ -90,7 +91,11 @@ export function linkTarget(href: string | null | undefined, origins: readonly st
   const value = (href ?? "").trim();
   if (!value || value.length > 4096 || hasUnsafeLinkChar(value)) return BLOCKED;
   const page = pageIdFromHref(value, origins);
-  if (page) return { kind: "page", id: page };
+  if (page) {
+    const at = value.indexOf("#");
+    const heading = at < 0 ? null : parseHeadingHash(value.slice(at));
+    return heading ? { kind: "page", id: page, heading } : { kind: "page", id: page };
+  }
   if (/^https?:\/\//i.test(value)) {
     try {
       const url = new URL(value);
@@ -151,19 +156,25 @@ export function openInNewTab(url: string): void {
 
 /**
  * Follow a link. Never navigates this window: a Prism page goes to `openPage`,
- * an anchor scrolls, everything else that is allowed opens in a new tab.
+ * an anchor scrolls (`#h-<slug>` through `focusHeading`, when the caller has one), everything else
+ * that is allowed opens in a new tab.
  * Returns false when the link is not one we open.
  */
-export function openLinkTarget(target: LinkTarget, openPage: (id: string) => void): boolean {
+export function openLinkTarget(target: LinkTarget, openPage: (id: string, heading?: string) => void, focusHeading?: (slug: string) => void): boolean {
   if (target.kind === "blocked") return false;
-  if (target.kind === "page") { openPage(target.id); return true; }
+  if (target.kind === "page") { openPage(target.id, target.heading); return true; }
   if (typeof window === "undefined") return false;
   if (target.kind === "anchor") {
     let id = target.id;
     try { id = decodeURIComponent(id); } catch { /* keep as typed */ }
     const el = document.getElementById(id);
     el?.scrollIntoView({ block: "start" });
-    return !!el;
+    if (el) return true;
+    // `#h-<slug>`: a heading of THIS page (editor headings carry no id — the slug is derived).
+    const heading = parseHeadingHash(`#${id}`);
+    if (!heading || !focusHeading) return false;
+    focusHeading(heading);
+    return true;
   }
   openInNewTab(target.url);
   return true;

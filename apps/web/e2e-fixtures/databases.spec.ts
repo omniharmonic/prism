@@ -8,7 +8,7 @@ const row = (page: Page, title: string) => page.locator("tr", { has: page.getByR
 test("table: typed cells edit in place with per-field compare-and-set, and conflicts are recoverable", async ({ page }) => {
   await page.goto("/e2e-fixtures/databases.html");
   const table = page.getByRole("table", { name: "All tasks" });
-  await expect(table.getByRole("row")).toHaveCount(1 + 7 + 1); // header, 7 rows, + New
+  await expect(table.getByRole("row")).toHaveCount(1 + 7 + 1 + 1); // header, 7 rows, + New, the calculations footer
   await expect(page.getByText("7 pages")).toBeVisible();
 
   // Select: pick an option from the schema enum.
@@ -47,7 +47,7 @@ test("table: filter, header sort, hide and resize are saved to the database note
   await filter.getByLabel("Condition 1 property").selectOption("priority");
   await filter.getByLabel("Filter value").selectOption("high");
   const table = page.getByRole("table", { name: "All tasks" });
-  await expect(table.getByRole("row")).toHaveCount(1 + 2 + 1);
+  await expect(table.getByRole("row")).toHaveCount(1 + 2 + 1 + 1);
   await expect(page.getByRole("button", { name: "Filter · 1" })).toBeVisible();
   await page.keyboard.press("Escape");
 
@@ -181,7 +181,7 @@ test("viewer: read-only cells, hidden private rows, honest 'limited' and session
 
 test("legacy shell: bundled schemas + listNotes fallback, metadata-only CAS writes", async ({ page }) => {
   await page.goto("/e2e-fixtures/databases.html?legacy");
-  await expect(page.getByRole("table", { name: "All tasks" }).getByRole("row")).toHaveCount(1 + 7 + 1);
+  await expect(page.getByRole("table", { name: "All tasks" }).getByRole("row")).toHaveCount(1 + 7 + 1 + 1);
   await row(page, "Update pricing page").getByRole("button", { name: "Status: done" }).click();
   await page.getByRole("dialog", { name: "Choose Status" }).getByRole("option", { name: "todo" }).click();
   await expect(row(page, "Update pricing page").getByRole("button", { name: "Status: todo" })).toBeVisible();

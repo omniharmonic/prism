@@ -4,13 +4,24 @@ import { ChevronLeft, ChevronRight } from "lucide-react";
 import { format, startOfWeek, endOfWeek, addWeeks, subWeeks, eachDayOfInterval, isSameDay } from "date-fns";
 import type { RendererProps } from "./RendererProps";
 import { calendarApi, calendarDate, type CalendarEvent } from "../../lib/sync/client";
+import { formatDate, formatTime, usesSystemDate, usesSystemTime, weekStartsOn } from "../../lib/datetime/format";
+import { useRegionPrefs } from "../../lib/datetime/useRegionPrefs";
+
+// "system" keeps the strings this view always showed (date-fns patterns).
+const clock = (d: Date): string => (usesSystemTime() ? format(d, "h:mm a") : formatTime(d, { hour: "numeric", minute: "2-digit" }));
+const monthDay = (d: Date, year = false): string =>
+  usesSystemDate() ? format(d, year ? "MMM d, yyyy" : "MMM d") : formatDate(d, { month: "short", day: "numeric", ...(year ? { year: "numeric" } : {}) });
+const longDay = (d: Date): string =>
+  usesSystemDate() ? format(d, "EEEE, MMMM d, yyyy") : formatDate(d, { weekday: "long", month: "long", day: "numeric", year: "numeric" });
 
 export default function CalendarRenderer({ note: _note }: RendererProps) {
   const [currentDate, setCurrentDate] = useState(new Date());
   const [view, setView] = useState<"week" | "day">("week");
 
-  const weekStart = startOfWeek(currentDate, { weekStartsOn: 1 });
-  const weekEnd = endOfWeek(currentDate, { weekStartsOn: 1 });
+  // Settings → Start week on (NP-AX-09). "System locale" = the locale's own first day.
+  const first = weekStartsOn({ prefs: useRegionPrefs() });
+  const weekStart = startOfWeek(currentDate, { weekStartsOn: first });
+  const weekEnd = endOfWeek(currentDate, { weekStartsOn: first });
 
   const { data: events, isLoading, isError } = useQuery({
     queryKey: ["calendar", "events", weekStart.toISOString(), weekEnd.toISOString()],
@@ -45,7 +56,7 @@ export default function CalendarRenderer({ note: _note }: RendererProps) {
             <ChevronLeft size={16} style={{ color: "var(--text-secondary)" }} />
           </button>
           <h2 className="text-sm font-medium" style={{ color: "var(--text-primary)" }}>
-            {format(weekStart, "MMM d")} – {format(weekEnd, "MMM d, yyyy")}
+            {monthDay(weekStart)} – {monthDay(weekEnd, true)}
           </h2>
           <button onClick={() => setCurrentDate(addWeeks(currentDate, 1))} className="p-1 rounded hover:bg-[var(--glass-hover)]">
             <ChevronRight size={16} style={{ color: "var(--text-secondary)" }} />
@@ -168,11 +179,11 @@ function WeekView({ days, events }: { days: Date[]; events: CalendarEvent[] }) {
                       color: "var(--action-fg, #fff)",
                       opacity: 0.9,
                     }}
-                    title={`${event.summary}\n${format(startTime, "h:mm a")} – ${format(endTime, "h:mm a")}`}
+                    title={`${event.summary}\n${clock(startTime)} – ${clock(endTime)}`}
                   >
                     <div className="font-medium truncate">{event.summary}</div>
                     {height > 30 && (
-                      <div className="opacity-75">{format(startTime, "h:mm a")}</div>
+                      <div className="opacity-75">{clock(startTime)}</div>
                     )}
                   </div>
                 );
@@ -189,7 +200,7 @@ function DayView({ date, events }: { date: Date; events: CalendarEvent[] }) {
   return (
     <div className="p-4 space-y-2">
       <h3 className="text-lg font-medium mb-4" style={{ color: "var(--text-primary)" }}>
-        {format(date, "EEEE, MMMM d, yyyy")}
+        {longDay(date)}
       </h3>
 
       {events.length === 0 ? (
@@ -204,7 +215,7 @@ function DayView({ date, events }: { date: Date; events: CalendarEvent[] }) {
                 </div>
                 <div className="text-xs mt-0.5" style={{ color: "var(--text-secondary)" }}>
                   {event.start.dateTime
-                    ? `${format(new Date(event.start.dateTime), "h:mm a")} – ${format(new Date(event.end.dateTime!), "h:mm a")}`
+                    ? `${clock(new Date(event.start.dateTime))} – ${clock(new Date(event.end.dateTime!))}`
                     : "All day"
                   }
                 </div>

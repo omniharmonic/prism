@@ -37,8 +37,14 @@ async function drawer(page: Page) {
 }
 async function selectBravo(page: Page) {
   await editorReady(page);
-  await page.getByText("Bravo paragraph", { exact: true }).click();
-  await page.getByText("Bravo paragraph", { exact: true }).selectText();
+  // A scripted DOM selection made within ~20 ms of the editor gaining focus is undone by
+  // ProseMirror's post-focus re-sync (see `select` in editor-toolbar.spec.ts): make it until it holds.
+  const target = page.getByText("Bravo paragraph", { exact: true });
+  await expect(async () => {
+    await target.click();
+    await target.selectText();
+    await expect.poll(() => page.evaluate(() => { const e = (document.querySelector(".tiptap") as any).editor; const { from, to } = e.state.selection; return e.state.doc.textBetween(from, to) as string; }), { timeout: 1000 }).toBe("Bravo paragraph");
+  }).toPass({ timeout: 10_000 });
   const bubble = page.locator(".document-selection-actions:visible, .cd-bubble:visible").first();
   await expect(bubble).toBeVisible();
   return bubble;

@@ -53,6 +53,7 @@ import { AgentSourcePreview } from "./AgentSourcePreview";
 import { AgentContextAttachments } from "./AgentContextAttachments";
 import type { RendererProps } from "../renderers/RendererProps";
 
+import { formatDate as fmtDate, formatDateTime as fmtDateTime, formatTime as fmtTime } from "../../lib/datetime/format";
 // ── helpers ──────────────────────────────────────────────────────────────────
 
 function relTime(ms: number | null | undefined): string {
@@ -62,7 +63,7 @@ function relTime(ms: number | null | undefined): string {
   if (d < 3_600_000) return `${Math.floor(d / 60_000)}m ago`;
   if (d < 86_400_000) return `${Math.floor(d / 3_600_000)}h ago`;
   if (d < 7 * 86_400_000) return `${Math.floor(d / 86_400_000)}d ago`;
-  return new Date(ms).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+  return fmtDate(new Date(ms), { month: "short", day: "numeric" });
 }
 
 function fmtDuration(ms: number | undefined): string | null {
@@ -854,7 +855,7 @@ function TurnBlock({ turn, compact }: { turn: TurnView; compact?: boolean }) {
       <div className="prism-agent-speaker prism-agent-speaker-assistant" style={{ color: "var(--text-secondary)" }}>
         <span className="prism-agent-avatar" aria-hidden="true"><PrismMark width={24} height={18} decorative /></span>
         <span className="font-medium">Prism agent</span>
-        {turn.startedAt && <time dateTime={new Date(turn.startedAt).toISOString()} title={new Date(turn.startedAt).toLocaleString()} style={{ color: "var(--text-muted)" }}>{new Date(turn.startedAt).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })}</time>}
+        {turn.startedAt && <time dateTime={new Date(turn.startedAt).toISOString()} title={fmtDateTime(new Date(turn.startedAt))} style={{ color: "var(--text-muted)" }}>{fmtTime(new Date(turn.startedAt), { hour: "numeric", minute: "2-digit" })}</time>}
       </div>
       {turn.tools.length > 0 && (
         <details className="prism-agent-activity" open={running || turn.tools.some(tool => tool.ok === false)}>

@@ -287,6 +287,39 @@ test("comment mention, edit own, reopen", async ({ page }) => {
   expect(stored).toContain("\"resolved\":false");
 });
 
+// The people lookup takes a round trip. Enter pressed before it answers means "this person" — it
+// used to find no row to take and fall through to the reply box, which POSTED "Thanks @gra".
+test("comment reply: Enter while the mention lookup is out waits for it and never posts the half-typed name", async ({ page }) => {
+  await page.goto("/e2e-fixtures/notion-mentions.html?comments");
+  const editor = page.locator(".ProseMirror").first();
+  await expect(editor).toContainText("The rollout plan is ready");
+  await editor.click();
+  await page.evaluate(() => (window as any).prismMentionsFixture.select("rollout plan"));
+  await page.getByRole("button", { name: "Comment on selection" }).click();
+  const box = page.getByRole("textbox", { name: "Comment" });
+  await box.fill("First thought.");
+  await page.keyboard.press("ControlOrMeta+Enter");
+  const panel = page.getByRole("complementary", { name: "Comments panel" });
+  await expect(panel).toContainText("First thought.");
+
+  const reply = panel.getByRole("textbox", { name: "Reply" });
+  await reply.click();
+  await page.evaluate(() => { (window as any).prismFixtureLookups.holdPeople = true; });
+  await reply.pressSequentially("Thanks @gra");
+  await page.keyboard.press("Enter");
+  // Not posted, nothing lost: the field still holds what was typed.
+  await expect(reply).toHaveValue("Thanks @gra");
+  expect(JSON.stringify(await page.evaluate(() => (window as any).prismMentionsFixture.comments()))).not.toContain("Thanks @gra");
+  await page.evaluate(() => (window as any).prismFixtureLookups.releasePeople());
+  await expect(reply).toHaveValue("Thanks @[Grace Hopper](person:p-grace) ");
+  await expect(reply).toBeFocused();
+  await reply.press("Enter");
+  await expect(panel.getByRole("link", { name: "Person: Grace Hopper" })).toBeVisible();
+  const stored = JSON.stringify(await page.evaluate(() => (window as any).prismMentionsFixture.comments()));
+  expect(stored).toContain("Thanks @[Grace Hopper](person:p-grace)");
+  expect(stored).not.toContain("Thanks @gra\"");
+});
+
 // Wave 3 gaps #10: a workspace member with no person page is mentioned by account.
 test("@ menu lists workspace members without a person page; the chip stores an opaque id, never an email", async ({ page }) => {
   const editor = await openEditor(page);

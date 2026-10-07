@@ -132,6 +132,10 @@ if (params.has("ingest")) {
   notes.push(task("g3", "Notion mirror", { status: "todo", due: day(1), source: "notion" }));
   notes.push(task("g4", "Hand-made", { status: "todo", due: day(3), source: "book" }));
 }
+// More rows than one page of a table (100): a calculation must cover all of them.
+if (params.has("many") && !persisted) for (let i = 0; i < 150; i++) notes.push(task(`m${i}`, `Bulk task ${String(i).padStart(3, "0")}`, { status: "todo", estimate: 1 }));
+// A multi-value cell that repeats a value: the row is one row of that group.
+if (params.has("dupe") && !persisted) notes.push(task("dup1", "Doubled label", { status: "todo", estimate: 4, labels: ["launch", "launch", "design"] }));
 if (params.has("tz")) notes.push(task("t7", "Late call", { status: "todo", due: `${day(3)}T05:00:00Z` }));
 if (link) notes = notes.map((n) => ({ ...n, _level: "view" }));
 if (viewer) notes = notes.map((n) => (n.id === "t6" ? n : { ...n, _caps: ["view"] }));
@@ -269,7 +273,29 @@ if (!legacy) {
     controls.queries.push(clone(spec));
     if (params.has("forbidden")) throw new VaultRequestError(403, "POST /query failed: 403 forbidden");
     const rows = visible().map((n) => ({ ...n, content: "", canEdit: !link && (!viewer || !!n._caps?.includes("edit")) }));
-    return runQuery(rows, spec, { limited: viewer || link });
+    // "is Me" in a view filter: the server resolves the caller; here the caller is Mira
+    // (her person page, her account as creator / last editor). A link is nobody.
+    const me = (n: { metadata: Record<string, unknown> | null }, key: string) => {
+      if (link) return false;
+      const v = n.metadata?.[key];
+      if (key === "prism_creator" || key === "prism_last_writer") return v === "mira@example.test";
+      return (Array.isArray(v) ? v : [v]).some((x) => typeof x === "string" && x.includes("People/Mira Chen"));
+    };
+    // The server's rule for the access keys: a calculation on one is answered only when
+    // the request also asks for the key as a field — else null (never omitted).
+    const asked = spec.aggregates ?? [];
+    const kept = asked.filter((a) => !["prism_creator", "prism_visibility"].includes(a.key) || !spec.fields || spec.fields.includes(a.key));
+    const page = runQuery(rows, { ...spec, ...(spec.aggregates ? { aggregates: kept } : {}) }, { limited: viewer || link, me });
+    if (page.aggregates) for (const a of asked) if (!kept.includes(a)) (page.aggregates[a.key] ??= {})[a.fn] = null;
+    // ?calcomit=<key>   an answer that leaves a calculation out (an older server)
+    // ?groupcap=<value> the answer leaves that group out and says groups were cut
+    // ?calctrunc        the figures cover only part of the view
+    const omit = params.get("calcomit");
+    if (omit && page.aggregates) { delete page.aggregates[omit]; for (const g of page.groups ?? []) delete g.aggregates[omit]; }
+    const cut = params.get("groupcap");
+    if (cut && page.groups) { page.groups = page.groups.filter((g) => g.value !== cut); page.groupsCapped = true; }
+    if (params.has("calctrunc") && spec.aggregates) page.truncated = true;
+    return page;
   };
   client.updateProperties = async (id, set, expect) => {
     controls.writes.push(clone({ id, set, expect }));

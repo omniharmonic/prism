@@ -1,8 +1,12 @@
+import { useSyncExternalStore } from "react";
 import { create } from "zustand";
 import { persist, createJSONStorage } from "zustand/middleware";
 import type { ContentType } from "../../lib/types";
 
-export type Theme = "dark" | "light";
+/** The SETTING. "system" follows the OS colour scheme, live (NP-AX-01). */
+export type Theme = "dark" | "light" | "system";
+/** What is on screen: the class on `<html>`. */
+export type EffectiveTheme = "dark" | "light";
 
 /** A recently-opened note, for the sidebar Recent widget. */
 export interface RecentItem {
@@ -72,7 +76,8 @@ export const useSettingsStore = create<SettingsStore>()(
   persist(
     (set, get) => ({
       // Defaults
-      theme: "dark",
+      // New installs follow the OS; a stored choice (every existing install has one) is kept.
+      theme: "system",
       fontFamily: "Inter",
       fontSize: 14,
       editorFontFamily: "Newsreader",
@@ -160,22 +165,78 @@ export const useSettingsStore = create<SettingsStore>()(
   ),
 );
 
-// Apply theme — just toggle the class. CSS handles all the values.
-/** Flip light/dark from what is on screen now (⌘⇧L, the palette's "Toggle Theme"). */
+// ── Theme ───────────────────────────────────────────────────────────────────
+// The class on <html> ("light" | "dark") is the one truth every stylesheet and every
+// `classList.contains("light")` reader uses. The SETTING may also be "system": then the
+// class follows `prefers-color-scheme`, live. `apps/web/public/theme-boot.js` sets the same
+// class before first paint (keep the two in step: storage key, colours, the rule).
+
+/** `<meta name="theme-color">` per theme = the page background (index.html's first-paint rule). */
+export const THEME_COLORS: Record<EffectiveTheme, string> = { dark: "#0a0a0b", light: "#f4f4f6" };
+const DARK_QUERY = "(prefers-color-scheme: dark)";
+
+/** The OS colour scheme. No answer (old webview, tests without matchMedia) → dark, the old default. */
+export function systemTheme(): EffectiveTheme {
+  if (typeof window === "undefined" || !window.matchMedia) return "dark";
+  if (window.matchMedia(DARK_QUERY).matches) return "dark";
+  return window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
+}
+
+export function resolveTheme(theme: Theme): EffectiveTheme {
+  return theme === "light" || theme === "dark" ? theme : systemTheme();
+}
+
+const themeListeners = new Set<() => void>();
+const onScreen = (): EffectiveTheme =>
+  typeof document !== "undefined" && document.documentElement.classList.contains("light") ? "light" : "dark";
+
+let classWatch: MutationObserver | null = null;
+function watchThemeClass(fn: () => void): () => void {
+  themeListeners.add(fn);
+  // Anything may flip the class (this module, the boot script, a test): the class is the truth.
+  if (!classWatch && typeof MutationObserver !== "undefined") {
+    classWatch = new MutationObserver(() => themeListeners.forEach((l) => l()));
+    classWatch.observe(document.documentElement, { attributes: true, attributeFilter: ["class"] });
+  }
+  return () => {
+    themeListeners.delete(fn);
+    if (!themeListeners.size) { classWatch?.disconnect(); classWatch = null; }
+  };
+}
+
+/** The theme on screen, for components that pass a theme to a library (code editor, canvas). */
+export function useEffectiveTheme(): EffectiveTheme {
+  return useSyncExternalStore(
+    watchThemeClass,
+    onScreen,
+    () => "dark",
+  );
+}
+
+/**
+ * Flip light/dark from what is on screen now (⌘⇧L, the palette's "Toggle Theme"). With System
+ * selected this picks the opposite of the current effective theme and so LEAVES System — an
+ * explicit choice; Settings → Appearance → System goes back.
+ */
 export function toggleTheme(): void {
-  const light = typeof document !== "undefined" ? document.documentElement.classList.contains("light") : useSettingsStore.getState().theme === "light";
+  const light = typeof document !== "undefined" ? onScreen() === "light" : useSettingsStore.getState().theme === "light";
   useSettingsStore.getState().setTheme(light ? "dark" : "light");
 }
 
 export function applyTheme(theme: Theme) {
+  const effective = resolveTheme(theme);
   const root = document.documentElement;
-  if (theme === "light") {
-    root.classList.add("light");
-    root.classList.remove("dark");
-  } else {
-    root.classList.add("dark");
-    root.classList.remove("light");
-  }
+  root.classList.toggle("light", effective === "light");
+  root.classList.toggle("dark", effective === "dark");
+  document.querySelector('meta[name="theme-color"]')?.setAttribute("content", THEME_COLORS[effective]);
+}
+
+// The OS scheme changed while the app is open: follow it, but only for the System setting.
+if (typeof window !== "undefined" && window.matchMedia) {
+  const query = window.matchMedia(DARK_QUERY);
+  const follow = () => { if (useSettingsStore.getState().theme === "system") applyTheme("system"); };
+  if (query.addEventListener) query.addEventListener("change", follow);
+  else query.addListener?.(follow); // Safari < 14
 }
 
 // Initialize theme on app load

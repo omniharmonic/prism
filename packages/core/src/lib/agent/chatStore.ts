@@ -76,6 +76,11 @@ interface AgentChatState {
   selectionInNewDocument: (id: string) => void;
   scope: string | null;
   bindScope: (scope: string | null) => void;
+  /** The host is asking the server who we are after a vault/workspace switch: while this is set
+   *  and `scope` is null the workspace is not mounted (see `App`). Hosts that do not confirm an
+   *  audience never set it. */
+  audiencePending: boolean;
+  setAudiencePending: (pending: boolean) => void;
   activeSessionId: string | null;
   pendingAsk: PendingAsk | null;
   draft: AgentDraftContext | null;
@@ -86,6 +91,8 @@ interface AgentChatState {
 
 export const useAgentChatStore = create<AgentChatState>((set, get) => ({
   scope: null,
+  audiencePending: false,
+  setAudiencePending: (audiencePending) => { if (get().audiencePending !== audiencePending) set({ audiencePending }); },
   bindScope: (scope) => {
     if (get().scope === scope) return;
     set({ scope, activeSessionId: load(scope), draft: loadDraft(scope), pendingAsk: null, pendingSelection: null, pendingSavedNote: null });

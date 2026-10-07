@@ -85,6 +85,8 @@ export type { GraphNode, GraphLink, GraphData } from "./components/layout/GraphC
 export { CollabSharingProvider, useCollabSharing, useVaultChangeSignal } from "./data/CollabSharing";
 export { AccountProvider, useAccount } from "./data/Account";
 export { PushProvider, usePush } from "./data/PushNotifications";
+// Native shell section in Settings → Account (WP5: the iOS app's lock + server). No editor code.
+export { ShellSettingsProvider } from "./data/ShellSettings";
 export type { PushClient, PushState } from "./data/PushNotifications";
 export type { AccountClient, AccountProfile, SignedInDevice, AgentToken, AgentTokenList, CreatedAgentToken } from "./data/Account";
 export { PlatformProvider, usePlatform, useIsWeb, type Platform } from "./data/Platform";

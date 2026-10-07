@@ -51,6 +51,7 @@ import { usePullToRefresh } from "../../lib/gestures/usePullToRefresh";
 import { usePagesUI } from "../../lib/pages/store";
 import { liveActionErrorText } from "../../lib/actions/client";
 
+import { formatDate as fmtDate } from "../../lib/datetime/format";
 interface LinkData {
   sourceId: string;
   targetId: string;
@@ -94,7 +95,7 @@ function formatRelativeTime(ts: number | string): string {
     if (diffHr < 24) return `${diffHr}h ago`;
     const diffDay = Math.floor(diffHr / 24);
     if (diffDay < 7) return `${diffDay}d ago`;
-    return date.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+    return fmtDate(date, { month: "short", day: "numeric" }, { locale: "en-US" });
   } catch {
     return "";
   }

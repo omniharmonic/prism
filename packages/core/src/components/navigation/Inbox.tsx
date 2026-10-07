@@ -8,6 +8,7 @@ import { Spinner } from "../ui/Spinner";
 import type { MatrixRoom } from "../../lib/matrix/types";
 import { useLivePollMs } from "../../lib/events/channelStatus";
 
+import { formatDate as fmtDate } from "../../lib/datetime/format";
 interface PlatformGroup {
   platform: string;
   label: string;
@@ -235,7 +236,7 @@ function formatRelativeTime(ts: number): string {
     if (diffHr < 24) return `${diffHr}h`;
     const diffDay = Math.floor(diffHr / 24);
     if (diffDay < 7) return `${diffDay}d`;
-    return date.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+    return fmtDate(date, { month: "short", day: "numeric" }, { locale: "en-US" });
   } catch {
     return "";
   }

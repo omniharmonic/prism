@@ -4,12 +4,32 @@ use crate::origin::ServerOrigin;
 
 const TEMPLATE: &str = include_str!("host.js");
 const PLACEHOLDER: &str = "__PRISM_ORIGIN__";
+const PLATFORM_PLACEHOLDER: &str = "__PRISM_PLATFORM__";
 
-/// host.js with the origin injected as a JSON string literal (so no value can
-/// break out of the string, whatever it contains).
-pub fn init_script(origin: &ServerOrigin) -> String {
-    let literal = serde_json::to_string(origin.as_str()).expect("a string serializes");
-    TEMPLATE.replacen(PLACEHOLDER, &literal, 1)
+/// The shell platform the host hook reports (`__PRISM_SHELL__.platform`).
+pub const PLATFORM: &str = if cfg!(target_os = "ios") {
+    "ios"
+} else if cfg!(target_os = "macos") {
+    "macos"
+} else if cfg!(target_os = "windows") {
+    "windows"
+} else if cfg!(target_os = "android") {
+    "android"
+} else {
+    "linux"
+};
+
+/// host.js with the origin and platform injected as JSON string literals (so
+/// no value can break out of the string, whatever it contains). `None` (iOS)
+/// injects "": the hook then reads the live origin from the page's
+/// `prism-server-origin` meta (window.rs `retarget_page`).
+pub fn init_script(origin: Option<&ServerOrigin>) -> String {
+    let literal = serde_json::to_string(origin.map(|o| o.as_str()).unwrap_or(""))
+        .expect("a string serializes");
+    let platform = serde_json::to_string(PLATFORM).expect("a string serializes");
+    TEMPLATE
+        .replacen(PLACEHOLDER, &literal, 1)
+        .replacen(PLATFORM_PLACEHOLDER, &platform, 1)
 }
 
 /// JS the shell evals to open the Server settings dialog with a fresh grant.
@@ -25,9 +45,12 @@ mod tests {
     #[test]
     fn injects_origin_once_as_a_string_literal() {
         let o = ServerOrigin::parse("https://prism.example.com").unwrap();
-        let js = init_script(&o);
+        let js = init_script(Some(&o));
         assert!(js.contains(r#"var ORIGIN = "https://prism.example.com";"#));
         assert!(!js.contains("var ORIGIN = __PRISM_ORIGIN__"));
+        assert!(js.contains(&format!("var PLATFORM = \"{PLATFORM}\";")));
+        assert!(!js.contains("__PRISM_PLATFORM__"));
+        assert!(init_script(None).contains(r#"var ORIGIN = "";"#));
         // The contract keys the web app reads.
         for k in [
             "__PRISM_HOST__",

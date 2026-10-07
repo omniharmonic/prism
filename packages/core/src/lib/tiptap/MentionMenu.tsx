@@ -20,6 +20,13 @@ type Item =
   | { kind: "date"; date: DateCandidate }
   | { kind: "remind"; date: DateCandidate };
 
+/** What a row IS (not where it is): rows arrive and move while the person is choosing. */
+const itemKey = (it: Item) => (it.kind === "person" || it.kind === "page" ? `${it.kind}:${it.id}` : `${it.kind}:${it.date.date}`);
+/** A lookup that never answers must not swallow Enter for good. */
+const ENTER_WAIT_MS = 3000;
+/** "rem", "remind me friday": the reminder rows only — no people or pages are offered. */
+const REMIND = /^rem(?:i(?:n(?:d(?: me)?)?)?)?(?: (.*))?$/;
+
 /** Insert a chip over the `@query` range, followed by a space. Returns its uid. */
 export function insertMention(editor: Editor, range: { from: number; to: number }, attrs: Partial<MentionAttrs>): string {
   const uid = newMentionUid();
@@ -80,7 +87,7 @@ export function MentionMenu({ editor, state, notes }: { editor: Editor | null; s
 
   const items = useMemo<Item[]>(() => {
     const q = raw.trim().toLowerCase();
-    const remindQuery = q.match(/^rem(?:i(?:n(?:d(?: me)?)?)?)?(?: (.*))?$/);
+    const remindQuery = q.match(REMIND);
     const out: Item[] = [];
     if (!remindQuery) {
       // People are looked up for the DEBOUNCED query. Until that catches up with what is typed, the
@@ -110,9 +117,20 @@ export function MentionMenu({ editor, state, notes }: { editor: Editor | null; s
   }, [raw, debounced, people.data, members.data, notes, noteId]);
 
   const signature = `${state.from}:${raw}`;
-  const [sel, setSel] = useState({ signature: "", index: 0 });
-  const index = sel.signature === signature ? Math.min(sel.index, Math.max(0, items.length - 1)) : 0;
-  const visible = !!editor && state.active && items.length > 0;
+  // The selection is a ROW, not a position: when people arrive above it, a row the person moved
+  // to with the arrows stays selected (by index it silently became another row).
+  const [sel, setSel] = useState({ signature: "", key: "" });
+  const chosen = sel.signature === signature ? items.findIndex((it) => itemKey(it) === sel.key) : -1;
+  const index = Math.max(0, chosen);
+  // People are still being looked up for the text typed NOW (the debounce has not fired, or its
+  // request has not answered). They are listed FIRST, so until then the top row is not the row
+  // Enter should take: "@morgan⏎" typed fluently used to insert "Remind me tomorrow" — the only
+  // row on screen — and set a reminder. Enter / Tab on the default row waits for the answer.
+  const remind = REMIND.test(raw.trim().toLowerCase());
+  const lookingUp = state.active && !remind && (debounced !== raw.trim() || (!!client?.listPeople && people.isLoading) || members.isLoading);
+  const [wanted, setWanted] = useState<{ signature: string; key: "Enter" | "Tab"; overdue: boolean } | null>(null);
+  const waiting = !!wanted && wanted.signature === signature && lookingUp && !wanted.overdue;
+  const visible = !!editor && state.active && (items.length > 0 || waiting);
 
   const choose = useCallback(
     (item: Item) => {
@@ -129,23 +147,44 @@ export function MentionMenu({ editor, state, notes }: { editor: Editor | null; s
     [editor, state.from, state.to, noteId],
   );
 
+  // The press that waited: answered by the list for the text it was pressed on. Typing on, moving
+  // the caret or closing the menu makes it void; with nothing to pick the key goes to the editor.
   useEffect(() => {
-    if (!editor || !visible) return;
+    if (!wanted) return;
+    if (!editor || !state.active || wanted.signature !== signature) { setWanted(null); return; }
+    if (lookingUp && !wanted.overdue) {
+      const timer = setTimeout(() => setWanted((w) => (w ? { ...w, overdue: true } : w)), ENTER_WAIT_MS);
+      return () => clearTimeout(timer);
+    }
+    setWanted(null);
+    if (items[index]) choose(items[index]!);
+    else editor.commands.keyboardShortcut(wanted.key);
+  }, [wanted, editor, state.active, signature, lookingUp, items, index, choose]);
+
+  useEffect(() => {
+    // Listening also while the list is still empty but people are being looked up: Enter there
+    // used to fall through to the editor as a line break in the middle of "@name".
+    if (!editor || !(visible || lookingUp)) return;
     const el = editor.view.dom;
-    const undescribe = describeEditorPopup(el, id, `${id}-${index}`);
+    const undescribe = visible && items.length ? describeEditorPopup(el, id, `${id}-${index}`) : () => {};
     const keydown = (e: KeyboardEvent) => {
       if (e.isComposing) return;
-      if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      if ((e.key === "ArrowDown" || e.key === "ArrowUp") && items.length) {
         e.preventDefault();
         e.stopImmediatePropagation();
         const next = (index + (e.key === "ArrowDown" ? 1 : -1) + items.length) % items.length;
-        setSel({ signature, index: next });
+        setSel({ signature, key: itemKey(items[next]!) });
         document.getElementById(`${id}-${next}`)?.scrollIntoView({ block: "nearest" });
+      } else if ((e.key === "Enter" || e.key === "Tab") && !e.shiftKey && lookingUp && chosen < 0 && !wanted?.overdue) {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        setDebounced(raw.trim()); // ask now, not after the rest of the debounce
+        setWanted({ signature, key: e.key as "Enter" | "Tab", overdue: false });
       } else if ((e.key === "Enter" || e.key === "Tab") && !e.shiftKey && items[index]) {
         e.preventDefault();
         e.stopImmediatePropagation();
         choose(items[index]!);
-      } else if (e.key === "Escape") {
+      } else if (e.key === "Escape" && visible) {
         e.preventDefault();
         e.stopImmediatePropagation();
         dismissMentionSuggest(editor, state.from);
@@ -157,7 +196,7 @@ export function MentionMenu({ editor, state, notes }: { editor: Editor | null; s
       el.removeEventListener("keydown", keydown, true);
       undescribe();
     };
-  }, [editor, visible, id, index, items, choose, signature, state.from]);
+  }, [editor, visible, lookingUp, chosen, wanted, raw, id, index, items, choose, signature, state.from]);
 
   if (!editor || !visible) return null;
   const coords = editor.view.coordsAtPos(Math.min(state.to, editor.state.doc.content.size));
@@ -196,7 +235,7 @@ export function MentionMenu({ editor, state, notes }: { editor: Editor | null; s
                 tabIndex={-1}
                 className="prism-mention-option"
                 onMouseDown={(e) => e.preventDefault()}
-                onMouseEnter={() => setSel({ signature, index: i })}
+                onMouseEnter={() => setSel({ signature, key: itemKey(it) })}
                 onClick={() => choose(it)}
               >
                 <span className="prism-mention-option-icon" aria-hidden="true">
@@ -213,7 +252,7 @@ export function MentionMenu({ editor, state, notes }: { editor: Editor | null; s
           </div>
         );
       })}
-      {people.isFetching && !people.data && (
+      {((people.isFetching && !people.data) || waiting) && (
         <div className="prism-mention-menu-status" role="status"><AtSign size={13} aria-hidden="true" /> Finding people…</div>
       )}
     </div>

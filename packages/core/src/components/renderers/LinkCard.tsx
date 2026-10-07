@@ -12,6 +12,7 @@ import { linkTarget, openInNewTab, openLinkTarget, sharePageLink, type LinkTarge
 import { structuralEditsAllowed } from "../../lib/tiptap/blockCommands";
 import { pageLink } from "../../lib/pages/usePageActions";
 import { inWorkspace } from "../../lib/tiptap/openPage";
+import { focusHeading, headingLink } from "../../lib/pages/headingLinks";
 import { walkTab } from "../../lib/a11y/tabWalk";
 import "./LinkCard.css";
 
@@ -96,17 +97,18 @@ export function LinkCard({ editor }: { editor: Editor }) {
     cardRef.current?.querySelector<HTMLElement>("button:not([disabled])")?.focus();
   }, [card]);
 
-  const openPage = (id: string) => {
+  const openPage = (id: string, heading?: string) => {
     const open = (title: string, type: Parameters<ReturnType<typeof useUIStore.getState>["openTab"]>[2]) => useUIStore.getState().openTab(id, title, type);
     // No workspace shell around this editor (the share route `/collab/:id` has no tabs): the page's
     // own address, in a new tab that cannot reach this window. Never a navigation of this one.
     // A share-link viewer gets the share route for the target with the same link (`sharePageLink`):
     // `/page/<id>` would ask them to sign in.
-    if (!client || !inWorkspace()) { openInNewTab(sharePageLink(id) ?? pageLink(id)); return; }
+    if (!client || !inWorkspace()) { openInNewTab(sharePageLink(id) ?? (heading ? headingLink(id, heading) : pageLink(id))); return; }
+    if (heading) void focusHeading(heading, id);
     // The reader's own read decides the title and type; a page they cannot see opens as "no access".
     void client.getNote(id).then((n) => open(noteLinkTitle(n), inferContentType(n)), () => open("Page", "document"));
   };
-  const follow = (target: LinkTarget) => openLinkTarget(target, openPage);
+  const follow = (target: LinkTarget) => openLinkTarget(target, openPage, (slug) => { void focusHeading(slug, null, 600); });
 
   useEffect(() => {
     let dom: HTMLElement;

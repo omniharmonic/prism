@@ -34,6 +34,7 @@ import { propertyFromField } from "../../lib/database/schema";
 import { Popover } from "./Popover";
 import "./database.css";
 
+import { formatDate as fmtDate, formatDateTime as fmtDateTime } from "../../lib/datetime/format";
 const FREE_KINDS: PropertyKind[] = ["text", "number", "checkbox", "url"];
 
 function keyFromLabel(label: string): string {
@@ -138,7 +139,7 @@ export function PropertyBar({ note, readOnly, onOpenAll, layout = "bar", trailin
       {layout === "bar" && !trailing && note.updatedAt && !Number.isNaN(Date.parse(note.updatedAt)) && (
         <div className="db-prop db-prop-updated">
           <span className="db-prop-label">Updated</span>
-          <time dateTime={note.updatedAt} title={new Date(note.updatedAt).toLocaleString()}>{relativeDay(note.updatedAt)}</time>
+          <time dateTime={note.updatedAt} title={fmtDateTime(new Date(note.updatedAt))}>{relativeDay(note.updatedAt)}</time>
         </div>
       )}
       {(editable || (onOpenAll && !trailing)) && (
@@ -206,7 +207,7 @@ function relativeDay(iso: string): string {
   const days = Math.round((new Date(today.toDateString()).getTime() - new Date(d.toDateString()).getTime()) / 86_400_000);
   if (days === 0) return "Today";
   if (days === 1) return "Yesterday";
-  return d.toLocaleDateString(undefined, { month: "short", day: "numeric", ...(d.getFullYear() === today.getFullYear() ? {} : { year: "numeric" }) });
+  return fmtDate(d, { month: "short", day: "numeric", ...(d.getFullYear() === today.getFullYear() ? {} : { year: "numeric" }) });
 }
 
 function AddProperty({ empty, canCreate, canEditSchema, firstTag, existing, showEmpty, hiddenCount, onToggleEmpty, onReveal, onCreateSchemaField, onCreateFree, deleted, onManageDeleted }: {

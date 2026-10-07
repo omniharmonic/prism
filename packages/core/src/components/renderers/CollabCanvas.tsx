@@ -4,7 +4,7 @@ import { Excalidraw, convertToExcalidrawElements, reconcileElements } from "@exc
 import "@excalidraw/excalidraw/index.css";
 import "./canvas-workspace.css";
 import { Link2, Link2Off, PanelLeftOpen, PanelLeftClose, ExternalLink } from "lucide-react";
-import { useSettingsStore } from "../../app/stores/settings";
+import { useEffectiveTheme } from "../../app/stores/settings";
 import { useUIStore } from "../../app/stores/ui";
 import { useVaultClient } from "../../data/VaultClientContext";
 import { inferContentType } from "../../lib/schemas/content-types";
@@ -62,7 +62,7 @@ export function CollabCanvas({
   noteId?: string;
 }) {
   const apiRef = useRef<any>(null);
-  const theme = useSettingsStore((s) => s.theme);
+  const theme = useEffectiveTheme();
   const isDark = theme === "dark";
   const client = useVaultClient();
   const access = useCanvasNoteAccess();

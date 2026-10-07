@@ -5,6 +5,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Bell, CalendarDays, FileText, Lock, Trash2, User } from "lucide-react";
 import { setMentionNodeView, type MentionAttrs } from "./MentionNode";
 import { openPageFromDocument } from "./openPage";
+import { useRegionPrefs } from "../datetime/useRegionPrefs";
 import { formatChipDate, formatChipDateLong, isDateOnly, chipDate, ymd, localIso } from "./MentionDates";
 import { mentionNoteId } from "./MentionContext";
 import { isAccountMentionId } from "./MentionParse";
@@ -327,6 +328,7 @@ function DateChip({ props, chip }: { props: NodeViewProps; chip: React.RefObject
   const attrs = props.node.attrs as MentionAttrs;
   const [editing, setEditing] = useState(false);
   const editable = props.editor.isEditable;
+  useRegionPrefs(); // a node view is its own React root: follow a date/time format change
   const label = formatChipDate(attrs.date);
   return (
     <>

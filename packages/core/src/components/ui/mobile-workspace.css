@@ -6,6 +6,17 @@
 .prism-mobile-navigation > button:focus-visible, .prism-mobile-sheet button:focus-visible { outline: 2px solid var(--color-accent); outline-offset: -2px; }
 .prism-mobile-sheet { position: fixed; top: auto; left: 0; right: 0; width: min(100% - 16px, 440px); max-width: none; max-height: 82dvh; padding: 0; margin: auto auto calc(env(safe-area-inset-bottom) + 8px); border: 1px solid var(--glass-border); border-radius: 16px; background: var(--bg-surface); color: var(--text-primary); box-shadow: 0 16px 60px #0003; overflow: hidden; }
 .prism-mobile-sheet::backdrop { background: #0006; }
+/* Entrance (NP-AX-06): every phone bottom sheet (More, page actions, tree row actions, database
+   panels — all `BottomSheet`) rises 8px while fading in, on the shared motion tokens. 8px = the sheet's own bottom margin, so it is
+   inside the visible viewport (above the keyboard) on every frame — a longer rise started below it. Opacity +
+   transform only, on the dialog itself (the panel's transform belongs to the drag-to-dismiss).
+   There is no exit animation, like every other popup: closing removes the dialog at once, so
+   nothing invisible is left over the page. Both reduced-motion switches turn it off. */
+@keyframes prism-sheet-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+.prism-mobile-sheet[open] { animation: prism-sheet-in var(--motion-slow, 180ms) var(--motion-ease, ease-out); }
+.prism-mobile-sheet[open]::backdrop { animation: prism-fade-in var(--motion-fast, 120ms) ease-out; }
+@media (prefers-reduced-motion: reduce) { .prism-mobile-sheet[open], .prism-mobile-sheet[open]::backdrop { animation: none; } }
+:root.reduce-motion .prism-mobile-sheet[open], :root.reduce-motion .prism-mobile-sheet[open]::backdrop { animation: none; }
 .prism-mobile-sheet-panel { display: flex; flex-direction: column; max-height: inherit; min-height: 0; }
 .prism-mobile-sheet-handle { display: grid; place-items: center; flex-shrink: 0; height: 22px; touch-action: none; cursor: grab; }
 .prism-mobile-sheet-handle > span { width: 36px; height: 4px; border-radius: 3px; background: var(--glass-border-strong); }

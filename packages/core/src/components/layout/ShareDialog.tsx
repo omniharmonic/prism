@@ -29,6 +29,7 @@ import { useAgentChatStore } from "../../lib/agent/chatStore";
 import { PersonAvatar } from "../sharing/PersonAvatar";
 import { PublishHandoff } from "../sharing/PublishHandoff";
 
+import { formatDate as fmtDate } from "../../lib/datetime/format";
 type Props = { noteId: string; sharing: CollabSharing; onClose: () => void };
 type Section = "people" | "links" | "publish" | "sync";
 const LEVELS: ShareLevel[] = ["view", "comment", "suggest", "edit"];
@@ -759,7 +760,7 @@ function SharingDocument({ noteId, sharing, onClose }: Props) {
                       </h3>
                       <p>
                         {link.expiresAt <= Date.now() ? "Expired" : "Expires"}{" "}
-                        {new Date(link.expiresAt).toLocaleDateString()}
+                        {fmtDate(new Date(link.expiresAt))}
                       </p>
                     </div>
                     <div className="share-row">

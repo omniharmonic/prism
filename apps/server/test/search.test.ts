@@ -84,6 +84,25 @@ test("filters only narrow: title, type, tag, author, date range", async () => {
   assert.deepEqual(ids((await (await get("/search?q=workshop&tag=secret", login(MEMBER))).json()) as Array<any>), []);
 });
 
+test("sort=edited|created orders AFTER the permission filter and BEFORE the limit; an unknown sort is ignored", async () => {
+  const cookie = login(OWNER);
+  const order = async (qs: string, who = cookie) => ((await (await get(`/search?q=workshop&${qs}`, who)).json()) as Array<any>).map((r) => r.id);
+  assert.deepEqual(await order("sort=edited"), ["w4", "w3", "w1", "w2"], "newest edit first");
+  fv.put({ id: "w8", path: "Notes/Newest workshop", tags: ["project"], content: "<p>workshop</p>", metadata: {}, createdAt: "2026-09-30T09:00:00.000Z", updatedAt: "2026-06-01T10:00:00.000Z" });
+  assert.deepEqual((await order("sort=created&tag=project")).slice(0, 2), ["w8", "w1"], "newest created first");
+  assert.equal((await order("sort=edited")).at(-1), "w8", "oldest edit last");
+  // The limit cuts the SORTED list: the newest edit is never lost to the vault's own order.
+  assert.deepEqual(await order("sort=edited&limit=1"), ["w4"]);
+  // A member's order is over what they can view only — the hidden, newer w3/w4 neither appear nor take a slot.
+  grantUser(MEMBER, "tag", "project", "view");
+  assert.deepEqual(await order("sort=edited&limit=1", login(MEMBER)), ["w1"]);
+  assert.deepEqual(await order("sort=edited", login(MEMBER)), ["w1", "w8"]);
+  // Unknown value = no sort (the vault's order), never an error.
+  const r = await get("/search?q=workshop&sort=__proto__", cookie);
+  assert.equal(r.status, 200);
+  assert.deepEqual(ids((await r.json()) as Array<any>), ["w1", "w2", "w3", "w4", "w8"]);
+});
+
 test("editor=me matches the opaque last-writer stamp; author= is the creator; non-admins and links cannot probe others", async () => {
   // The stamp the gateway writes: an opaque id, never an address (w2's legacy email stamp matches nobody).
   fv.put({ id: "w8", path: "Library/Edited by owner", tags: ["note"], content: "<p>workshop notes edited by the owner</p>", metadata: { prism_creator: MEMBER, prism_last_writer: writerIdFor(OWNER) }, updatedAt: "2026-09-26T10:00:00.000Z" });

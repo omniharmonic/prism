@@ -6,6 +6,7 @@ import { useThreadReadingPosition } from "./useThreadReadingPosition";
 import type { ThreadReadingIdentity } from "../../lib/messages/readingPosition";
 import type { MatrixMessage } from "../../lib/matrix/types";
 
+import { formatDate as fmtDate, formatDateTime as fmtDateTime, formatTime as fmtTime } from "../../lib/datetime/format";
 interface MessageThreadProps {
   messages: MatrixMessage[];
   readingIdentity?: ThreadReadingIdentity;
@@ -196,7 +197,7 @@ function MessageGroup({
             }
             title={
               validTime(first.timestamp)
-                ? new Date(first.timestamp).toLocaleString()
+                ? fmtDateTime(new Date(first.timestamp))
                 : first.timestamp_label
             }
             style={{ color: "var(--text-muted)" }}
@@ -253,20 +254,12 @@ function validTime(value: number): boolean {
 function formatTimestamp(message: MatrixMessage): string {
   if (!validTime(message.timestamp))
     return message.timestamp_label || "Time unavailable";
-  return new Intl.DateTimeFormat(undefined, {
-    hour: "numeric",
-    minute: "2-digit",
-  }).format(message.timestamp);
+  return fmtTime(message.timestamp, { hour: "numeric", minute: "2-digit" });
 }
 
 function dayLabel(message: MatrixMessage): string {
   if (!validTime(message.timestamp)) return "Date unavailable";
-  return new Intl.DateTimeFormat(undefined, {
-    weekday: "short",
-    month: "short",
-    day: "numeric",
-    year: "numeric",
-  }).format(message.timestamp);
+  return fmtDate(message.timestamp, { weekday: "short", month: "short", day: "numeric", year: "numeric" });
 }
 
 /** Preserve plain source text exactly, including markup; only web URLs become links. */
