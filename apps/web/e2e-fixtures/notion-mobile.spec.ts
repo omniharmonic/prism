@@ -167,3 +167,39 @@ test("page sheet rows: Share, Find in page, Agent", async ({ page }) => {
   await expect.poll(() => page.evaluate(() => { const s = (window as any).prismShellUI.getState(); return [s.contextPanelOpen, s.contextPanelTab]; })).toEqual([true, "agent"]);
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
 });
+
+/** w16 (defect 46): the More sheet says what is about this page and what is a place to go; the
+ *  last row can always be scrolled fully into view above a fade. */
+test("More sheet: 'This page' and 'Go to' sections; the last row is never cut", async ({ page }) => {
+  await page.goto("/e2e-fixtures/notion-shell.html");
+  await expect(page.locator(".tiptap[contenteditable=true]")).toBeVisible();
+  await page.getByRole("navigation", { name: "Mobile workspace" }).getByRole("button", { name: "More", exact: true }).click();
+  const sheet = page.getByRole("dialog", { name: "A living workspace" });
+  const thisPage = sheet.getByRole("group", { name: "This page" });
+  const goTo = sheet.getByRole("group", { name: "Go to" });
+  await expect(thisPage.getByRole("button", { name: "Details & metadata" })).toBeVisible();
+  await expect(thisPage.getByRole("button", { name: "Version history" })).toBeVisible();
+  await expect(goTo.getByRole("button", { name: "New page", exact: true })).toBeVisible();
+  await expect(thisPage.getByRole("button", { name: "Settings" })).toHaveCount(0);
+  const last = goTo.getByRole("button", { name: "Settings", exact: true });
+  await last.scrollIntoViewIfNeeded();
+  const content = sheet.locator(".prism-mobile-sheet-content");
+  await content.evaluate((el) => { el.scrollTop = el.scrollHeight; });
+  const [row, box] = [(await last.boundingBox())!, (await content.boundingBox())!];
+  expect(row.y + row.height).toBeLessThanOrEqual(box.y + box.height - 12); // clear of the fade
+  expect(await content.evaluate((el) => getComputedStyle(el, "::after").position)).toBe("sticky");
+});
+
+/** w16 (#26): the tree row's phone sheet renames the page like the desktop row menu. */
+test("tree row sheet on a phone offers Rename", async ({ page }) => {
+  await page.goto("/e2e-fixtures/notion-shell.html");
+  await expect(page.locator(".tiptap[contenteditable=true]")).toBeVisible();
+  await page.getByRole("navigation", { name: "Mobile workspace" }).getByRole("button", { name: "Notes", exact: true }).click();
+  const actions = page.getByRole("button", { name: /^Page actions for / }).first();
+  const name = ((await actions.getAttribute("aria-label")) ?? "").replace(/^Page actions for /, "");
+  await actions.click();
+  const sheet = page.getByRole("dialog", { name });
+  await sheet.getByRole("button", { name: "Rename", exact: true }).click();
+  await expect(sheet).toHaveCount(0);
+  await expect(page.getByRole("textbox", { name: `Rename ${name}` })).toBeVisible();
+});

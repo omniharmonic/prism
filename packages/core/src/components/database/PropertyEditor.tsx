@@ -42,6 +42,7 @@ import {
   PROPERTY_KINDS,
   propertyFromField,
   STATUS_GROUP_LABELS,
+  defaultOptionLabel,
   STATUS_GROUPS,
   statusGroupOf,
   type FieldHints,
@@ -133,7 +134,8 @@ export function PropertyEditor({ propertyKey, field, tag, rows, onClose }: {
   const renameOption = (value: string, label: string) => {
     const next = { ...optionLabels };
     const text = label.trim();
-    if (text && text !== value) next[value] = text;
+    // The default name ("In progress" for `in-progress`) is not a rename: no hint is written for it.
+    if (text && text !== value && text !== defaultOptionLabel(value)) next[value] = text;
     else delete next[value];
     if (JSON.stringify(next) !== JSON.stringify(optionLabels)) void apply({ optionLabels: next });
   };
@@ -286,8 +288,8 @@ export function PropertyEditor({ propertyKey, field, tag, rows, onClose }: {
                   <ul className="db-option-list" aria-label="Deleted options">
                     {hiddenOptions.map((v) => (
                       <li key={v}>
-                        <span className="db-pop-empty" style={{ flex: 1 }}>{optionLabels[v] ?? v} (deleted)</span>
-                        <button type="button" className="db-ghost" disabled={busy} aria-label={`Restore option ${optionLabels[v] ?? v}`} onClick={() => void apply({ hiddenOptions: hiddenOptions.filter((x) => x !== v) })}><RotateCcw size={12} aria-hidden="true" /> Restore</button>
+                        <span className="db-pop-empty" style={{ flex: 1 }}>{optionLabels[v] ?? defaultOptionLabel(v)} (deleted)</span>
+                        <button type="button" className="db-ghost" disabled={busy} aria-label={`Restore option ${optionLabels[v] ?? defaultOptionLabel(v)}`} onClick={() => void apply({ hiddenOptions: hiddenOptions.filter((x) => x !== v) })}><RotateCcw size={12} aria-hidden="true" /> Restore</button>
                       </li>
                     ))}
                   </ul>

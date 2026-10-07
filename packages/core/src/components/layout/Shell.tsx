@@ -9,7 +9,7 @@ import { useIsMobile } from "../../app/hooks/useIsMobile";
 import { Navigation } from "../navigation/Navigation";
 import { Canvas } from "./Canvas";
 import { ContextPanel } from "./ContextPanel";
-import { StatusBar } from "./StatusBar";
+import { Settings } from "./Settings";
 import { CommandBar } from "./CommandBar";
 import { SharingDialogHost } from "./SharingDialogHost";
 import { WikilinkChooser } from "./WikilinkChooser";
@@ -190,7 +190,10 @@ function ShellLayout() {
         )}
         {isMobile && <MobileActionBar key="mobile-actions" />}
       </div>
-      {!isMobile && <StatusBar key="status" />}
+      {/* The desktop status bar is gone (w16): its count, service health and font moved to
+          Settings → Services and the page ⋯ menu. The Settings dialog is mounted here on desktop
+          (MobileActionBar mounts it on phones). */}
+      {!isMobile && <SettingsHost key="settings" />}
       <CommandBar key="commands" />
       <WikilinkChooser key="wikilinks" />
       <SharingDialogHost key="sharing" />
@@ -201,6 +204,12 @@ function ShellLayout() {
       <PageAgentHost key="page-agent" />
     </div></NoteShortcutsProvider>
   );
+}
+
+function SettingsHost() {
+  const open = useUIStore((s) => s.settingsOpen);
+  const setOpen = useUIStore((s) => s.setSettingsOpen);
+  return <Settings open={open} onClose={() => setOpen(false)} />;
 }
 
 /** Slide-in overlay panel for mobile: a backdrop that dismisses on tap plus a

@@ -9,12 +9,18 @@ test("table: typed cells edit in place with per-field compare-and-set, and confl
   await page.goto("/e2e-fixtures/databases.html");
   const table = page.getByRole("table", { name: "All tasks" });
   await expect(table.getByRole("row")).toHaveCount(1 + 7 + 1 + 1); // header, 7 rows, + New, the calculations footer
-  await expect(page.getByText("7 pages")).toBeVisible();
+  // The footer's first cell counts the rows; "7 pages" under the table would say it twice (w16).
+  await expect(table.locator("tfoot").getByRole("rowheader")).toHaveAccessibleName("Count: 7");
+  await expect(page.getByText("7 pages")).toHaveCount(0);
+  // Option names are words from the schema ("In progress", "To do"), not CSS on the stored value —
+  // nothing is capitalised by a stylesheet any more (a free tag shows as typed) (w16).
+  await expect(table.getByRole("button", { name: "Status: In progress" }).first()).toBeVisible();
+  expect(await page.locator(".db-opt-text").evaluateAll((els) => els.filter((e) => getComputedStyle(e, "::first-letter").textTransform === "uppercase").length)).toBe(0);
 
   // Select: pick an option from the schema enum.
-  await row(page, "Refine onboarding copy").getByRole("button", { name: "Status: in-progress" }).click();
-  await page.getByRole("dialog", { name: "Choose Status" }).getByRole("option", { name: "done" }).click();
-  await expect(row(page, "Refine onboarding copy").getByRole("button", { name: "Status: done" })).toBeVisible();
+  await row(page, "Refine onboarding copy").getByRole("button", { name: "Status: In progress" }).click();
+  await page.getByRole("dialog", { name: "Choose Status" }).getByRole("option", { name: "Done" }).click();
+  await expect(row(page, "Refine onboarding copy").getByRole("button", { name: "Status: Done" })).toBeVisible();
   expect((await writes(page)).at(-1)).toEqual({ id: "t3", set: { status: "done" }, expect: { status: "in-progress" } });
 
   // Number: typed input, committed on Enter as a number.
@@ -29,12 +35,12 @@ test("table: typed cells edit in place with per-field compare-and-set, and confl
 
   // Someone else changed the priority meanwhile: the edit is refused, nothing is lost.
   await page.evaluate(() => { (window as any).dbFixture.conflictWith = "low"; });
-  await row(page, "Write release notes").getByRole("button", { name: "Priority: high" }).click();
-  await page.getByRole("dialog", { name: "Choose Priority" }).getByRole("option", { name: "medium" }).click();
+  await row(page, "Write release notes").getByRole("button", { name: "Priority: High" }).click();
+  await page.getByRole("dialog", { name: "Choose Priority" }).getByRole("option", { name: "Medium" }).click();
   const alert = row(page, "Write release notes").getByRole("alert");
-  await expect(alert).toContainText("Changed elsewhere to “low”");
+  await expect(alert).toContainText("Changed elsewhere to “Low”");
   await alert.getByRole("button", { name: "Keep mine" }).click();
-  await expect(row(page, "Write release notes").getByRole("button", { name: "Priority: medium" })).toBeVisible();
+  await expect(row(page, "Write release notes").getByRole("button", { name: "Priority: Medium" })).toBeVisible();
   const last = (await writes(page)).at(-1);
   expect(last).toEqual({ id: "t2", set: { priority: "medium" }, expect: { priority: "low" } });
 });
@@ -83,9 +89,9 @@ test("new rows are created with the tag, schema defaults and the group they were
   expect(created).toMatchObject({ tags: ["task"], path: "Projects/Launch plan/Ship the changelog", metadata: { title: "Ship the changelog", status: "todo" } });
 
   await page.getByRole("tab", { name: "Board" }).click();
-  const done = page.getByRole("region", { name: "done", exact: true });
+  const done = page.getByRole("region", { name: "Done", exact: true });
   await done.getByRole("button", { name: "Add item" }).click();
-  await page.getByRole("textbox", { name: "New page in done" }).fill("Archive old docs");
+  await page.getByRole("textbox", { name: "New page in Done" }).fill("Archive old docs");
   await page.keyboard.press("Enter");
   await expect(done.getByRole("article", { name: "Archive old docs" })).toBeVisible();
   expect((await fx(page)).creates.at(-1).metadata).toMatchObject({ status: "done", title: "Archive old docs" });
@@ -93,23 +99,23 @@ test("new rows are created with the tag, schema defaults and the group they were
   // A failed create keeps the typed title.
   await page.evaluate(() => { (window as any).dbFixture.failNext = true; });
   await done.getByRole("button", { name: "Add item" }).click();
-  await page.getByRole("textbox", { name: "New page in done" }).fill("Retry me");
+  await page.getByRole("textbox", { name: "New page in Done" }).fill("Retry me");
   await page.keyboard.press("Enter");
   await expect(page.getByRole("alert").filter({ hasText: "could not be created" })).toBeVisible();
-  await expect(page.getByRole("textbox", { name: "New page in done" })).toHaveValue("Retry me");
+  await expect(page.getByRole("textbox", { name: "New page in Done" })).toHaveValue("Retry me");
 });
 
 test("board: move by menu and by drag writes the group property, rank stays view-local", async ({ page }) => {
   await page.goto("/e2e-fixtures/databases.html");
   await page.getByRole("tab", { name: "Board" }).click();
-  const todo = page.getByRole("region", { name: "todo", exact: true });
-  const inProgress = page.getByRole("region", { name: "in-progress", exact: true });
-  const done = page.getByRole("region", { name: "done", exact: true });
+  const todo = page.getByRole("region", { name: "To do", exact: true });
+  const inProgress = page.getByRole("region", { name: "In progress", exact: true });
+  const done = page.getByRole("region", { name: "Done", exact: true });
   await expect(todo.getByRole("article")).toHaveCount(2);
 
   await page.getByRole("button", { name: "Actions for Review workspace navigation" }).click();
   await page.getByRole("menuitem", { name: "Move to…" }).click();
-  await page.getByRole("menuitem", { name: "done" }).click();
+  await page.getByRole("menuitem", { name: "Done" }).click();
   await expect(done.getByRole("article", { name: "Review workspace navigation" })).toBeVisible();
   expect((await writes(page)).at(-1)).toEqual({ id: "t1", set: { status: "done" }, expect: { status: "todo" } });
 
@@ -170,7 +176,7 @@ test("viewer: read-only cells, hidden private rows, honest 'limited' and session
   await expect(page.getByRole("button", { name: "Private planning note" })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "New", exact: true })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Add a view" })).toHaveCount(0);
-  await row(page, "Write release notes").getByRole("button", { name: "Status: in-progress" }).click();
+  await row(page, "Write release notes").getByRole("button", { name: "Status: In progress" }).click();
   await expect(page.getByRole("dialog", { name: "Choose Status" })).toHaveCount(0);
   await page.getByRole("button", { name: "Due", exact: true }).click();
   await page.getByRole("menuitem", { name: "Sort ascending" }).click();
@@ -182,9 +188,9 @@ test("viewer: read-only cells, hidden private rows, honest 'limited' and session
 test("legacy shell: bundled schemas + listNotes fallback, metadata-only CAS writes", async ({ page }) => {
   await page.goto("/e2e-fixtures/databases.html?legacy");
   await expect(page.getByRole("table", { name: "All tasks" }).getByRole("row")).toHaveCount(1 + 7 + 1 + 1);
-  await row(page, "Update pricing page").getByRole("button", { name: "Status: done" }).click();
-  await page.getByRole("dialog", { name: "Choose Status" }).getByRole("option", { name: "todo" }).click();
-  await expect(row(page, "Update pricing page").getByRole("button", { name: "Status: todo" })).toBeVisible();
+  await row(page, "Update pricing page").getByRole("button", { name: "Status: Done" }).click();
+  await page.getByRole("dialog", { name: "Choose Status" }).getByRole("option", { name: "To do" }).click();
+  await expect(row(page, "Update pricing page").getByRole("button", { name: "Status: To do" })).toBeVisible();
   const w = (await writes(page)).at(-1);
   expect(w).toEqual({ id: "t5", metadata: { status: "todo" }, ifUpdatedAt: "2026-10-01T12:00:00.000Z" });
 });
@@ -232,7 +238,7 @@ test("L5: a capability link (no _caps) gets no edit affordances it cannot use", 
   await expect(page.getByRole("button", { name: "Review workspace navigation", exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "New", exact: true })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Add a view" })).toHaveCount(0);
-  await row(page, "Write release notes").getByRole("button", { name: "Status: in-progress" }).click();
+  await row(page, "Write release notes").getByRole("button", { name: "Status: In progress" }).click();
   await expect(page.getByRole("dialog", { name: "Choose Status" })).toHaveCount(0);
   expect((await writes(page)).length).toBe(0);
 });
@@ -245,7 +251,7 @@ test("L4: a 403 from the query route is an error, never a fallback listing", asy
 
 test("L8: the search box is debounced", async ({ page }) => {
   await page.goto("/e2e-fixtures/databases.html");
-  await expect(page.getByText("7 pages")).toBeVisible();
+  await expect(page.getByRole("rowheader", { name: "Count: 7" })).toBeVisible();
   await page.getByLabel("Search this database").pressSequentially("release", { delay: 40 });
   await expect(page.getByText("1 page", { exact: true })).toBeVisible();
   const searches = await page.evaluate(() => (window as any).dbFixture.queries.filter((q: any) => q.search).map((q: any) => q.search));
@@ -399,9 +405,9 @@ test("column reorder and cell keyboard nav", async ({ page }) => {
   const table = page.getByRole("table", { name: "All tasks" });
   const focused = () => page.evaluate(() => document.activeElement?.getAttribute("aria-label") ?? document.activeElement?.textContent ?? "");
   const focusedRow = () => page.evaluate(() => document.activeElement?.closest("tr")?.getAttribute("data-row-id") ?? "");
-  await row(page, "Refine onboarding copy").getByRole("button", { name: "Status: in-progress" }).focus();
+  await row(page, "Refine onboarding copy").getByRole("button", { name: "Status: In progress" }).focus();
   await page.keyboard.press("ArrowRight");
-  expect(await focused()).toBe("Priority: medium");
+  expect(await focused()).toBe("Priority: Medium");
   await page.keyboard.press("ArrowLeft");
   await page.keyboard.press("ArrowLeft");
   expect(await focused()).toBe("Refine onboarding copy");
@@ -502,7 +508,7 @@ test("board: hide empty groups, group by person, card menu order and open", asyn
   await settings.getByLabel("Group by").selectOption("priority");
   // "blocked" is an option nobody uses: an empty column.
   await expect.poll(columns).toEqual(["low", "medium", "high", "blocked"]);
-  await expect(board.getByRole("region", { name: "blocked" })).toContainText("No pages");
+  await expect(board.getByRole("region", { name: "Blocked" })).toContainText("No pages");
   await settings.getByRole("checkbox", { name: "Hide empty groups" }).check();
   await expect.poll(columns).toEqual(["low", "medium", "high"]);
   await expect.poll(async () => (await configWrites(page)).at(-1)?.metadata.prism_database.views[1]).toMatchObject({ groupBy: "priority", hideEmptyGroups: true });
@@ -511,8 +517,8 @@ test("board: hide empty groups, group by person, card menu order and open", asyn
   for (const title of ["Update pricing page", "Private planning note"]) {
     await page.getByRole("button", { name: `Actions for ${title}` }).click();
     await page.getByRole("menuitem", { name: "Move to…" }).click();
-    await page.getByRole("menuitem", { name: "medium" }).click();
-    await expect(board.getByRole("region", { name: "medium" }).getByRole("article", { name: title })).toBeVisible();
+    await page.getByRole("menuitem", { name: "Medium" }).click();
+    await expect(board.getByRole("region", { name: "Medium" }).getByRole("article", { name: title })).toBeVisible();
   }
   await expect.poll(columns).toEqual(["medium", "high"]);
   await page.getByRole("button", { name: "View settings" }).click();
@@ -543,10 +549,10 @@ test("board: hide empty groups, group by person, card menu order and open", asyn
   await page.getByRole("tab", { name: "All tasks" }).click();
   await page.getByRole("button", { name: "View settings" }).click();
   await settings.getByLabel("Group by").selectOption("priority");
-  await expect(page.getByRole("region", { name: "blocked" })).toBeVisible();
+  await expect(page.getByRole("region", { name: "Blocked" })).toBeVisible();
   await settings.getByRole("checkbox", { name: "Hide empty groups" }).check();
-  await expect(page.getByRole("region", { name: "blocked" })).toHaveCount(0);
-  await expect(page.getByRole("region", { name: "high" })).toBeVisible();
+  await expect(page.getByRole("region", { name: "Blocked" })).toHaveCount(0);
+  await expect(page.getByRole("region", { name: "High" })).toBeVisible();
 });
 
 // NP-DB-23 — on a phone a board opens as a grouped list (the saved view is untouched); the board is one tap away.
@@ -556,9 +562,9 @@ test("phone: boards default to list", async ({ page }) => {
   await page.getByRole("tab", { name: "Board" }).click();
   await expect(page.getByText("Shown as a list on this screen.")).toBeVisible();
   await expect(page.locator(".db-board")).toHaveCount(0);
-  const todo = page.getByRole("region", { name: "todo", exact: true });
-  await expect(todo.getByRole("list", { name: "todo list" }).getByRole("button", { name: "Review workspace navigation" })).toBeVisible();
-  await expect(page.getByRole("region", { name: "in-progress", exact: true })).toBeVisible();
+  const todo = page.getByRole("region", { name: "To do", exact: true });
+  await expect(todo.getByRole("list", { name: "To do list" }).getByRole("button", { name: "Review workspace navigation" })).toBeVisible();
+  await expect(page.getByRole("region", { name: "In progress", exact: true })).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   // Rows open full-page on a phone.
   await todo.getByRole("button", { name: "Review workspace navigation" }).click();

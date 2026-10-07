@@ -72,8 +72,26 @@ function placeFor(editor: Editor, from: number, to: number): { left: number; top
     const a = editor.view.coordsAtPos(from);
     const b = editor.view.coordsAtPos(to, -1);
     const width = Math.min(360, window.innerWidth - 16);
-    const below = Math.max(a.bottom, b.bottom) + 6;
-    const top = below + 44 > window.innerHeight ? Math.max(8, Math.min(a.top, b.top) - 44) : below;
+    // #35: the card hangs from the bottom of the link's LINE BOX (the glyph box + half the leading),
+    // not from the glyphs — +6 px under the glyphs landed inside the next line on a 1.6–1.75 line
+    // height. It opens above only when the visible area (the visual viewport minus the phone's
+    // keyboard toolbar / bottom bar) has no room below.
+    let leading = 0;
+    try {
+      const el = editor.view.domAtPos(from).node;
+      const block = (el.nodeType === 1 ? (el as HTMLElement) : el.parentElement)?.closest("p, li, h1, h2, h3, h4, blockquote, td, th") as HTMLElement | null;
+      const lh = block ? parseFloat(getComputedStyle(block).lineHeight) : NaN;
+      if (Number.isFinite(lh)) leading = Math.max(0, (lh - (a.bottom - a.top)) / 2);
+    } catch { /* glyph box only */ }
+    const lineBottom = Math.max(a.bottom, b.bottom) + leading;
+    const vv = window.visualViewport;
+    let viewBottom = (vv?.offsetTop ?? 0) + (vv?.height ?? window.innerHeight);
+    for (const sel of [".keyboard-toolbar", ".prism-mobile-navigation:not([hidden])"]) {
+      const r = document.querySelector(sel)?.getBoundingClientRect();
+      if (r && r.height > 0 && r.top > lineBottom && r.top < viewBottom) viewBottom = r.top;
+    }
+    const below = lineBottom + 2;
+    const top = below + 44 > viewBottom ? Math.max(8, Math.min(a.top, b.top) - leading - 46) : below;
     return { left: Math.max(8, Math.min(a.left, window.innerWidth - width - 8)), top };
   } catch {
     return null;

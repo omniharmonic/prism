@@ -237,3 +237,21 @@ test("recents are capped at 12 in the sidebar", async ({ page }) => {
   await expect(palette.getByRole("option").first()).toContainText("Day 14");
   expect(await palette.getByRole("option").count()).toBeLessThanOrEqual(12);
 });
+
+/** w16 (defect 23): no desktop status bar. What it held lives elsewhere: Settings in the sidebar
+ *  footer (and ⌘, / ⌘K), the reading font in the page ⋯ menu, the note count and service health in
+ *  Settings → Services. */
+test("no status bar; its controls are reachable elsewhere", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto("/e2e-fixtures/notion-shell.html");
+  await expect(page.locator(".tiptap[contenteditable=true]")).toBeVisible();
+  await expect(page.getByText(/^\d+ notes?$/)).toHaveCount(0);
+  await expect(page.getByRole("group", { name: "Document font" })).toHaveCount(0);
+  await expect(page.locator('button[title="Settings"]')).toHaveCount(0);
+  await page.getByRole("button", { name: "Page actions" }).click();
+  await expect(page.getByRole("menuitem", { name: /Serif font/ })).toBeVisible();
+  await page.keyboard.press("Escape");
+  await page.getByRole("button", { name: "Settings", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Settings", exact: true });
+  await expect(dialog).toBeVisible();
+});

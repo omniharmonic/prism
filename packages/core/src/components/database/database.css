@@ -505,11 +505,7 @@
 .db-peek .document-page-header { --document-title-size: 28px; margin-bottom: 20px; }
 .db-peek .document-breadcrumb { display: none; }
 
-/* ── w15 visual ──
-   Defect 36: a stored option that reads as an identifier ("in-progress", "todo", "medium") is shown
-   with a capital — presentation only, the value and every accessible name are unchanged. */
-.db-opt-text[data-slug], .db-group-name { display: inline-block; max-width: 100%; vertical-align: top; }
-.db-opt-text[data-slug]::first-letter, .db-group-name::first-letter { text-transform: uppercase; }
+/* ── w15 visual ── (defect 36: option names are words through `defaultOptionLabel`, not CSS) */
 /* Titles are the first column, not headings: medium weight (every row in bold read as a wall). */
 .db-row-open { font-weight: 500; }
 /* Defect 37: a cover that fails to load leaves the card's own tinted tile, never a broken-image glyph. */

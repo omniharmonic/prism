@@ -71,7 +71,9 @@ interface PagesUIState {
   openTemplates: (open: boolean) => void;
   /** Phone: the page-actions sheet for this page. */
   actionsFor: PageRef | null;
-  openActions: (page: PageRef | null) => void;
+  /** Where the sheet was opened from can rename in place (the tree row): offered as "Rename". */
+  actionsRename: (() => void) | null;
+  openActions: (page: PageRef | null, opts?: { onRename?: () => void }) => void;
 
   toast: PageToast | null;
   showToast: (t: Omit<PageToast, "id">) => void;
@@ -119,7 +121,8 @@ export const usePagesUI = create<PagesUIState>((set, get) => ({
   templatesOpen: false,
   openTemplates: (open) => set({ templatesOpen: open }),
   actionsFor: null,
-  openActions: (page) => set({ actionsFor: page }),
+  actionsRename: null,
+  openActions: (page, opts) => set({ actionsFor: page, actionsRename: page ? opts?.onRename ?? null : null }),
 
   toast: null,
   showToast: (t) => {

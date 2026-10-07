@@ -406,7 +406,7 @@ export function ProjectTree() {
       e.stopPropagation();
       contextTrigger.current = e.currentTarget as HTMLElement;
       if (node.note) {
-        if (isMobile) usePagesUI.getState().openActions(pageRef(node));
+        if (isMobile) usePagesUI.getState().openActions(pageRef(node), { onRename: () => setRenaming(node) });
         else setPageMenu({ x: e.clientX, y: e.clientY, node });
       } else setFolderMenu({ x: e.clientX, y: e.clientY, node });
     },
@@ -628,7 +628,7 @@ export function ProjectTree() {
                 contextTrigger.current = el;
                 const r = el.getBoundingClientRect();
                 if (n.note) {
-                  if (isMobile) usePagesUI.getState().openActions(pageRef(n));
+                  if (isMobile) usePagesUI.getState().openActions(pageRef(n), { onRename: () => setRenaming(n) });
                   else setPageMenu({ x: r.left, y: r.bottom + 4, node: n });
                 } else setFolderMenu({ x: r.left, y: r.bottom + 4, node: n });
               },

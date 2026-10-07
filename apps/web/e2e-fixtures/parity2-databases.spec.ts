@@ -58,7 +58,7 @@ test("table: the first column stays frozen on a wide table and the row count sho
   const first = table.getByRole("button", { name: "Review workspace navigation", exact: true });
   await expect(first).toBeVisible();
   const rows = await table.locator("tbody tr[data-row-id]").count();
-  await expect(page.locator(".db-count")).toHaveText(`${rows} pages`);
+  await expect(table.locator("tfoot").getByRole("rowheader")).toHaveAccessibleName(`Count: ${rows}`);
   const wrap = page.locator(".db-table-wrap").first();
   expect(await wrap.evaluate((el) => el.scrollWidth > el.clientWidth)).toBe(true); // wider than the screen
   const header = page.getByRole("button", { name: "Priority", exact: true });

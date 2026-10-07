@@ -7,15 +7,15 @@ test("properties under the title: typed values, metadata-only CAS writes, empty 
   await page.goto("/e2e-fixtures/databases.html?open=page");
   await expect(page.locator(".tiptap")).toContainText("A single, evolving place");
   const props = bar(page);
-  await expect(props.getByRole("button", { name: "Status: in-progress" })).toBeVisible();
-  await expect(props.getByRole("button", { name: "Priority: medium" })).toBeVisible();
+  await expect(props.getByRole("button", { name: "Status: In progress" })).toBeVisible();
+  await expect(props.getByRole("button", { name: "Priority: Medium" })).toBeVisible();
   await expect(props.getByRole("button", { name: "Owner: Alex Chen" })).toBeVisible(); // a free metadata key
   await expect(props.getByRole("button", { name: /^Due:/ })).toHaveCount(0); // empty → hidden
   await page.screenshot({ path: info.outputPath("page-properties-1440.png") });
 
-  await props.getByRole("button", { name: "Status: in-progress" }).click();
-  await page.getByRole("dialog", { name: "Choose Status" }).getByRole("option", { name: "done" }).click();
-  await expect(props.getByRole("button", { name: "Status: done" })).toBeVisible();
+  await props.getByRole("button", { name: "Status: In progress" }).click();
+  await page.getByRole("dialog", { name: "Choose Status" }).getByRole("option", { name: "Done" }).click();
+  await expect(props.getByRole("button", { name: "Status: Done" })).toBeVisible();
   let s = await state(page);
   expect(s.writes).toEqual([{ id: "page", set: { status: "done" }, expect: { status: "in-progress" } }]);
   expect(s.page.content).toContain("A single, evolving place"); // the body is never written
@@ -31,7 +31,7 @@ test("properties under the title: typed values, metadata-only CAS writes, empty 
   expect(s.writes.at(-1)).toEqual({ id: "page", set: { due: "2026-11-02" }, expect: { due: null } });
 
   // Clearing a value writes null (merge-patch delete), never an empty string.
-  await props.getByRole("button", { name: "Priority: medium" }).click();
+  await props.getByRole("button", { name: "Priority: Medium" }).click();
   await page.getByRole("dialog", { name: "Choose Priority" }).getByRole("button", { name: "Clear" }).click();
   await expect(props.getByRole("button", { name: /^Priority:/ })).toHaveCount(0);
   expect((await state(page)).writes.at(-1)).toEqual({ id: "page", set: { priority: null }, expect: { priority: "medium" } });
@@ -54,11 +54,11 @@ test("owner adds a typed property and a new option through the schema", async ({
   expect(s.schemaWrites[0]).toEqual({ tag: "task", patch: { fields: { effort: { type: "number" } }, ui: { effort: { kind: "number", label: "Effort" } } } });
   expect(s.writes.at(-1)).toEqual({ id: "page", set: { effort: 4 }, expect: { effort: null } });
 
-  await props.getByRole("button", { name: "Priority: medium" }).click();
+  await props.getByRole("button", { name: "Priority: Medium" }).click();
   const picker = page.getByRole("dialog", { name: "Choose Priority" });
   await picker.getByLabel("Search Priority options").fill("urgent");
   await picker.getByRole("button", { name: /Create/ }).click();
-  await expect(props.getByRole("button", { name: "Priority: urgent" })).toBeVisible();
+  await expect(props.getByRole("button", { name: "Priority: Urgent" })).toBeVisible();
   s = await state(page);
   expect(s.schemaWrites.at(-1)).toEqual({ tag: "task", patch: { fields: { priority: { enum: ["low", "medium", "high", "urgent"] } } } });
   expect(s.writes.at(-1)).toEqual({ id: "page", set: { priority: "urgent" }, expect: { priority: "medium" } });
@@ -92,10 +92,10 @@ test("person picker links a person note as a wikilink", async ({ page }) => {
 test("viewers see properties without edit affordances", async ({ page }) => {
   await page.goto("/e2e-fixtures/databases.html?open=page&viewer");
   const props = bar(page);
-  await expect(props.getByRole("button", { name: "Status: in-progress" })).toBeVisible();
+  await expect(props.getByRole("button", { name: "Status: In progress" })).toBeVisible();
   await expect(props.getByRole("button", { name: "Add property" })).toHaveCount(0);
   await expect(props.getByRole("button", { name: "Add tag" })).toHaveCount(0);
-  await props.getByRole("button", { name: "Status: in-progress" }).click();
+  await props.getByRole("button", { name: "Status: In progress" }).click();
   await expect(page.getByRole("dialog", { name: "Choose Status" })).toHaveCount(0);
   expect((await state(page)).writes).toEqual([]);
 });
@@ -114,7 +114,7 @@ test("rename, retype with preview, delete property", async ({ page }) => {
   const editor = page.getByRole("dialog", { name: "Edit property Stage" });
   await expect(editor).toBeVisible();
   expect(await lastSchema()).toEqual({ tag: "task", patch: { ui: { status: { label: "Stage" } } } });
-  await expect(props.getByRole("button", { name: "Stage: in-progress" })).toBeVisible();
+  await expect(props.getByRole("button", { name: "Stage: In progress" })).toBeVisible();
   expect((await stored()).status).toBe("in-progress");
 
   // Options: rename, recolour, reorder — all hints over the stored value.
@@ -125,23 +125,23 @@ test("rename, retype with preview, delete property", async ({ page }) => {
   await editor.getByLabel("Colour of Doing").selectOption("red");
   await expect(props.locator('.db-opt[data-value="in-progress"]')).toHaveAttribute("data-color", "red");
   const names = () => editor.getByRole("list", { name: "Options", exact: true }).getByRole("textbox").evaluateAll((els) => els.map((e) => (e as HTMLInputElement).value));
-  expect(await names()).toEqual(["todo", "Doing", "done"]);
+  expect(await names()).toEqual(["To do", "Doing", "Done"]);
   await editor.getByRole("button", { name: "Move Doing up" }).click();
-  await expect.poll(names).toEqual(["Doing", "todo", "done"]);
+  await expect.poll(names).toEqual(["Doing", "To do", "Done"]);
   expect(await lastSchema()).toEqual({ tag: "task", patch: { ui: { status: { optionOrder: ["in-progress", "todo", "done"] } } } });
   // Deleting an option pages still use is refused, with the count; an unused one is hidden and can be restored.
-  await editor.getByRole("button", { name: "Delete option todo" }).click();
+  await editor.getByRole("button", { name: "Delete option To do" }).click();
   await expect(editor.getByRole("alert")).toContainText("2 pages still use “todo”");
-  await expect.poll(names).toEqual(["Doing", "todo", "done"]);
+  await expect.poll(names).toEqual(["Doing", "To do", "Done"]);
   await editor.getByLabel("New option").fill("blocked");
   await editor.getByRole("button", { name: "Add option" }).click();
   expect(await lastSchema()).toEqual({ tag: "task", patch: { fields: { status: { enum: ["todo", "in-progress", "done", "blocked"] } }, ui: { status: {} } } });
-  await expect.poll(names).toEqual(["Doing", "todo", "done", "blocked"]);
-  await editor.getByRole("button", { name: "Delete option blocked" }).click();
-  await expect.poll(names).toEqual(["Doing", "todo", "done"]);
+  await expect.poll(names).toEqual(["Doing", "To do", "Done", "Blocked"]);
+  await editor.getByRole("button", { name: "Delete option Blocked" }).click();
+  await expect.poll(names).toEqual(["Doing", "To do", "Done"]);
   await expect(editor.getByRole("list", { name: "Deleted options" })).toContainText("blocked (deleted)");
-  await editor.getByRole("button", { name: "Restore option blocked" }).click();
-  await expect.poll(names).toEqual(["Doing", "todo", "done", "blocked"]);
+  await editor.getByRole("button", { name: "Restore option Blocked" }).click();
+  await expect.poll(names).toEqual(["Doing", "To do", "Done", "Blocked"]);
   expect((await stored()).status).toBe("in-progress"); // never rewritten
   await editor.getByRole("button", { name: "Close" }).click();
 
@@ -187,13 +187,13 @@ test("rename, retype with preview, delete property", async ({ page }) => {
   await props.getByRole("button", { name: "Add property" }).click();
   await page.getByRole("dialog", { name: "Add a property" }).getByRole("button", { name: "Manage deleted property Priority" }).click();
   await page.getByRole("dialog", { name: "Edit property Priority" }).getByRole("button", { name: "Restore property" }).click();
-  await expect(props.getByRole("button", { name: "Priority: medium" })).toBeVisible();
+  await expect(props.getByRole("button", { name: "Priority: Medium" })).toBeVisible();
   expect((await state(page)).writes).toEqual([]); // no page was written by any of this
 });
 
 test("non-owners see no schema controls", async ({ page }) => {
   await page.goto("/e2e-fixtures/databases.html?open=page&viewer");
-  await expect(bar(page).getByRole("button", { name: "Status: in-progress" })).toBeVisible();
+  await expect(bar(page).getByRole("button", { name: "Status: In progress" })).toBeVisible();
   await expect(page.getByRole("button", { name: /^Edit property/ })).toHaveCount(0);
   await page.goto("/e2e-fixtures/databases.html?viewer");
   await page.getByRole("button", { name: "Status", exact: true }).click();
@@ -205,7 +205,7 @@ for (const appearance of ["phone", "dark"])
   test(`property bar ${appearance}`, async ({ page }, info) => {
     if (appearance === "phone") await page.setViewportSize({ width: 390, height: 844 });
     await page.goto(`/e2e-fixtures/databases.html?open=page${appearance === "dark" ? "&dark" : ""}`);
-    await expect(bar(page).getByRole("button", { name: "Status: in-progress" })).toBeVisible();
+    await expect(bar(page).getByRole("button", { name: "Status: In progress" })).toBeVisible();
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
     if (appearance === "phone")
       for (const b of await bar(page).getByRole("button").all()) expect((await b.boundingBox())!.height).toBeGreaterThanOrEqual(44);

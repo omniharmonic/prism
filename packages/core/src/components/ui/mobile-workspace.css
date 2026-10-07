@@ -23,7 +23,13 @@
 .prism-mobile-sheet-heading { display: flex; align-items: center; gap: 12px; padding: 0 10px 8px 20px; flex-shrink: 0; border-bottom: 1px solid var(--border-subtle); }
 .prism-mobile-sheet-heading h2 { flex: 1; min-width: 0; margin: 0; font-size: 15px; font-weight: 600; line-height: 1.5; color: var(--text-primary); overflow-wrap: anywhere; }
 .prism-mobile-sheet-heading button { width: 44px; height: 44px; display: grid; place-items: center; flex-shrink: 0; border-radius: 6px; color: var(--text-muted); }
-.prism-mobile-sheet-content { min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding-bottom: 8px; }
+.prism-mobile-sheet-content { min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding-bottom: env(safe-area-inset-bottom); }
+/* w16 (defect 46): the last row is never cut without a cue — a fade that sticks to the bottom while
+   there is more below, and sits in its own 20 px under the last row at the end (a sticky ::after,
+   never a mask: masks clip menus). */
+.prism-mobile-sheet-content::after { content: ""; position: sticky; bottom: 0; display: block; height: 20px; background: linear-gradient(to bottom, color-mix(in srgb, var(--bg-surface) 0%, transparent), var(--bg-surface)); pointer-events: none; }
+.prism-mobile-sheet-group { margin: 0; padding: 12px 20px 4px; font-size: 12px; font-weight: 600; line-height: 1.4; color: var(--text-muted); }
+.prism-mobile-sheet-actions + .prism-mobile-sheet-actions { margin-top: 6px; border-top: 1px solid var(--border-subtle); }
 .prism-mobile-sheet-context button { min-height: 44px; min-width: 44px; }
 .prism-mobile-sheet-context { padding: 12px 20px; border-bottom: 1px solid var(--border-subtle); }
 .prism-mobile-sheet-actions > button { display: flex; align-items: center; gap: 12px; width: 100%; min-height: 50px; padding: 10px 20px; text-align: left; color: var(--text-primary); font-size: 14px; line-height: 1.5; }

@@ -14,6 +14,7 @@ import { useHostServices } from "../../data/HostServicesContext";
 import { useVaultClient } from "../../data/VaultClientContext";
 import { ServerAiModels } from "./ServerAiModels";
 import { SearchIndexSettings } from "./SearchIndexSettings";
+import { ServiceHealth } from "./ServiceHealth";
 import "./settings-workspace.css";
 
 interface SettingsProps {
@@ -184,6 +185,7 @@ export function Settings({ open, onClose }: SettingsProps) {
           {activeTab === "account" && <AccountSettings />}
 
           {/* Services Tab */}
+          {activeTab === "services" && <ServiceHealth />}
           {activeTab === "services" && host?.searchIndex && <SearchIndexSettings host={host} />}
           {activeTab === "services" && config && (
             <>

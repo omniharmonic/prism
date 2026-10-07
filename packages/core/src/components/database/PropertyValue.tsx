@@ -90,13 +90,10 @@ function LinkChip({ value, kind, open }: { value: string; kind: "person" | "rela
   );
 }
 
-/** A stored value that reads as an identifier ("in-progress", "todo"): shown with a capital (CSS only — the text is unchanged). */
-const SLUG = /^[a-z][a-z0-9]*(?:[-_][a-z0-9]+)*$/;
-
 export function OptionChip({ value, label, color, onRemove, removeLabel }: { value: string; /** Display name (an option rename); defaults to the stored value. */ label?: string; color: OptionColor; onRemove?: () => void; removeLabel?: string }) {
   return (
     <span className="db-opt" data-color={color} data-value={value}>
-      <span className="db-opt-text" data-slug={(label === undefined || label === value) && SLUG.test(value) ? "" : undefined}>{label ?? value}</span>
+      <span className="db-opt-text">{label ?? value}</span>
       {onRemove && (
         <button type="button" className="db-opt-remove" aria-label={removeLabel ?? `Remove ${value}`} onClick={(e) => { e.stopPropagation(); onRemove(); }}>
           <X size={11} aria-hidden="true" />

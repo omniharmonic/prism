@@ -149,6 +149,23 @@ test("phones: the slash menu fits the screen and uses large targets; columns sta
   await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
 });
 
+// #32 (w16): on a phone the menu opens BELOW the caret — never above it over the title — and when
+// the caret is low the page scrolls it up first; the list ends in a scroll cue.
+test("phones: a caret low on the screen still gets the menu below it, inside the screen", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  const paras = Array.from({ length: 30 }, (_, i) => `<p>Paragraph ${i + 1} of a long page.</p>`).join("");
+  await page.goto("/e2e-fixtures/editor-blocks.html?content=" + encodeURIComponent(paras));
+  await newLine(page);
+  const menu = await slash(page, "");
+  await expect.poll(async () => {
+    const caret = await page.evaluate(() => { const ed = (document.querySelector(".tiptap") as any).editor; return ed.view.coordsAtPos(ed.state.selection.from).bottom as number; });
+    const box = (await menu.boundingBox())!;
+    return box.y >= caret && box.y + box.height <= 844 && box.height >= 120;
+  }).toBe(true);
+  const fade = await menu.evaluate((el) => getComputedStyle(el, "::after").position);
+  expect(fade).toBe("sticky");
+});
+
 // NP-ED-08: toggle headings (H1–H3 summaries) from the slash menu; the level is stored, open/closed stays view state.
 test("toggle headings", async ({ page }) => {
   await newLine(page);

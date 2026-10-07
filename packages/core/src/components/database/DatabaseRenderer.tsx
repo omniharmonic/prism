@@ -504,12 +504,23 @@ export function DatabasePage({ note, readOnly, embedded }: RendererProps & {
                   : <CalendarView ctx={ctx} month={month} onMonth={setMonth} onPickDate={(k) => updateView({ dateKey: k })} />)}
               </>
             )}
-            <p className="db-count" role="status">
-              {rows.length < total ? `Showing ${rows.length} of ${total}` : `${total} ${total === 1 ? "page" : "pages"}`}
-              {limited && " · only pages you can see"}
-              {truncated && " · this tag is very large; results cover the first 20,000 pages"}
-              {rowsQuery.hasNextPage && <> · <button type="button" className="db-ghost" disabled={rowsQuery.isFetchingNextPage} onClick={() => void rowsQuery.fetchNextPage()}>{rowsQuery.isFetchingNextPage ? "Loading…" : "Load more"}</button></>}
-            </p>
+            {(() => {
+              // w16 (defect 36/footer): a table's footer already counts the rows in its first cell —
+              // "N pages" here too said it twice. The partial count and the notes stay.
+              const countInFooter = view.type === "table" && !!calc;
+              const parts = [
+                rows.length < total ? `Showing ${rows.length} of ${total}` : countInFooter ? "" : `${total} ${total === 1 ? "page" : "pages"}`,
+                limited ? "only pages you can see" : "",
+                truncated ? "this tag is very large; results cover the first 20,000 pages" : "",
+              ].filter(Boolean);
+              if (!parts.length && !rowsQuery.hasNextPage) return null;
+              return (
+                <p className="db-count" role="status">
+                  {parts.join(" · ")}
+                  {rowsQuery.hasNextPage && <>{parts.length ? " · " : ""}<button type="button" className="db-ghost" disabled={rowsQuery.isFetchingNextPage} onClick={() => void rowsQuery.fetchNextPage()}>{rowsQuery.isFetchingNextPage ? "Loading…" : "Load more"}</button></>}
+                </p>
+              );
+            })()}
             {toast && <UndoToast message={toast.message} undo={toast.undo} onUndone={(m) => setToast({ message: m, undo: null })} onDismiss={() => setToast(null)} />}
           </>
         ) : null}

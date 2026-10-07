@@ -1,5 +1,23 @@
 import { test, expect, type Page, type Locator } from "@playwright/test";
 
+// w16: a card has no status <select> and no Earlier / Later buttons — its ⋯ menu ("Move to…",
+// "Move up", "Move down") and dragging do both. These helpers drive the menu.
+const cardMenu = async (page: Page, title: string) => {
+  await page.getByRole("button", { name: `Actions for ${title}`, exact: true }).click();
+  return page.getByRole("dialog", { name: `Actions for ${title}` });
+};
+async function moveTo(page: Page, title: string, column: string) {
+  const menu = await cardMenu(page, title);
+  await menu.getByRole("menuitem", { name: "Move to…" }).click();
+  await menu.getByRole("menuitem", { name: column, exact: true }).click();
+}
+async function reorder(page: Page, title: string, dir: "up" | "down") {
+  const menu = await cardMenu(page, title);
+  await menu.getByRole("menuitem", { name: `Move ${dir}`, exact: true }).click();
+}
+const cardIn = (page: Page, column: string, title: string) =>
+  page.getByRole("region", { name: column, exact: true }).getByRole("article", { name: title, exact: true });
+
 test("custom and unset statuses remain explicit; menu movement guards the revision and preserves other metadata", async ({
   page,
 }) => {
@@ -9,12 +27,8 @@ test("custom and unset statuses remain explicit; menu movement guards the revisi
     exact: true,
   });
   await expect(ungrouped.getByRole("article")).toHaveCount(2);
-  await expect(page.getByLabel("Move Review with collaborators")).toHaveValue(
-    "",
-  );
-  await page
-    .getByLabel("Move Review with collaborators")
-    .selectOption("in-progress");
+  await expect(cardIn(page, "Ungrouped", "Review with collaborators")).toBeVisible();
+  await moveTo(page, "Review with collaborators", "In progress");
   await expect(
     page
       .getByRole("region", { name: "In progress", exact: true })
@@ -39,9 +53,7 @@ test("custom and unset statuses remain explicit; menu movement guards the revisi
     ),
   ).toBe("preserve");
   await page.reload();
-  await expect(page.getByLabel("Move Review with collaborators")).toHaveValue(
-    "in-progress",
-  );
+  await expect(cardIn(page, "In progress", "Review with collaborators")).toBeVisible();
   await page
     .getByRole("button", { name: "Polish the editor", exact: true })
     .click();
@@ -61,26 +73,26 @@ test("failed and conflicting moves stay in place and require deliberate recovery
   page,
 }) => {
   await page.goto("/e2e-fixtures/boards.html");
-  const move = page.getByLabel("Move Polish the editor");
-  await expect(move).toHaveValue("todo");
+  const actions = page.getByRole("button", { name: "Actions for Polish the editor", exact: true });
+  await expect(cardIn(page, "To do", "Polish the editor")).toBeVisible();
   await page.evaluate(() => {
     (window as any).prismBoardFixture.failNext = true;
   });
-  await move.selectOption("done");
+  await moveTo(page, "Polish the editor", "Done");
   await expect(page.getByRole("alert")).toContainText("Connection interrupted");
-  await expect(move).toHaveValue("todo");
+  await expect(cardIn(page, "To do", "Polish the editor")).toBeVisible();
   await page.evaluate(() => (window as any).prismBoardFixture.conflict());
-  await move.selectOption("done");
+  await moveTo(page, "Polish the editor", "Done");
   await expect(page.getByRole("alert")).toContainText(
     "changed in another window",
   );
-  await expect(move).toHaveValue("todo");
+  await expect(cardIn(page, "To do", "Polish the editor")).toBeVisible();
   await page.evaluate(() => {
     (window as any).prismBoardFixture.hold = true;
   });
   await page.getByRole("button", { name: "Refresh", exact: true }).click();
   await expect(page.getByText("Loading tasks…", { exact: true })).toBeVisible();
-  await expect(move).toHaveCount(0);
+  await expect(actions).toHaveCount(0);
   await page.evaluate(() => {
     const fixture = (window as any).prismBoardFixture;
     fixture.hold = false;
@@ -89,9 +101,9 @@ test("failed and conflicting moves stay in place and require deliberate recovery
   await expect(
     page.getByText("Tasks refreshed.", { exact: true }),
   ).toBeVisible();
-  await expect(move).toBeVisible();
-  await move.selectOption("done");
-  await expect(move).toHaveValue("done");
+  await expect(actions).toBeVisible();
+  await moveTo(page, "Polish the editor", "Done");
+  await expect(cardIn(page, "Done", "Polish the editor")).toBeVisible();
   expect(
     await page.evaluate(
       () =>
@@ -147,6 +159,11 @@ test("read-only and future boards never expose mutation controls", async ({
   ).toHaveCount(0);
   await expect(page.getByRole("combobox")).toHaveCount(0);
   await expect(page.getByRole("button", { name: /^Drag / })).toHaveCount(0);
+  // The card menu opens (Open) but offers no move.
+  await page.getByRole("button", { name: /^Actions for / }).first().click();
+  await expect(page.getByRole("menuitem", { name: "Open" })).toBeVisible();
+  await expect(page.getByRole("menuitem", { name: /^Move/ })).toHaveCount(0);
+  await page.keyboard.press("Escape");
   await page.goto("/e2e-fixtures/boards.html?future");
   await expect(page.getByRole("alert")).toContainText(
     "unsupported configuration",
@@ -225,8 +242,11 @@ test("each task respects its capabilities and separate views group the same note
   await expect(
     page.getByRole("button", { name: "New task", exact: true }),
   ).toHaveCount(0);
-  await expect(page.getByRole("combobox")).toHaveCount(1);
-  await expect(page.getByLabel("Move Review with collaborators")).toBeVisible();
+  // Only the card this person may edit offers "Move to…".
+  await expect((await cardMenu(page, "Review with collaborators")).getByRole("menuitem", { name: "Move to…" })).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect((await cardMenu(page, "Polish the editor")).getByRole("menuitem", { name: "Move to…" })).toHaveCount(0);
+  await page.keyboard.press("Escape");
   const second = await context.newPage();
   await second.goto("/e2e-fixtures/boards.html?alternate");
   await expect(
@@ -301,11 +321,11 @@ test("queued changes are not called confirmed and cannot be duplicated", async (
   await page.evaluate(() => {
     (window as any).prismBoardFixture.queueNext = true;
   });
-  await page.getByLabel("Move Polish the editor").selectOption("done");
+  await moveTo(page, "Polish the editor", "Done");
   await expect(page.getByRole("status").first()).toContainText(
     "waiting for sync",
   );
-  await page.getByLabel("Move Polish the editor").selectOption("done");
+  await moveTo(page, "Polish the editor", "Blocked");
   await expect(page.getByRole("alert")).toContainText(
     "earlier change is waiting",
   );
@@ -627,12 +647,7 @@ test("manual rank belongs to the view, survives reload and leaves task records u
       .evaluateAll((items) =>
         items.map((item) => item.getAttribute("aria-label")),
       );
-  await page
-    .getByRole("button", {
-      name: "Move Review with collaborators earlier",
-      exact: true,
-    })
-    .click();
+  await reorder(page, "Review with collaborators", "up");
   await expect
     .poll(titles)
     .toEqual([
@@ -641,11 +656,9 @@ test("manual rank belongs to the view, survives reload and leaves task records u
       "Write launch notes",
     ]);
   await expect(
-    page.getByRole("button", {
-      name: "Move Review with collaborators earlier",
-      exact: true,
-    }),
+    (await cardMenu(page, "Review with collaborators")).getByRole("menuitem", { name: "Move up", exact: true }),
   ).toBeDisabled();
+  await page.keyboard.press("Escape");
   await expect(
     page.getByRole("button", { name: "List", exact: true }),
   ).toHaveAttribute("aria-pressed", "true");
@@ -681,12 +694,7 @@ test("manual rank belongs to the view, survives reload and leaves task records u
     "Review with collaborators",
     "Write launch notes",
   ]);
-  await page
-    .getByRole("button", {
-      name: "Move Review with collaborators later",
-      exact: true,
-    })
-    .click();
+  await reorder(page, "Review with collaborators", "down");
   await expect
     .poll(titles)
     .toEqual([
@@ -713,12 +721,7 @@ test("manual order rejects a concurrent view change and does not expose controls
       sort: { field: "title", direction: "asc" },
     };
   });
-  await page
-    .getByRole("button", {
-      name: "Move Review with collaborators earlier",
-      exact: true,
-    })
-    .click();
+  await reorder(page, "Review with collaborators", "up");
   await expect(page.getByRole("alert")).toContainText(
     "settings changed in another window",
   );
@@ -739,7 +742,7 @@ test("manual order rejects a concurrent view change and does not expose controls
   await page.goto("/e2e-fixtures/boards.html?caps");
   await expect(page.getByRole("article")).toHaveCount(3);
   await expect(
-    page.getByRole("button", { name: / earlier$| later$/ }),
+    (await cardMenu(page, "Review with collaborators")).getByRole("menuitem", { name: /^Move (up|down)$/ }),
   ).toHaveCount(0);
 });
 
@@ -920,9 +923,11 @@ test("an editable board can rank read-only tasks without gaining task write acce
 }) => {
   await page.goto("/e2e-fixtures/boards.html?manual-drag&task-readonly");
   await expect(page.getByRole("article")).toHaveCount(3);
-  await expect(
-    page.getByLabel("Move Polish the editor", { exact: true }),
-  ).toHaveCount(0);
+  // The task itself is read-only: its menu offers order (the board is editable) but no "Move to…".
+  const menu = await cardMenu(page, "Polish the editor");
+  await expect(menu.getByRole("menuitem", { name: "Move to…" })).toHaveCount(0);
+  await expect(menu.getByRole("menuitem", { name: "Move down", exact: true })).toBeVisible();
+  await page.keyboard.press("Escape");
   await dragTask(
     page,
     "Polish the editor",
@@ -954,18 +959,13 @@ test("an editable board can rank read-only tasks without gaining task write acce
   await expect(page.getByRole("button", { name: /^Drag / })).toHaveCount(0);
 });
 
-test("phone manual ordering keeps its earlier/later controls and respects queued writes", async ({
+test("phone manual ordering works from the card menu and respects queued writes", async ({
   page,
 }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto("/e2e-fixtures/boards.html?manual-drag");
   await page.getByRole("button", { name: "List", exact: true }).click();
-  await page
-    .getByRole("button", {
-      name: "Move Polish the editor earlier",
-      exact: true,
-    })
-    .click();
+  await reorder(page, "Polish the editor", "up");
   await expect(page.getByRole("status").first()).toContainText(
     "Task order saved.",
   );
@@ -977,9 +977,7 @@ test("phone manual ordering keeps its earlier/later controls and respects queued
   await page.evaluate(() => {
     (window as any).prismBoardFixture.pending = true;
   });
-  await page
-    .getByRole("button", { name: "Move Polish the editor later", exact: true })
-    .click();
+  await reorder(page, "Polish the editor", "down");
   await expect(page.getByRole("alert")).toContainText(
     "earlier change is waiting",
   );
@@ -1025,11 +1023,11 @@ test("per-column add, card menu, due chips", async ({ page }) => {
   await expect(page.getByRole("region", { name: "Blocked", exact: true }).getByRole("article", { name: "Wait on legal review" })).toBeVisible();
   expect((await fx()).creates.at(-1).metadata).toMatchObject({ title: "Wait on legal review", status: "blocked" });
 
-  // Card ⋯ menu: Move to…, Move earlier/later, Open.
+  // Card ⋯ menu: Move to…, Move up/down, Open.
   await editor.getByRole("button", { name: "Actions for Polish the editor" }).click();
   const menu = page.getByRole("dialog", { name: "Actions for Polish the editor" });
-  await expect(menu.getByRole("menuitem", { name: "Move earlier" })).toBeDisabled();
-  await menu.getByRole("menuitem", { name: "Move later" }).click();
+  await expect(menu.getByRole("menuitem", { name: "Move up" })).toBeDisabled();
+  await menu.getByRole("menuitem", { name: "Move down" }).click();
   await expect(todo.getByRole("article").first()).toHaveAccessibleName("Review with collaborators");
   const order = (await fx()).writes.at(-1);
   expect(order.metadata.prism_board.order.slice(0, 2)).toEqual(["custom", "design"]);

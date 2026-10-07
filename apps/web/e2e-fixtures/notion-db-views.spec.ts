@@ -13,18 +13,18 @@ test("table group by with counts", async ({ page }) => {
   await page.getByRole("button", { name: "View settings" }).click();
   await page.getByRole("dialog", { name: "View settings" }).getByLabel("Group by").selectOption("status");
   await page.keyboard.press("Escape");
-  const todo = page.getByRole("region", { name: "todo", exact: true });
-  const done = page.getByRole("region", { name: "done", exact: true });
+  const todo = page.getByRole("region", { name: "To do", exact: true });
+  const done = page.getByRole("region", { name: "Done", exact: true });
   await expect(todo.getByLabel("2 pages")).toBeVisible();
-  await expect(page.getByRole("region", { name: "in-progress" }).getByLabel("3 pages")).toBeVisible();
+  await expect(page.getByRole("region", { name: "In progress" }).getByLabel("3 pages")).toBeVisible();
   await expect(done.getByRole("table").getByRole("button", { name: "Design new icon set", exact: true })).toBeVisible();
   expect((await configWrites(page)).at(-1).metadata.prism_database.views[0].groupBy).toBe("status");
 
   // Collapse a group: its rows leave, its count stays.
-  await done.getByRole("button", { name: "Collapse done" }).click();
+  await done.getByRole("button", { name: "Collapse Done" }).click();
   await expect(done.getByRole("table")).toHaveCount(0);
   await expect(done.getByLabel("2 pages")).toBeVisible();
-  await done.getByRole("button", { name: "Expand done" }).click();
+  await done.getByRole("button", { name: "Expand Done" }).click();
 
   // "+ New" inside a group creates the row IN that group.
   await done.getByRole("button", { name: "New", exact: true }).click();
@@ -38,9 +38,9 @@ test("table group by with counts", async ({ page }) => {
   await page.getByRole("button", { name: "View settings" }).click();
   await page.getByRole("dialog", { name: "View settings" }).getByLabel("Group by").selectOption("priority");
   await page.keyboard.press("Escape");
-  const high = page.getByRole("region", { name: "high", exact: true });
+  const high = page.getByRole("region", { name: "High", exact: true });
   await expect(high.getByLabel("2 pages")).toBeVisible();
-  await expect(high.getByRole("list", { name: "high list" }).getByRole("button", { name: "Write release notes" })).toBeVisible();
+  await expect(high.getByRole("list", { name: "High list" }).getByRole("button", { name: "Write release notes" })).toBeVisible();
 });
 
 test("database search box", async ({ page }) => {
@@ -60,7 +60,7 @@ test("database search box", async ({ page }) => {
   // Escape clears the box and every row comes back.
   await search.press("Escape");
   await expect(search).toHaveValue("");
-  await expect(page.getByText("7 pages")).toBeVisible();
+  await expect(page.getByRole("rowheader", { name: "Count: 7" })).toBeVisible();
 });
 
 test("side peek, center peek, full page", async ({ page }) => {
@@ -74,8 +74,8 @@ test("side peek, center peek, full page", async ({ page }) => {
   const side = page.getByRole("dialog", { name: "Refine onboarding copy (side peek)" });
   await expect(side).toBeVisible();
   await expect(side.getByText("Refine onboarding copy — fictional task.")).toBeVisible();
-  await side.getByRole("button", { name: "Status: in-progress" }).click();
-  await page.getByRole("dialog", { name: "Choose Status" }).getByRole("option", { name: "done" }).click();
+  await side.getByRole("button", { name: "Status: In progress" }).click();
+  await page.getByRole("dialog", { name: "Choose Status" }).getByRole("option", { name: "Done" }).click();
   expect((await writes(page)).at(-1)).toEqual({ id: "t3", set: { status: "done" }, expect: { status: "in-progress" } });
   expect(await openTabs(page)).toEqual(["db"]);
 
@@ -136,8 +136,8 @@ test("database template applies on new row", async ({ page }) => {
   const editor = page.getByRole("dialog", { name: "Template: Release checklist" });
   await expect(editor).toBeVisible();
   await editor.getByRole("button", { name: "Priority: Empty" }).click();
-  await page.getByRole("dialog", { name: "Choose Priority" }).getByRole("option", { name: "low" }).click();
-  await expect(editor.getByRole("button", { name: "Priority: low" })).toBeVisible();
+  await page.getByRole("dialog", { name: "Choose Priority" }).getByRole("option", { name: "Low" }).click();
+  await expect(editor.getByRole("button", { name: "Priority: Low" })).toBeVisible();
   await editor.getByRole("button", { name: "Done" }).click();
   const saved = (await configWrites(page)).at(-1).metadata.prism_database.templates;
   expect(saved.map((t: any) => t.name)).toEqual(["Bug report", "Sneaky", "Release checklist"]);
@@ -171,7 +171,7 @@ test("bulk edit and bulk trash with undo", async ({ page }) => {
   const edit = page.getByRole("dialog", { name: "Edit property on selected pages" });
   await edit.getByLabel("Property to edit").selectOption("priority");
   await edit.getByRole("button", { name: "Priority: Empty" }).click();
-  await page.getByRole("dialog", { name: "Choose Priority" }).getByRole("option", { name: "low" }).click();
+  await page.getByRole("dialog", { name: "Choose Priority" }).getByRole("option", { name: "Low" }).click();
   const toast = page.locator(".db-toast");
   await expect(toast).toContainText("Updated Priority on 2 of 3. Not changed: Refine onboarding copy (changed elsewhere).");
   const batch = (await fx(page)).batches.at(-1);
@@ -180,7 +180,7 @@ test("bulk edit and bulk trash with undo", async ({ page }) => {
     { id: "t4", set: { priority: "low" }, expect: { priority: "medium" } },
     { id: "t5", set: { priority: "low" }, expect: { priority: "low" } },
   ]);
-  await expect(row(page, "Design new icon set").getByRole("button", { name: "Priority: low" })).toBeVisible();
+  await expect(row(page, "Design new icon set").getByRole("button", { name: "Priority: Low" })).toBeVisible();
   // One Undo puts back what each written row had (CAS on the new value).
   await toast.getByRole("button", { name: "Undo" }).click();
   await expect(toast).toContainText("Restored Priority on 2 pages.");
@@ -188,7 +188,7 @@ test("bulk edit and bulk trash with undo", async ({ page }) => {
     { id: "t4", set: { priority: "medium" }, expect: { priority: "low" } },
     { id: "t5", set: { priority: "low" }, expect: { priority: "low" } },
   ]);
-  await expect(row(page, "Design new icon set").getByRole("button", { name: "Priority: medium" })).toBeVisible();
+  await expect(row(page, "Design new icon set").getByRole("button", { name: "Priority: Medium" })).toBeVisible();
 
   // ⌘A selects every row; Escape clears.
   await t.getByRole("button", { name: "Write release notes", exact: true }).focus();
@@ -202,11 +202,11 @@ test("bulk edit and bulk trash with undo", async ({ page }) => {
   await t.getByRole("checkbox", { name: "Select Update pricing page" }).click();
   await page.getByRole("toolbar", { name: "Selected pages" }).getByRole("button", { name: "Move to Trash" }).click();
   await expect(toast).toContainText("Moved 2 pages to Trash.");
-  await expect(page.getByText("5 pages")).toBeVisible();
+  await expect(page.getByRole("rowheader", { name: "Count: 5" })).toBeVisible();
   expect([...(await fx(page)).trashed].sort()).toEqual(["t4", "t5"]);
   await toast.getByRole("button", { name: "Undo" }).click();
   await expect(toast).toContainText("Restored 2 pages.");
-  await expect(page.getByText("7 pages")).toBeVisible();
+  await expect(page.getByRole("rowheader", { name: "Count: 7" })).toBeVisible();
   expect([...(await fx(page)).restored].sort()).toEqual(["t4", "t5"]);
 });
 

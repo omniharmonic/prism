@@ -112,7 +112,6 @@ export function MobileActionBar() {
     {
       icon: <Info size={19} />,
       label: "Details & metadata",
-      startsGroup: true,
       onClick: () => openPanel("metadata"),
     },
     ...(agentChat
@@ -178,12 +177,19 @@ export function MobileActionBar() {
     {
       icon: <SettingsIcon size={19} />,
       label: "Settings",
-      startsGroup: true,
       onClick: () => {
         setMoreOpen(false);
         setSettingsOpen(true);
       },
     },
+  ];
+
+  // w16 (defect 46): two labelled sections — what this page can do, then where to go — instead of
+  // one list that mixed them.
+  const PAGE_ACTIONS = new Set(["Details & metadata", "Ask about this note", "Ask the agent", "Version history", "Add to favorites", "Remove from favorites"]);
+  const sheetItems: SheetItem[] = [
+    ...moreItems.filter((i) => PAGE_ACTIONS.has(i.label)).map((i) => ({ ...i, group: "This page" })),
+    ...moreItems.filter((i) => !PAGE_ACTIONS.has(i.label)).map((i) => ({ ...i, group: "Go to" })),
   ];
 
   return (
@@ -303,7 +309,7 @@ export function MobileActionBar() {
             </div>
           ) : undefined
         }
-        items={moreItems}
+        items={sheetItems}
       />
 
       <Settings open={settingsOpen} onClose={() => setSettingsOpen(false)} />

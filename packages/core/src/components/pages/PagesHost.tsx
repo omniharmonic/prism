@@ -18,6 +18,7 @@ export function PagesHost() {
   const trashOpen = usePagesUI((s) => s.trashOpen);
   const create = usePagesUI((s) => s.create);
   const actionsFor = usePagesUI((s) => s.actionsFor);
+  const actionsRename = usePagesUI((s) => s.actionsRename);
   const templatesOpen = usePagesUI((s) => s.templatesOpen);
   const ui = usePagesUI.getState();
   return (
@@ -30,14 +31,15 @@ export function PagesHost() {
       {create && (create.template || create.chooser || create.use
         ? <NewContentMenu key={create.use?.id ?? "new"} initialFolder={create.folder} startWithTemplates={create.template} initialTemplate={create.use} onClose={() => ui.openCreate(null)} />
         : <QuickCreate key={create.folder ?? ""} folder={create.folder} />)}
-      {actionsFor && <PageActionsSheet page={actionsFor} onClose={() => ui.openActions(null)} />}
+      {actionsFor && <PageActionsSheet page={actionsFor} onRename={actionsRename ?? undefined} onClose={() => ui.openActions(null)} />}
       <PageToastView />
     </>
   );
 }
 
-function PageActionsSheet({ page, onClose }: { page: PageRef; onClose: () => void }) {
-  const items = usePageMenuItems(page, { close: onClose, sheet: true });
+function PageActionsSheet({ page, onRename, onClose }: { page: PageRef; onRename?: () => void; onClose: () => void }) {
+  // #26: the tree row's sheet renames like the desktop row menu (the row's own inline field).
+  const items = usePageMenuItems(page, { close: onClose, sheet: true, onRename });
   return (
     <BottomSheet
       open

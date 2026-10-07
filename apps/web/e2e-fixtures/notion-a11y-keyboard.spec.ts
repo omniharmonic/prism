@@ -275,7 +275,7 @@ test.describe("keyboard-only journey", () => {
     await page.goto("/e2e-fixtures/notion-shell.html");
     await ready(page);
     const k = new Keys(page);
-    const opener = page.getByTitle("Settings", { exact: true });
+    const opener = page.getByRole("button", { name: "Settings", exact: true });
     await k.tabTo(opener, "sidebar Settings", { max: 200 });
     await page.keyboard.press("Enter");
     const dialog = page.getByRole("dialog", { name: "Settings", exact: true });

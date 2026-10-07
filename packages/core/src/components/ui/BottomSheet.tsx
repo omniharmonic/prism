@@ -10,6 +10,19 @@ export interface SheetItem {
   startsGroup?: boolean;
   danger?: boolean;
   active?: boolean;
+  /** A labelled section ("Go to", "This page"): consecutive items with the same group share one. */
+  group?: string;
+}
+
+/** Consecutive items with the same `group` form one section. */
+function sections(items: SheetItem[]): Array<{ label?: string; items: SheetItem[] }> {
+  const out: Array<{ label?: string; items: SheetItem[] }> = [];
+  for (const item of items) {
+    const last = out[out.length - 1];
+    if (last && last.label === item.group) last.items.push(item);
+    else out.push({ label: item.group, items: [item] });
+  }
+  return out;
 }
 
 /** A modal mobile action surface. Only the handle can dismiss by dragging;
@@ -152,13 +165,15 @@ export function BottomSheet({
         </header>
         <div className="prism-mobile-sheet-content">
           {header && <div className="prism-mobile-sheet-context">{header}</div>}
-          {items ? (
-            <div className="prism-mobile-sheet-actions">
-              {items.map((item, index) => (
+          {items ? sections(items).map((section, sectionIndex) => (
+            <div key={section.label ?? `#${sectionIndex}`} className="prism-mobile-sheet-actions"
+              role={section.label ? "group" : undefined} aria-labelledby={section.label ? `${titleId}-g${sectionIndex}` : undefined}>
+              {section.label && <h3 id={`${titleId}-g${sectionIndex}`} className="prism-mobile-sheet-group">{section.label}</h3>}
+              {section.items.map((item, index) => (
                 <button
                   // Keyed by label (+ occurrence), not position: a row arriving late (lock state
                   // once the page loads) must not remount the rows after it under a finger.
-                  key={`${item.label}#${items.slice(0, index).filter((other) => other.label === item.label).length}`}
+                  key={`${item.label}#${section.items.slice(0, index).filter((other) => other.label === item.label).length}`}
                   type="button"
                   onClick={item.onClick}
                   className={[
@@ -173,9 +188,7 @@ export function BottomSheet({
                 </button>
               ))}
             </div>
-          ) : (
-            children
-          )}
+          )) : children}
         </div>
       </div>
     </dialog>

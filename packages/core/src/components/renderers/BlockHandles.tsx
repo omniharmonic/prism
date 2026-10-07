@@ -380,7 +380,8 @@ export function BlockHandles({ editor, enabled, notes, noteId, onComment }: Bloc
   if (!block) return noticeEl;
   const kind = blockKind(block);
   const narrow = coarse;
-  const gutterLeft = narrow ? Math.max(0, hovered.left - 21) : hovered.left - 52;
+  // #44: on a phone the grip keeps ≥ 4 px from the text (16 px wide, its 44 px hit area grows left).
+  const gutterLeft = narrow ? Math.max(0, hovered.left - 22) : hovered.left - 52;
 
   const insertBelow = () => {
     const at = locateBlock(editor, hovered.ref);

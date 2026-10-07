@@ -24,7 +24,7 @@ test("reduced motion disables transitions", async ({ page }) => {
   await page.emulateMedia({ reducedMotion: "no-preference" });
   expect(await paletteDuration(page)).toBeGreaterThanOrEqual(120);
   // The in-app setting does the same, persists on this device and survives reload.
-  await page.getByTitle("Settings", { exact: true }).click();
+  await page.getByRole("button", { name: "Settings", exact: true }).click();
   await page.getByRole("button", { name: "Appearance" }).click();
   await page.getByRole("checkbox", { name: "Reduce motion" }).check();
   await expect(page.locator("html")).toHaveClass(/reduce-motion/);

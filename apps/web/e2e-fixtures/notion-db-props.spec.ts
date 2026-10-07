@@ -362,10 +362,10 @@ test("date range and time, status groups", async ({ page }) => {
   expect((await writes(page)).at(-1).set).toEqual({ due: null });
 
   // Status options are grouped To-do / In progress / Complete in the editor and the filter.
-  await row(page, "Refine onboarding copy").getByRole("button", { name: "Status: in-progress" }).click();
+  await row(page, "Refine onboarding copy").getByRole("button", { name: "Status: In progress" }).click();
   const picker = page.getByRole("dialog", { name: "Choose Status" });
   await expect(picker.locator(".db-status-group")).toHaveText(["To-do", "In progress", "Complete"]);
-  await expect(picker.getByRole("option")).toHaveText(["todo", "in-progress", "done"]);
+  await expect(picker.getByRole("option")).toHaveText(["To do", "In progress", "Done"]);
   await page.keyboard.press("Escape");
   await page.getByRole("button", { name: "Filter", exact: true }).click();
   await filter.getByRole("button", { name: "Add filter" }).click();

@@ -21,12 +21,12 @@ test("inline linked board inside a page", async ({ page }) => {
   const board = blocks.nth(0);
   await expect(board.getByRole("tab", { name: "Board" })).toHaveAttribute("aria-selected", "true");
   const col = board.getByRole("list", { name: "Board board" });
-  await expect(col.getByRole("region", { name: "in-progress" }).getByRole("article", { name: "Write release notes" })).toBeVisible();
+  await expect(col.getByRole("region", { name: "In progress" }).getByRole("article", { name: "Write release notes" })).toBeVisible();
   // Moving a card writes the row's property (the same per-field CAS as the database page).
   await board.getByRole("button", { name: "Actions for Refine onboarding copy" }).click();
   await page.getByRole("menuitem", { name: "Move to…" }).click();
-  await page.getByRole("menuitem", { name: "done" }).click();
-  await expect(col.getByRole("region", { name: "done" }).getByRole("article", { name: "Refine onboarding copy" })).toBeVisible();
+  await page.getByRole("menuitem", { name: "Done" }).click();
+  await expect(col.getByRole("region", { name: "Done" }).getByRole("article", { name: "Refine onboarding copy" })).toBeVisible();
   expect((await fx(page)).writes.at(-1)).toEqual({ id: "t3", set: { status: "done" }, expect: { status: "in-progress" } });
 
   // Block 2: the TABLE view of the same database, with its own filter saved to that view.

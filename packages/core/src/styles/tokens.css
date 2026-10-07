@@ -175,7 +175,6 @@ input:focus, textarea:focus, select:focus, button:hover {
   --context-panel-width: 320px;
   --context-panel-min-width: 260px;
   --context-panel-max-width: 480px;
-  --status-bar-height: 28px;
   --tab-bar-height: 40px;
   --toolbar-height: 44px;
 

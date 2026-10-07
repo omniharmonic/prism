@@ -20,15 +20,14 @@
 .board-workspace .board-card-title, .board-workspace .board-card-drag { min-height: 32px; }
 .board-card-title { line-height: 1.5; padding: 3px 0 8px; }
 .board-card-title > svg { opacity: .5; }
-.board-card dl { margin: 4px 0 12px; align-items: center; gap: 6px 10px; }
+.board-card dl { margin: 4px 0 0; align-items: center; gap: 6px 10px; }
 .board-card [data-board-field="priority"] { border-radius: 5px; padding: 2px 6px; background: var(--glass-active); text-transform: capitalize; }
 .board-card [data-priority="high"] { color: var(--text-primary); background: color-mix(in srgb, #d99c6c 19%, var(--bg-surface)); }
 .board-card [data-priority="urgent"] { color: var(--text-primary); background: color-mix(in srgb, #d77878 22%, var(--bg-surface)); }
-.board-workspace .board-card select { min-height: 32px; font-size: 12px; border-color: transparent; background: var(--bg-elevated); }
 .board-list { max-width: 1100px; width: 100%; }
 .board-list-group .board-card { margin-bottom: 8px; }
 @media (max-width: 767px), (pointer: coarse) {
-  .board-workspace .board-control, .board-workspace .board-card-title, .board-workspace .board-card-drag, .board-workspace .board-card select { min-height: 44px; }
+  .board-workspace .board-control, .board-workspace .board-card-title, .board-workspace .board-card-drag { min-height: 44px; }
 }
 @media (max-width: 767px) {
   .board-workspace .board-header { padding: 20px 16px 16px; }

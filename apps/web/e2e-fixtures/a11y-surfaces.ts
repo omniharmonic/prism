@@ -251,7 +251,7 @@ export const SURFACES: Surface[] = [
   } },
   { id: "db-select-editor", only: "desktop", path: "/e2e-fixtures/databases.html", open: async (page) => {
     await dbReady(page);
-    await dbRow(page, "Refine onboarding copy").getByRole("button", { name: "Status: in-progress" }).click();
+    await dbRow(page, "Refine onboarding copy").getByRole("button", { name: "Status: In progress" }).click();
     await expect(page.getByRole("dialog", { name: "Choose Status" }).getByRole("option", { name: "done" })).toBeVisible();
   } },
   { id: "db-date-editor", only: "desktop", path: "/e2e-fixtures/databases.html?free-dates", open: async (page) => {

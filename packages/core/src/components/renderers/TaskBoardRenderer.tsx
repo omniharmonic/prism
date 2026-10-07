@@ -837,8 +837,8 @@ function TaskCard({
             ))}
             {ordering && <>
               <hr />
-              <button type="button" role="menuitem" disabled={disabled || !onEarlier} onClick={() => { closeMenu(); onEarlier?.(); }}><ArrowUp size={14} aria-hidden="true" /> Move earlier</button>
-              <button type="button" role="menuitem" disabled={disabled || !onLater} onClick={() => { closeMenu(); onLater?.(); }}><ArrowDown size={14} aria-hidden="true" /> Move later</button>
+              <button type="button" role="menuitem" disabled={disabled || !onEarlier} onClick={() => { closeMenu(); onEarlier?.(); }}><ArrowUp size={14} aria-hidden="true" /> Move up</button>
+              <button type="button" role="menuitem" disabled={disabled || !onLater} onClick={() => { closeMenu(); onLater?.(); }}><ArrowDown size={14} aria-hidden="true" /> Move down</button>
             </>}
           </div>
         </Popover>
@@ -854,37 +854,9 @@ function TaskCard({
           </button>
         )}
       </div>
-      {ordering && (
-        <div
-          role="group"
-          aria-label={"Order " + boardTitle(task)}
-          className="mb-2 flex gap-1"
-        >
-          <button
-            aria-label={"Move " + boardTitle(task) + " earlier"}
-            disabled={disabled || !onEarlier}
-            className={
-              boardControl + " flex flex-1 items-center justify-center gap-1"
-            }
-            onClick={onEarlier}
-          >
-            <ArrowUp size={14} />
-            Earlier
-          </button>
-          <button
-            aria-label={"Move " + boardTitle(task) + " later"}
-            disabled={disabled || !onLater}
-            className={
-              boardControl + " flex flex-1 items-center justify-center gap-1"
-            }
-            onClick={onLater}
-          >
-            <ArrowDown size={14} />
-            Later
-          </button>
-        </div>
-      )}
-      <dl className="mb-3 flex flex-wrap gap-x-3 gap-y-1 text-xs text-[var(--text-secondary)]">
+      {/* w16: no per-card status select or Earlier / Later buttons — the column says the status,
+          and dragging or the ⋯ menu ("Move to…", "Move up / down") changes it, keyboard included. */}
+      <dl className="flex flex-wrap gap-x-3 gap-y-1 text-xs text-[var(--text-secondary)]">
         {due && (
           <div data-board-field="due" className="board-due" data-due={due.state}>
             <dt className="sr-only">Due</dt>
@@ -906,34 +878,14 @@ function TaskCard({
             </div>
           );
         })}
+        {/* A status no column shows (the Ungrouped column) is the one place the value itself is news. */}
+        {status === null && typeof raw === "string" && raw.trim() && (
+          <div data-board-field={config.groupBy} className="min-w-0 max-w-full break-words">
+            <dt className="sr-only">{config.groupBy}</dt>
+            <dd>{raw}</dd>
+          </div>
+        )}
       </dl>
-      {readOnly ? (
-        <p className="text-xs text-[var(--text-secondary)]">
-          {config.columns.find((c) => c.id === status)?.label ??
-            (typeof raw === "string" ? raw : "No " + config.groupBy)}
-        </p>
-      ) : (
-        <select
-          aria-label={"Move " + boardTitle(task)}
-          value={status ?? ""}
-          disabled={disabled}
-          onChange={(e) => onMove(e.target.value)}
-          className={boardControl + " w-full"}
-        >
-          {status === null && (
-            <option value="" disabled>
-              {typeof raw === "string"
-                ? "Ungrouped: " + raw
-                : "No " + config.groupBy}
-            </option>
-          )}
-          {config.columns.map((c) => (
-            <option key={c.id} value={c.id}>
-              {c.label}
-            </option>
-          ))}
-        </select>
-      )}
     </article>
   );
 }

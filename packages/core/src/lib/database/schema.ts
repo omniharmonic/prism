@@ -282,6 +282,21 @@ export function humanize(key: string): string {
   return s.charAt(0).toUpperCase() + s.slice(1);
 }
 
+/** An option value stored as an identifier ("in-progress", "not_started", "todo") reads as words. */
+const OPTION_SLUG = /^[a-z0-9]+(?:[-_][a-z0-9]+)*$/;
+const OPTION_WORDS: Record<string, string> = { todo: "To do" };
+
+/** The name an option shows when no `optionLabels` hint renames it: "in-progress" → "In progress".
+ *  Only identifier-shaped values change; anything typed with spaces or capitals shows as typed. The
+ *  stored value never changes (filters, CSV export and writes use it). */
+export function defaultOptionLabel(value: string): string {
+  if (!OPTION_SLUG.test(value)) return value;
+  const known = OPTION_WORDS[value];
+  if (known) return known;
+  const words = value.replace(/[-_]+/g, " ");
+  return words.charAt(0).toUpperCase() + words.slice(1);
+}
+
 const KNOWN_COLORS: Record<string, OptionColor> = {
   todo: "gray", "to do": "gray", draft: "gray", raw: "gray", backlog: "gray", low: "gray",
   "in-progress": "blue", "in progress": "blue", active: "blue", doing: "blue", medium: "yellow", tentative: "yellow",
@@ -308,7 +323,7 @@ export function propertyFromField(key: string, f: SchemaField, tag: string | nul
   const order = Array.isArray(f.optionOrder) ? f.optionOrder : [];
   const rank = (v: string) => { const i = order.indexOf(v); return i < 0 ? order.length + all.indexOf(v) : i; };
   const values = order.length ? [...all].sort((a, b) => rank(a) - rank(b)) : all;
-  const labelOf = (v: string) => { const l = f.optionLabels?.[v]; return typeof l === "string" && l.trim() ? l.trim() : v; };
+  const labelOf = (v: string) => { const l = f.optionLabels?.[v]; return typeof l === "string" && l.trim() ? l.trim() : defaultOptionLabel(v); };
   return {
     key,
     label: f.label?.trim() || humanize(key),

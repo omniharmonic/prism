@@ -185,6 +185,33 @@ export function slashScore(query: string, item: { title: string; keywords: strin
  * points at the active option with aria-activedescendant. Shared by the plain
  * and collaborative editors.
  */
+const PHONE_MIN_BELOW = 200;
+
+/** Where the "/" menu has room: the visual viewport (a phone keyboard shrinks it) minus the bottom
+ *  chrome (phone keyboard toolbar, bottom bar). */
+function slashPlacement(editor: Editor | null, pos: number) {
+  if (!editor) return null;
+  let coords: { left: number; top: number; bottom: number };
+  try { coords = editor.view.coordsAtPos(pos); } catch { return null; }
+  const vv = typeof window !== "undefined" ? window.visualViewport : null;
+  const viewTop = vv?.offsetTop ?? 0;
+  let viewBottom = viewTop + (vv?.height ?? window.innerHeight);
+  for (const sel of [".keyboard-toolbar", ".prism-mobile-navigation:not([hidden])"]) {
+    const r = document.querySelector(sel)?.getBoundingClientRect();
+    if (r && r.height > 0 && r.top > coords.bottom && r.top < viewBottom) viewBottom = r.top;
+  }
+  const phone = typeof window.matchMedia === "function" && window.matchMedia("(max-width: 767px)").matches;
+  return { coords, viewTop, viewBottom, phone, caretBottom: coords.bottom, below: viewBottom - coords.bottom - 12 };
+}
+
+function scrollParent(el: HTMLElement): HTMLElement | null {
+  for (let n = el.parentElement; n; n = n.parentElement) {
+    const o = getComputedStyle(n).overflowY;
+    if ((o === "auto" || o === "scroll") && n.scrollHeight > n.clientHeight) return n;
+  }
+  return null;
+}
+
 export function SlashMenu({ editor, state, onClose }: { editor: Editor | null; state: SlashCommandState; onClose: () => void }) {
   const [selected, setSelected] = useState(0);
   const listId = useId();
@@ -254,14 +281,37 @@ export function SlashMenu({ editor, state, onClose }: { editor: Editor | null; s
     listRef.current?.querySelector<HTMLElement>('[aria-selected="true"]')?.scrollIntoView({ block: "nearest" });
   }, [selected, items]);
 
-  if (!editor || items.length === 0) return null;
-  let coords: { left: number; top: number; bottom: number };
-  try { coords = editor.view.coordsAtPos(state.to); } catch { return null; }
+  // Follow the caret when the page or the visual viewport moves (a phone keyboard opening).
+  const [, reflow] = useState(0);
+  useEffect(() => {
+    const on = () => reflow((n) => n + 1);
+    const vv = window.visualViewport;
+    window.addEventListener("scroll", on, true);
+    vv?.addEventListener("resize", on);
+    vv?.addEventListener("scroll", on);
+    return () => { window.removeEventListener("scroll", on, true); vv?.removeEventListener("resize", on); vv?.removeEventListener("scroll", on); };
+  }, []);
+
+  // #32: on a phone the menu always opens BELOW the caret (above it, it covered the title). When
+  // there is too little room down there, the page scrolls the caret up first.
+  const place = slashPlacement(editor, state.to);
+  useLayoutEffect(() => {
+    if (!place?.phone || !editor || place.below >= PHONE_MIN_BELOW) return;
+    const scroller = scrollParent(editor.view.dom);
+    const target = place.viewTop + (place.viewBottom - place.viewTop) * 0.3;
+    const by = Math.round(place.caretBottom - target);
+    if (by <= 0) return;
+    if (scroller) scroller.scrollTop += by; else window.scrollBy(0, by);
+  }, [place?.phone, place?.below, place?.caretBottom, editor]);
+
+  if (!editor || items.length === 0 || !place) return null;
+  const coords = place.coords;
   const width = Math.min(320, window.innerWidth - 16);
   const maxHeight = 360;
-  const below = window.innerHeight - coords.bottom - 12;
-  const top = below >= Math.min(maxHeight, 220) ? coords.bottom + 6 : Math.max(8, coords.top - 6 - Math.min(maxHeight, coords.top - 14));
-  const height = below >= Math.min(maxHeight, 220) ? Math.min(maxHeight, below) : Math.min(maxHeight, coords.top - 14);
+  const below = place.below;
+  const opensBelow = place.phone || below >= Math.min(maxHeight, 220);
+  const top = opensBelow ? coords.bottom + 6 : Math.max(8, coords.top - 6 - Math.min(maxHeight, coords.top - 14));
+  const height = opensBelow ? Math.min(maxHeight, Math.max(below, place.phone ? 120 : 0)) : Math.min(maxHeight, coords.top - 14);
   const grouped = !q.trim();
   let lastGroup: Group | null = null;
 

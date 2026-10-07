@@ -132,7 +132,7 @@
 .block-gutter-grip { cursor: grab; }
 .block-gutter-grip:active { cursor: grabbing; }
 .block-gutter.is-narrow { margin-top: -4px; }
-.block-gutter.is-narrow .block-gutter-button { width: 20px; height: 32px; color: var(--text-secondary); }
+.block-gutter.is-narrow .block-gutter-button { width: 16px; height: 32px; color: var(--text-secondary); }
 .block-drop-indicator { position: fixed; z-index: 31; height: 3px; border-radius: 2px; background: var(--color-accent); pointer-events: none; }
 
 /* ── Editor menus (block menu, slash menu, toolbar dropdowns) ── */
@@ -165,7 +165,10 @@
 }
 
 /* ── Slash menu ── */
-.slash-menu { padding: 4px 4px 6px; }
+.slash-menu { padding: 4px 4px 0; }
+/* #32: more rows below say so — a fade that sticks to the bottom while the list scrolls and sits in
+   its own space under the last row at the end (sticky ::after, not a mask). */
+.slash-menu::after { content: ""; position: sticky; bottom: 0; display: block; height: 14px; background: linear-gradient(to bottom, color-mix(in srgb, var(--bg-elevated) 0%, transparent), var(--bg-elevated)); pointer-events: none; }
 .slash-menu .editor-menu-section:first-child { padding-top: 4px; }
 .slash-menu-option { min-height: 44px; gap: 10px; }
 .slash-menu-option[data-active] { background: var(--surface-active); }

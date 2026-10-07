@@ -1,7 +1,7 @@
 /**
  * Sidebar account menu (wave 3): who is signed in, a way into Settings → Account,
  * and Sign out. Rendered only when the shell provides an AccountClient that can
- * sign out (web / Prism Client) — the legacy desktop has neither.
+ * sign out (web / Prism Client); without one (the legacy desktop) a plain Settings row.
  */
 import { useEffect, useRef, useState } from "react";
 import { CircleUser, LogOut, Settings2 } from "lucide-react";
@@ -32,7 +32,19 @@ export function AccountMenu() {
     return () => { document.removeEventListener("pointerdown", away); document.removeEventListener("keydown", key); };
   }, [open]);
 
-  if (!account?.signOut) return null;
+  // No account to sign out of (the legacy desktop): Settings still needs a way in — it used to be
+  // the status bar's gear, removed in w16.
+  if (!account?.signOut) return (
+    <div className="workspace-account">
+      <div className="workspace-nav-row group flex items-center" style={{ color: "var(--text-secondary)", fontSize: "var(--text-base)" }}>
+        <button type="button" onClick={() => useUIStore.getState().setSettingsOpen(true)}
+          className="interactive focus-ring flex flex-1 min-w-0 items-center gap-2.5 text-left" style={{ minHeight: "var(--workspace-control-height)", padding: "0 10px" }}>
+          <span className="flex items-center justify-center flex-shrink-0" style={{ width: 16, color: "var(--text-muted)" }}><Settings2 size={16} /></span>
+          <span className="flex-1 truncate">Settings</span>
+        </button>
+      </div>
+    </div>
+  );
   const signOut = async () => {
     setBusy(true);
     try { await account.signOut!(); } finally { setBusy(false); setOpen(false); }

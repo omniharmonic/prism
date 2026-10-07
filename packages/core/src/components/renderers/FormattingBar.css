@@ -61,8 +61,8 @@ div:has(> div > .empty-page-starters) .prose-editor { min-height: 2.5em !importa
 .keyboard-toolbar-row { scrollbar-width: none; }
 .keyboard-toolbar-row::-webkit-scrollbar { display: none; }
 .keyboard-toolbar-row::after {
-  content: ""; position: sticky; right: 0; flex: none; align-self: stretch; width: 18px; min-height: 44px; margin-left: -6px;
-  background: linear-gradient(to right, transparent, var(--bg-elevated)); pointer-events: none;
+  content: ""; position: sticky; right: 0; flex: none; align-self: stretch; width: 32px; min-height: 44px; margin-left: -6px;
+  background: linear-gradient(to right, color-mix(in srgb, var(--bg-elevated) 0%, transparent), var(--bg-elevated) 70%); pointer-events: none;
 }
 
 /* w14 visual, defect 14: "accept / reject all suggestions" say so. On a phone they stay icon buttons. */

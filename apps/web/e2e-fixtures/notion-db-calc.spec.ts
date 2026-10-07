@@ -28,7 +28,8 @@ test("table: choose a calculation per column; it is saved with the view and surv
   // The frozen first cell is the row count.
   await expect(foot.getByRole("rowheader")).toHaveText(`Count${rows.length}`);
   await expect(foot.getByRole("rowheader")).toHaveAccessibleName(`Count: ${rows.length}`);
-  await expect(page.locator(".db-count")).toHaveText(`${rows.length} pages`);
+  // …and it is the only count: no "N pages" line under the table (w16).
+  await expect(page.locator(".db-count")).toHaveCount(0);
 
   // "Calculate" appears on hover / focus; the menu is grouped by family and follows the property type.
   const estimate = foot.getByRole("button", { name: "Calculate Estimate (h)", exact: true });
@@ -110,25 +111,25 @@ test("grouped table: each group has its own figure and the view has a grand tota
   await page.getByRole("button", { name: "View settings" }).click();
   await settings(page).getByLabel("Group by").selectOption("status");
   await page.keyboard.press("Escape");
-  for (const status of ["todo", "in-progress", "done"]) {
+  for (const [status, label] of [["todo", "To do"], ["in-progress", "In progress"], ["done", "Done"]] as const) {
     const inGroup = rows.filter((n) => n.metadata.status === status);
-    const region = page.getByRole("region", { name: status, exact: true });
+    const region = page.getByRole("region", { name: label, exact: true });
     await expect(region.locator("tfoot").getByRole("rowheader")).toHaveText(`Count${inGroup.length}`);
-    await expect(region.locator("tfoot").getByRole("button", { name: `Sum of Estimate (h): ${sum(inGroup, "estimate") || "—"} in ${status}`, exact: true })).toBeVisible();
+    await expect(region.locator("tfoot").getByRole("button", { name: `Sum of Estimate (h): ${sum(inGroup, "estimate") || "—"} in ${label}`, exact: true })).toBeVisible();
   }
   const totals = page.getByRole("group", { name: "Totals for All tasks" });
   await expect(totals.locator('[data-calc="$count"]')).toHaveText(`Count${rows.length}`);
   await expect(totals.locator('[data-calc="estimate"]')).toContainText(`Sum of Estimate (h): ${sum(rows, "estimate")}`);
   // A collapsed group keeps its figure in the header.
-  const done = page.getByRole("region", { name: "done", exact: true });
-  await done.getByRole("button", { name: "Collapse done" }).click();
+  const done = page.getByRole("region", { name: "Done", exact: true });
+  await done.getByRole("button", { name: "Collapse Done" }).click();
   await expect(done.locator(".db-group-head")).toContainText("Sum of Estimate (h): —");
   // Changing the figure from a group's footer changes it for every group (it is the view's).
-  const todo = page.getByRole("region", { name: "todo", exact: true });
+  const todo = page.getByRole("region", { name: "To do", exact: true });
   await todo.locator("tfoot").getByRole("button", { name: /^Sum of Estimate/ }).click();
   await page.getByRole("menuitemradio", { name: "Max", exact: true }).click();
   const doing = rows.filter((n) => n.metadata.status === "in-progress" && typeof n.metadata.estimate === "number").map((n) => n.metadata.estimate as number);
-  await expect(page.getByRole("region", { name: "in-progress", exact: true }).locator("tfoot").getByRole("button", { name: `Maximum of Estimate (h): ${Math.max(...doing)} in in-progress`, exact: true })).toBeVisible();
+  await expect(page.getByRole("region", { name: "In progress", exact: true }).locator("tfoot").getByRole("button", { name: `Maximum of Estimate (h): ${Math.max(...doing)} in In progress`, exact: true })).toBeVisible();
 });
 
 test("viewer: a calculation is session-only, and a page the viewer cannot see is in no figure", async ({ page }) => {
@@ -221,9 +222,9 @@ test("phone: the footer scrolls with the table; a board shown as a list has its 
   await page.getByRole("combobox", { name: "Add a calculation" }).selectOption("estimate");
   await expect(page.getByRole("combobox", { name: "Calculation for Estimate (h)" })).toHaveValue("sum");
   await page.getByRole("button", { name: "Close sheet" }).click();
-  for (const status of ["todo", "in-progress", "done"]) {
+  for (const [status, label] of [["todo", "To do"], ["in-progress", "In progress"], ["done", "Done"]] as const) {
     const inGroup = rows.filter((n) => n.metadata.status === status);
-    const head = page.getByRole("region", { name: status, exact: true }).locator(".db-group-head");
+    const head = page.getByRole("region", { name: label, exact: true }).locator(".db-group-head");
     await expect(head.getByLabel(`${inGroup.length} pages`)).toBeVisible();
     await expect(head.locator('[data-calc="estimate"] [data-calc-value]')).toHaveText(String(sum(inGroup, "estimate") || "—"));
   }
@@ -238,9 +239,9 @@ test("board, list and gallery: a count and the chosen figure per column and in t
   await settings(page).getByRole("combobox", { name: "Add a calculation" }).selectOption("estimate");
   await page.keyboard.press("Escape");
   await expect.poll(async () => (await configWrites(page)).at(-1)?.metadata.prism_database.views.find((v: any) => v.id === "board").calculations).toEqual({ estimate: "sum" });
-  for (const status of ["todo", "in-progress", "done"]) {
+  for (const [status, label] of [["todo", "To do"], ["in-progress", "In progress"], ["done", "Done"]] as const) {
     const inGroup = rows.filter((n) => n.metadata.status === status);
-    const head = page.getByRole("region", { name: status, exact: true }).locator(".db-col-head");
+    const head = page.getByRole("region", { name: label, exact: true }).locator(".db-col-head");
     await expect(head.locator(".db-badge-count")).toHaveText(String(inGroup.length));
     await expect(head.locator('[data-calc="estimate"]')).toContainText(`Sum of Estimate (h): ${sum(inGroup, "estimate") || "—"}`);
   }
@@ -250,7 +251,7 @@ test("board, list and gallery: a count and the chosen figure per column and in t
   await page.keyboard.press("Escape");
   const doing = rows.filter((n) => n.metadata.status === "in-progress" && typeof n.metadata.estimate === "number");
   const avg = Math.round((sum(doing, "estimate") / doing.length) * 100) / 100;
-  await expect(page.getByRole("region", { name: "in-progress", exact: true }).locator('.db-col-head [data-calc="estimate"]')).toContainText(`Average of Estimate (h): ${avg}`);
+  await expect(page.getByRole("region", { name: "In progress", exact: true }).locator('.db-col-head [data-calc="estimate"]')).toContainText(`Average of Estimate (h): ${avg}`);
 
   // List and gallery: no footer until a calculation is chosen; then the count and the figure.
   for (const [tab, name] of [["List", "Totals for List"], ["Gallery", "Totals for Gallery"]] as const) {
@@ -293,7 +294,7 @@ test("a calculation on a column the view does not show (Created by) is asked for
   // The key travels as a field, so the server answers the figure (it answers null for an access key it was not asked to show).
   await expect.poll(async () => (await queries(page)).filter((q: any) => q.aggregates?.some((a: any) => a.key === "prism_creator")).at(-1)?.fields).toContain("prism_creator");
   const made = rows.filter((n) => typeof n.metadata.prism_creator === "string" && n.metadata.prism_creator).length;
-  const todo = page.getByRole("region", { name: "todo", exact: true }).locator('.db-col-head [data-calc="prism_creator"]');
+  const todo = page.getByRole("region", { name: "To do", exact: true }).locator('.db-col-head [data-calc="prism_creator"]');
   await expect(todo.locator("[data-calc-value]")).toHaveAttribute("data-calc-value", /^\d+$/);
   const perColumn = await page.locator('.db-col-head [data-calc="prism_creator"] [data-calc-value]').evaluateAll((els) => els.map((e) => Number(e.getAttribute("data-calc-value"))));
   expect(perColumn.reduce((a, b) => a + b, 0)).toBe(made);
@@ -318,19 +319,19 @@ test("groups cut from the answer read as not counted, not as zero; a partial fig
   const done = rows.filter((n) => n.metadata.status === "done").length;
   expect(done).toBeGreaterThan(0);
   // A group the answer holds: its figure, marked as a lower bound.
-  const inTodo = page.getByRole("region", { name: "todo", exact: true }).locator("tfoot");
-  const figure = inTodo.getByRole("button", { name: new RegExp(`^Count of Status: ≥ ${todo} in todo`) });
+  const inTodo = page.getByRole("region", { name: "To do", exact: true }).locator("tfoot");
+  const figure = inTodo.getByRole("button", { name: new RegExp(`^Count of Status: ≥ ${todo} in To do`) });
   await expect(figure).toBeVisible();
   await expect(figure).toHaveAttribute("title", /first pages scanned/);
   await expect(figure).not.toHaveAttribute("title", /20,000/);
   // The group the answer left out: not 0, and its row count is what is loaded, as a lower bound.
-  const inDone = page.getByRole("region", { name: "done", exact: true }).locator("tfoot");
-  await expect(inDone.getByRole("button", { name: /^Count of Status: not counted in done/ })).toBeVisible();
+  const inDone = page.getByRole("region", { name: "Done", exact: true }).locator("tfoot");
+  await expect(inDone.getByRole("button", { name: /^Count of Status: not counted in Done/ })).toBeVisible();
   await expect(inDone.getByRole("button", { name: /^Count of Status/ }).locator("[data-calc-value]")).toHaveAttribute("data-calc-value", "partial");
   await expect(inDone.getByRole("rowheader")).toHaveText(`Count≥ ${done}`);
   // Collapsed, the header says the same.
-  const region = page.getByRole("region", { name: "done", exact: true });
-  await region.getByRole("button", { name: "Collapse done" }).click();
+  const region = page.getByRole("region", { name: "Done", exact: true });
+  await region.getByRole("button", { name: "Collapse Done" }).click();
   await expect(region.locator(".db-group-head")).toContainText("Count of Status: not counted");
 });
 

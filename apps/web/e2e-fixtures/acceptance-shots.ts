@@ -328,7 +328,7 @@ export const SHOTS: Shot[] = [
     id: "NP-PG-05", section: PG, slug: "properties", title: "Typed properties under the title", viewports: ["desktop", "phone"],
     look: "Property rows under the title (status, priority, person…), quiet labels, Add property. Compare spacing with Notion's property list.",
     url: fx("databases", "?open=page"),
-    setup: async (page) => { await vis(page.getByRole("group", { name: "Page properties" }).getByRole("button", { name: "Status: in-progress" })); },
+    setup: async (page) => { await vis(page.getByRole("group", { name: "Page properties" }).getByRole("button", { name: "Status: In progress" })); },
   },
   {
     id: "NP-PG-05", section: PG, slug: "property-select-open", title: "A select property being edited", viewports: ["desktop", "phone"],
@@ -336,8 +336,8 @@ export const SHOTS: Shot[] = [
     url: fx("databases", "?open=page"),
     setup: async (page) => {
       const props = page.getByRole("group", { name: "Page properties" });
-      await vis(props.getByRole("button", { name: "Status: in-progress" }));
-      await props.getByRole("button", { name: "Status: in-progress" }).click();
+      await vis(props.getByRole("button", { name: "Status: In progress" }));
+      await props.getByRole("button", { name: "Status: In progress" }).click();
       await page.getByRole("dialog", { name: "Choose Status" }).waitFor({ timeout: 5000 }).catch(() => {});
       await page.waitForTimeout(300);
     },
@@ -600,7 +600,7 @@ export const SHOTS: Shot[] = [
     id: "NP-DB-03", section: DB, slug: "table", title: "Table view", viewports: ["desktop", "phone"],
     look: "View tabs, toolbar (Filter, Sort, search, New), typed cells (status chips, dates, numbers, checkbox), row count. Compare density and chip colours with Notion.",
     url: fx("databases"),
-    setup: async (page) => { await vis(page.getByRole("table", { name: "All tasks" })); await vis(page.getByText("7 pages")); },
+    setup: async (page) => { await vis(page.getByRole("table", { name: "All tasks" })); await vis(page.getByRole("rowheader", { name: "Count: 7" })); },
   },
   {
     id: "NP-DB-04", section: DB, slug: "board", title: "Board view", viewports: ["desktop", "phone"],
