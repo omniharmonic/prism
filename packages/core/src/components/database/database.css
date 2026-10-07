@@ -91,6 +91,30 @@
 .db-props-panel .db-prop { display: grid; grid-template-columns: minmax(84px, 34%) minmax(0, 1fr); align-items: center; gap: 8px; min-height: 34px; }
 .db-props-panel .db-prop-tags { align-items: start; padding-top: 6px; }
 .db-props-panel .db-prop-actions { align-self: start; }
+/* Pinned properties: the "N more properties" disclosure and the Customize checklist. */
+.db-props-bar .db-prop-more { align-self: flex-end; }
+.db-more-chevron { transition: transform var(--motion-fast, 120ms); }
+.db-prop-more [aria-expanded="true"] .db-more-chevron { transform: rotate(90deg); }
+.db-props-bar[data-pinned] .db-prop[data-pinned-property] .db-empty { color: var(--text-muted); }
+.db-pin-list { list-style: none; margin: 0; padding: 0; }
+.db-pin-list li { display: flex; align-items: center; gap: 4px; min-height: 34px; padding: 0 4px; border-radius: 6px; }
+.db-pin-list li[data-pinned="true"] { cursor: grab; }
+.db-pin-list li[data-dragging] { opacity: .5; }
+.db-pin-list li:hover { background: var(--glass-hover); }
+.db-pin-grip { display: inline-flex; width: 14px; flex: none; color: var(--text-muted); }
+.db-pin-check { display: flex; flex: 1; min-width: 0; align-items: center; gap: 8px; min-height: 34px; font-size: 13px; color: var(--text-primary); cursor: pointer; }
+.db-pin-check input { width: 16px; height: 16px; flex: none; }
+.db-pin-check span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.db-pin-moves { display: inline-flex; flex: none; gap: 2px; }
+.db-pin-moves button { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; border-radius: 6px; color: var(--text-secondary); }
+.db-pin-moves button:hover { background: var(--glass-active); color: var(--text-primary); }
+.db-pin-moves button[aria-disabled="true"] { opacity: .35; cursor: default; }
+.db-pin-note { margin: 8px 8px 4px; color: var(--text-secondary); font-size: 12px; line-height: 1.45; }
+@media (max-width: 767px) {
+  .db-pin-list li, .db-pin-check, .db-popover .db-pop-clear { min-height: 44px; }
+  .db-pin-moves button { width: 44px; height: 44px; }
+}
+
 
 /* ── database page ─────────────────────────────────────────────────── */
 .db-page { display: flex; flex-direction: column; height: 100%; min-height: 0; background: var(--bg-document, var(--bg-base)); }
@@ -446,27 +470,3 @@
 .db-cond-me { display: flex; align-items: center; gap: 6px; min-width: 0; }
 .db-cond-me > input { flex: 1; min-width: 0; }
 .db-cond-me > .db-control[aria-pressed="true"] { background: color-mix(in srgb, var(--color-accent) 16%, var(--bg-surface)); border-color: var(--color-accent); color: var(--text-primary); }
-
-/* Pinned properties: the "N more properties" disclosure and the Customize checklist. */
-.db-props-bar .db-prop-more { align-self: flex-end; }
-.db-more-chevron { transition: transform var(--motion-fast, 120ms); }
-.db-prop-more [aria-expanded="true"] .db-more-chevron { transform: rotate(90deg); }
-.db-props-bar[data-pinned] .db-prop[data-pinned-property] .db-empty { color: var(--text-muted); }
-.db-pin-list { list-style: none; margin: 0; padding: 0; }
-.db-pin-list li { display: flex; align-items: center; gap: 4px; min-height: 34px; padding: 0 4px; border-radius: 6px; }
-.db-pin-list li[data-pinned="true"] { cursor: grab; }
-.db-pin-list li[data-dragging] { opacity: .5; }
-.db-pin-list li:hover { background: var(--glass-hover); }
-.db-pin-grip { display: inline-flex; width: 14px; flex: none; color: var(--text-muted); }
-.db-pin-check { display: flex; flex: 1; min-width: 0; align-items: center; gap: 8px; min-height: 34px; font-size: 13px; color: var(--text-primary); cursor: pointer; }
-.db-pin-check input { width: 16px; height: 16px; flex: none; }
-.db-pin-check span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.db-pin-moves { display: inline-flex; flex: none; gap: 2px; }
-.db-pin-moves button { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; border-radius: 6px; color: var(--text-secondary); }
-.db-pin-moves button:hover { background: var(--glass-active); color: var(--text-primary); }
-.db-pin-moves button[aria-disabled="true"] { opacity: .35; cursor: default; }
-.db-pin-note { margin: 8px 8px 4px; color: var(--text-secondary); font-size: 12px; line-height: 1.45; }
-@media (max-width: 767px) {
-  .db-pin-list li, .db-pin-check, .db-popover .db-pop-clear { min-height: 44px; }
-  .db-pin-moves button { width: 44px; height: 44px; }
-}
