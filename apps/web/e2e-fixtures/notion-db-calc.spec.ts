@@ -280,3 +280,70 @@ test("print: the footer figure prints; an empty Calculate prompt does not", asyn
   await expect(footer(page).getByRole("rowheader")).toBeVisible();
   await expect(footer(page).getByRole("button", { name: "Calculate Priority", exact: true }).locator(".db-calc-prompt")).toBeHidden();
 });
+
+const queries = async (page: Page) => (await fx(page)).queries as any[];
+
+test("a calculation on a column the view does not show (Created by) is asked for and answered", async ({ page }) => {
+  await page.goto("/e2e-fixtures/databases.html");
+  const rows = await rowsOf(page);
+  await page.getByRole("tab", { name: "Board" }).click();
+  await page.getByRole("button", { name: "View settings" }).click();
+  await settings(page).getByRole("combobox", { name: "Add a calculation" }).selectOption("prism_creator");
+  await page.keyboard.press("Escape");
+  // The key travels as a field, so the server answers the figure (it answers null for an access key it was not asked to show).
+  await expect.poll(async () => (await queries(page)).filter((q: any) => q.aggregates?.some((a: any) => a.key === "prism_creator")).at(-1)?.fields).toContain("prism_creator");
+  const made = rows.filter((n) => typeof n.metadata.prism_creator === "string" && n.metadata.prism_creator).length;
+  const todo = page.getByRole("region", { name: "todo", exact: true }).locator('.db-col-head [data-calc="prism_creator"]');
+  await expect(todo.locator("[data-calc-value]")).toHaveAttribute("data-calc-value", /^\d+$/);
+  const perColumn = await page.locator('.db-col-head [data-calc="prism_creator"] [data-calc-value]').evaluateAll((els) => els.map((e) => Number(e.getAttribute("data-calc-value"))));
+  expect(perColumn.reduce((a, b) => a + b, 0)).toBe(made);
+});
+
+test("an answer that leaves a calculation out shows — , never a figure that loads forever", async ({ page }) => {
+  await page.goto("/e2e-fixtures/databases.html?calcomit=estimate");
+  await choose(page, "Estimate (h)", "Sum");
+  const cell = footer(page).getByRole("button", { name: /^Sum of Estimate/ });
+  await expect(cell.locator("[data-calc-value]")).toHaveAttribute("data-calc-value", "—");
+  await expect(cell).toHaveAccessibleName("Sum of Estimate (h): —");
+});
+
+test("groups cut from the answer read as not counted, not as zero; a partial figure names no row limit", async ({ page }) => {
+  await page.goto("/e2e-fixtures/databases.html?groupcap=done&calctrunc");
+  const rows = await rowsOf(page);
+  await choose(page, "Status", "Count all");
+  await page.getByRole("button", { name: "View settings" }).click();
+  await settings(page).getByLabel("Group by").selectOption("status");
+  await page.keyboard.press("Escape");
+  const todo = rows.filter((n) => n.metadata.status === "todo").length;
+  const done = rows.filter((n) => n.metadata.status === "done").length;
+  expect(done).toBeGreaterThan(0);
+  // A group the answer holds: its figure, marked as a lower bound.
+  const inTodo = page.getByRole("region", { name: "todo", exact: true }).locator("tfoot");
+  const figure = inTodo.getByRole("button", { name: new RegExp(`^Count of Status: ≥ ${todo} in todo`) });
+  await expect(figure).toBeVisible();
+  await expect(figure).toHaveAttribute("title", /first pages scanned/);
+  await expect(figure).not.toHaveAttribute("title", /20,000/);
+  // The group the answer left out: not 0, and its row count is what is loaded, as a lower bound.
+  const inDone = page.getByRole("region", { name: "done", exact: true }).locator("tfoot");
+  await expect(inDone.getByRole("button", { name: /^Count of Status: not counted in done/ })).toBeVisible();
+  await expect(inDone.getByRole("button", { name: /^Count of Status/ }).locator("[data-calc-value]")).toHaveAttribute("data-calc-value", "partial");
+  await expect(inDone.getByRole("rowheader")).toHaveText(`Count≥ ${done}`);
+  // Collapsed, the header says the same.
+  const region = page.getByRole("region", { name: "done", exact: true });
+  await region.getByRole("button", { name: "Collapse done" }).click();
+  await expect(region.locator(".db-group-head")).toContainText("Count of Status: not counted");
+});
+
+test("grouped by a multi-value property: a row that repeats a value is one row of that group", async ({ page }) => {
+  await page.goto("/e2e-fixtures/databases.html?dupe");
+  await choose(page, "Estimate (h)", "Sum");
+  await page.getByRole("button", { name: "View settings" }).click();
+  await settings(page).getByLabel("Group by").selectOption("labels");
+  await page.keyboard.press("Escape");
+  const rows = (await rowsOf(page)).filter((n) => Array.isArray(n.metadata.labels) && n.metadata.labels.includes("launch"));
+  const launch = page.getByRole("region", { name: "launch", exact: true });
+  await expect(launch.locator("tbody tr[data-row-id]")).toHaveCount(rows.length);
+  await expect(launch.locator('tbody tr[data-row-id="dup1"]')).toHaveCount(1);
+  await expect(launch.locator("tfoot").getByRole("rowheader")).toHaveText(`Count${rows.length}`);
+  await expect(launch.locator("tfoot").getByRole("button", { name: `Sum of Estimate (h): ${sum(rows, "estimate")} in launch`, exact: true })).toBeVisible();
+});

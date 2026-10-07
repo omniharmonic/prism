@@ -154,7 +154,7 @@ function groupRows(rows: QueryRow[], def: PropertyDef | undefined): Array<{ valu
   for (const v of order) buckets.set(v, []);
   for (const r of rows) {
     const raw = cell(r, def);
-    const vals = def.kind === "checkbox" ? [String(raw === true)] : Array.isArray(raw) ? raw.map(String) : isBlank(raw) ? [null] : [String(raw)];
+    const vals = def.kind === "checkbox" ? [String(raw === true)] : Array.isArray(raw) ? [...new Set(raw.map(String))] : isBlank(raw) ? [null] : [String(raw)];
     for (const v of vals.length ? vals : [null]) {
       if (!buckets.has(v)) buckets.set(v, []);
       buckets.get(v)!.push(r);

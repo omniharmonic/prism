@@ -68,3 +68,16 @@ test("a saved `Me` view survives a reload and still holds only the token", async
   await page.getByRole("button", { name: /^Filter/ }).click();
   await expect(page.getByRole("dialog", { name: "Filter" }).getByRole("button", { name: "Filter by me" })).toHaveAttribute("aria-pressed", "true");
 });
+
+test("a shell without the query route does not offer `Me` (nothing there could resolve it)", async ({ page }) => {
+  await page.goto("/e2e-fixtures/databases.html?legacy");
+  await expect(table(page).getByRole("button", { name: "Review workspace navigation", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Filter", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Filter" });
+  await dialog.getByRole("button", { name: "Add filter" }).click();
+  // "Created by" takes "Me" where the server can resolve it (the first test); not here.
+  await dialog.getByLabel("Condition 1 property").selectOption("prism_creator");
+  await dialog.getByLabel("Condition 1 operator").selectOption("eq");
+  await expect(dialog.getByLabel("Filter value")).toBeVisible();
+  await expect(dialog.getByRole("button", { name: "Filter by me" })).toHaveCount(0);
+});

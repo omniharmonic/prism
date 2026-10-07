@@ -9,6 +9,7 @@ import { ME_TOKEN, type QueryCondition, type QueryFilter, type QueryFilterGroup,
 import { STATUS_GROUP_LABELS, STATUS_GROUPS, SYSTEM_PROPERTIES, type PropertyDef } from "../../lib/database/schema";
 import { CARD_SIZES, VIEW_LABELS, VIEW_TYPES, type CardSize, type DatabaseView, type ViewType } from "./config";
 import { CalcSettings } from "./Calculations";
+import { useVaultClient } from "../../data/VaultClientContext";
 
 /** Title + timestamps + every property, as filter/sort targets. */
 export function filterTargets(props: PropertyDef[]): Array<{ key: string; label: string; def?: PropertyDef }> {
@@ -51,6 +52,10 @@ const ME_OPS: QueryOp[] = ["eq", "ne", "contains", "not_contains"];
 export const meFilterable = (def?: PropertyDef): boolean => !!def && (def.kind === "person" || def.system === "created_by" || def.system === "edited_by");
 
 function ValueInput({ def, cond, onChange }: { def?: PropertyDef; cond: QueryCondition; onChange: (v: unknown) => void }) {
+  // "Me" is resolved by the query route for whoever asks. A shell without the route
+  // filters on the device, where nobody could resolve it: not offered there (a saved
+  // token still shows, so it can be cleared).
+  const canResolveMe = !!useVaultClient().queryNotes;
   if (cond.op === "exists" || cond.op === "not_exists") return <span />;
   if (def?.kind === "checkbox") {
     return (
@@ -75,7 +80,7 @@ function ValueInput({ def, cond, onChange }: { def?: PropertyDef; cond: QueryCon
   }
   // A person / created-by / edited-by filter can be "Me": stored as the token `@me` and
   // resolved for whoever is looking (never an address in the saved view).
-  if (meFilterable(def) && ME_OPS.includes(cond.op)) {
+  if (meFilterable(def) && ME_OPS.includes(cond.op) && (canResolveMe || cond.value === ME_TOKEN)) {
     const me = cond.value === ME_TOKEN;
     return (
       <span className="db-cond-me">

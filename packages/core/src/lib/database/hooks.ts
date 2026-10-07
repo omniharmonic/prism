@@ -264,6 +264,8 @@ export interface DatabaseAggregates {
   truncated: boolean;
   aggregates: AggregateValues;
   groups: AggregateGroup[] | null;
+  /** Some groups are missing from `groups` (or incomplete): never read a missing one as empty. */
+  groupsCapped: boolean;
   /** The server is older than calculations: it answered the rows but no figures. */
   unsupported: boolean;
 }
@@ -298,7 +300,7 @@ export function useDatabaseAggregates(spec: QuerySpec | null, aggregates: Aggreg
         const notes = await client.listNotes({ tag: s.tags[0], limit: 5000 });
         page = runQuery(notes, s, { limited: notes.some((n) => Array.isArray(n._caps)) });
       }
-      return { total: page.total, truncated: page.truncated, aggregates: page.aggregates ?? {}, groups: page.groups ?? null, unsupported: page.aggregates === undefined };
+      return { total: page.total, truncated: page.truncated, aggregates: page.aggregates ?? {}, groups: page.groups ?? null, groupsCapped: page.groupsCapped === true, unsupported: page.aggregates === undefined };
     },
   });
 }

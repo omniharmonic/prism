@@ -98,8 +98,12 @@ export interface CalcState {
   groups: Map<string | null, AggregateGroup> | null;
   /** Matching rows the viewer can see; null until the first answer. */
   count: number | null;
-  /** The server stopped at its scan cap: figures cover the scanned rows only. */
+  /** The figures cover only part of the view (the server's scan cap or its work budget). */
   partial: boolean;
+  /** Some groups are missing from the answer: a missing group was not counted (it is not empty). */
+  groupsCapped?: boolean;
+  /** The answer is for exactly what is asked now (not the previous answer kept while loading). */
+  settled?: boolean;
   /** Change (or clear, with null) a property's calculation. */
   set: (key: string, fn: AggregateFn | null) => void;
 }
@@ -121,21 +125,32 @@ export function withCalculation(current: Record<string, AggregateFn> | undefined
   return Object.keys(next).length ? next : undefined;
 }
 
+/** A group the answer left out although it may hold rows (groups were cut, or the scan was partial). */
+const notCounted = (calc: CalcState, group?: { value: string | null }): boolean =>
+  !!group && !!calc.groups && !calc.groups.has(group.value) && (calc.groupsCapped === true || calc.partial);
 /**
- * The figures for the view or for one group; null until answered. A group the
- * answer does not list has no rows: its figures are those of an empty set.
+ * The figures for the view or for one group; null until answered. A group a
+ * COMPLETE answer does not list has no rows: its figures are those of an empty set.
  */
 function valuesFor(calc: CalcState, group?: { value: string | null }): AggregateValues | null {
   if (!group) return calc.total;
   if (!calc.groups) return null;
   return calc.groups.get(group.value)?.aggregates ?? computeAggregates([], Object.entries(calc.chosen).map(([key, fn]) => ({ key, fn }))).aggregates;
 }
-/** A figure that has not arrived yet (the engine answers null, never nothing, for what was asked). */
-const pendingValue = (v: AggregateValue | undefined): v is undefined => v === undefined;
+/**
+ * A figure that has not arrived yet: no answer, or the previous answer is still
+ * shown while the next loads. An answer that arrived WITHOUT the figure (an older
+ * or stricter server) is not pending — it reads "—", never "…" forever.
+ */
+const pendingValue = (calc: CalcState, values: AggregateValues | null, v: AggregateValue | undefined): boolean => v === undefined && (values === null || calc.settled === false);
+const NOT_COUNTED = "partial";
+const NOT_COUNTED_SPOKEN = "not counted";
+const NOT_COUNTED_WHY = "This view has more groups or values than are calculated at once: this group was not counted";
+const PARTIAL_WHY = "This database is very large: the figure covers the first pages scanned";
 
 /** One figure: small label + value, with the full sentence for assistive tech. */
-function Figure({ fn, def, value, partial, pending }: { fn: AggregateFn; def: PropertyDef; value: AggregateValue | undefined; partial: boolean; pending: boolean }) {
-  const text = pending ? "…" : partialText(fn, formatCalc(fn, value, def), partial);
+function Figure({ fn, def, value, partial, pending, missing }: { fn: AggregateFn; def: PropertyDef; value: AggregateValue | undefined; partial: boolean; pending: boolean; missing: boolean }) {
+  const text = missing ? NOT_COUNTED : pending ? "…" : partialText(fn, formatCalc(fn, value, def), partial);
   return (
     <>
       <span className="db-calc-label" aria-hidden="true">{CALC_SHORT[fn]}</span>
@@ -178,16 +193,17 @@ export function CalcCell({ def, calc, group }: { def: PropertyDef; calc: CalcSta
   const fn = calc.chosen[def.key];
   const values = valuesFor(calc, group);
   const value = fn ? values?.[def.key]?.[fn] : undefined;
-  const pending = !!fn && pendingValue(value);
-  const text = fn ? (pending ? "…" : partialText(fn, formatCalc(fn, value, def), calc.partial)) : "";
+  const missing = !!fn && notCounted(calc, group);
+  const pending = !!fn && !missing && pendingValue(calc, values, value);
+  const text = fn ? (missing ? NOT_COUNTED_SPOKEN : pending ? "…" : partialText(fn, formatCalc(fn, value, def), calc.partial)) : "";
   const where = group ? ` in ${group.label}` : "";
   return (
     <td className="db-calc-cell">
       <button ref={anchor} type="button" className="db-calc-btn focus-ring" data-empty={fn ? undefined : ""} aria-haspopup="menu" aria-expanded={open}
         aria-label={fn ? `${calcSentence(fn, def.label, text)}${where}${calc.partial ? " (only part of this very large database was counted)" : ""}` : `Calculate ${def.label}${where}`}
-        title={fn && calc.partial ? "This database is very large: the figure covers the first 20,000 pages" : undefined}
+        title={fn && missing ? NOT_COUNTED_WHY : fn && calc.partial ? PARTIAL_WHY : undefined}
         onClick={() => setOpen((o) => !o)}>
-        {fn ? <Figure fn={fn} def={def} value={value} partial={calc.partial} pending={pending} /> : <span className="db-calc-prompt" data-print="hide"><span className="db-calc-label">Calculate</span><ChevronDown size={12} aria-hidden="true" /></span>}
+        {fn ? <Figure fn={fn} def={def} value={value} partial={calc.partial} pending={pending} missing={missing} /> : <span className="db-calc-prompt" data-print="hide"><span className="db-calc-label">Calculate</span><ChevronDown size={12} aria-hidden="true" /></span>}
       </button>
       <Popover anchor={anchor} open={open} onClose={() => setOpen(false)} label={`Calculate ${def.label}`} width={230}>
         <CalcMenu def={def} current={fn} onPick={(next) => { setOpen(false); calc.set(def.key, next); anchor.current?.focus(); }} />
@@ -199,7 +215,8 @@ export function CalcCell({ def, calc, group }: { def: PropertyDef; calc: CalcSta
 /** The frozen first footer cell: how many rows (of the view, or of the group). */
 export function CalcCountCell({ calc, group, loaded }: { calc: CalcState; group?: { value: string | null; label: string }; loaded: number }) {
   const n = group ? calc.groups?.get(group.value)?.count ?? loaded : calc.count ?? loaded;
-  const text = partialText("count_all", n.toLocaleString(), calc.partial);
+  // A group the answer left out: the rows loaded so far are all that is known of it.
+  const text = partialText("count_all", n.toLocaleString(), calc.partial || notCounted(calc, group));
   return (
     <th scope="row" className="db-sticky db-calc-cell db-calc-count" aria-label={`Count${group ? ` in ${group.label}` : ""}: ${text}`}>
       <span className="db-calc-static"><span className="db-calc-label">Count</span><span className="db-calc-value" data-calc-value={text}>{text}</span></span>
@@ -219,11 +236,12 @@ export function CalcSummary({ calc, props, group, className = "" }: { calc: Calc
     <span className={`db-calc-summary ${className}`}>
       {items.map(({ fn, def }) => {
         const value = values?.[def.key]?.[fn];
-        const pending = pendingValue(value);
-        const text = pending ? "…" : partialText(fn, formatCalc(fn, value, def), calc.partial);
+        const missing = notCounted(calc, group);
+        const pending = !missing && pendingValue(calc, values, value);
+        const text = missing ? NOT_COUNTED : pending ? "…" : partialText(fn, formatCalc(fn, value, def), calc.partial);
         return (
-          <span key={def.key} className="db-calc-chip" data-calc={def.key} title={CALC_LABELS[fn]}>
-            <span className="db-sr-only">{calcSentence(fn, def.label, text)}</span>
+          <span key={def.key} className="db-calc-chip" data-calc={def.key} title={missing ? NOT_COUNTED_WHY : CALC_LABELS[fn]}>
+            <span className="db-sr-only">{calcSentence(fn, def.label, missing ? NOT_COUNTED_SPOKEN : text)}</span>
             <span aria-hidden="true" className="db-calc-label">{CALC_SHORT[fn]} · {def.label}</span>
             <span aria-hidden="true" className="db-calc-value" data-calc-value={pending ? undefined : text}>{text}</span>
           </span>

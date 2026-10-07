@@ -124,7 +124,9 @@ export function DatabasePage({ note, readOnly, embedded }: RendererProps & {
     if (view.type === "calendar") for (const k of INTEGRATION_META) wanted.add(k);
     // System properties that live in metadata (created by / last edited by) are
     // fetched when the view shows, filters or sorts by them.
-    for (const k of SYSTEM_META) if (view.visible?.includes(k) || filterConditions(view.filter).some((c) => c.key === k) || view.sort?.some((s) => s.key === k)) wanted.add(k);
+    // …or calculates over them: the server answers a figure for an access key only to a
+    // request that also asks for the key (a calculation on a hidden "Created by" column).
+    for (const k of SYSTEM_META) if (view.visible?.includes(k) || filterConditions(view.filter).some((c) => c.key === k) || view.sort?.some((s) => s.key === k) || view.calculations?.[k] !== undefined) wanted.add(k);
     const fields = hasSchema ? [...wanted].filter((k) => !k.startsWith("$") && (!isSystemKey(k) || ROW_META.includes(k) || SYSTEM_META.includes(k))).slice(0, 40) : undefined;
     let filter = view.filter;
     if (view.type === "calendar" && view.dateKey && view.dateKey !== "$createdAt" && (!filter || filter.match === "all")) {
@@ -315,6 +317,9 @@ export function DatabasePage({ note, readOnly, embedded }: RendererProps & {
     groups: calcData?.groups ? new Map(calcData.groups.map((g) => [g.value, g])) : null,
     count: calcData?.total ?? (pages.length ? total : null),
     partial: calcData?.truncated ?? truncated,
+    groupsCapped: calcData?.groupsCapped === true,
+    // A previous answer shown while the next one loads: what it lacks is still on its way.
+    settled: !!calcData && !calcQuery.isPlaceholderData,
     set: (key, fn) => updateView({ calculations: withCalculation(view.calculations, key, fn) }),
   } : undefined;
 
