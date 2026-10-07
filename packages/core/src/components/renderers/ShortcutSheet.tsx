@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { X } from "lucide-react";
-import { APP_SHORTCUTS as K, PENDING_SHORTCUTS, shortcutAvailable, type AppShortcut } from "../../lib/shortcuts";
+import { APP_SHORTCUTS as K, PENDING_SHORTCUTS, inNativeShell, shortcutAvailable, type AppShortcut } from "../../lib/shortcuts";
 import "./editor-blocks.css";
 
 /**
@@ -33,6 +33,8 @@ interface Row {
   label: string;
   keys: string[];
   literal?: boolean;
+  /** Listed only in a native shell (the browser keeps the key). */
+  native?: boolean;
   /** Listed only where this app-level binding works (`shortcutAvailable`: ⌘N is the native app's). */
   only?: AppShortcut;
   /** Not bound yet (its feature is on another branch): never rendered. */
@@ -80,12 +82,12 @@ const BASE_SECTIONS: Section[] = [
 /** Every section, with the rows from `PENDING_SHORTCUTS` whose feature has been bound (`pending: false`) added. */
 export const SHORTCUT_SECTIONS: Section[] = BASE_SECTIONS.map((s) => ({
   ...s,
-  rows: [...s.rows, ...PENDING_SHORTCUTS.filter((p) => p.section === s.title && !p.pending).map((p): Row => ({ label: p.label, keys: p.keys, literal: p.literal }))],
+  rows: [...s.rows, ...PENDING_SHORTCUTS.filter((p) => p.section === s.title && !p.pending).map((p): Row => ({ label: p.label, keys: p.keys, literal: p.literal, native: p.native }))],
 }));
 
 /** The sections as shown HERE: a binding that cannot work in this shell (⌘N in a browser tab) is not listed. */
 export function visibleShortcutSections(): Section[] {
-  return SHORTCUT_SECTIONS.map((s) => ({ ...s, rows: s.rows.filter((r) => !r.only || shortcutAvailable(r.only)) }));
+  return SHORTCUT_SECTIONS.map((s) => ({ ...s, rows: s.rows.filter((r) => (!r.only || shortcutAvailable(r.only)) && (!r.native || inNativeShell())) }));
 }
 
 function Sheet({ onClose }: { onClose: () => void }) {

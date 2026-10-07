@@ -53,14 +53,17 @@ export function shortcutAvailable(name: AppShortcut): boolean {
  * keys here, so the sheet does not show a row while it is `pending` (it lists working
  * keys only, and its tests press what it lists). At integration, bind the key in its
  * handler and drop the entry's `pending` flag — the row then appears in `section`.
+ * Bound on main since the P2 conveniences: ⌘L (`useKeyboardShortcuts`), ⌘⇧T (same; the key only
+ * reaches a native shell — `native`), ⌘⌥T (`lib/tiptap/toggleAll.ts`), Shift+A (`NotificationsInbox`).
+ * Still pending: ⌘A block select and `:` emoji.
  * (⌘N is bound already, native shells only: `NATIVE_ONLY_SHORTCUTS`.)
  */
-export interface PendingShortcut { label: string; keys: string[]; section: "Text formatting" | "Blocks" | "Navigation" | "Markdown while typing"; literal?: boolean; pending: boolean }
+export interface PendingShortcut { label: string; keys: string[]; section: "Text formatting" | "Blocks" | "Navigation" | "Markdown while typing"; literal?: boolean; /** Arrives only in a native shell (a browser keeps the key). */ native?: boolean; pending: boolean }
 export const PENDING_SHORTCUTS: PendingShortcut[] = [
-  { label: "Copy link to this page", keys: ["Mod-L"], section: "Navigation", pending: true },
-  { label: "Reopen the last closed tab", keys: ["Mod-Shift-T"], section: "Navigation", pending: true },
-  { label: "Mark all as read (Inbox)", keys: ["Shift-A"], section: "Navigation", pending: true },
-  { label: "Expand / collapse all toggles", keys: ["Mod-Alt-T"], section: "Blocks", pending: true },
+  { label: "Copy link to this page", keys: ["Mod-L"], section: "Navigation", pending: false },
+  { label: "Reopen the last closed tab", keys: ["Mod-Shift-T"], section: "Navigation", native: true, pending: false },
+  { label: "Mark all as read (Inbox)", keys: ["Shift-A"], section: "Navigation", pending: false },
+  { label: "Expand / collapse all toggles", keys: ["Mod-Alt-T"], section: "Blocks", pending: false },
   { label: "Select the block, then all blocks (press again)", keys: ["Mod-A"], section: "Blocks", pending: true },
   { label: "Emoji", keys: [":"], section: "Markdown while typing", literal: true, pending: true },
 ];
