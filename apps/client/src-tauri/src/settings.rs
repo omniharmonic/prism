@@ -1,6 +1,7 @@
-//! Non-secret, persisted client settings: the chosen server origin and the
-//! main window's geometry. Stored as JSON in the app config directory
-//! (`~/Library/Application Support/<identifier>/client-settings.json` on macOS).
+//! Non-secret, persisted client settings: the chosen server origin, the main
+//! window's geometry (desktop) and the app lock (iOS). Stored as JSON in the app
+//! config directory (`~/Library/Application Support/<identifier>/client-settings.json`
+//! on macOS; the same path inside the app's sandbox container on iOS).
 //! The device token is NOT here; it lives in the keychain (`secure_store.rs`).
 //!
 //! Read before the Tauri app is built (the CSP depends on the origin), so the
@@ -27,6 +28,97 @@ pub struct Settings {
     /// and ignored. Restart required.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub quick_capture_shortcut: Option<String>,
+    /// iOS: Face ID / passcode app lock (WP5). Absent = off. A malformed value
+    /// reads as absent, never as a corrupt file (which would drop the origin).
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "lenient_lock"
+    )]
+    pub app_lock: Option<AppLock>,
+}
+
+fn lenient_lock<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<AppLock>, D::Error> {
+    let v = serde_json::Value::deserialize(d)?;
+    Ok(serde_json::from_value::<AppLock>(v)
+        .ok()
+        .map(AppLock::sanitized))
+}
+
+/// When the iOS app asks for Face ID (or the device passcode).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum LockMode {
+    #[default]
+    Off,
+    /// Once per app launch.
+    Launch,
+    /// After the app has been in the background for `minutes`.
+    Background,
+    /// Every time the app comes back from the background.
+    Always,
+}
+
+impl LockMode {
+    #[cfg_attr(not(target_os = "ios"), allow(dead_code))]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            LockMode::Off => "off",
+            LockMode::Launch => "launch",
+            LockMode::Background => "background",
+            LockMode::Always => "always",
+        }
+    }
+}
+
+/// Minutes the Settings UI offers for [`LockMode::Background`].
+pub const LOCK_MINUTES: [u32; 3] = [5, 15, 60];
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AppLock {
+    pub mode: LockMode,
+    /// Only meaningful for `background`; always one of [`LOCK_MINUTES`].
+    pub minutes: u32,
+}
+
+impl Default for AppLock {
+    fn default() -> Self {
+        Self {
+            mode: LockMode::Off,
+            minutes: LOCK_MINUTES[0],
+        }
+    }
+}
+
+impl AppLock {
+    /// Validate what the Settings page asks for.
+    pub fn parse(mode: &str, minutes: Option<u32>) -> Result<Self, String> {
+        let mode = match mode {
+            "off" => LockMode::Off,
+            "launch" => LockMode::Launch,
+            "background" => LockMode::Background,
+            "always" => LockMode::Always,
+            _ => return Err("Unknown lock setting.".into()),
+        };
+        let minutes = minutes.unwrap_or(LOCK_MINUTES[0]);
+        if !LOCK_MINUTES.contains(&minutes) {
+            return Err("Choose 5, 15 or 60 minutes.".into());
+        }
+        Ok(Self { mode, minutes })
+    }
+
+    /// A saved value from disk, with anything out of range treated as the default.
+    pub fn sanitized(self) -> Self {
+        if LOCK_MINUTES.contains(&self.minutes) {
+            self
+        } else {
+            Self {
+                minutes: LOCK_MINUTES[0],
+                ..self
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
@@ -40,9 +132,23 @@ pub struct WindowGeometry {
     pub maximized: bool,
 }
 
-/// `<config dir>/<identifier>`.
+/// `<config dir>/<identifier>`. On iOS that is inside the app's own sandbox
+/// container (`$HOME` is the container there): `Library/Application Support`,
+/// which is backed up but never visible in the Files app.
 pub fn settings_dir(identifier: &str) -> Option<PathBuf> {
-    dirs::config_dir().map(|d| d.join(identifier))
+    #[cfg(target_os = "ios")]
+    {
+        std::env::var_os("HOME").map(|home| {
+            PathBuf::from(home)
+                .join("Library")
+                .join("Application Support")
+                .join(identifier)
+        })
+    }
+    #[cfg(not(target_os = "ios"))]
+    {
+        dirs::config_dir().map(|d| d.join(identifier))
+    }
 }
 
 pub fn load(dir: &Path) -> Settings {
@@ -73,6 +179,49 @@ pub fn update(dir: &Path, f: impl FnOnce(&mut Settings)) -> std::io::Result<()> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn app_lock_parsing() {
+        assert_eq!(
+            AppLock::parse("background", Some(15)),
+            Ok(AppLock {
+                mode: LockMode::Background,
+                minutes: 15
+            })
+        );
+        assert_eq!(AppLock::parse("off", None).unwrap().mode, LockMode::Off);
+        assert_eq!(
+            AppLock::parse("always", None).unwrap().mode,
+            LockMode::Always
+        );
+        assert_eq!(AppLock::parse("launch", Some(60)).unwrap().minutes, 60);
+        assert!(AppLock::parse("sometimes", None).is_err());
+        assert!(AppLock::parse("background", Some(0)).is_err());
+        assert!(AppLock::parse("background", Some(7)).is_err());
+        let s: Settings =
+            serde_json::from_str(r#"{"appLock":{"mode":"always","minutes":5}}"#).unwrap();
+        assert_eq!(s.app_lock.unwrap().mode, LockMode::Always);
+        let odd: Settings =
+            serde_json::from_str(r#"{"appLock":{"mode":"background","minutes":9999}}"#).unwrap();
+        assert_eq!(
+            odd.app_lock.unwrap().minutes,
+            5,
+            "out-of-range minutes are sanitized"
+        );
+        let bad: Settings = serde_json::from_str(
+            r#"{"serverOrigin":"https://prism.example.com","appLock":{"mode":"nope","minutes":5}}"#,
+        )
+        .unwrap();
+        assert_eq!(bad.app_lock, None, "a bad lock value reads as off…");
+        assert_eq!(
+            bad.server_origin.as_deref(),
+            Some("https://prism.example.com"),
+            "…and never costs the saved server"
+        );
+        assert!(!serde_json::to_string(&Settings::default())
+            .unwrap()
+            .contains("appLock"));
+    }
 
     #[test]
     fn round_trip_and_tolerates_garbage() {

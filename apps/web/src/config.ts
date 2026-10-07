@@ -178,6 +178,22 @@ async function askMe(context: string): Promise<Me> {
   }
 }
 
+let audienceCheck = 0;
+/**
+ * After a vault/workspace switch (`setActiveVault` dropped the audience): ask the server who we
+ * are THERE. Until it answers — at most `giveUpMs` — the workspace stays unmounted (`App` shows
+ * "Switching vault…"), so nothing a person does can land in a workspace that is about to be
+ * replaced. No answer in time (offline, a stalled request): the unconfirmed workspace, as before.
+ */
+export function confirmAudience(giveUpMs = 4000): Promise<Me> {
+  const mine = ++audienceCheck;
+  const store = useAgentChatStore.getState();
+  const done = () => { if (mine === audienceCheck) store.setAudiencePending(false); };
+  store.setAudiencePending(true);
+  const timer = setTimeout(done, giveUpMs);
+  return fetchMe().finally(() => { clearTimeout(timer); done(); });
+}
+
 /** The cached identity for the signed-in user — for surfaces that need a
  *  synchronous read (collab presence/authorship). Null until fetchMe() has run.
  *  Use with fetchMe() to guarantee freshness. */

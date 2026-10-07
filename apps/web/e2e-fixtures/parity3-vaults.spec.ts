@@ -1,4 +1,4 @@
-import { test, expect } from "@playwright/test";
+import { test, expect, type Page } from "@playwright/test";
 
 /**
  * Parity pass 3 · NP-SB-01: "Switching reloads the tree, favorites, recents and search scope
@@ -69,19 +69,84 @@ test("NP-SB-01: after a vault switch the tree and search show only the new vault
   await expect(nav.getByText("Tidepool study", { exact: true })).toHaveCount(0);
 });
 
-/** Phone: the same switch from the top of the Browse drawer. */
+const holdAccountCheck = (page: Page) => page.evaluate(() => { (window as any).prismFixtureControls.meHold = true; });
+const answerAccountCheck = (page: Page) => page.evaluate(() => { const c = (window as any).prismFixtureControls; c.meHold = false; c.meRelease?.(); });
+const treeReads = (page: Page, from: number) => page.evaluate((mark) => ((window as any).prismFixtureVaultRequests as Array<{ path: string; vault: string | null }>).slice(mark).filter((r) => r.path.startsWith("/api/tree")), from);
+
+/**
+ * Phone: the same switch from the top of the Browse drawer.
+ *
+ * A switch is confirmed by the server (one round trip, held open here like a slow connection).
+ * The workspace used to be mounted for "nobody yet" in between and thrown away at the answer:
+ * a drawer reopened in that moment shut again by itself (this test failed that way under load),
+ * and the new vault's tree was fetched twice. Now there is nothing to open until the answer.
+ */
 test("NP-SB-01: phone — the drawer's switcher changes the tree too", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto("/e2e-fixtures/workspace.html?navigation&vaultdata");
-  await page.evaluate(() => (window as any).prismFixtureUI.setState({ sidebarOpen: true, contextPanelOpen: false }));
-  const selector = page.getByRole("button", { name: "Switch vault" });
+  const notes = page.getByRole("button", { name: "Notes", exact: true });
+  const drawer = page.getByRole("dialog", { name: "Workspace navigation" });
+  await notes.click();
+  const selector = drawer.getByRole("button", { name: "Switch vault" });
   await expect(selector).toContainText("Personal vault");
+  await holdAccountCheck(page);
+  const mark = await page.evaluate(() => ((window as any).prismFixtureVaultRequests as unknown[]).length);
   await selector.click();
-  await page.getByRole("menu").getByRole("menuitem", { name: "Shared research" }).click();
-  // The drawer closes on the switch; reopened, it is the new vault's.
-  await page.evaluate(() => (window as any).prismFixtureUI.setState({ sidebarOpen: true }));
-  await expect(page.getByRole("button", { name: "Switch vault" })).toContainText("Shared research");
-  const tree = page.getByRole("tree", { name: "Pages" });
+  await drawer.getByRole("menu").getByRole("menuitem", { name: "Shared research" }).click();
+  // Until the server has answered: no workspace to act in — not the old vault's, not a stand-in.
+  await expect(page.getByRole("status").filter({ hasText: "Switching vault…" })).toBeVisible();
+  await expect(notes).toHaveCount(0);
+  await expect(drawer).toHaveCount(0);
+  expect(await treeReads(page, mark)).toEqual([]);
+  await answerAccountCheck(page);
+  // The new vault's workspace, once. The drawer the reader opens now stays open.
+  await notes.click();
+  await expect(selector).toContainText("Shared research");
+  const tree = drawer.getByRole("tree", { name: "Pages" });
   await expect(tree.getByRole("treeitem", { name: "Studies", exact: true })).toBeVisible();
   for (const gone of ["Journal", "Projects", "Messages"]) await expect(tree.getByRole("treeitem", { name: gone, exact: true })).toHaveCount(0);
+  await expect(page.getByRole("status").filter({ hasText: "Switching vault…" })).toHaveCount(0);
+  await expect(drawer).toBeVisible();
+  expect((await treeReads(page, mark)).map((r) => r.vault)).toEqual(["secondary"]);
+});
+
+/** Desktop: the workspace arrives once, so what is typed right after a switch stays typed. */
+test("NP-SB-01: quick find opened right after a switch keeps what was typed", async ({ page }) => {
+  await page.goto("/e2e-fixtures/workspace.html?navigation&vaultdata");
+  const nav = page.locator(".workspace-navigation");
+  await expect(nav.getByRole("button", { name: "Switch vault" })).toContainText("Personal vault");
+  await holdAccountCheck(page);
+  const mark = await page.evaluate(() => ((window as any).prismFixtureVaultRequests as unknown[]).length);
+  await nav.getByRole("button", { name: "Switch vault" }).click();
+  await nav.getByRole("menu").getByRole("menuitem", { name: "Shared research" }).click();
+  await expect(page.getByRole("status").filter({ hasText: "Switching vault…" })).toBeVisible();
+  await expect(nav).toHaveCount(0);
+  await answerAccountCheck(page);
+  await expect(nav.getByRole("button", { name: "Switch vault" })).toContainText("Shared research");
+  await page.keyboard.press("ControlOrMeta+k");
+  const input = page.getByRole("combobox", { name: "Search notes and commands" });
+  await input.pressSequentially("tidepool");
+  await expect(page.getByRole("group", { name: "Notes" }).getByRole("option", { name: /Tidepool study/ })).toBeVisible();
+  await expect(input).toHaveValue("tidepool");
+  await expect(input).toBeFocused();
+  await page.keyboard.press("Escape");
+  // One workspace, one tree read (it used to be mounted — and to fetch — twice).
+  expect((await treeReads(page, mark)).map((r) => r.vault)).toEqual(["secondary"]);
+});
+
+/** A check that never answers (offline, a stalled request) gives way to the workspace, as before. */
+test("NP-SB-01: a switch whose account check stalls still opens the workspace", async ({ page }) => {
+  await page.clock.install();
+  await page.goto("/e2e-fixtures/workspace.html?navigation&vaultdata");
+  const nav = page.locator(".workspace-navigation");
+  await expect(nav.getByRole("button", { name: "Switch vault" })).toContainText("Personal vault");
+  await holdAccountCheck(page);
+  await nav.getByRole("button", { name: "Switch vault" }).click();
+  await nav.getByRole("menu").getByRole("menuitem", { name: "Shared research" }).click();
+  await expect(page.getByRole("status").filter({ hasText: "Switching vault…" })).toBeVisible();
+  await page.clock.fastForward(4100);
+  await expect(page.getByRole("status").filter({ hasText: "Switching vault…" })).toHaveCount(0);
+  await expect(nav.getByRole("tree", { name: "Pages" }).getByRole("treeitem", { name: "Studies", exact: true })).toBeVisible();
+  await answerAccountCheck(page);
+  await expect(nav.getByRole("button", { name: "Switch vault" })).toContainText("Shared research");
 });

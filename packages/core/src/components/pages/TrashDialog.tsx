@@ -10,10 +10,11 @@ import { useSwipeActions } from "../../lib/gestures/useSwipeActions";
 import { usePullToRefresh } from "../../lib/gestures/usePullToRefresh";
 import "./pages.css";
 
+import { formatDate as fmtDate } from "../../lib/datetime/format";
 const when = (iso: string | null) => {
   if (!iso) return "";
   const d = new Date(iso);
-  return Number.isNaN(d.getTime()) ? "" : d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+  return Number.isNaN(d.getTime()) ? "" : fmtDate(d, { month: "short", day: "numeric" });
 };
 
 /** Trash: search, restore, or delete for good (a second, explicit confirmation). */

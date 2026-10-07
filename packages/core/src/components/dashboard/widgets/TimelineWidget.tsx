@@ -5,6 +5,10 @@ import { useUIStore } from "../../../app/stores/ui";
 import { inferContentType } from "../../../lib/schemas/content-types";
 import type { DashboardWidgetConfig } from "../../../lib/dashboard/widget-registry";
 import type { Note } from "../../../lib/types";
+import { formatTime, usesSystemTime } from "../../../lib/datetime/format";
+
+/** "system" keeps the string this always showed; a chosen 12/24-hour format replaces it (NP-AX-09). */
+const clock = (d: Date): string => (usesSystemTime() ? format(d, "h:mm a") : formatTime(d, { hour: "numeric", minute: "2-digit" }));
 
 interface TimelineWidgetProps {
   config: DashboardWidgetConfig;
@@ -119,7 +123,7 @@ export function TimelineWidget({ config }: TimelineWidgetProps) {
           <div className="space-y-1 pl-3" style={{ borderLeft: "2px solid var(--glass-border)" }}>
             {notes.map((note) => {
               const raw = getDateValue(note, dateField);
-              const time = raw ? format(parseISO(raw), "h:mm a") : "";
+              const time = raw ? clock(parseISO(raw)) : "";
               const title =
                 note.path?.split("/").pop() ??
                 note.content?.split("\n")[0]?.slice(0, 60) ??

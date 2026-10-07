@@ -14,6 +14,7 @@ import { useNotionDbSyncApi } from "../../lib/host/folderSync";
 import { hostServiceErrorText, type NotionDbSyncInfo } from "../../lib/host/services";
 import { DesktopOnlyNotice } from "../ui/DesktopOnlyNotice";
 
+import { formatDateTime as fmtDateTime } from "../../lib/datetime/format";
 interface NotionDbSyncModalProps {
   isOpen: boolean;
   onClose: () => void;
@@ -338,7 +339,7 @@ export function NotionDbSyncModal({ isOpen, onClose }: NotionDbSyncModalProps) {
                         </div>
                       </div>
                       <div className="flex items-center justify-between text-xs text-white/40">
-                        <span>{c.lastSynced ? `Last synced ${new Date(c.lastSynced).toLocaleString()}` : "Never synced"}</span>
+                        <span>{c.lastSynced ? `Last synced ${fmtDateTime(new Date(c.lastSynced))}` : "Never synced"}</span>
                         {api.update && (
                           <label className="flex items-center gap-1.5 cursor-pointer">
                             <input

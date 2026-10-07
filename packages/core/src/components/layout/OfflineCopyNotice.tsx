@@ -1,5 +1,6 @@
 import { CloudOff } from "lucide-react";
 
+import { formatDate as fmtDate, formatTime as fmtTime } from "../../lib/datetime/format";
 /** When the host served a page from its on-device copy, it stamps the note with when that copy was saved. */
 export function offlineCopyAt(note: unknown): string | null {
   const at = (note as { _offlineCopyAt?: unknown } | null | undefined)?._offlineCopyAt;
@@ -11,8 +12,8 @@ export function offlineCopyTime(at: string, now = new Date()): string {
   const when = new Date(at);
   if (Number.isNaN(when.getTime())) return "earlier";
   const sameDay = when.toDateString() === now.toDateString();
-  const time = when.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
-  return sameDay ? time : `${when.toLocaleDateString(undefined, when.getFullYear() === now.getFullYear() ? { month: "short", day: "numeric" } : { month: "short", day: "numeric", year: "numeric" })}, ${time}`;
+  const time = fmtTime(when, { hour: "numeric", minute: "2-digit" });
+  return sameDay ? time : `${fmtDate(when, when.getFullYear() === now.getFullYear() ? { month: "short", day: "numeric" } : { month: "short", day: "numeric", year: "numeric" })}, ${time}`;
 }
 
 /** NP-OF-02: a quiet line above a page read from the device with no connection. */

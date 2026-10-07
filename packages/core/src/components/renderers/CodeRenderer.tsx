@@ -16,9 +16,10 @@ import { rust } from "@codemirror/lang-rust";
 import { sql } from "@codemirror/lang-sql";
 import type { RendererProps } from "./RendererProps";
 import { useAutoSave } from "../../app/hooks/useAutoSave";
-import { useSettingsStore } from "../../app/stores/settings";
+import { useEffectiveTheme } from "../../app/stores/settings";
 import type { Extension } from "@codemirror/state";
 
+import { formatTime as fmtTime } from "../../lib/datetime/format";
 function getLanguageExtension(lang: string): Extension | null {
   switch (lang) {
     case "typescript":
@@ -79,7 +80,7 @@ export default function CodeRenderer({ note, readOnly }: RendererProps) {
   const contentRef = useRef(note.content || "");
   const editorRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
-  const theme = useSettingsStore((s) => s.theme);
+  const theme = useEffectiveTheme();
   const isDark = theme === "dark";
 
   const getContent = useCallback(() => contentRef.current, []);
@@ -152,7 +153,7 @@ export default function CodeRenderer({ note, readOnly }: RendererProps) {
           {language} {note.path && `— ${note.path.split("/").pop()}`}
         </span>
         <span style={{ color: "var(--text-muted)" }}>
-          {isSaving ? "Saving..." : lastSaved ? `Saved ${lastSaved.toLocaleTimeString()}` : ""}
+          {isSaving ? "Saving..." : lastSaved ? `Saved ${fmtTime(lastSaved)}` : ""}
         </span>
       </div>
       <div ref={editorRef} className="flex-1 min-h-0 overflow-auto" />

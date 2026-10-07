@@ -18,6 +18,7 @@ import { useHostServices } from "../../data/HostServicesContext";
 import { queueSkillRun, updateSkillNote, validateStructuredBlock, type SkillPatch } from "../../lib/host/vaultOps";
 import { hostServiceErrorText, type RunningSkill } from "../../lib/host/services";
 
+import { formatTime as fmtTime } from "../../lib/datetime/format";
 type ModelOption = { id: string; name: string; provider: string; size: string | null };
 /** Save a skill-config change: desktop → its Tauri command (+ the vault for the
  *  fields that command never had); thin client → the skill note via VaultClient. */
@@ -32,7 +33,7 @@ function formatDuration(secs: number | null): string {
 }
 
 function formatTime(iso: string): string {
-  try { return new Date(iso).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" }); }
+  try { return fmtTime(new Date(iso), { hour: "numeric", minute: "2-digit" }, { locale: "en-US" }); }
   catch { return ""; }
 }
 

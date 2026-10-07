@@ -67,6 +67,7 @@ import { ReviewBanner } from "./ReviewBanner";
 import "./editor-blocks.css";
 import { useRemoteUpdateHost, REMOTE_UPDATED, REMOTE_DRAFT_KEPT } from "../layout/RemoteUpdate";
 
+import { formatTime as fmtTime } from "../../lib/datetime/format";
 export default function DocumentRenderer({ note, onMetadataChange, readOnly }: RendererProps) {
   // ── P4 governed-editing gate (WEB, NON-OWNER ONLY) ────────────────────────
   // `reviewMode` reads the gateway's `_caps` annotation, which the Prism Server
@@ -520,7 +521,7 @@ export default function DocumentRenderer({ note, onMetadataChange, readOnly }: R
           {saveError && <span role="alert">{saveError} <button type="button" onClick={saveNow} className="underline">Retry save</button></span>}
           {isSaving && <span>Saving...</span>}
           {lastSaved && !isSaving && !saveError && (
-            <span>Saved {lastSaved.toLocaleTimeString()}</span>
+            <span>Saved {fmtTime(lastSaved)}</span>
           )}
         </div>
       </div>

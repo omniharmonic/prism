@@ -1,3 +1,4 @@
+import { formatDate as fmtDate } from "./datetime/format";
 /** Shortcut hints shown beside commands and buttons (NP-SR-06): ⌘ on Apple devices, Ctrl elsewhere. */
 const apple = typeof navigator !== "undefined" && /Mac|iPhone|iPad|iPod/i.test(navigator.platform || navigator.userAgent || "");
 
@@ -24,5 +25,5 @@ export function editedLabel(updatedAt: string | null | undefined, now = new Date
   if (days <= 0) return "Edited today";
   if (days === 1) return "Edited yesterday";
   if (days < 7) return `Edited ${days} days ago`;
-  return `Edited ${at.toLocaleDateString(undefined, at.getFullYear() === now.getFullYear() ? { month: "short", day: "numeric" } : { month: "short", day: "numeric", year: "numeric" })}`;
+  return `Edited ${fmtDate(at, at.getFullYear() === now.getFullYear() ? { month: "short", day: "numeric" } : { month: "short", day: "numeric", year: "numeric" })}`;
 }

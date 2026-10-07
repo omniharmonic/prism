@@ -34,6 +34,12 @@ dirs = "5"
 [target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
 security-framework = "3"
 
+# iOS (WP5): ASWebAuthenticationSession sign-in, UIAlertController confirmations,
+# APNs registration and the Face ID app lock, in a local Swift plugin. It
+# registers no webview-callable command (the app's own commands call it).
+[target.'cfg(target_os = "ios")'.dependencies]
+tauri-plugin-prism-ios = { path = "plugins/prism-ios" }
+
 # Native confirmation dialogs (NSAlert) for external links and server changes.
 # Already in the tree via tao/wry; only the AppKit features used are enabled.
 [target.'cfg(target_os = "macos")'.dependencies]

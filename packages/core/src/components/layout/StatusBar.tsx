@@ -8,6 +8,7 @@ import { useQuery } from "@tanstack/react-query";
 import { serviceApi, type BackgroundServiceStatus } from "../../lib/parachute/client";
 import { useLivePollMs } from "../../lib/events/channelStatus";
 
+import { formatTime as fmtTime } from "../../lib/datetime/format";
 export function StatusBar() {
   const { data: stats } = useVaultStats();
   const { data: services } = useServiceStatus();
@@ -136,7 +137,7 @@ function SyncIndicator({ services }: { services: BackgroundServiceStatus[] }) {
                 </div>
                 {svc.last_run && (
                   <div style={{ color: "var(--text-muted)", fontSize: "9px" }}>
-                    Last: {new Date(svc.last_run).toLocaleTimeString()}
+                    Last: {fmtTime(new Date(svc.last_run))}
                   </div>
                 )}
                 {svc.disabled && svc.disabled_reason && (

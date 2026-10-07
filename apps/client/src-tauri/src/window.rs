@@ -67,8 +67,15 @@ pub fn open_external_target(raw: &str) -> Option<Url> {
 }
 
 pub fn create_main_window<R: Runtime>(app: &mut App<R>) -> tauri::Result<WebviewWindow<R>> {
+    #[cfg_attr(mobile, allow(unused_variables))]
     let state = app.state::<AppState>();
-    let script = crate::host::init_script(&state.origin);
+    // Desktop: the origin is fixed for the process and baked into the host hook.
+    // iOS: it can change in place, so the hook reads the live value from the
+    // page's `prism-server-origin` meta (see `retarget_page` below).
+    #[cfg(desktop)]
+    let script = crate::host::init_script(state.origin().as_ref());
+    #[cfg(mobile)]
+    let script = crate::host::init_script(None);
 
     #[allow(unused_mut)]
     let mut builder =
@@ -101,9 +108,49 @@ pub fn create_main_window<R: Runtime>(app: &mut App<R>) -> tauri::Result<Webview
         builder = geometry::apply_saved(builder, state.settings_dir.as_deref());
     }
     #[cfg(mobile)]
-    let _ = NewWindowResponse::<R>::Deny;
+    {
+        let _ = NewWindowResponse::<R>::Deny;
+        let handle = app.handle().clone();
+        builder = builder.on_web_resource_request(move |request, response| {
+            let origin = handle.state::<AppState>().origin();
+            retarget_page(request.uri().scheme_str(), response, origin.as_ref());
+        });
+    }
 
     builder.build()
+}
+
+/// iOS: every page the bundle serves gets the CSP and origin meta of the
+/// CURRENT server (none on first run), so saving or clearing the server takes
+/// effect on the next reload without a process restart.
+#[cfg_attr(not(mobile), allow(dead_code))]
+fn retarget_page(
+    scheme: Option<&str>,
+    response: &mut tauri::http::Response<std::borrow::Cow<'static, [u8]>>,
+    origin: Option<&crate::origin::ServerOrigin>,
+) {
+    use tauri::http::header::{HeaderValue, CONTENT_TYPE};
+    if scheme != Some("tauri") && scheme != Some("http") && scheme != Some("https") {
+        return;
+    }
+    if let Some(csp) = response.headers_mut().get_mut("Content-Security-Policy") {
+        let fresh = crate::origin::retarget_csp(csp.to_str().unwrap_or(""), origin);
+        match HeaderValue::from_str(&fresh) {
+            Ok(v) => *csp = v,
+            // Never serve a page with a stale policy: the strictest one instead.
+            Err(_) => *csp = HeaderValue::from_static("default-src 'none'"),
+        }
+    }
+    let is_html = response
+        .headers()
+        .get(CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.starts_with("text/html"));
+    if is_html {
+        if let Some(body) = crate::origin::inject_head_meta(response.body(), origin) {
+            *response.body_mut() = std::borrow::Cow::Owned(body);
+        }
+    }
 }
 
 #[cfg(desktop)]
@@ -249,6 +296,35 @@ mod tests {
         assert_eq!(navigation_decision(&u("tauri://evil/")), Deny);
         assert_eq!(navigation_decision(&u("file:///etc/passwd")), Deny);
         assert_eq!(navigation_decision(&u("javascript:alert(1)")), Deny);
+    }
+
+    #[test]
+    fn retarget_page_rewrites_html_and_csp() {
+        use crate::origin::ServerOrigin;
+        let o = ServerOrigin::parse("https://b.example.com").unwrap();
+        let mut resp = tauri::http::Response::builder()
+            .header("Content-Type", "text/html")
+            .header(
+                "Content-Security-Policy",
+                "default-src 'self'; connect-src 'self' https://a.example.com",
+            )
+            .body(std::borrow::Cow::Borrowed(
+                &b"<html><head></head><body></body></html>"[..],
+            ))
+            .unwrap();
+        retarget_page(Some("tauri"), &mut resp, Some(&o));
+        let csp = resp.headers()["Content-Security-Policy"].to_str().unwrap();
+        assert!(csp.contains("https://b.example.com") && !csp.contains("a.example.com"));
+        let body = String::from_utf8(resp.body().to_vec()).unwrap();
+        assert!(body.contains(r#"content="https://b.example.com""#));
+
+        // A script/asset keeps its body; only HTML gets the meta.
+        let mut js = tauri::http::Response::builder()
+            .header("Content-Type", "text/javascript")
+            .body(std::borrow::Cow::Borrowed(&b"</head>"[..]))
+            .unwrap();
+        retarget_page(Some("tauri"), &mut js, Some(&o));
+        assert_eq!(js.body().as_ref(), b"</head>");
     }
 
     #[test]
