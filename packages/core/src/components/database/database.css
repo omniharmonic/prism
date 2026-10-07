@@ -506,3 +506,8 @@
    drew a filled grey square in dark, the heaviest thing in a phone table); ticked it is the native,
    accent-coloured control as before. */
 .db-table input.db-sel:not(:checked):not(:indeterminate) { appearance: none; -webkit-appearance: none; border: 1.5px solid var(--glass-border-strong, var(--glass-border)); border-radius: 4px; background: transparent; }
+/* The trailing "Updated … · Open all properties" group may wrap: at 320 px (200 % zoom on a phone)
+   the one-line rule above pushed its button off the screen (reflow spec). */
+@media (max-width: 767px) {
+  .db-props-bar .db-prop-trailing { white-space: normal; flex-wrap: wrap; justify-content: flex-end; min-width: 0; max-width: 100%; }
+}
