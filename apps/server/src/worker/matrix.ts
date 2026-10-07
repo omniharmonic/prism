@@ -1255,8 +1255,12 @@ export interface ReconcileResult {
   rooms: number;
   /** Rooms still owed after this sweep — a probe that threw, a repair that failed, ran out
    *  of time or was over the per-sweep budget. Hand it back as `retry`: the next sweep
-   *  probes them FIRST, wherever the resume point is. */
-  retry?: string[];
+   *  asks about them again (each after its back-off), wherever the resume point is. */
+  retry?: OwedRoom[];
+  /** Rooms given up on after RECONCILE_MAX_TRIES failures in a row (ids). They are asked about in the ordinary rotation only. */
+  stuck?: string[];
+  /** This was a retry-only sweep (owed rooms only: no rotation, no joined-rooms listing). */
+  retryOnly?: boolean;
   /** Joined rooms whose newest message is not in the vault. */
   behind: number;
   repaired: number;
@@ -1303,14 +1307,23 @@ export async function reconcileMatrix(
      *  reaches the end returns no `resumeAfter`, so the one after starts at the front
      *  — every room is probed once per cycle however many sweeps a cycle takes. */
     resumeAfter?: string | null;
-    /** The previous sweep's `retry`: rooms probed first, before the rotation continues. */
-    retry?: string[];
+    /** The previous sweep's `retry` (ids alone are accepted: an older cursor). */
+    retry?: Array<OwedRoom | string>;
+    /** The previous sweep's `stuck`. */
+    stuck?: string[];
+    /** Ask about the owed rooms only: no rotation slice, no joined-rooms listing, the resume point is left where it is. */
+    retryOnly?: boolean;
+    /** Most owed rooms asked about in this sweep (default 24). */
+    retryMax?: number;
+    /** Wall clock for the owed rooms' back-off (default Date.now; `now` is the deadline clock). */
+    wallNow?: () => number;
     /** Share of `deadlineMs` that probing may use (default 0.6); the rest is kept for repairs. */
     probeShare?: number;
     now?: () => number;
   },
 ): Promise<ReconcileResult> {
   const clock = opts.now ?? Date.now;
+  const wall = (opts.wallNow ?? Date.now)();
   const startedAt = clock();
   const bounded = !!opts.deadlineMs && opts.deadlineMs > 0;
   const deadlineAt = bounded ? startedAt + opts.deadlineMs! : Infinity;
@@ -1318,75 +1331,104 @@ export async function reconcileMatrix(
   // repaired in that sweep (probing to the very deadline left every finding unrepaired
   // while the resume point moved past it).
   const probeUntil = bounded ? startedAt + opts.deadlineMs! * Math.min(1, Math.max(0.05, opts.probeShare ?? 0.6)) : Infinity;
+  const retryOnly = opts.retryOnly === true;
+  // …and the owed rooms get only HALF of the probe window (all of it in a retry-only sweep):
+  // a pile of rooms whose probes hang must not eat every sweep and stall the rotation.
+  const retryUntil = retryOnly || !bounded ? probeUntil : startedAt + (probeUntil - startedAt) / 2;
   const expired = () => clock() >= deadlineAt;
-  const probeExpired = () => clock() >= probeUntil;
   let unprobed = 0;
-  const joined = await client.joinedRooms();
+  // A retry-only sweep asks about a handful of rooms: it needs neither the joined-rooms list nor the size sweep.
+  const joined = retryOnly ? null : await client.joinedRooms();
   // Lean: rows only. A body is read by `loadThread`, for a note about to be written.
   const existing = await listThreadRows(vault);
   const byRoom = threadsByRoom(existing);
-  await sweepOversizedThreads(vault, byRoom);
+  if (!retryOnly) await sweepOversizedThreads(vault, byRoom);
 
   // Probe: newest message per room (one cheap /messages call each).
-  const behind: Array<{ roomId: string; latest: number; cutoff: number }> = [];
+  const behind: Array<{ roomId: string; latest: number; cutoff: number; first: boolean }> = [];
   // Sorted, so "after room X" means the same thing in every sweep whatever order
   // the homeserver lists rooms in, and whatever was joined or left in between.
-  const order = [...joined].sort();
-  const isJoined = new Set(order);
+  const order = joined ? [...joined].sort() : [];
+  const isJoined = joined ? new Set(order) : null;
   const after = opts.resumeAfter ?? null;
   const from = after === null ? 0 : Math.max(0, order.findIndex((id) => id > after));
-  // Rooms an earlier sweep left unsettled (probe threw, repair failed / ran out of time /
-  // was over the per-sweep budget) come FIRST, whatever their place in the rotation: the
-  // resume point has already moved past them, and it must not have to come round again.
-  const retryFirst = [...new Set(opts.retry ?? [])].filter((id) => isJoined.has(id));
-  const again = new Set(retryFirst);
-  const queue: Array<{ id: string; rotation: boolean }> = [
-    ...retryFirst.map((id) => ({ id, rotation: false })),
-    ...order.slice(from).filter((id) => !again.has(id)).map((id) => ({ id, rotation: true })),
-  ];
-  /** Still owed after this sweep → probed first by the next one. */
-  const unsettled = new Set<string>();
+  // Rooms an earlier sweep left OWED (probe threw, repair failed / ran out of time / was over
+  // the per-sweep budget). The resume point has moved past them, so they are asked about
+  // again here — each after its own back-off, a bounded number per sweep, and before the
+  // rotation continues.
+  const owedIn = new Map<string, OwedRoom>();
+  for (const o of opts.retry ?? []) {
+    const row: OwedRoom = typeof o === "string" ? { id: o, tries: 0, at: 0 } : o;
+    if (row && typeof row.id === "string" && (!isJoined || isJoined.has(row.id))) owedIn.set(row.id, { id: row.id, tries: Number(row.tries) || 0, at: Number(row.at) || 0, ...(row.repair ? { repair: true } : {}) });
+  }
+  const stuck = new Set((opts.stuck ?? []).filter((id) => !isJoined || isJoined.has(id)));
+  const due = [...owedIn.values()].filter((o) => owedDue(o, wall)).sort((a, b) => Number(!!b.repair) - Number(!!a.repair) || a.tries - b.tries || (a.id < b.id ? -1 : 1));
+  const retryNow = due.slice(0, Math.max(1, opts.retryMax ?? RECONCILE_RETRY_PER_SWEEP));
+  /** Still owed after this sweep. Starts as everything not attempted now; attempts update or remove their entry. */
+  const owed = new Map(owedIn);
+  const retryQueue = retryNow.map((o) => o.id);
+  const rotation = order.slice(from).filter((id) => !owedIn.has(id));
   let lastProbed: string | null = after;
   let cut = false;
   let probed = 0;
-  const worker = async () => {
-    for (let next = queue.shift(); next; next = queue.shift()) {
-      if (probeExpired()) {
-        const left = [next, ...queue.splice(0)];
-        unprobed += left.length;
-        for (const l of left) if (!l.rotation) unsettled.add(l.id);
-        cut = left.some((l) => l.rotation) || cut;
-        return;
+  const failed = (id: string, repair: boolean): void => {
+    if (stuck.has(id)) return; // already given up on: it is asked about in the rotation, never owed again
+    const tries = (owedIn.get(id)?.tries ?? 0) + 1;
+    if (tries >= RECONCILE_MAX_TRIES) {
+      owed.delete(id);
+      stuck.add(id);
+      console.warn(`[worker] matrix reconcile: ${id} failed ${tries} times in a row — given up on for now (it stays in the ordinary rotation; see /acl/workers)`);
+    } else owed.set(id, { id, tries, at: wall, ...(repair ? { repair: true } : {}) });
+  };
+  const probe = async (id: string): Promise<void> => {
+    probed++;
+    try {
+      const { messages } = await client.messagesBefore(id, { from: opts.upTo, cap: 1 });
+      const latest = messages[0]?.ts;
+      const note = byRoom.get(id);
+      const cutoff = note ? lastMessageAtOf(note) : -1;
+      if (latest !== undefined && latest > cutoff) behind.push({ roomId: id, latest, cutoff: Math.max(cutoff, 0), first: !!owedIn.get(id)?.repair });
+      else {
+        owed.delete(id); // in step (or no messages ever): nothing is owed
+        stuck.delete(id);
       }
-      const id = next.id;
-      if (next.rotation) lastProbed = id;
-      probed++;
-      try {
-        const { messages } = await client.messagesBefore(id, { from: opts.upTo, cap: 1 });
-        const latest = messages[0]?.ts;
-        if (latest === undefined) continue; // no messages ever — nothing to hold
-        const note = byRoom.get(id);
-        const cutoff = note ? lastMessageAtOf(note) : -1;
-        if (latest > cutoff) behind.push({ roomId: id, latest, cutoff: Math.max(cutoff, 0) });
-      } catch (e) {
-        unsettled.add(id); // not known to be in step: asked again first thing next sweep
-        console.warn(`[worker] matrix reconcile: probe ${id} failed: ${String(e)}`);
-      }
+    } catch (e) {
+      failed(id, !!owedIn.get(id)?.repair);
+      console.warn(`[worker] matrix reconcile: probe ${id} failed: ${String(e)}`);
     }
   };
-  await Promise.all(Array.from({ length: opts.concurrency ?? 8 }, worker));
+  const drain = (queue: string[], until: number, onCut: (left: string[]) => void) => async () => {
+    for (let id = queue.shift(); id; id = queue.shift()) {
+      if (clock() >= until) {
+        onCut([id, ...queue.splice(0)]);
+        return;
+      }
+      if (queue === rotation) lastProbed = id;
+      await probe(id);
+    }
+  };
+  const workers = opts.concurrency ?? 8;
+  await Promise.all(Array.from({ length: workers }, drain(retryQueue, retryUntil, () => undefined))); // the unreached stay owed, untouched
+  if (!retryOnly) {
+    await Promise.all(Array.from({ length: workers }, drain(rotation, probeUntil, (left) => {
+      unprobed += left.length;
+      cut = true;
+    })));
+  }
 
-  behind.sort((a, b) => b.latest - a.latest);
+  // Repairs: rooms already deferred once go first, then the most recently active.
+  behind.sort((a, b) => Number(b.first) - Number(a.first) || b.latest - a.latest);
   const budget = opts.maxRepairs ?? 25;
   let repaired = 0;
   let messages = 0;
   const todo = behind.slice(0, budget);
-  for (const over of behind.slice(budget)) unsettled.add(over.roomId); // over this sweep's repair budget
+  const later = (id: string): void => void owed.set(id, { id, tries: owedIn.get(id)?.tries ?? 0, at: wall, repair: true }); // not a failure: no strike
+  for (const over of behind.slice(budget)) later(over.roomId); // over this sweep's repair budget
   for (let i = 0; i < todo.length; i++) {
     const b = todo[i]!;
     if (expired()) {
       unprobed += todo.length - i;
-      for (const rest of todo.slice(i)) unsettled.add(rest.roomId);
+      for (const rest of todo.slice(i)) later(rest.roomId);
       break;
     }
     try {
@@ -1397,40 +1439,62 @@ export async function reconcileMatrix(
       });
       if (gap.capped)
         console.warn(`[worker] matrix reconcile: ${b.roomId} gap hit its cap — oldest skipped`);
-      if (!gap.messages.length) continue;
-      const displayNames = await client.joinedMembers(b.roomId);
-      const rb: RoomBatch = {
-        roomId: b.roomId,
-        name: byRoom.has(b.roomId) ? null : await client.roomName(b.roomId),
-        memberIds: Object.keys(displayNames),
-        displayNames: Object.fromEntries(
-          Object.entries(displayNames).filter(([, v]) => v),
-        ),
-        messages: gap.messages,
-      };
-      await resolveDisplayNames(client, rb);
-      if (await ingestRoom(rb, vault, byRoom, { dedupe: true })) {
-        repaired++;
-        messages += gap.messages.length;
+      if (gap.messages.length) {
+        const displayNames = await client.joinedMembers(b.roomId);
+        const rb: RoomBatch = {
+          roomId: b.roomId,
+          name: byRoom.has(b.roomId) ? null : await client.roomName(b.roomId),
+          memberIds: Object.keys(displayNames),
+          displayNames: Object.fromEntries(
+            Object.entries(displayNames).filter(([, v]) => v),
+          ),
+          messages: gap.messages,
+        };
+        await resolveDisplayNames(client, rb);
+        if (await ingestRoom(rb, vault, byRoom, { dedupe: true })) {
+          repaired++;
+          messages += gap.messages.length;
+        }
       }
+      owed.delete(b.roomId);
+      stuck.delete(b.roomId);
     } catch (e) {
-      unsettled.add(b.roomId);
+      failed(b.roomId, true);
       console.warn(`[worker] matrix reconcile: repair ${b.roomId} failed: ${String(e)}`);
     }
   }
-  const retry = [...unsettled].sort();
+  const retry = [...owed.values()].sort((a, b) => (a.id < b.id ? -1 : 1));
   if (retry.length > RECONCILE_RETRY_CAP) console.warn(`[worker] matrix reconcile: ${retry.length} rooms owed — only ${RECONCILE_RETRY_CAP} are kept for the next sweep, the rest wait for the rotation`);
+  const resume = retryOnly ? after : cut ? lastProbed : null;
   return {
     scanned: probed,
-    rooms: joined.length,
+    rooms: joined ? joined.length : 0,
     behind: behind.length,
     repaired,
     messages,
     deferred: Math.max(0, behind.length - budget),
     ...(unprobed > 0 ? { unprobed } : {}),
-    ...(cut && lastProbed !== null ? { resumeAfter: lastProbed } : {}),
+    ...(resume !== null ? { resumeAfter: resume } : {}),
     ...(retry.length ? { retry: retry.slice(0, RECONCILE_RETRY_CAP) } : {}),
+    ...(stuck.size ? { stuck: [...stuck].sort().slice(-RECONCILE_STUCK_CAP) } : {}),
+    ...(retryOnly ? { retryOnly: true } : {}),
   };
 }
-/** Most rooms a sweep hands on as "probe these first next time". */
+/** A room a sweep still owes an answer about. `tries` = failed attempts in a row; `at` = the last attempt (wall clock);
+ *  `repair` = it was found behind and not repaired (over budget / out of time / the repair failed): repaired FIRST next time. */
+export interface OwedRoom {
+  id: string;
+  tries: number;
+  at: number;
+  repair?: boolean;
+}
+/** Most rooms a sweep hands on as owed. */
 const RECONCILE_RETRY_CAP = 2000;
+/** Most owed rooms ONE sweep asks about again (the rest keep waiting, in order of fewest tries). */
+const RECONCILE_RETRY_PER_SWEEP = 24;
+/** Failed attempts in a row after which a room is given up on: back to the ordinary rotation, and surfaced. */
+export const RECONCILE_MAX_TRIES = 6;
+const RECONCILE_STUCK_CAP = 500;
+/** When may an owed room be asked about again? 5 min after it was deferred or first failed, then 15 min, then hourly. */
+export const owedBackoffMs = (tries: number): number => (tries <= 1 ? 5 : tries === 2 ? 15 : 60) * 60_000;
+export const owedDue = (o: OwedRoom, wallNow: number): boolean => wallNow - o.at >= owedBackoffMs(o.tries);

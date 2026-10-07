@@ -21,7 +21,7 @@ import { getVaultRegistry, getWorkerCursor, setWorkerCursor, listVaultMirrors } 
 import { getSecret, secretsConfigured, otherSecretOwners } from "../secrets";
 import { config, type VaultEntry } from "../config";
 import { vault, vaultClient } from "../parachute";
-import { MatrixClient, ingestMatrix, reconcileMatrix, type IngestVault, type MatrixCreds, type RoomReplay } from "./matrix";
+import { MatrixClient, ingestMatrix, reconcileMatrix, owedDue, type IngestVault, type MatrixCreds, type OwedRoom, type RoomReplay } from "./matrix";
 import { FathomClient, ingestFathom } from "./fathom";
 import { FirefliesClient, FirefliesError, ingestAndCleanupFireflies, type FirefliesBudget, type FirefliesVault } from "./fireflies";
 import { ClickUpClient, ingestClickUp, type ClickUpCredential, type ClickUpVault } from "./clickup";
@@ -267,9 +267,44 @@ export const matrixReconcileSettled = (vaultId: string): Promise<void> => matrix
 /** Where the last reconcile sweep's probe stopped (a room id; rooms are probed in
  *  sorted order). Empty = the next sweep starts at the front. */
 const MATRIX_RECONCILE_CURSOR = "matrix-reconcile-after";
-/** Rooms the last sweep left unsettled (probe threw, repair failed / over budget / out of
- *  time): the next sweep probes them first, wherever the resume point is. */
+/** Rooms a sweep still owes an answer about (`OwedRoom[]`: probe threw, repair failed / over
+ *  budget / out of time). They are asked about again after their back-off — by a RETRY-ONLY
+ *  sweep when nothing else is due — wherever the resume point is. */
 const MATRIX_RECONCILE_RETRY_CURSOR = "matrix-reconcile-retry";
+/** Room ids given up on after RECONCILE_MAX_TRIES failures in a row: back in the ordinary
+ *  rotation, never owed again until a probe of them answers. Counted in `/acl/workers`. */
+const MATRIX_RECONCILE_STUCK_CURSOR = "matrix-reconcile-stuck";
+const owedRooms = (vaultId: string): OwedRoom[] =>
+  readJsonCursor<OwedRoom | string>(vaultId, MATRIX_RECONCILE_RETRY_CURSOR)
+    .map((o) => (typeof o === "string" ? { id: o, tries: 0, at: 0 } : o)) // ids alone = a cursor from before the back-off
+    .filter((o): o is OwedRoom => !!o && typeof o.id === "string");
+/** A full sweep cut off by its deadline, or a retry, comes back this soon — never sooner. */
+const MATRIX_RECONCILE_COMEBACK_MS = 300_000;
+const lastMatrixSweepAt = new Map<string, number>();
+
+/**
+ * Which reconcile sweep is due now? `full` = the hourly sweep of every joined room, or the
+ * continuation (5 min later) of one its deadline cut off. `retry` = only the rooms an earlier
+ * sweep still owes an answer about, each after its own back-off — one room that keeps failing
+ * used to bring the FULL sweep back every 5 minutes for ever.
+ */
+export function planMatrixReconcile(vaultId: string, now: number): "full" | "retry" | null {
+  if (config.matrixReconcileMs <= 0) return null;
+  const lastFull = lastMatrixReconcileAt.get(vaultId) ?? 0;
+  if (now - lastFull >= config.matrixReconcileMs) return "full";
+  if (now - (lastMatrixSweepAt.get(vaultId) ?? 0) < MATRIX_RECONCILE_COMEBACK_MS) return null;
+  if (getWorkerCursor(vaultId, MATRIX_RECONCILE_CURSOR)) return "full"; // the rotation was cut: continue it
+  return owedRooms(vaultId).some((o) => owedDue(o, now)) ? "retry" : null;
+}
+/** Record that a sweep of this kind starts now (the scheduler; tests that drive the planner). */
+export function noteMatrixReconcileStarted(vaultId: string, kind: "full" | "retry", now: number): void {
+  if (kind === "full") lastMatrixReconcileAt.set(vaultId, now);
+  lastMatrixSweepAt.set(vaultId, now);
+}
+export function resetMatrixReconcilePlanForTests(vaultId: string): void {
+  lastMatrixReconcileAt.delete(vaultId);
+  lastMatrixSweepAt.delete(vaultId);
+}
 
 /**
  * One reconcile sweep that CONTINUES where the previous one was cut off by its
@@ -282,20 +317,27 @@ export async function runMatrixReconcileSweep(
   client: Parameters<typeof reconcileMatrix>[0],
   ingestVault: IngestVault,
   upTo: string,
-  overrides: { deadlineMs?: number; now?: () => number; concurrency?: number; probeShare?: number; maxRepairs?: number } = {},
+  overrides: { deadlineMs?: number; now?: () => number; concurrency?: number; probeShare?: number; maxRepairs?: number; retryOnly?: boolean; retryMax?: number; wallNow?: () => number } = {},
 ): Promise<Awaited<ReturnType<typeof reconcileMatrix>>> {
   const r = await reconcileMatrix(client, ingestVault, {
     upTo,
     maxRepairs: overrides.maxRepairs ?? config.matrixReconcilePerSweep,
     deadlineMs: overrides.deadlineMs ?? config.matrixReconcileDeadlineMs,
     resumeAfter: getWorkerCursor(entry.id, MATRIX_RECONCILE_CURSOR) || null,
-    retry: readJsonCursor<string>(entry.id, MATRIX_RECONCILE_RETRY_CURSOR).filter((id) => typeof id === "string"),
+    retry: owedRooms(entry.id),
+    stuck: readJsonCursor<string>(entry.id, MATRIX_RECONCILE_STUCK_CURSOR).filter((id) => typeof id === "string"),
+    ...(overrides.retryOnly ? { retryOnly: true } : {}),
+    ...(overrides.retryMax ? { retryMax: overrides.retryMax } : {}),
+    ...(overrides.wallNow ? { wallNow: overrides.wallNow } : {}),
     ...(overrides.probeShare ? { probeShare: overrides.probeShare } : {}),
     ...(overrides.now ? { now: overrides.now } : {}),
     ...(overrides.concurrency ? { concurrency: overrides.concurrency } : {}),
   });
-  setWorkerCursor(entry.id, MATRIX_RECONCILE_CURSOR, r.resumeAfter ?? "");
+  // The owed list FIRST: a crash between the two writes must leave a room owed twice over
+  // (asked about again), never moved past by the resume point and owed by nobody.
   setWorkerCursor(entry.id, MATRIX_RECONCILE_RETRY_CURSOR, JSON.stringify(r.retry ?? []));
+  setWorkerCursor(entry.id, MATRIX_RECONCILE_STUCK_CURSOR, JSON.stringify(r.stuck ?? []));
+  setWorkerCursor(entry.id, MATRIX_RECONCILE_CURSOR, r.resumeAfter ?? "");
   return r;
 }
 
@@ -405,22 +447,23 @@ async function runMatrixPass(entry: VaultEntry, deps: MatrixPassDeps): Promise<n
   // the background under its own guard: this pass (and the ingest guard) end now.
   const now = Date.now();
   const canReconcile = !!(client.joinedRooms && client.messagesBefore && client.joinedMembers && client.roomName);
-  const reconcileDue = canReconcile && !!res.nextBatch && config.matrixReconcileMs > 0 && now - (lastMatrixReconcileAt.get(entry.id) ?? 0) >= config.matrixReconcileMs;
+  const sweep = canReconcile && !!res.nextBatch ? planMatrixReconcile(entry.id, now) : null;
+  const reconcileDue = sweep !== null;
   const resyncDue = !!client.sendText && config.matrixBridgeResync.length > 0 && config.matrixBridgeResyncMs > 0 && now - (lastBridgeResyncAt.get(entry.id) ?? 0) >= config.matrixBridgeResyncMs;
   if ((reconcileDue || resyncDue) && !matrixReconcileInFlight.has(entry.id)) {
-    if (reconcileDue) lastMatrixReconcileAt.set(entry.id, now);
+    if (sweep) noteMatrixReconcileStarted(entry.id, sweep, now);
     if (resyncDue) lastBridgeResyncAt.set(entry.id, now);
     const upTo = res.nextBatch;
     const background = (async () => {
       await Promise.resolve();
       if (reconcileDue) {
         try {
-          const r = await runMatrixReconcileSweep(entry, client as Parameters<typeof reconcileMatrix>[0], ingestVault, upTo);
-          const line = `[worker] matrix ${entry.id} reconcile: ${r.scanned} of ${r.rooms} rooms probed, ${r.behind} behind, ${r.repaired} repaired (+${r.messages} msgs), ${r.deferred} deferred${r.unprobed ? `, ${r.unprobed} not reached before the deadline` : ""}`;
+          const r = await runMatrixReconcileSweep(entry, client as Parameters<typeof reconcileMatrix>[0], ingestVault, upTo, sweep === "retry" ? { retryOnly: true } : {});
+          const line = `[worker] matrix ${entry.id} reconcile${sweep === "retry" ? " (owed rooms only)" : ""}: ${r.scanned}${sweep === "retry" ? "" : ` of ${r.rooms}`} rooms probed, ${r.behind} behind, ${r.repaired} repaired (+${r.messages} msgs), ${r.deferred} deferred${r.unprobed ? `, ${r.unprobed} not reached before the deadline` : ""}${r.retry?.length ? `, ${r.retry.length} still owed` : ""}${r.stuck?.length ? `, ${r.stuck.length} given up on` : ""}`;
           if (r.behind > 0 || r.unprobed) console.warn(line);
           else console.log(line);
-          // Deferred / unreached rooms may still miss messages — come back in 5 min, not an hour.
-          if (r.deferred > 0 || r.unprobed || r.retry?.length) lastMatrixReconcileAt.set(entry.id, now - config.matrixReconcileMs + 300_000);
+          // What comes next is the planner's call: a cut rotation continues in 5 min (full),
+          // owed rooms are asked about after their own back-off (retry only).
         } catch (e) {
           console.warn(`[worker] matrix ${entry.id} reconcile failed: ${String(e)}`);
         }
@@ -490,7 +533,13 @@ const upstreamFetch: typeof fetch = async (input, init) => {
   const ms = config.ingestUpstreamTimeoutMs;
   if (!(ms > 0) || init?.signal) return fetch(input, init);
   try {
-    return await fetch(input, { ...init, signal: AbortSignal.timeout(ms) });
+    const r = await fetch(input, { ...init, signal: AbortSignal.timeout(ms) });
+    // The BODY is read here too, under the same clock: an upstream that sends headers and
+    // then drips (or stops) used to time out inside the client's `r.json()`, where the abort
+    // is not recognisably the upstream's — it read as a failure on our side.
+    if (typeof r?.arrayBuffer !== "function") return r;
+    const body = r.status === 204 || r.status === 205 || r.status === 304 ? null : await r.arrayBuffer();
+    return new Response(body, { status: r.status, statusText: r.statusText, headers: r.headers });
   } catch (e) {
     if ((e as Error)?.name === "TimeoutError" || (e as Error)?.name === "AbortError") {
       let host = "upstream";
@@ -703,6 +752,17 @@ async function runFirefliesPass(entry: VaultEntry, opts: { force?: boolean }): P
   }
 
   const client = new FirefliesClient(apiKey, upstreamFetch);
+  // Did this pass ask Fireflies to CHANGE anything? Set before the request leaves: an upload
+  // whose answer never came may still have been accepted (and spends transcription minutes).
+  let mutated = false;
+  const methods = client as unknown as Record<string, (...a: unknown[]) => Promise<unknown>>;
+  for (const m of ["uploadAudio", "deleteTranscript"]) {
+    const real = methods[m]!.bind(client);
+    methods[m] = (...a: unknown[]) => {
+      mutated = true;
+      return real(...a);
+    };
+  }
   let owner = firefliesOwnerEmail.get(entry.id);
   if (!owner) {
     try {
@@ -718,8 +778,10 @@ async function runFirefliesPass(entry: VaultEntry, opts: { force?: boolean }): P
     // The slot was claimed so that Fireflies' API is touched once per scheduled hour. A pass
     // that died on OUR side (the vault listing timed out, the vault was down) has not done
     // its work: give the slot back so the next tick tries again — at most twice per slot,
-    // and never for a failure Fireflies itself answered or timed out on.
-    const ours = !(e instanceof FirefliesError) && !(e instanceof UpstreamTimeoutError);
+    // and never for a failure Fireflies itself answered or timed out on, and NEVER once the
+    // pass has uploaded audio or deleted a transcript (a second pass in the slot could upload
+    // the same recording again within minutes).
+    const ours = !mutated && !(e instanceof FirefliesError) && !(e instanceof UpstreamTimeoutError);
     const key = `${entry.id}:${slot}`;
     const given = firefliesSlotReturns.get(key) ?? 0;
     if (!opts.force && ours && given < 2 && getWorkerCursor(entry.id, "fireflies-slot") === slot) {

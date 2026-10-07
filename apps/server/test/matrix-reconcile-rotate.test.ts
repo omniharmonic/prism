@@ -21,7 +21,7 @@ type Client = Parameters<typeof reconcileMatrix>[0];
 type Result = Awaited<ReturnType<typeof reconcileMatrix>>;
 // Looked up dynamically so this file loads — and FAILS on its assertions — against a
 // scheduler that still starts every sweep at the front.
-const sweep = (entry: unknown, client: Client, vault: IngestVault, upTo: string, o: { deadlineMs: number; now: () => number; concurrency?: number; probeShare?: number; maxRepairs?: number }): Promise<Result> => {
+const sweep = (entry: unknown, client: Client, vault: IngestVault, upTo: string, o: { deadlineMs: number; now: () => number; concurrency?: number; probeShare?: number; maxRepairs?: number; wallNow?: () => number }): Promise<Result> => {
   const fn = (scheduler as unknown as { runMatrixReconcileSweep?: (...a: unknown[]) => Promise<Result> }).runMatrixReconcileSweep;
   if (fn) return fn(entry, client, vault, upTo, o);
   return reconcileMatrix(client, vault, { upTo, maxRepairs: config.matrixReconcilePerSweep, ...o });
@@ -71,6 +71,8 @@ function homeserver(n: number) {
 
 const entry = () => getVaultRegistry()[0]!;
 const CURSOR = "matrix-reconcile-after";
+/** The owed rooms' ids (the cursor holds `{id, tries, at, repair?}`; ids alone before the back-off existed). */
+const owedIds = (): string[] => (JSON.parse(getWorkerCursor(entry().id, "matrix-reconcile-retry") ?? "[]") as Array<string | { id: string }>).map((o) => (typeof o === "string" ? o : o.id));
 const logs = { warn: console.warn, error: console.error, log: console.log };
 beforeEach(() => {
   resetDb();
@@ -207,16 +209,18 @@ test("B1: rooms found behind in the FIRST segment of a multi-sweep cycle are rep
 test("S1: a room whose probe THREW, and a room over the per-sweep repair budget, are tried first by the next sweep — not a whole cycle later", async () => {
   const hs = busyHomeserver({ behind: ["!r0002:hs", "!r0006:hs"], failOnce: ["!r0005:hs"] });
   const v = memoryVault();
-  const o = { deadlineMs: 24, probeShare: 0.5, now: hs.now, concurrency: 1, maxRepairs: 1 };
+  let wall = 1_000_000_000;
+  const o = { deadlineMs: 24, probeShare: 0.5, now: hs.now, concurrency: 1, maxRepairs: 1, wallNow: () => wall };
   const first = await sweep(entry(), hs.client, v.vault, "c", o);
   assert.equal(first.scanned, 12, "`scanned` is the number of rooms probed, not the number joined");
   assert.equal(first.repaired, 1);
   assert.equal(first.deferred, 1);
-  const owed = JSON.parse(getWorkerCursor(entry().id, "matrix-reconcile-retry") ?? "[]") as string[];
+  const owed = owedIds();
   assert.equal(owed.includes("!r0005:hs"), true, "the failed probe is owed");
   assert.equal(owed.length, 2, "…and so is the room over the repair budget");
   assert.equal(getWorkerCursor(entry().id, CURSOR), "!r0011:hs");
 
+  wall += 6 * 60_000; // past the first back-off (5 min)
   const before = hs.probes.length;
   const second = await sweep(entry(), hs.client, v.vault, "c", o);
   assert.deepEqual(hs.probes.slice(before, before + 2).sort(), [...owed].sort(), "the owed rooms are probed FIRST");
@@ -227,15 +231,17 @@ test("S1: a room whose probe THREW, and a room over the per-sweep repair budget,
   assert.equal(hs.probes.filter((p) => p === "!r0005:hs").length, 2);
 });
 
-test("a room that fails on every sweep is retried each time and never holds the rotation back", async () => {
+test("a room that fails on every sweep is retried with a back-off and never holds the rotation back", async () => {
   const hs = busyHomeserver({});
   const real = hs.client.messagesBefore;
   hs.client.messagesBefore = (async (room: string, opts: { cap?: number }) => {
     if (room === "!r0001:hs") { await real.call(hs.client, room, opts).catch(() => undefined); throw new Error("matrix /messages → 500"); }
     return real.call(hs.client, room, opts);
   }) as typeof real;
-  const o = { deadlineMs: 20, probeShare: 0.5, now: hs.now, concurrency: 1 };
-  for (let i = 0; i < 4; i++) await sweep(entry(), hs.client, emptyVault, "c", o);
+  let wall = 1_000_000_000;
+  const o = { deadlineMs: 20, probeShare: 0.5, now: hs.now, concurrency: 1, wallNow: () => wall };
+  for (let i = 0; i < 4; i++, wall += 6 * 60_000) await sweep(entry(), hs.client, emptyVault, "c", o);
   assert.equal(new Set(hs.probes).size, 30, "the whole list was still reached");
-  assert.deepEqual(JSON.parse(getWorkerCursor(entry().id, "matrix-reconcile-retry") ?? "[]"), ["!r0001:hs"]);
+  assert.deepEqual(owedIds(), ["!r0001:hs"]);
+  assert.equal(hs.probes.filter((p) => p === "!r0001:hs").length, 2, "asked about again after 5 min, then not before 15 more");
 });
