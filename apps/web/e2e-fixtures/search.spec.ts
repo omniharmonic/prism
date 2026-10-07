@@ -163,14 +163,14 @@ test("palette prioritizes readable notes, filters returned messages and keeps ev
   expect(await page.evaluate(()=>(window as any).prismSearchUI.getState().activeTabId)).toBe("tab-message-0");
 });
 
-test("Open Agent Panel remains open when it was already visible", async ({page})=>{
+test("Open agent panel remains open when it was already visible", async ({page})=>{
   await page.goto("/e2e-fixtures/search.html");
   await page.evaluate(()=>(window as any).prismSearchUI.setState({contextPanelOpen:true}));
   await page.getByRole("button",{name:"Open search",exact:true}).click();
   const dialog=page.getByRole("dialog",{name:"Search workspace"});
   await dialog.getByRole("button",{name:"Commands",exact:true}).click();
-  await dialog.getByRole("combobox").fill("Open Agent Panel");
-  await dialog.getByRole("option",{name:"Open Agent Panel",exact:true}).click();
+  await dialog.getByRole("combobox").fill("Open agent panel");
+  await dialog.getByRole("option",{name:"Open agent panel",exact:true}).click();
   expect(await page.evaluate(()=>(window as any).prismSearchUI.getState().contextPanelOpen)).toBe(true);
 });
 

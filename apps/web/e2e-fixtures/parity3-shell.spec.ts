@@ -43,7 +43,7 @@ test("NP-PG-06: the Agent button shows an activity dot while a turn runs, and dr
   // The agent chat loads the session list; its latest turn is running.
   await page.keyboard.press("ControlOrMeta+k");
   await page.getByRole("combobox", { name: "Search notes and commands" }).fill("agent chat");
-  await page.getByRole("group", { name: "Commands" }).getByRole("option", { name: "Agent Chat", exact: true }).click();
+  await page.getByRole("group", { name: "Commands" }).getByRole("option", { name: "Agent chat", exact: true }).click();
   await expect.poll(() => page.evaluate(() => (window as any).prismShellAgent.lists as number)).toBeGreaterThan(listsBefore);
   await expect(agent).toHaveAccessibleName("AI Agent (working)");
   const dot = agent.locator(".tabbar-activity-dot");
@@ -105,7 +105,7 @@ test("NP-SR-06: the palette's Ask agent command rows carry an icon and open the 
   const input = page.getByRole("combobox", { name: "Search notes and commands" });
   await input.fill("ask");
   const commands = page.getByRole("group", { name: "Commands" });
-  const ask = commands.getByRole("option", { name: "Ask About This Note", exact: true });
+  const ask = commands.getByRole("option", { name: "Ask about this note", exact: true });
   await expect(ask).toBeVisible();
   await expect(ask.locator("svg").first()).toBeVisible();
   // Anything typed can be handed to the agent as a question: its own row, with an icon.
@@ -120,7 +120,7 @@ test("NP-SR-06: the palette's Ask agent command rows carry an icon and open the 
   // The other agent commands are there too, each with an icon.
   await page.keyboard.press("ControlOrMeta+k");
   await page.getByRole("combobox", { name: "Search notes and commands" }).fill("agent");
-  for (const name of ["Agent Chat", "Open Agent Panel"]) {
+  for (const name of ["Agent chat", "Open agent panel"]) {
     const option = page.getByRole("group", { name: "Commands" }).getByRole("option", { name, exact: true });
     await expect(option).toBeVisible();
     await expect(option.locator("svg").first()).toBeVisible();
@@ -133,7 +133,7 @@ test("NP-SR-06: no Ask agent command without an agent client", async ({ page }) 
   await ready(page);
   await page.keyboard.press("ControlOrMeta+k");
   await page.getByRole("combobox", { name: "Search notes and commands" }).fill("ask");
-  await expect(page.getByRole("option", { name: "Ask About This Note", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("option", { name: "Ask about this note", exact: true })).toHaveCount(0);
   await expect(page.getByRole("option", { name: /^Ask your agent/ })).toHaveCount(0);
 });
 

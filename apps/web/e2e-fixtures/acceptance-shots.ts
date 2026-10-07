@@ -889,7 +889,7 @@ export const SHOTS: Shot[] = [
     id: "NP-TX-04", section: TX, slug: "export-workspace", title: "Export the workspace", viewports: ["desktop"],
     look: "Markdown / HTML, Images and files; what the export contains (your view).",
     url: fx("notion-transfer"),
-    setup: async (page, c) => { await vis(tree(page)); await runCommand(page, c, "Export Workspace…"); await vis(page.getByRole("dialog", { name: "Export workspace" })); },
+    setup: async (page, c) => { await vis(tree(page)); await runCommand(page, c, "Export workspace…"); await vis(page.getByRole("dialog", { name: "Export workspace" })); },
   },
   {
     id: "NP-TX-05", section: TX, slug: "import-pick", title: "Import — choose a file", viewports: ["desktop", "phone"],

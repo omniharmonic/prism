@@ -582,7 +582,7 @@ test("find in page: phone reaches it from ⋯", async ({ page }) => {
   await expect(page.getByRole("textbox", { name: "Link address" })).toHaveCount(0);
   await expect(page.getByRole("dialog").first()).toBeVisible(); // the command bar / quick find
   // Help → Keyboard shortcuts lives there too (NP-ED-07).
-  await page.keyboard.type("Keyboard Shortcuts");
+  await page.keyboard.type("Keyboard shortcuts");
   await page.keyboard.press("Enter");
   await expect(page.getByRole("dialog", { name: "Keyboard shortcuts" })).toBeVisible();
 });

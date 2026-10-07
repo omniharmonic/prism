@@ -351,7 +351,7 @@ export const SURFACES: Surface[] = [
     await expect(page.getByRole("dialog", { name: "Import", exact: true })).toBeVisible();
   } },
   { id: "export-dialog", only: "desktop", path: "/e2e-fixtures/notion-transfer.html", before: async (page) => { await serveAttachments(page); }, open: async (page) => {
-    await command(page, "Export Workspace…");
+    await command(page, "Export workspace…");
     await expect(page.getByRole("dialog", { name: "Export workspace" })).toBeVisible();
   } },
   { id: "export-page-dialog", only: "desktop", path: "/e2e-fixtures/notion-transfer.html?open=prism", before: async (page) => { await serveAttachments(page); }, open: async (page) => {

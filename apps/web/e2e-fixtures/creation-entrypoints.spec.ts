@@ -6,8 +6,8 @@ test("command creation asks for a title, opens the saved page and preserves its 
   await expect(page.getByRole("heading", { name: "A living workspace" })).toBeVisible();
   await page.keyboard.press("ControlOrMeta+k");
   const search = page.getByRole("dialog", { name: "Search workspace" });
-  await search.getByRole("combobox").fill("New Document");
-  await search.getByRole("option", { name: "New Document", exact: true }).click();
+  await search.getByRole("combobox").fill("New document");
+  await search.getByRole("option", { name: "New document", exact: true }).click();
   const create = page.getByRole("dialog", { name: "New page", exact: true });
   await expect(search).toHaveCount(0);
   await expect(create.getByLabel("Page title")).toBeFocused();
@@ -46,8 +46,8 @@ test("email command preserves draft type without sending and phone cancellation 
   const opener = page.getByRole("button", { name: "Search", exact: true });
   await opener.click();
   const search = page.getByRole("dialog", { name: "Search workspace" });
-  await search.getByRole("combobox").fill("New Email");
-  await search.getByRole("option", { name: "New Email", exact: true }).click();
+  await search.getByRole("combobox").fill("New email");
+  await search.getByRole("option", { name: "New email", exact: true }).click();
   const create = page.getByRole("dialog", { name: "New email draft", exact: true });
   await expect(create).toBeVisible();
   await page.keyboard.press("Escape");
@@ -55,8 +55,8 @@ test("email command preserves draft type without sending and phone cancellation 
   await expect(opener).toBeFocused();
   expect(await writes(page)).toEqual([]);
   await opener.click();
-  await search.getByRole("combobox").fill("New Email");
-  await search.getByRole("option", { name: "New Email", exact: true }).click();
+  await search.getByRole("combobox").fill("New email");
+  await search.getByRole("option", { name: "New email", exact: true }).click();
   await create.getByLabel("Page title").fill("Weekly update");
   await create.getByRole("button", { name: "Create", exact: true }).click();
   await expect(create).toHaveCount(0);

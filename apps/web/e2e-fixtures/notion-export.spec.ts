@@ -8,7 +8,7 @@ test.beforeEach(async ({ page }) => { await serveAttachments(page); });
 test("vault zip export", async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto(transferUrl());
-  await runCommand(page, "Export Workspace…");
+  await runCommand(page, "Export workspace…");
   const dialog = page.getByRole("dialog", { name: "Export workspace" });
   await expect(dialog).toBeVisible();
   // Markdown or HTML (PDF is a single page's print, not a workspace export).
@@ -56,8 +56,8 @@ test("workspace import and export are the owner's and admins': a member is not o
   await page.keyboard.press("ControlOrMeta+k");
   const search = page.getByRole("dialog", { name: "Search workspace" });
   await search.getByRole("combobox").fill("Export");
-  await expect(search.getByRole("option", { name: "Export Page…" })).toBeVisible();
-  await expect(search.getByRole("option", { name: "Export Workspace…" })).toHaveCount(0);
+  await expect(search.getByRole("option", { name: "Export page…" })).toBeVisible();
+  await expect(search.getByRole("option", { name: "Export workspace…" })).toHaveCount(0);
   await search.getByRole("combobox").fill("Import");
   await expect(search.getByRole("option", { name: /^Import…/ })).toHaveCount(0);
 });

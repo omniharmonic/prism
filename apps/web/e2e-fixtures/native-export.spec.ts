@@ -51,7 +51,7 @@ async function startExport(page: Page) {
   const downloads: string[] = [];
   page.on("download", (d) => downloads.push(d.suggestedFilename()));
   await page.goto(transferUrl());
-  await runCommand(page, "Export Workspace…");
+  await runCommand(page, "Export workspace…");
   const dialog = page.getByRole("dialog", { name: "Export workspace" });
   await expect(dialog).toBeVisible();
   return { dialog, downloads };

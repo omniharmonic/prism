@@ -298,12 +298,12 @@ test("commands carry icons and shortcut hints; Toggle theme works from the palet
   const input = await openPalette(page);
   await input.fill("toggle");
   const commands = page.getByRole("group", { name: "Commands" });
-  const theme = commands.getByRole("option", { name: "Toggle Theme", exact: true });
+  const theme = commands.getByRole("option", { name: "Toggle theme", exact: true });
   await expect(theme).toBeVisible();
   await expect(theme).toHaveAttribute("aria-keyshortcuts", /^(Meta|Control)\+Shift\+L$/);
   await expect(theme.locator("kbd")).toHaveText(/^(⌘⇧L|Ctrl\+Shift\+L)$/);
   await expect(theme.locator("svg")).toHaveCount(1);
-  await expect(commands.getByRole("option", { name: "Toggle Sidebar", exact: true }).locator("kbd")).toHaveText(/^(⌘\\|Ctrl\+\\)$/);
+  await expect(commands.getByRole("option", { name: "Toggle sidebar", exact: true }).locator("kbd")).toHaveText(/^(⌘\\|Ctrl\+\\)$/);
   const isLight = () => page.evaluate(() => document.documentElement.classList.contains("light"));
   const before = await isLight();
   await theme.click();
@@ -312,7 +312,7 @@ test("commands carry icons and shortcut hints; Toggle theme works from the palet
   await expect.poll(isLight).toBe(before);
   // The required commands are all there, each with an icon.
   await page.keyboard.press("ControlOrMeta+k");
-  for (const [query, name] of [["new page", "New Page"], ["template", "New Page from Template"], ["trash", "Open Trash"], ["settings", "Settings"], ["inbox", "Open Inbox"]] as const) {
+  for (const [query, name] of [["new page", "New page"], ["template", "New page from template"], ["trash", "Open Trash"], ["settings", "Settings"], ["inbox", "Open Inbox"]] as const) {
     await page.getByRole("combobox", { name: "Search notes and commands" }).fill(query);
     const option = page.getByRole("group", { name: "Commands" }).getByRole("option", { name, exact: true });
     await expect(option).toBeVisible();
@@ -386,7 +386,7 @@ test("⌘K: a press on a command runs it when page results land between mouse do
   const dark = () => page.evaluate(() => document.documentElement.classList.contains("light"));
   const before = await dark();
   await input.fill("theme");
-  const command = dialog.getByRole("option", { name: "Toggle Theme" });
+  const command = dialog.getByRole("option", { name: "Toggle theme" });
   await expect(command).toBeVisible();
   await expect.poll(() => page.evaluate(() => (window as any).prismShell.searchWaiting.length as number)).toBeGreaterThan(0);
   const at = (await command.boundingBox())!;
@@ -405,7 +405,7 @@ test("⌘K: a press on a command runs it when page results land between mouse do
   // An ordinary press (nothing moves) runs once too.
   await page.keyboard.press("ControlOrMeta+k");
   await page.getByRole("combobox", { name: "Search notes and commands" }).fill("toggle theme");
-  await dialog.getByRole("option", { name: "Toggle Theme" }).click();
+  await dialog.getByRole("option", { name: "Toggle theme" }).click();
   await expect(dialog).toHaveCount(0);
   expect(await dark()).toBe(before);
 });
@@ -470,7 +470,7 @@ test("⌘K: a press that never got its release is forgotten — a later click el
   const light = () => page.evaluate(() => document.documentElement.classList.contains("light"));
   const before = await light();
   await input.fill("theme");
-  const command = dialog.getByRole("option", { name: "Toggle Theme" });
+  const command = dialog.getByRole("option", { name: "Toggle theme" });
   await expect(command).toBeVisible();
   await expect.poll(() => page.evaluate(() => (window as any).prismShell.searchWaiting.length as number)).toBeGreaterThan(0);
   // A press whose release the page never sees (the button came up outside the window).
@@ -508,7 +508,7 @@ test("⌘K: Enter while a mouse press is pending runs the selected row only", as
   const field = page.getByRole("combobox", { name: "Search notes and commands" });
   const recent = page.getByRole("group", { name: "Recent searches" }).getByRole("option", { name: "theme" });
   await expect(recent).toBeVisible();
-  const command = dialog.getByRole("option", { name: "Toggle Theme" });
+  const command = dialog.getByRole("option", { name: "Toggle theme" });
   await command.scrollIntoViewIfNeeded();
   const at = (await command.boundingBox())!;
   await page.mouse.move(at.x + 60, at.y + at.height / 2);

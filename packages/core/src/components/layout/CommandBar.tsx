@@ -149,7 +149,7 @@ export function CommandBar() {
   // Build command list
   const createCommand = useCallback((type: ContentType, label: string, icon: React.ReactNode) => ({
     id: `create-${type}`,
-    label: `New ${label}`,
+    label: `New ${label.toLowerCase()}`,
     category: "create" as const,
     icon,
     action: () => {
@@ -175,12 +175,12 @@ export function CommandBar() {
     createCommand("website", "Website", <Globe size={15} />),
     createCommand("task", "Task", <CheckSquare size={15} />),
     {
-      id: "new-page", label: "New Page", category: "create" as const, keys: shortcutKeys("newPage"),
+      id: "new-page", label: "New page", category: "create" as const, keys: shortcutKeys("newPage"),
       icon: <FilePlus2 size={15} />,
       action: () => { closeCommandBar(); usePagesUI.getState().openCreate({}); },
     },
     {
-      id: "create-from-template", label: "New Page from Template", category: "create" as const,
+      id: "create-from-template", label: "New page from template", category: "create" as const,
       icon: <LayoutTemplate size={15} />,
       action: () => { closeCommandBar(); usePagesUI.getState().openCreate({ template: true }); },
     },
@@ -192,7 +192,7 @@ export function CommandBar() {
     },
     {
       // Help → Keyboard shortcuts (NP-ED-07; also ⌘/ outside a block).
-      id: "keyboard-shortcuts", label: "Keyboard Shortcuts", category: "navigate" as const, keys: shortcutKeys("shortcutSheet"),
+      id: "keyboard-shortcuts", label: "Keyboard shortcuts", category: "navigate" as const, keys: shortcutKeys("shortcutSheet"),
       icon: <Settings size={15} />,
       action: () => { closeCommandBar(); openShortcutSheet(); },
     },
@@ -217,22 +217,22 @@ export function CommandBar() {
       icon: <Upload size={15} />,
       action: () => { closeCommandBar(); useTransferUI.getState().openImport({}); },
     }, {
-      id: "export-workspace", label: "Export Workspace…", category: "sync" as const,
+      id: "export-workspace", label: "Export workspace…", category: "sync" as const,
       icon: <Download size={15} />,
       action: () => { closeCommandBar(); useTransferUI.getState().openExport({ scope: "vault" }); },
     }] : []),
     ...(activeIsNote && activeTab ? [{
-      id: "export-page", label: "Export Page…", category: "sync" as const,
+      id: "export-page", label: "Export page…", category: "sync" as const,
       icon: <Download size={15} />,
       action: () => { closeCommandBar(); useTransferUI.getState().openExport({ scope: "page", page: { id: activeTab.noteId, title: activeTab.title, path: null } }); },
     }, {
-      id: "print-page", label: "Print Page", category: "sync" as const,
+      id: "print-page", label: "Print page", category: "sync" as const,
       icon: <Printer size={15} />,
       action: () => { closeCommandBar(); printCurrentPage(); },
     }] : []),
     // NP-AI-03: agent actions on the open page (or its selection) — where this viewer has the agent
     // AND the page is open in a text editor (never on a sheet, canvas, code or virtual tab: no dead entries).
-    ...(host && activeIsNote && activeTab && agentReady ? ([["summarize", "Summarize Page"], ["draft", "Draft with Agent…"], ["transform", "Transform with Agent…"]] as Array<[PageAgentKind, string]>).map(([kind, label]) => ({
+    ...(host && activeIsNote && activeTab && agentReady ? ([["summarize", "Summarize page"], ["draft", "Draft with agent…"], ["transform", "Transform with agent…"]] as Array<[PageAgentKind, string]>).map(([kind, label]) => ({
       id: `agent-${kind}`, label, category: "agent" as const,
       icon: <Sparkles size={15} />,
       action: () => {
@@ -244,42 +244,42 @@ export function CommandBar() {
       },
     })) : []),
     ...(activeIsNote && activeTab ? [{
-      id: "copy-page-link", label: "Copy Link to Page", category: "navigate" as const, keys: ["mod", "L"],
+      id: "copy-page-link", label: "Copy link to page", category: "navigate" as const, keys: ["mod", "L"],
       icon: <Link2 size={15} />,
       action: () => { closeCommandBar(); void copyPageLink(activeTab.noteId); },
     }, ...(toggleState().total ? [{
-      id: "toggle-all-toggles", label: "Expand or Collapse All Toggles", category: "navigate" as const, keys: ["mod", "alt", "T"],
+      id: "toggle-all-toggles", label: "Expand or collapse all toggles", category: "navigate" as const, keys: ["mod", "alt", "T"],
       icon: <ChevronsUpDown size={15} />,
       action: () => { closeCommandBar(); expandOrCollapseAllToggles(document.querySelector<HTMLElement>("#workspace-document .tiptap")); },
     }] : [])] : []),
     ...(hasClosedTab() ? [{
-      id: "reopen-closed-tab", label: "Reopen Closed Tab", category: "navigate" as const, keys: ["mod", "shift", "T"],
+      id: "reopen-closed-tab", label: "Reopen closed tab", category: "navigate" as const, keys: ["mod", "shift", "T"],
       icon: <Undo2 size={15} />,
       action: () => { closeCommandBar(); useUIStore.getState().reopenClosedTab(); },
     }] : []),
     ...(activeIsNote && activeTab ? [{
-      id: "move-page", label: "Move Page To…", category: "navigate" as const,
+      id: "move-page", label: "Move page to…", category: "navigate" as const,
       icon: <FolderInput size={15} />,
       action: () => { closeCommandBar(); usePagesUI.getState().openMove({ id: activeTab.noteId, path: null, title: activeTab.title }); },
     }] : []),
     ...(activeIsNote && activeTab ? [{
-      id: "toggle-favorite", label: favoriteIds.includes(activeTab.noteId) ? "Remove This Page from Favorites" : "Add This Page to Favorites", category: "navigate" as const,
+      id: "toggle-favorite", label: favoriteIds.includes(activeTab.noteId) ? "Remove this page from Favorites" : "Add this page to Favorites", category: "navigate" as const,
       icon: <Star size={15} />,
       action: () => { toggleFavorite({ id: activeTab.noteId, title: activeTab.title, type: activeTab.type }); closeCommandBar(); },
     }] : []),
     // Utility commands
     {
-      id: "toggle-theme", label: "Toggle Theme", category: "navigate" as const, keys: shortcutKeys("toggleTheme"),
+      id: "toggle-theme", label: "Toggle theme", category: "navigate" as const, keys: shortcutKeys("toggleTheme"),
       icon: <SunMoon size={15} />,
       action: () => { toggleTheme(); closeCommandBar(); },
     },
     {
-      id: "toggle-sidebar", label: "Toggle Sidebar", category: "navigate" as const, keys: shortcutKeys("toggleSidebar"),
+      id: "toggle-sidebar", label: "Toggle sidebar", category: "navigate" as const, keys: shortcutKeys("toggleSidebar"),
       icon: <PanelLeft size={15} />,
       action: () => { closeCommandBar(); useUIStore.getState().toggleSidebar(); },
     },
     {
-      id: "toggle-info-panel", label: "Toggle Info Panel", category: "navigate" as const, keys: shortcutKeys("toggleSidePanel"),
+      id: "toggle-info-panel", label: "Toggle info panel", category: "navigate" as const, keys: shortcutKeys("toggleSidePanel"),
       icon: <PanelRight size={15} />,
       action: () => { closeCommandBar(); useUIStore.getState().toggleContextPanel(); },
     },
@@ -299,19 +299,19 @@ export function CommandBar() {
       action: () => { closeCommandBar(); useUIStore.getState().setSettingsOpen(true); },
     },
     {
-      id: "agent-panel", label: "Open Agent Panel", category: "navigate" as const,
+      id: "agent-panel", label: "Open agent panel", category: "navigate" as const,
       icon: <Bot size={15} />,
       action: () => { setContextPanelTab("agent"); if (!useUIStore.getState().contextPanelOpen) toggleContextPanel(); closeCommandBar(); },
     },
     // Server agent sessions (WP3.2) — owner + AgentClient shells only.
     ...(agentChat ? [
       {
-        id: "agent-chat", label: "Agent Chat", category: "agent" as const,
+        id: "agent-chat", label: "Agent chat", category: "agent" as const,
         icon: <Sparkles size={15} />,
         action: () => { openAgentChat(); closeCommandBar(); },
       },
       ...(activeIsNote && activeTab ? [{
-        id: "agent-ask-note", label: "Ask About This Note", category: "agent" as const,
+        id: "agent-ask-note", label: "Ask about this note", category: "agent" as const,
         icon: <Sparkles size={15} />,
         action: () => {
           openAgentChat({ ask: { noteId: activeTab.noteId, noteTitle: activeTab.title } });
@@ -321,7 +321,7 @@ export function CommandBar() {
     ] : []),
     ...(activeTab && !activeTab.noteId.includes(":") ? [
       {
-        id: "version-history", label: "Version History", category: "navigate" as const,
+        id: "version-history", label: "Version history", category: "navigate" as const,
         icon: <History size={15} />,
         action: () => {
           setContextPanelTab("history");
@@ -354,7 +354,7 @@ export function CommandBar() {
     // Transform commands (only show when a note is open)
     ...(activeTab && hostCmds ? [
       {
-        id: "transform-presentation", label: "Turn into Presentation", category: "transform" as const,
+        id: "transform-presentation", label: "Turn into presentation", category: "transform" as const,
         icon: <Wand2 size={15} />,
         action: () => surface(async () => {
           closeCommandBar();
@@ -368,7 +368,7 @@ export function CommandBar() {
         }),
       },
       {
-        id: "transform-email", label: "Turn into Email Draft", category: "transform" as const,
+        id: "transform-email", label: "Turn into email draft", category: "transform" as const,
         icon: <Wand2 size={15} />,
         action: () => surface(async () => {
           closeCommandBar();
@@ -384,7 +384,7 @@ export function CommandBar() {
     ] : []),
     ...(activeTab ? [
       {
-        id: "resolve-wikilinks", label: "Resolve Wikilinks in This Note", category: "sync" as const,
+        id: "resolve-wikilinks", label: "Resolve wikilinks in this note", category: "sync" as const,
         icon: <RefreshCw size={15} />,
         action: async () => {
           closeCommandBar();
@@ -402,7 +402,7 @@ export function CommandBar() {
     // Notion database sync setup / management (desktop: Tauri; thin client: the
     // server, owner only — Client parity B).
     ...(hostCmds ? [{
-      id: "notion-db-sync", label: "Notion Database Sync…", category: "sync" as const,
+      id: "notion-db-sync", label: "Notion database sync…", category: "sync" as const,
       icon: <RefreshCw size={15} />,
       action: () => {
         closeCommandBar();
@@ -412,7 +412,7 @@ export function CommandBar() {
     // Vault-wide resolve on a thin client (server owner): the server job
     // (/api/admin/wikilinks/resolve) — a dry run first, then a confirmed write.
     ...(!isDesktop && host ? [{
-      id: "resolve-all-wikilinks", label: "Resolve All Wikilinks (Vault-wide)", category: "sync" as const,
+      id: "resolve-all-wikilinks", label: "Resolve all wikilinks (vault-wide)", category: "sync" as const,
       icon: <RefreshCw size={15} />,
       action: async () => {
         closeCommandBar();
@@ -435,7 +435,7 @@ export function CommandBar() {
     }] : []),
     // Global utility (desktop: its Tauri command scans every note on the host)
     ...(isDesktop ? [{
-      id: "resolve-all-wikilinks", label: "Resolve All Wikilinks (Vault-wide)", category: "sync" as const,
+      id: "resolve-all-wikilinks", label: "Resolve all wikilinks (vault-wide)", category: "sync" as const,
       icon: <RefreshCw size={15} />,
       action: async () => {
         const result = await invoke<{ total_wikilinks: number; resolved: number; unresolved: number }>(
@@ -445,7 +445,7 @@ export function CommandBar() {
         closeCommandBar();
       },
     }] : []),
-    // `commandBarOpen`: "Reopen Closed Tab" and the toggles command read state that is not in a
+    // `commandBarOpen`: "Reopen closed tab" and the toggles command read state that is not in a
     // store (the closed-tab stack, the page's DOM) — rebuilt each time the palette opens.
   ], [commandBarOpen, favoriteIds, toggleFavorite, createCommand, activeTab, activeIsNote, agentReady, agentChat, canTransfer, closeCommandBar, toggleContextPanel, setContextPanelTab, createNote, openTab, hostCmds, host, vaultClient, surface, transformNote]);
 

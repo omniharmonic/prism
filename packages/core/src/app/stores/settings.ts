@@ -214,7 +214,7 @@ export function useEffectiveTheme(): EffectiveTheme {
 }
 
 /**
- * Flip light/dark from what is on screen now (⌘⇧L, the palette's "Toggle Theme"). With System
+ * Flip light/dark from what is on screen now (⌘⇧L, the palette's "Toggle theme"). With System
  * selected this picks the opposite of the current effective theme and so LEAVES System — an
  * explicit choice; Settings → Appearance → System goes back.
  */

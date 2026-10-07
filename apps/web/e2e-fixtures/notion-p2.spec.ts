@@ -175,7 +175,7 @@ test("expand or collapse all toggles: ⌘⌥T, the page menu and the palette; ne
   // ⌘K has the same action, with its key.
   await page.keyboard.press("ControlOrMeta+k");
   await page.getByRole("combobox", { name: "Search notes and commands" }).fill("toggles");
-  await page.getByRole("option", { name: /Expand or Collapse All Toggles/ }).click();
+  await page.getByRole("option", { name: /Expand or collapse all toggles/ }).click();
   await expect(closed).toHaveCount(3);
 
   // View state only: the document is unchanged and nothing was sent.
@@ -191,7 +191,7 @@ test("expand or collapse all toggles: ⌘⌥T, the page menu and the palette; ne
 });
 
 /** Table A 23: ⌘L copies the open page's link. Table A 28: a closed tab can be reopened. */
-test("⌘L copies the page link; Reopen Closed Tab brings back the tab closed last, where it was", async ({ page }) => {
+test("⌘L copies the page link; Reopen closed tab brings back the tab closed last, where it was", async ({ page }) => {
   await stubClipboard(page);
   await page.goto("/e2e-fixtures/notion-shell.html");
   const editor = page.locator(".tiptap[contenteditable=true]");
@@ -206,10 +206,10 @@ test("⌘L copies the page link; Reopen Closed Tab brings back the tab closed la
   await page.keyboard.press("ControlOrMeta+k");
   const input = page.getByRole("combobox", { name: "Search notes and commands" });
   await input.fill("copy link");
-  await expect(page.getByRole("option", { name: /Copy Link to Page/ })).toBeVisible();
+  await expect(page.getByRole("option", { name: /Copy link to page/ })).toBeVisible();
   // No tab was closed yet: nothing to reopen.
   await input.fill("reopen");
-  await expect(page.getByRole("option", { name: /Reopen Closed Tab/ })).toHaveCount(0);
+  await expect(page.getByRole("option", { name: /Reopen closed tab/ })).toHaveCount(0);
   expect(await noteWrites(page)).toBe(0);
 
   // Open two more pages, then close the MIDDLE one.
@@ -228,13 +228,13 @@ test("⌘L copies the page link; Reopen Closed Tab brings back the tab closed la
 
   await page.keyboard.press("ControlOrMeta+k");
   await input.fill("reopen");
-  await page.getByRole("option", { name: /Reopen Closed Tab/ }).click();
+  await page.getByRole("option", { name: /Reopen closed tab/ }).click();
   expect(await order()).toEqual(["workspace", "agenda", "field-notes"]);
   await expect(tabs.getByRole("button", { name: "Open Workshop agenda", exact: true })).toHaveAttribute("aria-current", "page");
   // Used up: the command is gone again.
   await page.keyboard.press("ControlOrMeta+k");
   await input.fill("reopen");
-  await expect(page.getByRole("option", { name: /Reopen Closed Tab/ })).toHaveCount(0);
+  await expect(page.getByRole("option", { name: /Reopen closed tab/ })).toHaveCount(0);
 });
 
 /** Table A 51: previous / next row while a peek is open. */

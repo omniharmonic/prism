@@ -234,8 +234,8 @@ test("block menu and command bar run the same actions", async ({ page }) => {
   await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
   await page.keyboard.press("ControlOrMeta+k");
   const search = page.getByRole("dialog", { name: "Search workspace" });
-  await search.getByRole("combobox").fill("Summarize Page");
-  await search.getByRole("option", { name: "Summarize Page" }).first().click();
+  await search.getByRole("combobox").fill("Summarize page");
+  await search.getByRole("option", { name: "Summarize page" }).first().click();
   await expect(panel(page)).toHaveAccessibleName("Agent · Summarize page");
 });
 
@@ -386,16 +386,16 @@ test("command bar: the agent entries exist only for a page that is open in a tex
   const search = page.getByRole("dialog", { name: "Search workspace" });
   await page.keyboard.press("ControlOrMeta+k");
   await search.getByRole("combobox").fill("with Agent");
-  await expect(search.getByRole("option", { name: /Draft with Agent/ })).toHaveCount(1);
+  await expect(search.getByRole("option", { name: /Draft with agent/ })).toHaveCount(1);
   await page.keyboard.press("Escape");
   // A spreadsheet tab: no text editor — no dead entries.
   await page.evaluate(() => (window as any).prismFixtureUI.getState().openTab("room2", "Budget.csv", "spreadsheet"));
   await expect(doc(page)).toHaveCount(0);
   await page.keyboard.press("ControlOrMeta+k");
   await search.getByRole("combobox").fill("with Agent");
-  await expect(search.getByRole("option", { name: /Draft with Agent|Transform with Agent/ })).toHaveCount(0);
-  await search.getByRole("combobox").fill("Summarize Page");
-  await expect(search.getByRole("option", { name: "Summarize Page", exact: true })).toHaveCount(0);
+  await expect(search.getByRole("option", { name: /Draft with agent|Transform with agent/ })).toHaveCount(0);
+  await search.getByRole("combobox").fill("Summarize page");
+  await expect(search.getByRole("option", { name: "Summarize page", exact: true })).toHaveCount(0);
 });
 
 test("an older server (no text-only runs): a clear message, never a dead spinner", async ({ page }) => {

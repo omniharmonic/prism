@@ -254,7 +254,7 @@ test("⌘N is listed only where it works: not in a browser tab, yes in the nativ
   const search = page.getByRole("combobox", { name: "Search notes and commands" });
   await search.fill("new page");
   const commands = page.getByRole("group", { name: "Commands" });
-  const row = commands.getByRole("option", { name: "New Page", exact: true });
+  const row = commands.getByRole("option", { name: "New page", exact: true });
   await expect(row).toBeVisible();
   expect(await row.getAttribute("aria-keyshortcuts")).toBeNull();
   await expect(row.locator("kbd")).toHaveCount(0);
@@ -278,7 +278,7 @@ test("⌘N is listed only where it works: not in a browser tab, yes in the nativ
   await native.keyboard.press("Escape");
   await native.keyboard.press("ControlOrMeta+k");
   await native.getByRole("combobox", { name: "Search notes and commands" }).fill("new page");
-  const nativeRow = native.getByRole("group", { name: "Commands" }).getByRole("option", { name: "New Page", exact: true });
+  const nativeRow = native.getByRole("group", { name: "Commands" }).getByRole("option", { name: "New page", exact: true });
   await expect(nativeRow.locator("kbd")).toHaveText(/^(⌘N|Ctrl\+N)$/);
   await expect(nativeRow).toHaveAttribute("aria-keyshortcuts", /^(Meta|Control)\+N$/i);
   await context.close();
