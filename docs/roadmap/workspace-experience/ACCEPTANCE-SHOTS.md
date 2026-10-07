@@ -191,6 +191,26 @@ Fixed = changed in product code and the state recaptured and looked at (light an
 | 47 | → track appearance | Settings → Appearance is theirs. |
 | 48 | → track deviations | `TabBar` header is theirs. |
 
+### Status after the w15 visual pass (same branch, after merging main)
+
+Only the rows this pass changed; every other row keeps its w14 status above.
+
+| # | Status | What changed / why not |
+|---|---|---|
+| 15 | unchanged — **owner decision** | The per-card status select and Earlier / Later repeat what the ⋯ menu and drag do; removing them changes what `boards.spec.ts` drives. |
+| 17 | unchanged — **needs a full-suite run** | Sentence case for ~35 command names is a rename read by 12 spec files (exact names and case-sensitive patterns); do it with the orchestrator's full run. |
+| 23 | **fixed (quiet)** | The Outline / Formatting row has no rule under it at rest (it reads as part of the page; the rule returns while the formatting commands or review controls show). The empty save strip above the status bar is gone (it shows only when it says something). Status bar: "6 notes" (no "Vault:", no internal type word). Hiding the status bar altogether stays the owner's call. |
+| 24 | **fixed** | With the toolbar rule gone and Add icon / Add cover waiting for the pointer, the peek opens on its title. |
+| 32, 35, 44 (grip), 46 | not changed | Slash menu placement on a phone; link card below its link (as in Notion); the More sheet's mix of destinations and page actions is a product decision. |
+| 36 | **partly (presentation)** | Option chips and group names that are stored identifiers show with a capital ("In-progress", "Todo", "Medium") — CSS only; the stored value, the accessible names and what specs read are unchanged. Real names ("In progress") are the schema's option labels: making that the default changes group / button names in 6 database spec files — owner decision. Row titles are medium weight, not bold. |
+| 37 | **fixed** | A cover that fails to load leaves the card's tinted tile (`onError` hides the image). |
+| 38 | **fixed** | Through main's `formatDate` (`lib/datetime/format.ts`): "Expires Oct 6" and the regional date preference applies. |
+| 39 | unchanged — **owner decision** | Green / red suggestions (diff convention) vs the author's colour. |
+| 43 | **fixed (CSS)** | Phone page-agent result: a two-column grid of actions at the sheet's text size. |
+| 47 | **fixed** | Reduce motion is a row like the others (14 px label, 12 px hint, 16 px accent checkbox). |
+| 48 | **fixed** | The header control reads "1 tab" / "3 tabs" (its accessible name stays "Open documents (n)"). |
+| — | **new** | "Add icon" / "Add cover" wait for the pointer or keyboard focus on devices that hover (room kept, nothing moves); always shown on touch. Share dialog's close button is a quiet icon button. |
+
 Not seen in any capture: a white panel in dark mode, sideways page scroll, a focus ring around the writing surface, bottom controls over content.
 
 **Not looked at:** roughly 250 of the 364 images (mostly the second theme of a state already read in the other). Dark-mode leaks in those would be missed by this list — the reviewer's pass over the gallery covers them.

@@ -60,3 +60,10 @@
   .page-agent-actions .page-agent-button { flex: 1 1 auto; justify-content: center; }
 }
 @media print { .page-agent { display: none !important; } }
+
+/* w15 visual (defect 43): on a phone the result's actions are a tidy two-column grid at the sheet's
+   own text size (they were three ragged buttons and a full-width fourth in 16 px). */
+@media (max-width: 767px) {
+  .page-agent-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .page-agent-actions .page-agent-button { justify-content: center; font-size: 14px; min-width: 0; }
+}

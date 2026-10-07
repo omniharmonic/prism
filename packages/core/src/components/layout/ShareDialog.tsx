@@ -344,6 +344,8 @@ function SharingDocument({ noteId, sharing, onClose }: Props) {
       .prism-share-dialog button,.prism-share-dialog input,.prism-share-dialog select { min-height:44px; border-radius:8px; border:1px solid var(--glass-border); padding:8px 12px; font:inherit; font-size:13px; background:var(--bg-surface); color:var(--text-primary); max-width:100%; }
       .prism-share-dialog button { display:inline-flex; align-items:center; justify-content:center; gap:7px; cursor:pointer; }
       .prism-share-dialog button:disabled,.prism-share-dialog fieldset:disabled { opacity:.55; }
+      .prism-share-dialog > header > button { width:44px; padding:0; border-color:transparent; background:transparent; color:var(--text-muted); }
+      .prism-share-dialog > header > button:hover { background:var(--glass-hover); color:var(--text-primary); }
       .prism-share-dialog :focus-visible { outline:2px solid var(--color-accent); outline-offset:2px; }
       .prism-share-dialog p { margin:0; font-size:13px; line-height:1.6; color:var(--text-secondary); }
       .prism-share-dialog label { display:grid; gap:7px; font-size:12px; color:var(--text-secondary); }

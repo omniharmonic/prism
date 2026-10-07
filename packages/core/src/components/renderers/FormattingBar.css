@@ -69,3 +69,9 @@ div:has(> div > .empty-page-starters) .prose-editor { min-height: 2.5em !importa
 .document-review-all { display: inline-flex; align-items: center; gap: 5px; min-height: 32px; padding: 0 8px; border-radius: 7px; font-size: 12.5px; font-weight: 500; color: var(--text-secondary); white-space: nowrap; }
 .document-review-all:hover { background: var(--glass-hover); color: var(--text-primary); }
 @media (max-width: 767px) { .document-review-all > span { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; } .document-review-all { justify-content: center; padding: 0; } }
+
+/* w15 visual (defect 23): the Outline / Formatting row is part of the page, not a second bar —
+   no rule under it at rest; the rule returns while the formatting commands are open. */
+.document-formatting-bar { border-bottom-color: transparent; }
+.document-formatting-bar:has(.document-formatting-toggle[aria-expanded="true"]),
+.document-formatting-bar:has(.document-review-controls) { border-bottom-color: var(--glass-border); }

@@ -492,3 +492,17 @@
 .db-peek .document-writing-scroll { padding-top: 20px; }
 .db-peek .document-page-header { --document-title-size: 28px; margin-bottom: 20px; }
 .db-peek .document-breadcrumb { display: none; }
+
+/* ── w15 visual ──
+   Defect 36: a stored option that reads as an identifier ("in-progress", "todo", "medium") is shown
+   with a capital — presentation only, the value and every accessible name are unchanged. */
+.db-opt-text[data-slug], .db-group-name { display: inline-block; max-width: 100%; vertical-align: top; }
+.db-opt-text[data-slug]::first-letter, .db-group-name::first-letter { text-transform: uppercase; }
+/* Titles are the first column, not headings: medium weight (every row in bold read as a wall). */
+.db-row-open { font-weight: 500; }
+/* Defect 37: a cover that fails to load leaves the card's own tinted tile, never a broken-image glyph. */
+.db-cover img[hidden] { display: none; }
+/* Row selection boxes: an empty box is an outline in the surface's own colours (the native control
+   drew a filled grey square in dark, the heaviest thing in a phone table); ticked it is the native,
+   accent-coloured control as before. */
+.db-table input.db-sel:not(:checked):not(:indeterminate) { appearance: none; -webkit-appearance: none; border: 1.5px solid var(--glass-border-strong, var(--glass-border)); border-radius: 4px; background: transparent; }

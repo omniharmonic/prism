@@ -134,3 +134,19 @@ html.dark .document-cover-button:hover { background: rgba(20,21,26,.92); }
 .prism-emoji-picker .epr-search-container input { font-size: 13px; }
 .prism-emoji-picker .epr-tone { border-radius: 999px; }
 @media (max-width: 767px) { .prism-emoji-picker .epr-search-container input { font-size: 16px; } }
+
+/* w15 visual (defect 23): the save line under the page is not a bar. With nothing to say it takes
+   no room (it was an empty 24 px strip with a rule above the status bar); an error keeps its rule. */
+.document-save-footer:not(:has(span)) { display: none; }
+.document-save-footer:has([role="alert"]) { border-top: 1px solid var(--glass-border); }
+
+/* w15 visual: "Add icon" / "Add cover" wait for the pointer or the keyboard on devices that hover
+   (their room is kept, so nothing moves); touch devices show them always. */
+@media (hover: hover) and (pointer: fine) {
+  .document-page-header .document-icon-control:not(.has-icon),
+  .document-page-header .document-add-cover { opacity: 0; transition: opacity var(--motion-fast, 120ms); }
+  .document-page-header:hover .document-icon-control:not(.has-icon),
+  .document-page-header:hover .document-add-cover,
+  .document-page-header:focus-within .document-icon-control:not(.has-icon),
+  .document-page-header:focus-within .document-add-cover { opacity: 1; }
+}

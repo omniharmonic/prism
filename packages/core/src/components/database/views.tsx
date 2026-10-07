@@ -85,7 +85,7 @@ function GroupHeader({ g, def, open, onToggle, extra }: { g: { value: string | n
       <button type="button" className="db-group-toggle focus-ring" aria-expanded={open} aria-label={`${open ? "Collapse" : "Expand"} ${g.label}`} onClick={onToggle}>
         {open ? <ChevronDown size={14} aria-hidden="true" /> : <ChevronRight size={14} aria-hidden="true" />}
       </button>
-      {g.value !== null && def.kind !== "checkbox" && def.kind !== "person" ? <OptionChip value={g.value} label={g.label} color={def.options.find((o) => o.value === g.value)?.color ?? optionColor(g.value)} /> : <span>{g.label}</span>}
+      {g.value !== null && def.kind !== "checkbox" && def.kind !== "person" ? <OptionChip value={g.value} label={g.label} color={def.options.find((o) => o.value === g.value)?.color ?? optionColor(g.value)} /> : <span className="db-group-name">{g.label}</span>}
       <span className="db-badge-count" aria-label={`${g.rows.length} ${g.rows.length === 1 ? "page" : "pages"}`}>{g.rows.length}</span>
       {extra}
     </h3>
@@ -417,7 +417,7 @@ function BoardColumn({ value, label, def, children, count, onAdd, extra }: { val
     /* The board is a list of columns: each column region sits in a box-less list item. */
     <div role="listitem" style={{ display: "contents" }}>
     <section ref={drop.setNodeRef} className="db-col" aria-label={label} data-over={drop.isOver || undefined} style={{ ["--hue" as string]: `var(--db-hue-${color}, ${HUES[color]})` }}>
-      <header className="db-col-head"><span className="db-dot" aria-hidden="true" /> {label} <span className="db-badge-count">{count}</span>{extra}</header>
+      <header className="db-col-head"><span className="db-dot" aria-hidden="true" /> <span className="db-group-name">{label}</span> <span className="db-badge-count">{count}</span>{extra}</header>
       {onAdd && <button type="button" className="db-col-add" onClick={onAdd}><Plus size={14} aria-hidden="true" /> Add {def.kind === "status" ? "item" : "page"}</button>}
       {children}
     </section>
@@ -510,7 +510,7 @@ export function GalleryView({ ctx }: { ctx: ViewContext }) {
         return (
           <div key={r.id} className="db-gcard" role="listitem" aria-label={title(r)}>
             <button type="button" className="db-cover" aria-hidden="true" tabIndex={-1} onClick={(e) => ctx.open(r, e)}>
-              {url ? <img src={url} alt="" loading="lazy" referrerPolicy="no-referrer" style={{ objectPosition: `50% ${cover!.y}%` }} />
+              {url ? <img src={url} alt="" loading="lazy" referrerPolicy="no-referrer" onError={(e) => { e.currentTarget.hidden = true; }} style={{ objectPosition: `50% ${cover!.y}%` }} />
                 : cover?.gradient ? <span className="db-cover-gradient" style={{ background: cover.gradient, width: "100%", height: "100%" }} />
                 : <span>{icon ?? title(r).slice(0, 1).toUpperCase()}</span>}
             </button>
