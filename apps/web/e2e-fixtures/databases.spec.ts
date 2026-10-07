@@ -578,6 +578,83 @@ test("phone: boards default to list", async ({ page }) => {
   await expect(page.getByText("Shown as a list on this screen.")).toHaveCount(0);
 });
 
+// NP-AX-07 — on a phone the calendar is a week LIST (a day per row, 44 px targets); the month grid is one tap away
+// and the saved view is untouched. A page is rescheduled there with its date editor.
+test("phone: the calendar defaults to a week list — day rows, week navigation, the date editor reschedules; Month shows the grid", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/e2e-fixtures/databases.html?ingest");
+  await expect(page.getByRole("button", { name: "Refine onboarding copy", exact: true }).first()).toBeVisible();
+  const ymd = (off: number) => page.evaluate((o) => { const d = new Date(); const x = new Date(d.getFullYear(), d.getMonth(), d.getDate() + o); return `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, "0")}-${String(x.getDate()).padStart(2, "0")}`; }, off);
+  const [today, nextWeek] = [await ymd(0), await ymd(7)];
+  await page.evaluate(([today, nextWeek]) => {
+    const notes = (window as any).dbFixture.notes();
+    const set = (id: string, due: string | null) => { const n = notes.find((x: any) => x.id === id); n.metadata = { ...n.metadata, due }; };
+    set("t1", today!); set("g1", today!); set("t2", nextWeek!); set("t3", null); set("t4", null); set("t5", null); set("g2", null); set("g3", null); set("g4", null);
+  }, [today, nextWeek]);
+  await page.getByRole("tab", { name: "Calendar" }).click();
+  await expect(page.getByText("Shown as a week list on this screen.")).toBeVisible();
+  await expect(page.locator(".db-cal")).toHaveCount(0);
+  const week = page.getByRole("list", { name: "Calendar week" });
+  const days = week.locator("> li");
+  await expect(days).toHaveCount(7);
+  // Monday first; today is marked, and holds today's pages as full-width rows.
+  expect(await days.first().evaluate((li) => new Date(`${li.getAttribute("data-day")}T12:00:00`).getDay())).toBe(1);
+  const todayRow = week.locator(`> li[data-day="${today}"]`);
+  await expect(todayRow).toHaveAttribute("aria-current", "date");
+  await expect(todayRow).toContainText("Today");
+  const item = todayRow.locator('[data-agenda-item="t1"]');
+  await expect(item.getByRole("button", { name: "Review workspace navigation", exact: true })).toBeVisible();
+  // Every control in the list is a real touch target, and nothing overflows the screen.
+  const small = await week.locator("button, input, select, a[href]").evaluateAll((els) => els.map((el) => { const r = el.getBoundingClientRect(); return { what: (el.getAttribute("aria-label") || el.textContent || "").trim().slice(0, 40), w: Math.round(r.width), h: Math.round(r.height) }; }).filter((b) => b.w > 0 && (b.w < 44 || b.h < 44)));
+  expect(small).toEqual([]);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  for (const row of await days.all()) expect((await row.boundingBox())!.width).toBeGreaterThan(330);
+
+  // The date editor reschedules (no dragging on a phone): a per-field compare-and-set write.
+  await item.getByRole("button", { name: /^Due: / }).click();
+  await item.getByLabel("Due", { exact: true }).fill(nextWeek);
+  await item.getByLabel("Due", { exact: true }).press("Enter");
+  await expect.poll(async () => (await writes(page)).filter((w: any) => w.set).at(-1)).toMatchObject({ id: "t1", set: { due: nextWeek }, expect: { due: today } });
+  await expect(todayRow.locator('[data-agenda-item="t1"]')).toHaveCount(0);
+  // A page an integration keeps in sync is listed, opens, and says why its date is not changed here.
+  const synced = todayRow.locator('[data-agenda-item="g1"]');
+  await expect(synced).toContainText("kept in sync by an integration");
+  await synced.getByRole("button", { name: /^Due: / }).click();
+  await expect(synced.getByLabel("Due", { exact: true })).toHaveCount(0);
+
+  // Week navigation: next week holds what was moved there (and t2); Today comes back.
+  await page.getByRole("button", { name: "Next week" }).click();
+  await expect(week.locator(`> li[data-day="${nextWeek}"]`).getByRole("button", { name: "Review workspace navigation", exact: true })).toBeVisible();
+  await expect(week.locator(`> li[data-day="${nextWeek}"]`).getByRole("button", { name: "Write release notes", exact: true })).toBeVisible();
+  await expect(week.locator(`> li[data-day="${today}"]`)).toHaveCount(0);
+  await page.getByRole("button", { name: "Previous week" }).click();
+  await page.getByRole("button", { name: "Previous week" }).click();
+  await page.getByRole("button", { name: "Today", exact: true }).click();
+  await expect(week.locator(`> li[data-day="${today}"]`)).toHaveAttribute("aria-current", "date");
+
+  // Adding on a day sets that day.
+  await todayRow.getByRole("button", { name: `New page on ${today}` }).click();
+  await page.getByRole("textbox", { name: `New page on ${today}` }).fill("Standup notes");
+  await page.keyboard.press("Enter");
+  await expect(todayRow.getByRole("button", { name: "Standup notes", exact: true })).toBeVisible();
+  expect((await fx(page)).creates.at(-1).metadata.due).toBe(today);
+
+  // "Month" shows the dense grid as before; nothing about the saved view is written either way.
+  await page.getByRole("button", { name: "Month", exact: true }).click();
+  await expect(page.getByRole("grid", { name: "Calendar calendar" })).toBeVisible();
+  await expect(page.getByText("Month grid: days are small on this screen.")).toBeVisible();
+  await expect(week).toHaveCount(0);
+  await page.getByRole("button", { name: "Month", exact: true }).click();
+  await expect(week).toBeVisible();
+  expect(await configWrites(page)).toEqual([]);
+  // A wide screen gets the month grid straight away, with no notice.
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.reload();
+  await page.getByRole("tab", { name: "Calendar" }).click();
+  await expect(page.getByRole("grid", { name: "Calendar calendar" })).toBeVisible();
+  await expect(page.getByText("Shown as a week list on this screen.")).toHaveCount(0);
+});
+
 // NP-DB-07 — a calendar item is dragged to another day (CAS write through the property writer); a range spans as one bar.
 test("calendar drag reschedule and multi-day span", async ({ page }) => {
   // Dates inside the current month, starting on a Monday so a three-day range sits in one week row.

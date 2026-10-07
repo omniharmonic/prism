@@ -40,7 +40,7 @@ export function AccountMenu() {
   const item = "interactive focus-ring flex w-full items-center gap-2.5 text-left";
   const itemStyle = { minHeight: "var(--workspace-control-height)", padding: "0 10px", borderRadius: "var(--radius-sm)", fontSize: "var(--text-base)", color: "var(--text-primary)" } as const;
   return (
-    <div ref={root} style={{ position: "relative" }}>
+    <div ref={root} className="workspace-account" style={{ position: "relative" }}>
       <div className="workspace-nav-row group flex items-center" style={{ color: "var(--text-secondary)", fontSize: "var(--text-base)" }}>
         <button ref={trigger} type="button" aria-haspopup="menu" aria-expanded={open} aria-label="Account menu" onClick={() => setOpen((v) => !v)}
           className="interactive focus-ring flex flex-1 min-w-0 items-center gap-2.5 text-left" style={{ minHeight: "var(--workspace-control-height)", padding: "0 10px" }}>

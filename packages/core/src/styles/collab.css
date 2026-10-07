@@ -113,3 +113,10 @@ span[data-suggestion="delete"][data-color="#ef4444"] { color: var(--color-danger
 .collab-cover-bleed .document-cover { margin: -8px 0 28px; border-radius: var(--radius-lg); }
 .collab-cover-bleed .document-cover-controls { right: 14px; }
 @media (max-width: 767px) { .collab-cover-bleed .document-cover { margin: -4px -14px 20px; border-radius: 0; } }
+
+/* w14 visual, defect 13: comments read at one size; thread actions are real 28 px controls. */
+.prism-comment-input { font-size: 13px; line-height: 1.5; }
+.prism-comment-input:focus-visible { border-color: var(--focus-ring) !important; }
+.prism-comment-icon { display: inline-flex; align-items: center; justify-content: center; min-width: 28px; min-height: 28px; border-radius: 6px; }
+.prism-comment-icon:hover:not(:disabled) { background: var(--glass-hover); }
+@media (max-width: 767px), (pointer: coarse) { .prism-comment-input { font-size: 16px; } }

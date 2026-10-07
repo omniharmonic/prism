@@ -234,6 +234,20 @@ function matrixLost(vaultId: string): string[] {
   }
 }
 
+/** How many rooms the reconcile sweep still owes an answer about / has given up on
+ *  (worker cursors written by worker/scheduler.ts). Counts only. */
+function matrixReconcileCounts(vaultId: string): { owed: number; stuck: number } {
+  const n = (kind: string): number => {
+    try {
+      const v = JSON.parse(getWorkerCursor(vaultId, kind) || "[]");
+      return Array.isArray(v) ? v.length : 0;
+    } catch {
+      return 0;
+    }
+  };
+  return { owed: n("matrix-reconcile-retry"), stuck: n("matrix-reconcile-stuck") };
+}
+
 export async function getSourceHealth(opts: { now?: number; list?: Lister } = {}): Promise<SourceHealth[]> {
   const now = opts.now ?? Date.now();
   const out: SourceHealth[] = [];
@@ -248,6 +262,9 @@ export async function getSourceHealth(opts: { now?: number; list?: Lister } = {}
       // pass may be missing): `failing` — durably, across restarts — until the owner
       // has looked and cleared them (DELETE /acl/workers/matrix/lost). Ids only.
       const lost = src === "matrix" ? matrixLost(entry.id) : [];
+      // Rooms the hourly reconcile could not answer for: `reconcileOwed` are being retried with
+      // a back-off, `reconcileStuck` failed 6 times in a row (asked about in the rotation only).
+      const rec = src === "matrix" ? matrixReconcileCounts(entry.id) : { owed: 0, stuck: 0 };
       out.push({
         name: entry.id === "primary" ? src : `${src}@${entry.id}`,
         kind: "server",
@@ -259,6 +276,7 @@ export async function getSourceHealth(opts: { now?: number; list?: Lister } = {}
         failureStreak: r?.streak ?? 0,
         staleAfterMs,
         status: lost.length ? "failing" : computeStatus({ configured, lastSuccessAt: r?.lastSuccessAt ?? null, streak: r?.streak ?? 0, staleAfterMs, now, baselineAt: BOOT_AT }),
+        ...(src === "matrix" && (rec.owed || rec.stuck) ? { detail: { reconcileOwed: rec.owed, reconcileStuck: rec.stuck } } : {}),
       });
     }
   }

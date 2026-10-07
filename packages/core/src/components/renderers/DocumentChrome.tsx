@@ -170,6 +170,7 @@ function EmojiPickerPopover({
     <>
       <div onClick={onClose} style={{ position: "fixed", inset: 0, zIndex: 70 }} />
       <div
+        className="prism-emoji-picker"
         style={{
           position: "fixed",
           top,

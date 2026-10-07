@@ -518,7 +518,7 @@ export default function DocumentRenderer({ note, onMetadataChange, readOnly }: R
           More sheet, registered via the store). */}
       <div
         className="document-save-footer flex items-center justify-end px-4 py-1 text-xs gap-3"
-        style={{ color: "var(--text-muted)", borderTop: "1px solid var(--glass-border)" }}
+        style={{ color: "var(--text-muted)" }}
       >
         <div className="flex items-center gap-3">
           {uploadError && <span role="alert">{uploadError} <button type="button" onClick={() => setUploadError(null)} className="underline">Dismiss</button></span>}
