@@ -13,13 +13,11 @@ import {
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ArrowLeft,
-  ArrowUpRight,
   Search,
   MessageSquare,
   Filter,
   ChevronDown,
   ChevronRight,
-  Link2,
   User,
   Users,
   PenSquare,
@@ -51,7 +49,10 @@ import { usePullToRefresh } from "../../lib/gestures/usePullToRefresh";
 import { usePagesUI } from "../../lib/pages/store";
 import { liveActionErrorText } from "../../lib/actions/client";
 
-import { formatDate as fmtDate } from "../../lib/datetime/format";
+import { PeopleConversationList, PersonTimeline, SourceBadge, usePeopleConversations, messageWhen } from "./PeopleConversations";
+import { ConversationChromeProvider } from "./conversationChrome";
+import type { PersonConversationItem } from "../../data/VaultClient";
+import type { ContentType } from "../../lib/types";
 interface LinkData {
   sourceId: string;
   targetId: string;
@@ -83,23 +84,11 @@ function getPlatform(note: Note): string {
   return "matrix";
 }
 
-function formatRelativeTime(ts: number | string): string {
-  try {
-    const date = typeof ts === "number" ? new Date(ts) : new Date(ts);
-    const now = new Date();
-    const diffMs = now.getTime() - date.getTime();
-    const diffMin = Math.floor(diffMs / 60000);
-    if (diffMin < 1) return "now";
-    if (diffMin < 60) return `${diffMin}m ago`;
-    const diffHr = Math.floor(diffMin / 60);
-    if (diffHr < 24) return `${diffHr}h ago`;
-    const diffDay = Math.floor(diffHr / 24);
-    if (diffDay < 7) return `${diffDay}d ago`;
-    return fmtDate(date, { month: "short", day: "numeric" }, { locale: "en-US" });
-  } catch {
-    return "";
-  }
-}
+/** List times read like the mockups: a time today, "Yesterday", else a short date. */
+const formatRelativeTime = (ts: number | string): string => {
+  const at = typeof ts === "number" ? ts : Date.parse(ts);
+  return Number.isFinite(at) ? messageWhen(at) : "";
+};
 
 interface PersonWithThreads {
   person: Note;
@@ -127,6 +116,8 @@ function ScopedMessagesDashboard() {
   const audience = useAgentChatStore(state => state.scope);
   const scope = vault.scope?.() ?? actions?.scope?.() ?? audience ?? null;
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  // People view: the person whose merged timeline fills the detail pane (a thread opened from it sits on top).
+  const [selectedPerson, setSelectedPerson] = useState<{ id: string; name: string } | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
   const [viewMode, setViewMode] = useState<ViewMode>("triage");
   const [platformFilter, setPlatformFilter] = useState<string>("all");
@@ -156,6 +147,11 @@ function ScopedMessagesDashboard() {
     refetchInterval: useLivePollMs(30_000),
   });
 
+  // People are resolved by the server (addresses + handles, no stored link needed). Only a shell
+  // without that route (the legacy desktop) still derives them from person notes + graph links.
+  const resolvesPeople = !!vault.listPeopleConversations;
+  const peoplePage = usePeopleConversations(scope, searchQuery, resolvesPeople && viewMode === "people");
+
   // Fetch person notes (for People view)
   const {
     data: loadedPeople,
@@ -171,6 +167,7 @@ function ScopedMessagesDashboard() {
     ],
     queryFn: () => vault.listNotes({ tag: "person", limit: 2000 }),
     refetchInterval: useLivePollMs(60_000),
+    enabled: !resolvesPeople,
   });
 
   const threadNotes = threadsError ? undefined : loadedThreads;
@@ -204,6 +201,7 @@ function ScopedMessagesDashboard() {
     queryKey: ["vault", "inbox", scope, "graph"],
     queryFn: () => vault.getGraph(),
     staleTime: 60_000,
+    enabled: !resolvesPeople,
   });
   const graphData = graphError ? undefined : loadedGraph;
 
@@ -356,10 +354,17 @@ function ScopedMessagesDashboard() {
   }, [peopleWithThreads, searchQuery]);
 
   const handleOpenThread = (note: Note) => setSelectedId(note.id);
+  // The timeline belongs to the People view; another view shows its own selection only.
+  const person = viewMode === "people" && resolvesPeople ? selectedPerson : null;
+  const openTimelineItem = (item: PersonConversationItem) => {
+    // A meeting is a page of its own; mail and chats open here, over the timeline.
+    if (item.kind === "meeting") useUIStore.getState().openTab(item.id, item.title, "meeting" as ContentType);
+    else setSelectedId(item.id);
+  };
   // Phone: pull the conversation list down to refetch it (the Refresh button does the same).
   const pull = usePullToRefresh<HTMLDivElement>({
     label: "Messages",
-    onRefresh: () => Promise.all([reloadThreads(), reloadEmails(), reloadPeople(), reloadGraph()]).then((all) => {
+    onRefresh: () => Promise.all([reloadThreads(), reloadEmails(), ...(resolvesPeople ? (viewMode === "people" ? [peoplePage.refetch()] : []) : [reloadPeople(), reloadGraph()])]).then((all) => {
       if (all.some((r) => r.isError)) throw new Error("refresh failed");
     }),
   });
@@ -380,7 +385,7 @@ function ScopedMessagesDashboard() {
   return (
     <SelectedConversation.Provider value={selectedId}>
       <div
-        className={`prism-messages-workspace prism-message-split h-full min-h-0 min-w-0 ${selectedId ? "has-selection" : ""}`}
+        className={`prism-messages-workspace prism-message-split h-full min-h-0 min-w-0 ${selectedId || person ? "has-selection" : ""}`}
       >
         <div
           className="prism-messages-list flex min-h-0 min-w-0 flex-col"
@@ -401,7 +406,7 @@ function ScopedMessagesDashboard() {
               >
                 {limited ? "Showing " : ""}
                 {totalCount} conversations
-                {viewMode === "people" && ` · ${filteredPeople.length} people`}
+                {viewMode === "people" && (resolvesPeople ? (peoplePage.data ? ` · ${peoplePage.data.total} people` : "") : ` · ${filteredPeople.length} people`)}
               </p>
             </div>
 
@@ -418,64 +423,19 @@ function ScopedMessagesDashboard() {
               <RefreshCw size={15} />
             </button>
 
-            {/* View toggle */}
-            <div
-              className="prism-message-views flex max-w-full rounded-lg overflow-hidden"
-              role="group"
-              aria-label="Inbox view"
-              style={{ border: "1px solid var(--glass-border)" }}
-            >
-              <button
-                aria-pressed={viewMode === "triage"}
-                onClick={() => setViewMode("triage")}
-                className="interactive focus-ring flex items-center gap-1 px-3 py-2 text-xs"
-                style={{
-                  background:
-                    viewMode === "triage"
-                      ? "var(--surface-selected)"
-                      : "transparent",
-                  color:
-                    viewMode === "triage"
-                      ? "var(--text-primary)"
-                      : "var(--text-secondary)",
-                }}
-              >
-                <Inbox size={11} /> Triage
-              </button>
-              <button
-                aria-pressed={viewMode === "people"}
-                onClick={() => setViewMode("people")}
-                className="interactive focus-ring flex items-center gap-1 px-3 py-2 text-xs"
-                style={{
-                  background:
-                    viewMode === "people"
-                      ? "var(--surface-selected)"
-                      : "transparent",
-                  color:
-                    viewMode === "people"
-                      ? "var(--text-primary)"
-                      : "var(--text-secondary)",
-                }}
-              >
-                <Users size={11} /> People
-              </button>
-              <button
-                aria-pressed={viewMode === "platforms"}
-                onClick={() => setViewMode("platforms")}
-                className="interactive focus-ring flex items-center gap-1 px-3 py-2 text-xs"
-                style={{
-                  background:
-                    viewMode === "platforms"
-                      ? "var(--surface-selected)"
-                      : "transparent",
-                  color:
-                    viewMode === "platforms"
-                      ? "var(--text-primary)"
-                      : "var(--text-secondary)",
-                }}
-              >
-                <MessageSquare size={11} /> Platforms
-              </button>
+            {/* View toggle: the app's tab look (ui/Tabs) on toggle buttons. */}
+            <div className="prism-message-views" role="group" aria-label="Inbox view">
+              {([["triage", "Triage", Inbox], ["people", "People", Users], ["platforms", "Platforms", MessageSquare]] as const).map(([id, label, Icon]) => (
+                <button
+                  key={id}
+                  type="button"
+                  aria-pressed={viewMode === id}
+                  onClick={() => setViewMode(id)}
+                  className="focus-ring"
+                >
+                  <Icon size={14} aria-hidden="true" /> {label}
+                </button>
+              ))}
             </div>
 
             {/* Search */}
@@ -562,7 +522,7 @@ function ScopedMessagesDashboard() {
           )}
           {(threadsError ||
             emailsError ||
-            (viewMode === "people" && (peopleError || graphError))) && (
+            (viewMode === "people" && !resolvesPeople && (peopleError || graphError))) && (
             <div
               role="alert"
               className="flex flex-wrap items-center gap-2 px-4 py-3 text-xs"
@@ -592,6 +552,19 @@ function ScopedMessagesDashboard() {
                 onOpenThread={handleOpenThread}
                 searchQuery={searchQuery}
               />
+            ) : viewMode === "people" && resolvesPeople ? (
+              <PeopleConversationList
+                page={peoplePage.data}
+                loading={peoplePage.isPending}
+                failed={peoplePage.isError}
+                onRetry={() => void peoplePage.refetch()}
+                query={searchQuery}
+                selectedId={selectedPerson?.id ?? null}
+                onSelect={(person) => {
+                  setSelectedId(null);
+                  setSelectedPerson({ id: person.id, name: person.name });
+                }}
+              />
             ) : viewMode === "people" ? (
               <PeopleView
                 people={filteredPeople}
@@ -615,7 +588,17 @@ function ScopedMessagesDashboard() {
             <ConversationDetail
               key={selectedId}
               noteId={selectedId}
+              backLabel={person ? `Back to ${person.name}` : "Back to messages"}
               onBack={() => setSelectedId(null)}
+            />
+          ) : person ? (
+            <PersonTimeline
+              key={person.id}
+              personId={person.id}
+              name={person.name}
+              scope={scope}
+              onBack={() => setSelectedPerson(null)}
+              onOpen={openTimelineItem}
             />
           ) : (
             <div className="flex h-full flex-col items-center justify-center gap-3 p-8 text-center text-[var(--text-muted)]">
@@ -638,9 +621,11 @@ function ScopedMessagesDashboard() {
 function ConversationDetail({
   noteId,
   onBack,
+  backLabel = "Back to messages",
 }: {
   noteId: string;
   onBack: () => void;
+  backLabel?: string;
 }) {
   const vault = useVaultClient();
   const actions = useLiveActionsClient();
@@ -659,37 +644,57 @@ function ConversationDetail({
   });
   const note = result.data;
   const isEmail = note?.tags?.includes("email");
+  // ONE header per conversation: the thread's own header carries Back and Open as page
+  // (conversationChrome). Only while there is no thread to show does a bar of our own stand in.
+  if (note && !result.isError)
+    return (
+      <ConversationChromeProvider
+        value={{
+          onBack,
+          backLabel,
+          onOpenPage: () =>
+            useUIStore
+              .getState()
+              .openTab(
+                note.id,
+                note.path?.split("/").pop() || "Conversation",
+                isEmail ? "email" : "message-thread",
+              ),
+        }}
+      >
+        <div className="min-h-0 flex-1">
+          {isEmail ? (
+            <EmailRenderer
+              note={note}
+              readOnly={!!note._caps && !note._caps.includes("edit")}
+            />
+          ) : (
+            <MessageRenderer
+              note={note}
+              readOnly={!!note._caps && !note._caps.includes("edit")}
+            />
+          )}
+        </div>
+      </ConversationChromeProvider>
+    );
   return (
     <>
-      <div className="prism-message-detail-nav flex shrink-0 items-center justify-between gap-2 border-b border-[var(--glass-border)] px-4">
+      <div className="prism-conversation-heading">
         <button
-          className="focus-ring flex min-h-11 items-center gap-1 text-xs text-[var(--text-secondary)]"
+          type="button"
+          className="prism-conversation-action focus-ring"
+          aria-label={backLabel}
+          title={backLabel}
           onClick={onBack}
         >
-          <ArrowLeft size={15} /> Back to messages
+          <ArrowLeft size={18} aria-hidden="true" />
         </button>
-        {note && !result.isError && (
-          <button
-            className="focus-ring flex min-h-11 items-center gap-1 text-xs text-[var(--text-secondary)]"
-            onClick={() =>
-              useUIStore
-                .getState()
-                .openTab(
-                  note.id,
-                  note.path?.split("/").pop() || "Conversation",
-                  isEmail ? "email" : "message-thread",
-                )
-            }
-          >
-            <ArrowUpRight size={15} /> Open as page
-          </button>
-        )}
       </div>
       {result.isPending ? (
         <p role="status" className="p-6 text-sm text-[var(--text-muted)]">
           Opening conversation…
         </p>
-      ) : result.isError ? (
+      ) : (
         <div role="alert" className="p-6 text-sm text-[var(--text-secondary)]">
           This conversation couldn't be opened. Your messages list is still
           here.{" "}
@@ -700,22 +705,6 @@ function ConversationDetail({
             Try again
           </button>
         </div>
-      ) : (
-        note && (
-          <div className="min-h-0 flex-1">
-            {isEmail ? (
-              <EmailRenderer
-                note={note}
-                readOnly={!!note._caps && !note._caps.includes("edit")}
-              />
-            ) : (
-              <MessageRenderer
-                note={note}
-                readOnly={!!note._caps && !note._caps.includes("edit")}
-              />
-            )}
-          </div>
-        )
       )}
     </>
   );
@@ -979,84 +968,72 @@ function TriageTier({
   );
 }
 
-function TriageRow({ note, onOpen }: { note: Note; onOpen: () => void }) {
+/**
+ * One list row for every view: avatar, name, a one-line preview, the time, and where the
+ * conversation lives. An unread email reads heavier and carries a dot (never colour alone).
+ */
+function ThreadRow({ note, onOpen }: { note: Note; onOpen: () => void }) {
   const selectedId = useContext(SelectedConversation);
   const swipe = useEmailRowActions(note);
-          const meta = (note.metadata || {}) as Record<string, unknown>;
-          const platform = getPlatform(note);
-          const config = getPlatformConfig(platform);
-          const name =
-            (note.path || "").split("/").pop()?.replace(/-/g, " ") || "Thread";
-          const lastTs = meta.lastMessageAt as number;
-          const participants = (meta.participants as string[]) || [];
+  const meta = (note.metadata || {}) as Record<string, unknown>;
+  const name = (note.path || "").split("/").pop()?.replace(/-/g, " ") || "Thread";
+  const lastTs = meta.lastMessageAt as number;
+  const participants = Array.isArray(meta.participants) ? meta.participants.length : 0;
+  const unread = meta.isUnread === true && !markedRead.has(note.id);
+  const preview = lastPreview(note.content || "");
+  return (
+    <div style={{ position: "relative" }}>
+      <button
+        ref={swipe.ref}
+        onClick={onOpen}
+        className="prism-message-row prism-swipe-row flex items-start gap-3 text-left"
+        style={{ position: "relative" }}
+        aria-current={selectedId === note.id ? "true" : undefined}
+        data-unread={unread || undefined}
+      >
+        {swipe.hint}
+        <div
+          aria-hidden="true"
+          className="prism-message-avatar"
+          style={{ "--avatar-tone": messageColor(note.id) } as CSSProperties}
+        >
+          {messageInitials(name)}
+        </div>
+        <div className="flex-1 min-w-0">
+          <div className="flex items-baseline gap-2">
+            <span className="prism-row-name truncate capitalize">{name}</span>
+            {unread && <span className="prism-unread-dot" role="img" aria-label="Unread" />}
+            {lastTs ? <span className="prism-row-time ml-auto shrink-0">{formatRelativeTime(lastTs)}</span> : null}
+          </div>
+          {preview && <div className="prism-message-preview truncate">{preview}</div>}
+          <div className="prism-person-sources">
+            <SourceBadge platform={getPlatform(note)} />
+            {participants > 2 && <span className="prism-row-count">{participants} people</span>}
+          </div>
+        </div>
+      </button>
+      {swipe.markRead && <MarkReadButton name={name} onClick={swipe.markRead} />}
+    </div>
+  );
+}
 
-          // Get last message preview
-          const lines = (note.content || "")
-            .split("\n")
-            .filter((l) => l.trim() && !l.startsWith("#"));
-          const lastLine = lines[lines.length - 1] || "";
+/** The last line of a saved conversation, without the transcript's `[date time]` stamp. Linear. */
+function lastPreview(content: string): string {
+  let end = content.length;
+  while (end > 0) {
+    const start = content.lastIndexOf("\n", end - 1) + 1;
+    const line = content.slice(start, end).trim();
+    if (line && !line.startsWith("#")) {
+      const close = line.startsWith("[") ? line.indexOf("] ") : -1;
+      return (close > 0 && close <= 20 ? line.slice(close + 2) : line).slice(0, 200);
+    }
+    end = start - 1;
+  }
+  return "";
+}
 
-          return (
-            <div style={{ position: "relative" }}>
-            <button
-              ref={swipe.ref}
-              onClick={onOpen}
-              className="prism-message-row prism-swipe-row flex items-start gap-3 text-left"
-              style={{ position: "relative" }}
-              aria-current={selectedId === note.id ? "true" : undefined}
-            >
-              {swipe.hint}
-              <div
-                aria-hidden="true"
-                className="prism-message-avatar"
-                style={
-                  { "--avatar-tone": messageColor(note.id) } as CSSProperties
-                }
-              >
-                {messageInitials(name)}
-              </div>
-              <div className="flex-1 min-w-0">
-                <div className="flex items-center gap-2">
-                  <span
-                    className="text-sm font-medium capitalize truncate"
-                    style={{ color: "var(--text-primary)" }}
-                  >
-                    {name}
-                  </span>
-                  {lastTs && (
-                    <span
-                      className="ml-auto text-xs flex-shrink-0"
-                      style={{ color: "var(--text-muted)" }}
-                    >
-                      {formatRelativeTime(lastTs)}
-                    </span>
-                  )}
-                </div>
-                {lastLine && (
-                  <div className="prism-message-preview truncate">
-                    {lastLine}
-                  </div>
-                )}
-                <span className="prism-message-platform">{config.label}</span>
-                {participants.length > 0 && (
-                  <div className="flex items-center gap-1 mt-1">
-                    <User size={9} style={{ color: "var(--text-muted)" }} />
-                    <span
-                      className="text-[10px] truncate"
-                      style={{ color: "var(--text-muted)" }}
-                    >
-                      {participants.slice(0, 3).join(", ")}
-                      {participants.length > 3
-                        ? ` +${participants.length - 3}`
-                        : ""}
-                    </span>
-                  </div>
-                )}
-              </div>
-            </button>
-            {swipe.markRead && <MarkReadButton name={name} onClick={swipe.markRead} />}
-            </div>
-          );
+function TriageRow({ note, onOpen }: { note: Note; onOpen: () => void }) {
+  return <ThreadRow note={note} onOpen={onOpen} />;
 }
 
 /** Emails marked read from the list in this session: read at once, before the next mail ingest updates the note. */
@@ -1502,84 +1479,5 @@ function ConversationRow({
   note: Note;
   onClick: () => void;
 }) {
-  const selectedId = useContext(SelectedConversation);
-  const meta = (note.metadata || {}) as Record<string, unknown>;
-  const name =
-    (note.path || "").split("/").pop()?.replace(/-/g, " ") || "Unknown";
-  const participants = (meta.participants as string[]) || [];
-  const lastMessageAt = meta.lastMessageAt as number;
-  const messageCount = meta.messageCount as number;
-  const timeStr = lastMessageAt ? formatRelativeTime(lastMessageAt) : "";
-  const lines = (note.content || "")
-    .split("\n")
-    .filter((l) => l.trim() && !l.startsWith("#"));
-  const lastLine = lines[lines.length - 1] || "";
-  const swipe = useEmailRowActions(note);
-
-  return (
-    <div style={{ position: "relative" }}>
-    <button
-      ref={swipe.ref}
-      onClick={onClick}
-      className="prism-message-row prism-swipe-row flex items-start gap-3 text-left"
-      style={{ position: "relative" }}
-      aria-current={selectedId === note.id ? "true" : undefined}
-    >
-      {swipe.hint}
-      <div
-        aria-hidden="true"
-        className="prism-message-avatar"
-        style={{ "--avatar-tone": messageColor(note.id) } as CSSProperties}
-      >
-        {messageInitials(name)}
-      </div>
-      <div className="flex-1 min-w-0">
-        <div className="flex items-center gap-2">
-          <span
-            className="text-sm truncate capitalize"
-            style={{ color: "var(--text-primary)" }}
-          >
-            {name}
-          </span>
-          {timeStr && (
-            <span
-              className="ml-auto text-xs flex-shrink-0"
-              style={{ color: "var(--text-muted)" }}
-            >
-              {timeStr}
-            </span>
-          )}
-        </div>
-        {lastLine && (
-          <div className="prism-message-preview truncate">{lastLine}</div>
-        )}
-        <div className="flex items-center gap-2 mt-1">
-          {participants.length > 0 && (
-            <span
-              className="flex items-center gap-0.5 text-[10px]"
-              style={{ color: "var(--text-muted)" }}
-            >
-              <User size={9} /> {participants.length}
-            </span>
-          )}
-          {messageCount && (
-            <span
-              className="text-[10px]"
-              style={{ color: "var(--text-muted)" }}
-            >
-              {messageCount} msgs
-            </span>
-          )}
-          <span
-            className="flex items-center gap-0.5 text-[10px]"
-            style={{ color: "var(--color-accent)" }}
-          >
-            <Link2 size={9} /> vault
-          </span>
-        </div>
-      </div>
-    </button>
-    {swipe.markRead && <MarkReadButton name={name} onClick={swipe.markRead} />}
-    </div>
-  );
+  return <ThreadRow note={note} onOpen={onClick} />;
 }

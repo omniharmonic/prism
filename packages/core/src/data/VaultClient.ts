@@ -23,6 +23,22 @@ export interface PersonSummary {
   id: string; updatedAt?: string | null; canManageIdentities?: boolean; name: string; path: string | null; role: string | null;
   identities: Array<{ kind: string; value: string }>;
 }
+/** Messages → People: a person with conversations, resolved by the server from addresses and handles (never names). */
+export interface PersonConversationRow {
+  id: string; name: string; platforms: string[]; lastMessageAt: number; count: number; unread: number; hasIdentity: boolean;
+}
+export interface PeopleConversationsPage {
+  people: PersonConversationRow[]; total: number;
+  /** People with no conversation and no email / handle on file. */
+  withoutIdentity: number; truncated?: boolean; limited?: boolean;
+}
+export interface PersonConversationItem {
+  id: string; kind: "email" | "chat" | "meeting"; platform: string; title: string; at: number; unread?: boolean; members?: number;
+}
+export interface PersonConversationsPage {
+  person: { id: string; name: string; hasIdentity: boolean; identityKinds: string[]; count: number; platforms: string[] };
+  items: PersonConversationItem[]; next: number | null; limited?: boolean; mergedFrom?: string;
+}
 export interface PeoplePage { people: PersonSummary[]; next: string | null }
 export interface PersonPage {
   person: PersonSummary;
@@ -219,6 +235,10 @@ export interface VaultClient {
   changePersonIdentity?(id: string, change: { kind: "email" | "matrix"; value: string; action: "add" | "remove"; ifUpdatedAt: string }): Promise<{ person: PersonSummary }>;
   listPeople?(query?: string, after?: string): Promise<PeoplePage>;
   getPerson?(id: string, after?: string): Promise<PersonPage>;
+  /** People who have conversations, most recent first (absent on shells without a Prism Server). */
+  listPeopleConversations?(query?: string): Promise<PeopleConversationsPage>;
+  /** One person's merged cross-platform timeline, newest first. */
+  getPersonConversations?(id: string, before?: number): Promise<PersonConversationsPage>;
   getNeighborhood?(centerId: string, depth: number, limit?: number): Promise<VaultNeighborhood>;
   getVaultInfo(): Promise<VaultInfo>;
   updateVaultDescription(description: string): Promise<VaultInfo>;

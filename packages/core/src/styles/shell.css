@@ -139,6 +139,8 @@
 
 /* Per-page style (NP-PG-08): set on <main id="workspace-document"> from the
    page's prism_page_style, so plain and live (collab) editors both follow it. */
+/* Device setting (Settings → Appearance → Page width): a wider writing column for every page that is not Full width. */
+html[data-page-width="wide"] #workspace-document:not([data-page-full="true"]) { --content-measure: var(--content-measure-wide); }
 #workspace-document[data-page-full="true"] { --content-measure: min(100%, 1600px); --page-max-width: 100%; }
 #workspace-document[data-page-small="true"] .prose-editor { font-size: var(--text-base); line-height: 1.65; }
 #workspace-document[data-page-small="true"] { --document-title-size: clamp(28px, 2.6vw, 34px); }

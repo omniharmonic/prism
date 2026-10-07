@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { useNotificationSettings, useSaveNotificationSettings } from "../../lib/notifications/hooks";
+import { isNotificationsUnavailable, useNotificationSettings, useSaveNotificationSettings } from "../../lib/notifications/hooks";
 import type { NotificationSettings } from "../../lib/notifications/client";
 import "./inbox.css";
 
@@ -12,7 +12,12 @@ const ROWS: Array<{ key: keyof NotificationSettings; label: string; hint: string
 ];
 
 /** Per-type delivery settings (NP-CO-04). The Inbox always lists everything; these choose push and email. */
-export function NotificationSettingsPanel({ onClose }: { onClose: () => void }) {
+export function NotificationSettingsPanel({ onClose, embedded = false }: {
+  /** Closes the panel (the Inbox's pop-over). Not needed when `embedded`. */
+  onClose?: () => void;
+  /** Inside Settings → Notifications: no Close button, no focus grab, Esc belongs to the dialog. */
+  embedded?: boolean;
+}) {
   const q = useNotificationSettings();
   const save = useSaveNotificationSettings();
   const [draft, setDraft] = useState<NotificationSettings | null>(null);
@@ -26,18 +31,22 @@ export function NotificationSettingsPanel({ onClose }: { onClose: () => void }) 
 
   // Keyboard: the panel takes focus when it opens; Esc closes it (the opener gets focus back).
   const root = useRef<HTMLElement>(null);
-  useEffect(() => { root.current?.querySelector<HTMLElement>("button")?.focus(); }, []);
+  useEffect(() => { if (!embedded) root.current?.querySelector<HTMLElement>("button")?.focus(); }, [embedded]);
 
   return (
-    <section ref={root} className="prism-inbox-settings" aria-label="Notification settings" data-testid="notification-settings"
-      onKeyDown={(e) => { if (e.key === "Escape") { e.stopPropagation(); onClose(); } }}>
-      <div className="flex items-center gap-2">
-        <h2 className="flex-1 text-sm font-semibold">Notification settings</h2>
-        <button type="button" className="prism-inbox-btn" onClick={onClose}>Close</button>
-      </div>
+    <section ref={root} className={embedded ? "prism-inbox-settings prism-inbox-settings--embedded" : "prism-inbox-settings"} aria-label="Notification settings" data-testid="notification-settings"
+      onKeyDown={(e) => { if (!embedded && e.key === "Escape") { e.stopPropagation(); onClose?.(); } }}>
+      {!embedded && (
+        <div className="flex items-center gap-2">
+          <h2 className="flex-1 text-sm font-semibold">Notification settings</h2>
+          <button type="button" className="prism-inbox-btn" onClick={onClose}>Close</button>
+        </div>
+      )}
       <p className="mt-1 text-xs text-[var(--text-muted)]">Everything appears in your Inbox. Choose what also reaches you by push or email. Notifications never include page content.</p>
       {q.isLoading && <p className="mt-3 text-sm text-[var(--text-muted)]">Loading settings…</p>}
-      {q.isError && <p role="alert" className="mt-3 text-sm text-[var(--color-danger)]">Couldn’t load notification settings.</p>}
+      {q.isError && (embedded && isNotificationsUnavailable(q.error)
+        ? <p className="mt-3 text-sm text-[var(--text-secondary)]">Notifications aren’t available on this server.</p>
+        : <p role="alert" className="mt-3 text-sm text-[var(--color-danger)]">Couldn’t load notification settings.</p>)}
       {draft && (
         <>
           <table className="mt-3 prism-notification-settings">

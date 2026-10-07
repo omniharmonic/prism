@@ -2,7 +2,9 @@
  * Properties under the page title (mockup 12) and the same fields in the side
  * panel. Schema-driven: every tag on the page contributes its vault-typed fields,
  * so a `task` page shows Status/Priority/Due as a select/select/date, not free
- * text. Empty properties hide behind "+ Add property"; values save on commit
+ * text. Empty properties hide behind "+ Add property" — unless a tag PINS properties
+ * (its `pinned` hint, "Customize…" for owners): then the bar shows exactly those, in
+ * that order, empty ones included, and the rest behind "N more properties". Values save on commit
  * with per-field compare-and-set (metadata-only — the body is never written, and
  * on a live collaborative document the server tells the reconciler).
  */
@@ -15,6 +17,9 @@ import { reviewMode } from "../../lib/governance/review";
 import { noteAccess, useReverseRelations, useSchemas, usePropertyWriter, useScope, useUpdateSchema } from "../../lib/database/hooks";
 import {
   isBlank,
+  isSystemKey,
+  pinnedKeys,
+  splitPinned,
   PROPERTY_KIND_LABELS,
   PROPERTY_KINDS,
   resolveProperties,
@@ -32,6 +37,7 @@ import { REVEAL_PROPERTY_EVENT } from "../../lib/notifications/anchor";
 import { PropertyEditor } from "./PropertyEditor";
 import { propertyFromField } from "../../lib/database/schema";
 import { Popover } from "./Popover";
+import { CustomizeProperties } from "./PinnedProperties";
 import "./database.css";
 
 import { formatDate as fmtDate, formatDateTime as fmtDateTime } from "../../lib/datetime/format";
@@ -80,8 +86,23 @@ export function PropertyBar({ note, readOnly, onOpenAll, layout = "bar", trailin
   }, [tags, schemas]);
   const meta = note.metadata ?? {};
 
-  const shown = props.filter((p) => showEmpty || !isBlank(meta[p.key]) || revealed.includes(p.key));
-  const hiddenEmpty = props.filter((p) => isBlank(meta[p.key]) && !revealed.includes(p.key));
+  // Pinned layout (the page's tags choose what sits at the top). The side panel lists everything.
+  const { top, rest } = useMemo(
+    () => splitPinned(props, layout === "bar" ? pinnedKeys(tags, schemas) : []),
+    [props, layout, tags, schemas],
+  );
+  const pinMode = top.length > 0;
+  const [moreOpen, setMoreOpen] = useState(false);
+  const visible = (p: PropertyDef) => showEmpty || !isBlank(meta[p.key]) || revealed.includes(p.key);
+  const more = pinMode ? rest.filter(visible) : [];
+  const shown = pinMode ? [...top, ...(moreOpen ? more : [])] : props.filter(visible);
+  const hiddenEmpty = (pinMode ? rest : props).filter((p) => isBlank(meta[p.key]) && !revealed.includes(p.key));
+  // "Customize…": the server says who may change a tag's presentation (owner role).
+  const customTags = useMemo(
+    () => tags.filter((t) => Object.entries(schemas[t]?.fields ?? {}).some(([k, f]) => !f.deleted && !isSystemKey(k))),
+    [tags, schemas],
+  );
+  const canCustomize = !readOnly && layout === "bar" && schemaEdit.available && !!data?.live && !!data?.canEdit && customTags.length > 0;
 
   const commit = (def: PropertyDef) => async (next: unknown, base: unknown) => {
     await write(note, { [def.key]: next }, { [def.key]: base ?? null });
@@ -98,21 +119,22 @@ export function PropertyBar({ note, readOnly, onOpenAll, layout = "bar", trailin
   const reveal = (key: string) => {
     setRevealed((r) => (r.includes(key) ? r : [...r, key]));
     setJustAdded(key);
+    setMoreOpen(true); // a property brought out is never left folded away
   };
   // An "assigned you" notification lands on its property: bring it out if it is folded away.
   useEffect(() => {
     const h = (e: Event) => {
       const d = (e as CustomEvent<{ noteId?: string; key?: string }>).detail;
-      if (d?.noteId === note.id && typeof d.key === "string") setRevealed((r) => (r.includes(d.key!) ? r : [...r, d.key!]));
+      if (d?.noteId === note.id && typeof d.key === "string") { setRevealed((r) => (r.includes(d.key!) ? r : [...r, d.key!])); setMoreOpen(true); }
     };
     window.addEventListener(REVEAL_PROPERTY_EVENT, h);
     return () => window.removeEventListener(REVEAL_PROPERTY_EVENT, h);
   }, [note.id]);
 
   return (
-    <div className={`db-props db-props-${layout}`} role="group" aria-label="Page properties">
+    <div className={`db-props db-props-${layout}`} role="group" aria-label="Page properties" data-pinned={pinMode || undefined}>
       {shown.map((def) => (
-        <div className="db-prop" key={def.key} data-kind={def.kind} data-property-key={def.key}>
+        <div className="db-prop" key={def.key} data-kind={def.kind} data-property-key={def.key} data-pinned-property={top.includes(def) || undefined}>
           {canEditSchema && def.tag ? (
             <button type="button" className="db-prop-label db-prop-label-edit focus-ring" title={`Edit the “${def.label}” property`} aria-label={`Edit property ${def.label}`} onClick={() => setEditingProp({ tag: def.tag!, key: def.key })}>{def.label}</button>
           ) : <span className="db-prop-label" title={def.description || def.label}>{def.label}</span>}
@@ -129,6 +151,13 @@ export function PropertyBar({ note, readOnly, onOpenAll, layout = "bar", trailin
           />
         </div>
       ))}
+      {more.length > 0 && (
+        <div className="db-prop-actions db-prop-more">
+          <button type="button" className="db-ghost focus-ring" aria-expanded={moreOpen} onClick={() => setMoreOpen((v) => !v)}>
+            <ChevronRight size={13} aria-hidden="true" className="db-more-chevron" /> {more.length} more {more.length === 1 ? "property" : "properties"}
+          </button>
+        </div>
+      )}
       <ReverseRelations note={note} editable={editable} />
       {showTags && (
         <div className="db-prop db-prop-tags">
@@ -142,7 +171,7 @@ export function PropertyBar({ note, readOnly, onOpenAll, layout = "bar", trailin
           <time dateTime={note.updatedAt} title={fmtDateTime(new Date(note.updatedAt))}>{relativeDay(note.updatedAt)}</time>
         </div>
       )}
-      {(editable || (onOpenAll && !trailing)) && (
+      {(editable || canCustomize || (onOpenAll && !trailing)) && (
         <div className="db-prop-actions">
           {editable && (
             <AddProperty
@@ -172,6 +201,9 @@ export function PropertyBar({ note, readOnly, onOpenAll, layout = "bar", trailin
                 }
               }}
             />
+          )}
+          {canCustomize && (
+            <CustomizeProperties tags={customTags} schemas={schemas} onSave={(tag, pinned) => schemaEdit.update(tag, { pinned })} />
           )}
           {onOpenAll && layout === "bar" && !trailing && (
             <button type="button" className="db-ghost focus-ring" onClick={onOpenAll}>All properties <ChevronRight size={13} aria-hidden="true" /></button>

@@ -63,6 +63,7 @@ import {
   mergeSchemaFields,
   compatibleKinds,
   INGEST_TAGS,
+  MAX_PINNED,
   isPrototypeName,
   optionNameClash,
   PROPERTY_KIND_LABELS,
@@ -172,21 +173,39 @@ const selectHints = db.prepare("SELECT key, value FROM settings WHERE key LIKE ?
 const upsertHints = db.prepare(
   "INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
 );
-function readHints(vaultId: string): Map<string, Record<string, FieldHints>> {
+/**
+ * A tag's hint row is `{<field>: FieldHints, …}` plus, under PINNED_KEY, the tag's own
+ * pinned-property list. The key can never be a field name (FIELD_NAME starts with a
+ * letter), and it is taken out here so no reader ever sees it as a field.
+ */
+const PINNED_KEY = "$pinned";
+function readHintRows(vaultId: string): { fields: Map<string, Record<string, FieldHints>>; pinned: Map<string, string[]> } {
   const prefix = `schema-ui:${vaultId}:`.replace(/[\\%_]/g, (m) => `\\${m}`);
-  const out = new Map<string, Record<string, FieldHints>>();
+  const fields = new Map<string, Record<string, FieldHints>>();
+  const pinned = new Map<string, string[]>();
   for (const row of selectHints.all(`${prefix}%`) as Array<{ key: string; value: string }>) {
     try {
-      out.set(row.key.slice(`schema-ui:${vaultId}:`.length), JSON.parse(row.value) as Record<string, FieldHints>);
+      const tag = row.key.slice(`schema-ui:${vaultId}:`.length);
+      const { [PINNED_KEY]: pins, ...rest } = JSON.parse(row.value) as Record<string, unknown>;
+      fields.set(tag, rest as Record<string, FieldHints>);
+      if (Array.isArray(pins)) {
+        const keys = pins.filter((k): k is string => typeof k === "string").slice(0, MAX_PINNED);
+        if (keys.length) pinned.set(tag, keys);
+      }
     } catch {
       /* a corrupt hint row only loses presentation */
     }
   }
-  return out;
+  return { fields, pinned };
+}
+const readHints = (vaultId: string): Map<string, Record<string, FieldHints>> => readHintRows(vaultId).fields;
+const readPinned = (vaultId: string, tag: string): string[] | undefined => readHintRows(vaultId).pinned.get(tag);
+function writeHintRow(vaultId: string, tag: string, fields: Record<string, FieldHints>, pinned: string[] | undefined): void {
+  upsertHints.run(hintKey(vaultId, tag), JSON.stringify(pinned?.length ? { ...fields, [PINNED_KEY]: pinned } : fields));
 }
 
 /** Vault def + hints, exactly what clients render. `count` never appears. */
-function present(schema: TagSchema | undefined, hints: Record<string, FieldHints> | undefined): TagSchema {
+function present(schema: TagSchema | undefined, hints: Record<string, FieldHints> | undefined, pinned?: string[]): TagSchema {
   const fields: Record<string, SchemaField> = {};
   for (const [k, f] of Object.entries(schema?.fields ?? {})) {
     const { type, enum: en, default: def, description, indexed } = f;
@@ -199,7 +218,7 @@ function present(schema: TagSchema | undefined, hints: Record<string, FieldHints
     };
   }
   for (const [k, h] of Object.entries(hints ?? {})) fields[k] = { ...(fields[k] ?? {}), ...h };
-  return { description: schema?.description ?? null, fields };
+  return { description: schema?.description ?? null, fields, ...(pinned?.length ? { pinned } : {}) };
 }
 
 // Hints for the assignment hooks (S5): every property write used to scan + parse
@@ -304,13 +323,13 @@ databasesApi.get("/schemas", async (c) => {
   } catch (e) {
     return vaultFailure(c, e);
   }
-  const hints = readHints(entry.id);
+  const { fields: hints, pinned } = readHintRows(entry.id);
   const names = new Set<string>([...schemas.keys(), ...hints.keys()]);
   const out: Record<string, TagSchema> = {};
   for (const name of names) {
     if (wanted.length && !wanted.includes(name)) continue;
     if (allowed && !allowed.has(name)) continue;
-    out[name] = present(schemas.get(name), hints.get(name));
+    out[name] = present(schemas.get(name), hints.get(name), pinned.get(name));
   }
   c.header("Cache-Control", "private, no-store");
   return c.json({ schemas: out, canEdit: actor.kind === "user" && actor.role === "owner" });
@@ -474,6 +493,12 @@ async function applySchemaPatch(c: Context, entry: VaultEntry, tag: string, patc
       }, 409);
     }
   }
+  // A pinned key must be a property of THIS tag: declared in its vault schema or carrying a hint.
+  for (const k of patch.pinned ?? []) {
+    if (own(merged.fields, k) === undefined && own(storedHints, k) === undefined && own(patch.ui, k) === undefined) {
+      return c.json({ error: "bad_request", detail: `pinned: “${k}” is not a property of this tag` }, 400);
+    }
+  }
   // An option's display name may not read as another option (its value or its name).
   for (const [k, h] of Object.entries(patch.ui ?? {})) {
     if (!h.optionLabels) continue;
@@ -519,19 +544,20 @@ async function applySchemaPatch(c: Context, entry: VaultEntry, tag: string, patc
       return vaultFailure(c, new VaultError(resp.status, `PUT /tags/${tag}: ${resp.status} ${text}`));
     }
   }
-  if (patch.ui) {
+  if (patch.ui || patch.pinned !== undefined) {
     const all = readHints(entry.id).get(tag) ?? {};
-    for (const [field, h] of Object.entries(patch.ui)) {
+    for (const [field, h] of Object.entries(patch.ui ?? {})) {
       const next: FieldHints = { ...(all[field] ?? {}), ...h };
       if (h.colors) next.colors = { ...(all[field]?.colors ?? {}), ...h.colors };
       all[field] = next;
     }
-    upsertHints.run(hintKey(entry.id, tag), JSON.stringify(all));
+    // The pinned list is replaced whole when sent, and kept as stored when it is not.
+    writeHintRow(entry.id, tag, all, patch.pinned ?? readPinned(entry.id, tag));
     personHintCache.delete(entry.id); // the assignment hooks read hints from a cache
   }
   schemaCache.delete(entry.id);
   const fresh = vaultChange ? { description: description || null, fields: merged.fields } : current;
-  return c.json({ tag, schema: present(fresh, readHints(entry.id).get(tag)) });
+  return c.json({ tag, schema: present(fresh, readHints(entry.id).get(tag), readPinned(entry.id, tag)) });
 }
 
 const holdsOption = (v: unknown, option: string): boolean => (Array.isArray(v) ? v.some((x) => String(x) === option) : typeof v === "string" && v === option);

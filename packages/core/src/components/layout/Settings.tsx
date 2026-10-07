@@ -1,8 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { X, Database, MessageSquare, Mail, Cloud, Bot, Sun, Moon, Monitor, Plus, Trash2, Check, Video, Mic, Cpu, FileText, Zap } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
-import { useUIStore } from "../../app/stores/ui";
-import { useSettingsStore, type Theme } from "../../app/stores/settings";
+import { useSettingsStore, type Theme, type WritingFont, type PageWidth } from "../../app/stores/settings";
 import { useReduceMotion } from "../../lib/motion";
 import { RegionSettings } from "./RegionSettings";
 import { ollamaApi, localAiApi } from "../../lib/parachute/client";
@@ -14,6 +13,9 @@ import { useHostServices } from "../../data/HostServicesContext";
 import { useVaultClient } from "../../data/VaultClientContext";
 import { ServerAiModels } from "./ServerAiModels";
 import { SearchIndexSettings } from "./SearchIndexSettings";
+import { PushSettings } from "./PushSettings";
+import { NotificationSettingsPanel } from "../inbox/NotificationSettingsPanel";
+import { IntegrationsOverview } from "./IntegrationsOverview";
 import "./settings-workspace.css";
 
 interface SettingsProps {
@@ -24,6 +26,19 @@ interface SettingsProps {
 const FONT_OPTIONS = ["Inter", "System UI", "SF Pro", "Helvetica Neue", "Roboto", "Source Sans Pro", "IBM Plex Sans", "Lato"];
 const EDITOR_FONT_OPTIONS = ["Newsreader", "Georgia", "Merriweather", "Lora", "Source Serif Pro", "Crimson Text", "Libre Baskerville"];
 const MONO_FONT_OPTIONS = ["JetBrains Mono", "SF Mono", "Fira Code", "Source Code Pro", "IBM Plex Mono", "Cascadia Code", "Menlo"];
+
+
+type SectionId = "account" | "appearance" | "inputs" | "ai" | "notifications" | "search" | "advanced";
+const SECTION_INTRO: Record<SectionId, string> = {
+  account: "Your sign-in and personal account preferences.",
+  appearance: "A comfortable place to read and write. Changes apply immediately on this device.",
+  inputs: "The accounts and services that bring mail, messages, meetings and tasks into your vault.",
+  ai: "Which models answer, and what every agent knows about you.",
+  notifications: "What reaches you outside the Inbox.",
+  search: "Keep search up to date for this vault.",
+  advanced: "Start-up and details of this install.",
+};
+const selectStyle = { background: "var(--glass)", border: "1px solid var(--glass-border)", color: "var(--text-primary)" } as const;
 
 export function Settings({ open, onClose }: SettingsProps) {
   const isWeb = useIsWeb();
@@ -40,7 +55,7 @@ export function Settings({ open, onClose }: SettingsProps) {
   const account = useAccount();
   // Server owner on a thin client: AI model routing lives on the Prism Server.
   const host = useHostServices();
-  const [tab, setTab] = useState<"account" | "services" | "sources" | "appearance">("appearance");
+  const [tab, setTab] = useState<SectionId>("appearance");
   const [config, setConfig] = useState<Record<string, unknown> | null>(null);
   const [saving, setSaving] = useState<string | null>(null);
   const [editValues, setEditValues] = useState<Record<string, string>>({});
@@ -52,6 +67,8 @@ export function Settings({ open, onClose }: SettingsProps) {
     fontSize, setFontSize,
     editorFontFamily, setEditorFontFamily,
     monoFontFamily, setMonoFontFamily,
+    writingFont, setWritingFont,
+    pageWidth, setPageWidth,
     vaults, addVault, removeVault, setActiveVault, activeVaultUrl,
     defaultSyncDirection, setDefaultSyncDirection,
     sidebarLabel, setSidebarLabel,
@@ -73,10 +90,13 @@ export function Settings({ open, onClose }: SettingsProps) {
   const [skillModels, setSkillModels] = useState<Record<string, { provider: string; model: string }>>({});
   const { setSkillModel } = useSettingsStore();
 
+  // The host config file exists only on the legacy desktop. A server-backed shell (web, Prism
+  // Client) keeps its inputs on the Prism Server, so there is nothing to load — and no error.
   const loadConfig = useCallback(async () => {
+    if (isWeb) return;
     try { setConfig(await invoke<Record<string, unknown>>("get_full_config")); }
     catch { setConfig(null); setSettingsError("Couldn't load service settings. Try again."); }
-  }, []);
+  }, [isWeb]);
 
   useEffect(() => {
     if (open) {
@@ -90,6 +110,7 @@ export function Settings({ open, onClose }: SettingsProps) {
   }, [open, loadConfig, vaultClient]);
 
   useEffect(() => {
+    if (isWeb) return;
     // Guard against browser-only mode (outside Tauri webview)
     try {
       ollamaApi.listModels().then(setAvailableModels).catch(() => {});
@@ -97,7 +118,7 @@ export function Settings({ open, onClose }: SettingsProps) {
     } catch {
       // Not running in Tauri — invoke unavailable
     }
-  }, []);
+  }, [isWeb]);
 
   const handleSkillModelChange = async (skill: string, provider: string, model: string) => {
     await ollamaApi.setSkillModel(skill, provider, model);
@@ -146,19 +167,21 @@ export function Settings({ open, onClose }: SettingsProps) {
 
   if (!open) return null;
 
-  // Data Sources is entirely desktop-only (every field writes native config /
-  // probes host CLIs), so the whole tab is hidden in the web shell.
-  const tabs = [
+  // One list for every shell; a section a shell has nothing for is left out, never shown empty.
+  const tabs: Array<{ id: SectionId; label: string }> = [
     // Account is web-session only (the shell provides an AccountClient); hidden on
     // desktop (local owner, no session).
     ...(account ? [{ id: "account" as const, label: "Account" }] : []),
-    { id: "services" as const, label: "Services" },
-    ...(isWeb ? [] : [{ id: "sources" as const, label: "Data Sources" }]),
-    { id: "appearance" as const, label: "Appearance" },
+    { id: "appearance", label: "Appearance" },
+    { id: "inputs", label: "Inputs & integrations" },
+    { id: "ai", label: "AI & agent" },
+    // Notifications are delivered by the Prism Server to a signed-in account.
+    ...(account ? [{ id: "notifications" as const, label: "Notifications" }] : []),
+    ...(host?.searchIndex ? [{ id: "search" as const, label: "Search index" }] : []),
+    { id: "advanced", label: "Advanced" },
   ];
-  // Guard against a stale `tab` if the active tab is hidden in this shell.
-  const activeTab =
-    (isWeb && tab === "sources") || (!account && tab === "account") ? "services" : tab;
+  // Guard against a stale `tab` if the active section is hidden in this shell.
+  const activeTab: SectionId = tabs.some((t) => t.id === tab) ? tab : "appearance";
 
   return (
     <dialog ref={dialog} aria-label="Settings" onCancel={(event) => { event.preventDefault(); onClose(); }} className="fixed inset-0 m-0 h-dvh max-h-none w-full max-w-none border-0 p-3 text-[var(--text-primary)] z-50 flex items-center justify-center" style={{ background: "rgba(0,0,0,0.6)" }} onClick={onClose}>
@@ -172,34 +195,98 @@ export function Settings({ open, onClose }: SettingsProps) {
             {tabs.map((t) => (
               <button key={t.id} aria-pressed={activeTab === t.id} onClick={() => setTab(t.id)} className="focus-ring">{t.label}</button>
             ))}
-            <p>Appearance preferences apply on this device. Account and service settings use their displayed scope.</p>
+            <p>Appearance applies on this device. Account, inputs and AI settings say where they are kept.</p>
           </nav>
-          <div className="prism-settings__content">
+          <div className="prism-settings__content" data-settings-section={activeTab}>
             <div className="prism-settings__section-heading">
               <h3>{tabs.find((item) => item.id === activeTab)?.label}</h3>
-              <p>{activeTab === "appearance" ? "A comfortable place to read and write. Changes apply immediately on this device." : activeTab === "account" ? "Your sign-in and personal account preferences." : activeTab === "sources" ? "Configure the sources that bring context into your vault." : "Connections, search and agent services available on this host."}</p>
+              <p>{SECTION_INTRO[activeTab]}</p>
             </div>
           {settingsError && <p role="alert" className="text-sm">{settingsError} <button className="focus-ring underline" onClick={() => { setSettingsError(""); void loadConfig(); }}>Reload settings</button></p>}
-          {/* Account Tab (web session only) */}
+
           {activeTab === "account" && <AccountSettings />}
 
-          {/* Services Tab */}
-          {activeTab === "services" && host?.searchIndex && <SearchIndexSettings host={host} />}
-          {activeTab === "services" && config && (
+          {activeTab === "appearance" && (
+            <>
+              <Section title="Theme">
+                <div className="flex rounded-lg overflow-hidden" style={{ border: "1px solid var(--glass-border)" }}>
+                  {(["system", "light", "dark"] as Theme[]).map((t) => (
+                    <button key={t} aria-pressed={theme === t} onClick={() => setTheme(t)}
+                      className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 text-xs"
+                      style={{ background: theme === t ? "var(--glass-active)" : "transparent", color: "var(--text-primary)" }}>
+                      {t === "dark" ? <Moon size={12} /> : t === "light" ? <Sun size={12} /> : <Monitor size={12} />}
+                      {t.charAt(0).toUpperCase() + t.slice(1)}
+                    </button>
+                  ))}
+                </div>
+                {theme === "system" && (
+                  <p className="mt-2 text-xs" style={{ color: "var(--text-muted)" }}>Follows this device’s light or dark setting.</p>
+                )}
+              </Section>
+
+              <Section title="Writing">
+                <Row label="Writing font" hint="For pages that have not chosen their own font (page ⋯ menu).">
+                  <select aria-label="Writing font" value={writingFont} onChange={(e) => setWritingFont(e.target.value as WritingFont)} className="h-7 rounded-md px-2 text-xs outline-none" style={selectStyle}>
+                    <option value="sans">Sans — the interface font</option>
+                    <option value="serif">Serif — the editor font</option>
+                    <option value="mono">Mono — the code font</option>
+                  </select>
+                </Row>
+                <Row label="Page width" hint="Pages set to Full width keep it.">
+                  <select aria-label="Page width" value={pageWidth === "wide" ? "wide" : "standard"} onChange={(e) => setPageWidth(e.target.value as PageWidth)} className="h-7 rounded-md px-2 text-xs outline-none" style={selectStyle}>
+                    <option value="standard">Standard</option>
+                    <option value="wide">Wide</option>
+                  </select>
+                </Row>
+                <Row label="Font Size" hint="Interface and writing text together.">
+                  <div className="flex items-center gap-2">
+                    <input aria-label="Font Size" type="range" min={11} max={18} value={fontSize} onChange={(e) => setFontSize(Number(e.target.value))} className="w-24" />
+                    <span className="text-xs w-8" style={{ color: "var(--text-secondary)" }}>{fontSize}px</span>
+                  </div>
+                </Row>
+              </Section>
+
+              <Section title="Typefaces">
+                <Row label="UI Font" hint="Menus, the sidebar and Sans pages.">
+                  <select aria-label="UI Font" value={fontFamily} onChange={(e) => setFontFamily(e.target.value)} className="h-7 rounded-md px-2 text-xs outline-none" style={selectStyle}>
+                    {FONT_OPTIONS.map((f) => <option key={f} value={f} style={{ background: "var(--bg-elevated)" }}>{f}</option>)}
+                  </select>
+                </Row>
+                <Row label="Editor Font" hint="Serif pages.">
+                  <select aria-label="Editor Font" value={editorFontFamily} onChange={(e) => setEditorFontFamily(e.target.value)} className="h-7 rounded-md px-2 text-xs outline-none" style={selectStyle}>
+                    {EDITOR_FONT_OPTIONS.map((f) => <option key={f} value={f} style={{ background: "var(--bg-elevated)" }}>{f}</option>)}
+                  </select>
+                </Row>
+                <Row label="Code Font" hint="Code blocks and Mono pages.">
+                  <select aria-label="Code Font" value={monoFontFamily} onChange={(e) => setMonoFontFamily(e.target.value)} className="h-7 rounded-md px-2 text-xs outline-none" style={selectStyle}>
+                    {MONO_FONT_OPTIONS.map((f) => <option key={f} value={f} style={{ background: "var(--bg-elevated)" }}>{f}</option>)}
+                  </select>
+                </Row>
+              </Section>
+
+              <Section title="Sidebar">
+                <Row label="Sidebar Label" hint="The name of the pages section.">
+                  <input aria-label="Sidebar Label" value={sidebarLabel} onChange={(e) => setSidebarLabel(e.target.value)}
+                    className="h-7 rounded-md px-2 text-xs outline-none w-32" style={selectStyle} placeholder="Projects" />
+                </Row>
+              </Section>
+
+              <Section title="Motion">
+                <ReduceMotionRow />
+              </Section>
+
+              <RegionSettings />
+            </>
+          )}
+
+          {activeTab === "inputs" && (isWeb ? (
+            <IntegrationsOverview onNavigate={onClose} />
+          ) : config && (
             <>
               <Section title="Core Services">
                 <p className="text-[10px] mb-3" style={{ color: "var(--text-muted)" }}>
                   Configure connections to core infrastructure. Changes take effect on restart.
                 </p>
-                {isWeb ? (
-                  <div>
-                    <DesktopOnlyNotice
-                      feature="Service credentials"
-                      detail="Integration credentials are saved on the Prism Server. Workspace owners and admins manage available accounts in Workspace settings → Connections. Server operations remain with the server owner."
-                    />
-                    <button type="button" className="focus-ring mt-2 min-h-11 rounded-lg border border-[var(--glass-border)] px-3 text-sm" onClick={() => { onClose(); useUIStore.getState().openTab("network", "Workspace settings", "network"); }}>Open workspace settings</button>
-                  </div>
-                ) : (
                 <>
                 <ServiceField
                   icon={<Database size={14} />}
@@ -277,48 +364,110 @@ export function Settings({ open, onClose }: SettingsProps) {
                   onSave={handleSave} onClear={handleClear}
                 />
                 </>
+              </Section>
+              <Section title="Meeting Transcripts">
+                <p className="text-[10px] mb-3" style={{ color: "var(--text-muted)" }}>
+                  Connect transcript services to automatically pull meeting recordings into your vault.
+                  {config.ingest_mode === "client"
+                    ? "Transcript ingest runs on the Prism Server (this machine is in Client mode), so nothing here starts a sync."
+                    : "Transcripts are ingested every 10 minutes and enriched by the meeting processor skill."}
+                </p>
+                <SourceField icon={<Video size={14} />} label="Fathom" desc="Meeting recording & AI summaries"
+                  fieldKey="fathom_api_key" placeholder="Fathom API key" sensitive
+                  value={config.fathom_api_key as string} isSet={config.fathom_api_key_set as boolean}
+                  editValues={editValues} saving={saving} savedKeys={savedKeys}
+                  onEdit={(k, v) => setEditValues((prev) => ({ ...prev, [k]: v }))} onSave={handleSave} onClear={handleClear} />
+
+                <SourceField icon={<Video size={14} />} label="Read.ai" desc="Meeting copilot & transcription"
+                  fieldKey="readai_api_key" placeholder="Read.ai API key" sensitive
+                  value={config.readai_api_key as string} isSet={config.readai_api_key_set as boolean}
+                  editValues={editValues} saving={saving} savedKeys={savedKeys}
+                  onEdit={(k, v) => setEditValues((prev) => ({ ...prev, [k]: v }))} onSave={handleSave} onClear={handleClear} />
+
+                <SourceField icon={<Mic size={14} />} label="Otter.ai" desc="Meeting notes & transcription"
+                  fieldKey="otter_api_key" placeholder="Otter API key" sensitive
+                  value={config.otter_api_key as string} isSet={config.otter_api_key_set as boolean}
+                  editValues={editValues} saving={saving} savedKeys={savedKeys}
+                  onEdit={(k, v) => setEditValues((prev) => ({ ...prev, [k]: v }))} onSave={handleSave} onClear={handleClear} />
+
+                <SourceField icon={<Mic size={14} />} label="Fireflies.ai" desc="AI meeting assistant"
+                  fieldKey="fireflies_api_key" placeholder="Fireflies API key" sensitive
+                  value={config.fireflies_api_key as string} isSet={config.fireflies_api_key_set as boolean}
+                  editValues={editValues} saving={saving} savedKeys={savedKeys}
+                  onEdit={(k, v) => setEditValues((prev) => ({ ...prev, [k]: v }))} onSave={handleSave} onClear={handleClear} />
+              </Section>
+
+              <Section title="Knowledge Sources">
+                <SourceField icon={<Cloud size={14} />} label="Notion" desc="Workspace & knowledge base"
+                  fieldKey="notion_api_key" placeholder="Notion API key" sensitive
+                  value={config.notion_api_key as string} isSet={config.notion_api_key_set as boolean}
+                  editValues={editValues} saving={saving} savedKeys={savedKeys}
+                  onEdit={(k, v) => setEditValues((prev) => ({ ...prev, [k]: v }))} onSave={handleSave} onClear={handleClear} />
+              </Section>
+            </>
+          ))}
+
+          {activeTab === "ai" && (
+            <>
+              <Section title="AI Models">
+                <p className="text-[10px] mb-3" style={{ color: "var(--text-muted)" }}>
+                  Which model answers each kind of request.
+                </p>
+                {isWeb && host ? (
+                  <ServerAiModels host={host} />
+                ) : isWeb ? (
+                  <DesktopOnlyNotice
+                    feature="AI model routing & local models"
+                    detail="Only the server owner can route AI models (they run on the Prism Server)."
+                  />
+                ) : (
+                /* Interactive-skill model assignments (provider configured in the Local AI section below) */
+                <div className="rounded-lg overflow-hidden" style={{ border: "1px solid var(--glass-border)" }}>
+                  <div className="grid grid-cols-[1fr_100px_1fr] gap-0 px-3 py-1.5" style={{ background: "var(--glass)", borderBottom: "1px solid var(--glass-border)" }}>
+                    <span className="text-[10px] font-medium uppercase tracking-wider" style={{ color: "var(--text-muted)" }}>Skill</span>
+                    <span className="text-[10px] font-medium uppercase tracking-wider" style={{ color: "var(--text-muted)" }}>Provider</span>
+                    <span className="text-[10px] font-medium uppercase tracking-wider" style={{ color: "var(--text-muted)" }}>Model</span>
+                  </div>
+                  {(["edit", "chat", "transform", "generate"] as const).map((skill) => {
+                    const current = skillModels[skill] || { provider: "claude", model: "" };
+                    const modelsForProvider = availableModels.filter((m) => m.provider === current.provider);
+                    return (
+                      <div key={skill} className="grid grid-cols-[1fr_100px_1fr] gap-2 items-center px-3 py-1.5" style={{ borderBottom: "1px solid var(--glass-border)" }}>
+                        <span className="text-xs capitalize" style={{ color: "var(--text-primary)" }}>{skill}</span>
+                        <select
+                          aria-label={`${skill} provider`}
+                          value={current.provider}
+                          onChange={(e) => handleSkillModelChange(skill, e.target.value, "")}
+                          className="h-6 rounded px-1 text-[10px] outline-none"
+                          style={{ background: "var(--glass)", border: "1px solid var(--glass-border)", color: "var(--text-primary)" }}
+                        >
+                          <option value="claude" style={{ background: "var(--bg-elevated)" }}>Claude</option>
+                          <option value="local" style={{ background: "var(--bg-elevated)" }}>Local</option>
+                        </select>
+                        <select
+                          aria-label={`${skill} model`}
+                          value={current.model}
+                          onChange={(e) => handleSkillModelChange(skill, current.provider, e.target.value)}
+                          className="h-6 rounded px-1 text-[10px] outline-none"
+                          style={{ background: "var(--glass)", border: "1px solid var(--glass-border)", color: "var(--text-primary)" }}
+                        >
+                          <option value="" style={{ background: "var(--bg-elevated)" }}>Default</option>
+                          {modelsForProvider.map((m) => (
+                            <option key={m.id} value={m.id} style={{ background: "var(--bg-elevated)" }}>
+                              {m.name}{m.size ? ` (${m.size})` : ""}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    );
+                  })}
+                </div>
                 )}
               </Section>
 
-              <Section title="Vaults">
-                <div className="space-y-1">
-                  {vaults.map((v) => (
-                    <div key={v.url} className="flex items-center gap-2 py-1">
-                      <button onClick={() => setActiveVault(v.url)}
-                        className="flex-1 flex items-center gap-2 px-2 py-1.5 rounded-md text-left hover:bg-[var(--glass-hover)]"
-                        style={{ background: v.url === activeVaultUrl ? "var(--glass-active)" : "transparent" }}>
-                        <Database size={12} style={{ color: v.url === activeVaultUrl ? "var(--color-success)" : "var(--text-muted)" }} />
-                        <div>
-                          <div className="text-xs" style={{ color: "var(--text-primary)" }}>{v.name}</div>
-                          <div className="text-[10px]" style={{ color: "var(--text-muted)", fontFamily: "var(--font-mono)" }}>{v.url}</div>
-                        </div>
-                      </button>
-                      {vaults.length > 1 && (
-                        <button onClick={() => removeVault(v.url)} className="p-1 rounded hover:bg-[var(--glass-hover)]" style={{ color: "var(--text-muted)" }}>
-                          <Trash2 size={11} />
-                        </button>
-                      )}
-                    </div>
-                  ))}
-                </div>
-                <div className="mt-2 glass-inset p-2 rounded-lg space-y-1.5">
-                  <div className="flex gap-1">
-                    <input value={newVaultName} onChange={(e) => setNewVaultName(e.target.value)} placeholder="Name" aria-label="Vault name"
-                      className="flex-1 h-6 rounded px-2 text-xs outline-none"
-                      style={{ background: "var(--glass)", border: "1px solid var(--glass-border)", color: "var(--text-primary)" }} />
-                    <input value={newVaultUrl} onChange={(e) => setNewVaultUrl(e.target.value)} placeholder="http://localhost:1940" aria-label="Vault address"
-                      className="flex-1 h-6 rounded px-2 text-xs outline-none"
-                      style={{ background: "var(--glass)", border: "1px solid var(--glass-border)", color: "var(--text-primary)", fontFamily: "var(--font-mono)" }} />
-                    <button onClick={() => { if (newVaultName && newVaultUrl) { addVault(newVaultName, newVaultUrl); setNewVaultName(""); setNewVaultUrl(""); } }}
-                      aria-label="Add vault" title="Add vault"
-                      className="px-2 py-1 rounded text-xs hover:bg-[var(--glass-hover)]" style={{ color: "var(--color-accent)" }}>
-                      <Plus size={11} aria-hidden="true" />
-                    </button>
-                  </div>
-                </div>
-              </Section>
+              {!isWeb && config && <LocalAiSettings config={config} onSave={handleSave} saving={saving} savedKeys={savedKeys} />}
 
-              <Section title="Vault Description">
+              <Section title="Agent context">
                 <p className="text-[10px] mb-2" style={{ color: "var(--text-muted)" }}>
                   Context sent to every AI agent session. Describe yourself, your projects, and conventions so skills produce better results.
                 </p>
@@ -397,6 +546,75 @@ export function Settings({ open, onClose }: SettingsProps) {
                 </div>
               </Section>
 
+              {account && (
+                <Section title="Your own agent">
+                  <Row label="Connect Claude or another agent to this workspace" hint="Agent access tokens are kept with your account.">
+                    <button type="button" className="focus-ring rounded-lg border border-[var(--glass-border)] px-3 text-sm" onClick={() => setTab("account")}>Open Account</button>
+                  </Row>
+                </Section>
+              )}
+            </>
+          )}
+
+          {activeTab === "notifications" && (
+            <>
+              <NotificationSettingsPanel embedded />
+              <div className="mt-6"><PushSettings /></div>
+            </>
+          )}
+
+          {activeTab === "search" && host?.searchIndex && <SearchIndexSettings host={host} />}
+
+          {activeTab === "advanced" && (
+            <>
+              <Section title="Start-up">
+                {/* The whole row is the target (a bare 16px box is too small to tap). */}
+                <label className="flex min-h-11 items-center justify-between gap-3 text-sm" style={{ color: "var(--text-primary)" }}>
+                  <span>Start with last open document<span className="prism-settings__hint">Off: Prism opens on Home.</span></span>
+                  <input type="checkbox" aria-label="Start with last open document" checked={startWithLastDocument} onChange={(e) => setStartWithLastDocument(e.target.checked)} className="h-4 w-4" />
+                </label>
+              </Section>
+
+              {!isWeb && (
+                <>
+              <Section title="Vaults">
+                <div className="space-y-1">
+                  {vaults.map((v) => (
+                    <div key={v.url} className="flex items-center gap-2 py-1">
+                      <button onClick={() => setActiveVault(v.url)}
+                        className="flex-1 flex items-center gap-2 px-2 py-1.5 rounded-md text-left hover:bg-[var(--glass-hover)]"
+                        style={{ background: v.url === activeVaultUrl ? "var(--glass-active)" : "transparent" }}>
+                        <Database size={12} style={{ color: v.url === activeVaultUrl ? "var(--color-success)" : "var(--text-muted)" }} />
+                        <div>
+                          <div className="text-xs" style={{ color: "var(--text-primary)" }}>{v.name}</div>
+                          <div className="text-[10px]" style={{ color: "var(--text-muted)", fontFamily: "var(--font-mono)" }}>{v.url}</div>
+                        </div>
+                      </button>
+                      {vaults.length > 1 && (
+                        <button onClick={() => removeVault(v.url)} className="p-1 rounded hover:bg-[var(--glass-hover)]" style={{ color: "var(--text-muted)" }}>
+                          <Trash2 size={11} />
+                        </button>
+                      )}
+                    </div>
+                  ))}
+                </div>
+                <div className="mt-2 glass-inset p-2 rounded-lg space-y-1.5">
+                  <div className="flex gap-1">
+                    <input value={newVaultName} onChange={(e) => setNewVaultName(e.target.value)} placeholder="Name" aria-label="Vault name"
+                      className="flex-1 h-6 rounded px-2 text-xs outline-none"
+                      style={{ background: "var(--glass)", border: "1px solid var(--glass-border)", color: "var(--text-primary)" }} />
+                    <input value={newVaultUrl} onChange={(e) => setNewVaultUrl(e.target.value)} placeholder="http://localhost:1940" aria-label="Vault address"
+                      className="flex-1 h-6 rounded px-2 text-xs outline-none"
+                      style={{ background: "var(--glass)", border: "1px solid var(--glass-border)", color: "var(--text-primary)", fontFamily: "var(--font-mono)" }} />
+                    <button onClick={() => { if (newVaultName && newVaultUrl) { addVault(newVaultName, newVaultUrl); setNewVaultName(""); setNewVaultUrl(""); } }}
+                      aria-label="Add vault" title="Add vault"
+                      className="px-2 py-1 rounded text-xs hover:bg-[var(--glass-hover)]" style={{ color: "var(--color-accent)" }}>
+                      <Plus size={11} aria-hidden="true" />
+                    </button>
+                  </div>
+                </div>
+              </Section>
+
               <Section title="Sync">
                 <Row label="Default direction">
                   <select aria-label="Default sync direction" value={defaultSyncDirection} onChange={(e) => setDefaultSyncDirection(e.target.value as "push"|"pull"|"bidirectional")}
@@ -409,174 +627,9 @@ export function Settings({ open, onClose }: SettingsProps) {
                 </Row>
               </Section>
 
-              {!isWeb && <IngestSettings config={config} onSave={handleSaveRaw} saving={saving} savedKeys={savedKeys} />}
-
-              <Section title="AI Models">
-                <p className="text-[10px] mb-3" style={{ color: "var(--text-muted)" }}>
-                  Configure AI model providers and assign models to skills. All providers have full vault access via Parachute MCP.
-                </p>
-
-                {isWeb && host ? (
-                  <ServerAiModels host={host} />
-                ) : isWeb ? (
-                  <DesktopOnlyNotice
-                    feature="AI model routing & local models"
-                    detail="Only the server owner can route AI models (they run on the Prism Server)."
-                  />
-                ) : (
-                /* Interactive-skill model assignments (provider configured in the Local AI section below) */
-                <div className="rounded-lg overflow-hidden" style={{ border: "1px solid var(--glass-border)" }}>
-                  <div className="grid grid-cols-[1fr_100px_1fr] gap-0 px-3 py-1.5" style={{ background: "var(--glass)", borderBottom: "1px solid var(--glass-border)" }}>
-                    <span className="text-[10px] font-medium uppercase tracking-wider" style={{ color: "var(--text-muted)" }}>Skill</span>
-                    <span className="text-[10px] font-medium uppercase tracking-wider" style={{ color: "var(--text-muted)" }}>Provider</span>
-                    <span className="text-[10px] font-medium uppercase tracking-wider" style={{ color: "var(--text-muted)" }}>Model</span>
-                  </div>
-                  {(["edit", "chat", "transform", "generate"] as const).map((skill) => {
-                    const current = skillModels[skill] || { provider: "claude", model: "" };
-                    const modelsForProvider = availableModels.filter((m) => m.provider === current.provider);
-                    return (
-                      <div key={skill} className="grid grid-cols-[1fr_100px_1fr] gap-2 items-center px-3 py-1.5" style={{ borderBottom: "1px solid var(--glass-border)" }}>
-                        <span className="text-xs capitalize" style={{ color: "var(--text-primary)" }}>{skill}</span>
-                        <select
-                          aria-label={`${skill} provider`}
-                          value={current.provider}
-                          onChange={(e) => handleSkillModelChange(skill, e.target.value, "")}
-                          className="h-6 rounded px-1 text-[10px] outline-none"
-                          style={{ background: "var(--glass)", border: "1px solid var(--glass-border)", color: "var(--text-primary)" }}
-                        >
-                          <option value="claude" style={{ background: "var(--bg-elevated)" }}>Claude</option>
-                          <option value="local" style={{ background: "var(--bg-elevated)" }}>Local</option>
-                        </select>
-                        <select
-                          aria-label={`${skill} model`}
-                          value={current.model}
-                          onChange={(e) => handleSkillModelChange(skill, current.provider, e.target.value)}
-                          className="h-6 rounded px-1 text-[10px] outline-none"
-                          style={{ background: "var(--glass)", border: "1px solid var(--glass-border)", color: "var(--text-primary)" }}
-                        >
-                          <option value="" style={{ background: "var(--bg-elevated)" }}>Default</option>
-                          {modelsForProvider.map((m) => (
-                            <option key={m.id} value={m.id} style={{ background: "var(--bg-elevated)" }}>
-                              {m.name}{m.size ? ` (${m.size})` : ""}
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-                    );
-                  })}
-                </div>
-                )}
-              </Section>
-
-              {!isWeb && <LocalAiSettings config={config} onSave={handleSave} saving={saving} savedKeys={savedKeys} />}
-            </>
-          )}
-
-          {/* Data Sources Tab */}
-          {activeTab === "sources" && config && (
-            <>
-              <Section title="Meeting Transcripts">
-                <p className="text-[10px] mb-3" style={{ color: "var(--text-muted)" }}>
-                  Connect transcript services to automatically pull meeting recordings into your vault.
-                  {config.ingest_mode === "client"
-                    ? "Transcript ingest runs on the Prism Server (this machine is in Client mode), so nothing here starts a sync."
-                    : "Transcripts are ingested every 10 minutes and enriched by the meeting processor skill."}
-                </p>
-                <SourceField icon={<Video size={14} />} label="Fathom" desc="Meeting recording & AI summaries"
-                  fieldKey="fathom_api_key" placeholder="Fathom API key" sensitive
-                  value={config.fathom_api_key as string} isSet={config.fathom_api_key_set as boolean}
-                  editValues={editValues} saving={saving} savedKeys={savedKeys}
-                  onEdit={(k, v) => setEditValues((prev) => ({ ...prev, [k]: v }))} onSave={handleSave} onClear={handleClear} />
-
-                <SourceField icon={<Video size={14} />} label="Read.ai" desc="Meeting copilot & transcription"
-                  fieldKey="readai_api_key" placeholder="Read.ai API key" sensitive
-                  value={config.readai_api_key as string} isSet={config.readai_api_key_set as boolean}
-                  editValues={editValues} saving={saving} savedKeys={savedKeys}
-                  onEdit={(k, v) => setEditValues((prev) => ({ ...prev, [k]: v }))} onSave={handleSave} onClear={handleClear} />
-
-                <SourceField icon={<Mic size={14} />} label="Otter.ai" desc="Meeting notes & transcription"
-                  fieldKey="otter_api_key" placeholder="Otter API key" sensitive
-                  value={config.otter_api_key as string} isSet={config.otter_api_key_set as boolean}
-                  editValues={editValues} saving={saving} savedKeys={savedKeys}
-                  onEdit={(k, v) => setEditValues((prev) => ({ ...prev, [k]: v }))} onSave={handleSave} onClear={handleClear} />
-
-                <SourceField icon={<Mic size={14} />} label="Fireflies.ai" desc="AI meeting assistant"
-                  fieldKey="fireflies_api_key" placeholder="Fireflies API key" sensitive
-                  value={config.fireflies_api_key as string} isSet={config.fireflies_api_key_set as boolean}
-                  editValues={editValues} saving={saving} savedKeys={savedKeys}
-                  onEdit={(k, v) => setEditValues((prev) => ({ ...prev, [k]: v }))} onSave={handleSave} onClear={handleClear} />
-              </Section>
-
-              <Section title="Knowledge Sources">
-                <SourceField icon={<Cloud size={14} />} label="Notion" desc="Workspace & knowledge base"
-                  fieldKey="notion_api_key" placeholder="Notion API key" sensitive
-                  value={config.notion_api_key as string} isSet={config.notion_api_key_set as boolean}
-                  editValues={editValues} saving={saving} savedKeys={savedKeys}
-                  onEdit={(k, v) => setEditValues((prev) => ({ ...prev, [k]: v }))} onSave={handleSave} onClear={handleClear} />
-              </Section>
-            </>
-          )}
-
-          {/* Appearance Tab */}
-          {activeTab === "appearance" && (
-            <>
-              <Section title="Theme">
-                <div className="flex rounded-lg overflow-hidden" style={{ border: "1px solid var(--glass-border)" }}>
-                  {(["system", "light", "dark"] as Theme[]).map((t) => (
-                    <button key={t} aria-pressed={theme === t} onClick={() => setTheme(t)}
-                      className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 text-xs"
-                      style={{ background: theme === t ? "var(--glass-active)" : "transparent", color: "var(--text-primary)" }}>
-                      {t === "dark" ? <Moon size={12} /> : t === "light" ? <Sun size={12} /> : <Monitor size={12} />}
-                      {t.charAt(0).toUpperCase() + t.slice(1)}
-                    </button>
-                  ))}
-                </div>
-                {theme === "system" && (
-                  <p className="mt-2 text-xs" style={{ color: "var(--text-muted)" }}>Follows this device’s light or dark setting.</p>
-                )}
-              </Section>
-
-              <Section title="Motion">
-                <ReduceMotionRow />
-              </Section>
-
-              <RegionSettings />
-
-              <Section title="Typography">
-                <Row label="UI Font">
-                  <select aria-label="UI Font" value={fontFamily} onChange={(e) => setFontFamily(e.target.value)} className="h-7 rounded-md px-2 text-xs outline-none"
-                    style={{ background: "var(--glass)", border: "1px solid var(--glass-border)", color: "var(--text-primary)" }}>
-                    {FONT_OPTIONS.map((f) => <option key={f} value={f} style={{ background: "var(--bg-elevated)" }}>{f}</option>)}
-                  </select>
-                </Row>
-                <Row label="Editor Font">
-                  <select aria-label="Editor Font" value={editorFontFamily} onChange={(e) => setEditorFontFamily(e.target.value)} className="h-7 rounded-md px-2 text-xs outline-none"
-                    style={{ background: "var(--glass)", border: "1px solid var(--glass-border)", color: "var(--text-primary)" }}>
-                    {EDITOR_FONT_OPTIONS.map((f) => <option key={f} value={f} style={{ background: "var(--bg-elevated)" }}>{f}</option>)}
-                  </select>
-                </Row>
-                <Row label="Code Font">
-                  <select aria-label="Code Font" value={monoFontFamily} onChange={(e) => setMonoFontFamily(e.target.value)} className="h-7 rounded-md px-2 text-xs outline-none"
-                    style={{ background: "var(--glass)", border: "1px solid var(--glass-border)", color: "var(--text-primary)" }}>
-                    {MONO_FONT_OPTIONS.map((f) => <option key={f} value={f} style={{ background: "var(--bg-elevated)" }}>{f}</option>)}
-                  </select>
-                </Row>
-                <Row label="Font Size">
-                  <div className="flex items-center gap-2">
-                    <input aria-label="Font Size" type="range" min={11} max={18} value={fontSize} onChange={(e) => setFontSize(Number(e.target.value))} className="w-24" />
-                    <span className="text-xs w-8" style={{ color: "var(--text-secondary)" }}>{fontSize}px</span>
-                  </div>
-                </Row>
-                <Row label="Sidebar Label">
-                  <input aria-label="Sidebar Label" value={sidebarLabel} onChange={(e) => setSidebarLabel(e.target.value)}
-                    className="h-7 rounded-md px-2 text-xs outline-none w-32"
-                    style={{ background: "var(--glass)", border: "1px solid var(--glass-border)", color: "var(--text-primary)" }}
-                    placeholder="Projects" />
-                </Row>
-                <Row label="Start with last open document">
-                  <input type="checkbox" aria-label="Start with last open document" checked={startWithLastDocument} onChange={(e) => setStartWithLastDocument(e.target.checked)} className="h-4 w-4" />
-                </Row>
-              </Section>
+                  {config && <IngestSettings config={config} onSave={handleSaveRaw} saving={saving} savedKeys={savedKeys} />}
+                </>
+              )}
 
               <Section title="About">
                 <div className="text-xs space-y-1" style={{ color: "var(--text-muted)" }}>
@@ -599,8 +652,16 @@ function Section({ title, children }: { title: string; children: React.ReactNode
   return <section className="prism-settings__section"><h4>{title}</h4>{children}</section>;
 }
 
-function Row({ label, children }: { label: string; children: React.ReactNode }) {
-  return <div className="prism-settings__row"><span className="text-sm" style={{ color: "var(--text-primary)" }}>{label}</span>{children}</div>;
+function Row({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
+  return (
+    <div className="prism-settings__row">
+      <span className="text-sm" style={{ color: "var(--text-primary)" }}>
+        {label}
+        {hint && <span className="prism-settings__hint">{hint}</span>}
+      </span>
+      {children}
+    </div>
+  );
 }
 
 // ─── Ingest mode (host vs client) ────────────────────────────
