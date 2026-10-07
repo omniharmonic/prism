@@ -249,6 +249,40 @@ pub async fn download(
     }
 }
 
+/// iOS: the folder under the app's tmp directory that holds an archive while the
+/// system share sheet is up. The Swift side shares files under this folder ONLY
+/// (`PrismIosPlugin.shareFile`) — keep the name in step with it.
+#[cfg_attr(not(target_os = "ios"), allow(dead_code))]
+pub const SHARE_ROOT: &str = "prism-exports";
+
+/// `<tmp>/prism-exports/<nonce>`: one private folder per save, so the file can
+/// keep its readable name (the share sheet shows it) without ever colliding.
+#[cfg_attr(not(target_os = "ios"), allow(dead_code))]
+pub fn share_dir(tmp: &Path, nonce: &str) -> PathBuf {
+    tmp.join(SHARE_ROOT).join(nonce)
+}
+
+/// Create `dir` (and the share root above it) readable by this app only.
+#[cfg_attr(not(target_os = "ios"), allow(dead_code))]
+pub fn create_private_dir(dir: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dir)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        for d in [dir.parent(), Some(dir)].into_iter().flatten() {
+            std::fs::set_permissions(d, std::fs::Permissions::from_mode(0o700))?;
+        }
+    }
+    Ok(())
+}
+
+/// Remove every archive left under the share root (at launch: a save that was
+/// cut short by the app being killed must not leave a workspace export behind).
+#[cfg_attr(not(target_os = "ios"), allow(dead_code))]
+pub fn purge_share_root(tmp: &Path) {
+    let _ = std::fs::remove_dir_all(tmp.join(SHARE_ROOT));
+}
+
 /// JS the shell evals to report progress: a DOM event with numbers and the job
 /// id (a JSON string literal), never a path.
 pub fn progress_js(job_id: &str, received: u64, total: Option<u64>) -> String {
@@ -536,5 +570,46 @@ mod tests {
             r#"window.dispatchEvent(new CustomEvent("prism:export-save-progress",{detail:{jobId:"AbCdEfGhIjKlMnOpQrStUv",received:10,total:20}}));"#
         );
         assert!(progress_js("a\"b", 1, None).contains(r#"jobId:"a\"b",received:1,total:null"#));
+    }
+
+    #[test]
+    fn share_folder_is_private_and_purged() {
+        // iOS: the archive waits for the share sheet in <tmp>/prism-exports/<nonce>/.
+        let base = tmp("share");
+        let dir = share_dir(&base, "n0nce");
+        assert_eq!(dir, base.join("prism-exports").join("n0nce"));
+        create_private_dir(&dir).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            for d in [&dir, &base.join(SHARE_ROOT)] {
+                let mode = std::fs::metadata(d).unwrap().permissions().mode() & 0o777;
+                assert_eq!(mode, 0o700, "{d:?} is private to the app");
+            }
+        }
+        let file = dir.join(zip_name("My export"));
+        std::fs::write(&file, b"PK").unwrap();
+        assert_eq!(file.file_name().unwrap(), "My export.zip");
+        // Launch-time cleanup removes every leftover, and is harmless when there is none.
+        purge_share_root(&base);
+        assert!(!base.join(SHARE_ROOT).exists());
+        purge_share_root(&base);
+        assert!(base.exists(), "only the share root goes");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn the_swift_side_shares_only_from_the_share_root() {
+        // One name, two languages: keep them in step.
+        let swift = include_str!("../plugins/prism-ios/ios/Sources/PrismIos/PrismIosPlugin.swift");
+        assert!(swift.contains(&format!(".appendingPathComponent(\"{SHARE_ROOT}\", isDirectory: true)")));
+        assert!(swift.contains("file.path.hasPrefix(root.path + \"/\")"));
+        assert!(swift.contains("shareableExtensions: Set<String> = [\"zip\", \"md\", \"html\"]"));
+        assert!(swift.contains("shareableExtensions.contains(file.pathExtension.lowercased())"));
+        // …and those are exactly what the shell writes there.
+        assert!(zip_name("x").ends_with(".zip"));
+        for fmt in [crate::export::Format::Markdown, crate::export::Format::Html] {
+            assert!(["md", "html"].contains(&fmt.ext()));
+        }
     }
 }

@@ -90,11 +90,14 @@ PRODUCTION environment**). A token sent to the wrong environment answers `400 Ba
 deleted; the app re-registers on its next launch.
 
 ### API (iOS client contract)
-All under `/api/push`, behind the same server-owner gate as the web push routes, and additionally
-**require the app's device credential** (`Authorization: Bearer pd_…`). A browser session cookie, even the
-owner's, gets `403 {"error":"device_token_required"}` — an APNs token addresses one installed app, so it is
-bound to that app's device credential; non-owners, capability links and anon get `403 {"error":"forbidden"}`.
-No CSRF/Origin check applies (the credential is a bearer header, never ambient).
+All under `/api/push`. Since wave 2A the router admits **every signed-in user** (their own device rows;
+agent-turn pushes still only reach the session owner), and these three additionally **require the app's
+device credential** (`Authorization: Bearer pd_…`). A browser session cookie, even the owner's, gets
+`403 {"error":"device_token_required"}` — an APNs token addresses one installed app, so it is bound to
+that app's device credential; capability links and anon get `403 {"error":"forbidden"}`.
+No CSRF/Origin check applies (the credential is a bearer header, never ambient). The app's side is
+`apps/web/src/native/apnsPush.ts` (register on the user's toggle and on every launch while on, `DELETE`
+when turned off; the choice is kept per account on the device).
 - `POST /api/push/apns` `{token, environment}` — `token` = the APNs device token as hex (even length,
   64–200 chars, case-insensitive, stored lowercase); `environment` = `"sandbox" | "production"`.
   → `200 {ok:true, apnsEnabled:boolean}`; `400 bad_request` on a bad body. One row per device: calling it

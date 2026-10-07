@@ -11,6 +11,7 @@ import { Badge } from "../ui/Badge";
 import { useAccount, type AccountProfile, type SignedInDevice } from "../../data/Account";
 import { AgentAccessTokens } from "./AgentAccessTokens";
 import { PushSettings } from "./PushSettings";
+import { ShellSettingsSlot } from "../../data/ShellSettings";
 
 import { formatDateTime as fmtDateTime } from "../../lib/datetime/format";
 /** Downscale a picked image to a small square avatar (data URL) so it stays well
@@ -231,6 +232,9 @@ export function AccountSettings() {
           </p>
         </div>
       )}
+
+      {/* Native shell section (WP5: the iOS app's lock + server) */}
+      <ShellSettingsSlot />
 
       {/* Agent-finished push notifications (WP3.3; web owner only) */}
       <PushSettings />

@@ -3,8 +3,10 @@
 //!
 //!   quick_capture  quick-capture window ONLY (capabilities/quick-capture.json)
 //!   notify         main window (capabilities/default.json)
-//!   export_note    main window (capabilities/default.json)
-//!   save_export    main window (capabilities/default.json) — export_archive.rs
+//!   export_note    main window (capabilities/default.json; iOS: capabilities/mobile.json,
+//!                  where it ends in the share sheet instead of a save panel)
+//!   save_export    main window (capabilities/default.json; iOS: capabilities/mobile.json,
+//!                  where it ends in the share sheet instead of a save panel) — export_archive.rs
 //!
 //! Each command also checks the CALLING window's label, so a mistaken or
 //! future capability grant can't widen who may call it.
@@ -46,7 +48,7 @@ pub async fn quick_capture<R: Runtime>(
         .token()
         .await?
         .ok_or("You're signed out. Open Prism and sign in first.")?;
-    crate::capture::post(&state.origin, &token, &body).await?;
+    crate::capture::post(&state.require_origin()?, &token, &body).await?;
     let _ = window.close();
     Ok(true)
 }
@@ -142,7 +144,32 @@ pub async fn export_note<R: Runtime>(
             .file_name()
             .map(|n| n.to_string_lossy().into_owned()))
     }
-    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+    // iOS has no save panel: the file is written into a private folder in the app's
+    // tmp directory, handed to the system share sheet (Save to Files, AirDrop, …)
+    // and deleted when the sheet closes. Returns its name when an activity
+    // completed, null when the sheet was dismissed.
+    #[cfg(target_os = "ios")]
+    {
+        use crate::export_archive as archive;
+
+        let file_name = crate::export::suggested_file_name(&suggested_name, fmt);
+        let rendered = crate::export::render(fmt, &suggested_name, &content);
+        let ios = crate::ios::plugin(&app)?;
+        let dir = archive::share_dir(&std::env::temp_dir(), &crate::pkce::random_token()[..16]);
+        archive::create_private_dir(&dir).map_err(|e| format!("could not prepare the export: {e}"))?;
+        let target = dir.join(&file_name);
+        let result = match (std::fs::write(&target, rendered.as_bytes()), target.to_str()) {
+            (Ok(()), Some(path)) => ios
+                .share_file(path)
+                .await
+                .map(|shared| shared.then_some(file_name)),
+            (Err(e), _) => Err(format!("could not write the file: {e}")),
+            (Ok(()), None) => Err("That export can't be shared.".to_string()),
+        };
+        let _ = std::fs::remove_dir_all(&dir);
+        result
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux", target_os = "ios")))]
     {
         let _ = (&app, &suggested_name, fmt);
         Err("Export isn't available on this platform yet.".into())
@@ -182,7 +209,7 @@ pub async fn save_export<R: Runtime>(
             .token()
             .await?
             .ok_or("You're signed out. Sign in and export again.")?;
-        let source = archive::download_url(&state.origin, &job_id).ok_or("That export can't be saved.")?;
+        let source = archive::download_url(&state.require_origin()?, &job_id).ok_or("That export can't be saved.")?;
         let guard = saves.begin(&job_id)?;
 
         let file_name = archive::zip_name(&suggested_name);
@@ -226,7 +253,62 @@ pub async fn save_export<R: Runtime>(
             Err(archive::SaveError::Failed(m)) => Err(m),
         }
     }
-    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+    // iOS has no save panel: the archive is streamed into a private folder in the
+    // app's tmp directory, handed to the system share sheet (Save to Files,
+    // AirDrop, …) by the Swift plugin, and deleted when the sheet closes. The path
+    // never reaches the page. Returns the file's name when an activity completed,
+    // null when the sheet was dismissed (the dialog then offers "Save…" again).
+    #[cfg(target_os = "ios")]
+    {
+        use std::time::{Duration, Instant};
+
+        let bearer = state
+            .token()
+            .await?
+            .ok_or("You're signed out. Sign in and export again.")?;
+        let source = archive::download_url(&state.require_origin()?, &job_id).ok_or("That export can't be saved.")?;
+        let guard = saves.begin(&job_id)?;
+        let ios = crate::ios::plugin(&app)?;
+
+        let dir = archive::share_dir(&std::env::temp_dir(), &crate::pkce::random_token()[..16]);
+        archive::create_private_dir(&dir).map_err(|e| format!("could not prepare the export: {e}"))?;
+        let target = dir.join(archive::zip_name(&suggested_name));
+        let client = archive::client()?;
+        let mut last = Instant::now() - Duration::from_secs(1);
+        let outcome = archive::download(
+            &client,
+            &source,
+            &bearer,
+            &target,
+            archive::MAX_ARCHIVE_BYTES,
+            guard.flag(),
+            |received, total| {
+                let done = total.is_some_and(|t| received >= t);
+                if done || last.elapsed() >= Duration::from_millis(200) {
+                    last = Instant::now();
+                    let _ = window.eval(archive::progress_js(&job_id, received, total));
+                }
+            },
+        )
+        .await;
+        let result = match outcome {
+            Ok(_) => match target.to_str() {
+                Some(path) => ios.share_file(path).await.map(|shared| {
+                    shared
+                        .then(|| target.file_name().map(|n| n.to_string_lossy().into_owned()))
+                        .flatten()
+                }),
+                None => Err("That export can't be shared.".to_string()),
+            },
+            Err(archive::SaveError::Cancelled) => Ok(None),
+            Err(archive::SaveError::Failed(m)) => Err(m),
+        };
+        // Whatever happened, the archive does not stay in the app's tmp folder.
+        let _ = std::fs::remove_dir_all(&dir);
+        drop(guard);
+        result
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux", target_os = "ios")))]
     {
         let _ = (&app, &state, &saves, &suggested_name);
         Err("Saving an export isn't available on this platform yet.".into())

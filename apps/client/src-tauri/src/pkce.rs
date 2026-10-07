@@ -117,6 +117,40 @@ pub fn parse_callback_query(query: &str, expected_state: &str) -> CallbackOutcom
     }
 }
 
+/// The custom-scheme redirect the iOS app registers with the server
+/// (`DEVICE_REDIRECT_URIS` default) and hands to `ASWebAuthenticationSession`.
+#[cfg_attr(not(mobile), allow(dead_code))]
+pub const MOBILE_REDIRECT_URI: &str = "prism://auth/callback";
+/// Its scheme, for `ASWebAuthenticationSession(callbackURLScheme:)`.
+#[cfg_attr(not(mobile), allow(dead_code))]
+pub const MOBILE_CALLBACK_SCHEME: &str = "prism";
+
+/// The authorization code from the URL `ASWebAuthenticationSession` returned.
+/// The URL must be EXACTLY the registered redirect (scheme, host, path) plus a
+/// query carrying our `state`; anything else is refused, never half-trusted.
+#[cfg_attr(not(mobile), allow(dead_code))]
+pub fn code_from_redirect(
+    returned: &str,
+    redirect_uri: &str,
+    expected_state: &str,
+) -> Result<String, String> {
+    let (base, query) = returned.split_once('?').unwrap_or((returned, ""));
+    if base != redirect_uri || returned.contains('#') {
+        return Err("the sign-in response came back to an unexpected address".into());
+    }
+    match parse_callback_query(query, expected_state) {
+        CallbackOutcome::Code(c) => Ok(c),
+        CallbackOutcome::Denied(e) if e == "access_denied" => {
+            Err("Sign-in was denied in the browser.".into())
+        }
+        CallbackOutcome::Denied(e) => Err(format!("sign-in failed ({e})")),
+        CallbackOutcome::StateMismatch => {
+            Err("the sign-in response didn't match this attempt; try again".into())
+        }
+        CallbackOutcome::Malformed => Err("the sign-in response was malformed".into()),
+    }
+}
+
 /// Keep server-supplied error codes printable and short before showing them.
 fn sanitize_error(e: &str) -> String {
     e.chars()
@@ -193,6 +227,31 @@ mod tests {
         assert!(!ct_eq("abc", "abd"));
         assert!(!ct_eq("abc", "abcd"));
         assert!(!ct_eq("", "a"));
+    }
+
+    #[test]
+    fn mobile_redirect_parsing() {
+        let r = MOBILE_REDIRECT_URI;
+        assert!(r.starts_with(&format!("{MOBILE_CALLBACK_SCHEME}://")));
+        assert_eq!(
+            code_from_redirect("prism://auth/callback?code=abc&state=S", r, "S"),
+            Ok("abc".into())
+        );
+        for bad in [
+            "prism://auth/callback?code=abc&state=X",  // not our state
+            "prism://auth/callbackX?code=abc&state=S", // another path
+            "prism://evil/callback?code=abc&state=S",  // another host
+            "evil://auth/callback?code=abc&state=S",   // another scheme
+            "prism://auth/callback?state=S",           // no code
+            "prism://auth/callback?code=abc&state=S#f",
+            "prism://auth/callback",
+        ] {
+            assert!(code_from_redirect(bad, r, "S").is_err(), "{bad}");
+        }
+        assert_eq!(
+            code_from_redirect("prism://auth/callback?error=access_denied&state=S", r, "S"),
+            Err("Sign-in was denied in the browser.".into())
+        );
     }
 
     #[test]
