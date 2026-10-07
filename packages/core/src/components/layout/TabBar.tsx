@@ -155,12 +155,35 @@ export function TabBar() {
   }, [isMobile]);
   // The trail arrives after the tab (its path is read from the tree / the note): measure again then.
   const [trail, setTrail] = useState("");
-  useEffect(() => { setRoom("full"); }, [activeTabId, openTabs.length, trail]);
+  // A LAYOUT effect, declared before the measuring one: as a passive effect its reset could be queued right
+  // after a step-down from the same commit, leave the state at "full" with no further commit — and so no
+  // further measurement — and the whole trail stayed in a strip that was already scrolling.
+  useLayoutEffect(() => { setRoom("full"); }, [activeTabId, openTabs.length, trail]);
   useLayoutEffect(() => {
     const node = strip.current;
     if (isMobile || !node || room === "menu" || !node.querySelector(".tabbar-crumbs")) return;
     if (node.scrollWidth > node.clientWidth + 1) setRoom(room === "full" ? "narrow" : "menu");
   });
+  useEffect(() => {
+    if (isMobile) return;
+    // Keep the active tab in view. Change only the horizontal tab-strip scroll; never scroll the document or focus it.
+    const node = strip.current;
+    const active = node?.querySelector<HTMLElement>('[aria-current="page"]');
+    if (!node || !active) return;
+    const tab = active.parentElement!;
+    const reveal = () => {
+      const parent = node.getBoundingClientRect();
+      const child = tab.getBoundingClientRect();
+      if (child.left < parent.left) node.scrollLeft -= parent.left - child.left;
+      else if (child.right > parent.right) node.scrollLeft += child.right - parent.right;
+    };
+    reveal();
+    // Fonts, the breadcrumb's width, companion widths and responsive chrome can settle after activation.
+    const observer = new ResizeObserver(reveal);
+    observer.observe(node);
+    observer.observe(tab);
+    return () => observer.disconnect();
+  }, [activeTabId, openTabs, isMobile]);
   // Mobile: a quiet 3-zone header (nav · centered title · share). Tab switching,
   // creation, sidebar, and note actions all live in the floating command pill,
   // so the top bar stays a single uncluttered line.
