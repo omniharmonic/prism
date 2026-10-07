@@ -58,6 +58,8 @@ test('different working document requires a choice and preserves the old draft',
   await noSend(page);
   await page.getByRole('button', { name: 'Attach to current conversation', exact: true }).click();
   await expect(page.getByRole('button', { name: 'Selected passage', exact: true })).toHaveCount(1);
+  // The attach hands focus to the message field a frame later; wait for it, or the next fill races it and types there.
+  await expect(message).toBeFocused();
   await expect(page.getByTestId('agent-working-document')).toContainText('Reference note');
   await select(page, 'Another selected passage');
   await page.getByRole('button', { name: 'Ask agent about selection', exact: true }).click();

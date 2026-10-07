@@ -371,8 +371,9 @@ test.describe("Esc closes and focus returns to the opener", () => {
     const inEditor = () => page.evaluate(() => !!document.activeElement?.closest(".tiptap"));
     for (const [keys, popup, label] of [
       [`${mod}+k`, page.getByRole("dialog", { name: "Search workspace" }), "⌘K"],
-      [`${mod}+/`, page.getByRole("dialog", { name: "Keyboard shortcuts" }), "shortcut sheet"],
-      [`${mod}+Shift+/`, page.getByRole("menu", { name: "Block actions" }), "block menu"],
+      // In a block ⌘/ is the block menu (on Turn into); the sheet is ⌘⇧/ (NP-ED-05/06).
+      [`${mod}+Shift+/`, page.getByRole("dialog", { name: "Keyboard shortcuts" }), "shortcut sheet"],
+      [`${mod}+/`, page.getByRole("menu", { name: "Block actions" }), "block menu"],
       [`${mod}+f`, page.locator(".prism-find-bar"), "find bar"],
       [`${mod}+,`, page.getByRole("dialog", { name: "Settings", exact: true }), "settings"],
     ] as Array<[string, Locator, string]>) {
