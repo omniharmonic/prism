@@ -9,7 +9,9 @@ live system. Draft — some steps depend on the laptop inventory (see
 - **The laptop is for building and trying things.**
 - **The Mac Mini only runs what has been released.** Nobody edits files on the
   Mini, and no coding agents run there.
-- The two machines only meet through **GitHub**. You save work on the laptop,
+- The two machines only meet through **GitHub**, on the **`omniharmonic`**
+  account: `github.com/omniharmonic/prism` (decided 2026-10-08). Push as
+  `omniharmonic`; the deploy script refuses any other `origin`. You save work on the laptop,
   push it to GitHub, give it a version name (a "tag"), and the Mini pulls that
   exact version.
 
@@ -25,6 +27,7 @@ the **dev Prism server**.
 2. Open Terminal and run:
 
    ```bash
+   git clone https://github.com/omniharmonic/prism ~/dev/prism   # first time
    cd ~/dev/prism
    npm ci                                  # first time, or after pulling changes
    npm run build -w @prism/web             # builds the web app
@@ -52,6 +55,17 @@ reach the real vault, send mail, or message anyone.
 If you ever see an Ingest health card on the laptop saying a source is
 running — stop and check `.env.dev`.
 
+### Secrets
+
+No 1Password: secrets live in the Mac's Keychain as `omni.prism.<NAME>`
+(e.g. `omni.prism.SESSION_SECRET`), managed with the agent repo's
+`scripts/secrets.sh` (`set` asks for the value hidden — never type a secret on
+a command line; `list` shows names only). On the laptop they hold **dev**
+values; the production ones exist only on the Mini. To build `.env.dev` from
+them, write `apps/server/.env.dev.tmpl` with `SESSION_SECRET=@keychain` lines
+and run
+`~/dev/omniharmonicagent/scripts/secrets.sh --repo prism env-file apps/server/.env.dev.tmpl`.
+
 ### Running the tests (no vault needed at all)
 
 ```bash
@@ -67,20 +81,28 @@ settings).
 
 ## 2. Refresh the dev data
 
-Your dev vault is a copy of the real one. Refresh it every week or so, or when
-you need recent notes.
+Your dev vault is a **scrubbed copy** of the real one (decided 2026-10-08).
+Refresh it every week or so, or when you need recent notes. Everything is run
+from the laptop; the full commands are in
+`omniharmonicagent/docs/dev-environment/dev-environment-plan.md` §2.
 
-1. On the Mini (over Tailscale):
+1. **Snapshot on the Mini** (read-only, safe while everything runs):
    `ssh mini 'bash ~/dev/prism/scripts/backup-parachute.sh dev-refresh'`
-   — this only *reads*; it is safe while everything is running.
-2. Copy **just the vault file** to the laptop (not the passwords and tokens that
-   sit next to it):
-   `scp 'mini:~/parachute-backups/*-dev-refresh/parachute/vault/data/default/vault.db' ~/dev-data/`
-3. Stop the dev vault, put the new `vault.db` in place, start it again.
-4. Delete the backup folder from the Mini.
+2. **Scrub on the Mini, before anything moves.** Copy just the vault file,
+   delete any note that looks like it holds a password, key or token, and
+   compact it into a fresh `vault-dev.db` (so deleted text is really gone).
+   The hub database (token keys), `prism-server.db` (your stored connection
+   passwords) and the `.env` are **never** copied.
+3. **Copy over Tailscale:** `scp mini:<snapshot>/vault-dev.db ~/dev-data/vault.db.new`
+   (`~/dev-data` is a private folder, outside iCloud).
+4. **Delete the snapshot folder on the Mini** — it contains everything.
+5. **Swap it in:** stop the dev vault, move the new file into place, start it,
+   run the vault's `doctor` check.
 
-The copy contains your mail and messages: keep it on the laptop only, never in
-iCloud or a shared folder.
+The copy can't import anything new: the laptop has no ingest passwords at all
+(`SECRETS_KEY` is empty in `.env.dev`, and no Gmail/Proton/Matrix/calendar
+login exists there). It does contain your mail and messages: keep it on the
+laptop only, never in iCloud or a shared folder.
 
 ---
 
@@ -108,7 +130,8 @@ iCloud or a shared folder.
    ```
 
 What happens: the Mini takes a full backup, switches to the new version,
-rebuilds the web app, restarts Prism, and checks that Prism is up, can reach the
+rebuilds the web app, rebuilds `apps/server/.env` from the Keychain if an
+`apps/server/.env.tmpl` is there, restarts Prism, and checks that Prism is up, can reach the
 vault, and that no mail/message/calendar import broke. If anything fails it
 **switches back to the previous version by itself** and tells you.
 
