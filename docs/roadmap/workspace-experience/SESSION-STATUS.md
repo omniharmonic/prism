@@ -126,3 +126,32 @@ Still unmerged, each needs ONE small fresh agent (do not resume the old agents �
 - `feat/w9-gaps` (collab-convert, 4 uncommitted): fixture `diverged()` JSON compare, `noteLinkTitle` blank-title fix, old-code proof for round-3 suggesting fixes, WebKit, split WIP.
 - `feat/w12-editor-select` (w3-gaps): review S1–S9 pending. `feat/w14-visual` (w4-shell, 5 uncommitted): visual defects in progress. `feat/w14-icons` (w2-sharing): WIP, unverified.
 Open: unexplained `/health` misses with plenty of free memory (2026-10-04 21:54, 2026-10-06 22:46) — check pm2 logs around those times.
+
+
+## STOPPING POINT 2026-10-07 — READ FIRST (supersedes the sections above)
+
+**Main** = `bf325c96` + whatever landed after this note (check `git log`). NOTHING IS DEPLOYED: production (pm2 `prism-server`, `apps/web/dist`) still runs the release from before this work. Deploy order when the owner says go: restart the server first (`pm2 restart prism-server`, additive DB migrations run at start), then build + ship the PWA, then rebuild the Prism Client. Several features say "server first" (agent error codes, Messages → People route, pinned properties, search filters).
+
+### Landed this run (all on green typecheck + full server + full browser suites unless noted)
+Flake fixes (incl. block-menu Comment focus bug), P2 conveniences, appearance (System theme, regional prefs settings), iOS code merge (no build), table calculations (+ "Me" filter, wrap cells), duplicate with sub-pages, backlog (Matrix reconcile retry/back-off, ingest upstream timeouts, Fireflies no re-upload, Recovered text UI, offline tree cache cap), visual polish pass 1, Settings restored + pinned properties, Messages → People across platforms (read-time identity resolution), agent integration (error codes, honest copy at every entry point, one sign-in retry; merged on typecheck + agent server tests + 6 agent/keyboard specs after a full run on its pre-merge tree).
+
+### INCIDENT — fixed, read this
+Commit `b9a20c91` (Messages) was made from a stale working tree and silently reverted ~95 files of backlog + visual polish, deleting their tests too, so the suites stayed green. Repaired in `11638fbc` (three-way merge back of every affected file; verified: only Messages + Settings + two small fixes differ from the pre-damage main; full suites green incl. the restored tests). **New merge rule:** before every merge, `git diff --name-only --diff-filter=D main -- '*.test.ts' '*.spec.ts'` must be empty unless deliberate, and look for files reverted to an older version.
+
+### In flight at stop
+- `feat/w11-deviations` (w4-editor): header breadcrumb, ⌘/ = block menu (sheet ⌘⇧/, `?`), Publish flow, property type conversion, shortcut rows. Full suites running on main-merged tree (`scratchpad/dev2-*.log`); merge if green.
+- `feat/w16-polish` (w4-shell, agent running): real option names, Sentence case ⌘K, status bar removed, simpler task cards, phone More sheet, one page-count footer, phone Rename / slash menu / link card / keyboard toolbar. Needs: merge main, full suites, merge.
+
+### NEXT — in priority order
+1. **Agent that is actually useful (owner priority).** (a) The note you have open is in the agent's context automatically when you open it from a note (check every entry point passes `noteId`; server already inlines the first turn). (b) Search across all notes: the agent said it could not — diagnose (profile tool list for `prism-ro`/`vault-ro`, semantic search 409 off-primary, prompt not telling it). (c) Opt-in web access: a profile with WebSearch/WebFetch only (no shell/files), fetched pages fenced as untrusted, chosen per conversation — OWNER DECISION. (d) Read-write mode that can create/edit/link notes within Prism permissions (`prism-rw`, behind `AGENT_PRISM_PROFILES`; decision c.9). Verify against the REAL CLI once (`scripts/verify-agent-exec.ts` text-only case never run).
+2. **Claude sign-in on the server** — runs failed with "OAuth token revoked" (2026-10-04 ×2, 2026-10-07 10:18). Owner: `! claude` then `/login` on the server. Suspected refresh-token collision between concurrent CLI processes sharing one login.
+3. **Email triage `triage-failed`** — the `message-classify` skill runs on the LOCAL model; today's failures coincide with memory-pressure deferrals while this session's suites/agents loaded the host (not the Claude login). Re-run triage on today's failures by removing `triage-failed` from them (vault write — owner OK needed). Also: Google OAuth for `gog` calendar expired ("invalid_grant") — owner re-auth.
+4. **Transcript ↔ calendar matching** misses most connected events — diagnose with real data (window, score, title normalisation) before code.
+5. **Comments UX** deeper rethink (panel restyled in polish pass 1).
+6. Messages, remaining mockup pieces: previews in People rows, group avatars, "show earlier", file chips, quoted replies, sender popover, paging >100. Owner decisions: turn on `MATRIX_LINK_EXISTING` + `MATRIX_STORE_PARTICIPANT_IDS`; run the people link job for real.
+7. Unmerged older branches still holding work: `feat/w12-editor-select` (mouse block selection + inline emoji; review S1–S9 pending — real editing bugs), `feat/w14-icons` (custom page icons + toggle memory; WIP, unverified), `feat/w9-gaps` (Suggesting mode etc.; 4 uncommitted files in `.worktrees/collab-convert`, fixture fix + old-code proof pending).
+8. Unexplained `/health` misses with plenty of memory: 2026-10-04 21:54, 2026-10-06 22:46, 2026-10-07 15:37/15:50 (the last two during overlapping suite runs) — look at pm2 logs around those times.
+9. Owner decisions recorded by agents: pins per tag (not per page); dead desktop-only settings (sync direction, local vaults list) could be deleted; type conversion not offered on ingest tags (incl. `task`); ingest-owned pages cannot be duplicated by anyone; templates of an excluded page can re-publish (accepted residual).
+
+### How to work on this host
+Tests are serialized behind a memory gate (`scratchpad/AGENT-RULES.md`; gate example `w9b-gate.sh`). Full verification = `scratchpad/after-run.sh <wait-log> <worktree> <port> <tag>` (typecheck + server suite one file at a time + browser suite in 10 shards; ~75–90 min). Never run two full suites at once — today's overlap killed a shard three times and caused /health misses. One small fresh agent per branch; do not resume old agents (huge contexts).
