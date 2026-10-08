@@ -362,6 +362,32 @@ function seedCandidates(vault: FakeVault) {
   vault.add({ id: "m6", path: "vault/s/six", tags: ["sample-b"], content: "weird", metadata: {} });
 }
 
+test("runStructured: a note the model did not ANSWER is left for the next run, never flagged; two in a row stop the run", async () => {
+  const vault = new FakeVault();
+  const local = new FakeLocal();
+  seedCandidates(vault);
+  const cfg = parseStructuredConfig(classifierSkill(vault).metadata!);
+  const logged: string[] = [];
+  // One timeout between answers: that note waits, the others are classified.
+  local.respond = (user) => {
+    const title = /Title: (\S+)/.exec(user)![1]!;
+    if (title === "two") throw new Error("local AI request timed out after 120s");
+    return { importance: "alpha" };
+  };
+  let summary = await runStructured(vault, local, "RUBRIC", cfg, "test/model-small", { today: "2026-03-10", log: (m) => logged.push(m) });
+  assert.match(summary, /^Structured tagging complete — 3 of 4 note\(s\) classified, 1 left for the next run \(the local model did not answer\)\./);
+  assert.equal(vault.notes.get("m2")!.tags!.includes(REVIEW_TAG), false, "not flagged: the next run looks at it again");
+  assert.deepEqual(logged, ["[skills] note m2 not classified: local AI request timed out after 120s"]);
+  // The model is down for everything: stop after two notes, flag nothing.
+  const v2 = new FakeVault();
+  seedCandidates(v2);
+  local.respond = () => { throw new Error('local AI returned 400: {"error":"Failed to load model"}'); };
+  summary = await runStructured(v2, local, "RUBRIC", parseStructuredConfig(classifierSkill(v2).metadata!), "test/model-small", { today: "2026-03-10" });
+  assert.match(summary, /0 of 4 note\(s\) classified, 2 left for the next run/);
+  assert.match(summary, /Stopped early after 2 of 4 \(the local model is not answering\)/);
+  for (const id of ["m1", "m2", "m6"]) assert.equal(v2.notes.get(id)!.tags!.includes(REVIEW_TAG), false);
+});
+
 test("runStructured: union+dedup, exclusions, shortcut, retry, allowlist → review tag, summary text", async () => {
   const vault = new FakeVault();
   const local = new FakeLocal();
