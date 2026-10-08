@@ -128,6 +128,14 @@ Still unmerged, each needs ONE small fresh agent (do not resume the old agents �
 Open: unexplained `/health` misses with plenty of free memory (2026-10-04 21:54, 2026-10-06 22:46) — check pm2 logs around those times.
 
 
+## DEPLOYED 2026-10-07 late evening (second deploy) — READ FIRST
+
+Production runs main `79d73ad6`: the first deploy below, plus `feat/w16-polish` and `fix/triage-transient`.
+
+- **Polish (owner decisions, all seven items):** human option names, sentence-case ⌘K commands, no desktop status bar (its contents are Settings → Advanced), task cards without the status select / Earlier-Later (drag or the card ⋯ menu), phone More sheet in two groups, one count under a table, phone Rename / slash menu / link card / keyboard toolbar fixes. Verified on the merged branch: typecheck clean, server suite 183 files 2558/0, browser suite 10 shards with two failures — `navigation.spec` "opening Tools…" (load flake, passes alone) and `parity3-mentions` NP-RF-06 (the fixture relied on the status bar's height; fixture fixed, file 9/9). The full browser suite was NOT re-run after that fixture fix and the triage commit. Shots looked at: task board, More sheet, phone slash menu. NOT done from the agent's brief: the status table in `ACCEPTANCE-SHOTS.md` and the gallery rebuild; a light/dark review of every item.
+- **Triage (`worker/skills.ts`):** a note the local model did not ANSWER (timeout, refused load, HTTP error) is no longer tagged `triage-failed`; it waits for the next run, two in a row stop the run, and the reason is logged per note (`[skills] note <id> not classified: …`). Evidence for the cause is indirect (run durations, small notes, LM Studio load refusals) — read those log lines after a day to confirm. 85 emails still carry `triage-failed` from 2026-10-01…07 (owner OK needed to clear). The classifier model is not kept loaded in LM Studio (owner decision).
+- **Rollback for this deploy:** web build `apps/web/dist-prev-20261007-2135`, code `1b68f545`, backup `~/parachute-backups/20261008T033457Z-pre-w16-polish-deploy`.
+
 ## DEPLOYED 2026-10-07 evening — READ FIRST
 
 Production runs main `7ee7272a` (server restarted, PWA swapped in). Owner go-ahead was given for this deploy.
