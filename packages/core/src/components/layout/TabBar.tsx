@@ -1,5 +1,5 @@
 import { isVaultNoteId } from "../../lib/noteIdentity";
-import { useContext, useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { useContext, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
 import { OpenDocuments } from "./OpenDocuments";
 import {
   X,
@@ -20,6 +20,8 @@ import { QueryClientContext } from "@tanstack/react-query";
 import { agentKeys, useAgentClient } from "../../data/AgentClientContext";
 import type { AgentSessionSummary } from "../../lib/agent/sessions";
 import { PageIcon } from "../../lib/pages/icons";
+import { HeaderBreadcrumb, type CrumbRoom } from "../pages/Breadcrumbs";
+import { useOptionalVaultClient } from "../../data/VaultClientContext";
 import type { Editor } from "@tiptap/react";
 import { useDocumentSnapshots } from "../../lib/agent/documentSnapshots";
 import { useSelectionAsk } from "../../lib/agent/useSelectionAsk";
@@ -131,9 +133,40 @@ export function TabBar() {
   const attachSelection = useRef<(() => boolean) | null>(null);
   const strip = useRef<HTMLDivElement>(null);
   const [announcement, setAnnouncement] = useState("");
+  // NP-PG-06: the breadcrumb lives in this bar. It needs the tree, so it is drawn only
+  // inside a query client + vault client (fixtures mount the bar bare).
+  const vault = useOptionalVaultClient();
+  const crumbsHere = !!queries && !!vault && isRealNote;
+  // How much of the trail fits: start with the whole trail and step down (first + “…” + last two →
+  // “…” + last → only “…”) while the tabs no longer fit the strip. Measured, so short names keep
+  // their trail in a narrow window and long ones give way before the tabs scroll.
+  const [room, setRoom] = useState<CrumbRoom>("full");
+  useEffect(() => {
+    const node = strip.current;
+    if (isMobile || !node) return;
+    let width = node.clientWidth;
+    const observer = new ResizeObserver(() => {
+      if (node.clientWidth === width) return;
+      width = node.clientWidth;
+      setRoom("full");
+    });
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [isMobile]);
+  // The trail arrives after the tab (its path is read from the tree / the note): measure again then.
+  const [trail, setTrail] = useState("");
+  // A LAYOUT effect, declared before the measuring one: as a passive effect its reset could be queued right
+  // after a step-down from the same commit, leave the state at "full" with no further commit — and so no
+  // further measurement — and the whole trail stayed in a strip that was already scrolling.
+  useLayoutEffect(() => { setRoom("full"); }, [activeTabId, openTabs.length, trail]);
+  useLayoutEffect(() => {
+    const node = strip.current;
+    if (isMobile || !node || room === "menu" || !node.querySelector(".tabbar-crumbs")) return;
+    if (node.scrollWidth > node.clientWidth + 1) setRoom(room === "full" ? "narrow" : "menu");
+  });
   useEffect(() => {
     if (isMobile) return;
-    // Change only the horizontal tab-strip scroll; never scroll the document or focus it.
+    // Keep the active tab in view. Change only the horizontal tab-strip scroll; never scroll the document or focus it.
     const node = strip.current;
     const active = node?.querySelector<HTMLElement>('[aria-current="page"]');
     if (!node || !active) return;
@@ -145,13 +178,12 @@ export function TabBar() {
       else if (child.right > parent.right) node.scrollLeft += child.right - parent.right;
     };
     reveal();
-    // Fonts, companion widths and responsive chrome can settle after activation.
+    // Fonts, the breadcrumb's width, companion widths and responsive chrome can settle after activation.
     const observer = new ResizeObserver(reveal);
     observer.observe(node);
     observer.observe(tab);
     return () => observer.disconnect();
   }, [activeTabId, openTabs, isMobile]);
-
   // Mobile: a quiet 3-zone header (nav · centered title · share). Tab switching,
   // creation, sidebar, and note actions all live in the floating command pill,
   // so the top bar stays a single uncluttered line.
@@ -174,17 +206,10 @@ export function TabBar() {
         </IconButton>
 
         <div className="flex-1 min-w-0 flex items-center justify-center px-1">
-          <span
-            className="truncate text-center"
-            style={{
-              fontSize: "var(--text-sm)",
-              fontWeight: 550,
-              color: "var(--text-primary)",
-              maxWidth: "100%",
-            }}
-          >
-            {activeTab?.title ?? "Prism"}
-          </span>
+          {/* The page name; with ancestors it opens their list (the breadcrumb's compact form). */}
+          {crumbsHere
+            ? <HeaderBreadcrumb key="crumbs" noteId={activeTab!.noteId} title={activeTab!.title} room="menu" phone />
+            : <span className="tabbar-phone-title truncate">{activeTab?.title ?? "Prism"}</span>}
         </div>
         {isRealNote && <SyncStateBadge key="sync" variant="phone" />}
 
@@ -306,6 +331,7 @@ export function TabBar() {
                   }}
                 />
               )}
+              {active && crumbsHere && <HeaderBreadcrumb noteId={tab.noteId} title={tab.title} room={room} onTrail={setTrail} />}
               <PageIcon noteId={tab.noteId} />
               <button
                 aria-label={`Open ${tab.title}`}

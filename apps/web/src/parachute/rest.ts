@@ -20,6 +20,8 @@ import type {
   VaultGraph,
   VaultNeighborhood,
   PeoplePage,
+  PeopleConversationsPage,
+  PersonConversationsPage,
   PersonSummary,
   PersonPage,
   SemanticHit,
@@ -29,7 +31,7 @@ import type {
 import { VaultRequestError, HistoryUnavailableError, HistoryConflictError, PropertyConflictError, toNoteVersion } from "@prism/core/shell";
 import type { QueryPage, QuerySpec, SchemaMap, SchemaPatch, TagSchema, PropertyWriteResult } from "@prism/core/shell";
 import { filtersToParams, type SearchFilters } from "@prism/core/search";
-import type { PropertyBatchItem, PropertyBatchResult, CsvImportRequest, CsvImportResponse, RemoveValuesResult } from "@prism/core/database";
+import type { PropertyBatchItem, PropertyBatchResult, CsvImportRequest, CsvImportResponse, RemoveValuesResult, ConvertPropertyResult } from "@prism/core/database";
 import { agentScope, apiBase, DEFAULT_VAULT_NAME, capabilityHeader, contextHeaders, getMe } from "../config";
 import { retainDraft, enqueue, hasPending, hasPendingFor, noteKey, currentBase, flush, localNote, resolveLocalNoteId, retrySafe, queuedCreates } from "../offline/outbox";
 import { captureWriteContext, scopeKey } from "../offline/writeScope";
@@ -628,6 +630,13 @@ export async function getPerson(id: string, after?: string): Promise<PersonPage>
   return (await req(`/people/${encodeURIComponent(id)}${qs({ after })}`)).json();
 }
 
+export async function listPeopleConversations(query = ""): Promise<PeopleConversationsPage> {
+  return (await req(`/people/conversations${qs({ q: query.trim() || undefined })}`)).json();
+}
+export async function getPersonConversations(id: string, before?: number): Promise<PersonConversationsPage> {
+  return (await req(`/people/${encodeURIComponent(id)}/conversations${qs({ before })}`)).json();
+}
+
 export async function changePersonIdentity(id: string, change: { kind: "email" | "matrix"; value: string; action: "add" | "remove"; ifUpdatedAt: string }): Promise<{ person: PersonSummary }> {
   // Deliberate identity decisions need a current review. Never queue or force
   // them after an uncertain write; a refreshed person record resolves it.
@@ -667,6 +676,11 @@ export async function updateSchema(tag: string, patch: SchemaPatch): Promise<Tag
 /** Owner-only: clear a deleted property's values (dry-run by default). Never queued offline. */
 export async function removePropertyValues(tag: string, field: string, opts: { dryRun?: boolean; limit?: number } = {}): Promise<RemoveValuesResult> {
   return (await req(`/schemas/${encodeURIComponent(tag)}/fields/${encodeURIComponent(field)}/remove-values`, { method: "POST", body: JSON.stringify({ dryRun: opts.dryRun !== false, ...(opts.limit ? { limit: opts.limit } : {}) }), cache: "no-store" })).json();
+}
+
+/** Owner-only: convert a property to a type its stored values are not (dry-run by default). Never queued offline. */
+export async function convertProperty(tag: string, field: string, opts: { to: string; dryRun?: boolean; limit?: number; label?: string }): Promise<ConvertPropertyResult> {
+  return (await req(`/schemas/${encodeURIComponent(tag)}/fields/${encodeURIComponent(field)}/convert`, { method: "POST", body: JSON.stringify({ to: opts.to, dryRun: opts.dryRun !== false, ...(opts.limit ? { limit: opts.limit } : {}), ...(opts.label ? { label: opts.label } : {}) }), cache: "no-store" })).json();
 }
 
 /** Owner-only: can this tag start a new database? (The schema write with `requireNew` enforces it again.) */

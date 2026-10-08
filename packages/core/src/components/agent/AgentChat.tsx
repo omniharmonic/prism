@@ -42,6 +42,7 @@ import { requestReceipt, clearRequestReceipt } from "../../lib/agent/requestRece
 import { AgentApiError } from "../../lib/agent/sessions";
 import { useAgentConversation, agentErrorText } from "../../lib/agent/useAgentConversation";
 import { turnProblem, type TurnView } from "../../lib/agent/sessionReducer";
+import { queuedText } from "../../lib/agent/failure";
 import type { AgentClient, AgentProfile, AgentPermissionMode, AgentSessionSummary } from "../../lib/agent/sessions";
 import { useIsMobile } from "../../app/hooks/useIsMobile";
 import { useUIStore } from "../../app/stores/ui";
@@ -764,8 +765,15 @@ export function Conversation({
         </div>
       )}
       <div className="prism-agent-turns mx-auto flex flex-col">
-        {conv.state.turns.map((t) => (
-          <TurnBlock key={t.id} turn={t} compact={compact} />
+        {conv.state.turns.map((t, i) => (
+          <TurnBlock
+            key={t.id}
+            turn={t}
+            compact={compact}
+            // Try again = the same prompt as a NEW turn. Only for the last turn, and never
+            // when context was attached to it (a re-send would silently drop that context).
+            onRetry={i === conv.state.turns.length - 1 && !running && !sending && !t.context?.length && t.prompt ? () => void submit(t.prompt) : undefined}
+          />
         ))}
         {creating && (
           <>
@@ -836,7 +844,7 @@ function Thinking({ label }: { label: string }) {
   );
 }
 
-function TurnBlock({ turn, compact }: { turn: TurnView; compact?: boolean }) {
+function TurnBlock({ turn, compact, onRetry }: { turn: TurnView; compact?: boolean; onRetry?: () => void }) {
   const [snapshotPreview, setSnapshotPreview] = useState<AgentContextSnapshot | null>(null);
   const running = isRunning(turn.status);
   const problem = turnProblem(turn);
@@ -878,7 +886,7 @@ function TurnBlock({ turn, compact }: { turn: TurnView; compact?: boolean }) {
             ))}
         </div>
       )}
-      {running && !hasText && <Thinking label={turn.status === "queued" ? turn.reason ? `Queued — ${turn.reason}` : "Queued…" : "Thinking…"} />}
+      {running && !hasText && <Thinking label={turn.status === "queued" ? queuedText(turn) : turn.retrying ? "Signing in again on the server…" : "Thinking…"} />}
       {turn.touched.length > 0 && (
         <div className="flex flex-wrap gap-1.5">
           {turn.touched.map((x) => (
@@ -887,8 +895,13 @@ function TurnBlock({ turn, compact }: { turn: TurnView; compact?: boolean }) {
         </div>
       )}
       {problem && (
-        <div className="text-xs" style={{ color: problem.tone === "error" ? "var(--color-danger)" : "var(--text-muted)" }} data-testid="agent-turn-problem">
-          {problem.text}
+        <div className="flex flex-wrap items-center gap-2 text-xs" role={problem.tone === "error" ? "alert" : "status"} style={{ color: problem.tone === "error" ? "var(--color-danger)" : "var(--text-muted)" }} data-testid="agent-turn-problem" data-error-code={problem.code}>
+          <span>{problem.text}</span>
+          {problem.retry && onRetry && (
+            <button type="button" className="focus-ring min-h-8 rounded-lg border border-[var(--glass-border)] px-2" style={{ color: "var(--text-primary)" }} onClick={onRetry} data-testid="agent-turn-retry">
+              Try again
+            </button>
+          )}
         </div>
       )}
       {!running && (cost || dur) && (

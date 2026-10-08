@@ -27,7 +27,7 @@ import type {
 } from "../../data/CollabSharing";
 import { useAgentChatStore } from "../../lib/agent/chatStore";
 import { PersonAvatar } from "../sharing/PersonAvatar";
-import { PublishHandoff } from "../sharing/PublishHandoff";
+import { PublishFlow } from "../sharing/PublishHandoff";
 
 import { formatDate as fmtDate } from "../../lib/datetime/format";
 type Props = { noteId: string; sharing: CollabSharing; onClose: () => void };
@@ -109,7 +109,6 @@ function SharingDocument({ noteId, sharing, onClose }: Props) {
     null,
   );
   const [tag, setTag] = useState("");
-  const [password, setPassword] = useState("");
   const [publishedCount, setPublishedCount] = useState<number | null>(null);
   const admin = !!access && access.canManageLinks !== false;
   const levels = access?.allowedLevels ?? LEVELS;
@@ -163,16 +162,19 @@ function SharingDocument({ noteId, sharing, onClose }: Props) {
     });
   }, [refresh]);
 
-  async function run(action: () => Promise<void>, fallback: string) {
-    if (lock.current || !alive.current) return;
+  /** Resolves true when the action went through (false: refused, failed — the error is shown — or another one is running). */
+  async function run(action: () => Promise<void>, fallback: string): Promise<boolean> {
+    if (lock.current || !alive.current) return false;
     lock.current = true;
     setBusy(true);
     setError("");
     setNotice("");
     try {
       await action();
+      return true;
     } catch (e) {
       if (alive.current) setError(errorText(e, fallback));
+      return false;
     } finally {
       lock.current = false;
       if (alive.current) setBusy(false);
@@ -824,105 +826,41 @@ function SharingDocument({ noteId, sharing, onClose }: Props) {
                         ))}
                       </select>
                     </label>
-                    {/* NP-CO-08: per-tag explanation, preview, hand-off to the studio. */}
-                    <PublishHandoff tag={tag} noteId={noteId} published={!!currentPub} onClose={onClose} />
-                    <p className="share-card">
-                      Publishing includes{" "}
-                      {publishedCount === null
-                        ? "eligible notes"
-                        : `${publishedCount} notes`}{" "}
-                      tagged #{tag}, including future notes with this tag.
-                      Review the collection before publishing.
-                    </p>
-                    {publications === null ? (
-                      <p role="status">Loading published sites…</p>
-                    ) : (
-                      <>
-                        {currentPub && (
-                          <div className="share-card share-stack">
-                            <h3>
-                              Published
-                              {currentPub.passwordRequired
-                                ? " · password required"
-                                : ""}
-                            </h3>
-                            {copyButton(currentPub.url, "published site")}
-                          </div>
-                        )}
-                        <label>
-                          {currentPub
-                            ? "Update site password"
-                            : "Site password (optional)"}
-                          <input
-                            type="password"
-                            autoComplete="new-password"
-                            value={password}
-                            onChange={(e) => setPassword(e.target.value)}
-                            placeholder={
-                              currentPub?.passwordRequired
-                                ? "Enter a new password"
-                                : "Leave empty for public access"
-                            }
-                          />
-                        </label>
-                        <div className="share-row">
-                          {currentPub ? (
-                            <>
-                              <button
-                                type="button"
-                                disabled={!sharing.setPublishPassword}
-                                onClick={() =>
-                                  void run(async () => {
-                                    await sharing.setPublishPassword!(
-                                      tag,
-                                      password || null,
-                                    );
-                                    if (!alive.current) return;
-                                    setPassword("");
-                                    await loadPublications();
-                                  }, "Couldn't update the site password.")
-                                }
-                              >
-                                {password ? "Set password" : "Remove password"}
-                              </button>
-                              <button
-                                type="button"
-                                disabled={!sharing.unpublishTag}
-                                onClick={() =>
-                                  void run(async () => {
-                                    await sharing.unpublishTag!(tag);
-                                    await loadPublications();
-                                  }, "Couldn't unpublish this collection.")
-                                }
-                              >
-                                Unpublish
-                              </button>
-                            </>
-                          ) : (
-                            <button
-                              type="button"
-                              className="share-primary"
-                              disabled={!sharing.publishTag}
-                              onClick={() =>
-                                void run(async () => {
-                                  const result = await sharing.publishTag!(
-                                    tag,
-                                    { password: password || undefined },
-                                  );
-                                  if (!alive.current) return;
-                                  setPublishedCount(result.count);
-                                  setPassword("");
-                                  await loadPublications();
-                                }, "Couldn't publish this collection.")
-                              }
-                            >
-                              <Globe size={16} />
-                              Publish collection
-                            </button>
-                          )}
-                        </div>
-                      </>
-                    )}
+                    {/* NP-CO-08: one flow — per-tag explanation, preview, state + address, confirm, password, studio. */}
+                    <PublishFlow
+                      tag={tag}
+                      noteId={noteId}
+                      site={publications === null ? undefined : currentPub ?? null}
+                      busy={busy}
+                      publishedCount={currentPub ? publishedCount : null}
+                      copyButton={copyButton}
+                      canPublish={!!sharing.publishTag}
+                      canUnpublish={!!sharing.unpublishTag}
+                      canSetPassword={!!sharing.setPublishPassword}
+                      onClose={onClose}
+                      onPublish={(pw) =>
+                        run(async () => {
+                          const result = await sharing.publishTag!(tag, { password: pw });
+                          if (!alive.current) return;
+                          setPublishedCount(result.count);
+                          await loadPublications();
+                        }, "Couldn't publish this collection.")
+                      }
+                      onUnpublish={() =>
+                        run(async () => {
+                          await sharing.unpublishTag!(tag);
+                          if (!alive.current) return;
+                          setPublishedCount(null);
+                          await loadPublications();
+                        }, "Couldn't unpublish this collection.")
+                      }
+                      onSetPassword={(pw) =>
+                        run(async () => {
+                          await sharing.setPublishPassword!(tag, pw);
+                          await loadPublications();
+                        }, "Couldn't update the site password.")
+                      }
+                    />
                   </>
                 )}
               </div>

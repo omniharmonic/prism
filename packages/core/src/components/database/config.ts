@@ -198,6 +198,67 @@ export function duplicateView(config: DatabaseConfig, viewId: string): { config:
   return { config: { ...config, views }, id: copy.id };
 }
 
+/**
+ * A property moved to another key (a type conversion, NP-DB-11): every view keeps
+ * showing, sorting, grouping and filtering by it. Null when nothing names `from`.
+ */
+export function renamePropertyKey(config: DatabaseConfig, from: string, to: string): DatabaseConfig | null {
+  let changed = false;
+  const key = (k: string) => (k === from ? ((changed = true), to) : k);
+  const conds = <T extends { key: string }>(list: T[]) => list.map((c) => ({ ...c, key: key(c.key) }));
+  const views = config.views.map((v) => {
+    const next: DatabaseView = { ...v };
+    if (v.visible) next.visible = [...new Set(v.visible.map(key))];
+    if (v.sort) next.sort = conds(v.sort);
+    if (v.groupBy) next.groupBy = key(v.groupBy);
+    if (v.dateKey) next.dateKey = key(v.dateKey);
+    if (v.coverKey) next.coverKey = key(v.coverKey);
+    if (v.widths && Object.prototype.hasOwnProperty.call(v.widths, from)) {
+      const { [from]: w, ...rest } = v.widths;
+      next.widths = { ...rest, [to]: w! };
+      changed = true;
+    }
+    if (v.filter) {
+      next.filter = {
+        ...v.filter,
+        conditions: conds(v.filter.conditions),
+        ...(v.filter.groups ? { groups: v.filter.groups.map((g) => ({ ...g, conditions: conds(g.conditions) })) } : {}),
+      };
+    }
+    return next;
+  });
+  return changed ? { ...config, views } : null;
+}
+
+/**
+ * A converted property keeps working in EVERY database over its tag without any
+ * note being rewritten: where a field says it was converted from another one
+ * (`convertedFrom`, set by the server), is shown, and that other field is now
+ * deleted, a saved view that still names the old key is READ as naming the new
+ * one — columns, widths, sort, group, date / cover key and filters. The next time
+ * somebody saves the view it is stored that way. Restoring the old property (it
+ * is no longer deleted) ends the aliasing. Chains (a → a_number → a_number_text)
+ * are followed.
+ */
+export function followConversions(config: DatabaseConfig, schemas: Record<string, { fields: Record<string, { convertedFrom?: string; deleted?: boolean }> } | undefined>): DatabaseConfig {
+  let out = config;
+  for (let pass = 0; pass < 4; pass++) {
+    let moved = false;
+    for (const tag of config.source.tags) {
+      const fields = schemas[tag]?.fields;
+      if (!fields) continue;
+      for (const [key, f] of Object.entries(fields)) {
+        const from = f.convertedFrom;
+        if (!from || f.deleted || from === key || !Object.prototype.hasOwnProperty.call(fields, from) || fields[from]!.deleted !== true) continue;
+        const next = renamePropertyKey(out, from, key);
+        if (next) { out = next; moved = true; }
+      }
+    }
+    if (!moved) break;
+  }
+  return out;
+}
+
 /** Move a view tab to `to` (an index in the current order). */
 export function moveView(config: DatabaseConfig, viewId: string, to: number): DatabaseConfig | null {
   const from = config.views.findIndex((v) => v.id === viewId);

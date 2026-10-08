@@ -197,7 +197,91 @@ test("Publish tab: a published collection is managed in the studio; without a da
   await expect(dialog.getByRole("group", { name: "Pages you can see tagged prism" })).toHaveCount(0);
   await expect(dialog.getByRole("button", { name: "Review and publish in the Publishing studio" })).toBeVisible();
   await dialog.getByRole("button", { name: "Publish collection", exact: true }).click();
+  await dialog.getByRole("group", { name: "Confirm publishing" }).getByRole("button", { name: "Publish site" }).click();
   await expect(dialog.getByRole("button", { name: "Manage this site in the Publishing studio" })).toBeVisible();
+});
+
+// NP-CO-08, every clause in ONE flow inside Share → Publish: reachable from Share; says publishing is per tag;
+// previews what would go out (counted as this viewer sees it); publishes and unpublishes behind a confirm step
+// that says what happens; shows the public address; the password option; and the Publishing studio — the same
+// site, the same operation — is one click away in every state (no dead end).
+test("NP-CO-08: Share → Publish is one flow — per tag, preview, confirm, address, password, unpublish, studio", async ({ page }) => {
+  await open(page, "?tree");
+  const dialog = page.getByRole("dialog", { name: "Share document" });
+  const calls = (kind: string) => page.evaluate((kind) => (window as any).prismSharingFixture.calls.filter((c: any) => c.kind === kind).map((c: any) => c.args), kind);
+  await dialog.getByRole("tab", { name: "Publish", exact: true }).click(); // reachable from Share
+  await expect(dialog).toContainText("Prism publishes by tag, not page by page"); // per tag
+  await expect(dialog.getByRole("group", { name: "Pages you can see tagged prism" })).toContainText("12 pages you can see with #prism"); // preview
+  const site = dialog.getByRole("group", { name: "Site for prism" });
+  await expect(site).toHaveAttribute("data-published", "false");
+  await expect(site).toContainText("Not published");
+  await expect(dialog.getByRole("button", { name: "Review and publish in the Publishing studio" })).toBeVisible();
+
+  // Publish: nothing happens until the confirm step, which names what goes out and who can read it.
+  await site.getByRole("button", { name: "Publish collection", exact: true }).click();
+  const confirm = site.getByRole("group", { name: "Confirm publishing" });
+  await expect(confirm).toContainText("Publish #prism to the web?");
+  await expect(confirm).toContainText("the 12 pages you can see with #prism (private pages are left out)");
+  await expect(confirm).toContainText("by anyone who has the address,");
+  await expect(confirm.getByRole("button", { name: "Cancel" })).toBeFocused();
+  expect(await calls("publish")).toEqual([]);
+  await confirm.getByRole("button", { name: "Cancel" }).click();
+  await expect(confirm).toHaveCount(0);
+  expect(await calls("publish")).toEqual([]);
+  // With a password the confirm step says so. A failed publish says so and leaves the step open: try again.
+  await site.getByLabel("Site password (optional)").fill("fixture-password");
+  await site.getByRole("button", { name: "Publish collection", exact: true }).click();
+  await expect(confirm).toContainText("by anyone who has the address and the password you set");
+  await page.evaluate(() => { (window as any).prismSharingFixture.failNext = true; });
+  await confirm.getByRole("button", { name: "Publish site" }).click();
+  await expect(dialog.getByRole("alert")).toBeVisible();
+  await expect(site).toHaveAttribute("data-published", "false");
+  await expect(confirm).toBeVisible();
+  await confirm.getByRole("button", { name: "Publish site" }).click();
+  expect(await calls("publish")).toEqual([["prism", { password: "fixture-password" }], ["prism", { password: "fixture-password" }]]);
+
+  // Published: the public address (a link + copy), what is live, who can read it.
+  await expect(site).toHaveAttribute("data-published", "true");
+  await expect(site.getByRole("heading", { name: "Published · password required" })).toBeVisible();
+  await expect(site.getByRole("link", { name: "https://prism.example.test/wiki" })).toHaveAttribute("href", "https://prism.example.test/wiki");
+  await expect(site.getByRole("link", { name: "https://prism.example.test/wiki" })).toHaveAttribute("target", "_blank");
+  await expect(site.getByRole("button", { name: "Copy published site" })).toBeVisible();
+  await expect(site).toContainText("2 pages are live. Readers need the site password.");
+  await expect(site.getByLabel("Update site password")).toHaveValue(""); // the password is not kept in the form
+  await expect(dialog.getByRole("button", { name: "Manage this site in the Publishing studio" })).toBeVisible();
+  // Password option: remove it, set another.
+  await site.getByRole("button", { name: "Remove password" }).click();
+  await expect(site.getByRole("heading", { name: "Published", exact: true })).toBeVisible();
+  await expect(site).toContainText("Anyone with the address can read it.");
+  await site.getByLabel("Update site password").fill("second-password");
+  await site.getByRole("button", { name: "Set password" }).click();
+  await expect(site.getByRole("heading", { name: "Published · password required" })).toBeVisible();
+  expect(await calls("password")).toEqual([["prism", null], ["prism", "second-password"]]);
+
+  // Unpublish: confirm first (and it says what stops working); Cancel changes nothing.
+  await site.getByRole("button", { name: "Unpublish", exact: true }).click();
+  const off = site.getByRole("group", { name: "Confirm unpublishing" });
+  await expect(off).toContainText("The address above stops working for everyone at once. The pages themselves are not changed");
+  await off.getByRole("button", { name: "Cancel" }).click();
+  expect(await calls("unpublish")).toEqual([]);
+  await expect(site).toHaveAttribute("data-published", "true");
+  await site.getByRole("button", { name: "Unpublish", exact: true }).click();
+  await off.getByRole("button", { name: "Unpublish site" }).click();
+  expect(await calls("unpublish")).toEqual([["prism"]]);
+  await expect(site).toHaveAttribute("data-published", "false");
+  await expect(site.getByRole("button", { name: "Publish collection", exact: true })).toBeVisible(); // back at the start: no dead end
+
+  // The studio is the same site: the hand-off opens it and closes the dialog.
+  await dialog.getByRole("button", { name: "Review and publish in the Publishing studio" }).click();
+  await expect(dialog).toHaveCount(0);
+  expect(await page.evaluate(() => { const s = (window as any).prismSharingUI.getState(); return s.openTabs.find((t: any) => t.id === s.activeTabId)?.noteId; })).toBe("network");
+  // Phone: the whole flow fits.
+  await page.setViewportSize({ width: 390, height: 844 });
+  await open(page, "?tree");
+  await page.getByRole("tab", { name: "Publish", exact: true }).click();
+  await page.getByRole("button", { name: "Publish collection", exact: true }).click();
+  await expect(page.getByRole("group", { name: "Confirm publishing" })).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
 });
 
 test("publishing and peer sync retain their independent controls and failure recovery", async ({
@@ -212,10 +296,12 @@ test("publishing and peer sync retain their independent controls and failure rec
   await page
     .getByRole("button", { name: "Publish collection", exact: true })
     .click();
+  await page.getByRole("button", { name: "Publish site", exact: true }).click();
   await expect(
     page.getByText("Published · password required", { exact: true }),
   ).toBeVisible();
   await page.getByRole("button", { name: "Unpublish", exact: true }).click();
+  await page.getByRole("button", { name: "Unpublish site", exact: true }).click();
   await expect(
     page.getByRole("button", { name: "Publish collection", exact: true }),
   ).toBeVisible();

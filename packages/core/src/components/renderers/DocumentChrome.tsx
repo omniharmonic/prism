@@ -1,7 +1,7 @@
 import React, { Suspense, useEffect, useRef, useState } from "react";
 import "./DocumentChrome.css";
 import { ChevronRight, Smile, ImagePlus } from "lucide-react";
-import { PageBreadcrumbs } from "../pages/Breadcrumbs";
+import { PageBreadcrumbs, useHeaderBreadcrumbPath } from "../pages/Breadcrumbs";
 export { PageCover } from "./PageCover";
 import type { EmojiClickData, EmojiStyle, Theme } from "emoji-picker-react";
 
@@ -336,7 +336,9 @@ export function PageHeader({
   const parts = stripped.split("/").filter(Boolean);
   const baseName = parts.length ? withoutExtension(parts[parts.length - 1]) : "";
   const name = baseName || fallbackName || "Untitled";
-  const crumbs = parts.slice(0, -1);
+  // NP-PG-06: the header bar shows this page's breadcrumb when it hosts it — then not here too.
+  const inBar = useHeaderBreadcrumbPath();
+  const crumbs = inBar && inBar === path ? [] : parts.slice(0, -1);
   return (
     <header className="document-page-header">
       {(crumbs.length > 0 || presence) && (

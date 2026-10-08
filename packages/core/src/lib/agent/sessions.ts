@@ -74,6 +74,8 @@ export interface AgentTurn {
   pid: number | null;
   exit_code: number | null;
   error: string | null;
+  /** Stable failure class of a failed turn (null: it did not fail; absent on older servers). */
+  errorCode?: string | null;
   cost_usd: number | null;
   started_at: number | null;
   ended_at: number | null;
@@ -103,8 +105,12 @@ export type AgentEvent =
   | { t: "tool_use"; id: string; name: string; input: unknown }
   | { t: "tool_result"; toolUseId: string; ok: boolean; summary: string }
   | { t: "note_touched"; noteId: string; op: "create" | "update" | "delete" }
-  | { t: "status"; status: AgentTurnStatus; reason?: string }
-  | { t: "result"; ok: boolean; costUsd?: number; durationMs: number; numTurns?: number; error?: string };
+  /** The CLI reporting a failure of its own (sign-in, usage limit) — never assistant text. */
+  | { t: "error"; code: string; text: string }
+  /** `errorCode`: why it failed (terminal) or why it waits ("memory"); `retry`: the server is
+   *  re-spawning once after a sign-in failure — forget the failed attempt. */
+  | { t: "status"; status: AgentTurnStatus; reason?: string; errorCode?: string; retry?: boolean }
+  | { t: "result"; ok: boolean; costUsd?: number; durationMs: number; numTurns?: number; error?: string; errorCode?: string };
 
 /** One SSE message: a persisted event carries `seq`; a live `text_delta` does not. */
 export type AgentStreamMessage = AgentEvent & { turnId: string; seq?: number };

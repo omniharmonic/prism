@@ -80,6 +80,40 @@ if (location.search.includes("limited"))
         "low",
       ]),
     );
+// `?resolved`: the shell has the server's read-time people resolution (Messages → People).
+// NO graph link exists in this mode — like the production vault. The fake answers the two
+// routes the way the server does: by the address / handle on the person, never by a name.
+const resolved = location.search.includes("resolved");
+const DAY = 86_400_000;
+const NOW = Date.UTC(2026, 9, 6, 12, 0);
+const resolvedPeople = [
+  { id: "mira", name: "Mira Chen", keys: ["mira@example.test", "@telegram_11:example.test"] },
+  { id: "rowan", name: "Rowan Ellis", keys: ["@signal_22:example.test"] },
+  { id: "river", name: "River Stone", keys: [] as string[] },
+  { id: "sam", name: "Sam Okafor", keys: ["sam@example.test"] },
+];
+const resolvedItems = [
+  { id: "group", kind: "chat", platform: "telegram", title: "Workshop planning", at: NOW, keys: ["@telegram_11:example.test", "@signal_22:example.test"], members: 3 },
+  { id: "mail-agenda", kind: "email", platform: "email", title: "Saturday workshop agenda", at: NOW - 1_800_000, keys: ["mira@example.test"], unread: true },
+  { id: "direct", kind: "chat", platform: "signal", title: "Rowan Ellis", at: NOW - DAY, keys: ["@signal_22:example.test"] },
+  { id: "meet-review", kind: "meeting", platform: "meeting", title: "Budget review", at: NOW - 6 * DAY, keys: ["mira@example.test"] },
+  // Names River in its participants only — a display name associates nobody.
+  { id: "social", kind: "chat", platform: "whatsapp", title: "River Stone", at: NOW, keys: [] as string[] },
+] as const;
+if (resolved) {
+  notes.length = 0;
+  notes.push(
+    note("group", "Messages/Workshop planning", ["message-thread", "action-required"], { platform: "telegram", matrixRoomId: "!group:example.test", lastMessageAt: NOW, participants: ["Mira Chen", "Rowan Ellis", "You"] }),
+    note("direct", "Messages/Rowan Ellis", ["message-thread", "informational"], { platform: "signal", matrixRoomId: "!direct:example.test", lastMessageAt: NOW - DAY, participants: ["Rowan Ellis"] }),
+    note("social", "Messages/River Stone", ["message-thread", "social"], { platform: "whatsapp", lastMessageAt: NOW, participants: ["River Stone"] }),
+    { ...note("mail-agenda", "Email/Saturday workshop agenda", ["email", "action-required"], { type: "email", subject: "Saturday workshop agenda", from: "Mira Chen <mira@example.test>", to: "owner@example.test", isUnread: true, lastMessageAt: NOW - 1_800_000, source: "proton-bridge", messageId: "agenda@example.test" }), content: "# Saturday workshop agenda\n\n**From:** Mira Chen <mira@example.test>\n**To:** owner@example.test\n**Date:** 2026-10-06 14:42\n\n---\n\nI’ve attached the updated agenda. Could you confirm which section you’ll facilitate?" },
+  );
+  notes[0].content = "# Workshop planning\n\n[2026-10-06 12:00] Mira Chen: I added the agenda for Saturday.";
+  notes[1].content = "# Rowan Ellis\n\n[2026-10-05 09:18] Rowan Ellis: Thanks, see you then.";
+  notes[2].content = "# River Stone\n\n[2026-10-06 12:00] River Stone: Great, see you then.";
+}
+const itemsFor = (keys: readonly string[]) => resolvedItems.filter((item) => item.keys.some((key) => keys.includes(key)));
+const wireItem = ({ keys: _keys, ...item }: (typeof resolvedItems)[number]) => item;
 let audience = "owner@example.test";
 const fixtureScope = () =>
   JSON.stringify([
@@ -98,6 +132,8 @@ const controls = {
   },
   denyThreads: location.search.includes("failed"),
   sends: [] as Array<{ room: string; body: string; key?: string }>,
+  peopleReads: 0,
+  graphReads: 0,
 };
 Object.assign(window, {
   prismInboxFixture: controls,
@@ -156,9 +192,30 @@ const vault = {
       .filter((note) => !filters?.tag || note.tags?.includes(filters.tag))
       .slice(0, filters?.limit);
   },
+  ...(resolved
+    ? {
+        listPeopleConversations: async (query = "") => {
+          controls.peopleReads++;
+          if (controls.denyPeople || audience !== "owner@example.test") throw new Error("People unavailable");
+          const q = query.trim().toLowerCase();
+          const rows = resolvedPeople.map((p) => {
+            const items = itemsFor(p.keys);
+            return { id: p.id, name: p.name, platforms: [...new Set(items.map((i) => i.platform))], lastMessageAt: Math.max(0, ...items.map((i) => i.at)), count: items.length, unread: items.filter((i) => "unread" in i && i.unread).length, hasIdentity: p.keys.length > 0 };
+          });
+          const shown = rows.filter((r) => (r.count > 0 || q) && (!q || r.name.toLowerCase().includes(q))).sort((a, b) => b.lastMessageAt - a.lastMessageAt);
+          return { people: shown, total: rows.filter((r) => r.count > 0).length, withoutIdentity: rows.filter((r) => !r.count && !r.hasIdentity).length };
+        },
+        getPersonConversations: async (id: string) => {
+          const p = resolvedPeople.find((x) => x.id === id);
+          if (!p || audience !== "owner@example.test") throw new Error("not_found");
+          const items = itemsFor(p.keys).slice().sort((a, b) => b.at - a.at);
+          return { person: { id: p.id, name: p.name, hasIdentity: p.keys.length > 0, identityKinds: [], count: items.length, platforms: [...new Set(items.map((i) => i.platform))] }, items: items.map(wireItem), next: null };
+        },
+      }
+    : {}),
   getGraph: async () => ({
     nodes: [],
-    edges: [
+    edges: resolved ? (controls.graphReads++, []) : [
       ...(location.search.includes("identity") ? identityEdges : []),
       { source: "morgan", target: "direct", relationship: "messages-with" },
       { source: "direct", target: "morgan", relationship: "email-from" },

@@ -11,3 +11,10 @@
 .publish-handoff .publish-studio-button { display: flex; align-items: center; gap: 8px; width: 100%; min-height: 44px; padding: 0 12px; border-radius: 10px; border: 1px solid var(--glass-border); background: var(--surface-hover); color: var(--text-primary); font-size: 13px; font-weight: 600; text-align: left; }
 .publish-handoff .publish-studio-button span { flex: 1; min-width: 0; }
 .publish-handoff .publish-studio-button:hover { border-color: var(--color-accent); }
+/* The site's state, its address, and the confirm step of publish / unpublish. */
+.publish-state h3 { margin: 0; font-size: 13px; }
+.publish-state p { margin: 0; font-size: 13px; line-height: 1.5; color: var(--text-secondary); }
+.publish-state .publish-url { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.publish-state .publish-url a { min-width: 0; overflow-wrap: anywhere; color: var(--text-accent); }
+.publish-confirm { display: flex; flex-direction: column; gap: 10px; padding-top: 10px; border-top: 1px solid var(--glass-border); }
+.publish-handoff > .publish-preview-note { margin: 0; font-size: 12px; color: var(--text-muted); }

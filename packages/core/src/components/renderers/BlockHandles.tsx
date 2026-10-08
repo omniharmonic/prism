@@ -40,7 +40,7 @@ import { noteLinkTitle } from "../../lib/wikilinks";
 import { inferContentType } from "../../lib/schemas/content-types";
 import { isTrashed, protectionReason } from "../../lib/pages/model";
 import type { Note } from "../../lib/types";
-import "./ShortcutSheet"; // installs ⌘/ → keyboard shortcuts
+import "./ShortcutSheet"; // installs ⌘⇧/, ? and (outside a block) ⌘/ → keyboard shortcuts
 import "../../lib/tiptap/toggleAll"; // installs ⌘⌥T → expand / collapse all toggles (view state only)
 
 interface Hovered {
@@ -78,7 +78,7 @@ function scrollBounds(dom: HTMLElement): { top: number; bottom: number } {
  * `+` (insert below, opens the slash menu) and `⋮⋮` (drag to reorder, click for
  * the block menu). On touch / phone widths there is no hover: the handle follows
  * the block holding the caret and a tap opens the same menu (with Move up/down).
- * Keyboard: Alt/Option+Shift+↑/↓ moves the block (BlockKeymap), ⌘⇧/ / Ctrl+Shift+/
+ * Keyboard: Alt/Option+Shift+↑/↓ moves the block (BlockKeymap), ⌘/ / Ctrl+/
  * opens the block menu for the block holding the caret.
  *
  * Wave 4A: the menu is searchable and gains Copy, Move to (another page),
@@ -241,12 +241,13 @@ export function BlockHandles({ editor, enabled, notes, noteId, onComment }: Bloc
     return () => { editor.off("transaction", onUpdate); editor.off("selectionUpdate", onSelection); };
   }, [editor, place, coarse]);
 
-  // ⌘⇧/ (Ctrl+Shift+/) opens the block menu for the caret's block. (⌘/ alone is the shortcut sheet.)
+  // ⌘/ (Ctrl+/) opens the block menu for the caret's block, as in Notion (NP-ED-06). Taken here in the capture
+  // phase and prevented, so the shortcut sheet (⌘⇧/, ?, or ⌘/ OUTSIDE a block) does not also open.
   useEffect(() => {
     if (!enabled) return;
     const onKey = (event: KeyboardEvent) => {
       if (!viewReady(editor) || !editor.view.dom.contains(event.target as Node)) return;
-      if ((event.code !== "Slash" && event.key !== "/" && event.key !== "?") || !(isMac ? event.metaKey : event.ctrlKey) || event.altKey || !event.shiftKey) return;
+      if ((event.code !== "Slash" && event.key !== "/") || !(isMac ? event.metaKey : event.ctrlKey) || event.altKey || event.shiftKey) return;
       const block = topBlockAt(editor.state.doc, editor.state.selection.from);
       const at = block && place(block.index);
       if (!at) return;

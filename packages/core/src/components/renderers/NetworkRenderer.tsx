@@ -11,6 +11,7 @@ import { WorkspacePanel } from "./network/WorkspacePanel";
 import { WorkspacesPanel } from "./network/WorkspacesPanel";
 import { ServerPanel } from "./network/ServerPanel";
 import { GovernancePanel } from "./network/governance/GovernancePanel";
+import { useNetworkTabRequest } from "../../lib/network/tabRequest";
 
 /**
  * Workspace settings — a top-level virtual tab (not a per-note dialog) where the
@@ -83,6 +84,13 @@ export default function NetworkRenderer(_props: RendererProps) {
   // Resolve against permitted tabs during render, so a removed capability never
   // leaves its management panel mounted while an effect catches up.
   const activeTab = tabs.some((item) => item.id === tab) ? tab : tabs[0]?.id;
+  // "Manage connections" in Settings asks for a tab; taken once the role (and so the tab list) is known.
+  const requested = useNetworkTabRequest((s) => s.tab);
+  useEffect(() => {
+    if (!requested || role === null) return;
+    setTab(requested);
+    useNetworkTabRequest.getState().clear();
+  }, [requested, role]);
 
   // Role still loading (web, first paint before getViewer resolves).
   if (role === null) {

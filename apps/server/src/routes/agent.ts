@@ -80,6 +80,7 @@ import {
   listTurns,
   turnEvents,
   finalText,
+  turnErrorCode,
   turnActivity,
   startTurn,
   getTurn,
@@ -416,7 +417,7 @@ function sessionDetail(s: SessionRow) {
     const turnLast = evs.length ? evs[evs.length - 1]!.seq : null;
     if (turnLast != null && turnLast > lastSeq) lastSeq = turnLast;
     const { context_json: _context, ...row } = t;
-    return { ...row, context: turnContext(t), finalText: finalText(evs), ...turnActivity(evs), firstSeq, lastSeq: turnLast };
+    return { ...row, context: turnContext(t), finalText: finalText(evs), ...turnActivity(evs), errorCode: turnErrorCode(t, evs), firstSeq, lastSeq: turnLast };
   });
   return { session: s, turns, lastSeq };
 }

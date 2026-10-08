@@ -211,3 +211,95 @@ for (const appearance of ["phone", "dark"])
       for (const b of await bar(page).getByRole("button").all()) expect((await b.boundingBox())!.height).toBeGreaterThanOrEqual(44);
     await page.screenshot({ path: info.outputPath(`page-properties-${appearance}.png`) });
   });
+
+// ── pinned properties (the tag's `pinned` hint: what every page with the tag shows at the top) ──
+
+const keysShown = (page: Page) => bar(page).locator(".db-prop[data-property-key]").evaluateAll((els) => els.map((e) => (e as HTMLElement).dataset.propertyKey));
+
+test("owner pins properties: exact order, empty ones as placeholders, the rest behind “more”, kept after a reload", async ({ page }, info) => {
+  await page.goto("/e2e-fixtures/databases.html?open=page");
+  const props = bar(page);
+  await expect(props.getByRole("button", { name: "Status: in-progress" })).toBeVisible();
+  expect(await keysShown(page)).toEqual(["status", "priority", "owner"]); // no hint → every filled property
+  await expect(props.getByRole("button", { name: /more propert/ })).toHaveCount(0);
+
+  await props.getByRole("button", { name: "Customize…" }).click();
+  const dialog = page.getByRole("dialog", { name: "Customize properties" });
+  await expect(dialog).toContainText("Show at the top of every “task” page");
+  await dialog.getByLabel("Show Priority at top").check();
+  await dialog.getByLabel("Show Due at top").check();
+  await expect.poll(() => keysShown(page)).toEqual(["priority", "due"]);
+  expect((await state(page)).schemaWrites).toEqual([{ tag: "task", patch: { pinned: ["priority"] } }, { tag: "task", patch: { pinned: ["priority", "due"] } }]);
+
+  // Keyboard reorder: Due above Priority.
+  const up = dialog.getByRole("button", { name: "Move Due up" });
+  await up.focus();
+  await page.keyboard.press("Enter");
+  await expect.poll(() => keysShown(page)).toEqual(["due", "priority"]);
+  expect((await state(page)).schemaWrites.at(-1)).toEqual({ tag: "task", patch: { pinned: ["due", "priority"] } });
+  await expect(dialog.getByRole("button", { name: "Move Due up" })).toHaveAttribute("aria-disabled", "true");
+  await page.screenshot({ path: info.outputPath("pinned-customize.png") });
+  await page.keyboard.press("Escape");
+  await expect(dialog).toHaveCount(0);
+
+  // The empty pinned property is a quiet placeholder that can be filled in place.
+  await expect(props.getByRole("button", { name: "Due: Empty" })).toBeVisible();
+  await expect(props.getByRole("button", { name: "Status: in-progress" })).toHaveCount(0);
+  const more = props.getByRole("button", { name: "2 more properties" });
+  await expect(more).toHaveAttribute("aria-expanded", "false");
+  await more.click();
+  await expect(more).toHaveAttribute("aria-expanded", "true");
+  expect(await keysShown(page)).toEqual(["due", "priority", "status", "owner"]);
+  expect((await state(page)).writes).toEqual([]); // choosing a layout writes no page
+  await page.screenshot({ path: info.outputPath("pinned-bar.png") });
+
+  await page.reload();
+  await expect(bar(page).getByRole("button", { name: "Due: Empty" })).toBeVisible();
+  expect(await keysShown(page)).toEqual(["due", "priority"]);
+  await expect(bar(page).getByRole("button", { name: "2 more properties" })).toHaveAttribute("aria-expanded", "false");
+
+  // Filling the placeholder is an ordinary property write.
+  await bar(page).getByRole("button", { name: "Due: Empty" }).click();
+  const due = page.getByLabel("Due", { exact: true });
+  await due.fill("2026-11-02");
+  await due.press("Enter");
+  await expect(bar(page).getByRole("button", { name: /^Due: Nov 2/ })).toBeVisible();
+  expect((await state(page)).writes.at(-1)).toEqual({ id: "page", set: { due: "2026-11-02" }, expect: { due: null } });
+
+  // Back to "every filled property".
+  await bar(page).getByRole("button", { name: "Customize…" }).click();
+  await page.getByRole("dialog", { name: "Customize properties" }).getByRole("button", { name: "Show every filled property instead" }).click();
+  await expect.poll(() => keysShown(page)).toEqual(["status", "priority", "due", "owner"]);
+  expect((await state(page)).schemaWrites.at(-1)).toEqual({ tag: "task", patch: { pinned: [] } });
+});
+
+test("a non-owner sees the pinned layout and no Customize", async ({ page }) => {
+  await page.goto("/e2e-fixtures/databases.html?open=page");
+  await bar(page).getByRole("button", { name: "Customize…" }).click();
+  const dialog = page.getByRole("dialog", { name: "Customize properties" });
+  await dialog.getByLabel("Show Due at top").check();
+  await dialog.getByLabel("Show Status at top").check();
+  await expect.poll(() => keysShown(page)).toEqual(["due", "status"]);
+
+  await page.goto("/e2e-fixtures/databases.html?open=page&viewer"); // same tab: the fixture keeps its schemas
+  const props = bar(page);
+  await expect(props.getByRole("button", { name: "Due: Empty" })).toBeVisible(); // the placeholder, with nothing to edit
+  await expect(props.getByRole("button", { name: "Add property" })).toHaveCount(0);
+  expect(await keysShown(page)).toEqual(["due", "status"]);
+  await expect(page.getByRole("button", { name: "Customize…" })).toHaveCount(0);
+  await props.getByRole("button", { name: "2 more properties" }).click();
+  expect(await keysShown(page)).toEqual(["due", "status", "priority", "owner"]);
+});
+
+test("pinned layout on a phone: 44px targets, no sideways scroll", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/e2e-fixtures/databases.html?open=page");
+  await bar(page).getByRole("button", { name: "Customize…" }).click();
+  const dialog = page.getByRole("dialog", { name: "Customize properties" });
+  await dialog.getByLabel("Show Due at top").check();
+  await dialog.getByLabel("Show Priority at top").check();
+  for (const b of await dialog.getByRole("button").all()) expect((await b.boundingBox())!.height).toBeGreaterThanOrEqual(44);
+  await page.keyboard.press("Escape");
+  for (const b of await bar(page).getByRole("button").all()) expect((await b.boundingBox())!.height).toBeGreaterThanOrEqual(44);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+});

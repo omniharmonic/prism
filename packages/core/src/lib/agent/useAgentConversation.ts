@@ -16,6 +16,7 @@ import type { AgentContextSnapshot } from "./contextSnapshots";
 import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { agentKeys } from "../../data/AgentClientContext";
+import { failureOfError } from "./failure";
 import { AgentApiError, isTerminalTurn, type AgentClient, type AgentContextRecord, type AgentSession, type AgentStreamMessage } from "./sessions";
 import {
   activeTurn,
@@ -44,22 +45,21 @@ function reducer(s: ConversationState, a: Action): ConversationState {
 
 export type ConnectionState = "idle" | "connecting" | "live" | "reconnecting";
 
-/** Friendly copy for API failures. */
+/** Friendly copy for API failures (one helper for every entry point: `lib/agent/failure.ts`). */
 export function agentErrorText(e: unknown): string {
   if (e instanceof AgentApiError) {
     if (e.code === "budget_exceeded") return "This session reached its spending cap. Start a new session to keep going.";
     if (e.code === "daily_budget_exceeded") return "You've reached today's agent budget. It resets at midnight.";
     if (e.code === "profile_unavailable") return "That agent profile is turned off on the server. Start a new session with another profile.";
     // NP-PG-09: a Read-write (vault) session does not run on a locked page.
-    if (e.code === "locked") return e.detail ?? "This page is locked — unlock it or use a read-only session.";
-    if (e.code === "busy") return "The agent queue is full right now. Try again in a minute.";
+    if (e.code === "locked" || e.code === "busy") return failureOfError(e).text;
     if (e.code === "unavailable") return "The agent is temporarily unavailable. Try again shortly.";
     if (e.status === 403) return e.detail ? `Not allowed: ${e.detail}` : "You don't have access to the agent.";
     if (e.status === 404) return "This session no longer exists.";
     if (e.code === "conflict") return e.detail ?? "A turn is already running.";
     return e.detail || e.message;
   }
-  if (e instanceof TypeError) return "Can't reach the Prism server. Check your connection.";
+  if (e instanceof TypeError) return failureOfError(e).text;
   return e instanceof Error ? e.message : String(e);
 }
 

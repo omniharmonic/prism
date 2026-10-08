@@ -13,6 +13,7 @@ import { useAgentClient, useAgentAvailable, useAgentLimits, agentKeys } from "..
 import { openAgentChat } from "../../lib/agent/chatStore";
 import type { AgentSessionSummary } from "../../lib/agent/sessions";
 import { formatAgentCost } from "../../lib/agent/cost";
+import { failureOfRun } from "../../lib/agent/failure";
 import { useLivePollMs } from "../../lib/events/channelStatus";
 import { useHostServices } from "../../data/HostServicesContext";
 import { queueSkillRun, updateSkillNote, validateStructuredBlock, type SkillPatch } from "../../lib/host/vaultOps";
@@ -602,8 +603,10 @@ function DispatchCard({ dispatch, onCancel, onOpen }: { dispatch: AgentDispatch;
             </div>
           )}
           {dispatch.error && (
-            <div className="rounded p-2 text-xs" style={{ background: "rgba(239,68,68,0.1)", color: "var(--color-danger)" }}>
-              {dispatch.error}
+            <div className="rounded p-2 text-xs" style={{ background: "rgba(239,68,68,0.1)", color: "var(--color-danger)" }} data-testid="agent-dispatch-problem">
+              {/* What happened + what to do, then the server's own record of it. */}
+              {(failureOfRun({ status: "error", error: dispatch.error }) ?? { text: dispatch.error }).text}
+              <div className="mt-1 opacity-70">{dispatch.error}</div>
             </div>
           )}
           {/* Web monitor: the run's full report is the dispatch note — open it. */}

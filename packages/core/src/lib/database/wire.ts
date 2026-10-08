@@ -64,3 +64,37 @@ export interface RemoveValuesResult {
   failed?: number;
   remaining?: number;
 }
+
+/**
+ * `POST /api/schemas/:tag/fields/:field/convert` (owner-only; dry-run by default):
+ * "change type" across vault types as a conversion into a NEW field.
+ */
+export interface ConvertPropertyResult {
+  dryRun: boolean;
+  tag: string;
+  /** The property being converted, and the type it becomes. */
+  field: string;
+  to: string;
+  /** The key of the new field the values are converted into. */
+  target: string;
+  /** Pages whose value converts. */
+  total: number;
+  /** Pages whose value has no faithful reading as the new type: left on the old property. */
+  uncoercible: number;
+  /** A few of those values (≤ 5, shortened), for the owner to judge. */
+  samples: string[];
+  /** Pages holding a value that are left alone, by reason. */
+  skipped: { trashed: number; shared: number; system: number; ingest: number; private: number };
+  truncated: boolean;
+  /** A select-like target: how many options the converted values give it. */
+  options?: number;
+  /** Convertible pages not yet written. */
+  pending: number;
+  converted?: number;
+  conflicts?: number;
+  failed?: number;
+  /** A write run stopped before every page was done: ask again (each run re-lists). */
+  more?: boolean;
+  /** The new property is shown and the old one is marked deleted. */
+  done?: boolean;
+}

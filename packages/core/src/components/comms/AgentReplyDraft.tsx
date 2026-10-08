@@ -11,6 +11,8 @@ import {
   agentErrorText,
   useAgentConversation,
 } from "../../lib/agent/useAgentConversation";
+import { turnProblem } from "../../lib/agent/sessionReducer";
+import { queuedText } from "../../lib/agent/failure";
 import { useScopedDraft } from "../../lib/drafts/useScopedDraft";
 import {
   clearRequestReceipt,
@@ -410,6 +412,8 @@ function DraftSession({
           .join("\n\n")
           .trim()
       : "";
+  // Why the last run did not finish (null: it did, or it is still going).
+  const failure = turn ? turnProblem(turn) : null;
   let pendingRequest: {
     prompt: string;
     requestId: string;
@@ -428,6 +432,7 @@ function DraftSession({
   } catch {
     /* A damaged receipt must block generation, never silently retry. */
   }
+  const savedRequest = pendingRequest;
   const accepted =
     !!pendingRequest &&
     turn?.prompt === pendingRequest.prompt &&
@@ -456,15 +461,25 @@ function DraftSession({
       );
   }
 
-  async function generate() {
+  /** `fresh`: Try again after a FAILED run — the same instructions as a NEW request
+   *  (the failed turn's receipt is dropped; replaying it would hand back the failure). */
+  async function generate(fresh = false) {
     if (inFlight.current || busy || disabled || !sessionValid) return;
+    const pendingRequest = fresh ? null : savedRequest;
+    if (fresh && savedRequest)
+      clearRequestReceipt(
+        scope,
+        `${identity}:${sessionId}`,
+        savedRequest.requestId,
+        `${namespace}-turn`,
+      );
     inFlight.current = true;
     setSending(true);
     setCopied(false);
     setLocalError(null);
     try {
       await verifySession();
-      if (pending.text && !pendingRequest)
+      if (pending.text && !pendingRequest && !fresh)
         throw Error(
           "The saved request is unreadable. Keep your instructions and reopen the agent conversation before retrying.",
         );
@@ -643,8 +658,9 @@ function DraftSession({
       )}
       {conversation.active && (
         <p role="status">
-          The agent is preparing your {summary ? "summary" : "reply"}. You can
-          close this panel and return later.
+          {conversation.active.status === "queued" && queuedText(conversation.active) !== "Queued…"
+            ? `${queuedText(conversation.active)} You can close this panel and return later.`
+            : `The agent is preparing your ${summary ? "summary" : "reply"}. You can close this panel and return later.`}
         </p>
       )}
       <div className="prism-agent-draft-actions">
@@ -676,11 +692,25 @@ function DraftSession({
         )}
       </div>
       {turn && !conversation.active && !output && !conversation.loading && (
-        <p role="status">
+        <p role={turn.status === "done" || failure?.tone === "muted" ? "status" : "alert"} data-testid="agent-draft-outcome" data-error-code={failure?.code}>
           {turn.status === "done"
             ? `No ${summary ? "summary" : "reply"} text was saved. Revise your instructions to try again.`
-            : `The ${summary ? "summary" : "draft"} ended with status “${turn.status}”. Your original reply is unchanged.`}
+            : // What happened and what to do — never a bare status word (lib/agent/failure.ts).
+              `${failure?.text ?? "The agent did not finish."} ${summary ? "No summary was saved; your instructions are kept." : "Your original reply is unchanged."}`}
         </p>
+      )}
+      {turn && failure?.retry && accepted && !conversation.active && !output && !conversation.loading && (
+        <div className="prism-agent-draft-actions">
+          <button
+            className="prism-agent-draft-primary"
+            type="button"
+            data-testid="agent-draft-retry"
+            onClick={() => void generate(true)}
+            disabled={busy || disabled || !sessionValid}
+          >
+            Try again
+          </button>
+        </div>
       )}
       {output && (
         <section

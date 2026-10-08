@@ -190,6 +190,81 @@ test("relation chips open pages; the reverse property edits the forward side", a
   expect((await writes(page)).every((w: any) => w.id !== "atlas")).toBe(true);
 });
 
+// NP-DB-12, every clause, from BOTH sides: the picker searches the target database; related pages are chips that
+// open them; the reverse property on the target is optional (the owner names it, renames it, or stops showing it);
+// and an edit made on either side is what the other side shows (one relation, never two that can disagree).
+test("NP-DB-12: a relation edited from either side shows on both; the reverse property is optional", async ({ page }) => {
+  const tabs = () => page.evaluate(() => (window as any).prismUI.getState().openTabs.map((t: any) => t.noteId) as string[]);
+  const bar = page.getByRole("group", { name: "Page properties" });
+  const tasks = page.getByRole("list", { name: "Tasks" });
+
+  // Forward side: on a task, the picker searches #initiative pages only; the choice is a chip.
+  await page.goto("/e2e-fixtures/databases.html?open=t3");
+  await bar.getByRole("button", { name: "Add property" }).click();
+  await page.getByRole("dialog", { name: "Add a property" }).getByRole("button", { name: /Project/ }).click();
+  const picker = page.getByRole("dialog", { name: "Link Project" });
+  await picker.getByRole("textbox", { name: "Search pages" }).fill("bea");
+  await expect(picker.getByRole("option")).toHaveCount(1);
+  await picker.getByRole("option", { name: /Beacon/ }).click();
+  await expect(bar.getByRole("button", { name: "Project: Beacon" })).toBeVisible();
+
+  // …and the target page shows it under the reverse property, as a chip that opens the task.
+  await page.goto("/e2e-fixtures/databases.html?open=beacon");
+  await expect(tasks.getByRole("listitem")).toHaveCount(1);
+  await expect(tasks.getByRole("button", { name: "Refine onboarding copy" })).toBeVisible();
+  await tasks.getByRole("button", { name: "Refine onboarding copy" }).click();
+  await expect.poll(tabs).toContain("t3");
+
+  // Reverse side: add one task and remove another from the TARGET page.
+  await page.goto("/e2e-fixtures/databases.html?open=beacon");
+  await page.getByRole("button", { name: "Edit Tasks" }).click();
+  const reverse = page.getByRole("dialog", { name: "Edit Tasks" });
+  await reverse.getByRole("textbox", { name: "Search #task pages" }).fill("pricing");
+  await reverse.getByRole("option", { name: /Update pricing page/ }).click();
+  await expect(tasks.getByRole("listitem")).toHaveCount(2);
+  await reverse.getByRole("textbox", { name: "Search #task pages" }).fill("");
+  await reverse.getByRole("option", { name: /Refine onboarding copy/ }).click();
+  await expect(tasks.getByRole("listitem")).toHaveCount(1);
+  await expect(tasks.getByRole("button", { name: "Update pricing page" })).toBeVisible();
+  // Stored on ONE side only: the linking pages changed, the target page did not.
+  const stored = await page.evaluate(() => Object.fromEntries((window as any).dbFixture.notes().filter((n: any) => ["t3", "t5", "beacon"].includes(n.id)).map((n: any) => [n.id, n.metadata.project ?? null])));
+  expect(stored).toEqual({ t3: null, t5: "[[Projects/Beacon]]", beacon: null });
+  expect((await writes(page)).every((w: any) => w.id !== "beacon")).toBe(true);
+
+  // …and the forward side shows what the reverse side did: on the pages, and in the database table.
+  await page.goto("/e2e-fixtures/databases.html?open=t5");
+  await expect(bar.getByRole("button", { name: "Project: Beacon" })).toBeVisible();
+  await page.goto("/e2e-fixtures/databases.html?open=t3");
+  await expect(bar.getByRole("button", { name: "Project: Beacon" })).toHaveCount(0);
+  await page.goto("/e2e-fixtures/databases.html");
+  await showColumns(page, ["Project"]);
+  await expect(row(page, "Update pricing page").locator(".db-link-chip", { hasText: "Beacon" })).toBeVisible();
+  await expect(row(page, "Refine onboarding copy").locator(".db-link-chip", { hasText: "Beacon" })).toHaveCount(0);
+
+  // Optional: the owner renames the reverse property, or stops showing it — on the relation itself.
+  await page.goto("/e2e-fixtures/databases.html?open=t5");
+  await bar.getByRole("button", { name: "Edit property Project" }).click();
+  const editor = page.getByRole("dialog", { name: "Edit property Project" });
+  const name = editor.getByLabel("Reverse property name");
+  await expect(name).toHaveValue("Tasks");
+  await name.fill("Work items");
+  await editor.getByRole("button", { name: "Show on target pages" }).click();
+  expect((await fx(page)).schemaWrites.at(-1)).toEqual({ tag: "task", patch: { ui: { project: { reverseLabel: "Work items" } } } });
+  await page.goto("/e2e-fixtures/databases.html?open=beacon");
+  await expect(page.getByRole("list", { name: "Work items" }).getByRole("listitem")).toHaveCount(1);
+  await expect(tasks).toHaveCount(0);
+  await page.goto("/e2e-fixtures/databases.html?open=t5");
+  await bar.getByRole("button", { name: "Edit property Project" }).click();
+  await name.fill("");
+  await editor.getByRole("button", { name: "Stop showing it" }).click();
+  await page.goto("/e2e-fixtures/databases.html?open=beacon");
+  await expect(bar.getByRole("button", { name: /^Stage: / })).toBeVisible();
+  await expect(page.getByRole("list", { name: "Work items" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: /^Edit (Tasks|Work items)$/ })).toHaveCount(0);
+  // The relation itself is untouched by hiding its reverse side.
+  expect(await page.evaluate(() => (window as any).dbFixture.notes().find((n: any) => n.id === "t5").metadata.project)).toBe("[[Projects/Beacon]]");
+});
+
 test("the reverse property is read-only for someone who cannot edit the page", async ({ page }) => {
   await page.goto("/e2e-fixtures/databases.html?open=atlas&viewer");
   await expect(page.getByRole("list", { name: "Tasks" }).getByRole("listitem")).toHaveCount(2);
@@ -254,8 +329,9 @@ test("property management from the table: retype preview, number format, delete 
   await editor.getByLabel("Number format").selectOption("percent");
   await expect(row(page, "Atlas").getByRole("button", { name: "Budget: 12,500%" })).toBeVisible();
   expect((await notes()).find((n: any) => n.id === "atlas").metadata.budget).toBe(12500);
-  // A number can never become text: the option is disabled and explained.
-  await expect(editor.getByLabel("Property type").locator('option[value="text"]')).toHaveJSProperty("disabled", true);
+  // Number → text is not a presentation of a number: it is offered as a conversion (its own test below), never a silent retype.
+  await expect(editor.getByLabel("Property type").locator('option[value="text"]')).toHaveText("Text — converts the values");
+  await expect(editor.getByLabel("Property type").locator('option[value="text"]')).toHaveJSProperty("disabled", false);
   await editor.getByRole("button", { name: "Close" }).click();
   // Editing the formatted number still edits the raw value.
   await row(page, "Atlas").getByRole("button", { name: "Budget: 12,500%" }).click();
@@ -291,6 +367,107 @@ test("property management from the table: retype preview, number format, delete 
   await page.getByRole("dialog", { name: "Edit property Stage" }).getByRole("button", { name: "Restore property" }).click();
   await expect(table.getByRole("button", { name: "Stage", exact: true })).toBeVisible();
   await expect(row(page, "Atlas").getByRole("button", { name: "Stage: Empty" })).toBeVisible();
+});
+
+// NP-DB-11 — "change type with a conversion preview" for a type the stored values are NOT (text → number):
+// a dry run says what converts and what cannot; converting writes a NEW field (the vault type is never changed
+// in place), the column keeps its name, place and sort, the old property is deleted-but-restorable with its
+// values intact, and restoring it is the undo.
+test("NP-DB-11: change type converts the values — preview, new field, old property kept and restorable", async ({ page }) => {
+  await page.goto("/e2e-fixtures/databases.html?open=db2&convert");
+  const table = page.getByRole("table", { name: "All initiatives" });
+  const notes = () => page.evaluate(() => (window as any).dbFixture.notes() as any[]);
+  const meta = async (id: string) => (await notes()).find((n: any) => n.id === id).metadata;
+  const schemaFields = () => page.evaluate(() => (window as any).dbFixture.schemas().initiative.fields as Record<string, any>);
+  await expect(row(page, "Atlas").getByRole("button", { name: "Score: 12", exact: true })).toBeVisible();
+  await table.getByRole("button", { name: "Score", exact: true }).click();
+  await page.getByRole("menuitem", { name: "Edit property…" }).click();
+  const editor = page.getByRole("dialog", { name: "Edit property Score" });
+  const type = editor.getByLabel("Property type");
+  await expect(type).toHaveValue("text");
+  await expect(type.locator('option[value="number"]')).toHaveText("Number — converts the values");
+
+  // The preview is the server's dry run: counts, the values that cannot convert, and what happens to the old ones.
+  await type.selectOption("number");
+  const preview = editor.getByRole("group", { name: "Conversion preview" });
+  await expect(preview.getByRole("status")).toContainText("2 of 3 values will convert to Number. 1 cannot be read as Number and will be left out of the new property.");
+  await expect(preview.getByRole("list", { name: "Values that cannot be converted" })).toHaveText("n/a");
+  await expect(preview).toContainText("Nothing is overwritten");
+  expect((await fx(page)).conversions).toEqual([{ tag: "initiative", field: "score", to: "number", dryRun: true }]);
+  expect((await meta("atlas")).score_number).toBeUndefined(); // a dry run writes nothing
+  expect(Object.keys(await schemaFields())).not.toContain("score_number");
+  // Cancel leaves everything as it was.
+  await preview.getByRole("button", { name: "Cancel" }).click();
+  await expect(type).toHaveValue("text");
+  await expect(preview).toHaveCount(0);
+
+  // Convert, in chunks (the server says `more`; the client asks again).
+  await page.evaluate(() => { (window as any).dbFixture.convertChunk = 1; });
+  await type.selectOption("number");
+  await preview.getByRole("button", { name: "Convert to Number" }).click();
+  const done = editor.getByRole("region", { name: "Type changed" });
+  await expect(done.getByRole("status")).toContainText("“Score” is now Number. 2 values were converted. 1 could not be read as Number and was left out.");
+  expect(((await fx(page)).conversions as any[]).filter((c) => !c.dryRun)).toHaveLength(2);
+  // Stored: numbers in the NEW field, the old text untouched, the vault type of the old field unchanged.
+  expect([(await meta("atlas")).score_number, (await meta("beacon")).score_number, (await meta("comet")).score_number]).toEqual([12, 1250, undefined]);
+  expect([(await meta("atlas")).score, (await meta("beacon")).score, (await meta("comet")).score]).toEqual(["12", "1,250", "n/a"]);
+  const fields = await schemaFields();
+  expect(fields.score).toMatchObject({ type: "string", deleted: true });
+  expect(fields.score_number).toMatchObject({ type: "number", kind: "number", label: "Score", deleted: false, convertedFrom: "score" });
+  await done.getByRole("button", { name: "Done" }).click();
+
+  // What the user sees: ONE "Score" column, in the same place, now a number (formatted, right editor), still sorted by it.
+  await expect(table.getByRole("button", { name: "Score", exact: true })).toHaveCount(1);
+  await expect(row(page, "Beacon").getByRole("button", { name: "Score: 1,250", exact: true })).toBeVisible();
+  await expect(row(page, "Comet").getByRole("button", { name: "Score: Empty" })).toBeVisible();
+  await expect(table.locator("tbody tr[data-row-id]").first()).toContainText("Beacon"); // 1250 > 12 as NUMBERS ("12" > "1,250" as text)
+  // No database note was rewritten for that: a saved view that names the old key is READ under the new one.
+  expect((await meta("db2")).prism_database.views[0].visible).toEqual(["stage", "budget", "score"]);
+  expect(((await fx(page)).writes as any[]).filter((w: any) => w.metadata?.prism_database)).toEqual([]);
+  expect(((await fx(page)).queries as any[]).at(-1).sort).toEqual([{ key: "score_number", dir: "desc" }]);
+  await row(page, "Atlas").getByRole("button", { name: "Score: 12", exact: true }).click();
+  const input = page.getByRole("textbox", { name: "Score" });
+  await input.fill("40");
+  await input.press("Enter");
+  expect((await writes(page)).at(-1)).toEqual({ id: "atlas", set: { score_number: 40 }, expect: { score_number: 12 } });
+
+  // EVERY database over the tag follows — here another one whose view shows, sorts and filters by the property.
+  await page.goto("/e2e-fixtures/databases.html?open=db3&convert");
+  const board = page.getByRole("table", { name: "By score" });
+  await expect(board.getByRole("button", { name: "Score", exact: true })).toHaveCount(1);
+  await expect(board.locator("tbody tr[data-row-id]")).toHaveCount(2); // the filter (has a value) reads the NEW field: Comet has no number
+  await expect(board.locator("tbody tr[data-row-id]").first()).toContainText("Beacon");
+  await expect(row(page, "Atlas").getByRole("button", { name: "Score: 40", exact: true })).toBeVisible();
+  expect(((await fx(page)).queries as any[]).at(-1)).toMatchObject({ sort: [{ key: "score_number", dir: "desc" }], filter: { conditions: [{ key: "score_number", op: "exists" }] } });
+  // Saving a view stores it under the new key from then on.
+  await showColumns(page, ["Stage"]);
+  await expect.poll(async () => (await meta("db3")).prism_database.views[0]).toMatchObject({ visible: ["score_number", "stage"], sort: [{ key: "score_number", dir: "desc" }] });
+
+  // Undo: the old property is under "Deleted properties" with every value, and can be restored.
+  await page.goto("/e2e-fixtures/databases.html?open=db2&convert");
+  await page.getByRole("button", { name: "View settings" }).click();
+  await page.getByRole("dialog", { name: "View settings" }).getByRole("button", { name: "Manage deleted property Score" }).click();
+  await page.getByRole("dialog", { name: "Edit property Score" }).getByRole("button", { name: "Restore property" }).click();
+  expect((await schemaFields()).score.deleted).toBe(false);
+  expect((await meta("comet")).score).toBe("n/a");
+});
+
+// NP-DB-11 — a select made by conversion has its options: the distinct converted values, first seen first.
+test("NP-DB-11: a number converted to a select gets its option list", async ({ page }) => {
+  await page.goto("/e2e-fixtures/databases.html?open=db2");
+  const table = page.getByRole("table", { name: "All initiatives" });
+  await table.getByRole("button", { name: "Budget", exact: true }).click();
+  await page.getByRole("menuitem", { name: "Edit property…" }).click();
+  const editor = page.getByRole("dialog", { name: "Edit property Budget" });
+  await editor.getByLabel("Property type").selectOption("select");
+  await editor.getByRole("group", { name: "Conversion preview" }).getByRole("button", { name: "Convert to Select" }).click();
+  await editor.getByRole("region", { name: "Type changed" }).getByRole("button", { name: "Done" }).click();
+  await expect(row(page, "Atlas").locator('.db-opt[data-value="12500"]')).toBeVisible();
+  // The picker offers both values as options (not an empty list).
+  await row(page, "Atlas").getByRole("button", { name: /^Budget: / }).click();
+  const picker = page.getByRole("dialog", { name: "Choose Budget" });
+  await expect(picker.locator('.db-opt[data-value="800.5"]')).toBeVisible(); // the OTHER page's value is offered
+  expect(await page.evaluate(() => (window as any).dbFixture.schemas().initiative.fields.budget_select)).toMatchObject({ kind: "select", optionOrder: ["12500", "800.5"] });
 });
 
 // NP-DB-08 — a date holds a day, a time, or a range; status options are grouped. Editors, filters and sorts all understand them.

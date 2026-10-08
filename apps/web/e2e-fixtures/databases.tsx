@@ -21,6 +21,7 @@ import { applyTheme } from "../../../packages/core/src/app/stores/settings";
 import { NewContentMenu } from "../../../packages/core/src/components/navigation/NewContentMenu";
 import { OpenAsDatabaseButton } from "../../../packages/core/src/components/database/OpenAsDatabaseButton";
 import { CsvNewDatabaseDialog } from "../../../packages/core/src/components/database/Csv";
+import { coerceToKind, conversionKey, humanize, needsConversion, optionColor, sampleText, VAULT_TYPE_FOR_KIND, type ConvertPropertyResult, type PropertyKind } from "@prism/core/database";
 import { coerceCsvValue, compatibleKinds, mergeSchemaFields, parseCsv, runQuery, type CsvImportRequest, type CsvImportResponse, type CsvImportRow, type PropertyBatchResult, type QuerySpec, type SchemaMap, type SchemaPatch } from "@prism/core/database";
 
 const params = new URLSearchParams(location.search);
@@ -125,6 +126,18 @@ if (params.has("free-dates") && !persisted) {
   db.metadata = { ...db.metadata, prism_database: { ...(db.metadata!.prism_database as object), source: { tags: ["work"] } } };
 }
 if (params.has("free-dates")) schemas.work = schemas.task!;
+if (params.has("convert")) {
+  // A text property whose values mostly read as numbers (NP-DB-11: change type → conversion).
+  if (!persistedSchemas) schemas.initiative!.fields.score = { type: "string", label: "Score" };
+  if (!persisted) {
+    for (const [id, score] of [["atlas", "12"], ["beacon", "1,250"]] as const) { const n = notes.find((x) => x.id === id)!; n.metadata = { ...n.metadata, score }; }
+    notes.push({ id: "comet", path: "Projects/Comet", content: "", tags: ["initiative"], metadata: { title: "Comet", stage: "planning", score: "n/a" }, createdAt: at, updatedAt: at });
+    const db2 = notes.find((n) => n.id === "db2")!;
+    db2.metadata = { ...db2.metadata, prism_database: { version: 1, source: { tags: ["initiative"] }, views: [{ id: "table", name: "All initiatives", type: "table", visible: ["stage", "budget", "score"], sort: [{ key: "score", dir: "desc" }] }] } };
+    // Another database over the same tag: its saved view names the property too.
+    notes.push({ id: "db3", path: "Projects/Scoreboard", content: "", tags: [], metadata: { prism_type: "database", title: "Scoreboard", prism_database: { version: 1, source: { tags: ["initiative"] }, views: [{ id: "table", name: "By score", type: "table", visible: ["score"], sort: [{ key: "score", dir: "desc" }], filter: { match: "all", conditions: [{ key: "score", op: "exists" }] } }] } }, createdAt: at, updatedAt: at });
+  }
+}
 if (params.has("ingest")) {
   // Rows an integration owns: a calendar-synced page, a ClickUp task, an ingest `source`.
   notes.push(task("g1", "Synced standup", { status: "todo", due: day(1), calendarEventId: "ev-1" }));
@@ -158,6 +171,9 @@ const controls = {
   batches: [] as unknown[],
   imports: [] as unknown[],
   removals: [] as unknown[],
+  conversions: [] as unknown[],
+  /** convert handles at most this many pages per request (then says `more`). */
+  convertChunk: 0,
   schemas: () => schemas,
   /** Order of the calls a "CSV → new database" makes. */
   log: [] as string[],
@@ -248,7 +264,10 @@ if (!legacy) {
       }
     }
     for (const [k, h] of Object.entries(patch.ui ?? {})) merged.fields[k] = { ...(merged.fields[k] ?? {}), ...h, ...(h.colors ? { colors: { ...(merged.fields[k]?.colors ?? {}), ...h.colors } } : {}) };
-    schemas[tag] = { description: patch.description ?? cur.description, fields: merged.fields };
+    // `pinned` (what a page shows at the top): a property of the tag, ≤ 12, replaced whole; [] clears.
+    for (const k of patch.pinned ?? []) if (!merged.fields[k]) throw new VaultRequestError(400, `PUT /schemas failed: 400 ${JSON.stringify({ error: "bad_request", detail: `pinned: “${k}” is not a property of this tag` })}`);
+    const pinned = patch.pinned ?? cur.pinned;
+    schemas[tag] = { description: patch.description ?? cur.description, fields: merged.fields, ...(pinned?.length ? { pinned } : {}) };
     sessionStorage.setItem("db-fixture-schemas", JSON.stringify(schemas));
     return clone(schemas[tag]!);
   };
@@ -270,6 +289,46 @@ if (!legacy) {
     const batch = controls.removeChunk ? targets.slice(0, controls.removeChunk) : targets;
     for (const n of batch) { const meta = { ...(n.metadata ?? {}) }; delete meta[field]; n.metadata = meta; bump(n); }
     return { dryRun: false, ...base, removed: batch.length, conflicts: 0, failed: 0, remaining: targets.length - batch.length, more: batch.length < targets.length };
+  };
+  // POST /api/schemas/:tag/fields/:field/convert, as the server answers it (same pure coercion).
+  client.convertProperty = async (tag, field, opts): Promise<ConvertPropertyResult> => {
+    const dryRun = opts.dryRun !== false;
+    const to = opts.to as PropertyKind;
+    controls.conversions.push({ tag, field, to, dryRun });
+    if (INGEST.has(tag)) throw new VaultRequestError(409, `POST /schemas failed: 409 ${JSON.stringify({ error: "protected_tag", detail: "properties of an ingested tag are never converted" })}`);
+    const src = schemas[tag]?.fields[field];
+    if (!src) throw new VaultRequestError(404, "POST /schemas failed: 404 not_found");
+    if (!needsConversion(src.type, to)) throw new VaultRequestError(409, `POST /schemas failed: 409 ${JSON.stringify({ error: "compatible_kind" })}`);
+    const target = conversionKey(field, to);
+    const holding = notes.filter((n) => n.tags?.includes(tag) && n.metadata?.[field] !== undefined && n.metadata?.[field] !== null);
+    const live = holding.filter((n) => !n.tags!.includes("prism-trashed"));
+    const todo: Array<{ n: Note; value: unknown }> = [];
+    const samples: string[] = [];
+    let total = 0;
+    let uncoercible = 0;
+    for (const n of live) {
+      const out = coerceToKind(n.metadata![field], to);
+      if (!out.ok) { uncoercible++; if (samples.length < 5) samples.push(sampleText(n.metadata![field])); continue; }
+      total++;
+      if (JSON.stringify(n.metadata![target] ?? null) !== JSON.stringify(out.value)) todo.push({ n, value: out.value });
+    }
+    const base = { tag, field, to, target, total, uncoercible, samples, skipped: { trashed: holding.length - live.length, shared: 0, system: 0, ingest: 0, private: 0 }, truncated: false };
+    if (dryRun) return { dryRun: true, ...base, pending: todo.length };
+    const fields = schemas[tag]!.fields;
+    if (!fields[target]) fields[target] = { type: VAULT_TYPE_FOR_KIND[to], kind: to, label: opts.label ?? src.label ?? humanize(field), deleted: true, convertedFrom: field };
+    const batch = controls.convertChunk ? todo.slice(0, controls.convertChunk) : todo;
+    for (const { n, value } of batch) { n.metadata = { ...(n.metadata ?? {}), [target]: value }; bump(n); }
+    const done = batch.length === todo.length;
+    if (done) {
+      fields[target] = { ...fields[target]!, deleted: false };
+      if (to === "select" || to === "status" || to === "multi_select") {
+        const options = [...new Set(live.map((n) => coerceToKind(n.metadata![field], to)).flatMap((o) => (o.ok ? (Array.isArray(o.value) ? o.value : [o.value]) : [])) as string[])].slice(0, 100);
+        fields[target] = { ...fields[target]!, colors: Object.fromEntries(options.map((o) => [o, optionColor(o)])), optionOrder: options };
+      }
+      fields[field] = { ...src, deleted: true };
+    }
+    sessionStorage.setItem("db-fixture-schemas", JSON.stringify(schemas));
+    return { dryRun: false, ...base, converted: batch.length, conflicts: 0, failed: 0, pending: todo.length - batch.length, more: !done, done };
   };
   client.queryNotes = async (spec: QuerySpec) => {
     controls.queries.push(clone(spec));

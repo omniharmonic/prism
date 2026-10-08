@@ -138,11 +138,23 @@ const noSleep = async () => {};
   const h = createHttpHostServices({ fetch: s.fetch, sleep: noSleep });
   await assert.rejects(h.agentText("x"), (e: unknown) => e instanceof HostServiceError && e.code === "agent_failed" && e.detail === "boom");
   ok("agentText: a failed run rejects with agent_failed");
+  // w16: the server's failure class rides on the error, and every caller's copy comes from one helper.
+  const auth = fakeServer((c) => (c.path === "/api/agent/dispatch" ? json(200, { id: "d2", status: "queued" }) : json(200, { status: "error", error: "Claude sign-in failed on the server (claude exited 1).", errorCode: "auth" })));
+  const failure = await createHttpHostServices({ fetch: auth.fetch, sleep: noSleep }).agentText("x").then(() => null, (e: unknown) => e);
+  assert.ok(failure instanceof HostServiceError && failure.errorCode === "auth");
+  assert.equal(hostServiceErrorText(failure), "The agent couldn’t sign in on the server. Try again; if it keeps happening, sign in to Claude on the server (run `claude` there and log in).");
+  assert.equal(hostServiceErrorText(new HostServiceError(502, "agent_failed", "boom")), "The agent hit an error: boom. Try again.", "an older server (no errorCode): still a sentence");
+  assert.equal(hostServiceErrorText(new HostServiceError(502, "agent_failed", "claude exited 1", "usage_limit")), "Claude’s usage limit was reached. Try again later.");
+  assert.equal(hostServiceErrorText(new TypeError("Failed to fetch")), "Can’t reach the Prism server. Check your connection, then try again.");
+  ok("agentText: errorCode → the shared failure copy (auth, usage limit, offline, unknown)");
 }
 {
   const s = fakeServer((c) => (c.path === "/api/agent/dispatch" ? json(200, { id: "d3", status: "queued" }) : c.path.endsWith("/cancel") ? json(200, { ok: true }) : json(200, { status: "queued" })));
   const h = createHttpHostServices({ fetch: s.fetch, sleep: noSleep });
-  await assert.rejects(h.agentText("x", { timeoutMs: -1 }), (e: unknown) => e instanceof HostServiceError && e.code === "agent_timeout");
+  await assert.rejects(h.agentText("x", { timeoutMs: -1 }), (e: unknown) => e instanceof HostServiceError && e.code === "agent_timeout" && e.errorCode === "timeout");
+  const waiting = fakeServer((c) => (c.path === "/api/agent/dispatch" ? json(200, { id: "d4", status: "queued" }) : c.path.endsWith("/cancel") ? json(200, { ok: true }) : json(200, { status: "queued", queuedReason: "memory pressure: 9% free (< 15%)", queuedCode: "memory" })));
+  const gaveUp = await createHttpHostServices({ fetch: waiting.fetch, sleep: noSleep }).agentText("x", { timeoutMs: -1 }).then(() => null, (e: unknown) => e);
+  assert.equal(hostServiceErrorText(gaveUp), "The server is short on memory right now — it will run when there is room.", "gave up while waiting for memory: say that");
   assert.ok(s.calls.some((c) => c.method === "POST" && c.path === "/api/agent/dispatches/d3/cancel"), "the run is cancelled, freeing the slot");
   const ac = new AbortController();
   ac.abort();

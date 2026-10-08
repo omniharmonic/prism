@@ -33,7 +33,7 @@ import { BottomSheet } from "../ui/BottomSheet";
 import { Popover } from "./Popover";
 import { FilterEditor, SortEditor, ViewSettings } from "./ViewControls";
 import { BoardView, CalendarAgenda, CalendarView, GalleryView, ListView, TableView, monthGrid, type RowSelection, type ViewContext } from "./views";
-import { defaultConfig, duplicateView, MAX_VIEWS, moveView, newViewId, readDatabaseConfig, rowPath, VIEW_LABELS, VIEW_TYPES, type DatabaseConfig, type DatabaseTemplate, type DatabaseView, type OpenMode, type ViewType } from "./config";
+import { defaultConfig, duplicateView, MAX_VIEWS, moveView, newViewId, followConversions, readDatabaseConfig, rowPath, VIEW_LABELS, VIEW_TYPES, type DatabaseConfig, type DatabaseTemplate, type DatabaseView, type OpenMode, type ViewType } from "./config";
 import { RowPeek } from "./RowPeek";
 import { BulkBar, UndoToast, type UndoAction } from "./BulkBar";
 import { createTemplateNote, isTemplateFor, NewButton, TemplateEditor, templateProps } from "./Templates";
@@ -73,7 +73,10 @@ export function DatabasePage({ note, readOnly, embedded }: RendererProps & {
   }
   // Session-only edits for people who cannot save (and the optimistic copy while saving).
   const [local, setLocal] = useState<DatabaseConfig | null>(null);
-  const config = local ?? stored;
+  const { data: schemaData } = useSchemas();
+  // A view saved before a property was converted is read under the property's new key (NP-DB-11).
+  const written = local ?? stored;
+  const config = useMemo(() => (written ? followConversions(written, schemaData?.schemas ?? {}) : written), [written, schemaData?.schemas]);
   const viewKey = embedded ? `prism:db-view:${note.id}:block:${embedded.viewId ?? ""}` : `prism:db-view:${note.id}`;
   const [activeId, setActiveId] = useState<string>(() => {
     if (embedded?.viewId) return embedded.viewId;
@@ -112,7 +115,6 @@ export function DatabasePage({ note, readOnly, embedded }: RendererProps & {
     if (note.updatedAt !== propAtSave.current || JSON.stringify(stored) === JSON.stringify(local)) setLocal(null);
   });
 
-  const { data: schemaData } = useSchemas();
   const schemas = schemaData?.schemas ?? {};
   const tags = config?.source.tags ?? [];
   const hasSchema = tags.some((t) => Object.keys(schemas[t]?.fields ?? {}).length > 0);
@@ -538,7 +540,8 @@ export function DatabasePage({ note, readOnly, embedded }: RendererProps & {
           onClose={() => setEditingTemplate(null)} />
       )}
       {editingProp && schemas[editingProp.tag]?.fields[editingProp.key] && (
-        <PropertyEditor propertyKey={editingProp.key} tag={editingProp.tag} field={schemas[editingProp.tag]!.fields[editingProp.key]!} rows={rows} onClose={() => setEditingProp(null)} />
+        <PropertyEditor propertyKey={editingProp.key} tag={editingProp.tag} field={schemas[editingProp.tag]!.fields[editingProp.key]!} rows={rows} onClose={() => setEditingProp(null)}
+          onConverted={() => invalidateRows()} />
       )}
       {importingNew && <CsvNewDatabaseDialog adopt={{ id: note.id, path: note.path, title }} onClose={() => setImportingNew(false)} />}
       {importing && config && <CsvImportDialog tag={config.source.tags[0]!} dbPath={note.path} props={allProps} onClose={() => setImporting(false)} />}

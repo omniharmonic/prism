@@ -22,12 +22,15 @@
  * operations in `./vaultOps.ts`, usable from any shell.
  */
 import type { Note } from "../types";
+import { failureOfError } from "../agent/failure";
 
 export class HostServiceError extends Error {
   constructor(
     readonly status: number,
     readonly code: string,
     readonly detail?: string,
+    /** For a failed agent run: the server's stable failure class (`lib/agent/failure.ts`). */
+    readonly errorCode?: string,
   ) {
     super(detail ? `${code}: ${detail}` : code);
   }
@@ -409,14 +412,19 @@ export function createHttpHostServices(opts: HttpHostServicesOptions): HostServi
           await cancel();
           throw new HostServiceError(0, "aborted");
         }
-        const d = await call<{ status: string; output?: string; error?: string | null }>("GET", `/api/agent/dispatches/${enc(started.id)}`);
+        const d = await call<{ status: string; output?: string; error?: string | null; errorCode?: string | null; queuedCode?: string | null }>(
+          "GET",
+          `/api/agent/dispatches/${enc(started.id)}`,
+        );
         if (TERMINAL.has(d.status)) {
           if (d.status === "done") return cleanAgentText(d.output ?? "");
-          throw new HostServiceError(502, d.status === "cancelled" ? "agent_cancelled" : "agent_failed", d.error ?? undefined);
+          throw new HostServiceError(502, d.status === "cancelled" ? "agent_cancelled" : "agent_failed", d.error ?? undefined, d.errorCode ?? undefined);
         }
         if (Date.now() >= deadline) {
           await cancel();
-          throw new HostServiceError(504, "agent_timeout", "the server agent did not finish in time");
+          // Still WAITING for memory when we gave up: say that, not "took too long".
+          const waitingForMemory = d.status === "queued" && d.queuedCode === "memory";
+          throw new HostServiceError(504, "agent_timeout", "the server agent did not finish in time", waitingForMemory ? "memory" : "timeout");
         }
         await sleep(pollMs);
       }
@@ -511,14 +519,18 @@ export function wikilinkJobSummary(j: WikilinkJob): string {
 
 /** Human copy for a failed host-service call. */
 export function hostServiceErrorText(e: unknown): string {
+  if (e instanceof TypeError) return failureOfError(e).text; // the request never reached the server
   if (!(e instanceof HostServiceError)) return e instanceof Error ? e.message : String(e);
   switch (e.code) {
     case "forbidden":
       return "Only the server owner can do this.";
+    // Every way an agent run can fail reads the same everywhere (lib/agent/failure.ts).
     case "busy":
-      return "The server agent queue is full. Try again in a minute.";
+    case "locked":
     case "agent_timeout":
-      return "The server agent is still working. Check Agent activity.";
+    case "agent_failed":
+    case "agent_cancelled":
+      return failureOfError(e).text;
     case "calendar_sync_disabled":
       return "Calendar sync is off on the server.";
     case "public_repo":

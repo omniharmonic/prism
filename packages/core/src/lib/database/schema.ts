@@ -82,6 +82,8 @@ export interface FieldHints {
   format?: NumberFormat;
   /** Status: option value → group. */
   statusGroups?: Record<string, StatusGroup>;
+  /** Set by the server on a field a type conversion created: the key its values were converted from. */
+  convertedFrom?: string;
 }
 
 /** One field as `GET /api/schemas` returns it: vault def + Prism hints. */
@@ -99,7 +101,11 @@ export interface SchemaField extends FieldHints {
 export interface TagSchema {
   description: string | null;
   fields: Record<string, SchemaField>;
+  /** Property keys a page with this tag shows at the top, in order (a per-tag presentation hint; absent = every filled property). */
+  pinned?: string[];
 }
+/** Most properties one tag may pin to the top of its pages. */
+export const MAX_PINNED = 12;
 export type SchemaMap = Record<string, TagSchema>;
 
 export interface PropertyOption {
@@ -342,6 +348,30 @@ export function propertyFromField(key: string, f: SchemaField, tag: string | nul
   };
 }
 
+/**
+ * The keys a page with these tags shows at the top: each tag's `pinned` list, in tag
+ * order, a key once. Empty = no tag pins anything (the page lists every filled property).
+ */
+export function pinnedKeys(tags: string[], schemas: SchemaMap): string[] {
+  const out: string[] = [];
+  for (const t of tags) {
+    const list = Object.prototype.hasOwnProperty.call(schemas, t) ? schemas[t]?.pinned : undefined;
+    if (!Array.isArray(list)) continue;
+    for (const k of list) if (typeof k === "string" && !out.includes(k)) out.push(k);
+  }
+  return out;
+}
+
+/** Split a page's properties into the pinned ones (in pinned order) and the rest (in their own order). */
+export function splitPinned(props: PropertyDef[], pinned: string[]): { top: PropertyDef[]; rest: PropertyDef[] } {
+  const top: PropertyDef[] = [];
+  for (const k of pinned) {
+    const p = props.find((d) => d.key === k);
+    if (p) top.push(p);
+  }
+  return { top, rest: props.filter((p) => !top.includes(p)) };
+}
+
 /** Keys hidden everywhere for a page with these tags: deleted by one of them and declared LIVE by none. */
 export function deletedKeys(tags: string[], schemas: SchemaMap): Set<string> {
   const out = new Set<string>();
@@ -509,6 +539,8 @@ export interface SchemaPatch {
   fields?: Record<string, { type?: VaultFieldType; enum?: string[]; description?: string; default?: unknown }>;
   /** Presentation hints per field (stored by the Prism Server, not the vault). */
   ui?: Record<string, FieldHints>;
+  /** The tag's pinned properties, in order (replaces the list; `[]` clears it). Each must be a property of the tag. */
+  pinned?: string[];
 }
 
 const recordOf = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
@@ -662,7 +694,17 @@ export function validateSchemaPatch(raw: unknown): { ok: true; patch: SchemaPatc
       patch.ui[name] = out;
     }
   }
-  if (!patch.fields && !patch.ui && patch.description === undefined) return { ok: false, error: "nothing to change" };
+  if (raw.pinned !== undefined) {
+    if (!Array.isArray(raw.pinned) || raw.pinned.length > MAX_PINNED) return { ok: false, error: `pinned must be a list of ≤${MAX_PINNED} property keys` };
+    const keys: string[] = [];
+    for (const k of raw.pinned) {
+      if (typeof k !== "string" || !FIELD_NAME.test(k) || BANNED.has(k) || isSystemKey(k)) return { ok: false, error: "pinned: invalid property key" };
+      if (keys.includes(k)) return { ok: false, error: `pinned: ${k} is listed twice` };
+      keys.push(k);
+    }
+    patch.pinned = keys;
+  }
+  if (!patch.fields && !patch.ui && patch.description === undefined && patch.pinned === undefined) return { ok: false, error: "nothing to change" };
   for (const group of [patch.ui ?? {}] as Array<Record<string, FieldHints>>) {
     for (const [name, h] of Object.entries(group)) {
       for (const opt of [...Object.keys(h.colors ?? {}), ...(h.optionOrder ?? []), ...(h.hiddenOptions ?? []), ...Object.keys(h.statusGroups ?? {})]) {

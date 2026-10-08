@@ -71,7 +71,7 @@ test("copy link to heading: block menu and outline copy `<page link>#h-<slug>`; 
     await expect.poll(() => page.evaluate(() => { const e = (document.querySelector(".tiptap") as any).editor; return `${e.state.selection.$from.parent.type.name}:${e.state.selection.$from.parent.textContent}`; })).toBe(expected);
   };
   await caretIn(steps.nth(1), "heading:Next steps");
-  await page.keyboard.press("ControlOrMeta+Shift+/");
+  await page.keyboard.press("ControlOrMeta+/"); // ⌘/ in a block = its menu (⌘⇧/ is the shortcut sheet)
   const menu = page.getByRole("menu", { name: "Block actions" });
   await expect(menu).toBeVisible();
   await menu.getByRole("menuitem", { name: "Copy link to heading" }).click();
@@ -80,7 +80,7 @@ test("copy link to heading: block menu and outline copy `<page link>#h-<slug>`; 
   // A paragraph has no such item.
   await expect(menu).toHaveCount(0);
   await caretIn(editor.getByText("The second one."), "paragraph:The second one.");
-  await page.keyboard.press("ControlOrMeta+Shift+/");
+  await page.keyboard.press("ControlOrMeta+/"); // ⌘/ in a block = its menu (⌘⇧/ is the shortcut sheet)
   await expect(menu).toBeVisible();
   await expect(menu.getByRole("menuitem", { name: "Copy link to heading" })).toHaveCount(0);
   await page.keyboard.press("Escape");

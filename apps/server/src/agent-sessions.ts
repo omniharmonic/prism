@@ -61,9 +61,11 @@ import {
   runnerCwdPath,
   enqueueRun,
   runnerBudgetUsd,
+  runnerAuthRetryDelayMs,
   type RunHandle,
 } from "./agent-exec";
 import { StreamNormalizer, scrubSecrets, vaultToolName, type AgentEvent, type AgentTurnStatus } from "./agent-events";
+import { authRetryAllowed, classifyRunFailure, describeRunFailure, failureCodeOfText, isAgentErrorCode, noteRunOutcome, queuedReasonCode, type AgentErrorCode } from "./agent-failure";
 
 // ── profiles (agent-profiles.ts; re-exported for existing importers) ─────────
 
@@ -394,6 +396,18 @@ export function finalText(events: StoredEvent[]): string {
 }
 
 /** Tool names used + notes touched in a turn (transcript + session view). */
+/** The stable failure class of a finished turn: the terminal status event's code,
+ *  else (rows from before the code existed, pruned events) read from the stored error. */
+export function turnErrorCode(turn: Pick<TurnRow, "status" | "error">, events: StoredEvent[]): AgentErrorCode | null {
+  if (turn.status === "cancelled") return "cancelled";
+  if (turn.status !== "error") return null;
+  for (let i = events.length - 1; i >= 0; i--) {
+    const ev = events[i]!.event;
+    if (ev.t === "status" && ev.status === "error") return isAgentErrorCode(ev.errorCode) ? ev.errorCode : (failureCodeOfText(turn.error) ?? "unknown");
+  }
+  return failureCodeOfText(turn.error) ?? (/budget/i.test(turn.error ?? "") ? "budget" : /timed out/i.test(turn.error ?? "") ? "timeout" : "unknown");
+}
+
 export function turnActivity(events: StoredEvent[]): { tools: string[]; touched: Array<{ noteId: string; op: string }> } {
   const tools: string[] = [];
   const touched: Array<{ noteId: string; op: string }> = [];
@@ -583,6 +597,7 @@ export const READ_TOKEN_TTL_S = 3 * 3600;
 const userSlot = new Map<string, string>(); // email → turnId holding the slot
 const userWaiting = new Map<string, Array<{ turnId: string; go: () => void }>>();
 const turnTokens = new Map<string, string>(); // turnId → read-token jti
+const retryTimers = new Map<string, ReturnType<typeof setTimeout>>(); // turnId → the pending sign-in retry
 const turnPats = new Map<string, string>(); // turnId → per-turn Prism PAT id (prism-* profiles)
 
 /** Revoke a turn's per-turn Prism PAT. Idempotent; called at turn end, on
@@ -809,11 +824,19 @@ export async function startTurn(
   // --resume iff the CLI already holds this conversation (init seen, or its
   // transcript file exists — a turn-1 that died after init must not re-use
   // --session-id: the CLI refuses "Session ID … is already in use").
-  const resume = !!s.cli_session_id || deps.cliSessionExists(s.id);
+  let resume = !!s.cli_session_id || deps.cliSessionExists(s.id);
 
-  const norm = new StreamNormalizer();
+  // Per ATTEMPT (a sign-in failure is re-spawned once — see authRetryAllowed).
+  let attempt = 1;
+  let norm = new StreamNormalizer();
   let stderrTail = "";
-  const statusEv = (status: AgentTurnStatus, reason?: string): AgentEvent => (reason ? { t: "status", status, reason } : { t: "status", status });
+  const statusEv = (status: AgentTurnStatus, reason?: string, extra: { errorCode?: AgentErrorCode; retry?: boolean } = {}): AgentEvent => ({
+    t: "status",
+    status,
+    ...(reason ? { reason } : {}),
+    ...(extra.errorCode ? { errorCode: extra.errorCode } : {}),
+    ...(extra.retry ? { retry: true } : {}),
+  });
 
   const handleEvent = (ev: AgentEvent): void => {
     if (ev.t === "text_delta") {
@@ -824,7 +847,13 @@ export async function startTurn(
     record(sessionId, turnId, ev);
   };
 
-  const onEnd = (info: { code: number | null; error: string | null; cancelled: boolean }) => {
+  type EndInfo = { code: number | null; error: string | null; cancelled: boolean; elapsedMs?: number | null };
+
+  /** The turn is over (after any retry): close the row, release everything. */
+  const finalize = (info: EndInfo, code: AgentErrorCode | null) => {
+    const pendingRetry = retryTimers.get(turnId);
+    if (pendingRetry) clearTimeout(pendingRetry);
+    retryTimers.delete(turnId);
     handles.delete(turnId);
     dropToken(turnId);
     dropPat(turnId);
@@ -835,16 +864,18 @@ export async function startTurn(
       deleteSessionRows(sessionId);
       return;
     }
-    for (const ev of norm.end()) handleEvent(ev);
     const result = norm.result;
-    const status: AgentTurnStatus = info.cancelled ? "cancelled" : info.error || (result && !result.ok) ? "error" : "done";
+    const status: AgentTurnStatus = info.cancelled ? "cancelled" : code ? "error" : "done";
+    // A truthful sentence first ("claude exited 1 — success" told nobody anything),
+    // then what the CLI itself said.
+    const said = norm.failure?.text ?? (result && !result.ok ? result.error : null);
     const error =
       status === "error"
         ? scrubSecrets(
-            [info.error, result && !result.ok ? result.error : null, stderrTail.trim() ? stderrTail.trim().slice(-500) : null]
+            [describeRunFailure(code!, { exitCode: info.code, runnerError: info.error }), said, stderrTail.trim() ? stderrTail.trim().slice(-500) : null]
               .filter(Boolean)
               .join(" — "),
-          ) || "turn failed"
+          )
         : null;
     // total_cost_usd is CUMULATIVE across --resume (verified) → per-turn = delta.
     const cur = getSession(sessionId);
@@ -854,15 +885,76 @@ export async function startTurn(
       turnCost = Math.max(0, result.costUsd - prevCost);
       if (result.costUsd > prevCost) q.setSessionCost.run(result.costUsd, deps.now(), sessionId);
     }
+    // A FIRST turn whose sign-in failed left no conversation behind: forget the id
+    // its init recorded, or the next turn would `--resume` something the CLI never kept.
+    if (code === "auth" && !resume && !deps.cliSessionExists(s.id)) q.setCliSession.run(null, deps.now(), sessionId);
     q.turnEnd.run(status, info.code, error, turnCost, deps.now(), turnId);
     if (turnCost != null && turnCost > 0) q.insertCost.run(turnId, email, turnCost, deps.now());
     if (cur && cur.status === "running") q.setSessionStatus.run("idle", deps.now(), sessionId);
-    record(sessionId, turnId, error ? { t: "status", status, reason: error.slice(0, 300) } : statusEv(status));
+    if (status !== "cancelled") noteRunOutcome(code, deps.now());
+    record(sessionId, turnId, error ? statusEv(status, error.slice(0, 300), { errorCode: code ?? undefined }) : statusEv(status));
     scheduleFollowups(sessionId);
     notifyTurnEnd(sessionId, turnId, status); // WP3.3 push seam — fire-and-forget, ids only
     if (deps.transcriptMirror) {
       void mirrorTranscript(sessionId).catch((e) => console.error(`[agent] transcript mirror failed: ${(e as Error).message}`));
     }
+  };
+
+  /** One `claude` process ended. */
+  const onEnd = (info: EndInfo) => {
+    handles.delete(turnId);
+    dropPat(turnId); // per spawn: a retry mints a fresh one
+    if (getSession(sessionId)?.status === "archived") return finalize(info, null);
+    for (const ev of norm.end()) handleEvent(ev);
+    const result = norm.result;
+    if (info.cancelled) return finalize(info, null);
+    if (!info.error && !(result && !result.ok)) return finalize(info, null);
+    const code = classifyRunFailure({
+      exitCode: info.code,
+      runnerError: info.error,
+      streamCode: norm.failure?.code ?? result?.errorCode ?? null,
+      resultError: result && !result.ok ? result.error : null,
+      texts: [stderrTail],
+      deniedTool: norm.deniedTool,
+    });
+    const prevCost = getSession(sessionId)?.cost_usd ?? 0;
+    const attemptCost = result?.costUsd != null ? Math.max(0, result.costUsd - prevCost) : null;
+    if (!authRetryAllowed({ code, attempt, exitCode: info.code, elapsedMs: info.elapsedMs ?? -1, costUsd: attemptCost, sawTool: norm.sawTool })) {
+      return finalize(info, code);
+    }
+    // ONE re-spawn. Same argv semantics: `--resume` iff the CLI holds the conversation.
+    // A first turn's failed attempt recorded an id at init but may or may not have
+    // written its file — the file decides (`--session-id` on a kept id is refused,
+    // `--resume` of one it never kept finds no conversation).
+    attempt = 2;
+    if (!resume) {
+      if (deps.cliSessionExists(s.id)) resume = true;
+      else q.setCliSession.run(null, deps.now(), sessionId);
+    }
+    record(sessionId, turnId, statusEv("running", "Claude sign-in failed on the server — trying once more", { errorCode: "auth", retry: true }));
+    const timer = setTimeout(() => {
+      retryTimers.delete(turnId);
+      handles.delete(turnId);
+      if (getTurn(turnId)?.status !== "running") return; // closed meanwhile
+      norm = new StreamNormalizer();
+      stderrTail = "";
+      try {
+        go();
+      } catch {
+        finalize(info, code); // the run queue filled meanwhile: report the sign-in failure
+      }
+    }, runnerAuthRetryDelayMs());
+    timer.unref();
+    retryTimers.set(turnId, timer);
+    // Stop / archive during the wait must close the turn (there is no process to kill).
+    handles.set(turnId, {
+      id: `retry:${turnId}`,
+      state: () => "queued",
+      cancel: () => {
+        finalize({ code: null, error: null, cancelled: true }, null);
+        return true;
+      },
+    });
   };
 
   /** Hand the turn to the shared run queue (throws AgentBusyError if full). */
@@ -888,7 +980,7 @@ export async function startTurn(
           allowedTools: profileAllowedTools(s.profile),
           maxBudgetUsd: runnerBudgetUsd(),
         }),
-      onQueued: (reason) => record(sessionId, turnId, statusEv("queued", reason)),
+      onQueued: (reason) => record(sessionId, turnId, statusEv("queued", reason, { errorCode: queuedReasonCode(reason) ?? undefined })),
       onStart: () => {
         q.turnRunning.run(deps.now(), turnId);
         record(sessionId, turnId, statusEv("running"));
@@ -1166,6 +1258,8 @@ export function _resetAgentSessions(): void {
   userWaiting.clear();
   turnTokens.clear();
   turnPats.clear();
+  for (const t of retryTimers.values()) clearTimeout(t);
+  retryTimers.clear();
   if (maintenanceTimer) clearInterval(maintenanceTimer);
   maintenanceTimer = null;
   deps = defaultDeps();

@@ -20,6 +20,12 @@ test("twenty crowded tabs retain all actions, searchable full titles, active and
 }, info) => {
   await page.goto("/e2e-fixtures/open-documents.html");
   const before = await state(page);
+  // The breadcrumb yields to the tabs first: in a strip that scrolls it is only its "…" menu, which still lists the trail.
+  const crumbs = page.getByRole("navigation", { name: "Document location" });
+  await expect(crumbs).toHaveAttribute("data-room", "menu");
+  await crumbs.getByRole("button", { name: "Show 2 locations" }).click();
+  await expect(page.getByRole("menu", { name: "More locations" }).getByRole("menuitem")).toHaveText(["Projects", "Prism"]);
+  await page.keyboard.press("Escape");
   const dialog = await menu(page);
   await expect(dialog.locator("li[data-document-id]")).toHaveCount(20);
   await expect(

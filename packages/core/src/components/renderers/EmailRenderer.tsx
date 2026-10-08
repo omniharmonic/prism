@@ -1,3 +1,4 @@
+import { ConversationBack, ConversationOpenPage } from "../comms/conversationChrome";
 import "../comms/email-workspace.css";
 import { splitEmailQuote } from "../../lib/messages/emailQuote";
 import { messageInitials } from "../comms/messageAppearance";
@@ -140,6 +141,7 @@ function VaultEmailView({
             }}
           >
             <div className="flex items-center gap-2">
+              <ConversationBack />
               {!read && (
                 <span
                   className="w-2 h-2 rounded-full flex-shrink-0"
@@ -147,11 +149,12 @@ function VaultEmailView({
                 />
               )}
               <h2
-                className="text-lg font-semibold min-w-0 break-words"
+                className="text-lg font-semibold min-w-0 flex-1 break-words"
                 style={{ color: "var(--text-primary)" }}
               >
                 {subject || "Email"}
               </h2>
+              <ConversationOpenPage />
             </div>
             <p className="prism-email-source">
               <Mail size={13} aria-hidden="true" />

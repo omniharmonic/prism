@@ -8,6 +8,9 @@
  *   PUT  /api/schemas/:tag         owner-only additive schema edit (+ hints)
  *   POST /api/schemas/:tag/fields/:field/remove-values
  *                                  owner-only: clear a DELETED property's values (dry-run default)
+ *   POST /api/schemas/:tag/fields/:field/convert
+ *                                  owner-only: "change type" across vault types as a guided
+ *                                  conversion into a NEW field (dry-run default)
  *   POST /api/query                lean filtered/sorted/paged rows for a view
  *   POST /api/properties/:id       metadata-only property write with per-field CAS
  *   POST /api/properties/batch     up to 100 of those, one result each (bulk edit)
@@ -62,7 +65,18 @@ import {
   isPeopleKeyName,
   mergeSchemaFields,
   compatibleKinds,
+  coerceToKind,
+  conversionKey,
+  needsConversion,
+  sampleText,
+  cleanLabel,
+  humanize,
+  optionColor,
+  PROPERTY_KINDS,
+  VAULT_TYPE_FOR_KIND,
+  type PropertyKind,
   INGEST_TAGS,
+  MAX_PINNED,
   isPrototypeName,
   optionNameClash,
   PROPERTY_KIND_LABELS,
@@ -172,21 +186,39 @@ const selectHints = db.prepare("SELECT key, value FROM settings WHERE key LIKE ?
 const upsertHints = db.prepare(
   "INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
 );
-function readHints(vaultId: string): Map<string, Record<string, FieldHints>> {
+/**
+ * A tag's hint row is `{<field>: FieldHints, …}` plus, under PINNED_KEY, the tag's own
+ * pinned-property list. The key can never be a field name (FIELD_NAME starts with a
+ * letter), and it is taken out here so no reader ever sees it as a field.
+ */
+const PINNED_KEY = "$pinned";
+function readHintRows(vaultId: string): { fields: Map<string, Record<string, FieldHints>>; pinned: Map<string, string[]> } {
   const prefix = `schema-ui:${vaultId}:`.replace(/[\\%_]/g, (m) => `\\${m}`);
-  const out = new Map<string, Record<string, FieldHints>>();
+  const fields = new Map<string, Record<string, FieldHints>>();
+  const pinned = new Map<string, string[]>();
   for (const row of selectHints.all(`${prefix}%`) as Array<{ key: string; value: string }>) {
     try {
-      out.set(row.key.slice(`schema-ui:${vaultId}:`.length), JSON.parse(row.value) as Record<string, FieldHints>);
+      const tag = row.key.slice(`schema-ui:${vaultId}:`.length);
+      const { [PINNED_KEY]: pins, ...rest } = JSON.parse(row.value) as Record<string, unknown>;
+      fields.set(tag, rest as Record<string, FieldHints>);
+      if (Array.isArray(pins)) {
+        const keys = pins.filter((k): k is string => typeof k === "string").slice(0, MAX_PINNED);
+        if (keys.length) pinned.set(tag, keys);
+      }
     } catch {
       /* a corrupt hint row only loses presentation */
     }
   }
-  return out;
+  return { fields, pinned };
+}
+const readHints = (vaultId: string): Map<string, Record<string, FieldHints>> => readHintRows(vaultId).fields;
+const readPinned = (vaultId: string, tag: string): string[] | undefined => readHintRows(vaultId).pinned.get(tag);
+function writeHintRow(vaultId: string, tag: string, fields: Record<string, FieldHints>, pinned: string[] | undefined): void {
+  upsertHints.run(hintKey(vaultId, tag), JSON.stringify(pinned?.length ? { ...fields, [PINNED_KEY]: pinned } : fields));
 }
 
 /** Vault def + hints, exactly what clients render. `count` never appears. */
-function present(schema: TagSchema | undefined, hints: Record<string, FieldHints> | undefined): TagSchema {
+function present(schema: TagSchema | undefined, hints: Record<string, FieldHints> | undefined, pinned?: string[]): TagSchema {
   const fields: Record<string, SchemaField> = {};
   for (const [k, f] of Object.entries(schema?.fields ?? {})) {
     const { type, enum: en, default: def, description, indexed } = f;
@@ -199,7 +231,7 @@ function present(schema: TagSchema | undefined, hints: Record<string, FieldHints
     };
   }
   for (const [k, h] of Object.entries(hints ?? {})) fields[k] = { ...(fields[k] ?? {}), ...h };
-  return { description: schema?.description ?? null, fields };
+  return { description: schema?.description ?? null, fields, ...(pinned?.length ? { pinned } : {}) };
 }
 
 // Hints for the assignment hooks (S5): every property write used to scan + parse
@@ -304,13 +336,13 @@ databasesApi.get("/schemas", async (c) => {
   } catch (e) {
     return vaultFailure(c, e);
   }
-  const hints = readHints(entry.id);
+  const { fields: hints, pinned } = readHintRows(entry.id);
   const names = new Set<string>([...schemas.keys(), ...hints.keys()]);
   const out: Record<string, TagSchema> = {};
   for (const name of names) {
     if (wanted.length && !wanted.includes(name)) continue;
     if (allowed && !allowed.has(name)) continue;
-    out[name] = present(schemas.get(name), hints.get(name));
+    out[name] = present(schemas.get(name), hints.get(name), pinned.get(name));
   }
   c.header("Cache-Control", "private, no-store");
   return c.json({ schemas: out, canEdit: actor.kind === "user" && actor.role === "owner" });
@@ -474,6 +506,12 @@ async function applySchemaPatch(c: Context, entry: VaultEntry, tag: string, patc
       }, 409);
     }
   }
+  // A pinned key must be a property of THIS tag: declared in its vault schema or carrying a hint.
+  for (const k of patch.pinned ?? []) {
+    if (own(merged.fields, k) === undefined && own(storedHints, k) === undefined && own(patch.ui, k) === undefined) {
+      return c.json({ error: "bad_request", detail: `pinned: “${k}” is not a property of this tag` }, 400);
+    }
+  }
   // An option's display name may not read as another option (its value or its name).
   for (const [k, h] of Object.entries(patch.ui ?? {})) {
     if (!h.optionLabels) continue;
@@ -519,19 +557,20 @@ async function applySchemaPatch(c: Context, entry: VaultEntry, tag: string, patc
       return vaultFailure(c, new VaultError(resp.status, `PUT /tags/${tag}: ${resp.status} ${text}`));
     }
   }
-  if (patch.ui) {
+  if (patch.ui || patch.pinned !== undefined) {
     const all = readHints(entry.id).get(tag) ?? {};
-    for (const [field, h] of Object.entries(patch.ui)) {
+    for (const [field, h] of Object.entries(patch.ui ?? {})) {
       const next: FieldHints = { ...(all[field] ?? {}), ...h };
       if (h.colors) next.colors = { ...(all[field]?.colors ?? {}), ...h.colors };
       all[field] = next;
     }
-    upsertHints.run(hintKey(entry.id, tag), JSON.stringify(all));
+    // The pinned list is replaced whole when sent, and kept as stored when it is not.
+    writeHintRow(entry.id, tag, all, patch.pinned ?? readPinned(entry.id, tag));
     personHintCache.delete(entry.id); // the assignment hooks read hints from a cache
   }
   schemaCache.delete(entry.id);
   const fresh = vaultChange ? { description: description || null, fields: merged.fields } : current;
-  return c.json({ tag, schema: present(fresh, readHints(entry.id).get(tag)) });
+  return c.json({ tag, schema: present(fresh, readHints(entry.id).get(tag), readPinned(entry.id, tag)) });
 }
 
 const holdsOption = (v: unknown, option: string): boolean => (Array.isArray(v) ? v.some((x) => String(x) === option) : typeof v === "string" && v === option);
@@ -663,6 +702,204 @@ databasesApi.post("/schemas/:tag/fields/:field/remove-values", bodyLimit({ maxSi
     target: { tag, field, ...out, total: targets.length }, status: out.failed ? "failed" : "ok",
   });
   return c.json({ dryRun: false, ...base, ...out, remaining: Math.max(0, targets.length - out.removed), more: targets.length > attempted });
+});
+
+// ── "change type" across vault types: a guided conversion (NP-DB-11) ─────────
+
+const sameValue = (a: unknown, b: unknown) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
+/** Options a conversion gives a select-like property (the vault enum is not used: later values stay free). */
+const CONVERT_MAX_OPTIONS = 100;
+
+/**
+ * `POST /api/schemas/:tag/fields/:field/convert {to, dryRun=true, limit?, label?}`
+ *
+ * The vault type of a field is never changed in place (the schema is shared and
+ * additive-only). A type change that is not a presentation of the stored type
+ * (text → number, number → text, text → multi-select, …) is done as a conversion:
+ *   1. a NEW field `conversionKey(field, to)` of the target type is added (additive),
+ *      hidden while the copy runs;
+ *   2. each page's value is coerced (`coerceToKind`, pure) and written into the new
+ *      field with ONE compare-and-set write per page — the old value is not touched;
+ *   3. when every convertible page is done, ONE hints write shows the new property
+ *      (under the old name) and marks the old one deleted (hidden, restorable; its
+ *      values go only through the separate `remove-values` run).
+ * A select / status / multi-select made this way gets its options from the converted
+ * values (distinct, first seen first, ≤ 100) as presentation hints. Saved views are
+ * not rewritten: clients read a view that names the old key as naming the new one
+ * (`followConversions`, driven by the `convertedFrom` hint), in every database.
+ * A value with no faithful reading is never guessed: it is counted (`uncoercible`,
+ * with a few samples for the owner) and stays on the old property.
+ *
+ * Same guards as `remove-values`: server-owner role, CSRF, a signed-in person (no
+ * agent credential), never Prism-managed or ingest-owned tags, never system/ingest
+ * keys, and the same pages are left alone (trashed, system, integration-owned,
+ * someone else's private page, a key another tag also declares). Dry run by
+ * default; a write run is ≤ `limit` pages / ~20 s and says `more`; the same
+ * (field, kind) always converts into the same key, so a run can be continued.
+ * One bulk schema job at a time for the whole server; audited with counts only.
+ */
+databasesApi.post("/schemas/:tag/fields/:field/convert", bodyLimit({ maxSize: 4096 }), async (c) => {
+  const actor = resolveActor(c);
+  if (actor.kind !== "user" || actor.role !== "owner") return c.json({ error: "forbidden", reason: "changing a property's type is owner-only" }, 403);
+  const via = requestVia(c);
+  const csrf = csrfRefusal(c, via);
+  if (csrf) return csrf;
+  if (via !== "session" && via !== "device") return c.json({ error: "agent_origin_refused", detail: "converting a property needs a signed-in person" }, 403);
+  const tag = canonicalTag(c.req.param("tag") ?? "");
+  const field = c.req.param("field") ?? "";
+  if (!tag || tag.length > 128 || /[\u0000-\u001f]/.test(tag)) return c.json({ error: "bad_request", detail: "invalid tag" }, 400);
+  const convertible = (k: string) => FIELD_NAME.test(k) && !isPrototypeName(k) && !isSystemKey(k) && !INGEST_KEYS.has(k) && k !== "source";
+  if (!convertible(field)) return c.json({ error: "bad_request", detail: "not a convertible property" }, 400);
+  const limited = perOwner(c, "schema-convert", actor.email, envInt("SCHEMA_CONVERT_PER_MINUTE", 30));
+  if (limited) return limited;
+  const body = (await c.req.json().catch(() => null)) as { to?: unknown; dryRun?: unknown; limit?: unknown; label?: unknown } | null;
+  if (!body || typeof body !== "object" || Array.isArray(body)) return c.json({ error: "bad_request" }, 400);
+  if (typeof body.to !== "string" || !(PROPERTY_KINDS as readonly string[]).includes(body.to)) return c.json({ error: "bad_request", detail: "to must be a property type" }, 400);
+  const to = body.to as PropertyKind;
+  if (body.dryRun !== undefined && typeof body.dryRun !== "boolean") return c.json({ error: "bad_request", detail: "dryRun must be boolean" }, 400);
+  const dryRun = body.dryRun !== false;
+  const limit = body.limit === undefined ? REMOVE_DEFAULT : Number(body.limit);
+  if (!Number.isInteger(limit) || limit < 1 || limit > REMOVE_MAX) return c.json({ error: "bad_request", detail: `limit must be 1–${REMOVE_MAX}` }, 400);
+  if (body.label !== undefined && (typeof body.label !== "string" || body.label.length > 80)) return c.json({ error: "bad_request", detail: "label must be ≤80 chars" }, 400);
+  if (LOCKED_TAG(tag)) return c.json({ error: "forbidden", reason: "this tag's schema is managed by Prism" }, 403);
+  if (INGEST_TAGS.has(tag)) return c.json({ error: "protected_tag", detail: "properties of an ingested tag are never converted" }, 409);
+  const entry = entryFor(c, actor);
+  const target = conversionKey(field, to);
+  if (!convertible(target)) return c.json({ error: "bad_request", detail: "not a convertible property" }, 400);
+  const targetType = VAULT_TYPE_FOR_KIND[to];
+
+  let schemas: Map<string, TagSchema>;
+  let rows: Note[];
+  try {
+    schemaCache.delete(entry.id); // decide against the vault's CURRENT schema
+    schemas = await vaultSchemas(entry);
+    rows = await vaultClient(entry.id).listNotes({ tags: [tag], includeMetadata: [field, target, "prism_creator", "prism_visibility", "source"], limit: RAW_MAX });
+  } catch (e) {
+    return vaultFailure(c, e);
+  }
+  const hints = readHints(entry.id);
+  const tagHints = hints.get(tag) ?? {};
+  const source = own(schemas.get(tag)?.fields, field);
+  if (!source && !own(tagHints, field)) return c.json({ error: "not_found", detail: "this tag has no such property" }, 404);
+  if (!needsConversion(source?.type, to)) {
+    return c.json({ error: "compatible_kind", detail: `“${field}” can be shown as ${PROPERTY_KIND_LABELS[to]} without converting anything: change its type instead.`, compatible: compatibleKinds(source?.type) }, 409);
+  }
+  // The destination is this conversion's own field, or free: never someone else's property.
+  const existing = own(schemas.get(tag)?.fields, target);
+  const targetHints = own(tagHints, target) as (FieldHints & { convertedFrom?: string }) | undefined;
+  if ((existing || targetHints) && (targetHints?.convertedFrom !== field || (existing?.type ?? targetType) !== targetType)) {
+    return c.json({ error: "target_taken", detail: `this tag already has a property stored as “${target}”` }, 409);
+  }
+
+  const holding = rows.filter((n) => { const v = own(n.metadata, field); return v !== undefined && v !== null; });
+  const sharedBy = (n: Note) => (n.tags ?? []).some((t) => t !== tag && [field, target].some((k) => own(schemas.get(t)?.fields, k) !== undefined || own(hints.get(t), k) !== undefined));
+  const ingestOwned = (n: Note) => protectionReason(n) !== null || (n.tags ?? []).some((t) => INGEST_TAGS.has(t)) ||
+    (typeof n.metadata?.source === "string" && INGEST_SOURCES.has(n.metadata.source.trim().toLowerCase()));
+  const othersPrivate = (n: Note) => n.metadata?.prism_visibility === "private" && String(n.metadata?.prism_creator ?? "").toLowerCase() !== actor.email.toLowerCase();
+  const skipped = { trashed: 0, shared: 0, system: 0, ingest: 0, private: 0 };
+  const todo: Array<{ note: Note; value: unknown }> = [];
+  const samples: string[] = [];
+  // A select-like target gets its option list from the values themselves: distinct, first seen first, capped.
+  const wantsOptions = to === "select" || to === "status" || to === "multi_select";
+  const options: string[] = [];
+  const seenOptions = new Set<string>();
+  let total = 0;
+  let uncoercible = 0;
+  for (const n of holding) {
+    if ((n.tags ?? []).includes("prism-trashed")) { skipped.trashed++; continue; }
+    if (systemNoteReason(n)) { skipped.system++; continue; }
+    if (ingestOwned(n)) { skipped.ingest++; continue; }
+    if (othersPrivate(n)) { skipped.private++; continue; }
+    if (sharedBy(n)) { skipped.shared++; continue; }
+    const out = coerceToKind(own(n.metadata, field), to);
+    if (!out.ok) {
+      uncoercible++;
+      if (samples.length < 5) { const t = sampleText(own(n.metadata, field)); if (!samples.includes(t)) samples.push(t); }
+      continue;
+    }
+    total++;
+    if (wantsOptions) {
+      for (const v of Array.isArray(out.value) ? out.value : [out.value]) {
+        if (typeof v !== "string" || seenOptions.has(v) || isPrototypeName(v) || options.length >= CONVERT_MAX_OPTIONS) continue;
+        seenOptions.add(v);
+        options.push(v);
+      }
+    }
+    if (!sameValue(own(n.metadata, target), out.value)) todo.push({ note: n, value: out.value });
+  }
+  const base = { tag, field, to, target, total, uncoercible, samples, skipped, truncated: rows.length >= RAW_MAX, ...(wantsOptions ? { options: options.length } : {}) };
+  c.header("Cache-Control", "private, no-store");
+  if (dryRun) return c.json({ dryRun: true, ...base, pending: todo.length });
+
+  if (removeRunning) return c.json({ error: "busy", detail: "another property job is running; try again when it finishes" }, 409);
+  removeRunning = true;
+  const out = { converted: 0, conflicts: 0, failed: 0 };
+  let next = 0;
+  let done = false;
+  try {
+    // 1. The destination field (additive), hidden until the copy is complete.
+    if (!existing || !targetHints) {
+      const label = cleanLabel(typeof body.label === "string" && body.label.trim() ? body.label.trim() : own(tagHints, field)?.label ?? humanize(field));
+      const res = await withSchemaLock(`${entry.id}\u0000${tag}`, () => applySchemaPatch(c, entry, tag, { fields: existing ? {} : { [target]: { type: targetType } }, ui: { [target]: { kind: to, label, deleted: true } } }));
+      if (res.status !== 200) return res;
+      const all = readHints(entry.id).get(tag) ?? {};
+      (all[target] as FieldHints & { convertedFrom?: string }).convertedFrom = field;
+      upsertHints.run(hintKey(entry.id, tag), JSON.stringify(all));
+    }
+    // 2. One compare-and-set write per page; the old value stays where it is.
+    const deadline = Date.now() + envInt("SCHEMA_REMOVE_BUDGET_MS", 20_000);
+    const vc = vaultClient(entry.id);
+    const batch = todo.slice(0, limit);
+    const worker = async () => {
+      for (;;) {
+        if (Date.now() > deadline) return;
+        const item = batch[next++];
+        if (!item) return;
+        const n = item.note;
+        if (!n.updatedAt) { out.conflicts++; continue; } // no revision to compare against: never forced
+        try {
+          const updated = await vc.updateNote(n.id, { metadata: { [target]: item.value }, ifUpdatedAt: n.updatedAt });
+          if (isDocLive(entry.id, n.id)) {
+            const prev = Date.parse(n.updatedAt);
+            const after = Date.parse(updated.updatedAt ?? "");
+            if (Number.isFinite(prev) && Number.isFinite(after)) markReconciled(docNameFor(entry.id, n.id), prev, after);
+          }
+          treeUpsertNote(entry, updated);
+          out.converted++;
+        } catch (e) {
+          if (e instanceof VaultConflictError) out.conflicts++;
+          else out.failed++;
+        }
+      }
+    };
+    await Promise.all(Array.from({ length: REMOVE_CONCURRENCY }, worker));
+    // 3. Everything convertible is in the new field: show it, hide the old one — one hints write.
+    if (out.converted === todo.length) {
+      const all = readHints(entry.id).get(tag) ?? {};
+      all[target] = { ...(all[target] ?? {}), deleted: false };
+      if (wantsOptions && options.length) {
+        // Options the owner already coloured or ordered keep their settings; new ones follow in first-seen order.
+        const colors = { ...(all[target]!.colors ?? {}) };
+        for (const o of options) if (!Object.hasOwn(colors, o)) colors[o] = optionColor(o);
+        const order = [...(all[target]!.optionOrder ?? [])];
+        for (const o of options) if (!order.includes(o)) order.push(o);
+        all[target] = { ...all[target]!, colors, optionOrder: order };
+      }
+      all[field] = { ...(all[field] ?? {}), deleted: true };
+      upsertHints.run(hintKey(entry.id, tag), JSON.stringify(all));
+      done = true;
+    }
+  } finally {
+    removeRunning = false;
+    schemaCache.delete(entry.id);
+    evictVaultListings(entry);
+  }
+  // Counts and names only — never a value.
+  recordAction({
+    actorEmail: actor.email, via, origin: "human", action: "schema.convert", vaultId: entry.id,
+    target: { tag, field, to, target, total, uncoercible, done, ...out }, status: out.failed ? "failed" : "ok",
+  });
+  return c.json({ dryRun: false, ...base, ...out, pending: todo.length - out.converted, more: !done, done });
 });
 
 // ── query ────────────────────────────────────────────────────────────────────

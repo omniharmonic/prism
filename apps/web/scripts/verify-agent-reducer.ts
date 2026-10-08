@@ -26,6 +26,7 @@ import { streamSessionEvents } from "../../../packages/core/src/lib/agent/httpAg
 import { formatAgentCost, formatAgentBudget, SUBSCRIPTION_COST_TOOLTIP, PROFILE_LABELS, isReadOnlyProfile } from "../../../packages/core/src/lib/agent/cost.ts";
 import { createHttpAgentClient } from "../../../packages/core/src/lib/agent/httpAgentClient.ts";
 import { agentErrorText } from "../../../packages/core/src/lib/agent/useAgentConversation.ts";
+import { AGENT_ERROR_CODES, agentFailure, failureOfError, queuedText } from "../../../packages/core/src/lib/agent/failure.ts";
 import { AgentApiError } from "../../../packages/core/src/lib/agent/sessions.ts";
 import { streamSSE } from "../../../packages/core/src/lib/transport/sse.ts";
 import type { AgentSessionDetail, AgentStreamMessage, AgentTurn } from "../../../packages/core/src/lib/agent/sessions.ts";
@@ -166,6 +167,51 @@ const turnEvents: AgentStreamMessage[] = [
   assert.match(turnProblem({ ...base, status: "interrupted" })!.text, /Interrupted/);
   assert.match(turnProblem({ ...base, status: "error", error: "session budget exceeded" })!.text, /spending cap/);
   assert.equal(turnProblem({ ...base, status: "done" }), null);
+
+  // w16: ONE helper maps a failure to a sentence + whether "Try again" can help.
+  const AUTH = "The agent couldn’t sign in on the server. Try again; if it keeps happening, sign in to Claude on the server (run `claude` there and log in).";
+  assert.deepEqual(agentFailure("auth"), { code: "auth", text: AUTH, retry: true, tone: "error" });
+  assert.equal(agentFailure("usage_limit").text, "Claude’s usage limit was reached. Try again later.");
+  assert.equal(agentFailure("memory").text, "The server is short on memory right now — it will run when there is room.");
+  for (const code of AGENT_ERROR_CODES) {
+    const f = agentFailure(code);
+    assert.ok(f.text.length > 8 && /[.!]$/.test(f.text), `${code}: a sentence`);
+    assert.doesNotMatch(f.text, /^(error|failed|unknown|status)$/i, `${code}: never a bare status word`);
+  }
+  assert.deepEqual(AGENT_ERROR_CODES.filter((c) => !agentFailure(c).retry), ["budget", "cancelled", "locked", "tool_denied", "cli_missing"], "where retrying cannot help, none is offered");
+  // The server's code wins; text is the fallback (older server, stored failures).
+  assert.equal(turnProblem({ ...base, status: "error", errorCode: "auth", error: "whatever" })!.text, AUTH);
+  assert.equal(turnProblem({ ...base, status: "error", error: "Claude sign-in failed on the server (claude exited 1). — Failed to authenticate: OAuth token revoked." })!.code, "auth");
+  assert.equal(turnProblem({ ...base, status: "error", error: "claude exited 1 — success" })!.text, "The agent hit an error: claude exited 1 — success. Try again.");
+  assert.equal(turnProblem({ ...base, status: "error" })!.text, "The agent hit an error on the server. Try again.");
+  assert.equal(turnProblem({ ...base, status: "cancelled" })!.tone, "muted");
+  assert.equal(failureOfError(new TypeError("Failed to fetch")).code, "offline");
+  assert.equal(failureOfError(new AgentApiError(423, "locked", "This page is locked — unlock it or use a read-only session.")).text, "This page is locked — unlock it or use a read-only session.");
+  assert.equal(failureOfError({ status: 502, code: "agent_failed", detail: "x", errorCode: "usage_limit" }).code, "usage_limit");
+  assert.equal(failureOfError({ status: 504, code: "agent_timeout", errorCode: "memory" }).code, "memory");
+  assert.equal(queuedText({ errorCode: "memory", reason: "memory pressure: 12% free (< 15%)" }), agentFailure("memory").text);
+  assert.equal(queuedText({ reason: "waiting for your other agent turn to finish" }), "Queued — waiting for your other agent turn to finish");
+  ok("failures: one helper — code → sentence + Try again; text fallback; queued-for-memory");
+
+  // The CLI's own error line is never a reply; a retry clears the failed attempt.
+  let s16 = addPendingTurn(emptyConversation, { id: "t9", prompt: "Summarize" });
+  s16 = applyAgentMessage(s16, { turnId: "t9", t: "text_delta", blockId: "m:0", text: "Failed to auth" });
+  s16 = applyAgentMessage(s16, { seq: 1, turnId: "t9", t: "error", code: "auth", text: "Failed to authenticate: OAuth token revoked." });
+  assert.equal(s16.turns[0]!.blocks.length, 0, "the error line is not assistant text");
+  assert.equal(s16.turns[0]!.errorCode, "auth");
+  s16 = applyAgentMessage(s16, { seq: 2, turnId: "t9", t: "status", status: "running", reason: "trying once more", errorCode: "auth", retry: true });
+  assert.equal(s16.turns[0]!.errorCode, undefined);
+  assert.equal(s16.turns[0]!.retrying, true);
+  assert.equal(turnProblem(s16.turns[0]!), null, "no problem is shown while the one retry runs");
+  const failed = applyAgentMessage(applyAgentMessage(s16, { seq: 3, turnId: "t9", t: "error", code: "auth", text: "Failed to authenticate." }), { seq: 4, turnId: "t9", t: "status", status: "error", reason: "Claude sign-in failed on the server (claude exited 1).", errorCode: "auth" });
+  assert.equal(turnProblem(failed.turns[0]!)!.text, AUTH);
+  const recovered = applyAgentMessage(applyAgentMessage(s16, { seq: 3, turnId: "t9", t: "text", blockId: "m2:0", text: "The summary." }), { seq: 4, turnId: "t9", t: "status", status: "done" });
+  assert.equal(turnProblem(recovered.turns[0]!), null);
+  assert.equal(recovered.turns[0]!.blocks[0]!.text, "The summary.");
+  const failedTurn: AgentTurn = { id: "turn-f", session_id: "sid", prompt: "p", note_id: null, status: "error", pid: 1, exit_code: 1, error: "x", errorCode: "usage_limit", cost_usd: null, started_at: 1, ended_at: 2, finalText: "", tools: [], touched: [], firstSeq: 1, lastSeq: 6 };
+  const seeded = seedConversation({ session: { id: "sid" } as AgentSessionDetail["session"], turns: [failedTurn], lastSeq: 6 });
+  assert.equal(turnProblem(seeded.state.turns[0]!)!.code, "usage_limit", "the REST detail's errorCode seeds a finished turn");
+  ok("reducer: error line ≠ reply; a retry clears the failed attempt; errorCode from stream and detail");
   const unknown = applyAgentMessage(emptyConversation, { seq: 3, turnId: "other", t: "status", status: "running" });
   assert.equal(unknown.turns[0]!.id, "other", "an event for an unseen turn (another device) adds a placeholder");
   ok("turn problem copy, tool-name shortening, unknown-turn placeholder");

@@ -9,7 +9,7 @@ import type {
   VaultInfo,
 } from "../lib/types";
 import type { MoveRequest, DuplicateRequest, DuplicateResult, MoveResult, TrashListing, PreferencesSnapshot, PagePreferences } from "../lib/pages/model";
-import type { QueryPage, QuerySpec, SchemaMap, SchemaPatch, TagSchema, PropertyBatchItem, PropertyBatchResult, CsvImportRequest, CsvImportResponse, RemoveValuesResult } from "../lib/database";
+import type { QueryPage, QuerySpec, SchemaMap, SchemaPatch, TagSchema, PropertyBatchItem, PropertyBatchResult, CsvImportRequest, CsvImportResponse, RemoveValuesResult, ConvertPropertyResult } from "../lib/database";
 
 /** Transport status for recoverable UI states, without parsing diagnostic text. */
 export class VaultRequestError extends Error {
@@ -22,6 +22,22 @@ export function isAccessUnavailable(error: unknown): boolean {
 export interface PersonSummary {
   id: string; updatedAt?: string | null; canManageIdentities?: boolean; name: string; path: string | null; role: string | null;
   identities: Array<{ kind: string; value: string }>;
+}
+/** Messages → People: a person with conversations, resolved by the server from addresses and handles (never names). */
+export interface PersonConversationRow {
+  id: string; name: string; platforms: string[]; lastMessageAt: number; count: number; unread: number; hasIdentity: boolean;
+}
+export interface PeopleConversationsPage {
+  people: PersonConversationRow[]; total: number;
+  /** People with no conversation and no email / handle on file. */
+  withoutIdentity: number; truncated?: boolean; limited?: boolean;
+}
+export interface PersonConversationItem {
+  id: string; kind: "email" | "chat" | "meeting"; platform: string; title: string; at: number; unread?: boolean; members?: number;
+}
+export interface PersonConversationsPage {
+  person: { id: string; name: string; hasIdentity: boolean; identityKinds: string[]; count: number; platforms: string[] };
+  items: PersonConversationItem[]; next: number | null; limited?: boolean; mergedFrom?: string;
 }
 export interface PeoplePage { people: PersonSummary[]; next: string | null }
 export interface PersonPage {
@@ -219,6 +235,10 @@ export interface VaultClient {
   changePersonIdentity?(id: string, change: { kind: "email" | "matrix"; value: string; action: "add" | "remove"; ifUpdatedAt: string }): Promise<{ person: PersonSummary }>;
   listPeople?(query?: string, after?: string): Promise<PeoplePage>;
   getPerson?(id: string, after?: string): Promise<PersonPage>;
+  /** People who have conversations, most recent first (absent on shells without a Prism Server). */
+  listPeopleConversations?(query?: string): Promise<PeopleConversationsPage>;
+  /** One person's merged cross-platform timeline, newest first. */
+  getPersonConversations?(id: string, before?: number): Promise<PersonConversationsPage>;
   getNeighborhood?(centerId: string, depth: number, limit?: number): Promise<VaultNeighborhood>;
   getVaultInfo(): Promise<VaultInfo>;
   updateVaultDescription(description: string): Promise<VaultInfo>;
@@ -258,6 +278,9 @@ export interface VaultClient {
   /** Owner-only: clear a DELETED (hidden-everywhere) property's values on the pages of a
    *  tag — dry-run unless `dryRun: false`, one CAS write per page. Optional. */
   removePropertyValues?(tag: string, field: string, opts?: { dryRun?: boolean; limit?: number }): Promise<RemoveValuesResult>;
+  /** Owner-only: "change type" across stored types as a conversion into a NEW field (the old
+   *  one is then marked deleted) — dry-run unless `dryRun: false`, one CAS write per page. Optional. */
+  convertProperty?(tag: string, field: string, opts: { to: string; dryRun?: boolean; limit?: number; label?: string }): Promise<ConvertPropertyResult>;
   /** Owner-only: may `tag` start a NEW database (unused, unshared, unpublished, not an integration's)? The server decides. */
   checkNewTag?(tag: string): Promise<{ tag: string; available: boolean; reason?: string; detail?: string }>;
   /** Lean, permission-filtered, paged rows for a database view. Optional: the
