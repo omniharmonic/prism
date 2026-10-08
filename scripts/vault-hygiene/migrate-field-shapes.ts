@@ -4,6 +4,7 @@
  *
  *   recording_id / spec.version   a number            → the same digits as text
  *   meeting|transcript.source     "" (or blanks)      → removed (says nothing)
+ *   duration_minutes, organization.status  ""         → removed (a blank is not a number or an option)
  *   a list field                  "" (or blanks)      → removed
  *                                 one value as text   → a one-item list
  *                                 "a, b" / "a; b"     → split, but only when every part is a
@@ -60,6 +61,12 @@ export const LIST_FIELDS: Record<string, string[]> = {
   "grant-application": ["collaborators"],
 };
 export const SOURCE_TAGS = ["meeting", "transcript"];
+/** tag → typed scalar fields where a stored "" fails the schema and says nothing (an integer, an enum). */
+export const BLANK_SCALARS: Record<string, string[]> = {
+  meeting: ["duration_minutes"],
+  transcript: ["duration_minutes"],
+  organization: ["status"],
+};
 /** Tags listed for `recording_id` (the field is text wherever it appears). */
 export const RECORDING_TAGS = ["meeting", "transcript"];
 /** A comma in these is always a separator: the values are single words or short phrases by definition. */
@@ -129,6 +136,7 @@ export function fixesOf(note: VaultNote, only: string[] = []): Fix[] {
   for (const tag of tags) {
     if (only.length && !only.includes(tag)) continue;
     for (const field of LIST_FIELDS[tag] ?? []) if (has(field)) add(tag, field, listFix(field, md[field]));
+    for (const field of BLANK_SCALARS[tag] ?? []) if (has(field) && isBlank(md[field])) add(tag, field, { rule: "blank-removed", to: null });
     if (SOURCE_TAGS.includes(tag) && has("source") && isBlank(md.source)) add(tag, "source", { rule: "blank-removed", to: null });
     if (RECORDING_TAGS.includes(tag) && has("recording_id")) {
       const t = asText(md.recording_id);
@@ -143,7 +151,7 @@ export function fixesOf(note: VaultNote, only: string[] = []): Fix[] {
 }
 
 function keysFor(tag: string): string[] {
-  return [...(LIST_FIELDS[tag] ?? []), ...(SOURCE_TAGS.includes(tag) ? ["source"] : []), ...(RECORDING_TAGS.includes(tag) ? ["recording_id"] : []), ...(tag === "spec" ? ["version"] : [])];
+  return [...(LIST_FIELDS[tag] ?? []), ...(BLANK_SCALARS[tag] ?? []), ...(SOURCE_TAGS.includes(tag) ? ["source"] : []), ...(RECORDING_TAGS.includes(tag) ? ["recording_id"] : []), ...(tag === "spec" ? ["version"] : [])];
 }
 
 export async function main(argv: string[], ctx: Ctx): Promise<number> {

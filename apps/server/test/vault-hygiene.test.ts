@@ -387,6 +387,8 @@ function seedShapes(v: FakeVault): void {
   v.add({ id: "m1", path: "vault/meetings/2026-01/one", tags: ["meeting", "transcript"], metadata: { projects: "opencivics, regen-commons", attendees: "", source: "", recording_id: 12345, title: "keep me" } });
   v.add({ id: "m2", path: "vault/meetings/2026-01/two", tags: ["meeting"], metadata: { projects: ["[[vault/projects/a/PROJECT]]"], attendees: ["a@b.c"], source: "fathom", recording_id: "777" } });
   v.add({ id: "s1", path: "vault/specs/one", tags: ["spec"], metadata: { version: 1.2, project: "x" } });
+  v.add({ id: "o1", path: "vault/organizations/one", tags: ["organization"], metadata: { status: "", people: ["[[vault/people/a]]"] } });
+  v.add({ id: "tr1", path: "vault/meetings/2026-01/three", tags: ["transcript"], metadata: { duration_minutes: "", source: "fathom" } });
   v.add({ id: "pr1", path: "vault/projects/a/PROJECT", tags: ["project"], metadata: { keywords: "commons, food", confidence: 0.85 } });
   v.add({ id: "e1", path: "vault/messages/email/x", tags: ["email", "meeting"], metadata: { projects: "x", recording_id: 5 } });
   v.add({ id: "t1", path: "vault/meetings/trashed", tags: ["meeting", "prism-trashed"], metadata: { projects: "x" } });
@@ -398,7 +400,9 @@ test("field-shapes: the dry run counts per field and rule, prints no value and w
   const c = ctxFor(v);
   assert.equal(await fieldShapes.main(VAULT, c), 0);
   assert.equal(v.writes().length, 0);
-  assert.match(out(c), /DRY RUN — 3 note\(s\)/);
+  assert.match(out(c), /DRY RUN — 5 note\(s\)/);
+  assert.match(out(c), /organization\.status: blank-removed: 1/);
+  assert.match(out(c), /transcript\.duration_minutes: blank-removed: 1/);
   assert.match(out(c), /meeting\.projects: split-to-list: 1/);
   assert.match(out(c), /meeting\.recording_id: number-to-text: 1/);
   assert.match(out(c), /spec\.version: number-to-text: 1/);
@@ -413,7 +417,7 @@ test("field-shapes: apply is compare-and-set, touches only the corrected keys, s
   await assert.rejects(fieldShapes.main([...VAULT, "--apply"], ctxFor(v)), /backup-confirmed/);
   assert.equal(await fieldShapes.main([...VAULT, "--apply", "--backup-confirmed"], c), 0);
   const patches = v.writes();
-  assert.deepEqual(patches.map((p) => p.path.split("/").pop()).sort(), ["m1", "pr1", "s1"]);
+  assert.deepEqual(patches.map((p) => p.path.split("/").pop()).sort(), ["m1", "o1", "pr1", "s1", "tr1"]);
   for (const p of patches) assert.ok(p.body.if_updated_at && p.body.force === undefined && p.body.content === undefined);
   assert.deepEqual(patches.find((p) => p.path.endsWith("/m1"))!.body.metadata, { projects: ["opencivics", "regen-commons"], attendees: null, source: null, recording_id: "12345" });
   assert.deepEqual(v.notes.get("m1")!.metadata, { projects: ["opencivics", "regen-commons"], recording_id: "12345", title: "keep me" });

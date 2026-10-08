@@ -238,6 +238,22 @@
       "from": null,
       "to": { "type": "integer", "description": "Epoch milliseconds of the most recent message" },
       "reason": "Ingest key (epoch ms) written by worker/proton.ts and worker/gmail.ts."
+    },
+    {
+      "id": "project-keywords",
+      "tag": "project",
+      "field": "keywords",
+      "from": { "type": "string" },
+      "to": { "type": "array", "description": "Keywords for matching, one per item (e.g. bioregional, food chain, regenerative agriculture)" },
+      "reason": "The write-side shape guard and vault-lint treat keywords as a list (vault-shapes.ts LIST_FIELDS_BY_TAG) while the schema said text, so every project with keywords warned one way or the other. Migration (f) made the stored values lists."
+    },
+    {
+      "id": "meeting-status",
+      "tag": "meeting",
+      "field": "status",
+      "from": { "type": "string", "enum": ["raw", "cleaned", "processed"], "default": "raw" },
+      "to": { "type": "string", "description": "Processing lifecycle", "enum": ["raw", "cleaned", "processed", "enriched", "confirmed"], "default": "raw" },
+      "reason": "438 meeting notes hold confirmed (written by the retired desktop calendar sync before it moved to event_status) and 5 hold enriched; declaring both stops the warning without rewriting a note."
     }
   ]
 }

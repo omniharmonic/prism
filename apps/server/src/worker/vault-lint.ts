@@ -70,7 +70,11 @@ function vaultWarned(row: LintRow): boolean {
   if (Array.isArray(v)) return v.length > 0;
   if (typeof v === "object") {
     const o = v as Record<string, unknown>;
-    for (const k of ["warnings", "errors", "issues"]) if (Array.isArray(o[k]) && (o[k] as unknown[]).length) return true;
+    // `schema_conflict` = the note carries two tags whose definitions of one field differ (a
+    // spec that is also a report). It describes the tag pair, not a value this note holds, and
+    // no rewrite of the note can clear it — so it is not shape drift.
+    const counts = (x: unknown) => !(x && typeof x === "object" && (x as { reason?: unknown }).reason === "schema_conflict");
+    for (const k of ["warnings", "errors", "issues"]) if (Array.isArray(o[k]) && (o[k] as unknown[]).some(counts)) return true;
     if (o.ok === false || o.valid === false) return true;
   }
   return false;

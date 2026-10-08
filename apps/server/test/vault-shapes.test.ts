@@ -149,6 +149,9 @@ test("lint: rates, threshold, rise and persistence (injected listing)", async ()
   assert.equal(lastVaultLintOutcome("primary", deps.getCursor)!.status, "failing");
   // a vault's own validation_status counts too; a listing error stops the run
   assert.equal(lintRows([{ metadata: {}, validation_status: { warnings: [{ field: "x" }] } }], "task").warned, 1);
+  // Two tags that define one field differently (a spec that is also a report): about the tag pair, not this note's data.
+  assert.equal(lintRows([{ metadata: {}, validation_status: { warnings: [{ field: "status", reason: "schema_conflict" }] } }], "spec").warned, 0);
+  assert.equal(lintRows([{ metadata: {}, validation_status: { warnings: [{ field: "status", reason: "schema_conflict" }, { field: "status", reason: "enum_mismatch" }] } }], "spec").warned, 1);
   const broken = await runVaultLintOnce("primary", { ...deps, list: async () => { throw new Error("GET /notes: 503"); } });
   assert.equal(broken.status, "error");
   assert.match(broken.error!, /503/);
