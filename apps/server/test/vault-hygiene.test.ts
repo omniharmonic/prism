@@ -62,7 +62,14 @@ class FakeVault {
     if (url.pathname.startsWith(`${api}/tags/`) && method === "PUT") {
       const name = decodeURIComponent(url.pathname.slice(`${api}/tags/`.length));
       const t = this.tags.find((x) => x.name === name)!;
-      t.fields = { ...(t.fields ?? {}), ...body.fields }; // merges per field, replacing a field's definition
+      // Like vault 0.7.9: every field in the body must agree in type with every OTHER tag that
+      // declares it, else 422 and nothing is written (core collectCrossTagFieldViolations).
+      const violations = Object.entries(body.fields as Record<string, { type?: string }>).flatMap(([field, def]) =>
+        this.tags.filter((o) => o.name !== name && o.fields?.[field] && o.fields[field]!.type !== def.type).map((o) => ({ field, reason: "type_conflict", other_tag: o.name })),
+      );
+      if (violations.length) return json({ error: "tag_field_conflict", error_type: "tag_field_conflict", tag: name, violations }, 422);
+      // merges per field, replacing a field's definition — unless replace_fields, where absent fields are dropped
+      t.fields = body.replace_fields ? { ...body.fields } : { ...(t.fields ?? {}), ...body.fields };
       t.description = body.description;
       return json({ ok: true });
     }
@@ -217,6 +224,39 @@ test("schema: apply PUTs with the admin token, keeps other fields + indexes, ski
   await schema.main([...VAULT, "--apply", "--backup-confirmed"], again);
   assert.equal(v.writes().length, before, "a second run writes nothing");
   assert.match(out(again), /summary: 0 to apply/);
+});
+
+test("schema: a type change of a field several tags share is dropped everywhere, then re-declared (the vault refuses it tag by tag)", async () => {
+  const v = new FakeVault();
+  v.tags = liveSchemas();
+  const c = ctxFor(v, { PARACHUTE_ADMIN_TOKEN: ADMIN });
+  assert.equal(await schema.main([...VAULT, "--apply", "--backup-confirmed"], c), 0, c.lines.join("\n"));
+  for (const tag of ["person", "project", "organization", "concept"]) {
+    assert.equal(v.tags.find((t) => t.name === tag)!.fields!.confidence!.type, "string", tag);
+  }
+  const drops = v.writes().filter((w) => w.body.replace_fields === true);
+  assert.deepEqual(drops.map((w) => w.path.split("/").pop()).sort(), ["concept", "organization", "person", "project"]);
+  assert.ok(drops.every((w) => !("confidence" in w.body.fields)));
+  assert.ok(c.lines.some((l) => /verify: all \d+ change\(s\) live/.test(l)));
+});
+
+test("schema: a run that stopped after dropping a shared field finishes on the next run", async () => {
+  const v = new FakeVault();
+  v.tags = liveSchemas();
+  delete v.tags.find((t) => t.name === "person")!.fields!.confidence; // dropped, then the run died
+  const plan = schema.planChanges(schema.loadFixes(), v.tags, { includeOptional: true });
+  assert.equal(plan.find((p) => p.change.id === "person-confidence")!.verdict, "pending");
+  assert.equal(await schema.main([...VAULT, "--apply", "--backup-confirmed"], ctxFor(v, { PARACHUTE_ADMIN_TOKEN: ADMIN })), 0);
+  assert.equal(v.tags.find((t) => t.name === "person")!.fields!.confidence!.type, "string");
+});
+
+test("schema: a shared field another tag outside the plan declares differently stops the run before any write", async () => {
+  const v = new FakeVault();
+  v.tags = [...liveSchemas(), { name: "outsider", description: "x", fields: { confidence: { type: "number" } } }];
+  const c = ctxFor(v, { PARACHUTE_ADMIN_TOKEN: ADMIN });
+  assert.equal(await schema.main([...VAULT, "--apply", "--backup-confirmed"], c), 1);
+  assert.equal(v.writes().length, 0);
+  assert.ok(c.lines.some((l) => l.includes("BLOCKED confidence") && l.includes("#outsider")));
 });
 
 test("schema: --reverse plans every applied change back to its old definition", async () => {

@@ -71,6 +71,45 @@ export function planChanges(changes: SchemaChange[], live: VaultTag[], opts: { o
     const verdict: Verdict = now === essentials(change.to) ? "already" : now === essentials(change.from) ? "pending" : "drift";
     out.push({ change, verdict, live: cur });
   }
+  // A shared type change drops the field from every declarer before re-declaring it
+  // (sharedTypeChanges). If that run stopped half-way the field is absent here while a
+  // sibling tag is pending or done: re-adding it is the rest of the same change.
+  for (const p of out) {
+    if (p.verdict !== "drift" || p.live || !p.change.from) continue;
+    const sibling = out.some((q) => q !== p && q.change.field === p.change.field && q.verdict !== "tag-missing" && q.verdict !== "drift" && essentials(q.change.to) === essentials(p.change.to));
+    if (sibling) p.verdict = "pending";
+  }
+  return out;
+}
+
+export interface SharedTypeChange {
+  field: string;
+  type: string;
+  /** Planned tags that still declare the field with the old type. */
+  tags: string[];
+  /** Tags outside the plan that declare the field with another type: the change cannot be made. */
+  blockers: string[];
+}
+
+/**
+ * The vault refuses a field whose type differs from ANY other tag's declaration of the same
+ * name (422 tag_field_conflict), so a type change of a field several tags share can never be
+ * written tag by tag. Such a field is first dropped from every planned declarer
+ * (`replace_fields`), then re-declared with the new type. Note values are never touched.
+ */
+export function sharedTypeChanges(changes: SchemaChange[], live: VaultTag[]): SharedTypeChange[] {
+  const out: SharedTypeChange[] = [];
+  for (const field of [...new Set(changes.map((c) => c.field))]) {
+    const planned = new Map(changes.filter((c) => c.field === field).map((c) => [c.tag, c]));
+    const types = new Set([...planned.values()].map((c) => c.to.type ?? ""));
+    if (types.size !== 1) continue;
+    const type = [...types][0]!;
+    const declarers = live.filter((t) => t.fields?.[field] && (t.fields[field]!.type ?? "") !== type);
+    const tags = declarers.filter((t) => planned.has(t.name)).map((t) => t.name);
+    if (!tags.length) continue;
+    const blockers = declarers.filter((t) => !planned.has(t.name)).map((t) => t.name);
+    if (declarers.length > 1 || blockers.length) out.push({ field, type, tags, blockers });
+  }
   return out;
 }
 
@@ -144,6 +183,8 @@ export async function main(argv: string[], ctx: Ctx): Promise<number> {
   for (const p of plan) ctx.log(`  ${describe(p)}`);
   const pending = plan.filter((p) => p.verdict === "pending");
   const counts = (v: Verdict) => plan.filter((p) => p.verdict === v).length;
+  const shared = sharedTypeChanges(pending.map((p) => p.change), live);
+  for (const g of shared) ctx.log(`  shared field "${g.field}": dropped from #${g.tags.join(", #")}, then re-declared as ${g.type} (the vault requires one type across tags)${g.blockers.length ? ` — BLOCKED by #${g.blockers.join(", #")}` : ""}`);
   ctx.log(`summary: ${pending.length} to apply, ${counts("already")} already applied, ${counts("drift")} drift, ${counts("tag-missing")} tag missing`);
   if (!apply) {
     if (pending.length) ctx.log("nothing written. Re-run with --apply --backup-confirmed and PARACHUTE_ADMIN_TOKEN to write.");
@@ -154,7 +195,36 @@ export async function main(argv: string[], ctx: Ctx): Promise<number> {
   for (const p of pending) byTag.set(p.change.tag, [...(byTag.get(p.change.tag) ?? []), p.change]);
   const liveByName = new Map(live.map((t) => [t.name, t]));
   const written: string[] = [];
-  for (const [tag, changes] of byTag) {
+
+  const blocked = shared.filter((g) => g.blockers.length);
+  if (blocked.length) {
+    for (const g of blocked) ctx.log(`  BLOCKED ${g.field}: #${g.blockers.join(", #")} also declare it with another type and are not in this plan`);
+    ctx.log("stopped before writing anything.");
+    return 1;
+  }
+  for (const g of shared) {
+    for (const tag of g.tags) {
+      const body = tagBody(liveByName.get(tag)!, []);
+      delete body.fields[g.field];
+      try {
+        await vault.putTag(tag, { ...body, replace_fields: true }, admin!);
+        const t = liveByName.get(tag)!;
+        const { [g.field]: _dropped, ...rest } = t.fields ?? {};
+        liveByName.set(tag, { ...t, fields: rest });
+        ctx.log(`  dropped ${tag}.${g.field} (re-declared as ${g.type} below)`);
+      } catch (e) {
+        ctx.log(`  FAILED dropping ${tag}.${g.field}: ${scrub(e instanceof Error ? e.message : String(e))}`);
+        ctx.log(`stopped. Re-run this step to finish: a dropped field is re-declared on the next run. Tags written before the failure: ${written.join(", ") || "none"}.`);
+        return 1;
+      }
+    }
+  }
+  // Type changes first: a tag's PUT carries its whole field map, and the vault checks every
+  // field in it against the other tags, so a field that still disagrees elsewhere (report.date
+  // vs transcript.date) must be corrected before those other tags are written.
+  const changesType = (tag: string, cs: SchemaChange[]) => cs.some((c) => (live.find((t) => t.name === tag)?.fields?.[c.field]?.type ?? c.to.type) !== c.to.type);
+  const ordered = [...byTag].sort((a, b) => Number(changesType(b[0], b[1])) - Number(changesType(a[0], a[1])));
+  for (const [tag, changes] of ordered) {
     try {
       await vault.putTag(tag, tagBody(liveByName.get(tag)!, changes), admin!);
       written.push(tag);
