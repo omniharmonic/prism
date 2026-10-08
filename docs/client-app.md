@@ -118,8 +118,16 @@ or a universal link. It plugs into the `#[cfg(mobile)]` arm of `signin.rs` and r
   2. It then forgets the token: first in memory, then in the keychain. A keychain failure
      can therefore never skip the revoke, and it is reported to the UI as a toast.
   3. It deletes the offline read cache (`prism-read-cache`) and reloads.
-- **401** on our token: `onUnauthorized()` → `sign_out {revoke:false}` (the token is dead
-  anyway). The app shows the sign-in screen. It never auto-opens the browser.
+- **401** on our token is a suspicion, not a sign-out (`apps/web/src/native/sessionGuard.ts`
+  states the rule). The page asks ONE `GET /auth/me` with the same token. Only a 401 from
+  `/auth/me` itself ends the session: `onUnauthorized()` → `sign_out {revoke:false}`, then
+  the page reloads into the sign-in screen. A 200 keeps the token; no answer, a 5xx or a
+  proxy page keeps it too. Nothing ever starts a sign-in except the person's press — each
+  sign-in mints a device. `signIn()` is one at a time: on iOS a call while the sheet is up
+  joins it; on desktop a second click restarts the flow (the shell cancels the first).
+- **No token under a running page** (signed out from the menu, the Keychain item gone): the
+  request is not sent at all — it is answered 401 locally — and the page reloads into the
+  sign-in screen. A page never carries on without a bearer behind a signed-in workspace.
 
 ## Keychain
 

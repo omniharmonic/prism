@@ -1,6 +1,6 @@
 import { PrismMark } from "@prism/core/shell";
 import { useEffect } from "react";
-import { startNativeSignIn, getHost } from "../transport";
+import { startNativeSignIn, getHost, SESSION_ENDED_KEY } from "../transport";
 import { takeSignOutNotice } from "../config";
 
 /** Keep native credential/network waits visible instead of a frozen boot label. */
@@ -21,8 +21,19 @@ export function NativeStartupScreen({ phase }: { phase: "credentials" | "connect
  * the device token. The button just invokes the host hook. When the shell has
  * a token again it reloads the webview, or dispatches `prism:host-token` on
  * window — either way we re-boot so the auth gate re-checks /auth/me.
+ *
+ * Sign-in starts HERE and nowhere else: a 401 never starts one (native/sessionGuard.ts).
  */
 const signedOutUnreached = takeSignOutNotice();
+/** Read once per page load: the server refused this device's token (transport.ts reloaded us
+ *  here). Said plainly, because the person did not ask to be signed out. */
+const sessionEnded = (() => {
+  try {
+    const set = sessionStorage.getItem(SESSION_ENDED_KEY) === "1";
+    sessionStorage.removeItem(SESSION_ENDED_KEY);
+    return set;
+  } catch { return false; }
+})();
 
 export function NativeSignInScreen({ notice }: { notice?: string }) {
   useEffect(() => {
@@ -42,7 +53,7 @@ export function NativeSignInScreen({ notice }: { notice?: string }) {
         <div>
           <h1 style={{ margin: 0, fontSize: 22, fontWeight: 600 }}>Sign in to Prism</h1>
           <p style={{ margin: "6px 0 0", fontSize: 13, opacity: 0.65 }}>
-            {signedOutUnreached ? "Signed out on this device. The server could not be reached, so this session may still be listed there until it expires — sign in and check Settings → Account when you are back online." : notice ?? "You'll sign in with your browser, then come straight back."}
+            {signedOutUnreached ? "Signed out on this device. The server could not be reached, so this session may still be listed there until it expires — sign in and check Settings → Account when you are back online." : notice ?? (sessionEnded ? "This device was signed out by the server. Sign in again to continue." : "You'll sign in with your browser, then come straight back.")}
           </p>
         </div>
         <button

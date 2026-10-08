@@ -141,10 +141,21 @@ validated redirect target is shown prominently beneath it, either the scheme
   deep link. Always check that `state` matches.
 - The browser leg needs the user's web login. If the owner uses the magic link, it
   must be opened in the **same browser** so the parked request is found. Otherwise
-  the user just starts again from the app once signed in. A new invitee first
+  the user just starts again from the app once signed in.
+- **The emailed link opens in the browser, not in the app's sign-in sheet.** The sheet
+  (`ASWebAuthenticationSession`, non-ephemeral) shares the browser's cookies, so the web
+  login's "link sent" page waits for the session: while it shows, and only when it was
+  reached with `?next=/auth/device/continue`, it asks `GET /auth/me` (every 3 s, on
+  focus / `visibilitychange`, and from an "I've opened the link — continue" button) and,
+  once signed in, goes to `postLoginTarget()` — that one fixed path. The server then shows
+  the CONSENT page as always (session + this browser's parked request); nothing is approved
+  by waiting. The browser that opened the link is sent to the same consent page by
+  `/auth/callback`; approving THERE sends the code to `prism://auth/callback` outside the
+  sheet, where the app ignores it (`links.rs`) — approve in the app's sheet. A new invitee first
   accepts the invite in the browser, then starts sign-in from the app.
-- Store the token in the Keychain or Keystore. On `401`, drop it and run the flow
-  again.
+- Store the token in the Keychain or Keystore. A single `401` is not proof the token is
+  dead: confirm with `GET /auth/me` before dropping it, and never start the flow again
+  without the person asking — each run mints a device (six in an hour on the first iOS run).
 - Sign-out: call `POST /auth/device/revoke` with the token.
 
 ## Known limits
@@ -181,8 +192,8 @@ The shell injects this **before the app script runs** (Tauri `initialization_scr
 interface PrismHost {
   apiOrigin?: string;            // "https://prism.example.com"; else VITE_PRISM_API_ORIGIN at build time
   getToken(): string | null | undefined | Promise<string | null | undefined>; // Keychain/Keystore `pd_…`
-  onUnauthorized?(): void | Promise<void>;  // server returned 401 for our token: drop it (debounced, 1 per 2s)
-  signIn?(): void | Promise<void>;          // run the PKCE flow; falls back to onUnauthorized
+  onUnauthorized?(): void | Promise<void>;  // the token is DEAD (401 confirmed by /auth/me): forget it. Must not sign in.
+  signIn?(): void | Promise<void>;          // run the PKCE flow — only for a person's press; one at a time
   onSignedOut?(): void | Promise<void>;     // user signed out; token already revoked server-side
 }
 ```
@@ -192,8 +203,21 @@ interface PrismHost {
 - After a successful sign-in the shell reloads the webview, or dispatches
   `window.dispatchEvent(new Event("prism:host-token"))`; the sign-in screen reloads on it.
 - **Auth gate:** `main.tsx` calls `/auth/me` with the bearer. No token skips the call.
-  No token or a 401 renders "Sign in to Prism" (`NativeSignInScreen`), whose button calls
-  `host.signIn()`. A 401 also fires `onUnauthorized` and empties the read cache.
+  No token, or a token `/auth/me` refuses, renders "Sign in to Prism" (`NativeSignInScreen`),
+  whose button calls `host.signIn()` — the ONLY thing that starts a sign-in.
+- **When a session ends** (`src/native/sessionGuard.ts`; `npm run verify:session -w @prism/web`):
+  1. One 401 is a suspicion. The token that was refused is asked one question, `GET /auth/me`
+     with that same token. 401 from `/auth/me` = dead. 200 + `authenticated:true` = alive,
+     nothing happens. Anything else (no answer, 5xx, a proxy's page) = unknown, nothing
+     happens. One question at a time; a burst of 401s asks once. A 401 for a token that is
+     no longer the current one is ignored.
+  2. A dead token is forgotten once (`onUnauthorized`), the read cache is emptied, and the
+     page reloads into the sign-in screen. Nothing starts a sign-in by itself: every sign-in
+     mints a device.
+  3. Once the page has sent the token, a request that would go out with NO token is not
+     sent (it is answered 401 locally) and the page reloads into the sign-in screen.
+  At launch a 401 on `/auth/me` waits for that answer: alive → asked once more; unknown →
+  "can't reach the server" (`ReconnectScreen`), never the sign-in screen.
 - **Sign-out** (`logout()`): `POST /auth/device/revoke` with the bearer, then
   `onSignedOut`, then the cache is cleared.
 
@@ -206,7 +230,8 @@ interface PrismHost {
 | origin | same-origin (`VITE_GATEWAY_URL` in dev) | `host.apiOrigin` |
 | credentials | `include` (session cookie) | `omit`, never cookies |
 | auth | cookie (+ `Capability` header for share links) | `Authorization: Bearer pd_…`, only to the configured origin |
-| 401 | unchanged | `host.onUnauthorized()` |
+| 401 | unchanged | confirmed with one `/auth/me`; only a dead token → `host.onUnauthorized()` + reload |
+| no token | n/a | after one was sent: not sent, reload into sign-in |
 
 Routed through it: `parachute/rest.ts` (all note/tag/vault/graph/search/history calls),
 `offline/outbox.ts` replay, `config.ts` (`/auth/me`, login, register, invite-info,
@@ -248,5 +273,5 @@ device token as an async function (resolved on every (re)connect) in native, els
 and refresh the entry (403/404/410 evict it). Offline (`navigator.onLine` false or a
 fetch `TypeError`): serve the last good response, else fail as before. The key is
 server + vault + workspace + capability-link + path. Bounded LRU: 300 entries / 64 MB,
-a body over 16 MB is not cached. Cleared on sign-out, on a native 401, and when the signed-in
+a body over 16 MB is not cached. Cleared on sign-out, when a native session ends, and when the signed-in
 email changes. The write outbox (`offline/outbox.ts`) is independent and works in both modes.

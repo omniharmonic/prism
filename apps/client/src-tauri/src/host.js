@@ -73,6 +73,7 @@
   }
 
   // ---- the host contract ----------------------------------------------------
+  var signInFlight = null; // the sign-in in progress, if any (see signIn)
   var host = {
     get apiOrigin() {
       return currentOrigin();
@@ -84,15 +85,22 @@
       });
     },
     onUnauthorized: function () {
-      // The server rejected the token: forget it locally (it is dead anyway).
+      // The token is dead (the page confirmed the 401 with /auth/me first): forget it
+      // locally. This NEVER starts a sign-in — every sign-in mints a device, so only
+      // the person's press on "Sign in" may start one.
       return ipc("sign_out", { revoke: false }).catch(function () {});
     },
     signIn: function () {
-      // A second click restarts the flow (the shell cancels the previous one),
-      // e.g. after the user closed the browser tab.
-      // iOS shows the system sign-in sheet over the app; no hint needed.
+      // ONE sign-in at a time.
+      // iOS: the sign-in sheet is modal over the app, so a call while one is up
+      // joins it — never a second sheet, never a second consent, never a second
+      // device (two "Prism on iPhone" tokens 3.4 s apart, 2026-10-08).
+      // Desktop: a second click RESTARTS the flow (e.g. after the browser tab was
+      // closed) — the shell cancels the previous attempt's listener before it
+      // starts the new one, so there is still only one that can finish.
+      if (IOS && signInFlight) return signInFlight;
       if (!IOS) toast("Continue in your browser to sign in…");
-      return ipc("sign_in").then(
+      var flight = ipc("sign_in").then(
         function () {
           // Re-boot so the auth gate re-checks /auth/me with the new token.
           window.location.reload();
@@ -102,6 +110,12 @@
           if (!/cancelled/i.test(msg)) toast("Sign-in failed: " + msg);
         }
       );
+      signInFlight = flight;
+      function settled() {
+        if (signInFlight === flight) signInFlight = null;
+      }
+      flight.then(settled, settled);
+      return flight;
     },
     onSignedOut: function () {
       // The app already revoked the token server-side (POST /auth/device/revoke).
