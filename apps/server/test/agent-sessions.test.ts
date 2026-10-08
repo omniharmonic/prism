@@ -409,6 +409,9 @@ test("open note: content goes into the FIRST turn only (bounded), later turns ne
   assert.match(p1, /summarize$/);
   assert.doesNotMatch(p2, /SECRET-PLAN|open_note/);
   assert.match(p2, /and again$/);
+  // Long notes are paged on the vault profiles; the prism_* profiles have their own capped reader.
+  for (const profile of ["vault-ro", "vault-rw"] as const) assert.ok(buildSessionPrompt("x", { profile, firstTurn: true }).includes("content_next_offset"), profile);
+  assert.ok(!buildSessionPrompt("x", { profile: "prism-ro", firstTurn: true }).includes("content_next_offset"));
   assert.equal(buildSessionPrompt("x", { profile: "vault-rw", firstTurn: false, noteId: "n9" }).includes("Active note: n9."), true);
 });
 
