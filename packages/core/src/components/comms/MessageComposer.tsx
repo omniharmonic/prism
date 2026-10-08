@@ -22,6 +22,8 @@ interface MessageComposerProps {
   disabled?: boolean;
   sendDisabled?: boolean;
   placeholder?: string;
+  /** Put the caret in the field when the composer appears (a composer opened by an explicit tap). */
+  focusOnOpen?: boolean;
 }
 
 export function MessageComposer(props: MessageComposerProps) {
@@ -43,6 +45,7 @@ function ScopedMessageComposer({
   retrySafe,
   deliveryContext,
   enterToSend = true,
+  focusOnOpen = false,
 }: MessageComposerProps) {
   const draft = useScopedDraft("message", draftScope || null, draftKey);
   const { text, setText } = draft;
@@ -57,6 +60,17 @@ function ScopedMessageComposer({
     return () => {
       mounted.current = false;
     };
+  }, []);
+
+  // Once, on open: the tap that opened the composer is the gesture that lets a
+  // phone raise its keyboard, and the field is brought above it.
+  useEffect(() => {
+    if (!focusOnOpen || disabled) return;
+    const input = inputRef.current;
+    if (!input) return;
+    input.focus({ preventScroll: true });
+    input.setSelectionRange(input.value.length, input.value.length);
+    input.scrollIntoView({ block: "nearest" });
   }, []);
 
   const handleSend = async () => {

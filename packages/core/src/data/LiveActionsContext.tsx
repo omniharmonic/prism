@@ -19,15 +19,31 @@ export function useLiveActionsClient(): LiveActionsClient | null {
 }
 
 /**
- * The server's live-actions status, probed once (cached 10 min). null while
- * loading, when the shell has no client, or when the viewer is not the server
- * owner (403) — every caller then behaves as before.
+ * Why a live-actions family can or cannot be used right now. A caller that
+ * renders a control for the family shows `reason` beside it when it is not
+ * `ready`, so the control never just sits there doing nothing.
  */
-export function useLiveActionsStatus(): LiveActionsStatus | null {
+export type LiveActionsState =
+  | "ready"
+  /** The status probe has not answered yet. */
+  | "loading"
+  /** This shell has no live-actions client (desktop, capability viewers). */
+  | "no-client"
+  /** The probe was refused (401/403/404): this viewer is not the server owner. */
+  | "not-allowed"
+  /** The probe failed for another reason (offline, server error). */
+  | "unreachable"
+  /** `ACTIONS_<FAMILY>_ENABLED` is off on the server. */
+  | "disabled"
+  /** The family is on but the server holds no credential for it. */
+  | "unconfigured";
+
+function useLiveActionsProbe(): { client: LiveActionsClient | null; status: LiveActionsStatus | null; settled: boolean; failed: boolean } {
   const client = useLiveActionsClient();
-  const { data } = useQuery({
+  const enabled = !!client && (!client.scope || !!client.scope());
+  const { data, isPending, isError } = useQuery({
     queryKey: ["live-actions-status", client?.scope?.() ?? ""],
-    enabled: !!client && (!client.scope || !!client.scope()),
+    enabled,
     staleTime: 10 * 60_000,
     retry: (n, e) => !(e instanceof LiveActionError && (e.status === 401 || e.status === 403 || e.status === 404)) && n < 1,
     queryFn: async () => {
@@ -39,7 +55,16 @@ export function useLiveActionsStatus(): LiveActionsStatus | null {
       }
     },
   });
-  return client ? (data ?? null) : null;
+  return { client: enabled ? client : null, status: client ? (data ?? null) : null, settled: !enabled || !isPending, failed: enabled && isError };
+}
+
+/**
+ * The server's live-actions status, probed once (cached 10 min). null while
+ * loading, when the shell has no client, or when the viewer is not the server
+ * owner (403) — every caller then behaves as before.
+ */
+export function useLiveActionsStatus(): LiveActionsStatus | null {
+  return useLiveActionsProbe().status;
 }
 
 /**
@@ -47,8 +72,18 @@ export function useLiveActionsStatus(): LiveActionsStatus | null {
  * otherwise null, so a component falls back to its existing (desktop) path.
  */
 export function useLiveActions(family: keyof LiveActionsStatus): LiveActionsClient | null {
-  const client = useLiveActionsClient();
-  const status = useLiveActionsStatus();
+  return useLiveActionsAvailability(family).client;
+}
+
+/** {@link useLiveActions} plus WHY the family is unavailable when it is. */
+export function useLiveActionsAvailability(family: keyof LiveActionsStatus): { client: LiveActionsClient | null; state: LiveActionsState } {
+  const { client, status, settled, failed } = useLiveActionsProbe();
+  if (!client) return { client: null, state: "no-client" };
+  if (!settled) return { client: null, state: "loading" };
+  if (failed) return { client: null, state: "unreachable" };
   const s = status?.[family];
-  return client && s?.enabled && s.configured ? client : null;
+  if (!s) return { client: null, state: "not-allowed" };
+  if (!s.enabled) return { client: null, state: "disabled" };
+  if (!s.configured) return { client: null, state: "unconfigured" };
+  return { client, state: "ready" };
 }

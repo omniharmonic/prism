@@ -265,7 +265,7 @@ export {
 } from "./lib/host/vaultOps";
 
 // Live actions seam (Arch v2 WP1.5): email / calendar / Matrix actions via the server.
-export { LiveActionsProvider, useLiveActionsClient, useLiveActionsStatus, useLiveActions } from "./data/LiveActionsContext";
+export { LiveActionsProvider, useLiveActionsClient, useLiveActionsStatus, useLiveActions, useLiveActionsAvailability, type LiveActionsState } from "./data/LiveActionsContext";
 export {
   createHttpLiveActionsClient,
   LiveActionError,
