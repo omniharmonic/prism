@@ -320,7 +320,7 @@ const candidateOf = (n: { id: string; path: string | null; metadata: Record<stri
     path: n.path,
     title: (typeof m.title === "string" && m.title.trim()) || (GENERIC_LEAF.test(leaf) && parent ? parent : leaf.replace(/\.md$/i, "")) || n.id,
     aliases: strings(m.aliases, m.alias),
-    emails: strings(m.email, m.emails, m.contact, m.contact_emails),
+    emails: strings(m.email, m.emails, m.contact, m.contact_emails, (m.channels && typeof m.channels === "object" ? (m.channels as Record<string, unknown>).email : undefined)),
   };
 };
 /** Notes under a folder, from the (permission-filtered) tree. */

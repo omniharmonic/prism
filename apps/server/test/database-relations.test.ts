@@ -192,6 +192,24 @@ test("backfill plan: proposals from names, unresolved listed, set targets left a
   assert.equal(plan.alreadySet, 1);
 });
 
+test("dry-run findings (2026-10-08): contact is not a person link; chat/mail tags get no hints; a name with a slash still resolves", () => {
+  assert.equal(inferRelationTarget("contact", KNOWN), null, "a person's own contact address is not a link to someone else");
+  assert.equal(inferRelationTarget("contacts", KNOWN), null);
+  const plan = planRelationTargets({
+    person: { description: null, fields: { contact: { type: "string" }, projects: { type: "array" } } },
+    "message-thread": { description: null, fields: { participants: { type: "array" } } },
+    email: { description: null, fields: { to: { type: "string" } } },
+  });
+  const keys = [...plan.proposals, ...plan.unresolved].map((x) => `${x.tag}.${x.field}`);
+  assert.ok(keys.includes("person.projects"));
+  assert.ok(!keys.includes("person.contact"), "contact is never proposed");
+  assert.ok(!keys.some((k) => k.startsWith("message-thread.") || k.startsWith("email.")), "ingested chat/mail people fields are skipped");
+  const sprint: RelationCandidate[] = [{ id: "s6", path: "vault/projects/x/sprints/sprint-6", title: "Sprint 6 (10/6 - 10/20)", aliases: [], emails: [] }];
+  const r = resolveRelationValue("Sprint 6 (10/6 - 10/20)", buildRelationIndex(sprint));
+  assert.equal(r.kind === "note" ? r.note.id : r.kind, "s6");
+  assert.equal(resolveRelationValue("[[Sprint 6 (10/6 - 10/20)]]", buildRelationIndex(sprint)).kind, "none", "a [[link]] with a slash stays a path");
+});
+
 // ── server ───────────────────────────────────────────────────────────────────
 
 let fv: FakeVault;

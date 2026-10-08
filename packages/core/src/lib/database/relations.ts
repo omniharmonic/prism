@@ -115,7 +115,12 @@ export function resolveRelationValue(raw: string, idx: RelationIndex): RelationR
   if (!t) return { kind: "none" };
   const isLink = t.length >= 4 && t.startsWith("[[") && t.endsWith("]]");
   const inner = isLink ? linkTarget(t) : t;
-  if (inner.includes("/")) return resolvePath(inner, idx) ?? { kind: "none" };
+  if (inner.includes("/")) {
+    const byPath = resolvePath(inner, idx);
+    // A [[link]] is a path; a plain value with a "/" may still be a name ("Sprint 6 (10/6 - 10/20)").
+    if (byPath || isLink) return byPath ?? { kind: "none" };
+    return one(idx.byName.get(nameKey(inner)), "name") ?? { kind: "none" };
+  }
   if (looksLikeEmail(inner)) return one(idx.byEmail.get(inner.toLowerCase()), "email") ?? { kind: "none" };
   // A bare word: a path at the top level, a slug, then a name.
   const top = one(idx.byPath.get(pathKey(inner)), "path");

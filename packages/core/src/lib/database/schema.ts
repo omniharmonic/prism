@@ -244,7 +244,7 @@ export const PRESENTATION_KEYS = new Set(["contentFont"]);
 /** A metadata key no schema declares may be shown as a free property. */
 export const isListableKey = (k: string): boolean => !isSystemKey(k) && !PRESENTATION_KEYS.has(k);
 
-const PERSON_KEYS = /^(assigned|assignee|assignees|owner|owners|person|people|author|authors|lead|attendees|participants|collaborators|reviewer|reviewers|contact)$/i;
+const PERSON_KEYS = /^(assigned|assignee|assignees|owner|owners|person|people|author|authors|lead|attendees|participants|collaborators|reviewer|reviewers)$/i;
 /** A property name that reads as people ("assignee", "owner", "reviewer", …) — `inferKind`'s own rule. */
 export const isPeopleKeyName = (key: string): boolean => PERSON_KEYS.test(key);
 const RELATION_KEYS = /^(project|projects|parent|related|relates_to|organization|organizations|org|epic|area)$/i;
@@ -256,7 +256,7 @@ const PHONE_KEYS = /^(phone|telephone|mobile|cell|phone_number)$/i;
 const FILES_KEYS = /^(files?|attachments?|media|documents?)$/i;
 
 /** Property names that point at people, whatever their exact word. */
-const PERSON_TARGET_NAMES = /^(people|persons?|attendees?|participants?|assigned|assignees?|owners?|authors?|leads?|collaborators?|reviewers?|contacts?|members?)$/i;
+const PERSON_TARGET_NAMES = /^(people|persons?|attendees?|participants?|assigned|assignees?|owners?|authors?|leads?|collaborators?|reviewers?|members?)$/i;
 const ORG_TARGET_NAMES = /^(orgs?|organi[sz]ations?|compan(y|ies))$/i;
 
 /**
@@ -936,11 +936,15 @@ export interface RelationTargetPlan {
  * NAME gives it — or why there is none. Presentation only: the result is turned into
  * `relationTag` hints; no stored value is ever read or rewritten.
  */
+const UNLINKED_PEOPLE_TAGS: ReadonlySet<string> = new Set(["email", "message-thread", "message-archive"]);
+
 export function planRelationTargets(schemas: SchemaMap, skipTag: (tag: string) => boolean = () => false): RelationTargetPlan {
   const known = Object.keys(schemas);
   const out: RelationTargetPlan = { proposals: [], unresolved: [], alreadySet: 0 };
   for (const tag of Object.keys(schemas).sort()) {
-    if (skipTag(tag)) continue;
+    // Chat and mail people fields hold ingested display names / addresses of strangers,
+    // not links someone curates: a relation hint there would show mostly "not linked".
+    if (skipTag(tag) || UNLINKED_PEOPLE_TAGS.has(tag)) continue;
     for (const [field, f] of Object.entries(schemas[tag]?.fields ?? {})) {
       if (isSystemKey(field) || f.deleted) continue;
       const kind = inferKind(field, f);
