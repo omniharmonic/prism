@@ -128,6 +128,16 @@ Still unmerged, each needs ONE small fresh agent (do not resume the old agents �
 Open: unexplained `/health` misses with plenty of free memory (2026-10-04 21:54, 2026-10-06 22:46) — check pm2 logs around those times.
 
 
+## DEPLOYED 2026-10-07 evening — READ FIRST
+
+Production runs main `7ee7272a` (server restarted, PWA swapped in). Owner go-ahead was given for this deploy.
+
+- **What went out:** everything on main up to and including `feat/w11-deviations` (guided property type conversion, header breadcrumb, ⌘/ block menu, one publish flow). That branch's first full run had ONE failure: my merge of main dropped a closing `});` in `apps/server/test/database-props.test.ts` (typecheck + that file failed; all 10 browser shards and the other 182 server files were green). Fixed in `e701df6e`; server typecheck + the file (25/25) re-run green. The browser shards were NOT re-run after that test-only fix.
+- **Not deployed, not merged:** `feat/w16-polish` (worktree `.worktrees/w4-shell`, head `066fe134`). Its agent was cut off mid-work; the uncommitted files are saved as a WIP commit. 19 commits behind main, never typechecked or tested. To finish: merge main, apply the merge rule (no deleted tests / reverted files), typecheck, `after-run.sh`, then ff-merge.
+- **Rollback:** previous code = `0e7fb3ad` (what pm2 started on 2026-10-02); previous web build = `apps/web/dist-prev-20261007-2006`; backup = `~/parachute-backups/20261008T020449Z-pre-w16-deploy`. To roll back the web app only: swap the folders back. To roll back the server: check out `0e7fb3ad`, `pm2 restart prism-server`, and null the `collab_docs` base columns as CLAUDE.md "Rollback (L4/L5)" says.
+- **Checked after deploy:** `/health` 200 with vault, no stderr since restart, workers ticking (matrix, reconcile 1570 rooms), public site serves the new entry chunk, new routes answer (401/403, not 404).
+- **Owner actions still open:** (1) `apps/server/.env` has `COLLAB_SUGGEST_ENFORCED=false`; with this client deployed it should be removed or set `true`, then pm2 restart (agents never touch `.env`). (2) `claude` → `/login` on the server for the agent. (3) Google `gog` re-auth for calendar. (4) OK to clear today's `triage-failed` tags. (5) Prism Client rebuild on the build machine.
+
 ## STOPPING POINT 2026-10-07 — READ FIRST (supersedes the sections above)
 
 **Main** = `bf325c96` + whatever landed after this note (check `git log`). NOTHING IS DEPLOYED: production (pm2 `prism-server`, `apps/web/dist`) still runs the release from before this work. Deploy order when the owner says go: restart the server first (`pm2 restart prism-server`, additive DB migrations run at start), then build + ship the PWA, then rebuild the Prism Client. Several features say "server first" (agent error codes, Messages → People route, pinned properties, search filters).
