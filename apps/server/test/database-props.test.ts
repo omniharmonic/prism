@@ -599,6 +599,7 @@ test("convert: bounded like remove-values — pages per run, `more`, one bulk jo
   let limited = 0;
   for (let i = 0; i < 40; i++) if ((await convert("recipe", "notes", { to: "number" })).status === 429) limited++;
   assert.ok(limited > 0, "convert is rate limited");
+});
 
 // ── pinned properties (per-tag `pinned` hint: what a page shows at the top) ──────────────
 
