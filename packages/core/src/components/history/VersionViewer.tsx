@@ -9,6 +9,7 @@ import { reviewMode } from "../../lib/governance/review";
 import { useNoteVersion, useRestoreVersion, useHistorySource } from "../../app/hooks/useNoteHistory";
 import { useIsMobile } from "../../app/hooks/useIsMobile";
 import { contentAsText, diffMetadata, diffText, type DiffRow } from "../../lib/history/diff";
+import { producerOf, replacedByLine, withSource, writerOf, writerTitle } from "../../lib/history/attribution";
 import { sanitizeHtml } from "../../lib/html/sanitize";
 import { Button } from "../ui/Button";
 import { Spinner } from "../ui/Spinner";
@@ -96,6 +97,11 @@ export function VersionViewer({
   );
 
   const when = savedAt(versions, index);
+  // Who produced this state, when no person did: the agent/sync label (owner only — see attribution.ts).
+  const made = producerOf(versions, index);
+  const author = withSource(writerOf({ writer: summary.writer, metadata: summary.metadata, via: made?.via ?? null, producedAt: when }), made);
+  const authorLine = author.kind === "external" || (author.kind === "agent" && !author.name) ? `${writerTitle(author)}${author.source ? ` (${author.source})` : ""} · ` : "";
+  const replacedBy = replacedByLine(summary);
   const unrecoverable = selected.data?.content === null;
   const isIdentical = compare === "current" && diff && diff.added === 0 && diff.removed === 0 && metaChanges.length === 0;
 
@@ -148,8 +154,8 @@ export function VersionViewer({
               {current && selected.data ? (when ? formatWhen(when) : "Oldest saved version") : "Saved version"}
             </div>
             <div className="text-xs leading-relaxed break-words" style={{ color: "var(--text-muted)" }}>
-              {current && selected.data ? <>{when ? `${ago(when)} · ` : ""}then {opLabel(summary.op)} {ago(summary.supersededAt)}
-              {summary.actor ? ` · ${summary.actor}` : ""}{summary.via ? ` · via ${summary.via}` : ""}</> : "Checking page access"}
+              {current && selected.data ? <>{authorLine}{when ? `${ago(when)} · ` : ""}then {opLabel(summary.op)} {ago(summary.supersededAt)}
+              {replacedBy}</> : "Checking page access"}
             </div>
           </div>
           <Button

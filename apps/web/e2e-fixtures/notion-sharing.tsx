@@ -4,6 +4,8 @@
  *   ?panel=info     PageInfo — word/character count, created, edited, last editor
  *   ?panel=shared   SharedWithMe (sidebar section); &guest for the guest-only view, &empty
  *   ?panel=move     MoveAccessNotice for a move out of a shared page
+ *   &external       (history/info) states written OUTSIDE Prism: stale stamps + the
+ *                   owner-visible vault provenance (actor / via) of each change
  * &dark renders the dark theme.
  */
 import React, { useState } from "react";
@@ -31,24 +33,38 @@ useAgentChatStore.setState({ scope: "fixture-2d" });
 const ME = "u_00000000000000a1"; // opaque writer stamp ids (never emails)
 const stamp = (who: string, kind: string, when: string) => ({ prism_last_writer: who, prism_last_write_at: when, prism_last_change: `${kind}@${when}` });
 const at = (h: number) => new Date(Date.UTC(2026, 9, 2, h, 0)).toISOString();
+const external = params.has("external");
 
 const note: Note = {
   id: "handbook",
   path: "Research/Research handbook",
   content: "<h1>Research handbook</h1><p>A shared workspace where you and your agent work with connected context.</p><p>Prism brings notes, tasks and sources together.</p>",
-  metadata: stamp(ME, "edit", at(11)),
+  // &external: the stamp is two hours older than the note — a write without one (an agent on the vault MCP) came after.
+  metadata: stamp(ME, "edit", external ? at(9) : at(11)),
   tags: ["research"],
   createdAt: "2026-09-01T09:00:00Z",
   updatedAt: at(11),
 };
 // Newest first. A row is the state BEFORE a change; its metadata says who wrote that state.
-const versions: NoteVersion[] = [
+const plainVersions: NoteVersion[] = [
   { versionIx: 4, op: "update", supersededAt: at(11), path: note.path, metadata: stamp(ME, "accepted-suggestion", at(10)), contentLength: 120, content: null },
   { versionIx: 3, op: "update", supersededAt: at(10), path: note.path, metadata: stamp(ME, "agent", at(9)), contentLength: 110, content: null },
   { versionIx: 2, op: "update", supersededAt: at(9), path: note.path, metadata: null, contentLength: 90, content: null, writer: { kind: "person", name: "Sam Chen", self: false } },
   { versionIx: 1, op: "update", supersededAt: at(8), path: note.path, metadata: stamp("link", "edit", at(7)), contentLength: 80, content: null },
   { versionIx: 0, op: "update", supersededAt: at(7), path: note.path, metadata: null, contentLength: 60, content: null },
 ];
+// A row's actor/via describe the change that REPLACED it (owner view only).
+const versions: NoteVersion[] = external
+  ? plainVersions.map((v) =>
+      v.versionIx === 4
+        ? { ...v, actor: "agent-session:3f2a9c0b-1111-4222-8333-444455556666", via: "mcp" }
+        : v.versionIx === 3
+          ? { ...v, metadata: stamp(ME, "edit", at(6)) }
+          : v.versionIx === 2
+            ? { ...v, writer: undefined, actor: "routine:morning-intel", via: "api" }
+            : v,
+    )
+  : plainVersions;
 const activity: PageActivity = {
   comments: [
     {
@@ -66,7 +82,7 @@ const activity: PageActivity = {
   ],
   shares: [{ name: "Morgan Lee", avatar: null, email: "morgan.lee@prism.test", level: "edit", at: Date.parse(at(9)) + 900_000, by: "Jordan Diaz", scope: "page" }],
   sharesVisible: true,
-  lastEditor: { kind: "person", name: "Jordan Diaz", self: true },
+  lastEditor: external ? { kind: "external", name: null, self: false } : { kind: "person", name: "Jordan Diaz", self: true },
   createdAt: note.createdAt,
   updatedAt: note.updatedAt,
   writers: { [ME]: "Jordan Diaz" },

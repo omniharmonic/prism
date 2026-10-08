@@ -299,7 +299,7 @@ export { PersonAvatar, toneFor } from "./components/sharing/PersonAvatar";
 export { SharedWithMe, useSharedWithMe, useViewerIsGuest } from "./components/sharing/SharedWithMe";
 export { PageInfo, countText, plainText } from "./components/sharing/PageInfo";
 export { PageUpdates, buildUpdates, type UpdateItem } from "./components/sharing/PageUpdates";
-export { writerOf, writerTitle, writerName, lastEditedBy } from "./lib/history/attribution";
+export { writerOf, writerTitle, writerName, lastEditedBy, producerOf, sourceLabel, withSource } from "./lib/history/attribution";
 export { MoveAccessNotice, moveAccessSummary, useMoveAccessPreview } from "./components/sharing/MoveAccessNotice";
 // Shell sync state + motion (wave 2E: NP-OF-01, NP-SB-15, NP-PG-06, NP-AX-06)
 export { SyncStateBadge, OPEN_SAVED_CHANGES_EVENT } from "./components/layout/SyncStateBadge";

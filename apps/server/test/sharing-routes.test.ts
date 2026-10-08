@@ -182,8 +182,8 @@ test("versionWriter classifies by stamp and channel; names only for signed-in vi
   // A kind recorded for an OLDER stamp is ignored once a later stamp replaced the writer.
   const later = { ...stamped(BOB, "agent"), prism_last_write_at: "2026-01-03T00:00:00.000Z" };
   assert.equal(versionWriter(later, null, CAROL).kind, "person");
-  // The CURRENT note: written again long after its stamp → unknown, never a wrong name.
-  assert.equal(versionWriter(stamped(BOB, "edit"), null, CAROL, undefined, "2026-02-01T00:00:00.000Z").kind, "unknown");
+  // The CURRENT note: written again long after its stamp → changed outside Prism, never a wrong name.
+  assert.equal(versionWriter(stamped(BOB, "edit"), null, CAROL, undefined, "2026-02-01T00:00:00.000Z").kind, "external");
 });
 
 test("non-owner version history names the writer by kind and name, never by email or stamp", async () => {

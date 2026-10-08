@@ -1308,7 +1308,7 @@ api.get("/notes/:id/versions", async (c) => {
     const page = await vaultClient(resolveActor(c).vaultId).listVersions(gate.note.id, limit, offset);
     const viewer = resolveActor(c).kind === "user" ? (resolveActor(c) as { email: string }).email : null;
     const names = viewer ? writerNames() : undefined;
-    return c.json({ versions: page.versions.map((v) => redactVersionForViewer(v, viewer, names)), total: page.total });
+    return c.json({ versions: page.versions.map((v, i) => redactVersionForViewer(v, viewer, names, page.versions[i + 1] ?? null)), total: page.total });
   } catch (e) {
     return vaultErr(c, e);
   }

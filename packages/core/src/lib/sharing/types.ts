@@ -42,9 +42,16 @@ export interface IndexedThread {
 
 /** Who produced a stored state of a page (server `versionWriter`). */
 export interface WriterInfo {
-  kind: "person" | "guest" | "agent" | "suggestion" | "accepted-suggestion" | "unknown";
+  /** `external` = changed outside Prism (an agent or sync writing to the vault directly): no Prism stamp describes it. */
+  kind: "person" | "guest" | "agent" | "suggestion" | "accepted-suggestion" | "external" | "unknown";
   name: string | null;
   self: boolean;
+  /**
+   * OWNER ONLY, client-derived: the vault's own provenance of the change that
+   * produced the state (`actor` / `via`, shortened — e.g. "agent-session:3f2a… via mcp").
+   * The server never sets it; non-owners' version rows carry no actor/via.
+   */
+  source?: string | null;
 }
 
 /** GET /api/notes/:id/activity */

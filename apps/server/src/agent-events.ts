@@ -107,16 +107,34 @@ export function summarizeToolResult(content: unknown): string {
   return truncate(scrubSecrets(text), MAX_RESULT_SUMMARY);
 }
 
-/** Vault MCP write tools → the note op they perform. */
+/**
+ * Write tools → the note op they perform: the vault MCP's (`create-note`, …) and
+ * the Prism MCP's (`prism_*`, the prism-rw / prism-suggest profiles). A comment,
+ * a suggestion and a sheet edit change the page, so they count as an update.
+ */
 const WRITE_OPS: Record<string, "create" | "update" | "delete"> = {
   "create-note": "create",
   "update-note": "update",
   "delete-note": "delete",
+  prism_create_note: "create",
+  prism_update_note: "update",
+  prism_delete_note: "delete",
+  prism_restore_version: "update",
+  prism_suggest_edit: "update",
+  prism_add_comment: "update",
+  prism_resolve_comment: "update",
+  prism_sheet_update: "update",
 };
 
 /** `mcp__parachute-vault__create-note` → `create-note` (null: not a vault tool). */
 export function vaultToolName(name: string): string | null {
   const m = /^mcp__parachute-vault__(.+)$/.exec(name);
+  return m ? m[1]! : null;
+}
+
+/** `mcp__prism__prism_update_note` → `prism_update_note` (null: not a Prism MCP tool). */
+export function prismToolName(name: string): string | null {
+  const m = /^mcp__prism__(prism_[a-z0-9_]+)$/.exec(name);
   return m ? m[1]! : null;
 }
 
@@ -301,7 +319,7 @@ export class StreamNormalizer {
           if (!ok && /permission|not allowed|denied/i.test(toolResultText(block.content).slice(0, 2000))) this.deniedTool = true;
           out.push({ t: "tool_result", toolUseId, ok, summary: summarizeToolResult(block.content) });
           const call = this.tools.get(toolUseId);
-          const tool = call ? vaultToolName(call.name) : null;
+          const tool = call ? (vaultToolName(call.name) ?? prismToolName(call.name)) : null;
           if (ok && tool) {
             for (const n of touchedNotes(tool, call!.input, block.content)) out.push({ t: "note_touched", ...n });
           }

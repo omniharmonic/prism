@@ -46,7 +46,7 @@ export function PageInfo({ note, editor }: { note: Note; editor?: Editor | null 
   // The server names the last editor (never an email); the owner path resolves the raw stamp.
   const activity = usePageActivity(note);
   const counts = countText(liveText ?? plainText(note.content));
-  const writer = activity.data?.lastEditor ?? writerOf({ metadata: note.metadata }, activity.directory);
+  const writer = activity.data?.lastEditor ?? writerOf({ metadata: note.metadata, producedAt: note.updatedAt }, activity.directory);
   const by = lastEditedBy(writer);
   const row = (label: string, value: string) => (
     <div style={{ display: "flex", justifyContent: "space-between", gap: 12 }}>

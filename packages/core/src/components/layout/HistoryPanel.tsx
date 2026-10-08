@@ -1,5 +1,5 @@
 import { useEffect, useState, type ReactNode } from "react";
-import { Check, CheckCheck, Clock, History, RotateCcw, Sparkles } from "lucide-react";
+import { Check, CheckCheck, Clock, History, RotateCcw, Sparkles, Bot } from "lucide-react";
 import type { Note } from "../../lib/types";
 import { useNoteVersions } from "../../app/hooks/useNoteHistory";
 import { useVaultClient } from "../../data/VaultClientContext";
@@ -9,7 +9,7 @@ import { ago, dayLabel, formatWhen, opLabel, savedAt, sizeDelta } from "../histo
 import { Button } from "../ui/Button";
 import { Spinner } from "../ui/Spinner";
 import { useAgentChatStore } from "../../lib/agent/chatStore";
-import { writerName, writerOf, writerTitle, type WriterInfo } from "../../lib/history/attribution";
+import { producerOf, replacedByLine, withSource, writerName, writerOf, writerTitle, type WriterInfo } from "../../lib/history/attribution";
 import { PageUpdates } from "../sharing/PageUpdates";
 import { PersonAvatar } from "../sharing/PersonAvatar";
 import { usePageActivity } from "../sharing/usePageActivity";
@@ -58,7 +58,12 @@ function ScopedHistory({ note }: HistoryPanelProps) {
     ? sizeDelta(versions[0].contentLength, new TextEncoder().encode(note.content ?? "").length)
     : undefined;
 
-  const currentWriter = activity?.lastEditor ?? writerOf({ metadata: note.metadata }, directory);
+  // The change that produced the current state is the one recorded on the newest row.
+  const madeCurrent = producerOf(versions, -1);
+  const currentWriter = withSource(
+    activity?.lastEditor ?? writerOf({ metadata: note.metadata, via: madeCurrent?.via ?? null, producedAt: note.updatedAt }, directory),
+    madeCurrent,
+  );
   return (
     <section className="prism-context-history space-y-3" aria-label="Page history">
       <header><h2>Version history</h2><p>Saved versions of this page</p></header>
@@ -129,7 +134,9 @@ function ScopedHistory({ note }: HistoryPanelProps) {
             // What THIS save changed: its size vs the version before it.
             const older = versions[i + 1];
             const delta = older ? sizeDelta(older.contentLength, v.contentLength) : undefined;
-            const writer = writerOf(v, directory);
+            const made = producerOf(versions, i);
+            const writer = withSource(writerOf({ writer: v.writer, metadata: v.metadata, via: made?.via ?? null, producedAt: when }, directory), made);
+            const replacedBy = replacedByLine(v);
             return (
               <div key={v.versionIx}>
                 {day !== prevDay && (
@@ -141,9 +148,9 @@ function ScopedHistory({ note }: HistoryPanelProps) {
                   onClick={() => setOpenIx(i)}
                   title={writer.kind === "unknown" ? (when ? formatWhen(when) : "Oldest saved version") : writerTitle(writer)}
                   writer={writer}
-                  subtitle={`${writerLine(writer)}${writer.kind === "unknown" ? "" : when ? `${formatWhen(when)} · ` : "Oldest saved version · "}then ${opLabel(v.op)} ${ago(v.supersededAt)}${v.actor ? ` · ${v.actor}` : ""}${v.via ? ` · via ${v.via}` : ""}`}
+                  subtitle={`${writerLine(writer)}${writer.kind === "unknown" ? "" : when ? `${formatWhen(when)} · ` : "Oldest saved version · "}then ${opLabel(v.op)} ${ago(v.supersededAt)}${replacedBy}`}
                   badge={delta && delta.sign !== 0 ? delta : undefined}
-                  icon={v.op === "restore" ? <RotateCcw size={10} /> : writer.kind === "agent" ? <Sparkles size={10} /> : writer.kind === "accepted-suggestion" ? <CheckCheck size={10} /> : <Clock size={10} />}
+                  icon={v.op === "restore" ? <RotateCcw size={10} /> : writer.kind === "agent" ? <Sparkles size={10} /> : writer.kind === "external" ? <Bot size={10} /> : writer.kind === "accepted-suggestion" ? <CheckCheck size={10} /> : <Clock size={10} />}
                   last={i === versions.length - 1}
                 />
               </div>
@@ -187,9 +194,9 @@ function ScopedHistory({ note }: HistoryPanelProps) {
   );
 }
 
-/** "You · " / "Sam Chen · " before a row's time; nothing when unknown. */
+/** "You · " / "Sam Chen · " (or, owner only, the vault's label for an unnamed agent/sync) before a row's time. */
 function writerLine(w: WriterInfo): string {
-  const who = writerName(w);
+  const who = writerName(w) ?? w.source ?? null;
   return who ? `${who} · ` : "";
 }
 

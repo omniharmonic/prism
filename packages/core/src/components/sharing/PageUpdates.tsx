@@ -1,8 +1,8 @@
-import { CheckCheck, MessageSquare, PenLine, Sparkles, UserPlus } from "lucide-react";
+import { Bot, CheckCheck, MessageSquare, PenLine, Sparkles, UserPlus } from "lucide-react";
 import type { ReactNode } from "react";
 import type { NoteVersionSummary } from "../../data/VaultClient";
 import { usePageActivity } from "./usePageActivity";
-import { writerName, writerOf, writerTitle, type WriterInfo } from "../../lib/history/attribution";
+import { producerOf, withSource, writerName, writerOf, writerTitle, type WriterInfo } from "../../lib/history/attribution";
 import type { PageActivity } from "../../lib/sharing/types";
 import type { Note } from "../../lib/types";
 import { ago, formatWhen, savedAt } from "../history/labels";
@@ -10,7 +10,7 @@ import { PersonAvatar } from "./PersonAvatar";
 
 export interface UpdateItem {
   key: string;
-  kind: "edit" | "agent" | "accepted-suggestion" | "suggestion" | "comment" | "share";
+  kind: "edit" | "agent" | "external" | "accepted-suggestion" | "suggestion" | "comment" | "share";
   at: number;
   title: string;
   who: string | null;
@@ -21,8 +21,10 @@ export interface UpdateItem {
 const LEVEL: Record<string, string> = { view: "view", comment: "comment", suggest: "suggest", edit: "edit", own: "full access" };
 
 function editItem(key: string, w: WriterInfo, at: number): UpdateItem {
-  const kind = w.kind === "agent" ? "agent" : w.kind === "accepted-suggestion" ? "accepted-suggestion" : w.kind === "suggestion" ? "suggestion" : "edit";
-  return { key, kind, at, title: writerTitle(w), who: writerName(w) };
+  const kind = w.kind === "agent" ? "agent" : w.kind === "external" ? "external" : w.kind === "accepted-suggestion" ? "accepted-suggestion" : w.kind === "suggestion" ? "suggestion" : "edit";
+  // An agent/sync with no Prism name: the owner sees the vault's own label for it.
+  const detail = !writerName(w) && w.source ? w.source : w.kind === "external" ? "An agent or sync wrote to the vault directly" : undefined;
+  return { key, kind, at, title: writerTitle(w), who: writerName(w), ...(detail ? { detail } : {}) };
 }
 
 /**
@@ -36,13 +38,17 @@ export function buildUpdates(input: { note: Pick<Note, "updatedAt" | "metadata">
   const items: UpdateItem[] = [];
   const t = (iso: string | null | undefined) => (iso ? Date.parse(iso) || 0 : 0);
   if (input.note.updatedAt) {
-    const current = input.activity?.lastEditor ?? writerOf({ metadata: input.note.metadata }, directory);
-    items.push(editItem("current", current, t(input.note.updatedAt)));
+    // The current state was produced by the change recorded on the newest version row.
+    const made = producerOf(input.versions, -1);
+    const current = input.activity?.lastEditor ?? writerOf({ metadata: input.note.metadata, via: made?.via ?? null, producedAt: input.note.updatedAt }, directory);
+    items.push(editItem("current", withSource(current, made), t(input.note.updatedAt)));
   }
   input.versions.forEach((v, i) => {
     const when = savedAt(input.versions, i);
     if (!when) return;
-    items.push(editItem(`v${v.versionIx}`, writerOf(v, directory), t(when)));
+    const made = producerOf(input.versions, i);
+    const w = writerOf({ writer: v.writer, metadata: v.metadata, via: made?.via ?? null, producedAt: when }, directory);
+    items.push(editItem(`v${v.versionIx}`, withSource(w, made), t(when)));
   });
   for (const thread of input.activity?.comments ?? []) {
     thread.comments.forEach((c, i) => {
@@ -74,6 +80,7 @@ export function buildUpdates(input: { note: Pick<Note, "updatedAt" | "metadata">
 const ICON: Record<UpdateItem["kind"], ReactNode> = {
   edit: <PenLine size={13} />,
   agent: <Sparkles size={13} />,
+  external: <Bot size={13} />,
   "accepted-suggestion": <CheckCheck size={13} />,
   suggestion: <PenLine size={13} />,
   comment: <MessageSquare size={13} />,
