@@ -37,6 +37,18 @@ export const omniConfig = {
   eventsPerThread: (): number => int("OMNI_EVENTS_PER_THREAD", 2_000),
   /** Concurrent /api/omni/events + thread-stream connections. */
   maxStreams: (): number => int("OMNI_MAX_STREAMS", 16),
+  /**
+   * Which sender runs an approved email (Benjamin, 2026-10-08: option B).
+   * `proton-send` (default) = the agent repo's `scripts/proton_send.py --approved`, which
+   * refuses markdown and holds the third-party-recipient guard; `live-actions` = Prism's
+   * own Proton SMTP action (behind ACTIONS_EMAIL_ENABLED).
+   */
+  emailExecutor: (): "proton-send" | "live-actions" => (env("OMNI_EMAIL_EXECUTOR") === "live-actions" ? "live-actions" : "proton-send"),
+  /** Absolute path to proton_send.py. Unset = approved emails are refused (executor_disabled). */
+  protonSendPath: (): string | undefined => env("OMNI_PROTON_SEND"),
+  /** Python used to run it (the agent repo's venv on the Mini). */
+  protonPython: (): string => env("OMNI_PROTON_PYTHON") ?? "python3",
+  protonSendTimeoutMs: (): number => int("OMNI_PROTON_SEND_TIMEOUT_MS", 90_000),
   ownerEmail: (): string => config.ownerEmail,
   appOrigin: (): string => config.appOrigin,
 };

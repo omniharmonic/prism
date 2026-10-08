@@ -67,6 +67,7 @@ import {
   type Executor,
 } from "../omni/approvals";
 import { buildToday, localDate, validDate, type Dispatch } from "../omni/today";
+import { runProtonSend } from "../omni/proton-send";
 
 export const omniApi = new Hono();
 
@@ -124,9 +125,14 @@ const liveActionExecutor: Executor = async ({ kind, payload, approvalId, headers
   }
   return { status: "unknown", detail: out };
 };
-let executor: Executor = liveActionExecutor;
+/** Approved emails go to proton_send.py unless OMNI_EMAIL_EXECUTOR=live-actions (option B). */
+const defaultExecutor: Executor = (o) =>
+  (o.kind === "email" || o.kind === "email-reply") && omniConfig.emailExecutor() === "proton-send"
+    ? runProtonSend(o.kind, o.payload)
+    : liveActionExecutor(o);
+let executor: Executor = defaultExecutor;
 export function setOmniExecutorForTests(e: Executor | null): void {
-  executor = e ?? liveActionExecutor;
+  executor = e ?? defaultExecutor;
 }
 
 // ── gates ───────────────────────────────────────────────────────────────────

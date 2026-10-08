@@ -371,7 +371,7 @@ test("hooks: loopback + service token only; propose stores the full draft, diges
   const g = (await (await req(`/approvals/${p.id}`, { headers: owner() })).json()) as { approval: Record<string, unknown> };
   assert.deepEqual(g.approval.payload, draft, "full payload, never truncated");
   assert.equal(g.approval.status, "pending");
-  assert.deepEqual(g.approval.executor, { name: "prism-live-actions:email", available: true, enabled: false });
+  assert.deepEqual(g.approval.executor, { name: "proton-send", available: true, enabled: false }, "option B: proton_send.py, off until OMNI_PROTON_SEND is set");
   // Key order does not change the digest.
   assert.equal(canonicalJson({ b: 1, a: [{ d: 1, c: 2 }] }), '{"a":[{"c":2,"d":1}],"b":1}');
 });
@@ -403,8 +403,10 @@ test("decide: wrong digest, agent origin, missing key and a disabled executor ar
   assert.ok(!JSON.stringify(auditRows()).includes("kevin@"), "audit: ids + digests only");
 });
 
-test("decide send: executes ONCE through the executor; replay with the same key; another key → already decided", async () => {
+test("decide send: executes ONCE through the executor; replay with the same key; another key → already decided", async (t) => {
   Object.assign(config, { actionsEmailEnabled: true });
+  process.env.OMNI_PROTON_SEND = process.execPath; // any existing absolute file = "configured"
+  t.after(() => delete process.env.OMNI_PROTON_SEND);
   setOmniExecutorForTests(async (o) => {
     execCalls.push(o);
     return { status: "sent", detail: { executor: "prism-live-actions:email", httpStatus: 200 } };

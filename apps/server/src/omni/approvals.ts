@@ -19,6 +19,8 @@ import { createHash } from "node:crypto";
 import { db } from "../db";
 import { config } from "../config";
 import { newId } from "./store";
+import { omniConfig } from "./config";
+import { protonSendConfigured } from "./proton-send";
 
 export const APPROVAL_KINDS = ["email", "email-reply", "message", "calendar-invite", "tweet", "wallet-proposal"] as const;
 export type ApprovalKind = (typeof APPROVAL_KINDS)[number];
@@ -212,7 +214,9 @@ export function executorFor(kind: ApprovalKind): { name: string; available: bool
   switch (kind) {
     case "email":
     case "email-reply":
-      return { name: "prism-live-actions:email", available: true, enabled: config.actionsEmailEnabled };
+      return omniConfig.emailExecutor() === "proton-send"
+        ? { name: "proton-send", available: true, enabled: protonSendConfigured() }
+        : { name: "prism-live-actions:email", available: true, enabled: config.actionsEmailEnabled };
     case "calendar-invite":
       return { name: "prism-live-actions:calendar", available: true, enabled: config.actionsCalendarEnabled };
     case "message":

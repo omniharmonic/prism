@@ -21,6 +21,10 @@ and `apps/server/src/omni/*`. Tests: `apps/server/test/omni-gateway.test.ts`,
 | `OMNI_APPROVAL_TTL_MS` | 86400000 | Default lifetime of a proposed approval. |
 | `OMNI_EVENTS_PER_THREAD` | 2000 | Persisted stream events kept per thread. |
 | `OMNI_MAX_STREAMS` | 16 | Concurrent SSE connections (thread streams + `/events`). |
+| `OMNI_EMAIL_EXECUTOR` | `proton-send` | Who sends an approved email (Benjamin, 2026-10-08: option B). `proton-send` = the agent repo's `scripts/proton_send.py --approved` (markdown refusal + third-party-recipient guard); `live-actions` = Prism's own `/api/actions/email/*` (`ACTIONS_EMAIL_ENABLED`). |
+| `OMNI_PROTON_SEND` | unset | ABSOLUTE path to `proton_send.py` on the Mini (e.g. `/Users/benjaminlife/dev/omniharmonic_agent/scripts/proton_send.py`). Unset or missing file → approved emails answer `executor_disabled` and stay pending. |
+| `OMNI_PROTON_PYTHON` | `python3` | Python that runs it (the agent repo's venv, if it has one). |
+| `OMNI_PROTON_SEND_TIMEOUT_MS` | 90000 | Past it the send is killed and recorded `unknown` (check Sent before re-sending). |
 
 Hermes side (VERIFY on the Mini): the `api_server` platform enabled with a strong
 `API_SERVER_KEY`, bound to loopback; the Prism MCP configured with a `pp_` PAT so writes
@@ -159,7 +163,7 @@ Prism's existing guarded executors.
   "digest": "<64 hex>", "summary": "Email Kevin", "status": "pending",
   "createdAt": "…", "expiresAt": "…", "decidedAt": null, "result": null,
   "supersededBy": null, "revises": null,
-  "executor": {"name": "prism-live-actions:email", "available": true, "enabled": false}
+  "executor": {"name": "proton-send", "available": true, "enabled": false}
 }
 ```
 
@@ -168,8 +172,8 @@ Prism's existing guarded executors.
 
 | `kind` | `payload` | Executor |
 |---|---|---|
-| `email` | `{to:[≤20], cc?:[≤20], subject, body}` (plain text) | `POST /api/actions/email/send` (`ACTIONS_EMAIL_ENABLED`) |
-| `email-reply` | `{noteId, expectTo:[…], cc?, body}` | `POST /api/actions/email/reply` |
+| `email` | `{to:[≤20], cc?:[≤20], subject, body}` (plain text) | `proton_send.py send --approved` (default; see below) or `POST /api/actions/email/send` |
+| `email-reply` | `{noteId, expectTo:[…], cc?, body}` | `proton_send.py send --approved --reply-to-note <noteId> --to <each expectTo>` or `POST /api/actions/email/reply` |
 | `message` | `{roomId, body}` | `POST /api/actions/matrix/send` (`ACTIONS_MATRIX_ENABLED`) |
 | `calendar-invite` | `{title, start, end, attendees?, location?, description?}` (RFC 3339) | `POST /api/actions/calendar/create` (`ACTIONS_CALENDAR_ENABLED`) |
 | `tweet` | `{text}` | none wired yet → `executor_unavailable` |
@@ -206,6 +210,10 @@ Decision rules, in order:
 
 Every proposal, edit, refusal and execution writes an `omni_audit` row (ids + 16-hex digest
 prefixes, never the payload).
+
+### Email executor: `proton_send.py` (option B)
+
+`src/omni/proton-send.ts`. Fixed argv (`send --approved --json --body-file - --subject … --to … [--cc …] [--allow-external]`), each value one argv element, no shell; the body on stdin; cwd = the agent repo root; env = HOME/USER/LOGNAME/PATH/LANG/LC_*/TMPDIR/TZ only — never a Prism secret, never `PROTON_SEND_ALLOW_EXTERNAL`. `--allow-external` is passed when a recipient is not the owner, but third-party mail still needs `PROTON_SEND_ALLOW_EXTERNAL=1` in the AGENT repo's `.env` — the recipient policy stays in `proton_send.py`. A reply sends exactly the recipients shown on the card (`expectTo`); the note supplies the subject and threading headers. Outcome: exit 0 → `sent` (+ `messageId`); a refusal `proton_send.py` raises before it opens the SMTP socket (markdown, recipient guard, Bridge unreachable / pin / login) → `failed`; a refused SMTP exchange, a timeout or a signal → `unknown`. Tests: `test/omni-proton-send.test.ts` (fake spawner). Later: port the two guards into live actions and switch `OMNI_EMAIL_EXECUTOR`.
 
 ## Change channel and push
 
