@@ -18,10 +18,10 @@ for the device checklist in `docs/client-app.md`.
 | # | Finding | Status |
 |---|---|---|
 | 1 | The server-address field was near-black on the light card: two iOS-only screens named a colour token that does not exist (`--surface-sunken`). | Fixed (PR #21) |
-| 2 | **The owner cannot finish an app sign-in with the email link.** The link opens in Safari; the app's `ASWebAuthenticationSession` sheet stays on the "link sent" page and is never told. A password sign-in inside the sheet works. | Open |
-| 3 | The sheet DOES share Safari's session: after the link signed Safari in, reloading the sheet went straight to consent. So the "link sent" page could poll or offer "I've opened the link" and continue. | Lead for #2 |
-| 4 | **A 401 makes the app sign in again by itself, and each time it mints another device.** Four "Prism on iPhone" device tokens were created in about six minutes (two of them 3.4 s apart, seen by the owner as two consent prompts). | Client behaviour still open; the trigger is #8 |
-| 5 | **After such a 401 the page keeps sending requests with NO bearer** (`auth=none` in the server's error log: `/api/notes`, `/api/actions`, `/api/events`, `/auth/me`, `/api/vaults`) until the app is relaunched. Seen by the owner as an empty sidebar and a 403 in Workspace settings while the footer still showed his name and "Synced". | Open |
+| 2 | **The owner cannot finish an app sign-in with the email link.** The link opens in Safari; the app's `ASWebAuthenticationSession` sheet stays on the "link sent" page and is never told. A password sign-in inside the sheet works. | Fixed in code (the "link sent" page continues once the browser is signed in; see #3). **Not yet seen on a simulator or device.** |
+| 3 | The sheet DOES share Safari's session: after the link signed Safari in, reloading the sheet went straight to consent. So the "link sent" page could poll or offer "I've opened the link" and continue. | Done: it does both (`LoginScreen`, only mid app sign-in; the server's consent step is unchanged) |
+| 4 | **A 401 makes the app sign in again by itself, and each time it mints another device.** Four "Prism on iPhone" device tokens were created in about six minutes (two of them 3.4 s apart, seen by the owner as two consent prompts). | Fixed in code: a 401 is confirmed with one `/auth/me` before the token is dropped, sign-in is one at a time, and only a press starts one (`native/sessionGuard.ts`). The trigger is #8. **Not yet seen on a simulator or device.** |
+| 5 | **After such a 401 the page keeps sending requests with NO bearer** (`auth=none` in the server's error log: `/api/notes`, `/api/actions`, `/api/events`, `/auth/me`, `/api/vaults`) until the app is relaunched. Seen by the owner as an empty sidebar and a 403 in Workspace settings while the footer still showed his name and "Synced". | Fixed in code: with no token the request is not sent and the page reloads into the sign-in screen. **Not yet seen on a simulator or device.** |
 | 6 | Live-editing connections were closed with "Access changed. Reconnect." eight times on two pages in the first session. Not seen after a clean relaunch. Probably the same token churn as #4. | To confirm |
 | 7 | "Tags" is shown twice on a page's property area (a property row and the tag chips). Not checked against the web build. | Open |
 | 8 | **Root trigger: the vault now and then refuses the server's own valid token, and the owner passthrough forwarded that 401 to the client.** Reproduced against the laptop vault (0.7.9, hub 0.7.19) with a fresh token: 1 refusal in 40 requests, then 0 in 300; the Mini's vault gave 0 in 150. Why the vault does it is not known. Every client reads a 401 as "signed out" — on the web that would be the login screen. | Fixed server-side: the passthrough and the server's vault client send the request once more, and a second refusal is a 502 `vault_auth` (`test/vault-token-refused.test.ts`) |
@@ -49,6 +49,19 @@ its own `fetch` and had no retry. It now goes through `fetchVault` (parachute.ts
   unauthenticated ones (the hub's health probe included). Cause not established; this is in
   Parachute or Bun, not Prism. The Mini's vault gave 0 refusals in 150 sequential reads; it
   has not been tested under concurrency.
+
+### What the code did (findings 4 and 5), read after the session
+
+- `serverFetch` called `host.onUnauthorized()` on ANY 401 that carried the device token, and
+  the shell's `onUnauthorized` deletes the Keychain token (`sign_out {revoke:false}`). So one
+  refused request threw away a good token.
+- Nothing then reloaded the page. `serverFetch` adds the bearer only `if (token)`, so every
+  later request simply went out without one (finding 5).
+- No code path started a sign-in after a 401: the only caller of `signIn()` was, and is, the
+  "Sign in" button. Each lost token still cost a new sign-in — and so a new device — the next
+  time the person reached that button. Two presses could also overlap: on iOS `signIn` did
+  not wait for the sheet that was already up. That is the likeliest reading of the two
+  devices 3.4 s apart, but it was not reproduced.
 
 ## How these were seen
 

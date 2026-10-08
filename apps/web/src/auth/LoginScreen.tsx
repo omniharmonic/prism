@@ -1,6 +1,6 @@
 import { PrismMark } from "@prism/core/shell";
-import { useState } from "react";
-import { login, requestMagicLink, postLoginTarget } from "../config";
+import { useEffect, useRef, useState } from "react";
+import { login, requestMagicLink, postLoginTarget, hasSession } from "../config";
 import { takeSignOutNotice } from "../config";
 
 /**
@@ -20,6 +20,49 @@ export function LoginScreen({ notice }: { notice?: string }) {
   const [linkMode, setLinkMode] = useState(false);
   // false when the server has no Resend key — the link was printed to its console.
   const [emailDelivery, setEmailDelivery] = useState(true);
+
+  // Mid native sign-in (`?next=/auth/device/continue`) the emailed link opens in ANOTHER
+  // window: the app's sign-in sheet shows this page, the mail app hands the link to the
+  // browser. Both share one cookie jar, so once the link has signed the browser in, this
+  // page can go on by itself (qa/ios-simulator-findings-2026-10-08.md, findings 2 and 3).
+  //
+  // All it does is ask "is there a session?" (GET /auth/me) and then go where a password
+  // login goes: `postLoginTarget()`, which is only ever the fixed path /auth/device/continue.
+  // The server still decides everything there — it needs the session AND this browser's
+  // parked request, and it answers with the CONSENT page. Nothing is approved from here.
+  const resumeTarget = status === "linksent" ? postLoginTarget() : null;
+  const resuming = useRef(false);
+  const [notYet, setNotYet] = useState(false);
+  async function resumeIfSignedIn(): Promise<boolean> {
+    if (!resumeTarget || resuming.current) return false;
+    resuming.current = true;
+    const signedIn = await hasSession();
+    if (signedIn) {
+      window.location.replace(resumeTarget); // stays "resuming": one navigation, no more asks
+      return true;
+    }
+    resuming.current = false;
+    return false;
+  }
+  useEffect(() => {
+    if (!resumeTarget) return;
+    const check = () => { if (document.visibilityState !== "hidden") void resumeIfSignedIn(); };
+    // Coming back from the mail app / browser is the moment that matters; the timer covers a
+    // sheet that stayed in front. It stops with the parked request (15 min, like the link).
+    const timer = setInterval(check, 3000);
+    const stop = setTimeout(() => clearInterval(timer), 15 * 60_000);
+    document.addEventListener("visibilitychange", check);
+    window.addEventListener("focus", check);
+    window.addEventListener("pageshow", check);
+    return () => {
+      clearInterval(timer);
+      clearTimeout(stop);
+      document.removeEventListener("visibilitychange", check);
+      window.removeEventListener("focus", check);
+      window.removeEventListener("pageshow", check);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [resumeTarget]);
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -75,12 +118,25 @@ export function LoginScreen({ notice }: { notice?: string }) {
         {status === "linksent" ? (
           <div style={{ fontSize: 14, lineHeight: 1.5 }}>
             {emailDelivery ? (
-              <>If <strong>{email}</strong> is allowed, a sign-in link is on its way. You can close this tab.</>
+              <>If <strong>{email}</strong> is allowed, a sign-in link is on its way. {resumeTarget ? "Open it, then come back here — this page continues on its own." : "You can close this tab."}</>
             ) : (
               <>
                 Email isn't configured on this server, so no message was sent. If{" "}
                 <strong>{email}</strong> is the owner, the one-time sign-in link was printed to the{" "}
                 <strong>server console</strong> (the terminal running the Prism Server) — open it from there.
+              </>
+            )}
+            {resumeTarget && (
+              <>
+                {/* For a sheet whose timers were paused in the background: the same check, by hand. */}
+                <button
+                  type="button"
+                  onClick={async () => { setNotYet(false); if (!(await resumeIfSignedIn())) setNotYet(true); }}
+                  style={{ display: "block", width: "100%", marginTop: 14, padding: "11px 16px", minHeight: 44, borderRadius: 8, border: "none", background: "var(--action-bg)", color: "var(--action-fg)", fontSize: 14, fontWeight: 600, cursor: "pointer" }}
+                >
+                  I’ve opened the link — continue
+                </button>
+                {notYet && <div role="status" style={{ marginTop: 10, fontSize: 13, color: "var(--text-muted, #888)" }}>Not signed in yet. Open the link from the email first, then try again.</div>}
               </>
             )}
           </div>

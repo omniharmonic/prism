@@ -3,6 +3,12 @@
  * (the spec injects apps/client/src-tauri/src/host.js with platform = "ios" before this runs):
  *
  *   ?view=setup     the first-run "Enter your server" screen (ServerSetupScreen)
+ *   ?view=session   the sign-in gate as main.tsx decides it (fetchMe → the native sign-in
+ *                   screen, "can't reach", or a stand-in for the signed-in workspace), with
+ *                   the real transport exposed so a spec can make requests the way the app
+ *                   does. The 401 / signed-out rules need the NATIVE transport: those cases
+ *                   run when the fixture server was started with VITE_PRISM_NATIVE=1
+ *                   (native-session.spec.ts); the rule itself is `npm run verify:session`.
  *   ?view=settings  Settings → Account's iOS section (IosAppSettings) + the notification
  *                   toggle (PushSettings over apnsPush), after the same boot wiring main.tsx
  *                   does for a signed-in person (fetchMe → initIosPush)
@@ -15,7 +21,10 @@ import React from "react";
 import { createRoot } from "react-dom/client";
 import { PushProvider, useUIStore } from "@prism/core/shell";
 import { PushSettings } from "../../../packages/core/src/components/layout/PushSettings";
-import { fetchMe } from "../src/config";
+import { fetchMe, logout } from "../src/config";
+import { isNative, serverFetch } from "../src/transport";
+import { NativeSignInScreen } from "../src/auth/NativeSignInScreen";
+import { ReconnectScreen } from "../src/auth/ReconnectScreen";
 import { ServerSetupScreen } from "../src/native/ServerSetupScreen";
 import { IosAppSettings } from "../src/native/IosAppSettings";
 import { apnsPush, initIosPush } from "../src/native/apnsPush";
@@ -35,6 +44,23 @@ const ready = () => { (window as unknown as { iosFixture: { ready: boolean } }).
 if (view === "setup") {
   root.render(<React.StrictMode><ServerSetupScreen /></React.StrictMode>);
   ready();
+} else if (view === "session") {
+  void (async () => {
+    const me = await fetchMe();
+    Object.assign((window as unknown as { iosFixture: object }).iosFixture, {
+      native: isNative,
+      /** Status of a request made the way the app makes every request. */
+      get: (path: string) => serverFetch(path).then((r) => r.status),
+      me: () => fetchMe().then((m) => (m.unavailable ? "unavailable" : m.authenticated ? "in" : "out")),
+      logout: () => logout(),
+    });
+    root.render(
+      <React.StrictMode>
+        {me.unavailable ? <ReconnectScreen /> : me.authenticated ? <main data-testid="workspace">Signed in as {me.email}</main> : <NativeSignInScreen />}
+      </React.StrictMode>,
+    );
+    ready();
+  })();
 } else {
   void (async () => {
     await fetchMe(); // who is signed in decides whose notification choice is read

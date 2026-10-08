@@ -74,7 +74,7 @@ export function getConnection(): Connection {
 // Gateway origin + request plumbing live in ./transport (PWA: same-origin,
 // session cookie; native build: configured origin + device bearer token).
 // For dev, set VITE_GATEWAY_URL=http://localhost:8787.
-import { gatewayOrigin, serverFetch, isNative, getDeviceToken, getHost } from "./transport";
+import { gatewayOrigin, serverFetch, isNative, getDeviceToken, getHost, confirmUnauthorized, markSigningOut } from "./transport";
 import { bindCacheUser, clearReadCache } from "./offline/readCache";
 export { gatewayOrigin };
 
@@ -149,7 +149,16 @@ async function askMe(context: string): Promise<Me> {
       useAgentChatStore.getState().bindScope(null);
       return cachedMe;
     }
-    const r = await serverFetch("/auth/me", { headers: { ...capabilityHeader(), ...contextHeaders() } });
+    let r = await serverFetch("/auth/me", { headers: { ...capabilityHeader(), ...contextHeaders() } });
+    // Native: one 401 is not a sign-out (native/sessionGuard.ts). Wait for the server's answer
+    // about THIS token. Dead → signed out (the page is already reloading into sign-in). Alive
+    // → ask once more. Anything else is "could not check", which never shows a sign-in screen
+    // to someone whose token is fine (they would press Sign in and mint another device).
+    if (isNative && r.status === 401 && !getCapabilityToken()) {
+      const verdict = await confirmUnauthorized();
+      if (verdict === "alive") r = await serverFetch("/auth/me", { headers: { ...capabilityHeader(), ...contextHeaders() } });
+      if (verdict === "unknown" || (verdict === "alive" && r.status === 401)) return { authenticated: false, unavailable: true };
+    }
     if (!r.ok && r.status !== 401 && r.status !== 403) return { authenticated: false, unavailable: true };
     const me = r.ok ? (await r.json()) as Me : { authenticated: false };
     // A late response from the previous vault must not replace current identity.
@@ -289,6 +298,17 @@ export function takeSignOutNotice(): boolean {
   } catch { return false; }
 }
 
+/** Is there a signed-in browser session right now? One plain question, no side effects
+ *  (unlike `fetchMe`, which also re-binds caches). Never throws. */
+export async function hasSession(): Promise<boolean> {
+  try {
+    const r = await serverFetch("/auth/me", { cache: "no-store" });
+    return r.ok && ((await r.json()) as { authenticated?: unknown })?.authenticated === true;
+  } catch {
+    return false;
+  }
+}
+
 export async function logout(): Promise<boolean> {
   // The scope being signed out, captured while the identity is still known.
   const { captureWriteContext } = await import("./offline/writeScope");
@@ -312,6 +332,9 @@ export async function logout(): Promise<boolean> {
   } finally {
     // The shell forgets its token WHETHER OR NOT the server answered (review low 9):
     // it used to be skipped when the revoke request failed, leaving the token in the Keychain.
+    // From here no authenticated request is made (transport: markSigningOut) — the token is
+    // about to go, and a request without it must not be sent.
+    markSigningOut();
     if (isNative) await Promise.resolve(getHost()?.onSignedOut?.()).catch(() => undefined);
     await clearReadCache();
     // Live-document bodies of the signing-out account leave the device too (review

@@ -76,7 +76,7 @@ directory. Do not copy it into /Applications yet.
 
 - [ ] **Prism → Sign Out**: the app returns to the sign-in screen, the keychain item is gone, and Account → Devices on the server no longer lists the device.
 - [ ] Sign in again, then use **Account → Sign out** in the web UI: same result.
-- [ ] Sign in again, then **revoke the device from the browser** (Account → Devices). The next request in the client gets a 401, the app shows the sign-in screen, and the keychain item is deleted.
+- [ ] Sign in again, then **revoke the device from the browser** (Account → Devices). The next request in the client gets a 401, the app confirms it with one `GET /auth/me`, then reloads into the sign-in screen ("This device was signed out by the server") and the keychain item is deleted. No browser / sign-in sheet opens by itself, and no new device appears in Account → Devices.
 
 ## 7. Window state
 

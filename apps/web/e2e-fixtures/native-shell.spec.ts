@@ -304,3 +304,38 @@ test("Ctrl+N in a text field on a Mac is 'next line', not New Page (the binding 
   await expect(title(page)).toBeFocused();
   expect(await openTabs(page)).toBe(before + 1);
 });
+
+test("desktop sign-in: a second press RESTARTS the flow (the shell cancels the first), and a 401 never starts one", async ({ page }) => {
+  // The desktop half of the one-at-a-time rule (host.js signIn). The browser tab may have been
+  // closed, so a second press must be able to start again; the shell (state.rs begin_sign_in,
+  // `new_sign_in_cancels_the_previous_one`) cancels the first attempt's listener first.
+  await page.addInitScript(
+    ({ source }) => {
+      if (window.top !== window) return;
+      const w = window as any;
+      w.ipcCalls = [] as string[];
+      w.__TAURI_INTERNALS__ = {
+        invoke: (cmd: string, args: Record<string, unknown>) => {
+          w.ipcCalls.push(cmd === "sign_out" ? `sign_out:${String(args.revoke)}` : cmd);
+          if (cmd !== "sign_in") return Promise.resolve(null);
+          // As the shell does: starting a sign-in cancels the one before it.
+          w.cancelPrevious?.("Sign-in cancelled");
+          return new Promise((_, no) => { w.cancelPrevious = no; });
+        },
+      };
+      new Function(source.replace("__PRISM_ORIGIN__", JSON.stringify(location.origin)).replace("__PRISM_PLATFORM__", JSON.stringify("macos")))();
+    },
+    { source: HOST_JS },
+  );
+  await page.goto("/e2e-fixtures/harness.html");
+  const ipc = () => page.evaluate(() => (window as any).ipcCalls as string[]);
+  await page.evaluate(() => { const h = (window as any).__PRISM_HOST__; void h.signIn(); void h.signIn(); });
+  await expect.poll(ipc).toEqual(["sign_in", "sign_in"]);
+  // The cancelled first attempt is not reported as a failure.
+  await expect(page.locator("#prism-host-toast")).toHaveText("Continue in your browser to sign in…");
+
+  // The server refused the token: forget it. Nothing else — no third sign-in.
+  await page.evaluate(() => (window as any).__PRISM_HOST__.onUnauthorized());
+  await page.waitForTimeout(200);
+  expect(await ipc()).toEqual(["sign_in", "sign_in", "sign_out:false"]);
+});
