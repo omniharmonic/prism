@@ -112,6 +112,23 @@ if (resolved) {
   notes[1].content = "# Rowan Ellis\n\n[2026-10-05 09:18] Rowan Ellis: Thanks, see you then.";
   notes[2].content = "# River Stone\n\n[2026-10-06 12:00] River Stone: Great, see you then.";
 }
+// `?triage`: every classification state, mixed `lastMessageAt` shapes (epoch ms and ISO), and a
+// fake that records each tag write. `&legacy`: a shell without `changeTags` (add, then remove).
+const triage = location.search.includes("triage");
+if (triage) {
+  const T = Date.UTC(2026, 9, 6, 12, 0);
+  notes.length = 0;
+  notes.push(
+    note("t-urgent", "Messages/Grant deadline", ["message-thread", "urgent", "triaged"], { platform: "telegram", matrixRoomId: "!u:example.test", lastMessageAt: T }),
+    note("t-action", "Messages/Budget question", ["message-thread", "action-required", "triaged"], { platform: "signal", matrixRoomId: "!a:example.test", lastMessageAt: new Date(T - 3_600_000).toISOString() }),
+    note("t-failed", "Messages/Garbled thread", ["message-thread", "triage-failed"], { platform: "telegram", matrixRoomId: "!f:example.test", lastMessageAt: T - 7_200_000 }),
+    note("t-needs", "Messages/New chat", ["message-thread", "needs-triage"], { platform: "whatsapp", lastMessageAt: T - 10_800_000 }),
+    note("t-plain", "Messages/Plain chat", ["message-thread"], { platform: "telegram", lastMessageAt: T - 14_400_000 }),
+    note("t-info", "Messages/Newsletter", ["message-thread", "informational", "triaged"], { platform: "telegram", lastMessageAt: T - 18_000_000 }),
+    note("t-low", "Messages/Promo", ["message-thread", "low", "triaged"], { platform: "telegram", lastMessageAt: T - 21_600_000 }),
+    note("t-done", "Messages/Done thing", ["message-thread", "handled"], { platform: "telegram", lastMessageAt: T - 25_200_000 }),
+  );
+}
 const itemsFor = (keys: readonly string[]) => resolvedItems.filter((item) => item.keys.some((key) => keys.includes(key)));
 const wireItem = ({ keys: _keys, ...item }: (typeof resolvedItems)[number]) => item;
 let audience = "owner@example.test";
@@ -134,6 +151,17 @@ const controls = {
   sends: [] as Array<{ room: string; body: string; key?: string }>,
   peopleReads: 0,
   graphReads: 0,
+  tagWrites: [] as Array<{ id: string; op: string; add: string[]; remove: string[]; member?: boolean }>,
+  failTagWrites: false,
+  /** Ingest / another device changed a note's tags on the "server". */
+  setTags: (id: string, tags: string[]) => {
+    const target = notes.find((n) => n.id === id);
+    if (target) target.tags = tags;
+  },
+};
+const applyTags = (id: string, add: string[], remove: string[]) => {
+  const target = notes.find((n) => n.id === id)!;
+  target.tags = [...(target.tags ?? []).filter((t) => !remove.includes(t)), ...add.filter((t) => !(target.tags ?? []).includes(t))];
 };
 Object.assign(window, {
   prismInboxFixture: controls,
@@ -144,7 +172,29 @@ const vault = {
   getNote: async (id: string) => {
     if (controls.denyDetail || audience !== "owner@example.test")
       throw Error("Fixture inaccessible");
-    return structuredClone(notes.find((note) => note.id === id)!);
+    const found = structuredClone(notes.find((note) => note.id === id)!);
+    // A member's read through the gateway carries `_caps` (the status write then speaks add_tags/remove_tags).
+    if (triage && id === "t-needs") found._caps = ["view", "comment", "suggest", "edit"];
+    return found;
+  },
+  ...(triage && !location.search.includes("legacy")
+    ? {
+        changeTags: async (id: string, change: { add: string[]; remove: string[] }, options?: { member?: boolean }) => {
+          controls.tagWrites.push({ id, op: "change", ...change, member: options?.member });
+          if (controls.failTagWrites) throw new Error("Fixture refused");
+          applyTags(id, change.add, change.remove);
+        },
+      }
+    : {}),
+  addTags: async (id: string, tags: string[]) => {
+    controls.tagWrites.push({ id, op: "add", add: tags, remove: [] });
+    if (controls.failTagWrites) throw new Error("Fixture refused");
+    applyTags(id, tags, []);
+  },
+  removeTags: async (id: string, tags: string[]) => {
+    controls.tagWrites.push({ id, op: "remove", add: [], remove: tags });
+    if (controls.failTagWrites) throw new Error("Fixture refused");
+    applyTags(id, [], tags);
   },
   getThreadMessages: async () => ({
     messages: [
@@ -190,7 +240,8 @@ const vault = {
       throw new Error("Fixture unavailable");
     return (audience === "owner@example.test" ? notes : [])
       .filter((note) => !filters?.tag || note.tags?.includes(filters.tag))
-      .slice(0, filters?.limit);
+      .slice(0, filters?.limit)
+      .map((note) => structuredClone(note)); // a read is a copy: later "server" edits must not leak into the cache
   },
   ...(resolved
     ? {

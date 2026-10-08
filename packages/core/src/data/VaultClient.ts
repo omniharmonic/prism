@@ -221,6 +221,13 @@ export interface VaultClient {
   getTags(): Promise<TagCount[]>;
   addTags(id: string, tags: string[]): Promise<void>;
   removeTags(id: string, tags: string[]): Promise<void>;
+  /**
+   * Add AND remove tags in ONE write (a status change must never land half-applied). `member`:
+   * the note was read through the gateway with `_caps` (a non-owner) → the member dialect
+   * `add_tags`/`remove_tags`; otherwise the owner/vault `tags: {add, remove}`. Optional — callers
+   * fall back to {@link addTags} then {@link removeTags}.
+   */
+  changeTags?(id: string, change: { add: string[]; remove: string[] }, options?: { member?: boolean }): Promise<void>;
   getStats(): Promise<VaultStats>;
   getLinks(noteId?: string, relationship?: string): Promise<VaultLink[]>;
   createLink(

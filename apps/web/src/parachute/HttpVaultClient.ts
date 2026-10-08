@@ -31,6 +31,7 @@ export const httpVaultClient: VaultClient = {
   semanticSearch: rest.semanticSearch,
   getTags: rest.getTags,
   addTags: rest.addTags,
+  changeTags: rest.changeTags,
   removeTags: rest.removeTags,
   getStats: rest.getStats,
   getLinks: rest.getLinks,

@@ -21,7 +21,12 @@ import {
   TRIAGE_TAGS,
   THREAD_STATUS_LABELS,
   threadStatus,
+  statusChange,
+  retryClassification,
+  writeTagChange,
+  type ThreadStatus,
 } from "../../lib/messages/triage";
+import { syncTriageCaches } from "../comms/triageCache";
 
 import { useAgentChatStore } from "../../lib/agent/chatStore";
 
@@ -71,39 +76,43 @@ function ScopedMessageRenderer({
   const isWeb = useIsWeb();
 
   const currentTriage = threadStatus(note.tags);
-  const [triageStatus, setTriageStatus] = useState(currentTriage);
-  useEffect(() => setTriageStatus(currentTriage), [currentTriage]);
+  const [triageStatus, setTriageStatus] = useState<ThreadStatus>(currentTriage);
+  // The tags this view last confirmed: a second change in a row diffs against them, not the prop.
+  const [triageTags, setTriageTags] = useState<readonly string[]>(note.tags ?? []);
+  useEffect(() => { setTriageStatus(currentTriage); setTriageTags(note.tags ?? []); }, [currentTriage, note.tags]);
 
-  const handleTriageChange = useCallback(
-    async (newTag: (typeof TRIAGE_TAGS)[number]) => {
+  /** ONE write per change (add + remove together); the lists follow from the confirmed tags. */
+  const applyTriage = useCallback(
+    async (change: { add: string[]; remove: string[] }, next: ThreadStatus) => {
       if (triagePending || !canTriage) return;
       setTriagePending(true);
       setTriageError(null);
+      const previous = triageStatus;
+      setTriageStatus(next); // pending indicator: the control shows the choice, disabled, until confirmed
       try {
-        // `triaged` is also the worker's processing marker; preserve it when
-        // choosing a more specific classification.
-        const oldTags: readonly string[] = TRIAGE_TAGS.filter(
-          (tag) => tag !== "triaged",
-        );
-        // Add the new value before removing old values; a partial failure leaves
-        // a visible classification to reconcile, not a silently untagged thread.
-        await vault.addTags(note.id, [newTag]);
-        const toRemove = (note.tags || []).filter(
-          (tag) => oldTags.includes(tag) && tag !== newTag,
-        );
-        if (toRemove.length) await vault.removeTags(note.id, toRemove);
-        setTriageStatus(newTag);
+        await writeTagChange(vault, note, change);
+        const tags = [...triageTags.filter((t) => !change.remove.includes(t)), ...change.add.filter((t) => !triageTags.includes(t))];
+        setTriageTags(tags);
+        syncTriageCaches(queryClient, note.id, tags);
         setSent(false);
       } catch {
+        setTriageStatus(previous); // roll back: nothing was confirmed
         setTriageError(
           "The status update was not confirmed. Refresh this thread before trying again.",
         );
       } finally {
         setTriagePending(false);
-        void queryClient.invalidateQueries({ queryKey: ["vault"] });
       }
     },
-    [note.id, note.tags, queryClient, triagePending, vault, canTriage],
+    [note, queryClient, triagePending, triageStatus, triageTags, vault, canTriage],
+  );
+  const handleTriageChange = useCallback(
+    (newTag: (typeof TRIAGE_TAGS)[number]) => applyTriage(statusChange(triageTags, newTag), newTag),
+    [applyTriage, triageTags],
+  );
+  const retryTriage = useCallback(
+    () => applyTriage(retryClassification(triageTags), "unclassified"),
+    [applyTriage, triageTags],
   );
 
   const showLive =
@@ -213,8 +222,13 @@ function ScopedMessageRenderer({
             className="prism-thread-status focus-ring"
           >
             <option value="unclassified" disabled>
-              Needs triage
+              {THREAD_STATUS_LABELS.unclassified}
             </option>
+            {triageStatus === "triage-failed" && (
+              <option value="triage-failed" disabled>
+                {THREAD_STATUS_LABELS["triage-failed"]}
+              </option>
+            )}
             {TRIAGE_TAGS.map((tag) => (
               <option key={tag} value={tag}>
                 {THREAD_STATUS_LABELS[tag]}
@@ -224,6 +238,25 @@ function ScopedMessageRenderer({
         </label>
         <ConversationOpenPage />
       </header>
+      {triageStatus === "triage-failed" && (
+        <p className="prism-triage-failed-note px-4 py-2 text-xs">
+          The classifier couldn’t sort this conversation and won’t try again on its own. Choose a
+          status above, or{" "}
+          {canTriage ? (
+            <button
+              type="button"
+              className="underline focus-ring"
+              disabled={triagePending}
+              onClick={() => void retryTriage()}
+            >
+              send it back to be classified
+            </button>
+          ) : (
+            "ask someone who can edit it to send it back"
+          )}
+          .
+        </p>
+      )}
       {triageError && (
         <p role="alert" className="px-4 py-2 text-xs">
           {triageError}

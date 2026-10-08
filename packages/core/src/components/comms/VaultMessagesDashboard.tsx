@@ -8,6 +8,7 @@ import {
   useMemo,
   createContext,
   useContext,
+  useRef,
   type CSSProperties,
 } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -22,6 +23,7 @@ import {
   Users,
   PenSquare,
   AlertTriangle,
+  AlertCircle,
   Bell,
   Clock,
   Inbox,
@@ -32,7 +34,14 @@ import {
 import { useVaultClient } from "../../data/VaultClientContext";
 import { useIsWeb } from "../../data/Platform";
 import { MessageComposer } from "./MessageComposer";
-import { threadStatus } from "../../lib/messages/triage";
+import {
+  threadStatus,
+  lastMessageTime,
+  THREAD_STATUS_LABELS,
+  THREAD_STATUS_ORDER,
+  THREAD_STATUS_TONE,
+  type ThreadStatus,
+} from "../../lib/messages/triage";
 import { matrixApi } from "../../lib/matrix/client";
 import {
   useLiveActions,
@@ -121,6 +130,7 @@ function ScopedMessagesDashboard() {
   const [searchQuery, setSearchQuery] = useState("");
   const [viewMode, setViewMode] = useState<ViewMode>("triage");
   const [platformFilter, setPlatformFilter] = useState<string>("all");
+  const [category, setCategory] = useState<CategoryFilter>("all");
 
   // Existing bounded lists; the UI must disclose when these limits are reached.
   const {
@@ -267,9 +277,8 @@ function ScopedMessagesDashboard() {
       const platforms = new Set<string>();
       let lastMessageAt = 0;
       for (const t of threads) {
-        const tm = (t.metadata || {}) as Record<string, unknown>;
         platforms.add(getPlatform(t));
-        const ts = (tm.lastMessageAt as number) || 0;
+        const ts = lastMessageTime(t.metadata as Record<string, unknown> | null);
         if (ts > lastMessageAt) lastMessageAt = ts;
       }
 
@@ -319,13 +328,7 @@ function ScopedMessagesDashboard() {
       return true;
     });
 
-    filtered.sort((a, b) => {
-      const aTime =
-        ((a.metadata as Record<string, unknown>)?.lastMessageAt as number) || 0;
-      const bTime =
-        ((b.metadata as Record<string, unknown>)?.lastMessageAt as number) || 0;
-      return bTime - aTime;
-    });
+    filtered.sort(byRecency);
 
     const groups = new Map<string, Note[]>();
     for (const note of filtered) {
@@ -551,6 +554,8 @@ function ScopedMessagesDashboard() {
                 messages={allMessages}
                 onOpenThread={handleOpenThread}
                 searchQuery={searchQuery}
+                category={category}
+                onCategory={setCategory}
               />
             ) : viewMode === "people" && resolvesPeople ? (
               <PeopleConversationList
@@ -711,260 +716,137 @@ function ConversationDetail({
 }
 
 // ─── Triage View ─────────────────────────────────────────────
+// ONE classification model (lib/messages/triage.ts): labels, order and tone come from there.
+// One row of filter chips with counts; each row carries its own compact chip.
 
-// Importance tags written by the `message-triage` skill (skill_scheduler.rs).
-// Keep this list in sync with the skill prompt's Step 2 tags — a note carrying
-// any of these has been classified and must NOT fall back into "Needs Triage".
+type CategoryFilter = ThreadStatus | "all";
 
-const PRIORITY_TIERS = [
-  {
-    tag: "urgent",
-    label: "Urgent",
-    icon: AlertTriangle,
-    color: "var(--color-danger)",
-    bgColor: "var(--bg-surface)",
-    borderColor: "rgba(239,68,68,0.4)",
-    defaultCollapsed: false,
-  },
-  {
-    tag: "action-required",
-    label: "Action Required",
-    icon: Bell,
-    color: "var(--color-warning)",
-    bgColor: "var(--bg-surface)",
-    borderColor: "rgba(245,158,11,0.4)",
-    defaultCollapsed: false,
-  },
-  {
-    tag: "unclassified",
-    label: "Needs Triage",
-    icon: Clock,
-    color: "var(--text-muted)",
-    bgColor: "var(--glass)",
-    borderColor: "var(--glass-border)",
-    defaultCollapsed: false,
-  },
-  {
-    tag: "informational",
-    label: "Informational",
-    icon: MessageSquare,
-    color: "var(--text-secondary)",
-    bgColor: "transparent",
-    borderColor: "var(--glass-border)",
-    defaultCollapsed: true,
-  },
-  {
-    tag: "low",
-    label: "Low Priority",
-    icon: Inbox,
-    color: "var(--text-muted)",
-    bgColor: "transparent",
-    borderColor: "var(--glass-border)",
-    defaultCollapsed: true,
-  },
-  {
-    tag: "social",
-    label: "Social",
-    icon: Users,
-    color: "var(--text-muted)",
-    bgColor: "var(--bg-surface)",
-    borderColor: "var(--glass-border)",
-    defaultCollapsed: true,
-  },
-  {
-    tag: "triaged",
-    label: "Reviewed",
-    icon: Check,
-    color: "var(--text-muted)",
-    bgColor: "var(--bg-surface)",
-    borderColor: "var(--glass-border)",
-    defaultCollapsed: true,
-  },
-  {
-    tag: "handled",
-    label: "Handled",
-    icon: Check,
-    color: "var(--color-success)",
-    bgColor: "transparent",
-    borderColor: "rgba(34,197,94,0.3)",
-    defaultCollapsed: true,
-  },
-] as const;
+const STATUS_ICON: Partial<Record<ThreadStatus, typeof AlertTriangle>> = {
+  urgent: AlertTriangle,
+  "action-required": Bell,
+  unclassified: Clock,
+  "triage-failed": AlertCircle,
+  handled: Check,
+};
+
+/** Most recent actual message first; ties by id, so a re-read never reshuffles equal rows. */
+function byRecency(a: Note, b: Note): number {
+  return lastMessageTime(b.metadata as Record<string, unknown> | null) - lastMessageTime(a.metadata as Record<string, unknown> | null)
+    || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+}
 
 function TriageView({
   messages,
   onOpenThread,
   searchQuery,
+  category,
+  onCategory,
 }: {
   messages: Note[];
   onOpenThread: (note: Note) => void;
   searchQuery: string;
+  category: CategoryFilter;
+  onCategory: (next: CategoryFilter) => void;
 }) {
   const q = searchQuery.toLowerCase();
-
-  const tiers = useMemo(() => {
-    const result: Array<{
-      tier: (typeof PRIORITY_TIERS)[number];
-      notes: Note[];
-    }> = [];
-
-    for (const tier of PRIORITY_TIERS) {
-      let notes = messages.filter(
-        (note) => threadStatus(note.tags) === tier.tag,
-      );
-
-      // Apply search filter
-      if (q) {
-        notes = notes.filter((n) => {
-          const name = (n.path || "").split("/").pop() || "";
-          return (
-            name.toLowerCase().includes(q) ||
-            (n.content || "").toLowerCase().includes(q)
-          );
-        });
-      }
-
-      // Sort by most recent
-      notes.sort((a, b) => {
-        const aTime =
-          ((a.metadata as Record<string, unknown>)?.lastMessageAt as number) ||
-          0;
-        const bTime =
-          ((b.metadata as Record<string, unknown>)?.lastMessageAt as number) ||
-          0;
-        return bTime - aTime;
-      });
-
-      if (notes.length > 0) {
-        result.push({ tier, notes });
-      }
+  const searched = useMemo(
+    () =>
+      q
+        ? messages.filter((n) => {
+            const name = (n.path || "").split("/").pop() || "";
+            return name.toLowerCase().includes(q) || (n.content || "").toLowerCase().includes(q);
+          })
+        : messages,
+    [messages, q],
+  );
+  const counts = useMemo(() => {
+    const map = new Map<ThreadStatus, number>();
+    for (const n of searched) {
+      const status = threadStatus(n.tags);
+      map.set(status, (map.get(status) ?? 0) + 1);
     }
+    return map;
+  }, [searched]);
 
-    return result;
-  }, [messages, q]);
-
-  // Show a real conversation on entry even when every populated tier is
-  // normally collapsed. This is an initializer only: refetches must not undo
-  // a reader's deliberate collapse choice.
-  const initialExpandedTag = tiers.some(({ tier }) => !tier.defaultCollapsed)
-    ? undefined
-    : tiers[0]?.tier.tag;
-
-  const urgentCount = messages.filter(
-    (n) => threadStatus(n.tags) === "urgent",
-  ).length;
-  const actionCount = messages.filter(
-    (n) => threadStatus(n.tags) === "action-required",
-  ).length;
+  // Rows don't jump: while a filter stays selected, a conversation that was listed under it stays
+  // listed (with its NEW chip) when its tags change underneath — e.g. ingest clearing the
+  // classifier's tags on a new message. Choosing a filter again starts from the current tags.
+  const held = useRef<{ key: string; ids: Set<string> }>({ key: "", ids: new Set() });
+  if (held.current.key !== category) held.current = { key: category, ids: new Set() };
+  const rows = useMemo(() => {
+    const ids = held.current.ids;
+    const list = category === "all"
+      ? [...searched]
+      : searched.filter((n) => threadStatus(n.tags) === category || ids.has(n.id));
+    for (const n of list) ids.add(n.id);
+    return list.sort(byRecency);
+  }, [searched, category]);
 
   if (messages.length === 0) {
     return (
       <div className="text-center py-12">
-        <Inbox
-          size={24}
-          style={{ color: "var(--text-muted)" }}
-          className="mx-auto mb-2"
-        />
-        <p className="text-sm" style={{ color: "var(--text-muted)" }}>
-          No messages to triage.
-        </p>
+        <Inbox size={24} style={{ color: "var(--text-muted)" }} className="mx-auto mb-2" />
+        <p className="text-sm" style={{ color: "var(--text-muted)" }}>No messages to triage.</p>
       </div>
     );
   }
 
+  const shown = THREAD_STATUS_ORDER.filter((s) => (counts.get(s) ?? 0) > 0 || s === category);
   return (
     <div>
-      {/* Summary banner */}
-      {(urgentCount > 0 || actionCount > 0) && (
-        <div
-          className="flex items-center gap-4 px-6 py-2.5"
-          style={{
-            background:
-              urgentCount > 0
-                ? "rgba(239,68,68,0.06)"
-                : "rgba(245,158,11,0.06)",
-            borderBottom: "1px solid var(--glass-border)",
-          }}
+      <div className="prism-triage-filters" role="group" aria-label="Filter by category">
+        <button
+          type="button"
+          className="prism-triage-chip focus-ring"
+          aria-pressed={category === "all"}
+          onClick={() => onCategory("all")}
         >
-          {urgentCount > 0 && (
-            <span
-              className="flex items-center gap-1.5 text-xs font-medium"
-              style={{ color: "var(--color-danger)" }}
-            >
-              <AlertTriangle size={13} /> {urgentCount} urgent
-            </span>
-          )}
-          {actionCount > 0 && (
-            <span
-              className="flex items-center gap-1.5 text-xs font-medium"
-              style={{ color: "var(--color-warning)" }}
-            >
-              <Bell size={13} /> {actionCount} need action
-            </span>
-          )}
-        </div>
+          All <span className="prism-triage-count">{searched.length}</span>
+        </button>
+        {shown.map((status) => (
+          <button
+            key={status}
+            type="button"
+            className="prism-triage-chip focus-ring"
+            data-tone={THREAD_STATUS_TONE[status]}
+            aria-pressed={category === status}
+            onClick={() => onCategory(category === status ? "all" : status)}
+          >
+            <span className="prism-status-dot" aria-hidden="true" />
+            {THREAD_STATUS_LABELS[status]}{" "}
+            <span className="prism-triage-count">{counts.get(status) ?? 0}</span>
+          </button>
+        ))}
+      </div>
+      {category === "triage-failed" && (
+        <p className="prism-triage-hint">
+          The classifier gave up on these and won’t retry on its own. Open one to choose a status
+          or send it back to be classified.
+        </p>
       )}
-
-      {/* Priority tiers */}
-      {tiers.map(({ tier, notes }) => (
-        <TriageTier
-          key={`${tier.tag}:${!!searchQuery}`}
-          forceExpanded={!!searchQuery}
-          defaultExpanded={tier.tag === initialExpandedTag}
-          tier={tier}
-          notes={notes}
-          onOpenThread={onOpenThread}
-        />
-      ))}
+      {rows.length ? (
+        rows.map((note) => <TriageRow key={note.id} note={note} onOpen={() => onOpenThread(note)} />)
+      ) : (
+        <p className="prism-triage-hint" role="status">
+          {category === "all"
+            ? "No conversations match this search."
+            : q
+              ? `Nothing in “${THREAD_STATUS_LABELS[category]}” matches this search.`
+              : `Nothing in “${THREAD_STATUS_LABELS[category]}” right now.`}
+        </p>
+      )}
     </div>
   );
 }
 
-function TriageTier({
-  tier,
-  notes,
-  onOpenThread,
-  forceExpanded,
-  defaultExpanded,
-}: {
-  forceExpanded?: boolean;
-  defaultExpanded?: boolean;
-  tier: (typeof PRIORITY_TIERS)[number];
-  notes: Note[];
-  onOpenThread: (note: Note) => void;
-}) {
-  const [collapsed, setCollapsed] = useState(
-    () => !(forceExpanded || defaultExpanded || !tier.defaultCollapsed),
-  );
-  const Icon = tier.icon;
-
+/** The row's one classification chip: label (always), icon for the states that ask for you, tone from tokens. */
+function StatusChip({ status }: { status: ThreadStatus }) {
+  const Icon = STATUS_ICON[status];
   return (
-    <div>
-      <button
-        aria-expanded={!collapsed}
-        onClick={() => setCollapsed(!collapsed)}
-        className="prism-message-tier w-full flex items-center gap-2 focus-ring hover:bg-[var(--glass-hover)] transition-colors"
-      >
-        {collapsed ? (
-          <ChevronRight size={13} style={{ color: tier.color }} />
-        ) : (
-          <ChevronDown size={13} style={{ color: tier.color }} />
-        )}
-        <Icon size={13} style={{ color: tier.color }} />
-        <span className="prism-tier-name text-xs">{tier.label}</span>
-        <span
-          className="text-xs font-medium px-1.5 py-0.5 rounded-full"
-          style={{ background: tier.borderColor, color: tier.color }}
-        >
-          {notes.length}
-        </span>
-      </button>
-
-      {!collapsed &&
-        notes.map((note) => (
-          <TriageRow key={note.id} note={note} onOpen={() => onOpenThread(note)} />
-        ))}
-    </div>
+    <span className="prism-status-chip" data-tone={THREAD_STATUS_TONE[status]} data-status={status}>
+      {Icon && <Icon size={11} aria-hidden="true" />}
+      {THREAD_STATUS_LABELS[status]}
+    </span>
   );
 }
 
@@ -977,7 +859,7 @@ function ThreadRow({ note, onOpen }: { note: Note; onOpen: () => void }) {
   const swipe = useEmailRowActions(note);
   const meta = (note.metadata || {}) as Record<string, unknown>;
   const name = (note.path || "").split("/").pop()?.replace(/-/g, " ") || "Thread";
-  const lastTs = meta.lastMessageAt as number;
+  const lastTs = lastMessageTime(meta);
   const participants = Array.isArray(meta.participants) ? meta.participants.length : 0;
   const unread = meta.isUnread === true && !markedRead.has(note.id);
   const preview = lastPreview(note.content || "");
@@ -1007,6 +889,7 @@ function ThreadRow({ note, onOpen }: { note: Note; onOpen: () => void }) {
           </div>
           {preview && <div className="prism-message-preview truncate">{preview}</div>}
           <div className="prism-person-sources">
+            <StatusChip status={threadStatus(note.tags)} />
             <SourceBadge platform={getPlatform(note)} />
             {participants > 2 && <span className="prism-row-count">{participants} people</span>}
           </div>
@@ -1223,7 +1106,7 @@ function PersonCard({
             const threadName =
               (thread.path || "").split("/").pop()?.replace(/-/g, " ") ||
               "Thread";
-            const lastTs = meta.lastMessageAt as number;
+            const lastTs = lastMessageTime(meta);
             const lines = (thread.content || "")
               .split("\n")
               .filter((l) => l.trim() && !l.startsWith("#"));

@@ -18,11 +18,13 @@ test("Inbox counts unique conversations, keeps reviewed items visible and fits a
   await expect(
     page.getByText("4 conversations", { exact: true }),
   ).toBeVisible();
+  // `handled` wins over `urgent`: no Urgent filter, the thread is listed (once) under Handled.
   await expect(page.getByRole("button", { name: /^Urgent/ })).toHaveCount(0);
   await page.getByRole("button", { name: /^Handled/ }).click();
   await expect(
     page.getByRole("button", { name: /Direct discussion/ }),
   ).toHaveCount(1);
+  await page.getByRole("button", { name: /^All/ }).click();
   await page.getByRole("textbox", { name: "Search inbox" }).fill("reviewed");
   await expect(
     page.getByRole("button", { name: /Reviewed discussion/ }),
