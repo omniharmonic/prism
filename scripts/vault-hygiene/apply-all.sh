@@ -13,6 +13,8 @@
 #   m-c-ff   trash identified duplicates — Fireflies inbox batch first
 #   m-c      trash identified duplicates — everything else
 #   m-b      repoint [[vault/projects/<slug>]] folder links to …/PROJECT
+#   m-f      stored shapes lint still reports: numbers kept as text, blank fields removed,
+#            one value / an unambiguous "a, b" turned into a list (never a guess)
 #   m-e      Prism people-link job: dry run, then a CAPPED write run
 #   m-d      untagged-notes report (writes nothing)
 #
@@ -42,7 +44,7 @@ PEOPLE_LINK_CAP="${PEOPLE_LINK_CAP:-500}"
 KC_PARACHUTE_TOKEN="${KC_PARACHUTE_TOKEN:-prism-parachute-token}"
 KC_OWNER_TOKEN="${KC_OWNER_TOKEN:-prism-owner-device-token}"
 KC_ADMIN_TOKEN="${KC_ADMIN_TOKEN:-prism-parachute-admin-token}"
-STEPS=(schema m-a m-c-ff m-c m-b m-e m-d)
+STEPS=(schema m-a m-c-ff m-c m-b m-f m-e m-d)
 
 BACKUP=""
 FROM=""
@@ -74,7 +76,7 @@ command -v node >/dev/null && command -v jq >/dev/null && command -v security >/
 
 # ── 2. Tokens (Keychain → environment of the child processes only) ─────────
 kc() { security find-generic-password -a "$USER" -s "$1" -w 2>/dev/null || security find-generic-password -s "$1" -w 2>/dev/null || true; }
-PARACHUTE_TOKEN="$(kc "$KC_PARACHUTE_TOKEN")"
+PARACHUTE_TOKEN="${PARACHUTE_TOKEN:-$(kc "$KC_PARACHUTE_TOKEN")}"   # an already-exported token wins (an ssh session cannot read the Keychain)
 [ -n "$PARACHUTE_TOKEN" ] || die "Keychain item '$KC_PARACHUTE_TOKEN' not found — create it: security add-generic-password -U -a \"\$USER\" -s $KC_PARACHUTE_TOKEN -w   (you will be prompted for the value)"
 export PARACHUTE_TOKEN
 
@@ -168,6 +170,8 @@ if want m-c-ff || want m-c; then
 fi
 
 want m-b && migration m-b migrate-project-folder-links.ts
+
+want m-f && migration m-f migrate-field-shapes.ts
 
 # ── M-e: Prism's own people-link job (admin API, owner device token) ────────
 prism_api() { # METHOD PATH [JSON] — the bearer goes to curl on stdin, never argv
