@@ -63,6 +63,33 @@ test("fuzzy search ranks the intended block first", async ({ page }) => {
   await expect(page.getByRole("listbox", { name: "Insert block" })).toHaveCount(0);
 });
 
+test("a block's name can be typed in full: several words keep the menu open, prose closes it", async ({ page }) => {
+  await newLine(page);
+  const menu = page.getByRole("listbox", { name: "Insert block" });
+  for (const [query, expected] of [["toggle heading 2", "Toggle heading 2"], ["table of", "Table of contents"], ["2 col", "2 columns"], ["to-do list", "To-do list"], ["link to", "Link to page"]] as const) {
+    await page.keyboard.type(`/${query}`);
+    await expect(menu.getByRole("option").first(), query).toHaveAccessibleName(new RegExp(`^${expected}`));
+    for (let i = 0; i <= query.length; i++) await page.keyboard.press("Backspace");
+  }
+  // Enter on a several-word query inserts that block and removes the typed command.
+  await page.keyboard.type("/toggle heading 2");
+  await page.keyboard.press("Enter");
+  await page.keyboard.type("Section");
+  expect(await editorHtml(page)).toMatch(/<details[^>]*data-heading-level="2"[^>]*><summary>Section<\/summary>/);
+  expect(await editorHtml(page)).not.toContain("/toggle");
+  // Ordinary writing after a "/" is not a command: no menu, Enter is a new line and the text stays.
+  await newLine(page);
+  await page.keyboard.type("/usr and local paths");
+  await expect(menu).toHaveCount(0);
+  await page.keyboard.press("Enter");
+  await page.keyboard.type("next");
+  expect(await editorHtml(page)).toContain("<p>/usr and local paths</p><p>next</p>");
+  // A space straight after the "/" never opens it.
+  await newLine(page);
+  await page.keyboard.type("/ table");
+  await expect(menu).toHaveCount(0);
+});
+
 test("every slash block inserts the node it names and the stored HTML keeps it", async ({ page }) => {
   page.on("dialog", (dialog) => dialog.accept("https://images.example.test/chart.png"));
   const run = async (query: string, after?: string) => {
