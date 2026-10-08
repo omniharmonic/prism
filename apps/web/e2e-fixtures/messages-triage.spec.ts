@@ -22,10 +22,50 @@ test("the classification model reads every tag it can meet", () => {
   expect(statusChange(["urgent", "triaged"], "triaged")).toEqual({ add: [], remove: ["urgent"] });
 });
 
+test("the view opens on Needs attention (urgent + action required), and search stays inside it", async ({ page }) => {
+  await page.goto("/e2e-fixtures/inbox.html?triage");
+  await expect(chip(page, "Needs attention 2")).toHaveAttribute("aria-pressed", "true");
+  await expect(chip(page, "All 8")).toHaveAttribute("aria-pressed", "false");
+  await expect(page.locator(".prism-message-row .prism-row-name")).toHaveText(["Grant deadline", "Budget question"]);
+  // Search narrows inside the category — a match elsewhere ("Plain chat") is not pulled in.
+  const search = page.getByRole("textbox", { name: "Search inbox" });
+  await search.fill("budget");
+  await expect(chip(page, "Needs attention 1")).toHaveAttribute("aria-pressed", "true");
+  await expect(rows(page)).toHaveText([/Budget question/]);
+  await search.fill("plain");
+  await expect(rows(page)).toHaveCount(0);
+  await expect(page.getByText("Nothing that needs your attention matches this search.")).toBeVisible();
+  await search.fill("");
+  // Un-choosing a single status returns to the default, not to All.
+  await chip(page, "Urgent 1").click();
+  await expect(rows(page)).toHaveCount(1);
+  await chip(page, "Urgent 1").click();
+  await expect(chip(page, "Needs attention 2")).toHaveAttribute("aria-pressed", "true");
+});
+
+test("nothing needs attention: it says so and offers Show all", async ({ page }) => {
+  await page.goto("/e2e-fixtures/inbox.html?triage");
+  await page.evaluate(() => {
+    (window as any).prismInboxFixture.setTags("t-urgent", ["message-thread", "handled"]);
+    (window as any).prismInboxFixture.setTags("t-action", ["message-thread", "handled"]);
+  });
+  await refetch(page);
+  // Rows don't jump under the open filter; choosing it again starts from the current tags.
+  await chip(page, "All 8").click();
+  await chip(page, "Needs attention 0").click();
+  await expect(chip(page, "Needs attention 0")).toHaveAttribute("aria-pressed", "true");
+  await expect(rows(page)).toHaveCount(0);
+  await expect(page.getByRole("status").filter({ hasText: "Nothing needs your attention right now." })).toBeVisible();
+  await page.getByRole("button", { name: "Show all", exact: true }).click();
+  await expect(chip(page, "All 8")).toHaveAttribute("aria-pressed", "true");
+  await expect(rows(page)).toHaveCount(8);
+});
+
 test("one row of chips with counts, sentence case, and one category chip per row in recency order", async ({ page }) => {
   await page.goto("/e2e-fixtures/inbox.html?triage");
+  await chip(page, "All 8").click();
   await expect(chips(page)).toHaveText([
-    "All 8", "Urgent 1", "Action required 1", "Needs triage 2", "Couldn’t classify 1", "Informational 1", "Low priority 1", "Handled 1",
+    "Needs attention 2", "All 8", "Urgent 1", "Action required 1", "Needs triage 2", "Couldn’t classify 1", "Informational 1", "Low priority 1", "Handled 1",
   ]);
   await expect(chip(page, "All 8")).toHaveAttribute("aria-pressed", "true");
   // Every row: exactly one chip, and the list is newest first (an ISO `lastMessageAt` sorts too).
@@ -39,13 +79,13 @@ test("one row of chips with counts, sentence case, and one category chip per row
   // Tone from tokens: the urgent chip is tinted, a quiet one is not.
   const bg = (name: string) => rows(page).filter({ hasText: name }).locator(".prism-status-chip").evaluate((el) => getComputedStyle(el).backgroundColor);
   expect(await bg("Grant deadline")).not.toBe(await bg("Done thing"));
-  // Filtering is a toggle with aria-pressed; choosing it again goes back to All.
+  // Filtering is a toggle with aria-pressed; choosing it again goes back to the default.
   await chip(page, "Urgent 1").click();
   await expect(chip(page, "Urgent 1")).toHaveAttribute("aria-pressed", "true");
   await expect(chip(page, "All 8")).toHaveAttribute("aria-pressed", "false");
   await expect(rows(page)).toHaveCount(1);
   await chip(page, "Urgent 1").click();
-  await expect(chip(page, "All 8")).toHaveAttribute("aria-pressed", "true");
+  await expect(chip(page, "Needs attention 2")).toHaveAttribute("aria-pressed", "true");
   // Search narrows inside the chosen filter, and the counts follow the search.
   await chip(page, "Needs triage 2").click();
   await page.getByRole("textbox", { name: "Search inbox" }).fill("plain");
@@ -89,6 +129,7 @@ test("a thread the classifier gave up on is shown as such and can be sent back i
 
 test("a status change is ONE write (owner and member dialects), and a refused one rolls back", async ({ page }) => {
   await page.goto("/e2e-fixtures/inbox.html?triage");
+  await chip(page, "All 8").click();
   await rows(page).filter({ hasText: "Budget question" }).click();
   const status = page.getByRole("combobox", { name: "Thread status" });
   await status.selectOption("urgent");

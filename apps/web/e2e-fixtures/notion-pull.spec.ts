@@ -58,6 +58,7 @@ test("Inbox: pulling the list down refetches it and says so; a short pull does n
 
 test("Messages: pull to refresh — not when scrolled, not while a text field has focus, not for a sideways drag; reduced motion", async ({ page }) => {
   await page.goto("/e2e-fixtures/notion-gestures.html");
+  await page.getByRole("group", { name: "Filter by category" }).getByRole("button", { name: /^All/ }).click();
   const scroller = page.getByTestId("messages-scroller");
   const first = page.locator(".prism-message-row").first();
   await expect(first).toBeVisible();
@@ -109,6 +110,7 @@ test("Messages: pull to refresh — not when scrolled, not while a text field ha
 
 test("Messages: an email row swipes right to mark read (never to archive); the row has a Mark as read button; chat rows have no swipe", async ({ page }) => {
   await page.goto("/e2e-fixtures/notion-gestures.html");
+  await page.getByRole("group", { name: "Filter by category" }).getByRole("button", { name: /^All/ }).click();
   const row = (name: string) => page.locator(".prism-message-row").filter({ hasText: name }).first();
   const acts = () => page.evaluate(() => (window as any).prismGestures.actions as Array<{ action: string; noteId: string; read?: boolean }>);
   await expect(row("Budget question 1")).toBeVisible();
@@ -145,6 +147,7 @@ test("Messages: an email row swipes right to mark read (never to archive); the r
 
   // No live email actions in this shell: no swipe, no button.
   await page.goto("/e2e-fixtures/notion-gestures.html?noactions");
+  await page.getByRole("group", { name: "Filter by category" }).getByRole("button", { name: /^All/ }).click();
   await expect(row("Budget question 1")).toBeVisible();
   await drag(page, row("Budget question 1"), 100, 0, { hold: true });
   await expect(row("Budget question 1").locator(".prism-swipe-hint")).toHaveCount(0);

@@ -4,9 +4,12 @@ const filter = (page: import("@playwright/test").Page, name: RegExp) =>
   page.getByRole("group", { name: "Filter by category" }).getByRole("button", { name });
 
 for (const width of [1440, 390, 720]) {
-  test(`classified inbox shows every conversation initially at ${width}px`, async ({ page }, info) => {
+  test(`classified inbox opens on Needs attention; All shows every conversation at ${width}px`, async ({ page }, info) => {
     await page.setViewportSize({ width, height: width === 720 ? 500 : 844 });
     await page.goto("/e2e-fixtures/inbox.html");
+    // Owner decision 2026-10-08: the view opens on urgent + action required; All is one tap away.
+    await expect(filter(page, /^Needs attention/)).toHaveAttribute("aria-pressed", "true");
+    await filter(page, /^All/).click();
     await expect(filter(page, /^All/)).toHaveAttribute("aria-pressed", "true");
     await expect(page.getByRole("button", { name: /Planning group/ })).toBeVisible();
     for (const name of [/^Low priority 1$/, /^Social 1$/, /^Reviewed 1$/, /^Handled 1$/])

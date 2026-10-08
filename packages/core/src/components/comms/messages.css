@@ -96,6 +96,23 @@
   line-height: 1.5;
   color: var(--text-secondary);
 }
+.prism-triage-hint p { margin: 0; }
+/* The empty "Needs attention" (or any single category) offers the way out right under its sentence. */
+.prism-triage-show-all {
+  margin-top: 6px;
+  min-height: var(--control-h-sm, 28px);
+  padding: 0 10px;
+  border-radius: 6px;
+  border: 1px solid var(--glass-border);
+  background: transparent;
+  color: var(--text-primary);
+  font-size: 12px;
+  font-weight: 500;
+}
+.prism-triage-show-all:hover { background: var(--glass-hover); }
+@media (pointer: coarse) {
+  .prism-triage-show-all { min-height: 44px; }
+}
 .prism-status-chip {
   display: inline-flex;
   align-items: center;

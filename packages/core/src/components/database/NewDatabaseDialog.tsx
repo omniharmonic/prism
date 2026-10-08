@@ -4,6 +4,9 @@
  *   SERVER calls available: no pages, no properties, nobody shares or publishes it;
  *   shown and editable) → the properties it starts with (the one-step property form,
  *   several, reorderable; a Status starter is offered) → its first view → create.
+ *   A board / calendar first view that no property can serve gets one ADDED (a Status /
+ *   a "Date"), listed before Create and pinned while that view is chosen; choosing a view
+ *   that does not need it takes an untouched added one away again.
  * Creating is `createBlankDatabase`: the page, then the tag's properties (`requireNew`
  * — the server checks the tag again), then the view; a failure keeps its progress so
  * "Try again" continues instead of starting over.
@@ -15,7 +18,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowDown, ArrowUp, Plus, X } from "lucide-react";
 import { useVaultClient } from "../../data/VaultClientContext";
-import { buildNewPropertyPatch, PROPERTY_KIND_LABELS, type SchemaPatch } from "../../lib/database/schema";
+import { PROPERTY_KIND_LABELS, type SchemaPatch } from "../../lib/database/schema";
 import type { Note } from "../../lib/types";
 import { VIEW_LABELS, VIEW_TYPES, type ViewType } from "./config";
 import {
@@ -26,25 +29,17 @@ import {
   NEW_TAG_NAME,
   NewDatabaseError,
   newTagAvailability,
+  starterStatusProperty,
   tagFromName,
+  viewPropertyKey,
+  withViewProperty,
   type NewDatabaseProgress,
   type NewDatabaseProperty,
 } from "./createDatabase";
 import { NewPropertyForm } from "./NewPropertyForm";
 
 /** The Status property a new database is offered to start with (removable). */
-export function starterStatusProperty(): NewDatabaseProperty {
-  const built = buildNewPropertyPatch({
-    label: "Status", kind: "status",
-    options: [
-      { value: "To do", color: "gray", group: "todo" },
-      { value: "In progress", color: "blue", group: "in_progress" },
-      { value: "Done", color: "green", group: "complete" },
-    ],
-  });
-  if (!built.ok) throw new Error(built.error);
-  return { key: built.key, field: built.patch.fields![built.key]!, ui: built.patch.ui![built.key]! };
-}
+export { starterStatusProperty };
 
 type TagState = { state: "idle" | "checking" | "ok" | "refused" | "error"; detail?: string };
 
@@ -72,9 +67,26 @@ export function NewDatabaseDialog({ folder = "", initialName = "", initialView =
   const [tagEdited, setTagEdited] = useState(false);
   const [tagState, setTagState] = useState<TagState>({ state: "idle" });
   const [recheck, setRecheck] = useState(0);
-  const [properties, setProperties] = useState<NewDatabaseProperty[]>(() => [starterStatusProperty()]);
+  const [initial] = useState(() => withViewProperty(initialView, [starterStatusProperty()]));
+  const [properties, setProperties] = useState<NewDatabaseProperty[]>(initial.properties);
   const [adding, setAdding] = useState(false);
   const [view, setView] = useState<ViewType>(initialView);
+  // A property added for the chosen view (board → Status, calendar → Date), named in its row.
+  const [viewAdded, setViewAdded] = useState<{ key: string; view: ViewType } | null>(initial.added ? { key: initial.added.key, view: initialView } : null);
+  const chooseView = (next: ViewType) => {
+    // An added property the person never touched goes when the view no longer needs it…
+    let base = properties;
+    let added = viewAdded;
+    if (added && added.view !== next && viewPropertyKey(next, base) !== added.key) {
+      base = base.filter((p) => p.key !== added!.key);
+      added = null;
+    }
+    // …and the new view gets one if nothing can serve it.
+    const out = withViewProperty(next, base);
+    setView(next);
+    setProperties(out.properties);
+    setViewAdded(out.added ? { key: out.added.key, view: next } : added);
+  };
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   // What a failed attempt already made: a retry continues from there.
@@ -119,6 +131,8 @@ export function NewDatabaseDialog({ folder = "", initialName = "", initialView =
   }, [name, tagEdited ? tag : "", tagEdited, server, owner, recheck, tagLocked]);
 
   const viewRefusal = blankViewRefusal(view, properties);
+  // The property the view groups / dates by cannot be removed while that view is chosen.
+  const viewKey = view === "board" || view === "calendar" ? viewPropertyKey(view, properties) : null;
   const ready = !!name.trim() && (tagLocked || tagState.state === "ok") && !viewRefusal && !adding;
 
   const move = (i: number, d: -1 | 1) => setProperties((cur) => {
@@ -131,6 +145,7 @@ export function NewDatabaseDialog({ folder = "", initialName = "", initialView =
   const addProperty = async (_tag: string, key: string, patch: SchemaPatch) => {
     // Nothing is written here: the properties go out with the database, in one claim of the tag.
     setProperties((cur) => [...cur, { key, field: patch.fields![key]!, ui: patch.ui![key]! }]);
+    setViewAdded(null); // the person shaped the list themselves from here on
   };
 
   const create = async () => {
@@ -208,14 +223,16 @@ export function NewDatabaseDialog({ folder = "", initialName = "", initialView =
                 <ul className="db-newdb-props" aria-label="Properties of the new database">
                   {properties.map((p, i) => {
                     const label = p.ui.label ?? p.key;
+                    const pinned = p.key === viewKey;
                     const target = p.ui.relationTarget ? ("tag" in p.ui.relationTarget ? `#${p.ui.relationTarget.tag}` : p.ui.relationTarget.pathPrefix) : p.ui.relationTag ? `#${p.ui.relationTag}` : "";
                     return (
                       <li key={p.key} className="db-newdb-prop">
                         <span className="db-newdb-prop-name">{label}</span>
-                        <span className="db-newdb-prop-kind">{p.ui.kind ? PROPERTY_KIND_LABELS[p.ui.kind] : p.field.type}{target ? ` → ${target}` : ""}{p.field.enum?.length ? ` · ${p.field.enum.join(", ")}` : ""}</span>
+                        <span className="db-newdb-prop-kind">{p.ui.kind ? PROPERTY_KIND_LABELS[p.ui.kind] : p.field.type}{target ? ` → ${target}` : ""}{p.field.enum?.length ? ` · ${p.field.enum.join(", ")}` : ""}
+                          {viewAdded?.key === p.key ? ` · added for the ${VIEW_LABELS[viewAdded.view]} view` : pinned ? ` · used by the ${VIEW_LABELS[view]} view` : ""}</span>
                         <button type="button" className="db-icon-btn" aria-label={`Move ${label} up`} disabled={busy || tagLocked || i === 0} onClick={() => move(i, -1)}><ArrowUp size={12} aria-hidden="true" /></button>
                         <button type="button" className="db-icon-btn" aria-label={`Move ${label} down`} disabled={busy || tagLocked || i === properties.length - 1} onClick={() => move(i, 1)}><ArrowDown size={12} aria-hidden="true" /></button>
-                        <button type="button" className="db-icon-btn" aria-label={`Remove ${label}`} disabled={busy || tagLocked} onClick={() => setProperties((cur) => cur.filter((x) => x.key !== p.key))}><X size={12} aria-hidden="true" /></button>
+                        <button type="button" className="db-icon-btn" aria-label={`Remove ${label}`} title={pinned ? `The ${VIEW_LABELS[view]} view needs it — choose another view to remove it` : undefined} disabled={busy || tagLocked || pinned} onClick={() => { setProperties((cur) => cur.filter((x) => x.key !== p.key)); if (viewAdded?.key === p.key) setViewAdded(null); }}><X size={12} aria-hidden="true" /></button>
                       </li>
                     );
                   })}
@@ -235,7 +252,7 @@ export function NewDatabaseDialog({ folder = "", initialName = "", initialView =
             <fieldset className="db-newdb-views" disabled={busy || !!progress?.configDone}>
               <legend className="db-field-legend">First view</legend>
               {VIEW_TYPES.map((v) => (
-                <label key={v} className="db-radio"><input type="radio" name="db-newdb-view" value={v} checked={view === v} onChange={() => setView(v)} /> {VIEW_LABELS[v]}</label>
+                <label key={v} className="db-radio"><input type="radio" name="db-newdb-view" value={v} checked={view === v} onChange={() => chooseView(v)} /> {VIEW_LABELS[v]}</label>
               ))}
             </fieldset>
             {viewRefusal && <p className="db-error" role="alert">{viewRefusal}</p>}

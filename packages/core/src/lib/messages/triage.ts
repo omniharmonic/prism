@@ -38,6 +38,17 @@ export const THREAD_STATUS_ORDER: readonly ThreadStatus[] = [
   "urgent", "action-required", "unclassified", "triage-failed", "informational", "low", "social", "triaged", "handled",
 ];
 
+/**
+ * The Messages view OPENS on "Needs attention" = these statuses together (owner decision
+ * 2026-10-08): what asks for a person first, "All" one tap away. A set, not a single status, so
+ * the default filter is one chip (exclusive `aria-pressed` like the others), never a multi-select.
+ */
+export const NEEDS_ATTENTION: readonly ThreadStatus[] = ["urgent", "action-required"];
+export const NEEDS_ATTENTION_LABEL = "Needs attention";
+export function needsAttention(status: ThreadStatus): boolean {
+  return NEEDS_ATTENTION.includes(status);
+}
+
 /** Visual tone of a status (mapped to tokens in CSS — never a colour here). */
 export type StatusTone = "danger" | "warning" | "pending" | "failed" | "neutral" | "done";
 export const THREAD_STATUS_TONE: Record<ThreadStatus, StatusTone> = {

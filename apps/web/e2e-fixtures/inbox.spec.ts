@@ -107,9 +107,9 @@ test("a capped Inbox discloses missing history and offers whole-vault search", a
   await expect(
     page.getByText("Showing 500 conversations", { exact: true }),
   ).toBeVisible();
-  await expect(page.getByRole("status")).toContainText(
-    "Older conversations may be outside",
-  );
+  await expect(
+    page.getByRole("status").filter({ hasText: "Older conversations" }),
+  ).toContainText("Older conversations may be outside");
   await expect(
     page.getByRole("textbox", { name: "Search inbox" }),
   ).toHaveAttribute("placeholder", "Search loaded conversations…");

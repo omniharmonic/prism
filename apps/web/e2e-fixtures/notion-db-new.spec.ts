@@ -79,7 +79,7 @@ test("new database: name → minted tag → three properties incl. a relation �
   await expect(table.locator("tbody tr[data-row-id]")).toHaveCount(1);
 });
 
-test("new database: a taken tag is skipped when minting; an edited tag is checked; a board needs a status", async ({ page }) => {
+test("new database: a taken tag is skipped when minting; an edited tag is checked; a board gets a status", async ({ page }) => {
   await page.goto("/e2e-fixtures/databases.html?create&open=page");
   // "research" is in use by a page: the name "Research" mints research-2.
   await page.evaluate(() => { (window as any).dbFixture.notes().push({ id: "r1", path: "X/R", content: "", tags: ["research"], metadata: {}, createdAt: "", updatedAt: "" }); });
@@ -92,13 +92,47 @@ test("new database: a taken tag is skipped when minting; an edited tag is checke
   await expect(dialog.getByRole("button", { name: "Create database" })).toBeDisabled();
   await dialog.getByRole("button", { name: "Use the name" }).click();
   await expect(dialog.getByLabel("Tag for its pages")).toHaveValue("research-2");
-  // A board without a Status/Select property is not offered as buildable.
+  // A board without a Status/Select property gets one ADDED (owner decision 2026-10-08), shown before Create.
+  const props = dialog.getByRole("list", { name: "Properties of the new database" });
   await dialog.getByRole("button", { name: "Remove Status" }).click();
+  await expect(props.getByRole("listitem")).toHaveCount(0);
   await dialog.getByRole("radio", { name: "Board" }).check();
-  await expect(dialog.getByRole("alert")).toContainText("A board groups pages by a Status or Select property");
-  await expect(dialog.getByRole("button", { name: "Create database" })).toBeDisabled();
-  await dialog.getByRole("radio", { name: "List" }).check();
+  await expect(props.getByRole("listitem")).toHaveCount(1);
+  await expect(props).toContainText("To do, In progress, Done · added for the Board view");
+  await expect(dialog.getByRole("alert")).toHaveCount(0);
+  // The board groups by it: it can't be removed while Board is chosen.
+  await expect(dialog.getByRole("button", { name: "Remove Status" })).toBeDisabled();
   await expect(dialog.getByRole("button", { name: "Create database" })).toBeEnabled();
+  // Another view that does not need it takes the untouched added one away again.
+  await dialog.getByRole("radio", { name: "List" }).check();
+  await expect(props).toHaveCount(0);
+  await expect(dialog.getByRole("button", { name: "Create database" })).toBeEnabled();
+});
+
+test("new database: a calendar first view gets a Date property, written with the schema and used by the view", async ({ page }) => {
+  await page.goto("/e2e-fixtures/databases.html?create&open=page");
+  const dialog = await openNewDatabase(page);
+  await dialog.getByLabel("Database name").fill("Events");
+  await expect(dialog.getByLabel("Tag for its pages")).toHaveValue("events");
+  const props = dialog.getByRole("list", { name: "Properties of the new database" });
+  await dialog.getByRole("radio", { name: "Calendar" }).check();
+  await expect(props.getByRole("listitem")).toHaveCount(2);
+  await expect(props.getByRole("listitem").last()).toContainText("Date");
+  await expect(props.getByRole("listitem").last()).toContainText("added for the Calendar view");
+  await expect(dialog.getByRole("button", { name: "Remove Date" })).toBeDisabled();
+  // Board needs nothing more (the Status starter serves it); the Date added for the calendar goes.
+  await dialog.getByRole("radio", { name: "Board" }).check();
+  await expect(props.getByRole("listitem")).toHaveCount(1);
+  await dialog.getByRole("radio", { name: "Calendar" }).check();
+  await expect(props.getByRole("listitem")).toHaveCount(2);
+  await dialog.getByRole("button", { name: "Create database" }).click();
+  await expect(dialog).toHaveCount(0);
+  const f = await fx(page);
+  expect(Object.keys(f.schemaWrites[0].patch.fields)).toEqual(["status", "date"]);
+  expect(f.schemaWrites[0].patch.fields.date).toEqual({ type: "date" });
+  expect(f.schemaWrites[0].patch.ui.date).toMatchObject({ kind: "date", label: "Date" });
+  const config = f.writes.find((x: any) => x.metadata?.prism_database);
+  expect(config.metadata.prism_database.views[0]).toMatchObject({ type: "calendar", dateKey: "date" });
 });
 
 test("new database: the tag is refused at create time → the page is taken back; a new tag then succeeds", async ({ page }) => {

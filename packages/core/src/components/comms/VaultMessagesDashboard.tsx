@@ -40,6 +40,8 @@ import {
   THREAD_STATUS_LABELS,
   THREAD_STATUS_ORDER,
   THREAD_STATUS_TONE,
+  NEEDS_ATTENTION_LABEL,
+  needsAttention,
   type ThreadStatus,
 } from "../../lib/messages/triage";
 import { matrixApi } from "../../lib/matrix/client";
@@ -130,7 +132,7 @@ function ScopedMessagesDashboard() {
   const [searchQuery, setSearchQuery] = useState("");
   const [viewMode, setViewMode] = useState<ViewMode>("triage");
   const [platformFilter, setPlatformFilter] = useState<string>("all");
-  const [category, setCategory] = useState<CategoryFilter>("all");
+  const [category, setCategory] = useState<CategoryFilter>(DEFAULT_CATEGORY);
 
   // Existing bounded lists; the UI must disclose when these limits are reached.
   const {
@@ -719,7 +721,14 @@ function ConversationDetail({
 // ONE classification model (lib/messages/triage.ts): labels, order and tone come from there.
 // One row of filter chips with counts; each row carries its own compact chip.
 
-type CategoryFilter = ThreadStatus | "all";
+// The view opens on "attention" (urgent ∪ action required, `NEEDS_ATTENTION`); "all" is one tap
+// away. Still ONE exclusive choice (`aria-pressed`): un-choosing a status chip returns to the default.
+type CategoryFilter = ThreadStatus | "all" | "attention";
+const DEFAULT_CATEGORY: CategoryFilter = "attention";
+
+function inCategory(status: ThreadStatus, category: CategoryFilter): boolean {
+  return category === "all" || (category === "attention" ? needsAttention(status) : status === category);
+}
 
 const STATUS_ICON: Partial<Record<ThreadStatus, typeof AlertTriangle>> = {
   urgent: AlertTriangle,
@@ -777,7 +786,7 @@ function TriageView({
     const ids = held.current.ids;
     const list = category === "all"
       ? [...searched]
-      : searched.filter((n) => threadStatus(n.tags) === category || ids.has(n.id));
+      : searched.filter((n) => inCategory(threadStatus(n.tags), category) || ids.has(n.id));
     for (const n of list) ids.add(n.id);
     return list.sort(byRecency);
   }, [searched, category]);
@@ -792,9 +801,20 @@ function TriageView({
   }
 
   const shown = THREAD_STATUS_ORDER.filter((s) => (counts.get(s) ?? 0) > 0 || s === category);
+  const attentionCount = THREAD_STATUS_ORDER.filter(needsAttention).reduce((sum, s) => sum + (counts.get(s) ?? 0), 0);
   return (
     <div>
       <div className="prism-triage-filters" role="group" aria-label="Filter by category">
+        <button
+          type="button"
+          className="prism-triage-chip focus-ring"
+          data-tone="danger"
+          aria-pressed={category === "attention"}
+          onClick={() => onCategory("attention")}
+        >
+          <span className="prism-status-dot" aria-hidden="true" />
+          {NEEDS_ATTENTION_LABEL} <span className="prism-triage-count">{attentionCount}</span>
+        </button>
         <button
           type="button"
           className="prism-triage-chip focus-ring"
@@ -810,7 +830,7 @@ function TriageView({
             className="prism-triage-chip focus-ring"
             data-tone={THREAD_STATUS_TONE[status]}
             aria-pressed={category === status}
-            onClick={() => onCategory(category === status ? "all" : status)}
+            onClick={() => onCategory(category === status ? DEFAULT_CATEGORY : status)}
           >
             <span className="prism-status-dot" aria-hidden="true" />
             {THREAD_STATUS_LABELS[status]}{" "}
@@ -827,13 +847,24 @@ function TriageView({
       {rows.length ? (
         rows.map((note) => <TriageRow key={note.id} note={note} onOpen={() => onOpenThread(note)} />)
       ) : (
-        <p className="prism-triage-hint" role="status">
-          {category === "all"
-            ? "No conversations match this search."
-            : q
-              ? `Nothing in “${THREAD_STATUS_LABELS[category]}” matches this search.`
-              : `Nothing in “${THREAD_STATUS_LABELS[category]}” right now.`}
-        </p>
+        <div className="prism-triage-hint">
+          <p role="status">
+            {category === "all"
+              ? "No conversations match this search."
+              : category === "attention"
+                ? q
+                  ? "Nothing that needs your attention matches this search."
+                  : "Nothing needs your attention right now."
+                : q
+                  ? `Nothing in “${THREAD_STATUS_LABELS[category]}” matches this search.`
+                  : `Nothing in “${THREAD_STATUS_LABELS[category]}” right now.`}
+          </p>
+          {category !== "all" && (
+            <button type="button" className="prism-triage-show-all focus-ring" onClick={() => onCategory("all")}>
+              Show all
+            </button>
+          )}
+        </div>
       )}
     </div>
   );

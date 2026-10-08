@@ -15,6 +15,9 @@ import {
   NewDatabaseError,
   newDatabaseSchemaBatches,
   tagFromName,
+  viewPropertyKey,
+  viewStarterProperty,
+  withViewProperty,
   type NewDatabaseProperty,
 } from "../../../packages/core/src/components/database/createDatabase";
 import { buildNewPropertyPatch } from "../../../packages/core/src/lib/database/schema";
@@ -98,6 +101,25 @@ test("blankDatabaseView: a board groups by the first status/select, a calendar d
     const v = blankDatabaseView(t, [STATUS, PROJECT, DUE])!;
     assert.ok(readDatabaseConfig({ prism_type: "database", prism_database: { version: 1, source: { tags: ["x"] }, views: [v] } }), t);
   }
+});
+
+test("withViewProperty: a board / calendar that nothing serves gets a Status / Date ADDED; others need nothing", () => {
+  const board = withViewProperty("board", [PROJECT]);
+  assert.equal(board.added!.key, "status");
+  assert.deepEqual(board.added!.field, { type: "string", enum: ["To do", "In progress", "Done"] });
+  assert.equal(board.added!.ui.kind, "status");
+  assert.deepEqual(board.properties.map((p) => p.key), ["project", "status"]);
+  assert.equal(blankDatabaseView("board", board.properties)!.groupBy, "status");
+  const cal = withViewProperty("calendar", [STATUS]);
+  assert.deepEqual(cal.added && { key: cal.added.key, field: cal.added.field, kind: cal.added.ui.kind, label: cal.added.ui.label }, { key: "date", field: { type: "date" }, kind: "date", label: "Date" });
+  assert.equal(viewPropertyKey("calendar", cal.properties), "date");
+  // Served already → nothing added; tables etc. never get one.
+  assert.equal(withViewProperty("board", [STATUS]).added, null);
+  assert.equal(withViewProperty("calendar", [DUE]).added, null);
+  for (const t of ["table", "gallery", "list"] as const) assert.equal(viewStarterProperty(t, []), null);
+  // A key already taken by another kind ("Date" as text) → "Date 2".
+  const text = prop("Date", "text");
+  assert.equal(viewStarterProperty("calendar", [text])!.key, "date_2");
 });
 
 test("createBlankDatabase: page → schema (requireNew) → view on the page's current revision", async () => {

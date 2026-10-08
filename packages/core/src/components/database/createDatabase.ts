@@ -1,6 +1,6 @@
 import type { VaultClient } from "../../data/VaultClient";
 import type { Note } from "../../lib/types";
-import { safeTitleLeaf, type FieldHints, type PropertyKind, type SchemaPatch } from "../../lib/database/schema";
+import { buildNewPropertyPatch, safeTitleLeaf, type FieldHints, type NewPropertyDraft, type PropertyKind, type SchemaPatch } from "../../lib/database/schema";
 import { defaultConfig, VIEW_LABELS, type DatabaseConfig, type DatabaseView, type ViewType } from "./config";
 
 /**
@@ -95,6 +95,61 @@ export function blankDatabaseView(type: ViewType, properties: Array<Pick<NewData
     view.dateKey = by;
   }
   return view;
+}
+
+/** A property built by the one-step form's rules (the same patch the form would send). */
+function starterProperty(draft: NewPropertyDraft): NewDatabaseProperty {
+  const built = buildNewPropertyPatch(draft);
+  if (!built.ok) throw new Error(built.error);
+  return { key: built.key, field: built.patch.fields![built.key]!, ui: built.patch.ui![built.key]! };
+}
+
+/** The Status property a new database is offered to start with (To do / In progress / Done). */
+export function starterStatusProperty(label = "Status"): NewDatabaseProperty {
+  return starterProperty({
+    label, kind: "status",
+    options: [
+      { value: "To do", color: "gray", group: "todo" },
+      { value: "In progress", color: "blue", group: "in_progress" },
+      { value: "Done", color: "green", group: "complete" },
+    ],
+  });
+}
+
+/** The Date property a calendar-first database gets (a plain day). */
+export function starterDateProperty(label = "Date"): NewDatabaseProperty {
+  return starterProperty({ label, kind: "date", dateOnly: true });
+}
+
+/**
+ * The property a first view of `type` needs when none of `properties` can serve it
+ * (owner decision 2026-10-08: ADD one instead of refusing): a board → a Status
+ * (To do / In progress / Done), a calendar → a "Date" date. Its key never collides
+ * with an existing one ("Status 2", "Date 2"…). Null = the view needs nothing more.
+ */
+export function viewStarterProperty(type: ViewType, properties: Array<Pick<NewDatabaseProperty, "key" | "ui">>): NewDatabaseProperty | null {
+  if (type !== "board" && type !== "calendar") return null;
+  if (blankDatabaseView(type, properties)) return null;
+  const make = type === "board" ? starterStatusProperty : starterDateProperty;
+  const base = type === "board" ? "Status" : "Date";
+  const taken = new Set(properties.map((p) => p.key));
+  for (let i = 1; i <= 20; i++) {
+    const p = make(i === 1 ? base : `${base} ${i}`);
+    if (!taken.has(p.key)) return p;
+  }
+  return null;
+}
+
+/** `properties` with the view's starter appended when it needs one (see {@link viewStarterProperty}). */
+export function withViewProperty(type: ViewType, properties: NewDatabaseProperty[]): { properties: NewDatabaseProperty[]; added: NewDatabaseProperty | null } {
+  const added = viewStarterProperty(type, properties);
+  return { properties: added ? [...properties, added] : properties, added };
+}
+
+/** The key the first view groups (board) or dates (calendar) by, if any. */
+export function viewPropertyKey(type: ViewType, properties: Array<Pick<NewDatabaseProperty, "key" | "ui">>): string | null {
+  const v = blankDatabaseView(type, properties);
+  return v?.groupBy ?? v?.dateKey ?? null;
 }
 
 /** Why a view type cannot be the first view of these properties ("" = it can). */
