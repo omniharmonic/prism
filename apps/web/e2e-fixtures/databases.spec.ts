@@ -172,7 +172,8 @@ test("adding a view and opening a row", async ({ page }) => {
 
 test("viewer: read-only cells, hidden private rows, honest 'limited' and session-only view changes", async ({ page }) => {
   await page.goto("/e2e-fixtures/databases.html?viewer");
-  await expect(page.getByText("6 pages · only pages you can see")).toBeVisible();
+  await expect(page.getByText("only pages you can see", { exact: true })).toBeVisible();
+  await expect(page.getByRole("rowheader", { name: "Count: 6" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Private planning note" })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "New", exact: true })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Add a view" })).toHaveCount(0);
@@ -253,7 +254,7 @@ test("L8: the search box is debounced", async ({ page }) => {
   await page.goto("/e2e-fixtures/databases.html");
   await expect(page.getByRole("rowheader", { name: "Count: 7" })).toBeVisible();
   await page.getByLabel("Search this database").pressSequentially("release", { delay: 40 });
-  await expect(page.getByText("1 page", { exact: true })).toBeVisible();
+  await expect(page.getByRole("rowheader", { name: "Count: 1" })).toBeVisible();
   const searches = await page.evaluate(() => (window as any).dbFixture.queries.filter((q: any) => q.search).map((q: any) => q.search));
   expect(searches).toEqual(["release"]);
 });
@@ -507,10 +508,10 @@ test("board: hide empty groups, group by person, card menu order and open", asyn
   const settings = page.getByRole("dialog", { name: "View settings" });
   await settings.getByLabel("Group by").selectOption("priority");
   // "blocked" is an option nobody uses: an empty column.
-  await expect.poll(columns).toEqual(["low", "medium", "high", "blocked"]);
+  await expect.poll(columns).toEqual(["Low", "Medium", "High", "Blocked"]);
   await expect(board.getByRole("region", { name: "Blocked" })).toContainText("No pages");
   await settings.getByRole("checkbox", { name: "Hide empty groups" }).check();
-  await expect.poll(columns).toEqual(["low", "medium", "high"]);
+  await expect.poll(columns).toEqual(["Low", "Medium", "High"]);
   await expect.poll(async () => (await configWrites(page)).at(-1)?.metadata.prism_database.views[1]).toMatchObject({ groupBy: "priority", hideEmptyGroups: true });
   // A group that becomes empty disappears; one that gains a page comes back.
   await page.keyboard.press("Escape");
@@ -520,10 +521,10 @@ test("board: hide empty groups, group by person, card menu order and open", asyn
     await page.getByRole("menuitem", { name: "Medium" }).click();
     await expect(board.getByRole("region", { name: "Medium" }).getByRole("article", { name: title })).toBeVisible();
   }
-  await expect.poll(columns).toEqual(["medium", "high"]);
+  await expect.poll(columns).toEqual(["Medium", "High"]);
   await page.getByRole("button", { name: "View settings" }).click();
   await settings.getByRole("checkbox", { name: "Hide empty groups" }).uncheck();
-  await expect.poll(columns).toEqual(["low", "medium", "high", "blocked"]);
+  await expect.poll(columns).toEqual(["Low", "Medium", "High", "Blocked"]);
   await expect.poll(async () => (await configWrites(page)).at(-1)?.metadata.prism_database.views[1].hideEmptyGroups).toBeUndefined();
 
   // Group by a person property.

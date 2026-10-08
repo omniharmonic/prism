@@ -79,18 +79,18 @@ test("list rows and gallery cards show the view's chosen properties", async ({ p
   const list = page.getByRole("list", { name: "List list" });
   const item = list.getByRole("listitem").filter({ has: page.getByRole("button", { name: "Design new icon set", exact: true }) });
   await expect(item).toBeVisible();
-  await expect(item).toContainText("done");
-  await expect(item).not.toContainText("medium");
+  await expect(item).toContainText("Done");
+  await expect(item).not.toContainText("Medium");
   await page.getByRole("button", { name: "View settings" }).click();
   const settings = page.getByRole("dialog", { name: "View settings" });
   await settings.getByRole("list", { name: "Visible properties" }).getByRole("checkbox", { name: "Priority", exact: true }).check();
   await page.keyboard.press("Escape");
-  await expect(item).toContainText("medium");
+  await expect(item).toContainText("Medium");
   await expect.poll(async () => (await configWrites(page)).at(-1)?.metadata.prism_database.views.find((v: any) => v.id === "list").visible).toContain("priority");
   // Gallery: its own choice (status + priority), unaffected by the list's.
   await page.getByRole("tab", { name: "Gallery" }).click();
   const card = page.getByRole("list", { name: "Gallery gallery" }).getByRole("listitem", { name: "Design new icon set" });
-  await expect(card).toContainText("done");
-  await expect(card).toContainText("medium");
+  await expect(card).toContainText("Done");
+  await expect(card).toContainText("Medium");
   expect((await configWrites(page)).at(-1).metadata.prism_database.views.find((v: any) => v.id === "gallery").visible).toEqual(["status", "priority"]);
 });

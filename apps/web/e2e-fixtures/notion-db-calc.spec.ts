@@ -342,9 +342,9 @@ test("grouped by a multi-value property: a row that repeats a value is one row o
   await settings(page).getByLabel("Group by").selectOption("labels");
   await page.keyboard.press("Escape");
   const rows = (await rowsOf(page)).filter((n) => Array.isArray(n.metadata.labels) && n.metadata.labels.includes("launch"));
-  const launch = page.getByRole("region", { name: "launch", exact: true });
+  const launch = page.getByRole("region", { name: "Launch", exact: true });
   await expect(launch.locator("tbody tr[data-row-id]")).toHaveCount(rows.length);
   await expect(launch.locator('tbody tr[data-row-id="dup1"]')).toHaveCount(1);
   await expect(launch.locator("tfoot").getByRole("rowheader")).toHaveText(`Count${rows.length}`);
-  await expect(launch.locator("tfoot").getByRole("button", { name: `Sum of Estimate (h): ${sum(rows, "estimate")} in launch`, exact: true })).toBeVisible();
+  await expect(launch.locator("tfoot").getByRole("button", { name: `Sum of Estimate (h): ${sum(rows, "estimate")} in Launch`, exact: true })).toBeVisible();
 });

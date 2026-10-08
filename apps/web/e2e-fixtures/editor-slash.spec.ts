@@ -153,17 +153,31 @@ test("phones: the slash menu fits the screen and uses large targets; columns sta
 // the caret is low the page scrolls it up first; the list ends in a scroll cue.
 test("phones: a caret low on the screen still gets the menu below it, inside the screen", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
-  const paras = Array.from({ length: 30 }, (_, i) => `<p>Paragraph ${i + 1} of a long page.</p>`).join("");
+  const paras = Array.from({ length: 40 }, (_, i) => `<p>Paragraph ${i + 1} of a long page.</p>`).join("");
   await page.goto("/e2e-fixtures/editor-blocks.html?content=" + encodeURIComponent(paras));
-  await newLine(page);
+  await page.locator(".tiptap[contenteditable=true]").click();
+  // An empty line after paragraph 20, then the page scrolled so that line sits at the bottom of the screen.
+  await page.evaluate(() => {
+    const ed = (document.querySelector(".tiptap") as any).editor;
+    let end = 0; let n = 0;
+    ed.state.doc.forEach((node: any, offset: number) => { n++; if (n === 20) end = offset + node.nodeSize - 1; });
+    ed.chain().focus().setTextSelection(end).run();
+  });
+  await page.keyboard.press("Enter");
+  await page.evaluate(() => {
+    const ed = (document.querySelector(".tiptap") as any).editor;
+    const by = ed.view.coordsAtPos(ed.state.selection.from).bottom - 800;
+    let el: HTMLElement | null = ed.view.dom.parentElement;
+    while (el && !(/(auto|scroll)/.test(getComputedStyle(el).overflowY) && el.scrollHeight > el.clientHeight)) el = el.parentElement;
+    if (el) el.scrollTop += by; else window.scrollBy(0, by);
+  });
   const menu = await slash(page, "");
   await expect.poll(async () => {
     const caret = await page.evaluate(() => { const ed = (document.querySelector(".tiptap") as any).editor; return ed.view.coordsAtPos(ed.state.selection.from).bottom as number; });
     const box = (await menu.boundingBox())!;
     return box.y >= caret && box.y + box.height <= 844 && box.height >= 120;
   }).toBe(true);
-  const fade = await menu.evaluate((el) => getComputedStyle(el, "::after").position);
-  expect(fade).toBe("sticky");
+  expect(await menu.evaluate((el) => getComputedStyle(el, "::after").position)).toBe("sticky");
 });
 
 // NP-ED-08: toggle headings (H1–H3 summaries) from the slash menu; the level is stored, open/closed stays view state.

@@ -139,7 +139,7 @@ test("rename, retype with preview, delete property", async ({ page }) => {
   await expect.poll(names).toEqual(["Doing", "To do", "Done", "Blocked"]);
   await editor.getByRole("button", { name: "Delete option Blocked" }).click();
   await expect.poll(names).toEqual(["Doing", "To do", "Done"]);
-  await expect(editor.getByRole("list", { name: "Deleted options" })).toContainText("blocked (deleted)");
+  await expect(editor.getByRole("list", { name: "Deleted options" })).toContainText("Blocked (deleted)");
   await editor.getByRole("button", { name: "Restore option Blocked" }).click();
   await expect.poll(names).toEqual(["Doing", "To do", "Done", "Blocked"]);
   expect((await stored()).status).toBe("in-progress"); // never rewritten
@@ -158,7 +158,7 @@ test("rename, retype with preview, delete property", async ({ page }) => {
   const preview = priority.getByRole("group", { name: "Type change preview" });
   await expect(preview).toContainText("1 of 1 value will show as Status");
   await expect(preview).toContainText("No stored value changes");
-  await expect(preview.getByRole("list", { name: "Examples" })).toContainText("medium");
+  await expect(preview.getByRole("list", { name: "Examples" })).toContainText("Medium");
   const before = (await state(page)).schemaWrites.length;
   await preview.getByRole("button", { name: "Cancel" }).click();
   expect((await state(page)).schemaWrites.length).toBe(before); // the preview writes nothing

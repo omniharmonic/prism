@@ -84,7 +84,7 @@ test("document autosave waits through unrelated workspace rerenders", async ({ p
   await editor.pressSequentially(" A new idea.");
   // Updating the shared font registration used to flush the debounce early. (The font lives in the
   // page ⋯ menu since the status bar went, w16.)
-  await page.getByRole("button", { name: "Page actions" }).click();
+  await page.getByRole("button", { name: "Page actions", exact: true }).click();
   await page.getByRole("menuitem", { name: /Serif font/ }).click();
   const contentWrites = () => page.evaluate(() => (window as unknown as { prismFixtureWrites: Array<{ content?: string }> }).prismFixtureWrites.filter((w) => w.content !== undefined));
   expect(await contentWrites()).toHaveLength(0);

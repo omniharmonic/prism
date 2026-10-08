@@ -201,7 +201,10 @@ function slashPlacement(editor: Editor | null, pos: number) {
     if (r && r.height > 0 && r.top > coords.bottom && r.top < viewBottom) viewBottom = r.top;
   }
   const phone = typeof window.matchMedia === "function" && window.matchMedia("(max-width: 767px)").matches;
-  return { coords, viewTop, viewBottom, phone, caretBottom: coords.bottom, below: viewBottom - coords.bottom - 12 };
+  // The page title (and anything above it) is never covered.
+  const title = document.querySelector('#workspace-document [aria-label="Document title"], #workspace-document .document-page-header')?.getBoundingClientRect();
+  const aboveLimit = Math.max(viewTop + 8, title && title.bottom < coords.top ? title.bottom + 8 : 0);
+  return { coords, viewTop, viewBottom, phone, aboveLimit, caretBottom: coords.bottom, below: viewBottom - coords.bottom - 12 };
 }
 
 function scrollParent(el: HTMLElement): HTMLElement | null {
@@ -309,9 +312,17 @@ export function SlashMenu({ editor, state, onClose }: { editor: Editor | null; s
   const width = Math.min(320, window.innerWidth - 16);
   const maxHeight = 360;
   const below = place.below;
-  const opensBelow = place.phone || below >= Math.min(maxHeight, 220);
-  const top = opensBelow ? coords.bottom + 6 : Math.max(8, coords.top - 6 - Math.min(maxHeight, coords.top - 14));
-  const height = opensBelow ? Math.min(maxHeight, Math.max(below, place.phone ? 120 : 0)) : Math.min(maxHeight, coords.top - 14);
+  let opensBelow = below >= Math.min(maxHeight, 220);
+  let top = opensBelow ? coords.bottom + 6 : Math.max(8, coords.top - 6 - Math.min(maxHeight, coords.top - 14));
+  let height = opensBelow ? Math.min(maxHeight, below) : Math.min(maxHeight, coords.top - 14);
+  if (place.phone) {
+    // Below while there is room for a few rows (the effect above scrolls the caret up first); only
+    // a caret that cannot move (the end of a short page) opens above — and never over the title.
+    const roomAbove = coords.top - 6 - place.aboveLimit;
+    opensBelow = below >= 140 || below >= roomAbove;
+    top = opensBelow ? coords.bottom + 6 : coords.top - 6 - Math.min(maxHeight, roomAbove);
+    height = opensBelow ? Math.min(maxHeight, Math.max(below, 96)) : Math.min(maxHeight, roomAbove);
+  }
   const grouped = !q.trim();
   let lastGroup: Group | null = null;
 
