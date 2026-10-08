@@ -178,11 +178,7 @@
         "status": {
           "type": "string",
           "description": "Processing lifecycle",
-          "enum": [
-            "raw",
-            "cleaned",
-            "processed"
-          ],
+          "enum": ["raw", "cleaned", "processed", "enriched", "confirmed"],
           "default": "raw"
         },
         "recording_id": {
@@ -759,10 +755,7 @@
             "low"
           ]
         },
-        "keywords": {
-          "type": "string",
-          "description": "Comma-separated keywords for matching (e.g. 'bioregional, food chain, regenerative agriculture')"
-        }
+        "keywords": { "type": "array", "description": "Keywords for matching, one per item (e.g. bioregional, food chain, regenerative agriculture)" }
       }
     },
     "agent-insight": {

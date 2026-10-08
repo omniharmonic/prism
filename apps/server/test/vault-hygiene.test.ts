@@ -11,6 +11,8 @@ import { readFileSync } from "node:fs";
 import { guardTarget, UsageError, type Ctx, type UndoRecord, type VaultNote, type VaultTag } from "../../../scripts/vault-hygiene/lib";
 import * as schema from "../../../scripts/vault-hygiene/apply-schema-fixes";
 import * as emptyLists from "../../../scripts/vault-hygiene/migrate-empty-lists";
+import * as fieldShapes from "../../../scripts/vault-hygiene/migrate-field-shapes";
+import { LIST_FIELDS_BY_TAG } from "../src/vault-shapes";
 import * as folderLinks from "../../../scripts/vault-hygiene/migrate-project-folder-links";
 import * as dups from "../../../scripts/vault-hygiene/trash-duplicates";
 import * as untagged from "../../../scripts/vault-hygiene/report-untagged";
@@ -62,7 +64,14 @@ class FakeVault {
     if (url.pathname.startsWith(`${api}/tags/`) && method === "PUT") {
       const name = decodeURIComponent(url.pathname.slice(`${api}/tags/`.length));
       const t = this.tags.find((x) => x.name === name)!;
-      t.fields = { ...(t.fields ?? {}), ...body.fields }; // merges per field, replacing a field's definition
+      // Like vault 0.7.9: every field in the body must agree in type with every OTHER tag that
+      // declares it, else 422 and nothing is written (core collectCrossTagFieldViolations).
+      const violations = Object.entries(body.fields as Record<string, { type?: string }>).flatMap(([field, def]) =>
+        this.tags.filter((o) => o.name !== name && o.fields?.[field] && o.fields[field]!.type !== def.type).map((o) => ({ field, reason: "type_conflict", other_tag: o.name })),
+      );
+      if (violations.length) return json({ error: "tag_field_conflict", error_type: "tag_field_conflict", tag: name, violations }, 422);
+      // merges per field, replacing a field's definition — unless replace_fields, where absent fields are dropped
+      t.fields = body.replace_fields ? { ...body.fields } : { ...(t.fields ?? {}), ...body.fields };
       t.description = body.description;
       return json({ ok: true });
     }
@@ -152,7 +161,7 @@ test("production URLs (:1940, the public host) need --production; credentials in
 
 test("every script refuses a production vault URL without --production (dry runs too)", async () => {
   const v = new FakeVault();
-  for (const m of [schema.main, emptyLists.main, folderLinks.main, dups.main, untagged.main]) {
+  for (const m of [schema.main, emptyLists.main, fieldShapes.main, folderLinks.main, dups.main, untagged.main]) {
     await assert.rejects(m(["--vault-url", "http://127.0.0.1:1940"], ctxFor(v)), /PRODUCTION/);
   }
   assert.equal(v.calls.length, 0);
@@ -217,6 +226,58 @@ test("schema: apply PUTs with the admin token, keeps other fields + indexes, ski
   await schema.main([...VAULT, "--apply", "--backup-confirmed"], again);
   assert.equal(v.writes().length, before, "a second run writes nothing");
   assert.match(out(again), /summary: 0 to apply/);
+});
+
+test("schema: a type change of a field several tags share is dropped everywhere, then re-declared (the vault refuses it tag by tag)", async () => {
+  const v = new FakeVault();
+  v.tags = liveSchemas();
+  const c = ctxFor(v, { PARACHUTE_ADMIN_TOKEN: ADMIN });
+  assert.equal(await schema.main([...VAULT, "--apply", "--backup-confirmed"], c), 0, c.lines.join("\n"));
+  for (const tag of ["person", "project", "organization", "concept"]) {
+    assert.equal(v.tags.find((t) => t.name === tag)!.fields!.confidence!.type, "string", tag);
+  }
+  const drops = v.writes().filter((w) => w.body.replace_fields === true);
+  assert.deepEqual(drops.map((w) => w.path.split("/").pop()).sort(), ["concept", "organization", "person", "project"]);
+  assert.ok(drops.every((w) => !("confidence" in w.body.fields)));
+  assert.ok(c.lines.some((l) => /verify: all \d+ change\(s\) live/.test(l)));
+});
+
+test("schema: a run that stopped after dropping a shared field finishes on the next run", async () => {
+  const v = new FakeVault();
+  v.tags = liveSchemas();
+  delete v.tags.find((t) => t.name === "person")!.fields!.confidence; // dropped, then the run died
+  const plan = schema.planChanges(schema.loadFixes(), v.tags, { includeOptional: true });
+  assert.equal(plan.find((p) => p.change.id === "person-confidence")!.verdict, "pending");
+  assert.equal(await schema.main([...VAULT, "--apply", "--backup-confirmed"], ctxFor(v, { PARACHUTE_ADMIN_TOKEN: ADMIN })), 0);
+  assert.equal(v.tags.find((t) => t.name === "person")!.fields!.confidence!.type, "string");
+});
+
+test("schema: a shared field another tag outside the plan declares differently stops the run before any write", async () => {
+  const v = new FakeVault();
+  v.tags = [...liveSchemas(), { name: "outsider", description: "x", fields: { confidence: { type: "number" } } }];
+  const c = ctxFor(v, { PARACHUTE_ADMIN_TOKEN: ADMIN });
+  assert.equal(await schema.main([...VAULT, "--apply", "--backup-confirmed"], c), 1);
+  assert.equal(v.writes().length, 0);
+  assert.ok(c.lines.some((l) => l.includes("BLOCKED confidence") && l.includes("#outsider")));
+});
+
+test("schema: a field whose live definition has no default gets the new options and still no default", async () => {
+  const v = new FakeVault();
+  v.tags = liveSchemas();
+  for (const tag of ["task", "organization", "writing"]) delete v.tags.find((t) => t.name === tag)!.fields!.status!.default; // an older vault: never stored
+  const dry = ctxFor(v);
+  await schema.main(VAULT, dry);
+  assert.ok(dry.lines.some((l) => l.startsWith("  task.status:") && l.includes("pending") && l.includes("no default kept")), dry.lines.join("\n"));
+  assert.ok(!dry.lines.some((l) => /status: SKIP \(drift\)/.test(l) && /task|organization|writing/.test(l)));
+  const c = ctxFor(v, { PARACHUTE_ADMIN_TOKEN: ADMIN });
+  assert.equal(await schema.main([...VAULT, "--apply", "--backup-confirmed"], c), 0, c.lines.join("\n"));
+  const status = v.tags.find((t) => t.name === "task")!.fields!.status!;
+  assert.ok(status.enum!.includes("waiting") && status.enum!.includes("archived"));
+  assert.equal(status.default, undefined, "no default was added");
+  assert.ok(v.tags.find((t) => t.name === "organization")!.fields!.status!.enum!.includes("merged_into_canonical"));
+  const again = ctxFor(v, { PARACHUTE_ADMIN_TOKEN: ADMIN });
+  await schema.main([...VAULT, "--apply", "--backup-confirmed"], again);
+  assert.ok(again.lines.some((l) => l.includes("task.status: already applied")), "idempotent");
 });
 
 test("schema: --reverse plans every applied change back to its old definition", async () => {
@@ -293,6 +354,98 @@ test("(a) a note edited between the read and the write is a conflict: no force, 
   assert.deepEqual(v.notes.get("o1")!.metadata!.people, [], "--mode empty-list writes []");
   assert.match(out(c), /1 conflict/);
   assert.equal(c.undo.length, 1, "only real writes are logged");
+});
+
+// ------------------------------------------------------------------ field shapes (f)
+
+test("field-shapes: the list table is the server's (minus the ingest-owned message-thread)", () => {
+  const { "message-thread": _ingest, ...rest } = LIST_FIELDS_BY_TAG as Record<string, readonly string[]>;
+  assert.deepEqual(Object.fromEntries(Object.entries(fieldShapes.LIST_FIELDS).map(([k, v]) => [k, [...v].sort()])), Object.fromEntries(Object.entries(rest).map(([k, v]) => [k, [...v].sort()])));
+});
+
+test("field-shapes: every correction says exactly what the stored value said; anything else is left alone", () => {
+  const fix = (field: string, v: unknown) => fieldShapes.listFix(field, v);
+  assert.deepEqual(fix("projects", ""), { rule: "blank-removed", to: null });
+  assert.deepEqual(fix("projects", "   "), { rule: "blank-removed", to: null });
+  assert.deepEqual(fix("projects", "regen-commons"), { rule: "text-to-list", to: ["regen-commons"] });
+  assert.deepEqual(fix("projects", "[[vault/projects/a/PROJECT]]"), { rule: "text-to-list", to: ["[[vault/projects/a/PROJECT]]"] });
+  assert.deepEqual(fix("projects", "opencivics, regen-commons;trustgraph"), { rule: "split-to-list", to: ["opencivics", "regen-commons", "trustgraph"] });
+  assert.deepEqual(fix("projects", "[[a/b|One, two]], [[c]]"), { rule: "split-to-list", to: ["[[a/b|One, two]]", "[[c]]"] }, "a comma inside a link is not a separator");
+  assert.deepEqual(fix("projects", "Sprint 6 (10/6 - 10/20), Product Milestones"), { rule: "text-to-list", to: ["Sprint 6 (10/6 - 10/20), Product Milestones"] }, "free text is never split");
+  assert.deepEqual(fix("attendees", "Doe, Jane"), { rule: "text-to-list", to: ["Doe, Jane"] }, "a name with a comma stays one value");
+  assert.deepEqual(fix("keywords", "commons, Local Food; governance"), { rule: "split-to-list", to: ["commons", "Local Food", "governance"] });
+  assert.deepEqual(fix("attendees", ["a@b.c", "", " "]), { rule: "blank-items-dropped", to: ["a@b.c"] });
+  assert.deepEqual(fix("attendees", ["", ""]), { rule: "blank-items-dropped", to: null });
+  for (const fine of [["x"], [], 7, { a: 1 }, true, null]) assert.equal(fix("projects", fine), undefined);
+  assert.deepEqual(fieldShapes.splitOutsideLinks("a,,b ; "), ["a", "b"]);
+  const t0 = Date.now();
+  fieldShapes.splitOutsideLinks("[[".repeat(200_000) + ",".repeat(200_000));
+  assert.ok(Date.now() - t0 < 1500, "linear on hostile input");
+});
+
+function seedShapes(v: FakeVault): void {
+  v.add({ id: "m1", path: "vault/meetings/2026-01/one", tags: ["meeting", "transcript"], metadata: { projects: "opencivics, regen-commons", attendees: "", source: "", recording_id: 12345, title: "keep me" } });
+  v.add({ id: "m2", path: "vault/meetings/2026-01/two", tags: ["meeting"], metadata: { projects: ["[[vault/projects/a/PROJECT]]"], attendees: ["a@b.c"], source: "fathom", recording_id: "777" } });
+  v.add({ id: "s1", path: "vault/specs/one", tags: ["spec"], metadata: { version: 1.2, project: "x" } });
+  v.add({ id: "o1", path: "vault/organizations/one", tags: ["organization"], metadata: { status: "", people: ["[[vault/people/a]]"] } });
+  v.add({ id: "tr1", path: "vault/meetings/2026-01/three", tags: ["transcript"], metadata: { duration_minutes: "", source: "fathom" } });
+  v.add({ id: "pr1", path: "vault/projects/a/PROJECT", tags: ["project"], metadata: { keywords: "commons, food", confidence: 0.85 } });
+  v.add({ id: "e1", path: "vault/messages/email/x", tags: ["email", "meeting"], metadata: { projects: "x", recording_id: 5 } });
+  v.add({ id: "t1", path: "vault/meetings/trashed", tags: ["meeting", "prism-trashed"], metadata: { projects: "x" } });
+}
+
+test("field-shapes: the dry run counts per field and rule, prints no value and writes nothing", async () => {
+  const v = new FakeVault();
+  seedShapes(v);
+  const c = ctxFor(v);
+  assert.equal(await fieldShapes.main(VAULT, c), 0);
+  assert.equal(v.writes().length, 0);
+  assert.match(out(c), /DRY RUN — 5 note\(s\)/);
+  assert.match(out(c), /organization\.status: blank-removed: 1/);
+  assert.match(out(c), /transcript\.duration_minutes: blank-removed: 1/);
+  assert.match(out(c), /meeting\.projects: split-to-list: 1/);
+  assert.match(out(c), /meeting\.recording_id: number-to-text: 1/);
+  assert.match(out(c), /spec\.version: number-to-text: 1/);
+  assert.match(out(c), /project\.keywords: split-to-list: 1/);
+  assert.ok(!out(c).includes("opencivics") && !out(c).includes("12345") && !out(c).includes("keep me"), "values never reach the output");
+});
+
+test("field-shapes: apply is compare-and-set, touches only the corrected keys, skips ingest-owned and trashed notes, and undo restores every value", async () => {
+  const v = new FakeVault();
+  seedShapes(v);
+  const c = ctxFor(v);
+  await assert.rejects(fieldShapes.main([...VAULT, "--apply"], ctxFor(v)), /backup-confirmed/);
+  assert.equal(await fieldShapes.main([...VAULT, "--apply", "--backup-confirmed"], c), 0);
+  const patches = v.writes();
+  assert.deepEqual(patches.map((p) => p.path.split("/").pop()).sort(), ["m1", "o1", "pr1", "s1", "tr1"]);
+  for (const p of patches) assert.ok(p.body.if_updated_at && p.body.force === undefined && p.body.content === undefined);
+  assert.deepEqual(patches.find((p) => p.path.endsWith("/m1"))!.body.metadata, { projects: ["opencivics", "regen-commons"], attendees: null, source: null, recording_id: "12345" });
+  assert.deepEqual(v.notes.get("m1")!.metadata, { projects: ["opencivics", "regen-commons"], recording_id: "12345", title: "keep me" });
+  assert.equal(v.notes.get("s1")!.metadata!.version, "1.2");
+  assert.deepEqual(v.notes.get("pr1")!.metadata, { keywords: ["commons", "food"], confidence: 0.85 }, "a decimal confidence is not guessed into a label");
+  assert.deepEqual(v.notes.get("e1")!.metadata, { projects: "x", recording_id: 5 }, "ingest-owned");
+  assert.deepEqual(v.notes.get("t1")!.metadata, { projects: "x" }, "trashed");
+  const again = ctxFor(v);
+  await fieldShapes.main([...VAULT, "--apply", "--backup-confirmed"], again);
+  assert.equal(v.writes().length, patches.length, "idempotent");
+
+  const recs = c.undo.map((l) => JSON.parse(l) as UndoRecord);
+  assert.deepEqual((recs.find((r) => r.id === "m1") as any).before.metadata, { projects: "opencivics, regen-commons", attendees: "", source: "", recording_id: 12345 });
+  assert.equal(await undo.main([...VAULT, "--apply"], ctxFor(v), recs), 0);
+  assert.deepEqual(v.notes.get("m1")!.metadata, { projects: "opencivics, regen-commons", attendees: "", source: "", recording_id: 12345, title: "keep me" });
+  assert.equal(v.notes.get("s1")!.metadata!.version, 1.2);
+});
+
+test("field-shapes: a note edited between the listing and the write is re-judged on its fresh copy", async () => {
+  const v = new FakeVault();
+  seedShapes(v);
+  v.beforePatch = (id) => {
+    if (id === "s1") v.notes.get("s1")!.updatedAt = v.stamp();
+  };
+  const c = ctxFor(v);
+  assert.equal(await fieldShapes.main([...VAULT, "--apply", "--backup-confirmed"], c), 0);
+  assert.match(out(c), /1 conflict/);
+  assert.equal(v.notes.get("s1")!.metadata!.version, 1.2, "the conflicting note is left for the next run");
 });
 
 test("undo leaves a note alone when it was edited after the migration", async () => {

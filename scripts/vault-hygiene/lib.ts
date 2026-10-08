@@ -209,7 +209,7 @@ export class VaultApi {
     return (await this.req(`/tags?include_schema=true`)).json() as Promise<VaultTag[]>;
   }
 
-  async putTag(name: string, body: { description: string; fields: Record<string, FieldDef> }, adminToken: string): Promise<void> {
+  async putTag(name: string, body: { description: string; fields: Record<string, FieldDef>; replace_fields?: boolean }, adminToken: string): Promise<void> {
     await this.req(`/tags/${encodeURIComponent(name)}`, { method: "PUT", body: JSON.stringify(body) }, adminToken);
   }
 }
