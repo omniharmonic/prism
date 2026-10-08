@@ -1,4 +1,5 @@
 import { Component, Suspense, lazy, useMemo, useState, type ComponentType, type ComponentProps, type ReactNode } from "react";
+import { retryImport } from "../../lib/retryImport";
 
 class EditorImportError extends Error {}
 
@@ -24,12 +25,15 @@ class EditorLoadBoundary extends Component<
 /** Load only the active engine. The host keeps ownership of its Y.Doc, socket,
  * and local persistence while loading/retrying; neither a spinner nor an import
  * failure should recreate a collaborative session. Runtime failures can retry
- * in place; failed module fetches require an explicit reload because browsers
- * cache the rejected import, even with a fresh React lazy identity. */
-function deferredEditor<Props extends object>(load: () => Promise<{ default: ComponentType<Props> }>, label: string) {
+ * in place. A failed module fetch is retried automatically a couple of times
+ * (`retryImport`); only when every attempt fails does the card ask for a reload,
+ * because some browsers cache the rejected import for the rest of the page. */
+function deferredEditor<Props extends object, Module>(load: () => Promise<Module>, pick: (module: Module) => ComponentType<Props>, label: string) {
   return function DeferredEditor(props: Props) {
     const [attempt, setAttempt] = useState(0);
-    const Editor = useMemo(() => lazy(() => load().catch(() => { throw new EditorImportError("Editor files unavailable"); })), [attempt]);
+    // One failed request is retried quietly (a fresh request each time) before the
+    // "couldn't open" card: a cold cache or a flaky connection is not a crash.
+    const Editor = useMemo(() => lazy(() => retryImport(load).then((module) => ({ default: pick(module) }), () => { throw new EditorImportError("Editor files unavailable"); })), [attempt]);
     return (
       <EditorLoadBoundary key={attempt} label={label} retry={() => setAttempt(value => value + 1)}>
         <Suspense fallback={<div role="status" className="p-6 text-sm text-[var(--text-secondary)]">Loading {label}…</div>}>
@@ -40,12 +44,12 @@ function deferredEditor<Props extends object>(load: () => Promise<{ default: Com
   };
 }
 
-export const CollabCanvas = deferredEditor<ComponentProps<typeof import("./CollabCanvas").CollabCanvas>>(
-  () => import("./CollabCanvas").then(module => ({ default: module.CollabCanvas })), "canvas",
+export const CollabCanvas = deferredEditor<ComponentProps<typeof import("./CollabCanvas").CollabCanvas>, typeof import("./CollabCanvas")>(
+  () => import("./CollabCanvas"), (module) => module.CollabCanvas, "canvas",
 );
-export const CollabCodeEditor = deferredEditor<ComponentProps<typeof import("./CollabCodeEditor").CollabCodeEditor>>(
-  () => import("./CollabCodeEditor").then(module => ({ default: module.CollabCodeEditor })), "code editor",
+export const CollabCodeEditor = deferredEditor<ComponentProps<typeof import("./CollabCodeEditor").CollabCodeEditor>, typeof import("./CollabCodeEditor")>(
+  () => import("./CollabCodeEditor"), (module) => module.CollabCodeEditor, "code editor",
 );
-export const CollabSpreadsheet = deferredEditor<ComponentProps<typeof import("./CollabSpreadsheet").CollabSpreadsheet>>(
-  () => import("./CollabSpreadsheet").then(module => ({ default: module.CollabSpreadsheet })), "spreadsheet",
+export const CollabSpreadsheet = deferredEditor<ComponentProps<typeof import("./CollabSpreadsheet").CollabSpreadsheet>, typeof import("./CollabSpreadsheet")>(
+  () => import("./CollabSpreadsheet"), (module) => module.CollabSpreadsheet, "spreadsheet",
 );

@@ -107,7 +107,8 @@ test("a delayed code engine retains its live session and receives remote edits b
 
 test("a failed sheet import offers explicit reload and preserves remote cells", async ({ page }) => {
   let attempts = 0;
-  await page.route("**/CollabSpreadsheet.tsx*", route => ++attempts === 1 ? route.abort("failed") : route.continue());
+  // The first request and both automatic retries (retryImport) fail; the reload then succeeds.
+  await page.route("**/CollabSpreadsheet.tsx*", route => ++attempts <= 3 ? route.abort("failed") : route.continue());
   const fixture = await collaborativeFixture(page, "spreadsheet");
   try {
     await page.goto("/e2e-fixtures/collab-storage.html?live");

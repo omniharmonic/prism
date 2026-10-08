@@ -1,4 +1,5 @@
 import { lazy, type ComponentType } from "react";
+import { retryImport } from "../../lib/retryImport";
 import type { ContentType } from "../../lib/types";
 import type { RendererProps } from "./RendererProps";
 
@@ -14,7 +15,7 @@ const ProjectRenderer = lazy(() => import("./ProjectRenderer"));
 const SpreadsheetRenderer = lazy(() => import("./SpreadsheetRenderer"));
 const WebsiteRenderer = lazy(() => import("./WebsiteRenderer"));
 const DashboardRenderer = lazy(() => import("./DashboardRenderer"));
-const CanvasRenderer = lazy(() => import("./CanvasRenderer"));
+const CanvasRenderer = lazy(() => retryImport(() => import("./CanvasRenderer"))); // the largest chunk (Excalidraw): one failed request is retried
 const PlaceholderRenderer = lazy(() => import("./PlaceholderRenderer"));
 const CalendarDashboardRenderer = lazy(() => import("../comms/CalendarDashboard"));
 const MessagesDashboardRenderer = lazy(() => import("../comms/VaultMessagesDashboard"));

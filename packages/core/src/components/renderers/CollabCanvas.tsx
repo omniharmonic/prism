@@ -17,6 +17,7 @@ import { useCanvasCardNavigation } from "./CanvasCardList";
 import { useCanvasNoteAccess } from "./useCanvasNoteAccess";
 import { NoteDrawer } from "./NoteDrawer";
 import { getCanvasNoteIds, findNoteElement, buildNoteCardElements, eid } from "./canvas-cards";
+import { paintableCanvasElements } from "./canvas-scene";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -101,11 +102,24 @@ export function CollabCanvas({
     // moves once per-client version counters drifted. We still guard against the
     // fractional-index drop the old raw path avoided: if reconcile returns fewer
     // elements than the local∪remote id set, fall back to the raw map values.
-    const repaint = () => {
+    //
+    // A repaint NEVER throws: it runs from a Yjs observer and from the first-paint
+    // timer, where an exception is not caught by any error boundary — it used to
+    // leave the canvas blank and the timer retrying every 50 ms until Excalidraw
+    // happened to accept the scene ("creating a canvas crashed, then it loaded").
+    // Whatever Excalidraw refuses (an API still initialising, an element without a
+    // valid fractional index from a remote/IndexedDB merge) is retried with the raw
+    // map values, then left for the next change; the CRDT is never touched here.
+    const repaint = (): boolean => {
       const api = apiRef.current;
-      if (!api) return;
-      const remote = Array.from(map.values());
-      const local = api.getSceneElementsIncludingDeleted();
+      if (!api) return false;
+      const remote = paintableCanvasElements(Array.from(map.values()));
+      let local: any[];
+      try {
+        local = api.getSceneElementsIncludingDeleted() ?? [];
+      } catch {
+        return false; // the API exists but its scene is not ready yet
+      }
       let next: any[];
       try {
         next = reconcileElements(local, remote as any, api.getAppState());
@@ -114,11 +128,29 @@ export function CollabCanvas({
       }
       const unionIds = new Set<string>([...local.map((e: any) => e.id), ...remote.map((e: any) => e.id)]);
       if (next.length < unionIds.size) next = remote;
-      api.updateScene({ elements: next });
+      try {
+        api.updateScene({ elements: next });
+      } catch (first) {
+        if (next === remote) {
+          console.warn("Canvas: the scene could not be painted yet", first);
+          return false;
+        }
+        try {
+          api.updateScene({ elements: remote });
+        } catch (second) {
+          console.warn("Canvas: the scene could not be painted yet", second);
+          return false;
+        }
+      }
       // Record the versions Excalidraw actually holds now, so the onChange this
       // repaint triggers recognizes these as already-synced and doesn't re-write
       // them (which would inflate versions and break the next remote update).
-      for (const el of api.getSceneElementsIncludingDeleted()) syncedVersions.current.set(el.id, el.version ?? 0);
+      try {
+        for (const el of api.getSceneElementsIncludingDeleted()) syncedVersions.current.set(el.id, el.version ?? 0);
+      } catch {
+        /* recorded on the next repaint */
+      }
+      return true;
     };
 
     // Remote changes only (skip our own LOCAL-origin writes — already on screen).
@@ -153,12 +185,14 @@ export function CollabCanvas({
     awareness?.on("change", onAwareness);
 
     // First paint once both the API and the synced map are ready (covers either
-    // ordering of "API mounts" vs "initial sync arrives").
+    // ordering of "API mounts" vs "initial sync arrives"). A paint Excalidraw
+    // refuses is retried for a while (~5 s), then left to the next map change.
+    let paintTries = 0;
     const initialPaint = setInterval(() => {
-      if (apiRef.current) {
-        repaint();
-        onAwareness();
+      if (!apiRef.current) return;
+      if (repaint() || ++paintTries >= 100) {
         clearInterval(initialPaint);
+        onAwareness();
       }
     }, 50);
 
@@ -191,7 +225,7 @@ export function CollabCanvas({
       ydoc.transact(() => {
         for (const el of newElements) if (el?.id) map.set(el.id, el);
       }, LOCAL);
-      apiRef.current?.updateScene({ elements: Array.from(map.values()) });
+      apiRef.current?.updateScene({ elements: paintableCanvasElements(Array.from(map.values())) });
     },
     [elementsMap, ydoc, access.read, includeBody, isDark],
   );
@@ -212,7 +246,7 @@ export function CollabCanvas({
     if (showLinks) {
       // Viz arrows are local-only (never in the map), so the map already holds
       // the clean scene — repaint from it to drop them.
-      apiRef.current?.updateScene({ elements: Array.from(map.values()) });
+      apiRef.current?.updateScene({ elements: paintableCanvasElements(Array.from(map.values())) });
       linkArrowIds.current.clear();
       setShowLinks(false);
       return;
@@ -281,7 +315,7 @@ export function CollabCanvas({
         (el as any).customData = { ...(el as any).customData, prismLinkViz: true };
         linkArrowIds.current.add((el as any).id);
       }
-      apiRef.current?.updateScene({ elements: [...elements, ...converted] });
+      apiRef.current?.updateScene({ elements: [...paintableCanvasElements(elements), ...converted] });
     }
     setShowLinks(true);
   }, [showLinks, isDark, client, elementsMap]);
@@ -403,7 +437,7 @@ export function CollabCanvas({
             onPointerUpdate={onPointerUpdate}
             viewModeEnabled={!editable}
             theme={isDark ? "dark" : "light"}
-            initialData={{ elements: sceneElements(), scrollToContent: true }}
+            initialData={{ elements: paintableCanvasElements(sceneElements()), scrollToContent: true }}
           />
         </div>
       </div>

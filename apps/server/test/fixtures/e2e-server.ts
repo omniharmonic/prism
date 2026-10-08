@@ -21,7 +21,7 @@
 import { serve } from "@hono/node-server";
 import type { Server } from "node:http";
 import { createApp } from "../../src/app";
-import { attachCollab } from "../../src/collab";
+import { attachCollab, liveDocument } from "../../src/collab";
 import { configureConversion } from "../../src/convert/service";
 import { addGrant, createCapability, setAccount, setUserProfile } from "../../src/db";
 import { signCapability } from "../../src/auth/capability";
@@ -70,6 +70,21 @@ grant(EVE, "note", "rich", "edit");
 grant(EVE, "note", "bomb", "edit");
 grant(SAM, "note", "bomb", "view");
 grant(GINA, "page", "plan", "view");
+
+// Test hook: the vault answers 500 to the next N plain reads (`GET /notes/<id>`, no query —
+// the collab load's read) of a note whose path contains `pathContains` (canvas-create.spec).
+const failReads = { pathContains: "", count: 0 };
+const vaultFetch = globalThis.fetch;
+globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+  const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
+  const id = url.pathname.match(/\/notes\/([^/]+)$/)?.[1];
+  const note = id ? fv.notes.get(decodeURIComponent(id)) : undefined;
+  if ((init?.method ?? "GET").toUpperCase() === "GET" && !url.search && failReads.count > 0 && note?.path?.includes(failReads.pathContains)) {
+    failReads.count--;
+    return new Response(JSON.stringify({ error: "vault busy" }), { status: 500, headers: { "content-type": "application/json" } });
+  }
+  return vaultFetch(input as never, init);
+}) as typeof fetch;
 
 const app = createApp();
 const server = serve({ fetch: app.fetch, port: 0, hostname: "127.0.0.1" }, (info) => {
@@ -126,6 +141,15 @@ process.stdin.on("data", (chunk: string) => {
         restoreLimits?.();
         restoreLimits = cmd.limits ? configureConversion(cmd.limits) : null;
         process.stdout.write(JSON.stringify({ op: "limits", ok: true }) + "\n");
+      } else if (cmd.op === "failReads") {
+        const f = cmd as unknown as { pathContains: string; count: number };
+        failReads.pathContains = f.pathContains;
+        failReads.count = f.count;
+        process.stdout.write(JSON.stringify({ op: "failReads", ok: true }) + "\n");
+      } else if (cmd.op === "live") {
+        // What the server's LIVE document for a note holds (which structure it was seeded as).
+        const doc = liveDocument(cmd.id ?? "");
+        process.stdout.write(JSON.stringify({ op: "live", live: doc ? { elements: doc.getMap("elements").size, fragment: doc.getXmlFragment("default").length } : null, remaining: failReads.count }) + "\n");
       } else if (cmd.op === "patches") {
         const calls = fv.calls.filter((c) => c.method === "PATCH" && c.path.includes(cmd.id ?? "")).length;
         process.stdout.write(JSON.stringify({ op: "patches", count: calls }) + "\n");
