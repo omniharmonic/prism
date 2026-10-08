@@ -428,7 +428,7 @@ async function classifyOne(
   note: Note,
   today: string,
   signal?: AbortSignal,
-): Promise<{ ok: true; label: string } | { ok: false; reason: string }> {
+): Promise<{ ok: true; label: string } | { ok: false; reason: string; transient?: boolean }> {
   const caps = [MAX_NOTE_CHARS, RETRY_NOTE_CHARS];
   for (let i = 0; i < caps.length; i++) {
     const user = buildNotePrompt(note, today, caps[i]!);
@@ -439,7 +439,8 @@ async function classifyOne(
     } catch (e) {
       if (e instanceof LocalUnavailableError || e instanceof SkillCancelledError) throw e;
       if (signal?.aborted) throw new SkillCancelledError();
-      if (i + 1 === caps.length) return { ok: false, reason: (e as Error).message };
+      // The model did not ANSWER (timeout, load refused, HTTP error): that says nothing about the note.
+      if (i + 1 === caps.length) return { ok: false, reason: (e as Error).message, transient: true };
       continue; // retry truncated
     }
     const v = json && typeof json === "object" ? (json as Meta)[cfg.resultField] : undefined;
@@ -462,7 +463,12 @@ export interface StructuredRunOptions {
   /** The owner's cancel: checked before every note AND aborts the in-flight
    *  model request. A cancelled run says so in its summary. */
   signal?: AbortSignal;
+  /** One line per note the model could not classify (note id + reason; never content). */
+  log?: (msg: string) => void;
 }
+
+/** After this many notes in a row the model did not answer, the run stops (the rest wait). */
+export const MAX_CONSECUTIVE_NO_ANSWER = 2;
 
 /** Run a structured skill end to end → the desktop's summary text. */
 export async function runStructured(
@@ -497,6 +503,8 @@ export async function runStructured(
   let flagged = 0;
   let errors = 0;
   let processed = 0;
+  let unanswered = 0;
+  let unansweredRun = 0;
   let stopped: string | null = null;
   for (const note of todo) {
     if (opts.signal?.aborted) {
@@ -527,6 +535,18 @@ export async function runStructured(
         break;
       }
       if (!r.ok) {
+        opts.log?.(`[skills] note ${note.id} not classified: ${Array.from(r.reason).slice(0, 200).join("")}`);
+        if (r.transient) {
+          // Not the note's fault: leave it untagged so the next run tries again (a `triage-failed`
+          // tag is permanent — the note is never looked at again).
+          unanswered++;
+          if (++unansweredRun >= MAX_CONSECUTIVE_NO_ANSWER) {
+            stopped = "the local model is not answering";
+            break;
+          }
+          continue;
+        }
+        unansweredRun = 0;
         try {
           await vault.addTags(note.id, [REVIEW_TAG]);
           flagged++;
@@ -536,6 +556,7 @@ export async function runStructured(
         continue;
       }
       label = r.label;
+      unansweredRun = 0;
     }
     try {
       await vault.addTags(note.id, [label, ...cfg.alsoAddTags]);
@@ -547,10 +568,11 @@ export async function runStructured(
 
   // 5. Summary (the desktop's text; an early stop is appended, never silent).
   const breakdown = [...counts].map(([k, n]) => `${k}: ${n}`).sort();
-  const classified = processed - flagged - errors;
+  const classified = processed - flagged - errors - unanswered;
   let summary = `Structured tagging complete — ${classified} of ${total} note(s) classified`;
   if (flagged > 0) summary += `, ${flagged} flagged for review (${REVIEW_TAG})`;
   if (errors > 0) summary += `, ${errors} error(s)`;
+  if (unanswered > 0) summary += `, ${unanswered} left for the next run (the local model did not answer)`;
   summary += `.\n${breakdown.length ? breakdown.join(", ") : "(none)"}`;
   if (stopped) summary += `\nStopped early after ${processed} of ${total} (${stopped}); the rest are picked up next run.`;
   return summary;
@@ -960,6 +982,7 @@ export async function runSkillsOnce(deps: SkillsDeps, onOutcome?: (r: RunResult)
         let r: RunResult;
         try {
           const summary = await runStructured(deps.vault, deps.local, prompt, cfg, route.model, {
+            log: deps.log,
             today: deps.localParts(now).day,
             deadline: start + deps.settings.localRunTimeoutMs,
             pressure: () => {
