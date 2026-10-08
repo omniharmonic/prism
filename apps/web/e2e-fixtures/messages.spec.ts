@@ -336,14 +336,104 @@ test("unavailable server email never falls through to native reply commands", as
     page.getByRole("button", { name: "Reply", exact: true }),
   ).toBeDisabled();
   await expect(
-    page.getByText(
-      "Replying is unavailable for this email on this connection.",
-    ),
+    page.getByText("Replying is turned off on this server.", { exact: true }),
   ).toBeVisible();
   expect(
     await page.evaluate(() => (window as any).prismMessagesFixture.attempts),
   ).toBe(0);
 });
+
+// Owner report (iOS, server with ACTIONS_EMAIL_ENABLED=false): "tapping Reply
+// doesn't open a new input". Reply was greyed out with its only explanation a
+// faint line at the very bottom of the pane; and where replying IS possible the
+// composer opened without the caret in it.
+for (const [width, height] of [
+  [390, 844],
+  [1440, 900],
+] as const) {
+  test(`Reply opens a focused composer inside the viewport at ${width}px`, async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width, height });
+    await page.goto("/e2e-fixtures/messages.html?email");
+    const reply = page.getByRole("button", { name: "Reply", exact: true });
+    await expect(reply).toBeEnabled();
+    await expect(page.locator(".prism-email-unavailable")).toHaveCount(0);
+    const input = page.getByRole("textbox", { name: "Message", exact: true });
+    await expect(input).toHaveCount(0);
+    await reply.click();
+    await expect(input).toBeVisible();
+    await expect(input).toBeFocused();
+    await expect(input).toBeInViewport({ ratio: 1 });
+    await expect(page.getByText("Replying to morgan@example.test")).toBeInViewport();
+    await page.keyboard.type("Typed without tapping the field");
+    await expect(input).toHaveValue("Typed without tapping the field");
+    expect(
+      await page.evaluate(() => document.documentElement.scrollWidth),
+    ).toBeLessThanOrEqual(width);
+    expect(
+      await page.evaluate(() => (window as any).prismMessagesFixture.attempts),
+    ).toBe(0);
+  });
+
+  test(`Reply that cannot work says why beside the button at ${width}px`, async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width, height });
+    await page.goto("/e2e-fixtures/messages.html?email&unavailable");
+    const reply = page.getByRole("button", { name: "Reply", exact: true });
+    await expect(reply).toBeDisabled();
+    const reason = page.getByText("Replying is turned off on this server.", {
+      exact: true,
+    });
+    await expect(reason).toBeVisible();
+    await expect(reply).toHaveAccessibleDescription(
+      "Replying is turned off on this server.",
+    );
+    // Beside the control it explains — not at the far end of the pane, where a
+    // phone's bottom bar covers it.
+    const button = (await reply.boundingBox())!;
+    const text = (await reason.boundingBox())!;
+    expect(text.y).toBeGreaterThanOrEqual(button.y + button.height);
+    expect(text.y - (button.y + button.height)).toBeLessThan(24);
+    // The sibling mailbox actions are not offered at all, and no composer exists.
+    await expect(
+      page.getByRole("button", { name: "Archive", exact: true }),
+    ).toHaveCount(0);
+    await expect(
+      page.getByRole("button", { name: /Mark (read|unread)/ }),
+    ).toHaveCount(0);
+    await expect(
+      page.getByRole("textbox", { name: "Message", exact: true }),
+    ).toHaveCount(0);
+    expect(
+      await page.evaluate(() => document.documentElement.scrollWidth),
+    ).toBeLessThanOrEqual(width);
+    expect(
+      await page.evaluate(() => (window as any).prismMessagesFixture.attempts),
+    ).toBe(0);
+  });
+}
+
+for (const [query, reason] of [
+  ["unconfigured", "The server has no mail credential yet, so it can't send a reply."],
+  ["notowner", "Only the server owner can reply to email from Prism."],
+  ["nomessageid", "This email was saved without a message ID, so Prism can't reply to it."],
+] as const)
+  test(`unavailable email reply names its cause: ${query}`, async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto(`/e2e-fixtures/messages.html?email&${query}`);
+    const reply = page.getByRole("button", { name: "Reply", exact: true });
+    await expect(page.getByText(reason, { exact: true })).toBeVisible();
+    await expect(reply).toBeDisabled();
+    await expect(reply).toHaveAccessibleDescription(reason);
+    await expect(
+      page.getByRole("button", { name: "Archive", exact: true }),
+    ).toHaveCount(0);
+    expect(
+      await page.evaluate(() => (window as any).prismMessagesFixture.attempts),
+    ).toBe(0);
+  });
 
 test("read-only email never exposes reply or mailbox mutation actions", async ({
   page,
@@ -359,9 +449,7 @@ test("read-only email never exposes reply or mailbox mutation actions", async ({
     page.getByRole("button", { name: /Mark (read|unread)/ }),
   ).toHaveCount(0);
   await expect(
-    page.getByText(
-      "Replying is unavailable for this email on this connection.",
-    ),
+    page.getByText("You can read this email but not reply to it.", { exact: true }),
   ).toBeVisible();
   expect(
     await page.evaluate(() => (window as any).prismMessagesFixture.attempts),
