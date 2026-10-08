@@ -450,6 +450,7 @@ function CreateContent({
           </label>
           <input
             id="new-content-name"
+            data-display-text
             style={{
               fontSize: isMobile ? 26 : 30,
               fontWeight: 600,

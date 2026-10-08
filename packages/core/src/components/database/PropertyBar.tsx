@@ -65,10 +65,13 @@ export function PropertyBar({ note, readOnly, onOpenAll, layout = "bar", trailin
   const canEditSchema = editable && schemaEdit.available && !!data?.live && !!data?.canEdit;
   const tags = note.tags ?? [];
   const schemas = data?.schemas ?? {};
+  const resolved = useMemo(() => resolveProperties(tags, schemas, note.metadata), [tags, schemas, note.metadata]);
   const props = useMemo(() => {
-    const all = resolveProperties(tags, schemas, note.metadata);
+    // A page's tags are the note's own `tags`, edited in the Tags row below. An imported page often
+    // keeps its frontmatter `tags:` list in metadata too; listed as a free property it was a second "Tags".
+    const all = showTags ? resolved.filter((p) => !isShadowTagsKey(p)) : resolved;
     return schemaOnly ? all.filter((p) => p.tag !== null) : all;
-  }, [tags, schemas, note.metadata, schemaOnly]);
+  }, [resolved, schemaOnly, showTags]);
   const [revealed, setRevealed] = useState<string[]>([]);
   const [showEmpty, setShowEmpty] = useState(layout === "panel");
   const [justAdded, setJustAdded] = useState<string | null>(null);
@@ -174,7 +177,7 @@ export function PropertyBar({ note, readOnly, onOpenAll, layout = "bar", trailin
               canCreate={editable}
               canEditSchema={canEditSchema}
               firstTag={tags[0] ?? null}
-              existing={props.map((p) => p.key)}
+              existing={[...props.map((p) => p.key), ...resolved.filter(isShadowTagsKey).map((p) => p.key)]}
               showEmpty={showEmpty}
               deleted={canEditSchema ? deletedProps : []}
               onManageDeleted={(p) => { if (p.tag) setEditingProp({ tag: p.tag, key: p.key }); }}
@@ -224,6 +227,9 @@ export function PropertyBar({ note, readOnly, onOpenAll, layout = "bar", trailin
     );
   }
 }
+
+/** A free `tags` metadata key (no schema declares it): the note's real tags already have their own row. */
+const isShadowTagsKey = (p: PropertyDef): boolean => p.tag === null && p.key.toLowerCase() === "tags";
 
 type FreeDraft = { key: string; label: string; kind: PropertyKind } | null;
 

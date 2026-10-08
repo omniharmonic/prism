@@ -253,10 +253,6 @@
 /* phone */
 @media (max-width: 767px) {
   .db-scroll { padding: 22px 16px calc(var(--workspace-bottom-inset, 0px) + 96px); }
-  .db-props-bar { gap: 12px 14px; }
-  .db-props-bar .db-prop-tags, .db-props-bar .db-prop-updated { padding-left: 0; border-left: 0; }
-  .db-props-bar .db-prop { flex: 1 1 calc(50% - 14px); }
-  .db-props-bar .db-prop-tags { flex-basis: 100%; }
   .db-value-button, .db-add-tag, .db-tag, .db-tag-name, .db-ghost, .db-control, .db-search, .db-new-row, .db-col-add { min-height: 44px; }
   .db-value-bar .db-value-button { min-width: 0; width: 100%; }
   .db-tag .db-opt-remove { width: 34px; height: 44px; margin-right: -3px; }
@@ -506,11 +502,6 @@
 .db-props-bar .db-prop-tags, .db-props-bar .db-prop-updated { padding-left: 0; border-left: 0; }
 .db-props-bar .db-add-tag { border-color: transparent; background: transparent; color: var(--text-muted); padding: 0 8px; }
 .db-props-bar .db-add-tag:hover, .db-props-bar .db-add-tag[aria-expanded="true"] { background: var(--glass-hover); color: var(--text-primary); }
-@media (max-width: 767px) {
-  .db-props-bar { gap: 6px 14px; padding-bottom: 10px; }
-  .db-props-bar .db-prop { gap: 0; white-space: nowrap; }
-  .db-props-bar .db-value-bar .db-value-button:not([data-readonly]) { width: calc(100% + 8px); }
-}
 
 /* ── Phone database toolbar (w14 visual, defect 16): tabs, search, ONE row of actions ──
    Filter / Sort / settings / ⋯ are 44 px icon buttons (their names stay for assistive tech) and New
@@ -538,9 +529,26 @@
    drew a filled grey square in dark, the heaviest thing in a phone table); ticked it is the native,
    accent-coloured control as before. */
 .db-table input.db-sel:not(:checked):not(:indeterminate) { appearance: none; -webkit-appearance: none; border: 1.5px solid var(--glass-border-strong, var(--glass-border)); border-radius: 4px; background: transparent; }
-/* The trailing "Updated … · Open all properties" group may wrap: at 320 px (200 % zoom on a phone)
-   the one-line rule above pushed its button off the screen (reflow spec). */
+/* ── Properties under the title on a phone: ONE property per row, name on the left, value on the right ──
+   The phone layout was two columns of name-over-value with `white-space: nowrap`: a value wider than
+   half the screen (a sentence, a URL) ran into the next column or was cut off, and a 44 px name over a
+   44 px value made every pair 88 px tall. A row holds any value: it wraps in its own column.
+   Measured by apps/web/e2e-fixtures/phone-properties.spec.ts. */
 @media (max-width: 767px) {
+  .db-props-bar { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0; padding-bottom: 8px; }
+  .db-props-bar .db-prop:not(.db-prop-trailing) { display: grid; grid-template-columns: minmax(84px, 32%) minmax(0, 1fr); column-gap: 10px; align-items: start; min-height: var(--touch-target); }
+  .db-props-bar .db-prop > .db-prop-label { display: flex; align-items: center; min-height: var(--touch-target); min-width: 0; font-size: 13px; overflow-wrap: anywhere; }
+  .db-props-bar .db-value-bar { display: block; min-width: 0; }
+  .db-props-bar .db-value-bar .db-value-button:not([data-readonly]) { width: calc(100% + 8px); }
+  .db-props-bar .db-prop > .db-chips { align-items: center; min-height: var(--touch-target); min-width: 0; }
+  .db-props-bar .db-prop-updated time { min-height: var(--touch-target); }
+  /* A tag keeps its 44 px touch height and is DRAWN as a 30 px chip (it was a 44 px grey slab). */
+  .db-props-bar .db-tag { position: relative; isolation: isolate; background: transparent; }
+  .db-props-bar .db-tag::before { content: ""; position: absolute; inset: 7px 0; z-index: -1; border-radius: inherit; background: var(--glass-hover); }
+  /* "Add property" / "Customize…" start on the names' edge. */
+  .db-props-bar .db-prop-actions { margin-left: -8px; }
+  /* The trailing "Updated … · Open all properties" group may wrap: at 320 px (200 % zoom on a phone)
+     one line pushed its button off the screen (reflow spec). */
   .db-props-bar .db-prop-trailing { white-space: normal; flex-wrap: wrap; justify-content: flex-end; min-width: 0; max-width: 100%; }
 }
 
