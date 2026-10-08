@@ -30,7 +30,7 @@ import { SubPageError } from "./subPages";
 import { parentOf } from "../pages/model";
 
 const PAGE_ID = /^[A-Za-z0-9_-]{1,128}$/;
-/** Fired on `window` when a page was created somewhere in the app: `{ id, parentPath }`. */
+/** Fired on `window` when a page was created somewhere in the app: `{ id, parentPath }`. A listener that now shows the row sets `handled`. */
 export const PAGE_CREATED_EVENT = "prism:page-created";
 
 function ChildPageRow({ node, selected }: NodeViewProps) {
@@ -111,12 +111,29 @@ export function insertChildPageBlock(editor: Editor, pageId: string, pos: number
   return true;
 }
 
+/**
+ * Offer a created page's row to the editor that has `parentPath` open now (the `ChildPages`
+ * listener below answers by setting `handled`). Tried for a few seconds: a page that is
+ * re-checking access has no editor for a moment.
+ */
+async function handOverRow(id: string, parentPath: string): Promise<boolean> {
+  if (typeof window === "undefined") return false;
+  for (let attempt = 0; attempt < 40; attempt++) {
+    const detail = { id, parentPath, handled: false };
+    window.dispatchEvent(new CustomEvent(PAGE_CREATED_EVENT, { detail }));
+    if (detail.handled) return true;
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  return false;
+}
+
 /** Slash `/page`: create the sub-page, then put its row where the command ran. */
 export async function createChildPage(editor: Editor): Promise<boolean> {
   const create = options(editor)?.create;
   if (!create || !structuralEditsAllowed(editor)) return false;
   const { $from } = editor.state.selection;
   const anchor = $from.depth >= 1 ? $from.before(1) : null;
+  const parentPath = options(editor)?.hostPath?.() ?? null;
   // Follow the block through edits made while the page is being created.
   let pos = anchor;
   const track = ({ transaction }: { transaction: { docChanged: boolean; mapping: { map: (p: number, assoc?: number) => number } } }) => {
@@ -127,7 +144,14 @@ export async function createChildPage(editor: Editor): Promise<boolean> {
     const id = await create();
     // Never a temporary offline id in a document (review M2).
     if (id && id.startsWith("offline-")) throw new SubPageError("Creating a page here needs a connection. Nothing was added.");
-    return !!id && insertChildPageBlock(editor, id, pos);
+    if (!id) return false;
+    if (insertChildPageBlock(editor, id, pos)) return true;
+    // The page exists, but the editor that ran the command cannot take its row any more (a live
+    // page that re-checked access came back with a NEW editor): the row goes to whichever editor
+    // has this page open — never a sub-page that nothing on its parent points to, silently.
+    if (PAGE_ID.test(id) && parentPath && (await handOverRow(id, parentPath))) return true;
+    editorNotice("The page was created, but its link could not be added here. Find it under this page in the sidebar.");
+    return false;
   } catch (e) {
     editorNotice(e instanceof SubPageError ? e.message : "Couldn’t create a page here.");
     return false;
@@ -203,13 +227,13 @@ export const ChildPages = Extension.create<ChildPagesOptions>({
     const hostPath = this.options.hostPath;
     if (!hostPath || typeof window === "undefined") return;
     const onCreated = (event: Event) => {
-      const detail = (event as CustomEvent<{ id?: string; parentPath?: string }>).detail;
+      const detail = (event as CustomEvent<{ id?: string; parentPath?: string; handled?: boolean }>).detail;
       const path = hostPath();
       if (!detail?.id || !path || detail.parentPath !== path || editor.isDestroyed || !structuralEditsAllowed(editor)) return;
       // At the caret's block when the editor has been used, else at the end.
       const { $from } = editor.state.selection;
       const used = editor.isFocused || editor.state.selection.from > 1;
-      insertChildPageBlock(editor, detail.id, used && $from.depth >= 1 ? $from.before(1) : null);
+      if (insertChildPageBlock(editor, detail.id, used && $from.depth >= 1 ? $from.before(1) : null) || childPageIds(editor.state.doc).has(detail.id)) detail.handled = true;
     };
     window.addEventListener(PAGE_CREATED_EVENT, onCreated);
     (this.storage as { off?: () => void }).off = () => window.removeEventListener(PAGE_CREATED_EVENT, onCreated);

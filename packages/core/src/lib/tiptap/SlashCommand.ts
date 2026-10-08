@@ -6,7 +6,9 @@ import { Plugin } from "@tiptap/pm/state";
  * Detects a `/` slash-command trigger (Notion/Anytype style) and surfaces the
  * query to the React layer, which renders the block-type menu. Mirrors the
  * WikilinkAutocomplete pattern: trigger when `/` starts a block or follows
- * whitespace and the query has no spaces.
+ * whitespace. The query may hold single spaces — block names are several words
+ * ("table view", "toggle heading 2", "image from url") — but never starts with
+ * one or holds two in a row; the menu itself hides when nothing matches.
  */
 
 export interface SlashCommandState {
@@ -84,7 +86,7 @@ export const SlashCommand = Extension.create<SlashCommandOptions, { dismissedFro
                 const charBefore = slashIdx > 0 ? textBefore[slashIdx - 1] : "";
                 const atStartOrSpace = slashIdx === 0 || charBefore === " " || charBefore === "\n";
                 const query = textBefore.slice(slashIdx + 1);
-                if (atStartOrSpace && !query.includes(" ") && query.length <= 30) {
+                if (atStartOrSpace && !query.startsWith(" ") && !query.includes("  ") && query.length <= 30) {
                   const from = $from.start() + slashIdx;
                   if (storage.dismissedFrom === from) return clear();
                   lastActive = true;
