@@ -56,6 +56,7 @@ import {
 } from "./agent-profiles";
 import {
   LONG_NOTE_RULE,
+  PRISM_LONG_NOTE_RULE,
   buildClaudeArgs,
   cliProjectDir,
   isUuid,
@@ -518,8 +519,7 @@ export function buildSessionPrompt(
       ? "You are Prism's agent, operating ONLY through the prism MCP tools (prism_*), which act with the user's own Prism permissions."
       : "You are Prism's agent, operating ONLY on the user's Parachute vault via the parachute-vault MCP tools.",
     "You have NO host file, shell, or web access.",
-    // The vault tools page a body; the prism_* tools cap it themselves.
-    ...(isPrismProfile(o.profile) ? [] : [LONG_NOTE_RULE]),
+    isPrismProfile(o.profile) ? PRISM_LONG_NOTE_RULE : LONG_NOTE_RULE,
     isReadOnlyProfile(o.profile)
       ? "This session is READ-ONLY: you can query the vault but cannot create, update, or delete notes."
       : o.profile === "prism-suggest"
