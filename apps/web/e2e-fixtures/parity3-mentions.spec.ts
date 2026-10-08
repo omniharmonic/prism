@@ -80,7 +80,7 @@ test("NP-RF-06: the reminder's inbox item opens the page scrolled to its date ch
   await page.evaluate(() => {
     const plan = (window as any).prismFixtureNotes.find((n: any) => n.id === "plan");
     const filler = Array.from({ length: 90 }, (_, i) => `<p>Paragraph ${i + 1} of the launch plan.</p>`).join("");
-    plan.content = `${filler}<p>Follow up <span data-type="mention" data-kind="date" data-date="2026-10-02T09:00:00+00:00" data-reminder="r1" data-mention-uid="u-rem">@x</span> with the venue.</p><p>The end.</p>`;
+    plan.content = `${filler}<p>Follow up <span data-type="mention" data-kind="date" data-date="2026-10-02T09:00:00+00:00" data-reminder="r1" data-mention-uid="u-rem">@x</span> with the venue.</p>${Array.from({ length: 25 }, (_, i) => `<p>Closing note ${i + 1}.</p>`).join("")}<p>The end.</p>`; // text after the chip, so the page can scroll it to the middle whatever the window chrome
     (window as any).prismFixtureReminders.push({ id: "r1", noteId: "plan", at: new Date(2026, 9, 2, 9, 0).getTime(), tz: "UTC", dateOnly: false, uid: "u-rem", status: "scheduled" });
   });
   const nav = page.locator(".workspace-navigation").first();
