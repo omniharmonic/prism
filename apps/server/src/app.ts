@@ -38,6 +38,28 @@ import { EMBED_FRAME_SOURCES } from "@prism/core/media-embeds";
 export function createApp(): Hono {
   const app = new Hono();
 
+  // Dev aid, off unless PRISM_HTTP_ERRLOG=1: one line per refused or failed request — method,
+  // path (never the query string), status, origin and whether a bearer was sent. No header
+  // value, no body. The server otherwise logs no request outcomes, which leaves a client
+  // that is being refused (a native shell, a new route) undiagnosable from this side.
+  if (process.env.PRISM_HTTP_ERRLOG === "1") {
+    app.use("*", async (c, next) => {
+      await next();
+      if (c.res.status < 400) return;
+      const auth = c.req.header("authorization") ?? "";
+      const kind = auth.startsWith("Bearer pd_") ? "device" : auth ? "bearer" : c.req.header("cookie") ? "cookie" : "none";
+      // The server's own short error code, when the body is small JSON (never note content: a refusal carries none).
+      let code = "";
+      try {
+        const body = (await c.res.clone().json()) as { error?: unknown; reason?: unknown };
+        code = [body.error, body.reason].filter((x) => typeof x === "string").join(" / ").slice(0, 120);
+      } catch {
+        /* not JSON */
+      }
+      console.log(`[http] ${c.res.status} ${c.req.method} ${new URL(c.req.url).pathname} origin=${c.req.header("origin") ?? "-"} auth=${kind} vault=${c.req.header("x-prism-vault") ?? "-"}${code ? ` error=${code}` : ""}`);
+    });
+  }
+
   // Content-Security-Policy. Scripts are external ES modules (no inline <script>),
   // so script-src stays tight; 'wasm-unsafe-eval' covers editor deps (e.g.
   // Excalidraw) without opening full eval. style-src allows inline styles (the
