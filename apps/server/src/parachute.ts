@@ -56,6 +56,23 @@ export interface NoteLink {
   relationship: string;
 }
 
+/**
+ * `fetch` for a call that carries the SERVER's vault token: a 401 is sent once more.
+ * The vault has been seen to answer a valid token "API key required" now and then
+ * (2026-10-08, vault 0.7.9: isolated single requests, about 0.3 % with other traffic
+ * running). A 401 is decided before the vault acts, so a repeat cannot apply a write twice.
+ * Only for string / absent bodies (a stream cannot be re-sent).
+ */
+export async function fetchVault(url: string, init?: RequestInit): Promise<Response> {
+  let resp = await fetch(url, init);
+  if (resp.status === 401 && (init?.body === undefined || init?.body === null || typeof init.body === "string")) {
+    await resp.body?.cancel().catch(() => {});
+    await new Promise((r) => setTimeout(r, 150));
+    resp = await fetch(url, init);
+  }
+  return resp;
+}
+
 export class VaultError extends Error {
   constructor(
     readonly status: number,
