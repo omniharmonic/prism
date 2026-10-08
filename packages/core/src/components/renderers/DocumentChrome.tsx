@@ -102,6 +102,7 @@ function EditableTitle({ name, onRename }: { name: string; onRename: (newName: s
       <div className="document-title-edit" ref={wrapRef}><input
         ref={inputRef}
         aria-label="Document title"
+        data-display-text
         value={draft}
         // readOnly, not disabled: disabling a focused input drops its focus, and
         // re-focusing after the failure raced React's re-enable under load.

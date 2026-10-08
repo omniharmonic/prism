@@ -10,6 +10,24 @@
  * The `html` prefix outranks the component sheets, which load after this file.
  */
 @media screen and (max-width: 767px), screen and (hover: none) and (pointer: coarse) {
+  /* ── iOS zoom-on-focus ── WebKit on a phone zooms the page when the focused text control is under
+     16 px (scale = 16 / font-size) and leaves it zoomed. It reads the FOCUSED element's own size: an
+     input / textarea / select, or the root of a contenteditable.
+     The floor used to be `input, textarea, select { font-size: 16px }` in glass.css — element
+     specificity, so every `text-xs` class, component rule and inline `fontSize` beat it (sign-in,
+     search, share, agent, board and governance controls were 12–14 px). This one is `!important`
+     and a FLOOR: `1em` is the parent's size, so a control that inherits a larger size (a title being
+     renamed) keeps it. A control that SETS a larger size than its parent opts out with
+     `data-display-text`. Excalidraw sizes its own text box to the canvas zoom.
+     Measured on every surface by apps/web/e2e-fixtures/phone-zoom.spec.ts. */
+  html :is(input:not([type=checkbox], [type=radio], [type=range], [type=color], [type=file], [type=button], [type=submit], [type=reset], [type=image]), textarea, select):not([data-display-text], .excalidraw *) { font-size: max(16px, 1em) !important; }
+  /* The writing surface: the font-size setting (11–18 px → --text-lg = setting + 2) and a page's
+     "Small text" may not take it under the floor here; larger settings are kept. */
+  html .prose-editor { font-size: max(16px, var(--text-lg)); }
+  html #workspace-document[data-page-small="true"] .prose-editor { font-size: max(16px, var(--text-base)); }
+  /* Code files (CodeMirror's content is a contenteditable; its theme draws 13 px). */
+  html .cm-editor { font-size: max(16px, 1em); }
+
   /* ── Shared controls ── `ui/Button` is drawn at the desktop control size (tokens.css); here it is a
      touch target. (The `min-h-control` / `size-control` utilities do the same for hand-built ones.) */
   html .ui-button { min-height: var(--touch-target); }
