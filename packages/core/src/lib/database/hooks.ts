@@ -16,7 +16,8 @@ import { queryKeys } from "../parachute/queries";
 import type { Note } from "../types";
 import tagSchemas from "../schemas/tag-schemas.json";
 import { runQuery, type AggregateGroup, type AggregateGroupBy, type AggregateRequest, type AggregateValues, type QueryPage, type QuerySpec } from "./query";
-import type { SchemaMap, SchemaPatch, TagSchema } from "./schema";
+import { GENERIC_LEAF, type RelationTarget, type SchemaMap, type SchemaPatch, type TagSchema } from "./schema";
+import { buildRelationIndex, type RelationCandidate, type RelationIndex } from "./relations";
 import type { PropertyBatchItem, PropertyBatchResult } from "./wire";
 
 /** The active audience (vault/workspace/account) — part of every cache key. */
@@ -307,31 +308,103 @@ export function useDatabaseAggregates(spec: QuerySpec | null, aggregates: Aggreg
   });
 }
 
-/** Search notes to link to (person/relation pickers). Lean when the server can. */
-export function useLinkCandidates(tag: string | null, search: string, enabled: boolean) {
+/** A relation's target as the pickers use it: a tag name (older callers) or a target spec. */
+const targetSpec = (t: string | RelationTarget | null): RelationTarget | null => (typeof t === "string" ? (t ? { tag: t } : null) : t);
+const candidateOf = (n: { id: string; path: string | null; metadata: Record<string, unknown> | null }): RelationCandidate => {
+  const m = n.metadata ?? {};
+  const strings = (...vs: unknown[]) => vs.flatMap((v) => (Array.isArray(v) ? v : [v])).filter((x): x is string => typeof x === "string" && !!x.trim());
+  const leaf = n.path?.split("/").pop() ?? "";
+  const parent = n.path?.split("/").slice(-2, -1)[0];
+  return {
+    id: n.id,
+    path: n.path,
+    title: (typeof m.title === "string" && m.title.trim()) || (GENERIC_LEAF.test(leaf) && parent ? parent : leaf.replace(/\.md$/i, "")) || n.id,
+    aliases: strings(m.aliases, m.alias),
+    emails: strings(m.email, m.emails, m.contact, m.contact_emails),
+  };
+};
+/** Notes under a folder, from the (permission-filtered) tree. */
+async function underFolder(client: VaultClient, prefix: string): Promise<RelationCandidate[]> {
+  const lower = `${prefix.toLowerCase()}/`;
+  return (await client.listTree()).filter((n) => !!n.path && n.path.toLowerCase().startsWith(lower)).map(candidateOf);
+}
+
+/**
+ * Search notes to link to (person/relation pickers): ONLY the relation's target —
+ * pages with its tag, or pages under its folder — listed on open, narrowed as you
+ * type. Without a target (an old relation nobody pointed anywhere) it searches
+ * every page, as before. Lean when the server can.
+ */
+export function useLinkCandidates(target: string | RelationTarget | null, search: string, enabled: boolean) {
   const client = useVaultClient();
   const scope = useScope();
+  const spec = targetSpec(target);
   return useQuery({
-    queryKey: ["vault", "search", "link-candidates", scope, tag, search],
+    queryKey: ["vault", "search", "link-candidates", scope, spec, search],
     enabled,
     staleTime: 15_000,
-    queryFn: async (): Promise<Array<{ id: string; path: string | null; title: string }>> => {
-      const toRow = (n: { id: string; path: string | null; metadata: Record<string, unknown> | null }) => ({
-        id: n.id, path: n.path, title: (typeof n.metadata?.title === "string" && n.metadata.title) || n.path?.split("/").pop() || n.id,
-      });
+    queryFn: async (): Promise<RelationCandidate[]> => {
+      const needle = search.trim().toLowerCase();
+      if (spec && "pathPrefix" in spec) {
+        return (await underFolder(client, spec.pathPrefix))
+          .filter((c) => !needle || c.title.toLowerCase().includes(needle) || (c.path ?? "").toLowerCase().includes(needle))
+          .sort((a, b) => a.title.localeCompare(b.title))
+          .slice(0, 20);
+      }
+      const tag = spec?.tag ?? null;
       if (tag && client.queryNotes) {
         try {
           const page = await client.queryNotes({ tags: [tag], search: search || undefined, limit: 20, sort: [{ key: "$title", dir: "asc" }], fields: ["title"] });
-          return page.rows.map(toRow);
+          return page.rows.map(candidateOf);
         } catch (e) {
           if (!unsupported(e)) throw e;
         }
       }
-      if (search.trim()) return (await client.search(search, tag ? [tag] : undefined, 20)).map(toRow);
-      if (tag) return (await client.listNotes({ tag, limit: 20 })).map(toRow);
+      if (search.trim()) return (await client.search(search, tag ? [tag] : undefined, 20)).map(candidateOf);
+      if (tag) return (await client.listNotes({ tag, limit: 20 })).map(candidateOf);
       return [];
     },
   });
+}
+
+export const relationIndexKey = (scope: string, spec: RelationTarget | null) => ["vault", "search", "relation-index", scope, spec] as const;
+const INDEX_PAGES = 4;
+/**
+ * Every note of a relation's target (title, aliases, addresses — no bodies), to READ
+ * stored values in any of their four encodings (`resolveRelationValue`). One query
+ * per target, shared by every chip of a column; ≤ 2,000 notes (beyond that, values
+ * past the cut simply stay unresolved — shown as their text).
+ */
+export function useRelationIndex(target: string | RelationTarget | null, enabled: boolean) {
+  const client = useVaultClient();
+  const scope = useScope();
+  const spec = targetSpec(target);
+  return useQuery({
+    queryKey: relationIndexKey(scope, spec),
+    enabled: enabled && !!spec,
+    staleTime: 60_000,
+    queryFn: () => loadRelationIndex(client, spec!),
+  });
+}
+
+export async function loadRelationIndex(client: VaultClient, spec: RelationTarget): Promise<RelationIndex> {
+  if ("pathPrefix" in spec) return buildRelationIndex(await underFolder(client, spec.pathPrefix));
+  if (client.queryNotes) {
+    try {
+      const rows: RelationCandidate[] = [];
+      let cursor: string | null = null;
+      for (let i = 0; i < INDEX_PAGES; i++) {
+        const page: QueryPage = await client.queryNotes({ tags: [spec.tag], limit: 500, sort: [{ key: "$title", dir: "asc" }], fields: ["title", "aliases", "alias", "email", "emails", "contact"], ...(cursor ? { cursor } : {}) });
+        rows.push(...page.rows.map(candidateOf));
+        cursor = page.next;
+        if (!cursor) break;
+      }
+      return buildRelationIndex(rows);
+    } catch (e) {
+      if (!unsupported(e)) throw e;
+    }
+  }
+  return buildRelationIndex((await client.listNotes({ tag: spec.tag, limit: 2000 })).map(candidateOf));
 }
 
 /**

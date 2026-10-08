@@ -84,7 +84,18 @@ export interface FieldHints {
   statusGroups?: Record<string, StatusGroup>;
   /** Set by the server on a field a type conversion created: the key its values were converted from. */
   convertedFrom?: string;
+  /**
+   * Relation / person: the pages the picker searches and new pages are created in —
+   * pages carrying a tag, or pages under a folder. `relationTag` is the older form of
+   * `{tag}`; the two are kept in step (`mergeFieldHints`) so older clients still read it.
+   */
+  relationTarget?: RelationTarget;
+  /** Relation / person: one page or several. Must agree with the vault type when there is one (array = several). */
+  multiple?: boolean;
 }
+
+/** What a relation points at: pages with a tag, or pages under a folder (path prefix). */
+export type RelationTarget = { tag: string } | { pathPrefix: string };
 
 /** One field as `GET /api/schemas` returns it: vault def + Prism hints. */
 export interface SchemaField extends FieldHints {
@@ -132,6 +143,10 @@ export interface PropertyDef {
   enumValues: string[];
   /** Relation: the tag the picker searches. */
   target?: string;
+  /** Relation: the folder the picker searches (a path-prefix target; `target` is then absent). */
+  targetPath?: string;
+  /** The target came from the property's NAME (no hint stored): "projects" → #project. */
+  targetInferred?: boolean;
   /** Relation: the reverse label shown on target pages. */
   reverseLabel?: string;
   /** Read-only system property (created/edited time/by). */
@@ -240,6 +255,65 @@ const EMAIL_KEYS = /^(email|e-mail|mail|email_address)$/i;
 const PHONE_KEYS = /^(phone|telephone|mobile|cell|phone_number)$/i;
 const FILES_KEYS = /^(files?|attachments?|media|documents?)$/i;
 
+/** Property names that point at people, whatever their exact word. */
+const PERSON_TARGET_NAMES = /^(people|persons?|attendees?|participants?|assigned|assignees?|owners?|authors?|leads?|collaborators?|reviewers?|contacts?|members?)$/i;
+const ORG_TARGET_NAMES = /^(orgs?|organi[sz]ations?|compan(y|ies))$/i;
+
+/**
+ * The tag a relation-ish property points at, read from its NAME when no hint says
+ * (C: "projects" → #project, "attendees" → #person, "organizations" → #organization,
+ * "meetings" → #meeting, "tasks" → #task). Only a tag in `knownTags` (tags with a
+ * schema) is ever proposed, and only for names that read as a relation: a people
+ * word, a RELATION_KEYS word, or the plural of a known tag. "email" next to an
+ * #email tag is NOT a relation. Null = no confident answer (never a guess).
+ */
+export function inferRelationTarget(key: string, knownTags: Iterable<string>): string | null {
+  const known = new Set<string>();
+  for (const t of knownTags) known.add(t.toLowerCase());
+  const k = key.trim().toLowerCase().replace(/[\s-]+/g, "_");
+  if (!k) return null;
+  const has = (t: string) => known.has(t) ? t : null;
+  if (PERSON_TARGET_NAMES.test(k)) return has("person");
+  if (ORG_TARGET_NAMES.test(k)) return has("organization") ?? has("organisation");
+  if (/^projects?$/.test(k)) return has("project");
+  // The plural of a known tag ("meetings", "tasks", "categories", "boxes").
+  const singulars = [k.endsWith("ies") ? `${k.slice(0, -3)}y` : null, k.endsWith("es") ? k.slice(0, -2) : null, k.endsWith("s") ? k.slice(0, -1) : null];
+  for (const s of singulars) if (s && s.length > 1 && has(s)) return s;
+  // The singular itself only for words that already read as a relation ("organization", "epic").
+  if (RELATION_KEYS.test(k) && has(k)) return k;
+  return null;
+}
+
+/** Does this name read as a relation or people property (for the backfill report)? */
+export const isRelationKeyName = (key: string): boolean => RELATION_KEYS.test(key) || PERSON_KEYS.test(key) || PERSON_TARGET_NAMES.test(key) || ORG_TARGET_NAMES.test(key);
+
+/** The target a field's hints state (`relationTarget`, else the older `relationTag`), or null. */
+export function relationTargetOf(f: Pick<FieldHints, "relationTarget" | "relationTag"> | undefined): RelationTarget | null {
+  const t = f?.relationTarget as Record<string, unknown> | undefined;
+  if (t && typeof t === "object") {
+    if (typeof t.tag === "string" && t.tag.trim()) return { tag: t.tag.trim() };
+    if (typeof t.pathPrefix === "string" && t.pathPrefix.trim()) return { pathPrefix: t.pathPrefix.trim() };
+  }
+  if (typeof f?.relationTag === "string" && f.relationTag.trim()) return { tag: f.relationTag.trim() };
+  return null;
+}
+
+/**
+ * Merge a hints patch onto the stored hints of one field (the server's PUT, the
+ * fixtures). Colours merge per option; `relationTarget` and `relationTag` are kept
+ * in step — a tag target also writes `relationTag` (older clients, reverse
+ * relations read it), a folder target drops it.
+ */
+export function mergeFieldHints(prev: FieldHints | undefined, h: FieldHints): FieldHints {
+  const next: FieldHints = { ...(prev ?? {}), ...h };
+  if (h.colors) next.colors = { ...(prev?.colors ?? {}), ...h.colors };
+  if (h.relationTarget) {
+    if ("tag" in h.relationTarget) next.relationTag = h.relationTarget.tag;
+    else delete next.relationTag;
+  } else if (h.relationTag) next.relationTarget = { tag: h.relationTag };
+  return next;
+}
+
 /** Kind for a schema field (hints win, then vault type, then the key name). */
 export function inferKind(key: string, f: SchemaField | undefined, sample?: unknown): PropertyKind {
   if (f?.kind && (PROPERTY_KINDS as readonly string[]).includes(f.kind)) return f.kind;
@@ -322,8 +396,25 @@ export function optionColor(value: string, hints?: Record<string, OptionColor>):
   return OPTION_COLORS[1 + (h % (OPTION_COLORS.length - 1))]!;
 }
 
-export function propertyFromField(key: string, f: SchemaField, tag: string | null, sample?: unknown): PropertyDef {
-  const kind = inferKind(key, f, sample);
+/**
+ * `knownTags` (tags with a schema) lets a relation-ish name find its target when no
+ * hint names one (`inferRelationTarget`). With a target, a DECLARED string/array field
+ * named like a relation ("project", "projects", "meetings") is a relation whatever its
+ * current value — plain names and bare slugs then show as chips the picker can fix.
+ * A free key (no schema) keeps the kind its value gives it.
+ */
+export function propertyFromField(key: string, f: SchemaField, tag: string | null, sample?: unknown, knownTags?: Iterable<string>): PropertyDef {
+  let kind = inferKind(key, f, sample);
+  const hinted = relationTargetOf(f);
+  const inferred = !hinted && knownTags ? inferRelationTarget(key, knownTags) : null;
+  const declaredText = f.type === "string" || f.type === "array" || f.type === "reference";
+  if (f.kind === undefined && declaredText && (kind === "text" || kind === "multi_select") && (hinted || inferred)) {
+    const targetTag = hinted && "tag" in hinted ? hinted.tag : inferred;
+    kind = PERSON_KEYS.test(key) || PERSON_TARGET_NAMES.test(key) || targetTag === "person" ? "person" : "relation";
+  }
+  const linkish = kind === "relation" || kind === "person";
+  const target = linkish ? hinted ?? (inferred ? { tag: inferred } : null) : null;
+  const multiple = f.type === "array" || kind === "multi_select" || (f.type === undefined && linkish && (typeof f.multiple === "boolean" ? f.multiple : Array.isArray(sample)));
   const hiddenOptions = Array.isArray(f.hiddenOptions) ? f.hiddenOptions.filter((v) => typeof v === "string") : [];
   const all = [...new Set<string>([...(f.enum ?? []), ...Object.keys(f.colors ?? {})])].filter((v) => !hiddenOptions.includes(v));
   const order = Array.isArray(f.optionOrder) ? f.optionOrder : [];
@@ -341,9 +432,11 @@ export function propertyFromField(key: string, f: SchemaField, tag: string | nul
     type: f.type,
     description: f.description,
     default: f.default,
-    multiple: f.type === "array" || kind === "multi_select",
+    multiple,
     enumValues: [...(f.enum ?? [])],
-    ...(f.relationTag ? { target: f.relationTag } : {}),
+    ...(target && "tag" in target ? { target: target.tag } : {}),
+    ...(target && "pathPrefix" in target ? { targetPath: target.pathPrefix } : {}),
+    ...(target && !hinted ? { targetInferred: true } : {}),
     ...(f.reverseLabel ? { reverseLabel: f.reverseLabel } : {}),
   };
 }
@@ -397,6 +490,7 @@ export function resolveProperties(
   // A deleted property is hidden on every surface, value or not — but only as THAT tag's
   // property: another tag of the same page that declares the key live still shows it.
   const gone = deletedKeys(tags, schemas);
+  const known = Object.keys(schemas);
   for (const tag of tags) {
     const s = schemas[tag];
     if (!s) continue;
@@ -404,14 +498,14 @@ export function resolveProperties(
       if (seen.has(key) || isSystemKey(key) || f.deleted) continue;
       if (f.hidden && isBlank(meta[key])) continue;
       seen.add(key);
-      out.push(propertyFromField(key, f, tag, meta[key]));
+      out.push(propertyFromField(key, f, tag, meta[key], known));
     }
   }
   for (const [key, value] of Object.entries(meta)) {
     if (gone.has(key)) continue;
     if (seen.has(key) || !isListableKey(key) || value === null || typeof value === "object" && !Array.isArray(value)) continue;
     seen.add(key);
-    out.push(propertyFromField(key, {}, null, value));
+    out.push(propertyFromField(key, {}, null, value, known));
   }
   return out;
 }
@@ -425,8 +519,13 @@ export function linkLabel(v: string): string {
   const inner = t.length >= 4 && t.startsWith("[[") && t.endsWith("]]") ? t.slice(2, -2) : t;
   const alias = inner.split("|")[1];
   if (alias) return alias.trim();
-  return (inner.split("/").pop() ?? inner).replace(/\.[^.]+$/, "");
+  // A project note at `vault/projects/<slug>/PROJECT` is named by its folder, not "PROJECT".
+  const parts = inner.split("/").filter(Boolean);
+  const leaf = (parts.pop() ?? inner).replace(/\.[^.]+$/, "");
+  return GENERIC_LEAF.test(leaf) && parts.length ? parts[parts.length - 1]! : leaf;
 }
+/** File names that name a FOLDER's note rather than themselves (PROJECT.md, index, README). */
+export const GENERIC_LEAF = /^(project|index|readme)$/i;
 /** `[[path]]` → `path`; plain strings pass through. */
 export const linkTarget = (v: string): string => {
   const t = v.trim();
@@ -643,6 +742,15 @@ export function validateSchemaPatch(raw: unknown): { ok: true; patch: SchemaPatc
         if (!okText(h.relationTag, 128) || !(h.relationTag as string).trim()) return { ok: false, error: `ui.${name}: relationTag must be a tag name` };
         out.relationTag = (h.relationTag as string).trim();
       }
+      if (h.relationTarget !== undefined) {
+        const t = validRelationTarget(h.relationTarget);
+        if (!t) return { ok: false, error: `ui.${name}: relationTarget must be {tag} or {pathPrefix}` };
+        out.relationTarget = t;
+      }
+      if (h.multiple !== undefined) {
+        if (typeof h.multiple !== "boolean") return { ok: false, error: `ui.${name}: multiple must be boolean` };
+        out.multiple = h.multiple;
+      }
       if (h.reverseLabel !== undefined) {
         if (!okText(h.reverseLabel, 80)) return { ok: false, error: `ui.${name}: reverseLabel must be ≤80 chars` };
         out.reverseLabel = cleanLabel(h.reverseLabel as string);
@@ -714,6 +822,140 @@ export function validateSchemaPatch(raw: unknown): { ok: true; patch: SchemaPatc
   }
   for (const [name, f] of Object.entries(patch.fields ?? {})) if ((f.enum ?? []).some(isPrototypeName)) return { ok: false, error: `field ${name}: invalid option name` };
   return { ok: true, patch };
+}
+
+/**
+ * An untrusted relation target, or null. A tag is a tag name; a folder is a
+ * relative vault path ("vault/projects"): no leading slash, no `.`/`..` or empty
+ * segments, no backslash or control characters, ≤ 200 characters.
+ */
+export function validRelationTarget(raw: unknown): RelationTarget | null {
+  if (!recordOf(raw)) return null;
+  const keys = Object.keys(raw);
+  if (keys.length !== 1) return null;
+  if (keys[0] === "tag") {
+    const t = raw.tag;
+    if (!okText(t, 128) || !(t as string).trim() || /[\r\n]/.test(t as string)) return null;
+    return { tag: (t as string).trim().replace(/^#+/, "") };
+  }
+  if (keys[0] === "pathPrefix") {
+    const p = raw.pathPrefix;
+    if (!okText(p, 200)) return null;
+    const v = (p as string).trim().replace(/\/+$/, "");
+    if (!v || v.startsWith("/") || v.includes("\\")) return null;
+    if (v.split("/").some((seg) => !seg.trim() || seg === "." || seg === "..")) return null;
+    return { pathPrefix: v };
+  }
+  return null;
+}
+
+/** The metadata key a new property named `label` gets ("Due date" → `due_date`). */
+export function keyFromLabel(label: string): string {
+  const k = label.trim().toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 60);
+  return /^[a-z]/.test(k) ? k : `p_${k}`;
+}
+
+/** What the one-step "New property" form collects. */
+export interface NewPropertyDraft {
+  label: string;
+  kind: PropertyKind;
+  /** Select / status / multi-select: the options, in order (the typed text IS the stored value). */
+  options?: Array<{ value: string; color?: OptionColor; group?: StatusGroup }>;
+  /** Number: display format (absent = the default). */
+  format?: NumberFormat;
+  /** Relation / person: what it links to. */
+  target?: RelationTarget | null;
+  /** Relation / person: several pages (vault `array`) or one (vault `string`). */
+  multiple?: boolean;
+  /** Relation: the name the reverse side shows on target pages (tag targets only). */
+  reverseLabel?: string;
+  /** Date: store as the vault's own `date` type (one day; no time, no range). */
+  dateOnly?: boolean;
+}
+
+/**
+ * ONE schema write for a brand-new property (A): the vault field (additive, with
+ * its enum for select/status) and every presentation hint in the same PUT, so a
+ * property is created with its options, colours, groups, number format and relation
+ * target — never "create, then edit". Never throws; validates what the form can't.
+ */
+export function buildNewPropertyPatch(d: NewPropertyDraft): { ok: true; key: string; patch: SchemaPatch } | { ok: false; error: string } {
+  const label = cleanLabel(d.label ?? "");
+  if (!label) return { ok: false, error: "Give the property a name." };
+  if (label.length > 80) return { ok: false, error: "The name is too long." };
+  const key = keyFromLabel(label);
+  if (!FIELD_NAME.test(key) || isSystemKey(key) || isPrototypeName(key)) return { ok: false, error: "That name can’t be used for a property." };
+  if (!(PROPERTY_KINDS as readonly string[]).includes(d.kind)) return { ok: false, error: "Choose a type." };
+  const linkish = d.kind === "relation" || d.kind === "person";
+  const type: VaultFieldType = linkish ? (d.multiple ? "array" : "string") : d.kind === "date" && d.dateOnly ? "date" : VAULT_TYPE_FOR_KIND[d.kind];
+  const ui: FieldHints = { kind: d.kind, label };
+  const field: NonNullable<SchemaPatch["fields"]>[string] = { type };
+  if (d.kind === "select" || d.kind === "status" || d.kind === "multi_select") {
+    const opts = (d.options ?? []).map((o) => ({ ...o, value: cleanLabel(o.value ?? "") })).filter((o) => o.value);
+    const seen = new Set<string>();
+    for (const o of opts) {
+      if (o.value.length > 80) return { ok: false, error: `“${o.value.slice(0, 20)}…” is too long for an option.` };
+      if (isPrototypeName(o.value)) return { ok: false, error: `“${o.value}” can’t be an option name.` };
+      const k = o.value.toLowerCase();
+      if (seen.has(k)) return { ok: false, error: `“${o.value}” is listed twice.` };
+      seen.add(k);
+    }
+    if (opts.length > 100) return { ok: false, error: "A property can have at most 100 options." };
+    if (opts.length) {
+      // The vault validates `enum` on string fields only: multi-select options are hints.
+      if (d.kind !== "multi_select") field.enum = opts.map((o) => o.value);
+      ui.colors = Object.fromEntries(opts.map((o) => [o.value, o.color && (OPTION_COLORS as readonly string[]).includes(o.color) ? o.color : optionColor(o.value)]));
+      if (opts.length > 1) ui.optionOrder = opts.map((o) => o.value);
+      if (d.kind === "status") ui.statusGroups = Object.fromEntries(opts.map((o) => [o.value, o.group && (STATUS_GROUPS as readonly string[]).includes(o.group) ? o.group : statusGroupOf(o.value)]));
+    }
+  }
+  if (d.kind === "number" && d.format && d.format !== "number" && (NUMBER_FORMATS as readonly string[]).includes(d.format)) ui.format = d.format;
+  if (linkish) {
+    const t = d.target ? validRelationTarget(d.target) : null;
+    if (d.target && !t) return { ok: false, error: "That isn’t a tag or folder pages can link to." };
+    if (t && "tag" in t) ui.relationTag = t.tag; // the older form: every client reads it
+    else if (t) ui.relationTarget = t;
+    ui.multiple = !!d.multiple;
+    const rev = cleanLabel(d.reverseLabel ?? "");
+    if (d.kind === "relation" && rev && t && "tag" in t) ui.reverseLabel = rev.slice(0, 80);
+  }
+  return { ok: true, key, patch: { fields: { [key]: field }, ui: { [key]: ui } } };
+}
+
+/** One row of the relation-target backfill report. */
+export interface RelationTargetPlan {
+  proposals: Array<{ tag: string; field: string; kind: "relation" | "person"; target: string }>;
+  unresolved: Array<{ tag: string; field: string; kind: PropertyKind; reason: string }>;
+  /** Fields that already state a target (left alone). */
+  alreadySet: number;
+}
+
+/**
+ * The backfill planner (C): for every property of every tag that reads as a
+ * relation or person (by its kind or its name) and states no target, the target its
+ * NAME gives it — or why there is none. Presentation only: the result is turned into
+ * `relationTag` hints; no stored value is ever read or rewritten.
+ */
+export function planRelationTargets(schemas: SchemaMap, skipTag: (tag: string) => boolean = () => false): RelationTargetPlan {
+  const known = Object.keys(schemas);
+  const out: RelationTargetPlan = { proposals: [], unresolved: [], alreadySet: 0 };
+  for (const tag of Object.keys(schemas).sort()) {
+    if (skipTag(tag)) continue;
+    for (const [field, f] of Object.entries(schemas[tag]?.fields ?? {})) {
+      if (isSystemKey(field) || f.deleted) continue;
+      const kind = inferKind(field, f);
+      const nameSays = isRelationKeyName(field) || inferRelationTarget(field, known) !== null;
+      if (kind !== "relation" && kind !== "person" && !nameSays) continue;
+      if (f.kind && f.kind !== "relation" && f.kind !== "person") continue; // the owner chose another type
+      if (f.type && !["string", "array", "reference"].includes(f.type)) continue;
+      if (relationTargetOf(f)) { out.alreadySet++; continue; }
+      const target = inferRelationTarget(field, known);
+      const k: "relation" | "person" = kind === "person" || target === "person" ? "person" : "relation";
+      if (target) out.proposals.push({ tag, field, kind: k, target });
+      else out.unresolved.push({ tag, field, kind, reason: isRelationKeyName(field) ? "no tag matches this name" : "not a relation name" });
+    }
+  }
+  return out;
 }
 
 /**

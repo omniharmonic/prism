@@ -17,8 +17,10 @@ import { inferContentType } from "../../lib/schemas/content-types";
 import type { Note } from "../../lib/types";
 import { serverFetch } from "../../lib/transport/serverFetch";
 import { downloadOwnAttachment, fileRef, isImageFileName, parseFileRefs, MAX_FILE_BYTES } from "../../lib/media/attachments";
-import { PropertyConflictError } from "../../data/VaultClient";
-import { useLinkCandidates } from "../../lib/database/hooks";
+import { PropertyConflictError, VaultRequestError } from "../../data/VaultClient";
+import { loadRelationIndex, relationIndexKey, useLinkCandidates, useRelationIndex, useScope } from "../../lib/database/hooks";
+import { conventionalPath, relationValues, resolveRelationValue, resolvedPath, type RelationResolution } from "../../lib/database/relations";
+import { useQueryClient } from "@tanstack/react-query";
 import {
   asWikilink,
   coerceValue,
@@ -36,29 +38,50 @@ import {
   STATUS_GROUPS,
   type OptionColor,
   type PropertyDef,
+  type RelationTarget,
 } from "../../lib/database/schema";
 import { Popover } from "./Popover";
 
 export type ValueVariant = "bar" | "cell" | "panel" | "card";
 
+/** The pages a relation / person property points at: its stated or inferred target, else the old fallbacks. */
+export function relationTargetFor(def: Pick<PropertyDef, "kind" | "key" | "target" | "targetPath">): RelationTarget | null {
+  if (def.targetPath) return { pathPrefix: def.targetPath };
+  if (def.target) return { tag: def.target };
+  if (def.kind === "person") return { tag: "person" };
+  return /^projects?$/i.test(def.key) ? { tag: "project" } : null;
+}
+
+/** A stored value the target's index reads better than its text: anything non-blank (a full-path link resolves to its page's title). */
+const needsIndex = (v: string): boolean => v.trim() !== "";
+
 /**
- * Open the page a `[[path]]` relation/person value points at (NP-DB-12). The
- * page is read through the reader's own client, so someone who cannot view it
- * opens nothing and learns nothing beyond the link text they already see.
+ * Open the page a relation/person value points at (NP-DB-12). The page is read
+ * through the reader's own client, so someone who cannot view it opens nothing
+ * and learns nothing beyond the link text they already see. A value in an older
+ * encoding (a folder link, a bare slug, a name) is resolved against the relation's
+ * TARGET when the path itself names no page.
  */
-export function useOpenLinked() {
+export function useOpenLinked(target?: RelationTarget | null) {
   const client = useVaultClient();
+  const qc = useQueryClient();
+  const scope = useScope();
   return async (value: string): Promise<boolean> => {
-    const target = linkTarget(value);
-    if (!target) return false;
+    const path = linkTarget(value);
+    if (!path) return false;
     try {
       let note: Note | null = null;
       try {
-        note = await client.getNote(target);
+        note = await client.getNote(path);
       } catch {
         // A server that only takes ids: find the id in the (permission-filtered) tree.
-        const entry = (await client.listTree()).find((n) => n.path === target || n.path?.replace(/\.[^./]+$/, "") === target);
+        const entry = (await client.listTree()).find((n) => n.path === path || n.path?.replace(/\.[^./]+$/, "") === path);
         if (entry) note = await client.getNote(entry.id);
+      }
+      if (!note && target) {
+        const idx = await qc.fetchQuery({ queryKey: relationIndexKey(scope, target), staleTime: 60_000, queryFn: () => loadRelationIndex(client, target) });
+        const r = resolveRelationValue(value, idx);
+        if (r.kind === "note") note = await client.getNote(r.note.id);
       }
       if (!note) return false;
       useUIStore.getState().openTab(note.id, (typeof note.metadata?.title === "string" && note.metadata.title) || linkLabel(value), inferContentType(note));
@@ -70,22 +93,49 @@ export function useOpenLinked() {
 }
 
 /** A related page / person as a chip. `open`: a plain click opens it (else only ⌘/Ctrl-click does — the cell's own click edits). */
-function LinkChip({ value, kind, open }: { value: string; kind: "person" | "relation"; open: boolean }) {
-  const openLinked = useOpenLinked();
+function LinkChip({ value, kind, open, target, resolution }: { value: string; kind: "person" | "relation"; open: boolean; target: RelationTarget | null; resolution: RelationResolution | null }) {
+  const openLinked = useOpenLinked(target);
   const [missing, setMissing] = useState(false);
   const go = (e: { stopPropagation: () => void; preventDefault: () => void }) => {
     e.stopPropagation();
     e.preventDefault();
+    if (resolution?.kind === "note") {
+      useUIStore.getState().openTab(resolution.note.id, resolution.note.title, "document");
+      return;
+    }
     void openLinked(value).then((ok) => setMissing(!ok));
   };
-  const label = linkLabel(value);
+  const resolved = resolution?.kind === "note" ? resolution.note : null;
+  const label = resolved?.title || linkLabel(value);
+  // A plain name / slug no target page answers: shown as the text it is, never guessed.
+  const unlinked = !resolved && !!resolution && !value.trim().startsWith("[[");
+  const where = target ? ("tag" in target ? `#${target.tag} page` : `page in ${target.pathPrefix}`) : "page";
+  const title = missing ? "This page is unavailable. It may have moved, or you may not have access."
+    : unlinked ? (resolution?.kind === "ambiguous" ? `“${value}” matches ${resolution.count} ${where}s — not linked` : `“${value}” is not linked to a ${where}`)
+    : open ? `Open ${label}` : `${label} — ${navigator.platform?.startsWith("Mac") ? "⌘" : "Ctrl"}-click to open`;
   return (
-    <span className={`db-link-chip${open ? " db-link-open" : ""}`} data-kind={kind} data-missing={missing || undefined}
+    <span className={`db-link-chip${open ? " db-link-open" : ""}`} data-kind={kind} data-missing={missing || undefined} data-unlinked={unlinked || undefined}
+      data-resolved-via={resolved ? resolution!.kind === "note" && resolution!.via : undefined}
       role={open ? "link" : undefined} tabIndex={open ? 0 : undefined}
-      title={missing ? "This page is unavailable. It may have moved, or you may not have access." : open ? `Open ${label}` : `${label} — ${navigator.platform?.startsWith("Mac") ? "⌘" : "Ctrl"}-click to open`}
+      title={title}
       onClick={(e) => { if (open || e.metaKey || e.ctrlKey) go(e); }}
       onKeyDown={(e) => { if (open && e.key === "Enter") go(e); }}>
       {kind === "person" && <span className="db-avatar" aria-hidden="true">{label.slice(0, 1).toUpperCase()}</span>}{label}
+    </span>
+  );
+}
+
+/** Relation / person chips: every stored encoding read against the target (one shared index per target). */
+function RelationChips({ def, value, open }: { def: PropertyDef; value: unknown; open: boolean }) {
+  const values = relationValues(value);
+  const target = relationTargetFor(def);
+  const idx = useRelationIndex(target, values.some(needsIndex));
+  return (
+    <span className="db-chips">
+      {values.map((v) => (
+        <LinkChip key={v} value={v} kind={def.kind as "person" | "relation"} open={open} target={target}
+          resolution={idx.data && needsIndex(v) ? resolveRelationValue(v, idx.data) : null} />
+      ))}
     </span>
   );
 }
@@ -104,7 +154,8 @@ export function OptionChip({ value, label, color, onRemove, removeLabel }: { val
 }
 
 const colorOf = (def: PropertyDef, v: string): OptionColor => def.options.find((o) => o.value === v)?.color ?? optionColor(v);
-const list = (v: unknown): string[] => (Array.isArray(v) ? v.map(String) : isBlank(v) ? [] : [String(v)]);
+// `""` (an older writer's "empty list") and blank items are empty, never a chip.
+const list = (v: unknown): string[] => (Array.isArray(v) ? v.map(String).filter((x) => x.trim() !== "") : isBlank(v) ? [] : [String(v)]);
 
 /** Read-only rendering (cards, read-only pages, cells of rows you cannot edit). */
 export function PropertyDisplay({ def, value, openLinks = true, links = true }: { def: PropertyDef; value: unknown; /** Relation/person chips open their page on a plain click (off inside an editable cell, where the click edits). */ openLinks?: boolean; /** URL / email / phone render as real links. Off inside the cell's own button (a link inside a button is invalid and unreachable by keyboard); the cell renders the link beside the button instead. */ links?: boolean }) {
@@ -124,7 +175,7 @@ export function PropertyDisplay({ def, value, openLinks = true, links = true }: 
       return <span className="db-chips">{list(value).map((v) => <OptionChip key={v} value={v} label={optionLabel(def, v)} color={colorOf(def, v)} />)}</span>;
     case "person":
     case "relation":
-      return <span className="db-chips">{list(value).map((v) => <LinkChip key={v} value={v} kind={def.kind as "person" | "relation"} open={openLinks} />)}</span>;
+      return <RelationChips def={def} value={value} open={openLinks} />;
     case "checkbox":
       return <span className="db-check" data-checked={value === true || undefined} role="img" aria-label={value === true ? "Checked" : "Unchecked"}>{value === true && <Check size={12} aria-hidden="true" />}</span>;
     case "files": {
@@ -603,47 +654,100 @@ function OptionPicker({ anchor, open, def, value, onClose, onPick, onCreateOptio
   );
 }
 
+/**
+ * The relation / person picker (B). It searches ONLY the relation's target (pages
+ * with its tag, or under its folder), lists them on open, and offers
+ * "Create “<query>”" when no target page has that name: a new page with the target
+ * tag, beside the target's existing pages, through the ordinary create route (the
+ * gateway decides; a refusal is said, nothing is linked). A choice is always written
+ * as a full-path `[[wikilink]]`; values stored in an older encoding (folder link,
+ * bare slug, name) are recognised as the page they mean, so choosing it again does
+ * not add a second copy.
+ */
 function LinkPicker({ anchor, open, def, value, onClose, onPick }: {
   anchor: React.RefObject<HTMLElement | null>; open: boolean; def: PropertyDef; value: unknown;
   onClose: () => void; onPick: (next: unknown) => void;
 }) {
+  const client = useVaultClient();
+  const qc = useQueryClient();
+  const scopeKey = useScope();
   const [q, setQ] = useState("");
-  const openLinked = useOpenLinked();
-  // The relation's target database (schema hint `relationTag`), else the old heuristics.
-  const tag = def.target ?? (def.kind === "person" ? "person" : /^projects?$/i.test(def.key) ? "project" : null);
-  const candidates = useLinkCandidates(tag, q, open);
+  const [creating, setCreating] = useState(false);
+  const [err, setErr] = useState("");
+  const target = relationTargetFor(def);
+  const openLinked = useOpenLinked(target);
+  const candidates = useLinkCandidates(target, q, open);
   const current = list(value);
+  // Every stored encoding, read as the page it means (needed to show what is selected).
+  const idx = useRelationIndex(target, open);
+  const pathOf = (v: string): string => (resolvedPath(v, idx.data) ?? linkTarget(v)).toLowerCase();
+  const holds = (path: string) => current.some((v) => pathOf(v) === path.toLowerCase());
   const toggle = (path: string) => {
     const link = asWikilink(path);
     if (def.multiple) {
-      const has = current.some((v) => linkLabel(v) === linkLabel(link) || v === link);
-      const next = has ? current.filter((v) => v !== link && linkLabel(v) !== linkLabel(link)) : [...current, link];
+      const next = holds(path) ? current.filter((v) => pathOf(v) !== path.toLowerCase()) : [...current, link];
       onPick(next.length ? next : null);
     } else {
       onPick(link);
       onClose();
     }
   };
+  const label = (v: string) => {
+    const r = idx.data ? resolveRelationValue(v, idx.data) : null;
+    return r?.kind === "note" ? r.note.title : linkLabel(v);
+  };
+  const rows = (candidates.data ?? []).filter((c) => c.path);
+  const query = q.trim();
+  const exact = rows.some((c) => c.title.toLowerCase() === query.toLowerCase());
+  const tag = target && "tag" in target ? target.tag : null;
+  const where = target ? ("tag" in target ? `#${target.tag}` : target.pathPrefix) : "";
+  const canCreate = !!target && !!query && !exact && typeof client.createNote === "function";
+  const create = async () => {
+    if (!canCreate || creating) return;
+    setErr("");
+    if (typeof navigator !== "undefined" && navigator.onLine === false) { setErr("Creating a page needs a connection. Nothing was added."); return; }
+    setCreating(true);
+    try {
+      const index = idx.data ?? await qc.fetchQuery({ queryKey: relationIndexKey(scopeKey, target!), staleTime: 60_000, queryFn: () => loadRelationIndex(client, target!) });
+      if (!index) throw new Error("no index");
+      const existing = [...index.byPath.values()].flat().map((c) => c.path);
+      const path = conventionalPath(target, existing, query);
+      const note = await client.createNote({ content: "", path, tags: tag ? [tag] : [], metadata: { title: query } });
+      if (!note?.id || note.id.startsWith("offline-")) { setErr("Creating a page needs a connection. Nothing was linked."); return; }
+      void qc.invalidateQueries({ queryKey: ["vault", "search"] });
+      void qc.invalidateQueries({ queryKey: ["vault", "tree"] });
+      setQ("");
+      toggle(note.path ?? path);
+    } catch (e) {
+      const status = e instanceof VaultRequestError ? e.status : /\b(40[349])\b/.exec(String((e as Error)?.message ?? ""))?.[1];
+      setErr(String(status) === "403" ? `You can’t add ${where} pages.` : String(status) === "409" ? "A page with that name already exists there. Search for it instead." : "The page could not be created. Nothing was linked.");
+    } finally {
+      setCreating(false);
+    }
+  };
+  const kindWord = def.kind === "person" ? "people" : "pages";
   return (
     <Popover anchor={anchor} open={open} onClose={onClose} label={`Link ${def.label}`} width={300}>
       {current.length > 0 && (
         <div className="db-pop-current">
           {current.map((v) => (
             <span key={v} className="db-link-chip" data-kind={def.kind}>
-              <button type="button" className="db-link-open" aria-label={`Open ${linkLabel(v)}`} onClick={() => void openLinked(v).then((ok) => { if (ok) onClose(); })}>{linkLabel(v)}</button>
-              <button type="button" aria-label={`Remove ${linkLabel(v)}`} onClick={() => { const next = current.filter((x) => x !== v); onPick(next.length ? (def.multiple ? next : next[0]) : null); }}><X size={11} aria-hidden="true" /></button>
+              <button type="button" className="db-link-open" aria-label={`Open ${label(v)}`} onClick={() => void openLinked(v).then((ok) => { if (ok) onClose(); })}>{label(v)}</button>
+              <button type="button" aria-label={`Remove ${label(v)}`} onClick={() => { const next = current.filter((x) => x !== v); onPick(next.length ? (def.multiple ? next : next[0]) : null); }}><X size={11} aria-hidden="true" /></button>
             </span>
           ))}
         </div>
       )}
       <div className="db-pop-search">
         <Search size={14} aria-hidden="true" />
-        <input autoFocus aria-label={`Search ${def.kind === "person" ? "people" : "pages"}`} placeholder={def.kind === "person" ? "Search people…" : "Search pages…"} value={q} onChange={(e) => setQ(e.target.value)} />
+        <input autoFocus aria-label={`Search ${kindWord}`} placeholder={target ? `Search ${where} ${kindWord}…` : def.kind === "person" ? "Search people…" : "Search pages…"} value={q} onChange={(e) => setQ(e.target.value)}
+          onKeyDown={(e) => { if (e.key === "Enter" && !e.nativeEvent.isComposing) { e.preventDefault(); if (rows.length === 1) toggle(rows[0]!.path!); else if (canCreate) void create(); } }} />
       </div>
+      {target && <p className="db-pop-path db-pop-target">Links to {"tag" in target ? <>pages tagged <code>#{target.tag}</code></> : <>pages in <code>{target.pathPrefix}</code></>}</p>}
       <ul className="db-pop-list" role="listbox" aria-label={`${def.label} candidates`}>
-        {(candidates.data ?? []).filter((c) => c.path).map((c) => (
+        {rows.map((c) => (
           <li key={c.id} role="presentation">
-            <button type="button" role="option" aria-selected={current.some((v) => linkLabel(v) === linkLabel(asWikilink(c.path!)))} onClick={() => toggle(c.path!)}>
+            <button type="button" role="option" aria-selected={holds(c.path!)} onClick={() => toggle(c.path!)}>
               {def.kind === "person" && <span className="db-avatar" aria-hidden="true">{c.title.slice(0, 1).toUpperCase()}</span>}
               <span className="db-pop-title">{c.title}</span>
               <span className="db-pop-path">{c.path}</span>
@@ -651,8 +755,14 @@ function LinkPicker({ anchor, open, def, value, onClose, onPick }: {
           </li>
         ))}
         {candidates.isLoading && <li className="db-pop-empty">Searching…</li>}
-        {!candidates.isLoading && !(candidates.data ?? []).length && <li className="db-pop-empty">{q ? "No matches" : "Type to search"}</li>}
+        {!candidates.isLoading && !rows.length && <li className="db-pop-empty">{q ? "No matches" : target ? `No ${where} ${kindWord} yet` : "Type to search"}</li>}
       </ul>
+      {canCreate && (
+        <button type="button" className="db-pop-create" disabled={creating} onClick={() => void create()}>
+          <Plus size={14} aria-hidden="true" /> {creating ? "Creating…" : <>Create “{query}”{tag ? <span className="db-pop-path"> in #{tag}</span> : null}</>}
+        </button>
+      )}
+      {err && <p role="alert" className="db-error">{err}</p>}
     </Popover>
   );
 }
