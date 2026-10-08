@@ -214,19 +214,60 @@ export const getNoteTool = defineTool({
   description:
     "Read one note by id: content, metadata, tags, path, your capabilities on it (`_caps`), and `collab: {kind, live}` — " +
     "its editor kind (document|code|spreadsheet|canvas) and whether someone has it open for live editing right now. " +
-    "Use the returned `updatedAt` as `if_updated_at` for prism_update_note / prism_restore_version. Content over 100,000 " +
-    "characters is truncated (`contentTruncated`). Needs view on the note.",
-  inputSchema: z.object({ id: idField }),
+    "Use the returned `updatedAt` as `if_updated_at` for prism_update_note / prism_restore_version. LONG NOTES: read the " +
+    "body in pages — pass `content_length` (characters per call, e.g. 24000) and, on later calls, `content_offset` = the " +
+    "`contentNextOffset` you were given, until `contentNextOffset` is null; `contentLength` is the whole body's size. " +
+    "Without `content_length`, content over 100,000 characters is truncated (`contentTruncated`). Needs view on the note.",
+  inputSchema: z.object({
+    id: idField,
+    content_offset: z.number().int().min(0).optional().describe("Start of the content page, in characters (default 0). Use the previous call's contentNextOffset."),
+    content_length: z.number().int().min(1000).max(NOTE_CONTENT_CHARS).optional().describe("Characters of content to return in this call. Use 24000 for long notes and follow contentNextOffset."),
+  }),
   annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
   access: canView,
-  async handler({ id }, ctx) {
+  async handler({ id, content_offset, content_length }, ctx) {
     const note = await getJson<NoteOut>(ctx, `/api/notes/${enc(id)}`);
-    return shapeNote(ctx, note);
+    const paged = content_offset !== undefined || content_length !== undefined;
+    return shapeNote(ctx, note, paged ? { offset: content_offset ?? 0, length: content_length ?? NOTE_PAGE_CHARS } : undefined);
   },
 });
 
-function shapeNote(ctx: ToolContext, note: NoteOut): Record<string, unknown> {
+/** Default page when a caller pages without saying how much: small enough that the whole tool
+ *  result stays under the ~50 KB above which the Claude CLI saves a result to a file the
+ *  agent (no Read tool) cannot open. */
+const NOTE_PAGE_CHARS = 24_000;
+
+/** One page of a body. Never splits a surrogate pair; `next` is null on the last page. */
+export function contentPage(content: string | null | undefined, offset: number, length: number): { text: string; offset: number; next: number | null; total: number } {
+  const body = content ?? "";
+  let start = Math.min(Math.max(0, offset), body.length);
+  if (start > 0 && start < body.length && isLowSurrogate(body.charCodeAt(start))) start--;
+  let end = Math.min(body.length, start + length);
+  if (end < body.length && isLowSurrogate(body.charCodeAt(end))) end--;
+  return { text: body.slice(start, end), offset: start, next: end < body.length ? end : null, total: body.length };
+}
+const isLowSurrogate = (c: number) => c >= 0xdc00 && c <= 0xdfff;
+
+function shapeNote(ctx: ToolContext, note: NoteOut, page?: { offset: number; length: number }): Record<string, unknown> {
   const kind: CollabKind = noteKind({ path: note.path ?? null, tags: note.tags ?? null, metadata: note.metadata ?? null, content: note.content });
+  if (page) {
+    const pg = contentPage(note.content, page.offset, page.length);
+    return {
+      id: note.id,
+      path: note.path ?? null,
+      tags: note.tags ?? [],
+      // Metadata rides only with the first page: it does not change between pages.
+      ...(pg.offset === 0 ? { metadata: note.metadata ?? {} } : {}),
+      createdAt: note.createdAt,
+      updatedAt: note.updatedAt ?? null,
+      content: pg.text,
+      contentLength: pg.total,
+      contentOffset: pg.offset,
+      contentNextOffset: pg.next,
+      _caps: capsOf(ctx, note),
+      collab: { kind, live: isDocLive(ctx.principal.actor.vaultId, note.id) },
+    };
+  }
   const c = clip(note.content, NOTE_CONTENT_CHARS);
   return {
     id: note.id,

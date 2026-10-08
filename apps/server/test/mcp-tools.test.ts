@@ -185,6 +185,41 @@ test("query_notes: owner sees everything (incl. private); content only on reques
   assert.equal(edBig.content.length, 2000, "non-owner path is bounded the same way");
 });
 
+test("get_note pages a long body: every character exactly once, next offset null at the end, same access rules", async () => {
+  const body = Array.from({ length: 6000 }, (_, i) => `line ${i} — naïve café 🙂`).join("\n"); // > 100 KB, multi-byte, surrogate pairs
+  fv.put({ id: "long1", path: "garden/long1", content: body, tags: ["garden"], metadata: { type: "document", status: "x" } });
+  const ed = await connect(pat(EDITOR));
+  let offset = 0;
+  let got = "";
+  let pages = 0;
+  for (;;) {
+    const r = must(await call(ed, "prism_get_note", { id: "long1", content_length: 24000, ...(offset ? { content_offset: offset } : {}) }));
+    assert.ok(r.content.length <= 24000);
+    assert.ok(JSON.stringify(r).length < 100_000, "one page stays far below the size the CLI spills to a file");
+    assert.equal(r.contentLength, body.length);
+    assert.equal(r.contentOffset, offset);
+    assert.equal("metadata" in r, pages === 0, "metadata rides with the first page only");
+    assert.deepEqual(r._caps, ["view", "comment", "suggest", "edit", "create"]);
+    got += r.content;
+    pages++;
+    if (r.contentNextOffset === null) break;
+    assert.ok(r.contentNextOffset > offset);
+    offset = r.contentNextOffset;
+    assert.ok(pages < 50);
+  }
+  assert.equal(got, body, "the pages concatenate to the exact body");
+  assert.ok(pages >= 5);
+  // An offset past the end is an empty last page, never an error; without paging arguments nothing changed.
+  const past = must(await call(ed, "prism_get_note", { id: "long1", content_offset: body.length + 10 }));
+  assert.equal(past.content, "");
+  assert.equal(past.contentNextOffset, null);
+  const whole = must(await call(ed, "prism_get_note", { id: "long1" }));
+  assert.equal(whole.content.length, 100_000);
+  assert.equal(whole.contentTruncated, true);
+  // Paging is no way around permissions.
+  assert.equal((await call(ed, "prism_get_note", { id: "s1", content_length: 24000 })).ok, false);
+});
+
 test("get_note: content + _caps + collab kind/live; viewer gets [view]; secret and another's private are forbidden", async () => {
   const ed = await connect(pat(EDITOR));
   const g1 = must(await call(ed, "prism_get_note", { id: "g1" }));

@@ -257,6 +257,15 @@ export const LONG_NOTE_RULE = [
   "When listing or searching several notes, leave include_content off and fetch bodies one note at a time.",
 ].join(" ");
 
+/** The same rule for the prism_* profiles, whose reader is `prism_get_note` (pages in characters). */
+export const PRISM_LONG_NOTE_RULE = [
+  "Reading long notes: a tool result larger than about 40 KB is NOT delivered to you (it is saved to a file you cannot open).",
+  "So ALWAYS read a note's body in pages: call prism_get_note with { id, content_length: 24000 },",
+  "then call it again with content_offset set to the contentNextOffset you were given, and repeat until contentNextOffset is null",
+  "(contentLength tells you the whole body's size). Read EVERY page before you answer about the note as a whole or rewrite it,",
+  "and never tell the user a note is too long to read. In prism_query_notes leave include_content off unless you need previews.",
+].join(" ");
+
 /** The data-access preamble prepended to every dispatch (a server-side analog of
  *  the desktop PRISM_CONTEXT). Keeps the agent scoped to vault operations. */
 export function buildPrompt(prompt: string, skill: string | null, noteId: string | null): string {
