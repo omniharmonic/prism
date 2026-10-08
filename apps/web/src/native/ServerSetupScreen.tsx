@@ -115,7 +115,7 @@ export function ServerSetupScreen() {
             aria-invalid={error ? true : undefined}
             aria-describedby={error ? "server-setup-error" : undefined}
             // 16px: iOS zooms into smaller inputs on focus.
-            style={{ fontSize: 16, padding: "11px 12px", borderRadius: 10, border: "1px solid var(--glass-border, #333)", background: "var(--surface-sunken, #0d0d10)", color: "inherit", fontWeight: 400 }}
+            style={{ fontSize: 16, padding: "11px 12px", borderRadius: 10, border: "1px solid var(--glass-border, #333)", background: "var(--bg-surface)", color: "inherit", fontWeight: 400 }}
           />
         </label>
         {error && (

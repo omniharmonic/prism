@@ -101,7 +101,7 @@ export function IosAppSettings() {
             disabled={busy}
             onChange={(e) => void changeLock(e.target.value as Choice)}
             // 16px: no zoom-on-focus on iOS.
-            style={{ fontSize: 16, padding: "8px 10px", borderRadius: 8, background: "var(--surface-sunken, transparent)", color: "inherit", border: "1px solid var(--glass-border)" }}
+            style={{ fontSize: 16, padding: "8px 10px", borderRadius: 8, background: "var(--bg-surface)", color: "inherit", border: "1px solid var(--glass-border)" }}
           >
             {CHOICES.map((c) => (
               <option key={c.value} value={c.value}>
