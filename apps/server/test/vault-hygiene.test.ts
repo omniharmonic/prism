@@ -259,6 +259,25 @@ test("schema: a shared field another tag outside the plan declares differently s
   assert.ok(c.lines.some((l) => l.includes("BLOCKED confidence") && l.includes("#outsider")));
 });
 
+test("schema: a field whose live definition has no default gets the new options and still no default", async () => {
+  const v = new FakeVault();
+  v.tags = liveSchemas();
+  for (const tag of ["task", "organization", "writing"]) delete v.tags.find((t) => t.name === tag)!.fields!.status!.default; // an older vault: never stored
+  const dry = ctxFor(v);
+  await schema.main(VAULT, dry);
+  assert.ok(dry.lines.some((l) => l.startsWith("  task.status:") && l.includes("pending") && l.includes("no default kept")), dry.lines.join("\n"));
+  assert.ok(!dry.lines.some((l) => /status: SKIP \(drift\)/.test(l) && /task|organization|writing/.test(l)));
+  const c = ctxFor(v, { PARACHUTE_ADMIN_TOKEN: ADMIN });
+  assert.equal(await schema.main([...VAULT, "--apply", "--backup-confirmed"], c), 0, c.lines.join("\n"));
+  const status = v.tags.find((t) => t.name === "task")!.fields!.status!;
+  assert.ok(status.enum!.includes("waiting") && status.enum!.includes("archived"));
+  assert.equal(status.default, undefined, "no default was added");
+  assert.ok(v.tags.find((t) => t.name === "organization")!.fields!.status!.enum!.includes("merged_into_canonical"));
+  const again = ctxFor(v, { PARACHUTE_ADMIN_TOKEN: ADMIN });
+  await schema.main([...VAULT, "--apply", "--backup-confirmed"], again);
+  assert.ok(again.lines.some((l) => l.includes("task.status: already applied")), "idempotent");
+});
+
 test("schema: --reverse plans every applied change back to its old definition", async () => {
   const v = new FakeVault();
   v.tags = liveSchemas();

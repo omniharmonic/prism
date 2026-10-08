@@ -46,12 +46,24 @@ export function essentials(d: FieldDef | null | undefined): string {
   return JSON.stringify([d.type ?? null, d.enum ?? null, d.default ?? null]);
 }
 
+/** {@link essentials} without the default: what a live field with NO default is compared on. */
+function shape(d: FieldDef | null | undefined): string {
+  if (!d) return "absent";
+  return JSON.stringify([d.type ?? null, d.enum ?? null]);
+}
+
 export type Verdict = "pending" | "already" | "drift" | "tag-missing";
 
 export interface PlannedChange {
   change: SchemaChange;
   verdict: Verdict;
   live: FieldDef | null;
+  /**
+   * The live field has no default where the fix file expected one (vault ≤0.6 filled the first
+   * enum value implicitly, so older vaults never stored one). The change is applied WITHOUT a
+   * default: adding one would make the vault start filling it into notes.
+   */
+  noDefault?: boolean;
 }
 
 export function planChanges(changes: SchemaChange[], live: VaultTag[], opts: { only?: string[]; includeOptional?: boolean } = {}): PlannedChange[] {
@@ -68,8 +80,14 @@ export function planChanges(changes: SchemaChange[], live: VaultTag[], opts: { o
     }
     const cur = tag!.fields?.[change.field] ?? null;
     const now = essentials(cur);
-    const verdict: Verdict = now === essentials(change.to) ? "already" : now === essentials(change.from) ? "pending" : "drift";
-    out.push({ change, verdict, live: cur });
+    let verdict: Verdict = now === essentials(change.to) ? "already" : now === essentials(change.from) ? "pending" : "drift";
+    let noDefault = false;
+    if (verdict === "drift" && cur && cur.default === undefined && change.from?.default !== undefined && JSON.stringify(change.from.default) === JSON.stringify(change.to.default ?? null)) {
+      // Same field, but this vault never stored the default: judge it without one.
+      if (shape(cur) === shape(change.to)) verdict = "already";
+      else if (shape(cur) === shape(change.from)) (verdict = "pending"), (noDefault = true);
+    }
+    out.push({ change, verdict, live: cur, ...(noDefault ? { noDefault } : {}) });
   }
   // A shared type change drops the field from every declarer before re-declaring it
   // (sharedTypeChanges). If that run stopped half-way the field is absent here while a
@@ -134,7 +152,8 @@ export function describe(p: PlannedChange): string {
       const removed = a.filter((v) => !b.includes(v));
       if (removed.length) parts.push(`enum −[${removed.join(", ")}]`);
     }
-    if (JSON.stringify(live.default ?? null) !== JSON.stringify(c.to.default ?? null)) parts.push(`default ${JSON.stringify(live.default ?? null)} → ${JSON.stringify(c.to.default ?? null)}`);
+    if (p.noDefault) parts.push("no default kept (the live field has none)");
+    else if (JSON.stringify(live.default ?? null) !== JSON.stringify(c.to.default ?? null)) parts.push(`default ${JSON.stringify(live.default ?? null)} → ${JSON.stringify(c.to.default ?? null)}`);
   }
   return `${name}: ${parts.join("; ") || "description only"}   (${c.reason})`;
 }
@@ -156,6 +175,11 @@ export function tagBody(live: VaultTag, changes: SchemaChange[]): { description:
     fields[c.field] = { ...c.to, ...(prev?.indexed && INDEXABLE.has(c.to.type ?? "") ? { indexed: true } : {}) };
   }
   return { description: live.description ?? "", fields };
+}
+
+function withoutDefault(c: SchemaChange): SchemaChange {
+  const { default: _none, ...to } = c.to;
+  return { ...c, to };
 }
 
 export function reverseFixes(changes: SchemaChange[]): SchemaChange[] {
@@ -192,7 +216,7 @@ export async function main(argv: string[], ctx: Ctx): Promise<number> {
   }
 
   const byTag = new Map<string, SchemaChange[]>();
-  for (const p of pending) byTag.set(p.change.tag, [...(byTag.get(p.change.tag) ?? []), p.change]);
+  for (const p of pending) byTag.set(p.change.tag, [...(byTag.get(p.change.tag) ?? []), p.noDefault ? withoutDefault(p.change) : p.change]);
   const liveByName = new Map(live.map((t) => [t.name, t]));
   const written: string[] = [];
 
