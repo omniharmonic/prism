@@ -1,0 +1,45 @@
+/**
+ * Omni module configuration (owner-only gateway between the Omni app and Hermes;
+ * docs/omni-module.md). Read from the environment AT CALL TIME (not at import) so
+ * tests and a restart-free flag flip both see the current value. Everything is
+ * off by default: with OMNI_ENABLED unset every /api/omni/* route answers 404.
+ */
+import { config } from "../config";
+
+const env = (k: string): string | undefined => {
+  const v = process.env[k];
+  return v === undefined || v === "" ? undefined : v;
+};
+const int = (k: string, d: number): number => {
+  const n = Number(env(k));
+  return Number.isFinite(n) && n >= 0 ? n : d;
+};
+
+export const omniConfig = {
+  /** Master switch. Off → every /api/omni route (hooks included) is a 404. */
+  enabled: (): boolean => env("OMNI_ENABLED") === "true",
+  /** Hermes API server base URL (the Hermes gateway's `api_server` platform). */
+  hermesUrl: (): string => (env("OMNI_HERMES_URL") ?? "http://127.0.0.1:8642").replace(/\/+$/, ""),
+  /** NAME of the env var that holds Hermes' API_SERVER_KEY (the key itself never sits in a
+   *  file this module reads, and is never logged). Default `OMNI_HERMES_KEY`. */
+  hermesKey: (): string | undefined => env(env("OMNI_HERMES_KEY_ENV") ?? "OMNI_HERMES_KEY"),
+  /** Shared secret Hermes' `omni-bridge` plugin (and the proactivity sweeps) present on the
+   *  loopback-only hook routes. Unset = the hooks are refused. */
+  serviceToken: (): string | undefined => env("OMNI_SERVICE_TOKEN"),
+  requestTimeoutMs: (): number => int("OMNI_HERMES_TIMEOUT_MS", 15_000),
+  /** A streamed turn is abandoned when Hermes sends nothing (not even a keepalive) this long. */
+  streamIdleMs: (): number => int("OMNI_HERMES_STREAM_IDLE_MS", 300_000),
+  /** Hard ceiling for one turn's stream. */
+  turnMaxMs: (): number => int("OMNI_TURN_MAX_MS", 60 * 60_000),
+  /** Default lifetime of a proposed approval. */
+  approvalTtlMs: (): number => int("OMNI_APPROVAL_TTL_MS", 24 * 60 * 60_000),
+  /** Persisted stream events kept per thread (oldest pruned). */
+  eventsPerThread: (): number => int("OMNI_EVENTS_PER_THREAD", 2_000),
+  /** Concurrent /api/omni/events + thread-stream connections. */
+  maxStreams: (): number => int("OMNI_MAX_STREAMS", 16),
+  ownerEmail: (): string => config.ownerEmail,
+  appOrigin: (): string => config.appOrigin,
+};
+
+export const OMNI_API_VERSION = 1;
+export const OMNI_MIN_CLIENT = "1.0";

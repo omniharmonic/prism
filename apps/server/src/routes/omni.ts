@@ -1,0 +1,716 @@
+/**
+ * Omni gateway — `/api/omni/*` (docs/omni-module.md; spec:
+ * omniharmonicagent/docs/omni/integration-contract.md § 4–6). The OWNER-ONLY bridge
+ * between the Omni app (iPhone/iPad/Mac) and Hermes (the agent on the Mac Mini, the
+ * canonical thread store). Mounted BEFORE the gateway so the owner passthrough never
+ * proxies these to the vault.
+ *
+ * GATES
+ *  - `OMNI_ENABLED` (default off): every route, hooks included, answers 404.
+ *  - App routes: the SERVER OWNER (OWNER_EMAIL) authenticated by a browser SESSION or a
+ *    native DEVICE token (`pd_…`). An in-process MCP dispatch, the loopback owner token, a
+ *    capability link or another account → 403; anonymous → 401. Mutations also pass the
+ *    live-actions CSRF guard (JSON content type; Origin / Sec-Fetch-Site unless device).
+ *  - Hook routes (`/hooks/*`, Hermes' omni-bridge plugin + the sweeps): loopback only
+ *    (`isLocalRequest`) AND `Authorization: Bearer <OMNI_SERVICE_TOKEN>` (constant-time).
+ *    They can PROPOSE and announce; they can never decide or execute anything.
+ *  - Approval decisions additionally need a HUMAN origin (session/device; a client's
+ *    `X-Prism-Action-Origin: agent` downgrade is honoured), the digest the person saw and
+ *    an `Idempotency-Key`; execution goes only through Prism's live-action routes.
+ */
+import { Hono, type Context } from "hono";
+import { streamSSE } from "hono/streaming";
+import { timingSafeEqual } from "node:crypto";
+import { resolveActor, requestVia } from "../auth/actor";
+import { isLocalRequest } from "../auth/local";
+import { csrfRefusal, readCapped } from "./actions";
+import { IDEMPOTENCY_KEY_RE } from "../actions/store";
+import { omniConfig, OMNI_API_VERSION, OMNI_MIN_CLIENT } from "../omni/config";
+import { hermes, HermesError, SESSION_ID_RE, JOB_ID_RE, type HermesSession, type HermesMessage } from "../omni/hermes-client";
+import {
+  THREAD_STATES,
+  bumpUnread,
+  ensureThread,
+  eventsAfter,
+  getThread,
+  getTurn,
+  activeTurn,
+  listThreads,
+  newId,
+  sweepRunningTurns,
+  omniAudit,
+  threadCards,
+  updateThread,
+  type ThreadRow,
+  type ThreadState,
+} from "../omni/store";
+import { cancelTurn, emit, startTurn } from "../omni/turns";
+import { publishNotice, pushOmni, subscribeNotices, subscribeThread, type ThreadMessage } from "../omni/bus";
+import {
+  ApprovalInputError,
+  approvalView,
+  claimApproval,
+  closeApproval,
+  createApproval,
+  executorFor,
+  expireApprovals,
+  finishApproval,
+  getApproval,
+  listApprovals,
+  liveActionRequest,
+  rawIdemKey,
+  threadApprovals,
+  unclaimApproval,
+  validatePayload,
+  type ApprovalStatus,
+  type ExecOutcome,
+  type Executor,
+} from "../omni/approvals";
+import { buildToday, localDate, validDate, type Dispatch } from "../omni/today";
+
+export const omniApi = new Hono();
+
+// ── wiring ──────────────────────────────────────────────────────────────────
+
+type AppLike = { request: (input: string, init?: RequestInit) => Response | Promise<Response> };
+let appRef: AppLike | null = null;
+
+/** Mount under `/api/omni` and keep the app for in-process calls (executor, Today). */
+export function mountOmni(app: Hono): void {
+  appRef = app as unknown as AppLike;
+  // No in-memory stream survives a restart: a turn left `running` is interrupted.
+  sweepRunningTurns();
+  app.route("/api/omni", omniApi);
+}
+
+/** The person's own credential + CSRF-relevant headers, for an in-process call made on
+ *  their behalf (so the inner route judges the SAME person and origin). */
+function forwardHeaders(c: Context, extra: Record<string, string> = {}): Record<string, string> {
+  const h: Record<string, string> = { "content-type": "application/json", ...extra };
+  for (const k of ["cookie", "authorization", "origin", "sec-fetch-site"]) {
+    const v = c.req.header(k);
+    if (v) h[k] = v;
+  }
+  return h;
+}
+function dispatcherFor(c: Context): Dispatch {
+  return async (path, init) => {
+    if (!appRef) throw new Error("omni_not_mounted");
+    return appRef.request(path, { method: init.method, headers: forwardHeaders(c), body: init.body !== undefined ? JSON.stringify(init.body) : undefined });
+  };
+}
+
+/** Default executor: the live-action route, in process, with the decider's credential. */
+const liveActionExecutor: Executor = async ({ kind, payload, approvalId, headers }) => {
+  const exec = executorFor(kind);
+  if (!exec.available) return { status: "disabled", detail: { error: "executor_unavailable", executor: exec.name } };
+  if (!exec.enabled) return { status: "disabled", detail: { error: "executor_disabled", executor: exec.name } };
+  const req = liveActionRequest(kind, payload);
+  if (!req || !appRef) return { status: "disabled", detail: { error: "executor_unavailable", executor: exec.name } };
+  let res: Response;
+  try {
+    res = await appRef.request(req.path, { method: "POST", headers: { ...headers, "idempotency-key": `omni-${approvalId}` }, body: JSON.stringify(req.body) });
+  } catch {
+    return { status: "unknown", detail: { error: "executor_error" } };
+  }
+  const j = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+  const out: Record<string, unknown> = { executor: exec.name, httpStatus: res.status };
+  for (const k of ["error", "detail", "sent", "messageId", "eventId", "id"]) if (j[k] !== undefined) out[k] = j[k];
+  if (res.ok) return { status: "sent", detail: out };
+  if (res.status === 503 && j.error === "actions_disabled") return { status: "disabled", detail: { ...out, error: "executor_disabled" } };
+  // Live actions say `sent: false` when nothing provably left the server; anything else may have.
+  if (j.sent === false || res.status === 400 || res.status === 403 || res.status === 404 || res.status === 409 || res.status === 415 || res.status === 422 || res.status === 429) {
+    return { status: "failed", detail: out };
+  }
+  return { status: "unknown", detail: out };
+};
+let executor: Executor = liveActionExecutor;
+export function setOmniExecutorForTests(e: Executor | null): void {
+  executor = e ?? liveActionExecutor;
+}
+
+// ── gates ───────────────────────────────────────────────────────────────────
+
+omniApi.use("*", async (c, next) => {
+  if (!omniConfig.enabled()) return c.json({ error: "not_found" }, 404);
+  await next();
+});
+
+const hookAuthorized = (c: Context): boolean => {
+  const want = omniConfig.serviceToken();
+  if (!want || want.length < 16) return false;
+  if (!isLocalRequest((k) => c.req.header(k))) return false;
+  const h = c.req.header("authorization") ?? "";
+  if (!h.startsWith("Bearer ")) return false;
+  const a = Buffer.from(h.slice(7));
+  const b = Buffer.from(want);
+  return a.length === b.length && timingSafeEqual(a, b);
+};
+
+omniApi.use("*", async (c, next) => {
+  if (c.req.path.startsWith("/api/omni/hooks/") || c.req.path.startsWith("/hooks/")) {
+    if (!hookAuthorized(c)) return c.json({ error: "forbidden" }, 403);
+    return next();
+  }
+  const via = requestVia(c);
+  if (via === "anon") return c.json({ error: "unauthorized" }, 401);
+  if (via !== "session" && via !== "device") return c.json({ error: "forbidden", detail: "sign in on the device (session or device token)" }, 403);
+  const actor = resolveActor(c);
+  if (actor.kind !== "user" || actor.email.toLowerCase() !== omniConfig.ownerEmail()) return c.json({ error: "forbidden" }, 403);
+  if (c.req.method !== "GET" && c.req.method !== "HEAD") {
+    const csrf = csrfRefusal(c, via);
+    if (csrf) return csrf;
+  }
+  await next();
+});
+
+const MAX_BODY = 512 * 1024;
+async function jsonBody(c: Context): Promise<Record<string, unknown> | null> {
+  const text = await readCapped(c.req.raw, MAX_BODY);
+  if (text === null) return null;
+  if (!text.trim()) return {};
+  try {
+    const v = JSON.parse(text);
+    return v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : null;
+  } catch {
+    return null;
+  }
+}
+const bad = (c: Context, detail: string) => c.json({ error: "bad_request", detail }, 400);
+function hermesFailure(c: Context, e: unknown): Response {
+  if (e instanceof HermesError) return c.json({ error: e.code }, e.status as 400);
+  console.error(`[omni] ${(e as Error)?.message}`);
+  return c.json({ error: "internal_error" }, 500);
+}
+const iso = (v: number | null | undefined) => (v ? new Date(v).toISOString() : null);
+const tsIso = (v: number | string | null | undefined): string | null => {
+  if (v == null) return null;
+  if (typeof v === "number") return new Date(v < 1e12 ? v * 1000 : v).toISOString();
+  return Number.isNaN(Date.parse(v)) ? null : new Date(v).toISOString();
+};
+
+// ── threads ─────────────────────────────────────────────────────────────────
+
+function threadView(t: ThreadRow | null, s: HermesSession | null): Record<string, unknown> {
+  const id = t?.id ?? s!.id;
+  const running = !!activeTurn(id);
+  const hermesActive = s?.last_active ? s.last_active * 1000 : 0;
+  const pending = threadApprovals(id).some((a) => a.status === "pending");
+  const state: ThreadState = running ? "working" : pending ? "needs-you" : (t?.state ?? "waiting");
+  return {
+    id,
+    title: t?.title ?? s?.title ?? null,
+    state,
+    objective: t?.objective ?? null,
+    taskNoteId: t?.taskNoteId ?? null,
+    lastActivityAt: iso(Math.max(t?.lastActivityAt ?? 0, hermesActive)) ,
+    unread: t?.unread ?? 0,
+    pinned: s?.pinned ?? t?.pinned ?? false,
+    archived: s?.archived ?? t?.archived ?? false,
+    nextCheckAt: null,
+    waitingOn: null,
+    model: s?.model ?? null,
+    preview: s?.preview ?? null,
+    messageCount: s?.message_count ?? null,
+    running,
+    lastSeq: t?.eventSeq ?? 0,
+    source: t?.source ?? (s ? "hermes" : null),
+  };
+}
+
+omniApi.get("/version", (c) => c.json({ api: OMNI_API_VERSION, minClient: OMNI_MIN_CLIENT }));
+
+omniApi.get("/threads", async (c) => {
+  const states = (c.req.query("state") ?? "").split(",").filter(Boolean);
+  if (states.some((s) => !(THREAD_STATES as readonly string[]).includes(s))) return bad(c, `state: ${THREAD_STATES.join(",")}`);
+  const q = (c.req.query("q") ?? "").trim().toLowerCase().slice(0, 200);
+  const local = new Map(listThreads(500).map((t) => [t.id, t]));
+  let sessions: HermesSession[] = [];
+  let hermesState: "ok" | "unavailable" = "ok";
+  try {
+    sessions = (await hermes.listSessions({ limit: 200 })).sessions;
+  } catch (e) {
+    if (e instanceof HermesError && e.code === "hermes_not_configured") return hermesFailure(c, e);
+    hermesState = "unavailable";
+  }
+  const seen = new Set<string>();
+  const out: Array<Record<string, unknown>> = [];
+  for (const s of sessions) {
+    if (!s?.id || !SESSION_ID_RE.test(s.id) || seen.has(s.id)) continue;
+    seen.add(s.id);
+    out.push(threadView(local.get(s.id) ?? null, s));
+  }
+  for (const t of local.values()) if (!seen.has(t.id)) out.push(threadView(t, null));
+  const filtered = out
+    .filter((t) => !t.archived || c.req.query("archived") === "1")
+    .filter((t) => !states.length || states.includes(t.state as string))
+    .filter((t) => !q || `${t.title ?? ""} ${t.preview ?? ""}`.toLowerCase().includes(q))
+    .sort((a, b) => Number(b.pinned) - Number(a.pinned) || String(b.lastActivityAt ?? "").localeCompare(String(a.lastActivityAt ?? "")));
+  return c.json({ threads: filtered, next: null, hermes: hermesState });
+});
+
+const SOURCES = ["text", "voice", "nudge", "prism"] as const;
+const NOTE_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
+function noteIdsOf(v: unknown): string[] | null {
+  if (v === undefined || v === null) return [];
+  if (!Array.isArray(v) || v.length > 20 || v.some((x) => typeof x !== "string" || !NOTE_ID_RE.test(x))) return null;
+  return v as string[];
+}
+/** The message Hermes receives: the person's text, then referenced note ids as data. */
+const withNotes = (text: string, ids: string[]) => (ids.length ? `${text}\n\n[Prism notes referenced (read them with your Prism tools): ${ids.join(", ")}]` : text);
+function idemKeyOf(c: Context): string | null | false {
+  const k = c.req.header("idempotency-key");
+  if (k === undefined) return null;
+  return IDEMPOTENCY_KEY_RE.test(k) ? k : false;
+}
+
+omniApi.post("/threads", async (c) => {
+  const b = await jsonBody(c);
+  if (!b) return bad(c, "a JSON object body is required");
+  const prompt = typeof b.prompt === "string" ? b.prompt.trim() : "";
+  if (!prompt || prompt.length > 100_000) return bad(c, "prompt: 1–100000 characters");
+  const title = typeof b.title === "string" ? b.title.trim().slice(0, 200) : prompt.replace(/\s+/g, " ").slice(0, 80);
+  const objective = typeof b.objective === "string" ? b.objective.slice(0, 2000) : null;
+  const taskNoteId = typeof b.taskNoteId === "string" && NOTE_ID_RE.test(b.taskNoteId) ? b.taskNoteId : b.taskNoteId == null ? null : undefined;
+  if (taskNoteId === undefined) return bad(c, "taskNoteId: a note id");
+  const source = b.source === undefined ? "text" : b.source;
+  if (typeof source !== "string" || !(SOURCES as readonly string[]).includes(source)) return bad(c, `source: ${SOURCES.join("|")}`);
+  const ids = noteIdsOf(b.noteIds);
+  if (!ids) return bad(c, "noteIds: up to 20 note ids");
+  const id = newId("omni");
+  try {
+    await hermes.createSession({ id, title });
+  } catch (e) {
+    return hermesFailure(c, e);
+  }
+  const thread = ensureThread({ id, title, objective, taskNoteId, source });
+  const r = startTurn(id, withNotes(prompt, taskNoteId ? [taskNoteId, ...ids] : ids), null);
+  publishNotice({ type: "thread", id, op: "created" });
+  return c.json({ thread: threadView(getThread(id) ?? thread, null), turnId: "turn" in r ? r.turn.id : null }, 201);
+});
+
+function threadIdParam(c: Context): string | null {
+  const id = c.req.param("id") ?? "";
+  return SESSION_ID_RE.test(id) ? id : null;
+}
+
+/** A Hermes message for the app: role + text + time; tool rows keep only the tool name. */
+function messageView(m: HermesMessage): Record<string, unknown> | null {
+  if (!m || typeof m.role !== "string") return null;
+  const text = typeof m.content === "string" ? m.content : Array.isArray(m.content) ? m.content.map((p) => (p && typeof p === "object" && typeof (p as { text?: unknown }).text === "string" ? (p as { text: string }).text : "")).join("") : "";
+  if (m.role === "tool") return { id: m.id ?? null, role: "tool", toolName: m.tool_name ?? null, at: tsIso(m.timestamp ?? null) };
+  if (m.role !== "user" && m.role !== "assistant") return null;
+  return { id: m.id ?? null, role: m.role, text, at: tsIso(m.timestamp ?? null) };
+}
+
+omniApi.get("/threads/:id", async (c) => {
+  const id = threadIdParam(c);
+  if (!id) return c.json({ error: "not_found" }, 404);
+  let session: HermesSession;
+  let messages: HermesMessage[];
+  try {
+    [session, messages] = await Promise.all([hermes.getSession(id), hermes.getMessages(id, { limit: 200 })]);
+  } catch (e) {
+    return hermesFailure(c, e);
+  }
+  const t = getThread(id);
+  if (t && t.unread) updateThread(id, { unread: 0 });
+  expireApprovals();
+  return c.json({
+    thread: threadView(getThread(id), session),
+    messages: messages.map(messageView).filter(Boolean),
+    cards: threadCards(id),
+    approvals: threadApprovals(id).map(approvalView),
+    activeTurnId: activeTurn(id)?.id ?? null,
+  });
+});
+
+omniApi.patch("/threads/:id", async (c) => {
+  const id = threadIdParam(c);
+  if (!id) return c.json({ error: "not_found" }, 404);
+  const b = await jsonBody(c);
+  if (!b) return bad(c, "a JSON object body is required");
+  const unknown = Object.keys(b).filter((k) => !["title", "pinned", "archived", "state", "unread"].includes(k));
+  if (unknown.length) return bad(c, `unsupported fields: ${unknown.join(", ")}`);
+  if (b.title !== undefined && (typeof b.title !== "string" || b.title.length > 200)) return bad(c, "title: ≤200 characters");
+  for (const f of ["pinned", "archived", "unread"]) if (b[f] !== undefined && typeof b[f] !== "boolean") return bad(c, `${f}: boolean`);
+  if (b.state !== undefined && (typeof b.state !== "string" || !(THREAD_STATES as readonly string[]).includes(b.state))) return bad(c, `state: ${THREAD_STATES.join("|")}`);
+  let session: HermesSession | null = null;
+  try {
+    session = await hermes.getSession(id);
+    const hp: { title?: string; pinned?: boolean; archived?: boolean } = {};
+    if (typeof b.title === "string") hp.title = b.title;
+    if (typeof b.pinned === "boolean") hp.pinned = b.pinned;
+    if (typeof b.archived === "boolean") hp.archived = b.archived;
+    if (Object.keys(hp).length) session = (await hermes.patchSession(id, hp)) ?? session;
+  } catch (e) {
+    return hermesFailure(c, e);
+  }
+  ensureThread({ id, title: session?.title ?? null, source: "hermes" });
+  const t = updateThread(id, {
+    title: typeof b.title === "string" ? b.title : undefined,
+    pinned: b.pinned as boolean | undefined,
+    archived: b.archived as boolean | undefined,
+    state: b.state as ThreadState | undefined,
+    unread: b.unread === false ? 0 : b.unread === true ? 1 : undefined,
+  });
+  return c.json({ thread: threadView(t, session) });
+});
+
+omniApi.post("/threads/:id/turns", async (c) => {
+  const id = threadIdParam(c);
+  if (!id) return c.json({ error: "not_found" }, 404);
+  const key = idemKeyOf(c);
+  if (key === false) return bad(c, "Idempotency-Key: 8–200 characters of [A-Za-z0-9._:-]");
+  const b = await jsonBody(c);
+  if (!b) return bad(c, "a JSON object body is required");
+  const text = typeof b.text === "string" ? b.text.trim() : "";
+  if (!text || text.length > 100_000) return bad(c, "text: 1–100000 characters");
+  const ids = noteIdsOf(b.noteIds);
+  if (!ids) return bad(c, "noteIds: up to 20 note ids");
+  if (!getThread(id)) {
+    // A Hermes session started elsewhere (Telegram, Buzz, the Hermes desktop): adopt it.
+    try {
+      const s = await hermes.getSession(id);
+      ensureThread({ id, title: s.title ?? null, source: "hermes" });
+    } catch (e) {
+      return hermesFailure(c, e);
+    }
+  }
+  const r = startTurn(id, withNotes(text, ids), key);
+  if ("active" in r) return c.json({ error: "conflict", detail: "a turn is already running", turnId: r.active.id }, 409);
+  if ("replay" in r) {
+    c.header("Idempotent-Replayed", "true");
+    return c.json({ turnId: r.replay.id, status: r.replay.status });
+  }
+  return c.json({ turnId: r.turn.id, status: "running" }, 202);
+});
+
+const seqParam = (v: string | undefined): number => {
+  const n = Number(v);
+  return Number.isInteger(n) && n >= 0 ? n : 0;
+};
+let openStreams = 0;
+
+omniApi.get("/threads/:id/stream", (c) => {
+  const id = threadIdParam(c);
+  if (!id || !getThread(id)) return c.json({ error: "not_found" }, 404);
+  if (openStreams >= omniConfig.maxStreams()) return c.json({ error: "too_many_streams" }, 429);
+  const after = Math.max(seqParam(c.req.query("after")), seqParam(c.req.header("last-event-id")));
+  openStreams++;
+  return streamSSE(c, async (stream) => {
+    let chain: Promise<unknown> = Promise.resolve();
+    let lastSeq = after;
+    let finished = false;
+    let resolveDone: () => void = () => {};
+    const done = new Promise<void>((r) => (resolveDone = r));
+    const finish = () => {
+      finished = true;
+      resolveDone();
+    };
+    const write = (m: ThreadMessage) => {
+      if (finished) return;
+      if (m.seq != null) {
+        if (m.seq <= lastSeq) return;
+        lastSeq = m.seq;
+        const data = JSON.stringify({ seq: m.seq, turnId: m.turnId, ...m.event });
+        chain = chain.then(() => stream.writeSSE({ id: String(m.seq), event: m.event.t, data })).catch(() => {});
+        // The turn's last event is the `status` that follows its `result`.
+        if (m.event.t === "status" && m.turnId && getTurn(m.turnId)?.status !== "running" && !activeTurn(id)) finish();
+      } else {
+        chain = chain.then(() => stream.writeSSE({ event: m.event.t, data: JSON.stringify({ turnId: m.turnId, ...m.event }) })).catch(() => {});
+      }
+    };
+    const buffered: ThreadMessage[] = [];
+    let replaying = true;
+    const unsub = subscribeThread(id, (m) => (replaying ? buffered.push(m) : write(m)));
+    for (const e of eventsAfter(id, after)) write({ seq: e.seq, turnId: e.turnId, event: e.payload as unknown as ThreadMessage["event"] });
+    replaying = false;
+    for (const m of buffered) write(m);
+    if (!finished && !activeTurn(id)) finish();
+    const ping = setInterval(() => {
+      chain = chain.then(() => stream.write(": ping\n\n")).catch(() => {});
+    }, 25_000);
+    ping.unref?.();
+    stream.onAbort(finish);
+    await done;
+    clearInterval(ping);
+    unsub();
+    openStreams--;
+    await chain;
+  });
+});
+
+omniApi.post("/turns/:id/cancel", (c) => {
+  const t = getTurn(c.req.param("id") ?? "");
+  if (!t) return c.json({ error: "not_found" }, 404);
+  if (t.status !== "running") return c.json({ turnId: t.id, status: t.status });
+  if (!cancelTurn(t.id)) return c.json({ error: "conflict", detail: "the turn is not running in this server process" }, 409);
+  return c.json({ turnId: t.id, status: "cancelling" }, 202);
+});
+
+// ── owner-wide change channel ──────────────────────────────────────────────
+
+omniApi.get("/events", (c) => {
+  if (openStreams >= omniConfig.maxStreams()) return c.json({ error: "too_many_streams" }, 429);
+  openStreams++;
+  return streamSSE(c, async (stream) => {
+    let chain: Promise<unknown> = stream.write(": connected\n\n");
+    let resolveDone: () => void = () => {};
+    const done = new Promise<void>((r) => (resolveDone = r));
+    const unsub = subscribeNotices((n) => {
+      chain = chain.then(() => stream.writeSSE({ event: n.type, data: JSON.stringify(n) })).catch(() => {});
+    });
+    const ping = setInterval(() => {
+      chain = chain.then(() => stream.write(": ping\n\n")).catch(() => {});
+    }, 25_000);
+    ping.unref?.();
+    // Connections are recycled (like /api/events) so a revoked device does not keep a channel open.
+    const recycle = setTimeout(resolveDone, 15 * 60_000);
+    recycle.unref?.();
+    stream.onAbort(() => resolveDone());
+    await done;
+    clearInterval(ping);
+    clearTimeout(recycle);
+    unsub();
+    openStreams--;
+    await chain;
+  });
+});
+
+// ── approvals ───────────────────────────────────────────────────────────────
+
+const STATUSES: ApprovalStatus[] = ["pending", "approved", "sent", "failed", "unknown", "expired", "cancelled", "revised"];
+
+omniApi.get("/approvals", (c) => {
+  const st = c.req.query("status");
+  if (st && !STATUSES.includes(st as ApprovalStatus)) return bad(c, `status: ${STATUSES.join("|")}`);
+  expireApprovals();
+  return c.json({ approvals: listApprovals(omniConfig.ownerEmail(), (st as ApprovalStatus) ?? null).map(approvalView) });
+});
+
+omniApi.get("/approvals/:id", (c) => {
+  expireApprovals();
+  const a = getApproval(omniConfig.ownerEmail(), c.req.param("id") ?? "");
+  return a ? c.json({ approval: approvalView(a) }) : c.json({ error: "not_found" }, 404);
+});
+
+/** Human origin = a session or device credential, not self-downgraded to agent. */
+function humanOrigin(c: Context): { via: string; human: boolean; device: string | null } {
+  const via = requestVia(c);
+  const downgrade = (c.req.header("x-prism-action-origin") ?? "").toLowerCase() === "agent";
+  const actor = resolveActor(c);
+  return { via, human: (via === "session" || via === "device") && !downgrade, device: actor.kind === "user" ? (actor.deviceId ?? null) : null };
+}
+const DIGEST_RE = /^[a-f0-9]{64}$/;
+
+/** Edit: replace the payload (the person saw `digest`) → a NEW pending approval with a new digest. */
+omniApi.put("/approvals/:id", async (c) => {
+  const owner = omniConfig.ownerEmail();
+  const o = humanOrigin(c);
+  if (!o.human) return c.json({ error: "human_origin_required" }, 403);
+  const b = await jsonBody(c);
+  if (!b) return bad(c, "a JSON object body is required");
+  expireApprovals();
+  const a = getApproval(owner, c.req.param("id") ?? "");
+  if (!a) return c.json({ error: "not_found" }, 404);
+  const seen = typeof b.digest === "string" ? b.digest : b.payloadHash;
+  if (typeof seen !== "string" || !DIGEST_RE.test(seen)) return bad(c, "digest: the 64-hex digest of the draft you edited");
+  if (a.status !== "pending") return c.json({ error: a.status === "expired" ? "expired" : "already_decided", status: a.status }, a.status === "expired" ? 410 : 409);
+  if (seen !== a.digest) return c.json({ error: "digest_mismatch", detail: "the draft changed since it was shown" }, 409);
+  let v;
+  try {
+    v = validatePayload(a.kind, b.payload);
+  } catch (e) {
+    if (e instanceof ApprovalInputError) return bad(c, e.message);
+    throw e;
+  }
+  const next = createApproval({ owner, threadId: a.threadId, kind: v.kind, payload: v.payload, summary: a.summary, ttlMs: omniConfig.approvalTtlMs(), revises: a.id });
+  if (!closeApproval(a.id, "revised", o.via, o.device, null, next.id)) return c.json({ error: "already_decided" }, 409);
+  omniAudit({ actor: owner, via: o.via, action: "approval.edit", approvalId: a.id, threadId: a.threadId, digest: next.digest, status: "ok" });
+  publishNotice({ type: "approval", id: next.id, op: "pending", threadId: a.threadId ?? undefined });
+  return c.json({ approval: approvalView(next), replaced: a.id }, 201);
+});
+
+async function decide(c: Context): Promise<Response> {
+  const owner = omniConfig.ownerEmail();
+  const id = c.req.param("id") ?? "";
+  const o = humanOrigin(c);
+  if (!o.human) {
+    omniAudit({ actor: owner, via: o.via, action: "approval.decide", approvalId: id, status: "refused", error: "human_origin_required" });
+    return c.json({ error: "human_origin_required", detail: "decide on the device (session or device token)" }, 403);
+  }
+  const key = idemKeyOf(c);
+  if (!key) return bad(c, "Idempotency-Key header: 8–200 characters of [A-Za-z0-9._:-] (required)");
+  const b = await jsonBody(c);
+  if (!b) return bad(c, "a JSON object body is required");
+  const decision = b.decision === "approve" ? "send" : b.decision === "reject" ? "cancel" : b.decision;
+  if (decision !== "send" && decision !== "cancel" && decision !== "revise") return bad(c, "decision: send|cancel|revise");
+  const digest = typeof b.digest === "string" ? b.digest : b.payloadHash;
+  if (typeof digest !== "string" || !DIGEST_RE.test(digest)) return bad(c, "digest: the 64-hex digest of the draft shown");
+  expireApprovals();
+  const a = getApproval(owner, id);
+  if (!a) return c.json({ error: "not_found" }, 404);
+  // Replay: the same key on an already-decided approval answers the stored outcome.
+  if (a.status !== "pending") {
+    if (rawIdemKey(owner, id) === key) {
+      c.header("Idempotent-Replayed", "true");
+      return c.json({ approval: approvalView(a) });
+    }
+    if (a.status === "expired") {
+      omniAudit({ actor: owner, via: o.via, action: "approval.decide", approvalId: id, threadId: a.threadId, digest, status: "refused", error: "expired" });
+      return c.json({ error: "expired" }, 410);
+    }
+    return c.json({ error: a.status === "approved" ? "in_progress" : "already_decided", status: a.status }, 409);
+  }
+  if (digest !== a.digest) {
+    omniAudit({ actor: owner, via: o.via, action: "approval.decide", approvalId: id, threadId: a.threadId, digest, status: "refused", error: "digest_mismatch" });
+    return c.json({ error: "digest_mismatch", detail: "the draft changed since it was shown — review it again" }, 409);
+  }
+  if (decision === "cancel" || decision === "revise") {
+    if (!closeApproval(id, decision === "cancel" ? "cancelled" : "revised", o.via, o.device, key)) return c.json({ error: "already_decided" }, 409);
+    omniAudit({ actor: owner, via: o.via, action: `approval.${decision}`, approvalId: id, threadId: a.threadId, digest, status: "ok" });
+    publishNotice({ type: "approval", id, op: decision === "cancel" ? "cancelled" : "revised", threadId: a.threadId ?? undefined });
+    let turnId: string | null = null;
+    const feedback = typeof b.feedback === "string" ? b.feedback.trim().slice(0, 20_000) : "";
+    if (decision === "revise" && a.threadId && getThread(a.threadId) && feedback) {
+      // The feedback goes back into the thread as a turn; Hermes proposes a new draft.
+      const r = startTurn(a.threadId, `Revise the ${a.kind} draft (approval ${a.id}) as follows. Propose the new draft with omni_propose; do not send anything.\n\n${feedback}`, `revise-${key}`.slice(0, 200));
+      turnId = "turn" in r ? r.turn.id : "active" in r ? r.active.id : r.replay.id;
+    }
+    return c.json({ approval: approvalView(getApproval(owner, id)!), turnId });
+  }
+  // send: pre-check the executor so a disabled one costs nothing and keeps the approval pending.
+  const exec = executorFor(a.kind);
+  if (!exec.available || !exec.enabled) {
+    const error = exec.available ? "executor_disabled" : "executor_unavailable";
+    omniAudit({ actor: owner, via: o.via, action: "approval.send", approvalId: id, threadId: a.threadId, digest, status: "refused", error });
+    return c.json({ error, executor: exec.name, detail: exec.available ? "this kind of action is switched off on the server (ACTIONS_*_ENABLED)" : "no executor is wired for this kind yet" }, 503);
+  }
+  if (!claimApproval(id, digest, o.via, o.device, key)) return c.json({ error: "already_decided" }, 409);
+  omniAudit({ actor: owner, via: o.via, action: "approval.approve", approvalId: id, threadId: a.threadId, digest, status: "ok" });
+  let out: ExecOutcome;
+  try {
+    out = await executor({ kind: a.kind, payload: a.payload, approvalId: id, headers: forwardHeaders(c) });
+  } catch {
+    out = { status: "unknown", detail: { error: "executor_error" } };
+  }
+  if (out.status === "disabled") {
+    unclaimApproval(id);
+    omniAudit({ actor: owner, via: o.via, action: "approval.send", approvalId: id, threadId: a.threadId, digest, status: "refused", error: String(out.detail.error ?? "executor_disabled") });
+    return c.json({ error: out.detail.error ?? "executor_disabled", executor: exec.name }, 503);
+  }
+  finishApproval(id, out.status, out.detail);
+  omniAudit({ actor: owner, via: o.via, action: "approval.send", approvalId: id, threadId: a.threadId, digest, status: out.status, error: out.status === "sent" ? null : String(out.detail.error ?? "") || null });
+  const done = getApproval(owner, id)!;
+  publishNotice({ type: "approval", id, op: out.status, threadId: a.threadId ?? undefined });
+  if (a.threadId && getThread(a.threadId)) {
+    emit(a.threadId, null, { t: "approval", approval: approvalView(done) });
+  }
+  return c.json({ approval: approvalView(done) }, out.status === "sent" ? 200 : out.status === "failed" ? 422 : 502);
+}
+omniApi.post("/approvals/:id/decision", decide);
+omniApi.post("/approvals/:id/decide", decide);
+
+// ── jobs (Hermes cron) ──────────────────────────────────────────────────────
+
+function jobView(j: Record<string, unknown>): Record<string, unknown> {
+  const keep = ["id", "name", "schedule", "enabled", "paused", "next_run_at", "last_run_at", "last_status", "last_error", "deliver", "skill", "skills", "repeat", "state"];
+  return Object.fromEntries(keep.filter((k) => j[k] !== undefined).map((k) => [k, k === "last_error" && typeof j[k] === "string" ? (j[k] as string).slice(0, 300) : j[k]]));
+}
+omniApi.get("/jobs", async (c) => {
+  try {
+    return c.json({ jobs: (await hermes.listJobs(true)).map((j) => jobView(j as Record<string, unknown>)) });
+  } catch (e) {
+    return hermesFailure(c, e);
+  }
+});
+omniApi.post("/jobs", async (c) => {
+  const b = await jsonBody(c);
+  if (!b) return bad(c, "a JSON object body is required");
+  const name = typeof b.name === "string" ? b.name.trim() : "";
+  const schedule = typeof b.schedule === "string" ? b.schedule.trim() : "";
+  const prompt = typeof b.prompt === "string" ? b.prompt : "";
+  const skill = typeof b.skill === "string" ? b.skill : undefined;
+  if (!name || name.length > 200) return bad(c, "name: 1–200 characters");
+  if (!schedule || schedule.length > 200) return bad(c, "schedule: required");
+  if (!prompt && !skill) return bad(c, "prompt or skill: required");
+  if (prompt.length > 5000) return bad(c, "prompt: ≤5000 characters");
+  const body: Record<string, unknown> = { name, schedule, ...(prompt ? { prompt } : {}), ...(skill ? { skill } : {}) };
+  if (typeof b.deliver === "string" && b.deliver.length <= 200) body.deliver = b.deliver;
+  try {
+    const job = await hermes.createJob(body);
+    omniAudit({ actor: omniConfig.ownerEmail(), via: requestVia(c), action: "job.create", status: "ok" });
+    return c.json({ job: jobView(job as Record<string, unknown>) }, 201);
+  } catch (e) {
+    return hermesFailure(c, e);
+  }
+});
+omniApi.post("/jobs/:id/:action", async (c) => {
+  const id = c.req.param("id") ?? "";
+  const action = c.req.param("action");
+  if (!JOB_ID_RE.test(id)) return c.json({ error: "not_found" }, 404);
+  if (action !== "pause" && action !== "resume" && action !== "run") return c.json({ error: "not_found" }, 404);
+  try {
+    const job = await hermes.jobAction(id, action);
+    omniAudit({ actor: omniConfig.ownerEmail(), via: requestVia(c), action: `job.${action}`, status: "ok" });
+    return c.json({ job: jobView(job as Record<string, unknown>) });
+  } catch (e) {
+    return hermesFailure(c, e);
+  }
+});
+
+// ── today ───────────────────────────────────────────────────────────────────
+
+omniApi.get("/today", async (c) => {
+  const q = c.req.query("date");
+  if (q !== undefined && !validDate(q)) return bad(c, "date: YYYY-MM-DD");
+  return c.json(await buildToday(dispatcherFor(c), q ?? localDate()));
+});
+
+// ── hooks (Hermes omni-bridge plugin, sweeps): loopback + service token ────
+
+/** `omni_propose`: a draft for Benjamin's review. Stores it; sends NOTHING. */
+omniApi.post("/hooks/propose", async (c) => {
+  const owner = omniConfig.ownerEmail();
+  const b = await jsonBody(c);
+  if (!b) return bad(c, "a JSON object body is required");
+  let threadId: string | null = null;
+  if (b.threadId !== undefined && b.threadId !== null) {
+    if (typeof b.threadId !== "string" || !SESSION_ID_RE.test(b.threadId)) return bad(c, "threadId: a thread (Hermes session) id");
+    threadId = b.threadId;
+  }
+  let v;
+  try {
+    v = validatePayload(b.kind, b.payload);
+  } catch (e) {
+    if (e instanceof ApprovalInputError) return bad(c, e.message);
+    throw e;
+  }
+  const ttl = typeof b.expiresInSec === "number" && b.expiresInSec >= 60 && b.expiresInSec <= 7 * 86_400 ? b.expiresInSec * 1000 : omniConfig.approvalTtlMs();
+  const a = createApproval({ owner, threadId, kind: v.kind, payload: v.payload, summary: typeof b.summary === "string" ? b.summary : null, ttlMs: ttl });
+  omniAudit({ actor: "hermes", via: "service-token", action: "approval.propose", approvalId: a.id, threadId, digest: a.digest, status: "ok" });
+  if (threadId) {
+    ensureThread({ id: threadId, source: "hermes" });
+    emit(threadId, null, { t: "approval", approval: approvalView(a) });
+  }
+  publishNotice({ type: "approval", id: a.id, op: "pending", threadId: threadId ?? undefined });
+  pushOmni("OMNI_APPROVAL", a.id);
+  return c.json({ id: a.id, digest: a.digest, status: a.status, expiresAt: new Date(a.expiresAt).toISOString() }, 201);
+});
+
+/** Post-turn hook: Hermes finished a turn the app did not start (heartbeat, cron, /goal). */
+omniApi.post("/hooks/turn", async (c) => {
+  const b = await jsonBody(c);
+  if (!b) return bad(c, "a JSON object body is required");
+  const sessionId = b.sessionId;
+  if (typeof sessionId !== "string" || !SESSION_ID_RE.test(sessionId)) return bad(c, "sessionId: a Hermes session id");
+  const t = getThread(sessionId) ?? ensureThread({ id: sessionId, source: "hermes" });
+  if (!activeTurn(t.id)) {
+    bumpUnread(t.id);
+    emit(t.id, null, { t: "status", state: t.state, reason: "agent_message" });
+  }
+  publishNotice({ type: "thread", id: t.id, op: "message" });
+  pushOmni("OMNI_THREAD", t.id);
+  return c.json({ ok: true, threadId: t.id }, 202);
+});
