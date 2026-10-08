@@ -12,7 +12,7 @@ import { BoardFilters } from "./BoardFilters";
 import { propertyFilters, readFilterDraft } from "../../../lib/boards/filters";
 import { readBoardConfig, type BoardConfig } from "../../../lib/boards/config";
 const control =
-  "min-h-11 w-full rounded-lg border border-[var(--glass-border)] bg-[var(--bg-surface)] px-3 text-sm";
+  "min-h-control w-full rounded-lg border border-[var(--glass-border)] bg-[var(--bg-surface)] px-3 text-sm";
 
 function Dialog({
   title,
@@ -55,7 +55,7 @@ function Dialog({
           aria-label="Close"
           disabled={busy}
           onClick={onClose}
-          className="grid h-11 w-11 place-items-center rounded-lg hover:bg-[var(--glass-hover)]"
+          className="grid size-control place-items-center rounded-lg hover:bg-[var(--glass-hover)]"
         >
           <X size={18} />
         </button>
@@ -227,7 +227,7 @@ export function BoardSettings({
               placeholder="priority, deadline, project"
             />
           </Field>
-          <label className="flex min-h-11 items-center gap-3 text-sm">
+          <label className="flex min-h-control items-center gap-3 text-sm">
             <input
               type="checkbox"
               checked={manualOrder}

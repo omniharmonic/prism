@@ -120,7 +120,7 @@ export default function NetworkRenderer(_props: RendererProps) {
                 tabs={tabs}
                 activeTab={activeTab!}
                 onChange={setTab}
-                className="[&>button]:min-h-11"
+                className="[&>button]:min-h-control"
               />
             </div>
           )}

@@ -69,11 +69,11 @@ export function InvitationResult({
             readOnly
             value={result.inviteUrl}
             onFocus={(event) => event.currentTarget.select()}
-            className="focus-ring min-h-11 w-full min-w-0 rounded-lg border border-[var(--glass-border)] bg-[var(--bg-base)] px-3 text-sm"
+            className="focus-ring min-h-control w-full min-w-0 rounded-lg border border-[var(--glass-border)] bg-[var(--bg-base)] px-3 text-sm"
           />
           <div className="mt-3 flex flex-wrap items-center gap-3">
             <Button
-              className="min-h-11"
+              className="min-h-control"
               loading={copy === "pending"}
               onClick={async () => {
                 setCopy("pending");

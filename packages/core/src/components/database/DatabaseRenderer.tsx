@@ -27,7 +27,7 @@ import { inferContentType } from "../../lib/schemas/content-types";
 import { queryKeys } from "../../lib/parachute/queries";
 import { noteAccess, useDatabaseAggregates, useDatabaseRows, usePropertyWriter, useSchemas, useScope, useUpdateSchema } from "../../lib/database/hooks";
 import { filterConditions, noteTitle, QUERY_MAX_LIMIT, type QueryRow, type QuerySpec } from "../../lib/database/query";
-import { deletedKeys, isListableKey, isSystemKey, propertyFromField, resolveProperties, SYSTEM_PROPERTIES, type PropertyDef } from "../../lib/database/schema";
+import { deletedKeys, isListableKey, isSystemKey, propertyFromField, resolveProperties, SYSTEM_PROPERTIES, type PropertyDef, type SchemaPatch } from "../../lib/database/schema";
 import { PropertyEditor } from "./PropertyEditor";
 import { BottomSheet } from "../ui/BottomSheet";
 import { Popover } from "./Popover";
@@ -166,7 +166,7 @@ export function DatabasePage({ note, readOnly, embedded }: RendererProps & {
     for (const r of rows) for (const [k, v] of Object.entries(r.metadata)) {
       if (seen.has(k) || !isListableKey(k) || v === null || (typeof v === "object" && !Array.isArray(v))) continue;
       seen.add(k);
-      base.push(propertyFromField(k, {}, null, v));
+      base.push(propertyFromField(k, {}, null, v, Object.keys(schemas)));
     }
     return [...base, ...SYSTEM_PROPERTIES];
   }, [tags, schemas, rows]);
@@ -358,6 +358,21 @@ export function DatabasePage({ note, readOnly, embedded }: RendererProps & {
     updateView,
     ...(calc ? { calc } : {}),
     ...(ownerish && !readOnly ? { editProperty: (def: PropertyDef) => { if (def.tag) setEditingProp({ tag: def.tag, key: def.key }); } } : {}),
+    // The table's "+" column (A): the owner creates a property in one step; an editor is told why not.
+    ...(!readOnly && canEditDb && tags.length && view.type === "table" ? { addProperty: {
+      tags,
+      knownTags: Object.keys(schemas),
+      existing: allProps.map((p) => p.key),
+      schemaBacked: ownerish,
+      ...(ownerish ? {} : { reason: schemaEdit.available && schemaData?.live
+        ? `Only the workspace owner can add a property here: it is added to every page tagged ${tags.map((t) => `#${t}`).join(", ")}. You can still add a property to one page from that page.`
+        : "Adding a property to a database needs the Prism Server." }),
+      create: async (tag: string, key: string, patch: SchemaPatch) => {
+        await schemaEdit.update(tag, patch);
+        // The new column shows in this view at once.
+        updateView({ visible: [...shown.map((p) => p.key).filter((k) => k !== key), key] });
+      },
+    } } : {}),
     // Selection only for people who can act on something (Notion viewers can't select).
     ...(view.type === "table" && !readOnly && (canCreate || rows.some(canEditRow)) ? { selection } : {}),
   } : null;

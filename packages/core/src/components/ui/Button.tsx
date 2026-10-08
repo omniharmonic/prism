@@ -21,10 +21,11 @@ const variantStyles: Record<ButtonVariant, string> = {
     "bg-transparent hover:bg-[var(--glass-hover)] active:bg-[var(--glass-active)]",
 };
 
+/* Bound to the control tokens (tokens.css); `.ui-button` gets the touch size in touch.css. */
 const sizeStyles: Record<ButtonSize, string> = {
-  sm: "h-7 px-2.5 text-xs gap-1.5 rounded-md",
-  md: "h-8 px-3.5 text-sm gap-2 rounded-lg",
-  lg: "h-10 px-5 text-sm gap-2.5 rounded-lg",
+  sm: "h-[var(--control-h-sm)] px-[var(--control-px-sm)] text-xs gap-1.5 rounded-md",
+  md: "h-[var(--control-h-md)] px-[var(--control-px-md)] text-sm gap-[var(--control-gap)] rounded-lg",
+  lg: "h-[var(--control-h-lg)] px-[var(--control-px-lg)] text-sm gap-2 rounded-lg",
 };
 
 export const Button = forwardRef<HTMLButtonElement, ButtonProps>(
@@ -36,7 +37,7 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(
         aria-busy={loading || undefined}
         disabled={disabled || loading}
         className={cn(
-          "inline-flex items-center justify-center font-medium transition-all",
+          "ui-button inline-flex min-w-0 max-w-full items-center justify-center whitespace-nowrap font-medium transition-all",
           "outline-none focus-visible:ring-2 focus-visible:ring-accent/50",
           "disabled:opacity-40 disabled:pointer-events-none",
           variantStyles[variant],
@@ -47,7 +48,8 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(
         {...props}
       >
         {loading ? <Spinner size={size === "sm" ? 12 : 14} /> : icon}
-        {children}
+        {/* A plain label truncates instead of wrapping inside the pill or overflowing its row. */}
+        {typeof children === "string" ? <span className="min-w-0 truncate">{children}</span> : children}
       </button>
     );
   },

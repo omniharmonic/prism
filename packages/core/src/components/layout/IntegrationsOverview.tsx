@@ -79,7 +79,7 @@ export function IntegrationsOverview({ onNavigate }: { onNavigate: () => void })
         })}
       </ul>
       {admin ? (
-        <button type="button" className="focus-ring mt-4 min-h-11 rounded-lg border border-[var(--glass-border)] px-3 text-sm" onClick={open}>Manage connections</button>
+        <button type="button" className="focus-ring mt-4 min-h-control rounded-lg border border-[var(--glass-border)] px-3 text-sm" onClick={open}>Manage connections</button>
       ) : admin === false ? (
         <p role="note" className="mt-4 text-xs leading-relaxed" style={{ color: "var(--text-secondary)" }}>
           A workspace owner or admin connects these in Workspace settings → Connections.

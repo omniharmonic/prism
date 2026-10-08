@@ -18,7 +18,7 @@
 }
 .prism-messages-heading .prism-message-search {
   flex: 1 1 100%;
-  min-height: 44px;
+  min-height: var(--control-h-md);
   background: var(--glass);
   border: 1px solid var(--glass-border);
   border-radius: 10px;
@@ -34,7 +34,7 @@
   align-items: center;
   justify-content: center;
   gap: 6px;
-  min-height: 44px;
+  min-height: var(--control-h-md);
   padding: 6px 12px;
   border-radius: 6px;
   font-size: 14px;
@@ -52,19 +52,100 @@
   color: var(--text-primary);
   box-shadow: inset 0 0 0 1px var(--glass-border);
 }
-.prism-message-tier {
-  min-height: 44px;
-  margin-top: 12px;
-  background: transparent;
-  border: 0;
-  padding: 10px 24px;
+/* ── Category: one row of filter chips (the Inbox chip pattern) + one chip per row ──
+   Tone comes from tokens only (color-mix over --color-*), so both themes and print follow. */
+.prism-triage-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 12px 16px 6px;
+  min-width: 0;
 }
-.prism-message-tier .prism-tier-name {
-  text-transform: none;
-  letter-spacing: 0;
+.prism-triage-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+  min-height: 32px;
+  padding: 0 12px;
+  border-radius: 999px;
+  border: 1px solid var(--glass-border);
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 12px;
   font-weight: 500;
+  white-space: nowrap;
+}
+.prism-triage-chip:hover { background: var(--glass-hover); color: var(--text-primary); }
+.prism-triage-chip[aria-pressed="true"] {
+  background: var(--surface-selected, var(--glass-active));
+  color: var(--text-primary);
+  border-color: transparent;
+}
+.prism-triage-count { color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.prism-triage-chip[aria-pressed="true"] .prism-triage-count { color: var(--text-secondary); }
+.prism-status-dot { width: 7px; height: 7px; border-radius: 50%; flex: none; background: var(--text-muted); }
+.prism-triage-chip[data-tone="danger"] .prism-status-dot { background: var(--color-danger); }
+.prism-triage-chip[data-tone="warning"] .prism-status-dot { background: var(--color-warning); }
+.prism-triage-chip[data-tone="failed"] .prism-status-dot { background: transparent; box-shadow: inset 0 0 0 1.5px var(--color-danger); }
+.prism-triage-chip[data-tone="pending"] .prism-status-dot { background: transparent; box-shadow: inset 0 0 0 1.5px var(--text-muted); }
+.prism-triage-chip[data-tone="done"] .prism-status-dot { background: var(--color-success); }
+.prism-triage-hint {
+  margin: 4px 24px 8px;
+  font-size: 12px;
+  line-height: 1.5;
   color: var(--text-secondary);
 }
+.prism-triage-hint p { margin: 0; }
+/* The empty "Needs attention" (or any single category) offers the way out right under its sentence. */
+.prism-triage-show-all {
+  margin-top: 6px;
+  min-height: var(--control-h-sm, 28px);
+  padding: 0 10px;
+  border-radius: 6px;
+  border: 1px solid var(--glass-border);
+  background: transparent;
+  color: var(--text-primary);
+  font-size: 12px;
+  font-weight: 500;
+}
+.prism-triage-show-all:hover { background: var(--glass-hover); }
+@media (pointer: coarse) {
+  .prism-triage-show-all { min-height: 44px; }
+}
+.prism-status-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 0 7px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 18px;
+  white-space: nowrap;
+  color: var(--text-secondary);
+  background: var(--glass);
+}
+.prism-status-chip[data-tone="danger"] {
+  color: color-mix(in srgb, var(--color-danger) 70%, var(--text-primary));
+  background: color-mix(in srgb, var(--color-danger) 14%, transparent);
+}
+.prism-status-chip[data-tone="warning"] {
+  color: color-mix(in srgb, var(--color-warning) 62%, var(--text-primary));
+  background: color-mix(in srgb, var(--color-warning) 16%, transparent);
+}
+.prism-status-chip[data-tone="failed"] {
+  color: color-mix(in srgb, var(--color-danger) 70%, var(--text-primary));
+  background: transparent;
+  border: 1px dashed color-mix(in srgb, var(--color-danger) 55%, transparent);
+}
+.prism-status-chip[data-tone="pending"] {
+  color: var(--text-muted);
+  background: transparent;
+  border-color: var(--glass-border);
+}
+.prism-status-chip[data-tone="done"] { color: var(--text-muted); background: transparent; border-color: var(--glass-border); }
 .prism-message-row {
   width: calc(100% - 16px);
   min-height: 44px;
@@ -150,7 +231,7 @@
   text-underline-offset: 3px;
 }
 .prism-thread-status {
-  min-height: 44px;
+  min-height: var(--control-h-md);
   max-width: 180px;
   border-radius: 8px;
   border: 1px solid var(--glass-border);
@@ -229,7 +310,7 @@
   background: var(--glass-border);
 }
 .prism-earlier-messages {
-  min-height: 44px;
+  min-height: var(--control-h-md);
   border: 1px solid var(--glass-border);
   border-radius: 8px;
   padding: 7px 14px;
@@ -457,8 +538,8 @@
   align-items: center;
   justify-content: center;
   flex: none;
-  width: 44px;
-  height: 44px;
+  width: var(--control-h-md);
+  height: var(--control-h-md);
   border-radius: 8px;
   color: var(--text-secondary);
 }
@@ -503,7 +584,7 @@
   color: var(--text-primary);
 }
 .prism-people-action {
-  min-height: 44px;
+  min-height: var(--control-h-md);
   padding: 8px 14px;
   border: 1px solid var(--glass-border-strong);
   border-radius: 8px;
@@ -570,12 +651,12 @@
 .prism-agent-draft-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
 .prism-agent-draft-heading h2 { font-size: 20px; font-weight: 600; letter-spacing: -.02em; }
 .prism-agent-draft-heading p, .prism-agent-draft-caption { margin-top: 5px; color: var(--text-muted); font-size: 12px; overflow-wrap: anywhere; }
-.prism-agent-draft-heading button { min-width: 44px; min-height: 44px; display: grid; place-items: center; border-radius: 8px; }
+.prism-agent-draft-heading button { min-width: var(--control-h-md); min-height: var(--control-h-md); display: grid; place-items: center; border-radius: 8px; }
 .prism-agent-draft-explainer { margin: 18px 0; font-size: 13px; line-height: 1.6; color: var(--text-secondary); }
 .prism-agent-draft-instructions { display: block; font-size: 13px; font-weight: 500; }
 .prism-agent-draft-instructions textarea { display: block; width: 100%; resize: vertical; margin-top: 8px; padding: 12px; min-height: 100px; max-height: 250px; font-size: 16px; font-weight: 400; line-height: 1.5; border: 1px solid var(--glass-border); border-radius: 10px; background: var(--bg-base); }
 .prism-agent-draft-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
-.prism-agent-draft-actions button, .prism-agent-draft-dialog [role=alert] button { min-height: 44px; padding: 8px 12px; border: 1px solid var(--glass-border); border-radius: 8px; font-size: 13px; }
+.prism-agent-draft-actions button, .prism-agent-draft-dialog [role=alert] button { min-height: var(--control-h-md); padding: 8px 12px; border: 1px solid var(--glass-border); border-radius: 8px; font-size: 13px; }
 .prism-agent-draft-actions button.prism-agent-draft-primary { background: var(--action-bg); color: var(--action-fg); border-color: transparent; }
 .prism-agent-draft-dialog button:disabled { opacity: .45; cursor: not-allowed; }
 .prism-agent-draft-dialog [role=alert], .prism-agent-draft-dialog [role=status] { margin-top: 12px; font-size: 13px; line-height: 1.6; overflow-wrap: anywhere; }
@@ -589,4 +670,26 @@
 @media (max-width: 480px) {
   .prism-message-views { flex-wrap: wrap; min-width: 0; }
   .prism-message-views button { white-space: normal; padding-inline: 8px; flex: 1 1 auto; min-width: 0; }
+}
+
+/* Phones: the category chips are one row that scrolls sideways; touch targets stay 44 px. */
+@media (max-width: 640px) {
+  .prism-triage-filters { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; padding-inline: 12px; }
+  .prism-triage-filters::-webkit-scrollbar { display: none; }
+}
+@media (pointer: coarse) {
+  .prism-triage-chip { min-height: 44px; }
+}
+
+/* Touch targets (touch.css condition): the rules above draw these at the desktop control size
+   (tokens.css --control-h-md); a touch pointer or a narrow window gets --touch-target. */
+@media screen and (max-width: 767px), screen and (hover: none) and (pointer: coarse) {
+  .prism-messages-heading .prism-message-search { min-height: var(--touch-target); }
+  .prism-message-views button { min-height: var(--touch-target); }
+  .prism-thread-status { min-height: var(--touch-target); }
+  .prism-earlier-messages { min-height: var(--touch-target); }
+  .prism-conversation-action { width: var(--touch-target); height: var(--touch-target); }
+  .prism-people-action { min-height: var(--touch-target); }
+  .prism-agent-draft-heading button { min-width: var(--touch-target); min-height: var(--touch-target); }
+  .prism-agent-draft-actions button, .prism-agent-draft-dialog [role=alert] button { min-height: var(--touch-target); }
 }

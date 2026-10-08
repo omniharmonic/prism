@@ -194,6 +194,7 @@ test("relation chips open pages; the reverse property edits the forward side", a
 // open them; the reverse property on the target is optional (the owner names it, renames it, or stops showing it);
 // and an edit made on either side is what the other side shows (one relation, never two that can disagree).
 test("NP-DB-12: a relation edited from either side shows on both; the reverse property is optional", async ({ page }) => {
+  test.setTimeout(60_000); // a dozen page loads: ~25 s on a loaded fixture server, the default 30 s is too tight
   const tabs = () => page.evaluate(() => (window as any).prismUI.getState().openTabs.map((t: any) => t.noteId) as string[]);
   const bar = page.getByRole("group", { name: "Page properties" });
   const tasks = page.getByRole("list", { name: "Tasks" });

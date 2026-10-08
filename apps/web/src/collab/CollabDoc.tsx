@@ -40,6 +40,8 @@ function useIsNarrow(): boolean {
   return narrow;
 }
 
+/** How many times a `busy` refusal of an open is retried automatically (0.6 s, 1.2 s, 2.4 s) before asking. */
+const BUSY_RETRIES = 3;
 const COLORS = ["#f783ac", "#3b82f6", "#22c55e", "#eab308", "#a855f7", "#ef4444", "#06b6d4"];
 
 /** A STABLE color per identity (so a given person is always the same color across
@@ -442,6 +444,7 @@ function ScopedCollabDoc({
         // the actual note level before reconnecting or exposing editing controls.
         // Ordinary network loss retains the existing offline-editing behavior.
         let accessCheck = 0;
+        let busyRetries = 0; // `busy` refusals of this open retried automatically (see onAuthenticationFailed)
         const refreshAccess = async (): Promise<boolean> => {
           const request = ++accessCheck;
           try {
@@ -467,7 +470,7 @@ function ScopedCollabDoc({
         p = new HocuspocusProvider({
           url: collabUrl(), name, token: collabToken(capToken), document: doc,
           onStatus: ({ status }) => { socketUp = status === "connected"; if (current()) setConnected(status === "connected"); },
-          onSynced: () => { socketUp = true; if (current()) { setSynced(true); setConnected(true); } },
+          onSynced: () => { socketUp = true; busyRetries = 0; if (current()) { setSynced(true); setConnected(true); } },
           onStateless: ({ payload }) => {
             if (!current()) return;
             let message: { type?: unknown; state?: unknown; code?: unknown; reason?: unknown };
@@ -490,7 +493,15 @@ function ScopedCollabDoc({
             // in this device's local copy): show the stored page as plain text.
             else if (reason?.startsWith("too_complex")) { setTooComplex(noteLevel === "edit" || noteLevel === "own" ? "edit" : "view"); p?.disconnect(); }
             // The server could not take the open right now — nothing is wrong with the page or the access.
-            else if (reason?.startsWith("busy")) { setConnectionError(true); p?.disconnect(); }
+            // Retried quietly a few times first (a new page whose first read the vault was slow
+            // to answer is refused `busy` rather than opened as the wrong kind of document).
+            else if (reason?.startsWith("busy")) {
+              p?.disconnect();
+              if (busyRetries < BUSY_RETRIES) {
+                const wait = 600 * 2 ** busyRetries++;
+                window.setTimeout(() => { if (current()) void p?.connect(); }, wait);
+              } else setConnectionError(true);
+            }
             else setDenied(true);
           },
           onAuthenticated: ({ scope }) => {

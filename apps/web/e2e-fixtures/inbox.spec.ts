@@ -18,11 +18,13 @@ test("Inbox counts unique conversations, keeps reviewed items visible and fits a
   await expect(
     page.getByText("4 conversations", { exact: true }),
   ).toBeVisible();
+  // `handled` wins over `urgent`: no Urgent filter, the thread is listed (once) under Handled.
   await expect(page.getByRole("button", { name: /^Urgent/ })).toHaveCount(0);
   await page.getByRole("button", { name: /^Handled/ }).click();
   await expect(
     page.getByRole("button", { name: /Direct discussion/ }),
   ).toHaveCount(1);
+  await page.getByRole("button", { name: /^All/ }).click();
   await page.getByRole("textbox", { name: "Search inbox" }).fill("reviewed");
   await expect(
     page.getByRole("button", { name: /Reviewed discussion/ }),
@@ -105,9 +107,9 @@ test("a capped Inbox discloses missing history and offers whole-vault search", a
   await expect(
     page.getByText("Showing 500 conversations", { exact: true }),
   ).toBeVisible();
-  await expect(page.getByRole("status")).toContainText(
-    "Older conversations may be outside",
-  );
+  await expect(
+    page.getByRole("status").filter({ hasText: "Older conversations" }),
+  ).toContainText("Older conversations may be outside");
   await expect(
     page.getByRole("textbox", { name: "Search inbox" }),
   ).toHaveAttribute("placeholder", "Search loaded conversations…");

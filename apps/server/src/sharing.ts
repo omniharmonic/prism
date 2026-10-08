@@ -19,7 +19,7 @@ import type { VaultEntry } from "./config";
 import { ensureTree, rowRef, TREE_META_KEYS, type TreeRow } from "./tree";
 import { vaultClient } from "./parachute";
 import { effectiveCaps, expandLevel, type Cap, type Level, type NoteRef } from "./permissions";
-import { WRITER_KEY, WRITER_AT_KEY, resolveWriter, stripIdentity, writerIdFor, writerNames } from "./writer-stamp";
+import { WRITER_KEY, WRITER_AT_KEY, stripIdentity, writerIdFor, writerNames } from "./writer-stamp";
 import { TRASH_TAG } from "@prism/core/pages";
 
 export interface PersonView {
@@ -160,7 +160,8 @@ export async function descendantRefs(entry: VaultEntry, path: string): Promise<N
 
 /** What history shows for one stored state: who produced it, by kind. */
 export interface VersionWriter {
-  kind: "person" | "guest" | "agent" | "suggestion" | "accepted-suggestion" | "unknown";
+  /** `external` = changed outside Prism (an agent or sync with its own vault token, a routine, the desktop): no Prism stamp describes it. */
+  kind: "person" | "guest" | "agent" | "suggestion" | "accepted-suggestion" | "external" | "unknown";
   /** Display name — only for signed-in viewers; null when unknown. */
   name: string | null;
   /** The viewer produced it. */
@@ -170,7 +171,7 @@ export interface VersionWriter {
 /** Server-owned attribution keys: never accepted from, never served to, a non-owner. */
 export const CHANGE_KEY = "prism_last_change";
 export const WRITER_META_KEYS = [WRITER_KEY, WRITER_AT_KEY, CHANGE_KEY] as const;
-export type ChangeKind = "edit" | "suggestion" | "agent" | "accepted-suggestion";
+export type ChangeKind = "edit" | "suggestion" | "agent" | "accepted-suggestion" | "external";
 
 /**
  * The KIND of the stamped write, stored as `<kind>@<prism_last_write_at>`. Binding
@@ -185,7 +186,35 @@ export function changeKindOf(metadata: Record<string, unknown> | null | undefine
   const i = v.indexOf("@");
   if (i < 0 || v.slice(i + 1) !== at) return null;
   const k = v.slice(0, i);
-  return k === "edit" || k === "suggestion" || k === "agent" || k === "accepted-suggestion" ? k : null;
+  return k === "edit" || k === "suggestion" || k === "agent" || k === "accepted-suggestion" || k === "external" ? k : null;
+}
+
+/**
+ * The stamp for a write Prism makes on behalf of NOBODY it can name — a live
+ * document's store right after an external vault edit was folded in (collab.ts).
+ * The vault MERGES metadata, so a store without a stamp would leave the previous
+ * person's stamp in place and credit them with the external change; this clears
+ * the writer (null deletes the key) and records the kind `external`.
+ */
+export function externalStamp(): Record<string, string | null> {
+  const at = new Date().toISOString();
+  return { [WRITER_KEY]: null, [WRITER_AT_KEY]: at, [CHANGE_KEY]: changeValue("external", at) };
+}
+
+/** A stamp made more than this before the state it is read for describes an EARLIER write (writer-stamp.ts STALE_MS). */
+export const STAMP_TOLERANCE_MS = 10_000;
+
+/**
+ * Is the writer stamp in `metadata` older than the state it sits on? The vault
+ * merges metadata, so a write that carries no stamp (the vault MCP, a routine, a
+ * sync, Hermes…) leaves an older person's stamp behind. `producedAt` = when the
+ * state was produced: the note's `updatedAt` for the current note, the NEXT-OLDER
+ * row's `supersededAt` for a version row. Unknown times → not stale (no claim).
+ */
+export function stampIsStale(metadata: Record<string, unknown> | null | undefined, producedAt: string | null | undefined): boolean {
+  const at = Date.parse(String(metadata?.[WRITER_AT_KEY] ?? ""));
+  const up = Date.parse(producedAt ?? "");
+  return Number.isFinite(at) && Number.isFinite(up) && up - at > STAMP_TOLERANCE_MS;
 }
 
 /** A complete server stamp for `email` ("link" for a capability guest) and a change kind. */
@@ -204,31 +233,31 @@ export function stripWriterMeta<T extends Record<string, unknown> | null | undef
 
 /**
  * Derive the writer of a stored state from its writer stamp (writer-stamp.ts: an
- * OPAQUE subject id, never an email) and, when the vault reports it, the write
- * channel (`via: "mcp"` = an agent). Names are resolved only for a signed-in
- * `viewer`; `names` = `writerNames()` for the request. `updatedAt` (the CURRENT
- * note only) lets a stale stamp — something else wrote later — read as unknown.
+ * OPAQUE subject id, never an email) and, when the vault reports it, the channel
+ * of the change that PRODUCED the state (`via: "mcp"` = an agent). Names are
+ * resolved only for a signed-in `viewer`; `names` = `writerNames()` for the
+ * request. `producedAt` — when the state was produced (current note: its
+ * `updatedAt`; version row i: row i+1's `supersededAt`) — lets a stale stamp
+ * (something wrote later without one) read as `external` instead of crediting
+ * the earlier person. Same rule as the client (`@prism/core` `writerOf`).
  */
 export function versionWriter(
   metadata: Record<string, unknown> | null | undefined,
   via: unknown,
   viewer: string | null,
   names?: Map<string, string>,
-  updatedAt?: string | null,
+  producedAt?: string | null,
 ): VersionWriter {
+  const change = changeKindOf(metadata);
+  if (change === "external") return { kind: "external", name: null, self: false };
   const stamp = typeof metadata?.[WRITER_KEY] === "string" ? (metadata[WRITER_KEY] as string) : null;
   if (!stamp) return via === "mcp" ? { kind: "agent", name: null, self: false } : { kind: "unknown", name: null, self: false };
+  // The stamp describes an earlier write: whatever produced this state did not stamp it.
+  if (stampIsStale(metadata, producedAt)) return via === "mcp" ? { kind: "agent", name: null, self: false } : { kind: "external", name: null, self: false };
   const map = names ?? writerNames();
-  if (updatedAt !== undefined && resolveWriter(metadata, updatedAt, map) === null && stamp !== "link") {
-    // Stale (written again without a stamp) or an unknown account.
-    const at = Date.parse(String(metadata?.[WRITER_AT_KEY] ?? ""));
-    const up = Date.parse(updatedAt ?? "");
-    if (Number.isFinite(at) && Number.isFinite(up) && up - at > 10_000) return { kind: "unknown", name: null, self: false };
-  }
   const self = !!viewer && stamp !== "link" && stamp === writerIdFor(viewer);
   // writerNames() never yields an email unless the caller asked for it (admins).
   const name = !viewer ? null : stamp === "link" ? "Guest (link)" : (map.get(stamp) ?? null);
-  const change = changeKindOf(metadata);
   if (change === "agent") return { kind: "agent", name, self };
   if (change === "accepted-suggestion") return { kind: "accepted-suggestion", name, self };
   if (change === "suggestion") return { kind: "suggestion", name, self };
@@ -241,9 +270,15 @@ export function redactVersionForViewer<T extends { actor?: unknown; via?: unknow
   row: T,
   viewer: string | null,
   names?: Map<string, string>,
+  /**
+   * The change that PRODUCED this row's state = the next-older row (a row's own
+   * `actor`/`via`/`superseded_at` describe the change that REPLACED it). Absent
+   * (the oldest row on a page, a single-version read) → no staleness claim.
+   */
+  producer?: { via?: unknown; superseded_at?: string | null } | null,
 ): Omit<T, "actor" | "via"> & { writer: VersionWriter } {
-  const { actor: _a, via, ...rest } = row;
-  const writer = versionWriter(row.metadata ?? null, via, viewer, names);
+  const { actor: _a, via: _v, ...rest } = row;
+  const writer = versionWriter(row.metadata ?? null, producer?.via ?? null, viewer, names, producer?.superseded_at ?? undefined);
   let metadata = row.metadata;
   if (metadata) {
     const m: Record<string, unknown> = { ...stripWriterMeta(metadata) };

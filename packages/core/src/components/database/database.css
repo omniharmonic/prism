@@ -131,7 +131,7 @@
 .db-tabs { display: flex; align-items: flex-end; gap: 18px; min-width: 0; overflow-x: auto; scrollbar-width: none; }
 .db-tabs::-webkit-scrollbar { display: none; }
 .db-tablist { display: flex; align-items: flex-end; gap: 18px; min-width: 0; }
-.db-tab { display: inline-flex; align-items: center; gap: 6px; min-height: 40px; padding: 0 2px; border-bottom: 2px solid transparent; margin-bottom: -1px; color: var(--text-secondary); font-size: 13px; font-weight: 500; white-space: nowrap; }
+.db-tab { display: inline-flex; align-items: center; gap: 6px; min-height: var(--control-h-lg); padding: 0 2px; border-bottom: 2px solid transparent; margin-bottom: -1px; color: var(--text-secondary); font-size: 13px; font-weight: 500; white-space: nowrap; }
 .db-tab[aria-selected="true"] { border-bottom-color: var(--text-primary); color: var(--text-primary); font-weight: 600; }
 .db-tab:hover { color: var(--text-primary); }
 .db-actions { display: flex; align-items: center; gap: 6px; padding-bottom: 8px; flex-wrap: wrap; }
@@ -543,3 +543,33 @@
 @media (max-width: 767px) {
   .db-props-bar .db-prop-trailing { white-space: normal; flex-wrap: wrap; justify-content: flex-end; min-width: 0; max-width: 100%; }
 }
+
+/* The table's "+" column and the one-step New property form (A). */
+.db-th-add { width: 44px; padding: 0; border-bottom: 1px solid var(--glass-border); }
+.db-th-add-button { justify-content: center; width: 100%; color: var(--text-muted); }
+.db-th-add-button:hover { color: var(--text-primary); }
+.db-add-reason { padding: 10px; line-height: 1.45; }
+.db-new-options { display: grid; gap: 6px; margin: 0; padding: 0; border: 0; min-width: 0; }
+.db-field-legend { padding: 0; font-size: 12px; color: var(--text-muted); }
+.db-new-option-list { display: grid; gap: 4px; margin: 0; padding: 0; list-style: none; }
+.db-new-option { display: flex; align-items: center; gap: 4px; min-width: 0; }
+.db-new-option input { flex: 1 1 auto; min-width: 0; min-height: 30px; padding: 0 6px; border-radius: 6px; border: 1px solid var(--glass-border); background: var(--bg-surface); color: var(--text-primary); font: inherit; font-size: 13px; }
+.db-new-option select { flex: 0 0 auto; max-width: 92px; min-height: 30px; border-radius: 6px; border: 1px solid var(--glass-border); background: var(--bg-surface); color: var(--text-primary); font: inherit; font-size: 12px; }
+.db-new-option-add { display: flex; gap: 6px; align-items: center; }
+.db-new-option-add input { flex: 1 1 auto; min-width: 0; min-height: 30px; padding: 0 6px; border-radius: 6px; border: 1px solid var(--glass-border); background: var(--bg-surface); color: var(--text-primary); font: inherit; font-size: 13px; }
+.db-pop-target { padding: 2px 10px 4px; }
+.db-link-chip[data-unlinked] { border-style: dashed; opacity: 0.85; }
+@media (max-width: 640px) {
+  .db-new-option input, .db-new-option select, .db-new-option-add input { font-size: 16px; min-height: 40px; }
+}
+
+/* "New database" (Blank with schema): its starting properties and first view. */
+.db-newdb-tag { margin: -4px 0 0; font-size: 12px; color: var(--text-muted); display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.db-newdb-props { list-style: none; margin: 0 0 6px; padding: 0; display: grid; gap: 4px; }
+.db-newdb-prop { display: grid; grid-template-columns: minmax(0, auto) minmax(0, 1fr) auto auto auto; align-items: center; gap: 8px; min-height: 34px; padding: 2px 4px 2px 10px; border: 1px solid var(--glass-border); border-radius: 8px; }
+.db-newdb-prop-name { font-weight: 600; }
+.db-newdb-prop-kind { color: var(--text-muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.db-newdb-form { display: grid; gap: 6px; padding: 4px 0; }
+.db-newdb-form .db-new-prop { border-top: 0; margin-top: 0; padding: 0; }
+.db-newdb-views { display: flex; flex-wrap: wrap; gap: 4px 14px; margin: 0; padding: 0; border: 0; }
+.db-newdb-views legend { width: 100%; margin-bottom: 2px; }

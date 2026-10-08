@@ -190,8 +190,8 @@ button:disabled { cursor: not-allowed; }
 .workspace-navigation section:hover .workspace-section-actions,
 .workspace-navigation section:focus-within .workspace-section-actions { opacity: 1; }
 .workspace-new-page {
-  display: flex; align-items: center; gap: 10px; width: 100%; min-height: 40px;
-  border-radius: 7px; padding: 8px 12px; background: var(--action-bg);
+  display: flex; align-items: center; gap: 10px; width: 100%; min-height: var(--control-h-lg);
+  border-radius: 7px; padding: 6px 12px; background: var(--action-bg);
   color: var(--action-fg); font-size: 14px; font-weight: 550; border: 0;
 }
 .workspace-new-page:hover { background: var(--action-hover); }
@@ -250,3 +250,17 @@ button:disabled { cursor: not-allowed; }
 /* `--border-subtle` was used in 16 places and defined nowhere: those borders fell back to the TEXT
    colour (the heavy outline on "Retry document", the account menu, the offline line). */
 :root, html.dark, html.light { --border-subtle: var(--glass-border); }
+
+/* ── Overflow (ui-tokens) ──
+   A long word (URL, address, id, token) breaks instead of pushing its box wider than the screen.
+   `break-word` (not `anywhere`) changes nothing until a word would overflow its line, and does not
+   shrink min-content, so table columns and flex rows size exactly as before. Inherited: one rule. */
+:where(body) { overflow-wrap: break-word; }
+/* No global `min-width: 0` on flex children: tried, and it squeezed rows inside fixed-height dialogs
+   (the version viewer clipped at 200 % zoom). Rows that must shrink say so (`min-w-0`, .u-truncate). */
+/* Opt-in helpers for labels: one line with an ellipsis / at most two lines. Give the element a
+   `title` (or an accessible name) when the cut text matters. */
+.u-truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.u-clamp-2 { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; min-width: 0; }
+/* `ui/Button`: a label never wraps inside the pill; a string child truncates (Button.tsx). */
+.ui-button { white-space: nowrap; }

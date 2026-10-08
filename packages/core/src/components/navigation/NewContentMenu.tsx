@@ -34,6 +34,7 @@ import { applyTemplateVariables, templateCreator } from "../../lib/pages/templat
 import { serverFetch } from "../../lib/transport/serverFetch";
 import { usePagesUI } from "../../lib/pages/store";
 import { ComposeMessage } from "../comms/ComposeMessage";
+import { NewDatabaseDialog } from "../database/NewDatabaseDialog";
 import {
   folderLabel,
   newContentFolder,
@@ -80,7 +81,9 @@ const OPTIONS = [
     icon: LayoutDashboard,
   },
   {
-    // NP-DB-01: a full-page database; it asks for its source tag on first open.
+    // NP-DB-01: a full-page database. "New database" names it, mints its own tag and
+    // defines its first properties (NewDatabaseDialog); "Use an existing tag" makes the
+    // older page that asks for its source tag on first open.
     type: "database",
     label: "Database",
     detail: "A table of pages with board, calendar and gallery views.",
@@ -228,7 +231,12 @@ function CreateContent({
       folderLabel(value).toLowerCase().includes(search.toLowerCase()),
     )
     .slice(0, 40);
-  const dedicated = type === "task" || type === "message";
+  // "Database" = the New database dialog (its own tag + properties) where the shell can
+  // write schemas; "Use an existing tag" (or a shell without schema writes) keeps the
+  // older page that asks for its source tag on first open. A template keeps this dialog.
+  const [existingTagDb, setExistingTagDb] = useState(false);
+  const newDatabase = type === "database" && !template && !existingTagDb && !!client.updateSchema;
+  const dedicated = type === "task" || type === "message" || newDatabase;
   useEffect(() => {
     if (folder === null && tree.data && !tree.isFetching && !tree.isError)
       setFolder(newContentFolder(tree.data, activeNoteId.current));
@@ -343,6 +351,19 @@ function CreateContent({
   };
   if (type === "task") return <TaskCreateDialog onClose={onClose} />;
   if (type === "message") return <ComposeMessage onClose={onClose} />;
+  if (newDatabase)
+    return (
+      <NewDatabaseDialog
+        folder={selectedFolder}
+        initialName={title}
+        onClose={onClose}
+        onUseExistingTag={() => setExistingTagDb(true)}
+        onCreated={(note, name) => {
+          void queryClient.invalidateQueries({ queryKey: ["vault"] });
+          useUIStore.getState().openTab(note.id, name, "database");
+        }}
+      />
+    );
   return (
     <dialog
       ref={dialog}
@@ -409,7 +430,7 @@ function CreateContent({
             aria-label="Close new page"
             disabled={pending}
             onClick={close}
-            className="focus-ring flex h-11 w-11 items-center justify-center rounded-lg hover:bg-[var(--glass-hover)]"
+            className="focus-ring flex size-control items-center justify-center rounded-lg hover:bg-[var(--glass-hover)]"
           >
             <X size={18} />
           </button>
@@ -465,7 +486,7 @@ function CreateContent({
                 setShowTypes(!showTypes);
                 setShowFolders(false);
               }}
-              className="focus-ring flex min-h-11 items-center gap-2 rounded-lg px-3 text-sm hover:bg-[var(--glass-hover)]"
+              className="focus-ring flex min-h-control items-center gap-2 rounded-lg px-3 text-sm hover:bg-[var(--glass-hover)]"
             >
               <Icon size={16} />
               {option.label}
@@ -488,7 +509,7 @@ function CreateContent({
                     setType(item.type);
                     setShowTypes(false);
                   }}
-                  className="focus-ring flex min-h-11 items-center gap-2 rounded-lg px-3 text-left text-sm hover:bg-[var(--glass-hover)]"
+                  className="focus-ring flex min-h-control items-center gap-2 rounded-lg px-3 text-left text-sm hover:bg-[var(--glass-hover)]"
                   aria-pressed={type === item.type}
                 >
                   <item.icon size={16} />
@@ -515,7 +536,7 @@ function CreateContent({
                   setShowTypes(false);
                   setShowFolders(false);
                 }}
-                className="focus-ring flex min-h-11 items-center gap-2 rounded-lg px-3 text-sm hover:bg-[var(--glass-hover)]"
+                className="focus-ring flex min-h-control items-center gap-2 rounded-lg px-3 text-sm hover:bg-[var(--glass-hover)]"
               >
                 <LayoutTemplate size={16} />
                 {template ? template.title : "Blank page"}
@@ -539,7 +560,7 @@ function CreateContent({
                   setTemplate(null);
                   setShowTemplates(false);
                 }}
-                className="focus-ring flex min-h-11 items-center gap-2 rounded-lg px-3 text-left text-sm hover:bg-[var(--glass-hover)]"
+                className="focus-ring flex min-h-control items-center gap-2 rounded-lg px-3 text-left text-sm hover:bg-[var(--glass-hover)]"
               >
                 <FileText size={16} />
                 Blank page
@@ -557,7 +578,7 @@ function CreateContent({
                       setTemplate({ id: t.id, title });
                       setShowTemplates(false);
                     }}
-                    className="focus-ring flex min-h-11 items-center gap-2 rounded-lg px-3 text-left text-sm hover:bg-[var(--glass-hover)]"
+                    className="focus-ring flex min-h-control items-center gap-2 rounded-lg px-3 text-left text-sm hover:bg-[var(--glass-hover)]"
                   >
                     <LayoutTemplate size={16} />
                     <span className="truncate">{title}</span>
@@ -578,7 +599,7 @@ function CreateContent({
                   onClose();
                   usePagesUI.getState().openTemplates(true);
                 }}
-                className="focus-ring flex min-h-11 items-center gap-2 rounded-lg px-3 text-left text-sm hover:bg-[var(--glass-hover)] sm:col-span-2"
+                className="focus-ring flex min-h-control items-center gap-2 rounded-lg px-3 text-left text-sm hover:bg-[var(--glass-hover)] sm:col-span-2"
                 style={{ color: "var(--text-secondary)" }}
               >
                 <Settings2 size={16} />
@@ -599,7 +620,7 @@ function CreateContent({
               </p>
               <div className="flex flex-wrap gap-x-4 gap-y-1">
                 {foreignTags.map((t) => (
-                  <label key={t} className="flex min-h-11 items-center gap-2 text-sm">
+                  <label key={t} className="flex min-h-control items-center gap-2 text-sm">
                     <input
                       type="checkbox"
                       disabled={pending}
@@ -629,7 +650,7 @@ function CreateContent({
                 setShowFolders(!showFolders);
                 setShowTypes(false);
               }}
-              className="focus-ring flex min-h-11 min-w-0 items-center gap-2 rounded-lg px-3 text-left text-sm hover:bg-[var(--glass-hover)]"
+              className="focus-ring flex min-h-control min-w-0 items-center gap-2 rounded-lg px-3 text-left text-sm hover:bg-[var(--glass-hover)]"
             >
               <Folder size={16} className="shrink-0" />
               <span className="truncate">
@@ -674,7 +695,7 @@ function CreateContent({
                     setFolder("");
                     setShowFolders(false);
                   }}
-                  className="focus-ring flex min-h-11 w-full items-center gap-2 rounded-lg px-2 text-left text-sm hover:bg-[var(--glass-hover)]"
+                  className="focus-ring flex min-h-control w-full items-center gap-2 rounded-lg px-2 text-left text-sm hover:bg-[var(--glass-hover)]"
                 >
                   <Folder size={15} />
                   Vault home
@@ -689,7 +710,7 @@ function CreateContent({
                       setFolder(value);
                       setShowFolders(false);
                     }}
-                    className="focus-ring flex min-h-11 w-full items-center gap-2 rounded-lg px-2 text-left text-sm hover:bg-[var(--glass-hover)]"
+                    className="focus-ring flex min-h-control w-full items-center gap-2 rounded-lg px-2 text-left text-sm hover:bg-[var(--glass-hover)]"
                   >
                     <Folder size={15} className="shrink-0" />
                     <span className="truncate">{folderLabel(value)}</span>
@@ -753,7 +774,7 @@ function CreateContent({
             disabled={
               pending || tree.isPending || (tree.isFetching && folder === null)
             }
-            className="focus-ring flex min-h-11 shrink-0 items-center gap-2 rounded-lg px-4 text-sm font-medium disabled:opacity-50"
+            className="focus-ring flex min-h-control shrink-0 items-center gap-2 rounded-lg px-4 text-sm font-medium disabled:opacity-50"
             style={{
               background: "var(--action-bg)",
               color: "var(--action-fg)",

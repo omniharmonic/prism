@@ -131,7 +131,7 @@ export default function MessagesDashboard(_props: RendererProps) {
             aria-label="Filter conversation platform"
             value={platformFilter}
             onChange={(e) => setPlatformFilter(e.target.value)}
-            className="min-h-11 rounded-lg px-3 text-sm outline-none"
+            className="min-h-control rounded-lg px-3 text-sm outline-none"
             style={{ background: "var(--glass)", border: "1px solid var(--glass-border)", color: "var(--text-primary)" }}
           >
             <option value="all" style={{ background: "var(--bg-elevated)" }}>All platforms</option>

@@ -52,7 +52,7 @@ function ScopedCollabPage({ noteId }: { noteId: string }) {
   };
   return <QueryClientProvider client={queries}>
     {canonicalId ? <><CollabDoc noteId={canonicalId} onWikilinkNavigate={navigate} /><WikilinkChooser /></>
-      : failed ? <div role="alert" className="p-6 text-sm"><p>This shared document could not be opened. Check your access or try again.</p><button className="focus-ring mt-3 min-h-11 rounded-lg border border-[var(--glass-border)] px-4" onClick={() => setRetry(value => value + 1)}>Try again</button></div>
+      : failed ? <div role="alert" className="p-6 text-sm"><p>This shared document could not be opened. Check your access or try again.</p><button className="focus-ring mt-3 min-h-control rounded-lg border border-[var(--glass-border)] px-4" onClick={() => setRetry(value => value + 1)}>Try again</button></div>
         : <p role="status" className="p-6 text-sm">Opening shared document…</p>}
   </QueryClientProvider>;
 }

@@ -3,7 +3,7 @@ import { useState, useCallback, useEffect, useRef, useMemo } from "react";
 import {
   Search, X, FileText, MonitorPlay, Code, Mail, Table2, Globe,
   CheckSquare, MessageSquare, Bot, ArrowRight, Settings, RefreshCw, Wand2, History, Sparkles, Trash2, FolderInput, Upload, Download, Printer,
-  Star, SunMoon, PanelLeft, PanelRight, ChevronLeft, ChevronRight, FilePlus2, Home as HomeIcon, Inbox as InboxIcon, LayoutTemplate, Link2, ChevronsUpDown, Undo2 } from "lucide-react";
+  Star, SunMoon, PanelLeft, PanelRight, ChevronLeft, ChevronRight, FilePlus2, Home as HomeIcon, Inbox as InboxIcon, LayoutTemplate, Link2, ChevronsUpDown, Undo2, Database } from "lucide-react";
 import { copyPageLink } from "../../lib/pages/copyPageLink";
 import { expandOrCollapseAllToggles, toggleState } from "../../lib/tiptap/toggleAll";
 import { hasClosedTab, useUIStore } from "../../app/stores/ui";
@@ -188,6 +188,8 @@ export function CommandBar() {
     createCommand("spreadsheet", "Spreadsheet", <Table2 size={15} />),
     createCommand("website", "Website", <Globe size={15} />),
     createCommand("task", "Task", <CheckSquare size={15} />),
+    // "New database": its own tag, its first properties and view (NewDatabaseDialog via NewContentMenu).
+    createCommand("database", "Database", <Database size={15} />),
     {
       id: "new-page", label: "New page", category: "create" as const, keys: shortcutKeys("newPage"),
       icon: <FilePlus2 size={15} />,

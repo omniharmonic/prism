@@ -26,6 +26,7 @@ import { sync } from "./routes/sync";
 import { calendar } from "./routes/calendar";
 import { actionsApi } from "./routes/actions";
 import { adminApi } from "./routes/admin";
+import { mountOmni } from "./routes/omni";
 import { mcp } from "./routes/mcp";
 import { pats } from "./routes/pats";
 import { mountPrismMcp } from "./mcp/router";
@@ -181,6 +182,8 @@ export function createApp(): Hono {
   // owner short-circuit never proxies them to the vault.
   app.route("/api/media", media);
   app.route("/api/map", mapProxy);
+  // Omni gateway (owner-only bridge to Hermes; OMNI_ENABLED, default off → 404). Before the gateway.
+  mountOmni(app);
   app.route("/api", api);
   app.route("/acl", acl);
 

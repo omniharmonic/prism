@@ -79,6 +79,8 @@ export { NotePropertyBar } from "./components/database/NotePropertyBar";
 export { createDatabaseNote } from "./components/database/createDatabase";
 // CSV → a NEW database (NP-DB-25): the dialog and its pure/imperative parts, for any import entry point.
 export { CsvNewDatabaseDialog, importCsvAsNewDatabase, planNewDatabase, NewDatabaseError } from "./components/database/Csv";
+export { NewDatabaseDialog } from "./components/database/NewDatabaseDialog";
+export { createBlankDatabase, type BlankDatabasePlan } from "./components/database/createDatabase";
 // Inline + linked database blocks (the editor's `databaseView` atom renders these).
 export { DatabaseBlock, renderDatabaseBlock, databaseBlockHtml, parseDatabaseBlock, createInlineDatabase, addLinkedView } from "./components/database/DatabaseBlock";
 export type { PropertyBatchItem, PropertyBatchResult, CsvImportRequest, CsvImportResponse } from "./lib/database";
@@ -299,7 +301,7 @@ export { PersonAvatar, toneFor } from "./components/sharing/PersonAvatar";
 export { SharedWithMe, useSharedWithMe, useViewerIsGuest } from "./components/sharing/SharedWithMe";
 export { PageInfo, countText, plainText } from "./components/sharing/PageInfo";
 export { PageUpdates, buildUpdates, type UpdateItem } from "./components/sharing/PageUpdates";
-export { writerOf, writerTitle, writerName, lastEditedBy } from "./lib/history/attribution";
+export { writerOf, writerTitle, writerName, lastEditedBy, producerOf, sourceLabel, withSource } from "./lib/history/attribution";
 export { MoveAccessNotice, moveAccessSummary, useMoveAccessPreview } from "./components/sharing/MoveAccessNotice";
 // Shell sync state + motion (wave 2E: NP-OF-01, NP-SB-15, NP-PG-06, NP-AX-06)
 export { SyncStateBadge, OPEN_SAVED_CHANGES_EVENT } from "./components/layout/SyncStateBadge";

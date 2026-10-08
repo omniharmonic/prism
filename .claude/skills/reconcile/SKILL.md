@@ -115,6 +115,18 @@ then a short summary (counts of each).
   the evidence is strong, `prism_people_recommend_merge { person_ids, canonical_id, rationale, confidence }`.
   This only records a recommendation; the owner merges in Prism.
 
+## Field shapes when you write
+
+The vault validates these, and Prism's server guard (`apps/server/src/vault-shapes.ts`)
+and the agent's (`scripts/vault_shapes.py`) enforce them on their own writes:
+
+- List fields (`aliases`, `organizations`, `projects`, `people`, `collaborators`,
+  `attendees`, `participants`, `related`) are lists. Empty is ABSENT: never `""`.
+- Project links: `[[vault/projects/<slug>/PROJECT]]` (the note), never the folder.
+- `confidence` on person / project / organization / concept is `high` | `medium` |
+  `low`. The extractor's 0.0–1.0 score maps: ≥ 0.8 high, ≥ 0.5 medium, else low.
+- Omit a scalar you have no value for; never write `""`.
+
 ## Never
 
 - Never merge, never write `merged_into` / `merged-stub`, never delete a note,

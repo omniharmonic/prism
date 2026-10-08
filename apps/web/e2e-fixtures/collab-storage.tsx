@@ -97,20 +97,30 @@ Object.assign(window, { prismCollabFixture: {
     } finally { db.close(); }
   },
 }});
-// ?lazy — the on-demand editor seam (lazyCollab): the first download of the editor chunk fails.
+// ?lazy — the on-demand editor seam (lazyCollab): the first download(s) of the editor chunk fail
+// (`&fails=N`, default 1; the seam retries twice by itself, so N ≥ 3 reaches the page's "Try again").
 const lazyMode = new URLSearchParams(location.search).has("lazy");
 if (lazyMode) {
   let attempts = 0;
+  const fails = Number(new URLSearchParams(location.search).get("fails") ?? "1");
   setCollabEditorLoaderForTests(async () => {
     attempts++;
     (window as unknown as { prismLazyAttempts: number }).prismLazyAttempts = attempts;
-    if (attempts === 1) throw new TypeError("Failed to fetch dynamically imported module");
+    if (attempts <= fails) throw new TypeError("Failed to fetch dynamically imported module");
     return { CollabDocument: () => <p>Editor loaded</p>, useLiveCollab: () => true } as never;
   });
   installChunkReloadRecovery();
   (window as unknown as { prismLazyBooted: number }).prismLazyBooted = Date.now();
 }
+// ?boundary — RendererBoundary and a download failure thrown from a view (`&always` = every render fails).
+const boundaryBoot = Date.now();
+function FlakyView() {
+  // Fails for the first 300 ms (one burst of failed downloads), or always.
+  if (Date.now() - boundaryBoot < 300 || new URLSearchParams(location.search).has("always")) throw new TypeError("Failed to fetch dynamically imported module: http://127.0.0.1/assets/View.js");
+  return <p>Recovered view</p>;
+}
 const client = { listNotes: async () => [], getLinks: async () => [] } as unknown as VaultClient;
 const queries = new QueryClient();
+const query0 = new URLSearchParams(location.search);
 const query = new URLSearchParams(location.search);
-createRoot(document.getElementById("root")!).render(<React.StrictMode><QueryClientProvider client={queries}><PlatformProvider value="web"><VaultClientProvider client={client}>{lazyMode ? <RendererBoundary><LazyCollabDocument noteId="n1" note={{ id: "n1", path: "Projects/Page", content: "", tags: [], metadata: {}, createdAt: "", updatedAt: null } as never} /></RendererBoundary> : (query.has("denied") || query.has("live")) ? <CollabDoc noteId="denied-note" /> : query.has("reconnect") ? <ReconnectScreen /> : <p>Scoped collaborative storage fixture</p>}</VaultClientProvider></PlatformProvider></QueryClientProvider></React.StrictMode>);
+createRoot(document.getElementById("root")!).render(<React.StrictMode><QueryClientProvider client={queries}><PlatformProvider value="web"><VaultClientProvider client={client}>{query0.has("boundary") ? <RendererBoundary><FlakyView /></RendererBoundary> : lazyMode ? <RendererBoundary><LazyCollabDocument noteId="n1" note={{ id: "n1", path: "Projects/Page", content: "", tags: [], metadata: {}, createdAt: "", updatedAt: null } as never} /></RendererBoundary> : (query.has("denied") || query.has("live")) ? <CollabDoc noteId="denied-note" /> : query.has("reconnect") ? <ReconnectScreen /> : <p>Scoped collaborative storage fixture</p>}</VaultClientProvider></PlatformProvider></QueryClientProvider></React.StrictMode>);

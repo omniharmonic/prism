@@ -303,6 +303,9 @@ sharingApi.get("/notes/:id/activity", async (c) => {
     // the client resolves them with this map (never the whole account list).
     let writers: Record<string, string> | undefined;
     let myWriterId: string | undefined;
+    // The channel of the change that produced the CURRENT state = the newest
+    // version row's `via` (a row's provenance describes the change that replaced it).
+    let currentVia: unknown = null;
     const names = viewer ? writerNames(isAdmin(a)) : undefined;
     if (viewer && names) {
       myWriterId = writerIdFor(viewer);
@@ -314,7 +317,9 @@ sharingApi.get("/notes/:id/activity", async (c) => {
       };
       add(n.metadata);
       try {
-        for (const v of (await vaultClient(a.vaultId).listVersions(n.id, 100, 0)).versions) add(v.metadata);
+        const rows = (await vaultClient(a.vaultId).listVersions(n.id, 100, 0)).versions;
+        currentVia = rows[0]?.via ?? null;
+        for (const v of rows) add(v.metadata);
       } catch {
         /* history unavailable: the current stamp is still named */
       }
@@ -327,7 +332,7 @@ sharingApi.get("/notes/:id/activity", async (c) => {
       comments,
       shares,
       sharesVisible: manage,
-      lastEditor: versionWriter(n.metadata ?? null, null, viewer, names, n.updatedAt ?? null),
+      lastEditor: versionWriter(n.metadata ?? null, currentVia, viewer, names, n.updatedAt ?? null),
       createdAt: n.createdAt ?? null,
       updatedAt: n.updatedAt ?? null,
       ...(writers ? { writers, me: myWriterId } : {}),

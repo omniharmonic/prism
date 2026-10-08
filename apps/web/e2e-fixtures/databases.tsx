@@ -11,6 +11,7 @@
  *   ?block       a page holding inline/linked database blocks (renderDatabaseBlock)
  *   ?templates   the database starts with a "Bug report" template
  *   ?create      a shell with the "New page" menu and a tag's "Open as database" (NP-DB-01)
+ *   ?relations   tasks whose `project` is stored in the older encodings (folder link, slug, name, "")
  */
 import React from "react";
 import { createRoot } from "react-dom/client";
@@ -22,7 +23,7 @@ import { NewContentMenu } from "../../../packages/core/src/components/navigation
 import { OpenAsDatabaseButton } from "../../../packages/core/src/components/database/OpenAsDatabaseButton";
 import { CsvNewDatabaseDialog } from "../../../packages/core/src/components/database/Csv";
 import { coerceToKind, conversionKey, humanize, needsConversion, optionColor, sampleText, VAULT_TYPE_FOR_KIND, type ConvertPropertyResult, type PropertyKind } from "@prism/core/database";
-import { coerceCsvValue, compatibleKinds, mergeSchemaFields, parseCsv, runQuery, type CsvImportRequest, type CsvImportResponse, type CsvImportRow, type PropertyBatchResult, type QuerySpec, type SchemaMap, type SchemaPatch } from "@prism/core/database";
+import { coerceCsvValue, compatibleKinds, mergeFieldHints, mergeSchemaFields, parseCsv, runQuery, type CsvImportRequest, type CsvImportResponse, type CsvImportRow, type PropertyBatchResult, type QuerySpec, type SchemaMap, type SchemaPatch } from "@prism/core/database";
 
 const params = new URLSearchParams(location.search);
 applyTheme(params.has("dark") ? "dark" : "light");
@@ -149,6 +150,15 @@ if (params.has("ingest")) {
 if (params.has("many") && !persisted) for (let i = 0; i < 150; i++) notes.push(task(`m${i}`, `Bulk task ${String(i).padStart(3, "0")}`, { status: "todo", estimate: 1 }));
 // A multi-value cell that repeats a value: the row is one row of that group.
 if (params.has("dupe") && !persisted) notes.push(task("dup1", "Doubled label", { status: "todo", estimate: 4, labels: ["launch", "launch", "design"] }));
+// Relation values in the four encodings the vault holds (vault-health §8); written back only as `[[full path]]`.
+if (params.has("relations") && !persisted) {
+  notes.push({ id: "orion", path: "Initiatives/orion/PROJECT", content: "", tags: ["initiative"], metadata: { title: "Orion" }, createdAt: at, updatedAt: at });
+  notes.push(task("r1", "Folder-linked task", { status: "todo", project: "[[Initiatives/orion]]" }));
+  notes.push(task("r2", "Slug-linked task", { status: "todo", project: "beacon" }));
+  notes.push(task("r3", "Name-linked task", { status: "todo", project: "Atlas" }));
+  notes.push(task("r4", "Unknown-linked task", { status: "todo", project: "Nebula" }));
+  notes.push(task("r5", "Empty-linked task", { status: "todo", project: "" }));
+}
 if (params.has("tz")) notes.push(task("t7", "Late call", { status: "todo", due: `${day(3)}T05:00:00Z` }));
 if (link) notes = notes.map((n) => ({ ...n, _level: "view" }));
 if (viewer) notes = notes.map((n) => (n.id === "t6" ? n : { ...n, _caps: ["view"] }));
@@ -263,7 +273,7 @@ if (!legacy) {
         if (count) throw new VaultRequestError(409, `PUT /schemas failed: 409 ${JSON.stringify({ error: "option_in_use", field: k, option: o, count, detail: `${count} ${count === 1 ? "page still uses" : "pages still use"} “${o}”. Change ${count === 1 ? "it" : "them"} first.` })}`);
       }
     }
-    for (const [k, h] of Object.entries(patch.ui ?? {})) merged.fields[k] = { ...(merged.fields[k] ?? {}), ...h, ...(h.colors ? { colors: { ...(merged.fields[k]?.colors ?? {}), ...h.colors } } : {}) };
+    for (const [k, h] of Object.entries(patch.ui ?? {})) merged.fields[k] = { ...(merged.fields[k] ?? {}), ...mergeFieldHints(merged.fields[k], h) };
     // `pinned` (what a page shows at the top): a property of the tag, ≤ 12, replaced whole; [] clears.
     for (const k of patch.pinned ?? []) if (!merged.fields[k]) throw new VaultRequestError(400, `PUT /schemas failed: 400 ${JSON.stringify({ error: "bad_request", detail: `pinned: “${k}” is not a property of this tag` })}`);
     const pinned = patch.pinned ?? cur.pinned;

@@ -534,6 +534,15 @@ export async function removeTags(id: string, tags: string[]): Promise<void> {
   await mutate("PATCH", `/notes/${encodeURIComponent(id)}`, { tags: { remove: tags }, force: true }, () => {});
 }
 
+/** Add + remove in one PATCH (a set operation: safe to replay). A member speaks the gateway's dialect. */
+export async function changeTags(id: string, change: { add: string[]; remove: string[] }, options?: { member?: boolean }): Promise<void> {
+  const add = [...new Set(change.add)];
+  const remove = [...new Set(change.remove)].filter((t) => !add.includes(t));
+  if (!add.length && !remove.length) return;
+  const body = options?.member ? { add_tags: add, remove_tags: remove } : { tags: { add, remove }, force: true };
+  await mutate("PATCH", `/notes/${encodeURIComponent(id)}`, body, () => {});
+}
+
 // ---- links ----------------------------------------------------------------
 
 export async function getLinks(noteId?: string, relationship?: string): Promise<VaultLink[]> {

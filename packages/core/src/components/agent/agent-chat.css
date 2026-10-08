@@ -20,7 +20,7 @@
 .prism-agent-heading { padding: 18px 24px 12px; }
 .prism-agent-heading-top { display: flex; align-items: center; gap: 8px; }
 .prism-agent-conversation-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 19px; font-weight: 600; letter-spacing: -.02em; }
-.prism-agent-heading button[aria-label="Back to sessions"], .prism-agent-heading button[aria-label="Open in Agent tab"], .prism-agent-heading button[aria-label="Archive session"] { min-width: 44px; min-height: 44px; }
+.prism-agent-heading button[aria-label="Back to sessions"], .prism-agent-heading button[aria-label="Open in Agent tab"], .prism-agent-heading button[aria-label="Archive session"] { min-width: var(--control-h-md); min-height: var(--control-h-md); }
 .prism-agent-working-document { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 7px; color: var(--text-muted); font-size: 12px; }
 .prism-agent-note-chip { padding: 7px 9px; min-height: 32px; border-radius: 7px; }
 .prism-agent-permissions { margin-top: 10px; }
@@ -44,7 +44,7 @@
 .prism-agent-conversation[data-compact] .prism-agent-conversation-title { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; white-space: normal; overflow-wrap: anywhere; font-size: 15px; }
 .prism-agent-conversation[data-compact] .prism-agent-working-document { margin-top: 4px; }
 .prism-agent-conversation[data-compact] .prism-agent-permissions { margin-top: 6px; }
-.prism-agent-panel-new { display: inline-flex; flex-shrink: 0; align-items: center; justify-content: center; gap: 4px; min-width: 44px; min-height: 44px; padding: 0 6px; border-radius: 7px; color: var(--text-secondary); font-size: 12px; }
+.prism-agent-panel-new { display: inline-flex; flex-shrink: 0; align-items: center; justify-content: center; gap: 4px; min-width: var(--control-h-md); min-height: var(--control-h-md); padding: 0 6px; border-radius: 7px; color: var(--text-secondary); font-size: 12px; }
 .prism-agent-panel-new:hover { background: var(--glass-hover); }
 .prism-agent-conversation[data-compact] .prism-agent-heading button[aria-label="Open in Agent tab"] { flex-shrink: 0; }
 .prism-agent-conversation[data-compact] .prism-agent-transcript { padding: 20px 16px; }
@@ -94,3 +94,10 @@
 .prism-agent-followups { max-width: 800px; margin-left: auto; margin-right: auto; background: var(--bg-surface); }
 @media (max-width: 640px) { .prism-agent-activity { margin-left: 0; } }
 .prism-agent-context-result[data-attached]:disabled { opacity: 1; }
+
+/* Touch targets (touch.css condition): the rules above draw these at the desktop control size
+   (tokens.css --control-h-md); a touch pointer or a narrow window gets --touch-target. */
+@media screen and (max-width: 767px), screen and (hover: none) and (pointer: coarse) {
+  .prism-agent-heading button[aria-label="Back to sessions"], .prism-agent-heading button[aria-label="Open in Agent tab"], .prism-agent-heading button[aria-label="Archive session"] { min-width: var(--touch-target); min-height: var(--touch-target); }
+  .prism-agent-panel-new { min-width: var(--touch-target); min-height: var(--touch-target); }
+}

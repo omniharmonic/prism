@@ -20,7 +20,8 @@ import {
 import { ArrowDownWideNarrow, ArrowUpNarrowWide, ArrowUpRight, ChevronDown, ChevronLeft, ChevronRight, EyeOff, Group, MoreHorizontal, Pencil, Plus } from "lucide-react";
 import type { QueryRow } from "../../lib/database/query";
 import { noteTitle, unwrapLink } from "../../lib/database/query";
-import { formatDate, integrationOwned, isBlank, optionColor, optionLabel, propertyValue, type PropertyDef } from "../../lib/database/schema";
+import { formatDate, integrationOwned, isBlank, optionColor, optionLabel, propertyValue, type PropertyDef, type SchemaPatch } from "../../lib/database/schema";
+import { NewPropertyForm } from "./NewPropertyForm";
 import { dayDiff, daySpan, shiftDateValue } from "../../lib/database/dates";
 import { OptionChip, PropertyDisplay, PropertyValue } from "./PropertyValue";
 import { Popover } from "./Popover";
@@ -50,6 +51,21 @@ export interface ViewContext {
   editProperty?: (def: PropertyDef) => void;
   /** Calculations over the whole view (NP-DB-26); absent where a layout has none. */
   calc?: CalcState;
+  /** The table's "+" column (A): one-step property creation; absent = no "+". */
+  addProperty?: AddPropertyContext;
+}
+
+export interface AddPropertyContext {
+  /** The database's source tags (a new property goes to one of them). */
+  tags: string[];
+  /** Tags with a schema (relation targets proposed from a name). */
+  knownTags: string[];
+  /** Property keys already used by the database. */
+  existing: string[];
+  /** May this person change the schema (the server says: owner)? Else `reason` is shown. */
+  schemaBacked: boolean;
+  reason?: string;
+  create: (tag: string, key: string, patch: SchemaPatch) => Promise<void>;
 }
 
 const title = (r: QueryRow) => noteTitle(r);
@@ -216,6 +232,36 @@ function HeaderCell({ def, ctx, width, onResize }: { def: PropertyDef; ctx: View
 }
 
 /**
+ * The table's last header cell: "+" adds a property in one step (A). A `td`, not a
+ * `th` — it heads no column of values. People who may not change the schema are
+ * told why instead of being shown a form that would fail.
+ */
+function AddColumnCell({ add }: { add: AddPropertyContext }) {
+  const anchor = useRef<HTMLButtonElement>(null);
+  const [open, setOpen] = useState(false);
+  return (
+    <td className="db-th-add">
+      <button ref={anchor} type="button" className="db-th db-th-add-button focus-ring" aria-label="New property" title="Add a property" aria-haspopup="dialog" aria-expanded={open} onClick={() => setOpen((o) => !o)}>
+        <Plus size={14} aria-hidden="true" />
+      </button>
+      <Popover anchor={anchor} open={open} onClose={() => setOpen(false)} label="New property" width={320}>
+        {add.schemaBacked ? (
+          <NewPropertyForm
+            tags={add.tags}
+            schemaBacked
+            knownTags={add.knownTags}
+            existing={add.existing}
+            heading={add.tags.length === 1 ? `New property on every “${add.tags[0]}” page` : "New property"}
+            onCreateSchema={add.create}
+            onDone={() => setOpen(false)}
+          />
+        ) : <p className="db-pop-empty db-add-reason">{add.reason ?? "You can’t add properties here."}</p>}
+      </Popover>
+    </td>
+  );
+}
+
+/**
  * Spreadsheet-style keyboard navigation (NP-DB-03): arrow keys move between the
  * cells of a table body; Enter on a cell edits it (the cell's own button), Esc
  * leaves the editor and returns to the cell, Tab / Shift+Tab walk the table's
@@ -254,7 +300,7 @@ function TableBlock({ ctx, rows, preset, label, group }: { ctx: ViewContext; row
   const w = (k: string, d: number) => widths[k] ?? ctx.view.widths?.[k] ?? d;
   const sel = ctx.selection;
   const ids = rows.map((r) => r.id);
-  const total = w("$title", 280) + ctx.shown.reduce((s, p) => s + w(p.key, 180), 0);
+  const total = w("$title", 280) + ctx.shown.reduce((s, p) => s + w(p.key, 180), 0) + (ctx.addProperty ? 44 : 0);
   const allOn = !!sel && rows.length > 0 && rows.every((r) => sel.ids.has(r.id));
   const someOn = !!sel && rows.some((r) => sel.ids.has(r.id));
   return (
@@ -263,6 +309,7 @@ function TableBlock({ ctx, rows, preset, label, group }: { ctx: ViewContext; row
         <colgroup>
           <col className="db-col-title" style={{ width: w("$title", 280) }} />
           {ctx.shown.map((p) => <col key={p.key} style={{ width: w(p.key, 180) }} />)}
+          {ctx.addProperty && <col className="db-col-add" style={{ width: 44 }} />}
         </colgroup>
         <thead>
           <tr>
@@ -278,6 +325,7 @@ function TableBlock({ ctx, rows, preset, label, group }: { ctx: ViewContext; row
                 if (done) ctx.updateView({ widths: { ...(ctx.view.widths ?? {}), ...widths, [p.key]: px } });
               }} />
             ))}
+            {ctx.addProperty && <AddColumnCell add={ctx.addProperty} />}
           </tr>
         </thead>
         <tbody>

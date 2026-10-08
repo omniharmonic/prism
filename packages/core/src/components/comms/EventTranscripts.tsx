@@ -105,7 +105,7 @@ function StoredEventTranscripts({ noteId, eventId, onOpen }: Props) {
         <p role="alert" className="text-xs">
           Couldn't check this meeting's transcripts.{" "}
           <button
-            className="focus-ring min-h-11 underline"
+            className="focus-ring min-h-control underline"
             onClick={() => void result.refetch()}
           >
             Try again
@@ -119,7 +119,7 @@ function StoredEventTranscripts({ noteId, eventId, onOpen }: Props) {
               onClick={() =>
                 onOpen(note.id, note.path?.split("/").pop() || "Transcript")
               }
-              className="interactive focus-ring flex w-full min-h-11 min-w-0 items-start gap-2 rounded-lg px-2 py-2 text-left text-sm"
+              className="interactive focus-ring flex w-full min-h-control min-w-0 items-start gap-2 rounded-lg px-2 py-1.5 text-left text-sm"
             >
               <FileText size={16} className="mt-0.5 shrink-0" />
               <span className="min-w-0 break-words [overflow-wrap:anywhere]">

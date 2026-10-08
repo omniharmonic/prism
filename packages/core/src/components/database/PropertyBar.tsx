@@ -20,14 +20,15 @@ import {
   isSystemKey,
   pinnedKeys,
   splitPinned,
+  keyFromLabel,
   PROPERTY_KIND_LABELS,
-  PROPERTY_KINDS,
   resolveProperties,
-  VAULT_TYPE_FOR_KIND,
   type PropertyDef,
   type PropertyKind,
+  type SchemaPatch,
 } from "../../lib/database/schema";
-import { isFieldKey, noteTitle, runQuery, type QueryRow, type QuerySpec } from "../../lib/database/query";
+import { NewPropertyForm } from "./NewPropertyForm";
+import { noteTitle, runQuery, type QueryRow, type QuerySpec } from "../../lib/database/query";
 import { asWikilink, linkLabel, linkTarget } from "../../lib/database/schema";
 import { PropertyConflictError } from "../../data/VaultClient";
 import { useUIStore } from "../../app/stores/ui";
@@ -41,12 +42,6 @@ import { CustomizeProperties } from "./PinnedProperties";
 import "./database.css";
 
 import { formatDate as fmtDate, formatDateTime as fmtDateTime } from "../../lib/datetime/format";
-const FREE_KINDS: PropertyKind[] = ["text", "number", "checkbox", "url"];
-
-function keyFromLabel(label: string): string {
-  const k = label.trim().toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 60);
-  return /^[a-z]/.test(k) ? k : `p_${k}`;
-}
 
 export function PropertyBar({ note, readOnly, onOpenAll, layout = "bar", trailing, schemaOnly = false, showTags = true }: {
   note: Note;
@@ -186,10 +181,9 @@ export function PropertyBar({ note, readOnly, onOpenAll, layout = "bar", trailin
               hiddenCount={hiddenEmpty.length}
               onToggleEmpty={() => setShowEmpty((v) => !v)}
               onReveal={reveal}
-              onCreateSchemaField={async (label, kind, tag, relation) => {
-                const key = keyFromLabel(label);
-                const ui = { kind, label: label.trim(), ...(relation?.target ? { relationTag: relation.target } : {}), ...(relation?.target && relation.reverse ? { reverseLabel: relation.reverse } : {}) };
-                await schemaEdit.update(tag, { fields: { [key]: { type: VAULT_TYPE_FOR_KIND[kind] } }, ui: { [key]: ui } });
+              knownTags={Object.keys(schemas)}
+              onCreateSchema={async (tag, key, patch) => {
+                await schemaEdit.update(tag, patch);
                 reveal(key);
               }}
               onCreateFree={(label, kind) => {
@@ -242,40 +236,16 @@ function relativeDay(iso: string): string {
   return fmtDate(d, { month: "short", day: "numeric", ...(d.getFullYear() === today.getFullYear() ? {} : { year: "numeric" }) });
 }
 
-function AddProperty({ empty, canCreate, canEditSchema, firstTag, existing, showEmpty, hiddenCount, onToggleEmpty, onReveal, onCreateSchemaField, onCreateFree, deleted, onManageDeleted }: {
+function AddProperty({ empty, canCreate, canEditSchema, firstTag, existing, knownTags, showEmpty, hiddenCount, onToggleEmpty, onReveal, onCreateSchema, onCreateFree, deleted, onManageDeleted }: {
   deleted: PropertyDef[]; onManageDeleted: (p: PropertyDef) => void;
-  empty: PropertyDef[]; canCreate: boolean; canEditSchema: boolean; firstTag: string | null; existing: string[];
+  empty: PropertyDef[]; canCreate: boolean; canEditSchema: boolean; firstTag: string | null; existing: string[]; knownTags: string[];
   showEmpty: boolean; hiddenCount: number; onToggleEmpty: () => void; onReveal: (key: string) => void;
-  onCreateSchemaField: (label: string, kind: PropertyKind, tag: string, relation?: { target: string; reverse: string }) => Promise<void>;
+  onCreateSchema: (tag: string, key: string, patch: SchemaPatch) => Promise<void>;
   onCreateFree: (label: string, kind: PropertyKind) => void;
 }) {
   const anchor = useRef<HTMLButtonElement>(null);
   const [open, setOpen] = useState(false);
-  const [name, setName] = useState("");
   const schemaBacked = canEditSchema && !!firstTag;
-  const kinds = schemaBacked ? [...PROPERTY_KINDS] : FREE_KINDS;
-  const [kind, setKind] = useState<PropertyKind>("text");
-  const [target, setTarget] = useState("");
-  const [reverse, setReverse] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
-  const key = keyFromLabel(name);
-  const clash = !!name.trim() && existing.includes(key);
-  const submit = async () => {
-    if (!name.trim() || clash || !isFieldKey(key)) return;
-    setBusy(true);
-    setError("");
-    try {
-      if (schemaBacked) await onCreateSchemaField(name, kind, firstTag!, kind === "relation" && target.trim() ? { target: target.trim(), reverse: reverse.trim() } : undefined);
-      else onCreateFree(name, kind);
-      setName("");
-      setOpen(false);
-    } catch (e) {
-      setError(e instanceof Error && !/failed: \d{3}/.test(e.message) ? e.message : "The property could not be added.");
-    } finally {
-      setBusy(false);
-    }
-  };
   return (
     <>
       <button ref={anchor} type="button" className="db-ghost focus-ring" aria-haspopup="dialog" aria-expanded={open} onClick={() => setOpen((o) => !o)}>
@@ -318,34 +288,16 @@ function AddProperty({ empty, canCreate, canEditSchema, firstTag, existing, show
           </>
         )}
         {canCreate && (
-          <form className="db-new-prop" onSubmit={(e) => { e.preventDefault(); void submit(); }}>
-            <p className="db-pop-heading">New property{schemaBacked ? ` on every “${firstTag}” page` : " on this page"}</p>
-            <label className="db-field">
-              <span>Name</span>
-              <input aria-label="Property name" value={name} maxLength={60} onChange={(e) => setName(e.target.value)} placeholder="e.g. Estimate" />
-            </label>
-            <label className="db-field">
-              <span>Type</span>
-              <select aria-label="Property type" value={kind} onChange={(e) => setKind(e.target.value as PropertyKind)}>
-                {kinds.map((k) => <option key={k} value={k}>{PROPERTY_KIND_LABELS[k]}</option>)}
-              </select>
-            </label>
-            {schemaBacked && kind === "relation" && (
-              <>
-                <label className="db-field">
-                  <span>Links to pages tagged</span>
-                  <input aria-label="Related database tag" value={target} maxLength={128} onChange={(e) => setTarget(e.target.value)} placeholder="e.g. project" />
-                </label>
-                <label className="db-field">
-                  <span>Show on those pages as (optional)</span>
-                  <input aria-label="Reverse property name" value={reverse} maxLength={80} disabled={!target.trim()} onChange={(e) => setReverse(e.target.value)} placeholder={firstTag ? `e.g. ${firstTag}s` : "e.g. Tasks"} />
-                </label>
-              </>
-            )}
-            {clash && <p className="db-error" role="alert">This page already has that property.</p>}
-            {error && <p className="db-error" role="alert">{error}</p>}
-            <button type="submit" className="db-primary" disabled={busy || !name.trim() || clash}>{busy ? "Adding…" : "Add property"}</button>
-          </form>
+          <NewPropertyForm
+            tags={firstTag ? [firstTag] : []}
+            schemaBacked={schemaBacked}
+            knownTags={knownTags}
+            existing={existing}
+            freeNote={firstTag ? `Only the workspace owner can add a property to every “${firstTag}” page, so this one is added to this page only.` : undefined}
+            onCreateSchema={onCreateSchema}
+            onCreateFree={onCreateFree}
+            onDone={() => setOpen(false)}
+          />
         )}
       </Popover>
     </>

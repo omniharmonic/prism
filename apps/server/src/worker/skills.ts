@@ -82,6 +82,10 @@ import {
   type MemorySample,
 } from "../agent-exec";
 import { profileAllowedTools } from "../agent-profiles";
+import { openAICompatible, ProviderCallError } from "../providers/openai-compatible";
+import { claudeProviderId, getModelsConfig, localProviderId, resolveChain, type ResolvedStep } from "../providers/config";
+import type { ModelsConfig, RouteStep } from "../providers/types";
+import { noteExhausted, noteServed, type Attempt } from "../providers/router";
 
 // ── constants (identical to the desktop) ─────────────────────────────────────
 
@@ -188,6 +192,10 @@ export interface SkillsDeps {
   localParts: (d: Date) => { hour: number; day: string };
   settings: SkillsSettings;
   log: (msg: string) => void;
+  /** The models config (default: the active one). Injected by tests. */
+  modelsConfig?: () => ModelsConfig;
+  /** A model client for a models.json provider step (default: `lmStudioClient`). Injected by tests. */
+  localFor?: (step: ResolvedStep) => LocalModel;
   /** Is this account allowed to author skills (workspace owner/admin)? Default:
    *  the primary vault's role (`workspaceRole`). Injected by tests. */
   isTrustedCreator?: (email: string) => boolean;
@@ -302,6 +310,32 @@ export function effectiveRouting(meta: Meta, s: SkillsSettings): { useLocal: boo
   const model = mo && mo !== "" ? mo : s.localModel;
   const isLocal = provider === "local" || provider === "ollama";
   return { useLocal: isLocal && s.localBaseUrl !== "" && model !== "", model, provider };
+}
+
+/**
+ * models.json routing for a STRUCTURED skill (the `triage` job): the note's own
+ * `provider`/`model` go first ("local"/"ollama" = the config's local provider,
+ * "claude" = its claude-cli provider, else a provider name), then the job's chain,
+ * under its fallback policy. null = no models.json → the legacy `effectiveRouting`.
+ */
+export function triageSteps(meta: Meta, cfg: ModelsConfig): { steps: ResolvedStep[]; skipped: string[] } | null {
+  if (cfg.source !== "file") return null;
+  const po = asStr(meta.provider);
+  const mo = asStr(meta.model);
+  let override: RouteStep | null = null;
+  const skipped: string[] = [];
+  if (po) {
+    const id = po === "local" || po === "ollama" ? localProviderId(cfg) : po === "claude" ? claudeProviderId(cfg) : po;
+    const spec = id ? cfg.providers[id] : undefined;
+    const model = mo || spec?.model || (spec?.kind === "claude-cli" ? "sonnet" : "");
+    if (id && spec && model) override = { provider: id, model };
+    else skipped.push(`note provider "${po}" (not in the models config, or no model)`);
+  } else if (mo) {
+    const first = cfg.jobs.triage?.steps[0];
+    if (first) override = { provider: first.provider, model: mo };
+  }
+  const chain = resolveChain(cfg, "triage", override);
+  return { steps: chain.steps, skipped: [...skipped, ...chain.skipped] };
 }
 
 // ── structured skills (port of structured_skill.rs) ──────────────────────────
@@ -945,47 +979,118 @@ export async function runSkillsOnce(deps: SkillsDeps, onOutcome?: (r: RunResult)
       lastRefusal.delete(skillName);
     };
 
-    // Structured + local model → grammar-constrained classification on LM Studio.
-    if (mode === "structured" && route.useLocal) {
+    // Which model runs it. No models.json → the legacy routing (effectiveRouting),
+    // unchanged. With one, a structured skill walks the `triage` chain (the note's
+    // provider/model first): the first step that is admitted (memory guard) or
+    // reachable runs it; every step passed over is logged and recorded.
+    const plan = mode === "structured" ? triageSteps(meta, deps.modelsConfig ? deps.modelsConfig() : getModelsConfig()) : null;
+    let pick: { local: LocalModel; model: string; guarded: boolean; slot: LocalSlotToken | null; provider: string } | "claude" | null = null;
+    let cfg: StructuredConfig | null = null;
+    const misconfigured = async (e: unknown): Promise<void> => {
       const id = randomUUID();
-      let cfg: StructuredConfig;
+      const t = Date.now();
+      const r: RunResult = { status: "failed", output: null, error: `structured skill misconfigured: ${(e as Error).message}`, startedAt: t, completedAt: t, durationSecs: 0 };
+      await markRun();
+      await persist(deps, id, skillName, r, onOutcome);
+      res.finished.push({ skill: skillName, status: r.status });
+    };
+    const refuse = (reason: string, jit?: boolean): void => {
+      res.refused.push({ skill: skillName, reason, ...(jit ? { jit: true as const } : {}) });
+      if (lastRefusal.get(skillName) !== reason) {
+        lastRefusal.set(skillName, reason);
+        deps.log(`[skills] '${skillName}' deferred: ${reason} (stays due; retried next tick)`);
+      }
+    };
+
+    if (plan) {
+      const tried: Attempt[] = [];
+      let lastJit = false;
+      let stop = false;
+      for (const step of plan.steps) {
+        if (step.spec.kind === "claude-cli") {
+          noteServed("triage", step, tried, deps.log);
+          pick = "claude";
+          break;
+        }
+        if (!cfg) {
+          try {
+            cfg = parseStructuredConfig(meta);
+          } catch (e) {
+            await misconfigured(e);
+            stop = true;
+            break;
+          }
+        }
+        const local = deps.localFor ? deps.localFor(step) : lmStudioClient(step.spec.baseUrl ?? "", undefined, step.spec.apiKeyEnv);
+        let reason: string | null = null;
+        let slot: LocalSlotToken | null = null;
+        if (step.spec.memoryGuard) {
+          const verdict = await admitLocal({ ...deps, local }, step.model);
+          slot = verdict.ok ? tryAcquireLocalModel() : null;
+          if (!verdict.ok || !slot) {
+            reason = verdict.ok ? "another local-model run is in progress" : verdict.reason!;
+            lastJit = !verdict.ok && !!verdict.jit;
+          }
+        } else {
+          const st = await local.status(step.model).catch((e) => ({ reachable: false, loaded: null, error: (e as Error).message }) as LocalStatus);
+          if (!st.reachable) reason = `${step.provider} unreachable${st.error ? `: ${st.error}` : ""}`;
+          lastJit = false;
+        }
+        if (reason) {
+          tried.push({ provider: step.provider, model: step.model, ok: false, error: reason });
+          continue;
+        }
+        noteServed("triage", step, tried, deps.log);
+        pick = { local, model: step.model, guarded: step.spec.memoryGuard, slot, provider: step.provider };
+        break;
+      }
+      if (stop) continue;
+      if (!pick) {
+        if (plan.steps.length === 0) refuse(`no provider can run triage (models config)${plan.skipped.length ? `: ${plan.skipped.join("; ")}` : ""}`);
+        else {
+          noteExhausted("triage", tried);
+          // One step: its own reason, exactly as before; several: every step's reason.
+          refuse(tried.length === 1 ? tried[0]!.error! : tried.map((t) => `${t.provider}:${t.model}: ${t.error}`).join("; "), lastJit);
+        }
+        continue;
+      }
+    } else if (mode === "structured" && route.useLocal) {
+      // Legacy: structured + local model → grammar-constrained classification on LM Studio.
       try {
         cfg = parseStructuredConfig(meta);
       } catch (e) {
-        const t = Date.now();
-        const r: RunResult = { status: "failed", output: null, error: `structured skill misconfigured: ${(e as Error).message}`, startedAt: t, completedAt: t, durationSecs: 0 };
-        await markRun();
-        await persist(deps, id, skillName, r, onOutcome);
-        res.finished.push({ skill: skillName, status: r.status });
+        await misconfigured(e);
         continue;
       }
-
       const verdict = await admitLocal(deps, route.model);
       // Acquire the slot AFTER the async admission (M1): someone else may have
       // taken it while we awaited LM Studio / the memory probe → defer.
       const slot = verdict.ok ? tryAcquireLocalModel() : null;
       if (!verdict.ok || !slot) {
-        const reason = verdict.ok ? "another local-model run is in progress" : verdict.reason!;
-        res.refused.push({ skill: skillName, reason, ...(!verdict.ok && verdict.jit ? { jit: true as const } : {}) });
-        if (lastRefusal.get(skillName) !== reason) {
-          lastRefusal.set(skillName, reason);
-          deps.log(`[skills] '${skillName}' deferred: ${reason} (stays due; retried next tick)`);
-        }
+        refuse(verdict.ok ? "another local-model run is in progress" : verdict.reason!, !verdict.ok && !!verdict.jit);
         continue;
       }
+      pick = { local: deps.local, model: route.model, guarded: true, slot, provider: "local" };
+    }
 
+    if (pick && pick !== "claude") {
+      const { local, model, guarded, slot } = pick;
+      const structured = cfg!;
+      const id = randomUUID();
       const abort = new AbortController();
-      runningSkills.set(id, { skill: skillName, kind: "local", id, startedAt: Date.now(), model: route.model, abort, cancel: null, cancelRequested: false });
+      runningSkills.set(id, { skill: skillName, kind: "local", id, startedAt: Date.now(), model, abort, cancel: null, cancelRequested: false });
       try {
         await markRun();
         const start = Date.now();
         let r: RunResult;
         try {
-          const summary = await runStructured(deps.vault, deps.local, prompt, cfg, route.model, {
+          const summary = await runStructured(deps.vault, local, prompt, structured, model, {
             log: deps.log,
             today: deps.localParts(now).day,
             deadline: start + deps.settings.localRunTimeoutMs,
+            // The between-notes memory floor is about a model on THIS host.
             pressure: () => {
+              if (!guarded) return null;
               const v = admissionVerdict(safeProbe(deps.memoryProbe), deps.settings.swapMaxPct, deps.settings.runFreeMinPct ?? deps.settings.freeMinPct, deps.settings.swapMinFreeMb, 4);
               return v.ok ? null : v.reason;
             },
@@ -1077,10 +1182,13 @@ type FetchLike = (url: string, init?: RequestInit) => Promise<Response>;
 /** LM Studio (OpenAI-compatible `/v1`) client. `status` asks LM Studio's native
  *  `/api/v0/models` whether the model is resident; a server without that API is
  *  probed via `/v1/models` for reachability only (loaded = unknown). */
-export function lmStudioClient(baseUrl: string, fetchImpl: FetchLike = (u, i) => fetch(u, i)): LocalModel {
+export function lmStudioClient(baseUrl: string, fetchImpl: FetchLike = (u, i) => fetch(u, i), apiKeyEnv: string | null = null): LocalModel {
   const base = baseUrl.replace(/\/+$/, "");
   const root = base.replace(/\/v1$/, "");
-  const get = async (url: string) => fetchImpl(url, { signal: AbortSignal.timeout(5000) });
+  const key = () => (apiKeyEnv ? (process.env[apiKeyEnv] ?? "") : "");
+  const get = async (url: string) => fetchImpl(url, { signal: AbortSignal.timeout(5000), ...(key() ? { headers: { Authorization: `Bearer ${key()}` } } : {}) });
+  // Completions go through the provider layer's openai-compatible backend (same body).
+  const backend = openAICompatible({ baseUrl: base, apiKeyEnv }, fetchImpl);
   return {
     async status(model) {
       try {
@@ -1099,41 +1207,18 @@ export function lmStudioClient(baseUrl: string, fetchImpl: FetchLike = (u, i) =>
       }
     },
     async structured(system, user, schemaName, schema, model, timeoutMs, signal) {
-      const body = {
-        model,
-        messages: [
-          { role: "system", content: system },
-          { role: "user", content: user },
-        ],
-        stream: false,
-        response_format: { type: "json_schema", json_schema: { name: schemaName, strict: true, schema } },
-      };
-      let resp: Response;
+      let text: string;
       try {
-        resp = await fetchImpl(`${base}/chat/completions`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(body),
-          signal: signal ? AbortSignal.any([AbortSignal.timeout(timeoutMs), signal]) : AbortSignal.timeout(timeoutMs),
-        });
+        text = await backend.structuredText({ model, system, user, schemaName, schema, timeoutMs, signal });
       } catch (e) {
-        const err = e as Error;
-        if (signal?.aborted) throw new SkillCancelledError();
-        if (err.name === "TimeoutError" || err.name === "AbortError") {
-          throw new Error(`local AI request timed out after ${Math.round(timeoutMs / 1000)}s`);
-        }
-        throw new LocalUnavailableError(`local AI HTTP error: ${err.message}`);
+        if (!(e instanceof ProviderCallError)) throw e;
+        // The error classes and messages the scheduler has always acted on.
+        if (e.kind === "cancelled") throw new SkillCancelledError();
+        if (e.kind === "timeout") throw new Error(`local AI request timed out after ${Math.round(timeoutMs / 1000)}s`);
+        if (e.kind === "unreachable") throw new LocalUnavailableError(`local AI HTTP error: ${e.detail ?? e.message}`);
+        if (e.kind === "http") throw new Error(`local AI returned ${e.status}: ${Array.from(e.detail ?? "").slice(0, 500).join("")}`);
+        throw new Error("local AI response missing choices[0].message");
       }
-      if (!resp.ok) {
-        const text = await resp.text().catch(() => "<no body>");
-        throw new Error(`local AI returned ${resp.status}: ${Array.from(text).slice(0, 500).join("")}`);
-      }
-      const j = (await resp.json().catch(() => null)) as { choices?: Array<{ message?: { content?: string | null; reasoning_content?: string | null } }> } | null;
-      const msg = j?.choices?.[0]?.message;
-      if (!msg) throw new Error("local AI response missing choices[0].message");
-      // Reasoning models route grammar-constrained output to reasoning_content.
-      const c = (msg.content ?? "").trim();
-      const text = c !== "" ? c : (msg.reasoning_content ?? "").trim();
       const parsed = extractJson(text);
       if (parsed === undefined) {
         throw new Error(`structured output contained no parseable JSON; raw: ${Array.from(text).slice(0, 300).join("")}`);

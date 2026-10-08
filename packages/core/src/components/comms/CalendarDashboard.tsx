@@ -251,10 +251,10 @@ function ScopedCalendarDashboard() {
         <div className="flex min-w-0 flex-wrap items-center gap-3">
           <h2 className="text-lg font-semibold" style={{ color: "var(--text-primary)" }}>{title}</h2>
           <div className="flex items-center gap-1">
-            <button aria-label="Previous period" onClick={prev} className="focus-ring min-h-11 min-w-11 p-2 rounded-lg hover:bg-[var(--glass-hover)]" style={{ color: "var(--text-secondary)" }}><ChevronLeft size={16} /></button>
-            <button aria-label="Next period" onClick={next} className="focus-ring min-h-11 min-w-11 p-2 rounded-lg hover:bg-[var(--glass-hover)]" style={{ color: "var(--text-secondary)" }}><ChevronRight size={16} /></button>
+            <button aria-label="Previous period" onClick={prev} className="focus-ring min-h-control min-w-control p-2 rounded-lg hover:bg-[var(--glass-hover)]" style={{ color: "var(--text-secondary)" }}><ChevronLeft size={16} /></button>
+            <button aria-label="Next period" onClick={next} className="focus-ring min-h-control min-w-control p-2 rounded-lg hover:bg-[var(--glass-hover)]" style={{ color: "var(--text-secondary)" }}><ChevronRight size={16} /></button>
           </div>
-          <button onClick={goToday} className="focus-ring min-h-11 px-3 rounded-lg text-sm hover:bg-[var(--glass-hover)]" style={{ color: "var(--text-secondary)", border: "1px solid var(--glass-border)" }}>Today</button>
+          <button onClick={goToday} className="focus-ring min-h-control px-3 rounded-lg text-sm hover:bg-[var(--glass-hover)]" style={{ color: "var(--text-secondary)", border: "1px solid var(--glass-border)" }}>Today</button>
           {syncing && (
             <span className="flex items-center gap-1 text-[10px]" style={{ color: "var(--text-muted)" }}>
               <RefreshCw size={10} className="animate-spin" style={{ animationDuration: "2s" }} />
@@ -264,7 +264,7 @@ function ScopedCalendarDashboard() {
           {canCreate && (
             <button
               onClick={() => handleCreateClick()}
-              className="focus-ring min-h-11 min-w-11 p-2 rounded-lg hover:bg-[var(--glass-hover)] transition-colors"
+              className="focus-ring min-h-control min-w-control p-2 rounded-lg hover:bg-[var(--glass-hover)] transition-colors"
               style={{ color: "var(--color-accent)" }}
               title="Create event"
             >
@@ -282,7 +282,7 @@ function ScopedCalendarDashboard() {
                 if (v === "week") setWeekStart(startOfWeek(selectedDate || today));
                 if (v === "day") setDayDate(selectedDate || today);
               }}
-              className="focus-ring min-h-11 px-3 py-2 rounded-lg text-sm transition-colors"
+              className="focus-ring min-h-control px-3 py-1.5 rounded-lg text-sm transition-colors"
               style={{
                 background: view === v ? "var(--surface-active)" : "transparent",
                 color: view === v ? "var(--text-primary)" : "var(--text-secondary)",
@@ -617,7 +617,7 @@ function EventDetailPanel({ event, onClose, onEdit, onDelete, onOpenNotes, onOpe
     <div className="min-w-0 p-4 space-y-5">
       <div className="flex items-start justify-between">
         <h3 className="min-w-0 break-words text-xl font-semibold pr-2" style={{ color: "var(--text-primary)" }}>{event.summary || "Untitled"}</h3>
-        <button aria-label="Close event details" onClick={onClose} className="focus-ring hidden md:flex min-h-11 min-w-11 items-center justify-center rounded-lg hover:bg-[var(--glass-hover)] flex-shrink-0">
+        <button aria-label="Close event details" onClick={onClose} className="focus-ring hidden md:flex min-h-control min-w-control items-center justify-center rounded-lg hover:bg-[var(--glass-hover)] flex-shrink-0">
           <X size={14} style={{ color: "var(--text-muted)" }} />
         </button>
       </div>
@@ -648,7 +648,7 @@ function EventDetailPanel({ event, onClose, onEdit, onDelete, onOpenNotes, onOpe
           href={meetUrl}
           target="_blank"
           rel="noopener noreferrer"
-          className="focus-ring flex min-h-11 items-center gap-2 px-3 py-2 rounded-lg text-sm transition-colors hover:bg-[var(--glass-hover)]"
+          className="focus-ring flex min-h-control items-center gap-2 px-3 py-1.5 rounded-lg text-sm transition-colors hover:bg-[var(--glass-hover)]"
           style={{ color: "var(--color-accent)", border: "1px solid var(--glass-border)" }}
         >
           <Video size={12} /> Join meeting
@@ -684,19 +684,19 @@ function EventDetailPanel({ event, onClose, onEdit, onDelete, onOpenNotes, onOpe
 
       {/* Actions */}
       <div className="flex flex-wrap items-center gap-2 pt-4" style={{ borderTop: "1px solid var(--glass-border)" }}>
-        <button onClick={onOpenNotes} className="focus-ring flex min-h-11 items-center gap-2 px-3 py-2 rounded-lg text-sm transition-colors hover:bg-[var(--glass-hover)]" style={{ color: "var(--color-accent)", border: "1px solid var(--glass-border)" }}>
+        <button onClick={onOpenNotes} className="focus-ring flex min-h-control items-center gap-2 px-3 py-1.5 rounded-lg text-sm transition-colors hover:bg-[var(--glass-hover)]" style={{ color: "var(--color-accent)", border: "1px solid var(--glass-border)" }}>
           <FileText size={12} /> Meeting Notes
         </button>
         {canMutate && (
           <>
-            <button onClick={onEdit} className="focus-ring flex min-h-11 items-center gap-2 px-3 py-2 rounded-lg text-sm transition-colors hover:bg-[var(--glass-hover)]" style={{ color: "var(--text-secondary)", border: "1px solid var(--glass-border)" }}>
+            <button onClick={onEdit} className="focus-ring flex min-h-control items-center gap-2 px-3 py-1.5 rounded-lg text-sm transition-colors hover:bg-[var(--glass-hover)]" style={{ color: "var(--text-secondary)", border: "1px solid var(--glass-border)" }}>
               <Pencil size={12} /> Edit
             </button>
             <button
               onClick={() => (isDesktop ? void onDelete(true) : setConfirmDelete(true))}
               aria-label="Delete event"
               title="Delete event"
-              className="focus-ring flex min-h-11 items-center gap-2 px-3 py-2 rounded-lg text-sm transition-colors hover:bg-[var(--glass-hover)]"
+              className="focus-ring flex min-h-control items-center gap-2 px-3 py-1.5 rounded-lg text-sm transition-colors hover:bg-[var(--glass-hover)]"
               style={{ color: "var(--color-danger)", border: "1px solid var(--glass-border)" }}
             >
               <Trash2 size={12} />
@@ -719,12 +719,12 @@ function EventDetailPanel({ event, onClose, onEdit, onDelete, onOpenNotes, onOpe
             <button
               onClick={() => void doDelete()}
               disabled={deleting}
-              className="focus-ring min-h-11 px-3 py-2 rounded-lg text-sm font-medium disabled:opacity-50"
+              className="focus-ring min-h-control px-3 py-1.5 rounded-lg text-sm font-medium disabled:opacity-50"
               style={{ background: "var(--danger-bg, var(--color-danger))", color: "#fff" }}
             >
               {deleting ? "Deleting..." : "Delete this occurrence"}
             </button>
-            <button onClick={() => { setConfirmDelete(false); setDeleteError(null); }} disabled={deleting} className="focus-ring min-h-11 px-3 py-2 rounded-lg text-sm" style={{ color: "var(--text-secondary)", border: "1px solid var(--glass-border)" }}>
+            <button onClick={() => { setConfirmDelete(false); setDeleteError(null); }} disabled={deleting} className="focus-ring min-h-control px-3 py-1.5 rounded-lg text-sm" style={{ color: "var(--text-secondary)", border: "1px solid var(--glass-border)" }}>
               Cancel
             </button>
           </div>
@@ -737,7 +737,7 @@ function EventDetailPanel({ event, onClose, onEdit, onDelete, onOpenNotes, onOpe
               <button
                 onClick={() => void doDelete("all")}
                 disabled={deleting}
-                className="focus-ring min-h-11 px-3 py-2 rounded-lg text-sm font-medium disabled:opacity-50"
+                className="focus-ring min-h-control px-3 py-1.5 rounded-lg text-sm font-medium disabled:opacity-50"
                 style={{ background: "var(--danger-bg, var(--color-danger))", color: "#fff" }}
                 data-testid="delete-all-occurrences"
               >
@@ -751,7 +751,7 @@ function EventDetailPanel({ event, onClose, onEdit, onDelete, onOpenNotes, onOpe
         <div className="flex items-center gap-2 flex-wrap">
           {!rsvpNA && <span className="text-sm" style={{ color: "var(--text-muted)" }}>RSVP</span>}
           {!rsvpNA && (["accepted", "tentative", "declined"] as RsvpResponse[]).map((r) => (
-            <button key={r} onClick={() => rsvp(r)} className="focus-ring min-h-11 px-3 py-2 rounded-lg text-sm transition-colors hover:bg-[var(--glass-hover)]" style={{ color: "var(--text-secondary)", border: "1px solid var(--glass-border)" }}>
+            <button key={r} onClick={() => rsvp(r)} className="focus-ring min-h-control px-3 py-1.5 rounded-lg text-sm transition-colors hover:bg-[var(--glass-hover)]" style={{ color: "var(--text-secondary)", border: "1px solid var(--glass-border)" }}>
               {r === "accepted" ? "Yes" : r === "tentative" ? "Maybe" : "No"}
             </button>
           ))}

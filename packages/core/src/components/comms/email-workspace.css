@@ -104,7 +104,7 @@
 .prism-email-quoted summary {
   cursor: pointer;
   padding: 12px 0;
-  min-height: 44px;
+  min-height: var(--control-h-md);
 }
 .prism-email-quoted pre {
   padding: 12px 0 12px 16px;
@@ -172,7 +172,7 @@
   cursor: not-allowed;
 }
 .prism-agent-draft-panel [role="alert"] button {
-  min-height: 44px;
+  min-height: var(--control-h-md);
   padding: 8px 12px;
   border: 1px solid var(--glass-border);
   border-radius: 8px;
@@ -230,4 +230,11 @@
   .prism-agent-draft-panel {
     padding: 20px 16px;
   }
+}
+
+/* Touch targets (touch.css condition): the rules above draw these at the desktop control size
+   (tokens.css --control-h-md); a touch pointer or a narrow window gets --touch-target. */
+@media screen and (max-width: 767px), screen and (hover: none) and (pointer: coarse) {
+  .prism-email-quoted summary { min-height: var(--touch-target); }
+  .prism-agent-draft-panel [role="alert"] button { min-height: var(--touch-target); }
 }

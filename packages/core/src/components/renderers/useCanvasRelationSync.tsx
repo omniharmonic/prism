@@ -112,7 +112,7 @@ export function useCanvasRelationSync(
         Relationships could not be updated. Check your connection and edit
         access to both notes. Your drawing is retained.{" "}
         <button
-          className="focus-ring min-h-11 rounded-lg border border-[var(--glass-border)] px-3"
+          className="focus-ring min-h-control rounded-lg border border-[var(--glass-border)] px-3"
           onClick={() => {
             setResult(null);
             setAttempt((v) => v + 1);

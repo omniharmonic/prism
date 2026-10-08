@@ -60,23 +60,23 @@ export function NavigationPreferences({ preferences, onClose }: { preferences: R
       <button type="button" aria-label="Close sidebar preferences" className="focus-ring shrink-0 rounded p-2" onClick={onClose}><X size={18} /></button>
     </div>
     <label className="my-5 flex items-center justify-between gap-4 text-sm">Navigation spacing
-      <select aria-label="Navigation spacing" value={preferences.value.density} onChange={event => preferences.setDensity(event.target.value as Preferences["density"])} className="min-h-11 rounded-md border border-[var(--glass-border)] bg-[var(--bg-base)] px-3">
+      <select aria-label="Navigation spacing" value={preferences.value.density} onChange={event => preferences.setDensity(event.target.value as Preferences["density"])} className="min-h-control rounded-md border border-[var(--glass-border)] bg-[var(--bg-base)] px-3">
         <option value="comfortable">Comfortable</option><option value="compact">Compact</option>
       </select>
     </label>
     <div className="divide-y divide-[var(--glass-border)]">
       {preferences.value.order.map((id, index) => <div key={id} className="flex flex-wrap items-center gap-2 py-2">
         <span className="min-w-20 flex-1 text-sm">{TOOL_NAMES[id]}</span>
-        <select aria-label={`${TOOL_NAMES[id]} placement`} value={preferences.value.placement[id]} onChange={event => preferences.setPlacement(id, event.target.value as Placement)} className="min-h-11 rounded-md border border-[var(--glass-border)] bg-[var(--bg-base)] px-2 text-sm">
+        <select aria-label={`${TOOL_NAMES[id]} placement`} value={preferences.value.placement[id]} onChange={event => preferences.setPlacement(id, event.target.value as Placement)} className="min-h-control rounded-md border border-[var(--glass-border)] bg-[var(--bg-base)] px-2 text-sm">
           <option value="pinned">Pinned</option><option value="tools">In Tools</option><option value="hidden">Hidden</option>
         </select>
         <div className="flex">
-          <button type="button" aria-label={`Move ${TOOL_NAMES[id]} up`} disabled={index === 0} onClick={() => preferences.move(id, -1)} className="focus-ring flex h-11 w-9 items-center justify-center rounded"><ArrowUp size={15} /></button>
-          <button type="button" aria-label={`Move ${TOOL_NAMES[id]} down`} disabled={index === preferences.value.order.length - 1} onClick={() => preferences.move(id, 1)} className="focus-ring flex h-11 w-9 items-center justify-center rounded"><ArrowDown size={15} /></button>
+          <button type="button" aria-label={`Move ${TOOL_NAMES[id]} up`} disabled={index === 0} onClick={() => preferences.move(id, -1)} className="focus-ring flex h-8 coarse:h-11 w-9 items-center justify-center rounded"><ArrowUp size={15} /></button>
+          <button type="button" aria-label={`Move ${TOOL_NAMES[id]} down`} disabled={index === preferences.value.order.length - 1} onClick={() => preferences.move(id, 1)} className="focus-ring flex h-8 coarse:h-11 w-9 items-center justify-center rounded"><ArrowDown size={15} /></button>
         </div>
       </div>)}
     </div>
     {preferences.storageError && <p role="status" className="mt-3 text-sm text-[var(--color-warning)]">Your sidebar changed, but could not be saved on this device.</p>}
-    <div className="mt-5 flex items-center justify-between gap-3"><button type="button" className="focus-ring min-h-11 rounded px-2 text-sm text-[var(--text-secondary)]" onClick={preferences.reset}>Restore defaults</button><button type="button" className="focus-ring min-h-11 rounded-md bg-[var(--action-bg)] px-5 text-sm text-[var(--action-fg)]" onClick={onClose}>Done</button></div>
+    <div className="mt-5 flex items-center justify-between gap-3"><button type="button" className="focus-ring min-h-control rounded px-2 text-sm text-[var(--text-secondary)]" onClick={preferences.reset}>Restore defaults</button><button type="button" className="focus-ring min-h-control rounded-md bg-[var(--action-bg)] px-5 text-sm text-[var(--action-fg)]" onClick={onClose}>Done</button></div>
   </dialog>;
 }

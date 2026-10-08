@@ -124,7 +124,15 @@ for (const width of [1440, 390, 320])
       page.getByTestId("gov-reject"),
       page.getByTestId("gov-vote-reason"),
     ])
-      expect((await control.boundingBox())?.height).toBeGreaterThanOrEqual(44);
+    {
+      // Control-size tokens (tokens.css): 28–36 px at a desktop width, 44 px touch targets below 768 px.
+      const height = (await control.boundingBox())?.height;
+      if (width < 768) expect(height).toBeGreaterThanOrEqual(44);
+      else {
+        expect(height).toBeGreaterThanOrEqual(28);
+        expect(height).toBeLessThanOrEqual(36);
+      }
+    }
     await page.screenshot({
       path: info.outputPath(`governance-${width}.png`),
       fullPage: true,

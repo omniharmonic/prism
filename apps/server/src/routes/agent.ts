@@ -59,7 +59,8 @@ import {
   modelsOverview,
   readRouting,
   routeFor,
-  runLocalInteractive,
+  draftingPlan,
+  runDraftingPlan,
   testRoute,
   validateRoute,
   writeRouting,
@@ -170,25 +171,26 @@ agentApi.post("/dispatch", async (c) => {
     if (lock === "unknown") return c.json({ error: "lock_unknown", detail: LOCK_UNKNOWN_MESSAGE }, 503);
   }
   // Interactive routing (parity A): the client's read-only inline AI (edit /
-  // transform / generate / chat) follows the server-side per-skill routing.
+  // transform / generate / chat) follows the server-side per-skill routing — and,
+  // with a models.json, the `drafting` job's chain with its fallbacks (providers/).
   // Only the narrowed one-shots are routed — a full-tools dispatch always stays on claude.
-  const route = body.profile !== undefined && isInteractiveSkill(skill) ? routeFor(skill) : null;
-  if (route?.provider === "local") {
+  const plan = body.profile !== undefined && isInteractiveSkill(skill) ? draftingPlan(skill) : null;
+  const allowedTools = dispatchAllowedTools(body.profile);
+  if (plan && !plan.claudeModel) {
     const prompt = body.prompt;
-    const d = startExternalDispatch(entry, { skill, noteId }, (signal) => runLocalInteractive(route.model, prompt, signal));
-    return c.json({ id: d.id, status: d.status, queuedReason: d.queuedReason, provider: "local", model: route.model });
+    const d = startExternalDispatch(entry, { skill, noteId }, (signal) => runDraftingPlan(plan, { entry, prompt, signal, skill, noteId, textOnly, allowedTools }));
+    return c.json({ id: d.id, status: d.status, queuedReason: d.queuedReason, provider: plan.steps[0]?.provider ?? null, model: plan.steps[0]?.model ?? null });
   }
   try {
     // Only prompt/skill/noteId (+ an optional NARROWING profile) cross from the
     // client — never runner options.
-    const allowedTools = dispatchAllowedTools(body.profile);
     const d = startDispatch(
       entry,
       { prompt: body.prompt, skill, noteId },
       {
         ...(allowedTools ? { allowedTools } : {}),
         ...(textOnly ? { textOnly: true } : {}),
-        ...(route?.provider === "claude" && isClaudeModel(route.model) ? { model: route.model } : {}),
+        ...(plan?.claudeModel ? { model: plan.claudeModel } : {}),
       },
     );
     return c.json({ id: d.id, status: d.status, queuedReason: d.queuedReason });

@@ -8,7 +8,11 @@ async function targets(page: Page) {
   for (const control of [fresh, row.getByRole("button", { name: "Open in Agent tab" })]) {
     // Crossing a breakpoint re-lays the companion out (rail ↔ overlay ↔ phone sheet) a frame
     // after the resize: measure the control once it is on screen in the NEW layout, never mid-switch.
-    await expect.poll(async () => { const b = await control.boundingBox(); return b ? Math.min(b.height, b.width) : 0; }).toBeGreaterThanOrEqual(44);
+    // Control-size tokens (tokens.css): a narrow window (< 768 px) gets the 44 px touch target,
+    // a desktop width the 28–36 px control size.
+    const narrow = (page.viewportSize()?.width ?? 0) < 768;
+    await expect.poll(async () => { const b = await control.boundingBox(); return b ? Math.min(b.height, b.width) : 0; }).toBeGreaterThanOrEqual(narrow ? 44 : 28);
+    if (!narrow) expect((await control.boundingBox())!.height).toBeLessThanOrEqual(36);
   }
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
 }

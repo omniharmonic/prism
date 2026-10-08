@@ -105,7 +105,7 @@ import {
 } from "./db";
 import { effectiveLevel, effectiveCaps, atLeast, maxLevel, type Level } from "./permissions";
 import { warmPageAnchors, treeRevisions } from "./tree";
-import { writerStamp } from "./sharing";
+import { externalStamp, writerStamp } from "./sharing";
 import { randomUUID } from "node:crypto";
 import { createSuggestion, suggestionsForNote } from "./db";
 import { suggestionAuthors, hasSuggestions, resolveSuggestions, summarizeSuggestions, identifiedSuggestions, plainTextOf, type IdentifiedSuggestion, type PmNode } from "./suggestions";
@@ -1299,6 +1299,7 @@ export async function reconcileLoadedDocs(server: LiveDocs): Promise<void> {
         rebaseDoc(target.noteId, target.vaultId, { source: noteMs, hash: hash ?? contentHash(content), base: folded.base });
       }
       lastReconciled.set(name, noteMs);
+      markExternalFold(name);
       // The document was ahead and no merge could be trusted: what it held beyond the
       // vault's copy is no longer in it — everyone on the page is told, and it is kept.
       if (folded.wholesale && row?.ahead) tellClients(name, { type: "prism:notice", code: "external-replaced" });
@@ -1608,15 +1609,27 @@ function unconvertible(reason: ConversionFailure, documentName: string, content:
 export async function loadDocumentState(documentName: string, doc: Y.Doc, opts?: ConvertOptions): Promise<Y.Doc> {
   const target = federationTarget(documentName); // non-federated → decoded (vault, note)
   let note: { content: string; updatedAt: string | null } | null = null;
-  let kind: CollabKind = target.kind ?? kindCache.get(documentName) ?? "document";
+  let known: CollabKind | undefined = target.kind ?? kindCache.get(documentName);
+  let missing = false; // the vault says, definitely, that there is no such note
   try {
     const n = await vaultClient(target.vaultId).getNote(target.noteId);
     note = { content: n.content, updatedAt: n.updatedAt };
-    if (!target.kind) kind = noteKind({ path: n.path, tags: n.tags, metadata: n.metadata, content: n.content });
-    kindCache.set(documentName, kind);
-  } catch {
-    /* note may not be readable; leave empty */
+    if (!target.kind) known = noteKind({ path: n.path, tags: n.tags, metadata: n.metadata, content: n.content });
+    kindCache.set(documentName, known!);
+  } catch (e) {
+    /* note may not be readable; the kind decides below whether the load may go on */
+    missing = e instanceof VaultError && e.status === 404;
   }
+  // The kind decides which Yjs structure this document holds and how every store
+  // renders it. A guess is never acceptable: a new canvas whose first read failed
+  // (a slow or busy vault right after the create) used to be seeded as a TEXT
+  // document — the client bound an empty Y.Map, a store could write `<p></p>` over
+  // the scene, and an existing canvas opened EMPTY (whatever was drawn then replaced
+  // it). Unknown kind after a failed read → refuse the load as `busy`: the client
+  // retries, nothing is seeded, nothing is cached. Only a note the vault definitely
+  // does not have (404: nothing to corrupt) still opens as an empty document, as before.
+  if (!known && !missing) throw new CollabBusyError();
+  const kind: CollabKind = known ?? "document";
 
   // "Already populated this run" guard is kind-specific (document → XML fragment,
   // code → Y.Text, spreadsheet → Y.Array). Without it a reconnect re-seeds over live edits.
@@ -1709,6 +1722,7 @@ export async function loadDocumentState(documentName: string, doc: Y.Doc, opts?:
         // news — the reconciler and the store's guard fold it once it can be kept.
         unfolded = true;
       }
+      if (fold) markExternalFold(documentName);
       if (!fold) {
         /* opened as it was (above) */
       } else if (stored.ahead && !fold.wholesale) {
@@ -1801,12 +1815,22 @@ export async function loadDocumentState(documentName: string, doc: Y.Doc, opts?:
 // command), "agent" (a Prism MCP tool) or "accepted-suggestion" (an edit that
 // resolved suggestion marks by accepting them). History and page info read these
 // to say who changed what. Server-internal writes (reconciler folds, restores,
-// federation) carry no writer and leave the stamp untouched.
+// federation) carry no writer. An external vault edit FOLDED into the live doc
+// (reconciler, load, a store's own re-read) marks the document: if no person
+// changes it after that, the next store is stamped `external` (writer cleared) —
+// the vault merges metadata, and a store without a stamp left the previous
+// typist credited with the agent's / sync's change.
 export type CollabChangeKind = "edit" | "suggestion" | "agent";
 const collabWriters = new Map<string, Map<string, CollabChangeKind>>();
+/** Documents whose latest change is an external edit folded in (no person wrote since). */
+const externalFolds = new Set<string>();
+function markExternalFold(documentName: string): void {
+  externalFolds.add(documentName);
+}
 /** Record that `writer` changed `documentName` (most recent last). */
 export function noteCollabWriter(documentName: string, writer: string | null, kind: CollabChangeKind): void {
   if (!writer) return;
+  externalFolds.delete(documentName); // a person changed it after the fold: theirs is the latest change
   let m = collabWriters.get(documentName);
   if (!m) collabWriters.set(documentName, (m = new Map()));
   m.delete(writer);
@@ -1851,9 +1875,10 @@ function suggestionTexts(doc: Y.Doc): Map<string, { ins: string; del: string }> 
 const lastSuggestions = new Map<string, Map<string, { ins: string; del: string }>>();
 
 /** The stamp for a store of `documentName`, consuming the recorded writers. */
-function takeWriterStamp(documentName: string, doc: Y.Doc, kind: string): Record<string, string> | null {
+function takeWriterStamp(documentName: string, doc: Y.Doc, kind: string): Record<string, string | null> | null {
   const writers = collabWriters.get(documentName);
   collabWriters.delete(documentName);
+  const external = externalFolds.delete(documentName);
   let accepted = false;
   if (kind === "document") {
     const before = lastSuggestions.get(documentName);
@@ -1868,6 +1893,8 @@ function takeWriterStamp(documentName: string, doc: Y.Doc, kind: string): Record
       }
     }
   }
+  // The latest change is somebody else's write folded in from the vault: name nobody.
+  if (external) return externalStamp();
   if (!writers?.size) return null;
   const [writer, change] = [...writers.entries()].pop()!;
   // The opaque subject id + time + kind (writer-stamp.ts / sharing.ts) — never an email.
@@ -2268,7 +2295,13 @@ export async function storeDocumentState(documentName: string, doc: Y.Doc): Prom
     }
   };
   const readable = await readNote();
-  if (!kind) kind = "document";
+  // Never render under a guessed kind (a canvas persisted as HTML is corrupted):
+  // an unknown kind keeps the state and writes later, like any unreadable note.
+  if (!kind) {
+    keepAhead();
+    scheduleStoreRetry(documentName, noteId, vaultId, "unreadable");
+    return;
+  }
   kindCache.set(documentName, kind);
   // Its own actor: a document whose renders keep timing out cools down by itself (H-1) — never the store lane.
   const lane: ConvertOptions = { lane: "store", actor: `doc:${documentName}` };
@@ -2336,6 +2369,7 @@ export async function storeDocumentState(documentName: string, doc: Y.Doc): Prom
             rebaseDoc(noteId, vaultId, { source: noteMs, hash: hash ?? contentHash(note.content), base: fold.base });
           }
           lastReconciled.set(documentName, noteMs);
+          markExternalFold(documentName);
           if (fold.wholesale && row?.ahead) tellClients(documentName, { type: "prism:notice", code: "external-replaced" });
         }
       }
@@ -2414,7 +2448,10 @@ export async function storeDocumentState(documentName: string, doc: Y.Doc): Prom
         // Who gets the stamp is consumed by taking it; a write that does not land gives it back.
         const writersBefore = collabWriters.get(documentName);
         const suggestionsBefore = lastSuggestions.get(documentName);
+        const externalBefore = externalFolds.has(documentName);
         const giveBack = () => {
+          // The fold is still the latest change unless a person wrote meanwhile.
+          if (externalBefore && !collabWriters.get(documentName)?.size) externalFolds.add(documentName);
           if (writersBefore) collabWriters.set(documentName, new Map([...writersBefore, ...(collabWriters.get(documentName) ?? [])]));
           if (suggestionsBefore) lastSuggestions.set(documentName, suggestionsBefore);
         };
@@ -2611,6 +2648,7 @@ export const hocuspocus = new Hocuspocus({
   async afterUnloadDocument(data) {
     docEditors.delete(data.documentName);
     collabWriters.delete(data.documentName);
+    externalFolds.delete(data.documentName);
     lastSuggestions.delete(data.documentName);
     blockedDocs.delete(data.documentName);
     lastVaultRead.delete(data.documentName);

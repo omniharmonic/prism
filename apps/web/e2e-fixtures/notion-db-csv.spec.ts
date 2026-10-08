@@ -89,6 +89,8 @@ test("csv import into a new database", async ({ page }) => {
   const create = page.getByRole("dialog");
   await create.getByRole("button", { name: "Page", exact: true }).click();
   await create.getByRole("button", { name: "Database", exact: true }).click();
+  // (The New database dialog — its own tag + properties — offers the older page as "Use an existing tag".)
+  await page.getByRole("dialog", { name: "New database" }).getByRole("button", { name: "Use an existing tag" }).click();
   await create.getByRole("textbox").first().fill("Reading list");
   await create.getByRole("button", { name: "Create", exact: true }).click();
   await page.getByRole("button", { name: "Or import a CSV as its rows…" }).click();
@@ -152,6 +154,8 @@ test("csv into a new database is offered only to people who can change schemas",
   const create = page.getByRole("dialog");
   await create.getByRole("button", { name: "Page", exact: true }).click();
   await create.getByRole("button", { name: "Database", exact: true }).click();
+  // (The New database dialog — its own tag + properties — offers the older page as "Use an existing tag".)
+  await page.getByRole("dialog", { name: "New database" }).getByRole("button", { name: "Use an existing tag" }).click();
   await create.getByRole("button", { name: "Create", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Which pages should this database show?" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Or import a CSV as its rows…" })).toHaveCount(0);
@@ -213,6 +217,8 @@ test("L7: adopting an empty database page re-reads its revision before saving th
   const create = page.getByRole("dialog");
   await create.getByRole("button", { name: "Page", exact: true }).click();
   await create.getByRole("button", { name: "Database", exact: true }).click();
+  // (The New database dialog — its own tag + properties — offers the older page as "Use an existing tag".)
+  await page.getByRole("dialog", { name: "New database" }).getByRole("button", { name: "Use an existing tag" }).click();
   await create.getByRole("textbox").first().fill("Shelf");
   await create.getByRole("button", { name: "Create", exact: true }).click();
   await page.getByRole("button", { name: "Or import a CSV as its rows…" }).click();

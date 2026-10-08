@@ -230,7 +230,7 @@ function AccessPanel({
       </p>
     );
   const field =
-    "focus-ring min-h-11 w-full min-w-0 rounded-lg border border-[var(--glass-border)] bg-[var(--bg-base)] px-3 text-sm";
+    "focus-ring min-h-control w-full min-w-0 rounded-lg border border-[var(--glass-border)] bg-[var(--bg-base)] px-3 text-sm";
   const vaults = data?.vaults ?? [];
   return (
     <div className="space-y-6">
@@ -251,7 +251,7 @@ function AccessPanel({
           <p className="mt-0">{error}</p>
           {!removeReceipt && (
             <Button
-              className="min-h-11"
+              className="min-h-control"
               disabled={busy}
               onClick={() => {
                 setError("");
@@ -276,7 +276,7 @@ function AccessPanel({
             management role.
           </p>
           <Button
-            className="min-h-11"
+            className="min-h-control"
             disabled={busy}
             onClick={() =>
               void run(async () => {
@@ -310,7 +310,7 @@ function AccessPanel({
                 not confirmed saved: {receipt.roleError}
               </p>
               <Button
-                className="min-h-11"
+                className="min-h-control"
                 disabled={busy}
                 onClick={() =>
                   void run(async () => {
@@ -412,7 +412,7 @@ function AccessPanel({
           <Button
             type="submit"
             variant="primary"
-            className="mt-4 min-h-11"
+            className="mt-4 min-h-control"
             disabled={busy || loading || !email.trim() || !vaultId}
             loading={busy}
           >
@@ -477,7 +477,7 @@ function AccessPanel({
                           sharing.removeWorkspaceAccess && (
                             <Button
                               variant="ghost"
-                              className="min-h-11"
+                              className="min-h-control"
                               disabled={busy}
                               onClick={() =>
                                 void removeAccess(person.email, vault.id)

@@ -236,7 +236,7 @@ function AgentChatView({ client }: { client: AgentClient }) {
   const list = (<>
     {!showingConversation && pendingSavedNote && <section aria-label="Pending context destination" className="border-b border-[var(--glass-border)] p-3 text-xs">
       <p>A context note is waiting. Choose a conversation or start a new one; nothing has been sent.</p>
-      <button className="focus-ring min-h-11 underline" onClick={() => useAgentChatStore.getState().dismissSavedNote(pendingSavedNote.id)}>Dismiss pending note</button>
+      <button className="focus-ring min-h-control underline" onClick={() => useAgentChatStore.getState().dismissSavedNote(pendingSavedNote.id)}>Dismiss pending note</button>
     </section>}
     <SessionList
       sessions={sessions ?? []}

@@ -34,7 +34,14 @@
 }
 
 .prism-graph__saved { margin-top: 8px; font-size: 12px; color: var(--text-secondary); }
-.prism-graph__saved summary { cursor: pointer; min-height: 44px; align-content: center; }
+.prism-graph__saved summary { cursor: pointer; min-height: var(--control-h-md); align-content: center; }
 .prism-graph__saved p { margin: 8px 0; line-height: 1.5; }
 .prism-graph__saved > div { display: flex; flex-wrap: wrap; gap: 8px; }
-.prism-graph__saved button { min-height: 44px; }
+.prism-graph__saved button { min-height: var(--control-h-md); }
+
+/* Touch targets (touch.css condition): the rules above draw these at the desktop control size
+   (tokens.css --control-h-md); a touch pointer or a narrow window gets --touch-target. */
+@media screen and (max-width: 767px), screen and (hover: none) and (pointer: coarse) {
+  .prism-graph__saved summary { min-height: var(--touch-target); }
+  .prism-graph__saved button { min-height: var(--touch-target); }
+}

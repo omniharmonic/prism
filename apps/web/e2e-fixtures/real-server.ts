@@ -29,6 +29,10 @@ export interface RealServer {
   link(grant: { resourceType: "note" | "page"; resource: string; level: "view" | "suggest" | "edit" }): Promise<string>;
   /** Override the server's conversion limits (null restores them) — e.g. `{ inlineMaxNodes: 0, maxNodes: 1 }` makes every page "too large to save". */
   limits(patch: Record<string, number> | null): Promise<void>;
+  /** The vault answers 500 to the next `count` plain reads of a note whose path contains `pathContains` (a slow/busy vault). */
+  failReads(pathContains: string, count: number): Promise<void>;
+  /** What the server's live document for a note holds: canvas elements / document blocks (null = not loaded). Also how many armed read failures are left. */
+  live(id: string): Promise<{ live: { elements: number; fragment: number } | null; remaining: number }>;
   stop(): Promise<void>;
 }
 
@@ -93,6 +97,14 @@ export async function startRealServer(appOrigin: string): Promise<RealServer> {
     async limits(patch) {
       child.stdin.write(JSON.stringify({ op: "limits", limits: patch }) + "\n");
       await nextLine();
+    },
+    async failReads(pathContains, count) {
+      child.stdin.write(JSON.stringify({ op: "failReads", pathContains, count }) + "\n");
+      await nextLine();
+    },
+    async live(id) {
+      child.stdin.write(JSON.stringify({ op: "live", id }) + "\n");
+      return JSON.parse(await nextLine()) as never;
     },
     async stop() {
       child.stdin.end();

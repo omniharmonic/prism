@@ -471,6 +471,8 @@ test("create database from New page and from tag", async ({ page }) => {
   const dialog = page.getByRole("dialog");
   await dialog.getByRole("button", { name: "Page", exact: true }).click();
   await dialog.getByRole("button", { name: "Database", exact: true }).click();
+  // (The New database dialog — its own tag + properties — offers the older page as "Use an existing tag".)
+  await page.getByRole("dialog", { name: "New database" }).getByRole("button", { name: "Use an existing tag" }).click();
   await dialog.getByRole("textbox").first().fill("Roadmap");
   await dialog.getByRole("button", { name: "Create", exact: true }).click();
   const created = (await fx(page)).creates.at(-1);

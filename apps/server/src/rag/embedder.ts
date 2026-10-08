@@ -14,6 +14,8 @@
  * All embedders return L2-normalized vectors, so cosine similarity == dot product.
  */
 import { config } from "../config";
+import { openAICompatible, ProviderCallError, type OpenAICompatibleBackend } from "../providers/openai-compatible";
+import { getModelsConfig } from "../providers/config";
 
 export interface Embedder {
   /** Stable id (`provider:model`) — stored alongside vectors so a model change
@@ -84,54 +86,67 @@ export class HashEmbedder implements Embedder {
   }
 }
 
-interface EmbeddingsResponse {
-  data: Array<{ index: number; embedding: number[] }>;
-}
-
-/** Calls an OpenAI-compatible `/v1/embeddings` endpoint. */
+/** Calls an OpenAI-compatible `/v1/embeddings` endpoint (the provider layer's
+ *  openai-compatible backend; the key is a literal for EMBED_API_KEY, or read from
+ *  the env var a models.json provider names). */
 export class OpenAICompatEmbedder implements Embedder {
   readonly id: string;
   // Real dimension is learned from the first response; seeded optimistically.
   dim = 0;
+  private readonly backend: OpenAICompatibleBackend;
   constructor(
-    private readonly endpoint: string,
+    endpoint: string,
     private readonly model: string,
-    private readonly apiKey = "",
+    apiKey = "",
+    apiKeyEnv: string | null = null,
   ) {
     this.id = `openai:${model}`;
+    this.backend = openAICompatible({ baseUrl: endpoint, apiKey, apiKeyEnv });
   }
   async embed(texts: string[]): Promise<Float32Array[]> {
     if (texts.length === 0) return [];
-    const resp = await fetch(`${this.endpoint}/embeddings`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        ...(this.apiKey ? { Authorization: `Bearer ${this.apiKey}` } : {}),
-      },
-      body: JSON.stringify({ model: this.model, input: texts }),
-    });
-    if (!resp.ok) {
-      throw new Error(`embeddings ${resp.status}: ${await resp.text().catch(() => "")}`);
+    let rows: number[][];
+    try {
+      rows = await this.backend.embed(this.model, texts);
+    } catch (e) {
+      if (e instanceof ProviderCallError && e.kind === "http") throw new Error(`embeddings ${e.status}: ${e.detail ?? ""}`);
+      throw e;
     }
-    const json = (await resp.json()) as EmbeddingsResponse;
     const out: Float32Array[] = new Array(texts.length);
-    for (const row of json.data) {
-      const v = Float32Array.from(row.embedding);
+    rows.forEach((row, i) => {
+      if (!row) return;
+      const v = Float32Array.from(row);
       this.dim = v.length;
-      out[row.index] = normalize(v);
-    }
+      out[i] = normalize(v);
+    });
     return out;
   }
 }
 
 let _embedder: Embedder | null = null;
 
-/** The process-wide embedder, chosen from config (real endpoint else fallback). */
+/**
+ * The embedder for an `embeddings` job of a models.json (null: not a file config).
+ * One model only (validation refuses a fallback: vectors can't be mixed); no entry =
+ * the offline hash embedder, exactly like no EMBED_ENDPOINT.
+ */
+export function embedderFromModelsConfig(): Embedder | null {
+  const cfg = getModelsConfig();
+  if (cfg.source !== "file") return null;
+  const step = cfg.jobs.embeddings?.steps[0];
+  const spec = step ? cfg.providers[step.provider] : undefined;
+  if (!step || !spec?.baseUrl) return new HashEmbedder();
+  console.log(`[providers] embeddings → ${step.provider}:${step.model}`);
+  return new OpenAICompatEmbedder(spec.baseUrl, step.model, "", spec.apiKeyEnv);
+}
+
+/** The process-wide embedder: the models.json `embeddings` job when that file is in
+ *  use, else EMBED_ENDPOINT (real endpoint) or the offline fallback — as before. */
 export function getEmbedder(): Embedder {
   if (_embedder) return _embedder;
-  _embedder = config.embedEndpoint
-    ? new OpenAICompatEmbedder(config.embedEndpoint, config.embedModel, config.embedApiKey)
-    : new HashEmbedder();
+  _embedder =
+    embedderFromModelsConfig() ??
+    (config.embedEndpoint ? new OpenAICompatEmbedder(config.embedEndpoint, config.embedModel, config.embedApiKey) : new HashEmbedder());
   return _embedder;
 }
 

@@ -127,16 +127,25 @@ test("a disk failure never reports an offline edit as saved", async ({ page }) =
   expect(await page.evaluate(() => (window as any).prismCollabFixture.append("draft", "UNSAVED_FIXTURE"))).toBe("unavailable");
 });
 
-test("a failed editor download can be retried; a chunk error while offline never clears caches or reloads", async ({ page, context }) => {
+test("one failed editor download is retried by itself — no error shown", async ({ page }) => {
   await page.goto("/e2e-fixtures/collab-storage.html?lazy");
-  // First download fails: the document shows the error with a way to try again.
+  await expect(page.getByText("Editor loaded")).toBeVisible();
+  await expect(page.getByRole("alert")).toHaveCount(0);
+  expect(await page.evaluate(() => (window as any).prismLazyAttempts)).toBe(2);
+});
+
+test("a failed editor download can be retried; a chunk error while offline never clears caches or reloads", async ({ page, context }) => {
+  await page.goto("/e2e-fixtures/collab-storage.html?lazy&fails=3");
+  // Every automatic attempt fails: the document says so with a way to try again (not the crash card).
   const alert = page.getByRole("alert");
   await expect(alert).toBeVisible();
+  await expect(alert).toContainText("The editor couldn’t be loaded");
   await expect(page.getByText("Editor loaded")).toHaveCount(0);
+  expect(await page.evaluate(() => (window as any).prismLazyAttempts)).toBe(3);
   await alert.getByRole("button", { name: /retry|try again/i }).click();
-  // Retry asks for the chunk AGAIN (not the remembered rejection) and mounts the editor.
+  // Try again asks for the chunk AGAIN (not the remembered rejection) and mounts the editor.
   await expect(page.getByText("Editor loaded")).toBeVisible();
-  expect(await page.evaluate(() => (window as any).prismLazyAttempts)).toBe(2);
+  expect(await page.evaluate(() => (window as any).prismLazyAttempts)).toBe(4);
 
   // Offline: a failed chunk load must not unregister the worker, delete caches or reload.
   const booted = await page.evaluate(() => (window as any).prismLazyBooted as number);
@@ -146,4 +155,17 @@ test("a failed editor download can be retried; a chunk error while offline never
   expect(await page.evaluate(() => sessionStorage.getItem("prism:chunk-reload-at"))).toBeNull();
   expect(await page.evaluate(() => (window as any).prismLazyBooted as number)).toBe(booted);
   await context.setOffline(false);
+});
+
+test("the renderer boundary retries a failed download once by itself, then says what happened (not a code error)", async ({ page }) => {
+  await page.goto("/e2e-fixtures/collab-storage.html?boundary");
+  await expect(page.getByText("Recovered view")).toBeVisible();
+  await expect(page.getByRole("alert")).toHaveCount(0);
+
+  await page.goto("/e2e-fixtures/collab-storage.html?boundary&always");
+  const alert = page.getByRole("alert");
+  await expect(alert).toContainText("Part of Prism couldn’t be downloaded.");
+  await expect(alert).not.toContainText("dynamically imported module");
+  await expect(alert.getByRole("button", { name: "Reload Prism" })).toBeVisible();
+  await expect(alert.getByRole("button", { name: "Retry" })).toBeVisible();
 });

@@ -210,7 +210,7 @@ function ScopedPublishPanel() {
         >
           {error}
           <button
-            className="ml-3 min-h-11 rounded-lg border border-[var(--glass-border)] px-3"
+            className="ml-3 min-h-control rounded-lg border border-[var(--glass-border)] px-3"
             onClick={() =>
               void refresh().then((list) => {
                 if (list) void loadCounts(list);

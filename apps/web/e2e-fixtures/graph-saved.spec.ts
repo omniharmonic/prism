@@ -178,10 +178,16 @@ for (const width of [1440, 390, 320])
       "Save current view",
       "Restore saved view",
       "Remove saved view",
-    ])
-      expect(
-        (await page.getByRole("button", { name: label }).boundingBox())?.height,
-      ).toBeGreaterThanOrEqual(44);
+    ]) {
+      // Control-size tokens (tokens.css): 28–36 px at a desktop width, 44 px touch targets below 768 px.
+      const height = (await page.getByRole("button", { name: label }).boundingBox())
+        ?.height;
+      if (width < 768) expect(height).toBeGreaterThanOrEqual(44);
+      else {
+        expect(height).toBeGreaterThanOrEqual(28);
+        expect(height).toBeLessThanOrEqual(36);
+      }
+    }
     await page.screenshot({
       path: info.outputPath(`graph-saved-${width}.png`),
       animations: "disabled",

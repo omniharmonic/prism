@@ -1,9 +1,9 @@
 .prism-suggestion-review { margin-bottom: 20px; border: 1px solid var(--glass-border); border-radius: 12px; background: var(--bg-surface); color: var(--text-primary); font-size: 13px; }
-.prism-suggestion-review > summary { min-height: 44px; padding: 13px 16px; cursor: pointer; font-weight: 600; border-radius: 12px; }
+.prism-suggestion-review > summary { min-height: var(--control-h-md); padding: 13px 16px; cursor: pointer; font-weight: 600; border-radius: 12px; }
 .prism-review-body { padding: 0 16px 16px; }
 .prism-review-navigation { display: flex; align-items: center; justify-content: space-between; gap: 12px; border-top: 1px solid var(--glass-border); padding-top: 8px; margin-bottom: 12px; color: var(--text-secondary); }
 .prism-review-navigation > div { display: flex; gap: 4px; }
-.prism-suggestion-review button { min-height: 44px; min-width: 44px; display: inline-flex; align-items: center; justify-content: center; gap: 6px; padding: 8px 12px; border: 1px solid var(--glass-border); border-radius: 7px; background: var(--bg-base); color: var(--text-primary); }
+.prism-suggestion-review button { min-height: var(--control-h-md); min-width: var(--control-h-md); display: inline-flex; align-items: center; justify-content: center; gap: 6px; padding: 0 var(--control-px-md); border: 1px solid var(--glass-border); border-radius: 7px; background: var(--bg-base); color: var(--text-primary); }
 .prism-suggestion-review button:hover:not(:disabled) { background: var(--glass-hover); }
 .prism-suggestion-review button:disabled { opacity: .4; cursor: default; }
 .prism-review-author { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; margin-bottom: 12px; overflow-wrap: anywhere; }
@@ -23,3 +23,10 @@
 .prism-suggestion-review .prism-review-accept:hover:not(:disabled) { background: var(--action-hover, var(--color-accent)); }
 .prism-review-complete { margin-bottom: 16px; font-size: 12px; color: var(--text-secondary); }
 @media (max-width: 420px) { .prism-review-body { padding: 0 12px 12px; } .prism-review-actions [data-review-show] { flex-basis: 100%; margin-right: 0; } }
+
+/* Touch targets (touch.css condition): the rules above draw these at the desktop control size
+   (tokens.css --control-h-md); a touch pointer or a narrow window gets --touch-target. */
+@media screen and (max-width: 767px), screen and (hover: none) and (pointer: coarse) {
+  .prism-suggestion-review > summary { min-height: var(--touch-target); }
+  .prism-suggestion-review button { min-height: var(--touch-target); min-width: var(--touch-target); }
+}

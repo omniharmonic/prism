@@ -3,6 +3,7 @@
  * `node --env-file=.env`). The Parachute token is held ONLY here, server-side —
  * it is never sent to a client.
  */
+import { assertModelsConfig, getModelsConfig, setEnvModelSettings } from "./providers/config";
 export const config = {
   port: Number(process.env.PORT ?? 8787),
   // Loopback by default. The public entrypoint is the Cloudflare tunnel, which
@@ -324,6 +325,15 @@ export const config = {
   // `vault:<name>:admin` token: minted 1h-ephemeral per run via the operator CLI,
   // or PARACHUTE_ADMIN_TOKEN. 0 DISABLES it.
   historyCompactIntervalMs: Number(process.env.HISTORY_COMPACT_INTERVAL_MS ?? 86_400_000),
+  // Vault lint (worker/vault-lint.ts): a READ-ONLY daily sample of the newest notes per
+  // tag, counted against the declared field shapes (vault-shapes.ts). Reported as the
+  // `vault-lint` health source; it goes `failing` (→ the usual alert) when a tag's
+  // share of mis-shaped notes exceeds VAULT_LINT_MAX_RATE. OFF unless VAULT_LINT_ENABLED=true.
+  vaultLintEnabled: (process.env.VAULT_LINT_ENABLED ?? "false").toLowerCase() === "true",
+  vaultLintIntervalMs: Number(process.env.VAULT_LINT_INTERVAL_MS ?? 86_400_000),
+  vaultLintSample: Math.max(1, Math.min(500, Number(process.env.VAULT_LINT_SAMPLE ?? 100))),
+  vaultLintMaxRate: Number(process.env.VAULT_LINT_MAX_RATE ?? 0.2),
+  vaultLintMinSample: Math.max(1, Number(process.env.VAULT_LINT_MIN_SAMPLE ?? 10)),
   // Worker health + staleness alerts (worker/health.ts). A source is "stale" when
   // nothing succeeded within its threshold, "failing" after WORKER_FAIL_STREAK
   // consecutive errors. A threshold of 0 turns the STALENESS check off for that
@@ -573,14 +583,21 @@ export const vaultRegistry: VaultEntry[] = buildVaultRegistry();
 // stored in SQLite. db.ts already imports config, so the merge/resolve goes there
 // to avoid a config↔db import cycle. Import it from "./db".
 
-/** Whether a real embedding endpoint is configured (else the offline fallback). */
-export const embeddingsConfigured = () => config.embedEndpoint.length > 0;
+/** Whether a real embedding endpoint is configured (else the offline fallback):
+ *  the models.json `embeddings` job when that file is in use, else EMBED_ENDPOINT. */
+export const embeddingsConfigured = () => {
+  const m = getModelsConfig();
+  return m.source === "file" ? (m.jobs.embeddings?.steps.length ?? 0) > 0 : config.embedEndpoint.length > 0;
+};
 
 /** Whether magic-link email sign-in is available (Resend configured). */
 export const emailEnabled = () => config.resendApiKey.length > 0;
 
 /** Fail fast at startup if required secrets are missing. */
 export function assertConfig(): void {
+  // The provider layer's models.json (providers/config.ts): a file that does not
+  // validate stops the server with every problem listed — never a silent re-route.
+  assertModelsConfig();
   const missing: string[] = [];
   if (!config.parachuteToken) missing.push("PARACHUTE_TOKEN");
   if (!config.sessionSecret) missing.push("SESSION_SECRET");
@@ -604,6 +621,16 @@ export function assertConfig(): void {
     );
   }
 }
+
+// The provider layer reads the pre-provider-layer env vars through this (no import
+// cycle): with no models.json they ARE the routing (see providers/config.ts).
+setEnvModelSettings(() => ({
+  skillsDefaultProvider: config.skillsDefaultProvider,
+  skillsLocalBaseUrl: config.skillsLocalBaseUrl,
+  skillsLocalModel: config.skillsLocalModel,
+  embedEndpoint: config.embedEndpoint,
+  embedModel: config.embedModel,
+}));
 
 export type CalendarDeleteMode = "log" | "archive" | "delete";
 

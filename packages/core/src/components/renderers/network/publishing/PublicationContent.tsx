@@ -195,7 +195,7 @@ export function PublicationContent({
         <div role="alert" className="text-sm text-[var(--color-error)]">
           {loadError}
           <button
-            className="ml-2 min-h-11 rounded-lg border border-[var(--glass-border)] px-3"
+            className="ml-2 min-h-control rounded-lg border border-[var(--glass-border)] px-3"
             onClick={() => setReload((n) => n + 1)}
           >
             Retry preview
@@ -247,7 +247,7 @@ export function PublicationContent({
                   borderBottom: "1px solid var(--glass-border)",
                 }}
               >
-                <label className="grid h-11 w-11 shrink-0 cursor-pointer place-items-center">
+                <label className="grid size-control shrink-0 cursor-pointer place-items-center">
                   <input
                     type="checkbox"
                     aria-label={"Include " + n.title}

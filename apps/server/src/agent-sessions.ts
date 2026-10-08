@@ -62,8 +62,11 @@ import {
   enqueueRun,
   runnerBudgetUsd,
   runnerAuthRetryDelayMs,
+  isClaudeModel,
+  type ClaudeModel,
   type RunHandle,
 } from "./agent-exec";
+import { chatModel, ProviderCapabilityError } from "./providers/config";
 import { StreamNormalizer, scrubSecrets, vaultToolName, type AgentEvent, type AgentTurnStatus } from "./agent-events";
 import { authRetryAllowed, classifyRunFailure, describeRunFailure, failureCodeOfText, isAgentErrorCode, noteRunOutcome, queuedReasonCode, type AgentErrorCode } from "./agent-failure";
 
@@ -430,6 +433,7 @@ export function createSession(p: {
   requestId?: string;
 }): SessionRow {
   if (p.permissionMode && !prismProfilesEnabled()) throw new ProfileUnavailableError("Prism session permissions are disabled on this server");
+  chatProviderModel(); // refuse up front when chat is routed to a provider with no agent loop
   const now = deps.now();
   const row = {
     id: randomUUID(),
@@ -553,6 +557,22 @@ const noteRef = (n: Note): NoteRef => ({
 export class SessionBudgetError extends Error {}
 export class DailyBudgetError extends Error {}
 export class ProfileUnavailableError extends Error {}
+
+/**
+ * Provider layer: chat sessions are tool-using, multi-turn runs that only a provider
+ * with an agent loop (claude-cli today) can serve. Returns the claude `--model` the
+ * models.json `chat` job names (undefined = the runner default, as before), or throws
+ * ProfileUnavailableError (→ 409 `profile_unavailable`) with the reason and the fix.
+ */
+export function chatProviderModel(): ClaudeModel | undefined {
+  try {
+    const m = chatModel();
+    return isClaudeModel(m) ? m : undefined;
+  } catch (e) {
+    if (e instanceof ProviderCapabilityError) throw new ProfileUnavailableError(e.message);
+    throw e;
+  }
+}
 export class NoteForbiddenError extends Error {}
 /** The turn's page is locked and the session could write it around Prism (NP-PG-09). */
 export class NoteLockedError extends Error {}
@@ -688,6 +708,7 @@ export async function startTurn(
   if (!s) throw new SessionNotFoundError("session not found");
   if (s.status === "archived") throw new SessionArchivedError("session is archived");
   if (entry.id !== s.vault_id) throw new SessionNotFoundError("session belongs to another vault");
+  const chatClaudeModel = chatProviderModel();
   if (req.contextNoteIds !== undefined && !validContextNoteIds(req.contextNoteIds)) throw new AgentContextError("Attach up to five distinct note identifiers.");
   if (req.contextSnapshots !== undefined && !validContextSnapshots(req.contextSnapshots)) throw new AgentContextError("Invalid context snapshots.");
   const snapshots = (req.contextSnapshots ?? []).map(canonicalSnapshot);
@@ -979,6 +1000,7 @@ export async function startTurn(
           server: profileServer(s.profile),
           allowedTools: profileAllowedTools(s.profile),
           maxBudgetUsd: runnerBudgetUsd(),
+          ...(chatClaudeModel ? { model: chatClaudeModel } : {}),
         }),
       onQueued: (reason) => record(sessionId, turnId, statusEv("queued", reason, { errorCode: queuedReasonCode(reason) ?? undefined })),
       onStart: () => {

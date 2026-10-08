@@ -196,7 +196,8 @@ export function clickupTaskNote(
       ...(due ? { due } : {}),
       priority,
       ...(assigned ? { assigned } : {}),
-      project: task.list?.name ?? "",
+      // No list name → no key (never `""`: vault-hygiene writer fix).
+      ...(task.list?.name ? { project: task.list.name } : {}),
       context,
       clickup_url: url,
       clickup_team_id: ctx.teamId,

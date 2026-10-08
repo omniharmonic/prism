@@ -9,6 +9,7 @@
 import { canonicalTagsStrict } from "./tags";
 import { config, type VaultEntry } from "./config";
 import { resolveVaultEntry } from "./db";
+import { shapeMetadata } from "./vault-shapes";
 
 export interface Note {
   id: string;
@@ -193,7 +194,8 @@ export function vaultClient(vaultId?: string, opts: { /** Abort any single vault
     // on it than the type says (a request body) must not be able to send them.
     const body: Record<string, unknown> = { content: params.content };
     if (params.path !== undefined) body.path = params.path;
-    if (params.metadata !== undefined) body.metadata = params.metadata;
+    // Shape guard at the sink (vault-shapes.ts): declared field shapes, never `""` in a list.
+    if (params.metadata !== undefined) body.metadata = shapeMetadata(params.metadata, params.tags, "create");
     if (params.tags !== undefined) body.tags = sinkTags(params.tags);
     if (params.links !== undefined) body.links = params.links;
     if (params.ifExists !== undefined) body.if_exists = params.ifExists;
@@ -216,7 +218,7 @@ export function vaultClient(vaultId?: string, opts: { /** Abort any single vault
     const body: Record<string, unknown> = {};
     if (params.content !== undefined) body.content = params.content;
     if (params.path !== undefined) body.path = params.path;
-    if (params.metadata !== undefined) body.metadata = params.metadata;
+    if (params.metadata !== undefined) body.metadata = shapeMetadata(params.metadata, params.tags?.add, "update");
     if (params.links !== undefined) body.links = params.links;
     if (params.tags !== undefined) {
       body.tags = { ...(params.tags.add ? { add: sinkTags(params.tags.add) } : {}), ...(params.tags.remove ? { remove: sinkTags(params.tags.remove) } : {}) };

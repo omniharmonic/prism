@@ -48,6 +48,7 @@ import { PROTON_CREDENTIAL, protonMode } from "./proton";
 import { openCandidateCounts } from "../identity-store";
 import { lastLinkJobOutcome } from "../people-link-job";
 import { collabUnsavedStats } from "../db";
+import { lastVaultLintOutcome } from "./vault-lint";
 
 /** An unsaved live document older than this makes the `collab` source stale (alerted like any other). */
 const COLLAB_UNSAVED_STALE_MS = 60 * 60_000;
@@ -399,6 +400,38 @@ export async function getSourceHealth(opts: { now?: number; list?: Lister } = {}
         lastJobLinked: last?.linked ?? null,
         lastJobQueued: last?.queued ?? null,
       },
+    });
+  }
+
+  // Field-shape lint (worker/vault-lint.ts): read-only daily sample. `failing` (→ alert)
+  // when a tag's share of mis-shaped notes is over VAULT_LINT_MAX_RATE; stale when the
+  // daily run has not happened for two intervals. Counts and field names only.
+  if (config.vaultLintEnabled) {
+    const last = lastVaultLintOutcome("primary");
+    const at = last ? Date.parse(last.at) : NaN;
+    const okAt = last && last.status !== "error" && Number.isFinite(at) ? at : null;
+    const streak = last && last.status !== "ok" ? config.workerFailStreak : 0;
+    const staleAfterMs = config.vaultLintIntervalMs > 0 ? config.vaultLintIntervalMs * 2 : 0;
+    const detail: Record<string, string | number | boolean | null> = {
+      lastRunAt: last?.at ?? null,
+      over: last?.over.join(",") || null,
+      rose: last?.rose.join(",") || null,
+    };
+    for (const [tag, t] of Object.entries(last?.tags ?? {})) detail[`rate.${tag}`] = t.rate;
+    out.push({
+      name: "vault-lint",
+      kind: "server",
+      vaultId: "primary",
+      lastSuccessAt: iso(okAt),
+      lastError: last?.error
+        ? scrubError(last.error)
+        : last?.over.length
+          ? `mis-shaped metadata above ${Math.round(config.vaultLintMaxRate * 100)}% in: ${last.over.map((t) => `${t} ${Math.round((last.tags[t]?.rate ?? 0) * 100)}%`).join(", ")}`
+          : null,
+      failureStreak: streak,
+      staleAfterMs,
+      status: computeStatus({ configured: true, lastSuccessAt: okAt, streak, staleAfterMs, now, baselineAt: BOOT_AT }),
+      detail,
     });
   }
 

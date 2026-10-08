@@ -11,6 +11,8 @@
  *   POST /api/schemas/:tag/fields/:field/convert
  *                                  owner-only: "change type" across vault types as a guided
  *                                  conversion into a NEW field (dry-run default)
+ *   POST /api/schemas/relation-targets
+ *                                  owner-only: set inferred relation targets (hints only; dry-run default)
  *   POST /api/query                lean filtered/sorted/paged rows for a view
  *   POST /api/properties/:id       metadata-only property write with per-field CAS
  *   POST /api/properties/batch     up to 100 of those, one result each (bulk edit)
@@ -86,6 +88,9 @@ import {
   runQuery,
   validateQuerySpec,
   validateSchemaPatch,
+  mergeFieldHints,
+  planRelationTargets,
+  relationTargetOf,
   type FieldHints,
   type MeResolver,
   type QueryInput,
@@ -455,6 +460,74 @@ databasesApi.put("/schemas/:tag", async (c) => {
   return withSchemaLock(`${entry.id}\u0000${tag}`, () => applySchemaPatch(c, entry, tag, patch));
 });
 
+/**
+ * `POST /api/schemas/relation-targets {dryRun=true}` — the relation-target backfill (C).
+ *
+ * Every relation / person property (by its type or its name) of every tag that names
+ * no target gets the one its NAME gives it ("projects" → #project, "attendees" →
+ * #person, "organizations" → #organization, "meetings" → #meeting, "tasks" → #task;
+ * only tags that have a schema). The write is presentation only: a `relationTag`
+ * hint per field, never a vault schema change and never a stored value — values in
+ * any of their four encodings are READ against the target by the clients. Fields it
+ * cannot infer are listed (`unresolved`) for the owner to decide. Same guards as the
+ * other bulk schema jobs: server-owner role, CSRF, a signed-in person, dry run by
+ * default, Prism-managed tags left alone, audited with counts only.
+ */
+databasesApi.post("/schemas/relation-targets", bodyLimit({ maxSize: 4096 }), async (c) => {
+  const actor = resolveActor(c);
+  if (actor.kind !== "user" || actor.role !== "owner") return c.json({ error: "forbidden", reason: "setting relation targets is owner-only" }, 403);
+  const via = requestVia(c);
+  const csrf = csrfRefusal(c, via);
+  if (csrf) return csrf;
+  if (via !== "session" && via !== "device") return c.json({ error: "agent_origin_refused", detail: "setting relation targets needs a signed-in person" }, 403);
+  const limited = perOwner(c, "schema-write", actor.email, envInt("SCHEMA_WRITES_PER_MINUTE", 120));
+  if (limited) return limited;
+  const body = (await c.req.json().catch(() => null)) as { dryRun?: unknown } | null;
+  if (!body || typeof body !== "object" || Array.isArray(body)) return c.json({ error: "bad_request" }, 400);
+  if (body.dryRun !== undefined && typeof body.dryRun !== "boolean") return c.json({ error: "bad_request", detail: "dryRun must be boolean" }, 400);
+  const dryRun = body.dryRun !== false;
+  const entry = entryFor(c, actor);
+  let schemas: Map<string, TagSchema>;
+  try {
+    schemaCache.delete(entry.id);
+    schemas = await vaultSchemas(entry);
+  } catch (e) {
+    return vaultFailure(c, e);
+  }
+  const plan = () => {
+    const hints = readHints(entry.id);
+    const map: Record<string, TagSchema> = {};
+    for (const name of new Set([...schemas.keys(), ...hints.keys()])) map[name] = present(schemas.get(name), hints.get(name));
+    return planRelationTargets(map, LOCKED_TAG);
+  };
+  const before = plan();
+  c.header("Cache-Control", "private, no-store");
+  if (dryRun) return c.json({ dryRun: true, ...before });
+  let written = 0;
+  const byTag = new Map<string, Array<{ field: string; target: string }>>();
+  for (const p of before.proposals) byTag.set(p.tag, [...(byTag.get(p.tag) ?? []), { field: p.field, target: p.target }]);
+  for (const [tag, list] of byTag) {
+    await withSchemaLock(`${entry.id}\u0000${tag}`, async () => {
+      const all = readHints(entry.id).get(tag) ?? {};
+      let changed = false;
+      for (const { field, target } of list) {
+        // Decided again under the lock: a target set meanwhile is the owner's choice.
+        if (relationTargetOf(own(all, field))) continue;
+        all[field] = mergeFieldHints(own(all, field), { relationTag: target });
+        changed = true;
+        written++;
+      }
+      if (changed) writeHintRow(entry.id, tag, all, readPinned(entry.id, tag));
+    });
+  }
+  personHintCache.delete(entry.id);
+  recordAction({
+    actorEmail: actor.email, via, origin: "human", action: "schema.relation-targets", vaultId: entry.id,
+    target: { written, proposed: before.proposals.length, unresolved: before.unresolved.length }, status: "ok",
+  });
+  return c.json({ dryRun: false, ...before, written });
+});
+
 async function applySchemaPatch(c: Context, entry: VaultEntry, tag: string, patch: import("@prism/core/database").SchemaPatch) {
   let current: TagSchema | undefined;
   try {
@@ -504,6 +577,15 @@ async function applySchemaPatch(c: Context, entry: VaultEntry, tag: string, patc
         error: "incompatible_kind", field: k,
         detail: `“${k}” is stored as ${vaultType} for every page with this tag, so it cannot be shown as ${PROPERTY_KIND_LABELS[kind]}. Stored values are never converted; choose a matching type or add a new property instead.`,
       }, 409);
+    }
+  }
+  // One page or several (a relation / person): must agree with the stored type — the vault
+  // refuses a list in a string field and a single string in an array field.
+  for (const [k, h] of Object.entries(patch.ui ?? {})) {
+    if (h.multiple === undefined) continue;
+    const vaultType = own(merged.fields, k)?.type;
+    if (vaultType !== undefined && h.multiple !== (vaultType === "array")) {
+      return c.json({ error: "incompatible_kind", field: k, detail: `“${k}” is stored as ${vaultType}, so it holds ${vaultType === "array" ? "several values" : "one value"}. Stored values are never converted; add a new property instead.` }, 409);
     }
   }
   // A pinned key must be a property of THIS tag: declared in its vault schema or carrying a hint.
@@ -559,11 +641,7 @@ async function applySchemaPatch(c: Context, entry: VaultEntry, tag: string, patc
   }
   if (patch.ui || patch.pinned !== undefined) {
     const all = readHints(entry.id).get(tag) ?? {};
-    for (const [field, h] of Object.entries(patch.ui ?? {})) {
-      const next: FieldHints = { ...(all[field] ?? {}), ...h };
-      if (h.colors) next.colors = { ...(all[field]?.colors ?? {}), ...h.colors };
-      all[field] = next;
-    }
+    for (const [field, h] of Object.entries(patch.ui ?? {})) all[field] = mergeFieldHints(all[field], h);
     // The pinned list is replaced whole when sent, and kept as stored when it is not.
     writeHintRow(entry.id, tag, all, patch.pinned ?? readPinned(entry.id, tag));
     personHintCache.delete(entry.id); // the assignment hooks read hints from a cache

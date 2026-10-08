@@ -53,6 +53,7 @@ import { freemem, homedir, tmpdir, totalmem } from "node:os";
 import { dirname, join } from "node:path";
 import type { VaultEntry } from "./config";
 import { scrubSecrets } from "./agent-events";
+import { providerStatus } from "./providers/router";
 import { AUTH_RETRY_DELAY_MS, authRetryAllowed, classifyRunFailure, describeRunFailure, noteRunOutcome, queuedReasonCode, runHealth, _resetRunHealth, type AgentErrorCode } from "./agent-failure";
 
 export type DispatchStatus = "queued" | "running" | "done" | "error" | "cancelled";
@@ -78,6 +79,19 @@ export interface Dispatch {
   /** When the process was actually spawned (null while queued). */
   runStartedAt: number | null;
   endedAt: number | null;
+  /** Provider layer (models.json plans only): which provider/model answered, and the
+   *  steps that failed before it. Absent on the legacy single-route paths. */
+  provider?: string;
+  model?: string;
+  fallbacks?: Array<{ provider: string; model: string; ok: boolean; error?: string }>;
+}
+
+/** What an external run may return instead of plain text: the text + who served it. */
+export interface ExternalResult {
+  text: string;
+  provider: string;
+  model: string;
+  fallbacks: Array<{ provider: string; model: string; ok: boolean; error?: string }>;
 }
 
 /** What subscribers (the SSE route) receive: output DELTAS, and status changes. */
@@ -917,8 +931,10 @@ export function runnerStatus(): {
   lastFailure: { code: AgentErrorCode; at: number } | null;
   /** The last two runs both failed to sign in: the owner should log in to Claude on the server. */
   signInProblem: boolean;
+  /** The provider layer: active models config (keys redacted) + who served recent calls. */
+  providers: ReturnType<typeof providerStatus>;
 } {
-  return { running, queued: queue.length, maxConcurrent: cfg.maxConcurrent, maxQueue: cfg.maxQueue, admission: lastAdmission, ...runHealth() };
+  return { running, queued: queue.length, maxConcurrent: cfg.maxConcurrent, maxQueue: cfg.maxQueue, admission: lastAdmission, ...runHealth(), providers: providerStatus() };
 }
 
 // ── one-shot dispatches (the /api/agent/dispatch alias + the skill scheduler) ─
@@ -1097,7 +1113,7 @@ export function startDispatch(
 export function startExternalDispatch(
   entry: VaultEntry,
   req: { skill?: string | null; noteId?: string | null },
-  run: (signal: AbortSignal) => Promise<string>,
+  run: (signal: AbortSignal) => Promise<string | ExternalResult>,
 ): Dispatch {
   const now = Date.now();
   const d: Dispatch = {
@@ -1130,7 +1146,14 @@ export function startExternalDispatch(
     let out = "";
     let err: string | null = null;
     try {
-      out = await run(ac.signal);
+      const r = await run(ac.signal);
+      if (typeof r === "string") out = r;
+      else {
+        out = r.text;
+        d.provider = r.provider;
+        d.model = r.model;
+        d.fallbacks = r.fallbacks;
+      }
     } catch (e) {
       err = (e as Error)?.message ?? String(e);
     }

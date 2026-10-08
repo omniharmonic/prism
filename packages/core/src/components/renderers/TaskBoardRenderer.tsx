@@ -53,7 +53,7 @@ import {
 import { BoardSettings, BoardTaskForm } from "./boards/BoardForms";
 
 export const boardControl =
-  "board-control focus-ring min-h-11 rounded-lg border border-[var(--glass-border)] bg-[var(--bg-surface)] px-3 text-sm text-[var(--text-secondary)] hover:bg-[var(--glass-hover)] disabled:opacity-50";
+  "board-control focus-ring min-h-control rounded-lg border border-[var(--glass-border)] bg-[var(--bg-surface)] px-3 text-sm text-[var(--text-secondary)] hover:bg-[var(--glass-hover)] disabled:opacity-50";
 
 // Prefer the card under the pointer to its containing column. Exclude the
 // dragged card itself so overlapping its original slot cannot capture the drop.
@@ -809,7 +809,7 @@ function TaskCard({
       <div className="flex items-start gap-1">
         <button
           onClick={onOpen}
-          className="board-card-title focus-ring min-h-11 min-w-0 flex-1 break-words text-left text-sm font-medium"
+          className="board-card-title focus-ring min-h-control min-w-0 flex-1 break-words text-left text-sm font-medium"
         >
           {boardTitle(task)}
           <ArrowUpRight
@@ -823,7 +823,7 @@ function TaskCard({
           aria-label={"Actions for " + boardTitle(task)}
           aria-haspopup="menu"
           aria-expanded={menu}
-          className="board-card-menu focus-ring min-h-11 w-8 shrink-0 text-[var(--text-secondary)]"
+          className="board-card-menu focus-ring min-h-control w-8 shrink-0 text-[var(--text-secondary)]"
           onClick={() => setMenu((o) => !o)}
         >
           <MoreHorizontal size={16} />
@@ -848,7 +848,7 @@ function TaskCard({
             {...listeners}
             disabled={disabled}
             aria-label={"Drag " + boardTitle(task)}
-            className="board-card-drag focus-ring min-h-11 w-8 shrink-0 touch-none cursor-grab text-[var(--text-secondary)]"
+            className="board-card-drag focus-ring min-h-control w-8 shrink-0 touch-none cursor-grab text-[var(--text-secondary)]"
           >
             <GripVertical size={16} />
           </button>
