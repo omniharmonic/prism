@@ -54,7 +54,10 @@ for (const width of [1440, 390, 320]) test(`review diff stays legible at ${width
   await expect(page.getByRole('region', { name: 'Change by Prism agent' })).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   for (const label of ['Previous suggested change', 'Next suggested change', 'Show in document', 'Accept', 'Reject']) {
-    expect((await page.locator('.prism-suggestion-review').getByRole('button', { name: label, exact: true }).boundingBox())?.height).toBeGreaterThanOrEqual(44);
+    // Control-size tokens (tokens.css): 28–36 px at a desktop width, 44 px touch targets below 768 px.
+    const height = (await page.locator('.prism-suggestion-review').getByRole('button', { name: label, exact: true }).boundingBox())?.height;
+    if (width < 768) expect(height).toBeGreaterThanOrEqual(44);
+    else { expect(height).toBeGreaterThanOrEqual(28); expect(height).toBeLessThanOrEqual(36); }
   }
   await expect(page.locator('.cd-bubble:visible')).toHaveCount(0);
   await page.screenshot({ path: info.outputPath(`review-${width}.png`), animations: 'disabled' });

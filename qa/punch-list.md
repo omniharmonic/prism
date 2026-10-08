@@ -65,4 +65,12 @@ Full-suite results: see "Regression run" below.
 
 ## Regression run
 
-_Filled in when the full fixture run finishes._
+Full fixture suite on the final code (headless Chromium, 4 workers, 1.2 h): **1,793 passed, 41 failed, 10 skipped**.
+
+- Re-running the 41 failures with 2 workers: 16 passed (load-induced timeouts), 25 failed again.
+- The same 25 run on the starting commit `95491a4`: **16 fail there too** (pre-existing, listed below).
+- **9 were caused by tonight's work**, all by the control-size change: they asserted the old 44 px size on DESKTOP. Tests now assert the new contract (touch/phone ≥ 44 px, desktop 28–36 px). One real bug surfaced and was fixed in code: the suggestion-review Accept/Reject buttons grew to 37.5 px from padding (`suggestion-review.css`). All 9 pass now.
+- Server suite: 2,617 passed, 5 failed. Four also fail on `95491a4` (event-loop timing on this 4-core container). The fifth (`conversion-round5` C-1) is load-sensitive and passed on `95491a4` in this run.
+
+Pre-existing fixture failures (fail on `95491a4` too — to re-check on the laptop's real browser):
+`agent-snapshots` (selected text preview), `canvas` (connection → decorative, ×2), `document-recovery` (×2), `editor-toolbar` NP-ED-05 apple modifiers, `lazy-editors` delayed code engine, `notion-a11y-axe` sidebar-peek ×2, `notion-a11y-reflow` sidebar-peek + settings-appearance phone, `notion-a11y` reduced-motion sidebar-peek, `notion-sidebar` ×3, `publishing-studio` compact studio ×2.

@@ -21,7 +21,9 @@ for (const collab of [false, true]) {
       await page.getByRole('button', { name: 'Add notes', exact: true }).click();
       await page.getByRole('textbox', { name: 'Find canvas notes' }).fill('Morgan');
       const filterBox = await page.getByRole('combobox', {name: 'Filter canvas notes by tag'}).boundingBox();
-      expect(filterBox?.height).toBeGreaterThanOrEqual(44);
+      // Control-size tokens (tokens.css): 28–36 px on a desktop, the 44 px touch target on a phone.
+      if (appearance === 'phone') expect(filterBox?.height).toBeGreaterThanOrEqual(44);
+      else { expect(filterBox?.height).toBeGreaterThanOrEqual(28); expect(filterBox?.height).toBeLessThanOrEqual(36); }
       const note = page.getByRole('button', { name: 'Conversation with Morgan People/Conversation with Morgan', exact: true });
       await expect(note).toBeVisible();
       expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);

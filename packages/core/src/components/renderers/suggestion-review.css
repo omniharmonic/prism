@@ -3,7 +3,7 @@
 .prism-review-body { padding: 0 16px 16px; }
 .prism-review-navigation { display: flex; align-items: center; justify-content: space-between; gap: 12px; border-top: 1px solid var(--glass-border); padding-top: 8px; margin-bottom: 12px; color: var(--text-secondary); }
 .prism-review-navigation > div { display: flex; gap: 4px; }
-.prism-suggestion-review button { min-height: var(--control-h-md); min-width: var(--control-h-md); display: inline-flex; align-items: center; justify-content: center; gap: 6px; padding: 8px 12px; border: 1px solid var(--glass-border); border-radius: 7px; background: var(--bg-base); color: var(--text-primary); }
+.prism-suggestion-review button { min-height: var(--control-h-md); min-width: var(--control-h-md); display: inline-flex; align-items: center; justify-content: center; gap: 6px; padding: 0 var(--control-px-md); border: 1px solid var(--glass-border); border-radius: 7px; background: var(--bg-base); color: var(--text-primary); }
 .prism-suggestion-review button:hover:not(:disabled) { background: var(--glass-hover); }
 .prism-suggestion-review button:disabled { opacity: .4; cursor: default; }
 .prism-review-author { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; margin-bottom: 12px; overflow-wrap: anywhere; }
