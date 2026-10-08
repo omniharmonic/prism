@@ -3,6 +3,7 @@
  * `node --env-file=.env`). The Parachute token is held ONLY here, server-side —
  * it is never sent to a client.
  */
+import { assertModelsConfig, getModelsConfig, setEnvModelSettings } from "./providers/config";
 export const config = {
   port: Number(process.env.PORT ?? 8787),
   // Loopback by default. The public entrypoint is the Cloudflare tunnel, which
@@ -573,14 +574,21 @@ export const vaultRegistry: VaultEntry[] = buildVaultRegistry();
 // stored in SQLite. db.ts already imports config, so the merge/resolve goes there
 // to avoid a config↔db import cycle. Import it from "./db".
 
-/** Whether a real embedding endpoint is configured (else the offline fallback). */
-export const embeddingsConfigured = () => config.embedEndpoint.length > 0;
+/** Whether a real embedding endpoint is configured (else the offline fallback):
+ *  the models.json `embeddings` job when that file is in use, else EMBED_ENDPOINT. */
+export const embeddingsConfigured = () => {
+  const m = getModelsConfig();
+  return m.source === "file" ? (m.jobs.embeddings?.steps.length ?? 0) > 0 : config.embedEndpoint.length > 0;
+};
 
 /** Whether magic-link email sign-in is available (Resend configured). */
 export const emailEnabled = () => config.resendApiKey.length > 0;
 
 /** Fail fast at startup if required secrets are missing. */
 export function assertConfig(): void {
+  // The provider layer's models.json (providers/config.ts): a file that does not
+  // validate stops the server with every problem listed — never a silent re-route.
+  assertModelsConfig();
   const missing: string[] = [];
   if (!config.parachuteToken) missing.push("PARACHUTE_TOKEN");
   if (!config.sessionSecret) missing.push("SESSION_SECRET");
@@ -604,6 +612,16 @@ export function assertConfig(): void {
     );
   }
 }
+
+// The provider layer reads the pre-provider-layer env vars through this (no import
+// cycle): with no models.json they ARE the routing (see providers/config.ts).
+setEnvModelSettings(() => ({
+  skillsDefaultProvider: config.skillsDefaultProvider,
+  skillsLocalBaseUrl: config.skillsLocalBaseUrl,
+  skillsLocalModel: config.skillsLocalModel,
+  embedEndpoint: config.embedEndpoint,
+  embedModel: config.embedModel,
+}));
 
 export type CalendarDeleteMode = "log" | "archive" | "delete";
 

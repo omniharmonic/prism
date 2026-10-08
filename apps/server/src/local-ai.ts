@@ -34,6 +34,14 @@ import { CLAUDE_MODELS, defaultMemoryProbe, isClaudeModel, type MemoryProbe } fr
 import { admitLocal, lmStudioClient, releaseLocalModel, settingsFromConfig, tryAcquireLocalModel, type LocalModel, type SkillsSettings } from "./worker/skills";
 import { existsSync } from "node:fs";
 import { resolveClaude } from "./agent-exec";
+import { openAICompatible, ProviderCallError, type OpenAICompatibleTarget } from "./providers/openai-compatible";
+import { claudeProviderId, getModelsConfig, localProviderId, resolveChain, type ResolvedStep } from "./providers/config";
+import type { ModelsConfig, ProviderSpec, RouteStep } from "./providers/types";
+import { ChainCancelledError, runChain } from "./providers/router";
+import { claudeText } from "./providers/claude-cli";
+import type { ExternalResult } from "./agent-exec";
+import type { ClaudeModel } from "./agent-exec";
+import type { VaultEntry } from "./config";
 
 export const INTERACTIVE_SKILLS = ["edit", "chat", "transform", "generate"] as const;
 export type InteractiveSkill = (typeof INTERACTIVE_SKILLS)[number];
@@ -143,14 +151,29 @@ const localSettings = (): SkillsSettings => ({ ...settingsFromConfig(), ...(sett
 
 const scrub = (s: string) => s.replace(/https?:\/\/\S+/g, "<url>").replace(/[\r\n]+/g, " ").slice(0, 200);
 
+/**
+ * The server the Settings → AI models "local" choice means: with a models.json, its
+ * local provider (one named `local`, else the first local openai-compatible one);
+ * otherwise SKILLS_LOCAL_BASE_URL (undefined).
+ */
+export function uiLocalTarget(): OpenAICompatibleTarget | undefined {
+  const cfg = getModelsConfig();
+  if (cfg.source !== "file") return undefined;
+  const id = localProviderId(cfg);
+  const spec = id ? cfg.providers[id] : undefined;
+  return spec?.baseUrl ? { baseUrl: spec.baseUrl, apiKeyEnv: spec.apiKeyEnv } : undefined;
+}
+
 /** `local_ai_list_models` / `ollama_list_models`: LM Studio's native
  *  `/api/v0/models` (type + loaded state), else the OpenAI-compatible `/v1/models`. */
 export async function listLocalModels(): Promise<LocalModelList> {
-  const base = localSettings().localBaseUrl.replace(/\/+$/, "");
+  const base = (uiLocalTarget()?.baseUrl ?? localSettings().localBaseUrl).replace(/\/+$/, "");
   const out: LocalModelList = { baseUrl: base, configured: base !== "", reachable: false, models: [], error: null };
   if (!base) return out;
   const root = base.replace(/\/v1$/, "");
-  const get = (u: string) => fetchImpl(u, { signal: AbortSignal.timeout(5000) });
+  const keyEnv = uiLocalTarget()?.apiKeyEnv;
+  const key = keyEnv ? (process.env[keyEnv] ?? "") : "";
+  const get = (u: string) => fetchImpl(u, { signal: AbortSignal.timeout(5000), ...(key ? { headers: { Authorization: `Bearer ${key}` } } : {}) });
   try {
     const r = await get(`${root}/api/v0/models`);
     if (r.ok) {
@@ -191,9 +214,8 @@ export function claudeAvailable(): boolean {
   }
 }
 
-/** L5 caps: the raw HTTP body and the returned text. */
-const MAX_LOCAL_RESPONSE_BYTES = 2_000_000;
-const MAX_LOCAL_TEXT_CHARS = 200_000;
+/** L5 caps (the raw HTTP body 2 MB, the returned text 200k chars) live in the
+ *  openai-compatible backend (MAX_RESPONSE_BYTES / MAX_TEXT_CHARS). */
 
 export class LocalRefusedError extends Error {
   constructor(msg: string) {
@@ -202,51 +224,38 @@ export class LocalRefusedError extends Error {
   }
 }
 
-/** One plain completion against LM Studio's `/chat/completions` (no tools, no stream). */
-export async function localChat(model: string, system: string, user: string, opts: { timeoutMs?: number; signal?: AbortSignal; maxTokens?: number } = {}): Promise<string> {
-  const base = localSettings().localBaseUrl.replace(/\/+$/, "");
+/** One plain completion against LM Studio's `/chat/completions` (no tools, no stream).
+ *  Goes through the provider layer's openai-compatible backend (same request body as
+ *  before); `target` points it at a models.json provider instead of SKILLS_LOCAL_BASE_URL. */
+export async function localChat(
+  model: string,
+  system: string,
+  user: string,
+  opts: { timeoutMs?: number; signal?: AbortSignal; maxTokens?: number; target?: OpenAICompatibleTarget } = {},
+): Promise<string> {
+  const base = (opts.target?.baseUrl ?? localSettings().localBaseUrl).replace(/\/+$/, "");
   if (!base) throw new LocalRefusedError("no local model server is configured (SKILLS_LOCAL_BASE_URL)");
   const timeoutMs = opts.timeoutMs ?? 5 * 60_000;
-  const signal = opts.signal ? AbortSignal.any([AbortSignal.timeout(timeoutMs), opts.signal]) : AbortSignal.timeout(timeoutMs);
-  let resp: Response;
   try {
-    resp = await fetchImpl(`${base}/chat/completions`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model,
-        messages: [
-          { role: "system", content: system },
-          { role: "user", content: user },
-        ],
-        stream: false,
-        ...(opts.maxTokens ? { max_tokens: opts.maxTokens } : {}),
-      }),
-      signal,
-    });
+    return await openAICompatible({ baseUrl: base, apiKeyEnv: opts.target?.apiKeyEnv ?? null }, fetchImpl).complete({ model, system, user, timeoutMs, signal: opts.signal, maxTokens: opts.maxTokens });
   } catch (e) {
-    if (opts.signal?.aborted) throw new Error("cancelled");
-    const err = e as Error;
-    if (err.name === "TimeoutError" || err.name === "AbortError") throw new Error(`local model timed out after ${Math.round(timeoutMs / 1000)}s`);
-    throw new Error(`local model unreachable: ${scrub(err.message)}`);
+    if (!(e instanceof ProviderCallError)) throw e;
+    // The messages callers and tests have always seen.
+    switch (e.kind) {
+      case "cancelled":
+        throw new Error("cancelled");
+      case "timeout":
+        throw new Error(`local model timed out after ${Math.round(timeoutMs / 1000)}s`);
+      case "unreachable":
+        throw new Error(`local model unreachable: ${scrub(e.detail ?? e.message)}`);
+      case "http":
+        throw new Error(`local model returned HTTP ${e.status}`);
+      case "too_large":
+        throw new Error("local model response too large");
+      default:
+        throw new Error("local model response had no text");
+    }
   }
-  if (!resp.ok) throw new Error(`local model returned HTTP ${resp.status}`);
-  // L5: bounded response — never buffer an unbounded body from the model server.
-  const declared = Number(resp.headers.get("content-length") ?? 0);
-  if (declared > MAX_LOCAL_RESPONSE_BYTES) throw new Error("local model response too large");
-  const raw = await resp.text();
-  if (raw.length > MAX_LOCAL_RESPONSE_BYTES) throw new Error("local model response too large");
-  let j: { choices?: Array<{ message?: { content?: string | null } }> } | null = null;
-  try {
-    j = JSON.parse(raw);
-  } catch {
-    j = null;
-  }
-  const full = j?.choices?.[0]?.message?.content;
-  if (typeof full !== "string") throw new Error("local model response had no text");
-  const text = full.length > MAX_LOCAL_TEXT_CHARS ? full.slice(0, MAX_LOCAL_TEXT_CHARS) : full;
-  // Reasoning models may prefix a <think>…</think> block; the inline edit wants the answer only.
-  return text.replace(/^\s*<think>[\s\S]*?<\/think>\s*/i, "").trim();
 }
 
 /** The interactive system prompt (the desktop's local path had none; the server
@@ -257,9 +266,9 @@ const SYSTEM = "You are a writing assistant inside Prism, a notes app. Follow th
  * Run one interactive prompt on the local model, behind the skills' admission
  * guard + the shared one-local-run slot. Throws LocalRefusedError when refused.
  */
-export async function runLocalInteractive(model: string, prompt: string, signal?: AbortSignal, opts: { maxTokens?: number; timeoutMs?: number } = {}): Promise<string> {
+export async function runLocalInteractive(model: string, prompt: string, signal?: AbortSignal, opts: { maxTokens?: number; timeoutMs?: number; target?: OpenAICompatibleTarget } = {}): Promise<string> {
   const s = localSettings();
-  const local: LocalModel = lmStudioClient(s.localBaseUrl, fetchImpl);
+  const local: LocalModel = lmStudioClient(opts.target?.baseUrl ?? s.localBaseUrl, fetchImpl, opts.target?.apiKeyEnv ?? null);
   const verdict = await admitLocal({ local, memoryProbe: probe, settings: s }, model);
   if (!verdict.ok) throw new LocalRefusedError(`local model refused: ${verdict.reason}`);
   // Acquire AFTER the async admission (M1); release only our own slot.
@@ -281,7 +290,7 @@ export async function testRoute(route: SkillRoute): Promise<{ ok: boolean; provi
     return { ok, provider: "claude", model: route.model, ms: Date.now() - t0, ...(ok ? {} : { error: "the claude CLI was not found on the server" }) };
   }
   try {
-    const reply = await runLocalInteractive(route.model, "Reply with exactly the word: ready", undefined, { maxTokens: 16, timeoutMs: 120_000 });
+    const reply = await runLocalInteractive(route.model, "Reply with exactly the word: ready", undefined, { maxTokens: 16, timeoutMs: 120_000, target: uiLocalTarget() });
     return { ok: true, provider: "local", model: route.model, ms: Date.now() - t0, reply: reply.slice(0, 80) };
   } catch (e) {
     return { ok: false, provider: "local", model: route.model, ms: Date.now() - t0, error: scrub((e as Error).message) };
@@ -296,4 +305,126 @@ export async function modelsOverview(): Promise<{ local: LocalModelList; claude:
     skillsDefaultProvider: config.skillsDefaultProvider,
     skillsLocalModel: config.skillsLocalModel,
   };
+}
+
+// ── the provider layer: the `drafting` job (models.json) ─────────────────────
+
+/** Settings → AI models entries the owner has actually SAVED (no defaults filled in). */
+export function storedRouting(): Partial<AgentRouting> {
+  const out: Partial<AgentRouting> = {};
+  try {
+    const raw = JSON.parse(getAgentRoutingSetting() ?? "{}") as Record<string, unknown>;
+    for (const s of INTERACTIVE_SKILLS) {
+      try {
+        if (raw[s] !== undefined) out[s] = validateRoute(s, raw[s]);
+      } catch {
+        /* invalid entry: as if unset */
+      }
+    }
+  } catch {
+    /* nothing stored */
+  }
+  return out;
+}
+
+export interface DraftStep extends ResolvedStep {
+  /** The pre-provider-layer local route (SKILLS_LOCAL_BASE_URL + the shared guard). */
+  legacyLocal?: boolean;
+}
+export interface DraftingPlan {
+  source: "env" | "file";
+  steps: DraftStep[];
+  /** Steps left out (fallback policy, capability, no such provider) — logged by the runner. */
+  skipped: string[];
+  /** Set when the whole plan is ONE claude-cli step: the unchanged `startDispatch` path. */
+  claudeModel: ClaudeModel | null;
+}
+
+const legacyLocalSpec = (): ProviderSpec => ({
+  id: "local",
+  kind: "openai-compatible",
+  model: null,
+  baseUrl: localSettings().localBaseUrl || null,
+  apiKeyEnv: null,
+  local: true,
+  memoryGuard: true,
+  timeoutMs: null,
+  capabilities: ["completion", "structured"],
+});
+const legacyClaudeSpec = (): ProviderSpec => ({ id: "claude", kind: "claude-cli", model: "sonnet", baseUrl: null, apiKeyEnv: null, local: false, memoryGuard: false, timeoutMs: null, capabilities: ["agent", "completion", "structured"] });
+
+function legacyPlan(skill: InteractiveSkill, source: "env" | "file"): DraftingPlan {
+  const route = routeFor(skill);
+  if (route.provider === "local") return { source, steps: [{ provider: "local", model: route.model, spec: legacyLocalSpec(), legacyLocal: true }], skipped: [], claudeModel: null };
+  return { source, steps: [{ provider: "claude", model: route.model, spec: legacyClaudeSpec() }], skipped: [], claudeModel: isClaudeModel(route.model) ? route.model : "sonnet" };
+}
+
+/**
+ * Which model(s) serve an interactive one-shot (edit / transform / generate / chat →
+ * the `drafting` job), in order.
+ *  - No models.json: Settings → AI models, exactly as before (one route, no fallback).
+ *  - models.json: a route the owner SAVED in Settings → AI models goes first, then
+ *    `jobs.drafting` under its fallback policy. A models.json with no `drafting` job
+ *    and nothing saved keeps the old default (claude / sonnet).
+ */
+export function draftingPlan(skill: InteractiveSkill, cfg: ModelsConfig = getModelsConfig()): DraftingPlan {
+  if (cfg.source !== "file") return legacyPlan(skill, "env");
+  const saved = storedRouting()[skill];
+  if (!saved && cfg.jobs.drafting === undefined) return legacyPlan(skill, "file");
+  const skipped: string[] = [];
+  let override: RouteStep | null = null;
+  if (saved) {
+    const id = saved.provider === "local" ? localProviderId(cfg) : claudeProviderId(cfg);
+    if (id) override = { provider: id, model: saved.model };
+    else skipped.push(`Settings → AI models chose ${saved.provider}:${saved.model}, but the models config has no ${saved.provider === "local" ? "local openai-compatible" : "claude-cli"} provider`);
+  }
+  const chain = resolveChain(cfg, "drafting", override);
+  // A "local" choice in Settings may be a privacy choice: never let it fall back to a
+  // provider off Benjamin's hardware, whatever the file's `fallback` says.
+  const localOnly = saved?.provider === "local";
+  const steps: DraftStep[] = localOnly ? chain.steps.filter((st) => st.spec.local) : chain.steps;
+  if (localOnly) for (const st of chain.steps) if (!st.spec.local) skipped.push(`${st.provider}:${st.model} (Settings chose a local model; never falls back off this hardware)`);
+  const only = steps.length === 1 && steps[0]!.spec.kind === "claude-cli" && isClaudeModel(steps[0]!.model) ? (steps[0]!.model as ClaudeModel) : null;
+  return { source: "file", steps, skipped: [...skipped, ...chain.skipped], claudeModel: only };
+}
+
+export interface DraftingContext {
+  entry: VaultEntry;
+  prompt: string;
+  signal: AbortSignal;
+  skill: string | null;
+  noteId: string | null;
+  /** The dispatch's narrowing (claude steps keep it: text-only, or the read-only vault tools). */
+  textOnly: boolean;
+  allowedTools?: readonly string[];
+}
+
+/** One step of a drafting chain. */
+function runDraftStep(step: DraftStep, ctx: DraftingContext): Promise<string> {
+  if (step.spec.kind === "claude-cli") {
+    return claudeText({ entry: ctx.entry, prompt: ctx.prompt, model: step.model, textOnly: ctx.textOnly, allowedTools: ctx.allowedTools, skill: ctx.skill, noteId: ctx.noteId, signal: ctx.signal });
+  }
+  const timeoutMs = step.spec.timeoutMs ?? undefined;
+  if (step.legacyLocal) return runLocalInteractive(step.model, ctx.prompt, ctx.signal);
+  const target = { baseUrl: step.spec.baseUrl ?? "", apiKeyEnv: step.spec.apiKeyEnv };
+  // A model server on THIS host: the shared memory guard + one-local-run slot.
+  if (step.spec.memoryGuard) return runLocalInteractive(step.model, ctx.prompt, ctx.signal, { target, timeoutMs });
+  return localChat(step.model, SYSTEM, ctx.prompt, { signal: ctx.signal, target, timeoutMs });
+}
+
+/**
+ * Run a drafting plan inside an external dispatch. The pre-provider-layer local route
+ * runs exactly as before (its own error text); a models.json plan walks the chain with
+ * logged fallbacks and reports who served it (dispatch `provider` / `model` / `fallbacks`).
+ */
+export async function runDraftingPlan(plan: DraftingPlan, ctx: DraftingContext): Promise<string | ExternalResult> {
+  if (plan.source === "env" && plan.steps.length === 1 && plan.steps[0]!.legacyLocal) return runDraftStep(plan.steps[0]!, ctx);
+  if (plan.skipped.length) console.log(`[providers] drafting (${ctx.skill ?? "?"}): left out ${plan.skipped.join("; ")}`);
+  try {
+    const { value, servedBy } = await runChain("drafting", plan.steps, (step) => runDraftStep(step, ctx), { signal: ctx.signal });
+    return { text: value, provider: servedBy.provider, model: servedBy.model, fallbacks: servedBy.fallbacks };
+  } catch (e) {
+    if (e instanceof ChainCancelledError) throw new Error("cancelled");
+    throw e;
+  }
 }

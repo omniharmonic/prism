@@ -306,7 +306,7 @@ test("relation-target backfill: owner-only, dry run lists, write sets only hints
   assert.equal(tagPuts.length, 0, "no vault schema write");
   const writes = fv.calls.slice(before).filter((c: any) => c.method !== "GET");
   assert.deepEqual(writes, [], "no note was written");
-  assert.equal(fv.notes.get("t1")!.metadata.project, "prism", "stored values never change");
+  assert.equal(fv.notes.get("t1")!.metadata!.project, "prism", "stored values never change");
   const audit = listActionAudit({ limit: 5 }).find((a) => a.action === "schema.relation-targets");
   assert.ok(audit, "audited");
   assert.doesNotMatch(JSON.stringify(audit), /prism/, "counts only");

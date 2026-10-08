@@ -10,3 +10,6 @@ dist
 
 # Ad-hoc DB recovery snapshots (contain sessions + encrypted secrets)
 *.db.postrecovery-*
+
+# Per-host model routing (providers/config.ts; copy config/models.example.json)
+config/models.json
