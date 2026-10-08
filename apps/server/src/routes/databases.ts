@@ -43,7 +43,7 @@ import { protectionReason, systemNoteReason, SYSTEM_NOTE_TAGS } from "@prism/cor
 import { bodyLimit } from "hono/body-limit";
 import { db, resolveVaultEntry } from "../db";
 import type { VaultEntry } from "../config";
-import { vaultClient, VaultConflictError, VaultError, type Note } from "../parachute";
+import { fetchVault, vaultClient, VaultConflictError, VaultError, type Note } from "../parachute";
 import { resolveActor, requestVia, type Actor } from "../auth/actor";
 import { effectiveCaps, grantedTags, type Cap, type NoteRef } from "../permissions";
 import { roleAtLeast, roleFloor } from "../roles";
@@ -157,7 +157,7 @@ async function vaultSchemas(entry: VaultEntry): Promise<Map<string, TagSchema>> 
   const hit = schemaCache.get(entry.id);
   if (hit && hit.expires > Date.now()) return hit.value;
   const value = (async () => {
-    const resp = await fetch(`${entry.url}/vault/${entry.vault}/api/tags?include_schema=true`, {
+    const resp = await fetchVault(`${entry.url}/vault/${entry.vault}/api/tags?include_schema=true`, {
       headers: { Authorization: `Bearer ${entry.token}` },
     });
     if (!resp.ok) throw new VaultError(resp.status, `GET /tags: ${resp.status} ${await resp.text().catch(() => "")}`);
@@ -627,7 +627,7 @@ async function applySchemaPatch(c: Context, entry: VaultEntry, tag: string, patc
     } catch {
       return c.json({ error: "schema_admin_unavailable", detail: "the server could not obtain an admin token for this vault" }, 503);
     }
-    const resp = await fetch(`${entry.url}/vault/${entry.vault}/api/tags/${encodeURIComponent(tag)}`, {
+    const resp = await fetchVault(`${entry.url}/vault/${entry.vault}/api/tags/${encodeURIComponent(tag)}`, {
       method: "PUT",
       headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
       body: JSON.stringify({ description, fields: echoable(merged.fields) }),

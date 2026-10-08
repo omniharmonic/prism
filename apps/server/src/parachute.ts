@@ -56,6 +56,23 @@ export interface NoteLink {
   relationship: string;
 }
 
+/**
+ * `fetch` for a call that carries the SERVER's vault token: a 401 is sent once more.
+ * The vault has been seen to answer a valid token "API key required" now and then
+ * (2026-10-08, vault 0.7.9: isolated single requests, about 0.3 % with other traffic
+ * running). A 401 is decided before the vault acts, so a repeat cannot apply a write twice.
+ * Only for string / absent bodies (a stream cannot be re-sent).
+ */
+export async function fetchVault(url: string, init?: RequestInit): Promise<Response> {
+  let resp = await fetch(url, init);
+  if (resp.status === 401 && (init?.body === undefined || init?.body === null || typeof init.body === "string")) {
+    await resp.body?.cancel().catch(() => {});
+    await new Promise((r) => setTimeout(r, 150));
+    resp = await fetch(url, init);
+  }
+  return resp;
+}
+
 export class VaultError extends Error {
   constructor(
     readonly status: number,
@@ -122,11 +139,21 @@ export function vaultClient(vaultId?: string, opts: { /** Abort any single vault
 
   async function req(path: string, init?: RequestInit): Promise<Response> {
     const t0 = Date.now();
-    const resp = await fetch(`${apiBase()}${path}`, {
-      ...init,
-      ...(opts.timeoutMs && !init?.signal ? { signal: AbortSignal.timeout(opts.timeoutMs) } : {}),
-      headers: { ...authHeaders(), ...(init?.headers as Record<string, string> | undefined) },
-    });
+    const send = () =>
+      fetch(`${apiBase()}${path}`, {
+        ...init,
+        ...(opts.timeoutMs && !init?.signal ? { signal: AbortSignal.timeout(opts.timeoutMs) } : {}),
+        headers: { ...authHeaders(), ...(init?.headers as Record<string, string> | undefined) },
+      });
+    let resp = await send();
+    // The vault has been seen to refuse a valid token once in a while (see proxyToVault in
+    // routes/api.ts). A 401 is decided before the vault acts on the request, so sending the
+    // same request once more cannot apply a write twice. Bodies here are strings.
+    if (resp.status === 401 && (init?.body === undefined || typeof init.body === "string")) {
+      await resp.body?.cancel().catch(() => {});
+      await new Promise((r) => setTimeout(r, 150));
+      resp = await send();
+    }
     if (process.env.PRISM_VAULT_TRACE === "1") {
       // Which server subsystem is calling: first app frame outside this file.
       const caller = (new Error().stack ?? "").split("\n").find((l) => l.includes("/src/") && !l.includes("parachute.ts"))?.trim().replace(/^at /, "").replace(/\(?\/.*\/src\//, "").replace(/\)$/, "") ?? "?";
