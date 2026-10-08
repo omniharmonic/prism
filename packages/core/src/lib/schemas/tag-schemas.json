@@ -27,13 +27,17 @@
       "fields": {
         "status": {
           "type": "string",
-          "description": "Task lifecycle status",
+          "description": "Task lifecycle status. Canonical (tasks_store.py): pending, in-progress, blocked, waiting, completed, cancelled, archived. todo/done stay valid: Prism's task UI and the ClickUp mirror still write them.",
           "enum": [
             "todo",
             "in-progress",
             "blocked",
             "done",
-            "cancelled"
+            "cancelled",
+            "pending",
+            "waiting",
+            "completed",
+            "archived"
           ],
           "default": "todo"
         },
@@ -169,7 +173,7 @@
         },
         "source": {
           "type": "string",
-          "description": "Where the meeting note originated (fathom, meetily, calendar, manual)"
+          "description": "Where the recording or note came from: fathom, meetily, fireflies, voice, calendar or manual ('' = unknown)"
         },
         "status": {
           "type": "string",
@@ -207,12 +211,7 @@
       "fields": {
         "source": {
           "type": "string",
-          "description": "Transcript source",
-          "enum": [
-            "fathom",
-            "meetily",
-            "fireflies"
-          ]
+          "description": "Where the recording or note came from: fathom, meetily, fireflies, voice, calendar or manual ('' = unknown)"
         },
         "source_id": {
           "type": "string",
@@ -258,8 +257,13 @@
           "description": "Where this concept was first captured"
         },
         "confidence": {
-          "type": "number",
-          "description": "Extraction confidence (0-1)"
+          "type": "string",
+          "description": "How sure the extractor was: high, medium or low",
+          "enum": [
+            "high",
+            "medium",
+            "low"
+          ]
         }
       }
     },
@@ -282,7 +286,8 @@
             "draft",
             "editing",
             "published",
-            "archived"
+            "archived",
+            "active"
           ],
           "default": "draft"
         },
@@ -398,8 +403,8 @@
           "default": "draft"
         },
         "version": {
-          "type": "number",
-          "description": "Spec version number"
+          "type": "string",
+          "description": "Spec version label (e.g. 1, 1.2, v1)"
         }
       }
     },
@@ -474,8 +479,13 @@
           "description": "Where this entity was first captured"
         },
         "confidence": {
-          "type": "number",
-          "description": "Extraction confidence (0-1)"
+          "type": "string",
+          "description": "How sure the extractor was: high, medium or low",
+          "enum": [
+            "high",
+            "medium",
+            "low"
+          ]
         },
         "email": {
           "type": "string",
@@ -519,7 +529,8 @@
           "enum": [
             "active",
             "inactive",
-            "archived"
+            "archived",
+            "merged_into_canonical"
           ],
           "default": "active"
         },
@@ -548,8 +559,13 @@
           "description": "Where this entity was first captured"
         },
         "confidence": {
-          "type": "number",
-          "description": "Extraction confidence (0-1)"
+          "type": "string",
+          "description": "How sure the extractor was: high, medium or low",
+          "enum": [
+            "high",
+            "medium",
+            "low"
+          ]
         },
         "last_verified": {
           "type": "string",
@@ -650,8 +666,8 @@
       "precedence": 24,
       "fields": {
         "date": {
-          "type": "date",
-          "description": "Report date"
+          "type": "string",
+          "description": "Report date (YYYY-MM-DD)"
         },
         "processed-by": {
           "type": "string",
@@ -716,13 +732,7 @@
         },
         "role": {
           "type": "string",
-          "description": "Benjamin's role in this project",
-          "enum": [
-            "lead",
-            "contributor",
-            "advisor",
-            "observer"
-          ]
+          "description": "Benjamin's role in this project, in his words (e.g. Lead, Co-Founder and Network Steward)"
         },
         "collaborators": {
           "type": "array",
@@ -741,8 +751,13 @@
           "description": "Where this entity was first captured"
         },
         "confidence": {
-          "type": "number",
-          "description": "Extraction confidence (0-1)"
+          "type": "string",
+          "description": "How sure the extractor was: high, medium or low",
+          "enum": [
+            "high",
+            "medium",
+            "low"
+          ]
         },
         "keywords": {
           "type": "string",
@@ -848,22 +863,26 @@
       "fields": {
         "platform": {
           "type": "string",
-          "description": "Message platform",
+          "description": "Message platform (detectPlatform in worker/matrix.ts: a mautrix bridge prefix, else matrix)",
           "enum": [
             "whatsapp",
             "telegram",
             "signal",
             "discord",
-            "email"
+            "email",
+            "matrix",
+            "twitter",
+            "instagram",
+            "messenger"
           ]
         },
         "participants": {
-          "type": "string",
-          "description": "Comma-separated participant names"
+          "type": "array",
+          "description": "Participant display names (the Matrix ingester unions them on every append)"
         },
         "lastMessageAt": {
-          "type": "string",
-          "description": "Timestamp of most recent message"
+          "type": "integer",
+          "description": "Epoch milliseconds of the most recent message (kept monotonic by the Matrix ingester)"
         }
       }
     },

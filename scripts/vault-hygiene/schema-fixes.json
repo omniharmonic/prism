@@ -1,0 +1,243 @@
+{
+  "version": 1,
+  "note": "Proposed tag-schema corrections so the schemas describe the data the vault actually holds (qa/vault-health.md, 2026-10-08). Schema-only: no note is rewritten. `from` is the definition the change expects to find (as in packages/core/src/lib/schemas/tag-schemas.json); `to` is the complete new definition of that field. apply-schema-fixes.ts compares type/enum/default only and skips a field whose live definition matches neither (drift). Items marked optional are applied only with --include-optional and are deliberately NOT in tag-schemas.json (so a plain `npm run seed` cannot add them). Awaiting Benjamin's approval.",
+  "changes": [
+    {
+      "id": "thread-participants",
+      "tag": "message-thread",
+      "field": "participants",
+      "from": { "type": "string" },
+      "to": { "type": "array", "description": "Participant display names (the Matrix ingester unions them on every append)" },
+      "reason": "worker/matrix.ts writes a string[]; 98/100 sampled threads warn."
+    },
+    {
+      "id": "thread-last-message-at",
+      "tag": "message-thread",
+      "field": "lastMessageAt",
+      "from": { "type": "string" },
+      "to": { "type": "integer", "description": "Epoch milliseconds of the most recent message (kept monotonic by the Matrix ingester)" },
+      "reason": "worker/matrix.ts writes Math.max(...) of message timestamps (epoch ms, a number) and every reader parses it as a number; 99/100 warn."
+    },
+    {
+      "id": "thread-platform",
+      "tag": "message-thread",
+      "field": "platform",
+      "from": { "type": "string", "enum": ["whatsapp", "telegram", "signal", "discord", "email"] },
+      "to": {
+        "type": "string",
+        "description": "Message platform (detectPlatform in worker/matrix.ts: a mautrix bridge prefix, else matrix)",
+        "enum": ["whatsapp", "telegram", "signal", "discord", "email", "matrix", "twitter", "instagram", "messenger"]
+      },
+      "reason": "detectPlatform() also returns matrix, twitter, instagram and messenger; matrix 24 + twitter 2 of 100 warn today."
+    },
+    {
+      "id": "task-status",
+      "tag": "task",
+      "field": "status",
+      "from": { "type": "string", "enum": ["todo", "in-progress", "blocked", "done", "cancelled"], "default": "todo" },
+      "to": {
+        "type": "string",
+        "description": "Task lifecycle status. Canonical (tasks_store.py): pending, in-progress, blocked, waiting, completed, cancelled, archived. todo/done stay valid: Prism's task UI and the ClickUp mirror still write them.",
+        "enum": ["todo", "in-progress", "blocked", "done", "cancelled", "pending", "waiting", "completed", "archived"],
+        "default": "todo"
+      },
+      "reason": "tasks_store.py writes pending/waiting/completed/archived (73+7 of 100 sampled warn); ClickUp mapStatus + Prism TaskCreateDialog write todo/done, so those stay. Default unchanged."
+    },
+    {
+      "id": "person-confidence",
+      "tag": "person",
+      "field": "confidence",
+      "from": { "type": "number" },
+      "to": { "type": "string", "description": "How sure the extractor was: high, medium or low", "enum": ["high", "medium", "low"] },
+      "reason": "Every writer (extract-entities, reconcile, Google Contacts import) writes a label; 89/100 warn. 10 older float values will keep warning."
+    },
+    {
+      "id": "project-confidence",
+      "tag": "project",
+      "field": "confidence",
+      "from": { "type": "number" },
+      "to": { "type": "string", "description": "How sure the extractor was: high, medium or low", "enum": ["high", "medium", "low"] },
+      "reason": "Same label convention as person; 33/37 warn. Identical definition across the four tags avoids a schema_conflict."
+    },
+    {
+      "id": "organization-confidence",
+      "tag": "organization",
+      "field": "confidence",
+      "from": { "type": "number" },
+      "to": { "type": "string", "description": "How sure the extractor was: high, medium or low", "enum": ["high", "medium", "low"] },
+      "reason": "Same label convention; 97/100 warn."
+    },
+    {
+      "id": "concept-confidence",
+      "tag": "concept",
+      "field": "confidence",
+      "from": { "type": "number" },
+      "to": { "type": "string", "description": "How sure the extractor was: high, medium or low", "enum": ["high", "medium", "low"] },
+      "reason": "Keeps the four confidence definitions identical (no cross-tag conflict)."
+    },
+    {
+      "id": "organization-status",
+      "tag": "organization",
+      "field": "status",
+      "from": { "type": "string", "enum": ["active", "inactive", "archived"], "default": "active" },
+      "to": { "type": "string", "enum": ["active", "inactive", "archived", "merged_into_canonical"], "default": "active" },
+      "reason": "The people/org merge flow writes merged_into_canonical on tombstones (src/identity.ts)."
+    },
+    {
+      "id": "spec-version",
+      "tag": "spec",
+      "field": "version",
+      "from": { "type": "number" },
+      "to": { "type": "string", "description": "Spec version label (e.g. 1, 1.2, v1)" },
+      "reason": "36/50 specs hold a string label; version labels are strings by nature."
+    },
+    {
+      "id": "project-role",
+      "tag": "project",
+      "field": "role",
+      "from": { "type": "string", "enum": ["lead", "contributor", "advisor", "observer"] },
+      "to": { "type": "string", "description": "Benjamin's role in this project, in his words (e.g. Lead, Co-Founder and Network Steward)" },
+      "reason": "27/37 projects hold prose roles an enum cannot carry. NOTE: the vault may merge field definitions; the post-apply check reports whether the enum was actually dropped."
+    },
+    {
+      "id": "meeting-source",
+      "tag": "meeting",
+      "field": "source",
+      "from": { "type": "string" },
+      "to": { "type": "string", "description": "Where the recording or note came from: fathom, meetily, fireflies, voice, calendar or manual ('' = unknown)" },
+      "reason": "Same definition as transcript.source, so the 116 meeting+transcript notes stop raising schema_conflict."
+    },
+    {
+      "id": "transcript-source",
+      "tag": "transcript",
+      "field": "source",
+      "from": { "type": "string", "enum": ["fathom", "meetily", "fireflies"] },
+      "to": { "type": "string", "description": "Where the recording or note came from: fathom, meetily, fireflies, voice, calendar or manual ('' = unknown)" },
+      "reason": "Free string (identical to meeting.source): 'voice' captures and the '' written on 42 meeting notes would otherwise fail an enum."
+    },
+    {
+      "id": "report-date",
+      "tag": "report",
+      "field": "date",
+      "from": { "type": "date" },
+      "to": { "type": "string", "description": "Report date (YYYY-MM-DD)" },
+      "reason": "Every other tag declares date as string; report was the outlier (17 schema_conflict + 2 non-ISO values)."
+    },
+    {
+      "id": "writing-status",
+      "tag": "writing",
+      "field": "status",
+      "from": { "type": "string", "enum": ["draft", "editing", "published", "archived"], "default": "draft" },
+      "to": { "type": "string", "enum": ["draft", "editing", "published", "archived", "active"], "default": "draft" },
+      "reason": "5 writing notes hold active."
+    },
+    {
+      "id": "task-owner",
+      "optional": true,
+      "tag": "task",
+      "field": "owner",
+      "from": null,
+      "to": { "type": "string", "description": "Who owes the task (Benjamin, or the person he is waiting on)" },
+      "reason": "Written by tasks_store.py, not declared."
+    },
+    {
+      "id": "task-deadline",
+      "optional": true,
+      "tag": "task",
+      "field": "deadline",
+      "from": null,
+      "to": { "type": "string", "description": "ISO-8601 date, no-deadline or recurring-daily (tasks_store.py)" },
+      "reason": "Written by tasks_store.py, not declared."
+    },
+    {
+      "id": "task-deadline-source",
+      "optional": true,
+      "tag": "task",
+      "field": "deadline_source",
+      "from": null,
+      "to": { "type": "string", "description": "Where the deadline came from; guessed deadlines are never overdue", "enum": ["stated", "benjamin", "guessed", "none"] },
+      "reason": "Written by tasks_store.py / ledger.py, not declared."
+    },
+    {
+      "id": "task-source-ref",
+      "optional": true,
+      "tag": "task",
+      "field": "source_ref",
+      "from": null,
+      "to": { "type": "string", "description": "Path or id of the note the task came from" },
+      "reason": "Written by the commitments ledger, not declared."
+    },
+    {
+      "id": "email-source",
+      "optional": true,
+      "tag": "email",
+      "field": "source",
+      "from": null,
+      "to": { "type": "string", "description": "Ingest source (proton-bridge)" },
+      "reason": "Ingest key written by worker/proton.ts; declaring it lets Prism database views type it."
+    },
+    {
+      "id": "email-message-id",
+      "optional": true,
+      "tag": "email",
+      "field": "messageId",
+      "from": null,
+      "to": { "type": "string", "description": "RFC 5322 Message-ID" },
+      "reason": "Ingest key written by worker/proton.ts."
+    },
+    {
+      "id": "email-labels",
+      "optional": true,
+      "tag": "email",
+      "field": "labels",
+      "from": null,
+      "to": { "type": "array", "description": "Folder, UNREAD and header-derived labels (BULK, CHAT, DIRECT, ...)" },
+      "reason": "Ingest key (array) written by worker/proton.ts and the Gmail port."
+    },
+    {
+      "id": "email-mailbox",
+      "optional": true,
+      "tag": "email",
+      "field": "mailbox",
+      "from": null,
+      "to": { "type": "string", "description": "IMAP mailbox the message was read from" },
+      "reason": "Ingest key written by worker/proton.ts."
+    },
+    {
+      "id": "email-uid",
+      "optional": true,
+      "tag": "email",
+      "field": "uid",
+      "from": null,
+      "to": { "type": "integer", "description": "IMAP UID within the mailbox" },
+      "reason": "Ingest key (a number) written by worker/proton.ts."
+    },
+    {
+      "id": "email-account",
+      "optional": true,
+      "tag": "email",
+      "field": "account",
+      "from": null,
+      "to": { "type": "string", "description": "Mailbox account the message belongs to" },
+      "reason": "Ingest key written by worker/proton.ts."
+    },
+    {
+      "id": "email-to",
+      "optional": true,
+      "tag": "email",
+      "field": "to",
+      "from": null,
+      "to": { "type": "string", "description": "Recipients as written in the To header" },
+      "reason": "Ingest key written by worker/proton.ts."
+    },
+    {
+      "id": "email-last-message-at",
+      "optional": true,
+      "tag": "email",
+      "field": "lastMessageAt",
+      "from": null,
+      "to": { "type": "integer", "description": "Epoch milliseconds of the most recent message" },
+      "reason": "Ingest key (epoch ms) written by worker/proton.ts and worker/gmail.ts."
+    }
+  ]
+}
