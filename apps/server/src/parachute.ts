@@ -122,11 +122,21 @@ export function vaultClient(vaultId?: string, opts: { /** Abort any single vault
 
   async function req(path: string, init?: RequestInit): Promise<Response> {
     const t0 = Date.now();
-    const resp = await fetch(`${apiBase()}${path}`, {
-      ...init,
-      ...(opts.timeoutMs && !init?.signal ? { signal: AbortSignal.timeout(opts.timeoutMs) } : {}),
-      headers: { ...authHeaders(), ...(init?.headers as Record<string, string> | undefined) },
-    });
+    const send = () =>
+      fetch(`${apiBase()}${path}`, {
+        ...init,
+        ...(opts.timeoutMs && !init?.signal ? { signal: AbortSignal.timeout(opts.timeoutMs) } : {}),
+        headers: { ...authHeaders(), ...(init?.headers as Record<string, string> | undefined) },
+      });
+    let resp = await send();
+    // The vault has been seen to refuse a valid token once in a while (see proxyToVault in
+    // routes/api.ts). A 401 is decided before the vault acts on the request, so sending the
+    // same request once more cannot apply a write twice. Bodies here are strings.
+    if (resp.status === 401 && (init?.body === undefined || typeof init.body === "string")) {
+      await resp.body?.cancel().catch(() => {});
+      await new Promise((r) => setTimeout(r, 150));
+      resp = await send();
+    }
     if (process.env.PRISM_VAULT_TRACE === "1") {
       // Which server subsystem is calling: first app frame outside this file.
       const caller = (new Error().stack ?? "").split("\n").find((l) => l.includes("/src/") && !l.includes("parachute.ts"))?.trim().replace(/^at /, "").replace(/\(?\/.*\/src\//, "").replace(/\)$/, "") ?? "?";

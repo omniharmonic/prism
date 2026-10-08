@@ -20,10 +20,11 @@ for the device checklist in `docs/client-app.md`.
 | 1 | The server-address field was near-black on the light card: two iOS-only screens named a colour token that does not exist (`--surface-sunken`). | Fixed (PR #21) |
 | 2 | **The owner cannot finish an app sign-in with the email link.** The link opens in Safari; the app's `ASWebAuthenticationSession` sheet stays on the "link sent" page and is never told. A password sign-in inside the sheet works. | Open |
 | 3 | The sheet DOES share Safari's session: after the link signed Safari in, reloading the sheet went straight to consent. So the "link sent" page could poll or offer "I've opened the link" and continue. | Lead for #2 |
-| 4 | **A 401 makes the app sign in again by itself, and each time it mints another device.** Four "Prism on iPhone" device tokens were created in about six minutes (two of them 3.4 s apart, seen by the owner as two consent prompts). | Open; first 401's cause unknown |
+| 4 | **A 401 makes the app sign in again by itself, and each time it mints another device.** Four "Prism on iPhone" device tokens were created in about six minutes (two of them 3.4 s apart, seen by the owner as two consent prompts). | Client behaviour still open; the trigger is #8 |
 | 5 | **After such a 401 the page keeps sending requests with NO bearer** (`auth=none` in the server's error log: `/api/notes`, `/api/actions`, `/api/events`, `/auth/me`, `/api/vaults`) until the app is relaunched. Seen by the owner as an empty sidebar and a 403 in Workspace settings while the footer still showed his name and "Synced". | Open |
 | 6 | Live-editing connections were closed with "Access changed. Reconnect." eight times on two pages in the first session. Not seen after a clean relaunch. Probably the same token churn as #4. | To confirm |
 | 7 | "Tags" is shown twice on a page's property area (a property row and the tag chips). Not checked against the web build. | Open |
+| 8 | **Root trigger: the vault now and then refuses the server's own valid token, and the owner passthrough forwarded that 401 to the client.** Reproduced against the laptop vault (0.7.9, hub 0.7.19) with a fresh token: 1 refusal in 40 requests, then 0 in 300; the Mini's vault gave 0 in 150. Why the vault does it is not known. Every client reads a 401 as "signed out" — on the web that would be the login screen. | Fixed server-side: the passthrough and the server's vault client send the request once more, and a second refusal is a 502 `vault_auth` (`test/vault-token-refused.test.ts`) |
 
 ## How these were seen
 

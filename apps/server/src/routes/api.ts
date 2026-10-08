@@ -177,6 +177,20 @@ async function proxyToVault(c: Context) {
     // against N copies of an expensive vault call.
     const fresh = method === "GET" && /^\/notes\/[^/]+$/.test(path) && /\bno-(cache|store)\b/i.test(c.req.header("cache-control") ?? "");
     res = method === "GET" ? await coalescedGet(target, init, fresh) : await forward(target, init);
+    // A 401 here is the VAULT refusing the SERVER's token — it says nothing about the caller,
+    // who was authenticated before this function ran. Vault 0.7.9 has been seen to refuse a
+    // valid token once in a while (2026-10-08: 1 request in 40, then none in 300). The refusal
+    // happens before the vault acts, so the same request is sent once more; it is never
+    // forwarded as a 401, which every client reads as "you are signed out" (the iOS app then
+    // started a new sign-in and minted another device each time).
+    if (res.status === 401) {
+      await new Promise((r) => setTimeout(r, 150));
+      res = await forward(target, init);
+      if (res.status === 401) {
+        console.warn(`[gateway] vault refused the server's token twice on ${method} ${path}`);
+        return c.json({ error: "vault_auth", reason: "The server could not reach its vault. Try again in a moment." }, 502);
+      }
+    }
   } catch (e) {
     console.warn(`[gateway] vault ${method} ${path} failed: ${(e as Error).message}`);
     return c.json({ error: "vault_unreachable" }, 502);
