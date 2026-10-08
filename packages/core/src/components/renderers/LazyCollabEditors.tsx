@@ -16,7 +16,7 @@ class EditorLoadBoundary extends Component<
       <div role="alert" className="p-6 text-sm">
         <p className="font-medium">The {this.props.label} couldn’t open.</p>
         <p className="mt-2 text-[var(--text-secondary)]">{this.state.needsReload ? "The editor’s files could not be loaded. Check your connection, then reload Prism. Save any drafts in other tabs first." : "Try reopening the editor. Your document session remains open."}</p>
-        <button type="button" onClick={this.state.needsReload ? () => window.location.reload() : this.props.retry} className="focus-ring mt-4 min-h-11 rounded-lg border border-[var(--glass-border)] px-4">{this.state.needsReload ? "Reload Prism" : "Retry opening editor"}</button>
+        <button type="button" onClick={this.state.needsReload ? () => window.location.reload() : this.props.retry} className="focus-ring mt-4 min-h-control rounded-lg border border-[var(--glass-border)] px-4">{this.state.needsReload ? "Reload Prism" : "Retry opening editor"}</button>
       </div>
     );
   }

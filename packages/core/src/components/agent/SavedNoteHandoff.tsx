@@ -36,7 +36,7 @@ export function AddSavedNoteContextButton({
           ? "Finish or dismiss pending context"
           : `Add ${label} to context`
       }
-      className="focus-ring flex min-h-11 shrink-0 items-center justify-center gap-1 rounded-lg px-2 text-xs disabled:opacity-50"
+      className="focus-ring flex min-h-control shrink-0 items-center justify-center gap-1 rounded-lg px-2 text-xs disabled:opacity-50"
       style={{ color: "var(--color-accent)" }}
       onClick={() => {
         if (!useAgentChatStore.getState().beginSavedNote(noteId, label)) return;
@@ -255,7 +255,7 @@ export function SavedNoteHandoffNotice({
             You switched conversations. Choose where to attach this note.
           </p>
           <button
-            className="focus-ring min-h-11 underline"
+            className="focus-ring min-h-control underline"
             onClick={handoff.acceptCurrent}
           >
             Attach to this conversation
@@ -269,14 +269,14 @@ export function SavedNoteHandoffNotice({
       <div className="flex flex-wrap gap-3">
         {handoff.canRetry && (
           <button
-            className="focus-ring min-h-11 underline"
+            className="focus-ring min-h-control underline"
             onClick={handoff.retry}
           >
             Check note again
           </button>
         )}
         <button
-          className="focus-ring min-h-11 underline"
+          className="focus-ring min-h-control underline"
           onClick={handoff.dismiss}
         >
           Dismiss pending note

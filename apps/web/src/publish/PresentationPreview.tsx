@@ -158,7 +158,7 @@ export default function PresentationPreview({
         <div role="alert" className="p-4 text-sm">
           {error}
           <button
-            className="ml-3 min-h-11 underline"
+            className="ml-3 min-h-control underline"
             onClick={() => setRetry((n) => n + 1)}
           >
             Retry preview

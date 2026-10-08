@@ -150,7 +150,7 @@ function VaultMembers({
       </p>
     );
   const field =
-    "focus-ring min-h-11 w-full min-w-0 rounded-lg border border-[var(--glass-border)] bg-[var(--bg-base)] px-3 text-sm";
+    "focus-ring min-h-control w-full min-w-0 rounded-lg border border-[var(--glass-border)] bg-[var(--bg-base)] px-3 text-sm";
   const card = "rounded-xl border border-[var(--glass-border)] p-4 sm:p-5";
   const levels = Object.entries(ACCESS_LABELS).map(([value, label]) => (
     <option key={value} value={value}>
@@ -172,7 +172,7 @@ function VaultMembers({
         <div role="alert" className={card}>
           <p className="mt-0 text-sm">{error}</p>
           <Button
-            className="min-h-11"
+            className="min-h-control"
             disabled={!!pending}
             onClick={() => {
               setError("");
@@ -252,7 +252,7 @@ function VaultMembers({
           <Button
             type="submit"
             variant="primary"
-            className="mt-4 min-h-11"
+            className="mt-4 min-h-control"
             disabled={!!pending || !email.trim()}
             loading={pending === "invite"}
           >
@@ -308,7 +308,7 @@ function VaultMembers({
               {sharing.removeMember && (
                 <Button
                   variant="ghost"
-                  className="min-h-11"
+                  className="min-h-control"
                   disabled={!!pending}
                   aria-label={`Remove member ${member.email}`}
                   onClick={() =>
@@ -394,7 +394,7 @@ function VaultMembers({
           <AccessHelp level={tagLevel} />
           <Button
             type="submit"
-            className="mt-4 min-h-11"
+            className="mt-4 min-h-control"
             disabled={!!pending || !tag.trim() || !tagEmail.trim()}
             loading={pending === "tag"}
           >
@@ -457,7 +457,7 @@ function VaultMembers({
           <AccessHelp level={vaultLevel} />
           <Button
             type="submit"
-            className="mt-4 min-h-11"
+            className="mt-4 min-h-control"
             disabled={!!pending || !vaultEmail.trim()}
             loading={pending === "vault"}
           >
@@ -502,7 +502,7 @@ function VaultMembers({
                 {sharing.revokeGrant && (
                   <Button
                     variant="ghost"
-                    className="min-h-11"
+                    className="min-h-control"
                     disabled={!!pending}
                     aria-label={`Revoke grant for ${grant.subject}`}
                     onClick={() =>

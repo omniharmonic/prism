@@ -240,7 +240,7 @@ export function PublicationNavigationEditor({
                 assigned.size >= 64 ||
                 notes.every((n) => assigned.has(n.id))
               }
-              className="min-h-11 w-full rounded-lg border border-[var(--glass-border)] bg-[var(--bg-base)] px-3 text-sm"
+              className="min-h-control w-full rounded-lg border border-[var(--glass-border)] bg-[var(--bg-base)] px-3 text-sm"
               onChange={(e) => {
                 if (e.target.value)
                   sectionUpdate(i, {

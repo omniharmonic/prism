@@ -29,7 +29,7 @@ type Draft = {
   elsewhere: boolean;
 };
 const control =
-  "focus-ring min-h-11 rounded-lg border border-[var(--glass-border)] px-3 text-sm text-[var(--text-secondary)] hover:bg-[var(--glass-hover)] disabled:opacity-50";
+  "focus-ring min-h-control rounded-lg border border-[var(--glass-border)] px-3 text-sm text-[var(--text-secondary)] hover:bg-[var(--glass-hover)] disabled:opacity-50";
 function dateLabel(start?: string) {
   if (!start) return null;
   const date = calendarDate(start);
@@ -373,7 +373,7 @@ export function TranscriptReviewPanel({
       <div className="flex min-w-0 items-start gap-2">
         <button
           onClick={() => onOpen(item.id, item.title)}
-          className="focus-ring flex min-h-11 min-w-0 flex-1 items-start gap-2 rounded-lg p-2 text-left text-sm"
+          className="focus-ring flex min-h-control min-w-0 flex-1 items-start gap-2 rounded-lg p-2 text-left text-sm"
         >
           <FileText size={16} className="mt-0.5 shrink-0" />
           <span className="min-w-0 break-words [overflow-wrap:anywhere]">
@@ -447,7 +447,7 @@ export function TranscriptReviewPanel({
           {message(result.error)}{" "}
           <button
             disabled={cooldown}
-            className="focus-ring min-h-11 underline disabled:opacity-50"
+            className="focus-ring min-h-control underline disabled:opacity-50"
             onClick={() => void reload()}
           >
             Try again
@@ -483,7 +483,7 @@ export function TranscriptReviewPanel({
                   onChange={(event) => setSearch(event.target.value)}
                   disabled={busy || pending || !!draft}
                   placeholder="Search recordings…"
-                  className="min-h-11 min-w-0 flex-1 rounded-lg border border-[var(--glass-border)] bg-[var(--bg-base)] px-3 text-xs"
+                  className="min-h-control min-w-0 flex-1 rounded-lg border border-[var(--glass-border)] bg-[var(--bg-base)] px-3 text-xs"
                 />
                 <button
                   aria-label="Search transcripts"
@@ -527,7 +527,7 @@ export function TranscriptReviewPanel({
               : "The transcript will appear with this meeting and its calendar record."}
           </p>
           {draft.elsewhere && (
-            <label className="flex min-h-11 items-start gap-2 text-xs text-[var(--text-secondary)]">
+            <label className="flex min-h-control items-start gap-2 text-xs text-[var(--text-secondary)]">
               <input
                 type="checkbox"
                 checked={draft.confirmed}

@@ -12,7 +12,7 @@
   scrollbar-width: thin;
 }
 .prism-publication-tabs [role="tab"] {
-  min-height: 44px;
+  min-height: var(--control-h-md);
   flex-shrink: 0;
   padding: 10px 2px;
   border-bottom: 2px solid transparent;
@@ -248,7 +248,7 @@
 }
 .prism-site-navigation select {
   appearance: none;
-  min-height: 44px;
+  min-height: var(--control-h-md);
   padding-right: 32px;
   font-size: 12px;
 }
@@ -309,4 +309,11 @@
   .prism-site-studio-grid[data-mobile-pane="settings"] > .prism-site-studio-review,
   .prism-site-studio-grid[data-mobile-pane="preview"] > .prism-site-studio-settings { display: none; }
   .prism-site-studio-review { min-width: 0; }
+}
+
+/* Touch targets (touch.css condition): the rules above draw these at the desktop control size
+   (tokens.css --control-h-md); a touch pointer or a narrow window gets --touch-target. */
+@media screen and (max-width: 767px), screen and (hover: none) and (pointer: coarse) {
+  .prism-publication-tabs [role="tab"] { min-height: var(--touch-target); }
+  .prism-site-navigation select { min-height: var(--touch-target); }
 }

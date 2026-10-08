@@ -259,7 +259,7 @@ function PublicationSession({
           <h1 className="text-lg font-semibold">Publication unavailable</h1>
           <p className="text-sm text-[var(--text-secondary)]">{error}</p>
           <button
-            className="min-h-11 rounded-lg border border-[var(--glass-border)] px-5 text-sm"
+            className="min-h-control rounded-lg border border-[var(--glass-border)] px-5 text-sm"
             onClick={() => setReloadKey((k) => k + 1)}
           >
             Try again
@@ -299,7 +299,7 @@ function PublicationSession({
         >
           <span>{noteError}</span>
           <button
-            className="min-h-11 rounded-lg border border-[var(--glass-border)] px-4"
+            className="min-h-control rounded-lg border border-[var(--glass-border)] px-4"
             onClick={() => setNoteRetry((k) => k + 1)}
           >
             Retry page

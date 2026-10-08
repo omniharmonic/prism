@@ -416,7 +416,7 @@ export function PresentationDraft({
                   ).map(([key, label]) => (
                     <label
                       key={key}
-                      className="flex min-h-11 items-center gap-2 text-sm"
+                      className="flex min-h-control items-center gap-2 text-sm"
                     >
                       <input
                         type="checkbox"
@@ -541,7 +541,7 @@ export function PresentationDraft({
             </aside>
           </div>
           <details className="rounded-lg border border-[var(--glass-border)] p-3">
-            <summary className="min-h-11 cursor-pointer text-sm font-medium">
+            <summary className="min-h-control cursor-pointer text-sm font-medium">
               Appearance history ({state.history.length})
             </summary>
             <p className="mb-3 text-xs text-[var(--text-secondary)]">

@@ -36,7 +36,7 @@ export function useCanvasConnectionMode(
   }, []);
   const control =
     editable && selected ? (
-      <label className="prism-canvas-connection flex min-h-11 items-center gap-2 px-3 text-xs">
+      <label className="prism-canvas-connection flex min-h-control items-center gap-2 px-3 text-xs">
         <input
           type="checkbox"
           checked={selected.linked}

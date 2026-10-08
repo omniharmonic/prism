@@ -8,7 +8,7 @@
 .publish-preview li[aria-current="true"] { font-weight: 600; }
 .publish-preview .publish-preview-more { margin-top: 6px; min-height: 32px; padding: 0 8px; font-size: 12px; color: var(--text-accent); border: 0; background: transparent; }
 .publish-preview .publish-preview-note { margin: 8px 0 0; font-size: 12px; color: var(--text-muted); }
-.publish-handoff .publish-studio-button { display: flex; align-items: center; gap: 8px; width: 100%; min-height: 44px; padding: 0 12px; border-radius: 10px; border: 1px solid var(--glass-border); background: var(--surface-hover); color: var(--text-primary); font-size: 13px; font-weight: 600; text-align: left; }
+.publish-handoff .publish-studio-button { display: flex; align-items: center; gap: 8px; width: 100%; min-height: var(--control-h-md); padding: 0 12px; border-radius: 10px; border: 1px solid var(--glass-border); background: var(--surface-hover); color: var(--text-primary); font-size: 13px; font-weight: 600; text-align: left; }
 .publish-handoff .publish-studio-button span { flex: 1; min-width: 0; }
 .publish-handoff .publish-studio-button:hover { border-color: var(--color-accent); }
 /* The site's state, its address, and the confirm step of publish / unpublish. */
@@ -18,3 +18,9 @@
 .publish-state .publish-url a { min-width: 0; overflow-wrap: anywhere; color: var(--text-accent); }
 .publish-confirm { display: flex; flex-direction: column; gap: 10px; padding-top: 10px; border-top: 1px solid var(--glass-border); }
 .publish-handoff > .publish-preview-note { margin: 0; font-size: 12px; color: var(--text-muted); }
+
+/* Touch targets (touch.css condition): the rules above draw these at the desktop control size
+   (tokens.css --control-h-md); a touch pointer or a narrow window gets --touch-target. */
+@media screen and (max-width: 767px), screen and (hover: none) and (pointer: coarse) {
+  .publish-handoff .publish-studio-button { min-height: var(--touch-target); }
+}

@@ -7,6 +7,7 @@ import { useUIStore } from "../../app/stores/ui";
 import { addLinkedView, createInlineDatabase } from "../database/DatabaseBlock";
 import { readDatabaseConfig, VIEW_LABELS } from "../database/config";
 import { insertDatabaseBlock, type DatabaseInsertRequest } from "../../lib/tiptap/databaseView";
+import { NewDatabaseDialog } from "../database/NewDatabaseDialog";
 import "./editor-blocks.css";
 
 const TAG = /^[A-Za-z0-9][A-Za-z0-9_/-]{0,63}$/;
@@ -25,6 +26,7 @@ export function InsertDatabaseDialog({ editor, request, hostPath, onClose }: { e
   const [value, setValue] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [existingTag, setExistingTag] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const label = VIEW_LABELS[request.type];
   const databases = useMemo(() => {
@@ -47,24 +49,26 @@ export function InsertDatabaseDialog({ editor, request, hostPath, onClose }: { e
     if (!insertDatabaseBlock(editor, request.pos, attrs)) setError("This page is no longer editable here, so the database was not added.");
     else onClose();
   };
+  // Full-page database (NP-DB-01): leave a link to the sub-page here and open it.
+  const linkAndOpen = (made: { noteId: string; path: string | null; title: string }) => {
+    if (made.path && !editor.isDestroyed) {
+      const at = Math.max(0, Math.min(request.pos, editor.state.doc.content.size));
+      const node = editor.state.doc.nodeAt(at);
+      const link = { type: "paragraph", content: [{ type: "text", text: `[[${made.path}]]` }] };
+      if (node && node.isTextblock && node.content.size === 0) editor.chain().insertContentAt({ from: at, to: at + node.nodeSize }, link).run();
+      else editor.chain().insertContentAt(node ? at + node.nodeSize : editor.state.doc.content.size, link).run();
+    }
+    useUIStore.getState().openTab(made.noteId, made.title, "database");
+    onClose();
+  };
   const createNew = async () => {
     const tag = value.trim();
     if (!TAG.test(tag)) { setError("Use a tag name: letters, numbers, - or _ (for example “task”)."); return; }
     setBusy(true); setError("");
     try {
       const made = await createInlineDatabase(client, { path: hostPath ?? null }, { tag, type: request.type });
-      if (request.mode === "page") {
-        // Full-page database (NP-DB-01): leave a link to the sub-page here and open it.
-        if (made.path && !editor.isDestroyed) {
-          const at = Math.max(0, Math.min(request.pos, editor.state.doc.content.size));
-          const node = editor.state.doc.nodeAt(at);
-          const link = { type: "paragraph", content: [{ type: "text", text: `[[${made.path}]]` }] };
-          if (node && node.isTextblock && node.content.size === 0) editor.chain().insertContentAt({ from: at, to: at + node.nodeSize }, link).run();
-          else editor.chain().insertContentAt(node ? at + node.nodeSize : editor.state.doc.content.size, link).run();
-        }
-        useUIStore.getState().openTab(made.noteId, made.title, "database");
-        onClose();
-      } else finish(made);
+      if (request.mode === "page") linkAndOpen(made);
+      else finish(made);
     } catch {
       setError("Couldn't create the database. Nothing was added.");
     } finally { setBusy(false); }
@@ -87,6 +91,15 @@ export function InsertDatabaseDialog({ editor, request, hostPath, onClose }: { e
     } finally { setBusy(false); }
   };
 
+  // A full-page database gets its OWN tag and properties where this shell can write
+  // schemas (New database, "Blank with schema"); "Use an existing tag" is the form below.
+  if (request.mode === "page" && client.updateSchema && !existingTag)
+    return createPortal(
+      <NewDatabaseDialog folder={hostPath ?? ""} initialView={request.type} onClose={() => { onClose(); editor.commands.focus(); }}
+        onUseExistingTag={() => setExistingTag(true)}
+        onCreated={(note, title) => linkAndOpen({ noteId: note.id, path: note.path ?? null, title })} />,
+      document.body,
+    );
   return createPortal(
     <>
       <div style={{ position: "fixed", inset: 0, zIndex: 70, background: "rgba(0,0,0,.25)" }} onClick={onClose} />

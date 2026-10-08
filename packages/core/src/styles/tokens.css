@@ -9,6 +9,24 @@
  * every host shell that imports @prism/core. */
 @source "../**/*.{ts,tsx}";
 
+/* `coarse:` = the touch-target condition of touch.css (phones, coarse pointers, narrow windows). */
+@custom-variant coarse (@media screen and (max-width: 767px), screen and (hover: none) and (pointer: coarse));
+
+/* Control sizing bound to the tokens below: the desktop size, raised to --touch-target under
+   `coarse`. Use these instead of `min-h-11` / `h-11 w-11` (which forced the touch size on desktop). */
+@utility min-h-control {
+  min-height: var(--control-h-md);
+  @variant coarse { min-height: var(--touch-target); }
+}
+@utility min-w-control {
+  min-width: var(--control-h-md);
+  @variant coarse { min-width: var(--touch-target); }
+}
+@utility size-control {
+  width: var(--control-h-md); height: var(--control-h-md);
+  @variant coarse { width: var(--touch-target); height: var(--touch-target); }
+}
+
 /*
  * Prism "Blue Sky" Design System
  * ───────────────────────────────
@@ -199,6 +217,24 @@ input:focus, textarea:focus, select:focus, button:hover {
   --space-8: 32px;
   --space-10: 40px;
   --space-12: 48px;
+
+  /* Controls (buttons, inputs, selects, segmented choices) — ONE size scale for every surface.
+     Desktop sizes; a touch pointer or a narrow window raises every control that reads
+     --control-h-* through the `*-control` utilities / `.ui-button` to --touch-target (below and
+     touch.css). Never hard-code 44 px (`min-h-11`) on a control: that is the touch size, and on a
+     desktop it made pill buttons a third taller than the 28–34 px controls beside them. */
+  --control-h-xs: 24px;
+  --control-h-sm: 28px;
+  --control-h-md: 32px;
+  --control-h-lg: 36px;
+  --control-px-xs: 6px;
+  --control-px-sm: 8px;
+  --control-px-md: 12px;
+  --control-px-lg: 14px;
+  --control-gap: 6px;
+  --control-radius: var(--radius-sm);
+  --control-font: var(--text-sm);
+  --touch-target: 44px;
 
   /* z-index scale */
   --z-base: 0;

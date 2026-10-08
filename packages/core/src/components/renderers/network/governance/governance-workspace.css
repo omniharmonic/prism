@@ -34,11 +34,11 @@
 .prism-governance button,
 .prism-governance select,
 .prism-governance input:not([type="checkbox"]) {
-  min-height: 44px;
+  min-height: var(--control-h-md);
   max-width: 100%;
 }
 .prism-governance label:has(input[type="checkbox"]) {
-  min-height: 44px;
+  min-height: var(--control-h-md);
 }
 .prism-governance input:not([type="checkbox"]),
 .prism-governance select,
@@ -104,7 +104,7 @@
   margin: 12px 0;
 }
 .prism-governance summary {
-  min-height: 44px;
+  min-height: var(--control-h-md);
   align-content: center;
   cursor: pointer;
   font-size: 13px;
@@ -127,4 +127,14 @@
     white-space: nowrap;
     font-size: 13px;
   }
+}
+
+/* Touch targets (touch.css condition): the rules above draw these at the desktop control size
+   (tokens.css --control-h-md); a touch pointer or a narrow window gets --touch-target. */
+@media screen and (max-width: 767px), screen and (hover: none) and (pointer: coarse) {
+  .prism-governance button,
+.prism-governance select,
+.prism-governance input:not([type="checkbox"]) { min-height: var(--touch-target); }
+  .prism-governance label:has(input[type="checkbox"]) { min-height: var(--touch-target); }
+  .prism-governance summary { min-height: var(--touch-target); }
 }

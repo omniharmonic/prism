@@ -165,7 +165,7 @@ html[data-page-width="wide"] #workspace-document:not([data-page-full="true"]) { 
 .workspace-new-page-row { display: flex; gap: 1px; }
 .workspace-new-page-row .workspace-new-page { flex: 1; min-width: 0; border-radius: 7px 0 0 7px; }
 .workspace-new-page-more {
-  display: grid; place-items: center; width: 34px; min-height: 40px; border: 0; border-radius: 0 7px 7px 0;
+  display: grid; place-items: center; width: 34px; min-height: var(--control-h-lg); border: 0; border-radius: 0 7px 7px 0;
   background: var(--action-bg); color: var(--action-fg);
 }
 .workspace-new-page-more:hover { background: var(--action-hover); }

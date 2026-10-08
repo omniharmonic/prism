@@ -79,6 +79,8 @@ export { NotePropertyBar } from "./components/database/NotePropertyBar";
 export { createDatabaseNote } from "./components/database/createDatabase";
 // CSV → a NEW database (NP-DB-25): the dialog and its pure/imperative parts, for any import entry point.
 export { CsvNewDatabaseDialog, importCsvAsNewDatabase, planNewDatabase, NewDatabaseError } from "./components/database/Csv";
+export { NewDatabaseDialog } from "./components/database/NewDatabaseDialog";
+export { createBlankDatabase, type BlankDatabasePlan } from "./components/database/createDatabase";
 // Inline + linked database blocks (the editor's `databaseView` atom renders these).
 export { DatabaseBlock, renderDatabaseBlock, databaseBlockHtml, parseDatabaseBlock, createInlineDatabase, addLinkedView } from "./components/database/DatabaseBlock";
 export type { PropertyBatchItem, PropertyBatchResult, CsvImportRequest, CsvImportResponse } from "./lib/database";

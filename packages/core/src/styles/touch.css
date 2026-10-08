@@ -10,6 +10,10 @@
  * The `html` prefix outranks the component sheets, which load after this file.
  */
 @media screen and (max-width: 767px), screen and (hover: none) and (pointer: coarse) {
+  /* ── Shared controls ── `ui/Button` is drawn at the desktop control size (tokens.css); here it is a
+     touch target. (The `min-h-control` / `size-control` utilities do the same for hand-built ones.) */
+  html .ui-button { min-height: var(--touch-target); }
+
   /* ── Top bar ── */
   html button[title="Add to Favorites"], html button[title="Remove from Favorites"],
   html button[aria-label="Page actions"], html .share-trigger { min-width: 44px !important; min-height: 44px !important; }

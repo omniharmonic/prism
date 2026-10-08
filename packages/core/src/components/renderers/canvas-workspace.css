@@ -23,7 +23,7 @@
 .prism-canvas-drawer label:has(input:focus-visible) { outline: 2px solid var(--color-accent); outline-offset: 2px; }
 .prism-canvas-drawer label input:focus-visible { outline: none; }
 .prism-canvas-filter { position: relative; }
-.prism-canvas-filter select { min-height: 44px; }
+.prism-canvas-filter select { min-height: var(--control-h-md); }
 .prism-canvas-drawer input:focus-visible, .prism-canvas-drawer select:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
 .prism-canvas-copy-notice { border-radius: 8px; background: var(--glass-hover); padding: 10px 12px; line-height: 1.6; }
 .prism-canvas-picker-row { gap: 8px; border-bottom: 1px solid var(--glass-border); border-radius: 0; }
@@ -40,4 +40,10 @@
   .prism-canvas-actions { gap: 6px; }
   .prism-canvas-actions > button, .prism-canvas-actions > .prism-canvas-copy { min-height: 44px; }
   .prism-canvas-drawer > header { padding-top: 12px; }
+}
+
+/* Touch targets (touch.css condition): the rules above draw these at the desktop control size
+   (tokens.css --control-h-md); a touch pointer or a narrow window gets --touch-target. */
+@media screen and (max-width: 767px), screen and (hover: none) and (pointer: coarse) {
+  .prism-canvas-filter select { min-height: var(--touch-target); }
 }

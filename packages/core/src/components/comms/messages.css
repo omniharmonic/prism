@@ -18,7 +18,7 @@
 }
 .prism-messages-heading .prism-message-search {
   flex: 1 1 100%;
-  min-height: 44px;
+  min-height: var(--control-h-md);
   background: var(--glass);
   border: 1px solid var(--glass-border);
   border-radius: 10px;
@@ -34,7 +34,7 @@
   align-items: center;
   justify-content: center;
   gap: 6px;
-  min-height: 44px;
+  min-height: var(--control-h-md);
   padding: 6px 12px;
   border-radius: 6px;
   font-size: 14px;
@@ -214,7 +214,7 @@
   text-underline-offset: 3px;
 }
 .prism-thread-status {
-  min-height: 44px;
+  min-height: var(--control-h-md);
   max-width: 180px;
   border-radius: 8px;
   border: 1px solid var(--glass-border);
@@ -293,7 +293,7 @@
   background: var(--glass-border);
 }
 .prism-earlier-messages {
-  min-height: 44px;
+  min-height: var(--control-h-md);
   border: 1px solid var(--glass-border);
   border-radius: 8px;
   padding: 7px 14px;
@@ -521,8 +521,8 @@
   align-items: center;
   justify-content: center;
   flex: none;
-  width: 44px;
-  height: 44px;
+  width: var(--control-h-md);
+  height: var(--control-h-md);
   border-radius: 8px;
   color: var(--text-secondary);
 }
@@ -567,7 +567,7 @@
   color: var(--text-primary);
 }
 .prism-people-action {
-  min-height: 44px;
+  min-height: var(--control-h-md);
   padding: 8px 14px;
   border: 1px solid var(--glass-border-strong);
   border-radius: 8px;
@@ -634,12 +634,12 @@
 .prism-agent-draft-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
 .prism-agent-draft-heading h2 { font-size: 20px; font-weight: 600; letter-spacing: -.02em; }
 .prism-agent-draft-heading p, .prism-agent-draft-caption { margin-top: 5px; color: var(--text-muted); font-size: 12px; overflow-wrap: anywhere; }
-.prism-agent-draft-heading button { min-width: 44px; min-height: 44px; display: grid; place-items: center; border-radius: 8px; }
+.prism-agent-draft-heading button { min-width: var(--control-h-md); min-height: var(--control-h-md); display: grid; place-items: center; border-radius: 8px; }
 .prism-agent-draft-explainer { margin: 18px 0; font-size: 13px; line-height: 1.6; color: var(--text-secondary); }
 .prism-agent-draft-instructions { display: block; font-size: 13px; font-weight: 500; }
 .prism-agent-draft-instructions textarea { display: block; width: 100%; resize: vertical; margin-top: 8px; padding: 12px; min-height: 100px; max-height: 250px; font-size: 16px; font-weight: 400; line-height: 1.5; border: 1px solid var(--glass-border); border-radius: 10px; background: var(--bg-base); }
 .prism-agent-draft-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
-.prism-agent-draft-actions button, .prism-agent-draft-dialog [role=alert] button { min-height: 44px; padding: 8px 12px; border: 1px solid var(--glass-border); border-radius: 8px; font-size: 13px; }
+.prism-agent-draft-actions button, .prism-agent-draft-dialog [role=alert] button { min-height: var(--control-h-md); padding: 8px 12px; border: 1px solid var(--glass-border); border-radius: 8px; font-size: 13px; }
 .prism-agent-draft-actions button.prism-agent-draft-primary { background: var(--action-bg); color: var(--action-fg); border-color: transparent; }
 .prism-agent-draft-dialog button:disabled { opacity: .45; cursor: not-allowed; }
 .prism-agent-draft-dialog [role=alert], .prism-agent-draft-dialog [role=status] { margin-top: 12px; font-size: 13px; line-height: 1.6; overflow-wrap: anywhere; }
@@ -662,4 +662,17 @@
 }
 @media (pointer: coarse) {
   .prism-triage-chip { min-height: 44px; }
+}
+
+/* Touch targets (touch.css condition): the rules above draw these at the desktop control size
+   (tokens.css --control-h-md); a touch pointer or a narrow window gets --touch-target. */
+@media screen and (max-width: 767px), screen and (hover: none) and (pointer: coarse) {
+  .prism-messages-heading .prism-message-search { min-height: var(--touch-target); }
+  .prism-message-views button { min-height: var(--touch-target); }
+  .prism-thread-status { min-height: var(--touch-target); }
+  .prism-earlier-messages { min-height: var(--touch-target); }
+  .prism-conversation-action { width: var(--touch-target); height: var(--touch-target); }
+  .prism-people-action { min-height: var(--touch-target); }
+  .prism-agent-draft-heading button { min-width: var(--touch-target); min-height: var(--touch-target); }
+  .prism-agent-draft-actions button, .prism-agent-draft-dialog [role=alert] button { min-height: var(--touch-target); }
 }

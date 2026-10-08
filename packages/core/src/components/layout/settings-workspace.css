@@ -10,7 +10,7 @@
    (`scrollbar-gutter: stable` has no effect beside the custom ::-webkit-scrollbar.) */
 .prism-settings__body { display:grid; grid-template-columns:205px minmax(0,1fr); min-height:0; }
 .prism-settings__navigation { display:flex; flex-direction:column; gap:4px; min-width:0; padding:18px 12px; background:var(--bg-sidebar); border-right:1px solid var(--glass-border); overflow-x:auto; overflow-y:scroll; }
-.prism-settings__navigation button { min-width:0; overflow-wrap:anywhere; padding:11px 12px; min-height:44px; border-radius:6px; text-align:left; font-size:13px; color:var(--text-secondary); }
+.prism-settings__navigation button { min-width:0; overflow-wrap:anywhere; padding:7px 12px; min-height:var(--control-h-lg); border-radius:6px; text-align:left; font-size:13px; color:var(--text-secondary); }
 .prism-settings__navigation button:hover { background:var(--glass-hover); }
 .prism-settings__navigation button[aria-pressed=true] { background:var(--glass-active); color:var(--text-primary); font-weight:500; }
 .prism-settings__navigation p { margin-top:auto; padding:24px 12px 4px; font-size:11px; line-height:1.6; color:var(--text-muted); }
@@ -20,9 +20,9 @@
 .prism-settings__section { margin-top:26px; padding-top:20px; border-top:1px solid var(--glass-border); }
 .prism-settings__section h4 { margin-bottom:14px; font-size:14px; font-weight:550; }
 .prism-settings__row { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:10px; padding:9px 0; }
-.prism-settings input:not([type=checkbox]), .prism-settings select { min-height:36px; max-width:100%; }
+.prism-settings input:not([type=checkbox]), .prism-settings select { min-height:var(--control-h-md); max-width:100%; }
 .prism-settings select { min-width:150px; }
-.prism-settings button { min-height:36px; }
+.prism-settings button { min-height:var(--control-h-md); }
 .prism-settings__content [role=alert] { padding:12px; border:1px solid var(--glass-border); border-radius:6px; line-height:1.5; }
 @media(max-width:640px) {
  .prism-settings { max-height:calc(100dvh - 24px); }

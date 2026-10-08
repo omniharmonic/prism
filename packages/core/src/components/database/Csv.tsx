@@ -11,11 +11,11 @@ import { useQueryClient } from "@tanstack/react-query";
 import { Upload } from "lucide-react";
 import { useVaultClient } from "../../data/VaultClientContext";
 import { coerceCsvValue, CsvError, parseCsv, toCsv, type CsvCellValue } from "../../lib/database/csv";
-import { formatValue, isSystemKey, looksLikeEmail, PROPERTY_KIND_LABELS, propertyValue, safeTitleLeaf, VAULT_TYPE_FOR_KIND, type PropertyDef, type PropertyKind, type SchemaPatch } from "../../lib/database/schema";
+import { formatValue, isSystemKey, looksLikeEmail, PROPERTY_KIND_LABELS, propertyValue, VAULT_TYPE_FOR_KIND, type PropertyDef, type PropertyKind, type SchemaPatch } from "../../lib/database/schema";
 import { isFieldKey } from "../../lib/database/query";
 import { queryKeys } from "../../lib/parachute/queries";
 import type { Note } from "../../lib/types";
-import { defaultConfig, type DatabaseConfig } from "./config";
+import { createBlankDatabase, NewDatabaseError, newDatabaseErrorDetail, type NewDatabaseProgress } from "./createDatabase";
 import { noteTitle, runQuery, type QueryRow, type QuerySpec } from "../../lib/database/query";
 import type { CsvImportResponse } from "../../lib/database/wire";
 import type { VaultClient } from "../../data/VaultClient";
@@ -317,28 +317,9 @@ export function newDatabaseProblems(plan: CsvNewDatabasePlan): Array<{ row: numb
   return out;
 }
 
-/** How far a CSV → new database got (so a retry continues instead of starting over). */
-export interface NewDatabaseProgress {
-  /** The database page, once it exists. */
-  note?: Pick<Note, "id" | "path">;
-  /** We created that page in this attempt (as opposed to adopting one that was there). */
-  createdPage?: boolean;
-  /** Property batches (20 fields each) already written. */
-  schemaBatches?: number;
-  schemaDone?: boolean;
-  configDone?: boolean;
-}
-export class NewDatabaseError extends Error {
-  constructor(public readonly stage: "page" | "schema" | "config" | "import", public readonly progress: NewDatabaseProgress, public readonly detail: string | null, public readonly pageRemoved = false) {
-    super(`new database: ${stage} failed`);
-    this.name = "NewDatabaseError";
-  }
-}
-const detailOf = (e: unknown): string | null => {
-  const raw = String((e as Error)?.message ?? "");
-  const at = raw.indexOf("{");
-  return at < 0 ? null : raw.slice(at).match(/"(?:detail|reason)":"([^"]+)"/)?.[1] ?? null;
-};
+// The page → schema → view steps are `createBlankDatabase` (shared with "New database"); the
+// progress/error types live there and are re-exported for existing callers.
+export { NewDatabaseError, type NewDatabaseProgress } from "./createDatabase";
 
 /**
  * Create a database from a CSV. Order matters:
@@ -363,56 +344,15 @@ export async function importCsvAsNewDatabase(client: VaultClient, opts: {
   if (!client.updateSchema || !client.importCsv) throw new Error("Importing a CSV as a database needs the Prism Server.");
   const cols = opts.plan.columns.filter((c) => c.as !== "title" && c.as !== "skip");
   const index = (c: CsvColumnPlan) => opts.plan.header.indexOf(c.name);
-  const progress: NewDatabaseProgress = { ...(opts.resume ?? {}) };
-  // 1. The page.
-  if (!progress.note) {
-    if (opts.adopt) progress.note = opts.adopt;
-    else {
-      try {
-        const path = `${opts.folder ? `${opts.folder.replace(/\/+$/, "")}/` : ""}${safeTitleLeaf(opts.title)}`;
-        progress.note = await client.createNote({ content: "", path, metadata: { prism_type: "database", title: opts.title } });
-        progress.createdPage = true;
-      } catch (e) {
-        throw new NewDatabaseError("page", progress, detailOf(e));
-      }
-    }
-  }
-  const note = progress.note;
-  // 2. Properties, in batches the schema route accepts (≤ 20 fields per write). The FIRST
-  //    write carries `requireNew`; later batches extend the tag it just claimed.
-  if (!progress.schemaDone) {
-    try {
-      if (!cols.length) await client.updateSchema(opts.tag, { requireNew: true, description: `Pages of the “${opts.title}” database` });
-      for (let i = (progress.schemaBatches ?? 0) * 20; i < cols.length; i += 20) {
-        const patch: SchemaPatch = { ...(i === 0 ? { requireNew: true } : {}), fields: {}, ui: {} };
-        for (const c of cols.slice(i, i + 20)) {
-          patch.fields![c.key] = fieldFor(c, opts.plan.rows.map((r) => r[index(c)] ?? "")) as NonNullable<SchemaPatch["fields"]>[string];
-          patch.ui![c.key] = { kind: c.as as PropertyKind, label: c.name.slice(0, 80) };
-        }
-        await client.updateSchema(opts.tag, patch);
-        progress.schemaBatches = i / 20 + 1;
-      }
-      progress.schemaDone = true;
-    } catch (e) {
-      // Refused before anything of the tag exists: take back a page we made for it.
-      let removed = false;
-      if (progress.createdPage && !progress.schemaBatches && client.trashPage) {
-        try { await client.trashPage(note.id); removed = true; progress.note = undefined; progress.createdPage = false; } catch { /* the page stays; the message says so */ }
-      }
-      throw new NewDatabaseError("schema", progress, detailOf(e), removed);
-    }
-  }
-  // 3. The view config, against the page as it is NOW (it may have changed since the dialog opened).
-  if (!progress.configDone) {
-    try {
-      const config: DatabaseConfig = { ...defaultConfig(opts.tag), views: [{ id: "table", name: "Table", type: "table", ...(cols.length ? { visible: cols.map((c) => c.key) } : {}) }] };
-      const fresh = await client.getNote(note.id, { fresh: true });
-      await client.updateNote(note.id, { metadata: { prism_database: config }, ifUpdatedAt: fresh.updatedAt ?? undefined });
-      progress.configDone = true;
-    } catch (e) {
-      throw new NewDatabaseError("config", progress, detailOf(e));
-    }
-  }
+  // 1–3. The page, the tag's properties (requireNew), the view config.
+  const { note, progress } = await createBlankDatabase(client, {
+    tag: opts.tag, title: opts.title, folder: opts.folder, adopt: opts.adopt,
+    properties: cols.map((c) => ({
+      key: c.key,
+      field: fieldFor(c, opts.plan.rows.map((r) => r[index(c)] ?? "")) as NonNullable<SchemaPatch["fields"]>[string],
+      ui: { kind: c.as as PropertyKind, label: c.name.slice(0, 80) },
+    })),
+  }, opts.resume);
   // 4. The rows.
   const mapping: Record<string, string> = {};
   for (const c of opts.plan.columns) if (c.name) mapping[c.name] = c.as === "title" ? "$title" : c.as === "skip" ? "" : c.key;
@@ -421,7 +361,7 @@ export async function importCsvAsNewDatabase(client: VaultClient, opts: {
     const result = await client.importCsv({ tag: opts.tag, csv: opts.csv, mapping, pathPrefix, dryRun: false });
     return { note, result };
   } catch (e) {
-    throw new NewDatabaseError("import", progress, detailOf(e));
+    throw new NewDatabaseError("import", progress, newDatabaseErrorDetail(e));
   }
 }
 

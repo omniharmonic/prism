@@ -124,7 +124,7 @@ function WorkspaceSetup({
       </p>
     );
   const field =
-    "focus-ring min-h-11 w-full min-w-0 rounded-lg border border-[var(--glass-border)] bg-[var(--bg-base)] px-3 text-sm text-[var(--text-primary)]";
+    "focus-ring min-h-control w-full min-w-0 rounded-lg border border-[var(--glass-border)] bg-[var(--bg-base)] px-3 text-sm text-[var(--text-primary)]";
   const actionError = (key: string) =>
     errors[key] ? (
       <p role="alert" className="mt-2 text-sm text-[var(--color-error)]">
@@ -190,7 +190,7 @@ function WorkspaceSetup({
             <Button
               type="submit"
               variant="primary"
-              className="min-h-11 shrink-0"
+              className="min-h-control shrink-0"
               disabled={!!pending || !newName.trim()}
               loading={pending === "create"}
             >
@@ -235,7 +235,7 @@ function WorkspaceSetup({
         >
           <p className="mt-0 text-sm">{loadError}</p>
           <Button
-            className="min-h-11"
+            className="min-h-control"
             onClick={() => void refresh()}
             disabled={!!pending}
           >
@@ -334,7 +334,7 @@ function WorkspaceSetup({
                     ))}
                   </select>
                   <Button
-                    className="min-h-11"
+                    className="min-h-control"
                     disabled={!selected || !!pending || loading || !!loadError}
                     loading={pending === `move:${key}`}
                     onClick={() => {
@@ -396,7 +396,7 @@ function WorkspaceSetup({
                     }
                   />
                   <Button
-                    className="min-h-11"
+                    className="min-h-control"
                     disabled={!!pending || host === (workspace.hostname ?? "")}
                     loading={pending === `host:${key}`}
                     onClick={() =>
@@ -436,14 +436,14 @@ function WorkspaceSetup({
                     </p>
                     <div className="flex gap-2">
                       <Button
-                        className="min-h-11"
+                        className="min-h-control"
                         disabled={!!pending}
                         onClick={() => setDeleting(null)}
                       >
                         Keep workspace
                       </Button>
                       <Button
-                        className="min-h-11"
+                        className="min-h-control"
                         disabled={!!pending}
                         loading={pending === `delete:${key}`}
                         onClick={() =>
@@ -464,7 +464,7 @@ function WorkspaceSetup({
                 ) : (
                   <Button
                     variant="ghost"
-                    className="min-h-11"
+                    className="min-h-control"
                     disabled={!!pending}
                     onClick={() => setDeleting(key)}
                   >

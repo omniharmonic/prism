@@ -140,7 +140,7 @@ export function OpenDocuments() {
                 </span>
               </h2>
               <button
-                className="interactive focus-ring flex h-11 w-11 items-center justify-center"
+                className="interactive focus-ring flex size-control items-center justify-center"
                 aria-label="Close open documents"
                 onClick={() => setOpen(false)}
               >
@@ -220,7 +220,7 @@ export function OpenDocuments() {
                       </span>
                     </button>
                     <button
-                      className="interactive focus-ring flex h-11 w-11 shrink-0 items-center justify-center disabled:opacity-30"
+                      className="interactive focus-ring flex size-control shrink-0 items-center justify-center disabled:opacity-30"
                       aria-label={`Move ${tab.title} earlier`}
                       title="Move earlier"
                       disabled={index === 0}
@@ -229,7 +229,7 @@ export function OpenDocuments() {
                       <ArrowUp size={15} />
                     </button>
                     <button
-                      className="interactive focus-ring flex h-11 w-11 shrink-0 items-center justify-center disabled:opacity-30"
+                      className="interactive focus-ring flex size-control shrink-0 items-center justify-center disabled:opacity-30"
                       aria-label={`Move ${tab.title} later`}
                       title="Move later"
                       disabled={index === openTabs.length - 1}
@@ -238,7 +238,7 @@ export function OpenDocuments() {
                       <ArrowDown size={15} />
                     </button>
                     <button
-                      className="interactive focus-ring flex h-11 w-11 shrink-0 items-center justify-center"
+                      className="interactive focus-ring flex size-control shrink-0 items-center justify-center"
                       aria-label={`Close ${tab.title}`}
                       title="Close document"
                       onClick={() => {

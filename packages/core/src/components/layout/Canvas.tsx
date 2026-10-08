@@ -307,8 +307,8 @@ export function Canvas() {
             <p className="mt-3 text-sm text-[var(--text-secondary)]">{accessUnavailable ? "Your access may have changed, or this document may have been moved or removed." : "Check your connection and try again. Your saved work has not been changed."}</p>
             {accessUnavailable && canRequestAccess && parachuteNoteId && <div className="mt-5"><RequestAccessButton noteId={parachuteNoteId} /></div>}
             <div className="mt-5 flex flex-wrap justify-center gap-3">
-              <button type="button" disabled={isFetching} onClick={() => { void refetch(); }} className="focus-ring min-h-11 rounded-lg border border-[var(--border-subtle)] px-4 text-sm">{isFetching ? "Checking document…" : "Retry document"}</button>
-              <button type="button" onClick={() => activeTab && useUIStore.getState().closeTab(activeTab.id)} className="focus-ring min-h-11 rounded-lg px-4 text-sm text-[var(--text-secondary)]">Close tab</button>
+              <button type="button" disabled={isFetching} onClick={() => { void refetch(); }} className="focus-ring min-h-control rounded-lg border border-[var(--border-subtle)] px-4 text-sm">{isFetching ? "Checking document…" : "Retry document"}</button>
+              <button type="button" onClick={() => activeTab && useUIStore.getState().closeTab(activeTab.id)} className="focus-ring min-h-control rounded-lg px-4 text-sm text-[var(--text-secondary)]">Close tab</button>
             </div>
           </div>
         ) : effectiveNote && isLiveDoc ? (

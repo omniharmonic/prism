@@ -415,7 +415,7 @@ function ScopedMessagesDashboard() {
 
             <button
               type="button"
-              className="focus-ring flex h-11 w-11 flex-none items-center justify-center rounded-lg"
+              className="focus-ring flex size-control flex-none items-center justify-center rounded-lg"
               aria-label="Refresh"
               title="Refresh"
               aria-busy={pull.refreshing || undefined}
@@ -474,7 +474,7 @@ function ScopedMessagesDashboard() {
                   aria-label="Filter inbox platform"
                   value={platformFilter}
                   onChange={(e) => setPlatformFilter(e.target.value)}
-                  className="min-h-11 rounded-lg px-3 text-sm outline-none"
+                  className="min-h-control rounded-lg px-3 text-sm outline-none"
                   style={{
                     background: "var(--glass)",
                     border: "1px solid var(--glass-border)",
@@ -704,7 +704,7 @@ function ConversationDetail({
           This conversation couldn't be opened. Your messages list is still
           here.{" "}
           <button
-            className="min-h-11 underline"
+            className="min-h-control underline"
             onClick={() => void result.refetch()}
           >
             Try again

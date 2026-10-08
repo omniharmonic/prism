@@ -41,8 +41,8 @@ export function SelectionHandoffNotice({ handoff }: { handoff: ReturnType<typeof
     {handoff.message && <p role="status" className="mb-2">{handoff.message}</p>}
     {handoff.needsChoice && <><p className="mb-2">This conversation is working with different context. Choose where to add the captured text.</p>
       <div className="flex flex-wrap gap-2">
-        <button type="button" className="focus-ring min-h-11 rounded border border-[var(--glass-border)] px-2" onClick={handoff.acceptCurrent}>Attach to current conversation</button>
-        <button type="button" className="focus-ring min-h-11 rounded border border-[var(--glass-border)] px-2" onClick={handoff.startDocument}>New conversation about this page</button>
+        <button type="button" className="focus-ring min-h-control rounded border border-[var(--glass-border)] px-2" onClick={handoff.acceptCurrent}>Attach to current conversation</button>
+        <button type="button" className="focus-ring min-h-control rounded border border-[var(--glass-border)] px-2" onClick={handoff.startDocument}>New conversation about this page</button>
       </div>
     </>}
     <button type="button" className="focus-ring mt-2 min-h-10 underline" onClick={handoff.dismiss}>Dismiss captured context</button>

@@ -189,7 +189,7 @@ export function Settings({ open, onClose }: SettingsProps) {
       <div className="prism-settings" onClick={(e) => e.stopPropagation()}>
         <header className="prism-settings__header">
           <div><h2>Settings</h2><p>Make Prism work the way you do.</p></div>
-          <button aria-label="Close settings" onClick={onClose} className="focus-ring p-3 rounded hover:bg-[var(--glass-hover)]"><X size={18} /></button>
+          <button aria-label="Close settings" onClick={onClose} className="focus-ring min-h-control min-w-control grid place-items-center p-1.5 rounded hover:bg-[var(--glass-hover)]"><X size={18} /></button>
         </header>
         <div className="prism-settings__body">
           <nav aria-label="Settings sections" className="prism-settings__navigation">
@@ -571,7 +571,7 @@ export function Settings({ open, onClose }: SettingsProps) {
             <>
               <Section title="Start-up">
                 {/* The whole row is the target (a bare 16px box is too small to tap). */}
-                <label className="flex min-h-11 items-center justify-between gap-3 text-sm" style={{ color: "var(--text-primary)" }}>
+                <label className="flex min-h-control items-center justify-between gap-3 text-sm" style={{ color: "var(--text-primary)" }}>
                   <span>Start with last open document<span className="prism-settings__hint">Off: Prism opens on Home.</span></span>
                   <input type="checkbox" aria-label="Start with last open document" checked={startWithLastDocument} onChange={(e) => setStartWithLastDocument(e.target.checked)} className="h-4 w-4" />
                 </label>
@@ -1088,7 +1088,7 @@ function SourceField({ icon, label, desc, fieldKey, placeholder, sensitive, valu
 function ReduceMotionRow() {
   const [reduce, setReduce] = useReduceMotion();
   return (
-    <label className="flex min-h-11 items-center justify-between gap-4 text-sm" style={{ color: "var(--text-primary)" }}>
+    <label className="flex min-h-control items-center justify-between gap-4 text-sm" style={{ color: "var(--text-primary)" }}>
       <span>
         <span className="block">Reduce motion</span>
         <span className="block text-xs" style={{ color: "var(--text-muted)", marginTop: 2 }}>Turns off menu, sheet and panel animations on this device. Your system setting is always honoured.</span>

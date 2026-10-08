@@ -17,7 +17,7 @@
 .prism-context-link-copy .prism-context-relationship { align-self: flex-start; border-radius: 4px; padding: 2px 6px; background: var(--glass-hover); font-size: 11px; color: var(--text-secondary); }
 .prism-context-state { margin: 12px 0; padding: 14px; border: 1px solid var(--glass-border); border-radius: 8px; font-size: 13px; line-height: 1.6; color: var(--text-secondary); }
 .prism-context-state p + p { margin-top: 8px; color: var(--text-muted); font-size: 12px; }
-.prism-context-state button, .prism-context-more { margin-top: 10px; min-height: 44px; padding: 8px 12px; border: 1px solid var(--glass-border); border-radius: 6px; font-size: 12px; color: var(--text-primary); }
+.prism-context-state button, .prism-context-more { margin-top: 10px; min-height: var(--control-h-md); padding: 8px 12px; border: 1px solid var(--glass-border); border-radius: 6px; font-size: 12px; color: var(--text-primary); }
 .prism-context-more { width: 100%; }
 .prism-context-links button:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
 .prism-context-links button:disabled { opacity: .55; }
@@ -54,7 +54,7 @@
 }
 
 /* (The chevron of a select is the shared rule in styles/workspace.css.) */
-.prism-context-switch { min-width: 44px; min-height: 44px; display: grid; place-items: center; }
+.prism-context-switch { min-width: var(--control-h-md); min-height: var(--control-h-md); display: grid; place-items: center; }
 .prism-context-switch-track { display: block; width: 28px; height: 16px; border-radius: 9px; padding: 2px; }
 .prism-context-switch-track > span { display: block; width: 12px; height: 12px; border-radius: 50%; background: white; }
 .prism-context-chip-remove { min-width: 32px; min-height: 32px; display: inline-grid; place-items: center; }
@@ -78,4 +78,11 @@
  .prism-version-layout { height: 100dvh; padding-top: env(safe-area-inset-top); }
  .prism-version-dialog button { min-height: 44px; }
  .prism-version-dialog button[aria-label] { min-width: 44px; }
+}
+
+/* Touch targets (touch.css condition): the rules above draw these at the desktop control size
+   (tokens.css --control-h-md); a touch pointer or a narrow window gets --touch-target. */
+@media screen and (max-width: 767px), screen and (hover: none) and (pointer: coarse) {
+  .prism-context-state button, .prism-context-more { min-height: var(--touch-target); }
+  .prism-context-switch { min-width: var(--touch-target); min-height: var(--touch-target); }
 }

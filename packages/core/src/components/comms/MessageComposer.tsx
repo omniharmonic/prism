@@ -158,10 +158,8 @@ function ScopedMessageComposer({
           aria-busy={sending}
           onClick={() => void handleSend()}
           disabled={disabled || sendDisabled || sending || !text.trim()}
-          className="prism-send-message flex items-center justify-center shrink-0"
+          className="prism-send-message flex size-control items-center justify-center shrink-0"
           style={{
-            width: 44,
-            height: 44,
             background: "var(--action-bg)",
             color: "var(--action-fg)",
           }}

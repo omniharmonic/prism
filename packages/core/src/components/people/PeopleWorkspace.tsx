@@ -22,7 +22,7 @@ import "./people-workspace.css";
 import type { PersonSummary } from "../../data/VaultClient";
 
 const control =
-  "focus-ring min-h-11 rounded-lg border border-[var(--glass-border)] px-3 text-sm hover:bg-[var(--glass-hover)] disabled:opacity-50";
+  "focus-ring min-h-control rounded-lg border border-[var(--glass-border)] px-3 text-sm hover:bg-[var(--glass-hover)] disabled:opacity-50";
 const labels = {
   conversations: "Conversations",
   meetings: "Meetings",
@@ -539,7 +539,7 @@ function IdentityControls({
   }
   return (
     <details className="mt-5 border-t border-[var(--glass-border)] pt-4">
-      <summary className="focus-ring min-h-11 cursor-pointer py-2 text-sm font-medium">
+      <summary className="focus-ring min-h-control cursor-pointer py-1.5 text-sm font-medium">
         Manage accounts
       </summary>
       <p className="mb-4 text-xs text-[var(--text-secondary)]">

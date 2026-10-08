@@ -9,9 +9,9 @@ import { safeBoardField } from "../../../lib/boards/config";
 
 import { formatDateTime as fmtDateTime } from "../../../lib/datetime/format";
 const control =
-  "min-h-11 min-w-0 w-full rounded-lg border border-[var(--glass-border)] bg-[var(--bg-surface)] px-3 text-sm";
+  "min-h-control min-w-0 w-full rounded-lg border border-[var(--glass-border)] bg-[var(--bg-surface)] px-3 text-sm";
 const remove =
-  "grid min-h-11 w-11 shrink-0 place-items-center rounded-lg text-[var(--text-secondary)] hover:bg-[var(--glass-hover)]";
+  "grid size-control shrink-0 place-items-center rounded-lg text-[var(--text-secondary)] hover:bg-[var(--glass-hover)]";
 
 function dateLabel(value: string | undefined, fallback: string) {
   if (!value) return fallback;

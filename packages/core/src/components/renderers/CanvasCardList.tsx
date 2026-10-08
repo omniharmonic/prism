@@ -51,7 +51,7 @@ export function CanvasCardList({
     `${c.title} ${c.path}`.toLowerCase().includes(query.trim().toLowerCase()),
   );
   const button =
-    "focus-ring flex min-h-11 items-center gap-2 rounded-lg px-3 py-2 text-sm hover:bg-[var(--glass-hover)] disabled:opacity-40";
+    "focus-ring flex min-h-control items-center gap-2 rounded-lg px-3 py-1.5 text-sm hover:bg-[var(--glass-hover)] disabled:opacity-40";
   async function open(id: string) {
     if (busy) return;
     setBusy(id);
@@ -97,7 +97,7 @@ export function CanvasCardList({
           autoFocus
           aria-label="Find a card"
           placeholder="Find a card…"
-          className="focus-ring min-h-11 w-full rounded-lg border border-[var(--glass-border)] bg-transparent px-3 text-base"
+          className="focus-ring min-h-control w-full rounded-lg border border-[var(--glass-border)] bg-transparent px-3 text-base"
           value={query}
           onChange={(e) => {
             setQuery(e.target.value);
@@ -209,7 +209,7 @@ export function useCanvasCardNavigation(
       ref={button}
       type="button"
       aria-expanded={showCards}
-      className="focus-ring flex min-h-11 items-center gap-2 rounded-lg px-3 py-2 text-xs hover:bg-[var(--glass-hover)]"
+      className="focus-ring flex min-h-control items-center gap-2 rounded-lg px-3 py-1.5 text-xs hover:bg-[var(--glass-hover)]"
       onClick={() => {
         setShowCards((v) => !v);
         closePicker();

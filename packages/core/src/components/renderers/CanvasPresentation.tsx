@@ -91,7 +91,7 @@ export function useCanvasPresentation() {
       onClick={() => setExpanded((v) => !v)}
       aria-label={expanded ? "Back to document" : "Focus canvas"}
       aria-pressed={expanded}
-      className="focus-ring flex min-h-11 items-center gap-2 rounded-lg px-3 py-2 text-xs hover:bg-[var(--glass-hover)]"
+      className="focus-ring flex min-h-control items-center gap-2 rounded-lg px-3 py-1.5 text-xs hover:bg-[var(--glass-hover)]"
     >
       {expanded ? <Minimize2 size={16} /> : <Maximize2 size={16} />}
       <span>{expanded ? "Back to document" : "Focus canvas"}</span>

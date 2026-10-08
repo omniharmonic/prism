@@ -59,7 +59,7 @@ export function CollabDocument(props: { noteId: string; note: Note }) {
     return (
       <div role="alert" className="p-6 text-sm">
         <p>{state.error}</p>
-        <button type="button" className="focus-ring mt-3 min-h-11 rounded-lg border border-[var(--glass-border)] px-4"
+        <button type="button" className="focus-ring mt-3 min-h-control rounded-lg border border-[var(--glass-border)] px-4"
           onClick={() => setState((s) => ({ module: null, error: null, attempt: s.attempt + 1 }))}>Try again</button>
       </div>
     );

@@ -5,7 +5,7 @@
 .prism-connections button,
 .prism-connections select,
 .prism-connections input:not([type="checkbox"]) {
-  min-height: 44px;
+  min-height: var(--control-h-md);
 }
 .prism-connections button {
   white-space: normal;
@@ -16,7 +16,7 @@
   outline-offset: 2px;
 }
 .prism-connections label {
-  min-height: 44px;
+  min-height: var(--control-h-md);
 }
 .prism-connections input[type="checkbox"] {
   flex-shrink: 0;
@@ -86,7 +86,7 @@
   overflow-wrap: anywhere;
 }
 .connections-card button {
-  min-width: 44px;
+  min-width: var(--control-h-md);
 }
 .connection-row {
   border-top: 1px solid var(--glass-border);
@@ -233,4 +233,14 @@
 .connections-header > div {
   flex: 1;
   min-width: 0;
+}
+
+/* Touch targets (touch.css condition): the rules above draw these at the desktop control size
+   (tokens.css --control-h-md); a touch pointer or a narrow window gets --touch-target. */
+@media screen and (max-width: 767px), screen and (hover: none) and (pointer: coarse) {
+  .prism-connections button,
+.prism-connections select,
+.prism-connections input:not([type="checkbox"]) { min-height: var(--touch-target); }
+  .prism-connections label { min-height: var(--touch-target); }
+  .connections-card button { min-width: var(--touch-target); }
 }

@@ -28,7 +28,7 @@ export function SearchPanel({ query, onClose }: SearchPanelProps) {
       {!query.trim() ? "Search your workspace" : isFetching ? "Searching…" : isError ? "Search unavailable" : `${results?.length ?? 0} results shown · ${searchModeLabel(mode)}`}
     </div>
     {isFetching && <div className="flex justify-center py-4"><Spinner size={16} /></div>}
-    {isError && <div role="alert" className="px-3 py-4 text-sm">Couldn't search this workspace. <button className="focus-ring min-h-11 px-2 underline" onClick={() => void refetch()}>Try again</button></div>}
+    {isError && <div role="alert" className="px-3 py-4 text-sm">Couldn't search this workspace. <button className="focus-ring min-h-control px-2 underline" onClick={() => void refetch()}>Try again</button></div>}
     {!isFetching && !isError && query.trim() && results?.length === 0 && <p className="px-3 py-5 text-sm" style={{ color: "var(--text-secondary)" }}>No matching notes. Try a name, phrase, or related idea.</p>}
     {results?.map(note => {
       const title = note.path?.split("/").pop() || note.id;

@@ -37,7 +37,7 @@
   margin-bottom: 5px;
 }
 .prism-publication-preview-control {
-  min-height: 44px;
+  min-height: var(--control-h-md);
   border: 1px solid var(--glass-border);
   border-radius: 7px;
   padding: 8px 10px;
@@ -55,4 +55,10 @@
   overflow: auto;
   background: var(--glass-hover);
   padding: 10px;
+}
+
+/* Touch targets (touch.css condition): the rules above draw these at the desktop control size
+   (tokens.css --control-h-md); a touch pointer or a narrow window gets --touch-target. */
+@media screen and (max-width: 767px), screen and (hover: none) and (pointer: coarse) {
+  .prism-publication-preview-control { min-height: var(--touch-target); }
 }

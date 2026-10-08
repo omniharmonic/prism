@@ -455,8 +455,8 @@ function EmailReplyBar({
           <span>From: {live ? "Connected server mailbox" : account}</span>
           <span>Source: {source === "proton-bridge" ? "Proton Bridge" : source}</span>
         </div>
-        <label className="flex min-w-0 items-center gap-3"><span className="w-10 shrink-0 text-[var(--text-muted)]">To</span><input aria-label="Reply recipients" readOnly value={to} className="min-h-11 min-w-0 flex-1 rounded-lg border border-[var(--glass-border)] bg-transparent px-3 text-sm" /></label>
-        <label className="flex min-w-0 items-center gap-3"><span className="w-10 shrink-0 text-[var(--text-muted)]">Cc</span><input aria-label="Reply Cc" value={ccDraft.text} onChange={event => ccDraft.setText(event.target.value)} disabled={submitting} placeholder="Optional addresses, separated by commas" className="min-h-11 min-w-0 flex-1 rounded-lg border border-[var(--glass-border)] bg-transparent px-3 text-sm" autoComplete="off" spellCheck={false} /></label>
+        <label className="flex min-w-0 items-center gap-3"><span className="w-10 shrink-0 text-[var(--text-muted)]">To</span><input aria-label="Reply recipients" readOnly value={to} className="min-h-control min-w-0 flex-1 rounded-lg border border-[var(--glass-border)] bg-transparent px-3 text-sm" /></label>
+        <label className="flex min-w-0 items-center gap-3"><span className="w-10 shrink-0 text-[var(--text-muted)]">Cc</span><input aria-label="Reply Cc" value={ccDraft.text} onChange={event => ccDraft.setText(event.target.value)} disabled={submitting} placeholder="Optional addresses, separated by commas" className="min-h-control min-w-0 flex-1 rounded-lg border border-[var(--glass-border)] bg-transparent px-3 text-sm" autoComplete="off" spellCheck={false} /></label>
         {!ccValid && <p role="alert" className="text-[var(--color-danger)]">Enter complete email addresses separated by commas.</p>}
         {ccDraft.error && <p role="status">{ccDraft.error}</p>}
         <details className="text-[var(--text-muted)]"><summary className="cursor-pointer py-1">Reply details</summary><p className="mt-1 break-words">Subject: {subject}</p>{live && account && <p className="mt-1 break-words">Stored email account: {account}. The connected server mailbox determines the sending account.</p>}</details>
@@ -582,7 +582,7 @@ function EmailComposer({
               value={account}
               onChange={(e) => setAccount(e.target.value)}
               placeholder="Choose the sending account"
-              className="min-h-11 min-w-0 flex-1 rounded-lg border px-3 text-sm"
+              className="min-h-control min-w-0 flex-1 rounded-lg border px-3 text-sm"
               style={{
                 background: "var(--glass)",
                 borderColor: "var(--glass-border)",

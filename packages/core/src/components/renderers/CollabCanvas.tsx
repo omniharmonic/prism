@@ -382,7 +382,7 @@ export function CollabCanvas({
           {editable && <>
           <button
             onClick={() => { setShowDrawer((v) => !v); closeCardList(); }}
-            className="focus-ring flex min-h-11 items-center gap-2 px-3 py-2 rounded-lg hover:bg-[var(--glass-hover)] transition-colors"
+            className="focus-ring flex min-h-control items-center gap-2 px-3 py-1.5 rounded-lg hover:bg-[var(--glass-hover)] transition-colors"
             style={{ color: showDrawer ? "var(--color-accent)" : "var(--text-secondary)" }}
             title="Note drawer"
             aria-expanded={showDrawer}
@@ -393,7 +393,7 @@ export function CollabCanvas({
           </button>
           <button
             onClick={toggleLinks}
-            className="focus-ring flex min-h-11 items-center gap-2 px-3 py-2 rounded-lg hover:bg-[var(--glass-hover)] transition-colors"
+            className="focus-ring flex min-h-control items-center gap-2 px-3 py-1.5 rounded-lg hover:bg-[var(--glass-hover)] transition-colors"
             style={{ color: showLinks ? "var(--color-accent)" : "var(--text-secondary)" }}
             title={showLinks ? "Hide existing links" : "Show existing links"}
             aria-pressed={showLinks}
@@ -401,14 +401,14 @@ export function CollabCanvas({
             {showLinks ? <Link2Off size={13} /> : <Link2 size={13} />}
             {showLinks ? "Hide links" : "Show links"}
           </button>
-          <label className="prism-canvas-copy flex min-h-11 items-center gap-2 px-3 py-2 cursor-pointer" style={{ color: "var(--text-muted)" }}>
+          <label className="prism-canvas-copy flex min-h-control items-center gap-2 px-3 py-1.5 cursor-pointer" style={{ color: "var(--text-muted)" }}>
             <input type="checkbox" checked={includeBody} onChange={(e) => setIncludeBody(e.target.checked)} className="cursor-pointer" />
             Copy preview
           </label>
           {selectedNoteId && (
             <button
               onClick={handleOpenSelected}
-              className="focus-ring flex min-h-11 items-center gap-2 px-3 py-2 rounded-lg transition-colors"
+              className="focus-ring flex min-h-control items-center gap-2 px-3 py-1.5 rounded-lg transition-colors"
               style={{ background: "var(--action-bg, var(--color-accent))", color: "var(--action-fg, #fff)" }}
             >
               <ExternalLink size={11} />

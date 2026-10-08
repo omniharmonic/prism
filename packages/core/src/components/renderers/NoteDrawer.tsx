@@ -5,7 +5,7 @@ import { useVaultClient } from "../../data/VaultClientContext";
 import { useAgentChatStore } from "../../lib/agent/chatStore";
 import type { Note, NoteTreeEntry } from "../../lib/types";
 
-const control = "focus-ring min-h-11 rounded-lg border border-[var(--glass-border)] px-3 text-sm disabled:opacity-50";
+const control = "focus-ring min-h-control rounded-lg border border-[var(--glass-border)] px-3 text-sm disabled:opacity-50";
 const title = (n: NoteTreeEntry) => (typeof n.metadata?.title === "string" && n.metadata.title) || n.path?.split("/").pop() || "Untitled";
 
 type Props = { onAddNote: (note: Note) => Promise<void>; canvasNoteIds: Set<string>; onClose: () => void };
@@ -68,7 +68,7 @@ function Drawer({ onAddNote, canvasNoteIds, onClose, scope }: Props & { scope: s
     </header>
     <div className="space-y-3 p-4">
       <p className="prism-canvas-copy-notice text-xs text-[var(--text-secondary)]">Cards copy a title and properties into this canvas. Copy preview also includes saved text, visible to everyone with canvas access.</p>
-      <label className="flex min-h-11 items-center gap-2 rounded-lg border border-[var(--glass-border)] px-3"><Search size={16}/><span className="sr-only">Find canvas notes</span><input autoFocus value={query} onChange={e=>{setQuery(e.target.value);setLimit(50);}} placeholder="Find a note…" className="min-w-0 flex-1 bg-transparent py-2 text-base outline-none"/></label>
+      <label className="flex min-h-control items-center gap-2 rounded-lg border border-[var(--glass-border)] px-3"><Search size={16}/><span className="sr-only">Find canvas notes</span><input autoFocus value={query} onChange={e=>{setQuery(e.target.value);setLimit(50);}} placeholder="Find a note…" className="min-w-0 flex-1 bg-transparent py-2 text-base outline-none"/></label>
       <div className="prism-canvas-filter"><select aria-label="Filter canvas notes by tag" value={tag} onChange={e=>{setTag(e.target.value);setLimit(50);}} className={control+" w-full bg-[var(--bg-surface)]"}><option value="">All tags</option>{tags.map(t=><option key={t} value={t}>{t}</option>)}</select></div>
       {selected.size > 0 && <button className={control+" w-full"} disabled={busy || notes.isFetching || notes.isError} onClick={()=>void add([...selected])}>{busy ? "Adding…" : `Add ${selected.size} selected`}</button>}
       {error && <p role="alert" className="text-sm">{error}</p>}
@@ -77,9 +77,9 @@ function Drawer({ onAddNote, canvasNoteIds, onClose, scope }: Props & { scope: s
       {notes.isFetching && <p role="status" className="p-3 text-sm">Loading notes…</p>}
       {notes.isError && <div role="alert" className="p-3 text-sm">Notes could not be loaded.<button className={control+" mt-3"} onClick={()=>void notes.refetch()}>Try again</button></div>}
       {filtered.slice(0,limit).map(n=>{ const added=canvasNoteIds.has(n.id); return <div key={n.id} className="prism-canvas-picker-row flex min-h-16 items-center gap-3 rounded-lg px-2 hover:bg-[var(--glass-hover)]">
-        <label className="flex min-h-11 min-w-11 items-center justify-center"><span className="sr-only">Select {title(n)}</span><input type="checkbox" disabled={busy || added} checked={selected.has(n.id)} onChange={()=>setSelected(prev=>{const next=new Set(prev);if(next.has(n.id))next.delete(n.id);else next.add(n.id);return next;})}/></label>
+        <label className="flex min-h-control min-w-control items-center justify-center"><span className="sr-only">Select {title(n)}</span><input type="checkbox" disabled={busy || added} checked={selected.has(n.id)} onChange={()=>setSelected(prev=>{const next=new Set(prev);if(next.has(n.id))next.delete(n.id);else next.add(n.id);return next;})}/></label>
         <FileText aria-hidden="true" size={17} className="prism-canvas-note-icon"/>
-        <button disabled={busy || added} onClick={()=>void add([n.id])} className="focus-ring min-h-11 min-w-0 flex-1 py-2 text-left disabled:opacity-50"><span className="block truncate text-sm font-medium">{title(n)}</span><span className="block truncate text-xs text-[var(--text-secondary)]">{added ? "On canvas" : n.path || "Add to canvas"}</span></button>
+        <button disabled={busy || added} onClick={()=>void add([n.id])} className="focus-ring min-h-control min-w-0 flex-1 py-1.5 text-left disabled:opacity-50"><span className="block truncate text-sm font-medium">{title(n)}</span><span className="block truncate text-xs text-[var(--text-secondary)]">{added ? "On canvas" : n.path || "Add to canvas"}</span></button>
       </div>;})}
       {!notes.isFetching && !notes.isError && !filtered.length && <p className="p-6 text-center text-sm text-[var(--text-secondary)]">No matching notes</p>}
       {filtered.length > limit && <button className={control+" mt-3 w-full"} onClick={()=>setLimit(n=>n+50)}>Show more notes</button>}
