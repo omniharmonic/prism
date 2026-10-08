@@ -190,6 +190,8 @@ test("vaultMcpConfig holds exactly one server: the target vault, with its own to
 
 test("buildPrompt prepends the vault-only rules + skill/note context", () => {
   const p = buildPrompt("summarize", "summarize", "note-1");
+  // With no Read tool, a body the CLI saves to a file is unreadable: the agent is told to page it.
+  assert.ok(p.includes("content_next_offset") && p.includes("content_length: 24000") && p.includes("never tell the user a note is too long to read"));
   assert.match(p, /parachute-vault MCP tools/);
   assert.match(p, /Skill: summarize/);
   assert.match(p, /Active note: note-1/);

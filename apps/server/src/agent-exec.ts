@@ -240,6 +240,23 @@ export function vaultMcpConfig(entry: VaultEntry): object {
   };
 }
 
+/**
+ * How to read a long note — part of every vault-profile preamble.
+ * The CLI saves a tool result above roughly 50 KB to a file for the model to open with Read,
+ * and these runs have NO built-in tools, so the model could never open it: asked about a
+ * 50 KB note it answered "saved to a file I can't open" (2026-10-08). No CLI setting moves
+ * that threshold (MAX_MCP_OUTPUT_TOKENS was tried and does not). The vault itself pages a
+ * body: `content_length` (a byte budget) + `content_offset`, answering `content_next_offset`
+ * (null on the last page) and `content_total_length`.
+ */
+export const LONG_NOTE_RULE = [
+  "Reading long notes: a tool result larger than about 40 KB is NOT delivered to you (it is saved to a file you cannot open).",
+  "So when you need a note's body, read it in pages: call query-notes with { id, include_content: true, content_length: 24000 },",
+  "then call it again with content_offset set to the content_next_offset you were given, and repeat until content_next_offset is null.",
+  "Read EVERY page before you answer about the note as a whole, and never tell the user a note is too long to read.",
+  "When listing or searching several notes, leave include_content off and fetch bodies one note at a time.",
+].join(" ");
+
 /** The data-access preamble prepended to every dispatch (a server-side analog of
  *  the desktop PRISM_CONTEXT). Keeps the agent scoped to vault operations. */
 export function buildPrompt(prompt: string, skill: string | null, noteId: string | null): string {
@@ -248,6 +265,7 @@ export function buildPrompt(prompt: string, skill: string | null, noteId: string
     "via the parachute-vault MCP tools (query-notes, create-note, update-note, …).",
     "You have NO host file, shell, or web access. Do the requested task against the vault",
     "and report concisely what you did.",
+    LONG_NOTE_RULE,
   ].join(" ");
   const ctx = [skill ? `Skill: ${skill}.` : "", noteId ? `Active note: ${noteId}.` : ""].filter(Boolean).join(" ");
   return `${rules}\n\n${ctx}\n\n${prompt}`.trim();
