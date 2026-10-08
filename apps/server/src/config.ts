@@ -325,6 +325,15 @@ export const config = {
   // `vault:<name>:admin` token: minted 1h-ephemeral per run via the operator CLI,
   // or PARACHUTE_ADMIN_TOKEN. 0 DISABLES it.
   historyCompactIntervalMs: Number(process.env.HISTORY_COMPACT_INTERVAL_MS ?? 86_400_000),
+  // Vault lint (worker/vault-lint.ts): a READ-ONLY daily sample of the newest notes per
+  // tag, counted against the declared field shapes (vault-shapes.ts). Reported as the
+  // `vault-lint` health source; it goes `failing` (→ the usual alert) when a tag's
+  // share of mis-shaped notes exceeds VAULT_LINT_MAX_RATE. OFF unless VAULT_LINT_ENABLED=true.
+  vaultLintEnabled: (process.env.VAULT_LINT_ENABLED ?? "false").toLowerCase() === "true",
+  vaultLintIntervalMs: Number(process.env.VAULT_LINT_INTERVAL_MS ?? 86_400_000),
+  vaultLintSample: Math.max(1, Math.min(500, Number(process.env.VAULT_LINT_SAMPLE ?? 100))),
+  vaultLintMaxRate: Number(process.env.VAULT_LINT_MAX_RATE ?? 0.2),
+  vaultLintMinSample: Math.max(1, Number(process.env.VAULT_LINT_MIN_SAMPLE ?? 10)),
   // Worker health + staleness alerts (worker/health.ts). A source is "stale" when
   // nothing succeeded within its threshold, "failing" after WORKER_FAIL_STREAK
   // consecutive errors. A threshold of 0 turns the STALENESS check off for that

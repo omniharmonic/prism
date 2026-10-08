@@ -40,6 +40,7 @@ import { indexNote, deindexNote, type IndexResult } from "../rag/service";
 import { getEmbedder } from "../rag/embedder";
 import { indexedNoteIds, allIndexedNoteIds } from "../rag/store";
 import { runHistoryCompactOnce } from "./history-compact";
+import { runVaultLintOnce, vaultLintDue } from "./vault-lint";
 import { runTrashPurgeOnce, purgeEnabled as trashPurgeEnabled } from "../pages";
 import { recordSourceOutcome, runHealthCheckOnce } from "./health";
 import { defaultSkillsDeps, runSkillsOnce, type PassResult, type SkillsDeps } from "./skills";
@@ -56,6 +57,7 @@ let lastIndexSweepAt = 0;
 // every vault also compacts on its own when it (re)starts.
 let lastHistoryCompactAt = Date.now();
 let historyCompactInFlight = false;
+let vaultLintInFlight = false;
 let lastTrashPurgeAt = 0;
 let trashPurgeInFlight = false;
 let indexSweepInFlight = false;
@@ -1096,6 +1098,20 @@ async function tickRest(): Promise<void> {
       .catch((e) => console.warn("[worker] history-compact failed:", (e as Error).message))
       .finally(() => {
         historyCompactInFlight = false;
+      });
+  }
+
+  // Vault lint: a read-only daily sample of field shapes (worker/vault-lint.ts), OFF
+  // unless VAULT_LINT_ENABLED=true. Fire-and-forget; its due time is persisted.
+  if (!vaultLintInFlight && vaultLintDue("primary")) {
+    vaultLintInFlight = true;
+    void runVaultLintOnce("primary")
+      .then((o) => {
+        if (o.status !== "ok") console.warn(`[worker] vault-lint ${o.status}: over=${o.over.join(",") || "-"} rose=${o.rose.join(",") || "-"}${o.error ? ` (${o.error})` : ""}`);
+      })
+      .catch((e) => console.warn("[worker] vault-lint failed:", (e as Error).message))
+      .finally(() => {
+        vaultLintInFlight = false;
       });
   }
 
