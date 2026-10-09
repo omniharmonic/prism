@@ -1,4 +1,4 @@
-import { type Note, useWikilinkNavigate } from "@prism/core/shell";
+import { type Note, containerTitle, useWikilinkNavigate } from "@prism/core/shell";
 import { CollabDoc } from "./CollabDoc";
 import { isOwner } from "../config";
 import { useLinkNotes } from "./linkNotes";
@@ -9,7 +9,7 @@ import { useLinkNotes } from "./linkNotes";
  * collab-capable note, so edits sync in real time across every session — this
  * browser, another browser, a phone — with no refresh.
  */
-export function CollabDocument({ noteId }: { noteId: string; note: Note }) {
+export function CollabDocument({ noteId, note }: { noteId: string; note: Note }) {
   // In-app: clicking a [[wikilink]] opens the target note in a tab. The `[[`
   // SUGGEST dropdown surfaces vault note names, so it's owner-only — a signed-in
   // collaborator editing a shared doc gets navigation but no suggestions.
@@ -21,6 +21,10 @@ export function CollabDocument({ noteId }: { noteId: string; note: Note }) {
     <CollabDoc
       noteId={noteId}
       embedded
+      // The shell's note follows /api/events: a rename made elsewhere reaches the open document's title.
+      pagePath={note.id === noteId ? note.path ?? null : undefined}
+      // (The stored title, else — for a container-named page, `<folder>/PROJECT` — the name it is shown by.)
+      pageTitle={note.id === noteId ? (typeof note.metadata?.title === "string" && note.metadata.title.trim() ? note.metadata.title : containerTitle(note.path, note.metadata)) : null}
       onWikilinkNavigate={navigate}
       wikilinkNotes={isOwner() ? notes : undefined}
     />

@@ -90,9 +90,9 @@ test("remote caret name tags", async ({ browser }) => {
   await expect.poll(() => tag("Eve Editor").evaluate((el) => el.closest("p")?.textContent ?? "")).toContain("Second paragraph here.");
   // Each caret and its name tag are drawn in that person's own, stable colour — and the two differ.
   const colourOf = (name: string) => tag(name).evaluate((el) => ({ caret: getComputedStyle(el).borderLeftColor, label: getComputedStyle(el.querySelector(".collaboration-carets__label")!).backgroundColor }));
+  await expect.poll(() => colourOf("Olive Owner")).toEqual({ caret: rgb("#a855f7"), label: rgb("#a855f7") });
+  await expect.poll(() => colourOf("Eve Editor")).toEqual({ caret: rgb("#22c55e"), label: rgb("#22c55e") });
   const [o, e] = [await colourOf("Olive Owner"), await colourOf("Eve Editor")];
-  expect(o).toEqual({ caret: rgb("#a855f7"), label: rgb("#a855f7") });
-  expect(e).toEqual({ caret: rgb("#22c55e"), label: rgb("#22c55e") });
   expect(o.caret).not.toBe(e.caret);
 
   // Each editor sees the OTHER person's caret, never their own.
@@ -333,12 +333,12 @@ test("NP-AI-02: an agent's edits arrive as suggestions a person steps through, a
 
 /**
  * NP-CO-10 · "… colour-distinct from agent identity".
- * FIXME (behaviour gap, PARITY-GAPS a.1): an agent has no colour of its own — its marks carry the
+ * Was a behaviour gap (PARITY-GAPS a.1): an agent has no colour of its own — its marks carry the
  * colour of the account it acts for (`colorFor(email)`, apps/server/src/mcp/tool-collab.ts authorOf),
  * which is that person's caret colour, and the caret palette (CollabDoc.tsx COLORS) contains the
  * agent's default green / red.
  */
-test.fixme("NP-CO-10: an agent's marks never share a collaborator's caret colour", async ({ browser }) => {
+test("NP-CO-10: an agent's marks never share a collaborator's caret colour", async ({ browser }) => {
   const owner = await device(browser, "owner", share("notes"));
   const eve = await device(browser, "eve", share("notes"));
   for (const d of [owner, eve]) await live(d.page);
@@ -358,13 +358,13 @@ test.fixme("NP-CO-10: an agent's marks never share a collaborator's caret colour
 
 /**
  * NP-PG-03 · "a collab title edit syncs to other clients".
- * FIXME (behaviour gap, PARITY-GAPS a.1 — seen failing 2026-10-03, at the last-but-two assertion): the
+ * Was a behaviour gap (PARITY-GAPS a.1 — seen failing 2026-10-03, at the last-but-two assertion): the
  * rename itself works (the owner's title, the server's path), but the OTHER client's open live document
  * keeps the old title: `CollabDoc` reads the page's path once, when it opens (and after its own
  * rename), and nothing tells an open document that its page was renamed elsewhere. (This fixture does
  * not bridge the `/api/events` stream either, so the other client's tree and tab are not checked here.)
  */
-test.fixme("NP-PG-03: a title edit in a live document reaches another client that has the page open", async ({ browser }) => {
+test("NP-PG-03: a title edit in a live document reaches another client that has the page open", async ({ browser }) => {
   const owner = await device(browser, "owner", inApp("notes"), { width: 1440, height: 900 });
   const eve = await device(browser, "eve", inApp("notes"), { width: 1440, height: 900 });
   for (const d of [owner, eve]) await live(d.page);

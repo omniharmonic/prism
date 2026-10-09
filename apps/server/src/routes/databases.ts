@@ -49,6 +49,7 @@ import { effectiveCaps, grantedTags, type Cap, type NoteRef } from "../permissio
 import { roleAtLeast, roleFloor } from "../roles";
 import { ensureTree, rowRef, treeUpsertNote } from "../tree";
 import { docNameFor, isDocLive, isNoteId, markReconciled } from "../collab";
+import { tellPagesChanged } from "../page-notice";
 import { consumeRateLimit } from "../middleware/ratelimit";
 import { mintEphemeralAdminToken } from "../mcp-token";
 import { csrfRefusal } from "./actions";
@@ -1294,6 +1295,8 @@ async function writeProperties(actor: Actor, entry: VaultEntry, id: string, entr
       if (Number.isFinite(prev) && Number.isFinite(next)) markReconciled(docNameFor(entry.id, id), prev, next);
     }
     treeUpsertNote(entry, updated);
+    // The stored title is the page's name: open live documents look again (NP-PG-03).
+    if (entries.some(([k]) => k === "title")) void tellPagesChanged(entry.id, [updated.id]);
     // NP-CO-16: people ADDED to a person property hear about it (after the write
     // landed; fire-and-forget — never part of the response).
     notifyAssignments(actor, entry, note, Object.fromEntries(entries), via);

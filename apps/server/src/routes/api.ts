@@ -28,6 +28,7 @@ import { canvasApi } from "./canvas";
 import { threadsApi } from "./threads";
 import { peopleApi } from "./people";
 import { humanCollabApi } from "./human-collab";
+import { tellPagesChanged, writesTitle } from "../page-notice";
 import { transcriptsApi } from "./transcripts";
 import { databasesApi } from "./databases";
 import { sharingApi } from "./sharing";
@@ -199,6 +200,9 @@ async function proxyToVault(c: Context) {
   // subscribe socket covers everyone else's; this makes the writer's next read exact).
   if (method !== "GET" && method !== "HEAD" && res.status >= 200 && res.status < 300) {
     void treeAfterOwnerWrite(entry, method, path, res.body).catch(() => {});
+    // A stored title written through the passthrough is the page's name: open live documents look again.
+    const titled = method === "PATCH" ? path.match(/^\/notes\/([^/?]+)$/)?.[1] : undefined;
+    if (titled && writesTitle(init.body)) { try { void tellPagesChanged(entry.id, [decodeURIComponent(titled)]); } catch { /* malformed escape */ } }
     // A note deleted for good takes the page text set aside from its live document with it.
     for (const id of deleting) deleteCollabSetAsideForNote(entry.id, id);
   }
@@ -1259,6 +1263,7 @@ api.patch("/notes/:id", async (c) => {
       updated = await vc.getNote(noteId);
     }
     treeUpsertNote(resolveVaultEntry(actor.vaultId), updated);
+    if (writesTitle(body)) void tellPagesChanged(actor.vaultId, [updated.id]);
     // A write without content to a LIVE doc: keep the reconciler from folding the
     // content-stale vault copy over unsaved typing (review M3).
     if (body.content === undefined) void reconcileMetaWrite(actor.vaultId, noteId, note.updatedAt, updated.updatedAt);

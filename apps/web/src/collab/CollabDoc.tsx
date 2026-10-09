@@ -7,7 +7,7 @@ import { humanCollabRevision } from "@prism/core/collab-commands";
 import { sendHumanCommand } from "./humanCommands";
 import { humanRevisionBody } from "../../../../packages/core/src/lib/collab/human/validation";
 import { PageCover, parseCover, coverPatch, COVER_GRADIENTS, useSoftKeyboard, type PageCoverValue } from "@prism/core";
-import { COLLAB_SCHEMA_VERSION, useAgentDocumentSnapshot, CollabEditor, CommentsSidebar, CommentsRowButton, collabAffordances, humanFailureText, HumanCommandFailure, PresenceAvatars, type CollabSocketScope, type CommentCommandActions, type HumanCommandChannel, CollabCodeEditor, CollabSpreadsheet, CollabCanvas, detectCodeLanguage, inferContentType, PageHeader, NotePropertyBar, PageProperties, renamePageFromTitle, containerTitle, isContainerPath, useUIStore, useWritingFont, useAgentChatStore, type ContentFont, type Note, type Editor } from "@prism/core";
+import { COLLAB_SCHEMA_VERSION, collabColorFor, useAgentDocumentSnapshot, CollabEditor, CommentsSidebar, CommentsRowButton, collabAffordances, humanFailureText, HumanCommandFailure, PresenceAvatars, type CollabSocketScope, type CommentCommandActions, type HumanCommandChannel, CollabCodeEditor, CollabSpreadsheet, CollabCanvas, detectCodeLanguage, inferContentType, PageHeader, NotePropertyBar, PageProperties, renamePageFromTitle, containerTitle, isContainerPath, useUIStore, useWritingFont, useAgentChatStore, type ContentFont, type Note, type Editor } from "@prism/core";
 import { MessageSquare, X, Lock } from "lucide-react";
 import { serverFetch, collabWsUrl, collabToken, isNative } from "../transport";
 import { apiBase, agentScope, getCapabilityToken, getActiveVault, getMe, fetchMe, contextHeaders } from "../config";
@@ -42,15 +42,8 @@ function useIsNarrow(): boolean {
 
 /** How many times a `busy` refusal of an open is retried automatically (0.6 s, 1.2 s, 2.4 s) before asking. */
 const BUSY_RETRIES = 3;
-const COLORS = ["#f783ac", "#3b82f6", "#22c55e", "#eab308", "#a855f7", "#ef4444", "#06b6d4"];
-
-/** A STABLE color per identity (so a given person is always the same color across
- *  sessions/clients), derived from their email/name — not from join order. */
-function colorFor(seed: string): string {
-  let h = 0;
-  for (let i = 0; i < seed.length; i++) h = (h * 31 + seed.charCodeAt(i)) >>> 0;
-  return COLORS[h % COLORS.length]!;
-}
+/** A STABLE colour per identity, from the palette the server shares (never an agent's or a review colour — NP-CO-10). */
+const colorFor = collabColorFor;
 
 /** Resolve the collab identity from the signed-in session (name → email), or a
  *  distinct-per-link "Guest" for capability-link viewers with no account. This is
@@ -116,6 +109,8 @@ function deriveTitle(content: string): string {
 type CollabDocProps = {
   noteId: string;
   embedded?: boolean;
+  pagePath?: string | null;
+  pageTitle?: string | null;
   onWikilinkNavigate?: (target: string) => void;
   wikilinkNotes?: Note[];
 };
@@ -128,11 +123,18 @@ export function CollabDoc(props: CollabDocProps) {
 function ScopedCollabDoc({
   noteId,
   embedded = false,
+  pagePath,
+  pageTitle,
   onWikilinkNavigate,
   wikilinkNotes,
 }: {
   noteId: string;
   embedded?: boolean;
+  /** In the workspace: the page's path as the shell's note query knows it NOW (it follows
+   *  `/api/events`). A change of it is a rename / move made elsewhere — the title follows. */
+  pagePath?: string | null;
+  /** …and its stored title (`metadata.title`), which the page shows before its file name. */
+  pageTitle?: string | null;
   /** How to handle a clicked [[wikilink]] (in-app: open a tab; share route: route
    *  to the target or request-access). */
   onWikilinkNavigate?: (target: string) => void;
@@ -268,8 +270,11 @@ function ScopedCollabDoc({
     const audience = agentScope();
     setTitleNotice("");
     setFinishRename(null);
+    pathEpoch.current++; // a re-read that started before this rename must not land on top of it
     const done = await renamePageFromTitle(httpVaultClient, { id: noteId, path }, newName);
     if (!done || !mounted.current || agentScope() !== audience) return;
+    pathEpoch.current++;
+    ownRename.current = { path: done.path, until: Date.now() + 15_000 };
     setPath(done.path);
     // A container-named page (`<folder>/PROJECT`): the title was stored as metadata, nothing moved.
     const name = done.title ?? (done.path.split("/").pop() || newName.trim());
@@ -280,6 +285,80 @@ function ScopedCollabDoc({
       setFinishRename(() => done.finish ?? null);
     }
   };
+
+  // NP-PG-03: an OPEN live document follows its page when the page is renamed or moved
+  // elsewhere — the title, the breadcrumb and the tab; the Y.Doc (named by the note id), the
+  // editor and the caret are untouched (only `path` / `title` state changes). Three signals:
+  //  · the workspace's own note (`pagePath`, kept current by /api/events);
+  //  · the server's "prism:page-changed" socket message after a move (it carries no path —
+  //    each reader re-reads the page with their own access; this is what the share route has);
+  //  · coming back to the page (focus / visible), on the share route, at most every 30 s.
+  // This client's OWN rename always wins: a re-read that started before it is dropped
+  // (`pathEpoch`), and until its echo arrives (≤ 15 s) an older path from the shell is ignored.
+  // A title being typed is the title field's own draft — never replaced by any of this.
+  const pathRef = useRef(path);
+  pathRef.current = path;
+  const pathEpoch = useRef(0);
+  const ownRename = useRef<{ path: string; until: number } | null>(null);
+  // The title shown is the stored title, else the file name — the same rule as at open (a page
+  // that was only MOVED keeps its stored title).
+  const shownRef = useRef<string | null>(null);
+  // (A container-named page — `<folder>/PROJECT` — is named by its `name` / folder, never by the file: `containerTitle`.)
+  const followPath = (next: string | null | undefined, storedTitle?: unknown, metadata?: Record<string, unknown> | null) => {
+    if (!next || !mounted.current) return;
+    const name = (typeof storedTitle === "string" && storedTitle.trim()) || containerTitle(next, metadata ?? null) || next.split("/").pop() || next;
+    if (pathRef.current === next && shownRef.current === name) return;
+    if (pathRef.current !== next) { pathRef.current = next; setPath(next); }
+    shownRef.current = name;
+    setTitle(name);
+    useUIStore.getState().renameTab(noteId, name);
+  };
+  const rereadPath = async (again = false) => {
+    const epoch = pathEpoch.current;
+    const audience = agentScope();
+    try {
+      const context = await captureWriteContext();
+      const response = await serverFetch(`${apiBase()}/notes/${encodeURIComponent(noteId)}?include_content=false`, { headers: context.headers, cache: "reload" });
+      if (!response.ok) return;
+      const note = (await response.json()) as { id?: unknown; path?: unknown; metadata?: Record<string, unknown> | null };
+      if (!mounted.current || epoch !== pathEpoch.current || agentScope() !== audience || note.id !== noteId) return;
+      followPath(typeof note.path === "string" ? note.path : null, note.metadata?.title, note.metadata);
+      // A rename is two writes (the move, then the stored title): a read between them sees the
+      // new path with the OLD stored title. When a stored title differs from the file name,
+      // look once more a moment later (the server also tells us when the title is written).
+      const stored = typeof note.metadata?.title === "string" ? note.metadata.title.trim() : "";
+      if (stored && !again && typeof note.path === "string" && stored !== (note.path.split("/").pop() ?? "")) window.setTimeout(() => { if (mounted.current) void rereadPathRef.current(true); }, 2000);
+    } catch { /* offline: the next signal asks again */ }
+  };
+  const rereadPathRef = useRef(rereadPath);
+  rereadPathRef.current = rereadPath;
+  const seenPagePath = useRef(pagePath);
+  const seenPageTitle = useRef(pageTitle);
+  useEffect(() => {
+    if (pagePath === seenPagePath.current && pageTitle === seenPageTitle.current) return;
+    seenPagePath.current = pagePath;
+    seenPageTitle.current = pageTitle;
+    const own = ownRename.current;
+    if (own) {
+      const waiting = pagePath !== own.path && Date.now() <= own.until;
+      if (waiting) return;
+      ownRename.current = null;
+    }
+    followPath(pagePath, pageTitle);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- reacts to the shell's path / title only
+  }, [pagePath, pageTitle]);
+  useEffect(() => {
+    if (embedded) return; // the workspace has the shell's note
+    let last = 0;
+    const back = () => {
+      if (document.visibilityState !== "visible" || Date.now() - last < 30_000) return;
+      last = Date.now();
+      void rereadPathRef.current();
+    };
+    window.addEventListener("focus", back);
+    document.addEventListener("visibilitychange", back);
+    return () => { window.removeEventListener("focus", back); document.removeEventListener("visibilitychange", back); };
+  }, [embedded]);
 
   const handleIconChange = (emoji: string | null) => {
     const previousIcon = icon;
@@ -498,6 +577,9 @@ function ScopedCollabDoc({
               const reason = typeof message.reason === "string" ? message.reason : null;
               setServerUnsaved(message.state === "unsaved" ? { permanent: true, reason } : message.state === "pending" ? { permanent: false, reason } : null);
             }
+            // The page was renamed / moved (by anyone): re-read where it is now.
+            // (Spread over 0–1.5 s: every open socket of a moved page is told at the same moment.)
+            else if (message.type === "prism:page-changed") window.setTimeout(() => { if (current()) void rereadPathRef.current(); }, Math.random() * 1500);
             else if (message.type === "prism:notice" && message.code === "external-replaced") setServerNotice("Changes made elsewhere replaced part of this page.");
             else if (message.type === "prism:notice" && message.code === "unsaved-discarded") setServerNotice("Changes on this page that could not be saved were discarded by the workspace owner. You are looking at the stored page.");
             // Only for a notice shown above: an unknown code leaves the standing notice (text AND code) as it is.
