@@ -557,11 +557,55 @@ function sortValue(n: QueryInput, key: string): unknown {
   return Array.isArray(v) ? v[0] : v;
 }
 
-/** Stable multi-key sort; missing values last in either direction; id breaks ties. */
-export function sortRows<T extends QueryInput>(rows: T[], sort: QuerySort[] | undefined, tzOffset = 0): T[] {
+/**
+ * The order of a select / status / multi-select property's OPTIONS, per sorted key:
+ * stored option values, first to last (`sortOptionOrders` in schema.ts builds it from
+ * the tag schema — the `optionOrder` hint, else the declared enum order). The engine
+ * never reads a schema itself; whoever runs it (the server route, the client fallback)
+ * hands the order in, so both sort alike.
+ */
+export type OptionOrders = Readonly<Record<string, readonly string[]>>;
+/** Options read per key; a longer list is cut (a schema enum is far smaller). */
+const MAX_ORDERED_OPTIONS = 500;
+
+/** One rank map per sorted key that has an option order: built once per sort, read in O(1) per comparison. */
+function optionRanks(keys: QuerySort[], orders: OptionOrders | undefined): Array<Map<string, number> | null> {
+  return keys.map((s) => {
+    const list = orders && Object.prototype.hasOwnProperty.call(orders, s.key) ? orders[s.key] : undefined;
+    if (!Array.isArray(list) || !list.length) return null;
+    const ranks = new Map<string, number>();
+    const end = Math.min(list.length, MAX_ORDERED_OPTIONS);
+    for (let i = 0; i < end; i++) {
+      const v = list[i];
+      if (typeof v !== "string") continue;
+      // The exact stored value first; a value that differs only by case or `[[ ]]` reads as the same option.
+      if (!ranks.has(v)) ranks.set(v, i);
+      const lenient = norm(v);
+      if (!ranks.has(lenient)) ranks.set(lenient, i);
+    }
+    return ranks.size ? ranks : null;
+  });
+}
+const rankOf = (ranks: Map<string, number>, v: unknown): number | undefined => {
+  if (typeof v !== "string") return undefined;
+  return ranks.get(v) ?? ranks.get(norm(v));
+};
+
+/**
+ * Stable multi-key sort; missing values last in either direction; id breaks ties.
+ *
+ * A key with an option order (`optionOrders`) sorts by the position of the value's
+ * option — ascending = first option first — not by its text. A value that is no
+ * option (typed before the options existed, or by another writer) comes after every
+ * option in EITHER direction, in the ordinary value order among its like; a missing
+ * value still comes last of all.
+ */
+export function sortRows<T extends QueryInput>(rows: T[], sort: QuerySort[] | undefined, tzOffset = 0, optionOrders?: OptionOrders): T[] {
   const keys = sort?.length ? sort : [{ key: "$updatedAt", dir: "desc" as const }];
+  const ranks = optionRanks(keys, optionOrders);
   return [...rows].sort((a, b) => {
-    for (const s of keys) {
+    for (let i = 0; i < keys.length; i++) {
+      const s = keys[i]!;
       const va = sortValue(a, s.key);
       const vb = sortValue(b, s.key);
       const ea = isEmpty(va);
@@ -569,6 +613,17 @@ export function sortRows<T extends QueryInput>(rows: T[], sort: QuerySort[] | un
       if (ea || eb) {
         if (ea && eb) continue;
         return ea ? 1 : -1;
+      }
+      const r = ranks[i];
+      if (r) {
+        const ra = rankOf(r, va);
+        const rb = rankOf(r, vb);
+        if (ra !== undefined || rb !== undefined) {
+          if (ra === undefined) return 1;
+          if (rb === undefined) return -1;
+          if (ra !== rb) return s.dir === "asc" ? ra - rb : rb - ra;
+          continue;
+        }
       }
       const c = compareValues(va, vb, tzOffset);
       if (c !== 0) return s.dir === "asc" ? c : -c;
@@ -894,7 +949,13 @@ export function projectRow(n: QueryInput, fields: string[] | undefined): QueryRo
 export function runQuery(
   notes: QueryInput[],
   spec: QuerySpec,
-  opts: { limited: boolean; truncated?: boolean; now?: Date; /** Resolves the `@me` filter value for the caller. */ me?: MeResolver },
+  opts: {
+    limited: boolean; truncated?: boolean; now?: Date;
+    /** Resolves the `@me` filter value for the caller. */
+    me?: MeResolver;
+    /** The option order of the sorted select / status keys (see {@link OptionOrders}); a key without one sorts by value. */
+    optionOrders?: OptionOrders;
+  },
 ): QueryPage {
   const offset = decodeCursor(spec);
   if (offset === null) throw new CursorMismatchError();
@@ -911,7 +972,7 @@ export function runQuery(
       matchesFilter(n, spec.filter, now, spec.tzOffset ?? 0, opts.me) &&
       (!needle || matchesSearch(n, needle, spec.fields)),
   );
-  const sorted = sortRows(matched, spec.sort, spec.tzOffset ?? 0);
+  const sorted = sortRows(matched, spec.sort, spec.tzOffset ?? 0, opts.optionOrders);
   const limit = spec.limit ?? QUERY_DEFAULT_LIMIT;
   const page = sorted.slice(offset, offset + limit);
   const end = offset + page.length;

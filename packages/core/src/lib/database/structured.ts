@@ -10,10 +10,12 @@
  *   - `structuredItems(v)`  the same, one entry per list item, for chips (label · detail · link)
  *   - `isStructuredValue(v)` does the stored value hold an object (or a nested list)?
  *
- * EDITING. A structured value is READ-ONLY in every inline editor: the editors work
- * on text, so any edit would write the text back and lose the fields. `refuseStructuredWrite`
- * is the client-side rule every property write passes through; the server's property
- * routes and the CSV import apply the same rule against the value actually stored.
+ * EDITING. A structured value is never touched by an INLINE editor: those work on
+ * text, so any edit would write the text back and lose the fields. `refuseStructuredWrite`
+ * is the client-side rule every such write passes through; the server's property routes
+ * and the CSV import apply the same rule against the value actually stored. It IS edited
+ * — in its own dialog, written back whole in the same shape — through `structuredEdit.ts`
+ * and `POST /api/properties/:id/structured` (the one route that accepts objects).
  *
  * Bounded and linear whatever the value holds (this runs per cell, and in the server's
  * query engine): at most {@link MAX_ITEMS} list items, {@link MAX_KEYS} keys of an
@@ -28,8 +30,8 @@ const MAX_TEXT = 160;
 /** Pairs shown by the `key: value` fallback. */
 const MAX_PAIRS = 3;
 
-/** What a person sees where a structured value would otherwise be editable. */
-export const STRUCTURED_HINT = "Structured value: shown read-only here so its fields are kept.";
+/** What a person sees where an inline editor would otherwise replace a structured value (a bulk edit, a template's starting value). */
+export const STRUCTURED_HINT = "Structured value: it is changed with “Edit…” on its page, and kept as it is here so its fields are not lost.";
 
 /** Keys that NAME the thing an object describes, most telling first. */
 const LABEL_KEYS = ["name", "title", "label", "display_name", "displayName", "full_name", "fullName", "person", "user", "member", "page", "note", "email", "handle", "username", "slug", "id", "path", "url", "value"] as const;

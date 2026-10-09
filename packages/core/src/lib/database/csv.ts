@@ -8,6 +8,7 @@
  * input), bounded by `maxRows` / `maxCols` / `maxCell`; going over a bound is an
  * error, never a silent truncation.
  */
+import { normalizeUrlValue } from "./url";
 
 export interface CsvLimits {
   maxRows?: number;
@@ -95,10 +96,15 @@ export function toCsv(rows: CsvCellValue[][]): string {
 }
 
 /** Coerce one CSV text cell to a vault field type. `{error}` when it cannot be. */
-export function coerceCsvValue(raw: string, field: { type?: string; enum?: string[] } | undefined): { value: unknown } | { error: string } {
+export function coerceCsvValue(raw: string, field: { type?: string; enum?: string[]; /** The property's kind (hint or inferred): a `url` cell must be a web address. */ kind?: string } | undefined): { value: unknown } | { error: string } {
   const s = raw.trim();
   if (s === "") return { value: null };
   const type = field?.type;
+  if (field?.kind === "url" && type !== "array") {
+    // A URL property never takes text that is not a web address (`url.ts`); the row is reported, not imported.
+    const url = normalizeUrlValue(s);
+    return url !== null ? { value: url } : { error: `“${s.slice(0, 40)}” is not a web address` };
+  }
   if (type === "number" || type === "integer") {
     const n = Number(s.replace(/,/g, ""));
     if (!Number.isFinite(n) || (type === "integer" && !Number.isInteger(n))) return { error: `“${s.slice(0, 40)}” is not a ${type}` };

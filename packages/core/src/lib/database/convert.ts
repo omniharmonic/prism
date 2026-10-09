@@ -9,6 +9,7 @@
  *
  * Pure and linear: no regex with an unbounded quantifier runs over a stored value.
  */
+import { normalizeUrlValue } from "./url";
 import { parseFileRef } from "../media/attachments";
 import { looksLikeEmail, looksLikePhone, VAULT_TYPE_FOR_KIND, type PropertyKind } from "./schema";
 
@@ -116,8 +117,9 @@ export function coerceToKind(value: unknown, to: PropertyKind): Coerced {
     }
     case "url": {
       if (typeof one !== "string") return NO;
-      const t = one.trim();
-      return t.length <= 2048 && (t.startsWith("https://") || t.startsWith("http://")) ? yes(t) : NO;
+      // The one rule for what a URL property holds (`url.ts`): a web address, a bare domain gets `https://`.
+      const u = normalizeUrlValue(one);
+      return u !== null ? yes(u) : NO;
     }
     case "email": return typeof one === "string" && looksLikeEmail(one.trim()) ? yes(one.trim()) : NO;
     case "phone": return typeof one === "string" && looksLikePhone(one.trim()) ? yes(one.trim()) : NO;

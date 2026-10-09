@@ -348,13 +348,16 @@ test("NP-PG-05: checkbox, URL and number editors under the title — typed edito
   await expect(anchor).toHaveAttribute("href", "https://example.test/handbook");
   await expect(anchor).toHaveAttribute("target", "_blank");
   await expect(anchor).toHaveAttribute("rel", /noopener/);
-  // Text that is not an http(s) address is kept as typed (it is the person's value) but is NEVER drawn as a link.
+  // Text that is not a web address is REFUSED beside the field (nothing is written, the stored link stays).
+  const before = (await state(page)).writes.length;
   await props.getByRole("button", { name: /^Link: / }).click();
   await page.getByRole("textbox", { name: "Link", exact: true }).fill("javascript:alert(1)");
   await page.keyboard.press("Enter");
-  await expect(props.getByRole("button", { name: "Link: javascript:alert(1)" })).toBeVisible();
+  await expect(props.getByRole("alert")).toContainText("That isn’t a web address");
+  expect((await state(page)).writes.length).toBe(before);
   await expect(props.locator('a[href^="javascript:" i]')).toHaveCount(0);
-  await expect(props.getByRole("link")).toHaveCount(0);
+  await page.keyboard.press("Escape");
+  await expect(props.getByRole("link", { name: /example\.test\/handbook/ })).toBeVisible();
 
   // Checkbox: a real checkbox. Adding it under the title shows it UNTICKED and writes nothing
   // (it used to tick itself — twice — because "open the editor of the property just added" toggled it).
