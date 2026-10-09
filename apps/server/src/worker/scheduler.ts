@@ -42,6 +42,7 @@ import { indexedNoteIds, allIndexedNoteIds } from "../rag/store";
 import { runHistoryCompactOnce } from "./history-compact";
 import { runVaultLintOnce, vaultLintDue } from "./vault-lint";
 import { linkHealthDue, runLinkHealthOnce } from "./link-health";
+import { peopleLinkScheduleDue, runPeopleLinkScheduleOnce } from "./people-link-schedule";
 import { runTrashPurgeOnce, purgeEnabled as trashPurgeEnabled } from "../pages";
 import { recordSourceOutcome, runHealthCheckOnce } from "./health";
 import { defaultSkillsDeps, runSkillsOnce, type PassResult, type SkillsDeps } from "./skills";
@@ -1130,6 +1131,15 @@ async function tickRest(): Promise<void> {
       .finally(() => {
         linkHealthInFlight = false;
       });
+  }
+
+  // Scheduled people-link run (worker/people-link-schedule.ts): the owner's backfill
+  // job on strong keys with a hard write cap, OFF unless PEOPLE_LINK_SCHEDULE_ENABLED=true
+  // (and a dry run until PEOPLE_LINK_SCHEDULE_DRY_RUN=false). Fire-and-forget; its due time
+  // is persisted; it guards itself against a second start and skips a tick while a manual
+  // job / merge holds the people lock. Not started while the lint or link health is listing.
+  if (!vaultLintInFlight && !linkHealthInFlight && peopleLinkScheduleDue("primary")) {
+    void runPeopleLinkScheduleOnce("primary").catch((e) => console.warn("[worker] people-link schedule failed:", (e as Error).message));
   }
 
   // Trash auto-purge (pages): OFF unless TRASH_PURGE_ENABLED=true. Pages older than

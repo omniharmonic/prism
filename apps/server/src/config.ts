@@ -491,6 +491,21 @@ export const config = {
   peopleLinkMaxWrites: Number(process.env.PEOPLE_LINK_MAX_WRITES ?? 200),
   peopleLinkMaxWritesCeiling: Number(process.env.PEOPLE_LINK_MAX_WRITES_CEILING ?? 20_000),
   peopleLinkPaceMs: Number(process.env.PEOPLE_LINK_PACE_MS ?? 50),
+  // The SCHEDULED run of the same job (worker/people-link-schedule.ts): OFF unless
+  // PEOPLE_LINK_SCHEDULE_ENABLED=true. Strong keys only, `enqueue` off, the phases
+  // below only, a hard write cap, and a DRY RUN (counts only, no writes) until
+  // PEOPLE_LINK_SCHEDULE_DRY_RUN=false is set as well. Primary vault only.
+  peopleLinkScheduleEnabled: (process.env.PEOPLE_LINK_SCHEDULE_ENABLED ?? "false").toLowerCase() === "true",
+  peopleLinkScheduleMs: Number(process.env.PEOPLE_LINK_SCHEDULE_MS ?? 7 * 86_400_000),
+  peopleLinkScheduleDryRun: (process.env.PEOPLE_LINK_SCHEDULE_DRY_RUN ?? "true").toLowerCase() !== "false",
+  // Hard cap on note writes of one scheduled run, shared evenly between its phases.
+  peopleLinkScheduleMaxWrites: Number(process.env.PEOPLE_LINK_SCHEDULE_MAX_WRITES ?? 200),
+  // Which phases run unattended. Only emails, meetings, threads and tasks are accepted;
+  // any other name here is ignored (owner, tombstones, repoint and normalize stay manual).
+  peopleLinkSchedulePhases: process.env.PEOPLE_LINK_SCHEDULE_PHASES ?? "emails,meetings,threads,tasks",
+  // Let the scheduled run ask the Matrix homeserver who is in a room (and store the
+  // ids on the thread note). Off: only threads that already hold `participantIds` link.
+  peopleLinkScheduleMatrixLookups: (process.env.PEOPLE_LINK_SCHEDULE_MATRIX_LOOKUPS ?? "false").toLowerCase() === "true",
   // Threads: names may link in rooms of at most GROUP_NAME_MAX participants;
   // larger rooms link strong-key matches only (at most GROUP_LINK_CAP of them);
   // rooms above GROUP_MAX_MEMBERS are skipped.

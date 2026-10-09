@@ -28,6 +28,22 @@ export const peopleListing = (vaultId: string, fresh = false): Promise<Note[]> =
 /** Detected duplicate pairs: one detection per cached listing. */
 export const duplicatePairs = (vaultId: string): Promise<DuplicatePair[]> => cachedDerived(vaultId, loadPeopleListing(vaultId), "duplicates", detectDuplicates);
 
+/** The job's pacing, time-outs and limits from config — the same for a run the owner starts and a scheduled one. */
+export const linkJobTuning = () => ({
+  memberFailures: config.peopleLinkMemberFailures,
+  paceMs: config.peopleLinkPaceMs,
+  maxConsecutiveErrors: config.peopleLinkMaxConsecutiveErrors,
+  callTimeoutMs: config.peopleVaultTimeoutMs,
+  limits: {
+    groupNameMax: config.peopleLinkGroupNameMax,
+    groupMaxMembers: config.peopleLinkGroupMaxMembers,
+    groupLinkCap: config.peopleLinkGroupLinkCap,
+    maxRecipients: config.peopleLinkMaxRecipients,
+    memberLookups: config.peopleLinkMemberLookups,
+    memberPaceMs: config.peopleLinkMemberPaceMs,
+  },
+});
+
 /** collab.ts, read-only: is a note open in the editor, and "its content did not change". */
 export const peopleLiveHooks = (vaultId: string) => ({
   isLive: (noteId: string) => isDocLive(vaultId, noteId),

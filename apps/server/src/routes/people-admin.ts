@@ -29,7 +29,7 @@ import { actionOrigin } from "./actions";
 import { getCandidate, isCandidateStatus, listCandidates, openCandidateCounts } from "../identity-store";
 import { ReviewError } from "../identity-review";
 import { closeRecommendationsAfterMerge, dismissRecommendation, listAgentDecisions, listRecommendations, openRecommendationCount } from "../people-agent-store";
-import { dismissReview, duplicatePairs, peopleListing, peopleLiveHooks, peopleVault, resolveReview } from "../people-review-service";
+import { dismissReview, duplicatePairs, linkJobTuning, peopleListing, peopleLiveHooks, peopleVault, resolveReview } from "../people-review-service";
 import { getSecret } from "../secrets";
 import { MatrixClient, type MatrixCreds } from "../worker/matrix";
 import { PHASES, cancelLinkJob, isPhase, linkJobStatus, LinkJobBusyError, startLinkJob, type LinkJob, type LinkJobVault } from "../people-link-job";
@@ -269,22 +269,11 @@ export function mountPeopleLinkJob(admin: Hono): void {
         enqueue: enqueue === true, // the review queue is filled only when asked
         allowNameLinks: allowNames === true,
         excludeBulkLinks: excludeBulk === true,
-        memberFailures: config.peopleLinkMemberFailures,
-        paceMs: config.peopleLinkPaceMs,
+        ...linkJobTuning(),
         owner: ownerConfig(vaultId, self),
         members,
         people: () => people(vaultId, true),
         live: liveHooks(vaultId),
-        maxConsecutiveErrors: config.peopleLinkMaxConsecutiveErrors,
-        callTimeoutMs: config.peopleVaultTimeoutMs,
-        limits: {
-          groupNameMax: config.peopleLinkGroupNameMax,
-          groupMaxMembers: config.peopleLinkGroupMaxMembers,
-          groupLinkCap: config.peopleLinkGroupLinkCap,
-          maxRecipients: config.peopleLinkMaxRecipients,
-          memberLookups: config.peopleLinkMemberLookups,
-          memberPaceMs: config.peopleLinkMemberPaceMs,
-        },
         onEnd,
       });
       console.log(`[admin] people link started (${dryRun ? "dry run" : `WRITE, max ${maxWrites} writes`}) on vault ${vaultId}: ${job.phases.join(",")}`);
