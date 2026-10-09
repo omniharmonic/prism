@@ -1,6 +1,6 @@
 import { leafTitle } from "../../lib/pages/containerTitle";
 import { useState, useMemo, useEffect, useCallback, useRef, type ReactNode } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQueryClient } from "@tanstack/react-query";
 import { ChevronLeft, ChevronRight, Clock, RefreshCw, Plus, MapPin, Users, ExternalLink, FileText, Trash2, Pencil, X, Video } from "lucide-react";
 import { calendarApi, calendarDate } from "../../lib/sync/client";
 import { useVaultClient } from "../../data/VaultClientContext";
@@ -14,6 +14,7 @@ import { useUIStore } from "../../app/stores/ui";
 import { HostServiceError } from "../../lib/host/services";
 import { CALENDAR_SYNC_SETTLE_MS, calendarSyncChanged, ingestCoversRange, startCalendarSync } from "./calendarSync";
 import { EventTranscripts } from "./EventTranscripts";
+import { useMeetingListing, type MeetingLoadState } from "../../lib/calendar/meetingListing";
 import { calendarDayKey as dateKey, groupCalendarDays, layoutCalendarDay } from "./calendarLayout";
 import type { RendererProps } from "../renderers/RendererProps";
 
@@ -38,14 +39,8 @@ type CalEvent = {
 type ViewMode = "agenda" | "month" | "week" | "day";
 const AGENDA_DAYS = 7;
 const addDays = (d: Date, n: number) => new Date(d.getFullYear(), d.getMonth(), d.getDate() + n);
-/** The meeting notes are listed ONCE (lean: no bodies) and every view/range reads that list, so
- *  moving between days, weeks and views costs no request and never empties the screen. */
-const ALL_FROM = "1900-01-01T00:00:00.000Z";
-const ALL_TO = "2200-01-01T00:00:00.000Z";
-const MEETINGS_STALE_MS = 60_000;
-const MEETINGS_KEEP_MS = 30 * 60_000;
 /** "ready" = the vault answered; until then nothing may claim a day is empty. */
-type LoadState = "loading" | "ready" | "failed";
+type LoadState = MeetingLoadState;
 
 const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 const MONTH_NAMES = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
@@ -152,19 +147,13 @@ function ScopedCalendarDashboard() {
     }
   }, [view, year, month, weekStart, dayDate, firstDay]);
 
-  // Read from the vault (works on web + desktop), not live from Google. One listing for the whole
-  // calendar, kept while the tool is closed; a failed refetch keeps what was already shown.
-  const meetingsKey = useMemo(() => ["calendar", "meetings", scope], [scope]);
-  const { data, isFetching, isError } = useQuery({
-    queryKey: meetingsKey,
-    queryFn: () => calendarApi.listEventsFromVault(ALL_FROM, ALL_TO, client),
-    retry: 1,
-    staleTime: MEETINGS_STALE_MS,
-    gcTime: MEETINGS_KEEP_MS,
-  });
-
-  const events = useMemo<CalEvent[]>(() => (Array.isArray(data) ? (data as CalEvent[]) : []), [data]);
-  const load: LoadState = data !== undefined ? "ready" : isError ? "failed" : "loading";
+  // Read from the vault (works on web + desktop), not live from Google. THE shared listing
+  // (lib/calendar/meetingListing.ts): listed once, lean (no bodies), read by every view and range
+  // from memory — and by Home and the widgets — so moving between days, weeks and views costs no
+  // request and never empties the screen. A cold start draws this device's copy of the last
+  // listing at once and replaces it when the vault answers; a failed refetch keeps what was shown.
+  const { events: listed, load, isFetching, isError, queryKey: meetingsKey } = useMeetingListing();
+  const events = listed as CalEvent[];
 
   const refreshEvents = useCallback(() => {
     queryClient.invalidateQueries({ queryKey: ["calendar"] });
@@ -211,6 +200,16 @@ function ScopedCalendarDashboard() {
       openTab(note.id, leafTitle(note.path, note.metadata) || "Meeting Notes", "document");
     } catch { setNoteError("This meeting note is unavailable. Refresh the calendar and try again."); }
   }, [openTab, client, scope]);
+
+  // The open event follows the listing: a fresh listing replaces what an older one (or this device's
+  // copy) said about it, and an event the vault no longer lists closes instead of staying on screen.
+  const eventKey = (ev: CalEvent) => ev.vaultNoteId ?? ev.id;
+  const listedSelection = selectedEvent ? events.find((ev) => eventKey(ev) !== undefined && eventKey(ev) === eventKey(selectedEvent)) : undefined;
+  useEffect(() => {
+    if (!selectedEvent || load !== "ready") return;
+    if (!listedSelection) setSelectedEvent(null);
+    else if (listedSelection !== selectedEvent) setSelectedEvent(listedSelection);
+  }, [selectedEvent, listedSelection, load]);
 
   const closePanel = useCallback(() => { setSelectedEvent(null); setShowCreateForm(false); setEditingEvent(null); setSelectedDate(null); }, []);
 
@@ -289,7 +288,8 @@ function ScopedCalendarDashboard() {
   // ── Phone ── two fixed rows: what is on screen + move/create, then the views + Today. Nothing
   // wraps or changes place between views (the desktop header below wraps by title length).
   const short = (d: Date, withYear = d.getFullYear() !== today.getFullYear()) => fmtDate(d, { month: "short", day: "numeric", ...(withYear ? { year: "numeric" } : {}) }, { locale: "en-US" });
-  const span = (from: Date, to: Date) => `${short(from, from.getFullYear() !== to.getFullYear())} – ${from.getMonth() === to.getMonth() && from.getFullYear() === to.getFullYear() ? to.getDate() : short(to, to.getFullYear() !== today.getFullYear())}`;
+  // The year is written once, at the end, when the span is not (all) in this year: "Dec 28 – Jan 3, 2027".
+  const span = (from: Date, to: Date) => `${short(from, false)} – ${from.getMonth() === to.getMonth() && from.getFullYear() === to.getFullYear() ? to.getDate() : short(to, false)}${to.getFullYear() !== today.getFullYear() || from.getFullYear() !== today.getFullYear() ? `, ${to.getFullYear()}` : ""}`;
   const phoneTitle = view === "month" ? title
     : view === "week" ? span(weekStart, addDays(weekStart, 6))
     : view === "agenda" ? span(dayDate, addDays(dayDate, AGENDA_DAYS - 1))
@@ -304,7 +304,9 @@ function ScopedCalendarDashboard() {
       {mobile ? (
         <div className="calendar-phone-header flex-shrink-0 px-4 pt-1" style={{ borderBottom: "1px solid var(--glass-border)", background: "var(--bg-surface)" }}>
           <div className="flex items-center gap-1">
-            <h2 className="min-w-0 flex-1 truncate text-lg font-semibold" title={phoneTitle} style={{ color: "var(--text-primary)" }}>{phoneTitle}</h2>
+            {/* Never cut: where one line does not fit (320 px leaves 96) the date takes two, smaller
+                lines INSIDE the row's fixed height, so the controls beside it stay where they are. */}
+            <h2 data-testid="calendar-phone-title" className="min-w-0 flex-1 text-lg leading-[1.2] font-semibold max-[359px]:text-sm max-[359px]:leading-[1.2]" style={{ color: "var(--text-primary)", textWrap: "balance" }}>{phoneTitle}</h2>
             <RefreshButton busy={busy} onClick={refreshNow} className="size-control flex flex-shrink-0 items-center justify-center" size={18} />
             <button aria-label="Previous period" onClick={prev} className="focus-ring size-control flex flex-shrink-0 items-center justify-center rounded-lg" style={{ color: "var(--text-secondary)" }}><ChevronLeft size={20} /></button>
             <button aria-label="Next period" onClick={next} className="focus-ring size-control flex flex-shrink-0 items-center justify-center rounded-lg" style={{ color: "var(--text-secondary)" }}><ChevronRight size={20} /></button>

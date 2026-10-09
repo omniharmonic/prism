@@ -1,9 +1,9 @@
 import { useState, useMemo } from "react";
-import { useQuery } from "@tanstack/react-query";
 import { ChevronLeft, ChevronRight } from "lucide-react";
 import { format, startOfWeek, endOfWeek, addWeeks, subWeeks, eachDayOfInterval, isSameDay } from "date-fns";
 import type { RendererProps } from "./RendererProps";
-import { calendarApi, calendarDate, type CalendarEvent } from "../../lib/sync/client";
+import { calendarDate, type CalendarEvent } from "../../lib/sync/client";
+import { meetingsBetween, useMeetingListing } from "../../lib/calendar/meetingListing";
 import { formatDate, formatTime, usesSystemDate, usesSystemTime, weekStartsOn } from "../../lib/datetime/format";
 import { useRegionPrefs } from "../../lib/datetime/useRegionPrefs";
 
@@ -23,11 +23,12 @@ export default function CalendarRenderer({ note: _note }: RendererProps) {
   const weekStart = startOfWeek(currentDate, { weekStartsOn: first });
   const weekEnd = endOfWeek(currentDate, { weekStartsOn: first });
 
-  const { data: events, isLoading, isError } = useQuery({
-    queryKey: ["calendar", "events", weekStart.toISOString(), weekEnd.toISOString()],
-    queryFn: () => calendarApi.listEventsFromVault(weekStart.toISOString(), weekEnd.toISOString()),
-    retry: 1,
-  });
+  // The week on screen, out of THE shared meeting listing (no request per week).
+  const listing = useMeetingListing();
+  const events = useMemo(() => meetingsBetween(listing.events, weekStart, weekEnd), [listing.events, weekStart.getTime(), weekEnd.getTime()]);
+  // "Loading" / "unavailable" replace the page only while there is nothing at all to show.
+  const isLoading = listing.load === "loading" && listing.events.length === 0;
+  const isError = listing.load === "failed" && listing.events.length === 0;
 
   const days = useMemo(() => eachDayOfInterval({ start: weekStart, end: weekEnd }), [weekStart, weekEnd]);
 

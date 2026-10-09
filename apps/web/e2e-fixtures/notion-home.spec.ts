@@ -80,3 +80,20 @@ test("my tasks: an owner with no owner identity set sees every open task and a h
   await expect(tasks.getByTestId("my-tasks-hint")).toContainText("Set the owner identity");
   await expect(tasks).toHaveAttribute("data-scope", "all");
 });
+
+test("Home and the Calendar tool read ONE meeting listing: opening the calendar after Home asks for nothing more", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.addInitScript(() => localStorage.setItem("prism-settings", JSON.stringify({ state: { startWithLastDocument: false }, version: 0 })));
+  await page.goto(url("?reset"));
+  const meetingLists = () => page.evaluate(() => (window as any).fixtureMeetingLists ?? 0);
+  await expect(home(page).getByRole("region", { name: "Upcoming" }).getByRole("button", { name: /Design sync/ })).toBeVisible();
+  expect(await meetingLists()).toBe(1);
+  // The real sign-in scope: the listing is kept on this device for the next cold start, under the account + vault.
+  await expect.poll(() => page.evaluate(() => Object.keys(localStorage).filter((k) => k.startsWith("prism:calendar-listing:")))).toHaveLength(1);
+  expect(await page.evaluate(() => Object.keys(localStorage).find((k) => k.startsWith("prism:calendar-listing:")))).toMatch(/"default","primary","owner@example\.test"\]$/);
+  // The Calendar tool, opened the way the sidebar does it.
+  await page.evaluate(() => (window as any).prismFixtureUI.getState().openTab("calendar-dashboard", "Calendar", "calendar-dashboard"));
+  await expect(page.getByRole("button", { name: "Refresh calendar" })).toHaveAttribute("aria-busy", "false");
+  await expect(page.getByRole("button", { name: "Design sync" }).first()).toBeVisible();
+  expect(await meetingLists()).toBe(1);
+});
