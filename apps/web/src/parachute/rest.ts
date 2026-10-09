@@ -735,6 +735,41 @@ export async function updateProperties(id: string, set: Record<string, unknown>,
   }
 }
 
+/** The `{fields, current}` body of a 409 from a property route, as a {@link PropertyConflictError}. */
+function propertyConflict(e: VaultRequestError): PropertyConflictError {
+  let fields: string[] = [];
+  let current: Record<string, unknown> = {};
+  try {
+    const b = JSON.parse(e.message.slice(e.message.indexOf("{"))) as { fields?: string[]; current?: Record<string, unknown> };
+    fields = b.fields ?? [];
+    current = b.current ?? {};
+  } catch {
+    /* keep the generic conflict */
+  }
+  return new PropertyConflictError(fields, current);
+}
+
+/**
+ * The structured-value editor's write (`POST /api/properties/:id/structured`): the whole
+ * list / object, in its own shape, over exactly the value the editor loaded (`expect`).
+ * NEVER queued offline — a queued write is replayed without its compare-and-set, and this
+ * value must not be replaced blind — and not sent while older edits to the page still wait.
+ */
+export async function updateStructuredProperty(id: string, key: string, value: unknown, expect: unknown): Promise<PropertyWriteResult> {
+  if (isOffline()) throw Object.assign(new Error("You’re offline. This value is saved only while connected; your changes are still here."), { offline: true });
+  const context = await captureWriteContext();
+  if (await hasPendingFor(context, id)) {
+    void flush();
+    throw Object.assign(new Error("Earlier changes to this page are still being saved. Try again in a moment; your changes are still here."), { offline: true });
+  }
+  try {
+    return (await (await req(`/properties/${encodeURIComponent(id)}/structured`, { method: "POST", body: JSON.stringify({ key, value, expect }), cache: "no-store" })).json()) as PropertyWriteResult;
+  } catch (e) {
+    if (e instanceof VaultRequestError && e.status === 409) throw propertyConflict(e);
+    throw e;
+  }
+}
+
 // ---- attachments + link previews (routes/attachments.ts) --------------------
 
 /** Server refusals → a short reason the editor can show ("too large", "not supported"). */

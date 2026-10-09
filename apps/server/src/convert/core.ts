@@ -18,7 +18,8 @@ import { Window } from "happy-dom";
 import * as Y from "yjs";
 import { generateJSON, generateHTML, getSchema } from "@tiptap/core";
 import { prosemirrorJSONToYDoc } from "@tiptap/y-tiptap";
-import { collabExtensions } from "@prism/core/editor-schema";
+import { collabExtensions, resolveNodeSuggestionsInDoc } from "@prism/core/editor-schema";
+import { hasSuggestions, resolveSuggestions, type PmNode } from "../suggestions";
 import { addTaskListRule, taskListsInHtml } from "@prism/core/task-lists";
 import { marked } from "marked";
 import TurndownService from "turndown";
@@ -79,6 +80,23 @@ export function contentToSeedSync(content: string): Uint8Array {
   return Y.encodeStateAsUpdate(prosemirrorJSONToYDoc(schema, contentToDocJsonSync(content), FIELD));
 }
 
+/**
+ * Stored HTML as the page reads with its PENDING suggestions not applied: suggested insertions
+ * (text, paragraph breaks, line breaks, chips) left out, suggested deletions kept as plain
+ * content. Markdown cannot say "suggested", and turndown reads a suggestion span as its text —
+ * so a page with a pending replacement came out with the old AND the new words run together
+ * ("IntroOutro", `const a = 12;` in a fenced block). Every HTML → Markdown conversion goes
+ * through this first; HTML without a suggestion is returned as it is (nothing is parsed).
+ */
+export function rejectPendingSuggestionsSync(html: string): string {
+  if (html.indexOf("data-suggestion") === -1) return html;
+  const json = htmlToDocJsonSync(html) as PmNode;
+  if (!hasSuggestions(json, null)) return html;
+  const marksDone = resolveSuggestions(json, null, "reject");
+  const done = hasSuggestions(marksDone, null) ? (resolveNodeSuggestionsInDoc(schema.nodeFromJSON(marksDone), null, "reject").toJSON() as PmNode) : marksDone;
+  return docJsonToHtmlSync(done);
+}
+
 let blocksTurndown: TurndownService | null = null;
 /**
  * HTML → Markdown for blocks appended to a Markdown-bodied page ("Move to").
@@ -88,11 +106,18 @@ let blocksTurndown: TurndownService | null = null;
  */
 export function blocksHtmlToMarkdownSync(html: string): string {
   if (!blocksTurndown) {
-    blocksTurndown = addTaskListRule(new TurndownService({ headingStyle: "atx", codeBlockStyle: "fenced", bulletListMarker: "-" }));
-    blocksTurndown.keep(((node: { nodeName: string; getAttribute(name: string): string | null }) =>
-      (node.nodeName === "DIV" && (!!node.getAttribute("data-type") || !!node.getAttribute("data-prism-database"))) || node.nodeName === "DETAILS") as never);
+    type Kept = { nodeName: string; outerHTML?: string; isBlock?: boolean; getAttribute(name: string): string | null };
+    const kept = (node: Kept) => (node.nodeName === "DIV" && (!!node.getAttribute("data-type") || !!node.getAttribute("data-prism-database"))) || node.nodeName === "DETAILS";
+    blocksTurndown = addTaskListRule(new TurndownService({
+      headingStyle: "atx", codeBlockStyle: "fenced", bulletListMarker: "-",
+      // Turndown drops an element with no text BEFORE it asks `keep` — and a sub-page row, a file, an embed or
+      // a database block is exactly that: an empty <div> whose attributes are the block. They were lost on the
+      // way into a Markdown page (and "Move to" then removed the original). Kept blocks stay, text or not.
+      blankReplacement: ((_content: string, node: Kept) => (kept(node) && node.outerHTML ? `\n\n${node.outerHTML}\n\n` : node.isBlock ? "\n\n" : "")) as never,
+    }));
+    blocksTurndown.keep(kept as never);
   }
-  return blocksTurndown.turndown(normalizeLineBreaks(html));
+  return blocksTurndown.turndown(rejectPendingSuggestionsSync(normalizeLineBreaks(html)));
 }
 
 let plainTurndown: TurndownService | null = null;
@@ -100,5 +125,5 @@ let plainTurndown: TurndownService | null = null;
 export function htmlToMarkdownSync(html: string): string {
   // To-do items are written `- [x]` / `- [ ]` (the reader above makes to-dos of them again).
   plainTurndown ??= addTaskListRule(new TurndownService({ headingStyle: "atx", codeBlockStyle: "fenced" }));
-  return plainTurndown.turndown(normalizeLineBreaks(html));
+  return plainTurndown.turndown(rejectPendingSuggestionsSync(normalizeLineBreaks(html)));
 }

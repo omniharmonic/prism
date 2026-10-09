@@ -2,6 +2,7 @@
  * Import routes + engine (routes/import.ts, transfer/import.ts) against the fake
  * vault: dry run, write, idempotent re-run, attachments, and every refusal.
  */
+import { threadCpuMs } from "./probe";
 import { test, beforeEach, afterEach, after } from "node:test";
 import { stopImportWorker } from "../src/transfer/import";
 import { stopExportWorker } from "../src/transfer/export";
@@ -369,9 +370,9 @@ test("htmlBody: the page part of a document, linear on hostile input", () => {
   assert.equal(htmlBody("<!doctype html><HTML><head><title>x</title></head><BODY class='a'><p>hi</p></BODY></html>"), "<p>hi</p>");
   assert.equal(htmlBody("<head><style>x</style></head><p>after</p>"), "<p>after</p>");
   assert.equal(htmlBody("<p>fragment</p><bodyguard>"), "<p>fragment</p><bodyguard>");
-  const t0 = Date.now();
+  const t0 = threadCpuMs(); // CPU time of this thread (./probe), not the wall clock
   htmlBody("<".repeat(400_000));
   htmlBody("<bod".repeat(100_000));
   htmlBody("</head".repeat(100_000));
-  assert.ok(Date.now() - t0 < 1500);
+  assert.ok(threadCpuMs() - t0 < 1500);
 });

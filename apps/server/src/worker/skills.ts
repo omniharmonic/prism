@@ -64,6 +64,7 @@
  * Everything external is injected (`SkillsDeps`) so the whole pass is tested with
  * a fake vault, a fake LM Studio and a fake claude runner.
  */
+import { containerTitle } from "@prism/core/pages";
 import { roleAtLeast, workspaceRole } from "../roles";
 import { randomUUID } from "node:crypto";
 import { config } from "../config";
@@ -405,7 +406,7 @@ export function shortcutLabel(note: Note, cfg: StructuredConfig): string | null 
 
 /** Per-note user prompt (build_note_prompt). `cap` counts Unicode scalars. */
 export function buildNotePrompt(note: Note, today: string, cap: number): string {
-  const title = note.path ? (note.path.split("/").pop() ?? "Untitled") : "Untitled";
+  const title = note.path ? (containerTitle(note.path, note.metadata) ?? note.path.split("/").pop() ?? "Untitled") : "Untitled";
   const m = note.metadata ?? {};
   let header = `Today's date: ${today}\n`;
   if (typeof m.from === "string") header += `From: ${m.from}\n`;

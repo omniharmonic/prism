@@ -11,9 +11,12 @@
  * A page found by both appears once, as the ranked row (it carries the matching
  * passage), at the better of its two positions.
  */
+import { containerTitle } from "../pages/containerTitle";
+
 export interface BlendRow { id: string; path?: string | null }
 
-const titleOf = (row: BlendRow) => (row.path ?? "").split("/").pop()?.toLowerCase() ?? "";
+// The name the page is shown by: a container-named page (`…/food-chain/PROJECT`) matches on its folder's name.
+const titleOf = (row: BlendRow) => (containerTitle(row.path) ?? (row.path ?? "").split("/").pop() ?? "").toLowerCase();
 
 export function blendResults<T extends BlendRow>(ranked: T[], keyword: T[], terms: string[], limit = 100): T[] {
   const wanted = terms.map((t) => t.toLowerCase()).filter(Boolean);

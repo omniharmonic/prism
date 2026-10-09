@@ -83,6 +83,10 @@ html.dark {
   --glass-active: rgba(255, 255, 255, 0.11);
   --glass-border: rgba(255, 255, 255, 0.08);
   --glass-border-strong: rgba(255, 255, 255, 0.14);
+  /* The boundary of a FORM CONTROL (WCAG 1.4.11): ≥ 3 : 1 on every surface a field sits on, the
+     hover and active rows included (3.3 : 1 on --glass-active, 4.8 : 1 on the page). Dividers and
+     cards stay on --glass-border. See "FORM CONTROL BOUNDARIES" below. */
+  --control-border: #84868f;
   --glass-blur: 18px;
 
   /* Interactive hover/active tints for in-place rows, list items, ghost
@@ -125,6 +129,8 @@ html.light {
   --glass-active: rgba(255, 255, 255, 0.94);
   --glass-border: rgba(15, 23, 42, 0.07);
   --glass-border-strong: rgba(15, 23, 42, 0.12);
+  /* ≥ 3 : 1 on white (4.0), the sidebar (3.7) and the hover / active rows (3.1 on --surface-active). */
+  --control-border: #7d7f87;
   --glass-blur: 18px;
 
   --surface-hover: rgba(15, 23, 42, 0.045);
@@ -181,6 +187,43 @@ input:focus, textarea:focus, select:focus, button:hover {
     animation-iteration-count: 1 !important;
     scroll-behavior: auto !important;
   }
+}
+
+/* ═══════════════════════════════════════════
+   FORM CONTROL BOUNDARIES (NP-AX-04, WCAG 1.4.11 — decision c.17)
+   A text field, select, textarea or custom checkbox / switch / radio must be told from what
+   is around it at ≥ 3 : 1. Every one of them draws its box with the shared hairline
+   (`border: 1px solid var(--glass-border)`, in a class or inline) — so the hairline token is
+   re-pointed ON THE CONTROL ITSELF. Nothing else changes: a divider, a card or a menu still
+   reads the quiet value, and no component names a second token. A control with no border of
+   its own is drawn by the box around it: mark that box `data-control-box` (search pills,
+   composers) and it gets the same boundary.
+   `:where()` keeps specificity at zero: a control that sets its own colour (focus, error,
+   a deliberately seamless title field) keeps it.
+   ═══════════════════════════════════════════ */
+:where(
+  input:not([type="checkbox"], [type="radio"], [type="range"], [type="file"], [type="color"], [type="hidden"], [type="button"], [type="submit"], [type="reset"], [type="image"]),
+  select,
+  textarea,
+  [role="checkbox"],
+  [role="switch"],
+  [role="radio"],
+  [role="combobox"],
+  /* Boxes drawn AROUND a seamless field (the field inside has no border of its own): */
+  [data-control-box],
+  .db-search,
+  .db-pop-search,
+  .prism-search-input-row,
+  .prism-message-search,
+  .page-dialog-search,
+  .prism-people-search,
+  .prism-compose-surface,
+  .prism-agent-compose-surface,
+  .transfer-segment
+) {
+  --glass-border: var(--control-border);
+  --glass-border-strong: var(--control-border);
+  --border-default: var(--control-border);
 }
 
 /* ═══════════════════════════════════════════

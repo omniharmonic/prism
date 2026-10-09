@@ -4,6 +4,8 @@
  * it, must never freeze the tab — the scanners are linear, the parser input is
  * capped and pathological emphasis density is refused up front. Time-bounded.
  */
+// Timed in CPU time of this thread (./probe), never on the wall clock: the figure is the work, not the machine's load.
+import { threadCpuMs } from "./probe";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 // Loaded by a computed path (editor code under @prism/core's tsconfig; pure, runs in Node).
@@ -17,9 +19,9 @@ const { looksLikeMarkdown, markdownPasteRefusal, markdownSignals, markdownToPast
 };
 
 const timed = <T>(fn: () => T): { ms: number; value: T } => {
-  const t = performance.now();
+  const t = threadCpuMs();
   const value = fn();
-  return { ms: performance.now() - t, value };
+  return { ms: threadCpuMs() - t, value };
 };
 
 test("H3: pathological inputs are decided in linear time", () => {

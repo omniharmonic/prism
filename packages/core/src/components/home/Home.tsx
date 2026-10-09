@@ -9,7 +9,8 @@ import { useUIStore } from "../../app/stores/ui";
 import { queryKeys } from "../../lib/parachute/queries";
 import { useVaultClient } from "../../data/VaultClientContext";
 import { usePagesUI } from "../../lib/pages/store";
-import { calendarApi, type CalendarEvent } from "../../lib/sync/client";
+import type { CalendarEvent } from "../../lib/sync/client";
+import { meetingsBetween, useMeetingListing } from "../../lib/calendar/meetingListing";
 import { useNotifications, useReminders, useUnreadCount } from "../../lib/notifications/hooks";
 import { openNotification } from "../../lib/notifications/anchor";
 import { openInbox } from "../inbox/InboxNavButton";
@@ -55,12 +56,9 @@ export default function Home(_props: RendererProps) {
   const client = useVaultClient();
   const now = useMemo(() => Date.now(), []);
   const reminders = useReminders();
-  const events = useQuery({
-    queryKey: ["home", "events", new Date(now).toDateString()],
-    queryFn: () => calendarApi.listEventsFromVault(new Date(now).toISOString(), new Date(now + 7 * 86_400_000).toISOString(), client),
-    retry: false,
-    staleTime: 60_000,
-  });
+  // The week ahead, out of THE shared meeting listing (the Calendar tool and the widgets read the same one).
+  const meetings = useMeetingListing();
+  const events = useMemo(() => ({ data: meetingsBetween(meetings.events, now, now + 7 * 86_400_000), isError: meetings.load === "failed" }), [meetings.events, meetings.load, now]);
   // My tasks (wave 3): the tasks ASSIGNED TO THE VIEWER, resolved by the server
   // (`/api/query {assignedToMe}` — the viewer's person page / addresses). A shell
   // or server without that (desktop, older server: no `identity` in the answer)

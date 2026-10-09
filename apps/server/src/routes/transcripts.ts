@@ -9,6 +9,7 @@
  * unviewable note is indistinguishable from a missing one. The decision journal
  * and the note convergence live in ../transcript-links.ts.
  */
+import { containerTitle } from "@prism/core/pages";
 import { Hono, type Context } from "hono";
 import { resolveActor, type Actor } from "../auth/actor";
 import { effectiveCaps, type Cap } from "../permissions";
@@ -68,7 +69,7 @@ function capsOf(actor: UserActor, note: Note): Set<Cap> {
 }
 
 const titleOf = (n: Note): string =>
-  str(n.metadata?.title) ?? str(n.displayTitle) ?? (n.path ? n.path.split("/").pop()! : "") ?? "";
+  str(n.metadata?.title) ?? str(n.displayTitle) ?? containerTitle(n.path, n.metadata) ?? (n.path ? n.path.split("/").pop()! : "") ?? "";
 /** Only a real recorded start. A date-only legacy record omits it rather than
  *  inviting the client to render midnight UTC as a local time. */
 const startOf = (n: Note): string | undefined => str(n.metadata?.start) ?? undefined;

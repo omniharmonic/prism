@@ -144,7 +144,8 @@ test.describe("phone month grid", () => {
 
 /**
  * The rule (packages/core/src/lib/database/query.ts `sortRows`): rows WITH a value come first,
- * ordered by it; rows without one come last in BOTH directions. Expected orders below are written
+ * ordered by it — a select / status / multi-select by the position of its option — and rows
+ * without one come last in BOTH directions. Expected orders below are written
  * out by hand from the values this test sets — not computed with the engine.
  */
 type SortCase = { kind: string; key: string; label: string; /** Groups of row titles in ascending order (a group = equal values, any order inside). */ asc: string[][] };
@@ -153,8 +154,10 @@ const ALL = Object.values(T);
 const SORTS: SortCase[] = [
   { kind: "text (title)", key: "$title", label: "Title", asc: [[T.page], [T.t4], [T.t6], [T.t3], [T.t1], [T.t5], [T.t2]] },
   { kind: "number", key: "estimate", label: "Estimate (h)", asc: [[T.t2], [T.t1], [T.t3], [T.t4]] }, // 2, 3, 5, 12 — numeric, not "12" < "2"
-  { kind: "select", key: "priority", label: "Priority", asc: [[T.t1, T.t2], [T.t5, T.t6], [T.t3, T.t4, T.page]] }, // high, low, medium
-  { kind: "status", key: "status", label: "Status", asc: [[T.t4, T.t5], [T.t2, T.t3, T.page], [T.t1, T.t6]] }, // done, in-progress, todo
+  // A select sorts by the ORDER OF ITS OPTIONS (the schema's), not by the stored text A→Z; a status by its
+  // GROUPS — To-do, In progress, Complete — then its option order inside a group.
+  { kind: "select", key: "priority", label: "Priority", asc: [[T.t5, T.t6], [T.t3, T.t4, T.page], [T.t1, T.t2]] }, // low, medium, high
+  { kind: "status", key: "status", label: "Status", asc: [[T.t1, T.t6], [T.t2, T.t3, T.page], [T.t4, T.t5]] }, // To-do: todo · In progress: in-progress · Complete: done
   { kind: "multi-select", key: "labels", label: "Labels", asc: [[T.t1, T.t4], [T.t2]] }, // by the first label: design, launch
   { kind: "date", key: "due", label: "Due", asc: [[T.t4], [T.t5], [T.t1], [T.t2], [T.t3]] },
   { kind: "person", key: "assignee", label: "Assignee", asc: [[T.t3], [T.t1], [T.t2]] }, // Alex Stone, Mira Chen, Sam Rivera
@@ -213,4 +216,183 @@ test("NP-DB-08: the Sort dialog orders the table by each core property kind, bot
     check(await titles(), desc, `${c.kind} descending`);
     expect((await configWrites(page)).at(-1).metadata.prism_database.views[0].sort).toEqual([{ key: c.key, dir: "desc" }]);
   }
+});
+
+// ── Option order: reordered options, values that are no option, and the shell without the query route ──
+
+const sortBy = async (page: Page, key: string, dir: "asc" | "desc") => {
+  const sort = page.getByRole("dialog", { name: "Sort" });
+  if (!(await sort.isVisible())) {
+    await page.getByRole("button", { name: "Sort", exact: true }).click();
+    await sort.getByRole("button", { name: /Add sort/ }).click();
+  }
+  await sort.getByLabel("Sort 1 property").selectOption(key);
+  await sort.getByLabel("Sort 1 direction").selectOption(dir);
+};
+const rowTitles = (page: Page) => page.getByRole("table", { name: "All tasks" }).locator("tbody tr")
+  .evaluateAll((rows, all) => rows.map((r) => r.querySelector("button")?.textContent?.trim() ?? "").filter((t) => (all as string[]).includes(t)), ALL);
+/** The priority shown on each row, top to bottom (the option's label, "" for none). */
+const priorities = (page: Page) => page.getByRole("table", { name: "All tasks" }).locator("tbody tr")
+  .evaluateAll((rows) => rows.map((r) => r.querySelector('[aria-label^="Priority:"]')?.getAttribute("aria-label")?.replace("Priority: ", "") ?? null).filter((x) => x !== null));
+
+test("a select sorts by its options as the owner ordered them; a value that is no option comes after them, an empty one last", async ({ page }) => {
+  await page.goto("/e2e-fixtures/databases.html");
+  await ready(page);
+  await page.evaluate(() => {
+    const fx = (window as any).dbFixture;
+    // The owner dragged the options into this order (the `optionOrder` hint): high, low, medium.
+    fx.schemas().task.fields.priority.optionOrder = ["high", "low", "medium"];
+    const set = (id: string, patch: Record<string, unknown>) => { const n = fx.notes().find((x: any) => x.id === id); n.metadata = { ...n.metadata, ...patch }; };
+    set("t3", { priority: "someday" }); // typed by another writer: not one of the options
+    set("t4", { priority: null }); // nothing
+  });
+  await sortBy(page, "priority", "asc");
+  const asc = ["High", "High", "Low", "Low", "Medium", "someday", "Empty"];
+  await expect.poll(() => priorities(page)).toEqual(asc);
+  // Equal options keep a steady order (by page id), so the list does not shuffle between loads.
+  const first = await rowTitles(page);
+  expect(first.slice(0, 4)).toEqual([T.t1, T.t2, T.t5, T.t6]);
+  expect(first.slice(-2)).toEqual([T.t3, T.t4]);
+
+  await sortBy(page, "priority", "desc");
+  // Reversed among the options; the non-option and the empty row do not jump to the top.
+  await expect.poll(() => priorities(page)).toEqual(["Medium", "Low", "Low", "High", "High", "someday", "Empty"]);
+});
+
+/** The status shown on each row, top to bottom (the option's label). */
+const statuses = (page: Page) => page.getByRole("table", { name: "All tasks" }).locator("tbody tr")
+  .evaluateAll((rows) => rows.map((r) => r.querySelector('[aria-label^="Status:"]')?.getAttribute("aria-label")?.replace("Status: ", "").toLowerCase() ?? null).filter((x) => x !== null));
+
+test("a status sorts by its groups — To-do, In progress, Complete — whatever order its options are listed in, and by option order inside a group", async ({ page }) => {
+  await page.goto("/e2e-fixtures/databases.html");
+  await ready(page);
+  await page.evaluate(() => {
+    const fx = (window as any).dbFixture;
+    const status = fx.schemas().task.fields.status;
+    // The owner listed the options Complete-first, and added two more: "blocked" (in progress by default) and "idea" (put in To-do).
+    status.enum = ["done", "blocked", "in-progress", "todo", "idea"];
+    status.optionOrder = ["done", "blocked", "in-progress", "idea", "todo"];
+    status.statusGroups = { idea: "todo" };
+    const set = (id: string, patch: Record<string, unknown>) => { const n = fx.notes().find((x: any) => x.id === id); n.metadata = { ...n.metadata, ...patch }; };
+    set("t3", { status: "blocked" });
+    set("t6", { status: "idea" });
+    set("t5", { status: "someday" }); // not an option
+    set("page", { status: null });
+  });
+  await sortBy(page, "status", "asc");
+  // To-do (idea before todo: their option order) → In progress (blocked before in-progress) → Complete → a non-option → empty.
+  await expect.poll(() => statuses(page)).toEqual(["idea", "to do", "blocked", "in progress", "done", "someday", "empty"]);
+  expect(await rowTitles(page)).toEqual([T.t6, T.t1, T.t3, T.t2, T.t4, T.t5, T.page]);
+  await sortBy(page, "status", "desc");
+  await expect.poll(() => statuses(page)).toEqual(["done", "in progress", "blocked", "to do", "idea", "someday", "empty"]);
+  // The same options shown as a plain SELECT follow the listed order alone (Complete-first here).
+  await page.evaluate(() => { (window as any).dbFixture.schemas().task.fields.status.kind = "select"; });
+  await sortBy(page, "priority", "asc");
+  await sortBy(page, "status", "asc");
+  await expect.poll(async () => (await rowTitles(page)).slice(0, 5)).toEqual([T.t4, T.t3, T.t2, T.t6, T.t1]);
+});
+
+test("a shell without the query route sorts a status by its groups too (the same engine, the bundled schema)", async ({ page }) => {
+  await page.goto("/e2e-fixtures/databases.html?legacy");
+  await ready(page);
+  // The bundled enum is todo, in-progress, blocked, done, cancelled, pending, …: "pending" is listed AFTER done,
+  // but it is an in-progress status — by group it comes before every done row.
+  await page.evaluate(() => {
+    const notes = (window as any).dbFixture.notes();
+    const set = (id: string, status: string) => { const n = notes.find((x: any) => x.id === id); n.metadata = { ...n.metadata, status }; };
+    set("t6", "pending"); set("t3", "blocked");
+  });
+  await sortBy(page, "status", "asc");
+  const groups = [[T.t1], [T.t2, T.page], [T.t3], [T.t6], [T.t4, T.t5]]; // To-do: todo · In progress: in-progress, blocked, pending · Complete: done
+  await expect.poll(async () => {
+    const got = await rowTitles(page);
+    let at = 0;
+    for (const g of groups) {
+      if ([...got.slice(at, at + g.length)].sort().join("|") !== [...g].sort().join("|")) return `rows ${at + 1}–${at + g.length}: ${got.slice(at, at + g.length).join(", ")}`;
+      at += g.length;
+    }
+    return "ok";
+  }).toBe("ok");
+});
+
+// ── Calendar page chips on an iPad (a wide touch screen keeps the desktop month grid) ──
+
+for (const [width, height] of [[1024, 768], [820, 1180]] as const) {
+  test(`iPad ${width} px: a database calendar's page chips, multi-day bars and "+" are finger-sized, and nothing overlaps`, async ({ browser, baseURL }) => {
+    test.setTimeout(90_000); // a fresh context loads the whole fixture again
+    // A touch tablet: wide enough for the month grid, with a coarse pointer and no hover.
+    const context = await browser.newContext({ baseURL, viewport: { width, height }, hasTouch: true });
+    const page = await context.newPage();
+    try {
+      await page.goto("/e2e-fixtures/databases.html?free-dates");
+      await ready(page);
+      expect(await page.evaluate(() => matchMedia("(pointer: coarse)").matches)).toBe(true);
+      // Three pages on one day of this month, one two-day range and one more range in the same week (two lanes).
+      const days = await page.evaluate(() => {
+        const key = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+        const now = new Date();
+        // The Monday of the month's second full week: every date below is in one week row of this month.
+        const first = new Date(now.getFullYear(), now.getMonth(), 8);
+        const monday = new Date(first.getFullYear(), first.getMonth(), first.getDate() - ((first.getDay() + 6) % 7));
+        const at = (n: number) => key(new Date(monday.getFullYear(), monday.getMonth(), monday.getDate() + n));
+        const notes = (window as any).dbFixture.notes();
+        const set = (id: string, due: string | null) => { const n = notes.find((x: any) => x.id === id); n.metadata = { ...n.metadata, due }; };
+        set("t1", at(1)); set("t2", at(1)); set("t3", at(1));
+        set("t4", `${at(2)}/${at(4)}`); set("t5", `${at(3)}/${at(5)}`);
+        return { busy: at(1) };
+      });
+      await page.getByRole("tab", { name: "Calendar", exact: true }).click();
+      const grid = page.getByRole("grid", { name: "Calendar calendar" });
+      await expect(grid).toBeVisible();
+      // The tablet keeps the month grid with chips (the phone layouts are for narrow screens).
+      await expect(page.locator(".db-month-day, [data-agenda-item]")).toHaveCount(0);
+      const chips = grid.locator(".db-cal-item:not(.db-cal-bar)");
+      const bars = grid.locator(".db-cal-item.db-cal-bar");
+      await expect(chips).toHaveCount(3);
+      await expect(bars).toHaveCount(2);
+      const boxes = async (loc: typeof chips) => loc.evaluateAll((els) => els.map((el) => { const r = el.getBoundingClientRect(); return { top: r.top, bottom: r.bottom, left: r.left, right: r.right, w: r.width, h: r.height }; }));
+      const chipBoxes = await boxes(chips);
+      const barBoxes = await boxes(bars);
+      // Every chip and bar is at least 44 px tall (it was 18 – 20 px) and wide enough to press.
+      for (const b of [...chipBoxes, ...barBoxes]) {
+        expect(b.h).toBeGreaterThanOrEqual(44);
+        expect(b.w).toBeGreaterThanOrEqual(44);
+      }
+      // The day's "+" too.
+      const add = grid.locator(`[data-day="${days.busy}"] .db-cal-add`);
+      const addBox = (await add.boundingBox())!;
+      expect(addBox.width).toBeGreaterThanOrEqual(44);
+      expect(addBox.height).toBeGreaterThanOrEqual(44);
+      // Nothing is drawn over anything else: the stacked chips, the two bar lanes, the day number row.
+      const overlaps = (a: typeof chipBoxes[number], b: typeof chipBoxes[number]) => a.left < b.right - 0.5 && b.left < a.right - 0.5 && a.top < b.bottom - 0.5 && b.top < a.bottom - 0.5;
+      const all = [...chipBoxes, ...barBoxes, { top: addBox.y, bottom: addBox.y + addBox.height, left: addBox.x, right: addBox.x + addBox.width, w: addBox.width, h: addBox.height }];
+      for (let i = 0; i < all.length; i++) for (let j = i + 1; j < all.length; j++) expect(overlaps(all[i]!, all[j]!), `targets ${i} and ${j} overlap`).toBe(false);
+      // Each chip sits inside its own day cell, and the page does not scroll sideways.
+      const cell = (await grid.locator(`[data-day="${days.busy}"]`).boundingBox())!;
+      for (const b of chipBoxes) {
+        expect(b.left).toBeGreaterThanOrEqual(cell.x - 0.5);
+        expect(b.right).toBeLessThanOrEqual(cell.x + cell.width + 0.5);
+        expect(b.bottom).toBeLessThanOrEqual(cell.y + cell.height + 0.5);
+      }
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+      // By the app's touch rule (≥ 44 px, or ≥ 24 px with nothing else within reach): no small or crowded control in the grid.
+      const offenders = (await touchTargets(page)).filter((o) => /db-cal/.test(o.what));
+      expect(offenders).toEqual([]);
+      // A chip still opens its page with a tap.
+      await chips.first().tap();
+      await expect(page.locator(".db-peek, [role=dialog], .db-rowpeek").first()).toBeVisible();
+    } finally {
+      await context.close();
+    }
+  });
+}
+
+test("desktop (a fine pointer): calendar chips keep their compact size", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.goto("/e2e-fixtures/databases.html");
+  await ready(page);
+  await page.getByRole("tab", { name: "Calendar", exact: true }).click();
+  const chip = page.locator(".db-cal-item").first();
+  await expect(chip).toBeVisible();
+  expect((await chip.boundingBox())!.height).toBeLessThan(26);
 });

@@ -1,5 +1,5 @@
 /** Publication membership shared by the public reader and owner preview. */
-import { TRASH_TAG, TEMPLATE_TAG } from "@prism/core/pages";
+import { TRASH_TAG, TEMPLATE_TAG, containerTitle } from "@prism/core/pages";
 import { vaultClient, type Note } from "./parachute";
 import type { Actor } from "./auth/actor";
 import {
@@ -124,6 +124,9 @@ export function deriveTitle(content: string | null | undefined): string {
  *  else "Untitled". */
 export function navTitle(note: Note): string {
   if (note.content && note.content.trim()) return deriveTitle(note.content);
+  // A container-named page (`…/food-chain/PROJECT`): its title, else its folder — never "PROJECT" on a public site.
+  const container = containerTitle(note.path, note.metadata);
+  if (container) return container;
   const base = (note.path ?? "").split("/").pop() ?? "";
   const cleaned = base
     .replace(/\.[a-z0-9]+$/i, "")

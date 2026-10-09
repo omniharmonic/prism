@@ -20,7 +20,7 @@ import { ensureTree, rowRef, TREE_META_KEYS, type TreeRow } from "./tree";
 import { vaultClient } from "./parachute";
 import { effectiveCaps, expandLevel, type Cap, type Level, type NoteRef } from "./permissions";
 import { WRITER_KEY, WRITER_AT_KEY, stripIdentity, writerIdFor, writerNames } from "./writer-stamp";
-import { TRASH_TAG } from "@prism/core/pages";
+import { TRASH_TAG, containerTitle } from "@prism/core/pages";
 
 export interface PersonView {
   email: string;
@@ -80,7 +80,7 @@ export async function ancestorPages(entry: VaultEntry, path: string | null | und
   while (p.includes("/")) {
     p = p.slice(0, p.lastIndexOf("/"));
     const row = byPath.get(p);
-    if (row) out.push({ id: row.id, path: p, title: leaf(p) });
+    if (row) out.push({ id: row.id, path: p, title: containerTitle(p) ?? leaf(p) });
   }
   return out;
 }

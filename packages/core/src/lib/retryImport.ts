@@ -6,12 +6,15 @@
  * all: "creating a new canvas crashed, then it loaded"). That is not a reason to
  * show a crash screen — the same request a moment later usually succeeds.
  *
- * Browsers remember a failed module fetch for the rest of the page (Chromium
- * answers the next `import()` of that URL with the same rejection, without a
- * request). So a retry re-imports the URL the error names with a `?t=` query —
- * a fresh request, the same code (the chunk's own imports are unchanged). An
- * error that names no URL (Safari) is retried by calling `load` again. The last
- * failure is rethrown unchanged. Never retries offline (nothing can arrive).
+ * Browsers remember a failed module fetch for the rest of the page (Chromium AND
+ * Safari answer the next `import()` of that URL with the same rejection, without
+ * a request). So a retry re-imports the chunk's URL with a `?t=` query — a fresh
+ * request, the same code (the chunk's own imports are unchanged). The URL is the
+ * one the error names (Chromium, Firefox); Safari's error names none, so there it
+ * is read from the loader itself (`importedUrl`: the one `import("…")` in the
+ * function's source). Only when neither gives a URL is `load` simply called again
+ * (pass the loader that contains the `import()`, not a wrapper around it). The
+ * last failure is rethrown unchanged. Never retries offline (nothing can arrive).
  *
  * Import-free on purpose: it is used by the boot-path shell.
  */
@@ -31,7 +34,7 @@ export async function retryImport<T>(load: () => Promise<T>, delays: readonly nu
       const offline = typeof navigator !== "undefined" && navigator.onLine === false;
       if (attempt >= delays.length || offline) throw error;
       await new Promise((resolve) => setTimeout(resolve, delays[attempt]));
-      const url = failedModuleUrl(error);
+      const url = failedModuleUrl(error) ?? importedUrl(load);
       next = url ? () => import(/* @vite-ignore */ withRetryQuery(url, attempt + 1)) as Promise<T> : load;
     }
   }
@@ -48,6 +51,43 @@ export function failedModuleUrl(error: unknown): string | null {
     return url.href;
   } catch {
     return null;
+  }
+}
+
+/**
+ * The same-origin script a loader imports, read from its source: `() => import("./X-hash.js")`
+ * (a build wraps it — `() => __vitePreload(() => import("./X-hash.js"), deps, import.meta.url)` —
+ * and the dev server writes an absolute path). Null unless the source holds exactly ONE literal
+ * `import("…")`. A relative specifier is resolved against this module's own URL: every chunk of a
+ * build is emitted into the same directory. (A wrong guess costs nothing: the retry fails like the
+ * request before it and the original failure is what the caller sees.)
+ */
+export function importedUrl(load: unknown, base: string | undefined = moduleBase()): string | null {
+  if (typeof load !== "function" || typeof location === "undefined") return null;
+  let source: string;
+  try {
+    source = Function.prototype.toString.call(load).slice(0, 4000);
+  } catch {
+    return null;
+  }
+  const found = [...source.matchAll(/\bimport\(\s*(?:\/\*[^*]*\*\/\s*)?(["'])([^"'\\]+)\1\s*\)/g)];
+  if (found.length !== 1) return null;
+  const specifier = found[0]![2]!;
+  if (!/^(\.{0,2}\/|https?:)/.test(specifier)) return null; // a bare package name is not a URL
+  try {
+    const url = new URL(specifier, base ?? location.href);
+    if (url.origin !== location.origin || !/\.(m?js|tsx?|jsx)$/.test(url.pathname)) return null;
+    return url.href;
+  } catch {
+    return null;
+  }
+}
+
+function moduleBase(): string | undefined {
+  try {
+    return import.meta.url;
+  } catch {
+    return undefined;
   }
 }
 

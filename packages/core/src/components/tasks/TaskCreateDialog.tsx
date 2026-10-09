@@ -3,6 +3,7 @@ import { X } from "lucide-react";
 import { useCreateNote, useNotes } from "../../app/hooks/useParachute";
 import { useUIStore } from "../../app/stores/ui";
 import { vaultApi } from "../../lib/parachute/client";
+import { pageTitle } from "../../lib/pages/model";
 import { showMessage } from "../ui/ConfirmDialog";
 
 const STATUS_OPTIONS = ["todo", "in-progress", "blocked", "done"] as const;
@@ -52,7 +53,8 @@ export function TaskCreateDialog({ onClose }: TaskCreateDialogProps) {
       }
       // Source 3: notes tagged "project"
       if (n.tags?.includes("project") && !path.startsWith("_templates")) {
-        const label = path.split("/").pop() || "";
+        // A container-named project (`projects/food-chain/PROJECT`) is listed by its name, not as "PROJECT".
+        const label = pageTitle(path, n.metadata);
         if (label) names.add(label);
       }
     }

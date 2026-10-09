@@ -3,6 +3,7 @@
  * What a template may carry from the page it was saved from, and what a copy of a
  * LIVE page's editor state leaves behind.
  */
+import { threadCpuMs } from "./probe";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { INGEST_KEYS, INGEST_SOURCES } from "../src/ingest-keys";
@@ -106,9 +107,9 @@ test("copies get fresh mention uids and no reminders (2), no sub-page rows (3), 
 
 test("cleanCopyBody is linear: hostile bodies finish at once", () => {
   for (const body of ["<p>" + "<span ".repeat(200_000), "<p>" + "<span data-suggestion=\"insert\">".repeat(60_000), "<p>" + "</span>".repeat(200_000), "<" .repeat(400_000), "<p " + "a=\"".repeat(150_000)]) {
-    const t = Date.now();
+    const t = threadCpuMs(); // CPU time of this thread (./probe), not the wall clock
     cleanCopyBody(body);
-    assert.ok(Date.now() - t < 1500, `took ${Date.now() - t} ms`);
+    assert.ok(threadCpuMs() - t < 1500, `took ${threadCpuMs() - t} ms`);
   }
 });
 

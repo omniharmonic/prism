@@ -178,6 +178,113 @@ test("integration-owned pages can't be moved or trashed from the page menu", asy
   await expect(nav(page).getByRole("button", { name: "Add a page inside Team room" })).toHaveCount(0);
 });
 
+// NP-PG-15: a sub-page made from the tree's "+" is listed on its parent whether or not the parent is on screen.
+const noteBody = (page: Page, id: string) => page.evaluate((id) => (window as any).prismFixtureNotes.find((n: any) => n.id === id)?.content as string, id);
+const appends = async (page: Page) => (await writes(page)).filter((w) => "append" in w);
+const rowsFor = (body: string, id: string) => body.split(`data-page-id="${id}"`).length - 1;
+
+test("tree +: the parent is NOT open — its stored body gets the sub-page row, once", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto(url());
+  await expand(page, "Prism");
+  await row(page, "A living workspace").click(); // the open page is a sibling: "Plan" has no editor
+  await expect(page.getByRole("heading", { name: "Rename A living workspace", exact: true })).toBeVisible();
+  await nav(page).getByRole("button", { name: "Add a page inside Plan", exact: true }).click();
+  await expect(page.getByRole("textbox", { name: "Document title" })).toHaveValue("Untitled");
+  const created = (await writes(page)).find((w) => w.create) as { create: { path: string } };
+  expect(created.create.path).toBe("vault/Projects/Prism/Plan/Untitled");
+  await expect.poll(async () => (await appends(page)).length).toBe(1);
+  const id = await page.evaluate(() => (window as any).prismFixtureNotes.find((n: any) => n.path === "vault/Projects/Prism/Plan/Untitled").id as string);
+  expect((await appends(page))[0]).toMatchObject({ append: "plan", html: `<div data-type="child-page" data-page-id="${id}"></div>`, requestId: `subpage_${id}` });
+  const body = await noteBody(page, "plan");
+  expect(body.startsWith("<p>The plan.</p>"), "what the parent said is kept").toBe(true);
+  expect(rowsFor(body, id)).toBe(1);
+  await expect(page.getByRole("alert")).toHaveCount(0);
+  // Opening the parent shows the row, and it opens the sub-page.
+  await row(page, "Plan").click();
+  await expect(page.locator(".tiptap .prism-child-page[data-state=ready]")).toHaveCount(1);
+  await expect(page.getByRole("button", { name: "Open sub-page: Untitled" })).toBeVisible();
+  expect(rowsFor(await noteBody(page, "plan"), id)).toBe(1);
+});
+
+test("tree +: the parent IS open — its editor adds the row and the server is not asked for a second one", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto(url());
+  await expand(page, "Prism");
+  await row(page, "Plan").click();
+  await expect(page.getByRole("heading", { name: "Rename Plan", exact: true })).toBeVisible();
+  await expect(page.locator(".tiptap[contenteditable=true]")).toBeVisible();
+  await nav(page).getByRole("button", { name: "Add a page inside Plan", exact: true }).click();
+  await expect(page.getByRole("textbox", { name: "Document title" })).toHaveValue("Untitled");
+  const id = await page.evaluate(() => (window as any).prismFixtureNotes.find((n: any) => n.path === "vault/Projects/Prism/Plan/Untitled").id as string);
+  // The row was saved by the parent's own editor BEFORE the new page took its place…
+  expect(rowsFor(await noteBody(page, "plan"), id)).toBe(1);
+  expect(await appends(page), "…so the server was not asked to add it").toEqual([]);
+  // …and coming back shows the parent WITH the row — not the old text with the row offered as a foreign change.
+  await row(page, "Plan").click();
+  await expect(page.locator(`.tiptap .prism-child-page[data-page-id="${id}"]`)).toHaveCount(1);
+  await page.waitForTimeout(1500); // past the editor's autosave
+  expect(rowsFor(await noteBody(page, "plan"), id)).toBe(1);
+  expect(await appends(page)).toEqual([]);
+  expect(await page.evaluate(() => (window as any).prismFixtureUI.getState().ghostText ?? null), "the saved row is not offered back as a foreign change").toBeNull();
+});
+
+test("tree +: a locked parent — the page is still created and opened, and a notice says why it has no link", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto(url());
+  await expand(page, "Prism");
+  await row(page, "A living workspace").click();
+  await expect(page.getByRole("heading", { name: "Rename A living workspace", exact: true })).toBeVisible();
+  // Locked on the SERVER only (somebody else locked it a moment ago): this device's tree still thinks it is open.
+  await page.evaluate(() => { const n = (window as any).prismFixtureNotes.find((x: any) => x.id === "plan"); n.metadata = { ...n.metadata, prism_locked: true }; });
+  await nav(page).getByRole("button", { name: "Add a page inside Plan", exact: true }).click();
+  await expect(page.getByRole("textbox", { name: "Document title" })).toHaveValue("Untitled");
+  const notice = page.getByRole("alert").filter({ hasText: "is locked" });
+  await expect(notice).toContainText("“Untitled” was created. “Plan” is locked, so it has no link on that page");
+  expect(await notePath(page, await page.evaluate(() => (window as any).prismFixtureNotes.find((n: any) => n.path === "vault/Projects/Prism/Plan/Untitled").id))).toBe("vault/Projects/Prism/Plan/Untitled");
+  expect(await noteBody(page, "plan")).toBe("<p>The plan.</p>");
+  await expect(row(page, "Untitled")).toBeVisible();
+});
+
+test("tree +: a page created in a plain folder asks for no row anywhere", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto(url());
+  // A folder's "+" opens the title-first dialog ("Choose page type"): the same rule holds on that path.
+  await nav(page).getByRole("button", { name: "New page in Journal", exact: true }).click();
+  const create = page.getByRole("dialog", { name: "New page", exact: true });
+  await create.getByLabel("Page title").fill("Log");
+  await create.getByRole("button", { name: "Create page", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Rename Log", exact: true })).toBeVisible();
+  expect(((await writes(page)).find((w) => w.create) as { create: { path: string } }).create.path).toBe("vault/Journal/Log");
+  await page.waitForTimeout(800);
+  expect(await appends(page)).toEqual([]);
+  await expect(page.getByRole("alert")).toHaveCount(0);
+});
+
+test("a page created OFFLINE under a page is listed on its parent when its queued create is delivered", async ({ page }) => {
+  await page.goto(url());
+  await expect(row(page, "Archive")).toBeVisible();
+  // What `appendRowToClosedParent` keeps for a queued create (a temporary id is never written into a body)…
+  const kept = await page.evaluate(async () => {
+    const link = (window as any).prismFixtureSubPageLink;
+    const tree = (window as any).prismFixtureNotes.map((n: any) => ({ id: n.id, path: n.path, tags: n.tags, metadata: n.metadata }));
+    const how = await link.appendRowToClosedParent({ id: "offline-abc123", title: "Field trip", folder: "vault/Projects/Prism/Plan", tree });
+    return { how, stored: JSON.parse(localStorage.getItem("prism:offline-sublinks") ?? "{}") };
+  });
+  expect(kept.how).toBe("queued");
+  expect(kept.stored).toEqual({ "offline-abc123": { parentId: "plan", parentTitle: "Plan", title: "Field trip" } });
+  expect(await appends(page)).toEqual([]);
+  // …and the outbox's announcement that the create was delivered, with the page's real id.
+  await page.evaluate(() => window.dispatchEvent(new CustomEvent("prism:offline-note-resolved", { detail: { temporaryId: "offline-abc123", noteId: "real-77" } })));
+  await expect.poll(async () => (await appends(page)).length).toBe(1);
+  expect((await appends(page))[0]).toMatchObject({ append: "plan", html: '<div data-type="child-page" data-page-id="real-77"></div>', requestId: "subpage_real-77" });
+  expect(await page.evaluate(() => localStorage.getItem("prism:offline-sublinks"))).toBeNull();
+  // Delivered twice (two tabs): nothing is asked again.
+  await page.evaluate(() => window.dispatchEvent(new CustomEvent("prism:offline-note-resolved", { detail: { temporaryId: "offline-abc123", noteId: "real-77" } })));
+  await page.waitForTimeout(300);
+  expect((await appends(page)).length).toBe(1);
+});
+
 // NP-SB-07
 test("tree row hover + and ⋯", async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 });

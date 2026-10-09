@@ -22,6 +22,7 @@ import { PropertyConflictError, VaultRequestError } from "../../data/VaultClient
 import { loadRelationIndex, relationIndexKey, useLinkCandidates, useRelationIndex, useScope } from "../../lib/database/hooks";
 import { conventionalPath, relationValues, resolveRelationValue, resolvedPath, type RelationResolution } from "../../lib/database/relations";
 import { isStructuredValue, scalarText, STRUCTURED_HINT, structuredItems } from "../../lib/database/structured";
+import { normalizeUrlValue, storedWebUrl, URL_INVALID_HINT, URL_NOT_LINK_HINT } from "../../lib/database/url";
 import { useQueryClient } from "@tanstack/react-query";
 import {
   asWikilink,
@@ -44,6 +45,7 @@ import {
   type RelationTarget,
 } from "../../lib/database/schema";
 import { Popover } from "./Popover";
+import { StructuredValueDialog } from "./StructuredValueDialog";
 
 export type ValueVariant = "bar" | "cell" | "panel" | "card";
 
@@ -242,10 +244,14 @@ export function PropertyDisplay({ def, value, openLinks = true, links = true }: 
       return links && looksLikePhone(v) ? <a className="db-url" href={`tel:${v.replace(/[^\d+]/g, "")}`} onClick={(e) => e.stopPropagation()}>{v}</a> : <span className="db-text">{v}</span>;
     }
     case "url": {
-      const href = String(value);
-      const safe = /^https?:\/\//i.test(href);
-      if (safe && !links) return <span className="db-text">{href.replace(/^https?:\/\//, "")}</span>;
-      return safe ? <a className="db-url" href={href} target="_blank" rel="noreferrer noopener" onClick={(e) => e.stopPropagation()}>{href.replace(/^https?:\/\//, "")}</a> : <span>{href}</span>;
+      const text = scalarText(value);
+      // Only a web address is a link (`url.ts`, the editor's link rule). Anything else already
+      // stored here is shown as the text it is, with a quiet note saying why it does not open.
+      const href = storedWebUrl(text);
+      if (!href) return <span className="db-text db-not-link" data-not-link><span className="db-not-link-text">{text}</span><span className="db-not-link-hint">{URL_NOT_LINK_HINT}</span></span>;
+      const shown = href.replace(/^https?:\/\//i, "");
+      if (!links) return <span className="db-text">{shown}</span>;
+      return <a className="db-url" href={href} target="_blank" rel="noreferrer noopener" onClick={(e) => e.stopPropagation()}>{shown}</a>;
     }
     default:
       return <span className="db-text">{formatValue(def, value)}</span>;
@@ -286,6 +292,8 @@ export function PropertyValue({
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  /** The error is about the TEXT typed (not a web address / email / phone): fixed by typing, so no Retry and it clears on the next keystroke. */
+  const [invalid, setInvalid] = useState(false);
   const [conflict, setConflict] = useState<Conflict | null>(null);
   const attempted = useRef<unknown>(undefined);
   const base = useRef<unknown>(value);
@@ -312,6 +320,8 @@ export function PropertyValue({
   const couldEdit = !readOnly;
   if (structured) readOnly = true;
   const [hintOpen, setHintOpen] = useState(false);
+  const [editingStructured, setEditingStructured] = useState(false);
+  const structuredOpener = useRef<HTMLButtonElement | null>(null);
 
   const begin = () => {
     if (readOnly || busy) return;
@@ -344,21 +354,39 @@ export function PropertyValue({
 
   async function commit(raw: unknown, overrideBase?: unknown) {
     if (structured) return; // belt and braces: no editor opens for a structured value
-    const next = coerceValue(def, raw);
+    let next = coerceValue(def, raw);
+    const unchanged = (v: unknown) => JSON.stringify(v ?? null) === JSON.stringify(value ?? null) && overrideBase === undefined;
     // Email/phone keep any text the person typed, but say when it does not look right.
     if (typeof next === "string" && ((def.kind === "email" && !looksLikeEmail(next)) || (def.kind === "phone" && !looksLikePhone(next)))) {
       attempted.current = raw;
+      setInvalid(true);
       setError(def.kind === "email" ? "That doesn’t look like an email address." : "That doesn’t look like a phone number.");
       return;
     }
-    if (JSON.stringify(next ?? null) === JSON.stringify(value ?? null) && overrideBase === undefined) {
+    // A URL property holds web addresses only (`url.ts`): what was typed is normalised
+    // (`example.com` → `https://example.com`) or refused here, beside the field — never stored
+    // as it is. Leaving an older, non-address value untouched is not a write and closes quietly.
+    if (def.kind === "url" && typeof next === "string" && !unchanged(next)) {
+      const url = normalizeUrlValue(next);
+      if (url === null) {
+        attempted.current = raw;
+        setInvalid(true);
+        setError(URL_INVALID_HINT);
+        return;
+      }
+      next = url;
+    }
+    if (unchanged(next)) {
       setEditingText(false);
+      setError("");
+      setInvalid(false);
       onDone?.();
       return;
     }
     attempted.current = raw;
     setBusy(true);
     setError("");
+    setInvalid(false);
     setConflict(null);
     try {
       await onCommit(next, overrideBase === undefined ? base.current : overrideBase);
@@ -366,6 +394,8 @@ export function PropertyValue({
       onDone?.();
     } catch (e) {
       if (e instanceof PropertyConflictError) setConflict({ theirs: e.current[def.key] ?? null });
+      // The server applies the URL rule as well (a value another writer made a URL property meanwhile): said like the editor's own refusal.
+      else if (/"invalid_url"/.test(String((e as Error)?.message ?? ""))) { setInvalid(true); setError(URL_INVALID_HINT); }
       else setError(e instanceof Error && e.message && !/failed: \d{3}/.test(e.message) ? e.message : "Not saved. Your value is kept; try again.");
     } finally {
       setBusy(false);
@@ -385,6 +415,7 @@ export function PropertyValue({
       refocus.current = true;
       setEditingText(false);
       setError("");
+      setInvalid(false);
       onDone?.();
     }
   };
@@ -392,9 +423,9 @@ export function PropertyValue({
   const feedback = (
     <>
       {error && (
-        <span role="alert" className="db-error">
+        <span role="alert" className="db-error" data-invalid={invalid || undefined}>
           {error}
-          <button type="button" onClick={() => void commit(attempted.current)}>Retry</button>
+          {!invalid && <button type="button" onClick={() => void commit(attempted.current)}>Retry</button>}
         </span>
       )}
       {conflict && (
@@ -414,11 +445,19 @@ export function PropertyValue({
           ref={inputRef}
           className="db-input"
           aria-label={def.label}
+          /* `type="url"` gives the URL keyboard; outside a <form> the browser validates nothing, so
+             `example.com` reaches our own rule (which adds `https://`). */
           type={def.kind === "date" ? "date" : def.kind === "number" ? "text" : def.kind === "url" ? "url" : def.kind === "email" ? "email" : def.kind === "phone" ? "tel" : "text"}
           inputMode={def.kind === "number" ? "decimal" : def.kind === "email" ? "email" : def.kind === "phone" ? "tel" : undefined}
+          autoCapitalize={def.kind === "url" ? "none" : undefined}
+          autoCorrect={def.kind === "url" ? "off" : undefined}
+          spellCheck={def.kind === "url" ? false : undefined}
+          placeholder={def.kind === "url" ? "example.com" : undefined}
+          aria-invalid={invalid || undefined}
+          aria-describedby={error || conflict ? id : undefined}
           value={draft}
           disabled={busy}
-          onChange={(e) => setDraft(e.target.value)}
+          onChange={(e) => { setDraft(e.target.value); if (invalid) { setInvalid(false); setError(""); } }}
           onKeyDown={onTextKey}
           onBlur={() => { if (!busy && !error && !conflict) void commit(draft); }}
         />
@@ -430,13 +469,14 @@ export function PropertyValue({
             <CalendarClock size={14} aria-hidden="true" />
           </button>
         )}
-        {feedback}
+        <span id={id}>{feedback}</span>
       </span>
     );
   }
 
   const raw = isBlank(value) || structured ? "" : scalarText(value);
-  const valueLink = def.kind === "url" && /^https?:\/\//i.test(raw) ? { href: raw, name: raw.replace(/^https?:\/\//, "") }
+  const webUrl = def.kind === "url" ? storedWebUrl(raw) : null;
+  const valueLink = webUrl ? { href: webUrl, name: webUrl.replace(/^https?:\/\//i, "") }
     : def.kind === "email" && looksLikeEmail(raw) ? { href: `mailto:${raw.trim()}`, name: raw }
     : def.kind === "phone" && looksLikePhone(raw) ? { href: `tel:${raw.replace(/[^\d+]/g, "")}`, name: raw }
     : null;
@@ -446,10 +486,18 @@ export function PropertyValue({
       {readOnlyLinks ? (
         /* A reader's relation / person chips are links to those pages. Links may not sit inside a
            button, and a read-only cell has nothing else to do — so here it is a labelled group. */
-        <span className="db-value-button" role="group" data-readonly aria-label={`${def.label}: ${formatValue(def, value) || "Empty"}`} title={structured ? STRUCTURED_HINT : undefined}>
+        <span className="db-value-button" role="group" data-readonly aria-label={`${def.label}: ${formatValue(def, value) || "Empty"}`} title={structured && !(couldEdit && noteId) ? STRUCTURED_HINT : undefined}>
           <PropertyDisplay def={def} value={value} openLinks links={false} />
-          {/* Someone who could otherwise edit is told why this one cannot be (a tap shows it: phones have no hover). */}
-          {structured && couldEdit && (
+          {/* Someone who can edit the page edits a structured value in its own dialog (rows = items),
+              which writes it back in the same shape. Where there is no page to write to (a template's
+              starting values), it stays read-only and a tap says why (phones have no hover). */}
+          {structured && couldEdit && noteId && (
+            <button type="button" className="db-structured-edit focus-ring" aria-haspopup="dialog" aria-label={`Edit ${def.label}`}
+              onClick={(e) => { e.stopPropagation(); structuredOpener.current = e.currentTarget; setEditingStructured(true); }}>
+              Edit…
+            </button>
+          )}
+          {structured && couldEdit && !noteId && (
             <button type="button" className="db-structured-lock focus-ring" aria-label={`${def.label} is read-only: ${STRUCTURED_HINT}`} aria-expanded={hintOpen} title={STRUCTURED_HINT}
               onClick={(e) => { e.stopPropagation(); setHintOpen((v) => !v); }}>
               <Lock size={11} aria-hidden="true" />
@@ -461,7 +509,7 @@ export function PropertyValue({
         ref={anchor}
         type="button"
         className="db-value-button focus-ring"
-        aria-label={def.kind === "checkbox" ? def.label : `${def.label}: ${formatValue(def, value) || "Empty"}`}
+        aria-label={def.kind === "checkbox" ? def.label : `${def.label}: ${formatValue(def, value) || "Empty"}${def.kind === "url" && raw && !webUrl ? ` (${URL_NOT_LINK_HINT.toLowerCase()})` : ""}`}
         role={def.kind === "checkbox" ? "checkbox" : undefined}
         aria-checked={def.kind === "checkbox" ? value === true : undefined}
         aria-haspopup={!textual && def.kind !== "checkbox" ? "dialog" : undefined}
@@ -486,6 +534,10 @@ export function PropertyValue({
         </a>
       )}
       {structured && hintOpen && <span role="status" className="db-structured-note">{STRUCTURED_HINT}</span>}
+      {editingStructured && noteId && (
+        <StructuredValueDialog noteId={noteId} propertyKey={def.key} label={def.label} value={value} personTarget={structuredTargetFor(def)}
+          opener={structuredOpener.current} onClose={() => setEditingStructured(false)} />
+      )}
       <span id={id}>{feedback}</span>
       {(def.kind === "select" || def.kind === "status" || def.kind === "multi_select") && (
         <OptionPicker anchor={anchor} open={open} def={def} value={value} onClose={() => { setOpen(false); onDone?.(); }}

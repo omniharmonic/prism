@@ -13,6 +13,8 @@
     "preview": "npm run preview -w @prism/desktop",
     "tauri": "npm run tauri -w @prism/desktop --",
     "typecheck": "npm run typecheck -w @prism/core && npm run typecheck -w @prism/desktop && npm run typecheck -w @prism/web && npm run typecheck -w @prism/server",
+    "typecheck:e2e": "npm run typecheck:e2e -w @prism/web",
+    "check": "npm run typecheck && npm run typecheck:e2e && npm run check:dialogs -w @prism/web --if-present && npm run check:sw -w @prism/web && npm run check:initial -w @prism/web",
     "test": "npm run test -w @prism/server",
     "setup": "npm run setup:full -w @prism/server"
   },

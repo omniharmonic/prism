@@ -11,6 +11,7 @@
  * write streams content via stdin (`--file - --replace`) because gog's Kong
  * parser treats leading `---` (frontmatter) as a flag.
  */
+import { containerTitle } from "@prism/core/pages";
 import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import { existsSync } from "node:fs";
@@ -92,7 +93,8 @@ export interface GoogleDocsPushResult {
  *  leaf), then replace its content. Returns the doc id (persist as remote_id). */
 export async function pushNoteToGoogleDoc(client: Pick<GoogleDocsClient, "createDoc" | "writeDoc">, note: { path?: string | null; content: string }, remoteId?: string): Promise<GoogleDocsPushResult> {
   if (!remoteId) {
-    const title = (note.path?.split("/").pop() || "Untitled").replace(/\.[^.]+$/, "");
+    // A container-named page (`…/food-chain/PROJECT`) is exported under its folder's name, not as "PROJECT".
+    const title = containerTitle(note.path) ?? (note.path?.split("/").pop() || "Untitled").replace(/\.[^.]+$/, "");
     const docId = await client.createDoc(title);
     await client.writeDoc(docId, note.content);
     return { docId, created: true };

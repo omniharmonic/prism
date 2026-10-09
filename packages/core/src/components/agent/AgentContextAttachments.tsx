@@ -1,3 +1,4 @@
+import { pageTitle } from "../../lib/pages/model";
 import { leafTitle } from "../../lib/pages/containerTitle";
 import { useEffect, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
@@ -6,6 +7,9 @@ import { useVaultClient } from "../../data/VaultClientContext";
 import { useAgentChatStore } from "../../lib/agent/chatStore";
 
 /** Choose references only; the server rechecks access and reads text at send. */
+/** The name a page is shown by everywhere else (a container-named page is its folder, never "PROJECT"). */
+const noteName = (note: { path?: string | null; metadata?: Record<string, unknown> | null } | undefined): string => (note?.path ? pageTitle(note.path, note.metadata) : "");
+
 export function AgentContextAttachments({ ids, onChange, onPreview, disabled, maxNotes, maxCharacters }: {
   ids: string[]; onChange: (ids: string[]) => void; onPreview: (id: string) => void;
   disabled: boolean; maxNotes: number; maxCharacters: number;
@@ -57,7 +61,7 @@ function ContextPicker({ ids, onChange, maxNotes, onClose }: { ids: string[]; on
         <button aria-label="Close note picker" onClick={onClose} className="interactive focus-ring flex h-10 w-10 items-center justify-center rounded-lg"><X size={18} /></button>
       </div>
       <div className="prism-agent-context-search"><Search size={17} aria-hidden="true" /><input autoFocus aria-label="Search notes to attach" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search your vault…" className="focus-ring w-full rounded-lg border py-3 pl-10 pr-3 text-base" style={{ background: "var(--bg-surface)", borderColor: "var(--glass-border)" }} /></div>
-      {ids.length > 0 && <section className="prism-agent-context-included" aria-label="Included notes"><h3>Included · {ids.length}</h3><div className="flex flex-wrap gap-2">{ids.map((id, index) => <span key={id} className="prism-agent-context-selected"><FileText size={13} aria-hidden="true" /><span>{notes?.find(note => note.id === id)?.path?.split("/").pop() || `Saved note ${index + 1}`}</span><button onClick={() => onChange(ids.filter(item => item !== id))} aria-label={`Remove included note ${index + 1}`} className="focus-ring"><X size={13}/></button></span>)}</div></section>}
+      {ids.length > 0 && <section className="prism-agent-context-included" aria-label="Included notes"><h3>Included · {ids.length}</h3><div className="flex flex-wrap gap-2">{ids.map((id, index) => <span key={id} className="prism-agent-context-selected"><FileText size={13} aria-hidden="true" /><span>{noteName(notes?.find(note => note.id === id)) || `Saved note ${index + 1}`}</span><button onClick={() => onChange(ids.filter(item => item !== id))} aria-label={`Remove included note ${index + 1}`} className="focus-ring"><X size={13}/></button></span>)}</div></section>}
       <div className="min-h-0 overflow-y-auto px-4 pb-4 text-sm">
         <h3 className="prism-agent-context-results-label">Search results</h3>
         {searching ? <p role="status">Searching…</p> : search.trim().length < 2 ? <p style={{ color: "var(--text-muted)" }}>Type at least two characters to find a note.</p> : null}

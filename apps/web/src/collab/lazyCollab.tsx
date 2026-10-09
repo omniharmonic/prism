@@ -29,7 +29,8 @@ export function setCollabEditorLoaderForTests(next: Loader | null): void {
 }
 
 export function preloadCollabEditor(): Promise<Module> {
-  pending ??= retryImport(() => loader()).then(
+  // The loader itself, not a wrapper: `retryImport` reads the chunk's URL from it where the error names none (Safari).
+  pending ??= retryImport(loader).then(
     (m) => (loaded = m),
     (e) => {
       pending = null; // a failed download may be retried by the next open

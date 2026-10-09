@@ -7,7 +7,7 @@ import { useVaultTree } from "../../app/hooks/useParachute";
 import { useAgentAvailable } from "../../data/AgentClientContext";
 import { openAgentChat } from "../../lib/agent/chatStore";
 import { useUIStore } from "../../app/stores/ui";
-import { TEMPLATE_TAG, isTrashed } from "../../lib/pages/model";
+import { TEMPLATE_TAG, isTrashed, pageTitle } from "../../lib/pages/model";
 import { sanitizeHtml } from "../../lib/html/sanitize";
 import "./FormattingBar.css";
 
@@ -79,7 +79,7 @@ export function EmptyPageStarters({ editor, noteId, title }: { editor: Editor; n
       {choosing && (
         <ul className="empty-page-templates" aria-label="Templates">
           {templates.length ? templates.slice(0, 12).map((t) => (
-            <li key={t.id}><button type="button" className="empty-page-starter focus-ring" onClick={() => void useTemplate(t.id)}>{t.path?.split("/").pop() ?? t.id}</button></li>
+            <li key={t.id}><button type="button" className="empty-page-starter focus-ring" onClick={() => void useTemplate(t.id)}>{t.path ? pageTitle(t.path, t.metadata) : t.id}</button></li>
           )) : <li className="empty-page-starters-hint">No templates yet. Tag a page “template” to use it here.</li>}
         </ul>
       )}

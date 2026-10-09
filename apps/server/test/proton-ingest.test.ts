@@ -10,6 +10,8 @@
  * with TZ=America/Denver and a synthetic account. proton-script-micro.json pins
  * the header/date/HTML semantics the same way. The port must match byte-for-byte.
  */
+// Timed in CPU time of this thread (./probe), never on the wall clock: the figure is the work, not the machine's load.
+import { threadCpuMs } from "./probe";
 import { test, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
@@ -692,9 +694,9 @@ test("C1: viaSender matches the original regex and is linear", () => {
 
 const MB = 1024 * 1024;
 function timed(label: string, fn: () => unknown, boundMs = 300): void {
-  const t0 = performance.now();
+  const t0 = threadCpuMs();
   fn();
-  const ms = performance.now() - t0;
+  const ms = threadCpuMs() - t0;
   assert.ok(ms < boundMs, `${label}: ${ms.toFixed(0)} ms (bound ${boundMs} ms)`);
 }
 

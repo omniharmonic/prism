@@ -19,6 +19,7 @@
  * during the window would be attributed to the agent (paths are unique, so this needs the
  * same path); raw vault writes carry writer kind `external` (no Prism writer stamp).
  */
+import { containerTitle } from "@prism/core/pages";
 import { inferContentType } from "@prism/core/content-types";
 import { resolveVaultEntry } from "../db";
 import { ensureTree, subscribeTreeChanges, type TreeChange, type TreeRow } from "../tree";
@@ -116,7 +117,7 @@ export function buildCard(w: WriteSignal, meta: NoteMeta, threadId: string): Rec
     noteId: id,
     op: w.op,
     type,
-    title: meta.title || leaf(meta.path) || id,
+    title: meta.title || containerTitle(meta.path) || leaf(meta.path) || id,
     path: meta.path,
     tags: meta.tags,
     icon: meta.icon ?? null,

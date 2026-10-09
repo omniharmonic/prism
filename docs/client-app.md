@@ -810,6 +810,13 @@ The block editor (callouts, toggles, columns, block/text colour, and tables/imag
 
 Any future node/mark/attribute change must bump the version; `apps/server/test/collab-schema-gate.test.ts` pins the schema's names and fails otherwise.
 
+**Current version: 6** (history of the versions: the comment in `collabSchema.ts`). Every live editor sends `schema=6` / `X-Prism-Editor-Schema: 6`; a client built at 5 or below is refused as described above.
+
+- **What v6 changed (Suggesting mode):** two attributes `suggestion` (`insert` | `delete`) + `suggestionBy` on the text blocks (`paragraph`, `heading`, `codeBlock`, `toggleSummary`) and on the inline atoms `hardBreak` and `mention` — a paragraph break, line break or chip suggested while Suggesting (HTML `data-suggestion-node` / `data-suggestion-by`); and the existing `insertion` / `deletion` marks may now sit on text in inline code (the `code` mark no longer excludes them) and in a code block (`codeBlock` allows them). No node or mark was added or renamed.
+- **Why a v5 client must not write:** its schema drops the two attributes (a suggested break / chip would become a plain edit) and strips suggestion marks from code (the struck and the inserted text would both become plain code).
+- **REST markers added for v6** (`needsEditorUpdate`, `apps/server/src/routes/api.ts`): the attribute `data-suggestion-node`, and a suggestion inside code (`<span data-suggestion=…><code>` or a suggestion span inside `<pre>` — `suggestionInCode`). A suggestion on ordinary text is not a marker: a v5 editor represents it exactly.
+- **An open v5 tab loses nothing:** its socket is refused on the next connect → **Update required — Reload**; typing that had not reached the server stays on the device (the local document + the unsynced entry, marked `update-required` so it is not retried by the old build) and is sent after the reload loads the current build. Tests: `apps/web/e2e-fixtures/editor-schema.spec.ts` ("a version bump while a tab is open…"), `apps/server/test/collab-schema-gate.test.ts` ("v6: …").
+
 ### Release order
 
 1. **Server first:** deploy the server with the gate, then `pm2 restart prism-server`. Old clients are refused from this moment, so no stale editor can write v2-incompatible content.

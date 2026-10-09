@@ -45,6 +45,7 @@ import { CollabBusyError, DocumentTooComplexError, FIELD, collabSchema, docNameF
 import { getCollabUnsaved, getDocState } from "../db";
 import { writerStamp } from "../sharing";
 import "../block-append-store";
+import { noteContentStored } from "../notifications";
 
 const MAX_HTML = 256 * 1024;
 /** The vault refuses updates to a note over 2 MB while history is on. */
@@ -120,6 +121,39 @@ function stateCovers(stateVector: Uint8Array, marker: string): boolean {
   return (Y.decodeStateVector(stateVector).get(client!) ?? 0) >= clock!;
 }
 
+/** The page ids when EVERY block is a sub-page row (`childPage`), else null. */
+function subPageRowsOnly(blocks: unknown[]): string[] | null {
+  const ids: string[] = [];
+  for (const b of blocks) {
+    const node = b as { type?: unknown; attrs?: { pageId?: unknown } } | null;
+    if (!node || node.type !== "childPage" || typeof node.attrs?.pageId !== "string" || !node.attrs.pageId) return null;
+    ids.push(node.attrs.pageId);
+  }
+  return ids.length ? ids : null;
+}
+/** Page ids a stored body (HTML, or Markdown carrying the row's HTML block) already lists as sub-page rows. */
+export function subPageRowsIn(body: string): Set<string> {
+  const ids = new Set<string>();
+  for (const tag of body.match(/<div\b[^>]*>/gi) ?? []) {
+    if (!/\bdata-type\s*=\s*["']child-page["']/i.test(tag)) continue;
+    const id = /\bdata-page-id\s*=\s*["']([A-Za-z0-9_-]{1,128})["']/i.exec(tag)?.[1];
+    if (id) ids.add(id);
+  }
+  return ids;
+}
+/** …and a live document's. */
+function subPageRowsInDoc(doc: Y.Doc): Set<string> {
+  const ids = new Set<string>();
+  const walk = (n: { type?: unknown; attrs?: { pageId?: unknown }; content?: unknown[] } | null | undefined) => {
+    if (!n) return;
+    if (n.type === "childPage" && typeof n.attrs?.pageId === "string") ids.add(n.attrs.pageId);
+    for (const c of n.content ?? []) walk(c as never);
+  };
+  walk(yDocToProsemirrorJSON(doc, FIELD) as never);
+  return ids;
+}
+const subPageRowHtml = (id: string) => `<div data-type="child-page" data-page-id="${id}"></div>`;
+
 const inFlight = new Map<string, Promise<{ status: number; body: Record<string, unknown> }>>();
 
 export const blocksApi = new Hono();
@@ -193,6 +227,16 @@ blocksApi.post("/notes/:id/blocks/append", bodyLimit({ maxSize: MAX_HTML + 4096,
       throw e;
     }
     if (!blocks) return { status: 400, body: { error: "invalid_request", detail: "nothing to append" } };
+    // A page lists a sub-page ONCE. When all that is appended is sub-page rows (a page created under
+    // this one while it was not open — NP-PG-15), a row the page already has is not added again:
+    // the editor that had the page open may have put it there first, and another device may repeat.
+    const rowIds = subPageRowsOnly(blocks.json);
+    const withoutListed = (listed: Set<string>): { html: string; json: unknown[] } | null => {
+      if (!rowIds) return blocks;
+      const fresh = [...new Set(rowIds)].filter((x) => !listed.has(x));
+      if (!fresh.length) return null;
+      return fresh.length === rowIds.length ? blocks : { html: fresh.map(subPageRowHtml).join(""), json: (blocks!.json as Array<{ attrs?: { pageId?: string } }>).filter((b, i, all) => fresh.includes(b.attrs?.pageId ?? "") && all.findIndex((o) => o.attrs?.pageId === b.attrs?.pageId) === i) };
+    };
     const record = (live: boolean | typeof APPLIED_UNCONFIRMED, applied: string | null = null) => {
       db.prepare(
         `INSERT INTO block_append_receipts (vault_id, note_id, actor, request_id, body_hash, live, applied, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -258,8 +302,10 @@ blocksApi.post("/notes/:id/blocks/append", bodyLimit({ maxSize: MAX_HTML + 4096,
           if (e instanceof ConversionError) return e.reason === "busy" ? { status: 503, body: { error: "busy", retry: true } } : { status: 413, body: { error: "too_large", detail: "that page is full" } };
           throw e;
         }
-        if ((renderedSizeOf(conn.document) ?? 0) + Buffer.byteLength(blocks.html) > MAX_NOTE) return { status: 413, body: { error: "too_large", detail: "that page is full" } };
-        appendToLiveDoc(conn.document, blocks.json, `human:${actor.email}`);
+        const adding = withoutListed(rowIds ? subPageRowsInDoc(conn.document) : new Set());
+        if (!adding) { record(true); return { status: 200, body: { ok: true, live: true, present: true } }; }
+        if ((renderedSizeOf(conn.document) ?? 0) + Buffer.byteLength(adding.html) > MAX_NOTE) return { status: 413, body: { error: "too_large", detail: "that page is full" } };
+        appendToLiveDoc(conn.document, adding.json, `human:${actor.email}`);
         // Same tick as the append: from here on a retry of this request finds the blocks by
         // this marker instead of appending them again (L6).
         marker = `${conn.document.clientID}:${Y.getState(conn.document.store, conn.document.clientID)}`;
@@ -281,9 +327,11 @@ blocksApi.post("/notes/:id/blocks/append", bodyLimit({ maxSize: MAX_HTML + 4096,
     let current = note;
     for (let attempt = 0; attempt < 2; attempt++) {
       if (!current.updatedAt) return { status: 409, body: { error: "conflict" } };
+      const adding = withoutListed(rowIds ? subPageRowsIn(current.content ?? "") : new Set());
+      if (!adding) { record(false); return { status: 200, body: { ok: true, live: false, present: true } }; }
       let next: string;
       try {
-        next = await appendToBody(current.content ?? "", blocks.html, who);
+        next = await appendToBody(current.content ?? "", adding.html, who);
       } catch (e) {
         if (e instanceof ConversionError) return conversionRefusal(e);
         throw e;
@@ -296,6 +344,12 @@ blocksApi.post("/notes/:id/blocks/append", bodyLimit({ maxSize: MAX_HTML + 4096,
         const saved = await client.updateNote(note.id, { content: next, metadata: writerStamp(actor.email, "edit"), ifUpdatedAt: current.updatedAt });
         record(false);
         try { treeUpsertNote(entry, saved); } catch { /* the subscribe socket follows */ }
+        // What a content PATCH does through `restMentionHook` (this route is not under it): page chips and
+        // sub-page rows in the new body become links / mentions — so the parent of a row added here is in
+        // its sub-page's backlinks and the graph. Never changes the answer.
+        if (next.indexOf('data-type="mention"') >= 0 || next.indexOf('data-type="child-page"') >= 0) {
+          void noteContentStored({ vaultId: entry.id, noteId: note.id, prev: current.content ?? "", prevMentions: null, next, authors: [actor.email], updatedAt: saved.updatedAt ?? null }).catch(() => undefined);
+        }
         return { status: 200, body: { ok: true, live: false, updatedAt: saved.updatedAt ?? null } };
       } catch (e) {
         const conflict = e instanceof VaultConflictError || (e instanceof VaultError && e.status === 409);

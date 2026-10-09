@@ -283,16 +283,19 @@ Found and fixed:
 - **The pressed Messages view toggle (Triage / People / Platforms) had no focus ring.** Its own `box-shadow` (a 1 px hairline) outranked `.focus-ring:focus-visible`, so a keyboard user saw nothing on the selected toggle. The pressed state now keeps the hairline and adds the ring.
 - **The message composer and the agent composer** showed focus with a soft glow (1.1 : 1) and a part-strength border (2.3 : 1 in light). The focused border is now full strength — asserted ≥ 3 : 1 in both themes ("… the focused composer's border is at least 3 : 1"). The glow stays as decoration; these two are recorded as "soft-ring text fields" in the report, not failures.
 
-**Control boundaries — measured and reported, not a gate.** Every visible text field, select, textarea and custom checkbox / radio / switch: the best of its border and its fill against what is behind it (also looking at up to two wrappers that draw the box).
+**Control boundaries — a gate since 2026-10-09 (decision c.17), ≥ 3 : 1.** Every visible text field, select, textarea and custom checkbox / radio / switch: the best of its border and its fill against what is behind it (also the box a wrapper draws around a seamless field, a checkbox's drawn box and a segmented group's box).
 
-| Theme | ≥ 3 : 1 | Below 3 : 1 | Not judged (gradient / native) | Median of the low ones | Range |
-|---|---|---|---|---|---|
-| light | 6 | 79 | 27 | 1.24 : 1 | 1.0 – 1.84 |
-| dark | 7 | 78 | 27 | 1.38 : 1 | 1.0 – 1.42 |
+| | Before (2026-10-08) | Now |
+|---|---|---|
+| ≥ 3 : 1 | 13 | **224** |
+| Below 3 : 1 | 157 | **0** |
+| Not judged | 54 | **0** |
 
-By kind (both themes): text inputs 64, search inputs 28, custom checkboxes 16, selects 14, custom radios 10, password 7, textareas 6, combobox inputs 6, email 4, searchbox 2. A ratio of 1.0 means a borderless field on a same-coloured surface whose box is drawn further out than the two wrappers the measure looks at — those few are an under-count of the real boundary, not a new finding.
+(The totals differ because selects with a chevron image and controls over a blur are now judged instead of skipped.)
 
-Why this is not fixed here: every one of these is the shared 1 px hairline (`--glass-border`), which is also every divider in the app. Raising it is a design decision, not a token typo — owner decision **c.17** in PARITY-GAPS (recommended: a `--control-border` token at 3 : 1 for form fields only).
+How: one token, `--control-border` (dark `#84868f`, light `#7d7f87`, the light value in print). Fields still write `border: 1px solid var(--glass-border)`; `tokens.css` ("FORM CONTROL BOUNDARIES") re-points that hairline on the control itself and on the boxes drawn around seamless fields, so dividers and cards keep the quiet hairline and no component names a second token. Ratios: light 4.0 : 1 on white, 3.7 on the sidebar, 3.1 on the active row; dark 4.8 on the page, 3.3 on the active row. Found on the way: the shared `Input` lost its border and fill whenever a caller passed a `style` (the name and password fields in Settings, the vote reason); the share dialog's per-person permission selects had a transparent border; the published site's password field used a 1.8 : 1 border; the message composer's focused border did not stand out from a 3 : 1 resting border in dark (now `--focus-ring`).
+
+Needs a look by eye (a design change on every form field): the borders are visibly darker than the old hairline.
 
 Not measured at all: icon-only controls against their background, text over cover images.
 

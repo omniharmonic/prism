@@ -9,6 +9,7 @@ import { addLinkedView, createInlineDatabase } from "../database/DatabaseBlock";
 import { readDatabaseConfig, VIEW_LABELS } from "../database/config";
 import { insertDatabaseBlock, type DatabaseInsertRequest } from "../../lib/tiptap/databaseView";
 import { NewDatabaseDialog } from "../database/NewDatabaseDialog";
+import { pageTitle } from "../../lib/pages/model";
 import "./editor-blocks.css";
 
 const TAG = /^[A-Za-z0-9][A-Za-z0-9_/-]{0,63}$/;
@@ -35,7 +36,7 @@ export function InsertDatabaseDialog({ editor, request, hostPath, onClose }: { e
     const q = value.trim().toLowerCase();
     return (tree ?? [])
       .filter((n) => (n.metadata as Record<string, unknown> | null)?.prism_type === "database" || (n as { prismType?: string }).prismType === "database")
-      .map((n) => ({ id: n.id, name: (n.path ?? n.id).split("/").pop()!.replace(/\.[^.]+$/, "") }))
+      .map((n) => ({ id: n.id, name: n.path ? pageTitle(n.path, n.metadata as Record<string, unknown> | null) : n.id }))
       .filter((d) => !q || d.name.toLowerCase().includes(q))
       .slice(0, 50);
   }, [tree, value]);

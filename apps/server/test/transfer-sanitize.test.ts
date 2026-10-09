@@ -1,4 +1,5 @@
 /** The export sanitiser and its helpers (`@prism/core/import-export` sanitize.ts): allowlist output, linear time. */
+import { threadCpuMs } from "./probe";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { htmlDepth, htmlToText, safeUrl, sanitizeHtml } from "@prism/core/import-export";
@@ -36,11 +37,11 @@ test("htmlDepth / htmlToText, and everything is linear on hostile input", () => 
   const n = 300_000;
   const shapes = ["<".repeat(n), "<a ".repeat(n / 3), "<p".repeat(n / 2), '<a href="'.repeat(n / 9), "<script>".repeat(n / 8), "</".repeat(n / 2), "<!--".repeat(n / 4), "<div>".repeat(n / 5), "<svg><svg>".repeat(n / 10), "&#".repeat(n / 2), `<p ${'a="b" '.repeat(n / 6)}>`, `<a href="${"j".repeat(n)}">`];
   for (const s of shapes) {
-    const t0 = Date.now();
+    const t0 = threadCpuMs(); // CPU time of this thread (./probe), not the wall clock
     sanitizeHtml(s);
     htmlDepth(s);
     htmlToText(s);
-    const ms = Date.now() - t0;
+    const ms = threadCpuMs() - t0;
     assert.ok(ms < 2000, `${s.slice(0, 10)}… took ${ms} ms`);
   }
 });

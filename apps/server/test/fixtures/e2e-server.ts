@@ -44,7 +44,8 @@ const RICH =
   "<blockquote><p>A quoted line.</p></blockquote>" +
   "<pre><code>const x = 1;</code></pre>" +
   "<hr>" +
-  "<p>Line one<br>line two and [[Some Page]].</p>";
+  "<p>Line one<br>line two and [[Some Page]].</p>" +
+  "<p>Run <code>prismctl</code> to start.</p>";
 
 fv.put({ id: "plan", path: "vault/Shared/Plan", content: "<p>Alpha beta gamma</p><p>Second paragraph here.</p>", metadata: { prism_creator: OWNER }, tags: ["team"] });
 fv.put({ id: "notes", path: "vault/Shared/Plan/Notes", content: "<p>Child notes about the plan.</p>", tags: ["team"] });

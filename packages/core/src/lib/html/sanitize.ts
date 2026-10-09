@@ -16,7 +16,7 @@ const CONFIG: Parameters<typeof DOMPurify.sanitize>[1] = {
   // HTML only — no SVG/MathML, which widen the XSS surface.
   USE_PROFILES: { html: true },
   // Attributes TipTap/wikilinks/suggestions rely on, beyond DOMPurify's defaults.
-  ADD_ATTR: ["target", "data-type", "data-target", "data-suggestion", "data-checked", "colspan", "rowspan"],
+  ADD_ATTR: ["target", "data-type", "data-target", "data-suggestion", "data-suggestion-node", "data-suggestion-by", "data-checked", "colspan", "rowspan"],
   FORBID_TAGS: ["script", "style", "iframe", "object", "embed", "form"],
   FORBID_ATTR: ["style", "onerror", "onload", "onclick", "onmouseover"],
 };

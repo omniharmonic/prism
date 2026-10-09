@@ -772,7 +772,7 @@ export function CalendarView({ ctx, month, onMonth, onPickDate }: { ctx: ViewCon
                         {ctx.canCreate && editableKey && <button type="button" className="db-cal-add" aria-label={`New page on ${k}`} onClick={() => setAdding(k)}><Plus size={13} aria-hidden="true" /></button>}
                       </div>
                       {/* Room for this week's multi-day bars, which are laid over the row. */}
-                      {lanes > 0 && <div aria-hidden="true" style={{ height: lanes * 24, flex: "none" }} />}
+                      {lanes > 0 && <div aria-hidden="true" style={{ height: `calc(${lanes} * var(--db-cal-lane, 24px))`, flex: "none" }} />}
                       {adding === k && <NewRowForm label={`New page on ${k}`} onCreate={(t) => ctx.create(t, { [key]: k })} onCancel={() => setAdding(null)} />}
                       {dayItems.slice(0, 3).map((r) => <CalChip key={r.id} row={r} ctx={ctx} anchorDay={k} className="db-cal-item" editable={canMove(r)} onLocked={whyLocked(r)} />)}
                       {dayItems.length > 3 && <span className="db-pop-path" style={{ marginLeft: 4 }}>+{dayItems.length - 3} more</span>}
@@ -783,7 +783,7 @@ export function CalendarView({ ctx, month, onMonth, onPickDate }: { ctx: ViewCon
                   <CalChip key={`${b.item.row.id}@${keys[b.from]}`} row={b.item.row} ctx={ctx} anchorDay={keys[b.from]!} editable={canMove(b.item.row)} onLocked={whyLocked(b.item.row)}
                     className="db-cal-item db-cal-bar"
                     label={`${title(b.item.row)}, ${formatDate(`${b.item.first}/${b.item.last}`)}`}
-                    style={{ gridColumn: `${b.from + 1} / span ${b.len}`, marginTop: 30 + b.lane * 24, ...(b.before ? { borderTopLeftRadius: 0, borderBottomLeftRadius: 0 } : {}), ...(b.after ? { borderTopRightRadius: 0, borderBottomRightRadius: 0 } : {}) }} />
+                    style={{ gridColumn: `${b.from + 1} / span ${b.len}`, marginTop: `calc(var(--db-cal-bar-top, 30px) + ${b.lane} * var(--db-cal-lane, 24px))`, ...(b.before ? { borderTopLeftRadius: 0, borderBottomLeftRadius: 0 } : {}), ...(b.after ? { borderTopRightRadius: 0, borderBottomRightRadius: 0 } : {}) }} />
                 ))}
               </div>
             );

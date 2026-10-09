@@ -12,6 +12,8 @@
  *   ?templates   the database starts with a "Bug report" template
  *   ?create      a shell with the "New page" menu and a tag's "Open as database" (NP-DB-01)
  *   ?relations   tasks whose `project` is stored in the older encodings (folder link, slug, name, "")
+ *   ?circles     pages whose `members` are OBJECTS ({name, role}); `?circles=rich` adds one whose items also hold
+ *                nested fields, a field on one row only, a page link and a plain line (the structured-value dialog)
  */
 import React from "react";
 import { createRoot } from "react-dom/client";
@@ -23,7 +25,7 @@ import { NewContentMenu } from "../../../packages/core/src/components/navigation
 import { OpenAsDatabaseButton } from "../../../packages/core/src/components/database/OpenAsDatabaseButton";
 import { CsvNewDatabaseDialog } from "../../../packages/core/src/components/database/Csv";
 import { coerceToKind, conversionKey, humanize, needsConversion, optionColor, sampleText, VAULT_TYPE_FOR_KIND, type ConvertPropertyResult, type PropertyKind } from "@prism/core/database";
-import { coerceCsvValue, compatibleKinds, mergeFieldHints, mergeSchemaFields, parseCsv, runQuery, type CsvImportRequest, type CsvImportResponse, type CsvImportRow, type PropertyBatchResult, type QuerySpec, type SchemaMap, type SchemaPatch } from "@prism/core/database";
+import { coerceCsvValue, compatibleKinds, inferKind, mergeFieldHints, mergeSchemaFields, parseCsv, runQuery, sortOptionOrders, type CsvImportRequest, type CsvImportResponse, type CsvImportRow, type PropertyBatchResult, type QuerySpec, type SchemaMap, type SchemaPatch } from "@prism/core/database";
 
 const params = new URLSearchParams(location.search);
 applyTheme(params.has("dark") ? "dark" : "light");
@@ -165,6 +167,12 @@ if (params.has("circles")) {
     notes.push({ id: "pb", path: "People/Benjamin Life", content: "", tags: ["person"], metadata: { title: "Benjamin Life" }, createdAt: at, updatedAt: at });
     notes.push({ id: "c1", path: "Circles/OpenCivics Delegate Council", content: "<h2>Purpose</h2><p>Network delegates coordinate consortium decisions.</p>", tags: ["circle"], metadata: { title: "OpenCivics — Delegate Council", members: [{ name: "Benjamin Life", role: "delegate" }, { name: "Patricia Parkinson", role: "delegate" }], status: "active", cadence: "monthly", linked_projects: ["opencivics"], sponsors: [{ person: "[[People/Mira Chen]]", role: "sponsor" }], budget: { amount: 500, currency: "USD" }, scores: [3, true] }, createdAt: at, updatedAt: at });
     notes.push({ id: "c2", path: "Circles/Stewards", content: "", tags: ["circle"], metadata: { title: "Stewards", members: ["facilitation"], status: "paused", cadence: "weekly" }, createdAt: at, updatedAt: at });
+    // Everything the structured-value dialog must keep: nested fields, a field on one row only, another key order, a page link, a plain line.
+    if (params.get("circles") === "rich") notes.push({ id: "c3", path: "Circles/Working Group", content: "", tags: ["circle"], metadata: { title: "Working Group", members: [
+      { name: "Benjamin Life", role: "delegate", since: 2021, active: true, contact: { email: "b@example.test", phones: ["1", "2"] }, tags: ["core", "ops"] },
+      { role: "observer", name: "Patricia Parkinson", page: "[[People/Sam Rivera]]", note: null },
+      "a plain line",
+    ], status: "active", cadence: "weekly" }, createdAt: at, updatedAt: at });
     notes.push({ id: "dbc", path: "Circles", content: "", tags: [], metadata: { prism_type: "database", title: "Circles", prism_database: { version: 1, source: { tags: ["circle"] }, views: [{ id: "table", name: "All circles", type: "table", visible: ["members", "status", "cadence", "sponsors"] }, { id: "board", name: "By status", type: "board", groupBy: "status", visible: ["members", "cadence"] }, { id: "list", name: "List", type: "list", visible: ["members"] }, { id: "gallery", name: "Gallery", type: "gallery", visible: ["members"] }] } }, createdAt: at, updatedAt: at });
   }
 }
@@ -190,8 +198,12 @@ const controls = {
   creates: [] as unknown[],
   schemaWrites: [] as unknown[],
   failNext: false,
+  /** The next property write is refused by the server's URL rule. */
+  refuseUrlNext: false,
   /** The next property write finds the field already changed to this value elsewhere. */
   conflictWith: undefined as unknown,
+  /** Every call to the structured route (`VaultClient.updateStructuredProperty`). */
+  structuredWrites: [] as Array<{ id: string; key: string; value: unknown; expect: unknown }>,
   slowMs: 0,
   listCalls: 0,
   queries: [] as QuerySpec[],
@@ -378,7 +390,9 @@ if (!legacy) {
     // the request also asks for the key as a field — else null (never omitted).
     const asked = spec.aggregates ?? [];
     const kept = asked.filter((a) => !["prism_creator", "prism_visibility"].includes(a.key) || !spec.fields || spec.fields.includes(a.key));
-    const page = runQuery(rows, { ...spec, ...(spec.aggregates ? { aggregates: kept } : {}) }, { limited: viewer || link, me });
+    // Like the server: a select / status column sorts by the order of its options.
+    const optionOrders = sortOptionOrders(spec.tags, schemas, (spec.sort ?? []).map((x) => x.key));
+    const page = runQuery(rows, { ...spec, ...(spec.aggregates ? { aggregates: kept } : {}) }, { limited: viewer || link, me, optionOrders });
     if (page.aggregates) for (const a of asked) if (!kept.includes(a)) (page.aggregates[a.key] ??= {})[a.fn] = null;
     // ?calcomit=<key>   an answer that leaves a calculation out (an older server)
     // ?groupcap=<value> the answer leaves that group out and says groups were cut
@@ -395,6 +409,8 @@ if (!legacy) {
     const n = find(id)!;
     if (viewer && !n._caps?.includes("edit")) throw new Error("You can only view this page.");
     if (controls.failNext) { controls.failNext = false; throw new Error("POST /properties failed: 503"); }
+    // The server's URL rule refusing the write (400 invalid_url), as `POST /api/properties/:id` answers it.
+    if (controls.refuseUrlNext) { controls.refuseUrlNext = false; throw new VaultRequestError(400, `POST /properties/${id} failed: 400 ${JSON.stringify({ error: "invalid_url", reason: "That isn’t a web address.", fields: Object.keys(set) })}`); }
     if (controls.conflictWith !== undefined) {
       const key = Object.keys(set)[0]!;
       n.metadata = { ...(n.metadata ?? {}), [key]: controls.conflictWith };
@@ -408,6 +424,24 @@ if (!legacy) {
     n.metadata = meta;
     bump(n);
     return { id: n.id, updatedAt: n.updatedAt, metadata: clone(meta) };
+  };
+  // POST /api/properties/:id/structured, as the server answers it: the whole value, over exactly the value loaded.
+  client.updateStructuredProperty = async (id, key, value, expect) => {
+    controls.structuredWrites.push(clone({ id, key, value, expect }));
+    const n = find(id)!;
+    if (link || (viewer && !n._caps?.includes("edit"))) throw new VaultRequestError(403, `POST /properties/${id}/structured failed: 403 ${JSON.stringify({ error: "forbidden" })}`);
+    if (controls.failNext) { controls.failNext = false; throw new VaultRequestError(502, "POST /properties failed: 502"); }
+    if (controls.slowMs) await new Promise((r) => setTimeout(r, controls.slowMs));
+    if (controls.conflictWith !== undefined) {
+      n.metadata = { ...(n.metadata ?? {}), [key]: controls.conflictWith };
+      controls.conflictWith = undefined;
+      bump(n);
+    }
+    const stored = n.metadata?.[key] ?? null;
+    if (JSON.stringify(stored) !== JSON.stringify(expect ?? null)) throw new PropertyConflictError([key], { [key]: stored });
+    n.metadata = { ...(n.metadata ?? {}), [key]: clone(value) };
+    bump(n);
+    return { id: n.id, updatedAt: n.updatedAt, metadata: clone(n.metadata) };
   };
 }
 
@@ -480,7 +514,7 @@ if (!legacy) {
         if (!key) continue;
         const raw = cells[header!.indexOf(col)] ?? "";
         if (key === "$title") { title = raw.trim(); continue; }
-        const c = coerceCsvValue(raw, fields[key]);
+        const c = coerceCsvValue(raw, fields[key] ? { ...fields[key], kind: inferKind(key, fields[key]) } : undefined);
         if ("error" in c) { error = `${col}: ${c.error}`; break; }
         values[key] = c.value;
       }

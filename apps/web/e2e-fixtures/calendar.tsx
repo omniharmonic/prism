@@ -6,6 +6,12 @@ import { LiveActionError, type LiveActionsClient } from "../../../packages/core/
 import { HostServicesProvider } from "../../../packages/core/src/data/HostServicesContext";
 import type { HostServices } from "../../../packages/core/src/lib/host/services";
 import CalendarDashboard from "../../../packages/core/src/components/comms/CalendarDashboard";
+import CalendarRenderer from "../../../packages/core/src/components/renderers/CalendarRenderer";
+import Home from "../../../packages/core/src/components/home/Home";
+import { CalendarMini } from "../../../packages/core/src/components/navigation/CalendarMini";
+import { CalendarWidget } from "../../../packages/core/src/components/dashboard/widgets/CalendarWidget";
+import { VaultRequestError } from "../../../packages/core/src/data/VaultClient";
+import * as meetingListing from "../../../packages/core/src/lib/calendar/meetingListing";
 
 const note = (id: string, path: string, metadata: Record<string, unknown>, tags = ["meeting"]): Note => ({ id, path, metadata, tags, content: "Synthetic meeting record.", createdAt: "2026-10-01", updatedAt: "2026-10-01" });
 const notes = [
@@ -50,9 +56,31 @@ if (new URLSearchParams(location.search).has("phone")) {
 // makes it persist one new meeting note, as the server's ingest would). Nothing leaves the page.
 const query = new URLSearchParams(location.search);
 const wait = (ms: number) => new Promise((done) => setTimeout(done, ms));
-const controls = { syncFail: query.has("syncfail"), lists: 0, syncs: [] as { from: string; to: string }[], deny: false, searches: 0, writes: 0, reads: [] as string[], updates: [] as unknown[], creates: [] as unknown[], rsvps: [] as unknown[], deletes: [] as unknown[] };
+// The device copy of the listing (calendar-listing.spec.ts): `?scope=<account+vault>` (default: the
+// fixture's one; `?scope=` = nobody signed in), `&hold` (the listing waits for `release()`), `&listfail` (it cannot be reached), `&denied`
+// (it answers 403), `&gone=<id,id>` (the vault no longer has these), `&retitle=<id>:<title>`,
+// `&many=<n>` (n more meetings with long descriptions), `&surfaces` (Home, the event page, the sidebar's
+// CalendarMini and the dashboard widget beside the Calendar tool, over the same client).
+const gone = new Set((query.get("gone") ?? "").split(",").filter(Boolean));
+const retitle = (query.get("retitle") ?? "").split(":");
+for (let i = 0; i < Number(query.get("many") ?? 0); i++) {
+  const start = new Date(Date.parse("2026-10-05T15:00:00Z") + (i - 200) * 6 * 3_600_000);
+  notes.push(note(`many-${i}`, `Meetings/Many ${i}`, { title: `Bulk meeting ${i}`, calendarEventId: `many-${i}-event`, start: start.toISOString(), end: new Date(+start + 1_800_000).toISOString(), description: `${i} `.repeat(i % 3 === 0 ? 1500 : 300) }));
+}
+// `&hold`: the listing does not answer until the spec calls `release()` (no race with a slow machine).
+let release = () => {};
+const gate = query.has("hold") ? new Promise<void>((done) => { release = done; }) : Promise.resolve();
+const controls = { release: () => release(), syncFail: query.has("syncfail"), listFail: query.has("listfail"), listDenied: query.has("denied"), lists: 0, syncs: [] as { from: string; to: string }[], deny: false, searches: 0, writes: 0, reads: [] as string[], updates: [] as unknown[], creates: [] as unknown[], rsvps: [] as unknown[], deletes: [] as unknown[] };
 const vault = {
-  listNotes: async () => { controls.lists++; await wait(Number(query.get("list") ?? 0)); return notes.filter((n) => n.tags?.includes("meeting")); },
+  listNotes: async (filters?: { tag?: string }) => {
+    if (filters?.tag !== "meeting") return [];
+    controls.lists++;
+    await wait(Number(query.get("list") ?? 0));
+    await gate;
+    if (controls.listDenied) throw new VaultRequestError(403, "Forbidden");
+    if (controls.listFail) throw new TypeError("Failed to fetch");
+    return notes.filter((n) => n.tags?.includes("meeting") && !gone.has(n.id)).map((n) => (n.id === retitle[0] ? { ...n, metadata: { ...n.metadata, title: retitle[1] } } : n));
+  },
   getNote: async (id: string) => { controls.reads.push(id); if (controls.deny && id.startsWith("recording")) throw new Error("Denied"); const n = notes.find((n) => n.id === id); if (!n) throw new Error("Missing"); return n; },
   getLinks: async (id: string) => id === "meeting-one" ? [{ sourceId: id, targetId: "recording-one", relationship: "has-transcript" }, { sourceId: id, targetId: "recording-two", relationship: "has-transcript" }] : [],
   search: async () => { controls.searches++; return notes.filter((n) => n.id === "unrelated"); },
@@ -80,6 +108,12 @@ const host = query.has("sync") ? {
     return { synced: 3, errors: 0, total: 3, from, to, created: adds ? 1 : 0, updated: 0, unchanged: adds ? 2 : 3, deleted: 0, cancelled: 0 };
   },
 } as unknown as HostServices : null;
-useAgentChatStore.setState({ scope: "calendar-fixture-owner-vault" });
-Object.assign(window, { prismCalendarFixture: controls, prismCalendarUI: useUIStore });
-createRoot(document.getElementById("root")!).render(<React.StrictMode><QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><PlatformProvider value="web"><VaultClientProvider client={vault}><LiveActionsProvider client={live}><HostServicesProvider client={host}><div style={{ height: "100dvh" }}><CalendarDashboard note={note("calendar", "Calendar", {})} /></div></HostServicesProvider></LiveActionsProvider></VaultClientProvider></PlatformProvider></QueryClientProvider></React.StrictMode>);
+useAgentChatStore.setState({ scope: query.has("scope") ? query.get("scope") || null : "calendar-fixture-owner-vault" });
+Object.assign(window, { prismCalendarFixture: controls, prismCalendarUI: useUIStore, prismMeetingListing: meetingListing });
+const surfaces = query.has("surfaces") ? <div data-testid="calendar-surfaces" style={{ display: "grid", gridTemplateColumns: "repeat(4, minmax(0, 1fr))", gap: 8, maxHeight: "40dvh", overflow: "auto" }}>
+  <section aria-label="Sidebar calendar"><CalendarMini /></section>
+  <section aria-label="Dashboard calendar widget"><CalendarWidget /></section>
+  <section aria-label="Home"><Home note={note("home", "Home", {})} /></section>
+  <section aria-label="Event page" style={{ height: 300 }}><CalendarRenderer note={note("event", "Event", {})} /></section>
+</div> : null;
+createRoot(document.getElementById("root")!).render(<React.StrictMode><QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><PlatformProvider value="web"><VaultClientProvider client={vault}><LiveActionsProvider client={live}><HostServicesProvider client={host}>{surfaces}<div style={{ height: surfaces ? "60dvh" : "100dvh" }}><CalendarDashboard note={note("calendar", "Calendar", {})} /></div></HostServicesProvider></LiveActionsProvider></VaultClientProvider></PlatformProvider></QueryClientProvider></React.StrictMode>);

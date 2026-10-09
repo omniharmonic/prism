@@ -399,7 +399,10 @@ function bodyBudget(doc: Y.Doc, prose: PMNode, growth: number, usedByActor: numb
   }
 }
 
-const UNMARKABLE = "That selection includes content a suggestion cannot cover (inline code, a line break or an embedded item). Select plain text within one paragraph.";
+// (Inline code can carry a suggestion since schema v6; a line break or a chip is a node, not text.)
+const UNMARKABLE = "That selection includes content a suggestion cannot cover (a line break or an embedded item). Select text within one paragraph.";
+/** Schema v6: a block start, a line break or a chip that is itself a pending suggestion (`attrs.suggestion`). */
+const nodeSuggested = (node?: PMNode | null): boolean => node?.attrs?.suggestion === "insert" || node?.attrs?.suggestion === "delete";
 
 function planSuggest(doc: Y.Doc, prose: PMNode, command: Extract<HumanCollabCommand, { kind: "suggest" }>, ctx: HumanCommandContext, usage: ActorUsage): Planned {
   const schema = collabSchema();
@@ -430,11 +433,14 @@ function planSuggest(doc: Y.Doc, prose: PMNode, command: Extract<HumanCollabComm
   // One open suggestion per passage: a second one over (or touching) it would
   // make accept/reject ambiguous. The reviewer resolves the first one first.
   let overlap = from === to && (hasReviewMark($from.marks()) || hasReviewMark($from.nodeBefore?.marks) || hasReviewMark($from.nodeAfter?.marks));
+  // The same rule as the browser's `humanRangeProblem`: nothing is suggested inside a block that is itself a
+  // pending suggestion (a suggested new paragraph, a suggested join), nor over a suggested line break or chip.
+  if (nodeSuggested($from.parent) || nodeSuggested($to.parent)) overlap = true;
   let runs = 0;
   prose.nodesBetween(from, to, (node) => {
     if (!node.isInline) return true;
     runs++;
-    if (hasReviewMark(node.marks)) overlap = true;
+    if (hasReviewMark(node.marks) || nodeSuggested(node)) overlap = true;
     return false;
   });
   if (overlap) {
@@ -474,8 +480,8 @@ function planSuggest(doc: Y.Doc, prose: PMNode, command: Extract<HumanCollabComm
   // suggestion gives back EXACTLY the block as it is, and accepting it gives
   // EXACTLY the plain edit. So every node the command adds carries the insertion
   // mark, every node in the range carries the deletion mark, and nothing else
-  // changed. A range that can be marked only in part (inline code excludes other
-  // marks; a line break or image carries none) fails here; nothing is mutated.
+  // changed. A range that can be marked only in part (a line break or image
+  // carries no mark; inline code does carry them since schema v6) fails here; nothing is mutated.
   let stored: PMNode;
   try {
     stored = throughYjs(miniNext);

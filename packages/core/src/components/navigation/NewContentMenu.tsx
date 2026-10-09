@@ -33,6 +33,7 @@ import { inferContentType } from "../../lib/schemas/content-types";
 import { applyTemplateVariables, templateCreator } from "../../lib/pages/templates";
 import { serverFetch } from "../../lib/transport/serverFetch";
 import { usePagesUI } from "../../lib/pages/store";
+import { linkNewPageToParent } from "../../lib/pages/subPageLink";
 import { ComposeMessage } from "../comms/ComposeMessage";
 import { NewDatabaseDialog } from "../database/NewDatabaseDialog";
 import {
@@ -334,6 +335,8 @@ function CreateContent({
       if (template && client.copyAttachments && referencesAttachments(params)) await client.copyAttachments(note.id).catch(() => null);
       if (!alive.current || !current()) return;
       void queryClient.invalidateQueries({ queryKey: ["vault"] });
+      // NP-PG-15: created under a page → that page lists it (its open editor, else its stored body).
+      await linkNewPageToParent({ id: note.id, title: input.title, folder: selectedFolder, tree: tree.data ?? [] });
       useUIStore.getState().openTab(note.id, input.title, openType);
       if (droppedTags.length) usePagesUI.getState().showToast({ message: `Created without the template’s tag${droppedTags.length === 1 ? "" : "s"} ${droppedTags.map((t) => `“${t}”`).join(", ")} — not applied, because you can’t add pages to ${droppedTags.length === 1 ? "it" : "them"}.` });
       onClose();

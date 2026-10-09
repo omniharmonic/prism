@@ -4,6 +4,7 @@
  * person note carrying the account's email for everyone else) and only ever
  * narrows rows the caller may already view.
  */
+import { threadCpuMs } from "./probe";
 import { test, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { api } from "../src/routes/api";
@@ -106,7 +107,7 @@ test("assignedToMe: tombstones never stand for a person; long or odd values are 
   assert.equal(assignedToMe({ assignee: ["x@y.test", "A@X.test"] }, me), true);
   assert.equal(assignedToMe({ assigned: "Ada" }, me), false, "a first name alone is not the person");
   assert.equal(assignedToMe({ assigned: "[[Ada Lovelace" }, me), false);
-  const started = Date.now();
+  const started = threadCpuMs(); // CPU time of this thread (./probe), not the wall clock
   assert.equal(assignedToMe({ assigned: "[[".repeat(900) + " and ".repeat(50) }, me), false);
-  assert.ok(Date.now() - started < 200);
+  assert.ok(threadCpuMs() - started < 200);
 });

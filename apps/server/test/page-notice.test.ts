@@ -17,7 +17,7 @@ after(async () => { await stopConversionWorkers(); });
 
 const OWNER = "owner@test.local";
 const EDITOR = "editor@test.local";
-const JSON_H = { "content-type": "application/json", origin: process.env.APP_ORIGIN ?? "http://localhost:8787", "sec-fetch-site": "same-origin", "x-prism-editor-schema": "5" };
+const JSON_H = { "content-type": "application/json", origin: process.env.APP_ORIGIN ?? "http://localhost:8787", "sec-fetch-site": "same-origin", "x-prism-editor-schema": "6" };
 let fv: FakeVault;
 let heard: string[] = [];
 let release: (() => Promise<void>) | null = null;

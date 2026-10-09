@@ -24,7 +24,7 @@ const ydoc = new Y.Doc();
 let editor: Editor | null = null;
 const content = new URLSearchParams(location.search).has("empty")
   ? "<p></p>"
-  : '<p>Alpha <strong>beta</strong> gamma</p><p>Another paragraph</p><p>Code <code>literal</code> text</p><p>A<br>break</p><p><span data-suggestion="insert" data-suggestion-id="pending" data-user="Another person">Pending</span> text</p>';
+  : '<p>Alpha <strong>beta</strong> gamma</p><p>Another paragraph</p><p>Code <code>literal</code> text</p><p>A<br>break</p><p><span data-suggestion="insert" data-suggestion-id="pending" data-user="Another person">Pending</span> text</p><p data-suggestion-node="insert" data-suggestion-by="Another person">Suggested paragraph</p><p>Tail<br data-suggestion-node="delete" data-suggestion-by="Another person">end</p>';
 const state = {
   credentials: undefined as RequestCredentials | undefined,
   audience: null as HumanCommandContext | null,

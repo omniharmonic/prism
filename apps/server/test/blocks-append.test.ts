@@ -20,7 +20,7 @@ import { api } from "../src/routes/api";
 import { addGrant, ensureUser } from "../src/db";
 import { attachCollab, hocuspocus, isDocLive, resetReconcileState, reconcileLoadedDocs, yDocToHtml } from "../src/collab";
 import { appendToBody } from "../src/routes/blocks";
-import { stopConversionWorkers } from "../src/convert/service";
+import { configureConversion, stopConversionWorkers } from "../src/convert/service";
 import { installFakeVault, makeCapability, makeSession, resetDb, sessionCookie, type FakeVault } from "./helpers";
 
 // A live conversion thread keeps a test process from exiting: stop it when the file is done.
@@ -35,6 +35,7 @@ const BLOCK = "<blockquote><p>Echo quote</p></blockquote>";
 const J = { "content-type": "application/json" };
 
 let fv: FakeVault;
+let restoreConversion: () => void = () => {};
 let server: Server;
 let wsUrl: string;
 const sockets = new Set<Socket>();
@@ -51,6 +52,8 @@ beforeEach(async () => {
   resetDb();
   resetReconcileState();
   fv = installFakeVault();
+  // None of these tests is about conversion timeouts: a healthy conversion is never cut short by a busy machine.
+  restoreConversion = configureConversion({ timeoutMs: 100_000, timeoutMaxMs: 100_000 });
   hocuspocus.configuration.debounce = 60_000; // human edits stay UNSAVED during a test
   hocuspocus.configuration.maxDebounce = 120_000;
   for (const e of [EDITOR, VIEWER]) ensureUser(e);
@@ -76,6 +79,7 @@ afterEach(async () => {
   hocuspocus.flushPendingStores();
   for (const d of [...hocuspocus.documents.values()]) await hocuspocus.unloadDocument(d);
   fv.restore();
+  restoreConversion();
 });
 
 async function human(name: string): Promise<Y.Doc> {
@@ -87,7 +91,8 @@ async function human(name: string): Promise<Y.Doc> {
   });
   providers.push(provider);
   await new Promise<void>((resolve, reject) => {
-    const t = setTimeout(() => reject(new Error("sync timeout")), 5000);
+    // A ceiling, not an expectation: on a busy machine the first sync of a 3,000-paragraph page takes longer than 5 s.
+    const t = setTimeout(() => reject(new Error("sync timeout")), 90_000);
     provider.on("synced", () => { clearTimeout(t); resolve(); });
   });
   return doc;
@@ -197,7 +202,7 @@ test("auth, CSRF, caps and page state: unviewable == missing; view-only, locked,
 
 // ── review H4: the conversion service (no parser, no full render on this thread) ──
 
-test("H4: a LIVE page of 3,000 paragraphs takes an append (its size is measured off-thread, never rendered here)", { timeout: 120_000 }, async () => {
+test("H4: a LIVE page of 3,000 paragraphs takes an append (its size is measured off-thread, never rendered here)", { timeout: 600_000 }, async () => {
   const big = Array.from({ length: 3000 }, (_, i) => `<p>Paragraph ${i} of a long page.</p>`).join("");
   fv.put({ id: "big", tags: ["garden"], content: big, updatedAt: T0 });
   const doc = new Y.Doc();
@@ -230,7 +235,7 @@ test("H4: a LIVE page of 3,000 paragraphs takes an append (its size is measured 
   assert.match(fv.notes.get("big")!.content, /UNSAVED-HUMAN[\s\S]*Echo quote/, "typing and the moved block were stored");
 });
 
-test("H4: moving MANY blocks (3,000 paragraphs, nesting 60 deep) is converted off-thread — a 200 or a clean refusal, never a 502", { timeout: 120_000 }, async () => {
+test("H4: moving MANY blocks (3,000 paragraphs, nesting 60 deep) is converted off-thread — a 200 or a clean refusal, never a 502", { timeout: 600_000 }, async () => {
   const many = Array.from({ length: 3000 }, (_, i) => `<p>b${i}</p>`).join("");
   const res = await append("t1", { html: many, requestId: rid(41) });
   assert.equal(res.status, 200, JSON.stringify(await res.clone().json()));

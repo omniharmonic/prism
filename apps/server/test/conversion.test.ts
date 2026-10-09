@@ -59,29 +59,11 @@ import {
 } from "../src/collab";
 import { mergeContentIntoLive } from "../src/collab-ops";
 import { dueCollabUnsaved, getCollabUnsaved, getDocState, insertCollabReceipt, isCollabUnsaved, unconfirmedCollabReceipts } from "../src/db";
+import { cpuOf, probed, threadCpuMs } from "./probe";
 import { installFakeVault, resetDb, type FakeVault } from "./helpers";
 
 // ── helpers ─────────────────────────────────────────────────────────────────
 
-/** Run `fn` while a 20 ms timer measures the longest gap between its ticks. */
-async function probed<T>(fn: () => Promise<T>): Promise<{ value?: T; error?: unknown; maxLagMs: number; ms: number }> {
-  let last = performance.now();
-  let maxLagMs = 0;
-  const timer = setInterval(() => {
-    const now = performance.now();
-    maxLagMs = Math.max(maxLagMs, now - last - 20);
-    last = now;
-  }, 20);
-  const start = performance.now();
-  try {
-    const value = await fn();
-    return { value, maxLagMs: Math.max(maxLagMs, performance.now() - last - 20), ms: performance.now() - start };
-  } catch (error) {
-    return { error, maxLagMs: Math.max(maxLagMs, performance.now() - last - 20), ms: performance.now() - start };
-  } finally {
-    clearInterval(timer);
-  }
-}
 /** Generous on a loaded CI host; the unprotected calls took 3–30 SECONDS. */
 const LOOP_BUDGET_MS = 1500;
 const reasonOf = (e: unknown) => (e instanceof ConversionError ? e.reason : `not a ConversionError: ${String(e)}`);
@@ -156,17 +138,17 @@ const text = (doc: Y.Doc) => norm(yDocToDocJson(doc));
 test("pre-check: one linear pass, whatever the input (2 MB of each pathological shape)", () => {
   const big = 2_000_000;
   const shapes = ["*a ", "_a ", "[](", "> ", "<div>", "<", "&", "\n", "~", "![", "`", "<!--", "[[", "* ", "<a "];
-  const start = performance.now();
-  for (const s of shapes) {
-    const input = s.repeat(Math.floor(big / s.length));
-    complexityOf(input, true);
-    complexityOf(input, false);
-    conversionRefusal(input, true);
-    isCheapContent(input, true);
-  }
-  const ms = performance.now() - start;
-  // ~1 s on an idle host. The budget is generous for a loaded one (the whole suite runs in
-  // parallel); a super-linear scan of 2 MB would take minutes, not seconds.
+  const inputs = shapes.map((s) => s.repeat(Math.floor(big / s.length)));
+  // CPU time of this thread (./probe), so the figure is the scan's cost and not the machine's load:
+  // about 1 s. A super-linear scan of 2 MB would take minutes of CPU, not seconds.
+  const { cpuMs: ms } = cpuOf(() => {
+    for (const input of inputs) {
+      complexityOf(input, true);
+      complexityOf(input, false);
+      conversionRefusal(input, true);
+      isCheapContent(input, true);
+    }
+  });
   assert.ok(ms < 20_000, `the pre-checks took ${ms.toFixed(0)} ms for ${shapes.length * 4} passes over 2 MB`);
 });
 
@@ -235,7 +217,7 @@ for (const [label, input] of [
     const r = await probed(() => markdownToHtml(input));
     assert.equal(reasonOf(r.error), "timeout");
     assert.ok(r.maxLagMs < LOOP_BUDGET_MS, `event loop stalled ${r.maxLagMs.toFixed(0)} ms`);
-    assert.ok(r.ms < 10_000, `took ${r.ms.toFixed(0)} ms`);
+    assert.ok(r.cpuMs < 10_000, `took ${r.cpuMs.toFixed(0)} ms`);
     // ONE timeout may be the server's load: the input is tried again…
     const worker = conversionStats.worker;
     const second = await probed(() => markdownToHtml(input));
@@ -245,7 +227,7 @@ for (const [label, input] of [
     const again = await probed(() => markdownToHtml(input));
     assert.equal(reasonOf(again.error), "timeout");
     assert.equal(conversionStats.worker, worker + 1);
-    assert.ok(again.ms < 200);
+    assert.ok(again.cpuMs < 200);
     // The thread was terminated and a new one serves the next task.
     restoreLimits();
     assert.match(await markdownToHtml("after the *kill* ".repeat(2000)), /<em>kill<\/em>/);
@@ -259,7 +241,7 @@ test("link-bracket runs and deep blockquotes: bounded, never on the event loop",
   assert.ok(brackets.error ? brackets.error instanceof ConversionError : typeof brackets.value === "string");
   const quote = await probed(() => contentToSeed(DEEP_QUOTE));
   assert.equal(reasonOf(quote.error), "too_complex"); // marked overflows its stack on this: refused before any parser
-  assert.ok(quote.ms < 200 && quote.maxLagMs < LOOP_BUDGET_MS);
+  assert.ok(quote.cpuMs < 200 && quote.maxLagMs < LOOP_BUDGET_MS);
 });
 
 test("htmlToMarkdown on deeply nested elements (turndown explodes): bounded, the event loop keeps turning", { timeout: 120_000 }, async () => {
@@ -269,7 +251,7 @@ test("htmlToMarkdown on deeply nested elements (turndown explodes): bounded, the
     assert.ok(r.maxLagMs < LOOP_BUDGET_MS, `depth ${depth}: event loop stalled ${r.maxLagMs.toFixed(0)} ms`);
     // Killed at the deadline, crashed in the worker (stack overflow) or — on a fast host — converted: never here.
     assert.ok(r.error === undefined ? typeof r.value === "string" : r.error instanceof ConversionError, `depth ${depth}: ${String(r.error)}`);
-    assert.ok(r.ms < 10_000);
+    assert.ok(r.cpuMs < 10_000);
   }
   restoreLimits();
   assert.equal(await htmlToMarkdown("<h1>T</h1><p>a <strong>b</strong></p>"), "# T\n\na **b**");
@@ -349,12 +331,12 @@ test("M1: 2 MB of ordinary Markdown opens (the worker heap is sized for it); a b
   // Dense short paragraphs: the DOM + ProseMirror trees of 2 MB of these do not fit any sane heap.
   const dense = rep("A note with **bold** and *em* text.\n\n", 2_000_000);
   const worker = conversionStats.worker;
-  const start = performance.now();
+  const start = threadCpuMs();
   assert.equal(conversionRefusal(dense, true), "too_many_nodes");
   fv.put({ id: "dense", tags: ["garden"], content: dense, updatedAt: "2026-03-01T00:00:00.000Z" });
   await assert.rejects(loadDocumentState("dense", new Y.Doc()), (e) => e instanceof DocumentTooComplexError && e.failure === "too_many_nodes");
   assert.equal(conversionStats.worker, worker, "refused by the pre-check: no thread, no gigabytes");
-  assert.ok(performance.now() - start < 3000);
+  assert.ok(threadCpuMs() - start < 3000, "refused by counting, not by trying (CPU time of this thread)");
 
   // A plain 2 MB Markdown note — ordinary prose paragraphs — opens live.
   const prose = rep("The quick brown fox jumps over the lazy dog, again and again, with *some* emphasis and a [link](https://example.org/a).\n\n", 2_000_000);
@@ -453,9 +435,8 @@ test("the synchronous forms are bounded: small input converts, anything else thr
     ["suggestions in a big note", () => resolveSuggestionsInHtml("<p>x</p>".repeat(5000), null, "accept")],
     ["a fold of a big body", () => applyExternalContent(docOf("<p>a</p>"), "document", "<p>x</p>".repeat(5000))],
   ] as const) {
-    const start = performance.now();
-    assert.throws(fn, (e) => e instanceof ConversionError && e.reason === "too_large", label);
-    assert.ok(performance.now() - start < 300, `${label}: refused in ${Math.round(performance.now() - start)} ms`);
+    const refused = cpuOf(() => assert.throws(fn, (e) => e instanceof ConversionError && e.reason === "too_large", label));
+    assert.ok(refused.cpuMs < 300, `${label}: refused after ${Math.round(refused.cpuMs)} ms of work`);
   }
 });
 

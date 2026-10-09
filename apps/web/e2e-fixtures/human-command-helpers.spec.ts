@@ -72,7 +72,7 @@ test("real read-only editor captures explicit range/boundary positions without m
   expect(problem).toContain("Select text first");
 });
 
-test("selection validation refuses cross-block, code, hardbreak and pending suggestion ranges", async ({
+test("selection validation refuses cross-block, line-break and pending-suggestion ranges, and allows inline code (schema v6)", async ({
   page,
 }) => {
   await ready(page);
@@ -94,10 +94,24 @@ test("selection validation refuses cross-block, code, hardbreak and pending sugg
       code: f.problem(blocks[2].start, blocks[2].end),
       br: f.problem(blocks[3].start, blocks[3].end),
       pending: f.problem(blocks[4].start, blocks[4].end),
+      // Schema v6: a block or a line break can itself be a pending suggestion (attrs.suggestion).
+      shape: [doc.content[5].attrs?.suggestion, doc.content[6].content[1].attrs?.suggestion],
+      pendingBlock: f.problem(blocks[5].start, blocks[5].start + 9),
+      caretInPendingBlock: f.problem(blocks[5].start + 3, blocks[5].start + 3),
+      pendingBreak: f.problem(blocks[6].start, blocks[6].end),
+      besidePendingBreak: f.problem(blocks[6].start, blocks[6].start + 4),
     };
   });
   expect(result.cross).toContain("one paragraph");
-  expect(result.code).toContain("inline code");
+  // Inline code carries the suggestion marks since schema v6 — for an editor in Suggesting mode and for a
+  // suggest-level person's command alike (the server accepts and applies it: human-collab.test.ts H1,
+  // suggest-only.spec.ts). It used to be refused here with "…without inline code…".
+  expect(result.code).toBeNull();
+  expect(result.shape).toEqual(["insert", "delete"]);
+  expect(result.pendingBlock).toContain("pending suggestion");
+  expect(result.caretInPendingBlock).toContain("pending suggestion");
+  expect(result.pendingBreak).toContain("pending suggestion");
+  expect(result.besidePendingBreak, "plain text in a paragraph that merely holds a suggested break").toBeNull();
   expect(result.br).toContain("line breaks");
   expect(result.pending).toContain("pending suggestion");
 });

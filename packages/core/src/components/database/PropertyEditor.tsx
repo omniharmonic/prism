@@ -28,6 +28,7 @@
  * The one data deletion is explicit: "remove the values from every page" runs
  * the owner-only server job (dry run first, one compare-and-set write per page).
  */
+import { storedWebUrl } from "../../lib/database/url";
 import { useState } from "react";
 import { createPortal } from "react-dom";
 import { useQueryClient } from "@tanstack/react-query";
@@ -84,7 +85,7 @@ export function fitsKind(kind: PropertyKind, v: unknown): boolean {
   return parts.every((x) => {
     if (typeof x !== "string") return kind === "text";
     switch (kind) {
-      case "url": return /^https?:\/\//i.test(x);
+      case "url": return storedWebUrl(x) !== null;
       case "email": return looksLikeEmail(x);
       case "phone": return looksLikePhone(x);
       case "date": return /^\d{4}-\d{2}-\d{2}/.test(x);

@@ -4,7 +4,7 @@ import WebSocket from "ws";
 
 const SHOTS = process.env.PRISM_EDITOR_SHOTS;
 /** The editor's current document-schema version (bumped with every schema change). */
-const V = 5;
+const V = 6;
 const REASON = "update_required: Prism was updated. Reload or update the app to keep editing.";
 
 /** A real Hocuspocus server that enforces the schema param like the Prism Server. */
@@ -74,6 +74,78 @@ test("a server that requires a newer schema shows 'Update required' with Reload 
     await reloaded;
   } finally {
     for (const s of sockets) s.close();
+    await server.destroy();
+  }
+});
+
+test("a version bump while a tab is open: Update required — Reload, and typing that had not reached the server is kept and sent once the app is current", async ({ page }) => {
+  // The server as the OLD client knows it (accepts V); then it is upgraded (requires V + 1) while
+  // the tab is disconnected with words the server never received.
+  let minimum = V;
+  let serverText = "";
+  const server = new Server({
+    address: "127.0.0.1", port: 0, quiet: true, debounce: 10,
+    async onAuthenticate({ requestParameters }) {
+      const v = requestParameters.get("schema") ?? "";
+      if (!/^\d+$/.test(v) || Number(v) < minimum) throw Object.assign(new Error(REASON), { reason: REASON });
+      return { fixture: true };
+    },
+    async onChange({ document }) { serverText = document.getXmlFragment("default").toString(); },
+  });
+  await server.listen();
+  const sockets: WebSocket[] = [];
+  let up = true;
+  page.on("dialog", (dialog) => { void dialog.accept(); });
+  try {
+    await page.routeWebSocket(/\/collab(\?|$)/, (route) => {
+      if (!up) { void route.close({ code: 1006 }); return; }
+      const socket = new WebSocket(server.webSocketURL + new URL(route.url()).search); sockets.push(socket);
+      const pending: (string | Buffer)[] = [];
+      route.onMessage((m) => (socket.readyState === WebSocket.OPEN ? socket.send(m) : pending.push(m)));
+      socket.on("open", () => { for (const m of pending) socket.send(m); });
+      socket.on("message", (m, binary) => { try { route.send(binary ? Buffer.from(m as Buffer) : m.toString()); } catch { /* page moved on */ } });
+      route.onClose(() => socket.close()); socket.on("close", () => { void route.close({ code: 1000 }).catch(() => undefined); });
+    });
+    await page.route("**/auth/me", (r) => r.fulfill({ json: { authenticated: true, email: "alice@example.test", vaultId: "primary", workspace: { id: "workspace-a" } } }));
+    await page.route("**/api/notes/denied-note**", (r) => r.fulfill({ json: { id: "denied-note", path: "Projects/Prism/Shared", content: "", _level: "own", metadata: {}, tags: [] } }));
+    await page.route("**/api/federated/**", (r) => r.fulfill({ status: 204 }));
+    await page.goto("/e2e-fixtures/collab-storage.html?live");
+    const editor = page.locator(".tiptap[contenteditable=true]");
+    await expect(editor).toBeVisible();
+    await editor.click();
+    await page.keyboard.type("Synced before the update.");
+    await expect.poll(() => serverText, { timeout: 15000 }).toContain("Synced before the update.");
+
+    // Disconnected; the person keeps typing.
+    up = false;
+    for (const socket of sockets.splice(0)) socket.close();
+    await expect(page.getByText(/Connecting…|Offline/).first()).toBeVisible({ timeout: 15000 });
+    await editor.click();
+    await page.keyboard.press("ControlOrMeta+End");
+    await page.keyboard.type(" Typed during the update.");
+    const held = () => page.evaluate(() => ((window as any).prismCollabFixture.deviceTexts() as Promise<string[]> | string[]));
+    await expect.poll(async () => (await held()).join("\n"), { timeout: 15000 }).toContain("Typed during the update.");
+
+    // The server now requires the next schema: the old tab is refused when it reconnects.
+    minimum = V + 1;
+    up = true;
+    const alert = page.getByRole("alert").filter({ hasText: "Update required" });
+    await expect(alert).toBeVisible({ timeout: 60000 });
+    await expect(page.locator(".tiptap")).toHaveCount(0);
+    // Nothing was lost: the words are still on this device, and never reached the server from the old build.
+    expect((await held()).join("\n")).toContain("Typed during the update.");
+    expect(serverText).not.toContain("Typed during the update.");
+
+    // Reload = the current build (the fixture's own version is accepted again): the words are there and are sent.
+    minimum = V;
+    const reloaded = page.waitForEvent("framenavigated");
+    await alert.getByRole("button", { name: "Reload" }).click();
+    await reloaded;
+    await expect(page.locator(".tiptap[contenteditable=true]")).toContainText("Typed during the update.", { timeout: 30000 });
+    await expect(page.locator(".tiptap[contenteditable=true]")).toContainText("Synced before the update.");
+    await expect.poll(() => serverText, { timeout: 30000 }).toContain("Typed during the update.");
+  } finally {
+    for (const socket of sockets) socket.close();
     await server.destroy();
   }
 });

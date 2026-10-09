@@ -29,6 +29,6 @@ function Nested({ children }: {children: React.ReactNode}) {
 }
 function Fixture() {
   const [query, setQuery] = useState("ideas");
-  return <><button onClick={e => { e.currentTarget.focus(); useUIStore.getState().openCommandBar(); }}>Open search</button><label>Query<input aria-label="Query" value={query} onChange={e => setQuery(e.target.value)} /></label><div style={{ width: "min(480px, 100%)" }}><SearchPanel query={query} onClose={() => {}} /></div><CommandBar /></>;
+  return <><button onClick={e => { e.currentTarget.focus(); useUIStore.getState().openCommandBar(); }}>Open search</button><label>Query<input aria-label="Query" style={{ border: "1px solid var(--glass-border)" }} value={query} onChange={e => setQuery(e.target.value)} /></label><div style={{ width: "min(480px, 100%)" }}><SearchPanel query={query} onClose={() => {}} /></div><CommandBar /></>;
 }
 createRoot(document.getElementById("root")!).render(<React.StrictMode><QueryClientProvider client={client}><PlatformProvider value="web"><VaultClientProvider client={vault}><AgentClientProvider client={params.has("no-agent") ? null : agent}>{params.has("nested") ? <Nested><Fixture /></Nested> : <Fixture />}</AgentClientProvider></VaultClientProvider></PlatformProvider></QueryClientProvider></React.StrictMode>);
