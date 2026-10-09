@@ -92,7 +92,9 @@ function useCrumbNavigation() {
       useUIStore.getState().openTab(page.id, c.label, inferContentType(page));
       return;
     }
-    usePagesUI.getState().reveal(c.raw);
+    // A plain folder has nothing to open: the sidebar (on a phone, the Browse drawer) opens on
+    // it — expanded, scrolled into view and focused (the tree row answers `revealTarget`).
+    usePagesUI.getState().revealInSidebar(c.raw);
     if (!useUIStore.getState().sidebarOpen) useUIStore.getState().toggleSidebar();
   };
   return { pages, go };

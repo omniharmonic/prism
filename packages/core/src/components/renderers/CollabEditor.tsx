@@ -43,8 +43,7 @@ import { MentionContext, setMentionNoteId } from "../../lib/tiptap/MentionContex
 import { MentionMenu } from "../../lib/tiptap/MentionMenu";
 import { useCommentMentionPicker } from "../../lib/tiptap/MentionText";
 import { ChildPages } from "../../lib/tiptap/childPage";
-import { createSubPage, describeSubPage } from "../../lib/tiptap/subPages";
-import { trashPage } from "../../lib/pages/ops";
+import { createSubPage, describeSubPage, subPageTrash } from "../../lib/tiptap/subPages";
 import { useOptionalVaultClient } from "../../data/VaultClientContext";
 import { QueryClientContext } from "@tanstack/react-query";
 import { useContext } from "react";
@@ -224,7 +223,7 @@ export function CollabEditor({
         hostPath: () => hostPathRef.current,
         create: () => (subPagesRef.current.client && hostPathRef.current ? createSubPage(subPagesRef.current.client, subPagesRef.current.queryClient, hostPathRef.current) : Promise.resolve(null)),
         describe: describeSubPage(() => subPagesRef.current.client),
-        trash: (id: string) => (subPagesRef.current.client ? trashPage(subPagesRef.current.client, id).then(() => void subPagesRef.current.queryClient?.invalidateQueries({ queryKey: ["vault"] })) : Promise.reject(new Error("unavailable"))),
+        ...subPageTrash(() => subPagesRef.current.client ?? null, () => subPagesRef.current.queryClient),
       } : {}),
       SuggestionMode.configure({ user }),
       CommentOnly.configure({ active: !!commentOnly }),

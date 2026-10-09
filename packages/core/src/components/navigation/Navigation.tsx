@@ -67,6 +67,8 @@ export function Navigation() {
   const sectionProps = (id: string, defaultOpen: boolean) => shortcuts.synced && shortcuts.collapsed
     ? { open: !shortcuts.collapsed.includes(id), onToggle: (open: boolean) => shortcuts.setCollapsed(id, !open) }
     : { defaultOpen };
+  // "Show in the sidebar" (a breadcrumb's folder): the Pages section opens for the row.
+  const revealSeq = usePagesUI((s) => s.revealTarget?.seq ?? 0);
   const openTab = useUIStore((s) => s.openTab);
   const activeTabId = useUIStore((s) => s.activeTabId);
   const openTabs = useUIStore((s) => s.openTabs);
@@ -261,7 +263,7 @@ export function Navigation() {
           <SharedWithMe guest={guest} activeId={activeNoteId} onOpen={(item) => openTab(item.id, item.title, "document")} />
 
           {/* Projects / vault notes */}
-          {!guest && <><NavSection label={sidebarLabel === "Projects" ? "Pages" : sidebarLabel} {...sectionProps("pages", true)} action={<div className="flex items-center"><NavActionButton title="New page from template" icon={<LayoutTemplate size={14} />} onClick={() => usePagesUI.getState().openCreate({ template: true })} /><NavActionButton title="New folder" icon={<FolderPlus size={14} />} onClick={() => { setNewFolderName(""); setNewFolderOpen(true); }} /><NavActionButton title="Collapse all" icon={<ChevronsDownUp size={14} />} onClick={collapseNav} /><RefreshNavButton /></div>}>
+          {!guest && <><NavSection label={sidebarLabel === "Projects" ? "Pages" : sidebarLabel} {...sectionProps("pages", true)} openSignal={revealSeq} action={<div className="flex items-center"><NavActionButton title="New page from template" icon={<LayoutTemplate size={14} />} onClick={() => usePagesUI.getState().openCreate({ template: true })} /><NavActionButton title="New folder" icon={<FolderPlus size={14} />} onClick={() => { setNewFolderName(""); setNewFolderOpen(true); }} /><NavActionButton title="Collapse all" icon={<ChevronsDownUp size={14} />} onClick={collapseNav} /><RefreshNavButton /></div>}>
             <ProjectTree />
           </NavSection>
           <NavSection label="Tools" action={<NavActionButton title="Customize sidebar" icon={<Settings2 size={14} />} onClick={() => setPreferencesOpen(true)} />}>
@@ -462,10 +464,13 @@ function NavSection({
   defaultOpen = false,
   open: controlledOpen,
   onToggle,
+  openSignal,
   action,
   children,
 }: {
   label: string;
+  /** A change to a non-zero value opens the section ("show in the sidebar" needs its row on screen). */
+  openSignal?: number;
   defaultOpen?: boolean;
   /** Controlled open state (synced sidebar preferences); uncontrolled otherwise. */
   open?: boolean;
@@ -481,6 +486,12 @@ function NavSection({
   // open below the fold of the sidebar's scroller, behind the footer.
   const reveal = useRef(false);
   const setOpen = (next: boolean) => { reveal.current = next; return onToggle ? onToggle(next) : setLocalOpen(next); };
+  const openRef = useRef({ open, onToggle });
+  openRef.current = { open, onToggle };
+  useEffect(() => {
+    if (!openSignal || openRef.current.open) return;
+    if (openRef.current.onToggle) openRef.current.onToggle(true); else setLocalOpen(true);
+  }, [openSignal]);
   useEffect(() => {
     if (!open || !reveal.current) return;
     reveal.current = false;

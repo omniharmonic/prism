@@ -54,6 +54,15 @@ interface PagesUIState {
   toggleExpanded: (path: string, open?: boolean) => void;
   /** Expand every ancestor of `path` (breadcrumb "show in sidebar"). */
   reveal: (path: string) => void;
+  /**
+   * "Show in the sidebar": the tree row at this path is to be scrolled into view and focused
+   * (the row itself answers, then calls `revealShown`). Set by `revealInSidebar`; short-lived,
+   * so a row that only appears much later never takes the focus by surprise.
+   */
+  revealTarget: { path: string; seq: number; at: number } | null;
+  /** Expand down to `path`, and ask its row to come into view and take the focus. The caller opens the sidebar. */
+  revealInSidebar: (path: string) => void;
+  revealShown: (seq: number) => void;
   collapseAll: () => void;
   /** Sign-out / account change: forget the in-memory expansion too (storage is cleared by the host). */
   resetExpanded: () => void;
@@ -81,6 +90,9 @@ interface PagesUIState {
 }
 
 let toastSeq = 0;
+let revealSeq = 0;
+/** How long a "show in the sidebar" request waits for its row (the drawer and the section open first). */
+export const REVEAL_WINDOW_MS = 4000;
 let toastTimer: ReturnType<typeof setTimeout> | undefined;
 
 export const usePagesUI = create<PagesUIState>((set, get) => ({
@@ -109,6 +121,12 @@ export const usePagesUI = create<PagesUIState>((set, get) => ({
       writeExpanded(s.expandedScope, next);
       return { expanded: next };
     }),
+  revealTarget: null,
+  revealInSidebar: (path) => {
+    get().reveal(path);
+    set({ revealTarget: { path, seq: ++revealSeq, at: Date.now() } });
+  },
+  revealShown: (seq) => { if (get().revealTarget?.seq === seq) set({ revealTarget: null }); },
   collapseAll: () => { writeExpanded(get().expandedScope, {}); set({ expanded: {} }); },
   resetExpanded: () => set({ expanded: {}, expandedScope: null }),
 

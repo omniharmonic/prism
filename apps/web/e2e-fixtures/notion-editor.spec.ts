@@ -657,7 +657,7 @@ test("child page block appears in parent body", async ({ page }) => {
   await expect(page.locator(".tiptap .prism-child-page")).toHaveCount(2);
   if (SHOTS) await page.screenshot({ path: `${SHOTS}/child-page-rows.png` });
   // Rows for pages that are NOT this page's own sub-pages (a linked page elsewhere, a page the reader
-  // cannot see) are just removed: no Trash offer (review M4).
+  // cannot see) are just removed: nothing goes to the Trash (review M4).
   const selectRow = async (id: string) => {
     // Focus first and wait for it (TipTap's own .focus() is deferred a frame; a key pressed before it lands goes nowhere).
     await page.locator(".tiptap").focus();
@@ -670,14 +670,17 @@ test("child page block appears in parent body", async ({ page }) => {
     }, id);
     await expect.poll(() => page.evaluate(() => (document.querySelector(".tiptap") as any).editor.state.selection.node?.attrs.pageId ?? null)).toBe(id);
   };
-  const offer = page.getByRole("alertdialog", { name: "Sub-page link removed" });
+  const toast = page.locator(".page-toast");
+  const trashedIds = () => page.evaluate(() => (window as any).prismMediaTrashed as string[]);
+  const restoredIds = () => page.evaluate(() => (window as any).prismMediaRestored as string[]);
   for (const id of ["db1", "ghost"]) {
     await selectRow(id);
     await page.keyboard.press("Backspace");
     await expect(page.locator(`.tiptap [data-page-id="${id}"]`)).toHaveCount(0);
   }
-  await page.waitForFunction(() => new Promise((r) => setTimeout(() => r(true), 600))); // past the offer's settle window
-  await expect(offer).toHaveCount(0);
+  await page.waitForFunction(() => new Promise((r) => setTimeout(() => r(true), 600))); // past the settle window
+  await expect(toast).toHaveCount(0);
+  expect(await trashedIds()).toEqual([]);
   // A real sub-page: created here with /page, so its path is directly under this page.
   await page.locator(".tiptap").getByText("Top").click();
   await page.keyboard.press("End");
@@ -687,7 +690,7 @@ test("child page block appears in parent body", async ({ page }) => {
   const child = page.locator(".tiptap .prism-child-page[data-state=ready]");
   await expect(child).toHaveCount(1);
   const childId = (await child.getAttribute("data-page-id"))!;
-  // Cut (⌘X) is a move in progress, not a deletion: no offer.
+  // Cut (⌘X) is a move in progress, not a deletion: the page stays.
   await selectRow(childId);
   await page.evaluate(() => {
     const dt = new DataTransfer();
@@ -695,31 +698,37 @@ test("child page block appears in parent body", async ({ page }) => {
   });
   await expect(page.locator(".tiptap .prism-child-page")).toHaveCount(0);
   await page.waitForFunction(() => new Promise((r) => setTimeout(() => r(true), 600)));
-  await expect(offer).toHaveCount(0);
+  await expect(toast).toHaveCount(0);
+  expect(await trashedIds()).toEqual([]);
   // Put the row back (what a paste after the cut does).
   await page.evaluate((id) => (document.querySelector(".tiptap") as any).editor.commands.insertContent({ type: "childPage", attrs: { pageId: id } }), childId);
   await expect(child).toHaveCount(1);
   // The editor groups changes made within 500 ms into one undo step; let that window close so the
   // deletion below is its own step (this is the history's own constant, not a wait for the UI).
   await page.waitForTimeout(650);
-  // Deleting the row offers Trash and NAMES the page (the deleter can view it); Keep leaves it alone.
+  // Deleting the row moves the page to the Trash — no question — and says so, NAMING it (the
+  // deleter can view it), with Undo.
   await selectRow(childId);
   await page.keyboard.press("Backspace");
-  await expect(offer).toBeVisible();
-  await expect(offer).toContainText("Move “Untitled” to Trash too?");
-  await offer.getByRole("button", { name: "Keep page" }).click();
-  await expect(offer).toHaveCount(0);
-  expect(await page.evaluate(() => (window as any).prismMediaTrashed)).toEqual([]);
-  // Undo brings the row back; deleting again and choosing Trash moves the page.
+  await expect(toast).toContainText("Moved “Untitled” to Trash.");
+  await expect(toast.getByRole("button", { name: "Undo" })).toBeVisible();
+  await expect(page.getByRole("alertdialog")).toHaveCount(0);
+  expect(await trashedIds()).toEqual([childId]);
+  // Editor undo brings the row back — and the page out of the Trash with it.
   await page.locator(".tiptap").focus();
   await expect(page.locator(".tiptap")).toBeFocused();
   await page.keyboard.press("ControlOrMeta+z");
   await expect(child).toHaveCount(1);
-  await selectRow(childId);
-  await page.keyboard.press("Backspace");
-  await offer.getByRole("button", { name: "Move to Trash" }).click();
-  await expect(page.getByText("Moved to Trash.")).toBeVisible();
-  expect(await page.evaluate(() => (window as any).prismMediaTrashed)).toEqual([childId]);
+  await expect(toast).toContainText("Restored “Untitled”");
+  expect(await restoredIds()).toEqual([childId]);
+  // Redo is this person's own deletion again: Trash again; the toast's Undo puts page and row back.
+  await page.keyboard.press("ControlOrMeta+Shift+z");
+  await expect(page.locator(".tiptap .prism-child-page")).toHaveCount(0);
+  await expect(toast).toContainText("Moved “Untitled” to Trash.");
+  expect(await trashedIds()).toEqual([childId, childId]);
+  await toast.getByRole("button", { name: "Undo" }).click();
+  await expect(child).toHaveCount(1);
+  await expect.poll(restoredIds).toEqual([childId, childId]);
   // A page created inside this one elsewhere (tree +, "Add a page inside") gets its row too — once.
   await page.locator(".tiptap").getByText("Top").click();
   await page.evaluate(() => {
@@ -925,8 +934,8 @@ test("row peek: Esc from inside the peeked page's editor closes the peek", async
   await expect(side).toHaveCount(0);
 });
 
-// Review M4: a sub-page row that is MOVED to another page is not deleted — no Trash offer.
-test("moving a sub-page row to another page offers no Trash", async ({ page }) => {
+// Review M4: a sub-page row that is MOVED to another page is not deleted — its page stays out of the Trash.
+test("moving a sub-page row to another page trashes nothing", async ({ page }) => {
   await page.route("**/api/notes/*/blocks/append", (route) => route.fulfill({ status: 200, json: { ok: true, live: false } }));
   await open(page);
   await clickInto(page, "Closing heron note.");
@@ -942,7 +951,7 @@ test("moving a sub-page row to another page offers no Trash", async ({ page }) =
   await page.getByRole("menuitem", { name: "Braiding Sweetgrass" }).click();
   await expect(page.getByRole("status").filter({ hasText: "Moved to Braiding Sweetgrass" })).toBeVisible();
   await expect(page.locator(".tiptap .prism-child-page")).toHaveCount(0);
-  await page.waitForFunction(() => new Promise((r) => setTimeout(() => r(true), 600))); // past the offer's settle window
-  await expect(page.getByRole("alertdialog", { name: "Sub-page link removed" })).toHaveCount(0);
+  await page.waitForFunction(() => new Promise((r) => setTimeout(() => r(true), 600))); // past the settle window
+  await expect(page.getByText(/to Trash/)).toHaveCount(0);
   expect(await page.evaluate(() => (window as any).prismMediaTrashed)).toEqual([]);
 });

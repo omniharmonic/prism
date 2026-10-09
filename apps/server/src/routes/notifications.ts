@@ -69,6 +69,7 @@ import {
   REQUEST_LEVELS,
   noteContentStored,
   cachedChips,
+  chipsLinkSomething,
   mentionableMembers,
   getPageLevel,
   setPageLevel,
@@ -404,7 +405,8 @@ notificationsRoutes.post("/access-requests/:id", SMALL, async (c) => {
 /**
  * Mounted in routes/api.ts on `/notes` and `/notes/:id` BEFORE the owner
  * short-circuit, so both the passthrough and the member route are covered. Only a
- * successful content write whose body carries a mention chip does any work, and
+ * successful content write whose body carries a mention chip or a sub-page row —
+ * or that removes the last one this server remembers — does any work, and it
  * never changes the response.
  *
  * Review M4: the server remembers each note's last-seen chip set
@@ -424,7 +426,16 @@ export const restMentionHook: MiddlewareHandler = async (c, next) => {
   } catch {
     return next();
   }
-  if (raw.length > 4_000_000 || raw.indexOf("mention") < 0) return next();
+  if (raw.length > 4_000_000) return next();
+  // A body that carries a chip or a sub-page row (`childPage`: the parent links to it like a
+  // page chip) — or a page whose remembered chips link somewhere, so that a body without
+  // any of them still unlinks (the last row or chip was just deleted).
+  const marked = raw.indexOf("mention") >= 0 || raw.indexOf("child-page") >= 0;
+  if (!marked && (isCreate || !id || !isNoteId(id) || raw.indexOf('"content"') < 0)) return next();
+  const actor = resolveActor(c);
+  if (actor.kind !== "user") return next();
+  const vaultId = roleAtLeast(actor.role, "admin") ? resolveVaultEntry(c.req.header("x-prism-vault")).id : actor.vaultId;
+  if (!marked && !chipsLinkSomething(cachedChips(vaultId, id!), id!)) return next();
   let content: string | null = null;
   try {
     const b = JSON.parse(raw) as { content?: unknown };
@@ -432,10 +443,9 @@ export const restMentionHook: MiddlewareHandler = async (c, next) => {
   } catch {
     return next();
   }
-  if (!content || content.indexOf('data-type="mention"') < 0) return next();
-  const actor = resolveActor(c);
-  if (actor.kind !== "user") return next();
-  const vaultId = roleAtLeast(actor.role, "admin") ? resolveVaultEntry(c.req.header("x-prism-vault")).id : actor.vaultId;
+  if (content === null) return next();
+  const carries = content.indexOf('data-type="mention"') >= 0 || content.indexOf('data-type="child-page"') >= 0;
+  if (!carries && (isCreate || !id || !isNoteId(id) || !chipsLinkSomething(cachedChips(vaultId, id), id))) return next();
   let prev: string | null = "";
   let prevMentions: ParsedMention[] | null = null;
   let deferred = false;
