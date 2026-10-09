@@ -42,6 +42,7 @@ import { vaultClient, VaultError, VaultConflictError, type Note } from "./parach
 import { ensureTree, treeUpsertNote, treeRemoveNote, rowRef, TREE_META_KEYS, type TreeRow } from "./tree";
 import type { VaultEntry } from "./config";
 import { purgeAttachmentsForNote } from "./attachments";
+import { tellPagesChanged } from "./page-notice";
 import {
   TRASH_TAG,
   TRASH_META,
@@ -729,7 +730,10 @@ export function createPagesApi(opts: PagesApiOptions = {}) {
       return { moved, failed: null, error: null };
     });
     if (outcome === "busy") return c.json({ error: "busy", reason: "Another change to these pages is in progress. Try again in a moment." }, 409);
-    if (outcome.moved.length) wrote();
+    if (outcome.moved.length) {
+      wrote();
+      void tellPagesChanged(entry.id, outcome.moved.map((m) => m.id));
+    }
     if (!outcome.failed) {
       finishMove(journalId, "done", outcome.moved.length, 0);
       return c.json({ ok: true, path: target, moved: outcome.moved, wikilinks: "vault_cascade" });

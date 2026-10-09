@@ -85,7 +85,9 @@ function EditableTitle({ name, onRename }: { name: string; onRename: (newName: s
       }
       // The server's own reason (no permission here, unsent changes…) when it gave one.
       const why = e instanceof Error && e.name === "PagesRequestError" && e.message ? ` ${e.message.replace(/[.\s]+$/, "")}.` : "";
-      setError(`Could not rename this page.${why} Your title is still here; press Enter to retry.`);
+      // The page WAS renamed and only its stored title is missing: say exactly that (Enter writes the title).
+      const own = e instanceof Error && (e as { titleNotice?: unknown }).titleNotice === true ? e.message : "";
+      setError(own || `Could not rename this page.${why} Your title is still here; press Enter to retry.`);
       lastFailed.current = v;
       // Focus comes back to the title only for an Enter the person has not moved on from. A blur means
       // they went somewhere else on purpose: the typed title and the reason stay, focus is theirs.

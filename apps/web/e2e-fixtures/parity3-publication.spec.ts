@@ -14,7 +14,7 @@ test("NP-ED-24: block round-trip through publish — every block type is on the 
   const article = page.locator("article.prose-editor");
   await expect(article).toContainText("PRISM_PUBLICATION_guide_first_BODY");
   const lost: string[] = [];
-  for (const block of PARITY_BLOCKS.filter((b) => !b.gaps?.published)) {
+  for (const block of PARITY_BLOCKS) {
     const el = article.locator(block.selector).filter(block.text ? { hasText: block.text } : {}).first();
     const there = (await el.count()) > 0;
     // A divider and an empty container have no text box of their own; everything else must be visible.
@@ -59,17 +59,13 @@ test("NP-ED-24: published blocks read as what they are", async ({ page }) => {
   await expect(article.locator('a[href="https://www.youtube.com/watch?v=dQw4w9WgXcQ"]')).toBeVisible();
 });
 
-/**
- * FIXME (behaviour gap, PARITY-GAPS a.1 — seen failing 2026-10-03): blocks the published page does not
- * draw. Today: the table-of-contents block (NP-ED-19) is an empty element there — the reader has the
- * site's own outline, but nothing stands where the author put the block.
- */
-test.fixme("NP-ED-24: published page draws every block (known gaps: " + PARITY_BLOCKS.filter((b) => b.gaps?.published).map((b) => b.name).join(", ") + ")", async ({ page }) => {
+/** The table-of-contents block (NP-ED-19) is drawn where the author put it (it is an empty element as stored). */
+test("NP-ED-24: published page draws every block — the table of contents lists the page's headings", async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 900 });
   await page.goto("/e2e-fixtures/publication.html?blocks");
   const article = page.locator("article.prose-editor");
   await expect(article).toContainText("RT callout");
-  for (const block of PARITY_BLOCKS.filter((b) => b.gaps?.published)) await expect(article.locator(block.selector).first(), block.name).toBeVisible();
+  await expect(article.locator('div[data-type="toc"]').first()).toBeVisible();
   // The table of contents lists the page's headings and links to them.
   await expect(article.locator('div[data-type="toc"]')).toContainText("RT heading two");
 });

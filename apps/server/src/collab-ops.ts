@@ -345,13 +345,9 @@ export function editFragment(ydoc: Y.Doc, fn: (doc: PMNode) => PMNode | null): v
   if (next && !next.eq(doc)) updateYFragment(ydoc, frag, next, meta as never);
 }
 
-const COLORS = ["#f783ac", "#3b82f6", "#22c55e", "#eab308", "#a855f7", "#ef4444", "#06b6d4"];
-/** Same stable per-identity color as the web client (CollabDoc colorFor). */
-export function colorFor(seed: string): string {
-  let h = 0;
-  for (let i = 0; i < seed.length; i++) h = (h * 31 + seed.charCodeAt(i)) >>> 0;
-  return COLORS[h % COLORS.length]!;
-}
+/** The stable per-identity colour of a PERSON — the same table the web client reads
+ *  (`@prism/core` lib/collab/colors.ts). An agent's writes use `AGENT_COLOR` instead. */
+export { colorFor, AGENT_COLOR } from "@prism/core/collab-colors";
 
 /** Who an MCP write is attributed to, in the editor's own vocabulary. */
 export interface CollabAuthor {

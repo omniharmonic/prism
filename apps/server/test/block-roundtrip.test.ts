@@ -112,27 +112,22 @@ async function publishAndExport() {
   };
   const md = await exportFile("markdown");
   const html = await exportFile("html");
-  const lost = (kind: "markdown" | "html_export", file: string, known: boolean) =>
-    PARITY_BLOCKS.filter((b) => !!b.gaps?.[kind] === known && b[kind].some((re) => !re.test(file))).map((b) => `${b.row} ${b.name}: ${b[kind].filter((re) => !re.test(file)).join(" , ")}`);
-  assert.deepEqual(lost("markdown", md, false), [], `Markdown export lost blocks. The file was:\n${md}`);
-  assert.deepEqual(lost("html_export", html, false), [], `HTML export lost blocks. The file was:\n${html}`);
+  // Every block is still a block in both files (to-do state, tables, captions and card
+  // descriptions included — the Markdown export's block rules, transfer/export-markdown.ts).
+  const lost = (kind: "markdown" | "html_export", file: string) =>
+    PARITY_BLOCKS.filter((b) => b[kind].some((re) => !re.test(file))).map((b) => `${b.row} ${b.name}: ${b[kind].filter((re) => !re.test(file)).join(" , ")}`);
+  assert.deepEqual(lost("markdown", md), [], `Markdown export lost blocks. The file was:\n${md}`);
+  assert.deepEqual(lost("html_export", html), [], `HTML export lost blocks. The file was:\n${html}`);
   // Nothing is DROPPED by either export: every word a block holds (its text, a caption, a card's
   // title and description) is still in the file.
-  const dropped = (kind: "markdown" | "html_export", file: string, known: boolean) =>
-    PARITY_BLOCKS.filter((b) => !!b.gaps?.[kind] === known).flatMap((b) => (b.html.match(/RT [a-z A-Z]+|rt-notes\.txt|const rt = /g) ?? []).map((w) => w.trim()).filter((w) => !file.includes(w)).map((w) => `${b.row} ${b.name}: “${w}”`));
-  assert.deepEqual(dropped("markdown", md, false), [], `Markdown export dropped content. The file was:\n${md}`);
-  assert.deepEqual(dropped("html_export", html, false), [], `HTML export dropped content. The file was:\n${html}`);
-  return { md, html, lost, dropped };
+  const dropped = (file: string) =>
+    PARITY_BLOCKS.flatMap((b) => (b.html.match(/RT [a-z A-Z]+|rt-notes\.txt|const rt = /g) ?? []).map((w) => w.trim()).filter((w) => !file.includes(w)).map((w) => `${b.row} ${b.name}: “${w}”`));
+  assert.deepEqual(dropped(md), [], `Markdown export dropped content. The file was:\n${md}`);
+  assert.deepEqual(dropped(html), [], `HTML export dropped content. The file was:\n${html}`);
 }
 
 test("block round-trip through publish and export", async () => {
   await publishAndExport();
-});
-
-// Build gaps (PARITY-GAPS §a.1), kept as todo so the run names them until they are built.
-test("block round-trip through export — blocks the Markdown / HTML export does not keep as blocks", { todo: "behaviour gap: " + PARITY_BLOCKS.flatMap((b) => [b.gaps?.markdown && `${b.name} (Markdown): ${b.gaps.markdown}`, b.gaps?.html_export && `${b.name} (HTML): ${b.gaps.html_export}`]).filter(Boolean).join("; ") }, async () => {
-  const { md, html, lost, dropped } = await publishAndExport();
-  assert.deepEqual([...lost("markdown", md, true), ...lost("html_export", html, true), ...dropped("markdown", md, true), ...dropped("html_export", html, true)], []);
 });
 
 // ── an agent edit (Prism MCP) ────────────────────────────────────────────────

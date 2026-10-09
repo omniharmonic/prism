@@ -15,6 +15,7 @@ import { editorSaveState, flushPendingSaves } from "../../app/hooks/useAutoSave"
 import { useCollabSharing } from "../../data/CollabSharing";
 import { registeredEditor } from "../agent/documentSnapshots";
 import * as ops from "./ops";
+import { syncStoredTitle, TITLE_NOT_UPDATED, TITLE_REFUSED } from "./titleRename";
 import { usePagesUI, type PageRef } from "./store";
 import { pageLink } from "./pageLink";
 
@@ -85,7 +86,23 @@ export function usePageActions() {
     return "partial";
   };
 
-  const move = async (page: PageRef, to: { parent?: string; newPath?: string; moveId?: string }): Promise<"moved" | "partial" | false> => {
+  /** The tree's Rename when the file name already says the typed name as far as a path can: only the stored title changes. */
+  const retitle = async (page: PageRef, typed: string): Promise<boolean> => {
+    try {
+      const fresh = await client.getNote(page.id, { fresh: true });
+      if (!fresh?.path) return false;
+      const outcome = await syncStoredTitle(client, fresh, fresh.path, typed);
+      if (outcome === "failed") { toast(TITLE_NOT_UPDATED, { tone: "error" }); return false; }
+      if (outcome === "refused") { toast("The title could not be changed — you can’t change this page’s properties.", { tone: "error" }); return false; }
+      if (outcome === "written") void queryClient.invalidateQueries({ queryKey: queryKeys.vault.all });
+      return outcome === "written";
+    } catch (e) {
+      fail(e, "Couldn’t rename this page. Try again.");
+      return false;
+    }
+  };
+
+  const move = async (page: PageRef, to: { parent?: string; newPath?: string; moveId?: string; /** A rename: the name as it was TYPED (kept as the stored title when the path cannot hold it). */ title?: string }): Promise<"moved" | "partial" | false> => {
     try {
       // The page's own write is CAS against what the server has NOW (a stale tab
       // must not move a page someone just renamed); descendants are CAS server-side.
@@ -96,6 +113,10 @@ export function usePageActions() {
         ...(fresh?.updatedAt ? { ifUpdatedAt: fresh.updatedAt } : {}),
         ...(to.moveId ? { moveId: to.moveId } : {}),
       });
+      // A rename (the tree's Rename): a stored title would keep the old name in every list (NP-DB-20).
+      const titled = await syncStoredTitle(client, fresh, result.path, to.title);
+      if (titled === "failed") toast(TITLE_NOT_UPDATED, { tone: "error" });
+      else if (titled === "refused") toast(TITLE_REFUSED, { tone: "error" });
       if (result.ok) {
         const leaf = result.path.split("/").pop();
         // A container-named page (`<folder>/PROJECT`) keeps the name it is shown by; its file name is not a title.
@@ -220,6 +241,7 @@ export function usePageActions() {
 
   return {
     move,
+    retitle,
     restore,
 
     trash: async (page: PageRef) => {

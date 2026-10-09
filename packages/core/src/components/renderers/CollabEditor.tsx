@@ -21,7 +21,7 @@ import { DocumentOutline } from "./DocumentOutline";
 import { CollabToolbar } from "./CollabToolbar";
 import { KeyboardToolbar, useCoarsePointer } from "./KeyboardToolbar";
 import { FormattingBar } from "./FormattingBar";
-import { SuggestionReview } from "./SuggestionReview";
+import { SuggestionReview, suggestionIdentity } from "./SuggestionReview";
 import "./editor-blocks.css";
 import { BlockKeymap } from "../../lib/tiptap/blockCommands";
 import { EditorKeys, editorPlaceholder, blockSelectionActive } from "../../lib/tiptap/EditorKeys";
@@ -58,6 +58,8 @@ export interface CollabUser {
 export interface AwarenessProvider {
   awareness: unknown;
 }
+
+const STALE_SUGGESTION_NOTICE = "This change was edited after you opened it — Refresh it in the review queue before accepting.";
 
 /**
  * Real-time collaborative editor bound to a shared Y.Doc (CRDT). History is
@@ -153,6 +155,8 @@ export function CollabEditor({
   noteId?: string;
 }) {
   const suggestionBubble = useRef<HTMLDivElement>(null);
+  const staleSuggestion = useRef<string | null>(null);
+  const setStaleSuggestion = useCallback((key: string | null) => { staleSuggestion.current = key; }, []);
   const touch = useCoarsePointer();
   // Inline comment composer anchored to a captured selection range.
   const [composer, setComposer] = useState<{ from: number; to: number; top: number; left: number } | null>(null);
@@ -231,7 +235,11 @@ export function CollabEditor({
         describe: describeSubPage(() => subPagesRef.current.client),
         ...subPageTrash(() => subPagesRef.current.client ?? null, () => subPagesRef.current.queryClient),
       } : {}),
-      SuggestionMode.configure({ user }),
+      SuggestionMode.configure({
+        user,
+        // A removal suggesting cannot record (an image, a mention…) was put back: say so.
+        onRefused: (message) => { setHumanNotice(message); window.setTimeout(() => setHumanNotice((now) => (now === message ? "" : now)), 6000); },
+      }),
       CommentOnly.configure({ active: !!commentOnly }),
       CommentInteraction.configure({ onActivate: (id) => commentActivateRef.current?.(id) }),
       Collaboration.configure({ document: ydoc }),
@@ -331,6 +339,19 @@ export function CollabEditor({
     };
   }, [editor, ydoc, seedContent, seedReady]);
 
+  // Accept the change at the caret — the bubble's button (a mouse) and the keyboard toolbar row's (touch).
+  // "Needs refresh" withholds it in both: the change was edited after it was read.
+  const acceptSuggestionAtCaret = () => {
+    if (!editor) return;
+    const at = suggestionAt(editor.state, editor.state.selection.from);
+    if (staleSuggestion.current && suggestionIdentity(at?.mark) === staleSuggestion.current) {
+      setHumanNotice(STALE_SUGGESTION_NOTICE);
+      window.setTimeout(() => setHumanNotice((now) => (now === STALE_SUGGESTION_NOTICE ? "" : now)), 6000);
+      return;
+    }
+    editor.chain().focus().acceptSuggestion().run();
+  };
+
   // The selection's actions: the bubble (a mouse), or the start of the keyboard toolbar row (touch).
   const selectionActions = editor && (
     <SelectionActions
@@ -374,10 +395,10 @@ export function CollabEditor({
       {toolbar && editor && <KeyboardToolbar editor={editor} formatting={editable && !commentOnly && !suggesting} selection={selectionActions}
         review={canReview ? {
           at: (current) => !!suggestionAt(current.state, current.state.selection.from),
-          accept: () => editor.chain().focus().acceptSuggestion().run(),
+          accept: acceptSuggestionAtCaret,
           reject: () => editor.chain().focus().rejectSuggestion().run(),
         } : undefined} />}
-      {editor && <SuggestionReview editor={editor} canReview={!!canReview} />}
+      {editor && <SuggestionReview editor={editor} canReview={!!canReview} onStale={setStaleSuggestion} />}
       {/* On-selection "Comment" bubble (Google-Docs style). Not on a touch device: the system's own
           selection callout sits there, and the actions are in the keyboard toolbar row instead. */}
       {editor && !(touch && toolbar) && (
@@ -404,7 +425,7 @@ export function CollabEditor({
           shouldShow={({ editor: current, state }) => (current.isFocused || !!suggestionBubble.current?.contains(document.activeElement)) && !!suggestionAt(state, state.selection.from)}
         >
           <div ref={suggestionBubble} className="cd-bubble">
-            <button onMouseDown={(e) => e.preventDefault()} onClick={() => editor.chain().focus().acceptSuggestion().run()}>
+            <button onMouseDown={(e) => e.preventDefault()} onClick={acceptSuggestionAtCaret}>
               <Check size={14} color="#22c55e" /> Accept
             </button>
             <button onMouseDown={(e) => e.preventDefault()} onClick={() => editor.chain().focus().rejectSuggestion().run()}>

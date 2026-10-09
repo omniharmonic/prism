@@ -63,12 +63,12 @@ test("NP-CO-12: Accept all applies every suggestion at once; Undo brings them ba
 
 /**
  * NP-CO-12 · "A Suggesting mode marks inserts and deletes with attribution."
- * FIXME (behaviour gap, PARITY-GAPS a.1 — seen failing 2026-10-03): while Suggesting, TYPING OVER a
+ * Was a behaviour gap (PARITY-GAPS a.1 — seen failing 2026-10-03): while Suggesting, TYPING OVER a
  * selection removes the selected text outright — only Backspace / Delete are tracked
  * (`SuggestionMode.handleKeyDown`, packages/core/src/editor/suggestions.ts); the replaced words are
  * gone with no deletion mark, so a reviewer cannot see or reject that half of the change.
  */
-test.fixme("NP-CO-12: typing over a selection while Suggesting keeps the replaced text as a tracked deletion", async ({ page }) => {
+test("NP-CO-12: typing over a selection while Suggesting keeps the replaced text as a tracked deletion", async ({ page }) => {
   await page.goto("/e2e-fixtures/notion-mentions.html?comments&review");
   const editor = page.locator(".ProseMirror").first();
   await expect(editor).toContainText("The rollout plan is ready for review.");

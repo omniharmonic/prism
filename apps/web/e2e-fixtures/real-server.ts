@@ -124,10 +124,27 @@ export async function connect(page: Page, context: BrowserContext, server: RealS
   const sid = server.sessions[who];
   const base = new URL(page.url() === "about:blank" ? "http://127.0.0.1" : page.url());
   await context.addCookies([{ name: "prism_session", value: sid, domain: base.hostname === "about:blank" ? "127.0.0.1" : "127.0.0.1", path: "/" }]);
+  // A `fetch(…, { cache: "no-store" | "reload" | "no-cache" })` reaches a real server with
+  // `Cache-Control: no-cache` + `Pragma: no-cache` — the browser's network stack adds them BELOW
+  // request interception, so the bridge never saw them and the gateway answered a "fresh" read
+  // from its 5 s reuse window. Say them in the page, where the bridge can forward them.
+  await page.addInitScript(() => {
+    const native = window.fetch.bind(window);
+    window.fetch = (input: RequestInfo | URL, init?: RequestInit) => {
+      const mode = init?.cache ?? (input instanceof Request ? input.cache : undefined);
+      if (mode !== "no-store" && mode !== "reload" && mode !== "no-cache") return native(input, init);
+      const headers = new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined));
+      if (!headers.has("cache-control")) headers.set("Cache-Control", "no-cache");
+      if (!headers.has("pragma")) headers.set("Pragma", "no-cache");
+      return native(input, { ...init, headers });
+    };
+  });
   await page.route((url) => /^\/(api|auth|acl)(\/|$)/.test(url.pathname), async (route) => {
     const url = new URL(route.request().url());
     try {
-      const response = await route.fetch({ url: `http://127.0.0.1:${server.port}${url.pathname}${url.search}` });
+      // The page's own headers, Cache-Control / Pragma included (see above).
+      const sent = { ...route.request().headers(), ...(await route.request().allHeaders().catch(() => ({}))) };
+      const response = await route.fetch({ url: `http://127.0.0.1:${server.port}${url.pathname}${url.search}`, headers: sent });
       await route.fulfill({ response });
     } catch (error) {
       // A spec that closes its page or context with a request still in flight (the tree

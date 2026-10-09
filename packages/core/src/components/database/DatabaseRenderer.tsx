@@ -35,6 +35,7 @@ import { FilterEditor, SortEditor, ViewSettings } from "./ViewControls";
 import { BoardView, CalendarAgenda, CalendarView, GalleryView, ListView, TableView, monthGrid, type RowSelection, type ViewContext } from "./views";
 import { defaultConfig, duplicateView, MAX_VIEWS, moveView, newViewId, followConversions, readDatabaseConfig, rowPath, VIEW_LABELS, VIEW_TYPES, type DatabaseConfig, type DatabaseTemplate, type DatabaseView, type OpenMode, type ViewType } from "./config";
 import { RowPeek } from "./RowPeek";
+import { pageTitle } from "../../lib/pages/model";
 import { BulkBar, UndoToast, type UndoAction } from "./BulkBar";
 import { createTemplateNote, isTemplateFor, NewButton, TemplateEditor, templateProps } from "./Templates";
 import { resolveTemplateContent, resolveTemplateMetadata, templateCreator } from "../../lib/pages/templates";
@@ -299,7 +300,12 @@ export function DatabasePage({ note, readOnly, embedded }: RendererProps & {
       // A private template's body stays private: the new row is private too.
       if (tpl.metadata?.prism_visibility === "private") privateTo = typeof tpl.metadata.prism_creator === "string" ? tpl.metadata.prism_creator : "";
     }
-    const created = await client.createNote({ content, path: rowPath(note.path, titleText), tags: [...tags], metadata: { ...defaults, ...fromTemplate, ...(preset ?? {}), title: titleText, ...(privateTo !== null ? { prism_visibility: "private", ...(privateTo ? { prism_creator: privateTo } : {}) } : {}) } });
+    // NP-DB-20: a row's name is its page's name (the path). A stored `title` is written only
+    // when the path cannot say it (characters a file name may not hold) — a copy of the file
+    // name would go stale at the first rename.
+    const path = rowPath(note.path, titleText);
+    const stored = pageTitle(path) === titleText.trim() ? {} : { title: titleText };
+    const created = await client.createNote({ content, path, tags: [...tags], metadata: { ...defaults, ...fromTemplate, ...(preset ?? {}), ...stored, ...(privateTo !== null ? { prism_visibility: "private", ...(privateTo ? { prism_creator: privateTo } : {}) } : {}) } });
     if (content && client.copyAttachments && content.includes("/api/attachments/")) await client.copyAttachments(created.id).catch(() => null);
     invalidateRows();
     return created;

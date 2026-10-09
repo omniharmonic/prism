@@ -86,7 +86,9 @@ test("new rows are created with the tag, schema defaults and the group they were
   await page.keyboard.press("Enter");
   await expect(page.getByRole("button", { name: "Ship the changelog", exact: true })).toBeVisible();
   const created = (await fx(page)).creates.at(-1);
-  expect(created).toMatchObject({ tags: ["task"], path: "Projects/Launch plan/Ship the changelog", metadata: { title: "Ship the changelog", status: "todo" } });
+  expect(created).toMatchObject({ tags: ["task"], path: "Projects/Launch plan/Ship the changelog", metadata: { status: "todo" } });
+  // NP-DB-20: the row's name is its path — no stored copy of it that a rename would leave behind.
+  expect(created.metadata.title).toBeUndefined();
 
   await page.getByRole("tab", { name: "Board" }).click();
   const done = page.getByRole("region", { name: "Done", exact: true });
@@ -94,7 +96,7 @@ test("new rows are created with the tag, schema defaults and the group they were
   await page.getByRole("textbox", { name: "New page in Done" }).fill("Archive old docs");
   await page.keyboard.press("Enter");
   await expect(done.getByRole("article", { name: "Archive old docs" })).toBeVisible();
-  expect((await fx(page)).creates.at(-1).metadata).toMatchObject({ status: "done", title: "Archive old docs" });
+  expect((await fx(page)).creates.at(-1)).toMatchObject({ path: "Projects/Launch plan/Archive old docs", metadata: { status: "done" } });
 
   // A failed create keeps the typed title.
   await page.evaluate(() => { (window as any).dbFixture.failNext = true; });

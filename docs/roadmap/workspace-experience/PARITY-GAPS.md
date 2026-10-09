@@ -2,7 +2,7 @@
 
 Rewritten 2026-10-04 by the fourth verification pass at main `44238483` (branch `feat/w11-verify`). Evidence per row: [PARITY-EVIDENCE.md](PARITY-EVIDENCE.md). The gate itself: [NOTION-PARITY-CHECKLIST.md](NOTION-PARITY-CHECKLIST.md). WebKit: [WEBKIT-RESULTS.md](WEBKIT-RESULTS.md).
 
-> **Merge note.** `feat/w9-gaps` also edits this file (it records the closure of slices I–M and adds slice N). When it merges, keep THIS file's structure and tables and take from that branch only the facts about its own slices — they are already listed here as "pending merge".
+> **`feat/w9-gaps` (2026-10-08).** The branch was finished on `feat/w9-gaps-finish` (merged with main `5fcfc629`, review round 3 completed, its specs green on Chromium and WebKit there) and is proposed as one pull request. Its rows in §a.0 below are marked "in the pull request"; the totals in this file are still the fourth pass's (judged on main) and move only when that pull request is merged and the specs are green on main.
 
 | Status | Rows now | Third-pass slice | Second pass | First pass |
 |---|---|---|---|---|
@@ -26,17 +26,17 @@ Sizes: **S** = under a day, one or two files. **M** = one to three days, a new c
 
 ### a.0 Built, not on main — re-verify after the merge
 
-Judged on main these rows are still `partial`. Their `test.fixme` / `todo` pins are still in main's specs; the branch un-pins them.
+Judged on main these rows are still `partial`. Their `test.fixme` / `todo` pins are still in main's specs; the branch un-pins them. The `feat/w9-gaps` rows are in the `feat/w9-gaps-finish` pull request (specs green there on Chromium and WebKit; the four IME tests of parity4-suggestions are Chromium-only — the composition is driven over CDP).
 
 | Row | Clause | Branch · commits | Spec that must be green on main after the merge | Row becomes |
 |---|---|---|---|---|
-| NP-PG-03 | a collab title edit syncs to other clients | `feat/w9-gaps` · `ee6684d1`, `c4bbfe73`, `7f35ad76` | parity3-collab › "NP-PG-03: a title edit in a live document reaches another client…", parity4-collab, server page-notice.test | needs-screenshot (S 01) |
-| NP-ED-08, NP-ED-16 | callout background colour | `feat/w9-gaps` · `eeffd464` | parity3-editor › "…a callout background colour changes the callout's background", parity4-colours | ED-16 passed; ED-08 deviation (c.3) |
-| NP-CO-10 | carets colour-distinct from agent identity | `feat/w9-gaps` · `eeffd464` | parity3-collab › "NP-CO-10: an agent's marks never share a collaborator's caret colour", server agent-colour.test | passed |
-| NP-CO-12, NP-AI-02 | every removal while Suggesting is tracked; "Needs refresh" | `feat/w9-gaps` · `f52602ae`, `cc1c29ee`, `1d316ec8` | parity3-suggestions › "…typing over a selection while Suggesting keeps the replaced text as a tracked deletion", parity4-suggestions, server suggesting-putback.test | needs-screenshot (S 06) |
-| NP-ED-24 | Markdown export keeps to-dos, tables, captions, bookmark text; published TOC | `feat/w9-gaps` · `1e91868a`, `9ee9b2c8`, `e4ef7b9e` | server block-roundtrip.test (the `todo`), export-blocks.test; parity3-publication › "…published page draws every block", parity4-publication | passed — together with the next line |
+| NP-PG-03 | a collab title edit syncs to other clients | `feat/w9-gaps-finish` (pull request) | parity3-collab › "NP-PG-03: a title edit in a live document reaches another client…", parity4-collab, server page-notice.test | needs-screenshot (S 01) |
+| NP-ED-08, NP-ED-16 | callout background colour | `feat/w9-gaps-finish` (pull request) | parity3-editor › "…a callout background colour changes the callout's background", parity4-colours | ED-16 passed; ED-08 deviation (c.3) |
+| NP-CO-10 | carets colour-distinct from agent identity | `feat/w9-gaps-finish` (pull request) | parity3-collab › "NP-CO-10: an agent's marks never share a collaborator's caret colour", server agent-colour.test | passed |
+| NP-CO-12, NP-AI-02 | every removal while Suggesting is tracked (marks on text only — a chip, image or line break is refused, not struck); "Needs refresh" | `feat/w9-gaps-finish` (pull request) | parity3-suggestions › "…typing over a selection while Suggesting keeps the replaced text as a tracked deletion", parity4-suggestions, server suggesting-putback.test | needs-screenshot (S 06) |
+| NP-ED-24 | Markdown export keeps to-dos, tables, captions, bookmark text; published TOC | `feat/w9-gaps-finish` (pull request) | server block-roundtrip.test (the former `todo` is gone: every block is asserted, the fixture has no `gaps` list any more), export-blocks.test; parity3-publication › "…published page draws every block", parity4-publication | passed — together with the next line |
 | NP-ED-24 | a Markdown note's task items open as a to-do list (slice N) | `feat/w10-fixes` · `5296c4a6`, `0cafe63d` | that branch's server + editor tests | passed |
-| NP-DB-20 | renaming a row created in the view updates the view | `feat/w9-gaps` · `611e8f54`, `df14d663`, `b1132f68`, `27cf73cb` | parity3-databases › "…renaming a row that was created in the view updates the row in the view", parity4-databases, parity4-pages | passed |
+| NP-DB-20 | renaming a row created in the view updates the view | `feat/w9-gaps-finish` (pull request) | parity3-databases › "…renaming a row that was created in the view updates the row in the view", parity4-databases, parity4-pages, server title-sync.test | passed |
 | (WebKit findings 1–4 of WEBKIT-RESULTS) | palette press, Tab in the link card and the table, settings column, native selects | `feat/w10-fixes` · `e44bdd48`, `f851066f`, `a13fc14b`, `fb62f2d6` | notion-a11y-reflow (un-fixme settings-account on WebKit), notion-a11y-touch (judge selects on WebKit), editor-links + databases WITHOUT the Tab-preference fixture | lifts the WebKit caveats on NP-ED-18, AX-02, AX-05, AX-07 |
 
 ### a.1 Open on main — dispatch-ready, smallest first
@@ -298,7 +298,7 @@ One line each: the question, and the recommended answer. A "yes" to the recommen
 
 ## Order of work proposed
 
-1. **Merge `feat/w9-gaps`, then `feat/w10-fixes`**; run the specs of §a.0 on main (Chromium + WebKit). Eight partial rows move.
+1. **Merge the `feat/w9-gaps-finish` pull request** (`feat/w9-gaps`, finished), then `feat/w10-fixes` if anything of it is still off main; run the specs of §a.0 on main (Chromium + WebKit). Eight partial rows move.
 2. **Dispatch slices P and Q now** (both S, self-contained, with a pinned `test.fixme` each). Slice S after decision c.14.
 3. **Owner decisions c.1 – c.16** — seven deviation rows and four partial rows turn on a yes.
 4. **Spec slice a.2** (one track, specs only).

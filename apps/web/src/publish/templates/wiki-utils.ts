@@ -115,8 +115,28 @@ function slugify(text: string): string {
   );
 }
 
+export const HEADING_ID_PREFIX = "h-";
+const TOC_BLOCK_MAX_BLOCKS = 3;
+const TOC_BLOCK_MAX_ENTRIES = 200;
+/** The heading an in-page `#fragment` means: its id, or — links written before ids were prefixed — the prefixed one. */
+export function headingTarget(root: ParentNode, fragment: string): Element | null {
+  let id = fragment;
+  try { id = decodeURIComponent(fragment); } catch { /* as written */ }
+  if (!id) return null;
+  const find = (value: string) => root.querySelector(`[id="${typeof CSS !== "undefined" && CSS.escape ? CSS.escape(value) : value.replace(/["\\]/g, "\\$&")}"]`);
+  return find(id) ?? (id.startsWith(HEADING_ID_PREFIX) ? null : find(HEADING_ID_PREFIX + id));
+}
+/** An id a heading already carries is kept only when it is a plain token (it becomes a URL fragment). */
+const SAFE_ID = /^[A-Za-z][A-Za-z0-9_-]{0,80}$/;
+
 /** Parse already-sanitized HTML, assign stable ids to h1–h3, and return both the
- *  id-augmented HTML and the heading list for the right-rail TOC. */
+ *  id-augmented HTML and the heading list for the right-rail TOC.
+ *
+ *  A table-of-contents BLOCK in the page (`<div data-type="toc">`, empty as stored — the
+ *  editor draws it from the document) is filled here from the same heading list, so it
+ *  stands where the author put it (NP-ED-19/24). Built with DOM calls only: heading text
+ *  goes in as text, ids are slugs (`[a-z0-9_-]`, numbered when repeated — stable for the same
+ *  page) and every link is an in-page `#fragment`; no inline style (the indent is a class rule). */
 export function extractToc(html: string): { html: string; toc: TocEntry[] } {
   if (!html || typeof DOMParser === "undefined") return { html, toc: [] };
   const doc = new DOMParser().parseFromString(html, "text/html");
@@ -125,7 +145,11 @@ export function extractToc(html: string): { html: string; toc: TocEntry[] } {
   doc.querySelectorAll("h1, h2, h3").forEach((h) => {
     const text = h.textContent?.trim() || "";
     if (!text) return;
-    const baseId = (h as HTMLElement).id || slugify(text);
+    // Prefixed: a heading called "root" / "constructor" can never collide with an id (or a
+    // named property) the app itself uses. An in-page link to the bare slug still lands
+    // (`headingTarget`).
+    const own = (h as HTMLElement).id;
+    const baseId = HEADING_ID_PREFIX + ((own && SAFE_ID.test(own) ? own : "") || slugify(text));
     let uid = baseId;
     let i = 1;
     while (seen.has(uid)) uid = `${baseId}-${i++}`;
@@ -133,6 +157,35 @@ export function extractToc(html: string): { html: string; toc: TocEntry[] } {
     (h as HTMLElement).id = uid;
     toc.push({ id: uid, text, level: Number(h.tagName[1]) });
   });
+  const blocks = doc.querySelectorAll('div[data-type="toc"]');
+  if (blocks.length) {
+    let top = 3;
+    for (const entry of toc) if (entry.level < top) top = entry.level;
+    const listed = toc.slice(0, TOC_BLOCK_MAX_ENTRIES);
+    blocks.forEach((block, index) => {
+      block.replaceChildren();
+      // Bounded work for any page: a few blocks, a capped list each.
+      if (!listed.length || index >= TOC_BLOCK_MAX_BLOCKS) return;
+      const nav = doc.createElement("nav");
+      nav.className = "prism-toc";
+      nav.setAttribute("aria-label", "Table of contents");
+      const list = doc.createElement("ol");
+      list.className = "prism-toc-list";
+      for (const entry of listed) {
+        const item = doc.createElement("li");
+        item.setAttribute("data-indent", String(Math.min(entry.level - top, 2)));
+        const link = doc.createElement("a");
+        link.className = "prism-toc-item";
+        link.setAttribute("href", `#${encodeURIComponent(entry.id)}`);
+        link.setAttribute("data-toc-target", entry.id);
+        link.textContent = entry.text;
+        item.append(link);
+        list.append(item);
+      }
+      nav.append(list);
+      block.append(nav);
+    });
+  }
   return { html: doc.body.innerHTML, toc };
 }
 

@@ -31,7 +31,7 @@ test("table group by with counts", async ({ page }) => {
   await page.getByRole("textbox", { name: "New page title" }).fill("Archive old builds");
   await page.keyboard.press("Enter");
   await expect(done.getByLabel("3 pages")).toBeVisible();
-  expect((await fx(page)).creates.at(-1).metadata).toMatchObject({ title: "Archive old builds", status: "done" });
+  expect((await fx(page)).creates.at(-1)).toMatchObject({ path: "Projects/Launch plan/Archive old builds", metadata: { status: "done" } });
 
   // List views group the same way.
   await page.getByRole("tab", { name: "List" }).click();
@@ -124,7 +124,8 @@ test("database template applies on new row", async ({ page }) => {
   const fromBug = (await fx(page)).creates[0];
   expect(fromBug.content).toContain("Steps to reproduce");
   expect(fromBug.tags).toEqual(["task"]);
-  expect(fromBug.metadata).toMatchObject({ title: "Untitled", status: "todo", priority: "high", labels: ["bug"] });
+  expect(fromBug.metadata).toMatchObject({ status: "todo", priority: "high", labels: ["bug"] });
+  expect(fromBug.path).toBe("Projects/Launch plan/Untitled"); // NP-DB-20: the name is the path, no stored copy
   await expect(page.getByRole("dialog", { name: "Untitled (side peek)" })).toBeVisible();
   await page.keyboard.press("Escape");
 
@@ -153,7 +154,7 @@ test("database template applies on new row", async ({ page }) => {
   const n = (await fx(page)).creates.length;
   await page.locator(".db-actions").getByRole("button", { name: "New", exact: true }).click();
   await expect.poll(async () => (await fx(page)).creates.length).toBe(n + 1);
-  expect((await fx(page)).creates.at(-1).metadata).toMatchObject({ priority: "low", title: "Untitled" });
+  expect((await fx(page)).creates.at(-1)).toMatchObject({ path: "Projects/Launch plan/Untitled", metadata: { priority: "low" } });
 });
 
 test("bulk edit and bulk trash with undo", async ({ page }) => {

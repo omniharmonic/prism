@@ -52,7 +52,7 @@ import {
   CollabOpError,
   CollabConflictError,
   addCommentThread,
-  colorFor,
+  AGENT_COLOR,
   formatA1,
   getThread,
   gridOfRows,
@@ -162,7 +162,8 @@ function authorOf(ctx: ToolContext): CollabAuthor {
   // same `h_…` a human's suggestions carry) — never the email: every viewer of the
   // page, guests included, can read `data-actor-id` (wave 3). Documents written
   // before this still hold the email form; readers accept both (`emailForActorId`).
-  return { name: `${name} (agent)`, color: colorFor(email), actorId: documentActorId(`user:${email}`), turnId: ctx.principal.agentTurnId };
+  // NP-CO-10: the reserved agent colour, never the caret colour of the person it acts for.
+  return { name: `${name} (agent)`, color: AGENT_COLOR, actorId: documentActorId(`user:${email}`), turnId: ctx.principal.agentTurnId };
 }
 
 /**

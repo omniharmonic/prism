@@ -144,12 +144,12 @@ test("NP-ED-08: a callout shows its icon and takes a text colour from the block 
 
 /**
  * NP-ED-08 · callout colour, the BACKGROUND half.
- * FIXME (behaviour gap, PARITY-GAPS a.1 — seen failing 2026-10-03): the block menu stores
+ * Was a behaviour gap (PARITY-GAPS a.1 — seen failing 2026-10-03): the block menu stores
  * `data-block-color="blue_background"` on the callout, but the callout's own rule
  * (`.prose-editor div[data-type="callout"] { background: var(--glass-hover) }`, editor-blocks.css) is
  * more specific than `[data-block-color="…_background"]`, so the callout keeps its default fill.
  */
-test.fixme("NP-ED-08: a callout background colour changes the callout's background", async ({ page }) => {
+test("NP-ED-08: a callout background colour changes the callout's background", async ({ page }) => {
   await open(page, '<p>Before</p><div data-type="callout" data-emoji="💡"><p>Mind the gap</p></div><p>After</p>');
   const callout = page.locator('.tiptap div[data-type="callout"]');
   const plain = await css(callout, "background-color");

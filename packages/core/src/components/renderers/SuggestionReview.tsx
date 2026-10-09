@@ -1,8 +1,10 @@
-import { useRef, useState } from "react";
-import { ChevronLeft, ChevronRight, Check, X } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { ySyncPluginKey } from "@tiptap/y-tiptap";
+import { ChevronLeft, ChevronRight, Check, RefreshCw, X } from "lucide-react";
 import "./suggestion-review.css";
 import { useEditorState, type Editor } from "@tiptap/react";
 import type { Node, Mark } from "@tiptap/pm/model";
+import { isAgentAuthor } from "../../lib/collab/colors";
 
 type Change = { key: string; from: number; to: number; author: string; before: string; after: string; turn: boolean };
 
@@ -18,7 +20,7 @@ function changesIn(doc: Node): Change[] {
     const key = identity
       ? JSON.stringify([identity, mark.attrs.actorId, mark.attrs.user])
       : previous?.to === pos && previous.mark.eq(mark) ? previous.key : JSON.stringify([pos, mark.toJSON()]);
-    const change = changes.get(key) ?? { key, from: pos, to: pos, author: mark.attrs.user || "Unknown collaborator", before: "", after: "", turn: !!mark.attrs.turnId };
+    const change = changes.get(key) ?? { key, from: pos, to: pos, author: mark.attrs.user || "Unknown collaborator", before: "", after: "", turn: !!mark.attrs.turnId || isAgentAuthor(mark.attrs.user) };
     if (mark.type.name === "deletion") change.before += node.text;
     else change.after += node.text;
     change.to = pos + node.nodeSize;
@@ -29,7 +31,12 @@ function changesIn(doc: Node): Change[] {
 }
 
 /** Resolve the current live range when acting; remote edits never freeze positions. */
-export function SuggestionReview({ editor, canReview }: { editor: Editor; canReview: boolean }) {
+/** The identity of the suggestion a mark belongs to (null: a run typed in Suggesting mode has none). */
+export function suggestionIdentity(mark: Mark | null | undefined): string | null {
+  return mark?.attrs.suggestionId ? JSON.stringify([mark.attrs.suggestionId, mark.attrs.actorId, mark.attrs.user]) : null;
+}
+
+export function SuggestionReview({ editor, canReview, onStale }: { editor: Editor; canReview: boolean; /** The change that "Needs refresh" (its identity), or null — so other accept controls withhold too. */ onStale?: (key: string | null) => void }) {
   const changes = useEditorState({ editor, selector: ({ editor: current }) => changesIn(current.state.doc) });
   const [cursor, setCursor] = useState<{ key: string; index: number } | null>(null);
   const [notice, setNotice] = useState("");
@@ -38,6 +45,40 @@ export function SuggestionReview({ editor, canReview }: { editor: Editor; canRev
   const found = cursor ? changes.findIndex(change => change.key === cursor.key) : 0;
   const index = found >= 0 ? found : Math.min(cursor?.index ?? 0, changes.length - 1);
   const change = changes[index];
+
+  // NP-CO-12 / NP-AI-02 "Needs refresh": the change on screen was EDITED BY SOMEONE ELSE after
+  // the reviewer was shown it (its words differ now and a collaborator's transaction arrived in
+  // between). Accept is withheld until they look again (Refresh) — nobody accepts words they
+  // have not read. The reviewer's own edits inside a suggestion never raise it. Only a change
+  // with an identity can be followed (an agent's, a suggest-only person's); a run typed in
+  // Suggesting mode has none, and a change that is gone is the "already reviewed" notice below.
+  const shown = useRef<{ key: string; before: string; after: string } | null>(null);
+  if (!change) shown.current = null;
+  else if (shown.current?.key !== change.key) shown.current = { key: change.key, before: change.before, after: change.after };
+  const [staleKey, setStaleKey] = useState<string | null>(null);
+  useEffect(() => {
+    const on = ({ editor: current, transaction }: { editor: Editor; transaction: { docChanged: boolean; getMeta(key: unknown): unknown } }) => {
+      const seen = shown.current;
+      if (!transaction.docChanged || !seen) return;
+      const now = changesIn(current.state.doc).find((item) => item.key === seen.key);
+      if (!now || (now.before === seen.before && now.after === seen.after)) return;
+      // A collaborator's (or an agent's) edit arrives through Yjs; the reviewer's own does not.
+      // (Only while the queue is open — a closed queue has shown nobody anything.)
+      // The reviewer's OWN undo / redo also arrives through Yjs: that is theirs, not someone else's.
+      const sync = transaction.getMeta(ySyncPluginKey) as { isUndoRedoOperation?: boolean } | undefined;
+      if (sync && !sync.isUndoRedoOperation && review.current?.open) setStaleKey(seen.key);
+      else shown.current = { key: seen.key, before: now.before, after: now.after };
+    };
+    editor.on("transaction", on);
+    return () => { editor.off("transaction", on); };
+  }, [editor]);
+  const stale = !!change && staleKey === change.key;
+  useEffect(() => { onStale?.(stale ? staleKey : null); }, [stale, staleKey, onStale]);
+  const refresh = () => {
+    if (change) shown.current = { key: change.key, before: change.before, after: change.after };
+    setStaleKey(null);
+    setNotice("");
+  };
 
   function choose(nextIndex: number) {
     const next = changes[nextIndex];
@@ -48,6 +89,7 @@ export function SuggestionReview({ editor, canReview }: { editor: Editor; canRev
     const current = changesIn(editor.state.doc).find(item => item.key === key);
     if (!current) { setNotice("This change has already been reviewed or changed."); return; }
     if (action !== "show" && !canReview) return;
+    if (action === "accept" && stale) return;
     const command = editor.chain().focus().setTextSelection(current.from);
     const applied = action === "show" ? command.scrollIntoView().run() : action === "accept" ? command.acceptSuggestion().run() : command.rejectSuggestion().run();
     if (action === "show") { setNotice(""); return; }
@@ -84,14 +126,16 @@ export function SuggestionReview({ editor, canReview }: { editor: Editor; canRev
       </nav>
       {!canReview && <p className="prism-review-hint">You can inspect changes. A collaborator with edit access can accept or reject them.</p>}
       <section aria-label={`Change by ${change.author}`}>
-        <header className="prism-review-author"><strong>{change.author}</strong>{change.turn && <span>Agent suggestion</span>}</header>
+        <header className="prism-review-author"><strong>{change.author}</strong>{change.turn && <span>Agent suggestion</span>}{stale && <span className="prism-review-stale">Needs refresh</span>}</header>
+        {stale && <p role="status" className="prism-review-hint">This change was edited after you opened it. Refresh to read it as it is now.</p>}
         <div className="prism-review-diff">
           {change.before && <div className="prism-review-before"><span>Remove</span><p>{change.before}</p></div>}
           {change.after && <div className="prism-review-after"><span>Insert</span><p>{change.after}</p></div>}
         </div>
         <div className="prism-review-actions">
           <button data-review-show className="focus-ring" onClick={() => act(change.key, "show")}>Show in document</button>
-          {canReview && <><button className="focus-ring" onClick={() => act(change.key, "reject")}><X size={15} aria-hidden="true" />Reject</button><button className="focus-ring prism-review-accept" onClick={() => act(change.key, "accept")}><Check size={15} aria-hidden="true" />Accept</button></>}
+          {stale && <button className="focus-ring" onClick={refresh}><RefreshCw size={15} aria-hidden="true" />Refresh</button>}
+          {canReview && <><button className="focus-ring" onClick={() => act(change.key, "reject")}><X size={15} aria-hidden="true" />Reject</button>{!stale && <button className="focus-ring prism-review-accept" onClick={() => act(change.key, "accept")}><Check size={15} aria-hidden="true" />Accept</button>}</>}
         </div>
       </section>
       {/* Phone: "accept / reject all" live here, not in the page's chrome row — so they exist only

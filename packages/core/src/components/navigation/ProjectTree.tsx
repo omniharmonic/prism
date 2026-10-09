@@ -451,7 +451,9 @@ export function ProjectTree() {
           return;
         }
         const next = renamePath(node.note.path, newName);
-        if (next) await actions.move(pageRef(node), { newPath: next });
+        if (next) await actions.move(pageRef(node), { newPath: next, title: newName });
+        // The file name already says it as far as a path can ("Road/map" over `Road-map`): only the stored title changes.
+        else if (newName.trim()) await actions.retitle(pageRef(node), newName);
         return;
       }
       try {

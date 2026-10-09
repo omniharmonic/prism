@@ -11,6 +11,12 @@
  */
 import type { VaultClient } from "../../data/VaultClient";
 import { PagesRequestError, isContainerPath, pageTitle, renamePath, type MoveResult } from "./model";
+import { syncStoredTitle, type StoredTitleOutcome } from "./storedTitle";
+
+export { syncStoredTitle };
+
+/** The page is renamed; the server refused the stored-title write (no permission, locked…): said once, no retry offered. */
+export const TITLE_REFUSED = "Renamed. The title shown in lists could not be changed — you can’t change this page’s properties.";
 import * as ops from "./ops";
 import { flushPendingSaves } from "../../app/hooks/useAutoSave";
 import { usePagesUI } from "./store";
@@ -78,6 +84,13 @@ function partialNotice(client: VaultClient, id: string, title: string, result: M
   });
 }
 
+/** The page is renamed, its stored title is not: kept in the title field with this reason — Enter tries the title again (no second move). */
+export const TITLE_NOT_UPDATED = "Renamed; the title could not be updated — try again.";
+class TitleNotUpdated extends Error {
+  readonly titleNotice = true;
+  constructor() { super(`${TITLE_NOT_UPDATED} Press Enter to retry.`); this.name = "TitleNotUpdated"; }
+}
+
 export interface TitleRenameResult {
   path: string;
   /** Some sub-pages have not moved yet. */
@@ -106,9 +119,8 @@ export async function renamePageFromTitle(
   onChanged?: () => void,
 ): Promise<TitleRenameResult | null> {
   const title = newName.trim();
-  if (isContainerPath(page.path)) {
-    if (!title) return null;
-    if (typeof navigator !== "undefined" && navigator.onLine === false) throw offlineRefusal();
+  /** A container-named page: the title is stored, nothing moves. */
+  const storeContainerTitle = async (path: string): Promise<TitleRenameResult> => {
     try {
       // A metadata-only write (merged by the vault): the body and the path are not sent.
       await client.updateNote(page.id, { metadata: { title } });
@@ -116,23 +128,56 @@ export async function renamePageFromTitle(
       throw refusalOf(e, title) ?? e;
     }
     onChanged?.();
-    return { path: page.path!, partial: false, title };
+    return { path, partial: false, title };
+  };
+  if (isContainerPath(page.path)) {
+    if (!title) return null;
+    if (typeof navigator !== "undefined" && navigator.onLine === false) throw offlineRefusal();
+    return storeContainerTitle(page.path!);
   }
-  const next = renamePath(page.path, newName);
-  if (!next) return null;
+  if (!title) return null;
   if (typeof navigator !== "undefined" && navigator.onLine === false) throw offlineRefusal();
   // What was just typed in the body goes first: a debounced autosave landing between our fresh
   // read and the move would make the move conflict with the page's own save.
   await flushPendingSaves(page.id).catch(() => {});
   let result: MoveResult;
+  let titleWrite: StoredTitleOutcome;
   try {
-    // CAS against the page as the server has it NOW (the tree's Rename does the same).
+    // CAS against the page as the server has it NOW (the tree's Rename does the same) — and the
+    // new path is worked out from where the page is now (a retry after a rename that already
+    // moved it must not ask for the same move again).
     const fresh = await client.getNote(page.id, { fresh: true });
+    const from = fresh?.path ?? page.path;
+    // The caller's path can be stale (the page was moved to `<folder>/PROJECT` elsewhere, the tab
+    // has not heard yet): the guard is repeated on the path the server has NOW — a container
+    // file is never moved by a title edit.
+    if (isContainerPath(from)) return await storeContainerTitle(from!);
+    const next = renamePath(from, newName);
+    if (!next) {
+      // The file name already says this (as far as a path can): only the stored title differs —
+      // "Plan- Q4/2026" over `…/Plan- Q4-2026` — so it is written without a move.
+      if (!from) return null;
+      titleWrite = await syncStoredTitle(client, fresh, from, title);
+      if (titleWrite === "failed") throw new TitleNotUpdated();
+      // Nothing moved and the title may not be written: the old title goes back, with the reason.
+      if (titleWrite === "refused") throw new TitleRenameRefused("The title could not be changed — you can’t change this page’s properties.", "title_refused");
+      if (titleWrite === "unchanged") return null;
+      onChanged?.();
+      return { path: from, partial: false };
+    }
     result = await ops.movePage(client, page.id, { newPath: next, ...(fresh?.updatedAt ? { ifUpdatedAt: fresh.updatedAt } : {}) });
+    // Before anyone is told: the lists re-read once, and must find the new name.
+    titleWrite = await syncStoredTitle(client, fresh, result.path, title);
   } catch (e) {
     throw refusalOf(e, title) ?? e;
   }
+  if (titleWrite === "failed") {
+    // The page IS renamed; say so everywhere, and keep the typed title in the field for the retry.
+    onChanged?.();
+    throw new TitleNotUpdated();
+  }
   onChanged?.();
+  if (titleWrite === "refused") usePagesUI.getState().showToast({ message: TITLE_REFUSED, tone: "error" });
   partialNotice(client, page.id, pageTitle(result.path) || title, result, onChanged);
   const name = pageTitle(result.path) || title;
   const moveId = !result.ok ? result.partial?.resume.moveId : undefined;

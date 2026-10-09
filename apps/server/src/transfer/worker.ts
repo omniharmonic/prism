@@ -9,7 +9,8 @@ import { parentPort, workerData } from "node:worker_threads";
 import { marked } from "marked";
 import { sanitizeHtml } from "@prism/core/import-export";
 import { taskListsInHtml } from "@prism/core/task-lists";
-import { ImportError, newTurndown, planUpload, type PlanRequest } from "./import-plan";
+import { ImportError, planUpload, type PlanRequest } from "./import-plan";
+import { newExportTurndown } from "./export-markdown";
 
 export type WorkerRequest =
   | { op: "to-markdown"; html: string }
@@ -22,7 +23,8 @@ export type WorkerRequest =
   | { op: "doc-seed"; content: string }
   | { op: "doc-html"; json: unknown };
 
-const turndown = newTurndown();
+// The export's HTML → Markdown: the import's turndown + the block rules (to-dos, tables, captions, bookmarks).
+const turndown = newExportTurndown();
 
 // The document conversions pull in TipTap + a DOM; loaded on first use so an
 // export/import worker that never needs them does not pay for it.
