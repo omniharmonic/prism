@@ -51,6 +51,9 @@ export function extractMentions(html: string | null | undefined): ParsedMention[
     let m: RegExpExecArray | null;
     while ((m = ATTR.exec(tag))) attrs[m[1]!.toLowerCase()] = decode(m[3] ?? m[4] ?? "");
     if (attrs["data-type"] !== "mention") continue;
+    // A chip that is only SUGGESTED (put in while Suggesting, editor/suggestionNodes) is not a
+    // mention yet: it notifies and links when the suggestion is accepted — never if rejected.
+    if (attrs["data-suggestion-node"] === "insert") continue;
     const kind = attrs["data-kind"];
     const k: MentionKind = kind === "person" || kind === "date" ? kind : "page";
     const cap = (v: string | undefined, max: number) => (v && v.length <= max ? v : null);

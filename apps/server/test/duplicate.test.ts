@@ -575,6 +575,21 @@ test("one audit row per duplicate, counts only", async () => {
 
 // ── the pure half ───────────────────────────────────────────────────────────
 
+test("cleanCopyBody: a suggested paragraph break / line break does not travel — the copy holds the page as it is without the suggestion", () => {
+  const ins = (text: string) => `<span data-suggestion="insert" data-user="Ann">${text}</span>`;
+  const at = (kind: string) => `data-suggestion-node="${kind}" data-suggestion-by="Ann"`;
+  // A split paragraph is one again; a new paragraph (its text is a suggested insertion) leaves nothing behind.
+  assert.equal(cleanCopyBody(`<p>one</p><p ${at("insert")}>two</p><p ${at("insert")}>${ins("new")}</p><p>end</p>`, () => "u"), "<p>onetwo</p><p>end</p>");
+  // A suggested line break is left out; one suggested for removal is still there. A suggested join is not made.
+  assert.equal(cleanCopyBody(`<p>a<br ${at("insert")}>b<br ${at("delete")}>c</p><p ${at("delete")}>d</p>`, () => "u"), "<p>ab<br>c</p><p>d</p>");
+  // Where the block before is of another kind the block stays — as a plain block, no attribute.
+  assert.equal(cleanCopyBody(`<p>a</p><h2 class="x" ${at("insert")}>t</h2><ul><li><p ${at("insert")}>i</p></li></ul>`, () => "u"), '<p>a</p><h2 class="x">t</h2><ul><li><p>i</p></li></ul>');
+  assert.ok(!cleanCopyBody(`<p>a</p><p ${at("insert")}>b</p>`.repeat(2000), () => "u").includes("data-suggestion"));
+  // A chip: a suggested one does not travel; one suggested for removal does, as a plain chip with a new uid.
+  const chip = (extra: string) => `<span data-type="mention" data-kind="date" data-date="2027-01-01" data-mention-uid="old" ${extra}>@x</span>`;
+  assert.equal(cleanCopyBody(`<p>a${chip(at("insert"))}b${chip(at("delete"))}c</p>`, () => "new"), '<p>ab<span data-type="mention" data-kind="date" data-date="2027-01-01" data-mention-uid="new">@x</span>c</p>');
+});
+
 test("cleanCopyBody: sub-page rows and page mentions are re-pointed only where a copy exists; without a map rows are dropped as before", () => {
   const html = '<p>a</p><div data-type="child-page" data-page-id="x1"></div><div data-type="child-page" data-page-id="x2"></div><p><span data-type="mention" data-kind="page" data-id="x1" data-mention-uid="u1">t</span><span data-type="mention" data-kind="person" data-id="x1" data-mention-uid="u2">n</span></p>';
   const out = cleanCopyBody(html, () => "new", { pageId: (id) => (id === "x1" ? "y1" : null) });

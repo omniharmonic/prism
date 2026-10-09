@@ -474,8 +474,8 @@ function planSuggest(doc: Y.Doc, prose: PMNode, command: Extract<HumanCollabComm
   // suggestion gives back EXACTLY the block as it is, and accepting it gives
   // EXACTLY the plain edit. So every node the command adds carries the insertion
   // mark, every node in the range carries the deletion mark, and nothing else
-  // changed. A range that can be marked only in part (inline code excludes other
-  // marks; a line break or image carries none) fails here; nothing is mutated.
+  // changed. A range that can be marked only in part (a line break or image
+  // carries no mark; inline code does carry them since schema v6) fails here; nothing is mutated.
   let stored: PMNode;
   try {
     stored = throughYjs(miniNext);

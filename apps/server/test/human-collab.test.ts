@@ -1029,7 +1029,7 @@ test("H1: a suggestion can never add unattributed content — line breaks are re
   assert.equal(writes(), 0);
 });
 
-test("H1: a range that cannot be marked completely is refused whole (code spans, line breaks, several paragraphs) — never a partial suggestion", { timeout: 20000 }, async () => {
+test("H1: a range that cannot be marked completely is refused whole (line breaks, several paragraphs) — never a partial suggestion; inline code can be marked (schema v6) and is exactly reversible", { timeout: 20000 }, async () => {
   const auth = userAuth(SUGGESTER);
   fv.put({ id: "mix", tags: ["garden"], content: "<p>aa <code>bb</code> cc</p><p>one<br>two</p><p>last</p>", updatedAt: T0 });
   const editor = await editorClient("mix");
@@ -1041,9 +1041,6 @@ test("H1: a range that cannot be marked completely is refused whole (code spans,
     return { from, to, quote: doc.textBetween(from, to, "\n", "\ufffc") };
   };
   for (const [label, sel, text] of [
-    ["delete across a code span", () => range("aa", "cc"), ""],
-    ["replace across a code span", () => range("aa", "cc"), "new"],
-    ["delete inside a code span", () => select(editor, "bb"), ""],
     ["delete across a line break", () => range("one", "two"), ""],
     ["replace across paragraphs", () => range("two", "last"), "joined"],
     ["delete across paragraphs", () => range("cc", "one"), ""],
@@ -1063,9 +1060,12 @@ test("H1: a range that cannot be marked completely is refused whole (code spans,
   assert.equal(ins.status, 200, JSON.stringify(ins.body));
   const del = await post("mix", await command(editor, () => ({ kind: "suggest", ...select(editor, "two"), text: "" })), auth);
   assert.equal(del.status, 200, JSON.stringify(del.body));
+  // Inside inline code too: the suggestion marks sit on code since schema v6 (they were excluded, so this was refused).
+  const code = await post("mix", await command(editor, () => ({ kind: "suggest", ...select(editor, "bb"), text: "BB" })), auth);
+  assert.equal(code.status, 200, JSON.stringify(code.body));
   const marked = pm(editor).toJSON() as PmNode;
   assert.equal(generateHTML(resolveSuggestions(marked, null, "reject") as never, collabExtensions()), html0);
-  assert.equal(generateHTML(resolveSuggestions(marked, null, "accept") as never, collabExtensions()), "<p>AA <code>bb</code> cc</p><p>one<br></p><p>last word</p>");
+  assert.equal(generateHTML(resolveSuggestions(marked, null, "accept") as never, collabExtensions()), "<p>AA <code>BB</code> cc</p><p>one<br></p><p>last word</p>");
 });
 
 test("H2: the endpoint addresses a note ONLY by its id — a path / title alias is 'not found', opens no second document and cannot wipe unsaved typing", { timeout: 20000 }, async () => {

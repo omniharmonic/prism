@@ -33,9 +33,9 @@ import { installFakeVault, resetDb, makeSession, sessionCookie, grantUser, type 
 // ── 1. The schema is pinned to its version ───────────────────────────────────
 
 /** Bump COLLAB_SCHEMA_VERSION and update this snapshot TOGETHER. */
-const SCHEMA_V5 = {
+const SCHEMA_V6 = {
   nodes: {
-    attachment: ["kind", "mimeType", "name", "size", "src"], blockquote: ["blockColor"], bookmark: ["description", "favicon", "image", "siteName", "title", "url"], bulletList: ["blockColor"], callout: ["blockColor", "emoji"], childPage: ["pageId"], codeBlock: ["language"], column: ["width"], columns: [], databaseView: ["noteId", "viewId"], doc: [], embed: ["height", "url"], hardBreak: [], heading: ["blockColor", "level"], horizontalRule: [], image: ["align", "alt", "caption", "height", "src", "title", "width"], listItem: [], mention: ["date", "id", "kind", "label", "reminder", "uid"], orderedList: ["blockColor", "start", "type"], paragraph: ["blockColor"], table: [], tableCell: ["align", "cellColor", "colspan", "colwidth", "rowspan"], tableHeader: ["align", "cellColor", "colspan", "colwidth", "rowspan"], tableOfContents: [], tableRow: [], taskItem: ["checked"], taskList: ["blockColor"], text: [], toggle: ["blockColor", "level"], toggleSummary: [],
+    attachment: ["kind", "mimeType", "name", "size", "src"], blockquote: ["blockColor"], bookmark: ["description", "favicon", "image", "siteName", "title", "url"], bulletList: ["blockColor"], callout: ["blockColor", "emoji"], childPage: ["pageId"], codeBlock: ["language", "suggestion", "suggestionBy"], column: ["width"], columns: [], databaseView: ["noteId", "viewId"], doc: [], embed: ["height", "url"], hardBreak: ["suggestion", "suggestionBy"], heading: ["blockColor", "level", "suggestion", "suggestionBy"], horizontalRule: [], image: ["align", "alt", "caption", "height", "src", "title", "width"], listItem: [], mention: ["date", "id", "kind", "label", "reminder", "suggestion", "suggestionBy", "uid"], orderedList: ["blockColor", "start", "type"], paragraph: ["blockColor", "suggestion", "suggestionBy"], table: [], tableCell: ["align", "cellColor", "colspan", "colwidth", "rowspan"], tableHeader: ["align", "cellColor", "colspan", "colwidth", "rowspan"], tableOfContents: [], tableRow: [], taskItem: ["checked"], taskList: ["blockColor"], text: [], toggle: ["blockColor", "level"], toggleSummary: ["suggestion", "suggestionBy"],
   },
   marks: {
     bold: [], code: [], comment: ["id", "resolved"], deletion: ["actorId", "color", "suggestionId", "turnId", "user"], highlight: ["color"], insertion: ["actorId", "color", "suggestionId", "turnId", "user"], italic: [], link: ["class", "href", "rel", "target", "title"], strike: [], textColor: ["color"], underline: [],
@@ -50,8 +50,30 @@ test("the document schema's node, mark and attribute names match COLLAB_SCHEMA_V
     nodes: names(Object.fromEntries(Object.entries(schema.nodes).map(([k, v]) => [k, v.spec]))),
     marks: names(Object.fromEntries(Object.entries(schema.marks).map(([k, v]) => [k, v.spec]))),
   };
-  assert.equal(COLLAB_SCHEMA_VERSION, 5, "bump the snapshot above together with the version");
-  assert.deepEqual(actual, SCHEMA_V5, "a node/mark/attribute changed: bump COLLAB_SCHEMA_VERSION (packages/core/src/editor/collabSchema.ts) and update SCHEMA_V5");
+  assert.equal(COLLAB_SCHEMA_VERSION, 6, "bump the snapshot above together with the version");
+  assert.deepEqual(actual, SCHEMA_V6, "a node/mark/attribute changed: bump COLLAB_SCHEMA_VERSION (packages/core/src/editor/collabSchema.ts) and update SCHEMA_V6");
+});
+
+test("every text block and every inline atom of the schema (line break, chip) can carry a suggestion record", () => {
+  // editor/suggestionNodes lists the types by name: a new text block type must be added there,
+  // or a paragraph break in front of it could not be suggested (Enter would stay untracked); an
+  // inline atom without them would be put in / taken out as a plain edit while Suggesting.
+  const schema = getSchema(collabExtensions());
+  const missing = Object.values(schema.nodes).filter((type) => (type.isTextblock || (type.isInline && !type.isText)) && !("suggestion" in (type.spec.attrs ?? {}))).map((type) => type.name);
+  assert.deepEqual(missing, []);
+});
+
+test("the suggestion marks can sit on ALL text: every text block allows them and no mark excludes them (inline code and code blocks included)", () => {
+  // Otherwise a change made there while Suggesting has no record — it was "applied directly" in code.
+  const schema = getSchema(collabExtensions());
+  const { insertion, deletion, code } = schema.marks;
+  const blocks = Object.values(schema.nodes).filter((type) => type.isTextblock && !(type.allowsMarkType(insertion!) && type.allowsMarkType(deletion!))).map((type) => type.name);
+  assert.deepEqual(blocks, []);
+  const excluding = Object.values(schema.marks).filter((mark) => mark !== insertion && mark !== deletion && (mark.excludes(insertion!) || mark.excludes(deletion!))).map((mark) => mark.name);
+  assert.deepEqual(excluding, []);
+  // Inline code still excludes every OTHER mark (bold code, a link in code… stay impossible) — and itself.
+  const allowedInCode = Object.values(schema.marks).filter((mark) => !code!.excludes(mark)).map((mark) => mark.name).sort();
+  assert.deepEqual(allowedInCode, ["deletion", "insertion"]);
 });
 
 test("schema params parse strictly", () => {
@@ -224,6 +246,9 @@ test("L1: markers are read the way an HTML parser reads them — quotes, case an
     "<details\n><summary>s</summary></details>",
     "<DETAILS><summary>s</summary></DETAILS>",
     "<div data-prism-database\t=\t'db1'></div>",
+    // v6: a suggested paragraph break / line break (an older editor would save the page without it).
+    '<p>a</p><p data-suggestion-node="insert" data-suggestion-by="Ann">b</p>',
+    '<p>a<br data-suggestion-node="delete" data-suggestion-by="Ann">b</p>',
     '<details data-type="toggle" data-heading-level = "2"><summary>s</summary></details>',
   ]) assert.equal(needsEditorUpdate(html), true, html);
   for (const html of ["<p>hello</p>", '<div data-type="other"><p>x</p></div>', "<p>the word data-type and data-block-color in prose</p>", "<p>&lt;detailsx&gt;</p>", "# Markdown with data-type=\"callout\" in text", "<detailsx>", '<p data-typeface="callout">x</p>']) {

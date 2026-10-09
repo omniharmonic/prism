@@ -1,7 +1,9 @@
 import { Extension } from "@tiptap/core";
 import { Plugin, Selection, TextSelection } from "@tiptap/pm/state";
 import { suggestionKey } from "./suggestionMeta";
-import { Mapping, ReplaceAroundStep, ReplaceStep, Transform, canJoin } from "@tiptap/pm/transform";
+import { Decoration, DecorationSet } from "@tiptap/pm/view";
+import { AddMarkStep, AttrStep, Mapping, RemoveMarkStep, ReplaceAroundStep, ReplaceStep, Transform, canJoin } from "@tiptap/pm/transform";
+import { joinTarget, nodeSuggestionOf, nodeSuggestions, removeBlockStart, resolveNodeSuggestion, resolveNodeSuggestions, setNodeSuggestion, type NodeSuggestion } from "./suggestionNodes";
 import { absolutePositionToRelativePosition, relativePositionToAbsolutePosition, ySyncPluginKey } from "@tiptap/y-tiptap";
 
 /**
@@ -12,6 +14,16 @@ import { absolutePositionToRelativePosition, relativePositionToAbsolutePosition,
  * (shared schema, isomorphic). This file uses the DOM (handleKeyDown) and is
  * client-only — never imported by the Node server.
  *
+ * STRUCTURE is tracked too (./suggestionNodes — two attributes on the node, which travel through
+ * Yjs where a mark would not): a new block START (Enter, a pasted paragraph, a table or a list
+ * from the slash menu) and a line break are stamped `insert`; Backspace at the start of a block
+ * and the removal of a line break stamp `delete`. Accept / Reject resolve them with the marks.
+ * A block the person made themselves (its start is their own pending suggestion) is theirs to
+ * re-shape — turn into a heading, wrap in a list — because Reject takes all of it out again.
+ * What has no tracked form is REFUSED, never applied as a plain edit: re-shaping a block that
+ * was already there, and adding a block that holds no text block (a divider, an image, an
+ * embed…) — the dispatch is taken back and the person is told (`SUGGESTION_STRUCTURE_MESSAGE`).
+ *
  * Removals are tracked at the TRANSACTION level (`appendTransaction`), not per key:
  * typing / pasting / composing (IME) / dropping over a selection, Enter over a
  * selection, cut, a phone keyboard's delete, autocorrect — any local `ReplaceStep`
@@ -19,20 +31,27 @@ import { absolutePositionToRelativePosition, relativePositionToAbsolutePosition,
  * a deletion (one undo step, one Yjs update). Backspace / Delete keep their key
  * handler (it also decides where the caret goes). What stays a real removal:
  *  - text that is the same person's own pending insertion (it just disappears);
- *  - removals that hold no content at all (joining two blocks, an empty block) —
- *    untracked, like the split Enter makes;
- *  - structure changes (lift / wrap / turn into): a `ReplaceAroundStep` that takes out node
- *    boundaries only. One that takes out TEXT — a replacement across nesting depth, e.g. from a
- *    paragraph into the first item of the list below — is tracked like any other removal.
+ *  - the start of a block that is the person's own pending suggestion (and a line break of
+ *    theirs): it just disappears.
+ * A removal that takes out nothing but the START of a block that was already there (a join) is
+ * put back and the block stamped `delete` — a tracked join. A `ReplaceAroundStep` that takes out
+ * TEXT — a replacement across nesting depth, e.g. from a paragraph into the first item of the
+ * list below — is tracked like any other removal.
  * Suggestion marks go on TEXT only — the sync layer carries marks on text and nowhere else,
- * so a "struck" chip or line break would exist in this session alone. Every leaf that is not
- * text (image, mention chip, divider, embed, sub-page row, database block, line break) is
- * therefore REFUSED: put back unmarked (with `onRefused`; a line break silently); a copy of it
- * that the same dispatch put elsewhere (dragged along with text) is taken out again.
+ * so a "struck" chip would exist in this session alone. Every leaf that is neither text nor an
+ * inline atom with a record of its own (image, divider, embed, sub-page row, database block) is
+ * therefore REFUSED: put back unmarked (with `onRefused`); a copy of it
+ * that the same dispatch put elsewhere (dragged along with text) is taken out again. A LINE
+ * BREAK and a CHIP (mention / date) are tracked through their attributes: one put in is stamped
+ * `insert`, a removed one is put back stamped `delete`. Every block start inside a removal that
+ * would have joined blocks is stamped `delete` too, so Accept gives the page the plain edit gives.
  * Not a removal: a removal made ONLY of such leaves that the same dispatch inserts again
- * (a drag of the chip / block itself: it MOVED). Text that cannot carry the mark (inline code,
- * a code block) is removed for real, with a notice — never put back unmarked beside its
- * replacement.
+ * (a drag of the chip / block itself: it MOVED). Text inside inline code and code blocks carries
+ * the marks like any text (the live schema lets it — collabSchema.ts `CODE_EXCLUDES`,
+ * `SuggestableCodeBlock`).
+ * FORMATTING text that was already there (a mark added or removed: bold, a link, a colour — and
+ * a suggestion mark taken off by hand) has no tracked form either: refused, with a notice; the
+ * text the person themselves suggested may be formatted. Comments are not edits.
  * There is NO exemption for "the same kind of node replaced the old one": pasting image B
  * over image A is a removal of A. Attribute changes are either gated off while Suggesting
  * (`structuralEditsAllowed`) or carry `SUGGESTION_UNTRACKED_META`.
@@ -49,10 +68,22 @@ import type { EditorState } from "@tiptap/pm/state";
 
 /** The contiguous suggestion run (insertion or deletion) covering `pos`, or null.
  *  Used for per-suggestion accept/reject and to show the inline bubble. */
+export type SuggestionAt =
+  | { type: "insertion" | "deletion"; from: number; to: number; mark: PMMark; node?: undefined }
+  /** A suggested paragraph break / line break (./suggestionNodes): no mark, the node itself. */
+  | { type: "insertion" | "deletion"; from: number; to: number; mark?: undefined; node: NodeSuggestion };
+
+/** The suggested break on the node at `pos`, in the shape `suggestionAt` returns. */
+function nodeSuggestionAt(doc: PMNode, pos: number): SuggestionAt | null {
+  const node = pos >= 0 && pos < doc.content.size ? doc.nodeAt(pos) : null;
+  const s = node && nodeSuggestionOf(node);
+  return node && s ? { type: s.kind === "insert" ? "insertion" : "deletion", from: pos, to: pos + node.nodeSize, node: { pos, node, ...s } } : null;
+}
+
 export function suggestionAt(
   state: EditorState,
   pos: number,
-): { type: "insertion" | "deletion"; from: number; to: number; mark: PMMark } | null {
+): SuggestionAt | null {
   const size = state.doc.content.size;
   const at = (from: number, to: number): PMMark | null => {
     if (from < 0 || to > size || from >= to) return null;
@@ -63,7 +94,15 @@ export function suggestionAt(
     return found;
   };
   const mark = at(pos, pos + 1) ?? at(pos - 1, pos);
-  if (!mark) return null;
+  if (!mark) {
+    // No suggested text here: a suggested line break beside the caret, or — with the caret at
+    // the very start of a block — that block's suggested paragraph break.
+    if (pos < 0 || pos > size) return null;
+    const $pos = state.doc.resolve(pos);
+    if ($pos.nodeAfter && isTrackedLeaf($pos.nodeAfter)) { const hit = nodeSuggestionAt(state.doc, pos); if (hit) return hit; }
+    if ($pos.nodeBefore && isTrackedLeaf($pos.nodeBefore)) { const hit = nodeSuggestionAt(state.doc, pos - 1); if (hit) return hit; }
+    return $pos.parent.isTextblock && $pos.parentOffset === 0 && $pos.depth > 0 ? nodeSuggestionAt(state.doc, $pos.before()) : null;
+  }
   let from = pos;
   while (from > 0 && state.doc.rangeHasMark(from - 1, from, mark)) from--;
   let to = pos;
@@ -94,23 +133,6 @@ function resolveIdentifiedSuggestion(state: EditorState, tr: Transaction, mark: 
   return true;
 }
 
-/** True if every text node in [a,b] is an insertion authored by `userName` —
- *  i.e. the user is deleting their OWN pending suggestion, so we can truly
- *  remove it instead of marking it struck-through. */
-function rangeHasOnlyOwnInsertion(state: EditorState, a: number, b: number, userName: string): boolean {
-  const ins = state.schema.marks.insertion;
-  if (!ins || a >= b) return false;
-  let any = false;
-  let allOwn = true;
-  state.doc.nodesBetween(a, b, (node) => {
-    if (!node.isText) return;
-    any = true;
-    const m = node.marks.find((mk) => mk.type === ins);
-    if (!m || m.attrs.user !== userName) allOwn = false;
-  });
-  return any && allOwn;
-}
-
 /** A removed slice that needs no record: no content at all (a join, an empty block),
  *  or nothing but the person's own pending insertions. */
 function keepsNothing(slice: Slice, insertion: MarkType, userName: string): boolean {
@@ -118,11 +140,21 @@ function keepsNothing(slice: Slice, insertion: MarkType, userName: string): bool
   slice.content.descendants((node) => {
     if (keep) return false;
     if (!node.isLeaf) return true;
+    if (isTrackedLeaf(node) && ownStart(node, userName)) return false; // their own pending line break / chip
     const mine = node.isText ? node.marks.find((m) => m.type === insertion) : undefined;
     if (!mine || mine.attrs.user !== userName) keep = true;
     return false;
   });
   return !keep;
+}
+
+const isLineBreak = (node: PMNode) => node.type.name === "hardBreak";
+/** An inline leaf that carries its own suggestion record (./suggestionNodes): a line break, a mention / date chip. */
+const isTrackedLeaf = (node: PMNode) => node.isLeaf && !node.isText && "suggestion" in node.attrs;
+/** Is this node's start (a block) / this node (a line break) the person's OWN pending suggestion? */
+function ownStart(node: PMNode, userName: string): boolean {
+  const s = nodeSuggestionOf(node);
+  return !!s && s.kind === "insert" && s.by === userName;
 }
 
 /** Removed content waiting to go back in: where (current document), and what. In a live
@@ -132,9 +164,9 @@ interface Held { pos: number; slice: Slice; rel?: unknown; /** Its place could n
 interface HeldState { held: Held[] }
 const heldOf = (state: EditorState): Held[] => (suggestionKey.getState(state) as HeldState | undefined)?.held ?? [];
 
-/** A leaf that is not text and not a line break: an image, a mention chip, a divider, an embed…
- *  (inline or block — the name is historical). Removing one raises the notice; a line break does not. */
-const isBlockLeaf = (node: PMNode) => node.isLeaf && !node.isText && node.type.name !== "hardBreak";
+/** A leaf that is not text and carries no suggestion record of its own: an image, a divider, an
+ *  embed… Removing one raises the notice; a line break or a chip is tracked instead (`isTrackedLeaf`). */
+const isBlockLeaf = (node: PMNode) => node.isLeaf && !node.isText && !isTrackedLeaf(node);
 
 /**
  * The stretches of TEXT in [from, to), each ended by any leaf that is not text. Suggestion
@@ -215,29 +247,49 @@ function continuedAfter(doc: PMNode, b: number, openEnd: number): boolean[] {
  * removed; text already struck keeps its mark; a leaf that is not text stays (`refused`).
  * Returns where `b` is afterwards.
  */
-export function strikeInPlace(tr: Transaction, a: number, b: number, ctx: { insertion: MarkType; deletion: MarkType; userName: string }): { end: number; refused: boolean; untracked: boolean } {
+export function strikeInPlace(tr: Transaction, a: number, b: number, ctx: { insertion: MarkType; deletion: MarkType; userName: string; /** The removal would JOIN the blocks it spans (typed / pasted over, cut, Backspace — not Enter): every block start inside it is stamped as a suggested join, so Accept gives the page the plain edit would have. */ joins?: boolean }): { end: number; refused: boolean; untracked: boolean } {
   const { insertion, deletion, userName } = ctx;
   const strike: Array<[number, number]> = [];
   const drop: Array<[number, number]> = [];
   let run: [number, number] | null = null;
   const close = () => { if (run) strike.push(run); run = null; };
   const out = { refused: false, untracked: false };
+  const breaks: number[] = [];
+  const ownStarts: number[] = [];
   tr.doc.nodesBetween(a, b, (node, pos, parent) => {
-    if (!node.isLeaf) { close(); return; }
+    if (!node.isLeaf) {
+      close();
+      // A block START inside the range: the person's own pending one is taken out again, any
+      // other is stamped as a suggested join.
+      if (ctx.joins && node.isTextblock && pos >= a && pos < b) { if (ownStart(node, userName)) ownStarts.push(pos); else if (!nodeSuggestionOf(node)) breaks.push(pos); }
+      return;
+    }
     const range: [number, number] = [Math.max(pos, a), Math.min(pos + node.nodeSize, b)];
     if (range[1] <= range[0]) return;
-    if (!node.isText) { close(); if (isBlockLeaf(node)) out.refused = true; return; }
+    if (!node.isText) {
+      close();
+      if (isBlockLeaf(node)) out.refused = true;
+      // A line break / a chip: their own pending one goes, any other is stamped as a suggested removal.
+      else if (ownStart(node, userName)) drop.push(range);
+      else if (!nodeSuggestionOf(node)) breaks.push(pos);
+      return;
+    }
     const mine = node.marks.find((m) => m.type === insertion);
     if (mine && mine.attrs.user === userName) { close(); drop.push(range); }
     else if (node.marks.some((m) => m.type === deletion)) close();
-    else if (!canStrike(node, parent, deletion)) { close(); drop.push(range); out.untracked = true; }
+    else if (!canStrike(node, parent, deletion)) { close(); out.untracked = true; } // stays / comes back as it was: never removed without a record
     else if (run && run[1] === range[0]) run[1] = range[1];
     else { close(); run = [range[0], range[1]]; }
   });
   close();
   const first = tr.steps.length;
   for (const [x, y] of strike) tr.addMark(x, y, deletion.create({ user: userName, color: "#ef4444" }));
+  for (const at of breaks) setNodeSuggestion(tr, at, "delete", userName);
+  const stamped = tr.steps.length;
   for (const [x, y] of drop.sort((m, n) => n[0] - m[0])) tr.delete(x, y);
+  for (const pos of ownStarts.reverse()) {
+    try { removeBlockStart(tr, tr.mapping.slice(stamped).map(pos), (other) => ownStart(other, userName)); } catch { /* the block stays, still their suggestion */ }
+  }
   return { end: tr.mapping.slice(first).map(b, -1), ...out };
 }
 
@@ -252,9 +304,10 @@ export function putBackMessages(r: PutBackResult): string[] {
  * Put removed content back into `tr` as tracked deletions — last position first, so earlier
  * positions stay valid.
  *  - the person's own pending insertion is not restored; text already struck keeps its mark;
- *  - text that cannot carry the mark (inline code, a code block) stays removed (`untracked`);
+ *  - text that could not carry the mark (none in the live schema — code carries it) comes back
+ *    as it was (`untracked`, with a notice): never removed without a record;
  *  - a leaf that is not text (a chip, an image, a divider…) takes no mark: it comes back
- *    unmarked (`refused`; a line break silently), and a copy of it the same dispatch put
+ *    unmarked (`refused`; a line break or a chip is stamped as a suggested removal instead), and a copy of it the same dispatch put
  *    elsewhere (`moved` — it was dragged along with text) is taken out again;
  *  - a slice the document cannot take back in place (the fitter places nothing, drops part of
  *    it, or would change the shape of a table / column layout around it) is kept as struck text
@@ -264,7 +317,7 @@ export function putBackMessages(r: PutBackResult): string[] {
  */
 export function putBack(
   tr: Transaction,
-  items: Array<{ at: number; slice: Slice; pure: boolean; order: number; /** `continuedAfter` of the removal, when it ended inside nested blocks. */ rejoin?: boolean[] }>,
+  items: Array<{ at: number; slice: Slice; pure: boolean; order: number; /** `continuedAfter` of the removal, when it ended inside nested blocks. */ rejoin?: boolean[]; /** The removal took out nothing but the start of a block that was already there: it is stamped as a suggested join. */ join?: boolean }>,
   ctx: { selection: Selection; insertion: MarkType; deletion: MarkType; userName: string; /** Block leaves the dispatch inserted… */ moved?: PMNode[]; /** …and where (ranges in `tr.doc` as it is at the call). */ arrivedIn?: Array<[number, number]> },
 ): PutBackResult {
   const { selection, insertion, deletion, userName } = ctx;
@@ -314,13 +367,25 @@ export function putBack(
     let run: [number, number] | null = null;
     const close = () => { if (run) strike.push(run); run = null; };
     const drop: Array<[number, number]> = [];
+    const stamps: number[] = [];
+    // Block starts that were the person's own pending suggestion: taken out again below.
+    const ownStarts: number[] = [];
     tr.doc.nodesBetween(at, end, (node, pos, parent) => {
+      // A join put back: the block whose start came back is stamped (never the person's own, never one already stamped).
+      // (So Accept of a selection typed over across blocks joins them, as the plain edit would.)
+      if (node.isTextblock && pos >= at && pos < end) { if (ownStart(node, userName)) ownStarts.push(pos); else if (!nodeSuggestionOf(node)) stamps.push(pos); }
       if (!node.isLeaf) return;
       const range: [number, number] = [Math.max(pos, at), Math.min(pos + node.nodeSize, end)];
       if (range[1] <= range[0]) return;
       if (!node.isText) {
         // ANY leaf that is not text ends the run (a line break included: it takes no mark).
-        if (!isBlockLeaf(node)) { close(); return; }
+        if (!isBlockLeaf(node)) {
+          close();
+          // A line break: their own pending one stays out, any other is a suggested removal.
+          if (ownStart(node, userName)) drop.push(range);
+          else if (!nodeSuggestionOf(node)) stamps.push(pos);
+          return;
+        }
         close();
         // A leaf (an image, a chip…) cannot be struck: it stays where it was. If the same
         // dispatch also put it somewhere else (it was dragged along with text), that copy is
@@ -333,12 +398,14 @@ export function putBack(
       const mine = node.marks.find((m) => m.type === insertion);
       if (mine && mine.attrs.user === userName) { close(); drop.push(range); }
       else if (node.marks.some((m) => m.type === deletion)) close();
-      else if (!canStrike(node, parent, deletion)) { close(); drop.push(range); out.untracked = true; }
+      else if (!canStrike(node, parent, deletion)) { close(); out.untracked = true; } // stays / comes back as it was: never removed without a record
       else if (run) run[1] = range[1];
       else run = [range[0], range[1]];
     });
     close();
     for (const [a, b] of strike) tr.addMark(a, b, struck());
+    for (const pos of stamps) setNodeSuggestion(tr, pos, "delete", userName);
+    const stamped = tr.steps.length;
     // The removal ended inside nested blocks (a list, a quote…) that went on after it: what was
     // left of each stands right behind the part just put back — they are one block again.
     // (Outermost first: a join further out does not move the places further in — nor the
@@ -360,6 +427,9 @@ export function putBack(
       });
     }
     for (const [a, b] of drop.sort((x, y) => y[0] - x[0])) tr.delete(a, b);
+    for (const pos of ownStarts.reverse()) {
+      try { removeBlockStart(tr, tr.mapping.slice(stamped).map(pos), (other) => ownStart(other, userName)); } catch { /* the block stays, still their suggestion */ }
+    }
     // A plain removal (cut, a phone keyboard's delete): the caret goes BEFORE the struck
     // text, where Backspace leaves it, so the next delete moves on.
     if (r.pure && selection.empty && selection.from === r.at) caret = { at, step: tr.steps.length };
@@ -382,6 +452,48 @@ export function putBack(
   return { ...out, caret: !!caret };
 }
 
+/** What a fragment holds, block shapes aside: its text and its other leaves, in order. */
+function contentKey(content: Fragment): string {
+  let key = "";
+  content.descendants((node) => { if (node.isText) key += node.text; else if (node.isLeaf) key += `\u0000${node.type.name}\u0000`; });
+  return key;
+}
+
+/**
+ * A replacement of WHOLE blocks by other whole blocks that hold exactly the same text and leaves:
+ * a re-shape written as a replacement (turn into a callout / a toggle, an empty line replaced by
+ * a table) — structure, not a removal and an insertion of that text.
+ */
+function sameContentReshaped(before: PMNode, step: ReplaceStep): boolean {
+  if (step.to <= step.from || step.slice.openStart || step.slice.openEnd || !step.slice.content.firstChild?.isBlock) return false;
+  const out = before.slice(step.from, step.to);
+  if (out.openStart || out.openEnd || !out.content.firstChild?.isBlock) return false;
+  return contentKey(out.content) === contentKey(step.slice.content);
+}
+
+/** Which stretches of a fragment's text are suggested, by whom and how — whatever other marks or blocks split them. */
+function suggestedRuns(content: Fragment): string {
+  let key = "";
+  let last = "";
+  content.descendants((node) => {
+    if (!node.isText) return;
+    const sig = node.marks.filter((m) => m.type.name === "insertion" || m.type.name === "deletion").map((m) => `${m.type.name}:${m.attrs.user}:${m.attrs.suggestionId ?? ""}`).sort().join("|");
+    key += sig === last ? node.text : `\u0001${sig}\u0001${node.text}`;
+    last = sig;
+  });
+  return key;
+}
+
+/** The characters a Markdown shortcut (a TipTap input rule) consumed, when this transaction is one. */
+function typedByRule(t: Transaction): { from: number; to: number; text: string } | null {
+  const meta = (t as unknown as { meta?: Record<string, unknown> }).meta;
+  for (const value of Object.values(meta ?? {})) {
+    const v = value as { transform?: unknown; from?: unknown; to?: unknown; text?: unknown } | null;
+    if (v && typeof v === "object" && v.transform === t && typeof v.from === "number" && typeof v.to === "number" && typeof v.text === "string") return { from: v.from, to: v.to, text: v.text };
+  }
+  return null;
+}
+
 /** What the ySync plugin's state holds (y-tiptap), as far as this file reads it. */
 interface YSync { doc: unknown; type: unknown; binding: { mapping: unknown } | null }
 
@@ -391,25 +503,29 @@ declare module "@tiptap/core" {
       setSuggesting: (on: boolean) => ReturnType;
       acceptAllSuggestions: () => ReturnType;
       rejectAllSuggestions: () => ReturnType;
-      acceptSuggestion: () => ReturnType;
-      rejectSuggestion: () => ReturnType;
+      /** The suggestion at the caret — or, given a position, the suggested break on the node there. */
+      acceptSuggestion: (nodePos?: number) => ReturnType;
+      rejectSuggestion: (nodePos?: number) => ReturnType;
     };
   }
 }
 
 export interface SuggestionOptions {
   user: SuggestionUser;
-  /** A notice for the editor's status line: a removal suggesting cannot record was put back, applied directly (code) or misplaced (see the file header). */
+  /** A notice for the editor's status line: a change suggesting cannot record was refused or put back, or text was kept beside the change (see the file header). */
   onRefused?: (message: string) => void;
 }
 
 export { SUGGESTION_UNTRACKED_META } from "./suggestionMeta";
 
-export const SUGGESTION_REFUSED_MESSAGE = "Images, mentions and other blocks can’t be removed while suggesting (or moved along with text) — switch to Editing for that.";
-export const SUGGESTION_CODE_MESSAGE = "Changes inside code aren’t tracked while suggesting — this one was applied directly.";
+export const SUGGESTION_REFUSED_MESSAGE = "Images, dividers and other blocks can’t be removed while suggesting (or moved along with text) — switch to Editing for that.";
+/** Text that cannot carry the deletion mark. No text of the live schema is like that (inline code and code blocks carry the marks since schema v6 — pinned by apps/server/test/collab-schema-gate); if one ever is, it is left as it was, never removed without a record. */
+export const SUGGESTION_CODE_MESSAGE = "Some of this text can’t carry a suggestion — it was left as it is.";
+export const SUGGESTION_FORMAT_MESSAGE = "Formatting text that was already there can’t be tracked while suggesting — nothing was changed. Format the text you add, or switch to Editing.";
 export const SUGGESTION_LOST_MESSAGE = "A block removed while suggesting could not be put back — use Undo to bring it back.";
 export const SUGGESTION_TODO_MESSAGE = "Checking a to-do isn’t tracked while suggesting — switch to Editing to check it.";
 export const SUGGESTION_ISOLATED_MESSAGE = "A change that starts in one table cell or column and ends outside it can’t be tracked while suggesting — nothing was changed. Select inside one cell, or switch to Editing.";
+export const SUGGESTION_STRUCTURE_MESSAGE = "Dividers, images and other blocks can’t be added while suggesting, and a block that is already there can’t be turned into another kind — nothing was changed. Start a new line for a new block, or switch to Editing.";
 export const SUGGESTION_MISPLACED_MESSAGE = "Some removed text could not go back where it was — it was kept, struck, next to the change.";
 
 export const SuggestionMode = Extension.create<SuggestionOptions>({
@@ -450,6 +566,8 @@ export const SuggestionMode = Extension.create<SuggestionOptions>({
           });
           // delete from end → start so positions stay valid
           for (const [from, to] of delRanges.reverse()) tr.delete(tr.mapping.map(from), tr.mapping.map(to));
+          // Then the suggested breaks: a new block stays, a suggested join is made.
+          resolveNodeSuggestions(tr, null, "accept");
           tr.setMeta(suggestionKey, true); // a review action is never itself a suggestion
           if (dispatch) dispatch(tr);
           return true;
@@ -472,6 +590,8 @@ export const SuggestionMode = Extension.create<SuggestionOptions>({
             }
           });
           for (const [from, to] of insRanges.reverse()) tr.delete(tr.mapping.map(from), tr.mapping.map(to));
+          // Then the suggested breaks (the inserted text is gone, so a new block is seen to be empty).
+          resolveNodeSuggestions(tr, null, "reject");
           tr.setMeta(suggestionKey, true);
           if (dispatch) dispatch(tr);
           return true;
@@ -479,11 +599,12 @@ export const SuggestionMode = Extension.create<SuggestionOptions>({
 
       // Accept just the suggestion at the cursor (Google-Docs per-change accept).
       acceptSuggestion:
-        () =>
+        (nodePos?: number) =>
         ({ state, tr, dispatch }) => {
-          const r = suggestionAt(state, state.selection.from);
+          const r = typeof nodePos === "number" ? nodeSuggestionAt(state.doc, nodePos) : suggestionAt(state, state.selection.from);
           if (!r) return false;
-          if (!resolveIdentifiedSuggestion(state, tr, r.mark, "accept")) {
+          if (r.node) resolveNodeSuggestion(tr, r.node.pos, "accept");
+          else if (!resolveIdentifiedSuggestion(state, tr, r.mark, "accept")) {
             if (r.type === "deletion") tr.delete(r.from, r.to);
             else tr.removeMark(r.from, r.to, r.mark);
           }
@@ -494,11 +615,12 @@ export const SuggestionMode = Extension.create<SuggestionOptions>({
 
       // Reject just the suggestion at the cursor.
       rejectSuggestion:
-        () =>
+        (nodePos?: number) =>
         ({ state, tr, dispatch }) => {
-          const r = suggestionAt(state, state.selection.from);
+          const r = typeof nodePos === "number" ? nodeSuggestionAt(state.doc, nodePos) : suggestionAt(state, state.selection.from);
           if (!r) return false;
-          if (!resolveIdentifiedSuggestion(state, tr, r.mark, "reject")) {
+          if (r.node) resolveNodeSuggestion(tr, r.node.pos, "reject");
+          else if (!resolveIdentifiedSuggestion(state, tr, r.mark, "reject")) {
             if (r.type === "insertion") tr.delete(r.from, r.to);
             else tr.removeMark(r.from, r.to, r.mark);
           }
@@ -511,6 +633,8 @@ export const SuggestionMode = Extension.create<SuggestionOptions>({
 
   addProseMirrorPlugins() {
     const ext = this;
+    // The "↵" widgets of the document last drawn (rebuilt only when the document changes).
+    let breakMarks: { doc: PMNode | null; set: DecorationSet } = { doc: null, set: DecorationSet.empty };
     return [
       new Plugin({
         key: suggestionKey,
@@ -588,10 +712,47 @@ export const SuggestionMode = Extension.create<SuggestionOptions>({
             if (view.composing && Date.now() - endedAt < 1000) { timer = setTimeout(settle, 80); return; }
             flush();
           };
+          // A composition (IME) about to start over a selection that crosses NESTING DEPTH (from a
+          // paragraph into the list below…), or the boundary of a table cell / column. Replacing
+          // such a selection is tracked by taking the dispatch back and redoing it (see
+          // `appendTransaction`) — which redraws the composing text and so ENDS the composition.
+          // So the selection is dealt with BEFORE the first composed character exists: struck
+          // where it stands (nothing across a cell boundary: that is refused, as everywhere), the
+          // caret put IN FRONT of it (where a cut leaves it — behind it the composed text would
+          // start inside the struck run, and moving it out mid-composition ends the composition).
+          // The composition then runs at a plain caret, and what it writes is marked inserted like
+          // any typing. (Capture phase: before ProseMirror reads the selection for the composition.)
+          const preStrike = () => {
+            if (!ext.storage.suggesting || view.isDestroyed || !view.editable) return;
+            const { state } = view;
+            const { selection } = state;
+            const insertion = state.schema.marks.insertion;
+            const deletion = state.schema.marks.deletion;
+            if (!insertion || !deletion || selection.empty || !(selection instanceof TextSelection)) return;
+            const { $from, $to, from, to } = selection;
+            if ($from.sameParent($to)) return;
+            const slice = selection.content();
+            const isolated = crossesIsolating(state.doc, from, to);
+            if (!isolated && $from.depth === $to.depth && slice.openStart === slice.openEnd) return;
+            const tr = state.tr.setMeta(suggestionKey, true);
+            const messages: string[] = [];
+            if (isolated) messages.push(SUGGESTION_ISOLATED_MESSAGE);
+            else {
+              const result = strikeInPlace(tr, from, to, { insertion, deletion, userName: ext.options.user.name, joins: true });
+              if (result.refused) messages.push(SUGGESTION_REFUSED_MESSAGE);
+              if (result.untracked) messages.push(SUGGESTION_CODE_MESSAGE);
+            }
+            try {
+              tr.setSelection(TextSelection.create(tr.doc, from));
+              view.dispatch(tr);
+            } catch { return; }
+            for (const message of messages) ext.options.onRefused?.(message);
+          };
           // Composition per the browser's own events (ProseMirror's flag can stay set).
           let composingNow = false;
           const onCompositionStart = () => {
             composingNow = true;
+            preStrike();
             // A new composition inside the wait: the wait starts over at ITS end — nothing is put back mid-composition.
             if (timer !== null) { clearTimeout(timer); timer = null; }
           };
@@ -600,7 +761,7 @@ export const SuggestionMode = Extension.create<SuggestionOptions>({
           const onBlur = () => { if (!composingNow) flush(); };
           // Leaving the editor or the page ends any composition for our purposes.
           const onHidden = () => { if (document.visibilityState === "hidden") flush(); };
-          view.dom.addEventListener("compositionstart", onCompositionStart);
+          view.dom.addEventListener("compositionstart", onCompositionStart, true);
           view.dom.addEventListener("compositionend", onCompositionEnd);
           view.dom.addEventListener("blur", onBlur);
           window.addEventListener("pagehide", flush);
@@ -621,7 +782,7 @@ export const SuggestionMode = Extension.create<SuggestionOptions>({
               // Before the collaboration plugin goes (this plugin is listed before it): the
               // dispatch still reaches the shared document.
               flush();
-              view.dom.removeEventListener("compositionstart", onCompositionStart);
+              view.dom.removeEventListener("compositionstart", onCompositionStart, true);
               view.dom.removeEventListener("compositionend", onCompositionEnd);
               view.dom.removeEventListener("blur", onBlur);
               window.removeEventListener("pagehide", flush);
@@ -650,8 +811,14 @@ export const SuggestionMode = Extension.create<SuggestionOptions>({
           // carried to the final document.
           const all = new Mapping();
           for (const t of transactions) for (const map of t.mapping.maps) all.appendMap(map);
-          const added: Array<{ k: number; from: number; to: number }> = [];
-          let removed: Array<{ k: number; pos: number; slice: Slice; pure: boolean; rejoin?: boolean[] }> = [];
+          const added: Array<{ k: number; from: number; to: number; /** Text in it is marked inserted. */ mark: boolean; /** Block starts and line breaks in it are stamped as suggested. */ stamp: boolean }> = [];
+          let removed: Array<{ k: number; pos: number; slice: Slice; pure: boolean; rejoin?: boolean[]; join?: boolean }> = [];
+          // A re-shape of a block that was already there, or an attribute change on one: REFUSED.
+          let structural = false;
+          // A mark added to / taken off text that was already there (formatting): REFUSED.
+          let formatted = false;
+          // Blocks without a text block of their own (a divider, an image, an embed…) this dispatch put in.
+          const blocksIn: PMNode[] = [];
           // A removal across the boundary of a table cell / column: the whole dispatch is taken back.
           let isolated = false;
           // A removal across nesting depth (see `inPlace` below): [a, b) in the document before the dispatch.
@@ -666,14 +833,74 @@ export const SuggestionMode = Extension.create<SuggestionOptions>({
           let k = 0;
           for (const t of transactions) {
             const on = tracked(t);
+            // The person's own edit — not what another plugin appended to it (a trailing paragraph,
+            // a table repair): only their own edit is held to the structure rules and stamped.
+            const mine = on && t.getMeta("appendedTransaction") === undefined;
             t.steps.forEach((step, i) => {
               const map = t.mapping.maps[i]!;
               const before = t.docs[i]!;
               const made: Array<[number, number]> = [];
               if (on) {
-                if (step instanceof ReplaceStep || step instanceof ReplaceAroundStep) step.slice.content.descendants((node) => { if (isBlockLeaf(node)) arrived.push(node); });
+                // A block is the person's OWN when its start is their pending suggestion — or was
+                // made earlier in this very dispatch (Enter at the start of a heading splits it and
+                // then re-types the emptied first half).
+                const inFresh = (pos: number) => fresh.some(([a, b]) => pos >= a && pos < b);
+                const ownBlock = (node: PMNode, pos: number) => ownStart(node, user.name) || inFresh(pos) || (node.content.size === 0 && inFresh(pos + node.nodeSize - 1));
+                const allOwn = (from: number, to: number, own: (node: PMNode, pos: number) => boolean = ownBlock) => {
+                  let any = false;
+                  let all = true;
+                  before.nodesBetween(from, to, (node, pos) => { if (!node.isTextblock) return true; any = true; if (!own(node, pos)) all = false; return false; });
+                  return any && all;
+                };
+                // STRUCTURE: a step that re-shapes blocks and takes no content out (lift / wrap /
+                // turn into, also written as a same-content replacement), or changes an attribute.
+                // On the person's own pending blocks it is theirs to make (Reject takes the whole
+                // block out again); on anything that was already there it has no tracked form.
+                let reshape = false;
+                // A re-shaped block keeps its stamp only when its START was the suggestion (the emptied
+                // first half of a heading split at its start is re-typed, but its start was there before).
+                let restamp = false;
+                if (mine && (step instanceof AddMarkStep || step instanceof RemoveMarkStep)) {
+                  const name = step.mark.type.name;
+                  // A suggestion mark is only ever put on or taken off by this plugin and by the review
+                  // commands (both carry the plugin's meta): by hand it would settle a suggestion unreviewed.
+                  if (name === "insertion" || name === "deletion") formatted = true;
+                  // A comment is not an edit. Any other mark is formatting: theirs to change on text
+                  // they suggested themselves (or put in earlier in this dispatch), nowhere else.
+                  else if (name !== "comment") before.nodesBetween(step.from, step.to, (node, pos) => {
+                    if (!node.isText) return !formatted;
+                    const own = node.marks.find((m) => m.type === insertion);
+                    if (!(own && own.attrs.user === user.name) && !inFresh(Math.max(pos, step.from))) formatted = true;
+                    return false;
+                  });
+                }
+                if (mine) {
+                  if (step instanceof AttrStep) {
+                    const target = before.nodeAt(step.pos);
+                    if (!target || !(target.isTextblock ? ownBlock(target, step.pos) : ownStart(target, user.name))) structural = true;
+                  } else if (step instanceof ReplaceAroundStep) {
+                    if (keepsNothing(before.slice(step.from, step.gapFrom), insertion, user.name) && keepsNothing(before.slice(step.gapTo, step.to), insertion, user.name)) reshape = true;
+                  } else if (step instanceof ReplaceStep && sameContentReshaped(before, step)) reshape = true;
+                  if (reshape) {
+                    const { from, to } = step as ReplaceStep;
+                    if (!allOwn(from, to)) structural = true;
+                    // A re-shape written as a replacement must carry every suggestion mark along
+                    // (one that rebuilt the text bare would turn suggested text into plain text).
+                    if (step instanceof ReplaceStep && suggestedRuns(before.slice(from, to).content) !== suggestedRuns(step.slice.content)) structural = true;
+                    restamp = allOwn(from, to, (node, pos) => ownStart(node, user.name) || inFresh(pos));
+                  }
+                }
+                if (!reshape && (step instanceof ReplaceStep || step instanceof ReplaceAroundStep)) step.slice.content.descendants((node) => {
+                  if (!isBlockLeaf(node)) return;
+                  arrived.push(node);
+                  if (mine && node.isBlock) blocksIn.push(node);
+                });
+                // (Also what another plugin appended because of the edit — the empty paragraph kept
+                // after a new last block: it came with the suggestion and goes with it.)
+                const stamp = reshape ? restamp : step instanceof ReplaceStep;
                 map.forEach((oldStart, oldEnd, newStart, newEnd) => {
-                  if (newEnd > newStart) { added.push({ k, from: newStart, to: newEnd }); made.push([newStart, newEnd]); }
+                  if (newEnd > newStart) { added.push({ k, from: newStart, to: newEnd, mark: !reshape, stamp }); made.push([newStart, newEnd]); }
+                  if (reshape) return;
                   // Any step that takes content out is read — a ReplaceAroundStep too: a replacement
                   // that crosses nesting depth (from a paragraph into the list, quote or table cell
                   // below it, or out of one) is written as one (the rest of the last block is carried
@@ -690,10 +917,21 @@ export const SuggestionMode = Extension.create<SuggestionOptions>({
                   if (at < oldEnd) pieces.push([at, oldEnd]);
                   for (const [a, b] of pieces) {
                     const slice = before.slice(a, b);
-                    if (keepsNothing(slice, insertion, user.name)) continue;
+                    let join = false;
+                    if (keepsNothing(slice, insertion, user.name)) {
+                      // Nothing but boundaries (and the person's own pending text). When one of them is
+                      // the START of a block that was already there, this is a JOIN: it is put back
+                      // and the block stamped as a suggested join — never a plain edit.
+                      if (mine && step instanceof ReplaceStep) before.nodesBetween(a, b, (node, pos) => {
+                        if (!node.isTextblock) return true;
+                        if (pos >= a && pos < b && !ownBlock(node, pos)) join = true;
+                        return false;
+                      });
+                      if (!join) continue;
+                    }
                     if (crossesIsolating(before, a, b)) isolated = true;
                     if (step instanceof ReplaceAroundStep || slice.openStart !== slice.openEnd) deep.at = { a, b, put: [newStart, newEnd], first: k === 0 };
-                    removed.push({ k, pos: newStart, slice, pure: newEnd === newStart, rejoin: slice.openEnd > 1 ? continuedAfter(before, b, slice.openEnd) : undefined });
+                    removed.push({ k, pos: newStart, slice, pure: newEnd === newStart, rejoin: slice.openEnd > 1 ? continuedAfter(before, b, slice.openEnd) : undefined, join });
                   }
                 });
               }
@@ -720,7 +958,10 @@ export const SuggestionMode = Extension.create<SuggestionOptions>({
               return !onlyMoved;
             });
           }
-          if (!added.length && !removed.length) return null;
+          if (!added.length && !removed.length && !structural && !formatted) return null;
+          // (Also one that went out in the same dispatch — a drag of an image: moving a block that
+          // was already there is a change with no tracked form, like adding one.)
+          const blockAdded = blocksIn.length > 0;
 
           const tell = ext.options.onRefused;
           const local = transactions.filter(tracked);
@@ -745,6 +986,33 @@ export const SuggestionMode = Extension.create<SuggestionOptions>({
             const back = takenBack();
             if (back) {
               if (tell) queueMicrotask(() => tell(SUGGESTION_ISOLATED_MESSAGE));
+              return back;
+            }
+          }
+          // REFUSED: structure with no tracked form — a block that was already there re-shaped
+          // (turned into a heading, wrapped in a list, an attribute changed), or a block added
+          // that holds no text block to carry the record (a divider, an image, an embed…).
+          // Nothing changes, and the person is told what does work. A Markdown shortcut ("# ",
+          // "- ", "---") that would have done it leaves the characters the person typed.
+          if (structural || blockAdded || formatted) {
+            const back = takenBack();
+            if (back) {
+              const rule = local.length === 1 && transactions[0] === local[0] ? typedByRule(local[0]!) : null;
+              if (rule && rule.from === rule.to && rule.text) {
+                try {
+                  const $at = back.doc.resolve(rule.from);
+                  if ($at.parent.inlineContent) {
+                    back.insertText(rule.text, rule.from, rule.to);
+                    for (const [x, y] of textRuns(back.doc, rule.from, rule.from + rule.text.length)) {
+                      back.addMark(x, y, insertion.create({ user: user.name, color: user.color }));
+                      back.removeMark(x, y, deletion);
+                    }
+                    back.setSelection(TextSelection.create(back.doc, rule.from + rule.text.length));
+                  }
+                } catch { /* the characters are not typed: nothing else changes */ }
+              }
+              const why = structural || blockAdded ? SUGGESTION_STRUCTURE_MESSAGE : SUGGESTION_FORMAT_MESSAGE;
+              if (tell) queueMicrotask(() => tell(why));
               return back;
             }
           }
@@ -776,7 +1044,14 @@ export const SuggestionMode = Extension.create<SuggestionOptions>({
             const put = holds ? raw : null;
             const back = takenBack();
             if (back) {
-              const result = strikeInPlace(back, spot.a, spot.b, { insertion, deletion, userName: user.name });
+              // A join across depth (the start of a block that was already there): a suggested join.
+              if (removed[0]!.join) {
+                const starts: number[] = [];
+                back.doc.nodesBetween(spot.a, spot.b, (node, pos) => { if (!node.isTextblock) return true; if (pos >= spot.a && pos < spot.b && !nodeSuggestionOf(node)) starts.push(pos); return false; });
+                for (const pos of starts) setNodeSuggestion(back, pos, "delete", user.name);
+              }
+              // (Enter over such a selection leaves the blocks apart, as the plain edit does: no join is suggested.)
+              const result = strikeInPlace(back, spot.a, spot.b, { insertion, deletion, userName: user.name, joins: one });
               // A plain removal (cut): the caret goes BEFORE the struck text, as everywhere.
               let caret = one && removed[0]!.pure ? spot.a : result.end;
               let placed = true;
@@ -805,12 +1080,23 @@ export const SuggestionMode = Extension.create<SuggestionOptions>({
             }
           }
 
+          // While an IME composition is running the document around the composing text
+          // must not be redrawn (the browser would end the composition and commit a
+          // half-typed character): what the composition replaced is HELD in plugin state
+          // and put back when it ends (`releaseHeld`), or with the next ordinary edit.
+          const composing = transactions.some((t) => tracked(t) && t.getMeta("composition") !== undefined);
           const tr = newState.tr.setMeta(suggestionKey, true);
-          for (const { k: at, from, to } of added) {
+          const stamps: number[] = [];
+          for (const { k: at, from, to, mark, stamp } of added) {
             const rest = all.slice(at + 1);
             const a = rest.map(from, 1);
             const b = rest.map(to, -1);
             if (b <= a) continue;
+            // A block START or a line break the person put in (Enter, Shift+Enter, a pasted
+            // paragraph, a table from the slash menu) is stamped as their suggestion — the
+            // record a mark cannot be (see ./suggestionNodes).
+            if (stamp) tr.doc.nodesBetween(a, b, (node, pos) => { if (pos >= a && pos < b && (node.isTextblock || isTrackedLeaf(node))) stamps.push(pos); return true; });
+            if (!mark) continue;
             // On TEXT only (a chip or a line break put in carries no mark — see `textRuns`).
             for (const [x, y] of textRuns(tr.doc, a, b)) {
               tr.addMark(x, y, insertion.create({ user: user.name, color: user.color }));
@@ -823,12 +1109,8 @@ export const SuggestionMode = Extension.create<SuggestionOptions>({
             });
           }
 
-          // While an IME composition is running the document around the composing text
-          // must not be redrawn (the browser would end the composition and commit a
-          // half-typed character): what the composition replaced is HELD in plugin state
-          // and put back when it ends (`releaseHeld`), or with the next ordinary edit.
-          const composing = transactions.some((t) => tracked(t) && t.getMeta("composition") !== undefined);
-          const here: Array<{ at: number; slice: Slice; pure: boolean; order: number; rejoin?: boolean[] }> = removed.map((r, order) => ({ at: all.slice(r.k + 1).map(r.pos, -1), slice: r.slice, pure: r.pure, order, rejoin: r.rejoin }));
+          for (const pos of stamps) setNodeSuggestion(tr, pos, "insert", user.name);
+          const here: Array<{ at: number; slice: Slice; pure: boolean; order: number; rejoin?: boolean[]; join?: boolean }> = removed.map((r, order) => ({ at: all.slice(r.k + 1).map(r.pos, -1), slice: r.slice, pure: r.pure, order, rejoin: r.rejoin, join: r.join }));
           if (composing) {
             if (here.length) tr.setMeta(suggestionKey, { hold: here.map(({ at, slice }) => ({ pos: at, slice })) });
             return tr.steps.length || here.length ? tr : null;
@@ -846,6 +1128,29 @@ export const SuggestionMode = Extension.create<SuggestionOptions>({
           return tr.steps.length || result.caret || held?.length ? tr : null;
         },
         props: {
+          // A suggested LINE BREAK is drawn as a small "↵" in front of it (a <br> cannot show
+          // anything itself). A suggested paragraph break needs none: the block's own element
+          // carries `data-suggestion-node` (styles/collab.css draws the "¶").
+          decorations(state) {
+            if (breakMarks.doc !== state.doc) {
+              const marks = nodeSuggestions(state.doc).filter((s) => isTrackedLeaf(s.node)).map((s) => {
+                const title = `${s.kind === "insert" ? "Suggested" : "Removal suggested"} by ${s.by || "a collaborator"}`;
+                // A chip is drawn by its own view: it takes a class (struck / underlined in styles/collab.css).
+                if (!isLineBreak(s.node)) return Decoration.node(s.pos, s.pos + s.node.nodeSize, { class: `prism-suggested-chip prism-suggested-chip-${s.kind}`, "data-suggested-by": s.by, title });
+                return Decoration.widget(s.pos, () => {
+                  const el = document.createElement("span");
+                  el.className = "prism-suggested-break";
+                  el.dataset.kind = s.kind;
+                  el.dataset.user = s.by;
+                  el.contentEditable = "false";
+                  el.title = `Line break: ${title.toLowerCase()}`;
+                  return el;
+                }, { side: -1, key: `suggested-break:${s.kind}:${s.by}`, ignoreSelection: true });
+              });
+              breakMarks = { doc: state.doc, set: marks.length ? DecorationSet.create(state.doc, marks) : DecorationSet.empty };
+            }
+            return breakMarks.set;
+          },
           handleKeyDown(view, event) {
             if (!ext.storage.suggesting) return false;
             const isBack = event.key === "Backspace";
@@ -857,35 +1162,68 @@ export const SuggestionMode = Extension.create<SuggestionOptions>({
             const deletion = state.schema.marks.deletion;
             if (!deletion || !insertion) return false;
             const { user } = ext.options;
-            const { from, to, empty } = state.selection;
+            const { from, to, empty, $from } = state.selection;
             const size = state.doc.content.size;
+
+            // At the EDGE of a block the key speaks about the paragraph break: Backspace at the
+            // start, about the one in front of this block; Delete at the end, about the one in
+            // front of the next. The person's own pending break is really taken out again; a
+            // break that was already there is stamped as a suggested join (Accept joins the two
+            // blocks, Reject keeps them). Where nothing could be joined (the first block, a
+            // block after an image, another table cell) the key does nothing.
+            if (empty && $from.depth > 0 && $from.parent.isTextblock && (isBack ? $from.parentOffset === 0 : $from.parentOffset === $from.parent.content.size)) {
+              let blockPos = isBack ? $from.before() : -1;
+              if (!isBack) {
+                const after = $from.after();
+                state.doc.nodesBetween(after, size, (node, pos) => {
+                  if (blockPos >= 0) return false;
+                  if (!node.isTextblock) return true;
+                  if (pos >= after) blockPos = pos;
+                  return false;
+                });
+              }
+              const block = blockPos >= 0 ? state.doc.nodeAt(blockPos) : null;
+              const target = block ? joinTarget(state.doc, blockPos) : null;
+              if (!block || !target || (!isBack && target.pos !== $from.before())) return true;
+              const tr = state.tr.setMeta(suggestionKey, true);
+              if (ownStart(block, user.name)) removeBlockStart(tr, blockPos, (other) => ownStart(other, user.name));
+              else if (!nodeSuggestionOf(block)) setNodeSuggestion(tr, blockPos, "delete", user.name);
+              // The caret goes where the key would leave it: Backspace to the end of the block before, Delete stays.
+              try {
+                const at = tr.mapping.map(isBack ? target.end : tr.steps.length && ownStart(block, user.name) ? from : blockPos + 1, -1);
+                const $at = tr.doc.resolve(Math.min(at, tr.doc.content.size));
+                tr.setSelection($at.parent.inlineContent ? TextSelection.create(tr.doc, $at.pos) : Selection.near($at, -1));
+              } catch { /* the mapped selection stands */ }
+              view.dispatch(tr.scrollIntoView());
+              return true;
+            }
 
             // Mark [a,b] as a tracked deletion (or truly remove if it's the
             // user's own pending insertion), then place the cursor at `caret`.
             const strike = (a: number, b: number, caret: number) => {
               if (a < 0 || b > size || a >= b) return false;
-              // Text that cannot carry the mark (inline code, a code block): let the key do its
-              // ordinary work — the removal is then applied directly, with the notice (appendTransaction).
-              // …and so does a selection that MIXES such text with ordinary text (the ordinary part is
-              // then struck, the code part removed, with the notice). A leaf that is not text (a chip,
-              // an image, a line break) cannot be struck at all: the key is refused, and says so.
+              // Text that could not carry the mark (none in the live schema: code carries it too) is
+              // never removed without a record: the key is refused. An image / divider / embed
+              // cannot be struck or stamped at all: the key is refused, and says so.
               let unmarkable = false;
               let leaf = false;
               state.doc.nodesBetween(a, b, (node, _pos, parent) => {
                 if (node.isText) { if (!canStrike(node, parent, deletion)) unmarkable = true; }
-                else if (node.isLeaf) leaf = true;
+                else if (isBlockLeaf(node)) leaf = true;
               });
               if (leaf) { ext.options.onRefused?.(SUGGESTION_REFUSED_MESSAGE); return true; }
-              if (unmarkable) return false;
+              if (unmarkable) { ext.options.onRefused?.(SUGGESTION_CODE_MESSAGE); return true; }
               const tr = state.tr.setMeta(suggestionKey, true); // not an insertion
-              if (rangeHasOnlyOwnInsertion(state, a, b, user.name)) {
-                tr.delete(a, b);
-                tr.setSelection(TextSelection.create(tr.doc, a));
-              } else {
-                for (const [x, y] of textRuns(state.doc, a, b)) tr.addMark(x, y, deletion.create({ user: user.name, color: "#ef4444" }));
-                const c = Math.min(Math.max(caret, 0), tr.doc.content.size);
-                tr.setSelection(TextSelection.create(tr.doc, c));
-              }
+              // Struck where it stands: the person's own pending text / line breaks / chips simply
+              // go, a line break or a chip that was there is stamped as a suggested removal, and a
+              // block start inside the range as a suggested join (the key would have joined them).
+              const first = tr.steps.length;
+              strikeInPlace(tr, a, b, { insertion, deletion, userName: user.name, joins: true });
+              const c = Math.min(Math.max(tr.mapping.slice(first).map(caret, -1), 0), tr.doc.content.size);
+              try {
+                const $c = tr.doc.resolve(c);
+                tr.setSelection($c.parent.inlineContent ? TextSelection.create(tr.doc, c) : Selection.near($c, -1));
+              } catch { /* the mapped selection stands */ }
               view.dispatch(tr);
               return true;
             };
