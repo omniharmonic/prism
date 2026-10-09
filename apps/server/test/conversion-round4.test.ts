@@ -37,6 +37,7 @@ import { ConversionError, configureConversion, contentToSeed, conversionStats, f
 import * as precheck from "../src/convert/precheck";
 import { vaultClient } from "../src/parachute";
 import { db } from "../src/db";
+import { probed, turnsUntilSettled } from "./probe";
 import { installFakeVault, makeCapability, makeSession, resetDb, sessionCookie, type FakeVault } from "./helpers";
 
 const OWNER = "owner@test.local";
@@ -218,25 +219,6 @@ async function call(cl: Client, name: string, args: Record<string, unknown>): Pr
 const ownerHeaders = () => ({ cookie: sessionCookie(makeSession(OWNER)), ...J, "x-prism-editor-schema": String(COLLAB_SCHEMA_VERSION), "sec-fetch-site": "same-origin" });
 
 
-/** Run `fn` while a 10 ms timer measures the longest gap between its ticks (the event loop's worst stall). */
-async function probed<T>(fn: () => Promise<T> | T): Promise<{ value?: T; error?: unknown; maxLagMs: number; ms: number }> {
-  let last = performance.now();
-  let maxLagMs = 0;
-  const timer = setInterval(() => {
-    const now = performance.now();
-    maxLagMs = Math.max(maxLagMs, now - last - 10);
-    last = now;
-  }, 10);
-  const start = performance.now();
-  try {
-    const value = await fn();
-    return { value, maxLagMs: Math.max(maxLagMs, performance.now() - last - 10), ms: performance.now() - start };
-  } catch (error) {
-    return { error, maxLagMs: Math.max(maxLagMs, performance.now() - last - 10), ms: performance.now() - start };
-  } finally {
-    clearInterval(timer);
-  }
-}
 const typeInto = (doc: Y.Doc, words: string): void => {
   const p = doc.getXmlFragment("default").get(0) as Y.XmlElement;
   const t = p.get(0) as Y.XmlText;
@@ -341,19 +323,25 @@ test("M4: the worker heap ceiling is modest by default, and what is parsed at al
 test("M4: consecutive killed workers open a circuit breaker — no more respawns until a cool-down, then one trial", { timeout: 120_000 }, async () => {
   await stopConversionWorkers();
   restore.push(configureConversion({ threads: 1, timeoutMs: 250, timeoutPerMbMs: 0, timeoutMaxMs: 250, failureTtlMs: 0, ...({ breakerFailures: 3, breakerCooldownMs: 1200, breakerCooldownMaxMs: 5000, actorBreakerFailures: 3, actorCooldownMs: 1200, actorCooldownMaxMs: 5000 } as object) }));
+  // The cool-downs are read from a clock only this test moves (see H-1 in conversion-round5.test.ts).
+  let at = Date.now();
+  restore.push(service.setConversionClock(() => at));
+  const clock = { advance: (ms: number) => void (at += ms) };
   const who = { actor: "user:slow@test.local" };
   const bomb = (i: number) => "*a ".repeat(6000) + i; // marked is quadratic: seconds in the worker
   const reasons: string[] = [];
   for (let i = 0; i < 3; i++) reasons.push(await service.markdownToHtml(bomb(i), who).then(() => "ok", (e) => (e as ConversionError).reason));
   assert.deepEqual(reasons, ["timeout", "timeout", "timeout"]);
   const spawned = conversionStats.worker;
-  const start = performance.now();
-  const fourth = await service.markdownToHtml(bomb(3), who).then(() => "ok", (e) => (e as ConversionError).reason);
+  // "At once": answered within a few turns of the event loop — it waited for no thread and no timer. (Counted in
+  // turns, not milliseconds: a timeout would be hundreds of turns away, on any machine.)
+  const asked = turnsUntilSettled(service.markdownToHtml(bomb(3), who).then(() => "ok", (e) => (e as ConversionError).reason));
+  const fourth = await asked.result;
   assert.equal(fourth, "busy", "answered busy — says nothing about the input, callers retry later");
-  assert.ok(performance.now() - start < 100, "at once");
+  assert.ok(asked.turns() <= 3, `at once (${asked.turns()} event-loop turns)`);
   assert.equal(conversionStats.worker, spawned, "no thread was spawned for it");
   // After the cool-down ONE task is let through; a success closes the breaker.
-  await new Promise((r) => setTimeout(r, 1300));
+  clock.advance(1200);
   restore.push(configureConversion({ timeoutMs: 20_000, timeoutMaxMs: 20_000, inlineMaxChars: 0, inlineMaxNodes: 0 }));
   assert.equal(await service.markdownToHtml("ok *then*", who), "<p>ok <em>then</em></p>\n");
   assert.equal(await service.markdownToHtml("and again", who), "<p>and again</p>\n");
@@ -528,6 +516,9 @@ test("M2: a page that can NEVER be saved answers a NON-retry error (REST, restor
 // ── M3 ──────────────────────────────────────────────────────────────────────
 
 test("M3: a store whose render was overtaken by a fold never saves its older snapshot over the row — every write is sent from a consistent row", { timeout: 120_000 }, async () => {
+  // Not a test of timeouts: a healthy conversion must not be cut short because the machine is busy
+  // (the wall-clock limit is 8 s by default; a starved worker thread once read as "too complex" here).
+  restore.push(configureConversion({ timeoutMs: 100_000, timeoutMaxMs: 100_000 }));
   // Big enough that the store's render runs in the worker (awaited), small external body (folded at once).
   fv.put({ id: "m3", tags: ["garden"], content: "<p>x</p>".repeat(3200), updatedAt: T0 });
   const doc = await loadDocumentState("m3", new Y.Doc());

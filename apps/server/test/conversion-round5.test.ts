@@ -37,6 +37,7 @@ import { ConversionError, configureConversion, contentToSeed, conversionStats, f
 import * as precheck from "../src/convert/precheck";
 import { vaultClient } from "../src/parachute";
 import { db } from "../src/db";
+import { probed } from "./probe";
 import { installFakeVault, makeCapability, makeSession, resetDb, sessionCookie, type FakeVault } from "./helpers";
 import { HTML_SHAPES, MD_SHAPES, table } from "./fixtures/conversion-shapes";
 
@@ -219,25 +220,6 @@ async function call(cl: Client, name: string, args: Record<string, unknown>): Pr
 const ownerHeaders = () => ({ cookie: sessionCookie(makeSession(OWNER)), ...J, "x-prism-editor-schema": String(COLLAB_SCHEMA_VERSION), "sec-fetch-site": "same-origin" });
 
 
-/** Run `fn` while a 10 ms timer measures the longest gap between its ticks (the event loop's worst stall). */
-async function probed<T>(fn: () => Promise<T> | T): Promise<{ value?: T; error?: unknown; maxLagMs: number; ms: number }> {
-  let last = performance.now();
-  let maxLagMs = 0;
-  const timer = setInterval(() => {
-    const now = performance.now();
-    maxLagMs = Math.max(maxLagMs, now - last - 10);
-    last = now;
-  }, 10);
-  const start = performance.now();
-  try {
-    const value = await fn();
-    return { value, maxLagMs: Math.max(maxLagMs, performance.now() - last - 10), ms: performance.now() - start };
-  } catch (error) {
-    return { error, maxLagMs: Math.max(maxLagMs, performance.now() - last - 10), ms: performance.now() - start };
-  } finally {
-    clearInterval(timer);
-  }
-}
 const typeInto = (doc: Y.Doc, words: string): void => {
   const p = doc.getXmlFragment("default").get(0) as Y.XmlElement;
   const t = p.get(0) as Y.XmlText;
@@ -326,7 +308,7 @@ test("C-1: whatever still converts inline is small — the LARGEST 'cheap' input
       const r = await probed(() => contentToSeed(input));
       assert.ok(r.error === undefined || r.error instanceof ConversionError, `${kind}, ${label}: ${String(r.error)}`);
       assert.equal(conversionStats.inline, before + 1, `${kind}, ${label}: converted inline`);
-      worst.push([`${kind}, ${label} (${input.length} B)`, Math.round(r.maxLagMs), Math.round(r.ms)]);
+      worst.push([`${kind}, ${label} (${input.length} B)`, Math.round(r.maxLagMs), Math.round(r.cpuMs)]);
       assert.ok(r.maxLagMs < LOOP_BUDGET_MS, `${kind}, ${label}: ${input.length} bytes inline stalled the loop ${r.maxLagMs.toFixed(0)} ms`);
     }
   }
@@ -628,15 +610,20 @@ function tune(patch: Partial<Tuning>): void {
   restore.push(() => void Object.assign(tuning, was));
 }
 /** While `during` runs, every read of `id`'s history takes `ms` (a hung vault) — unless the caller gives up first (its abort signal is honoured). */
+/** What happened to the history reads made under `slowHistory`. */
+const historyCalls = { asked: 0, served: 0, abandoned: 0 };
 async function slowHistory<T>(id: string, ms: number, during: () => Promise<T>): Promise<T> {
   const inner = globalThis.fetch;
   globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
     const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
     if (!url.pathname.includes(`/notes/${id}/versions`)) return inner(input, init);
+    historyCalls.asked++;
     return new Promise<Response>((resolve, reject) => {
-      const timer = setTimeout(() => resolve(inner(input, init)), ms);
+      // `Infinity`: the vault never answers — only the caller giving up ends the request.
+      const timer = Number.isFinite(ms) ? setTimeout(() => { historyCalls.served++; resolve(inner(input, init)); }, ms) : undefined;
       init?.signal?.addEventListener("abort", () => {
         clearTimeout(timer);
+        historyCalls.abandoned++;
         reject(init.signal!.reason ?? new Error("aborted"));
       });
     });
@@ -663,10 +650,14 @@ test("M-6: a history lookup that hangs cannot hold a page's load — it gives up
   tune({ historyCallMs: 300, historyDeadlineMs: 700 });
   await lostAckThenExternal("m6", (c) => c + "<p>EXTERNAL</p>");
   resetReconcileState(); // a restart: nothing in memory
-  const started = performance.now();
-  const reopened = await slowHistory("m6", 5000, () => loadDocumentState("m6", new Y.Doc()));
-  const took = performance.now() - started;
-  assert.ok(took < 2500, `the load waited ${took.toFixed(0)} ms on the note's history`);
+  // The history NEVER answers here. A load that waited for it would never finish (the test would time out);
+  // what is asserted is that the load finished because it gave the lookup up — not how many milliseconds
+  // that took on this machine.
+  Object.assign(historyCalls, { asked: 0, served: 0, abandoned: 0 });
+  const reopened = await slowHistory("m6", Infinity, () => loadDocumentState("m6", new Y.Doc()));
+  assert.ok(historyCalls.asked >= 1, "the history was asked for");
+  assert.equal(historyCalls.served, 0, "and never answered");
+  assert.equal(historyCalls.abandoned, historyCalls.asked, "every lookup was given up at its deadline");
   assert.deepEqual(eachOnce(yDocToHtml(reopened), ["start", "edit one", "EXTERNAL"]), [1, 1, 1], yDocToHtml(reopened));
 });
 

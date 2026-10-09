@@ -27,6 +27,7 @@ import { hocuspocus, loadDocumentState, mergeIsSane, occurrences, reconcileLoade
 import * as service from "../src/convert/service";
 import { ConversionError, configureConversion, forgetConversionFailures, stopConversionWorkers } from "../src/convert/service";
 import { vaultClient } from "../src/parachute";
+import { cpuOf } from "./probe";
 import { installFakeVault, makeSession, resetDb, sessionCookie, type FakeVault } from "./helpers";
 
 const OWNER = "owner@test.local";
@@ -281,9 +282,9 @@ test("S-3 (follow-up): counting a run of text in a page is linear — periodic t
     ["all matches", "a".repeat(25_000), 4],
     ["period two", "ab".repeat(20_000) + "b", 0],
   ] as const) {
-    const started = performance.now();
-    assert.equal(occurrences(label === "period two" ? "ab".repeat(50_000) : hay, needle), want, label);
-    const ms = performance.now() - started;
+    // CPU time of this thread (./probe): the search's cost, whatever else the machine is doing.
+    const text = label === "period two" ? "ab".repeat(50_000) : hay;
+    const { cpuMs: ms } = cpuOf(() => assert.equal(occurrences(text, needle), want, label));
     assert.ok(ms < 150, `${label}: ${ms.toFixed(0)} ms for 100 KB`);
   }
 });
