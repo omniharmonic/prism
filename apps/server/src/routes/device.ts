@@ -35,10 +35,13 @@ import {
   AUTH_CODE_TTL_MS,
   AUTH_REQUEST_TTL_MS,
   DEVICE_TOKEN_PREFIX,
-  NATIVE_CLIENT_ID,
   bearerFromHeader,
+  OMNI_CLIENT_ID,
   consentCsrf,
+  defaultLabelFor,
   isAllowedRedirectUri,
+  isKnownClientId,
+  redirectAllowedForClient,
   isValidChallenge,
   isValidVerifier,
   issueDeviceToken,
@@ -141,10 +144,10 @@ function consentPage(c: Context, req: DeviceAuthRequestRow, email: string, sessi
     200,
     "Sign in Prism",
     `<h1>Allow an app to sign in as you?</h1>` +
-      `<p>An app calling itself “${esc(req.label ?? "Prism app")}” wants to sign in to Prism as <strong>${esc(email)}</strong>. ` +
+      `<p>An app calling itself “${esc(req.label ?? defaultLabelFor(req.client_id))}” wants to sign in to Prism as <strong>${esc(email)}</strong>. ` +
       `If you approve, it will see and edit exactly what you can.</p>` +
       `<p>The sign-in will be sent to:<br><code style="font-size:14px;font-weight:600">${esc(target)}</code>${esc(targetNote)}</p>` +
-      `<p class="muted">Only approve if you just started signing in from the Prism app yourself. ` +
+      `<p class="muted">Only approve if you just started signing in from the ${req.client_id === OMNI_CLIENT_ID ? "Omni" : "Prism"} app yourself. ` +
       `You can revoke this device anytime in Settings → Account.</p>` +
       `<form method="post" action="/auth/device/approve">` +
       `<input type="hidden" name="req" value="${esc(req.id)}"><input type="hidden" name="csrf" value="${esc(csrf)}">` +
@@ -191,7 +194,11 @@ deviceAuth.get("/device/authorize", (c) => {
   const q = c.req.query();
   // 1. redirect_uri + client first — an invalid one is NEVER redirected to.
   if (!isAllowedRedirectUri(q.redirect_uri)) return errorPage(c, 400, "This app asked to return to an address that isn't registered with this Prism server.");
-  if (q.client_id !== NATIVE_CLIENT_ID) return errorPage(c, 400, "Unknown client.");
+  if (!isKnownClientId(q.client_id)) return errorPage(c, 400, "Unknown client.");
+  // An app's own custom scheme is honoured only for that app (prism:// ↔ prism-native,
+  // omni:// ↔ omni-native) — same refusal, same page, still before any login.
+  if (!redirectAllowedForClient(q.client_id, q.redirect_uri)) return errorPage(c, 400, "This app asked to return to an address that isn't registered with this Prism server.");
+  const clientId = q.client_id;
   const redirectUri = q.redirect_uri;
   const state = q.state;
   // Pre-consent errors are NEVER bounced back to the redirect URI (no error
@@ -208,11 +215,11 @@ deviceAuth.get("/device/authorize", (c) => {
   const now = Date.now();
   const req: DeviceAuthRequestRow = {
     id: randomId(24),
-    client_id: NATIVE_CLIENT_ID,
+    client_id: clientId,
     redirect_uri: redirectUri,
     code_challenge: q.code_challenge,
     state: state ?? null,
-    label: sanitizeLabel(q.label),
+    label: sanitizeLabel(q.label, defaultLabelFor(clientId)),
     created_at: now,
     expires_at: now + AUTH_REQUEST_TTL_MS,
   };
@@ -272,7 +279,7 @@ deviceAuth.post("/device/approve", async (c) => {
 deviceAuth.post("/device/token", async (c) => {
   const f = await readBody(c);
   if (f.grant_type !== "authorization_code") return oauthError(c, 400, "unsupported_grant_type");
-  if (f.client_id !== NATIVE_CLIENT_ID) return oauthError(c, 401, "invalid_client");
+  if (!isKnownClientId(f.client_id)) return oauthError(c, 401, "invalid_client");
   if (!f.code || !f.redirect_uri || !isValidVerifier(f.code_verifier)) return oauthError(c, 400, "invalid_request");
 
   const hash = sha256hex(f.code);
@@ -288,7 +295,7 @@ deviceAuth.post("/device/token", async (c) => {
   if (row.client_id !== f.client_id || row.redirect_uri !== f.redirect_uri) return oauthError(c, 400, "invalid_grant");
   if (!safeEqual(s256(f.code_verifier), row.code_challenge)) return oauthError(c, 400, "invalid_grant", "PKCE verification failed");
 
-  const { token, id, expiresIn } = issueDeviceToken(row.email, row.label ?? "Prism app", row.client_id);
+  const { token, id, expiresIn } = issueDeviceToken(row.email, row.label ?? defaultLabelFor(row.client_id), row.client_id);
   setDeviceAuthCodeDevice(hash, id);
   c.header("Cache-Control", "no-store");
   c.header("Pragma", "no-cache");
@@ -330,6 +337,7 @@ deviceAuth.get("/devices", (c) => {
     devices: rows.map((r) => ({
       id: r.id,
       label: r.label,
+      clientId: r.client_id,
       email: r.email,
       createdAt: r.created_at,
       lastSeenAt: r.last_seen_at,

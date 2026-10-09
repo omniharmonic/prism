@@ -35,16 +35,16 @@ app                               system browser                         Prism S
 
 | Method + path | Auth | Purpose |
 |---|---|---|
-| `GET /auth/device/authorize` | browser | Starts the flow. Params: `client_id=prism-native`, `redirect_uri`, `code_challenge` (43-char base64url), `code_challenge_method=S256` (`plain` is refused), `state` (recommended, ≤512 chars, echoed), `label` (device name, ≤80 chars), optional `response_type=code`. |
+| `GET /auth/device/authorize` | browser | Starts the flow. Params: `client_id=prism-native` (or `omni-native`, see Clients), `redirect_uri`, `code_challenge` (43-char base64url), `code_challenge_method=S256` (`plain` is refused), `state` (recommended, ≤512 chars, echoed), `label` (device name, ≤80 chars), optional `response_type=code`. |
 | `GET /auth/device/continue` | browser | Where the web login returns. Internal; clients never call it. |
 | `POST /auth/device/approve` | browser session + CSRF | The consent form. Redirects to `redirect_uri?code=…&state=…`, or `?error=access_denied&state=…` on Deny. |
 | `POST /auth/device/token` | none (PKCE) | Form-encoded or JSON body. Returns `{access_token, token_type:"Bearer", expires_in, device_id}` with `Cache-Control: no-store`. Rate-limited to 20 per 10 minutes per client IP. Errors follow OAuth: `400 invalid_request / invalid_grant / unsupported_grant_type`, `401 invalid_client`. |
 | `POST /auth/device/revoke` | see below | `token=pd_…`: revokes that token, always 200 (RFC 7009 style). `device_id=…` with a session or device token: revokes your own device, or any device if you are the server owner. An empty body with `Authorization: Bearer pd_…` revokes the calling token (sign out). |
-| `GET /auth/devices` | session or device token | Your live devices: `{devices:[{id,label,email,createdAt,lastSeenAt,expiresAt,current}]}`. The server owner may add `?all=1`. |
+| `GET /auth/devices` | session or device token | Your live devices: `{devices:[{id,label,clientId,email,createdAt,lastSeenAt,expiresAt,current}]}`. The server owner may add `?all=1`. |
 | `DELETE /auth/devices/:id` | session or device token | Revoke your device (the owner may revoke any). Someone else's device returns 404. |
 
 Errors before consent are **never redirected**, whatever caused them: an
-unregistered `redirect_uri`, an unknown `client_id`, `plain` or a missing PKCE
+unregistered `redirect_uri`, an unknown `client_id`, another app's custom scheme, `plain` or a missing PKCE
 challenge, a bad `response_type`, or an over-long `state`. Each gets a 400 error
 page, and nothing is parked or set as a cookie. Error parameters are never added
 to a URL the requester supplied. Only a completed consent redirects: `code` on
@@ -53,7 +53,8 @@ Approve, `error=access_denied` on Deny.
 ### Redirect URIs
 
 - Exact string match against `DEVICE_REDIRECT_URIS`, comma-separated (default
-  `prism://auth/callback`). No query and no trailing slash variants are accepted.
+  `prism://auth/callback,omni://auth/callback`). No query and no trailing slash variants
+  are accepted. A server that sets the variable itself must list every URI it wants.
   Add a universal link (an `https://…` URL your app claims) here for the stronger
   iOS option.
 - Desktop loopback (RFC 8252 §7.3): exactly `http://127.0.0.1:<port>/callback` or
@@ -62,6 +63,24 @@ Approve, `error=access_denied` on Deny.
   - The URI may not contain a query, fragment or userinfo.
   - `localhost` is not accepted.
   - Set `DEVICE_ALLOW_LOOPBACK=false` to disable loopback redirects.
+
+### Clients
+
+| `client_id` | App | Its custom-scheme redirect | Accepted |
+|---|---|---|---|
+| `prism-native` | Prism Client (Mac, iPhone, iPad) | `prism://auth/callback` | always |
+| `omni-native` | Omni (`docs/omni-module.md`) | `omni://auth/callback` | only while `OMNI_ENABLED=true` |
+
+Both run the same flow and get the same kind of `pd_…` token; the id only says which app a
+device is (`clientId` in `GET /auth/devices`, and the default label: "Prism app" / "Omni
+app"). Rules, all checked before any login and all answered with a 400 page:
+
+- An unknown `client_id` is refused. With the Omni module off, `omni-native` is unknown.
+- A custom scheme belongs to its app: `prism://…` is honoured only for `prism-native`,
+  `omni://…` only for `omni-native`. Loopback redirects and other allowlisted URIs
+  (a universal link) work for either. This check only narrows the allowlist.
+- A code is bound to the client that asked for it; redeeming it under the other id is
+  `invalid_grant` and burns the code.
 
 **Universal links never capture this flow.** The server's apple-app-site-association file
 (`routes/app-links.ts`) excludes `/auth/*` and `/accept-invite`, and the client's link

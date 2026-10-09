@@ -24,6 +24,7 @@ import { issueDeviceToken } from "../src/auth/device";
 import { setMembership } from "../src/db";
 import { resetDb, makeSession, sessionCookie, makeCapability } from "./helpers";
 import type { TreeChange } from "../src/tree";
+import { createHermesStub, type HermesStub, type StubFrame } from "../scripts/lib/hermes-stub";
 
 const J = { "content-type": "application/json" };
 const owner = () => ({ ...J, cookie: sessionCookie(makeSession(config.ownerEmail)) });
@@ -33,45 +34,32 @@ const key = () => `omni-test-key-${Date.now()}-${++keyN}`;
 
 // ── fake Hermes ─────────────────────────────────────────────────────────────
 
-type Frame = [string, Record<string, unknown>];
+// The routes, the bearer check and the SSE encoding are the SAME stub the laptop dev
+// gateway runs against (scripts/lib/hermes-stub.ts) — here handed to the client's fetch
+// seam, with the frames each test scripts.
+
+type Frame = StubFrame;
 interface Fake {
   calls: Array<{ method: string; path: string; auth: string | null; body: unknown }>;
-  sessions: Map<string, { id: string; title?: string; last_active?: number }>;
-  /** Frames the next chat/stream answers with. `hold` = keep the stream open until released. */
+  sessions: HermesStub["sessions"];
+  /** Frames the next chat/stream answers with. `hold` = keep the stream open until stopped. */
   frames: Frame[];
   hold: boolean;
-  release: () => void;
   status: number | null;
   throwNext: boolean;
   jobs: Array<Record<string, unknown>>;
 }
 let fake: Fake;
 
-function sse(frames: Frame[], hold: boolean, onAbort: (r: () => void) => void, signal?: AbortSignal | null): Response {
-  const enc = new TextEncoder();
-  const body = new ReadableStream<Uint8Array>({
-    async start(ctrl) {
-      let seq = 0;
-      for (const [ev, data] of frames) ctrl.enqueue(enc.encode(`event: ${ev}\ndata: ${JSON.stringify({ ...data, seq: ++seq, run_id: "run_abc123" })}\n\n`));
-      if (hold) {
-        await new Promise<void>((resolve) => {
-          onAbort(resolve);
-          signal?.addEventListener("abort", () => resolve());
-        });
-        if (signal?.aborted) {
-          ctrl.error(new Error("aborted"));
-          return;
-        }
-        ctrl.enqueue(enc.encode(`event: run.completed\ndata: {"run_id":"run_abc123"}\n\n`));
-      }
-      ctrl.close();
-    },
-  });
-  return new Response(body, { status: 200, headers: { "content-type": "text/event-stream" } });
-}
-
 function installHermes(): void {
-  fake = { calls: [], sessions: new Map(), frames: [], hold: false, release: () => {}, status: null, throwNext: false, jobs: [{ id: "abcdef012345", name: "Brief", schedule: "0 7 * * *", enabled: true, secret_field: "x" }] };
+  const stub = createHermesStub({
+    key: process.env.OMNI_HERMES_KEY!,
+    runId: () => "run_abc123",
+    script: () => ({ steps: fake.frames.map((frame) => ({ frame })), end: fake.hold ? "hold" : "close" }),
+    messages: () => [{ id: 1, role: "user", content: "hi", timestamp: 1700000000 }, { id: 2, role: "tool", tool_name: "prism_update_note", content: "RAW TOOL OUTPUT secret" }, { id: 3, role: "assistant", content: "done", timestamp: 1700000001 }],
+    jobs: [{ id: "abcdef012345", name: "Brief", schedule: "0 7 * * *", enabled: true, secret_field: "x" }],
+  });
+  fake = { calls: [], sessions: stub.sessions, frames: [], hold: false, status: null, throwNext: false, jobs: stub.jobs };
   setHermesFetchForTests(async (url, init) => {
     const u = new URL(url);
     const body = init.body ? JSON.parse(String(init.body)) : undefined;
@@ -83,32 +71,7 @@ function installHermes(): void {
       throw new TypeError("fetch failed");
     }
     if (fake.status) return new Response(JSON.stringify({ error: { message: "no", code: "x" } }), { status: fake.status });
-    const p = u.pathname;
-    const json = (v: unknown, s = 200) => new Response(JSON.stringify(v), { status: s, headers: J });
-    if (p === "/api/sessions" && init.method === "POST") {
-      fake.sessions.set(body.id, { id: body.id, title: body.title, last_active: Date.now() / 1000 });
-      return json({ session: fake.sessions.get(body.id) }, 201);
-    }
-    if (p === "/api/sessions") return json({ data: [...fake.sessions.values()], has_more: false });
-    let m = /^\/api\/sessions\/([^/]+)$/.exec(p);
-    if (m) {
-      const s = fake.sessions.get(m[1]!);
-      if (!s) return json({ error: { message: "Session not found", code: "session_not_found" } }, 404);
-      if (init.method === "PATCH") Object.assign(s, body);
-      return json({ session: s });
-    }
-    m = /^\/api\/sessions\/([^/]+)\/messages$/.exec(p);
-    if (m) return json({ data: [{ id: 1, role: "user", content: "hi", timestamp: 1700000000 }, { id: 2, role: "tool", tool_name: "prism_update_note", content: "RAW TOOL OUTPUT secret" }, { id: 3, role: "assistant", content: "done", timestamp: 1700000001 }] });
-    m = /^\/api\/sessions\/([^/]+)\/chat\/stream$/.exec(p);
-    if (m) return sse(fake.frames, fake.hold, (r) => (fake.release = r), init.signal);
-    if (/^\/v1\/runs\/[^/]+\/stop$/.test(p)) {
-      fake.release();
-      return json({ status: "stopping" });
-    }
-    if (p === "/api/jobs") return json({ jobs: fake.jobs });
-    m = /^\/api\/jobs\/([a-f0-9]{12})\/(pause|resume|run)$/.exec(p);
-    if (m) return json({ job: { ...fake.jobs[0], enabled: m[2] !== "pause" } });
-    return json({ error: "nope" }, 404);
+    return stub.fetch(url, init);
   });
 }
 
@@ -347,6 +310,32 @@ test("one turn at a time; idempotent replay; cancel stops the Hermes run", async
   assert.equal(t2.headers.get("Idempotent-Replayed"), "true");
   assert.equal(((await t2.json()) as { turnId: string }).turnId, tid);
   assert.equal(fake.calls.filter((x) => x.path.endsWith("/chat/stream")).length, 2);
+});
+
+test("replay across several finished turns is complete (an earlier turn's status does not end the stream)", async () => {
+  const { id, turnId } = await newThread([["run.started", {}], ["assistant.completed", { content: "one" }], ["run.completed", {}]]);
+  await turnSettled(turnId);
+  fake.frames = [["run.started", {}], ["assistant.completed", { content: "two" }], ["run.completed", {}]];
+  const t2 = await post(`/threads/${id}/turns`, { text: "next" }, { ...owner(), "idempotency-key": key() });
+  await turnSettled(((await t2.json()) as { turnId: string }).turnId);
+  const stored = eventsAfter(id, 0).map((e) => e.seq);
+  assert.equal(stored.length, 10, "two turns × (status, init, text, result, status)");
+  const seqs = (text: string) => [...text.matchAll(/^id: (\d+)$/gm)].map((m) => Number(m[1]));
+  const all = await (await req(`/threads/${id}/stream`, { headers: owner() })).text();
+  assert.deepEqual(seqs(all), stored, "after=0 replays every stored event of both turns");
+  const tail = await (await req(`/threads/${id}/stream?after=3`, { headers: owner() })).text();
+  assert.deepEqual(seqs(tail), stored.filter((s) => s > 3), "…and so does a reconnect from inside the first turn");
+  // A replay requested while a later turn runs carries the history AND follows the live turn to its end.
+  fake.frames = [["run.started", {}]];
+  fake.hold = true;
+  const t3 = ((await (await post(`/threads/${id}/turns`, { text: "third" }, { ...owner(), "idempotency-key": key() })).json()) as { turnId: string }).turnId;
+  await new Promise((r) => setTimeout(r, 20));
+  const live = req(`/threads/${id}/stream?after=0`, { headers: owner() });
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal((await post(`/turns/${t3}/cancel`, {})).status, 202);
+  const liveSeqs = seqs(await (await live).text());
+  assert.deepEqual(liveSeqs, eventsAfter(id, 0).map((e) => e.seq));
+  assert.equal(liveSeqs.length, 14);
 });
 
 // ── approvals ───────────────────────────────────────────────────────────────
