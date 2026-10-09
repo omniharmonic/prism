@@ -28,7 +28,9 @@
  *
  *   - `people-link` (identity + linking layer): not an ingest. It reports the
  *     review-queue depth and the last backfill job (`detail`), appears only once
- *     a job has run or identities are queued, and never goes stale.
+ *     a job has run or identities are queued, and never goes stale — unless the
+ *     scheduled run is on (PEOPLE_LINK_SCHEDULE_ENABLED): then it is always listed,
+ *     says when the next run is due, and is stale after two missed intervals.
  *
  * Status: disabled (not configured / no data ever) | failing (streak >=
  * WORKER_FAIL_STREAK) | stale (nothing succeeded within the threshold) | ok.
@@ -47,6 +49,7 @@ import { calendarMode, calendarSourceName } from "./calendar";
 import { PROTON_CREDENTIAL, protonMode } from "./proton";
 import { openCandidateCounts } from "../identity-store";
 import { lastLinkJobOutcome } from "../people-link-job";
+import { lastPeopleLinkSchedule, peopleLinkScheduleBusySkips, peopleLinkScheduleNextAt } from "./people-link-schedule";
 import { collabUnsavedStats } from "../db";
 import { lastVaultLintOutcome } from "./vault-lint";
 import { lastLinkHealthOutcome } from "./link-health";
@@ -381,8 +384,14 @@ export async function getSourceHealth(opts: { now?: number; list?: Lister } = {}
   for (const entry of getVaultRegistry()) {
     const last = lastLinkJobOutcome(entry.id);
     const open = openCandidateCounts(entry.id);
-    if (!last && !open.total) continue;
+    // The scheduled run (primary vault only): the source is then always listed, and it
+    // goes `stale` when no job has ended without an error for two intervals.
+    const scheduled = entry.id === "primary" && config.peopleLinkScheduleEnabled && config.peopleLinkScheduleMs > 0;
+    if (!last && !open.total && !scheduled) continue;
     const lastSuccessAt = last?.lastSuccessAt ? Date.parse(last.lastSuccessAt) : null;
+    const staleAfterMs = scheduled ? config.peopleLinkScheduleMs * 2 : 0;
+    const sched = scheduled ? lastPeopleLinkSchedule(entry.id) : null;
+    const nextAt = scheduled ? peopleLinkScheduleNextAt(entry.id) : null;
     out.push({
       name: entry.id === "primary" ? "people-link" : `people-link@${entry.id}`,
       kind: "server",
@@ -390,8 +399,8 @@ export async function getSourceHealth(opts: { now?: number; list?: Lister } = {}
       lastSuccessAt: iso(Number.isFinite(lastSuccessAt as number) ? lastSuccessAt : null),
       lastError: last?.error ? scrubError(last.error) : null,
       failureStreak: last?.failStreak ?? 0,
-      staleAfterMs: 0,
-      status: computeStatus({ configured: true, lastSuccessAt, streak: last?.failStreak ?? 0, staleAfterMs: 0, now, baselineAt: BOOT_AT }),
+      staleAfterMs,
+      status: computeStatus({ configured: true, lastSuccessAt, streak: last?.failStreak ?? 0, staleAfterMs, now, baselineAt: BOOT_AT }),
       detail: {
         openCandidates: open.total,
         lastJobStatus: last?.status ?? null,
@@ -400,6 +409,19 @@ export async function getSourceHealth(opts: { now?: number; list?: Lister } = {}
         lastJobWrites: last?.writes ?? null,
         lastJobLinked: last?.linked ?? null,
         lastJobQueued: last?.queued ?? null,
+        lastJobScheduled: last?.scheduled ?? null,
+        lastJobWouldLink: last?.wouldLink ?? null,
+        lastJobCapped: last?.capped ?? null,
+        ...(scheduled
+          ? {
+              scheduleEnabled: true,
+              scheduleDryRun: config.peopleLinkScheduleDryRun,
+              scheduleLastStartedAt: sched?.at ?? null,
+              scheduleLastStatus: sched?.status ?? null,
+              scheduleNextAt: nextAt === null ? null : new Date(nextAt || now).toISOString(),
+              scheduleBusySkips: peopleLinkScheduleBusySkips(),
+            }
+          : {}),
       },
     });
   }

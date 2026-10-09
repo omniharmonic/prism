@@ -28,6 +28,7 @@ explicit merge for duplicates.
 | Vocabulary | `src/relationships.ts` | Canonical relationship names, their endpoint kinds, the synonym map. |
 | Review queue | `src/identity-store.ts`, `src/identity-review.ts` | SQLite `identity_candidates` + resolve / dismiss. |
 | Backfill job | `src/people-link-job.ts` | Eight phases, dry run by default. |
+| Scheduled run | `src/worker/people-link-schedule.ts` | The same job, weekly, four phases, strong keys, capped. Off by default. |
 | Forward linking | `src/people-forward.ts` | Per-pass helpers the ingesters call when their flag is on. |
 | Duplicates | `src/people-merge.ts` | Detector + explicit merge. |
 | Metadata edits | `src/people-metadata.ts` | Append-only merge-patch builders. |
@@ -298,6 +299,70 @@ Safety, every phase:
   not fold the stored body over unsaved typing.
 - A listing that reaches 50,000 notes aborts the run before any write.
 
+
+### Scheduled run (off by default)
+
+`src/worker/people-link-schedule.ts` runs the SAME job from the worker tick, so
+records that arrived before a person note existed get linked without the owner
+starting a run. Primary vault only.
+
+| Setting | What the scheduled run uses |
+|---|---|
+| Names | `allowNameLinks: false`. A name never links a person. |
+| Review queue | `enqueue: false`. Nothing is queued. |
+| Phases | `emails`, `meetings`, `threads`, `tasks` only. |
+| Write cap | `PEOPLE_LINK_SCHEDULE_MAX_WRITES` (200) for the run, split evenly between the phases (`maxWritesPerPhase`), so a mail backlog cannot use up the run. The rest waits (`deferred`). |
+| Writes | Compare-and-set, as in every run of the job. |
+| Mode | A dry run until `PEOPLE_LINK_SCHEDULE_DRY_RUN=false`. A dry run uses the same caps and writes nothing to the vault. |
+| Matrix | No membership lookup unless `PEOPLE_LINK_SCHEDULE_MATRIX_LOOKUPS=true`. Without it only threads that already hold `participantIds` link. |
+
+Why these phases and not the others:
+
+| Phase | Unattended | Reason |
+|---|---|---|
+| `emails` | yes | Exact address of one live person. Adds a link on the email note. Never a display name, a role mailbox or the owner. |
+| `meetings` | yes | Attendee address. The owner by their own full name or a configured alias (calendar ingest does the same). Any other name is not linked. |
+| `threads` | yes | Matrix id only. Adds a link on the thread note. |
+| `tasks` | yes | `assigned-to` by address, by an explicit `[[person]]` reference, or the owner's configured alias; `belongs-to` when `project` names exactly one project. Links only; no field of the task changes. |
+| `owner` | no | Edits the owner's own person note. |
+| `tombstones` | no | Rewrites `merged_into` on a person note. |
+| `repoint` | no | Removes links from a merged stub. The pointer it follows may have been written by an agent or resolved by name, and the job has no undo log. |
+| `normalize` | no | Removes and re-creates links under another name across the whole vault. Not needed to link new records. |
+
+`PEOPLE_LINK_SCHEDULE_PHASES` can only narrow the list: a name outside the four
+is ignored.
+
+Timing. The start time of the last scheduled run is kept in the worker cursor
+`people-link-schedule`, so a restart neither repeats nor loses a run. A run that
+ended `done` (or was cancelled) waits `PEOPLE_LINK_SCHEDULE_MS`. A run that ended
+in `error`, or was cut off by a restart, is tried again after one day. The first
+run happens on the first tick after the switch is turned on.
+
+Busy. While a manual job, a merge or a review decision holds the people lock,
+the tick is skipped and the due time is not moved; the next tick (60 s) tries
+again. The run never throws into the tick.
+
+What it records:
+
+- the job outcome, as for a manual run (`people-link` in `/acl/workers`). New
+  detail fields: `lastJobScheduled`, `lastJobWouldLink`, `lastJobCapped`, and with
+  the schedule on `scheduleEnabled`, `scheduleDryRun`, `scheduleLastStartedAt`,
+  `scheduleLastStatus`, `scheduleNextAt`, `scheduleBusySkips`. With the schedule on
+  the source is always listed and is `stale` when no job has ended without an
+  error for two intervals;
+- one `action_audit` row per run, action `worker.people-link-schedule`, `via`
+  `worker`, counts only (per phase: scanned, wouldLink, linked, unlinked, review,
+  conflicts, errors, oversize, deferred). A dry run records a row too;
+- `GET /people/link` shows the run while it is going (`job.scheduled: true`), and
+  `POST /people/link/cancel` stops it.
+
+First use: set `PEOPLE_LINK_SCHEDULE_ENABLED=true` and leave the rest. Read the
+dry-run counts for a week. Then set `PEOPLE_LINK_SCHEDULE_DRY_RUN=false`. The
+next run is at `scheduleNextAt`; a write run can also be started by hand with
+`POST /people/link`.
+
+Test: `apps/server/test/people-link-schedule.test.ts`.
+
 ### Duplicates and merge
 
 `GET /duplicates?strength=strong|medium|weak&limit=1..200&offset=0` →
@@ -529,6 +594,12 @@ Read at server start; restart pm2 after a change.
 | `PEOPLE_LINK_MAX_WRITES` | `200` | | Cap of a write run that passes no `maxWrites`. |
 | `PEOPLE_LINK_MAX_WRITES_CEILING` | `20000` | | Largest `maxWrites` a request may ask for. |
 | `PEOPLE_LINK_PACE_MS` | `50` | | Pause per writer between writes. |
+| `PEOPLE_LINK_SCHEDULE_ENABLED` | `false` | `true` | The scheduled run (above). |
+| `PEOPLE_LINK_SCHEDULE_DRY_RUN` | `true` | `true` for the first week, then `false` | Counts only, no vault write. |
+| `PEOPLE_LINK_SCHEDULE_MS` | `604800000` (7 days) | | Interval. `0` = off. |
+| `PEOPLE_LINK_SCHEDULE_MAX_WRITES` | `200` | | Hard cap on note writes of one scheduled run, split evenly between its phases. |
+| `PEOPLE_LINK_SCHEDULE_PHASES` | `emails,meetings,threads,tasks` | | Narrows the run. Other phase names are ignored. |
+| `PEOPLE_LINK_SCHEDULE_MATRIX_LOOKUPS` | `false` | | Lets the scheduled run ask Matrix for room members and store `participantIds`. |
 | `PEOPLE_LINK_MAX_CONSECUTIVE_ERRORS` | `5` | | Failed writes in a row that abort a run or a merge. |
 | `PEOPLE_QUEUE_MAX_OPEN` | `1000` | | Most open review rows per vault; past it nothing is inserted. |
 | `PEOPLE_LINK_MEMBER_FAILURES` | `3` | | Failed membership lookups in a row that end a run's lookup stage. |
@@ -825,7 +896,7 @@ dumps.
   `queuedByReason`) → write, like "Resolve All Wikilinks".
 - **`mergedFrom`** on the person detail: show "merged from …".
 - **Recipients in the messages dashboard**: add `email-to` to its filter.
-- **Health**: `people-link` in `/acl/workers` carries `detail.openCandidates`.
+- **Health**: `people-link` in `/acl/workers` carries `detail.openCandidates`. With the scheduled run on it also carries the `schedule*` fields and can go `stale` (see "Scheduled run").
 - **Agent recommendations**: show `recommendations` from `GET /duplicates`
   beside the matching pair ("Suggested by your agent: keep X — <rationale>");
   "Dismiss" → `POST /recommendations/:id/dismiss`. An "Agent decisions" list

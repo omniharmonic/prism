@@ -56,6 +56,8 @@
  *   - A removal is sent only after the matching addition succeeded.
  *   - ≤2 writes in flight, paced; a hard per-run write cap; every vault call has
  *     a timeout; N consecutive failed writes (not 409) ABORT the run as `error`.
+ *     `maxWritesPerPhase` (the scheduled run, worker/people-link-schedule.ts)
+ *     also caps each phase, so a backlog in an early phase cannot use up the run.
  *   - Notes over the vault's 2 MB history ceiling are skipped (`oversize`).
  *   - A note open in the collab editor gets its links written and the collab
  *     reconciler is told the content did not change (`markReconciled`).
@@ -132,6 +134,10 @@ export interface LinkJob {
   dryRun: boolean;
   phases: Phase[];
   maxWrites: number;
+  /** Hard cap on note writes per PHASE (0 = none). Set by the scheduled run. */
+  maxWritesPerPhase: number;
+  /** Started by the worker's schedule (worker/people-link-schedule.ts), not by the owner. */
+  scheduled: boolean;
   allowNameLinks: boolean;
   status: "running" | "done" | "error" | "cancelled";
   startedAt: string;
@@ -162,6 +168,10 @@ export interface LinkJobOptions {
   phases?: Phase[];
   /** Hard cap on note writes this run (0 = no cap). */
   maxWrites?: number;
+  /** Hard cap on note writes per phase (0 / absent = none). A capped phase defers the rest to a later run. */
+  maxWritesPerPhase?: number;
+  /** This run was started by the worker's schedule (recorded on the job and its outcome). */
+  scheduled?: boolean;
   /** Put unresolved identities in the review queue (default FALSE, for every run). */
   enqueue?: boolean;
   /** Do not link bulk-labelled mail at all (default: an exact address still links). */
@@ -264,6 +274,8 @@ export function startLinkJob(vault: LinkJobVault, vaultId: string, opts: LinkJob
     dryRun: opts.dryRun,
     phases,
     maxWrites: Math.max(0, Math.floor(opts.maxWrites ?? 0)),
+    maxWritesPerPhase: Math.max(0, Math.floor(opts.maxWritesPerPhase ?? 0)),
+    scheduled: opts.scheduled === true,
     allowNameLinks: opts.allowNameLinks === true,
     status: "running",
     startedAt: new Date().toISOString(),
@@ -398,6 +410,8 @@ interface Ctx {
   /** Dry run only: edits earlier phases WOULD have made, for later per-tag listings. */
   overlay: { add: Array<{ sourceId: string; targetId: string; relationship: string }>; remove: Set<string> };
   consecutiveErrors: number;
+  /** Writes counted in the phase now running (against `maxWritesPerPhase`). */
+  phaseWrites: number;
   timeoutMs: number;
   /** Per phase: scan order of notes, reviews waiting for the write window, the first capped index. */
   order: Map<string, number>;
@@ -1220,7 +1234,7 @@ async function apply(ctx: Ctx, rep: PhaseReport, plan: Plan): Promise<void> {
           planned.add(o.noteId);
           rep.notesToWrite++;
         }
-        if (ctx.job.maxWrites && ctx.job.writes >= ctx.job.maxWrites) {
+        if ((ctx.job.maxWrites && ctx.job.writes >= ctx.job.maxWrites) || (ctx.job.maxWritesPerPhase && ctx.phaseWrites >= ctx.job.maxWritesPerPhase)) {
           ctx.job.capped = true;
           rep.deferred++;
           failed.add(o.noteId);
@@ -1228,6 +1242,7 @@ async function apply(ctx: Ctx, rep: PhaseReport, plan: Plan): Promise<void> {
           continue;
         }
         ctx.job.writes++;
+        ctx.phaseWrites++;
         const removed = remove.map((r) => r.link);
         if (ctx.job.dryRun) {
           applyLocally(ctx, { ...o, remove }, removed, undefined);
@@ -1307,6 +1322,7 @@ async function run(vault: LinkJobVault, job: LinkJob, opts: LinkJobOptions): Pro
     graph: null,
     overlay: { add: [], remove: new Set() },
     consecutiveErrors: 0,
+    phaseWrites: 0,
     timeoutMs: Math.max(0, opts.callTimeoutMs ?? 30_000),
     order: new Map(),
     pending: [],
@@ -1325,6 +1341,7 @@ async function run(vault: LinkJobVault, job: LinkJob, opts: LinkJobOptions): Pro
     ctx.order = new Map();
     ctx.pending = [];
     ctx.firstDeferred = Infinity;
+    ctx.phaseWrites = 0;
     const plan = await PLANNERS[phase](ctx, rep);
     if (cancelFlag) return;
     await apply(ctx, rep, plan);
@@ -1351,6 +1368,12 @@ export interface LinkJobOutcome {
   /** Consecutive runs that ended in `error`. */
   failStreak: number;
   lastSuccessAt: string | null;
+  /** Started by the worker's schedule (absent on outcomes recorded before that existed). */
+  scheduled?: boolean;
+  /** Links the run planned (a dry run's whole result; equals `linked` after a clean write run). */
+  wouldLink?: number;
+  /** The run stopped at a write cap; the rest waits for a later run. */
+  capped?: boolean;
 }
 
 const OUTCOME_CURSOR = "people-link-last-job";
@@ -1370,7 +1393,7 @@ function persistOutcome(job: LinkJob): void {
   try {
     const prev = lastLinkJobOutcome(job.vaultId);
     const ok = job.status !== "error";
-    const sum = (k: "linked" | "queued") => job.phases.reduce((n, p) => n + job.report[p][k], 0);
+    const sum = (k: "linked" | "queued" | "wouldLink") => job.phases.reduce((n, p) => n + job.report[p][k], 0);
     const out: LinkJobOutcome = {
       jobId: job.id,
       at: job.endedAt ?? new Date().toISOString(),
@@ -1382,6 +1405,9 @@ function persistOutcome(job: LinkJob): void {
       queued: sum("queued"),
       failStreak: ok ? 0 : (prev?.failStreak ?? 0) + 1,
       lastSuccessAt: ok ? (job.endedAt ?? new Date().toISOString()) : (prev?.lastSuccessAt ?? null),
+      scheduled: job.scheduled,
+      wouldLink: sum("wouldLink"),
+      capped: job.capped,
     };
     setWorkerCursor(job.vaultId, OUTCOME_CURSOR, JSON.stringify(out));
   } catch (e) {
