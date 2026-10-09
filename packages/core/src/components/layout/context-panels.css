@@ -50,6 +50,9 @@
 .prism-context-metadata button:disabled { opacity: .5; }
 @media (max-width: 640px) {
   .prism-context-metadata input:not([type=checkbox]), .prism-context-metadata select, .prism-context-tag-input button, .prism-context-tags button, .prism-context-field-error button, .prism-context-tag-suggestions button { min-height: 44px; }
+  /* Below the first screen of the panel (found by the scrolled touch sweep): a tag's "×" was 29 px wide beside its name, "Raw JSON" 21 px tall. */
+  .prism-context-tags button[aria-label^="Remove tag"] { min-width: 44px; justify-content: center; display: inline-flex; align-items: center; }
+  .prism-context-raw-toggle { min-height: 44px; }
   .prism-context-metadata input, .prism-context-metadata select { font-size: 16px; }
 }
 

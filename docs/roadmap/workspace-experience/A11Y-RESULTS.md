@@ -242,3 +242,60 @@ touch tests 2 passed; `editor-blocks`, `editor-slash`, `calendar`, `notion-mobil
 `agent-composer-growth` 42 passed; axe + reflow on six touched surfaces 35 passed; root typecheck
 and `typecheck:e2e` clean. Not re-run: the full reflow sweep, the full axe sweep, the motion and
 live specs (no code they cover changed).
+
+## 2026-10-08 — scrolled touch sweep, non-text contrast, three more surfaces (`polish4/parity-quick-wins`)
+
+Chromium and WebKit: notion-a11y-touch 152 / 152 on both, notion-a11y-contrast 182 / 182 on both, axe + reflow for the new and changed surfaces 41 / 41 on WebKit (the whole axe / reflow files on Chromium). The numbers in the tables below are the Chromium run's. Implemented and run by the same agent; not independently reviewed.
+
+### Surfaces added to every sweep (NP-AX-01)
+
+`a11y-surfaces.ts` gained **set-password**, **reconnect** and **network-connections** (the Connections / network panel). Because every sweep reads that list, each is now covered by axe + "no light panel in dark" (both themes, both viewports), reflow, touch targets (first screen and scrolled) and non-text contrast. Result: no axe finding, no light panel. One touch defect found and fixed: "Skip for now" on set-password was 18 px tall on a phone.
+
+Still not swept: the native sign-in screen (it is the shell's), the graph, the canvas chrome (Excalidraw).
+
+### Touch targets below the first screen (NP-AX-07)
+
+`notion-a11y-touch.spec.ts` › "touch targets ≥44px · scrolled › <surface> · phone · below the first screen": `touchTargetsBelowFold` (`a11y-measure.ts`) scrolls every vertically scrolling region of the top layer a screenful at a time (two rows of overlap) and applies the same rule at each stop.
+
+| Found | Was | Fix |
+|---|---|---|
+| @-menu rows ("Today", "Tomorrow", people, pages) | 40 px, stacked with no gap | `touch.css`: `.prism-mention-option` 44 px |
+| View settings on a phone: Layout, Group by, "Add a calculation" selects | 34 px (the sheet is not `.db-dialog`, so the dialog rule missed them) | `touch.css`: `.db-settings select`, `select.db-control` 44 px |
+| Context panel → Properties: a tag's "×" | 29 px wide beside the tag name | `context-panels.css`: 44 px |
+| Context panel → "Raw JSON" | 82 × 21 px | 44 px tall; it now also says `aria-expanded` |
+| Database view tabs at 320 px | the tab list shrank and its last tab sat under "Add a view" — Calendar could not be tapped | `.db-tablist { flex: none }`: the row scrolls (parity6-databases › "320 px: every view tab can be reached") |
+
+The one pinned exception of the first sweep — the database month grid on phones — is gone: `CalendarMonthTouch` (one ≥ 44 px target per day; parity6-databases › "NP-AX-07: … at 390 px / at 320 px"). **No exception is left in the touch sweep.** Not covered: an iPad shows the desktop month grid, whose page chips are 18 px tall (PARITY-GAPS slice U).
+
+### Non-text contrast (NP-AX-04, WCAG 1.4.11)
+
+`notion-a11y-contrast.spec.ts`, every surface at 1440×900, light and dark — 178 runs + 4 composer tests. Colours are resolved by painting them (so `color-mix`, `oklch` and translucent values are handled) and composited over what is behind.
+
+**Focus indicators — a gate, ≥ 3 : 1.** Tab through each surface (up to 40 stops); at each stop the outline or hard `box-shadow` ring — the most visible one — is measured against what it is drawn on.
+
+| | |
+|---|---|
+| Stops measured | 3,018 |
+| Below 3 : 1 | **0** (after the two fixes below) |
+| Not judged | 226 — 110 show focus with a caret, a soft shadow or a change of fill only; 80 are inside the third-party emoji picker; 36 draw their ring over a gradient or an image |
+
+Found and fixed:
+- **The pressed Messages view toggle (Triage / People / Platforms) had no focus ring.** Its own `box-shadow` (a 1 px hairline) outranked `.focus-ring:focus-visible`, so a keyboard user saw nothing on the selected toggle. The pressed state now keeps the hairline and adds the ring.
+- **The message composer and the agent composer** showed focus with a soft glow (1.1 : 1) and a part-strength border (2.3 : 1 in light). The focused border is now full strength — asserted ≥ 3 : 1 in both themes ("… the focused composer's border is at least 3 : 1"). The glow stays as decoration; these two are recorded as "soft-ring text fields" in the report, not failures.
+
+**Control boundaries — measured and reported, not a gate.** Every visible text field, select, textarea and custom checkbox / radio / switch: the best of its border and its fill against what is behind it (also looking at up to two wrappers that draw the box).
+
+| Theme | ≥ 3 : 1 | Below 3 : 1 | Not judged (gradient / native) | Median of the low ones | Range |
+|---|---|---|---|---|---|
+| light | 6 | 79 | 27 | 1.24 : 1 | 1.0 – 1.84 |
+| dark | 7 | 78 | 27 | 1.38 : 1 | 1.0 – 1.42 |
+
+By kind (both themes): text inputs 64, search inputs 28, custom checkboxes 16, selects 14, custom radios 10, password 7, textareas 6, combobox inputs 6, email 4, searchbox 2. A ratio of 1.0 means a borderless field on a same-coloured surface whose box is drawn further out than the two wrappers the measure looks at — those few are an under-count of the real boundary, not a new finding.
+
+Why this is not fixed here: every one of these is the shared 1 px hairline (`--glass-border`), which is also every divider in the app. Raising it is a design decision, not a token typo — owner decision **c.17** in PARITY-GAPS (recommended: a `--control-border` token at 3 : 1 for form fields only).
+
+Not measured at all: icon-only controls against their background, text over cover images.
+
+### Page property editors (NP-PG-05)
+
+page-properties › "NP-PG-05: checkbox, URL and number editors under the title — …". It found that **adding a checkbox property ticked it** (the "open the editor of the property just added" effect calls the checkbox's toggle; twice under StrictMode, and again whenever that property remounted while it was still the last one added). Fixed: a checkbox is shown unticked and nothing is written until it is tapped.

@@ -19,8 +19,8 @@ recently or tied to an open decision.
 | Piece | State |
 |---|---|
 | macOS Prism Client (Tauri) | In daily use since WP4.3 |
-| iOS target of the same app | Merged as code. **Never compiled for iOS, never run on a device.** |
-| Swift plugin `plugins/prism-ios` | Never compiled. Only `LockPolicy` is tested (on the Mac) |
+| iOS target of the same app | **Compiles and runs (2026-10-08).** The debug simulator build succeeds (Xcode 27 / iOS 27) and the app was run in the simulator (`qa/ios-simulator-findings-2026-10-08.md`) and, the same day, on the owner's iPhone against production as a debug build. That was an informal session: no per-row device result is recorded (the sitting is `qa/device-pass-script.md`). No release / ad hoc build, no push, no universal-link tap has been checked. **TestFlight remains gated on parity sign-off.** |
+| Swift plugin `plugins/prism-ios` | Compiles as part of that build. Only `LockPolicy` has tests (on the Mac) |
 | Omni app | Not started. The only Swift today is `OmniVoice` (macOS), which talks to the unauthenticated loopback dashboard `:8420` |
 | PrismKit (shared Swift package) | Proposal only |
 
@@ -119,7 +119,7 @@ are held the same way. Any new native-to-page hand-off must use this gate.
 
 | App | Choice | Why |
 |---|---|---|
-| Prism (iOS + macOS) | **Finish the Tauri iOS client** | Its value is the editor, databases and collab, all in `packages/core`. A SwiftUI rewrite would have to match schema v5 or y-prosemirror deletes content. The security plumbing is already written. The remaining risk is "never compiled", which is days to weeks of work |
+| Prism (iOS + macOS) | **Finish the Tauri iOS client** | Its value is the editor, databases and collab, all in `packages/core`. A SwiftUI rewrite would have to match schema v5 or y-prosemirror deletes content. The security plumbing is already written. The risk that was "never compiled" is gone (it compiles and runs since 2026-10-08); what remains is the recorded device pass, which is days to weeks of work |
 | Omni | **SwiftUI** | Small, list- and chat-shaped, runs on stable JSON APIs, and voice needs on-device Speech. Notes are read-only previews; "Open in Prism" uses the universal link |
 | Shared | **PrismKit** Swift package | Auth (PKCE, `ASWebAuthenticationSession`, Keychain), `PrismClient` transport, SSE, Codable models, agent-session reducer port, APNs registration, link validator, `LockPolicy`/`AppLock` lifted from the plugin, content-type table, read-only renderer |
 
@@ -155,9 +155,11 @@ committed in the entitlements.
 
 ## 6. Known gaps
 
-- iOS Rust (`cfg(ios)`) and the Swift plugin have never compiled.
-- No owner device pass yet: universal links, menu accelerators, the export save
-  panel and the share sheet are all unverified.
+- iOS Rust (`cfg(ios)`) and the Swift plugin compile (first on 2026-10-08) and the app
+  has run in the simulator and on the owner's iPhone as a debug build — but:
+- No RECORDED owner device pass yet (`qa/device-pass-script.md`): universal links, menu
+  accelerators, the export save panel, the share sheet, push and embeds in the app are
+  all unverified on a device.
 - Heading fragments are lost in app links.
 - No `/api/version` check. Schema changes in hints and writer kinds will break
   strict decoders.

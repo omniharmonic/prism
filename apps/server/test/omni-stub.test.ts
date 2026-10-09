@@ -208,3 +208,70 @@ test("the stub's own rules: bearer on every route, OpenAI-shaped errors, session
   assert.throws(() => httpBridge("http://localhost:8797", "x".repeat(32)));
   assert.ok(httpBridge("http://127.0.0.1:8797", "x".repeat(32)));
 });
+
+// ── first-run fix: the stub remembers its sessions across a restart ─────────────────────
+
+import { fileStubStore, type StubState } from "../scripts/lib/hermes-stub";
+
+/** An in-memory "disk" with the three calls `fileStubStore` makes. */
+function fakeDisk() {
+  const files = new Map<string, string>();
+  const modes = new Map<string, number>();
+  return {
+    files,
+    modes,
+    fs: {
+      readFileSync: (p: string) => {
+        const v = files.get(p);
+        if (v === undefined) throw new Error("ENOENT");
+        return v;
+      },
+      writeFileSync: (p: string, data: string, o: { mode: number }) => {
+        files.set(p, data);
+        modes.set(p, o.mode);
+      },
+      renameSync: (a: string, b: string) => {
+        files.set(b, files.get(a)!);
+        files.delete(a);
+      },
+    },
+  };
+}
+const stubCall = (s: HermesStub, method: string, path: string, body?: unknown) =>
+  s.fetch(`http://127.0.0.1:18642${path}`, { method, headers: { authorization: `Bearer ${KEY}`, ...J }, body: body === undefined ? undefined : JSON.stringify(body) });
+
+test("with a store, a restarted stub still has its sessions, transcripts and job changes", async () => {
+  const disk = fakeDisk();
+  const seedJobs = () => [{ id: "0a1b2c3d4e5f", name: "Brief", schedule: "0 7 * * *", enabled: true, state: "scheduled" }];
+  const first = createHermesStub({ key: KEY, jobs: seedJobs(), store: fileStubStore("/dev/state.json", disk.fs, 0), script: () => ({ steps: [{ frame: ["run.started", {}] }, { frame: ["assistant.completed", { content: "the answer" }] }, { frame: ["run.completed", {}] }] }) });
+  assert.equal((await stubCall(first, "POST", "/api/sessions", { id: "omni_aaaaaaaaaaaaaaaaaaaaaaaa", title: "Before the restart" })).status, 201);
+  const chat = await stubCall(first, "POST", "/api/sessions/omni_aaaaaaaaaaaaaaaaaaaaaaaa/chat/stream", { message: "hello there" });
+  await chat.text();
+  assert.equal((await stubCall(first, "PATCH", "/api/sessions/omni_aaaaaaaaaaaaaaaaaaaaaaaa", { pinned: true })).status, 200);
+  assert.equal((await stubCall(first, "POST", "/api/jobs/0a1b2c3d4e5f/pause")).status, 200);
+  assert.equal(disk.modes.get("/dev/state.json.tmp"), 0o600, "written owner-only, through a temp file that is renamed into place");
+  assert.ok(disk.files.has("/dev/state.json"));
+  assert.ok(!disk.files.has("/dev/state.json.tmp"));
+  assert.doesNotMatch(disk.files.get("/dev/state.json")!, new RegExp(KEY), "the key is never written");
+
+  // The restart: a new stub on the same file, seeded with the same default jobs.
+  const second = createHermesStub({ key: KEY, jobs: seedJobs(), store: fileStubStore("/dev/state.json", disk.fs, 0) });
+  const s = (await (await stubCall(second, "GET", "/api/sessions/omni_aaaaaaaaaaaaaaaaaaaaaaaa")).json()) as { session: { title: string; pinned: boolean; message_count: number } };
+  assert.deepEqual([s.session.title, s.session.pinned, s.session.message_count], ["Before the restart", true, 2]);
+  const m = (await (await stubCall(second, "GET", "/api/sessions/omni_aaaaaaaaaaaaaaaaaaaaaaaa/messages")).json()) as { data: Array<{ role: string; content: string }> };
+  assert.deepEqual(m.data.map((x) => [x.role, x.content]), [["user", "hello there"], ["assistant", "the answer"]]);
+  const jobs = (await (await stubCall(second, "GET", "/api/jobs?include_disabled=true")).json()) as { jobs: Array<{ id: string; enabled: boolean }> };
+  assert.deepEqual(jobs.jobs.map((j) => [j.id, j.enabled]), [["0a1b2c3d4e5f", false]], "the pause survived; the seed list did not overwrite it");
+});
+
+test("without a store (the test suite's setting) nothing is written; a missing or damaged state file starts empty", async () => {
+  const disk = fakeDisk();
+  const plain = createHermesStub({ key: KEY });
+  await stubCall(plain, "POST", "/api/sessions", { id: "omni_bbbbbbbbbbbbbbbbbbbbbbbb" });
+  assert.equal(disk.files.size, 0);
+  disk.files.set("/dev/bad.json", "{not json");
+  assert.equal(createHermesStub({ key: KEY, store: fileStubStore("/dev/bad.json", disk.fs, 0) }).sessions.size, 0);
+  disk.files.set("/dev/old.json", JSON.stringify({ version: 0, sessions: [{ id: "x" }] } as unknown as StubState));
+  assert.equal(createHermesStub({ key: KEY, store: fileStubStore("/dev/old.json", disk.fs, 0) }).sessions.size, 0, "an unknown version is ignored");
+  assert.equal(createHermesStub({ key: KEY, store: fileStubStore("/dev/none.json", disk.fs, 0) }).sessions.size, 0);
+});

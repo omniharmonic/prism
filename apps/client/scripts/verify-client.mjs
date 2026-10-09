@@ -100,6 +100,32 @@ check(
   `img-src must be exactly 'self' data: blob: <server>, got: ${img.join(" ")}`,
 );
 check(!/openfreemap|tile|\*/i.test(csp), "CSP names no tile host and no wildcard host (basemap comes through /api/map)");
+// Embeds in the apps (owner decision c.7, 2026-10-08): YouTube (no-cookie) and Vimeo ONLY, each
+// scoped to its player path. Everything else the PWA frames stays an "Open in …" card.
+const EMBED_PLAYERS = ["https://www.youtube-nocookie.com/embed/", "https://player.vimeo.com/video/"];
+const frame = dirs["frame-src"] ?? [];
+check(
+  frame.length === 3 && frame[0] === "'self'" && frame[1] === EMBED_PLAYERS[0] && frame[2] === EMBED_PLAYERS[1],
+  `frame-src = 'self' + the two embed players (${EMBED_PLAYERS.join(" ")})`,
+  `frame-src must be exactly 'self' ${EMBED_PLAYERS.join(" ")}, got: ${frame.join(" ")}`,
+);
+{
+  const originSrc = readFileSync(join(tauriDir, "src/origin.rs"), "utf8").split("#[cfg(test)]")[0];
+  const listed = [...(originSrc.match(/pub const EMBED_FRAME_SOURCES: \[&str; 2\] = \[([\s\S]*?)\];/)?.[1] ?? "").matchAll(/"([^"]+)"/g)].map((m) => m[1]);
+  check(JSON.stringify(listed) === JSON.stringify(EMBED_PLAYERS), "origin.rs EMBED_FRAME_SOURCES = the same two players (runtime CSP + navigation rule)", `origin.rs lists: ${listed.join(" ")}`);
+  check(/None => "frame-src 'self'"\.to_string\(\)/.test(originSrc), "unconfigured (first-run) CSP frames nothing remote");
+  const hook = readFileSync(join(tauriDir, "src/host.js"), "utf8");
+  const advertised = [...(hook.match(/var FRAME_ORIGINS = Object\.freeze\(\[([^\]]*)\]\)/)?.[1] ?? "").matchAll(/"([^"]+)"/g)].map((m) => m[1]);
+  check(JSON.stringify(advertised) === JSON.stringify(EMBED_PLAYERS.map((s) => new URL(s).origin)), "host.js frameOrigins = the origins of the same two players", `host.js advertises: ${advertised.join(" ")}`);
+  check(/return currentOrigin\(\) \? FRAME_ORIGINS : NO_FRAMES;/.test(hook), "host.js advertises no player before a server is configured");
+  const win = readFileSync(join(tauriDir, "src/window.rs"), "utf8").split("#[cfg(test)]")[0];
+  check(/\(embeds && crate::origin::is_embed_player_url\(url\)\)/.test(win) && /origin\(\)\.is_some\(\);\s*let d = navigation_decision\(url, embeds\)/.test(win), "navigation rule lets ONLY those player paths load, and only with a server configured");
+  const capture = readFileSync(join(tauriDir, "src/capture_window.rs"), "utf8");
+  check(/navigation_decision\(url, false\)/.test(capture), "the quick-capture window frames no player");
+  const views = readFileSync(resolve(root, "packages/core/src/lib/tiptap/mediaViews.ts"), "utf8");
+  const embeds = readFileSync(resolve(root, "packages/core/src/lib/media/embeds.ts"), "utf8");
+  check(/EMBED_SANDBOX_NATIVE = "allow-scripts allow-same-origin allow-presentation"/.test(embeds) && /sandbox: isNative\(\) \? EMBED_SANDBOX_NATIVE : EMBED_SANDBOX/.test(views), "in the apps an embed's sandbox has NO allow-popups (the block's \"Open in …\" link is the way out)");
+}
 check(conf.app?.withGlobalTauri === false, "withGlobalTauri is off (no window.__TAURI__ API surface)");
 
 // 3. frontend

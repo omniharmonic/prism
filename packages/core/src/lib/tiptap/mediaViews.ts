@@ -14,7 +14,7 @@ import type { Editor, NodeViewRenderer, NodeViewRendererProps } from "@tiptap/co
 import type { Node as PMNode } from "@tiptap/pm/model";
 import { NodeSelection } from "@tiptap/pm/state";
 import { registerBlockViews, codeLanguages } from "../../editor/blocks";
-import { embedFor, EMBED_SANDBOX, isAllowedFrameSrc, safeWebUrl } from "../media/embeds";
+import { embedFor, EMBED_SANDBOX, EMBED_SANDBOX_NATIVE, isAllowedFrameSrc, safeWebUrl } from "../media/embeds";
 import { formatBytes, isDangerousImageSrc, isOwnAttachment, ownOrProxiedSrc, safeAttachmentSrc } from "../media/attachments";
 import { serverFetch } from "../transport/serverFetch";
 import { structuralEditsAllowed } from "./blockCommands";
@@ -95,7 +95,7 @@ function selectThis(editor: Editor, getPos: NodeViewRendererProps["getPos"]): vo
   } catch { /* the node moved */ }
 }
 
-/** Is this the native shell (Prism Client)? Its CSP has no frame-src beyond 'self'. */
+/** Is this the native shell (Prism Client)? Its CSP frames only the players its host advertises (YouTube no-cookie, Vimeo). */
 const isNative = () => typeof window !== "undefined" && !!(window as Any).__PRISM_HOST__;
 /** Can this shell frame `src`? The PWA's CSP allows EMBED_FRAME_ORIGINS; the native client only what its host advertises. */
 function frameAllowedHere(src: string): boolean {
@@ -573,9 +573,9 @@ const embedView: NodeViewRenderer = ({ node, editor, getPos, view }) => {
       return;
     }
     if (!frameAllowedHere(target.src)) {
-      // The native client's CSP has no frame-src for players (pending review): a card, not a blank frame.
+      // The native client frames YouTube and Vimeo only (its CSP `frame-src`): a card, not a blank frame.
       dom.dataset.fallback = "true";
-      dom.append(bookmarkCard(doc, { url, title: target.label }, `Open in ${target.label} — embeds aren't shown in this app yet.`));
+      dom.append(bookmarkCard(doc, { url, title: target.label }, `Open in ${target.label} — only YouTube and Vimeo play inside the app.`));
       return;
     }
     delete dom.dataset.fallback;
@@ -592,7 +592,7 @@ const embedView: NodeViewRenderer = ({ node, editor, getPos, view }) => {
     else box.style.aspectRatio = "16 / 9";
     frame = h(doc, "iframe", undefined, {
       title: `${target.label} embed`,
-      sandbox: EMBED_SANDBOX,
+      sandbox: isNative() ? EMBED_SANDBOX_NATIVE : EMBED_SANDBOX,
       allow: target.allow,
       referrerpolicy: "strict-origin-when-cross-origin",
       loading: "lazy",

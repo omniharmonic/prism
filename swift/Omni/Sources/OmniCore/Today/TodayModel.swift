@@ -9,6 +9,8 @@ import OmniClient
 public final class TodayModel {
     public private(set) var today: OmniToday?
     public private(set) var phase: LoadPhase = .idle
+    /// A read is in flight (the first one, or a refresh over what is already shown).
+    public private(set) var isRefreshing = false
 
     private let service: any OmniService
     private let sink: ErrorSink
@@ -39,6 +41,10 @@ public final class TodayModel {
     }
 
     public func refresh() async {
+        // One read at a time (the screen appearing, ⌘R and a reconnect can coincide).
+        guard !isRefreshing else { return }
+        isRefreshing = true
+        defer { isRefreshing = false }
         if today == nil { phase = .loading }
         do {
             let fresh = try await service.today(date: Self.dayString(now(), calendar: calendar()))
@@ -46,9 +52,22 @@ public final class TodayModel {
             approvals.ingest(fresh.needsYou.approvals)
             phase = .loaded
         } catch {
-            guard let message = sink.describe(error) else { return }
-            phase = .failed(message)
+            guard let message = sink.describe(error) else {
+                if today == nil { phase = .idle }
+                return
+            }
+            // What was already shown stays; the message says it may be out of date.
+            phase = .failed(today == nil ? message : "Couldn't refresh Today. \(message)")
         }
+    }
+
+    /// Something has been read at least once (an older answer stays up when a refresh fails).
+    public var hasContent: Bool { today != nil }
+    /// One plain line when some sections are missing: "Some of Today couldn't be loaded: the agenda."
+    public var partialNotice: String? {
+        guard let errors = today?.errors, !errors.isEmpty else { return nil }
+        let names = errors.keys.sorted().map(Self.sectionName)
+        return "Some of Today couldn't be loaded: \(names.joined(separator: ", ")). The rest is up to date."
     }
 
     public var agenda: [OmniToday.AgendaItem] { today?.agenda ?? [] }
@@ -60,7 +79,7 @@ public final class TodayModel {
     public var sectionProblems: [String: String] {
         guard let errors = today?.errors else { return [:] }
         var out: [String: String] = [:]
-        for name in errors.keys { out[name] = "Couldn't load \(Self.sectionName(name)) just now." }
+        for name in errors.keys { out[name] = "Couldn't load \(Self.sectionName(name)) just now. The server couldn't read it from the vault." }
         return out
     }
 

@@ -332,7 +332,9 @@ export function PropertyValue({
   };
 
   useEffect(() => {
-    if (autoOpen) begin();
+    // A checkbox has no editor to open: "opening" it would TICK it — and again on every remount
+    // while it is still the property just added (twice under StrictMode). It is shown unticked.
+    if (autoOpen && def.kind !== "checkbox") begin();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [autoOpen]);
   useEffect(() => {

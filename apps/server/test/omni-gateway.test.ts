@@ -476,3 +476,68 @@ test("today degrades per section: approvals + in-flight still answer when the qu
   assert.deepEqual(j.needsYou.approvals.map((a) => a.id), [p.id]);
   assert.equal((await req("/today?date=tomorrow", { headers: owner() })).status, 400);
 });
+
+// ── first-run fix: a thread Hermes no longer has ────────────────────────────────────────
+
+const DONE: Frame[] = [["run.started", {}], ["assistant.completed", { content: "ok" }], ["run.completed", {}], ["done", {}]];
+type ListedThread = { id: string; gone: boolean; archived: boolean; title: string | null };
+const listThreadsOf = async (q = "") => ((await (await req(`/threads${q}`, { headers: owner() })).json()) as { threads: ListedThread[]; hermes: string });
+
+test("a thread Hermes forgot: the list marks it gone, opening it is a clear 404, and it can be removed (archived locally)", async () => {
+  const kept = await newThread(DONE);
+  await turnSettled(kept.turnId);
+  const lost = await newThread(DONE);
+  await turnSettled(lost.turnId);
+  // Hermes loses one session (a reset, a prune; the dev stub restarting without its file).
+  fake.sessions.delete(lost.id);
+
+  const l = await listThreadsOf();
+  assert.equal(l.hermes, "ok");
+  assert.deepEqual(Object.fromEntries(l.threads.map((t) => [t.id, t.gone])), { [kept.id]: false, [lost.id]: true });
+
+  // Opening it: the documented 404 not_found, flagged, and nothing is read as unread-cleared.
+  const open = await req(`/threads/${lost.id}`, { headers: owner() });
+  assert.equal(open.status, 404);
+  assert.deepEqual(await open.json(), { error: "not_found", detail: "the agent no longer has this conversation", gone: true });
+  // An id NEITHER side knows is the plain 404 (no `gone`: there is no row to remove).
+  assert.deepEqual(await (await req("/threads/omni_neverexisted", { headers: owner() })).json(), { error: "not_found" });
+
+  // Remove it from the list: the gateway's own row is archived; Hermes is not written to.
+  const before = fake.calls.length;
+  const rm = await req(`/threads/${lost.id}`, { method: "PATCH", headers: owner(), body: JSON.stringify({ archived: true }) });
+  assert.equal(rm.status, 200);
+  const removed = ((await rm.json()) as { thread: ListedThread }).thread;
+  assert.equal(removed.archived, true);
+  assert.equal(removed.gone, true);
+  assert.deepEqual(fake.calls.slice(before).map((c) => `${c.method} ${c.path}`), [`GET /api/sessions/${lost.id}`], "only the lookup; no PATCH reaches Hermes");
+  assert.deepEqual((await listThreadsOf()).threads.map((t) => t.id), [kept.id]);
+  assert.deepEqual((await listThreadsOf("?archived=1")).threads.map((t) => t.id).sort(), [kept.id, lost.id].sort());
+
+  // A PATCH for an id neither side knows still creates nothing.
+  const none = await req("/threads/omni_neverexisted", { method: "PATCH", headers: owner(), body: JSON.stringify({ archived: true }) });
+  assert.equal(none.status, 404);
+  assert.equal(getThread("omni_neverexisted"), null);
+});
+
+test("gone is only claimed on proof: not while Hermes is unreachable, not from a truncated list, not for a thread with a turn running", async () => {
+  const a = await newThread(DONE);
+  await turnSettled(a.turnId);
+  fake.sessions.delete(a.id);
+  // Hermes unreachable: local rows are listed, none is called gone.
+  fake.throwNext = true;
+  const down = await listThreadsOf();
+  assert.equal(down.hermes, "unavailable");
+  assert.deepEqual(down.threads.map((t) => [t.id, t.gone]), [[a.id, false]]);
+  // More sessions than one page: the list is not complete, so absence proves nothing.
+  for (let i = 0; i < 201; i++) fake.sessions.set(`api_${i}_abcd1234`, { id: `api_${i}_abcd1234`, title: null, last_active: 1700000000 + i });
+  const truncated = await listThreadsOf();
+  assert.equal(truncated.threads.find((t) => t.id === a.id)?.gone, false);
+  for (let i = 0; i < 201; i++) fake.sessions.delete(`api_${i}_abcd1234`);
+  assert.equal((await listThreadsOf()).threads.find((t) => t.id === a.id)?.gone, true);
+  // A thread whose turn is running here is alive, whatever the list says.
+  const live = await newThread([["run.started", {}]], true);
+  fake.sessions.delete(live.id);
+  assert.equal((await listThreadsOf()).threads.find((t) => t.id === live.id)?.gone, false);
+  await post(`/turns/${live.turnId}/cancel`, {});
+  await turnSettled(live.turnId);
+});

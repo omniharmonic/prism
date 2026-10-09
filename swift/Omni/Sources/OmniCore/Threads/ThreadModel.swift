@@ -43,6 +43,9 @@ public final class ThreadModel {
     /// A problem with the live connection that reconnecting did not fix.
     public private(set) var streamProblem: String?
     public private(set) var isStopping = false
+    /// The agent no longer has this conversation (the server answered 404, or the list
+    /// already said so). Nothing is retried: the view offers to remove it or to check again.
+    public private(set) var isUnavailable = false
     /// The view is on screen (set by ``open()`` / ``close()``).
     public private(set) var isOpen = false
     /// The composer's text.
@@ -59,17 +62,21 @@ public final class ThreadModel {
     private var pendingKey: IdempotencyKey?
     private var followTask: Task<Void, Never>?
     private var followGeneration = 0
+    /// Told when the server says the thread is gone, so the list can show it too.
+    private let onUnavailable: @MainActor (String) -> Void
+    private var isLoading = false
 
-    init(threadID: String, service: any OmniService, approvals: ApprovalCenter, sink: ErrorSink, sleep: @escaping @Sendable (Duration) async throws -> Void) {
+    init(threadID: String, service: any OmniService, approvals: ApprovalCenter, sink: ErrorSink, sleep: @escaping @Sendable (Duration) async throws -> Void, onUnavailable: @escaping @MainActor (String) -> Void = { _ in }) {
         self.threadID = threadID
         self.service = service
         self.approvals = approvals
         self.sink = sink
         self.sleep = sleep
+        self.onUnavailable = onUnavailable
     }
 
     public var isRunning: Bool { activeTurnID != nil }
-    public var canSend: Bool { !isRunning && sendState != .sending && pendingText == nil && !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    public var canSend: Bool { !isUnavailable && !isRunning && sendState != .sending && pendingText == nil && !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
     public var title: String { thread.map(ThreadGrouping.displayTitle) ?? "Thread" }
 
     /// Everything the transcript shows, top to bottom.
@@ -97,9 +104,30 @@ public final class ThreadModel {
     // MARK: Lifecycle
 
     /// The thread came on screen: read it and follow a running turn.
-    public func open() async {
+    ///
+    /// - Parameter knownGone: the thread list already says the agent no longer has it —
+    ///   nothing is asked of the server; the unavailable state is shown at once.
+    public func open(knownGone: Bool = false) async {
         isOpen = true
+        if knownGone, detail == nil { markUnavailable() }
+        // Unavailable is not retried by coming back to the thread; "Check Again" asks.
+        guard !isUnavailable else { return }
         await reload(showLoading: detail == nil)
+    }
+
+    /// The person asked to look again (the unavailable state's "Check Again", or Try Again).
+    public func checkAgain() async {
+        isUnavailable = false
+        await reload(showLoading: true)
+    }
+
+    private func markUnavailable() {
+        stopFollowing()
+        isUnavailable = true
+        activeTurnID = nil
+        streamProblem = nil
+        phase = .failed(PlainLanguage.threadUnavailable)
+        onUnavailable(threadID)
     }
 
     /// The thread left the screen: drop the live connection. A running turn keeps running
@@ -111,20 +139,27 @@ public final class ThreadModel {
 
     /// A notice named this thread (an agent-initiated message, a decision, a new card).
     public func changedOnServer() async {
-        // While a turn streams, its own events carry the news.
-        guard isOpen, followTask == nil else { return }
+        // While a turn streams, its own events carry the news. A thread that is gone, or
+        // whose first read has not answered yet, is not asked again by a notice.
+        guard isOpen, followTask == nil, !isUnavailable, !isLoading else { return }
         await reload(showLoading: false)
     }
 
     public func reload() async {
+        guard !isUnavailable else { return }
         await reload(showLoading: false)
     }
 
     private func reload(showLoading: Bool) async {
+        // One read at a time: opening a thread while a notice arrives must not ask twice.
+        guard !isLoading else { return }
+        isLoading = true
+        defer { isLoading = false }
         if showLoading { phase = .loading }
         do {
             let fresh = try await service.thread(threadID)
             apply(fresh)
+            isUnavailable = false
             phase = .loaded
             if let turn = fresh.activeTurnId {
                 if followTask == nil { startFollowing(turn: turn, replayTurn: true) }
@@ -132,7 +167,15 @@ public final class ThreadModel {
                 activeTurnID = nil
             }
         } catch {
-            guard let message = sink.describe(error) else { return }
+            if PlainLanguage.isNotFound(error) {
+                markUnavailable()
+                return
+            }
+            guard let message = sink.describe(error) else {
+                // Signed out or cancelled: never leave the spinner up.
+                if detail == nil, phase == .loading { phase = .idle }
+                return
+            }
             if detail == nil { phase = .failed(message) } else { streamProblem = message }
         }
     }
@@ -294,6 +337,14 @@ public final class ThreadModel {
             } catch {
                 guard generation == followGeneration else { return }
                 if error is CancellationError { return }
+                if PlainLanguage.isNotFound(error) {
+                    // The stream itself is a 404: read the thread once to learn whether it is gone.
+                    followTask = nil
+                    connection = .idle
+                    activeTurnID = nil
+                    await reload(showLoading: false)
+                    return
+                }
                 if let message = sink.describe(error) { streamProblem = message }
                 break attach
             }
@@ -305,6 +356,11 @@ public final class ThreadModel {
                 fresh = try await service.thread(threadID)
             } catch {
                 guard generation == followGeneration else { return }
+                if PlainLanguage.isNotFound(error) {
+                    followTask = nil
+                    markUnavailable()
+                    return
+                }
                 if let message = sink.describe(error) { streamProblem = message }
                 break attach
             }

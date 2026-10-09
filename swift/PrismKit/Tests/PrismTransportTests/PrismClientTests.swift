@@ -1,4 +1,5 @@
 import Foundation
+import os
 import PrismAuth
 import PrismModels
 import PrismTestSupport
@@ -305,6 +306,55 @@ final class PrismClientTests: XCTestCase {
             XCTAssertEqual((error as? PrismError)?.serverCode, "too_many_streams")
         }
     }
+
+    // MARK: diagnostics (first-run fix): what the request observer is told — and never told
+
+    func testTheRequestObserverGetsMethodPathStatusAndServerCodeOnly() async throws {
+        let server = StubServer { r in
+            switch r.path {
+            case "/api/omni/threads/omni_dead": return .json(404, #"{"error":"not_found","detail":"the agent no longer has this conversation","gone":true}"#)
+            case "/api/omni/today": return .json(502, #"{"error":"hermes_unavailable","secret":"SERVER-TEXT"}"#)
+            default: return .json(200, #"{"ok":true,"body":"RESPONSE-BODY"}"#)
+            }
+        }
+        let seen = OSAllocatedUnfairLock<[RequestRecord]>(initialState: [])
+        let store = InMemoryTokenStore()
+        try store.setToken(TestTokens.device, for: origin)
+        let client = PrismClient(origin: origin, tokenStore: store, session: server.session, onRequest: { r in seen.withLock { $0.append(r) } })
+
+        _ = try await client.send(.get("/api/omni/threads", query: [URLQueryItem(name: "q", value: "PRIVATE-SEARCH")]))
+        _ = try? await client.send(.get("/api/omni/threads/omni_dead"))
+        _ = try? await client.send(.get("/api/omni/today"))
+        _ = try await client.send(PrismRequest(method: "POST", path: "/api/omni/threads", body: Data(#"{"prompt":"REQUEST-BODY"}"#.utf8), idempotencyKey: IdempotencyKey("key-12345678")))
+
+        let records = seen.withLock { $0 }
+        XCTAssertEqual(records.map { "\($0.method) \($0.path) \($0.status.map(String.init) ?? "-") \($0.serverCode ?? "-")" }, [
+            "GET /api/omni/threads 200 -",
+            "GET /api/omni/threads/omni_dead 404 not_found",
+            "GET /api/omni/today 502 hermes_unavailable",
+            "POST /api/omni/threads 200 -",
+        ])
+        XCTAssertEqual(records.map(\.isFailure), [false, true, true, false])
+        // Nothing but those fields exists on a record: no token, query, header or body can ride along.
+        let dump = records.map { String(reflecting: $0) }.joined()
+        for secret in [TestTokens.device, "PRIVATE-SEARCH", "REQUEST-BODY", "RESPONSE-BODY", "SERVER-TEXT", "key-12345678", "Bearer", "no longer has"] {
+            XCTAssertFalse(dump.contains(secret), "a record leaked \(secret)")
+        }
+    }
+
+    func testTheRequestObserverRecordsAStreamWhenItConnectsOrIsRefused() async throws {
+        let server = StubServer { r in
+            r.path.hasSuffix("/events") ? .sse([": connected\n\n"]) : .json(429, #"{"error":"too_many_streams"}"#)
+        }
+        let seen = OSAllocatedUnfairLock<[RequestRecord]>(initialState: [])
+        let store = InMemoryTokenStore()
+        try store.setToken(TestTokens.device, for: origin)
+        let client = PrismClient(origin: origin, tokenStore: store, session: server.session, onRequest: { r in seen.withLock { $0.append(r) } })
+        for try await _ in try await client.openStream(.get("/api/omni/events")) {}
+        _ = try? await client.openStream(.get("/api/omni/threads/omni_x/stream"))
+        let records = seen.withLock { $0 }
+        XCTAssertEqual(records.map { "\($0.path) \($0.status ?? 0) \($0.serverCode ?? "-") \($0.isStream)" }, ["/api/omni/events 200 - true", "/api/omni/threads/omni_x/stream 429 too_many_streams true"])
+    }
 }
 
 final class Counter: @unchecked Sendable {
@@ -312,4 +362,5 @@ final class Counter: @unchecked Sendable {
     private var n = 0
     func increment() { lock.lock(); n += 1; lock.unlock() }
     var value: Int { lock.lock(); defer { lock.unlock() }; return n }
+
 }

@@ -41,6 +41,10 @@ function download(value: unknown, name: string) {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
+/** A failed read of the queue is read again this soon, and reported after this many in a row. */
+const STORAGE_RECHECK_MS = 1000;
+const STORAGE_FAILURES_BEFORE_REPORT = 2;
+
 /** Honest save status and recovery. Never discard content or retry uncertain writes implicitly. */
 export function OfflineIndicator() {
   const [online, setOnline] = useState(navigator.onLine);
@@ -57,23 +61,45 @@ export function OfflineIndicator() {
   const [busy, setBusy] = useState(false);
   const [discarding, setDiscarding] = useState<number | null>(null);
   const dialog = useRef<HTMLDialogElement>(null);
+  // The queue could not be READ. Shown only when it stays unreadable (see below), and cleared by
+  // the first read that works — it is a state of the device, not a message to dismiss.
+  const [storageDown, setStorageDown] = useState(false);
   useEffect(() => {
     let disposed = false;
+    let running = false;
+    let again = false;
+    let failures = 0;
+    let recheck: number | undefined;
     const refresh = async () => {
+      // One read at a time: overlapping reads would count one bad moment several times.
+      if (running) { again = true; return; }
+      running = true;
       try {
+        // Each of these already replaced a dead connection and tried again (outbox `withDb`).
         const next = await visibleWrites();
         const old = getMe()?.isOwner
           ? (await allQueued()).filter((i) => !i.scope).length
           : 0;
+        failures = 0;
         if (!disposed) {
           setItems(next);
           setLegacy(old);
+          setStorageDown(false);
         }
       } catch {
-        if (!disposed)
-          setError(
-            "Offline storage is unavailable. Keep this tab open and copy any unsaved text.",
-          );
+        // iOS refuses IndexedDB for a moment while the app resumes from the background, while
+        // its storage process restarts and right after an app update. So: nothing is said while
+        // the page is hidden, and nothing after ONE failed read — it is read again shortly, and
+        // only a second failure in a row is reported. The 5 s poll and the visibility / pageshow /
+        // online events keep reading, so the report goes away when storage is back.
+        if (disposed) return;
+        if (document.visibilityState === "hidden") { failures = 0; return; }
+        failures++;
+        if (failures >= STORAGE_FAILURES_BEFORE_REPORT) setStorageDown(true);
+        else { window.clearTimeout(recheck); recheck = window.setTimeout(() => void refresh(), STORAGE_RECHECK_MS); }
+      } finally {
+        running = false;
+        if (again && !disposed) { again = false; void refresh(); }
       }
     };
     const change = () => {
@@ -86,8 +112,11 @@ export function OfflineIndicator() {
       setOpen(false);
       change();
     };
+    const visible = () => { if (document.visibilityState !== "hidden") change(); };
     window.addEventListener("online", change);
     window.addEventListener("offline", change);
+    window.addEventListener("pageshow", change);
+    document.addEventListener("visibilitychange", visible);
     window.addEventListener("prism:vault-changed", scopeChange);
     const unsubscribe = subscribe(() => void refresh());
     void refresh();
@@ -96,8 +125,11 @@ export function OfflineIndicator() {
       disposed = true;
       unsubscribe();
       clearInterval(timer);
+      window.clearTimeout(recheck);
       window.removeEventListener("online", change);
       window.removeEventListener("offline", change);
+      window.removeEventListener("pageshow", change);
+      document.removeEventListener("visibilitychange", visible);
       window.removeEventListener("prism:vault-changed", scopeChange);
     };
   }, []);
@@ -162,7 +194,10 @@ export function OfflineIndicator() {
   }, []);
   useEffect(() => {
     if (open) dialog.current?.showModal();
-    else dialog.current?.close();
+    else {
+      dialog.current?.close();
+      setError(""); // an action's error belongs to the dialog it happened in
+    }
   }, [open]);
 
   const loadReview = async (item: QueuedWrite) => {
@@ -238,9 +273,9 @@ export function OfflineIndicator() {
       </div>
     </dialog>
   );
-  if (online && !items.length && !legacy && !error && !open && !elsewhere.count) return <>{toast}{storageBanner}{leavePrompt}</>;
-  const label = error
-    ? "Save needs attention"
+  if (online && !items.length && !legacy && !storageDown && !open && !elsewhere.count) return <>{toast}{storageBanner}{leavePrompt}</>;
+  const label = storageDown
+    ? "Offline storage unavailable"
     : attention
       ? `${attention} saved change${attention === 1 ? " needs" : "s need"} review`
       : items.length
@@ -256,7 +291,7 @@ export function OfflineIndicator() {
       {/* The pill is for what the header's sync state cannot say or do. Plain "Offline" and healthy
           queued changes are the header's (it opens this same dialog): a second, floating "Offline"
           over the page said it twice. */}
-      {(error || attention > 0 || legacy > 0 || elsewhere.count > 0) && <button
+      {(storageDown || attention > 0 || legacy > 0 || elsewhere.count > 0) && <button
         type="button"
         onClick={() => setOpen(true)}
         aria-haspopup="dialog"
@@ -292,6 +327,17 @@ export function OfflineIndicator() {
             Close
           </button>
         </div>
+        {storageDown && (
+          <div role="alert" className="offline-storage-down mt-4 rounded-lg border border-[var(--color-danger)] p-3 text-sm">
+            <p className="font-medium">Prism can’t read this device’s offline storage.</p>
+            <p className="mt-1 text-[var(--text-secondary)]">
+              Until this clears, a change may fail to save — the page header says so when one does — and changes made without a connection can’t be kept. The list below may be out of date.
+            </p>
+            <p className="mt-1 text-[var(--text-secondary)]">
+              Prism keeps trying, and this message goes away by itself when storage works again. If it stays: stay connected, copy any text you have not seen saved, then close and reopen Prism. Also check that the device has free space.
+            </p>
+          </div>
+        )}
         {error && (
           <p role="alert" className="mt-4 text-sm text-red-500">
             {error}
@@ -323,7 +369,7 @@ export function OfflineIndicator() {
             </button>
           </div>
         )}
-        {!items.length && (
+        {!items.length && !storageDown && (
           <p className="my-5 text-sm" role="status">
             {storing
               ? "Saving your latest edit on this device…"

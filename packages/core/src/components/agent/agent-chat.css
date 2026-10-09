@@ -38,7 +38,8 @@
 .prism-agent-assistant-text { margin-left: 37px; font-size: 14px; line-height: 1.75; }
 .prism-agent-composer { padding: 12px 20px 12px; background: var(--bg-base); }
 .prism-agent-compose-surface { max-width: 800px; margin: 0 auto; padding: 8px; border: 1px solid var(--glass-border); border-radius: 12px; background: var(--bg-surface); }
-.prism-agent-compose-surface:focus-within { border-color: color-mix(in srgb, var(--color-accent) 45%, var(--glass-border)); box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-accent) 7%, transparent); }
+/* The border IS the focus indicator here (the glow is decoration, about 1.1 : 1): full accent, ≥ 3 : 1 on the surface (NP-AX-04). */
+.prism-agent-compose-surface:focus-within { border-color: var(--color-accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-accent) 7%, transparent); }
 .prism-agent-input { padding: 11px 9px; }
 .prism-agent-conversation[data-compact] .prism-agent-heading { padding: 8px 12px; }
 .prism-agent-conversation[data-compact] .prism-agent-conversation-title { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; white-space: normal; overflow-wrap: anywhere; font-size: 15px; }

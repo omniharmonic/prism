@@ -32,7 +32,7 @@ import { PropertyEditor } from "./PropertyEditor";
 import { BottomSheet } from "../ui/BottomSheet";
 import { Popover } from "./Popover";
 import { FilterEditor, SortEditor, ViewSettings } from "./ViewControls";
-import { BoardView, CalendarAgenda, CalendarView, GalleryView, ListView, TableView, monthGrid, type RowSelection, type ViewContext } from "./views";
+import { BoardView, CalendarAgenda, CalendarMonthTouch, CalendarView, GalleryView, ListView, TableView, monthGrid, type RowSelection, type ViewContext } from "./views";
 import { defaultConfig, duplicateView, MAX_VIEWS, moveView, newViewId, followConversions, readDatabaseConfig, rowPath, VIEW_LABELS, VIEW_TYPES, type DatabaseConfig, type DatabaseTemplate, type DatabaseView, type OpenMode, type ViewType } from "./config";
 import { RowPeek } from "./RowPeek";
 import { pageTitle } from "../../lib/pages/model";
@@ -518,12 +518,12 @@ export function DatabasePage({ note, readOnly, embedded }: RendererProps & {
                 {view.type === "list" && <ListView ctx={ctx} />}
                 {view.type === "calendar" && isMobile && view.dateKey && (
                   <p className="db-notice db-phone-layout" role="status">
-                    {phoneMonth ? "Month grid: days are small on this screen." : "Shown as a week list on this screen."}{" "}
+                    {phoneMonth ? "Month: tap a day to see its pages." : "Shown as a week list on this screen."}{" "}
                     <button type="button" className="db-ghost" aria-pressed={phoneMonth} onClick={() => setPhoneMonth((v) => !v)}>Month</button>
                   </p>
                 )}
-                {view.type === "calendar" && (isMobile && view.dateKey && !phoneMonth
-                  ? <CalendarAgenda ctx={ctx} month={month} onMonth={setMonth} />
+                {view.type === "calendar" && (isMobile && view.dateKey
+                  ? (phoneMonth ? <CalendarMonthTouch ctx={ctx} month={month} onMonth={setMonth} /> : <CalendarAgenda ctx={ctx} month={month} onMonth={setMonth} />)
                   : <CalendarView ctx={ctx} month={month} onMonth={setMonth} onPickDate={(k) => updateView({ dateKey: k })} />)}
               </>
             )}

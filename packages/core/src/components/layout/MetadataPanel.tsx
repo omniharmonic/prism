@@ -316,8 +316,9 @@ function EditableMetadata({ note, scope }: MetadataPanelProps & {scope:string|nu
       {/* Advanced JSON (collapsible) */}
       <button
         onClick={() => setShowAdvanced(!showAdvanced)}
-        className="flex items-center gap-1 text-xs hover:text-[var(--text-primary)] transition-colors"
+        className="prism-context-raw-toggle flex items-center gap-1 text-xs hover:text-[var(--text-primary)] transition-colors"
         style={{ color: "var(--text-muted)" }}
+        aria-expanded={showAdvanced}
       >
         {showAdvanced ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
         Raw JSON

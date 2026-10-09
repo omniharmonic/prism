@@ -109,6 +109,78 @@ final class AppModelTests: XCTestCase {
         XCTAssertNil(app.session)
     }
 
+    // MARK: first-run fix: the screen follows the stored token, not the attempt's last word
+
+    func testAnAttemptThatStoredTheTokenAndThenReportedAnErrorIsSignedInNotFailed() async {
+        let app = make()
+        app.serverText = "https://prism.example.com"
+        await app.submitServer()
+        auth.storeTokenThenFail(DeviceAuthError.timedOut)
+        app.signIn()
+        await eventually { app.phase != .signingIn }
+        XCTAssertEqual(app.phase, .signedIn, "a token is stored: no 'sign-in failed' over a working sign-in")
+        XCTAssertNotNil(app.session)
+    }
+
+    func testCancelPressedWhileTheLastStepWasAlreadyThroughStillEndsSignedIn() async {
+        let app = make()
+        app.serverText = "https://prism.example.com"
+        await app.submitServer()
+        auth.holdSignIn()
+        app.signIn()
+        await eventually { self.auth.isWaitingInSignIn }
+        app.cancelSignIn()
+        XCTAssertEqual(app.phase, .signedOut(notice: nil))
+        // The browser leg had already succeeded: the token arrives after the Cancel.
+        auth.releaseSignIn()
+        await eventually { app.phase == .signedIn }
+        XCTAssertNotNil(app.session)
+        XCTAssertTrue(auth.hasToken)
+    }
+
+    func testAFailedAttemptWithNoTokenStillSaysWhyAndALateOneFromAnotherServerIsIgnored() async {
+        let app = make()
+        app.serverText = "https://prism.example.com"
+        await app.submitServer()
+        auth.failSignIn(DeviceAuthError.server(code: "invalid_grant", description: nil, status: 400))
+        app.signIn()
+        await eventually { app.phase != .signingIn }
+        XCTAssertEqual(app.phase, .signedOut(notice: "Sign-in failed: invalid_grant"))
+        XCTAssertNil(app.session)
+        // An attempt still in the browser when the server is changed says nothing about the new one.
+        auth = FakeAuth()
+        auth.holdSignIn()
+        let held = auth
+        await app.changeServer()
+        app.serverText = "https://prism.example.com"
+        await app.submitServer()
+        app.signIn()
+        await eventually { held.isWaitingInSignIn }
+        await app.changeServer()
+        held.releaseSignIn()
+        try? await Task.sleep(for: .milliseconds(20))
+        XCTAssertEqual(app.phase, .needsServer)
+        XCTAssertNil(app.session)
+    }
+
+    func testDiagnosticsNotesSignInAndServerChecksWithoutSecrets() async {
+        let log = DiagnosticsLog()
+        service.lists(.success(Fixture.list([])))
+        service.pending(.success([]))
+        let app = AppModel(settings: settings, probe: probe, deviceLabel: "Omni on Test Mac", sleep: noSleep, diagnostics: log) { [self] _, _ in
+            ServerEnvironment(service: service, auth: auth)
+        }
+        app.serverText = "https://prism.example.com"
+        await app.submitServer()
+        auth.failSignIn(DeviceAuthError.server(code: "invalid_grant", description: "code already used", status: 400))
+        app.signIn()
+        await eventually { app.phase != .signingIn }
+        XCTAssertEqual(log.entries.count, 2)
+        XCTAssertTrue(log.text.contains("sign-in: started"))
+        XCTAssertTrue(log.text.contains("sign-in: failed, the token exchange answered 400 invalid_grant"))
+        XCTAssertEqual(log.failureCount, 1)
+    }
+
     func testGivingUpOnTheBrowserReturnsToSignIn() async {
         let app = make()
         app.serverText = "https://prism.example.com"
@@ -248,6 +320,55 @@ final class SessionModelTests: XCTestCase {
         XCTAssertFalse(thread.isOpen)
     }
 
+    // MARK: first-run fixes
+
+    func testAGoneThreadOpensWithoutARequestAndRemovingItLeavesForToday() async {
+        service.lists(.success(Fixture.list([Fixture.threadJSON("old", gone: true), Fixture.threadJSON("t1")])))
+        service.pending(.success([]))
+        service.patches(.success(Fixture.thread("old", archived: true)))
+        let session = SessionModel(service: service, sleep: noSleep) {}
+        await session.threads.refresh()
+        session.destination = .thread("old")
+        let model = session.threadModel(for: "old")
+        await session.openThread(model)
+        XCTAssertTrue(model.isUnavailable)
+        XCTAssertEqual(service.detailReads, 0, "the list already said it is gone")
+        let removed = await session.removeThread("old")
+        XCTAssertTrue(removed)
+        XCTAssertEqual(session.destination, .today)
+        XCTAssertEqual(session.threads.threads.map(\.id), ["t1"])
+        XCTAssertFalse(session.threadModel(for: "old") === model, "the removed thread's model is dropped")
+    }
+
+    func testAThreadFoundGoneOnOpeningIsMarkedInTheListToo() async {
+        let session = make()
+        await session.threads.refresh()
+        service.details(.failure(PrismError.rejected(Fixture.failure(404, "not_found"))))
+        let model = session.threadModel(for: "t1")
+        await session.openThread(model)
+        XCTAssertTrue(model.isUnavailable)
+        XCTAssertEqual(session.threads.thread("t1")?.gone, true)
+    }
+
+    func testRefreshReadsWhatTheWindowShows() async {
+        let session = make()
+        service.todays(.success(Fixture.today()))
+        service.jobs(.success([]))
+        service.details(.success(Fixture.detail("t1")))
+        session.destination = .today
+        await session.refreshVisible()
+        XCTAssertEqual([service.listReads, service.pendingReads, service.todayDates.count, service.jobCalls.count], [1, 1, 1, 0])
+        session.destination = .recurring
+        await session.refreshVisible()
+        XCTAssertEqual(service.listReads, 2)
+        XCTAssertEqual(session.jobs.phase, .loaded)
+        session.destination = .thread("t1")
+        await session.threadModel(for: "t1").open()
+        await session.refreshVisible()
+        XCTAssertEqual(service.detailReads, 2)
+        XCTAssertEqual(service.todayDates.count, 1, "Today is not read while it is not on screen")
+    }
+
     func testStartingAThreadOpensItAndKeyboardRequestsMoveTheWindow() async {
         let session = make()
         service.created(.success(Fixture.decode(["thread": Fixture.threadJSON("new", state: "working"), "turnId": "turn1"])))
@@ -314,11 +435,53 @@ final class TodayAndJobsTests: XCTestCase {
         XCTAssertEqual(service.todayDates, ["2026-10-08"])
         XCTAssertEqual(model.phase, .loaded)
         XCTAssertTrue(model.agenda.isEmpty)
-        XCTAssertEqual(model.sectionProblems, ["agenda": "Couldn't load the agenda just now."])
+        XCTAssertEqual(model.sectionProblems, ["agenda": "Couldn't load the agenda just now. The server couldn't read it from the vault."])
+        XCTAssertEqual(model.partialNotice, "Some of Today couldn't be loaded: the agenda. The rest is up to date.")
+        XCTAssertTrue(model.hasContent)
         XCTAssertEqual(model.tasks.map(\.title), ["Send Kevin the Buoy spec"])
         XCTAssertEqual(model.inFlight.map(\.id), ["t1"])
         XCTAssertEqual(model.approvalIDs, ["apr1"])
         XCTAssertEqual(approvals.pending.map(\.id), ["apr1"], "Today's approvals are the same cards as everywhere else")
+    }
+
+    func testAFailedRefreshKeepsWhatTodayAlreadyShowsAndSaysSo() async {
+        let sink = ErrorSink {}
+        let approvals = ApprovalCenter(service: service, sink: sink)
+        let model = TodayModel(service: service, sink: sink, approvals: approvals)
+        // The first read fails outright: nothing to show, a plain message, Try Again works.
+        service.todays(.failure(PrismError.unreachable("connection refused")), .success(Fixture.today(tasks: [["noteId": "n1", "title": "Call Dana"]])), .failure(PrismError.outcomeUnknown(OutcomeUnknown(status: nil, code: nil, reason: "timed out"))))
+        await model.refresh()
+        XCTAssertFalse(model.hasContent)
+        XCTAssertEqual(model.phase.failure, "Can't reach the server. Check that it's running and that this Mac is on the right network.")
+        await model.refresh()
+        XCTAssertEqual(model.phase, .loaded)
+        XCTAssertNil(model.partialNotice)
+        XCTAssertEqual(model.tasks.map(\.title), ["Call Dana"])
+        // A later refresh fails: the tasks stay on screen, with a line saying it could not refresh.
+        await model.refresh()
+        XCTAssertEqual(model.tasks.map(\.title), ["Call Dana"])
+        XCTAssertEqual(model.phase.failure, "Couldn't refresh Today. The server didn't answer clearly, so it's not known whether this went through.")
+        XCTAssertFalse(model.isRefreshing)
+    }
+
+    func testDiagnosticsLinesAreWhatAServerLogWouldShowAndTheListIsBounded() {
+        let log = DiagnosticsLog(capacity: 3)
+        let at = ISO8601DateFormatter().date(from: "2026-10-09T14:03:07Z")!
+        XCTAssertEqual(log.text, "No requests yet.")
+        log.record(RequestRecord(at: at, method: "GET", path: "/api/omni/threads/omni_ab12", status: 404, serverCode: "not_found", durationMs: 12))
+        log.record(RequestRecord(at: at, method: "GET", path: "/api/omni/events", status: 200, durationMs: 3, isStream: true))
+        log.record(RequestRecord(at: at, method: "POST", path: "/api/omni/threads", status: nil, failure: "connection refused", durationMs: 1))
+        XCTAssertTrue(log.entries[0].line.hasSuffix("GET /api/omni/threads/omni_ab12 → 404 not_found  (12 ms)"))
+        XCTAssertTrue(log.entries[1].line.hasSuffix("GET /api/omni/events [stream] → 200  (3 ms)"))
+        XCTAssertTrue(log.entries[2].line.hasSuffix("POST /api/omni/threads → no answer (connection refused)  (1 ms)"))
+        XCTAssertEqual(log.entries.map(\.isFailure), [true, false, true])
+        XCTAssertEqual(log.failureCount, 2)
+        log.note("sign-in: finished, the device is signed in")
+        XCTAssertEqual(log.entries.count, 3, "the oldest line is dropped")
+        XCTAssertFalse(log.text.contains("omni_ab12"))
+        XCTAssertEqual(log.text.split(separator: "\n").count, 3)
+        log.clear()
+        XCTAssertTrue(log.entries.isEmpty)
     }
 
     func testJobsListPauseAndResume() async {

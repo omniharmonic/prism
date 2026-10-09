@@ -10,8 +10,11 @@
  * capped at MAX_ENTRIES and MAX_BYTES; a single body over MAX_BODY is not cached
  * (the `/tree` projection has its own, larger limit — TREE_MAX_BODY).
  * Cleared on sign-out, on a native 401, and when the signed-in account changes.
- * Every IDB failure degrades to "no cache", never to an error.
+ * Every IDB failure degrades to "no cache", never to an error — but only after the
+ * connection was replaced and the read tried again (`idbRetry`): on iOS a connection dies
+ * while the app is in the background, and one dead read must not mean "never saved".
  */
+import { idbRetry } from "./idbRetry";
 const DB_NAME = "prism-read-cache";
 const MAX_ENTRIES = 300;
 const MAX_BYTES = 64 * 1024 * 1024;
@@ -118,7 +121,11 @@ function open(): Promise<IDBDatabase> {
         req.result.createObjectStore("bodies", { keyPath: "key" });
         req.result.createObjectStore("index", { keyPath: "key" });
       };
-      req.onsuccess = () => resolve(req.result);
+      req.onsuccess = () => {
+        // The browser closed the connection itself (iOS: storage process restarted): open a new one next time.
+        req.result.onclose = () => { dbp = null; };
+        resolve(req.result);
+      };
       req.onerror = () => reject(req.error);
     });
     dbp.catch(() => {
@@ -127,11 +134,23 @@ function open(): Promise<IDBDatabase> {
   }
   return dbp;
 }
+/**
+ * One unit of cache work. A dead connection must not read as "not cached" (an offline page
+ * would say it was never saved) or silently skip a delete: the connection is replaced and the
+ * unit run again (`idbRetry`) before the caller falls back.
+ */
+function withDb<T>(run: (db: IDBDatabase) => Promise<T>): Promise<T> {
+  return idbRetry(async () => run(await open()), () => {
+    const stale = dbp;
+    dbp = null;
+    void stale?.then((db) => db.close(), () => undefined).catch(() => undefined);
+  });
+}
 
 function done(t: IDBTransaction): Promise<void> {
   return new Promise((resolve, reject) => {
     t.oncomplete = () => resolve();
-    t.onerror = () => reject(t.error);
+    // Only `abort` carries the transaction's error (it is still null while a request's error bubbles).
     t.onabort = () => reject(t.error);
   });
 }
@@ -144,19 +163,20 @@ function result<T>(r: IDBRequest<T>): Promise<T> {
 
 export async function cacheGet(key: string): Promise<{ body: string; contentType: string; stored?: number } | null> {
   try {
-    const db = await open();
-    const t = db.transaction(["bodies", "index"], "readwrite");
-    const row = await result<BodyRow | undefined>(t.objectStore("bodies").get(key));
-    if (!row) return null;
-    const idx = await result<IndexRow | undefined>(t.objectStore("index").get(key));
-    if (!idx || Date.now() - (idx.stored ?? idx.at) > maxAge(key)) {
-      // Too old to trust offline: it is re-validated on reconnect or gone.
-      t.objectStore("bodies").delete(key);
-      t.objectStore("index").delete(key);
-      return null;
-    }
-    t.objectStore("index").put({ ...idx, at: Date.now() }); // LRU touch
-    return { body: row.body, contentType: row.contentType, stored: idx.stored ?? idx.at };
+    return await withDb(async (db) => {
+      const t = db.transaction(["bodies", "index"], "readwrite");
+      const row = await result<BodyRow | undefined>(t.objectStore("bodies").get(key));
+      if (!row) return null;
+      const idx = await result<IndexRow | undefined>(t.objectStore("index").get(key));
+      if (!idx || Date.now() - (idx.stored ?? idx.at) > maxAge(key)) {
+        // Too old to trust offline: it is re-validated on reconnect or gone.
+        t.objectStore("bodies").delete(key);
+        t.objectStore("index").delete(key);
+        return null;
+      }
+      t.objectStore("index").put({ ...idx, at: Date.now() }); // LRU touch
+      return { body: row.body, contentType: row.contentType, stored: idx.stored ?? idx.at };
+    });
   } catch {
     return null;
   }
@@ -165,33 +185,34 @@ export async function cacheGet(key: string): Promise<{ body: string; contentType
 export async function cachePut(key: string, body: string, contentType: string): Promise<void> {
   if (body.length > (isTreeKey(key) ? TREE_MAX_BODY : MAX_BODY)) return;
   try {
-    const db = await open();
-    // A tree is megabytes and is fetched on every start and every sidebar change that reaches this
-    // device: when the server sent the SAME body again, only its freshness is recorded.
-    const tree = isTreeKey(key);
-    if (tree) {
-      await pendingPrints.get(key);
-      const t0 = db.transaction(["bodies", "index"], "readwrite");
-      const idx = await result<IndexRow | undefined>(t0.objectStore("index").get(key));
-      // Hashed only when it CAN be the same body: same length as the one stored (and that one has a print).
-      if (idx?.print && idx.size === body.length) {
-        cacheStats.compared++;
-        if (idx.print === fingerprint(body) && (await result<number>(t0.objectStore("bodies").count(key))) === 1) {
-          t0.objectStore("index").put({ ...idx, at: Date.now(), stored: Date.now() });
-          await done(t0);
-          cacheStats.unchangedSkips++;
-          return;
+    return await withDb(async (db) => {
+      // A tree is megabytes and is fetched on every start and every sidebar change that reaches this
+      // device: when the server sent the SAME body again, only its freshness is recorded.
+      const tree = isTreeKey(key);
+      if (tree) {
+        await pendingPrints.get(key);
+        const t0 = db.transaction(["bodies", "index"], "readwrite");
+        const idx = await result<IndexRow | undefined>(t0.objectStore("index").get(key));
+        // Hashed only when it CAN be the same body: same length as the one stored (and that one has a print).
+        if (idx?.print && idx.size === body.length) {
+          cacheStats.compared++;
+          if (idx.print === fingerprint(body) && (await result<number>(t0.objectStore("bodies").count(key))) === 1) {
+            t0.objectStore("index").put({ ...idx, at: Date.now(), stored: Date.now() });
+            await done(t0);
+            cacheStats.unchangedSkips++;
+            return;
+          }
         }
       }
-    }
-    const stored = Date.now();
-    const t = db.transaction(["bodies", "index"], "readwrite");
-    t.objectStore("bodies").put({ key, body, contentType } satisfies BodyRow);
-    t.objectStore("index").put({ key, size: body.length, at: stored, stored } satisfies IndexRow);
-    await done(t);
-    cacheStats.bodyWrites++;
-    if (tree) printLater(key, body, stored);
-    await evict(db);
+      const stored = Date.now();
+      const t = db.transaction(["bodies", "index"], "readwrite");
+      t.objectStore("bodies").put({ key, body, contentType } satisfies BodyRow);
+      t.objectStore("index").put({ key, size: body.length, at: stored, stored } satisfies IndexRow);
+      await done(t);
+      cacheStats.bodyWrites++;
+      if (tree) printLater(key, body, stored);
+      await evict(db);
+    });
   } catch {
     /* cache is best-effort */
   }
@@ -199,11 +220,12 @@ export async function cachePut(key: string, body: string, contentType: string): 
 
 export async function cacheDelete(key: string): Promise<void> {
   try {
-    const db = await open();
-    const t = db.transaction(["bodies", "index"], "readwrite");
-    t.objectStore("bodies").delete(key);
-    t.objectStore("index").delete(key);
-    await done(t);
+    return await withDb(async (db) => {
+      const t = db.transaction(["bodies", "index"], "readwrite");
+      t.objectStore("bodies").delete(key);
+      t.objectStore("index").delete(key);
+      await done(t);
+    });
   } catch {
     /* ignore */
   }
@@ -250,13 +272,14 @@ async function evict(db: IDBDatabase): Promise<void> {
 /** Delete every cached entry of one audience (scope key). */
 export async function cacheDeleteScope(scope: string): Promise<void> {
   try {
-    const db = await open();
-    const keys = (await result<IDBValidKey[]>(db.transaction("index").objectStore("index").getAllKeys())) as string[];
-    const hit = keys.filter((k) => k.startsWith(scope + "|"));
-    if (!hit.length) return;
-    const t = db.transaction(["bodies", "index"], "readwrite");
-    for (const k of hit) { t.objectStore("bodies").delete(k); t.objectStore("index").delete(k); }
-    await done(t);
+    return await withDb(async (db) => {
+      const keys = (await result<IDBValidKey[]>(db.transaction("index").objectStore("index").getAllKeys())) as string[];
+      const hit = keys.filter((k) => k.startsWith(scope + "|"));
+      if (!hit.length) return;
+      const t = db.transaction(["bodies", "index"], "readwrite");
+      for (const k of hit) { t.objectStore("bodies").delete(k); t.objectStore("index").delete(k); }
+      await done(t);
+    });
   } catch {
     /* ignore */
   }
@@ -265,13 +288,14 @@ export async function cacheDeleteScope(scope: string): Promise<void> {
 /** Delete every cached entry whose key starts with `prefix` (e.g. one note, with any query). */
 export async function cacheDeletePrefix(prefix: string): Promise<void> {
   try {
-    const db = await open();
-    const keys = (await result<IDBValidKey[]>(db.transaction("index").objectStore("index").getAllKeys())) as string[];
-    const hit = keys.filter((k) => k === prefix || k.startsWith(prefix + "?"));
-    if (!hit.length) return;
-    const t = db.transaction(["bodies", "index"], "readwrite");
-    for (const k of hit) { t.objectStore("bodies").delete(k); t.objectStore("index").delete(k); }
-    await done(t);
+    return await withDb(async (db) => {
+      const keys = (await result<IDBValidKey[]>(db.transaction("index").objectStore("index").getAllKeys())) as string[];
+      const hit = keys.filter((k) => k === prefix || k.startsWith(prefix + "?"));
+      if (!hit.length) return;
+      const t = db.transaction(["bodies", "index"], "readwrite");
+      for (const k of hit) { t.objectStore("bodies").delete(k); t.objectStore("index").delete(k); }
+      await done(t);
+    });
   } catch {
     /* ignore */
   }
@@ -285,21 +309,22 @@ export async function cacheDeletePrefix(prefix: string): Promise<void> {
  */
 export async function reconcileCachedNotes(scopePrefix: string, visibleIds: Set<string>): Promise<number> {
   try {
-    const db = await open();
-    const keys = (await result<IDBValidKey[]>(db.transaction("index").objectStore("index").getAllKeys())) as string[];
-    const mine = keys.filter((k) => k.startsWith(scopePrefix + "|"));
-    const revoked = mine.filter((k) => {
-      const m = k.slice(scopePrefix.length + 1).match(/^\/notes\/([^/?]+)/);
-      if (!m) return false;
-      const id = decodeURIComponent(m[1]!);
-      return !id.startsWith("offline-") && !visibleIds.has(id);
+    return await withDb(async (db) => {
+      const keys = (await result<IDBValidKey[]>(db.transaction("index").objectStore("index").getAllKeys())) as string[];
+      const mine = keys.filter((k) => k.startsWith(scopePrefix + "|"));
+      const revoked = mine.filter((k) => {
+        const m = k.slice(scopePrefix.length + 1).match(/^\/notes\/([^/?]+)/);
+        if (!m) return false;
+        const id = decodeURIComponent(m[1]!);
+        return !id.startsWith("offline-") && !visibleIds.has(id);
+      });
+      if (!revoked.length) return 0;
+      const lists = mine.filter((k) => /^\/(notes\?|notes$|graph)/.test(k.slice(scopePrefix.length + 1)));
+      const t = db.transaction(["bodies", "index"], "readwrite");
+      for (const k of [...revoked, ...lists]) { t.objectStore("bodies").delete(k); t.objectStore("index").delete(k); }
+      await done(t);
+      return revoked.length;
     });
-    if (!revoked.length) return 0;
-    const lists = mine.filter((k) => /^\/(notes\?|notes$|graph)/.test(k.slice(scopePrefix.length + 1)));
-    const t = db.transaction(["bodies", "index"], "readwrite");
-    for (const k of [...revoked, ...lists]) { t.objectStore("bodies").delete(k); t.objectStore("index").delete(k); }
-    await done(t);
-    return revoked.length;
   } catch {
     return 0;
   }
@@ -307,7 +332,7 @@ export async function reconcileCachedNotes(scopePrefix: string, visibleIds: Set<
 
 /** Expire old entries now (start-up and on reconnect). */
 export async function sweepReadCache(): Promise<void> {
-  try { await evict(await open()); } catch { /* ignore */ }
+  try { await withDb(evict); } catch { /* ignore */ }
 }
 
 /** Remove the old URL-only service-worker API cache on upgrade/sign-out. */
@@ -326,11 +351,12 @@ export async function clearReadCache(): Promise<void> {
   try { window.dispatchEvent(new Event("prism:signed-out")); } catch { /* no window */ }
   await clearLegacyApiCache();
   try {
-    const db = await open();
-    const t = db.transaction(["bodies", "index"], "readwrite");
-    t.objectStore("bodies").clear();
-    t.objectStore("index").clear();
-    await done(t);
+    return await withDb(async (db) => {
+      const t = db.transaction(["bodies", "index"], "readwrite");
+      t.objectStore("bodies").clear();
+      t.objectStore("index").clear();
+      await done(t);
+    });
   } catch {
     /* ignore */
   }

@@ -46,12 +46,13 @@ struct ThreadRow: View {
 
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
-            Image(systemName: StateStyle.symbol(thread.state))
-                .foregroundStyle(StateStyle.color(thread.state))
+            Image(systemName: thread.gone ? "bubble.left.and.exclamationmark.bubble.right" : StateStyle.symbol(thread.state))
+                .foregroundStyle(thread.gone ? Color.secondary : StateStyle.color(thread.state))
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 2) {
                 Text(ThreadGrouping.displayTitle(thread))
                     .fontWeight(thread.unread > 0 ? .semibold : .regular)
+                    .foregroundStyle(thread.gone ? .secondary : .primary)
                     .lineLimit(1)
                 if let subtitle = ThreadGrouping.subtitle(thread) {
                     Text(subtitle).font(.caption).foregroundStyle(.secondary).lineLimit(1)
@@ -67,9 +68,9 @@ struct ThreadRow: View {
     }
 
     private var accessibilityText: String {
-        var parts = [ThreadGrouping.displayTitle(thread), ThreadGrouping.title(for: thread.state)]
+        var parts = [ThreadGrouping.displayTitle(thread), thread.gone ? "no longer available" : ThreadGrouping.title(for: thread.state)]
         if thread.unread > 0 { parts.append("unread") }
-        if let subtitle = ThreadGrouping.subtitle(thread) { parts.append(subtitle) }
+        if !thread.gone, let subtitle = ThreadGrouping.subtitle(thread) { parts.append(subtitle) }
         return parts.joined(separator: ", ")
     }
 }
@@ -98,8 +99,20 @@ enum StateStyle {
 /// The thread sections, the empty state and the "agent unreachable" note, as list content.
 struct ThreadSections: View {
     let threads: ThreadListModel
+    /// Take a thread out of the list (the row's menu).
+    var remove: (String) -> Void = { _ in }
 
     var body: some View {
+        if threads.phase == .loading, threads.threads.isEmpty {
+            HStack(spacing: 8) {
+                ProgressView().controlSize(.small)
+                Text("Loading threads…").font(.callout).foregroundStyle(.secondary)
+            }
+            .accessibilityElement(children: .combine)
+        }
+        if let problem = threads.removeError {
+            Label(problem, systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.secondary)
+        }
         if threads.agentUnavailable {
             Label("The server can't reach the agent right now. This list may be incomplete.", systemImage: "exclamationmark.triangle")
                 .font(.caption)
@@ -118,11 +131,16 @@ struct ThreadSections: View {
         ForEach(threads.sections) { section in
             Section(section.title) {
                 ForEach(section.threads) { thread in
-                    #if os(macOS)
-                    ThreadRow(thread: thread).tag(Destination.thread(thread.id))
-                    #else
-                    NavigationLink(value: Destination.thread(thread.id)) { ThreadRow(thread: thread) }
-                    #endif
+                    Group {
+                        #if os(macOS)
+                        ThreadRow(thread: thread).tag(Destination.thread(thread.id))
+                        #else
+                        NavigationLink(value: Destination.thread(thread.id)) { ThreadRow(thread: thread) }
+                        #endif
+                    }
+                    .contextMenu {
+                        Button(thread.gone ? "Remove from List" : "Archive Thread") { remove(thread.id) }
+                    }
                 }
             }
         }
@@ -145,7 +163,7 @@ struct SplitMainView: View {
                 Label("Needs you", systemImage: "hand.raised")
                     .badge(session.approvals.pendingCount)
                     .tag(Destination.needsYou)
-                ThreadSections(threads: session.threads)
+                ThreadSections(threads: session.threads) { id in Task { await session.removeThread(id) } }
                 Section("Recurring") {
                     Label("Recurring jobs", systemImage: "arrow.triangle.2.circlepath").tag(Destination.recurring)
                 }
@@ -278,7 +296,7 @@ struct ThreadListScreen: View {
     var body: some View {
         @Bindable var threads = session.threads
         List {
-            ThreadSections(threads: session.threads)
+            ThreadSections(threads: session.threads) { id in Task { await session.removeThread(id) } }
             Section("Recurring") {
                 NavigationLink(value: Destination.recurring) {
                     Label("Recurring jobs", systemImage: "arrow.triangle.2.circlepath")

@@ -255,6 +255,18 @@ export function createApp(): Hono {
   app.use("/assets/*", serveStatic({ root: WEB_ROOT, onFound: cacheHeaders }));
   app.get("/*", serveStatic({ root: WEB_ROOT, onFound: cacheHeaders }));
   app.get("*", serveStatic({ path: `${WEB_ROOT}/index.html`, onFound: cacheHeaders }));
+  // Reached only when there is no built web app at WEB_ROOT (a fresh checkout): say so in
+  // words instead of a bare 404 — the browser sign-in for a native app starts on that page.
+  app.get("*", (c) => {
+    c.header("Cache-Control", "no-store");
+    return c.html(
+      `<!doctype html><meta charset="utf-8"><title>Prism</title><body style="font:15px system-ui,sans-serif;max-width:520px;margin:15vh auto;padding:0 20px;line-height:1.5">` +
+        `<h1 style="font-size:20px">The Prism web app isn't built on this server</h1>` +
+        `<p>The server is running, but the web pages (including sign-in) have not been built yet.</p>` +
+        `<p>On the machine that runs the server: <code>npm run build -w @prism/web</code>, then reload this page.</p></body>`,
+      503,
+    );
+  });
 
   return app;
 }
