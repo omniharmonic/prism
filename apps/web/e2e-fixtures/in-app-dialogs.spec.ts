@@ -278,7 +278,7 @@ test.describe("plain editor · phone, keyboard up", () => {
     await context.close();
   });
 
-  test("a tap on Image / File opens the chooser from that tap; the picked image is uploaded and shown", async ({ browser }) => {
+  test("a tap on Image (slash, and the keyboard toolbar) opens the chooser from that tap; the picked image is uploaded and shown", async ({ browser }) => {
     const { context, page, calls } = await phone(browser);
     await page.goto("/e2e-fixtures/editor-blocks.html?upload");
     await expect(page.locator(".tiptap[contenteditable=true]")).toBeVisible();
@@ -295,10 +295,19 @@ test.describe("plain editor · phone, keyboard up", () => {
     await page.getByRole("toolbar", { name: "Editing toolbar" }).getByRole("button", { name: "Image", exact: true }).tap();
     await (await again).setFiles({ name: "second.png", mimeType: "image/png", buffer: PNG });
     await expect(editor(page).locator("img")).toHaveCount(2);
-    // On a line that is not directly above an image: WebKit's emulated keyboard intermittently
-    // REPLACES each typed character on an empty line that sits right before an image block (seen in
-    // 1 run of ~6; the device pass has a row for it).
-    await emptyLineAfter(page, "Alpha", true);
+    expect(await calls()).toEqual([]);
+    await context.close();
+  });
+
+  // Its own page: in WebKit's phone emulation, text typed on a page where an image block had just been
+  // selected was intermittently REPLACED key by key by the engine itself (`<p>/</p>` → `<p>f</p>` on one
+  // insertText, no app transaction in between; ~1 run in 8). Device row C27 checks it on a real phone.
+  test("a tap on File opens the chooser from that tap; the picked file becomes a block", async ({ browser }) => {
+    const { context, page, calls } = await phone(browser);
+    await page.goto("/e2e-fixtures/editor-blocks.html?upload");
+    await expect(page.locator(".tiptap[contenteditable=true]")).toBeVisible();
+    await emptyLineAfter(page, "Foxtrot closing", true);
+    await keyboardUp(page);
     const file = page.waitForEvent("filechooser");
     await slash(page, "file", /^File Upload any file/, true);
     await (await file).setFiles(media("brief.pdf"));
