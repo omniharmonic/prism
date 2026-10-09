@@ -22,8 +22,11 @@ import { Transform } from "@tiptap/pm/transform";
  *           no mark of its own);
  *   delete  the break is suggested for removal (Backspace at the start of a block): Accept
  *           joins the block to the one before, Reject keeps it.
- * On a LINE BREAK (`hardBreak`) it speaks about the break itself: Accept of an insert / Reject
- * of a delete keeps it, the other two remove it.
+ * On an INLINE ATOM — a line break (`hardBreak`) or a chip (`mention`: person / page / date) —
+ * it speaks about the node itself: Accept of an insert / Reject of a delete keeps it, the
+ * other two remove it. A chip stamped `insert` is not a mention YET: the server's mention
+ * hook (`extractMentions`) leaves it out until it is accepted, so nobody is notified and no
+ * backlink is made for a suggestion that may be rejected.
  *
  * Both the live editor (./suggestions) and the server's review (accept / reject of a stored
  * page) resolve them with `resolveNodeSuggestions` below — one implementation.
@@ -33,7 +36,9 @@ export type NodeSuggestionKind = "insert" | "delete";
 /** The text blocks of the shared schema — every node type whose content is inline. */
 export const SUGGESTION_TEXTBLOCKS = ["paragraph", "heading", "codeBlock", "toggleSummary"] as const;
 /** Every node type that carries the two attributes. */
-export const SUGGESTION_NODE_TYPES = [...SUGGESTION_TEXTBLOCKS, "hardBreak"] as const;
+/** The inline atoms of the shared schema: a line break and a chip (person / page / date mention). */
+export const SUGGESTION_INLINE_ATOMS = ["hardBreak", "mention"] as const;
+export const SUGGESTION_NODE_TYPES = [...SUGGESTION_TEXTBLOCKS, ...SUGGESTION_INLINE_ATOMS] as const;
 
 const kindOf = (value: unknown): NodeSuggestionKind | null => (value === "insert" || value === "delete" ? value : null);
 type Source = { getAttribute(name: string): string | null };

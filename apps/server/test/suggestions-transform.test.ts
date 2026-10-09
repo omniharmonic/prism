@@ -9,6 +9,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { suggestionAuthors, hasSuggestions, resolveSuggestions, summarizeSuggestions, type PmNode } from "../src/suggestions";
 import { suggestionAuthorsInHtml, resolveSuggestionsInHtml } from "../src/collab";
+import { extractMentions } from "@prism/core/mentions";
 
 const t = (text: string, marks?: PmNode["marks"]): PmNode => ({ type: "text", text, ...(marks ? { marks } : {}) });
 const ins = (user: string) => ({ type: "insertion", attrs: { user, color: "#0f0" } });
@@ -147,4 +148,27 @@ test("suggested breaks: the attributes survive the stored-HTML round trip unchan
   const html = `<p>one</p><p ${BREAK("insert")}>two<br ${BREAK("delete", "Ann")}>three</p>`;
   assert.equal(resolveSuggestionsInHtml(html, "Nobody", "accept"), html);
   assert.equal(resolveSuggestionsInHtml(`${html}<p>${INS("x")}</p>`, "Nobody", "accept"), `${html}<p>${INS("x")}</p>`);
+});
+
+// ── a suggested CHIP (mention / date) ─────────────────────────────────────────
+const CHIP = (uid: string, extra = "") => `<span data-type="mention" class="prism-mention" data-kind="person" data-id="people/ada" data-label="Ada" data-mention-uid="${uid}"${extra ? ` ${extra}` : ""}>@Ada</span>`;
+
+test("suggested chip: accept keeps it (plain), reject removes it; a chip suggested for removal the other way round", () => {
+  const added = `<p>hi ${CHIP("u1", BREAK("insert"))} there</p>`;
+  assert.equal(resolveSuggestionsInHtml(added, "Suggester", "accept"), `<p>hi ${CHIP("u1")} there</p>`);
+  assert.equal(resolveSuggestionsInHtml(added, "Suggester", "reject"), "<p>hi  there</p>");
+  const removed = `<p>hi ${CHIP("u1", BREAK("delete"))} there</p>`;
+  assert.equal(resolveSuggestionsInHtml(removed, null, "accept"), "<p>hi  there</p>");
+  assert.equal(resolveSuggestionsInHtml(removed, null, "reject"), `<p>hi ${CHIP("u1")} there</p>`);
+  assert.deepEqual(suggestionAuthorsInHtml(added), ["Suggester"]);
+});
+
+test("suggested chip: the mention hook does not see a chip that is only suggested — it is a mention once accepted (so nobody is notified for a suggestion)", () => {
+  const added = `<p>hi ${CHIP("u1", BREAK("insert"))} and ${CHIP("u2")}</p>`;
+  assert.deepEqual(extractMentions(added).map((m) => m.uid), ["u2"]);
+  // Accepted: now it is there, and new to the diff the server notifies from.
+  assert.deepEqual(extractMentions(resolveSuggestionsInHtml(added, null, "accept")).map((m) => m.uid), ["u1", "u2"]);
+  assert.deepEqual(extractMentions(resolveSuggestionsInHtml(added, null, "reject")).map((m) => m.uid), ["u2"]);
+  // A chip suggested for REMOVAL is still a mention until the removal is accepted.
+  assert.deepEqual(extractMentions(`<p>${CHIP("u3", BREAK("delete"))}</p>`).map((m) => m.uid), ["u3"]);
 });

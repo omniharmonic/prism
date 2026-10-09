@@ -252,13 +252,18 @@ test("B1: pasting one image over another while Suggesting changes nothing (with 
   expect(await fx<string>(page, "html")).toBe(before);
 });
 
-test("B1: pasting one chip over another while Suggesting keeps the first (with a notice) — for every collaborator", async ({ page }) => {
-  await openWith(page, leafPage);
-  await fx(page, "pasteNodeOver", "mention", { kind: "date", date: "2027-01-01", uid: "chip-2" });
-  // Marks do not travel on chips, so nothing pretends to be "struck": both chips are simply there.
-  await same(page);
-  expect(await fx<Array<{ uid: string; date: string; marks: string[] }>>(page, "chips")).toEqual([{ uid: "chip-1", date: "2026-10-01", marks: [] }, { uid: "chip-2", date: "2027-01-01", marks: [] }]);
-  await expect(refusedNotice(page)).toBeVisible();
+type Chip = { uid: string; suggestion: string | null };
+test("B1: pasting one chip over another while Suggesting is a tracked replacement — Reject all keeps the first, Accept all the second", async ({ page }) => {
+  for (const review of [rejectAll, acceptAll]) {
+    await openWith(page, leafPage);
+    await fx(page, "pasteNodeOver", "mention", { kind: "date", date: "2027-01-01", uid: "chip-2" });
+    await same(page);
+    // For every collaborator: the old chip is a suggested removal, the new one a suggested insertion.
+    expect(await fx<Chip[]>(page, "chips")).toEqual([{ uid: "chip-1", suggestion: "delete" }, { uid: "chip-2", suggestion: "insert" }]);
+    await expect(refusedNotice(page)).toHaveCount(0);
+    await review(page);
+    expect(await fx<Chip[]>(page, "chips")).toEqual([{ uid: review === rejectAll ? "chip-1" : "chip-2", suggestion: null }]);
+  }
 });
 
 test("B1: \"Remind me\" still leaves ONE chip; a date chip cannot be changed while Suggesting", async ({ page }) => {
@@ -279,54 +284,93 @@ test("B1: \"Remind me\" still leaves ONE chip; a date chip cannot be changed whi
   await expect(page.getByRole("dialog", { name: "Edit date" }).locator('input[type="date"]')).toHaveCount(1);
 });
 
-test("S4: text dragged with a chip inside — the chip stays where it was; Reject all restores the original exactly", async ({ page }) => {
+test("S4: text dragged with a chip inside is a tracked move, chip included — Reject all restores the original exactly, Accept all moves it", async ({ page }) => {
+  for (const review of [rejectAll, acceptAll]) {
+    await openWith(page, leafPage);
+    const before = await fx<string>(page, "html");
+    await fx(page, "selectAcross", "Due ", " for");
+    await fx(page, "dropSelectionAfter", "Closing");
+    await same(page);
+    // The chip where it was is a suggested removal, its copy at the drop a suggested insertion — like the words around it.
+    expect(await fx<Chip[]>(page, "chips")).toEqual([{ uid: "chip-1", suggestion: "delete" }, { uid: "chip-1", suggestion: "insert" }]);
+    await expect(struck(page, "Due")).toBeVisible();
+    await expect(added(page, "Due")).toBeVisible();
+    await expect(refusedNotice(page)).toHaveCount(0);
+    await review(page);
+    expect(await fx<Chip[]>(page, "chips")).toEqual([{ uid: "chip-1", suggestion: null }]);
+    await expect(paragraphs(page).first().locator('[data-type="mention"]')).toHaveCount(review === rejectAll ? 1 : 0);
+    await expect(paragraphs(page).last().locator('[data-type="mention"]')).toHaveCount(review === rejectAll ? 0 : 1);
+    if (review === rejectAll) expect(await fx<string>(page, "html")).toBe(before);
+    await expect(page.locator(".ProseMirror [data-suggestion]")).toHaveCount(0);
+  }
+});
+
+// Every inline atom of the schema has a tracked form while Suggesting — none is put in or taken
+// out as a plain edit. The list is read from the schema: a new inline node type fails here until
+// it is covered (editor/suggestionNodes `SUGGESTION_INLINE_ATOMS`).
+const CHIPS: Array<{ name: string; attrs: Record<string, unknown> }> = [
+  { name: "person mention", attrs: { kind: "person", id: "people/ada", label: "Ada", uid: "new-chip" } },
+  { name: "page mention", attrs: { kind: "page", id: "notes/plan", label: "Plan", uid: "new-chip" } },
+  { name: "date chip", attrs: { kind: "date", date: "2027-03-04", uid: "new-chip" } },
+];
+test("the schema's inline atoms are exactly the ones Suggesting tracks: a line break and a chip", async ({ page }) => {
+  await open(page);
+  expect(await fx<string[]>(page, "inlineAtoms")).toEqual(["hardBreak", "mention"]);
+});
+for (const chipKind of CHIPS) {
+  test(`a ${chipKind.name} put in while Suggesting is a suggestion: Reject all removes it, Accept all keeps it; the author's Backspace takes their own out`, async ({ page }) => {
+    await open(page);
+    const before = await html(page);
+    for (const review of [rejectAll, acceptAll]) {
+      await fx(page, "caretAfter", "The rollout plan");
+      await fx(page, "insertChip", chipKind.attrs);
+      await same(page);
+      expect(await fx<Chip[]>(page, "chips")).toEqual([{ uid: "new-chip", suggestion: "insert" }]);
+      expect(await html(page)).toContain('data-suggestion-node="insert" data-suggestion-by="You"');
+      await expect(page.locator(".ProseMirror .prism-suggested-chip-insert")).toHaveCount(1);
+      await review(page);
+      if (review === rejectAll) expect(await html(page)).toBe(before);
+    }
+    expect(await fx<Chip[]>(page, "chips")).toEqual([{ uid: "new-chip", suggestion: null }]);
+    // Removing a chip that is there: a suggested removal (Reject keeps it, Accept removes it) — never refused, never a plain removal.
+    const withChip = await html(page);
+    for (const review of [rejectAll, acceptAll]) {
+      await fx(page, "caretAfter", "The rollout plan");
+      await page.keyboard.press("Delete");
+      await same(page);
+      expect(await fx<Chip[]>(page, "chips")).toEqual([{ uid: "new-chip", suggestion: "delete" }]);
+      await expect(refusedNotice(page)).toHaveCount(0);
+      await review(page);
+      if (review === rejectAll) expect(await html(page)).toBe(withChip);
+    }
+    expect(await html(page)).toBe(before);
+    // Their own pending chip: Backspace right after putting it in is no suggestion at all.
+    await fx(page, "caretAfter", "The rollout plan");
+    await fx(page, "insertChip", chipKind.attrs);
+    await page.keyboard.press("Backspace");
+    await same(page);
+    expect(await html(page)).toBe(before);
+  });
+}
+
+test("Backspace over a selection that holds a chip strikes the words and suggests the chip's removal; a line break put in is a suggestion", async ({ page }) => {
   await openWith(page, leafPage);
+  const before = await fx<string>(page, "html");
   await fx(page, "selectAcross", "Due ", " for");
-  await fx(page, "dropSelectionAfter", "Closing");
+  await page.keyboard.press("Backspace");
   await same(page);
-  // One chip, for everyone, still in the first paragraph; the text around it is struck there and inserted at the drop.
-  expect(await fx<Array<{ uid: string; date: string; marks: string[] }>>(page, "chips")).toEqual([{ uid: "chip-1", date: "2026-10-01", marks: [] }]);
-  await expect(paragraphs(page).first().locator('[data-type="mention"]')).toHaveCount(1);
-  await expect(paragraphs(page).last().locator('[data-type="mention"]')).toHaveCount(0);
+  expect(await fx<Chip[]>(page, "chips")).toEqual([{ uid: "chip-1", suggestion: "delete" }]);
   await expect(struck(page, "Due")).toBeVisible();
-  await expect(added(page, "Due")).toBeVisible();
-  await expect(refusedNotice(page)).toBeVisible();
+  await expect(refusedNotice(page)).toHaveCount(0);
   await rejectAll(page);
-  expect(await fx<Array<{ uid: string; date: string; marks: string[] }>>(page, "chips")).toEqual([{ uid: "chip-1", date: "2026-10-01", marks: [] }]);
-  await expect(paragraphs(page).first()).toContainText("for the team.");
-  await expect(paragraphs(page).last()).toHaveText("Closing line.");
-  await expect(page.locator(".ProseMirror [data-suggestion]")).toHaveCount(0);
-});
-
-test("S4: text dragged with a chip inside — Accept all moves the text and leaves the one chip where it was", async ({ page }) => {
-  await openWith(page, leafPage);
-  await fx(page, "selectAcross", "Due ", " for");
-  await fx(page, "dropSelectionAfter", "Closing");
-  await acceptAll(page);
-  expect(await fx<number>(page, "count", "mention")).toBe(1);
-  await expect(paragraphs(page).first().locator('[data-type="mention"]')).toHaveCount(1);
-  await expect(paragraphs(page).last().locator('[data-type="mention"]')).toHaveCount(0);
-  await expect(page.locator(".ProseMirror [data-suggestion]")).toHaveCount(0);
-});
-
-test("a chip or a line break put in while Suggesting carries no mark only its author would see; Backspace on a chip is refused", async ({ page }) => {
-  await openWith(page, "<p>First line here.</p><p>Closing line.</p>");
-  await fx(page, "caretAfter", "First line");
+  expect(await fx<string>(page, "html")).toBe(before);
+  await fx(page, "caretAfter", "Closing");
   await page.keyboard.press("Shift+Enter");
   await page.keyboard.type("new");
   await same(page);
   await expect(added(page, "new")).toBeVisible();
-  // Backspace over a selection that holds a chip changes nothing, and says why.
-  await page.goto(`/e2e-fixtures/parity4-suggest.html?content=${encodeURIComponent(leafPage)}`);
-  const editor = page.locator(".ProseMirror").first();
-  await expect(editor).toContainText("Closing line.");
-  await page.getByRole("button", { name: "Editing", exact: true }).click();
-  await editor.click();
-  await fx(page, "selectAcross", "Due ", " for");
-  await page.keyboard.press("Backspace");
-  await expect(refusedNotice(page)).toBeVisible();
-  await expect(struck(page)).toHaveCount(0);
-  expect(await fx<number>(page, "count", "mention")).toBe(1);
+  await rejectAll(page);
+  expect(await fx<string>(page, "html")).toBe(before);
 });
 
 test("Backspace over ordinary text mixed with inline code strikes the text and removes the code, with the notice", async ({ page }) => {
@@ -849,3 +893,43 @@ test("Tab on a list item that was already there is refused (it would be an untra
   await rejectAll(page);
   expect(await html(page)).toBe(before);
 });
+
+// ── Accept of a selection typed over ACROSS blocks gives the page the plain edit would have ──
+// The blocks are kept apart while the suggestion is pending (each half struck where it stands);
+// the block start inside the selection is a suggested join, so Accept all joins them — exactly
+// what typing over that selection does in Editing — and Reject all gives both blocks back.
+const ACROSS: Array<{ name: string; html: string; from: string; to: string }> = [
+  { name: "a pair of paragraphs", html: "<p>alpha bravo</p><p>charlie delta</p><p>End.</p>", from: "bravo", to: "charlie " },
+  { name: "a pair of list items", html: "<ul><li><p>alpha bravo</p></li><li><p>charlie delta</p></li><li><p>echo</p></li></ul><p>End.</p>", from: "bravo", to: "charlie " },
+  { name: "a paragraph and the list item below", html: "<p>alpha bravo</p><ul><li><p>charlie delta</p></li><li><p>echo</p></li></ul><p>End.</p>", from: "bravo", to: "charlie " },
+  { name: "three paragraphs", html: "<p>alpha bravo</p><p>middle</p><p>charlie delta</p><p>End.</p>", from: "bravo", to: "charlie " },
+];
+const ACROSS_ACTIONS: Array<{ name: string; run: (page: Page) => Promise<void> }> = [
+  { name: "typed over", run: async (page) => { await page.keyboard.type("X"); } },
+  { name: "Backspace", run: async (page) => { await page.keyboard.press("Backspace"); } },
+];
+for (const shape of ACROSS) {
+  for (const action of ACROSS_ACTIONS) {
+    test(`across blocks — ${shape.name}, ${action.name}: Accept all gives exactly the plain edit's page; Reject all gives both blocks back`, async ({ page }) => {
+      // What a plain (Editing) author gets.
+      await page.goto(`/e2e-fixtures/parity4-suggest.html?content=${encodeURIComponent(shape.html)}`);
+      await expect(page.locator(".ProseMirror").first()).toContainText("End.");
+      await page.locator(".ProseMirror").first().click();
+      await fx(page, "selectAcross", shape.from, shape.to);
+      await action.run(page);
+      await same(page);
+      const plain = await html(page);
+      expect(plain).not.toContain("bravo");
+      for (const review of [rejectAll, acceptAll]) {
+        await openWith(page, shape.html, "End.");
+        const before = await html(page);
+        await fx(page, "selectAcross", shape.from, shape.to);
+        await action.run(page);
+        await same(page);
+        expect(await html(page)).toContain('data-suggestion-node="delete"'); // the join is a suggestion, for every collaborator
+        await review(page);
+        expect(await html(page)).toBe(review === rejectAll ? before : plain);
+      }
+    });
+  }
+}

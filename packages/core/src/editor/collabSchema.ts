@@ -29,8 +29,9 @@ import { mentionExtensions } from "../lib/tiptap/MentionNode";
  *       lowlight variant (same name + `language` attr, highlighting is decoration-only)
  *   5 — + childPage (sub-page row), toggle `level` (toggle headings), column `width`
  *       and up to 5 columns, table cell `cellColor` (wave 4A)
- *   6 — + `suggestion` / `suggestionBy` on every text block and on `hardBreak`: a paragraph
- *       break or a line break suggested while Suggesting (./suggestionNodes)
+ *   6 — + `suggestion` / `suggestionBy` on every text block and on the inline atoms (`hardBreak`,
+ *       `mention`): a paragraph break, a line break or a chip suggested while Suggesting
+ *       (./suggestionNodes)
  */
 // The value lives in ./schemaVersion (no imports) so the app shell can read it without the editor.
 export { COLLAB_SCHEMA_VERSION } from "./schemaVersion";
@@ -68,7 +69,7 @@ export function collabExtensions(): Extensions {
     // can round-trip them through HTML; the suggest-mode behavior plugin is
     // added client-side in CollabEditor.
     ...suggestionMarks(),
-    // Suggested paragraph breaks / line breaks: two attributes on text blocks and `hardBreak`
+    // Suggested paragraph breaks / line breaks / chips: two attributes on text blocks, `hardBreak` and `mention`
     // (marks travel on text only — see ./suggestionNodes).
     SuggestionNodeAttributes,
     // Comment anchor mark; thread data lives in a Yjs Map (client-side).

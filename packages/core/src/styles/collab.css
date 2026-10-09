@@ -102,6 +102,9 @@ span[data-suggestion="delete"][data-color="#ef4444"] { color: var(--color-danger
 /* An empty suggested block that holds the caret also shows the editor's placeholder, which is a
    ::before too (editor-blocks.css): one ::before says both. */
 .tiptap .is-empty[data-suggestion-node]::before { content: "¶ " attr(data-placeholder); opacity: 0.75; margin: 0; padding: 0; font-size: inherit; background: none; text-decoration: none; }
+/* A suggested chip (mention / date): the node decoration's class on the chip's own element. */
+.prism-suggested-chip-insert { text-decoration: underline; text-decoration-color: var(--color-success); box-shadow: 0 0 0 2px rgba(34, 197, 94, 0.28); border-radius: 4px; }
+.prism-suggested-chip-delete { text-decoration: line-through; text-decoration-color: var(--color-danger); box-shadow: 0 0 0 2px rgba(239, 68, 68, 0.28); border-radius: 4px; opacity: 0.75; }
 .prism-suggested-break { user-select: none; -webkit-user-select: none; pointer-events: none; }
 .prism-suggested-break::after {
   content: "↵";

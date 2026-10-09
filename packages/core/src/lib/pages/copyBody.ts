@@ -148,7 +148,8 @@ export function cleanCopyBody(body: string, uid: () => string = defaultUid, opts
         if (spans.pop() === "unwrap") replacement = "";
       } else {
         const suggestion = attr(tag, "data-suggestion");
-        if (suggestion === "insert") {
+        // (A chip that is only suggested — `data-suggestion-node="insert"` — is left out the same way.)
+        if (suggestion === "insert" || attr(tag, "data-suggestion-node") === "insert") {
           out += body.slice(copied, at);
           dropping = { name: "span", depth: 1 };
           at = body.indexOf("<", tag.end);
@@ -161,7 +162,7 @@ export function cleanCopyBody(body: string, uid: () => string = defaultUid, opts
           spans.push("keep");
           if (attr(tag, "data-type") === "mention") {
             const target = attr(tag, "data-kind") === "page" ? copyOf(attr(tag, "data-id")) : null;
-            const kept = tag.attrs.filter((a) => a.name !== "data-reminder" && a.name !== "data-mention-uid").map((a) => (target && a.name === "data-id" ? `data-id="${target}"` : a.raw));
+            const kept = tag.attrs.filter((a) => a.name !== "data-reminder" && a.name !== "data-mention-uid" && a.name !== "data-suggestion-node" && a.name !== "data-suggestion-by").map((a) => (target && a.name === "data-id" ? `data-id="${target}"` : a.raw));
             replacement = `<span ${[...kept, `data-mention-uid="${uid()}"`].join(" ")}>`;
           }
         }
@@ -176,7 +177,7 @@ export function cleanCopyBody(body: string, uid: () => string = defaultUid, opts
         continue;
       }
     }
-    if (!tag.closing && attr(tag, "data-suggestion-node") !== undefined) {
+    if (!tag.closing && tag.name !== "span" && attr(tag, "data-suggestion-node") !== undefined) {
       const kind = attr(tag, "data-suggestion-node");
       if (kind === "insert" && tag.name === "br") replacement = "";
       else if (kind === "insert" && JOINABLE.has(tag.name) && prev && prev.closing && prev.name === tag.name && prev.end === at && prev.start >= copied) {

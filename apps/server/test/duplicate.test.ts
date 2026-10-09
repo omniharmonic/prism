@@ -585,6 +585,9 @@ test("cleanCopyBody: a suggested paragraph break / line break does not travel â€
   // Where the block before is of another kind the block stays â€” as a plain block, no attribute.
   assert.equal(cleanCopyBody(`<p>a</p><h2 class="x" ${at("insert")}>t</h2><ul><li><p ${at("insert")}>i</p></li></ul>`, () => "u"), '<p>a</p><h2 class="x">t</h2><ul><li><p>i</p></li></ul>');
   assert.ok(!cleanCopyBody(`<p>a</p><p ${at("insert")}>b</p>`.repeat(2000), () => "u").includes("data-suggestion"));
+  // A chip: a suggested one does not travel; one suggested for removal does, as a plain chip with a new uid.
+  const chip = (extra: string) => `<span data-type="mention" data-kind="date" data-date="2027-01-01" data-mention-uid="old" ${extra}>@x</span>`;
+  assert.equal(cleanCopyBody(`<p>a${chip(at("insert"))}b${chip(at("delete"))}c</p>`, () => "new"), '<p>ab<span data-type="mention" data-kind="date" data-date="2027-01-01" data-mention-uid="new">@x</span>c</p>');
 });
 
 test("cleanCopyBody: sub-page rows and page mentions are re-pointed only where a copy exists; without a map rows are dropped as before", () => {

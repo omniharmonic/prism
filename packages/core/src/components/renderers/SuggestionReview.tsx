@@ -18,7 +18,7 @@ function changesIn(doc: Node): Change[] {
       // A suggested paragraph break / line break is a change of its own (it holds no text to pair with).
       const structure = nodeSuggestionOf(node);
       if (structure) {
-        const what = node.isTextblock ? "Paragraph break" : "Line break";
+        const what = node.isTextblock ? "Paragraph break" : node.type.name === "hardBreak" ? "Line break" : `@${node.attrs.label || node.attrs.date || "mention"}`;
         const key = JSON.stringify(["node", pos, structure.kind, structure.by]);
         changes.set(key, { key, from: node.isTextblock ? pos + 1 : pos, to: pos + node.nodeSize, author: structure.by || "Unknown collaborator", before: structure.kind === "delete" ? what : "", after: structure.kind === "insert" ? what : "", turn: isAgentAuthor(structure.by), node: pos });
       }

@@ -110,7 +110,12 @@ Object.assign(window, {
     },
     /** What "@Remind me…" does after its chip is in: stamp the reminder id on it. */
     remind: (uid: string) => updateMentionByUid(editor!, uid, { reminder: "r-1" }),
-    chips: () => { const out: Array<{ uid: string; date: string; marks: string[] }> = []; peer!.state.doc.descendants((node) => { if (node.type.name === "mention") out.push({ uid: node.attrs.uid, date: node.attrs.date, marks: node.marks.map((m) => m.type.name) }); }); return out; },
+    /** The collaborator's chips, in order: which, and whether each is a pending suggestion ("insert" / "delete" / null). */
+    chips: () => { const out: Array<{ uid: string; suggestion: string | null }> = []; peer!.state.doc.descendants((node) => { if (node.type.name === "mention") out.push({ uid: node.attrs.uid, suggestion: node.attrs.suggestion ?? null }); }); return out; },
+    /** A chip put in at the caret (what the @ menu dispatches). */
+    insertChip(attrs: Record<string, unknown>) { editor!.chain().focus().insertContent({ type: "mention", attrs }).run(); },
+    /** Every inline node type of the schema that is not text — each must have a tracked form while Suggesting. */
+    inlineAtoms: () => Object.values(editor!.schema.nodes).filter((type) => type.isInline && !type.isText).map((type) => type.name).sort(),
     blur: () => (editor!.view.dom as HTMLElement).blur(),
     unmount: () => setMounted?.(false),
     /** The shared document itself (what every collaborator and the server hold). */

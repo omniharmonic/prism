@@ -35,7 +35,7 @@ import { installFakeVault, resetDb, makeSession, sessionCookie, grantUser, type 
 /** Bump COLLAB_SCHEMA_VERSION and update this snapshot TOGETHER. */
 const SCHEMA_V6 = {
   nodes: {
-    attachment: ["kind", "mimeType", "name", "size", "src"], blockquote: ["blockColor"], bookmark: ["description", "favicon", "image", "siteName", "title", "url"], bulletList: ["blockColor"], callout: ["blockColor", "emoji"], childPage: ["pageId"], codeBlock: ["language", "suggestion", "suggestionBy"], column: ["width"], columns: [], databaseView: ["noteId", "viewId"], doc: [], embed: ["height", "url"], hardBreak: ["suggestion", "suggestionBy"], heading: ["blockColor", "level", "suggestion", "suggestionBy"], horizontalRule: [], image: ["align", "alt", "caption", "height", "src", "title", "width"], listItem: [], mention: ["date", "id", "kind", "label", "reminder", "uid"], orderedList: ["blockColor", "start", "type"], paragraph: ["blockColor", "suggestion", "suggestionBy"], table: [], tableCell: ["align", "cellColor", "colspan", "colwidth", "rowspan"], tableHeader: ["align", "cellColor", "colspan", "colwidth", "rowspan"], tableOfContents: [], tableRow: [], taskItem: ["checked"], taskList: ["blockColor"], text: [], toggle: ["blockColor", "level"], toggleSummary: ["suggestion", "suggestionBy"],
+    attachment: ["kind", "mimeType", "name", "size", "src"], blockquote: ["blockColor"], bookmark: ["description", "favicon", "image", "siteName", "title", "url"], bulletList: ["blockColor"], callout: ["blockColor", "emoji"], childPage: ["pageId"], codeBlock: ["language", "suggestion", "suggestionBy"], column: ["width"], columns: [], databaseView: ["noteId", "viewId"], doc: [], embed: ["height", "url"], hardBreak: ["suggestion", "suggestionBy"], heading: ["blockColor", "level", "suggestion", "suggestionBy"], horizontalRule: [], image: ["align", "alt", "caption", "height", "src", "title", "width"], listItem: [], mention: ["date", "id", "kind", "label", "reminder", "suggestion", "suggestionBy", "uid"], orderedList: ["blockColor", "start", "type"], paragraph: ["blockColor", "suggestion", "suggestionBy"], table: [], tableCell: ["align", "cellColor", "colspan", "colwidth", "rowspan"], tableHeader: ["align", "cellColor", "colspan", "colwidth", "rowspan"], tableOfContents: [], tableRow: [], taskItem: ["checked"], taskList: ["blockColor"], text: [], toggle: ["blockColor", "level"], toggleSummary: ["suggestion", "suggestionBy"],
   },
   marks: {
     bold: [], code: [], comment: ["id", "resolved"], deletion: ["actorId", "color", "suggestionId", "turnId", "user"], highlight: ["color"], insertion: ["actorId", "color", "suggestionId", "turnId", "user"], italic: [], link: ["class", "href", "rel", "target", "title"], strike: [], textColor: ["color"], underline: [],
@@ -54,11 +54,12 @@ test("the document schema's node, mark and attribute names match COLLAB_SCHEMA_V
   assert.deepEqual(actual, SCHEMA_V6, "a node/mark/attribute changed: bump COLLAB_SCHEMA_VERSION (packages/core/src/editor/collabSchema.ts) and update SCHEMA_V6");
 });
 
-test("every text block of the schema (and the line break) can carry a suggested break", () => {
+test("every text block and every inline atom of the schema (line break, chip) can carry a suggestion record", () => {
   // editor/suggestionNodes lists the types by name: a new text block type must be added there,
-  // or a paragraph break in front of it could not be suggested (Enter would stay untracked).
+  // or a paragraph break in front of it could not be suggested (Enter would stay untracked); an
+  // inline atom without them would be put in / taken out as a plain edit while Suggesting.
   const schema = getSchema(collabExtensions());
-  const missing = Object.values(schema.nodes).filter((type) => (type.isTextblock || type.name === "hardBreak") && !("suggestion" in (type.spec.attrs ?? {}))).map((type) => type.name);
+  const missing = Object.values(schema.nodes).filter((type) => (type.isTextblock || (type.isInline && !type.isText)) && !("suggestion" in (type.spec.attrs ?? {}))).map((type) => type.name);
   assert.deepEqual(missing, []);
 });
 
