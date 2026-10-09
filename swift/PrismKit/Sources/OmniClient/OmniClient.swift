@@ -37,6 +37,13 @@ public struct ApprovalDecision: Sendable, Equatable {
     public let replayed: Bool
     /// 200 (sent / cancelled / revised / replay), 422 (failed), 502 (unknown).
     public let httpStatus: Int
+
+    public init(approval: Approval, turnId: String? = nil, replayed: Bool = false, httpStatus: Int = 200) {
+        self.approval = approval
+        self.turnId = turnId
+        self.replayed = replayed
+        self.httpStatus = httpStatus
+    }
 }
 
 /// An edit: the NEW pending approval (new digest); the old one is now `revised`.

@@ -1,0 +1,7 @@
+.build/
+.swiftpm/
+DerivedData/
+xcuserdata/
+*.xcuserstate
+# Omni.xcodeproj IS committed (hand-written, see README). Only per-user state is ignored.
+Omni.xcodeproj/project.xcworkspace/
