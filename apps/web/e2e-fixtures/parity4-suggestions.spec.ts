@@ -241,13 +241,15 @@ const openWith = async (page: Page, html: string, marker = "Closing line.") => {
 };
 const refusedNotice = (page: Page) => page.getByRole("status").filter({ hasText: "can’t be removed while suggesting" });
 
-test("B1: pasting one image over another while Suggesting keeps the first (with a notice) — never an unmarked swap", async ({ page }) => {
+test("B1: pasting one image over another while Suggesting changes nothing (with a notice) — never an unmarked swap, never an untracked second image", async ({ page }) => {
   await openWith(page, leafPage);
+  const before = await fx<string>(page, "html");
   await fx(page, "pasteNodeOver", "image", { src: "/e2e-fixtures/fixture-image.svg?other", alt: "other" });
-  // The image that was there is still there; the pasted one is beside it.
-  expect(await fx<number>(page, "count", "image")).toBe(2);
-  expect(await fx<string>(page, "html")).toContain('alt="chart"');
-  await expect(refusedNotice(page)).toBeVisible();
+  // The image that was there is still there, and no other came in: an image has no tracked form.
+  await expect(page.getByRole("status").filter({ hasText: "can’t be added while suggesting" })).toBeVisible();
+  await same(page);
+  expect(await fx<number>(page, "count", "image")).toBe(1);
+  expect(await fx<string>(page, "html")).toBe(before);
 });
 
 test("B1: pasting one chip over another while Suggesting keeps the first (with a notice) — for every collaborator", async ({ page }) => {
@@ -491,3 +493,359 @@ for (const shape of DEPTH_SHAPES) {
     });
   }
 }
+
+// ── Suggested STRUCTURE: paragraph breaks, slash-menu blocks, line breaks ────────────────────
+// A mark cannot say "this paragraph break is new" (marks travel on text only), so a break carries
+// two attributes on the node (`data-suggestion-node` / `data-suggestion-by`), which every
+// collaborator and the stored page hold. Accept all / Reject all must both give the right page;
+// structure with no tracked form is refused, with a notice — never applied as a plain edit.
+const structureNotice = (page: Page) => page.getByRole("status").filter({ hasText: "can’t be added while suggesting" });
+const html = (page: Page) => fx<string>(page, "html");
+/** The caret at the very start of the block that holds `text`. */
+const caretBefore = (page: Page, text: string) => fx(page, "caretBefore", text);
+const slash = async (page: Page, query: string, name: string | RegExp) => {
+  await page.keyboard.type(`/${query}`);
+  await expect(page.getByRole("option", { name }).first()).toBeVisible();
+  await page.keyboard.press("Enter");
+};
+
+test("Enter splits a paragraph as a suggested break (one Yjs update): Reject all joins it again, Accept all keeps it", async ({ page }) => {
+  await open(page);
+  const before = await html(page);
+  await fx(page, "caretAfter", "The rollout plan");
+  const updates = await fx<number>(page, "updates");
+  await page.keyboard.press("Enter");
+  await same(page);
+  expect(await fx<number>(page, "updates")).toBe(updates + 1); // the split and its record are one change
+  // What a collaborator holds: the new block's start is the author's suggestion.
+  expect(await html(page)).toContain('<p data-suggestion-node="insert" data-suggestion-by="You"> is ready for review.</p>');
+  await rejectAll(page);
+  expect(await html(page)).toBe(before);
+  // Again — typed into, then accepted: two plain paragraphs, nothing pending.
+  await fx(page, "caretAfter", "The rollout plan");
+  await page.keyboard.press("Enter");
+  await page.keyboard.type("Now");
+  await acceptAll(page);
+  expect(await html(page)).toContain("<p>The rollout plan</p><p>Now is ready for review.</p>");
+  expect(await html(page)).not.toContain("data-suggestion");
+});
+
+test("new paragraphs typed after Enter are removed whole by Reject all — no empty line is left behind", async ({ page }) => {
+  await open(page);
+  const before = await html(page);
+  await fx(page, "caretAfter", "ready for review.");
+  await page.keyboard.press("Enter");
+  await page.keyboard.type("A new line.");
+  await page.keyboard.press("Enter");
+  await page.keyboard.type("And another.");
+  await same(page);
+  expect(await fx<number>(page, "count", "paragraph")).toBe(5);
+  await rejectAll(page);
+  expect(await html(page)).toBe(before);
+});
+
+test("Enter in a list makes a suggested item: Reject all removes it, Accept all keeps it; Enter at the start of a heading keeps the heading", async ({ page }) => {
+  const list = "<ul><li><p>alpha</p></li><li><p>bravo</p></li></ul><h2>Title here</h2><p>End.</p>";
+  await openWith(page, list, "End.");
+  const before = await html(page);
+  await fx(page, "caretAfter", "alpha");
+  await page.keyboard.press("Enter");
+  await page.keyboard.type("new item");
+  await same(page);
+  expect(await fx<number>(page, "count", "listItem")).toBe(3);
+  await rejectAll(page);
+  expect(await html(page)).toBe(before);
+  // Enter at the START of the heading: Reject gives the heading back as a heading.
+  await caretBefore(page, "Title");
+  await page.keyboard.press("Enter");
+  await same(page);
+  expect(await fx<number>(page, "count", "heading")).toBe(1);
+  await rejectAll(page);
+  expect(await html(page)).toBe(before);
+  await fx(page, "caretAfter", "al");
+  await page.keyboard.press("Enter");
+  await acceptAll(page);
+  expect(await html(page)).toContain("<ul><li><p>al</p></li><li><p>pha</p></li><li><p>bravo</p></li></ul>");
+  expect(await html(page)).not.toContain("data-suggestion");
+});
+
+test("slash menu on a new line: the heading is the author's own suggested block — Reject all removes it, Accept all keeps it", async ({ page }) => {
+  await open(page);
+  const before = await html(page);
+  for (const review of [rejectAll, acceptAll]) {
+    await fx(page, "caretAfter", "Closing line.");
+    await page.keyboard.press("Enter");
+    await slash(page, "h2", "Heading 2");
+    await page.keyboard.type("Next steps");
+    await same(page);
+    // For every collaborator: a heading whose start AND whose words are the author's suggestion.
+    expect(await html(page)).toContain('<h2 data-suggestion-node="insert" data-suggestion-by="You">');
+    await expect(added(page, "Next steps")).toBeVisible();
+    await review(page);
+    if (review === rejectAll) expect(await html(page)).toBe(before);
+  }
+  // (The empty paragraph the editor keeps after a last block that is not a paragraph came with the heading.)
+  expect(await html(page)).toBe(`${before}<h2>Next steps</h2><p></p>`);
+});
+
+test("slash menu on a new line: a table is a suggested block too — Reject all takes the whole table out, Accept all keeps it", async ({ page }) => {
+  await open(page);
+  const before = await html(page);
+  for (const review of [rejectAll, acceptAll]) {
+    await fx(page, "caretAfter", "Second paragraph stays here.");
+    await page.keyboard.press("Enter");
+    await slash(page, "table", "Table");
+    await expect.poll(() => fx<number>(page, "count", "table")).toBe(1);
+    await page.keyboard.type("cell words");
+    await same(page);
+    expect(await html(page)).toContain('data-suggestion-node="insert"');
+    await review(page);
+    if (review === rejectAll) expect(await html(page)).toBe(before);
+  }
+  expect(await fx<number>(page, "count", "table")).toBe(1);
+  expect(await html(page)).toContain("cell words");
+  expect(await html(page)).not.toContain("data-suggestion");
+});
+
+test("slash menu on a block that was already there: turning it into a heading is refused, with a notice — nothing changes", async ({ page }) => {
+  await open(page);
+  const before = await html(page);
+  await fx(page, "caretAfter", "Second paragraph stays here.");
+  await page.keyboard.type(" "); // the menu opens after a space (or on an empty line)
+  await slash(page, "h1", "Heading 1");
+  await expect(structureNotice(page)).toBeVisible();
+  await same(page);
+  expect(await fx<number>(page, "count", "heading")).toBe(0);
+  await expect(paragraphs(page).nth(1)).toHaveText("Second paragraph stays here. ");
+  await rejectAll(page);
+  expect(await html(page)).toBe(before);
+});
+
+test("slash menu: a divider has no tracked form — refused with a notice even on a new line; Reject all gives the page back", async ({ page }) => {
+  await open(page);
+  const before = await html(page);
+  await fx(page, "caretAfter", "Second paragraph stays here.");
+  await page.keyboard.press("Enter");
+  await slash(page, "divider", "Divider");
+  await expect(structureNotice(page)).toBeVisible();
+  await same(page);
+  expect(await fx<number>(page, "count", "horizontalRule")).toBe(1); // the one the page already had
+  await rejectAll(page);
+  expect(await html(page)).toBe(before);
+});
+
+test("a Markdown shortcut on a block that was already there is refused — the typed characters stay as suggested text", async ({ page }) => {
+  await open(page);
+  const before = await html(page);
+  await caretBefore(page, "Second");
+  await page.keyboard.type("# ");
+  await expect(structureNotice(page)).toBeVisible();
+  await same(page);
+  expect(await fx<number>(page, "count", "heading")).toBe(0);
+  await expect(paragraphs(page).nth(1)).toHaveText("# Second paragraph stays here.");
+  await expect(added(page, "#")).toBeVisible();
+  await rejectAll(page);
+  expect(await html(page)).toBe(before);
+});
+
+test("Backspace at the start of a paragraph is a suggested join: Accept all joins, Reject all keeps both; the author's own break is simply taken out", async ({ page }) => {
+  await open(page);
+  const before = await html(page);
+  await caretBefore(page, "Second");
+  await page.keyboard.press("Backspace");
+  await same(page);
+  expect(await html(page)).toContain('<p data-suggestion-node="delete" data-suggestion-by="You">Second paragraph stays here.</p>');
+  await rejectAll(page);
+  expect(await html(page)).toBe(before);
+  await caretBefore(page, "Second");
+  await page.keyboard.press("Backspace");
+  await acceptAll(page);
+  await expect(paragraphs(page).first()).toHaveText("The rollout plan is ready for review.Second paragraph stays here.");
+  expect(await html(page)).not.toContain("data-suggestion");
+  // Their own pending break: Backspace right after Enter is no suggestion at all.
+  await page.goto("/e2e-fixtures/parity4-suggest.html");
+  await open(page);
+  await fx(page, "caretAfter", "The rollout plan");
+  await page.keyboard.press("Enter");
+  await page.keyboard.press("Backspace");
+  await same(page);
+  expect(await html(page)).toBe(before);
+});
+
+const BREAK_PAGE = "<p>Line one<br>Line two</p><p>End.</p>";
+test("a line break can be removed while Suggesting — as a suggested removal: Accept all removes it, Reject all keeps it", async ({ page }) => {
+  await openWith(page, BREAK_PAGE, "End.");
+  const before = await html(page);
+  // Delete in front of it, Backspace behind it: the same record, for every collaborator.
+  for (const press of [async () => { await fx(page, "caretAfter", "Line one"); await page.keyboard.press("Delete"); }, async () => { await caretBefore(page, "Line two"); await page.keyboard.press("Backspace"); }]) {
+    await press();
+    await same(page);
+    expect(await html(page)).toContain('<br data-suggestion-node="delete" data-suggestion-by="You">');
+    await expect(page.locator('.ProseMirror .prism-suggested-break[data-kind="delete"]')).toHaveCount(1);
+    await expect(refusedNotice(page)).toHaveCount(0);
+    await rejectAll(page);
+    expect(await html(page)).toBe(before);
+  }
+  await fx(page, "caretAfter", "Line one");
+  await page.keyboard.press("Delete");
+  await acceptAll(page);
+  expect(await html(page)).toBe("<p>Line oneLine two</p><p>End.</p>");
+});
+
+test("typing over a selection that holds a line break strikes the text and suggests the break's removal; a break put in is the author's suggestion", async ({ page }) => {
+  await openWith(page, BREAK_PAGE, "End.");
+  const before = await html(page);
+  for (const review of [rejectAll, acceptAll]) {
+    await fx(page, "selectAcross", "one", "Line t");
+    await page.keyboard.type("X");
+    await same(page);
+    expect(await fx<string>(page, "struckText")).toBe("oneLine t");
+    expect(await html(page)).toContain('<br data-suggestion-node="delete" data-suggestion-by="You">');
+    await review(page);
+    if (review === rejectAll) expect(await html(page)).toBe(before);
+  }
+  expect(await html(page)).toBe("<p>Line Xwo</p><p>End.</p>");
+  // Shift+Enter: the new break is a suggestion — Reject all removes it; the author's Backspace takes their own out.
+  const now = await html(page);
+  await fx(page, "caretAfter", "Line X");
+  await page.keyboard.press("Shift+Enter");
+  await same(page);
+  expect(await html(page)).toContain('<br data-suggestion-node="insert" data-suggestion-by="You">');
+  await page.keyboard.press("Backspace");
+  await same(page);
+  expect(await html(page)).toBe(now);
+  await page.keyboard.press("Shift+Enter");
+  await page.keyboard.type("more");
+  await rejectAll(page);
+  expect(await html(page)).toBe(now);
+});
+
+test("the review queue lists a suggested paragraph break and resolves it on its own", async ({ page }) => {
+  await open(page);
+  const before = await html(page);
+  await fx(page, "caretAfter", "The rollout plan");
+  await page.keyboard.press("Enter");
+  await same(page);
+  const review = page.locator(".prism-suggestion-review");
+  await review.locator("summary").click();
+  await expect(review.locator("summary")).toHaveText("1 suggested change");
+  await expect(review.locator(".prism-review-after")).toContainText("Paragraph break");
+  await review.getByRole("button", { name: "Reject", exact: true }).click();
+  await same(page);
+  expect(await html(page)).toBe(before);
+});
+
+test("composing (IME) over a selection that crosses nesting depth: the composition is not interrupted, and the result is tracked", async ({ page, browserName }) => {
+  chromiumOnly(browserName, IME_BY_CDP);
+  await openWith(page, "<p>alpha bravo</p><ul><li><p>charlie delta</p></li><li><p>echo</p></li></ul><p>End.</p>", "End.");
+  const before = await html(page);
+  await fx(page, "selectAcross", "bravo", "charlie ");
+  expect(await fx<string>(page, "selectedText")).toBe("bravo|charlie ");
+  const cdp = await page.context().newCDPSession(page);
+  await cdp.send("Input.imeSetComposition", { text: "ｋ", selectionStart: 1, selectionEnd: 1 });
+  await cdp.send("Input.imeSetComposition", { text: "か", selectionStart: 1, selectionEnd: 1 });
+  // Still ONE composition: the half-typed character was replaced, not committed beside the next one.
+  await expect(page.locator(".ProseMirror").first()).not.toContainText("ｋ");
+  await expect(page.locator(".ProseMirror").first()).toContainText("か");
+  await cdp.send("Input.insertText", { text: "火" });
+  await expect(added(page, "火")).toBeVisible();
+  await expect(page.locator(".ProseMirror").first()).not.toContainText("か");
+  await same(page);
+  // Every removed character is still there, struck, where a collaborator reads it — no block was touched.
+  expect(await fx<string>(page, "struckText")).toBe("bravo|charlie ");
+  expect(await fx<number>(page, "count", "listItem")).toBe(2);
+  await rejectAll(page);
+  expect(await html(page)).toBe(before);
+});
+
+test("composing (IME) over a selection that crosses a table-cell boundary: the composition completes and its text is tracked — nothing is removed, with the notice", async ({ page, browserName }) => {
+  chromiumOnly(browserName, IME_BY_CDP);
+  await openWith(page, `<p>alpha bravo</p>${TABLE}<p>End.</p>`, "End.");
+  const before = await html(page);
+  await fx(page, "selectAcross", "bravo", "charlie ");
+  const starts = await page.evaluateHandle(() => { const log: string[] = []; document.querySelector(".ProseMirror")!.addEventListener("compositionstart", () => log.push("start"), true); return log; });
+  const cdp = await page.context().newCDPSession(page);
+  await cdp.send("Input.imeSetComposition", { text: "ｋ", selectionStart: 1, selectionEnd: 1 });
+  await cdp.send("Input.imeSetComposition", { text: "か", selectionStart: 1, selectionEnd: 1 });
+  await cdp.send("Input.insertText", { text: "火" });
+  // The character the person composed is in the page, as their suggestion (it used to be lost).
+  await expect(added(page, "火")).toBeVisible();
+  expect(await starts.jsonValue()).toEqual(["start"]); // ONE composition, never restarted
+  await expect(page.getByRole("status").filter({ hasText: "can’t be tracked while suggesting" })).toBeVisible();
+  await same(page);
+  expect(await fx<string>(page, "struckText")).toBe(""); // across a cell boundary nothing is removed
+  expect(await fx<string>(page, "text")).toContain("alpha 火bravo");
+  await rejectAll(page);
+  expect(await html(page)).toBe(before);
+});
+
+// Every text-bearing block of the slash menu, made on the author's own new line: the whole block
+// is a suggestion (its text blocks carry the record), so Reject all gives the page back exactly.
+const OWN_BLOCKS: Array<{ query: string; name: string | RegExp; type: string }> = [
+  { query: "bulleted", name: "Bulleted list", type: "bulletList" },
+  { query: "numbered", name: "Numbered list", type: "orderedList" },
+  { query: "to-do", name: "To-do list", type: "taskList" },
+  { query: "quote", name: "Quote", type: "blockquote" },
+  { query: "callout", name: "Callout", type: "callout" },
+  { query: "toggle", name: "Toggle", type: "toggle" },
+  { query: "code", name: "Code", type: "codeBlock" },
+  { query: "2 columns", name: "2 columns", type: "columns" },
+];
+for (const block of OWN_BLOCKS) {
+  test(`slash menu on a new line — ${block.type}: made as a suggestion; Reject all removes it, Accept all leaves nothing pending`, async ({ page }) => {
+    await open(page);
+    const before = await html(page);
+    for (const review of [rejectAll, acceptAll]) {
+      await fx(page, "caretAfter", "The rollout plan is ready for review.");
+      await page.keyboard.press("Enter");
+      await slash(page, block.query, block.name);
+      await expect.poll(() => fx<number>(page, "count", block.type)).toBe(1);
+      await page.keyboard.type("words");
+      await same(page);
+      expect(await html(page)).toContain('data-suggestion-node="insert"');
+      await review(page);
+      if (review === rejectAll) expect(await html(page)).toBe(before);
+    }
+    expect(await fx<number>(page, "count", block.type)).toBe(1);
+    expect(await html(page)).toContain("words");
+    expect(await html(page)).not.toContain("data-suggestion");
+  });
+}
+
+test("pasted paragraphs and a list left by pressing Enter twice are suggestions: Reject all gives the page back", async ({ page }) => {
+  const list = "<ul><li><p>alpha</p></li><li><p>bravo</p></li></ul><p>End.</p>";
+  await openWith(page, list, "End.");
+  const before = await html(page);
+  await fx(page, "caretAfter", "bravo");
+  await page.keyboard.press("Enter");
+  await page.keyboard.press("Enter"); // the empty item is the author's own: it may leave the list
+  await page.keyboard.type("after the list");
+  await same(page);
+  expect(await fx<number>(page, "count", "listItem")).toBe(2);
+  await rejectAll(page);
+  expect(await html(page)).toBe(before);
+  await fx(page, "caretAfter", "alpha");
+  await fx(page, "paste", "one\ntwo\nthree");
+  await same(page);
+  await expect(added(page, "three")).toBeVisible();
+  await rejectAll(page);
+  expect(await html(page)).toBe(before);
+});
+
+test("Tab on a list item that was already there is refused (it would be an untracked re-shape); on the author's own new item it works", async ({ page }) => {
+  const list = "<ul><li><p>alpha</p></li><li><p>bravo</p></li></ul><p>End.</p>";
+  await openWith(page, list, "End.");
+  const before = await html(page);
+  await fx(page, "caretAfter", "bravo");
+  await page.keyboard.press("Tab");
+  await expect(structureNotice(page)).toBeVisible();
+  await same(page);
+  expect(await html(page)).toBe(before);
+  await page.keyboard.press("Enter");
+  await page.keyboard.type("nested");
+  await page.keyboard.press("Tab");
+  await same(page);
+  expect(await fx<number>(page, "count", "bulletList")).toBe(2);
+  await rejectAll(page);
+  expect(await html(page)).toBe(before);
+});

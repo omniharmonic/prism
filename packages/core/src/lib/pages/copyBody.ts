@@ -4,7 +4,12 @@
  *
  *  - review state: text that is only a pending SUGGESTED insertion is left out, a
  *    suggested deletion keeps its text (nothing was deleted yet), and comment
- *    anchors are unwrapped (their threads stay with the original);
+ *    anchors are unwrapped (their threads stay with the original). The same for a
+ *    suggested BREAK (`data-suggestion-node`, editor/suggestionNodes): a suggested
+ *    line break is left out, a suggested paragraph break is closed again when the
+ *    block before it is of the same kind (`<p>…</p><p suggested>` — the common case;
+ *    elsewhere the block stays, as a plain block), and a break suggested for removal
+ *    stays; no copy carries the suggestion attributes;
  *  - sub-page rows (`<div data-type="child-page">`): they name the ORIGINAL's
  *    sub-pages, which the copy does not have — unless the copy brings its sub-pages
  *    along (`pageId`, "Duplicate with sub-pages"): then a row whose page was copied
@@ -107,6 +112,8 @@ export interface CopyBodyOptions {
 const withAttr = (tag: Tag, name: string, value: string): string =>
   `<${tag.name} ${tag.attrs.map((a) => (a.name === name ? `${name}="${value}"` : a.raw)).join(" ")}>`;
 const SAFE_ID = /^[A-Za-z0-9_-]{1,128}$/;
+/** Text blocks a suggested paragraph break can be closed between, by tag name. */
+const JOINABLE = new Set(["p", "h1", "h2", "h3", "h4", "h5", "h6"]);
 
 export function cleanCopyBody(body: string, uid: () => string = defaultUid, opts: CopyBodyOptions = {}): string {
   if (!body || !startsAsHtml(body)) return body;
@@ -120,6 +127,8 @@ export function cleanCopyBody(body: string, uid: () => string = defaultUid, opts
   const spans: Frame[] = [];
   // While dropping an element: its tag name and how many of them are open inside it.
   let dropping: { name: string; depth: number } | null = null;
+  // The tag read just before this one, when it was kept as written (so it is not in `out` yet).
+  let prev: { name: string; closing: boolean; start: number; end: number } | null = null;
   let at = body.indexOf("<");
   while (at !== -1) {
     const tag = readTag(body, at);
@@ -167,6 +176,22 @@ export function cleanCopyBody(body: string, uid: () => string = defaultUid, opts
         continue;
       }
     }
+    if (!tag.closing && attr(tag, "data-suggestion-node") !== undefined) {
+      const kind = attr(tag, "data-suggestion-node");
+      if (kind === "insert" && tag.name === "br") replacement = "";
+      else if (kind === "insert" && JOINABLE.has(tag.name) && prev && prev.closing && prev.name === tag.name && prev.end === at && prev.start >= copied) {
+        // `</p><p suggested>`: the suggested break is not made — the two blocks are one again.
+        out += body.slice(copied, prev.start);
+        copied = tag.end;
+        prev = null;
+        at = body.indexOf("<", tag.end);
+        continue;
+      } else {
+        const kept = tag.attrs.filter((a) => a.name !== "data-suggestion-node" && a.name !== "data-suggestion-by").map((a) => a.raw);
+        replacement = `<${[tag.name, ...kept].join(" ")}>`;
+      }
+    }
+    prev = replacement === null ? { name: tag.name, closing: tag.closing, start: at, end: tag.end } : null;
     if (replacement !== null) {
       out += body.slice(copied, at) + replacement;
       copied = tag.end;

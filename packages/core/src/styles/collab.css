@@ -82,6 +82,36 @@ span[data-suggestion="delete"] {
 span[data-suggestion="insert"], span[data-suggestion="delete"] { color: var(--text-primary) !important; }
 span[data-suggestion="insert"][data-color="#22c55e"] { color: var(--color-success) !important; }
 span[data-suggestion="delete"][data-color="#ef4444"] { color: var(--color-danger) !important; }
+/* Suggested STRUCTURE (editor/suggestionNodes.ts): a paragraph break put in (the block's start
+   carries data-suggestion-node="insert") or suggested for removal ("delete"), drawn as a "¶" in
+   front of the block; a suggested line break is a small "↵" widget in front of the <br>.
+   Generated content only — nothing here is part of the text. */
+[data-suggestion-node]:not(br)::before {
+  content: "¶";
+  margin-right: 0.3em;
+  font-weight: 400;
+  font-style: normal;
+  font-size: 0.85em;
+  user-select: none;
+  -webkit-user-select: none;
+  border-radius: 3px;
+  padding: 0 2px;
+}
+[data-suggestion-node="insert"]:not(br)::before { color: var(--color-success); background: rgba(34, 197, 94, 0.12); text-decoration: underline; }
+[data-suggestion-node="delete"]:not(br)::before { color: var(--color-danger); background: rgba(239, 68, 68, 0.1); text-decoration: line-through; }
+/* An empty suggested block that holds the caret also shows the editor's placeholder, which is a
+   ::before too (editor-blocks.css): one ::before says both. */
+.tiptap .is-empty[data-suggestion-node]::before { content: "¶ " attr(data-placeholder); opacity: 0.75; margin: 0; padding: 0; font-size: inherit; background: none; text-decoration: none; }
+.prism-suggested-break { user-select: none; -webkit-user-select: none; pointer-events: none; }
+.prism-suggested-break::after {
+  content: "↵";
+  margin: 0 0.15em;
+  font-size: 0.85em;
+  border-radius: 3px;
+  padding: 0 2px;
+}
+.prism-suggested-break[data-kind="insert"]::after { color: var(--color-success); background: rgba(34, 197, 94, 0.12); text-decoration: underline; }
+.prism-suggested-break[data-kind="delete"]::after { color: var(--color-danger); background: rgba(239, 68, 68, 0.1); text-decoration: line-through; }
 /* NP-CO-10: an agent's marks are told apart from every person's — a dashed line in the reserved
    agent colour (never a caret colour), beside the "(agent)" author label. Selected by the author
    label / the agent turn, so marks written before the reserved colour existed read the same. */

@@ -4,4 +4,4 @@
  * number at boot without loading the editor. History of the versions: `collabSchema.ts`,
  * which re-exports this constant (bump it there in the comment, here in the value).
  */
-export const COLLAB_SCHEMA_VERSION = 5;
+export const COLLAB_SCHEMA_VERSION = 6;

@@ -33,9 +33,9 @@ import { installFakeVault, resetDb, makeSession, sessionCookie, grantUser, type 
 // ── 1. The schema is pinned to its version ───────────────────────────────────
 
 /** Bump COLLAB_SCHEMA_VERSION and update this snapshot TOGETHER. */
-const SCHEMA_V5 = {
+const SCHEMA_V6 = {
   nodes: {
-    attachment: ["kind", "mimeType", "name", "size", "src"], blockquote: ["blockColor"], bookmark: ["description", "favicon", "image", "siteName", "title", "url"], bulletList: ["blockColor"], callout: ["blockColor", "emoji"], childPage: ["pageId"], codeBlock: ["language"], column: ["width"], columns: [], databaseView: ["noteId", "viewId"], doc: [], embed: ["height", "url"], hardBreak: [], heading: ["blockColor", "level"], horizontalRule: [], image: ["align", "alt", "caption", "height", "src", "title", "width"], listItem: [], mention: ["date", "id", "kind", "label", "reminder", "uid"], orderedList: ["blockColor", "start", "type"], paragraph: ["blockColor"], table: [], tableCell: ["align", "cellColor", "colspan", "colwidth", "rowspan"], tableHeader: ["align", "cellColor", "colspan", "colwidth", "rowspan"], tableOfContents: [], tableRow: [], taskItem: ["checked"], taskList: ["blockColor"], text: [], toggle: ["blockColor", "level"], toggleSummary: [],
+    attachment: ["kind", "mimeType", "name", "size", "src"], blockquote: ["blockColor"], bookmark: ["description", "favicon", "image", "siteName", "title", "url"], bulletList: ["blockColor"], callout: ["blockColor", "emoji"], childPage: ["pageId"], codeBlock: ["language", "suggestion", "suggestionBy"], column: ["width"], columns: [], databaseView: ["noteId", "viewId"], doc: [], embed: ["height", "url"], hardBreak: ["suggestion", "suggestionBy"], heading: ["blockColor", "level", "suggestion", "suggestionBy"], horizontalRule: [], image: ["align", "alt", "caption", "height", "src", "title", "width"], listItem: [], mention: ["date", "id", "kind", "label", "reminder", "uid"], orderedList: ["blockColor", "start", "type"], paragraph: ["blockColor", "suggestion", "suggestionBy"], table: [], tableCell: ["align", "cellColor", "colspan", "colwidth", "rowspan"], tableHeader: ["align", "cellColor", "colspan", "colwidth", "rowspan"], tableOfContents: [], tableRow: [], taskItem: ["checked"], taskList: ["blockColor"], text: [], toggle: ["blockColor", "level"], toggleSummary: ["suggestion", "suggestionBy"],
   },
   marks: {
     bold: [], code: [], comment: ["id", "resolved"], deletion: ["actorId", "color", "suggestionId", "turnId", "user"], highlight: ["color"], insertion: ["actorId", "color", "suggestionId", "turnId", "user"], italic: [], link: ["class", "href", "rel", "target", "title"], strike: [], textColor: ["color"], underline: [],
@@ -50,8 +50,16 @@ test("the document schema's node, mark and attribute names match COLLAB_SCHEMA_V
     nodes: names(Object.fromEntries(Object.entries(schema.nodes).map(([k, v]) => [k, v.spec]))),
     marks: names(Object.fromEntries(Object.entries(schema.marks).map(([k, v]) => [k, v.spec]))),
   };
-  assert.equal(COLLAB_SCHEMA_VERSION, 5, "bump the snapshot above together with the version");
-  assert.deepEqual(actual, SCHEMA_V5, "a node/mark/attribute changed: bump COLLAB_SCHEMA_VERSION (packages/core/src/editor/collabSchema.ts) and update SCHEMA_V5");
+  assert.equal(COLLAB_SCHEMA_VERSION, 6, "bump the snapshot above together with the version");
+  assert.deepEqual(actual, SCHEMA_V6, "a node/mark/attribute changed: bump COLLAB_SCHEMA_VERSION (packages/core/src/editor/collabSchema.ts) and update SCHEMA_V6");
+});
+
+test("every text block of the schema (and the line break) can carry a suggested break", () => {
+  // editor/suggestionNodes lists the types by name: a new text block type must be added there,
+  // or a paragraph break in front of it could not be suggested (Enter would stay untracked).
+  const schema = getSchema(collabExtensions());
+  const missing = Object.values(schema.nodes).filter((type) => (type.isTextblock || type.name === "hardBreak") && !("suggestion" in (type.spec.attrs ?? {}))).map((type) => type.name);
+  assert.deepEqual(missing, []);
 });
 
 test("schema params parse strictly", () => {

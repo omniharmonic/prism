@@ -65,6 +65,8 @@ Object.assign(window, {
     select(text: string) { const at = find(editor!, text); editor!.chain().focus().setTextSelection({ from: at, to: at + text.length }).run(); },
     /** From the start of `a` to the end of `b` (they may sit in different blocks). */
     selectAcross(a: string, b: string) { editor!.chain().focus().setTextSelection({ from: find(editor!, a), to: find(editor!, b) + b.length }).run(); },
+    /** The caret right in front of `text` (set directly: an arrow key can outrun the editor's focus). */
+    caretBefore(text: string) { editor!.chain().focus().setTextSelection(find(editor!, text)).run(); },
     caretAfter(text: string) { editor!.chain().focus().setTextSelection(find(editor!, text) + text.length).run(); },
     paste(text: string) {
       const data = new DataTransfer();

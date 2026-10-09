@@ -6,6 +6,7 @@ import TaskList from "@tiptap/extension-task-list";
 import TaskItem from "@tiptap/extension-task-item";
 import type { Extensions } from "@tiptap/core";
 import { suggestionMarks } from "./suggestionMarks";
+import { SuggestionNodeAttributes } from "./suggestionNodes";
 import { commentMarks } from "./commentMark";
 import { blockSchemaExtensions } from "./blocks";
 import { mentionExtensions } from "../lib/tiptap/MentionNode";
@@ -28,6 +29,8 @@ import { mentionExtensions } from "../lib/tiptap/MentionNode";
  *       lowlight variant (same name + `language` attr, highlighting is decoration-only)
  *   5 — + childPage (sub-page row), toggle `level` (toggle headings), column `width`
  *       and up to 5 columns, table cell `cellColor` (wave 4A)
+ *   6 — + `suggestion` / `suggestionBy` on every text block and on `hardBreak`: a paragraph
+ *       break or a line break suggested while Suggesting (./suggestionNodes)
  */
 // The value lives in ./schemaVersion (no imports) so the app shell can read it without the editor.
 export { COLLAB_SCHEMA_VERSION } from "./schemaVersion";
@@ -65,7 +68,13 @@ export function collabExtensions(): Extensions {
     // can round-trip them through HTML; the suggest-mode behavior plugin is
     // added client-side in CollabEditor.
     ...suggestionMarks(),
+    // Suggested paragraph breaks / line breaks: two attributes on text blocks and `hardBreak`
+    // (marks travel on text only — see ./suggestionNodes).
+    SuggestionNodeAttributes,
     // Comment anchor mark; thread data lives in a Yjs Map (client-side).
     ...commentMarks(),
   ];
 }
+
+// The server resolves suggested breaks in a stored page with the same code the editor uses.
+export { resolveNodeSuggestionsInDoc, nodeSuggestions, SUGGESTION_NODE_TYPES, SUGGESTION_TEXTBLOCKS } from "./suggestionNodes";

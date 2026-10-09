@@ -112,7 +112,7 @@ test("round trip: a to-do list → Markdown → the reader → the same to-do li
   assert.equal((html.match(/data-checked="true"/g) ?? []).length, 2);
   // A second pass through Markdown changes nothing.
   assert.equal(sliceToMarkdown(schema.nodeFromJSON(after).slice(0)), md);
-  assert.equal(COLLAB_SCHEMA_VERSION, 5);
+  assert.equal(COLLAB_SCHEMA_VERSION, 6);
 });
 
 test("both conversion lanes read task items: inline for a small note, the worker for a long one", async () => {

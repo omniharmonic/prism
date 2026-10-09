@@ -39,7 +39,7 @@ import { WebSocketServer } from "ws";
 import type { IncomingMessage, Server } from "node:http";
 import * as Y from "yjs";
 import { yDocToProsemirrorJSON, updateYFragment, initProseMirrorDoc } from "@tiptap/y-tiptap";
-import { COLLAB_SCHEMA_VERSION } from "@prism/core/editor-schema";
+import { COLLAB_SCHEMA_VERSION, resolveNodeSuggestionsInDoc } from "@prism/core/editor-schema";
 import { inferContentType } from "@prism/core/content-types";
 import { createHash } from "node:crypto";
 // Content conversion (Markdown / HTML / ProseMirror) NEVER runs unbounded on this
@@ -165,17 +165,29 @@ export function suggestionAuthorsInHtml(html: string): string[] {
   return suggestionAuthors(htmlToDocJsonBounded(html) as PmNode);
 }
 
-/** Apply accept/reject of an author's suggestion marks to a note's HTML (bounded, synchronous). */
+/**
+ * Resolve an author's suggestions in a document: the marks first (text removed or kept), then
+ * the suggested paragraph / line breaks — a new block joins the one before or stays, with the
+ * same code the live editor runs (it needs the schema: a join is not a JSON edit). In that
+ * order: inserted text must be gone before its block can be seen to be empty.
+ */
+function resolveSuggestionsInJson(json: PmNode, author: string | null, action: "accept" | "reject"): PmNode {
+  const marksDone = resolveSuggestions(json, author, action);
+  if (!hasSuggestions(marksDone, author)) return marksDone; // no suggested break left to resolve
+  return resolveNodeSuggestionsInDoc(schema.nodeFromJSON(marksDone), author, action).toJSON() as PmNode;
+}
+
+/** Apply accept/reject of an author's suggestions to a note's HTML (bounded, synchronous). */
 export function resolveSuggestionsInHtml(html: string, author: string | null, action: "accept" | "reject"): string {
   const json = htmlToDocJsonBounded(html) as PmNode;
   if (!hasSuggestions(json, author)) return html;
-  return docJsonToHtmlBounded(resolveSuggestions(json, author, action));
+  return docJsonToHtmlBounded(resolveSuggestionsInJson(json, author, action));
 }
 /** The same for a note of any size (parse + render off the main thread). Throws ConversionError. */
 export async function resolveSuggestionsInHtmlAsync(html: string, author: string | null, action: "accept" | "reject", opts?: ConvertOptions): Promise<string> {
   const json = (await htmlToDocJson(html, opts)) as PmNode;
   if (!hasSuggestions(json, author)) return html;
-  return docJsonToHtml(resolveSuggestions(json, author, action), opts);
+  return docJsonToHtml(resolveSuggestionsInJson(json, author, action), opts);
 }
 
 /** Identified suggestions (id → actor + text) in a note's HTML; empty when it has none (bounded, synchronous). */
