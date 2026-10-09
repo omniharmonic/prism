@@ -41,6 +41,7 @@ import { getEmbedder } from "../rag/embedder";
 import { indexedNoteIds, allIndexedNoteIds } from "../rag/store";
 import { runHistoryCompactOnce } from "./history-compact";
 import { runVaultLintOnce, vaultLintDue } from "./vault-lint";
+import { linkHealthDue, runLinkHealthOnce } from "./link-health";
 import { runTrashPurgeOnce, purgeEnabled as trashPurgeEnabled } from "../pages";
 import { recordSourceOutcome, runHealthCheckOnce } from "./health";
 import { defaultSkillsDeps, runSkillsOnce, type PassResult, type SkillsDeps } from "./skills";
@@ -58,6 +59,7 @@ let lastIndexSweepAt = 0;
 let lastHistoryCompactAt = Date.now();
 let historyCompactInFlight = false;
 let vaultLintInFlight = false;
+let linkHealthInFlight = false;
 let lastTrashPurgeAt = 0;
 let trashPurgeInFlight = false;
 let indexSweepInFlight = false;
@@ -1112,6 +1114,21 @@ async function tickRest(): Promise<void> {
       .catch((e) => console.warn("[worker] vault-lint failed:", (e as Error).message))
       .finally(() => {
         vaultLintInFlight = false;
+      });
+  }
+
+  // Link health: a read-only daily measure of how well the newest notes are linked
+  // (worker/link-health.ts), OFF unless LINK_HEALTH_ENABLED=true. Fire-and-forget; its
+  // due time is persisted. Not started while the lint is listing (one reader at a time).
+  if (!linkHealthInFlight && !vaultLintInFlight && linkHealthDue("primary")) {
+    linkHealthInFlight = true;
+    void runLinkHealthOnce("primary")
+      .then((o) => {
+        if (o.status !== "ok") console.warn(`[worker] link-health ${o.status}: low=${o.low.join(",") || "-"}${o.error ? ` (${o.error})` : ""}`);
+      })
+      .catch((e) => console.warn("[worker] link-health failed:", (e as Error).message))
+      .finally(() => {
+        linkHealthInFlight = false;
       });
   }
 

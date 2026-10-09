@@ -34,6 +34,7 @@
  * The spawner, memory probe, cwd, and limits are injectable
  * (`configureAgentRunner`) so orchestration is unit-tested without the real CLI.
  */
+import { renderFieldShapesRule } from "@prism/core/vault-shapes";
 import { spawn as realSpawn } from "node:child_process";
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -266,6 +267,15 @@ export const PRISM_LONG_NOTE_RULE = [
   "and never tell the user a note is too long to read. In prism_query_notes leave include_content off unless you need previews.",
 ].join(" ");
 
+/**
+ * How to shape metadata — part of every preamble of a run that can WRITE notes.
+ * These runs write through the raw vault MCP (or, as an admin, through the owner
+ * passthrough), which no server-side shape guard sees: the prompt is the only place
+ * the rule can be stated. Rendered from the field-shape contract
+ * (`@prism/core/vault-shapes`), never hand-written.
+ */
+export const FIELD_SHAPES_RULE = renderFieldShapesRule();
+
 /** The data-access preamble prepended to every dispatch (a server-side analog of
  *  the desktop PRISM_CONTEXT). Keeps the agent scoped to vault operations. */
 export function buildPrompt(prompt: string, skill: string | null, noteId: string | null): string {
@@ -275,6 +285,7 @@ export function buildPrompt(prompt: string, skill: string | null, noteId: string
     "You have NO host file, shell, or web access. Do the requested task against the vault",
     "and report concisely what you did.",
     LONG_NOTE_RULE,
+    FIELD_SHAPES_RULE,
   ].join(" ");
   const ctx = [skill ? `Skill: ${skill}.` : "", noteId ? `Active note: ${noteId}.` : ""].filter(Boolean).join(" ");
   return `${rules}\n\n${ctx}\n\n${prompt}`.trim();

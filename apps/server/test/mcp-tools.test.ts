@@ -361,6 +361,22 @@ test("update_note: the owner's tag changes use the vault dialect", async () => {
   assert.deepEqual(r.tags, ["extra"]);
 });
 
+test("create/update_note: metadata passes the shape guard for the OWNER too (the passthrough forwards bodies as sent)", async () => {
+  const ow = await connect(pat(OWNER));
+  const made = must(await call(ow, "prism_create_note", { content: "Ann", tags: ["person"], path: "vault/people/ann-shape", metadata: { organizations: "", aliases: ["Ann", "", "Ann"], confidence: 0.93, role: "x" } }));
+  const stored = fv.notes.get(made.id)!.metadata as Record<string, unknown>;
+  assert.equal("organizations" in stored, false, "an empty list placeholder is never stored");
+  assert.deepEqual(stored.aliases, ["Ann"]);
+  assert.equal(stored.confidence, "high");
+  assert.equal(stored.role, "x");
+  // An update: `""` in a list field removes the key instead of storing a string.
+  const cur = fv.notes.get(made.id)!;
+  must(await call(ow, "prism_update_note", { id: made.id, metadata: { aliases: "", recording_id: 42 }, if_updated_at: cur.updatedAt }));
+  const after = fv.notes.get(made.id)!.metadata as Record<string, unknown>;
+  assert.ok(after.aliases === undefined || after.aliases === null, "cleared, not \"\"");
+  assert.equal(after.recording_id, "42");
+});
+
 test("LIVE collab doc: restores are refused; metadata/tag-only updates proceed (content writes merge — see mcp-collab.test.ts)", async () => {
   const ed = await connect(pat(EDITOR));
   hocuspocus.documents.set(docNameFor("primary", "g1"), {} as never);

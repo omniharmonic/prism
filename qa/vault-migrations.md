@@ -93,6 +93,8 @@ A dry run prints counts and at most 10–20 note ids and paths. It never prints 
 
 ## 3. Writer fixes (so the drift cannot come back)
 
+**Update 2026-10-08 (later the same day):** the shape rules now live in ONE file, the field-shape contract `packages/core/src/lib/schemas/vault-shapes.json`; both guards load it and every prompt block is generated from it. See `qa/schema-stability-2026-10-08.md` and `docs/vault-schema-change.md`. The paragraph below describes the state before that change.
+
 The migrations heal the past. These stop new notes coming out wrong. Each shape rule exists in exactly three places, kept in step by tests: `scripts/vault-hygiene/schema-fixes.json` (what the vault validates), Prism `apps/server/src/vault-shapes.ts` (the server guard) and the agent repo's `scripts/vault_shapes.py` (the agent guard). `test/vault-shapes.test.ts` and the agent's `tests/test_vault_shapes.py` both read schema-fixes.json and fail if a vocabulary drifts.
 
 **Guards (both write paths).**

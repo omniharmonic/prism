@@ -83,7 +83,7 @@ NEVER expose calendar details, email content, file names, or schedule patterns i
 ## Linking
 
 Use [[wikilinks]] to connect entities. When creating person, project, or organization notes:
-- Link to related projects: [[vault/projects/{slug}]]
+- Link to related projects: [[vault/projects/{slug}/PROJECT]]
 - Link to people: [[vault/people/{Name}]]
 - First mention only — don't over-link
 - Max 15-20 links per document

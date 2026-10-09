@@ -55,6 +55,7 @@ import {
   type AgentProfile,
 } from "./agent-profiles";
 import {
+  FIELD_SHAPES_RULE,
   LONG_NOTE_RULE,
   PRISM_LONG_NOTE_RULE,
   buildClaudeArgs,
@@ -524,7 +525,7 @@ export function buildSessionPrompt(
       ? "This session is READ-ONLY: you can query the vault but cannot create, update, or delete notes."
       : o.profile === "prism-suggest"
         ? "You may propose suggested edits and add comments. You cannot directly edit, restore, delete, share, or approve changes."
-        : "Report concisely what you changed.",
+        : `${FIELD_SHAPES_RULE} Report concisely what you changed.`,
   ].join(" ");
   const parts = [rules];
   if (o.firstTurn && o.note) {

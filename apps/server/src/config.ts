@@ -334,6 +334,28 @@ export const config = {
   vaultLintSample: Math.max(1, Math.min(500, Number(process.env.VAULT_LINT_SAMPLE ?? 100))),
   vaultLintMaxRate: Number(process.env.VAULT_LINT_MAX_RATE ?? 0.2),
   vaultLintMinSample: Math.max(1, Number(process.env.VAULT_LINT_MIN_SAMPLE ?? 10)),
+  // Which lint tags may make the source `failing` by RATE: "default" = the contract's
+  // lintAlertTags (the twelve tags judged since day one), "all", or a comma list. The
+  // other schema'd tags are sampled and reported only until their baseline is known.
+  vaultLintAlertTags: process.env.VAULT_LINT_ALERT_TAGS ?? "default",
+  // Fresh drift: a tag with ≥ this many mis-shaped notes WRITTEN SINCE THE LAST RUN is
+  // `failing` (a writer is drifting now). 0 = report the count only (the default).
+  vaultLintFreshMax: Math.max(0, Number(process.env.VAULT_LINT_FRESH_MAX ?? 0) || 0),
+  // Declared-schema violations (enum / type / empty string): "report" (default) shows
+  // them in /acl/workers; "enforce" also counts them into the failing rate.
+  vaultLintDeclaredEnforce: (process.env.VAULT_LINT_DECLARED ?? "report").trim().toLowerCase() === "enforce",
+  // Link health (worker/link-health.ts): a READ-ONLY daily measure of how well the
+  // newest meetings / transcripts / tasks / emails / threads are linked to people and
+  // projects, from lean listings only. Health source `link-health`; `failing` (→ the
+  // usual once-per-episode alert) when a measure falls LINK_HEALTH_MAX_DROP below its
+  // own running level, or under an explicit floor (LINK_HEALTH_MIN_<MEASURE>, e.g.
+  // LINK_HEALTH_MIN_MEETING_PROJECT_RESOLVED=0.8). OFF unless LINK_HEALTH_ENABLED=true.
+  linkHealthEnabled: (process.env.LINK_HEALTH_ENABLED ?? "false").toLowerCase() === "true",
+  linkHealthIntervalMs: Number(process.env.LINK_HEALTH_INTERVAL_MS ?? 86_400_000),
+  linkHealthSample: Math.max(1, Math.min(500, Number(process.env.LINK_HEALTH_SAMPLE ?? 150) || 150)),
+  linkHealthMinSample: Math.max(1, Number(process.env.LINK_HEALTH_MIN_SAMPLE ?? 20) || 20),
+  linkHealthMaxDrop: Number(process.env.LINK_HEALTH_MAX_DROP ?? 0.2),
+  linkHealthTargetCap: Math.max(100, Math.min(50_000, Number(process.env.LINK_HEALTH_TARGET_CAP ?? 5000) || 5000)),
   // Worker health + staleness alerts (worker/health.ts). A source is "stale" when
   // nothing succeeded within its threshold, "failing" after WORKER_FAIL_STREAK
   // consecutive errors. A threshold of 0 turns the STALENESS check off for that
