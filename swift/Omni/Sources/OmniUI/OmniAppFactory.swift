@@ -25,13 +25,16 @@ public enum OmniAppFactory {
         let flow: any RedirectFlow = WebAuthenticationSessionFlow(configuration: .omniNative) { presentationAnchor() }
         let label = "Omni on \(UIDevice.current.name)"
         #endif
+        // Development builds list their own requests in Settings → Diagnostics.
+        let diagnostics: DiagnosticsLog? = developmentBuild ? DiagnosticsLog() : nil
         return AppModel(
             settings: UserDefaultsSettings(),
             probe: LiveServerProbe(),
             deviceLabel: label,
             defaultServerURL: developmentBuild ? devGatewayURL : "",
             confirmation: DeviceOwnerConfirmation(allowWhenUnavailable: developmentBuild),
-            makeEnvironment: OmniLive.environmentFactory(tokenStore: tokens, flow: flow)
+            diagnostics: diagnostics,
+            makeEnvironment: OmniLive.environmentFactory(tokenStore: tokens, flow: flow, diagnostics: diagnostics)
         )
     }
 

@@ -58,6 +58,40 @@ public struct PrismResponse: Sendable {
     }
 }
 
+/// One finished request, for a diagnostics list. It carries NO secret and no content: never
+/// a token, a header, a query string or a body — only what a server log line would show.
+public struct RequestRecord: Sendable, Equatable, Identifiable {
+    public let id: UUID
+    public let at: Date
+    public let method: String
+    /// The path only (`/api/omni/threads/omni_…`); the query is dropped (it can hold search text).
+    public let path: String
+    /// The HTTP status, when an answer arrived.
+    public let status: Int?
+    /// The server's `error` code from a non-2xx JSON body (`not_found`, `hermes_unavailable`, …).
+    public let serverCode: String?
+    /// Why no answer arrived (`timed out`, `connection refused`, …) — never a URL.
+    public let failure: String?
+    public let durationMs: Int
+    /// A streaming GET (`text/event-stream`): the record is made when it connects (or fails to).
+    public let isStream: Bool
+
+    public init(id: UUID = UUID(), at: Date = Date(), method: String, path: String, status: Int?, serverCode: String? = nil, failure: String? = nil, durationMs: Int = 0, isStream: Bool = false) {
+        self.id = id
+        self.at = at
+        self.method = method
+        self.path = path
+        self.status = status
+        self.serverCode = serverCode
+        self.failure = failure
+        self.durationMs = durationMs
+        self.isStream = isStream
+    }
+
+    /// Did the request fail (no answer, or a status of 400 and up)?
+    public var isFailure: Bool { status.map { $0 >= 400 } ?? true }
+}
+
 /// The HTTP client bound to ONE server origin (the Swift twin of
 /// `apps/web/src/transport.ts` in native mode).
 ///
@@ -71,6 +105,8 @@ public struct PrismResponse: Sendable {
 ///   signed-out handler. Nothing here ever starts a sign-in.
 public final class PrismClient: Sendable {
     public typealias SignedOutHandler = @Sendable () async -> Void
+    /// Told about every finished request (see ``RequestRecord``). Called on an arbitrary thread.
+    public typealias RequestObserver = @Sendable (RequestRecord) -> Void
 
     public let origin: ServerOrigin
     /// `X-Prism-Vault`, when the account has more than one vault.
@@ -80,6 +116,7 @@ public final class PrismClient: Sendable {
     private let auth: DeviceAuthClient
     private let userAgent: String
     private let onSignedOut: SignedOutHandler?
+    private let onRequest: RequestObserver?
     private let guardian = LivenessGuard()
     /// Responses larger than this are refused (`decoding`).
     public let maxResponseBytes: Int
@@ -91,7 +128,8 @@ public final class PrismClient: Sendable {
         vault: String? = nil,
         userAgent: String = "PrismKit/1",
         maxResponseBytes: Int = 32 * 1024 * 1024,
-        onSignedOut: SignedOutHandler? = nil
+        onSignedOut: SignedOutHandler? = nil,
+        onRequest: RequestObserver? = nil
     ) {
         self.origin = origin
         self.tokenStore = tokenStore
@@ -100,6 +138,7 @@ public final class PrismClient: Sendable {
         self.userAgent = userAgent
         self.maxResponseBytes = maxResponseBytes
         self.onSignedOut = onSignedOut
+        self.onRequest = onRequest
         self.auth = DeviceAuthClient(origin: origin, session: session)
     }
 
@@ -122,13 +161,17 @@ public final class PrismClient: Sendable {
     /// redirect, and 401 (after the `/auth/me` check).
     public func sendRaw(_ request: PrismRequest) async throws -> PrismResponse {
         let (urlRequest, token) = try buildRequest(request, accept: "application/json")
+        let started = Date()
         let data: Data, resp: URLResponse
         do {
             (data, resp) = try await session.data(for: urlRequest)
         } catch {
-            throw Self.transportError(error)
+            let mapped = Self.transportError(error)
+            if !(mapped is CancellationError) { record(request, started: started, status: nil, body: nil, failure: Self.failureWord(mapped), stream: false) }
+            throw mapped
         }
         guard let http = resp as? HTTPURLResponse else { throw PrismError.decoding("not an HTTP response") }
+        record(request, started: started, status: http.statusCode, body: data, failure: nil, stream: false)
         guard data.count <= maxResponseBytes else { throw PrismError.decoding("response too large") }
         try await screen(status: http.statusCode, token: token)
         return PrismResponse(status: http.statusCode, headers: Self.headers(of: http), body: data)
@@ -141,13 +184,17 @@ public final class PrismClient: Sendable {
         var req = request
         req.timeout = idleTimeout
         let (urlRequest, token) = try buildRequest(req, accept: "text/event-stream")
+        let started = Date()
         let bytes: URLSession.AsyncBytes, resp: URLResponse
         do {
             (bytes, resp) = try await session.bytes(for: urlRequest)
         } catch {
-            throw Self.transportError(error)
+            let mapped = Self.transportError(error)
+            if !(mapped is CancellationError) { record(request, started: started, status: nil, body: nil, failure: Self.failureWord(mapped), stream: true) }
+            throw mapped
         }
         guard let http = resp as? HTTPURLResponse else { throw PrismError.decoding("not an HTTP response") }
+        if http.statusCode == 200 { record(request, started: started, status: 200, body: nil, failure: nil, stream: true) }
         if http.statusCode != 200 {
             var body = Data()
             do {
@@ -157,6 +204,7 @@ public final class PrismClient: Sendable {
                 }
             } catch { /* the status is what matters */ }
             bytes.task.cancel()
+            record(request, started: started, status: http.statusCode, body: body, failure: nil, stream: true)
             try await screen(status: http.statusCode, token: token)
             throw Self.error(for: PrismResponse(status: http.statusCode, headers: Self.headers(of: http), body: body))
         }
@@ -181,6 +229,28 @@ public final class PrismClient: Sendable {
                 pump.cancel()
                 bytes.task.cancel()
             }
+        }
+    }
+
+    // MARK: Diagnostics
+
+    /// Tell the observer about a finished request: method, path, status and the server's
+    /// `error` code — nothing else leaves here.
+    private func record(_ request: PrismRequest, started: Date, status: Int?, body: Data?, failure: String?, stream: Bool) {
+        guard let onRequest else { return }
+        var code: String?
+        if let status, status >= 400, let body, body.count <= 64 * 1024,
+           let obj = (try? JSONSerialization.jsonObject(with: body)) as? [String: Any], let c = obj["error"] as? String {
+            code = String(c.prefix(60))
+        }
+        onRequest(RequestRecord(method: request.method, path: request.path, status: status, serverCode: code, failure: failure, durationMs: max(0, Int(Date().timeIntervalSince(started) * 1000)), isStream: stream))
+    }
+
+    private static func failureWord(_ error: any Error) -> String {
+        switch error as? PrismError {
+        case .unreachable(let why): return why
+        case .outcomeUnknown(let u): return u.reason
+        default: return "network error"
         }
     }
 

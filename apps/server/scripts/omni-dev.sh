@@ -13,6 +13,13 @@
 #   OMNI_DEV_STUB_PORT  stub Hermes port (default 18642)
 #   OMNI_DEV_DB         this backend's own SQLite file (default apps/server/prism-omni-dev.db;
 #                       seeded once from the env file's DB_PATH when that exists)
+#   OMNI_DEV_STUB_STATE where the stub keeps its sessions between runs (default: <the db>.stub.json,
+#                       git-ignored). Delete it — and the db — to start clean.
+#   OMNI_DEV_WEB_BUILD  0 = never build apps/web here (default: build it when apps/web/dist is
+#                       missing or older than the sources — the browser sign-in page needs it)
+#
+# Two backends can run side by side: give the second one its own OMNI_DEV_PORT,
+# OMNI_DEV_STUB_PORT and OMNI_DEV_DB.
 #
 # The Hermes key and the hook service token are random, made at start, kept only in the
 # two processes' environment, never written to a file and never printed.
@@ -23,6 +30,7 @@ ENV_FILE="${OMNI_DEV_ENV_FILE:-$HERE/.env.dev}"
 PORT="${OMNI_DEV_PORT:-8797}"
 STUB_PORT="${OMNI_DEV_STUB_PORT:-18642}"
 DB="${OMNI_DEV_DB:-$HERE/prism-omni-dev.db}"
+STUB_STATE="${OMNI_DEV_STUB_STATE:-$DB.stub.json}"
 MODE="${1:-up}"
 
 die() { echo "omni-dev: $*" >&2; exit 1; }
@@ -76,6 +84,29 @@ if [ ! -f "$DB" ] && [ -n "$SRC_DB" ] && [ -f "$SRC_DB" ]; then
   echo "omni-dev: seeded $(basename "$DB") from $(basename "$SRC_DB")"
 fi
 
+# The browser sign-in page is the built web app (apps/web/dist). Build it when it is missing
+# or older than its sources, so the first sign-in does not land on a 404.
+REPO="$(cd "$HERE/../.." && pwd)"
+WEB_DIST="$REPO/apps/web/dist/index.html"
+web_stale() {
+  [ -f "$WEB_DIST" ] || return 0
+  [ -n "$(find "$REPO/apps/web/src" "$REPO/apps/web/index.html" "$REPO/apps/web/public" "$REPO/packages/core/src" -type f -newer "$WEB_DIST" -print -quit 2>/dev/null)" ]
+}
+if [ "${OMNI_DEV_WEB_BUILD:-1}" != "0" ] && web_stale; then
+  if [ -f "$WEB_DIST" ]; then echo "omni-dev: the web app's build is older than its sources — rebuilding (about a minute)…"; else echo "omni-dev: the web app is not built yet — building it (about a minute; the browser sign-in page needs it)…"; fi
+  if (cd "$REPO" && npm run build -w @prism/web >"$HERE/.omni-dev-web-build.log" 2>&1); then
+    rm -f "$HERE/.omni-dev-web-build.log"
+    echo "omni-dev: web app built"
+  else
+    echo "omni-dev: THE WEB BUILD FAILED — the last lines:" >&2
+    tail -15 "$HERE/.omni-dev-web-build.log" >&2 || true
+    if [ -f "$WEB_DIST" ]; then echo "omni-dev: carrying on with the older build (full log: apps/server/.omni-dev-web-build.log)" >&2
+    else echo "omni-dev: carrying on WITHOUT the web app: the browser sign-in page will say so. Fix the build (npm run build -w @prism/web) and start again." >&2; fi
+  fi
+elif [ ! -f "$WEB_DIST" ]; then
+  echo "omni-dev: apps/web/dist is missing and OMNI_DEV_WEB_BUILD=0 — the browser sign-in page will not load (npm run build -w @prism/web)" >&2
+fi
+
 # A vault token for the laptop's own hub, as the laptop dev launcher mints it. It lives only
 # in this process's environment (the process environment wins over the env file).
 if [ -z "${PARACHUTE_TOKEN:-}" ] && command -v parachute >/dev/null 2>&1; then
@@ -108,7 +139,7 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-OMNI_STUB_PORT="$STUB_PORT" OMNI_STUB_GATEWAY_URL="http://127.0.0.1:$PORT" node --import tsx scripts/omni-stub-hermes.ts &
+OMNI_STUB_PORT="$STUB_PORT" OMNI_STUB_GATEWAY_URL="http://127.0.0.1:$PORT" OMNI_STUB_STATE="$STUB_STATE" node --import tsx scripts/omni-stub-hermes.ts &
 STUB_PID=$!
 
 # Wait for OUR stub: only it accepts the key made above, so a 200 here proves the gateway
@@ -121,11 +152,46 @@ for _ in $(seq 1 50); do
 done
 [ -n "$ok" ] || die "the stub Hermes did not answer on 127.0.0.1:$STUB_PORT"
 
+# Threads the gateway's database lists but the stub no longer has (its state file was deleted,
+# or the database is older than the file) cannot be opened: take them out of the list. They
+# are archived in THIS dev database only — never deleted — and say so here.
+if [ -f "$DB" ] && [ "${OMNI_DEV_RECONCILE:-1}" != "0" ]; then
+  # The ids the stub has, one per line, quoted for SQL (ids are [A-Za-z0-9_-] only; anything else is dropped).
+  KNOWN="$(OMNI_DEV_STUB_STATE_FILE="$STUB_STATE" node -e '
+    let ids = [];
+    try { ids = (JSON.parse(require("node:fs").readFileSync(process.env.OMNI_DEV_STUB_STATE_FILE, "utf8")).sessions ?? []).map((s) => s && s.id); } catch {}
+    process.stdout.write(ids.filter((x) => typeof x === "string" && /^[A-Za-z0-9_-]{1,128}$/.test(x)).map((x) => `\x27${x}\x27`).join(","));
+  ' 2>/dev/null || true)"
+  if [ -n "$(sqlite3 "$DB" "SELECT name FROM sqlite_master WHERE type='table' AND name='omni_threads'" 2>/dev/null)" ]; then
+    DEAD="$(sqlite3 "$DB" "UPDATE omni_threads SET archived = 1 WHERE archived = 0 AND id NOT IN (${KNOWN:-''}); SELECT changes();" 2>/dev/null || echo "?")"
+    case "$DEAD" in
+      0) ;;
+      '?') echo "omni-dev: could not check old threads (one the stub no longer has shows as “no longer available” in the app)" >&2 ;;
+      *) echo "omni-dev: $DEAD old thread(s) the stub no longer has were archived in the dev database (they could not be opened)" ;;
+    esac
+  fi
+fi
+
 echo "omni-dev: stub Hermes on http://127.0.0.1:$STUB_PORT, dev gateway starting on http://127.0.0.1:$PORT"
 echo "omni-dev: executors OFF (no proton_send, ACTIONS_* false) — an approved draft answers executor_disabled"
 echo "omni-dev: the app's server URL is http://127.0.0.1:$PORT (this Mac and its simulators only)"
 
-PRISM_HTTP_ERRLOG=1 node --env-file="$ENV_FILE" --import tsx src/index.ts &
+echo "omni-dev: browser sign-in: use your dev password, or ask for the email link — no email is sent; the link is printed HERE, in a box"
+
+# The server's log passes through unchanged; the one line that carries a sign-in link is
+# repeated in a box so it cannot be missed among the request log. (The link is a one-time,
+# 15-minute dev credential for this laptop's gateway; the server already prints it.)
+highlight_link() {
+  while IFS= read -r line; do
+    printf '%s\n' "$line"
+    case "$line" in
+      *"[email:dev no RESEND]"*"/auth/callback?token="*)
+        printf '\n  ┌─ SIGN-IN LINK — open it in the SAME browser that shows the sign-in page ─────\n  │\n  │  %s\n  │\n  └─ one use, 15 minutes ──────────────────────────────────────────────────────\n\n' "${line##* :: }"
+        ;;
+    esac
+  done
+}
+PRISM_HTTP_ERRLOG=1 node --env-file="$ENV_FILE" --import tsx src/index.ts > >(highlight_link) 2>&1 &
 SERVER_PID=$!
 # Either process ending ends the pair.
 while kill -0 "$SERVER_PID" 2>/dev/null && kill -0 "$STUB_PID" 2>/dev/null; do sleep 1; done

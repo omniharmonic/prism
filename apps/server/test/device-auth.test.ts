@@ -848,3 +848,74 @@ test("an explicit DEVICE_REDIRECT_URIS without omni://auth/callback refuses it (
     Object.assign(config, { deviceRedirectUris: saved });
   }
 });
+
+// ── first-run fix: a second visit to /continue after the decision is not a failure ──────
+
+/** Sign in with a parked request and answer the consent form. Returns the browser's cookies afterwards. */
+async function decideOnce(decision: "approve" | "deny"): Promise<{ jar: string; res: Response; verifier: string }> {
+  const { challenge, verifier } = pkce();
+  const a = await app.request(authorizeUrl({ code_challenge: challenge }), { headers: tunnel() });
+  const reqCookie = cookieVal(a.headers.get("set-cookie"), "prism_device_req");
+  const sid = makeSession(OWNER);
+  const jar = `prism_session=${sid}; prism_device_req=${reqCookie}`;
+  const html = await (await app.request("/auth/device/continue", { headers: { cookie: jar, ...tunnel() } })).text();
+  const { req, csrf } = consentFields(html);
+  const res = await app.request("/auth/device/approve", { method: "POST", headers: { ...FORM_H, cookie: jar, ...tunnel() }, body: form({ req, csrf, decision }) });
+  assert.equal(res.status, 302);
+  const done = cookieVal(res.headers.get("set-cookie"), "prism_device_done");
+  assert.equal(done, decision === "approve" ? "approved" : "denied");
+  assert.match(res.headers.get("set-cookie") ?? "", /prism_device_done=[a-z]+;[^,]*HttpOnly/i, "the note is httpOnly");
+  // What the browser holds now: the session and the note; the parked-request cookie was cleared.
+  return { jar: `prism_session=${sid}; prism_device_done=${done}`, res, verifier };
+}
+
+test("after Approve, the OTHER tab's /continue (magic-link login, reload, Back) says 'you're signed in' — 200, no form, no code, nothing minted", async () => {
+  const codes = () => (db.prepare("SELECT COUNT(*) AS n FROM device_auth_codes").get() as { n: number }).n;
+  const { jar, res } = await decideOnce("approve");
+  assert.match(res.headers.get("location") ?? "", /^prism:\/\/auth\/callback\?code=/);
+  assert.equal(codes(), 1);
+  for (let i = 0; i < 3; i++) {
+    const again = await app.request("/auth/device/continue", { headers: { cookie: jar, ...tunnel() } });
+    assert.equal(again.status, 200, "not an error page");
+    assert.equal(again.headers.get("location"), null, "never a redirect");
+    assert.equal(again.headers.get("cache-control"), "no-store");
+    const html = await again.text();
+    assert.match(html, /You(&#39;|')re signed in/);
+    assert.doesNotMatch(html, /Can(&#39;|')t sign in this app/);
+    assert.doesNotMatch(html, /<form|name="csrf"|name="req"|code=/, "a page of text only");
+  }
+  assert.equal(codes(), 1, "visiting again mints no second code");
+  assert.equal((db.prepare("SELECT COUNT(*) AS n FROM device_auth_requests").get() as { n: number }).n, 0, "the parked request stays consumed");
+});
+
+test("after Deny, /continue says the sign-in was declined (200), not that it expired", async () => {
+  const { jar, res } = await decideOnce("deny");
+  assert.match(res.headers.get("location") ?? "", /error=access_denied/);
+  const again = await app.request("/auth/device/continue", { headers: { cookie: jar, ...tunnel() } });
+  assert.equal(again.status, 200);
+  assert.match(await again.text(), /Sign-in was declined/);
+});
+
+test("the 'already decided' note authorizes nothing: no session, a forged value, a replayed form and a new attempt all behave as before", async () => {
+  const { jar } = await decideOnce("approve");
+  // The note without a parked request never yields a consent page, whatever its value.
+  const forged = await app.request("/auth/device/continue", { headers: { cookie: "prism_device_done=anything", ...tunnel() } });
+  assert.equal(forged.status, 400);
+  assert.match(await forged.text(), /expired or was already used/);
+  // No note at all (another browser, or ten minutes later): still the plain refusal.
+  const sid = makeSession(OWNER);
+  const none = await app.request("/auth/device/continue", { headers: { cookie: `prism_session=${sid}`, ...tunnel() } });
+  assert.equal(none.status, 400);
+  // The form cannot be replayed: the request is gone (single use), with or without the note.
+  const replay = await app.request("/auth/device/approve", { method: "POST", headers: { ...FORM_H, cookie: `${jar}; prism_device_req=gone`, ...tunnel() }, body: form({ req: "gone", csrf: consentCsrf("gone", sid), decision: "approve" }) });
+  assert.notEqual(replay.status, 302);
+  // A NEW attempt clears the note and parks a new request: /continue shows the consent form again.
+  const { challenge } = pkce();
+  const a = await app.request(authorizeUrl({ code_challenge: challenge }), { headers: { cookie: jar, ...tunnel() } });
+  const setCookies = a.headers.get("set-cookie") ?? "";
+  assert.match(setCookies, /prism_device_done=;/, "the old note is cleared");
+  const reqCookie = cookieVal(setCookies, "prism_device_req");
+  const cont = await app.request("/auth/device/continue", { headers: { cookie: `${jar.split("; ")[0]}; prism_device_req=${reqCookie}`, ...tunnel() } });
+  assert.equal(cont.status, 200);
+  assert.match(await cont.text(), /Allow an app to sign in as you\?/);
+});

@@ -197,7 +197,13 @@ const tsIso = (v: number | string | null | undefined): string | null => {
 
 // ── threads ─────────────────────────────────────────────────────────────────
 
-function threadView(t: ThreadRow | null, s: HermesSession | null): Record<string, unknown> {
+/**
+ * @param gone Hermes — the canonical thread store — answered with its COMPLETE session list
+ *   and this thread is not in it: only the gateway's own row is left (Hermes pruned or reset
+ *   its sessions; the dev stub lost its memory). The transcript cannot be read any more, so
+ *   the app shows it as "no longer available" and offers to remove it (`PATCH {archived}`).
+ */
+function threadView(t: ThreadRow | null, s: HermesSession | null, gone = false): Record<string, unknown> {
   const id = t?.id ?? s!.id;
   const running = !!activeTurn(id);
   const hermesActive = s?.last_active ? s.last_active * 1000 : 0;
@@ -221,6 +227,7 @@ function threadView(t: ThreadRow | null, s: HermesSession | null): Record<string
     running,
     lastSeq: t?.eventSeq ?? 0,
     source: t?.source ?? (s ? "hermes" : null),
+    gone,
   };
 }
 
@@ -233,8 +240,12 @@ omniApi.get("/threads", async (c) => {
   const local = new Map(listThreads(500).map((t) => [t.id, t]));
   let sessions: HermesSession[] = [];
   let hermesState: "ok" | "unavailable" = "ok";
+  // Only a COMPLETE list proves a session is missing; a truncated one (or none) proves nothing.
+  let complete = false;
   try {
-    sessions = (await hermes.listSessions({ limit: 200 })).sessions;
+    const l = await hermes.listSessions({ limit: 200 });
+    sessions = l.sessions;
+    complete = !l.hasMore;
   } catch (e) {
     if (e instanceof HermesError && e.code === "hermes_not_configured") return hermesFailure(c, e);
     hermesState = "unavailable";
@@ -246,7 +257,8 @@ omniApi.get("/threads", async (c) => {
     seen.add(s.id);
     out.push(threadView(local.get(s.id) ?? null, s));
   }
-  for (const t of local.values()) if (!seen.has(t.id)) out.push(threadView(t, null));
+  // A thread with a turn running in this process is alive whatever the list says.
+  for (const t of local.values()) if (!seen.has(t.id)) out.push(threadView(t, null, complete && !activeTurn(t.id)));
   const filtered = out
     .filter((t) => !t.archived || c.req.query("archived") === "1")
     .filter((t) => !states.length || states.includes(t.state as string))
@@ -317,6 +329,9 @@ omniApi.get("/threads/:id", async (c) => {
   try {
     [session, messages] = await Promise.all([hermes.getSession(id), hermes.getMessages(id, { limit: 200 })]);
   } catch (e) {
+    // The gateway still has its row but Hermes has no such session: say so (the app shows
+    // "no longer available" and can remove it), still as the documented 404 `not_found`.
+    if (e instanceof HermesError && e.code === "not_found" && getThread(id)) return c.json({ error: "not_found", detail: "the agent no longer has this conversation", gone: true }, 404);
     return hermesFailure(c, e);
   }
   const t = getThread(id);
@@ -350,9 +365,15 @@ omniApi.patch("/threads/:id", async (c) => {
     if (typeof b.archived === "boolean") hp.archived = b.archived;
     if (Object.keys(hp).length) session = (await hermes.patchSession(id, hp)) ?? session;
   } catch (e) {
-    return hermesFailure(c, e);
+    // Hermes no longer has the session but the gateway has its own row: the change is made
+    // to that row only — this is how the app removes a dead thread from its list
+    // (`{archived: true}`). Nothing is created for an id neither side knows.
+    const gone = e instanceof HermesError && e.code === "not_found" && !!getThread(id);
+    if (!gone) return hermesFailure(c, e);
+    session = null;
   }
-  ensureThread({ id, title: session?.title ?? null, source: "hermes" });
+  const gone = session === null;
+  if (!gone) ensureThread({ id, title: session?.title ?? null, source: "hermes" });
   const t = updateThread(id, {
     title: typeof b.title === "string" ? b.title : undefined,
     pinned: b.pinned as boolean | undefined,
@@ -360,7 +381,7 @@ omniApi.patch("/threads/:id", async (c) => {
     state: b.state as ThreadState | undefined,
     unread: b.unread === false ? 0 : b.unread === true ? 1 : undefined,
   });
-  return c.json({ thread: threadView(t, session) });
+  return c.json({ thread: threadView(t, session, gone) });
 });
 
 omniApi.post("/threads/:id/turns", async (c) => {

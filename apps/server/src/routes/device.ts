@@ -6,7 +6,8 @@
  *   GET  /auth/device/authorize   start: validate client + redirect_uri + PKCE,
  *                                 park the request server-side, then consent
  *                                 (signed in) or bounce through the web login
- *   GET  /auth/device/continue    return point after login (reads the parked request)
+ *   GET  /auth/device/continue    return point after login (reads the parked request); a
+ *                                 second visit after the decision says "you're signed in"
  *   POST /auth/device/approve     consent form (session + CSRF bound) → redirect
  *                                 to redirect_uri?code=&state= (or error=access_denied)
  *   POST /auth/device/token       code + code_verifier → { access_token: pd_…, … }
@@ -110,6 +111,28 @@ function setReqCookie(c: Context, id: string) {
   });
 }
 const clearReqCookie = (c: Context) => deleteCookie(c, REQ_COOKIE, { path: "/auth" });
+
+/**
+ * What this browser last DECIDED on a consent page ("approved" | "denied"), kept for a few
+ * minutes so a second visit to /continue — the other tab of a magic-link login, a reload,
+ * Back — can say so instead of "expired or already used". It is a note for a page of text
+ * only: it authorizes nothing, carries no id, code or token, and nothing reads it but
+ * `GET /auth/device/continue` when there is NO parked request. The parked request stays
+ * single-use and a code is still only ever minted by the consent form.
+ */
+const DONE_COOKIE = "prism_device_done";
+const DONE_TTL_S = 10 * 60;
+function setDoneCookie(c: Context, decision: "approved" | "denied") {
+  setCookie(c, DONE_COOKIE, decision, { httpOnly: true, secure: config.appOrigin.startsWith("https"), sameSite: "Lax", path: "/auth", maxAge: DONE_TTL_S });
+}
+const clearDoneCookie = (c: Context) => deleteCookie(c, DONE_COOKIE, { path: "/auth" });
+
+/** The calm page for a second visit after a decision. Never a redirect, never a form. */
+function alreadyDecidedPage(c: Context, decision: "approved" | "denied") {
+  return decision === "approved"
+    ? page(c, 200, "Signed in", `<h1>You're signed in</h1><p>You already approved this sign-in. Return to the app — it is signed in.</p><p class="muted">You can close this window.</p>`)
+    : page(c, 200, "Sign-in declined", `<h1>Sign-in was declined</h1><p>You declined this sign-in, so the app was not signed in.</p><p class="muted">Close this window. To sign in after all, start again from the app.</p>`);
+}
 
 /** The pending authorize request parked for THIS browser, if any. */
 export function pendingDeviceRequest(c: Context): DeviceAuthRequestRow | null {
@@ -225,6 +248,8 @@ deviceAuth.get("/device/authorize", (c) => {
   };
   insertDeviceAuthRequest(req);
   setReqCookie(c, req.id);
+  // A new attempt: an earlier decision in this browser says nothing about this one.
+  clearDoneCookie(c);
 
   const s = readSession(c);
   const sid = sessionIdOf(c);
@@ -234,7 +259,13 @@ deviceAuth.get("/device/authorize", (c) => {
 
 deviceAuth.get("/device/continue", (c) => {
   const req = pendingDeviceRequest(c);
-  if (!req) return errorPage(c, 400, "This sign-in request expired or was already used.");
+  if (!req) {
+    // Nothing is parked. If this browser just decided (the consent was answered in another
+    // tab, or this is a reload / Back after it), say what happened — it is not a failure.
+    const done = getCookie(c, DONE_COOKIE);
+    if (done === "approved" || done === "denied") return alreadyDecidedPage(c, done);
+    return errorPage(c, 400, "This sign-in request expired or was already used.");
+  }
   const s = readSession(c);
   const sid = sessionIdOf(c);
   if (!s || !sid) return toLogin(c);
@@ -255,6 +286,7 @@ deviceAuth.post("/device/approve", async (c) => {
   if (!req) return errorPage(c, 400, "This sign-in request expired or was already used.");
   deleteDeviceAuthRequest(req.id);
   clearReqCookie(c);
+  setDoneCookie(c, f.decision === "approve" ? "approved" : "denied");
 
   if (f.decision !== "approve") {
     return c.redirect(withParams(req.redirect_uri, { error: "access_denied", state: req.state }));

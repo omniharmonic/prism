@@ -9,6 +9,11 @@ import os
 ///
 /// Anything else (another path, method, or state) gets an error page and the listener
 /// keeps waiting — a stray local request can neither complete nor abort a sign-in.
+///
+/// The callback is accepted ONCE. For a few seconds afterwards the listener still answers:
+/// the same callback again (a reload, a browser's retry or preview fetch) gets the same
+/// "Signed in" page and delivers nothing — so the browser never shows "can't connect" on a
+/// sign-in that worked.
 public struct LoopbackRedirectFlow: RedirectFlow {
     /// Opens the authorize URL in the system browser. Returns false when it could not.
     public typealias OpenURL = @Sendable (URL) async -> Bool
@@ -50,11 +55,22 @@ public final class LoopbackRedirectListener: Sendable {
     static let maxRequestBytes = 8 * 1024
     static let perConnection: DispatchTimeInterval = .seconds(2)
     static let maxConcurrent = 8
+    /// How long the listener keeps answering after the sign-in ended.
+    static let lingerAfterFinish: DispatchTimeInterval = .seconds(8)
 
     private struct State {
         var expectedState: String?
         var open = 0
         var finished = false
+        /// How the attempt ended, for the page a repeated callback gets. Never the code.
+        var ending: Ending?
+        var closed = false
+    }
+
+    enum Ending: Equatable, Sendable {
+        case signedIn
+        case denied
+        case failed
     }
 
     private let listener: NWListener
@@ -135,20 +151,39 @@ public final class LoopbackRedirectListener: Sendable {
     }
 
     private func finish(_ r: Result<String, any Error>) {
+        let ending: Ending
+        switch r {
+        case .success: ending = .signedIn
+        case .failure(let e):
+            if case DeviceAuthError.denied = e { ending = .denied } else { ending = .failed }
+        }
         let first = state.withLock { s -> Bool in
             if s.finished { return false }
             s.finished = true
+            s.ending = ending
             return true
         }
         guard first else { return }
         result.resume(r)
-        // Let the final page flush before the listener goes away.
-        queue.asyncAfter(deadline: .now() + .milliseconds(200)) { [listener] in listener.cancel() }
+        // A callback from the browser ended it: keep answering for a moment (see the type's
+        // note). Anything else (timeout, cancel, the browser never opened) closes at once.
+        let linger: DispatchTimeInterval
+        if case .failure(let e) = r, let auth = e as? DeviceAuthError, auth == .cancelled || auth == .timedOut || { if case .flowUnavailable = auth { return true } else { return false } }() {
+            linger = .milliseconds(200)
+        } else {
+            linger = Self.lingerAfterFinish
+        }
+        // `self` is held on purpose: the flow's session lets go of the listener as soon as it
+        // has the code, and deinit would close it before the linger is over.
+        queue.asyncAfter(deadline: .now() + linger) { [self] in
+            state.withLock { $0.closed = true }
+            listener.cancel()
+        }
     }
 
     private func accept(_ conn: NWConnection) {
         let admitted = state.withLock { s -> Bool in
-            guard !s.finished, s.open < Self.maxConcurrent else { return false }
+            guard !s.closed, s.open < Self.maxConcurrent else { return false }
             s.open += 1
             return true
         }
@@ -186,8 +221,8 @@ public final class LoopbackRedirectListener: Sendable {
             // Bytes, not Characters: "\r\n" is ONE Character in Swift.
             let lineEnd = buf.firstIndex(where: { $0 == 0x0D || $0 == 0x0A }) ?? buf.endIndex
             let line = String(decoding: buf[buf.startIndex..<lineEnd], as: UTF8.self)
-            let expected = self.state.withLock { $0.expectedState }
-            let (status, page, outcome) = Self.respond(to: line, expectedState: expected)
+            let (expected, ending) = self.state.withLock { ($0.expectedState, $0.ending) }
+            let (status, page, outcome) = Self.respond(to: line, expectedState: expected, alreadyEnded: ending)
             let body = Data(page.utf8)
             let reason = status == 200 ? "OK" : status == 404 ? "Not Found" : "Bad Request"
             let head = "HTTP/1.1 \(status) \(reason)\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: \(body.count)\r\nCache-Control: no-store\r\nReferrer-Policy: no-referrer\r\nContent-Security-Policy: default-src 'none'; style-src 'unsafe-inline'\r\nConnection: close\r\n\r\n"
@@ -224,7 +259,19 @@ public final class LoopbackRedirectListener: Sendable {
         return outcome == .stateMismatch ? .ignored : .done(outcome)
     }
 
-    private static func respond(to line: String, expectedState: String?) -> (Int, String, Result<String, any Error>?) {
+    /// - Parameter alreadyEnded: the attempt is over. A request that would have completed it
+    ///   (our path, our state) gets the page that says how it ended; NOTHING is delivered.
+    static func respond(to line: String, expectedState: String?, alreadyEnded: Ending? = nil) -> (Int, String, Result<String, any Error>?) {
+        if let alreadyEnded {
+            guard case .done = classify(requestLine: line, expectedState: expectedState) else {
+                return (404, page("Not found", "Nothing to see here."), nil)
+            }
+            switch alreadyEnded {
+            case .signedIn: return (200, page("Signed in", "You can close this tab and return to the app."), nil)
+            case .denied: return (200, page("Sign-in denied", "You can close this tab."), nil)
+            case .failed: return (400, page("Sign-in not completed", "Return to the app and try again."), nil)
+            }
+        }
         switch classify(requestLine: line, expectedState: expectedState) {
         case .notFound: return (404, page("Not found", "Nothing to see here."), nil)
         case .ignored: return (400, page("Sign-in not completed", "This response didn't match the sign-in in progress. Return to the app and try again."), nil)

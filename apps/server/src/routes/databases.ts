@@ -139,9 +139,13 @@ function vaultFailure(c: Context, e: unknown) {
       }
       return c.json({ error: "vault_rejected", status: e.status, reason }, e.status);
     }
+    // The status and the call only (never the vault's own text): enough to tell a refused
+    // token (401/403) from a vault fault (5xx) in the server log.
+    console.warn(`[databases] vault answered ${e.status}: ${e.message.split(": ")[0]}`);
     return c.json({ error: "vault_error", status: e.status }, 502);
   }
-  console.warn(`[databases] vault call failed: ${(e as Error).message}`);
+  const cause = (e as { cause?: { code?: unknown } })?.cause?.code;
+  console.warn(`[databases] vault call failed: ${(e as Error).message}${typeof cause === "string" ? ` (${cause})` : ""}`);
   return c.json({ error: "vault_unreachable" }, 502);
 }
 

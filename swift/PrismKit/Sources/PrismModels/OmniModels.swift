@@ -45,6 +45,10 @@ public struct OmniThread: Codable, Sendable, Equatable, Identifiable {
     public var lastSeq: Int
     /// `text | voice | nudge | prism | hermes` (a session started outside Omni).
     public var source: String?
+    /// The agent no longer has this conversation: only the server's own row is left, so it
+    /// cannot be opened. Show it as "no longer available" and offer to remove it
+    /// (`updateThread(id, ThreadPatch(archived: true))`). False on a server that predates the flag.
+    public var gone: Bool
 
     public init(from decoder: any Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -65,6 +69,7 @@ public struct OmniThread: Codable, Sendable, Equatable, Identifiable {
         running = try c.decodeIfPresent(Bool.self, forKey: .running) ?? false
         lastSeq = try c.decodeIfPresent(Int.self, forKey: .lastSeq) ?? 0
         source = try c.decodeIfPresent(String.self, forKey: .source)
+        gone = try c.decodeIfPresent(Bool.self, forKey: .gone) ?? false
     }
 }
 

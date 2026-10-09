@@ -26,9 +26,12 @@ public enum OmniLive {
 
     /// One `PrismClient` + `OmniClient` + `DeviceSignIn` per server origin, all on the
     /// `omni-native` client.
-    public static func environmentFactory(tokenStore: any TokenStore, flow: any RedirectFlow, userAgent: String = "Omni/1") -> EnvironmentFactory {
+    ///
+    /// - Parameter diagnostics: when given, every request's method, path, status and server
+    ///   error code is listed there (development builds).
+    public static func environmentFactory(tokenStore: any TokenStore, flow: any RedirectFlow, userAgent: String = "Omni/1", diagnostics: DiagnosticsLog? = nil) -> EnvironmentFactory {
         { origin, onSignedOut in
-            let transport = PrismClient(origin: origin, tokenStore: tokenStore, userAgent: userAgent, onSignedOut: onSignedOut)
+            let transport = PrismClient(origin: origin, tokenStore: tokenStore, userAgent: userAgent, onSignedOut: onSignedOut, onRequest: diagnostics?.observer)
             let signIn = DeviceSignIn(origin: origin, configuration: .omniNative, tokenStore: tokenStore)
             return ServerEnvironment(
                 service: LiveOmniService(client: OmniClient(transport: transport)),

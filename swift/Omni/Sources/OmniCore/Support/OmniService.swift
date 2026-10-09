@@ -9,6 +9,7 @@ public protocol OmniService: Sendable {
     func threads(states: [ThreadState], search: String?, includeArchived: Bool) async throws -> ThreadList
     func createThread(_ new: NewThread) async throws -> CreatedThread
     func thread(_ id: String) async throws -> ThreadDetail
+    func updateThread(_ id: String, _ patch: ThreadPatch) async throws -> OmniThread
     func startTurn(threadID: String, text: String, idempotencyKey: IdempotencyKey) async throws -> TurnStart
     func cancelTurn(_ turnID: String) async throws -> TurnCancellation
     func threadStream(threadID: String, after: Int) -> AsyncThrowingStream<ThreadStreamUpdate, any Error>
@@ -35,6 +36,7 @@ public struct LiveOmniService: OmniService {
     }
     public func createThread(_ new: NewThread) async throws -> CreatedThread { try await client.createThread(new) }
     public func thread(_ id: String) async throws -> ThreadDetail { try await client.thread(id) }
+    public func updateThread(_ id: String, _ patch: ThreadPatch) async throws -> OmniThread { try await client.updateThread(id, patch) }
     public func startTurn(threadID: String, text: String, idempotencyKey: IdempotencyKey) async throws -> TurnStart {
         try await client.startTurn(threadID: threadID, text: text, idempotencyKey: idempotencyKey)
     }

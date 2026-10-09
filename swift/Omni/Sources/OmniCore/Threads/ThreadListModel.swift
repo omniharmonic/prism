@@ -56,6 +56,7 @@ public enum ThreadGrouping {
     /// The small line under a title: what it is waiting on, else the latest text.
     public static func subtitle(_ thread: OmniThread) -> String? {
         if thread.state == .waiting, let on = thread.waitingOn, !on.isEmpty { return "on \(on)" }
+        if thread.gone { return "No longer available" }
         guard let preview = thread.preview?.trimmingCharacters(in: .whitespacesAndNewlines), !preview.isEmpty else { return nil }
         return preview == displayTitle(thread) ? nil : preview
     }
@@ -72,6 +73,10 @@ public final class ThreadListModel {
     public var searchText = ""
     public private(set) var isCreating = false
     public private(set) var createError: String?
+    /// The thread being removed from the list.
+    public private(set) var removingID: String?
+    /// Why the last removal did not happen.
+    public private(set) var removeError: String?
 
     private let service: any OmniService
     private let sink: ErrorSink
@@ -152,5 +157,38 @@ public final class ThreadListModel {
 
     public func clearCreateError() {
         createError = nil
+    }
+
+    /// Take a thread out of the list (it is archived on the server, never deleted). This is
+    /// the way out of a thread the agent no longer has. Returns true when it is gone from
+    /// the list.
+    @discardableResult
+    public func remove(_ id: String) async -> Bool {
+        guard removingID == nil else { return false }
+        removingID = id
+        removeError = nil
+        defer { removingID = nil }
+        do {
+            _ = try await service.updateThread(id, ThreadPatch(archived: true))
+        } catch {
+            // The server has no such thread at all: there is nothing left to remove.
+            if !PlainLanguage.isNotFound(error) {
+                if let message = sink.describe(error) { removeError = "Couldn't remove it. \(message)" }
+                return false
+            }
+        }
+        threads.removeAll { $0.id == id }
+        return true
+    }
+
+    public func clearRemoveError() {
+        removeError = nil
+    }
+
+    /// The thread turned out to be unavailable when it was opened: show it that way in the
+    /// list too, without waiting for the next read.
+    func markGone(_ id: String) {
+        guard let index = threads.firstIndex(where: { $0.id == id }), !threads[index].gone else { return }
+        threads[index].gone = true
     }
 }

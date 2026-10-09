@@ -15,6 +15,23 @@ struct TodayView: View {
                 Section {
                     Label(failure, systemImage: "wifi.exclamationmark").foregroundStyle(.secondary)
                     Button("Try Again") { Task { await model.refresh() } }
+                        .disabled(model.isRefreshing)
+                }
+            }
+            if model.phase == .loading {
+                // The first read can take a few seconds (the server reads the calendar and tasks).
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text("Loading Today…").foregroundStyle(.secondary)
+                }
+                .accessibilityElement(children: .combine)
+            }
+            if let notice = model.partialNotice {
+                Section {
+                    Label(notice, systemImage: "exclamationmark.triangle").foregroundStyle(.secondary)
+                    Button(model.isRefreshing ? "Trying…" : "Try Again") { Task { await model.refresh() } }
+                        .disabled(model.isRefreshing)
+                        .accessibilityHint("Reads Today again")
                 }
             }
             Section("Next") {
@@ -101,10 +118,15 @@ struct TodayView: View {
         .refreshable { await model.refresh() }
         .toolbar {
             ToolbarItem {
-                Button {
-                    Task { await model.refresh() }
-                } label: {
-                    Label("Refresh", systemImage: "arrow.clockwise")
+                if model.isRefreshing, model.hasContent {
+                    ProgressView().controlSize(.small).accessibilityLabel("Refreshing")
+                } else {
+                    Button {
+                        Task { await model.refresh() }
+                    } label: {
+                        Label("Refresh", systemImage: "arrow.clockwise")
+                    }
+                    .help("Refresh (⌘R)")
                 }
             }
         }
@@ -126,6 +148,13 @@ struct JobsView: View {
             }
             if let problem = model.actionProblem {
                 Label(problem, systemImage: "exclamationmark.triangle").foregroundStyle(.secondary)
+            }
+            if model.phase == .loading, model.jobs.isEmpty {
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text("Loading recurring jobs…").foregroundStyle(.secondary)
+                }
+                .accessibilityElement(children: .combine)
             }
             if model.phase == .loaded, model.jobs.isEmpty {
                 Text("No recurring jobs.").foregroundStyle(.secondary)

@@ -10,13 +10,17 @@
  *   OMNI_SERVICE_TOKEN      + OMNI_STUB_GATEWAY_URL (http://127.0.0.1:<port>): lets the
  *                           `stub:approval` / `stub:followup` scenarios play the omni-bridge
  *                           plugin against the gateway's loopback hooks. Optional.
+ *   OMNI_STUB_STATE         a JSON file to keep sessions, transcripts and jobs in, so a restart
+ *                           does not forget the threads the gateway still lists. Unset →
+ *                           memory only. `omni-dev.sh` sets it beside the dev database.
  *   OMNI_STUB_QUIET=1       no request log.
  *
  * LOOPBACK ONLY: it binds 127.0.0.1 and refuses to start on anything else. It never
  * prints the key or the service token, and logs only `METHOD path`.
  */
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { createHermesStub, httpBridge, SCENARIOS } from "./lib/hermes-stub";
+import * as fs from "node:fs";
+import { createHermesStub, fileStubStore, httpBridge, SCENARIOS } from "./lib/hermes-stub";
 
 const HOST = "127.0.0.1";
 const MAX_BODY = 1024 * 1024;
@@ -44,9 +48,12 @@ try {
 }
 
 const quiet = process.env.OMNI_STUB_QUIET === "1";
+const statePath = process.env.OMNI_STUB_STATE || "";
+const store = statePath ? fileStubStore(statePath, fs) : undefined;
 const stub = createHermesStub({
   key,
   bridge,
+  store,
   keepaliveMs: 15_000,
   jobs: [
     { id: "0a1b2c3d4e5f", name: "Morning brief (stub)", schedule: "0 7 * * *", enabled: true, state: "scheduled", next_run_at: "2026-10-09T13:00:00Z", last_run_at: "2026-10-08T13:00:00Z", last_status: "ok", deliver: "omni" },
@@ -113,9 +120,11 @@ const server = createServer((req, res) => {
 server.on("error", (e) => fail(`cannot listen on ${HOST}:${port}: ${(e as NodeJS.ErrnoException).code ?? (e as Error).name}`));
 server.listen(port, HOST, () => {
   console.log(`[stub-hermes] listening on http://${HOST}:${port} (loopback only)${bridge ? ", omni-bridge hooks → the dev gateway" : ", no gateway hooks configured"}`);
+  console.log(store ? `[stub-hermes] ${stub.sessions.size} session(s) remembered (state file beside the dev database)` : "[stub-hermes] memory only: a restart forgets every session (set OMNI_STUB_STATE)");
   if (!quiet) console.log(`[stub-hermes] scenarios (put the marker in a message): ${Object.keys(SCENARIOS).map((s) => `stub:${s}`).join(" ")}`);
 });
 for (const sig of ["SIGINT", "SIGTERM"] as const) process.on(sig, () => {
+  store?.flush();
   server.close();
   server.closeAllConnections();
   process.exit(0);

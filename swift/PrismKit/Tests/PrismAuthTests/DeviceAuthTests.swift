@@ -1,5 +1,5 @@
 import Foundation
-import PrismAuth
+@testable import PrismAuth
 import PrismTestSupport
 import XCTest
 
@@ -262,6 +262,54 @@ final class DeviceAuthTests: XCTestCase {
         XCTAssertEqual(s, 200)
         let got = try await code
         XCTAssertEqual(got, "GOOD")
+    }
+
+    /// First-run fix: after the real callback, a repeat of it (reload, a browser's retry or
+    /// preview) and stray requests (favicon) are answered calmly and deliver nothing.
+    func testLoopbackListenerAnswersARepeatedCallbackWithoutDeliveringAnything() async throws {
+        var holder: LoopbackRedirectListener?
+        do { holder = try await LoopbackRedirectListener.bind() } catch { throw XCTSkip("loopback sockets are unavailable in this sandbox: \(error)") }
+        let base = "http://127.0.0.1:\(holder!.port)"
+        let session = URLSession(configuration: .ephemeral)
+        func get(_ path: String) async throws -> (Int, String) {
+            let (d, r) = try await session.data(from: URL(string: base + path)!)
+            return ((r as! HTTPURLResponse).statusCode, String(decoding: d, as: UTF8.self))
+        }
+        let waiting = Task { [listener = holder!] in try await listener.waitForCode(expectedState: "STATE1", timeout: .seconds(10)) }
+        try await Task.sleep(for: .milliseconds(50))
+        var r = try await get("/favicon.ico")
+        XCTAssertEqual(r.0, 404)
+        r = try await get("/callback?code=GOOD&state=STATE1")
+        XCTAssertEqual(r.0, 200)
+        let got = try await waiting.value
+        XCTAssertEqual(got, "GOOD")
+        // The flow drops its reference once it has the code; the listener must still answer.
+        holder = nil
+        try await Task.sleep(for: .milliseconds(400))
+        r = try await get("/callback?code=GOOD&state=STATE1")
+        XCTAssertEqual(r.0, 200)
+        XCTAssertTrue(r.1.contains("Signed in"))
+        // Another code with our state changes nothing (the first one was the sign-in)…
+        r = try await get("/callback?code=OTHER&state=STATE1")
+        XCTAssertEqual(r.0, 200)
+        // …and everything else is still refused.
+        r = try await get("/callback?code=EVIL&state=WRONG")
+        XCTAssertEqual(r.0, 404)
+        r = try await get("/favicon.ico")
+        XCTAssertEqual(r.0, 404)
+    }
+
+    func testLoopbackRepeatPagesNeverCarryAnOutcome() {
+        typealias L = LoopbackRedirectListener
+        for ending in [L.Ending.signedIn, .denied, .failed] {
+            for line in ["GET /callback?code=X&state=S HTTP/1.1", "GET /callback?error=access_denied&state=S HTTP/1.1", "GET /callback?state=S HTTP/1.1", "GET /callback?code=X&state=NOPE HTTP/1.1", "GET / HTTP/1.1", "POST /callback?code=X&state=S HTTP/1.1"] {
+                XCTAssertNil(L.respond(to: line, expectedState: "S", alreadyEnded: ending).2, "\(ending) \(line)")
+            }
+        }
+        XCTAssertEqual(L.respond(to: "GET /callback?code=X&state=S HTTP/1.1", expectedState: "S", alreadyEnded: .signedIn).0, 200)
+        XCTAssertEqual(L.respond(to: "GET /callback?code=X&state=S HTTP/1.1", expectedState: "S", alreadyEnded: .failed).0, 400)
+        // Before the end, the same line still completes the sign-in exactly once.
+        if case .success(let code)? = L.respond(to: "GET /callback?code=X&state=S HTTP/1.1", expectedState: "S").2 { XCTAssertEqual(code, "X") } else { XCTFail("expected the code") }
     }
 
     func testLoopbackListenerTimesOutAndCancels() async throws {
