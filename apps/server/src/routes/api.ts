@@ -580,6 +580,30 @@ export function needsEditorUpdate(storedContent: string | null | undefined): boo
     const c = s.charCodeAt(i + 8);
     if (Number.isNaN(c) || isWs(c) || c === 62 /* > */ || c === 47 /* / */) return true;
   }
+  return suggestionInCode(s);
+}
+/**
+ * v6: a suggestion INSIDE code. Since v6 inline code and code blocks carry the insertion /
+ * deletion marks; an older editor's schema excludes them there, so its save would settle the
+ * suggestion unreviewed (the struck and the inserted text both become plain code). Stored as
+ * `<span data-suggestion=…><code>…` (inline code) or as a suggestion span inside `<pre>`.
+ * One forward pass (both cursors only move on); `s` is lower-cased.
+ */
+function suggestionInCode(s: string): boolean {
+  const NAME = "data-suggestion";
+  let pre = s.indexOf("<pre");
+  let preEnd = -1; // where the <pre> block the cursor last passed ends
+  for (let i = s.indexOf(NAME); i !== -1; i = s.indexOf(NAME, i + NAME.length)) {
+    if (s.charCodeAt(i + NAME.length) === 45 /* - : data-suggestion-node / -id / -by */ || attrValueAt(s, i + NAME.length) === null) continue;
+    while (pre !== -1 && pre < i) {
+      const close = s.indexOf("</pre", pre);
+      preEnd = close === -1 ? s.length : close;
+      pre = s.indexOf("<pre", preEnd);
+    }
+    if (i < preEnd) return true;
+    const end = s.indexOf(">", i);
+    if (end !== -1 && s.startsWith("<code", end + 1)) return true;
+  }
   return false;
 }
 api.use("/notes/:id", async (c, next) => {

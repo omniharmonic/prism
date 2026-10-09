@@ -123,6 +123,11 @@ export function cleanCopyBody(body: string, uid: () => string = defaultUid, opts
   };
   let out = "";
   let copied = 0; // everything before this index is already in `out` (or dropped)
+  // A kept `</code>` not written yet: when the suggestion spans around inline code are taken
+  // away, `<code>npm </code><code>install</code>` is one code run again — the closing tag and
+  // a bare `<code>` right behind it are both left out. Anything else written first writes it.
+  let heldClose = "";
+  const emit = (text: string) => { if (text) { out += heldClose + text; heldClose = ""; } };
   // One entry per OPEN <span>: whether its closing tag is written. (Only spans are tracked.)
   const spans: Frame[] = [];
   // While dropping an element: its tag name and how many of them are open inside it.
@@ -150,7 +155,7 @@ export function cleanCopyBody(body: string, uid: () => string = defaultUid, opts
         const suggestion = attr(tag, "data-suggestion");
         // (A chip that is only suggested — `data-suggestion-node="insert"` — is left out the same way.)
         if (suggestion === "insert" || attr(tag, "data-suggestion-node") === "insert") {
-          out += body.slice(copied, at);
+          emit(body.slice(copied, at));
           dropping = { name: "span", depth: 1 };
           at = body.indexOf("<", tag.end);
           continue;
@@ -171,7 +176,7 @@ export function cleanCopyBody(body: string, uid: () => string = defaultUid, opts
       const target = copyOf(attr(tag, "data-page-id"));
       if (target) replacement = withAttr(tag, "data-page-id", target);
       else {
-        out += body.slice(copied, at);
+        emit(body.slice(copied, at));
         dropping = { name: "div", depth: 1 };
         at = body.indexOf("<", tag.end);
         continue;
@@ -182,7 +187,7 @@ export function cleanCopyBody(body: string, uid: () => string = defaultUid, opts
       if (kind === "insert" && tag.name === "br") replacement = "";
       else if (kind === "insert" && JOINABLE.has(tag.name) && prev && prev.closing && prev.name === tag.name && prev.end === at && prev.start >= copied) {
         // `</p><p suggested>`: the suggested break is not made — the two blocks are one again.
-        out += body.slice(copied, prev.start);
+        emit(body.slice(copied, prev.start));
         copied = tag.end;
         prev = null;
         at = body.indexOf("<", tag.end);
@@ -192,15 +197,33 @@ export function cleanCopyBody(body: string, uid: () => string = defaultUid, opts
         replacement = `<${[tag.name, ...kept].join(" ")}>`;
       }
     }
+    if (replacement === null && tag.name === "code") {
+      if (tag.closing) {
+        emit(body.slice(copied, at));
+        out += heldClose; // (two closing tags in a row: the first is written)
+        heldClose = body.slice(at, tag.end);
+        copied = tag.end;
+        prev = null;
+        at = body.indexOf("<", tag.end);
+        continue;
+      }
+      if (heldClose && at === copied && tag.attrs.length === 0) {
+        heldClose = "";
+        copied = tag.end;
+        prev = null;
+        at = body.indexOf("<", tag.end);
+        continue;
+      }
+    }
     prev = replacement === null ? { name: tag.name, closing: tag.closing, start: at, end: tag.end } : null;
     if (replacement !== null) {
-      out += body.slice(copied, at) + replacement;
+      emit(body.slice(copied, at) + replacement);
       copied = tag.end;
     }
     at = body.indexOf("<", tag.end);
   }
   // An element being dropped that never closed: nothing after it is kept (it was all inside).
-  return dropping ? out : out + body.slice(copied);
+  return dropping ? out + heldClose : out + heldClose + body.slice(copied);
 }
 
 /**

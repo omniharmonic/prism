@@ -52,7 +52,8 @@ async function handle(req: WorkerRequest): Promise<{ value: unknown; transfer?: 
     case "doc-html":
       return { value: (await loadCore()).docJsonToHtmlSync(req.json) };
     case "to-markdown":
-      return { value: turndown.turndown(req.html) };
+      // Pending suggestions are not part of the exported page (Markdown cannot mark them; see core).
+      return { value: turndown.turndown((await loadCore()).rejectPendingSuggestionsSync(req.html)) };
     case "to-html":
       // Stored HTML and rendered Markdown alike leave through the allowlist sanitiser. A Markdown
       // page's `- [x]` items become the to-do list the editor shows (`taskListsInHtml`: one linear

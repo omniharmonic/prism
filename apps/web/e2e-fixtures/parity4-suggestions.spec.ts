@@ -417,6 +417,36 @@ for (const edit of CODE_EDITS) {
   });
 }
 
+// A page whose stored body is MARKDOWN with a fenced block opens as exactly this HTML (the server's
+// Markdown seed — apps/server/test/suggestions-markdown.test.ts follows the same page through
+// store → load and back to Markdown): the fence keeps its language through suggest, accept and reject.
+const FENCED_PAGE = '<p>Run <code>npm install</code> first.</p><pre><code class="language-js">const a = 1;\nnext();\n</code></pre><p>Closing line.</p>';
+test("a fenced block of a Markdown page: an insertion and a deletion inside it are suggestions; Accept all gives the plain edit's page, Reject all the original — the fence and its language stay", async ({ page }) => {
+  const steps = async (p: Page) => {
+    await fx(p, "select", "1;");
+    await p.keyboard.type("2;");
+    await fx(p, "caretAfter", "next();");
+    await p.keyboard.type(" // done");
+    await fx(p, "select", "const ");
+    await p.keyboard.press("Backspace");
+  };
+  const plain = await plainResult(page, FENCED_PAGE, steps);
+  expect(plain).toContain('<pre><code class="language-js">a = 2;\nnext(); // done\n</code></pre>');
+  for (const review of [rejectAll, acceptAll]) {
+    await openWith(page, FENCED_PAGE);
+    const before = await html(page);
+    await steps(page);
+    await same(page);
+    expect((await fx<string>(page, "struckText")).split("|").join("")).toBe("const 1;");
+    await expect(added(page, "2;")).toBeVisible();
+    await expect(added(page, "// done")).toBeVisible();
+    expect(await html(page)).toContain('<pre><code class="language-js">'); // for every collaborator, still the fence
+    expect(await fx<number>(page, "count", "codeBlock")).toBe(1);
+    await review(page);
+    expect(await html(page)).toBe(review === rejectAll ? before : plain);
+  }
+});
+
 test("code: an existing paragraph cannot be turned into a code block while Suggesting (refused); on a new line the code block and its text are a suggestion", async ({ page }) => {
   await open(page);
   const before = await html(page);
