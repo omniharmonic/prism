@@ -553,6 +553,36 @@ test("find in page counts and steps", async ({ page }) => {
   await expect(page.locator(".prism-search-match")).toHaveCount(0);
 });
 
+const FIND_EVENT = "prism:find-in-page"; // lib/tiptap/findShortcuts.ts FIND_IN_PAGE_EVENT
+
+// The race behind the intermittent failure of the test below, made certain: the bar is asked for while a modal
+// surface (the phone's ⋯ sheet) is STILL open — everything outside a modal is inert, so the bar's `focus()` did
+// nothing — and the surface then hands focus back to where it was. The field must end up with the caret anyway.
+test("find in page: the field gets the caret even when the surface that opened it is slow to close", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/e2e-fixtures/notion-shell.html");
+  const editor = page.locator(".tiptap[contenteditable=true]");
+  await expect(editor).toBeVisible();
+  await editor.evaluate((el: HTMLElement) => el.focus());
+  await page.evaluate((eventName) => {
+    const modal = document.createElement("dialog");
+    modal.textContent = "a surface that has not closed yet";
+    document.body.appendChild(modal);
+    modal.showModal();
+    window.dispatchEvent(new CustomEvent(eventName));
+    // It closes late, and as modal surfaces do, gives focus back to what had it.
+    setTimeout(() => { modal.close(); modal.remove(); (document.querySelector(".tiptap") as HTMLElement).focus(); }, 250);
+  }, FIND_EVENT);
+  const field = page.getByRole("search", { name: "Find in note" }).getByRole("textbox", { name: "Find in note" });
+  await expect(field).toBeFocused();
+  await page.waitForTimeout(600); // past the late close and the hand-back
+  await expect(field).toBeFocused();
+  // …and once the person has moved on, the bar never takes the caret back.
+  await editor.click();
+  await page.waitForTimeout(300);
+  await expect(editor).toBeFocused();
+});
+
 // NP-ED-22: on a phone (no ⌘F) the page ⋯ sheet opens the same find bar.
 test("find in page: phone reaches it from ⋯", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });

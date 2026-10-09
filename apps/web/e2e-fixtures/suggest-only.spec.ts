@@ -121,6 +121,33 @@ test("revision parity holds on a rich document (headings, marks, lists, tasks, c
   await expect(page.locator('[data-suggestion="insert"]')).toHaveText("references");
 });
 
+// Schema v6: the suggestion marks sit on code too, so a suggest-level person's command inside inline code or a
+// code block is accepted by the browser's validation AND applied by the server (it used to be refused by both).
+test("a suggestion inside inline code and inside a code block goes through a command and is applied", async ({ page, browser }) => {
+  await open(page, "sam", "rich");
+  for (const [word, replacement] of [["prismctl", "prism"], ["const", "let"]] as const) {
+    const composer = await suggestReplace(page, word, replacement);
+    await expect(composer).toHaveAttribute("data-revision-parity", "match");
+    await expect(composer.getByRole("alert")).toHaveCount(0);
+    await composer.getByRole("button", { name: "Suggest", exact: true }).click();
+    await expect(page.getByRole("status").filter({ hasText: "Suggestion sent for review." })).toBeVisible();
+    await expect(page.locator('[data-suggestion="insert"]').filter({ hasText: replacement })).toHaveCount(1);
+    await expect(page.locator('[data-suggestion="delete"]').filter({ hasText: word })).toHaveCount(1);
+  }
+  // Stored: both suggestions are in the note's body, inside the code (a run may be stored as more than one span).
+  await expect.poll(async () => {
+    const body = (await server.note("rich"))!.content;
+    const inserted = [...body.matchAll(/<(?:ins|span)[^>]*data-suggestion="insert"[^>]*>(.*?)<\/(?:ins|span)>/g)].map((m) => m[1]!.replace(/<[^>]+>/g, "")).join("|");
+    return [inserted.includes("prism"), inserted.includes("let"), /<pre[\s\S]*data-suggestion="insert"[\s\S]*<\/pre>/.test(body)];
+  }).toEqual([true, true, true]);
+  // An editor sees both, in the code.
+  const editorPage = await browser.newPage();
+  await open(editorPage, "eve", "rich");
+  await expect(editorPage.locator('code [data-suggestion="insert"], [data-suggestion="insert"] code').filter({ hasText: "prism" })).toHaveCount(1);
+  await expect(editorPage.locator('pre [data-suggestion="insert"]').filter({ hasText: "let" })).toHaveCount(1);
+  await editorPage.close();
+});
+
 test("a stale revision keeps the draft and asks for the passage again", async ({ page, browser }) => {
   await open(page, "sam", "plan");
   const composer = await suggestReplace(page, "Second", "Next");

@@ -33,9 +33,33 @@ export function EditorFindBar({ editor, onClose, replaceOpen = false }: EditorFi
 
   useEffect(() => { if (replaceOpen) setShowReplace(true); }, [replaceOpen]);
 
+  // The bar opens with the caret in its field. Opened from the phone's ⋯ sheet (a modal dialog) or a menu, the
+  // bar can mount while that surface is still closing: a modal makes everything outside it inert, so `focus()`
+  // does nothing then — and the surface, as it goes, hands focus back to its trigger. So focus is taken again
+  // on the following frames until the field HAS it (at most ~1.5 s), and never once the person has pressed a
+  // key or a pointer anywhere (their focus is theirs).
   useEffect(() => {
-    inputRef.current?.focus();
-    inputRef.current?.select();
+    let frame = 0;
+    let stopped = false;
+    const started = performance.now();
+    const stop = () => { stopped = true; cancelAnimationFrame(frame); document.removeEventListener("pointerdown", stop, true); document.removeEventListener("keydown", stop, true); };
+    const take = () => {
+      if (stopped) return;
+      const input = inputRef.current;
+      if (!input) return stop();
+      if (document.activeElement !== input) {
+        input.focus();
+        if (document.activeElement === input) input.select();
+      }
+      // Held for a few frames after it sticks: the closing surface's own "return focus" may still be on its way.
+      if (performance.now() - started > 1500) return stop();
+      frame = requestAnimationFrame(take);
+    };
+    take();
+    const settle = window.setTimeout(() => { if (document.activeElement === inputRef.current) stop(); }, 400);
+    document.addEventListener("pointerdown", stop, true);
+    document.addEventListener("keydown", stop, true);
+    return () => { window.clearTimeout(settle); stop(); };
   }, []);
 
   // Track editability changes (read-only flips, suggest mode) and live edits.
