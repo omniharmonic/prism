@@ -15,7 +15,7 @@ import { EventTranscripts } from "./EventTranscripts";
 import { calendarDayKey as dateKey, groupCalendarDays, layoutCalendarDay } from "./calendarLayout";
 import type { RendererProps } from "../renderers/RendererProps";
 
-import { formatDate as fmtDate, formatTime as fmtTime, weekColumn, weekdayOrder, weekStartsOn } from "../../lib/datetime/format";
+import { formatDate as fmtDate, formatTime as fmtTime, relativeDay, usesSystemTime, weekColumn, weekdayOrder, weekStartsOn } from "../../lib/datetime/format";
 import { useRegionPrefs } from "../../lib/datetime/useRegionPrefs";
 type CalEvent = {
   id?: string;
@@ -32,7 +32,10 @@ type CalEvent = {
   attendees?: Array<{ email: string; displayName?: string; responseStatus?: string }>;
 };
 
-type ViewMode = "month" | "week" | "day";
+/** "agenda" is the phone's list of the next seven days; a wide window never shows it. */
+type ViewMode = "agenda" | "month" | "week" | "day";
+const AGENDA_DAYS = 7;
+const addDays = (d: Date, n: number) => new Date(d.getFullYear(), d.getMonth(), d.getDate() + n);
 
 const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 const MONTH_NAMES = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
@@ -47,6 +50,17 @@ function formatTime(dateStr?: string): string {
   try { return fmtTime(new Date(dateStr), { hour: "numeric", minute: "2-digit" }, { locale: "en-US" }); }
   catch { return ""; }
 }
+
+/** An hour label of the time grids. On "System" the grids keep their short labels; a chosen
+ *  12/24-hour format (Settings → Language & region) is honoured. */
+function hourLabel(h: number, compact: boolean): string {
+  if (usesSystemTime()) return compact ? (h === 0 ? "" : `${h % 12 || 12}${h < 12 ? "a" : "p"}`) : h === 0 ? "12 AM" : `${h % 12 || 12} ${h < 12 ? "AM" : "PM"}`;
+  return compact && h === 0 ? "" : fmtTime(new Date(2000, 0, 1, h), { hour: "numeric", minute: "2-digit" }, { locale: "en-US" });
+}
+
+/** All-day first, then by start. */
+const byStart = <T extends { start?: { dateTime?: string } }>(events: T[]): T[] =>
+  [...events].sort((a, b) => (a.start?.dateTime ? Date.parse(a.start.dateTime) : -Infinity) - (b.start?.dateTime ? Date.parse(b.start.dateTime) : -Infinity));
 
 /** Include the day when a displayed time belongs to a neighboring day. */
 function timeOnDay(value: string, day: Date): string {
@@ -86,7 +100,9 @@ function ScopedCalendarDashboard() {
   const mounted = useRef(true);
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
   const today = new Date();
-  const [view, setView] = useState<ViewMode>(mobile ? "day" : "month");
+  // A phone opens on the agenda (the week ahead as a list); every other view stays one tap away.
+  const [chosenView, setView] = useState<ViewMode>(mobile ? "agenda" : "month");
+  const view: ViewMode = !mobile && chosenView === "agenda" ? "month" : chosenView;
   const [noteError, setNoteError] = useState<string | null>(null);
   const [year, setYear] = useState(today.getFullYear());
   const [month, setMonth] = useState(today.getMonth());
@@ -120,7 +136,7 @@ function ScopedCalendarDashboard() {
       end.setHours(23, 59, 59);
       return { rangeStart: weekStart, rangeEnd: end };
     } else {
-      const end = new Date(dayDate);
+      const end = view === "agenda" ? addDays(dayDate, AGENDA_DAYS - 1) : new Date(dayDate);
       end.setHours(23, 59, 59);
       return { rangeStart: new Date(dayDate.getFullYear(), dayDate.getMonth(), dayDate.getDate()), rangeEnd: end };
     }
@@ -147,11 +163,12 @@ function ScopedCalendarDashboard() {
   }, []);
 
   const handleCreateClick = useCallback((date?: Date) => {
-    setCreateDate(date || selectedDate || today);
+    // On a phone the day (or first agenda day) on screen is the one a new event is for.
+    setCreateDate(date || (mobile && (view === "day" || view === "agenda") ? dayDate : selectedDate || today));
     setShowCreateForm(true);
     setSelectedEvent(null);
     setEditingEvent(null);
-  }, [selectedDate, today]);
+  }, [selectedDate, today, mobile, view, dayDate]);
 
   // Desktop: its Tauri command behind a confirm(). Web/native: the server's live
   // action, behind the detail panel's own two-step confirm (with "notify guests").
@@ -225,12 +242,12 @@ function ScopedCalendarDashboard() {
   const prev = () => {
     if (view === "month") { if (month === 0) { setYear(year - 1); setMonth(11); } else setMonth(month - 1); }
     else if (view === "week") { setWeekStart(new Date(weekStart.getFullYear(), weekStart.getMonth(), weekStart.getDate() - 7)); }
-    else { setDayDate(new Date(dayDate.getFullYear(), dayDate.getMonth(), dayDate.getDate() - 1)); }
+    else { setDayDate(addDays(dayDate, view === "agenda" ? -AGENDA_DAYS : -1)); }
   };
   const next = () => {
     if (view === "month") { if (month === 11) { setYear(year + 1); setMonth(0); } else setMonth(month + 1); }
     else if (view === "week") { setWeekStart(new Date(weekStart.getFullYear(), weekStart.getMonth(), weekStart.getDate() + 7)); }
-    else { setDayDate(new Date(dayDate.getFullYear(), dayDate.getMonth(), dayDate.getDate() + 1)); }
+    else { setDayDate(addDays(dayDate, view === "agenda" ? AGENDA_DAYS : 1)); }
   };
   const goToday = () => {
     setYear(today.getFullYear()); setMonth(today.getMonth());
@@ -243,10 +260,48 @@ function ScopedCalendarDashboard() {
     : fmtDate(dayDate, { weekday: "long", month: "long", day: "numeric", year: "numeric" }, { locale: "en-US" });
 
   const selectedEvents = selectedDate ? eventsByDate.get(dateKey(selectedDate)) || [] : [];
+  const chooseView = (v: ViewMode) => {
+    setView(v);
+    if (v === "week") setWeekStart(startOfWeek(selectedDate || today));
+    if (v === "day" || v === "agenda") setDayDate(selectedDate || today);
+  };
+
+  // ── Phone ── two fixed rows: what is on screen + move/create, then the views + Today. Nothing
+  // wraps or changes place between views (the desktop header below wraps by title length).
+  const short = (d: Date, withYear = d.getFullYear() !== today.getFullYear()) => fmtDate(d, { month: "short", day: "numeric", ...(withYear ? { year: "numeric" } : {}) }, { locale: "en-US" });
+  const span = (from: Date, to: Date) => `${short(from, from.getFullYear() !== to.getFullYear())} – ${from.getMonth() === to.getMonth() && from.getFullYear() === to.getFullYear() ? to.getDate() : short(to, to.getFullYear() !== today.getFullYear())}`;
+  const phoneTitle = view === "month" ? title
+    : view === "week" ? span(weekStart, addDays(weekStart, 6))
+    : view === "agenda" ? span(dayDate, addDays(dayDate, AGENDA_DAYS - 1))
+    : `${isSameDay(dayDate, today) ? "Today · " : ""}${fmtDate(dayDate, { weekday: "short", month: "short", day: "numeric", ...(dayDate.getFullYear() !== today.getFullYear() ? { year: "numeric" } : {}) }, { locale: "en-US" })}`;
+  // Phone month: the chosen day's events are listed under the grid (today until a day is chosen).
+  const monthDay = selectedDate ?? (today.getFullYear() === year && today.getMonth() === month ? today : null);
+  const detailsTitle = selectedEvent ? "Event" : showCreateForm ? (editingEvent ? "Edit event" : "New event") : "Calendar details";
 
   return (
     <div className="flex min-w-0 flex-col h-full bg-[var(--bg-base)]">
       {/* Header */}
+      {mobile ? (
+        <div className="calendar-phone-header flex-shrink-0 px-4 pt-1" style={{ borderBottom: "1px solid var(--glass-border)", background: "var(--bg-surface)" }}>
+          <div className="flex items-center gap-1">
+            <h2 className="min-w-0 flex-1 truncate text-lg font-semibold" title={phoneTitle} style={{ color: "var(--text-primary)" }}>{phoneTitle}</h2>
+            {syncing && <RefreshCw role="img" aria-label="Syncing" size={14} className="flex-shrink-0 animate-spin" style={{ animationDuration: "2s", color: "var(--text-muted)" }} />}
+            {isLoading && <Spinner size={14} />}
+            <button aria-label="Previous period" onClick={prev} className="focus-ring size-control flex flex-shrink-0 items-center justify-center rounded-lg" style={{ color: "var(--text-secondary)" }}><ChevronLeft size={20} /></button>
+            <button aria-label="Next period" onClick={next} className="focus-ring size-control flex flex-shrink-0 items-center justify-center rounded-lg" style={{ color: "var(--text-secondary)" }}><ChevronRight size={20} /></button>
+            {canCreate && <button onClick={() => handleCreateClick()} title="Create event" className="focus-ring size-control flex flex-shrink-0 items-center justify-center rounded-lg" style={{ color: "var(--color-accent)" }}><Plus size={20} /></button>}
+          </div>
+          <div className="flex items-center gap-2">
+            <div className="prism-tabs flex-1" data-inline role="group" aria-label="Calendar view" style={{ gap: 6 }}>
+              {(["agenda", "day", "week", "month"] as ViewMode[]).map((v) => (
+                <button key={v} aria-pressed={view === v} onClick={() => chooseView(v)} className="prism-tab">{v.charAt(0).toUpperCase() + v.slice(1)}</button>
+              ))}
+            </div>
+            {isError && <span role="status" className="flex-shrink-0 text-xs" style={{ color: "var(--color-danger)" }}>Not connected</span>}
+            <button onClick={goToday} className="focus-ring min-h-control flex-shrink-0 px-2 text-sm font-medium" style={{ color: "var(--color-accent)" }}>Today</button>
+          </div>
+        </div>
+      ) : (
       <div className="flex flex-wrap items-center justify-between gap-2 px-4 py-3 flex-shrink-0" style={{ borderBottom: "1px solid var(--glass-border)", background: "var(--bg-surface)" }}>
         <div className="flex min-w-0 flex-wrap items-center gap-3">
           <h2 className="text-lg font-semibold" style={{ color: "var(--text-primary)" }}>{title}</h2>
@@ -277,11 +332,7 @@ function ScopedCalendarDashboard() {
             <button
               key={v}
               aria-pressed={view === v}
-              onClick={() => {
-                setView(v);
-                if (v === "week") setWeekStart(startOfWeek(selectedDate || today));
-                if (v === "day") setDayDate(selectedDate || today);
-              }}
+              onClick={() => chooseView(v)}
               className="focus-ring min-h-control px-3 py-1.5 rounded-lg text-sm transition-colors"
               style={{
                 background: view === v ? "var(--surface-active)" : "transparent",
@@ -295,17 +346,32 @@ function ScopedCalendarDashboard() {
           {isError && <span className="text-xs" style={{ color: "var(--color-danger)" }}>Not connected</span>}
         </div>
       </div>
+      )}
 
       <div className="flex-1 flex min-h-0">
         {/* Main calendar area */}
         <div className="min-w-0 flex-1 flex flex-col min-h-0 overflow-auto">
-          {view === "month" && <MonthView days={getMonthDays(year, month)} month={month} today={today} selectedDate={selectedDate} eventsByDate={eventsByDate} onSelect={setSelectedDate} onEventClick={handleEventClick} />}
-          {view === "week" && <WeekView days={getWeekDays(weekStart)} today={today} selectedDate={selectedDate} eventsByDate={eventsByDate} onSelect={setSelectedDate} onEventClick={handleEventClick} />}
+          {view === "agenda" && <AgendaView days={Array.from({ length: AGENDA_DAYS }, (_, i) => addDays(dayDate, i))} today={today} eventsByDate={eventsByDate} onEventClick={handleEventClick} />}
+          {view === "month" && !mobile && <MonthView days={getMonthDays(year, month)} month={month} today={today} selectedDate={selectedDate} eventsByDate={eventsByDate} onSelect={setSelectedDate} onEventClick={handleEventClick} />}
+          {view === "month" && mobile && <>
+            <PhoneMonthGrid days={getMonthDays(year, month)} month={month} today={today} selectedDate={monthDay} eventsByDate={eventsByDate} onSelect={setSelectedDate} />
+            <section aria-label="Events on the selected day" className="space-y-3 px-4 pb-4">
+              {monthDay ? <>
+                <DayHeading day={monthDay} today={today} action={canCreate ? <button onClick={() => handleCreateClick(monthDay)} aria-label="Add event on this day" className="focus-ring size-control flex flex-shrink-0 items-center justify-center rounded-lg" style={{ color: "var(--color-accent)" }}><Plus size={18} /></button> : null} />
+                {(eventsByDate.get(dateKey(monthDay)) ?? []).length === 0 && <p className="py-2 text-sm" style={{ color: "var(--text-muted)" }}>No events</p>}
+                {byStart(eventsByDate.get(dateKey(monthDay)) ?? []).map((event) => <PhoneEventCard key={event.vaultNoteId ?? event.id} event={event} day={monthDay} onClick={handleEventClick} />)}
+              </> : <p className="py-2 text-sm" style={{ color: "var(--text-muted)" }}>Select a day to see its events.</p>}
+            </section>
+          </>}
+          {/* Phone: a day header opens that day (there is no side panel to list it in). */}
+          {view === "week" && <WeekView days={getWeekDays(weekStart)} today={today} selectedDate={selectedDate} eventsByDate={eventsByDate} onSelect={mobile ? (d) => { setSelectedDate(d); setDayDate(d); setView("day"); } : setSelectedDate} onEventClick={handleEventClick} />}
           {view === "day" && <DayView date={dayDate} today={today} events={eventsByDate.get(dateKey(dayDate)) || []} onEventClick={handleEventClick} />}
         </div>
 
         {/* Side panel — event detail, create form, or day overview */}
-        <CalendarDetailsPanel open={!!selectedEvent || showCreateForm || !!selectedDate} onClose={closePanel}>
+        {/* Phone: the sheet is for an event or the form only — a chosen DAY is shown in the page
+            (it used to open the sheet too, so "Today" covered the calendar with a day list). */}
+        <CalendarDetailsPanel title={detailsTitle} open={!!selectedEvent || showCreateForm || (!mobile && !!selectedDate)} onClose={mobile ? () => { setSelectedEvent(null); setShowCreateForm(false); setEditingEvent(null); } : closePanel}>
           {noteError && <p role="alert" className="px-4 py-2 text-sm">{noteError}</p>}
           {selectedEvent ? (
             <EventDetailPanel
@@ -358,7 +424,7 @@ function ScopedCalendarDashboard() {
   );
 }
 
-function CalendarDetailsPanel({ open, onClose, children }: { open: boolean; onClose: () => void; children: ReactNode }) {
+function CalendarDetailsPanel({ title, open, onClose, children }: { title: string; open: boolean; onClose: () => void; children: ReactNode }) {
   const mobile = useIsMobile();
   const dialog = useRef<HTMLDialogElement>(null);
   useEffect(() => {
@@ -368,10 +434,18 @@ function CalendarDetailsPanel({ open, onClose, children }: { open: boolean; onCl
     element?.showModal();
     return () => { element?.close(); if (previous?.isConnected) previous.focus(); };
   }, [mobile, open]);
+  // Event → its edit form: the new content starts at its top, not where the last one was scrolled to.
+  const body = useRef<HTMLDivElement>(null);
+  useEffect(() => { if (body.current) body.current.scrollTop = 0; }, [title]);
   if (!mobile) return open ? <aside className="w-[clamp(300px,30%,380px)] flex-shrink-0 overflow-auto border-l" style={{ borderColor: "var(--glass-border)", background: "var(--bg-surface)" }}>{children}</aside> : null;
-  return <dialog ref={dialog} aria-label="Calendar details" onCancel={(e) => { e.preventDefault(); e.stopPropagation(); onClose(); }} className="fixed inset-0 m-0 h-[100dvh] max-h-none w-full max-w-none overflow-auto border-0 p-4" style={{ background: "var(--bg-surface)", color: "var(--text-primary)" }}>
-    <div className="mb-3 flex items-center justify-between"><h2 className="font-medium">Calendar details</h2><button aria-label="Close calendar details" className="focus-ring rounded-lg p-3" onClick={onClose}><X size={18} /></button></div>
-    {children}
+  // A modal <dialog> is in the top layer, outside the shell's safe-area padding: it pads itself, or
+  // its header sits under the status bar / Dynamic Island and its last button under the home bar.
+  // The header stays put; the body scrolls (and is what the keyboard pushes around).
+  return <dialog ref={dialog} aria-label="Calendar details" onCancel={(e) => { e.preventDefault(); e.stopPropagation(); onClose(); }} className="calendar-details-sheet fixed inset-0 m-0 h-[100dvh] max-h-none w-full max-w-none overflow-hidden border-0 p-0" style={{ background: "var(--bg-surface)", color: "var(--text-primary)" }}>
+    <div className="flex h-full flex-col" style={{ padding: "env(safe-area-inset-top) env(safe-area-inset-right) 0 env(safe-area-inset-left)" }}>
+      <div className="flex flex-shrink-0 items-center justify-between pl-4 pr-2 pt-1"><h2 className="font-medium">{title}</h2><button aria-label="Close calendar details" className="focus-ring size-control flex items-center justify-center rounded-lg" onClick={onClose}><X size={18} /></button></div>
+      <div ref={body} className="calendar-details-body min-h-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain px-4" style={{ paddingBottom: "max(16px, env(safe-area-inset-bottom))" }}>{children}</div>
+    </div>
   </dialog>;
 }
 
@@ -411,12 +485,78 @@ function MonthView({ days, month, today, selectedDate, eventsByDate, onSelect, o
   );
 }
 
+// ─── Phone: event card, agenda, month grid ───────────────────
+
+function PhoneEventCard({ event, day, onClick }: { event: CalEvent; day: Date; onClick: (ev: CalEvent) => void }) {
+  return <button onClick={(e) => { e.currentTarget.focus({ preventScroll: true }); onClick(event); }} className="interactive focus-ring block w-full min-w-0 rounded-xl border p-4 text-left" style={{ borderColor: "var(--glass-border)", background: "var(--bg-surface)", color: "var(--text-primary)" }}>
+    <span className="text-xs" style={{ color: "var(--text-muted)" }}>{event.start?.dateTime ? `${timeOnDay(event.start.dateTime, day)}${event.end?.dateTime ? ` – ${timeOnDay(event.end.dateTime, day)}` : ""}` : "All day"}</span>
+    <span className="mt-1 block break-words text-sm font-medium">{event.summary || "Untitled event"}</span>
+    {event.location && <span className="mt-2 block break-words text-xs [overflow-wrap:anywhere]" style={{ color: "var(--text-secondary)" }}>{event.location}</span>}
+  </button>;
+}
+
+/** "Today · Mon, Oct 5" — the day's name in a list of days. */
+function DayHeading({ day, today, action }: { day: Date; today: Date; action?: ReactNode }) {
+  const relative = relativeDay(day, { now: today });
+  return <div className="flex min-h-[var(--touch-target)] items-center justify-between gap-2">
+    <h3 className="min-w-0 text-sm font-semibold" style={{ color: isSameDay(day, today) ? "var(--color-accent)" : "var(--text-primary)" }}>
+      {relative === "Today" || relative === "Tomorrow" ? `${relative} · ` : ""}{fmtDate(day, { weekday: "short", month: "short", day: "numeric" }, { locale: "en-US" })}
+    </h3>
+    {action}
+  </div>;
+}
+
+/** The next seven days as one list: a day's name, then its events (or one quiet line). */
+function AgendaView({ days, today, eventsByDate, onEventClick }: { days: Date[]; today: Date; eventsByDate: Map<string, CalEvent[]>; onEventClick: (ev: CalEvent) => void }) {
+  return <div className="px-4 pb-6" data-testid="calendar-agenda">
+    {days.map((day) => {
+      const events = byStart(eventsByDate.get(dateKey(day)) ?? []);
+      return <section key={dateKey(day)} aria-label={day.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" })} className="space-y-3 pb-2" style={{ borderBottom: "1px solid color-mix(in srgb, var(--glass-border) 60%, transparent)" }}>
+        <DayHeading day={day} today={today} action={events.length ? undefined : <span className="flex-shrink-0 text-sm" style={{ color: "var(--text-muted)" }}>No events</span>} />
+        {events.map((event) => <PhoneEventCard key={event.vaultNoteId ?? event.id} event={event} day={day} onClick={onEventClick} />)}
+      </section>;
+    })}
+  </div>;
+}
+
+/** A month a thumb can use: each day is ONE target (number + up to three marks); the chosen day's
+ *  events are listed under the grid, where their titles can be read. */
+function PhoneMonthGrid({ days, month, today, selectedDate, eventsByDate, onSelect }: {
+  days: Date[]; month: number; today: Date; selectedDate: Date | null; eventsByDate: Map<string, CalEvent[]>; onSelect: (d: Date) => void;
+}) {
+  return <div className="flex-shrink-0 pt-2">
+    <div className="grid grid-cols-7">
+      {weekdayOrder().map((d) => <div key={d} className="py-1 text-center text-[11px] font-medium" style={{ color: "var(--text-muted)" }}>{WEEKDAYS[d]}</div>)}
+    </div>
+    <div className="grid grid-cols-7">
+      {days.map((day) => {
+        const isMonth = day.getMonth() === month;
+        const isToday = isSameDay(day, today);
+        const isSel = selectedDate ? isSameDay(day, selectedDate) : false;
+        const count = (eventsByDate.get(dateKey(day)) ?? []).length;
+        return <button key={dateKey(day)} onClick={() => onSelect(day)} aria-pressed={isSel} data-outside-month={isMonth ? undefined : "true"}
+          aria-label={`Select ${day.toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" })}${count ? `, ${count} ${count === 1 ? "event" : "events"}` : ""}`}
+          className="focus-ring flex min-h-[52px] min-w-0 flex-col items-center gap-1 rounded-lg pt-1.5" style={{ background: isSel ? "var(--glass-active)" : "transparent" }}>
+          <span className="flex h-7 w-7 items-center justify-center rounded-full text-sm font-medium" style={{ color: isToday ? "var(--action-fg, white)" : isMonth ? "var(--text-primary)" : "var(--text-muted)", background: isToday ? "var(--action-bg, var(--color-accent))" : "transparent" }}>{day.getDate()}</span>
+          <span aria-hidden className="flex h-1.5 items-center gap-0.5">
+            {Array.from({ length: Math.min(count, 3) }, (_, i) => <span key={i} className="h-1.5 w-1.5 rounded-full" style={{ background: isMonth ? "var(--color-accent)" : "var(--text-muted)" }} />)}
+          </span>
+        </button>;
+      })}
+    </div>
+  </div>;
+}
+
 // ─── Week View ───────────────────────────────────────────────
 
 function WeekView({ days, today, selectedDate, eventsByDate, onSelect, onEventClick }: {
   days: Date[]; today: Date; selectedDate: Date | null;
   eventsByDate: Map<string, CalEvent[]>; onSelect: (d: Date) => void; onEventClick: (ev: CalEvent) => void;
 }) {
+  // Phone: open on the morning, not on seven empty hours after midnight.
+  const mobile = useIsMobile();
+  const grid = useRef<HTMLDivElement>(null);
+  useEffect(() => { if (mobile && grid.current) grid.current.scrollTop = 7 * 48; }, [mobile]);
   return (
     <div className="min-w-[640px] flex-1 flex flex-col min-h-0">
       {/* Day headers */}
@@ -426,7 +566,7 @@ function WeekView({ days, today, selectedDate, eventsByDate, onSelect, onEventCl
           const isToday = isSameDay(d, today);
           const isSel = selectedDate ? isSameDay(d, selectedDate) : false;
           return (
-            <button key={i} onClick={() => onSelect(d)} className="text-center py-2 hover:bg-[var(--glass-hover)] transition-colors"
+            <button key={i} onClick={() => onSelect(d)} aria-label={mobile ? `Open ${d.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" })}` : undefined} className="text-center py-2 hover:bg-[var(--glass-hover)] transition-colors"
               style={{ background: isSel ? "var(--glass-active)" : "transparent", borderLeft: "1px solid var(--glass-border)" }}>
               <div className="text-[10px]" style={{ color: "var(--text-muted)" }}>{WEEKDAYS[d.getDay()]}</div>
               <div className="text-sm font-medium w-7 h-7 mx-auto flex items-center justify-center rounded-full"
@@ -445,13 +585,13 @@ function WeekView({ days, today, selectedDate, eventsByDate, onSelect, onEventCl
         </div>)}
       </div>
       {/* Time grid */}
-      <div className="flex-1 overflow-auto">
+      <div ref={grid} className="flex-1 overflow-auto">
         <div className="grid grid-cols-8" style={{ minHeight: 24 * 48 }}>
           {/* Time labels */}
           <div>
             {HOURS.map((h) => (
               <div key={h} className="text-[10px] text-right pr-2" style={{ height: 48, color: "var(--text-muted)", paddingTop: 2 }}>
-                {h === 0 ? "" : `${h % 12 || 12}${h < 12 ? "a" : "p"}`}
+                {hourLabel(h, true)}
               </div>
             ))}
           </div>
@@ -489,11 +629,7 @@ function DayView({ date, today, events, onEventClick }: { date: Date; today: Dat
   const isToday = isSameDay(date, today);
   if (mobile) return <div className="space-y-3 overflow-auto p-4">
     {!events.length && <p className="py-8 text-center text-sm" style={{ color: "var(--text-muted)" }}>No events for this day.</p>}
-    {[...events].sort((a, b) => (a.start?.dateTime ? Date.parse(a.start.dateTime) : -Infinity) - (b.start?.dateTime ? Date.parse(b.start.dateTime) : -Infinity)).map((event) => <button key={event.vaultNoteId ?? event.id} onClick={(e) => { e.currentTarget.focus({ preventScroll: true }); onEventClick(event); }} className="interactive focus-ring w-full rounded-xl border p-4 text-left" style={{ borderColor: "var(--glass-border)", background: "var(--bg-surface)", color: "var(--text-primary)" }}>
-      <span className="text-xs" style={{ color: "var(--text-muted)" }}>{event.start?.dateTime ? `${timeOnDay(event.start.dateTime, date)}${event.end?.dateTime ? ` – ${timeOnDay(event.end.dateTime, date)}` : ""}` : "All day"}</span>
-      <span className="mt-1 block break-words text-sm font-medium">{event.summary || "Untitled event"}</span>
-      {event.location && <span className="mt-2 block break-words text-xs" style={{ color: "var(--text-secondary)" }}>{event.location}</span>}
-    </button>)}
+    {byStart(events).map((event) => <PhoneEventCard key={event.vaultNoteId ?? event.id} event={event} day={date} onClick={onEventClick} />)}
   </div>;
 
   return (
@@ -507,7 +643,7 @@ function DayView({ date, today, events, onEventClick }: { date: Date; today: Dat
         <div>
           {HOURS.map((h) => (
             <div key={h} className="text-[10px] text-right pr-2" style={{ height: 48, color: "var(--text-muted)", paddingTop: 2 }}>
-              {h === 0 ? "12 AM" : `${h % 12 || 12} ${h < 12 ? "AM" : "PM"}`}
+              {hourLabel(h, false)}
             </div>
           ))}
         </div>
@@ -614,7 +750,7 @@ function EventDetailPanel({ event, onClose, onEdit, onDelete, onOpenNotes, onOpe
 
 
   return (
-    <div className="min-w-0 p-4 space-y-5">
+    <div className="min-w-0 p-4 space-y-5 max-md:px-0">
       <div className="flex items-start justify-between">
         <h3 className="min-w-0 break-words text-xl font-semibold pr-2" style={{ color: "var(--text-primary)" }}>{event.summary || "Untitled"}</h3>
         <button aria-label="Close event details" onClick={onClose} className="focus-ring hidden md:flex min-h-control min-w-control items-center justify-center rounded-lg hover:bg-[var(--glass-hover)] flex-shrink-0">
@@ -637,8 +773,21 @@ function EventDetailPanel({ event, onClose, onEdit, onDelete, onOpenNotes, onOpe
       {/* Location */}
       {event.location && (
         <div className="flex items-center gap-2">
-          <MapPin size={12} style={{ color: "var(--text-muted)" }} />
-          <span className="text-sm" style={{ color: "var(--text-secondary)" }}>{event.location}</span>
+          <MapPin size={12} className="flex-shrink-0" style={{ color: "var(--text-muted)" }} />
+          <span className="min-w-0 text-sm [overflow-wrap:anywhere]" style={{ color: "var(--text-secondary)" }}>{event.location}</span>
+        </div>
+      )}
+
+      {/* RSVP — near the top: the one thing most often done to an invitation. */}
+      {canRsvp && (
+        <div className="flex items-center gap-2 flex-wrap" data-testid="event-rsvp">
+          {!rsvpNA && <span className="text-sm" style={{ color: "var(--text-muted)" }}>RSVP</span>}
+          {!rsvpNA && (["accepted", "tentative", "declined"] as RsvpResponse[]).map((r) => (
+            <button key={r} onClick={() => rsvp(r)} className="focus-ring min-h-control min-w-control px-3 py-1.5 rounded-lg text-sm transition-colors hover:bg-[var(--glass-hover)]" style={{ color: "var(--text-secondary)", border: "1px solid var(--glass-border)" }}>
+              {r === "accepted" ? "Yes" : r === "tentative" ? "Maybe" : "No"}
+            </button>
+          ))}
+          {rsvpMsg && <span className="text-sm" style={{ color: "var(--text-muted)" }}>{rsvpMsg}</span>}
         </div>
       )}
 
@@ -696,7 +845,7 @@ function EventDetailPanel({ event, onClose, onEdit, onDelete, onOpenNotes, onOpe
               onClick={() => (isDesktop ? void onDelete(true) : setConfirmDelete(true))}
               aria-label="Delete event"
               title="Delete event"
-              className="focus-ring flex min-h-control items-center gap-2 px-3 py-1.5 rounded-lg text-sm transition-colors hover:bg-[var(--glass-hover)]"
+              className="focus-ring flex min-h-control min-w-control items-center justify-center gap-2 px-3 py-1.5 rounded-lg text-sm transition-colors hover:bg-[var(--glass-hover)]"
               style={{ color: "var(--color-danger)", border: "1px solid var(--glass-border)" }}
             >
               <Trash2 size={12} />
@@ -710,12 +859,12 @@ function EventDetailPanel({ event, onClose, onEdit, onDelete, onOpenNotes, onOpe
             Delete this occurrence from Google Calendar? Only this one is removed if the event repeats. Its meeting note is kept (marked cancelled).
           </div>
           {(event.attendees?.length ?? 0) > 0 && (
-            <label className="flex items-center gap-1.5 text-xs" style={{ color: "var(--text-secondary)" }}>
-              <input type="checkbox" checked={notifyGuests} onChange={(e) => setNotifyGuests(e.target.checked)} />
+            <label className="flex items-center gap-1.5 text-xs coarse:min-h-[var(--touch-target)] coarse:gap-3 coarse:text-sm" style={{ color: "var(--text-secondary)" }}>
+              <input type="checkbox" className="coarse:h-5 coarse:w-5 flex-shrink-0" checked={notifyGuests} onChange={(e) => setNotifyGuests(e.target.checked)} />
               {notifyGuests ? "Guests will be emailed a cancellation" : "Don't email guests"}
             </label>
           )}
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <button
               onClick={() => void doDelete()}
               disabled={deleting}
@@ -745,17 +894,6 @@ function EventDetailPanel({ event, onClose, onEdit, onDelete, onOpenNotes, onOpe
               </button>
             </div>
           )}
-        </div>
-      )}
-      {canRsvp && (
-        <div className="flex items-center gap-2 flex-wrap">
-          {!rsvpNA && <span className="text-sm" style={{ color: "var(--text-muted)" }}>RSVP</span>}
-          {!rsvpNA && (["accepted", "tentative", "declined"] as RsvpResponse[]).map((r) => (
-            <button key={r} onClick={() => rsvp(r)} className="focus-ring min-h-control px-3 py-1.5 rounded-lg text-sm transition-colors hover:bg-[var(--glass-hover)]" style={{ color: "var(--text-secondary)", border: "1px solid var(--glass-border)" }}>
-              {r === "accepted" ? "Yes" : r === "tentative" ? "Maybe" : "No"}
-            </button>
-          ))}
-          {rsvpMsg && <span className="text-sm" style={{ color: "var(--text-muted)" }}>{rsvpMsg}</span>}
         </div>
       )}
     </div>
@@ -849,8 +987,9 @@ function EventFormPanel({ event, defaultDate, onClose, onSaved, live }: {
   };
 
   return (
-    <div className="p-3 space-y-3">
-      <div className="flex items-center justify-between">
+    <div className="p-3 space-y-3 max-md:px-0">
+      {/* Phone: the sheet's own header names the form and closes it. */}
+      <div className="hidden md:flex items-center justify-between">
         <h3 className="text-sm font-semibold" style={{ color: "var(--text-primary)" }}>{isEdit ? "Edit Event" : "New Event"}</h3>
         <button aria-label="Close event details" onClick={onClose} className="p-2 rounded hover:bg-[var(--glass-hover)]">
           <X size={14} style={{ color: "var(--text-muted)" }} />
@@ -862,20 +1001,20 @@ function EventFormPanel({ event, defaultDate, onClose, onSaved, live }: {
           value={summary}
           onChange={(e) => setSummary(e.target.value)}
           placeholder="Event title"
-          className="w-full rounded px-2 py-1.5 text-xs outline-none"
+          className="w-full rounded px-2 py-1.5 text-xs outline-none coarse:min-h-[var(--touch-target)]"
           style={{ background: "var(--glass)", border: "1px solid var(--glass-border)", color: "var(--text-primary)" }}
           autoFocus
         />
 
         <div className="grid grid-cols-2 gap-2">
           <input aria-label="Event date" type="date" value={date} onChange={(e) => setDate(e.target.value)}
-            className="col-span-2 min-w-0 rounded px-2 py-2 text-base outline-none"
+            className="col-span-2 min-w-0 rounded px-2 py-2 text-base outline-none coarse:min-h-[var(--touch-target)]"
             style={{ background: "var(--glass)", border: "1px solid var(--glass-border)", color: "var(--text-primary)" }} />
           <input aria-label="Start time" type="time" value={startTime} onChange={(e) => setStartTime(e.target.value)}
-            className="min-w-0 rounded px-2 py-2 text-base outline-none"
+            className="min-w-0 rounded px-2 py-2 text-base outline-none coarse:min-h-[var(--touch-target)]"
             style={{ background: "var(--glass)", border: "1px solid var(--glass-border)", color: "var(--text-primary)" }} />
           <input aria-label="End time" type="time" value={endTime} onChange={(e) => setEndTime(e.target.value)}
-            className="min-w-0 rounded px-2 py-2 text-base outline-none"
+            className="min-w-0 rounded px-2 py-2 text-base outline-none coarse:min-h-[var(--touch-target)]"
             style={{ background: "var(--glass)", border: "1px solid var(--glass-border)", color: "var(--text-primary)" }} />
         </div>
 
@@ -883,7 +1022,7 @@ function EventFormPanel({ event, defaultDate, onClose, onSaved, live }: {
           value={locationVal}
           onChange={(e) => setLocationVal(e.target.value)}
           placeholder="Location"
-          className="w-full rounded px-2 py-1.5 text-xs outline-none"
+          className="w-full rounded px-2 py-1.5 text-xs outline-none coarse:min-h-[var(--touch-target)]"
           style={{ background: "var(--glass)", border: "1px solid var(--glass-border)", color: "var(--text-primary)" }}
         />
 
@@ -891,18 +1030,18 @@ function EventFormPanel({ event, defaultDate, onClose, onSaved, live }: {
           value={attendeesVal}
           onChange={(e) => setAttendeesVal(e.target.value)}
           placeholder="Attendees (comma-separated emails)"
-          className="w-full rounded px-2 py-1.5 text-xs outline-none"
+          className="w-full rounded px-2 py-1.5 text-xs outline-none coarse:min-h-[var(--touch-target)]"
           style={{ background: "var(--glass)", border: "1px solid var(--glass-border)", color: "var(--text-primary)" }}
         />
         {live && !isEdit && attendeesVal.trim() && (
-          <label className="flex items-center gap-1.5 text-xs" style={{ color: "var(--text-secondary)" }}>
-            <input type="checkbox" checked={notifyAttendees} onChange={(e) => setNotifyAttendees(e.target.checked)} />
+          <label className="flex items-center gap-1.5 text-xs coarse:min-h-[var(--touch-target)] coarse:gap-3 coarse:text-sm" style={{ color: "var(--text-secondary)" }}>
+            <input type="checkbox" className="coarse:h-5 coarse:w-5 flex-shrink-0" checked={notifyAttendees} onChange={(e) => setNotifyAttendees(e.target.checked)} />
             {notifyAttendees ? "Attendees will be emailed an invite" : "Don't email attendees an invite"}
           </label>
         )}
         {live && isEdit && ((event?.attendees?.length ?? 0) > 0 || attendeesVal.trim()) && (
-          <label className="flex items-center gap-1.5 text-xs" style={{ color: "var(--text-secondary)" }}>
-            <input type="checkbox" checked={notifyAttendees} onChange={(e) => setNotifyAttendees(e.target.checked)} />
+          <label className="flex items-center gap-1.5 text-xs coarse:min-h-[var(--touch-target)] coarse:gap-3 coarse:text-sm" style={{ color: "var(--text-secondary)" }}>
+            <input type="checkbox" className="coarse:h-5 coarse:w-5 flex-shrink-0" checked={notifyAttendees} onChange={(e) => setNotifyAttendees(e.target.checked)} />
             {notifyAttendees ? "Guests will be emailed about the change" : "Don't email guests about the change"}
           </label>
         )}
@@ -925,7 +1064,7 @@ function EventFormPanel({ event, defaultDate, onClose, onSaved, live }: {
       <button
         onClick={() => void handleSave()}
         disabled={!summary.trim() || saving || !canSave}
-        className="w-full py-2 rounded text-xs font-medium transition-colors disabled:opacity-50"
+        className="w-full py-2 rounded text-xs font-medium transition-colors disabled:opacity-50 coarse:min-h-[var(--touch-target)] coarse:text-sm"
         style={{ background: "var(--action-bg, var(--color-accent))", color: "var(--action-fg, #fff)" }}
       >
         {saving ? "Saving..." : isEdit ? "Update Event" : "Create Event"}
@@ -936,7 +1075,7 @@ function EventFormPanel({ event, defaultDate, onClose, onSaved, live }: {
         <button
           onClick={() => void handleSave(true)}
           disabled={saving}
-          className="w-full py-1.5 rounded text-xs font-medium disabled:opacity-50"
+          className="w-full py-1.5 rounded text-xs font-medium disabled:opacity-50 coarse:min-h-[var(--touch-target)] coarse:text-sm"
           style={{ background: "var(--danger-bg, var(--color-danger))", color: "#fff" }}
           data-testid="update-all-occurrences"
         >
