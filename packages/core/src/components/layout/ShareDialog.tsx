@@ -350,8 +350,11 @@ function SharingDocument({ noteId, sharing, onClose }: Props) {
       .prism-share-dialog > header > button:hover { background:var(--glass-hover); color:var(--text-primary); }
       .prism-share-dialog :focus-visible { outline:2px solid var(--color-accent); outline-offset:2px; }
       .prism-share-dialog p { margin:0; font-size:13px; line-height:1.6; color:var(--text-secondary); }
-      .prism-share-dialog label { display:grid; gap:7px; font-size:12px; color:var(--text-secondary); }
-      .prism-share-dialog .share-stack { display:grid; gap:16px; }
+      .prism-share-dialog label { display:grid; grid-template-columns:minmax(0,1fr); gap:7px; font-size:12px; color:var(--text-secondary); }
+      /* One column that may be NARROWER than its widest child (a select is as wide as its longest option; with a classic
+         scrollbar in the dialog — Safari with a mouse — an auto column pushed the dialog sideways by the difference). */
+      .prism-share-dialog .share-stack { display:grid; grid-template-columns:minmax(0,1fr); gap:16px; }
+      .prism-share-dialog select { max-width:100%; min-width:0; }
       .prism-share-dialog .share-row { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
       .prism-share-dialog .share-card { padding:14px; border:1px solid var(--glass-border); border-radius:10px; }
       .prism-share-dialog .share-primary { background:var(--action-bg, var(--color-accent)); color:var(--action-fg, #fff); border-color:transparent; }
