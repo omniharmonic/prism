@@ -261,3 +261,189 @@ export function focusIndicator(page: Page): Promise<{ what: string; visible: boo
     return { what, visible: !!detail, detail: detail || "no outline, no box-shadow" };
   });
 }
+
+// ── NP-AX-04: non-text contrast (WCAG 1.4.11) ─────────────────────────────────────────────────
+
+export type NonTextFinding = { what: string; ratio: number; colors: string };
+export type NonTextReport = {
+  /** Measured and below 3 : 1. */
+  low: NonTextFinding[];
+  /** Looked at and at or above 3 : 1. */
+  ok: number;
+  /** Could not be judged from computed colours (a gradient / image / blur behind it, a native control, a soft shadow). */
+  unmeasured: string[];
+};
+
+/**
+ * The in-page toolkit both measurements use. Serialised into the page, so it is one string-free
+ * function returning its helpers. Colours are resolved by PAINTING them (any CSS colour syntax —
+ * `color-mix`, `oklch`, `color(srgb …)` — comes back as RGBA), then composited over what is behind.
+ */
+function installContrastKit(): void {
+  const w = window as unknown as { __a11yContrast?: unknown };
+  if (w.__a11yContrast) return;
+  type RGBA = [number, number, number, number];
+  const canvas = document.createElement("canvas");
+  canvas.width = canvas.height = 1;
+  const ctx = canvas.getContext("2d", { willReadFrequently: true })!;
+  const cache = new Map<string, RGBA>();
+  const parse = (color: string): RGBA => {
+    const hit = cache.get(color);
+    if (hit) return hit;
+    ctx.clearRect(0, 0, 1, 1);
+    ctx.fillStyle = "rgba(0,0,0,0)";
+    ctx.fillStyle = color;
+    ctx.fillRect(0, 0, 1, 1);
+    const d = ctx.getImageData(0, 0, 1, 1).data;
+    const out: RGBA = [d[0]!, d[1]!, d[2]!, d[3]! / 255];
+    cache.set(color, out);
+    return out;
+  };
+  const over = (top: RGBA, under: RGBA): RGBA => {
+    const a = top[3] + under[3] * (1 - top[3]);
+    if (a <= 0) return [0, 0, 0, 0];
+    return [0, 1, 2].map((i) => (top[i]! * top[3] + under[i]! * under[3] * (1 - top[3])) / a).concat(a) as RGBA;
+  };
+  const lum = (c: RGBA) => { const f = (v: number) => { const s = v / 255; return s <= 0.03928 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4; }; return 0.2126 * f(c[0]) + 0.7152 * f(c[1]) + 0.0722 * f(c[2]); };
+  const ratio = (a: RGBA, b: RGBA) => { const [hi, lo] = [lum(a), lum(b)].sort((x, y) => y - x); return (hi! + 0.05) / (lo! + 0.05); };
+  const hex = (c: RGBA) => "#" + [0, 1, 2].map((i) => Math.round(c[i]!).toString(16).padStart(2, "0")).join("");
+  /** The colour painted behind `el`'s box (its ancestors, composited). `null` when a gradient, an image or a blur is part of it. */
+  const behind = (el: Element | null): RGBA | null => {
+    const layers: RGBA[] = [];
+    for (let p: Element | null = el; p; p = p.parentElement) {
+      const st = getComputedStyle(p);
+      if (st.backgroundImage !== "none" || (st.backdropFilter && st.backdropFilter !== "none")) return null;
+      const c = parse(st.backgroundColor);
+      if (c[3] > 0) layers.push(c);
+      if (c[3] >= 0.999) break;
+    }
+    // The canvas itself: white, or near-black under a dark colour scheme.
+    let base: RGBA = getComputedStyle(document.documentElement).colorScheme.includes("dark") && !document.documentElement.classList.contains("light") ? [18, 18, 20, 1] : [255, 255, 255, 1];
+    for (let i = layers.length - 1; i >= 0; i--) base = over(layers[i]!, base);
+    return base;
+  };
+  const name = (el: Element) => `${el.tagName.toLowerCase()}${el.getAttribute("role") ? `[role=${el.getAttribute("role")}]` : ""}${(el as HTMLInputElement).type && el.tagName === "INPUT" ? `[type=${(el as HTMLInputElement).type}]` : ""}${typeof el.className === "string" && el.className ? "." + el.className.trim().split(/\s+/).slice(0, 2).join(".") : ""} "${(el.getAttribute("aria-label") || (el as HTMLInputElement).placeholder || el.textContent || "").trim().replace(/\s+/g, " ").slice(0, 32)}"`;
+  w.__a11yContrast = { parse, over, ratio, hex, behind, name };
+}
+
+/**
+ * The FOCUS INDICATOR of the focused element against what it is drawn on: an outline, or a hard
+ * ring made with `box-shadow` (no blur) — the most visible of them. ≥ 3 : 1 passes. `caret` says
+ * the element is a text-entry field, where the caret (text-coloured) shows focus as well.
+ */
+export async function focusIndicatorContrast(page: Page): Promise<{ what: string; ratio: number | null; colors: string; how: string; /** A text-entry field: its caret also shows focus. */ caret?: boolean }> {
+  await page.evaluate(installContrastKit);
+  return page.evaluate(async (NOT_OURS) => {
+    type RGBA = [number, number, number, number];
+    const kit = (window as any).__a11yContrast as { parse(c: string): RGBA; over(a: RGBA, b: RGBA): RGBA; ratio(a: RGBA, b: RGBA): number; hex(c: RGBA): string; behind(el: Element | null): RGBA | null; name(el: Element): string };
+    const focused = document.activeElement as HTMLElement | null;
+    if (!focused || focused === document.body) return { what: "body", ratio: null, colors: "", how: "nothing focused" };
+    const ad = focused.getAttribute("aria-activedescendant");
+    const candidates: HTMLElement[] = [focused, ...(ad && document.getElementById(ad) ? [document.getElementById(ad)!] : [])];
+    for (let p = focused.parentElement, i = 0; p && i < 3; p = p.parentElement, i++) if (p.matches(":focus-within")) candidates.push(p);
+    if (focused.closest(NOT_OURS)) return { what: kit.name(focused), ratio: null, colors: "", how: "third-party widget" };
+    // A ring that fades or grows in is judged when it has arrived, not part-way.
+    const moving = candidates.flatMap((el) => el.getAnimations()).map((a) => a.finished.catch(() => undefined));
+    if (moving.length) await Promise.race([Promise.all(moving), new Promise((r) => setTimeout(r, 500))]);
+    // Every candidate ring (an outline; each hard `box-shadow` ring — a control can carry a 1 px
+    // hairline shadow AND a focus ring): the indicator is the one that stands out most.
+    let best: { ratio: number; colors: string; how: string } | null = null;
+    let blind = "";
+    for (const el of candidates) {
+      const st = getComputedStyle(el);
+      const rings: Array<{ color: RGBA; how: string; inside: boolean }> = [];
+      if (st.outlineStyle !== "none" && parseFloat(st.outlineWidth) > 0) {
+        const c = kit.parse(st.outlineColor);
+        if (c[3] > 0) rings.push({ color: c, how: `outline ${st.outlineWidth}`, inside: parseFloat(st.outlineOffset) < 0 });
+      }
+      if (st.boxShadow !== "none") {
+        // Computed form: "<color> <x> <y> <blur> <spread>[ inset], …" — a ring is 0 0 0 <spread>.
+        for (const part of st.boxShadow.split(/,(?![^(]*\))/)) {
+          const m = part.trim().match(/^(.*?)\s(-?[\d.]+)px\s(-?[\d.]+)px\s([\d.]+)px\s(-?[\d.]+)px(\sinset)?$/);
+          if (!m) continue;
+          const [, color, x, y, blur, spread, inset] = m;
+          if (Number(x) === 0 && Number(y) === 0 && Number(blur) === 0 && Number(spread) >= 1) { const c = kit.parse(color!); if (c[3] > 0) rings.push({ color: c, how: `box-shadow ring ${spread}px`, inside: !!inset }); }
+        }
+      }
+      for (const ring of rings) {
+        const bg = ring.inside ? kit.behind(el) : kit.behind(el.parentElement);
+        if (!bg) { blind = `${ring.how} over a gradient / image`; continue; }
+        const drawn = kit.over(ring.color, bg);
+        const ratio = Math.round(kit.ratio(drawn, bg) * 100) / 100;
+        if (!best || ratio > best.ratio) best = { ratio, colors: `${kit.hex(drawn)} on ${kit.hex(bg)}`, how: ring.how };
+      }
+    }
+    const caret = focused.matches("input:not([type=checkbox]):not([type=radio]):not([type=button]):not([type=submit]):not([type=range]), textarea, [contenteditable=true], [contenteditable='']");
+    if (best) return { what: kit.name(focused), ...best, caret };
+    if (blind) return { what: kit.name(focused), ratio: null, colors: "", how: blind };
+    return { what: kit.name(focused), ratio: null, colors: "", how: "no outline or hard ring (caret, soft shadow or a change of fill)" };
+  }, NOT_OURS);
+}
+
+/**
+ * The BOUNDARY of every visible form control (text field, select, textarea, custom checkbox /
+ * switch / radio) against what is behind it: the best of its border and its own fill, also looking
+ * at up to two wrappers that draw the box for it (a search field inside a bordered pill). ≥ 3 : 1
+ * passes. Native checkboxes / radios / range inputs are drawn by the browser and not judged.
+ */
+export async function controlBoundaryContrast(page: Page): Promise<NonTextReport> {
+  await page.evaluate(installContrastKit);
+  return page.evaluate((NOT_OURS) => {
+    type RGBA = [number, number, number, number];
+    const kit = (window as any).__a11yContrast as { parse(c: string): RGBA; over(a: RGBA, b: RGBA): RGBA; ratio(a: RGBA, b: RGBA): number; hex(c: RGBA): string; behind(el: Element | null): RGBA | null; name(el: Element): string };
+    const report: { low: Array<{ what: string; ratio: number; colors: string }>; ok: number; unmeasured: string[] } = { low: [], ok: 0, unmeasured: [] };
+    const shown = (el: Element) => {
+      const st = getComputedStyle(el);
+      if (st.display === "none" || st.visibility !== "visible" || Number(st.opacity) < 0.05) return false;
+      for (let p: Element | null = el; p; p = p.parentElement) if ((p as HTMLElement).inert || p.getAttribute("aria-hidden") === "true") return false;
+      const r = el.getBoundingClientRect();
+      if (r.width < 8 || r.height < 8 || r.bottom < 0 || r.top > innerHeight || r.right < 0 || r.left > innerWidth) return false;
+      const hit = document.elementFromPoint(Math.min(innerWidth - 1, Math.max(0, r.left + r.width / 2)), Math.min(innerHeight - 1, Math.max(0, r.top + r.height / 2)));
+      return !!hit && (el.contains(hit) || hit.contains(el) || !!hit.closest("label")?.contains(el));
+    };
+    const controls = Array.from(document.querySelectorAll<HTMLElement>('input:not([type=hidden]):not([type=checkbox]):not([type=radio]):not([type=range]):not([type=file]):not([type=color]):not([type=button]):not([type=submit]):not([type=reset]), textarea, select, [role=checkbox], [role=switch], [role=radio], [role=combobox]:not(input)'))
+      .filter((el) => !el.closest(NOT_OURS) && !(el as HTMLInputElement).disabled && el.getAttribute("aria-disabled") !== "true" && shown(el));
+    const seen = new Set<string>();
+    for (const el of controls) {
+      const what = kit.name(el);
+      if (seen.has(what)) continue;
+      seen.add(what);
+      const rect = el.getBoundingClientRect();
+      const boxes: Element[] = [el];
+      // A wrapper that hugs the control may be the box a person sees.
+      for (let p = el.parentElement, i = 0; p && i < 2; p = p.parentElement, i++) { const r = p.getBoundingClientRect(); if (r.height <= rect.height + 20 && r.width <= Math.max(rect.width * 3, rect.width + 120)) boxes.push(p); else break; }
+      let best = 0, colors = "", blind = false;
+      for (const box of boxes) {
+        const bg = kit.behind(box.parentElement);
+        if (!bg) { blind = true; continue; }
+        const st = getComputedStyle(box);
+        if (st.backgroundImage !== "none") { blind = true; continue; }
+        const tries: Array<[string, RGBA]> = [];
+        for (const side of ["Top", "Right", "Bottom", "Left"] as const) {
+          if (st[`border${side}Style` as "borderTopStyle"] !== "none" && parseFloat(st[`border${side}Width` as "borderTopWidth"]) > 0) tries.push(["border", kit.over(kit.parse(st[`border${side}Color` as "borderTopColor"]), bg)]);
+        }
+        if (st.outlineStyle !== "none" && parseFloat(st.outlineWidth) > 0) tries.push(["outline", kit.over(kit.parse(st.outlineColor), bg)]);
+        tries.push(["fill", kit.over(kit.parse(st.backgroundColor), bg)]);
+        for (const [how, c] of tries) { const r = kit.ratio(c, bg); if (r > best) { best = r; colors = `${how} ${kit.hex(c)} on ${kit.hex(bg)}`; } }
+      }
+      if (best === 0 && blind) { report.unmeasured.push(what); continue; }
+      if (best >= 3) report.ok++;
+      else report.low.push({ what, ratio: Math.round(best * 100) / 100, colors });
+    }
+    return report;
+  }, NOT_OURS);
+}
+
+/** One box's BORDER against what is behind it (the composers show focus with their border, not a ring). */
+export async function borderContrast(page: Page, selector: string): Promise<{ ratio: number | null; colors: string }> {
+  await page.evaluate(installContrastKit);
+  return page.evaluate((selector) => {
+    type RGBA = [number, number, number, number];
+    const kit = (window as any).__a11yContrast as { parse(c: string): RGBA; over(a: RGBA, b: RGBA): RGBA; ratio(a: RGBA, b: RGBA): number; hex(c: RGBA): string; behind(el: Element | null): RGBA | null };
+    const el = document.querySelector(selector);
+    const bg = el ? kit.behind(el.parentElement) : null;
+    if (!el || !bg) return { ratio: null, colors: "" };
+    const c = kit.over(kit.parse(getComputedStyle(el).borderTopColor), bg);
+    return { ratio: Math.round(kit.ratio(c, bg) * 100) / 100, colors: `${kit.hex(c)} on ${kit.hex(bg)}` };
+  }, selector);
+}
