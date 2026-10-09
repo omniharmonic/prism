@@ -24,6 +24,7 @@
   --glass-active: rgba(255, 255, 255, 0.94);
   --glass-border: rgba(15, 23, 42, 0.07);
   --glass-border-strong: rgba(15, 23, 42, 0.12);
+  --control-border: #7d7f87; /* a printed form field keeps its 3 : 1 boundary on paper */
   --glass-blur: 18px;
 
   --surface-hover: rgba(15, 23, 42, 0.045);

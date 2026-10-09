@@ -417,13 +417,16 @@ export async function controlBoundaryContrast(page: Page): Promise<NonTextReport
         const bg = kit.behind(box.parentElement);
         if (!bg) { blind = true; continue; }
         const st = getComputedStyle(box);
-        if (st.backgroundImage !== "none") { blind = true; continue; }
+        // A background image (a select's chevron, a gradient) hides what the FILL looks like; the border and the
+        // outline are still drawn around it and are judged.
+        const pictured = st.backgroundImage !== "none";
         const tries: Array<[string, RGBA]> = [];
         for (const side of ["Top", "Right", "Bottom", "Left"] as const) {
           if (st[`border${side}Style` as "borderTopStyle"] !== "none" && parseFloat(st[`border${side}Width` as "borderTopWidth"]) > 0) tries.push(["border", kit.over(kit.parse(st[`border${side}Color` as "borderTopColor"]), bg)]);
         }
         if (st.outlineStyle !== "none" && parseFloat(st.outlineWidth) > 0) tries.push(["outline", kit.over(kit.parse(st.outlineColor), bg)]);
-        tries.push(["fill", kit.over(kit.parse(st.backgroundColor), bg)]);
+        if (!pictured) tries.push(["fill", kit.over(kit.parse(st.backgroundColor), bg)]);
+        else if (!tries.length) { blind = true; continue; }
         for (const [how, c] of tries) { const r = kit.ratio(c, bg); if (r > best) { best = r; colors = `${how} ${kit.hex(c)} on ${kit.hex(bg)}`; } }
       }
       if (best === 0 && blind) { report.unmeasured.push(what); continue; }
