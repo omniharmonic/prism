@@ -236,6 +236,34 @@ test("v5: child-page rows, toggle headings, column widths and cell colours refus
   }
 });
 
+test("v6: a suggested paragraph break / line break / chip, and a suggestion inside code, refuse a v5 editor's content write — and its socket", async () => {
+  const sug = (kind: string, inner: string) => `<span data-suggestion="${kind}" data-user="Ann" data-color="#22c55e" style="color:#22c55e;">${inner}</span>`;
+  const markers = [
+    '<p>a</p><p data-suggestion-node="insert" data-suggestion-by="Ann">b</p>',
+    '<p>a<br data-suggestion-node="delete" data-suggestion-by="Ann">b</p>',
+    '<p>hi <span data-type="mention" class="prism-mention" data-kind="date" data-date="2027-01-01" data-suggestion-node="insert" data-suggestion-by="Ann">@x</span></p>',
+    `<p>run ${sug("insert", "<code>ci</code>")}</p>`,
+    `<pre><code>a = ${sug("delete", "1")}${sug("insert", "2")};</code></pre>`,
+    `<p>before</p><pre><code>one</code></pre><p>between</p><pre><code class="language-js">x${sug("insert", "y")}</code></pre>`,
+  ];
+  for (const [i, html] of markers.entries()) {
+    fv.put({ id: `v6-${i}`, content: html, tags: [] });
+    assert.equal((await patch(`v6-${i}`, { content: "<p>x</p>" }, { "X-Prism-Editor-Schema": "5" })).status, 409, html);
+    assert.equal((await patch(`v6-${i}`, { content: `${html}<p>y</p>` }, { "X-Prism-Editor-Schema": String(COLLAB_SCHEMA_VERSION) })).status, 200, html);
+  }
+  // What a v5 editor represents exactly is NOT a marker: a suggestion on ordinary text, also next to code and after a code block.
+  const { needsEditorUpdate } = await import("../src/routes/api");
+  for (const html of [`<p>${sug("insert", "word")} and <code>code</code></p>`, `<pre><code>plain</code></pre><p>${sug("delete", "gone")}</p>`, "<pre><code>the text data-suggestion=x in code</code></pre>".replace("data-suggestion=x", "data-suggestion-id")]) {
+    assert.equal(needsEditorUpdate(html), false, html);
+  }
+  // The live socket: the version just before the current one is refused like any older one (5 → 6).
+  fv.put({ id: "d6", content: markers[0]!, tags: ["team"] });
+  const previous = await open("d6", `?schema=${COLLAB_SCHEMA_VERSION - 1}`);
+  assert.equal(previous.outcome, UPDATE_REQUIRED_REASON);
+  assert.equal(previous.doc.getXmlFragment("default").length, 0, "it never received the document");
+  assert.equal((await open("d6", `?schema=${COLLAB_SCHEMA_VERSION}`)).outcome, "synced");
+});
+
 test("L1: markers are read the way an HTML parser reads them — quotes, case and spacing do not hide one; plain look-alikes pass", async () => {
   const { needsEditorUpdate } = await import("../src/routes/api");
   for (const html of [
