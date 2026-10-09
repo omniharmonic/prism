@@ -37,11 +37,11 @@ let origin = try ServerOrigin("https://prism.example.com")
 let tokens = KeychainTokenStore(service: "com.example.omni")
 
 // Sign in — only for a person's press (every run mints a device on the server).
-let signIn = DeviceSignIn(origin: origin, tokenStore: tokens)
+let signIn = DeviceSignIn(origin: origin, configuration: .omniNative, tokenStore: tokens)
 #if os(macOS)
 let flow = LoopbackRedirectFlow.systemBrowser()
 #else
-let flow = WebAuthenticationSessionFlow { window }          // an ASPresentationAnchor
+let flow = WebAuthenticationSessionFlow(configuration: .omniNative) { window }   // an ASPresentationAnchor
 #endif
 try await signIn.signIn(using: flow, label: "Omni on Ben's iPhone")
 
@@ -127,6 +127,17 @@ DB_PATH=:memory: npx tsx swift/PrismKit/Scripts/digest-vectors.ts \
   > swift/PrismKit/Tests/PrismModelsTests/Fixtures/approval-digest-vectors.json
 ```
 
+## Checked against a real gateway
+
+`swift/Omni/Scripts/smoke.sh` (2026-10-08) ran every call above against the laptop dev
+gateway + stub Hermes, signing in as `omni-native` over both redirects (loopback and
+`omni://auth/callback`). The models matched what the gateway sends: every thread, message,
+approval (all six kinds — each digest recomputed locally equals the server's), record
+card, job and Today object decoded with no unread and no missing key, and no stream event
+arrived as `.unknown`. `DeviceAuthConfiguration.omniNative` is registered on a server with
+`OMNI_ENABLED=true`; `.prismNative` stays the default for Prism's own client. What that
+run cannot show is listed in `docs/omni-module.md` § What the stub cannot tell us.
+
 ## Tests
 
 `URLProtocol` stubs only (`Tests/PrismTestSupport`): no socket to any server. The loopback
@@ -135,8 +146,6 @@ round-trip test is skipped unless `PRISMKIT_KEYCHAIN_TESTS=1`.
 
 ## Not here yet (typed seams only)
 
-- `DeviceAuthConfiguration.omniNative` (`omni-native`, `omni://auth/callback`): the server
-  registers neither yet, so `.prismNative` is the default.
 - `/api/omni/push`, `/nudges*`, `POST /tasks/:id/dispatch`, voice — not built on the server.
   `OmniToday.needsYou.nudges`, `openLoops` and `brief` decode as open JSON.
 - From the wider PrismKit plan (`integration-contract.md` § 11): `PrismTypes`, `PrismLinks`,
