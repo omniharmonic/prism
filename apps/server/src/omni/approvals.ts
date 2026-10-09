@@ -211,6 +211,11 @@ export function approvalView(a: Approval): Record<string, unknown> {
 
 /** Which existing guarded executor runs a kind, and whether it is switched on. */
 export function executorFor(kind: ApprovalKind): { name: string; available: boolean; enabled: boolean } {
+  const e = executorOf(kind);
+  // OMNI_EXECUTORS=off wins over every family flag: nothing Omni proposes can be sent.
+  return omniConfig.executorsOff() ? { ...e, enabled: false } : e;
+}
+function executorOf(kind: ApprovalKind): { name: string; available: boolean; enabled: boolean } {
   switch (kind) {
     case "email":
     case "email-reply":

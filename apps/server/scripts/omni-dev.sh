@@ -92,6 +92,8 @@ export OMNI_DEV_URL="http://127.0.0.1:$PORT"
 if [ "$MODE" = "walkthrough" ]; then
   [ -f "$DB" ] || die "no dev database at $DB — start the backend first (scripts/omni-dev.sh)"
   # Only the session row needs the database; no vault call is made from this process.
+  # Against a real dev Hermes the walk-through speaks to the fake model, not the stub.
+  [ -z "$HERMES_DEV_HOME" ] || export OMNI_WALK_DRIVER=fake
   exec node --env-file="$ENV_FILE" --import tsx scripts/omni-walkthrough.ts
 fi
 [ "$MODE" = "up" ] || die "usage: scripts/omni-dev.sh [up|walkthrough|scenarios]"

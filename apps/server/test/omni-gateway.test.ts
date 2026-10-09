@@ -790,3 +790,56 @@ test("the turn is read to Hermes' own end of stream (`done`), not hung up on at 
   assert.equal(sawEnd, true);
   assert.equal(getTurn(turnId)!.status, "done");
 });
+
+test("health: Hermes reachability, whether the plugin's hooks can be reached, and who would send — no secret", async () => {
+  assert.equal((await req("/health")).status, 401, "owner only, like every app route");
+  const saved = config.trustLocal;
+  try {
+    Object.assign(config, { trustLocal: true });
+    const ok = (await (await req("/health", { headers: owner() })).json()) as Record<string, unknown>;
+    assert.equal(ok.hermes, "ok");
+    assert.deepEqual(ok.hooks, { serviceToken: true, trustLocal: true, ready: true });
+    assert.deepEqual((ok.executors as Record<string, unknown>).email, { name: "proton-send", available: true, enabled: false });
+    assert.deepEqual((ok.executors as Record<string, unknown>).tweet, { name: "none", available: false, enabled: false });
+    assert.equal(ok.runningTurns, 0);
+    assert.ok(!JSON.stringify(ok).includes(process.env.OMNI_SERVICE_TOKEN!) && !JSON.stringify(ok).includes(process.env.OMNI_HERMES_KEY!));
+    // The server does not trust loopback (an https origin without TRUST_LOCAL): the plugin's calls would be refused.
+    Object.assign(config, { trustLocal: false });
+    assert.deepEqual(((await (await req("/health", { headers: owner() })).json()) as { hooks: unknown }).hooks, { serviceToken: true, trustLocal: false, ready: false });
+    fake.status = 401;
+    assert.equal(((await (await req("/health", { headers: owner() })).json()) as { hermes: string }).hermes, "hermes_auth");
+    fake.status = null;
+    fake.throwNext = true;
+    assert.equal(((await (await req("/health", { headers: owner() })).json()) as { hermes: string }).hermes, "hermes_unavailable");
+  } finally {
+    Object.assign(config, { trustLocal: saved });
+  }
+});
+
+test("OMNI_EXECUTORS=off: nothing Omni proposes is sent, even with every family flag on", async (t) => {
+  Object.assign(config, { actionsEmailEnabled: true, actionsCalendarEnabled: true, actionsMatrixEnabled: true });
+  process.env.OMNI_PROTON_SEND = process.execPath;
+  process.env.OMNI_EXECUTORS = "off";
+  t.after(() => {
+    delete process.env.OMNI_PROTON_SEND;
+    delete process.env.OMNI_EXECUTORS;
+  });
+  setOmniExecutorForTests(async (o) => {
+    execCalls.push(o);
+    return { status: "sent", detail: {} };
+  });
+  const h = (await (await req("/health", { headers: owner() })).json()) as { executors: Record<string, { enabled: boolean }> };
+  assert.deepEqual(Object.values(h.executors).map((e) => e.enabled), [false, false, false, false, false, false]);
+  for (const [kind, payload] of [["email", draft], ["message", { roomId: "!r:example.test", body: "hi" }], ["calendar-invite", { title: "Sync", start: "2026-10-09T17:00:00Z", end: "2026-10-09T17:30:00Z" }]] as const) {
+    const p = await propose(kind, payload as Record<string, unknown>);
+    const r = await decide(p.id, { decision: "send", digest: p.digest }, { ...owner(), "idempotency-key": key() });
+    assert.equal(r.status, 503, kind);
+    assert.equal(((await r.json()) as { error: string }).error, "executor_disabled", kind);
+  }
+  assert.equal(execCalls.length, 0, "no executor was called");
+  // Without the switch the same flags would send.
+  delete process.env.OMNI_EXECUTORS;
+  const p = await propose();
+  assert.equal((await decide(p.id, { decision: "send", digest: p.digest }, { ...owner(), "idempotency-key": key() })).status, 200);
+  assert.equal(execCalls.length, 1);
+});

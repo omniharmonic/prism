@@ -47,6 +47,13 @@ export const omniConfig = {
    * own Proton SMTP action (behind ACTIONS_EMAIL_ENABLED).
    */
   emailExecutor: (): "proton-send" | "live-actions" => (env("OMNI_EMAIL_EXECUTOR") === "live-actions" ? "live-actions" : "proton-send"),
+  /**
+   * `OMNI_EXECUTORS=off`: no approved draft is executed, whatever the per-family flags say
+   * (`ACTIONS_*_ENABLED`, `OMNI_PROTON_SEND`) — those also serve Prism's own live actions, so
+   * this is the switch that turns OMNI's sending off by itself. Approving then answers
+   * `executor_disabled` and the draft stays pending.
+   */
+  executorsOff: (): boolean => (env("OMNI_EXECUTORS") ?? "").toLowerCase() === "off",
   /** Absolute path to proton_send.py. Unset = approved emails are refused (executor_disabled). */
   protonSendPath: (): string | undefined => env("OMNI_PROTON_SEND"),
   /** Python used to run it (the agent repo's venv on the Mini). */

@@ -56,7 +56,8 @@ export const FAKE_DRIVER: ContractDriver = {
   slow: (n) => `fake:slow:${n}`,
   slowStart: (n) => `fake:slow:${n}`,
   toolOk: "fake:tool:skills_list {}",
-  toolFail: 'fake:tool:read_file {"path":"/nonexistent/omni-contract-probe.txt"}',
+  // A tool every Hermes toolset keeps, asked for something that does not exist.
+  toolFail: 'fake:tool:skill_view {"name":"omni-contract-no-such-skill"}',
   providerError: "fake:error:401",
   empty: "fake:empty",
   silent: (s) => `fake:silent:${s}`,

@@ -45,10 +45,12 @@ import {
   type ThreadRow,
   type ThreadState,
 } from "../omni/store";
-import { cancelTurn, emit, startTurn, stopOrphanedRuns } from "../omni/turns";
+import { cancelTurn, emit, liveTurnCount, startTurn, stopOrphanedRuns } from "../omni/turns";
+import { config } from "../config";
 import { bareToolName } from "../omni/stream";
 import { publishNotice, pushOmni, subscribeNotices, subscribeThread, type ThreadMessage } from "../omni/bus";
 import {
+  APPROVAL_KINDS,
   ApprovalInputError,
   approvalView,
   claimApproval,
@@ -261,6 +263,33 @@ export function resetOmniPresenceForTests(): void {
 }
 
 omniApi.get("/version", (c) => c.json({ api: OMNI_API_VERSION, minClient: OMNI_MIN_CLIENT }));
+
+/**
+ * Is the whole chain up? Asked on demand (one cheap Hermes call); nothing here is a secret.
+ *  - `hermes`: `ok`, or the error code a turn would end with (`hermes_unavailable`,
+ *    `hermes_auth`, `hermes_timeout`, `hermes_not_configured`).
+ *  - `hooks.ready`: the omni-bridge plugin CAN reach the hook routes — a service token is
+ *    set and the server trusts loopback (`TRUST_LOCAL`). False → proposals are refused.
+ *  - `executors`: who would send an approved draft of each kind, and whether it is on.
+ */
+omniApi.get("/health", async (c) => {
+  let state = "ok";
+  try {
+    await hermes.listSessions({ limit: 1 });
+  } catch (e) {
+    state = e instanceof HermesError ? e.code : "internal_error";
+  }
+  const token = omniConfig.serviceToken();
+  const hooks = { serviceToken: !!token && token.length >= 16, trustLocal: config.trustLocal };
+  return c.json({
+    api: OMNI_API_VERSION,
+    hermes: state,
+    hooks: { ...hooks, ready: hooks.serviceToken && hooks.trustLocal },
+    executors: Object.fromEntries(APPROVAL_KINDS.map((k) => [k, executorFor(k)])),
+    runningTurns: liveTurnCount(),
+    checkedAt: new Date().toISOString(),
+  });
+});
 
 omniApi.get("/threads", async (c) => {
   const states = (c.req.query("state") ?? "").split(",").filter(Boolean);
