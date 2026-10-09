@@ -7,7 +7,7 @@ import { humanCollabRevision } from "@prism/core/collab-commands";
 import { sendHumanCommand } from "./humanCommands";
 import { humanRevisionBody } from "../../../../packages/core/src/lib/collab/human/validation";
 import { PageCover, parseCover, coverPatch, COVER_GRADIENTS, type PageCoverValue } from "@prism/core";
-import { COLLAB_SCHEMA_VERSION, useAgentDocumentSnapshot, CollabEditor, CommentsSidebar, CommentsRowButton, collabAffordances, humanFailureText, HumanCommandFailure, PresenceAvatars, type CollabSocketScope, type CommentCommandActions, type HumanCommandChannel, CollabCodeEditor, CollabSpreadsheet, CollabCanvas, detectCodeLanguage, inferContentType, PageHeader, NotePropertyBar, PageProperties, renamePageFromTitle, useUIStore, useWritingFont, useAgentChatStore, type ContentFont, type Note, type Editor } from "@prism/core";
+import { COLLAB_SCHEMA_VERSION, useAgentDocumentSnapshot, CollabEditor, CommentsSidebar, CommentsRowButton, collabAffordances, humanFailureText, HumanCommandFailure, PresenceAvatars, type CollabSocketScope, type CommentCommandActions, type HumanCommandChannel, CollabCodeEditor, CollabSpreadsheet, CollabCanvas, detectCodeLanguage, inferContentType, PageHeader, NotePropertyBar, PageProperties, renamePageFromTitle, containerTitle, isContainerPath, useUIStore, useWritingFont, useAgentChatStore, type ContentFont, type Note, type Editor } from "@prism/core";
 import { MessageSquare, X, Lock } from "lucide-react";
 import { serverFetch, collabWsUrl, collabToken, isNative } from "../transport";
 import { apiBase, agentScope, getCapabilityToken, getActiveVault, getMe, fetchMe, contextHeaders } from "../config";
@@ -255,7 +255,8 @@ function ScopedCollabDoc({
     const done = await renamePageFromTitle(httpVaultClient, { id: noteId, path }, newName);
     if (!done || !mounted.current || agentScope() !== audience) return;
     setPath(done.path);
-    const name = done.path.split("/").pop() || newName.trim();
+    // A container-named page (`<folder>/PROJECT`): the title was stored as metadata, nothing moved.
+    const name = done.title ?? (done.path.split("/").pop() || newName.trim());
     setTitle(name);
     useUIStore.getState().renameTab(noteId, name);
     if (done.partial) {
@@ -414,7 +415,8 @@ function ScopedCollabDoc({
         setKind(k);
         if (k === "code") setLanguage(detectCodeLanguage(note.path ?? null, note.metadata ?? null));
         const filename = note.path?.split("/").pop() as string | undefined;
-        const titleMeta = typeof note.metadata?.title === "string" ? note.metadata.title : undefined;
+        // A container-named page (`<folder>/PROJECT`) is named by its title / name / folder, never by its file.
+        const titleMeta = (typeof note.metadata?.title === "string" ? note.metadata.title : undefined) || containerTitle(note.path ?? null, note.metadata ?? null) || undefined;
         // Prefer the note's explicit title / filename; fall back to a heading
         // derived from the body. (Content-only derivation left "Shared document"
         // whenever the body had no leading heading — or was collab HTML.)
@@ -730,6 +732,7 @@ function ScopedCollabDoc({
         {/* Header — shared page chrome, identical to the non-collab document view */}
         <PageHeader
           path={path}
+          title={isContainerPath(path) ? title : undefined}
           fallbackName={title}
           details={<NotePropertyBar noteId={noteId} readOnly={!canReview} fallback={<PageProperties path={path} />} />}
           onRename={canReview ? handleRename : undefined}

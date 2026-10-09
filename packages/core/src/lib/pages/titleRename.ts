@@ -10,7 +10,7 @@
  * A plain function (no hooks): the full-page share route has no providers.
  */
 import type { VaultClient } from "../../data/VaultClient";
-import { PagesRequestError, pageTitle, renamePath, type MoveResult } from "./model";
+import { PagesRequestError, isContainerPath, pageTitle, renamePath, type MoveResult } from "./model";
 import * as ops from "./ops";
 import { flushPendingSaves } from "../../app/hooks/useAutoSave";
 import { usePagesUI } from "./store";
@@ -82,6 +82,8 @@ export interface TitleRenameResult {
   path: string;
   /** Some sub-pages have not moved yet. */
   partial: boolean;
+  /** Set when the title was stored as `metadata.title` and nothing moved (a container-named page). */
+  title?: string;
   /** Present while `partial` and resumable: finishes the move (the toast's "Finish move"; hosts without toasts render their own button). */
   finish?: () => Promise<boolean>;
 }
@@ -91,6 +93,11 @@ export interface TitleRenameResult {
  * name is empty or unchanged). Throws {@link TitleRenameRefused} when the title
  * should go back, anything else when the typed title should stay for a retry.
  * `onChanged` runs after every confirmed write (also the "Finish move" action).
+ *
+ * A CONTAINER-NAMED page (`<folder>/PROJECT`, `containerTitle.ts`) is not named by its
+ * file: its title is stored as `metadata.title` and NOTHING moves — neither the file
+ * nor the folder (ingest, relations and wikilinks find the note at that path). The
+ * result then carries `title` and the unchanged `path`.
  */
 export async function renamePageFromTitle(
   client: VaultClient,
@@ -98,9 +105,21 @@ export async function renamePageFromTitle(
   newName: string,
   onChanged?: () => void,
 ): Promise<TitleRenameResult | null> {
+  const title = newName.trim();
+  if (isContainerPath(page.path)) {
+    if (!title) return null;
+    if (typeof navigator !== "undefined" && navigator.onLine === false) throw offlineRefusal();
+    try {
+      // A metadata-only write (merged by the vault): the body and the path are not sent.
+      await client.updateNote(page.id, { metadata: { title } });
+    } catch (e) {
+      throw refusalOf(e, title) ?? e;
+    }
+    onChanged?.();
+    return { path: page.path!, partial: false, title };
+  }
   const next = renamePath(page.path, newName);
   if (!next) return null;
-  const title = newName.trim();
   if (typeof navigator !== "undefined" && navigator.onLine === false) throw offlineRefusal();
   // What was just typed in the body goes first: a debounced autosave landing between our fresh
   // read and the move would make the move conflict with the page's own save.

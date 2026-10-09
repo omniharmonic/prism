@@ -11,7 +11,6 @@ const CalendarRenderer = lazy(() => import("./CalendarRenderer"));
 const CodeRenderer = lazy(() => import("./CodeRenderer"));
 const PresentationRenderer = lazy(() => import("./PresentationRenderer"));
 const TaskBoardRenderer = lazy(() => import("./TaskBoardRenderer"));
-const ProjectRenderer = lazy(() => import("./ProjectRenderer"));
 const SpreadsheetRenderer = lazy(() => import("./SpreadsheetRenderer"));
 const WebsiteRenderer = lazy(() => import("./WebsiteRenderer"));
 const DashboardRenderer = lazy(() => import("./DashboardRenderer"));
@@ -40,7 +39,9 @@ const RENDERER_MAP: Partial<Record<ContentType, React.LazyExoticComponent<Compon
   presentation: PresentationRenderer,
   task: DocumentRenderer,
   "task-board": TaskBoardRenderer,
-  project: ProjectRenderer,
+  // A project page is an ordinary document: body, title, properties (Phase 0). Its live
+  // Meetings / Tasks / Documents / People sections are a later phase.
+  project: DocumentRenderer,
   spreadsheet: SpreadsheetRenderer,
   website: WebsiteRenderer,
   dashboard: DashboardRenderer,

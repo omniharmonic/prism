@@ -30,7 +30,7 @@ import type { VaultEntry } from "./config";
 import { vaultClient } from "./parachute";
 import { setPageAnchorResolver, type NoteRef } from "./permissions";
 import { getVaultRegistry } from "./db";
-import { TRASH_TAG, TRASH_META, ORDER_KEY, LOCK_KEY } from "@prism/core/pages";
+import { TRASH_TAG, TRASH_META, ORDER_KEY, LOCK_KEY, isContainerPath } from "@prism/core/pages";
 
 /** Metadata keys the projection reads — the ONLY ones requested from the vault. */
 export const TREE_META_KEYS = [
@@ -43,6 +43,9 @@ export const TREE_META_KEYS = [
   // What `[[` / `@` suggestions match besides the path name (a page is often known by
   // a title or an alias that differs from its file name).
   "title",
+  // A container-named page (`<folder>/PROJECT`) with no title is named by `metadata.name`
+  // (`containerTitle`); read for those notes only, and emitted as their `title`.
+  "name",
   "aliases",
   "alias",
   // Pages (nested pages / trash): sibling order is emitted; trash state is internal
@@ -252,8 +255,10 @@ function rowFromNote(n: unknown): TreeRow | null {
   const order = m[ORDER_KEY];
   if (typeof order === "number" && Number.isFinite(order)) row.order = order;
   if (typeof m.icon === "string" && m.icon !== "" && m.icon.length <= ICON_MAX) row.icon = m.icon;
-  if (typeof m.title === "string" && m.title.length <= TITLE_MAX) {
-    const title = cleanText(m.title);
+  // A container-named page falls back to `metadata.name` (the same order as `containerTitle`).
+  const rawTitle = typeof m.title === "string" && m.title.trim() ? m.title : isContainerPath(row.path) && typeof m.name === "string" ? m.name : null;
+  if (rawTitle !== null && rawTitle.length <= TITLE_MAX) {
+    const title = cleanText(rawTitle);
     // A title that only repeats the file name tells a reader nothing new: not carried (tree size).
     if (title && !isFileName(title, row.path)) row.title = title;
   }

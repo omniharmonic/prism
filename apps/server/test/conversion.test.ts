@@ -651,11 +651,19 @@ test("M4 — store: a render that fails because of LOAD (timeout / busy / crash)
   assert.equal(vaultWrites().length, 1);
 });
 
+/** A paragraph somebody typed (an EMPTY one at the end of a page is the editor's own, not an edit). */
+function typedParagraph(text: string): Y.XmlElement {
+  const p = new Y.XmlElement("paragraph");
+  p.insert(0, [new Y.XmlText(text)]);
+  return p;
+}
+
 test("store: a document beyond what can be rendered at all is not written, not blocked and not retried — recorded as permanently unsaved until it shrinks", { timeout: 120_000 }, async () => {
   fv.put({ id: "n5", tags: ["garden"], content: "<p>small</p>", updatedAt: "2026-03-01T00:00:00.000Z" });
   const doc = await loadDocumentState("n5", new Y.Doc());
   const source = getDocState("n5")!.sourceUpdatedAt;
-  doc.getXmlFragment("default").insert(1, [new Y.XmlElement("paragraph")]);
+  // A real edit: an empty trailing paragraph alone is what every editor adds on open, and is not stored (`pristineDocs`).
+  doc.getXmlFragment("default").insert(1, [typedParagraph("more")]);
   restore.push(configureConversion({ inlineMaxNodes: 0, maxNodes: 1 }));
   await storeDocumentState("n5", doc);
   assert.deepEqual(vaultWrites(), []);
@@ -670,7 +678,7 @@ test("store: a document beyond what can be rendered at all is not written, not b
   // Once the page can be rendered again, the next store writes it and clears the record.
   restoreLimits();
   await storeDocumentState("n5", doc);
-  assert.equal(fv.notes.get("n5")!.content, "<p>small</p><p></p>");
+  assert.equal(fv.notes.get("n5")!.content, "<p>small</p><p>more</p>");
   assert.equal(getCollabUnsaved("n5", "primary"), null);
   assert.equal(getDocState("n5")!.ahead, false);
 });
@@ -678,7 +686,7 @@ test("store: a document beyond what can be rendered at all is not written, not b
 test("store: a busy converter is waited out — the note is written, nothing is flagged", { timeout: 120_000 }, async () => {
   fv.put({ id: "n6", tags: ["garden"], content: "<p>small</p>", updatedAt: "2026-03-01T00:00:00.000Z" });
   const other = await loadDocumentState("n6", new Y.Doc());
-  other.getXmlFragment("default").insert(1, [new Y.XmlElement("paragraph")]);
+  other.getXmlFragment("default").insert(1, [typedParagraph("more")]);
   await stopConversionWorkers();
   restore.push(configureConversion({ inlineMaxNodes: 0, threads: 1, maxQueue: 1, timeoutMs: 600, timeoutPerMbMs: 0, timeoutMaxMs: 600 }));
   const busyBefore = conversionStats.busy;
@@ -687,7 +695,7 @@ test("store: a busy converter is waited out — the note is written, nothing is 
   await Promise.all(hog);
   assert.ok(conversionStats.busy > busyBefore, "the converter really was saturated");
   assert.equal(isDocBlocked("n6"), false);
-  assert.equal(fv.notes.get("n6")!.content, "<p>small</p><p></p>", "stored once a slot was free");
+  assert.equal(fv.notes.get("n6")!.content, "<p>small</p><p>more</p>", "stored once a slot was free");
   await stopConversionWorkers();
 });
 

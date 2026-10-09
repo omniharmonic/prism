@@ -47,8 +47,9 @@ const KNOWN_TYPES = new Set<string>([
 // `precedence` (lower = higher priority).
 // NOTE: "project" is intentionally lower-priority than document subtypes — the
 // "project" tag is often used organizationally ("belongs to X project"), not
-// structurally ("IS a project definition"). Only use ProjectRenderer when no more
-// specific type is present. This is encoded as a high `precedence` in the JSON.
+// structurally ("IS a project definition"). This is encoded as a high `precedence`
+// in the JSON. A "project" note renders on the ordinary document surface
+// (Registry.ts) and is live-editable as a document (`LIVE_COLLAB_TYPES` below).
 const TAG_TO_CONTENT_TYPE: [string, ContentType][] = Object.entries(
   (tagSchemas as unknown as { tags: Record<string, TagSchemaEntry> }).tags
 )
@@ -222,3 +223,14 @@ export const CONTENT_TYPE_LABELS: Record<ContentType, string> = {
   "bioregion-entity": "Bioregion Entity",
   database: "Database",
 };
+
+/**
+ * The content types that open in the live collaborative editor where the shell has
+ * one (Canvas.tsx, RowPeek.tsx). The collab KIND of each is decided separately and
+ * identically on both sides — `detectKind` (apps/web CollabDoc) and the server's
+ * `noteKind` both collapse `inferContentType` to canvas | code | spreadsheet, and
+ * everything else (so `task` and `project` too) is a `document` persisted as HTML.
+ * Adding a type here never changes how a note is stored; a type whose renderer is
+ * not a document/code/sheet/canvas editor must NOT be added.
+ */
+export const LIVE_COLLAB_TYPES: ReadonlySet<string> = new Set(["document", "task", "project", "code", "spreadsheet", "canvas"]);

@@ -4,6 +4,7 @@ import { BubbleMenu } from "@tiptap/react/menus";
 import { SelectionActions } from "./SelectionActions";
 import { useAgentClient } from "../../data/AgentClientContext";
 import { useEditor, EditorContent } from "@tiptap/react";
+import { getHTMLFromFragment } from "@tiptap/core";
 import { useUIStore } from "../../app/stores/ui";
 import { useWritingFont } from "../../app/stores/settings";
 import { useNotes } from "../../app/hooks/useParachute";
@@ -41,6 +42,7 @@ import { useVaultClient } from "../../data/VaultClientContext";
 import { ChildPages } from "../../lib/tiptap/childPage";
 import { createSubPage, describeSubPage, subPageTrash } from "../../lib/tiptap/subPages";
 import { renamePageFromTitle } from "../../lib/pages/titleRename";
+import { containerTitle } from "../../lib/pages/containerTitle";
 import { queryKeys } from "../../lib/parachute/queries";
 import { useQueryClient } from "@tanstack/react-query";
 import { EditorFindBar } from "./EditorFindBar";
@@ -70,6 +72,8 @@ import "./editor-blocks.css";
 import { useRemoteUpdateHost, REMOTE_UPDATED, REMOTE_DRAFT_KEPT } from "../layout/RemoteUpdate";
 
 import { formatTime as fmtTime } from "../../lib/datetime/format";
+const withoutTrailingEmptyParagraphs = (html: string): string => html.replace(/(?:<p><\/p>)+$/, "");
+
 export default function DocumentRenderer({ note, onMetadataChange, readOnly }: RendererProps) {
   // ── P4 governed-editing gate (WEB, NON-OWNER ONLY) ────────────────────────
   // `reviewMode` reads the gateway's `_caps` annotation, which the Prism Server
@@ -141,8 +145,14 @@ export default function DocumentRenderer({ note, onMetadataChange, readOnly }: R
     if (readOnly || governed) return; // read-only surface / no edit access: never rename/persist
     const refresh = () => { void renameClient.invalidateQueries({ queryKey: queryKeys.vault.all }); };
     const done = await renamePageFromTitle(vaultClient, { id: note.id, path: note.path }, newName, refresh);
-    if (done) renameTab(note.id, done.path.split("/").pop() || newName.trim());
+    if (!done) return;
+    // A container-named page (`<folder>/PROJECT`): the title was stored, nothing moved.
+    if (done.title) setStoredTitle({ id: note.id, title: done.title });
+    renameTab(note.id, done.title ?? (done.path.split("/").pop() || newName.trim()));
   }, [note.path, note.id, vaultClient, renameClient, renameTab, readOnly, governed]);
+  // The title just stored for THIS page, shown until the re-read note carries it.
+  const [storedTitle, setStoredTitle] = useState<{ id: string; title: string } | null>(null);
+  const headerTitle = (storedTitle?.id === note.id ? storedTitle.title : null) ?? containerTitle(note.path, note.metadata);
 
   // Wikilink navigation (shared with the collaborative editors).
   const handleWikilinkNavigate = useWikilinkNavigate();
@@ -290,6 +300,8 @@ export default function DocumentRenderer({ note, onMetadataChange, readOnly }: R
   // Editing stays LOCAL in "propose" mode — that is the point: type your change,
   // then submit it. Only "read-only" (view/comment caps) locks the editor.
   const notEditable = readOnly || mode === "read-only";
+  /** Per editor instance: what it held when it was created (trailing empty paragraphs aside); null once the page was edited. */
+  const pristineHtml = useRef(new WeakMap<object, string | null>());
 
   const editor = useEditor({
     extensions,
@@ -304,8 +316,25 @@ export default function DocumentRenderer({ note, onMetadataChange, readOnly }: R
         class: "prose-editor outline-none min-h-[200px]",
       },
     },
-    onUpdate: ({ editor }) => {
-      contentRef.current = editor.getHTML();
+    onUpdate: ({ editor, transaction }) => {
+      const html = editor.getHTML();
+      // Opening a page is not an edit. The editor appends an empty paragraph after a body
+      // that ends in a list, a table or a quote (TipTap's trailing node), and that arrives
+      // here as an update: saved, it rewrote the note — Markdown became HTML, with a new
+      // history version — though nobody had typed. Until the document really differs from
+      // what this editor was created with, nothing is scheduled. (The live editor's twin:
+      // `pristineDocs`, apps/server collab.ts.)
+      let pristine = pristineHtml.current.get(editor);
+      if (pristine === undefined) {
+        // The first change of this editor: what it held before it is the loaded page.
+        pristine = withoutTrailingEmptyParagraphs(getHTMLFromFragment(transaction.before.content, editor.schema));
+        pristineHtml.current.set(editor, pristine);
+      }
+      if (pristine !== null) {
+        if (withoutTrailingEmptyParagraphs(html) === pristine) return;
+        pristineHtml.current.set(editor, null); // edited: every change from here on is saved
+      }
+      contentRef.current = html;
       scheduleSave();
     },
   }, [initialHtml]); // Re-create editor when initialHtml changes
@@ -324,7 +353,7 @@ export default function DocumentRenderer({ note, onMetadataChange, readOnly }: R
     if (editor) editor.setEditable(!notEditable, false);
   }, [editor, notEditable]);
 
-  useAgentDocumentSnapshot(editor, note.id, note.path?.split("/").pop() || "Untitled", note.updatedAt);
+  useAgentDocumentSnapshot(editor, note.id, headerTitle || note.path?.split("/").pop() || "Untitled", note.updatedAt);
 
   // Agent write-back: watch for pending edits from PanelChat via Zustand store
   const pendingEdit = useUIStore((s) => s.pendingEdit);
@@ -483,6 +512,7 @@ export default function DocumentRenderer({ note, onMetadataChange, readOnly }: R
         <div className="document-writing-measure">
           <PageHeader
             path={note.path}
+            title={headerTitle}
             details={(() => {
               const pageDetails = <PageProperties path={note.path} tags={note.tags ?? []} updatedAt={note.updatedAt} onOpenAll={() => useUIStore.setState({contextPanelOpen:true,contextPanelTab:"metadata"})}/>;
               // Published / anonymous surfaces keep the plain details: page metadata is not published.

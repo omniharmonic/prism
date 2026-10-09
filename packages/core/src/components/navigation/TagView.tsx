@@ -1,4 +1,5 @@
 import { Tag, FileText, Code, CheckSquare, Globe, Table2, Presentation } from "lucide-react";
+import { containerTitle } from "../../lib/pages/containerTitle";
 import { useNotes } from "../../app/hooks/useParachute";
 import { useUIStore } from "../../app/stores/ui";
 import { inferContentType, CONTENT_TYPE_LABELS } from "../../lib/schemas/content-types";
@@ -27,7 +28,7 @@ export function TagView({ tag }: TagViewProps) {
 
   const handleOpenNote = (note: Note) => {
     const type = inferContentType(note);
-    const title = note.path?.split("/").pop() || note.id;
+    const title = containerTitle(note.path, note.metadata) || note.path?.split("/").pop() || note.id;
     openTab(note.id, title, type);
   };
 
@@ -75,7 +76,7 @@ export function TagView({ tag }: TagViewProps) {
             {notes.map((note) => {
               const type = inferContentType(note as never);
               const Icon = TYPE_ICONS[type] || FileText;
-              const title = note.path?.split("/").pop() || note.content?.slice(0, 60) || note.id;
+              const title = containerTitle(note.path, note.metadata) || note.path?.split("/").pop() || note.content?.slice(0, 60) || note.id;
               const date = note.updatedAt || note.createdAt;
 
               return (

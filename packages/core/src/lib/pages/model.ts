@@ -26,6 +26,9 @@ import { cleanCopyBody, repointWikilinks } from "./copyBody";
 import { INGEST_TAGS } from "../database/schema";
 import { inferContentType } from "../schemas/content-types";
 import { sanitizeRegion, type StoredRegion } from "../datetime/preferences";
+import { containerTitle } from "./containerTitle";
+
+export { containerFolder, containerTitle, humanizeSlug, isContainerPath } from "./containerTitle";
 
 export const TRASH_TAG = "prism-trashed";
 export const TRASH_META = {
@@ -168,8 +171,14 @@ export function fileExtension(name: string): string {
 /** A file name without its (known) extension. */
 export const withoutExtension = (name: string): string => name.slice(0, name.length - fileExtension(name).length);
 
-export const pageTitle = (path: string | null | undefined): string =>
-  (path ? withoutExtension(leafName(path)) : "") || "Untitled";
+/**
+ * The name a page is shown by. A container-named note (`<folder>/PROJECT`, see
+ * `containerTitle.ts`) is named by `metadata.title` / `metadata.name` / its folder;
+ * every other page by its file name. Pass `metadata` where the caller has it — without
+ * it a container-named note still gets its folder's name, never the word "PROJECT".
+ */
+export const pageTitle = (path: string | null | undefined, metadata?: Record<string, unknown> | null): string =>
+  containerTitle(path, metadata) ?? ((path ? withoutExtension(leafName(path)) : "") || "Untitled");
 
 /**
  * Where a page lands when moved under `parent` ("" = top level). Top level keeps

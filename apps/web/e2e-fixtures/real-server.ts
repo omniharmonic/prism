@@ -20,7 +20,7 @@ export interface RealServer {
   port: number;
   sessions: Record<"owner" | "sam" | "eve" | "gina", string>;
   /** Read a fake-vault note as the server holds it. */
-  note(id: string): Promise<{ id: string; content: string; metadata: Record<string, unknown> | null } | null>;
+  note(id: string): Promise<{ id: string; path?: string | null; content: string; metadata: Record<string, unknown> | null } | null>;
   /** Replace a note's body in the fake vault, as an external writer would (a newer version). */
   put(id: string, content: string): Promise<void>;
   /** Seed one more note in the fake vault (a NEW id; the shared seed is never changed). */

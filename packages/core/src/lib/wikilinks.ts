@@ -1,5 +1,6 @@
 /** Shared by interactive navigation, single-note linking and the server batch job. */
 import { decodeHTML } from "entities";
+import { containerTitle } from "./pages/containerTitle";
 export interface LinkableNote {
   id: string;
   path: string | null;
@@ -13,8 +14,14 @@ export function noteAliases(note: LinkableNote): string[] {
   const raw = note.metadata?.aliases ?? note.metadata?.alias;
   return (Array.isArray(raw) ? raw : [raw]).filter((s): s is string => typeof s === "string" && !!s.trim());
 }
-export function noteLinkTitle(note: LinkableNote): string {
+/** What `[[Title]]` resolves by. Kept exactly as it was: changing it would make links resolve differently. */
+function linkKeyTitle(note: LinkableNote): string {
   return (typeof note.metadata?.title === "string" ? note.metadata.title : note.displayTitle) || note.path?.split("/").pop() || note.id;
+}
+/** The name a note is SHOWN by (tabs, link chips, mention menus). A container-named note
+ *  (`<folder>/PROJECT`) is named by its title / name / folder — see `pages/containerTitle.ts`. */
+export function noteLinkTitle(note: LinkableNote): string {
+  return (typeof note.metadata?.title === "string" ? note.metadata.title : note.displayTitle) || containerTitle(note.path, note.metadata) || note.path?.split("/").pop() || note.id;
 }
 export function parseWikilinks(content: string): { links: string[]; balanced: boolean } {
   // TipTap stores HTML; resolve its visible text, not tag attributes or encoded
@@ -47,7 +54,7 @@ export function buildWikilinkIndex<T extends LinkableNote>(notes: T[]): Wikilink
       add(index.titles,fold(note.path.split("/").pop()!),note);
     }
     for (const alias of noteAliases(note)) add(index.aliases,fold(alias),note);
-    add(index.titles,fold(noteLinkTitle(note)),note);
+    add(index.titles,fold(linkKeyTitle(note)),note);
   }
   return index;
 }

@@ -8,12 +8,20 @@ for (const kind of ["website", "presentation", "dashboard"]) {
   expect(await page.evaluate(()=>(window as any).prismRendererFixture.writes)).toEqual([]);
  });
 }
-test("project related notes use a path boundary and open actual records",async({page})=>{
+// Phase 0 (project pages): a `project` note is an ordinary document. The old renderer listed
+// "related" notes by downloading the whole vault; there are no such sections yet (Phase 2).
+test("a project note renders as a document and does not download the vault to draw itself",async({page})=>{
  await page.goto("/e2e-fixtures/renderer-preservation.html?kind=project");
- await expect(page.getByRole("button",{name:"Brief",exact:true})).toBeVisible();
- await expect(page.getByRole("button",{name:"Unrelated",exact:true})).toHaveCount(0);
- await page.getByRole("button",{name:"Review todo"}).click();
- expect(await page.evaluate(()=>(window as any).prismRendererFixture.open().at(-1).noteId)).toBe("task-a");
+ await expect(page.locator(".tiptap h1",{hasText:"Prism"})).toBeVisible();
+ await expect(page.locator(".tiptap")).toContainText("A fictional launch project.");
+ expect(await page.locator(".tiptap").evaluate(el=>(el as HTMLElement).innerText)).not.toMatch(/^#/m);
+ await expect(page.getByRole("button",{name:"Brief",exact:true})).toHaveCount(0);
+ await expect(page.getByText(/Tasks\s*\(|Documents\s*\(/)).toHaveCount(0);
+ await page.waitForTimeout(500);
+ // No unfiltered list of every note (the old page's `useNotes()`).
+ const reads=await page.evaluate(()=>(window as any).prismRendererFixture.reads as Array<{tag?:string;path?:string}|undefined>);
+ expect(reads.filter(r=>!r||(!r.tag&&!r.path))).toEqual([]);
+ expect(await page.evaluate(()=>(window as any).prismRendererFixture.writes)).toEqual([]);
 });
 test("map reports unavailable reads instead of claiming there are no locations",async({page})=>{
  await page.goto("/e2e-fixtures/renderer-preservation.html?kind=map&fail");
