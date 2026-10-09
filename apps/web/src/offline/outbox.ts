@@ -1,5 +1,6 @@
 /** Scoped, durable writes. A conflict or unknown outcome is NEVER forced/retried. */
 import { serverFetch } from "../transport";
+import { idbRetry } from "./idbRetry";
 import {
   captureWriteContext,
   sameScope,
@@ -54,10 +55,24 @@ const DB_NAME = "prism-web";
 const STORE = "outbox";
 const MAPPINGS = "note-ids";
 let database: Promise<IDBDatabase> | undefined;
+/** Forget the connection (and close it if it ever opened): the next call opens a new one. */
+function dropConnection(): void {
+  const stale = database;
+  database = undefined;
+  void stale?.then((db) => db.close(), () => undefined).catch(() => undefined);
+}
+/**
+ * One unit of storage work on the shared connection. A connection the browser has closed
+ * under us (iOS: the storage process restarted while the app was in the background) is
+ * replaced and the unit run again — see `idbRetry`. The final failure is the caller's.
+ */
+function withDb<T>(run: (db: IDBDatabase) => Promise<T>): Promise<T> {
+  return idbRetry(async () => run(await openDb()), dropConnection);
+}
 
 function openDb(): Promise<IDBDatabase> {
-  if (!database)
-    database = new Promise((resolve, reject) => {
+  if (database) return database;
+  database = new Promise((resolve, reject) => {
       const request = indexedDB.open(DB_NAME, 2);
       request.onupgradeneeded = () => {
         const db = request.result;
@@ -84,6 +99,10 @@ function openDb(): Promise<IDBDatabase> {
           request.result.close();
           database = undefined;
         };
+        // The browser closed the connection itself (storage process gone): open a new one next time.
+        request.result.onclose = () => {
+          database = undefined;
+        };
         resolve(request.result);
       };
       request.onerror = () => {
@@ -95,6 +114,9 @@ function openDb(): Promise<IDBDatabase> {
         reject(new Error("Close older Prism tabs to upgrade offline storage."));
       };
     });
+  // A refused open (however it is reported) is never kept: the next call opens again.
+  const opening = database;
+  opening.catch(() => { if (database === opening) database = undefined; });
   return database;
 }
 
@@ -103,16 +125,15 @@ async function transaction<T>(
   mode: IDBTransactionMode,
   run: (store: IDBObjectStore) => IDBRequest<T>,
 ): Promise<T> {
-  const db = await openDb();
-  return new Promise((resolve, reject) => {
+  return withDb((db) => new Promise((resolve, reject) => {
     const tx = db.transaction(STORE, mode);
     const request = run(tx.objectStore(STORE));
     tx.oncomplete = () => resolve(request.result);
-    tx.onerror = tx.onabort = () =>
+    tx.onabort = () =>
       reject(
         tx.error ?? new Error("Could not save this change on this device."),
       );
-  });
+  }));
 }
 const subscribers = new Set<() => void>();
 export function subscribe(fn: () => void): () => void {
@@ -173,9 +194,8 @@ export function retrySafe(item: Pick<QueuedWrite, "method" | "path" | "body" | "
 let staleSendingMs = 35_000; // > the 30 s request timeout, so a live sender is never pre-empted
 export function setStaleSendingMsForTests(ms: number): void { staleSendingMs = ms; }
 export async function recoverInterrupted(): Promise<void> {
-  const db = await openDb();
   let changed = false;
-  await new Promise<void>((resolve, reject) => {
+  await withDb((db) => new Promise<void>((resolve, reject) => {
     const tx = db.transaction(STORE, "readwrite");
     const cursor = tx.objectStore(STORE).openCursor();
     cursor.onsuccess = () => {
@@ -192,8 +212,8 @@ export async function recoverInterrupted(): Promise<void> {
       row.continue();
     };
     tx.oncomplete = () => resolve();
-    tx.onerror = tx.onabort = () => reject(tx.error);
-  });
+    tx.onabort = () => reject(tx.error);
+  }));
   if (changed) notify();
 }
 export async function visibleWrites(): Promise<QueuedWrite[]> {
@@ -253,8 +273,7 @@ export async function discardAllCurrent(): Promise<void> {
 export async function discard(id: number): Promise<void> {
   let discardedNote: string | null = null;
   const context = await captureWriteContext();
-  const db = await openDb();
-  await new Promise<void>((resolve, reject) => {
+  await withDb((db) => new Promise<void>((resolve, reject) => {
     const tx = db.transaction(STORE, "readwrite");
     const store = tx.objectStore(STORE);
     const request = store.get(id);
@@ -279,9 +298,9 @@ export async function discard(id: number): Promise<void> {
       };
     };
     tx.oncomplete = () => resolve();
-    tx.onerror = tx.onabort = () =>
+    tx.onabort = () =>
       reject(new Error(reason || "Could not remove the saved change."));
-  });
+  }));
   notify();
   // The open editor may still hold the discarded text: have the app reload the
   // page from the server so the next save is built on what is really there.
@@ -336,8 +355,7 @@ export async function enqueue(
   // row for the note, still `queued` and of the same shape, is folded into —
   // never one that is being sent or awaits review.
   const foldable = fresh.state === "queued" && patch && !("path" in patch) && (options.kind === "meta" || contentOnly(patch));
-  const db = await openDb().catch(storageFailed);
-  await new Promise<void>((resolve, reject) => {
+  await withDb((db) => new Promise<void>((resolve, reject) => {
     const tx = db.transaction(STORE, "readwrite");
     const store = tx.objectStore(STORE);
     if (!foldable) { store.add(fresh); }
@@ -357,8 +375,8 @@ export async function enqueue(
       };
     }
     tx.oncomplete = () => resolve();
-    tx.onerror = tx.onabort = () => reject(tx.error ?? new Error("Could not save this change on this device."));
-  }).catch(storageFailed);
+    tx.onabort = () => reject(tx.error ?? new Error("Could not save this change on this device."));
+  })).catch(storageFailed);
   void navigator.storage?.persist?.().catch(() => false); // ask the browser not to evict unsent work
   notify();
   if (fresh.nextAttemptAt) scheduleFlush(fresh.nextAttemptAt - Date.now()); // the caller flushes ordinary rows
@@ -367,8 +385,7 @@ export async function enqueue(
 /** Atomically take a row for sending. Returns the row AS STORED at that instant —
  *  the only thing that may be sent (review C1: never a snapshot read earlier). */
 async function claim(id: number): Promise<QueuedWrite | undefined> {
-  const db = await openDb();
-  return new Promise((resolve, reject) => {
+  return withDb((db) => new Promise((resolve, reject) => {
     const tx = db.transaction(STORE, "readwrite");
     const store = tx.objectStore(STORE);
     const request = store.get(id);
@@ -380,12 +397,11 @@ async function claim(id: number): Promise<QueuedWrite | undefined> {
       store.put(claimed);
     };
     tx.oncomplete = () => resolve(claimed);
-    tx.onerror = tx.onabort = () => reject(tx.error);
-  });
+    tx.onabort = () => reject(tx.error);
+  }));
 }
 async function mappings(scope: WriteScope): Promise<Map<string, IdMapping>> {
-  const db = await openDb();
-  return new Promise((resolve, reject) => {
+  return withDb((db) => new Promise((resolve, reject) => {
     const tx = db.transaction(MAPPINGS, "readonly");
     const request = tx.objectStore(MAPPINGS).getAll();
     tx.oncomplete = () =>
@@ -396,8 +412,8 @@ async function mappings(scope: WriteScope): Promise<Map<string, IdMapping>> {
             .map((r) => [r.key.slice(scopeKey(scope).length + 1), r]),
         ),
       );
-    tx.onerror = tx.onabort = () => reject(tx.error);
-  });
+    tx.onabort = () => reject(tx.error);
+  }));
 }
 export async function resolveLocalNoteId(id: string): Promise<string> {
   if (!id.startsWith("offline-")) return id;
@@ -560,8 +576,7 @@ async function confirm(item: QueuedWrite, result: Delivered): Promise<void> {
     );
   const ownBase = parse(item.body).if_updated_at as string | undefined;
   const from = new Set([ownBase, ...(result.from ?? [])].filter((v): v is string => typeof v === "string" && !!v));
-  const db = await openDb();
-  await new Promise<void>((resolve, reject) => {
+  await withDb((db) => new Promise<void>((resolve, reject) => {
     const tx = db.transaction([STORE, MAPPINGS], "readwrite");
     if (temporaryId && (noteId || result.updatedAt)) {
       const key = `${scopeKey(item.scope!)}:${temporaryId}`;
@@ -597,8 +612,8 @@ async function confirm(item: QueuedWrite, result: Delivered): Promise<void> {
       };
     };
     tx.oncomplete = () => resolve();
-    tx.onerror = tx.onabort = () => reject(tx.error);
-  });
+    tx.onabort = () => reject(tx.error);
+  }));
   const key = noteId ?? (originalId.startsWith("offline-") ? undefined : originalId);
   if (result.updatedAt && key && item.scope) rememberRevision(item.scope, key, [...from], result.updatedAt);
   notify();
@@ -839,8 +854,7 @@ export async function resolveConflict(
   if (!revision) throw new Error("A current revision is required.");
   const patch = JSON.parse(body) as Record<string, unknown>;
   delete patch.force;
-  const db = await openDb();
-  await new Promise<void>((resolve, reject) => {
+  await withDb((db) => new Promise<void>((resolve, reject) => {
     const tx = db.transaction(STORE, "readwrite");
     const store = tx.objectStore(STORE);
     const request = store.get(id);
@@ -872,7 +886,7 @@ export async function resolveConflict(
       });
     };
     tx.oncomplete = () => resolve();
-    tx.onerror = tx.onabort = () =>
+    tx.onabort = () =>
       reject(
         new Error(
           invalid
@@ -880,7 +894,7 @@ export async function resolveConflict(
             : "Could not save the reviewed change.",
         ),
       );
-  });
+  }));
   notify();
   await flush();
 }
@@ -935,8 +949,7 @@ export async function retainDraft(noteId: string, content: string, scope: WriteS
     : "Your workspace or access changed. This draft is saved only on this device. Review it in the original workspace before applying it.";
   const path = `/notes/${encodeURIComponent(noteId)}`;
   const body = JSON.stringify({ content });
-  const db = await openDb().catch(storageFailed);
-  await new Promise<void>((resolve, reject) => {
+  await withDb((db) => new Promise<void>((resolve, reject) => {
     const tx = db.transaction(STORE, "readwrite");
     const store = tx.objectStore(STORE);
     const add = () => store.add({ version: 2, operationId: crypto.randomUUID(), scope, method: "PATCH", path, body, queuedAt: Date.now(), state, detail } satisfies QueuedWrite);
@@ -949,7 +962,7 @@ export async function retainDraft(noteId: string, content: string, scope: WriteS
       if (item.state !== state || item.method !== "PATCH" || item.body !== body) add();
     };
     tx.oncomplete = () => resolve();
-    tx.onerror = tx.onabort = () => reject(tx.error ?? Error("Draft could not be saved on this device."));
-  }).catch(storageFailed);
+    tx.onabort = () => reject(tx.error ?? Error("Draft could not be saved on this device."));
+  })).catch(storageFailed);
   notify();
 }

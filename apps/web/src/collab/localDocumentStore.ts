@@ -5,6 +5,7 @@
  * Reading or writing a document's CRDT state is `localDocument.ts`.
  */
 import { scopeKey, type WriteScope } from "../offline/writeScope";
+import { idbRetry } from "../offline/idbRetry";
 
 export type LocalSaveState = "saving" | "saved" | "unavailable";
 const DATABASE = "prism-collab-v3";
@@ -43,7 +44,12 @@ export function readPending(key: string): { raw: string; update: Uint8Array } | 
     return raw ? { raw, update: fromBase64(raw) } : null;
   } catch { return null; }
 }
+/** Opens a NEW connection each time. A refusal that passes (iOS resuming from the background,
+ *  the storage process restarting) is tried again before it is reported (`idbRetry`). */
 export function openDatabase(): Promise<IDBDatabase> {
+  return idbRetry(openOnce, () => undefined);
+}
+function openOnce(): Promise<IDBDatabase> {
   return new Promise<IDBDatabase>((resolve, reject) => {
     const request = indexedDB.open(DATABASE, 1);
     request.onupgradeneeded = () => request.result.createObjectStore("documents");
@@ -63,24 +69,29 @@ export async function purgeLocalDocuments(scopes: (scopeKey: string) => boolean,
   const kept = new Set<string>();
   const purgedScopes = new Set<string>();
   try {
-    const db = await openDatabase();
-    try {
-      const transaction = db.transaction("documents", "readwrite");
-      const done = transactionDone(transaction);
-      const store = transaction.objectStore("documents");
-      const keys = await new Promise<IDBValidKey[]>((resolve, reject) => { const r = store.getAllKeys(); r.onsuccess = () => resolve(r.result); r.onerror = () => reject(r.error); });
-      for (const key of keys) {
-        if (typeof key !== "string") continue;
-        const [scope, name] = parts(key);
-        if (!scopes(scope)) continue;
-        purgedScopes.add(tag(scope));
-        if (keep(scope, name)) { kept.add(pendingStorageKey(key)); continue; }
-        store.delete(key);
-        removed++;
-      }
-      await done;
-    } finally { db.close(); }
-  } catch { /* storage unavailable: nothing to remove */ }
+    // One attempt = one connection + one transaction (an aborted one removed nothing), so a
+    // refusal that passes does not leave another account's documents on the device.
+    await idbRetry(async () => {
+      removed = 0;
+      const db = await openOnce();
+      try {
+        const transaction = db.transaction("documents", "readwrite");
+        const done = transactionDone(transaction);
+        const store = transaction.objectStore("documents");
+        const keys = await new Promise<IDBValidKey[]>((resolve, reject) => { const r = store.getAllKeys(); r.onsuccess = () => resolve(r.result); r.onerror = () => { reject(r.error); }; });
+        for (const key of keys) {
+          if (typeof key !== "string") continue;
+          const [scope, name] = parts(key);
+          if (!scopes(scope)) continue;
+          purgedScopes.add(tag(scope));
+          if (keep(scope, name)) { kept.add(pendingStorageKey(key)); continue; }
+          store.delete(key);
+          removed++;
+        }
+        await done;
+      } finally { db.close(); }
+    }, () => undefined);
+  } catch { removed = 0; /* storage unavailable: nothing was removed */ }
   return removed + purgePending((scopeTag) => purgedScopes.has(scopeTag), kept);
 }
 /** Remove rescue entries of the selected scope tags, except `kept` keys. */
@@ -108,15 +119,22 @@ export function purgePendingForScope(scopeKey: string, keepKeys: string[]): void
  * "nothing to keep" (it is about to delete this state).
  */
 export async function exportLocalDocumentRaw(key: string): Promise<{ state: string | null; pending: string | null }> {
-  const db = await openDatabase();
-  try {
-    const stored = await new Promise<Uint8Array | undefined>((resolve, reject) => {
-      const request = db.transaction("documents").objectStore("documents").get(key);
-      request.onsuccess = () => resolve(request.result);
-      request.onerror = () => reject(request.error);
-    });
-    return { state: stored ? toBase64(stored) : null, pending: readPending(key)?.raw ?? null };
-  } finally { db.close(); }
+  const stored = await readStoredDocument(key);
+  return { state: stored ? toBase64(stored) : null, pending: readPending(key)?.raw ?? null };
+}
+/** The stored CRDT state of one document, on a connection of its own. A read that fails for a
+ *  moment is tried again; THROWS when storage really cannot be read (never "nothing stored"). */
+export function readStoredDocument(key: string): Promise<Uint8Array | undefined> {
+  return idbRetry(async () => {
+    const db = await openOnce();
+    try {
+      return await new Promise<Uint8Array | undefined>((resolve, reject) => {
+        const request = db.transaction("documents").objectStore("documents").get(key);
+        request.onsuccess = () => resolve(request.result);
+        request.onerror = () => reject(request.error);
+      });
+    } finally { db.close(); }
+  }, () => undefined);
 }
 /** No credentials or unscoped legacy state. Call only after checking document access. */
 export function localDocumentKey(scope: WriteScope, documentName: string): string {
@@ -125,6 +143,7 @@ export function localDocumentKey(scope: WriteScope, documentName: string): strin
 export function transactionDone(transaction: IDBTransaction): Promise<void> {
   return new Promise((resolve, reject) => {
     transaction.oncomplete = () => resolve();
-    transaction.onerror = transaction.onabort = () => reject(transaction.error ?? new Error("Local save failed"));
+    // Only `abort` carries the transaction's error (it is still null while a request's error bubbles).
+    transaction.onabort = () => reject(transaction.error ?? new Error("Local save failed"));
   });
 }
