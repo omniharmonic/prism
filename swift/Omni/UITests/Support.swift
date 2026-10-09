@@ -292,19 +292,25 @@ class OmniUITestCase: XCTestCase {
         #endif
     }
 
-    /// Scroll the thread list until the element can be tapped.
+    /// Scroll the thread list until the element can be tapped: a third of a screen at a
+    /// time, so a row cannot be jumped over or left under the tab bar.
     func reveal(_ target: XCUIElement) {
+        func ready() -> Bool { target.exists && target.isHittable }
+        func drag(_ from: CGFloat, _ to: CGFloat) {
+            let list = threadList
+            guard list.exists else { return }
+            let start = list.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: from))
+            start.press(forDuration: 0.05, thenDragTo: list.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: to)), withVelocity: .slow, thenHoldForDuration: 0.1)
+        }
         var tries = 0
-        while !(target.exists && target.isHittable), tries < 10 {
-            threadList.swipeUp()
+        while !ready(), tries < 14 {
+            drag(0.65, 0.35)
             tries += 1
         }
-        if !(target.exists && target.isHittable) {
-            tries = 0
-            while !(target.exists && target.isHittable), tries < 12 {
-                threadList.swipeDown()
-                tries += 1
-            }
+        tries = 0
+        while !ready(), tries < 28 {
+            drag(0.35, 0.65)
+            tries += 1
         }
     }
 
@@ -315,6 +321,11 @@ class OmniUITestCase: XCTestCase {
         reveal(row)
         guard wait(row, 10, "the thread's row", file: file, line: line) else { return }
         row.tap()
+        // The row was under a bar, or the list was still moving: once more.
+        if Run.usesTabs, !app.navigationBars.buttons.element(boundBy: 0).waitForExistence(timeout: 3) || app.navigationBars["Threads"].exists {
+            reveal(row)
+            if row.exists, row.isHittable { row.tap() }
+        }
     }
 
     func startNewThread() {

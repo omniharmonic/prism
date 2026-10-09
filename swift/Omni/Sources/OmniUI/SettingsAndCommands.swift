@@ -33,10 +33,11 @@ public struct SettingsView: View {
             Section {
                 Text("Omni \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "dev"). Models are chosen on the server, not here.")
                     .font(.footnote)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.quietText)
             }
         }
         .formStyle(.grouped)
+        .tint(Color.omniAccent)
         .confirmationDialog("Sign out of Omni on this device?", isPresented: $confirmingSignOut, titleVisibility: .visible) {
             Button("Sign Out", role: .destructive) { Task { await app.signOut() } }
             Button("Cancel", role: .cancel) {}
@@ -73,15 +74,11 @@ struct DiagnosticsSection: View {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 3) {
                         if log.entries.isEmpty {
-                            Text("No requests yet.").foregroundStyle(.secondary)
+                            Text("No requests yet.").foregroundStyle(Color.quietText)
                         }
                         ForEach(log.entries) { entry in
-                            // One line where it fits (a phone at ordinary text sizes, the Mac);
-                            // wrapped, never cut, where it does not.
-                            ViewThatFits(in: .horizontal) {
-                                Text(entry.line).lineLimit(1).fixedSize()
-                                Text(entry.line)
-                            }
+                            // Wrapped where it does not fit, never cut; it grows with the text size.
+                            Text(entry.line)
                             .foregroundStyle(entry.isFailure ? AnyShapeStyle(Color.failureText) : AnyShapeStyle(.primary))
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .id(entry.id)
@@ -111,7 +108,7 @@ struct DiagnosticsSection: View {
                 Spacer()
                 Text(log.failureCount == 0 ? "\(log.entries.count) lines" : "\(log.entries.count) lines, \(log.failureCount) failed")
                     .font(.footnote)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.quietText)
             }
         } header: {
             Text("Diagnostics")

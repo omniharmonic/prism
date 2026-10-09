@@ -37,7 +37,7 @@ struct ThreadView: View {
                     Label(ThreadGrouping.title(for: thread.state), systemImage: StateStyle.symbol(thread.state))
                         .labelStyle(.titleAndIcon)
                         .font(.callout)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Color.quietText)
                         .accessibilityLabel("State: \(ThreadGrouping.title(for: thread.state))")
                 }
             }
@@ -81,7 +81,7 @@ struct ThreadView: View {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 14) {
                         if model.timeline.isEmpty {
-                            Text("Nothing here yet.").foregroundStyle(.secondary).frame(maxWidth: .infinity)
+                            Text("Nothing here yet.").foregroundStyle(Color.quietText).frame(maxWidth: .infinity)
                         }
                         ForEach(model.timeline) { item in
                             TimelineRow(item: item, model: model, approvals: session.approvals)
@@ -104,6 +104,11 @@ struct ThreadView: View {
                 #endif
                 .refreshable { await model.reload() }
                 .onChange(of: model.timeline) { proxy.scrollTo("bottom", anchor: .bottom) }
+                // The keyboard came up, or the message box grew: the room for the conversation
+                // shrank, and its end must not slide under the box.
+                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { old, new in
+                    if new < old { proxy.scrollTo("bottom", anchor: .bottom) }
+                }
             }
         }
     }
@@ -141,7 +146,7 @@ struct Banner<Actions: View>: View {
 
     var body: some View {
         HStack(spacing: 10) {
-            Image(systemName: symbol).foregroundStyle(.secondary).accessibilityHidden(true)
+            Image(systemName: symbol).foregroundStyle(Color.quietText).accessibilityHidden(true)
             Text(text).font(.callout).fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 8)
             actions.controlSize(.small)
@@ -204,7 +209,7 @@ struct Composer<Accessory: View>: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, 5)
                 .padding(.vertical, Self.verticalInset)
-                .foregroundStyle(text.isEmpty ? AnyShapeStyle(.tertiary) : AnyShapeStyle(.clear))
+                .foregroundStyle(text.isEmpty ? AnyShapeStyle(Color.quietText) : AnyShapeStyle(.clear))
                 .accessibilityHidden(true)
                 .overlay {
                     TextEditor(text: $text)
@@ -213,6 +218,19 @@ struct Composer<Accessory: View>: View {
                         .focused($focused)
                         .accessibilityLabel(placeholder)
                         .accessibilityIdentifier("composer")
+                        #if os(iOS)
+                        // Return starts a new line here, so the keyboard needs its own way out.
+                        .toolbar {
+                            if focused {
+                                ToolbarItemGroup(placement: .keyboard) {
+                                    Spacer()
+                                    Button("Done") { focused = false }
+                                        .accessibilityLabel("Hide keyboard")
+                                        .accessibilityIdentifier("composer.hideKeyboard")
+                                }
+                            }
+                        }
+                        #endif
                         #if os(macOS)
                         .onKeyPress(.return, phases: .down) { press in
                             // Shift- or Option-Return: let the editor insert the new line.
@@ -241,7 +259,8 @@ struct Composer<Accessory: View>: View {
                     Image(systemName: "arrow.up.circle.fill").font(.title2)
                 }
                 .buttonStyle(.plain)
-                .foregroundStyle(canSend ? AnyShapeStyle(.tint) : AnyShapeStyle(.tertiary))
+                .foregroundStyle(canSend ? AnyShapeStyle(.tint) : AnyShapeStyle(Color.quietText))
+                .opacity(canSend ? 1 : 0.6)
                 .disabled(!canSend)
                 .help("Send (Return)")
                 .accessibilityLabel("Send message")
@@ -277,10 +296,17 @@ struct NewThreadView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            ContentUnavailableView {
-                Label("New thread", systemImage: "square.and.pencil")
-            } description: {
-                Text("Say what you want done. Omni works on it in its own thread and asks before anything goes out.")
+            // Centred when there is room; scrolls under the keyboard at the largest text sizes.
+            GeometryReader { area in
+                ScrollView {
+                    ContentUnavailableView {
+                        Label("New thread", systemImage: "square.and.pencil")
+                    } description: {
+                        Text("Say what you want done. Omni works on it in its own thread and asks before anything goes out.")
+                    }
+                    .frame(maxWidth: .infinity, minHeight: area.size.height)
+                }
+                .scrollBounceBehavior(.basedOnSize)
             }
             if let error = session.threads.createError {
                 Banner(symbol: "exclamationmark.triangle", text: error) {

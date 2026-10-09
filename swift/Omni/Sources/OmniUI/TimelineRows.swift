@@ -31,7 +31,7 @@ struct TimelineRow: View {
         case .turnEnded(let text):
             Label(text, systemImage: "stop.circle")
                 .font(.callout)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color.quietText)
                 .frame(maxWidth: .infinity)
         }
     }
@@ -49,7 +49,7 @@ struct UserBubble: View {
                 .padding(.vertical, 8)
                 .background(Color.accentColor.opacity(0.16), in: RoundedRectangle(cornerRadius: 14))
             if let caption {
-                Text(caption).font(.caption).foregroundStyle(.secondary)
+                Text(caption).font(.caption).foregroundStyle(Color.quietText)
             }
         }
         .frame(maxWidth: .infinity, alignment: .trailing)
@@ -97,11 +97,11 @@ struct ToolChip: View {
                 ProgressView().controlSize(.mini)
             } else {
                 Image(systemName: ok == false ? "xmark.circle" : "wrench.and.screwdriver")
-                    .foregroundStyle(ok == false ? AnyShapeStyle(.red) : AnyShapeStyle(.secondary))
+                    .foregroundStyle(ok == false ? AnyShapeStyle(.red) : AnyShapeStyle(Color.quietText))
             }
             Text(ThreadTimeline.toolLabel(name)).font(.callout)
             if let summary, !summary.isEmpty {
-                Text(summary).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                Text(summary).font(.caption).foregroundStyle(Color.quietText).lineLimit(1)
             }
         }
         .padding(.horizontal, 10)
@@ -122,19 +122,19 @@ struct RecordCardView: View {
             if let url = link { openURL(url) }
         } label: {
             HStack(alignment: .top, spacing: 10) {
-                Image(systemName: symbol).font(.title3).foregroundStyle(.secondary).frame(width: 24)
+                Image(systemName: symbol).font(.title3).foregroundStyle(Color.quietText).frame(width: 24)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(card.title ?? card.path ?? "Untitled note").fontWeight(.medium).lineLimit(2)
-                    Text(detail).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                    Text(detail).font(.caption).foregroundStyle(Color.quietText).lineLimit(2)
                 }
                 Spacer(minLength: 8)
                 if link != nil {
-                    Label("Open in Prism", systemImage: "arrow.up.right").labelStyle(.iconOnly).foregroundStyle(.secondary)
+                    Label("Open in Prism", systemImage: "arrow.up.right").labelStyle(.iconOnly).foregroundStyle(Color.quietText)
                 }
             }
             .padding(10)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(.background.secondary, in: RoundedRectangle(cornerRadius: 10))
+            .background(.background, in: RoundedRectangle(cornerRadius: 10))
             .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(.separator))
             .contentShape(RoundedRectangle(cornerRadius: 10))
         }

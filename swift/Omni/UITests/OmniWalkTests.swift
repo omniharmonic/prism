@@ -199,6 +199,7 @@ final class OmniWalkTests: OmniUITestCase {
         composer.tap()
         composer.typeText("What is on the list for the retreat?")
         #if os(iOS)
+        showKeyboard()
         shot("composer-keyboard-up")
         #endif
         send()
@@ -215,12 +216,23 @@ final class OmniWalkTests: OmniUITestCase {
         // A long message: the box grows, and the transcript stays reachable.
         composer.tap()
         composer.typeText("One\nTwo\nThree\nFour\nFive — a longer line that should wrap inside the box rather than run off its edge, however narrow the window is.")
+        showKeyboard()
         shot("composer-multiline")
         #if os(iOS)
-        // The keyboard goes away when the conversation is dragged.
-        element("transcript").swipeDown()
-        XCTAssertTrue(gone(app.keyboards.firstMatch, 5), "the keyboard cannot be put away by dragging the conversation")
+        // The end of the conversation stays in view above the box and the keyboard.
+        XCTAssertTrue(text("I answer the same way every time").isHittable, "the end of the conversation is hidden behind the message box")
+        // The keyboard goes away: by its Done button…
+        let done = element("composer.hideKeyboard")
+        wait(done, 5, "Done above the keyboard")
+        done.tap()
+        XCTAssertTrue(gone(app.keyboards.firstMatch, 5), "Done did not put the keyboard away")
         shot("composer-keyboard-dismissed")
+        // …and by dragging the conversation down.
+        composer.tap()
+        showKeyboard()
+        let top = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.22))
+        top.press(forDuration: 0.05, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)), withVelocity: .default, thenHoldForDuration: 0.1)
+        XCTAssertTrue(gone(app.keyboards.firstMatch, 5), "the keyboard cannot be put away by dragging the conversation")
         #endif
     }
 
@@ -430,11 +442,28 @@ final class OmniWalkTests: OmniUITestCase {
         #endif
     }
 
+    /// Press Send (Return on the Mac). On a simulator the software keyboard comes and goes
+    /// while a test types, moving the button: wait for it to settle, and press again if the
+    /// first press landed on nothing.
     func send() {
         #if os(macOS)
         composer.typeKey(.return, modifierFlags: [])
         #else
+        pause(1.2)
+        let before = (composer.value as? String) ?? ""
         sendButton.tap()
+        let cleared = NSPredicate { _, _ in !self.composer.exists || ((self.composer.value as? String) ?? "") != before || self.stopButton.exists }
+        if XCTWaiter().wait(for: [XCTNSPredicateExpectation(predicate: cleared, object: nil)], timeout: 4) != .completed, sendButton.exists, sendButton.isEnabled {
+            sendButton.tap()
+        }
+        #endif
+    }
+
+    /// Bring the software keyboard up for a picture (see `send()`).
+    func showKeyboard() {
+        #if os(iOS)
+        if !app.keyboards.firstMatch.exists { composer.tap() }
+        _ = app.keyboards.firstMatch.waitForExistence(timeout: 3)
         #endif
     }
 

@@ -59,10 +59,10 @@ struct ThreadRow: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(ThreadGrouping.displayTitle(thread))
                     .fontWeight(thread.unread > 0 ? .semibold : .regular)
-                    .foregroundStyle(thread.gone ? .secondary : .primary)
+                    .foregroundStyle(thread.gone ? Color.quietText : Color.primary)
                     .lineLimit(1)
                 if let subtitle = ThreadGrouping.subtitle(thread) {
-                    Text(subtitle).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                    Text(subtitle).font(.caption).foregroundStyle(Color.quietText).lineLimit(1)
                 }
             }
             Spacer(minLength: 4)
@@ -116,24 +116,24 @@ struct ThreadSections: View {
         if threads.phase == .loading, threads.threads.isEmpty {
             HStack(spacing: 8) {
                 ProgressView().controlSize(.small)
-                Text("Loading threads…").font(.callout).foregroundStyle(.secondary)
+                Text("Loading threads…").font(.callout).foregroundStyle(Color.quietText)
             }
             .accessibilityElement(children: .combine)
         }
         if let problem = threads.removeError {
-            Label(problem, systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.secondary)
+            Label(problem, systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(Color.quietText)
                 .fixedSize(horizontal: false, vertical: true)
         }
         if threads.agentUnavailable {
             // The whole sentence, on as many lines as it needs (a Mac sidebar row is one line by default).
             Label("The server can't reach the agent right now. This list may be incomplete.", systemImage: "exclamationmark.triangle")
                 .font(.caption)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color.quietText)
                 .fixedSize(horizontal: false, vertical: true)
         }
         if let failure = threads.phase.failure {
             VStack(alignment: .leading, spacing: 6) {
-                Label(failure, systemImage: "wifi.exclamationmark").font(.callout).foregroundStyle(.secondary)
+                Label(failure, systemImage: "wifi.exclamationmark").font(.callout).foregroundStyle(Color.quietText)
                     .fixedSize(horizontal: false, vertical: true)
                 Button("Try Again") { Task { await threads.refresh() } }
                     .accessibilityHint("Reads the thread list again")
@@ -144,7 +144,7 @@ struct ThreadSections: View {
             Section("Threads") {
                 Text(threads.isSearching ? "No threads match that search." : "No threads yet. Start one to hand something to Omni.")
                     .font(.callout)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.quietText)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }

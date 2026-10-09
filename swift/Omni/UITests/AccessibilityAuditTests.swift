@@ -62,12 +62,19 @@ final class AccessibilityAuditTests: OmniUITestCase {
     private func audit(_ screen: String) {
         pause(0.8)
         do {
+            let keyboard = app.keyboards.firstMatch.exists ? app.keyboards.firstMatch.frame.insetBy(dx: 0, dy: -70) : .null
             try app.performAccessibilityAudit(for: [.contrast, .elementDetection, .hitRegion, .sufficientElementDescription, .dynamicType, .textClipped, .trait]) { issue in
-                let element = issue.element?.debugDescription ?? ""
-                let label = issue.element?.label ?? ""
-                if Self.expected.contains(where: { $0.type == issue.auditType && element.contains($0.element) }) { return true }
-                let short = element.split(separator: "\n").first.map(String.init) ?? ""
-                self.findings.append("[\(screen)] \(issue.compactDescription) — “\(label)” \(short.prefix(160))")
+                let element = issue.element
+                let debug = element?.debugDescription ?? ""
+                let label = element?.label ?? ""
+                let frame = element?.frame ?? .null
+                // The system's own: the keyboard and its suggestion bar, and the buttons the
+                // navigation bar draws on glass (Cancel, Done, Back).
+                if !keyboard.isNull, !frame.isNull, keyboard.contains(CGPoint(x: frame.midX, y: frame.midY)) { return true }
+                if element?.elementType == .button, self.app.navigationBars.buttons[label].exists, issue.auditType == .contrast { return true }
+                if Self.expected.contains(where: { $0.type == issue.auditType && debug.contains($0.element) }) { return true }
+                let kind = element.map { "\($0.elementType.rawValue)" } ?? "-"
+                self.findings.append("[\(screen)] \(issue.compactDescription) — “\(label.prefix(60))” type \(kind) \(frame.isNull ? "" : "\(frame.integral)") \(issue.detailedDescription.prefix(120))")
                 return true
             }
         } catch {

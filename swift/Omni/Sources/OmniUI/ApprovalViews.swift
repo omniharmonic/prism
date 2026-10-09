@@ -36,11 +36,11 @@ struct ApprovalCardView: View {
                 draft(card.content)
             }
             if let line = card.statusLine() {
-                Text(line).font(.callout).foregroundStyle(standing == .mismatch || standing == .unknown ? AnyShapeStyle(Color.warningText) : AnyShapeStyle(.secondary))
+                Text(line).font(.callout).foregroundStyle(standing == .mismatch || standing == .unknown ? AnyShapeStyle(Color.warningText) : AnyShapeStyle(Color.quietText))
                     .fixedSize(horizontal: false, vertical: true)
             }
             if standing == .pending, let off = card.sendingSwitchedOff {
-                Label(off, systemImage: "powerplug").font(.caption).foregroundStyle(.secondary)
+                Label(off, systemImage: "powerplug").font(.caption).foregroundStyle(Color.quietText)
             }
             if let notice = card.notice {
                 Label(notice.text, systemImage: noticeSymbol(notice.tone))
@@ -52,7 +52,7 @@ struct ApprovalCardView: View {
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.background.secondary, in: RoundedRectangle(cornerRadius: 12))
+        .background(.background, in: RoundedRectangle(cornerRadius: 12))
         .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(standing == .pending ? AnyShapeStyle(.tint.opacity(0.5)) : AnyShapeStyle(.separator)))
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Approval: \(card.content.headline)")
@@ -80,7 +80,7 @@ struct ApprovalCardView: View {
         Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: 10, verticalSpacing: 4) {
             ForEach(content.fields) { field in
                 GridRow {
-                    Text(field.label).font(.callout).foregroundStyle(.secondary).gridColumnAlignment(.trailing)
+                    Text(field.label).font(.callout).foregroundStyle(Color.quietText).gridColumnAlignment(.trailing)
                     Text(field.value).font(.callout).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
                 }
                 .accessibilityElement(children: .combine)
@@ -96,7 +96,10 @@ struct ApprovalCardView: View {
     }
 
     @ViewBuilder private func buttons(_ card: ApprovalCard, _ standing: ApprovalCard.Standing) -> some View {
-        HStack(spacing: 8) {
+        // Side by side where they fit; one under another where they do not (large text, a
+        // narrow column) — never squeezed or cut.
+        let layout = buttonsFit ? AnyLayout(HStackLayout(spacing: 8)) : AnyLayout(VStackLayout(alignment: .leading, spacing: 8))
+        layout {
             if let retry = card.retry, standing == .pending {
                 Button("Try Again") { Task { await center.retry(card.id) } }
                     .buttonStyle(.borderedProminent)
@@ -125,8 +128,15 @@ struct ApprovalCardView: View {
                     .accessibilityHint("Reads the draft from the server again")
             }
         }
+        #if os(iOS)
+        .buttonStyle(.bordered)
+        #endif
         .disabled(card.isBusy)
     }
+
+    @Environment(\.dynamicTypeSize) private var typeSize
+    /// Four buttons in a row fit at ordinary text sizes; from the accessibility sizes up they stack.
+    private var buttonsFit: Bool { !typeSize.isAccessibilitySize }
 
     private func header(_ standing: ApprovalCard.Standing, _ card: ApprovalCard) -> String {
         let kind = card.content.kindLabel
@@ -158,7 +168,7 @@ struct ApprovalCardView: View {
         switch standing {
         case .pending: return AnyShapeStyle(.tint)
         case .mismatch, .unknown: return AnyShapeStyle(Color.warningText)
-        default: return AnyShapeStyle(.secondary)
+        default: return AnyShapeStyle(Color.quietText)
         }
     }
 
@@ -175,7 +185,7 @@ struct ApprovalCardView: View {
         switch tone {
         case .warning: return AnyShapeStyle(Color.warningText)
         case .failure: return AnyShapeStyle(Color.failureText)
-        default: return AnyShapeStyle(.secondary)
+        default: return AnyShapeStyle(Color.quietText)
         }
     }
 }
@@ -203,7 +213,7 @@ struct ApprovalEditSheet: View {
                 Section {
                     Text("Saving makes a new draft to review. Recipients and times can't be changed here — ask Omni to revise instead.")
                         .font(.footnote)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Color.quietText)
                 }
             }
             .formStyle(.grouped)
@@ -249,7 +259,7 @@ struct ReviseSheet: View {
                 Section {
                     Text("This draft is set aside and Omni writes a new one for you to review. Nothing is sent.")
                         .font(.footnote)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Color.quietText)
                 }
             }
             .formStyle(.grouped)
@@ -299,6 +309,10 @@ struct NeedsYouView: View {
                                     Button("Open thread") { navigator.open(.thread(threadID)) }
                                         .buttonStyle(.borderless)
                                         .font(.callout)
+                                        #if os(iOS)
+                                        .frame(minHeight: 44)
+                                        .contentShape(Rectangle())
+                                        #endif
                                         .accessibilityHint("Shows the conversation this draft came from")
                                 }
                             }

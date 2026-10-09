@@ -4,7 +4,7 @@ extension OmniUITestCase {
     /// One thread in every state the list can show, and one draft of every kind.
     func seed() {
         let made = server { backend -> [String: String] in
-            try await backend.reset()
+            try await backend.reset(keepGone: true)
             var ids: [String: String] = [:]
             ids["done"] = try await backend.thread("Summarise yesterday's notes", "Summarise yesterday's notes in five lines.")
             ids["scheduled"] = try await backend.thread("Check the forecast on Friday", "Check the marine forecast on Friday morning and tell me if the crossing is on.")

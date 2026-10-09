@@ -9,6 +9,16 @@ extension Color {
     /// Failure text: a deep red on light backgrounds, a soft red on dark ones.
     static let failureText = Color.adaptive(light: (0.72, 0.11, 0.11), dark: (1.00, 0.42, 0.38))
 
+    /// Quiet text — captions, previews, times, hints. The system's secondary label colour
+    /// is about 3.4:1 on white, which the accessibility audit marks down at caption sizes;
+    /// this is the same idea at about 7:1 (and 9:1 on black).
+    static let quietText = Color.adaptive(light: (0.36, 0.36, 0.39), dark: (0.68, 0.68, 0.71))
+
+    /// The app's accent: the system blue, a step deeper on light backgrounds so that blue
+    /// TEXT (plain buttons, a card's "APPROVE" line) and white text on a blue button both
+    /// read clearly (about 6:1 against white; the system blue is under 4:1).
+    static let omniAccent = Color.adaptive(light: (0.00, 0.36, 0.82), dark: (0.36, 0.66, 1.00))
+
     private static func adaptive(light: (Double, Double, Double), dark: (Double, Double, Double)) -> Color {
         #if os(macOS)
         Color(nsColor: NSColor(name: nil) { appearance in
