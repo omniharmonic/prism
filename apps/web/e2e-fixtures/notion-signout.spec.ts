@@ -7,6 +7,7 @@ const seedCaches = (page: Page) => page.evaluate(() => {
   localStorage.setItem("prism:recent-searches:default", JSON.stringify(["workshop"]));
   localStorage.setItem("prism:offline-pinned:default", JSON.stringify(["agenda"]));
   // The Calendar's last listing, kept for a fast cold start (lib/calendar/meetingListing.ts).
+  localStorage.setItem("prism:offline-sublinks", JSON.stringify({ "offline-1": { parentId: "p", parentTitle: "Plan", title: "Private page" } })); // NP-PG-15: rows waiting for a queued create
   localStorage.setItem("prism:calendar-listing:default", JSON.stringify({ v: 1, at: Date.now(), events: [{ id: "e1", summary: "Private meeting", start: { dateTime: new Date().toISOString() }, end: { dateTime: new Date().toISOString() } }] }));
 });
 // The app reloads after signing out: a read that lands mid-navigation is retried by the poll.
