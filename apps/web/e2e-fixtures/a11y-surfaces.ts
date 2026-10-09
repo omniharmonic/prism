@@ -45,7 +45,8 @@ async function selectBravo(page: Page) {
     await target.selectText();
     await expect.poll(() => page.evaluate(() => { const e = (document.querySelector(".tiptap") as any).editor; const { from, to } = e.state.selection; return e.state.doc.textBetween(from, to) as string; }), { timeout: 1000 }).toBe("Bravo paragraph");
   }).toPass({ timeout: 10_000 });
-  const bubble = page.locator(".document-selection-actions:visible, .cd-bubble:visible").first();
+  // A mouse: the bubble. A touch device: the same actions lead the keyboard toolbar row (no bubble there).
+  const bubble = page.locator(".document-selection-actions:visible, .cd-bubble:visible, .keyboard-toolbar-selection:visible").first();
   await expect(bubble).toBeVisible();
   return bubble;
 }

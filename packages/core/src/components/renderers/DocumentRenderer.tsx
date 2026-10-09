@@ -56,8 +56,10 @@ import { useAutoSave } from "../../app/hooks/useAutoSave";
 import { useWikilinkNavigate } from "../../app/hooks/useWikilinkNavigate";
 import { convertApi } from "../../lib/parachute/client";
 import { DocumentOutline } from "./DocumentOutline";
-import { EditorToolbar } from "./EditorToolbar";
-import { KeyboardToolbar } from "./KeyboardToolbar";
+import { EditorToolbarCommands } from "./EditorToolbar";
+import { FormattingBar } from "./FormattingBar";
+import { KeyboardToolbar, useCoarsePointer } from "./KeyboardToolbar";
+import { useIsMobile } from "../../app/hooks/useIsMobile";
 import { BacklinksPill } from "../layout/BacklinksPill";
 import { EmptyPageStarters } from "./EmptyPageStarters";
 import { PageHeader, PageProperties, type ContentFont } from "./DocumentChrome";
@@ -81,6 +83,8 @@ export default function DocumentRenderer({ note, onMetadataChange, readOnly }: R
   //                 banner offers "Submit for review".
   //   "read-only" → editor read-only with a one-line notice.
   const mode = reviewMode(note);
+  const coarse = useCoarsePointer();
+  const phone = useIsMobile();
   // `readOnly` (published wiki / anonymous surfaces) wins outright: those
   // responses carry no `_caps` today, and if they ever did, a public reader must
   // not be offered a submit button.
@@ -443,13 +447,19 @@ export default function DocumentRenderer({ note, onMetadataChange, readOnly }: R
 
   return (
     <div ref={containerRef} className="document-writing-surface flex flex-col h-full" data-content-font={contentFont}>
-      {editor && <BubbleMenu editor={editor} pluginKey="documentSelectionActions" shouldShow={({ state }) => !state.selection.empty && !blockSelectionActive(state)}>
+      {/* The selection's actions: a bubble with a mouse. On a touch device the system's own selection
+          callout sits there, so they are the start of the keyboard toolbar row instead — the ONE
+          formatting surface there (for a reader: only while text is selected). */}
+      {editor && !coarse && <BubbleMenu editor={editor} pluginKey="documentSelectionActions" shouldShow={({ state }) => !state.selection.empty && !blockSelectionActive(state)}>
         <div className="document-selection-actions"><SelectionActions editor={editor} allowFormatting={!notEditable} /></div>
       </BubbleMenu>}
-      {/* Toolbar (hidden on read-only surfaces — no editing affordances) */}
-      {editor && !notEditable && <EditorToolbar editor={editor} />}
-      {editor && !notEditable && <KeyboardToolbar editor={editor} />}
-      {editor && notEditable && <div className="document-outline-readonly"><DocumentOutline editor={editor} /></div>}
+      {/* The page's chrome row (no formatting commands on read-only surfaces). On a phone it also
+          carries the backlinks count, which is otherwise a strip of its own under the title. */}
+      {editor && <FormattingBar formatting={!notEditable} navigation={<DocumentOutline editor={editor} />}
+        trailing={phone && !readOnly ? <BacklinksPill inline noteId={note.id} title={note.path?.split("/").pop() ?? ""} /> : undefined}>
+        {!notEditable && <EditorToolbarCommands editor={editor} />}
+      </FormattingBar>}
+      {editor && <KeyboardToolbar editor={editor} selection={<SelectionActions editor={editor} allowFormatting={!notEditable} />} />}
 
       {/* Governed note (web, non-owner): the propose-for-review affordance, plus
           the per-note history. Never rendered when `_caps` is absent. */}
@@ -483,7 +493,7 @@ export default function DocumentRenderer({ note, onMetadataChange, readOnly }: R
             onIconChange={persistMetadata ? (emoji) => persistMetadata({ icon: emoji }) : undefined}
             onAddCover={persistMetadata && !cover ? () => changeCover({ kind: "gradient", value: COVER_GRADIENTS[Math.floor(Math.random() * COVER_GRADIENTS.length)].name, y: 50 }) : undefined}
           />
-          {!readOnly && <BacklinksPill noteId={note.id} title={note.path?.split("/").pop() ?? ""} />}
+          {!readOnly && !phone && <BacklinksPill noteId={note.id} title={note.path?.split("/").pop() ?? ""} />}
           <EditorContent editor={editor} />
           {editor && !notEditable && <EmptyPageStarters editor={editor} noteId={note.id} title={note.path?.split("/").pop() ?? ""} />}
         </div>

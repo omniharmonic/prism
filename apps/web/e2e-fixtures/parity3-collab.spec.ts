@@ -34,7 +34,8 @@ const share = (id: string) => `/e2e-fixtures/collab-route.html?target=${id}`;
 const inApp = (id: string) => `/e2e-fixtures/collab-route.html?page=${id}`;
 async function live(page: Page) {
   await expect(editor(page)).toBeVisible();
-  await expect(page.getByText(/Live · /)).toBeVisible();
+  // "Live · Editing" (desktop header); on a phone the page's chrome row says "Live" beside the mode button.
+  await expect(page.getByText(/^Live( · |$)/)).toBeVisible();
   await expect(editor(page)).not.toHaveText("");
 }
 /** A write credential for Prism's own MCP endpoint, minted by the signed-in person (Settings → "Connect your agent"). */

@@ -1,14 +1,15 @@
 import { useEffect, useRef, useState } from "react";
 import type { Editor } from "@tiptap/react";
 import {
-  AtSign, Bold, CheckSquare, ChevronDown, Image as ImageIcon, IndentDecrease, IndentIncrease, Italic,
+  AtSign, Bold, CheckSquare, ChevronDown, Code, Image as ImageIcon, IndentDecrease, IndentIncrease, Italic,
   Link as LinkIcon, Plus, Redo2, Repeat2, Strikethrough, Underline, Undo2, X,
 } from "lucide-react";
 import { canUploadImages, pickAndUploadImages } from "../../lib/tiptap/ImageUpload";
+import { blockSelectionActive } from "../../lib/tiptap/EditorKeys";
 import "./FormattingBar.css";
 
 /** True on touch-first devices (the iOS app, phones, tablets without a pointer). */
-function useCoarsePointer(): boolean {
+export function useCoarsePointer(): boolean {
   const query = "(pointer: coarse)";
   const [coarse, setCoarse] = useState(() => typeof window !== "undefined" && !!window.matchMedia?.(query).matches);
   useEffect(() => {
@@ -36,6 +37,13 @@ function useKeyboardInset(active: boolean): number {
   return inset;
 }
 
+/** The page's selection is a range inside this editor. */
+function selectionInside(editor: Editor): boolean {
+  const selection = typeof window === "undefined" ? null : window.getSelection();
+  if (!selection || selection.isCollapsed || !selection.anchorNode) return false;
+  try { return editor.view.dom.contains(selection.anchorNode); } catch { return false; }
+}
+
 const TURN_INTO: Array<[string, (e: Editor) => boolean]> = [
   ["Text", (e) => e.chain().focus().setParagraph().run()],
   ["Heading 1", (e) => e.chain().focus().toggleHeading({ level: 1 }).run()],
@@ -55,31 +63,54 @@ const TURN_INTO: Array<[string, (e: Editor) => boolean]> = [
  *
  * NP-MB-04: the phone editing toolbar that rides above the on-screen keyboard
  * (pinned to `visualViewport`, so it works in Safari and the iOS app), with
- * insert, Turn into, B/I/U/S, link, to-do, indent/outdent, @ mention, image,
+ * insert, Turn into, B/I/U/S, code, link, to-do, indent/outdent, @ mention, image,
  * undo/redo and dismiss keyboard. It scrolls the caret clear of itself and only
  * exists while an editable editor has focus on a touch device.
+ *
+ * It is the ONE Prism formatting surface on a touch device. The system's own selection
+ * callout (Copy / Look Up / …) sits above a selection there, so the selection bubble is not
+ * mounted on a coarse pointer (`useCoarsePointer`); its actions are `selection`, shown at the
+ * start of this row while text is selected. A page that cannot be edited (a reader, a
+ * suggest-only person) and a page in suggesting mode (`formatting={false}`) get the row only
+ * while text is selected: Comment / Suggest edit / Ask agent, docked at the bottom.
  */
-export function KeyboardToolbar({ editor, force = false }: { editor: Editor; force?: boolean }) {
+export function KeyboardToolbar({ editor, force = false, selection, formatting = true }: {
+  editor: Editor; force?: boolean;
+  /** The selection's actions (`<SelectionActions>`): rendered only while text is selected. */
+  selection?: React.ReactNode;
+  /** False = no editing commands, only `selection` (suggesting mode: untracked edits are not offered). */
+  formatting?: boolean;
+}) {
   const coarse = useCoarsePointer();
   const [focused, setFocused] = useState(() => editor.isFocused);
   const [panel, setPanel] = useState<null | "turn" | "link">(null);
   const [href, setHref] = useState("");
   const bar = useRef<HTMLDivElement>(null);
   const keepFocus = useRef(false);
-  const enabled = (coarse || force) && editor.isEditable;
-  const visible = enabled && (focused || panel !== null);
+  const pressing = useRef(false);
+  const commands = formatting && editor.isEditable;
+  // A page that cannot be edited keeps its last editor selection when the reader selects something
+  // else on the screen (the title): there the page's own selection must still be the document's.
+  const selected = !!selection && !editor.state.selection.empty && !blockSelectionActive(editor.state) && (editor.isEditable || selectionInside(editor));
+  // A reader has no caret to follow: the row exists while text is selected, wherever focus is.
+  const visible = (coarse || force) && (commands ? focused || panel !== null : selected);
   const inset = useKeyboardInset(visible);
   const [, rerender] = useState(0);
 
   useEffect(() => {
     const onFocus = () => setFocused(true);
-    const onBlur = () => { if (!keepFocus.current) { setFocused(false); setPanel(null); } };
+    // Focus that moves INTO the row (the selection's link field, an open menu) keeps the row.
+    const onBlur = ({ event }: { event?: FocusEvent }) => {
+      if (keepFocus.current || (event?.relatedTarget instanceof Node && bar.current?.contains(event.relatedTarget))) return;
+      setFocused(false); setPanel(null);
+    };
     const onChange = () => rerender((n) => n + 1);
     editor.on("focus", onFocus);
     editor.on("blur", onBlur);
     editor.on("selectionUpdate", onChange);
     editor.on("transaction", onChange);
-    return () => { editor.off("focus", onFocus); editor.off("blur", onBlur); editor.off("selectionUpdate", onChange); editor.off("transaction", onChange); };
+    document.addEventListener("selectionchange", onChange);
+    return () => { document.removeEventListener("selectionchange", onChange); editor.off("focus", onFocus); editor.off("blur", onBlur); editor.off("selectionUpdate", onChange); editor.off("transaction", onChange); };
   }, [editor]);
 
   // Never cover the caret: scroll the editor's scroller by the overlap.
@@ -125,6 +156,19 @@ export function KeyboardToolbar({ editor, force = false }: { editor: Editor; for
       className="keyboard-toolbar-button focus-ring" onMouseDown={hold} onClick={run(onClick)}>{icon}</button>
   );
   const chain = () => editor.chain().focus();
+  // Focus that leaves the row for anything but the editor ends it (the editor's own focus event brings
+  // it back). Decided AFTER the tap that caused it: WebKit blurs the selection's link field with no
+  // `relatedTarget` when its Apply button is tapped, and the row must still be there for the click.
+  const onRowBlur = () => {
+    const settle = () => {
+      if (pressing.current) { window.setTimeout(settle, 100); return; }
+      if (keepFocus.current || bar.current?.contains(document.activeElement) || editor.isDestroyed || editor.isFocused) return;
+      setFocused(false);
+    };
+    window.setTimeout(settle, 0);
+  };
+  const press = (down: boolean) => () => { if (down) pressing.current = true; else window.setTimeout(() => { pressing.current = false; }, 300); };
+  const dismiss = btn("Dismiss keyboard", <ChevronDown size={20} />, () => { editor.commands.blur(); (document.activeElement as HTMLElement | null)?.blur?.(); setFocused(false); });
   const inList = editor.isActive("listItem") || editor.isActive("taskItem");
   const listType = editor.isActive("taskItem") ? "taskItem" : "listItem";
   const applyLink = () => {
@@ -136,7 +180,8 @@ export function KeyboardToolbar({ editor, force = false }: { editor: Editor; for
   };
 
   return (
-    <div ref={bar} className="keyboard-toolbar" role="toolbar" aria-label="Editing toolbar" style={{ bottom: inset > 120 ? inset : "var(--workspace-bottom-inset, 0px)" }} data-keyboard-inset={inset}>
+    <div ref={bar} className="keyboard-toolbar" role="toolbar" aria-label={commands ? "Editing toolbar" : "Selection actions"} data-selection={selected || undefined} onBlur={onRowBlur}
+      onPointerDown={press(true)} onPointerUp={press(false)} onPointerCancel={press(false)} style={{ bottom: inset > 120 ? inset : "var(--workspace-bottom-inset, 0px)" }} data-keyboard-inset={inset}>
       {panel === "turn" ? (
         <div className="keyboard-toolbar-row" role="group" aria-label="Turn into">
           {TURN_INTO.map(([label, apply]) => (
@@ -152,6 +197,21 @@ export function KeyboardToolbar({ editor, force = false }: { editor: Editor; for
           <button type="submit" className="keyboard-toolbar-chip focus-ring" onMouseDown={hold}>Apply</button>
           {btn("Cancel link", <X size={18} />, () => { keepFocus.current = false; setPanel(null); editor.commands.focus(); })}
         </form>
+      ) : selected ? (
+        // Text is selected: the selection's own actions lead (they were the floating bubble), then
+        // what the bubble never had. Insert block waits for a caret.
+        <div className="keyboard-toolbar-row keyboard-toolbar-selection no-scrollbar">
+          {selection}
+          {commands && <>
+            <span className="selection-divider" aria-hidden="true" />
+            {btn("To-do", <CheckSquare size={18} />, () => chain().toggleTaskList().run(), { active: editor.isActive("taskList") })}
+            {btn("Indent", <IndentIncrease size={18} />, () => chain().sinkListItem(listType).run(), { disabled: !inList })}
+            {btn("Outdent", <IndentDecrease size={18} />, () => chain().liftListItem(listType).run(), { disabled: !inList })}
+            {btn("Undo", <Undo2 size={18} />, () => chain().undo().run(), { disabled: !editor.can().undo() })}
+            {btn("Redo", <Redo2 size={18} />, () => chain().redo().run(), { disabled: !editor.can().redo() })}
+            {dismiss}
+          </>}
+        </div>
       ) : (
         <div className="keyboard-toolbar-row no-scrollbar">
           {btn("Insert block", <Plus size={19} />, () => {
@@ -165,6 +225,7 @@ export function KeyboardToolbar({ editor, force = false }: { editor: Editor; for
           {btn("Italic", <Italic size={18} />, () => chain().toggleItalic().run(), { active: editor.isActive("italic") })}
           {btn("Underline", <Underline size={18} />, () => chain().toggleUnderline().run(), { active: editor.isActive("underline") })}
           {btn("Strikethrough", <Strikethrough size={18} />, () => chain().toggleStrike().run(), { active: editor.isActive("strike") })}
+          {btn("Code", <Code size={18} />, () => chain().toggleCode().run(), { active: editor.isActive("code") })}
           {btn("Link", <LinkIcon size={18} />, () => { keepFocus.current = true; setHref((editor.getAttributes("link").href as string) ?? ""); setPanel("link"); }, { active: editor.isActive("link") })}
           {btn("To-do", <CheckSquare size={18} />, () => chain().toggleTaskList().run(), { active: editor.isActive("taskList") })}
           {btn("Indent", <IndentIncrease size={18} />, () => chain().sinkListItem(listType).run(), { disabled: !inList })}
@@ -173,7 +234,7 @@ export function KeyboardToolbar({ editor, force = false }: { editor: Editor; for
           {btn("Image", <ImageIcon size={18} />, () => pickAndUploadImages(editor), { disabled: !canUploadImages(editor) })}
           {btn("Undo", <Undo2 size={18} />, () => chain().undo().run(), { disabled: !editor.can().undo() })}
           {btn("Redo", <Redo2 size={18} />, () => chain().redo().run(), { disabled: !editor.can().redo() })}
-          {btn("Dismiss keyboard", <ChevronDown size={20} />, () => { editor.commands.blur(); (document.activeElement as HTMLElement | null)?.blur?.(); setFocused(false); })}
+          {dismiss}
         </div>
       )}
     </div>

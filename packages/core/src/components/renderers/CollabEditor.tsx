@@ -19,7 +19,8 @@ import type { Note } from "../../lib/types";
 import { SelectionActions } from "./SelectionActions";
 import { DocumentOutline } from "./DocumentOutline";
 import { CollabToolbar } from "./CollabToolbar";
-import { KeyboardToolbar } from "./KeyboardToolbar";
+import { KeyboardToolbar, useCoarsePointer } from "./KeyboardToolbar";
+import { FormattingBar } from "./FormattingBar";
 import { SuggestionReview } from "./SuggestionReview";
 import "./editor-blocks.css";
 import { BlockKeymap } from "../../lib/tiptap/blockCommands";
@@ -93,7 +94,11 @@ export function CollabEditor({
   onUploadError,
   humanCommands,
   noteId,
+  chrome,
 }: {
+  /** The host's status and actions for the page's ONE chrome row (a phone; see `FormattingBar`).
+   *  Omitted → the host shows them itself (desktop: the header). Needs `toolbar`. */
+  chrome?: { status?: React.ReactNode; trailing?: React.ReactNode };
   ydoc: Y.Doc;
   provider: AwarenessProvider | null;
   user: CollabUser;
@@ -148,6 +153,7 @@ export function CollabEditor({
   noteId?: string;
 }) {
   const suggestionBubble = useRef<HTMLDivElement>(null);
+  const touch = useCoarsePointer();
   // Inline comment composer anchored to a captured selection range.
   const [composer, setComposer] = useState<{ from: number; to: number; top: number; left: number } | null>(null);
   const [draft, setDraft] = useState("");
@@ -325,6 +331,26 @@ export function CollabEditor({
     };
   }, [editor, ydoc, seedContent, seedReady]);
 
+  // The selection's actions: the bubble (a mouse), or the start of the keyboard toolbar row (touch).
+  const selectionActions = editor && (
+    <SelectionActions
+      editor={editor}
+      allowFormatting={editable && !commentOnly}
+      onSuggest={humanCommands ? () => openHuman("suggest") : undefined}
+      onComment={humanCommands ? (canComment ? () => openHuman("comment") : undefined) : canComment ? () => {
+        const sel = editor.state.selection;
+        const c = editor.view.coordsAtPos(sel.to);
+        setComposer({
+          from: sel.from,
+          to: sel.to,
+          top: c.bottom + 6,
+          left: Math.max(8, Math.min(c.left, window.innerWidth - 288)),
+        });
+        setDraft("");
+      } : undefined}
+    />
+  );
+
   return (
     <>
       {/* Collab caret/suggestion/bubble CSS lives in @prism/core styles/collab.css
@@ -336,15 +362,20 @@ export function CollabEditor({
           suggesting={!!suggesting}
           onSetSuggesting={onSetSuggesting}
           canReview={canReview}
+          status={chrome?.status}
+          trailing={chrome?.trailing}
         />
       )}
-      {toolbar && editor && editable && !commentOnly && !suggesting && <KeyboardToolbar editor={editor} />}
       {toolbar && editor && (!editable || commentOnly) && (
-        <div className="document-outline-readonly"><DocumentOutline editor={editor} /></div>
+        <FormattingBar formatting={false} navigation={<DocumentOutline editor={editor} />} status={chrome?.status} trailing={chrome?.trailing} />
       )}
+      {/* Touch: the ONE formatting surface. It carries the selection's actions (no bubble there);
+          while suggesting, and for a reader, it is ONLY those actions (untracked edits are not offered). */}
+      {toolbar && editor && <KeyboardToolbar editor={editor} formatting={editable && !commentOnly && !suggesting} selection={selectionActions} />}
       {editor && <SuggestionReview editor={editor} canReview={!!canReview} />}
-      {/* On-selection "Comment" bubble (Google-Docs style). */}
-      {editor && (
+      {/* On-selection "Comment" bubble (Google-Docs style). Not on a touch device: the system's own
+          selection callout sits there, and the actions are in the keyboard toolbar row instead. */}
+      {editor && !(touch && toolbar) && (
         <BubbleMenu
           editor={editor}
           pluginKey="commentBubble"
@@ -354,24 +385,7 @@ export function CollabEditor({
             return !suggestionAt(state, from); // the suggestion bubble owns that case
           }}
         >
-          <div className="cd-bubble">
-            <SelectionActions
-              editor={editor}
-              allowFormatting={editable && !commentOnly}
-              onSuggest={humanCommands ? () => openHuman("suggest") : undefined}
-              onComment={humanCommands ? (canComment ? () => openHuman("comment") : undefined) : canComment ? () => {
-                const sel = editor.state.selection;
-                const c = editor.view.coordsAtPos(sel.to);
-                setComposer({
-                  from: sel.from,
-                  to: sel.to,
-                  top: c.bottom + 6,
-                  left: Math.max(8, Math.min(c.left, window.innerWidth - 288)),
-                });
-                setDraft("");
-              } : undefined}
-            />
-          </div>
+          <div className="cd-bubble">{selectionActions}</div>
         </BubbleMenu>
       )}
 

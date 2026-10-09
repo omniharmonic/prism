@@ -20,3 +20,8 @@
 .backlinks-item-snippet { font-size: 12px; line-height: 1.5; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .backlinks-more { padding: 6px 10px; font-size: 11px; color: var(--text-muted); }
 @media (pointer: coarse) { .backlinks-pill { min-height: 44px; } .backlinks-item { min-height: 44px; } }
+
+/* In the page's chrome row (a phone): one compact item; the list hangs from the row's trailing edge. */
+.backlinks[data-inline] { margin: 0; position: static; }
+.backlinks[data-inline] .backlinks-pill { justify-content: center; min-width: 44px; min-height: 44px; padding: 0 10px; border-color: transparent; border-radius: 8px; font-variant-numeric: tabular-nums; }
+.backlinks[data-inline] .backlinks-list { left: auto; right: 0; top: calc(100% + 4px); }
