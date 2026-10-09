@@ -30,7 +30,7 @@ import { peopleApi } from "./people";
 import { humanCollabApi } from "./human-collab";
 import { tellPagesChanged, writesTitle } from "../page-notice";
 import { transcriptsApi } from "./transcripts";
-import { databasesApi } from "./databases";
+import { databasesApi, restUrlRuleHook } from "./databases";
 import { sharingApi } from "./sharing";
 import { consumeRateLimit, rateLimitClientKey } from "../middleware/ratelimit";
 import { settleKeyForUser, takeUnsavedSettle } from "../unsaved-settle";
@@ -687,6 +687,10 @@ api.use("/notes/:id/restore", async (c, next) => (c.req.method === "POST" ? ((aw
 // Wave 2A: a successful content write carrying @-mention chips → notifications +
 // mention backlinks (both the owner passthrough and the member route; never
 // changes the response). After the schema gate, before the owner short-circuit.
+// The URL rule (a URL property holds web addresses) on note creates and updates — for the member
+// routes AND the owner / admin passthrough below. First of the body hooks: it may normalise the body.
+api.use("/notes", restUrlRuleHook);
+api.use("/notes/:id", restUrlRuleHook);
 api.use("/notes", restMentionHook);
 api.use("/notes/:id", restMentionHook);
 // NP-CO-16: a metadata write that adds someone to a person property → "assigned

@@ -237,7 +237,7 @@ function EditableMetadata({ note, scope }: MetadataPanelProps & {scope:string|nu
   return (
     <section className="prism-context-metadata space-y-3" aria-label="Page properties">
       <header><h2>Properties</h2><p>Details that help organize this page</p></header>
-      {updateNote.isError && <p role="alert" className="prism-context-state">The property could not be saved. Check your access and try again.</p>}
+      {updateNote.isError && !/"invalid_url"/.test(String(updateNote.error?.message ?? "")) && <p role="alert" className="prism-context-state">The property could not be saved. Check your access and try again.</p>}
       {/* ── Core Info ─────────────────────────── */}
       <div className="flex items-center gap-2">
         <select
@@ -438,7 +438,13 @@ function PropertyRow({
   async function save(next:unknown) {
     if(pending.current) return;
     pending.current=true;attempted.current=next;setBusy(true);setError("");
-    try { await onChange(next); return true; } catch { setError("Not saved. Your value is kept; try again."); return false; }
+    try { await onChange(next); return true; }
+    catch (e) {
+      // The server holds a URL property to web addresses too: its refusal is about the text, said here like the editor's own.
+      if (/"invalid_url"/.test(String((e as Error)?.message ?? ""))) { setInvalid(true); setError(URL_INVALID_HINT); }
+      else setError("Not saved. Your value is kept; try again.");
+      return false;
+    }
     finally { pending.current=false;setBusy(false); }
   }
   /** The error is about the text typed (not a web address): fixed by typing, so there is nothing to retry. */

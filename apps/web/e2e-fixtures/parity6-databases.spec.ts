@@ -154,9 +154,10 @@ const ALL = Object.values(T);
 const SORTS: SortCase[] = [
   { kind: "text (title)", key: "$title", label: "Title", asc: [[T.page], [T.t4], [T.t6], [T.t3], [T.t1], [T.t5], [T.t2]] },
   { kind: "number", key: "estimate", label: "Estimate (h)", asc: [[T.t2], [T.t1], [T.t3], [T.t4]] }, // 2, 3, 5, 12 — numeric, not "12" < "2"
-  // A select and a status sort by the ORDER OF THEIR OPTIONS (the schema's), not by the stored text A→Z.
+  // A select sorts by the ORDER OF ITS OPTIONS (the schema's), not by the stored text A→Z; a status by its
+  // GROUPS — To-do, In progress, Complete — then its option order inside a group.
   { kind: "select", key: "priority", label: "Priority", asc: [[T.t5, T.t6], [T.t3, T.t4, T.page], [T.t1, T.t2]] }, // low, medium, high
-  { kind: "status", key: "status", label: "Status", asc: [[T.t1, T.t6], [T.t2, T.t3, T.page], [T.t4, T.t5]] }, // todo, in-progress, done
+  { kind: "status", key: "status", label: "Status", asc: [[T.t1, T.t6], [T.t2, T.t3, T.page], [T.t4, T.t5]] }, // To-do: todo · In progress: in-progress · Complete: done
   { kind: "multi-select", key: "labels", label: "Labels", asc: [[T.t1, T.t4], [T.t2]] }, // by the first label: design, launch
   { kind: "date", key: "due", label: "Due", asc: [[T.t4], [T.t5], [T.t1], [T.t2], [T.t3]] },
   { kind: "person", key: "assignee", label: "Assignee", asc: [[T.t3], [T.t1], [T.t2]] }, // Alex Stone, Mira Chen, Sam Rivera
@@ -258,11 +259,51 @@ test("a select sorts by its options as the owner ordered them; a value that is n
   await expect.poll(() => priorities(page)).toEqual(["Medium", "Low", "Low", "High", "High", "someday", "Empty"]);
 });
 
-test("a shell without the query route sorts a status by its options too (the same engine, the bundled schema)", async ({ page }) => {
+/** The status shown on each row, top to bottom (the option's label). */
+const statuses = (page: Page) => page.getByRole("table", { name: "All tasks" }).locator("tbody tr")
+  .evaluateAll((rows) => rows.map((r) => r.querySelector('[aria-label^="Status:"]')?.getAttribute("aria-label")?.replace("Status: ", "").toLowerCase() ?? null).filter((x) => x !== null));
+
+test("a status sorts by its groups — To-do, In progress, Complete — whatever order its options are listed in, and by option order inside a group", async ({ page }) => {
+  await page.goto("/e2e-fixtures/databases.html");
+  await ready(page);
+  await page.evaluate(() => {
+    const fx = (window as any).dbFixture;
+    const status = fx.schemas().task.fields.status;
+    // The owner listed the options Complete-first, and added two more: "blocked" (in progress by default) and "idea" (put in To-do).
+    status.enum = ["done", "blocked", "in-progress", "todo", "idea"];
+    status.optionOrder = ["done", "blocked", "in-progress", "idea", "todo"];
+    status.statusGroups = { idea: "todo" };
+    const set = (id: string, patch: Record<string, unknown>) => { const n = fx.notes().find((x: any) => x.id === id); n.metadata = { ...n.metadata, ...patch }; };
+    set("t3", { status: "blocked" });
+    set("t6", { status: "idea" });
+    set("t5", { status: "someday" }); // not an option
+    set("page", { status: null });
+  });
+  await sortBy(page, "status", "asc");
+  // To-do (idea before todo: their option order) → In progress (blocked before in-progress) → Complete → a non-option → empty.
+  await expect.poll(() => statuses(page)).toEqual(["idea", "to do", "blocked", "in progress", "done", "someday", "empty"]);
+  expect(await rowTitles(page)).toEqual([T.t6, T.t1, T.t3, T.t2, T.t4, T.t5, T.page]);
+  await sortBy(page, "status", "desc");
+  await expect.poll(() => statuses(page)).toEqual(["done", "in progress", "blocked", "to do", "idea", "someday", "empty"]);
+  // The same options shown as a plain SELECT follow the listed order alone (Complete-first here).
+  await page.evaluate(() => { (window as any).dbFixture.schemas().task.fields.status.kind = "select"; });
+  await sortBy(page, "priority", "asc");
+  await sortBy(page, "status", "asc");
+  await expect.poll(async () => (await rowTitles(page)).slice(0, 5)).toEqual([T.t4, T.t3, T.t2, T.t6, T.t1]);
+});
+
+test("a shell without the query route sorts a status by its groups too (the same engine, the bundled schema)", async ({ page }) => {
   await page.goto("/e2e-fixtures/databases.html?legacy");
   await ready(page);
+  // The bundled enum is todo, in-progress, blocked, done, cancelled, pending, …: "pending" is listed AFTER done,
+  // but it is an in-progress status — by group it comes before every done row.
+  await page.evaluate(() => {
+    const notes = (window as any).dbFixture.notes();
+    const set = (id: string, status: string) => { const n = notes.find((x: any) => x.id === id); n.metadata = { ...n.metadata, status }; };
+    set("t6", "pending"); set("t3", "blocked");
+  });
   await sortBy(page, "status", "asc");
-  const groups = [[T.t1, T.t6], [T.t2, T.t3, T.page], [T.t4, T.t5]]; // todo, in-progress, done — the enum's order, not A→Z
+  const groups = [[T.t1], [T.t2, T.page], [T.t3], [T.t6], [T.t4, T.t5]]; // To-do: todo · In progress: in-progress, blocked, pending · Complete: done
   await expect.poll(async () => {
     const got = await rowTitles(page);
     let at = 0;

@@ -394,6 +394,8 @@ export function PropertyValue({
       onDone?.();
     } catch (e) {
       if (e instanceof PropertyConflictError) setConflict({ theirs: e.current[def.key] ?? null });
+      // The server applies the URL rule as well (a value another writer made a URL property meanwhile): said like the editor's own refusal.
+      else if (/"invalid_url"/.test(String((e as Error)?.message ?? ""))) { setInvalid(true); setError(URL_INVALID_HINT); }
       else setError(e instanceof Error && e.message && !/failed: \d{3}/.test(e.message) ? e.message : "Not saved. Your value is kept; try again.");
     } finally {
       setBusy(false);

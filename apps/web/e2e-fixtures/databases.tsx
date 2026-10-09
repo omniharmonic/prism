@@ -198,6 +198,8 @@ const controls = {
   creates: [] as unknown[],
   schemaWrites: [] as unknown[],
   failNext: false,
+  /** The next property write is refused by the server's URL rule. */
+  refuseUrlNext: false,
   /** The next property write finds the field already changed to this value elsewhere. */
   conflictWith: undefined as unknown,
   /** Every call to the structured route (`VaultClient.updateStructuredProperty`). */
@@ -407,6 +409,8 @@ if (!legacy) {
     const n = find(id)!;
     if (viewer && !n._caps?.includes("edit")) throw new Error("You can only view this page.");
     if (controls.failNext) { controls.failNext = false; throw new Error("POST /properties failed: 503"); }
+    // The server's URL rule refusing the write (400 invalid_url), as `POST /api/properties/:id` answers it.
+    if (controls.refuseUrlNext) { controls.refuseUrlNext = false; throw new VaultRequestError(400, `POST /properties/${id} failed: 400 ${JSON.stringify({ error: "invalid_url", reason: "That isn’t a web address.", fields: Object.keys(set) })}`); }
     if (controls.conflictWith !== undefined) {
       const key = Object.keys(set)[0]!;
       n.metadata = { ...(n.metadata ?? {}), [key]: controls.conflictWith };

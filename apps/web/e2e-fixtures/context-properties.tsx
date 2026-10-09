@@ -1,7 +1,7 @@
 import React from "react";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { VaultClientProvider, PlatformProvider, PropertyConflictError, type VaultClient, type Note } from "@prism/core";
+import { VaultClientProvider, PlatformProvider, PropertyConflictError, VaultRequestError, type VaultClient, type Note } from "@prism/core";
 import { ContextPanel } from "../../../packages/core/src/components/layout/ContextPanel";
 import { useUIStore } from "../../../packages/core/src/app/stores/ui";
 import { useAgentChatStore } from "../../../packages/core/src/lib/agent/chatStore";
@@ -12,6 +12,8 @@ useSettingsStore.setState({ theme: params.has("dark") ? "dark" : "light" });
 const controls = {
   scope: "fixture-a",
   fail: false,
+  /** A field the server's URL rule refuses on the next writes ("" = none). */
+  refuseUrl: "",
   hold: false,
   pending: [] as Array<() => void>,
   writes: [] as Array<{ kind: string; value: unknown; scope?: string }>,
@@ -57,6 +59,8 @@ const client = {
   ],
   updateNote: async (_id: string, patch: Partial<Note>, opts?: { expectedScope?: string }) => {
     await write("property", patch, opts?.expectedScope);
+    // `refuseUrl = "<key>"`: the server's URL rule refuses that field (PATCH /api/notes/:id → 400 invalid_url).
+    if (controls.refuseUrl) throw new VaultRequestError(400, `PATCH /notes/fictional-page failed: 400 ${JSON.stringify({ error: "invalid_url", reason: "That isn’t a web address.", fields: [controls.refuseUrl] })}`);
     note = { ...note, ...patch };
     return note;
   },

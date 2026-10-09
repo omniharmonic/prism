@@ -11,6 +11,7 @@ import { test, expect, type Page } from "@playwright/test";
 const fx = (page: Page) => page.evaluate(() => (window as any).dbFixture);
 const writes = async (page: Page) => ((await fx(page)).writes as any[]).filter((w: any) => !w.metadata?.prism_database);
 const row = (page: Page, title: string) => page.locator("tr", { has: page.getByRole("button", { name: title, exact: true }) });
+const row2 = row;
 const REFUSED = "That isn’t a web address";
 /** Give rows a stored `link` before the app reads them (the fixture keeps its notes in sessionStorage across a reload). */
 async function seedLinks(page: Page, links: Record<string, string>) {
@@ -185,4 +186,43 @@ test("context panel: a free property that holds a web address takes web addresse
   await owner.press("Enter");
   await expect.poll(count).toBe(2);
   await expect(page.getByRole("alert")).toHaveCount(0);
+});
+
+test("the server's refusal is shown inline too: in the context panel's free-property row and in a database cell — as the rule's own message, with nothing to retry", async ({ page }) => {
+  // Context panel: "Owner" is plain text for this client, but the server knows better (another writer made it a URL property).
+  await page.goto("/e2e-fixtures/context-properties.html?extra");
+  const owner = page.getByRole("textbox", { name: "Owner", exact: true });
+  await page.evaluate(() => { (window as any).contextProperties.refuseUrl = "owner"; });
+  await owner.fill("ask Alex");
+  await owner.press("Enter");
+  const row = page.locator(".prism-context-property-row", { has: owner });
+  const alert = row.getByRole("alert");
+  await expect(alert).toContainText(REFUSED);
+  await expect(alert.getByRole("button", { name: "Retry" })).toHaveCount(0);
+  await expect(owner).toHaveAttribute("aria-invalid", "true");
+  await expect(owner, "what was typed is still there to fix").toHaveValue("ask Alex");
+  // Not the panel's generic "could not be saved. Check your access" banner: this is about the value.
+  await expect(page.getByText("Check your access and try again")).toHaveCount(0);
+  expect(await page.evaluate(() => (window as any).contextNote().metadata.owner)).toBe("Alex Chen");
+  // Typing clears the message; once the server accepts, the value is saved.
+  await page.evaluate(() => { (window as any).contextProperties.refuseUrl = ""; });
+  await owner.fill("https://example.test/alex");
+  await expect(row.getByRole("alert")).toHaveCount(0);
+  await owner.press("Enter");
+  await expect.poll(() => page.evaluate(() => (window as any).contextNote().metadata.owner)).toBe("https://example.test/alex");
+
+  // Database cell: the client let it through (a real address), the server refuses anyway — same inline message.
+  await page.goto("/e2e-fixtures/databases.html");
+  const r = row2(page, "Update pricing page");
+  await r.getByRole("button", { name: "Link: Empty" }).click();
+  await page.evaluate(() => { (window as any).dbFixture.refuseUrlNext = true; });
+  const input = page.getByRole("textbox", { name: "Link", exact: true });
+  await input.fill("https://example.test/refused-by-server");
+  await input.press("Enter");
+  await expect(r.getByRole("alert")).toContainText(REFUSED);
+  await expect(r.getByRole("alert").getByRole("button", { name: "Retry" })).toHaveCount(0);
+  await expect(input).toHaveValue("https://example.test/refused-by-server");
+  await input.fill("https://example.test/accepted");
+  await input.press("Enter");
+  await expect(r.getByRole("link", { name: "example.test/accepted" })).toBeVisible();
 });
