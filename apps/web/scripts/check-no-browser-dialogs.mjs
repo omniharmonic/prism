@@ -14,7 +14,9 @@
  * Reads the TypeScript syntax tree (no regex over source), so a comment, a string such as
  * "javascript:alert(1)" or a method named `.confirm()` on some other object is not a finding.
  * Flags:  window.prompt(…) / globalThis.confirm(…) / self.alert(…) / window["alert"](…),
- *         a bare prompt(…) / confirm(…) / alert(…) that is not a binding declared in that file,
+ *         EVERY bare prompt(…) / confirm(…) / alert(…) call — there is no exemption for a file
+ *         that declares its own function of that name (a local `confirm` would hide a real one
+ *         beside it): name a local helper something else,
  *         and taking the function without calling it (`const ask = window.confirm`).
  *
  *   node scripts/check-no-browser-dialogs.mjs            # packages/core/src + apps/web/src
@@ -42,25 +44,6 @@ function* sources(dir) {
   }
 }
 
-/** Names this file binds itself (a local `function confirm()`, an import, a parameter…). */
-function declared(source) {
-  const names = new Set();
-  const bind = (name) => {
-    if (!name) return;
-    if (ts.isIdentifier(name)) { if (NAMES.has(name.text)) names.add(name.text); }
-    else if (ts.isObjectBindingPattern(name) || ts.isArrayBindingPattern(name)) for (const e of name.elements) if (!ts.isOmittedExpression(e)) bind(e.name);
-  };
-  const visit = (node) => {
-    if (ts.isFunctionDeclaration(node) || ts.isFunctionExpression(node) || ts.isClassDeclaration(node)) bind(node.name);
-    if (ts.isVariableDeclaration(node) || ts.isParameter(node) || ts.isBindingElement(node)) bind(node.name);
-    if (ts.isImportClause(node)) bind(node.name);
-    if (ts.isImportSpecifier(node) || ts.isNamespaceImport(node)) bind(node.name);
-    ts.forEachChild(node, visit);
-  };
-  visit(source);
-  return names;
-}
-
 /** `window.alert`, `globalThis["confirm"]` → the dialog's name, else null. */
 function globalDialog(node) {
   if (ts.isPropertyAccessExpression(node) && ts.isIdentifier(node.expression) && GLOBALS.has(node.expression.text) && NAMES.has(node.name.text)) return node.name.text;
@@ -77,7 +60,6 @@ for (const root of roots) {
     if (!/\b(prompt|confirm|alert)\b/.test(text)) continue;
     const kind = /\.(tsx|jsx)$/.test(path) ? ts.ScriptKind.TSX : ts.ScriptKind.TS;
     const source = ts.createSourceFile(path, text, ts.ScriptTarget.Latest, true, kind);
-    const local = declared(source);
     const report = (node, what) => {
       const at = source.getLineAndCharacterOfPosition(node.getStart(source));
       findings.push(`${relative(repo, path)}:${at.line + 1}:${at.character + 1}  ${what}`);
@@ -85,7 +67,7 @@ for (const root of roots) {
     const visit = (node) => {
       const viaGlobal = globalDialog(node);
       if (viaGlobal) report(node, `${node.expression.text}.${viaGlobal}`);
-      else if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && NAMES.has(node.expression.text) && !local.has(node.expression.text)) report(node, `${node.expression.text}(…)`);
+      else if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && NAMES.has(node.expression.text)) report(node, `${node.expression.text}(…)`);
       ts.forEachChild(node, visit);
     };
     visit(source);

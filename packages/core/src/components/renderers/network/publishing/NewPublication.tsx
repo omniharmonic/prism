@@ -16,6 +16,7 @@ import { Badge } from "../../../ui/Badge";
 import { Input } from "../../../ui/Input";
 import { TagPicker } from "../TagPicker";
 import { Field, SectionLabel, ErrText } from "./shared";
+import { copyText } from "../../../../lib/clipboard";
 export function NewPublication({
   tags,
   publishedTags,
@@ -111,14 +112,14 @@ export function NewPublication({
 
   const copyUrl = async () => {
     if (!result) return;
-    try {
-      await navigator.clipboard.writeText(result.url);
-    } catch {
+    // First statement of the click handler: the write starts inside the gesture.
+    if (!(await copyText(result.url))) {
       setError(
         "The link could not be copied. Select the address and copy it manually.",
       );
       return;
     }
+    setError(null);
     setCopied(true);
     setTimeout(() => setCopied(false), 1600);
   };

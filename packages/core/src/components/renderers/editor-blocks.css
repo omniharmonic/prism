@@ -198,8 +198,11 @@
 .table-controls {
   position: fixed; z-index: 35; display: flex; align-items: center; gap: 2px; padding: 3px;
   border-radius: var(--radius-md); background: var(--bg-elevated); border: 1px solid var(--glass-border);
-  box-shadow: var(--glass-shadow-elevated); max-width: calc(100vw - 16px); overflow-x: auto;
+  box-shadow: var(--glass-shadow-elevated); max-width: calc(100vw - 16px);
 }
+.table-controls-row { display: flex; align-items: center; gap: 2px; min-width: 0; overflow-x: auto; scrollbar-width: none; }
+.table-controls-row::-webkit-scrollbar { display: none; }
+.table-controls-more { display: none; flex: none; width: 18px; place-items: center; font-size: 16px; line-height: 1; color: var(--text-muted); pointer-events: none; }
 .table-controls button {
   display: inline-flex; align-items: center; justify-content: center; width: 30px; height: 30px; flex-shrink: 0;
   border: 0; border-radius: 6px; background: none; color: var(--text-secondary); cursor: pointer;
@@ -208,7 +211,16 @@
 .table-controls button:disabled { opacity: 0.35; cursor: default; }
 .table-controls button.is-danger:hover:not(:disabled) { color: var(--color-danger); }
 .table-controls .selection-divider { align-self: stretch; width: 1px; margin: 4px 2px; background: var(--glass-border); flex-shrink: 0; }
-@media (max-width: 767px) { .table-controls button { width: 40px; height: 40px; } }
+/* Phone / touch: 44 px targets; ONE row that scrolls sideways a whole button at a time (TableControls
+   sizes the row to a whole number of buttons), no dividers (they would leave a part-button at rest),
+   and a chevron BESIDE the row while there is more to the right — the keyboard toolbar's cue. */
+@media screen and (max-width: 767px), screen and (hover: none) and (pointer: coarse) {
+  .table-controls { z-index: 55; }
+  .table-controls button { width: 44px; height: 44px; scroll-snap-align: start; }
+  .table-controls-row { scroll-snap-type: x mandatory; overscroll-behavior-x: contain; }
+  .table-controls .selection-divider { display: none; }
+  .table-controls[data-more] > .table-controls-more { display: grid; }
+}
 
 /* ══ Media, embeds and editor depth (schema v3) ══════════════════════════════ */
 
@@ -266,8 +278,12 @@ figure.prism-image[data-editable] .prism-image-caption { cursor: text; }
 
 /* ── Bookmark card ── */
 .prism-bookmark-block { margin: 0.75em 0; }
-.prose-editor a.prism-bookmark, a.prism-bookmark { display: flex; align-items: stretch; min-height: 96px; border: 1px solid var(--glass-border); border-radius: var(--radius-md); overflow: hidden; color: inherit; text-decoration: none; background: var(--glass); transition: background 120ms, border-color 120ms; }
-a.prism-bookmark:hover { background: var(--glass-hover); border-color: var(--glass-border-strong); }
+.prose-editor .prism-bookmark, .prism-bookmark { position: relative; cursor: pointer; display: flex; align-items: stretch; min-height: 96px; border: 1px solid var(--glass-border); border-radius: var(--radius-md); overflow: hidden; color: inherit; text-decoration: none; background: var(--glass); transition: background 120ms, border-color 120ms; }
+.prism-bookmark:hover { background: var(--glass-hover); border-color: var(--glass-border-strong); }
+/* The explicit Open control. Mouse: on hover / focus / when the block is selected. Touch: always (below). */
+.prism-bookmark-open { position: absolute; top: 6px; right: 6px; z-index: 1; background: var(--bg-elevated); border: 1px solid var(--glass-border); box-shadow: var(--glass-shadow-elevated); opacity: 0; transition: opacity 120ms; }
+.prism-bookmark-open:disabled { display: none; }
+.prism-bookmark:hover .prism-bookmark-open, .prism-bookmark-open:focus-visible, .is-selected .prism-bookmark-open { opacity: 1; }
 .prism-bookmark-text { display: flex; flex-direction: column; gap: 4px; min-width: 0; flex: 1; padding: 12px 14px; }
 .prism-bookmark-title { font-size: 14px; font-weight: 550; color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .prism-bookmark-description { font-size: 12.5px; line-height: 1.45; color: var(--text-secondary); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
@@ -505,4 +521,18 @@ a.prism-toc-item { box-sizing: border-box; }
 @media screen and (max-width: 767px), screen and (hover: none) and (pointer: coarse) {
   .prism-editor-prompt input { height: 44px; font-size: 16px; }
   .prism-editor-prompt button { min-height: 44px; min-width: 44px; }
+}
+
+/* ── Touch: media actions a finger can reach (no hover there) ──
+   44 px targets; a bookmark's Open control and a read-only image's actions (View full screen /
+   Download / Copy) are always shown — on a page the reader cannot edit a tap opens the image, so
+   nothing ever revealed its toolbar. The image toolbar scrolls sideways when it is wider than the image. */
+@media screen and (max-width: 767px), screen and (hover: none) and (pointer: coarse) {
+  .prism-media-btn { min-width: 44px; height: 44px; }
+  .prism-bookmark-open { opacity: 1; }
+  .prism-bookmark-text { padding-right: 56px; }
+  .prism-media-toolbar { max-width: calc(100% - 16px); overflow-x: auto; scrollbar-width: none; }
+  .prism-media-toolbar::-webkit-scrollbar { display: none; }
+  .prism-media-toolbar .prism-media-btn { flex: none; }
+  figure.prism-image:not([data-editable]) .prism-media-toolbar { opacity: 1; pointer-events: auto; }
 }

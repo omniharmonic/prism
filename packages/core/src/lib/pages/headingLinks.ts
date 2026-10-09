@@ -12,6 +12,7 @@
 import { focusAnchor } from "../notifications/anchor";
 import { pageLink } from "./pageLink";
 import { headingSlugs } from "./headingSlug";
+import { copyText } from "../clipboard";
 
 export { headingSlug, headingSlugs, parseHeadingHash } from "./headingSlug";
 
@@ -57,8 +58,8 @@ export function focusHeading(slug: string, noteId?: string | null, waitMs?: numb
 }
 
 /** Copy the heading's link. Resolves false when the clipboard refused or the element is no linkable heading. */
-export async function copyHeadingLink(noteId: string, heading: Element | null): Promise<boolean> {
+export function copyHeadingLink(noteId: string, heading: Element | null): Promise<boolean> {
   const slug = headingSlugOf(heading);
-  if (!slug) return false;
-  try { await navigator.clipboard.writeText(headingLink(noteId, slug)); return true; } catch { return false; }
+  if (!slug) return Promise.resolve(false);
+  return copyText(headingLink(noteId, slug));
 }

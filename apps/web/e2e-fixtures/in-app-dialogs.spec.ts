@@ -36,7 +36,12 @@ const offline = (context: BrowserContext) => context.route((url) => url.hostname
 /** An empty paragraph right after the paragraph reading `text`, holding the caret. */
 async function emptyLineAfter(page: Page, text: string, touch = false) {
   const target = page.getByText(text, { exact: true });
-  if (touch) await target.tap(); else await target.click();
+  if (touch) {
+    await target.tap();
+    // WebKit's touch emulation delivers the tap's click late: let it land on the paragraph, not on a
+    // menu that opens under the same point a moment later.
+    await page.waitForTimeout(350);
+  } else await target.click();
   await page.evaluate((t) => {
     const e = (document.querySelector(".tiptap") as any).editor;
     let end = 0;
@@ -290,7 +295,10 @@ test.describe("plain editor · phone, keyboard up", () => {
     await page.getByRole("toolbar", { name: "Editing toolbar" }).getByRole("button", { name: "Image", exact: true }).tap();
     await (await again).setFiles({ name: "second.png", mimeType: "image/png", buffer: PNG });
     await expect(editor(page).locator("img")).toHaveCount(2);
-    await emptyLineAfter(page, "Foxtrot closing", true);
+    // On a line that is not directly above an image: WebKit's emulated keyboard intermittently
+    // REPLACES each typed character on an empty line that sits right before an image block (seen in
+    // 1 run of ~6; the device pass has a row for it).
+    await emptyLineAfter(page, "Alpha", true);
     const file = page.waitForEvent("filechooser");
     await slash(page, "file", /^File Upload any file/, true);
     await (await file).setFiles(media("brief.pdf"));
@@ -491,10 +499,13 @@ test("guard: check-no-browser-dialogs passes on the tree and catches a new call"
   const dir = info.outputPath("dialogs-guard");
   mkdirSync(dir, { recursive: true });
   writeFileSync(path.join(dir, "bad.tsx"), 'export const a = () => { if (window.confirm("x")) alert("y"); const p = globalThis["prompt"]; return prompt("z") ?? p; };\n');
-  writeFileSync(path.join(dir, "fine.ts"), '// alert(1) in a comment\nexport const s = "javascript:alert(1)";\nasync function confirm(x: number) { return x; }\nexport const ok = () => confirm(1);\nexport const store = { confirm() {} }; store.confirm();\n');
+  writeFileSync(path.join(dir, "fine.ts"), '// alert(1) in a comment\nexport const s = "javascript:alert(1)";\nexport const store = { confirm() {}, prompt: 1 }; store.confirm();\nexport const ok = (dialogs: { alert(m: string): void }) => dialogs.alert("x");\n');
+  // No exemption: a file that declares its own `confirm` cannot hide a real call beside it.
+  writeFileSync(path.join(dir, "local.ts"), 'async function confirm(x: number) { return x; }\nexport const a = () => confirm(1);\n');
   const dirty = spawnSync(process.execPath, [script, dir], { encoding: "utf8" });
   expect(dirty.status).toBe(1);
   expect(dirty.stderr).toContain("bad.tsx:1");
+  expect(dirty.stderr).toContain("local.ts:2");
   for (const what of ["window.confirm", "alert(…)", "globalThis.prompt", "prompt(…)"]) expect(dirty.stderr).toContain(what);
   expect(dirty.stderr).not.toContain("fine.ts");
 });

@@ -15,7 +15,12 @@ import type { Node as PMNode } from "@tiptap/pm/model";
 import { NodeSelection } from "@tiptap/pm/state";
 import { registerBlockViews, codeLanguages } from "../../editor/blocks";
 import { embedFor, EMBED_SANDBOX, EMBED_SANDBOX_NATIVE, isAllowedFrameSrc, safeWebUrl } from "../media/embeds";
-import { formatBytes, isDangerousImageSrc, isOwnAttachment, ownOrProxiedSrc, safeAttachmentSrc } from "../media/attachments";
+import { formatBytes, isDangerousImageSrc, isOwnAttachment, ownOrProxiedSrc, safeAttachmentSrc, safeMediaSrc } from "../media/attachments";
+import { saveOwnAttachment, savesThroughShell } from "../saveFile";
+import { copyText } from "../clipboard";
+import { linkTarget, openLinkTarget } from "./prismLinks";
+import { openPageFromDocument } from "./openPage";
+import { useUIStore } from "../../app/stores/ui";
 import { serverFetch } from "../transport/serverFetch";
 import { structuralEditsAllowed } from "./blockCommands";
 import { canUploadImages, IMAGE_TYPES, openFilePicker, type ImageUploadOptions } from "./ImageUpload";
@@ -172,6 +177,15 @@ async function downloadImage(doc: Document, img: HTMLImageElement, original: str
     a.click();
     a.remove();
   };
+  // The Prism Client cancels downloads: the shell saves our own attachment itself (save panel /
+  // share sheet), and an outside image opens through the shell's confirmed "open this link?".
+  if (savesThroughShell()) {
+    if (isOwnAttachment(original)) { await saveOwnAttachment(serverFetch, original, imageFileName(img.alt)); return; }
+    const outside = /^https?:\/\//i.test(original) ? safeMediaSrc(original) : null;
+    if (!outside) throw new Error("no address");
+    window.open(outside, "_blank", "noopener,noreferrer");
+    return;
+  }
   try {
     const res = shown.startsWith("blob:") ? await globalThis.fetch(shown) /* a blob: URL is this page's own memory, never the server */ : isOwnAttachment(original) ? await serverFetch(original) : null;
     if (res?.ok) {
@@ -194,9 +208,9 @@ async function downloadImage(doc: Document, img: HTMLImageElement, original: str
 async function copyImage(img: HTMLImageElement): Promise<"image" | "address" | null> {
   const src = img.currentSrc || img.src;
   const clip = typeof navigator !== "undefined" ? navigator.clipboard : undefined;
-  if (!src || !clip) return null;
+  if (!src) return null;
   const Item = (globalThis as Any).ClipboardItem;
-  if (Item && clip.write && img.naturalWidth) {
+  if (Item && clip?.write && img.naturalWidth) {
     try {
       const png = new Promise<Blob>((resolve, reject) => {
         const canvas = img.ownerDocument.createElement("canvas");
@@ -214,7 +228,10 @@ async function copyImage(img: HTMLImageElement): Promise<"image" | "address" | n
   }
   // A blob: address means nothing outside this tab.
   if (src.startsWith("blob:")) return null;
-  try { await clip.writeText(new URL(src, img.ownerDocument.baseURI).href); return "address"; } catch { return null; }
+  // `copyText` (lib/clipboard.ts) also tries the legacy copy where the async clipboard refuses; null = nothing was copied.
+  let address: string;
+  try { address = new URL(src, img.ownerDocument.baseURI).href; } catch { return null; }
+  return (await copyText(address)) ? "address" : null;
 }
 
 /** Pick a file and swap it in: same node, same width / alignment / caption; ONE transaction. */
@@ -276,7 +293,9 @@ const imageView: NodeViewRenderer = ({ node, editor, getPos, view }) => {
     // Neutralise at render: a dangerous scheme never reaches the DOM; anything else
     // (relative, protocol-relative, cid:, blob:) is shown as the browser can.
     const src = isDangerousImageSrc(a.src) ? "" : String(a.src);
-    if (img.getAttribute("src") !== src) { if (src) img.setAttribute("src", src); else img.removeAttribute("src"); }
+    // The Prism Client re-points our attachments to a bearer-fetched `blob:` and keeps the stored
+    // address in `data-prism-src`: compare with THAT, or every edit would reset and re-fetch the image.
+    if ((img.getAttribute("data-prism-src") ?? img.getAttribute("src")) !== src) { if (src) img.setAttribute("src", src); else img.removeAttribute("src"); }
     img.alt = a.alt ?? "";
     if (a.title) img.title = a.title; else img.removeAttribute("title");
     dom.dataset.align = a.align ?? "center";
@@ -318,7 +337,7 @@ const imageView: NodeViewRenderer = ({ node, editor, getPos, view }) => {
   captionBtn.addEventListener("click", editCaption);
   caption.addEventListener("click", editCaption);
   openBtn.addEventListener("click", () => openLightbox(img.currentSrc || img.src, img.alt, current.attrs.caption));
-  downloadBtn.addEventListener("click", () => { void downloadImage(doc, img, String(current.attrs.src ?? "")); });
+  downloadBtn.addEventListener("click", () => { downloadImage(doc, img, String(current.attrs.src ?? "")).catch(() => editorNotice("Couldn't save this image.")); });
   copyBtn.addEventListener("click", () => { void copyImage(img).then((how) => editorNotice(how === "image" ? "Copied image" : how === "address" ? "Copied the image address — this image cannot be copied from here" : "Couldn’t copy — the browser refused clipboard access", how ? "status" : "alert")); });
   replaceBtn.addEventListener("click", () => replaceImage(editor, getPos, dom));
   img.addEventListener("click", (e) => {
@@ -381,23 +400,9 @@ const imageView: NodeViewRenderer = ({ node, editor, getPos, view }) => {
 // ── Files (download card, PDF, audio, video) ────────────────────────────────
 
 async function download(src: string, name: string): Promise<void> {
-  // Own attachments go through the installed transport (cookie in the PWA, the
-  // device bearer in the native client), so the download works in both.
-  if (isOwnAttachment(src)) {
-    const res = await serverFetch(src);
-    if (!res.ok) throw new Error(`download ${res.status}`);
-    const blob = await res.blob();
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = name || "download";
-    a.rel = "noopener";
-    document.body.append(a);
-    a.click();
-    a.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 30_000);
-    return;
-  }
+  // Own attachments: a browser download through the installed transport (cookie in the PWA),
+  // or the shell's own save in the Prism Client, whose web view cancels downloads (lib/saveFile.ts).
+  if (isOwnAttachment(src)) { await saveOwnAttachment(serverFetch, src, name || "download"); return; }
   // Anything else is an https link: opened in a new tab, never fetched with our credentials.
   const safe = safeAttachmentSrc(src);
   if (safe && !isOwnAttachment(safe)) window.open(safe, "_blank", "noopener,noreferrer");
@@ -479,9 +484,27 @@ function hostOf(url: string): string {
   try { return new URL(url).hostname.replace(/^www\./, ""); } catch { return url; }
 }
 
+/**
+ * Follow a card's link by the link card's rules (`linkTarget` → `openLinkTarget`): one of our pages
+ * opens in the app, anything else allowed opens in a new tab, this window never navigates. In the
+ * Prism Client the outside link reaches the host script exactly once — its one native
+ * "open this link?" — and only from here, i.e. only when the person chose to open it.
+ */
+function followCardLink(url: string): boolean {
+  return openLinkTarget(linkTarget(url), (id) => openPageFromDocument(id, () => useUIStore.getState().openTab(id, "Page", "document")));
+}
+
+/**
+ * The bookmark card. NOT an anchor: in an editable page a tap on it places the selection, and an
+ * anchor there made the Prism Client's host script ask "open this link?" on every tap (it takes
+ * every un-handled anchor click). Opening is the explicit Open control — always on the card on a
+ * touch screen (44 px), on hover / focus / selection with a mouse — or the card itself where the
+ * page cannot be edited (the view's click handler).
+ */
 function bookmarkCard(doc: Document, attrs: Record<string, Any>, note?: string): HTMLElement {
   const url = safeWebUrl(attrs.url) ?? "";
-  const card = h(doc, "a", "prism-bookmark", { href: url, target: "_blank", rel: "noopener noreferrer" });
+  const card = h(doc, "div", "prism-bookmark", { role: "group", "aria-label": `Bookmark: ${attrs.title || hostOf(url)}` });
+  card.dataset.url = url;
   const text = h(doc, "span", "prism-bookmark-text");
   const title = h(doc, "span", "prism-bookmark-title");
   title.textContent = attrs.title || hostOf(url);
@@ -518,6 +541,11 @@ function bookmarkCard(doc: Document, attrs: Record<string, Any>, note?: string):
     wrap.append(img);
     card.append(wrap);
   }
+  const open = button(doc, `Open ${hostOf(url)} in a new tab`, "external", "prism-media-btn prism-bookmark-open");
+  open.title = "Open link";
+  open.disabled = !url || linkTarget(url).kind === "blocked";
+  open.addEventListener("click", (e) => { e.preventDefault(); e.stopPropagation(); followCardLink(url); });
+  card.append(open);
   return card;
 }
 
@@ -528,8 +556,11 @@ const bookmarkView: NodeViewRenderer = ({ node, editor, getPos, view }) => {
   const render = () => dom.replaceChildren(bookmarkCard(doc, current.attrs));
   render();
   dom.addEventListener("click", (e) => {
+    if ((e.target as HTMLElement).closest(".prism-bookmark-open")) return; // its own handler
+    e.preventDefault();
     // In an editable doc, a plain click selects the block; ⌘/Ctrl-click (or any click when read-only) opens it.
-    if (canEdit(editor) && !(e.metaKey || e.ctrlKey)) { e.preventDefault(); selectThis(editor, getPos); }
+    if (canEdit(editor) && !(e.metaKey || e.ctrlKey)) selectThis(editor, getPos);
+    else followCardLink(safeWebUrl(current.attrs.url) ?? "");
   });
   return {
     dom,
@@ -629,7 +660,11 @@ const embedView: NodeViewRenderer = ({ node, editor, getPos, view }) => {
   };
   render();
   dom.addEventListener("click", (e) => {
-    if ((e.target as HTMLElement).closest("a, .prism-embed-resize")) return;
+    const t = e.target as HTMLElement;
+    if (t.closest("a, button, .prism-embed-resize")) return;
+    // The fallback card (a link that cannot be framed here): opens where the page cannot be edited, like a bookmark.
+    const card = t.closest<HTMLElement>(".prism-bookmark");
+    if (card && (!canEdit(editor) || e.metaKey || e.ctrlKey)) { followCardLink(card.dataset.url ?? ""); return; }
     selectThis(editor, getPos);
   });
   return {
@@ -651,7 +686,7 @@ const embedView: NodeViewRenderer = ({ node, editor, getPos, view }) => {
     deselectNode() { dom.classList.remove("is-selected"); },
     stopEvent(e) {
       const t = e.target as HTMLElement | null;
-      return !!t?.closest?.("a, iframe, .prism-embed-resize");
+      return !!t?.closest?.("a, button, iframe, .prism-embed-resize");
     },
     ignoreMutation() { return true; },
   };
@@ -827,14 +862,12 @@ const codeBlockView: NodeViewRenderer = ({ node, editor, getPos, view }) => {
     openLanguagePicker(doc, lang, current.attrs.language ?? null, (l) => setAttrs(editor, getPos, { language: l }));
   });
   wrapBtn.addEventListener("click", () => { wrap = !wrap; paint(); });
-  copyBtn.addEventListener("click", async () => {
-    try {
-      await navigator.clipboard.writeText(current.textContent);
-      copied.textContent = "Copied";
-    } catch {
-      copied.textContent = "Copy failed";
-    }
-    setTimeout(() => { copied.textContent = ""; }, 1600);
+  copyBtn.addEventListener("click", () => {
+    // Inside the click (lib/clipboard.ts); "Copied" only when it really was.
+    void copyText(current.textContent).then((ok) => {
+      copied.textContent = ok ? "Copied" : "Copy failed";
+      setTimeout(() => { copied.textContent = ""; }, 1600);
+    });
   });
   paint();
   const onUpdate = () => { lang.disabled = !canEdit(editor); };

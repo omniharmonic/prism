@@ -6,6 +6,7 @@
  * dry run: what would be created/updated/unchanged, and per-row problems) →
  * import. Re-importing the same file converges instead of duplicating.
  */
+import { saveTextFile, type SaveOutcome } from "../../lib/saveFile";
 import { useMemo, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Upload } from "lucide-react";
@@ -65,15 +66,12 @@ export function rowsToCsv(rows: QueryRow[], props: PropertyDef[]): string {
   return toCsv([["Title", ...props.map((p) => p.label)], ...rows.map((r) => [noteTitle(r), ...props.map((p) => cellText(r, p))])]);
 }
 
-export function downloadText(name: string, text: string, type = "text/csv;charset=utf-8") {
-  const url = URL.createObjectURL(new Blob(["﻿", text], { type }));
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = name;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
+/**
+ * Hand the CSV to the person: a browser download, or the Prism Client's save panel / share sheet
+ * (its web view cancels downloads — `lib/saveFile.ts`). Resolves what happened; throws on failure.
+ */
+export function downloadText(name: string, text: string): Promise<SaveOutcome> {
+  return saveTextFile(name, `\ufeff${text}`, "csv");
 }
 
 const slug = (s: string) => s.trim().toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");

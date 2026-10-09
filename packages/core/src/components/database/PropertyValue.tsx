@@ -8,6 +8,7 @@
  * person keep theirs or take the other value; any other failure keeps the draft
  * and offers Retry. Nothing is ever silently dropped.
  */
+import { editorNotice } from "../../lib/tiptap/notice";
 import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { CalendarClock, Check, ExternalLink, Lock, Mail, Paperclip, Phone, Plus, Search, Upload, X } from "lucide-react";
 import { buildDateValue, dateRange, hasTime, parseDateParts } from "../../lib/database/dates";
@@ -223,8 +224,8 @@ export function PropertyDisplay({ def, value, openLinks = true, links = true }: 
         <span className="db-chips db-files">
           {files.map((f) => (
             <span key={f.url} role="link" tabIndex={0} className="db-file" title={`Download ${f.name}`}
-              onClick={(e) => { e.stopPropagation(); void downloadOwnAttachment(serverFetch, f.url, f.name).catch(() => {}); }}
-              onKeyDown={(e) => { if (e.key === "Enter") { e.stopPropagation(); void downloadOwnAttachment(serverFetch, f.url, f.name).catch(() => {}); } }}>
+              onClick={(e) => { e.stopPropagation(); void downloadOwnAttachment(serverFetch, f.url, f.name).catch(() => editorNotice(`Couldn’t download ${f.name}.`)); }}
+              onKeyDown={(e) => { if (e.key === "Enter") { e.stopPropagation(); void downloadOwnAttachment(serverFetch, f.url, f.name).catch(() => editorNotice(`Couldn’t download ${f.name}.`)); } }}>
               {isImageFileName(f.name) ? <img className="db-file-thumb" src={f.url} alt="" loading="lazy" /> : <Paperclip size={11} aria-hidden="true" />}
               <span className="db-file-name">{f.name}</span>
             </span>

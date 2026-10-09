@@ -105,6 +105,12 @@ ok("no stray fetch() in apps/web + @prism/core server paths (see allowlist)");
   if (run.status === 0) ok(run.stdout.trim());
   else bad(`browser dialogs in shipped UI:\n${(run.stderr || run.stdout).trim()}`);
 }
+// 2c. every clipboard write goes through lib/clipboard.ts `copyText` (inside the gesture, honest result).
+{
+  const run = spawnSync(process.execPath, [join(here, "check-clipboard.mjs")], { encoding: "utf8" });
+  if (run.status === 0) ok(run.stdout.trim());
+  else bad(`clipboard writes outside the helper:\n${(run.stderr || run.stdout).trim()}`);
+}
 
 // 3. host contract in source
 for (const k of ["__PRISM_HOST__", "getToken", "onUnauthorized", "apiOrigin", "signIn"]) {
