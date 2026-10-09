@@ -66,17 +66,26 @@ test("engine: runQuery pages in option order and an order for another key change
   assert.deepEqual(ids(runQuery(ROWS, { ...spec, limit: 10 }, { limited: false, optionOrders: odd }).rows), ["g", "a", "c", "b", "e", "f", "d"]);
 });
 
-test("engine: sorting 20,000 rows by an option order stays fast (one rank map, no per-comparison scan)", () => {
+test("engine: the option order is read ONCE per sort (a rank map), never scanned per comparison", () => {
   const options = Array.from({ length: 400 }, (_, i) => `opt-${String(i).padStart(3, "0")}`);
-  const order = { status: [...options].reverse() };
-  const rows = Array.from({ length: 20_000 }, (_, i) => n(`r${String(i).padStart(5, "0")}`, { status: options[(i * 7919) % options.length] }));
-  const t0 = performance.now();
-  const sorted = sortRows(rows, [{ key: "status", dir: "asc" }], 0, order);
-  const took = performance.now() - t0;
+  // Count every read of an option out of the order list: a per-comparison `indexOf` would read
+  // it hundreds of times per comparison (millions here); building the map reads each option once.
+  let reads = 0;
+  const counted = new Proxy([...options].reverse(), {
+    get(target, prop, receiver) {
+      if (typeof prop === "string" && /^\d+$/.test(prop)) reads++;
+      return Reflect.get(target, prop, receiver);
+    },
+  });
+  const rows = Array.from({ length: 5_000 }, (_, i) => n(`r${String(i).padStart(5, "0")}`, { status: options[(i * 7919) % options.length] }));
+  const sorted = sortRows(rows, [{ key: "status", dir: "asc" }], 0, { status: counted });
   assert.equal(sorted[0]!.metadata!.status, "opt-399");
   assert.equal(sorted[sorted.length - 1]!.metadata!.status, "opt-000");
-  // A per-comparison `indexOf` over 400 options is ~60 M string compares here; the map is a few ms.
-  assert.ok(took < 1500, `sorted in ${Math.round(took)} ms`);
+  assert.ok(reads <= options.length * 2, `the order list was read ${reads} times for ${rows.length} rows`);
+  // And the same count whatever the number of rows.
+  const before = reads;
+  sortRows(rows.slice(0, 50), [{ key: "status", dir: "desc" }], 0, { status: counted });
+  assert.equal(reads - before, before);
 });
 
 test("sortOptionOrders: the optionOrder hint, then the enum; hidden options after; only option properties", () => {
