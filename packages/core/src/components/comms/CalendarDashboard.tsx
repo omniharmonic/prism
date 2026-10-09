@@ -10,7 +10,8 @@ import { useHostServices } from "../../data/HostServicesContext";
 import { useLiveActions } from "../../data/LiveActionsContext";
 import { LiveActionError, liveActionErrorText, type CalendarUpdateParams, type LiveActionsClient, type RsvpResponse } from "../../lib/actions/client";
 import { useUIStore } from "../../app/stores/ui";
-import { Spinner } from "../ui/Spinner";
+import { HostServiceError } from "../../lib/host/services";
+import { CALENDAR_SYNC_SETTLE_MS, calendarSyncChanged, ingestCoversRange, startCalendarSync } from "./calendarSync";
 import { EventTranscripts } from "./EventTranscripts";
 import { calendarDayKey as dateKey, groupCalendarDays, layoutCalendarDay } from "./calendarLayout";
 import type { RendererProps } from "../renderers/RendererProps";
@@ -36,6 +37,14 @@ type CalEvent = {
 type ViewMode = "agenda" | "month" | "week" | "day";
 const AGENDA_DAYS = 7;
 const addDays = (d: Date, n: number) => new Date(d.getFullYear(), d.getMonth(), d.getDate() + n);
+/** The meeting notes are listed ONCE (lean: no bodies) and every view/range reads that list, so
+ *  moving between days, weeks and views costs no request and never empties the screen. */
+const ALL_FROM = "1900-01-01T00:00:00.000Z";
+const ALL_TO = "2200-01-01T00:00:00.000Z";
+const MEETINGS_STALE_MS = 60_000;
+const MEETINGS_KEEP_MS = 30 * 60_000;
+/** "ready" = the vault answered; until then nothing may claim a day is empty. */
+type LoadState = "loading" | "ready" | "failed";
 
 const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 const MONTH_NAMES = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
@@ -142,14 +151,19 @@ function ScopedCalendarDashboard() {
     }
   }, [view, year, month, weekStart, dayDate, firstDay]);
 
-  const { data, isLoading, isError } = useQuery({
-    queryKey: ["calendar", scope, view, rangeStart.toISOString(), rangeEnd.toISOString()],
-    // Read from the vault (works on web + desktop), not live from Google.
-    queryFn: () => calendarApi.listEventsFromVault(rangeStart.toISOString(), rangeEnd.toISOString(), client),
+  // Read from the vault (works on web + desktop), not live from Google. One listing for the whole
+  // calendar, kept while the tool is closed; a failed refetch keeps what was already shown.
+  const meetingsKey = useMemo(() => ["calendar", "meetings", scope], [scope]);
+  const { data, isFetching, isError } = useQuery({
+    queryKey: meetingsKey,
+    queryFn: () => calendarApi.listEventsFromVault(ALL_FROM, ALL_TO, client),
     retry: 1,
+    staleTime: MEETINGS_STALE_MS,
+    gcTime: MEETINGS_KEEP_MS,
   });
 
-  const events: CalEvent[] = !isError && Array.isArray(data) ? (data as CalEvent[]) : [];
+  const events = useMemo<CalEvent[]>(() => (Array.isArray(data) ? (data as CalEvent[]) : []), [data]);
+  const load: LoadState = data !== undefined ? "ready" : isError ? "failed" : "loading";
 
   const refreshEvents = useCallback(() => {
     queryClient.invalidateQueries({ queryKey: ["calendar"] });
@@ -199,42 +213,47 @@ function ScopedCalendarDashboard() {
 
   const closePanel = useCallback(() => { setSelectedEvent(null); setShowCreateForm(false); setEditingEvent(null); setSelectedDate(null); }, []);
 
-  // On-demand sync: when the view range changes, sync that range into Parachute
-  const [syncing, setSyncing] = useState(false);
-  const rangeKey = `${rangeStart.toISOString()}-${rangeEnd.toISOString()}`;
-  const [syncedRanges, setSyncedRanges] = useState<Set<string>>(new Set());
-
-  useEffect(() => {
-    // Google → vault range sync: the desktop runs it through its Tauri command;
-    // a thin client (PWA / Prism Client, server owner) asks the Prism Server
-    // (POST /api/calendar/sync, WP4.3). Anyone else just reads the meeting notes
-    // the server's calendar ingest persists.
-    const syncRange = isDesktop ? calendarApi.syncRange : host ? host.calendarSyncRange : null;
+  // Google → vault range sync, ALWAYS in the background (calendarSync.ts says when): the desktop
+  // runs it through its Tauri command; a thin client (PWA / Prism Client, server owner) asks the
+  // Prism Server (POST /api/calendar/sync, WP4.3). Anyone else just reads the meeting notes the
+  // server's calendar ingest persists.
+  const syncRange = isDesktop ? calendarApi.syncRange : host ? host.calendarSyncRange : null;
+  const [syncing, setSyncing] = useState(0);
+  const [syncFailed, setSyncFailed] = useState(false);
+  const sync = useCallback((from: Date, to: Date, force: boolean) => {
     if (!syncRange) return;
-    if (syncedRanges.has(rangeKey)) return;
-    let cancelled = false;
-    setSyncing(true);
-    const fromStr = rangeStart.toISOString().split("T")[0];
-    const toStr = rangeEnd.toISOString().split("T")[0];
-    syncRange(fromStr, toStr)
-      .then((result) => {
-        if (!cancelled) {
-          setSyncedRanges((prev) => new Set(prev).add(rangeKey));
-          if (result.synced > 0) {
-            console.log("Calendar sync:", result.synced, "events synced for", fromStr, "to", toStr);
-            // Surface the newly-persisted meeting notes in the current view.
-            queryClient.invalidateQueries({ queryKey: ["calendar"] });
-          }
-        }
-      })
-      .catch((e) => {
-        if (!cancelled) console.warn("Calendar sync error:", e);
-      })
-      .finally(() => {
-        if (!cancelled) setSyncing(false);
-      });
-    return () => { cancelled = true; };
-  }, [rangeKey, queryClient, host]);
+    const fromStr = from.toISOString().split("T")[0];
+    const toStr = to.toISOString().split("T")[0];
+    const job = startCalendarSync(scope ?? "", fromStr, toStr, force, () => syncRange(fromStr, toStr));
+    if (!job) return;
+    setSyncing((n) => n + 1);
+    job.then((result) => {
+      if (!mounted.current) return;
+      setSyncFailed(false);
+      // Surface the newly-persisted meeting notes; an unchanged calendar costs no second listing.
+      if (calendarSyncChanged(result)) queryClient.invalidateQueries({ queryKey: meetingsKey });
+    }, (e) => {
+      console.warn("Calendar sync error:", e);
+      // 409 = this server does not own calendar ingest: nothing the reader can act on.
+      if (mounted.current && !(e instanceof HostServiceError && e.status === 409)) setSyncFailed(true);
+    }).finally(() => { if (mounted.current) setSyncing((n) => n - 1); });
+  }, [syncRange, scope, queryClient, meetingsKey]);
+
+  const rangeKey = `${rangeStart.toISOString()}-${rangeEnd.toISOString()}`;
+  const opened = useRef(false);
+  useEffect(() => {
+    if (!opened.current) { opened.current = true; sync(rangeStart, rangeEnd, false); return; }
+    if (ingestCoversRange(rangeStart, rangeEnd)) return;
+    const timer = setTimeout(() => sync(rangeStart, rangeEnd, false), CALENDAR_SYNC_SETTLE_MS);
+    return () => clearTimeout(timer);
+  }, [rangeKey, sync]);
+
+  /** The one indicator is also the refresh button: re-read the vault and top up from Google. */
+  const refreshNow = useCallback(() => {
+    sync(rangeStart, rangeEnd, true);
+    queryClient.invalidateQueries({ queryKey: meetingsKey });
+  }, [sync, rangeStart, rangeEnd, queryClient, meetingsKey]);
+  const busy = isFetching || syncing > 0;
 
   const eventsByDate = useMemo(() => groupCalendarDays(events, rangeStart, rangeEnd), [events, rangeStart, rangeEnd]);
 
@@ -285,8 +304,7 @@ function ScopedCalendarDashboard() {
         <div className="calendar-phone-header flex-shrink-0 px-4 pt-1" style={{ borderBottom: "1px solid var(--glass-border)", background: "var(--bg-surface)" }}>
           <div className="flex items-center gap-1">
             <h2 className="min-w-0 flex-1 truncate text-lg font-semibold" title={phoneTitle} style={{ color: "var(--text-primary)" }}>{phoneTitle}</h2>
-            {syncing && <RefreshCw role="img" aria-label="Syncing" size={14} className="flex-shrink-0 animate-spin" style={{ animationDuration: "2s", color: "var(--text-muted)" }} />}
-            {isLoading && <Spinner size={14} />}
+            <RefreshButton busy={busy} onClick={refreshNow} className="size-control flex flex-shrink-0 items-center justify-center" size={18} />
             <button aria-label="Previous period" onClick={prev} className="focus-ring size-control flex flex-shrink-0 items-center justify-center rounded-lg" style={{ color: "var(--text-secondary)" }}><ChevronLeft size={20} /></button>
             <button aria-label="Next period" onClick={next} className="focus-ring size-control flex flex-shrink-0 items-center justify-center rounded-lg" style={{ color: "var(--text-secondary)" }}><ChevronRight size={20} /></button>
             {canCreate && <button onClick={() => handleCreateClick()} title="Create event" className="focus-ring size-control flex flex-shrink-0 items-center justify-center rounded-lg" style={{ color: "var(--color-accent)" }}><Plus size={20} /></button>}
@@ -310,12 +328,7 @@ function ScopedCalendarDashboard() {
             <button aria-label="Next period" onClick={next} className="focus-ring min-h-control min-w-control p-2 rounded-lg hover:bg-[var(--glass-hover)]" style={{ color: "var(--text-secondary)" }}><ChevronRight size={16} /></button>
           </div>
           <button onClick={goToday} className="focus-ring min-h-control px-3 rounded-lg text-sm hover:bg-[var(--glass-hover)]" style={{ color: "var(--text-secondary)", border: "1px solid var(--glass-border)" }}>Today</button>
-          {syncing && (
-            <span className="flex items-center gap-1 text-[10px]" style={{ color: "var(--text-muted)" }}>
-              <RefreshCw size={10} className="animate-spin" style={{ animationDuration: "2s" }} />
-              Syncing...
-            </span>
-          )}
+          <RefreshButton busy={busy} onClick={refreshNow} className="min-h-control min-w-control flex items-center justify-center p-2 hover:bg-[var(--glass-hover)] transition-colors" size={14} />
           {canCreate && (
             <button
               onClick={() => handleCreateClick()}
@@ -342,30 +355,32 @@ function ScopedCalendarDashboard() {
               {v.charAt(0).toUpperCase() + v.slice(1)}
             </button>
           ))}
-          {isLoading && <Spinner size={14} />}
           {isError && <span className="text-xs" style={{ color: "var(--color-danger)" }}>Not connected</span>}
         </div>
       </div>
       )}
 
+      {/* A failed top-up never hides what the vault already has. */}
+      {syncFailed && <p role="status" data-testid="calendar-sync-notice" className="flex-shrink-0 px-4 py-1.5 text-xs" style={{ color: "var(--text-muted)", borderBottom: "1px solid var(--glass-border)", background: "var(--bg-surface)" }}>Couldn't reach Google Calendar — showing saved events.</p>}
+
       <div className="flex-1 flex min-h-0">
         {/* Main calendar area */}
         <div className="min-w-0 flex-1 flex flex-col min-h-0 overflow-auto">
-          {view === "agenda" && <AgendaView days={Array.from({ length: AGENDA_DAYS }, (_, i) => addDays(dayDate, i))} today={today} eventsByDate={eventsByDate} onEventClick={handleEventClick} />}
+          {view === "agenda" && <AgendaView load={load} days={Array.from({ length: AGENDA_DAYS }, (_, i) => addDays(dayDate, i))} today={today} eventsByDate={eventsByDate} onEventClick={handleEventClick} />}
           {view === "month" && !mobile && <MonthView days={getMonthDays(year, month)} month={month} today={today} selectedDate={selectedDate} eventsByDate={eventsByDate} onSelect={setSelectedDate} onEventClick={handleEventClick} />}
           {view === "month" && mobile && <>
             <PhoneMonthGrid days={getMonthDays(year, month)} month={month} today={today} selectedDate={monthDay} eventsByDate={eventsByDate} onSelect={setSelectedDate} />
             <section aria-label="Events on the selected day" className="space-y-3 px-4 pb-4">
               {monthDay ? <>
                 <DayHeading day={monthDay} today={today} action={canCreate ? <button onClick={() => handleCreateClick(monthDay)} aria-label="Add event on this day" className="focus-ring size-control flex flex-shrink-0 items-center justify-center rounded-lg" style={{ color: "var(--color-accent)" }}><Plus size={18} /></button> : null} />
-                {(eventsByDate.get(dateKey(monthDay)) ?? []).length === 0 && <p className="py-2 text-sm" style={{ color: "var(--text-muted)" }}>No events</p>}
+                {(eventsByDate.get(dateKey(monthDay)) ?? []).length === 0 && <EmptyDay load={load} className="py-2 text-sm">No events</EmptyDay>}
                 {byStart(eventsByDate.get(dateKey(monthDay)) ?? []).map((event) => <PhoneEventCard key={event.vaultNoteId ?? event.id} event={event} day={monthDay} onClick={handleEventClick} />)}
               </> : <p className="py-2 text-sm" style={{ color: "var(--text-muted)" }}>Select a day to see its events.</p>}
             </section>
           </>}
           {/* Phone: a day header opens that day (there is no side panel to list it in). */}
           {view === "week" && <WeekView days={getWeekDays(weekStart)} today={today} selectedDate={selectedDate} eventsByDate={eventsByDate} onSelect={mobile ? (d) => { setSelectedDate(d); setDayDate(d); setView("day"); } : setSelectedDate} onEventClick={handleEventClick} />}
-          {view === "day" && <DayView date={dayDate} today={today} events={eventsByDate.get(dateKey(dayDate)) || []} onEventClick={handleEventClick} />}
+          {view === "day" && <DayView load={load} date={dayDate} today={today} events={eventsByDate.get(dateKey(dayDate)) || []} onEventClick={handleEventClick} />}
         </div>
 
         {/* Side panel — event detail, create form, or day overview */}
@@ -406,7 +421,7 @@ function ScopedCalendarDashboard() {
                 )}
               </div>
               {selectedEvents.length === 0 ? (
-                <div className="text-xs" style={{ color: "var(--text-muted)" }}>No events</div>
+                <EmptyDay load={load} className="text-xs">No events</EmptyDay>
               ) : (
                 <div className="space-y-2">{selectedEvents.map((ev, i) => (
                   <button key={i} className="w-full text-left" onClick={(e) => { e.currentTarget.focus({ preventScroll: true }); handleEventClick(ev); }}>
@@ -422,6 +437,25 @@ function ScopedCalendarDashboard() {
       </div>
     </div>
   );
+}
+
+/** THE loading indicator, and the way to refresh: it turns while the vault is read or Google is
+ *  being synced, and a tap asks for both. There is never a second spinner next to it. */
+function RefreshButton({ busy, onClick, className, size }: { busy: boolean; onClick: () => void; className: string; size: number }) {
+  return <button type="button" data-testid="calendar-refresh" aria-label="Refresh calendar" aria-busy={busy} title={busy ? "Refreshing…" : "Refresh calendar"} onClick={onClick} className={`focus-ring rounded-lg ${className}`} style={{ color: busy ? "var(--text-secondary)" : "var(--text-muted)" }}>
+    <span aria-hidden className={`flex ${busy ? "animate-spin" : ""}`} style={{ animationDuration: "1.4s" }}><RefreshCw size={size} /></span>
+  </button>;
+}
+
+/** "No events" is a claim about the calendar: it is only made once the vault has answered. While
+ *  loading there is a quiet placeholder (or nothing); a failed first load says so instead. */
+function EmptyDay({ load, className, skeleton, children }: { load: LoadState; className: string; skeleton?: boolean; children: ReactNode }) {
+  if (load === "ready") return <p className={className} style={{ color: "var(--text-muted)" }}>{children}</p>;
+  if (load === "failed") return <p className={className} style={{ color: "var(--text-muted)" }}>Couldn't load events.</p>;
+  if (!skeleton) return null;
+  return <div aria-hidden data-testid="calendar-skeleton" className="space-y-3">
+    {[0, 1, 2].map((i) => <div key={i} className="h-[68px] rounded-xl" style={{ background: "var(--glass-hover)", opacity: 0.6 - i * 0.15 }} />)}
+  </div>;
 }
 
 function CalendarDetailsPanel({ title, open, onClose, children }: { title: string; open: boolean; onClose: () => void; children: ReactNode }) {
@@ -507,12 +541,12 @@ function DayHeading({ day, today, action }: { day: Date; today: Date; action?: R
 }
 
 /** The next seven days as one list: a day's name, then its events (or one quiet line). */
-function AgendaView({ days, today, eventsByDate, onEventClick }: { days: Date[]; today: Date; eventsByDate: Map<string, CalEvent[]>; onEventClick: (ev: CalEvent) => void }) {
+function AgendaView({ load, days, today, eventsByDate, onEventClick }: { load: LoadState; days: Date[]; today: Date; eventsByDate: Map<string, CalEvent[]>; onEventClick: (ev: CalEvent) => void }) {
   return <div className="px-4 pb-6" data-testid="calendar-agenda">
     {days.map((day) => {
       const events = byStart(eventsByDate.get(dateKey(day)) ?? []);
       return <section key={dateKey(day)} aria-label={day.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" })} className="space-y-3 pb-2" style={{ borderBottom: "1px solid color-mix(in srgb, var(--glass-border) 60%, transparent)" }}>
-        <DayHeading day={day} today={today} action={events.length ? undefined : <span className="flex-shrink-0 text-sm" style={{ color: "var(--text-muted)" }}>No events</span>} />
+        <DayHeading day={day} today={today} action={events.length || load === "loading" ? undefined : <span className="flex-shrink-0 text-sm" style={{ color: "var(--text-muted)" }}>{load === "ready" ? "No events" : "Couldn't load"}</span>} />
         {events.map((event) => <PhoneEventCard key={event.vaultNoteId ?? event.id} event={event} day={day} onClick={onEventClick} />)}
       </section>;
     })}
@@ -624,11 +658,11 @@ function WeekView({ days, today, selectedDate, eventsByDate, onSelect, onEventCl
 
 // ─── Day View ────────────────────────────────────────────────
 
-function DayView({ date, today, events, onEventClick }: { date: Date; today: Date; events: CalEvent[]; onEventClick: (ev: CalEvent) => void }) {
+function DayView({ load, date, today, events, onEventClick }: { load: LoadState; date: Date; today: Date; events: CalEvent[]; onEventClick: (ev: CalEvent) => void }) {
   const mobile = useIsMobile();
   const isToday = isSameDay(date, today);
   if (mobile) return <div className="space-y-3 overflow-auto p-4">
-    {!events.length && <p className="py-8 text-center text-sm" style={{ color: "var(--text-muted)" }}>No events for this day.</p>}
+    {!events.length && <EmptyDay load={load} skeleton className="py-8 text-center text-sm">No events for this day.</EmptyDay>}
     {byStart(events).map((event) => <PhoneEventCard key={event.vaultNoteId ?? event.id} event={event} day={date} onClick={onEventClick} />)}
   </div>;
 
