@@ -113,9 +113,23 @@ test.describe("plain editor selection toolbar", () => {
       const mod = os === "apple" ? "Meta" : "Control";
       const other = os === "apple" ? "Control" : "Meta";
       // What reached the window, and whether the page had consumed it by then.
+      //
+      // The listener also stands in for the app shell, which this fixture does not mount: the shell takes the ⌘K the
+      // editor leaves alone (quick find) and consumes it (`useKeyboardShortcuts`). Without that, the key's HOST default
+      // ran — on a Mac, Ctrl+K is "delete to the end of the paragraph", so under the emulated Windows modifier the
+      // caret's ⌘K merged "Alpha" into the next block and the rest of the test waited for a heading that was gone.
+      // (No Windows or Linux browser has that default, and on a Mac the app's modifier is ⌘.)
       await page.evaluate(() => {
         (window as any).prismKeys = [];
-        window.addEventListener("keydown", (e) => { if (!["Meta", "Control", "Shift", "Alt"].includes(e.key)) (window as any).prismKeys.push([e.key.toLowerCase(), e.defaultPrevented]); });
+        (window as any).prismQuickFind = 0;
+        window.addEventListener("keydown", (e) => {
+          if (["Meta", "Control", "Shift", "Alt"].includes(e.key)) return;
+          (window as any).prismKeys.push([e.key.toLowerCase(), e.defaultPrevented]);
+          if (e.key.toLowerCase() === "k" && (e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && !e.defaultPrevented) {
+            e.preventDefault();
+            (window as any).prismQuickFind++;
+          }
+        });
       });
       const consumed = async (key: string) => (await page.evaluate(() => (window as any).prismKeys as Array<[string, boolean]>)).filter(([k]) => k === key).at(-1)?.[1];
       const cases: Array<[string, string, string]> = [["b", "b", "strong"], ["i", "i", "em"], ["u", "u", "u"], ["Shift+s", "s", "s"], ["e", "e", "code"], ["Shift+h", "h", "mark"]];
@@ -138,8 +152,12 @@ test.describe("plain editor selection toolbar", () => {
       await expect.poll(() => html(page)).toMatch(/<a [^>]*href="https:\/\/example\.test\/np-ed-05"[^>]*>Echo quote<\/a>/);
       // ⌘K with only a caret is not "link" (it is the shell's quick find — NP-SB-02): no link field, nothing linked.
       await page.getByText("Alpha", { exact: true }).click();
+      const beforeQuickFind = await html(page);
       await page.keyboard.press(`${mod}+k`);
       await expect(field).toHaveCount(0);
+      expect(await consumed("k"), "the editor leaves a caret's ⌘K to the shell").toBe(false);
+      expect(await page.evaluate(() => (window as any).prismQuickFind), "…which received it exactly once").toBe(1);
+      expect(await html(page), "and the document is untouched").toBe(beforeQuickFind);
       expect((await html(page)).match(/<a /g)).toHaveLength(1);
       await page.keyboard.press("Escape");
       await page.getByText("Alpha", { exact: true }).click();
