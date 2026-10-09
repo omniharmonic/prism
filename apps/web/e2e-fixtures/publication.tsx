@@ -134,7 +134,9 @@ window.fetch = async (input, init) => {
         (params.has("typography") ? `<h1>A place for shared understanding</h1><h2>Working together</h2><p>Shared context makes our notes easier to read and revisit.</p><p>${"UNBROKEN_TOKEN_".repeat(12)}</p>` : "") +
         (params.has("long-content")
           ? `<h2>${longTitle}</h2><p><a href="https://example.test/">${longTitle}</a></p><pre><code>${longTitle.repeat(4)}</code></pre>`
-          : ""),
+          : "") +
+        // Slices K / L: a spec's own stored HTML (callout colours, the table-of-contents block).
+        (params.get("html") ?? ""),
     });
   }
   return json({}, 404);

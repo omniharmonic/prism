@@ -8,6 +8,7 @@ import {
   buildLinkIndex,
   renderWikiBody,
   extractToc,
+  headingTarget,
   rewritePublicAttachments,
   computeBacklinks,
   buildTree,
@@ -207,17 +208,17 @@ export default function WikiTemplate({
     if (!note) return { html: "", toc: [] as ReturnType<typeof extractToc>["toc"] };
     const dirty = renderWikiBody(note.content, linkIndex, slug);
     // Files of a published page come from the publication's own attachment route.
-    const out = extractToc(rewritePublicAttachments(sanitizeHtml(dirty), slug));
+    let clean = rewritePublicAttachments(sanitizeHtml(dirty), slug);
     // Notes conventionally open with "# <Title>", and the chrome already shows
-    // the title — drop the body's leading h1 when it just repeats it.
-    const m = out.html.match(/^\s*<h1[^>]*>([\s\S]*?)<\/h1>/);
+    // the title — drop the body's leading h1 when it just repeats it. Before the
+    // outline is read, so neither the rail nor a table-of-contents block in the page
+    // lists (and links to) a heading that is not there.
+    const m = clean.match(/^\s*<h1[^>]*>([\s\S]*?)<\/h1>/);
     if (m) {
       const text = m[1].replace(/<[^>]+>/g, "").replace(/\s+/g, " ").trim().toLowerCase();
-      if (text === note.title.replace(/\s+/g, " ").trim().toLowerCase()) {
-        out.html = out.html.replace(m[0], "");
-      }
+      if (text === note.title.replace(/\s+/g, " ").trim().toLowerCase()) clean = clean.replace(m[0], "");
     }
-    return out;
+    return extractToc(clean);
   }, [note, linkIndex, slug]);
 
   // The /notes/<x> slot accepts a vault PATH as well as a note id (the twin's
@@ -253,6 +254,17 @@ export default function WikiTemplate({
   // clicks / middle-click so the real href still opens a new tab).
   const onArticleClick = useCallback(
     (e: MouseEvent<HTMLDivElement>) => {
+      // An in-page link — a table-of-contents block's entry, or a `#heading` link the author
+      // wrote: scroll to the heading (the address bar and the router are left alone).
+      const inPage = (e.target as HTMLElement).closest('a[href^="#"]') as HTMLAnchorElement | null;
+      if (inPage) {
+        if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
+        const heading = headingTarget(e.currentTarget as HTMLElement, inPage.getAttribute("data-toc-target") ?? (inPage.getAttribute("href") ?? "").slice(1));
+        if (!heading) return;
+        e.preventDefault();
+        heading.scrollIntoView({ behavior: "smooth", block: "start" });
+        return;
+      }
       const a = (e.target as HTMLElement).closest("a.pub-wikilink") as HTMLAnchorElement | null;
       if (!a) return;
       const id = a.getAttribute("data-target");
@@ -263,6 +275,14 @@ export default function WikiTemplate({
     },
     [onNavigate],
   );
+
+  // A link that arrives with a `#heading` fragment lands on that heading once the page is drawn
+  // (ids are prefixed, so the browser's own jump finds nothing for a bare slug).
+  useEffect(() => {
+    const fragment = typeof location !== "undefined" ? location.hash.slice(1) : "";
+    if (!html || !fragment || !articleRef.current) return;
+    headingTarget(articleRef.current, fragment)?.scrollIntoView({ block: "start" });
+  }, [html]);
 
   const onTocClick = useCallback((e: MouseEvent<HTMLAnchorElement>, id: string) => {
     e.preventDefault();

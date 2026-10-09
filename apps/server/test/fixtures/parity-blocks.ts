@@ -20,12 +20,6 @@ export interface ParityBlock {
   html_export: RegExp[];
   selector: string;
   text?: string;
-  /**
-   * Pipelines this block does NOT survive today (seen failing 2026-10-03) — each is a build gap
-   * recorded in docs/roadmap/workspace-experience/PARITY-GAPS.md §a.1. The value says what is lost.
-   * The tests assert every block WITHOUT an entry, and carry the listed ones as todo / fixme.
-   */
-  gaps?: { markdown?: string; html_export?: string; published?: string };
 }
 
 const IMG = "/api/attachments/a_rtimage0000000000000000";
@@ -74,7 +68,6 @@ export const PARITY_BLOCKS: ParityBlock[] = [
     markdown: [/\[x\]\s+RT done task/i, /\[ \]\s+RT open task/],
     html_export: [/RT done task/, /RT open task/],
     selector: 'li[data-checked="true"]', text: "RT done task",
-    gaps: { markdown: "the items are exported as plain bullets: the checked / open state is lost" },
   },
   {
     row: "NP-ED-08", name: "toggle list",
@@ -109,7 +102,6 @@ export const PARITY_BLOCKS: ParityBlock[] = [
     markdown: [/\|\s*RT head A\s*\|\s*RT head B\s*\|/, /\|\s*RT cell A\s*\|\s*RT cell B\s*\|/],
     html_export: [/<table[\s\S]*<th[^>]*>[\s\S]*RT head A[\s\S]*<td[^>]*>[\s\S]*RT cell A[\s\S]*<\/table>/],
     selector: "table td", text: "RT cell A",
-    gaps: { markdown: "the table is flattened: every cell becomes its own paragraph (the words survive, the rows and columns do not)" },
   },
   {
     row: "NP-ED-11", name: "code block with a language",
@@ -126,7 +118,6 @@ export const PARITY_BLOCKS: ParityBlock[] = [
     markdown: [/RT image/, /a_rtimage0000000000000000/],
     html_export: [/<img[^>]*alt="RT image"/, /a_rtimage0000000000000000/],
     selector: 'img[alt="RT image"]',
-    gaps: { markdown: "the caption (and the alignment) is dropped: Markdown keeps only the image and its alt text" },
   },
   {
     row: "NP-ED-13", name: "file block",
@@ -143,7 +134,6 @@ export const PARITY_BLOCKS: ParityBlock[] = [
     markdown: [/RT bookmark/, /https:\/\/example\.test\/rt-bookmark/],
     html_export: [/<a[^>]*href="https:\/\/example\.test\/rt-bookmark"[^>]*>RT bookmark<\/a>/],
     selector: 'a[href="https://example.test/rt-bookmark"]', text: "RT bookmark",
-    gaps: { markdown: "the card becomes a plain link: its description (and site, image) is dropped" },
   },
   {
     row: "NP-ED-15", name: "embed",
@@ -177,7 +167,6 @@ export const PARITY_BLOCKS: ParityBlock[] = [
     markdown: [/^## RT heading two$/m],
     html_export: [/<h2[^>]*>RT heading two<\/h2>/],
     selector: 'div[data-type="toc"]',
-    gaps: { published: "the block is an empty element on a published page: no list of headings is drawn in its place (the reader has the site's own outline)" },
   },
 ];
 
