@@ -18,6 +18,7 @@ import * as ops from "./ops";
 import { syncStoredTitle, TITLE_NOT_UPDATED, TITLE_REFUSED } from "./titleRename";
 import { usePagesUI, type PageRef } from "./store";
 import { pageLink } from "./pageLink";
+import { copyText } from "../clipboard";
 
 const HTMLISH = /^\s*<(p|h[1-6]|ul|ol|div|blockquote|pre|table|section|article|figure|hr)\b/i;
 
@@ -371,12 +372,7 @@ export function usePageActions() {
 
     copyLink: async (page: PageRef) => {
       const link = pageLink(page.id);
-      try {
-        await navigator.clipboard.writeText(link);
-        toast("Link copied");
-      } catch {
-        toast(`Copy this link: ${link}`);
-      }
+      toast((await copyText(link)) ? "Link copied" : `Couldn’t copy. Copy this link: ${link}`);
     },
 
     exportPage: async (page: PageRef, format: "markdown" | "html") => {

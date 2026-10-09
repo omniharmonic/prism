@@ -7,6 +7,12 @@
 #   scripts/omni-dev.sh walkthrough   run the end-to-end walk-through against a running one
 #   scripts/omni-dev.sh scenarios     list the stub's scripted behaviours
 #
+#   OMNI_DEV_HERMES_HOME=~/.hermes-dev scripts/omni-dev.sh
+#                                     NO stub: the dev gateway against a REAL dev Hermes that is
+#                                     already running from that home (its API server on loopback,
+#                                     a fake model behind it). docs/omni-module.md "Testing against
+#                                     a real Hermes". Never ~/.hermes, never ports 8642/8643.
+#
 # Settings (all optional):
 #   OMNI_DEV_ENV_FILE   the DEV env file (default apps/server/.env.dev). Never `.env`.
 #   OMNI_DEV_PORT       dev gateway port (default 8797)
@@ -15,6 +21,9 @@
 #                       seeded once from the env file's DB_PATH when that exists)
 #   OMNI_DEV_STUB_STATE where the stub keeps its sessions between runs (default: <the db>.stub.json,
 #                       git-ignored). Delete it — and the db — to start clean.
+#   OMNI_DEV_HERMES_HOME a dev Hermes home (not ~/.hermes). Its .env supplies API_SERVER_PORT,
+#                       API_SERVER_KEY and OMNI_SERVICE_TOKEN (the omni-bridge plugin's token);
+#                       they are read into this process's environment and never printed.
 #   OMNI_DEV_WEB_BUILD  0 = never build apps/web here (default: build it when apps/web/dist is
 #                       missing or older than the sources — the browser sign-in page needs it)
 #
@@ -56,6 +65,22 @@ done
 [ "$STUB_PORT" != "8642" ] || die "8642 is the real Hermes API server's port — the stub must not sit there"
 [ "$PORT" != "$STUB_PORT" ] || die "the gateway and the stub need different ports"
 
+# A real dev Hermes instead of the stub: its home's .env names the port and holds the two
+# secrets. The owner's own Hermes (~/.hermes) and Hermes' usual ports are refused.
+HERMES_DEV_HOME="${OMNI_DEV_HERMES_HOME:-}"
+REAL_PORT=""
+if [ -n "$HERMES_DEV_HOME" ]; then
+  HERMES_DEV_HOME="$(cd "$HERMES_DEV_HOME" 2>/dev/null && pwd -P)" || die "OMNI_DEV_HERMES_HOME is not a directory"
+  [ "$HERMES_DEV_HOME" != "$(cd "$HOME/.hermes" 2>/dev/null && pwd -P)" ] || die "refusing ~/.hermes — that is the real Hermes. Use a dev home (e.g. ~/.hermes-dev)."
+  [ -f "$HERMES_DEV_HOME/.env" ] || die "no .env in $HERMES_DEV_HOME"
+  hermes_value() { sed -n "s/^$1=//p" "$HERMES_DEV_HOME/.env" | tail -1; }
+  REAL_PORT="$(hermes_value API_SERVER_PORT)"
+  case "$REAL_PORT" in ''|*[!0-9]*) die "API_SERVER_PORT in the dev Hermes .env must be a number" ;; esac
+  case "$REAL_PORT" in 8642|8643) die "port $REAL_PORT is a real Hermes' — give the dev Hermes its own API_SERVER_PORT" ;; esac
+  [ "$REAL_PORT" != "$PORT" ] || die "the gateway and the dev Hermes need different ports"
+  case "$(hermes_value API_SERVER_HOST)" in ''|127.0.0.1|localhost) ;; *) die "the dev Hermes API server must listen on loopback (API_SERVER_HOST)" ;; esac
+fi
+
 # This backend's own database: never the file another dev server has open.
 SRC_DB="$(env_value DB_PATH)"
 case "$SRC_DB" in /*|'') ;; *) SRC_DB="$HERE/${SRC_DB#./}" ;; esac
@@ -67,13 +92,19 @@ export OMNI_DEV_URL="http://127.0.0.1:$PORT"
 if [ "$MODE" = "walkthrough" ]; then
   [ -f "$DB" ] || die "no dev database at $DB — start the backend first (scripts/omni-dev.sh)"
   # Only the session row needs the database; no vault call is made from this process.
+  # Against a real dev Hermes the walk-through speaks to the fake model, not the stub.
+  [ -z "$HERMES_DEV_HOME" ] || export OMNI_WALK_DRIVER=fake
   exec node --env-file="$ENV_FILE" --import tsx scripts/omni-walkthrough.ts
 fi
 [ "$MODE" = "up" ] || die "usage: scripts/omni-dev.sh [up|walkthrough|scenarios]"
 
 in_use() { lsof -nP -iTCP:"$1" -sTCP:LISTEN >/dev/null 2>&1; }
 in_use "$PORT" && die "port $PORT is already in use (set OMNI_DEV_PORT)"
-in_use "$STUB_PORT" && die "port $STUB_PORT is already in use (set OMNI_DEV_STUB_PORT)"
+if [ -n "$REAL_PORT" ]; then
+  in_use "$REAL_PORT" || die "nothing listens on 127.0.0.1:$REAL_PORT — start the dev Hermes first (hermes gateway run, with HERMES_HOME=$HERMES_DEV_HOME)"
+else
+  in_use "$STUB_PORT" && die "port $STUB_PORT is already in use (set OMNI_DEV_STUB_PORT)"
+fi
 
 if [ ! -f "$DB" ] && [ -n "$SRC_DB" ] && [ -f "$SRC_DB" ]; then
   # A consistent copy (the source may be open in another dev server): accounts, grants and
@@ -114,13 +145,25 @@ if [ -z "${PARACHUTE_TOKEN:-}" ] && command -v parachute >/dev/null 2>&1; then
   if [ "${#PARACHUTE_TOKEN}" -gt 200 ]; then export PARACHUTE_TOKEN; else unset PARACHUTE_TOKEN; echo "omni-dev: could not mint a dev vault token; using the env file's (Today's agenda/tasks may fail)" >&2; fi
 fi
 
-# Dev-only secrets: random, in memory only.
-OMNI_HERMES_KEY="$(openssl rand -hex 32)"
-OMNI_SERVICE_TOKEN="$(openssl rand -hex 32)"
+if [ -n "$REAL_PORT" ]; then
+  # The dev Hermes' own key and the token its omni-bridge plugin presents: from its .env
+  # into this process's environment only.
+  OMNI_HERMES_KEY="$(hermes_value API_SERVER_KEY)"
+  OMNI_SERVICE_TOKEN="$(hermes_value OMNI_SERVICE_TOKEN)"
+  [ "${#OMNI_HERMES_KEY}" -ge 16 ] || die "API_SERVER_KEY is missing from the dev Hermes .env"
+  [ "${#OMNI_SERVICE_TOKEN}" -ge 16 ] || die "OMNI_SERVICE_TOKEN is missing from the dev Hermes .env (the omni-bridge plugin needs it too)"
+  [ "$(hermes_value OMNI_GATEWAY_URL)" = "http://127.0.0.1:$PORT" ] || die "OMNI_GATEWAY_URL in the dev Hermes .env must be http://127.0.0.1:$PORT (this gateway), or the plugin would call another one"
+  HERMES_PORT="$REAL_PORT"
+else
+  # Dev-only secrets: random, in memory only.
+  OMNI_HERMES_KEY="$(openssl rand -hex 32)"
+  OMNI_SERVICE_TOKEN="$(openssl rand -hex 32)"
+  HERMES_PORT="$STUB_PORT"
+fi
 export OMNI_HERMES_KEY OMNI_SERVICE_TOKEN
 export OMNI_HERMES_KEY_ENV=OMNI_HERMES_KEY
 export OMNI_ENABLED=true
-export OMNI_HERMES_URL="http://127.0.0.1:$STUB_PORT"
+export OMNI_HERMES_URL="http://127.0.0.1:$HERMES_PORT"
 
 # Nothing outward. An empty value counts as unset for the Omni settings, and a variable that
 # is already in the environment is never replaced by the env file.
@@ -139,23 +182,25 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-OMNI_STUB_PORT="$STUB_PORT" OMNI_STUB_GATEWAY_URL="http://127.0.0.1:$PORT" OMNI_STUB_STATE="$STUB_STATE" node --import tsx scripts/omni-stub-hermes.ts &
-STUB_PID=$!
+if [ -z "$REAL_PORT" ]; then
+  OMNI_STUB_PORT="$STUB_PORT" OMNI_STUB_GATEWAY_URL="http://127.0.0.1:$PORT" OMNI_STUB_STATE="$STUB_STATE" node --import tsx scripts/omni-stub-hermes.ts &
+  STUB_PID=$!
+fi
 
-# Wait for OUR stub: only it accepts the key made above, so a 200 here proves the gateway
+# Wait for OUR Hermes: only it accepts the key in hand, so a 200 here proves the gateway
 # will not be talking to some other Hermes. The key goes to curl on stdin, not in its argv.
 ok=""
 for _ in $(seq 1 50); do
-  kill -0 "$STUB_PID" 2>/dev/null || die "the stub Hermes did not start"
-  if printf 'Authorization: Bearer %s' "$OMNI_HERMES_KEY" | curl -fsS -o /dev/null -H @- "http://127.0.0.1:$STUB_PORT/api/sessions?limit=1" 2>/dev/null; then ok=1; break; fi
+  [ -z "$STUB_PID" ] || kill -0 "$STUB_PID" 2>/dev/null || die "the stub Hermes did not start"
+  if printf 'Authorization: Bearer %s' "$OMNI_HERMES_KEY" | curl -fsS -o /dev/null -H @- "http://127.0.0.1:$HERMES_PORT/api/sessions?limit=1" 2>/dev/null; then ok=1; break; fi
   sleep 0.2
 done
-[ -n "$ok" ] || die "the stub Hermes did not answer on 127.0.0.1:$STUB_PORT"
+[ -n "$ok" ] || die "Hermes did not accept the key on 127.0.0.1:$HERMES_PORT"
 
 # Threads the gateway's database lists but the stub no longer has (its state file was deleted,
 # or the database is older than the file) cannot be opened: take them out of the list. They
 # are archived in THIS dev database only — never deleted — and say so here.
-if [ -f "$DB" ] && [ "${OMNI_DEV_RECONCILE:-1}" != "0" ]; then
+if [ -z "$REAL_PORT" ] && [ -f "$DB" ] && [ "${OMNI_DEV_RECONCILE:-1}" != "0" ]; then
   # The ids the stub has, one per line, quoted for SQL (ids are [A-Za-z0-9_-] only; anything else is dropped).
   KNOWN="$(OMNI_DEV_STUB_STATE_FILE="$STUB_STATE" node -e '
     let ids = [];
@@ -172,7 +217,8 @@ if [ -f "$DB" ] && [ "${OMNI_DEV_RECONCILE:-1}" != "0" ]; then
   fi
 fi
 
-echo "omni-dev: stub Hermes on http://127.0.0.1:$STUB_PORT, dev gateway starting on http://127.0.0.1:$PORT"
+if [ -n "$REAL_PORT" ]; then echo "omni-dev: REAL dev Hermes on http://127.0.0.1:$REAL_PORT (home $HERMES_DEV_HOME), dev gateway starting on http://127.0.0.1:$PORT"
+else echo "omni-dev: stub Hermes on http://127.0.0.1:$STUB_PORT, dev gateway starting on http://127.0.0.1:$PORT"; fi
 echo "omni-dev: executors OFF (no proton_send, ACTIONS_* false) — an approved draft answers executor_disabled"
 echo "omni-dev: the app's server URL is http://127.0.0.1:$PORT (this Mac and its simulators only)"
 
@@ -193,5 +239,5 @@ highlight_link() {
 }
 PRISM_HTTP_ERRLOG=1 node --env-file="$ENV_FILE" --import tsx src/index.ts > >(highlight_link) 2>&1 &
 SERVER_PID=$!
-# Either process ending ends the pair.
-while kill -0 "$SERVER_PID" 2>/dev/null && kill -0 "$STUB_PID" 2>/dev/null; do sleep 1; done
+# Either process ending ends the pair. (A real dev Hermes is not ours to stop.)
+while kill -0 "$SERVER_PID" 2>/dev/null && { [ -z "$STUB_PID" ] || kill -0 "$STUB_PID" 2>/dev/null; }; do sleep 1; done

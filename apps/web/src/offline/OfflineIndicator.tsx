@@ -1,3 +1,4 @@
+import { saveTextFile } from "@prism/core/shell";
 import { useEffect, useRef, useState } from "react";
 import {
   allQueued,
@@ -30,15 +31,9 @@ const stateLabels = {
   unknown: "Result unconfirmed",
   quarantined: "Older draft",
 };
-function download(value: unknown, name: string) {
-  const url = URL.createObjectURL(
-    new Blob([JSON.stringify(value, null, 2)], { type: "application/json" }),
-  );
-  const anchor = document.createElement("a");
-  anchor.href = url;
-  anchor.download = name;
-  anchor.click();
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
+/** A browser download, or the Prism Client's save panel / share sheet (its web view cancels downloads). */
+function download(value: unknown, name: string): Promise<unknown> {
+  return saveTextFile(name, JSON.stringify(value, null, 2), "json");
 }
 
 /** A failed read of the queue is read again this soon, and reported after this many in a row. */
@@ -357,7 +352,7 @@ export function OfflineIndicator() {
                 void allQueued()
                   .then((rows) => {
                     if (getMe()?.isOwner)
-                      download(
+                      return download(
                         rows.filter((r) => !r.scope),
                         "prism-older-drafts.json",
                       );
@@ -428,10 +423,10 @@ export function OfflineIndicator() {
                   type="button"
                   className="underline"
                   onClick={() =>
-                    download(
+                    void download(
                       item,
                       `prism-saved-change-${item.operationId}.json`,
-                    )
+                    ).catch(() => setError("Could not save that change as a file."))
                   }
                 >
                   Download saved change

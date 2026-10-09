@@ -10,13 +10,14 @@ import { captureWriteContext } from "./writeScope";
 export type LeaveChoice = "stay" | "download" | "discard";
 export const LEAVE_EVENT = "prism:leave-with-unsent";
 
-function download(value: unknown, name: string) {
-  const url = URL.createObjectURL(new Blob([JSON.stringify(value, null, 2)], { type: "application/json" }));
-  const anchor = document.createElement("a");
-  anchor.href = url;
-  anchor.download = name;
-  anchor.click();
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
+/**
+ * Hand the unsent work over as a file. A browser starts a download. The Prism Client's web view
+ * cancels downloads, so there the shell's save panel / share sheet does it — and only "saved"
+ * counts: the caller removes the work from this device next.
+ */
+async function download(value: unknown, name: string): Promise<boolean> {
+  const { saveTextFile } = await import("@prism/core/shell");
+  return (await saveTextFile(name, JSON.stringify(value, null, 2), "json")) !== "cancelled";
 }
 
 /**
@@ -35,8 +36,14 @@ export async function confirmLeaveWithUnsent(): Promise<boolean> {
   const choice = await new Promise<LeaveChoice>((resolve) => {
     let handled = false;
     window.dispatchEvent(new CustomEvent(LEAVE_EVENT, { detail: { count, take: () => { handled = true; }, resolve } }));
-    // No dialog host mounted (e.g. a bare page): fall back to the browser's own prompt.
-    if (!handled) resolve(window.confirm(`${count} change${count === 1 ? " has" : "s have"} not reached the server yet and will stay on this device, unsent. Sign out anyway?`) ? "download" : "stay");
+    // No dialog host mounted (e.g. a bare page): ask in the app's own confirmation — never the
+    // browser's `confirm()`, which the Prism Client's web view answers "no" without showing anything.
+    if (!handled) void import("@prism/core/shell").then(({ askConfirm }) => askConfirm({
+      title: "Sign out with unsent changes?",
+      body: `${count} change${count === 1 ? " has" : "s have"} not reached the server yet. They are downloaded as a file first, then removed from this device.`,
+      confirm: "Download and sign out",
+      cancel: "Stay signed in",
+    })).then((yes) => resolve(yes ? "download" : "stay"), () => resolve("stay"));
   });
   if (choice === "stay") return false;
   if (choice === "download") {
@@ -54,7 +61,13 @@ export async function confirmLeaveWithUnsent(): Promise<boolean> {
       return false;
     }
     // Queued writes as before; live documents as their Yjs state (base64) per note id.
-    download(liveDocuments.length ? { queuedWrites: queued, liveDocuments } : queued, "prism-unsent-changes.json");
+    // The file must really have been handed over before anything is removed: in the Prism Client a
+    // closed save panel / share sheet, or a failed save, means the person has NO copy.
+    const kept = await download(liveDocuments.length ? { queuedWrites: queued, liveDocuments } : queued, "prism-unsent-changes.json").catch(() => false);
+    if (!kept) {
+      window.dispatchEvent(new CustomEvent("prism:offline-refused", { detail: { message: "Your unsent changes were not saved as a file, so you are not signed out and nothing was removed." } }));
+      return false;
+    }
   }
   await discardAllCurrent().catch(() => undefined);
   return true;

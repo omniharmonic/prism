@@ -786,7 +786,7 @@ function SkillConfigCard({
   const handleProviderChange = (provider: string) => apply({ provider: provider as SkillPatch["provider"], model: "" });
   const handleSkillModelChange = (model: string) => apply({ model });
   const handleExecutionModeChange = (executionMode: string) => apply({ executionMode: executionMode as SkillPatch["executionMode"] });
-  // Two-click inline confirm — window.confirm() is unreliable in the Tauri webview.
+  // Two-click inline confirm (the web view shows no browser dialogs).
   const handleDelete = async () => {
     if (!confirmingDelete) {
       setConfirmingDelete(true);

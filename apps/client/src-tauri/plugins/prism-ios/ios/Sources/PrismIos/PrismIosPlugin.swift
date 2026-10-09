@@ -612,10 +612,18 @@ class PrismIosPlugin: Plugin, ASWebAuthenticationPresentationContextProviding, U
   // MARK: export → share sheet
 
   /// What the shell exports: an archive (save_export) or one note (export_note).
-  private static let shareableExtensions: Set<String> = ["zip", "md", "html"]
+  private static let shareableExtensions: Set<String> = ["zip", "md", "html", "csv", "json"]
+  /// One attached file of a page (save_attachment). The SAME list as `SAVE_EXTENSIONS` in
+  /// attachment_save.rs — Rust names the file, so nothing else ever arrives here.
+  private static let attachmentExtensions: Set<String> = [
+    "png", "jpg", "jpeg", "gif", "webp", "avif", "heic", "bmp", "tiff", "pdf", "mp3", "m4a", "wav", "ogg", "oga", "flac", "aac", "opus", "mp4",
+    "m4v", "mov", "webm", "mkv", "txt", "csv", "tsv", "json", "md", "rtf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "odt", "ods", "odp",
+    "pages", "numbers", "key", "epub", "ics", "vcf", "zip", "gz", "tar", "7z", "bin",
+  ]
 
   /// Present the system share sheet (Save to Files, AirDrop, …) for ONE file the
-  /// shell just wrote. Only a `.zip` / `.md` / `.html` inside
+  /// shell just wrote. Only an export (`.zip` / `.md` / `.html` / `.csv` / `.json`) or an attached
+  /// file with a listed extension, inside
   /// `<app tmp>/prism-exports/` is accepted; the path comes from Rust
   /// (native_cmds.rs), never from the page.
   /// Resolves `{confirmed: <an activity completed>}`; the shell deletes the file
@@ -628,10 +636,11 @@ class PrismIosPlugin: Plugin, ASWebAuthenticationPresentationContextProviding, U
       .standardizedFileURL.resolvingSymlinksInPath()
     var isDir: ObjCBool = false
     guard file.path.hasPrefix(root.path + "/"),
-      PrismIosPlugin.shareableExtensions.contains(file.pathExtension.lowercased()),
+      PrismIosPlugin.shareableExtensions.contains(file.pathExtension.lowercased())
+        || PrismIosPlugin.attachmentExtensions.contains(file.pathExtension.lowercased()),
       FileManager.default.fileExists(atPath: file.path, isDirectory: &isDir), !isDir.boolValue
     else {
-      invoke.reject("That export can't be shared.")
+      invoke.reject("That file can't be shared.")
       return
     }
     DispatchQueue.main.async {

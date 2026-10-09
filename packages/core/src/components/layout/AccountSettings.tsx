@@ -14,6 +14,7 @@ import { PushSettings } from "./PushSettings";
 import { ShellSettingsSlot } from "../../data/ShellSettings";
 
 import { formatDateTime as fmtDateTime } from "../../lib/datetime/format";
+import { askConfirm } from "../ui/ConfirmDialog";
 /** Downscale a picked image to a small square avatar (data URL) so it stays well
  *  under the server's size cap and renders crisply at cursor/comment sizes. */
 async function fileToAvatar(file: File, size = 128): Promise<string> {
@@ -113,7 +114,7 @@ export function AccountSettings() {
 
   const revokeDevice = useCallback(async (d: SignedInDevice) => {
     if (!account?.revokeDevice) return;
-    if (!window.confirm(`Sign out "${d.label ?? "this device"}"? It will need to sign in again.`)) return;
+    if (!(await askConfirm({ title: `Sign out "${d.label ?? "this device"}"?`, body: "It will need to sign in again.", confirm: "Sign out", danger: true }))) return;
     setError(null);
     try {
       await account.revokeDevice(d.id);

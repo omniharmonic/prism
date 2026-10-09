@@ -240,6 +240,9 @@ export const endTurn = (turnId: string, status: TurnRow["status"], errorCode: st
 export const runningThreadIds = (): string[] => (q.runningTurns.all() as Array<{ thread_id: string }>).map((r) => r.thread_id);
 /** At boot: no in-memory stream survives a restart, so a `running` turn is interrupted. */
 export const sweepRunningTurns = (): number => q.sweepTurns.run(Date.now()).changes;
+/** The Hermes run ids of the turns still marked `running` (read BEFORE the sweep). */
+export const runningRunIds = (): string[] =>
+  (db.prepare("SELECT run_id AS r FROM omni_turns WHERE status = 'running' AND run_id IS NOT NULL").all() as Array<{ r: string }>).map((x) => x.r);
 
 // ── cards ───────────────────────────────────────────────────────────────────
 

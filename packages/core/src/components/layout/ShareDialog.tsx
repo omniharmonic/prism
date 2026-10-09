@@ -30,6 +30,7 @@ import { PersonAvatar } from "../sharing/PersonAvatar";
 import { PublishFlow } from "../sharing/PublishHandoff";
 
 import { formatDate as fmtDate } from "../../lib/datetime/format";
+import { copyText } from "../../lib/clipboard";
 type Props = { noteId: string; sharing: CollabSharing; onClose: () => void };
 type Section = "people" | "links" | "publish" | "sync";
 const LEVELS: ShareLevel[] = ["view", "comment", "suggest", "edit"];
@@ -193,22 +194,39 @@ function SharingDocument({ noteId, sharing, onClose }: Props) {
       throw new Error("Access changed; reload settings.");
     }
   }
-  async function copy(url: string, label: string) {
-    try {
-      await navigator.clipboard.writeText(url);
-      if (!alive.current) return;
-      setCopied(label);
-      setManualCopy(null);
-      clearTimeout(copyTimer.current);
-      copyTimer.current = setTimeout(() => {
-        if (alive.current) setCopied("");
-      }, 2000);
-    } catch {
-      if (alive.current) {
-        setCopied("");
-        setManualCopy({ url, label });
-      }
+  /** "Copied" only when the clipboard really took it; otherwise the link is shown to copy by hand. */
+  function showCopy(ok: boolean, url: string, label: string) {
+    if (!alive.current) return;
+    clearTimeout(copyTimer.current);
+    if (!ok) {
+      setCopied("");
+      setManualCopy({ url, label });
+      return;
     }
+    setCopied(label);
+    setManualCopy(null);
+    copyTimer.current = setTimeout(() => {
+      if (alive.current) setCopied("");
+    }, 2000);
+  }
+  /** Call synchronously in the click handler (lib/clipboard.ts: the write must start inside the gesture). */
+  function copy(url: string, label: string) {
+    void copyText(url).then((ok) => showCopy(ok, url, label));
+  }
+  /**
+   * Create a link and copy it. The link comes from the server, but the clipboard only accepts a
+   * write that starts inside this click, so the PENDING link goes to copyText right away.
+   */
+  function createLinkAndCopy() {
+    if (lock.current || !alive.current) return;
+    const pending = (async () => sharing.createLink!(noteId, linkLevel, days))();
+    const written = copyText(pending.then((link) => link.url));
+    void run(async () => {
+      const link = await pending;
+      if (!alive.current) return;
+      await changed(async () => {});
+      showCopy(await written, link.url, `link ${link.id}`);
+    }, "Couldn't create the link.");
   }
   const loadPublications = useCallback(async () => {
     if (alive.current) setPublications(null);
@@ -279,7 +297,7 @@ function SharingDocument({ noteId, sharing, onClose }: Props) {
     <button
       type="button"
       aria-label={`Copy ${label}`}
-      onClick={() => void copy(url, label)}
+      onClick={() => copy(url, label)}
     >
       {copied === label ? <Check size={16} /> : <Copy size={16} />}{" "}
       {copied === label ? "Copied" : "Copy"}
@@ -747,18 +765,7 @@ function SharingDocument({ noteId, sharing, onClose }: Props) {
                   type="button"
                   className="share-primary"
                   disabled={!sharing.createLink}
-                  onClick={() =>
-                    void run(async () => {
-                      const link = await sharing.createLink!(
-                        noteId,
-                        linkLevel,
-                        days,
-                      );
-                      if (!alive.current) return;
-                      await changed(async () => {});
-                      await copy(link.url, `link ${link.id}`);
-                    }, "Couldn't create the link.")
-                  }
+                  onClick={createLinkAndCopy}
                 >
                   <Link2 size={16} />
                   Create link

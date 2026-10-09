@@ -12,6 +12,7 @@ import { linkTarget, openInNewTab, openLinkTarget, sharePageLink, type LinkTarge
 import { structuralEditsAllowed } from "../../lib/tiptap/blockCommands";
 import { pageLink } from "../../lib/pages/usePageActions";
 import { inWorkspace } from "../../lib/tiptap/openPage";
+import { copyText } from "../../lib/clipboard";
 import { focusHeading, headingLink } from "../../lib/pages/headingLinks";
 import { walkTab } from "../../lib/a11y/tabWalk";
 import "./LinkCard.css";
@@ -36,10 +37,12 @@ import "./LinkCard.css";
  *    click (tap) opens the link; where it is, it places the caret and the card shows —
  *    ⌘/Ctrl-click opens at once.
  */
-interface CardState { href: string; from: number; to: number; left: number; top: number; via: "hover" | "caret" | "keys" | "focus" }
+interface CardState { href: string; from: number; to: number; left: number; top: number; via: "hover" | "caret" | "keys" | "focus" | "press" }
 
 const SHOW_MS = 280;
 const HIDE_MS = 220;
+/** Shorter than the system's own long press (~500 ms), so the card is up before a text selection starts. */
+const LONG_PRESS_MS = 420;
 
 function linkAt(editor: Editor, pos: number): { href: string; from: number; to: number } | null {
   const type = editor.schema.marks.link;
@@ -101,7 +104,7 @@ function placeFor(editor: Editor, from: number, to: number): { left: number; top
 export function LinkCard({ editor }: { editor: Editor }) {
   const client = useOptionalVaultClient();
   const [card, setCard] = useState<CardState | null>(null);
-  const [copied, setCopied] = useState(false);
+  const [copied, setCopied] = useState<"yes" | "no" | null>(null);
   const cardRef = useRef<HTMLDivElement>(null);
   const state = useRef<CardState | null>(null);
   state.current = card;
@@ -136,7 +139,7 @@ export function LinkCard({ editor }: { editor: Editor }) {
       const place = placeFor(editor, link.from, link.to);
       if (!place) return;
       clear("hide");
-      setCopied(false);
+      setCopied(null);
       setCard({ ...link, ...place, via });
     };
     const hide = () => { clear("show"); clear("hide"); setCard(null); };
@@ -165,17 +168,41 @@ export function LinkCard({ editor }: { editor: Editor }) {
     };
     const onLeave = () => { if (state.current?.via === "hover") hideSoon(); else clear("show"); };
 
+    // Touch, on a page the reader cannot edit: a tap follows the link (below), so there was no way
+    // to reach Copy — the card needs a pointer that hovers or a keyboard. A LONG PRESS on the link
+    // shows the card (Open / Copy) instead; the tap that ends it does not also open the link.
+    let press: { timer: number; x: number; y: number } | null = null;
+    let pressed = false;
+    const endPress = () => { if (press) { window.clearTimeout(press.timer); press = null; } };
+    const onPressStart = (e: PointerEvent) => {
+      endPress();
+      pressed = false;
+      if (e.pointerType === "mouse" || editor.isEditable) return;
+      const a = (e.target as Element | null)?.closest?.("a[href]");
+      const link = a && dom.contains(a) ? linkOfAnchor(editor, a) : null;
+      if (!link) return;
+      press = { x: e.clientX, y: e.clientY, timer: window.setTimeout(() => { press = null; pressed = true; show(link, "press"); }, LONG_PRESS_MS) };
+    };
+    const onPressMove = (e: PointerEvent) => { if (press && Math.hypot(e.clientX - press.x, e.clientY - press.y) > 10) endPress(); };
+    // Where a long press raises the system's own menu as an event (Android), ours is the one shown.
+    const onContextMenu = (e: MouseEvent) => { if (pressed || press) e.preventDefault(); };
+    // A press anywhere else puts that card away.
+    const onOutside = (e: PointerEvent) => { if (state.current?.via === "press" && !cardRef.current?.contains(e.target as Node | null)) hide(); };
+
     // A click on a link never navigates this window. Listened for at the WINDOW (capture), ahead of
     // any document-level handler: the Prism Client's host script takes every http(s) anchor click it
     // finds un-handled and opens it natively — it would open our own page links outside the app, and
     // an outside link twice. Handled here first, it leaves the click alone; an outside link then
     // reaches it exactly once, through `openInNewTab`.
     const onClick = (e: MouseEvent) => {
+      endPress(); // a click ends any press under way (some engines send no pointerup for a tap)
       const a = (e.target as Element | null)?.closest?.("a[href]");
       const link = a && dom.contains(a) ? linkOfAnchor(editor, a) : null;
       if (!link) return;
       const handledElsewhere = e.defaultPrevented;
       e.preventDefault();
+      // The end of a long press that raised the card: not a tap on the link.
+      if (pressed) { pressed = false; return; }
       // Someone ahead of us already took this click (an older host): do not open an outside link again.
       if (handledElsewhere && linkTarget(link.href).kind === "external") return;
       if (editor.isEditable && !(e.metaKey || e.ctrlKey)) {
@@ -239,6 +266,14 @@ export function LinkCard({ editor }: { editor: Editor }) {
 
     dom.addEventListener("mouseover", onOver);
     dom.addEventListener("mouseleave", onLeave);
+    dom.addEventListener("pointerdown", onPressStart);
+    dom.addEventListener("pointermove", onPressMove);
+    dom.addEventListener("pointerup", endPress);
+    dom.addEventListener("pointercancel", endPress);
+    dom.addEventListener("touchend", endPress);
+    dom.addEventListener("touchcancel", endPress);
+    dom.addEventListener("contextmenu", onContextMenu);
+    window.addEventListener("pointerdown", onOutside, true);
     window.addEventListener("click", onClick, true);
     dom.addEventListener("keydown", onKey, true);
     dom.addEventListener("focusin", onFocusIn);
@@ -252,6 +287,15 @@ export function LinkCard({ editor }: { editor: Editor }) {
       clear("show"); clear("hide");
       dom.removeEventListener("mouseover", onOver);
       dom.removeEventListener("mouseleave", onLeave);
+      endPress();
+      dom.removeEventListener("pointerdown", onPressStart);
+      dom.removeEventListener("pointermove", onPressMove);
+      dom.removeEventListener("pointerup", endPress);
+      dom.removeEventListener("pointercancel", endPress);
+      dom.removeEventListener("touchend", endPress);
+      dom.removeEventListener("touchcancel", endPress);
+      dom.removeEventListener("contextmenu", onContextMenu);
+      window.removeEventListener("pointerdown", onOutside, true);
       window.removeEventListener("click", onClick, true);
       dom.removeEventListener("keydown", onKey, true);
       dom.removeEventListener("focusin", onFocusIn);
@@ -282,9 +326,8 @@ export function LinkCard({ editor }: { editor: Editor }) {
     close(false);
     editor.chain().focus().setTextSelection({ from, to }).unsetLink().setTextSelection(to).run();
   };
-  const copy = () => {
-    void navigator.clipboard?.writeText(card.href).then(() => setCopied(true), () => setCopied(false));
-  };
+  // Inside the tap (lib/clipboard.ts); "Copied" only when it really was.
+  const copy = () => { void copyText(card.href).then((ok) => setCopied(ok ? "yes" : "no")); };
   const label = target.kind === "page" ? "Open page" : "Open link";
 
   return createPortal(
@@ -321,10 +364,11 @@ export function LinkCard({ editor }: { editor: Editor }) {
         </button>
       </> : (
         <button type="button" className="prism-link-card-action" aria-label="Copy link" title="Copy link" onMouseDown={(e) => e.preventDefault()} onClick={copy}>
-          <Copy size={14} aria-hidden="true" /> {copied ? "Copied" : "Copy"}
+          <Copy size={14} aria-hidden="true" /> {copied === "yes" ? "Copied" : "Copy"}
         </button>
       )}
-      <span className="sr-only" aria-live="polite">{copied ? "Link copied" : ""}</span>
+      {copied === "no" && <span className="prism-link-card-note" role="alert">Couldn’t copy — press and hold the address to copy it.</span>}
+      <span className="sr-only" aria-live="polite">{copied === "yes" ? "Link copied" : ""}</span>
     </div>,
     document.body,
   );

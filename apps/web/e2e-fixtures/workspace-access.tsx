@@ -78,6 +78,8 @@ Object.defineProperty(navigator, "clipboard", {
     },
   },
 });
+// The legacy fallback (lib/clipboard.ts) follows the same switch: a denied clipboard takes nothing.
+document.execCommand = () => !controls.clipboardDenied;
 useAgentChatStore.setState({ scope: controls.scope });
 async function write(input: Record<string, unknown>) {
   controls.writes.push(input);

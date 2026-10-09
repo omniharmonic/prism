@@ -128,21 +128,37 @@ export function canUploadFiles(editor: Editor | null): boolean {
   return !!(ext?.options as ImageUploadOptions | undefined)?.uploadFile;
 }
 
-/** Open the file picker (optionally filtered, e.g. "application/pdf" or "audio/*") and attach the files at the selection. */
-export function pickAndUploadFiles(editor: Editor, accept?: string): void {
+/**
+ * Open the system file chooser. MUST be called synchronously inside the tap / click / key press
+ * that asked for it: WebKit (iOS Safari and the app's WKWebView) opens a chooser only while the
+ * user gesture is still active — after an `await`, a timeout or a re-render it silently does
+ * nothing. The input is in the document and laid out (1 px, off screen, never `display: none`),
+ * and it is removed on a choice AND on a cancelled chooser.
+ * `accept` decides what the iOS sheet offers (Photo Library / Take Photo / Choose File).
+ */
+export function openFilePicker(opts: { accept?: string; multiple?: boolean; marker?: string }, onFiles: (files: File[]) => void): void {
   const input = document.createElement("input");
   input.type = "file";
-  if (accept) input.accept = accept;
-  input.multiple = true;
-  input.style.display = "none";
-  const pos = editor.state.selection.from;
+  if (opts.accept) input.accept = opts.accept;
+  input.multiple = !!opts.multiple;
+  input.tabIndex = -1;
+  input.setAttribute("aria-hidden", "true");
+  input.setAttribute(opts.marker ?? "data-prism-file-picker", "");
+  input.style.cssText = "position:fixed;left:-9999px;top:0;width:1px;height:1px;opacity:0;pointer-events:none;";
   input.addEventListener("change", () => {
     const files = Array.from(input.files ?? []);
     input.remove();
-    if (files.length) void uploadFiles(editor, files, pos);
+    if (files.length) onFiles(files);
   });
+  input.addEventListener("cancel", () => input.remove());
   document.body.appendChild(input);
   input.click();
+}
+
+/** Open the file picker (optionally filtered, e.g. "application/pdf" or "audio/*") and attach the files at the selection. Call it inside the user's gesture (`openFilePicker`). */
+export function pickAndUploadFiles(editor: Editor, accept?: string): void {
+  const pos = editor.state.selection.from;
+  openFilePicker({ accept, multiple: true }, (files) => void uploadFiles(editor, files, pos));
 }
 
 export function canUploadImages(editor: Editor | null): boolean {
@@ -150,21 +166,10 @@ export function canUploadImages(editor: Editor | null): boolean {
   return !!(ext?.options as ImageUploadOptions | undefined)?.upload;
 }
 
-/** Open the system file picker and upload the chosen images at the selection. */
+/** Open the system file picker and upload the chosen images at the selection. Call it inside the user's gesture (`openFilePicker`). */
 export function pickAndUploadImages(editor: Editor): void {
-  const input = document.createElement("input");
-  input.type = "file";
-  input.accept = IMAGE_TYPES.join(",");
-  input.multiple = true;
-  input.style.display = "none";
   const pos = editor.state.selection.from;
-  input.addEventListener("change", () => {
-    const files = Array.from(input.files ?? []);
-    input.remove();
-    if (files.length) void uploadImages(editor, files, pos);
-  });
-  document.body.appendChild(input);
-  input.click();
+  openFilePicker({ accept: IMAGE_TYPES.join(","), multiple: true }, (files) => void uploadImages(editor, files, pos));
 }
 
 export const ImageUpload = Extension.create<ImageUploadOptions>({

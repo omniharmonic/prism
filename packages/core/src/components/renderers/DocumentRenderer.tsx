@@ -34,6 +34,7 @@ import { ImageUpload } from "../../lib/tiptap/ImageUpload";
 import "../../lib/tiptap/mediaViews";
 import { UrlPaste, type UrlPasteState, type Unfurler } from "../../lib/tiptap/UrlPaste";
 import { PasteUrlMenu } from "./PasteUrlMenu";
+import { EditorPrompt } from "./EditorPrompt";
 import { LinkCard } from "./LinkCard";
 import { DatabaseInsert, type DatabaseInsertRequest } from "../../lib/tiptap/databaseView";
 import { InsertDatabaseDialog } from "./InsertDatabaseDialog";
@@ -541,6 +542,8 @@ export default function DocumentRenderer({ note, onMetadataChange, readOnly }: R
         )}
         {/* Link card: address + Open / Edit / Remove for the link under the pointer or caret */}
         {editor && <LinkCard editor={editor} />}
+        {/* The in-app address field: Embed, Web bookmark, Image from URL, toolbar Link / Image (never window.prompt) */}
+        {editor && <EditorPrompt editor={editor} />}
         {/* "Paste as" menu after a bare URL paste */}
         {editor && pasteState && !notEditable && (
           <PasteUrlMenu editor={editor} state={pasteState} unfurl={unfurl} onClose={() => setPasteState(null)} />

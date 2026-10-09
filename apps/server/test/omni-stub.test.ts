@@ -8,6 +8,8 @@ import { test, beforeEach, after } from "node:test";
 import assert from "node:assert/strict";
 
 process.env.OMNI_ENABLED = "true";
+// A cancel keeps asking Hermes to stop; in tests it gives up quickly.
+process.env.OMNI_HERMES_STOP_RETRY_MS = "1500";
 process.env.OMNI_HERMES_URL = "http://127.0.0.1:18642";
 process.env.OMNI_HERMES_KEY = "stub-test-key-0123456789abcdef";
 process.env.OMNI_SERVICE_TOKEN = "stub-service-token-0123456789";
@@ -38,11 +40,8 @@ beforeEach(() => {
   Object.assign(config, { actionsEmailEnabled: false, actionsCalendarEnabled: false, actionsMatrixEnabled: false });
   stub = createHermesStub({
     key: KEY,
-    // No pacing in tests: the same frames, all at once.
-    script: (ctx) => {
-      const t = defaultScript(ctx) as StubTurn;
-      return { ...t, delayMs: 0, steps: t.steps.map((s) => ({ ...s, waitMs: s.waitMs ? 1 : undefined })) };
-    },
+    // No pacing in tests: the same turn, all at once (a pause becomes a few milliseconds).
+    script: (ctx) => quick(defaultScript(ctx)),
     // The omni-bridge plugin's calls, to the gateway's hook routes in process.
     bridge: {
       propose: async (body) => {
@@ -63,8 +62,11 @@ after(() => {
   setOmniPusherForTests(null);
 });
 
+/** The same turn without its pacing. */
+const quick = (t: StubTurn): StubTurn => ({ ...t, delayMs: 0, startMs: t.startMs ? 60 : undefined, acts: t.acts.map((a) => ("wait" in a ? { wait: Math.max(5, Math.round(a.wait / 100)) } : a)) });
 const post = (path: string, body: unknown, headers: Record<string, string> = owner()) => omniApi.request(path, { method: "POST", headers, body: JSON.stringify(body) });
 const events = (id: string) => eventsAfter(id, 0).map((e) => e.payload as { t: string } & Record<string, unknown>);
+const turnEvents = (id: string, turnId: string) => eventsAfter(id, 0).filter((e) => e.turnId === turnId).map((e) => e.payload as { t: string } & Record<string, unknown>);
 async function thread(prompt: string): Promise<{ id: string; turnId: string }> {
   const r = await post("/threads", { prompt });
   assert.equal(r.status, 201, await r.clone().text());
@@ -78,29 +80,37 @@ async function turn(id: string, text: string): Promise<string> {
   await turnSettled(turnId);
   return turnId;
 }
-const resultOf = (id: string, turnId: string) => eventsAfter(id, 0).filter((e) => e.turnId === turnId).map((e) => e.payload as Record<string, unknown>).find((e) => e.t === "result")!;
+const resultOf = (id: string, turnId: string) => turnEvents(id, turnId).find((e) => e.t === "result")!;
 
-test("reply: streamed chunks, a tool call, the final text; the transcript is kept", async () => {
+test("reply: text, a tool call, the final text; the transcript is kept", async () => {
   const { id, turnId } = await thread("Hello there");
   await turnSettled(turnId);
+  // What the model said before the tool is its own block; the answer is another.
   assert.deepEqual(events(id).map((e) => e.t), ["status", "init", "text", "tool_use", "tool_result", "text", "result", "status"]);
+  assert.equal(events(id)[2]!.text, "Let me look. ");
+  assert.equal(events(id)[3]!.name, "prism_search_notes", "the mcp__server__ prefix is dropped");
   assert.match(String(events(id)[5]!.text), /This is the stub Hermes\. You said: “Hello there”/);
   assert.equal(getTurn(turnId)!.status, "done");
-  assert.match(getTurn(turnId)!.runId ?? "", /^run_[a-f0-9]{16}$/);
-  const d = (await (await omniApi.request(`/threads/${id}`, { headers: owner() })).json()) as { messages: Array<{ role: string; text: string }>; thread: { messageCount: number; preview: string } };
-  assert.deepEqual(d.messages.map((m) => m.role), ["user", "assistant"]);
+  assert.match(getTurn(turnId)!.runId ?? "", /^run_[a-f0-9]{32}$/);
+  const d = (await (await omniApi.request(`/threads/${id}`, { headers: owner() })).json()) as { messages: Array<{ role: string; text?: string; toolName?: string }>; thread: { messageCount: number; preview: string } };
+  // Hermes' rows: user, assistant (text + the tool call), tool, assistant. Nothing is dropped
+  // here because the tool-call row carries text.
+  assert.deepEqual(d.messages.map((m) => m.role), ["user", "assistant", "tool", "assistant"]);
   assert.equal(d.messages[0]!.text, "Hello there");
-  assert.equal(d.thread.messageCount, 2);
+  assert.equal(d.messages[2]!.toolName, "prism_search_notes");
+  assert.ok(!JSON.stringify(d).includes("3 notes"), "a tool's result never reaches the app");
+  assert.equal(d.thread.messageCount, 4);
 });
 
-test("approval: the stub proposes through the hook the way omni-bridge would; a send is refused while the executor is off", async () => {
+test("approval: the stub proposes through the hook the way omni-bridge does; a send is refused while the executor is off", async () => {
   const { id, turnId } = await thread("stub:approval please draft it");
   await turnSettled(turnId);
   const ev = events(id);
   assert.deepEqual(ev.map((e) => e.t), ["status", "init", "text", "tool_use", "approval", "tool_result", "text", "result", "status"]);
-  assert.equal(ev[3]!.name, "omni_propose");
-  const ap = ev[4]!.approval as { id: string; digest: string; status: string; payload: unknown; executor: { name: string; enabled: boolean } };
+  assert.equal(ev[3]!.name, "omni_propose", "the plugin's tool, by its real name");
+  const ap = ev[4]!.approval as { id: string; digest: string; status: string; payload: unknown; threadId: string; executor: { name: string; enabled: boolean } };
   assert.equal(ap.status, "pending");
+  assert.equal(ap.threadId, id, "the session id is the thread id");
   assert.deepEqual(ap.payload, STUB_PROPOSALS.email!.payload);
   assert.deepEqual(ap.executor, { name: "proton-send", available: true, enabled: false });
   assert.equal(getThread(id)!.state, "needs-you");
@@ -115,7 +125,20 @@ test("approval: the stub proposes through the hook the way omni-bridge would; a 
   const kinds = events(id).filter((e) => e.t === "approval").map((e) => (e.approval as { kind: string }).kind);
   assert.deepEqual(kinds, ["email", ...Object.keys(STUB_PROPOSALS)]);
   // The gateway's own "revise" turn names the tool: the stub proposes again.
-  assert.equal(defaultScript({ sessionId: id, message: "Revise the email draft. Propose the new draft with omni_propose; do not send anything.", runId: "run_x", stub }).steps.some((s) => s.frame?.[0] === "tool.started"), true);
+  assert.equal(defaultScript({ sessionId: id, message: "Revise the email draft. Propose the new draft with omni_propose; do not send anything.", runId: "run_x", stub }).acts.some((a) => "tool" in a && a.tool === "omni_propose"), true);
+});
+
+test("the gateway hook is down: the plugin's tool reports an error — Hermes still says tool.completed, the gateway shows it failed", async () => {
+  const bridge = stub.bridge!;
+  stub.bridge = { ...bridge, propose: async () => ({ ok: false, status: 0 }) };
+  const { id, turnId } = await thread("stub:approval");
+  await turnSettled(turnId);
+  const ev = events(id);
+  assert.ok(!ev.some((e) => e.t === "approval"), "nothing was proposed");
+  const results = ev.filter((e) => e.t === "tool_result");
+  assert.deepEqual(results.map((e) => e.ok), [true, false], "announced ok (all Hermes' stream says), then corrected from the tool's row");
+  assert.equal(results[0]!.toolUseId, results[1]!.toolUseId);
+  assert.equal(resultOf(id, turnId).ok, true, "the turn itself completed: the model told the person it could not propose");
 });
 
 test("failure scenarios map to the gateway's codes; Hermes' text never reaches the app", async () => {
@@ -125,7 +148,10 @@ test("failure scenarios map to the gateway's codes; Hermes' text never reaches t
     ["stub:error", "agent_failed"],
     ["stub:error:auth_failed", "auth"],
     ["stub:error:rate_limit", "usage_limit"],
-    ["stub:error:max_iterations", "iteration_limit"],
+    ["stub:error:budget_exceeded", "budget"],
+    ["stub:error:timeout", "timeout"],
+    ["stub:raise", "agent_failed"],
+    ["stub:empty", "agent_failed"],
     ["stub:drop", "hermes_unavailable"],
     ["stub:truncate", "stream_ended"],
     ["stub:http:401", "hermes_auth"],
@@ -135,8 +161,11 @@ test("failure scenarios map to the gateway's codes; Hermes' text never reaches t
     const t = await turn(id, text);
     assert.equal(resultOf(id, t).errorCode, code, text);
     assert.equal(getTurn(t)!.status, "error", text);
+    // A failed model call arrives as `assistant.completed` text: it must not become a `text` event.
+    if (text.startsWith("stub:error") || text === "stub:empty") assert.ok(!turnEvents(id, t).some((e) => e.t === "text"), `${text}: Hermes' error text was shown as an answer`);
   }
-  assert.ok(!JSON.stringify(events(id)).includes("simulated"));
+  const all = JSON.stringify(events(id));
+  for (const leak of ["simulated", "Incorrect API key", "rate limit exceeded", "insufficient credits", "No reply", "Hermes raised"]) assert.ok(!all.includes(leak), leak);
   // And the thread still works afterwards.
   assert.equal(resultOf(id, await turn(id, "again")).ok, true);
 });
@@ -144,9 +173,9 @@ test("failure scenarios map to the gateway's codes; Hermes' text never reaches t
 test("slow: holds until cancelled; the stop reaches the stub's run", async () => {
   const { id, turnId } = await thread("first");
   await turnSettled(turnId);
-  const r = await post(`/threads/${id}/turns`, { text: "stub:slow:2" }, { ...owner(), "idempotency-key": "stub-slow-0001" });
+  const r = await post(`/threads/${id}/turns`, { text: "stub:slow:200" }, { ...owner(), "idempotency-key": "stub-slow-0001" });
   const slow = ((await r.json()) as { turnId: string }).turnId;
-  await new Promise((res) => setTimeout(res, 30));
+  await new Promise((res) => setTimeout(res, 40));
   assert.equal(stub.runs.size, 1, "the run is open");
   assert.equal((await post(`/turns/${slow}/cancel`, {})).status, 202);
   await turnSettled(slow);
@@ -156,50 +185,122 @@ test("slow: holds until cancelled; the stop reaches the stub's run", async () =>
   assert.equal(stub.runs.size, 0, "the run ended in the stub");
 });
 
-test("card, hermes-approval, queued and empty scenarios", async () => {
+test("slowstart: a cancel in the run's first moments is refused by Hermes — the gateway asks again until the run stops", async () => {
+  const { id, turnId } = await thread("first");
+  await turnSettled(turnId);
+  const stops: number[] = [];
+  setHermesFetchForTests(async (url, init) => {
+    const res = await stub.fetch(url, init);
+    if (url.endsWith("/stop")) stops.push(res.status);
+    return res;
+  });
+  const r = await post(`/threads/${id}/turns`, { text: "stub:slowstart" }, { ...owner(), "idempotency-key": "stub-slowstart-0001" });
+  const slow = ((await r.json()) as { turnId: string }).turnId;
+  await new Promise((res) => setTimeout(res, 15));
+  assert.equal(stub.runs.size, 0, "the run exists but cannot be stopped yet");
+  assert.equal((await post(`/turns/${slow}/cancel`, {})).status, 202);
+  await turnSettled(slow);
+  assert.equal(resultOf(id, slow).errorCode, "cancelled");
+  assert.ok(stops.length >= 2 && stops[0] === 404 && stops[stops.length - 1] === 200, `stop answers: ${stops.join(", ")}`);
+  await new Promise((res) => setTimeout(res, 20));
+  assert.equal(stub.runs.size, 0, "the run was stopped — it did not go on unobserved");
+  const said = (stub.transcripts.get(id) ?? []).filter((m) => m.role === "assistant").map((m) => String(m.content)).join("");
+  assert.ok(!said.includes("step 120 of 120"));
+});
+
+test("card, toolfail and blocked: a card only for a write whose row says it worked", async () => {
   setOmniRecordSourcesForTests({ resolver: async (ref) => (ref.id === "n1" ? { id: "n1", path: "vault/tasks/x", tags: ["task"], title: "X", updatedAt: "2026-10-08T10:00:00Z" } : null), subscriber: async () => () => {} });
   const { id, turnId } = await thread("stub:card:n1");
   await turnSettled(turnId);
   const card = events(id).find((e) => e.t === "card")!.card as { noteId: string; op: string };
   assert.deepEqual([card.noteId, card.op], ["n1", "updated"]);
-  const h = await turn(id, "stub:hermes-approval");
-  assert.ok(eventsAfter(id, 0).some((e) => e.turnId === h && (e.payload as { reason?: string }).reason === "hermes_approval_requested"));
-  const q = await turn(id, "stub:queued");
-  assert.ok(eventsAfter(id, 0).some((e) => e.turnId === q && (e.payload as { reason?: string }).reason === "queued"));
-  assert.equal(resultOf(id, await turn(id, "stub:empty")).ok, true);
+  assert.deepEqual(events(id).map((e) => e.t), ["status", "init", "tool_use", "tool_result", "card", "text", "result", "status"], "the card arrives while the turn runs");
+
+  // The same tool, failing: Hermes' stream is identical; only the tool's row differs.
+  const f = await turn(id, "stub:toolfail:n1");
+  const fe = turnEvents(id, f);
+  assert.deepEqual(fe.map((e) => e.t), ["status", "init", "tool_use", "tool_result", "tool_result", "text", "result", "status"]);
+  assert.deepEqual(fe.filter((e) => e.t === "tool_result").map((e) => e.ok), [true, false]);
+  assert.ok(!fe.some((e) => e.t === "card"), "a failed write yields no card");
+  assert.equal(events(id).filter((e) => e.t === "card").length, 1);
+
+  // A tool a plugin vetoed (omni-bridge refusing `terminal`): Hermes sends no frame for it.
+  const b = await turn(id, "stub:blocked");
+  assert.deepEqual(turnEvents(id, b).map((e) => e.t), ["status", "init", "text", "result", "status"]);
+  assert.equal(resultOf(id, b).ok, true);
+  // The stored call of an MCP tool is the `tool_call` bridge; the rows still pair up.
+  const stored = (stub.transcripts.get(id) ?? []).find((m) => Array.isArray(m.tool_calls))!.tool_calls as Array<{ function: { name: string } }>;
+  assert.equal(stored[0]!.function.name, "tool_call");
   for (const name of Object.keys(SCENARIOS)) assert.ok(defaultScript({ sessionId: id, message: `stub:${name}`, runId: "run_x", stub }), name);
 });
 
-test("the stub's own rules: bearer on every route, OpenAI-shaped errors, sessions, jobs, runs", async () => {
+test("the stub's own rules: bearer on every route, Hermes' error shapes, sessions, jobs, runs", async () => {
   const call = (method: string, path: string, body?: unknown, key: string | null = KEY) =>
     stub.fetch(`http://127.0.0.1:18642${path}`, { method, headers: { ...(key ? { authorization: `Bearer ${key}` } : {}), ...J }, body: body === undefined ? undefined : JSON.stringify(body) });
+  const code = async (r: Response) => ((await r.json()) as { error: { code: string } }).error.code;
   for (const path of ["/api/sessions", "/api/jobs", "/api/sessions/x/messages", "/v1/runs/run_x/stop"]) {
-    assert.equal((await call(path.includes("stop") ? "POST" : "GET", path, undefined, null)).status, 401, path);
+    const none = await call(path.includes("stop") ? "POST" : "GET", path, undefined, null);
+    assert.equal(none.status, 401, path);
+    assert.equal(await code(none), "gateway_auth_failed");
     assert.equal((await call("GET", path, undefined, `${KEY}x`)).status, 401, path);
   }
   const c = await call("POST", "/api/sessions", { id: "omni_abc", title: "T" });
   assert.equal(c.status, 201);
-  assert.equal(((await c.json()) as { session: { id: string } }).session.id, "omni_abc");
-  assert.equal((await call("POST", "/api/sessions", { id: "omni_abc" })).status, 409);
+  const made = ((await c.json()) as { session: Record<string, unknown> }).session;
+  assert.equal(made.id, "omni_abc");
+  assert.ok(!("last_active" in made), "a single session carries no last_active (only the list does)");
+  assert.equal(await code(await call("POST", "/api/sessions", { id: "omni_abc" })), "session_exists");
+  // Titles are unique across every session, and at most 100 characters.
+  const dup = await call("POST", "/api/sessions", { id: "omni_def", title: "T" });
+  assert.equal(dup.status, 400);
+  assert.equal(await code(dup), "invalid_title");
+  assert.equal((await call("POST", "/api/sessions", { id: "omni_def" })).status, 201);
+  assert.equal(await code(await call("PATCH", "/api/sessions/omni_def", { title: "T" })), "invalid_title");
+  assert.equal(await code(await call("PATCH", "/api/sessions/omni_def", { title: "x".repeat(101) })), "invalid_title");
+  assert.equal(await code(await call("PATCH", "/api/sessions/omni_def", { state: "done" })), "unsupported_session_field");
+  assert.equal(await code(await call("PATCH", "/api/sessions/omni_def", { pinned: "yes" })), "invalid_session_field");
+  assert.equal(await code(await call("POST", "/api/sessions", { id: "../etc" })), "invalid_session_id");
   const minted = ((await (await call("POST", "/api/sessions", {})).json()) as { session: { id: string } }).session.id;
   assert.match(minted, /^api_\d+_[a-f0-9]{8}$/);
   const miss = await call("GET", "/api/sessions/nope");
   assert.equal(miss.status, 404);
-  assert.equal(((await miss.json()) as { error: { code: string } }).error.code, "session_not_found");
+  assert.equal(await code(miss), "session_not_found");
   assert.equal((await call("POST", "/api/sessions/nope/chat/stream", { message: "x" })).status, 404);
-  assert.equal((await call("POST", "/api/sessions/omni_abc/chat/stream", {})).status, 400);
+  assert.equal(await code(await call("POST", "/api/sessions/omni_abc/chat/stream", {})), "missing_message");
   const p = (await (await call("PATCH", "/api/sessions/omni_abc", { pinned: true, title: "New" })).json()) as { session: { pinned: boolean; title: string } };
   assert.deepEqual([p.session.pinned, p.session.title], [true, "New"]);
-  const list = (await (await call("GET", "/api/sessions?limit=1&offset=0")).json()) as { data: unknown[]; has_more: boolean };
-  assert.deepEqual([list.data.length, list.has_more], [1, true]);
-  assert.equal((await call("POST", "/v1/runs/run_missing/stop", {})).status, 404);
-  const j = (await (await call("POST", "/api/jobs", { name: "J", schedule: "0 8 * * *", prompt: "p" })).json()) as { job: { id: string } };
+  // The list: newest first, pins added past the limit, archived sessions left out.
+  stub.sessions.get(minted)!.last_active = Date.now() / 1000 + 60;
+  const list = (await (await call("GET", "/api/sessions?limit=1&offset=0")).json()) as { data: Array<{ id: string; last_active: number }>; has_more: boolean; limit: number };
+  assert.deepEqual([list.data.map((s) => s.id).sort(), list.has_more, list.limit], [[minted, "omni_abc"].sort(), true, 1]);
+  assert.equal(typeof list.data[0]!.last_active, "number");
+  assert.equal((await call("PATCH", "/api/sessions/omni_def", { archived: true })).status, 200);
+  const all = (await (await call("GET", "/api/sessions?limit=200")).json()) as { data: Array<{ id: string }> };
+  assert.ok(!all.data.some((s) => s.id === "omni_def"), "an archived session is not listed");
+  assert.equal((await call("GET", "/api/sessions/omni_def")).status, 200, "…but is still there");
+  assert.equal(await code(await call("GET", "/api/sessions/omni_abc/messages?order=sideways")), "invalid_pagination");
+  assert.equal(await code(await call("POST", "/v1/runs/run_missing/stop", {})), "run_not_found");
+  // Jobs: Hermes' shapes and its odd statuses.
+  const created = await call("POST", "/api/jobs", { name: "J", schedule: "0 8 * * *", prompt: "p" });
+  assert.equal(created.status, 200);
+  const j = (await created.json()) as { job: { id: string; schedule: { kind: string; display: string }; state: string } };
   assert.match(j.job.id, /^[a-f0-9]{12}$/);
-  assert.equal(((await (await call("POST", `/api/jobs/${j.job.id}/pause`, {})).json()) as { job: { enabled: boolean } }).job.enabled, false);
-  assert.equal(((await (await call("GET", "/api/jobs")).json()) as { jobs: unknown[] }).jobs.length, 0, "disabled jobs need include_disabled");
-  assert.equal(((await (await call("GET", "/api/jobs?include_disabled=true")).json()) as { jobs: unknown[] }).jobs.length, 1);
-  assert.equal((await call("DELETE", `/api/jobs/${j.job.id}`)).status, 200);
+  assert.deepEqual([j.job.schedule.kind, j.job.schedule.display, j.job.state], ["cron", "0 8 * * *", "scheduled"]);
+  const lone = await call("POST", "/api/jobs", { name: "K", schedule: "0 8 * * *", skill: "omni-briefing" });
+  assert.equal(lone.status, 500, "`skill` alone is ignored: nothing to run");
+  assert.match(((await lone.json()) as { error: string }).error, /^Cron job has nothing to run/);
+  assert.equal((await call("POST", "/api/jobs", { name: "K", schedule: "every 2h", skills: ["omni-briefing"] })).status, 200);
+  const bad = await call("POST", "/api/jobs", { name: "K", schedule: "whenever", prompt: "p" });
+  assert.equal(bad.status, 500);
+  assert.match(((await bad.json()) as { error: string }).error, /^Invalid schedule/);
+  assert.deepEqual(await (await call("POST", "/api/jobs", { schedule: "0 8 * * *" })).json(), { error: "Name is required" });
+  const paused = ((await (await call("POST", `/api/jobs/${j.job.id}/pause`, {})).json()) as { job: { enabled: boolean; state: string; paused_at: string | null } }).job;
+  assert.deepEqual([paused.enabled, paused.state, typeof paused.paused_at], [false, "paused", "string"]);
+  assert.equal(((await (await call("GET", "/api/jobs")).json()) as { jobs: unknown[] }).jobs.length, 1, "a paused job needs include_disabled");
+  assert.equal(((await (await call("GET", "/api/jobs?include_disabled=true")).json()) as { jobs: unknown[] }).jobs.length, 2);
+  assert.deepEqual(await (await call("DELETE", `/api/jobs/${j.job.id}`)).json(), { ok: true });
   assert.equal((await call("GET", `/api/jobs/${j.job.id}`)).status, 404);
+  assert.equal((await call("GET", "/api/jobs/not-an-id")).status, 400);
   assert.equal((await call("GET", "/api/anything-else")).status, 404);
   assert.throws(() => createHermesStub({ key: "short" }));
   // The bridge sends the service token to a loopback gateway only.
@@ -242,8 +343,8 @@ const stubCall = (s: HermesStub, method: string, path: string, body?: unknown) =
 
 test("with a store, a restarted stub still has its sessions, transcripts and job changes", async () => {
   const disk = fakeDisk();
-  const seedJobs = () => [{ id: "0a1b2c3d4e5f", name: "Brief", schedule: "0 7 * * *", enabled: true, state: "scheduled" }];
-  const first = createHermesStub({ key: KEY, jobs: seedJobs(), store: fileStubStore("/dev/state.json", disk.fs, 0), script: () => ({ steps: [{ frame: ["run.started", {}] }, { frame: ["assistant.completed", { content: "the answer" }] }, { frame: ["run.completed", {}] }] }) });
+  const seedJobs = () => [{ id: "0a1b2c3d4e5f", name: "Brief", schedule: { kind: "cron", expr: "0 7 * * *", display: "0 7 * * *" }, enabled: true, state: "scheduled" }];
+  const first = createHermesStub({ key: KEY, jobs: seedJobs(), store: fileStubStore("/dev/state.json", disk.fs, 0), script: () => ({ acts: [{ say: "the answer" }] }) });
   assert.equal((await stubCall(first, "POST", "/api/sessions", { id: "omni_aaaaaaaaaaaaaaaaaaaaaaaa", title: "Before the restart" })).status, 201);
   const chat = await stubCall(first, "POST", "/api/sessions/omni_aaaaaaaaaaaaaaaaaaaaaaaa/chat/stream", { message: "hello there" });
   await chat.text();

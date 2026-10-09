@@ -8,6 +8,7 @@ import { isLocked } from "../../lib/pages/model";
 import { usePagesUI } from "../../lib/pages/store";
 import { useSyncStore } from "../../lib/sync/syncState";
 import { registeredEditor, useDocumentSnapshots } from "../../lib/agent/documentSnapshots";
+import { copyText } from "../../lib/clipboard";
 import {
   DRAFT_OPTIONS,
   LANGUAGES,
@@ -198,14 +199,9 @@ function PageAgentPanel({ host, request }: { host: HostServices; request: PageAg
   };
 
   const copy = async () => {
-    try {
-      await navigator.clipboard.writeText(resultParagraphs(result).join("\n\n"));
-      setCopied(true);
-      setNotice("");
-    } catch {
-      setCopied(false);
-      setNotice("Couldn’t copy automatically. Select the text above and copy it.");
-    }
+    const ok = await copyText(resultParagraphs(result).join("\n\n")); // the write starts inside the click
+    setCopied(ok);
+    setNotice(ok ? "" : "Couldn’t copy automatically. Select the text above and copy it.");
   };
 
   const title = optionLabel(request.kind, option, onSelection);

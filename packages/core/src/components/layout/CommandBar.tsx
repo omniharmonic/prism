@@ -50,6 +50,7 @@ import { PageIcon } from "../../lib/pages/icons";
 import { ariaKeys, editedLabel, hint } from "../../lib/shortcutHints";
 import { toggleTheme } from "../../app/stores/settings";
 import { useVaultTree } from "../../app/hooks/useParachute";
+import { askConfirm, showMessage } from "../ui/ConfirmDialog";
 
 interface Command {
   id: string;
@@ -114,7 +115,7 @@ export function CommandBar() {
     try {
       await fn();
     } catch (e) {
-      if (!(e instanceof Declined)) alert(hostServiceErrorText(e));
+      if (!(e instanceof Declined)) void showMessage(hostServiceErrorText(e), "That didn't work");
     }
   }, []);
 
@@ -129,7 +130,7 @@ export function CommandBar() {
         if (!(e instanceof HostServiceError) && !(e instanceof TypeError)) throw e;
         const failure = failureOfError(e);
         if (!failure.retry) throw e; // surfaced once, by `surface`
-        if (!window.confirm(`${failure.text}\n\nNothing was created and your page is unchanged. Try again?`)) throw new Declined();
+        if (!(await askConfirm({ title: "The agent couldn't finish", body: `${failure.text}\n\nNothing was created and your page is unchanged.`, confirm: "Try again" }))) throw new Declined();
       }
     }
   }, [host, vaultClient]);
@@ -363,7 +364,7 @@ export function CommandBar() {
           await surface(async () => {
             await addSyncConfig(vaultClient, activeTab.noteId, "notion");
             const errors = (await host!.notePush(activeTab.noteId)).filter((r) => r.status === "error");
-            if (errors.length) alert(errors.map((r) => r.message).join("; "));
+            if (errors.length) void showMessage(errors.map((r) => r.message).join("; "), "Notion sync failed");
           });
         },
       },
@@ -411,7 +412,7 @@ export function CommandBar() {
             const result = isDesktop
               ? await invoke<{ resolved: number; total: number }>("resolve_wikilinks", { noteId: activeTab.noteId })
               : await resolveWikilinks(vaultClient, activeTab.noteId);
-            alert(`Resolved ${result.resolved} of ${result.total} wikilinks`);
+            void showMessage(`Resolved ${result.resolved} of ${result.total} wikilinks.`, "Wikilinks");
           });
         },
       },
@@ -436,17 +437,17 @@ export function CommandBar() {
         await surface(async () => {
           const dry = await runWikilinkJobToEnd(host, { dryRun: true });
           if (dry.status !== "done") {
-            alert(`The wikilink scan ${dry.status}${dry.error ? `: ${dry.error}` : ""}.`);
+            void showMessage(`The wikilink scan ${dry.status}${dry.error ? `: ${dry.error}` : ""}.`, "Wikilinks");
             return;
           }
           const summary = wikilinkJobSummary(dry);
           if (!dry.resolved) {
-            alert(`${summary}\n\nNothing to add.`);
+            void showMessage(`${summary}\n\nNothing to add.`, "Wikilinks");
             return;
           }
-          if (!confirm(`${summary}\n\nAdd these ${dry.resolved} links now? (Only links are added; note text is never changed.)`)) return;
+          if (!(await askConfirm({ title: `Add these ${dry.resolved} links now?`, body: `${summary}\n\nOnly links are added; note text is never changed.`, confirm: "Add links" }))) return;
           const real = await runWikilinkJobToEnd(host, { dryRun: false });
-          alert(wikilinkJobSummary(real));
+          void showMessage(wikilinkJobSummary(real), "Wikilinks");
         });
       },
     }] : []),
@@ -458,7 +459,7 @@ export function CommandBar() {
         const result = await invoke<{ total_wikilinks: number; resolved: number; unresolved: number }>(
           "resolve_all_wikilinks",
         );
-        alert(`Processed ${result.total_wikilinks} wikilinks: ${result.resolved} resolved, ${result.unresolved} unresolved`);
+        void showMessage(`Processed ${result.total_wikilinks} wikilinks: ${result.resolved} resolved, ${result.unresolved} unresolved.`, "Wikilinks");
         closeCommandBar();
       },
     }] : []),

@@ -405,8 +405,9 @@ export function DatabasePage({ note, readOnly, embedded }: RendererProps & {
     if (!spec || !view) return;
     try {
       const all = await allRows(client, { ...spec, cursor: null });
-      downloadText(`${title} - ${view.name}.csv`.replace(/[\\/:*?"<>|]/g, "-"), rowsToCsv(all, shown));
-      setToast({ message: `Exported ${all.length} ${all.length === 1 ? "row" : "rows"} to CSV.`, undo: null });
+      const outcome = await downloadText(`${title} - ${view.name}.csv`.replace(/[\\/:*?"<>|]/g, "-"), rowsToCsv(all, shown));
+      // "cancelled" = the app's save panel / share sheet was closed: nothing was exported, so nothing is claimed.
+      if (outcome !== "cancelled") setToast({ message: `Exported ${all.length} ${all.length === 1 ? "row" : "rows"} to CSV.`, undo: null });
     } catch {
       setToast({ message: "The export could not be prepared. Try again.", undo: null });
     }

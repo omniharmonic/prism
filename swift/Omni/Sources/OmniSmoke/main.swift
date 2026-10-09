@@ -536,9 +536,12 @@ func run() async -> Int32 {
         return out.joined(separator: "; ")
     }
 
-    await report.step("other stub turns decode: Hermes' own approval request, a queued run, an empty run") {
+    // What a real Hermes does (docs/omni-module.md "The contract with Hermes"): a failed tool
+    // still arrives as completed and is corrected by a second tool_result; a tool a plugin
+    // refused sends nothing; a model answer with no text is a failed turn.
+    await report.step("other stub turns decode: a failed tool (corrected), a refused tool, an empty answer") {
         var out: [String] = []
-        for text in ["stub:hermes-approval", "stub:queued", "stub:empty"] {
+        for text in ["stub:toolfail:smoke-note-0001", "stub:blocked", "stub:empty"] {
             _ = try await omni.startTurn(threadID: threadID, text: text, idempotencyKey: .random())
             let c = try await follow(omni, threadID, after: seq)
             seq = c.transcript.lastSeq

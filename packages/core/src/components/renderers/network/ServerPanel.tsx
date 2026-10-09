@@ -49,6 +49,7 @@ import { RecoveredText } from "../../recovered/RecoveredText";
 import "./server-connections.css";
 
 import { formatDate as fmtDate } from "../../../lib/datetime/format";
+import { askConfirm } from "../../ui/ConfirmDialog";
 const EDITABLE: { key: string; label: string; help: string }[] = [
   {
     key: "MAGIC_FROM",
@@ -561,11 +562,7 @@ function IntegrationRow({
 
   const remove = async () => {
     if (!sharing.deleteIntegrationCredential || !available || busy) return;
-    if (
-      !window.confirm(
-        `Remove the stored ${kind} credential? Sync for it stops until a new one is saved.`,
-      )
-    )
+    if (!(await askConfirm({ title: `Remove the stored ${kind} credential?`, body: "Sync for it stops until a new one is saved.", confirm: "Remove", danger: true })))
       return;
     setBusy("remove");
     try {
@@ -897,10 +894,11 @@ function ScopedServerPanel({ sharing }: { sharing: CollabSharing | null }) {
           return;
         }
         const msg =
-          `Revoke ${dry.wouldRevoke} token(s) for: ${who}?` +
+          `For: ${who}.` +
           (opts.notify ? "\n\nEach affected member will be emailed." : "") +
           "\n\nThe hub enforces revocation within about a minute. This cannot be undone.";
-        if (!window.confirm(msg)) return;
+        if (!(await askConfirm({ title: `Revoke ${dry.wouldRevoke} token(s)?`, body: msg, confirm: "Revoke", danger: true }))) return;
+        if (!current()) return;
         const res = await sharing.revokeLegacyMcpTokens({
           ...opts,
           dryRun: false,
@@ -923,12 +921,9 @@ function ScopedServerPanel({ sharing }: { sharing: CollabSharing | null }) {
 
   const applyIngress = useCallback(async () => {
     if (!sharing?.applyTunnelIngress || !current()) return;
-    if (
-      !window.confirm(
-        "Add ingress rules for your workspace subdomains and restart the tunnel? (It rolls back automatically if the tunnel doesn't come back online.)",
-      )
-    )
+    if (!(await askConfirm({ title: "Add ingress rules and restart the tunnel?", body: "Rules are added for your workspace subdomains. It rolls back automatically if the tunnel doesn't come back online.", confirm: "Add and restart" })))
       return;
+    if (!current()) return;
     setBusy("ingress");
     setError(null);
     try {
@@ -1010,11 +1005,10 @@ function ScopedServerPanel({ sharing }: { sharing: CollabSharing | null }) {
       if (!sharing?.controlTunnel || !current()) return;
       if (
         action === "stop" &&
-        !window.confirm(
-          "Stopping the tunnel takes the PUBLIC site offline. If you're viewing this over the tunnel, you'll lose your connection. Continue?",
-        )
+        !(await askConfirm({ title: "Stop the tunnel?", body: "Stopping the tunnel takes the PUBLIC site offline. If you're viewing this over the tunnel, you'll lose your connection.", confirm: "Stop tunnel", danger: true }))
       )
         return;
+      if (!current()) return;
       setBusy(`tunnel:${action}`);
       setError(null);
       try {

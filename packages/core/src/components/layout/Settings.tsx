@@ -18,6 +18,7 @@ import { PushSettings } from "./PushSettings";
 import { NotificationSettingsPanel } from "../inbox/NotificationSettingsPanel";
 import { IntegrationsOverview } from "./IntegrationsOverview";
 import "./settings-workspace.css";
+import { askConfirm } from "../ui/ConfirmDialog";
 
 interface SettingsProps {
   open: boolean;
@@ -927,7 +928,7 @@ function SecretInput({ fieldKey, placeholder, isSet, editValues, saving, savedKe
       )}
       {isSet && !value && onClear && (
         <button
-          onClick={() => { if (window.confirm("Remove this stored credential? Anything that uses it stops until a new one is saved.")) onClear(fieldKey); }}
+          onClick={() => { void askConfirm({ title: "Remove this stored credential?", body: "Anything that uses it stops until a new one is saved.", confirm: "Remove", danger: true }).then((yes) => { if (yes) onClear(fieldKey); }); }}
           disabled={saving === fieldKey}
           title="Remove the stored value"
           className="p-1 rounded hover:bg-[var(--glass-hover)]" style={{ color: "var(--text-muted)" }}>

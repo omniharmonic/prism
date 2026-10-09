@@ -14,6 +14,7 @@ import {
 import { turnProblem } from "../../lib/agent/sessionReducer";
 import { queuedText } from "../../lib/agent/failure";
 import { useScopedDraft } from "../../lib/drafts/useScopedDraft";
+import { copyText } from "../../lib/clipboard";
 import {
   clearRequestReceipt,
   requestReceipt,
@@ -585,8 +586,13 @@ function DraftSession({
     setLocalError(null);
     setCopied(false);
     try {
-      await verifySession();
-      await navigator.clipboard.writeText(output);
+      // Still inside the click: the clipboard write is opened NOW and filled in once the session
+      // is verified (WebKit refuses a write that starts after an await). A failed check rejects
+      // the text, so nothing is written.
+      const verified = verifySession();
+      const ok = await copyText(verified.then(() => output));
+      await verified; // a failed check is reported in its own words
+      if (!ok) throw Error("Select the summary text and copy it by hand.");
       if (mounted.current && client.scope?.() === scope) setCopied(true);
     } catch (err) {
       if (mounted.current)
