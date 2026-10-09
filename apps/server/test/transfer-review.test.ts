@@ -4,6 +4,7 @@
  * vault; only symbols that existed before the fixes are imported, so the file
  * runs (and fails test by test) on the earlier code too.
  */
+import { probed } from "./probe";
 import { test, beforeEach, afterEach, after } from "node:test";
 import assert from "node:assert/strict";
 import { deflateRawSync, inflateRawSync } from "node:zlib";
@@ -51,22 +52,11 @@ after(async () => {
   }
 });
 
-/** The longest gap between two ticks of a 10 ms timer while `work` runs: how long the event loop was held. */
+/** How long the event loop was held while `work` runs — in CPU time of this thread (./probe), never on the wall clock. */
 async function maxLag<T>(work: () => Promise<T>): Promise<{ lag: number; value: T }> {
-  let last = Date.now();
-  let lag = 0;
-  const timer = setInterval(() => {
-    const now = Date.now();
-    lag = Math.max(lag, now - last);
-    last = now;
-  }, 10);
-  try {
-    const value = await work();
-    lag = Math.max(lag, Date.now() - last);
-    return { lag, value };
-  } finally {
-    clearInterval(timer);
-  }
+  const r = await probed(work);
+  if (r.error !== undefined) throw r.error;
+  return { lag: Math.round(r.maxLagMs), value: r.value as T };
 }
 /** Generous on purpose (shared CI hosts): the blocking these replace was 2–30 SECONDS. */
 const LAG_LIMIT_MS = 800;

@@ -16,7 +16,7 @@
  */
 import { test, afterEach, beforeEach } from "node:test";
 import assert from "node:assert/strict";
-import { monitorEventLoopDelay } from "node:perf_hooks";
+import { probed } from "./probe";
 import {
   MatrixClient,
   THREAD_LIST_KEYS,
@@ -493,21 +493,18 @@ test("1,500 threads, idle pass + full reconcile sweep: zero body reads, zero wri
     joinedMembers: async () => ({}),
     roomName: async () => null,
   };
-  const h = monitorEventLoopDelay({ resolution: 10 });
-  h.enable();
-  await new Promise((r) => setTimeout(r, 30));
-  h.reset();
-  const res = await ingestMatrix(client, v.vault, { since: "s1" });
-  const rec = await reconcileMatrix(client, v.vault, { upTo: "s2" });
-  await new Promise((r) => setTimeout(r, 30));
-  h.disable();
+  // The loop's worst stall in CPU time of this thread (./probe) — not a wall-clock histogram, which also counts
+  // every moment the scheduler kept this process off a core.
+  const run = await probed(async () => ({ res: await ingestMatrix(client, v.vault, { since: "s1" }), rec: await reconcileMatrix(client, v.vault, { upTo: "s2" }) }));
+  if (run.error !== undefined) throw run.error;
+  const { res, rec } = run.value!;
   assert.equal(res.messages, 0);
   assert.deepEqual({ scanned: rec.scanned, behind: rec.behind, repaired: rec.repaired }, { scanned: N, behind: 0, repaired: 0 });
   assert.equal(v.gets.length, 0, "no body fetched");
   assert.equal(v.writes.length, 0);
   assert.equal(v.lists.length, 2);
   for (const l of v.lists) assert.equal(l.includeContent, false);
-  const maxLagMs = h.max / 1e6;
+  const maxLagMs = run.maxLagMs;
   assert.ok(maxLagMs < 200, `max event-loop delay ${maxLagMs.toFixed(1)} ms`);
 });
 

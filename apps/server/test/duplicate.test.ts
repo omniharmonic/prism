@@ -5,7 +5,7 @@
  * what a copy carries, what is skipped (and only counted), limits before any write,
  * idempotent retry, re-pointed links, a failure midway, files.
  */
-import { probed } from "./probe";
+import { probed , threadCpuMs } from "./probe";
 import { test, beforeEach, afterEach } from "node:test";
 import { createHash } from "node:crypto";
 import assert from "node:assert/strict";
@@ -605,11 +605,11 @@ test("repointWikilinks: full paths only, alias and anchor kept, linear on unmatc
   assert.equal(repointWikilinks("x [[a/b]] [[A/B.md|al]] [[a/b#h]] [[b]] [[a/bc]] [[a/b", map), "x [[a/b (copy)]] [[a/b (copy)|al]] [[a/b (copy)#h]] [[b]] [[a/bc]] [[a/b");
   assert.equal(repointWikilinks("no links", map), "no links");
   const hostile = "[[".repeat(200_000);
-  const t0 = Date.now();
+  const t0 = threadCpuMs(); // CPU time of this thread (./probe), not the wall clock
   assert.equal(repointWikilinks(hostile, map), hostile);
   const tags = "<span ".repeat(100_000);
   cleanCopyBody(`<p>${tags}`, () => "u", { pageId: () => "z" });
-  assert.ok(Date.now() - t0 < 2000, `took ${Date.now() - t0} ms`);
+  assert.ok(threadCpuMs() - t0 < 2000, `took ${threadCpuMs() - t0} ms`);
 });
 
 // ── re-review: B3, S2–S6 ─────────────────────────────────────────────────────

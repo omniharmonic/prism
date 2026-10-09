@@ -3,6 +3,7 @@
  * against hostile archives, the linear Markdown scanners, front matter, and the
  * import planner on a Notion-shaped export.
  */
+import { threadCpuMs } from "./probe";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { deflateRawSync, inflateRawSync } from "node:zlib";
@@ -159,7 +160,7 @@ test("the scanners are linear on pathological input", () => {
   const n = 300_000;
   const shapes = ["<x:".repeat(n / 3), "<".repeat(n), "[a]: ".repeat(n / 5), "[".repeat(n), "[ ".repeat(n / 2), "](".repeat(n / 2), "[a](".repeat(n / 4), "[a] ".repeat(n / 4), "`".repeat(n), "[[".repeat(n / 2), "![".repeat(n / 2) + "]", "/api/attachments/a_".repeat(n / 19), "---\n" + "a: [\n".repeat(n / 5)];
   for (const s of shapes) {
-    const t0 = Date.now();
+    const t0 = threadCpuMs(); // CPU time of this thread (./probe), not the wall clock
     rewriteMarkdownLinks(s, () => "x");
     neutralizeUnsafeLinks(s);
     neutralizeUnsafeLinks(`<a:${s}`);
@@ -167,7 +168,7 @@ test("the scanners are linear on pathological input", () => {
     parseFrontMatter(s);
     stripNotionId(s);
     safePageSegment(s);
-    const ms = Date.now() - t0;
+    const ms = threadCpuMs() - t0;
     assert.ok(ms < 1500, `${s.slice(0, 8)}… took ${ms} ms`);
   }
 });
@@ -290,9 +291,9 @@ test("template variables: body (HTML chips / Markdown text), properties, and wha
   assert.equal(resolveTemplateContent("By @me", { now }), "By @me");
   assert.deepEqual(applyTemplateVariables({ content: "x", path: "p", metadata: { title: "@today", due: "@today" } }, ctx).metadata, { title: "@today", due: "2026-10-03" });
   // Linear on hostile templates.
-  const t0 = Date.now();
+  const t0 = threadCpuMs(); // CPU time of this thread (./probe), not the wall clock
   for (const s of ["@".repeat(200_000), "<".repeat(200_000), "@today".repeat(40_000), "<p>" + "@me ".repeat(50_000), "`@".repeat(100_000), "[[@".repeat(70_000)]) resolveTemplateContent(s, ctx);
-  assert.ok(Date.now() - t0 < 2000);
+  assert.ok(threadCpuMs() - t0 < 2000);
 });
 
 test("template creator: the account's display name, else a neutral Me — never the e-mail", async () => {

@@ -404,9 +404,9 @@ test("field-shapes: every correction says exactly what the stored value said; an
   assert.deepEqual(fix("attendees", ["", ""]), { rule: "blank-items-dropped", to: null });
   for (const fine of [["x"], [], 7, { a: 1 }, true, null]) assert.equal(fix("projects", fine), undefined);
   assert.deepEqual(fieldShapes.splitOutsideLinks("a,,b ; "), ["a", "b"]);
-  const t0 = Date.now();
+  const t0 = threadCpuMs(); // CPU time of this thread (./probe), not the wall clock
   fieldShapes.splitOutsideLinks("[[".repeat(200_000) + ",".repeat(200_000));
-  assert.ok(Date.now() - t0 < 1500, "linear on hostile input");
+  assert.ok(threadCpuMs() - t0 < 1500, "linear on hostile input");
 });
 
 function seedShapes(v: FakeVault): void {

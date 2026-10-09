@@ -29,7 +29,19 @@ const turndown = newExportTurndown();
 // The document conversions pull in TipTap + a DOM; loaded on first use so an
 // export/import worker that never needs them does not pay for it.
 let docCore: Promise<typeof import("../convert/core")> | null = null;
-const loadCore = () => (docCore ??= import("../convert/core"));
+/**
+ * The first use loads the module INSIDE a task. That load is not the task's work: the pool is told
+ * (`loading` … `loaded`) and starts the task's deadline again once the module is in — a healthy page
+ * converted by a fresh thread (the one before it was killed on a pathological page) must not be cut
+ * short, or exported as plain text, because TipTap and a DOM were still being read from disk.
+ */
+const loadCore = () => {
+  if (!docCore) {
+    parentPort!.postMessage({ loading: true });
+    docCore = import("../convert/core").finally(() => parentPort!.postMessage({ loaded: true }));
+  }
+  return docCore;
+};
 
 async function handle(req: WorkerRequest): Promise<{ value: unknown; transfer?: ArrayBuffer[] }> {
   switch (req.op) {
@@ -53,7 +65,8 @@ async function handle(req: WorkerRequest): Promise<{ value: unknown; transfer?: 
       return { value: (await loadCore()).docJsonToHtmlSync(req.json) };
     case "to-markdown":
       // Pending suggestions are not part of the exported page (Markdown cannot mark them; see core).
-      return { value: turndown.turndown((await loadCore()).rejectPendingSuggestionsSync(req.html)) };
+      // (A page without one never loads the document converters: the same cheap test `rejectPendingSuggestionsSync` starts with.)
+      return { value: turndown.turndown(req.html.indexOf("data-suggestion") === -1 ? req.html : (await loadCore()).rejectPendingSuggestionsSync(req.html)) };
     case "to-html":
       // Stored HTML and rendered Markdown alike leave through the allowlist sanitiser. A Markdown
       // page's `- [x]` items become the to-do list the editor shows (`taskListsInHtml`: one linear

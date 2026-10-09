@@ -80,6 +80,7 @@ import {
   confirmableCommands,
 } from "../src/human-collab";
 import { resolveSuggestions, type PmNode } from "../src/suggestions";
+import { humanRangeProblem } from "../../../packages/core/src/lib/collab/human/validation";
 import { installFakeVault, makeCapability, makeSession, resetDb, sessionCookie, type FakeVault } from "./helpers";
 
 const EDITOR = "editor@test.local";
@@ -1066,6 +1067,57 @@ test("H1: a range that cannot be marked completely is refused whole (line breaks
   const marked = pm(editor).toJSON() as PmNode;
   assert.equal(generateHTML(resolveSuggestions(marked, null, "reject") as never, collabExtensions()), html0);
   assert.equal(generateHTML(resolveSuggestions(marked, null, "accept") as never, collabExtensions()), "<p>AA <code>BB</code> cc</p><p>one<br></p><p>last word</p>");
+});
+
+test("H1 (schema v6): the browser's validation and the endpoint agree on every shape — code is accepted; a suggested block, a suggested line break and a line break are refused; nothing refused is applied", { timeout: 60000 }, async () => {
+  const auth = userAuth(SUGGESTER);
+  fv.put({
+    id: "v6",
+    tags: ["garden"],
+    content:
+      "<p>aa <code>bb</code> cc</p><pre><code>const x = 1;</code></pre><p>one<br>two</p>" +
+      '<p data-suggestion-node="insert" data-suggestion-by="Someone">Suggested paragraph</p>' +
+      '<p>Tail<br data-suggestion-node="delete" data-suggestion-by="Someone">end</p><p>last</p>',
+    updatedAt: T0,
+  });
+  const editor = await editorClient("v6");
+  const shape = pm(editor).toJSON() as { content: Array<{ attrs?: { suggestion?: string }; content?: Array<{ attrs?: { suggestion?: string } }> }> };
+  assert.equal(shape.content[3]!.attrs?.suggestion, "insert", "the fixture really holds a suggested block");
+  assert.equal(shape.content[4]!.content![1]!.attrs?.suggestion, "delete", "…and a suggested line break");
+  const span = (a: string, b: string) => {
+    const doc = pm(editor);
+    const from = findTextRange(doc, a)!.from;
+    const to = findTextRange(doc, b)!.to;
+    return { from, to, quote: doc.textBetween(from, to, "\n", "\ufffc") };
+  };
+  // [what, the range, the text, the endpoint's answer]
+  const cases: Array<[string, () => { from: number; to: number; quote: string }, string, number, string?]> = [
+    ["inline code", () => select(editor, "bb"), "BB", 200],
+    ["a code block", () => select(editor, "const"), "let", 200],
+    ["across a plain line break", () => span("one", "two"), "", 400, "invalid_command"],
+    ["inside a suggested paragraph", () => select(editor, "Suggested"), "Proposed", 409, "suggestion_overlap"],
+    ["a caret inside a suggested paragraph", () => caretAfter(editor, "Suggested"), " new", 409, "suggestion_overlap"],
+    ["across a suggested line break", () => span("Tail", "end"), "", 409, "suggestion_overlap"],
+    ["plain text beside a suggested line break", () => select(editor, "Tail"), "Head", 200],
+    ["plain text", () => select(editor, "last"), "final", 200],
+  ];
+  for (const [what, range, text, status, error] of cases) {
+    const before = stateOf("v6");
+    const r0 = range();
+    // The browser's own check, on the same document (`packages/core/src/lib/collab/human/validation.ts`).
+    const browser = humanRangeProblem(pm(editor) as never, r0.from, r0.to, "suggest");
+    const r = await post("v6", await command(editor, () => ({ kind: "suggest", ...range(), text })), auth);
+    assert.equal(r.status, status, `${what}: ${JSON.stringify(r.body)}`);
+    if (error) assert.equal(r.body.error, error, what);
+    assert.equal(browser === null, status === 200, `${what}: the browser says ${JSON.stringify(browser)}, the endpoint ${r.status}`);
+    if (status !== 200) assert.equal(stateOf("v6"), before, `${what}: nothing was applied`);
+  }
+  // What was accepted in code is exactly reversible.
+  const marked = pm(editor).toJSON() as PmNode;
+  const accepted = generateHTML(resolveSuggestions(marked, null, "accept") as never, collabExtensions());
+  assert.ok(accepted.includes("<code>BB</code>") && accepted.includes("let x = 1;"), accepted);
+  const rejected = generateHTML(resolveSuggestions(marked, null, "reject") as never, collabExtensions());
+  assert.ok(rejected.includes("<code>bb</code>") && rejected.includes("const x = 1;") && rejected.includes("Tail") && rejected.includes("last"), rejected);
 });
 
 test("H2: the endpoint addresses a note ONLY by its id — a path / title alias is 'not found', opens no second document and cannot wipe unsaved typing", { timeout: 20000 }, async () => {
