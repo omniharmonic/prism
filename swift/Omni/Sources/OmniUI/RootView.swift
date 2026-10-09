@@ -107,7 +107,7 @@ struct ServerSetupView: View {
             if let error = app.serverError {
                 Label(error, systemImage: "exclamationmark.triangle")
                     .font(.callout)
-                    .foregroundStyle(.red)
+                    .foregroundStyle(Color.failureText)
                     .fixedSize(horizontal: false, vertical: true)
                     .accessibilityIdentifier("server.error")
             }

@@ -108,6 +108,8 @@ struct Backend {
 class OmniUITestCase: XCTestCase {
     let app = XCUIApplication()
     let backend = Backend()
+    /// What `seed()` made, by a short name ("working", "approval-email", …) → thread id.
+    nonisolated(unsafe) static var seeded: [String: String] = [:]
     /// One numbering for the whole run, so the gallery sorts in the order of the walk.
     nonisolated(unsafe) private static var shotNumber = 0
 

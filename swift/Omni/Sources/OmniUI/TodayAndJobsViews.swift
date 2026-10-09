@@ -202,7 +202,7 @@ struct JobRow: View {
                 Text(JobPresentation.name(job)).foregroundStyle(paused ? .secondary : .primary)
                 Text(details(paused)).font(.caption).foregroundStyle(.secondary).lineLimit(2)
                 if let error = job.lastError, !error.isEmpty {
-                    Text(error).font(.caption).foregroundStyle(.orange).lineLimit(2)
+                    Text(error).font(.caption).foregroundStyle(Color.warningText).lineLimit(2)
                 }
             }
             Spacer(minLength: 8)

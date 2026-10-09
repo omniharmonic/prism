@@ -76,15 +76,18 @@ struct DiagnosticsSection: View {
                             Text("No requests yet.").foregroundStyle(.secondary)
                         }
                         ForEach(log.entries) { entry in
-                            Text(entry.line)
-                                .lineLimit(2)
-                                .minimumScaleFactor(0.75)
-                                .foregroundStyle(entry.isFailure ? AnyShapeStyle(.red) : AnyShapeStyle(.primary))
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .id(entry.id)
+                            // One line where it fits (a phone at ordinary text sizes, the Mac);
+                            // wrapped, never cut, where it does not.
+                            ViewThatFits(in: .horizontal) {
+                                Text(entry.line).lineLimit(1).fixedSize()
+                                Text(entry.line)
+                            }
+                            .foregroundStyle(entry.isFailure ? AnyShapeStyle(Color.failureText) : AnyShapeStyle(.primary))
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .id(entry.id)
                         }
                     }
-                    .font(.system(.caption, design: .monospaced))
+                    .font(.system(Self.lineStyle, design: .monospaced))
                     .textSelection(.enabled)
                     .padding(.vertical, 4)
                 }
@@ -115,6 +118,14 @@ struct DiagnosticsSection: View {
         } footer: {
             Text("Development builds only. The last \(log.capacity) requests this app made: time, method, path, status and the server's error code. No sign-in tokens and no message text. Kept in memory until the app quits.")
         }
+    }
+
+    private static var lineStyle: Font.TextStyle {
+        #if os(iOS)
+        .caption2
+        #else
+        .caption
+        #endif
     }
 
     private static func copy(_ text: String) {

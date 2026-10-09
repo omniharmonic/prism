@@ -67,6 +67,45 @@ final class PolishTests: XCTestCase {
         XCTAssertEqual(PlainLanguage.readMessage(for: PrismError.unreachable("x")), PlainLanguage.message(for: PrismError.unreachable("x")))
     }
 
+    func testAThreadOpenedAfterItsLastTurnFailedSaysWhyOnce() async {
+        let service = FakeService()
+        let sink = ErrorSink {}
+        let approvals = ApprovalCenter(service: service, sink: sink, confirmation: NoSendConfirmation())
+        let asked = Fixture.message("user", "look up the tides", at: "2026-10-08T15:00:00.000Z", id: 1)
+        service.details(.success(Fixture.detail("t1", state: "needs-you", lastSeq: 9, messages: [asked])))
+        service.streams([.success(.connected), .success(Fixture.event(8, .result(ok: false, durationMs: 10, errorCode: "hermes_unavailable"))), .success(Fixture.event(9, .status(state: .needsYou, reason: "hermes_unavailable")))])
+        let model = ThreadModel(threadID: "t1", service: service, approvals: approvals, sink: sink, sleep: { _ in })
+        await model.open()
+        XCTAssertEqual(model.turnEnded, "The connection to the agent was lost before it finished.")
+        XCTAssertFalse(model.isRunning)
+        XCTAssertEqual(service.streamAfters, [0], "the last few stored events are read, once")
+        // Reading the thread again does not ask for them again.
+        await model.reload()
+        XCTAssertEqual(service.streamAfters.count, 1)
+
+        // A thread that needs the person because a draft is waiting is not a failed turn.
+        let other = FakeService()
+        other.details(.success(Fixture.detail("t1", state: "needs-you", lastSeq: 9, messages: [asked], approvals: [Fixture.approvalJSON("a1")])))
+        let waiting = ThreadModel(threadID: "t1", service: other, approvals: ApprovalCenter(service: other, sink: sink, confirmation: NoSendConfirmation()), sink: sink, sleep: { _ in })
+        await waiting.open()
+        XCTAssertNil(waiting.turnEnded)
+        XCTAssertEqual(other.streamAfters, [])
+    }
+
+    func testTheServersReviseInstructionIsShownAsThePersonsOwnWords() {
+        let stored = "Revise the email draft (approval apr_5c9b4a89d08957b041a1220f) as follows. Propose the new draft with omni_propose; do not send anything.\n\nMake it shorter and mention Friday."
+        XCTAssertEqual(ThreadTimeline.userText(stored), "Revise the draft: Make it shorter and mention Friday.")
+        // Anything else a person typed is shown as typed — also when it merely starts the same way.
+        for typed in ["Revise the plan as follows. Do it.\n\nNow", "Revise the email draft (approval x) as follows.", "hello", ""] {
+            XCTAssertEqual(ThreadTimeline.userText(typed), typed)
+        }
+        let detail = Fixture.detail("t1", messages: [Fixture.message("user", stored, at: "2026-10-08T15:00:00.000Z", id: 1), Fixture.message("assistant", stored, at: "2026-10-08T15:00:01.000Z", id: 2)])
+        let rows = ThreadTimeline.history(detail)
+        guard case .message(_, _, let mine, _) = rows[0], case .message(_, _, let agents, _) = rows[1] else { return XCTFail("two messages expected") }
+        XCTAssertEqual(mine, "Revise the draft: Make it shorter and mention Friday.")
+        XCTAssertEqual(agents, stored, "only the person's side is reworded")
+    }
+
     func testTypingANewAddressTakesTheOldRefusalAwayAndTheLastAddressIsRemembered() async {
         let settings = MemorySettings()
         let app = AppModel(settings: settings, probe: FixedProbe(), deviceLabel: "test", defaultServerURL: "", makeEnvironment: { _, _ in

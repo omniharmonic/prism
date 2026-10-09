@@ -36,7 +36,7 @@ struct ApprovalCardView: View {
                 draft(card.content)
             }
             if let line = card.statusLine() {
-                Text(line).font(.callout).foregroundStyle(standing == .mismatch || standing == .unknown ? AnyShapeStyle(.orange) : AnyShapeStyle(.secondary))
+                Text(line).font(.callout).foregroundStyle(standing == .mismatch || standing == .unknown ? AnyShapeStyle(Color.warningText) : AnyShapeStyle(.secondary))
                     .fixedSize(horizontal: false, vertical: true)
             }
             if standing == .pending, let off = card.sendingSwitchedOff {
@@ -104,16 +104,20 @@ struct ApprovalCardView: View {
             } else if card.canOfferSend() {
                 Button("Send") { Task { await center.send(card.id) } }
                     .buttonStyle(.borderedProminent)
+                    .accessibilityIdentifier("approval.send")
                     .accessibilityHint("Sends exactly what is shown, after you confirm on this device")
             }
             if card.canOfferEdit() {
                 Button("Edit") { editing = ApprovalDraft(card.approval) }
+                    .accessibilityIdentifier("approval.edit")
                     .accessibilityHint("Change the wording yourself")
             }
             if card.canOfferCancel() {
                 Button("Revise…") { revising = true }
+                    .accessibilityIdentifier("approval.revise")
                     .accessibilityHint("Ask Omni for a new draft")
                 Button("Cancel Draft") { confirmingCancel = true }
+                    .accessibilityIdentifier("approval.cancel")
                     .accessibilityHint("Discards this draft; nothing is sent")
             }
             if standing == .mismatch {
@@ -153,7 +157,7 @@ struct ApprovalCardView: View {
     private func tint(_ standing: ApprovalCard.Standing) -> AnyShapeStyle {
         switch standing {
         case .pending: return AnyShapeStyle(.tint)
-        case .mismatch, .unknown: return AnyShapeStyle(.orange)
+        case .mismatch, .unknown: return AnyShapeStyle(Color.warningText)
         default: return AnyShapeStyle(.secondary)
         }
     }
@@ -169,8 +173,8 @@ struct ApprovalCardView: View {
 
     private func noticeStyle(_ tone: ApprovalCard.Tone) -> AnyShapeStyle {
         switch tone {
-        case .warning: return AnyShapeStyle(.orange)
-        case .failure: return AnyShapeStyle(.red)
+        case .warning: return AnyShapeStyle(Color.warningText)
+        case .failure: return AnyShapeStyle(Color.failureText)
         default: return AnyShapeStyle(.secondary)
         }
     }

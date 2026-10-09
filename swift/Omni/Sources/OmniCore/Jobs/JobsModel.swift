@@ -68,7 +68,7 @@ public enum JobPresentation {
         guard let schedule = job.schedule, !schedule.isNull else { return nil }
         if let text = schedule.stringValue { return cronInWords(text) ?? text }
         for key in ["display", "expr", "expression", "cron", "value", "kind"] {
-            if let text = schedule[key]?.stringValue, !text.isEmpty { return key == "display" ? text : cronInWords(text) ?? text }
+            if let text = schedule[key]?.stringValue, !text.isEmpty { return cronInWords(text) ?? text }
         }
         return schedule.canonicalJSON
     }

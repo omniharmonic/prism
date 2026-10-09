@@ -244,7 +244,7 @@ struct Composer<Accessory: View>: View {
                 .foregroundStyle(canSend ? AnyShapeStyle(.tint) : AnyShapeStyle(.tertiary))
                 .disabled(!canSend)
                 .help("Send (Return)")
-                .accessibilityLabel("Send")
+                .accessibilityLabel("Send message")
                 .accessibilityIdentifier("composer.send")
             }
         }

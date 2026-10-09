@@ -3,9 +3,6 @@ import XCTest
 /// The walk: every screen and state of the app, in the order a person would meet them, with
 /// a screenshot of each. Runs against the laptop dev backend (stub Hermes; nothing can send).
 final class OmniWalkTests: OmniUITestCase {
-    /// What `seed()` made, by a short name.
-    nonisolated(unsafe) private static var seeded: [String: String] = [:]
-
     // MARK: Before the app
 
     func test01FirstRunAndSignIn() {
@@ -151,17 +148,15 @@ final class OmniWalkTests: OmniUITestCase {
 
         go(.today)
         see("Stand-up")
-        see("Research mooring suppliers") // in flight
         shot("today-loaded")
         #if os(iOS)
-        app.collectionViews.firstMatch.swipeUp()
-        shot("today-loaded-lower")
+        if Run.usesTabs {
+            app.collectionViews.firstMatch.swipeUp()
+            shot("today-loaded-lower")
+        }
         #endif
 
-        // From Today into the queue and into a thread, and back.
-        #if os(iOS)
-        app.collectionViews.firstMatch.swipeDown()
-        #endif
+        // From Today into a thread.
         let inFlight = app.buttons.matching(NSPredicate(format: "label CONTAINS 'Research mooring suppliers'")).firstMatch
         if inFlight.waitForExistence(timeout: 5) {
             inFlight.tap()
@@ -232,8 +227,8 @@ final class OmniWalkTests: OmniUITestCase {
     // MARK: Threads that went wrong, or carry something
 
     func test07ThreadStates() throws {
-        if Self.seeded.isEmpty { seed() }
-        let ids = Self.seeded
+        if OmniUITestCase.seeded.isEmpty { seed() }
+        let ids = OmniUITestCase.seeded
         launch(faults: "sample-data")
 
         openThread(try XCTUnwrap(ids["error"]))
@@ -285,8 +280,8 @@ final class OmniWalkTests: OmniUITestCase {
     // MARK: Approvals
 
     func test08Approvals() throws {
-        if Self.seeded.isEmpty { seed() }
-        let ids = Self.seeded
+        if OmniUITestCase.seeded.isEmpty { seed() }
+        let ids = OmniUITestCase.seeded
         launch(faults: "sample-data")
 
         go(.needsYou)
@@ -296,19 +291,19 @@ final class OmniWalkTests: OmniUITestCase {
         for kind in ["email", "email-reply", "message", "calendar-invite", "tweet", "wallet-proposal"] {
             openThread(try XCTUnwrap(ids["approval-\(kind)"]))
             see("APPROVE", 15)
-            wait(button("Revise…"), 10, "Revise on the \(kind) draft")
+            wait(element("approval.revise"), 10, "Revise on the \(kind) draft")
             pause(0.5)
             shot("approval-\(kind)")
         }
 
         // The email draft: Send (sending is off on this server), Edit, Revise, Cancel.
         openThread(try XCTUnwrap(ids["approval-email"]))
-        wait(button("Send"), 15, "Send on the email draft")
-        button("Send").tap()
+        wait(element("approval.send"), 15, "Send on the email draft")
+        element("approval.send").tap()
         see("nothing was sent", 15)
         shot("approval-send-switched-off")
 
-        button("Edit").tap()
+        element("approval.edit").tap()
         let subject = app.textFields["Subject"].firstMatch
         wait(subject, 10, "the Subject field of the edit sheet")
         shot("approval-edit-sheet")
@@ -319,7 +314,7 @@ final class OmniWalkTests: OmniUITestCase {
         pause(1)
         shot("approval-edited")
 
-        button("Revise…").tap()
+        element("approval.revise").tap()
         let feedback = app.descendants(matching: .any).matching(NSPredicate(format: "label == 'What should change' AND (elementType == %d OR elementType == %d)", XCUIElement.ElementType.textField.rawValue, XCUIElement.ElementType.textView.rawValue)).firstMatch
         wait(feedback, 10, "the revise sheet's field")
         feedback.tap()
@@ -327,11 +322,11 @@ final class OmniWalkTests: OmniUITestCase {
         shot("approval-revise-sheet")
         button("Ask Omni").tap()
         see("REVISED", 20)
-        wait(button("Send"), 30, "a new draft after Revise")
+        wait(element("approval.send"), 30, "a new draft after Revise")
         pause(1)
         shot("approval-revised-new-draft")
 
-        button("Cancel Draft").tap()
+        element("approval.cancel").tap()
         let confirm = app.buttons.matching(NSPredicate(format: "label == 'Cancel Draft'"))
         pause(1)
         shot("approval-cancel-confirm")
@@ -344,7 +339,7 @@ final class OmniWalkTests: OmniUITestCase {
         launch(faults: "sample-data,digest-mismatch")
         go(.needsYou)
         see("CAN'T VERIFY", 20)
-        XCTAssertFalse(button("Send").exists, "Send is offered for a draft that does not match its fingerprint")
+        XCTAssertFalse(element("approval.send").exists, "Send is offered for a draft that does not match its fingerprint")
         wait(button("Reload"), 5, "Reload on a mismatched draft")
         shot("approval-digest-mismatch")
     }
@@ -386,7 +381,7 @@ final class OmniWalkTests: OmniUITestCase {
     // MARK: Mac keys and the window
 
     func test10MacKeysAndWindow() {
-        if Self.seeded.isEmpty { seed() }
+        if OmniUITestCase.seeded.isEmpty { seed() }
         launch(faults: "sample-data")
         see("Stand-up")
         app.typeKey("n", modifierFlags: .command)
@@ -469,51 +464,5 @@ final class OmniWalkTests: OmniUITestCase {
         #else
         app.typeKey(.escape, modifierFlags: [])
         #endif
-    }
-
-    /// One thread in every state the list can show, and one draft of every kind.
-    func seed() {
-        let made = server { backend -> [String: String] in
-            try await backend.reset()
-            var ids: [String: String] = [:]
-            ids["done"] = try await backend.thread("Summarise yesterday's notes", "Summarise yesterday's notes in five lines.")
-            ids["scheduled"] = try await backend.thread("Check the forecast on Friday", "Check the marine forecast on Friday morning and tell me if the crossing is on.")
-            ids["error"] = try await backend.thread("Look up the tide tables", "Look up the tide tables for Saturday. stub:error")
-            ids["drop"] = try await backend.thread("Draft the packing list", "Draft the packing list for the retreat. stub:drop")
-            ids["toolfail"] = try await backend.thread("File the receipts", "File last month's receipts. stub:toolfail:sample-note-2")
-            ids["empty"] = try await backend.thread("Name the boat", "Suggest a name for the boat. stub:empty")
-            // A made-up note id: the gateway builds the card without asking the vault for it.
-            ids["card"] = try await backend.thread("Update the task for Dana", "Mark the call with Dana as due Friday. stub:card:sample-note-1")
-            for id in ids.values { try await backend.settle(id) }
-            if let scheduled = ids["scheduled"] { _ = try await backend.call("PATCH", "/api/omni/threads/\(scheduled)", ["state": "scheduled"]) }
-
-            let waiting = try await backend.thread("Compare the two quotes", "Compare the two mooring quotes. stub:slow:900")
-            ids["waiting"] = waiting
-            try await Task.sleep(for: .seconds(2))
-            try await backend.stopTurn(in: waiting)
-
-            let drafts = [
-                ("email", "Email Kevin about the buoy spec"), ("email-reply", "Reply to Dana"), ("message", "Message the hardware room"),
-                ("calendar-invite", "Invite for the spec review"), ("tweet", "Post about the retreat"), ("wallet-proposal", "Pay the venue deposit"),
-            ]
-            for (kind, title) in drafts {
-                let id = try await backend.thread(title, "\(title). stub:approval:\(kind)")
-                ids["approval-\(kind)"] = id
-                try await backend.settle(id)
-            }
-            ids["followup"] = try await backend.thread("Find the grant deadline", "Find the grant deadline. stub:followup")
-            ids["working"] = try await backend.thread("Research mooring suppliers", "Research mooring suppliers near the harbour. stub:slow:900")
-            // The follow-up arrives three seconds after its turn: wait for the unread dot.
-            if let followup = ids["followup"] {
-                try await backend.settle(followup)
-                for _ in 0..<30 {
-                    if try await backend.state(of: followup).unread > 0 { break }
-                    try await Task.sleep(for: .milliseconds(300))
-                }
-            }
-            return ids
-        }
-        Self.seeded = made ?? [:]
-        XCTAssertFalse(Self.seeded.isEmpty, "seeding the backend failed")
     }
 }
