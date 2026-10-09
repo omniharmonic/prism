@@ -60,9 +60,8 @@ Closed since the last edition of this file (on main or on `polish4/parity-quick-
 | NP-CO-03 · a REPLY item landing on the commented passage | The anchor exists only in a live document; the inbox fixture renders the plain editor. | real-server journey (as parity3-collab): comment, reply from a second account, open the item from the Inbox | S–M |
 | NP-AX-04 · what the contrast sweep does not judge | Focus indicators are gated at 3 : 1 on every surface. Not measured: icon-only controls, text over cover images, rings drawn over a gradient (34 stops), and "focus shown only by a change of fill" (counted, not judged). | `notion-a11y-contrast.spec.ts`, `a11y-measure.ts` | S–M |
 | NP-AX-01 · surfaces still not in the dark sweep | native sign-in screen, graph, canvas chrome. (set-password, reconnect and the network / connections panel were added on 2026-10-08.) | `a11y-surfaces.ts` | S |
-| parity5-shell, parity5-a11y, notion-a11y-contrast on WebKit | Chromium only so far (the contrast measurement reads computed colours by painting them; WebKit should agree but has not been run over all 178). | `--project=webkit`, one file per command | S |
 
-Closed 2026-10-08 (`polish4/parity-quick-wins`): ~~NP-PG-05 · checkbox, URL and number editors under the title~~ (page-properties › "NP-PG-05: …"). ~~NP-DB-08 · sorting per type through the UI~~ (parity6-databases › "NP-DB-08: …"). ~~NP-AX-07 · controls below the first screenful~~ (notion-a11y-touch › "… · scrolled"). ~~NP-AX-04 · focus-indicator contrast~~ (notion-a11y-contrast).
+Closed 2026-10-08 (`polish4/parity-quick-wins`): ~~NP-PG-05 · checkbox, URL and number editors under the title~~ (page-properties › "NP-PG-05: …"). ~~NP-DB-08 · sorting per type through the UI~~ (parity6-databases › "NP-DB-08: …"). ~~NP-AX-07 · controls below the first screenful~~ (notion-a11y-touch › "… · scrolled"). ~~NP-AX-04 · focus-indicator contrast~~ (notion-a11y-contrast). ~~parity5-shell, parity5-a11y on WebKit~~ (15 / 15 and 8 / 8); notion-a11y-contrast on WebKit 182 / 182.
 
 ### a.3 Accessibility rows — state on 2026-10-08
 
@@ -83,7 +82,7 @@ Closed 2026-10-08 (`polish4/parity-quick-wins`): ~~NP-PG-05 · checkbox, URL and
 
 ### b.1 WebKit — done for the suite; what is still owed
 
-The WebKit run of checklist §1.1 / §4 step 3 exists (1,602 passed, 0 failed, 12 skipped; WEBKIT-RESULTS.md). Owed: (1) parity5-shell, parity5-a11y and the whole of notion-a11y-contrast on WebKit; (2) the specs of `feat/w9-gaps` on WebKit after it merges; (3) one complete WebKit pass in one go on a machine that is not the production host (the totals were collected file by file); (4) real Safari on a device — covered by b.3.
+The WebKit run of checklist §1.1 / §4 step 3 exists (1,602 passed, 0 failed, 12 skipped; WEBKIT-RESULTS.md). The 2026-10-08 branch ran its new and touched specs on WebKit (509 passed; PARITY-EVIDENCE "Verification runs"). Owed: (1) — done 2026-10-08 (parity5-shell, parity5-a11y, notion-a11y-contrast); (2) the specs of `feat/w9-gaps` on WebKit after it merges; (3) one complete WebKit pass in one go on a machine that is not the production host (the totals were collected file by file); (4) real Safari on a device — covered by b.3.
 
 ### b.2 Screenshot review (S) — machine-usable capture list
 

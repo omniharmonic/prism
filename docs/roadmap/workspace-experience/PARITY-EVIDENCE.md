@@ -62,6 +62,20 @@ Owner decisions recorded 2026-10-08, all as recommended: **c.3** a toggle's open
 
 **Defects the new specs found** (all fixed on the branch unless noted): adding a checkbox property ticked it by itself; the Calendar view tab could not be tapped at 320 px; @-menu rows, View settings selects, the context panel's tag "×" and "Raw JSON", and set-password's "Skip for now" were under 44 px on a phone; the pressed Messages view toggle had no focus ring; the two composers' focus was a 1.1 : 1 glow. Recorded, not fixed: select / status sort by stored value rather than option order; field borders below 3 : 1 (decision c.17); a URL property keeps non-URL text (never drawn as a link).
 
+**Verification runs (2026-10-08, the busy laptop, fixture port 5242; commands: `E2E_PORT=5242 npx playwright test <files> [--project=webkit] --reporter=line`).**
+
+| Run | Result |
+|---|---|
+| Chromium — offline-storage-retry, notion-outbox, notion-offline-writes, outbox, notion-sync-state, notion-media, databases, notion-db-views, every notion-a11y* file (axe, reflow, touch, keyboard, contrast, motion), native-shell, ios-shell, page-properties, parity6-databases, collab-storage, notion-offline-cache, notion-offline, notion-collab-offline, phone-zoom, parity5-a11y, parity5-shell, calendar-phone, connections, inbox, messages, notion-mentions, context-properties, parity3-databases, parity2-databases, notion-db-props, auth, agent-chat | **1,306 passed, 0 failed, 3 skipped** (13.3 min, one run) |
+| WebKit, one file per command — offline-storage-retry 7 · parity6-databases 4 · page-properties 13 · notion-a11y-touch 152 · notion-a11y-contrast 182 · native-shell 12 · ios-shell 16 · databases 41 (+1 skipped) · notion-outbox 13 · notion-media 5 · axe + reflow on the new / changed surfaces 41 · parity5-shell 15 · parity5-a11y 8 | **509 passed, 0 failed** — after one re-run: notion-outbox › "H5: a server blip does not turn autosaves into review…" failed once inside the long batch (load average > 50) and passed alone, and then with its whole file (13 / 13) |
+| `npm run typecheck` · `npm run typecheck:e2e -w @prism/web` · `npm run verify:sync -w @prism/web` | clean · clean · OK |
+| `node apps/client/scripts/verify-client.mjs` | all 143 checks passed |
+| `cargo test --lib` (`apps/client/src-tauri`) | 102 passed |
+| `tauri ios build --target aarch64-sim --debug --ci` | succeeded (`Prism.app` for the simulator). Not installed, not launched. |
+| Not run | the server test suite (`npm test` in `apps/server`; no server code changed) — so NP-NA-04's server test was READ, not re-run; the full WebKit suite; anything on a device or a simulator. |
+
+One Chromium test failed once and passed alone during development (page-properties › "owner pins properties…", a timing failure under load); it is green in the run above.
+
 ## Totals
 
 | Status | Now (2026-10-08, main `5fcfc629` + this branch) | Δ vs fourth pass | Fourth pass (`44238483`, 2026-10-04) | Δ vs third-pass slice | Third-pass slice (`3c1df0a`) | Second pass (`d4a7d00`) | Δ vs second pass | First pass (`8094d9f`) |

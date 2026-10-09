@@ -245,7 +245,7 @@ live specs (no code they cover changed).
 
 ## 2026-10-08 — scrolled touch sweep, non-text contrast, three more surfaces (`polish4/parity-quick-wins`)
 
-Run on Chromium unless a line says otherwise. Implemented and run by the same agent; not independently reviewed.
+Chromium and WebKit: notion-a11y-touch 152 / 152 on both, notion-a11y-contrast 182 / 182 on both, axe + reflow for the new and changed surfaces 41 / 41 on WebKit (the whole axe / reflow files on Chromium). The numbers in the tables below are the Chromium run's. Implemented and run by the same agent; not independently reviewed.
 
 ### Surfaces added to every sweep (NP-AX-01)
 
