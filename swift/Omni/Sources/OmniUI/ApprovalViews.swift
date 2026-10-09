@@ -68,12 +68,6 @@ struct ApprovalCardView: View {
                 Task { await center.revise(card.id, feedback: text) }
             }
         }
-        .confirmationDialog("Cancel this draft?", isPresented: $confirmingCancel, titleVisibility: .visible) {
-            Button("Cancel Draft", role: .destructive) { Task { await center.cancel(card.id) } }
-            Button("Keep", role: .cancel) {}
-        } message: {
-            Text("Nothing is sent. Omni can write a new one if you ask.")
-        }
     }
 
     @ViewBuilder private func draft(_ content: ApprovalContent) -> some View {
@@ -146,6 +140,13 @@ struct ApprovalCardView: View {
                 Button("Cancel Draft") { confirmingCancel = true }
                     .accessibilityIdentifier("approval.cancel")
                     .accessibilityHint("Discards this draft; nothing is sent")
+                    // On the button: the question appears beside what was pressed.
+                    .confirmationDialog("Cancel this draft?", isPresented: $confirmingCancel, titleVisibility: .visible) {
+                        Button("Cancel Draft", role: .destructive) { Task { await center.cancel(card.id) } }
+                        Button("Keep", role: .cancel) {}
+                    } message: {
+                        Text("Nothing is sent. Omni can write a new one if you ask.")
+                    }
             }
             if standing == .mismatch {
                 Button("Reload") { Task { await center.reload(card.id) } }

@@ -132,7 +132,7 @@ class OmniUITestCase: XCTestCase {
     /// Launch signed in to the dev gateway (or as asked).
     func launch(token: String? = Run.token, server: String = Run.server, firstRun: Bool = false, faults: String = "", arguments: [String] = []) {
         app.terminate()
-        var env = ["OMNI_UITEST": "1", "OMNI_UITEST_SERVER": server, "OMNI_UITEST_APPEARANCE": Run.theme]
+        var env = ["OMNI_UITEST": "1", "OMNI_UITEST_SERVER": server, "OMNI_UITEST_APPEARANCE": Run.theme, "OMNI_UITEST_ANIMATIONS": "0"]
         if let token { env["OMNI_UITEST_TOKEN"] = token }
         if firstRun { env["OMNI_UITEST_FIRST_RUN"] = "1" }
         if !faults.isEmpty { env["OMNI_UITEST_FAULTS"] = faults }
@@ -285,6 +285,7 @@ class OmniUITestCase: XCTestCase {
         #else
         image = XCUIScreen.main.screenshot()
         #endif
+        let png = Self.upright(image)
         let attachment = XCTAttachment(screenshot: image)
         attachment.name = "\(number)-\(name)"
         attachment.lifetime = .keepAlways
@@ -293,10 +294,24 @@ class OmniUITestCase: XCTestCase {
         let url = URL(fileURLWithPath: Run.shots).appendingPathComponent("\(number)-\(name).png")
         do {
             try FileManager.default.createDirectory(atPath: Run.shots, withIntermediateDirectories: true)
-            try image.pngRepresentation.write(to: url)
+            try png.write(to: url)
         } catch {
             XCTFail("could not write \(url.lastPathComponent): \(error.localizedDescription)")
         }
+    }
+
+    /// The picture as a person holding the device sees it: a landscape iPad's screenshot
+    /// arrives lying on its side.
+    private static func upright(_ shot: XCUIScreenshot) -> Data {
+        #if os(iOS)
+        guard Run.isPad, Run.variant == "landscape", shot.image.size.height > shot.image.size.width, let cg = shot.image.cgImage else { return shot.pngRepresentation }
+        let turned = UIImage(cgImage: cg, scale: shot.image.scale, orientation: .left)
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = shot.image.scale
+        return UIGraphicsImageRenderer(size: turned.size, format: format).pngData { _ in turned.draw(at: .zero) }
+        #else
+        return shot.pngRepresentation
+        #endif
     }
 
     // MARK: Getting around

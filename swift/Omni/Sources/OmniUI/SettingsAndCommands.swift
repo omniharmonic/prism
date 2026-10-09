@@ -26,6 +26,14 @@ public struct SettingsView: View {
                 Button("Sign Out", role: .destructive) { confirmingSignOut = true }
                     .disabled(app.phase != .signedIn)
                     .accessibilityHint("Revokes this device on the server and forgets its sign-in")
+                    // On the button, so the question appears beside it (an iPad shows it as a
+                    // bubble pointing at what was pressed, not at the top of the sheet).
+                    .confirmationDialog("Sign out of Omni on this device?", isPresented: $confirmingSignOut, titleVisibility: .visible) {
+                        Button("Sign Out", role: .destructive) { Task { await app.signOut() } }
+                        Button("Cancel", role: .cancel) {}
+                    } message: {
+                        Text("The device is revoked on the server. The server address is kept.")
+                    }
             }
             if let log = app.diagnostics {
                 DiagnosticsSection(log: log)
@@ -38,12 +46,6 @@ public struct SettingsView: View {
         }
         .formStyle(.grouped)
         .tint(Color.omniAccent)
-        .confirmationDialog("Sign out of Omni on this device?", isPresented: $confirmingSignOut, titleVisibility: .visible) {
-            Button("Sign Out", role: .destructive) { Task { await app.signOut() } }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("The device is revoked on the server. The server address is kept.")
-        }
         #if os(macOS)
         .frame(width: app.diagnostics == nil ? 460 : 620)
         .fixedSize(horizontal: false, vertical: true)

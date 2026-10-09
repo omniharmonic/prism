@@ -68,6 +68,12 @@ enum UITestLaunch {
         let diagnostics = DiagnosticsLog()
         let live = OmniLive.environmentFactory(tokenStore: tokens, flow: NeverReturningFlow(), userAgent: "Omni/1 (ui-test)", diagnostics: diagnostics)
         let faults = configuration.faults
+        #if os(iOS)
+        // UIKit's transitions off for a test run: the runner waits for every animation to
+        // end before each step, and a spinner removed mid-transition can leave it waiting
+        // a minute at a time. What is drawn is the same; it just arrives at once.
+        if ProcessInfo.processInfo.environment["OMNI_UITEST_ANIMATIONS"] == "0" { UIView.setAnimationsEnabled(false) }
+        #endif
         #if os(macOS)
         if let name = configuration.appearance {
             NSApplication.shared.appearance = NSAppearance(named: name == "dark" ? .darkAqua : .aqua)
