@@ -45,6 +45,7 @@ import { renamePath } from "../renderers/DocumentChrome";
 import { useNoteShortcuts } from "./NoteShortcuts";
 import { useSwipeActions } from "../../lib/gestures/useSwipeActions";
 import "../pages/pages.css";
+import { ConfirmDialog } from "../ui/ConfirmDialog";
 
 // Icon mapping for content types
 const TYPE_ICONS: Record<ContentType, React.ElementType> = {
@@ -311,29 +312,6 @@ function FolderMoveDialog({ node, allPaths, onMove, onClose }: { node: TreeNode;
         <div className="flex justify-end mt-3">
           <button onClick={onClose} className="px-3 py-1.5 rounded-md text-xs hover:bg-[var(--glass-hover)]" style={{ color: "var(--text-secondary)" }}>
             Cancel
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function ConfirmDialog({ title, body, confirm, onConfirm, onCancel }: { title: string; body: string; confirm: string; onConfirm: () => void; onCancel: () => void }) {
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center" style={{ background: "rgba(0,0,0,0.4)" }}>
-      <div role="alertdialog" aria-label={title} className="glass-elevated w-full max-w-xs mx-4 p-4" style={{ borderRadius: "var(--radius-lg)" }} onClick={(e) => e.stopPropagation()}>
-        <div className="text-sm font-medium mb-2" style={{ color: "var(--text-primary)" }}>
-          {title}
-        </div>
-        <div className="text-xs mb-4" style={{ color: "var(--text-secondary)" }}>
-          {body}
-        </div>
-        <div className="flex justify-end gap-2">
-          <button onClick={onCancel} className="px-3 py-1.5 rounded-md text-xs hover:bg-[var(--glass-hover)]" style={{ color: "var(--text-secondary)" }}>
-            Cancel
-          </button>
-          <button onClick={onConfirm} className="px-3 py-1.5 rounded-md text-xs font-medium" style={{ background: "var(--danger-bg, var(--color-danger))", color: "#fff" }}>
-            {confirm}
           </button>
         </div>
       </div>
@@ -693,6 +671,7 @@ export function ProjectTree() {
           title={`Move “${trashFolder.name}” to Trash?`}
           body={`${collectNotes(trashFolder).length} page${collectNotes(trashFolder).length === 1 ? "" : "s"} inside will move to the Trash. You can restore them from the Trash.`}
           confirm="Move to Trash"
+          danger
           onConfirm={() => void handleFolderTrash(trashFolder)}
           onCancel={() => setTrashFolder(null)}
         />
@@ -702,6 +681,7 @@ export function ProjectTree() {
           title={`Move ${selectedIds.size} pages to Trash?`}
           body="Their sub-pages move with them. You can restore them from the Trash."
           confirm="Move to Trash"
+          danger
           onConfirm={() => void handleBatchTrash()}
           onCancel={() => setBatchTrashConfirm(false)}
         />

@@ -1,3 +1,4 @@
+import { caretPopupPlacement } from "../../lib/tiptap/popupPlacement";
 import { useState, useMemo, useEffect, useId, useCallback, useContext, useRef } from "react";
 import type { Editor } from "@tiptap/react";
 import { QueryClientContext } from "@tanstack/react-query";
@@ -112,8 +113,8 @@ export function WikilinkDropdown({ editor, notes, autocomplete, hostPath }: {
   if (!editor || !visible) return null;
   const coords = editor.view.coordsAtPos(Math.min(autocomplete.to,editor.state.doc.content.size));
   const width = Math.min(320,window.innerWidth-16);
-  const height = Math.min(280,window.innerHeight-16);
-  const top = coords.bottom+height+6>window.innerHeight ? Math.max(8,coords.top-height-6) : coords.bottom+6;
+  // Phone keyboard up: the visible area (not the layout viewport) decides — the list opened behind the keys.
+  const { top, maxHeight: height } = caretPopupPlacement(coords, 280);
   return <div id={id} role="listbox" aria-label="Link to a document" className="fixed glass-elevated overflow-auto rounded-xl p-1 shadow-lg"
     style={{left:Math.max(8,Math.min(coords.left,window.innerWidth-width-8)),top,width,maxHeight:height,zIndex:70}}>
     {rows.map((row,i)=>{

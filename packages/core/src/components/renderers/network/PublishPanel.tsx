@@ -23,6 +23,7 @@ import type { TagCount } from "../../../lib/types";
 import { NewPublication } from "./publishing/NewPublication";
 import { PublicationSettings } from "./publishing/PublicationSettings";
 import { pubSlice, SectionLabel, Spinner } from "./publishing/shared";
+import { copyText } from "../../../lib/clipboard";
 
 export function PublishPanel() {
   const vault = useVaultClient();
@@ -123,9 +124,8 @@ function ScopedPublishPanel() {
   );
 
   const copy = useCallback(async (text: string, key: string) => {
-    try {
-      await navigator.clipboard.writeText(text);
-    } catch {
+    // First statement of the click handler: the write starts inside the gesture.
+    if (!(await copyText(text))) {
       setError(
         "The link could not be copied. Select the address and copy it manually.",
       );

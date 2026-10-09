@@ -7,6 +7,7 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { test, expect, type Page, type BrowserContext } from "@playwright/test";
+import { enterAddress, forbidBrowserDialogs } from "./in-app-dialog-helpers";
 import { connect, startRealServer, type RealServer } from "./real-server";
 
 const media = (name: string) => path.join(path.dirname(fileURLToPath(import.meta.url)), "media", name);
@@ -21,6 +22,7 @@ let seq = 0;
 /** A fresh page of the owner's, open in the app's live editor with the caret on an empty last line. */
 async function openPage(page: Page, context: BrowserContext, content = "<h2>Heading</h2><p>Start</p>"): Promise<string> {
   const id = `slash-${process.pid}-${++seq}`;
+  await forbidBrowserDialogs(page);
   expect(await server.add({ id, path: `vault/Shared/Slash ${id}`, content, tags: ["team"] })).toBe(true);
   // Nothing outside the fixture is contacted (embeds, link previews).
   await context.route((url) => url.hostname !== "127.0.0.1" && url.hostname !== "localhost", (route) => route.abort());
@@ -102,8 +104,8 @@ test("live: media — image upload, image from URL, file, PDF, audio, video", as
   await pick("image", /^Image Upload or embed/, "cover.png");
   await expect(editor(page).locator('img[src^="/api/attachments/"]')).toHaveCount(1);
   await newLine(page);
-  page.once("dialog", (d) => void d.accept("https://images.example.test/chart.png"));
   await slash(page, "image from", /^Image from URL/);
+  await enterAddress(page, "Image address", "https://images.example.test/chart.png");
   await expect(editor(page).locator('img[src="https://images.example.test/chart.png"]')).toHaveCount(1);
   for (const [query, option, file, kind] of [["file", /^File Upload any file/, "brief.pdf", "pdf"], ["pdf", /^PDF/, "brief.pdf", "pdf"], ["audio", /^Audio/, "tone.wav", "audio"], ["video", /^Video Upload a video/, "clip.webm", "video"]] as const) {
     const before = await editor(page).locator(`.prism-attachment[data-kind="${kind}"]`).count();
@@ -119,13 +121,13 @@ test("live: media — image upload, image from URL, file, PDF, audio, video", as
 
 test("live: web bookmark and embed", async ({ page, context }) => {
   const id = await openPage(page, context);
-  page.once("dialog", (d) => void d.accept("https://atlas.example.test/watersheds"));
   await slash(page, "bookmark", /^Web bookmark/);
+  await enterAddress(page, "Link for the bookmark", "https://atlas.example.test/watersheds");
   await expect(editor(page).locator(".prism-bookmark")).toHaveCount(1);
   await expect(editor(page).locator(".prism-bookmark")).toContainText("atlas.example.test");
   await newLine(page);
-  page.once("dialog", (d) => void d.accept("https://www.youtube.com/watch?v=dQw4w9WgXcQ"));
   await slash(page, "embed", /^Embed YouTube/);
+  await enterAddress(page, "Link to embed", "https://www.youtube.com/watch?v=dQw4w9WgXcQ");
   await expect(editor(page).locator('.prism-embed iframe[src*="youtube"]')).toHaveCount(1);
   const out = await html(page);
   expect(out).toContain('data-type="bookmark"');

@@ -327,6 +327,13 @@
       return null;
     });
   }
+  // Attachments (attachment_save.rs): the shell downloads ONE attached file of a page itself
+  // and writes it where the user says in a native save panel (iOS: the share sheet, then
+  // deletes its copy). We pass the attachment's id and a suggested name — never a URL, a path
+  // or the token. Resolves with the saved file's name, or null when the user cancelled.
+  function saveAttachment(attachmentId, suggestedName) {
+    return ipc("save_attachment", { attachmentId: String(attachmentId), suggestedName: String(suggestedName) });
+  }
   // WP5 (iOS): narrow wrappers over the iOS commands (capabilities/mobile.json).
   // Each is a fixed command with fixed, typed arguments; the shell validates
   // everything again and owns every native prompt (confirmation, Face ID).
@@ -372,6 +379,7 @@
       takePendingLink: takePendingLink,
       saveExport: saveExport,
       cancelExportSave: cancelExportSave,
+      saveAttachment: saveAttachment,
       ios: IOS ? Object.freeze(ios) : null,
     }),
     writable: false,

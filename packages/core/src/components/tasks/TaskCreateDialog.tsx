@@ -3,6 +3,7 @@ import { X } from "lucide-react";
 import { useCreateNote, useNotes } from "../../app/hooks/useParachute";
 import { useUIStore } from "../../app/stores/ui";
 import { vaultApi } from "../../lib/parachute/client";
+import { showMessage } from "../ui/ConfirmDialog";
 
 const STATUS_OPTIONS = ["todo", "in-progress", "blocked", "done"] as const;
 const PRIORITY_OPTIONS = ["low", "medium", "high", "critical"] as const;
@@ -94,7 +95,7 @@ export function TaskCreateDialog({ onClose }: TaskCreateDialogProps) {
       onClose();
     } catch (e) {
       console.error("Failed to create task:", e);
-      alert(`Failed to create task: ${e}`);
+      void showMessage(`${e}`, "Couldn't create the task");
     } finally {
       setIsSubmitting(false);
     }

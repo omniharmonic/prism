@@ -138,7 +138,9 @@ export default function BioregionEntityRenderer({ note, onSave, onMetadataChange
       const wl = a.getAttribute("data-wikilink-target");
       if (wl) { e.preventDefault(); navigate(wl); return; }
       const href = a.getAttribute("href");
-      if (href && /^https?:/i.test(href)) { e.preventDefault(); window.open(href, "_blank", "noopener,noreferrer"); }
+      // The Prism Client's host script already took this click (it opens outside links itself, after a
+      // native confirmation): opening it here as well asked twice.
+      if (href && /^https?:/i.test(href) && !e.defaultPrevented) { e.preventDefault(); window.open(href, "_blank", "noopener,noreferrer"); }
     },
     [navigate],
   );

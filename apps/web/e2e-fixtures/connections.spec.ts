@@ -1,4 +1,5 @@
 import { test, expect } from "@playwright/test";
+import { answerConfirm } from "./in-app-dialog-helpers";
 const fixture = "/e2e-fixtures/connections.html";
 test("actual workspace settings presents honest account rows and preserved processing evidence", async ({
   page,
@@ -131,8 +132,8 @@ test("credential failure retains draft and optional scope values; sync and remov
   await expect(page.getByRole("status")).toContainText(
     "3 imported · 1 updated",
   );
-  page.once("dialog", (dialog) => dialog.dismiss());
   await page.getByRole("button", { name: "Remove", exact: true }).click();
+  await answerConfirm(page, "Cancel", "Remove the stored clickup credential?");
   expect(
     await page.evaluate(() =>
       (window as any).prismConnections.writes.filter(
@@ -140,8 +141,8 @@ test("credential failure retains draft and optional scope values; sync and remov
       ),
     ),
   ).toEqual([]);
-  page.once("dialog", (dialog) => dialog.accept());
   await page.getByRole("button", { name: "Remove", exact: true }).click();
+  await answerConfirm(page, "Remove");
   await expect(page.getByRole("status")).toContainText(
     "ClickUp credentials removed",
   );
@@ -220,16 +221,16 @@ test("server operator actions preserve confirmation, dry run, notifications and 
 }) => {
   await page.goto(fixture);
   await page.getByRole("tab", { name: "Server operations" }).click();
-  page.once("dialog", (d) => d.dismiss());
   await page.getByRole("button", { name: "Stop", exact: true }).click();
+  await answerConfirm(page, "Cancel", "Stop the tunnel?");
   expect(
     await page.evaluate(() => (window as any).prismConnections.writes),
   ).toEqual([]);
-  page.once("dialog", (d) => d.accept());
   await page.getByRole("button", { name: "Stop", exact: true }).click();
+  await answerConfirm(page, "Stop tunnel");
   await expect(page.getByRole("status")).toContainText("Tunnel stop requested");
-  page.once("dialog", (d) => d.accept());
   await page.getByRole("button", { name: "Revoke all + notify" }).click();
+  await answerConfirm(page, "Revoke", /Revoke \d+ token/);
   await expect(page.getByRole("status")).toContainText("notified 1");
   const legacy = await page.evaluate(() =>
     (window as any).prismConnections.writes.filter(
@@ -380,10 +381,10 @@ test("ingress and server sender configuration retain their explicit operator pay
 }) => {
   await page.goto(fixture);
   await page.getByRole("tab", { name: "Server operations" }).click();
-  page.once("dialog", (d) => d.accept());
   await page
     .getByRole("button", { name: "2. Add ingress rules & restart tunnel" })
     .click();
+  await answerConfirm(page, "Add and restart");
   await expect(page.getByRole("status")).toContainText(
     "Routed: research.example.test",
   );
@@ -431,6 +432,7 @@ test("a late legacy-token dry run cannot prompt or revoke after a vault switch",
   await expect(
     page.getByRole("button", { name: "Manage Matrix", exact: true }),
   ).toContainText("Not configured");
+  await expect(page.getByRole("alertdialog")).toHaveCount(0);
   expect(dialogs).toBe(0);
   expect(
     await page.evaluate(() =>

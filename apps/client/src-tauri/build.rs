@@ -18,6 +18,8 @@ fn main() {
             "export_note",
             // Export archives (docs/client-app.md "Saving an export archive")
             "save_export",
+            // One attachment of a page → the save panel / share sheet (attachment_save.rs)
+            "save_attachment",
             // WP5 (iOS only; capabilities/mobile.json)
             "reset_server",
             "get_app_settings",

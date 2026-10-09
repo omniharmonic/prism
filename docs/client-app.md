@@ -12,7 +12,7 @@ access**. Everything it can see or change goes through the server gateway, so
 |---|---|---|
 | Trust model | Holds the vault JWT, talks to `localhost:1940` | Holds a per-device `pd_…` token, talks to one Prism Server |
 | Status | **Legacy since WP4.3** (rollback path only, `apps/desktop/README.md`) | The client for every Mac, the Mac mini included |
-| Backend | ~100 Rust commands, sync services, `claude`/`gog`/`gh` subprocesses | 9 commands for the main window (`get_token`, `sign_in`, `sign_out`, `get_server_origin`, `set_server_origin`, `open_external`, `notify`, `export_note`, `save_export`) + `quick_capture` for the capture window |
+| Backend | ~100 Rust commands, sync services, `claude`/`gog`/`gh` subprocesses | 10 commands for the main window (`get_token`, `sign_in`, `sign_out`, `get_server_origin`, `set_server_origin`, `open_external`, `notify`, `export_note`, `save_export`, `save_attachment`) + `quick_capture` for the capture window |
 | UI | Desktop build of `@prism/core` | `apps/web` built with `--mode native` |
 | Identity | `Prism`, `com.benjaminlife.prism` | **`Prism Client`**, `com.benjaminlife.prism.client` |
 | Agent / ingest | Local | Server-side (`/api/agent/*`, server workers) |
@@ -175,6 +175,7 @@ surface.
 | Notifications | `notify {title, body, sessionId?}` | `main`, `capabilities/default.json` | Shown only while the main window is NOT focused. |
 | Export | `export_note {content, suggestedName, format}` | `main`, `capabilities/default.json` | Destination comes from the native save panel only. |
 | Export archive | `save_export {jobId, suggestedName, cancel?}` | `main`, `capabilities/default.json` | Rust downloads from the configured server (no redirects) and writes only where the save panel says. |
+| Save an attachment | `save_attachment {attachmentId, suggestedName}` | `main`, `capabilities/default.json` + `mobile.json` | Rust downloads `/api/attachments/<id>` from the configured server (no redirects, size cap, no page/script types), names the file from a fixed extension list, and writes only where the save panel says (iOS: the share sheet). |
 | Tray / global shortcut | none (Rust only) | none | No page-callable surface at all. |
 | Drag-drop | none (OS event, Rust only) | none | Content reaches the page as a DOM event. |
 
@@ -402,6 +403,40 @@ receives it. **iOS (hardware keyboard):** there is no menu bar in the Tauri iOS 
 reaches the WKWebView as a keydown and the same handler takes it — NOT verified on a device.
 A discoverable entry in the iPad ⌘-hold overlay needs a `UIKeyCommand` in the Swift plugin
 (`plugins/prism-ios` on `feat/native-ios`) that evals the same event.
+
+### Saving one attachment (`save_attachment`; macOS: save panel, iOS: share sheet)
+
+"Download" on an image, a file / PDF / audio / video block or a Files property did nothing in
+the apps for the same reason as below (the web view cancels downloads; `blob:` navigations are
+refused). The page now calls `__PRISM_SHELL__.saveAttachment(id, name)` when the shell offers
+it (`packages/core/src/lib/saveFile.ts`; the browser path — a `blob:` download through the
+installed transport — is unchanged).
+
+**IPC** `save_attachment { attachmentId, suggestedName }` → the saved file's NAME, or null
+(the save panel / share sheet was closed). Module `src-tauri/src/attachment_save.rs`:
+
+- 🔒 The page supplies an attachment **id** (`[A-Za-z0-9_-]{1,64}`, the page's own
+  `OWN_ATTACHMENT` rule) and a suggested name — no URL, path or token. Rust builds
+  `<configured origin>/api/attachments/<id>`, sends the keychain bearer there only, with the
+  no-redirect client of `export_archive.rs`.
+- The answer must be `200`, not a page / script / SVG type, within 512 MB by its declared
+  length and while streaming, and exactly as long as declared.
+- Bytes are streamed into `<tmp>/prism-exports/<random>/` (0700) and never cross IPC. The
+  file's name is a sanitised stem + an extension from `SAVE_EXTENSIONS` — the suggested one
+  when it is listed, else the one for the type the server declared, else `.bin` (the page
+  cannot make the file a `.command`, `.app`, `.html` or `.svg`).
+- macOS: the native save panel, then a copy into a fresh sibling `.part` renamed over the
+  target. iOS: Swift `shareFile`, which accepts only that folder and the same extension list
+  (`attachmentExtensions`; `verify-client.mjs` and a Rust test compare the two lists).
+  The tmp folder is removed whatever happened.
+- An image or file that is NOT ours (an outside https address) is never fetched with our
+  credentials: it opens through `open_external` (the one native confirmation).
+- **Text the page built** (a database view's CSV, the "unsent changes" JSON offered before a
+  sign-out) goes through `export_note` with the formats `csv` / `json` (written as given).
+  Sign-out with unsent changes stays signed in unless that file was really saved.
+- **Tests:** `cargo test --lib attachment_save::` (id shapes, the URL, redirects refused and
+  never followed, page/script/untyped answers, size caps, incomplete bodies, name
+  sanitising, the chosen path); `touch-and-native-actions.spec.ts` "saving a file".
 
 ### Saving an export archive (`save_export`; macOS: save panel, iOS: share sheet)
 
@@ -870,9 +905,9 @@ Info.plist keys never need re-applying: Tauri merges `src-tauri/Info.ios.plist` 
 | WebView | Swift `load(webview:)` | `contentInsetAdjustmentBehavior=.never` (the web UI owns safe areas via `viewport-fit=cover`), no scroll-view bounce, no back/forward swipe, no link previews. Pinch zoom stays available; zoom-on-focus is avoided by the 16 px floor in `styles/touch.css` § "iOS zoom-on-focus" (`phone-zoom.spec.ts`). |
 
 **IPC surface (iOS) — pinned separately from the desktop's.** `capabilities/mobile.json`
-(platform iOS, window `main`), 14 commands: the six shared ones (`get_token`, `sign_in`,
-`sign_out`, `get_server_origin`, `set_server_origin`, `open_external`), `export_note` and
-`save_export` (both end in the share sheet), and six iOS-only ones — `reset_server`,
+(platform iOS, window `main`), 15 commands: the six shared ones (`get_token`, `sign_in`,
+`sign_out`, `get_server_origin`, `set_server_origin`, `open_external`), `export_note`,
+`save_export` and `save_attachment` (all three end in the share sheet), and six iOS-only ones — `reset_server`,
 `get_app_settings`, `set_app_lock`, `push_register`, `push_status`, `push_take_opened`
 (`src/mobile_cmds.rs`; on desktop they return an error and no desktop capability grants them).
 No quick capture and no desktop `notify` on iOS. The desktop list is unchanged: 9 main-window

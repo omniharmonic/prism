@@ -1,4 +1,5 @@
 import { test, expect, type Page } from "@playwright/test";
+import { enterAddress, forbidBrowserDialogs } from "./in-app-dialog-helpers";
 
 const SHOTS = process.env.PRISM_EDITOR_SHOTS;
 const editorHtml = (page: Page) => page.evaluate(() => (document.querySelector(".tiptap") as any).editor.getHTML() as string);
@@ -91,7 +92,8 @@ test("a block's name can be typed in full: several words keep the menu open, pro
 });
 
 test("every slash block inserts the node it names and the stored HTML keeps it", async ({ page }) => {
-  page.on("dialog", (dialog) => dialog.accept("https://images.example.test/chart.png"));
+  await forbidBrowserDialogs(page);
+  await page.reload();
   const run = async (query: string, after?: string) => {
     await newLine(page);
     await slash(page, query);
@@ -112,6 +114,7 @@ test("every slash block inserts the node it names and the stored HTML keeps it",
   await run("2col", "Left side");
   await run("3col", "First of three");
   await run("image");
+  await enterAddress(page, "Image address", "https://images.example.test/chart.png");
   const html = await editorHtml(page);
   expect(html).toContain("<h1>Big title</h1>");
   expect(html).toMatch(/<div data-emoji="💡" data-type="callout"><p>Mind the gap<\/p><\/div>/);

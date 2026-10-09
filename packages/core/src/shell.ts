@@ -21,6 +21,8 @@ import { installImeKeyGuard } from "./lib/ime/keyGuard";
 // NP-AX-08: keys that belong to an IME composition never reach app handlers (see keyGuard.ts).
 installImeKeyGuard();
 export { installImeKeyGuard, isImeKey } from "./lib/ime/keyGuard";
+// The one clipboard writer (gesture-safe, with a fallback and an honest result) — see lib/clipboard.ts.
+export { copyText } from "./lib/clipboard";
 
 export { PrismMark, PrismAppIcon } from "./components/brand/PrismMark";
 
@@ -322,3 +324,5 @@ export { openNotification, focusAnchor, anchorSelector, listenForInboxOpenReques
 export { InboxBadge, InboxNavButton, openInbox } from "./components/inbox/InboxNavButton";
 export { RequestAccessButton } from "./components/inbox/RequestAccessButton";
 export { PageNotificationLevelButton } from "./components/inbox/PageNotificationLevel";
+export { ConfirmDialog, askConfirm, showMessage, type ConfirmOptions } from "./components/ui/ConfirmDialog";
+export { saveOwnAttachment, saveTextFile, downloadBlob, savesThroughShell, type SaveOutcome } from "./lib/saveFile";

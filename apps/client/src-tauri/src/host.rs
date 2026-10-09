@@ -73,6 +73,7 @@ mod tests {
             "\"notify\"",
             "\"export_note\"",
             "\"save_export\"",
+            "\"save_attachment\"",
         ] {
             assert!(js.contains(cmd));
         }

@@ -3,6 +3,7 @@
  * database gallery cards. Pure and isomorphic (the server imports the schema
  * that uses `safeMediaSrc`).
  */
+import { saveOwnAttachment, type SaveOutcome } from "../saveFile";
 
 export type AttachmentKind = "file" | "pdf" | "audio" | "video";
 
@@ -194,18 +195,12 @@ export function firstFileUrl(value: unknown): string | null {
   return typeof value === "string" ? safeMediaSrc(value) : null;
 }
 
-/** Download one of OUR attachments through the installed transport (cookie in the PWA, bearer in the native client). */
-export async function downloadOwnAttachment(fetcher: (path: string) => Promise<Response>, url: string, name: string): Promise<void> {
+/**
+ * Save one of OUR attachments: a browser download through the installed transport, or — in the
+ * Prism Client, whose web view cancels downloads — the shell's own save (`lib/saveFile.ts`).
+ * Resolves "saved" / "cancelled" / "started"; throws when it failed.
+ */
+export async function downloadOwnAttachment(fetcher: (path: string) => Promise<Response>, url: string, name: string): Promise<SaveOutcome> {
   if (!isOwnAttachment(url)) throw new Error("not an attachment");
-  const res = await fetcher(url);
-  if (!res.ok) throw new Error(`download ${res.status}`);
-  const href = URL.createObjectURL(await res.blob());
-  const a = document.createElement("a");
-  a.href = href;
-  a.download = name || "download";
-  a.rel = "noopener";
-  document.body.append(a);
-  a.click();
-  a.remove();
-  setTimeout(() => URL.revokeObjectURL(href), 30_000);
+  return saveOwnAttachment(fetcher, url, name);
 }

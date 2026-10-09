@@ -18,6 +18,7 @@ import {
 } from "lucide-react";
 import { DocumentOutline } from "./DocumentOutline";
 import { FormattingBar } from "./FormattingBar";
+import { requestEditorPrompt } from "../../lib/tiptap/editorPrompt";
 
 /**
  * Slim formatting toolbar for the collaborative editor. Two groups —
@@ -139,13 +140,7 @@ export function CollabToolbar({
         <Btn
           label="Link"
           active={editor.isActive("link")}
-          on={() => {
-            const prev = editor.getAttributes("link").href as string | undefined;
-            const url = window.prompt("Link URL", prev ?? "https://");
-            if (url === null) return;
-            if (url === "") c().unsetLink().run();
-            else c().setLink({ href: url }).run();
-          }}
+          on={() => requestEditorPrompt(editor, "link", (editor.getAttributes("link").href as string | undefined) ?? undefined)}
         >
           <LinkIcon size={16} />
         </Btn>

@@ -29,6 +29,9 @@ export const omniConfig = {
   requestTimeoutMs: (): number => int("OMNI_HERMES_TIMEOUT_MS", 15_000),
   /** A streamed turn is abandoned when Hermes sends nothing (not even a keepalive) this long. */
   streamIdleMs: (): number => int("OMNI_HERMES_STREAM_IDLE_MS", 300_000),
+  /** How long a cancel keeps asking Hermes to stop the run (it cannot be stopped until its
+   *  agent exists, a few seconds after the run starts). */
+  stopRetryMs: (): number => int("OMNI_HERMES_STOP_RETRY_MS", 30_000),
   /** Hard ceiling for one turn's stream. */
   turnMaxMs: (): number => int("OMNI_TURN_MAX_MS", 60 * 60_000),
   /** Default lifetime of a proposed approval. */
@@ -44,6 +47,13 @@ export const omniConfig = {
    * own Proton SMTP action (behind ACTIONS_EMAIL_ENABLED).
    */
   emailExecutor: (): "proton-send" | "live-actions" => (env("OMNI_EMAIL_EXECUTOR") === "live-actions" ? "live-actions" : "proton-send"),
+  /**
+   * `OMNI_EXECUTORS=off`: no approved draft is executed, whatever the per-family flags say
+   * (`ACTIONS_*_ENABLED`, `OMNI_PROTON_SEND`) — those also serve Prism's own live actions, so
+   * this is the switch that turns OMNI's sending off by itself. Approving then answers
+   * `executor_disabled` and the draft stays pending.
+   */
+  executorsOff: (): boolean => (env("OMNI_EXECUTORS") ?? "").toLowerCase() === "off",
   /** Absolute path to proton_send.py. Unset = approved emails are refused (executor_disabled). */
   protonSendPath: (): string | undefined => env("OMNI_PROTON_SEND"),
   /** Python used to run it (the agent repo's venv on the Mini). */
