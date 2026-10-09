@@ -2,7 +2,7 @@ import { Extension } from "@tiptap/core";
 import { Plugin, Selection, TextSelection } from "@tiptap/pm/state";
 import { suggestionKey } from "./suggestionMeta";
 import { Decoration, DecorationSet } from "@tiptap/pm/view";
-import { AttrStep, Mapping, ReplaceAroundStep, ReplaceStep, Transform, canJoin } from "@tiptap/pm/transform";
+import { AddMarkStep, AttrStep, Mapping, RemoveMarkStep, ReplaceAroundStep, ReplaceStep, Transform, canJoin } from "@tiptap/pm/transform";
 import { joinTarget, nodeSuggestionOf, nodeSuggestions, removeBlockStart, resolveNodeSuggestion, resolveNodeSuggestions, setNodeSuggestion, type NodeSuggestion } from "./suggestionNodes";
 import { absolutePositionToRelativePosition, relativePositionToAbsolutePosition, ySyncPluginKey } from "@tiptap/y-tiptap";
 
@@ -46,9 +46,12 @@ import { absolutePositionToRelativePosition, relativePositionToAbsolutePosition,
  * `insert`, a removed one is put back stamped `delete`. Every block start inside a removal that
  * would have joined blocks is stamped `delete` too, so Accept gives the page the plain edit gives.
  * Not a removal: a removal made ONLY of such leaves that the same dispatch inserts again
- * (a drag of the chip / block itself: it MOVED). Text that cannot carry the mark (inline code,
- * a code block) is removed for real, with a notice — never put back unmarked beside its
- * replacement.
+ * (a drag of the chip / block itself: it MOVED). Text inside inline code and code blocks carries
+ * the marks like any text (the live schema lets it — collabSchema.ts `CODE_EXCLUDES`,
+ * `SuggestableCodeBlock`).
+ * FORMATTING text that was already there (a mark added or removed: bold, a link, a colour — and
+ * a suggestion mark taken off by hand) has no tracked form either: refused, with a notice; the
+ * text the person themselves suggested may be formatted. Comments are not edits.
  * There is NO exemption for "the same kind of node replaced the old one": pasting image B
  * over image A is a removal of A. Attribute changes are either gated off while Suggesting
  * (`structuralEditsAllowed`) or carry `SUGGESTION_UNTRACKED_META`.
@@ -274,7 +277,7 @@ export function strikeInPlace(tr: Transaction, a: number, b: number, ctx: { inse
     const mine = node.marks.find((m) => m.type === insertion);
     if (mine && mine.attrs.user === userName) { close(); drop.push(range); }
     else if (node.marks.some((m) => m.type === deletion)) close();
-    else if (!canStrike(node, parent, deletion)) { close(); drop.push(range); out.untracked = true; }
+    else if (!canStrike(node, parent, deletion)) { close(); out.untracked = true; } // stays / comes back as it was: never removed without a record
     else if (run && run[1] === range[0]) run[1] = range[1];
     else { close(); run = [range[0], range[1]]; }
   });
@@ -301,7 +304,8 @@ export function putBackMessages(r: PutBackResult): string[] {
  * Put removed content back into `tr` as tracked deletions — last position first, so earlier
  * positions stay valid.
  *  - the person's own pending insertion is not restored; text already struck keeps its mark;
- *  - text that cannot carry the mark (inline code, a code block) stays removed (`untracked`);
+ *  - text that could not carry the mark (none in the live schema — code carries it) comes back
+ *    as it was (`untracked`, with a notice): never removed without a record;
  *  - a leaf that is not text (a chip, an image, a divider…) takes no mark: it comes back
  *    unmarked (`refused`; a line break or a chip is stamped as a suggested removal instead), and a copy of it the same dispatch put
  *    elsewhere (`moved` — it was dragged along with text) is taken out again;
@@ -394,7 +398,7 @@ export function putBack(
       const mine = node.marks.find((m) => m.type === insertion);
       if (mine && mine.attrs.user === userName) { close(); drop.push(range); }
       else if (node.marks.some((m) => m.type === deletion)) close();
-      else if (!canStrike(node, parent, deletion)) { close(); drop.push(range); out.untracked = true; }
+      else if (!canStrike(node, parent, deletion)) { close(); out.untracked = true; } // stays / comes back as it was: never removed without a record
       else if (run) run[1] = range[1];
       else run = [range[0], range[1]];
     });
@@ -467,6 +471,19 @@ function sameContentReshaped(before: PMNode, step: ReplaceStep): boolean {
   return contentKey(out.content) === contentKey(step.slice.content);
 }
 
+/** Which stretches of a fragment's text are suggested, by whom and how — whatever other marks or blocks split them. */
+function suggestedRuns(content: Fragment): string {
+  let key = "";
+  let last = "";
+  content.descendants((node) => {
+    if (!node.isText) return;
+    const sig = node.marks.filter((m) => m.type.name === "insertion" || m.type.name === "deletion").map((m) => `${m.type.name}:${m.attrs.user}:${m.attrs.suggestionId ?? ""}`).sort().join("|");
+    key += sig === last ? node.text : `\u0001${sig}\u0001${node.text}`;
+    last = sig;
+  });
+  return key;
+}
+
 /** The characters a Markdown shortcut (a TipTap input rule) consumed, when this transaction is one. */
 function typedByRule(t: Transaction): { from: number; to: number; text: string } | null {
   const meta = (t as unknown as { meta?: Record<string, unknown> }).meta;
@@ -495,14 +512,16 @@ declare module "@tiptap/core" {
 
 export interface SuggestionOptions {
   user: SuggestionUser;
-  /** A notice for the editor's status line: a removal suggesting cannot record was put back, applied directly (code) or misplaced (see the file header). */
+  /** A notice for the editor's status line: a change suggesting cannot record was refused or put back, or text was kept beside the change (see the file header). */
   onRefused?: (message: string) => void;
 }
 
 export { SUGGESTION_UNTRACKED_META } from "./suggestionMeta";
 
 export const SUGGESTION_REFUSED_MESSAGE = "Images, dividers and other blocks can’t be removed while suggesting (or moved along with text) — switch to Editing for that.";
-export const SUGGESTION_CODE_MESSAGE = "Changes inside code aren’t tracked while suggesting — this one was applied directly.";
+/** Text that cannot carry the deletion mark. No text of the live schema is like that (inline code and code blocks carry the marks since schema v6 — pinned by apps/server/test/collab-schema-gate); if one ever is, it is left as it was, never removed without a record. */
+export const SUGGESTION_CODE_MESSAGE = "Some of this text can’t carry a suggestion — it was left as it is.";
+export const SUGGESTION_FORMAT_MESSAGE = "Formatting text that was already there can’t be tracked while suggesting — nothing was changed. Format the text you add, or switch to Editing.";
 export const SUGGESTION_LOST_MESSAGE = "A block removed while suggesting could not be put back — use Undo to bring it back.";
 export const SUGGESTION_TODO_MESSAGE = "Checking a to-do isn’t tracked while suggesting — switch to Editing to check it.";
 export const SUGGESTION_ISOLATED_MESSAGE = "A change that starts in one table cell or column and ends outside it can’t be tracked while suggesting — nothing was changed. Select inside one cell, or switch to Editing.";
@@ -796,9 +815,10 @@ export const SuggestionMode = Extension.create<SuggestionOptions>({
           let removed: Array<{ k: number; pos: number; slice: Slice; pure: boolean; rejoin?: boolean[]; join?: boolean }> = [];
           // A re-shape of a block that was already there, or an attribute change on one: REFUSED.
           let structural = false;
-          // Blocks without a text block of their own (a divider, an image, an embed…) this dispatch put in / took out.
+          // A mark added to / taken off text that was already there (formatting): REFUSED.
+          let formatted = false;
+          // Blocks without a text block of their own (a divider, an image, an embed…) this dispatch put in.
           const blocksIn: PMNode[] = [];
-          const blocksOut: PMNode[] = [];
           // A removal across the boundary of a table cell / column: the whole dispatch is taken back.
           let isolated = false;
           // A removal across nesting depth (see `inPlace` below): [a, b) in the document before the dispatch.
@@ -840,6 +860,20 @@ export const SuggestionMode = Extension.create<SuggestionOptions>({
                 // A re-shaped block keeps its stamp only when its START was the suggestion (the emptied
                 // first half of a heading split at its start is re-typed, but its start was there before).
                 let restamp = false;
+                if (mine && (step instanceof AddMarkStep || step instanceof RemoveMarkStep)) {
+                  const name = step.mark.type.name;
+                  // A suggestion mark is only ever put on or taken off by this plugin and by the review
+                  // commands (both carry the plugin's meta): by hand it would settle a suggestion unreviewed.
+                  if (name === "insertion" || name === "deletion") formatted = true;
+                  // A comment is not an edit. Any other mark is formatting: theirs to change on text
+                  // they suggested themselves (or put in earlier in this dispatch), nowhere else.
+                  else if (name !== "comment") before.nodesBetween(step.from, step.to, (node, pos) => {
+                    if (!node.isText) return !formatted;
+                    const own = node.marks.find((m) => m.type === insertion);
+                    if (!(own && own.attrs.user === user.name) && !inFresh(Math.max(pos, step.from))) formatted = true;
+                    return false;
+                  });
+                }
                 if (mine) {
                   if (step instanceof AttrStep) {
                     const target = before.nodeAt(step.pos);
@@ -848,14 +882,12 @@ export const SuggestionMode = Extension.create<SuggestionOptions>({
                     if (keepsNothing(before.slice(step.from, step.gapFrom), insertion, user.name) && keepsNothing(before.slice(step.gapTo, step.to), insertion, user.name)) reshape = true;
                   } else if (step instanceof ReplaceStep && sameContentReshaped(before, step)) reshape = true;
                   if (reshape) {
-                    const { from, to, slice } = step as ReplaceStep;
+                    const { from, to } = step as ReplaceStep;
                     if (!allOwn(from, to)) structural = true;
+                    // A re-shape written as a replacement must carry every suggestion mark along
+                    // (one that rebuilt the text bare would turn suggested text into plain text).
+                    if (step instanceof ReplaceStep && suggestedRuns(before.slice(from, to).content) !== suggestedRuns(step.slice.content)) structural = true;
                     restamp = allOwn(from, to, (node, pos) => ownStart(node, user.name) || inFresh(pos));
-                    // …and into CODE only while the block holds nothing that was there before: text
-                    // in code carries no mark, so Reject of a suggested code block takes all of it.
-                    let code = false;
-                    slice.content.descendants((node) => { if (node.type.spec.code) code = true; return !code; });
-                    if (code && !keepsNothing(before.slice(from, to), insertion, user.name)) structural = true;
                   }
                 }
                 if (!reshape && (step instanceof ReplaceStep || step instanceof ReplaceAroundStep)) step.slice.content.descendants((node) => {
@@ -897,7 +929,6 @@ export const SuggestionMode = Extension.create<SuggestionOptions>({
                       });
                       if (!join) continue;
                     }
-                    if (mine) slice.content.descendants((node) => { if (isBlockLeaf(node) && node.isBlock) blocksOut.push(node); });
                     if (crossesIsolating(before, a, b)) isolated = true;
                     if (step instanceof ReplaceAroundStep || slice.openStart !== slice.openEnd) deep.at = { a, b, put: [newStart, newEnd], first: k === 0 };
                     removed.push({ k, pos: newStart, slice, pure: newEnd === newStart, rejoin: slice.openEnd > 1 ? continuedAfter(before, b, slice.openEnd) : undefined, join });
@@ -927,14 +958,10 @@ export const SuggestionMode = Extension.create<SuggestionOptions>({
               return !onlyMoved;
             });
           }
-          if (!added.length && !removed.length && !structural) return null;
-          // A block that came in and is not one that went out in the same dispatch (a drag): new.
-          const blockAdded = blocksIn.some((node) => {
-            const twin = blocksOut.findIndex((gone) => gone.eq(node));
-            if (twin < 0) return true;
-            blocksOut.splice(twin, 1);
-            return false;
-          });
+          if (!added.length && !removed.length && !structural && !formatted) return null;
+          // (Also one that went out in the same dispatch — a drag of an image: moving a block that
+          // was already there is a change with no tracked form, like adding one.)
+          const blockAdded = blocksIn.length > 0;
 
           const tell = ext.options.onRefused;
           const local = transactions.filter(tracked);
@@ -967,7 +994,7 @@ export const SuggestionMode = Extension.create<SuggestionOptions>({
           // that holds no text block to carry the record (a divider, an image, an embed…).
           // Nothing changes, and the person is told what does work. A Markdown shortcut ("# ",
           // "- ", "---") that would have done it leaves the characters the person typed.
-          if (structural || blockAdded) {
+          if (structural || blockAdded || formatted) {
             const back = takenBack();
             if (back) {
               const rule = local.length === 1 && transactions[0] === local[0] ? typedByRule(local[0]!) : null;
@@ -984,7 +1011,8 @@ export const SuggestionMode = Extension.create<SuggestionOptions>({
                   }
                 } catch { /* the characters are not typed: nothing else changes */ }
               }
-              if (tell) queueMicrotask(() => tell(SUGGESTION_STRUCTURE_MESSAGE));
+              const why = structural || blockAdded ? SUGGESTION_STRUCTURE_MESSAGE : SUGGESTION_FORMAT_MESSAGE;
+              if (tell) queueMicrotask(() => tell(why));
               return back;
             }
           }
@@ -1067,7 +1095,7 @@ export const SuggestionMode = Extension.create<SuggestionOptions>({
             // A block START or a line break the person put in (Enter, Shift+Enter, a pasted
             // paragraph, a table from the slash menu) is stamped as their suggestion — the
             // record a mark cannot be (see ./suggestionNodes).
-            if (stamp && !composing) tr.doc.nodesBetween(a, b, (node, pos) => { if (pos >= a && pos < b && (node.isTextblock || isTrackedLeaf(node))) stamps.push(pos); return true; });
+            if (stamp) tr.doc.nodesBetween(a, b, (node, pos) => { if (pos >= a && pos < b && (node.isTextblock || isTrackedLeaf(node))) stamps.push(pos); return true; });
             if (!mark) continue;
             // On TEXT only (a chip or a line break put in carries no mark — see `textRuns`).
             for (const [x, y] of textRuns(tr.doc, a, b)) {
@@ -1174,10 +1202,8 @@ export const SuggestionMode = Extension.create<SuggestionOptions>({
             // user's own pending insertion), then place the cursor at `caret`.
             const strike = (a: number, b: number, caret: number) => {
               if (a < 0 || b > size || a >= b) return false;
-              // Text that cannot carry the mark (inline code, a code block): let the key do its
-              // ordinary work — the removal is then applied directly, with the notice (appendTransaction).
-              // …and so does a selection that MIXES such text with ordinary text (the ordinary part is
-              // then struck, the code part removed, with the notice). An image / divider / embed
+              // Text that could not carry the mark (none in the live schema: code carries it too) is
+              // never removed without a record: the key is refused. An image / divider / embed
               // cannot be struck or stamped at all: the key is refused, and says so.
               let unmarkable = false;
               let leaf = false;
@@ -1186,7 +1212,7 @@ export const SuggestionMode = Extension.create<SuggestionOptions>({
                 else if (isBlockLeaf(node)) leaf = true;
               });
               if (leaf) { ext.options.onRefused?.(SUGGESTION_REFUSED_MESSAGE); return true; }
-              if (unmarkable) return false;
+              if (unmarkable) { ext.options.onRefused?.(SUGGESTION_CODE_MESSAGE); return true; }
               const tr = state.tr.setMeta(suggestionKey, true); // not an insertion
               // Struck where it stands: the person's own pending text / line breaks / chips simply
               // go, a line break or a chip that was there is stamped as a suggested removal, and a

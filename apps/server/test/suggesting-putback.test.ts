@@ -48,10 +48,12 @@ test("a partly placed slice is never accepted: the text restored must be the tex
   const removed = doc.slice(7, 17); // "here" | "code"
   const state = EditorState.create({ doc: schema.nodes.doc!.create(null, [p("only paragraph")]) });
   const tr = state.tr;
-  putBack(tr, [{ at: 5, slice: removed, pure: false, order: 0 }], ctx(state));
+  const result = putBack(tr, [{ at: 5, slice: removed, pure: false, order: 0 }], ctx(state));
   const all = tr.doc.textContent;
   assert.ok(all.includes("here"), all);
-  // "code" comes back struck, or — where the mark cannot sit (a code block) — is reported untracked; never half-restored unmarked.
+  // "code" comes back struck (a code block's text carries the mark too) — never half-restored unmarked, never dropped.
+  assert.equal(result.untracked, false);
+  assert.ok(struckText(tr.doc).includes("code") || result.misplaced, struckText(tr.doc));
   assert.doesNotThrow(() => tr.doc.check());
 });
 

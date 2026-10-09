@@ -63,6 +63,19 @@ test("every text block and every inline atom of the schema (line break, chip) ca
   assert.deepEqual(missing, []);
 });
 
+test("the suggestion marks can sit on ALL text: every text block allows them and no mark excludes them (inline code and code blocks included)", () => {
+  // Otherwise a change made there while Suggesting has no record — it was "applied directly" in code.
+  const schema = getSchema(collabExtensions());
+  const { insertion, deletion, code } = schema.marks;
+  const blocks = Object.values(schema.nodes).filter((type) => type.isTextblock && !(type.allowsMarkType(insertion!) && type.allowsMarkType(deletion!))).map((type) => type.name);
+  assert.deepEqual(blocks, []);
+  const excluding = Object.values(schema.marks).filter((mark) => mark !== insertion && mark !== deletion && (mark.excludes(insertion!) || mark.excludes(deletion!))).map((mark) => mark.name);
+  assert.deepEqual(excluding, []);
+  // Inline code still excludes every OTHER mark (bold code, a link in code… stay impossible) — and itself.
+  const allowedInCode = Object.values(schema.marks).filter((mark) => !code!.excludes(mark)).map((mark) => mark.name).sort();
+  assert.deepEqual(allowedInCode, ["deletion", "insertion"]);
+});
+
 test("schema params parse strictly", () => {
   assert.equal(clientSchemaVersion(new URLSearchParams("schema=2")), 2);
   for (const bad of ["", "schema=", "schema=two", "schema=2.5", "schema=-1", "schema=1e3"]) assert.equal(clientSchemaVersion(new URLSearchParams(bad)), 0, bad);

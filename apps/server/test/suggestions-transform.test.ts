@@ -172,3 +172,9 @@ test("suggested chip: the mention hook does not see a chip that is only suggeste
   // A chip suggested for REMOVAL is still a mention until the removal is accepted.
   assert.deepEqual(extractMentions(`<p>${CHIP("u3", BREAK("delete"))}</p>`).map((m) => m.uid), ["u3"]);
 });
+
+test("suggestions inside code resolve like any text: accept gives the new code, reject the old", () => {
+  const html = `<p>Run <code>npm </code><span data-suggestion="delete" data-user="Suggester"><code>install</code></span><span data-suggestion="insert" data-user="Suggester"><code>ci</code></span></p><pre><code>a = <span data-suggestion="delete" data-user="Suggester">1</span><span data-suggestion="insert" data-user="Suggester">2</span>;</code></pre>`;
+  assert.equal(resolveSuggestionsInHtml(html, "Suggester", "accept"), "<p>Run <code>npm ci</code></p><pre><code>a = 2;</code></pre>");
+  assert.equal(resolveSuggestionsInHtml(html, "Suggester", "reject"), "<p>Run <code>npm install</code></p><pre><code>a = 1;</code></pre>");
+});

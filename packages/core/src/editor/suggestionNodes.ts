@@ -18,8 +18,7 @@ import { Transform } from "@tiptap/pm/transform";
  *   insert  the break was suggested (Enter, a pasted paragraph, a new block): Accept keeps the
  *           block, Reject takes its start out again (the block joins the one before; a block
  *           with nothing left in it is removed, together with a list / table / callout that
- *           holds nothing else; a suggested CODE block goes with its text, which can carry
- *           no mark of its own);
+ *           holds nothing else);
  *   delete  the break is suggested for removal (Backspace at the start of a block): Accept
  *           joins the block to the one before, Reject keeps it.
  * On an INLINE ATOM — a line break (`hardBreak`) or a chip (`mention`: person / page / date) —
@@ -150,7 +149,7 @@ function leafCount(doc: PMNode): number {
  * callout that holds nothing else goes with them). Returns false when nothing could be done
  * (the caller then only clears the attribute).
  *  - a block with nothing in it is removed — with the largest part of the page around it that
- *    holds nothing else (never a single table cell or row: that would leave a ragged table);
+ *    holds nothing else (a whole table row, never a single cell: that would leave a ragged table);
  *  - a block with content joins the text block before it; when that one is EMPTY it is the one
  *    removed instead (the block with the content keeps its kind — a heading stays a heading);
  *  - never across an image / divider, nor out of a table cell or a column; never at the cost
@@ -167,7 +166,9 @@ export function removeBlockStart(tr: Transform, pos: number, going: (block: PMNo
       const at = $in.node(d);
       if (d < $in.depth && !holdsNothing(at, (block) => block === node || going(block))) break;
       const role = at.type.spec.tableRole as string | undefined;
-      if (role === "row" || role === "cell" || role === "header_cell") continue;
+      if (role === "cell" || role === "header_cell") continue;
+      // A whole ROW may go (Tab in the last cell adds one) when none of its cells spans rows.
+      if (role === "row") { let plain = true; at.forEach((cell) => { if ((cell.attrs.rowspan ?? 1) !== 1) plain = false; }); if (!plain) continue; }
       const index = $in.index(d - 1);
       if ($in.node(d - 1).canReplace(index, index + 1)) best = [$in.before(d), $in.after(d)];
     }
@@ -199,10 +200,6 @@ export function resolveNodeSuggestion(tr: Transform, pos: number, action: "accep
   const remove = (s.kind === "insert") === (action === "reject");
   if (remove) {
     if (!node.isTextblock) { tr.delete(pos, pos + node.nodeSize); return true; }
-    // A suggested CODE block: its text can carry no insertion mark, so the block is the whole
-    // record — rejecting it takes its text with it. (The editor only lets a block become code
-    // while it holds nothing that was there before.)
-    if (s.kind === "insert" && node.type.spec.code && node.content.size) tr.delete(pos + 1, pos + 1 + node.content.size);
     const going = (block: PMNode) => { const o = nodeSuggestionOf(block); return !!o && o.kind === s.kind && (author === null ? o.by === s.by : o.by === author); };
     const before = tr.steps.length;
     try { if (removeBlockStart(tr, pos, going)) return true; } catch { /* the block stays: its attribute is cleared below */ }

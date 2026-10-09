@@ -373,25 +373,120 @@ test("Backspace over a selection that holds a chip strikes the words and suggest
   expect(await fx<string>(page, "html")).toBe(before);
 });
 
-test("Backspace over ordinary text mixed with inline code strikes the text and removes the code, with the notice", async ({ page }) => {
-  await openWith(page, "<p>Run <code>npm install</code> now.</p><p>Closing line.</p>");
-  await fx(page, "selectAcross", "Run ", " now");
-  await page.keyboard.press("Backspace");
+// ── Code: inline code and code blocks carry the suggestion marks like any text ───────────────
+// (They used to exclude every mark, so a change inside code was applied directly, with a notice.)
+const CODE_PAGE = "<p>Run <code>npm install</code> now.</p><pre><code>const a = 1;</code></pre><p>Closing line.</p>";
+const codeNotice = (page: Page) => page.getByRole("status").filter({ hasText: /inside code|can’t carry a suggestion/ });
+/** The same steps made by a plain (Editing) author: the page Accept all must give. */
+const plainResult = async (page: Page, content: string, steps: (page: Page) => Promise<void>) => {
+  await page.goto(`/e2e-fixtures/parity4-suggest.html?content=${encodeURIComponent(content)}`);
+  await expect(page.locator(".ProseMirror").first()).toContainText("Closing line.");
+  await page.locator(".ProseMirror").first().click();
+  await steps(page);
   await same(page);
-  await expect(page.getByRole("status").filter({ hasText: "inside code aren’t tracked" })).toBeVisible();
-  await expect(struck(page, "Run")).toBeVisible();
-  await expect(paragraphs(page).first()).not.toContainText("npm install");
+  return html(page);
+};
+const CODE_EDITS: Array<{ name: string; struck: string; added: string | null; steps: (page: Page) => Promise<void> }> = [
+  { name: "inline code — typed over", struck: "install", added: "ci", steps: async (page) => { await fx(page, "select", "install"); await page.keyboard.type("ci"); } },
+  { name: "inline code — pasted over", struck: "install", added: "ci", steps: async (page) => { await fx(page, "select", "install"); await fx(page, "paste", "ci"); } },
+  { name: "inline code — Backspace", struck: "l", added: null, steps: async (page) => { await fx(page, "caretAfter", "npm install"); await page.keyboard.press("Backspace"); } },
+  { name: "inline code — cut", struck: "npm ", added: null, steps: async (page) => { await fx(page, "select", "npm "); await page.keyboard.press("ControlOrMeta+x"); } },
+  { name: "inline code mixed with ordinary text — Backspace", struck: "Run npm install now", added: null, steps: async (page) => { await fx(page, "selectAcross", "Run ", " now"); await page.keyboard.press("Backspace"); } },
+  { name: "code block — typed over", struck: "1;", added: "2;", steps: async (page) => { await fx(page, "select", "1;"); await page.keyboard.type("2;"); } },
+  { name: "code block — pasted over", struck: "const", added: "let", steps: async (page) => { await fx(page, "select", "const"); await fx(page, "paste", "let"); } },
+  { name: "code block — Delete", struck: "c", added: null, steps: async (page) => { await fx(page, "caretBefore", "const"); await page.keyboard.press("Delete"); } },
+  { name: "code block — typed at the caret", struck: "", added: " // note", steps: async (page) => { await fx(page, "caretAfter", "= 1;"); await page.keyboard.type(" // note"); } },
+  { name: "code block — a new line (Enter)", struck: "", added: "b();", steps: async (page) => { await fx(page, "caretAfter", "= 1;"); await page.keyboard.press("Enter"); await page.keyboard.type("b();"); } },
+];
+for (const edit of CODE_EDITS) {
+  test(`code — ${edit.name}: tracked like any text (no "applied directly"); Accept all gives the plain edit's page, Reject all the original`, async ({ page }) => {
+    const plain = await plainResult(page, CODE_PAGE, edit.steps);
+    for (const review of [rejectAll, acceptAll]) {
+      await openWith(page, CODE_PAGE);
+      const before = await html(page);
+      await edit.steps(page);
+      await same(page);
+      // Every removed character is still there, struck, for every collaborator; what was typed is marked inserted.
+      expect((await fx<string>(page, "struckText")).split("|").join("")).toBe(edit.struck);
+      if (edit.added) await expect(added(page, edit.added.trim())).toBeVisible();
+      await expect(codeNotice(page)).toHaveCount(0);
+      expect(await fx<string>(page, "text")).toContain("npm install"); // nothing left the page
+      await review(page);
+      expect(await html(page)).toBe(review === rejectAll ? before : plain);
+    }
+  });
+}
+
+test("code: an existing paragraph cannot be turned into a code block while Suggesting (refused); on a new line the code block and its text are a suggestion", async ({ page }) => {
+  await open(page);
+  const before = await html(page);
+  await caretBefore(page, "Second");
+  await page.keyboard.type("``` ");
+  await expect(structureNotice(page)).toBeVisible();
+  await same(page);
+  expect(await fx<number>(page, "count", "codeBlock")).toBe(0);
   await rejectAll(page);
-  await expect(paragraphs(page).first()).toHaveText("Run  now.");
+  expect(await html(page)).toBe(before);
+  // A split paragraph turned into code: the text that was there goes back into its paragraph on Reject.
+  await fx(page, "caretAfter", "The rollout plan");
+  await page.keyboard.press("Enter");
+  await page.keyboard.type("/code");
+  await expect(page.getByRole("option", { name: "Code" }).first()).toBeVisible();
+  await page.keyboard.press("Enter");
+  await expect.poll(() => fx<number>(page, "count", "codeBlock")).toBe(1);
+  await page.keyboard.type("x = 1");
+  await same(page);
+  await expect(added(page, "x = 1")).toBeVisible();
+  await rejectAll(page);
+  expect(await html(page)).toBe(before);
 });
 
-test("J-2: an image block dragged elsewhere moves — one image, no notice", async ({ page }) => {
+test("J-2: an image block cannot be dragged elsewhere while Suggesting — a move has no tracked form: nothing changes, with the notice", async ({ page }) => {
   await openWith(page, leafPage);
+  const before = await fx<string>(page, "html");
   await fx(page, "dragNodeAfter", "image", "Second paragraph");
-  expect(await fx<number>(page, "count", "image")).toBe(1);
-  const order = await page.locator(".ProseMirror").first().evaluate((el) => [...el.children].map((c) => (c.querySelector("img") || c.tagName === "IMG" ? "img" : "p")));
-  expect(order.indexOf("img")).toBeGreaterThan(1);
-  await expect(refusedNotice(page)).toHaveCount(0);
+  await expect(page.getByRole("status").filter({ hasText: "can’t be added while suggesting" })).toBeVisible();
+  await same(page);
+  expect(await fx<string>(page, "html")).toBe(before);
+});
+
+test("formatting text that was already there is refused while Suggesting (bold, inline code by shortcut); the author's own suggested text may be formatted", async ({ page }) => {
+  await open(page);
+  const before = await html(page);
+  for (const key of ["ControlOrMeta+b", "ControlOrMeta+i", "ControlOrMeta+e"]) {
+    await fx(page, "select", "rollout");
+    await page.keyboard.press(key);
+    await expect(page.getByRole("status").filter({ hasText: "Formatting text that was already there" })).toBeVisible();
+    await same(page);
+    expect(await html(page)).toBe(before);
+  }
+  // Their own pending words: formatting them is part of the suggestion — Reject all takes it all out.
+  await fx(page, "caretAfter", "rollout");
+  await page.keyboard.type(" brand");
+  await fx(page, "select", "brand");
+  await page.keyboard.press("ControlOrMeta+b");
+  await same(page);
+  expect(await html(page)).toContain("<strong>brand</strong>");
+  await rejectAll(page);
+  expect(await html(page)).toBe(before);
+});
+
+test("Tab in the last cell of a table adds a row as a suggestion: Reject all takes the row out again, Accept all keeps it", async ({ page }) => {
+  const table = "<table><tbody><tr><th><p>head one</p></th><th><p>head two</p></th></tr><tr><td><p>cell one</p></td><td><p>cell two</p></td></tr></tbody></table><p>Closing line.</p>";
+  for (const review of [rejectAll, acceptAll]) {
+    await openWith(page, table);
+    const before = await html(page);
+    await fx(page, "caretAfter", "cell two");
+    await page.keyboard.press("Tab");
+    await expect.poll(() => fx<number>(page, "count", "tableRow")).toBe(3);
+    await page.keyboard.type("new cell");
+    await same(page);
+    expect(await html(page)).toContain('data-suggestion-node="insert"');
+    await review(page);
+    expect(await fx<number>(page, "count", "tableRow")).toBe(review === rejectAll ? 2 : 3);
+    if (review === rejectAll) expect(await html(page)).toBe(before);
+    else expect(await html(page)).not.toContain("data-suggestion");
+  }
 });
 
 test("J-3: text held during a composition goes back in place after a collaborator's edit earlier in the page", async ({ page, browserName }) => {
@@ -449,22 +544,6 @@ test("S3: a to-do's checkbox cannot be clicked while Suggesting (it would be an 
   await box.click();
   await expect(box).toBeChecked();
   expect(await fx<string>(page, "html")).toContain('data-checked="true"');
-});
-
-test("J-4: inside code a replacement is applied directly, with a notice — never old and new text side by side", async ({ page }) => {
-  await openWith(page, "<p>Run <code>npm install</code> now.</p><pre><code>const a = 1;</code></pre><p>Closing line.</p>");
-  await fx(page, "select", "install");
-  await page.keyboard.type("ci");
-  await expect(paragraphs(page).first()).toHaveText("Run npm ci now.");
-  await expect(page.getByRole("status").filter({ hasText: "inside code aren’t tracked" })).toBeVisible();
-  // Backspace inside code deletes (it used to move the caret and delete nothing).
-  await fx(page, "caretAfter", "npm ci");
-  await page.keyboard.press("Backspace");
-  await expect(paragraphs(page).first()).toHaveText("Run npm c now.");
-  await fx(page, "select", "1;");
-  await page.keyboard.type("2;");
-  await expect(page.locator(".ProseMirror pre").first()).toHaveText("const a = 2;");
-  await expect(struck(page)).toHaveCount(0);
 });
 
 test("J-6: a long composition is never interrupted by the put-back", async ({ page, browserName }) => {
