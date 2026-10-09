@@ -174,6 +174,21 @@ export function configureConversion(patch: Partial<ConvertConfig>): () => void {
   return () => void Object.assign(convertCfg, before);
 }
 
+/**
+ * The clock every cool-down reads (circuit breakers, actor penalties, load strikes,
+ * failure memory). Production: the wall clock. Tests substitute their own so that
+ * "still cooling down" and "the cool-down is over" are statements about THIS clock —
+ * not about how long a loaded machine took to run the conversions in between.
+ * Task timeouts are real timers and are not affected.
+ */
+let now: () => number = Date.now;
+/** Returns the undo. `null` restores the wall clock. */
+export function setConversionClock(clock: (() => number) | null): () => void {
+  const before = now;
+  now = clock ?? Date.now;
+  return () => void (now = before);
+}
+
 // ── worker pool ─────────────────────────────────────────────────────────────
 
 /** What the service needs of a conversion thread (tests substitute a fake: `setConversionWorkerFactory`). */
@@ -230,7 +245,7 @@ function breakerAdmits(w: ConversionWorker): boolean {
   if (convertCfg.breakerFailures <= 0) return true;
   const b = breakerOf(w);
   if (b.openUntil === 0) return true;
-  return Date.now() >= b.openUntil && !b.trial;
+  return now() >= b.openUntil && !b.trial;
 }
 /** `trial`: this task was the half-open trial (admitted while the breaker was open). */
 function breakerResult(w: ConversionWorker, outcome: "ok" | "dead" | "neutral", trial: boolean): void {
@@ -249,7 +264,7 @@ function breakerResult(w: ConversionWorker, outcome: "ok" | "dead" | "neutral", 
   b.fails++;
   if (b.openUntil !== 0 || b.fails >= convertCfg.breakerFailures) {
     b.cooldownMs = Math.min(convertCfg.breakerCooldownMaxMs, b.cooldownMs ? b.cooldownMs * 2 : convertCfg.breakerCooldownMs);
-    b.openUntil = Date.now() + b.cooldownMs;
+    b.openUntil = now() + b.cooldownMs;
     conversionStats.breakerOpened++;
     console.warn(`[convert] ${b.fails} conversions in a row ended with the worker dead — this thread takes no work for ${Math.round(b.cooldownMs / 1000)} s (callers are answered busy)`);
     w.flush();
@@ -282,14 +297,14 @@ const penalties = new Map<string, Penalty>();
 function actorPenalised(actor: string | null | undefined): boolean {
   if (!actor || convertCfg.actorBreakerFailures <= 0) return false;
   const p = penalties.get(actor);
-  return !!p && p.openUntil !== 0 && (Date.now() < p.openUntil || p.trial);
+  return !!p && p.openUntil !== 0 && (now() < p.openUntil || p.trial);
 }
 /** Admit one task of this actor: null = refused; `trial` = it is the half-open trial. */
 function actorAdmit(actor: string | null | undefined): { trial: boolean } | null {
   if (!actor || convertCfg.actorBreakerFailures <= 0) return { trial: false };
   const p = penalties.get(actor);
   if (!p || p.openUntil === 0) return { trial: false };
-  if (Date.now() < p.openUntil || p.trial) return null;
+  if (now() < p.openUntil || p.trial) return null;
   p.trial = true;
   return { trial: true };
 }
@@ -299,7 +314,7 @@ function actorResult(actor: string | null | undefined, outcome: "ok" | "strike" 
   if (trial && p) p.trial = false;
   if (outcome === "neutral") return;
   if (outcome === "ok") return void penalties.delete(actor);
-  const at = Date.now();
+  const at = now();
   if (!p) {
     penalties.set(actor, (p = { fails: 0, openUntil: 0, cooldownMs: 0, trial: false, at }));
     while (penalties.size > PENALTIES_MAX) penalties.delete(penalties.keys().next().value!);
@@ -329,11 +344,11 @@ const loadStrikesBy = new Map<string, { times: number[]; until: number }>();
 function loadPenalised(actor: string | null | undefined): boolean {
   if (!actor || convertCfg.loadStrikes <= 0) return false;
   const s = loadStrikesBy.get(actor);
-  return !!s && Date.now() < s.until;
+  return !!s && now() < s.until;
 }
 function loadStrike(actor: string | null | undefined): void {
   if (!actor || convertCfg.loadStrikes <= 0) return;
-  const at = Date.now();
+  const at = now();
   let s = loadStrikesBy.get(actor);
   if (!s) {
     loadStrikesBy.set(actor, (s = { times: [], until: 0 }));
@@ -414,7 +429,7 @@ const failures = new Map<string, { timeouts: number; kills: number; until: numbe
 function remembered(key: string): ConversionFailure | null {
   const hit = failures.get(key);
   if (!hit) return null;
-  if (hit.until <= Date.now()) {
+  if (hit.until <= now()) {
     failures.delete(key);
     return null;
   }
@@ -427,7 +442,7 @@ function remember(key: string, e: ConversionError): void {
   const prev = failures.get(key);
   const kills = (prev?.kills ?? 0) + (killed ? 1 : 0);
   // (a first death is kept for the long TTL too: the second one, hours later, still counts)
-  const until = Date.now() + (kills > 0 ? Math.max(convertCfg.killerTtlMs, convertCfg.failureTtlMs) : convertCfg.failureTtlMs);
+  const until = now() + (kills > 0 ? Math.max(convertCfg.killerTtlMs, convertCfg.failureTtlMs) : convertCfg.failureTtlMs);
   failures.delete(key);
   failures.set(key, { timeouts: (prev?.timeouts ?? 0) + (e.reason === "timeout" ? 1 : 0), kills, until });
   while (failures.size > FAILURES_MAX) failures.delete(failures.keys().next().value!);

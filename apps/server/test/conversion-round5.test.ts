@@ -371,10 +371,20 @@ const prose = (tag: string) => `${tag} ` + "word ".repeat(6000);
 /** A document whose render goes to the worker (text beyond the inline byte cap). */
 const bigDoc = (tag: string) => ({ type: "doc", content: [{ type: "paragraph", content: [{ type: "text", text: `${tag} ` + "word ".repeat(6000) }] }] });
 type Extra = Partial<service.ConvertConfig> & Record<string, number>;
+/** A clock only the test moves, for every cool-down the service keeps (restored after the test). */
+function manualClock(): { advance: (ms: number) => void } {
+  let at = Date.now();
+  restore.push(service.setConversionClock(() => at));
+  return { advance: (ms) => void (at += ms) };
+}
 
-test("H-1: one member's timeouts never deny conversion to anyone else — the shared breaker counts only DEAD workers; timeouts cool down that actor alone", { timeout: 120_000 }, async () => {
+test("H-1: one member's timeouts never deny conversion to anyone else — the shared breaker counts only DEAD workers; timeouts cool down that actor alone", { timeout: 600_000 }, async () => {
   await stopConversionWorkers();
   restore.push(configureConversion({ timeoutMs: 250, timeoutPerMbMs: 0, timeoutMaxMs: 250, failureTtlMs: 0, breakerFailures: 3, breakerCooldownMs: 30_000, actorBreakerFailures: 3, actorCooldownMs: 1500, actorCooldownMaxMs: 6000 } as Extra));
+  // The cool-down is read from this clock, which only the test moves: "still cooling down" must not depend on
+  // how long a busy machine takes to run the three healthy conversions below (it used to: they outlasted 1.5 s
+  // of wall clock on a loaded laptop and the penalty had quietly expired before it was asserted).
+  const clock = manualClock();
   const bomb = (i: number) => "*a ".repeat(6000) + i; // marked is quadratic: seconds in the worker — distinct content each time
   const mallory = { actor: "user:mallory" };
   const opened = conversionStats.breakerOpened;
@@ -382,7 +392,8 @@ test("H-1: one member's timeouts never deny conversion to anyone else — the sh
   for (let i = 0; i < 4; i++) reasons.push(await reasonOf(service.markdownToHtml(bomb(i), mallory)));
   assert.deepEqual(reasons, ["timeout", "timeout", "timeout", "busy"], "three timeouts, then this actor is told to come back later");
   // Everybody else converts as if nothing had happened.
-  restore.push(configureConversion({ timeoutMs: 20_000, timeoutMaxMs: 20_000 }));
+  // (A generous ceiling: it is only there so that a healthy conversion is never cut short on a busy machine.)
+  restore.push(configureConversion({ timeoutMs: 90_000, timeoutMaxMs: 90_000 }));
   assert.match(await service.markdownToHtml(prose("alice"), { actor: "user:alice" }), /^<p>alice word/, "another member's open");
   assert.match(await service.markdownToHtml(prose("server")), /^<p>server word/, "a server-side conversion (no actor)");
   assert.equal(await reasonOf(service.docJsonToHtml(bigDoc("store"), { lane: "store" })), "ok", "a store");
@@ -391,7 +402,10 @@ test("H-1: one member's timeouts never deny conversion to anyone else — the sh
   const used = conversionStats.worker;
   assert.equal(await reasonOf(service.markdownToHtml(prose("mallory"), mallory)), "busy");
   assert.equal(conversionStats.worker, used, "no worker was handed the penalised actor's task");
-  await new Promise((r) => setTimeout(r, 1600));
+  clock.advance(1499);
+  assert.equal(await reasonOf(service.markdownToHtml(prose("mallory, a moment early"), mallory)), "busy", "one millisecond before the cool-down ends: still refused");
+  assert.equal(conversionStats.worker, used);
+  clock.advance(1);
   assert.equal(await reasonOf(service.markdownToHtml(prose("mallory again"), mallory)), "ok", "one trial after the cool-down; a success ends the penalty");
   assert.equal(await reasonOf(service.markdownToHtml(prose("mallory once more"), mallory)), "ok");
   await stopConversionWorkers();
@@ -402,6 +416,7 @@ test("H-1: tasks already queued when the breaker opens are answered busy — the
   // A 4 MB heap ceiling: the thread dies while it loads (out of memory) — `worker_failed`, the breaker's business.
   restore.push(configureConversion({ threads: 1, heapMb: 4, failureTtlMs: 0, breakerFailures: 2, breakerCooldownMs: 1500, breakerCooldownMaxMs: 60_000 } as Extra));
   restore.push(() => void stopConversionWorkers());
+  const clock = manualClock(); // the cool-down is measured on the test's clock, not on how fast the threads die
   const opened = conversionStats.breakerOpened;
   const all = await Promise.all([0, 1, 2, 3, 4, 5].map((i) => reasonOf(service.markdownToHtml(prose(`q${i}`)))));
   assert.deepEqual(all, ["failed", "failed", "busy", "busy", "busy", "busy"], "two dead workers open the breaker; what was queued behind them is not run");
@@ -410,7 +425,10 @@ test("H-1: tasks already queued when the breaker opens are answered busy — the
   const used = conversionStats.worker;
   assert.equal(await reasonOf(service.markdownToHtml(prose("early"))), "busy");
   assert.equal(conversionStats.worker, used);
-  await new Promise((r) => setTimeout(r, 1700));
+  clock.advance(1499);
+  assert.equal(await reasonOf(service.markdownToHtml(prose("still early"))), "busy", "one millisecond before the first cool-down ends");
+  assert.equal(conversionStats.worker, used, "so the cool-down was NOT doubled by the queued tasks, and not shortened either");
+  clock.advance(1);
   assert.equal(await reasonOf(service.markdownToHtml(prose("trial"))), "failed", "the trial ran (and the thread is still dead)");
   assert.equal(conversionStats.worker, used + 1);
   assert.equal(conversionStats.breakerOpened - opened, 2, "a failed TRIAL re-opens it");

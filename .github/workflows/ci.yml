@@ -21,8 +21,11 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - name: Typecheck (all workspaces)
-        run: npm run typecheck
+      # The one pre-merge check, the same command people run locally: every workspace's type check
+      # (the server's includes test/** and scripts/**), the e2e specs' type check, and the static
+      # guards (no browser dialogs — once that script exists —, service-worker denylist, lazy editors).
+      - name: Check (typecheck all workspaces + e2e specs, static guards)
+        run: npm run check
       - name: Server tests
         run: npm run test -w @prism/server
       - name: Build web PWA
