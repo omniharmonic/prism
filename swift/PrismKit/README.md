@@ -104,6 +104,22 @@ let outcome = try await omni.decide(shown: approval, .send, idempotencyKey: key)
 `OmniError.executorNotReady` (503 `executor_disabled` / `executor_unavailable`: nothing ran,
 the approval is still pending) and `OmniError.localDigestMismatch`.
 
+## Diagnostics
+
+`PrismClient(…, onRequest:)` is told about every finished request as a `RequestRecord`:
+time, method, **path only** (the query is dropped), status, the server's `error` code,
+duration, and — when no answer came — a sanitised reason. A record has no field that could
+hold a token, a header, a query or a body. Streams are recorded when they connect or are
+refused. Omni lists these in its development build's Settings.
+
+## Sign-in, a second time round
+
+The loopback listener accepts the callback **once**. For eight seconds afterwards it still
+answers: the same callback again (a reload, a browser's retry) gets the "Signed in" page and
+delivers nothing; anything else gets 404. So a browser never shows "can't connect" on a
+sign-in that worked. On the server, a second visit to `/auth/device/continue` after the
+decision answers "You're signed in" (200) instead of "expired or already used".
+
 ## Streams
 
 `omni.threadStream(threadID:after:)` replays persisted events after `after`, follows the

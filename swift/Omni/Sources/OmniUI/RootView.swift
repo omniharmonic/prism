@@ -45,6 +45,13 @@ public struct RootView: View {
             }
         }
         .task { await app.start() }
+        #if os(macOS)
+        // Sign-in ends in the browser: bring Omni back to the front when it has worked, so
+        // the last thing on screen is the app, signed in — not a browser tab.
+        .onChange(of: app.phase) { old, new in
+            if new == .signedIn, old == .signingIn || old == .signedOut(notice: nil) { NSApplication.shared.activate() }
+        }
+        #endif
     }
 }
 

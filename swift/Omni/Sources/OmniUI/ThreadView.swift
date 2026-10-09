@@ -10,17 +10,19 @@ struct ThreadView: View {
     var body: some View {
         VStack(spacing: 0) {
             transcript
-            banners
-            Divider()
-            Composer(
-                text: $model.draft,
-                placeholder: "Message Omni…",
-                canSend: model.canSend,
-                isRunning: model.isRunning,
-                isStopping: model.isStopping,
-                onSend: { Task { await model.send() } },
-                onStop: { Task { await model.stop() } }
-            )
+            if !model.isUnavailable {
+                banners
+                Divider()
+                Composer(
+                    text: $model.draft,
+                    placeholder: "Message Omni…",
+                    canSend: model.canSend,
+                    isRunning: model.isRunning,
+                    isStopping: model.isStopping,
+                    onSend: { Task { await model.send() } },
+                    onStop: { Task { await model.stop() } }
+                )
+            }
         }
         .navigationTitle(model.title)
         .toolbar {
@@ -34,7 +36,7 @@ struct ThreadView: View {
                 }
             }
         }
-        .task(id: model.threadID) { await model.open() }
+        .task(id: model.threadID) { await session.openThread(model) }
         .onDisappear { model.close() }
     }
 
@@ -42,13 +44,30 @@ struct ThreadView: View {
         switch model.phase {
         case .idle, .loading:
             ProgressView("Loading the thread…").frame(maxWidth: .infinity, maxHeight: .infinity)
+        case .failed where model.isUnavailable:
+            // The agent no longer has it: say so once, and offer the way out. Nothing retries.
+            ContentUnavailableView {
+                Label("This conversation is no longer available", systemImage: "bubble.left.and.exclamationmark.bubble.right")
+            } description: {
+                Text("The agent no longer has it, so it can't be opened or continued. You can remove it from your list.")
+                if let problem = session.threads.removeError {
+                    Text(problem).foregroundStyle(.red)
+                }
+            } actions: {
+                Button("Remove from List") { Task { await session.removeThread(model.threadID) } }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(session.threads.removingID != nil)
+                    .accessibilityHint("Takes this thread out of your list")
+                Button("Check Again") { Task { await model.checkAgain() } }
+                    .accessibilityHint("Asks the server for this conversation once more")
+            }
         case .failed(let message):
             ContentUnavailableView {
                 Label("Couldn't open this thread", systemImage: "exclamationmark.bubble")
             } description: {
                 Text(message)
             } actions: {
-                Button("Try Again") { Task { await model.open() } }
+                Button("Try Again") { Task { await model.checkAgain() } }
             }
         case .loaded:
             ScrollViewReader { proxy in

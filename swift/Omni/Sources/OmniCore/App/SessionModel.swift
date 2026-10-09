@@ -111,9 +111,39 @@ public final class SessionModel {
         if threadModels.count >= 12 {
             for (key, model) in threadModels where !model.isOpen && model.draft.isEmpty { threadModels[key] = nil }
         }
-        let model = ThreadModel(threadID: id, service: service, approvals: approvals, sink: sink, sleep: sleep)
+        let model = ThreadModel(threadID: id, service: service, approvals: approvals, sink: sink, sleep: sleep) { [weak self] id in
+            self?.threads.markGone(id)
+        }
         threadModels[id] = model
         return model
+    }
+
+    /// A thread came on screen. One the list already knows is gone is not asked for again.
+    public func openThread(_ model: ThreadModel) async {
+        await model.open(knownGone: threads.thread(model.threadID)?.gone ?? false)
+    }
+
+    /// Take a thread out of the list and leave it (the way out of one that is no longer
+    /// available). Returns true when it is gone from the list.
+    @discardableResult
+    public func removeThread(_ id: String) async -> Bool {
+        guard await threads.remove(id) else { return false }
+        threadModels[id]?.close()
+        threadModels[id] = nil
+        if destination == .thread(id) { destination = .today }
+        return true
+    }
+
+    /// ⌘R and the Refresh buttons: read again everything the window shows right now.
+    public func refreshVisible() async {
+        await threads.refresh()
+        await approvals.refresh()
+        switch destination {
+        case .today, nil: await today.refresh()
+        case .recurring: await jobs.refresh()
+        case .thread(let id): await threadModels[id]?.reload()
+        case .needsYou, .newThread: break
+        }
     }
 
     /// Create a thread from the new-thread composer and open it.
@@ -168,6 +198,8 @@ public final class SessionModel {
         await threads.refresh()
         await approvals.refresh()
         for model in threadModels.values where model.isOpen { await model.changedOnServer() }
+        // Today lists approvals and what is in flight: keep it honest once it has been shown.
+        if today.hasContent, destination == .today || destination == nil { await today.refresh() }
     }
 
     func handle(_ notice: OmniNotice) async {
@@ -175,6 +207,7 @@ public final class SessionModel {
         case "thread":
             await threads.refresh()
             if let model = threadModels[notice.id], model.isOpen { await model.changedOnServer() }
+            if today.hasContent, destination == .today || destination == nil { await today.refresh() }
         case "approval":
             await approvals.refresh()
             if let threadID = notice.threadId, let model = threadModels[threadID], model.isOpen { await model.changedOnServer() }

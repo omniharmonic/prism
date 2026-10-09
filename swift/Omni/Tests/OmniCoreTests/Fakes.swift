@@ -13,8 +13,8 @@ enum Fixture {
         return try! PrismJSON.decoder().decode(T.self, from: data)
     }
 
-    static func threadJSON(_ id: String, state: String = "done", title: String? = nil, unread: Int = 0, lastSeq: Int = 0, archived: Bool = false, waitingOn: String? = nil) -> [String: Any] {
-        var o: [String: Any] = ["id": id, "state": state, "unread": unread, "pinned": false, "archived": archived, "running": state == "working", "lastSeq": lastSeq, "source": "text"]
+    static func threadJSON(_ id: String, state: String = "done", title: String? = nil, unread: Int = 0, lastSeq: Int = 0, archived: Bool = false, waitingOn: String? = nil, gone: Bool = false) -> [String: Any] {
+        var o: [String: Any] = ["id": id, "state": state, "unread": unread, "pinned": false, "archived": archived, "running": state == "working", "lastSeq": lastSeq, "source": "text", "gone": gone]
         o["title"] = title ?? "Thread \(id)"
         if let waitingOn { o["waitingOn"] = waitingOn }
         return o
@@ -55,6 +55,14 @@ enum Fixture {
         var o: [String: Any] = ["thread": threadJSON(id, state: activeTurnId == nil ? state : "working", lastSeq: lastSeq), "messages": messages, "cards": cards, "approvals": approvals]
         o["activeTurnId"] = activeTurnId ?? NSNull()
         return decode(o)
+    }
+
+    static func today(agenda: [[String: Any]]? = [], tasks: [[String: Any]]? = [], errors: [String: String] = [:]) -> OmniToday {
+        decode([
+            "date": "2026-10-09", "agenda": agenda as Any? ?? NSNull(), "tasks": tasks as Any? ?? NSNull(), "taskIdentity": "person",
+            "needsYou": ["approvals": [] as [Any], "nudges": [] as [Any]], "inFlight": [] as [Any],
+            "openLoops": NSNull(), "brief": NSNull(), "errors": errors,
+        ])
     }
 
     static func card(_ noteId: String, op: String = "updated", updatedAt: String? = nil) -> [String: Any] {
@@ -106,6 +114,8 @@ final class FakeService: OmniService, @unchecked Sendable {
     private var _jobs = Queue<[OmniJob]>()
     private var _jobActions = Queue<OmniJob>()
     private var _today = Queue<OmniToday>()
+    private var _patches = Queue<OmniThread>()
+    private var _patchCalls: [String] = []
     private var _streams: [[Result<ThreadStreamUpdate, any Error>]] = []
     private var _manualStreams: [AsyncThrowingStream<ThreadStreamUpdate, any Error>] = []
     private var _notices: AsyncThrowingStream<NoticeStreamUpdate, any Error>?
@@ -145,6 +155,9 @@ final class FakeService: OmniService, @unchecked Sendable {
     func jobs(_ items: Result<[OmniJob], any Error>...) { locked { _jobs.items = items } }
     func jobActions(_ items: Result<OmniJob, any Error>...) { locked { _jobActions.items = items } }
     func todays(_ items: Result<OmniToday, any Error>...) { locked { _today.items = items } }
+    func patches(_ items: Result<OmniThread, any Error>...) { locked { _patches.items = items } }
+    /// `"<id> archived=true"` for every `updateThread`.
+    var patchCalls: [String] { locked { _patchCalls } }
     /// Each call to `threadStream` plays the next script, then ends (or throws).
     func streams(_ scripts: [Result<ThreadStreamUpdate, any Error>]...) { locked { _streams = scripts } }
     /// A stream the test feeds by hand.
@@ -193,6 +206,12 @@ final class FakeService: OmniService, @unchecked Sendable {
         try locked { () -> Result<ThreadDetail, any Error> in
             _detailReads += 1
             return Result { try _details.next() }
+        }.get()
+    }
+    func updateThread(_ id: String, _ patch: ThreadPatch) async throws -> OmniThread {
+        try locked { () -> Result<OmniThread, any Error> in
+            _patchCalls.append("\(id) archived=\(patch.archived.map(String.init) ?? "nil")")
+            return Result { try _patches.next() }
         }.get()
     }
     func startTurn(threadID: String, text: String, idempotencyKey: IdempotencyKey) async throws -> TurnStart {
@@ -283,14 +302,34 @@ final class FakeAuth: SessionAuth, @unchecked Sendable {
     var labels: [String] { lock.withLock { _labels } }
     var signOuts: Int { lock.withLock { _signOuts } }
     func failSignIn(_ error: any Error) { lock.withLock { _signInResult = .failure(error) } }
+    /// The token is stored, and THEN the attempt reports this error (a late failure).
+    func storeTokenThenFail(_ error: any Error) { lock.withLock { _lateFailure = error } }
+    private var _lateFailure: (any Error)?
+    /// While set, `signIn` waits here (the browser leg) until `releaseSignIn()`.
+    private var _gate: CheckedContinuation<Void, Never>?
+    private var _gated = false
+    func holdSignIn() { lock.withLock { _gated = true } }
+    var isWaitingInSignIn: Bool { lock.withLock { _gate != nil } }
+    func releaseSignIn() {
+        let c = lock.withLock { () -> CheckedContinuation<Void, Never>? in
+            defer { _gate = nil }
+            _gated = false
+            return _gate
+        }
+        c?.resume()
+    }
 
     func signIn(label: String) async throws {
         let result = lock.withLock { () -> Result<Void, any Error> in
             _labels.append(label)
             return _signInResult
         }
+        if lock.withLock({ _gated }) {
+            await withCheckedContinuation { c in lock.withLock { _gate = c } }
+        }
         try result.get()
         lock.withLock { _hasToken = true }
+        if let late = lock.withLock({ _lateFailure }) { throw late }
     }
     func signOut() async -> SignOutResult {
         lock.withLock {

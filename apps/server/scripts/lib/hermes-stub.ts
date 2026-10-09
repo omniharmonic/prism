@@ -1,6 +1,8 @@
 /**
  * A STUB Hermes API server — the routes `src/omni/hermes-client.ts` calls, nothing else.
- * DEV + TEST ONLY: it has no model, no tools and no memory beyond this process.
+ * DEV + TEST ONLY: it has no model and no tools. Its sessions, transcripts and jobs live in
+ * memory; give it a `store` (the dev script does: a JSON file beside the dev database) and
+ * they survive a restart, as a real Hermes' sessions do.
  *
  * One implementation, two front doors:
  *  - `scripts/omni-stub-hermes.ts` serves `stub.fetch` over HTTP on 127.0.0.1 for the
@@ -106,6 +108,22 @@ export interface HermesStubOptions {
    *  plugin. Absent → those scenarios report a failed tool call. */
   bridge?: StubBridge;
   log?: (line: string) => void;
+  /** Where sessions, transcripts and jobs are kept between runs. Absent → memory only. */
+  store?: StubStore;
+}
+
+/** Everything the stub remembers. */
+export interface StubState {
+  version: 1;
+  sessions: StubSession[];
+  transcripts: Record<string, StubMessage[]>;
+  jobs: Array<Record<string, unknown>>;
+}
+export interface StubStore {
+  /** The saved state, or null when there is none (or it cannot be read). */
+  load(): StubState | null;
+  /** Called after every change. May batch; must not throw. */
+  save(state: StubState): void;
 }
 
 /** What the real `omni-bridge` Hermes plugin does: two loopback POSTs with the service token. */
@@ -140,11 +158,18 @@ export function createHermesStub(opts: HermesStubOptions): HermesStub {
   const log = opts.log ?? (() => {});
   const mintRun = opts.runId ?? (() => `run_${hex(8)}`);
   const script = opts.script ?? defaultScript;
+  const saved = opts.store?.load() ?? null;
+  /** Hand the current state to the store (after every change). */
+  const persist = (): void => {
+    if (!opts.store) return;
+    opts.store.save({ version: 1, sessions: [...stub.sessions.values()], transcripts: Object.fromEntries(stub.transcripts), jobs: stub.jobs });
+  };
   const stub: HermesStub = {
     fetch: handle,
-    sessions: new Map(),
-    transcripts: new Map(),
-    jobs: opts.jobs ?? [],
+    sessions: new Map((saved?.sessions ?? []).filter((x) => x && typeof x.id === "string").map((x) => [x.id, x])),
+    transcripts: new Map(Object.entries(saved?.transcripts ?? {}).filter(([, v]) => Array.isArray(v))),
+    // Saved jobs win over the seed list: a job paused before the restart stays paused.
+    jobs: saved?.jobs?.length ? saved.jobs : (opts.jobs ?? []),
     runs: new Map(),
     // The plugin's calls are logged by outcome only (never the draft, never the token).
     bridge: opts.bridge && {
@@ -169,6 +194,7 @@ export function createHermesStub(opts: HermesStubOptions): HermesStub {
         s.message_count = list.length;
         if (role === "assistant") s.preview = content.replace(/\s+/g, " ").slice(0, 120);
       }
+      persist();
     },
   };
 
@@ -204,6 +230,7 @@ export function createHermesStub(opts: HermesStubOptions): HermesStub {
       if (stub.sessions.has(id)) return oaiError(409, "Session already exists", "session_exists");
       const s: StubSession = { id, title: typeof body.title === "string" ? body.title : null, source: "api_server", model: "stub-hermes", started_at: nowSec(), last_active: nowSec(), message_count: 0, preview: null, pinned: false, archived: false };
       stub.sessions.set(id, s);
+      persist();
       return json({ object: "hermes.session", session: s }, 201);
     }
     if (p === "/api/sessions" && method === "GET") {
@@ -218,6 +245,7 @@ export function createHermesStub(opts: HermesStubOptions): HermesStub {
       if (!s) return oaiError(404, "Session not found", "session_not_found");
       if (method === "PATCH") {
         for (const k of ["title", "pinned", "archived", "unread"]) if (body[k] !== undefined) s[k] = body[k];
+        persist();
         return json({ object: "hermes.session", session: s });
       }
       if (method === "GET") return json({ object: "hermes.session", session: s });
@@ -264,6 +292,7 @@ export function createHermesStub(opts: HermesStubOptions): HermesStub {
       const job: Record<string, unknown> = { id: hex(6), name: body.name, schedule: body.schedule, enabled: true, state: "scheduled", next_run_at: null, last_run_at: null, last_status: null };
       for (const k of ["prompt", "skill", "deliver"]) if (body[k] !== undefined) job[k] = body[k];
       stub.jobs.push(job);
+      persist();
       return json({ job }, 201);
     }
     m = /^\/api\/jobs\/([a-f0-9]{12})(?:\/(pause|resume|run))?$/.exec(p);
@@ -275,15 +304,18 @@ export function createHermesStub(opts: HermesStubOptions): HermesStub {
         if (m[2] === "pause") Object.assign(job, { enabled: false, state: "paused" });
         else if (m[2] === "resume") Object.assign(job, { enabled: true, state: "scheduled" });
         else Object.assign(job, { last_run_at: new Date().toISOString(), last_status: "ok" });
+        persist();
         return json({ job });
       }
       if (!m[2] && method === "GET") return json({ job });
       if (!m[2] && method === "PATCH") {
         for (const k of ["name", "schedule", "prompt", "skill", "deliver", "enabled"]) if (body[k] !== undefined) job[k] = body[k];
+        persist();
         return json({ job });
       }
       if (!m[2] && method === "DELETE") {
         stub.jobs.splice(i, 1);
+        persist();
         return json({ job });
       }
     }
@@ -554,5 +586,48 @@ export function httpBridge(gatewayUrl: string, serviceToken: string): StubBridge
       const r = await post("/api/omni/hooks/turn", { sessionId });
       return { ok: r.ok, status: r.status };
     },
+  };
+}
+
+/**
+ * A `StubStore` in one JSON file (the dev script puts it beside the dev database; it is
+ * git-ignored and holds only what was typed at the stub). Writes are batched and atomic
+ * (temp file + rename, mode 0600); a file that cannot be read or parsed counts as "none".
+ * `flush()` writes what is pending now (call it before the process exits).
+ */
+export function fileStubStore(path: string, fs: { readFileSync(p: string, enc: "utf8"): string; writeFileSync(p: string, data: string, o: { mode: number }): void; renameSync(a: string, b: string): void }, debounceMs = 150): StubStore & { flush(): void } {
+  let pending: StubState | null = null;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const flush = (): void => {
+    if (timer) clearTimeout(timer);
+    timer = null;
+    if (!pending) return;
+    const state = pending;
+    pending = null;
+    try {
+      fs.writeFileSync(`${path}.tmp`, JSON.stringify(state), { mode: 0o600 });
+      fs.renameSync(`${path}.tmp`, path);
+    } catch {
+      /* a dev convenience: a failed save only means the next start forgets */
+    }
+  };
+  return {
+    load() {
+      try {
+        const v = JSON.parse(fs.readFileSync(path, "utf8")) as StubState;
+        return v && v.version === 1 && Array.isArray(v.sessions) && v.transcripts && typeof v.transcripts === "object" ? v : null;
+      } catch {
+        return null;
+      }
+    },
+    save(state) {
+      pending = state;
+      if (debounceMs <= 0) return flush();
+      if (!timer) {
+        timer = setTimeout(flush, debounceMs);
+        timer.unref?.();
+      }
+    },
+    flush,
   };
 }

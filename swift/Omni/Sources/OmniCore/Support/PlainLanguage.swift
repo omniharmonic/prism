@@ -11,6 +11,15 @@ public enum PlainLanguage {
         return e == .signedOut || e == .notSignedIn
     }
 
+    /// The server has no such thing (404): asking again will not help.
+    public static func isNotFound(_ error: any Error) -> Bool {
+        if let e = error as? PrismError, case .rejected(let f) = e { return f.status == 404 }
+        return false
+    }
+
+    /// What a thread shows when the agent no longer has it.
+    public static let threadUnavailable = "This conversation is no longer available. The agent no longer has it, so it can't be opened or continued."
+
     /// May the request have reached the server? Then a retry must reuse its `Idempotency-Key`.
     public static func outcomeIsUnknown(_ error: any Error) -> Bool {
         guard let e = error as? PrismError else { return !(error is OmniError) && !(error is CancellationError) }

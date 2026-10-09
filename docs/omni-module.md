@@ -72,7 +72,7 @@ app-side metadata (state, objective, task binding, unread, event log).
   "unread": 0,                  "pinned": false,             "archived": false,
   "nextCheckAt": null,          "waitingOn": null,           "model": "gpt-5-codex",
   "preview": "…",               "messageCount": 6,           "running": true,
-  "lastSeq": 12,                "source": "text"
+  "lastSeq": 12,                "source": "text",            "gone": false
 }
 ```
 
@@ -80,12 +80,20 @@ app-side metadata (state, objective, task binding, unread, event log).
 `working`; a pending approval in the thread → `needs-you`; otherwise the stored state
 (`done` after a successful turn, `needs-you` after a failed one, `waiting` after a cancel).
 
+`gone: true` — **Hermes no longer has this session**: Hermes answered with its complete
+session list and the thread is not in it, so only the gateway's own row is left (Hermes
+pruned or reset its sessions; the dev stub lost its memory). It is claimed only on proof:
+never while Hermes is unreachable, never from a truncated list (more than 200 sessions),
+never for a thread with a turn running here. The app shows such a thread as "no longer
+available" and offers to remove it: `PATCH {archived: true}` then changes the gateway's row
+only. Nothing is deleted — approvals, cards and the audit trail keep their thread id.
+
 | Route | Body / query | Answer |
 |---|---|---|
 | `GET /api/omni/threads` | `?state=working,needs-you&q=<text>&archived=1` | `{threads:[Thread], next:null, hermes:"ok"\|"unavailable"}` — Hermes sessions merged with local rows; when Hermes is down, local rows only with `hermes:"unavailable"`. Pinned first, then newest. |
 | `POST /api/omni/threads` | `{prompt, title?, objective?, taskNoteId?, noteIds?:[≤20], source?: "text"\|"voice"\|"nudge"\|"prism"}` | `201 {thread, turnId}` — creates the Hermes session `omni_<hex>` and starts the first turn. |
-| `GET /api/omni/threads/:id` | | `{thread, messages:[Message], cards:[Card], approvals:[Approval], activeTurnId}`; clears `unread`. |
-| `PATCH /api/omni/threads/:id` | `{title?, pinned?, archived?, state?, unread?: bool}` (unknown keys → 400) | `{thread}`; title/pinned/archived are written to Hermes too. |
+| `GET /api/omni/threads/:id` | | `{thread, messages:[Message], cards:[Card], approvals:[Approval], activeTurnId}`; clears `unread`. A thread Hermes no longer has → `404 {error:"not_found", detail, gone:true}` (an id neither side knows: plain `404 not_found`). Do not retry it. |
+| `PATCH /api/omni/threads/:id` | `{title?, pinned?, archived?, state?, unread?: bool}` (unknown keys → 400) | `{thread}`; title/pinned/archived are written to Hermes too. For a thread Hermes no longer has, the gateway's own row is changed and Hermes is not written to. |
 | `POST /api/omni/threads/:id/turns` | `{text, noteIds?}`, header `Idempotency-Key` (optional, 8–200 `[A-Za-z0-9._:-]`) | `202 {turnId, status:"running"}`; `409 {error:"conflict", turnId}` while a turn runs (attach to it); same key again → `200 {turnId, status}` + `Idempotent-Replayed: true`. A Hermes session started elsewhere (Telegram, Buzz) is adopted. |
 | `GET /api/omni/threads/:id/stream?after=<seq>` | also honours `Last-Event-ID` | SSE, below. |
 | `POST /api/omni/turns/:id/cancel` | `{}` | `202 {turnId, status:"cancelling"}` (aborts the stream and calls Hermes `POST /v1/runs/{run}/stop`); an ended turn → `200 {turnId, status}`. |
@@ -264,12 +272,17 @@ its own) →
   "needsYou": {"approvals": [Approval], "nudges": []},
   "inFlight": [{"id", "title", "state", "lastActivityAt"}],
   "openLoops": null, "brief": null,
-  "errors": {"agenda": "query_502"}
+  "errors": {"agenda": "vault_error"}
 }
 ```
 
 Each section calls an existing route (`POST /api/query`) in process with the caller's own
-credential; a failed section is `null` and named in `errors`. Agenda = `meeting` notes whose
+credential; a failed section is `null` and named in `errors` with the query route's own code
+(`vault_error`, `vault_unreachable`, `rate_limited`, …; `query_<status>` when it gave none).
+A section whose query failed on the vault side (5xx) is asked **once more** after 750 ms
+before it is given up: the vault has been seen to refuse a good token, or drop a large
+listing, now and then. The two sections are whole-tag listings and can take several seconds
+on a large vault; the app shows a loading state meanwhile. Agenda = `meeting` notes whose
 `date` is the day, cancelled dropped. Tasks = open `assignedToMe` tasks by due date. Nudges,
 open loops and the brief arrive with M3.
 
@@ -313,15 +326,36 @@ What `omni-dev.sh` does:
 - Waits until the stub accepts the new key before it starts the gateway, so the gateway
   cannot be talking to some other Hermes on the machine. The stub refuses port 8642.
 
-Ports: `OMNI_DEV_PORT` (8797), `OMNI_DEV_STUB_PORT` (18642).
+- **Builds the web app when it is missing or stale** (`apps/web/dist` older than
+  `apps/web/src`, `apps/web/public`, `apps/web/index.html` or `packages/core/src`): the browser
+  sign-in page is that build. `OMNI_DEV_WEB_BUILD=0` skips it. If the build fails it says so
+  and carries on; a server with no build answers page requests with a plain "the web app
+  isn't built" page (503) instead of a bare 404.
+- **Prints the sign-in link in a box.** The dev server sends no email; when you ask for the
+  email link on the sign-in page, the link appears in this terminal, boxed, to open in the
+  same browser.
+- **Keeps the stub's sessions in a file** beside the dev database
+  (`<db>.stub.json`, or `OMNI_DEV_STUB_STATE`; git-ignored, owner-only), so the threads the
+  gateway lists still open after a restart.
+- **Reconciles at start.** A thread in the dev database that the stub does not have (the
+  state file was deleted, or the database is older than it) is archived in the dev database
+  — never deleted — and the count is printed. `OMNI_DEV_RECONCILE=0` leaves them, to see
+  the app's "no longer available" state.
+
+Ports: `OMNI_DEV_PORT` (8797), `OMNI_DEV_STUB_PORT` (18642). Two backends can run side by
+side with their own ports and `OMNI_DEV_DB`.
+
+**Stopping it:** Ctrl-C in its own terminal. Do not `pkill -f omni-dev.sh`: that ends every
+dev backend on the machine, not just yours.
 
 ### The stub (`scripts/omni-stub-hermes.ts`, logic in `scripts/lib/hermes-stub.ts`)
 
 It implements the routes `src/omni/hermes-client.ts` calls and no others, checks the bearer
-on each, binds `127.0.0.1` only, and keeps sessions, transcripts and jobs in memory (a
-restart forgets them: the thread list still shows the gateway's own rows, but opening one
-answers `404 not_found`). The test
-suite drives the same code through the client's fetch seam.
+on each, binds `127.0.0.1` only, and keeps sessions, transcripts and jobs in memory —
+written to `OMNI_STUB_STATE` after every change when that is set (as `omni-dev.sh` does), so
+a restart remembers them. Without the file a restart forgets everything, and the gateway
+marks its own rows `gone` (opening one answers `404 not_found`, `gone: true`). The test
+suite drives the same code through the client's fetch seam, with no file.
 
 What a turn does is chosen by a marker anywhere in the message the person types:
 

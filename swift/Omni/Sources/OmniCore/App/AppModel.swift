@@ -33,6 +33,8 @@ public final class AppModel {
     public private(set) var origin: ServerOrigin?
     /// The signed-in session's models; nil unless ``phase`` is `.signedIn`.
     public private(set) var session: SessionModel?
+    /// The request list for Settings → Diagnostics (development builds); nil otherwise.
+    public let diagnostics: DiagnosticsLog?
 
     private let settings: any SettingsStore
     private let probe: any ServerProbe
@@ -57,8 +59,10 @@ public final class AppModel {
         defaultServerURL: String = "",
         confirmation: any SendConfirmation = NoSendConfirmation(),
         sleep: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) },
+        diagnostics: DiagnosticsLog? = nil,
         makeEnvironment: @escaping EnvironmentFactory
     ) {
+        self.diagnostics = diagnostics
         self.settings = settings
         self.probe = probe
         self.deviceLabel = deviceLabel
@@ -107,6 +111,7 @@ public final class AppModel {
         let result = await probe.probe(origin)
         guard mine == generation else { return }
         if let problem = PlainLanguage.message(for: result) {
+            diagnostics?.note("server check: \(Self.word(for: result))", isFailure: true)
             phase = .unreachable(message: problem)
             return
         }
@@ -128,16 +133,69 @@ public final class AppModel {
         generation += 1
         let mine = generation
         phase = .signingIn
+        let envID = environmentID
+        diagnostics?.note("sign-in: started (the browser opens)")
         signInTask = Task { [deviceLabel] in
             do {
                 try await env.auth.signIn(label: deviceLabel)
-                guard mine == self.generation else { return }
-                self.enterSession(env)
+                self.diagnostics?.note("sign-in: finished, the device is signed in")
+                self.signInFinished(env, attempt: mine, environmentID: envID, error: nil)
             } catch {
-                guard mine == self.generation else { return }
-                let cancelled = (error as? DeviceAuthError) == .cancelled || error is CancellationError
-                self.phase = .signedOut(notice: cancelled ? nil : PlainLanguage.message(for: error))
+                self.diagnostics?.note("sign-in: \(Self.word(for: error))", isFailure: !Self.isCancellation(error))
+                self.signInFinished(env, attempt: mine, environmentID: envID, error: error)
             }
+        }
+    }
+
+    /// What the screen shows after a sign-in attempt ends follows ONE fact: is a token
+    /// stored for this server? If it is, the app is signed in — whatever the attempt
+    /// reported (a late error after the token was kept, or a Cancel pressed while the last
+    /// step was already through) — and no "sign-in failed" is shown over a working sign-in.
+    private func signInFinished(_ env: ServerEnvironment, attempt: Int, environmentID envID: Int, error: (any Error)?) {
+        // The server was changed meanwhile: this attempt says nothing about the new one.
+        guard envID == self.environmentID, environment != nil else { return }
+        if env.auth.hasToken {
+            switch phase {
+            case .signingIn, .signedOut:
+                generation += 1
+                enterSession(env)
+            default:
+                break
+            }
+            return
+        }
+        guard attempt == generation, let error else { return }
+        phase = .signedOut(notice: Self.isCancellation(error) ? nil : PlainLanguage.message(for: error))
+    }
+
+    private static func isCancellation(_ error: any Error) -> Bool {
+        (error as? DeviceAuthError) == .cancelled || error is CancellationError
+    }
+
+    /// A sign-in failure as a code for the diagnostics list (never a token, code or URL).
+    private static func word(for error: any Error) -> String {
+        if isCancellation(error) { return "cancelled" }
+        if let e = error as? DeviceAuthError {
+            switch e {
+            case .server(let code, _, let status): return "failed, the token exchange answered \(status) \(code)"
+            case .http(let status): return "failed, HTTP \(status)"
+            case .denied(let code): return "denied in the browser (\(code))"
+            case .timedOut: return "timed out waiting for the browser"
+            case .unreachable(let why): return "failed, server unreachable (\(why))"
+            case .flowUnavailable(let why): return "could not start (\(why))"
+            case .tokenStore(let why): return "failed, Keychain (\(why))"
+            default: return "failed (\(String(describing: e).prefix(40)))"
+            }
+        }
+        return "failed"
+    }
+
+    private static func word(for probe: ServerProbeResult) -> String {
+        switch probe {
+        case .ready: return "ready"
+        case .omniOff: return "the server answered, Omni is off there"
+        case .unexpected(let status): return "unexpected answer (HTTP \(status))"
+        case .unreachable(let why): return "no answer (\(why))"
         }
     }
 
@@ -171,6 +229,7 @@ public final class AppModel {
     /// has already forgotten it; show sign-in again, on the same server.
     public func handleSignedOut() {
         guard phase == .signedIn || phase == .connecting else { return }
+        diagnostics?.note("signed out: the server no longer accepts this device's sign-in", isFailure: true)
         generation += 1
         closeSession()
         phase = .signedOut(notice: "Your sign-in is no longer valid on this server. Sign in again.")

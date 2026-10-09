@@ -3,7 +3,8 @@
  * existing Prism route, called IN-PROCESS with the requesting owner's own credential
  * (`dispatch`), so the answer is exactly what that person may read — nothing here
  * reads the vault around the gateway. A section that fails is `null` with its code in
- * `errors`; the others still answer.
+ * `errors`; the others still answer. A section whose query failed on the vault side
+ * (5xx) is asked once more before it is given up (see `query`).
  *
  *  agenda   — meeting notes (the calendar ingest's `meeting` tag) whose `date` is the day,
  *             cancelled ones dropped, by start.
@@ -32,14 +33,36 @@ type Row = { id: string; path: string | null; metadata: Record<string, unknown> 
 const s = (v: unknown): string | null => (typeof v === "string" && v ? v : null);
 const title = (r: Row): string => s(r.metadata.title) ?? leafTitle(r.path ?? r.id, r.metadata) ?? r.id;
 
-async function query(dispatch: Dispatch, spec: Record<string, unknown>): Promise<{ rows: Row[]; identity?: string }> {
-  const res = await dispatch("/api/query", { method: "POST", body: spec });
-  if (!res.ok) throw new Error(`query_${res.status}`);
-  const j = (await res.json()) as { rows?: Row[]; identity?: string };
-  return { rows: Array.isArray(j.rows) ? j.rows : [], identity: j.identity };
+/** How long to wait before the one retry of a section whose query failed on the vault side. */
+const RETRY_DELAY_MS = 750;
+const CODE_RE = /^[a-z0-9_]{1,40}$/;
+
+/**
+ * One section's rows. A 5xx from `/api/query` is the VAULT failing that read (it has been
+ * seen to refuse a good token, or drop a large listing, once in a while — more so while it
+ * is busy with the other section's listing); a read is safe to ask again, so it is retried
+ * ONCE after a pause. Anything else (4xx, a thrown dispatch) is final. The error is the
+ * route's own code (`vault_error`, `vault_unreachable`, `rate_limited`, …), else
+ * `query_<status>` — never the vault's text.
+ */
+async function query(dispatch: Dispatch, spec: Record<string, unknown>, retryDelayMs: number): Promise<{ rows: Row[]; identity?: string }> {
+  for (let attempt = 0; ; attempt++) {
+    const res = await dispatch("/api/query", { method: "POST", body: spec });
+    if (res.ok) {
+      const j = (await res.json()) as { rows?: Row[]; identity?: string };
+      return { rows: Array.isArray(j.rows) ? j.rows : [], identity: j.identity };
+    }
+    const inner = ((await res.json().catch(() => null)) as { error?: unknown } | null)?.error;
+    if (res.status >= 500 && attempt === 0) {
+      await new Promise((r) => setTimeout(r, retryDelayMs));
+      continue;
+    }
+    throw new Error(typeof inner === "string" && CODE_RE.test(inner) ? inner : `query_${res.status}`);
+  }
 }
 
-export async function buildToday(dispatch: Dispatch, date: string): Promise<Record<string, unknown>> {
+export async function buildToday(dispatch: Dispatch, date: string, opts: { retryDelayMs?: number } = {}): Promise<Record<string, unknown>> {
+  const retryDelayMs = opts.retryDelayMs ?? RETRY_DELAY_MS;
   const errors: Record<string, string> = {};
   const origin = omniConfig.appOrigin();
   const link = (id: string) => `${origin}/page/${encodeURIComponent(id)}`;
@@ -50,7 +73,7 @@ export async function buildToday(dispatch: Dispatch, date: string): Promise<Reco
     sort: [{ key: "start", dir: "asc" }],
     limit: 100,
     fields: ["title", "start", "end", "location", "meetLink", "event_status", "date"],
-  })
+  }, retryDelayMs)
     .then(({ rows }) =>
       rows
         .filter((r) => r.metadata.event_status !== "cancelled")
@@ -68,7 +91,7 @@ export async function buildToday(dispatch: Dispatch, date: string): Promise<Reco
     sort: [{ key: "due", dir: "asc" }],
     limit: 50,
     fields: ["title", "status", "due", "deadline", "priority", "omni_thread"],
-  })
+  }, retryDelayMs)
     .then(({ rows, identity }) => ({
       identity: identity ?? null,
       rows: rows.map((r) => ({

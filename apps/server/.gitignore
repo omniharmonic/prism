@@ -13,3 +13,8 @@ dist
 
 # Per-host model routing (providers/config.ts; copy config/models.example.json)
 config/models.json
+
+# Dev stub Hermes state (omni-dev.sh) and its web-build log
+*.stub.json
+*.stub.json.tmp
+.omni-dev-web-build.log

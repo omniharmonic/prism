@@ -56,6 +56,39 @@ final class ThreadListTests: XCTestCase {
         XCTAssertFalse(model.isEmpty)
     }
 
+    func testAGoneThreadSaysSoInItsRowAndCanBeRemoved() async {
+        let service = FakeService()
+        service.lists(.success(Fixture.list([Fixture.threadJSON("old", state: "done", gone: true), Fixture.threadJSON("live", state: "done")])))
+        service.patches(.success(Fixture.thread("old", archived: true)))
+        let model = make(service)
+        await model.refresh()
+        XCTAssertEqual(model.thread("old")?.gone, true)
+        XCTAssertEqual(ThreadGrouping.subtitle(model.thread("old")!), "No longer available")
+        XCTAssertNil(ThreadGrouping.subtitle(model.thread("live")!))
+        let removed = await model.remove("old")
+        XCTAssertTrue(removed)
+        XCTAssertEqual(service.patchCalls, ["old archived=true"])
+        XCTAssertEqual(model.threads.map(\.id), ["live"])
+        XCTAssertNil(model.removeError)
+    }
+
+    func testRemovingAThreadTheServerHasNoRowForStillClearsItAndAFailureKeepsIt() async {
+        let service = FakeService()
+        service.lists(.success(Fixture.list([Fixture.threadJSON("a"), Fixture.threadJSON("b")])))
+        service.patches(.failure(PrismError.rejected(Fixture.failure(404, "not_found"))), .failure(PrismError.unreachable("connection refused")))
+        let model = make(service)
+        await model.refresh()
+        let first = await model.remove("a")
+        XCTAssertTrue(first, "nothing is left on the server to remove")
+        XCTAssertEqual(model.threads.map(\.id), ["b"])
+        let second = await model.remove("b")
+        XCTAssertFalse(second)
+        XCTAssertEqual(model.threads.map(\.id), ["b"], "a thread that could not be removed stays")
+        XCTAssertEqual(model.removeError, "Couldn't remove it. Can't reach the server. Check that it's running and that this Mac is on the right network.")
+        model.clearRemoveError()
+        XCTAssertNil(model.removeError)
+    }
+
     func testEmptyListAndAgentUnavailable() async {
         let service = FakeService()
         service.lists(.success(Fixture.list([], hermes: "unavailable")))
@@ -186,12 +219,87 @@ final class ThreadModelTests: XCTestCase {
     }
 
     func testALoadFailureIsShownAndSignedOutGoesToTheApp() async {
-        service.details(.failure(PrismError.rejected(Fixture.failure(404, "not_found"))), .failure(PrismError.signedOut))
+        service.details(.failure(PrismError.outcomeUnknown(OutcomeUnknown(status: 502, code: "hermes_unavailable", reason: "HTTP 502"))), .failure(PrismError.signedOut))
         let model = make()
         await model.open()
-        XCTAssertEqual(model.phase.failure, "The server couldn't find that. It may have been removed.")
+        XCTAssertEqual(model.phase.failure, "The server is up, but it can't reach the agent right now.")
+        XCTAssertFalse(model.isUnavailable, "a failure that may pass is not 'no longer available'")
         await model.reload()
         XCTAssertEqual(signedOut.count, 1)
+    }
+
+    // MARK: a thread the agent no longer has (first-run fix: the 404s in the dev log)
+
+    func testAThreadTheServerCannotFindIsUnavailableAndIsNotAskedForAgain() async {
+        service.details(.failure(PrismError.rejected(Fixture.failure(404, "not_found"))))
+        var told: [String] = []
+        let counter = signedOut
+        let sink = ErrorSink { counter.bump() }
+        approvals = ApprovalCenter(service: service, sink: sink)
+        let model = ThreadModel(threadID: "t1", service: service, approvals: approvals, sink: sink, sleep: noSleep) { told.append($0) }
+        await model.open()
+        XCTAssertTrue(model.isUnavailable)
+        XCTAssertEqual(model.phase.failure, PlainLanguage.threadUnavailable)
+        XCTAssertEqual(told, ["t1"], "the list is told, so the row says so too")
+        XCTAssertEqual(service.detailReads, 1)
+        // Coming back to it, a notice, a reconnect, pull-to-refresh: none of them asks again.
+        await model.open()
+        await model.changedOnServer()
+        await model.reload()
+        model.close()
+        await model.open()
+        XCTAssertEqual(service.detailReads, 1, "one GET, not three")
+        // Nothing can be sent into it.
+        model.draft = "are you there?"
+        XCTAssertFalse(model.canSend)
+        await model.send()
+        XCTAssertTrue(service.startTexts.isEmpty)
+        XCTAssertEqual(model.draft, "are you there?", "the text is not thrown away")
+        XCTAssertTrue(service.streamAfters.isEmpty)
+    }
+
+    func testCheckAgainAsksOnceAndAThreadThatCameBackOpensNormally() async {
+        service.details(.failure(PrismError.rejected(Fixture.failure(404, "not_found"))), .failure(PrismError.rejected(Fixture.failure(404, "not_found"))), .success(Fixture.detail(messages: [hello, answer])))
+        let model = make()
+        await model.open()
+        await model.checkAgain()
+        XCTAssertTrue(model.isUnavailable)
+        XCTAssertEqual(service.detailReads, 2)
+        await model.checkAgain()
+        XCTAssertFalse(model.isUnavailable)
+        XCTAssertEqual(model.phase, .loaded)
+        XCTAssertEqual(texts(model), ["user:hello", "assistant:Hi Benjamin."])
+        model.draft = "hello again"
+        XCTAssertTrue(model.canSend)
+    }
+
+    func testAThreadTheListAlreadyKnowsIsGoneIsNeverRequested() async {
+        let model = make()
+        await model.open(knownGone: true)
+        XCTAssertTrue(model.isUnavailable)
+        XCTAssertEqual(model.phase.failure, PlainLanguage.threadUnavailable)
+        XCTAssertEqual(service.detailReads, 0)
+    }
+
+    func testAThreadThatDisappearsWhileItIsOpenBecomesUnavailable() async {
+        service.details(.success(Fixture.detail(messages: [hello, answer])), .failure(PrismError.rejected(Fixture.failure(404, "not_found"))))
+        let model = make()
+        await model.open()
+        XCTAssertEqual(model.phase, .loaded)
+        await model.changedOnServer()
+        XCTAssertTrue(model.isUnavailable)
+        XCTAssertFalse(model.canSend)
+    }
+
+    func testOpeningWhileTheFirstReadIsInFlightDoesNotReadTwice() async {
+        service.details(.success(Fixture.detail(messages: [hello])))
+        let model = make()
+        async let first: Void = model.open()
+        async let second: Void = model.changedOnServer()
+        async let third: Void = model.open()
+        _ = await (first, second, third)
+        XCTAssertEqual(service.detailReads, 1)
+        XCTAssertEqual(model.phase, .loaded)
     }
 
     func testSendStreamsDeltasThenTheFinalTextReplacesThem() async {

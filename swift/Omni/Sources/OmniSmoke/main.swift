@@ -62,6 +62,20 @@ struct DevOwnerBrowser: Sendable {
     let session = PrismURLSession.make()
 
     func approve(_ authorizeURL: URL) async throws -> String {
+        try await approveKeepingCookies(authorizeURL).location
+    }
+
+    /// What the OTHER tab does afterwards (the sign-in page that was left open, a reload,
+    /// Back): open /auth/device/continue again with the browser's cookies.
+    func continueAgain(cookies: String) async throws -> (status: Int, html: String) {
+        var get = URLRequest(url: try origin.url(path: "/auth/device/continue"))
+        get.setValue("prism_session=\(sessionCookie); \(cookies)", forHTTPHeaderField: "Cookie")
+        let (page, r) = try await session.data(for: get)
+        return ((r as? HTTPURLResponse)?.statusCode ?? 0, String(decoding: page, as: UTF8.self))
+    }
+
+    /// `approve`, also returning the cookies the browser holds afterwards (never printed).
+    func approveKeepingCookies(_ authorizeURL: URL) async throws -> (location: String, cookies: String) {
         try check(origin.contains(authorizeURL), "the authorize URL is not on the dev gateway")
         var get = URLRequest(url: authorizeURL)
         get.setValue("prism_session=\(sessionCookie)", forHTTPHeaderField: "Cookie")
@@ -82,7 +96,9 @@ struct DevOwnerBrowser: Sendable {
         let http = r2 as? HTTPURLResponse
         try check(http?.statusCode == 302, "approve answered \(http?.statusCode ?? 0)")
         guard let location = http?.value(forHTTPHeaderField: "Location") else { throw StepFailed(what: "approve gave no redirect") }
-        return location
+        let after = http?.value(forHTTPHeaderField: "Set-Cookie") ?? ""
+        let done = Self.capture(after, #"prism_device_done=([a-z]+)"#).map { "prism_device_done=\($0)" } ?? ""
+        return (location, done)
     }
 
     static func capture(_ text: String, _ pattern: String) -> String? {
@@ -113,7 +129,7 @@ struct CustomSchemeFlow: RedirectFlow {
 /// The JSON keys each PrismKit model reads. A key the gateway sends that is not here, or a
 /// key here the gateway never sends, is reported.
 enum Shape {
-    static let thread: Set<String> = ["id", "title", "state", "objective", "taskNoteId", "lastActivityAt", "unread", "pinned", "archived", "nextCheckAt", "waitingOn", "model", "preview", "messageCount", "running", "lastSeq", "source"]
+    static let thread: Set<String> = ["id", "title", "state", "objective", "taskNoteId", "lastActivityAt", "unread", "pinned", "archived", "nextCheckAt", "waitingOn", "model", "preview", "messageCount", "running", "lastSeq", "source", "gone"]
     static let threadList: Set<String> = ["threads", "next", "hermes"]
     static let detail: Set<String> = ["thread", "messages", "cards", "approvals", "activeTurnId"]
     static let message: Set<String> = ["id", "role", "text", "toolName", "at"]
@@ -244,13 +260,54 @@ func run() async -> Int32 {
         return "signed in, alive, revoked, forgotten"
     }
 
-    let transport = PrismClient(origin: origin, tokenStore: tokens, userAgent: "OmniSmoke/1", onSignedOut: { await signedOut.set() })
+    await report.step("sign in again, as it went on the first run: the callback arrives twice, a favicon is asked for, and the other tab resumes after Approve") {
+        let seen = Flag()
+        let again = InMemoryTokenStore()
+        let flow = LoopbackRedirectFlow(timeout: .seconds(30)) { url in
+            guard let done = try? await browser.approveKeepingCookies(url), let callback = URL(string: done.location), callback.host == "127.0.0.1", let port = callback.port else { return false }
+            let web = PrismURLSession.make()
+            func status(_ u: URL) async -> Int { ((try? await web.data(from: u))?.1 as? HTTPURLResponse)?.statusCode ?? 0 }
+            // A browser asks for more than the callback, and may ask for the callback twice.
+            await seen.note("favicon \(await status(URL(string: "http://127.0.0.1:\(port)/favicon.ico")!))")
+            await seen.note("callback \(await status(callback))")
+            await seen.note("callback-again \(await status(callback))")
+            // The sign-in page left open in the first tab now continues by itself.
+            if let other = try? await browser.continueAgain(cookies: done.cookies) {
+                await seen.note("continue \(other.status) \(other.html.contains("signed in") ? "signed-in-page" : other.html.contains("Can") ? "error-page" : "other-page")")
+            }
+            return true
+        }
+        let device = DeviceSignIn(origin: origin, configuration: .omniNative, tokenStore: again)
+        try await device.signIn(using: flow, label: "Omni smoke (laptop, repeated callback)")
+        try check(device.hasToken, "no token was stored")
+        try check(await device.liveness() == .alive, "the token is not alive")
+        let notes = await seen.notes
+        try check(notes == ["favicon 404", "callback 200", "callback-again 200", "continue 200 signed-in-page"], "the browser saw: \(notes)")
+        let result = await device.signOut()
+        try check(result == .revoked, "sign-out was \(result)")
+        return "favicon 404 (ignored); callback 200; the same callback again 200 and nothing delivered twice; the other tab: 200 “You're signed in”; one live token"
+    }
+
+    // Every request this run makes is listed the way Settings → Diagnostics lists it.
+    let diagnostics = DiagnosticsLog(capacity: 2000)
+    let transport = PrismClient(origin: origin, tokenStore: tokens, userAgent: "OmniSmoke/1", onSignedOut: { await signedOut.set() }, onRequest: diagnostics.observer)
     let omni = OmniClient(transport: transport)
+    // What the backend already held before this run touched it (an empty stub, or old threads).
+    var preexisting: [OmniThread] = []
 
     await report.step("server probe (what the first-run screen does, no credential)") {
         let result = await LiveServerProbe().probe(origin)
         try check(result == .ready, "probe said \(result)")
         return "ready"
+    }
+
+    await report.step("what was there before: threads from earlier runs") {
+        preexisting = try await omni.threads().threads
+        let gone = preexisting.filter(\.gone).count
+        if env["OMNI_SMOKE_EXPECT_OLD"] == "1" { try check(!preexisting.isEmpty, "this run expected threads from an earlier run and found none") }
+        if env["OMNI_SMOKE_EXPECT_EMPTY"] == "1" { try check(preexisting.isEmpty, "this run expected an empty backend and found \(preexisting.count) thread(s)") }
+        if env["OMNI_SMOKE_EXPECT_GONE"] == "1" { try check(gone > 0, "this run expected threads the stub no longer has and the list marks none") }
+        return preexisting.isEmpty ? "none (an empty backend)" : "\(preexisting.count) thread(s), \(gone) marked no longer available"
     }
 
     await report.step("version") {
@@ -671,7 +728,140 @@ func run() async -> Int32 {
         try check(session.today.phase == .loaded, "today: \(session.today.phase)")
         await session.jobs.refresh()
         try check(session.jobs.phase == .loaded && !session.jobs.jobs.isEmpty, "jobs: \(session.jobs.phase)")
-        return "today \(session.today.today?.date ?? "?"), \(session.jobs.jobs.count) jobs"
+        let partial = session.today.partialNotice.map { " — partial: \($0)" } ?? ", every section loaded"
+        return "today \(session.today.today?.date ?? "?")\(partial); \(session.jobs.jobs.count) jobs"
+    }
+
+    await report.step("app models: a failed turn and a dropped connection say so in words, and the thread still works afterwards") {
+        guard case .thread(let id) = session.destination else { throw StepFailed(what: "no open thread") }
+        let model = session.threadModel(for: id)
+        var said: [String] = []
+        for (marker, expected) in [("stub:error", "The agent couldn't finish that."), ("stub:error:rate_limit", "The model's usage limit was reached. Try again later."), ("stub:drop", "The connection to the agent was lost before it finished."), ("stub:truncate", "The connection to the agent was lost before it finished.")] {
+            model.draft = "\(marker) please"
+            await model.send()
+            try check(model.sendState == .idle, "\(marker): the send itself failed: \(model.sendState)")
+            try check(await waitUntil(.seconds(30)) { !model.isRunning }, "\(marker): the turn never ended")
+            try check(model.turnEnded == expected, "\(marker): the thread says “\(model.turnEnded ?? "nothing")”")
+            try check(model.phase == .loaded && model.streamProblem == nil, "\(marker): left a problem banner: \(model.streamProblem ?? "phase \(model.phase)")")
+            said.append("\(marker) → “\(expected)”")
+        }
+        // The chat request itself refused by the agent (5xx): still a turn that ends in words.
+        model.draft = "stub:http:503 please"
+        await model.send()
+        try check(await waitUntil(.seconds(30)) { !model.isRunning }, "stub:http: the turn never ended")
+        try check(model.turnEnded != nil, "stub:http:503 ended without a word")
+        said.append("stub:http:503 → “\(model.turnEnded ?? "")”")
+        // And it is not stuck: the next ordinary message goes through.
+        model.draft = "and a normal one after the failures"
+        try check(model.canSend, "the composer is disabled after a failed turn")
+        await model.send()
+        try check(await waitUntil(.seconds(30)) { !model.isRunning }, "the turn after the failures never ended")
+        try check(model.turnEnded == nil, "the turn after the failures says: \(model.turnEnded ?? "")")
+        return said.joined(separator: "; ") + "; then a normal turn worked"
+    }
+
+    await report.step("app screens, as each does on appearing: sidebar groups, Needs you badge, Today, Recurring, ⌘R on each") {
+        await session.threads.refresh()
+        await session.approvals.refresh()
+        try check(session.threads.phase == .loaded, "threads: \(session.threads.phase)")
+        try check(session.approvals.phase == .loaded, "approvals: \(session.approvals.phase)")
+        let serverPending = try await omni.approvals(status: .pending).count
+        try check(session.approvals.pendingCount == serverPending, "the Needs you badge says \(session.approvals.pendingCount), the server \(serverPending)")
+        var opened: [String] = []
+        // One thread from every group the sidebar shows.
+        for section in session.threads.sections {
+            guard let thread = section.threads.first(where: { !$0.gone }) else { continue }
+            session.destination = .thread(thread.id)
+            let model = session.threadModel(for: thread.id)
+            await session.openThread(model)
+            try check(model.phase == .loaded, "\(section.title): opening “\(ThreadGrouping.displayTitle(thread))” gave \(model.phase)")
+            _ = await waitUntil(.seconds(20)) { !model.isRunning }
+            await session.refreshVisible()
+            try check(model.phase == .loaded && model.streamProblem == nil, "\(section.title): after ⌘R: \(model.streamProblem ?? "\(model.phase)")")
+            model.close()
+            opened.append("\(section.title) \(section.threads.count)")
+        }
+        for destination in [Destination.today, .needsYou, .recurring, .newThread] {
+            session.destination = destination
+            await session.refreshVisible()
+        }
+        try check(session.today.phase == .loaded, "Today after ⌘R: \(session.today.phase)")
+        try check(session.jobs.phase == .loaded, "Recurring after ⌘R: \(session.jobs.phase)")
+        // Search: a word no thread has → the empty-search state, then back to the full list.
+        session.threads.searchText = "zzz-no-thread-has-this-zzz"
+        await session.threads.refresh()
+        try check(session.threads.isEmpty && session.threads.isSearching, "a search with no hits is not the empty state")
+        session.threads.searchText = ""
+        await session.threads.refresh()
+        try check(!session.threads.isEmpty, "the list did not come back after clearing the search")
+        return "groups: \(opened.joined(separator: ", ")); badge \(serverPending); Today, Needs you, Recurring and New Thread refreshed; search empty state ok"
+    }
+
+    await report.step("old threads: each one opens, or says it is no longer available — never a dead screen, never asked for twice") {
+        await session.threads.refresh()
+        let old = session.threads.threads.filter { t in preexisting.contains { $0.id == t.id } }
+        guard !old.isEmpty else { return "no threads from an earlier run on this backend" }
+        var loaded = 0, unavailable = 0
+        for thread in old.prefix(40) {
+            let before = diagnostics.entries.count
+            let model = session.threadModel(for: thread.id)
+            await session.openThread(model)
+            // What the first run did: the screen appears, a notice and a reconnect arrive, the person comes back to it.
+            await model.changedOnServer()
+            await model.open()
+            _ = await waitUntil(.seconds(1)) { diagnostics.entries.count > before }
+            let reads = diagnostics.entries[before...].filter { $0.line.contains("GET /api/omni/threads/\(thread.id) ") }.count
+            if model.isUnavailable {
+                unavailable += 1
+                try check(model.phase.failure == PlainLanguage.threadUnavailable, "an unavailable thread says: \(model.phase.failure ?? "nothing")")
+                try check(reads <= 1, "an unavailable thread was asked for \(reads) times")
+                try check(!model.canSend, "a message can be sent into a thread that is gone")
+                try check(session.threads.thread(thread.id)?.gone == true, "the list does not mark it")
+            } else {
+                loaded += 1
+                try check(model.phase == .loaded, "“\(ThreadGrouping.displayTitle(thread))” gave \(model.phase)")
+            }
+            model.close()
+        }
+        if env["OMNI_SMOKE_EXPECT_GONE"] == "1" { try check(unavailable > 0, "expected at least one unavailable thread") }
+        var removedNote = ""
+        if let victim = session.threads.threads.first(where: { $0.gone }) {
+            session.destination = .thread(victim.id)
+            try check(await session.removeThread(victim.id), "Remove from List failed: \(session.threads.removeError ?? "?")")
+            try check(session.destination == .today, "after removing, the window is on \(String(describing: session.destination))")
+            let listed = try await omni.threads().threads.contains { $0.id == victim.id }
+            let archived = try await omni.threads(includeArchived: true).threads.first { $0.id == victim.id }
+            try check(!listed && archived?.archived == true, "the removed thread is still listed (or was deleted, not archived)")
+            removedNote = "; removed one from the list (archived on the server, not deleted)"
+        }
+        return "\(old.count) old thread(s): \(loaded) opened, \(unavailable) no longer available\(removedNote)"
+    }
+
+    await report.step("a thread the server has never heard of: one request, a clear state, nothing sendable") {
+        let ghost = session.threadModel(for: "omni_0000000000000000deadbeef")
+        let before = diagnostics.entries.count
+        await ghost.open()
+        await ghost.open()
+        await ghost.changedOnServer()
+        try check(ghost.isUnavailable && !ghost.canSend, "phase \(ghost.phase)")
+        _ = await waitUntil(.seconds(2)) { diagnostics.entries.count > before }
+        let lines = diagnostics.entries[before...].map(\.line).filter { $0.contains("omni_0000000000000000deadbeef") }
+        try check(lines.count == 1 && lines[0].contains("→ 404 not_found"), "requests: \(lines)")
+        return "1 request (404 not_found) → “\(PlainLanguage.threadUnavailable)”"
+    }
+
+    await report.step("diagnostics: the request list names what failed and holds no secret") {
+        _ = await waitUntil(.seconds(2)) { diagnostics.entries.count > 20 }
+        let text = diagnostics.text
+        let held = (try? tokens.token(for: origin)) ?? nil
+        try check(diagnostics.entries.count > 20, "only \(diagnostics.entries.count) lines")
+        try check(text.contains("POST /api/omni/threads →") && text.contains("[stream] → 200"), "the list is missing ordinary requests")
+        try check(text.contains("→ 404 not_found") && text.contains("executor_disabled"), "the failures of this run are not in the list")
+        if let held { try check(!text.contains(held), "THE TOKEN IS IN THE DIAGNOSTICS LIST") }
+        for secret in [cookie, "Bearer", "pd_", "stub:", "dana@example.com", "?q=", "Idempotency"] {
+            try check(!text.contains(secret), "the list contains “\(secret == cookie ? "the session cookie" : secret)”")
+        }
+        return "\(diagnostics.entries.count) lines, \(diagnostics.failureCount) failures, e.g. “\(diagnostics.entries.first(where: \.isFailure)?.line ?? "")”; no token, cookie, query, message text or address"
     }
     session.stop()
 
