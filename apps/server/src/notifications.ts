@@ -10,7 +10,10 @@
  *    route). It diffs the mention chips of the previous vs the new content
  *    (`@prism/core/mentions`), so only NEW chips notify. A person chip resolves
  *    the person note's email identities to accounts. A page/person chip also adds
- *    a vault link `mentions` (NP-RF-07 backlinks) with a CAS write.
+ *    a vault link `mentions` (NP-RF-07 backlinks) with a CAS write. A SUB-PAGE
+ *    ROW (`childPage`, NP-PG-15) is a link target exactly like a page chip: the
+ *    parent links to the sub-pages its body lists, so the parent is in each
+ *    sub-page's backlinks and the two are joined in the graph. A row notifies nobody.
  *  - Comments (collab only): new thread items are diffed against a per-document
  *    baseline (taken when the doc loads); participants of the thread get
  *    `comment_reply`, people @-mentioned in the text get `comment_mention`.
@@ -41,7 +44,7 @@ import { effectiveCaps, expandLevel, levelRank, type Cap, type NoteRef, type Lev
 import { workspaceRole, roleAtLeast, roleFloor } from "./roles";
 import { ensureTree, rowRef, subscribeTreeChanges } from "./tree";
 import { vaultClient, VaultConflictError, type Note } from "./parachute";
-import { extractMentions, mentionKey, extractCommentMentions, COMMENT_MENTION, type ParsedMention } from "@prism/core/mentions";
+import { extractMentions, extractChildPageIds, mentionKey, extractCommentMentions, COMMENT_MENTION, type ParsedMention } from "@prism/core/mentions";
 import { pageTitle, TRASH_TAG } from "@prism/core/pages";
 import { personSummary } from "./people-directory";
 import { sendPush, pushEnabled } from "./push";
@@ -755,20 +758,33 @@ function rememberChips(vaultId: string, noteId: string, chips: ParsedMention[]):
   if (chipCache.size > 2000) chipCache.delete(chipCache.keys().next().value!);
 }
 
+/**
+ * What a stored body links to: its mention chips, plus one page entry per sub-page row
+ * (`childPage`). A row carries only a page id, so it diffs, links and unlinks like a page
+ * chip without a uid — and, not being a person, never notifies.
+ */
+export function linkChips(html: string | null | undefined): ParsedMention[] {
+  const chips = extractMentions(html);
+  for (const id of extractChildPageIds(html)) chips.push({ kind: "page", id, label: null, date: null, reminder: null, uid: null });
+  return chips;
+}
+/** True when a remembered chip set names a note (so a body without any chip still has a link to remove). */
+export const chipsLinkSomething = (chips: ParsedMention[] | null, self: string): boolean => !!chips && linkTargets(chips, self).size > 0;
+
 // An account mention (`u_…`) names no note: it is never a link target.
 const linkTargets = (ms: ParsedMention[], self: string) =>
   new Set(ms.filter((m) => (m.kind === "page" || m.kind === "person") && m.id && m.id !== self && !ACCOUNT_MENTION_ID.test(m.id)).map((m) => m.id!));
 
 /**
- * Diff old vs new mention chips; notify the people newly mentioned, link the
- * newly mentioned pages/people and unlink targets whose last chip is gone
- * (backlinks). Never throws.
+ * Diff old vs new mention chips and sub-page rows; notify the people newly
+ * mentioned, link the newly mentioned pages/people and the sub-pages newly listed,
+ * and unlink targets whose last chip or row is gone (backlinks). Never throws.
  */
 export async function noteContentStored(e: StoredContent): Promise<{ notified: number; linked: number; unlinked: number }> {
   const out = { notified: 0, linked: 0, unlinked: 0 };
   try {
-    const before = e.prevMentions ?? extractMentions(e.prev);
-    const after = extractMentions(e.next);
+    const before = e.prevMentions ?? linkChips(e.prev);
+    const after = linkChips(e.next);
     rememberChips(e.vaultId, e.noteId, after);
     const seen = new Set(before.map(mentionKey));
     const added = after.filter((m) => !seen.has(mentionKey(m)));

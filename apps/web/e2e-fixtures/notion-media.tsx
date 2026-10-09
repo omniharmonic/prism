@@ -11,6 +11,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { PlatformProvider, VaultClientProvider, CollabEditor, VaultRequestError, type Note, type VaultClient } from "@prism/core";
 import DocumentRenderer from "../../../packages/core/src/components/renderers/DocumentRenderer";
 import { useUIStore } from "../../../packages/core/src/app/stores/ui";
+import { PageToastView } from "../../../packages/core/src/components/pages/PagesHost";
 import { linkTarget, pageIdFromUrl } from "../../../packages/core/src/lib/tiptap/prismLinks";
 
 const params = new URLSearchParams(location.search);
@@ -28,9 +29,11 @@ const FILES: Record<string, string> = { "application/pdf": "/api/attachments/a_p
 // A tiny vault: the page, one existing database ("Reading list") and whatever a test creates.
 const db: Note = { id: "db1", path: "Projects/Prism/Reading list", content: "", tags: [], metadata: { title: "Reading list", prism_type: "database", prism_database: { version: 1, source: { tags: ["book"] }, views: [{ id: "vtable", name: "All books", type: "table" }] } }, createdAt: date, updatedAt: date };
 const book: Note = { id: "b1", path: "Books/Braiding Sweetgrass", content: "", tags: ["book"], metadata: { title: "Braiding Sweetgrass" }, createdAt: date, updatedAt: date };
-const vault: Note[] = [note, db, book];
+// A spec may seed more pages before the app loads (`window.prismMediaSeed`, set by an init script).
+const vault: Note[] = [note, db, book, ...((window as unknown as { prismMediaSeed?: Note[] }).prismMediaSeed ?? [])];
 const creates: Array<Record<string, unknown>> = [];
 const trashed: string[] = [];
+const restored: string[] = [];
 if (params.has("nocreate")) creates.length = 0;
 const client = {
   getNote: async (id: string) => { const n = vault.find((x) => x.id === id); if (!n) throw new VaultRequestError(404, "GET /notes failed: 404"); return structuredClone(n); },
@@ -47,7 +50,12 @@ const client = {
     vault.push(n);
     return structuredClone(n);
   },
-  trashPage: async (id: string) => { trashed.push(id); const n = vault.find((x) => x.id === id); if (n) n.tags = [...(n.tags ?? []), "prism-trashed"]; return { rootId: id, trashed: [id] }; },
+  trashPage: async (id: string) => {
+    // ?notrash: the gateway refuses (this person may not move the page to the Trash).
+    if (new URLSearchParams(location.search).has("notrash")) throw new VaultRequestError(403, "POST /notes/trash failed: 403");
+    trashed.push(id); const n = vault.find((x) => x.id === id); if (n) n.tags = [...(n.tags ?? []), "prism-trashed"]; return { rootId: id, trashed: [id] };
+  },
+  restoreFromTrash: async (id: string) => { restored.push(id); const n = vault.find((x) => x.id === id); if (n) n.tags = (n.tags ?? []).filter((t) => t !== "prism-trashed"); return { restored: [id] }; },
   search: async () => [],
   getTags: async () => [],
   getLinks: async () => [],
@@ -76,6 +84,7 @@ Object.assign(window, {
   prismMediaUnfurls: unfurls,
   prismMediaCreates: creates,
   prismMediaTrashed: trashed,
+  prismMediaRestored: restored,
   prismMediaVault: vault,
   prismMediaUI: useUIStore,
   prismLinks: { linkTarget, pageIdFromUrl },
@@ -102,6 +111,8 @@ function LivePair() {
             user={{ name: i === 0 ? "Ada" : "Ben", color: i === 0 ? "#3a7bd5" : "#f47c6b" }}
             seedReady={i === 0}
             seedContent={i === 0 ? async () => content : async () => null}
+            // ?livehost: both clients have the page (and its sub-pages) — the Trash seam is on.
+            hostPath={params.has("livehost") ? note.path : undefined}
             uploadImage={async () => ({ src: "/api/attachments/a_img1" })}
             uploadFile={async (file) => ({ src: FILES[file.type] ?? "/api/attachments/a_bin1", name: file.name, size: file.size, mimeType: file.type || "application/octet-stream" })}
           />
@@ -125,6 +136,7 @@ createRoot(document.getElementById("root")!).render(
               />
             </main>
           )}
+          <PageToastView />
         </VaultClientProvider>
       </QueryClientProvider>
     </PlatformProvider>

@@ -101,6 +101,13 @@
 .tabbar-crumbs { flex: 0 0 auto; gap: 2px; font-size: 12.5px; }
 .tabbar-crumbs .page-crumb { max-width: 132px; }
 .tabbar-crumbs[data-room="narrow"] .page-crumb { max-width: 96px; }
+/* The phone bar: two equal sides around the title, so the title is centred in the bar whatever
+   each side holds (Messages has nothing on the right; a page has four controls there). A side
+   never gets narrower than its controls; the title gives way (and shortens) before they do. */
+.tabbar-phone { display: flex; align-items: center; gap: 4px; }
+.tabbar-phone-side { display: flex; align-items: center; align-self: stretch; gap: 4px; flex: 1 1 0; min-width: max-content; }
+.tabbar-phone-side[data-side="end"] { justify-content: flex-end; }
+.tabbar-phone-centre { display: flex; align-items: center; justify-content: center; flex: 0 1 auto; min-width: 0; padding: 0 4px; }
 .tabbar-phone-crumbs { display: flex; min-width: 0; max-width: 100%; }
 .tabbar-phone-title {
   display: inline-flex; align-items: center; gap: 3px; min-width: 0; max-width: 100%;

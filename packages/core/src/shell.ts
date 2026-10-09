@@ -313,7 +313,7 @@ export { BacklinksPill } from "./components/layout/BacklinksPill";
 export { EmptyPageStarters } from "./components/renderers/EmptyPageStarters";
 export { PageIcon, notePageIconChanged, pageIconWriteConfirmed, pageIconWriteFailed } from "./lib/pages/icons";
 // Wave 2A: @-mentions, notifications inbox, reminders, access requests.
-export { extractMentions, newMentions, extractCommentMentions, splitCommentMentions, commentMentionToken, type ParsedMention } from "./lib/tiptap/MentionParse";
+export { extractMentions, extractChildPageIds, newMentions, extractCommentMentions, splitCommentMentions, commentMentionToken, type ParsedMention } from "./lib/tiptap/MentionParse";
 export * from "./lib/notifications/client";
 export * from "./lib/notifications/hooks";
 export { openNotification, focusAnchor, anchorSelector, listenForInboxOpenRequests, setPendingNotification, ANCHOR_FLASH_CLASS, REVEAL_PROPERTY_EVENT } from "./lib/notifications/anchor";

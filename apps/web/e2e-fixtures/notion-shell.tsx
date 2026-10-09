@@ -46,6 +46,9 @@ if (params.has("dbrows")) {
     { id: "task-invites", path: "Projects/Prism/Tasks/Send invitations", content: "", tags: ["task"], metadata: { status: "todo", priority: "low" }, createdAt: recent, updatedAt: recent },
   );
 }
+// ?manyfolders: a long tree (forty top-level folders ahead of "Projects"), so a row that is
+// revealed has to be scrolled to.
+if (params.has("manyfolders")) for (let i = 1; i <= 40; i++) notes.push({ id: `archive-${i}`, path: `Archive ${String(i).padStart(2, "0")}/Notes`, content: "", tags: [], metadata: { type: "document" }, createdAt: recent, updatedAt: recent });
 // Metadata written by the app survives reloads ("another device" = a fresh page).
 const savedMeta = JSON.parse(sessionStorage.getItem("notion-shell-meta") ?? "{}") as Record<string, Record<string, unknown>>;
 for (const n of notes) if (savedMeta[n.id]) n.metadata = { ...n.metadata, ...savedMeta[n.id] };
@@ -74,6 +77,8 @@ const controls = {
   /** navigator.onLine stays true but nothing answers (pm2 restart, tunnel down). */
   unreachable: false,
   signedOut: false,
+  /** Pages this account may not move to the Trash (403 on the trash route). */
+  trashRefused: [] as string[],
   /** Pages this account can no longer see (absent from the tree, 403 on read). */
   hidden: [] as string[],
   refreshMe: () => fetchMe(),
@@ -144,7 +149,7 @@ window.fetch = async (input, init) => {
   if (path === "/api/me/preferences") {
     if (method === "PUT") { const body = JSON.parse(String(init?.body)); controls.preferences = { ...controls.preferences, ...body.preferences }; controls.revision++; }
     const items = Object.fromEntries(notes.map((n) => [n.id, { path: n.path, title: n.path!.split("/").pop()!, tags: n.tags ?? [], type: n.metadata?.type as string | undefined }]));
-    return Response.json({ preferences: { version: 1, favorites: controls.preferences.favorites, recents: controls.preferences.recents, sidebar: { order: [], collapsed: [] } }, revision: controls.revision, items });
+    return Response.json({ preferences: { version: 1, favorites: controls.preferences.favorites, recents: controls.preferences.recents, sidebar: (controls.preferences as { sidebar?: { order: string[]; collapsed: string[] } }).sidebar ?? { order: [], collapsed: [] } }, revision: controls.revision, items });
   }
   if (path === "/api/tree") controls.treeReads++;
   if (path === "/api/tree") return Response.json(notes.filter((n) => !controls.hidden.includes(n.id)).map((n) => ({ id: n.id, path: n.path, tags: n.tags, updatedAt: n.updatedAt, type: n.metadata?.type, prismType: n.metadata?.prism_type, ...(typeof n.metadata?.icon === "string" ? { icon: n.metadata.icon } : {}) })));
@@ -230,6 +235,19 @@ window.fetch = async (input, init) => {
     if (controls.failStatus) return Response.json({ error: "fixture_failure" }, { status: controls.failStatus });
     const moved = fakeMove(notes, decodeURIComponent(moveId), body, bump);
     return respond(moved.body, { status: moved.status });
+  }
+  // Trash (POST /api/notes/:id/trash) and restore (POST /api/trash/:id/restore): the page and
+  // what is inside it, tagged — never deleted. `trashRefused` = pages this account may not trash.
+  const trashId = method === "POST" ? path.match(/^\/api\/notes\/([^/]+)\/trash$/)?.[1] : undefined;
+  const restoreId = method === "POST" ? path.match(/^\/api\/trash\/([^/]+)\/restore$/)?.[1] : undefined;
+  if (trashId || restoreId) {
+    const root = notes.find((n) => n.id === decodeURIComponent((trashId ?? restoreId)!));
+    controls.writes.push({ method, path, body: null });
+    if (!root) return Response.json({ error: "not_found" }, { status: 404 });
+    if (trashId && controls.trashRefused.includes(root.id)) return Response.json({ error: "forbidden", message: "You can’t move this page to Trash." }, { status: 403 });
+    const group = notes.filter((n) => n === root || (!!root.path && !!n.path && n.path.startsWith(`${root.path}/`)));
+    for (const n of group) { n.tags = trashId ? [...new Set([...(n.tags ?? []), "prism-trashed"])] : (n.tags ?? []).filter((t) => t !== "prism-trashed"); n.updatedAt = bump(); }
+    return respond(trashId ? { rootId: root.id, trashed: group.map((n) => n.id) } : { restored: group.map((n) => n.id) });
   }
   const noteId = path.match(/^\/api\/notes\/([^/]+)$/)?.[1];
   if (noteId) {

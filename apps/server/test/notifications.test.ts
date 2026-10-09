@@ -437,6 +437,59 @@ test("L1: deleting the last chip to a target removes the mentions backlink; L4: 
   assert.equal(item.actor, null);
 });
 
+// Sub-pages (NP-PG-15): the parent's body lists a sub-page as a `childPage` row. The row is a
+// link target like a page chip, so the parent is in the sub-page's backlinks (and the graph).
+const row = (id: string) => `<div data-page-id="${id}" data-type="child-page"></div>`;
+const linksOf = (id: string) => (fv.notes.get(id)!.links ?? []).map((l) => [l.targetId, l.relationship]);
+
+test("a sub-page row links the parent to the sub-page (backlink), notifies nobody, and unlinks when the row goes", async () => {
+  fv.put({ id: "kid", path: "vault/Projects/Plan/Trip plan", tags: ["team"], content: "<p></p>" });
+  const withRow = `<p>hello</p>${row("kid")}`;
+  let r = await noteContentStored({ vaultId: "primary", noteId: "doc", prev: "<p>hello</p>", next: withRow, authors: [BOB], updatedAt: fv.notes.get("doc")!.updatedAt });
+  assert.deepEqual([r.notified, r.linked, r.unlinked], [0, 1, 0]);
+  assert.deepEqual(linksOf("doc"), [["kid", "mentions"]]);
+  assert.equal(delivered.length, 0);
+  // Saving again (the row unchanged) writes nothing more; either attribute order is read.
+  r = await noteContentStored({ vaultId: "primary", noteId: "doc", prev: withRow, next: `<p>more</p><div data-type="child-page" data-page-id="kid"></div>`, authors: [BOB], updatedAt: null });
+  assert.deepEqual([r.linked, r.unlinked], [0, 0]);
+  // The row is deleted (its page went to the Trash): the link goes with it.
+  r = await noteContentStored({ vaultId: "primary", noteId: "doc", prev: withRow, next: "<p>hello</p>", authors: [BOB], updatedAt: null });
+  assert.deepEqual([r.linked, r.unlinked], [0, 1]);
+  assert.deepEqual(linksOf("doc"), []);
+});
+
+test("a crafted sub-page row cannot link a page its author may not view, a page to itself, or a malformed id", async () => {
+  const r = await noteContentStored({ vaultId: "primary", noteId: "doc", prev: "", next: `${row("secret")}${row("doc")}${row("../x")}<div data-type="child-page"></div>`, authors: [BOB], updatedAt: null });
+  assert.deepEqual([r.notified, r.linked], [0, 0]);
+  assert.deepEqual(linksOf("doc"), []);
+});
+
+test("REST: saving a parent with a new sub-page row links it; deleting the last row unlinks it (owner passthrough and member route)", async () => {
+  fv.put({ id: "kid", path: "vault/Projects/Plan/Trip plan", tags: ["team"], content: "<p></p>" });
+  const headers = { "x-prism-editor-schema": "99" };
+  // Owner passthrough: the row is the ONLY markup in the body.
+  let res = await req("/notes/doc", OWNER, { method: "PATCH", body: JSON.stringify({ content: `<p>hello</p>${row("kid")}` }), headers });
+  assert.equal(res.status, 200);
+  await until(async () => linksOf("doc"), (v) => v.length === 1);
+  assert.deepEqual(linksOf("doc"), [["kid", "mentions"]]);
+  // The row is deleted: the body carries no chip and no row any more, and the link still goes.
+  res = await req("/notes/doc", OWNER, { method: "PATCH", body: JSON.stringify({ content: "<p>hello</p>" }), headers });
+  assert.equal(res.status, 200);
+  await until(async () => linksOf("doc"), (v) => v.length === 0);
+  // A member (Bob, edit via tag) puts it back.
+  res = await req("/notes/doc", BOB, { method: "PATCH", body: JSON.stringify({ content: `<p>hello</p>${row("kid")}`, if_updated_at: fv.notes.get("doc")!.updatedAt }), headers });
+  assert.equal(res.status, 200);
+  await until(async () => linksOf("doc"), (v) => v.length === 1);
+  // Plain autosaves afterwards (no row change) do not read the vault again or touch the links.
+  const reads = () => fv.calls.filter((c) => c.method === "GET" && c.path.endsWith("/notes/doc")).length;
+  const before = reads();
+  res = await req("/notes/doc", OWNER, { method: "PATCH", body: JSON.stringify({ content: `<p>hello again</p>${row("kid")}` }), headers });
+  assert.equal(res.status, 200);
+  await new Promise((r) => setTimeout(r, 50));
+  assert.equal(reads() - before, 0);
+  assert.deepEqual(linksOf("doc"), [["kid", "mentions"]]);
+});
+
 test("L2: approving a request never lowers an existing grant; L7: share-holders see names, not emails", async () => {
   grantUser(EVE, "note", "secret", "edit");
   db.prepare("INSERT INTO access_requests (id, vault_id, note_id, requester, level, status, created_at) VALUES ('r1','primary','secret',?, 'view','pending',?)").run(EVE, Date.now());

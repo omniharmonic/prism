@@ -39,8 +39,7 @@ import { PageCover } from "./PageCover";
 import { COVER_GRADIENTS, coverPatch, parseCover, type PageCover as Cover } from "../../lib/media/attachments";
 import { useVaultClient } from "../../data/VaultClientContext";
 import { ChildPages } from "../../lib/tiptap/childPage";
-import { createSubPage, describeSubPage } from "../../lib/tiptap/subPages";
-import { trashPage } from "../../lib/pages/ops";
+import { createSubPage, describeSubPage, subPageTrash } from "../../lib/tiptap/subPages";
 import { renamePageFromTitle } from "../../lib/pages/titleRename";
 import { queryKeys } from "../../lib/parachute/queries";
 import { useQueryClient } from "@tanstack/react-query";
@@ -180,7 +179,7 @@ export default function DocumentRenderer({ note, onMetadataChange, readOnly }: R
     hostPath: () => pathRef.current,
     create: () => createSubPage(subPagesRef.current.client, subPagesRef.current.queryClient, pathRef.current ?? ""),
     describe: describeSubPage(() => subPagesRef.current.client),
-    trash: (id: string) => trashPage(subPagesRef.current.client, id).then(() => void subPagesRef.current.queryClient.invalidateQueries({ queryKey: ["vault"] })),
+    ...subPageTrash(() => subPagesRef.current.client, () => subPagesRef.current.queryClient),
   } : {}), [canSubPage]);
 
   const extensions = useMemo(() => [

@@ -35,7 +35,7 @@ import { NewContentMenu } from "./NewContentMenu";
 import { Spinner } from "../ui/Spinner";
 import { useQueryClient } from "@tanstack/react-query";
 import { comparePages, isUnder, orderOf, parentOf, planReorder, protectionReason, withoutTrashed } from "../../lib/pages/model";
-import { usePagesUI, type PageRef } from "../../lib/pages/store";
+import { REVEAL_WINDOW_MS, usePagesUI, type PageRef } from "../../lib/pages/store";
 import { useOptionalVaultClient } from "../../data/VaultClientContext";
 import { pageIconOf, usePageIconOverride } from "../../lib/pages/icons";
 import { usePageActions } from "../../lib/pages/usePageActions";
@@ -757,6 +757,29 @@ function TreeNodeView({ node, depth, ctx }: { node: TreeNode; depth: number; ctx
   });
   const swipeRef = swipe.ref;
   const setRow = useCallback((el: HTMLDivElement | null) => { rowEl.current = el; swipeRef(el); }, [swipeRef]);
+
+  // "Show in the sidebar" (a breadcrumb's folder): this row comes into view and takes the focus.
+  // Deferred a frame or two: on a phone the Browse drawer is a <dialog> that is not shown (and
+  // puts the focus on its Close button) until its own effect has run, after this row's.
+  const revealSeq = usePagesUI((s) => (s.revealTarget?.path === node.rawPath ? s.revealTarget.seq : 0));
+  useEffect(() => {
+    if (!revealSeq) return;
+    let frames = 0;
+    let frame = requestAnimationFrame(function show() {
+      const target = usePagesUI.getState().revealTarget;
+      if (!target || target.seq !== revealSeq) return;
+      if (Date.now() - target.at > REVEAL_WINDOW_MS) return usePagesUI.getState().revealShown(revealSeq);
+      const button = rowEl.current?.querySelector<HTMLElement>(".page-tree-open");
+      // Not on screen yet (the drawer is still closed, the section still folded): look again.
+      if (!button || !button.getClientRects().length || ++frames < 2) { frame = requestAnimationFrame(show); return; }
+      button.scrollIntoView({ block: "center", inline: "nearest" });
+      button.focus({ preventScroll: true });
+      rowEl.current?.setAttribute("data-revealed", "");
+      setTimeout(() => rowEl.current?.removeAttribute("data-revealed"), 1600);
+      usePagesUI.getState().revealShown(revealSeq);
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [revealSeq]);
 
   const zoneFor = (e: React.DragEvent): DropZone => {
     const r = (e.currentTarget as HTMLElement).getBoundingClientRect();

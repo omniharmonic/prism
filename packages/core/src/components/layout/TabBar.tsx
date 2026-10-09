@@ -187,10 +187,14 @@ export function TabBar() {
   // Mobile: a quiet 3-zone header (nav · centered title · share). Tab switching,
   // creation, sidebar, and note actions all live in the floating command pill,
   // so the top bar stays a single uncluttered line.
+  // The title is centred in the BAR, not in what the controls leave over: both sides take an
+  // equal share of the room (`.tabbar-phone-side`), so Messages — which has no controls on the
+  // right — sits in the middle like every other view. A name too long for that gives the
+  // lighter side's spare room to itself before it shortens.
   if (isMobile) {
     return (
       <div
-        className="flex items-center gap-1"
+        className="tabbar-phone"
         style={{
           height: 46,
           borderBottom: "1px solid var(--glass-border)",
@@ -198,42 +202,46 @@ export function TabBar() {
           padding: "0 6px",
         }}
       >
-        <IconButton onClick={navBack} title="Back" disabled={!canBack}>
-          <ChevronLeft size={20} />
-        </IconButton>
-        <IconButton onClick={navForward} title="Forward" disabled={!canForward}>
-          <ChevronRight size={20} />
-        </IconButton>
+        <div className="tabbar-phone-side">
+          <IconButton onClick={navBack} title="Back" disabled={!canBack}>
+            <ChevronLeft size={20} />
+          </IconButton>
+          <IconButton onClick={navForward} title="Forward" disabled={!canForward}>
+            <ChevronRight size={20} />
+          </IconButton>
+        </div>
 
-        <div className="flex-1 min-w-0 flex items-center justify-center px-1">
+        <div className="tabbar-phone-centre">
           {/* The page name; with ancestors it opens their list (the breadcrumb's compact form). */}
           {crumbsHere
             ? <HeaderBreadcrumb key="crumbs" noteId={activeTab!.noteId} title={activeTab!.title} room="menu" phone />
             : <span className="tabbar-phone-title truncate">{activeTab?.title ?? "Prism"}</span>}
         </div>
-        {isRealNote && <SyncStateBadge key="sync" variant="phone" />}
 
-        {isRealNote && (
-          <IconButton
-            onClick={() =>
-              toggleFavorite({
-                id: activeTab!.noteId,
-                title: activeTab!.title,
-                type: activeTab!.type,
-              })
-            }
-            title={isFav ? "Remove from Favorites" : "Add to Favorites"}
-            active={isFav}
-          >
-            <Star
-              size={18}
-              fill={isFav ? "var(--color-accent)" : "none"}
-              color={isFav ? "var(--color-accent)" : undefined}
-            />
-          </IconButton>
-        )}
-        <ShareButton key="share" />
-        {isRealNote && <PageActionsButton key="page-actions" page={{ id: activeTab!.noteId, path: null, title: activeTab!.title }} size={18} />}
+        <div className="tabbar-phone-side" data-side="end">
+          {isRealNote && <SyncStateBadge key="sync" variant="phone" />}
+          {isRealNote && (
+            <IconButton
+              onClick={() =>
+                toggleFavorite({
+                  id: activeTab!.noteId,
+                  title: activeTab!.title,
+                  type: activeTab!.type,
+                })
+              }
+              title={isFav ? "Remove from Favorites" : "Add to Favorites"}
+              active={isFav}
+            >
+              <Star
+                size={18}
+                fill={isFav ? "var(--color-accent)" : "none"}
+                color={isFav ? "var(--color-accent)" : undefined}
+              />
+            </IconButton>
+          )}
+          <ShareButton key="share" />
+          {isRealNote && <PageActionsButton key="page-actions" page={{ id: activeTab!.noteId, path: null, title: activeTab!.title }} size={18} />}
+        </div>
       </div>
     );
   }
