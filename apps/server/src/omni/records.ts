@@ -3,19 +3,19 @@
  * note, the thread gets a card {noteId, op, type, title, summary, links…} that opens
  * the note in Prism.
  *
- * Two sources, both best effort:
- *  1. The tool stream. A `tool.completed` (never `tool.failed`) for a Prism MCP write
- *     tool (`prism_create_note`, `prism_update_note`, …) or a raw vault MCP write
- *     (`create-note` …). Update/delete/comment/suggest name the note id in their
- *     input; a create names a PATH at most (Hermes' stream carries no tool result, so
- *     the created id is unknown) → resolved through the tree projection by path.
- *  2. The tree change feed (`subscribeTreeChanges`), for a create the stream could not
- *     resolve: a row that APPEARS while the turn runs (or within a grace period after)
+ * Three sources, in this order:
+ *  1. The tool's stored result. Hermes' stream does not say whether a tool worked, so a
+ *     write is carded only after its row was read (stream.ts `reconcile`): a failed write
+ *     gets no card, and a create whose result names the new note's id is resolved by it.
+ *  2. The tool input. Update/delete/comment/suggest name the note id; a create may name a
+ *     PATH → resolved through the tree projection.
+ *  3. The tree change feed (`subscribeTreeChanges`), for a create neither of those
+ *     identified: a row that APPEARS while the turn runs (or within a grace period after)
  *     and matches the create's path, or — without a path — carries all of its tags and
  *     its `metadata.title`, and only when exactly one pending create matches.
  * LIMITS (documented in docs/omni-module.md): the tree has no writer column, so a note
- * the agent wrote through some other tool, or a create with neither path nor tags, gets
- * no card; a note written by someone else that happens to match a pending create's path
+ * the agent wrote through some other tool, or a create with no id in its result and neither
+ * path nor tags, gets no card; a note written by someone else that happens to match a pending create's path
  * during the window would be attributed to the agent (paths are unique, so this needs the
  * same path); raw vault writes carry writer kind `external` (no Prism writer stamp).
  */
@@ -144,6 +144,11 @@ export async function cardForWrite(w: WriteSignal, threadId: string): Promise<{ 
   const i = w.input;
   if (w.op === "created") {
     const path = str(i.path);
+    // The tool's own result named the new note (read from its row): that is the note.
+    if (w.createdId) {
+      const byId = await resolveNote({ id: w.createdId }).catch(() => null);
+      return { card: buildCard(w, byId ?? { id: w.createdId, path: path ?? null, tags: Array.isArray(i.tags) ? (i.tags as unknown[]).filter((t): t is string => typeof t === "string") : [] }, threadId) };
+    }
     const meta = path ? await resolveNote({ path }).catch(() => null) : null;
     if (meta) return { card: buildCard(w, meta, threadId) };
     const md = i.metadata && typeof i.metadata === "object" ? (i.metadata as Record<string, unknown>) : {};

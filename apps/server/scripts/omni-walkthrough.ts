@@ -10,6 +10,13 @@
  * token, as the app will. At the end the device token is revoked and the session row
  * deleted.
  *
+ * `OMNI_WALK_DRIVER=fake` (set by `omni-dev.sh` when it runs against a REAL dev Hermes on the
+ * fake model — `OMNI_DEV_HERMES_HOME`) swaps the stub's markers for the fake model's, skips
+ * the two failures only a stub can stage (a dropped / truncated stream), and adds what only
+ * a real Hermes shows: the omni-bridge plugin's own tool call, its tool policy, a failed tool.
+ * `OMNI_WALK_HERMES_CLI=<command>` (the dev Hermes' CLI) also runs a turn on the thread from
+ * another surface, for the plugin's post-turn notice.
+ *
  * Prints one PASS/FAIL line per step. It never prints a token, a key or a cookie.
  * It talks to a loopback URL only and refuses anything else.
  */
@@ -25,6 +32,14 @@ const BASE = (process.env.OMNI_DEV_URL ?? `http://127.0.0.1:${process.env.PORT ?
     process.exit(2);
   }
 }
+
+/** Which Hermes is behind the gateway: the stub, or a real one on the fake model. */
+const REAL = process.env.OMNI_WALK_DRIVER === "fake";
+const M = REAL
+  ? { slow: "fake:slow take your time", approval: "fake:propose draft an email to Dana", authError: "fake:error:401", says: "fake model" }
+  : { slow: "stub:slow take your time", approval: "stub:approval draft an email to Dana", authError: "stub:error:auth_failed", says: "stub Hermes" };
+/** A real Hermes builds an agent per turn: give its turns time. */
+const TURN_MS = REAL ? 240_000 : 60_000;
 
 // ── reporting ───────────────────────────────────────────────────────────────
 
@@ -86,7 +101,7 @@ interface Ev {
  */
 async function readStream(threadId: string, after: number, o: { stopWhen?: (ev: Ev, all: Ev[]) => boolean; onEvent?: (ev: Ev, all: Ev[]) => void; timeoutMs?: number } = {}): Promise<{ events: Ev[]; closedByServer: boolean }> {
   const ac = new AbortController();
-  const timer = setTimeout(() => ac.abort(), o.timeoutMs ?? 60_000);
+  const timer = setTimeout(() => ac.abort(), o.timeoutMs ?? TURN_MS);
   const events: Ev[] = [];
   try {
     const r = await fetch(`${BASE}/api/omni/threads/${threadId}/stream?after=${after}`, { headers: { ...auth(), accept: "text/event-stream" }, signal: ac.signal });
@@ -154,7 +169,7 @@ let firstTurn = "";
 let approval: Record<string, unknown> | null = null;
 
 async function main(): Promise<void> {
-  console.log(`Omni walk-through against ${BASE} (dev gateway + stub Hermes)`);
+  console.log(`Omni walk-through against ${BASE} (dev gateway + ${REAL ? "a REAL dev Hermes on the fake model" : "stub Hermes"})`);
 
   const signedIn = await step("sign in: owner session → PKCE (omni-native, omni://auth/callback) → device token", async () => {
     // The dev owner's browser session, minted the way scripts/mk-owner-session.ts does.
@@ -221,7 +236,7 @@ async function main(): Promise<void> {
     check(find(events, "init"), "no init");
     check(events.some((e) => e.t === "text_delta"), "no live text_delta");
     const text = events.filter((e) => e.t === "text").pop();
-    check(text && String(text.text).includes("stub Hermes"), "the final text is not the stub's — is the gateway pointed at the stub?");
+    check(text && String(text.text).includes(M.says), `the final text is not the ${M.says}'s — is the gateway pointed at the right Hermes?`);
     const res = find(events, "result");
     check(res && res.ok === true, `result was ${JSON.stringify(res?.errorCode ?? res?.ok)}`);
     const st = events.filter((e) => e.t === "status").pop();
@@ -265,7 +280,7 @@ async function main(): Promise<void> {
   });
 
   await step("cancel a slow turn", async () => {
-    const r = await call("POST", `/api/omni/threads/${threadId}/turns`, { text: "stub:slow take your time" }, { "idempotency-key": idem() });
+    const r = await call("POST", `/api/omni/threads/${threadId}/turns`, { text: M.slow }, { "idempotency-key": idem() });
     check(r.status === 202, `turn got ${r.status}`);
     const slow = String(r.body.turnId);
     let cancelled: Answer | null = null;
@@ -279,7 +294,7 @@ async function main(): Promise<void> {
           })();
         }
       },
-      timeoutMs: 30_000,
+      timeoutMs: REAL ? TURN_MS : 30_000,
     });
     check(closedByServer, "the stream did not close after the cancel");
     check((busy as Answer | null)?.status === 409 && (busy as Answer | null)?.body.turnId === slow, "a second turn while one runs was not a 409 naming the running turn");
@@ -293,8 +308,8 @@ async function main(): Promise<void> {
     return `409 while running; cancel 202; ${kinds(events)}`;
   });
 
-  await step("a turn that proposes an approval (stub plays the omni-bridge plugin)", async () => {
-    const r = await call("POST", `/api/omni/threads/${threadId}/turns`, { text: "stub:approval draft an email to Dana" }, { "idempotency-key": idem() });
+  await step(REAL ? "a turn that proposes an approval (the REAL omni-bridge plugin, asked by the fake model)" : "a turn that proposes an approval (stub plays the omni-bridge plugin)", async () => {
+    const r = await call("POST", `/api/omni/threads/${threadId}/turns`, { text: M.approval }, { "idempotency-key": idem() });
     check(r.status === 202, `turn got ${r.status}`);
     const { events, closedByServer } = await readStream(threadId, seq);
     check(closedByServer, "the stream did not close");
@@ -357,42 +372,82 @@ async function main(): Promise<void> {
     return "cancel 200; same key → 200 + Idempotent-Replayed: true; another key → 409 already_decided";
   });
 
-  await step("failure paths: a failed run, a dropped Hermes stream", async () => {
+  await step(REAL ? "failure path: the model call fails (Hermes sends its error text as the answer)" : "failure paths: a failed run, a dropped Hermes stream", async () => {
     const out: string[] = [];
-    for (const [text, code] of [["stub:error:auth_failed", "auth"], ["stub:drop", "hermes_unavailable"], ["stub:truncate", "stream_ended"]] as const) {
+    const cases: Array<readonly [string, string]> = REAL ? [[M.authError, "auth"]] : [[M.authError, "auth"], ["stub:drop", "hermes_unavailable"], ["stub:truncate", "stream_ended"]];
+    for (const [text, code] of cases) {
       const r = await call("POST", `/api/omni/threads/${threadId}/turns`, { text }, { "idempotency-key": idem() });
       check(r.status === 202, `${text}: turn got ${r.status}`);
       const { events, closedByServer } = await readStream(threadId, seq);
       check(closedByServer, `${text}: the stream did not close`);
       const res = find(events, "result");
       check(res?.ok === false && res.errorCode === code, `${text}: errorCode ${String(res?.errorCode)}, expected ${code}`);
-      check(!JSON.stringify(events).includes("simulated failure"), "Hermes' own error text reached the app");
+      check(!/simulated|Incorrect API key|HTTP 401/.test(JSON.stringify(events)), "Hermes' own error text reached the app");
       seq = lastSeq(events);
       out.push(`${text} → ${code}`);
     }
     return out.join("; ");
   });
 
-  await step("an agent-initiated message (stub plays omni-bridge's post-turn hook)", async () => {
-    const r = await call("POST", `/api/omni/threads/${threadId}/turns`, { text: "stub:followup" }, { "idempotency-key": idem() });
-    check(r.status === 202, `turn got ${r.status}`);
-    const { events } = await readStream(threadId, seq);
-    check(find(events, "result")?.ok === true, "the turn failed");
-    seq = lastSeq(events);
-    // Nothing is attached to the thread now; the stub's unprompted message arrives ~3 s later.
-    let unread = 0;
-    for (let i = 0; i < 16 && !unread; i++) {
-      await sleep(500);
-      const list = await call("GET", "/api/omni/threads");
-      unread = Number(((list.body.threads ?? []) as Array<Record<string, unknown>>).find((t) => t.id === threadId)?.unread ?? 0);
-    }
-    check(unread === 1, "the thread did not become unread after the hook");
-    const tail = await readStream(threadId, seq);
-    const st = tail.events.find((e) => e.t === "status" && e.reason === "agent_message");
-    check(st, "no status event with reason agent_message");
-    seq = lastSeq(tail.events);
-    return "unread 1; status reason agent_message on the thread stream";
-  });
+  if (REAL) {
+    await step("the Omni tool policy: a shell command is refused by omni-bridge, and nothing runs", async () => {
+      const r = await call("POST", `/api/omni/threads/${threadId}/turns`, { text: 'fake:tool:terminal {"command":"echo omni-walkthrough"}' }, { "idempotency-key": idem() });
+      check(r.status === 202, `turn got ${r.status}`);
+      const { events, closedByServer } = await readStream(threadId, seq);
+      check(closedByServer, "the stream did not close");
+      // Hermes sends no frame for a call a plugin vetoed: the app sees no tool at all.
+      check(!events.some((e) => e.t === "tool_use"), "a terminal tool call was shown as started");
+      const text = events.filter((e) => e.t === "text").pop();
+      check(text && /reported an error/.test(String(text.text)), "the model was not told the tool was refused");
+      check(find(events, "result")?.ok === true, "the turn failed");
+      seq = lastSeq(events);
+      return "no tool ran; the model got the refusal and said so";
+    });
+
+    await step("a tool that fails: Hermes says `tool.completed`; the gateway corrects it from the tool's row", async () => {
+      const r = await call("POST", `/api/omni/threads/${threadId}/turns`, { text: 'fake:tool:skill_view {"name":"omni-walkthrough-no-such-skill"}' }, { "idempotency-key": idem() });
+      check(r.status === 202, `turn got ${r.status}`);
+      const { events, closedByServer } = await readStream(threadId, seq);
+      check(closedByServer, "the stream did not close");
+      const results = events.filter((e) => e.t === "tool_result");
+      check(results.length === 2 && results[0]!.ok === true && results[1]!.ok === false && results[0]!.toolUseId === results[1]!.toolUseId, `tool_result events: ${results.map((e) => String(e.ok)).join(", ")} (expected true, then false for the same call)`);
+      check(!/not found|available_skills|"success"/i.test(JSON.stringify(events)), "the tool's raw result reached the app");
+      seq = lastSeq(events);
+      return "tool_result ok → corrected to failed; the raw result stayed in Hermes";
+    });
+  }
+
+  const cli = process.env.OMNI_WALK_HERMES_CLI;
+  if (!REAL || cli) {
+    await step(REAL ? "an agent-initiated message: a turn on this thread from the Hermes CLI → omni-bridge's post-turn notice" : "an agent-initiated message (stub plays omni-bridge's post-turn hook)", async () => {
+      if (REAL) {
+        // Another surface (the CLI) continues the Omni thread. The plugin, loaded in THAT
+        // process too, tells the gateway when the turn ends.
+        const { spawnSync } = await import("node:child_process");
+        const run = spawnSync(cli!, ["chat", "-Q", "-q", "A note from the command line.", "--resume", threadId], { encoding: "utf8", timeout: TURN_MS, stdio: ["ignore", "pipe", "pipe"] });
+        check(run.status === 0, `the Hermes CLI exited ${String(run.status)}`);
+      } else {
+        const r = await call("POST", `/api/omni/threads/${threadId}/turns`, { text: "stub:followup" }, { "idempotency-key": idem() });
+        check(r.status === 202, `turn got ${r.status}`);
+        const { events } = await readStream(threadId, seq);
+        check(find(events, "result")?.ok === true, "the turn failed");
+        seq = lastSeq(events);
+      }
+      // Nothing is attached to the thread now; the notice arrives within a few seconds.
+      let unread = 0;
+      for (let i = 0; i < 16 && !unread; i++) {
+        await sleep(500);
+        const list = await call("GET", "/api/omni/threads");
+        unread = Number(((list.body.threads ?? []) as Array<Record<string, unknown>>).find((t) => t.id === threadId)?.unread ?? 0);
+      }
+      check(unread === 1, "the thread did not become unread after the hook");
+      const tail = await readStream(threadId, seq);
+      const st = tail.events.find((e) => e.t === "status" && e.reason === "agent_message");
+      check(st, "no status event with reason agent_message");
+      seq = lastSeq(tail.events);
+      return "unread 1; status reason agent_message on the thread stream";
+    });
+  }
 
   await step("thread detail", async () => {
     const r = await call("GET", `/api/omni/threads/${threadId}`);
@@ -408,15 +463,29 @@ async function main(): Promise<void> {
   });
 
   await step("jobs", async () => {
-    const r = await call("GET", "/api/omni/jobs");
-    const jobs = (r.body.jobs ?? []) as Array<Record<string, unknown>>;
-    check(r.status === 200 && jobs.length >= 2, `got ${r.status}, ${jobs.length} jobs`);
+    let r = await call("GET", "/api/omni/jobs");
+    let jobs = (r.body.jobs ?? []) as Array<Record<string, unknown>>;
+    check(r.status === 200, `got ${r.status}`);
+    let made = "";
+    if (REAL && !jobs.length) {
+      // A fresh dev Hermes has no jobs: make one (it stays in the DEV Hermes, paused).
+      const c = await call("POST", "/api/omni/jobs", { name: "Omni walk-through (dev)", schedule: "0 7 * * *", prompt: "Say hello." });
+      check(c.status === 201, `create got ${c.status} ${String(c.body.error ?? "")}`);
+      made = "; created one";
+      r = await call("GET", "/api/omni/jobs");
+      jobs = (r.body.jobs ?? []) as Array<Record<string, unknown>>;
+    }
+    check(jobs.length >= (REAL ? 1 : 2), `${jobs.length} jobs`);
     const id = String(jobs[0]!.id);
+    check(typeof (jobs[0]!.schedule as Record<string, unknown> | undefined)?.display === "string", "schedule is not Hermes' {kind, expr, display} object");
     const p = await call("POST", `/api/omni/jobs/${id}/pause`, {});
     check(p.status === 200 && (p.body.job as Record<string, unknown>).enabled === false, `pause got ${p.status}`);
+    const listed = ((await call("GET", "/api/omni/jobs")).body.jobs ?? []) as Array<Record<string, unknown>>;
+    check(listed.some((j) => j.id === id), "a paused job dropped out of the list");
     const u = await call("POST", `/api/omni/jobs/${id}/resume`, {});
     check(u.status === 200 && (u.body.job as Record<string, unknown>).enabled === true, `resume got ${u.status}`);
-    return `${jobs.length} jobs; pause → enabled false; resume → enabled true`;
+    if (made) await call("POST", `/api/omni/jobs/${id}/pause`, {});
+    return `${jobs.length} jobs${made}; pause → enabled false (still listed); resume → enabled true`;
   });
 
   await step("today", async () => {
