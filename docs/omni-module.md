@@ -5,7 +5,9 @@ Prism Server between the **Omni app** (SwiftUI, iPhone/iPad/Mac) and **Hermes** 
 Research Hermes Agent on the Mac Mini, the canonical thread store). Spec:
 `omniharmonicagent/docs/omni/integration-contract.md` §§ 4–7. Code: `apps/server/src/routes/omni.ts`
 and `apps/server/src/omni/*`. Tests: `apps/server/test/omni-gateway.test.ts`,
-`apps/server/test/omni-executor.test.ts` (Hermes faked, never contacted).
+`omni-executor.test.ts`, `omni-proton-send.test.ts`, `omni-stub.test.ts` (Hermes is the
+stub in `apps/server/scripts/lib/hermes-stub.ts`; a real one is never contacted).
+To work on the app without the Mac Mini: [Developing against a stub Hermes](#developing-against-a-stub-hermes).
 
 ## Configuration (`apps/server/.env`, restart pm2 after a change)
 
@@ -35,7 +37,12 @@ carry Prism's writer stamp.
 | Route group | Credential | Refused |
 |---|---|---|
 | Everything except `/hooks/*` | The **server owner** (`OWNER_EMAIL`) by browser session cookie **or** native device token `Authorization: Bearer pd_…` | anonymous → `401 unauthorized`; another account (even an admin), a capability link, the loopback owner token, an in-process Prism-MCP dispatch → `403 forbidden` |
-| `/hooks/*` | Loopback request (no `X-Forwarded-For`/`X-Real-IP`/`CF-Connecting-IP`) **and** `Authorization: Bearer <OMNI_SERVICE_TOKEN>` | everything else → `403 forbidden` |
+| `/hooks/*` | Loopback request (no `X-Forwarded-For`/`X-Real-IP`/`CF-Connecting-IP`, and the server trusts loopback: `TRUST_LOCAL=true`, which an `https` `APP_ORIGIN` does not default to) **and** `Authorization: Bearer <OMNI_SERVICE_TOKEN>` | everything else → `403 forbidden` |
+
+The app signs in with Prism's native sign-in (`docs/native-auth.md`) as
+`client_id=omni-native`, redirect `omni://auth/callback` (iPhone/iPad) or a loopback
+redirect (Mac). That client exists only while `OMNI_ENABLED=true`. A server that sets
+`DEVICE_REDIRECT_URIS` itself must list `omni://auth/callback` there.
 
 Every non-GET app route also passes the live-actions CSRF guard: `Content-Type:
 application/json` is required (`415 unsupported_media_type` — also for bodyless POSTs, send
@@ -95,7 +102,9 @@ Hermes reads the notes itself through its Prism tools.
 Persisted events: `event: <t>`, `data: {"seq", "turnId", "t", …}`, `id: <seq>`. Live-only
 `text_delta`: no `id`. `: ping` every 25 s. The stream replays everything after `after`,
 then follows the running turn and **closes after the turn's final `status`** (or right after
-the replay when nothing runs). Reconnect with `?after=<last seq>`.
+the replay when nothing runs). Reconnect with `?after=<last seq>`. One connection replays
+at most 1000 stored events: after a long absence, reconnect from the last seq until a
+replay brings nothing new.
 
 | `t` | Fields | Notes |
 |---|---|---|
@@ -208,6 +217,10 @@ Decision rules, in order:
    Answer `200` (sent) / `422` (failed; `result` carries the live action's error code) /
    `502` (unknown), body `{approval}`.
 
+A refused `send` (`executor_disabled`, `executor_unavailable`) is not a decision: nothing is
+stored, so the same `Idempotency-Key` again gets the same `503`, without
+`Idempotent-Replayed`. The replay answer exists only once the approval left `pending`.
+
 Every proposal, edit, refusal and execution writes an `omni_audit` row (ids + 16-hex digest
 prefixes, never the payload).
 
@@ -267,13 +280,119 @@ open loops and the brief arrive with M3.
 | `POST /api/omni/hooks/propose` | `{kind, payload, threadId?, summary? (≤300), expiresInSec? (60–604800)}` | `201 {id, digest, status:"pending", expiresAt}` — stores the draft, emits `approval` to the thread, pushes `OMNI_APPROVAL`. Sends nothing. |
 | `POST /api/omni/hooks/turn` | `{sessionId}` | `202 {ok, threadId}` — a turn the app did not start (heartbeat, cron, `/goal`): unread +1, notice, push `OMNI_THREAD`. The app then reads the thread. |
 
+## Developing against a stub Hermes
+
+For app work on the laptop, with no Mac Mini, no real Hermes and no way to send anything.
+The gateway is the real one; only Hermes is replaced.
+
+```bash
+cd apps/server
+scripts/omni-dev.sh               # stub Hermes on 127.0.0.1:18642 + dev gateway on 127.0.0.1:8797
+scripts/omni-dev.sh walkthrough   # in another terminal: 21 checks, one PASS/FAIL line each
+scripts/omni-dev.sh scenarios     # what the stub can be told to do
+```
+
+The app's server URL is `http://127.0.0.1:8797` — this Mac and its simulators only (both
+processes bind `127.0.0.1`; a phone on the network cannot reach them). Sign in through the
+browser as the dev owner (`client_id=omni-native`), exactly as against production.
+
+What `omni-dev.sh` does:
+
+- Reads a **dev** env file (`apps/server/.env.dev`, or `OMNI_DEV_ENV_FILE`). It refuses
+  `.env`, and refuses an env file whose `PARACHUTE_URL` is not loopback. Run it on the
+  laptop only: on the Mini, loopback **is** the production vault.
+- Uses its own SQLite file (`prism-omni-dev.db`, or `OMNI_DEV_DB`), copied once from the env
+  file's `DB_PATH` so the dev owner's account and password exist. Another dev server may keep
+  running on its own port and database. Delete the file to start clean.
+- Makes a random Hermes key and a random hook service token at each start. They exist only
+  in the two processes' environment: never in a file, never printed.
+- Forces `OMNI_ENABLED=true`, `OMNI_HERMES_URL` = the stub, and **every executor off**:
+  `OMNI_PROTON_SEND` empty, `ACTIONS_EMAIL_ENABLED` / `ACTIONS_CALENDAR_ENABLED` /
+  `ACTIONS_MATRIX_ENABLED` = `false` (tweet and wallet have no executor). Approving a draft
+  answers `503 executor_disabled` (or `executor_unavailable`) and the draft stays pending.
+- Waits until the stub accepts the new key before it starts the gateway, so the gateway
+  cannot be talking to some other Hermes on the machine. The stub refuses port 8642.
+
+Ports: `OMNI_DEV_PORT` (8797), `OMNI_DEV_STUB_PORT` (18642).
+
+### The stub (`scripts/omni-stub-hermes.ts`, logic in `scripts/lib/hermes-stub.ts`)
+
+It implements the routes `src/omni/hermes-client.ts` calls and no others, checks the bearer
+on each, binds `127.0.0.1` only, and keeps sessions, transcripts and jobs in memory (a
+restart forgets them: the thread list still shows the gateway's own rows, but opening one
+answers `404 not_found`). The test
+suite drives the same code through the client's fetch seam.
+
+What a turn does is chosen by a marker anywhere in the message the person types:
+
+| Message contains | The turn |
+|---|---|
+| (no marker) | A normal answer: streamed chunks about 120 ms apart, one read-only tool call, the final text. |
+| `stub:slow` / `stub:slow:<seconds>` | A chunk every second (default 120), then it holds. For cancel. |
+| `stub:approval` / `stub:approval:<kind>` | Plays the `omni-bridge` plugin: a `tool.started` for `omni_propose`, then a real `POST /api/omni/hooks/propose` with the service token and `threadId`, then the answer. Kinds: `email` (default), `email-reply`, `message`, `calendar-invite`, `tweet`, `wallet-proposal`. Drafts use `example.com` addresses. |
+| `stub:error` / `stub:error:<code>` | `run.failed`, optionally with a Hermes code (`auth_failed` → `auth`, `rate_limit` → `usage_limit`, `budget_exceeded` → `budget`, `timeout`, `max_iterations` → `iteration_limit`). |
+| `stub:drop` | The connection breaks mid-answer → `hermes_unavailable`. |
+| `stub:truncate` | The stream ends with no terminal frame → `stream_ended`. |
+| `stub:http:<status>` | The chat request itself is refused (401 → `hermes_auth`, 5xx → `hermes_unavailable`). |
+| `stub:card:<noteId>` | Reports a successful `prism_update_note` on that note of the dev vault, so the gateway builds a record card. The stub writes nothing. |
+| `stub:followup` | A normal answer, then 3 s later a message nobody asked for, announced with `POST /api/omni/hooks/turn`. |
+| `stub:hermes-approval`, `stub:queued`, `stub:empty` | Hermes' own approval request; a queued run; a run with no text. |
+
+The gateway's own "revise" turn names `omni_propose`, so "Revise with Omni" produces a new
+draft from the stub too.
+
+To test the app's own reconnect, start `stub:slow`, drop the app's stream, and reattach with
+`?after=<last seq>`: the turn keeps running in the gateway.
+
+### What the stub cannot tell us
+
+The gateway has never met a real Hermes. The stub was written from the gateway's client,
+so it agrees with the client by construction. These assumptions need a test against the
+installed Hermes before the app is pointed at production:
+
+1. **Route and field names.** That `/api/sessions`, `/api/sessions/{id}/messages`,
+   `/api/sessions/{id}/chat/stream`, `/v1/runs/{id}/stop` and `/api/jobs*` exist on the
+   installed version with these shapes (`{data, has_more}`, `{session}`, `{jobs}`, `{job}`),
+   and that the `api_server` platform is enabled.
+2. **Creating a session with our own id.** `POST /api/sessions {id: "omni_<hex>"}` — the
+   stub accepts a caller-chosen id and answers 409 for a taken one. Hermes may mint its own.
+3. **Stream event names and fields.** `run.started`, `assistant.delta {delta}`,
+   `assistant.completed {content}`, `tool.started {tool_name, args}`,
+   `tool.completed|tool.failed {tool_name, preview}`, `run.completed|failed|cancelled`,
+   `error {code}`, and `run_id` on the frames (the gateway reads the run id from the first
+   frame that has one). A different name is silently ignored, not an error.
+4. **Cancel.** That `/v1/runs/{run_id}/stop` stops a run started through
+   `/api/sessions/{id}/chat/stream` (open item 1 in `voice-v1.md` § 14), and that dropping
+   the stream interrupts the run. The gateway does both.
+5. **Hanging up after `run.completed`.** The gateway closes the stream as soon as it reads
+   the terminal frame. If Hermes treats that as an interrupt before it has saved the turn,
+   the last message could be lost. The stub saves first.
+6. **Tool names and matching.** Hermes' progress frames carry no call id; the gateway pairs
+   `tool.completed` with the oldest open `tool.started` of the same name, and strips
+   `mcp__<server>__`. Record cards depend on the exact tool names (`prism_update_note`, …)
+   and on `args` being the tool input.
+7. **Messages.** That `order=latest&limit=N` returns the newest N in chronological order,
+   with `role`, `content` (string or parts), `tool_name`, `timestamp` (seconds or ISO).
+8. **Error bodies and codes.** `{error:{code}}` with `session_not_found`; which codes a
+   failed run carries (the gateway maps them by pattern and falls back to `agent_failed`).
+9. **Keepalives and long silences.** The stub sends `: keepalive` every 15 s. A real model
+   call that sends nothing for `OMNI_HERMES_STREAM_IDLE_MS` ends the turn as `timeout`.
+10. **Concurrency.** What Hermes does with a second message while a run is active on the
+    session from another surface (Telegram): the stub just runs it; `run.queued` is only
+    played on request.
+11. **Jobs.** Field names (`enabled`, `state`, `next_run_at`, …), what `pause` changes, and
+    whether `include_disabled=true` is the right switch.
+12. **The `omni-bridge` plugin does not exist yet.** The stub plays what the plugin should
+    do; whether Hermes' plugin API can call the hooks during and after a turn, and pass the
+    session id as `threadId`, is unproven.
+
+It also says nothing about speed, cost, model behaviour, real tool calls, or real note
+writes (cards from `create` watch the tree feed; the stub never creates a note).
+
 ## Not built yet (deferred, with reasons)
 
 - `/api/omni/push` (Omni-own APNs topic), `/nudges*` (M3), `POST /tasks/:id/dispatch` (M2,
   needs the task write-back design), voice (M4).
 - `tweet` / `wallet-proposal` executors (their scripts live in the agent repo).
-- `proton_send.py --approved` as an email executor (the live-action route is used instead; it
-  enforces plain text only through the app, not the `find_markdown` check).
-- `omni://auth/callback` in `DEVICE_REDIRECT_URIS` and an `omni-native` client id
-  (`auth/device.ts`, outside this module).
-- The Hermes `omni-bridge` plugin itself (agent repo).
+- The Hermes `omni-bridge` plugin itself (agent repo). The dev stub plays its two calls.
+- A test against a real Hermes (the list above).

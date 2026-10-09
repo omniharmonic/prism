@@ -9,7 +9,9 @@
  *  - a device token works over tunnel headers where COLLAB_TOKEN does not;
  *  - a device actor has exactly the user's grants (owner → passthrough);
  *  - collab resolveLevel with a device token;
- *  - /auth/device/token rate limit; devices list/revoke authz; native CORS.
+ *  - /auth/device/token rate limit; devices list/revoke authz; native CORS;
+ *  - the Omni app's client (`omni-native` + `omni://auth/callback`): only with
+ *    OMNI_ENABLED, each custom scheme bound to its own client, every rule above unchanged.
  */
 import { test, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
@@ -18,7 +20,7 @@ import { createApp } from "../src/app";
 import { config } from "../src/config";
 import { db, setAccount, storeMagicLink, getUser, getMcpToken } from "../src/db";
 import { hashPassword } from "../src/auth/password";
-import { issueDeviceToken, isAllowedRedirectUri, consentCsrf } from "../src/auth/device";
+import { issueDeviceToken, isAllowedRedirectUri, isKnownClientId, redirectAllowedForClient, consentCsrf } from "../src/auth/device";
 import { setMemberVaultTokensEnabled } from "../src/routes/mcp";
 import { setTokenMinter, setTokenRevoker } from "../src/mcp-token";
 import { authorizeConnection } from "../src/collab";
@@ -40,7 +42,10 @@ beforeEach(() => {
   // bleed between tests.
   ip = `10.${randomBytes(1)[0]}.${randomBytes(1)[0]}.${randomBytes(1)[0]}`;
 });
-afterEach(() => fv.restore());
+afterEach(() => {
+  fv.restore();
+  delete process.env.OMNI_ENABLED;
+});
 
 /** Tunnel-style headers: what every request over the public entrypoint carries. */
 const tunnel = () => ({ "cf-connecting-ip": ip, "x-forwarded-for": ip });
@@ -699,5 +704,147 @@ test("consent CSRF refuses to run without SESSION_SECRET (no constant fallback k
     assert.throws(() => consentCsrf("req", "sid"), /SESSION_SECRET/);
   } finally {
     (config as { sessionSecret: string }).sessionSecret = saved;
+  }
+});
+
+// ------------------------------------------------------------- the Omni app's client
+
+const OMNI_REDIRECT = "omni://auth/callback";
+const parked = () => (db.prepare("SELECT COUNT(*) AS n FROM device_auth_requests").get() as { n: number }).n;
+
+test("omni-native: unknown unless OMNI_ENABLED — authorize is a 400 page (nothing parked), token is invalid_client", async () => {
+  const { verifier, challenge } = pkce();
+  assert.equal(isKnownClientId("omni-native"), false);
+  assert.equal(isKnownClientId("prism-native"), true);
+  for (const redirect_uri of [OMNI_REDIRECT, "http://127.0.0.1:53123/callback"]) {
+    const r = await app.request(authorizeUrl({ code_challenge: challenge, client_id: "omni-native", redirect_uri }), { headers: { cookie: sessionCookie(makeSession(OWNER)), ...tunnel() } });
+    assert.equal(r.status, 400, redirect_uri);
+    assert.equal(r.headers.get("location"), null);
+    assert.equal(cookieVal(r.headers.get("set-cookie"), "prism_device_req"), null);
+  }
+  assert.equal(parked(), 0);
+  const t = await exchange({ code: "x".repeat(43), code_verifier: verifier, client_id: "omni-native", redirect_uri: OMNI_REDIRECT });
+  assert.equal(t.status, 401);
+  assert.equal(((await t.json()) as { error: string }).error, "invalid_client");
+  // With the module off, omni:// is not usable by the Prism client either.
+  const p = await app.request(authorizeUrl({ code_challenge: challenge, redirect_uri: OMNI_REDIRECT }), { headers: tunnel() });
+  assert.equal(p.status, 400);
+  assert.equal(parked(), 0);
+});
+
+test("omni-native: full PKCE round trip to omni://auth/callback; the device is listed with its client id", async () => {
+  process.env.OMNI_ENABLED = "true";
+  const { verifier, challenge } = pkce();
+  const loc = await approveAs(OWNER, challenge, { client_id: "omni-native", redirect_uri: OMNI_REDIRECT });
+  assert.equal(`${loc.protocol}//${loc.host}${loc.pathname}`, OMNI_REDIRECT);
+  assert.equal(loc.searchParams.get("state"), "st-123");
+  const code = loc.searchParams.get("code")!;
+  const r = await exchange({ code, code_verifier: verifier, client_id: "omni-native", redirect_uri: OMNI_REDIRECT });
+  assert.equal(r.status, 200);
+  const j = (await r.json()) as { access_token: string; device_id: string; token_type: string };
+  assert.match(j.access_token, /^pd_/);
+  const me = await app.request("/auth/me", { headers: { ...bearer(j.access_token), ...tunnel() } });
+  assert.equal(((await me.json()) as { email: string }).email, OWNER);
+  const list = (await (await app.request("/auth/devices", { headers: { ...bearer(j.access_token), ...tunnel() } })).json()) as { devices: Array<{ id: string; clientId: string; label: string }> };
+  assert.deepEqual(list.devices.map((d) => [d.id, d.clientId, d.label]), [[j.device_id, "omni-native", "Test iPhone"]]);
+  // Stored hashed, like every device token.
+  assert.equal((db.prepare("SELECT client_id FROM device_tokens WHERE id = ?").get(j.device_id) as { client_id: string }).client_id, "omni-native");
+  assert.equal((db.prepare("SELECT COUNT(*) AS n FROM device_tokens WHERE token_hash = ?").get(j.access_token) as { n: number }).n, 0);
+});
+
+test("omni-native: a device with no label is called “Omni app”; a loopback redirect (the Mac app) works", async () => {
+  process.env.OMNI_ENABLED = "true";
+  const { challenge } = pkce();
+  const sid = makeSession(OWNER);
+  const a = await app.request(authorizeUrl({ code_challenge: challenge, client_id: "omni-native", redirect_uri: "http://127.0.0.1:53123/callback", label: undefined }), { headers: { cookie: sessionCookie(sid), ...tunnel() } });
+  assert.equal(a.status, 200);
+  const html = await a.text();
+  assert.match(html, /An app calling itself “Omni app” wants to sign in/);
+  assert.match(html, /127\.0\.0\.1:53123\/callback/);
+  assert.match(html, /from the Omni app yourself/);
+});
+
+test("each custom scheme belongs to its own client: omni:// only for omni-native, prism:// only for prism-native", async () => {
+  process.env.OMNI_ENABLED = "true";
+  const { challenge } = pkce();
+  assert.equal(redirectAllowedForClient("omni-native", OMNI_REDIRECT), true);
+  assert.equal(redirectAllowedForClient("prism-native", REDIRECT), true);
+  assert.equal(redirectAllowedForClient("omni-native", REDIRECT), false);
+  assert.equal(redirectAllowedForClient("prism-native", OMNI_REDIRECT), false);
+  assert.equal(redirectAllowedForClient("evil", OMNI_REDIRECT), false);
+  assert.equal(redirectAllowedForClient("omni-native", "https://evil.example/cb"), false, "never wider than the allowlist");
+  const cases: Array<[string, string]> = [
+    ["omni-native", REDIRECT],
+    ["prism-native", OMNI_REDIRECT],
+    // Exact match only — the same rule as prism://.
+    ["omni-native", "omni://auth/callback/"],
+    ["omni-native", "omni://auth/callback?x=1"],
+    ["omni-native", "omni://auth/callback#f"],
+    ["omni-native", "omni://evil/callback"],
+    ["omni-native", "OMNI://auth/callback"],
+    ["omni-native", "omni:auth/callback"],
+    ["omni-native", "http://localhost:53123/callback"],
+    ["omni-native", "https://evil.example/cb"],
+  ];
+  for (const [client_id, redirect_uri] of cases) {
+    const r = await app.request(authorizeUrl({ code_challenge: challenge, client_id, redirect_uri }), { headers: { cookie: sessionCookie(makeSession(OWNER)), ...tunnel() } });
+    assert.equal(r.status, 400, `${client_id} → ${redirect_uri}`);
+    assert.equal(r.headers.get("location"), null, `no redirect for ${redirect_uri}`);
+    assert.equal(cookieVal(r.headers.get("set-cookie"), "prism_device_req"), null);
+  }
+  assert.equal(parked(), 0);
+});
+
+test("omni-native keeps every pre-consent rule: S256 only, valid challenge, response_type, state — 400 pages, no redirect", async () => {
+  process.env.OMNI_ENABLED = "true";
+  const { challenge } = pkce();
+  const o = { client_id: "omni-native", redirect_uri: OMNI_REDIRECT };
+  const cases = [
+    authorizeUrl({ ...o, code_challenge: challenge, code_challenge_method: "plain" }),
+    authorizeUrl({ ...o, code_challenge: challenge, code_challenge_method: undefined }),
+    authorizeUrl({ ...o }),
+    authorizeUrl({ ...o, code_challenge: "short" }),
+    authorizeUrl({ ...o, code_challenge: challenge, response_type: "token" }),
+    authorizeUrl({ ...o, code_challenge: challenge, state: "s".repeat(600) }),
+  ];
+  for (const u of cases) {
+    const r = await app.request(u, { headers: tunnel() });
+    assert.equal(r.status, 400, u);
+    assert.equal(r.headers.get("location"), null, `no redirect for ${u}`);
+    assert.equal(cookieVal(r.headers.get("set-cookie"), "prism_device_req"), null);
+  }
+  assert.equal(parked(), 0);
+});
+
+test("a code is bound to the client that asked: an omni-native code is not redeemable as prism-native (and is burned)", async () => {
+  process.env.OMNI_ENABLED = "true";
+  const { verifier, challenge } = pkce();
+  const code = (await approveAs(OWNER, challenge, { client_id: "omni-native", redirect_uri: OMNI_REDIRECT })).searchParams.get("code")!;
+  const cross = await exchange({ code, code_verifier: verifier, client_id: "prism-native", redirect_uri: OMNI_REDIRECT });
+  assert.equal(cross.status, 400);
+  assert.equal(((await cross.json()) as { error: string }).error, "invalid_grant");
+  const again = await exchange({ code, code_verifier: verifier, client_id: "omni-native", redirect_uri: OMNI_REDIRECT });
+  assert.equal(again.status, 400, "any attempt burns the code");
+  assert.equal((db.prepare("SELECT COUNT(*) AS n FROM device_tokens").get() as { n: number }).n, 0);
+  // A wrong verifier is refused for omni-native exactly as for prism-native.
+  const p2 = pkce();
+  const code2 = (await approveAs(OWNER, p2.challenge, { client_id: "omni-native", redirect_uri: OMNI_REDIRECT })).searchParams.get("code")!;
+  const wrong = await exchange({ code: code2, code_verifier: randomBytes(32).toString("base64url"), client_id: "omni-native", redirect_uri: OMNI_REDIRECT });
+  assert.equal(wrong.status, 400);
+});
+
+test("an explicit DEVICE_REDIRECT_URIS without omni://auth/callback refuses it (the allowlist is the authority)", async () => {
+  process.env.OMNI_ENABLED = "true";
+  const saved = config.deviceRedirectUris;
+  Object.assign(config, { deviceRedirectUris: ["prism://auth/callback"] });
+  try {
+    const { challenge } = pkce();
+    assert.equal(isAllowedRedirectUri(OMNI_REDIRECT), false);
+    const r = await app.request(authorizeUrl({ code_challenge: challenge, client_id: "omni-native", redirect_uri: OMNI_REDIRECT }), { headers: tunnel() });
+    assert.equal(r.status, 400);
+    assert.equal(r.headers.get("location"), null);
+    assert.equal(parked(), 0);
+  } finally {
+    Object.assign(config, { deviceRedirectUris: saved });
   }
 });

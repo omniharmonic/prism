@@ -408,6 +408,7 @@ omniApi.get("/threads/:id/stream", (c) => {
     let chain: Promise<unknown> = Promise.resolve();
     let lastSeq = after;
     let finished = false;
+    let replaying = true;
     let resolveDone: () => void = () => {};
     const done = new Promise<void>((r) => (resolveDone = r));
     const finish = () => {
@@ -421,14 +422,16 @@ omniApi.get("/threads/:id/stream", (c) => {
         lastSeq = m.seq;
         const data = JSON.stringify({ seq: m.seq, turnId: m.turnId, ...m.event });
         chain = chain.then(() => stream.writeSSE({ id: String(m.seq), event: m.event.t, data })).catch(() => {});
-        // The turn's last event is the `status` that follows its `result`.
-        if (m.event.t === "status" && m.turnId && getTurn(m.turnId)?.status !== "running" && !activeTurn(id)) finish();
+        // The turn's last event is the `status` that follows its `result`. Only a LIVE
+        // event may end the stream: while replaying, an earlier turn's `status` is history,
+        // and closing on it would cut the replay short (the end of the replay is judged
+        // once, below).
+        if (!replaying && m.event.t === "status" && m.turnId && getTurn(m.turnId)?.status !== "running" && !activeTurn(id)) finish();
       } else {
         chain = chain.then(() => stream.writeSSE({ event: m.event.t, data: JSON.stringify({ turnId: m.turnId, ...m.event }) })).catch(() => {});
       }
     };
     const buffered: ThreadMessage[] = [];
-    let replaying = true;
     const unsub = subscribeThread(id, (m) => (replaying ? buffered.push(m) : write(m)));
     for (const e of eventsAfter(id, after)) write({ seq: e.seq, turnId: e.turnId, event: e.payload as unknown as ThreadMessage["event"] });
     replaying = false;

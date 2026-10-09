@@ -23,6 +23,7 @@
  */
 import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { config } from "../config";
+import { omniConfig } from "../omni/config";
 import {
   insertDeviceToken,
   getDeviceTokenByHash,
@@ -39,6 +40,24 @@ import { removeApnsTokenForDevice } from "../apns";
 
 export const DEVICE_TOKEN_PREFIX = "pd_";
 export const NATIVE_CLIENT_ID = "prism-native";
+/**
+ * The Omni app's client id (docs/native-auth.md "Clients"; docs/omni-module.md). The
+ * SAME flow and the same `pd_` token as `prism-native` — a second id only so the device
+ * list says which app a device is. Accepted only while the Omni module is on
+ * (`OMNI_ENABLED=true`): with it off the server knows one client, exactly as before.
+ */
+export const OMNI_CLIENT_ID = "omni-native";
+/** The custom-scheme redirects, each owned by ONE client (see `redirectAllowedForClient`). */
+export const PRISM_REDIRECT_URI = "prism://auth/callback";
+export const OMNI_REDIRECT_URI = "omni://auth/callback";
+
+/** Is `id` a client this server signs in? Strict equality against the fixed ids. */
+export function isKnownClientId(id: unknown): id is string {
+  return id === NATIVE_CLIENT_ID || (id === OMNI_CLIENT_ID && omniConfig.enabled());
+}
+
+/** The label a device gets when the client sent none. */
+export const defaultLabelFor = (clientId: string): string => (clientId === OMNI_CLIENT_ID ? "Omni app" : "Prism app");
 /** Authorization codes live at most this long (RFC 6749 recommends ≤ 10 min). */
 export const AUTH_CODE_TTL_MS = 5 * 60_000;
 /** A pending authorize request (the login bounce) lives this long. */
@@ -67,7 +86,7 @@ export function safeEqual(a: string, b: string): boolean {
 
 /**
  * Is `uri` an allowed native redirect? Either an EXACT match against
- * DEVICE_REDIRECT_URIS (default `prism://auth/callback`), or — for desktop
+ * DEVICE_REDIRECT_URIS (default `prism://auth/callback,omni://auth/callback`), or — for desktop
  * clients, RFC 8252 §7.3 — an http loopback IP literal (127.0.0.1 / [::1]) on an
  * explicit unprivileged port (≥ 1024) with path exactly `/callback` or `/`, and
  * no query, userinfo or fragment. `localhost` is deliberately NOT accepted
@@ -96,10 +115,25 @@ export function isAllowedRedirectUri(uri: unknown): uri is string {
   return uri === `http://${u.host}${u.pathname}`;
 }
 
+/**
+ * A second, NARROWING check applied after `isAllowedRedirectUri`: an app's custom scheme
+ * belongs to that app. A `prism://…` redirect is honoured only for `prism-native` and an
+ * `omni://…` one only for `omni-native`, so neither app can be handed a code that was
+ * requested in the other's name. Loopback and any other allowlisted URI (a universal
+ * link) are not tied to a client. It never allows a URI the allowlist refused.
+ */
+export function redirectAllowedForClient(clientId: string, uri: string): boolean {
+  if (!isKnownClientId(clientId) || !isAllowedRedirectUri(uri)) return false;
+  const scheme = uri.slice(0, uri.indexOf(":") + 1).toLowerCase();
+  if (scheme === "omni:") return clientId === OMNI_CLIENT_ID;
+  if (scheme === "prism:") return clientId === NATIVE_CLIENT_ID;
+  return true;
+}
+
 /** Clamp a client-supplied device label to something safe to store + display. */
-export function sanitizeLabel(label: unknown): string {
+export function sanitizeLabel(label: unknown, fallback = "Prism app"): string {
   const s = typeof label === "string" ? label.replace(/[\u0000-\u001f\u007f]/g, " ").trim() : "";
-  return (s || "Prism app").slice(0, 80);
+  return (s || fallback).slice(0, 80);
 }
 
 /** Append OAuth response params to a redirect URI, preserving any existing query. */

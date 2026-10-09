@@ -143,10 +143,12 @@ export const config = {
 
   // ── Native sign-in / device tokens (WP2.1, auth/device.ts) ──
   // Exact-match allowlist of redirect URIs a native client may use with
-  // /auth/device/authorize (comma-separated). Loopback redirects
+  // /auth/device/authorize (comma-separated). The default names both apps' custom
+  // schemes; `omni://auth/callback` is only ever honoured for the `omni-native` client,
+  // which exists only while OMNI_ENABLED=true (auth/device.ts). Loopback redirects
   // (http://127.0.0.1:<any port>/… or http://[::1]:<port>/…, RFC 8252 §7.3) are
   // additionally accepted unless DEVICE_ALLOW_LOOPBACK=false.
-  deviceRedirectUris: (process.env.DEVICE_REDIRECT_URIS ?? "prism://auth/callback")
+  deviceRedirectUris: (process.env.DEVICE_REDIRECT_URIS ?? "prism://auth/callback,omni://auth/callback")
     .split(",")
     .map((s) => s.trim())
     .filter(Boolean),
