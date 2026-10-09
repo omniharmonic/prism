@@ -22,7 +22,12 @@ struct TodayView: View {
                 // The first read can take a few seconds (the server reads the calendar and tasks).
                 HStack(spacing: 8) {
                     ProgressView().controlSize(.small)
-                    Text("Loading Today…").foregroundStyle(.secondary)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Loading Today…").foregroundStyle(.secondary)
+                        Text("The server is reading your calendar and tasks. The first read of the day can take a little while.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                 }
                 .accessibilityElement(children: .combine)
             }
@@ -34,11 +39,12 @@ struct TodayView: View {
                         .accessibilityHint("Reads Today again")
                 }
             }
+            if model.hasContent {
             Section("Next") {
                 if let problem = model.sectionProblems["agenda"] {
                     Text(problem).foregroundStyle(.secondary)
                 } else if model.agenda.isEmpty {
-                    Text(model.phase == .loaded ? "Nothing on the calendar today." : " ").foregroundStyle(.secondary)
+                    Text("Nothing on the calendar today.").foregroundStyle(.secondary)
                 }
                 ForEach(model.agenda, id: \.noteId) { item in
                     HStack(alignment: .firstTextBaseline, spacing: 10) {
@@ -59,7 +65,7 @@ struct TodayView: View {
             Section("Needs you") {
                 let ids = model.approvalIDs.filter { session.approvals.card(for: $0)?.approval.status == .pending }
                 if ids.isEmpty {
-                    Text(model.phase == .loaded ? "Nothing needs a decision." : " ").foregroundStyle(.secondary)
+                    Text("Nothing needs a decision.").foregroundStyle(.secondary)
                 }
                 ForEach(ids, id: \.self) { id in
                     if let card = session.approvals.card(for: id) {
@@ -75,7 +81,7 @@ struct TodayView: View {
             }
             Section("Omni is working on") {
                 if model.inFlight.isEmpty {
-                    Text(model.phase == .loaded ? "Nothing in flight." : " ").foregroundStyle(.secondary)
+                    Text("Nothing in flight.").foregroundStyle(.secondary)
                 }
                 ForEach(model.inFlight, id: \.id) { item in
                     Button {
@@ -98,20 +104,21 @@ struct TodayView: View {
                 if let problem = model.sectionProblems["tasks"] {
                     Text(problem).foregroundStyle(.secondary)
                 } else if model.tasks.isEmpty {
-                    Text(model.phase == .loaded ? "No open tasks." : " ").foregroundStyle(.secondary)
+                    Text("No open tasks.").foregroundStyle(.secondary)
                 }
                 ForEach(model.tasks, id: \.noteId) { task in
                     HStack(alignment: .firstTextBaseline) {
                         Image(systemName: "circle").foregroundStyle(.secondary).accessibilityHidden(true)
                         Text(task.title)
                         Spacer()
-                        if let due = task.due, !due.isEmpty {
-                            Text(due.prefix(10)).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                        if let due = TodayModel.dueText(task.due) ?? task.due.flatMap({ $0.isEmpty ? nil : String($0.prefix(10)) }) {
+                            Text(due).font(.caption).foregroundStyle(.secondary)
                         }
                     }
                     .accessibilityElement(children: .combine)
-                    .accessibilityLabel("Task: \(task.title)\(task.due.map { ", due \($0.prefix(10))" } ?? "")")
+                    .accessibilityLabel("Task: \(task.title)\((TodayModel.dueText(task.due) ?? task.due).map { ", due \($0)" } ?? "")")
                 }
+            }
             }
         }
         .navigationTitle(Date.now.formatted(.dateTime.weekday(.wide).month().day()))

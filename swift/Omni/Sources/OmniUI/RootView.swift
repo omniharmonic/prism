@@ -44,6 +44,9 @@ public struct RootView: View {
                 }
             }
         }
+        #if DEBUG
+        .modifier(UITestCompactWidth())
+        #endif
         .task { await app.start() }
         #if os(macOS)
         // Sign-in ends in the browser: bring Omni back to the front when it has worked, so
@@ -74,6 +77,9 @@ struct StatusScreen<Actions: View>: View {
             }
             actions
         }
+        #if os(iOS)
+        .controlSize(.large)
+        #endif
         .frame(maxWidth: 420)
         .padding(32)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -103,6 +109,7 @@ struct ServerSetupView: View {
                     .font(.callout)
                     .foregroundStyle(.red)
                     .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityIdentifier("server.error")
             }
             Button("Continue") { Task { await app.submitServer() } }
                 .keyboardShortcut(.defaultAction)

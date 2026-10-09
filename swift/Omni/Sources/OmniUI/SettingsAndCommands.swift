@@ -37,7 +37,7 @@ public struct SettingsView: View {
             }
         }
         .formStyle(.grouped)
-        .confirmationDialog("Sign out of Omni on this device?", isPresented: $confirmingSignOut) {
+        .confirmationDialog("Sign out of Omni on this device?", isPresented: $confirmingSignOut, titleVisibility: .visible) {
             Button("Sign Out", role: .destructive) { Task { await app.signOut() } }
             Button("Cancel", role: .cancel) {}
         } message: {
@@ -77,6 +77,8 @@ struct DiagnosticsSection: View {
                         }
                         ForEach(log.entries) { entry in
                             Text(entry.line)
+                                .lineLimit(2)
+                                .minimumScaleFactor(0.75)
                                 .foregroundStyle(entry.isFailure ? AnyShapeStyle(.red) : AnyShapeStyle(.primary))
                                 .frame(maxWidth: .infinity, alignment: .leading)
                                 .id(entry.id)

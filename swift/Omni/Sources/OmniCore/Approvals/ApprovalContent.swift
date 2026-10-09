@@ -42,7 +42,8 @@ public struct ApprovalContent: Equatable, Sendable {
         for (key, label) in spec.fields {
             seen.insert(key)
             guard let value = object[key], !value.isNull else { continue }
-            fields.append(Field(key: key, label: label, value: Self.text(value)))
+            let text = Self.text(value)
+            fields.append(Field(key: key, label: label, value: Self.timeKeys.contains(key) ? Self.momentText(text) ?? text : text))
         }
         var body: String?
         if let key = spec.body {
@@ -91,6 +92,20 @@ public struct ApprovalContent: Equatable, Sendable {
     public static func shownKeys(for kind: ApprovalKind) -> [String] {
         let spec = spec(for: kind)
         return spec.fields.map(\.key) + (spec.body.map { [$0] } ?? [])
+    }
+
+    /// The payload keys that hold a moment (RFC 3339) and are shown as a date and time.
+    static let timeKeys: Set<String> = ["start", "end"]
+
+    /// "Wed, Oct 14, 2026 at 10:00 AM MDT" for a stored RFC 3339 moment: the same instant,
+    /// in this device's zone, with the zone named. nil when the text is not a moment — it is
+    /// then shown exactly as stored.
+    public static func momentText(_ stored: String, timeZone: TimeZone = .current, locale: Locale = .current) -> String? {
+        guard let date = PrismJSON.parseDate(stored) else { return nil }
+        var style = Date.FormatStyle.dateTime.weekday(.abbreviated).month(.abbreviated).day().year().hour().minute().timeZone()
+        style.timeZone = timeZone
+        style.locale = locale
+        return date.formatted(style)
     }
 
     /// A value as text: strings as they are, lists of strings joined, anything else as its

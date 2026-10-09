@@ -17,6 +17,10 @@ public enum OmniAppFactory {
     ///   application identifier cannot use the data-protection keychain), and lets a send
     ///   through on a device with no passcode to check (a simulator).
     public static func liveModel(developmentBuild: Bool) -> AppModel {
+        #if DEBUG
+        // The XCUITest runner's launch (UITestSupport.swift). Not in a Release build.
+        if let test = UITestLaunch.configuration { return UITestLaunch.model(test) }
+        #endif
         let tokens = OmniLive.tokenStore(developmentBuild: developmentBuild)
         #if os(macOS)
         let flow: any RedirectFlow = LoopbackRedirectFlow.systemBrowser()

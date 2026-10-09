@@ -68,7 +68,7 @@ struct ApprovalCardView: View {
                 Task { await center.revise(card.id, feedback: text) }
             }
         }
-        .confirmationDialog("Cancel this draft?", isPresented: $confirmingCancel) {
+        .confirmationDialog("Cancel this draft?", isPresented: $confirmingCancel, titleVisibility: .visible) {
             Button("Cancel Draft", role: .destructive) { Task { await center.cancel(card.id) } }
             Button("Keep", role: .cancel) {}
         } message: {

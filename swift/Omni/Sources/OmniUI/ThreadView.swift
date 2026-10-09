@@ -24,7 +24,13 @@ struct ThreadView: View {
                 )
             }
         }
-        .navigationTitle(model.title)
+        .navigationTitle(model.thread == nil ? session.threads.thread(model.threadID).map(ThreadGrouping.displayTitle) ?? model.title : model.title)
+        #if os(iOS)
+        // A thread's own title, whole, in the bar; its state under it. (A label in the bar
+        // was cut down to a sliver on an iPhone.)
+        .navigationBarTitleDisplayMode(.inline)
+        .navigationSubtitle(model.thread.map { $0.gone ? "No longer available" : ThreadGrouping.title(for: $0.state) } ?? "")
+        #else
         .toolbar {
             if let thread = model.thread {
                 ToolbarItem {
@@ -36,6 +42,7 @@ struct ThreadView: View {
                 }
             }
         }
+        #endif
         .task(id: model.threadID) { await session.openThread(model) }
         .onDisappear { model.close() }
     }
@@ -85,7 +92,16 @@ struct ThreadView: View {
                     .frame(maxWidth: 820, alignment: .leading)
                     .frame(maxWidth: .infinity)
                 }
-                .defaultScrollAnchor(.bottom)
+                // A short conversation starts at the top; a long one opens at its end and
+                // stays there as the answer grows.
+                .defaultScrollAnchor(.top, for: .alignment)
+                .defaultScrollAnchor(.bottom, for: .initialOffset)
+                .defaultScrollAnchor(.bottom, for: .sizeChanges)
+                .accessibilityIdentifier("transcript")
+                #if os(iOS)
+                // Dragging the conversation puts the keyboard away (there is no other way to on an iPhone).
+                .scrollDismissesKeyboard(.immediately)
+                #endif
                 .refreshable { await model.reload() }
                 .onChange(of: model.timeline) { proxy.scrollTo("bottom", anchor: .bottom) }
             }
@@ -150,6 +166,10 @@ struct Composer<Accessory: View>: View {
     var isStopping = false
     let onSend: () -> Void
     var onStop: () -> Void = {}
+    /// Put the cursor in the box when it appears. Always on the Mac (a thread opens ready to
+    /// type in). On iPhone and iPad only where typing is the whole point — a new thread —
+    /// because there the cursor brings the keyboard up over half the conversation.
+    var focusOnAppear = Composer.focusesByDefault
     @ViewBuilder var accessory: Accessory
     @FocusState private var focused: Bool
 
@@ -161,8 +181,10 @@ struct Composer<Accessory: View>: View {
         isStopping: Bool = false,
         onSend: @escaping () -> Void,
         onStop: @escaping () -> Void = {},
+        focusOnAppear: Bool = Composer.focusesByDefault,
         @ViewBuilder accessory: () -> Accessory = { EmptyView() }
     ) {
+        self.focusOnAppear = focusOnAppear
         _text = text
         self.placeholder = placeholder
         self.canSend = canSend
@@ -190,6 +212,7 @@ struct Composer<Accessory: View>: View {
                         .scrollContentBackground(.hidden)
                         .focused($focused)
                         .accessibilityLabel(placeholder)
+                        .accessibilityIdentifier("composer")
                         #if os(macOS)
                         .onKeyPress(.return, phases: .down) { press in
                             // Shift- or Option-Return: let the editor insert the new line.
@@ -211,6 +234,7 @@ struct Composer<Accessory: View>: View {
                 .disabled(isStopping)
                 .help("Stop (⌘.)")
                 .accessibilityLabel("Stop")
+                .accessibilityIdentifier("composer.stop")
                 .accessibilityHint("Stops what Omni is doing in this thread")
             } else {
                 Button(action: onSend) {
@@ -221,11 +245,20 @@ struct Composer<Accessory: View>: View {
                 .disabled(!canSend)
                 .help("Send (Return)")
                 .accessibilityLabel("Send")
+                .accessibilityIdentifier("composer.send")
             }
         }
         .padding(.horizontal)
         .padding(.vertical, 10)
-        .onAppear { focused = true }
+        .onAppear { if focusOnAppear { focused = true } }
+    }
+
+    static var focusesByDefault: Bool {
+        #if os(macOS)
+        true
+        #else
+        false
+        #endif
     }
 
     private static var verticalInset: CGFloat {
@@ -264,11 +297,15 @@ struct NewThreadView: View {
                     Task {
                         if await session.startThread(prompt: prompt) { text = "" }
                     }
-                }
+                },
+                focusOnAppear: true
             )
             .disabled(session.threads.isCreating)
         }
         .navigationTitle("New Thread")
+        #if os(iOS)
+        .navigationBarTitleDisplayMode(.inline)
+        #endif
     }
 
     private var canSend: Bool {

@@ -2,18 +2,25 @@ import OmniClient
 import OmniCore
 import SwiftUI
 
-/// The signed-in window. Mac and iPad: a sidebar (Today, Needs you, threads by state,
-/// Recurring) and the selected content. iPhone: tabs Today · Needs you · Threads
-/// (product-spec.md § 4).
+/// The signed-in window. Mac, and an iPad at full or wide width: a sidebar (Today, Needs
+/// you, threads by state, Recurring) beside the selected content. iPhone, and an iPad in a
+/// narrow Split View or Slide Over: tabs Today · Needs you · Threads (product-spec.md § 4).
 struct MainView: View {
     let app: AppModel
     @Bindable var session: SessionModel
+    #if os(iOS)
+    @Environment(\.horizontalSizeClass) private var widthClass
+    #endif
 
     var body: some View {
         #if os(macOS)
         SplitMainView(app: app, session: session)
         #else
-        TabMainView(app: app, session: session)
+        if widthClass == .regular {
+            SplitMainView(app: app, session: session)
+        } else {
+            TabMainView(app: app, session: session)
+        }
         #endif
     }
 }
@@ -99,7 +106,10 @@ enum StateStyle {
 /// The thread sections, the empty state and the "agent unreachable" note, as list content.
 struct ThreadSections: View {
     let threads: ThreadListModel
-    /// Take a thread out of the list (the row's menu).
+    /// true in a sidebar whose list holds the selection; false where a row is a link that
+    /// pushes the thread (the iPhone's list).
+    var selectable = true
+    /// Take a thread out of the list (the row's menu, or a swipe).
     var remove: (String) -> Void = { _ in }
 
     var body: some View {
@@ -119,7 +129,13 @@ struct ThreadSections: View {
                 .foregroundStyle(.secondary)
         }
         if let failure = threads.phase.failure {
-            Label(failure, systemImage: "wifi.exclamationmark").font(.caption).foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 6) {
+                Label(failure, systemImage: "wifi.exclamationmark").font(.callout).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Button("Try Again") { Task { await threads.refresh() } }
+                    .accessibilityHint("Reads the thread list again")
+                    .accessibilityIdentifier("threads.retry")
+            }
         }
         if threads.isEmpty {
             Section("Threads") {
@@ -132,45 +148,71 @@ struct ThreadSections: View {
             Section(section.title) {
                 ForEach(section.threads) { thread in
                     Group {
-                        #if os(macOS)
-                        ThreadRow(thread: thread).tag(Destination.thread(thread.id))
-                        #else
-                        NavigationLink(value: Destination.thread(thread.id)) { ThreadRow(thread: thread) }
-                        #endif
+                        if selectable {
+                            ThreadRow(thread: thread).tag(Destination.thread(thread.id))
+                        } else {
+                            NavigationLink(value: Destination.thread(thread.id)) { ThreadRow(thread: thread) }
+                        }
                     }
+                    .accessibilityIdentifier("thread.\(thread.id)")
                     .contextMenu {
                         Button(thread.gone ? "Remove from List" : "Archive Thread") { remove(thread.id) }
                     }
+                    #if os(iOS)
+                    .swipeActions(edge: .trailing) {
+                        Button(thread.gone ? "Remove" : "Archive") { remove(thread.id) }
+                            .tint(.gray)
+                    }
+                    #endif
                 }
             }
         }
     }
 }
 
-// MARK: macOS
+// MARK: Sidebar + content (Mac, iPad)
 
-#if os(macOS)
 struct SplitMainView: View {
     let app: AppModel
     @Bindable var session: SessionModel
     @State private var searchPresented = false
+    #if os(iOS)
+    @State private var showingSettings = false
+    #endif
 
     var body: some View {
         @Bindable var threads = session.threads
         NavigationSplitView {
             List(selection: $session.destination) {
                 Label("Today", systemImage: "sun.max").tag(Destination.today)
+                    .accessibilityIdentifier("nav.today")
                 Label("Needs you", systemImage: "hand.raised")
                     .badge(session.approvals.pendingCount)
                     .tag(Destination.needsYou)
+                    .accessibilityIdentifier("nav.needsYou")
                 ThreadSections(threads: session.threads) { id in Task { await session.removeThread(id) } }
                 Section("Recurring") {
                     Label("Recurring jobs", systemImage: "arrow.triangle.2.circlepath").tag(Destination.recurring)
+                        .accessibilityIdentifier("nav.recurring")
                 }
             }
             .navigationSplitViewColumnWidth(min: 220, ideal: 260)
+            #if os(iOS)
+            .navigationTitle("Omni")
+            .refreshable { await session.threads.refresh() }
+            #endif
             .searchable(text: $threads.searchText, isPresented: $searchPresented, placement: .sidebar, prompt: "Search threads")
             .toolbar {
+                #if os(iOS)
+                ToolbarItem(placement: .topBarLeading) {
+                    Button {
+                        showingSettings = true
+                    } label: {
+                        Label("Settings", systemImage: "gearshape")
+                    }
+                    .accessibilityIdentifier("settings.open")
+                }
+                #endif
                 ToolbarItem {
                     Button {
                         session.requestNewThread()
@@ -178,11 +220,24 @@ struct SplitMainView: View {
                         Label("New Thread", systemImage: "square.and.pencil")
                     }
                     .help("New thread (⌘N)")
+                    .accessibilityIdentifier("thread.new")
                 }
             }
         } detail: {
+            #if os(iOS)
+            NavigationStack {
+                DestinationView(session: session, destination: session.destination)
+                    .navigationBarTitleDisplayMode(.inline)
+            }
+            #else
             DestinationView(session: session, destination: session.destination)
+            #endif
         }
+        #if os(iOS)
+        // The list stays beside the content in portrait too: it is the work queue.
+        .navigationSplitViewStyle(.balanced)
+        .sheet(isPresented: $showingSettings) { SettingsSheet(app: app, isPresented: $showingSettings) }
+        #endif
         .environment(\.navigator, Navigator { session.destination = $0 })
         .onChange(of: session.searchRequests) { searchPresented = true }
         .task(id: threads.searchText) {
@@ -194,7 +249,6 @@ struct SplitMainView: View {
         .task { await session.approvals.refresh() }
     }
 }
-#endif
 
 // MARK: iPhone / iPad
 
@@ -223,6 +277,7 @@ struct TabMainView: View {
                                 } label: {
                                     Label("Settings", systemImage: "gearshape")
                                 }
+                                .accessibilityIdentifier("settings.open")
                             }
                         }
                 }
@@ -251,18 +306,30 @@ struct TabMainView: View {
                     }
             }
         }
-        .sheet(isPresented: $showingSettings) {
-            NavigationStack {
-                SettingsView(app: app)
-                    .navigationTitle("Settings")
-                    .toolbar {
-                        ToolbarItem(placement: .confirmationAction) {
-                            Button("Done") { showingSettings = false }
-                        }
-                    }
+        .sheet(isPresented: $showingSettings) { SettingsSheet(app: app, isPresented: $showingSettings) }
+        .onAppear {
+            // Coming from the sidebar layout (an iPad window made narrow): stay where it was.
+            switch session.destination {
+            case .needsYou: tab = .needsYou
+            case .thread, .recurring:
+                tab = .threads
+                if let destination = session.destination { path = [destination] }
+            case .newThread: tab = .threads
+            case .today, nil: break
+            }
+        }
+        .onChange(of: path) { _, path in
+            // What is pushed is where the session is (Stop, Refresh and "remove this thread"
+            // act on it); back at the list, nothing is open.
+            if let top = path.last {
+                if session.destination != top { session.destination = top }
+            } else if tab == .threads, session.destination != .newThread {
+                session.destination = nil
             }
         }
         .onChange(of: session.destination) { _, destination in
+            // The open thread was taken out of the list: go back to the list, not a dead screen.
+            if destination == .today, !path.isEmpty, tab == .threads { path = [] }
             // A thread was just created from the sheet: show it.
             if case .thread = destination, showingNewThread {
                 showingNewThread = false
@@ -289,6 +356,25 @@ struct TabMainView: View {
     }
 }
 
+/// Settings as a sheet (iPhone, iPad).
+struct SettingsSheet: View {
+    let app: AppModel
+    @Binding var isPresented: Bool
+
+    var body: some View {
+        NavigationStack {
+            SettingsView(app: app)
+                .navigationTitle("Settings")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("Done") { isPresented = false }
+                    }
+                }
+        }
+    }
+}
+
 struct ThreadListScreen: View {
     @Bindable var session: SessionModel
     @Binding var showingNewThread: Bool
@@ -296,11 +382,12 @@ struct ThreadListScreen: View {
     var body: some View {
         @Bindable var threads = session.threads
         List {
-            ThreadSections(threads: session.threads) { id in Task { await session.removeThread(id) } }
+            ThreadSections(threads: session.threads, selectable: false) { id in Task { await session.removeThread(id) } }
             Section("Recurring") {
                 NavigationLink(value: Destination.recurring) {
                     Label("Recurring jobs", systemImage: "arrow.triangle.2.circlepath")
                 }
+                .accessibilityIdentifier("nav.recurring")
             }
         }
         .navigationTitle("Threads")
@@ -313,6 +400,7 @@ struct ThreadListScreen: View {
                 } label: {
                     Label("New Thread", systemImage: "square.and.pencil")
                 }
+                .accessibilityIdentifier("thread.new")
             }
         }
         .task(id: threads.searchText) {

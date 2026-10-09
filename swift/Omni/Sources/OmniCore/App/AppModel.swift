@@ -27,7 +27,10 @@ public final class AppModel {
 
     public private(set) var phase: Phase = .needsServer
     /// The address field on the first-run screen.
-    public var serverText: String
+    public var serverText: String {
+        // The reason an address was refused is about the address that was there.
+        didSet { if serverText != oldValue { serverError = nil } }
+    }
     /// Why the address in ``serverText`` was refused.
     public private(set) var serverError: String?
     public private(set) var origin: ServerOrigin?

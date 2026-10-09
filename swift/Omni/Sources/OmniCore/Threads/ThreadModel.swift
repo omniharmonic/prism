@@ -171,7 +171,7 @@ public final class ThreadModel {
                 markUnavailable()
                 return
             }
-            guard let message = sink.describe(error) else {
+            guard let message = sink.describe(error, reading: true) else {
                 // Signed out or cancelled: never leave the spinner up.
                 if detail == nil, phase == .loading { phase = .idle }
                 return

@@ -18,8 +18,10 @@ struct TimelineRow: View {
         case .streamingText(_, let text, let isFinal):
             AgentText(text: text, streaming: !isFinal)
         case .pendingMessage(let text, let failed):
-            UserBubble(text: text, caption: failed ? "Not delivered" : "Sending…")
-                .opacity(failed ? 1 : 0.6)
+            // Once the server has taken it (the answer is on its way) it is simply the message.
+            let sending = !failed && model.sendState == .sending
+            UserBubble(text: text, caption: failed ? "Not delivered" : sending ? "Sending…" : nil)
+                .opacity(sending ? 0.6 : 1)
         case .tool(_, let name, let ok, let summary, let running):
             ToolChip(name: name, ok: ok, summary: summary, running: running)
         case .card(_, let card):
