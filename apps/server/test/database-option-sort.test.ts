@@ -88,13 +88,15 @@ test("engine: the option order is read ONCE per sort (a rank map), never scanned
   assert.equal(reads - before, before);
 });
 
-test("sortOptionOrders: the optionOrder hint, then the enum; hidden options after; only option properties", () => {
+test("sortOptionOrders: the optionOrder hint, then the enum; hidden options after; a status by its groups; only option properties", () => {
   const schemas: SchemaMap = {
     task: {
       description: null,
       fields: {
         status: { type: "string", enum: ["done", "in-progress", "todo", "wontfix"], optionOrder: ["todo", "in-progress"], hiddenOptions: ["wontfix"] },
         priority: { type: "string", enum: ["low", "high"] },
+        // A SELECT whose options are status words keeps its plain option order (groups are a status thing).
+        stage: { type: "string", enum: ["done", "todo", "doing"], kind: "select" },
         labels: { type: "array", enum: ["b", "a"] },
         due: { type: "string" },
         gone: { type: "string", enum: ["x", "y"], deleted: true },
@@ -103,15 +105,36 @@ test("sortOptionOrders: the optionOrder hint, then the enum; hidden options afte
     },
     other: { description: null, fields: { gone: { type: "string", enum: ["p", "q"] }, status: { type: "string", enum: ["never", "used"] } } },
   };
-  const out = sortOptionOrders(["task", "other"], schemas, ["status", "priority", "labels", "due", "gone", "free", "missing", "$title", "__proto__", "status"]);
+  const out = sortOptionOrders(["task", "other"], schemas, ["status", "priority", "stage", "labels", "due", "gone", "free", "missing", "$title", "__proto__", "status"]);
   assert.deepEqual(out, {
-    status: ["todo", "in-progress", "done", "wontfix"],
+    // To-do → In progress → Complete; "wontfix" (no longer offered) reads as in progress and sorts with that group, after its shown options.
+    status: ["todo", "in-progress", "wontfix", "done"],
     priority: ["low", "high"],
+    stage: ["done", "todo", "doing"],
     labels: ["b", "a"],
     gone: ["p", "q"], // deleted on `task`, live on `other`
     free: ["now", "later"],
   });
   assert.deepEqual(sortOptionOrders(["task"], new Map(Object.entries(schemas)), ["priority"]), { priority: ["low", "high"] });
+});
+
+test("sortOptionOrders: a status sorts To-do → In progress → Complete, option order inside a group — by the statusGroups hint, else the word", () => {
+  const status = (extra: Record<string, unknown>): SchemaMap => ({ task: { description: null, fields: { status: { type: "string", enum: ["shipped", "review", "backlog", "building", "idea", "cancelled"], ...extra } } } });
+  // No hints: the words decide (backlog = to-do; shipped / cancelled = complete; the rest in progress), enum order inside each.
+  assert.deepEqual(sortOptionOrders(["task"], status({}), ["status"]).status, ["backlog", "review", "building", "idea", "shipped", "cancelled"]);
+  // The owner's groups win over the words, and the owner's option order holds INSIDE each group.
+  const hinted = status({ statusGroups: { idea: "todo", review: "complete", cancelled: "todo" }, optionOrder: ["cancelled", "building", "shipped", "idea"] });
+  assert.deepEqual(sortOptionOrders(["task"], hinted, ["status"]).status, ["cancelled", "idea", "backlog", "building", "shipped", "review"]);
+  // The same options as a plain select: option order only.
+  assert.deepEqual(sortOptionOrders(["task"], status({ kind: "select", optionOrder: ["cancelled", "building", "shipped", "idea"] }), ["status"]).status, ["cancelled", "building", "shipped", "idea", "review", "backlog"]);
+  // A bad group name in a hint is ignored (the word decides); every option is still in the order exactly once.
+  const odd = sortOptionOrders(["task"], status({ statusGroups: { idea: "nonsense" } as never }), ["status"]).status!;
+  assert.deepEqual([...odd].sort(), ["backlog", "building", "cancelled", "idea", "review", "shipped"]);
+  // End to end through the engine: grouped ascending, reversed descending, a non-option and an empty value last both ways.
+  const rows = [n("a", { status: "shipped" }), n("b", { status: "idea" }), n("c", { status: "backlog" }), n("d", { status: "mystery" }), n("e", {}), n("f", { status: "review" }), n("g", { status: "backlog" })];
+  const orders = sortOptionOrders(["task"], status({}), ["status"]);
+  assert.deepEqual(ids(sortRows(rows, [{ key: "status", dir: "asc" }], 0, orders)), ["c", "g", "f", "b", "a", "d", "e"]);
+  assert.deepEqual(ids(sortRows(rows, [{ key: "status", dir: "desc" }], 0, orders)), ["a", "b", "f", "c", "g", "d", "e"]);
 });
 
 // ── POST /api/query ──────────────────────────────────────────────────────────
@@ -125,8 +148,8 @@ beforeEach(() => {
   resetTreeForTests();
   resetDatabaseCachesForTests();
   fv = installFakeVault();
-  // The enum is deliberately NOT alphabetical: todo → in-progress → done.
-  vaultTags = [{ name: "task", description: "Work", fields: { status: { type: "string", enum: ["todo", "in-progress", "done"] }, priority: { type: "string", enum: ["urgent", "normal", "low"] }, note: { type: "string" } } }];
+  // The status enum is deliberately neither alphabetical nor in workflow order: done, todo, in-progress.
+  vaultTags = [{ name: "task", description: "Work", fields: { status: { type: "string", enum: ["done", "todo", "in-progress"] }, priority: { type: "string", enum: ["urgent", "normal", "low"] }, note: { type: "string" } } }];
   innerFetch = globalThis.fetch;
   globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
     const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
@@ -160,17 +183,24 @@ const sortedIds = async (sort: Array<{ key: string; dir: "asc" | "desc" }>, cook
   return ((await r.json()) as { rows: Array<{ id: string }> }).rows.map((x) => x.id);
 };
 
-test("query: a status column sorts by the enum's order (todo → in-progress → done), unknown then missing last", async () => {
+test("query: a status column sorts by its groups (To-do → In progress → Complete), a select by its option order; unknown then missing last", async () => {
   assert.deepEqual(await sortedIds([{ key: "status", dir: "asc" }]), ["t2", "t3", "t1", "t4", "t5"]);
   assert.deepEqual(await sortedIds([{ key: "status", dir: "desc" }]), ["t1", "t3", "t2", "t4", "t5"]);
   assert.deepEqual(await sortedIds([{ key: "priority", dir: "asc" }]), ["t3", "t2", "t1", "t4", "t5"], "a select too: urgent → normal → low");
   assert.deepEqual(await sortedIds([{ key: "note", dir: "asc" }]), ["t3", "t1", "t2", "t4", "t5"], "plain text still sorts A→Z");
 });
 
-test("query: an owner's option reorder (the optionOrder hint) changes the sort at once", async () => {
-  const r = await post("/schemas/task", { ui: { status: { optionOrder: ["done", "todo", "in-progress"] } } }, login(OWNER), "PUT");
+test("query: an owner's status groups and option order (hints) change the sort at once; a select follows its reorder", async () => {
+  // "done" is moved to the To-do group, and the options are listed in-progress, done, todo:
+  // To-do (done, todo — their option order) comes before In progress whatever the list says.
+  const r = await post("/schemas/task", { ui: { status: { statusGroups: { done: "todo" }, optionOrder: ["in-progress", "done", "todo"] }, priority: { optionOrder: ["low", "urgent", "normal"] } } }, login(OWNER), "PUT");
   assert.equal(r.status, 200);
   assert.deepEqual(await sortedIds([{ key: "status", dir: "asc" }]), ["t1", "t2", "t3", "t4", "t5"]);
+  assert.deepEqual(await sortedIds([{ key: "status", dir: "desc" }]), ["t3", "t2", "t1", "t4", "t5"]);
+  assert.deepEqual(await sortedIds([{ key: "priority", dir: "asc" }]), ["t1", "t3", "t2", "t4", "t5"]);
+  // Shown as a plain select instead, the same property follows its option order alone.
+  assert.equal((await post("/schemas/task", { ui: { status: { kind: "select" } } }, login(OWNER), "PUT")).status, 200);
+  assert.deepEqual(await sortedIds([{ key: "status", dir: "asc" }]), ["t3", "t1", "t2", "t4", "t5"]);
 });
 
 test("query: a member's view sorts by the same option order", async () => {

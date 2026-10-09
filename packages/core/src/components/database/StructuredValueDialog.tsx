@@ -2,7 +2,11 @@
  * The editor for a STRUCTURED property value — a list of items such as
  * `members: [{name, role}]`, or one object. Rows are the items, columns the fields
  * they have; a cell is text, a number or a yes/no; rows can be added, removed and
- * reordered. A field that holds a page link offers the page picker.
+ * reordered. A field that holds a page link offers the page picker. FIELDS can be
+ * added, renamed and removed across the items ("Fields" above the items), and a NESTED
+ * value — an object or a list inside an item — is edited by drilling in: the same editor
+ * opens on it (to any depth), and "Done" puts the result back in its place. Only the
+ * outermost editor writes: one whole-value compare-and-set save.
  *
  * It writes the WHOLE value back in its own shape through `useStructuredWriter`
  * (`POST /api/properties/:id/structured`, compare-and-set on the value loaded here).
@@ -21,15 +25,15 @@
  */
 import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import { ArrowDown, ArrowUp, Link2, Plus, Search, Trash2, X } from "lucide-react";
+import { ArrowDown, ArrowUp, Link2, Pencil, Plus, Search, Trash2, X } from "lucide-react";
 import type { RelationCandidate } from "../../lib/database/relations";
 import { PropertyConflictError, VaultRequestError } from "../../data/VaultClient";
 import { StructuredEditError, useLinkCandidates, useStructuredWriter } from "../../lib/database/hooks";
 import { asWikilink, linkLabel, type RelationTarget } from "../../lib/database/schema";
 import { isStructuredValue, valueText } from "../../lib/database/structured";
 import {
-  blankItem, buildValue, cellOf, clearItemKey, columnsOf, columnType, isBlankItem, isLinkColumn, itemsOf, parseCell,
-  sameStructured, sameTopShape, setItemKey, validateStructuredValue, MAX_EDIT_COLUMNS, MAX_EDIT_ROWS, type CellType,
+  blankItem, blankPlain, buildValue, cellOf, clearItemKey, columnsOf, columnType, fieldCount, fieldNameProblem, isBlankItem, isLinkColumn, itemsOf, parseCell,
+  removeField, renameItemKey, sameStructured, sameTopShape, setItemKey, validateStructuredValue, MAX_EDIT_COLUMNS, MAX_EDIT_ROWS, type CellType,
 } from "../../lib/database/structuredEdit";
 import "./database.css";
 
@@ -81,6 +85,30 @@ export function StructuredValueDialog({ noteId, propertyKey, label, value, perso
   onSaved?: (next: unknown) => void;
 }) {
   const write = useStructuredWriter();
+  return (
+    <Editor label={label} value={value} personTarget={personTarget} opener={opener} onClose={onClose}
+      save={async (next, expect) => { await write(noteId, propertyKey, next, expect); onSaved?.(next); }} />
+  );
+}
+
+/**
+ * One editor on one structured value. The ROOT one (`save`) writes the property; a NESTED
+ * one (`apply`) hands its result back to the editor that opened it and writes nothing.
+ */
+function Editor({ label, value, personTarget, opener, onClose, save: saveRoot, apply, within }: {
+  label: string;
+  value: unknown;
+  personTarget?: RelationTarget | null;
+  opener?: HTMLElement | null;
+  onClose: () => void;
+  /** Root: write `next` over `expect`. Throws `PropertyConflictError` when it changed elsewhere. */
+  save?: (next: unknown, expect: unknown) => Promise<void>;
+  /** Nested: put `next` back where this value came from (in the parent editor, not yet saved). */
+  apply?: (next: unknown) => void;
+  /** Nested: the name of what this value is part of ("Members"). */
+  within?: string;
+}) {
+  const nested = !!apply;
   const titleId = useId();
   const noteTextId = useId();
   const dialog = useRef<HTMLDialogElement>(null);
@@ -90,6 +118,10 @@ export function StructuredValueDialog({ noteId, propertyKey, label, value, perso
   /** The value this edit is based on (and compared against when saving). */
   const [base, setBase] = useState<unknown>(value);
   const [rows, setRows] = useState<Row[]>(() => rowsFrom(value));
+  /** Items past the rows shown: not listed, written back after the shown ones (a field rename / removal reaches them too). */
+  const [hiddenItems, setHiddenItems] = useState<unknown[]>(() => itemsOf(value).slice(MAX_EDIT_ROWS));
+  /** The fields, in order: those the items had when loaded, then any added here. Renamed in place, removed for good. */
+  const [fields, setFields] = useState<string[]>(() => columnsOf(itemsOf(value)));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [conflict, setConflict] = useState<{ theirs: unknown } | null>(null);
@@ -99,22 +131,23 @@ export function StructuredValueDialog({ noteId, propertyKey, label, value, perso
   const [focusRow, setFocusRow] = useState<number | null>(null);
   /** The cell whose page picker is open (one at a time), shown under the items. */
   const [picking, setPicking] = useState<{ rowId: number; key: string } | null>(null);
+  /** The field being added / renamed / removed (one panel at a time). */
+  const [fieldPanel, setFieldPanel] = useState<{ mode: "add" } | { mode: "edit"; key: string } | null>(null);
+  /** The nested value being edited in its own editor: a field of a row (`key`), or the row itself (`key: null`, a list inside the list). */
+  const [drill, setDrill] = useState<{ rowId: number; key: string | null; opener: HTMLElement | null } | null>(null);
   const [announce, setAnnounce] = useState("");
 
   const isList = Array.isArray(base);
-  /** Items past the rows shown: never touched, written back after the shown ones. */
-  const hiddenItems = useMemo(() => itemsOf(base).slice(MAX_EDIT_ROWS), [base]);
   const items = useMemo(() => rows.map((r) => r.item), [rows]);
-  // Columns come from the value as loaded plus anything added since, so a column does not vanish while its last value is being retyped.
-  const allColumns = useMemo(() => columnsOf([...itemsOf(base), ...items]), [base, items]);
-  const columns = allColumns.slice(0, MAX_EDIT_COLUMNS);
-  const hiddenColumns = allColumns.length - columns.length;
-  const types = useMemo(() => new Map(columns.map((k) => [k, columnType([...items, ...itemsOf(base)], k)] as const)), [columns, items, base]);
-  const linkColumns = useMemo(() => new Set(columns.filter((k) => isLinkColumn([...items, ...itemsOf(base)], k))), [columns, items, base]);
+  const columns = fields.slice(0, MAX_EDIT_COLUMNS);
+  const hiddenColumns = fields.length - columns.length;
+  const everyItem = useMemo(() => [...items, ...hiddenItems], [items, hiddenItems]);
+  const types = useMemo(() => new Map(columns.map((k) => [k, columnType(everyItem, k)] as const)), [columns.join("\u0000"), everyItem]); // eslint-disable-line react-hooks/exhaustive-deps
+  const linkColumns = useMemo(() => new Set(columns.filter((k) => isLinkColumn(everyItem, k))), [columns.join("\u0000"), everyItem]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  /** What Save would write: rows added here and left empty are not items. */
+  /** What Save would write: a row added here and left empty is not an item. */
   const draft = useMemo(
-    () => buildValue(base, [...rows.filter((r) => !(r.original === undefined && isBlankItem(r.item))).map((r) => r.item), ...hiddenItems]),
+    () => buildValue(base, [...rows.filter((r) => !(r.original === undefined && (isBlankItem(r.item) || r.item === ""))).map((r) => r.item), ...hiddenItems]),
     [base, rows, hiddenItems],
   );
   const dirty = !sameStructured(draft, base);
@@ -154,9 +187,23 @@ export function StructuredValueDialog({ noteId, propertyKey, label, value, perso
     setPicking(null);
     if (at) dialog.current?.querySelector<HTMLElement>(`[data-sv-pick="${at.rowId}:${CSS.escape(at.key)}"]`)?.focus();
   };
-  /** Escape: the innermost thing first — the page picker, the "Discard?" question, then the dialog. */
+  /** After the field form closes: the chip to focus (a field's name), or "" for "Add field". Set, then focused once the chips are drawn. */
+  const [focusField, setFocusField] = useState<string | null>(null);
+  useEffect(() => {
+    if (focusField === null) return;
+    const el = dialog.current;
+    ((focusField ? el?.querySelector<HTMLElement>(`[data-sv-field="${CSS.escape(focusField)}"]`) : null) ?? el?.querySelector<HTMLElement>("[data-sv-add-field]"))?.focus();
+    setFocusField(null);
+  }, [focusField]);
+  const closeFieldPanel = (focusKey?: string | null) => {
+    const at = fieldPanel;
+    setFieldPanel(null);
+    setFocusField(focusKey !== undefined ? focusKey ?? "" : at?.mode === "edit" ? at.key : "");
+  };
+  /** Escape: the innermost thing first — the page picker, the field panel, the "Discard?" question, then the editor. */
   const onEscape = () => {
     if (picking) { closePicker(); return; }
+    if (fieldPanel) { closeFieldPanel(); return; }
     if (confirmClose) { setConfirmClose(false); return; }
     requestClose();
   };
@@ -165,12 +212,12 @@ export function StructuredValueDialog({ noteId, propertyKey, label, value, perso
   // saving): focus goes back to where the person was, inside the dialog.
   const lastFocus = useRef<HTMLElement | null>(null);
   useEffect(() => {
-    if (confirmClose || busy) return;
+    if (confirmClose || busy || drill) return;
     const el = dialog.current;
     if (!el || (el.contains(document.activeElement) && document.activeElement !== el)) return;
     const back = lastFocus.current;
     (back && el.contains(back) && !(back as HTMLButtonElement).disabled ? back : el).focus({ preventScroll: true });
-  }, [confirmClose, busy]);
+  }, [confirmClose, busy, drill]);
 
   const update = (id: number, fn: (r: Row) => Row) => { setError(""); setRows((cur) => cur.map((r) => (r.id === id ? fn(r) : r))); };
   const flag = (cell: string, bad: boolean) => setInvalid((cur) => {
@@ -203,19 +250,62 @@ export function StructuredValueDialog({ noteId, propertyKey, label, value, perso
     const neighbour = rows[index + 1] ?? rows[index - 1];
     if (neighbour) setFocusRow(neighbour.id); else dialog.current?.querySelector<HTMLElement>("[data-sv-add]")?.focus();
   };
-  const model = useMemo(() => blankItem([...itemsOf(base), ...items]), [base, items]);
-  const canAdd = isList && Object.keys(model).length > 0 && rows.length < MAX_EDIT_ROWS;
+  /** What "Add item" adds: a row shaped like the last object row, else one with the known fields, else a plain entry like the list's own. */
+  const newItem = (): { item: unknown } | null => {
+    const like = [...itemsOf(base), ...items];
+    const shaped = blankItem(items.some(isObject) ? items : like);
+    if (Object.keys(shaped).length) return { item: shaped };
+    if (like.some(isObject) || (fields.length > 0 && !like.length)) return { item: {} };
+    const plain = blankPlain(like);
+    return plain === null ? null : { item: plain };
+  };
+  const canAdd = isList && rows.length < MAX_EDIT_ROWS && newItem() !== null;
   const add = () => {
-    if (!canAdd) return;
-    const row: Row = { id: nextId.current++, item: blankItem(items.length ? items : itemsOf(base)), original: undefined };
+    const made = canAdd ? newItem() : null;
+    if (!made) return;
+    const row: Row = { id: nextId.current++, item: made.item, original: undefined };
     setError("");
     setRows((cur) => [...cur, row]);
     setAnnounce(`Item ${rows.length + 1} added.`);
     setFocusRow(row.id);
   };
 
+  // ── fields ──
+  const addField = (name: string) => {
+    setError("");
+    setFields((cur) => [...cur, name]);
+    setAnnounce(`Field ${name} added. It is saved on the items you fill it in on.`);
+    closeFieldPanel(name);
+  };
+  const renameFieldTo = (from: string, to: string) => {
+    setError("");
+    setFields((cur) => cur.map((k) => (k === from ? to : k)));
+    // The row as loaded is renamed too, so "clearing a cell puts back what was there" still reads the right field.
+    setRows((cur) => cur.map((r) => ({ ...r, item: renameItemKey(r.item, from, to), original: r.original === undefined ? undefined : renameItemKey(r.original, from, to) })));
+    setHiddenItems((cur) => cur.map((it) => renameItemKey(it, from, to)));
+    setInvalid((cur) => new Set([...cur].filter((c) => !c.endsWith(`:${from}`))));
+    setPicking(null);
+    setAnnounce(`Field ${from} is now ${to}.`);
+    closeFieldPanel(to);
+  };
+  const removeFieldNamed = (key: string) => {
+    setError("");
+    setFields((cur) => cur.filter((k) => k !== key));
+    setRows((cur) => { const next = removeField(cur.map((r) => r.item), key); return cur.map((r, i) => ({ ...r, item: next[i] })); });
+    setHiddenItems((cur) => removeField(cur, key));
+    setInvalid((cur) => new Set([...cur].filter((c) => !c.endsWith(`:${key}`))));
+    setPicking(null);
+    setAnnounce(`Field ${key} removed.`);
+    closeFieldPanel(null);
+  };
+
   async function save(over?: unknown) {
     if (busy || problem) return;
+    if (apply) {
+      if (dirty) apply(draft);
+      onClose();
+      return;
+    }
     const expect = over === undefined ? base : over;
     const next = over === undefined ? draft : buildValue(over, itemsOf(draft));
     if (sameStructured(next, expect)) { onClose(); return; }
@@ -223,11 +313,10 @@ export function StructuredValueDialog({ noteId, propertyKey, label, value, perso
     setError("");
     setConflict(null);
     try {
-      await write(noteId, propertyKey, next, expect);
-      onSaved?.(next);
+      await saveRoot!(next, expect);
       onClose();
     } catch (e) {
-      if (e instanceof PropertyConflictError) setConflict({ theirs: Object.prototype.hasOwnProperty.call(e.current, propertyKey) ? e.current[propertyKey] : null });
+      if (e instanceof PropertyConflictError) { const cur = e.current; const k = Object.keys(cur)[0]; setConflict({ theirs: k !== undefined ? cur[k] : null }); }
       else setError(failureText(e));
     } finally {
       setBusy(false);
@@ -237,8 +326,12 @@ export function StructuredValueDialog({ noteId, propertyKey, label, value, perso
     if (!conflict) return;
     setBase(conflict.theirs);
     setRows(rowsFrom(conflict.theirs));
+    setHiddenItems(itemsOf(conflict.theirs).slice(MAX_EDIT_ROWS));
+    setFields(columnsOf(itemsOf(conflict.theirs)));
     setInvalid(new Set());
     setPicking(null);
+    setFieldPanel(null);
+    setDrill(null);
     setConflict(null);
     setError("");
     setAnnounce("The latest saved value is shown.");
@@ -246,15 +339,26 @@ export function StructuredValueDialog({ noteId, propertyKey, label, value, perso
   /** After a conflict: is what is stored now still something this dialog can write over? */
   const theirsEditable = !!conflict && isStructuredValue(conflict.theirs) && sameTopShape(conflict.theirs, base);
 
-  const rowName = (i: number) => (isList ? `item ${i + 1}` : "this value");
+  /** How a row is called in a control's name: "item 2" in a list; a single group of fields is called by the editor's own label. */
+  const rowName = (i: number) => (isList ? `item ${i + 1}` : label);
+  /** A nested value: what it reads as, and the way in. */
+  const nestedCell = (row: Row, key: string | null, v: unknown, name: string): ReactNode => {
+    const text = valueText(v) || (Array.isArray(v) ? "Empty list" : "No fields");
+    return (
+      <span className="db-sv-nested-cell">
+        <span className="db-sv-nested" title={text} data-sv-nested>{text}</span>
+        <button type="button" className="db-structured-edit db-sv-drill focus-ring" disabled={busy} aria-haspopup="dialog" aria-label={`Edit ${name}`}
+          onClick={(e) => setDrill({ rowId: row.id, key, opener: e.currentTarget })}>
+          Edit…
+        </button>
+      </span>
+    );
+  };
   const cell = (row: Row, i: number, key: string): ReactNode => {
     const c = cellOf(row.item, key);
     const type = types.get(key) ?? "text";
     const name = `${humanize(key)} of ${rowName(i)}`;
-    if (c.kind === "nested") {
-      const text = valueText(c.value) || (Array.isArray(c.value) ? "Empty list" : "Empty");
-      return <span className="db-sv-nested" title="This field holds a list or a group of fields. It is kept exactly as it is." data-sv-kept>{text}<span className="db-sv-kept"> · kept as it is</span></span>;
-    }
+    if (c.kind === "nested") return nestedCell(row, key, c.value, name);
     // A cell follows its own value's type; an empty one follows its column.
     const kind: CellType = c.kind === "text" || c.kind === "number" || c.kind === "boolean" ? c.kind : type;
     if (kind === "boolean") {
@@ -276,7 +380,7 @@ export function StructuredValueDialog({ noteId, propertyKey, label, value, perso
           return (
             <button type="button" className="db-icon-btn focus-ring db-sv-link" disabled={busy} aria-expanded={open} data-linked={linked || undefined} data-sv-pick={`${row.id}:${key}`}
               aria-label={`Link a page for ${name}`} title={linked ? `Linked to ${linkLabel(text)} — choose another page` : "Link a page"}
-              onClick={() => (open ? closePicker() : setPicking({ rowId: row.id, key }))}>
+              onClick={() => (open ? closePicker() : (setFieldPanel(null), setPicking({ rowId: row.id, key })))}>
               <Link2 size={13} aria-hidden="true" />
             </button>
           );
@@ -286,29 +390,59 @@ export function StructuredValueDialog({ noteId, propertyKey, label, value, perso
   };
 
   const pickRow = picking ? rows.findIndex((r) => r.id === picking.rowId) : -1;
+  const drillRow = drill ? rows.findIndex((r) => r.id === drill.rowId) : -1;
+  const drillValue = drill && drillRow >= 0 ? (drill.key === null ? rows[drillRow]!.item : isObject(rows[drillRow]!.item) ? (rows[drillRow]!.item as Record<string, unknown>)[drill.key] : undefined) : undefined;
+  const drillLabel = drill && drillRow >= 0 ? (drill.key === null ? `${isList ? `item ${drillRow + 1}` : "value"} of ${label}` : `${humanize(drill.key)} of ${rowName(drillRow)}`) : "";
+  const count = rows.length + hiddenItems.length;
   return createPortal(
-    <dialog ref={dialog} className="db-dialog-wrap db-sv-wrap" aria-modal="true" aria-labelledby={titleId} aria-describedby={noteTextId} data-structured-dialog
-      onCancel={(e) => { e.preventDefault(); onEscape(); }}
+    <dialog ref={dialog} className="db-dialog-wrap db-sv-wrap" aria-modal="true" aria-labelledby={titleId} aria-describedby={noteTextId} data-structured-dialog data-nested={nested || undefined}
+      onCancel={(e) => { if (e.target !== e.currentTarget) return; e.preventDefault(); onEscape(); }}
       // Chrome closes a modal on a second Escape even when the first was refused: open it again, as it was.
-      onClose={() => { const el = dialog.current; if (!closing.current && el && !el.open) el.showModal(); }}
+      onClose={(e) => { const el = dialog.current; if (e.target === e.currentTarget && !closing.current && el && !el.open) el.showModal(); }}
       // The dialog is portaled, but React still bubbles its events to the cell / row that opened it:
-      // nothing clicked or typed here may reach the table behind.
+      // nothing clicked or typed here may reach the table (or the editor) behind.
       onMouseDown={(e) => { e.stopPropagation(); if (e.target === e.currentTarget) requestClose(); }}
       onClick={(e) => e.stopPropagation()} onDoubleClick={(e) => e.stopPropagation()} onPointerDown={(e) => e.stopPropagation()}
       onContextMenu={(e) => e.stopPropagation()} onKeyUp={(e) => e.stopPropagation()} onKeyDown={(e: KeyboardEvent<HTMLDialogElement>) => e.stopPropagation()}
-      onFocus={(e) => { if (e.target instanceof HTMLElement && e.target !== e.currentTarget && !e.target.closest("[data-sv-confirm]")) lastFocus.current = e.target; }}>
+      onFocus={(e) => { e.stopPropagation(); if (e.target instanceof HTMLElement && e.target !== e.currentTarget && dialog.current?.contains(e.target) && !e.target.closest("[data-sv-confirm]")) lastFocus.current = e.target; }}>
       <div className="db-dialog db-dialog-wide db-sv">
         <header className="db-dialog-head">
           <h2 id={titleId}>Edit {label}</h2>
           <button type="button" className="db-icon-btn focus-ring" aria-label="Close" disabled={busy} onClick={requestClose}><X size={14} aria-hidden="true" /></button>
         </header>
         <p id={noteTextId} className="db-sv-note">
-          {isList ? `${rows.length + hiddenItems.length} ${rows.length + hiddenItems.length === 1 ? "item" : "items"}. Each row is one item; each column is a field.` : "One group of fields."}
+          {nested && <>Part of {within}. “Done” puts it back there; it is saved when you save {within}. </>}
+          {isList ? `${count} ${count === 1 ? "item" : "items"}. Each row is one item; each column is a field.` : "One group of fields."}
           {" "}Anything not shown here is kept exactly as it is.
         </p>
 
+        {/* Fields: listed (and managed) above the items — on a phone the column headers are not on screen. */}
+        {(fields.length > 0 || rows.some((r) => isObject(r.item)) || (!isList && isObject(base)) || (isList && rows.length === 0 && hiddenItems.length === 0)) && (
+          <div className="db-sv-fields" role="group" aria-label="Fields">
+            <span className="db-sv-fields-label" aria-hidden="true">Fields</span>
+            {columns.map((k) => (
+              <button key={k} type="button" className="db-sv-field focus-ring" data-sv-field={k} disabled={busy} aria-expanded={fieldPanel?.mode === "edit" && fieldPanel.key === k}
+                aria-label={`Field ${humanize(k)}: rename or remove`} title={k}
+                onClick={() => { setPicking(null); setFieldPanel(fieldPanel?.mode === "edit" && fieldPanel.key === k ? null : { mode: "edit", key: k }); }}>
+                {humanize(k)} <Pencil size={11} aria-hidden="true" />
+              </button>
+            ))}
+            <button type="button" className="db-sv-field db-sv-field-add focus-ring" data-sv-add-field disabled={busy || fields.length >= MAX_EDIT_COLUMNS} aria-expanded={fieldPanel?.mode === "add"}
+              title={fields.length >= MAX_EDIT_COLUMNS ? `An item shows up to ${MAX_EDIT_COLUMNS} fields here.` : undefined}
+              onClick={() => { setPicking(null); setFieldPanel(fieldPanel?.mode === "add" ? null : { mode: "add" }); }}>
+              <Plus size={12} aria-hidden="true" /> Add field
+            </button>
+          </div>
+        )}
+        {fieldPanel && (
+          <FieldPanel key={fieldPanel.mode === "edit" ? `edit:${fieldPanel.key}` : "add"} mode={fieldPanel.mode} name={fieldPanel.mode === "edit" ? fieldPanel.key : ""}
+            existing={fields} used={fieldPanel.mode === "edit" ? fieldCount(everyItem, fieldPanel.key) : 0} itemWord={isList ? "item" : "value"}
+            onAdd={addField} onRename={(to) => fieldPanel.mode === "edit" && renameFieldTo(fieldPanel.key, to)}
+            onRemove={() => fieldPanel.mode === "edit" && removeFieldNamed(fieldPanel.key)} onClose={() => closeFieldPanel()} />
+        )}
+
         {rows.length === 0 ? (
-          <p className="db-pop-empty" data-sv-empty>{isList ? "No items. Saving leaves an empty list." : "Nothing to edit."}</p>
+          <p className="db-pop-empty" data-sv-empty>{isList ? (nested ? "No items." : "No items. Saving leaves an empty list.") : "Nothing to edit."}</p>
         ) : (
           <div className="db-sv-scroll">
             <table className="db-sv-table" aria-label={`${label} items`}>
@@ -325,13 +459,14 @@ export function StructuredValueDialog({ noteId, propertyKey, label, value, perso
                     {isList && <th scope="row" className="db-sv-n">{i + 1}</th>}
                     {isObject(row.item) ? (
                       columns.length === 0
-                        ? <td><span className="db-sv-nested" data-sv-kept>{valueText(row.item) || "Empty"}<span className="db-sv-kept"> · kept as it is</span></span></td>
+                        ? <td><span className="db-sv-kept" data-sv-nofields>No fields yet. Use “Add field”.</span></td>
                         : columns.map((k) => <td key={k} data-label={humanize(k)}><span className="db-sv-cell-label" aria-hidden="true">{humanize(k)}</span>{cell(row, i, k)}</td>)
                     ) : (
                       <td colSpan={Math.max(1, columns.length)} data-label="Value">
                         <span className="db-sv-cell-label" aria-hidden="true">Value</span>
-                        <PlainItem row={row} name={`Value of ${rowName(i)}`} busy={busy} flag={flag}
-                          onChange={(next) => update(row.id, (r) => ({ ...r, item: next }))} />
+                        {Array.isArray(row.item)
+                          ? nestedCell(row, null, row.item, `Value of ${rowName(i)}`)
+                          : <PlainItem row={row} name={`Value of ${rowName(i)}`} busy={busy} flag={flag} onChange={(next) => update(row.id, (r) => ({ ...r, item: next }))} />}
                       </td>
                     )}
                     {isList && (
@@ -398,14 +533,73 @@ export function StructuredValueDialog({ noteId, propertyKey, label, value, perso
         ) : (
           <div className="db-settings-row">
             <button type="button" className="db-ghost focus-ring" disabled={busy} onClick={requestClose}>Cancel</button>
-            <button type="button" className="db-primary focus-ring" disabled={busy || !!problem || !dirty || (!!conflict && !theirsEditable)} onClick={() => void save()}>
-              {busy ? "Saving…" : "Save"}
+            <button type="button" className="db-primary focus-ring" data-sv-save disabled={busy || !!problem || (!nested && !dirty) || (!!conflict && !theirsEditable)} onClick={() => void save()}>
+              {nested ? "Done" : busy ? "Saving…" : "Save"}
             </button>
           </div>
         )}
       </div>
+      {/* A nested value opens in the same editor, over this one; its result goes back into the row (nothing is written until the outermost Save). */}
+      {drill && drillRow >= 0 && (isObject(drillValue) || Array.isArray(drillValue)) && (
+        <Editor key={`${drill.rowId}:${drill.key ?? "$item"}`} label={drillLabel} within={label} value={drillValue} personTarget={personTarget} opener={drill.opener}
+          onClose={() => setDrill(null)}
+          apply={(next) => {
+            const at = drill;
+            update(at.rowId, (r) => ({ ...r, item: at.key === null ? next : setItemKey(r.item, at.key, next) }));
+            setAnnounce(`${drillLabel} changed. It is saved when you save ${label}.`);
+          }} />
+      )}
     </dialog>,
     document.body,
+  );
+}
+
+/** Add a field, or rename / remove one — a small form inside the editor (never a browser prompt). */
+function FieldPanel({ mode, name, existing, used, itemWord, onAdd, onRename, onRemove, onClose }: {
+  mode: "add" | "edit"; name: string; existing: readonly string[]; /** Items that carry the field now. */ used: number; itemWord: string;
+  onAdd: (name: string) => void; onRename: (to: string) => void; onRemove: () => void; onClose: () => void;
+}) {
+  const [text, setText] = useState(name);
+  const [bad, setBad] = useState("");
+  const [removing, setRemoving] = useState(false);
+  const id = useId();
+  const submit = () => {
+    const next = text.trim();
+    if (mode === "edit" && next === name) { onClose(); return; }
+    const why = fieldNameProblem(next, mode === "edit" ? existing.filter((k) => k !== name) : existing);
+    if (why) { setBad(why); return; }
+    if (mode === "add") onAdd(next); else onRename(next);
+  };
+  const title = mode === "add" ? "Add a field" : `Field “${name}”`;
+  return (
+    <section className="db-sv-picker db-sv-fieldpanel" role="group" aria-label={title} data-sv-fieldpanel>
+      <div className="db-sv-picker-head">
+        <span>{title}</span>
+        <button type="button" className="db-icon-btn focus-ring" aria-label="Close the field form" onClick={onClose}><X size={13} aria-hidden="true" /></button>
+      </div>
+      {removing ? (
+        <div className="db-sv-confirm" role="alertdialog" aria-label="Remove this field?">
+          <span>Remove “{name}” from {used === 1 ? `1 ${itemWord}` : `${used} ${itemWord}s`}? {used > 0 ? "Its values go with it when you save." : "No item holds it."}</span>
+          <span className="db-sv-conflict-actions">
+            <button type="button" className="db-ghost focus-ring" autoFocus onClick={() => setRemoving(false)}>Keep the field</button>
+            <button type="button" className="db-primary db-danger focus-ring" onClick={onRemove}>Remove field</button>
+          </span>
+        </div>
+      ) : (
+        <form className="db-sv-fieldform" onSubmit={(e) => { e.preventDefault(); e.stopPropagation(); submit(); }}>
+          <label className="db-field"><span>Field name (as it is stored)</span>
+            <input autoFocus className="db-input" aria-label="Field name" value={text} maxLength={120} spellCheck={false} autoCapitalize="none"
+              aria-invalid={bad ? true : undefined} aria-describedby={bad ? id : undefined} onChange={(e) => { setText(e.target.value); setBad(""); }} />
+          </label>
+          {bad && <span id={id} className="db-error" role="alert">{bad}</span>}
+          {mode === "add" && <p className="db-sv-note">A new field is saved on the items you fill it in on.</p>}
+          <span className="db-sv-conflict-actions">
+            <button type="submit" className="db-primary focus-ring">{mode === "add" ? "Add field" : "Rename"}</button>
+            {mode === "edit" && <button type="button" className="db-ghost db-danger focus-ring" onClick={() => setRemoving(true)}><Trash2 size={13} aria-hidden="true" /> Remove field…</button>}
+          </span>
+        </form>
+      )}
+    </section>
   );
 }
 

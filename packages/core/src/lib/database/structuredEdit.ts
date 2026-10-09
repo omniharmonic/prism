@@ -13,6 +13,10 @@
  *   - A cell holds text, a number, a yes/no, or nothing. A cell whose value is itself an
  *     object or a list is shown as a summary and is NOT editable here — and is kept.
  *   - Rows can be added, removed and reordered.
+ *   - FIELDS can be added, renamed and removed across the items ({@link renameField},
+ *     {@link removeField}; a field just added is stored on the items it is filled in on).
+ *   - A NESTED value (an object or a list inside an item) is edited by drilling in: the
+ *     same editor on that value, whose result replaces it in place ({@link setItemKey}).
  *
  * 🔒 Fidelity. An edit changes exactly what the person changed, nothing else:
  *   - a row's keys keep their order ({@link setItemKey} replaces in place, appends a new key);
@@ -173,7 +177,7 @@ export function isLinkColumn(items: readonly unknown[], key: string): boolean {
  * goes last), every other key and value is carried over by reference. Own data
  * properties only, defined (never assigned), so no key can reach a prototype.
  */
-export function setItemKey(item: unknown, key: string, next: string | number | boolean | null): Record<string, unknown> {
+export function setItemKey(item: unknown, key: string, next: unknown): Record<string, unknown> {
   const src = isObject(item) ? item : {};
   const out: Record<string, unknown> = {};
   let placed = false;
@@ -221,6 +225,66 @@ export function parseCell(type: CellType, input: string | boolean): { value: str
   if (t.length > 40 || !/^[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?$/.test(t)) return { error: "That isn’t a number." };
   const n = Number(t);
   return Number.isFinite(n) ? { value: n } : { error: "That isn’t a number." };
+}
+
+// ── fields (columns) across the items ────────────────────────────────────────
+
+/** Why `name` cannot be a field name here, or null. (`existing` = the fields the items already have.) */
+export function fieldNameProblem(name: string, existing: readonly string[]): string | null {
+  if (!name) return "Give the field a name.";
+  if (name !== name.trim()) return "A field name cannot start or end with a space.";
+  if (name.length > STRUCTURED_MAX_KEY) return `A field name is at most ${STRUCTURED_MAX_KEY} characters.`;
+  if (BANNED_KEYS.has(name)) return `“${name}” cannot be used as a field name.`;
+  // eslint-disable-next-line no-control-regex
+  if (/[\u0000-\u001f]/.test(name)) return "A field name cannot hold a line break or a control character.";
+  if (existing.includes(name)) return `There is already a field named “${name}”.`;
+  const lower = name.toLowerCase();
+  const twin = existing.find((k) => k.toLowerCase() === lower);
+  return twin ? `There is already a field named “${twin}” (names that differ only by capitals are easy to mix up).` : null;
+}
+
+/**
+ * `item` with its key `from` called `to` — a NEW object; the key keeps its PLACE and its
+ * value (whatever it is, nested or not) by reference; every other key is untouched. An
+ * item without `from` (or that is not an object) is returned as it is. An item that
+ * already has `to` is returned as it is too: callers refuse such a rename first
+ * ({@link fieldNameProblem}) — a value is never overwritten by a rename.
+ */
+export function renameItemKey<T>(item: T, from: string, to: string): T | Record<string, unknown> {
+  if (!isObject(item) || !has(item, from) || from === to || has(item, to) || BANNED_KEYS.has(to)) return item;
+  const out: Record<string, unknown> = {};
+  for (const k of Object.keys(item)) Object.defineProperty(out, k === from ? to : k, { value: item[k], enumerable: true, writable: true, configurable: true });
+  return out;
+}
+/** Rename a field on every item that has it. Items that do not have it are the same objects as before. */
+export function renameField(items: readonly unknown[], from: string, to: string): unknown[] {
+  return items.map((it) => renameItemKey(it, from, to));
+}
+/** Remove a field from every item that has it (its values go with it). Other items are the same objects as before. */
+export function removeField(items: readonly unknown[], key: string): unknown[] {
+  return items.map((it) => (isObject(it) && has(it, key) ? unsetItemKey(it, key) : it));
+}
+/** How many items carry this field. */
+export function fieldCount(items: readonly unknown[], key: string): number {
+  let n = 0;
+  for (const it of items) if (isObject(it) && has(it, key)) n++;
+  return n;
+}
+
+/**
+ * What "Add item" adds to a list that has no object to shape a row by: a plain entry of
+ * the kind the list already holds (text → `""`, a number → `0`, a yes/no → `false`),
+ * text for an empty list. Null when the list holds only nested lists (nothing to model).
+ */
+export function blankPlain(items: readonly unknown[]): string | number | boolean | null {
+  if (!items.length) return "";
+  for (let i = items.length - 1; i >= 0; i--) {
+    const v = items[i];
+    if (typeof v === "string") return "";
+    if (typeof v === "number") return 0;
+    if (typeof v === "boolean") return false;
+  }
+  return null;
 }
 
 /**

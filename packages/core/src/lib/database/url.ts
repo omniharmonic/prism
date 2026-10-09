@@ -68,3 +68,36 @@ export function storedWebUrl(value: unknown): string | null {
   const text = value.trim();
   return validWebUrl(text) ? text : null;
 }
+
+/**
+ * One WRITE to a URL property, as every writer decides it (the editors here, the server's
+ * property routes, the Prism MCP note tools):
+ *   - a clear (`null` / `""` / an empty list) is always allowed;
+ *   - putting back EXACTLY what is stored is allowed — so an older value that is no web
+ *     address never blocks a write that merely restates it (a whole-metadata save, a
+ *     compare-and-set retry);
+ *   - text is normalised (`example.com` → `https://example.com`) or refused;
+ *   - a list is allowed only when every entry is a web address (each normalised);
+ *   - anything else (a number, a yes/no, an object) is refused.
+ * Linear in the value. `{ok: true, value}` carries what to STORE.
+ */
+export function checkUrlWrite(next: unknown, stored: unknown): { ok: true; value: unknown } | { ok: false } {
+  if (next === null || next === undefined || next === "" || (Array.isArray(next) && next.length === 0)) return { ok: true, value: next ?? null };
+  let same = false;
+  try { same = JSON.stringify(next) === JSON.stringify(stored ?? null); } catch { same = false; }
+  if (same) return { ok: true, value: next };
+  if (typeof next === "string") {
+    const url = normalizeUrlValue(next);
+    return url === null ? { ok: false } : { ok: true, value: url };
+  }
+  if (Array.isArray(next) && next.length <= 200) {
+    const out: string[] = [];
+    for (const x of next) {
+      const url = normalizeUrlValue(x);
+      if (url === null) return { ok: false };
+      out.push(url);
+    }
+    return { ok: true, value: out };
+  }
+  return { ok: false };
+}

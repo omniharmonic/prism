@@ -86,13 +86,14 @@ test("fidelity: nested fields, a field on one row only, each row's field order a
   const table = dialog.getByRole("table", { name: "Members items" });
   // Every field any item has is a column, in the order first seen.
   await expect(table.locator("thead th")).toHaveText(["Item#", "Name", "Role", "Since", "Active", "Contact", "Tags", "Page", "Note", "Actions"]);
-  // Typed cells: a number, a yes/no; nested values are summarised and said to be kept.
+  // Typed cells: a number, a yes/no; nested values are summarised, each with its own way in ("Edit…").
   await expect(dialog.getByRole("textbox", { name: "Since of item 1" })).toHaveValue("2021");
   await expect(dialog.getByRole("checkbox", { name: "Active of item 1" })).toBeChecked();
   const row1 = table.locator("tbody tr").nth(0);
-  await expect(row1.locator("[data-sv-kept]")).toHaveCount(2);
-  await expect(row1.locator("[data-sv-kept]").first()).toContainText("b@example.test");
-  await expect(row1.locator("[data-sv-kept]").first()).toContainText("kept as it is");
+  await expect(row1.locator("[data-sv-nested]")).toHaveCount(2);
+  await expect(row1.locator("[data-sv-nested]").first()).toContainText("b@example.test");
+  await expect(row1.getByRole("button", { name: "Edit Contact of item 1" })).toHaveText("Edit…");
+  await expect(row1.getByRole("button", { name: "Edit Tags of item 1" })).toBeVisible();
   // The plain line is one editable value across the row.
   await expect(dialog.getByRole("textbox", { name: "Value of item 3" })).toHaveValue("a plain line");
 
@@ -193,7 +194,7 @@ test("keyboard: Enter opens it, Tab stays inside, Escape with changes asks befor
   expect(await page.evaluate(() => { const b = document.querySelector<HTMLElement>('[data-property-key="status"] button'); b?.focus(); return document.activeElement === b; })).toBe(false);
   await dialog.getByRole("button", { name: "Close", exact: true }).focus();
   await page.keyboard.press("Tab");
-  await expect(dialog.getByRole("textbox", { name: "Name of item 1" })).toBeFocused();
+  await expect(dialog.getByRole("button", { name: "Field Name: rename or remove" })).toBeFocused();
   // Every control has a name.
   const unnamed = await dialog.locator("input, button").evaluateAll((els) => els.filter((el) => !(el.getAttribute("aria-label") || el.textContent || "").trim()).length);
   expect(unnamed).toBe(0);
@@ -380,6 +381,223 @@ test("someone who can only view sees no Edit…; a member who may edit the row g
   expect((await stored(page, "c1")).members[0]).toEqual({ name: "Benjamin Life", role: "delegate" });
 });
 
+// ── fields: add, rename, remove ──────────────────────────────────────────────
+
+test("fields: add one (saved where it is filled in), rename one (it keeps its place on every item), remove one (asked first) — one save", async ({ page }) => {
+  const browserDialogs = noBrowserDialogs(page);
+  await page.goto("/e2e-fixtures/databases.html?circles=rich&open=c3");
+  await bar(page).locator('[data-property-key="members"]').getByRole("button", { name: "Edit Members" }).click();
+  const dialog = dialogOf(page);
+  const fields = dialog.getByRole("group", { name: "Fields" });
+  await expect(fields.getByRole("button")).toHaveText(["Name", "Role", "Since", "Active", "Contact", "Tags", "Page", "Note", "Add field"]);
+  const heads = dialog.getByRole("table", { name: "Members items" }).locator("thead th");
+
+  // ADD: a name that is taken (even by capitals only) or not allowed is refused in the form.
+  await fields.getByRole("button", { name: "Add field" }).click();
+  const form = dialog.getByRole("group", { name: "Add a field" });
+  const name = form.getByRole("textbox", { name: "Field name" });
+  await expect(name).toBeFocused();
+  for (const [typed, why] of [["role", "already a field named “role”"], ["Role", "already a field named “role”"], ["__proto__", "cannot be used"], ["", "Give the field a name"]] as const) {
+    await name.fill(typed);
+    await name.press("Enter");
+    await expect(form.getByRole("alert")).toContainText(why);
+  }
+  await name.fill("email");
+  await name.press("Enter");
+  await expect(form).toHaveCount(0);
+  await expect(heads).toHaveText(["Item#", "Name", "Role", "Since", "Active", "Contact", "Tags", "Page", "Note", "Email", "Actions"]);
+  await expect(fields.getByRole("button", { name: "Field Email: rename or remove" })).toBeFocused();
+  // Nothing is changed yet: a field nobody filled in is not stored anywhere.
+  await expect(dialog.getByRole("button", { name: "Save", exact: true })).toBeDisabled();
+  await dialog.getByRole("textbox", { name: "Email of item 2" }).fill("pat@example.test");
+
+  // RENAME "role" → "position": the column is renamed where it stands.
+  await fields.getByRole("button", { name: "Field Role: rename or remove" }).click();
+  const edit = dialog.getByRole("group", { name: "Field “role”" });
+  const rename = edit.getByRole("textbox", { name: "Field name" });
+  await expect(rename).toHaveValue("role");
+  // Escape closes the form only, not the editor.
+  await page.keyboard.press("Escape");
+  await expect(edit).toHaveCount(0);
+  await expect(dialog).toBeVisible();
+  await expect(fields.getByRole("button", { name: "Field Role: rename or remove" })).toBeFocused();
+  await page.keyboard.press("Enter");
+  await dialog.getByRole("group", { name: "Field “role”" }).getByRole("textbox", { name: "Field name" }).fill("name");
+  await page.keyboard.press("Enter");
+  await expect(dialog.getByRole("group", { name: "Field “role”" }).getByRole("alert")).toContainText("already a field named “name”");
+  await dialog.getByRole("group", { name: "Field “role”" }).getByRole("textbox", { name: "Field name" }).fill("position");
+  await dialog.getByRole("group", { name: "Field “role”" }).getByRole("button", { name: "Rename" }).click();
+  await expect(heads).toHaveText(["Item#", "Name", "Position", "Since", "Active", "Contact", "Tags", "Page", "Note", "Email", "Actions"]);
+  await expect(dialog.getByRole("textbox", { name: "Position of item 1" })).toHaveValue("delegate");
+  await expect(dialog.getByRole("textbox", { name: "Position of item 2" })).toHaveValue("observer");
+
+  // REMOVE "since": asked first, in the form, saying how many items hold it; "Keep" keeps it.
+  await fields.getByRole("button", { name: "Field Since: rename or remove" }).click();
+  const since = dialog.getByRole("group", { name: "Field “since”" });
+  await since.getByRole("button", { name: "Remove field…" }).click();
+  const ask = since.getByRole("alertdialog", { name: "Remove this field?" });
+  await expect(ask).toContainText("Remove “since” from 1 item? Its values go with it when you save.");
+  await ask.getByRole("button", { name: "Keep the field" }).click();
+  await expect(heads).toContainText(["Since"]);
+  await since.getByRole("button", { name: "Remove field…" }).click();
+  await since.getByRole("button", { name: "Remove field", exact: true }).click();
+  await expect(heads).toHaveText(["Item#", "Name", "Position", "Active", "Contact", "Tags", "Page", "Note", "Email", "Actions"]);
+  // A nested field can be removed too (its values go with it).
+  await fields.getByRole("button", { name: "Field Tags: rename or remove" }).click();
+  await dialog.getByRole("group", { name: "Field “tags”" }).getByRole("button", { name: "Remove field…" }).click();
+  await dialog.getByRole("group", { name: "Field “tags”" }).getByRole("button", { name: "Remove field", exact: true }).click();
+
+  await dialog.getByRole("button", { name: "Save", exact: true }).click();
+  await expect(dialog).toHaveCount(0);
+  const want = [
+    // "position" where "role" was; "since" and "tags" gone; "contact" untouched; no "email" here (not filled in).
+    { name: "Benjamin Life", position: "delegate", active: true, contact: { email: "b@example.test", phones: ["1", "2"] } },
+    // This item stored its role FIRST: so is "position". The new field goes last, on this item only.
+    { position: "observer", name: "Patricia Parkinson", page: "[[People/Sam Rivera]]", note: null, email: "pat@example.test" },
+    "a plain line",
+  ];
+  expect(JSON.stringify((await stored(page, "c3")).members)).toBe(JSON.stringify(want));
+  // ONE write, compared against the value as it was loaded.
+  const f = await fx(page);
+  expect(f.structuredWrites.length).toBe(1);
+  expect(JSON.stringify(f.structuredWrites[0].expect)).toBe(JSON.stringify(RICH));
+  expect(browserDialogs).toEqual([]);
+});
+
+test("fields: a field added and never filled in changes nothing; renaming back is not a change either", async ({ page }) => {
+  await page.goto("/e2e-fixtures/databases.html?circles&open=c1");
+  await bar(page).locator('[data-property-key="members"]').getByRole("button", { name: "Edit Members" }).click();
+  const dialog = dialogOf(page);
+  const fields = dialog.getByRole("group", { name: "Fields" });
+  await fields.getByRole("button", { name: "Add field" }).click();
+  await dialog.getByRole("textbox", { name: "Field name" }).fill("notes");
+  await page.keyboard.press("Enter");
+  await fields.getByRole("button", { name: "Field Role: rename or remove" }).click();
+  await dialog.getByRole("textbox", { name: "Field name" }).fill("duty");
+  await page.keyboard.press("Enter");
+  await expect(dialog.getByRole("button", { name: "Save", exact: true })).toBeEnabled();
+  await fields.getByRole("button", { name: "Field Duty: rename or remove" }).click();
+  await dialog.getByRole("textbox", { name: "Field name" }).fill("role");
+  await page.keyboard.press("Enter");
+  await expect(dialog.getByRole("button", { name: "Save", exact: true })).toBeDisabled();
+  await dialog.getByRole("button", { name: "Cancel" }).click();
+  await expect(dialog).toHaveCount(0);
+  expect((await fx(page)).structuredWrites).toEqual([]);
+});
+
+// ── nested values: drill in ──────────────────────────────────────────────────
+
+test("nested: an object and a list inside an item are edited by drilling in (two levels deep), put back in place, and saved with everything else in one write", async ({ page }, info) => {
+  const browserDialogs = noBrowserDialogs(page);
+  await page.goto("/e2e-fixtures/databases.html?circles=rich&open=c3");
+  await bar(page).locator('[data-property-key="members"]').getByRole("button", { name: "Edit Members" }).click();
+  const root = dialogOf(page);
+  const openContact = root.getByRole("button", { name: "Edit Contact of item 1" });
+  await openContact.click();
+  // The same editor, on the nested value, over the first one.
+  const contact = page.getByRole("dialog", { name: "Edit Contact of item 1" });
+  await expect(contact).toBeVisible();
+  await expect(contact).toContainText("Part of Members. “Done” puts it back there; it is saved when you save Members.");
+  await expect(contact.getByRole("table", { name: "Contact of item 1 items" }).locator("thead th")).toHaveText(["Email", "Phones"]);
+  const email = contact.getByRole("textbox", { name: "Email of Contact of item 1" });
+  await expect(email).toBeFocused();
+  await expect(email).toHaveValue("b@example.test");
+  await email.fill("ben@example.test");
+  // One level deeper: the list of phones.
+  await contact.getByRole("button", { name: "Edit Phones of Contact of item 1" }).click();
+  const phones = page.getByRole("dialog", { name: "Edit Phones of Contact of item 1" });
+  await expect(phones).toContainText("Part of Contact of item 1.");
+  await expect(phones.getByRole("textbox", { name: "Value of item 1" })).toHaveValue("1");
+  await phones.getByRole("textbox", { name: "Value of item 2" }).fill("222");
+  await phones.getByRole("button", { name: "Add item" }).click();
+  await phones.getByRole("textbox", { name: "Value of item 3" }).fill("333");
+  await phones.getByRole("button", { name: "Add item" }).click(); // left empty: not an item
+  await phones.getByRole("button", { name: "Move item 3 up" }).click();
+  await page.screenshot({ path: info.outputPath("structured-dialog-nested.png") });
+  await phones.getByRole("button", { name: "Done" }).click();
+  await expect(phones).toHaveCount(0);
+  // Back in Contact, focus on the button that opened Phones, and the summary shows the new list.
+  await expect(contact.getByRole("button", { name: "Edit Phones of Contact of item 1" })).toBeFocused();
+  await expect(contact.locator("[data-sv-nested]")).toHaveText("1, 333, 222");
+  // A field is added to the nested object as well.
+  await contact.getByRole("group", { name: "Fields" }).getByRole("button", { name: "Add field" }).click();
+  await contact.getByRole("textbox", { name: "Field name" }).fill("city");
+  await page.keyboard.press("Enter");
+  await contact.getByRole("textbox", { name: "City of Contact of item 1" }).fill("Boulder");
+  await contact.getByRole("button", { name: "Done" }).click();
+  await expect(contact).toHaveCount(0);
+  await expect(openContact).toBeFocused();
+  // Nothing is written until the outermost Save.
+  expect((await fx(page)).structuredWrites).toEqual([]);
+  await expect(root.locator("tbody tr").first().locator("[data-sv-nested]").first()).toContainText("ben@example.test");
+
+  // The list of tags on the same item: reorder and remove.
+  await root.getByRole("button", { name: "Edit Tags of item 1" }).click();
+  const tags = page.getByRole("dialog", { name: "Edit Tags of item 1" });
+  await tags.getByRole("button", { name: "Move item 2 up" }).click();
+  await tags.getByRole("button", { name: "Remove item 2" }).click();
+  await tags.getByRole("button", { name: "Done" }).click();
+  // A nested edit that is CANCELLED changes nothing (asked first when there are changes).
+  await root.getByRole("button", { name: "Edit Contact of item 1" }).click();
+  await contact.getByRole("textbox", { name: "Email of Contact of item 1" }).fill("thrown@away.test");
+  await page.keyboard.press("Escape");
+  await contact.getByRole("alertdialog", { name: "Discard changes?" }).getByRole("button", { name: "Discard" }).click();
+  await expect(contact).toHaveCount(0);
+  await expect(root).toBeVisible();
+
+  await root.getByRole("button", { name: "Save", exact: true }).click();
+  await expect(root).toHaveCount(0);
+  const want = [
+    { name: "Benjamin Life", role: "delegate", since: 2021, active: true, contact: { email: "ben@example.test", phones: ["1", "333", "222"], city: "Boulder" }, tags: ["ops"] },
+    { role: "observer", name: "Patricia Parkinson", page: "[[People/Sam Rivera]]", note: null },
+    "a plain line",
+  ];
+  expect(JSON.stringify((await stored(page, "c3")).members)).toBe(JSON.stringify(want));
+  const f = await fx(page);
+  expect(f.structuredWrites.length).toBe(1);
+  expect(JSON.stringify(f.structuredWrites[0].expect)).toBe(JSON.stringify(RICH));
+  expect(browserDialogs).toEqual([]);
+});
+
+test("nested: “Done” with no change is not a change; a nested number list refuses text; the nested editor is keyboard-reachable", async ({ page }) => {
+  await page.goto("/e2e-fixtures/databases.html?circles&open=c1");
+  // `scores: [3, true]` is plain; give the page a value with a nested number list.
+  await page.evaluate(() => {
+    const n = (window as any).dbFixture.notes().find((x: any) => x.id === "c1");
+    n.metadata = { ...n.metadata, members: [{ name: "Benjamin Life", role: "delegate", marks: [3, 5] }, { name: "Patricia Parkinson", role: "delegate" }] };
+    sessionStorage.setItem("db-fixture-notes", JSON.stringify((window as any).dbFixture.notes()));
+  });
+  await page.reload();
+  const edit = bar(page).locator('[data-property-key="members"]').getByRole("button", { name: "Edit Members" });
+  await edit.focus();
+  await page.keyboard.press("Enter");
+  const root = dialogOf(page);
+  const open = root.getByRole("button", { name: "Edit Marks of item 1" });
+  await open.focus();
+  await page.keyboard.press("Enter");
+  const marks = page.getByRole("dialog", { name: "Edit Marks of item 1" });
+  await expect(marks.getByRole("textbox", { name: "Value of item 1" })).toBeFocused();
+  // Done without a change: the outer editor still has nothing to save.
+  await marks.getByRole("button", { name: "Done" }).click();
+  await expect(root.getByRole("button", { name: "Save", exact: true })).toBeDisabled();
+  await page.keyboard.press("Enter");
+  await marks.getByRole("textbox", { name: "Value of item 2" }).fill("five");
+  await expect(marks.getByRole("alert")).toContainText("That isn’t a number.");
+  await expect(marks.getByRole("button", { name: "Done" })).toBeDisabled();
+  await marks.getByRole("textbox", { name: "Value of item 2" }).fill("8");
+  await marks.getByRole("button", { name: "Add item" }).click();
+  await expect(marks.getByRole("textbox", { name: "Value of item 3" })).toHaveValue("0");
+  await marks.getByRole("textbox", { name: "Value of item 3" }).fill("13");
+  // Escape with changes asks; Enter on "Keep editing" keeps them; Done applies.
+  await page.keyboard.press("Escape");
+  await expect(marks.getByRole("alertdialog", { name: "Discard changes?" }).getByRole("button", { name: "Keep editing" })).toBeFocused();
+  await page.keyboard.press("Enter");
+  await marks.getByRole("button", { name: "Done" }).click();
+  await root.getByRole("button", { name: "Save", exact: true }).click();
+  await expect(root).toHaveCount(0);
+  expect(JSON.stringify((await stored(page, "c1")).members)).toBe(JSON.stringify([{ name: "Benjamin Life", role: "delegate", marks: [3, 8, 13] }, { name: "Patricia Parkinson", role: "delegate" }]));
+});
+
 test.describe("phone", () => {
   test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
   test("390 px: the dialog fills the screen, each item is a card of labelled fields, every control is finger-sized, nothing scrolls sideways", async ({ page }, info) => {
@@ -416,6 +634,23 @@ test.describe("phone", () => {
     }
     expect(await touchTargets(page)).toEqual([]);
     await page.screenshot({ path: info.outputPath("structured-dialog-390.png"), fullPage: false });
+    // Fields are managed from the chips above the items (the column headers are not on screen on a phone)…
+    const fields = dialog.getByRole("group", { name: "Fields" });
+    await expect(fields.getByRole("button", { name: "Field Role: rename or remove" })).toBeVisible();
+    await fields.getByRole("button", { name: "Add field" }).tap();
+    const form = dialog.getByRole("group", { name: "Add a field" });
+    await expect(form.getByRole("textbox", { name: "Field name" })).toBeVisible();
+    expect(await touchTargets(page)).toEqual([]);
+    await form.getByRole("button", { name: "Close the field form" }).tap();
+    // …and a nested value opens full screen over the editor, finger-sized too.
+    await dialog.getByRole("button", { name: "Edit Contact of item 1" }).tap();
+    const nestedDialog = page.getByRole("dialog", { name: "Edit Contact of item 1" });
+    await expect(nestedDialog).toBeVisible();
+    expect((await nestedDialog.boundingBox())!.width).toBeGreaterThanOrEqual(389);
+    expect(await nestedDialog.evaluate((el) => el.scrollWidth <= el.clientWidth + 1)).toBe(true);
+    expect(await touchTargets(page)).toEqual([]);
+    await nestedDialog.getByRole("button", { name: "Cancel" }).tap();
+    await expect(nestedDialog).toHaveCount(0);
     // It works by touch: change, add, save.
     await dialog.getByRole("textbox", { name: "Role of item 1" }).fill("chair");
     await dialog.getByRole("button", { name: "Add item" }).tap();

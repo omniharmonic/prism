@@ -35,6 +35,7 @@ const REASONS: Record<string, string> = {
   locked: "it is locked",
   not_found: "it is no longer available",
   structured_value: "its value is structured and is kept as it is",
+  invalid_url: "that is not a web address",
 };
 const describe = (failed: Array<{ title: string; error: string }>) =>
   failed.slice(0, 3).map((f) => `${f.title} (${REASONS[f.error] ?? "not saved"})`).join(", ") + (failed.length > 3 ? ` and ${failed.length - 3} more` : "");

@@ -681,6 +681,19 @@ dialog.db-sv-wrap::backdrop { background: transparent; }
 .db-sv-link[data-linked] { color: var(--color-accent); }
 .db-sv-nested { display: inline-block; max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: middle; color: var(--text-secondary); }
 .db-sv-kept { color: var(--text-muted); font-size: 11.5px; font-style: italic; }
+.db-sv-nested-cell { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.db-sv-nested-cell > .db-sv-nested { flex: 1 1 auto; min-width: 0; max-width: 220px; }
+.db-sv-drill { margin-left: 0; }
+/* Fields: the columns as chips, with Add — above the items so they are reachable on a phone too. */
+.db-sv-fields { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.db-sv-fields-label { font-size: 11.5px; font-weight: 600; color: var(--text-muted); margin-right: 2px; }
+.db-sv-field { display: inline-flex; align-items: center; gap: 5px; min-height: 26px; padding: 0 9px; border-radius: 999px; border: 1px solid var(--glass-border); background: var(--bg-surface); color: var(--text-secondary); font-size: 12px; white-space: nowrap; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+.db-sv-field:hover, .db-sv-field[aria-expanded="true"] { background: var(--glass-hover); color: var(--text-primary); }
+.db-sv-field-add { border-style: dashed; }
+.db-sv-fieldform { display: grid; gap: 8px; }
+.db-sv-fieldform .db-input { border-color: var(--glass-border-strong, var(--glass-border)); box-shadow: none; }
+.db-sv-fieldform .db-input:focus-visible { border-color: var(--color-accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-accent) 18%, transparent); }
+.db-sv-fieldpanel .db-sv-confirm { display: grid; gap: 8px; border-top: 0; padding-top: 0; }
 .db-sv-cell-label { display: none; }
 .db-sv-conflict { display: grid; gap: 6px; }
 .db-sv-conflict-actions { display: inline-flex; flex-wrap: wrap; gap: 8px; align-items: center; }
@@ -694,6 +707,8 @@ dialog.db-sv-wrap::backdrop { background: transparent; }
   .db-sv-check { width: 24px; height: 24px; margin: 10px; }
   .db-sv-conflict-actions > button { min-height: 44px; }
   .db-sv-picker .db-pop-list li > button { min-height: 44px; }
+  .db-sv-field { min-height: 44px; padding: 0 14px; font-size: 13px; }
+  .db-sv-fields { gap: 8px; }
   .db-sv-picker .db-pop-search input { min-height: 44px; font-size: 16px; }
 }
 @media (max-width: 767px) {

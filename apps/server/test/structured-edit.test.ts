@@ -12,6 +12,12 @@ import { test, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import {
   blankItem,
+  blankPlain,
+  fieldCount,
+  fieldNameProblem,
+  removeField,
+  renameField,
+  renameItemKey,
   buildValue,
   cellOf,
   columnsOf,
@@ -162,6 +168,93 @@ test("validation: JSON lists and objects within the bounds; everything else is n
   assert.equal(sameTopShape([], {}), false);
 });
 
+// ── fields across the items, and nested values ───────────────────────────────
+
+test("fields: rename keeps the field's PLACE and value on every item that has it; items without it are untouched", () => {
+  const items = itemsOf(RICH);
+  const out = renameField(items, "role", "position") as any[];
+  assert.deepEqual(Object.keys(out[0]), ["name", "position", "since", "active", "contact", "tags"]);
+  assert.deepEqual(Object.keys(out[1]), ["position", "name", "page", "note"], "second where it was first: each item keeps its own order");
+  assert.equal(out[0].position, "delegate");
+  assert.equal(out[0].contact, (RICH[0] as any).contact, "nested values are carried by reference");
+  assert.equal(out[2], "a plain line");
+  assert.equal(out[3], RICH[3], "an item without the field is the same object");
+  // A nested value can be the thing renamed: it moves whole.
+  const moved = renameField(items, "contact", "reach") as any[];
+  assert.equal(moved[0].reach, (RICH[0] as any).contact);
+  assert.deepEqual(Object.keys(moved[0]), ["name", "role", "since", "active", "reach", "tags"]);
+  // Never over another field: the item is left as it is (callers refuse the rename first).
+  assert.equal(renameItemKey(RICH[0], "role", "name"), RICH[0]);
+  assert.equal(renameItemKey(RICH[0], "role", "__proto__"), RICH[0]);
+  assert.equal(renameItemKey(RICH[0], "role", "role"), RICH[0]);
+  assert.equal(renameItemKey("text", "a", "b"), "text");
+  // The originals are never mutated.
+  assert.deepEqual(Object.keys(RICH[1] as object), ["role", "name", "page", "note"]);
+});
+
+test("fields: remove takes the field (and its values) off every item that has it and nothing else; count says how many", () => {
+  const items = itemsOf(RICH);
+  assert.equal(fieldCount(items, "role"), 2);
+  assert.equal(fieldCount(items, "extra"), 1);
+  assert.equal(fieldCount(items, "nope"), 0);
+  const out = removeField(items, "contact") as any[];
+  assert.deepEqual(Object.keys(out[0]), ["name", "role", "since", "active", "tags"]);
+  assert.equal(out[0].tags, (RICH[0] as any).tags);
+  assert.equal(out[1], RICH[1]);
+  assert.equal(out[2], "a plain line");
+  assert.equal(keyOrder(buildValue(RICH, removeField(items, "nope"))), keyOrder(RICH), "removing a field nobody has changes nothing");
+});
+
+test("fields: what may be a field name", () => {
+  const existing = ["name", "role"];
+  assert.equal(fieldNameProblem("email", existing), null);
+  assert.equal(fieldNameProblem("first name", existing), null, "a stored name may hold a space");
+  assert.match(fieldNameProblem("", existing)!, /name/);
+  assert.match(fieldNameProblem(" email", existing)!, /space/);
+  assert.match(fieldNameProblem("role", existing)!, /already/);
+  assert.match(fieldNameProblem("Role", existing)!, /already a field named “role”/);
+  assert.match(fieldNameProblem("__proto__", existing)!, /cannot be used/);
+  assert.match(fieldNameProblem("constructor", existing)!, /cannot be used/);
+  assert.match(fieldNameProblem("a\nb", existing)!, /line break/);
+  assert.match(fieldNameProblem("x".repeat(121), existing)!, /at most/);
+});
+
+test("nested: a value inside an item is edited with the same model and put back in place — siblings, order and deeper values kept", () => {
+  const items = itemsOf(RICH);
+  // Drill into item 1's `contact` (an object): change one field, add one.
+  const contact = (RICH[0] as any).contact;
+  const [c0] = itemsOf(contact);
+  const contactNext = buildValue(contact, [setItemKey(setItemKey(c0, "email", "ben@example.org"), "city", "Boulder")]);
+  assert.equal(keyOrder(contactNext), keyOrder({ email: "ben@example.org", phones: ["1", "2"], city: "Boulder" }));
+  assert.equal((contactNext as any).phones, contact.phones, "the list beside the edited field is the same list");
+  // Drill into item 1's `tags` (a list of text): add, remove, reorder.
+  const tags = (RICH[0] as any).tags as string[];
+  const tagsNext = buildValue(tags, ["ops", "core", "new"]);
+  assert.equal(blankPlain(tags), "");
+  assert.equal(blankPlain([1, 2]), 0);
+  assert.equal(blankPlain([true]), false);
+  assert.equal(blankPlain([]), "");
+  assert.equal(blankPlain([["a"]]), null);
+  // Two levels down: item 4 → extra → deep → deeper[1].x
+  const extra = (RICH[3] as any).extra;
+  const deeper = extra.deep.deeper as unknown[];
+  const deeperNext = buildValue(deeper, [deeper[0], setItemKey(deeper[1], "x", false)]);
+  const extraNext = setItemKey(extra, "deep", setItemKey(extra.deep, "deeper", deeperNext));
+  const next = buildValue(RICH, [
+    setItemKey(setItemKey(items[0], "contact", contactNext), "tags", tagsNext),
+    items[1], items[2],
+    setItemKey(items[3], "extra", extraNext),
+  ]);
+  assert.equal(keyOrder(next), keyOrder([
+    { name: "Benjamin Life", role: "delegate", since: 2021, active: true, contact: { email: "ben@example.org", phones: ["1", "2"], city: "Boulder" }, tags: ["ops", "core", "new"] },
+    { role: "observer", name: "Patricia Parkinson", page: "[[People/Patricia Parkinson]]", note: null },
+    "a plain line",
+    { name: "Third", extra: { deep: { deeper: [1, { x: false }] } } },
+  ]));
+  assert.equal(validateStructuredValue(next), null);
+  assert.equal(keyOrder(RICH[0]), keyOrder({ name: "Benjamin Life", role: "delegate", since: 2021, active: true, contact: { email: "b@example.org", phones: ["1", "2"] }, tags: ["core", "ops"] }), "the loaded value is never mutated");
+});
+
 // ── POST /api/properties/:id/structured ──────────────────────────────────────
 
 let fv: FakeVault;
@@ -225,6 +318,30 @@ test("structured route: an edited list lands in exactly the shape sent — key o
   const sent = (typeof patch.body === "string" ? JSON.parse(patch.body) : patch.body) as { metadata: Record<string, unknown>; content?: string };
   assert.equal(sent.content, undefined, "metadata-only");
   assert.deepEqual(Object.keys(sent.metadata).filter((k) => !k.startsWith("prism_")), ["members"]);
+});
+
+test("structured route: a field renamed, a field removed, a field added and nested values edited land whole and in order", async () => {
+  seed();
+  const items = itemsOf(RICH);
+  const contact = (RICH[0] as any).contact;
+  const renamed = renameField(items, "role", "position");
+  const removed = removeField(renamed, "since");
+  const withNested = [
+    setItemKey(setItemKey(setItemKey(removed[0], "contact", setItemKey(contact, "phones", ["1", "2", "3"])), "tags", ["core"]), "pronouns", "he/him"),
+    removed[1], removed[2],
+    setItemKey(removed[3], "extra", { deep: { deeper: [1, { x: true, y: "new" }] } }),
+  ];
+  const next = buildValue(RICH, withNested);
+  const r = await edit("c1", { key: "members", value: next, expect: RICH });
+  assert.equal(r.status, 200);
+  assert.equal(keyOrder(stored("c1").members), keyOrder([
+    { name: "Benjamin Life", position: "delegate", active: true, contact: { email: "b@example.org", phones: ["1", "2", "3"] }, tags: ["core"], pronouns: "he/him" },
+    { position: "observer", name: "Patricia Parkinson", page: "[[People/Patricia Parkinson]]", note: null },
+    "a plain line",
+    { name: "Third", extra: { deep: { deeper: [1, { x: true, y: "new" }] } } },
+  ]));
+  // The same change against a value that moved on is still a conflict (one whole-value compare-and-set).
+  assert.equal((await edit("c1", { key: "members", value: RICH, expect: RICH })).status, 409);
 });
 
 test("structured route: a single object is edited as an object; a list may be emptied and stays a list", async () => {

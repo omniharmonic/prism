@@ -472,9 +472,10 @@ export function splitPinned(props: PropertyDef[], pinned: string[]): { top: Prop
 /**
  * The option order of each of `keys` that is a select / status / multi-select property
  * of a database over `tags` — what the query engine sorts such a column by (`OptionOrders`
- * in query.ts). The order is the one every picker and board shows: the `optionOrder`
- * hint, then the remaining declared options in enum order; options no longer offered
- * (`hiddenOptions`) follow, so a page still holding one sorts with the options, after them.
+ * in query.ts). The order is the `optionOrder` hint, then the remaining declared options
+ * in enum order; options no longer offered (`hiddenOptions`) follow, so a page still
+ * holding one sorts with the options, after them. A STATUS is ordered by its GROUPS first
+ * (To-do → In progress → Complete, as its picker lists them), that order within a group.
  * The first tag that declares a key live decides, like `resolveProperties`. A key that is
  * no option property (or has no options) is left out and sorts by its value.
  */
@@ -490,11 +491,51 @@ export function sortOptionOrders(tags: readonly string[], schemas: SchemaMap | R
       if (!f || f.deleted) continue;
       const def = propertyFromField(key, f, tag);
       if (def.kind === "select" || def.kind === "status" || def.kind === "multi_select") {
-        const order = [...def.options.map((o) => o.value), ...(def.hiddenOptions ?? [])];
+        let order = [...def.options.map((o) => o.value), ...(def.hiddenOptions ?? [])];
+        // A STATUS reads as a workflow: To-do, then In progress, then Complete — each option under its
+        // group (the `statusGroups` hint, else `statusGroupOf`'s reading of the word), in option order
+        // within the group. One pass per group over a short list; the engine still gets ONE flat order.
+        if (def.kind === "status") {
+          const groupOf = new Map(order.map((v) => [v, statusGroupOf(v, f.statusGroups)] as const));
+          order = STATUS_GROUPS.flatMap((g) => order.filter((v) => groupOf.get(v) === g));
+        }
         if (order.length) out[key] = order;
       }
       break;
     }
+  }
+  return out;
+}
+
+/**
+ * Which of `keys` are URL properties of a page with these tags and these stored values —
+ * decided exactly as the page shows them (`resolveProperties`): the first tag that
+ * declares the key live gives its kind (the `kind` hint, else the vault type and the
+ * key's name); a key no tag declares is a URL property when its STORED value is a web
+ * address. What the server's property routes and the MCP note tools hold to the URL rule
+ * (`url.ts` `checkUrlWrite`). One pass over the keys × the page's tags.
+ */
+export function urlPropertyKeys(tags: readonly string[], schemas: SchemaMap | ReadonlyMap<string, TagSchema>, stored: Record<string, unknown> | null | undefined, keys: readonly string[]): string[] {
+  const out: string[] = [];
+  const schemaOf = (t: string): TagSchema | undefined =>
+    schemas instanceof Map ? schemas.get(t) : Object.prototype.hasOwnProperty.call(schemas, t) ? (schemas as SchemaMap)[t] : undefined;
+  const meta = stored ?? {};
+  for (const key of keys) {
+    if (isPrototypeName(key) || isSystemKey(key) || out.includes(key)) continue;
+    const sample = Object.prototype.hasOwnProperty.call(meta, key) ? meta[key] : undefined;
+    let declared = false;
+    let deleted = false;
+    for (const tag of tags) {
+      const fields = schemaOf(tag)?.fields;
+      const f = fields && Object.prototype.hasOwnProperty.call(fields, key) ? fields[key] : undefined;
+      if (!f) continue;
+      if (f.deleted) { deleted = true; continue; }
+      declared = true;
+      if (propertyFromField(key, f, tag, sample).kind === "url") out.push(key);
+      break;
+    }
+    // A free key (no tag declares it): the stored value decides. A key a tag "deleted" is hidden, not a URL property.
+    if (!declared && !deleted && inferKind(key, undefined, sample) === "url") out.push(key);
   }
   return out;
 }

@@ -98,6 +98,9 @@ import {
   mergeFieldHints,
   planRelationTargets,
   sortOptionOrders,
+  urlPropertyKeys,
+  checkUrlWrite,
+  URL_INVALID_HINT,
   relationTargetOf,
   type FieldHints,
   type MeResolver,
@@ -1220,6 +1223,77 @@ databasesApi.post("/query", async (c) => {
   }
 });
 
+// ── the URL rule on the server ───────────────────────────────────────────────
+
+/**
+ * What a property write REPLACED in a URL property when the old value was no web address
+ * (text typed before the rule, another tool's write): `(vault, note, key)` → that value.
+ * Putting exactly it back is allowed for a while — that is Undo of the change that
+ * replaced it. Bounded and short-lived; nothing else is ever exempt from the rule.
+ */
+const URL_UNDO_TTL_MS = 30 * 60_000;
+const URL_UNDO_MAX = 5000;
+const urlUndo = new Map<string, { value: string; expires: number }>();
+const urlUndoKey = (vaultId: string, id: string, key: string) => `${vaultId}\u0000${id}\u0000${key}`;
+function rememberReplacedUrl(vaultId: string, id: string, key: string, previous: unknown): void {
+  let value: string;
+  try { value = JSON.stringify(previous); } catch { return; }
+  if (value.length > MAX_VALUE_BYTES) return;
+  const k = urlUndoKey(vaultId, id, key);
+  urlUndo.delete(k);
+  urlUndo.set(k, { value, expires: Date.now() + URL_UNDO_TTL_MS });
+  while (urlUndo.size > URL_UNDO_MAX) urlUndo.delete(urlUndo.keys().next().value as string);
+}
+function isReplacedUrl(vaultId: string, id: string, key: string, next: unknown): boolean {
+  const hit = urlUndo.get(urlUndoKey(vaultId, id, key));
+  if (!hit) return false;
+  if (hit.expires <= Date.now()) { urlUndo.delete(urlUndoKey(vaultId, id, key)); return false; }
+  try { return JSON.stringify(next) === hit.value; } catch { return false; }
+}
+/** Test-only: forget what was replaced (the Undo allowance). */
+export function resetUrlUndoForTests(): void { urlUndo.clear(); }
+
+/**
+ * The URL rule for one metadata write (`@prism/core` `url.ts`, the SAME function the
+ * editors use): for every key of `set` that is a URL property of a page with `tags` and
+ * the values `stored` (`urlPropertyKeys`: the kind hint, else the vault type + name; a
+ * free key by its stored value), the value is normalised (`example.com` →
+ * `https://example.com`) or the key is reported in `invalid`. A clear and a restatement of
+ * what is stored always pass — an old value that is no web address never blocks a write
+ * that leaves it as it is. With `noteId`, putting back the value a write here just
+ * replaced passes too (Undo). Returns the `set` to store (a new object; other keys
+ * untouched). Schemas are the cached ones; if they cannot be read, only the stored value
+ * decides (a write is never failed because the tag list was unreachable).
+ */
+export async function applyUrlRule(
+  entry: VaultEntry, tags: readonly string[], stored: Record<string, unknown> | null | undefined, set: Record<string, unknown>, noteId?: string,
+): Promise<{ set: Record<string, unknown>; invalid: string[]; /** The keys of `set` that are URL properties. */ urlKeys: string[] }> {
+  const keys = Object.keys(set).filter((k) => isFieldKey(k));
+  if (!keys.length) return { set, invalid: [], urlKeys: [] };
+  const merged = new Map<string, TagSchema>();
+  try {
+    const vault = await vaultSchemas(entry);
+    const hints = cachedHints(entry.id);
+    for (const t of tags) if (vault.has(t) || hints.has(t)) merged.set(t, presentSchema(vault.get(t), hints.get(t)));
+  } catch {
+    merged.clear();
+  }
+  const urlKeys = urlPropertyKeys(tags, merged, stored, keys);
+  if (!urlKeys.length) return { set, invalid: [], urlKeys };
+  const out: Record<string, unknown> = { ...set };
+  const invalid: string[] = [];
+  for (const k of urlKeys) {
+    const before = stored && Object.hasOwn(stored, k) ? stored[k] : null;
+    // A list of objects under a URL-named key is the structured editor's business, not text.
+    if (isStructuredValue(set[k])) continue;
+    const checked = checkUrlWrite(set[k], before);
+    if (checked.ok) out[k] = checked.value;
+    else if (noteId && isReplacedUrl(entry.id, noteId, k, set[k])) out[k] = set[k];
+    else invalid.push(k);
+  }
+  return { set: out, invalid, urlKeys };
+}
+
 // ── property writes ──────────────────────────────────────────────────────────
 
 const MAX_PROPS = 20;
@@ -1265,7 +1339,8 @@ async function writeProperties(
   opts: { structured?: boolean } = {},
 ): Promise<WriteOutcome> {
   const vc = vaultClient(entry.id);
-  const patch = stampMetadata(Object.fromEntries(entries), actor)!;
+  let patch = stampMetadata(Object.fromEntries(entries), actor)!;
+  let urlKeys: string[] = [];
   for (let attempt = 0; attempt < 2; attempt++) {
     let note: Note;
     try {
@@ -1299,6 +1374,16 @@ async function writeProperties(
     // the editor loaded (the compare-and-set below is mandatory there).
     const structured = opts.structured ? [] : refuseStructuredWrite(Object.fromEntries(entries), note.metadata ?? {});
     if (structured.length) return { ok: false, id, status: 400, error: "structured_value", reason: STRUCTURED_HINT, fields: structured };
+    // A URL property holds web addresses only — for every writer of this route (a person, an
+    // agent, the MCP tools that dispatch here), not just the editors: normalised or refused
+    // per field, `invalid_url`. Restating the stored value and Undo of a replaced value pass.
+    if (!opts.structured) {
+      const ruled = await applyUrlRule(entry, note.tags ?? [], note.metadata, Object.fromEntries(entries), id);
+      if (ruled.invalid.length) return { ok: false, id, status: 400, error: "invalid_url", reason: URL_INVALID_HINT, fields: ruled.invalid };
+      urlKeys = ruled.urlKeys;
+      entries = entries.map(([k]) => [k, ruled.set[k]] as [string, unknown]);
+      patch = stampMetadata(Object.fromEntries(entries), actor)!;
+    }
     // Per-field compare-and-set: a property someone else changed since the client
     // read it is a conflict; edits to OTHER fields (or the body) are not.
     const stale = expected.filter(([k, v]) => !same(note.metadata?.[k], v));
@@ -1326,6 +1411,12 @@ async function writeProperties(
       const prev = Date.parse(note.updatedAt ?? "");
       const next = Date.parse(updated.updatedAt ?? "");
       if (Number.isFinite(prev) && Number.isFinite(next)) markReconciled(docNameFor(entry.id, id), prev, next);
+    }
+    // What this write replaced in a URL property, when that was no web address: Undo may put it back.
+    for (const k of urlKeys) {
+      const before = note.metadata?.[k];
+      const now = entries.find(([key]) => key === k)?.[1];
+      if (before !== undefined && before !== null && !same(before, now) && !checkUrlWrite(before, null).ok) rememberReplacedUrl(entry.id, id, k, before);
     }
     treeUpsertNote(entry, updated);
     // The stored title is the page's name: open live documents look again (NP-PG-03).
