@@ -130,3 +130,22 @@ span[data-suggestion="delete"][data-color="#ef4444"] { color: var(--color-danger
 .collab-document-body > .document-formatting-bar:not([data-chrome]) .document-formatting-navigation { margin-left: -7px; }
 .collab-document-body > .document-formatting-bar .document-formatting-commands { padding-left: 0; padding-right: 0; margin-left: -6px; }
 .collab-document-body > .document-formatting-bar .document-formatting-preference { padding-left: 0; }
+
+/* The phone comments drawer (CollabDoc). It fills the screen's height; while a software keyboard is
+   open it fills the VISIBLE area instead (`lib/softKeyboard` — top = where WebKit panned the page to,
+   bottom = the keyboard), so a reply field and its Resolve / Delete buttons are never under the keys
+   and the drawer scrolls inside itself. It is `position: fixed`, outside the shell's padding, so it
+   clears the status bar and the home indicator itself. */
+.collab-comments-drawer { top: 0; bottom: 0; padding: calc(16px + env(safe-area-inset-top, 0px)) 16px calc(16px + env(safe-area-inset-bottom, 0px)); overscroll-behavior: contain; }
+html[data-soft-keyboard="open"] .collab-comments-drawer { top: var(--visual-viewport-top, 0px); bottom: var(--keyboard-inset, 0px); padding-bottom: 16px; }
+
+/* The suggest-only note above the body. Desktop: the tinted box. Phone: ONE quiet line of caption —
+   the chrome row above it already says "Suggesting", and a boxed strip there crowded the page. */
+.prism-suggest-banner { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 0 0 12px; padding: 8px 12px; border-radius: 10px; border: 1px solid var(--glass-border); background: color-mix(in srgb, var(--color-accent) 6%, transparent); font-size: 12.5px; color: var(--text-secondary); }
+.prism-suggest-banner-text { flex: 1; min-width: 200px; }
+.prism-suggest-banner-short { display: none; }
+@media (max-width: 767px) {
+  .prism-suggest-banner { margin: 2px 0 10px; padding: 0; border: 0; border-radius: 0; background: none; color: var(--text-muted); }
+  .prism-suggest-banner-long { display: none; }
+  .prism-suggest-banner-short { display: inline; }
+}

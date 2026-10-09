@@ -6,7 +6,7 @@ import { captureWriteContext, scopeKey } from "../offline/writeScope";
 import { humanCollabRevision } from "@prism/core/collab-commands";
 import { sendHumanCommand } from "./humanCommands";
 import { humanRevisionBody } from "../../../../packages/core/src/lib/collab/human/validation";
-import { PageCover, parseCover, coverPatch, COVER_GRADIENTS, type PageCoverValue } from "@prism/core";
+import { PageCover, parseCover, coverPatch, COVER_GRADIENTS, useSoftKeyboard, type PageCoverValue } from "@prism/core";
 import { COLLAB_SCHEMA_VERSION, useAgentDocumentSnapshot, CollabEditor, CommentsSidebar, CommentsRowButton, collabAffordances, humanFailureText, HumanCommandFailure, PresenceAvatars, type CollabSocketScope, type CommentCommandActions, type HumanCommandChannel, CollabCodeEditor, CollabSpreadsheet, CollabCanvas, detectCodeLanguage, inferContentType, PageHeader, NotePropertyBar, PageProperties, renamePageFromTitle, containerTitle, isContainerPath, useUIStore, useWritingFont, useAgentChatStore, type ContentFont, type Note, type Editor } from "@prism/core";
 import { MessageSquare, X, Lock } from "lucide-react";
 import { serverFetch, collabWsUrl, collabToken, isNative } from "../transport";
@@ -219,6 +219,22 @@ function ScopedCollabDoc({
   const narrow = useIsNarrow();
   // Comments shown by default on desktop, collapsed on mobile (doc gets full width).
   const [commentsOpen, setCommentsOpen] = useState(false); // closed by default; toggle in the header
+  // The phone drawer takes the focus when it opens: the document under it must not keep the caret
+  // (and with it the keyboard and the editing toolbar). While the keyboard is up, the field being
+  // typed in is kept inside the drawer's visible part.
+  const drawerRef = useRef<HTMLDivElement>(null);
+  const keyboard = useSoftKeyboard();
+  const drawerOpen = narrow && commentsOpen; // the drawer exists only for a document
+  useEffect(() => {
+    const drawer = drawerRef.current;
+    if (drawer && !drawer.contains(document.activeElement)) drawer.focus({ preventScroll: true });
+  }, [drawerOpen]);
+  useEffect(() => {
+    const active = document.activeElement;
+    if (!keyboard.open || !active || !drawerRef.current?.contains(active)) return;
+    const frame = requestAnimationFrame(() => (active.closest("[data-comment-id], .page-discussion") ?? active).scrollIntoView({ block: "nearest" }));
+    return () => cancelAnimationFrame(frame);
+  }, [drawerOpen, keyboard.open, keyboard.height, keyboard.top]);
   const [editor, setEditor] = useState<Editor | null>(null);
   const [focusedThread, setFocusedThread] = useState<string | null>(null);
   // A notification deep link (inbox → comment) opens the sidebar on that thread.
@@ -863,18 +879,23 @@ function ScopedCollabDoc({
       {showComments && narrow && commentsOpen && (
         <>
           <div onClick={() => setCommentsOpen(false)} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.45)", zIndex: 40 }} />
+          {/* `.collab-comments-drawer` (collab.css): it fills the VISIBLE area while a software keyboard
+              is open, so a reply field and its buttons stay above the keys and it scrolls inside. */}
           <div
+            ref={drawerRef}
+            role="dialog"
+            aria-label="Comments"
+            tabIndex={-1}
+            className="collab-comments-drawer"
             style={{
               position: "fixed",
-              top: 0,
               right: 0,
-              bottom: 0,
               width: "min(360px, 88vw)",
               zIndex: 41,
               background: "var(--bg-base, #0d0d0f)",
               borderLeft: "1px solid var(--glass-border)",
-              padding: 16,
               overflowY: "auto",
+              outline: "none",
             }}
           >
             <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 6 }}>

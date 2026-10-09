@@ -1,5 +1,6 @@
 import { isVaultNoteId } from "../../lib/noteIdentity";
-import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
+import { useCallback, useRef, useState, type RefObject } from "react";
+import { useSoftKeyboard } from "../../lib/softKeyboard";
 import type { ContentType } from "../../lib/types";
 import "../ui/mobile-workspace.css";
 import {
@@ -54,7 +55,9 @@ export function MobileActionBar() {
   const docFontSetter = useUIStore((s) => s.docFontSetter);
 
   const moreButton = useRef<HTMLButtonElement>(null);
-  const keyboardEditing = useKeyboardEditing();
+  // A software keyboard owns the bottom edge: the bar is hidden while one is open (`lib/softKeyboard`).
+  // Pinch zoom alone never hides navigation, and neither the editor nor its reserved inset changes.
+  const keyboardEditing = useSoftKeyboard().open;
   const [newOpen, setNewOpen] = useState(false);
   const [tabsOpen, setTabsOpen] = useState(false);
   const [moreOpen, setMoreOpen] = useState(false);
@@ -348,34 +351,4 @@ function MobileButton({
       <span>{text ?? label}</span>
     </button>
   );
-}
-
-/** Let a software-keyboard composition own the bottom edge. Pinch zoom alone
- * never hides navigation, and neither the editor nor its reserved inset changes. */
-function useKeyboardEditing() {
-  const [editing, setEditing] = useState(false);
-  useEffect(() => {
-    const vv = window.visualViewport;
-    if (!vv) return;
-    const update = () => {
-      const element = document.activeElement as HTMLElement | null;
-      const input = !!element?.closest('textarea,input,[contenteditable="true"]');
-      setEditing(
-        input && Math.abs(vv.scale - 1) < 0.05 && window.innerHeight - vv.height - vv.offsetTop > 120,
-      );
-    };
-    const focus = () => queueMicrotask(update);
-    vv.addEventListener("resize", update);
-    vv.addEventListener("scroll", update);
-    document.addEventListener("focusin", focus);
-    document.addEventListener("focusout", focus);
-    update();
-    return () => {
-      vv.removeEventListener("resize", update);
-      vv.removeEventListener("scroll", update);
-      document.removeEventListener("focusin", focus);
-      document.removeEventListener("focusout", focus);
-    };
-  }, []);
-  return editing;
 }

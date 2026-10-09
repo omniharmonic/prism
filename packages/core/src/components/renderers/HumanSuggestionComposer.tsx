@@ -62,6 +62,7 @@ export function HumanSuggestionComposer({
   kind,
   initialAction = "replace",
   anchorRect,
+  docked = false,
   onClose,
   onDone,
 }: {
@@ -71,6 +72,8 @@ export function HumanSuggestionComposer({
   kind: ComposerKind;
   initialAction?: SuggestAction | "empty";
   anchorRect: { top: number; left: number };
+  /** Touch: docked on the keyboard (`.prism-docked-composer`) instead of hanging under the selection. */
+  docked?: boolean;
   onClose: () => void;
   onDone: (message: string, result: HumanCollabResult) => void;
 }) {
@@ -164,17 +167,19 @@ export function HumanSuggestionComposer({
     <div
       role="dialog"
       aria-label={kind === "comment" ? "Comment on selection" : "Suggest an edit"}
-      className="prism-human-composer"
+      className={docked ? "prism-human-composer prism-docked-composer" : "prism-human-composer"}
       data-revision-parity={anchor?.parity}
       onKeyDown={(e) => {
         if (e.key === "Escape") onClose();
       }}
       style={{
-        position: "fixed",
-        top: Math.min(anchorRect.top, (typeof window !== "undefined" ? window.innerHeight : 800) - 300),
-        left: anchorRect.left,
-        zIndex: 60,
-        width: "min(340px, calc(100vw - 16px))",
+        ...(docked ? {} : {
+          position: "fixed" as const,
+          top: Math.min(anchorRect.top, (typeof window !== "undefined" ? window.innerHeight : 800) - 300),
+          left: anchorRect.left,
+          zIndex: 60,
+          width: "min(340px, calc(100vw - 16px))",
+        }),
         padding: 12,
         borderRadius: 12,
         border: "1px solid var(--glass-border)",

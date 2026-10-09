@@ -13,6 +13,9 @@
 //   waitUnlocked        resolves once nothing is behind the lock cover (incoming links wait on it)
 //   shareFile           UIActivityViewController for ONE exported file in the app's tmp folder
 //
+// Besides the commands: `load(webview:)` configures the web view once, including removing the
+// system's form bar from the keyboard (KeyboardAccessory) — not a command, nothing calls it.
+//
 // While the app is LOCKED, nothing here presents UI or hands anything out:
 // authenticate / confirm / verifyOwner refuse, and the lock cover is its own
 // window above every other window (sheets included).
@@ -375,6 +378,47 @@ final class AppLock: NSObject {
   }
 }
 
+// MARK: - No system form bar on the keyboard
+//
+// WKWebView puts its own bar (previous / next field, Done) on top of the keyboard for every text
+// field and editable region. Prism draws its own toolbar there (KeyboardToolbar, which has
+// "Dismiss keyboard"), so two bars were stacked. The bar is `inputAccessoryView` of the web view's
+// content view (the private WKContentView — the first responder, so the WKWebView's own
+// `inputAccessoryView` is never asked). There is no public switch for it; the established way is to
+// give THAT ONE view a runtime subclass whose `inputAccessoryView` is nil. Nothing else about the
+// view changes, no other instance and no other class is touched, and if WebKit's view hierarchy ever
+// differs the function does nothing and the system bar simply stays.
+
+private final class NoInputAccessory: NSObject {
+  @objc var inputAccessoryView: UIView? { nil }
+}
+
+enum KeyboardAccessory {
+  static func remove(from webview: WKWebView) {
+    guard
+      let content = webview.scrollView.subviews.first(where: {
+        String(describing: type(of: $0)).hasPrefix("WKContent")
+      }),
+      let contentClass: AnyClass = object_getClass(content)
+    else { return }
+    let name = "\(NSStringFromClass(contentClass))_PrismNoInputAccessory"
+    var subclass: AnyClass? = NSClassFromString(name)
+    if subclass == nil {
+      let selector = #selector(getter: NoInputAccessory.inputAccessoryView)
+      guard
+        let method = class_getInstanceMethod(NoInputAccessory.self, selector),
+        let created: AnyClass = objc_allocateClassPair(contentClass, name, 0)
+      else { return }
+      class_addMethod(created, selector, method_getImplementation(method), method_getTypeEncoding(method))
+      objc_registerClassPair(created)
+      subclass = created
+    }
+    if let subclass = subclass, object_getClass(content) != subclass {
+      object_setClass(content, subclass)
+    }
+  }
+}
+
 // MARK: - The plugin
 
 class PrismIosPlugin: Plugin, ASWebAuthenticationPresentationContextProviding, UNUserNotificationCenterDelegate {
@@ -417,6 +461,8 @@ class PrismIosPlugin: Plugin, ASWebAuthenticationPresentationContextProviding, U
     // webview itself back past the app.
     webview.allowsBackForwardNavigationGestures = false
     webview.allowsLinkPreview = false
+    // Prism's own toolbar is the one bar on the keyboard (see KeyboardAccessory below).
+    KeyboardAccessory.remove(from: webview)
   }
 
   // MARK: sign-in
