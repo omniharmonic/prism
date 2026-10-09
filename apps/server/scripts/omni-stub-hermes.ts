@@ -54,10 +54,12 @@ const stub = createHermesStub({
   key,
   bridge,
   store,
-  keepaliveMs: 15_000,
+  // Hermes writes `: keepalive` after 30 s of silence (CHAT_COMPLETIONS_SSE_KEEPALIVE_SECONDS).
+  keepaliveMs: 30_000,
   jobs: [
-    { id: "0a1b2c3d4e5f", name: "Morning brief (stub)", schedule: "0 7 * * *", enabled: true, state: "scheduled", next_run_at: "2026-10-09T13:00:00Z", last_run_at: "2026-10-08T13:00:00Z", last_status: "ok", deliver: "omni" },
-    { id: "f5e4d3c2b1a0", name: "Inbox sweep (stub)", schedule: "*/30 * * * *", enabled: false, state: "paused", next_run_at: null, last_run_at: "2026-10-07T18:30:00Z", last_status: "error", last_error: "stub: a made-up failure", deliver: "omni" },
+    // Hermes' own job shape: `schedule` is an object; a paused job is disabled.
+    { id: "0a1b2c3d4e5f", name: "Morning brief (stub)", prompt: "Write the morning brief.", skills: [], skill: null, schedule: { kind: "cron", expr: "0 7 * * *", display: "0 7 * * *" }, schedule_display: "0 7 * * *", enabled: true, state: "scheduled", paused_at: null, next_run_at: "2026-10-09T07:00:00-06:00", last_run_at: "2026-10-08T07:00:00-06:00", last_status: "ok", last_error: null, deliver: "local" },
+    { id: "f5e4d3c2b1a0", name: "Inbox sweep (stub)", prompt: "Sweep the inbox.", skills: [], skill: null, schedule: { kind: "interval", minutes: 30, display: "every 30m" }, schedule_display: "every 30m", enabled: false, state: "paused", paused_at: "2026-10-07T12:30:00-06:00", next_run_at: "2026-10-07T13:00:00-06:00", last_run_at: "2026-10-07T12:30:00-06:00", last_status: "error", last_error: "stub: a made-up failure", deliver: "local" },
   ],
   log: quiet ? undefined : (line) => console.log(`[stub-hermes] ${line}`),
 });

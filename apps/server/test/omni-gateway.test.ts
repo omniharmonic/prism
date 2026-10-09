@@ -7,6 +7,8 @@ import { test, beforeEach, after } from "node:test";
 import assert from "node:assert/strict";
 
 process.env.OMNI_ENABLED = "true";
+// A cancel keeps asking Hermes to stop; in tests it gives up quickly.
+process.env.OMNI_HERMES_STOP_RETRY_MS = "1500";
 process.env.OMNI_HERMES_URL = "http://127.0.0.1:8642";
 process.env.OMNI_HERMES_KEY = "hermes-test-key-0123456789";
 process.env.OMNI_SERVICE_TOKEN = "omni-service-token-0123456789";
@@ -16,15 +18,17 @@ import { omniApi, setOmniExecutorForTests } from "../src/routes/omni";
 import { setHermesFetchForTests } from "../src/omni/hermes-client";
 import { setOmniRecordSourcesForTests, type NoteMeta } from "../src/omni/records";
 import { setOmniPusherForTests } from "../src/omni/bus";
-import { turnSettled } from "../src/omni/turns";
-import { eventsAfter, getTurn, getThread, auditRows, resetOmniStoreForTests } from "../src/omni/store";
+import { turnSettled, stopOrphanedRuns } from "../src/omni/turns";
+import { eventsAfter, getTurn, getThread, auditRows, resetOmniStoreForTests, runningRunIds } from "../src/omni/store";
 import { approvalDigest, canonicalJson, type Executor } from "../src/omni/approvals";
 import { INPROCESS_ACTOR, INPROCESS_CLIENT_KEY } from "../src/auth/actor";
 import { issueDeviceToken } from "../src/auth/device";
 import { setMembership } from "../src/db";
 import { resetDb, makeSession, sessionCookie, makeCapability } from "./helpers";
 import type { TreeChange } from "../src/tree";
-import { createHermesStub, type HermesStub, type StubFrame } from "../scripts/lib/hermes-stub";
+import { createHermesStub, type HermesStub, type StubAct, type StubFrame, type StubTurn } from "../scripts/lib/hermes-stub";
+import { resetOmniPresenceForTests } from "../src/routes/omni";
+import { HermesNormalizer, toolFailed, createdIdOf, errorCodeOf, toolRowsOf } from "../src/omni/stream";
 
 const J = { "content-type": "application/json" };
 const owner = () => ({ ...J, cookie: sessionCookie(makeSession(config.ownerEmail)) });
@@ -36,15 +40,15 @@ const key = () => `omni-test-key-${Date.now()}-${++keyN}`;
 
 // The routes, the bearer check and the SSE encoding are the SAME stub the laptop dev
 // gateway runs against (scripts/lib/hermes-stub.ts) — here handed to the client's fetch
-// seam, with the frames each test scripts.
+// seam, with the turn each test scripts (what the agent says and which tools it calls; the
+// stub turns that into the frames and the transcript rows a real Hermes produces).
 
-type Frame = StubFrame;
 interface Fake {
   calls: Array<{ method: string; path: string; auth: string | null; body: unknown }>;
   sessions: HermesStub["sessions"];
-  /** Frames the next chat/stream answers with. `hold` = keep the stream open until stopped. */
-  frames: Frame[];
-  hold: boolean;
+  stub: HermesStub;
+  /** What the next chat/stream does. */
+  turn: StubTurn;
   status: number | null;
   throwNext: boolean;
   jobs: Array<Record<string, unknown>>;
@@ -55,11 +59,10 @@ function installHermes(): void {
   const stub = createHermesStub({
     key: process.env.OMNI_HERMES_KEY!,
     runId: () => "run_abc123",
-    script: () => ({ steps: fake.frames.map((frame) => ({ frame })), end: fake.hold ? "hold" : "close" }),
-    messages: () => [{ id: 1, role: "user", content: "hi", timestamp: 1700000000 }, { id: 2, role: "tool", tool_name: "prism_update_note", content: "RAW TOOL OUTPUT secret" }, { id: 3, role: "assistant", content: "done", timestamp: 1700000001 }],
-    jobs: [{ id: "abcdef012345", name: "Brief", schedule: "0 7 * * *", enabled: true, secret_field: "x" }],
+    script: () => fake.turn,
+    jobs: [{ id: "abcdef012345", name: "Brief", schedule: { kind: "cron", expr: "0 7 * * *", display: "0 7 * * *" }, enabled: true, secret_field: "x" }],
   });
-  fake = { calls: [], sessions: stub.sessions, frames: [], hold: false, status: null, throwNext: false, jobs: stub.jobs };
+  fake = { calls: [], sessions: stub.sessions, stub, turn: { acts: [] }, status: null, throwNext: false, jobs: stub.jobs };
   setHermesFetchForTests(async (url, init) => {
     const u = new URL(url);
     const body = init.body ? JSON.parse(String(init.body)) : undefined;
@@ -83,6 +86,7 @@ let execCalls: Array<Parameters<Executor>[0]>;
 beforeEach(() => {
   resetDb();
   resetOmniStoreForTests();
+  resetOmniPresenceForTests();
   installHermes();
   notes.clear();
   notes.set("n1", { id: "n1", path: "vault/tasks/call-dana", tags: ["task"], title: "Call Dana Friday", updatedAt: "2026-10-08T10:00:00Z" });
@@ -112,10 +116,17 @@ const req = (path: string, init: RequestInit = {}, env?: Record<symbol, unknown>
 const post = (path: string, body: unknown, headers: Record<string, string> = owner(), env?: Record<symbol, unknown>) =>
   req(path, { method: "POST", headers, body: JSON.stringify(body) }, env);
 
-async function newThread(frames: Frame[], hold = false): Promise<{ id: string; turnId: string }> {
-  fake.frames = frames;
-  fake.hold = hold;
-  const r = await post("/threads", { prompt: "Create a task to call Dana Friday" });
+const say = (text: string): StubAct => ({ say: text });
+/** A tool call and the result Hermes stores for it (default: a success). */
+const tool = (name: string, args: Record<string, unknown> = {}, result: string = JSON.stringify({ result: "ok" })): StubAct => ({ tool: name, args, result });
+const raw = (event: string, data: Record<string, unknown> = {}): StubAct => ({ frame: [event, data] as StubFrame });
+const turnOf = (t: StubTurn | StubAct[]): StubTurn => (Array.isArray(t) ? { acts: t } : t);
+/** A run that says something and stays open until it is stopped. */
+const HELD: StubTurn = { acts: [say("thinking")], end: "hold" };
+
+async function newThread(turn: StubTurn | StubAct[], prompt = "Create a task to call Dana Friday"): Promise<{ id: string; turnId: string }> {
+  fake.turn = turnOf(turn);
+  const r = await post("/threads", { prompt });
   assert.equal(r.status, 201);
   const j = (await r.json()) as { thread: { id: string }; turnId: string };
   return { id: j.thread.id, turnId: j.turnId };
@@ -166,18 +177,12 @@ test("mutations need JSON + same origin (live-actions CSRF guard); device tokens
 
 // ── threads + streaming + cards ─────────────────────────────────────────────
 
-const happy: Frame[] = [
-  ["run.started", {}],
-  ["message.started", {}],
-  ["assistant.delta", { delta: "Creat" }],
-  ["assistant.delta", { delta: "ing…" }],
-  ["tool.started", { tool_name: "mcp__prism__prism_update_note", args: { id: "n1", if_updated_at: "x", metadata: { status: "pending", due: "2026-10-10" }, api_key: "sk-supersecretvalue1234567890" } }],
-  ["tool.completed", { tool_name: "mcp__prism__prism_update_note", preview: "ok" }],
-  ["tool.started", { tool_name: "mcp__prism__prism_delete_note", args: { id: "n2" } }],
-  ["tool.failed", { tool_name: "mcp__prism__prism_delete_note", preview: "forbidden" }],
-  ["assistant.completed", { content: "Done — I set the due date." }],
-  ["run.completed", { usage: {} }],
-  ["done", {}],
+const happy: StubAct[] = [
+  say("Creating…"),
+  tool("mcp__prism__prism_update_note", { id: "n1", if_updated_at: "x", metadata: { status: "pending", due: "2026-10-10" }, api_key: "sk-supersecretvalue1234567890" }, JSON.stringify({ result: "RAW TOOL OUTPUT secret" })),
+  // The delete FAILS. Hermes' stream says `tool.completed` all the same; only the row differs.
+  tool("mcp__prism__prism_delete_note", { id: "n2" }, JSON.stringify({ error: "RAW TOOL OUTPUT forbidden" })),
+  say("Done — I set the due date."),
 ];
 
 test("create a thread: Hermes session + streamed turn → normalized, persisted events + a record card", async () => {
@@ -189,11 +194,15 @@ test("create a thread: Hermes session + streamed turn → normalized, persisted 
   const chat = fake.calls.find((c) => c.path.endsWith("/chat/stream"))!;
   assert.deepEqual(chat.body, { message: "Create a task to call Dana Friday" });
   const ev = events(id);
-  assert.deepEqual(ev.map((e) => e.t), ["status", "init", "tool_use", "tool_result", "card", "tool_use", "tool_result", "text", "result", "status"]);
+  // text: what the model said before its first tool. Each write tool's row is read right
+  // after it completes: the update is carded, the delete's `ok` is corrected to false.
+  assert.deepEqual(ev.map((e) => e.t), ["status", "init", "text", "tool_use", "tool_result", "card", "tool_use", "tool_result", "tool_result", "text", "result", "status"]);
   assert.ok(!ev.some((e) => e.t === "text_delta"), "deltas are never persisted");
-  const tool = ev[2]! as { input: Record<string, unknown> };
-  assert.equal(tool.input.api_key, "[redacted]");
-  const card = (ev[4]! as { card: Record<string, unknown> }).card;
+  assert.deepEqual(ev[2], { t: "text", blockId: `${turnId}:b0`, text: "Creating…" });
+  const use = ev[3]! as { name: string; input: Record<string, unknown> };
+  assert.equal(use.name, "prism_update_note");
+  assert.equal(use.input.api_key, "[redacted]");
+  const card = (ev[5]! as { card: Record<string, unknown> }).card;
   assert.equal(card.noteId, "n1");
   assert.equal(card.op, "updated");
   assert.equal(card.type, "task");
@@ -201,10 +210,11 @@ test("create a thread: Hermes session + streamed turn → normalized, persisted 
   assert.deepEqual(card.changedKeys, ["status", "due"]);
   assert.deepEqual(card.writer, { kind: "agent", label: "Omni" });
   assert.deepEqual(card.links, { prism: `${config.appOrigin}/page/n1`, prismApp: "prism://page/n1", omni: "omni://record/n1" });
-  assert.equal((ev[6] as { ok: boolean }).ok, false, "failed delete reported");
+  assert.deepEqual([ev[7], ev[8]].map((e) => [(e as { toolUseId: string }).toolUseId, (e as { ok: boolean }).ok]), [[`${turnId}:t2`, true], [`${turnId}:t2`, false]], "the failed delete: announced ok, then corrected from its row");
   assert.equal(ev.filter((e) => e.t === "card").length, 1, "a FAILED write yields no card");
-  assert.deepEqual(ev[7], { t: "text", blockId: `${turnId}:b0`, text: "Done — I set the due date." });
-  assert.equal((ev[8] as { ok: boolean }).ok, true);
+  assert.deepEqual(ev[9], { t: "text", blockId: `${turnId}:b1`, text: "Done — I set the due date." });
+  assert.equal((ev[10] as { ok: boolean }).ok, true);
+  assert.ok(!JSON.stringify(ev).includes("RAW TOOL OUTPUT"), "a tool's result is read, never forwarded");
   assert.equal(getTurn(turnId)!.status, "done");
   assert.equal(getTurn(turnId)!.runId, "run_abc123");
   assert.equal(getThread(id)!.state, "done");
@@ -215,17 +225,25 @@ test("create a thread: Hermes session + streamed turn → normalized, persisted 
   assert.equal(s.status, 200);
   const text = await s.text();
   assert.ok(!text.includes("id: 1\n") && !text.includes("id: 2\n"));
-  assert.match(text, /event: tool_use\ndata: \{"seq":3,.*\nid: 3\n/);
-  assert.match(text, /event: card\ndata: \{"seq":5/);
+  assert.match(text, /event: tool_use\ndata: \{"seq":4,.*\nid: 4\n/);
+  assert.match(text, /event: card\ndata: \{"seq":6/);
   assert.match(text, /event: status\ndata: .*"state":"done"/);
 
-  // Thread detail: Hermes messages (tool rows keep the NAME only), cards, approvals.
+  // Thread detail: Hermes messages (tool rows keep the NAME only), cards, approvals. The
+  // assistant row that only carried the second tool call has no text and is left out.
   const d = await req(`/threads/${id}`, { headers: owner() });
   const dj = (await d.json()) as { thread: { state: string; running: boolean }; messages: Array<Record<string, unknown>>; cards: unknown[] };
   assert.equal(dj.thread.state, "done");
   assert.equal(dj.thread.running, false);
   assert.equal(dj.cards.length, 1);
-  assert.deepEqual(dj.messages[1], { id: 2, role: "tool", toolName: "prism_update_note", at: null });
+  assert.deepEqual(dj.messages.map((m) => [m.role, m.text ?? m.toolName]), [
+    ["user", "Create a task to call Dana Friday"],
+    ["assistant", "Creating…"],
+    ["tool", "prism_update_note"],
+    ["tool", "prism_delete_note"],
+    ["assistant", "Done — I set the due date."],
+  ]);
+  assert.deepEqual(Object.keys(dj.messages[2]!).sort(), ["at", "id", "role", "toolName"]);
   assert.ok(!JSON.stringify(dj).includes("RAW TOOL OUTPUT"));
   // List merges Hermes sessions with local metadata.
   const l = (await (await req("/threads?state=done", { headers: owner() })).json()) as { threads: Array<{ id: string }>; hermes: string };
@@ -233,26 +251,110 @@ test("create a thread: Hermes session + streamed turn → normalized, persisted 
   assert.deepEqual(l.threads.map((t) => t.id), [id]);
 });
 
+test("the stream as Hermes really sends it: no tool.failed, no run.failed, the error text as the answer", async () => {
+  // A failed model call after one tool: `assistant.completed` carries Hermes' error text and
+  // `run.completed.messages` ends with the tool row — no answer. The text must not be shown.
+  const { id, turnId } = await newThread({ acts: [say("One moment. "), tool("read_file", { path: "/x" }, JSON.stringify({ content: "", error: "File not found: /x" }))], end: "fail", failText: "API call failed after 3 retries: HTTP 429: rate limit exceeded for sk-abc" });
+  await turnSettled(turnId);
+  const ev = events(id);
+  assert.deepEqual(ev.map((e) => e.t), ["status", "init", "text", "tool_use", "tool_result", "tool_result", "result", "status"]);
+  assert.deepEqual(ev.filter((e) => e.t === "tool_result").map((e) => (e as { ok: boolean }).ok), [true, false], "a read tool's failure is learned when the run ends");
+  assert.deepEqual([ev[6]!.ok, ev[6]!.errorCode], [false, "usage_limit"]);
+  assert.ok(!JSON.stringify(ev).includes("rate limit exceeded"), "Hermes' error text is classified, never forwarded");
+  assert.equal(getTurn(turnId)!.status, "error");
+  assert.equal(getThread(id)!.state, "needs-you");
+});
+
+test("names this Hermes version never sends are still understood (other surfaces, other versions)", async () => {
+  const { id, turnId } = await newThread([
+    raw("run.queued"),
+    raw("assistant.commentary", { text: "Let me check." }),
+    raw("tool.started", { tool_name: "mcp__prism__prism_delete_note", args: { id: "n2" } }),
+    raw("tool.failed", { tool_name: "mcp__prism__prism_delete_note", preview: "forbidden" }),
+    raw("approval.request", { command: "rm" }),
+    raw("run.failed", { code: "max_iterations" }),
+  ]);
+  await turnSettled(turnId);
+  const ev = events(id);
+  assert.deepEqual(ev.map((e) => e.t), ["status", "init", "status", "text", "tool_use", "tool_result", "status", "result", "status"]);
+  assert.equal(ev[2]!.reason, "queued");
+  assert.deepEqual([ev[5]!.ok, ev[5]!.summary], [false, "forbidden"]);
+  assert.equal(ev[6]!.reason, "hermes_approval_requested");
+  assert.equal(ev[7]!.errorCode, "iteration_limit");
+  assert.ok(!ev.some((e) => e.t === "card"));
+});
+
+test("stream.ts units: Hermes' failure rule, a created id, error codes, tool rows, pairing by arguments", () => {
+  // Hermes' own rule (agent/display.py `_detect_tool_failure`).
+  assert.equal(toolFailed("terminal", JSON.stringify({ output: "", exit_code: 1, error: null })), true);
+  assert.equal(toolFailed("terminal", JSON.stringify({ output: "error: nothing", exit_code: 0 })), false, "a terminal is judged by its exit code");
+  assert.equal(toolFailed("terminal", JSON.stringify({ error: "blocked by a plugin" })), true);
+  assert.equal(toolFailed("read_file", JSON.stringify({ content: "", error: "File not found" })), true);
+  assert.equal(toolFailed("memory", JSON.stringify({ success: false, message: "full" })), true);
+  assert.equal(toolFailed("mcp__vault__create_note", JSON.stringify({ result: JSON.stringify({ id: "n1" }) })), false);
+  assert.equal(toolFailed("x", "Error: boom"), true);
+  assert.equal(toolFailed("x", JSON.stringify({ result: "3 notes" })), false);
+  // A create's id, through Hermes' `{"result": "<the MCP tool's text>"}` wrapping.
+  assert.equal(createdIdOf(JSON.stringify({ result: JSON.stringify({ id: "01JABC", path: "a/b" }) })), "01JABC");
+  assert.equal(createdIdOf(JSON.stringify({ result: JSON.stringify({ note: { id: "n-7" } }) })), "n-7");
+  assert.equal(createdIdOf(JSON.stringify({ result: "created" })), undefined);
+  assert.equal(createdIdOf("not json"), undefined);
+  // Codes from Hermes' text (never forwarded).
+  const code = (t: string) => errorCodeOf({}, t);
+  assert.equal(code("HTTP 401: Incorrect API key provided"), "auth");
+  assert.equal(code("⚠️ Provider authentication failed: no credentials"), "auth");
+  assert.equal(code("API call failed after 3 retries: HTTP 429: slow down"), "usage_limit");
+  assert.equal(code("HTTP 402: insufficient credits"), "budget");
+  assert.equal(code("API call failed after 3 retries: Request timed out."), "timeout");
+  assert.equal(code("API call failed after 3 retries: HTTP 500: upstream"), "agent_failed");
+  assert.equal(code("The author of this note is unknown"), "agent_failed", "`author` is not `auth`");
+  assert.equal(errorCodeOf({ code: "auth_failed" }), "auth");
+  // Rows: the call (assistant.tool_calls) and its result (role tool), joined by id. The
+  // transcript stores tool_calls as a list; a JSON string of one is read too.
+  const rows = toolRowsOf([
+    { role: "assistant", content: "", tool_calls: JSON.stringify([{ id: "call_1", function: { name: "t", arguments: '{"a":1}' } }, { id: "call_2", function: { name: "t", arguments: '{"a":2}' } }]) },
+    { role: "tool", tool_call_id: "call_1", tool_name: "t", content: '{"error":"no"}' },
+    { role: "tool", tool_call_id: "call_2", content: '{"result":"ok"}' },
+  ]);
+  assert.deepEqual(rows, [{ callId: "call_1", name: "t", args: { a: 1 }, content: '{"error":"no"}' }, { callId: "call_2", name: "t", args: { a: 2 }, content: '{"result":"ok"}' }]);
+  // Tool search: the stored call is the `tool_call` bridge; the row names the real tool.
+  assert.deepEqual(
+    toolRowsOf([
+      { role: "assistant", tool_calls: [{ id: "call_9", function: { name: "tool_call", arguments: JSON.stringify({ name: "omni_propose", arguments: { kind: "tweet" } }) } }] },
+      { role: "tool", tool_call_id: "call_9", tool_name: "omni_propose", content: "{}" },
+    ]),
+    [{ callId: "call_9", name: "omni_propose", args: { kind: "tweet" }, content: "{}" }],
+  );
+  // Two calls of one tool, completed in the other order: rows are paired by their arguments.
+  const n = new HermesNormalizer("turn_x");
+  const f = (event: string, data: Record<string, unknown>) => n.push({ event, data });
+  f("tool.started", { tool_name: "t", args: { a: 2 } });
+  f("tool.started", { tool_name: "t", args: { a: 1 } });
+  const fixes = n.reconcile(rows, true);
+  assert.deepEqual(fixes, [{ t: "tool_result", toolUseId: "turn_x:t2", ok: false, summary: "" }, { t: "tool_result", toolUseId: "turn_x:t1", ok: true, summary: "" }]);
+  assert.deepEqual(n.reconcile(rows, true), [], "a row is used once");
+});
+
 test("a create by path resolves through the tree; a create without one is matched from the tree feed", async () => {
   notes.set("n3", { id: "n3", path: "vault/tasks/buy-milk", tags: ["task"], title: "Buy milk" });
+  notes.set("n4", { id: "n4", path: "vault/inbox/untitled", tags: ["capture"], title: "A capture" });
   const { id, turnId } = await newThread([
-    ["run.started", {}],
-    ["tool.started", { tool_name: "mcp__prism__prism_create_note", args: { path: "vault/tasks/buy-milk", tags: ["task"], content: "x" } }],
-    ["tool.completed", { tool_name: "mcp__prism__prism_create_note" }],
-    ["tool.started", { tool_name: "mcp__parachute_vault__create_note", args: { tags: ["idea"], metadata: { title: "Kelp farm" }, content: "y" } }],
-    ["tool.completed", { tool_name: "mcp__parachute_vault__create_note" }],
-    ["run.completed", {}],
+    tool("mcp__prism__prism_create_note", { path: "vault/tasks/buy-milk", tags: ["task"], content: "x" }),
+    // The tool's own result names the new note: no path and no tree feed are needed.
+    tool("mcp__parachute__create_note", { content: "z" }, JSON.stringify({ result: JSON.stringify({ id: "n4", path: "vault/inbox/untitled" }) })),
+    tool("mcp__parachute_vault__create_note", { tags: ["idea"], metadata: { title: "Kelp farm" }, content: "y" }, JSON.stringify({ result: "created" })),
+    say("Three notes."),
   ]);
   await turnSettled(turnId);
   let cards = events(id).filter((e) => e.t === "card").map((e) => (e as { card: Record<string, unknown> }).card);
-  assert.deepEqual(cards.map((c) => [c.noteId, c.op]), [["n3", "created"]]);
+  assert.deepEqual(cards.map((c) => [c.noteId, c.op]), [["n3", "created"], ["n4", "created"]]);
   assert.ok(treeListener, "an unresolved create watches the tree");
   // An unrelated row (other tags) is NOT attributed; the matching new row is.
   const row = (o: Partial<{ id: string; path: string; tags: string[]; title: string }>) => ({ id: "x", path: null, tags: [], updatedAt: null, creator: null, visibility: "workspace" as const, ...o });
   treeListener!({ kind: "upsert", row: row({ id: "zz", path: "vault/inbox/kelp", tags: ["email"], title: "Kelp farm" }), prev: undefined });
   treeListener!({ kind: "upsert", row: row({ id: "n9", path: "vault/ideas/kelp-farm", tags: ["idea"], title: "Kelp farm" }), prev: undefined });
   cards = events(id).filter((e) => e.t === "card").map((e) => (e as { card: Record<string, unknown> }).card);
-  assert.deepEqual(cards.map((c) => [c.noteId, c.op, (c.writer as { kind: string }).kind]), [["n3", "created", "agent"], ["n9", "created", "external"]]);
+  assert.deepEqual(cards.map((c) => [c.noteId, c.op, (c.writer as { kind: string }).kind]), [["n3", "created", "agent"], ["n4", "created", "external"], ["n9", "created", "external"]]);
 });
 
 test("Hermes failures map to codes: refused key, unreachable, not configured", async () => {
@@ -274,8 +376,8 @@ test("Hermes failures map to codes: refused key, unreachable, not configured", a
   } finally {
     process.env.OMNI_HERMES_KEY = saved;
   }
-  // A stream that fails mid-way ends the turn with a code, never Hermes' message.
-  const { id, turnId } = await newThread([["run.started", {}], ["error", { message: "OAuth token revoked for sk-abc", code: "auth_failed" }]]);
+  // Hermes itself throwing mid-turn (`error {message}`) ends the turn with a code, never its message.
+  const { id, turnId } = await newThread({ acts: [], end: "raise", failText: "OAuth token revoked for sk-abc" });
   await turnSettled(turnId);
   const res = events(id).find((e) => e.t === "result") as Record<string, unknown>;
   assert.equal(res.ok, false);
@@ -286,7 +388,7 @@ test("Hermes failures map to codes: refused key, unreachable, not configured", a
 });
 
 test("one turn at a time; idempotent replay; cancel stops the Hermes run", async () => {
-  const { id, turnId } = await newThread([["run.started", {}], ["assistant.delta", { delta: "thinking" }]], true);
+  const { id, turnId } = await newThread(HELD);
   await new Promise((r) => setTimeout(r, 20));
   const busy = await post(`/threads/${id}/turns`, { text: "and another" }, { ...owner(), "idempotency-key": key() });
   assert.equal(busy.status, 409);
@@ -299,8 +401,7 @@ test("one turn at a time; idempotent replay; cancel stops the Hermes run", async
   assert.equal((events(id).find((e) => e.t === "result") as { errorCode: string }).errorCode, "cancelled");
   assert.equal(getThread(id)!.state, "waiting");
   // Idempotency: the same key replays the first turn instead of starting a second.
-  fake.frames = [["run.started", {}], ["run.completed", {}]];
-  fake.hold = false;
+  fake.turn = { acts: [say("ok")] };
   const k = key();
   const t1 = await post(`/threads/${id}/turns`, { text: "next" }, { ...owner(), "idempotency-key": k });
   assert.equal(t1.status, 202);
@@ -313,9 +414,9 @@ test("one turn at a time; idempotent replay; cancel stops the Hermes run", async
 });
 
 test("replay across several finished turns is complete (an earlier turn's status does not end the stream)", async () => {
-  const { id, turnId } = await newThread([["run.started", {}], ["assistant.completed", { content: "one" }], ["run.completed", {}]]);
+  const { id, turnId } = await newThread([say("one")]);
   await turnSettled(turnId);
-  fake.frames = [["run.started", {}], ["assistant.completed", { content: "two" }], ["run.completed", {}]];
+  fake.turn = { acts: [say("two")] };
   const t2 = await post(`/threads/${id}/turns`, { text: "next" }, { ...owner(), "idempotency-key": key() });
   await turnSettled(((await t2.json()) as { turnId: string }).turnId);
   const stored = eventsAfter(id, 0).map((e) => e.seq);
@@ -326,8 +427,7 @@ test("replay across several finished turns is complete (an earlier turn's status
   const tail = await (await req(`/threads/${id}/stream?after=3`, { headers: owner() })).text();
   assert.deepEqual(seqs(tail), stored.filter((s) => s > 3), "…and so does a reconnect from inside the first turn");
   // A replay requested while a later turn runs carries the history AND follows the live turn to its end.
-  fake.frames = [["run.started", {}]];
-  fake.hold = true;
+  fake.turn = { acts: [], end: "hold" };
   const t3 = ((await (await post(`/threads/${id}/turns`, { text: "third" }, { ...owner(), "idempotency-key": key() })).json()) as { turnId: string }).turnId;
   await new Promise((r) => setTimeout(r, 20));
   const live = req(`/threads/${id}/stream?after=0`, { headers: owner() });
@@ -400,7 +500,7 @@ test("decide send: executes ONCE through the executor; replay with the same key;
     execCalls.push(o);
     return { status: "sent", detail: { executor: "prism-live-actions:email", httpStatus: 200 } };
   });
-  const { id: threadId, turnId } = await newThread([["run.started", {}], ["run.completed", {}]]);
+  const { id: threadId, turnId } = await newThread([say("ok")]);
   await turnSettled(turnId);
   const p = await propose("email", draft, threadId);
   const k = key();
@@ -451,11 +551,20 @@ test("agent-initiated turn: unread + an ids-only push + a notice on /events", as
   assert.deepEqual(pushes, [["OMNI_THREAD", "api_1700_abcd1234"]]);
   const l = (await (await req("/threads", { headers: owner() })).json()) as { threads: Array<{ id: string; unread: number; title: string }> };
   assert.deepEqual(l.threads.map((t) => [t.id, t.unread, t.title]), [["api_1700_abcd1234", 1, "Heartbeat"]]);
+  // While the app's own turn runs on a thread, a notice for it is not news: no unread, no push.
+  const live = await newThread(HELD);
+  await new Promise((res) => setTimeout(res, 20));
+  pushes.length = 0;
+  const quiet = await post("/hooks/turn", { sessionId: live.id }, hook);
+  assert.deepEqual([quiet.status, await quiet.json()], [202, { ok: true, threadId: live.id, ignored: "turn_running" }]);
+  assert.deepEqual([getThread(live.id)!.unread, pushes], [0, []]);
+  await post(`/turns/${live.turnId}/cancel`, {});
+  await turnSettled(live.turnId);
 });
 
 test("jobs: list (allowlisted fields) and pause through Hermes; bad ids never reach it", async () => {
   const l = (await (await req("/jobs", { headers: owner() })).json()) as { jobs: Array<Record<string, unknown>> };
-  assert.deepEqual(l.jobs, [{ id: "abcdef012345", name: "Brief", schedule: "0 7 * * *", enabled: true }]);
+  assert.deepEqual(l.jobs, [{ id: "abcdef012345", name: "Brief", schedule: { kind: "cron", expr: "0 7 * * *", display: "0 7 * * *" }, enabled: true }]);
   const p = await post("/jobs/abcdef012345/pause", {});
   assert.equal(p.status, 200);
   assert.equal(((await p.json()) as { job: { enabled: boolean } }).job.enabled, false);
@@ -479,7 +588,7 @@ test("today degrades per section: approvals + in-flight still answer when the qu
 
 // ── first-run fix: a thread Hermes no longer has ────────────────────────────────────────
 
-const DONE: Frame[] = [["run.started", {}], ["assistant.completed", { content: "ok" }], ["run.completed", {}], ["done", {}]];
+const DONE: StubAct[] = [say("ok")];
 type ListedThread = { id: string; gone: boolean; archived: boolean; title: string | null };
 const listThreadsOf = async (q = "") => ((await (await req(`/threads${q}`, { headers: owner() })).json()) as { threads: ListedThread[]; hermes: string });
 
@@ -535,9 +644,149 @@ test("gone is only claimed on proof: not while Hermes is unreachable, not from a
   for (let i = 0; i < 201; i++) fake.sessions.delete(`api_${i}_abcd1234`);
   assert.equal((await listThreadsOf()).threads.find((t) => t.id === a.id)?.gone, true);
   // A thread whose turn is running here is alive, whatever the list says.
-  const live = await newThread([["run.started", {}]], true);
+  const live = await newThread({ acts: [], end: "hold" });
   fake.sessions.delete(live.id);
   assert.equal((await listThreadsOf()).threads.find((t) => t.id === live.id)?.gone, false);
   await post(`/turns/${live.turnId}/cancel`, {});
   await turnSettled(live.turnId);
+});
+
+// ── what a real Hermes does that the first stub did not (v0.20.5, scripts/omni-contract.ts) ──
+
+test("titles: Hermes wants them unique and ≤ 100 characters — the gateway keeps its own and never fails for it", async () => {
+  const a = await newThread(DONE, "Call Dana");
+  await turnSettled(a.turnId);
+  const b = await newThread(DONE, "Call Dana");
+  await turnSettled(b.turnId);
+  const creates = fake.calls.filter((c) => c.method === "POST" && c.path === "/api/sessions").map((c) => (c.body as { title?: string }).title);
+  assert.deepEqual(creates, ["Call Dana", "Call Dana", undefined], "refused for its title (invalid_title), then created untitled");
+  assert.equal(fake.sessions.get(b.id)!.title, null);
+  const l = await listThreadsOf();
+  assert.deepEqual(l.threads.map((t) => t.title), ["Call Dana", "Call Dana"], "both threads carry the title the person gave");
+  // Renaming to a title another session has: Hermes refuses, the gateway's row takes it; the pin still reaches Hermes.
+  const r = await req(`/threads/${b.id}`, { method: "PATCH", headers: owner(), body: JSON.stringify({ title: "Call Dana", pinned: true }) });
+  assert.equal(r.status, 200);
+  const t = ((await r.json()) as { thread: { title: string; pinned: boolean } }).thread;
+  assert.deepEqual([t.title, t.pinned], ["Call Dana", true]);
+  assert.equal(fake.sessions.get(b.id)!.pinned, true);
+  // A long title: Hermes gets its first 100 characters, the gateway the whole of it.
+  const long = "x".repeat(150);
+  const r2 = await req(`/threads/${a.id}`, { method: "PATCH", headers: owner(), body: JSON.stringify({ title: long }) });
+  assert.equal(((await r2.json()) as { thread: { title: string } }).thread.title, long);
+  assert.equal(String(fake.sessions.get(a.id)!.title).length, 100);
+});
+
+test("an archived thread is not `gone`: Hermes leaves archived sessions out of its list (and archives old ones itself)", async () => {
+  const a = await newThread(DONE);
+  await turnSettled(a.turnId);
+  const b = await newThread(DONE);
+  await turnSettled(b.turnId);
+  // Archived from the app.
+  assert.equal((await req(`/threads/${a.id}`, { method: "PATCH", headers: owner(), body: JSON.stringify({ archived: true }) })).status, 200);
+  assert.equal(fake.sessions.get(a.id)!.archived, true);
+  // Archived by Hermes on its own (its auto-archive sweep): the gateway's row does not know.
+  fake.sessions.get(b.id)!.archived = true;
+  assert.deepEqual((await listThreadsOf()).threads.map((t) => t.id), [], "neither is in the default list");
+  const all = (await listThreadsOf("?archived=1")).threads;
+  assert.deepEqual(all.map((t) => [t.id, t.gone, t.archived]).sort(), [[a.id, false, true], [b.id, false, true]].sort(), "both are there, archived, not gone");
+  // Opening one still works, and un-archiving brings it back.
+  assert.equal((await req(`/threads/${b.id}`, { headers: owner() })).status, 200);
+  assert.equal((await req(`/threads/${b.id}`, { method: "PATCH", headers: owner(), body: JSON.stringify({ archived: false }) })).status, 200);
+  assert.deepEqual((await listThreadsOf()).threads.map((t) => [t.id, t.gone]), [[b.id, false]]);
+  // The lookups are remembered: a polled list does not ask Hermes again for every archived thread.
+  const before = fake.calls.length;
+  await listThreadsOf("?archived=1");
+  await listThreadsOf("?archived=1");
+  assert.deepEqual(fake.calls.slice(before).map((c) => c.path.split("?")[0]), ["/api/sessions", "/api/sessions"]);
+});
+
+test("jobs: a skill goes to Hermes as `skills`; a job Hermes will not take is the request's fault (400), not an outage", async () => {
+  const r = await post("/jobs", { name: "Brief", schedule: "0 7 * * *", skill: "omni-briefing" });
+  assert.equal(r.status, 201);
+  const sent = fake.calls.find((c) => c.method === "POST" && c.path === "/api/jobs")!.body as Record<string, unknown>;
+  assert.deepEqual(sent, { name: "Brief", schedule: "0 7 * * *", skills: ["omni-briefing"] });
+  const job = ((await r.json()) as { job: { schedule: { display: string }; skills: string[]; state: string } }).job;
+  assert.deepEqual([job.schedule.display, job.skills, job.state], ["0 7 * * *", ["omni-briefing"], "scheduled"]);
+  const bad = await post("/jobs", { name: "Brief", schedule: "whenever", prompt: "hello" });
+  assert.equal(bad.status, 400);
+  assert.deepEqual(await bad.json(), { error: "hermes_rejected" });
+  // Pause: disabled + paused, and still listed (the gateway asks with include_disabled).
+  const id = fake.jobs.find((j) => j.name === "Brief" && Array.isArray(j.skills))!.id as string;
+  const p = ((await (await post(`/jobs/${id}/pause`, {})).json()) as { job: { enabled: boolean; state: string } }).job;
+  assert.deepEqual([p.enabled, p.state], [false, "paused"]);
+  const l = (await (await req("/jobs", { headers: owner() })).json()) as { jobs: Array<{ id: string }> };
+  assert.ok(l.jobs.some((j) => j.id === id));
+});
+
+test("a cancel that lands before Hermes has named the run waits for the run id, then stops it", async () => {
+  fake.turn = HELD;
+  const inner = fake.stub.fetch;
+  setHermesFetchForTests(async (url, init) => {
+    fake.calls.push({ method: init.method ?? "GET", path: new URL(url).pathname, auth: null, body: undefined });
+    // The chat response (and with it the first frame) takes a moment to arrive.
+    if (url.endsWith("/chat/stream")) await new Promise((r) => setTimeout(r, 80));
+    return inner(url, init);
+  });
+  const r = await post("/threads", { prompt: "x" });
+  const { thread, turnId } = (await r.json()) as { thread: { id: string }; turnId: string };
+  await new Promise((res) => setTimeout(res, 10));
+  assert.equal(getTurn(turnId)!.runId, null, "no frame yet: the run has no id here");
+  assert.equal((await post(`/turns/${turnId}/cancel`, {})).status, 202);
+  await turnSettled(turnId);
+  assert.equal((events(thread.id).find((e) => e.t === "result") as { errorCode: string }).errorCode, "cancelled");
+  assert.ok(fake.calls.some((c) => c.path === "/v1/runs/run_abc123/stop"), "the run was stopped by id");
+  await new Promise((res) => setTimeout(res, 20));
+  assert.equal(fake.stub.runs.size, 0, "…and is not running in Hermes any more");
+});
+
+test("a run the gateway gives up on (Hermes silent past the idle limit) is stopped, not left running", async () => {
+  process.env.OMNI_HERMES_STREAM_IDLE_MS = "60";
+  try {
+    const { id, turnId } = await newThread({ acts: [{ wait: 5_000 }, say("too late")] });
+    await turnSettled(turnId);
+    assert.equal((events(id).find((e) => e.t === "result") as { errorCode: string }).errorCode, "hermes_timeout");
+    assert.ok(fake.calls.some((c) => c.path === "/v1/runs/run_abc123/stop"));
+    await new Promise((res) => setTimeout(res, 20));
+    assert.equal(fake.stub.runs.size, 0);
+  } finally {
+    delete process.env.OMNI_HERMES_STREAM_IDLE_MS;
+  }
+});
+
+test("after a restart: the runs of turns left `running` are asked to stop", async () => {
+  const { turnId } = await newThread(HELD);
+  await new Promise((res) => setTimeout(res, 20));
+  assert.deepEqual(runningRunIds(), ["run_abc123"]);
+  stopOrphanedRuns(runningRunIds());
+  await new Promise((res) => setTimeout(res, 30));
+  assert.equal(fake.stub.runs.size, 0, "the run ended in Hermes");
+  await turnSettled(turnId);
+});
+
+test("the turn is read to Hermes' own end of stream (`done`), not hung up on at run.completed", async () => {
+  let sawEnd = false;
+  const inner = fake.stub.fetch;
+  setHermesFetchForTests(async (url, init) => {
+    const res = await inner(url, init);
+    if (!url.endsWith("/chat/stream") || !res.body) return res;
+    const reader = res.body.getReader();
+    return new Response(
+      new ReadableStream<Uint8Array>({
+        async pull(ctrl) {
+          const c = await reader.read();
+          if (c.done) {
+            sawEnd = true;
+            return ctrl.close();
+          }
+          ctrl.enqueue(c.value);
+        },
+        cancel: () => void reader.cancel(),
+      }),
+      { status: res.status, headers: res.headers },
+    );
+  });
+  const { turnId } = await newThread([say("ok")]);
+  await turnSettled(turnId);
+  assert.equal(sawEnd, true);
+  assert.equal(getTurn(turnId)!.status, "done");
 });

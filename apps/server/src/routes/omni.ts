@@ -38,13 +38,15 @@ import {
   listThreads,
   newId,
   sweepRunningTurns,
+  runningRunIds,
   omniAudit,
   threadCards,
   updateThread,
   type ThreadRow,
   type ThreadState,
 } from "../omni/store";
-import { cancelTurn, emit, startTurn } from "../omni/turns";
+import { cancelTurn, emit, startTurn, stopOrphanedRuns } from "../omni/turns";
+import { bareToolName } from "../omni/stream";
 import { publishNotice, pushOmni, subscribeNotices, subscribeThread, type ThreadMessage } from "../omni/bus";
 import {
   ApprovalInputError,
@@ -79,8 +81,11 @@ let appRef: AppLike | null = null;
 /** Mount under `/api/omni` and keep the app for in-process calls (executor, Today). */
 export function mountOmni(app: Hono): void {
   appRef = app as unknown as AppLike;
-  // No in-memory stream survives a restart: a turn left `running` is interrupted.
+  // No in-memory stream survives a restart: a turn left `running` is interrupted — and the
+  // Hermes run it was following is asked to stop (nobody is listening to it any more).
+  const orphans = omniConfig.enabled() ? runningRunIds() : [];
   sweepRunningTurns();
+  if (orphans.length) stopOrphanedRuns(orphans);
   app.route("/api/omni", omniApi);
 }
 
@@ -231,6 +236,30 @@ function threadView(t: ThreadRow | null, s: HermesSession | null, gone = false):
   };
 }
 
+/** How many unlisted threads one list request asks Hermes about. */
+const GONE_LOOKUPS = 40;
+const PRESENCE_TTL_MS = 5 * 60_000;
+const presence = new Map<string, { at: number; v: HermesSession | "gone" }>();
+/** Does Hermes still have this session? Its own answer, remembered for a few minutes so a
+ *  list that is polled does not ask again for every archived thread. `unknown` = could not ask. */
+async function sessionPresence(id: string): Promise<HermesSession | "gone" | "unknown"> {
+  const hit = presence.get(id);
+  if (hit && Date.now() - hit.at < PRESENCE_TTL_MS) return hit.v;
+  let v: HermesSession | "gone";
+  try {
+    v = await hermes.getSession(id);
+  } catch (e) {
+    if (!(e instanceof HermesError && e.code === "not_found")) return "unknown";
+    v = "gone";
+  }
+  if (presence.size > 2000) presence.clear();
+  presence.set(id, { at: Date.now(), v });
+  return v;
+}
+export function resetOmniPresenceForTests(): void {
+  presence.clear();
+}
+
 omniApi.get("/version", (c) => c.json({ api: OMNI_API_VERSION, minClient: OMNI_MIN_CLIENT }));
 
 omniApi.get("/threads", async (c) => {
@@ -257,8 +286,18 @@ omniApi.get("/threads", async (c) => {
     seen.add(s.id);
     out.push(threadView(local.get(s.id) ?? null, s));
   }
-  // A thread with a turn running in this process is alive whatever the list says.
-  for (const t of local.values()) if (!seen.has(t.id)) out.push(threadView(t, null, complete && !activeTurn(t.id)));
+  // The gateway's own threads that Hermes did not list. Its list leaves out ARCHIVED sessions
+  // (and Hermes archives old ones by itself), so absence proves nothing: each is asked for by
+  // id, and only Hermes' own "no such session" makes it `gone`. A thread with a turn running
+  // in this process is alive whatever Hermes says. Without a complete list nothing is asked.
+  const wantArchived = c.req.query("archived") === "1";
+  const missing = [...local.values()].filter((t) => !seen.has(t.id));
+  const ask = complete ? missing.filter((t) => !activeTurn(t.id) && (wantArchived || !t.archived)).slice(0, GONE_LOOKUPS) : [];
+  const found = new Map(await Promise.all(ask.map(async (t) => [t.id, await sessionPresence(t.id)] as const)));
+  for (const t of missing) {
+    const p = found.get(t.id);
+    out.push(threadView(t, p && p !== "gone" && p !== "unknown" ? p : null, p === "gone"));
+  }
   const filtered = out
     .filter((t) => !t.archived || c.req.query("archived") === "1")
     .filter((t) => !states.length || states.includes(t.state as string))
@@ -312,12 +351,15 @@ function threadIdParam(c: Context): string | null {
   return SESSION_ID_RE.test(id) ? id : null;
 }
 
-/** A Hermes message for the app: role + text + time; tool rows keep only the tool name. */
+/** A Hermes message for the app: role + text + time; tool rows keep only the tool name.
+ *  Left out: Hermes' model-only rows (`display_kind: hidden`), and assistant rows with no
+ *  text — the carrier of a tool call, or Hermes' `(empty)` placeholder for a blank answer. */
 function messageView(m: HermesMessage): Record<string, unknown> | null {
-  if (!m || typeof m.role !== "string") return null;
+  if (!m || typeof m.role !== "string" || m.display_kind === "hidden") return null;
   const text = typeof m.content === "string" ? m.content : Array.isArray(m.content) ? m.content.map((p) => (p && typeof p === "object" && typeof (p as { text?: unknown }).text === "string" ? (p as { text: string }).text : "")).join("") : "";
-  if (m.role === "tool") return { id: m.id ?? null, role: "tool", toolName: m.tool_name ?? null, at: tsIso(m.timestamp ?? null) };
+  if (m.role === "tool") return { id: m.id ?? null, role: "tool", toolName: typeof m.tool_name === "string" ? bareToolName(m.tool_name) : null, at: tsIso(m.timestamp ?? null) };
   if (m.role !== "user" && m.role !== "assistant") return null;
+  if (m.role === "assistant" && (!text.trim() || text.trim() === "(empty)")) return null;
   return { id: m.id ?? null, role: m.role, text, at: tsIso(m.timestamp ?? null) };
 }
 
@@ -363,7 +405,10 @@ omniApi.patch("/threads/:id", async (c) => {
     if (typeof b.title === "string") hp.title = b.title;
     if (typeof b.pinned === "boolean") hp.pinned = b.pinned;
     if (typeof b.archived === "boolean") hp.archived = b.archived;
-    if (Object.keys(hp).length) session = (await hermes.patchSession(id, hp)) ?? session;
+    // A title Hermes will not take (it wants them unique, ≤ 100 characters) stays the
+    // gateway's own: the app's title is the row here, not Hermes'.
+    if (Object.keys(hp).length) session = (await hermes.patchSession(id, hp)).session ?? session;
+    presence.delete(id);
   } catch (e) {
     // Hermes no longer has the session but the gateway has its own row: the change is made
     // to that row only — this is how the app removes a dead thread from its list
@@ -661,12 +706,14 @@ omniApi.post("/jobs", async (c) => {
   const name = typeof b.name === "string" ? b.name.trim() : "";
   const schedule = typeof b.schedule === "string" ? b.schedule.trim() : "";
   const prompt = typeof b.prompt === "string" ? b.prompt : "";
-  const skill = typeof b.skill === "string" ? b.skill : undefined;
+  const skill = typeof b.skill === "string" && b.skill.trim() ? b.skill.trim().slice(0, 200) : undefined;
   if (!name || name.length > 200) return bad(c, "name: 1–200 characters");
   if (!schedule || schedule.length > 200) return bad(c, "schedule: required");
   if (!prompt && !skill) return bad(c, "prompt or skill: required");
   if (prompt.length > 5000) return bad(c, "prompt: ≤5000 characters");
-  const body: Record<string, unknown> = { name, schedule, ...(prompt ? { prompt } : {}), ...(skill ? { skill } : {}) };
+  // Hermes' route reads `skills` (a list); a lone `skill` key is ignored there and the job
+  // is then refused as having nothing to run.
+  const body: Record<string, unknown> = { name, schedule, ...(prompt ? { prompt } : {}), ...(skill ? { skills: [skill] } : {}) };
   if (typeof b.deliver === "string" && b.deliver.length <= 200) body.deliver = b.deliver;
   try {
     const job = await hermes.createJob(body);
@@ -735,11 +782,13 @@ omniApi.post("/hooks/turn", async (c) => {
   if (!b) return bad(c, "a JSON object body is required");
   const sessionId = b.sessionId;
   if (typeof sessionId !== "string" || !SESSION_ID_RE.test(sessionId)) return bad(c, "sessionId: a Hermes session id");
+  // While the app's own turn runs on this thread there is no news to announce: the turn is
+  // being streamed, and its end is announced by the turn runner. (A notice here would push
+  // "new message" for a turn the person is watching.)
+  if (activeTurn(sessionId)) return c.json({ ok: true, threadId: sessionId, ignored: "turn_running" }, 202);
   const t = getThread(sessionId) ?? ensureThread({ id: sessionId, source: "hermes" });
-  if (!activeTurn(t.id)) {
-    bumpUnread(t.id);
-    emit(t.id, null, { t: "status", state: t.state, reason: "agent_message" });
-  }
+  bumpUnread(t.id);
+  emit(t.id, null, { t: "status", state: t.state, reason: "agent_message" });
   publishNotice({ type: "thread", id: t.id, op: "message" });
   pushOmni("OMNI_THREAD", t.id);
   return c.json({ ok: true, threadId: t.id }, 202);

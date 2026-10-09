@@ -29,6 +29,9 @@ export const omniConfig = {
   requestTimeoutMs: (): number => int("OMNI_HERMES_TIMEOUT_MS", 15_000),
   /** A streamed turn is abandoned when Hermes sends nothing (not even a keepalive) this long. */
   streamIdleMs: (): number => int("OMNI_HERMES_STREAM_IDLE_MS", 300_000),
+  /** How long a cancel keeps asking Hermes to stop the run (it cannot be stopped until its
+   *  agent exists, a few seconds after the run starts). */
+  stopRetryMs: (): number => int("OMNI_HERMES_STOP_RETRY_MS", 30_000),
   /** Hard ceiling for one turn's stream. */
   turnMaxMs: (): number => int("OMNI_TURN_MAX_MS", 60 * 60_000),
   /** Default lifetime of a proposed approval. */
