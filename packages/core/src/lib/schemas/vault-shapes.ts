@@ -97,10 +97,12 @@ export function renderFieldShapesBody(c: VaultShapesContract = VAULT_SHAPES): st
 
 /**
  * The block as it is pasted into a prompt file: begin marker (contract version +
- * the first 12 hex of the contract file's SHA-256), body, end marker.
+ * the first 12 hex of the SHA-256 of the BODY text), body, end marker. Hashing the
+ * body, not the contract file, means the block only changes when a rule an agent
+ * reads changes. The caller hashes (this module stays free of node:crypto).
  */
-export function renderFieldShapesBlock(contractSha256: string, c: VaultShapesContract = VAULT_SHAPES): string {
-  const begin = `${FIELD_SHAPES_BEGIN} contract=v${c.version} sha256=${contractSha256.slice(0, 12)} · GENERATED from vault-shapes.json — do not edit by hand -->`;
+export function renderFieldShapesBlock(bodySha256: string, c: VaultShapesContract = VAULT_SHAPES): string {
+  const begin = `${FIELD_SHAPES_BEGIN} contract=v${c.version} sha256=${bodySha256.slice(0, 12)} · GENERATED from vault-shapes.json — do not edit by hand -->`;
   return `${begin}\n${renderFieldShapesBody(c)}\n${FIELD_SHAPES_END}`;
 }
 

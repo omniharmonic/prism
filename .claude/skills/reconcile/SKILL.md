@@ -115,7 +115,7 @@ then a short summary (counts of each).
   the evidence is strong, `prism_people_recommend_merge { person_ids, canonical_id, rationale, confidence }`.
   This only records a recommendation; the owner merges in Prism.
 
-<!-- field-shapes:begin contract=v1 sha256=df82b8ed9815 · GENERATED from vault-shapes.json — do not edit by hand -->
+<!-- field-shapes:begin contract=v1 sha256=dfa10cc813e2 · GENERATED from vault-shapes.json — do not edit by hand -->
 ## Field shapes (bind hard — every note you create or update)
 
 The vault validates these shapes; a wrong one is a warning on that note forever and breaks Prism's database views. This block is generated from the approved schema (Prism `packages/core/src/lib/schemas/vault-shapes.json`); the write guards and the daily vault lint enforce the same rules.

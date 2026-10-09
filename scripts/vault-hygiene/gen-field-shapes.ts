@@ -15,20 +15,25 @@ import { createHash } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { renderFieldShapesBlock, type VaultShapesContract } from "../../packages/core/src/lib/schemas/vault-shapes";
+import { renderFieldShapesBlock, renderFieldShapesBody, type VaultShapesContract } from "../../packages/core/src/lib/schemas/vault-shapes";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 export const CONTRACT_PATH = resolve(ROOT, "packages/core/src/lib/schemas/vault-shapes.json");
 export const BLOCK_PATH = resolve(ROOT, "docs/vault-field-shapes.md");
 
-export function contractSha256(path = CONTRACT_PATH): string {
-  return createHash("sha256").update(readFileSync(path)).digest("hex");
+/**
+ * The hash in the block's marker: SHA-256 of the block's TEXT (not of the contract
+ * file). So the block — and with it every routine prompt — changes only when a rule
+ * an agent reads changes, never because an unrelated contract key (a lint tag) moved.
+ */
+export function bodySha256(contract: VaultShapesContract): string {
+  return createHash("sha256").update(renderFieldShapesBody(contract), "utf8").digest("hex");
 }
 
 /** The committed file's exact expected content (block + one trailing newline). */
 export function expectedBlockFile(path = CONTRACT_PATH): string {
   const contract = JSON.parse(readFileSync(path, "utf8")) as VaultShapesContract;
-  return `${renderFieldShapesBlock(contractSha256(path), contract)}\n`;
+  return `${renderFieldShapesBlock(bodySha256(contract), contract)}\n`;
 }
 
 /**
