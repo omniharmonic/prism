@@ -24,12 +24,26 @@ struct ThreadView: View {
                 )
             }
         }
-        .navigationTitle(model.thread == nil ? session.threads.thread(model.threadID).map(ThreadGrouping.displayTitle) ?? model.title : model.title)
+        .navigationTitle(barTitle)
         #if os(iOS)
         // A thread's own title, whole, in the bar; its state under it. (A label in the bar
         // was cut down to a sliver on an iPhone.)
         .navigationBarTitleDisplayMode(.inline)
-        .navigationSubtitle(model.thread.map { $0.gone ? "No longer available" : ThreadGrouping.title(for: $0.state) } ?? "")
+        .toolbar {
+            ToolbarItem(placement: .principal) {
+                VStack(spacing: 0) {
+                    Text(barTitle).font(.headline).lineLimit(1)
+                    if let state = model.thread.map({ $0.gone ? "No longer available" : ThreadGrouping.title(for: $0.state) }) {
+                        Text(state).font(.caption).foregroundStyle(Color.quietText).lineLimit(1)
+                    }
+                }
+                // A bar does not grow with the text size (the system shows its items large
+                // on a long press instead); held to sizes that fit it.
+                .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
+                .accessibilityElement(children: .combine)
+                .accessibilityAddTraits(.isHeader)
+            }
+        }
         #else
         .toolbar {
             if let thread = model.thread {
@@ -45,6 +59,11 @@ struct ThreadView: View {
         #endif
         .task(id: model.threadID) { await session.openThread(model) }
         .onDisappear { model.close() }
+    }
+
+    /// The thread's title; the list's, while the thread itself has not loaded (or never will).
+    private var barTitle: String {
+        model.thread == nil ? session.threads.thread(model.threadID).map(ThreadGrouping.displayTitle) ?? model.title : model.title
     }
 
     @ViewBuilder private var transcript: some View {
@@ -327,6 +346,9 @@ struct NewThreadView: View {
                 focusOnAppear: true
             )
             .disabled(session.threads.isCreating)
+            // The box keeps the height its text needs; the words above give way.
+            .fixedSize(horizontal: false, vertical: true)
+            .layoutPriority(1)
         }
         .navigationTitle("New Thread")
         #if os(iOS)

@@ -15,7 +15,7 @@ final class OmniWalkTests: OmniUITestCase {
         wait(field)
         clear(field)
         field.typeText("not an address")
-        button("Continue").tap()
+        press("Continue")
         wait(element("server.error"), 5, "the reason the address was refused")
         shot("first-run-bad-address")
 
@@ -24,17 +24,17 @@ final class OmniWalkTests: OmniUITestCase {
         field.typeText(Run.server)
         XCTAssertTrue(gone(element("server.error"), 3), "the old reason stayed up over a new address")
         shot("first-run-address-typed")
-        button("Continue").tap()
+        press("Continue")
         see("Sign in to Omni")
         shot("sign-in")
 
-        button("Sign In").tap()
+        press("Sign In")
         see("Finish signing in in your browser")
         shot("signing-in-waiting")
-        button("Cancel").tap()
+        press("Cancel")
         see("Sign in to Omni")
 
-        button("Change Server…").tap()
+        press("Change Server…")
         see("Welcome to Omni")
     }
 
@@ -42,9 +42,9 @@ final class OmniWalkTests: OmniUITestCase {
         launch(token: nil, server: "http://127.0.0.1:18699") // nothing listens there
         see("Can't connect", 30)
         shot("cant-connect")
-        button("Try Again").tap()
+        press("Try Again")
         see("Can't connect", 30)
-        button("Change Server…").tap()
+        press("Change Server…")
         see("Welcome to Omni")
     }
 
@@ -61,9 +61,9 @@ final class OmniWalkTests: OmniUITestCase {
         openThread(id)
         see("This conversation is no longer available")
         shot("thread-gone")
-        button("Check Again").tap()
+        press("Check Again")
         see("This conversation is no longer available")
-        button("Remove from List").tap()
+        press("Remove from List")
         XCTAssertTrue(gone(element("thread.\(id)"), 10), "the removed thread is still listed")
         // …and the person is not left on a dead screen.
         XCTAssertTrue(gone(text("This conversation is no longer available"), 5), "still on the dead thread after removing it")
@@ -90,10 +90,12 @@ final class OmniWalkTests: OmniUITestCase {
         shot("recurring")
         let pauseJob = app.buttons["Pause Morning brief (stub)"].firstMatch
         wait(pauseJob)
+        bring(pauseJob)
         pauseJob.tap()
         let resume = app.buttons["Resume Morning brief (stub)"].firstMatch
         wait(resume, 10, "Resume, after pausing")
         shot("recurring-paused")
+        bring(resume)
         resume.tap()
         wait(app.buttons["Pause Morning brief (stub)"].firstMatch, 10, "Pause, after resuming")
 
@@ -159,6 +161,7 @@ final class OmniWalkTests: OmniUITestCase {
         // From Today into a thread.
         let inFlight = app.buttons.matching(NSPredicate(format: "label CONTAINS 'Research mooring suppliers'")).firstMatch
         if inFlight.waitForExistence(timeout: 5) {
+            bring(inFlight)
             inFlight.tap()
             wait(composer, 10, "the thread opened from Today")
         } else {
@@ -204,12 +207,10 @@ final class OmniWalkTests: OmniUITestCase {
         #endif
         send()
         let chip = app.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH 'Tool:'")).firstMatch
-        if chip.waitForExistence(timeout: 15) {
-            shot("thread-tool-chip")
-        } else {
-            XCTFail("no tool chip while the turn streamed")
-        }
+        if chip.waitForExistence(timeout: 15) { shot("thread-tool-chip") }
         wait(sendButton, 30, "Send again, after the turn")
+        // The chip stays in the conversation once the turn is over.
+        see("Tool:", 10)
         pause(1)
         shot("thread-turn-done")
 
@@ -311,34 +312,34 @@ final class OmniWalkTests: OmniUITestCase {
         // The email draft: Send (sending is off on this server), Edit, Revise, Cancel.
         openThread(try XCTUnwrap(ids["approval-email"]))
         wait(element("approval.send"), 15, "Send on the email draft")
-        element("approval.send").tap()
+        press("approval.send")
         see("nothing was sent", 15)
         shot("approval-send-switched-off")
 
-        element("approval.edit").tap()
+        press("approval.edit")
         let subject = app.textFields["Subject"].firstMatch
         wait(subject, 10, "the Subject field of the edit sheet")
         shot("approval-edit-sheet")
         subject.tap()
         subject.typeText(" (v2)")
-        button("Save").tap()
+        press("Save")
         see("(v2)", 15)
         pause(1)
         shot("approval-edited")
 
-        element("approval.revise").tap()
+        press("approval.revise")
         let feedback = app.descendants(matching: .any).matching(NSPredicate(format: "label == 'What should change' AND (elementType == %d OR elementType == %d)", XCUIElement.ElementType.textField.rawValue, XCUIElement.ElementType.textView.rawValue)).firstMatch
         wait(feedback, 10, "the revise sheet's field")
         feedback.tap()
         feedback.typeText("Make it shorter and mention Friday.")
         shot("approval-revise-sheet")
-        button("Ask Omni").tap()
+        press("Ask Omni")
         see("REVISED", 20)
         wait(element("approval.send"), 30, "a new draft after Revise")
         pause(1)
         shot("approval-revised-new-draft")
 
-        element("approval.cancel").tap()
+        press("approval.cancel")
         let confirm = app.buttons.matching(NSPredicate(format: "label == 'Cancel Draft'"))
         pause(1)
         shot("approval-cancel-confirm")
@@ -371,13 +372,15 @@ final class OmniWalkTests: OmniUITestCase {
         #endif
         let copy = button("Copy All")
         wait(copy, 10, "Copy All in Diagnostics")
+        bring(copy)
         copy.tap()
         wait(button("Copied"), 3, "Copied, after Copy All")
+        XCTAssertFalse(element("diagnostics.count").label.hasPrefix("0 lines"), "Copy All also cleared the list")
         #if os(iOS)
         app.collectionViews.firstMatch.swipeDown()
         #endif
 
-        button("Sign Out").tap()
+        press("Sign Out")
         pause(1)
         shot("sign-out-confirm", window: settingsWindow)
         let confirm = app.buttons.matching(NSPredicate(format: "label == 'Sign Out'"))
@@ -468,11 +471,13 @@ final class OmniWalkTests: OmniUITestCase {
     }
 
     private func clear(_ field: XCUIElement) {
-        field.tap()
         #if os(macOS)
+        field.tap()
         field.typeKey("a", modifierFlags: .command)
         field.typeKey(.delete, modifierFlags: [])
         #else
+        // The cursor at the END of what is there (a tap in the middle of large text leaves it mid-word).
+        field.coordinate(withNormalizedOffset: CGVector(dx: 0.97, dy: 0.5)).tap()
         let existing = (field.value as? String) ?? ""
         if !existing.isEmpty, existing != field.placeholderValue {
             field.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: existing.count + 2))

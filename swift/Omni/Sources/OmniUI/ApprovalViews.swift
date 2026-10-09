@@ -77,6 +77,19 @@ struct ApprovalCardView: View {
     }
 
     @ViewBuilder private func draft(_ content: ApprovalContent) -> some View {
+        if typeSize.isAccessibilitySize {
+            // Each label above its value: beside it, a long address gets a column five characters wide.
+            VStack(alignment: .leading, spacing: 8) {
+                ForEach(content.fields) { field in
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(field.label).font(.callout).foregroundStyle(Color.quietText)
+                        Text(field.value).font(.callout).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+                    }
+                    .accessibilityElement(children: .combine)
+                    .accessibilityLabel("\(field.label): \(field.value)")
+                }
+            }
+        } else {
         Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: 10, verticalSpacing: 4) {
             ForEach(content.fields) { field in
                 GridRow {
@@ -86,6 +99,7 @@ struct ApprovalCardView: View {
                 .accessibilityElement(children: .combine)
                 .accessibilityLabel("\(field.label): \(field.value)")
             }
+        }
         }
         if let body = content.body {
             Divider()

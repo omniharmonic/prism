@@ -182,10 +182,57 @@ class OmniUITestCase: XCTestCase {
         app.buttons.matching(NSPredicate(format: "label ==[c] %@ OR identifier == %@", label, label)).firstMatch
     }
 
+    /// Tap a button by its label or identifier, scrolling to it first.
+    func press(_ label: String, file: StaticString = #filePath, line: UInt = #line) {
+        let target = label.contains(".") ? element(label) : button(label)
+        guard wait(target, 15, "the \(label) button", file: file, line: line) else { return }
+        bring(target)
+        target.tap()
+    }
+
+    /// The text is on screen — scrolling the main list or page down to find it if need be
+    /// (at the largest text sizes most screens are longer than the phone).
     @discardableResult
     func see(_ fragment: String, _ seconds: TimeInterval = 15, file: StaticString = #filePath, line: UInt = #line) -> Bool {
-        wait(text(fragment), seconds, "“\(fragment)”", file: file, line: line)
+        let target = text(fragment)
+        if target.waitForExistence(timeout: Run.variant == "xxxl" ? min(seconds, 4) : seconds) { return true }
+        #if os(iOS)
+        for _ in 0..<12 {
+            scrollPage(down: true)
+            if target.waitForExistence(timeout: 0.6) { return true }
+        }
+        for _ in 0..<24 {
+            scrollPage(down: false)
+            if target.waitForExistence(timeout: 0.6) { return true }
+        }
+        #endif
+        return wait(target, Run.variant == "xxxl" ? seconds : 1, "“\(fragment)”", file: file, line: line)
     }
+
+    #if os(iOS)
+    /// Drag the frontmost scrolling area by a third of the screen.
+    func scrollPage(down: Bool) {
+        let from = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: down ? 0.62 : 0.38))
+        let to = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: down ? 0.30 : 0.70))
+        from.press(forDuration: 0.05, thenDragTo: to, withVelocity: .slow, thenHoldForDuration: 0.1)
+    }
+
+    /// Scroll until the element can be tapped.
+    func bring(_ target: XCUIElement) {
+        var tries = 0
+        while !(target.exists && target.isHittable), tries < 14 {
+            scrollPage(down: true)
+            tries += 1
+        }
+        tries = 0
+        while !(target.exists && target.isHittable), tries < 28 {
+            scrollPage(down: false)
+            tries += 1
+        }
+    }
+    #else
+    func bring(_ target: XCUIElement) {}
+    #endif
 
     func gone(_ element: XCUIElement, _ seconds: TimeInterval = 10) -> Bool {
         let expectation = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: element)

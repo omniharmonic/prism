@@ -115,6 +115,7 @@ struct ToolChip: View {
 /// A record the agent changed. Tapping it opens the note in Prism; Omni never edits it.
 struct RecordCardView: View {
     let card: RecordCard
+    @Environment(\.dynamicTypeSize) private var typeSize
     @Environment(\.openURL) private var openURL
 
     var body: some View {
@@ -124,8 +125,10 @@ struct RecordCardView: View {
             HStack(alignment: .top, spacing: 10) {
                 Image(systemName: symbol).font(.title3).foregroundStyle(Color.quietText).frame(width: 24)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(card.title ?? card.path ?? "Untitled note").fontWeight(.medium).lineLimit(2)
-                    Text(detail).font(.caption).foregroundStyle(Color.quietText).lineLimit(2)
+                    Text(card.title ?? card.path ?? "Untitled note").fontWeight(.medium).lineLimit(typeSize.isAccessibilitySize ? 6 : 2)
+                        .multilineTextAlignment(.leading)
+                    Text(detail).font(.caption).foregroundStyle(Color.quietText).lineLimit(typeSize.isAccessibilitySize ? 6 : 2)
+                        .multilineTextAlignment(.leading)
                 }
                 Spacer(minLength: 8)
                 if link != nil {

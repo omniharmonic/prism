@@ -67,6 +67,7 @@ public struct SettingsView: View {
 struct DiagnosticsSection: View {
     let log: DiagnosticsLog
     @State private var copied = false
+    @Environment(\.dynamicTypeSize) private var typeSize
 
     var body: some View {
         Section {
@@ -93,7 +94,8 @@ struct DiagnosticsSection: View {
                 .onChange(of: log.entries.count) { if let last = log.entries.last { proxy.scrollTo(last.id, anchor: .bottom) } }
             }
             .accessibilityLabel("Recent requests")
-            HStack {
+            let row = typeSize.isAccessibilitySize ? AnyLayout(VStackLayout(alignment: .leading, spacing: 10)) : AnyLayout(HStackLayout())
+            row {
                 Button(copied ? "Copied" : "Copy All") {
                     Self.copy(log.text)
                     copied = true
@@ -105,11 +107,17 @@ struct DiagnosticsSection: View {
                 .accessibilityHint("Copies the list so you can paste it")
                 Button("Clear") { log.clear() }
                     .disabled(log.entries.isEmpty)
-                Spacer()
+                if !typeSize.isAccessibilitySize { Spacer() }
                 Text(log.failureCount == 0 ? "\(log.entries.count) lines" : "\(log.entries.count) lines, \(log.failureCount) failed")
                     .font(.footnote)
                     .foregroundStyle(Color.quietText)
+                    .accessibilityIdentifier("diagnostics.count")
             }
+            #if os(iOS)
+            // Two buttons share this row: without their own style a tap anywhere in an iOS
+            // list row presses every button in it — Copy All also cleared the list.
+            .buttonStyle(.borderless)
+            #endif
         } header: {
             Text("Diagnostics")
         } footer: {

@@ -50,6 +50,9 @@ struct DestinationView: View {
 
 struct ThreadRow: View {
     let thread: OmniThread
+    /// At the accessibility text sizes one line holds two or three words: let a title take
+    /// three lines and its preview two, rather than cut both to "Pay the…".
+    @Environment(\.dynamicTypeSize) private var typeSize
 
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
@@ -60,9 +63,9 @@ struct ThreadRow: View {
                 Text(ThreadGrouping.displayTitle(thread))
                     .fontWeight(thread.unread > 0 ? .semibold : .regular)
                     .foregroundStyle(thread.gone ? Color.quietText : Color.primary)
-                    .lineLimit(1)
+                    .lineLimit(typeSize.isAccessibilitySize ? 3 : 1)
                 if let subtitle = ThreadGrouping.subtitle(thread) {
-                    Text(subtitle).font(.caption).foregroundStyle(Color.quietText).lineLimit(1)
+                    Text(subtitle).font(.caption).foregroundStyle(Color.quietText).lineLimit(typeSize.isAccessibilitySize ? 2 : 1)
                 }
             }
             Spacer(minLength: 4)

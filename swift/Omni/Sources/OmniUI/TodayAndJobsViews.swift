@@ -6,6 +6,7 @@ import SwiftUI
 /// A short read-only list (product-spec.md § 8a).
 struct TodayView: View {
     let session: SessionModel
+    @Environment(\.dynamicTypeSize) private var typeSize
     @Environment(\.navigator) private var navigator
 
     var body: some View {
@@ -47,15 +48,20 @@ struct TodayView: View {
                     Text("Nothing on the calendar today.").foregroundStyle(Color.quietText)
                 }
                 ForEach(model.agenda, id: \.noteId) { item in
-                    HStack(alignment: .firstTextBaseline, spacing: 10) {
+                    // The time beside the title; above it at the accessibility text sizes, where
+                    // a column for the time would break "9:30 AM" in two.
+                    let large = typeSize.isAccessibilitySize
+                    let row = large ? AnyLayout(VStackLayout(alignment: .leading, spacing: 2)) : AnyLayout(HStackLayout(alignment: .firstTextBaseline, spacing: 10))
+                    row {
                         Text(TodayModel.timeText(item.start) ?? "All day")
                             .font(.callout.monospacedDigit())
                             .foregroundStyle(Color.quietText)
-                            .frame(minWidth: 64, alignment: .leading)
+                            .fixedSize()
+                            .frame(minWidth: large ? nil : 64, alignment: .leading)
                         VStack(alignment: .leading, spacing: 2) {
                             Text(item.title)
                             if let location = item.location, !location.isEmpty {
-                                Text(location).font(.caption).foregroundStyle(Color.quietText).lineLimit(1)
+                                Text(location).font(.caption).foregroundStyle(Color.quietText).lineLimit(large ? 3 : 1)
                             }
                         }
                     }
@@ -191,10 +197,14 @@ struct JobRow: View {
     let job: OmniJob
     let busy: Bool
     let toggle: () -> Void
+    @Environment(\.dynamicTypeSize) private var typeSize
 
     var body: some View {
         let paused = JobPresentation.isPaused(job)
-        HStack(alignment: .center, spacing: 10) {
+        // The button beside the text; under it at the accessibility text sizes, where side by
+        // side leaves the name a column one syllable wide.
+        let row = typeSize.isAccessibilitySize ? AnyLayout(VStackLayout(alignment: .leading, spacing: 8)) : AnyLayout(HStackLayout(alignment: .center, spacing: 10))
+        row {
             Image(systemName: paused ? "pause.circle" : "arrow.triangle.2.circlepath")
                 .foregroundStyle(Color.quietText)
                 .accessibilityHidden(true)
@@ -206,12 +216,17 @@ struct JobRow: View {
                 }
             }
             .accessibilityElement(children: .combine)
-            Spacer(minLength: 8)
+            if !typeSize.isAccessibilitySize { Spacer(minLength: 8) }
             if busy {
                 ProgressView().controlSize(.small).accessibilityLabel("Working")
             } else {
                 Button(paused ? "Resume" : "Pause", action: toggle)
+                    #if os(iOS)
+                    .buttonStyle(.bordered) // its own target: a tap on the row's text pauses nothing
+                    #else
                     .controlSize(.small)
+                    #endif
+                    .fixedSize()
                     .accessibilityLabel("\(paused ? "Resume" : "Pause") \(JobPresentation.name(job))")
             }
         }
