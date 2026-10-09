@@ -539,7 +539,7 @@ export const EDITOR_SCHEMA_HEADER = "x-prism-editor-schema";
 // v2 (callout/toggle/columns/colours), v3 (mention), v4 (attachment/embed/bookmark/toc/database blocks, image align/caption),
 // v5 (child-page rows, toggle headings, column widths, table cell colours — 4–5 columns are caught by the columns marker).
 const MARKER_TYPES = new Set(["callout", "toggle", "columns", "column", "mention", "attachment", "embed", "bookmark", "toc", "child-page"]);
-const MARKER_ATTRS = ["data-prism-database", "data-block-color", "data-text-color", "data-align", "data-caption", "data-heading-level", "data-col-width", "data-cell-color"];
+const MARKER_ATTRS = ["data-prism-database", "data-block-color", "data-text-color", "data-align", "data-caption", "data-heading-level", "data-col-width", "data-cell-color", "data-suggestion-node"];
 const isWs = (c: number) => c === 32 || c === 9 || c === 10 || c === 13 || c === 12;
 /** After an attribute NAME at `i`: the value following `=` (whitespace and either quote style tolerated), or null when no `=`. */
 function attrValueAt(s: string, i: number): string | null {

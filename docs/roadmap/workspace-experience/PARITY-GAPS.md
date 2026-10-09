@@ -28,7 +28,7 @@ Sizes: **S** = under a day, one or two files. **M** = one to three days, a new c
 
 ### a.0 In progress (w9-gaps) — built on `feat/w9-gaps`, not on main
 
-These eight rows were `partial` until PR #42 merged (2026-10-09); the statuses in the last column are what they move to. The four IME tests of parity4-suggestions are Chromium-only. Suggesting-mode limits recorded with the merge: a removal across a table-cell boundary is refused with a notice; slash-menu inserts and Enter are untracked; a line break cannot be removed while suggesting.
+These eight rows were `partial` until PR #42 merged (2026-10-09); the statuses in the last column are what they move to. Suggesting-mode limit recorded with the merge: a removal across a table-cell boundary is refused with a notice. Closed afterwards (branch `polish5/gaps-suggest`, schema v6): Enter and slash-menu blocks are tracked as suggested paragraph breaks (a divider / image / embed, and re-shaping a block that was already there, are refused with a notice); a line break can be removed as a suggested removal; a composition (IME) over a selection that crosses a table-cell boundary completes and is tracked. The six IME tests of parity4-suggestions are Chromium-only.
 
 | Row | Clause | State | Spec that must be green on main after the merge | Row becomes |
 |---|---|---|---|---|

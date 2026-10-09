@@ -821,10 +821,10 @@ export const SuggestionMode = Extension.create<SuggestionOptions>({
                 // then re-types the emptied first half).
                 const inFresh = (pos: number) => fresh.some(([a, b]) => pos >= a && pos < b);
                 const ownBlock = (node: PMNode, pos: number) => ownStart(node, user.name) || inFresh(pos) || (node.content.size === 0 && inFresh(pos + node.nodeSize - 1));
-                const allOwn = (from: number, to: number) => {
+                const allOwn = (from: number, to: number, own: (node: PMNode, pos: number) => boolean = ownBlock) => {
                   let any = false;
                   let all = true;
-                  before.nodesBetween(from, to, (node, pos) => { if (!node.isTextblock) return true; any = true; if (!ownBlock(node, pos)) all = false; return false; });
+                  before.nodesBetween(from, to, (node, pos) => { if (!node.isTextblock) return true; any = true; if (!own(node, pos)) all = false; return false; });
                   return any && all;
                 };
                 // STRUCTURE: a step that re-shapes blocks and takes no content out (lift / wrap /
@@ -832,6 +832,9 @@ export const SuggestionMode = Extension.create<SuggestionOptions>({
                 // On the person's own pending blocks it is theirs to make (Reject takes the whole
                 // block out again); on anything that was already there it has no tracked form.
                 let reshape = false;
+                // A re-shaped block keeps its stamp only when its START was the suggestion (the emptied
+                // first half of a heading split at its start is re-typed, but its start was there before).
+                let restamp = false;
                 if (mine) {
                   if (step instanceof AttrStep) {
                     const target = before.nodeAt(step.pos);
@@ -842,6 +845,7 @@ export const SuggestionMode = Extension.create<SuggestionOptions>({
                   if (reshape) {
                     const { from, to, slice } = step as ReplaceStep;
                     if (!allOwn(from, to)) structural = true;
+                    restamp = allOwn(from, to, (node, pos) => ownStart(node, user.name) || inFresh(pos));
                     // …and into CODE only while the block holds nothing that was there before: text
                     // in code carries no mark, so Reject of a suggested code block takes all of it.
                     let code = false;
@@ -856,7 +860,7 @@ export const SuggestionMode = Extension.create<SuggestionOptions>({
                 });
                 // (Also what another plugin appended because of the edit — the empty paragraph kept
                 // after a new last block: it came with the suggestion and goes with it.)
-                const stamp = reshape || step instanceof ReplaceStep;
+                const stamp = reshape ? restamp : step instanceof ReplaceStep;
                 map.forEach((oldStart, oldEnd, newStart, newEnd) => {
                   if (newEnd > newStart) { added.push({ k, from: newStart, to: newEnd, mark: !reshape, stamp }); made.push([newStart, newEnd]); }
                   if (reshape) return;

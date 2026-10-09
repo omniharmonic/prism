@@ -232,6 +232,9 @@ test("L1: markers are read the way an HTML parser reads them — quotes, case an
     "<details\n><summary>s</summary></details>",
     "<DETAILS><summary>s</summary></DETAILS>",
     "<div data-prism-database\t=\t'db1'></div>",
+    // v6: a suggested paragraph break / line break (an older editor would save the page without it).
+    '<p>a</p><p data-suggestion-node="insert" data-suggestion-by="Ann">b</p>',
+    '<p>a<br data-suggestion-node="delete" data-suggestion-by="Ann">b</p>',
     '<details data-type="toggle" data-heading-level = "2"><summary>s</summary></details>',
   ]) assert.equal(needsEditorUpdate(html), true, html);
   for (const html of ["<p>hello</p>", '<div data-type="other"><p>x</p></div>', "<p>the word data-type and data-block-color in prose</p>", "<p>&lt;detailsx&gt;</p>", "# Markdown with data-type=\"callout\" in text", "<detailsx>", '<p data-typeface="callout">x</p>']) {
