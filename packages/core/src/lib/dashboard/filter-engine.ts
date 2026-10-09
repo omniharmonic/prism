@@ -1,6 +1,7 @@
 /**
  * Pure functions for client-side filtering, sorting, grouping, and aggregation of Notes.
  */
+import { scalarText } from "../database/structured";
 import type { Note } from "../types";
 
 // ── Data source / config types ──────────────────────────────────────
@@ -52,7 +53,7 @@ function looseEqual(a: unknown, b: unknown): boolean {
       b.toLowerCase().includes(a.toLowerCase())
     );
   }
-  return String(a) === String(b);
+  return scalarText(a) === scalarText(b);
 }
 
 /** Resolve special sentinel values (e.g. "today"). */
@@ -282,7 +283,7 @@ export function sortNotes(notes: Note[], sort: SortConfig): Note[] {
     if (typeof aVal === "number" && typeof bVal === "number") {
       return (aVal - bVal) * dir;
     }
-    return String(aVal).localeCompare(String(bVal)) * dir;
+    return scalarText(aVal).localeCompare(scalarText(bVal)) * dir;
   });
 
   return sorted;
@@ -297,7 +298,7 @@ export function groupNotes(
 
   for (const note of notes) {
     const raw = getFieldValue(note, group.field);
-    const key = raw != null ? String(raw) : "—";
+    const key = raw != null ? scalarText(raw) || "—" : "—";
     const list = groups.get(key);
     if (list) {
       list.push(note);

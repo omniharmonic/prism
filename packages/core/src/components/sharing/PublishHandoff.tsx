@@ -1,3 +1,4 @@
+import { leafTitle } from "../../lib/pages/containerTitle";
 import { useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import { QueryClientContext } from "@tanstack/react-query";
 import { ChevronRight, ExternalLink, FileText, Globe } from "lucide-react";
@@ -8,7 +9,7 @@ import { PageIcon } from "../../lib/pages/icons";
 import type { ContentType } from "../../lib/types";
 import "./PublishHandoff.css";
 
-const leaf = (path: string | null) => (path ?? "").split("/").pop() || "Untitled";
+const leaf = (path: string | null) => leafTitle(path) || "Untitled";
 const SHOWN = 8;
 
 /** Pages carrying `tag`, from the sidebar tree (already limited to what this account can see; Trash excluded). */

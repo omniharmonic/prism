@@ -1,3 +1,4 @@
+import { leafTitle } from "../../lib/pages/containerTitle";
 import { useAgentDocumentSnapshot } from "../../lib/agent/documentSnapshots";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { BubbleMenu } from "@tiptap/react/menus";
@@ -353,7 +354,7 @@ export default function DocumentRenderer({ note, onMetadataChange, readOnly }: R
     if (editor) editor.setEditable(!notEditable, false);
   }, [editor, notEditable]);
 
-  useAgentDocumentSnapshot(editor, note.id, headerTitle || note.path?.split("/").pop() || "Untitled", note.updatedAt);
+  useAgentDocumentSnapshot(editor, note.id, headerTitle || leafTitle(note.path, note.metadata) || "Untitled", note.updatedAt);
 
   // Agent write-back: watch for pending edits from PanelChat via Zustand store
   const pendingEdit = useUIStore((s) => s.pendingEdit);
@@ -485,7 +486,7 @@ export default function DocumentRenderer({ note, onMetadataChange, readOnly }: R
       {/* The page's chrome row (no formatting commands on read-only surfaces). On a phone it also
           carries the backlinks count, which is otherwise a strip of its own under the title. */}
       {editor && <FormattingBar formatting={!notEditable} navigation={<DocumentOutline editor={editor} />}
-        trailing={phone && !readOnly ? <BacklinksPill inline noteId={note.id} title={note.path?.split("/").pop() ?? ""} /> : undefined}>
+        trailing={phone && !readOnly ? <BacklinksPill inline noteId={note.id} title={leafTitle(note.path, note.metadata) ?? ""} /> : undefined}>
         {!notEditable && <EditorToolbarCommands editor={editor} />}
       </FormattingBar>}
       {editor && <KeyboardToolbar editor={editor} selection={<SelectionActions editor={editor} allowFormatting={!notEditable} />} />}
@@ -523,9 +524,9 @@ export default function DocumentRenderer({ note, onMetadataChange, readOnly }: R
             onIconChange={persistMetadata ? (emoji) => persistMetadata({ icon: emoji }) : undefined}
             onAddCover={persistMetadata && !cover ? () => changeCover({ kind: "gradient", value: COVER_GRADIENTS[Math.floor(Math.random() * COVER_GRADIENTS.length)].name, y: 50 }) : undefined}
           />
-          {!readOnly && !phone && <BacklinksPill noteId={note.id} title={note.path?.split("/").pop() ?? ""} />}
+          {!readOnly && !phone && <BacklinksPill noteId={note.id} title={leafTitle(note.path, note.metadata) ?? ""} />}
           <EditorContent editor={editor} />
-          {editor && !notEditable && <EmptyPageStarters editor={editor} noteId={note.id} title={note.path?.split("/").pop() ?? ""} />}
+          {editor && !notEditable && <EmptyPageStarters editor={editor} noteId={note.id} title={leafTitle(note.path, note.metadata) ?? ""} />}
         </div>
         {/* Block gutter: ⋮⋮ drag / block menu and + insert (tap menu on phones) */}
         {editor && <BlockHandles editor={editor} enabled={!notEditable} notes={governed ? undefined : allNotes} noteId={note.id} />}

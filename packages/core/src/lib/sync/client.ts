@@ -1,3 +1,4 @@
+import { leafTitle } from "../pages/containerTitle";
 import { invoke } from "@tauri-apps/api/core";
 import { vaultApi } from "../parachute/client";
 import type { VaultClient } from "../../data/VaultClient";
@@ -123,7 +124,7 @@ export const calendarApi = {
       events.push({
         id: (m.calendarEventId as string) || note.id,
         vaultNoteId: note.id,
-        summary: (m.title as string) || note.path?.split("/").pop() || "Untitled Event",
+        summary: (m.title as string) || leafTitle(note.path, note.metadata) || "Untitled Event",
         description: (m.description as string) ?? null,
         start: { dateTime: hasTime ? startRaw : null, date: hasTime ? null : startRaw, timeZone: typeof m.timeZone === "string" ? m.timeZone : null },
         end: { dateTime: hasTime ? endRaw : null, date: hasTime ? null : endRaw, timeZone: typeof m.timeZone === "string" ? m.timeZone : null },

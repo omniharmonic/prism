@@ -1,3 +1,4 @@
+import { leafTitle } from "../../../lib/pages/containerTitle";
 import { CheckSquare, Circle, CheckCircle2 } from "lucide-react";
 import { useNotes } from "../../../app/hooks/useParachute";
 import { useUIStore } from "../../../app/stores/ui";
@@ -51,7 +52,7 @@ export function TaskListWidget({ filter }: TaskListWidgetProps) {
     <div className="space-y-0.5 max-h-64 overflow-auto">
       {tasks.slice(0, 15).map((task) => {
         const status = getStatus(task);
-        const title = task.path?.split("/").pop() || task.content?.split("\n")[0]?.slice(0, 60) || "Untitled";
+        const title = leafTitle(task.path, task.metadata) || task.content?.split("\n")[0]?.slice(0, 60) || "Untitled";
         const isDone = status === "done";
 
         return (

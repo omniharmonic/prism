@@ -1,3 +1,4 @@
+import { leafTitle } from "../../lib/pages/containerTitle";
 import { useTranscriptReviewClient } from "../../data/TranscriptReviewClientContext";
 import { TranscriptReviewPanel } from "./TranscriptReviewPanel";
 import { transcriptNoteId } from "./transcriptReviewReceipt";
@@ -117,13 +118,13 @@ function StoredEventTranscripts({ noteId, eventId, onOpen }: Props) {
             <button
               key={note.id}
               onClick={() =>
-                onOpen(note.id, note.path?.split("/").pop() || "Transcript")
+                onOpen(note.id, leafTitle(note.path, note.metadata) || "Transcript")
               }
               className="interactive focus-ring flex w-full min-h-control min-w-0 items-start gap-2 rounded-lg px-2 py-1.5 text-left text-sm"
             >
               <FileText size={16} className="mt-0.5 shrink-0" />
               <span className="min-w-0 break-words [overflow-wrap:anywhere]">
-                {note.path?.split("/").pop() || "Transcript"}
+                {leafTitle(note.path, note.metadata) || "Transcript"}
               </span>
             </button>
           ))}

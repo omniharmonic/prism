@@ -1,3 +1,4 @@
+import { leafTitle } from "../../lib/pages/containerTitle";
 import { useState, useCallback } from "react";
 import { Settings, Plus, Pencil } from "lucide-react";
 import type { RendererProps } from "./RendererProps";
@@ -82,7 +83,7 @@ export default function DashboardRenderer({ note, onMetadataChange, readOnly }: 
   ); // undefined = closed, null = new widget, DashboardWidgetConfig = editing
 
   const dashboardTitle =
-    note.path?.split("/").pop() || (meta?.title as string) || "Dashboard";
+    leafTitle(note.path, note.metadata) || (meta?.title as string) || "Dashboard";
 
   const updateWidgets = useCallback(
     (newWidgets: DashboardWidgetConfig[]) => {

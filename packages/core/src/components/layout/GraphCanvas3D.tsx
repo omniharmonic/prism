@@ -1,3 +1,4 @@
+import { leafTitle } from "../../lib/pages/containerTitle";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ForceGraph3D from "react-force-graph-3d";
 import { graphTooltip } from "./graphTooltip";
@@ -162,7 +163,7 @@ export function GraphCanvas({
   );
 
   const handleNodeLabel = useCallback(
-    (node: GraphNode) => graphTooltip(node.path?.split("/").pop() || node.id),
+    (node: GraphNode) => graphTooltip(leafTitle(node.path) || node.id),
     [],
   );
 

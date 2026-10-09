@@ -1,3 +1,4 @@
+import { leafTitle } from "../../../../lib/pages/containerTitle";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useVaultClient } from "../../../../data/VaultClientContext";
 import { Button } from "../../../ui/Button";
@@ -35,7 +36,7 @@ export function PublicationContent({
 
   const noteTitle = useCallback(
     (n: { path: string | null; content?: string }): string => {
-      const base = (n.path ?? "").split("/").pop() ?? "";
+      const base = leafTitle(n.path) ?? "";
       return base.replace(/\.[a-z0-9]+$/i, "") || "Untitled";
     },
     [],

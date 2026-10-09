@@ -1,4 +1,5 @@
 import { useState, useCallback, useEffect, useMemo, useRef } from "react";
+import { isStructuredValue, scalarText, STRUCTURED_HINT, structuredItems, valueText } from "../../lib/database/structured";
 import { invoke } from "@tauri-apps/api/core";
 import { Plus, X, RefreshCw, Cloud, Trash2, Check, AlertTriangle, ChevronDown, ChevronRight, GitFork } from "lucide-react";
 import type { Note, ContentType } from "../../lib/types";
@@ -135,7 +136,7 @@ function ReadOnlyMetadata({ note }: MetadataPanelProps) {
         {properties.map(([key, value]) => (
           <div key={key}>
             <dt>{key.replace(/[_-]/g, " ")}</dt>
-            <dd>{typeof value === "object" ? JSON.stringify(value) : String(value)}</dd>
+            <dd>{valueText(value)}</dd>
           </div>
         ))}
       </dl>
@@ -419,12 +420,12 @@ function PropertyRow({
   onChange: (value: unknown) => Promise<void>;
 }) {
   const label = fieldName.replace(/[_-]/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
-  const [draft, setDraft] = useState(value != null ? String(value) : "");
+  const [draft, setDraft] = useState(value != null ? scalarText(value) : "");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const pending = useRef(false);
   const attempted = useRef<unknown>(value);
-  useEffect(()=>{ if(!pending.current) setDraft(value != null ? String(value) : ""); },[value]);
+  useEffect(()=>{ if(!pending.current) setDraft(value != null ? scalarText(value) : ""); },[value]);
   async function save(next:unknown) {
     if(pending.current) return;
     pending.current=true;attempted.current=next;setBusy(true);setError("");
@@ -433,6 +434,8 @@ function PropertyRow({
   }
   const failure = error ? <span role="alert" className="prism-context-field-error">{error}<button type="button" onClick={()=>void save(attempted.current)}>Retry</button></span> : null;
 
+
+  const structured = isStructuredValue(value);
 
   // Discover unique values if we have sibling notes
   const uniqueValues = useMemo(() => {
@@ -445,6 +448,20 @@ function PropertyRow({
     }
     return vals;
   }, [allNotesForTag, fieldName]);
+
+  // A value holding objects (`members: [{name, role}]`) is shown, never edited here:
+  // every input below works on text and would write the text back over the objects.
+  if (structured) {
+    return (
+      <div className="prism-context-property-row py-0.5" data-structured>
+        <span className="text-xs block mb-1" style={{ color: "var(--text-muted)" }}>{label}</span>
+        <ul className="text-xs space-y-0.5" aria-label={label} style={{ color: "var(--text-primary)" }}>
+          {structuredItems(value).map((it, i) => <li key={i}>{it.text}</li>)}
+        </ul>
+        <p className="text-[11px] mt-1" style={{ color: "var(--text-muted)" }}>{STRUCTURED_HINT}</p>
+      </div>
+    );
+  }
 
   // Boolean toggle
   if (isBooleanValue(value)) {
@@ -530,7 +547,7 @@ function PropertyRow({
   }
 
   // Default: inline text input
-  const strValue = value != null ? String(value) : "";
+  const strValue = value != null ? scalarText(value) : "";
   return (
     <div className="prism-context-property-row flex items-center gap-2 py-0.5">
       <span className="text-xs shrink-0 w-20" style={{ color: "var(--text-muted)" }}>{label}</span>

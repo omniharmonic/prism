@@ -9,6 +9,7 @@
  * text editor that saves with a compare-and-set PATCH. Fixing the content (or
  * splitting the page) is what brings the live editor back.
  */
+import { leafTitle } from "@prism/core/pages";
 import { useCallback, useEffect, useState } from "react";
 import { htmlToText } from "@prism/core/import-export";
 import { serverFetch } from "../transport";
@@ -37,7 +38,7 @@ export function PlainTextPage({ noteId, canEdit, embedded, onOpenLive }: { noteI
       const r = await serverFetch(`${apiBase()}/notes/${encodeURIComponent(noteId)}`, { headers, cache: "no-store" });
       if (!r.ok) throw new Error(String(r.status));
       const n = (await r.json()) as { content?: string; updatedAt?: string | null; path?: string | null; metadata?: { title?: unknown } | null };
-      const title = (typeof n.metadata?.title === "string" && n.metadata.title) || n.path?.split("/").pop() || "Page";
+      const title = (typeof n.metadata?.title === "string" && n.metadata.title) || leafTitle(n.path, n.metadata) || "Page";
       setNote({ content: n.content ?? "", updatedAt: n.updatedAt ?? null, title });
     } catch {
       setError("This page could not be loaded. Check your connection and try again.");

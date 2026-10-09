@@ -1,3 +1,4 @@
+import { leafTitle } from "../../../lib/pages/containerTitle";
 import { FileText } from "lucide-react";
 import { useNotes } from "../../../app/hooks/useParachute";
 import { useUIStore } from "../../../app/stores/ui";
@@ -24,7 +25,7 @@ export function NoteListWidget({ filter }: NoteListWidgetProps) {
 
   const handleOpen = (n: Note) => {
     const type = inferContentType(n);
-    const title = n.path?.split("/").pop() || n.id;
+    const title = leafTitle(n.path, n.metadata) || n.id;
     openTab(n.id, title, type);
   };
 
@@ -49,7 +50,7 @@ export function NoteListWidget({ filter }: NoteListWidgetProps) {
   return (
     <div className="space-y-0.5 max-h-64 overflow-auto">
       {filtered.slice(0, 20).map((note) => {
-        const title = note.path?.split("/").pop() || note.content?.slice(0, 60) || note.id;
+        const title = leafTitle(note.path, note.metadata) || note.content?.slice(0, 60) || note.id;
         const date = note.updatedAt || note.createdAt;
 
         return (

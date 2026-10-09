@@ -1,3 +1,4 @@
+import { leafTitle } from "../../lib/pages/containerTitle";
 import { useEffect, useMemo, useRef } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { ArrowUpRight, X } from "lucide-react";
@@ -26,7 +27,7 @@ export function AgentSourcePreview({ noteId, onClose }: { noteId: string; onClos
   // Refetch before displaying a cached passage. A denied read must not show the
   // previous successful response retained by the query cache.
   const note = !source.isFetching && !source.isError && scope ? source.data : undefined;
-  const name = note?.path?.split("/").pop() || "Source preview";
+  const name = leafTitle(note?.path, note?.metadata) || "Source preview";
   const textHtml = useMemo(() => note?.content.trimStart().startsWith("<") ? DOMPurify.sanitize(note.content, {
     ALLOWED_TAGS: ["p", "br", "span", "strong", "b", "em", "i", "del", "s", "blockquote", "pre", "code", "ul", "ol", "li", "h1", "h2", "h3", "h4", "h5", "h6", "hr", "table", "thead", "tbody", "tr", "th", "td"],
     ALLOWED_ATTR: ["start"],

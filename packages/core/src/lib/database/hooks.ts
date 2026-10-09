@@ -7,6 +7,7 @@
  * pure engine over `listNotes`, and a metadata-only `updateNote` with the same
  * per-field compare-and-set done client-side.
  */
+import { containerTitle, leafTitle } from "../pages/containerTitle";
 import { useCallback } from "react";
 import { keepPreviousData, useInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useVaultClient } from "../../data/VaultClientContext";
@@ -19,6 +20,7 @@ import { runQuery, type AggregateGroup, type AggregateGroupBy, type AggregateReq
 import { GENERIC_LEAF, type RelationTarget, type SchemaMap, type SchemaPatch, type TagSchema } from "./schema";
 import { buildRelationIndex, type RelationCandidate, type RelationIndex } from "./relations";
 import type { PropertyBatchItem, PropertyBatchResult } from "./wire";
+import { refuseStructuredWrite, StructuredValueError } from "./structured";
 
 /** The active audience (vault/workspace/account) — part of every cache key. */
 export function useScope(): string {
@@ -93,6 +95,12 @@ async function fallbackWrite(
   expectedScope?: string,
 ): Promise<PropertyWriteResult> {
   let rev = updatedAt;
+  // This path has no server rule behind it: check the value actually stored.
+  const stored = await client.getNote(id, { fresh: true }).catch(() => null);
+  if (stored) {
+    const refused = refuseStructuredWrite(set, stored.metadata ?? {});
+    if (refused.length) throw new StructuredValueError(refused);
+  }
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
       const n = await client.updateNote(id, { metadata: set, ifUpdatedAt: rev ?? undefined }, { expectedScope });
@@ -122,6 +130,9 @@ export function usePropertyWriter() {
     set: Record<string, unknown>,
     expect: Record<string, unknown>,
   ): Promise<PropertyWriteResult> => {
+    // A value holding objects is never replaced by an inline edit (`structured.ts`); nothing is sent.
+    const refused = refuseStructuredWrite(set, expect);
+    if (refused.length) throw new StructuredValueError(refused);
     let result: PropertyWriteResult;
     if (client.updateProperties) {
       try {
@@ -156,9 +167,17 @@ export function useBatchPropertyWriter() {
   const client = useVaultClient();
   const scope = useScope();
   const qc = useQueryClient();
-  return useCallback(async (items: Array<PropertyBatchItem & { updatedAt?: string | null }>): Promise<PropertyBatchResult[]> => {
+  return useCallback(async (all: Array<PropertyBatchItem & { updatedAt?: string | null }>): Promise<PropertyBatchResult[]> => {
+    // Rows whose value holds objects are left out of the request and reported (`structured.ts`).
+    const kept: PropertyBatchResult[] = [];
+    const items = all.filter((it) => {
+      const refused = refuseStructuredWrite(it.set, it.expect);
+      if (refused.length) kept.push({ id: it.id, ok: false, error: "structured_value", fields: refused });
+      return !refused.length;
+    });
     let results: PropertyBatchResult[] | null = null;
-    if (client.updatePropertiesBatch) {
+    if (!items.length) results = [];
+    if (!results && client.updatePropertiesBatch) {
       try {
         const out: PropertyBatchResult[] = [];
         for (let i = 0; i < items.length; i += 100) out.push(...await client.updatePropertiesBatch(items.slice(i, i + 100).map(({ id, set, expect }) => ({ id, set, ...(expect ? { expect } : {}) }))));
@@ -177,6 +196,7 @@ export function useBatchPropertyWriter() {
           results.push({ id: it.id, ok: true, updatedAt: r.updatedAt, metadata: r.metadata });
         } catch (e) {
           if (e instanceof PropertyConflictError) results.push({ id: it.id, ok: false, error: "conflict", fields: e.fields, current: e.current });
+          else if (e instanceof StructuredValueError) results.push({ id: it.id, ok: false, error: "structured_value", fields: e.fields });
           else results.push({ id: it.id, ok: false, error: e instanceof VaultRequestError && e.status === 404 ? "not_found" : e instanceof VaultRequestError && e.status === 403 ? "forbidden" : "vault_error" });
         }
       }
@@ -186,7 +206,7 @@ export function useBatchPropertyWriter() {
       qc.setQueryData<Note>(queryKeys.vault.note(r.id), (old) => (old ? { ...old, updatedAt: r.updatedAt ?? old.updatedAt, metadata: { ...(old.metadata ?? {}), ...r.metadata } } : old));
     }
     void qc.invalidateQueries({ predicate: (q) => q.queryKey[0] === "vault" && q.queryKey[1] === "notes" && typeof q.queryKey[2] !== "string" });
-    return results;
+    return [...results, ...kept];
   }, [client, qc, scope]);
 }
 
@@ -223,7 +243,7 @@ export function useReverseRelations(note: Pick<Note, "id" | "path" | "tags"> | n
             page = runQuery(await client.listNotes({ tag: s.tag, limit: 5000 }), spec, { limited: false });
           }
         } else page = runQuery(await client.listNotes({ tag: s.tag, limit: 5000 }), spec, { limited: false });
-        out.push({ ...s, rows: page.rows.filter((r) => r.id !== note!.id).map((r) => ({ id: r.id, path: r.path, title: (typeof r.metadata.title === "string" && r.metadata.title) || r.path?.split("/").pop() || r.id })), more: !!page.next });
+        out.push({ ...s, rows: page.rows.filter((r) => r.id !== note!.id).map((r) => ({ id: r.id, path: r.path, title: (typeof r.metadata.title === "string" && r.metadata.title) || leafTitle(r.path, r.metadata) || r.id })), more: !!page.next });
       }
       return out;
     },
@@ -318,7 +338,8 @@ const candidateOf = (n: { id: string; path: string | null; metadata: Record<stri
   return {
     id: n.id,
     path: n.path,
-    title: (typeof m.title === "string" && m.title.trim()) || (GENERIC_LEAF.test(leaf) && parent ? parent : leaf.replace(/\.md$/i, "")) || n.id,
+    // A container-named note (`…/opencivics/PROJECT`) is named like everywhere else: title → name → its folder made readable.
+    title: (typeof m.title === "string" && m.title.trim()) || containerTitle(n.path, m) || (GENERIC_LEAF.test(leaf) && parent ? parent : leaf.replace(/\.md$/i, "")) || n.id,
     aliases: strings(m.aliases, m.alias),
     emails: strings(m.email, m.emails, m.contact, m.contact_emails, (m.channels && typeof m.channels === "object" ? (m.channels as Record<string, unknown>).email : undefined)),
   };
@@ -354,7 +375,7 @@ export function useLinkCandidates(target: string | RelationTarget | null, search
       const tag = spec?.tag ?? null;
       if (tag && client.queryNotes) {
         try {
-          const page = await client.queryNotes({ tags: [tag], search: search || undefined, limit: 20, sort: [{ key: "$title", dir: "asc" }], fields: ["title"] });
+          const page = await client.queryNotes({ tags: [tag], search: search || undefined, limit: 20, sort: [{ key: "$title", dir: "asc" }], fields: ["title", "name"] });
           return page.rows.map(candidateOf);
         } catch (e) {
           if (!unsupported(e)) throw e;
@@ -394,7 +415,7 @@ export async function loadRelationIndex(client: VaultClient, spec: RelationTarge
       const rows: RelationCandidate[] = [];
       let cursor: string | null = null;
       for (let i = 0; i < INDEX_PAGES; i++) {
-        const page: QueryPage = await client.queryNotes({ tags: [spec.tag], limit: 500, sort: [{ key: "$title", dir: "asc" }], fields: ["title", "aliases", "alias", "email", "emails", "contact"], ...(cursor ? { cursor } : {}) });
+        const page: QueryPage = await client.queryNotes({ tags: [spec.tag], limit: 500, sort: [{ key: "$title", dir: "asc" }], fields: ["title", "name", "aliases", "alias", "email", "emails", "contact"], ...(cursor ? { cursor } : {}) });
         rows.push(...page.rows.map(candidateOf));
         cursor = page.next;
         if (!cursor) break;

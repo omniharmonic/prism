@@ -1,3 +1,4 @@
+import { leafTitle } from "../../lib/pages/containerTitle";
 import { useQuery } from "@tanstack/react-query";
 import { useVaultClient } from "../../data/VaultClientContext";
 import { useAgentChatStore } from "../../lib/agent/chatStore";
@@ -38,7 +39,7 @@ export function useGraphNeighborhood(center: string, depth: number) {
           .map((n) => ({
             ...n,
             path: n.path ?? null,
-            title: n.path?.split("/").pop() || n.id,
+            title: leafTitle(n.path) || n.id,
             tags: n.tags ?? [],
           })),
         edges: edges.slice(0, 2000),
