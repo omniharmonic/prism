@@ -14,7 +14,7 @@ import { createPortal } from "react-dom";
 import { ChevronDown, ChevronUp, Maximize2, PanelRight, Square, X } from "lucide-react";
 import { useNote, useUpdateNote } from "../../app/hooks/useParachute";
 import { useUIStore } from "../../app/stores/ui";
-import { inferContentType } from "../../lib/schemas/content-types";
+import { inferContentType, LIVE_COLLAB_TYPES } from "../../lib/schemas/content-types";
 import { reviewMode } from "../../lib/governance/review";
 import { isLocked } from "../../lib/pages/model";
 import { noteLinkTitle } from "../../lib/wikilinks";
@@ -23,7 +23,7 @@ import { RendererBoundary } from "../layout/RendererBoundary";
 import { useCollabDocumentSeam } from "../../data/CollabDocumentContext";
 import type { OpenMode } from "./config";
 
-const COLLAB_TYPES = new Set(["document", "task", "code", "spreadsheet", "canvas"]);
+const COLLAB_TYPES = LIVE_COLLAB_TYPES;
 
 export function RowPeek({ noteId, mode, onMode, onClose, canSetMode, steps }: {
   noteId: string;

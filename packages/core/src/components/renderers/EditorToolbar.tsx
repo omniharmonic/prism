@@ -19,17 +19,16 @@ import {
   Undo2,
   Redo2,
 } from "lucide-react";
-import { DocumentOutline } from "./DocumentOutline";
-import { FormattingBar } from "./FormattingBar";
 import { cn } from "../../lib/cn";
 
 interface EditorToolbarProps {
   editor: Editor;
 }
 
-export function EditorToolbar({ editor }: EditorToolbarProps) {
+/** The formatting commands of the plain editor: the children of the page's `FormattingBar`. */
+export function EditorToolbarCommands({ editor }: EditorToolbarProps) {
   return (
-    <FormattingBar navigation={<DocumentOutline editor={editor} />}>
+    <>
       {/* Undo / Redo */}
       <ToolbarButton
         icon={<Undo2 size={15} />}
@@ -172,7 +171,7 @@ export function EditorToolbar({ editor }: EditorToolbarProps) {
         }
         title="Insert table"
       />
-    </FormattingBar>
+    </>
   );
 }
 

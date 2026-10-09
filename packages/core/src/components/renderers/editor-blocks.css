@@ -436,16 +436,7 @@ a.prism-bookmark:hover { background: var(--glass-hover); border-color: var(--gla
 .prism-child-page-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-decoration: underline; text-decoration-color: var(--glass-border-strong); text-underline-offset: 3px; }
 .prism-child-page-row[aria-disabled="true"] .prism-child-page-title { text-decoration: none; }
 .prose-editor .prism-child-page.ProseMirror-selectednode .prism-child-page-row { background: var(--surface-selected); }
-.prism-child-page-prompt {
-  position: fixed; left: 50%; bottom: calc(24px + var(--workspace-bottom-inset, 0px)); transform: translateX(-50%); z-index: 80;
-  display: flex; align-items: center; gap: 10px; max-width: calc(100vw - 32px); padding: 8px 10px 8px 14px;
-  border-radius: var(--radius-md); border: 1px solid var(--glass-border); background: var(--bg-surface); color: var(--text-primary);
-  box-shadow: var(--glass-shadow-elevated); font-size: 13px;
-}
-.prism-child-page-prompt button { min-height: 30px; padding: 4px 10px; border-radius: var(--radius-sm); border: 1px solid var(--glass-border); background: none; color: var(--text-primary); font-size: 12.5px; cursor: pointer; white-space: nowrap; }
-.prism-child-page-prompt button:hover { background: var(--glass-hover); }
-.prism-child-page-prompt button.is-danger { color: var(--color-danger); }
-@media (max-width: 767px) { .prism-child-page-row { min-height: 44px; } .prism-child-page-prompt button { min-height: 44px; } }
+@media (max-width: 767px) { .prism-child-page-row { min-height: 44px; } }
 
 /* ── Editor menu search + shortcut sheet (NP-ED-02 / NP-ED-07) ── */
 .editor-menu-search { display: block; width: calc(100% - 8px); margin: 2px 4px 4px; height: 28px; padding: 0 8px; border-radius: var(--radius-sm); border: 1px solid var(--glass-border); background: var(--glass); color: var(--text-primary); font-size: 13px; outline: none; }

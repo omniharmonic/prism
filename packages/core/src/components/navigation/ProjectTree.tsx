@@ -34,8 +34,8 @@ import type { ContentType, NoteTreeEntry } from "../../lib/types";
 import { NewContentMenu } from "./NewContentMenu";
 import { Spinner } from "../ui/Spinner";
 import { useQueryClient } from "@tanstack/react-query";
-import { comparePages, isUnder, orderOf, parentOf, planReorder, protectionReason, withoutTrashed } from "../../lib/pages/model";
-import { usePagesUI, type PageRef } from "../../lib/pages/store";
+import { comparePages, containerTitle, isContainerPath, isUnder, orderOf, parentOf, planReorder, protectionReason, withoutTrashed } from "../../lib/pages/model";
+import { REVEAL_WINDOW_MS, usePagesUI, type PageRef } from "../../lib/pages/store";
 import { useOptionalVaultClient } from "../../data/VaultClientContext";
 import { pageIconOf, usePageIconOverride } from "../../lib/pages/icons";
 import { usePageActions } from "../../lib/pages/usePageActions";
@@ -155,7 +155,13 @@ function findNode(nodes: TreeNode[], pred: (n: TreeNode) => boolean): TreeNode |
   }
   return null;
 }
-const pageRef = (node: TreeNode): PageRef => ({ id: node.note!.id, path: node.note!.path, title: node.name });
+/**
+ * What a row is CALLED. `node.name` stays the path segment (every move, rename and
+ * drop is computed from it); a container-named page (`<folder>/PROJECT`) is shown by
+ * its title / name / folder instead — the same name its header and tab carry.
+ */
+const rowLabel = (node: TreeNode): string => (node.note ? containerTitle(node.note.path, node.note.metadata) : null) ?? node.name;
+const pageRef = (node: TreeNode): PageRef => ({ id: node.note!.id, path: node.note!.path, title: rowLabel(node) });
 const rawKey = (n: TreeNode) => `${n.rawPath}\u0000${n.note?.id ?? ""}`;
 
 // ─── Folder context menu (plain folders only; pages use the page menu) ─────
@@ -430,6 +436,19 @@ export function ProjectTree() {
       setRenaming(null);
       if (node.note) {
         // A page rename is a move of the page AND its sub-pages (server-side, CAS).
+        // A container-named page is not named by its file: store the title, move nothing.
+        if (isContainerPath(node.note.path)) {
+          const title = newName.trim();
+          if (!title || title === rowLabel(node)) return;
+          try {
+            await updateNote.mutateAsync({ id: node.note.id, metadata: { title } });
+            useUIStore.getState().renameTab(node.note.id, title);
+          } catch (e) {
+            console.error("Rename failed:", e);
+          }
+          invalidate();
+          return;
+        }
         const next = renamePath(node.note.path, newName);
         if (next) await actions.move(pageRef(node), { newPath: next });
         return;
@@ -692,7 +711,7 @@ export function ProjectTree() {
 
 function TreePageMenu({ node, at, onRename, onClose }: { node: TreeNode; at: { x: number; y: number }; onRename: () => void; onClose: () => void }) {
   const items = usePageMenuItems(pageRef(node), { entry: node.note, onRename, close: onClose });
-  return <PageMenuPopover label={`Actions for ${node.name}`} items={items} anchor={at} onClose={onClose} />;
+  return <PageMenuPopover label={`Actions for ${rowLabel(node)}`} items={items} anchor={at} onClose={onClose} />;
 }
 
 interface TreeCtx {
@@ -721,6 +740,7 @@ function TreeNodeView({ node, depth, ctx }: { node: TreeNode; depth: number; ctx
   const active = useUIStore((s) => !!node.note && s.openTabs.find((t) => t.id === s.activeTabId)?.noteId === node.note.id);
   const longPress = useRef<{ timer: ReturnType<typeof setTimeout>; fired: boolean } | null>(null);
   const isPage = !!node.note;
+  const label = rowLabel(node);
   const hasChildren = node.children.length > 0;
   const isRenaming = ctx.renamingNode === node || (!!ctx.renamingNode && rawKey(ctx.renamingNode) === rawKey(node));
   const showNewFolderInput = ctx.newFolder?.parentPath === node.rawPath && !isPage;
@@ -742,7 +762,7 @@ function TreeNodeView({ node, depth, ctx }: { node: TreeNode; depth: number; ctx
       return;
     }
     if (ctx.onNodeClick(e, node)) return;
-    openTab(node.note!.id, node.name, contentType);
+    openTab(node.note!.id, label, contentType);
   };
 
   // Phone (touch): swipe a page row right to (un)favorite it, left for its actions
@@ -752,11 +772,34 @@ function TreeNodeView({ node, depth, ctx }: { node: TreeNode; depth: number; ctx
   const rowEl = useRef<HTMLDivElement | null>(null);
   const swipe = useSwipeActions<HTMLDivElement>({
     disabled: !isPage || isRenaming || !ctx.isMobile,
-    right: isPage ? { label: favorite ? "Remove favorite" : "Favorite", tone: "accent", run: () => shortcuts.toggleFavorite({ id: node.note!.id, title: node.name, type: contentType as ContentType }) } : null,
+    right: isPage ? { label: favorite ? "Remove favorite" : "Favorite", tone: "accent", run: () => shortcuts.toggleFavorite({ id: node.note!.id, title: label, type: contentType as ContentType }) } : null,
     left: isPage ? { label: "More", run: () => { if (rowEl.current) ctx.onMenu(node, rowEl.current); } } : null,
   });
   const swipeRef = swipe.ref;
   const setRow = useCallback((el: HTMLDivElement | null) => { rowEl.current = el; swipeRef(el); }, [swipeRef]);
+
+  // "Show in the sidebar" (a breadcrumb's folder): this row comes into view and takes the focus.
+  // Deferred a frame or two: on a phone the Browse drawer is a <dialog> that is not shown (and
+  // puts the focus on its Close button) until its own effect has run, after this row's.
+  const revealSeq = usePagesUI((s) => (s.revealTarget?.path === node.rawPath ? s.revealTarget.seq : 0));
+  useEffect(() => {
+    if (!revealSeq) return;
+    let frames = 0;
+    let frame = requestAnimationFrame(function show() {
+      const target = usePagesUI.getState().revealTarget;
+      if (!target || target.seq !== revealSeq) return;
+      if (Date.now() - target.at > REVEAL_WINDOW_MS) return usePagesUI.getState().revealShown(revealSeq);
+      const button = rowEl.current?.querySelector<HTMLElement>(".page-tree-open");
+      // Not on screen yet (the drawer is still closed, the section still folded): look again.
+      if (!button || !button.getClientRects().length || ++frames < 2) { frame = requestAnimationFrame(show); return; }
+      button.scrollIntoView({ block: "center", inline: "nearest" });
+      button.focus({ preventScroll: true });
+      rowEl.current?.setAttribute("data-revealed", "");
+      setTimeout(() => rowEl.current?.removeAttribute("data-revealed"), 1600);
+      usePagesUI.getState().revealShown(revealSeq);
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [revealSeq]);
 
   const zoneFor = (e: React.DragEvent): DropZone => {
     const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
@@ -766,7 +809,7 @@ function TreeNodeView({ node, depth, ctx }: { node: TreeNode; depth: number; ctx
   };
 
   return (
-    <div data-depth={depth} style={{ overflowX: "clip" }} role="treeitem" aria-label={node.name} aria-level={depth + 1} aria-expanded={hasChildren ? open : undefined} aria-selected={active}>
+    <div data-depth={depth} style={{ overflowX: "clip" }} role="treeitem" aria-label={label} aria-level={depth + 1} aria-expanded={hasChildren ? open : undefined} aria-selected={active}>
       <div
         ref={setRow}
         className="page-tree-row prism-swipe-row"
@@ -804,7 +847,7 @@ function TreeNodeView({ node, depth, ctx }: { node: TreeNode; depth: number; ctx
             type="button"
             className="page-tree-disclosure focus-ring"
             aria-expanded={open}
-            aria-label={`${open ? "Collapse" : "Expand"} ${node.name}`}
+            aria-label={`${open ? "Collapse" : "Expand"} ${label}`}
             onClick={toggle}
             tabIndex={-1}
           >
@@ -815,7 +858,7 @@ function TreeNodeView({ node, depth, ctx }: { node: TreeNode; depth: number; ctx
         )}
         {isRenaming ? (
           <div className="flex-1 min-w-0 pr-2">
-            <InlineEdit label={`Rename ${node.name}`} initialValue={node.name} onConfirm={(val) => ctx.onRenameConfirm(node, val)} onCancel={ctx.onRenameCancel} />
+            <InlineEdit label={`Rename ${label}`} initialValue={label} onConfirm={(val) => ctx.onRenameConfirm(node, val)} onCancel={ctx.onRenameCancel} />
           </div>
         ) : (
           <button
@@ -855,7 +898,7 @@ function TreeNodeView({ node, depth, ctx }: { node: TreeNode; depth: number; ctx
             aria-current={active ? "page" : undefined}
           >
             <span className="page-tree-icon">{emoji ? <span className="page-tree-emoji">{emoji}</span> : <Icon size={14} style={{ opacity: 0.75 }} />}</span>
-            <span>{node.name}</span>
+            <span>{label}</span>
           </button>
         )}
         {!isRenaming && (
@@ -865,7 +908,7 @@ function TreeNodeView({ node, depth, ctx }: { node: TreeNode; depth: number; ctx
                 type="button"
                 className="page-tree-action focus-ring"
                 title={isPage ? "Add a page inside" : "New page in folder"}
-                aria-label={`${isPage ? "Add a page inside" : "New page in"} ${node.name}`}
+                aria-label={`${isPage ? "Add a page inside" : "New page in"} ${label}`}
                 onClick={(e) => {
                   e.stopPropagation();
                   ctx.onAddInside(node);
@@ -878,7 +921,7 @@ function TreeNodeView({ node, depth, ctx }: { node: TreeNode; depth: number; ctx
               type="button"
               className="page-tree-action focus-ring"
               title={isPage ? "Page actions" : "Folder actions"}
-              aria-label={`${isPage ? "Page" : "Folder"} actions for ${node.name}`}
+              aria-label={`${isPage ? "Page" : "Folder"} actions for ${label}`}
               aria-haspopup="menu"
               onClick={(e) => {
                 e.stopPropagation();

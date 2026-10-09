@@ -298,6 +298,7 @@ import { formatDate as fmtDate, formatDateTime as fmtDateTime } from "../../lib/
  *  (e.g. collab presence + comments toggle). Display-only. */
 export function PageHeader({
   path,
+  title,
   fallbackName,
   right,
   onRename,
@@ -309,6 +310,9 @@ export function PageHeader({
   presence,
 }: {
   path?: string | null;
+  /** The page's display title when it is NOT its file name: a container-named note
+   *  (`<folder>/PROJECT`, `lib/pages/containerTitle.ts`). Wins over the path's leaf. */
+  title?: string | null;
   /** Used when the path has no usable filename (e.g. a content-derived title). */
   fallbackName?: string;
   right?: React.ReactNode;
@@ -336,7 +340,7 @@ export function PageHeader({
   const stripped = (path || "").replace(/^vault\//, "");
   const parts = stripped.split("/").filter(Boolean);
   const baseName = parts.length ? withoutExtension(parts[parts.length - 1]) : "";
-  const name = baseName || fallbackName || "Untitled";
+  const name = title?.trim() || baseName || fallbackName || "Untitled";
   // NP-PG-06: the header bar shows this page's breadcrumb when it hosts it — then not here too.
   const inBar = useHeaderBreadcrumbPath();
   const crumbs = inBar && inBar === path ? [] : parts.slice(0, -1);

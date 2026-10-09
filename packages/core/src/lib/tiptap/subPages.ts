@@ -2,7 +2,9 @@ import type { QueryClient } from "@tanstack/react-query";
 import type { VaultClient } from "../../data/VaultClient";
 import type { NoteTreeEntry } from "../types";
 import { newContentParams } from "../../components/navigation/newContent";
-import { isTrashed } from "../pages/model";
+import { isTrashed, protectionReason } from "../pages/model";
+import { restoreFromTrash, trashPage } from "../pages/ops";
+import { useUIStore } from "../../app/stores/ui";
 import { noteLinkTitle } from "../wikilinks";
 
 /** A title typed into the editor, made safe as ONE path segment (null = unusable). */
@@ -37,15 +39,41 @@ export async function createSubPage(client: VaultClient, queryClient: QueryClien
 
 /** The page behind a sub-page row, read with the caller's own access (null = cannot view / gone / trashed). */
 export function describeSubPage(client: () => VaultClient | null) {
-  return async (pageId: string): Promise<{ title: string; path: string | null } | null> => {
+  return async (pageId: string): Promise<{ title: string; path: string | null; blocked: string | null } | null> => {
     const c = client();
     if (!c) return null;
     try {
       const note = await c.getNote(pageId);
       if (!note || note.id !== pageId || isTrashed(note)) return null;
-      return { title: noteLinkTitle(note), path: note.path ?? null };
+      // `blocked`: a page an integration or the system owns is never moved to the Trash from here.
+      return { title: noteLinkTitle(note), path: note.path ?? null, blocked: protectionReason(note) };
     } catch {
       return null;
     }
+  };
+}
+
+/**
+ * The Trash side of a sub-page row (`ChildPages.configure({ trash, restore })`): the SAME
+ * operations as the page menu's "Move to Trash" and its Undo — the gateway decides whether this
+ * person may (a refusal rejects, and the editor says so). Trash, never a permanent delete.
+ */
+export function subPageTrash(client: () => VaultClient | null, queryClient: () => QueryClient | null | undefined) {
+  const refresh = () => void queryClient()?.invalidateQueries({ queryKey: ["vault"] });
+  return {
+    trash: async (pageId: string): Promise<void> => {
+      const c = client();
+      if (!c) throw new Error("unavailable");
+      const { trashed } = await trashPage(c, pageId);
+      // A trashed page (and what went with it) does not stay open in a tab.
+      for (const id of trashed.length ? trashed : [pageId]) useUIStore.getState().closeTabs(id);
+      refresh();
+    },
+    restore: async (pageId: string): Promise<void> => {
+      const c = client();
+      if (!c) throw new Error("unavailable");
+      await restoreFromTrash(c, pageId);
+      refresh();
+    },
   };
 }

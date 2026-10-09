@@ -19,8 +19,10 @@ const MAX_LISTED = 20;
  * counted or named; hidden when there are none or the shell can't list links
  * (non-owners today: the gateway doesn't serve /links). Opening the list loads
  * a snippet per page (≤ 20) through the normal note read.
+ * `inline`: the pill as one item of the page's chrome row (a phone): the count only, named in
+ * full for assistive tech; its list hangs from the row's trailing edge.
  */
-export function BacklinksPill({ noteId, title }: { noteId: string; title: string }) {
+export function BacklinksPill({ noteId, title, inline = false }: { noteId: string; title: string; inline?: boolean }) {
   const client = useVaultClient();
   const scope = useAgentChatStore((s) => s.scope);
   const tree = useVaultTree();
@@ -64,10 +66,11 @@ export function BacklinksPill({ noteId, title }: { noteId: string; title: string
   if (!sources.length) return null;
   const label = `${sources.length} backlink${sources.length === 1 ? "" : "s"}`;
   return (
-    <div className="backlinks">
+    <div className="backlinks" data-inline={inline || undefined}>
       <button ref={button} type="button" className="backlinks-pill focus-ring" aria-expanded={open} aria-controls="backlinks-list"
+        aria-label={inline ? label : undefined} title={inline ? label : undefined}
         onClick={() => setOpen((o) => !o)}>
-        <ArrowDownLeft size={13} aria-hidden /> {label}
+        <ArrowDownLeft size={13} aria-hidden /> {inline ? sources.length : label}
       </button>
       {open && (
         <div ref={panel} id="backlinks-list" className="backlinks-list prism-menu-enter" role="region" aria-label="Pages that link here">

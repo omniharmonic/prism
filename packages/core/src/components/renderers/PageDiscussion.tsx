@@ -22,7 +22,10 @@ export function PageDiscussion({
   canComment,
   editor,
   actions,
+  composeOnly = false,
 }: {
+  /** Only "Add comment" and its field — where the threads are already listed (the phone's Comments drawer). */
+  composeOnly?: boolean;
   ydoc: Y.Doc;
   user: { name: string; color: string };
   canComment: boolean;
@@ -40,7 +43,7 @@ export function PageDiscussion({
   const field = useRef<HTMLTextAreaElement>(null);
   const mentions = useCommentMentionPicker(field, text, setText);
 
-  if (!canComment && threads.length === 0) return null;
+  if (composeOnly ? !canComment : !canComment && threads.length === 0) return null;
 
   const send = async () => {
     const value = text.trim();
@@ -68,14 +71,14 @@ export function PageDiscussion({
 
   return (
     <section className="page-discussion" aria-label="Page discussion" data-empty={threads.length === 0 || undefined}>
-      {open.length > 0 && (
+      {!composeOnly && open.length > 0 && (
         <div className="page-discussion-threads">
           {open.map((t) => (
             <ThreadCard key={t.id} ydoc={ydoc} thread={t} user={user} canComment={canComment} editor={editor} actions={actions} />
           ))}
         </div>
       )}
-      {showResolved && resolved.length > 0 && (
+      {!composeOnly && showResolved && resolved.length > 0 && (
         <div className="page-discussion-threads">
           {resolved.map((t) => (
             <ThreadCard key={t.id} ydoc={ydoc} thread={t} user={user} canComment={canComment} editor={editor} actions={actions} />
@@ -88,7 +91,7 @@ export function PageDiscussion({
             <MessageSquarePlus size={14} aria-hidden="true" /> {threads.length ? "Add a page comment" : "Add comment"}
           </button>
         )}
-        {resolved.length > 0 && (
+        {!composeOnly && resolved.length > 0 && (
           <button type="button" className="page-discussion-resolved focus-ring" aria-expanded={showResolved} onClick={() => setShowResolved((v) => !v)}>
             {showResolved ? "Hide" : "Show"} {resolved.length} resolved
           </button>

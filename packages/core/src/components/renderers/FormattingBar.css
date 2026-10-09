@@ -75,3 +75,40 @@ div:has(> div > .empty-page-starters) .prose-editor { min-height: 2.5em !importa
 .document-formatting-bar { border-bottom-color: transparent; }
 .document-formatting-bar:has(.document-formatting-toggle[aria-expanded="true"]),
 .document-formatting-bar:has(.document-review-controls) { border-bottom-color: var(--glass-border); }
+
+/* ── The page's ONE chrome row (editing-chrome pass) ──
+   `data-chrome="row"`: the host put its status and its actions in the row (FormattingBar `status` /
+   `trailing`) instead of stacking strips of its own — a phone. One line, never wrapping: Outline and
+   Formatting are icon buttons there (their names stay for assistive tech), the mode and the trailing
+   actions sit at the end. */
+.document-chrome-status { display: flex; align-items: center; gap: 6px; min-width: 0; font-size: 11px; color: var(--text-muted); white-space: nowrap; }
+.document-chrome-status > span:last-child { overflow: hidden; text-overflow: ellipsis; }
+.document-chrome-dot { flex: none; width: 7px; height: 7px; border-radius: 999px; }
+.document-chrome-trailing { display: flex; align-items: center; gap: 4px; flex: none; position: relative; }
+.document-chrome-action { position: relative; display: inline-flex; align-items: center; justify-content: center; gap: 5px; min-width: 44px; min-height: 44px; padding: 0 10px; border-radius: 8px; font-size: 12px; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.document-chrome-action:hover, .document-chrome-action[aria-expanded=true] { color: var(--text-primary); background: var(--glass-hover); }
+.document-formatting-bar[data-chrome="row"] { position: relative; }
+.document-formatting-bar[data-chrome="row"] .document-formatting-entry { flex-wrap: nowrap; justify-content: flex-start; gap: 4px; }
+.document-formatting-bar[data-chrome="row"] .document-formatting-navigation { flex-wrap: nowrap; flex: none; gap: 0; }
+.document-formatting-bar[data-chrome="row"] .document-review-controls { flex: none; margin-left: auto; }
+.document-formatting-bar[data-chrome="row"] .document-chrome-trailing { margin-left: auto; }
+.document-formatting-bar[data-chrome="row"] .document-review-controls + .document-chrome-trailing { margin-left: 0; }
+.document-formatting-bar[data-chrome="row"] .document-chrome-status { flex: 0 1 auto; }
+.document-formatting-bar[data-chrome="row"] :is(.document-outline-toggle, .document-formatting-toggle) { justify-content: center; min-width: 44px; padding: 0; }
+.document-formatting-bar[data-chrome="row"] :is(.document-outline-toggle, .document-formatting-toggle) > span,
+.document-formatting-bar[data-chrome="row"] .document-formatting-toggle > svg:last-child { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+/* The outline and the backlinks list hang from the row, not from their button: they span it. */
+.document-formatting-bar[data-chrome="row"] .document-outline { position: static; }
+.document-formatting-bar[data-chrome="row"] .document-outline-popover { left: 0; width: min(280px, 100%); }
+/* The bulk review buttons leave the row on a phone: they are in the "N suggested changes" strip,
+   which exists only while there is something to review (SuggestionReview). */
+.prism-review-bulk { display: none; }
+@media (max-width: 767px) {
+  .document-review-controls .document-review-all { display: none; }
+  .prism-review-bulk { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; padding-top: 12px; border-top: 1px solid var(--glass-border); }
+  .prism-review-bulk > button { flex: 1 1 0; white-space: nowrap; }
+}
+/* A page that cannot be edited keeps the hairline under its row (it was `.document-outline-readonly`). */
+.document-formatting-bar[data-reader]:not([data-chrome]) { border-bottom-color: var(--glass-border); }
+/* A reader whose selection offers nothing (no agent, no comments): no empty row. */
+.keyboard-toolbar:has(> .keyboard-toolbar-selection:empty) { display: none; }

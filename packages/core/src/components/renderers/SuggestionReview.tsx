@@ -64,6 +64,13 @@ export function SuggestionReview({ editor, canReview }: { editor: Editor; canRev
       });
     }
   }
+  function bulk(action: "accept" | "reject") {
+    if (editor.isDestroyed || !canReview) return;
+    const total = changes.length;
+    const applied = action === "accept" ? editor.chain().focus().acceptAllSuggestions().run() : editor.chain().focus().rejectAllSuggestions().run();
+    setCursor(null);
+    setNotice(applied ? `${action === "accept" ? "Accepted" : "Rejected"} ${total} suggested ${total === 1 ? "change" : "changes"}.` : "These changes could not be reviewed. Check the current document and try again.");
+  }
   if (!change) return notice ? <p ref={complete} tabIndex={-1} role="status" className="prism-review-complete">{notice} No suggested changes remain.</p> : null;
   return <details ref={review} className="prism-suggestion-review">
     <summary className="focus-ring">{changes.length} suggested {changes.length === 1 ? "change" : "changes"}</summary>
@@ -87,6 +94,12 @@ export function SuggestionReview({ editor, canReview }: { editor: Editor; canRev
           {canReview && <><button className="focus-ring" onClick={() => act(change.key, "reject")}><X size={15} aria-hidden="true" />Reject</button><button className="focus-ring prism-review-accept" onClick={() => act(change.key, "accept")}><Check size={15} aria-hidden="true" />Accept</button></>}
         </div>
       </section>
+      {/* Phone: "accept / reject all" live here, not in the page's chrome row — so they exist only
+          while there is something to review (CSS shows this group ≤ 767 px; the row keeps them on desktop). */}
+      {canReview && <div className="prism-review-bulk" role="group" aria-label="All suggested changes">
+        <button className="focus-ring" aria-label="Reject all suggestions" onClick={() => bulk("reject")}><X size={15} aria-hidden="true" />Reject all</button>
+        <button className="focus-ring" aria-label="Accept all suggestions" onClick={() => bulk("accept")}><Check size={15} aria-hidden="true" />Accept all</button>
+      </div>}
       {notice && <p role="status" className="prism-review-hint">{notice}</p>}
     </div>
   </details>;

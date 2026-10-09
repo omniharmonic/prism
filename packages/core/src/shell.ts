@@ -292,6 +292,7 @@ export { TranscriptReviewClientProvider, useTranscriptReviewClient, type Transcr
 export { eligiblePublicationNavigation, parsePublicationNavigation, type PublicationNavigation } from "./lib/publishing/navigation";
 // Pages: nested-page moves, Trash, synced preferences (lib/pages/model.ts).
 export { renamePageFromTitle, TitleRenameRefused } from "./lib/pages/titleRename";
+export { containerTitle, isContainerPath, humanizeSlug } from "./lib/pages/containerTitle";
 export { PagesRequestError, TRASH_TAG, sanitizePreferences, type MoveRequest, type MoveResult, type DuplicateRequest, type DuplicateResult, type TrashItem, type TrashListing, type PreferencesSnapshot, type PagePreferences } from "./lib/pages/model";
 
 // Sharing / review reads (wave 2D)
@@ -313,7 +314,7 @@ export { BacklinksPill } from "./components/layout/BacklinksPill";
 export { EmptyPageStarters } from "./components/renderers/EmptyPageStarters";
 export { PageIcon, notePageIconChanged, pageIconWriteConfirmed, pageIconWriteFailed } from "./lib/pages/icons";
 // Wave 2A: @-mentions, notifications inbox, reminders, access requests.
-export { extractMentions, newMentions, extractCommentMentions, splitCommentMentions, commentMentionToken, type ParsedMention } from "./lib/tiptap/MentionParse";
+export { extractMentions, extractChildPageIds, newMentions, extractCommentMentions, splitCommentMentions, commentMentionToken, type ParsedMention } from "./lib/tiptap/MentionParse";
 export * from "./lib/notifications/client";
 export * from "./lib/notifications/hooks";
 export { openNotification, focusAnchor, anchorSelector, listenForInboxOpenRequests, setPendingNotification, ANCHOR_FLASH_CLASS, REVEAL_PROPERTY_EVENT } from "./lib/notifications/anchor";

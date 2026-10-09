@@ -10,7 +10,7 @@ import { queryKeys } from "../parachute/queries";
 import { convertApi } from "../parachute/client";
 import { inferContentType } from "../schemas/content-types";
 import type { Note } from "../types";
-import { LOCK_KEY, ORDER_KEY, PAGE_STYLE_KEY, TEMPLATES_FOLDER, PagesRequestError, duplicateCopy, duplicateSummary, templateSource, referencesAttachments, copyFilesNotice, isLocked, isTrashed, isUnder, pageStyleOf, pageTitle, type MoveResult } from "./model";
+import { LOCK_KEY, ORDER_KEY, PAGE_STYLE_KEY, TEMPLATES_FOLDER, PagesRequestError, duplicateCopy, duplicateSummary, templateSource, referencesAttachments, copyFilesNotice, isContainerPath, isLocked, isTrashed, isUnder, pageStyleOf, pageTitle, type MoveResult } from "./model";
 import { editorSaveState, flushPendingSaves } from "../../app/hooks/useAutoSave";
 import { useCollabSharing } from "../../data/CollabSharing";
 import { registeredEditor } from "../agent/documentSnapshots";
@@ -98,7 +98,8 @@ export function usePageActions() {
       });
       if (result.ok) {
         const leaf = result.path.split("/").pop();
-        if (leaf) useUIStore.getState().renameTab(page.id, leaf);
+        // A container-named page (`<folder>/PROJECT`) keeps the name it is shown by; its file name is not a title.
+        if (leaf) useUIStore.getState().renameTab(page.id, isContainerPath(result.path) ? page.title : leaf);
         ui.getState().reveal(result.path.includes("/") ? result.path.slice(0, result.path.lastIndexOf("/")) : result.path);
       }
       return await finishMove(page, result);

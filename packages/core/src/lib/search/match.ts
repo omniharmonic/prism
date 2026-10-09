@@ -2,6 +2,8 @@
  * Pure search helpers shared by the Prism Server (`GET /api/search`) and the
  * client fallback (NP-SR-03 highlighting, NP-SR-04 filters). No DOM, no I/O.
  */
+import { containerTitle } from "../pages/containerTitle";
+
 export type Range = [start: number, end: number];
 
 export type SearchSort = "edited" | "created";
@@ -205,7 +207,7 @@ export function buildSnippet(text: string, terms: string[], max = 220): { snippe
 export function noteTitle(note: NoteLike): string {
   const meta = note.metadata ?? {};
   if (typeof meta.title === "string" && meta.title.trim()) return meta.title.trim();
-  return note.path?.split("/").pop() || note.id;
+  return containerTitle(note.path, meta) || note.path?.split("/").pop() || note.id;
 }
 
 /** Bytes of raw note content a snippet may read (per note). */

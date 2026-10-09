@@ -14,6 +14,8 @@
 }
 .page-tree-row:hover { background: var(--glass-hover); }
 .page-tree-row[data-active="true"] { background: var(--surface-selected); color: var(--text-primary); font-weight: 550; }
+/* "Show in the sidebar": the row a breadcrumb asked for is marked for a moment (a touch has no focus ring). */
+.page-tree-row[data-revealed] { background: var(--color-accent-dim); box-shadow: inset 0 0 0 1.5px var(--color-accent); }
 .page-tree-row[data-selected="true"] { background: var(--surface-active); color: var(--text-primary); }
 .page-tree-row[data-drop="inside"] { box-shadow: inset 0 0 0 2px var(--color-accent); background: var(--color-accent-dim); }
 .page-tree-row[data-drop="before"]::before,

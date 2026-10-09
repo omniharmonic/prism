@@ -67,6 +67,38 @@ export function extractMentions(html: string | null | undefined): ParsedMention[
   return out;
 }
 
+/** At most this many sub-page rows are read from one document. */
+export const MAX_CHILD_PAGES = 200;
+
+/**
+ * The page ids of the sub-page rows in stored HTML (`<div data-type="child-page"
+ * data-page-id="…">`, NP-PG-15), in document order, without repeats. Pure and bounded like
+ * `extractMentions`: a linear scan of `<div` opening tags, strict ids only. The server links
+ * a page to the sub-pages its body lists (so the parent is among a sub-page's backlinks).
+ */
+export function extractChildPageIds(html: string | null | undefined): string[] {
+  const out: string[] = [];
+  if (!html || html.indexOf('data-type="child-page"') < 0) return out;
+  let i = 0;
+  while (out.length < MAX_CHILD_PAGES) {
+    const at = html.indexOf("<div", i);
+    if (at < 0) break;
+    const end = html.indexOf(">", at);
+    if (end < 0) break;
+    i = end + 1;
+    const tag = html.slice(at + 4, end);
+    if (tag.length > 2000 || tag.indexOf("child-page") < 0) continue;
+    const attrs: Record<string, string> = {};
+    ATTR.lastIndex = 0;
+    let m: RegExpExecArray | null;
+    while ((m = ATTR.exec(tag))) attrs[m[1]!.toLowerCase()] = decode(m[3] ?? m[4] ?? "");
+    const id = attrs["data-page-id"];
+    if (attrs["data-type"] !== "child-page" || !id || !MENTION_ID.test(id) || out.includes(id)) continue;
+    out.push(id);
+  }
+  return out;
+}
+
 /** Diff key: the chip's uid when it has one, else kind+id (+date). */
 export const mentionKey = (m: ParsedMention): string => `${m.uid ?? ""}|${m.kind}|${m.id ?? ""}|${m.kind === "date" ? (m.date ?? "") : ""}`;
 

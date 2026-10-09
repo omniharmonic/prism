@@ -7,7 +7,7 @@ import { humanCollabRevision } from "@prism/core/collab-commands";
 import { sendHumanCommand } from "./humanCommands";
 import { humanRevisionBody } from "../../../../packages/core/src/lib/collab/human/validation";
 import { PageCover, parseCover, coverPatch, COVER_GRADIENTS, type PageCoverValue } from "@prism/core";
-import { COLLAB_SCHEMA_VERSION, useAgentDocumentSnapshot, CollabEditor, CommentsSidebar, collabAffordances, humanFailureText, HumanCommandFailure, PresenceAvatars, type CollabSocketScope, type CommentCommandActions, type HumanCommandChannel, CollabCodeEditor, CollabSpreadsheet, CollabCanvas, detectCodeLanguage, inferContentType, PageHeader, NotePropertyBar, PageProperties, renamePageFromTitle, useUIStore, useWritingFont, useAgentChatStore, type ContentFont, type Note, type Editor } from "@prism/core";
+import { COLLAB_SCHEMA_VERSION, useAgentDocumentSnapshot, CollabEditor, CommentsSidebar, CommentsRowButton, collabAffordances, humanFailureText, HumanCommandFailure, PresenceAvatars, type CollabSocketScope, type CommentCommandActions, type HumanCommandChannel, CollabCodeEditor, CollabSpreadsheet, CollabCanvas, detectCodeLanguage, inferContentType, PageHeader, NotePropertyBar, PageProperties, renamePageFromTitle, containerTitle, isContainerPath, useUIStore, useWritingFont, useAgentChatStore, type ContentFont, type Note, type Editor } from "@prism/core";
 import { MessageSquare, X, Lock } from "lucide-react";
 import { serverFetch, collabWsUrl, collabToken, isNative } from "../transport";
 import { apiBase, agentScope, getCapabilityToken, getActiveVault, getMe, fetchMe, contextHeaders } from "../config";
@@ -255,7 +255,8 @@ function ScopedCollabDoc({
     const done = await renamePageFromTitle(httpVaultClient, { id: noteId, path }, newName);
     if (!done || !mounted.current || agentScope() !== audience) return;
     setPath(done.path);
-    const name = done.path.split("/").pop() || newName.trim();
+    // A container-named page (`<folder>/PROJECT`): the title was stored as metadata, nothing moved.
+    const name = done.title ?? (done.path.split("/").pop() || newName.trim());
     setTitle(name);
     useUIStore.getState().renameTab(noteId, name);
     if (done.partial) {
@@ -414,7 +415,8 @@ function ScopedCollabDoc({
         setKind(k);
         if (k === "code") setLanguage(detectCodeLanguage(note.path ?? null, note.metadata ?? null));
         const filename = note.path?.split("/").pop() as string | undefined;
-        const titleMeta = typeof note.metadata?.title === "string" ? note.metadata.title : undefined;
+        // A container-named page (`<folder>/PROJECT`) is named by its title / name / folder, never by its file.
+        const titleMeta = (typeof note.metadata?.title === "string" ? note.metadata.title : undefined) || containerTitle(note.path ?? null, note.metadata ?? null) || undefined;
         // Prefer the note's explicit title / filename; fall back to a heading
         // derived from the body. (Content-only derivation left "Shared document"
         // whenever the body had no leading heading — or was collab HTML.)
@@ -680,6 +682,24 @@ function ScopedCollabDoc({
 
   // Comments + suggestions are prose-only; code/spreadsheets are pure collab data.
   const showComments = isDocument;
+  const statusColor = connected ? "#22c55e" : online ? "#eab308" : "#ef4444";
+  // A phone: the page has ONE chrome row (in the editor, above the body). The connection state, the
+  // Comments button and the backlinks count are items of it instead of three strips of their own.
+  const inRow = narrow && isDocument;
+  // The row's mode button already says Editing / Suggesting: next to it the state is just "Live".
+  const modeInRow = editable && !useCommands && canReview && !isSuggestLevel;
+  const rowStatus = (
+    <>
+      <span className="document-chrome-dot" style={{ background: statusColor }} />
+      <span>{connected ? (modeInRow ? "Live" : `Live · ${statusText}`) : statusText}</span>
+    </>
+  );
+  const rowActions = (
+    <>
+      {showComments && <CommentsRowButton ydoc={ydoc} open={commentsOpen} onToggle={() => setCommentsOpen((o) => !o)} />}
+      {embedded && <BacklinksPill inline noteId={noteId} title={title} />}
+    </>
+  );
   const sidebar = <CommentsSidebar noteId={noteId} ydoc={ydoc} user={user} canComment={canComment} editor={editor} focusedThreadId={focusedThread} actions={commentActions} />;
 
   return (
@@ -712,6 +732,7 @@ function ScopedCollabDoc({
         {/* Header — shared page chrome, identical to the non-collab document view */}
         <PageHeader
           path={path}
+          title={isContainerPath(path) ? title : undefined}
           fallbackName={title}
           details={<NotePropertyBar noteId={noteId} readOnly={!canReview} fallback={<PageProperties path={path} />} />}
           onRename={canReview ? handleRename : undefined}
@@ -719,10 +740,10 @@ function ScopedCollabDoc({
           onIconChange={canReview ? handleIconChange : undefined}
           onAddCover={canReview && isDocument && !cover ? () => handleCoverChange({ kind: "gradient", value: COVER_GRADIENTS[Math.floor(Math.random() * COVER_GRADIENTS.length)]!.name, y: 50 }) : undefined}
           presence={<PresenceAvatars awareness={provider.awareness as never} editor={editor} compact={narrow} />}
-          right={
+          right={inRow ? undefined : (
             <div style={{ display: "flex", alignItems: "center", gap: 10, paddingTop: 4 }}>
               <span style={{ fontSize: 11, color: "var(--text-muted)", display: "flex", alignItems: "center", gap: 6, whiteSpace: "nowrap" }}>
-                <span style={{ width: 7, height: 7, borderRadius: 999, background: connected ? "#22c55e" : online ? "#eab308" : "#ef4444" }} />
+                <span style={{ width: 7, height: 7, borderRadius: 999, background: statusColor }} />
                 {connected ? "Live · " : ""}{statusText}
               </span>
               {showComments && (
@@ -750,7 +771,7 @@ function ScopedCollabDoc({
                 </button>
               )}
             </div>
-          }
+          )}
         />
 
         {titleNotice && <p role="status" className="mb-4 text-xs text-[var(--text-secondary)]">{titleNotice}
@@ -758,15 +779,17 @@ function ScopedCollabDoc({
             onClick={() => { setFinishing(true); void finishRename().then((ok) => { if (!mounted.current) return; setFinishing(false); if (ok) { setFinishRename(null); setTitleNotice(""); } else setTitleNotice("Some sub-pages still need moving. Try Finish move again."); }); }}>Finish move</button></>}
         </p>}
         {uploadNotice && <p role="alert" className="mb-4 text-xs text-[var(--text-secondary)]">{uploadNotice} <button type="button" className="underline" onClick={() => setUploadNotice(null)}>Dismiss</button></p>}
-        {embedded && isDocument && <div style={{ maxWidth: "var(--content-measure)", margin: "0 auto" }}><BacklinksPill noteId={noteId} title={title} /></div>}
+        {embedded && isDocument && !inRow && <div style={{ maxWidth: "var(--content-measure)", margin: "0 auto" }}><BacklinksPill noteId={noteId} title={title} /></div>}
 
-        {/* NP-CO-02: page-level discussion (threads about the page, not anchored to text). */}
-        {isDocument && showComments && <PageDiscussion ydoc={ydoc} user={user} canComment={canComment} editor={editor} actions={commentActions} />}
+        {/* NP-CO-02: page-level discussion (threads about the page, not anchored to text). On a phone it is
+            in the Comments drawer (ONE comments entry point: the row's button). */}
+        {isDocument && showComments && !inRow && <PageDiscussion ydoc={ydoc} user={user} canComment={canComment} editor={editor} actions={commentActions} />}
 
         {/* Doc + (desktop) inline comments */}
         <div style={{ display: "flex", gap: 20, alignItems: "flex-start" }}>
           <div
             data-content-font={isDocument ? contentFont : undefined}
+            className={isDocument ? "collab-document-body" : undefined}
             style={{
               flex: 1,
               minWidth: 0,
@@ -809,6 +832,7 @@ function ScopedCollabDoc({
                 suggesting={effectiveSuggesting}
                 onSetSuggesting={isSuggestLevel ? undefined : canReview ? setSuggesting : undefined}
                 humanCommands={humanChannel}
+                chrome={inRow ? { status: rowStatus, trailing: rowActions } : undefined}
                 canReview={canReview}
                 canComment={canComment}
                 onEditor={setEditor}
@@ -858,6 +882,8 @@ function ScopedCollabDoc({
                 <X size={18} />
               </button>
             </div>
+            {/* The page-level "Add comment" (its threads are in the list below, with the anchored ones). */}
+            {inRow && <PageDiscussion composeOnly ydoc={ydoc} user={user} canComment={canComment} editor={editor} actions={commentActions} />}
             {sidebar}
           </div>
         </>

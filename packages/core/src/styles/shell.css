@@ -101,6 +101,13 @@
 .tabbar-crumbs { flex: 0 0 auto; gap: 2px; font-size: 12.5px; }
 .tabbar-crumbs .page-crumb { max-width: 132px; }
 .tabbar-crumbs[data-room="narrow"] .page-crumb { max-width: 96px; }
+/* The phone bar: two equal sides around the title, so the title is centred in the bar whatever
+   each side holds (Messages has nothing on the right; a page has four controls there). A side
+   never gets narrower than its controls; the title gives way (and shortens) before they do. */
+.tabbar-phone { display: flex; align-items: center; gap: 4px; }
+.tabbar-phone-side { display: flex; align-items: center; align-self: stretch; gap: 4px; flex: 1 1 0; min-width: max-content; }
+.tabbar-phone-side[data-side="end"] { justify-content: flex-end; }
+.tabbar-phone-centre { display: flex; align-items: center; justify-content: center; flex: 0 1 auto; min-width: 0; padding: 0 4px; }
 .tabbar-phone-crumbs { display: flex; min-width: 0; max-width: 100%; }
 .tabbar-phone-title {
   display: inline-flex; align-items: center; gap: 3px; min-width: 0; max-width: 100%;
@@ -159,7 +166,8 @@ html[data-page-width="wide"] #workspace-document:not([data-page-full="true"]) { 
 /* While the phone keyboard toolbar is up, the editor gains scroll room below
    its last line (inside its own scroller, so no container shrinks) and the
    caret can always be scrolled clear of the toolbar + keyboard. */
-.prose-editor[contenteditable="true"] { padding-bottom: var(--keyboard-toolbar-space, 0px); }
+/* Also a page that cannot be edited: a reader's selection actions dock in the same row (KeyboardToolbar). */
+.prose-editor[contenteditable] { padding-bottom: var(--keyboard-toolbar-space, 0px); }
 
 /* One-action New page with the type chooser beside it (NP-SB-13). */
 .workspace-new-page-row { display: flex; gap: 1px; }

@@ -1,4 +1,5 @@
 import { AddSavedNoteContextButton } from "../agent/SavedNoteHandoff";
+import { containerTitle } from "../../lib/pages/containerTitle";
 import "./search-workspace.css";
 import { FileText, MessageSquare } from "lucide-react";
 import { useVaultSearch } from "../../app/hooks/useParachute";
@@ -31,7 +32,7 @@ export function SearchPanel({ query, onClose }: SearchPanelProps) {
     {isError && <div role="alert" className="px-3 py-4 text-sm">Couldn't search this workspace. <button className="focus-ring min-h-control px-2 underline" onClick={() => void refetch()}>Try again</button></div>}
     {!isFetching && !isError && query.trim() && results?.length === 0 && <p className="px-3 py-5 text-sm" style={{ color: "var(--text-secondary)" }}>No matching notes. Try a name, phrase, or related idea.</p>}
     {results?.map(note => {
-      const title = note.path?.split("/").pop() || note.id;
+      const title = containerTitle(note.path, note.metadata) || note.path?.split("/").pop() || note.id;
       const marks = resultHighlights(note, title, query);
       const type = inferContentType(note);
       const updated = note.updatedAt ? new Date(note.updatedAt) : null;

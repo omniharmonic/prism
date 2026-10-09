@@ -7,7 +7,8 @@
  *    trashed → "Deleted page"), a click opens the page;
  *  - `ChildPages`: the host seam — `create()` makes the sub-page (slash `/page`),
  *    pages created inside this page elsewhere (tree `+`) get a row too, and
- *    deleting a row offers to move that page to Trash.
+ *    deleting a row moves that page to the Trash (with Undo) when it really is
+ *    this page's own sub-page.
  */
 import { openPageFromDocument } from "./openPage";
 import { Extension, type Editor } from "@tiptap/core";
@@ -28,6 +29,7 @@ import { structuralEditsAllowed } from "./blockCommands";
 import { editorNotice } from "./notice";
 import { SubPageError } from "./subPages";
 import { parentOf } from "../pages/model";
+import { usePagesUI } from "../pages/store";
 
 const PAGE_ID = /^[A-Za-z0-9_-]{1,128}$/;
 /** Fired on `window` when a page was created somewhere in the app: `{ id, parentPath }`. A listener that now shows the row sets `handled`. */
@@ -83,10 +85,15 @@ export interface ChildPagesOptions {
   create?: () => Promise<string | null>;
   /** This page's path: a page created directly inside it elsewhere (tree `+`) gets a row here. */
   hostPath?: () => string | null | undefined;
-  /** Move a page to Trash (offered when its row is deleted). Omitted → no offer. */
+  /** Move a page to the Trash (when its row is deleted here). Never a permanent delete. Omitted → rows are only removed. */
   trash?: (pageId: string) => Promise<unknown>;
-  /** The page behind a row, read with the DELETER's own access (null = they cannot view it). Needed for the Trash offer. */
-  describe?: (pageId: string) => Promise<{ title: string; path: string | null } | null>;
+  /** Put back a page `trash` moved (the toast's Undo, or an editor undo that brings the row back). */
+  restore?: (pageId: string) => Promise<unknown>;
+  /**
+   * The page behind a row, read with the DELETER's own access (null = they cannot view it).
+   * `blocked` = why this page may not be moved to the Trash here (an integration's or a system page).
+   */
+  describe?: (pageId: string) => Promise<{ title: string; path: string | null; blocked?: string | null } | null>;
 }
 
 const options = (editor: Editor | null) =>
@@ -170,51 +177,43 @@ const removalKey = new PluginKey("childPageRemoval");
 
 /**
  * "Move to another page" removes a row here because it now lives THERE: the next
- * local removal in this editor is not a deletion and must not offer Trash.
+ * local removal in this editor is not a deletion and must not move the page to Trash.
  */
 export function suppressTrashOffer(editor: Editor): void {
   const storage = (editor.storage as unknown as Record<string, { suppressUntil?: number } | undefined>).childPages;
   if (storage) storage.suppressUntil = Date.now() + 1000;
 }
 
-/** A small standing offer after a sub-page's row was deleted. */
-function offerTrash(editor: Editor, pages: Array<{ id: string; title: string }>, trash: (id: string) => Promise<unknown>): () => void {
-  const el = document.createElement("div");
-  el.className = "prism-child-page-prompt";
-  el.setAttribute("role", "alertdialog");
-  el.setAttribute("aria-label", "Sub-page link removed");
-  const text = document.createElement("span");
-  // The deleter can view these pages (that is how their titles were read).
-  text.textContent = pages.length === 1 ? `The link is removed. Move “${pages[0].title}” to Trash too?` : `${pages.length} links removed. Move those sub-pages to Trash too?`;
-  const yes = document.createElement("button");
-  yes.type = "button";
-  yes.className = "is-danger";
-  yes.textContent = "Move to Trash";
-  const no = document.createElement("button");
-  no.type = "button";
-  no.textContent = "Keep page";
-  el.append(text, yes, no);
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const close = () => { clearTimeout(timer); el.remove(); };
-  no.addEventListener("click", close);
-  yes.addEventListener("click", () => {
-    yes.disabled = true;
-    no.disabled = true;
-    // Only pages still absent from the document (an undo may have brought a row back).
-    const present = editor.isDestroyed ? new Set<string>() : childPageIds(editor.state.doc);
-    void Promise.allSettled(pages.filter((p) => !present.has(p.id)).map((p) => trash(p.id))).then((results) => {
-      const failed = results.filter((r) => r.status === "rejected").length;
-      text.textContent = failed ? "That page could not be moved to Trash." : "Moved to Trash.";
-      yes.remove();
-      no.remove();
-      el.setAttribute("role", "status");
-      timer = setTimeout(close, 2500);
-    });
-  });
-  el.addEventListener("keydown", (e) => { if (e.key === "Escape") { e.stopPropagation(); close(); } });
-  document.body.appendChild(el);
-  timer = setTimeout(close, 12_000);
-  return close;
+/** Put a row for `pageId` back where it was (`pos`, kept current by the plugin); at the end when that place is gone. */
+function restoreRow(editor: Editor, pageId: string, pos: number | undefined): boolean {
+  if (editor.isDestroyed || !structuralEditsAllowed(editor)) return false;
+  const { state } = editor;
+  const type = state.schema.nodes.childPage;
+  if (!type) return false;
+  if (childPageIds(state.doc).has(pageId)) return true;
+  const end = state.doc.content.size;
+  let at = pos === undefined ? end : Math.max(0, Math.min(pos, end));
+  const $at = state.doc.resolve(at);
+  if ($at.parent.isTextblock || !$at.parent.canReplaceWith($at.index(), $at.index(), type)) at = end;
+  try {
+    editor.view.dispatch(state.tr.insert(at, type.create({ pageId })).scrollIntoView());
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+const quoted = (pages: Array<{ title: string }>, many: string) => (pages.length === 1 ? `“${pages[0]!.title}”` : many.replace("#", String(pages.length)));
+
+interface ChildPagesStorage {
+  off?: () => void;
+  suppressUntil?: number;
+  /** Pages THIS editor moved to the Trash because their row was deleted here: id → title. */
+  trashed: Map<string, string>;
+  /** Rows this person deleted here themselves (a redo of that deletion is theirs too). */
+  deletedHere: Set<string>;
+  /** Where each deleted row was, mapped through every later change. */
+  removedAt: Map<string, number>;
 }
 
 export const ChildPages = Extension.create<ChildPagesOptions>({
@@ -236,59 +235,131 @@ export const ChildPages = Extension.create<ChildPagesOptions>({
       if (insertChildPageBlock(editor, detail.id, used && $from.depth >= 1 ? $from.before(1) : null) || childPageIds(editor.state.doc).has(detail.id)) detail.handled = true;
     };
     window.addEventListener(PAGE_CREATED_EVENT, onCreated);
-    (this.storage as { off?: () => void }).off = () => window.removeEventListener(PAGE_CREATED_EVENT, onCreated);
+    (this.storage as ChildPagesStorage).off = () => window.removeEventListener(PAGE_CREATED_EVENT, onCreated);
   },
   onDestroy() {
-    (this.storage as { off?: () => void; closePrompt?: () => void }).off?.();
-    (this.storage as { closePrompt?: () => void }).closePrompt?.();
+    (this.storage as ChildPagesStorage).off?.();
   },
   addStorage() {
-    return {} as { off?: () => void; closePrompt?: () => void; suppressUntil?: number };
+    return { trashed: new Map(), deletedHere: new Set(), removedAt: new Map() } as ChildPagesStorage;
   },
   addProseMirrorPlugins() {
     const editor = this.editor;
-    const { trash, describe, hostPath } = this.options;
-    const storage = this.storage as { closePrompt?: () => void; suppressUntil?: number };
+    const { trash, restore, describe, hostPath } = this.options;
+    const storage = this.storage as ChildPagesStorage;
     if (!trash || !describe || !hostPath) return [];
+    const toast = usePagesUI.getState().showToast;
     let pending: Set<string> = new Set();
     let timer: ReturnType<typeof setTimeout> | undefined;
+
+    /** A page this editor moved to the Trash comes back (its row is on the page again, or Undo was chosen). */
+    const bringBack = (id: string, withRow: boolean) => {
+      const title = storage.trashed.get(id);
+      if (title === undefined || !restore) return;
+      storage.trashed.delete(id);
+      restore(id).then(
+        () => toast({ message: withRow ? `Restored “${title}”` : `Restored “${title}”. Its link was not put back on the page — find it under this page in the sidebar.` }),
+        () => {
+          storage.trashed.set(id, title);
+          toast({ message: `Couldn’t restore “${title}”. It’s still in the Trash.`, tone: "error" });
+        },
+      );
+    };
+    /** The toast's Undo: the row goes back where it was — which is what restores the page (see `appendTransaction`). */
+    const undo = (ids: string[]) => {
+      // Last row first: rows deleted together share one place, and each insertion there goes in
+      // front of the one before it — so they come back in their original order.
+      const at = (id: string) => storage.removedAt.get(id) ?? Number.MAX_SAFE_INTEGER;
+      const ordered = ids.map((id, i) => ({ id, i })).sort((a, b) => at(a.id) - at(b.id) || a.i - b.i).reverse();
+      for (const { id } of ordered) if (!restoreRow(editor, id, storage.removedAt.get(id))) bringBack(id, false);
+    };
+
+    const settle = () => {
+      if (editor.isDestroyed) return;
+      const now = childPageIds(editor.state.doc);
+      const gone = [...pending].filter((id) => !now.has(id));
+      pending = new Set();
+      const host = hostPath();
+      if (!gone.length || !host) return;
+      // Only pages that really are THIS page's direct sub-pages, read with the deleter's own
+      // access (unviewable, moved elsewhere, already trashed → the row is simply removed).
+      void Promise.all(gone.map((id) => describe(id).then((p) => (p && p.path && parentOf(p.path) === host ? { id, title: p.title, blocked: p.blocked ?? null } : null), () => null))).then(async (found) => {
+        if (editor.isDestroyed) return;
+        const still = childPageIds(editor.state.doc);
+        const mine = found.filter((p): p is { id: string; title: string; blocked: string | null } => !!p && !still.has(p.id));
+        if (!mine.length) return;
+        const allowed = mine.filter((p) => !p.blocked);
+        const results = await Promise.allSettled(allowed.map((p) => trash(p.id)));
+        const moved = allowed.filter((_, i) => results[i]!.status === "fulfilled");
+        const kept = [...mine.filter((p) => p.blocked), ...allowed.filter((_, i) => results[i]!.status === "rejected")];
+        for (const p of moved) storage.trashed.set(p.id, p.title);
+        // An undo that landed while the request was in flight: the row is back, so is the page.
+        const back = editor.isDestroyed ? new Set<string>() : childPageIds(editor.state.doc);
+        const stay = moved.filter((p) => !back.has(p.id));
+        for (const p of moved) if (back.has(p.id)) bringBack(p.id, true);
+        const keptText = kept.length
+          ? kept.length === 1 && kept[0]!.blocked
+            ? ` “${kept[0]!.title}” was not moved to Trash. ${kept[0]!.blocked}`
+            : ` ${quoted(kept, "# sub-pages")} couldn’t be moved to Trash and ${kept.length === 1 ? "is" : "are"} still under this page in the sidebar.`
+          : "";
+        if (stay.length) {
+          toast({
+            message: `Moved ${quoted(stay, "# sub-pages")} to Trash.${keptText}`,
+            ...(kept.length ? { tone: "error" as const } : {}),
+            ...(restore ? { action: { label: "Undo", run: () => undo(stay.map((p) => p.id)) } } : {}),
+          });
+        } else if (kept.length) {
+          toast({ message: `The link was removed.${keptText}`, tone: "error" });
+        }
+      });
+    };
+
     return [
       new Plugin({
         key: removalKey,
         appendTransaction(transactions, oldState, newState) {
-          // Local deletions only: a collaborator's change (y-sync) or history replay is not this user's decision.
-          // A cut (⌘X) is a move in progress, and "Move to" put the row on another page: neither is a deletion.
-          const local = transactions.filter((tr) => tr.docChanged && !tr.getMeta("y-sync$") && tr.getMeta("addToHistory") !== false && tr.getMeta("uiEvent") !== "cut");
-          if (!local.length || (storage.suppressUntil ?? 0) > Date.now()) return null;
-          let touched = false;
-          for (const tr of local) for (const map of tr.mapping.maps) map.forEach((from, to) => { if (to > from) touched = true; });
-          if (!touched) return null;
+          const changed = transactions.filter((tr) => tr.docChanged);
+          if (!changed.length) return null;
+          // Where the deleted rows were follows every later change (the toast's Undo puts them back there).
+          if (storage.removedAt.size) for (const tr of changed) for (const [id, pos] of storage.removedAt) storage.removedAt.set(id, tr.mapping.map(pos, -1));
+          // This person's own changes only. A collaborator's change (y-sync) is not their decision;
+          // their own undo/redo in a live page arrives through y-sync too, marked as such.
+          const sync = (tr: (typeof changed)[number]) => tr.getMeta("y-sync$") as { isUndoRedoOperation?: boolean } | undefined;
+          const own = changed.filter((tr) => !sync(tr) || sync(tr)!.isUndoRedoOperation);
+          if (!own.length) return null;
           const before = childPageIds(oldState.doc);
-          if (!before.size) return null;
           const after = childPageIds(newState.doc);
-          for (const id of before) if (!after.has(id)) pending.add(id);
+          // A row that is back (undo, or the toast's Undo): the page this editor trashed for it comes back too.
+          for (const id of after) {
+            if (before.has(id)) continue;
+            pending.delete(id);
+            storage.removedAt.delete(id);
+            if (storage.trashed.has(id)) bringBack(id, true);
+          }
+          if (!before.size || (storage.suppressUntil ?? 0) > Date.now()) return null;
+          // What counts as DELETING a row: a direct edit. Not a cut (⌘X: a move in progress), not
+          // "Move to" (the row lives on another page now), not a whole-document load (a template,
+          // an import, an agent's replacement: `setContent`), and not a change kept out of history.
+          const replay = (tr: (typeof changed)[number]) => !!sync(tr)?.isUndoRedoOperation || tr.getMeta("history$") !== undefined;
+          const direct = own.filter((tr) => !replay(tr) && tr.getMeta("addToHistory") !== false && tr.getMeta("uiEvent") !== "cut" && tr.getMeta("preventUpdate") === undefined);
+          const replayed = own.some(replay);
+          if (!direct.length && !replayed) return null;
+          const removed = [...before].filter((id) => !after.has(id));
+          if (!removed.length) return null;
+          for (const id of removed) {
+            // An undo/redo removes a row for many reasons (undoing the `/page` that made it): it
+            // moves a page to Trash only when it replays THIS person's own deletion of that row.
+            if (!direct.length && !storage.deletedHere.has(id)) continue;
+            storage.deletedHere.add(id);
+            pending.add(id);
+            let at = -1;
+            oldState.doc.descendants((n, pos) => { if (at < 0 && n.type.name === "childPage" && n.attrs.pageId === id) at = pos; return at < 0 && !n.isTextblock; });
+            if (at >= 0) storage.removedAt.set(id, changed.reduce((pos, tr) => tr.mapping.map(pos, -1), at));
+          }
           if (!pending.size) return null;
           // A move is delete-then-insert: decide after the dust settles.
           clearTimeout(timer);
-          timer = setTimeout(() => {
-            if (editor.isDestroyed) return;
-            const now = childPageIds(editor.state.doc);
-            const gone = [...pending].filter((id) => !now.has(id));
-            pending = new Set();
-            const host = hostPath();
-            if (!gone.length || !host) return;
-            // Offer only for pages that really are THIS page's direct sub-pages, read with the
-            // deleter's own access (unviewable → no offer, and so nothing to name).
-            void Promise.all(gone.map((id) => describe(id).then((p) => (p && p.path && parentOf(p.path) === host ? { id, title: p.title } : null), () => null))).then((found) => {
-              const pages = found.filter((p): p is { id: string; title: string } => !!p);
-              if (!pages.length || editor.isDestroyed) return;
-              const still = childPageIds(editor.state.doc);
-              const offer = pages.filter((p) => !still.has(p.id));
-              if (!offer.length) return;
-              storage.closePrompt?.();
-              storage.closePrompt = offerTrash(editor, offer, trash);
-            });
-          }, 250);
+          timer = setTimeout(settle, 250);
           return null;
         },
       }),

@@ -47,3 +47,26 @@
   .document-selection-actions > *, .cd-bubble > * { flex: none; }
   .document-selection-actions .selection-dropdown, .cd-bubble .selection-dropdown { position: static; }
 }
+
+/* ── Touch: the selection's actions are the start of the keyboard toolbar row (KeyboardToolbar
+   `selection`), not a bubble — the system's own callout sits above a selection there. Same row
+   rules as the toolbar: 44 px targets, one line that scrolls sideways. The drop-downs are static so
+   their menus hang from the toolbar (outside the scroller) and open UPWARD, away from the keyboard. */
+.keyboard-toolbar-selection > button:not(.keyboard-toolbar-button), .keyboard-toolbar-selection .selection-dropdown > button {
+  display: inline-flex; align-items: center; justify-content: center; gap: 5px; flex: none; min-width: 44px; min-height: 44px;
+  padding: 0 10px; border-radius: 8px; font-size: 14px; color: var(--text-secondary); white-space: nowrap;
+}
+.keyboard-toolbar-selection > button > svg:only-child { width: 18px; height: 18px; }
+.keyboard-toolbar-selection button[aria-pressed=true] { background: var(--surface-active, var(--glass-active)); color: var(--text-primary); }
+.keyboard-toolbar-selection button:disabled { opacity: 0.35; }
+.keyboard-toolbar-selection button:active { background: var(--glass-hover); }
+.keyboard-toolbar-selection .selection-ask { color: var(--color-accent); font-weight: 500; }
+.keyboard-toolbar-selection .selection-divider { flex: none; align-self: stretch; width: 1px; margin: 8px 3px; background: var(--glass-border); }
+.keyboard-toolbar .selection-dropdown { position: static; flex: none; }
+.keyboard-toolbar .selection-menu { top: auto; bottom: calc(100% + 6px); left: 6px; max-width: calc(100vw - 12px); max-height: min(340px, calc(100dvh - var(--keyboard-toolbar-space, 56px) - 16px)) !important; }
+.keyboard-toolbar .selection-link-form { flex: 1; min-width: 0; min-height: 44px; flex-wrap: nowrap; }
+.keyboard-toolbar .selection-link-form input { flex: 1; width: auto; min-width: 0; min-height: 40px; font-size: 16px; }
+.keyboard-toolbar .selection-link-form button { flex: none; min-width: 44px; min-height: 44px; }
+.keyboard-toolbar .selection-link-error { flex: none; padding: 0; }
+/* The link field takes the whole row while it is open. */
+.keyboard-toolbar-selection:has(> .selection-link-form) > :not(.selection-link-form) { display: none; }

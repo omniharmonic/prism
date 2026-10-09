@@ -7,7 +7,7 @@ import { RemoteUpdateBar, RemoteUpdateContext, type RemoteUpdateHost } from "./R
 import { Compass } from "lucide-react";
 import { useUIStore } from "../../app/stores/ui";
 import { useNote, useUpdateNote } from "../../app/hooks/useParachute";
-import { inferContentType } from "../../lib/schemas/content-types";
+import { inferContentType, LIVE_COLLAB_TYPES } from "../../lib/schemas/content-types";
 import { getRenderer } from "../renderers/Registry";
 import { useCollabDocumentSeam } from "../../data/CollabDocumentContext";
 import { TagView } from "../navigation/TagView";
@@ -97,7 +97,7 @@ export function Canvas() {
   // CodeMirror, spreadsheet → grid, canvas → Excalidraw). The hook is called
   // unconditionally; shells that provide collab return true for these kinds, the
   // default (offline shells) returns false → plain autosave editor.
-  const COLLAB_TYPES = new Set(["document", "task", "code", "spreadsheet", "canvas"]);
+  const COLLAB_TYPES = LIVE_COLLAB_TYPES;
   const collab = useCollabDocumentSeam();
   const collabDocId =
     !isVirtual && effectiveNote && contentType && COLLAB_TYPES.has(contentType) ? effectiveNote.id : "";

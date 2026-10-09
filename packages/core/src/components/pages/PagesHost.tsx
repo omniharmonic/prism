@@ -51,7 +51,8 @@ function PageActionsSheet({ page, onRename, onClose }: { page: PageRef; onRename
   );
 }
 
-function PageToastView() {
+/** The one transient page toast (with its action, e.g. Undo). Exported for hosts without the Shell (fixtures). */
+export function PageToastView() {
   const toast = usePagesUI((s) => s.toast);
   if (!toast) return null;
   return (
