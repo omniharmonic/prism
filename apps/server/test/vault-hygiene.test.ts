@@ -661,7 +661,7 @@ test("(g) dry run: counts and ids/paths only — no write, no body, no token", a
   const v = new FakeVault();
   seedSubpages(v);
   const c = ctxFor(v);
-  assert.equal(await subpageLinks.main([...VAULT], c), 0);
+  assert.equal(await subpageLinks.main([...VAULT, "--all"], c), 0);
   assert.equal(v.writes().length, 0);
   assert.match(out(c), /DRY RUN — scanned \d+ note\(s\); 3 hold sub-page rows \(7 row\(s\)\)/);
   assert.match(out(c), /1 row\(s\) already linked; 3 link\(s\) to add on 2 note\(s\); 3 row\(s\) name a missing or trashed page/);
@@ -685,7 +685,7 @@ test("(g) apply: one links-only CAS PATCH per parent (never force, no content, n
   seedSubpages(v);
   const before = structuredClone([...v.notes.values()].map((n) => ({ id: n.id, content: n.content, metadata: n.metadata, tags: n.tags })));
   const c = ctxFor(v);
-  assert.equal(await subpageLinks.main([...VAULT, "--apply", "--backup-confirmed"], c), 0);
+  assert.equal(await subpageLinks.main([...VAULT, "--all", "--apply", "--backup-confirmed"], c), 0);
   const w = v.writes();
   assert.deepEqual(w.map((x) => [x.method, x.path]).sort(), [["PATCH", "/vault/default/api/notes/other"], ["PATCH", "/vault/default/api/notes/parent"]]);
   for (const p of w) {
@@ -710,7 +710,7 @@ test("(g) apply: one links-only CAS PATCH per parent (never force, no content, n
 
   // Idempotent: a second run finds nothing to add.
   const again = ctxFor(v);
-  assert.equal(await subpageLinks.main([...VAULT, "--apply", "--backup-confirmed"], again), 0);
+  assert.equal(await subpageLinks.main([...VAULT, "--all", "--apply", "--backup-confirmed"], again), 0);
   assert.equal(v.writes().length, 2);
   assert.match(out(again), /0 link\(s\) to add on 0 note\(s\)/);
 
@@ -741,7 +741,7 @@ test("(g) apply: a concurrent edit is a conflict (skipped, not forced); a row re
   seedSubpages(v);
   v.beforePatch = (id) => { if (id === "parent") v.find("parent")!.updatedAt = v.stamp(); };
   const c = ctxFor(v);
-  assert.equal(await subpageLinks.main([...VAULT, "--apply", "--backup-confirmed"], c), 0);
+  assert.equal(await subpageLinks.main([...VAULT, "--all", "--apply", "--backup-confirmed"], c), 0);
   assert.match(out(c), /1 conflict\(s\)/);
   assert.ok(!v.links.some((l) => l.sourceId === "parent"));
   assert.equal(c.undo.length, 1);
@@ -749,7 +749,7 @@ test("(g) apply: a concurrent edit is a conflict (skipped, not forced); a row re
   const v2 = new FakeVault();
   seedSubpages(v2);
   const c2 = ctxFor(v2);
-  assert.equal(await subpageLinks.main([...VAULT, "--apply", "--backup-confirmed", "--limit", "1"], c2), 0);
+  assert.equal(await subpageLinks.main([...VAULT, "--all", "--apply", "--backup-confirmed", "--limit", "1"], c2), 0);
   assert.equal(v2.writes().length, 1);
 
   // The row disappears between the listing and the fresh read: nothing is written for that note.
@@ -764,7 +764,7 @@ test("(g) apply: a concurrent edit is a conflict (skipped, not forced); a row re
     return inner(input, init);
   }) as typeof fetch;
   const c3 = ctxFor(v3);
-  assert.equal(await subpageLinks.main([...VAULT, "--apply", "--backup-confirmed"], c3), 0);
+  assert.equal(await subpageLinks.main([...VAULT, "--all", "--apply", "--backup-confirmed"], c3), 0);
   assert.ok(!v3.links.some((l) => l.sourceId === "parent"));
   assert.match(out(c3), /1 unchanged/);
 });
@@ -779,4 +779,17 @@ test("(g) scoping: --tag / --path-prefix read only those parents", async () => {
   assert.equal(await subpageLinks.main([...VAULT, "--path-prefix", "vault/notes/"], c2), 0);
   assert.match(out(c2), /1 link\(s\) to add on 1 note\(s\)/);
   assert.equal(v.writes().length, 0);
+});
+
+test("(g) default scope: only notes with a live note under their own path are read — never a listing of every body", async () => {
+  const v = new FakeVault();
+  seedSubpages(v);
+  v.add({ id: "home", path: "vault/notes/Home", content: `<p>${BODY_SECRET}</p>${row("sub")}${row("kid1")}` });
+  v.add({ id: "sub", path: "vault/notes/Home/Sub" });
+  const c = ctxFor(v);
+  assert.equal(await subpageLinks.main([...VAULT], c), 0);
+  assert.match(out(c), /DRY RUN — scanned 1 note\(s\); 1 hold sub-page rows \(2 row\(s\)\)/);
+  assert.match(out(c), /2 link\(s\) to add on 1 note\(s\)/);
+  assert.equal(v.writes().length, 0);
+  assert.ok(!out(c).includes(BODY_SECRET));
 });

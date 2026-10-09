@@ -23,7 +23,10 @@
  * Ingest-owned notes (email, message threads) are never touched.
  *
  *   PARACHUTE_TOKEN=… node --import tsx scripts/vault-hygiene/backfill-subpage-links.ts \
- *     --vault-url http://127.0.0.1:1940 --production [--tag project]… [--path-prefix vault/projects/]… [--limit N]
+ *     --vault-url http://127.0.0.1:1940 --production [--all] [--tag project]… [--path-prefix vault/projects/]… [--limit N]
+ *
+ * Without --all / --tag / --path-prefix only notes that have a live note under their own
+ * path are read (one at a time) — a full-body listing of the vault is opt-in.
  */
 import { pathToFileURL } from "node:url";
 import {
@@ -133,7 +136,7 @@ const eligible = (n: VaultNote): boolean => isLive(n) && !(n.tags ?? []).some((t
 
 export async function main(argv: string[], ctx: Ctx): Promise<number> {
   const args = parseArgs(argv, ["vault-url", "vault", "tag", "path-prefix", "limit", "rate", "undo-log"]);
-  for (const f of args.flags) if (!["apply", "backup-confirmed", "production"].includes(f)) throw new UsageError(`unknown flag --${f}`);
+  for (const f of args.flags) if (!["apply", "backup-confirmed", "production", "all"].includes(f)) throw new UsageError(`unknown flag --${f}`);
   const url = guardTarget(args.get("vault-url"), args.has("production"));
   const apply = writeMode(args);
   const limit = args.get("limit") ? Number(args.get("limit")) : Infinity;
@@ -142,12 +145,30 @@ export async function main(argv: string[], ctx: Ctx): Promise<number> {
 
   // Every live note id (lean: no bodies) — what a row's page id must be to be linked.
   const liveIds = new Set<string>();
-  for (const n of await vault.listNotes({ includeMetadata: ["prism_trashed_at"] })) if (isLive(n)) liveIds.add(n.id);
+  const lean = (await vault.listNotes({ includeMetadata: ["prism_trashed_at"] })).filter(isLive);
+  for (const n of lean) liveIds.add(n.id);
 
   // The parents to read: the whole vault, or only the tags / folders named.
   const sources = new Map<string, VaultNote>();
   const scoped = args.all("tag").length + args.all("path-prefix").length > 0;
-  if (!scoped) for (const n of await vault.listNotes({ includeContent: true, includeLinks: true })) sources.set(n.id, n);
+  if (!scoped && args.has("all")) for (const n of await vault.listNotes({ includeContent: true, includeLinks: true })) sources.set(n.id, n);
+  else if (!scoped) {
+    // Default: never one listing of every body (heavy on a production host). A sub-page is
+    // created UNDER its parent's path, so only notes with a live note beneath their path can
+    // hold rows worth linking; those are read one at a time. A parent whose sub-pages were all
+    // moved away is missed — `--all` (or --tag / --path-prefix) reads further.
+    const stem = (path: string) => path.replace(/\.md$/i, "");
+    const dirs = new Set<string>();
+    for (const n of lean) {
+      const parts = (n.path ?? "").split("/");
+      for (let i = 1; i < parts.length; i++) dirs.add(parts.slice(0, i).join("/"));
+    }
+    for (const n of lean) {
+      if (!n.path || !dirs.has(stem(n.path))) continue;
+      const full = await vault.getNote(n.id, { includeLinks: true });
+      if (full) sources.set(full.id, full);
+    }
+  }
   for (const tag of args.all("tag")) for (const n of await vault.listNotes({ tag, includeContent: true, includeLinks: true })) sources.set(n.id, n);
   for (const pathPrefix of args.all("path-prefix")) for (const n of await vault.listNotes({ pathPrefix, includeContent: true, includeLinks: true })) sources.set(n.id, n);
 

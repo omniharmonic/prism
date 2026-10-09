@@ -73,7 +73,7 @@ Not proposed as a schema change: renaming `meeting.status` to `processing_status
 | M-b | `… migrate-project-folder-links.ts` | `… migrate-project-folder-links.ts --apply --backup-confirmed` |
 | M-c | `… trash-duplicates.ts --path-prefix vault/_inbox/transcripts/fireflies/` | `PRISM_OWNER_TOKEN=… … trash-duplicates.ts --path-prefix vault/_inbox/transcripts/fireflies/ --prism-url http://127.0.0.1:8787 --apply --backup-confirmed` |
 | M-d | `… report-untagged.ts` (`--json` for a file) | (none) |
-| M-g (optional) | `… backfill-subpage-links.ts` (`--tag project` / `--path-prefix vault/projects/` to narrow; default: every note) | `… backfill-subpage-links.ts --apply --backup-confirmed` (`--limit 20` for a first small batch) |
+| M-g (optional) | `… backfill-subpage-links.ts` (default: only notes with a live note under their own path, read one at a time; `--all` reads every body in one listing; `--tag` / `--path-prefix` narrow) | `… backfill-subpage-links.ts --apply --backup-confirmed` (`--limit 20` for a first small batch) |
 | Undo any | `… undo.ts --log vault-hygiene-undo-<script>-<time>.jsonl` | add `--apply` (and `--prism-url` + `PRISM_OWNER_TOKEN` for M-c) |
 
 Useful options on every migration: `--limit N` (write at most N notes, good for a first small batch), `--rate N` (writes a second, default 2), `--undo-log <file>`.
