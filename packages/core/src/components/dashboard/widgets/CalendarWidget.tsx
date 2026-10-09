@@ -1,9 +1,6 @@
-import { useQuery } from "@tanstack/react-query";
 import { Clock, Calendar } from "lucide-react";
 import { format } from "date-fns";
-import { useVaultClient } from "../../../data/VaultClientContext";
-import { useAgentChatStore } from "../../../lib/agent/chatStore";
-import { calendarApi } from "../../../lib/sync/client";
+import { meetingsToday, useMeetingListing } from "../../../lib/calendar/meetingListing";
 import { formatTime, usesSystemTime } from "../../../lib/datetime/format";
 
 /** "system" keeps the string this always showed; a chosen 12/24-hour format replaces it (NP-AX-09). */
@@ -13,27 +10,12 @@ const clock = (d: Date): string => (usesSystemTime() ? format(d, "h:mm a") : for
 type GogEvent = any;
 
 export function CalendarWidget() {
-  const client = useVaultClient();
-  const audience = useAgentChatStore((state) => state.scope);
-  const scope = client.scope?.();
-  const now = new Date();
-  const { data, isError, isLoading } = useQuery({
-    queryKey: ["vault", "dashboard-calendar", audience, scope, format(now, "yyyy-MM-dd")],
-    queryFn: async ({ signal }) => {
-      const events = await calendarApi.listEventsFromVault(
-        new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString(),
-        new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1).toISOString(),
-        client,
-      );
-      if (signal.aborted || client.scope?.() !== scope || useAgentChatStore.getState().scope !== audience)
-        throw new Error("Workspace changed before loading calendar events.");
-      return events;
-    },
-    retry: 1,
-    refetchInterval: 60_000,
-  });
-
-  const events: GogEvent[] = Array.isArray(data) ? data : [];
+  // Today, out of THE shared meeting listing (one request serves Home, the Calendar tool and this).
+  const listing = useMeetingListing({ refetchInterval: 60_000 });
+  const events: GogEvent[] = meetingsToday(listing.events);
+  // Events drawn from this device's copy stay while the fresh listing is on its way (or failed).
+  const isLoading = events.length === 0 && listing.load === "loading";
+  const isError = events.length === 0 && listing.load === "failed";
 
   if (isLoading) {
     return (

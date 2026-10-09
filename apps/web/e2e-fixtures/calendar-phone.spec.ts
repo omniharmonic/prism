@@ -80,6 +80,72 @@ for (const [width, height] of [[390, 844], [320, 568]] as const) {
       expect(new Set(Object.values(places)).size, JSON.stringify(places)).toBe(1);
     });
 
+    // At 320 px the date has 96 px beside the four buttons; it used to be cut with an ellipsis
+    // ("Today · M…"). It now takes two smaller lines inside the row instead, and nothing moves.
+    test("the header date is never cut: every view, a year of months and weeks, across the new year", async ({ page }) => {
+      const title = page.locator(".calendar-phone-header h2");
+      const measure = () => page.locator(".calendar-phone-header").evaluate((header) => {
+        const h2 = header.querySelector<HTMLElement>("h2")!;
+        const range = document.createRange();
+        range.selectNodeContents(h2);
+        const text = range.getBoundingClientRect(), box = h2.getBoundingClientRect(), row = h2.parentElement!.getBoundingClientRect();
+        const buttons = Array.from(header.querySelectorAll("button")).map((b) => { const r = b.getBoundingClientRect(); return { name: (b.getAttribute("aria-label") || b.getAttribute("title") || b.textContent || "").trim(), x: Math.round(r.x), y: Math.round(r.y), w: r.width, h: r.height }; });
+        return {
+          text: h2.textContent ?? "",
+          cutX: h2.scrollWidth - h2.clientWidth, cutY: h2.scrollHeight - h2.clientHeight,
+          ellipsis: getComputedStyle(h2).textOverflow === "ellipsis" || getComputedStyle(h2).overflow !== "visible",
+          // The drawn text against the title's own box and the row it sits in.
+          outside: Math.max(0, text.right - box.right, box.left - text.left, text.bottom - row.bottom, row.top - text.top),
+          row: Math.round(row.height), headerHeight: Math.round(header.getBoundingClientRect().height),
+          page: document.documentElement.scrollWidth - innerWidth,
+          small: buttons.filter((b) => b.w < 44 || b.h < 44).map((b) => b.name),
+          off: buttons.filter((b) => b.x < 0 || b.x + b.w > innerWidth + 0.5).map((b) => b.name),
+          places: buttons.filter((b) => !["Agenda", "Day", "Week", "Month"].includes(b.name)).map((b) => `${b.name}@${b.x},${b.y}`).join(" "),
+        };
+      });
+      const seen: string[] = [];
+      let places = "";
+      const check = async () => {
+        const m = await measure();
+        seen.push(m.text);
+        expect({ text: m.text, cutX: m.cutX, cutY: m.cutY, ellipsis: m.ellipsis, outside: Math.round(m.outside), page: m.page, small: m.small, off: m.off }, m.text)
+          .toEqual({ text: m.text, cutX: 0, cutY: 0, ellipsis: false, outside: 0, page: Math.min(m.page, 0), small: [], off: [] });
+        expect(m.row, `${m.text}: the row keeps the height of its buttons`).toBe(44);
+        places ||= m.places;
+        expect(m.places, `${m.text}: no control moved`).toBe(places);
+        expect(m.places).toContain("Refresh calendar@");
+        expect(m.headerHeight).toBeLessThanOrEqual(100);
+      };
+      const step = async (button: string, times: number) => {
+        for (let i = 0; i < times; i++) {
+          const before = await title.textContent();
+          await page.getByRole("button", { name: button }).click();
+          await expect(title).not.toHaveText(before!);
+          await check();
+        }
+      };
+      await open(page);
+      await check(); // Agenda: "Oct 5 – 11"
+      await step("Next period", 14); // …"Dec 28 – Jan 3, 2027", "Jan 4 – 10, 2027"
+      await view(page, "Week").click(); await check();
+      await step("Previous period", 16);
+      await view(page, "Month").click(); await check();
+      await step("Next period", 15); // every month name, this year and the next
+      await view(page, "Day").click(); await check();
+      await page.getByRole("button", { name: "Today", exact: true }).click(); await check(); // "Today · Mon, Oct 5"
+      await step("Previous period", 6); // "Wed, Sep 30"
+      // The days around the new year: "Today · Wed, Dec 30", "Sat, Jan 2, 2027".
+      await page.clock.setFixedTime(new Date("2026-12-30T16:00:00Z"));
+      await page.goto("/e2e-fixtures/calendar.html?phone");
+      await expect(title).toHaveText("Dec 30 – Jan 5, 2027");
+      places = "";
+      await check();
+      await view(page, "Day").click(); await check();
+      await expect(title).toHaveText("Today · Wed, Dec 30");
+      await step("Next period", 4);
+      expect(seen).toEqual(expect.arrayContaining(["Oct 5 – 11", "Dec 28 – Jan 3, 2027", "Jan 4 – 10, 2027", "October 2026", "September 2027", "Today · Mon, Oct 5", "Wed, Sep 30", "Sat, Jan 2, 2027"]));
+    });
+
     test("agenda: the week ahead as one list — today first, an empty day says so, a cancelled event is not listed", async ({ page }) => {
       await open(page);
       const agenda = page.getByTestId("calendar-agenda");
