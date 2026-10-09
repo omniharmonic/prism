@@ -18,6 +18,7 @@
     "./map": "./src/components/map/CommonsMap.tsx",
     "./collab-access": "./src/lib/collab/access.ts",
     "./collab-commands": "./src/lib/collab/commands.ts",
+    "./collab-colors": "./src/lib/collab/colors.ts",
     "./wikilinks": "./src/lib/wikilinks.ts",
     "./media-embeds": "./src/lib/media/embeds.ts",
     "./mentions": "./src/lib/tiptap/MentionParse.ts",

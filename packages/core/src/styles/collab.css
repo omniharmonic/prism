@@ -82,6 +82,16 @@ span[data-suggestion="delete"] {
 span[data-suggestion="insert"], span[data-suggestion="delete"] { color: var(--text-primary) !important; }
 span[data-suggestion="insert"][data-color="#22c55e"] { color: var(--color-success) !important; }
 span[data-suggestion="delete"][data-color="#ef4444"] { color: var(--color-danger) !important; }
+/* NP-CO-10: an agent's marks are told apart from every person's — a dashed line in the reserved
+   agent colour (never a caret colour), beside the "(agent)" author label. Selected by the author
+   label / the agent turn, so marks written before the reserved colour existed read the same. */
+:root { --prism-agent-mark: #475569; }
+html.dark { --prism-agent-mark: #94a3b8; }
+span[data-suggestion][data-user$="(agent)"], span[data-suggestion][data-turn-id] {
+  text-decoration-color: var(--prism-agent-mark) !important;
+  text-decoration-style: dashed !important;
+  text-decoration-thickness: 2px !important;
+}
 .cd-bubble {
   display: flex;
   gap: 2px;

@@ -136,6 +136,7 @@ export type {
 } from "./data/CollabSharing";
 export { ShareDialog } from "./components/layout/ShareDialog";
 export { collabAffordances, type CollabAffordances, type CollabSocketScope } from "./lib/collab/access";
+export { CARET_COLORS, AGENT_COLOR, colorFor as collabColorFor, isAgentAuthor } from "./lib/collab/colors";
 export { HumanCommandFailure, HUMAN_COMMAND_COPY } from "./lib/collab/human/failure";
 export { PageHeader, PageProperties, FontSwitch, renamePath } from "./components/renderers/DocumentChrome";
 export type { ContentFont } from "./components/renderers/DocumentChrome";
