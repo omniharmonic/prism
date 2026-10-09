@@ -1,3 +1,5 @@
+import { leafTitle } from "../../../lib/pages/containerTitle";
+import { scalarText } from "../../../lib/database/structured";
 import { useWidgetData } from "../../../app/hooks/useWidgetData";
 import { useUIStore } from "../../../app/stores/ui";
 import { inferContentType } from "../../../lib/schemas/content-types";
@@ -17,7 +19,7 @@ export function GalleryWidget({ config }: GalleryWidgetProps) {
   const handleOpen = (note: Note) => {
     const type = inferContentType(note);
     const title =
-      note.path?.split("/").pop() ??
+      leafTitle(note.path, note.metadata) ??
       note.content?.split("\n")[0]?.slice(0, 60) ??
       note.id;
     openTab(note.id, title, type);
@@ -55,7 +57,7 @@ export function GalleryWidget({ config }: GalleryWidgetProps) {
     >
       {items.map((note) => {
         const title =
-          note.path?.split("/").pop() ??
+          leafTitle(note.path, note.metadata) ??
           note.content?.split("\n")[0]?.slice(0, 60) ??
           note.id;
         const preview = note.content?.slice(0, 100);
@@ -96,7 +98,7 @@ export function GalleryWidget({ config }: GalleryWidgetProps) {
                   style={{ color: "var(--text-secondary)" }}
                 >
                   <span style={{ color: "var(--text-muted)" }}>{field}: </span>
-                  {String(val)}
+                  {scalarText(val)}
                 </div>
               );
             })}

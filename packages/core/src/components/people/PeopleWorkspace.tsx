@@ -1,3 +1,4 @@
+import { leafTitle } from "../../lib/pages/containerTitle";
 import { useEffect, useRef, useState } from "react";
 import { useInfiniteQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -184,7 +185,7 @@ function PeopleView({
         openTab(
           note.id,
           (typeof note.metadata?.title === "string" && note.metadata.title) ||
-            note.path?.split("/").pop() ||
+            leafTitle(note.path, note.metadata) ||
             "Untitled",
           inferContentType(note),
         );

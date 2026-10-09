@@ -1,3 +1,5 @@
+import { leafTitle } from "../../../lib/pages/containerTitle";
+import { scalarText } from "../../../lib/database/structured";
 import { useState, useCallback, useMemo } from "react";
 import { ArrowUp, ArrowDown } from "lucide-react";
 import { useWidgetData } from "../../../app/hooks/useWidgetData";
@@ -15,7 +17,7 @@ interface ListWidgetProps {
 function getCellValue(note: Note, field: string): string {
   switch (field) {
     case "path": {
-      return note.path?.split("/").pop() ?? note.content?.split("\n")[0]?.slice(0, 60) ?? note.id;
+      return leafTitle(note.path, note.metadata) ?? note.content?.split("\n")[0]?.slice(0, 60) ?? note.id;
     }
     case "createdAt":
     case "updatedAt": {
@@ -34,7 +36,7 @@ function getCellValue(note: Note, field: string): string {
     default: {
       const v = note.metadata ? (note.metadata as Record<string, unknown>)[field] : undefined;
       if (v == null) return "—";
-      return String(v);
+      return scalarText(v) || "—";
     }
   }
 }
@@ -71,7 +73,7 @@ export function ListWidget({ config }: ListWidgetProps) {
   const handleOpen = (note: Note) => {
     const type = inferContentType(note);
     const title =
-      note.path?.split("/").pop() ??
+      leafTitle(note.path, note.metadata) ??
       note.content?.split("\n")[0]?.slice(0, 60) ??
       note.id;
     openTab(note.id, title, type);

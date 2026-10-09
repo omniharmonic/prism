@@ -445,7 +445,7 @@ api.get("/graph/neighborhood", async (c) => {
   const limit = Number(c.req.query("limit") ?? 150);
   if (!center || center.length > 2048 || !Number.isInteger(depth) || depth < 1 || depth > 5 || !Number.isInteger(limit) || limit < 1 || limit > 500) return c.json({error:"bad_request"},400);
   try {
-    const notes = await vaultClient(actor.vaultId).listNotes({includeLinks:true,includeMetadata:["title","type","prism_creator","prism_visibility"]});
+    const notes = await vaultClient(actor.vaultId).listNotes({includeLinks:true,includeMetadata:["title","name","type","prism_creator","prism_visibility"]});
     if (notes.length >= 50_000) return c.json({error:"incomplete_inventory"},503);
     const live = notes.filter(note => !isTrashed(note)); // trashed pages leave the graph
     const allowed = roleAtLeast(actor.role,"admin") ? live : live.filter(note => capsFor(actor,ref(note)).has("view"));

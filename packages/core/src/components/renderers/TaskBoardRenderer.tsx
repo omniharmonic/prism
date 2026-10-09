@@ -1,3 +1,4 @@
+import { scalarText } from "../../lib/database/structured";
 import { TEMPLATE_TAG, isTemplateNote } from "../../lib/pages/model";
 import "./boards/BoardWorkspace.css";
 import { dueSummary } from "../../lib/database/dates";
@@ -871,9 +872,7 @@ function TaskCard({
             <div key={field} data-board-field={field} data-priority={field === "priority" && typeof value === "string" ? value.toLowerCase() : undefined} className="min-w-0 max-w-full break-words">
               <dt className="sr-only">{field}</dt>
               <dd>
-                {typeof value === "object"
-                  ? JSON.stringify(value)
-                  : String(value)}
+                {scalarText(value)}
               </dd>
             </div>
           );

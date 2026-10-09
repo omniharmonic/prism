@@ -21,6 +21,10 @@
 
 import { fileRef, parseFileRef, parseFileRefs } from "../media/attachments";
 import { dateRange, hasTime, isDateValue } from "./dates";
+import { asWikilink, GENERIC_LEAF, linkLabel, linkTarget } from "./links";
+import { isStructuredValue, valueText } from "./structured";
+
+export { asWikilink, GENERIC_LEAF, linkLabel, linkTarget };
 
 export const PROPERTY_KINDS = [
   "text", "number", "select", "multi_select", "status", "date", "person", "relation", "checkbox", "url", "email", "phone", "files",
@@ -513,33 +517,15 @@ export function resolveProperties(
 export const isBlank = (v: unknown): boolean =>
   v === undefined || v === null || v === "" || (Array.isArray(v) && v.length === 0);
 
-/** `[[vault/people/Ada Lovelace]]` → `Ada Lovelace`. */
-export function linkLabel(v: string): string {
-  const t = v.trim();
-  const inner = t.length >= 4 && t.startsWith("[[") && t.endsWith("]]") ? t.slice(2, -2) : t;
-  const alias = inner.split("|")[1];
-  if (alias) return alias.trim();
-  // A project note at `vault/projects/<slug>/PROJECT` is named by its folder, not "PROJECT".
-  const parts = inner.split("/").filter(Boolean);
-  const leaf = (parts.pop() ?? inner).replace(/\.[^.]+$/, "");
-  return GENERIC_LEAF.test(leaf) && parts.length ? parts[parts.length - 1]! : leaf;
-}
-/** File names that name a FOLDER's note rather than themselves (PROJECT.md, index, README). */
-export const GENERIC_LEAF = /^(project|index|readme)$/i;
-/** `[[path]]` → `path`; plain strings pass through. */
-export const linkTarget = (v: string): string => {
-  const t = v.trim();
-  return (t.length >= 4 && t.startsWith("[[") && t.endsWith("]]") ? t.slice(2, -2) : t).split("|")[0]!.trim();
-};
-export const asWikilink = (path: string): string => `[[${path}]]`;
-
 /** Short human text for any property value (cells, cards, filters). */
 export function formatValue(def: Pick<PropertyDef, "kind"> & Partial<Pick<PropertyDef, "options" | "format">>, v: unknown): string {
   if (isBlank(v)) return "";
   if (def.kind === "checkbox") return v === true ? "Yes" : "No";
+  // An object (or a list holding one) has ONE reading everywhere: `valueText`.
+  if (isStructuredValue(v)) return valueText(v);
   if (Array.isArray(v)) return v.map((x) => formatValue(def, x)).filter(Boolean).join(", ");
   if ((def.kind === "select" || def.kind === "status" || def.kind === "multi_select") && def.options) return optionLabel(def as Pick<PropertyDef, "options">, String(v));
-  if (def.kind === "person" || def.kind === "relation") return typeof v === "string" ? linkLabel(v) : String(v);
+  if (def.kind === "person" || def.kind === "relation") return typeof v === "string" ? linkLabel(v) : valueText(v);
   if (def.kind === "date" && typeof v === "string") return formatDate(v);
   if (def.kind === "files") return parseFileRefs(v).map((f) => f.name).join(", ");
   if (def.kind === "phone" && typeof v === "string") return v.trim();
@@ -599,6 +585,9 @@ function formatOneDate(v: string): string {
 /** Coerce raw editor input into the stored shape for `def` (null = clear). */
 export function coerceValue(def: Pick<PropertyDef, "kind" | "multiple">, raw: unknown): unknown {
   if (raw === null || raw === undefined) return null;
+  // A structured value is never turned into text here: it passes through untouched, and
+  // the write rule (`refuseStructuredWrite`, client and server) decides what may land.
+  if (isStructuredValue(raw)) return raw;
   switch (def.kind) {
     case "checkbox": return raw === true || raw === "true";
     case "number": {

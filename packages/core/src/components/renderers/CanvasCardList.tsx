@@ -1,3 +1,4 @@
+import { leafTitle } from "../../lib/pages/containerTitle";
 import { useCallback, useRef, useState, type RefObject } from "react";
 import type { Note } from "../../lib/types";
 import { useUIStore } from "../../app/stores/ui";
@@ -27,7 +28,7 @@ export function canvasCards(elements: readonly any[]): CanvasCard[] {
     cards.set(id, {
       id,
       path,
-      title: label || path.split("/").pop() || "Untitled card",
+      title: label || leafTitle(path) || "Untitled card",
     });
   }
   return [...cards.values()];
@@ -192,7 +193,7 @@ export function useCanvasCardNavigation(
         const note = await read(id);
         const title =
           (typeof note.metadata?.title === "string" && note.metadata.title) ||
-          note.path?.split("/").pop() ||
+          leafTitle(note.path, note.metadata) ||
           "Untitled";
         useUIStore.getState().openTab(note.id, title, inferContentType(note));
       }}

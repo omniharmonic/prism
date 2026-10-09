@@ -1,3 +1,5 @@
+import { leafTitle } from "../../../lib/pages/containerTitle";
+import { scalarText } from "../../../lib/database/structured";
 import { useMemo } from "react";
 import { format, parseISO, startOfDay } from "date-fns";
 import { useWidgetData } from "../../../app/hooks/useWidgetData";
@@ -65,7 +67,7 @@ export function TimelineWidget({ config }: TimelineWidgetProps) {
   const handleOpen = (note: Note) => {
     const type = inferContentType(note);
     const title =
-      note.path?.split("/").pop() ??
+      leafTitle(note.path, note.metadata) ??
       note.content?.split("\n")[0]?.slice(0, 60) ??
       note.id;
     openTab(note.id, title, type);
@@ -125,7 +127,7 @@ export function TimelineWidget({ config }: TimelineWidgetProps) {
               const raw = getDateValue(note, dateField);
               const time = raw ? clock(parseISO(raw)) : "";
               const title =
-                note.path?.split("/").pop() ??
+                leafTitle(note.path, note.metadata) ??
                 note.content?.split("\n")[0]?.slice(0, 60) ??
                 note.id;
 
@@ -167,7 +169,7 @@ export function TimelineWidget({ config }: TimelineWidgetProps) {
                           className="text-xs truncate"
                           style={{ color: "var(--text-muted)" }}
                         >
-                          {String(val)}
+                          {scalarText(val)}
                         </div>
                       );
                     })}

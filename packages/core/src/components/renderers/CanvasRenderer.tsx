@@ -1,3 +1,4 @@
+import { leafTitle } from "../../lib/pages/containerTitle";
 import { useCallback, useRef, useState } from "react";
 import { Excalidraw, convertToExcalidrawElements } from "@excalidraw/excalidraw";
 import "@excalidraw/excalidraw/index.css";
@@ -139,7 +140,7 @@ export default function CanvasRenderer({ note, readOnly }: RendererProps) {
     const api = apiRef.current;
     if (!api) return;
     access.read(selectedNoteId).then((n) => {
-      const title = (typeof n.metadata?.title === "string" && n.metadata.title) || n.path?.split("/").pop() || "Untitled";
+      const title = (typeof n.metadata?.title === "string" && n.metadata.title) || leafTitle(n.path, n.metadata) || "Untitled";
       openTab(n.id, title, inferContentType(n));
     }).catch(() => { /* visible error from access.read */ });
   }, [selectedNoteId, openTab, access.read]);
@@ -231,7 +232,7 @@ export default function CanvasRenderer({ note, readOnly }: RendererProps) {
         className="prism-canvas-toolbar"
         style={{ borderBottom: "1px solid var(--glass-border)", background: "var(--bg-surface)" }}
       >
-        <div className="prism-canvas-heading"><h2>{note.path?.split("/").pop() || "Canvas"}</h2><p>Map your notes, ideas, and connections.</p></div>
+        <div className="prism-canvas-heading"><h2>{leafTitle(note.path, note.metadata) || "Canvas"}</h2><p>Map your notes, ideas, and connections.</p></div>
         <div className="prism-canvas-actions">
           {!readOnly && <>
 

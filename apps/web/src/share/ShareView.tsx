@@ -1,3 +1,4 @@
+import { leafTitle } from "@prism/core/pages";
 import { useEffect, useState } from "react";
 import { marked } from "marked";
 import { sanitizeHtml } from "@prism/core/shell";
@@ -63,7 +64,7 @@ export function ShareView({ noteId }: { noteId: string }) {
           if (r.ok) {
             const note = await r.json();
             if (!cancelled) {
-              const name = (note.path || "").split("/").pop() || noteId;
+              const name = leafTitle(note.path, note.metadata) || noteId;
               setState({ status: "ok", title: name, html: sanitizeHtml(renderMarkdown(note.content || "")) });
             }
             return;
@@ -122,7 +123,7 @@ export function ShareView({ noteId }: { noteId: string }) {
 function renderMarkdown(md: string): string {
   const clean = md.replace(
     /\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g,
-    (_m, target: string, name?: string) => name || target.split("/").pop() || target,
+    (_m, target: string, name?: string) => name || leafTitle(target) || target,
   );
   return marked.parse(clean) as string;
 }

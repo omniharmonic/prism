@@ -3,6 +3,8 @@ import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { LiveActionsProvider, PlatformProvider, VaultClientProvider, useAgentChatStore, useUIStore, type Note, type VaultClient } from "@prism/core";
 import { LiveActionError, type LiveActionsClient } from "../../../packages/core/src/lib/actions/client";
+import { HostServicesProvider } from "../../../packages/core/src/data/HostServicesContext";
+import type { HostServices } from "../../../packages/core/src/lib/host/services";
 import CalendarDashboard from "../../../packages/core/src/components/comms/CalendarDashboard";
 
 const note = (id: string, path: string, metadata: Record<string, unknown>, tags = ["meeting"]): Note => ({ id, path, metadata, tags, content: "Synthetic meeting record.", createdAt: "2026-10-01", updatedAt: "2026-10-01" });
@@ -43,9 +45,14 @@ if (new URLSearchParams(location.search).has("phone")) {
     ...[1, 2, 3, 4, 5].map((n) => note(`busy-${n}`, `Meetings/Busy ${n}`, { title: `Busy day item ${n}`, calendarEventId: `busy-${n}-event`, start: at(20, `${String(8 + n).padStart(2, "0")}:00`), end: at(20, `${String(8 + n).padStart(2, "0")}:45`), htmlLink: link(`busy-${n}`) })),
   );
 }
-const controls = { deny: false, searches: 0, writes: 0, reads: [] as string[], updates: [] as unknown[], creates: [] as unknown[], rsvps: [] as unknown[], deletes: [] as unknown[] };
+// Loading (calendar-phone.spec.ts "loading"): `?list=<ms>` delays the vault listing; `?sync[=<ms>]`
+// gives the page a FAKE host whose Google sync takes that long (`&syncfail` rejects it, `&syncadds`
+// makes it persist one new meeting note, as the server's ingest would). Nothing leaves the page.
+const query = new URLSearchParams(location.search);
+const wait = (ms: number) => new Promise((done) => setTimeout(done, ms));
+const controls = { syncFail: query.has("syncfail"), lists: 0, syncs: [] as { from: string; to: string }[], deny: false, searches: 0, writes: 0, reads: [] as string[], updates: [] as unknown[], creates: [] as unknown[], rsvps: [] as unknown[], deletes: [] as unknown[] };
 const vault = {
-  listNotes: async () => notes.filter((n) => n.tags?.includes("meeting")),
+  listNotes: async () => { controls.lists++; await wait(Number(query.get("list") ?? 0)); return notes.filter((n) => n.tags?.includes("meeting")); },
   getNote: async (id: string) => { controls.reads.push(id); if (controls.deny && id.startsWith("recording")) throw new Error("Denied"); const n = notes.find((n) => n.id === id); if (!n) throw new Error("Missing"); return n; },
   getLinks: async (id: string) => id === "meeting-one" ? [{ sourceId: id, targetId: "recording-one", relationship: "has-transcript" }, { sourceId: id, targetId: "recording-two", relationship: "has-transcript" }] : [],
   search: async () => { controls.searches++; return notes.filter((n) => n.id === "unrelated"); },
@@ -63,6 +70,16 @@ const live = {
     return { eventId, deleted: true };
   },
 } as unknown as LiveActionsClient;
+const host = query.has("sync") ? {
+  calendarSyncRange: async (from: string, to: string) => {
+    controls.syncs.push({ from, to });
+    await wait(Number(query.get("sync") || 0));
+    if (controls.syncFail) throw new Error("gog: the calendar could not be reached");
+    const adds = query.has("syncadds") && !notes.some((n) => n.id === "synced-later");
+    if (adds) notes.push(note("synced-later", "Meetings/Synced later", { title: "Synced later", calendarEventId: "synced-later-event", start: "2026-10-07T17:00:00-06:00", end: "2026-10-07T17:30:00-06:00", htmlLink: "https://calendar.example.test/later" }));
+    return { synced: 3, errors: 0, total: 3, from, to, created: adds ? 1 : 0, updated: 0, unchanged: adds ? 2 : 3, deleted: 0, cancelled: 0 };
+  },
+} as unknown as HostServices : null;
 useAgentChatStore.setState({ scope: "calendar-fixture-owner-vault" });
 Object.assign(window, { prismCalendarFixture: controls, prismCalendarUI: useUIStore });
-createRoot(document.getElementById("root")!).render(<React.StrictMode><QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><PlatformProvider value="web"><VaultClientProvider client={vault}><LiveActionsProvider client={live}><div style={{ height: "100dvh" }}><CalendarDashboard note={note("calendar", "Calendar", {})} /></div></LiveActionsProvider></VaultClientProvider></PlatformProvider></QueryClientProvider></React.StrictMode>);
+createRoot(document.getElementById("root")!).render(<React.StrictMode><QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><PlatformProvider value="web"><VaultClientProvider client={vault}><LiveActionsProvider client={live}><HostServicesProvider client={host}><div style={{ height: "100dvh" }}><CalendarDashboard note={note("calendar", "Calendar", {})} /></div></HostServicesProvider></LiveActionsProvider></VaultClientProvider></PlatformProvider></QueryClientProvider></React.StrictMode>);

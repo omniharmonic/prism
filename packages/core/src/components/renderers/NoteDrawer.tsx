@@ -1,3 +1,4 @@
+import { leafTitle } from "../../lib/pages/containerTitle";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { FileText, Search, X } from "lucide-react";
@@ -6,7 +7,7 @@ import { useAgentChatStore } from "../../lib/agent/chatStore";
 import type { Note, NoteTreeEntry } from "../../lib/types";
 
 const control = "focus-ring min-h-control rounded-lg border border-[var(--glass-border)] px-3 text-sm disabled:opacity-50";
-const title = (n: NoteTreeEntry) => (typeof n.metadata?.title === "string" && n.metadata.title) || n.path?.split("/").pop() || "Untitled";
+const title = (n: NoteTreeEntry) => (typeof n.metadata?.title === "string" && n.metadata.title) || leafTitle(n.path, n.metadata) || "Untitled";
 
 type Props = { onAddNote: (note: Note) => Promise<void>; canvasNoteIds: Set<string>; onClose: () => void };
 export function NoteDrawer(props: Props) {

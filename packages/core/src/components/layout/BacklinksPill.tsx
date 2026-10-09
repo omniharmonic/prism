@@ -1,3 +1,4 @@
+import { leafTitle } from "../../lib/pages/containerTitle";
 import { useEffect, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { ArrowDownLeft, FileText } from "lucide-react";
@@ -77,7 +78,7 @@ export function BacklinksPill({ noteId, title, inline = false }: { noteId: strin
           <ul>
             {sources.slice(0, MAX_LISTED).map((id) => {
               const row = visible.get(id)!;
-              const name = row.path?.split("/").pop() || id;
+              const name = leafTitle(row.path, row.metadata) || id;
               return (
                 <li key={id}>
                   <button type="button" className="backlinks-item focus-ring" onClick={() => {

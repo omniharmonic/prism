@@ -19,10 +19,12 @@ import {
 } from "@dnd-kit/core";
 import { ArrowDownWideNarrow, ArrowUpNarrowWide, ArrowUpRight, ChevronDown, ChevronLeft, ChevronRight, EyeOff, Group, MoreHorizontal, Pencil, Plus } from "lucide-react";
 import type { QueryRow } from "../../lib/database/query";
-import { noteTitle, unwrapLink } from "../../lib/database/query";
+import { noteTitle } from "../../lib/database/query";
+import { linkLabel } from "../../lib/database/links";
 import { formatDate, integrationOwned, isBlank, optionColor, optionLabel, propertyValue, type PropertyDef, type SchemaPatch } from "../../lib/database/schema";
 import { NewPropertyForm } from "./NewPropertyForm";
 import { dayDiff, daySpan, shiftDateValue } from "../../lib/database/dates";
+import { isStructuredValue, scalarText } from "../../lib/database/structured";
 import { OptionChip, PropertyDisplay, PropertyValue } from "./PropertyValue";
 import { Popover } from "./Popover";
 import { applyRank, reorderRank, type DatabaseView } from "./config";
@@ -170,13 +172,13 @@ function groupRows(rows: QueryRow[], def: PropertyDef | undefined): Array<{ valu
   for (const v of order) buckets.set(v, []);
   for (const r of rows) {
     const raw = cell(r, def);
-    const vals = def.kind === "checkbox" ? [String(raw === true)] : Array.isArray(raw) ? [...new Set(raw.map(String))] : isBlank(raw) ? [null] : [String(raw)];
+    const vals = def.kind === "checkbox" ? [String(raw === true)] : Array.isArray(raw) ? [...new Set(raw.map(scalarText))] : isBlank(raw) ? [null] : [scalarText(raw)];
     for (const v of vals.length ? vals : [null]) {
       if (!buckets.has(v)) buckets.set(v, []);
       buckets.get(v)!.push(r);
     }
   }
-  const label = (v: string | null) => (v === null ? `No ${def.label}` : def.kind === "checkbox" ? (v === "true" ? "Checked" : "Unchecked") : def.kind === "person" || def.kind === "relation" ? unwrapLink(v).split("/").pop()! : optionLabel(def, v));
+  const label = (v: string | null) => (v === null ? `No ${def.label}` : def.kind === "checkbox" ? (v === "true" ? "Checked" : "Unchecked") : def.kind === "person" || def.kind === "relation" ? linkLabel(v) : optionLabel(def, v));
   const out = [...buckets.entries()].map(([value, rs]) => ({ value, label: label(value), rows: rs }));
   // Like Notion, the empty group leads.
   return [...out.filter((g) => g.value === null), ...out.filter((g) => g.value !== null)];
@@ -440,8 +442,8 @@ function BoardCard({ row, ctx, columns, groupDef, colRows }: {
       <Popover anchor={menuAnchor} open={menu} onClose={() => { setMenu(false); setMoveOpen(false); }} label={`Actions for ${title(row)}`} width={220}>
         <div className="db-menu" role="menu">
           <button type="button" role="menuitem" onClick={() => { setMenu(false); ctx.open(row); }}><ArrowUpRight size={14} aria-hidden="true" /> Open</button>
-          {editable && <button type="button" role="menuitem" aria-expanded={moveOpen} onClick={() => setMoveOpen((o) => !o)}><ChevronRight size={14} aria-hidden="true" /> Move to…</button>}
-          {editable && moveOpen && columns.filter((c) => c.value !== (isBlank(current) ? null : String(current))).map((c) => (
+          {editable && !isStructuredValue(current) && <button type="button" role="menuitem" aria-expanded={moveOpen} onClick={() => setMoveOpen((o) => !o)}><ChevronRight size={14} aria-hidden="true" /> Move to…</button>}
+          {editable && moveOpen && columns.filter((c) => c.value !== (isBlank(current) ? null : scalarText(current))).map((c) => (
             <button key={c.value ?? "∅"} type="button" role="menuitem" style={{ paddingLeft: 28 }} onClick={() => {
               setMenu(false);
               void ctx.commit(row, groupDef)(c.value === null ? null : groupDef.kind === "checkbox" ? c.value === "true" : groupDef.kind === "multi_select" ? [c.value] : c.value, current ?? null).catch(() => {});
@@ -507,10 +509,12 @@ export function BoardView({ ctx, onPickGroup }: { ctx: ViewContext; onPickGroup:
     if (overId.startsWith("card:")) {
       neighbor = (e.over.data.current as { row: QueryRow }).row;
       const nv = neighbor.metadata[groupDef.key];
-      target = groupDef.kind === "checkbox" ? String(nv === true) : isBlank(nv) ? null : String(Array.isArray(nv) ? nv[0] : nv);
+      target = groupDef.kind === "checkbox" ? String(nv === true) : isBlank(nv) ? null : scalarText(Array.isArray(nv) ? nv[0] : nv);
     } else target = (e.over.data.current as { value: string | null }).value;
     const cur = row.metadata[groupDef.key];
-    const curKey = groupDef.kind === "checkbox" ? String(cur === true) : isBlank(cur) ? null : String(Array.isArray(cur) ? cur[0] : cur);
+    // A card whose group value holds objects cannot change column: the move would replace the objects with text.
+    if (isStructuredValue(cur)) return;
+    const curKey = groupDef.kind === "checkbox" ? String(cur === true) : isBlank(cur) ? null : scalarText(Array.isArray(cur) ? cur[0] : cur);
     if (neighbor && neighbor.id !== row.id) {
       const next = reorderRank(ctx.view.order, ctx.rows.map((r) => r.id), row.id, neighbor.id, "before");
       if (next) ctx.updateView({ order: next });

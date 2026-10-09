@@ -12,6 +12,7 @@
  * is a *lens over the vault*, reachable from the sidebar, sharing the same tabs,
  * search, and renderers as everything else — not a separate app at a URL.
  */
+import { leafTitle } from "../../lib/pages/containerTitle";
 import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { MapPin, Layers } from "lucide-react";
@@ -67,7 +68,7 @@ function nameOf(n: Note): string {
     str(m, "scientificName") ||
     str(m, "hucName") ||
     n.content?.split("\n")[0]?.replace(/^#\s*/, "").slice(0, 80) ||
-    n.path?.split("/").pop() ||
+    leafTitle(n.path, n.metadata) ||
     n.id
   );
 }

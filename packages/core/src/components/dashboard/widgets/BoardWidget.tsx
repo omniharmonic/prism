@@ -1,3 +1,5 @@
+import { leafTitle } from "../../../lib/pages/containerTitle";
+import { scalarText } from "../../../lib/database/structured";
 import { useWidgetData } from "../../../app/hooks/useWidgetData";
 import { useUIStore } from "../../../app/stores/ui";
 import { inferContentType } from "../../../lib/schemas/content-types";
@@ -10,7 +12,7 @@ interface BoardWidgetProps {
 
 function getCardTitle(note: Note): string {
   return (
-    note.path?.split("/").pop() ??
+    leafTitle(note.path, note.metadata) ??
     note.content?.split("\n")[0]?.slice(0, 60) ??
     note.id
   );
@@ -105,7 +107,7 @@ export function BoardWidget({ config }: BoardWidgetProps) {
                       className="text-xs mt-1 truncate"
                       style={{ color: "var(--text-muted)" }}
                     >
-                      {String(val)}
+                      {scalarText(val)}
                     </div>
                   );
                 })}

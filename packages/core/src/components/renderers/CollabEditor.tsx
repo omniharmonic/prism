@@ -371,7 +371,12 @@ export function CollabEditor({
       )}
       {/* Touch: the ONE formatting surface. It carries the selection's actions (no bubble there);
           while suggesting, and for a reader, it is ONLY those actions (untracked edits are not offered). */}
-      {toolbar && editor && <KeyboardToolbar editor={editor} formatting={editable && !commentOnly && !suggesting} selection={selectionActions} />}
+      {toolbar && editor && <KeyboardToolbar editor={editor} formatting={editable && !commentOnly && !suggesting} selection={selectionActions}
+        review={canReview ? {
+          at: (current) => !!suggestionAt(current.state, current.state.selection.from),
+          accept: () => editor.chain().focus().acceptSuggestion().run(),
+          reject: () => editor.chain().focus().rejectSuggestion().run(),
+        } : undefined} />}
       {editor && <SuggestionReview editor={editor} canReview={!!canReview} />}
       {/* On-selection "Comment" bubble (Google-Docs style). Not on a touch device: the system's own
           selection callout sits there, and the actions are in the keyboard toolbar row instead. */}
@@ -389,8 +394,10 @@ export function CollabEditor({
         </BubbleMenu>
       )}
 
-      {/* Per-suggestion Accept / Reject bubble (when the cursor is in a change). */}
-      {editor && canReview && (
+      {/* Per-suggestion Accept / Reject bubble (when the cursor is in a change). Touch: the same two
+          actions lead the keyboard toolbar row instead (`review`) — a bubble there floats over the
+          text and lands behind the keyboard. */}
+      {editor && canReview && !(touch && toolbar) && (
         <BubbleMenu
           editor={editor}
           pluginKey="suggestionBubble"
@@ -408,8 +415,9 @@ export function CollabEditor({
       )}
 
       {humanCommands && editor && (
-        <div className="prism-suggest-banner" role="note" style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", margin: "0 0 12px", padding: "8px 12px", borderRadius: 10, border: "1px solid var(--glass-border)", background: "color-mix(in srgb, var(--color-accent) 6%, transparent)", fontSize: 12.5, color: "var(--text-secondary)" }}>
-          <span style={{ flex: 1, minWidth: 200 }}>You can suggest changes. Select text, then choose <strong>Suggest edit</strong> or <strong>Comment</strong>. An editor reviews each suggestion.</span>
+        <div className="prism-suggest-banner" role="note">
+          {/* A phone gets one quiet line (collab.css): the row above already says "Suggesting". */}
+          <span className="prism-suggest-banner-text">You can suggest changes. <span className="prism-suggest-banner-long">Select text, then choose <strong>Suggest edit</strong> or <strong>Comment</strong>. An editor reviews each suggestion.</span><span className="prism-suggest-banner-short">Select text to start.</span></span>
           {editor.state.doc.childCount === 1 && editor.state.doc.firstChild?.isTextblock && editor.state.doc.firstChild.content.size === 0 && (
             <button type="button" onClick={() => openHuman("suggest", true)} style={{ minHeight: 30, padding: "4px 10px", borderRadius: 7, border: "1px solid var(--glass-border)", background: "var(--bg-surface)", color: "var(--text-primary)", cursor: "pointer", fontSize: 12.5 }}>
               Suggest text
@@ -427,6 +435,7 @@ export function CollabEditor({
           kind={human.kind}
           initialAction={human.empty ? "empty" : "replace"}
           anchorRect={{ top: human.top, left: human.left }}
+          docked={touch}
           onClose={() => setHuman(null)}
           onDone={(message) => {
             setHuman(null);
@@ -484,12 +493,12 @@ export function CollabEditor({
       {/* Comment composer, anchored to the captured selection. */}
       {composer && editor && (
         <div
+          role="dialog"
+          aria-label="Comment on selection"
+          className={touch ? "prism-comment-composer prism-docked-composer" : "prism-comment-composer"}
           style={{
-            position: "fixed",
-            top: composer.top,
-            left: composer.left,
-            zIndex: 60,
-            width: 272,
+            // Touch: docked on the keyboard (`.prism-docked-composer`), never under the selection.
+            ...(touch ? {} : { position: "fixed" as const, top: composer.top, left: composer.left, zIndex: 60, width: 272 }),
             padding: 10,
             borderRadius: 12,
             border: "1px solid var(--glass-border)",

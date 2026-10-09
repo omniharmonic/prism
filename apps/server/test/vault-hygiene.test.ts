@@ -17,6 +17,8 @@ import * as folderLinks from "../../../scripts/vault-hygiene/migrate-project-fol
 import * as dups from "../../../scripts/vault-hygiene/trash-duplicates";
 import * as untagged from "../../../scripts/vault-hygiene/report-untagged";
 import * as undo from "../../../scripts/vault-hygiene/undo";
+import * as subpageLinks from "../../../scripts/vault-hygiene/backfill-subpage-links";
+import { extractChildPageIds } from "@prism/core/mentions";
 
 const READ = "read-tok-SECRET";
 const ADMIN = "admin-tok-SECRET";
@@ -49,6 +51,11 @@ class FakeVault {
   find(idOrPath: string): VaultNote | undefined {
     return this.notes.get(idOrPath) ?? [...this.notes.values()].find((n) => n.path === idOrPath);
   }
+  /** The vault's link table; a note read with `include_links` carries the rows it is an end of. */
+  links: Array<{ sourceId: string; targetId: string; relationship: string }> = [];
+  linksOf(id: string) {
+    return this.links.filter((l) => l.sourceId === id || l.targetId === id).map((l) => ({ ...l }));
+  }
   writes(): Call[] {
     return this.calls.filter((c) => c.method !== "GET");
   }
@@ -80,11 +87,14 @@ class FakeVault {
       const prefix = url.searchParams.get("path_prefix");
       const keys = url.searchParams.get("include_metadata")?.split(",");
       const withContent = url.searchParams.get("include_content") === "true";
+      const withLinks = url.searchParams.get("include_links") === "true";
       const rows = [...this.notes.values()]
         .filter((n) => tags.every((t) => (n.tags ?? []).includes(t)) && (!prefix || (n.path ?? "").startsWith(prefix)))
         .map((n) => {
           const r: VaultNote = { ...n, metadata: keys ? Object.fromEntries(Object.entries(n.metadata ?? {}).filter(([k]) => keys.includes(k))) : { ...n.metadata } };
           if (!withContent) delete r.content;
+          if (withLinks) r.links = this.linksOf(n.id);
+          else delete r.links;
           return r;
         });
       return json(rows);
@@ -93,12 +103,26 @@ class FakeVault {
       const id = decodeURIComponent(url.pathname.slice(`${api}/notes/`.length));
       const note = this.find(id);
       if (!note) return json({ error: "not_found" }, 404);
-      if (method === "GET") return json(structuredClone(note));
+      if (method === "GET") {
+        const copy = structuredClone(note);
+        if (url.searchParams.get("include_links") === "true") copy.links = this.linksOf(note.id);
+        else delete copy.links;
+        return json(copy);
+      }
       if (method === "PATCH") {
         assert.equal(body.force, undefined, "a migration must never send force");
         assert.ok(body.if_updated_at, "every write carries if_updated_at");
         this.beforePatch?.(note.id);
         if (body.if_updated_at !== note.updatedAt) return json({ error: "conflict" }, 409);
+        // Typed links, like the vault: targets resolve by id or path; add is INSERT OR IGNORE.
+        for (const l of body.links?.add ?? []) {
+          const t = this.find(l.target);
+          if (t && !this.links.some((x) => x.sourceId === note.id && x.targetId === t.id && x.relationship === l.relationship)) this.links.push({ sourceId: note.id, targetId: t.id, relationship: l.relationship });
+        }
+        for (const l of body.links?.remove ?? []) {
+          const t = this.find(l.target);
+          this.links = this.links.filter((x) => !(x.sourceId === note.id && x.targetId === t?.id && x.relationship === l.relationship));
+        }
         if (body.content !== undefined) note.content = body.content;
         for (const [k, v] of Object.entries(body.metadata ?? {})) {
           if (v === null) delete note.metadata![k];
@@ -161,7 +185,7 @@ test("production URLs (:1940, the public host) need --production; credentials in
 
 test("every script refuses a production vault URL without --production (dry runs too)", async () => {
   const v = new FakeVault();
-  for (const m of [schema.main, emptyLists.main, fieldShapes.main, folderLinks.main, dups.main, untagged.main]) {
+  for (const m of [schema.main, emptyLists.main, fieldShapes.main, folderLinks.main, dups.main, untagged.main, subpageLinks.main]) {
     await assert.rejects(m(["--vault-url", "http://127.0.0.1:1940"], ctxFor(v)), /PRODUCTION/);
   }
   assert.equal(v.calls.length, 0);
@@ -578,4 +602,194 @@ test("(d) the untagged report groups by folder with a suggestion and never write
   assert.match(out(c), /_templates .*leave untagged/);
   assert.match(out(c), /people\/link/);
   await assert.rejects(untagged.main([...VAULT, "--apply"], c), /never writes/);
+});
+
+// ------------------------------------------------------------------ (g) sub-page links
+
+const row = (id: string) => `<div data-type="child-page" data-page-id="${id}"></div>`;
+const BODY_SECRET = "PRIVATE-BODY-TEXT";
+
+function seedSubpages(v: FakeVault) {
+  v.add({ id: "parent", path: "vault/projects/atlas/PROJECT", tags: ["project"], content: `<p>${BODY_SECRET}</p>${row("kid1")}${row("kid2")}${row("gone")}${row("binned")}${row("parent")}` });
+  v.add({ id: "kid1", path: "vault/projects/atlas/Plan" });
+  v.add({ id: "kid2", path: "vault/projects/atlas/Notes" });
+  v.add({ id: "binned", path: "vault/projects/atlas/Old", tags: ["prism-trashed"], metadata: { prism_trashed_at: "2026-10-01T00:00:00Z" } });
+  v.add({ id: "done", path: "vault/notes/Linked already", content: `<p>x</p>${row("kid1")}` });
+  v.links.push({ sourceId: "done", targetId: "kid1", relationship: "mentions" });
+  // A link of another kind is not the sub-page link: `mentions` is still added.
+  v.add({ id: "other", path: "vault/notes/Other kind", content: row("kid2") });
+  v.links.push({ sourceId: "other", targetId: "kid2", relationship: "related" });
+  v.add({ id: "plain", path: "vault/notes/No rows", content: "<p>data-type=\"child-page\" is only text here</p>" });
+  v.add({ id: "mail", path: "vault/email/x", tags: ["email"], content: row("kid1") });
+  v.add({ id: "trashedParent", path: "vault/notes/Trashed parent", tags: ["prism-trashed"], content: row("kid1") });
+}
+
+test("(g) childPageIds: a linear scan that reads rows exactly like the server's extractChildPageIds", () => {
+  const cases = [
+    `${row("a")}${row("b")}${row("a")}`,
+    `<div data-page-id='q1' class="x" data-type='child-page'></div>`,
+    `<div data-page-id='q1' class="x" data-type="child-page"></div>`,
+    `<div data-type="child-page" data-page-id="bad id"></div>${row("ok_1-2")}`,
+    `<div data-type="child-pages" data-page-id="no"></div><div xdata-type="child-page" data-page-id="no2"></div>`,
+    `<p data-type="child-page" data-page-id="p"></p><span>data-type="child-page"</span>`,
+    `<div data-type="child-page"></div><div data-type="child-page" data-page-id=""></div>`,
+    `<div data-type="child-page" data-page-id="unterminated`,
+    "",
+    "<p>nothing</p>",
+    Array.from({ length: 300 }, (_, i) => row(`n${i}`)).join("<p>x</p>"),
+  ];
+  for (const html of cases) assert.deepEqual(subpageLinks.childPageIds(html), extractChildPageIds(html), html.slice(0, 80));
+  assert.deepEqual(subpageLinks.childPageIds(cases[0]), ["a", "b"]);
+  assert.deepEqual(subpageLinks.childPageIds(`<div data-page-id='q1' class="x" data-type="child-page"></div>`), ["q1"]); // attribute order and quote style do not matter
+  assert.deepEqual(subpageLinks.childPageIds(null), []);
+  // Linear on a hostile body.
+  const t0 = performance.now();
+  subpageLinks.childPageIds(`data-type="child-page"` + "<div ".repeat(200_000) + "<div data-page-id=".repeat(50_000));
+  assert.ok(performance.now() - t0 < 2000);
+});
+
+test("(g) planNote: links only live sub-pages that are not linked yet", () => {
+  const live = new Set(["p", "a", "b"]);
+  const note = { id: "p", content: `${row("a")}${row("b")}${row("zz")}${row("p")}`, links: [{ sourceId: "p", targetId: "a", relationship: "mentions" }, { sourceId: "b", targetId: "p", relationship: "mentions" }] };
+  assert.deepEqual(subpageLinks.planNote(note, live), { add: ["b"], linked: 1, dangling: 2, rows: 4 });
+  // A note read WITHOUT its links plans nothing (never assumes a link is missing).
+  assert.deepEqual(subpageLinks.planNote({ id: "p", content: row("a") }, live).add, []);
+  assert.deepEqual(subpageLinks.planNote({ id: "p", content: "<p>x</p>", links: [] }, live), { add: [], linked: 0, dangling: 0, rows: 0 });
+});
+
+test("(g) dry run: counts and ids/paths only — no write, no body, no token", async () => {
+  const v = new FakeVault();
+  seedSubpages(v);
+  const c = ctxFor(v);
+  assert.equal(await subpageLinks.main([...VAULT, "--all"], c), 0);
+  assert.equal(v.writes().length, 0);
+  assert.match(out(c), /DRY RUN — scanned \d+ note\(s\); 3 hold sub-page rows \(7 row\(s\)\)/);
+  assert.match(out(c), /1 row\(s\) already linked; 3 link\(s\) to add on 2 note\(s\); 3 row\(s\) name a missing or trashed page/);
+  assert.match(out(c), /e\.g\. parent vault\/projects\/atlas\/PROJECT \(\+2\)/);
+  assert.ok(!out(c).includes(BODY_SECRET) && !out(c).includes("child-page"));
+  noSecrets(c);
+  assert.equal(c.undo.length, 0);
+});
+
+test("(g) --apply needs --backup-confirmed; --limit must be positive", async () => {
+  const v = new FakeVault();
+  seedSubpages(v);
+  await assert.rejects(subpageLinks.main([...VAULT, "--apply"], ctxFor(v)), /backup-confirmed/);
+  await assert.rejects(subpageLinks.main([...VAULT, "--limit", "0"], ctxFor(v)), /--limit/);
+  await assert.rejects(subpageLinks.main([...VAULT, "--force"], ctxFor(v)), /unknown flag/);
+  assert.equal(v.writes().length, 0);
+});
+
+test("(g) apply: one links-only CAS PATCH per parent (never force, no content, no metadata), undo log; undo.ts removes exactly those links", async () => {
+  const v = new FakeVault();
+  seedSubpages(v);
+  const before = structuredClone([...v.notes.values()].map((n) => ({ id: n.id, content: n.content, metadata: n.metadata, tags: n.tags })));
+  const c = ctxFor(v);
+  assert.equal(await subpageLinks.main([...VAULT, "--all", "--apply", "--backup-confirmed"], c), 0);
+  const w = v.writes();
+  assert.deepEqual(w.map((x) => [x.method, x.path]).sort(), [["PATCH", "/vault/default/api/notes/other"], ["PATCH", "/vault/default/api/notes/parent"]]);
+  for (const p of w) {
+    assert.ok(p.body.if_updated_at);
+    assert.deepEqual(Object.keys(p.body).sort(), ["if_updated_at", "links"]);
+    assert.equal(p.body.force, undefined);
+    assert.equal(p.body.links.remove, undefined);
+  }
+  assert.deepEqual(w.find((x) => x.path.endsWith("/parent"))!.body.links.add, [{ target: "kid1", relationship: "mentions" }, { target: "kid2", relationship: "mentions" }]);
+  // Bodies, metadata and tags are untouched everywhere.
+  assert.deepEqual([...v.notes.values()].map((n) => ({ id: n.id, content: n.content, metadata: n.metadata, tags: n.tags })), before);
+  const has = (s: string, t: string, r = "mentions") => v.links.some((l) => l.sourceId === s && l.targetId === t && l.relationship === r);
+  assert.ok(has("parent", "kid1") && has("parent", "kid2") && has("other", "kid2") && has("other", "kid2", "related"));
+  assert.ok(!has("parent", "binned") && !has("parent", "gone") && !has("parent", "parent") && !has("mail", "kid1") && !has("trashedParent", "kid1"));
+  assert.equal(v.links.length, 5);
+  assert.match(out(c), /done: 3 link\(s\) added on 2 note\(s\), 0 conflict/);
+  noSecrets(c);
+  const recs = c.undo.map((l) => JSON.parse(l) as UndoRecord);
+  assert.equal(recs.length, 2);
+  assert.ok(recs.every((r) => r.kind === "vault-links" && r.script === "subpage-links"));
+  assert.ok(!c.undo.join("\n").includes(BODY_SECRET), "the undo log holds no note text");
+
+  // Idempotent: a second run finds nothing to add.
+  const again = ctxFor(v);
+  assert.equal(await subpageLinks.main([...VAULT, "--all", "--apply", "--backup-confirmed"], again), 0);
+  assert.equal(v.writes().length, 2);
+  assert.match(out(again), /0 link\(s\) to add on 0 note\(s\)/);
+
+  // Undo works even after the parent was edited (it touches links only), and only removes what the log names.
+  v.find("parent")!.content += "<p>edited later</p>";
+  v.find("parent")!.updatedAt = v.stamp();
+  const dry = ctxFor(v);
+  assert.equal(await undo.main([...VAULT], dry, recs), 0);
+  assert.equal(v.writes().length, 2);
+  assert.match(out(dry), /would remove 2 link\(s\) from parent/);
+  const u = ctxFor(v);
+  assert.equal(await undo.main([...VAULT, "--apply"], u, recs), 0);
+  const undoWrites = v.writes().slice(2);
+  assert.equal(undoWrites.length, 2);
+  for (const p of undoWrites) assert.deepEqual(Object.keys(p.body).sort(), ["if_updated_at", "links"]);
+  assert.ok(!has("parent", "kid1") && !has("parent", "kid2") && !has("other", "kid2"));
+  assert.ok(has("done", "kid1") && has("other", "kid2", "related"), "links the migration did not add are kept");
+  assert.ok(v.find("parent")!.content!.includes("edited later"));
+  // Undo twice: nothing left to remove, nothing written.
+  const u2 = ctxFor(v);
+  assert.equal(await undo.main([...VAULT, "--apply"], u2, recs), 0);
+  assert.equal(v.writes().length, 4);
+  assert.match(out(u2), /already gone/);
+});
+
+test("(g) apply: a concurrent edit is a conflict (skipped, not forced); a row removed meanwhile is not linked; --limit caps the writes", async () => {
+  const v = new FakeVault();
+  seedSubpages(v);
+  v.beforePatch = (id) => { if (id === "parent") v.find("parent")!.updatedAt = v.stamp(); };
+  const c = ctxFor(v);
+  assert.equal(await subpageLinks.main([...VAULT, "--all", "--apply", "--backup-confirmed"], c), 0);
+  assert.match(out(c), /1 conflict\(s\)/);
+  assert.ok(!v.links.some((l) => l.sourceId === "parent"));
+  assert.equal(c.undo.length, 1);
+
+  const v2 = new FakeVault();
+  seedSubpages(v2);
+  const c2 = ctxFor(v2);
+  assert.equal(await subpageLinks.main([...VAULT, "--all", "--apply", "--backup-confirmed", "--limit", "1"], c2), 0);
+  assert.equal(v2.writes().length, 1);
+
+  // The row disappears between the listing and the fresh read: nothing is written for that note.
+  const v3 = new FakeVault();
+  seedSubpages(v3);
+  const inner = v3.fetch;
+  let listed = false;
+  v3.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    const u = new URL(String(input));
+    if (u.pathname.endsWith("/api/notes") && u.searchParams.get("include_content") === "true") listed = true;
+    else if (listed && u.pathname.endsWith("/notes/parent") && (init?.method ?? "GET") === "GET") v3.find("parent")!.content = "<p>rows removed</p>";
+    return inner(input, init);
+  }) as typeof fetch;
+  const c3 = ctxFor(v3);
+  assert.equal(await subpageLinks.main([...VAULT, "--all", "--apply", "--backup-confirmed"], c3), 0);
+  assert.ok(!v3.links.some((l) => l.sourceId === "parent"));
+  assert.match(out(c3), /1 unchanged/);
+});
+
+test("(g) scoping: --tag / --path-prefix read only those parents", async () => {
+  const v = new FakeVault();
+  seedSubpages(v);
+  const c = ctxFor(v);
+  assert.equal(await subpageLinks.main([...VAULT, "--tag", "project"], c), 0);
+  assert.match(out(c), /2 link\(s\) to add on 1 note\(s\)/);
+  const c2 = ctxFor(v);
+  assert.equal(await subpageLinks.main([...VAULT, "--path-prefix", "vault/notes/"], c2), 0);
+  assert.match(out(c2), /1 link\(s\) to add on 1 note\(s\)/);
+  assert.equal(v.writes().length, 0);
+});
+
+test("(g) default scope: only notes with a live note under their own path are read — never a listing of every body", async () => {
+  const v = new FakeVault();
+  seedSubpages(v);
+  v.add({ id: "home", path: "vault/notes/Home", content: `<p>${BODY_SECRET}</p>${row("sub")}${row("kid1")}` });
+  v.add({ id: "sub", path: "vault/notes/Home/Sub" });
+  const c = ctxFor(v);
+  assert.equal(await subpageLinks.main([...VAULT], c), 0);
+  assert.match(out(c), /DRY RUN — scanned 1 note\(s\); 1 hold sub-page rows \(2 row\(s\)\)/);
+  assert.match(out(c), /2 link\(s\) to add on 1 note\(s\)/);
+  assert.equal(v.writes().length, 0);
+  assert.ok(!out(c).includes(BODY_SECRET));
 });

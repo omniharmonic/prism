@@ -11,6 +11,7 @@
 // surface degrades on the desktop shell / for capability viewers. Fingerprints
 // are the only trust concept surfaced — no git, device-ids, or conflict files,
 // and CRDT merge is automatic (no conflict UI, ever).
+import { leafTitle } from "../../../lib/pages/containerTitle";
 import {
   useCallback,
   useEffect,
@@ -119,7 +120,7 @@ function timeAgo(ts: number): string {
 }
 function noteTitle(n: Note): string {
   return (
-    n.path?.split("/").pop() ||
+    leafTitle(n.path, n.metadata) ||
     (n.metadata?.title as string | undefined) ||
     n.content?.split("\n")[0]?.slice(0, 60) ||
     n.id

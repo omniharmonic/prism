@@ -1,3 +1,4 @@
+import { leafTitle } from "../../lib/pages/containerTitle";
 import { useState, useCallback, useRef } from "react";
 import { Eye, Code, Columns } from "lucide-react";
 import type { RendererProps } from "./RendererProps";
@@ -26,7 +27,7 @@ export default function WebsiteRenderer({ note, readOnly }: RendererProps) {
         style={{ borderBottom: "1px solid var(--glass-border)", background: "var(--bg-surface)" }}
       >
         <span className="text-sm" style={{ color: "var(--text-secondary)" }}>
-          {note.path?.split("/").pop() || "Website"}
+          {leafTitle(note.path, note.metadata) || "Website"}
         </span>
         <div className="flex items-center gap-2">
           <div className="flex rounded-md overflow-hidden" style={{ border: "1px solid var(--glass-border)" }}>

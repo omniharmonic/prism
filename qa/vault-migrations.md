@@ -63,6 +63,7 @@ Not proposed as a schema change: renaming `meeting.status` to `processing_status
 | M-c | `trash-duplicates.ts`: move `duplicate`-tagged notes to Trash | Only notes whose twin is identified: the note names it (`duplicate_of`, `canonical`, `merged_into`, …), or exactly one other note has the same recording id. Others are listed for you. A duplicate with sub-pages is skipped. Goes through Prism's own Trash, so everything stays restorable from the Trash view | 63 tagged `duplicate`; start with the 23 Fireflies inbox ones (`--path-prefix vault/_inbox/transcripts/fireflies/`) | Low | Restore from Prism's Trash, or `undo.ts --log … --prism-url …` | **approved 2026-10-08** |
 | M-d | `report-untagged.ts`: untagged notes by folder | **Report only, writes nothing.** Prints each folder, its count, and a suggested tag (project slug + `document`/`research`; `_templates/` stays untagged) | 395 untagged | None | n/a | **approved 2026-10-08** |
 | M-e | People links (email / thread / meeting orphans) | Not a new script: use Prism's own job `POST /api/admin/people/link {"dryRun": true}` (server owner only, through the admin API), which is conservative and already dry-run by default | 2,818 email, 1,169 thread, 506 meeting, 139 person orphans | Medium (write run) | That job's own audit + per-note CAS | **approved 2026-10-08** |
+| M-g | `backfill-subpage-links.ts`: add the parent → sub-page link to rows saved before the server wrote it (PR #31) | **Links only.** For every live note whose body lists sub-pages (`<div data-type="child-page" data-page-id>`), adds one `mentions` link from the parent to each listed sub-page that is a live note and is not linked yet — the same link the server now writes when a row is added. No body, no metadata, no tag is touched. Rows that name a missing or trashed page are counted and left alone | Unknown until the dry run (it prints: notes with rows, rows, already linked, to add) | Low. Each write is one links-only compare-and-set PATCH; an open live page sees its revision move with no text change | `undo.ts --log <undo log>` removes exactly the links it added (works even if the page was edited since: it touches links only). Re-running the backfill puts them back | **OPTIONAL — not approved, not in the default order.** Written and tested against the fake vault only; never run against a real vault |
 
 ### Commands
 
@@ -72,6 +73,7 @@ Not proposed as a schema change: renaming `meeting.status` to `processing_status
 | M-b | `… migrate-project-folder-links.ts` | `… migrate-project-folder-links.ts --apply --backup-confirmed` |
 | M-c | `… trash-duplicates.ts --path-prefix vault/_inbox/transcripts/fireflies/` | `PRISM_OWNER_TOKEN=… … trash-duplicates.ts --path-prefix vault/_inbox/transcripts/fireflies/ --prism-url http://127.0.0.1:8787 --apply --backup-confirmed` |
 | M-d | `… report-untagged.ts` (`--json` for a file) | (none) |
+| M-g (optional) | `… backfill-subpage-links.ts` (default: only notes with a live note under their own path, read one at a time; `--all` reads every body in one listing; `--tag` / `--path-prefix` narrow) | `… backfill-subpage-links.ts --apply --backup-confirmed` (`--limit 20` for a first small batch) |
 | Undo any | `… undo.ts --log vault-hygiene-undo-<script>-<time>.jsonl` | add `--apply` (and `--prism-url` + `PRISM_OWNER_TOKEN` for M-c) |
 
 Useful options on every migration: `--limit N` (write at most N notes, good for a first small batch), `--rate N` (writes a second, default 2), `--undo-log <file>`.
@@ -152,7 +154,22 @@ It refuses anywhere but the Mini (macOS + the local vault database + the vault a
 | m-b | folder links → `…/PROJECT`, unresolved slugs listed | CAS rewrite | `undo.ts --log …/undo-m-b.jsonl --apply` |
 | m-e | people-link job dry run (strong keys only, no names, nothing queued) | write run capped at `PEOPLE_LINK_CAP` (500) writes; re-run `--only m-e` to continue | links are additive + audited; full rollback = the backup |
 | m-d | untagged report | — | — |
+| m-g *(optional: only with `--only m-g`)* | sub-page rows without a parent link | links-only CAS PATCH per parent | `undo.ts --log <run dir>/undo-m-g.jsonl --apply` |
 
 Every step stops the run on error and prints its undo. Undo logs and a transcript go to `~/parachute-backups/vault-hygiene-<time>/` (0700; the m-b log holds old note bodies). Tokens are read from the Keychain into the child processes' environment and sent to curl on stdin — never on a command line, never printed. Resume with `--from <step>`, run one with `--only <step>`. Whole rollback: stop pm2 `prism-server` and the vault, restore `vault.db` and `prism-server.db` from the snapshot, start both.
+
+**Optional step `m-g` (sub-page links).** It is not part of the approved order: a default run and `--from` never include it. Run it by name when you want it — it takes the same backup, shows its dry run and asks before applying:
+
+```bash
+scripts/vault-hygiene/apply-all.sh --only m-g
+```
+
+or by hand, dry run first (this is the exact command; it writes nothing):
+
+```bash
+PARACHUTE_TOKEN=… node --import tsx scripts/vault-hygiene/backfill-subpage-links.ts --vault-url http://127.0.0.1:1940 --production
+```
+
+The dry run prints how many notes hold sub-page rows, how many rows are already linked, how many links it would add and on how many notes, how many rows name a missing or trashed page, and up to 10 note ids/paths — never a body. Add `--apply --backup-confirmed` (and `--undo-log <file>`, `--limit N`, `--rate N`) to write. It reads every note's body once to find the rows; `--tag` / `--path-prefix` (repeatable) narrow that.
 
 **After:** set `VAULT_LINT_ENABLED=true` in `apps/server/.env`, restart pm2 `prism-server`, and check `GET /acl/workers` → `vault-lint` the next day.

@@ -141,6 +141,20 @@ export interface VaultNote {
   content?: string;
   updatedAt?: string;
   createdAt?: string;
+  /** Outgoing + incoming typed links, present only on a read that asked for them (`include_links`). */
+  links?: VaultLink[] | null;
+}
+
+/** A hydrated link as `include_links` returns it. */
+export interface VaultLink {
+  sourceId: string;
+  targetId: string;
+  relationship: string;
+}
+/** A link to add or remove: the target note (id or path) and the relationship. */
+export interface LinkInput {
+  target: string;
+  relationship: string;
 }
 
 export class HttpError extends Error {
@@ -177,19 +191,20 @@ export class VaultApi {
     return res;
   }
 
-  async listNotes(opts: { tag?: string; pathPrefix?: string; includeContent?: boolean; includeMetadata?: string[] } = {}): Promise<VaultNote[]> {
+  async listNotes(opts: { tag?: string; pathPrefix?: string; includeContent?: boolean; includeMetadata?: string[]; includeLinks?: boolean } = {}): Promise<VaultNote[]> {
     const sp = new URLSearchParams({ limit: "50000", sort: "desc" });
     if (opts.tag) sp.append("tag", opts.tag);
     if (opts.pathPrefix) sp.set("path_prefix", opts.pathPrefix);
     sp.set("include_content", opts.includeContent ? "true" : "false");
+    if (opts.includeLinks) sp.set("include_links", "true");
     if (opts.includeMetadata?.length) sp.set("include_metadata", opts.includeMetadata.join(","));
     return (await this.req(`/notes?${sp}`)).json() as Promise<VaultNote[]>;
   }
 
   /** Full read (body + metadata) — the fresh copy every write is built on. */
-  async getNote(id: string): Promise<VaultNote | null> {
+  async getNote(id: string, opts: { includeLinks?: boolean } = {}): Promise<VaultNote | null> {
     try {
-      return (await (await this.req(`/notes/${encodeURIComponent(id)}`)).json()) as VaultNote;
+      return (await (await this.req(`/notes/${encodeURIComponent(id)}${opts.includeLinks ? "?include_links=true" : ""}`)).json()) as VaultNote;
     } catch (e) {
       if (e instanceof HttpError && e.status === 404) return null;
       throw e;
@@ -202,6 +217,18 @@ export class VaultApi {
     const payload: Record<string, unknown> = { if_updated_at: ifUpdatedAt };
     if (body.content !== undefined) payload.content = body.content;
     if (body.metadata !== undefined) payload.metadata = body.metadata;
+    return (await (await this.req(`/notes/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(payload) })).json()) as VaultNote;
+  }
+
+  /**
+   * Compare-and-set LINKS-ONLY PATCH: adds / removes typed links of one note and sends
+   * nothing else — no `content`, no `metadata`, NEVER `force`. Adding a link that exists
+   * is a no-op on the vault (INSERT OR IGNORE).
+   */
+  async patchLinks(id: string, links: { add?: LinkInput[]; remove?: LinkInput[] }, ifUpdatedAt: string): Promise<VaultNote> {
+    if (!ifUpdatedAt) throw new Error("refusing a write without if_updated_at");
+    if (!links.add?.length && !links.remove?.length) throw new Error("refusing an empty links write");
+    const payload = { if_updated_at: ifUpdatedAt, links: { ...(links.add?.length ? { add: links.add } : {}), ...(links.remove?.length ? { remove: links.remove } : {}) } };
     return (await (await this.req(`/notes/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(payload) })).json()) as VaultNote;
   }
 
@@ -260,7 +287,17 @@ export type UndoRecord =
       afterUpdatedAt: string;
       before: { content?: string; metadata?: Record<string, unknown> };
     }
-  | { kind: "prism-trash"; script: string; at: string; id: string; path: string | null; canonicalId: string };
+  | { kind: "prism-trash"; script: string; at: string; id: string; path: string | null; canonicalId: string }
+  | {
+      /** Links this write ADDED to note `id` (nothing else was written). Undo removes exactly these. */
+      kind: "vault-links";
+      script: string;
+      at: string;
+      id: string;
+      path: string | null;
+      afterUpdatedAt: string;
+      added: LinkInput[];
+    };
 
 export class UndoLog {
   constructor(

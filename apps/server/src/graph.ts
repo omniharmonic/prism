@@ -1,4 +1,5 @@
 import type { Note } from "./parachute";
+import { leafTitle } from "@prism/core/pages";
 
 export interface Neighborhood {
   nodes: Array<{
@@ -83,7 +84,8 @@ export function graphNeighborhood(
         title:
           (typeof note.metadata?.title === "string" &&
             note.metadata.title.trim()) ||
-          note.path?.split("/").pop() ||
+          // A container-named note (`…/opencivics/PROJECT`) is a node named by its folder, not "PROJECT".
+          leafTitle(note.path, note.metadata) ||
           id,
         tags: note.tags ?? [],
       };

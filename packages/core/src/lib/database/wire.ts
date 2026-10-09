@@ -41,7 +41,7 @@ export interface CsvImportResponse {
   tag: string;
   rows: number;
   key: string;
-  summary: { create: number; update: number; unchanged: number; error: number };
+  summary: { create: number; update: number; unchanged: number; error: number; /** Rows where a cell was NOT applied because the page holds a structured value (objects) there. */ structuredKept?: number };
   sample: CsvImportRow[];
   errors: CsvImportRow[];
   result?: { created: number; updated: number; failed: Array<{ row: number; error: string }> };

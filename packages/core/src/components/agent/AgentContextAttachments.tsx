@@ -1,3 +1,4 @@
+import { leafTitle } from "../../lib/pages/containerTitle";
 import { useEffect, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { FileText, Paperclip, Search, X } from "lucide-react";
@@ -27,7 +28,7 @@ function AttachedNoteName({ id, fallback }: { id: string; fallback: string }) {
   const client = useVaultClient();
   const scope = useAgentChatStore((s) => s.scope);
   const note = useQuery({ queryKey: ["vault", "agent-attached-note", scope, id], queryFn: () => client.getNote(id), enabled: !!scope, staleTime: 0, gcTime: 0, retry: false });
-  return <span className="truncate">{note.isError ? "Unavailable note" : !note.isFetching && note.data?.path ? note.data.path.split("/").pop() : fallback}</span>;
+  return <span className="truncate">{note.isError ? "Unavailable note" : !note.isFetching && note.data?.path ? leafTitle(note.data.path, note.data.metadata) : fallback}</span>;
 }
 
 function ContextPicker({ ids, onChange, maxNotes, onClose }: { ids: string[]; onChange: (ids: string[]) => void; maxNotes: number; onClose: () => void }) {
@@ -63,7 +64,7 @@ function ContextPicker({ ids, onChange, maxNotes, onClose }: { ids: string[]; on
         {!searching && results.isError && <div role="alert">Couldn't search this vault. <button onClick={() => void results.refetch()} className="focus-ring underline">Try again</button></div>}
         {notes?.length === 0 && <p>No matching notes.</p>}
         {notes?.map((note) => <button key={note.id} aria-label={`${note.path || "Untitled note"}${ids.includes(note.id) ? " Attached" : ""}`} disabled={ids.includes(note.id) || ids.length >= maxNotes} onClick={() => onChange([...ids, note.id])} className="prism-agent-context-result interactive focus-ring" data-attached={ids.includes(note.id) || undefined}>
-          <FileText size={19} className="shrink-0" /><span className="min-w-0 flex-1"><span className="prism-agent-context-result-title">{note.path?.split("/").pop() || "Untitled note"}</span><span className="prism-agent-context-result-location">Saved note{note.path?.includes("/") ? ` · ${note.path.split("/").slice(0, -1).join(" / ")}` : ""}</span>{note.content && !note.content.trimStart().startsWith("<") && <span className="prism-agent-context-result-excerpt">{note.content.replace(/\s+/g, " ").slice(0, 220)}</span>}</span>{ids.includes(note.id) && <span className="text-xs">Attached</span>}
+          <FileText size={19} className="shrink-0" /><span className="min-w-0 flex-1"><span className="prism-agent-context-result-title">{leafTitle(note.path, note.metadata) || "Untitled note"}</span><span className="prism-agent-context-result-location">Saved note{note.path?.includes("/") ? ` · ${note.path.split("/").slice(0, -1).join(" / ")}` : ""}</span>{note.content && !note.content.trimStart().startsWith("<") && <span className="prism-agent-context-result-excerpt">{note.content.replace(/\s+/g, " ").slice(0, 220)}</span>}</span>{ids.includes(note.id) && <span className="text-xs">Attached</span>}
         </button>)}
       </div>
       <div className="flex justify-end border-t p-3" style={{ borderColor: "var(--glass-border)" }}><button onClick={onClose} className="interactive focus-ring rounded-lg px-4 py-2 text-sm">Done · {ids.length} attached</button></div>

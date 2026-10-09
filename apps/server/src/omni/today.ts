@@ -14,6 +14,7 @@
 import { listApprovals, approvalView, expireApprovals } from "./approvals";
 import { getThread, runningThreadIds } from "./store";
 import { omniConfig } from "./config";
+import { leafTitle } from "@prism/core/pages";
 
 export type Dispatch = (path: string, init: { method: string; body?: unknown }) => Promise<Response>;
 
@@ -29,7 +30,7 @@ export const validDate = (s: string | undefined): s is string => !!s && DATE_RE.
 
 type Row = { id: string; path: string | null; metadata: Record<string, unknown> };
 const s = (v: unknown): string | null => (typeof v === "string" && v ? v : null);
-const title = (r: Row): string => s(r.metadata.title) ?? (r.path ?? r.id).split("/").pop() ?? r.id;
+const title = (r: Row): string => s(r.metadata.title) ?? leafTitle(r.path ?? r.id, r.metadata) ?? r.id;
 
 async function query(dispatch: Dispatch, spec: Record<string, unknown>): Promise<{ rows: Row[]; identity?: string }> {
   const res = await dispatch("/api/query", { method: "POST", body: spec });

@@ -5,6 +5,11 @@
  *    produced (`afterUpdatedAt`); then ONE compare-and-set PATCH puts back the
  *    replaced body/values. A note edited since is reported and left alone.
  *  - `prism-trash` records: restored through Prism (`POST /api/trash/:id/restore`).
+ *  - `vault-links` records (the sub-page link backfill): the links that write ADDED
+ *    are removed with ONE links-only compare-and-set PATCH against the note's CURRENT
+ *    revision. Unlike a body restore this does not need the note to be unedited — it
+ *    touches no text and no value, only the links the log names — and a link that is
+ *    already gone is not an error.
  *
  * Dry run by default (prints what it would restore). `--apply` writes.
  *
@@ -48,6 +53,29 @@ export async function main(argv: string[], ctx: Ctx, records?: UndoRecord[]): Pr
           body: "{}",
         });
         if (!res.ok) throw new HttpError(res.status, `restore ${r.id}: ${res.status}`);
+        restored++;
+        continue;
+      }
+      if (r.kind === "vault-links") {
+        const note = await vault.getNote(r.id, { includeLinks: true });
+        if (!note || !note.updatedAt) {
+          stale++;
+          ctx.log(`  skip ${r.id} ${r.path ?? ""}: note no longer exists`);
+          continue;
+        }
+        // Only links still present are removed (targets compare by id; the log holds ids).
+        const present = r.added.filter((l) => (note.links ?? []).some((x) => x.sourceId === note.id && x.targetId === l.target && x.relationship === l.relationship));
+        if (!present.length) {
+          stale++;
+          ctx.log(`  skip ${r.id} ${r.path ?? ""}: the link(s) are already gone`);
+          continue;
+        }
+        if (!apply) {
+          ctx.log(`  would remove ${present.length} link(s) from ${r.id} ${r.path ?? ""}`);
+          continue;
+        }
+        await throttle.wait();
+        await vault.patchLinks(r.id, { remove: present }, note.updatedAt);
         restored++;
         continue;
       }

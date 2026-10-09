@@ -1,3 +1,4 @@
+import { leafTitle } from "../../lib/pages/containerTitle";
 import { convertToExcalidrawElements } from "@excalidraw/excalidraw";
 import type { Note } from "../../lib/types";
 
@@ -14,7 +15,7 @@ import type { Note } from "../../lib/types";
 /** Build a rich multi-line label for a note card (title + tag-aware metadata). */
 export function buildCardLabel(note: Note, includeBody: boolean): string {
   const meta = (note.metadata || {}) as Record<string, any>;
-  const title = (typeof meta.title === "string" && meta.title.trim()) || note.path?.split("/").pop() || "Untitled";
+  const title = (typeof meta.title === "string" && meta.title.trim()) || leafTitle(note.path, note.metadata) || "Untitled";
   const tags = note.tags || [];
   const lines = [title];
 

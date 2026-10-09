@@ -6,6 +6,7 @@
 #   scripts/vault-hygiene/apply-all.sh --from m-b      # resume at a step
 #   scripts/vault-hygiene/apply-all.sh --only m-d      # one step
 #   scripts/vault-hygiene/apply-all.sh --yes           # no confirmation prompts (still dry-runs first)
+#   scripts/vault-hygiene/apply-all.sh --only m-g      # an OPTIONAL step: runs only when named (never by default, never with --from)
 #
 # Steps, in order (qa/vault-migrations.md):
 #   schema   S1–S13 tag-schema corrections (apply-schema-fixes.ts --include-optional)
@@ -17,6 +18,9 @@
 #            one value / an unambiguous "a, b" turned into a list (never a guess)
 #   m-e      Prism people-link job: dry run, then a CAPPED write run
 #   m-d      untagged-notes report (writes nothing)
+# Optional steps — NOT part of the approved order above; each runs only with `--only <step>`:
+#   m-g      backfill the parent → sub-page link for sub-page rows saved before the server
+#            wrote it (backfill-subpage-links.ts; links only, no body, no metadata)
 #
 # Every step stops the run on error and prints its undo command. Every write is
 # compare-and-set; every migration logs what it replaced to an undo log in the
@@ -45,6 +49,8 @@ KC_PARACHUTE_TOKEN="${KC_PARACHUTE_TOKEN:-prism-parachute-token}"
 KC_OWNER_TOKEN="${KC_OWNER_TOKEN:-prism-owner-device-token}"
 KC_ADMIN_TOKEN="${KC_ADMIN_TOKEN:-prism-parachute-admin-token}"
 STEPS=(schema m-a m-c-ff m-c m-b m-f m-e m-d)
+# Run only by `--only <step>`: not in the approved order, so never part of a default or --from run.
+OPTIONAL_STEPS=(m-g)
 
 BACKUP=""
 FROM=""
@@ -56,13 +62,12 @@ while [ $# -gt 0 ]; do
     --from) FROM="${2:-}"; shift 2 ;;
     --only) ONLY="${2:-}"; shift 2 ;;
     --yes) YES=1; shift ;;
-    -h|--help) sed -n '2,32p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,36p' "$0"; exit 0 ;;
     *) echo "unknown option: $1 (see --help)" >&2; exit 2 ;;
   esac
 done
-for s in "$FROM" "$ONLY"; do
-  [ -z "$s" ] || printf '%s\n' "${STEPS[@]}" | grep -qx -- "$s" || { echo "unknown step '$s' (steps: ${STEPS[*]})" >&2; exit 2; }
-done
+[ -z "$FROM" ] || printf '%s\n' "${STEPS[@]}" | grep -qx -- "$FROM" || { echo "unknown step '$FROM' (steps: ${STEPS[*]})" >&2; exit 2; }
+[ -z "$ONLY" ] || printf '%s\n' "${STEPS[@]}" "${OPTIONAL_STEPS[@]}" | grep -qx -- "$ONLY" || { echo "unknown step '$ONLY' (steps: ${STEPS[*]}; optional, --only: ${OPTIONAL_STEPS[*]})" >&2; exit 2; }
 
 die() { echo "✗ $*" >&2; exit 1; }
 say() { printf '\n\033[1m== %s\033[0m\n' "$*"; }
@@ -203,6 +208,9 @@ if want m-e; then
     echo "  $undo_hint"
   fi
 fi
+
+# ── optional steps (only with --only) ───────────────────────────────────────
+[ "$ONLY" = "m-g" ] && migration m-g backfill-subpage-links.ts
 
 if want m-d; then
   say "m-d — untagged notes report (writes nothing)"

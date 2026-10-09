@@ -6,6 +6,7 @@
  * fields, and — for signals — the affects/response links that close the
  * sense→respond loop.
  */
+import { scalarText } from "../../lib/database/structured";
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import DOMPurify from "dompurify";
 import type { RendererProps } from "./RendererProps";
@@ -21,7 +22,7 @@ const DocumentEditor = lazy(() => import("./DocumentRenderer"));
 
 const str = (m: Record<string, unknown> | null, k: string): string => {
   const v = m?.[k];
-  return typeof v === "string" ? v : v == null ? "" : String(v);
+  return typeof v === "string" ? v : scalarText(v);
 };
 const arr = (m: Record<string, unknown> | null, k: string): string[] => {
   const v = m?.[k];
@@ -218,7 +219,7 @@ export default function BioregionEntityRenderer({ note, onSave, onMetadataChange
             return (
               <tr key={f}>
                 <td style={{ padding: "3px 12px 3px 0", opacity: 0.6, verticalAlign: "top", fontFamily: "ui-monospace, monospace", fontSize: 12 }}>{f}</td>
-                <td style={{ padding: "3px 0" }}>{Array.isArray(v) ? v.join(", ") : String(v)}</td>
+                <td style={{ padding: "3px 0" }}>{scalarText(v)}</td>
               </tr>
             );
           })}

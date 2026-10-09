@@ -1,3 +1,4 @@
+import { leafTitle } from "../../lib/pages/containerTitle";
 import { useCallback, useEffect, useRef, useState } from "react";
 import * as Y from "yjs";
 import { Excalidraw, convertToExcalidrawElements, reconcileElements } from "@excalidraw/excalidraw";
@@ -234,7 +235,7 @@ export function CollabCanvas({
   const handleOpenSelected = useCallback(() => {
     if (!selectedNoteId) return;
     access.read(selectedNoteId).then((n) => {
-      const title = (typeof n.metadata?.title === "string" && n.metadata.title) || n.path?.split("/").pop() || "Untitled";
+      const title = (typeof n.metadata?.title === "string" && n.metadata.title) || leafTitle(n.path, n.metadata) || "Untitled";
       openTab(n.id, title, inferContentType(n));
     }).catch(() => { /* visible error from access.read */ });
   }, [selectedNoteId, access.read, openTab]);

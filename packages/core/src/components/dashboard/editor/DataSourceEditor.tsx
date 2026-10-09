@@ -1,3 +1,4 @@
+import { scalarText } from "../../../lib/database/structured";
 import { useState } from "react";
 import { X, Plus } from "lucide-react";
 import { useTags } from "../../../app/hooks/useParachute";
@@ -194,7 +195,7 @@ export function DataSourceEditor({ value, onChange }: DataSourceEditorProps) {
                   className="text-xs px-2 py-0.5 rounded"
                   style={{ background: "var(--glass)", color: "var(--text-secondary)" }}
                 >
-                  {key} = {String(val)}
+                  {key} = {scalarText(val)}
                 </span>
                 <button
                   onClick={() => removeMetaFilter(key)}

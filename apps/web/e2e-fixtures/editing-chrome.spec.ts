@@ -15,7 +15,7 @@
  */
 import { test, expect, type Browser, type Page } from "@playwright/test";
 import { connect, startRealServer, type RealServer } from "./real-server";
-import { PHONE, expectOneRow, formattingSurfaces, measureChrome, openKeyboard, selectWord } from "./editing-chrome-helpers";
+import { KEYBOARD, PHONE, closeKeyboard, expectInVisibleArea, expectOneRow, formattingSurfaces, measureChrome, openKeyboard, selectWord, visibleArea } from "./editing-chrome-helpers";
 
 const WIDTHS = [390, 320] as const;
 const DESKTOP = { width: 1440, height: 900 };
@@ -102,6 +102,61 @@ test.describe("plain page", () => {
     await toolbar.getByRole("button", { name: "Apply" }).tap();
     await expect(tiptap(page).locator('a[href="https://example.test/plan"]')).toHaveText("workshop");
     await expect(formattingSurfaces(page)).toHaveCount(1);
+    await context.close();
+  });
+
+  // Polish round 3 — the owner's iPhone: the toolbar floated 76 px above the keyboard with the tab
+  // bar showing under it. The page does not scroll in the app, so WebKit pans the visible area all the
+  // way down (`offsetTop` = layout height − visible height): the visible bottom IS the layout bottom,
+  // and the old "is a keyboard open" test (layout − offsetTop − height > 120) answered no.
+  for (const width of WIDTHS) test(`phone ${width} · keyboard: the toolbar's bottom edge is the visible area's bottom edge wherever the page is panned; the bottom bar is hidden`, async ({ browser }) => {
+    const { context, page } = await phone(browser, width);
+    await ready(page);
+    const nav = page.getByRole("navigation", { name: "Mobile workspace" });
+    const toolbar = page.getByRole("toolbar", { name: "Editing toolbar" });
+    await expect(nav).toBeVisible();
+    await page.locator(".tiptap p").first().tap();
+    await expect(toolbar).toBeVisible();
+    const bottom = () => toolbar.evaluate((el) => el.getBoundingClientRect().bottom);
+    // Not panned, panned part of the way, panned all the way (the app).
+    for (const offsetTop of [0, 150, 300, 844 - KEYBOARD]) {
+      await openKeyboard(page, { offsetTop });
+      const area = await visibleArea(page);
+      await expect.poll(bottom, { message: `toolbar bottom with offsetTop ${offsetTop}` }).toBeCloseTo(area.bottom, 0);
+      await expect(nav, `bottom bar with offsetTop ${offsetTop}`).toBeHidden();
+      // Flush on the keys: no home-indicator padding under the row, nothing of Prism's over it.
+      expect(await toolbar.evaluate((el) => getComputedStyle(el).paddingBottom)).toBe("4px");
+      expect((await measureChrome(page)).overlaps, "nothing overlaps the toolbar").toEqual([]);
+    }
+    // "Dismiss keyboard" is always in reach (the app removes the system's own bar): on screen without scrolling the row.
+    const dismiss = toolbar.getByRole("button", { name: "Dismiss keyboard", exact: true });
+    const d = (await dismiss.boundingBox())!;
+    expect(d.x).toBeGreaterThanOrEqual(0);
+    expect(d.x + d.width).toBeLessThanOrEqual(width);
+    expect(Math.min(d.width, d.height)).toBeGreaterThanOrEqual(44);
+    // At rest no item of the row is cut in half: each is entirely in the row's box, or entirely outside it.
+    for (const select of [false, true]) {
+      if (select) { await selectWord(page, "workshop"); await expect(toolbar).toHaveAttribute("data-selection", "true"); }
+      await expect.poll(() => toolbar.locator(".keyboard-toolbar-row").evaluate((row) => {
+        const box = row.getBoundingClientRect();
+        return Array.from(row.querySelectorAll("button")).map((b) => b.getBoundingClientRect()).filter((r) => r.width > 0 && r.left < box.right - 0.5 && r.right > box.right + 0.5).length;
+      }), { message: `half-cut items at rest${select ? " (selection row)" : ""}` }).toBe(0);
+      // Even spacing: the gaps between neighbouring items of the row's first screenful are equal.
+      const gaps = await toolbar.locator(".keyboard-toolbar-row").evaluate((row) => {
+        const box = row.getBoundingClientRect();
+        const items = Array.from(row.children).map((c) => c.getBoundingClientRect()).filter((r) => r.width > 0 && r.right <= box.right + 0.5);
+        return items.slice(1).map((r, i) => Math.round((r.left - items[i]!.right) * 10) / 10);
+      });
+      expect(new Set(gaps.map((g) => Math.round(g))).size, `row gaps ${gaps.join(", ")}`).toBeLessThanOrEqual(2); // dividers carry a margin
+    }
+    // Focus in any other text control (search, a property, the title): the toolbar is not shown; the keyboard still hides the bar.
+    await page.evaluate(() => { const input = Object.assign(document.createElement("input"), { id: "elsewhere" }); input.setAttribute("aria-label", "Somewhere else"); document.body.append(input); input.focus(); });
+    await expect(page.locator(".keyboard-toolbar")).toHaveCount(0);
+    await expect(nav).toBeHidden();
+    // The keyboard closes: the bottom bar comes back.
+    await page.evaluate(() => (document.activeElement as HTMLElement).blur());
+    await closeKeyboard(page);
+    await expect(nav).toBeVisible();
     await context.close();
   });
 
@@ -204,11 +259,45 @@ test.describe("live page", () => {
     expect(m.covered, "chrome over the selected text").toEqual([]);
     expect(m.selection!.bottom).toBeLessThanOrEqual((await toolbar.boundingBox())!.y + 1);
     await toolbar.getByRole("button", { name: "Comment on selection" }).tap();
+    // The composer docks on the keyboard, whole, wherever the page is panned — it used to open under
+    // the selection, behind the keys. Its field has the focus, so the editing toolbar is gone.
+    const composer = page.getByRole("dialog", { name: "Comment on selection" });
+    await expect(composer.getByPlaceholder(/Add a comment/)).toBeFocused();
+    await expect(page.locator(".keyboard-toolbar")).toHaveCount(0);
+    for (const offsetTop of [0, 844 - KEYBOARD]) {
+      await openKeyboard(page, { offsetTop });
+      await expectInVisibleArea(page, ".prism-comment-composer", `comment composer (offsetTop ${offsetTop})`);
+    }
     await page.getByPlaceholder(/Add a comment/).fill("Is this still true?");
     await page.getByRole("button", { name: "Comment", exact: true }).tap();
     await expect(tiptap(page).locator("span[data-comment-id]")).toHaveText("Second");
     // The row counts it; the thread is in the one drawer.
     await expect(page.getByRole("button", { name: "Comments (1 open)" })).toBeVisible();
+
+    // The drawer: opening it takes the caret out of the document (no keyboard toolbar under it), and
+    // with focus in "Reply…" the toolbar stays away while the field and its buttons are above the keys.
+    await page.locator(".tiptap p").first().tap();
+    await expect(toolbar).toBeVisible();
+    await page.getByRole("button", { name: "Comments (1 open)" }).tap();
+    const drawer = page.getByRole("dialog", { name: "Comments" });
+    await expect(drawer).toBeVisible();
+    await expect(page.locator(".keyboard-toolbar")).toHaveCount(0);
+    await drawer.getByLabel("Reply").tap();
+    await expect(drawer.getByLabel("Reply")).toBeFocused();
+    // This fixture page scrolls as a document (the app's shell does not), and WebKit then keeps its
+    // real layout viewport a few px off the scroll position — under the simulated `offsetTop`. Start from the top.
+    await page.evaluate(() => window.scrollTo(0, 0));
+    for (const offsetTop of [0, 844 - KEYBOARD]) {
+      await openKeyboard(page, { offsetTop });
+      await expect(page.locator(".keyboard-toolbar")).toHaveCount(0);
+      await expect(page.locator(".prism-mobile-navigation:visible")).toHaveCount(0);
+      await expectInVisibleArea(page, ".collab-comments-drawer", `comments drawer (offsetTop ${offsetTop})`);
+      await expectInVisibleArea(page, '.collab-comments-drawer input[aria-label="Reply"]', "reply field");
+      await expectInVisibleArea(page, '.collab-comments-drawer button[aria-label="Resolve thread"]', "Resolve");
+      await expectInVisibleArea(page, '.collab-comments-drawer button[aria-label="Delete thread"]', "Delete");
+    }
+    await closeKeyboard(page);
+    await page.getByRole("button", { name: "Close comments" }).tap();
 
     // Suggesting: the toolbar offers no untracked edits — it exists only for a selection.
     await page.getByRole("button", { name: "Editing", exact: true }).tap();
@@ -247,8 +336,21 @@ test.describe("live page", () => {
     const m = await measureChrome(page);
     expect(m.overlaps).toEqual([]); // the bubble used to sit on the "You can suggest changes" note
     expect(m.covered, "chrome over the selected text").toEqual([]);
+    // The note is one quiet line on a phone, not a boxed strip.
+    const note = page.getByRole("note");
+    await expect(note).toContainText("You can suggest changes");
+    expect((await note.boundingBox())!.height, "the suggest-only note is one line").toBeLessThanOrEqual(width === 320 ? 44 : 24);
+    expect(await note.evaluate((el) => { const s = getComputedStyle(el); return `${s.borderTopWidth} ${s.backgroundImage} ${s.backgroundColor}`; })).toBe("0px none rgba(0, 0, 0, 0)");
     await actions.getByRole("button", { name: "Suggest an edit to the selection" }).tap();
-    await expect(page.getByRole("dialog", { name: "Suggest an edit" }).locator("blockquote")).toHaveText("gamma");
+    const suggest = page.getByRole("dialog", { name: "Suggest an edit" });
+    await expect(suggest.locator("blockquote")).toHaveText("gamma");
+    // The composer is whole above the keyboard its field raises (it opened under the selection).
+    await expect(suggest.getByLabel("Replacement text")).toBeFocused();
+    for (const offsetTop of [0, 844 - KEYBOARD]) {
+      await openKeyboard(page, { offsetTop });
+      await expectInVisibleArea(page, ".prism-human-composer", `suggest composer (offsetTop ${offsetTop})`);
+      await expect(page.locator(".keyboard-toolbar")).toHaveCount(0);
+    }
     await context.close();
   });
 
@@ -322,6 +424,20 @@ test.describe("live page", () => {
         expect(box.x + box.width).toBeLessThanOrEqual(width);
       }
       expect((await measureChrome(page)).overlaps).toEqual([]);
+      // One suggestion: Accept / Reject lead the keyboard toolbar while the caret is in it — no bubble
+      // floating over the text or behind the keys.
+      await page.locator('[data-suggestion="insert"]').tap();
+      await openKeyboard(page, { offsetTop: 844 - KEYBOARD });
+      const toolbar = page.getByRole("toolbar", { name: "Editing toolbar" });
+      for (const name of ["Accept", "Reject"]) {
+        const box = (await toolbar.getByRole("button", { name, exact: true }).boundingBox())!;
+        expect(Math.min(box.width, box.height), `${name}: a touch target`).toBeGreaterThanOrEqual(44);
+        expect(box.x + box.width, `${name}: on screen`).toBeLessThanOrEqual(width);
+      }
+      await expect(page.locator(".cd-bubble")).toHaveCount(0);
+      await expectInVisibleArea(page, ".keyboard-toolbar", "toolbar with Accept / Reject");
+      await closeKeyboard(page);
+      await page.locator(".tiptap p").nth(1).tap(); // the caret leaves the suggestion (the next visitor would see it inside the word)
       if (width === WIDTHS[WIDTHS.length - 1]) {
         await bulk.getByRole("button", { name: "Accept all suggestions" }).tap();
         await expect(page.locator("[data-suggestion]")).toHaveCount(0);

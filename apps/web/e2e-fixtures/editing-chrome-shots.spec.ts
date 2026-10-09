@@ -62,6 +62,13 @@ test("live page", async ({ browser }) => {
     }
     await selectWord(page, "gamma");
     await shot(page, `${name}-390-selection`);
+    // Round 3: the composer opened from the selection row docks on the keyboard.
+    if (who !== "gina") {
+      await page.getByRole("button", { name: who === "sam" ? "Suggest an edit to the selection" : "Comment on selection" }).tap();
+      await expect(page.locator(".prism-docked-composer")).toBeVisible();
+      await keyboard(page);
+      await shot(page, `${name}-390-composer`);
+    }
     await ctx.close();
   }
   const narrow = await browser.newContext({ ...PHONE, viewport: { width: 320, height: 844 } }); const small = await narrow.newPage();
