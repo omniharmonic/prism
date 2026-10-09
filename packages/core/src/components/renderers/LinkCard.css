@@ -24,6 +24,9 @@ html.reduce-motion .prism-link-card { animation: none; }
 /* Touch: finger-sized targets. */
 @media (pointer: coarse) {
   .prism-link-card { padding: 4px 6px 4px 10px; font-size: 13px; }
-  .prism-link-card-action { min-height: 40px; padding: 0 10px; }
+  .prism-link-card-action { min-height: 44px; min-width: 44px; padding: 0 10px; }
+  /* A page the reader cannot edit: OUR card answers a long press on a link (Open / Copy), not the system's. */
+  .tiptap[contenteditable="false"] a[href] { -webkit-touch-callout: none; }
 }
+.prism-link-card-note { flex-basis: 100%; padding: 2px 0 4px; font-size: 12px; color: var(--color-danger); white-space: normal; }
 @media print { .prism-link-card { display: none; } }

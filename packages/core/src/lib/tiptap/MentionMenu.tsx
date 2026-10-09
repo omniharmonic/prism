@@ -1,3 +1,4 @@
+import { caretPopupPlacement } from "./popupPlacement";
 import { useCallback, useEffect, useId, useMemo, useState } from "react";
 import type { Editor } from "@tiptap/react";
 import { useQuery } from "@tanstack/react-query";
@@ -201,8 +202,8 @@ export function MentionMenu({ editor, state, notes }: { editor: Editor | null; s
   if (!editor || !visible) return null;
   const coords = editor.view.coordsAtPos(Math.min(state.to, editor.state.doc.content.size));
   const width = Math.min(340, window.innerWidth - 16);
-  const height = Math.min(360, window.innerHeight - 16);
-  const top = coords.bottom + height + 6 > window.innerHeight ? Math.max(8, coords.top - height - 6) : coords.bottom + 6;
+  // Phone keyboard up: the visible area (not the layout viewport) decides — the menu opened behind the keys.
+  const { top, maxHeight: height } = caretPopupPlacement(coords, 360);
 
   const section = (kind: Item["kind"]) => items.map((it, i) => ({ it, i })).filter(({ it }) => it.kind === kind);
   const groups: Array<{ key: Item["kind"]; label: string }> = [

@@ -34,6 +34,7 @@ import { SearchHighlight } from "../../lib/tiptap/SearchHighlight";
 import { UrlPaste, type UrlPasteState, type Unfurler } from "../../lib/tiptap/UrlPaste";
 import { EditorFindBar } from "./EditorFindBar";
 import { PasteUrlMenu } from "./PasteUrlMenu";
+import { EditorPrompt } from "./EditorPrompt";
 import { LinkCard } from "./LinkCard";
 import { DatabaseInsert, type DatabaseInsertRequest } from "../../lib/tiptap/databaseView";
 import { InsertDatabaseDialog } from "./InsertDatabaseDialog";
@@ -495,6 +496,8 @@ export function CollabEditor({
 
       {/* Link card: address + Open / Edit / Remove for the link under the pointer or caret */}
       {editor && <LinkCard editor={editor} />}
+      {/* The in-app address field: Embed, Web bookmark, Image from URL, toolbar Link / Image (never window.prompt) */}
+      {editor && <EditorPrompt editor={editor} />}
       {/* "Paste as" menu after a bare URL paste */}
       {editor && pasteState && editable && !commentOnly && !suggesting && (
         <PasteUrlMenu editor={editor} state={pasteState} unfurl={unfurl ? (url) => unfurlRef.current!(url) : undefined} onClose={() => setPasteState(null)} />

@@ -4,6 +4,7 @@ import { useUIStore } from "../../app/stores/ui";
 import { useCollabSharing } from "../../data/CollabSharing";
 import { openSharingDialog } from "./SharingDialogHost";
 import { useIsMobile } from "../../app/hooks/useIsMobile";
+import { copyText } from "../../lib/clipboard";
 
 const VIRTUAL = new Set([
   "messages-dashboard",
@@ -38,8 +39,15 @@ export function ShareButton() {
 
   const [open, setOpen] = useState(false);
   const [link, setLink] = useState<string | null>(null);
-  const [status, setStatus] = useState<"idle" | "working" | "copied" | "error">("idle");
+  // "uncopied": the link exists but the clipboard refused it — it is shown, selected, to copy by hand.
+  const [status, setStatus] = useState<"idle" | "working" | "copied" | "uncopied" | "error">("idle");
   const ref = useRef<HTMLDivElement>(null);
+  const field = useRef<HTMLInputElement>(null);
+  const request = useRef(0);
+
+  useEffect(() => {
+    if (status === "uncopied") field.current?.select();
+  }, [status]);
 
   useEffect(() => {
     if (!open) return;
@@ -57,35 +65,42 @@ export function ShareButton() {
   // share dialog instead of the one-shot legacy link dropdown.
   if (sharing.getAccess) return <RichShareButton noteId={noteId} />;
 
-  async function generate() {
+  function showCopy(ok: boolean) {
+    setStatus(ok ? "copied" : "uncopied");
+    if (ok) setTimeout(() => setStatus((s) => (s === "copied" ? "idle" : s)), 2000);
+  }
+
+  function generate() {
+    const mine = ++request.current;
     setOpen(true);
     setStatus("working");
     setLink(null);
-    try {
-      const url = await sharing!.createShareLink(noteId);
+    // The link comes from the server, but the clipboard only accepts a write that starts inside
+    // this click: hand the PENDING link to copyText now (lib/clipboard.ts), then show the outcome.
+    const pending = (async () => sharing!.createShareLink(noteId))();
+    const written = copyText(pending);
+    void (async () => {
+      let url: string;
+      try {
+        url = await pending;
+      } catch {
+        if (mine === request.current) setStatus("error");
+        return;
+      }
+      if (mine !== request.current) return;
       setLink(url);
       setStatus("idle");
-      try {
-        await navigator.clipboard.writeText(url);
-        setStatus("copied");
-        setTimeout(() => setStatus("idle"), 2000);
-      } catch {
-        /* clipboard may be blocked; the link is shown to copy manually */
-      }
-    } catch {
-      setStatus("error");
-    }
+      const ok = await written;
+      if (mine === request.current) showCopy(ok);
+    })();
   }
 
-  async function copy() {
+  function copy() {
     if (!link) return;
-    try {
-      await navigator.clipboard.writeText(link);
-      setStatus("copied");
-      setTimeout(() => setStatus("idle"), 2000);
-    } catch {
-      /* ignore */
-    }
+    const mine = request.current;
+    void copyText(link).then((ok) => {
+      if (mine === request.current) showCopy(ok);
+    });
   }
 
   return (
@@ -125,7 +140,9 @@ export function ShareButton() {
             <>
               <div className="flex items-center gap-1.5">
                 <input
+                  ref={field}
                   readOnly
+                  aria-label="Share link"
                   value={link}
                   onFocus={(e) => e.currentTarget.select()}
                   className="flex-1 text-xs px-2 py-1.5 rounded outline-none"
@@ -145,6 +162,11 @@ export function ShareButton() {
                 </button>
                 <span className="sr-only" aria-live="polite" aria-atomic="true">{status === "copied" ? "Link copied" : ""}</span>
               </div>
+              {status === "uncopied" && (
+                <p role="alert" className="text-[11px] mt-2" style={{ color: "var(--color-danger, #EB5757)" }}>
+                  Couldn’t copy — the link above is selected; copy it by hand.
+                </p>
+              )}
               <p className="text-[11px] mt-2" style={{ color: "var(--text-muted)" }}>
                 Anyone with this link can edit <strong>this note only</strong> — the rest of your
                 vault stays private. Expires in 30 days.

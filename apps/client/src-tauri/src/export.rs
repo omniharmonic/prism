@@ -10,12 +10,17 @@ use std::path::{Path, PathBuf};
 
 /// Largest export accepted from the page.
 pub const MAX_EXPORT_BYTES: usize = 20_000_000;
-const MAX_STEM_CHARS: usize = 80;
+pub const MAX_STEM_CHARS: usize = 80;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Format {
     Markdown,
     Html,
+    /// A table the page built itself (a database view's "Export CSV"). Written as given.
+    Csv,
+    /// Data the page built itself (the "changes that never reached the server" file offered
+    /// before a sign-out). Written as given.
+    Json,
 }
 
 impl Format {
@@ -23,6 +28,8 @@ impl Format {
         match s {
             "markdown" | "md" => Ok(Self::Markdown),
             "html" => Ok(Self::Html),
+            "csv" => Ok(Self::Csv),
+            "json" => Ok(Self::Json),
             _ => Err("Unknown export format.".into()),
         }
     }
@@ -30,12 +37,16 @@ impl Format {
         match self {
             Self::Markdown => "md",
             Self::Html => "html",
+            Self::Csv => "csv",
+            Self::Json => "json",
         }
     }
     pub fn label(self) -> &'static str {
         match self {
             Self::Markdown => "Markdown",
             Self::Html => "HTML",
+            Self::Csv => "CSV",
+            Self::Json => "JSON",
         }
     }
 }
@@ -55,7 +66,7 @@ pub fn sanitize_stem(name: &str) -> String {
         })
         .collect();
     s = s.trim().to_string();
-    for ext in [".md", ".markdown", ".html", ".htm", ".txt"] {
+    for ext in [".md", ".markdown", ".html", ".htm", ".txt", ".csv", ".json"] {
         if s.to_ascii_lowercase().ends_with(ext) {
             s.truncate(s.len() - ext.len());
         }
@@ -101,7 +112,7 @@ fn escape_html(s: &str) -> String {
 /// when the exported file is opened in a browser.
 pub fn render(fmt: Format, title: &str, content: &str) -> String {
     match fmt {
-        Format::Markdown => content.to_string(),
+        Format::Markdown | Format::Csv | Format::Json => content.to_string(),
         Format::Html => format!(
             "<!doctype html>\n<html>\n<head>\n<meta charset=\"utf-8\">\n\
              <meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; img-src data: https:; style-src 'unsafe-inline'\">\n\
@@ -171,6 +182,14 @@ mod tests {
             );
         }
         assert_eq!(suggested_file_name("Trip", Format::Html), "Trip.html");
+        // A table / data the page built: written as given, under a sanitised name with ITS extension.
+        assert_eq!(Format::parse("csv"), Ok(Format::Csv));
+        assert_eq!(Format::parse("json"), Ok(Format::Json));
+        assert!(Format::parse("command").is_err() && Format::parse("svg").is_err());
+        assert_eq!(suggested_file_name("Tasks.csv", Format::Csv), "Tasks.csv");
+        assert_eq!(suggested_file_name("../../x.json", Format::Json), "x.json");
+        assert_eq!(render(Format::Csv, "t", "a,b\n1,2\n"), "a,b\n1,2\n");
+        assert_eq!(render(Format::Json, "t", "{\"a\":1}"), "{\"a\":1}");
     }
 
     #[test]

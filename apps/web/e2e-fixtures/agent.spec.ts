@@ -1,4 +1,5 @@
 import { test, expect } from "@playwright/test";
+import { answerConfirm } from "./in-app-dialog-helpers";
 
 test("agent draft survives panel close and reload without sending, isolated by account", async ({ page }) => {
   await page.goto("/e2e-fixtures/agent.html");
@@ -204,8 +205,13 @@ test("conversation identifies its authors and archive is a separate keyboard act
   const archive = page.getByRole("button", { name: "Archive session", exact: true }).nth(1);
   await expect(archive).toBeFocused();
   await expect(archive).toHaveCSS("opacity", "1");
-  page.once("dialog", (dialog) => dialog.accept());
+  // The in-app confirmation (never window.confirm): Cancel keeps the session, Archive removes it.
   await page.keyboard.press("Enter");
+  await answerConfirm(page, "Cancel", "Archive this session?");
+  await expect(second).toHaveCount(1);
+  await expect(archive).toBeFocused();
+  await page.keyboard.press("Enter");
+  await answerConfirm(page, "Archive");
   await expect(second).toHaveCount(0);
   expect(await page.evaluate(() => (window as any).prismAgentStore.getState().activeSessionId)).toBe("fixture-session");
   await page.screenshot({ path: testInfo.outputPath("document-conversation-desktop.png") });

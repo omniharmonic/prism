@@ -3,6 +3,7 @@ import type { VaultClient } from "../../data/VaultClient";
 import { serverFetch } from "../transport/serverFetch";
 import { isDesktop } from "../platform";
 import { sliceToMarkdown } from "./markdownClipboard";
+import { copyText } from "../clipboard";
 
 /** The stored HTML of some blocks (what the editor itself would save). */
 export function blocksToHtml(schema: Schema, nodes: PMNode[]): string {
@@ -11,20 +12,25 @@ export function blocksToHtml(schema: Schema, nodes: PMNode[]): string {
   return holder.innerHTML;
 }
 
-/** Copy blocks: rich text for editors, Markdown for everything else. */
+/**
+ * Copy blocks: rich text for editors, Markdown for everything else. Resolves false when the
+ * clipboard refused — say so. Call it synchronously in the click / key handler: the write starts
+ * before this function's first `await` (see lib/clipboard.ts for why that matters).
+ */
 export async function copyBlocks(schema: Schema, nodes: PMNode[]): Promise<boolean> {
   const html = blocksToHtml(schema, nodes);
   const text = sliceToMarkdown(new Slice(Fragment.fromArray(nodes), 0, 0));
-  try {
-    if (typeof ClipboardItem !== "undefined" && navigator.clipboard?.write) {
+  // Two flavours in ONE clipboard item is more than `copyText` does, so this write lives here
+  // (allowed by apps/web/scripts/check-clipboard.mjs). Refused or unavailable: Markdown alone.
+  if (typeof ClipboardItem !== "undefined" && typeof navigator.clipboard?.write === "function") {
+    try {
       await navigator.clipboard.write([new ClipboardItem({ "text/html": new Blob([html], { type: "text/html" }), "text/plain": new Blob([text], { type: "text/plain" }) })]);
-    } else {
-      await navigator.clipboard.writeText(text);
+      return true;
+    } catch {
+      /* fall through to plain text */
     }
-    return true;
-  } catch {
-    return false;
   }
+  return copyText(text);
 }
 
 /** "Move to" needs the Prism Server (the legacy desktop talks to the vault directly and has no such route). */

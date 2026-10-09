@@ -104,6 +104,8 @@ test("links use the selected expiry, clipboard failure stays explicit and failed
       configurable: true,
       value: { writeText: () => Promise.reject(Error("denied")) },
     });
+    // The legacy fallback (lib/clipboard.ts) is refused too: nothing reaches the clipboard.
+    document.execCommand = () => false;
   });
   await page.getByRole("button", { name: "Create link", exact: true }).click();
   await expect(page.getByLabel("link new-link", { exact: true })).toHaveValue(

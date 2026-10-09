@@ -198,8 +198,11 @@
 .table-controls {
   position: fixed; z-index: 35; display: flex; align-items: center; gap: 2px; padding: 3px;
   border-radius: var(--radius-md); background: var(--bg-elevated); border: 1px solid var(--glass-border);
-  box-shadow: var(--glass-shadow-elevated); max-width: calc(100vw - 16px); overflow-x: auto;
+  box-shadow: var(--glass-shadow-elevated); max-width: calc(100vw - 16px);
 }
+.table-controls-row { display: flex; align-items: center; gap: 2px; min-width: 0; overflow-x: auto; scrollbar-width: none; }
+.table-controls-row::-webkit-scrollbar { display: none; }
+.table-controls-more { display: none; flex: none; width: 18px; place-items: center; font-size: 16px; line-height: 1; color: var(--text-muted); pointer-events: none; }
 .table-controls button {
   display: inline-flex; align-items: center; justify-content: center; width: 30px; height: 30px; flex-shrink: 0;
   border: 0; border-radius: 6px; background: none; color: var(--text-secondary); cursor: pointer;
@@ -208,7 +211,16 @@
 .table-controls button:disabled { opacity: 0.35; cursor: default; }
 .table-controls button.is-danger:hover:not(:disabled) { color: var(--color-danger); }
 .table-controls .selection-divider { align-self: stretch; width: 1px; margin: 4px 2px; background: var(--glass-border); flex-shrink: 0; }
-@media (max-width: 767px) { .table-controls button { width: 40px; height: 40px; } }
+/* Phone / touch: 44 px targets; ONE row that scrolls sideways a whole button at a time (TableControls
+   sizes the row to a whole number of buttons), no dividers (they would leave a part-button at rest),
+   and a chevron BESIDE the row while there is more to the right — the keyboard toolbar's cue. */
+@media screen and (max-width: 767px), screen and (hover: none) and (pointer: coarse) {
+  .table-controls { z-index: 55; }
+  .table-controls button { width: 44px; height: 44px; scroll-snap-align: start; }
+  .table-controls-row { scroll-snap-type: x mandatory; overscroll-behavior-x: contain; }
+  .table-controls .selection-divider { display: none; }
+  .table-controls[data-more] > .table-controls-more { display: grid; }
+}
 
 /* ══ Media, embeds and editor depth (schema v3) ══════════════════════════════ */
 
@@ -266,8 +278,12 @@ figure.prism-image[data-editable] .prism-image-caption { cursor: text; }
 
 /* ── Bookmark card ── */
 .prism-bookmark-block { margin: 0.75em 0; }
-.prose-editor a.prism-bookmark, a.prism-bookmark { display: flex; align-items: stretch; min-height: 96px; border: 1px solid var(--glass-border); border-radius: var(--radius-md); overflow: hidden; color: inherit; text-decoration: none; background: var(--glass); transition: background 120ms, border-color 120ms; }
-a.prism-bookmark:hover { background: var(--glass-hover); border-color: var(--glass-border-strong); }
+.prose-editor .prism-bookmark, .prism-bookmark { position: relative; cursor: pointer; display: flex; align-items: stretch; min-height: 96px; border: 1px solid var(--glass-border); border-radius: var(--radius-md); overflow: hidden; color: inherit; text-decoration: none; background: var(--glass); transition: background 120ms, border-color 120ms; }
+.prism-bookmark:hover { background: var(--glass-hover); border-color: var(--glass-border-strong); }
+/* The explicit Open control. Mouse: on hover / focus / when the block is selected. Touch: always (below). */
+.prism-bookmark-open { position: absolute; top: 6px; right: 6px; z-index: 1; background: var(--bg-elevated); border: 1px solid var(--glass-border); box-shadow: var(--glass-shadow-elevated); opacity: 0; transition: opacity 120ms; }
+.prism-bookmark-open:disabled { display: none; }
+.prism-bookmark:hover .prism-bookmark-open, .prism-bookmark-open:focus-visible, .is-selected .prism-bookmark-open { opacity: 1; }
 .prism-bookmark-text { display: flex; flex-direction: column; gap: 4px; min-width: 0; flex: 1; padding: 12px 14px; }
 .prism-bookmark-title { font-size: 14px; font-weight: 550; color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .prism-bookmark-description { font-size: 12.5px; line-height: 1.45; color: var(--text-secondary); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
@@ -373,7 +389,13 @@ a.prism-toc-item { box-sizing: border-box; }
 .prism-db-insert-primary { color: #fff !important; background: var(--action-bg, var(--color-accent)) !important; font-weight: 600; }
 .prism-db-insert-primary:disabled { opacity: .5; }
 .prism-db-insert-error { margin: 0; font-size: 12px; color: var(--color-danger); }
-@media (max-width: 767px) { .prism-db-insert input { font-size: 16px; height: 40px; } .prism-db-insert li button { min-height: 44px; } }
+@media (max-width: 767px) {
+  .prism-db-insert input { font-size: 16px; height: 40px; } .prism-db-insert li button { min-height: 44px; }
+  /* Keyboard up: the dialog lives in the VISIBLE area (softKeyboard's root variables), so the list's
+     last rows and Cancel are not behind the keys. */
+  .prism-db-insert { top: calc(var(--visual-viewport-top, 0px) + 12px); max-height: calc(var(--visual-viewport-height, 100dvh) - 24px); }
+  .prism-db-insert-actions button { min-height: 44px; }
+}
 
 /* ── Wave 4A: placeholders (NP-ED-25) ──────────────────────────────────────
    The Placeholder extension marks the empty block that holds the caret; show its
@@ -479,3 +501,38 @@ a.prism-toc-item { box-sizing: border-box; }
   background: var(--bg-surface); color: var(--text-primary); box-shadow: var(--glass-shadow-elevated); font-size: 13px;
 }
 .block-drop-indicator.is-side { height: auto; }
+
+/* ── The in-app address field (EditorPrompt): Embed, Web bookmark, Image from URL, toolbar Link / Image.
+   Never `window.prompt` — the Prism Client's web view shows no browser dialogs. Desktop: a popover
+   under the caret. Touch / phone: it also carries `.prism-docked-composer` (docked on the keyboard). */
+.prism-editor-prompt { display: flex; flex-direction: column; gap: 8px; box-sizing: border-box; padding: 12px; border-radius: var(--radius-md); border: 1px solid var(--glass-border); background: var(--bg-elevated); color: var(--text-primary); box-shadow: var(--glass-shadow-elevated); }
+.prism-editor-prompt-label { display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; color: var(--text-secondary); }
+.prism-editor-prompt-row { display: flex; align-items: center; gap: 6px; }
+.prism-editor-prompt input { flex: 1; min-width: 0; height: 34px; padding: 0 10px; border-radius: var(--radius-sm); border: 1px solid var(--glass-border-strong, var(--glass-border)); background: var(--bg-base); color: var(--text-primary); font-size: 14px; outline: none; }
+.prism-editor-prompt input:focus { border-color: var(--color-accent); }
+.prism-editor-prompt input[aria-invalid="true"] { border-color: var(--color-danger); }
+.prism-editor-prompt-error { margin: 0; font-size: 12px; color: var(--color-danger); }
+.prism-editor-prompt-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.prism-editor-prompt button { display: inline-flex; align-items: center; justify-content: center; min-height: 32px; padding: 0 12px; border: 0; border-radius: var(--radius-sm); background: none; font-size: 13px; color: var(--text-secondary); cursor: pointer; }
+.prism-editor-prompt button:hover { background: var(--glass-hover); }
+.prism-editor-prompt .prism-editor-prompt-icon { min-width: 32px; padding: 0; }
+.prism-editor-prompt .prism-editor-prompt-primary { color: var(--action-fg, #fff); background: var(--action-bg, var(--color-accent)); font-weight: 600; }
+.prism-editor-prompt .prism-editor-prompt-primary:hover { background: var(--action-bg, var(--color-accent)); filter: brightness(1.06); }
+@media screen and (max-width: 767px), screen and (hover: none) and (pointer: coarse) {
+  .prism-editor-prompt input { height: 44px; font-size: 16px; }
+  .prism-editor-prompt button { min-height: 44px; min-width: 44px; }
+}
+
+/* ── Touch: media actions a finger can reach (no hover there) ──
+   44 px targets; a bookmark's Open control and a read-only image's actions (View full screen /
+   Download / Copy) are always shown — on a page the reader cannot edit a tap opens the image, so
+   nothing ever revealed its toolbar. The image toolbar scrolls sideways when it is wider than the image. */
+@media screen and (max-width: 767px), screen and (hover: none) and (pointer: coarse) {
+  .prism-media-btn { min-width: 44px; height: 44px; }
+  .prism-bookmark-open { opacity: 1; }
+  .prism-bookmark-text { padding-right: 56px; }
+  .prism-media-toolbar { max-width: calc(100% - 16px); overflow-x: auto; scrollbar-width: none; }
+  .prism-media-toolbar::-webkit-scrollbar { display: none; }
+  .prism-media-toolbar .prism-media-btn { flex: none; }
+  figure.prism-image:not([data-editable]) .prism-media-toolbar { opacity: 1; pointer-events: auto; }
+}

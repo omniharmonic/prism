@@ -25,7 +25,7 @@
  *     Associated Domains host is committed (the entitlement is generated per install by universal-links.mjs,
  *     whose self-test runs here); an incoming link reaches the page only as a validated path through the
  *     host hook — no new IPC command, no navigation; the File menu has "New Page" on CmdOrCtrl+N;
- *     the IPC surface is pinned per platform (desktop: 9 main-window commands + quick_capture; iOS: its own
+ *     the IPC surface is pinned per platform (desktop: 10 main-window commands + quick_capture; iOS: its own
  *     exact list, pinned separately in §10);
  * 10. WP5 iOS: the iOS capability is iOS-only and grants exactly the shared sign-in/server/link commands,
  *     export_note + save_export (→ the share sheet) and the six iOS commands (never quick capture / notify), the desktop
@@ -137,7 +137,7 @@ check(JSON.stringify(conf.build).includes("build:native"), "before{Dev,Build}Com
 const EXPECTED_CAPS = {
   "default.json": {
     windows: ["main"],
-    permissions: ["allow-get-token", "allow-sign-in", "allow-sign-out", "allow-get-server-origin", "allow-set-server-origin", "allow-open-external", "allow-notify", "allow-export-note", "allow-save-export"],
+    permissions: ["allow-get-token", "allow-sign-in", "allow-sign-out", "allow-get-server-origin", "allow-set-server-origin", "allow-open-external", "allow-notify", "allow-export-note", "allow-save-export", "allow-save-attachment"],
   },
   // The capture window gets ONE command and never get_token: the bearer must not enter that webview.
   "quick-capture.json": { windows: ["quick-capture"], permissions: ["allow-quick-capture"] },
@@ -148,7 +148,7 @@ const EXPECTED_CAPS = {
     windows: ["main"],
     permissions: [
       "allow-get-token", "allow-sign-in", "allow-sign-out", "allow-get-server-origin", "allow-set-server-origin", "allow-open-external",
-      "allow-export-note", "allow-save-export",
+      "allow-export-note", "allow-save-export", "allow-save-attachment",
       "allow-reset-server", "allow-get-app-settings", "allow-set-app-lock", "allow-push-register", "allow-push-status", "allow-push-take-opened",
     ],
   },
@@ -199,7 +199,7 @@ check((granted.get("allow-quick-capture") ?? []).join() === "quick-capture", "qu
 const buildRs = readFileSync(join(tauriDir, "build.rs"), "utf8");
 const declared = [...buildRs.matchAll(/^\s*"([a-z_]+)",\s*(?:\/\/.*)?$/gm)].map((m) => `allow-${m[1].replace(/_/g, "-")}`);
 check(
-  declared.length === 16 && declared.every((d) => granted.has(d)) && [...granted.keys()].every((g) => declared.includes(g)),
+  declared.length === 17 && declared.every((d) => granted.has(d)) && [...granted.keys()].every((g) => declared.includes(g)),
   `build.rs declares ${declared.length} commands, each granted to a window, none extra`,
   `build.rs commands [${declared.join(", ")}] vs granted [${[...granted.keys()].join(", ")}]`,
 );
@@ -315,8 +315,8 @@ if (!existsSync(dist)) {
   // The IPC surface is pinned PER PLATFORM. Desktop: links and New Page added NO command; `save_export`
   // (export archives) is the ninth main-window command, added deliberately. iOS (WP5): the six shared
   // commands + export_note + save_export (both end in the share sheet) + six iOS-only ones — its own
-  // exact list of 14. Anything else here is a change to review.
-  const MAIN = ["get_token", "sign_in", "sign_out", "get_server_origin", "set_server_origin", "open_external", "notify", "export_note", "save_export"];
+  // exact list of 15 (save_attachment is on both: one attached file → save panel / share sheet). Anything else here is a change to review.
+  const MAIN = ["get_token", "sign_in", "sign_out", "get_server_origin", "set_server_origin", "open_external", "notify", "export_note", "save_export", "save_attachment"];
   const IOS_ONLY = ["reset_server", "get_app_settings", "set_app_lock", "push_register", "push_status", "push_take_opened"];
   const IOS_MAIN = [...MAIN.filter((c) => c !== "notify"), ...IOS_ONLY];
   const declaredNames = [...buildRs.matchAll(/^\s*"([a-z_]+)",\s*(?:\/\/.*)?$/gm)].map((m) => m[1]);
@@ -337,7 +337,7 @@ if (!existsSync(dist)) {
     `mobile.json grants [${capPerms("mobile.json").join(", ")}]`,
   );
   check(!IOS_ONLY.some((c) => capPerms("default.json").includes(c) || capPerms("quick-capture.json").includes(c)), "no desktop window is granted an iOS-only command");
-  const handlers = [...readFileSync(join(tauriDir, "src/lib.rs"), "utf8").matchAll(/^\s*(?:commands|native_cmds|mobile_cmds)::([a-z_]+),$/gm)].map((m) => m[1]).sort();
+  const handlers = [...readFileSync(join(tauriDir, "src/lib.rs"), "utf8").matchAll(/^\s*(?:commands|native_cmds|mobile_cmds|attachment_save)::([a-z_]+),$/gm)].map((m) => m[1]).sort();
   check(JSON.stringify(handlers) === JSON.stringify([...declaredNames].sort()), "lib.rs registers exactly the declared commands", `handlers: ${handlers.join(", ")}`);
   // host.js: everything outside the `ios` wrapper object calls desktop main-window commands only; the
   // `ios` object (exposed only when the shell says platform = ios) calls iOS-granted commands only.
@@ -358,6 +358,21 @@ if (!existsSync(dist)) {
   check(saveSig !== "" && !/path|url|token|origin/i.test(saveSig), "save_export takes no path, URL, token or origin from the page");
   check(/redirect\(reqwest::redirect::Policy::none\(\)\)/.test(archive) && /create_new\(true\)/.test(archive) && /origin\.join\(/.test(archive), "export_archive.rs: no redirects, a fresh temp file, URL built from the configured origin");
   check(!/on_download|download_started|download_completed/.test(src("window.rs")), "the webview has NO download handler (page script cannot start downloads)");
+  // save_attachment: the page passes an attachment id and a name; Rust builds the URL, refuses redirects,
+  // names the file from a fixed extension list, and the Swift side shares that list only.
+  const attach = src("attachment_save.rs").replace(/^\s*\/\/.*$/gm, "");
+  const attachSig = /pub async fn save_attachment[\s\S]*?\) ->/.exec(attach)?.[0] ?? "";
+  check(attachSig !== "" && !/path|url|token|origin|bearer/i.test(attachSig) && /attachment_id: String/.test(attachSig), "save_attachment takes an attachment id and a name — no path, URL, token or origin from the page");
+  check(
+    /origin\.join\(&format!\("\/api\/attachments\/\{id\}"\)\)/.test(attach) && /archive::client\(\)/.test(attach) && /create_new\(true\)/.test(attach) && /archive::share_dir\(&std::env::temp_dir\(\)/.test(attach) && /std::fs::remove_dir_all\(&dir\)/.test(attach),
+    "attachment_save.rs: URL built from the configured origin, the no-redirect client, a fresh temp file in the private folder, folder removed afterwards",
+  );
+  const listOf = (text, re) => (re.exec(text)?.[1] ?? "").split(",").map((s) => s.trim().replace(/"/g, "")).filter(Boolean);
+  const rustExt = listOf(attach, /SAVE_EXTENSIONS: &\[&str\] = &\[([\s\S]*?)\];/);
+  const swiftExt = listOf(src("../plugins/prism-ios/ios/Sources/PrismIos/PrismIosPlugin.swift"), /attachmentExtensions: Set<String> = \[([\s\S]*?)\]/);
+  check(rustExt.length > 20 && JSON.stringify(rustExt) === JSON.stringify(swiftExt), `save_attachment: ${rustExt.length} allowed extensions, identical in Rust and Swift`, `Rust [${rustExt.join(" ")}] vs Swift [${swiftExt.join(" ")}]`);
+  check(!rustExt.some((e) => ["html", "htm", "svg", "js", "command", "app", "sh", "exe", "webloc", "terminal", "pkg", "dmg"].includes(e)), "save_attachment never names a file as a page, a script or something that runs");
+  check(/saveAttachment: saveAttachment/.test(hostJs) && /ipc\("save_attachment", \{ attachmentId: String\(attachmentId\), suggestedName: String\(suggestedName\) \}\)/.test(hostJs), "host.js: saveAttachment(id, name) → save_attachment, nothing else passed");
   const webLinks = readFileSync(resolve(root, "apps/web/src/native/appLinks.ts"), "utf8");
   check(/takePendingLink/.test(webLinks) && /prism:open-link/.test(webLinks) && !/location\.(assign|replace|href\s*=)/.test(webLinks), "web: appLinks.ts takes the path from the shell and opens a tab — never a navigation");
 }
@@ -383,6 +398,8 @@ if (!existsSync(dist)) {
   const info = plist(join(tauriDir, "Info.ios.plist"));
   check(value(info, "ITSAppUsesNonExemptEncryption") === false, "Info.ios.plist: ITSAppUsesNonExemptEncryption = false");
   check(/.{10,}/.test(value(info, "NSFaceIDUsageDescription") ?? ""), "Info.ios.plist: NSFaceIDUsageDescription present");
+  // The web view's file chooser offers "Take Photo or Video": iOS ends an app that opens the camera / microphone without these.
+  for (const key of ["NSCameraUsageDescription", "NSMicrophoneUsageDescription"]) check(/.{10,}/.test(value(info, key) ?? ""), `Info.ios.plist: ${key} present (file chooser → Take Photo or Video)`);
   check(value(info, "CFBundleDisplayName") === "Prism", "Info.ios.plist: display name Prism");
   check(!/NSAppTransportSecurity|NSAllows|NSExceptionDomains/.test(info), "Info.ios.plist (merged into every build): no ATS key at all");
   // Links (NP-NA-04): iOS registers exactly the prism:// scheme, like macOS. The sign-in redirect
@@ -397,6 +414,7 @@ if (!existsSync(dist)) {
   check(!/NSAppTransportSecurity/.test(genInfo), "gen/apple Info.plist (Release): no ATS key");
   check(JSON.stringify(iosSchemes(genInfo)) === JSON.stringify(["prism"]), "gen/apple Info.plist: exactly the prism:// scheme");
   check(/.{10,}/.test(value(genInfo, "NSFaceIDUsageDescription") ?? ""), "gen/apple Info.plist: NSFaceIDUsageDescription present");
+  for (const key of ["NSCameraUsageDescription", "NSMicrophoneUsageDescription"]) check(/.{10,}/.test(value(genInfo, key) ?? ""), `gen/apple Info.plist: ${key} present`);
   check(!/UIBackgroundModes/.test(info + genInfo), "no background modes (pushes are visible alerts; nothing runs in the background)");
   check(
     /Debug-only ATS loopback exception/.test(projectYml) && /if \[ "\$\{CONFIGURATION\}" = "debug" \]; then[\s\S]*NSAllowsLocalNetworking/.test(projectYml) && /Debug-only ATS loopback exception/.test(pbx),
@@ -484,7 +502,14 @@ if (!existsSync(dist)) {
   const pkce = readFileSync(join(tauriDir, "src/pkce.rs"), "utf8");
   check(/MOBILE_REDIRECT_URI: &str = "prism:\/\/auth\/callback"/.test(pkce), "iOS redirect = prism://auth/callback (server default DEVICE_REDIRECT_URIS)");
   const serverCfg = readFileSync(resolve(root, "apps/server/src/config.ts"), "utf8");
-  check(/NATIVE_ORIGINS \?\? "tauri:\/\/localhost/.test(serverCfg) && /DEVICE_REDIRECT_URIS \?\? "prism:\/\/auth\/callback"/.test(serverCfg), "server defaults already allow the iOS origin (tauri://localhost) and redirect");
+  // The DEFAULT LISTS are read (not one exact string): the redirect default gained a second entry
+  // (omni://auth/callback) and the old exact-string check then failed on a correct configuration.
+  const envDefault = (name) => (new RegExp(`${name} \\?\\? "([^"]*)"`).exec(serverCfg)?.[1] ?? "").split(",").map((s) => s.trim());
+  check(
+    envDefault("NATIVE_ORIGINS").includes("tauri://localhost") && envDefault("DEVICE_REDIRECT_URIS").includes("prism://auth/callback"),
+    "server defaults already allow the iOS origin (tauri://localhost) and redirect (prism://auth/callback)",
+    `server defaults: NATIVE_ORIGINS=[${envDefault("NATIVE_ORIGINS").join(", ")}] DEVICE_REDIRECT_URIS=[${envDefault("DEVICE_REDIRECT_URIS").join(", ")}]`,
+  );
 
   // Sign-in callback: the sheet's URL goes Swift → signin.rs → pkce::code_from_redirect (exact redirect +
   // state) → exchange with the verifier. It never passes through links.rs, which drops auth URLs silently.
@@ -536,7 +561,7 @@ if (!existsSync(dist)) {
     /archive::share_dir\(&std::env::temp_dir\(\)/.test(iosSave) && /ios\.share_file\(path\)\.await/.test(iosSave) && iosSave.indexOf("ios.share_file(path)") < iosSave.indexOf("std::fs::remove_dir_all(&dir)"),
     "iOS save_export: tmp folder → share sheet → deleted (no path, URL or token from the page)",
   );
-  check(/file\.path\.hasPrefix\(root\.path \+ "\/"\)/.test(swift) && /appendingPathComponent\("prism-exports", isDirectory: true\)/.test(swift) && /shareableExtensions: Set<String> = \["zip", "md", "html"\]/.test(swift), "Swift shareFile: only a .zip/.md/.html under <tmp>/prism-exports/");
+  check(/file\.path\.hasPrefix\(root\.path \+ "\/"\)/.test(swift) && /appendingPathComponent\("prism-exports", isDirectory: true\)/.test(swift) && /shareableExtensions: Set<String> = \["zip", "md", "html", "csv", "json"\]/.test(swift), "Swift shareFile: only a .zip/.md/.html under <tmp>/prism-exports/");
   const iosNote = nat.slice(nat.indexOf('#[cfg(target_os = "ios")]', nat.indexOf("pub async fn export_note")), nat.indexOf("pub async fn save_export"));
   check(/archive::share_dir\(&std::env::temp_dir\(\)/.test(iosNote) && iosNote.indexOf("share_file(path)") > 0 && iosNote.indexOf("share_file(path)") < iosNote.indexOf("std::fs::remove_dir_all(&dir)"), "iOS export_note: tmp folder → share sheet → deleted");
   check(/purge_share_root\(&std::env::temp_dir\(\)\)/.test(libRs), "iOS launch purges leftover export archives");

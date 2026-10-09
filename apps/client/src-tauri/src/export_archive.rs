@@ -604,12 +604,22 @@ mod tests {
         let swift = include_str!("../plugins/prism-ios/ios/Sources/PrismIos/PrismIosPlugin.swift");
         assert!(swift.contains(&format!(".appendingPathComponent(\"{SHARE_ROOT}\", isDirectory: true)")));
         assert!(swift.contains("file.path.hasPrefix(root.path + \"/\")"));
-        assert!(swift.contains("shareableExtensions: Set<String> = [\"zip\", \"md\", \"html\"]"));
+        assert!(swift.contains("shareableExtensions: Set<String> = [\"zip\", \"md\", \"html\", \"csv\", \"json\"]"));
         assert!(swift.contains("shareableExtensions.contains(file.pathExtension.lowercased())"));
         // …and those are exactly what the shell writes there.
         assert!(zip_name("x").ends_with(".zip"));
-        for fmt in [crate::export::Format::Markdown, crate::export::Format::Html] {
-            assert!(["md", "html"].contains(&fmt.ext()));
+        use crate::export::Format;
+        for fmt in [Format::Markdown, Format::Html, Format::Csv, Format::Json] {
+            assert!(["md", "html", "csv", "json"].contains(&fmt.ext()));
         }
+        // An attached file (attachment_save.rs) may carry exactly the extensions of its own list.
+        let listed = swift
+            .split("attachmentExtensions: Set<String> = [")
+            .nth(1)
+            .and_then(|rest| rest.split(']').next())
+            .expect("the Swift attachment list exists");
+        let swift_list: Vec<&str> = listed.split(',').map(|s| s.trim().trim_matches('"')).filter(|s| !s.is_empty()).collect();
+        assert_eq!(swift_list, crate::attachment_save::SAVE_EXTENSIONS, "Swift attachmentExtensions must equal SAVE_EXTENSIONS");
+        assert!(swift.contains("|| PrismIosPlugin.attachmentExtensions.contains(file.pathExtension.lowercased())"));
     }
 }

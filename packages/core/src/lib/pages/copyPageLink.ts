@@ -5,6 +5,7 @@
 import { isVaultNoteId } from "../noteIdentity";
 import { usePagesUI } from "./store";
 import { pageLink } from "./pageLink";
+import { copyText } from "../clipboard";
 
 /** A tab that shows a vault page (not Home, Inbox, a dashboard, a tag view …). */
 export const isPageTab = (noteId: string | null | undefined): noteId is string => isVaultNoteId(noteId);
@@ -12,12 +13,8 @@ export const isPageTab = (noteId: string | null | undefined): noteId is string =
 export async function copyPageLink(noteId: string): Promise<boolean> {
   const link = pageLink(noteId);
   const toast = usePagesUI.getState().showToast;
-  try {
-    await navigator.clipboard.writeText(link);
-    toast({ message: "Link copied" });
-    return true;
-  } catch {
-    toast({ message: `Copy this link: ${link}` });
-    return false;
-  }
+  // Called from the key press / palette click itself: the write starts before the first await.
+  const ok = await copyText(link);
+  toast({ message: ok ? "Link copied" : `Couldn’t copy. Copy this link: ${link}` });
+  return ok;
 }

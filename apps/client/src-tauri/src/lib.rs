@@ -11,6 +11,7 @@
 //!   iOS      signin.rs's ASWebAuthenticationSession arm, ios.rs + mobile_cmds.rs
 //!            (server setup, app lock, APNs) over plugins/prism-ios (Swift)
 
+mod attachment_save;
 mod auth;
 mod capture;
 #[cfg(desktop)]
@@ -88,6 +89,7 @@ pub fn run() {
         .manage(notify::NotifyState::default())
         .manage(links::LinkState::default())
         .manage(export_archive::SaveState::default())
+        .manage(attachment_save::AttachmentSaves::default())
         .invoke_handler(tauri::generate_handler![
             commands::get_token,
             commands::sign_in,
@@ -99,6 +101,7 @@ pub fn run() {
             native_cmds::notify,
             native_cmds::export_note,
             native_cmds::save_export,
+            attachment_save::save_attachment,
             mobile_cmds::reset_server,
             mobile_cmds::get_app_settings,
             mobile_cmds::set_app_lock,
