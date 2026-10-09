@@ -587,7 +587,7 @@ test("phone: boards default to list", async ({ page }) => {
   await expect(page.getByText("Shown as a list on this screen.")).toHaveCount(0);
 });
 
-// NP-AX-07 — on a phone the calendar is a week LIST (a day per row, 44 px targets); the month grid is one tap away
+// NP-AX-07 — on a phone the calendar is a week LIST (a day per row, 44 px targets); the month (a day per target) is one tap away
 // and the saved view is untouched. A page is rescheduled there with its date editor.
 test("phone: the calendar defaults to a week list — day rows, week navigation, the date editor reschedules; Month shows the grid", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
@@ -648,10 +648,11 @@ test("phone: the calendar defaults to a week list — day rows, week navigation,
   await expect(todayRow.getByRole("button", { name: "Standup notes", exact: true })).toBeVisible();
   expect((await fx(page)).creates.at(-1).metadata.due).toBe(today);
 
-  // "Month" shows the dense grid as before; nothing about the saved view is written either way.
+  // "Month" shows a month a thumb can use (one target per day; parity6-databases.spec.ts); nothing about the saved view is written either way.
   await page.getByRole("button", { name: "Month", exact: true }).click();
-  await expect(page.getByRole("grid", { name: "Calendar calendar" })).toBeVisible();
-  await expect(page.getByText("Month grid: days are small on this screen.")).toBeVisible();
+  await expect(page.getByRole("group", { name: "Calendar month" })).toBeVisible();
+  await expect(page.getByText("Month: tap a day to see its pages.")).toBeVisible();
+  await expect(page.locator(".db-cal")).toHaveCount(0);
   await expect(week).toHaveCount(0);
   await page.getByRole("button", { name: "Month", exact: true }).click();
   await expect(week).toBeVisible();

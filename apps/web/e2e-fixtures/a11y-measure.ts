@@ -92,6 +92,50 @@ export function touchTargets(page: Page, scaffold: string[] = []): Promise<Targe
   }, { CONTROLS, NOT_OURS, scaffold });
 }
 
+/**
+ * NP-AX-07 below the first screenful: `touchTargets` judges only what a person can reach right
+ * now (on screen, not covered). This scrolls every vertically scrolling region of the TOP layer
+ * (the open dialog / sheet if there is one, else the page) a screenful at a time — keeping two
+ * rows of overlap so nothing hides under a sticky bar — and measures again at each stop.
+ * Offenders are reported once each. Scroll positions are put back.
+ */
+export async function touchTargetsBelowFold(page: Page, scaffold: string[] = [], maxSteps = 10): Promise<TargetOffender[]> {
+  const count = await page.evaluate((NOT_OURS) => {
+    const shown = (el: Element) => { const st = getComputedStyle(el); return st.display !== "none" && st.visibility === "visible" && el.getClientRects().length > 0; };
+    const layers = Array.from(document.querySelectorAll<HTMLElement>("dialog[open], [role=dialog], .prism-mobile-sheet")).filter(shown);
+    const root: Element = layers[layers.length - 1] ?? document.body;
+    const candidates = [document.scrollingElement as Element, root, ...Array.from(root.querySelectorAll("*"))];
+    const scrollers = candidates.filter((el, i) => {
+      if (!el || candidates.indexOf(el) !== i || el.closest(NOT_OURS) || !shown(el)) return false;
+      if (el.matches("textarea, input, select, .ProseMirror, .tiptap, pre, code")) return false;
+      const st = getComputedStyle(el);
+      const scrolls = el === document.scrollingElement || st.overflowY === "auto" || st.overflowY === "scroll";
+      return scrolls && el.clientHeight >= 120 && el.scrollHeight > el.clientHeight + 40;
+    });
+    scrollers.forEach((el, i) => { el.setAttribute("data-a11y-scroller", String(i)); el.setAttribute("data-a11y-scroll-start", String(el.scrollTop)); });
+    return scrollers.length;
+  }, NOT_OURS);
+  const found = new Map<string, TargetOffender>();
+  for (let i = 0; i < count; i++) {
+    for (let step = 0; step < maxSteps; step++) {
+      const moved = await page.evaluate((i) => {
+        const el = document.querySelector(`[data-a11y-scroller="${i}"]`);
+        if (!el) return false;
+        const before = el.scrollTop;
+        el.scrollTop = before + Math.max(120, el.clientHeight - 96);
+        return el.scrollTop > before + 1;
+      }, i);
+      if (!moved) break;
+      await page.waitForTimeout(120); // lazy rows, sticky headers settling
+      for (const o of await touchTargets(page, scaffold)) if (!found.has(o.what)) found.set(o.what, o);
+    }
+    // Back to where it was before the next scroller is tried (an outer scroller must not hide an inner one).
+    await page.evaluate((i) => { const el = document.querySelector(`[data-a11y-scroller="${i}"]`); if (el) el.scrollTop = Number(el.getAttribute("data-a11y-scroll-start") ?? 0); }, i);
+  }
+  await page.evaluate(() => document.querySelectorAll("[data-a11y-scroller]").forEach((el) => { el.removeAttribute("data-a11y-scroller"); el.removeAttribute("data-a11y-scroll-start"); }));
+  return [...found.values()];
+}
+
 export type ReflowReport = { pageScroll: string[]; offscreen: string[]; overlap: string[] };
 
 /** No horizontal page scroll, nothing pushed off the side, no control sitting on another control. */
