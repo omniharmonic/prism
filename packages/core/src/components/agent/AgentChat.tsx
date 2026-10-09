@@ -1,3 +1,4 @@
+import { leafTitle } from "../../lib/pages/containerTitle";
 import { useComposerAutosize } from "../comms/useComposerAutosize";
 import { useSavedNoteHandoff, SavedNoteHandoffNotice } from "./SavedNoteHandoff";
 import "./agent-chat.css";
@@ -920,7 +921,7 @@ function NoteChip({ noteId, op, label }: { noteId: string; op?: string; label?: 
   const deleted = op === "delete";
   const { data: note, isError } = useNote(deleted ? null : noteId);
   const [preview, setPreview] = useState(false);
-  const name = isError ? "Unavailable note" : label || note?.path?.split("/").pop() || noteId.slice(0, 10);
+  const name = isError ? "Unavailable note" : label || leafTitle(note?.path, note?.metadata) || noteId.slice(0, 10);
   const verb = op === "create" ? "Created" : op === "update" ? "Updated" : op === "delete" ? "Deleted" : null;
   return (
     <>

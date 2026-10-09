@@ -581,3 +581,13 @@
 .db-newdb-form .db-new-prop { border-top: 0; margin-top: 0; padding: 0; }
 .db-newdb-views { display: flex; flex-wrap: wrap; gap: 4px 14px; margin: 0; padding: 0; border: 0; }
 .db-newdb-views legend { width: 100%; margin-bottom: 2px; }
+
+/* Structured values (objects in a property): read-only chips named by lib/database/structured.ts. */
+.db-chip-detail { color: var(--text-muted); white-space: pre; }
+.db-structured-chip { cursor: default; }
+.db-structured-lock { display: inline-flex; align-items: center; justify-content: center; width: 20px; height: 20px; margin-left: 2px; border-radius: 4px; color: var(--text-muted); flex: none; }
+.db-structured-lock:hover { background: var(--glass-hover); color: var(--text-secondary); }
+.db-structured-note { display: block; flex-basis: 100%; font-size: 12px; color: var(--text-muted); padding: 2px 0; }
+@media (pointer: coarse) { .db-structured-lock { width: 32px; height: 32px; } }
+/* A table cell is dense: there the reason is the cell's tooltip; the property bar and the row's own page show the lock. */
+.db-value-cell .db-structured-lock { display: none; }

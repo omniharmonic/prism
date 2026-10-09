@@ -1,3 +1,4 @@
+import { leafTitle } from "../../lib/pages/containerTitle";
 import {
   Component,
   Suspense,
@@ -241,7 +242,7 @@ function Explorer({
         .getState()
         .openTab(
           note.id,
-          note.path?.split("/").pop() || current.title,
+          leafTitle(note.path, note.metadata) || current.title,
           inferContentType(note),
         );
     } catch {

@@ -58,6 +58,10 @@ import {
   safeTitleLeaf,
   unwrapLink,
   coerceCsvValue,
+  isStructuredValue,
+  refuseStructuredWrite,
+  scalarText,
+  STRUCTURED_HINT,
   CsvError,
   CursorMismatchError,
   parseCsv,
@@ -651,7 +655,7 @@ async function applySchemaPatch(c: Context, entry: VaultEntry, tag: string, patc
   return c.json({ tag, schema: present(fresh, readHints(entry.id).get(tag), readPinned(entry.id, tag)) });
 }
 
-const holdsOption = (v: unknown, option: string): boolean => (Array.isArray(v) ? v.some((x) => String(x) === option) : typeof v === "string" && v === option);
+const holdsOption = (v: unknown, option: string): boolean => (Array.isArray(v) ? v.some((x) => scalarText(x) === option) : typeof v === "string" && v === option);
 
 // ── removing a deleted property's values (NP-DB-11 "delete with explicit data handling") ──
 
@@ -1255,6 +1259,12 @@ async function writeProperties(actor: Actor, entry: VaultEntry, id: string, entr
     }
     // A trashed page is not a row anywhere; it is restored, not edited.
     if ((note.tags ?? []).includes("prism-trashed")) return { ok: false, id, status: 404, error: "not_found" };
+    // A value that holds OBJECTS (`members: [{name, role}]`) is never replaced through this
+    // route — not by text, not by a clear: the route carries text / numbers / lists of text
+    // only (`validValue`), so nothing written here could put the objects back. Checked
+    // against the value STORED now, whatever the client believed it was editing.
+    const structured = refuseStructuredWrite(Object.fromEntries(entries), note.metadata ?? {});
+    if (structured.length) return { ok: false, id, status: 400, error: "structured_value", reason: STRUCTURED_HINT, fields: structured };
     // Per-field compare-and-set: a property someone else changed since the client
     // read it is a conflict; edits to OTHER fields (or the body) are not.
     const stale = expected.filter(([k, v]) => !same(note.metadata?.[k], v));
@@ -1427,7 +1437,7 @@ const okPrefix = (p: unknown): p is string =>
   typeof p === "string" && p.length > 0 && p.length <= 200 && !/[\u0000-\u001f\\]/.test(p) &&
   !p.startsWith("/") && p.split("/").every((seg) => seg !== "" && seg !== "." && seg !== "..");
 const safeLeaf = (t: string) => safeTitleLeaf(t);
-const keyNorm = (v: unknown) => unwrapLink((Array.isArray(v) ? v.join(",") : v === null || v === undefined ? "" : String(v)).trim()).toLowerCase();
+const keyNorm = (v: unknown) => unwrapLink((Array.isArray(v) ? v.map(scalarText).join(",") : scalarText(v)).trim()).toLowerCase();
 
 interface ImportRowPlan {
   row: number;
@@ -1436,6 +1446,8 @@ interface ImportRowPlan {
   id?: string;
   /** Property keys that change (update) or are set (create). */
   changes?: string[];
+  /** Property keys left as stored: the page holds a structured value there (objects), which a CSV cell cannot replace. */
+  kept?: string[];
   error?: string;
 }
 
@@ -1563,9 +1575,16 @@ databasesApi.post("/databases/import/csv", bodyLimit({ maxSize: IMPORT_MAX_BYTES
       const set: Record<string, unknown> = {};
       const curTitle = typeof match.metadata?.title === "string" ? match.metadata.title : null;
       if (title !== curTitle) set.title = title;
-      for (const [k, v] of Object.entries(values)) if (!same(match.metadata?.[k], v)) set[k] = v;
+      // A cell never replaces a structured value (objects): an export prints it as text
+      // ("Ada — delegate"), and writing that text back would lose the fields.
+      const kept: string[] = [];
+      for (const [k, v] of Object.entries(values)) {
+        if (same(match.metadata?.[k], v)) continue;
+        if (isStructuredValue(match.metadata?.[k])) kept.push(k);
+        else set[k] = v;
+      }
       const changes = Object.keys(set);
-      plans.push({ row: rowNo, action: changes.length ? "update" : "unchanged", title, id: match.id, changes, set, note: match });
+      plans.push({ row: rowNo, action: changes.length ? "update" : "unchanged", title, id: match.id, changes, set, note: match, ...(kept.length ? { kept } : {}) });
     } else {
       let path = `${pathPrefix}/${safeLeaf(title)}`;
       if (takenPaths.has(path.toLowerCase())) path = `${path} ${rowNo}`;
@@ -1576,8 +1595,8 @@ databasesApi.post("/databases/import/csv", bodyLimit({ maxSize: IMPORT_MAX_BYTES
     }
   }
   const count = (a: ImportRowPlan["action"]) => plans.filter((p) => p.action === a).length;
-  const summary = { create: count("create"), update: count("update"), unchanged: count("unchanged"), error: count("error") };
-  const shape = (p: ImportRowPlan) => ({ row: p.row, action: p.action, title: p.title.slice(0, 120), ...(p.id ? { id: p.id } : {}), ...(p.changes ? { changes: p.changes } : {}), ...(p.error ? { error: p.error } : {}) });
+  const summary = { create: count("create"), update: count("update"), unchanged: count("unchanged"), error: count("error"), ...(plans.some((p) => p.kept?.length) ? { structuredKept: plans.filter((p) => p.kept?.length).length } : {}) };
+  const shape = (p: ImportRowPlan) => ({ row: p.row, action: p.action, title: p.title.slice(0, 120), ...(p.id ? { id: p.id } : {}), ...(p.changes ? { changes: p.changes } : {}), ...(p.kept ? { kept: p.kept } : {}), ...(p.error ? { error: p.error } : {}) });
   const response = {
     dryRun,
     tag,

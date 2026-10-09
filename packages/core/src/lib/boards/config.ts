@@ -1,3 +1,4 @@
+import { leafTitle } from "../pages/containerTitle";
 import type { Note } from "../types";
 import {
   filterNotes,
@@ -91,7 +92,7 @@ export function readBoardConfig(note: Pick<Note, "metadata">): BoardConfig {
 export function boardTitle(note: Note): string {
   return (
     (typeof note.metadata?.title === "string" && note.metadata.title.trim()) ||
-    note.path?.split("/").pop() ||
+    leafTitle(note.path, note.metadata) ||
     "Untitled task"
   );
 }

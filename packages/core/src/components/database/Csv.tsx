@@ -11,6 +11,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { Upload } from "lucide-react";
 import { useVaultClient } from "../../data/VaultClientContext";
 import { coerceCsvValue, CsvError, parseCsv, toCsv, type CsvCellValue } from "../../lib/database/csv";
+import { isStructuredValue, scalarText, valueText } from "../../lib/database/structured";
 import { formatValue, isSystemKey, looksLikeEmail, PROPERTY_KIND_LABELS, propertyValue, VAULT_TYPE_FOR_KIND, type PropertyDef, type PropertyKind, type SchemaPatch } from "../../lib/database/schema";
 import { isFieldKey } from "../../lib/database/query";
 import { queryKeys } from "../../lib/parachute/queries";
@@ -56,7 +57,9 @@ export function rowsToCsv(rows: QueryRow[], props: PropertyDef[]): string {
     // Numbers are data, not formulas: written raw so `-5` round-trips (review L3).
     if (p.kind === "number" && typeof v === "number") return { number: v };
     // Options are exported as STORED (a renamed option round-trips through an import).
-    if (p.kind === "select" || p.kind === "status" || p.kind === "multi_select") return Array.isArray(v) ? v.map(String).join(", ") : v === null || v === undefined ? "" : String(v);
+    // A value holding objects is exported as people read it ("Ada — delegate"); a re-import never writes that text over the objects (server rule).
+    if (isStructuredValue(v)) return valueText(v);
+    if (p.kind === "select" || p.kind === "status" || p.kind === "multi_select") return Array.isArray(v) ? v.map(scalarText).join(", ") : v === null || v === undefined ? "" : scalarText(v);
     return formatValue(p, v);
   };
   return toCsv([["Title", ...props.map((p) => p.label)], ...rows.map((r) => [noteTitle(r), ...props.map((p) => cellText(r, p))])]);
@@ -209,6 +212,7 @@ export function CsvImportDialog({ tag, dbPath, props, onClose }: { tag: string; 
             {plan && (
               <div className="db-plan" role="status" aria-label="Import preview">
                 <p><strong>Preview:</strong> {plan.summary.create} new, {plan.summary.update} updated, {plan.summary.unchanged} unchanged{plan.summary.error ? `, ${plan.summary.error} with problems` : ""}.</p>
+                {!!plan.summary.structuredKept && <p className="db-pop-path" data-structured-kept>{plan.summary.structuredKept} {plan.summary.structuredKept === 1 ? "row keeps" : "rows keep"} a structured value as it is stored; the file’s text does not replace it.</p>}
                 <ul>
                   {plan.sample.filter((s) => s.action !== "unchanged").slice(0, 8).map((s) => (
                     <li key={s.row}>Row {s.row}: <strong>{s.action === "create" ? "New" : "Update"}</strong> {s.title}{s.changes?.length ? ` — ${s.changes.join(", ")}` : ""}</li>

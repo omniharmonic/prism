@@ -156,6 +156,18 @@ if (params.has("ingest")) {
   notes.push(task("g3", "Notion mirror", { status: "todo", due: day(1), source: "notion" }));
   notes.push(task("g4", "Hand-made", { status: "todo", due: day(3), source: "book" }));
 }
+// Structured values: a `circle` whose members are OBJECTS ({name, role}), as an ingester stores them.
+if (params.has("circles")) {
+  schemas.circle = { description: "Circles", fields: { members: { type: "array" }, status: { type: "string", enum: ["active", "paused"] }, cadence: { type: "string" }, sponsors: { type: "array", kind: "person" }, linked_projects: { type: "array", kind: "relation", label: "Linked projects" } } };
+  if (!persisted) {
+    // A container-named project page with no `title`: named by `metadata.name`, never "PROJECT" or its folder slug.
+    notes.push({ id: "oc", path: "vault/projects/opencivics/PROJECT", content: "", tags: ["project"], metadata: { name: "OpenCivics" }, createdAt: at, updatedAt: at });
+    notes.push({ id: "pb", path: "People/Benjamin Life", content: "", tags: ["person"], metadata: { title: "Benjamin Life" }, createdAt: at, updatedAt: at });
+    notes.push({ id: "c1", path: "Circles/OpenCivics Delegate Council", content: "<h2>Purpose</h2><p>Network delegates coordinate consortium decisions.</p>", tags: ["circle"], metadata: { title: "OpenCivics — Delegate Council", members: [{ name: "Benjamin Life", role: "delegate" }, { name: "Patricia Parkinson", role: "delegate" }], status: "active", cadence: "monthly", linked_projects: ["opencivics"], sponsors: [{ person: "[[People/Mira Chen]]", role: "sponsor" }], budget: { amount: 500, currency: "USD" }, scores: [3, true] }, createdAt: at, updatedAt: at });
+    notes.push({ id: "c2", path: "Circles/Stewards", content: "", tags: ["circle"], metadata: { title: "Stewards", members: ["facilitation"], status: "paused", cadence: "weekly" }, createdAt: at, updatedAt: at });
+    notes.push({ id: "dbc", path: "Circles", content: "", tags: [], metadata: { prism_type: "database", title: "Circles", prism_database: { version: 1, source: { tags: ["circle"] }, views: [{ id: "table", name: "All circles", type: "table", visible: ["members", "status", "cadence", "sponsors"] }, { id: "board", name: "By status", type: "board", groupBy: "status", visible: ["members", "cadence"] }, { id: "list", name: "List", type: "list", visible: ["members"] }, { id: "gallery", name: "Gallery", type: "gallery", visible: ["members"] }] } }, createdAt: at, updatedAt: at });
+  }
+}
 // More rows than one page of a table (100): a calculation must cover all of them.
 if (params.has("many") && !persisted) for (let i = 0; i < 150; i++) notes.push(task(`m${i}`, `Bulk task ${String(i).padStart(3, "0")}`, { status: "todo", estimate: 1 }));
 // A multi-value cell that repeats a value: the row is one row of that group.

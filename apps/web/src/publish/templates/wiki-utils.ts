@@ -1,3 +1,4 @@
+import { containerTitle, isContainerPath } from "@prism/core/pages";
 import { marked } from "marked";
 import { taskListsInHtml } from "@prism/core/task-lists";
 import type { NavNote, PubGraph } from "./types";
@@ -193,6 +194,8 @@ interface RawFolder {
 function leafName(n: NavNote): string {
   if (n.path) {
     const base = n.path.split("/").pop() || n.path;
+    // A container-named page (`…/opencivics/PROJECT`) is listed by its title, else its folder — never "PROJECT".
+    if (isContainerPath(n.path)) return containerTitle(n.path, n.title && n.title !== base.replace(/\.[^.]+$/, "") ? { title: n.title } : null) ?? n.title;
     return base.replace(/\.[^.]+$/, "") || n.title;
   }
   return n.title;

@@ -56,3 +56,15 @@ export function containerTitle(path: string | null | undefined, metadata?: Recor
   if (folder === null) return null;
   return text(metadata?.title) || text(metadata?.name) || humanizeSlug(folder) || null;
 }
+
+/**
+ * The name a note is shown by where a surface used to print the path's last segment
+ * (`path.split("/").pop()`): unchanged for every ordinary page, and the real title for a
+ * container-named one (`…/opencivics/PROJECT` → "Opencivics", or its `title` / `name`).
+ * `undefined` when there is no path, so `||` and `??` fallbacks keep working. Pass
+ * `metadata` wherever the caller has it.
+ */
+export function leafTitle(path: string | null | undefined, metadata?: Record<string, unknown> | null): string | undefined {
+  if (!path) return undefined;
+  return containerTitle(path, metadata) ?? path.split("/").pop();
+}

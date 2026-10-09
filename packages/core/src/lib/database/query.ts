@@ -16,6 +16,7 @@
 import { dateRange, dayDiff } from "./dates";
 import { TEMPLATE_TAG, isTemplateNote } from "../pages/model";
 import { containerTitle } from "../pages/containerTitle";
+import { scalarText } from "./structured";
 
 export const QUERY_OPS = [
   "eq", "ne", "in", "nin", "contains", "not_contains",
@@ -422,8 +423,9 @@ export function compareValues(a: unknown, b: unknown, tzOffset = 0): number {
   if (typeof a === "number" && typeof b === "number") return a - b;
   if (typeof a === "boolean" || typeof b === "boolean") return Number(a === true) - Number(b === true);
   // A date range (`start/end`) orders by its start.
-  const sa = rangeEnd(String(a), "start");
-  const sb = rangeEnd(String(b), "start");
+  // `scalarText`, never `String`: an object compares by its name, and cannot throw.
+  const sa = rangeEnd(scalarText(a), "start");
+  const sb = rangeEnd(scalarText(b), "start");
   const na = Number(sa);
   const nb = Number(sb);
   if (sa.trim() !== "" && sb.trim() !== "" && Number.isFinite(na) && Number.isFinite(nb)) return na - nb;
@@ -457,15 +459,16 @@ function equalsOne(actual: unknown, expected: unknown, tz = 0): boolean {
     if (ISO_DATE.test(actual.trim()) && ISO_DATE.test(expected.trim())) return compareValues(actual.trim(), expected.trim(), tz) === 0;
     return norm(actual) === norm(expected);
   }
-  if (typeof actual === "boolean" || typeof expected === "boolean") return String(actual) === String(expected);
+  if (typeof actual === "boolean" || typeof expected === "boolean") return scalarText(actual) === scalarText(expected);
   return compareValues(actual, expected, tz) === 0;
 }
 
 function contains(actual: unknown, needle: unknown): boolean {
   if (isEmpty(actual) || needle === null || needle === undefined) return false;
-  const n = norm(String(needle));
-  if (Array.isArray(actual)) return actual.some((a) => typeof a === "string" ? norm(a).includes(n) : String(a) === String(needle));
-  return norm(String(actual)).includes(n);
+  const n = norm(scalarText(needle));
+  // An object item is searched by its readable text ("Ada Lovelace — delegate").
+  if (Array.isArray(actual)) return actual.some((a) => typeof a === "string" ? norm(a).includes(n) : typeof a === "object" && a !== null ? scalarText(a).toLowerCase().includes(n) : scalarText(a) === scalarText(needle));
+  return norm(scalarText(actual)).includes(n);
 }
 
 /**
@@ -541,7 +544,8 @@ export function matchesSearch(n: QueryInput, needle: string, fields: string[] | 
   if (noteTitle(n).toLowerCase().includes(needle)) return true;
   const meta = n.metadata ?? {};
   const keys = fields ?? Object.keys(meta);
-  const hit = (v: unknown): boolean => typeof v === "string" && v.length <= 10_000 && norm(v).includes(needle);
+  // Text, or an object's readable text (bounded by `valueText`).
+  const hit = (v: unknown): boolean => typeof v === "string" ? v.length <= 10_000 && norm(v).includes(needle) : typeof v === "object" && v !== null && scalarText(v).toLowerCase().includes(needle);
   for (const k of keys) {
     if (k === "title" || UNSEARCHED.test(k) || !Object.prototype.hasOwnProperty.call(meta, k)) continue;
     const v = meta[k];
@@ -640,7 +644,7 @@ class Collector {
   }
   private one(v: unknown, tz: number): void {
     this.values++;
-    if (this.unique) this.unique.add(typeof v === "string" ? norm(v) : String(v));
+    if (this.unique) this.unique.add(typeof v === "string" ? norm(v) : scalarText(v));
     if (this.need.number) {
       const n = numericValue(v);
       if (n !== null) {
@@ -757,8 +761,8 @@ class Bucket {
 export function groupValuesOf(v: unknown, checkbox = false): Array<string | null> {
   if (checkbox) return [String(v === true)];
   // A value a cell repeats is one membership: the row is in that group once.
-  if (Array.isArray(v)) return v.length ? [...new Set(v.map(String))] : [null];
-  return isEmpty(v) ? [null] : [String(v)];
+  if (Array.isArray(v)) return v.length ? [...new Set(v.map(scalarText))] : [null];
+  return isEmpty(v) ? [null] : [scalarText(v)];
 }
 
 /**
@@ -773,7 +777,7 @@ function rowGroups(v: unknown, checkbox: boolean | undefined): { values: Array<s
   const seen = new Set<string>();
   let cut = v.length > end;
   for (let i = 0; i < end; i++) {
-    const s = String(v[i]);
+    const s = scalarText(v[i]);
     if (seen.has(s)) continue;
     if (seen.size >= MAX_GROUPS_PER_ROW) { cut = true; break; }
     seen.add(s);

@@ -1,3 +1,4 @@
+import { leafTitle } from "../../lib/pages/containerTitle";
 import { useState, useMemo, useEffect, useCallback, useRef, type ReactNode } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ChevronLeft, ChevronRight, Clock, RefreshCw, Plus, MapPin, Users, ExternalLink, FileText, Trash2, Pencil, X, Video } from "lucide-react";
@@ -207,7 +208,7 @@ function ScopedCalendarDashboard() {
       const note = await client.getNote(ev.vaultNoteId);
       if (!mounted.current || useAgentChatStore.getState().scope !== scope) return;
       if ((note.metadata?.calendarEventId || note.id) !== ev.id) throw new Error("Meeting identity changed");
-      openTab(note.id, note.path?.split("/").pop() || "Meeting Notes", "document");
+      openTab(note.id, leafTitle(note.path, note.metadata) || "Meeting Notes", "document");
     } catch { setNoteError("This meeting note is unavailable. Refresh the calendar and try again."); }
   }, [openTab, client, scope]);
 

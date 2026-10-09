@@ -28,7 +28,7 @@ import { inferContentType } from "../schemas/content-types";
 import { sanitizeRegion, type StoredRegion } from "../datetime/preferences";
 import { containerTitle } from "./containerTitle";
 
-export { containerFolder, containerTitle, humanizeSlug, isContainerPath } from "./containerTitle";
+export { containerFolder, containerTitle, humanizeSlug, isContainerPath, leafTitle } from "./containerTitle";
 
 export const TRASH_TAG = "prism-trashed";
 export const TRASH_META = {

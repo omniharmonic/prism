@@ -1,3 +1,4 @@
+import { leafTitle } from "../../lib/pages/containerTitle";
 import { useState, useMemo, useCallback, useRef, useEffect } from "react";
 import {
   FileText,
@@ -499,7 +500,7 @@ export function ProjectTree() {
   const handleFolderTrash = useCallback(
     async (node: TreeNode) => {
       setTrashFolder(null);
-      for (const n of topPages(node)) await actions.trash({ id: n.id, path: n.path, title: n.path?.split("/").pop() ?? n.id });
+      for (const n of topPages(node)) await actions.trash({ id: n.id, path: n.path, title: leafTitle(n.path, n.metadata) ?? n.id });
     },
     [actions],
   );
@@ -578,7 +579,7 @@ export function ProjectTree() {
     for (const id of ids) {
       const n = byId.get(id);
       if (!n || (n.path && paths.some((p) => isUnder(n.path, p)))) continue;
-      await actions.trash({ id, path: n.path, title: n.path?.split("/").pop() ?? id });
+      await actions.trash({ id, path: n.path, title: leafTitle(n.path, n.metadata) ?? id });
     }
   }, [selectedIds, notes, actions]);
 

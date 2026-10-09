@@ -9,7 +9,7 @@
  * and offers Retry. Nothing is ever silently dropped.
  */
 import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from "react";
-import { CalendarClock, Check, ExternalLink, Mail, Paperclip, Phone, Plus, Search, Upload, X } from "lucide-react";
+import { CalendarClock, Check, ExternalLink, Lock, Mail, Paperclip, Phone, Plus, Search, Upload, X } from "lucide-react";
 import { buildDateValue, dateRange, hasTime, parseDateParts } from "../../lib/database/dates";
 import { useVaultClient } from "../../data/VaultClientContext";
 import { useUIStore } from "../../app/stores/ui";
@@ -20,6 +20,7 @@ import { downloadOwnAttachment, fileRef, isImageFileName, parseFileRefs, MAX_FIL
 import { PropertyConflictError, VaultRequestError } from "../../data/VaultClient";
 import { loadRelationIndex, relationIndexKey, useLinkCandidates, useRelationIndex, useScope } from "../../lib/database/hooks";
 import { conventionalPath, relationValues, resolveRelationValue, resolvedPath, type RelationResolution } from "../../lib/database/relations";
+import { isStructuredValue, scalarText, STRUCTURED_HINT, structuredItems } from "../../lib/database/structured";
 import { useQueryClient } from "@tanstack/react-query";
 import {
   asWikilink,
@@ -28,6 +29,7 @@ import {
   formatValue,
   INGEST_TAGS,
   isBlank,
+  isPeopleKeyName,
   looksLikeEmail,
   looksLikePhone,
   linkLabel,
@@ -49,7 +51,9 @@ export function relationTargetFor(def: Pick<PropertyDef, "kind" | "key" | "targe
   if (def.targetPath) return { pathPrefix: def.targetPath };
   if (def.target) return { tag: def.target };
   if (def.kind === "person") return { tag: "person" };
-  return /^projects?$/i.test(def.key) ? { tag: "project" } : null;
+  // "project", "projects" and names that end in them ("linked_projects", "related-project") point at #project pages,
+  // so a slug or folder link reads as the project's title instead of its folder name.
+  return /(^|[_\-\s])projects?$/i.test(def.key) ? { tag: "project" } : null;
 }
 
 /** A stored value the target's index reads better than its text: anything non-blank (a full-path link resolves to its page's title). */
@@ -93,7 +97,7 @@ export function useOpenLinked(target?: RelationTarget | null) {
 }
 
 /** A related page / person as a chip. `open`: a plain click opens it (else only ⌘/Ctrl-click does — the cell's own click edits). */
-function LinkChip({ value, kind, open, target, resolution }: { value: string; kind: "person" | "relation"; open: boolean; target: RelationTarget | null; resolution: RelationResolution | null }) {
+function LinkChip({ value, kind, open, target, resolution, text, detail }: { value: string; kind: "person" | "relation"; open: boolean; target: RelationTarget | null; resolution: RelationResolution | null; /** The name to show when the page does not answer with its own title (a structured item's label). */ text?: string; /** Shown after the name: "— delegate" (a structured item's role). */ detail?: string }) {
   const openLinked = useOpenLinked(target);
   const [missing, setMissing] = useState(false);
   const go = (e: { stopPropagation: () => void; preventDefault: () => void }) => {
@@ -106,7 +110,7 @@ function LinkChip({ value, kind, open, target, resolution }: { value: string; ki
     void openLinked(value).then((ok) => setMissing(!ok));
   };
   const resolved = resolution?.kind === "note" ? resolution.note : null;
-  const label = resolved?.title || linkLabel(value);
+  const label = resolved?.title || text || linkLabel(value);
   // A plain name / slug no target page answers: shown as the text it is, never guessed.
   const unlinked = !resolved && !!resolution && !value.trim().startsWith("[[");
   const where = target ? ("tag" in target ? `#${target.tag} page` : `page in ${target.pathPrefix}`) : "page";
@@ -120,7 +124,38 @@ function LinkChip({ value, kind, open, target, resolution }: { value: string; ki
       title={title}
       onClick={(e) => { if (open || e.metaKey || e.ctrlKey) go(e); }}
       onKeyDown={(e) => { if (open && e.key === "Enter") go(e); }}>
-      {kind === "person" && <span className="db-avatar" aria-hidden="true">{label.slice(0, 1).toUpperCase()}</span>}{label}
+      {kind === "person" && <span className="db-avatar" aria-hidden="true">{label.slice(0, 1).toUpperCase()}</span>}{label}{detail ? <span className="db-chip-detail"> — {detail}</span> : null}
+    </span>
+  );
+}
+
+/** Where a structured value's names may be looked up: the relation's own target, else people for a people-named property ("members", "attendees"). */
+function structuredTargetFor(def: Pick<PropertyDef, "kind" | "key" | "target" | "targetPath">): RelationTarget | null {
+  if (def.kind === "person" || def.kind === "relation") return relationTargetFor(def);
+  return isPeopleKeyName(def.key) || /^members?$/i.test(def.key) ? { tag: "person" } : null;
+}
+
+/**
+ * A value that holds OBJECTS (`members: [{name, role}]`): one chip per item, named by
+ * the shared formatter (`structuredItems`) — never `[object Object]`. An item whose
+ * name is a page link, or the name of exactly one page of the target, opens that page
+ * like a relation chip; every other item is plain text. Read-only by construction.
+ */
+function StructuredChips({ def, value, open }: { def: PropertyDef; value: unknown; open: boolean }) {
+  const items = structuredItems(value);
+  const target = structuredTargetFor(def);
+  const idx = useRelationIndex(target, items.some((it) => !!it.link));
+  const kind: "person" | "relation" = def.kind === "person" || (!!target && "tag" in target && target.tag === "person") ? "person" : "relation";
+  if (!items.length) return <span className="db-empty">Empty</span>;
+  return (
+    <span className="db-chips db-structured" data-structured>
+      {items.map((it, i) => {
+        const resolution = it.link && idx.data ? resolveRelationValue(it.link, idx.data) : null;
+        const linked = !!it.link && (it.link.startsWith("[[") || resolution?.kind === "note");
+        return linked
+          ? <LinkChip key={i} value={it.link!} kind={kind} open={open} target={target} resolution={resolution} text={it.label} detail={it.detail} />
+          : <span key={i} className="db-link-chip db-structured-chip" data-kind="structured" title={it.text}>{it.text}</span>;
+      })}
     </span>
   );
 }
@@ -155,7 +190,8 @@ export function OptionChip({ value, label, color, onRemove, removeLabel }: { val
 
 const colorOf = (def: PropertyDef, v: string): OptionColor => def.options.find((o) => o.value === v)?.color ?? optionColor(v);
 // `""` (an older writer's "empty list") and blank items are empty, never a chip.
-const list = (v: unknown): string[] => (Array.isArray(v) ? v.map(String).filter((x) => x.trim() !== "") : isBlank(v) ? [] : [String(v)]);
+// `scalarText`, not `String`: an object item reads as its name, never `[object Object]` (and such a value is never editable).
+const list = (v: unknown): string[] => (Array.isArray(v) ? v.map(scalarText).filter((x) => x.trim() !== "") : isBlank(v) ? [] : [scalarText(v)]);
 
 /** Read-only rendering (cards, read-only pages, cells of rows you cannot edit). */
 export function PropertyDisplay({ def, value, openLinks = true, links = true }: { def: PropertyDef; value: unknown; /** Relation/person chips open their page on a plain click (off inside an editable cell, where the click edits). */ openLinks?: boolean; /** URL / email / phone render as real links. Off inside the cell's own button (a link inside a button is invalid and unreachable by keyboard); the cell renders the link beside the button instead. */ links?: boolean }) {
@@ -168,6 +204,7 @@ export function PropertyDisplay({ def, value, openLinks = true, links = true }: 
     const who = String(value) === "link" ? "Guest (link)" : String(value);
     return <span className="db-chips"><span className="db-link-chip" data-kind="person"><span className="db-avatar" aria-hidden="true">{who.slice(0, 1).toUpperCase()}</span>{who}</span></span>;
   }
+  if (isStructuredValue(value)) return <StructuredChips def={def} value={value} open={openLinks} />;
   switch (def.kind) {
     case "select":
     case "status":
@@ -268,6 +305,12 @@ export function PropertyValue({
   const textual = def.kind === "text" || def.kind === "number" || def.kind === "url" || def.kind === "date" || def.kind === "email" || def.kind === "phone";
   // System properties (created/edited time/by) are never editable.
   if (def.system) readOnly = true;
+  // A value holding objects is never editable inline: every editor here works on text,
+  // so any edit (a chip remove, a retype) would write the text back and lose the fields.
+  const structured = isStructuredValue(value);
+  const couldEdit = !readOnly;
+  if (structured) readOnly = true;
+  const [hintOpen, setHintOpen] = useState(false);
 
   const begin = () => {
     if (readOnly || busy) return;
@@ -281,7 +324,7 @@ export function PropertyValue({
       return;
     }
     if (textual) {
-      setDraft(isBlank(value) ? "" : def.kind === "date" ? String(value).slice(0, 10) : String(value));
+      setDraft(isBlank(value) ? "" : def.kind === "date" ? scalarText(value).slice(0, 10) : scalarText(value));
       setEditingText(true);
       return;
     }
@@ -297,6 +340,7 @@ export function PropertyValue({
   }, [editingText]);
 
   async function commit(raw: unknown, overrideBase?: unknown) {
+    if (structured) return; // belt and braces: no editor opens for a structured value
     const next = coerceValue(def, raw);
     // Email/phone keep any text the person typed, but say when it does not look right.
     if (typeof next === "string" && ((def.kind === "email" && !looksLikeEmail(next)) || (def.kind === "phone" && !looksLikePhone(next)))) {
@@ -388,19 +432,26 @@ export function PropertyValue({
     );
   }
 
-  const raw = isBlank(value) ? "" : String(value);
+  const raw = isBlank(value) || structured ? "" : scalarText(value);
   const valueLink = def.kind === "url" && /^https?:\/\//i.test(raw) ? { href: raw, name: raw.replace(/^https?:\/\//, "") }
     : def.kind === "email" && looksLikeEmail(raw) ? { href: `mailto:${raw.trim()}`, name: raw }
     : def.kind === "phone" && looksLikePhone(raw) ? { href: `tel:${raw.replace(/[^\d+]/g, "")}`, name: raw }
     : null;
-  const readOnlyLinks = !!readOnly && (def.kind === "relation" || def.kind === "person") && !isBlank(value);
+  const readOnlyLinks = !!readOnly && (structured || def.kind === "relation" || def.kind === "person") && !isBlank(value);
   return (
-    <span className={`db-value db-value-${variant}`} data-linked={valueLink ? "" : undefined}>
+    <span className={`db-value db-value-${variant}`} data-linked={valueLink ? "" : undefined} data-structured={structured || undefined}>
       {readOnlyLinks ? (
         /* A reader's relation / person chips are links to those pages. Links may not sit inside a
            button, and a read-only cell has nothing else to do — so here it is a labelled group. */
-        <span className="db-value-button" role="group" data-readonly aria-label={`${def.label}: ${formatValue(def, value) || "Empty"}`}>
+        <span className="db-value-button" role="group" data-readonly aria-label={`${def.label}: ${formatValue(def, value) || "Empty"}`} title={structured ? STRUCTURED_HINT : undefined}>
           <PropertyDisplay def={def} value={value} openLinks links={false} />
+          {/* Someone who could otherwise edit is told why this one cannot be (a tap shows it: phones have no hover). */}
+          {structured && couldEdit && (
+            <button type="button" className="db-structured-lock focus-ring" aria-label={`${def.label} is read-only: ${STRUCTURED_HINT}`} aria-expanded={hintOpen} title={STRUCTURED_HINT}
+              onClick={(e) => { e.stopPropagation(); setHintOpen((v) => !v); }}>
+              <Lock size={11} aria-hidden="true" />
+            </button>
+          )}
         </span>
       ) : (
       <button
@@ -431,6 +482,7 @@ export function PropertyValue({
           {def.kind === "url" ? <ExternalLink size={12} aria-hidden="true" /> : def.kind === "email" ? <Mail size={12} aria-hidden="true" /> : <Phone size={12} aria-hidden="true" />}
         </a>
       )}
+      {structured && hintOpen && <span role="status" className="db-structured-note">{STRUCTURED_HINT}</span>}
       <span id={id}>{feedback}</span>
       {(def.kind === "select" || def.kind === "status" || def.kind === "multi_select") && (
         <OptionPicker anchor={anchor} open={open} def={def} value={value} onClose={() => { setOpen(false); onDone?.(); }}

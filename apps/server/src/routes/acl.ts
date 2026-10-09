@@ -119,6 +119,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { readFile, writeFile, copyFile } from "node:fs/promises";
 import { notifyShare, suggestionsResolved } from "../notifications";
+import { leafTitle } from "@prism/core/pages";
 const pexec = promisify(execFile);
 
 /** Grant a person access to a resource, inviting them if they have no account
@@ -635,7 +636,7 @@ acl.get("/notes/:id", async (c) => {
     const me = resolveActor(c);
     const createdByMe = me.kind === "user" && !!creator && creator === me.email;
     // The creator's EMAIL is for admins; a scoped sharer learns only whether it is them (review M-B).
-    return c.json({ note: { id, tags, title: (typeof note.metadata?.title === "string" && note.metadata.title.trim()) || note.path?.split("/").pop() || deriveTitle(note.content), visibility, creator: canManageLinks ? creator : null, createdByMe, path: note.path ?? null }, owner, people, inherited, parent, links, tagAccess, canManageLinks, allowedLevels });
+    return c.json({ note: { id, tags, title: (typeof note.metadata?.title === "string" && note.metadata.title.trim()) || leafTitle(note.path, note.metadata) || deriveTitle(note.content), visibility, creator: canManageLinks ? creator : null, createdByMe, path: note.path ?? null }, owner, people, inherited, parent, links, tagAccess, canManageLinks, allowedLevels });
   } catch (e) {
     if (e instanceof VaultError && e.status === 404) return c.json({ error: "not_found" }, 404);
     return c.json({ error: "vault_error" }, 502);

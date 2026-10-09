@@ -1,3 +1,4 @@
+import { leafTitle } from "../pages/containerTitle";
 import { Mark } from "@tiptap/core";
 import { Plugin, PluginKey } from "@tiptap/pm/state";
 import { Decoration, DecorationSet } from "@tiptap/pm/view";
@@ -38,7 +39,7 @@ function decorate(doc: ProseMirrorNode) {
         : inner.trim();
       const displayName = inner.includes("|")
         ? inner.split("|")[1].trim()
-        : inner.split("/").pop()?.trim() || inner.trim();
+        : leafTitle(inner.trim())?.trim() || inner.trim();
 
       decorations.push(
         Decoration.inline(start, end, {
