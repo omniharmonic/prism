@@ -570,15 +570,16 @@ test("find in page: the field gets the caret even when the surface that opened i
     document.body.appendChild(modal);
     modal.showModal();
     window.dispatchEvent(new CustomEvent(eventName));
-    // It closes late, and as modal surfaces do, gives focus back to what had it.
-    setTimeout(() => { modal.close(); modal.remove(); (document.querySelector(".tiptap") as HTMLElement).focus(); }, 250);
+    // It closes late (and, as a modal does when it closes, gives focus back to what had it before it opened).
+    setTimeout(() => { modal.close(); modal.remove(); }, 250);
   }, FIND_EVENT);
   const field = page.getByRole("search", { name: "Find in note" }).getByRole("textbox", { name: "Find in note" });
   await expect(field).toBeFocused();
   await page.waitForTimeout(600); // past the late close and the hand-back
   await expect(field).toBeFocused();
-  // …and once the person has moved on, the bar never takes the caret back.
-  await editor.click();
+  // …and once it has had the caret, the bar never takes it back: not from its own replace field (focused by
+  // script, as a test or an assistive tool does), not from the page.
+  await editor.evaluate((el: HTMLElement) => el.focus());
   await page.waitForTimeout(300);
   await expect(editor).toBeFocused();
 });
