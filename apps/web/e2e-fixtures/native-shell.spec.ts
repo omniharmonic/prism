@@ -339,3 +339,68 @@ test("desktop sign-in: a second press RESTARTS the flow (the shell cancels the f
   await page.waitForTimeout(200);
   expect(await ipc()).toEqual(["sign_in", "sign_in", "sign_out:false"]);
 });
+
+// ── Embeds in the app (NP-ED-15, owner decision c.7: YouTube no-cookie + Vimeo only) ──────────
+const EMBEDS: Array<[url: string, label: string, player: string | null]> = [
+  ["https://www.youtube.com/watch?v=dQw4w9WgXcQ", "YouTube", "https://www.youtube-nocookie.com/embed/dQw4w9WgXcQ"],
+  ["https://vimeo.com/76979871", "Vimeo", "https://player.vimeo.com/video/76979871"],
+  ["https://www.loom.com/share/0281766fa2d04bb788eaf19e65135184", "Loom", null],
+  ["https://www.figma.com/design/AbCdEf123456/Atlas", "Figma", null],
+  ["https://docs.google.com/document/d/1AbCdEfGhIjKlMnOpQrStUvWxYz012345/edit", "Google Docs", null],
+  ["https://open.spotify.com/track/4uLU6hMCjMI75M1A2tKUQC", "Spotify", null],
+  ["https://x.com/prism/status/1234567890123", "Post on X", null],
+];
+const EMBED_PAGE = "/e2e-fixtures/notion-media.html?content=" + encodeURIComponent(EMBEDS.map(([u]) => `<div data-type="embed" data-url="${u}"></div>`).join(""));
+
+test("native embeds: YouTube and Vimeo play in a frame with no popups; every other provider stays an 'Open in …' card", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  // Never reach the internet from a fixture: a provider's frame gets an empty page.
+  await page.route(/^https:\/\/(www\.youtube-nocookie\.com|player\.vimeo\.com|www\.loom\.com|www\.figma\.com|docs\.google\.com|open\.spotify\.com|platform\.twitter\.com)\//, (r) => r.fulfill({ status: 200, contentType: "text/html", body: "<!doctype html><title>player</title>" }));
+  // The REAL host hook over an IPC that records what the page asks of the shell.
+  await page.addInitScript(({ source }) => {
+    if (window.top !== window) return;
+    const w = window as any;
+    w.ipcCalls = [] as Array<{ cmd: string; args: unknown }>;
+    w.__TAURI_INTERNALS__ = { invoke: (cmd: string, args: unknown) => { w.ipcCalls.push({ cmd, args }); return Promise.resolve(null); } };
+    new Function(source.replace("__PRISM_ORIGIN__", JSON.stringify(location.origin)).replace("__PRISM_PLATFORM__", JSON.stringify("macos")))();
+  }, { source: HOST_JS });
+  const popups: string[] = [];
+  page.context().on("page", (p) => popups.push(p.url()));
+  await page.goto(EMBED_PAGE);
+
+  // What the shell tells the page it may frame: exactly the two players of its CSP, and the page cannot change it.
+  const advertised = await page.evaluate(() => {
+    const host = (window as any).__PRISM_HOST__;
+    let pushed = false;
+    try { host.frameOrigins.push("https://evil.example"); pushed = true; } catch { /* frozen */ }
+    try { host.frameOrigins = ["https://evil.example"]; } catch { /* frozen */ }
+    return { origins: [...host.frameOrigins], pushed };
+  });
+  expect(advertised).toEqual({ origins: ["https://www.youtube-nocookie.com", "https://player.vimeo.com"], pushed: false });
+
+  const blocks = page.locator(".prism-embed");
+  await expect(blocks).toHaveCount(EMBEDS.length);
+  const frames = page.locator(".prism-embed iframe");
+  await expect(frames).toHaveCount(2);
+  for (const [i, [url, label, player]] of EMBEDS.entries()) {
+    const block = blocks.nth(i);
+    if (player) {
+      const frame = block.locator("iframe");
+      await expect(frame).toHaveAttribute("src", new RegExp("^" + player.replace(/[.?/]/g, "\\$&")));
+      // No allow-popups in the app (and still no top-navigation, forms or downloads).
+      await expect(frame).toHaveAttribute("sandbox", "allow-scripts allow-same-origin allow-presentation");
+      await expect(frame).toHaveAttribute("referrerpolicy", "strict-origin-when-cross-origin");
+      await expect(block.getByRole("link", { name: `Open in ${label}` })).toHaveAttribute("href", url);
+    } else {
+      await expect(block).toHaveAttribute("data-fallback", "true");
+      await expect(block.locator("iframe")).toHaveCount(0);
+      await expect(block).toContainText(`Open in ${label}`);
+      await expect(block).toContainText("only YouTube and Vimeo play inside the app");
+    }
+  }
+  // The way out of a player is the block's own link: it goes to the shell (native confirmation), never a popup or a navigation.
+  await blocks.nth(0).getByRole("link", { name: "Open in YouTube" }).click();
+  await expect.poll(() => page.evaluate(() => (window as any).ipcCalls.filter((c: any) => c.cmd === "open_external"))).toEqual([{ cmd: "open_external", args: { url: EMBEDS[0]![0] } }]);
+  expect(popups).toEqual([]);
+  expect(new URL(page.url()).pathname).toBe("/e2e-fixtures/notion-media.html");
+});

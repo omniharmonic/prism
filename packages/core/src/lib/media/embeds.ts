@@ -74,6 +74,13 @@ export const EMBED_FRAME_ORIGINS = [...new Set(EMBED_FRAME_SOURCES.map((s) => ne
  * no modals.
  */
 export const EMBED_SANDBOX = "allow-scripts allow-same-origin allow-popups allow-presentation";
+/**
+ * The same, WITHOUT popups, for the native apps (Prism Client on macOS / iOS — owner
+ * decision c.7, the security reviewer's "minimal safe set … with no popups"): a player
+ * there can open nothing. The block's own "Open in …" link (routed through the shell's
+ * native confirmation) is the only way out.
+ */
+export const EMBED_SANDBOX_NATIVE = "allow-scripts allow-same-origin allow-presentation";
 
 const MEDIA_ALLOW = "fullscreen; picture-in-picture; encrypted-media; clipboard-write";
 

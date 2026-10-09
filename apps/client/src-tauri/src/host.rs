@@ -59,6 +59,7 @@ mod tests {
             "onUnauthorized",
             "signIn",
             "onSignedOut",
+            "frameOrigins",
         ] {
             assert!(js.contains(k), "host hook must define {k}");
         }
@@ -81,6 +82,18 @@ mod tests {
             assert!(js.contains(k), "host hook must define {k}");
         }
         assert!(!js.contains("location.assign") && !js.contains("location.href ="));
+        // The players the page is told it may frame are exactly the CSP's (origin.rs).
+        let advertised: Vec<String> = crate::origin::EMBED_FRAME_SOURCES
+            .iter()
+            .map(|s| {
+                let u = tauri::Url::parse(s).unwrap();
+                format!("\"https://{}\"", u.host_str().unwrap())
+            })
+            .collect();
+        assert!(
+            js.contains(&format!("Object.freeze([{}])", advertised.join(", "))),
+            "host.js FRAME_ORIGINS must equal origin.rs EMBED_FRAME_SOURCES"
+        );
         assert!(
             !js.contains("localStorage"),
             "the token never touches web storage"
