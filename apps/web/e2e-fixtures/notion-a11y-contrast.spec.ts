@@ -10,12 +10,12 @@ import { borderContrast, controlBoundaryContrast, focusIndicatorContrast, type N
  *     what it is drawn on. This is a gate: none may be below 3 : 1. One kind is recorded instead of gated:
  *     a TEXT-ENTRY field whose ring is a soft glow (the two composers) — its caret shows focus, and its
  *     focused BORDER is asserted at ≥ 3 : 1 in the last tests of this file.
- *  2. CONTROL BOUNDARIES — every visible text field, select, textarea and custom checkbox / switch: the best
- *     of its border and its fill against what is behind it. MEASURED AND REPORTED, NOT A GATE: Prism draws
- *     its fields with the shared 1 px hairline (`--glass-border`, about 1.3 : 1) like Notion does, so nearly
- *     every field is below 3 : 1. Raising it is a design decision about one token used for every divider in
- *     the app, not a fix to make from a sweep. The numbers are in the test annotation, the `A11Y_REPORT`
- *     JSON and A11Y-RESULTS.md ("Non-text contrast").
+ *  2. CONTROL BOUNDARIES — every visible text field, select, textarea and custom checkbox / switch / radio: the
+ *     best of its border and its fill against what is behind it (also the box a wrapper draws around a seamless
+ *     field, a checkbox's drawn box, a segmented group's box). A GATE since decision c.17: none below 3 : 1, none
+ *     left unjudged. Fields draw their box with the shared hairline, which `tokens.css` re-points to
+ *     `--control-border` on the control itself ("FORM CONTROL BOUNDARIES"); a control over a blur or a gradient,
+ *     where no ratio can be computed, passes only with a visible border in exactly that token.
  *
  * Text contrast is the axe sweep's (`notion-a11y-axe.spec.ts`) and the token-pair test's. Not measured:
  * anything drawn over a gradient, an image or a blur; icons; text over cover images.
@@ -54,8 +54,10 @@ for (const theme of ["light", "dark"] as Theme[]) {
           mkdirSync(REPORT, { recursive: true });
           writeFileSync(`${REPORT}/contrast_${s.id}_${theme}.json`, JSON.stringify({ focus: { low: rings, softFields, measured, unmeasured }, boundaries }, null, 1));
         }
-        test.info().annotations.push({ type: "non-text-contrast", description: `focus: ${measured} measured, ${rings.length} low, ${softFields.length} soft-ring text fields, ${unmeasured.length} not judged · boundaries: ${boundaries.ok} ok, ${boundaries.low.length} hairline, ${boundaries.unmeasured.length} not judged` });
+        test.info().annotations.push({ type: "non-text-contrast", description: `focus: ${measured} measured, ${rings.length} low, ${softFields.length} soft-ring text fields, ${unmeasured.length} not judged · boundaries: ${boundaries.ok} ok, ${boundaries.low.length} low, ${boundaries.unmeasured.length} not judged` });
         expect(rings, "focus indicators below 3 : 1").toEqual([]);
+        expect(boundaries.low, "form control boundaries below 3 : 1 (tokens.css --control-border)").toEqual([]);
+        expect(boundaries.unmeasured, "form controls whose boundary could not be judged").toEqual([]);
       });
     }
   });

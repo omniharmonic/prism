@@ -38,3 +38,38 @@ test("graph: a container-named note is a node named by its title / name / folder
   assert.deepEqual(titles, { a: "Hub", p1: "OpenCivics", p2: "Food chain", p3: "Prism" });
   assert.ok(!JSON.stringify(g.nodes.map((n) => n.title)).includes("PROJECT"));
 });
+
+// ── Round 5 (2026-10-09): the remaining places that printed the path leaf ─────────────────────
+// Found by reading every `split("/").pop()` / `lastIndexOf("/")` in the server and in core.
+import { navTitle } from "../src/publication-content";
+import { buildNotePrompt } from "../src/worker/skills";
+import { pushNoteToGoogleDoc } from "../src/worker/googledocs";
+import { blendResults } from "../../../packages/core/src/lib/search/blend";
+
+const PROJECT = "vault/projects/bioregional-food-chain/PROJECT";
+
+test("a published site lists a container-named page by its title or folder — never PROJECT", () => {
+  const n = (metadata: Record<string, unknown>, content = ""): Note => ({ id: "p", path: PROJECT, tags: [], content, metadata }) as unknown as Note;
+  assert.equal(navTitle(n({})), "Bioregional food chain");
+  assert.equal(navTitle(n({ title: "Food Chain" })), "Food Chain");
+  assert.equal(navTitle({ id: "o", path: "vault/notes/field-notes.md", tags: [], content: "", metadata: {} } as unknown as Note), "field notes", "an ordinary page is unchanged");
+});
+
+test("a background skill is told the page's name, and a Google Doc is created under it", async () => {
+  const prompt = buildNotePrompt({ id: "p", path: PROJECT, tags: [], content: "body", metadata: {} } as unknown as Note, "2026-10-09", 2000);
+  assert.ok(prompt.includes("Bioregional food chain"), prompt.slice(0, 200));
+  assert.ok(!/\bPROJECT\b/.test(prompt.split("body")[0]!), "the file name is not offered as the title");
+  const created: string[] = [];
+  await pushNoteToGoogleDoc({ createDoc: async (title: string) => { created.push(title); return "doc-1"; }, writeDoc: async () => undefined } as never, { path: PROJECT, content: "x" });
+  assert.deepEqual(created, ["Bioregional food chain"]);
+  await pushNoteToGoogleDoc({ createDoc: async (title: string) => { created.push(title); return "doc-2"; }, writeDoc: async () => undefined } as never, { path: "vault/notes/Roadmap.md", content: "x" });
+  assert.equal(created[1], "Roadmap", "an ordinary page is unchanged");
+});
+
+test("search: typing a container-named page's name puts it first (it matched on the word PROJECT before)", () => {
+  const keyword = [{ id: "other", path: "vault/notes/Meeting about food" }, { id: "proj", path: PROJECT }];
+  assert.deepEqual(blendResults([], keyword, ["bioregional", "food"]).map((r) => r.id), ["proj", "other"]);
+  // …and the word "project" no longer makes every project page a title match.
+  const many = [{ id: "a", path: "vault/projects/alpha/PROJECT" }, { id: "b", path: "vault/notes/Project plan" }];
+  assert.deepEqual(blendResults([], many, ["project"]).map((r) => r.id), ["b", "a"]);
+});

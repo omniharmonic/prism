@@ -28,7 +28,7 @@ Sizes: **S** = under a day, one or two files. **M** = one to three days, a new c
 
 ### a.0 In progress (w9-gaps) — built on `feat/w9-gaps`, not on main
 
-These eight rows were `partial` until PR #42 merged (2026-10-09); the statuses in the last column are what they move to. The four IME tests of parity4-suggestions are Chromium-only. Suggesting-mode limits recorded with the merge: a removal across a table-cell boundary is refused with a notice; slash-menu inserts and Enter are untracked; a line break cannot be removed while suggesting.
+These eight rows were `partial` until PR #42 merged (2026-10-09); the statuses in the last column are what they move to. Suggesting-mode limit recorded with the merge: a removal across a table-cell boundary is refused with a notice. Closed afterwards (branch `polish5/gaps-suggest`, schema v6): Enter and slash-menu blocks are tracked as suggested paragraph breaks (a divider / image / embed, and re-shaping a block that was already there, are refused with a notice); a line break and a mention / date chip are put in and removed as suggestions (a suggested mention notifies only once accepted); Accept of a selection typed over across blocks joins them as the plain edit does; a composition (IME) over a selection that crosses a table-cell boundary completes and is tracked. The six IME tests of parity4-suggestions are Chromium-only.
 
 | Row | Clause | State | Spec that must be green on main after the merge | Row becomes |
 |---|---|---|---|---|
@@ -48,8 +48,8 @@ Nothing here touches the collab schema (`COLLAB_SCHEMA_VERSION` stays 5).
 | # | Slice | Row · clause | What is missing | Files | Size |
 |---|---|---|---|---|---|
 | 1 | **R · Locked pages and Read-write agents** — a flag, after decision c.9 | NP-PG-09 · "agents in Read-write mode are refused for that page" | A `vault-rw` session can write a locked page OTHER than the one it is bound to or names, by id, through the vault MCP. Everything else is closed (bound / named page → 423; owner REST bypass → 423; fail closed). | No code: `AGENT_PRISM_PROFILES=true` and make `prism-rw` the Read-write profile in the session picker (`apps/server/src/agent-profiles.ts` default list, `components/agent/*` profile labels). | S (decision) |
-| 2 | **T · Select and status sort by option order** — *found 2026-10-08 by parity6-databases* | NP-DB-08 (passed; this is a quality gap, not a failed clause) | A select / status column sorts by its STORED value A→Z (`done`, `in-progress`, `todo`), not by the order of its options as Notion does. | `packages/core/src/lib/database/query.ts` (`sortRows` needs the option order of the sorted key — the engine runs on the server too, so the schema's `enum` order must reach it), `parity6-databases.spec.ts` (the expected order of the select and status cases). | S–M |
-| 3 | **U · Calendar page chips on an iPad** | NP-AX-07 says "on phone" (passed); the iPad shows the desktop month grid | On a wide touch screen the per-day "+" is now visible without hover (32 px), but page chips are still 18 px tall. Either give coarse pointers the phone's one-target-per-day month (`CalendarMonthTouch`) or taller chips. | `components/database/DatabaseRenderer.tsx` (which layout a coarse pointer gets), `database.css`. | S |
+
+Closed 2026-10-09 (`polish5/gaps-db`): ~~T · Select and status sort by option order (NP-DB-08)~~ → a select / multi-select column sorts by its option order and a status by its groups (To-do → In progress → Complete, then option order) on the server and in the client fallback (server `database-option-sort.test`, parity6-databases › "NP-DB-08: …", "a select sorts by its options as the owner ordered them…"). ~~U · Calendar page chips on an iPad (NP-AX-07)~~ → chips, multi-day bars and the day "+" are 44 px targets under a coarse pointer (parity6-databases › "iPad 1024 px: …", "iPad 820 px: …").
 
 Closed since the last edition of this file (on main or on `polish4/parity-quick-wins`, each checked against its spec on 2026-10-08): ~~P · Phone sheet entrance (NP-AX-06)~~ → needs-screenshot. ~~Q · System theme (NP-AX-01)~~ → built; the row is still partial for other reasons (§a.3). ~~S · Calendar month grid on phones (NP-AX-07)~~ → passed. ~~E · Native links (NP-NA-04)~~ → needs-device. ~~Embeds in the apps (NP-ED-15, decision c.7)~~ → built, needs-device. Earlier: ~~A · Editor links~~, ~~H · Title rename~~, ~~B · Templates~~, ~~C · Agent on pages~~, ~~D · Phone gestures~~, ~~F · Search filter~~, ~~⌘N~~.
 
@@ -70,7 +70,7 @@ Closed 2026-10-08 (`polish4/parity-quick-wins`): ~~NP-PG-05 · checkbox, URL and
 | NP-AX-01 | partial | System is built. Left: three unswept surfaces (a.2), the native launch screen on a device, S 09 / 15. |
 | NP-AX-02 | passed | — |
 | NP-AX-03 | needs-device | VoiceOver on macOS and iOS. |
-| NP-AX-04 | partial | Decision c.17 (field borders are a 1 px hairline, about 1.3 : 1). Then the unmeasured kinds in a.2. |
+| NP-AX-04 | partial | Decision c.17 is answered and built (2026-10-09: `--control-border`, every measured form control ≥ 3 : 1, asserted by `notion-a11y-contrast`). Left: the unmeasured kinds in a.2 (icons, text over images) and a look by eye at the darker field borders. |
 | NP-AX-05 | needs-device | Dynamic Type XXL on an iPhone. |
 | NP-AX-06 | needs-screenshot | S 15. |
 | NP-AX-07 | passed | — (iPad chips: slice U, not a clause of the row). |
@@ -221,7 +221,7 @@ c.1 NP-ED-05 → passed · c.2 NP-ED-06 → passed · c.5 NP-DB-12 → passed ·
 |---|---|---|---|---|
 | c.9 | NP-PG-09 | Make `prism-rw` (gateway-enforced: locks, grants, private pages) the Read-write agent profile and retire `vault-rw` for sessions? | **Yes.** Cost: no delete and no attachment tools for the agent. | passed |
 | c.11 | NP-RF-07 | A member mentioned by account (no person page) gets no backlink — accept? | **Yes.** There is no page to link to. | stays passed |
-| c.17 | NP-AX-04 | **New (2026-10-08).** Text fields, selects and custom checkboxes are drawn with the shared 1 px hairline (about 1.3 : 1 against the page; 157 of 170 measured are under 3 : 1). WCAG 1.4.11 asks 3 : 1 for a control's boundary. Raise the field border, or accept the hairline as Notion does? | **Raise it for form fields only**: a `--control-border` token at 3 : 1 used by inputs / selects / checkboxes, leaving dividers on `--glass-border`. Size M (every field style), with a screenshot review. | passed after the build and the a.2 leftovers |
+| c.17 | NP-AX-04 | **New (2026-10-08).** Text fields, selects and custom checkboxes are drawn with the shared 1 px hairline (about 1.3 : 1 against the page; 157 of 170 measured are under 3 : 1). WCAG 1.4.11 asks 3 : 1 for a control's boundary. Raise the field border, or accept the hairline as Notion does? | **Raise it for form fields only**: a `--control-border` token at 3 : 1 used by inputs / selects / checkboxes, leaving dividers on `--glass-border`. Size M (every field style), with a screenshot review. | **Answered and built 2026-10-09** as recommended: `--control-border` in `tokens.css` (both themes + print), re-pointed on form controls and on the boxes around seamless fields; 224 of 224 measured controls ≥ 3 : 1 (was 13 of 170), and `notion-a11y-contrast` now fails on any below. NP-AX-04 passes after the a.2 leftovers. |
 
 ---
 
@@ -241,6 +241,6 @@ c.1 NP-ED-05 → passed · c.2 NP-ED-06 → passed · c.5 NP-DB-12 → passed ·
 2. **Independent re-run** of the rows moved on 2026-10-08 (NP-AX-07, NP-DB-08, NP-PG-05 and the reconciled rows) by someone other than the agent that built them — Chromium + WebKit.
 3. **Device sitting** — `qa/device-pass-script.md` (about 100 minutes). It records the 33 `needs-device` rows, including embeds in the apps and native links.
 4. **Screenshot gallery** from §b.2 (43 rows), then the reviewer's pass over it.
-5. **Decisions c.9, c.11, c.17**; then slices R, T, U and the c.17 border token.
+5. **Decisions c.9, c.11** (c.17 is answered and built); then the slices still open.
 6. **Spec leftovers** of §a.2 (the NP-CO-03 real-server journey; three surfaces; WebKit for the newest specs).
 7. **Measurements** (d) on a quiet machine and a sandbox vault; production smoke b.4.

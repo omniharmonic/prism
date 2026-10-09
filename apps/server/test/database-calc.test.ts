@@ -4,6 +4,8 @@
  * gateway app against the fake vault. A figure covers every matching row the
  * CALLER may see — never the loaded page, never a hidden row.
  */
+// Timed in CPU time of this thread (./probe), never on the wall clock: the figure is the work, not the machine's load.
+import { threadCpuMs } from "./probe";
 import { test, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { api } from "../src/routes/api";
@@ -185,9 +187,9 @@ test("engine: 20,000 rows, every function, grouped — within the budget", () =>
   let best = Infinity;
   let out: ReturnType<typeof computeAggregates> | null = null;
   for (let i = 0; i < 5; i++) {
-    const t0 = performance.now();
+    const t0 = threadCpuMs();
     out = computeAggregates(rows, requests, { key: "stage" });
-    best = Math.min(best, performance.now() - t0);
+    best = Math.min(best, threadCpuMs() - t0);
   }
   assert.equal(out!.aggregates.owner!.count_all, 20_000);
   assert.equal(out!.aggregates.owner!.count_unique, 300);
@@ -238,9 +240,9 @@ test("engine: the worst case — 200-value arrays in the group key and the calcu
     nums: Array.from({ length: 200 }, (_, j) => i + j),
   }));
   const requests = [{ key: "nums", fn: "median" as const }, { key: "nums", fn: "count_unique" as const }, { key: "nums", fn: "count_values" as const }];
-  const t0 = performance.now();
+  const t0 = threadCpuMs();
   const out = computeAggregates(rows, requests, { key: "groups" });
-  const ms = performance.now() - t0;
+  const ms = threadCpuMs() - t0;
   // Bounded by construction: no bucket was handed more values than the budget (+ one row's worth).
   const perRow = (1 + MAX_GROUPS_PER_ROW) * (1 + MAX_VALUES_PER_CELL);
   const added = (out.aggregates.nums!.count_values as number) + out.groups!.reduce((s, g) => s + (g.aggregates.nums!.count_values as number), 0);

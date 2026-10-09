@@ -35,6 +35,7 @@ import {
   yDocToHtml,
 } from "../src/collab";
 import { configureConversion, forgetConversionFailures, stopConversionWorkers } from "../src/convert/service";
+import { probed } from "./probe";
 import { installFakeVault, makeCapability, makeSession, resetDb, sessionCookie, type FakeVault } from "./helpers";
 
 const EDITOR = "editor@test.local";
@@ -167,20 +168,11 @@ const close = (tab: Tab) => {
 };
 
 /** Longest gap between ticks of a 20 ms timer while `fn` runs. */
+/** The event loop's worst stall while `fn` runs — in this thread's CPU time (`./probe`), not on the wall clock. */
 async function lagDuring<T>(fn: () => Promise<T>): Promise<{ value: T; maxLagMs: number }> {
-  let last = performance.now();
-  let maxLagMs = 0;
-  const timer = setInterval(() => {
-    const now = performance.now();
-    maxLagMs = Math.max(maxLagMs, now - last - 20);
-    last = now;
-  }, 20);
-  try {
-    const value = await fn();
-    return { value, maxLagMs: Math.max(maxLagMs, performance.now() - last - 20) };
-  } finally {
-    clearInterval(timer);
-  }
+  const r = await probed(fn);
+  if ("error" in r && r.error !== undefined) throw r.error;
+  return { value: r.value as T, maxLagMs: r.maxLagMs };
 }
 const LOOP_BUDGET_MS = 1500;
 

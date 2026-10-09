@@ -259,9 +259,19 @@
 .db-month-marks > span { width: 6px; height: 6px; border-radius: 999px; background: var(--color-accent); }
 .db-month-day[data-outside] .db-month-marks > span { background: var(--text-muted); }
 .db-month-chosen { margin-top: 8px; border-top: 1px solid var(--glass-border); }
-/* A touch screen wide enough for the desktop grid (iPad): the per-day "+" has no hover to reveal it. */
+/* A touch screen wide enough for the desktop grid (iPad): the per-day "+" has no hover to reveal
+   it, and a page chip is a thing a finger presses (and long-presses to drag) — so both are 44 px
+   targets. The multi-day bars are laid over the week by lane: `--db-cal-lane` (a bar + its gap)
+   and `--db-cal-bar-top` (below the day number) are what views.tsx positions them with, so a
+   taller bar never covers the next lane or the day's own chips. */
+.db-cal { --db-cal-lane: 24px; --db-cal-bar-top: 30px; }
 @media (pointer: coarse) {
-  .db-cal-add { opacity: 1; width: 32px; height: 32px; }
+  .db-cal { --db-cal-lane: 47px; --db-cal-bar-top: 52px; }
+  .db-cal-add { opacity: 1; width: 44px; height: 44px; }
+  .db-cal-num { min-height: 44px; }
+  .db-cal-item { min-height: 44px; padding: 0 8px; line-height: 44px; font-size: 13px; border-radius: 7px; }
+  .db-cal-item.db-cal-bar { height: 44px; line-height: 44px; }
+  .db-cal-day { min-height: 148px; }
 }
 .db-icon-btn { display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px; border-radius: 7px; color: var(--text-muted); }
 .db-icon-btn:hover { background: var(--glass-hover); color: var(--text-primary); }
@@ -631,3 +641,85 @@
 @media (pointer: coarse) { .db-structured-lock { width: 32px; height: 32px; } }
 /* A table cell is dense: there the reason is the cell's tooltip; the property bar and the row's own page show the lock. */
 .db-value-cell .db-structured-lock { display: none; }
+
+/* A URL property holding text that is not a web address (stored before the rule, or by another
+   tool): the text as it is, and a quiet note — it is not a link, and editing it fixes or clears it. */
+.db-not-link { display: inline-flex; align-items: baseline; gap: 6px; min-width: 0; max-width: 100%; }
+.db-not-link-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.db-not-link-hint { flex: none; color: var(--text-muted); font-size: 11px; font-style: italic; white-space: nowrap; }
+
+/* ── The structured-value dialog (StructuredValueDialog.tsx): rows = items, columns = their fields ── */
+.db-structured-edit { display: inline-flex; align-items: center; justify-content: center; flex: none; min-height: 24px; margin-left: 4px; padding: 0 8px; border-radius: 6px; border: 1px solid var(--glass-border); background: var(--bg-surface); color: var(--text-secondary); font-size: 12px; font-weight: 550; white-space: nowrap; }
+.db-structured-edit:hover { background: var(--glass-hover); color: var(--text-primary); }
+/* The modal itself is the full-viewport scrim (a native <dialog> in the top layer); the box inside is the dialog. */
+dialog.db-sv-wrap { width: 100vw; height: 100dvh; max-width: none; max-height: none; margin: 0; border: 0; color: var(--text-primary); }
+dialog.db-sv-wrap::backdrop { background: transparent; }
+.db-sv { width: min(860px, 100%); height: fit-content; }
+.db-sv-picker { display: grid; gap: 6px; padding: 8px; border: 1px solid var(--glass-border); border-radius: 10px; background: var(--bg-surface); }
+.db-sv-picker-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 12.5px; font-weight: 600; color: var(--text-secondary); }
+.db-sv-picker .db-pop-list { max-height: 200px; overflow: auto; }
+.db-sv-note { margin: 0; font-size: 12.5px; color: var(--text-muted); line-height: 1.45; }
+.db-sv-scroll { overflow: auto; max-height: min(56vh, 520px); border: 1px solid var(--glass-border); border-radius: 10px; }
+.db-sv-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.db-sv-table th, .db-sv-table td { padding: 6px 8px; border-bottom: 1px solid var(--glass-border); text-align: left; vertical-align: middle; }
+.db-sv-table tbody tr:last-child > * { border-bottom: 0; }
+.db-sv-table thead th { position: sticky; top: 0; z-index: 1; background: var(--bg-elevated); color: var(--text-muted); font-size: 11.5px; font-weight: 600; white-space: nowrap; }
+.db-sv-table tbody tr:focus { outline: none; }
+.db-sv-table tbody tr[data-new] { background: color-mix(in srgb, var(--color-accent) 6%, transparent); }
+.db-sv-n { width: 1%; color: var(--text-muted); font-weight: 400; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.db-sv-actions { width: 1%; white-space: nowrap; text-align: right; }
+.db-sv-actions > button + button { margin-left: 2px; }
+.db-sv-actions [data-sv-remove]:hover { color: var(--color-danger); }
+.db-sv-text { display: flex; align-items: center; gap: 4px; min-width: 0; flex-wrap: wrap; }
+.db-sv-text > .db-input { flex: 1 1 120px; min-width: 96px; border-color: var(--glass-border-strong, var(--glass-border)); box-shadow: none; }
+.db-sv-text > .db-input:focus-visible { border-color: var(--color-accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-accent) 18%, transparent); }
+.db-sv-text > .db-input[aria-invalid="true"] { border-color: var(--color-danger); }
+.db-sv-text > .db-error { flex-basis: 100%; }
+.db-sv td > .db-input { border-color: var(--glass-border-strong, var(--glass-border)); box-shadow: none; }
+.db-sv td > .db-input:focus-visible { border-color: var(--color-accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-accent) 18%, transparent); }
+.db-sv-check { width: 18px; height: 18px; accent-color: var(--action-bg, var(--color-accent)); }
+.db-sv-link[data-linked] { color: var(--color-accent); }
+.db-sv-nested { display: inline-block; max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: middle; color: var(--text-secondary); }
+.db-sv-kept { color: var(--text-muted); font-size: 11.5px; font-style: italic; }
+.db-sv-nested-cell { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.db-sv-nested-cell > .db-sv-nested { flex: 1 1 auto; min-width: 0; max-width: 220px; }
+.db-sv-drill { margin-left: 0; }
+/* Fields: the columns as chips, with Add — above the items so they are reachable on a phone too. */
+.db-sv-fields { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.db-sv-fields-label { font-size: 11.5px; font-weight: 600; color: var(--text-muted); margin-right: 2px; }
+.db-sv-field { display: inline-flex; align-items: center; gap: 5px; min-height: 26px; padding: 0 9px; border-radius: 999px; border: 1px solid var(--glass-border); background: var(--bg-surface); color: var(--text-secondary); font-size: 12px; white-space: nowrap; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+.db-sv-field:hover, .db-sv-field[aria-expanded="true"] { background: var(--glass-hover); color: var(--text-primary); }
+.db-sv-field-add { border-style: dashed; }
+.db-sv-fieldform { display: grid; gap: 8px; }
+.db-sv-fieldform .db-input { border-color: var(--glass-border-strong, var(--glass-border)); box-shadow: none; }
+.db-sv-fieldform .db-input:focus-visible { border-color: var(--color-accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-accent) 18%, transparent); }
+.db-sv-fieldpanel .db-sv-confirm { display: grid; gap: 8px; border-top: 0; padding-top: 0; }
+.db-sv-cell-label { display: none; }
+.db-sv-conflict { display: grid; gap: 6px; }
+.db-sv-conflict-actions { display: inline-flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.db-sv-confirm { padding-top: 8px; border-top: 1px solid var(--glass-border); font-size: 13px; }
+/* Touch and phones: every control is a 44 px target; on a phone each item is a card of labelled fields (a wide table would scroll sideways). */
+@media (pointer: coarse), (max-width: 767px) {
+  .db-structured-edit { min-height: 44px; min-width: 44px; padding: 0 12px; font-size: 13px; }
+  .db-sv .db-icon-btn { width: 44px; height: 44px; }
+  .db-sv .db-input { min-height: 44px; font-size: 16px; }
+  .db-sv .db-ghost, .db-sv .db-primary { min-height: 44px; }
+  .db-sv-check { width: 24px; height: 24px; margin: 10px; }
+  .db-sv-conflict-actions > button { min-height: 44px; }
+  .db-sv-picker .db-pop-list li > button { min-height: 44px; }
+  .db-sv-field { min-height: 44px; padding: 0 14px; font-size: 13px; }
+  .db-sv-fields { gap: 8px; }
+  .db-sv-picker .db-pop-search input { min-height: 44px; font-size: 16px; }
+}
+@media (max-width: 767px) {
+  .db-sv-scroll { max-height: none; overflow: visible; border: 0; border-radius: 0; }
+  .db-sv-table, .db-sv-table tbody, .db-sv-table tr, .db-sv-table td, .db-sv-table tbody th { display: block; }
+  .db-sv-table thead { position: absolute; width: 1px; height: 1px; margin: -1px; overflow: hidden; clip-path: inset(50%); }
+  .db-sv-table tbody tr { margin: 0 0 12px; padding: 8px 10px; border: 1px solid var(--glass-border); border-radius: 10px; }
+  .db-sv-table tbody th, .db-sv-table td { padding: 4px 0; border: 0; width: auto; }
+  .db-sv-table tbody th.db-sv-n { font-weight: 600; color: var(--text-secondary); }
+  .db-sv-table tbody th.db-sv-n::before { content: "Item "; }
+  .db-sv-cell-label { display: block; margin-bottom: 2px; font-size: 11.5px; font-weight: 600; color: var(--text-muted); }
+  .db-sv-actions { text-align: left; }
+  .db-sv-nested { max-width: 100%; white-space: normal; }
+}

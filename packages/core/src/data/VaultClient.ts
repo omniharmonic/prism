@@ -296,6 +296,15 @@ export interface VaultClient {
   /** Metadata-only property write with per-field compare-and-set (`expect` = the
    *  values the caller last saw). Throws {@link PropertyConflictError}. */
   updateProperties?(id: string, set: Record<string, unknown>, expect?: Record<string, unknown>): Promise<PropertyWriteResult>;
+  /**
+   * Write ONE structured property value (a list of objects, or an object) back in its own
+   * shape — the structured-value editor's write (`POST /api/properties/:id/structured`).
+   * `expect` is the value the editor loaded; the write lands only if exactly that is still
+   * stored. Throws {@link PropertyConflictError} (with the value stored now) otherwise.
+   * Never queued offline. Optional: without it the client does the same compare-and-set
+   * over `getNote` + a metadata-only `updateNote` (`useStructuredWriter`).
+   */
+  updateStructuredProperty?(id: string, key: string, value: unknown, expect: unknown): Promise<PropertyWriteResult>;
   /** Up to 100 property writes, each its own CAS write and result (bulk edit).
    *  Optional: the client falls back to one `updateProperties` per row. */
   updatePropertiesBatch?(items: PropertyBatchItem[]): Promise<PropertyBatchResult[]>;

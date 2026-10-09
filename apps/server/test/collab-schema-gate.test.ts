@@ -13,6 +13,8 @@
  *    owner passthrough and the non-owner route alike; metadata writes, plain notes,
  *    current clients and in-process MCP dispatches pass.
  */
+// Timed in CPU time of this thread (./probe), never on the wall clock: the figure is the work, not the machine's load.
+import { threadCpuMs } from "./probe";
 import { test, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { createServer, type Server } from "node:http";
@@ -33,9 +35,9 @@ import { installFakeVault, resetDb, makeSession, sessionCookie, grantUser, type 
 // ── 1. The schema is pinned to its version ───────────────────────────────────
 
 /** Bump COLLAB_SCHEMA_VERSION and update this snapshot TOGETHER. */
-const SCHEMA_V5 = {
+const SCHEMA_V6 = {
   nodes: {
-    attachment: ["kind", "mimeType", "name", "size", "src"], blockquote: ["blockColor"], bookmark: ["description", "favicon", "image", "siteName", "title", "url"], bulletList: ["blockColor"], callout: ["blockColor", "emoji"], childPage: ["pageId"], codeBlock: ["language"], column: ["width"], columns: [], databaseView: ["noteId", "viewId"], doc: [], embed: ["height", "url"], hardBreak: [], heading: ["blockColor", "level"], horizontalRule: [], image: ["align", "alt", "caption", "height", "src", "title", "width"], listItem: [], mention: ["date", "id", "kind", "label", "reminder", "uid"], orderedList: ["blockColor", "start", "type"], paragraph: ["blockColor"], table: [], tableCell: ["align", "cellColor", "colspan", "colwidth", "rowspan"], tableHeader: ["align", "cellColor", "colspan", "colwidth", "rowspan"], tableOfContents: [], tableRow: [], taskItem: ["checked"], taskList: ["blockColor"], text: [], toggle: ["blockColor", "level"], toggleSummary: [],
+    attachment: ["kind", "mimeType", "name", "size", "src"], blockquote: ["blockColor"], bookmark: ["description", "favicon", "image", "siteName", "title", "url"], bulletList: ["blockColor"], callout: ["blockColor", "emoji"], childPage: ["pageId"], codeBlock: ["language", "suggestion", "suggestionBy"], column: ["width"], columns: [], databaseView: ["noteId", "viewId"], doc: [], embed: ["height", "url"], hardBreak: ["suggestion", "suggestionBy"], heading: ["blockColor", "level", "suggestion", "suggestionBy"], horizontalRule: [], image: ["align", "alt", "caption", "height", "src", "title", "width"], listItem: [], mention: ["date", "id", "kind", "label", "reminder", "suggestion", "suggestionBy", "uid"], orderedList: ["blockColor", "start", "type"], paragraph: ["blockColor", "suggestion", "suggestionBy"], table: [], tableCell: ["align", "cellColor", "colspan", "colwidth", "rowspan"], tableHeader: ["align", "cellColor", "colspan", "colwidth", "rowspan"], tableOfContents: [], tableRow: [], taskItem: ["checked"], taskList: ["blockColor"], text: [], toggle: ["blockColor", "level"], toggleSummary: ["suggestion", "suggestionBy"],
   },
   marks: {
     bold: [], code: [], comment: ["id", "resolved"], deletion: ["actorId", "color", "suggestionId", "turnId", "user"], highlight: ["color"], insertion: ["actorId", "color", "suggestionId", "turnId", "user"], italic: [], link: ["class", "href", "rel", "target", "title"], strike: [], textColor: ["color"], underline: [],
@@ -50,8 +52,30 @@ test("the document schema's node, mark and attribute names match COLLAB_SCHEMA_V
     nodes: names(Object.fromEntries(Object.entries(schema.nodes).map(([k, v]) => [k, v.spec]))),
     marks: names(Object.fromEntries(Object.entries(schema.marks).map(([k, v]) => [k, v.spec]))),
   };
-  assert.equal(COLLAB_SCHEMA_VERSION, 5, "bump the snapshot above together with the version");
-  assert.deepEqual(actual, SCHEMA_V5, "a node/mark/attribute changed: bump COLLAB_SCHEMA_VERSION (packages/core/src/editor/collabSchema.ts) and update SCHEMA_V5");
+  assert.equal(COLLAB_SCHEMA_VERSION, 6, "bump the snapshot above together with the version");
+  assert.deepEqual(actual, SCHEMA_V6, "a node/mark/attribute changed: bump COLLAB_SCHEMA_VERSION (packages/core/src/editor/collabSchema.ts) and update SCHEMA_V6");
+});
+
+test("every text block and every inline atom of the schema (line break, chip) can carry a suggestion record", () => {
+  // editor/suggestionNodes lists the types by name: a new text block type must be added there,
+  // or a paragraph break in front of it could not be suggested (Enter would stay untracked); an
+  // inline atom without them would be put in / taken out as a plain edit while Suggesting.
+  const schema = getSchema(collabExtensions());
+  const missing = Object.values(schema.nodes).filter((type) => (type.isTextblock || (type.isInline && !type.isText)) && !("suggestion" in (type.spec.attrs ?? {}))).map((type) => type.name);
+  assert.deepEqual(missing, []);
+});
+
+test("the suggestion marks can sit on ALL text: every text block allows them and no mark excludes them (inline code and code blocks included)", () => {
+  // Otherwise a change made there while Suggesting has no record — it was "applied directly" in code.
+  const schema = getSchema(collabExtensions());
+  const { insertion, deletion, code } = schema.marks;
+  const blocks = Object.values(schema.nodes).filter((type) => type.isTextblock && !(type.allowsMarkType(insertion!) && type.allowsMarkType(deletion!))).map((type) => type.name);
+  assert.deepEqual(blocks, []);
+  const excluding = Object.values(schema.marks).filter((mark) => mark !== insertion && mark !== deletion && (mark.excludes(insertion!) || mark.excludes(deletion!))).map((mark) => mark.name);
+  assert.deepEqual(excluding, []);
+  // Inline code still excludes every OTHER mark (bold code, a link in code… stay impossible) — and itself.
+  const allowedInCode = Object.values(schema.marks).filter((mark) => !code!.excludes(mark)).map((mark) => mark.name).sort();
+  assert.deepEqual(allowedInCode, ["deletion", "insertion"]);
 });
 
 test("schema params parse strictly", () => {
@@ -212,6 +236,34 @@ test("v5: child-page rows, toggle headings, column widths and cell colours refus
   }
 });
 
+test("v6: a suggested paragraph break / line break / chip, and a suggestion inside code, refuse a v5 editor's content write — and its socket", async () => {
+  const sug = (kind: string, inner: string) => `<span data-suggestion="${kind}" data-user="Ann" data-color="#22c55e" style="color:#22c55e;">${inner}</span>`;
+  const markers = [
+    '<p>a</p><p data-suggestion-node="insert" data-suggestion-by="Ann">b</p>',
+    '<p>a<br data-suggestion-node="delete" data-suggestion-by="Ann">b</p>',
+    '<p>hi <span data-type="mention" class="prism-mention" data-kind="date" data-date="2027-01-01" data-suggestion-node="insert" data-suggestion-by="Ann">@x</span></p>',
+    `<p>run ${sug("insert", "<code>ci</code>")}</p>`,
+    `<pre><code>a = ${sug("delete", "1")}${sug("insert", "2")};</code></pre>`,
+    `<p>before</p><pre><code>one</code></pre><p>between</p><pre><code class="language-js">x${sug("insert", "y")}</code></pre>`,
+  ];
+  for (const [i, html] of markers.entries()) {
+    fv.put({ id: `v6-${i}`, content: html, tags: [] });
+    assert.equal((await patch(`v6-${i}`, { content: "<p>x</p>" }, { "X-Prism-Editor-Schema": "5" })).status, 409, html);
+    assert.equal((await patch(`v6-${i}`, { content: `${html}<p>y</p>` }, { "X-Prism-Editor-Schema": String(COLLAB_SCHEMA_VERSION) })).status, 200, html);
+  }
+  // What a v5 editor represents exactly is NOT a marker: a suggestion on ordinary text, also next to code and after a code block.
+  const { needsEditorUpdate } = await import("../src/routes/api");
+  for (const html of [`<p>${sug("insert", "word")} and <code>code</code></p>`, `<pre><code>plain</code></pre><p>${sug("delete", "gone")}</p>`, "<pre><code>the text data-suggestion=x in code</code></pre>".replace("data-suggestion=x", "data-suggestion-id")]) {
+    assert.equal(needsEditorUpdate(html), false, html);
+  }
+  // The live socket: the version just before the current one is refused like any older one (5 → 6).
+  fv.put({ id: "d6", content: markers[0]!, tags: ["team"] });
+  const previous = await open("d6", `?schema=${COLLAB_SCHEMA_VERSION - 1}`);
+  assert.equal(previous.outcome, UPDATE_REQUIRED_REASON);
+  assert.equal(previous.doc.getXmlFragment("default").length, 0, "it never received the document");
+  assert.equal((await open("d6", `?schema=${COLLAB_SCHEMA_VERSION}`)).outcome, "synced");
+});
+
 test("L1: markers are read the way an HTML parser reads them — quotes, case and spacing do not hide one; plain look-alikes pass", async () => {
   const { needsEditorUpdate } = await import("../src/routes/api");
   for (const html of [
@@ -224,15 +276,18 @@ test("L1: markers are read the way an HTML parser reads them — quotes, case an
     "<details\n><summary>s</summary></details>",
     "<DETAILS><summary>s</summary></DETAILS>",
     "<div data-prism-database\t=\t'db1'></div>",
+    // v6: a suggested paragraph break / line break (an older editor would save the page without it).
+    '<p>a</p><p data-suggestion-node="insert" data-suggestion-by="Ann">b</p>',
+    '<p>a<br data-suggestion-node="delete" data-suggestion-by="Ann">b</p>',
     '<details data-type="toggle" data-heading-level = "2"><summary>s</summary></details>',
   ]) assert.equal(needsEditorUpdate(html), true, html);
   for (const html of ["<p>hello</p>", '<div data-type="other"><p>x</p></div>', "<p>the word data-type and data-block-color in prose</p>", "<p>&lt;detailsx&gt;</p>", "# Markdown with data-type=\"callout\" in text", "<detailsx>", '<p data-typeface="callout">x</p>']) {
     assert.equal(needsEditorUpdate(html), false, html);
   }
   // Linear on a pathological body.
-  const t = performance.now();
+  const t = threadCpuMs();
   needsEditorUpdate("<p>" + "data-type ".repeat(200_000) + "</p>" + "<details".repeat(100_000));
-  assert.ok(performance.now() - t < 500);
+  assert.ok(threadCpuMs() - t < 500);
 });
 
 test("in-process MCP dispatches (agents) are exempt", async () => {

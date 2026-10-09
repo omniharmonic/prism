@@ -113,9 +113,9 @@ test("offline copies: removed on request, evicted when access is revoked, expire
   expect(await page.evaluate(() => (window as any).prismShellClient.getNote("field-notes").then(() => "served", () => "refused"))).toBe("refused");
   await context.setOffline(false);
   // The session ends (PWA 401 / sign-out): cached pages and device-local page lists go with it.
-  await page.evaluate(() => { localStorage.setItem("prism:recent-searches:x", '["workshop"]'); });
+  await page.evaluate(() => { localStorage.setItem("prism:recent-searches:x", '["workshop"]'); localStorage.setItem("prism:offline-sublinks", JSON.stringify({ "offline-1": { parentId: "p", parentTitle: "Plan", title: "Private page" } })); localStorage.setItem("prism:calendar-listing:x", JSON.stringify({ v: 1, at: Date.now(), events: [] })); });
   expect(await page.evaluate(() => Object.keys(localStorage).some((k) => k.startsWith("prism:offline-")))).toBe(true);
   await page.evaluate(async () => { (window as any).prismShell.signedOut = true; await (window as any).prismShell.refreshMe(); });
   await expect.poll(async () => (await cachedKeys(page)).length).toBe(0);
-  expect(await page.evaluate(() => Object.keys(localStorage).filter((k) => /^prism:(offline-|recent-searches:)/.test(k)))).toEqual([]);
+  expect(await page.evaluate(() => Object.keys(localStorage).filter((k) => /^prism:(offline-|recent-searches:|calendar-listing:)/.test(k)))).toEqual([]);
 });

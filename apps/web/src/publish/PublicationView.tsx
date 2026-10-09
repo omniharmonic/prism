@@ -407,7 +407,8 @@ function PasswordGate({
             padding: "10px 12px",
             fontSize: 16,
             borderRadius: 8,
-            border: "1px solid rgba(0,0,0,0.25)",
+            // The light theme's --control-border, written out (this field is theme-independent): 4 : 1 on white (NP-AX-04).
+            border: "1px solid #7d7f87",
             background: "#ffffff",
             color: "#111111",
             caretColor: "#111111",

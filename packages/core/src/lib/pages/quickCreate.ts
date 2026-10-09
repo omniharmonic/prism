@@ -6,6 +6,7 @@ import type { Note, NoteTreeEntry } from "../types";
 import { useUIStore } from "../../app/stores/ui";
 import { queryKeys } from "../parachute/queries";
 import { newContentFolder, newContentParams } from "../../components/navigation/newContent";
+import { linkNewPageToParent } from "./subPageLink";
 
 /**
  * NP-SB-13 / NP-MB-02: New page in ONE action. Creates "Untitled" next to the
@@ -25,8 +26,10 @@ export async function createUntitledPage(client: VaultClient, queryClient: Query
   // The create's own response IS the page: seed it so the title is on screen (and
   // focused) without waiting for a second round trip to read it back (< 300 ms).
   if (note && typeof note.id === "string") queryClient.setQueryData(queryKeys.vault.note(note.id), note);
-  // NP-PG-15: an open parent page adds a sub-page row for it (lib/tiptap/childPage.tsx listens).
-  if (typeof window !== "undefined") window.dispatchEvent(new CustomEvent("prism:page-created", { detail: { id: note.id, parentPath: folder } }));
+  // NP-PG-15: the parent page gets a sub-page row — from its open editor, else appended to its
+  // stored body by the server (`subPageLink.ts`). Only the open parent's own save is waited for
+  // (one request, and only when the parent is the page on screen), never the server's append.
+  await linkNewPageToParent({ id: note.id, title, folder, tree });
   useUIStore.getState().openTab(note.id, title, "document");
   focusPageTitle(title);
   return note;

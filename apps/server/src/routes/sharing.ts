@@ -22,7 +22,7 @@ import { ensureTree, rowRef, type TreeRow } from "../tree";
 import { vaultClient, VaultError, type Note } from "../parachute";
 import { consumeRateLimit } from "../middleware/ratelimit";
 import { ancestorPages, creatorNameFor, displayNameOnly, inheritedPeople, personView, versionWriter, viewableAncestors } from "../sharing";
-import { TRASH_TAG } from "@prism/core/pages";
+import { TRASH_TAG, containerTitle } from "@prism/core/pages";
 import type { VaultEntry } from "../config";
 import { WRITER_KEY, writerIdFor, writerNames } from "../writer-stamp";
 
@@ -43,7 +43,8 @@ const noteRef = (n: Note): NoteRef => ({
   visibility: n.metadata?.prism_visibility === "private" ? "private" : "workspace",
   path: n.path ?? null,
 });
-const titleOf = (path: string | null, id: string): string => (path ? path.slice(path.lastIndexOf("/") + 1) : id);
+// A container-named page (`…/food-chain/PROJECT`) is named by its folder, never by the word "PROJECT".
+const titleOf = (path: string | null, id: string): string => (path ? containerTitle(path) ?? path.slice(path.lastIndexOf("/") + 1) : id);
 
 function entryOf(a: Actor): VaultEntry | null {
   return getVaultRegistry().find((v) => v.id === a.vaultId) ?? null;

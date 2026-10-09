@@ -2,9 +2,9 @@ import { test, expect, type Page } from "@playwright/test";
 
 /**
  * Structured property values (`members: [{name, role}]`) — the owner's `circle` note
- * printed two chips reading "[object Object]". They now read as names, are read-only
- * in every inline editor, and no write path replaces the objects. Fixture:
- * databases.html?circles.
+ * printed two chips reading "[object Object]". They now read as names, no INLINE editor
+ * opens on them, and no flattening write path replaces the objects (they are edited in
+ * the structured-value dialog — structured-edit.spec.ts). Fixture: databases.html?circles.
  */
 const fx = (page: Page) => page.evaluate(() => (window as any).dbFixture);
 const stored = (page: Page, id: string) => page.evaluate((i) => (window as any).dbFixture.notes().find((n: any) => n.id === i).metadata, id);
@@ -12,7 +12,7 @@ const openTabs = (page: Page) => page.evaluate(() => (window as any).prismUI.get
 const MEMBERS = [{ name: "Benjamin Life", role: "delegate" }, { name: "Patricia Parkinson", role: "delegate" }];
 const bar = (page: Page) => page.getByRole("group", { name: "Page properties" });
 
-test("property bar: members render as names with their role, read-only, and a name that is a person page opens it", async ({ page }, info) => {
+test("property bar: members render as names with their role, no inline editor, and a name that is a person page opens it", async ({ page }, info) => {
   await page.goto("/e2e-fixtures/databases.html?circles&open=c1");
   const props = bar(page);
   const members = props.locator('[data-property-key="members"]');
@@ -25,10 +25,9 @@ test("property bar: members render as names with their role, read-only, and a na
   await members.getByText("Patricia Parkinson").click();
   await expect(page.getByRole("dialog")).toHaveCount(0);
   await expect(members.locator("input")).toHaveCount(0);
-  // The reason is said (a tap shows it: phones have no hover).
-  const lock = members.getByRole("button", { name: /Members is read-only/ });
-  await lock.click();
-  await expect(members.getByRole("status")).toContainText("Structured value");
+  // No lock and no "read-only" note any more: the value is edited in its own dialog (structured-edit.spec.ts).
+  await expect(members.getByRole("button", { name: /Members is read-only/ })).toHaveCount(0);
+  await expect(members.getByRole("button", { name: "Edit Members" })).toHaveText("Edit…");
   // A {person: [[link]], role} item, an object with no naming key, numbers and booleans in a list.
   await expect(props.locator('[data-property-key="sponsors"]')).toContainText("Mira Chen — sponsor");
   await expect(props.locator('[data-property-key="scores"]')).toContainText("3");

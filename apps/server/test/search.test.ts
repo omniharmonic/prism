@@ -3,6 +3,8 @@
  * gateway app against the fake vault: view filtering, trash + private rules,
  * filters that only narrow, match offsets, bounds and the rate limit.
  */
+// Timed in CPU time of this thread (./probe), never on the wall clock: the figure is the work, not the machine's load.
+import { threadCpuMs } from "./probe";
 import { test, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { api } from "../src/routes/api";
@@ -169,9 +171,9 @@ test("pure helpers: terms, merged offsets, plain text and snippets", () => {
 
 // ── review H1/M1/M2 ──────────────────────────────────────────────────────────
 function timed<T>(fn: () => T): [T, number] {
-  const t0 = performance.now();
+  const t0 = threadCpuMs();
   const out = fn();
-  return [out, performance.now() - t0];
+  return [out, threadCpuMs() - t0];
 }
 
 test("H1: plainText/snippets stay linear on pathological note content", () => {
@@ -212,9 +214,9 @@ test("M2: bounded vault fetch, bounded snippet work, identical in-flight queries
   const big = "<p>" + "filler words ".repeat(25_000) + "</p><p>quokka sighting near the end</p>";
   for (let i = 0; i < 30; i++) fv.put({ id: `big${i}`, path: `Big/${i}`, tags: ["note"], content: big, metadata: {} });
   const before = fv.calls.length;
-  const t0 = performance.now();
+  const t0 = threadCpuMs();
   const [a, b] = await Promise.all([get("/search?q=quokka&limit=100", login(OWNER)), get("/search?q=quokka&limit=100", login(OWNER))]);
-  const ms = performance.now() - t0;
+  const ms = threadCpuMs() - t0;
   assert.equal(a.status, 200);
   assert.equal(b.status, 200);
   const rows = (await a.json()) as Array<any>;

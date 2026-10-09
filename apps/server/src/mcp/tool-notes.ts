@@ -20,6 +20,8 @@
  *    for the passthrough (the vault has no /search route).
  */
 import { shapeMetadata } from "../vault-shapes";
+import { applyUrlRule } from "../routes/databases";
+import { resolveVaultEntry } from "../db";
 import * as z from "zod/v4";
 import { ConversionError, htmlToMarkdown } from "../convert/service";
 import { CAPS, atLeast, effectiveCaps, type Cap } from "../permissions";
@@ -309,6 +311,20 @@ export const semanticSearchTool = defineTool({
   },
 });
 
+/**
+ * The URL rule for metadata an MCP tool is about to write (`applyUrlRule`, the same one
+ * the property routes use): a URL property takes a web address — normalised here — or
+ * the call fails with `invalid_request` naming the fields (`detail: {error: "invalid_url",
+ * fields}`); nothing is written. Clearing a field and sending back what is stored pass.
+ */
+async function urlChecked(ctx: ToolContext, tags: readonly string[], stored: Record<string, unknown> | null, metadata: Record<string, unknown>): Promise<Record<string, unknown>> {
+  const ruled = await applyUrlRule(resolveVaultEntry(ctx.principal.actor.vaultId), tags, stored, metadata);
+  if (ruled.invalid.length) {
+    throw new ToolError("invalid_request", `${ruled.invalid.join(", ")}: not a web address — a URL property takes an address such as https://example.com/page (or null to clear it). Nothing was written.`, { error: "invalid_url", fields: ruled.invalid });
+  }
+  return ruled.set;
+}
+
 export const createNoteTool = defineTool({
   name: "prism_create_note",
   scope: "write",
@@ -329,7 +345,8 @@ export const createNoteTool = defineTool({
     // Shape guard (vault-shapes.ts) HERE, not only at the vault client: an owner/admin
     // principal's write leaves through the passthrough, which forwards bodies untouched.
     // This body is built by the tool, so shaping it changes no client's bytes.
-    const shaped = metadata === undefined ? undefined : shapeMetadata(metadata, tags, "create");
+    // …and the URL rule (a URL property holds web addresses only), for the same reason.
+    const shaped = metadata === undefined ? undefined : await urlChecked(ctx, tags, null, shapeMetadata(metadata, tags, "create") ?? {});
     const created = await getJson<NoteOut>(ctx, "/api/notes", { method: "POST", ...json({ content, path, tags, metadata: shaped }) });
     return { ...listRow(created, false), metadata: created.metadata ?? {} };
   },
@@ -419,7 +436,13 @@ export const updateNoteTool = defineTool({
     // Metadata passes the shape guard here as well (see prism_create_note): the note's own
     // tags when this call read it, plus the tags being added — else the by-name rules only.
     const shapeTags = knownTags || a.add_tags?.length ? [...(knownTags ?? []), ...(a.add_tags ?? [])] : undefined;
-    const metadata = a.metadata === undefined ? undefined : shapeMetadata(a.metadata, shapeTags, "update");
+    let metadata = a.metadata === undefined ? undefined : shapeMetadata(a.metadata, shapeTags, "update");
+    if (metadata !== undefined && Object.keys(metadata).length) {
+      // The URL rule needs the page as it is stored (its tags decide which keys are URL properties;
+      // its values decide whether a key is restated or changed). The view gate is this read.
+      const current = await getJson<NoteOut>(ctx, `/api/notes/${enc(a.id)}`);
+      metadata = await urlChecked(ctx, [...(current.tags ?? []), ...(a.add_tags ?? [])], current.metadata ?? {}, metadata);
+    }
     const body: Record<string, unknown> = { content, metadata, if_updated_at: ifUpdatedAt };
     if (isAdmin(ctx.principal)) {
       if (hasTags) body.tags = { add: a.add_tags ?? [], remove: a.remove_tags ?? [] };

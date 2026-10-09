@@ -30,7 +30,7 @@ import { peopleApi } from "./people";
 import { humanCollabApi } from "./human-collab";
 import { tellPagesChanged, writesTitle } from "../page-notice";
 import { transcriptsApi } from "./transcripts";
-import { databasesApi } from "./databases";
+import { databasesApi, restUrlRuleHook } from "./databases";
 import { sharingApi } from "./sharing";
 import { consumeRateLimit, rateLimitClientKey } from "../middleware/ratelimit";
 import { settleKeyForUser, takeUnsavedSettle } from "../unsaved-settle";
@@ -539,7 +539,7 @@ export const EDITOR_SCHEMA_HEADER = "x-prism-editor-schema";
 // v2 (callout/toggle/columns/colours), v3 (mention), v4 (attachment/embed/bookmark/toc/database blocks, image align/caption),
 // v5 (child-page rows, toggle headings, column widths, table cell colours — 4–5 columns are caught by the columns marker).
 const MARKER_TYPES = new Set(["callout", "toggle", "columns", "column", "mention", "attachment", "embed", "bookmark", "toc", "child-page"]);
-const MARKER_ATTRS = ["data-prism-database", "data-block-color", "data-text-color", "data-align", "data-caption", "data-heading-level", "data-col-width", "data-cell-color"];
+const MARKER_ATTRS = ["data-prism-database", "data-block-color", "data-text-color", "data-align", "data-caption", "data-heading-level", "data-col-width", "data-cell-color", "data-suggestion-node"];
 const isWs = (c: number) => c === 32 || c === 9 || c === 10 || c === 13 || c === 12;
 /** After an attribute NAME at `i`: the value following `=` (whitespace and either quote style tolerated), or null when no `=`. */
 function attrValueAt(s: string, i: number): string | null {
@@ -579,6 +579,30 @@ export function needsEditorUpdate(storedContent: string | null | undefined): boo
   for (let i = s.indexOf("<details"); i !== -1; i = s.indexOf("<details", i + 8)) {
     const c = s.charCodeAt(i + 8);
     if (Number.isNaN(c) || isWs(c) || c === 62 /* > */ || c === 47 /* / */) return true;
+  }
+  return suggestionInCode(s);
+}
+/**
+ * v6: a suggestion INSIDE code. Since v6 inline code and code blocks carry the insertion /
+ * deletion marks; an older editor's schema excludes them there, so its save would settle the
+ * suggestion unreviewed (the struck and the inserted text both become plain code). Stored as
+ * `<span data-suggestion=…><code>…` (inline code) or as a suggestion span inside `<pre>`.
+ * One forward pass (both cursors only move on); `s` is lower-cased.
+ */
+function suggestionInCode(s: string): boolean {
+  const NAME = "data-suggestion";
+  let pre = s.indexOf("<pre");
+  let preEnd = -1; // where the <pre> block the cursor last passed ends
+  for (let i = s.indexOf(NAME); i !== -1; i = s.indexOf(NAME, i + NAME.length)) {
+    if (s.charCodeAt(i + NAME.length) === 45 /* - : data-suggestion-node / -id / -by */ || attrValueAt(s, i + NAME.length) === null) continue;
+    while (pre !== -1 && pre < i) {
+      const close = s.indexOf("</pre", pre);
+      preEnd = close === -1 ? s.length : close;
+      pre = s.indexOf("<pre", preEnd);
+    }
+    if (i < preEnd) return true;
+    const end = s.indexOf(">", i);
+    if (end !== -1 && s.startsWith("<code", end + 1)) return true;
   }
   return false;
 }
@@ -663,6 +687,10 @@ api.use("/notes/:id/restore", async (c, next) => (c.req.method === "POST" ? ((aw
 // Wave 2A: a successful content write carrying @-mention chips → notifications +
 // mention backlinks (both the owner passthrough and the member route; never
 // changes the response). After the schema gate, before the owner short-circuit.
+// The URL rule (a URL property holds web addresses) on note creates and updates — for the member
+// routes AND the owner / admin passthrough below. First of the body hooks: it may normalise the body.
+api.use("/notes", restUrlRuleHook);
+api.use("/notes/:id", restUrlRuleHook);
 api.use("/notes", restMentionHook);
 api.use("/notes/:id", restMentionHook);
 // NP-CO-16: a metadata write that adds someone to a person property → "assigned

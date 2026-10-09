@@ -204,6 +204,8 @@ window.fetch = async (input, init) => {
   }
   if (path === "/api/notes" && method === "GET") {
     const tag = url.searchParams.get("tag");
+    // notion-home.spec.ts counts these: Home and the Calendar tool share ONE meeting listing.
+    if (tag === "meeting") (window as unknown as { fixtureMeetingLists?: number }).fixtureMeetingLists = ((window as unknown as { fixtureMeetingLists?: number }).fixtureMeetingLists ?? 0) + 1;
     return json(notes.filter((n) => canView(n) && (!tag || n.tags?.includes(tag))));
   }
   const one = path.match(/^\/api\/notes\/([^/]+)$/);

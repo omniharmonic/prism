@@ -33,9 +33,30 @@ export function EditorFindBar({ editor, onClose, replaceOpen = false }: EditorFi
 
   useEffect(() => { if (replaceOpen) setShowReplace(true); }, [replaceOpen]);
 
+  // The bar opens with the caret in its field. Opened from the phone's ⋯ sheet (a modal dialog) or a menu, the
+  // bar can mount while that surface is still closing: a modal makes everything outside it inert, so `focus()`
+  // does nothing then, and the surface hands focus back to its trigger as it goes. So the field asks again on
+  // the following frames UNTIL it has the caret once (at most ~1.5 s) — and then never again: from that moment
+  // focus belongs to the person and to the bar's own controls (the replace field). It also gives up at the
+  // person's first key or pointer.
   useEffect(() => {
-    inputRef.current?.focus();
-    inputRef.current?.select();
+    let frame = 0;
+    let stopped = false;
+    const started = performance.now();
+    const stop = () => { stopped = true; cancelAnimationFrame(frame); document.removeEventListener("pointerdown", stop, true); document.removeEventListener("keydown", stop, true); };
+    const take = () => {
+      if (stopped) return;
+      const input = inputRef.current;
+      if (!input) return stop();
+      input.focus();
+      if (document.activeElement === input) { input.select(); return stop(); }
+      if (performance.now() - started > 1500) return stop();
+      frame = requestAnimationFrame(take);
+    };
+    document.addEventListener("pointerdown", stop, true);
+    document.addEventListener("keydown", stop, true);
+    take();
+    return stop;
   }, []);
 
   // Track editability changes (read-only flips, suggest mode) and live edits.

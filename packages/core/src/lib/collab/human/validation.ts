@@ -69,7 +69,7 @@ export function parseHumanCommand(body: string): HumanCollabCommand | null {
     };
     if (
       !extra[v.kind] ||
-      Object.keys(v).sort().join() !== [...base, ...extra[v.kind]].sort().join()
+      Object.keys(v).sort().join() !== [...base, ...(extra[v.kind] ?? [])].sort().join()
     )
       return null;
     if (
@@ -137,6 +137,8 @@ const reviewMarked = (node?: ProseNode | null) =>
   !!node?.marks.some((mark) =>
     ["insertion", "deletion"].includes(mark.type.name),
   );
+const nodeSuggested = (node?: ProseNode | null) =>
+  node?.attrs?.suggestion === "insert" || node?.attrs?.suggestion === "delete";
 export function humanRangeProblem(
   doc: ProseNode,
   from: number,
@@ -170,10 +172,15 @@ export function humanRangeProblem(
     return "This block does not support that change.";
   let runs = 0,
     unmarkable = false,
-    overlap = false;
+    // Schema v6: a block start, a line break or a chip can itself BE a pending suggestion
+    // (`attrs.suggestion`). A command inside such a block, or over such a node, would stack a
+    // second suggestion on the first — refused like text that already carries one. (The server
+    // applies the same rule: `planSuggest` in apps/server/src/human-collab.ts.)
+    overlap = kind === "suggest" && (nodeSuggested(start.parent) || nodeSuggested(end.parent));
   doc.nodesBetween(from, to, (node) => {
     if (!node.isInline) return true;
     runs++;
+    if (nodeSuggested(node)) overlap = true;
     if (
       !node.isText ||
       node.marks.some((existing) => existing.type.excludes(mark))
@@ -198,7 +205,8 @@ export function humanRangeProblem(
   )
     return "This passage touches a pending suggestion. Review it before suggesting another change.";
   if (unmarkable)
-    return "Select fully markable text without inline code, line breaks, or embedded items.";
+    // (Inline code CAN carry a suggestion since schema v6; a line break or a chip is a node, not text.)
+    return "Select text without line breaks or embedded items.";
   return null;
 }
 export function suggestionTextProblem(

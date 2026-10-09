@@ -201,5 +201,50 @@ test("tree row sheet on a phone offers Rename", async ({ page }) => {
   const sheet = page.getByRole("dialog", { name });
   await sheet.getByRole("button", { name: "Rename", exact: true }).click();
   await expect(sheet).toHaveCount(0);
-  await expect(page.getByRole("textbox", { name: `Rename ${name}` })).toBeVisible();
+  // The field has focus and KEEPS it: the closing sheet used to hand focus back to whatever had it before
+  // (in Safari, where a tapped button is not focused, that is the editor) — the field commits on blur, so the
+  // rename ended before a key was pressed.
+  const field = page.getByRole("textbox", { name: `Rename ${name}` });
+  await expect(field).toBeVisible();
+  await expect(field).toBeFocused();
+  await page.waitForTimeout(400); // past the sheet's own teardown
+  await expect(field).toBeFocused();
+  await field.fill("Renamed from the sheet");
+  await field.press("Enter");
+  await expect(page.getByRole("button", { name: "Page actions for Renamed from the sheet" })).toBeVisible();
+});
+
+test("tree row sheet: Rename keeps the field when the editor had focus before the sheet opened", async ({ page }) => {
+  await page.goto("/e2e-fixtures/notion-shell.html");
+  const editor = page.locator(".tiptap[contenteditable=true]");
+  await expect(editor).toBeVisible();
+  await editor.evaluate((el: HTMLElement) => el.focus());
+  await expect(editor).toBeFocused();
+  // By script, as a tap in Safari does it: the button is activated without taking focus from the editor.
+  await page.getByRole("navigation", { name: "Mobile workspace" }).getByRole("button", { name: "Notes", exact: true }).evaluate((el: HTMLElement) => el.click());
+  const actions = page.getByRole("button", { name: /^Page actions for / }).first();
+  const name = ((await actions.getAttribute("aria-label")) ?? "").replace(/^Page actions for /, "");
+  await actions.evaluate((el: HTMLElement) => el.click());
+  const sheet = page.getByRole("dialog", { name });
+  await sheet.getByRole("button", { name: "Rename", exact: true }).evaluate((el: HTMLElement) => el.click());
+  await expect(sheet).toHaveCount(0);
+  const field = page.getByRole("textbox", { name: `Rename ${name}` });
+  await expect(field).toBeFocused();
+  await page.waitForTimeout(400);
+  await expect(field).toBeFocused();
+});
+
+test("a sheet that is simply dismissed still returns focus to where it was", async ({ page }) => {
+  await page.goto("/e2e-fixtures/notion-shell.html");
+  await expect(page.locator(".tiptap[contenteditable=true]")).toBeVisible();
+  await page.getByRole("navigation", { name: "Mobile workspace" }).getByRole("button", { name: "Notes", exact: true }).click();
+  const actions = page.getByRole("button", { name: /^Page actions for / }).first();
+  const name = ((await actions.getAttribute("aria-label")) ?? "").replace(/^Page actions for /, "");
+  await actions.focus();
+  await page.keyboard.press("Enter");
+  const sheet = page.getByRole("dialog", { name });
+  await expect(sheet).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(sheet).toHaveCount(0);
+  await expect(actions).toBeFocused();
 });

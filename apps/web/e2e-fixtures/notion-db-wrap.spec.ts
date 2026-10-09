@@ -12,14 +12,20 @@ test("wrap cells: off by default (one line per cell); on, rows grow — saved pe
   await page.getByRole("searchbox", { name: "Search this database" }).fill("printer");
   const row = table(page).locator('tbody tr[data-row-id="t2"]');
   await expect(row).toBeVisible();
+  // The search re-queries: wait until its answer is what is drawn (only the matching row, carrying the long title set
+  // above) before measuring — the row is replaced while the answer comes in, and a box asked for then is null.
+  await expect(table(page).locator("tbody tr[data-row-id]")).toHaveCount(1);
+  await expect(row).toContainText("Coordinate the printer driver fix");
   await expect(table(page)).not.toHaveAttribute("data-wrap", "");
-  const before = (await row.boundingBox())!.height;
+  const height = async () => (await row.boundingBox())?.height ?? null;
+  await expect.poll(height).not.toBeNull();
+  const before = (await height())!;
   expect(before).toBeLessThan(60);
   await page.getByRole("button", { name: "View settings" }).click();
   await settings(page).getByRole("checkbox", { name: "Wrap cells" }).check();
   await page.keyboard.press("Escape");
   await expect(table(page)).toHaveAttribute("data-wrap", "");
-  await expect.poll(async () => (await row.boundingBox())!.height).toBeGreaterThan(before + 16);
+  await expect.poll(async () => (await height()) ?? 0).toBeGreaterThan(before + 16);
   await expect.poll(async () => (await configWrites(page)).at(-1)?.metadata.prism_database.views[0].wrap).toBe(true);
   // Other layouts have no such setting.
   await page.getByRole("tab", { name: "List" }).click();

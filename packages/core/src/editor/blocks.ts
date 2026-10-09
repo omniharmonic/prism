@@ -561,11 +561,19 @@ export const ColoredTableHeader = TableHeader.extend({ addAttributes() { return 
 
 const lowlight = createLowlight(common);
 /** Highlighted code (lowlight decorations, no stored markup) with a language attribute and Tab indent. */
-export const CodeBlock = CodeBlockLowlight.extend({
+const codeBlockOptions = { lowlight, enableTabIndentation: true, tabSize: 2, defaultLanguage: null };
+const CodeBlockBase = CodeBlockLowlight.extend({
   addNodeView() {
     return VIEWS.codeBlock ?? null;
   },
-}).configure({ lowlight, enableTabIndentation: true, tabSize: 2, defaultLanguage: null });
+});
+export const CodeBlock = CodeBlockBase.configure(codeBlockOptions);
+/**
+ * The code block of the LIVE document schema (collabSchema.ts swaps it in): the same node, except
+ * that its text may carry the suggestion marks — so a change inside a code block made while
+ * Suggesting is tracked like any text. (Only there: the plain renderer's schema has no such marks.)
+ */
+export const SuggestableCodeBlock = CodeBlockBase.extend({ marks: "insertion deletion" }).configure(codeBlockOptions);
 
 /** The language names the picker offers (all registered with lowlight's `common` set). */
 export function codeLanguages(): string[] {

@@ -6,11 +6,14 @@ import { test, expect, type Page } from "@playwright/test";
 const seedCaches = (page: Page) => page.evaluate(() => {
   localStorage.setItem("prism:recent-searches:default", JSON.stringify(["workshop"]));
   localStorage.setItem("prism:offline-pinned:default", JSON.stringify(["agenda"]));
+  // The Calendar's last listing, kept for a fast cold start (lib/calendar/meetingListing.ts).
+  localStorage.setItem("prism:offline-sublinks", JSON.stringify({ "offline-1": { parentId: "p", parentTitle: "Plan", title: "Private page" } })); // NP-PG-15: rows waiting for a queued create
+  localStorage.setItem("prism:calendar-listing:default", JSON.stringify({ v: 1, at: Date.now(), events: [{ id: "e1", summary: "Private meeting", start: { dateTime: new Date().toISOString() }, end: { dateTime: new Date().toISOString() } }] }));
 });
 // The app reloads after signing out: a read that lands mid-navigation is retried by the poll.
 const state = (page: Page) => page.evaluate(() => ({
   signedOut: sessionStorage.getItem("notion-shell-signed-out"),
-  cached: Object.keys(localStorage).filter((k) => k.startsWith("prism:recent-searches:") || k.startsWith("prism:offline-")),
+  cached: Object.keys(localStorage).filter((k) => k.startsWith("prism:recent-searches:") || k.startsWith("prism:offline-") || k.startsWith("prism:calendar-listing:")),
 })).catch(() => ({ signedOut: null as string | null, cached: ["navigating"] }));
 
 test("sidebar account menu → Sign out ends the session and clears offline caches", async ({ page }) => {

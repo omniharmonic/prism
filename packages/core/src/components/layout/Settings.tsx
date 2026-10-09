@@ -211,10 +211,13 @@ export function Settings({ open, onClose }: SettingsProps) {
           {activeTab === "appearance" && (
             <>
               <Section title="Theme">
-                <div className="flex rounded-lg overflow-hidden" style={{ border: "1px solid var(--glass-border)" }}>
+                {/* Three labels in a 250 px column (a 320 px window with a classic scrollbar) at WCAG 1.4.12 text
+                    spacing: tighter side padding — the labels are centred, so nothing moves — and, narrower still,
+                    the row wraps rather than cutting "Dark" off. */}
+                <div className="flex flex-wrap rounded-lg overflow-hidden" style={{ border: "1px solid var(--glass-border)" }}>
                   {(["system", "light", "dark"] as Theme[]).map((t) => (
                     <button key={t} aria-pressed={theme === t} onClick={() => setTheme(t)}
-                      className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 text-xs"
+                      className="flex-1 flex items-center justify-center gap-1.5 px-2 py-2 text-xs"
                       style={{ background: theme === t ? "var(--glass-active)" : "transparent", color: "var(--text-primary)" }}>
                       {t === "dark" ? <Moon size={12} /> : t === "light" ? <Sun size={12} /> : <Monitor size={12} />}
                       {t.charAt(0).toUpperCase() + t.slice(1)}

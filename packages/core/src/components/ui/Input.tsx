@@ -8,7 +8,7 @@ interface InputProps extends InputHTMLAttributes<HTMLInputElement> {
 import React from "react";
 
 export const Input = forwardRef<HTMLInputElement, InputProps>(
-  ({ className, icon, ...props }, ref) => {
+  ({ className, icon, style, ...props }, ref) => {
     return (
       <div className={cn("relative flex items-center", className)}>
         {icon && (
@@ -23,12 +23,15 @@ export const Input = forwardRef<HTMLInputElement, InputProps>(
             "transition-colors placeholder:text-[var(--text-muted)]",
             icon && "pl-8",
           )}
+          {...props}
+          // A caller's `style` (a width, usually) is merged — it used to REPLACE this one, and the field
+          // lost its border and fill altogether ("Your name" in Settings, the vote reason).
           style={{
             background: "var(--glass)",
             border: "1px solid var(--glass-border)",
             color: "var(--text-primary)",
+            ...style,
           }}
-          {...props}
         />
       </div>
     );

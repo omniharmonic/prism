@@ -42,3 +42,13 @@ test("real strike and underline are kept — next to a suggestion and on their o
   assert.match(nested, /<s>/);
   assert.equal(roundTrip(nested), nested);
 });
+
+test("a suggestion INSIDE code — inline code and a fenced code block — survives store → load, byte-stable", () => {
+  const html = `<p>Run <code>npm </code>${DEL.replace(">removed<", "><code>install</code><")}${INS.replace(">added<", "><code>ci</code><")} now.</p><pre><code>const a = ${DEL.replace("removed", "1;")}${INS.replace("added", "2;")}\nnext();</code></pre>`;
+  const once = roundTrip(html);
+  assert.match(once, /data-suggestion="delete"[^>]*><code>install<\/code><\/span>/, once);
+  assert.match(once, /data-suggestion="insert"[^>]*><code>ci<\/code><\/span>/, once);
+  assert.match(once, /<pre><code>const a = <span data-suggestion="delete"[^>]*>1;<\/span><span data-suggestion="insert"[^>]*>2;<\/span>\nnext\(\);<\/code><\/pre>/, once);
+  assert.doesNotMatch(once, /<s>|<u>/, once);
+  assert.equal(roundTrip(once), once);
+});

@@ -11,6 +11,8 @@
  * `convert/core.ts` (worker AND inline lane — both checked here), in the web shell's
  * Markdown path and in the editor's Markdown paste. It is linear; time-bounded below.
  */
+// Timed in CPU time of this thread (./probe), never on the wall clock: the figure is the work, not the machine's load.
+import { threadCpuMs } from "./probe";
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import { getSchema } from "@tiptap/core";
@@ -112,7 +114,7 @@ test("round trip: a to-do list → Markdown → the reader → the same to-do li
   assert.equal((html.match(/data-checked="true"/g) ?? []).length, 2);
   // A second pass through Markdown changes nothing.
   assert.equal(sliceToMarkdown(schema.nodeFromJSON(after).slice(0)), md);
-  assert.equal(COLLAB_SCHEMA_VERSION, 5);
+  assert.equal(COLLAB_SCHEMA_VERSION, 6);
 });
 
 test("both conversion lanes read task items: inline for a small note, the worker for a long one", async () => {
@@ -154,9 +156,9 @@ test("the rewrite is linear: pathological HTML is decided quickly and never grow
     ["lone angle brackets", "checkbox " + "<".repeat(300_000)],
   ];
   for (const [name, html] of cases) {
-    const t = performance.now();
+    const t = threadCpuMs();
     const out = taskListsInHtml(html);
-    const ms = performance.now() - t;
+    const ms = threadCpuMs() - t;
     assert.ok(ms < 400, `${name}: ${Math.round(ms)} ms`);
     assert.ok(out.length <= html.length * 3 + 64, `${name}: output grew`);
   }
@@ -219,9 +221,9 @@ test("review 1: hostile HTML is still decided in linear time", () => {
     ["equals runs", "checkbox <li " + "=".repeat(300_000)],
   ];
   for (const [name, html] of cases) {
-    const t = performance.now();
+    const t = threadCpuMs();
     const out = taskListsInHtml(html);
-    const ms = performance.now() - t;
+    const ms = threadCpuMs() - t;
     assert.ok(ms < 400, `${name}: ${Math.round(ms)} ms`);
     assert.ok(out.length <= html.length * 3 + 64, `${name}: output grew`);
   }

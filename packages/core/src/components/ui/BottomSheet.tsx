@@ -72,8 +72,17 @@ export function BottomSheet({
     return () => {
       vv?.removeEventListener("resize", update);
       vv?.removeEventListener("scroll", update);
-      element?.close();
+      // An action of the sheet may have put focus somewhere on purpose before the sheet went away (Rename opens
+      // the row's inline field, which commits on blur). Focus is returned to where it was ONLY when nothing took it:
+      // otherwise the field lost focus the moment it appeared and the rename was over before a key was pressed —
+      // on Safari / iOS, where a tapped button is not focused, "where it was" is the editor, which is still there.
+      const active = document.activeElement as HTMLElement | null;
+      const taken = !!active && active !== document.body && active.isConnected && !element?.contains(active);
+      // Closing a modal dialog natively refocuses what was focused before it opened; a dialog already out of the
+      // document has nothing to close.
+      if (element?.isConnected) element.close();
       document.body.style.overflow = overflow;
+      if (taken) return;
       const target = returnFocusRef?.current ?? previous;
       if (target?.isConnected) target.focus({ preventScroll: true });
     };

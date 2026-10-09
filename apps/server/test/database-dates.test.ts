@@ -3,6 +3,7 @@
  * and a range `start/end`. A range sorts by its start, "is" any day inside it,
  * and a window filter keeps every range that overlaps the window.
  */
+import { threadCpuMs } from "./probe";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { addDays, buildDateValue, dateRange, dayDiff, daySpan, evaluateCondition, parseDateParts, runQuery, shiftDateValue, type QueryInput } from "@prism/core/database";
@@ -52,10 +53,10 @@ test("ordinary strings with a slash are untouched by range handling", () => {
   assert.equal(cond("docs/readme", "eq", "docs/readme"), true);
   assert.equal(cond("a/b", "contains", "/b"), true);
   const big = `${"1/".repeat(50_000)}`;
-  const t0 = Date.now();
+  const t0 = threadCpuMs(); // CPU time of this thread (./probe), not the wall clock
   assert.equal(cond(big, "eq", "2026-10-03"), false);
   assert.equal(typeof cond(big, "gte", "2026-10-03"), "boolean"); // compares as text, in linear time
-  assert.ok(Date.now() - t0 < 500, "linear on pathological input");
+  assert.ok(threadCpuMs() - t0 < 500, "linear on pathological input");
 });
 
 test("moving a value by days keeps its shape, time of day and length", () => {

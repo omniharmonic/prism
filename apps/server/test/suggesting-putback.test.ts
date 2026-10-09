@@ -48,10 +48,12 @@ test("a partly placed slice is never accepted: the text restored must be the tex
   const removed = doc.slice(7, 17); // "here" | "code"
   const state = EditorState.create({ doc: schema.nodes.doc!.create(null, [p("only paragraph")]) });
   const tr = state.tr;
-  putBack(tr, [{ at: 5, slice: removed, pure: false, order: 0 }], ctx(state));
+  const result = putBack(tr, [{ at: 5, slice: removed, pure: false, order: 0 }], ctx(state));
   const all = tr.doc.textContent;
   assert.ok(all.includes("here"), all);
-  // "code" comes back struck, or — where the mark cannot sit (a code block) — is reported untracked; never half-restored unmarked.
+  // "code" comes back struck (a code block's text carries the mark too) — never half-restored unmarked, never dropped.
+  assert.equal(result.untracked, false);
+  assert.ok(struckText(tr.doc).includes("code") || result.misplaced, struckText(tr.doc));
   assert.doesNotThrow(() => tr.doc.check());
 });
 
@@ -77,8 +79,12 @@ test("contiguous text is struck with one mark step per block, however many text 
   const tr = state.tr;
   putBack(tr, [{ at: 0, slice: new Slice(Fragment.fromArray(blocks), 0, 0), pure: false, order: 0 }], ctx(state));
   assert.ok(struckText(tr.doc).startsWith("plain 0 bold tail more end"));
-  // One step to put the blocks back, one mark step per block — it was one per text run (5 × 200).
-  assert.ok(tr.steps.length <= 200 + 2, `steps: ${tr.steps.length}`);
+  // One step to put the blocks back, then per BLOCK one mark step and the two attribute steps that
+  // stamp its start as a suggested removal (so Accept takes the emptied block out) — never one per
+  // text run (it was 5 × 200 mark steps).
+  const marks = tr.steps.filter((step) => (step.toJSON() as { stepType: string }).stepType === "addMark").length;
+  assert.ok(marks <= 200, `mark steps: ${marks}`);
+  assert.ok(tr.steps.length <= 3 * 200 + 2, `steps: ${tr.steps.length}`);
 });
 
 // ── Review of PR #42 ─────────────────────────────────────────────────────────────────────────

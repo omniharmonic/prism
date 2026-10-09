@@ -4,6 +4,7 @@
  * the property everywhere, and the only data deletion is the owner-only,
  * dry-run-first `remove-values` job with one CAS write per page.
  */
+import { threadCpuMs } from "./probe";
 import { test, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { api } from "../src/routes/api";
@@ -555,11 +556,11 @@ test("convert: owner + human + same-origin only; refused for presentations, inge
 });
 
 test("convert: the coercion is linear on hostile values", () => {
-  const started = Date.now();
+  const started = threadCpuMs(); // CPU time of this thread (./probe), not the wall clock
   for (const v of ["1".repeat(200_000), ",".repeat(200_000), " ".repeat(200_000) + "x", "[[".repeat(100_000), "a,".repeat(100_000)]) {
     for (const k of ["number", "checkbox", "multi_select", "date", "url", "email", "phone", "select", "relation", "text"] as const) coerceToKind(v, k);
   }
-  assert.ok(Date.now() - started < 1500, `took ${Date.now() - started} ms`);
+  assert.ok(threadCpuMs() - started < 1500, `took ${threadCpuMs() - started} ms`);
 });
 
 test("convert: a select-like target gets its options from the converted values — distinct, first seen first", async () => {

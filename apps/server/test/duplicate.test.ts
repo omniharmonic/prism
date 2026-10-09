@@ -5,6 +5,7 @@
  * what a copy carries, what is skipped (and only counted), limits before any write,
  * idempotent retry, re-pointed links, a failure midway, files.
  */
+import { probed , threadCpuMs } from "./probe";
 import { test, beforeEach, afterEach } from "node:test";
 import { createHash } from "node:crypto";
 import assert from "node:assert/strict";
@@ -575,6 +576,21 @@ test("one audit row per duplicate, counts only", async () => {
 
 // ── the pure half ───────────────────────────────────────────────────────────
 
+test("cleanCopyBody: a suggested paragraph break / line break does not travel — the copy holds the page as it is without the suggestion", () => {
+  const ins = (text: string) => `<span data-suggestion="insert" data-user="Ann">${text}</span>`;
+  const at = (kind: string) => `data-suggestion-node="${kind}" data-suggestion-by="Ann"`;
+  // A split paragraph is one again; a new paragraph (its text is a suggested insertion) leaves nothing behind.
+  assert.equal(cleanCopyBody(`<p>one</p><p ${at("insert")}>two</p><p ${at("insert")}>${ins("new")}</p><p>end</p>`, () => "u"), "<p>onetwo</p><p>end</p>");
+  // A suggested line break is left out; one suggested for removal is still there. A suggested join is not made.
+  assert.equal(cleanCopyBody(`<p>a<br ${at("insert")}>b<br ${at("delete")}>c</p><p ${at("delete")}>d</p>`, () => "u"), "<p>ab<br>c</p><p>d</p>");
+  // Where the block before is of another kind the block stays — as a plain block, no attribute.
+  assert.equal(cleanCopyBody(`<p>a</p><h2 class="x" ${at("insert")}>t</h2><ul><li><p ${at("insert")}>i</p></li></ul>`, () => "u"), '<p>a</p><h2 class="x">t</h2><ul><li><p>i</p></li></ul>');
+  assert.ok(!cleanCopyBody(`<p>a</p><p ${at("insert")}>b</p>`.repeat(2000), () => "u").includes("data-suggestion"));
+  // A chip: a suggested one does not travel; one suggested for removal does, as a plain chip with a new uid.
+  const chip = (extra: string) => `<span data-type="mention" data-kind="date" data-date="2027-01-01" data-mention-uid="old" ${extra}>@x</span>`;
+  assert.equal(cleanCopyBody(`<p>a${chip(at("insert"))}b${chip(at("delete"))}c</p>`, () => "new"), '<p>ab<span data-type="mention" data-kind="date" data-date="2027-01-01" data-mention-uid="new">@x</span>c</p>');
+});
+
 test("cleanCopyBody: sub-page rows and page mentions are re-pointed only where a copy exists; without a map rows are dropped as before", () => {
   const html = '<p>a</p><div data-type="child-page" data-page-id="x1"></div><div data-type="child-page" data-page-id="x2"></div><p><span data-type="mention" data-kind="page" data-id="x1" data-mention-uid="u1">t</span><span data-type="mention" data-kind="person" data-id="x1" data-mention-uid="u2">n</span></p>';
   const out = cleanCopyBody(html, () => "new", { pageId: (id) => (id === "x1" ? "y1" : null) });
@@ -589,11 +605,11 @@ test("repointWikilinks: full paths only, alias and anchor kept, linear on unmatc
   assert.equal(repointWikilinks("x [[a/b]] [[A/B.md|al]] [[a/b#h]] [[b]] [[a/bc]] [[a/b", map), "x [[a/b (copy)]] [[a/b (copy)|al]] [[a/b (copy)#h]] [[b]] [[a/bc]] [[a/b");
   assert.equal(repointWikilinks("no links", map), "no links");
   const hostile = "[[".repeat(200_000);
-  const t0 = Date.now();
+  const t0 = threadCpuMs(); // CPU time of this thread (./probe), not the wall clock
   assert.equal(repointWikilinks(hostile, map), hostile);
   const tags = "<span ".repeat(100_000);
   cleanCopyBody(`<p>${tags}`, () => "u", { pageId: () => "z" });
-  assert.ok(Date.now() - t0 < 2000, `took ${Date.now() - t0} ms`);
+  assert.ok(threadCpuMs() - t0 < 2000, `took ${threadCpuMs() - t0} ms`);
 });
 
 // ── re-review: B3, S2–S6 ─────────────────────────────────────────────────────
@@ -693,11 +709,11 @@ test("S3: a 6 MB subtree is copied without holding the event loop; a body over 1
   const huge = '<p><span data-suggestion="insert">pending</span>kept</p>' + "<p>filler text</p>".repeat(70_000);
   assert.ok(Buffer.byteLength(huge) > 1_000_000);
   fv.put({ id: "huge", path: "Big/Root/Zz huge", content: huge });
-  let worst = 0;
-  let last = performance.now();
-  const probe = setInterval(() => { const now = performance.now(); worst = Math.max(worst, now - last - 5); last = now; }, 5);
-  let r: Response;
-  try { r = await dup("bigroot", OWNER); } finally { clearInterval(probe); }
+  // The loop's worst stall in CPU time of this thread (./probe): what the copy itself held, whatever the machine is doing.
+  const run = await probed(() => dup("bigroot", OWNER));
+  if (run.error) throw run.error;
+  const r = run.value!;
+  const worst = run.maxLagMs;
   assert.equal(r.status, 200, await r.clone().text());
   const out = await json(r);
   assert.deepEqual([out.created, out.uncleaned], [32, 1]);

@@ -3,6 +3,8 @@
  * policy, the bounded HTML scan, limits. DNS and the transport are injected —
  * nothing here touches the internet.
  */
+// Timed in CPU time of this thread (./probe), never on the wall clock: the figure is the work, not the machine's load.
+import { threadCpuMs } from "./probe";
 import { test, before, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { api } from "../src/routes/api";
@@ -138,9 +140,9 @@ test("the scanner is linear on pathological input and ignores unsafe URLs", () =
     "&".repeat(1024 * 1024),
   ];
   for (const s of cases) {
-    const t0 = performance.now();
+    const t0 = threadCpuMs();
     parseUnfurl(s, "https://example.com/");
-    assert.ok(performance.now() - t0 < 500, `took ${performance.now() - t0} ms`);
+    assert.ok(threadCpuMs() - t0 < 500, `took ${threadCpuMs() - t0} ms`);
   }
   const m = parseUnfurl(
     `<head><title>${"t".repeat(1000)}</title><meta property="og:image" content="javascript:alert(1)"><link rel="icon" href="data:image/png;base64,AAAA"><meta name="description" content="${"d".repeat(2000)}">`,
@@ -165,13 +167,13 @@ test("M2: image/favicon the media proxy would refuse are omitted; nothing third-
 test("M2: entity decoding is linear — 250k '&' in a title and in a meta value", () => {
   const amps = "&".repeat(250_000);
   for (const doc of [`<head><title>${amps}</title></head>`, `<head><meta property="og:description" content="${amps}"></head>`, `<head><title>x</title><meta property="og:image" content="${amps}"></head>`]) {
-    const t0 = performance.now();
+    const t0 = threadCpuMs();
     parseUnfurl(doc, "https://example.com/");
-    assert.ok(performance.now() - t0 < 200, `took ${performance.now() - t0} ms`);
+    assert.ok(threadCpuMs() - t0 < 200, `took ${threadCpuMs() - t0} ms`);
   }
-  const t0 = performance.now();
+  const t0 = threadCpuMs();
   decodeEntities(amps);
-  assert.ok(performance.now() - t0 < 200, `decodeEntities took ${performance.now() - t0} ms`);
+  assert.ok(threadCpuMs() - t0 < 200, `decodeEntities took ${threadCpuMs() - t0} ms`);
   assert.equal(decodeEntities("a &amp; b &#39;c&#39; &amp;amp; &verylongnotanentityname; &"), "a & b 'c' &amp; &verylongnotanentityname; &");
 });
 

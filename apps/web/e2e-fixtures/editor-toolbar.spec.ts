@@ -29,6 +29,22 @@ async function select(page: Page, text: string) {
   return bubble;
 }
 
+/**
+ * Put the caret in a block and wait until the EDITOR has it there (focused, an empty selection inside that
+ * block). A click made while a link field or card is closing can leave the editor's caret where it was — inside
+ * the link just made — and ⌘K there is "open this link's card", not the caret's ⌘K the test means to press.
+ */
+async function caretIn(page: Page, text: string) {
+  const target = page.getByText(text, { exact: true });
+  await expect(async () => {
+    await target.click();
+    await expect.poll(() => page.evaluate(() => {
+      const e = (document.querySelector(".tiptap") as any).editor;
+      return e.isFocused && e.state.selection.empty ? (e.state.selection.$from.parent.textContent as string) : null;
+    }), { timeout: 1000 }).toBe(text);
+  }).toPass({ timeout: 10_000 });
+}
+
 test.describe("plain editor selection toolbar", () => {
   test.beforeEach(async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
@@ -97,7 +113,7 @@ test.describe("plain editor selection toolbar", () => {
     await page.keyboard.press("Enter");
     await expect.poll(() => html(page)).toContain('href="https://example.test/k"');
     // ⌘⌥F opens find with the replace row.
-    await page.getByText("Alpha", { exact: true }).click();
+    await caretIn(page, "Alpha");
     await page.keyboard.press("ControlOrMeta+Alt+f");
     await expect(page.getByRole("textbox", { name: "Replace with" })).toBeVisible();
   });
@@ -113,9 +129,23 @@ test.describe("plain editor selection toolbar", () => {
       const mod = os === "apple" ? "Meta" : "Control";
       const other = os === "apple" ? "Control" : "Meta";
       // What reached the window, and whether the page had consumed it by then.
+      //
+      // The listener also stands in for the app shell, which this fixture does not mount: the shell takes the ⌘K the
+      // editor leaves alone (quick find) and consumes it (`useKeyboardShortcuts`). Without that, the key's HOST default
+      // ran — on a Mac, Ctrl+K is "delete to the end of the paragraph", so under the emulated Windows modifier the
+      // caret's ⌘K merged "Alpha" into the next block and the rest of the test waited for a heading that was gone.
+      // (No Windows or Linux browser has that default, and on a Mac the app's modifier is ⌘.)
       await page.evaluate(() => {
         (window as any).prismKeys = [];
-        window.addEventListener("keydown", (e) => { if (!["Meta", "Control", "Shift", "Alt"].includes(e.key)) (window as any).prismKeys.push([e.key.toLowerCase(), e.defaultPrevented]); });
+        (window as any).prismQuickFind = 0;
+        window.addEventListener("keydown", (e) => {
+          if (["Meta", "Control", "Shift", "Alt"].includes(e.key)) return;
+          (window as any).prismKeys.push([e.key.toLowerCase(), e.defaultPrevented]);
+          if (e.key.toLowerCase() === "k" && (e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && !e.defaultPrevented) {
+            e.preventDefault();
+            (window as any).prismQuickFind++;
+          }
+        });
       });
       const consumed = async (key: string) => (await page.evaluate(() => (window as any).prismKeys as Array<[string, boolean]>)).filter(([k]) => k === key).at(-1)?.[1];
       const cases: Array<[string, string, string]> = [["b", "b", "strong"], ["i", "i", "em"], ["u", "u", "u"], ["Shift+s", "s", "s"], ["e", "e", "code"], ["Shift+h", "h", "mark"]];
@@ -137,12 +167,16 @@ test.describe("plain editor selection toolbar", () => {
       await page.keyboard.press("Enter");
       await expect.poll(() => html(page)).toMatch(/<a [^>]*href="https:\/\/example\.test\/np-ed-05"[^>]*>Echo quote<\/a>/);
       // ⌘K with only a caret is not "link" (it is the shell's quick find — NP-SB-02): no link field, nothing linked.
-      await page.getByText("Alpha", { exact: true }).click();
+      await caretIn(page, "Alpha");
+      const beforeQuickFind = await html(page);
       await page.keyboard.press(`${mod}+k`);
       await expect(field).toHaveCount(0);
+      expect(await consumed("k"), "the editor leaves a caret's ⌘K to the shell").toBe(false);
+      expect(await page.evaluate(() => (window as any).prismQuickFind), "…which received it exactly once").toBe(1);
+      expect(await html(page), "and the document is untouched").toBe(beforeQuickFind);
       expect((await html(page)).match(/<a /g)).toHaveLength(1);
       await page.keyboard.press("Escape");
-      await page.getByText("Alpha", { exact: true }).click();
+      await caretIn(page, "Alpha");
       // The sheet writes each key once, in this platform's notation.
       await page.keyboard.press(`${mod}+Shift+/`);
       const sheet = page.getByRole("dialog", { name: "Keyboard shortcuts" });

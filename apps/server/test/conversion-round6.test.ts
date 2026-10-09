@@ -20,6 +20,7 @@
  * one) calls them cheap; this file cannot be run against the old pre-check — it
  * would do on the event loop exactly what the review describes.
  */
+import { probed, threadCpuMs } from "./probe";
 import { test, afterEach, after } from "node:test";
 import assert from "node:assert/strict";
 import * as service from "../src/convert/service";
@@ -40,25 +41,6 @@ after(async () => {
 });
 
 const LOOP_BUDGET_MS = 200;
-/** Run `fn` while a 10 ms timer measures the longest gap between its ticks (the event loop's worst stall). */
-async function probed<T>(fn: () => Promise<T> | T): Promise<{ value?: T; error?: unknown; maxLagMs: number; ms: number }> {
-  let last = performance.now();
-  let maxLagMs = 0;
-  const timer = setInterval(() => {
-    const now = performance.now();
-    maxLagMs = Math.max(maxLagMs, now - last - 10);
-    last = now;
-  }, 10);
-  const start = performance.now();
-  try {
-    const value = await fn();
-    return { value, maxLagMs: Math.max(maxLagMs, performance.now() - last - 10), ms: performance.now() - start };
-  } catch (error) {
-    return { error, maxLagMs: Math.max(maxLagMs, performance.now() - last - 10), ms: performance.now() - start };
-  } finally {
-    clearInterval(timer);
-  }
-}
 const reasonOf = (p: Promise<unknown>): Promise<string> => p.then(() => "ok", (e) => (e instanceof ConversionError ? e.reason : `threw ${String(e)}`));
 const nodesOf = (body: string) => precheck.complexityOf(precheck.normalizeLineBreaks(body), true).nodes;
 
@@ -194,7 +176,7 @@ test("B1/B2: every audited shape, with every kind of line break, is either not c
           assert.ok(r.error === undefined || r.error instanceof ConversionError, `${name}: ${String(r.error)}`);
           assert.equal(conversionStats.inline, before + 1, `${name}: converted inline`);
           measured++;
-          worst.push([`${name} (${input.length} B)`, Math.round(r.maxLagMs), Math.round(r.ms)]);
+          worst.push([`${name} (${input.length} B)`, Math.round(r.maxLagMs), Math.round(r.cpuMs)]);
           assert.ok(r.maxLagMs < LOOP_BUDGET_MS, `${name}: ${input.length} bytes inline stalled the loop ${r.maxLagMs.toFixed(0)} ms`);
         }
       }
@@ -278,9 +260,9 @@ test("property: for random bodies the pre-check calls cheap, the parser's output
     let ms = Infinity;
     for (let attempt = 0; attempt < 2 && ms >= BUDGET_MS; attempt++) {
       const before = conversionStats.inline;
-      const started = performance.now();
+      const started = threadCpuMs(); // CPU time of this thread (./probe): the conversion's cost, not the machine's load
       await contentToSeed(body).catch((e) => assert.ok(e instanceof ConversionError, String(e)));
-      ms = Math.min(ms, performance.now() - started);
+      ms = Math.min(ms, threadCpuMs() - started);
       assert.equal(conversionStats.inline, before + 1, `#${i}: converted inline`);
     }
     if (ms > worstMs) worstMs = ms;
@@ -314,9 +296,9 @@ test("S-6: look-ahead — 200 openers of every kind in front of a 24 KB tail of 
       const body = (opener.repeat(200) + tail.repeat(Math.ceil(23_000 / tail.length))).slice(0, 23_900);
       if (!isCheapContent(body, !core.isStoredHtml(body))) continue;
       const before = conversionStats.inline;
-      const started = performance.now();
+      const started = threadCpuMs();
       await contentToSeed(body).catch((e) => assert.ok(e instanceof ConversionError, String(e)));
-      const ms = performance.now() - started;
+      const ms = threadCpuMs() - started;
       assert.equal(conversionStats.inline, before + 1);
       measured++;
       if (ms > worst[1]) worst = [`${JSON.stringify(opener)}×200 + ${JSON.stringify(tail)}`, ms];

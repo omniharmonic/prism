@@ -1,29 +1,21 @@
-import { useQuery } from "@tanstack/react-query";
 import { Clock } from "lucide-react";
 import { format } from "date-fns";
-import { calendarApi } from "../../lib/sync/client";
+import { meetingsToday, useMeetingListing } from "../../lib/calendar/meetingListing";
 import { formatTime, usesSystemTime } from "../../lib/datetime/format";
 
 /** "system" keeps the string this always showed; a chosen 12/24-hour format replaces it (NP-AX-09). */
 const clock = (d: Date): string => (usesSystemTime() ? format(d, "h:mm a") : formatTime(d, { hour: "numeric", minute: "2-digit" }));
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-type GogEvent = any; // gog returns standard Google Calendar event JSON
+type GogEvent = any; // the vault listing has the Google Calendar event shape
 
 export function CalendarMini() {
-  const now = new Date();
-  const { data, isError } = useQuery({
-    queryKey: ["calendar", "today", format(now, "yyyy-MM-dd")],
-    queryFn: () => calendarApi.listEventsFromVault(
-      new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString(),
-      new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1).toISOString(),
-    ),
-    retry: 1,
-    refetchInterval: 60_000,
-  });
-
-  // data is the events array directly (Rust command extracts from gog's { events: [...] })
-  const events: GogEvent[] = Array.isArray(data) ? data : [];
+  // Today, out of THE shared meeting listing (one request serves Home, the Calendar tool and this).
+  const listing = useMeetingListing({ refetchInterval: 60_000 });
+  const events: GogEvent[] = meetingsToday(listing.events);
+  const isError = events.length === 0 && listing.load === "failed";
+  // Not yet answered: nothing may say the day is empty.
+  if (events.length === 0 && listing.load === "loading") return null;
 
   if (isError) {
     return (

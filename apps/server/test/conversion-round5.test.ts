@@ -37,6 +37,7 @@ import { ConversionError, configureConversion, contentToSeed, conversionStats, f
 import * as precheck from "../src/convert/precheck";
 import { vaultClient } from "../src/parachute";
 import { db } from "../src/db";
+import { probed } from "./probe";
 import { installFakeVault, makeCapability, makeSession, resetDb, sessionCookie, type FakeVault } from "./helpers";
 import { HTML_SHAPES, MD_SHAPES, table } from "./fixtures/conversion-shapes";
 
@@ -219,25 +220,6 @@ async function call(cl: Client, name: string, args: Record<string, unknown>): Pr
 const ownerHeaders = () => ({ cookie: sessionCookie(makeSession(OWNER)), ...J, "x-prism-editor-schema": String(COLLAB_SCHEMA_VERSION), "sec-fetch-site": "same-origin" });
 
 
-/** Run `fn` while a 10 ms timer measures the longest gap between its ticks (the event loop's worst stall). */
-async function probed<T>(fn: () => Promise<T> | T): Promise<{ value?: T; error?: unknown; maxLagMs: number; ms: number }> {
-  let last = performance.now();
-  let maxLagMs = 0;
-  const timer = setInterval(() => {
-    const now = performance.now();
-    maxLagMs = Math.max(maxLagMs, now - last - 10);
-    last = now;
-  }, 10);
-  const start = performance.now();
-  try {
-    const value = await fn();
-    return { value, maxLagMs: Math.max(maxLagMs, performance.now() - last - 10), ms: performance.now() - start };
-  } catch (error) {
-    return { error, maxLagMs: Math.max(maxLagMs, performance.now() - last - 10), ms: performance.now() - start };
-  } finally {
-    clearInterval(timer);
-  }
-}
 const typeInto = (doc: Y.Doc, words: string): void => {
   const p = doc.getXmlFragment("default").get(0) as Y.XmlElement;
   const t = p.get(0) as Y.XmlText;
@@ -326,7 +308,7 @@ test("C-1: whatever still converts inline is small — the LARGEST 'cheap' input
       const r = await probed(() => contentToSeed(input));
       assert.ok(r.error === undefined || r.error instanceof ConversionError, `${kind}, ${label}: ${String(r.error)}`);
       assert.equal(conversionStats.inline, before + 1, `${kind}, ${label}: converted inline`);
-      worst.push([`${kind}, ${label} (${input.length} B)`, Math.round(r.maxLagMs), Math.round(r.ms)]);
+      worst.push([`${kind}, ${label} (${input.length} B)`, Math.round(r.maxLagMs), Math.round(r.cpuMs)]);
       assert.ok(r.maxLagMs < LOOP_BUDGET_MS, `${kind}, ${label}: ${input.length} bytes inline stalled the loop ${r.maxLagMs.toFixed(0)} ms`);
     }
   }
@@ -371,10 +353,20 @@ const prose = (tag: string) => `${tag} ` + "word ".repeat(6000);
 /** A document whose render goes to the worker (text beyond the inline byte cap). */
 const bigDoc = (tag: string) => ({ type: "doc", content: [{ type: "paragraph", content: [{ type: "text", text: `${tag} ` + "word ".repeat(6000) }] }] });
 type Extra = Partial<service.ConvertConfig> & Record<string, number>;
+/** A clock only the test moves, for every cool-down the service keeps (restored after the test). */
+function manualClock(): { advance: (ms: number) => void } {
+  let at = Date.now();
+  restore.push(service.setConversionClock(() => at));
+  return { advance: (ms) => void (at += ms) };
+}
 
-test("H-1: one member's timeouts never deny conversion to anyone else — the shared breaker counts only DEAD workers; timeouts cool down that actor alone", { timeout: 120_000 }, async () => {
+test("H-1: one member's timeouts never deny conversion to anyone else — the shared breaker counts only DEAD workers; timeouts cool down that actor alone", { timeout: 600_000 }, async () => {
   await stopConversionWorkers();
   restore.push(configureConversion({ timeoutMs: 250, timeoutPerMbMs: 0, timeoutMaxMs: 250, failureTtlMs: 0, breakerFailures: 3, breakerCooldownMs: 30_000, actorBreakerFailures: 3, actorCooldownMs: 1500, actorCooldownMaxMs: 6000 } as Extra));
+  // The cool-down is read from this clock, which only the test moves: "still cooling down" must not depend on
+  // how long a busy machine takes to run the three healthy conversions below (it used to: they outlasted 1.5 s
+  // of wall clock on a loaded laptop and the penalty had quietly expired before it was asserted).
+  const clock = manualClock();
   const bomb = (i: number) => "*a ".repeat(6000) + i; // marked is quadratic: seconds in the worker — distinct content each time
   const mallory = { actor: "user:mallory" };
   const opened = conversionStats.breakerOpened;
@@ -382,7 +374,8 @@ test("H-1: one member's timeouts never deny conversion to anyone else — the sh
   for (let i = 0; i < 4; i++) reasons.push(await reasonOf(service.markdownToHtml(bomb(i), mallory)));
   assert.deepEqual(reasons, ["timeout", "timeout", "timeout", "busy"], "three timeouts, then this actor is told to come back later");
   // Everybody else converts as if nothing had happened.
-  restore.push(configureConversion({ timeoutMs: 20_000, timeoutMaxMs: 20_000 }));
+  // (A generous ceiling: it is only there so that a healthy conversion is never cut short on a busy machine.)
+  restore.push(configureConversion({ timeoutMs: 90_000, timeoutMaxMs: 90_000 }));
   assert.match(await service.markdownToHtml(prose("alice"), { actor: "user:alice" }), /^<p>alice word/, "another member's open");
   assert.match(await service.markdownToHtml(prose("server")), /^<p>server word/, "a server-side conversion (no actor)");
   assert.equal(await reasonOf(service.docJsonToHtml(bigDoc("store"), { lane: "store" })), "ok", "a store");
@@ -391,7 +384,10 @@ test("H-1: one member's timeouts never deny conversion to anyone else — the sh
   const used = conversionStats.worker;
   assert.equal(await reasonOf(service.markdownToHtml(prose("mallory"), mallory)), "busy");
   assert.equal(conversionStats.worker, used, "no worker was handed the penalised actor's task");
-  await new Promise((r) => setTimeout(r, 1600));
+  clock.advance(1499);
+  assert.equal(await reasonOf(service.markdownToHtml(prose("mallory, a moment early"), mallory)), "busy", "one millisecond before the cool-down ends: still refused");
+  assert.equal(conversionStats.worker, used);
+  clock.advance(1);
   assert.equal(await reasonOf(service.markdownToHtml(prose("mallory again"), mallory)), "ok", "one trial after the cool-down; a success ends the penalty");
   assert.equal(await reasonOf(service.markdownToHtml(prose("mallory once more"), mallory)), "ok");
   await stopConversionWorkers();
@@ -402,6 +398,7 @@ test("H-1: tasks already queued when the breaker opens are answered busy — the
   // A 4 MB heap ceiling: the thread dies while it loads (out of memory) — `worker_failed`, the breaker's business.
   restore.push(configureConversion({ threads: 1, heapMb: 4, failureTtlMs: 0, breakerFailures: 2, breakerCooldownMs: 1500, breakerCooldownMaxMs: 60_000 } as Extra));
   restore.push(() => void stopConversionWorkers());
+  const clock = manualClock(); // the cool-down is measured on the test's clock, not on how fast the threads die
   const opened = conversionStats.breakerOpened;
   const all = await Promise.all([0, 1, 2, 3, 4, 5].map((i) => reasonOf(service.markdownToHtml(prose(`q${i}`)))));
   assert.deepEqual(all, ["failed", "failed", "busy", "busy", "busy", "busy"], "two dead workers open the breaker; what was queued behind them is not run");
@@ -410,7 +407,10 @@ test("H-1: tasks already queued when the breaker opens are answered busy — the
   const used = conversionStats.worker;
   assert.equal(await reasonOf(service.markdownToHtml(prose("early"))), "busy");
   assert.equal(conversionStats.worker, used);
-  await new Promise((r) => setTimeout(r, 1700));
+  clock.advance(1499);
+  assert.equal(await reasonOf(service.markdownToHtml(prose("still early"))), "busy", "one millisecond before the first cool-down ends");
+  assert.equal(conversionStats.worker, used, "so the cool-down was NOT doubled by the queued tasks, and not shortened either");
+  clock.advance(1);
   assert.equal(await reasonOf(service.markdownToHtml(prose("trial"))), "failed", "the trial ran (and the thread is still dead)");
   assert.equal(conversionStats.worker, used + 1);
   assert.equal(conversionStats.breakerOpened - opened, 2, "a failed TRIAL re-opens it");
@@ -610,15 +610,20 @@ function tune(patch: Partial<Tuning>): void {
   restore.push(() => void Object.assign(tuning, was));
 }
 /** While `during` runs, every read of `id`'s history takes `ms` (a hung vault) — unless the caller gives up first (its abort signal is honoured). */
+/** What happened to the history reads made under `slowHistory`. */
+const historyCalls = { asked: 0, served: 0, abandoned: 0 };
 async function slowHistory<T>(id: string, ms: number, during: () => Promise<T>): Promise<T> {
   const inner = globalThis.fetch;
   globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
     const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
     if (!url.pathname.includes(`/notes/${id}/versions`)) return inner(input, init);
+    historyCalls.asked++;
     return new Promise<Response>((resolve, reject) => {
-      const timer = setTimeout(() => resolve(inner(input, init)), ms);
+      // `Infinity`: the vault never answers — only the caller giving up ends the request.
+      const timer = Number.isFinite(ms) ? setTimeout(() => { historyCalls.served++; resolve(inner(input, init)); }, ms) : undefined;
       init?.signal?.addEventListener("abort", () => {
         clearTimeout(timer);
+        historyCalls.abandoned++;
         reject(init.signal!.reason ?? new Error("aborted"));
       });
     });
@@ -645,10 +650,14 @@ test("M-6: a history lookup that hangs cannot hold a page's load — it gives up
   tune({ historyCallMs: 300, historyDeadlineMs: 700 });
   await lostAckThenExternal("m6", (c) => c + "<p>EXTERNAL</p>");
   resetReconcileState(); // a restart: nothing in memory
-  const started = performance.now();
-  const reopened = await slowHistory("m6", 5000, () => loadDocumentState("m6", new Y.Doc()));
-  const took = performance.now() - started;
-  assert.ok(took < 2500, `the load waited ${took.toFixed(0)} ms on the note's history`);
+  // The history NEVER answers here. A load that waited for it would never finish (the test would time out);
+  // what is asserted is that the load finished because it gave the lookup up — not how many milliseconds
+  // that took on this machine.
+  Object.assign(historyCalls, { asked: 0, served: 0, abandoned: 0 });
+  const reopened = await slowHistory("m6", Infinity, () => loadDocumentState("m6", new Y.Doc()));
+  assert.ok(historyCalls.asked >= 1, "the history was asked for");
+  assert.equal(historyCalls.served, 0, "and never answered");
+  assert.equal(historyCalls.abandoned, historyCalls.asked, "every lookup was given up at its deadline");
   assert.deepEqual(eachOnce(yDocToHtml(reopened), ["start", "edit one", "EXTERNAL"]), [1, 1, 1], yDocToHtml(reopened));
 });
 

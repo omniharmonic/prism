@@ -41,7 +41,7 @@ interface Thread {
   worker: Worker;
   ready: boolean;
 }
-type Reply = { ready: true } | { ok: true; value: unknown } | { ok: false; error: string; code?: string; status?: number };
+type Reply = { ready: true } | { loading: true } | { loaded: true } | { ok: true; value: unknown } | { ok: false; error: string; code?: string; status?: number };
 
 // The worker is started through `worker-boot.mjs`, which registers the TypeScript loader
 // (tsx) inside the thread — a worker does not inherit the main thread's loader hooks.
@@ -85,6 +85,17 @@ export class TaskWorker {
       if ("ready" in m) {
         thread.ready = true;
         this.dispatch();
+        return;
+      }
+      // A module the running task needs is being loaded inside the thread (worker.ts `loadCore`): that is
+      // start-up, not the task's work. The load gets the boot allowance; the task's own deadline starts
+      // again when the module is in.
+      if ("loading" in m || "loaded" in m) {
+        const running = this.current;
+        if (running?.sent) {
+          if ("loading" in m) this.arm(BOOT_TIMEOUT_MS, () => new WorkerFailedError("worker_failed", "worker_failed"));
+          else this.arm(running.timeoutMs, () => new WorkerTimeoutError());
+        }
         return;
       }
       const task = this.settle();

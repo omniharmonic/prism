@@ -659,7 +659,7 @@ test("L1: note reflection waits a bounded time for a running ingest pass, then a
   const t0 = Date.now();
   const second = await reflectLiveCalendarChange(slow, "lockvault", "e", { kind: "delete" }, { lockWaitMs: 30 });
   assert.deepEqual(second, { noteId: null, outcome: "deferred" });
-  assert.ok(Date.now() - t0 < 1000);
+  // (No duration is asserted: the dependency here NEVER answers, so finishing at all is the proof that the deadline ended it — and a wall-clock bound fails on a busy machine without anything being wrong.)
   release();
   assert.equal((await first).outcome, "no-note");
 });

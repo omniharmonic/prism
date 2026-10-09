@@ -5,15 +5,25 @@ import "./suggestion-review.css";
 import { useEditorState, type Editor } from "@tiptap/react";
 import type { Node, Mark } from "@tiptap/pm/model";
 import { isAgentAuthor } from "../../lib/collab/colors";
+import { nodeSuggestionOf } from "../../editor/suggestionNodes";
 
-type Change = { key: string; from: number; to: number; author: string; before: string; after: string; turn: boolean };
+type Change = { key: string; from: number; to: number; author: string; before: string; after: string; turn: boolean; /** A suggested paragraph / line break: the position of its node. */ node?: number };
 
 /** Pair identified replacements; keep legacy runs separate instead of inventing provenance. */
 function changesIn(doc: Node): Change[] {
   const changes = new Map<string, Change>();
   let previous: { mark: Mark; key: string; to: number } | null = null;
   doc.descendants((node, pos) => {
-    if (!node.isText) return;
+    if (!node.isText) {
+      // A suggested paragraph break / line break is a change of its own (it holds no text to pair with).
+      const structure = nodeSuggestionOf(node);
+      if (structure) {
+        const what = node.isTextblock ? "Paragraph break" : node.type.name === "hardBreak" ? "Line break" : `@${node.attrs.label || node.attrs.date || "mention"}`;
+        const key = JSON.stringify(["node", pos, structure.kind, structure.by]);
+        changes.set(key, { key, from: node.isTextblock ? pos + 1 : pos, to: pos + node.nodeSize, author: structure.by || "Unknown collaborator", before: structure.kind === "delete" ? what : "", after: structure.kind === "insert" ? what : "", turn: isAgentAuthor(structure.by), node: pos });
+      }
+      return;
+    }
     const mark = node.marks.find((m) => m.type.name === "insertion" || m.type.name === "deletion");
     if (!mark) { previous = null; return; }
     const identity = mark.attrs.suggestionId;
@@ -91,7 +101,7 @@ export function SuggestionReview({ editor, canReview, onStale }: { editor: Edito
     if (action !== "show" && !canReview) return;
     if (action === "accept" && stale) return;
     const command = editor.chain().focus().setTextSelection(current.from);
-    const applied = action === "show" ? command.scrollIntoView().run() : action === "accept" ? command.acceptSuggestion().run() : command.rejectSuggestion().run();
+    const applied = action === "show" ? command.scrollIntoView().run() : action === "accept" ? command.acceptSuggestion(current.node).run() : command.rejectSuggestion(current.node).run();
     if (action === "show") { setNotice(""); return; }
     setNotice(applied ? `${action === "accept" ? "Accepted" : "Rejected"} change by ${current.author}.` : "This change could not be reviewed. Check the current document and try again.");
     if (applied) {

@@ -5,6 +5,7 @@
  * Markdown can say them (to-dos, tables). One run goes through the real export route
  * (the conversion runs in the worker); the shapes are pinned on the converter itself.
  */
+import { threadCpuMs } from "./probe";
 import { test, beforeEach, afterEach, after } from "node:test";
 import assert from "node:assert/strict";
 import { inflateRawSync } from "node:zlib";
@@ -96,19 +97,19 @@ test("text in a cell or a caption cannot become markup", () => {
 test("large tables convert in linear time", () => {
   const row = `<tr>${"<td><p>cell</p></td>".repeat(20)}</tr>`;
   const big = `<table><tbody>${row.repeat(1500)}</tbody></table>`;
-  const t0 = Date.now();
+  const t0 = threadCpuMs(); // CPU time of this thread (./probe), not the wall clock
   const out = md(big);
-  assert.ok(Date.now() - t0 < 5000, `took ${Date.now() - t0} ms`);
+  assert.ok(threadCpuMs() - t0 < 5000, `took ${threadCpuMs() - t0} ms`);
   assert.equal(out.trim().split("\n").length, 1501);
 });
 
 test("L-1: a table of many rows costs time in proportion to its rows (the row list is read once per table)", () => {
   const time = (rows: number) => {
     const html = `<table><tbody>${"<tr><td><p>c</p></td></tr>".repeat(rows)}</tbody></table>`;
-    const t0 = process.hrtime.bigint();
+    const t0 = threadCpuMs(); // CPU time of this thread (./probe), not the wall clock
     const out = md(html);
     assert.equal(out.trim().split("\n").length, rows + 1);
-    return Number(process.hrtime.bigint() - t0) / 1e6;
+    return threadCpuMs() - t0;
   };
   time(500); // warm up
   const small = Math.min(time(2000), time(2000));
