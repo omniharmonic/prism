@@ -32,7 +32,9 @@ test("transcript revocation hides previously displayed references on reopen", as
 test("phone calendar uses a full-width dismissible detail sheet and retains local all-day dates", async ({ page }, testInfo) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto("/e2e-fixtures/calendar.html");
-  await expect(page.getByRole("button", { name: "Day", exact: true })).toHaveAttribute("aria-pressed", "true");
+  // A phone opens on the agenda (calendar-phone.spec.ts); the day view is one tap away.
+  await expect(page.getByRole("button", { name: "Agenda", exact: true })).toHaveAttribute("aria-pressed", "true");
+  await page.getByRole("button", { name: "Day", exact: true }).click();
   const workshop = page.getByRole("button", { name: /All-day workshop/ });
   await expect(workshop).toBeVisible();
   await workshop.click();
@@ -62,6 +64,7 @@ test("editing an all-day event title preserves timing, guests, and occurrence no
 test("multi-day and overnight events appear on each occupied day with exclusive ends", async ({ page }, testInfo) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto("/e2e-fixtures/calendar.html?layout");
+  await page.getByRole("button", { name: "Day", exact: true }).click();
   await expect(page.getByRole("button", { name: /Multi-day offsite/ })).toBeVisible();
   await expect(page.getByRole("button", { name: /Overnight handoff/ })).toBeVisible();
   await page.screenshot({ path: testInfo.outputPath("calendar-agenda-mobile.png") });

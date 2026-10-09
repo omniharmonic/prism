@@ -460,7 +460,7 @@ export const SURFACES: Surface[] = [
     await expect(page.getByText("Show quoted history", { exact: true })).toBeVisible();
   } },
   { id: "calendar-dashboard", path: "/e2e-fixtures/calendar.html", open: async (page) => {
-    // The phone opens on the day view; the desktop on the month with its events.
+    // The phone opens on the agenda (the week ahead as a list); the desktop on the month with its events.
     await expect(page.getByRole("button", { name: "Create event" })).toBeVisible();
   } },
   { id: "governance", path: "/e2e-fixtures/governance-workspace.html", open: async (page) => {
