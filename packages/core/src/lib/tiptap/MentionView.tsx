@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { structuralEditsAllowed } from "./blockCommands";
 import { createPortal } from "react-dom";
 import { NodeViewWrapper, ReactNodeViewRenderer, type NodeViewProps } from "@tiptap/react";
 import { useQuery } from "@tanstack/react-query";
@@ -234,10 +235,12 @@ function PersonPageChip({ id, label, chip }: { id: string | null; label: string;
 }
 
 /** Date + time + reminder editor for a date chip. */
-function DatePopover({ anchor, attrs, editable, onSave, onClose, noteId }: {
+function DatePopover({ anchor, attrs, editable, reason, onSave, onClose, noteId }: {
   anchor: HTMLElement | null;
   attrs: MentionAttrs;
   editable: boolean;
+  /** Why the date cannot be changed here (shown instead of the form). */
+  reason?: string;
   noteId: string | null;
   onSave: (next: Partial<MentionAttrs>) => void;
   onClose: () => void;
@@ -317,7 +320,10 @@ function DatePopover({ anchor, attrs, editable, onSave, onClose, noteId }: {
             </div>
           </>
         ) : (
-          attrs.reminder && <p className="prism-mention-card-detail"><Bell size={12} aria-hidden="true" /> Reminder set</p>
+          <>
+            {attrs.reminder && <p className="prism-mention-card-detail"><Bell size={12} aria-hidden="true" /> Reminder set</p>}
+            {reason && <p className="prism-mention-card-detail" data-date-readonly="">{reason}</p>}
+          </>
         )}
       </div>
     </Floating>
@@ -327,7 +333,9 @@ function DatePopover({ anchor, attrs, editable, onSave, onClose, noteId }: {
 function DateChip({ props, chip }: { props: NodeViewProps; chip: React.RefObject<HTMLSpanElement | null> }) {
   const attrs = props.node.attrs as MentionAttrs;
   const [editing, setEditing] = useState(false);
-  const editable = props.editor.isEditable;
+  // Changing a date is a change to the page: not while Suggesting or comment-only (it would be untracked).
+  const tracked = props.editor.isEditable && !structuralEditsAllowed(props.editor);
+  const editable = props.editor.isEditable && !tracked;
   useRegionPrefs(); // a node view is its own React root: follow a date/time format change
   const label = formatChipDate(attrs.date);
   return (
@@ -354,6 +362,7 @@ function DateChip({ props, chip }: { props: NodeViewProps; chip: React.RefObject
           anchor={chip.current}
           attrs={attrs}
           editable={editable}
+          reason={tracked ? "Dates can’t be changed while suggesting — switch to Editing to change this one." : undefined}
           noteId={mentionNoteId(props.editor)}
           onSave={(next) => props.updateAttributes(next)}
           onClose={() => setEditing(false)}

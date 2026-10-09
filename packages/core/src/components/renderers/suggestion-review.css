@@ -9,6 +9,7 @@
 .prism-review-author { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; margin-bottom: 12px; overflow-wrap: anywhere; }
 .prism-review-author span, .prism-review-hint { color: var(--text-secondary); font-size: 12px; }
 .prism-review-hint { margin: 8px 0; line-height: 1.5; }
+.prism-review-author .prism-review-stale { padding: 1px 7px; border-radius: 999px; border: 1px solid var(--color-warning); color: var(--text-primary); font-weight: 600; }
 .prism-review-diff { display: grid; gap: 8px; max-height: 280px; overflow: auto; }
 .prism-review-diff > div { border-left: 3px solid; border-radius: 4px; padding: 9px 12px; }
 .prism-review-diff .prism-review-before { background: color-mix(in srgb, #dc2626 7%, var(--bg-base)); border-color: #b91c1c; }

@@ -1,4 +1,5 @@
 import { Extension } from "@tiptap/core";
+import { SUGGESTION_UNTRACKED_META } from "../../editor/suggestionMeta";
 import type { Editor } from "@tiptap/core";
 
 /**
@@ -40,6 +41,7 @@ export function updateMentionByUid(editor: Editor, uid: string, attrs: Record<st
   });
   if (found < 0) return false;
   const node = editor.state.doc.nodeAt(found)!;
-  editor.view.dispatch(editor.state.tr.setNodeMarkup(found, undefined, { ...node.attrs, ...attrs }));
+  // An attribute change, never a suggestion.
+  editor.view.dispatch(editor.state.tr.setNodeMarkup(found, undefined, { ...node.attrs, ...attrs }).setMeta(SUGGESTION_UNTRACKED_META, true));
   return true;
 }
