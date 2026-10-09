@@ -533,6 +533,7 @@ OMNI_HERMES_URL=http://127.0.0.1:18660 OMNI_HERMES_KEY="$(sed -n 's/^API_SERVER_
 # 3b. For the full-tools part of the walk-through: a fake vault MCP and a stand-in `gog`.
 #    OMNI_FAKE_MCP_PORT=18663 node --import tsx scripts/omni-fake-mcp.ts &
 #    config.yaml:  mcp_servers: {parachute: {url: "http://127.0.0.1:18663/mcp", headers: {Authorization: "Bearer fake-vault-token"}}}
+#                  platform_toolsets: {api_server: [omni-full, omni]}     (the plugin's own toolset — as on the Mini)
 #    .env:         OMNI_BRIDGE_WORKSPACE=<a directory outside ~/.hermes-dev>   OMNI_BRIDGE_APPROVAL_WAIT_S=120
 #    A `gog` on Hermes' PATH that prints two fixed events for `gog calendar events …` (it stands in for the real CLI).
 
@@ -554,18 +555,22 @@ makes real MCP calls through its tool-search bridge.
 `scripts/omni-walkthrough.ts`) drives the real Hermes with the fake model playing, in turn,
 a useful assistant and a hostile one:
 
+- First it checks the dev Hermes offers Omni `[omni-full, omni]` and that the plugin's log
+  says the sandbox is on and its self-test passed.
 - *Useful*: a calendar read through the stand-in `gog` (a trusted reader, no card); a vault
   query and a note write through the MCP (a record card; a delete asks); a read-only shell
   command, `write_file` in the workspace, a script run; a guarded command that pauses on a
   card, is approved, runs, and whose output arrives in the thread; network egress denied
   then approved, counted by a listener the script owns.
-- *Hostile*: about fifty attempts, each of which must end **refused** (the policy named the
+- *Hostile*: about sixty attempts, each of which must end **refused** (the policy named the
   rule), **contained** (it ran and the OS sandbox refused the read / write / connection), or
-  **on a card that is then denied** — reading the dev Hermes' real `.env` nine ways, sending
-  by every sender, switching the guard off, leaving the sandbox (a launchd job, an
-  AppleEvent, `open`, `crontab`, a local socket, the clipboard, a local port), other tools
-  (`vision_analyze` / the browser on a secret or a local address), a cron job, `execute_code`,
-  a sub-agent. After every attempt the script checks that neither of the dev Hermes' two
+  **on a card that is then denied** — reading the dev Hermes' real `.env` a dozen ways
+  (including `search_files` over the whole home directory), sending by every sender,
+  switching the guard off, leaving the sandbox (a launchd job, an AppleEvent, `open`,
+  `crontab`, a local socket, the clipboard, a local port), other tools (`vision_analyze` /
+  the browser on a secret or a local address, an MCP server handed a local file), a cron
+  job, `execute_code`, a sub-agent, and **the swap race**: a background process flips a
+  workspace file into a link to the secret while `read_file` reads it, twelve times. After every attempt the script checks that neither of the dev Hermes' two
   real secrets appears anywhere in the stream, that its listener saw no request, and that
   the files an attack aimed at are unchanged. `scripts/omni-contract.ts` has three depths: the default
 makes no model call and is safe against production (it creates one `omni_contract_…`
