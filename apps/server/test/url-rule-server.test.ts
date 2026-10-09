@@ -295,3 +295,149 @@ test("MCP prism_create_note: a new page's URL properties follow the rule; nothin
   const free = await call(cl, "prism_create_note", { content: "x", path: "Misc/Free", tags: ["misc"], metadata: { title: "Free", website: "see the wiki" } });
   assert.equal(free.isError, false, free.text);
 });
+
+// ── the gateway's own note writes: POST /api/notes, PATCH /api/notes/:id ─────
+
+/** The rule's OWN reads of a note (lean, and asking for the two access keys beside the candidates) — not the reads a route makes for itself. */
+const reads = () => fv.calls.filter((c) => c.method === "GET" && /\/api\/notes\/[^/]+$/.test(c.path) && /include_content=false/.test(c.search) && decodeURIComponent(c.search).includes("prism_creator,prism_visibility")).length;
+const patchesTo = (id: string) => fv.calls.filter((c) => c.method === "PATCH" && c.path.endsWith(`/notes/${id}`));
+const sentMeta = (id: string) => (patchesTo(id).at(-1)!.body as { metadata: Record<string, unknown> }).metadata;
+const rev = (id: string) => fv.notes.get(id)!.updatedAt;
+
+for (const who of ["owner (passthrough)", "member"] as const) {
+  test(`PATCH /api/notes/:id, ${who}: a URL property is normalised in the forwarded body or the request is refused 400 invalid_url — nothing reaches the vault`, async () => {
+    await hintSource();
+    const owner = who.startsWith("owner");
+    if (!owner) grantUser(MEMBER, "tag", "book", "edit");
+    const cookie = login(owner ? OWNER : MEMBER);
+    const patch = (id: string, metadata: Record<string, unknown>, extra: Record<string, unknown> = {}) => send(`/notes/${id}`, { metadata, if_updated_at: rev(id), ...extra }, cookie, "PATCH");
+    // Refused: a URL property by its name, and one by the owner's hint.
+    for (const metadata of [{ website: "see the wiki" }, { source: "javascript:alert(1)" }, { notes: "fine", website: "nope" }, { website: ["nope"] }]) {
+      const before = patchesTo("b1").length;
+      const r = await patch("b1", metadata);
+      assert.equal(r.status, 400, JSON.stringify(metadata));
+      const b = (await r.json()) as { error: string; fields: string[]; reason: string };
+      assert.equal(b.error, "invalid_url");
+      assert.deepEqual(b.fields, [Object.keys(metadata).find((k) => k !== "notes")]);
+      assert.match(b.reason, /web address/);
+      assert.equal(patchesTo("b1").length, before, "nothing was sent to the vault");
+    }
+    assert.deepEqual([stored("b1").website, stored("b1").ref, stored("b1").notes], ["https://example.com/one", "https://example.com/ref", "n"]);
+    // Accepted: a bare domain is stored with its scheme (the body is rewritten before it is forwarded); other keys untouched.
+    const ok = await patch("b1", { website: "example.com/rest", source: "https://example.org/s", notes: "any text" });
+    assert.equal(ok.status, 200);
+    assert.deepEqual([stored("b1").website, stored("b1").source, stored("b1").notes], ["https://example.com/rest", "https://example.org/s", "any text"]);
+    assert.equal(sentMeta("b1").website, "https://example.com/rest");
+    // A key no tag declares is a URL property only through the value it happens to hold: over this route, giving it other
+    // text changes what KIND of property it is (the property routes and the MCP tools, which read the page, refuse it).
+    assert.equal((await patch("b1", { ref: "now plain text" })).status, 200);
+    assert.equal(stored("b1").ref, "now plain text");
+    // A clear passes; a body edit of the same page is untouched by the rule.
+    assert.equal((await patch("b1", { website: null })).status, 200);
+    assert.equal((await send("/notes/b1", { content: "NEW BODY", if_updated_at: rev("b1") }, cookie, "PATCH")).status, 200);
+    assert.equal(fv.notes.get("b1")!.content, "NEW BODY");
+  });
+
+  test(`PATCH /api/notes/:id, ${who}: an old value that is no web address may be restated beside an unrelated change (a whole-form save); changing it to other text is refused`, async () => {
+    const owner = who.startsWith("owner");
+    if (!owner) grantUser(MEMBER, "tag", "book", "edit");
+    const cookie = login(owner ? OWNER : MEMBER);
+    // What the context panel sends: the page's whole metadata with one field changed.
+    const whole = await send("/notes/b2", { metadata: { title: "Two", website: "see the wiki", source: "ask Sam", notes: "added" }, if_updated_at: rev("b2") }, cookie, "PATCH");
+    assert.equal(whole.status, 200);
+    assert.deepEqual([stored("b2").website, stored("b2").notes], ["see the wiki", "added"]);
+    const bad = await send("/notes/b2", { metadata: { title: "Two", website: "see the handbook", notes: "added" }, if_updated_at: rev("b2") }, cookie, "PATCH");
+    assert.equal(bad.status, 400);
+    assert.deepEqual(((await bad.json()) as { fields: string[] }).fields, ["website"]);
+    assert.equal(stored("b2").website, "see the wiki");
+    // Fixed through the property route, the replaced value may be put back over REST too (Undo's allowance).
+    assert.equal((await send("/properties/b2", { set: { website: "https://wiki.example.com" }, expect: { website: "see the wiki" } }, cookie)).status, 200);
+    assert.equal((await send("/notes/b2", { metadata: { website: "see the wiki" }, if_updated_at: rev("b2") }, cookie, "PATCH")).status, 200);
+    assert.equal(stored("b2").website, "see the wiki");
+  });
+}
+
+test("PATCH /api/notes/:id: what the rule costs — nothing (no vault call of any kind) unless a URL-named or URL-hinted key carries something that is not an address; then one lean read", async () => {
+  await hintSource();
+  const cookie = login(OWNER);
+  // Nothing is warm: no schema cache, no tree projection. The pre-check needs neither.
+  resetDatabaseCachesForTests();
+  resetTreeForTests();
+  const gets = async (metadata: Record<string, unknown>, id = "b1") => {
+    const at = fv.calls.length;
+    const tagReads: string[] = [];
+    const inner = globalThis.fetch;
+    globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+      const u = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
+      if (/\/api\/tags$/.test(u.pathname)) tagReads.push(u.pathname);
+      return inner(input, init);
+    }) as typeof fetch;
+    let status: number;
+    try { status = (await send(`/notes/${id}`, { metadata, if_updated_at: rev(id) }, cookie, "PATCH")).status; } finally { globalThis.fetch = inner; }
+    const patchAt = fv.calls.slice(at).findIndex((c) => c.method === "PATCH");
+    const before = fv.calls.slice(at, patchAt < 0 ? undefined : at + patchAt).filter((c) => c.method === "GET");
+    return { status, before: before.map((c) => `${c.path.split("/").pop()}?${decodeURIComponent(c.search).replace(/^\?/, "")}`), schemas: tagReads.length };
+  };
+  // System keys, a status, free text, numbers, yes/no: not one call before the write — no note read, no schema read.
+  assert.deepEqual(await gets({ icon: "📚", prism_order: 3, coverY: 20, status: "doing", notes: "plain text", memo: "Ada Lovelace", rating: 5, isUnread: false }), { status: 200, before: [], schemas: 0 });
+  // URL properties given a clear or real addresses already in stored form: still nothing.
+  assert.deepEqual(await gets({ website: "https://example.com/a", source: "https://example.org/b" }), { status: 200, before: [], schemas: 0 });
+  assert.deepEqual(await gets({ website: null, source: "" }), { status: 200, before: [], schemas: 0 });
+  // A URL-named key carrying something else: ONE lean read (no content, only that key + the access keys) and the cached schemas.
+  const refused = await gets({ website: "nope", memo: "text beside it" });
+  assert.deepEqual([refused.status, refused.before], [400, ["b1?include_content=false&include_metadata=website,prism_creator,prism_visibility"]]);
+  assert.equal(refused.schemas, 1, "the schemas are read once…");
+  const bare = await gets({ website: "example.com/needs-its-scheme" });
+  assert.deepEqual([bare.status, bare.before.length, bare.schemas], [200, 1, 0], "…and come from the cache afterwards");
+  assert.equal(stored("b1").website, "https://example.com/needs-its-scheme");
+});
+
+test("POST /api/notes (create): the tags in the body decide; no stored value, no vault read — owner passthrough (one note and a batch) and a member", async () => {
+  await hintSource();
+  grantUser(MEMBER, "tag", "book", "edit");
+  for (const cookie of [login(OWNER), login(MEMBER)]) {
+    const before = { notes: fv.notes.size, reads: reads() };
+    const bad = await send("/notes", { content: "x", path: `Books/Bad-${cookie.length}`, tags: ["book"], metadata: { title: "Bad", website: "see the wiki", source: "https://example.org/ok" } }, cookie);
+    assert.equal(bad.status, 400);
+    const b = (await bad.json()) as { error: string; fields: string[] };
+    assert.deepEqual([b.error, b.fields], ["invalid_url", ["website"]]);
+    assert.equal(fv.notes.size, before.notes, "nothing was created");
+    const ok = await send("/notes", { content: "x", path: `Books/Good-${fv.notes.size}`, tags: ["book"], metadata: { title: `Good ${fv.notes.size}`, website: "example.com/new", notes: "any text" } }, cookie);
+    assert.ok(ok.status === 200 || ok.status === 201, `create → ${ok.status}`);
+    const made = [...fv.notes.values()].at(-1)!;
+    assert.equal(made.metadata!.website, "https://example.com/new");
+    assert.equal(made.metadata!.notes, "any text");
+    assert.equal(reads(), before.reads, "the rule never reads a note on a create");
+  }
+  // A page without the tag has no URL properties; and a batch names the note that was refused.
+  assert.ok((await send("/notes", { content: "x", path: "Misc/Free", tags: ["misc"], metadata: { website: "see the wiki" } })).status < 300);
+  const size = fv.notes.size;
+  const batch = await send("/notes", { notes: [
+    { content: "a", path: "Books/B1", tags: ["book"], metadata: { website: "https://example.com/1" } },
+    { content: "b", path: "Books/B2", tags: ["book"], metadata: { website: "not an address" } },
+  ] });
+  assert.equal(batch.status, 400);
+  const bb = (await batch.json()) as { error: string; fields: string[]; index: number };
+  assert.deepEqual([bb.error, bb.fields, bb.index], ["invalid_url", ["website"], 1]);
+  assert.equal(fv.notes.size, size, "the whole batch is refused: nothing half-created");
+});
+
+test("the gateway rule reveals nothing and blocks nothing it should not: no access → the route's own 404; anon → 401; an agent (PAT, over MCP) passes through it", async () => {
+  await hintSource();
+  ensureUser(MEMBER);
+  // No grant: the hook says nothing about the page (not even that its value is refused).
+  const hidden = await send("/notes/b1", { metadata: { website: "nope" }, if_updated_at: rev("b1") }, login(MEMBER), "PATCH");
+  assert.ok(hidden.status === 404 || hidden.status === 403, `→ ${hidden.status}`);
+  assert.doesNotMatch(await hidden.text(), /invalid_url/);
+  const anon = await api.request("/notes/b1", { method: "PATCH", headers: J, body: JSON.stringify({ metadata: { website: "nope" } }) });
+  assert.ok(anon.status >= 400, `anon → ${anon.status}`);
+  assert.doesNotMatch(await anon.text(), /invalid_url/);
+  assert.equal(stored("b1").website, "https://example.com/one");
+  // An agent's write (a PAT principal; the tool dispatches to this same route): refused when bad, landed and normalised when good.
+  const cl = await agent();
+  const bad = await call(cl, "prism_update_note", { id: "b1", if_updated_at: rev("b1"), metadata: { website: "nope" } });
+  assert.equal(bad.isError, true);
+  const ok = await call(cl, "prism_update_note", { id: "b1", if_updated_at: rev("b1"), metadata: { website: "example.com/by-agent" } });
+  assert.equal(ok.isError, false, ok.text);
+  assert.equal(stored("b1").website, "https://example.com/by-agent");
+});

@@ -253,6 +253,8 @@ const PERSON_KEYS = /^(assigned|assignee|assignees|owner|owners|person|people|au
 export const isPeopleKeyName = (key: string): boolean => PERSON_KEYS.test(key);
 const RELATION_KEYS = /^(project|projects|parent|related|relates_to|organization|organizations|org|epic|area)$/i;
 const URL_KEYS = /(^|_)(url|link|website|href)$/i;
+/** Does the NAME say "web address" (`website`, `source_url`, `link`…)? What makes a declared text field a URL property without a hint. */
+export const isUrlKeyName = (key: string): boolean => URL_KEYS.test(key);
 const DATE_KEYS = /^(date|due|deadline|start|end|scheduled|completed|completed_at|due_date|start_date|end_date|first-met|last-contact|published)$/i;
 const STATUS_KEYS = /^(status|state|stage|event_status)$/i;
 const EMAIL_KEYS = /^(email|e-mail|mail|email_address)$/i;

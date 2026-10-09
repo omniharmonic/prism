@@ -37,7 +37,7 @@ import { ingestKeyChanged, INGEST_KEYS, INGEST_SOURCES } from "../ingest-keys";
 import { grantsForResource } from "../db";
 import { publishedTag } from "../pages";
 import { recordAction } from "../actions/store";
-import { Hono, type Context } from "hono";
+import { Hono, type Context, type MiddlewareHandler } from "hono";
 import { canonicalTag } from "../tags";
 import { protectionReason, systemNoteReason, SYSTEM_NOTE_TAGS } from "@prism/core/pages";
 import { bodyLimit } from "hono/body-limit";
@@ -99,6 +99,7 @@ import {
   planRelationTargets,
   sortOptionOrders,
   urlPropertyKeys,
+  isUrlKeyName,
   checkUrlWrite,
   URL_INVALID_HINT,
   relationTargetOf,
@@ -1293,6 +1294,109 @@ export async function applyUrlRule(
   }
   return { set: out, invalid, urlKeys };
 }
+
+/** Keys some tag of this vault shows as a URL by an owner's hint (the local hint rows; no vault call). */
+function urlHintedKeys(vaultId: string): Set<string> {
+  const out = new Set<string>();
+  for (const fields of cachedHints(vaultId).values()) for (const [k, h] of Object.entries(fields)) if (h?.kind === "url" && !h.deleted) out.add(k);
+  return out;
+}
+
+/** A value the URL rule has nothing to say about wherever it lands: a clear, or web addresses already in stored form. */
+function settledUrlValue(v: unknown): boolean {
+  const checked = checkUrlWrite(v, undefined);
+  if (!checked.ok) return false;
+  try { return JSON.stringify(checked.value ?? null) === JSON.stringify(v ?? null); } catch { return false; }
+}
+const URL_HOOK_MAX_BODY = 4_000_000;
+const URL_HOOK_MAX_NOTES = 500;
+const invalidUrl = (c: Context, fields: string[], index?: number) =>
+  c.json({ error: "invalid_url", reason: URL_INVALID_HINT, fields, ...(index !== undefined ? { index } : {}) }, 400);
+
+/**
+ * The URL rule on the gateway's own note writes — `POST /api/notes` (one note or a batch)
+ * and `PATCH` / `PUT /api/notes/:id` — for EVERY caller: mounted before the owner
+ * short-circuit (like `restMentionHook`), so the member routes, the owner / admin
+ * passthrough, a PAT (an agent over REST) and the MCP tools' own dispatch all pass it.
+ * Same function as the property routes (`applyUrlRule`): a URL property's value is
+ * normalised in the forwarded body (`example.com` → `https://example.com`; a body that
+ * needs no change is forwarded byte for byte) or the request is answered 400
+ * `invalid_url {fields}` and NOTHING is forwarded. A clear, a restatement of the stored
+ * value and the Undo allowance pass.
+ *
+ * COST — decided first, in memory, with no vault call of any kind (not even the schema
+ * cache): a key can only be a URL property here if an owner's hint says so (`kind: url`,
+ * from the local hint rows) or its NAME does (`website`, `source_url`, `link`, …). A body
+ * with no such key — an icon, a status, a title, any other text — goes straight on. So
+ * does one whose such keys hold a clear or web addresses already in stored form. Only a
+ * candidate key carrying anything else costs: on a create nothing (tags are in the body;
+ * the schemas come from the 30 s cache); on an update ONE lean read of the note (no
+ * content, only those keys + the two access keys) for its tags and stored values, then
+ * the exact rule. A free key with another name is a URL property only through the value
+ * it happens to hold; over this route replacing that value is a change of kind, not text
+ * in a URL property, and is not looked at (the property routes and the MCP tools, which
+ * read the note anyway, do hold it). A caller who cannot view the note is passed on
+ * untouched (the route answers 404; nothing is revealed here), and a read that fails
+ * passes the request on (the route then fails the same way).
+ */
+export const restUrlRuleHook: MiddlewareHandler = async (c, next) => {
+  const method = c.req.method;
+  const id = c.req.param("id");
+  const create = method === "POST" && !id;
+  if (!create && !((method === "PATCH" || method === "PUT") && id)) return next();
+  let raw: string;
+  try { raw = await c.req.text(); } catch { return next(); }
+  if (raw.length > URL_HOOK_MAX_BODY || raw.indexOf("metadata") < 0) return next();
+  let body: unknown;
+  try { body = JSON.parse(raw); } catch { return next(); }
+  const actor = resolveActor(c);
+  if (actor.kind === "anon") return next(); // the route answers 401
+  const entry = entryFor(c, actor);
+  const metaOf = (x: unknown): Record<string, unknown> | null => {
+    const m = x && typeof x === "object" && !Array.isArray(x) ? (x as { metadata?: unknown }).metadata : null;
+    return m && typeof m === "object" && !Array.isArray(m) ? (m as Record<string, unknown>) : null;
+  };
+  const stringTags = (t: unknown): string[] => (Array.isArray(t) ? t.filter((x): x is string => typeof x === "string") : []);
+  let changed = false;
+
+  if (create) {
+    // One note, a list of notes, or `{notes: [...]}` (the vault's batch dialect on the passthrough).
+    const list: unknown[] = Array.isArray(body) ? body : Array.isArray((body as { notes?: unknown } | null)?.notes) ? (body as { notes: unknown[] }).notes : [body];
+    if (list.length > URL_HOOK_MAX_NOTES) return next(); // the routes bound a batch themselves
+    const hinted = urlHintedKeys(entry.id);
+    for (const [i, item] of list.entries()) {
+      const meta = metaOf(item);
+      if (!meta || !Object.keys(meta).some((k) => (hinted.has(k) || isUrlKeyName(k)) && !settledUrlValue(meta[k]))) continue;
+      const ruled = await applyUrlRule(entry, stringTags((item as { tags?: unknown }).tags), null, meta);
+      if (ruled.invalid.length) return invalidUrl(c, ruled.invalid, list.length > 1 ? i : undefined);
+      for (const k of ruled.urlKeys) if (ruled.set[k] !== meta[k]) { meta[k] = ruled.set[k]; changed = true; }
+    }
+  } else {
+    const meta = metaOf(body);
+    if (!meta) return next();
+    // Candidates, from memory only: hinted `url` anywhere in this vault, or named like a web address.
+    const hinted = urlHintedKeys(entry.id);
+    const need = Object.keys(meta).filter((k) => isFieldKey(k) && !isSystemKey(k) && (hinted.has(k) || isUrlKeyName(k)) && !settledUrlValue(meta[k]));
+    if (!need.length) return next();
+    const b = body as { tags?: unknown; add_tags?: unknown };
+    const adding = [...stringTags(b.add_tags), ...stringTags((b.tags as { add?: unknown } | null)?.add)];
+    let stored: Note;
+    try {
+      stored = await vaultClient(entry.id, { timeoutMs: 5_000 }).getNote(id!, { includeContent: false, ...(need.length <= 60 ? { includeMetadata: [...need, "prism_creator", "prism_visibility"] } : {}) });
+    } catch {
+      return next();
+    }
+    if (!isAdmin(actor) && !capsFor(actor, ref(stored)).has("view")) return next();
+    const subset: Record<string, unknown> = {};
+    for (const k of need) subset[k] = meta[k];
+    const ruled = await applyUrlRule(entry, [...(stored.tags ?? []), ...adding], stored.metadata, subset, stored.id);
+    if (ruled.invalid.length) return invalidUrl(c, ruled.invalid);
+    for (const k of ruled.urlKeys) if (ruled.set[k] !== meta[k]) { meta[k] = ruled.set[k]; changed = true; }
+  }
+  // Only a body the rule changed is rewritten; every later reader (the hooks, the route, the passthrough) sees it.
+  if (changed) (c.req as unknown as { bodyCache: Record<string, unknown> }).bodyCache = { text: Promise.resolve(JSON.stringify(body)) };
+  return next();
+};
 
 // ── property writes ──────────────────────────────────────────────────────────
 
