@@ -102,15 +102,18 @@ struct ApprovalCardView: View {
                     .buttonStyle(.borderedProminent)
                     .accessibilityHint("Repeats the \(retry.rawValue) decision; the server will not act on it twice")
             } else if card.canOfferSend() {
-                Button("Send") { Task { await center.send(card.id) } }
+                Button(card.isCommand ? "Approve Once" : "Send") { Task { await center.send(card.id) } }
                     .buttonStyle(.borderedProminent)
-                    .accessibilityHint("Sends exactly what is shown, after you confirm on this device")
+                    .accessibilityHint(card.isCommand ? "Lets Omni run exactly what is shown, once, after you confirm on this device" : "Sends exactly what is shown, after you confirm on this device")
             }
             if card.canOfferEdit() {
                 Button("Edit") { editing = ApprovalDraft(card.approval) }
                     .accessibilityHint("Change the wording yourself")
             }
-            if card.canOfferCancel() {
+            if card.canOfferCancel() && card.isCommand {
+                Button("Deny", role: .destructive) { Task { await center.cancel(card.id) } }
+                    .accessibilityHint("Omni does not run it")
+            } else if card.canOfferCancel() {
                 Button("Revise…") { revising = true }
                     .accessibilityHint("Ask Omni for a new draft")
                 Button("Cancel Draft") { confirmingCancel = true }
@@ -126,6 +129,18 @@ struct ApprovalCardView: View {
 
     private func header(_ standing: ApprovalCard.Standing, _ card: ApprovalCard) -> String {
         let kind = card.content.kindLabel
+        if card.isCommand {
+            switch standing {
+            case .pending: return "OMNI IS WAITING · APPROVE?"
+            case .sending: return "APPROVED · RUNNING"
+            case .sent: return "APPROVED · RAN"
+            case .failed: return "APPROVED · RAN AND FAILED"
+            case .unknown: return "APPROVED · NO WORD BACK"
+            case .cancelled, .revised: return "NOT RUN"
+            case .expired: return "NOT RUN · NO ANSWER IN TIME"
+            default: break
+            }
+        }
         switch standing {
         case .pending: return "APPROVE · \(kind)".uppercased()
         case .mismatch: return "CAN'T VERIFY · \(kind)".uppercased()

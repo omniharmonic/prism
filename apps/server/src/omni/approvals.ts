@@ -14,6 +14,14 @@
  *    guarded executors (live actions, behind ACTIONS_*_ENABLED) — this module has no
  *    sender of its own. A disabled executor leaves the approval `pending` and answers
  *    `executor_disabled`.
+ *
+ * KIND `command` is different in one way: it is not a draft to send but ONE TOOL CALL of
+ * a Hermes turn that the `omni-bridge` plugin paused (a shell command that would reach the
+ * network, a write outside the workspace, a scheduled job…). Nothing here executes it.
+ * `send` = "Approve once": the approval becomes `approved`, the plugin — which is holding
+ * that exact call and polls the hook — lets it run, then reports how it ended (`sent` =
+ * it ran, `failed` = it ran and failed). Deny, expiry and the end of the turn all leave
+ * the call un-run. It cannot be edited: the person approves the call as written or not at all.
  */
 import { createHash } from "node:crypto";
 import { db } from "../db";
@@ -22,13 +30,14 @@ import { newId } from "./store";
 import { omniConfig } from "./config";
 import { protonSendConfigured } from "./proton-send";
 
-export const APPROVAL_KINDS = ["email", "email-reply", "message", "calendar-invite", "tweet", "wallet-proposal"] as const;
+export const APPROVAL_KINDS = ["email", "email-reply", "message", "calendar-invite", "tweet", "wallet-proposal", "command"] as const;
 export type ApprovalKind = (typeof APPROVAL_KINDS)[number];
 export type ApprovalStatus = "pending" | "approved" | "sent" | "failed" | "unknown" | "expired" | "cancelled" | "revised";
 
 export class ApprovalInputError extends Error {}
 
 const MAX_PAYLOAD_BYTES = 256 * 1024;
+const MAX_COMMAND_INPUT_BYTES = 64 * 1024;
 const MAX_SUMMARY = 300;
 
 /** Stable JSON: object keys sorted at every depth (the digest must not depend on key order). */
@@ -107,6 +116,29 @@ export function validatePayload(kind: unknown, raw: unknown): { kind: ApprovalKi
         purpose: str(b.purpose, "purpose", 1000),
       });
       break;
+    case "command": {
+      // One paused tool call, exactly as it would run. A shell command carries `command`
+      // (+ where); any other tool its whole `input`. Neither is ever shortened: what is
+      // approved is what the digest covers.
+      const input = b.input;
+      if (input !== undefined && (input === null || typeof input !== "object" || Array.isArray(input))) throw new ApprovalInputError("input: an object");
+      if (input !== undefined && Buffer.byteLength(canonicalJson(input), "utf8") > MAX_COMMAND_INPUT_BYTES) throw new ApprovalInputError("input: too large to review");
+      const command = str(b.command, "command", 100_000, false);
+      if (command === undefined && input === undefined) throw new ApprovalInputError("command or input: required");
+      const origin = str(b.origin, "origin", 20, false);
+      if (origin !== undefined && !["subagent", "cron"].includes(origin)) throw new ApprovalInputError("origin: subagent | cron");
+      payload = pick({
+        tool: str(b.tool, "tool", 200),
+        command,
+        cwd: str(b.cwd, "cwd", 2000, false),
+        input: input as Record<string, unknown> | undefined,
+        reason: str(b.reason, "reason", 1000),
+        rule: str(b.rule, "rule", 100),
+        title: str(b.title, "title", 300, false),
+        origin,
+      });
+      break;
+    }
   }
   if (Buffer.byteLength(JSON.stringify(payload), "utf8") > MAX_PAYLOAD_BYTES) throw new ApprovalInputError("payload: too large");
   return { kind: kind as ApprovalKind, payload };
@@ -154,6 +186,8 @@ const q = {
   unclaim: db.prepare("UPDATE omni_approvals SET status = 'pending', decided_at = NULL, decided_via = NULL, decided_device = NULL, idem_key = NULL WHERE id = ? AND status = 'approved'"),
   finish: db.prepare("UPDATE omni_approvals SET status = ?, result = ? WHERE id = ? AND status = 'approved'"),
   close: db.prepare("UPDATE omni_approvals SET status = ?, decided_at = ?, decided_via = ?, decided_device = ?, idem_key = ?, superseded_by = ? WHERE id = ? AND status = 'pending'"),
+  pendingCommands: db.prepare("SELECT * FROM omni_approvals WHERE thread_id = ? AND kind = 'command' AND status = 'pending' AND created_at >= ?"),
+  staleCommands: db.prepare("UPDATE omni_approvals SET status = 'unknown', result = ? WHERE kind = 'command' AND status = 'approved' AND decided_at <= ?"),
 };
 
 export function createApproval(o: { owner: string; threadId: string | null; kind: ApprovalKind; payload: Record<string, unknown>; summary?: string | null; ttlMs: number; revises?: string | null }): Approval {
@@ -163,8 +197,18 @@ export function createApproval(o: { owner: string; threadId: string | null; kind
   q.ins.run(id, o.owner, o.threadId, o.kind, approvalDigest(o.kind, o.payload), JSON.stringify(o.payload), summary, now, now + o.ttlMs, o.revises ?? null);
   return getApproval(o.owner, id)!;
 }
-/** Expire overdue pending approvals (lazy: called before every read/decision). */
-export const expireApprovals = (): number => q.expire.run(Date.now(), Date.now()).changes;
+/** Expire overdue pending approvals (lazy: called before every read/decision). An approved
+ *  command whose call never reported back (Hermes died mid-call) becomes `unknown`. */
+export const expireApprovals = (): number => {
+  q.staleCommands.run(JSON.stringify({ error: "no_report", executor: "hermes-turn" }), Date.now() - COMMAND_REPORT_MS);
+  return q.expire.run(Date.now(), Date.now()).changes;
+};
+/** How long an approved command may run before the lack of a report means "unknown". */
+const COMMAND_REPORT_MS = 2 * 60 * 60_000;
+/** The command approvals a turn left pending (asked since `sinceMs`, not by a cron job). */
+export function pendingTurnCommands(threadId: string, sinceMs: number): Approval[] {
+  return (q.pendingCommands.all(threadId, sinceMs) as Raw[]).map(toApproval).filter((a) => a.payload.origin !== "cron");
+}
 export function getApproval(owner: string, id: string): Approval | null {
   const r = q.get.get(id, owner) as Raw | undefined;
   return r ? toApproval(r) : null;
@@ -200,6 +244,7 @@ export function approvalView(a: Approval): Record<string, unknown> {
     createdAt: new Date(a.createdAt).toISOString(),
     expiresAt: new Date(a.expiresAt).toISOString(),
     decidedAt: a.decidedAt ? new Date(a.decidedAt).toISOString() : null,
+    decidedVia: a.decidedVia,
     result: a.result,
     supersededBy: a.supersededBy,
     revises: a.revises,
@@ -212,11 +257,16 @@ export function approvalView(a: Approval): Record<string, unknown> {
 /** Which existing guarded executor runs a kind, and whether it is switched on. */
 export function executorFor(kind: ApprovalKind): { name: string; available: boolean; enabled: boolean } {
   const e = executorOf(kind);
-  // OMNI_EXECUTORS=off wins over every family flag: nothing Omni proposes can be sent.
-  return omniConfig.executorsOff() ? { ...e, enabled: false } : e;
+  // OMNI_EXECUTORS=off wins over every family flag: nothing Omni proposes can be sent. A
+  // `command` is not a send (Hermes runs its own paused call); it has its own switch.
+  return omniConfig.executorsOff() && kind !== "command" ? { ...e, enabled: false } : e;
 }
 function executorOf(kind: ApprovalKind): { name: string; available: boolean; enabled: boolean } {
   switch (kind) {
+    case "command":
+      // Not a sender: Hermes itself runs the call it paused. OMNI_COMMAND_APPROVALS=off
+      // makes every such call un-approvable (it then never runs).
+      return { name: "hermes-turn", available: true, enabled: !omniConfig.commandApprovalsOff() };
     case "email":
     case "email-reply":
       return omniConfig.emailExecutor() === "proton-send"
