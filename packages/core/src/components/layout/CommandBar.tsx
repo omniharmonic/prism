@@ -1,4 +1,5 @@
 import { AddSavedNoteContextButton } from "../agent/SavedNoteHandoff";
+import { containerTitle } from "../../lib/pages/containerTitle";
 import { useState, useCallback, useEffect, useRef, useMemo } from "react";
 import {
   Search, X, FileText, MonitorPlay, Code, Mail, Table2, Globe,
@@ -480,7 +481,7 @@ export function CommandBar() {
     // refetch): the list never blinks empty, and Enter acts on the row that is showing.
     const notes = query.trim() ? searchResults ?? [] : [];
     return notes.filter(note => filter !== "commands" && (filter === "all" || searchResultGroup(note) === filter)).map(note => {
-      const label = note.path?.split("/").pop() || note.id;
+      const label = containerTitle(note.path, note.metadata) || note.path?.split("/").pop() || note.id;
       const marks = resultHighlights(note, label, debouncedQuery);
       return {
         id: `note-${note.id}`,

@@ -1193,7 +1193,7 @@ async function servePreferences(c: Context, actor: Actor, entry: VaultEntry, pre
   const items: Record<string, { path: string | null; title: string; tags: string[]; type?: string; prismType?: string }> = {};
   for (const id of new Set([...favorites, ...recents])) {
     const row = byId.get(id)!;
-    items[id] = { path: row.path, title: pageTitle(row.path), tags: row.tags, ...(row.type ? { type: row.type } : {}), ...(row.prismType ? { prismType: row.prismType } : {}) };
+    items[id] = { path: row.path, title: pageTitle(row.path, row.title ? { title: row.title } : null), tags: row.tags, ...(row.type ? { type: row.type } : {}), ...(row.prismType ? { prismType: row.prismType } : {}) };
   }
   c.header("Cache-Control", "private, no-store");
   return c.json({ preferences: { ...prefs, favorites, recents }, revision, items });

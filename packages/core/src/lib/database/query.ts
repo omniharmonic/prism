@@ -15,6 +15,7 @@
  */
 import { dateRange, dayDiff } from "./dates";
 import { TEMPLATE_TAG, isTemplateNote } from "../pages/model";
+import { containerTitle } from "../pages/containerTitle";
 
 export const QUERY_OPS = [
   "eq", "ne", "in", "nin", "contains", "not_contains",
@@ -352,6 +353,8 @@ export function metadataKeysFor(spec: QuerySpec): string[] | null {
 export function noteTitle(n: Pick<QueryInput, "path" | "metadata" | "id">): string {
   const t = n.metadata?.title;
   if (typeof t === "string" && t.trim()) return t.trim();
+  const container = containerTitle(n.path, n.metadata);
+  if (container) return container;
   const leaf = n.path?.split("/").pop()?.replace(/\.[^.]+$/, "");
   return leaf || "Untitled";
 }

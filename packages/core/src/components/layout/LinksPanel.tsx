@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { containerTitle } from "../../lib/pages/containerTitle";
 import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 import { ArrowDownLeft, ArrowUpRight, ChevronRight, FileText, Link } from "lucide-react";
 import { useUIStore } from "../../app/stores/ui";
@@ -12,7 +13,7 @@ import "./context-panels.css";
 const PAGE_SIZE = 20;
 type Resolution = { note?: Note; state: "ready" | "unavailable" | "failed" };
 type Row = Resolution & { link: VaultLink; id: string };
-const title = (note: Note) => (typeof note.metadata?.title === "string" && note.metadata.title.trim()) || note.path?.split("/").pop() || "Untitled note";
+const title = (note: Note) => (typeof note.metadata?.title === "string" && note.metadata.title.trim()) || containerTitle(note.path, note.metadata) || note.path?.split("/").pop() || "Untitled note";
 
 export function LinksPanel({ noteId }: { noteId: string }) {
   const client = useVaultClient();

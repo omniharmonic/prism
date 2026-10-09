@@ -466,6 +466,7 @@ export const reconcileStats = { reads: 0, skipped: 0 };
 export function resetReconcileState(): void {
   lastReconciled.clear();
   lastVaultRead.clear();
+  pristineDocs.clear();
   reconcileStats.reads = 0;
   reconcileStats.skipped = 0;
 }
@@ -603,6 +604,35 @@ function blockDocument(documentName: string, reason: ConversionFailure): void {
 // rule below is applied at load, in the reconciler and in the store.
 
 const contentHash = (content: string): string => createHash("sha256").update(content ?? "").digest("base64");
+
+// ---- opening a page is not an edit --------------------------------------------
+// The editor tidies a document the moment it is shown: a body that ends in a list,
+// a table or a quote gets an empty paragraph after it (TipTap's trailing node), and
+// that reaches the server as an ordinary update. Stored as usual, merely OPENING such
+// a page rewrote its note — a Markdown body became HTML, with a new history version —
+// though nobody had typed anything. So a loaded document remembers what it held while
+// it WAS the vault's content (`pristineDocs`, a hash of its blocks without trailing
+// empty paragraphs); a store that finds the same blocks writes nothing. The first
+// store that finds anything else forgets the entry: from then on every store is an
+// ordinary one. Only ever SKIPS a write whose content is what the vault already holds.
+const pristineDocs = new Map<string, string>();
+const isEmptyParagraph = (node: unknown): boolean => {
+  const n = node as { type?: unknown; content?: unknown[] } | null;
+  return !!n && n.type === "paragraph" && (!Array.isArray(n.content) || n.content.length === 0);
+};
+function pristineKey(docJson: DocJson): string {
+  const blocks = Array.isArray(docJson.content) ? docJson.content : [];
+  let end = blocks.length;
+  while (end > 0 && isEmptyParagraph(blocks[end - 1])) end--;
+  return contentHash(JSON.stringify(blocks.slice(0, end)));
+}
+function rememberPristine(documentName: string, doc: Y.Doc): void {
+  try {
+    pristineDocs.set(documentName, pristineKey(yDocToDocJson(doc)));
+  } catch {
+    pristineDocs.delete(documentName); // never a reason to fail a load: such a document is simply stored as before
+  }
+}
 
 export type VaultRelation =
   /** Nothing newer than what the snapshot already absorbed. */
@@ -1781,6 +1811,7 @@ export async function loadDocumentState(documentName: string, doc: Y.Doc, opts?:
       // The document IS the vault content at this version.
       saveDocState(target.noteId, Y.encodeStateAsUpdate(doc), noteMs, target.vaultId, contentHash(note.content));
       clearCollabUnsaved(target.noteId, target.vaultId);
+      if (kind === "document" && !unfolded) rememberPristine(documentName, doc);
     }
     if (!unfolded) {
       lastReconciled.set(documentName, noteMs);
@@ -2389,6 +2420,30 @@ export async function storeDocumentState(documentName: string, doc: Y.Doc): Prom
       // awaits below belongs to the next store.
       const docJson = kind === "document" ? yDocToDocJson(doc) : null;
       const snapshotState = Y.encodeStateAsUpdate(doc);
+      // Opening a page is not an edit (see `pristineDocs`): the document still holds
+      // exactly what it was loaded with — at most the editor's own trailing empty
+      // paragraph more — so the vault already has this content, in the form it was
+      // written in (Markdown stays Markdown). Nothing is rendered, nothing is written.
+      const pristine = docJson ? pristineDocs.get(documentName) : undefined;
+      if (pristine !== undefined) {
+        if (note && pending.length === 0 && pristineKey(docJson!) === pristine) {
+          saveDocStateConfirming(noteId, snapshotState, toMs(note.updatedAt), vaultId, [], contentHash(note.content));
+          const at = toMs(note.updatedAt);
+          if (at > (lastReconciled.get(documentName) ?? 0)) lastReconciled.set(documentName, at);
+          vaultWritten = true;
+          // What a store tells its listener does not all live in the body: a page comment is
+          // kept beside it in the document, and is noticed here. The content did not change.
+          if (storeListener) {
+            try {
+              storeListener.stored({ docName: documentName, vaultId, noteId, prevContent: note.content, content: note.content, updatedAt: note.updatedAt, doc, editors: takeDocEditors(documentName) });
+            } catch {
+              /* notifications are best-effort — never fail the persist */
+            }
+          }
+          break;
+        }
+        pristineDocs.delete(documentName); // it has been edited: every store from here on is an ordinary one
+      }
       // What the row was built on when this snapshot was taken. The render below is
       // awaited: if the reconciler merges an external edit meanwhile, the row moves
       // to a NEWER version (state, source and base together) and this snapshot is
@@ -2648,6 +2703,7 @@ export const hocuspocus = new Hocuspocus({
   async afterUnloadDocument(data) {
     docEditors.delete(data.documentName);
     collabWriters.delete(data.documentName);
+    pristineDocs.delete(data.documentName);
     externalFolds.delete(data.documentName);
     lastSuggestions.delete(data.documentName);
     blockedDocs.delete(data.documentName);
