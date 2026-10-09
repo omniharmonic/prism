@@ -1,4 +1,7 @@
 import { test, expect, type Page } from "@playwright/test";
+import { enterAddress, forbidBrowserDialogs } from "./in-app-dialog-helpers";
+
+test.beforeEach(async ({ page }) => { await forbidBrowserDialogs(page); });
 
 const SHOTS = process.env.PRISM_EDITOR_SHOTS;
 // 1×1 transparent PNG.
@@ -72,9 +75,9 @@ test("the slash Image entry opens the file picker when uploads exist and keeps t
   await (await chooser).setFiles({ name: "picked.png", mimeType: "image/png", buffer: Buffer.from(PNG, "base64") });
   await expect.poll(() => uploads(page)).toEqual([expect.objectContaining({ name: "picked.png" })]);
   await expect(page.locator(".tiptap img")).toHaveCount(1);
-  page.once("dialog", (d) => d.accept("https://images.example.test/by-url.png"));
   await page.keyboard.type("/image");
   await page.getByRole("option", { name: /^Image from URL/ }).click();
+  await enterAddress(page, "Image address", "https://images.example.test/by-url.png");
   expect(await html(page)).toContain('src="https://images.example.test/by-url.png"');
 });
 
@@ -87,9 +90,13 @@ test("without an uploader the feature is hidden: no upload on paste, slash Image
   await page.keyboard.press("Enter");
   await page.keyboard.type("/image");
   await expect(page.getByRole("option", { name: /^Image/ })).toHaveCount(1);
-  page.once("dialog", (d) => { expect(d.message()).toBe("Image URL"); void d.accept("javascript:alert(1)"); });
   await page.keyboard.press("Enter");
+  const refused = await enterAddress(page, "Image address", "javascript:alert(1)");
+  await expect(refused.getByRole("alert")).toContainText("Enter the image’s web address");
   expect(await html(page)).not.toContain("javascript");
+  await page.keyboard.press("Escape");
+  await expect(refused).toHaveCount(0);
+  expect(await html(page)).not.toContain("<img");
 });
 
 test("an upload that finishes after the document became read-only inserts nothing", async ({ page }) => {

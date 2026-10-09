@@ -57,7 +57,11 @@
 	</array>
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
+	<key>NSCameraUsageDescription</key>
+	<string>Prism uses the camera when you choose to take a photo or video to add to a page.</string>
 	<key>NSFaceIDUsageDescription</key>
 	<string>Prism uses Face ID to unlock your workspace when you turn on the app lock.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Prism uses the microphone when you choose to record a video to add to a page.</string>
 </dict>
 </plist>

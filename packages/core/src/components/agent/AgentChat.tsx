@@ -56,6 +56,7 @@ import { AgentContextAttachments } from "./AgentContextAttachments";
 import type { RendererProps } from "../renderers/RendererProps";
 
 import { formatDate as fmtDate, formatDateTime as fmtDateTime, formatTime as fmtTime } from "../../lib/datetime/format";
+import { askConfirm, showMessage } from "../ui/ConfirmDialog";
 // ── helpers ──────────────────────────────────────────────────────────────────
 
 function relTime(ms: number | null | undefined): string {
@@ -198,11 +199,11 @@ function AgentChatView({ client }: { client: AgentClient }) {
     setActiveSession(id);
   };
   const archive = async (id: string) => {
-    if (!window.confirm("Archive this session? Its transcript note stays in the vault.")) return;
+    if (!(await askConfirm({ title: "Archive this session?", body: "Its transcript note stays in the vault.", confirm: "Archive" }))) return;
     try {
       await client.archiveSession(id);
     } catch (e) {
-      window.alert(agentErrorText(e));
+      void showMessage(agentErrorText(e), "Couldn't archive the session");
     }
     if (id === activeSessionId) setActiveSession(null);
     void queryClient.invalidateQueries({ queryKey: keys.all });

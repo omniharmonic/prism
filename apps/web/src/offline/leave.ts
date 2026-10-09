@@ -35,8 +35,14 @@ export async function confirmLeaveWithUnsent(): Promise<boolean> {
   const choice = await new Promise<LeaveChoice>((resolve) => {
     let handled = false;
     window.dispatchEvent(new CustomEvent(LEAVE_EVENT, { detail: { count, take: () => { handled = true; }, resolve } }));
-    // No dialog host mounted (e.g. a bare page): fall back to the browser's own prompt.
-    if (!handled) resolve(window.confirm(`${count} change${count === 1 ? " has" : "s have"} not reached the server yet and will stay on this device, unsent. Sign out anyway?`) ? "download" : "stay");
+    // No dialog host mounted (e.g. a bare page): ask in the app's own confirmation — never the
+    // browser's `confirm()`, which the Prism Client's web view answers "no" without showing anything.
+    if (!handled) void import("@prism/core/shell").then(({ askConfirm }) => askConfirm({
+      title: "Sign out with unsent changes?",
+      body: `${count} change${count === 1 ? " has" : "s have"} not reached the server yet. They are downloaded as a file first, then removed from this device.`,
+      confirm: "Download and sign out",
+      cancel: "Stay signed in",
+    })).then((yes) => resolve(yes ? "download" : "stay"), () => resolve("stay"));
   });
   if (choice === "stay") return false;
   if (choice === "download") {

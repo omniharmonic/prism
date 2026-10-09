@@ -322,3 +322,4 @@ export { openNotification, focusAnchor, anchorSelector, listenForInboxOpenReques
 export { InboxBadge, InboxNavButton, openInbox } from "./components/inbox/InboxNavButton";
 export { RequestAccessButton } from "./components/inbox/RequestAccessButton";
 export { PageNotificationLevelButton } from "./components/inbox/PageNotificationLevel";
+export { ConfirmDialog, askConfirm, showMessage, type ConfirmOptions } from "./components/ui/ConfirmDialog";

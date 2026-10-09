@@ -20,6 +20,7 @@ import {
   Redo2,
 } from "lucide-react";
 import { cn } from "../../lib/cn";
+import { requestEditorPrompt } from "../../lib/tiptap/editorPrompt";
 
 interface EditorToolbarProps {
   editor: Editor;
@@ -141,12 +142,7 @@ export function EditorToolbarCommands({ editor }: EditorToolbarProps) {
       {/* Link */}
       <ToolbarButton
         icon={<LinkIcon size={15} />}
-        onClick={() => {
-          const url = window.prompt("URL");
-          if (url) {
-            editor.chain().focus().setLink({ href: url }).run();
-          }
-        }}
+        onClick={() => requestEditorPrompt(editor, "link", (editor.getAttributes("link").href as string | undefined) ?? undefined)}
         active={editor.isActive("link")}
         title="Link"
       />
@@ -154,12 +150,7 @@ export function EditorToolbarCommands({ editor }: EditorToolbarProps) {
       {/* Image */}
       <ToolbarButton
         icon={<ImageIcon size={15} />}
-        onClick={() => {
-          const url = window.prompt("Image URL");
-          if (url) {
-            editor.chain().focus().setImage({ src: url }).run();
-          }
-        }}
+        onClick={() => requestEditorPrompt(editor, "image")}
         title="Image"
       />
 

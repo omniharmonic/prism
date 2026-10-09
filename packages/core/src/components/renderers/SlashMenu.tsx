@@ -11,7 +11,7 @@ import { useSelectionAsk } from "../../lib/agent/useSelectionAsk";
 import { dismissSlashCommand, type SlashCommandState } from "../../lib/tiptap/SlashCommand";
 import { turnTopBlocksInto, type TurnIntoKind } from "../../lib/tiptap/blockCommands";
 import { canUploadImages, pickAndUploadImages, canUploadFiles, pickAndUploadFiles } from "../../lib/tiptap/ImageUpload";
-import { editorUnfurler, insertLinkBlock } from "../../lib/tiptap/UrlPaste";
+import { requestEditorPrompt } from "../../lib/tiptap/editorPrompt";
 import { canInsertDatabase, requestDatabaseInsert } from "../../lib/tiptap/databaseView";
 import { describeEditorPopup } from "../../lib/tiptap/popupAria";
 import "./editor-blocks.css";
@@ -83,17 +83,14 @@ function insertColumns(editor: Editor, count: 2 | 3 | 4 | 5) {
   editor.chain().focus().insertContentAt({ from, to }, json).setTextSelection(from + 3).run();
 }
 
+// The address is typed into the editor's own field (`EditorPrompt`), never `window.prompt`: the
+// Prism Client's web view (macOS and iOS) answers a prompt with null and shows nothing.
 function insertImageByUrl(editor: Editor) {
-  const url = window.prompt("Image URL");
-  if (!url) return;
-  if (!/^https?:\/\//i.test(url) && !/^\/(?!\/)/.test(url)) return; // http(s) or same-origin path; never javascript:/data:/protocol-relative
-  editor.chain().focus().setImage({ src: url }).run();
+  requestEditorPrompt(editor, "image");
 }
 
 function promptLinkBlock(editor: Editor, type: "bookmark" | "embed") {
-  const url = window.prompt(type === "embed" ? "Link to embed (YouTube, Vimeo, Loom, Figma, Google Docs, Spotify…)" : "Link for the bookmark");
-  if (!url) return;
-  insertLinkBlock(editor, url, type, editorUnfurler(editor));
+  requestEditorPrompt(editor, type);
 }
 
 function insertToc(editor: Editor) {

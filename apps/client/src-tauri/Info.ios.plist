@@ -12,6 +12,14 @@
 	<!-- The optional app lock (Settings → Security). -->
 	<key>NSFaceIDUsageDescription</key>
 	<string>Prism uses Face ID to unlock your workspace when you turn on the app lock.</string>
+	<!-- The editor's file chooser (slash Image / File / Video / Audio, the keyboard toolbar's Image, a page
+	     cover): iOS offers "Take Photo or Video" beside Photo Library and Choose File. Without these two
+	     strings the system ends the app the moment the camera (or, for a video, the microphone) is opened.
+	     Prism itself never opens either: only the system chooser does, when the person picks it. -->
+	<key>NSCameraUsageDescription</key>
+	<string>Prism uses the camera when you choose to take a photo or video to add to a page.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Prism uses the microphone when you choose to record a video to add to a page.</string>
 	<!-- The prism:// deep-link scheme (NP-NA-04): prism://page/<id>, prism://inbox[/<id>],
 	     prism://agent[/<id>], validated in src/links.rs. The same entry as src-tauri/Info.plist
 	     (macOS), repeated here so the iOS build registers it whether or not the bundler merges

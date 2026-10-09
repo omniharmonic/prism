@@ -94,6 +94,12 @@ Do B1–B9 on the small phone; repeat the ones marked **×2** on the large phone
 | C12 | NP-NA-06 | Mid-draft, background the app for 10 minutes; return. | The page, the scroll position and the draft are back. Nothing was sent twice; no second agent turn started. | | ☐ | |
 | C13 | NP-NA-03, NP-CO-04 | From the second account: mention the owner; reply to their comment. | A push for each (generic words, no page text). Tapping one opens the page at the passage. | | ☐ | |
 | C14 | NP-RF-06 | Set a reminder two minutes ahead. | A push at the time; tapping it opens the page. | | ☐ | |
+| C15 | in-app dialogs NEW | In a `_test` page type `/embed`, tap **Embed**. Type a YouTube address, tap **Embed**. Repeat with `/bookmark` and **Image from URL**. | A field named "Link to embed" appears just above the keyboard with the cursor in it (the keyboard stays up). The player / card / image lands where the cursor was. No system pop-up at any point. | | ☐ | |
+| C16 | in-app dialogs NEW | `/embed` again, then tap **Cancel**. Then type some words. | Nothing was added; the `/embed` text is gone; the cursor is back in the same line and the words go there. | | ☐ | |
+| C17 | in-app dialogs NEW | `/image` → **Image**. Then the keyboard toolbar's Image button. Then `/file`, `/video`, `/audio`, `/pdf`. | Each tap opens the iOS chooser at once (Photo Library / Take Photo / Choose File for an image). Pick a photo: it uploads and shows in the page. Cancel a chooser: nothing happens and the next tap still opens it. | | ☐ | |
+| C18 | in-app dialogs NEW | In the image chooser pick **Take Photo**. | iOS asks for camera access with Prism's sentence (first time), the camera opens, the photo lands in the page. The app does not close. | | ☐ | |
+| C19 | in-app dialogs NEW | Settings → Account → Signed-in devices → **Revoke** on a device. Tap **Cancel**; then again and tap **Sign out**. Same for an agent token (**Revoke**). | A confirmation inside the app, on top of Settings, both times. Cancel changes nothing; the red button does it. | | ☐ | |
+| C20 | in-app dialogs NEW | Type `[[` and `@` on a line near the bottom of a page, keyboard up. Then `/table view` → **Cancel**. | Each list opens where it can be seen (not behind the keys). After Cancel the cursor is back in the page and the keyboard toolbar is there. | | ☐ | |
 | C15 | NP-NA-03 | Start an agent turn and background the app. | A push when the turn ends; tapping it opens that session. Turning the category off in notification settings stops it. | | ☐ | |
 | C16 | NP-NA-02 × push | With the app lock on and the app locked: tap a notification. | Nothing opens until Face ID succeeds; then the page opens. | | ☐ | |
 | C17 | NP-NA-04, NP-PG-16 NEW | Tap an `https://<server>/page/<id>` link in Messages and in Mail. Then a `prism://page/<id>` link. | The app opens that page (as a tab; the app does not reload). On a phone without the app, Safari opens it. | | ☐ | |
@@ -128,6 +134,8 @@ usable at iPad sizes; anything iPad-only that fails is a note, not a blocker for
 | E8 | NP-NA-04 NEW | Click an `https://<server>/page/<id>` link in Mail / Messages. | The page opens in Prism Client (or, where universal links are not set up for the Mac build, in the browser — note which). | | ☐ | |
 | E9 | NP-NA-01 | Sign out and in. | The token lives in the Keychain; the old device is revoked on the server. | | ☐ | |
 | E10 | NP-AX-03 | VoiceOver: the tree, the block menu, a database cell, Share. | Named controls; the tree says expanded / collapsed. | | ☐ | |
+| E11 | in-app dialogs NEW | Type `/embed` → Enter, paste a YouTube address → Enter. `/bookmark`, `/image from url` the same. Open **Formatting** → **Link** with a word selected, and **Image**. Press Esc in one of them. | A small field opens by the cursor each time (never a system prompt — the Mac app showed none, so these did nothing before). Enter inserts; Esc inserts nothing and the cursor is back. | | ☐ | |
+| E12 | in-app dialogs NEW | Agent panel → archive a session. Settings → Account → revoke a device. ⌘K → "Resolve wikilinks in this note". | A confirmation / message inside the app each time; the action happens only after its button. | | ☐ | |
 
 ## Part F — Safari and the installed web app (10 min)
 

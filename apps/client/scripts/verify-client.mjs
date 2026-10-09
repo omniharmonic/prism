@@ -383,6 +383,8 @@ if (!existsSync(dist)) {
   const info = plist(join(tauriDir, "Info.ios.plist"));
   check(value(info, "ITSAppUsesNonExemptEncryption") === false, "Info.ios.plist: ITSAppUsesNonExemptEncryption = false");
   check(/.{10,}/.test(value(info, "NSFaceIDUsageDescription") ?? ""), "Info.ios.plist: NSFaceIDUsageDescription present");
+  // The web view's file chooser offers "Take Photo or Video": iOS ends an app that opens the camera / microphone without these.
+  for (const key of ["NSCameraUsageDescription", "NSMicrophoneUsageDescription"]) check(/.{10,}/.test(value(info, key) ?? ""), `Info.ios.plist: ${key} present (file chooser → Take Photo or Video)`);
   check(value(info, "CFBundleDisplayName") === "Prism", "Info.ios.plist: display name Prism");
   check(!/NSAppTransportSecurity|NSAllows|NSExceptionDomains/.test(info), "Info.ios.plist (merged into every build): no ATS key at all");
   // Links (NP-NA-04): iOS registers exactly the prism:// scheme, like macOS. The sign-in redirect
@@ -397,6 +399,7 @@ if (!existsSync(dist)) {
   check(!/NSAppTransportSecurity/.test(genInfo), "gen/apple Info.plist (Release): no ATS key");
   check(JSON.stringify(iosSchemes(genInfo)) === JSON.stringify(["prism"]), "gen/apple Info.plist: exactly the prism:// scheme");
   check(/.{10,}/.test(value(genInfo, "NSFaceIDUsageDescription") ?? ""), "gen/apple Info.plist: NSFaceIDUsageDescription present");
+  for (const key of ["NSCameraUsageDescription", "NSMicrophoneUsageDescription"]) check(/.{10,}/.test(value(genInfo, key) ?? ""), `gen/apple Info.plist: ${key} present`);
   check(!/UIBackgroundModes/.test(info + genInfo), "no background modes (pushes are visible alerts; nothing runs in the background)");
   check(
     /Debug-only ATS loopback exception/.test(projectYml) && /if \[ "\$\{CONFIGURATION\}" = "debug" \]; then[\s\S]*NSAllowsLocalNetworking/.test(projectYml) && /Debug-only ATS loopback exception/.test(pbx),

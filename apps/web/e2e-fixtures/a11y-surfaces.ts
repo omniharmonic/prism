@@ -126,6 +126,23 @@ export const SURFACES: Surface[] = [
   { id: "editor-live-pair", path: "/e2e-fixtures/notion-media.html?live", before: async (page) => { await serveAttachments(page); }, open: async (page) => {
     await expect(page.locator(".ProseMirror").first()).toBeVisible();
   } },
+  // The in-app replacements of window.prompt / confirm (2026-10-09): the editor's address field and the confirmation.
+  { id: "editor-address-field", path: "/e2e-fixtures/editor-blocks.html", open: async (page) => {
+    await editorReady(page);
+    await page.locator(".tiptap[contenteditable=true]").click();
+    await page.evaluate(() => (document.querySelector(".tiptap") as any).editor.commands.focus("end"));
+    await page.keyboard.press("Enter");
+    await page.keyboard.type("/embed");
+    await page.getByRole("option", { name: /^Embed/ }).click();
+    const field = page.getByRole("dialog", { name: "Link to embed" });
+    await field.getByRole("textbox").fill("not an address");
+    await field.getByRole("textbox").press("Enter");
+    await expect(field.getByRole("alert")).toBeVisible();
+  } },
+  { id: "confirm-dialog", path: "/e2e-fixtures/in-app-dialogs.html", open: async (page) => {
+    await page.getByRole("button", { name: "Ask", exact: true }).click();
+    await expect(page.getByRole("alertdialog", { name: "Delete this event?" })).toBeVisible();
+  } },
   { id: "slash-menu", path: "/e2e-fixtures/editor-blocks.html", open: async (page) => {
     await editorReady(page);
     await page.locator(".tiptap[contenteditable=true]").click();

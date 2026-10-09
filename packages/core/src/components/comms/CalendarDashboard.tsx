@@ -19,6 +19,7 @@ import type { RendererProps } from "../renderers/RendererProps";
 
 import { formatDate as fmtDate, formatTime as fmtTime, relativeDay, usesSystemTime, weekColumn, weekdayOrder, weekStartsOn } from "../../lib/datetime/format";
 import { useRegionPrefs } from "../../lib/datetime/useRegionPrefs";
+import { askConfirm } from "../ui/ConfirmDialog";
 type CalEvent = {
   id?: string;
   vaultNoteId?: string;
@@ -185,11 +186,11 @@ function ScopedCalendarDashboard() {
     setEditingEvent(null);
   }, [selectedDate, today, mobile, view, dayDate]);
 
-  // Desktop: its Tauri command behind a confirm(). Web/native: the server's live
+  // Desktop: its Tauri command behind the in-app confirmation. Web/native: the server's live
   // action, behind the detail panel's own two-step confirm (with "notify guests").
   const handleDeleteEvent = useCallback(async (eventId: string, notify = true, scope?: "all") => {
     if (isDesktop) {
-      if (!confirm("Delete this event?")) return;
+      if (!(await askConfirm({ title: "Delete this event?", confirm: "Delete", danger: true }))) return;
       await calendarApi.deleteEvent(eventId);
     } else if (liveCal) {
       // Throws on failure — the panel shows the message and keeps the event open.

@@ -12,6 +12,7 @@ import { Input } from "../ui/Input";
 import { useAccount, type AgentToken, type CreatedAgentToken } from "../../data/Account";
 
 import { formatDate as fmtDate } from "../../lib/datetime/format";
+import { askConfirm } from "../ui/ConfirmDialog";
 const cardStyle = { border: "1px solid var(--glass-border)", borderRadius: 10, padding: 16, marginBottom: 16, background: "var(--glass-bg)" } as const;
 const labelStyle = { fontSize: 12, fontWeight: 600, color: "var(--text-secondary)", marginBottom: 6 } as const;
 const mutedStyle = { fontSize: 11.5, color: "var(--text-muted)" } as const;
@@ -127,7 +128,7 @@ export function AgentAccessTokens() {
 
   const revoke = useCallback(async (t: AgentToken) => {
     if (!account?.revokeAgentToken) return;
-    if (!window.confirm(`Revoke "${t.label ?? t.prefix}"? Any agent using it loses access immediately.`)) return;
+    if (!(await askConfirm({ title: `Revoke "${t.label ?? t.prefix}"?`, body: "Any agent using it loses access immediately.", confirm: "Revoke", danger: true }))) return;
     setError(null);
     try {
       await account.revokeAgentToken(t.id);

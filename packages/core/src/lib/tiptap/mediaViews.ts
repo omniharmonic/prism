@@ -18,7 +18,7 @@ import { embedFor, EMBED_SANDBOX, EMBED_SANDBOX_NATIVE, isAllowedFrameSrc, safeW
 import { formatBytes, isDangerousImageSrc, isOwnAttachment, ownOrProxiedSrc, safeAttachmentSrc } from "../media/attachments";
 import { serverFetch } from "../transport/serverFetch";
 import { structuralEditsAllowed } from "./blockCommands";
-import { canUploadImages, IMAGE_TYPES, type ImageUploadOptions } from "./ImageUpload";
+import { canUploadImages, IMAGE_TYPES, openFilePicker, type ImageUploadOptions } from "./ImageUpload";
 import { editorNotice } from "./notice";
 // Wave 4A views register themselves alongside the media views (one import in each editor).
 import "./columnsView";
@@ -222,14 +222,8 @@ function replaceImage(editor: Editor, getPos: NodeViewRendererProps["getPos"], d
   const options = editor.extensionManager.extensions.find((e) => e.name === "imageUpload")?.options as ImageUploadOptions | undefined;
   const upload = options?.upload;
   if (!upload || !canEdit(editor) || dom.hasAttribute("data-replacing")) return;
-  const input = document.createElement("input");
-  input.type = "file";
-  input.accept = IMAGE_TYPES.join(",");
-  input.style.display = "none";
-  input.setAttribute("data-prism-replace-image", "");
-  input.addEventListener("change", () => {
-    const file = input.files?.[0];
-    input.remove();
+  // Synchronously inside the click (`openFilePicker`): WebKit opens no chooser later than that.
+  openFilePicker({ accept: IMAGE_TYPES.join(","), marker: "data-prism-replace-image" }, ([file]) => {
     if (!file) return;
     if (!IMAGE_TYPES.includes(file.type)) return editorNotice("Only PNG, JPEG, GIF, WebP and AVIF images can be added here.");
     if (file.size > (options?.maxBytes ?? Infinity)) return editorNotice(`${file.name} is larger than ${Math.round((options?.maxBytes ?? 0) / 1_048_576)} MB.`);
@@ -245,8 +239,6 @@ function replaceImage(editor: Editor, getPos: NodeViewRendererProps["getPos"], d
     }, () => { if (!editor.isDestroyed) editorNotice(`Couldn't upload ${file.name}. The image was not replaced.`); })
       .finally(() => dom.removeAttribute("data-replacing"));
   });
-  document.body.appendChild(input);
-  input.click();
 }
 
 const imageView: NodeViewRenderer = ({ node, editor, getPos, view }) => {
