@@ -19,6 +19,7 @@
  *  - Text search is `GET /api/search` for non-owners but `GET /api/notes?search=`
  *    for the passthrough (the vault has no /search route).
  */
+import { shapeMetadata } from "../vault-shapes";
 import * as z from "zod/v4";
 import { ConversionError, htmlToMarkdown } from "../convert/service";
 import { CAPS, atLeast, effectiveCaps, type Cap } from "../permissions";
@@ -325,7 +326,11 @@ export const createNoteTool = defineTool({
   annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
   access: (p) => hasCapAnywhere(p, "create"),
   async handler({ content, path, tags, metadata }, ctx) {
-    const created = await getJson<NoteOut>(ctx, "/api/notes", { method: "POST", ...json({ content, path, tags, metadata }) });
+    // Shape guard (vault-shapes.ts) HERE, not only at the vault client: an owner/admin
+    // principal's write leaves through the passthrough, which forwards bodies untouched.
+    // This body is built by the tool, so shaping it changes no client's bytes.
+    const shaped = metadata === undefined ? undefined : shapeMetadata(metadata, tags, "create");
+    const created = await getJson<NoteOut>(ctx, "/api/notes", { method: "POST", ...json({ content, path, tags, metadata: shaped }) });
     return { ...listRow(created, false), metadata: created.metadata ?? {} };
   },
 });
@@ -361,9 +366,12 @@ export const updateNoteTool = defineTool({
     let ifUpdatedAt = a.if_updated_at;
     let noteId = a.id;
     let merged: { live: true; changed: boolean } | undefined;
+    /** The note's stored tags, when this call happened to read the note (content writes). */
+    let knownTags: string[] | undefined;
     if (a.content !== undefined) {
       const note = await getJson<NoteOut>(ctx, `/api/notes/${enc(a.id)}`); // view gate first: liveness is never an oracle
       noteId = note.id;
+      knownTags = note.tags ?? undefined;
       // A locked page refuses content for EVERY principal (owners unlock it first).
       if (note.metadata?.prism_locked === true) throw new ToolError("conflict", "this page is locked — unlock it before editing its content", { locked: true });
       // A note that is not loaded but holds unsaved live state is first given the chance to be
@@ -408,7 +416,11 @@ export const updateNoteTool = defineTool({
     // page-share exposure — never a bare PATCH. Everything else is PATCHed first.
     const wantsOther = content !== undefined || a.metadata !== undefined || hasTags;
     // The owner/admin passthrough speaks the vault's PATCH dialect; everyone else the gateway's.
-    const body: Record<string, unknown> = { content, metadata: a.metadata, if_updated_at: ifUpdatedAt };
+    // Metadata passes the shape guard here as well (see prism_create_note): the note's own
+    // tags when this call read it, plus the tags being added — else the by-name rules only.
+    const shapeTags = knownTags || a.add_tags?.length ? [...(knownTags ?? []), ...(a.add_tags ?? [])] : undefined;
+    const metadata = a.metadata === undefined ? undefined : shapeMetadata(a.metadata, shapeTags, "update");
+    const body: Record<string, unknown> = { content, metadata, if_updated_at: ifUpdatedAt };
     if (isAdmin(ctx.principal)) {
       if (hasTags) body.tags = { add: a.add_tags ?? [], remove: a.remove_tags ?? [] };
     } else {

@@ -405,7 +405,8 @@ test("open note: content goes into the FIRST turn only (bounded), later turns ne
   const p1 = calls[0]!.args.at(-1)!;
   const p2 = calls[1]!.args.at(-1)!;
   assert.match(p1, /<open_note>\nSECRET-PLAN body/);
-  assert.ok(p1.length < 9_500, "note context is bounded");
+  // 8,000 characters of note + the rules preamble (which now carries the field-shapes rule, ~1.2 KB).
+  assert.ok(p1.length < 11_000, "note context is bounded");
   assert.match(p1, /summarize$/);
   assert.doesNotMatch(p2, /SECRET-PLAN|open_note/);
   assert.match(p2, /and again$/);

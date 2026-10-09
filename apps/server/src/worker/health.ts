@@ -49,6 +49,7 @@ import { openCandidateCounts } from "../identity-store";
 import { lastLinkJobOutcome } from "../people-link-job";
 import { collabUnsavedStats } from "../db";
 import { lastVaultLintOutcome } from "./vault-lint";
+import { lastLinkHealthOutcome } from "./link-health";
 
 /** An unsaved live document older than this makes the `collab` source stale (alerted like any other). */
 const COLLAB_UNSAVED_STALE_MS = 60 * 60_000;
@@ -417,7 +418,16 @@ export async function getSourceHealth(opts: { now?: number; list?: Lister } = {}
       over: last?.over.join(",") || null,
       rose: last?.rose.join(",") || null,
     };
-    for (const [tag, t] of Object.entries(last?.tags ?? {})) detail[`rate.${tag}`] = t.rate;
+    for (const [tag, t] of Object.entries(last?.tags ?? {})) {
+      detail[`rate.${tag}`] = t.rate;
+      // New drift + who wrote it + declared-schema breaks: only when there is something to say.
+      if (t.fresh) detail[`fresh.${tag}`] = t.fresh;
+      if (t.declaredWarned) detail[`declared.${tag}`] = Object.entries(t.declared ?? {}).map(([f, n]) => `${f}=${n}`).join(",").slice(0, 200);
+      const w = Object.entries(t.writers ?? {});
+      if (w.length) detail[`writers.${tag}`] = w.map(([name, n]) => `${name}=${n}`).join(",").slice(0, 200);
+    }
+    detail.freshOver = last?.freshOver?.join(",") || null;
+    detail.overReportOnly = last?.overReportOnly?.join(",") || null;
     out.push({
       name: "vault-lint",
       kind: "server",
@@ -427,6 +437,45 @@ export async function getSourceHealth(opts: { now?: number; list?: Lister } = {}
         ? scrubError(last.error)
         : last?.over.length
           ? `mis-shaped metadata above ${Math.round(config.vaultLintMaxRate * 100)}% in: ${last.over.map((t) => `${t} ${Math.round((last.tags[t]?.rate ?? 0) * 100)}%`).join(", ")}`
+          : last?.freshOver?.length
+            ? `newly written mis-shaped notes in: ${last.freshOver.map((t) => `${t} ${last.tags[t]?.fresh ?? 0} (${Object.keys(last.tags[t]?.writers ?? {}).join("/") || "unknown"})`).join(", ")}`
+            : null,
+      failureStreak: streak,
+      staleAfterMs,
+      status: computeStatus({ configured: true, lastSuccessAt: okAt, streak, staleAfterMs, now, baselineAt: BOOT_AT }),
+      detail,
+    });
+  }
+
+  // Link health (worker/link-health.ts): read-only daily shares of the newest notes that
+  // are linked to people / projects. `failing` (→ alert) when a measure is under its
+  // floor or has dropped below its running level. Measure names and numbers only.
+  if (config.linkHealthEnabled) {
+    const last = lastLinkHealthOutcome("primary");
+    const at = last ? Date.parse(last.at) : NaN;
+    const okAt = last && last.status !== "error" && Number.isFinite(at) ? at : null;
+    const streak = last && last.status !== "ok" ? config.workerFailStreak : 0;
+    const staleAfterMs = config.linkHealthIntervalMs > 0 ? config.linkHealthIntervalMs * 2 : 0;
+    const detail: Record<string, string | number | boolean | null> = {
+      lastRunAt: last?.at ?? null,
+      low: last?.low.join(",") || null,
+      truncated: last?.truncated?.join(",") || null,
+    };
+    for (const [m, r] of Object.entries(last?.measures ?? {})) {
+      detail[`share.${m}`] = r.share;
+      detail[`n.${m}`] = r.n;
+      if (r.level !== null) detail[`level.${m}`] = r.level;
+    }
+    const pct = (x: number | null | undefined) => `${Math.round((x ?? 0) * 100)}%`;
+    out.push({
+      name: "link-health",
+      kind: "server",
+      vaultId: "primary",
+      lastSuccessAt: iso(okAt),
+      lastError: last?.error
+        ? scrubError(last.error)
+        : last?.low.length
+          ? `link measures off their usual level: ${last.low.map((m) => `${m} ${pct(last.measures[m]?.share)} (usual ${pct(last.measures[m]?.level)})`).join(", ")}`
           : null,
       failureStreak: streak,
       staleAfterMs,

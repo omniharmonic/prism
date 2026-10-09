@@ -114,6 +114,12 @@ For each extraction, assess:
 
 Flag low-confidence extractions for human review.
 
+These numbers are EXTRACTION scores for the reconcile step. They are never stored as
+they are: when a note is written, `confidence` on a person / project / organization /
+concept is the label `high` (≥ 0.8), `medium` (≥ 0.5) or `low` — see the "Field
+shapes" block in `.claude/skills/reconcile/SKILL.md` (generated from
+`packages/core/src/lib/schemas/vault-shapes.json`).
+
 ## Output Format
 
 Return extractions as a structured list ready for the reconciliation skill:

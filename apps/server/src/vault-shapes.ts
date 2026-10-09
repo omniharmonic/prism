@@ -24,54 +24,32 @@
  * Governance notes are never touched (their metadata is HMAC-signed, see
  * governance-integrity.ts). Pure, linear, never throws, never mutates its input.
  * `VAULT_SHAPE_GUARD=0` turns it off.
+ *
+ * THE RULES' DATA (which fields are lists, the vocabularies, the tags) is not
+ * written here: it is loaded from the contract, `@prism/core/vault-shapes`
+ * (`packages/core/src/lib/schemas/vault-shapes.json`) — the single source the
+ * agent repo's guard and every prompt's "Field shapes" block are generated from.
+ * `test/schema-drift.test.ts` pins the contract to tag-schemas.json and
+ * schema-fixes.json.
  */
+import { DECLARED_FIELDS, VAULT_SHAPES as C } from "@prism/core/vault-shapes";
 
-export const LIST_FIELDS_BY_TAG: Readonly<Record<string, readonly string[]>> = {
-  person: ["organizations", "projects", "aliases"],
-  organization: ["people", "projects", "aliases"],
-  project: ["collaborators", "aliases", "keywords"],
-  concept: ["aliases", "related", "sectors", "scales"],
-  briefing: ["projects", "people"],
-  meeting: ["projects", "attendees", "concepts", "organizations"],
-  transcript: ["projects", "attendees"],
-  research: ["projects"],
-  "decision-record": ["participants"],
-  "grant-application": ["collaborators"],
-  "message-thread": ["participants", "participantIds"],
-};
+export const LIST_FIELDS_BY_TAG: Readonly<Record<string, readonly string[]>> = C.listFields;
 export const ALWAYS_LIST: ReadonlySet<string> = new Set(Object.values(LIST_FIELDS_BY_TAG).flat());
 
-export const CONFIDENCE_TAGS: ReadonlySet<string> = new Set(["person", "project", "organization", "concept"]);
-export const CONFIDENCE_LABELS = ["high", "medium", "low"] as const;
+export const CONFIDENCE_TAGS: ReadonlySet<string> = new Set(C.confidence.tags);
+export const CONFIDENCE_LABELS = C.confidence.labels as readonly string[] as readonly ["high", "medium", "low"];
 
 /** task.status (schema-fixes S4): tasks_store vocabulary + todo/done (ClickUp mirror, Prism task UI). */
-export const TASK_STATUSES: ReadonlySet<string> = new Set([
-  "pending", "in-progress", "blocked", "waiting", "completed", "cancelled", "archived", "todo", "done",
-]);
-export const TASK_STATUS_SYNONYMS: Readonly<Record<string, string>> = {
-  tracked: "pending",
-  "not started": "pending",
-  open: "pending",
-  active: "in-progress",
-  doing: "in-progress",
-  in_progress: "in-progress",
-  "in progress": "in-progress",
-  review: "in-progress",
-  "in review": "in-progress",
-  resolved: "completed",
-  complete: "completed",
-  closed: "completed",
-  duplicate: "cancelled",
-  discarded: "cancelled",
-  dropped: "cancelled",
-  canceled: "cancelled",
-  "waiting-on": "waiting",
-  waiting_on: "waiting",
-};
-export const THREAD_PLATFORMS: ReadonlySet<string> = new Set([
-  "whatsapp", "telegram", "signal", "discord", "email", "matrix", "twitter", "instagram", "messenger",
-]);
-const SOURCE_TAGS = new Set(["meeting", "transcript"]);
+export const TASK_STATUSES: ReadonlySet<string> = new Set(C.taskStatus.values);
+export const TASK_STATUS_SYNONYMS: Readonly<Record<string, string>> = C.taskStatus.synonyms;
+export const THREAD_PLATFORMS: ReadonlySet<string> = new Set(C.threadPlatforms);
+const SOURCE_TAGS = new Set(C.source.tags);
+/** Fields that are text wherever they appear / on one tag (contract `textFields`). */
+const TEXT_ANYWHERE: readonly string[] = C.textFields["*"] ?? [];
+const textFieldsOf = (tag: string): readonly string[] => (tag === "*" ? [] : (C.textFields[tag] ?? []));
+const INTEGER_FIELDS: Readonly<Record<string, readonly string[]>> = C.integerFields;
+const LOWERCASE_STATUS_TAGS: readonly string[] = C.lowercaseStatusTags;
 
 export type ShapeMode = "create" | "update";
 
@@ -173,7 +151,7 @@ export function shapeMetadata(
       if (Array.isArray(value)) value = cleanList(value);
       else if (typeof value === "string" && taggedLists.has(key)) value = cleanList(splitListString(value));
     }
-    if (key === "recording_id" && typeof value === "number") value = versionText(value);
+    if (TEXT_ANYWHERE.includes(key) && typeof value === "number") value = versionText(value);
     out[key] = value;
   }
   if (tagset.size === 0) return out;
@@ -189,8 +167,8 @@ export function shapeMetadata(
     else dropOrNull("confidence");
   }
   if (tagset.has("task") && "status" in out) out.status = canonicalTaskStatus(out.status);
+  for (const t of tagset) for (const f of INTEGER_FIELDS[t] ?? []) if (out[f] !== undefined && out[f] !== null) out[f] = epochMs(out[f]);
   if (tagset.has("message-thread")) {
-    if (out.lastMessageAt !== undefined && out.lastMessageAt !== null) out.lastMessageAt = epochMs(out.lastMessageAt);
     if (typeof out.platform === "string") {
       const p = out.platform.trim().toLowerCase();
       if (p) out.platform = p;
@@ -202,8 +180,8 @@ export function shapeMetadata(
     if (s) out.source = s;
     else delete out.source; // never clear an existing source from an empty write
   }
-  if (tagset.has("spec") && "version" in out) out.version = versionText(out.version);
-  if (!tagset.has("task") && (tagset.has("organization") || tagset.has("writing")) && typeof out.status === "string") {
+  for (const t of tagset) for (const f of textFieldsOf(t)) if (f in out) out[f] = versionText(out[f]);
+  if (!tagset.has("task") && LOWERCASE_STATUS_TAGS.some((t) => tagset.has(t)) && typeof out.status === "string") {
     out.status = out.status.trim().toLowerCase();
   }
   return out;
@@ -212,7 +190,8 @@ export function shapeMetadata(
 // ── lint (read side) ────────────────────────────────────────────────────────
 
 /** Fields of a project-link kind: a folder link `[[vault/projects/<slug>]]` there dangles. */
-const PROJECT_LINK_FIELDS = ["projects", "project"] as const;
+const PROJECT_LINK_FIELDS: readonly string[] = C.projectLink.fields;
+const PROJECT_FOLDER_PARTS: readonly string[] = C.projectLink.folder.split("/");
 
 function isFolderProjectLink(v: unknown): boolean {
   if (typeof v !== "string") return false;
@@ -224,7 +203,7 @@ function isFolderProjectLink(v: unknown): boolean {
     if (k >= 0) target = target.slice(0, k);
   }
   const parts = target.split("/").filter(Boolean);
-  return parts.length === 3 && parts[0] === "vault" && parts[1] === "projects";
+  return parts.length === PROJECT_FOLDER_PARTS.length + 1 && PROJECT_FOLDER_PARTS.every((seg, i) => parts[i] === seg);
 }
 
 /**
@@ -242,13 +221,12 @@ export function shapeViolations(metadata: Record<string, unknown> | null | undef
   }
   if (CONFIDENCE_TAGS.has(tag) && has("confidence") && !(CONFIDENCE_LABELS as readonly unknown[]).includes(md.confidence)) out.push("confidence");
   if (tag === "task" && has("status") && !(typeof md.status === "string" && TASK_STATUSES.has(md.status))) out.push("status");
+  for (const f of INTEGER_FIELDS[tag] ?? []) if (has(f) && !Number.isInteger(md[f])) out.push(f);
   if (tag === "message-thread") {
-    if (has("lastMessageAt") && !Number.isInteger(md.lastMessageAt)) out.push("lastMessageAt");
     if (has("platform") && !(typeof md.platform === "string" && THREAD_PLATFORMS.has(md.platform))) out.push("platform");
   }
   if (SOURCE_TAGS.has(tag) && has("source") && !(typeof md.source === "string" && md.source.trim() !== "" && md.source === md.source.toLowerCase())) out.push("source");
-  if (has("recording_id") && typeof md.recording_id !== "string") out.push("recording_id");
-  if (tag === "spec" && has("version") && typeof md.version !== "string") out.push("version");
+  for (const f of [...TEXT_ANYWHERE, ...textFieldsOf(tag)]) if (has(f) && typeof md[f] !== "string") out.push(f);
   for (const f of PROJECT_LINK_FIELDS) {
     if (!has(f)) continue;
     const v = md[f];
@@ -257,15 +235,75 @@ export function shapeViolations(metadata: Record<string, unknown> | null | undef
   return [...new Set(out)];
 }
 
-/** Every metadata key `shapeViolations` reads for a tag (the lean listing asks for exactly these). */
+/**
+ * The DECLARED-schema check: metadata keys of one note whose stored value breaks what
+ * the tag's seeded schema (tag-schemas.json) declares — a value outside an `enum`
+ * (`<field>:enum`), a value of another type (`<field>:type`), or an empty string where
+ * the rule is "empty is absent" (`<field>:empty`). Fields `shapeViolations` already
+ * judges (`skip`) are left to it, so nothing is counted twice. Pure; names only.
+ */
+export function declaredViolations(metadata: Record<string, unknown> | null | undefined, tag: string, skip: readonly string[] = []): string[] {
+  const md = metadata ?? {};
+  const out: string[] = [];
+  const skipped = new Set(skip.map((f) => f.split(":")[0]));
+  for (const [field, decl] of Object.entries(DECLARED_FIELDS[tag] ?? {})) {
+    if (skipped.has(field) || !Object.prototype.hasOwnProperty.call(md, field)) continue;
+    const v = md[field];
+    if (v === null || v === undefined) continue;
+    if (typeof v === "string" && v.trim() === "") {
+      out.push(`${field}:empty`);
+      continue;
+    }
+    const typeOk =
+      decl.type === "array" ? Array.isArray(v)
+      : decl.type === "integer" ? Number.isInteger(v)
+      : decl.type === "number" ? typeof v === "number"
+      : decl.type === "boolean" ? typeof v === "boolean"
+      : decl.type === "object" ? typeof v === "object" && !Array.isArray(v)
+      : typeof v === "string"; // string, date, reference
+    if (!typeOk) out.push(`${field}:type`);
+    else if (decl.enum && !decl.enum.includes(v as string)) out.push(`${field}:enum`);
+  }
+  return out;
+}
+
+/**
+ * Metadata keys that say WHO wrote a note, cheapest first. Read by the lint only to
+ * put a mis-shaped note in a writer bucket — the values themselves are never reported.
+ */
+export const PROVENANCE_KEYS = ["source", "processed_by", "processed-by", "runner", "calendarEventId", "matrixRoomId", "prism_import", "prism_last_writer"] as const;
+
+/**
+ * A coarse, low-cardinality name for the writer of a note: its ingest `source` word
+ * (clickup, fathom, fireflies, proton-bridge, …), else a marker key. Never an id,
+ * address or path. "unknown" = nothing on the note says (a direct vault/MCP write).
+ */
+export function writerBucket(metadata: Record<string, unknown> | null | undefined): string {
+  const md = metadata ?? {};
+  if (typeof md.source === "string") {
+    const s = md.source.trim().toLowerCase();
+    if (/^[a-z][a-z0-9_-]{1,23}$/.test(s)) return s;
+  }
+  if (md.calendarEventId) return "calendar";
+  if (md.matrixRoomId) return "matrix";
+  if (md.processed_by || md["processed-by"]) return "routine";
+  if (md.runner) return "skill";
+  if (md.prism_import) return "import";
+  if (md.prism_last_writer) return "prism-user";
+  return "unknown";
+}
+
+/** Every metadata key the lint reads for a tag (the lean listing asks for exactly these). */
 export function lintKeys(tag: string): string[] {
   const keys = new Set<string>(LIST_FIELDS_BY_TAG[tag] ?? []);
   if (CONFIDENCE_TAGS.has(tag)) keys.add("confidence");
   if (tag === "task") keys.add("status");
-  if (tag === "message-thread") ["lastMessageAt", "platform"].forEach((k) => keys.add(k));
+  (INTEGER_FIELDS[tag] ?? []).forEach((k) => keys.add(k));
+  if (tag === "message-thread") keys.add("platform");
   if (SOURCE_TAGS.has(tag)) keys.add("source");
-  if (tag === "spec") keys.add("version");
-  keys.add("recording_id");
+  [...TEXT_ANYWHERE, ...textFieldsOf(tag)].forEach((k) => keys.add(k));
   PROJECT_LINK_FIELDS.forEach((k) => keys.add(k));
+  Object.keys(DECLARED_FIELDS[tag] ?? {}).forEach((k) => keys.add(k));
+  PROVENANCE_KEYS.forEach((k) => keys.add(k));
   return [...keys];
 }
