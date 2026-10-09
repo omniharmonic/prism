@@ -173,7 +173,7 @@ async function downloadImage(doc: Document, img: HTMLImageElement, original: str
     a.remove();
   };
   try {
-    const res = shown.startsWith("blob:") ? await fetch(shown) : isOwnAttachment(original) ? await serverFetch(original) : null;
+    const res = shown.startsWith("blob:") ? await globalThis.fetch(shown) /* a blob: URL is this page's own memory, never the server */ : isOwnAttachment(original) ? await serverFetch(original) : null;
     if (res?.ok) {
       const blob = await res.blob();
       const url = URL.createObjectURL(blob);
