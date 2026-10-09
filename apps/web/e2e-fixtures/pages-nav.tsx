@@ -16,6 +16,7 @@
 import React from "react";
 import { createRoot } from "react-dom/client";
 import { App, PlatformProvider, VaultClientProvider, CollabSharingProvider, useUIStore, type Note } from "@prism/core";
+import { appendRowToClosedParent, installOfflineSubPageLinks } from "../../../packages/core/src/lib/pages/subPageLink";
 import { httpVaultClient } from "../src/parachute/HttpVaultClient";
 import { fetchMe, setActiveVault } from "../src/config";
 import { fakeDuplicate } from "./fake-duplicate";
@@ -68,7 +69,8 @@ if (params.has("dup")) for (const [id, order] of [["plan", 1], ["living", 2]] as
 const moves = new Map<string, { from: string; to: string }>();
 const reads = { trash: 0, tree: 0 };
 const fixtureControls = { moveStatus: Number(params.get("move-status") ?? 0) };
-Object.assign(window, { prismFixtureUI: useUIStore, prismFixtureNotes: notes, prismFixtureWrites: writes, prismFixtureReads: reads, prismFixtureControls: fixtureControls, prismFixturePrefs: () => ({ prefs, revision }) });
+installOfflineSubPageLinks(); // as apps/web/src/main.tsx does
+Object.assign(window, { prismFixtureSubPageLink: { appendRowToClosedParent }, prismFixtureUI: useUIStore, prismFixtureNotes: notes, prismFixtureWrites: writes, prismFixtureReads: reads, prismFixtureControls: fixtureControls, prismFixturePrefs: () => ({ prefs, revision }) });
 // Wave 3A: `notion-transfer.html` loads this fixture with an extension (extra seed
 // notes, the import/export routes, a viewer role). Absent → nothing changes.
 const extension = (window as unknown as { prismFixtureExtension?: { seed?: (notes: Note[], make: typeof doc, stamp: () => string) => void; fetch?: (url: URL, method: string, init?: RequestInit) => Promise<Response | null>; sharing?: Record<string, unknown>; /** Extra providers around the app (e.g. host services, an agent client). */ wrap?: (app: React.ReactNode) => React.ReactNode } }).prismFixtureExtension;
@@ -208,6 +210,20 @@ window.fetch = async (input, init) => {
     const note: Note = { id: `created-${notes.length}`, content: " ", metadata: {}, tags: [], ...body, createdAt: stamp(), updatedAt: stamp() };
     notes.push(note);
     return json(note);
+  }
+  // NP-PG-15: the server's block-append route, as the gateway answers it (apps/server/src/routes/blocks.ts):
+  // a locked page refuses; a sub-page row the page already lists is not added again.
+  const appendTo = path.match(/^\/api\/notes\/([^/]+)\/blocks\/append$/);
+  if (appendTo && method === "POST") {
+    const note = byId(decodeURIComponent(appendTo[1]!));
+    writes.push({ append: note?.id ?? appendTo[1], ...body });
+    if (!note) return json({ error: "not_found" }, 404);
+    if (note.metadata?.prism_locked === true) return json({ error: "locked", detail: "this page is locked" }, 409);
+    const rowId = /data-page-id="([^"]+)"/.exec(String(body.html))?.[1];
+    if (rowId && (note.content ?? "").includes(`data-page-id="${rowId}"`)) return json({ ok: true, live: false, present: true });
+    note.content = `${note.content ?? ""}${body.html}`;
+    note.updatedAt = stamp();
+    return json({ ok: true, live: false, updatedAt: note.updatedAt });
   }
   const one = path.match(/^\/api\/notes\/([^/]+)$/);
   if (one) {

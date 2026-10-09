@@ -87,7 +87,8 @@ async function human(name: string): Promise<Y.Doc> {
   });
   providers.push(provider);
   await new Promise<void>((resolve, reject) => {
-    const t = setTimeout(() => reject(new Error("sync timeout")), 5000);
+    // A ceiling, not an expectation: on a busy machine the first sync of a 3,000-paragraph page takes longer than 5 s.
+    const t = setTimeout(() => reject(new Error("sync timeout")), 90_000);
     provider.on("synced", () => { clearTimeout(t); resolve(); });
   });
   return doc;

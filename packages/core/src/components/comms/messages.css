@@ -338,7 +338,9 @@
 }
 /* The border IS the focus indicator here (the glow is decoration): full strength, ≥ 3 : 1 (NP-AX-04). */
 .prism-compose-surface:focus-within {
-  border-color: var(--action-bg);
+  /* --focus-ring, not --action-bg: at rest the border is already the 3 : 1 control boundary, and focus must
+     stand out from THAT in both themes (dark: 8.5 : 1 against 4.8 : 1 at rest). */
+  border-color: var(--focus-ring);
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--action-bg) 7%, transparent);
 }
 .prism-compose-surface textarea {

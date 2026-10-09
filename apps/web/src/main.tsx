@@ -14,7 +14,7 @@ import { httpInvalidationSource } from "./events/httpInvalidationSource";
 import { webCollabSharing } from "./collab/grant";
 import { CollabDocument, useLiveCollab, preloadCollabEditor, preloadCollabEditorWhenIdle } from "./collab/lazyCollab";
 import { fetchMe, confirmAudience, initCapability, isOwner, postLoginTarget, capabilityHeader, contextHeaders } from "./config";
-import { setTransferContextHeaders } from "@prism/core/shell";
+import { setTransferContextHeaders, installOfflineSubPageLinks } from "@prism/core/shell";
 import { ReconnectScreen } from "./auth/ReconnectScreen";
 import { LoginScreen as WebLoginScreen } from "./auth/LoginScreen";
 import { NativeSignInScreen, NativeStartupScreen } from "./auth/NativeSignInScreen";
@@ -268,6 +268,7 @@ export async function start() {
       openTabs: state.openTabs.map((tab) => tab.noteId === temporaryId ? { ...tab, noteId } : tab),
     }));
   });
+  installOfflineSubPageLinks(); // NP-PG-15: a page created offline is listed on its parent once its create is delivered
   startOutboxSync();
   if (!capability && isNative) initNativeExtras(); // WP4.2: export + drag-drop (page half)
   // Universal / prism:// links (NP-NA-04): the shell hands over a validated path; it becomes a

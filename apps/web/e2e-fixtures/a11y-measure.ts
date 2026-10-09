@@ -403,6 +403,12 @@ export async function controlBoundaryContrast(page: Page): Promise<NonTextReport
     };
     const controls = Array.from(document.querySelectorAll<HTMLElement>('input:not([type=hidden]):not([type=checkbox]):not([type=radio]):not([type=range]):not([type=file]):not([type=color]):not([type=button]):not([type=submit]):not([type=reset]), textarea, select, [role=checkbox], [role=switch], [role=radio], [role=combobox]:not(input)'))
       .filter((el) => !el.closest(NOT_OURS) && !(el as HTMLInputElement).disabled && el.getAttribute("aria-disabled") !== "true" && shown(el));
+    const tokenProbe = document.createElement("i");
+    tokenProbe.style.cssText = "position:fixed;left:-99px;width:1px;height:1px;border:1px solid var(--control-border, transparent)";
+    document.body.appendChild(tokenProbe);
+    const tokenColor = kit.parse(getComputedStyle(tokenProbe).borderTopColor);
+    tokenProbe.remove();
+    const controlToken = tokenColor[3] > 0 ? kit.hex(tokenColor) : "";
     const seen = new Set<string>();
     for (const el of controls) {
       const what = kit.name(el);
@@ -411,12 +417,32 @@ export async function controlBoundaryContrast(page: Page): Promise<NonTextReport
       const rect = el.getBoundingClientRect();
       const boxes: Element[] = [el];
       // A wrapper that hugs the control may be the box a person sees.
-      for (let p = el.parentElement, i = 0; p && i < 2; p = p.parentElement, i++) { const r = p.getBoundingClientRect(); if (r.height <= rect.height + 20 && r.width <= Math.max(rect.width * 3, rect.width + 120)) boxes.push(p); else break; }
-      let best = 0, colors = "", blind = false;
+      for (let p = el.parentElement, i = 0; p && i < 2; p = p.parentElement, i++) { const r = p.getBoundingClientRect(); if (r.height <= rect.height + 28 && r.width <= Math.max(rect.width * 3, rect.width + 120)) boxes.push(p); else break; }
+      // A custom checkbox / switch / radio is usually a button around a small drawn box: that box is its boundary.
+      if (el.matches("[role=checkbox], [role=switch], [role=radio]")) {
+        for (const inner of Array.from(el.querySelectorAll<HTMLElement>("*"))) { const r = inner.getBoundingClientRect(); if (r.width >= 8 && r.width <= 48 && r.height >= 8 && r.height <= 32 && !inner.closest("svg")) boxes.push(inner); }
+      }
+      // A segmented radio group: the group's box is the boundary of each choice in it, however many there are.
+      const group = el.matches("[role=radio]") ? el.closest("[role=radiogroup]") : null;
+      if (group && !boxes.includes(group)) boxes.push(group);
+      let best = 0, colors = "", blind = false, token = false;
       for (const box of boxes) {
         const bg = kit.behind(box.parentElement);
-        if (!bg) { blind = true; continue; }
         const st = getComputedStyle(box);
+        if (!bg) {
+          // Drawn over a blur, a gradient or an image: the ratio cannot be computed. A visible border in the
+          // control-boundary token is accepted there (the token is ≥ 3 : 1 on every plain surface of its theme).
+          // …or a border that stands out from the control's OWN opaque fill (a focused field's accent border).
+          blind = true;
+          const own = kit.parse(st.backgroundColor);
+          for (const side of ["Top", "Right", "Bottom", "Left"] as const) {
+            if (st[`border${side}Style` as "borderTopStyle"] === "none" || !(parseFloat(st[`border${side}Width` as "borderTopWidth"]) > 0)) continue;
+            const border = kit.parse(st[`border${side}Color` as "borderTopColor"]);
+            if (controlToken && kit.hex(border) === controlToken) token = true;
+            else if (box === el && own[3] >= 0.999 && st.backgroundImage === "none" && border[3] >= 0.999 && kit.ratio(border, own) >= 3) token = true;
+          }
+          continue;
+        }
         // A background image (a select's chevron, a gradient) hides what the FILL looks like; the border and the
         // outline are still drawn around it and are judged.
         const pictured = st.backgroundImage !== "none";
@@ -429,6 +455,7 @@ export async function controlBoundaryContrast(page: Page): Promise<NonTextReport
         else if (!tries.length) { blind = true; continue; }
         for (const [how, c] of tries) { const r = kit.ratio(c, bg); if (r > best) { best = r; colors = `${how} ${kit.hex(c)} on ${kit.hex(bg)}`; } }
       }
+      if (best < 3 && blind && token) { report.ok++; continue; }
       if (best === 0 && blind) { report.unmeasured.push(what); continue; }
       if (best >= 3) report.ok++;
       else report.low.push({ what, ratio: Math.round(best * 100) / 100, colors });

@@ -88,9 +88,16 @@ let blocksTurndown: TurndownService | null = null;
  */
 export function blocksHtmlToMarkdownSync(html: string): string {
   if (!blocksTurndown) {
-    blocksTurndown = addTaskListRule(new TurndownService({ headingStyle: "atx", codeBlockStyle: "fenced", bulletListMarker: "-" }));
-    blocksTurndown.keep(((node: { nodeName: string; getAttribute(name: string): string | null }) =>
-      (node.nodeName === "DIV" && (!!node.getAttribute("data-type") || !!node.getAttribute("data-prism-database"))) || node.nodeName === "DETAILS") as never);
+    type Kept = { nodeName: string; outerHTML?: string; isBlock?: boolean; getAttribute(name: string): string | null };
+    const kept = (node: Kept) => (node.nodeName === "DIV" && (!!node.getAttribute("data-type") || !!node.getAttribute("data-prism-database"))) || node.nodeName === "DETAILS";
+    blocksTurndown = addTaskListRule(new TurndownService({
+      headingStyle: "atx", codeBlockStyle: "fenced", bulletListMarker: "-",
+      // Turndown drops an element with no text BEFORE it asks `keep` — and a sub-page row, a file, an embed or
+      // a database block is exactly that: an empty <div> whose attributes are the block. They were lost on the
+      // way into a Markdown page (and "Move to" then removed the original). Kept blocks stay, text or not.
+      blankReplacement: ((_content: string, node: Kept) => (kept(node) && node.outerHTML ? `\n\n${node.outerHTML}\n\n` : node.isBlock ? "\n\n" : "")) as never,
+    }));
+    blocksTurndown.keep(kept as never);
   }
   return blocksTurndown.turndown(normalizeLineBreaks(html));
 }

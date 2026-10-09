@@ -373,7 +373,7 @@ function SharingDocument({ noteId, sharing, onClose }: Props) {
       .prism-share-dialog .share-check input { min-height:auto; width:16px; height:16px; padding:0; accent-color:var(--color-accent); }
       .prism-share-dialog .share-invite { display:grid; grid-template-columns:minmax(0,1fr) auto auto; gap:8px; }
       /* A person row is a line of text with two quiet controls, not a form row of boxes. */
-      .prism-share-dialog .share-person select { border-color:transparent; background-color:transparent; color:var(--text-secondary); }
+      .prism-share-dialog .share-person select { border-color:var(--glass-border); background-color:transparent; color:var(--text-secondary); }
       .prism-share-dialog .share-person select:hover,.prism-share-dialog .share-person select:focus-visible { background-color:var(--glass-hover); color:var(--text-primary); }
       .prism-share-dialog .share-person button { border-color:transparent; background:transparent; color:var(--text-muted); min-width:var(--control-h-md); padding:6px; }
       .prism-share-dialog .share-person button:hover:not(:disabled) { background:var(--glass-hover); color:var(--color-danger); }

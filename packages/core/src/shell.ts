@@ -293,6 +293,7 @@ export { TranscriptReviewClientProvider, useTranscriptReviewClient, type Transcr
 export { eligiblePublicationNavigation, parsePublicationNavigation, type PublicationNavigation } from "./lib/publishing/navigation";
 // Pages: nested-page moves, Trash, synced preferences (lib/pages/model.ts).
 export { renamePageFromTitle, TitleRenameRefused } from "./lib/pages/titleRename";
+export { installOfflineSubPageLinks, linkNewPageToParent, parentPageAt, appendSubPageRow, appendRowToClosedParent, offerRowToOpenParent } from "./lib/pages/subPageLink";
 export { containerTitle, isContainerPath, humanizeSlug } from "./lib/pages/containerTitle";
 export { PagesRequestError, TRASH_TAG, sanitizePreferences, type MoveRequest, type MoveResult, type DuplicateRequest, type DuplicateResult, type TrashItem, type TrashListing, type PreferencesSnapshot, type PagePreferences } from "./lib/pages/model";
 

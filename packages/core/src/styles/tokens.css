@@ -209,7 +209,17 @@ input:focus, textarea:focus, select:focus, button:hover {
   [role="switch"],
   [role="radio"],
   [role="combobox"],
-  [data-control-box]
+  /* Boxes drawn AROUND a seamless field (the field inside has no border of its own): */
+  [data-control-box],
+  .db-search,
+  .db-pop-search,
+  .prism-search-input-row,
+  .prism-message-search,
+  .page-dialog-search,
+  .prism-people-search,
+  .prism-compose-surface,
+  .prism-agent-compose-surface,
+  .transfer-segment
 ) {
   --glass-border: var(--control-border);
   --glass-border-strong: var(--control-border);

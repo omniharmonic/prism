@@ -74,7 +74,7 @@ export const MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
 /** "Available offline" pages have their own budget and never push out the tree/lists. */
 const PINNED_MAX_BYTES = 200 * 1024 * 1024;
 /** Device-local records that name pages or queries; dropped with the cache. */
-const LOCAL_PREFIXES = ["prism:offline-pinned:", "prism:offline-recent:", "prism:offline-stamps:", "prism:offline-protected", "prism:recent-searches:", "prism:tree-expanded:"];
+const LOCAL_PREFIXES = ["prism:offline-pinned:", "prism:offline-recent:", "prism:offline-stamps:", "prism:offline-protected", "prism:recent-searches:", "prism:tree-expanded:", "prism:offline-sublinks"];
 
 interface IndexRow {
   key: string;
