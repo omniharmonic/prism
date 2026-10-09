@@ -370,3 +370,58 @@ test("iOS server: 'Sign out & change server' is the shell's (native confirmation
   await page.getByRole("button", { name: "Sign out & change server…" }).click();
   await expect.poll(() => page.evaluate(() => sessionStorage.getItem("prism:pending-link"))).toBeNull();
 });
+
+// ── Sign-in: one at a time, and only when the person asks ───────────────────────
+// (qa/ios-simulator-findings-2026-10-08.md #4: six "Prism on iPhone" devices in an hour, two
+// of them 3.4 s apart. Every sign-in mints a device, so the hook may start one only for a
+// press, and never a second while the sheet is up.)
+
+async function signInScreen(page: Page, script?: () => Promise<unknown>) {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await installIosShell(page, "https://prism.example.com");
+  await script?.(); // IPC answers go in after the shell (they hang off its `window.ipc`)
+  await page.route("**/auth/me", (r) => r.fulfill({ status: 401, json: { authenticated: false } }));
+  await page.goto("/e2e-fixtures/ios-shell.html?view=session");
+  await fixtureReady(page);
+  await expect(page.getByRole("heading", { name: "Sign in to Prism" })).toBeVisible();
+}
+
+test("iOS sign-in: nothing starts one by itself, and presses while the sheet is up join it — one sheet, one device", async ({ page }) => {
+  // The sheet stays up until the spec lets it finish.
+  await signInScreen(page, () => answer(page, "sign_in", `return new Promise((yes, no) => { window.ipc.finishSignIn = yes; window.ipc.cancelSignIn = no; });`));
+  // Signed out and looking at the screen: no sign-in was started for the person.
+  await page.waitForTimeout(300);
+  expect(await calls(page, "sign_in")).toEqual([]);
+
+  const button = page.getByRole("button", { name: "Sign in", exact: true });
+  await button.click();
+  await button.click();
+  await button.click();
+  // …and the hook itself, called directly (anything else in the page): still the same one.
+  expect(await page.evaluate(() => { const h = (window as any).__PRISM_HOST__; return h.signIn() === h.signIn(); })).toBe(true);
+  expect(await calls(page, "sign_in")).toEqual([{ cmd: "sign_in", args: {} }]);
+
+  // Dismissed: said to nobody (a cancel is not an error), and the next press is a NEW sign-in.
+  await page.evaluate(() => (window as any).ipc.cancelSignIn("Sign-in cancelled"));
+  await expect(page.locator("#prism-host-toast")).toHaveCount(0);
+  await button.click();
+  await expect.poll(async () => (await calls(page, "sign_in")).length).toBe(2);
+
+  // Finished: the page re-boots once, so the gate asks who is signed in with the new token.
+  const reloaded = page.waitForEvent("load");
+  await page.evaluate(() => (window as any).ipc.finishSignIn(null));
+  await reloaded;
+  await fixtureReady(page);
+  expect(await calls(page, "sign_in")).toEqual([]); // a fresh page: nothing started again
+});
+
+test("iOS sign-in: a token the server refused is only FORGOTTEN — the hook never signs in again by itself", async ({ page }) => {
+  await signInScreen(page);
+  await page.evaluate(() => (window as any).__PRISM_HOST__.onUnauthorized());
+  await page.evaluate(() => (window as any).__PRISM_HOST__.onUnauthorized());
+  await page.waitForTimeout(300);
+  const made = (await calls(page)).filter((c) => c.cmd !== "get_token");
+  // Forget locally, without a server call (the token is dead) — and no sign_in, ever.
+  expect(made).toEqual([{ cmd: "sign_out", args: { revoke: false } }, { cmd: "sign_out", args: { revoke: false } }]);
+  await expect(page.getByRole("heading", { name: "Sign in to Prism" })).toBeVisible();
+});

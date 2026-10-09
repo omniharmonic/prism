@@ -10,7 +10,7 @@ import type { LiveActionsClient } from "../../../packages/core/src/lib/actions/c
 import { MessageThread } from "../../../packages/core/src/components/comms/MessageThread";
 import { MessageComposer } from "../../../packages/core/src/components/comms/MessageComposer";
 import type { MatrixMessage } from "../../../packages/core/src/lib/matrix/types";
-import { createHttpLiveActionsClient } from "../../../packages/core/src/lib/actions/client";
+import { createHttpLiveActionsClient, LiveActionError } from "../../../packages/core/src/lib/actions/client";
 const message = (id: number): MatrixMessage => ({
   event_id: `event-${id}`,
   sender: id % 2 ? "@morgan:example.test" : "@alex:example.test",
@@ -49,6 +49,7 @@ if (location.search.includes("email-visual")) {
 }
 if (emailNote.metadata) {
   if (location.search.includes("noaccount")) delete emailNote.metadata.account;
+  if (location.search.includes("nomessageid")) delete emailNote.metadata.messageId;
   if (location.search.includes("draft")) emailNote.metadata.status = "draft";
 }
 Object.assign(window, {
@@ -72,16 +73,21 @@ function Fixture() {
   currentScope.current = scope;
   Object.assign(controls, { switchActor: () => setActor("morgan") });
   const agent = useMemo(() => replyAgent(() => currentScope.current), [scope]);
-  const emailClient = {
+  const emailActions: Partial<LiveActionsClient> = {
     scope: () => scope,
-    status: async () => ({
+    status: async () => {
+      // The server refuses the probe for anyone but its owner.
+      if (location.search.includes("notowner")) throw new LiveActionError(403, "forbidden");
+      return {
       email: {
         enabled: !location.search.includes("unavailable"),
-        configured: true,
+        configured: !location.search.includes("unconfigured"),
       },
       matrix: { enabled: false, configured: false, agentRooms: 0 },
       calendar: { enabled: false, configured: false },
-    }),
+    }; },
+    emailArchive: async () => { controls.attempts++; return { archived: true }; },
+    emailMarkRead: async (_target, read) => { controls.attempts++; return { read }; },
     emailReply: async (_params, options) => {
       controls.replyCalls.push({ params: _params, key: options?.idempotencyKey });
       controls.attempts++;
@@ -99,7 +105,8 @@ function Fixture() {
       }
       return { messageId: "accepted", inReplyTo: "fixture@example.test" };
     },
-  } as LiveActionsClient;
+  };
+  const emailClient = emailActions as LiveActionsClient;
   if (location.search.includes("lifecycle")) return <QueryClientProvider client={queryClient}><AgentLifecycleFixture /></QueryClientProvider>;
   if (location.search.includes("email"))
     return (

@@ -118,8 +118,16 @@ or a universal link. It plugs into the `#[cfg(mobile)]` arm of `signin.rs` and r
   2. It then forgets the token: first in memory, then in the keychain. A keychain failure
      can therefore never skip the revoke, and it is reported to the UI as a toast.
   3. It deletes the offline read cache (`prism-read-cache`) and reloads.
-- **401** on our token: `onUnauthorized()` → `sign_out {revoke:false}` (the token is dead
-  anyway). The app shows the sign-in screen. It never auto-opens the browser.
+- **401** on our token is a suspicion, not a sign-out (`apps/web/src/native/sessionGuard.ts`
+  states the rule). The page asks ONE `GET /auth/me` with the same token. Only a 401 from
+  `/auth/me` itself ends the session: `onUnauthorized()` → `sign_out {revoke:false}`, then
+  the page reloads into the sign-in screen. A 200 keeps the token; no answer, a 5xx or a
+  proxy page keeps it too. Nothing ever starts a sign-in except the person's press — each
+  sign-in mints a device. `signIn()` is one at a time: on iOS a call while the sheet is up
+  joins it; on desktop a second click restarts the flow (the shell cancels the first).
+- **No token under a running page** (signed out from the menu, the Keychain item gone): the
+  request is not sent at all — it is answered 401 locally — and the page reloads into the
+  sign-in screen. A page never carries on without a bearer behind a signed-in workspace.
 
 ## Keychain
 
@@ -816,7 +824,7 @@ Info.plist keys never need re-applying: Tauri merges `src-tauri/Info.ios.plist` 
 | Push | Swift `PushRegistrar`, `apps/web/src/native/apnsPush.ts` | `PushClient` seam (Settings → Account → "Notify me…"): the permission prompt only follows the user turning that toggle on (never at launch or sign-in by itself). **Every signed-in account** may register (the routes take any user with the app's `pd_` device credential; a cookie → 403); the choice is remembered per account on the device (`prism:apns:<16-hex tag>` — no address in web storage). While it is on and iOS allows it, the hex token is POSTed to `/api/push/apns {token, environment}` with the device bearer on **every launch** (token refresh). Environment (`mobile_cmds::apns_environment`, unit-tested): App Store/TestFlight installs have NO embedded profile, so no profile = `production`; a profile saying `development` or the simulator = `sandbox`; an ad hoc build embeds a distribution profile = `production`. Each registration waits with its own 30 s timeout. "Send a test notification" → `/api/push/apns/test`. Turning it off → `DELETE /api/push/apns`; sign-out and reset delete the row too (the shell's `delete_apns`, and the server's `revokeDevice`). A tap (ids only: `sessionId` / `url=/agent/<id>`, or `notificationId` / `url=/inbox/<id>`) is pulled through `push_take_opened`, which answers the canonical client PATH built by `links::notification_path` (the same id rules as a link), and the page opens it as a tab through `appLinks.openAppLink`, cold or warm. |
 | External links | `open_external` | Same validation; the confirmation is a `UIAlertController`; opens in Safari via the opener plugin. |
 | Export | `export_note`, `save_export` (`native_cmds.rs` iOS arms) + Swift `shareFile` | No save panel on iOS. The shell writes the note / streams the archive (same `export_archive::download`: bearer to the configured origin only, no redirect, size caps) into `<app tmp>/prism-exports/<random>/<name>` (0700), presents `UIActivityViewController` (Save to Files, AirDrop; popover anchored for iPad) and **deletes the folder when the sheet closes**, whatever happened; leftovers are purged at launch. Swift shares only a `.zip`/`.md`/`.html` under that folder; the path never reaches JS. Result: the file's name when an activity completed, null when the sheet was dismissed (the dialog then offers "Save…" again — the job lives 15 minutes on the server). |
-| WebView | Swift `load(webview:)` | `contentInsetAdjustmentBehavior=.never` (the web UI owns safe areas via `viewport-fit=cover`), no scroll-view bounce, no back/forward swipe, no link previews. Pinch zoom stays available; zoom-on-focus is avoided by the 16px input rule. |
+| WebView | Swift `load(webview:)` | `contentInsetAdjustmentBehavior=.never` (the web UI owns safe areas via `viewport-fit=cover`), no scroll-view bounce, no back/forward swipe, no link previews. Pinch zoom stays available; zoom-on-focus is avoided by the 16 px floor in `styles/touch.css` § "iOS zoom-on-focus" (`phone-zoom.spec.ts`). |
 
 **IPC surface (iOS) — pinned separately from the desktop's.** `capabilities/mobile.json`
 (platform iOS, window `main`), 14 commands: the six shared ones (`get_token`, `sign_in`,

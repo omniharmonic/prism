@@ -235,9 +235,12 @@ export function SlashMenu({ editor, state, onClose }: { editor: Editor | null; s
     if (databases) all.splice(all.findIndex((i) => i.id === "toc"), 0, ...DATABASE_ITEMS);
     if (canAsk) all.push({ id: "ask", agent: true, group: "Agent", title: "Ask agent", subtitle: "Discuss this page in your conversation", icon: <Sparkles size={16} />, keywords: ["ask", "agent", "ai", "assistant"], shortcut: "Mod-J", run: () => {} });
     if (!q.trim()) return all;
+    // Several words must really be in a block's name ("table view", "toggle heading 2"): loose
+    // letter-order matches would keep the menu up over ordinary prose that follows a "/".
+    const floor = q.trim().includes(" ") ? 50 : 1; // a substring of a keyword scores 54, letter order at most 40
     return all
       .map((it, i) => ({ it, i, score: slashScore(q, it) }))
-      .filter((r) => r.score > 0)
+      .filter((r) => r.score >= floor)
       .sort((a, b) => b.score - a.score || a.i - b.i)
       .map((r) => r.it);
   }, [q, canAsk, uploads, fileUploads, databases, subPages]);

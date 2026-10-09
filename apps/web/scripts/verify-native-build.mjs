@@ -71,7 +71,15 @@ const includeCount = (tCode.match(/credentials:\s*init\.credentials\s*\?\?\s*"in
 check(includeCount === 1, 'transport.ts has exactly one credentials:"include" (the PWA branch)', `transport.ts has ${includeCount} credentials:"include" (expected 1, PWA branch only)`);
 check(/credentials:\s*"omit"/.test(tCode) && /Bearer \$\{token\}/.test(tCode), "native branch = omit + Bearer token", "native branch must set credentials:omit and Authorization: Bearer");
 check(/isOurServer\(/.test(tCode), "bearer only attached to our own origin", "missing own-origin guard for the bearer token");
-check(/notifyUnauthorized\(\)/.test(tCode) && /resp\.status === 401/.test(tCode), "401 routed to onUnauthorized", "401 is not routed to the host hook");
+// A 401 is CONFIRMED before the session ends (native/sessionGuard.ts states the rule;
+// `npm run verify:session` pins it): the transport hands the refused token to the guard,
+// only the guard reaches onUnauthorized, and nothing in the transport's 401 path signs in.
+check(/resp\.status === 401 && sent\) void guard\.unauthorized\(sent\)/.test(tCode), "a 401 goes to the session guard with the token that was refused", "401 is not routed to the session guard");
+check((tCode.match(/onUnauthorized\?\.\(\)/g) ?? []).length === 2 && /forget: async \(\) => \{ await getHost\(\)\?\.onUnauthorized\?\.\(\); \}/.test(tCode), "onUnauthorized is reached only through the guard's forget (and the no-signIn fallback)", "onUnauthorized is called outside the session guard");
+check((tCode.match(/\.signIn\(\)/g) ?? []).length === 1 && /export function startNativeSignIn/.test(tCode), "signIn is called from startNativeSignIn only (a person's press)", "signIn is called outside startNativeSignIn");
+check(/if \(guard\.over\(\)\) return signedOutResponse\(\)/.test(tCode) && /else if \(guard\.missing\(\)\)/.test(tCode), "no request leaves without a bearer once the session is over", "the signed-out request block is missing");
+const guardSrc = strip(readFileSync(join(webSrc, "native/sessionGuard.ts"), "utf8"));
+check(!/signIn|sign_in|fetch\(/.test(guardSrc), "the session guard cannot start a sign-in (and makes no request itself)", "native/sessionGuard.ts mentions sign-in or fetch");
 
 // Files allowed to call bare fetch(): the helpers themselves, the legacy public ShareView
 // (talks to a vault URL directly, not the gateway) and the cross-origin federation pairing call.

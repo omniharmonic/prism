@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import type { Editor } from "@tiptap/react";
+import { useQueryClient } from "@tanstack/react-query";
 import { useVaultClient } from "../../data/VaultClientContext";
 import { useVaultTree } from "../../app/hooks/useParachute";
 import { useUIStore } from "../../app/stores/ui";
@@ -23,6 +24,7 @@ const TAG = /^[A-Za-z0-9][A-Za-z0-9_/-]{0,63}$/;
 export function InsertDatabaseDialog({ editor, request, hostPath, onClose }: { editor: Editor; request: DatabaseInsertRequest; hostPath: string | null | undefined; onClose: () => void }) {
   const client = useVaultClient();
   const { data: tree } = useVaultTree();
+  const queryClient = useQueryClient();
   const [value, setValue] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -67,6 +69,9 @@ export function InsertDatabaseDialog({ editor, request, hostPath, onClose }: { e
     setBusy(true); setError("");
     try {
       const made = await createInlineDatabase(client, { path: hostPath ?? null }, { tag, type: request.type });
+      // The new database is a page: the sidebar and "Linked view of database" list it at once,
+      // not only when the events channel (or a reload) refreshes the tree.
+      void queryClient.invalidateQueries({ queryKey: ["vault", "tree"] });
       if (request.mode === "page") linkAndOpen(made);
       else finish(made);
     } catch {

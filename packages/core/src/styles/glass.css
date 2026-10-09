@@ -203,16 +203,7 @@ html.light ::-webkit-scrollbar-thumb:hover {
   .command-pill { animation: none; }
 }
 
-/* ─── iOS no-zoom: form controls must be ≥16px or Safari zooms on focus,
-   stranding the user at the wrong scale after typing a comment/search. The
-   prose editor (contentEditable) is unaffected, so its type scale is preserved. */
-@media (max-width: 768px) {
-  input,
-  textarea,
-  select {
-    font-size: 16px;
-  }
-}
+/* (The iOS zoom-on-focus floor for form controls lives in touch.css § "iOS zoom-on-focus".) */
 
 /* ─── Tactile press: floating controls dip slightly when pressed ─── */
 .press {

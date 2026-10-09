@@ -120,6 +120,16 @@ if (params.has("templates") && !persisted) {
   // "Sneaky" points at an ordinary page (not a template of this database): refused.
   db.metadata = { ...db.metadata, prism_database: { ...(db.metadata!.prism_database as object), templates: [{ id: "tpl-bug", name: "Bug report" }, { id: "page", name: "Sneaky" }] } };
 }
+if (params.has("frontmatter-tags") && !persisted) {
+  // An imported page keeps its frontmatter `tags:` list in metadata as well as in the note's tags.
+  const p = notes.find((n) => n.id === "page")!;
+  p.metadata = { ...p.metadata, tags: ["research"] };
+}
+if (params.has("long-props") && !persisted) {
+  // Values wider than half a phone screen: a sentence, a URL, several labels.
+  const p = notes.find((n) => n.id === "page")!;
+  p.metadata = { ...p.metadata, owner: "Alexandria Chen-Montgomery and the platform team", link: "https://example.test/workspaces/a-living-workspace/overview", labels: ["design", "launch", "research-notes", "quarterly-planning"] };
+}
 if (params.has("free-dates") && !persisted) {
   // The same rows under a tag no integration owns (date ranges are withheld on ingest tags).
   notes = notes.map((n) => ({ ...n, tags: (n.tags ?? []).map((t) => (t === "task" ? "work" : t)) }));

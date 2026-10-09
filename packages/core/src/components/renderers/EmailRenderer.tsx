@@ -19,7 +19,9 @@ import { gmailApi } from "../../lib/matrix/client";
 import { Button } from "../ui/Button";
 import {
   useLiveActions,
+  useLiveActionsAvailability,
   useLiveActionsClient,
+  type LiveActionsState,
 } from "../../data/LiveActionsContext";
 import {
   liveActionErrorText,
@@ -90,7 +92,8 @@ function VaultEmailView({
   // Web/native: Proton Bridge via the server (WP1.5 live actions) when it offers
   // email actions and this note is a stored message (it has a Message-ID).
   // Desktop has no provider → `live` is null → the existing Tauri path.
-  const liveEmail = useLiveActions("email");
+  const { client: liveEmail, state: liveState } =
+    useLiveActionsAvailability("email");
   const live =
     !readOnly && liveEmail && typeof meta?.messageId === "string"
       ? liveEmail
@@ -120,6 +123,17 @@ function VaultEmailView({
   );
   const isWeb = useIsWeb();
   const canReply = !readOnly && (!!live || (!isWeb && !!account));
+  // Why the mailbox actions are not on offer — shown beside them, in the same
+  // row, so a greyed Reply is never the whole story (and never ends up under a
+  // phone's bottom bar, where a line below the message did).
+  const unavailable = canReply
+    ? null
+    : emailUnavailableReason({
+        readOnly,
+        isWeb,
+        state: liveState,
+        stored: typeof meta?.messageId === "string",
+      });
 
   // Build reply metadata
   // Reply-To wins when stored (the server applies the same rule).
@@ -168,6 +182,10 @@ function VaultEmailView({
                   variant="ghost"
                   icon={<Reply size={14} />}
                   disabled={!canReply}
+                  aria-describedby={
+                    canReply ? undefined : "prism-email-unavailable"
+                  }
+                  aria-expanded={canReply ? showReply : undefined}
                   onClick={() => setShowReply(true)}
                 >
                   Reply
@@ -215,6 +233,15 @@ function VaultEmailView({
                 </span>
               )}
             </div>
+            {unavailable && (
+              <p
+                id="prism-email-unavailable"
+                role="status"
+                className="prism-email-unavailable"
+              >
+                {unavailable}
+              </p>
+            )}
             {labels.length > 0 && (
               <div className="flex flex-wrap gap-1.5 mt-2">
                 {labels
@@ -329,15 +356,6 @@ function VaultEmailView({
             active={agentIntent === "summary"}
             onActivate={() => setAgentIntent("summary")}
           />
-          {!canReply && (
-            <p
-              role="status"
-              className="px-4 py-2 text-xs"
-              style={{ color: "var(--text-muted)" }}
-            >
-              Replying is unavailable for this email on this connection.
-            </p>
-          )}
           {/* Reply bar */}
           {showReply && replyTo && canReply && (
             <EmailReplyBar
@@ -364,6 +382,43 @@ function VaultEmailView({
       </div>
     </div>
   );
+}
+
+/**
+ * One short, plain sentence for why this email cannot be replied to (or
+ * archived / marked read) here. The copy follows `liveActionErrorText`.
+ */
+function emailUnavailableReason({
+  readOnly,
+  isWeb,
+  state,
+  stored,
+}: {
+  readOnly: boolean;
+  isWeb: boolean;
+  state: LiveActionsState;
+  stored: boolean;
+}): string {
+  if (readOnly) return "You can read this email but not reply to it.";
+  if (!isWeb) return "This email has no sending account, so it can't be replied to here.";
+  switch (state) {
+    case "loading":
+      return "Checking whether email can be sent from here…";
+    case "disabled":
+      return "Replying is turned off on this server.";
+    case "unconfigured":
+      return "The server has no mail credential yet, so it can't send a reply.";
+    case "not-allowed":
+      return "Only the server owner can reply to email from Prism.";
+    case "unreachable":
+      return "Could not reach the server to check whether email can be sent.";
+    case "no-client":
+      return "Replying to email isn't available on this connection.";
+    case "ready":
+      return stored
+        ? "Replying to this email isn't available."
+        : "This email was saved without a message ID, so Prism can't reply to it.";
+  }
 }
 
 /** Extract a bare email address from a "Name <email>" or plain "email" string. */
@@ -468,6 +523,7 @@ function EmailReplyBar({
         retrySafe={!!live}
         deliveryContext={JSON.stringify({ to: [to], cc })}
         enterToSend={false}
+        focusOnOpen
         placeholder="Write your reply…"
         disabled={isWeb && !live}
         sendDisabled={!ccValid}

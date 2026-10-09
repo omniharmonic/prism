@@ -16,6 +16,7 @@
     "verify:events": "node --import tsx scripts/verify-events.ts",
     "verify:search": "node --import tsx scripts/verify-search-blend.ts",
     "verify:sync": "node --import tsx scripts/verify-sync-state.ts",
+    "verify:session": "node --import tsx scripts/verify-session.ts",
     "verify:host": "node --import tsx scripts/verify-host-services.ts",
     "verify:media": "node --import tsx scripts/verify-media-proxy.ts",
     "test:e2e": "playwright test",

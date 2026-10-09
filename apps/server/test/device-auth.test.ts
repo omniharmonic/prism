@@ -272,6 +272,65 @@ test("owner magic link with a parked device request resumes the consent page", a
   assert.equal(cb.headers.get("location"), "/auth/device/continue");
 });
 
+test("the sign-in sheet's 'link sent' page (it polls /auth/me, then opens /continue): consent is still required, nothing is minted by waiting", async () => {
+  // The app's sheet parked a request and sits on the web login; the owner opens the emailed
+  // link in the BROWSER, which shares the sheet's cookies (iOS: ASWebAuthenticationSession).
+  const { challenge, verifier } = pkce();
+  const a = await app.request(authorizeUrl({ code_challenge: challenge }), { headers: tunnel() });
+  const reqCookie = cookieVal(a.headers.get("set-cookie"), "prism_device_req");
+  const parked = `prism_device_req=${reqCookie}`;
+  const me = (cookie: string) => app.request("/auth/me", { headers: { cookie, ...tunnel() } });
+  const codes = () => (db.prepare("SELECT COUNT(*) AS n FROM device_auth_codes").get() as { n: number }).n;
+  const devices = () => (db.prepare("SELECT COUNT(*) AS n FROM device_tokens").get() as { n: number }).n;
+
+  // Before the link is opened the page's question is answered "no" — however often it asks —
+  // and /continue only sends a signed-out browser back to the login with the FIXED path.
+  for (let i = 0; i < 5; i++) assert.equal((await me(parked)).status, 401);
+  const early = await app.request("/auth/device/continue", { headers: { cookie: parked, ...tunnel() } });
+  assert.equal(early.status, 302);
+  assert.equal(early.headers.get("location"), "/?next=%2Fauth%2Fdevice%2Fcontinue");
+
+  // The link is opened: the shared cookie jar now holds a session.
+  const token = randomBytes(32).toString("base64url");
+  storeMagicLink(createHash("sha256").update(token).digest("hex"), OWNER, 60_000);
+  const cb = await app.request(`/auth/callback?token=${token}`, { headers: { cookie: parked, ...tunnel() } });
+  const sid = cookieVal(cb.headers.get("set-cookie"), "prism_session");
+  assert.ok(sid);
+  const jar = `prism_session=${sid}; ${parked}`;
+  assert.equal((await me(jar)).status, 200);
+
+  // What the page then opens. It is the CONSENT page: no redirect, no code — and opening it
+  // again (a reload, the browser's own copy) neither consumes the request nor mints anything.
+  for (let i = 0; i < 2; i++) {
+    const cont = await app.request("/auth/device/continue", { headers: { cookie: jar, ...tunnel() } });
+    assert.equal(cont.status, 200);
+    assert.equal(cont.headers.get("location"), null);
+    assert.match(await cont.clone().text(), /Allow an app to sign in as you\?/);
+    assert.match(await cont.text(), /name="decision" value="approve"/);
+  }
+  assert.equal(codes(), 0, "waiting and continuing mints no code");
+  assert.equal(devices(), 0, "…and no device");
+
+  // A session alone is not enough: without THIS browser's parked request there is nothing to continue.
+  const noPark = await app.request("/auth/device/continue", { headers: { cookie: `prism_session=${sid}`, ...tunnel() } });
+  assert.equal(noPark.status, 400);
+  // Approval is still the form: session + CSRF + the parking cookie. Without the CSRF token → 403.
+  const html = await (await app.request("/auth/device/continue", { headers: { cookie: jar, ...tunnel() } })).text();
+  const { req, csrf } = consentFields(html);
+  const forged = await app.request("/auth/device/approve", { method: "POST", headers: { ...FORM_H, cookie: jar, ...tunnel() }, body: form({ req, csrf: "x", decision: "approve" }) });
+  assert.equal(forged.status, 403);
+  assert.equal(codes(), 0);
+  // Approved by the person: the code goes to the app's redirect, and only the PKCE verifier redeems it.
+  const ok = await app.request("/auth/device/approve", { method: "POST", headers: { ...FORM_H, cookie: jar, ...tunnel() }, body: form({ req, csrf, decision: "approve" }) });
+  assert.equal(ok.status, 302);
+  const loc = new URL(ok.headers.get("location")!);
+  assert.equal(`${loc.protocol}//${loc.host}${loc.pathname}`, REDIRECT);
+  const bad = await exchange({ grant_type: "authorization_code", code: loc.searchParams.get("code")!, code_verifier: randomBytes(32).toString("base64url"), redirect_uri: REDIRECT, client_id: "prism-native" });
+  assert.equal(bad.status, 400);
+  assert.equal(devices(), 0);
+  void verifier;
+});
+
 test("deny → redirect with error=access_denied and state; no code minted", async () => {
   const { challenge } = pkce();
   const loc = await approveAs(MEMBER, challenge, {}, "deny");
@@ -374,7 +433,15 @@ test("revoked or expired device tokens → 401 on /auth/me and no access on /api
   fv.put({ id: "n1", content: "a", tags: ["x"] });
   const { token, deviceId } = await fullFlow(OWNER);
   db.prepare("UPDATE device_tokens SET revoked_at = ? WHERE id = ?").run(Date.now(), deviceId);
-  assert.equal((await app.request("/auth/me", { headers: { ...bearer(token), ...tunnel() } })).status, 401);
+  const dead = await app.request("/auth/me", { headers: { ...bearer(token), ...tunnel() } });
+  assert.equal(dead.status, 401);
+  // The native client ends its session ONLY on this exact answer (apps/web transport.ts
+  // probeToken): a 401 carrying `authenticated:false`, which no proxy in between produces.
+  assert.equal(((await dead.json()) as { authenticated?: unknown }).authenticated, false);
+  const live = await fullFlow(MEMBER);
+  const alive = await app.request("/auth/me", { headers: { ...bearer(live.token), ...tunnel() } });
+  assert.equal(alive.status, 200);
+  assert.equal(((await alive.json()) as { authenticated?: unknown }).authenticated, true);
   const notes = await app.request(notesPath(), { headers: { ...bearer(token), ...tunnel() } });
   assert.deepEqual(await notes.json(), [], "a revoked owner token is anon, not the passthrough");
 
