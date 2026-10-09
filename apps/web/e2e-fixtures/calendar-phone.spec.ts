@@ -67,7 +67,7 @@ for (const [width, height] of [[390, 844], [320, 568]] as const) {
         await expect(view(page, name)).toHaveAttribute("aria-pressed", "true");
         expect(await overflow(page), `${name}: the page does not scroll sideways`).toBeLessThanOrEqual(0);
         const list = await controls(header);
-        expect(list.map((c) => c.name)).toEqual(["Previous period", "Next period", "Create event", "Agenda", "Day", "Week", "Month", "Today"]);
+        expect(list.map((c) => c.name)).toEqual(["Refresh calendar", "Previous period", "Next period", "Create event", "Agenda", "Day", "Week", "Month", "Today"]);
         expect(tooSmall(list), `${name}: 44 px targets`).toEqual([]);
         expect(outside(list, width), `${name}: inside the screen`).toEqual([]);
         expect(overlapping(list), `${name}: no control over another`).toEqual([]);
@@ -295,6 +295,128 @@ for (const [width, height] of [[390, 844], [320, 568]] as const) {
       await expect(page.getByText("13:00", { exact: true }).first()).toBeAttached(); // the hour label; was "1p" for everyone
       await expect(page.getByText("23:00", { exact: true })).toHaveCount(1);
       await expect(page.getByText(/^\d{1,2}[ap]$/)).toHaveCount(0);
+    });
+  });
+}
+
+/**
+ * Owner report from the real phone: "Events loading slowly with two loading animations" — the Day
+ * view said "No events for this day." under a sync icon AND a spinner. Every day/week/view change
+ * was a new query (the whole `meeting` listing again, the screen emptied meanwhile) plus a Google
+ * sync on the server (`gog`, seconds), and a finished sync listed everything a second time.
+ * Here the vault listing and the sync are FAKES with a delay (`calendar.tsx`): `list` / `sync` ms.
+ */
+const loading = (page: Page) => page.evaluate(() => { const c = (window as any).prismCalendarFixture; return { lists: c.lists as number, syncs: c.syncs as { from: string; to: string }[] }; });
+const refresh = (page: Page) => page.getByRole("button", { name: "Refresh calendar" });
+/** Everything on the page that says "working": busy regions and anything spinning. */
+const indicators = (page: Page) => page.evaluate(() => ({
+  busy: document.querySelectorAll("[aria-busy=true]").length,
+  spinning: Array.from(document.querySelectorAll<HTMLElement>(".animate-spin")).filter((el) => el.getBoundingClientRect().width > 0).length,
+  named: Array.from(document.querySelectorAll("[aria-label]")).map((el) => el.getAttribute("aria-label")!).filter((n) => /sync|loading/i.test(n)),
+}));
+async function openWith(page: Page, params: string) {
+  await page.clock.setFixedTime(new Date("2026-10-05T16:00:00Z"));
+  await page.goto(`/e2e-fixtures/calendar.html?phone&${params}`);
+  await expect(page.getByRole("button", { name: "Today", exact: true })).toBeVisible();
+}
+
+for (const [label, viewport, mobile] of [["phone", { width: 390, height: 844 }, true], ["desktop", { width: 1280, height: 800 }, false]] as const) {
+  test.describe(`loading (${label})`, () => {
+    test.use({ viewport, timezoneId: "America/Denver", ...(mobile ? { hasTouch: true, isMobile: true } : {}) });
+
+    test("events already in the vault show at once while a slow sync runs behind them, with ONE indicator", async ({ page }) => {
+      await openWith(page, "sync=4000&syncadds");
+      // The sync takes four seconds; the events are there long before it answers.
+      await expect(page.getByText("Weekly standup").first()).toBeVisible({ timeout: 1500 });
+      await expect(refresh(page)).toHaveAttribute("aria-busy", "true");
+      expect(await indicators(page)).toEqual({ busy: 1, spinning: 1, named: [] });
+      expect((await loading(page)).syncs).toHaveLength(1);
+      await expect(page.getByText("Synced later")).toHaveCount(0);
+      // When it finishes, what it brought merges in and the indicator rests.
+      await expect(page.getByText("Synced later").first()).toBeVisible({ timeout: 8000 });
+      await expect(refresh(page)).toHaveAttribute("aria-busy", "false");
+      expect(await indicators(page)).toEqual({ busy: 0, spinning: 0, named: [] });
+      await expect(page.getByText("Weekly standup").first()).toBeVisible();
+    });
+
+    test("nothing says a day is empty until the load has finished", async ({ page }) => {
+      await openWith(page, "list=1500&sync=200");
+      await view(page, "Day").click();
+      for (let i = 0; i < 3; i++) await page.getByRole("button", { name: "Next period" }).click(); // Thu, Oct 8: no events
+      await expect(refresh(page)).toHaveAttribute("aria-busy", "true");
+      await expect(page.getByText(/No events/)).toHaveCount(0);
+      expect(await indicators(page)).toEqual({ busy: 1, spinning: 1, named: [] });
+      if (mobile) {
+        await expect(page.getByTestId("calendar-skeleton")).toBeVisible();
+        await view(page, "Agenda").click();
+        await expect(page.getByTestId("calendar-agenda").getByRole("region")).toHaveCount(7);
+        await expect(page.getByText(/No events/)).toHaveCount(0);
+        await view(page, "Month").click();
+        await expect(page.getByText(/No events/)).toHaveCount(0);
+        await view(page, "Day").click();
+        for (let i = 0; i < 3; i++) await page.getByRole("button", { name: "Next period" }).click();
+        await expect(page.getByRole("heading", { level: 2 })).toHaveText("Thu, Oct 8");
+        // Loaded: now the empty day says so, and the placeholder is gone.
+        await expect(page.getByText("No events for this day.")).toBeVisible();
+        await expect(page.getByTestId("calendar-skeleton")).toHaveCount(0);
+      } else {
+        await page.getByRole("button", { name: "Month", exact: true }).click();
+        await page.getByRole("button", { name: "Select October 8, 2026", exact: true }).click();
+        await expect(page.locator("aside")).toContainText("Thursday, October 8");
+        await expect(page.getByText(/No events/)).toHaveCount(0);
+        await expect(page.locator("aside")).toContainText("No events");
+      }
+      await expect(refresh(page)).toHaveAttribute("aria-busy", "false");
+    });
+
+    test("moving between days, weeks and views asks for nothing again; a range never ingested is synced once", async ({ page }) => {
+      await openWith(page, "sync=50");
+      await expect(page.getByText("Weekly standup").first()).toBeVisible();
+      await expect(refresh(page)).toHaveAttribute("aria-busy", "false");
+      await view(page, "Day").click();
+      await page.getByRole("button", { name: "Next period" }).click();
+      // Tuesday's events are on screen with the tap itself (no waiting here): there is no request behind it.
+      expect(await page.getByRole("button", { name: /Partner call/ }).count()).toBe(1);
+      for (let i = 0; i < 2; i++) await page.getByRole("button", { name: "Next period" }).click();
+      await view(page, "Week").click();
+      await page.getByRole("button", { name: "Today", exact: true }).click();
+      await page.waitForTimeout(1200); // longer than the settle delay of a navigation sync
+      expect(await loading(page)).toMatchObject({ lists: 1, syncs: [{}] }); // one listing, the one sync of the open
+      expect(await indicators(page)).toEqual({ busy: 0, spinning: 0, named: [] });
+
+      // Two months ahead is outside what the server ingests on its own: synced once, after the taps settle.
+      await view(page, "Month").click();
+      await page.getByRole("button", { name: "Next period" }).click();
+      await page.getByRole("button", { name: "Next period" }).click();
+      await expect.poll(async () => (await loading(page)).syncs.length).toBe(2);
+      expect((await loading(page)).syncs[1].from).toMatch(/^2026-1[12]-/);
+      await page.getByRole("button", { name: "Previous period" }).click();
+      await page.getByRole("button", { name: "Next period" }).click();
+      await page.waitForTimeout(1200);
+      expect((await loading(page)).syncs).toHaveLength(2); // the same range again, inside the throttle window
+
+      // The indicator is the refresh button: a tap re-reads the vault and syncs what is on screen.
+      await refresh(page).click();
+      await expect.poll(async () => (await loading(page)).syncs.length).toBe(3);
+      await expect.poll(async () => (await loading(page)).lists).toBe(2);
+      await expect(refresh(page)).toHaveAttribute("aria-busy", "false");
+    });
+
+    test("a failed sync keeps the events and leaves one small notice", async ({ page }) => {
+      await openWith(page, "sync=300&syncfail");
+      await expect(page.getByText("Weekly standup").first()).toBeVisible();
+      const notice = page.getByTestId("calendar-sync-notice");
+      await expect(notice).toHaveText("Couldn't reach Google Calendar — showing saved events.");
+      await expect(page.getByText("Weekly standup").first()).toBeVisible();
+      await expect(refresh(page)).toHaveAttribute("aria-busy", "false");
+      expect((await notice.boundingBox())!.height).toBeLessThan(40);
+      expect(await overflow(page)).toBeLessThanOrEqual(0);
+      await expect(page.getByRole("dialog")).toHaveCount(0);
+      // It clears when a later sync works.
+      await page.evaluate(() => { (window as any).prismCalendarFixture.syncFail = false; });
+      await refresh(page).click();
+      await expect(notice).toHaveCount(0);
+      await expect(page.getByText("Weekly standup").first()).toBeVisible();
     });
   });
 }
