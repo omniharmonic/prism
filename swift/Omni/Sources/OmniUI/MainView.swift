@@ -172,6 +172,27 @@ struct ThreadSections: View {
 
 // MARK: Sidebar + content (Mac, iPad)
 
+/// The sidebar's list: Today, Needs you, the threads by state, Recurring.
+struct SidebarList: View {
+    @Bindable var session: SessionModel
+
+    var body: some View {
+        List(selection: $session.destination) {
+            Label("Today", systemImage: "sun.max").tag(Destination.today)
+                .accessibilityIdentifier("nav.today")
+            Label("Needs you", systemImage: "hand.raised")
+                .badge(session.approvals.pendingCount)
+                .tag(Destination.needsYou)
+                .accessibilityIdentifier("nav.needsYou")
+            ThreadSections(threads: session.threads) { id in Task { await session.removeThread(id) } }
+            Section("Recurring") {
+                Label("Recurring jobs", systemImage: "arrow.triangle.2.circlepath").tag(Destination.recurring)
+                    .accessibilityIdentifier("nav.recurring")
+            }
+        }
+    }
+}
+
 struct SplitMainView: View {
     let app: AppModel
     @Bindable var session: SessionModel
@@ -183,19 +204,7 @@ struct SplitMainView: View {
     var body: some View {
         @Bindable var threads = session.threads
         NavigationSplitView {
-            List(selection: $session.destination) {
-                Label("Today", systemImage: "sun.max").tag(Destination.today)
-                    .accessibilityIdentifier("nav.today")
-                Label("Needs you", systemImage: "hand.raised")
-                    .badge(session.approvals.pendingCount)
-                    .tag(Destination.needsYou)
-                    .accessibilityIdentifier("nav.needsYou")
-                ThreadSections(threads: session.threads) { id in Task { await session.removeThread(id) } }
-                Section("Recurring") {
-                    Label("Recurring jobs", systemImage: "arrow.triangle.2.circlepath").tag(Destination.recurring)
-                        .accessibilityIdentifier("nav.recurring")
-                }
-            }
+            SidebarList(session: session)
             .navigationSplitViewColumnWidth(min: 220, ideal: 260)
             #if os(iOS)
             .navigationTitle("Omni")
