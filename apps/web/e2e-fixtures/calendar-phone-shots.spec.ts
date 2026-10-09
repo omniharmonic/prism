@@ -53,7 +53,6 @@ if (run) for (const [width, height] of [[390, 844], [320, 568]] as const) {
       await expect(page.getByRole("button", { name: "Meeting Notes" })).toBeVisible();
       await page.waitForTimeout(300);
       await shot(page, "05-detail-top");
-      await page.getByRole("button", { name: "Meeting Notes" }).scrollIntoViewIfNeeded();
       await page.getByRole("button", { name: "Yes", exact: true }).scrollIntoViewIfNeeded();
       await page.getByRole("button", { name: "Yes", exact: true }).click();
       await page.waitForTimeout(200);

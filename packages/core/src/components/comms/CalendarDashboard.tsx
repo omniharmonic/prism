@@ -778,6 +778,19 @@ function EventDetailPanel({ event, onClose, onEdit, onDelete, onOpenNotes, onOpe
         </div>
       )}
 
+      {/* RSVP — near the top: the one thing most often done to an invitation. */}
+      {canRsvp && (
+        <div className="flex items-center gap-2 flex-wrap" data-testid="event-rsvp">
+          {!rsvpNA && <span className="text-sm" style={{ color: "var(--text-muted)" }}>RSVP</span>}
+          {!rsvpNA && (["accepted", "tentative", "declined"] as RsvpResponse[]).map((r) => (
+            <button key={r} onClick={() => rsvp(r)} className="focus-ring min-h-control min-w-control px-3 py-1.5 rounded-lg text-sm transition-colors hover:bg-[var(--glass-hover)]" style={{ color: "var(--text-secondary)", border: "1px solid var(--glass-border)" }}>
+              {r === "accepted" ? "Yes" : r === "tentative" ? "Maybe" : "No"}
+            </button>
+          ))}
+          {rsvpMsg && <span className="text-sm" style={{ color: "var(--text-muted)" }}>{rsvpMsg}</span>}
+        </div>
+      )}
+
       {/* Meet link */}
       {meetUrl && (
         <a
@@ -881,17 +894,6 @@ function EventDetailPanel({ event, onClose, onEdit, onDelete, onOpenNotes, onOpe
               </button>
             </div>
           )}
-        </div>
-      )}
-      {canRsvp && (
-        <div className="flex items-center gap-2 flex-wrap">
-          {!rsvpNA && <span className="text-sm" style={{ color: "var(--text-muted)" }}>RSVP</span>}
-          {!rsvpNA && (["accepted", "tentative", "declined"] as RsvpResponse[]).map((r) => (
-            <button key={r} onClick={() => rsvp(r)} className="focus-ring min-h-control min-w-control px-3 py-1.5 rounded-lg text-sm transition-colors hover:bg-[var(--glass-hover)]" style={{ color: "var(--text-secondary)", border: "1px solid var(--glass-border)" }}>
-              {r === "accepted" ? "Yes" : r === "tentative" ? "Maybe" : "No"}
-            </button>
-          ))}
-          {rsvpMsg && <span className="text-sm" style={{ color: "var(--text-muted)" }}>{rsvpMsg}</span>}
         </div>
       )}
     </div>

@@ -182,6 +182,18 @@ for (const [width, height] of [[390, 844], [320, 568]] as const) {
       await expect(dialog.getByRole("button", { name: /^Close/ })).toHaveCount(1);
       await expect(dialog.getByRole("button", { name: "Close calendar details" })).toBeInViewport();
 
+      // RSVP is near the top — after the time and place, before the guests, notes, transcripts and Delete —
+      // and on a phone it is on screen as the event opens.
+      const order = await dialog.evaluate((el) => {
+        const y = (n: Element | null | undefined) => (n ? Math.round(n.getBoundingClientRect().top) : NaN);
+        const text = (t: string) => Array.from(el.querySelectorAll("span, div")).find((n) => n.children.length === 0 && n.textContent?.trim().startsWith(t));
+        return { time: y(text("9:00 AM")), place: y(text("Conference room B")), rsvp: y(el.querySelector("[data-testid=event-rsvp]")), guests: y(text("Attendees")), notes: y(text("Agenda:")), transcripts: y(el.querySelector("[aria-label='Meeting transcripts']")), remove: y(el.querySelector("[aria-label='Delete event']")) };
+      });
+      expect(Object.entries(order).sort((a, b) => a[1] - b[1]).map(([k]) => k), JSON.stringify(order)).toEqual(["time", "place", "rsvp", "guests", "notes", "transcripts", "remove"]);
+      await expect(dialog.getByTestId("event-rsvp").getByRole("button", { name: "Yes", exact: true })).toBeInViewport({ ratio: 1 });
+
+      await dialog.getByRole("button", { name: "Maybe", exact: true }).click();
+      await expect(dialog.getByTestId("event-rsvp")).toContainText("Marked tentative");
       await dialog.getByRole("button", { name: "Delete event" }).click();
       const confirm = dialog.getByRole("alertdialog", { name: "Confirm delete" });
       await confirm.scrollIntoViewIfNeeded();
@@ -192,8 +204,6 @@ for (const [width, height] of [[390, 844], [320, 568]] as const) {
       // The header stays while the body scrolls.
       await expect(dialog.getByRole("button", { name: "Close calendar details" })).toBeInViewport();
 
-      await dialog.getByRole("button", { name: "Maybe", exact: true }).click();
-      await expect(dialog).toContainText("Marked tentative");
       await confirm.getByRole("checkbox").uncheck();
       await expect(confirm).toContainText("Don't email guests");
       await confirm.getByRole("button", { name: "Delete this occurrence" }).click();
@@ -291,6 +301,28 @@ for (const [width, height] of [[390, 844], [320, 568]] as const) {
 
 test.describe("desktop is unchanged", () => {
   test.use({ viewport: { width: 1280, height: 800 }, timezoneId: "America/Denver" });
+
+  test("event panel: RSVP sits after the time and place, above the guests, in the side panel", async ({ page }) => {
+    await open(page);
+    await view(page, "Day").click(); // the month cell shows three chips; this one is under "+6 more"
+    await page.getByRole("button", { name: /^Quarterly bioregional/ }).first().click();
+    const aside = page.locator("aside");
+    const rsvp = aside.getByTestId("event-rsvp");
+    await expect(rsvp.getByRole("button")).toHaveText(["Yes", "Maybe", "No"]);
+    const top = async (l: Locator) => (await l.boundingBox())!.y;
+    expect(await top(rsvp)).toBeGreaterThan(await top(aside.getByText(/^Conference room B/)));
+    expect(await top(rsvp)).toBeLessThan(await top(aside.getByText("Attendees", { exact: true })));
+    expect(await top(rsvp)).toBeLessThan(await top(aside.getByRole("button", { name: "Delete event" })));
+    // The panel keeps its width and nothing runs out of it.
+    const box = (await aside.boundingBox())!;
+    const r = (await rsvp.boundingBox())!;
+    expect(r.x).toBeGreaterThanOrEqual(box.x);
+    expect(r.x + r.width).toBeLessThanOrEqual(box.x + box.width);
+    expect(await aside.evaluate((el) => el.scrollWidth - el.clientWidth)).toBeLessThanOrEqual(0);
+    await rsvp.getByRole("button", { name: "Yes", exact: true }).click();
+    await expect(rsvp).toContainText("Accepted");
+    expect((await fixture(page)).rsvps).toEqual([{ eventId: "long-event", response: "accepted" }]);
+  });
 
   test("month by default, the wrapping header and its three views, the side panel for a day", async ({ page }) => {
     await open(page);
