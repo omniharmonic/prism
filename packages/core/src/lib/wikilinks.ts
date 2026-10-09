@@ -21,7 +21,8 @@ function linkKeyTitle(note: LinkableNote): string {
 /** The name a note is SHOWN by (tabs, link chips, mention menus). A container-named note
  *  (`<folder>/PROJECT`) is named by its title / name / folder — see `pages/containerTitle.ts`. */
 export function noteLinkTitle(note: LinkableNote): string {
-  return (typeof note.metadata?.title === "string" ? note.metadata.title : note.displayTitle) || containerTitle(note.path, note.metadata) || note.path?.split("/").pop() || note.id;
+  // A blank stored title is no title (as in a database view's `noteTitle`): the display title / file name names the page.
+  return (typeof note.metadata?.title === "string" && note.metadata.title.trim() ? note.metadata.title : note.displayTitle) || containerTitle(note.path, note.metadata) || note.path?.split("/").pop() || note.id;
 }
 export function parseWikilinks(content: string): { links: string[]; balanced: boolean } {
   // TipTap stores HTML; resolve its visible text, not tag attributes or encoded

@@ -232,12 +232,12 @@ test("NP-DB-20: renaming a row from its page title updates the row in the view",
 
 /**
  * NP-DB-20 · the same for a row CREATED IN the database view.
- * FIXME (behaviour gap, PARITY-GAPS a.1 — seen failing 2026-10-03): a row made with "+ New" (and every
+ * Was a behaviour gap (PARITY-GAPS a.1 — seen failing 2026-10-03): a row made with "+ New" (and every
  * ingest row) stores its name in `metadata.title`, which the view shows first (`noteTitle`); renaming
  * the page from its title moves the path (`renamePageFromTitle`) and leaves `metadata.title` alone,
  * so the view keeps the old name.
  */
-test.fixme("NP-DB-20: renaming a row that was created in the view updates the row in the view", async ({ page }) => {
+test("NP-DB-20: renaming a row that was created in the view updates the row in the view", async ({ page }) => {
   await page.goto("/e2e-fixtures/databases.html");
   const table = await renameRowFromPeek(page, "Update pricing page", "Publish the new pricing");
   await expect.poll(() => page.evaluate(() => (window as any).dbFixture.notes().find((n: any) => n.id === "t5").path)).toBe("Projects/Launch plan/Publish the new pricing");

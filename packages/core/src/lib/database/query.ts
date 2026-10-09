@@ -14,8 +14,7 @@
  * `ne` / `nin` / `not_contains` / `not_exists`, and always sorts last.
  */
 import { dateRange, dayDiff } from "./dates";
-import { TEMPLATE_TAG, isTemplateNote } from "../pages/model";
-import { containerTitle } from "../pages/containerTitle";
+import { TEMPLATE_TAG, isTemplateNote, pageTitle } from "../pages/model";
 import { scalarText } from "./structured";
 
 export const QUERY_OPS = [
@@ -354,10 +353,9 @@ export function metadataKeysFor(spec: QuerySpec): string[] | null {
 export function noteTitle(n: Pick<QueryInput, "path" | "metadata" | "id">): string {
   const t = n.metadata?.title;
   if (typeof t === "string" && t.trim()) return t.trim();
-  const container = containerTitle(n.path, n.metadata);
-  if (container) return container;
-  const leaf = n.path?.split("/").pop()?.replace(/\.[^.]+$/, "");
-  return leaf || "Untitled";
+  // The page's name is its file name — only a KNOWN extension is dropped ("Plan v1.5" is a whole name) —
+  // and a container-named note (`<folder>/PROJECT`) is named by its name / folder (`pageTitle`).
+  return pageTitle(n.path, n.metadata);
 }
 
 export function readKey(n: QueryInput, key: string): unknown {
