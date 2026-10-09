@@ -193,7 +193,15 @@ test("real collaborative host shares properties and readable mobile header witho
     await expect(editor.locator('h2')).toHaveText('Our shared ideas stay connected.');
     await page.getByRole('button', { name: 'Outline', exact: true }).click();
     await expect(page.getByRole('navigation', { name: 'Document outline' })).toContainText('Our shared ideas stay connected.');
-    await editor.locator('h2').click();
+    // The open outline is an overlay at this width and lies over the left of the heading (its lower edge ran
+    // through the heading's centre to within half a pixel: Chromium's layout put the default click just below it,
+    // WebKit's just inside it). A person taps the text they can see: the part of the heading clear of the overlay.
+    // That tap is outside the outline, so it also closes it.
+    const outline = page.getByRole('navigation', { name: 'Document outline' });
+    const [headingBox, outlineBox] = [(await editor.locator('h2').boundingBox())!, (await outline.boundingBox())!];
+    expect(outlineBox.x + outlineBox.width, 'the heading is not wholly covered').toBeLessThan(headingBox.x + headingBox.width - 12);
+    await editor.locator('h2').click({ position: { x: headingBox.width - 6, y: headingBox.height / 2 } });
+    await expect(outline).toHaveCount(0);
     await page.keyboard.press('End');
     await page.keyboard.type(' Together.');
     await page.getByRole('button', { name: 'Outline', exact: true }).click();

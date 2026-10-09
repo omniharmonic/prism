@@ -1,3 +1,4 @@
+import { fileURLToPath } from "node:url";
 import { test, expect, type Page } from "@playwright/test";
 import { Server } from "@hocuspocus/server";
 import WebSocket from "ws";
@@ -119,6 +120,10 @@ test("a failed sheet import offers explicit reload and preserves remote cells", 
     const row = doc.getArray<Y.Array<string>>("rows").get(1);
     doc.transact(() => { row.delete(1, 1); row.insert(1, ["REMOTE_DURING_RETRY"]); });
     expect([...doc.getConnections()]).toEqual(connections);
+    // Each automatic retry was a REAL request. Safari remembers a failed import like Chromium does but its
+    // error names no URL: the retries used to re-ask the page's own memory (one request in all), so nothing
+    // was retried there — and this test's reload met the route's second and third failure.
+    expect(attempts, "the first request and two fresh retries").toBe(3);
     await page.getByRole("button", { name: "Reload Prism" }).click();
     await expect(page.locator('input[value="REMOTE_DURING_RETRY"]')).toBeVisible();
     const restoredRow = fixture.doc().getArray<Y.Array<string>>("rows").get(1);
@@ -127,6 +132,48 @@ test("a failed sheet import offers explicit reload and preserves remote cells", 
     await page.reload();
     await expect(page.locator('input[value="LOCAL_SHEET_EDIT"]')).toBeVisible();
   } finally { await fixture.close(); }
+});
+
+test("one failed download of an editor is retried with a fresh request and the editor opens — no card, in every browser", async ({ page }) => {
+  let attempts = 0;
+  const urls: string[] = [];
+  await page.route("**/CollabSpreadsheet.tsx*", route => { urls.push(route.request().url()); return ++attempts <= 1 ? route.abort("failed") : route.continue(); });
+  const fixture = await collaborativeFixture(page, "spreadsheet");
+  try {
+    await page.goto("/e2e-fixtures/collab-storage.html?live");
+    await expect(page.locator('input[value="LAZY_SHEET_BASE"]')).toBeVisible();
+    await expect(page.getByRole("alert")).toHaveCount(0);
+    expect(attempts).toBe(2);
+    expect(new URL(urls[1]!).searchParams.get("t"), "the retry is a different URL, so the page's memory of the failure is not what answers").toBeTruthy();
+    expect(new URL(urls[1]!).pathname).toBe(new URL(urls[0]!).pathname);
+  } finally { await fixture.close(); }
+});
+
+test("importedUrl reads exactly one same-origin script from a loader and nothing else", async ({ page }) => {
+  await page.goto("/e2e-fixtures/harness.html");
+  const modulePath = "/@fs" + fileURLToPath(new URL("../../../packages/core/src/lib/retryImport.ts", import.meta.url));
+  const got = await page.evaluate(async (modulePath) => {
+    const { importedUrl } = await import(/* @vite-ignore */ modulePath);
+    const base = location.origin + "/assets/index-abc.js";
+    const f = (source: string) => new Function(`return ${source}`)();
+    return {
+      plain: importedUrl(f('() => import("./Sheet-1a2b.js")'), base),
+      built: importedUrl(f('() => __vitePreload(() => import("./Sheet-1a2b.js"), __vite__mapDeps([0,1]), chunkBase)'), base),
+      dev: importedUrl(f('() => import("/@fs/Users/x/Sheet.tsx?v=1")'), base),
+      commented: importedUrl(f('() => import(/* @vite-ignore */ "./Sheet-1a2b.js")'), base),
+      wrapper: importedUrl(f("() => loader()"), base),
+      two: importedUrl(f('() => cond ? import("./A.js") : import("./B.js")'), base),
+      bare: importedUrl(f('() => import("react")'), base),
+      foreign: importedUrl(f('() => import("https://elsewhere.test/x.js")'), base),
+      notScript: importedUrl(f('() => import("./data.json")'), base),
+      notFunction: importedUrl("() => import('./x.js')", base),
+    };
+  }, modulePath);
+  const origin = new URL(page.url()).origin;
+  expect(got).toEqual({
+    plain: `${origin}/assets/Sheet-1a2b.js`, built: `${origin}/assets/Sheet-1a2b.js`, dev: `${origin}/@fs/Users/x/Sheet.tsx?v=1`, commented: `${origin}/assets/Sheet-1a2b.js`,
+    wrapper: null, two: null, bare: null, foreign: null, notScript: null, notFunction: null,
+  });
 });
 
 test("the deferred canvas opens with its own tools and keeps the live connection in focus mode", async ({ page }) => {
