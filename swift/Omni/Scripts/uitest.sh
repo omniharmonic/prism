@@ -21,7 +21,8 @@
 #                                          when missing; never the simulator you use yourself)
 #   OMNI_UITEST_DERIVED    derived data (default swift/Omni/.build/uitest-dd)
 #   OMNI_UITEST_SHOTS      where the PNGs go (default <repo>/qa/screenshots/omni)
-#   OMNI_UITEST_ONLY       -only-testing value (default: OmniUITests)
+#   OMNI_UITEST_ONLY       what to run, comma-separated -only-testing values (default: OmniUITests),
+#                          e.g. OmniUITests/OmniWalkTests/test08Approvals
 #   OMNI_UITEST_MANUAL=1   include the manual browser sign-in test (the owner step)
 #   OMNI_UITEST_KEEP_SIMS=1   leave the simulators booted afterwards
 set -euo pipefail
@@ -157,6 +158,8 @@ run() { # run <platform> <theme> <variant>
     if [ "$variant" = "xxxl" ]; then xcrun simctl ui "$udid" content_size accessibility-extra-extra-extra-large >/dev/null; else xcrun simctl ui "$udid" content_size large >/dev/null; fi
   fi
   [ "${OMNI_UITEST_MANUAL:-0}" = "1" ] || extra+=(-skip-testing:OmniUITests/ManualSignInTests)
+  local only; IFS=',' read -r -a only <<<"$ONLY"
+  for o in "${only[@]}"; do extra+=(-only-testing:"$o"); done
   gone_thread
   local out="$SHOTS/$platform/$device${variant:+-$variant}/$theme"
   [ "$variant" = "default" ] && out="$SHOTS/$platform/$device/$theme"
@@ -168,7 +171,7 @@ run() { # run <platform> <theme> <variant>
   if TEST_RUNNER_OMNI_UITEST_SERVER="$BASE" TEST_RUNNER_OMNI_UITEST_TOKEN="$TOKEN" TEST_RUNNER_OMNI_UITEST_SIGNOUT_TOKEN="$TOKEN2" TEST_RUNNER_OMNI_UITEST_SHOTS="$out" \
      TEST_RUNNER_OMNI_UITEST_THEME="$theme" TEST_RUNNER_OMNI_UITEST_VARIANT="$variant" TEST_RUNNER_OMNI_UITEST_PLATFORM="$platform" TEST_RUNNER_OMNI_UITEST_MANUAL="${OMNI_UITEST_MANUAL:-0}" \
      xcodebuild test -project "$HERE/Omni.xcodeproj" -scheme Omni -destination "$dest" -derivedDataPath "$DERIVED" \
-       -only-testing:"$ONLY" ${extra[@]+"${extra[@]}"} -parallel-testing-enabled NO -collect-test-diagnostics never \
+       ${extra[@]+"${extra[@]}"} -parallel-testing-enabled NO -collect-test-diagnostics never \
        OMNI_BUNDLE_SUFFIX=.uitest >"$log" 2>&1; then
     grep -E "Executed [0-9]+ tests?" "$log" | tail -1 | sed 's/^[[:space:]]*/uitest:    /'
   else

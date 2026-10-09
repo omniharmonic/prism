@@ -210,6 +210,8 @@ struct ApprovalEditSheet: View {
     let save: (ApprovalDraft) async -> Bool
     @State private var saving = false
     @Environment(\.dismiss) private var dismiss
+    /// The body's box grows with the text size.
+    @ScaledMetric private var editorHeight: CGFloat = 160
 
     var body: some View {
         NavigationStack {
@@ -217,7 +219,7 @@ struct ApprovalEditSheet: View {
                 ForEach($draft.fields) { $field in
                     Section(field.label) {
                         if field.multiline {
-                            TextEditor(text: $field.text).frame(minHeight: 160).accessibilityLabel(field.label)
+                            TextEditor(text: $field.text).frame(minHeight: editorHeight).accessibilityLabel(field.label)
                         } else {
                             // The section already names it: no second label beside the field.
                             TextField(field.label, text: $field.text).labelsHidden().accessibilityLabel(field.label)

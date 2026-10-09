@@ -219,13 +219,22 @@ class OmniUITestCase: XCTestCase {
 
     /// Scroll until the element can be tapped.
     func bring(_ target: XCUIElement) {
+        // Whole, and clear of the bar above and the message box (or tab bar) below: a button
+        // half under the box counts as hittable, but its middle is not.
+        func ready() -> Bool {
+            guard target.exists, target.isHittable else { return false }
+            let frame = target.frame
+            let box = app.textViews["composer"].firstMatch
+            let floor = box.exists && box.frame.minY > frame.minY ? box.frame.minY : app.frame.maxY - 100
+            return frame.minY >= 110 && frame.maxY <= floor - 4
+        }
         var tries = 0
-        while !(target.exists && target.isHittable), tries < 14 {
+        while !ready(), tries < 14 {
             scrollPage(down: true)
             tries += 1
         }
         tries = 0
-        while !(target.exists && target.isHittable), tries < 28 {
+        while !ready(), tries < 28 {
             scrollPage(down: false)
             tries += 1
         }

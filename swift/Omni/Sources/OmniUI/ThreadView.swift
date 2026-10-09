@@ -196,6 +196,7 @@ struct Composer<Accessory: View>: View {
     var focusOnAppear = Composer.focusesByDefault
     @ViewBuilder var accessory: Accessory
     @FocusState private var focused: Bool
+    @Environment(\.dynamicTypeSize) private var typeSize
 
     init(
         text: Binding<String>,
@@ -224,7 +225,9 @@ struct Composer<Accessory: View>: View {
             // An invisible copy of the text sets the height; the editor fills it.
             Text(text.isEmpty ? placeholder : text + (text.hasSuffix("\n") ? " " : ""))
                 .font(.body)
-                .lineLimit(1...8)
+                // Up to eight lines, then the box scrolls. Four at the accessibility text
+                // sizes, where eight would fill the screen and push Send under the keyboard.
+                .lineLimit(1...(typeSize.isAccessibilitySize ? 4 : 8))
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, 5)
                 .padding(.vertical, Self.verticalInset)

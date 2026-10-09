@@ -132,7 +132,7 @@ final class OmniWalkTests: OmniUITestCase {
         #if os(macOS)
         app.typeKey("f", modifierFlags: .command)
         #else
-        if !search.exists { threadList.swipeDown() }
+        for _ in 0..<30 where !search.exists { scrollPage(down: false) } // the field sits above the top of the list
         #endif
         wait(search, 10, "the search field")
         search.tap()
@@ -159,7 +159,11 @@ final class OmniWalkTests: OmniUITestCase {
         #endif
 
         // From Today into a thread.
+        see("Omni is working on", 6)
         let inFlight = app.buttons.matching(NSPredicate(format: "label CONTAINS 'Research mooring suppliers'")).firstMatch
+        #if os(iOS)
+        for _ in 0..<10 where !inFlight.exists { scrollPage(down: true) }
+        #endif
         if inFlight.waitForExistence(timeout: 5) {
             bring(inFlight)
             inFlight.tap()
@@ -340,7 +344,10 @@ final class OmniWalkTests: OmniUITestCase {
         shot("approval-revised-new-draft")
 
         press("approval.cancel")
+        // The confirmation carries a second "Cancel Draft".
         let confirm = app.buttons.matching(NSPredicate(format: "label == 'Cancel Draft'"))
+        let asked = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in confirm.count >= 2 }, object: nil)
+        XCTAssertEqual(XCTWaiter().wait(for: [asked], timeout: 8), .completed, "Cancel Draft did not ask first")
         pause(1)
         shot("approval-cancel-confirm")
         confirm.element(boundBy: confirm.count - 1).tap()
