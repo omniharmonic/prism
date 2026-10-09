@@ -118,7 +118,7 @@ export function DocumentOutline({ editor }: { editor: Editor }) {
   return <div ref={root} className="document-outline">
     <button ref={button} type="button" className="document-outline-toggle focus-ring" aria-expanded={open} aria-controls={id}
       onMouseDown={event => event.preventDefault()} onClick={() => setOpen(value => !value)}>
-      <ListTree size={15} aria-hidden="true" /> Outline
+      <ListTree size={15} aria-hidden="true" /> <span>Outline</span>
     </button>
     {open && <nav id={id} aria-label="Document outline" className="document-outline-popover" data-beside={fit ? "" : undefined} style={fit ? { width: fit } : undefined}>
       <div className="document-outline-title">On this page</div>

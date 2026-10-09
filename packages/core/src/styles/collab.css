@@ -120,3 +120,13 @@ span[data-suggestion="delete"][data-color="#ef4444"] { color: var(--color-danger
 .prism-comment-icon { display: inline-flex; align-items: center; justify-content: center; min-width: 28px; min-height: 28px; border-radius: 6px; }
 .prism-comment-icon:hover:not(:disabled) { background: var(--glass-hover); }
 @media (max-width: 767px), (pointer: coarse) { .prism-comment-input { font-size: 16px; } }
+
+/* Editing-chrome pass: in the live page the chrome row, the review strip and the suggest note share
+   the text column's edges (they spanned the whole page, 140 px left of the title on a wide window).
+   The row's first icon sits on the text edge: the buttons' own padding is taken back. */
+.collab-document-body > :is(.document-formatting-bar, .prism-suggestion-review, .prism-review-complete, .prism-suggest-banner) { max-width: var(--content-measure); margin-left: auto; margin-right: auto; }
+.collab-document-body > .document-formatting-bar { margin-bottom: 8px; }
+.collab-document-body > .document-formatting-bar > .document-formatting-entry { padding-left: 0; padding-right: 0; }
+.collab-document-body > .document-formatting-bar:not([data-chrome]) .document-formatting-navigation { margin-left: -7px; }
+.collab-document-body > .document-formatting-bar .document-formatting-commands { padding-left: 0; padding-right: 0; margin-left: -6px; }
+.collab-document-body > .document-formatting-bar .document-formatting-preference { padding-left: 0; }

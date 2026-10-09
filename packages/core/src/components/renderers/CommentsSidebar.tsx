@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type * as Y from "yjs";
 import type { Editor } from "@tiptap/react";
-import { MessageSquarePlus, Check, Trash2, Pencil } from "lucide-react";
+import { MessageSquare, MessageSquarePlus, Check, Trash2, Pencil } from "lucide-react";
 import { useThreads, addReply, setResolved, deleteThread, type Thread, type CommentItem } from "../../editor/comments";
 import { MentionText, useCommentMentionPicker } from "../../lib/tiptap/MentionText";
 import { PageNotificationLevelButton } from "../inbox/PageNotificationLevel";
@@ -360,6 +360,21 @@ function DeleteButton({ confirm, setConfirm, onDelete, label = "Delete comment" 
   return (
     <button ref={button} onClick={() => setConfirm(true)} onBlur={() => setConfirm(false)} title={label} aria-label={label} className="p-1 rounded prism-comment-icon" style={{ color: "var(--text-muted)" }}>
       <Trash2 size={14} />
+    </button>
+  );
+}
+
+/**
+ * The Comments item of a page's chrome row (a phone; see `FormattingBar`): the ONE comments entry
+ * point there. It opens the host's comments drawer and carries the number of open threads — the
+ * page's own and the ones anchored to text.
+ */
+export function CommentsRowButton({ ydoc, open, onToggle }: { ydoc: Y.Doc; open: boolean; onToggle: () => void }) {
+  const count = useThreads(ydoc).filter((t) => !t.resolved).length;
+  return (
+    <button type="button" className="document-chrome-action focus-ring" aria-label={count ? `Comments (${count} open)` : "Comments"} title="Comments"
+      aria-expanded={open} onClick={onToggle}>
+      <MessageSquare size={15} aria-hidden="true" />{count > 0 && <span aria-hidden="true">{count}</span>}
     </button>
   );
 }

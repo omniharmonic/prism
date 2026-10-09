@@ -12,7 +12,6 @@
 .document-outline-link:hover { background: var(--glass-hover); color: var(--text-primary); }
 @media (hover: none) { .document-outline-link { opacity: 1; } }
 .document-outline-popover > p { margin: 6px 10px; font-size: 12px; color: var(--text-muted); }
-.document-outline-readonly { padding: 3px 8px; border-bottom: 1px solid var(--glass-border); }
 @media (max-width:767px) { .document-outline-toggle, .document-outline-go { min-height: 44px; } .document-outline-link { width: 44px; opacity: 1; } }
 
 /* NP-PG-11: the section being read. */

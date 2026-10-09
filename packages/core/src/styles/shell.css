@@ -159,7 +159,8 @@ html[data-page-width="wide"] #workspace-document:not([data-page-full="true"]) { 
 /* While the phone keyboard toolbar is up, the editor gains scroll room below
    its last line (inside its own scroller, so no container shrinks) and the
    caret can always be scrolled clear of the toolbar + keyboard. */
-.prose-editor[contenteditable="true"] { padding-bottom: var(--keyboard-toolbar-space, 0px); }
+/* Also a page that cannot be edited: a reader's selection actions dock in the same row (KeyboardToolbar). */
+.prose-editor[contenteditable] { padding-bottom: var(--keyboard-toolbar-space, 0px); }
 
 /* One-action New page with the type chooser beside it (NP-SB-13). */
 .workspace-new-page-row { display: flex; gap: 1px; }

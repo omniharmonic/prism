@@ -31,11 +31,16 @@ export function CollabToolbar({
   suggesting = false,
   onSetSuggesting,
   canReview = false,
+  status,
+  trailing,
 }: {
   editor: Editor;
   suggesting?: boolean;
   onSetSuggesting?: (on: boolean) => void;
   canReview?: boolean;
+  /** The page's chrome row (a phone): see `FormattingBar`. */
+  status?: React.ReactNode;
+  trailing?: React.ReactNode;
 }) {
   const c = () => editor.chain().focus();
 
@@ -84,12 +89,13 @@ export function CollabToolbar({
   const Sep = () => <span style={{ width: 1, height: 18, background: "var(--glass-border)", margin: "0 2px" }} />;
 
   return (
-    <FormattingBar navigation={<DocumentOutline editor={editor} />} reviewControls={(onSetSuggesting || canReview || suggesting) && (
+    <FormattingBar status={status} trailing={trailing} navigation={<DocumentOutline editor={editor} />} reviewControls={(onSetSuggesting || canReview || suggesting) && (
         <div style={{ display: "flex", alignItems: "center", gap: 4, flexShrink: 0 }}>
           {onSetSuggesting ? (
             <button
               type="button"
               title={suggesting ? "Suggesting — your changes are tracked" : "Switch to suggesting"}
+              className="document-mode-toggle"
               onMouseDown={(e) => e.preventDefault()}
               onClick={() => onSetSuggesting(!suggesting)}
               style={{
