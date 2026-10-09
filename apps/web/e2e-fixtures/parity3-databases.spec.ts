@@ -154,11 +154,16 @@ test("NP-DB-08: the URL editor stores a link and the cell opens it", async ({ pa
   await page.keyboard.press("Enter");
   expect((await writes(page)).at(-1)).toEqual({ id: "t5", set: { link: null }, expect: { link: "https://example.test/pricing" } });
   await expect(empty.getByRole("link")).toHaveCount(0);
-  // Something that is not a web address never becomes a clickable link.
+  // Something that is not a web address is refused beside the cell: never stored, never a link.
+  const before = (await writes(page)).length;
   await empty.getByRole("button", { name: "Link: Empty" }).click();
   await page.getByRole("textbox", { name: "Link", exact: true }).fill("javascript:alert(1)");
   await page.keyboard.press("Enter");
+  await expect(empty.getByRole("alert")).toContainText("That isn’t a web address");
+  expect((await writes(page)).length).toBe(before);
   await expect(empty.getByRole("link")).toHaveCount(0);
+  await page.keyboard.press("Escape");
+  await expect(empty.getByRole("button", { name: "Link: Empty" })).toBeVisible();
 });
 
 /** NP-DB-20 · "Every row opens as a normal page with … the body editable." */

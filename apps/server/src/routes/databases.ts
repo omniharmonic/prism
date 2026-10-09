@@ -61,6 +61,8 @@ import {
   coerceCsvValue,
   isStructuredValue,
   refuseStructuredWrite,
+  validateStructuredValue,
+  sameTopShape,
   scalarText,
   STRUCTURED_HINT,
   CsvError,
@@ -95,6 +97,7 @@ import {
   validateSchemaPatch,
   mergeFieldHints,
   planRelationTargets,
+  sortOptionOrders,
   relationTargetOf,
   type FieldHints,
   type MeResolver,
@@ -247,6 +250,9 @@ function present(schema: TagSchema | undefined, hints: Record<string, FieldHints
   for (const [k, h] of Object.entries(hints ?? {})) fields[k] = { ...(fields[k] ?? {}), ...h };
   return { description: schema?.description ?? null, fields, ...(pinned?.length ? { pinned } : {}) };
 }
+
+/** {@link present} under a name the query handler (which has its own `present` for rows) can use. */
+const presentSchema = present;
 
 // Hints for the assignment hooks (S5): every property write used to scan + parse
 // every schema-ui row. Cached per vault (tag → hints), dropped by the one writer of
@@ -1178,8 +1184,24 @@ databasesApi.post("/query", async (c) => {
   const refused = (spec.aggregates ?? []).filter((a) => hiddenKey(a.key));
   if (spec.aggregates) spec.aggregates = spec.aggregates.filter((a) => !hiddenKey(a.key));
   if (spec.groupBy && hiddenKey(spec.groupBy.key)) delete spec.groupBy;
+  // A select / status column sorts by the order of its OPTIONS (the `optionOrder` hint,
+  // else the declared enum), not by its stored text. The order comes from the schemas
+  // this server already caches; if they cannot be read the sort falls back to the value.
+  let optionOrders: Record<string, string[]> | undefined;
+  const sortKeys = (spec.sort ?? []).map((s) => s.key).filter(isFieldKey);
+  if (sortKeys.length) {
+    try {
+      const vault = await vaultSchemas(entry);
+      const hints = cachedHints(entry.id);
+      const merged = new Map<string, TagSchema>();
+      for (const t of spec.tags) if (vault.has(t) || hints.has(t)) merged.set(t, presentSchema(vault.get(t), hints.get(t)));
+      optionOrders = sortOptionOrders(spec.tags, merged, sortKeys);
+    } catch {
+      optionOrders = undefined;
+    }
+  }
   try {
-    const page = runQuery(visible.slice(0, cap), spec, { limited: !owner, truncated, ...(usesMe ? { me: isMe } : {}) });
+    const page = runQuery(visible.slice(0, cap), spec, { limited: !owner, truncated, ...(usesMe ? { me: isMe } : {}), ...(optionOrders ? { optionOrders } : {}) });
     // A calculation that is not answered is answered NULL, never left out (a client
     // waiting for the key would wait forever) — the same constant for every caller.
     for (const set of refused.length ? [page.aggregates, ...(page.groups ?? []).map((g) => g.aggregates)] : []) {
@@ -1237,7 +1259,11 @@ function parseWrite(set: unknown, expect: unknown): { error: string } | { entrie
  * per-field CAS → 409, vault `if_updated_at` retried once, writer stamp,
  * `markReconciled` for a live doc. Leaves listing-cache eviction to the caller.
  */
-async function writeProperties(actor: Actor, entry: VaultEntry, id: string, entries: Array<[string, unknown]>, expected: Array<[string, unknown]>, via: ReturnType<typeof requestVia>): Promise<WriteOutcome> {
+async function writeProperties(
+  actor: Actor, entry: VaultEntry, id: string, entries: Array<[string, unknown]>, expected: Array<[string, unknown]>, via: ReturnType<typeof requestVia>,
+  /** `structured`: the write comes from the structured route — one key, a validated list / object, `expect` required. */
+  opts: { structured?: boolean } = {},
+): Promise<WriteOutcome> {
   const vc = vaultClient(entry.id);
   const patch = stampMetadata(Object.fromEntries(entries), actor)!;
   for (let attempt = 0; attempt < 2; attempt++) {
@@ -1268,7 +1294,10 @@ async function writeProperties(actor: Actor, entry: VaultEntry, id: string, entr
     // route — not by text, not by a clear: the route carries text / numbers / lists of text
     // only (`validValue`), so nothing written here could put the objects back. Checked
     // against the value STORED now, whatever the client believed it was editing.
-    const structured = refuseStructuredWrite(Object.fromEntries(entries), note.metadata ?? {});
+    // The ONE exception is the structured route (`POST /properties/:id/structured`): it carries
+    // the whole list / object back in its own shape, validated, and only over the exact value
+    // the editor loaded (the compare-and-set below is mandatory there).
+    const structured = opts.structured ? [] : refuseStructuredWrite(Object.fromEntries(entries), note.metadata ?? {});
     if (structured.length) return { ok: false, id, status: 400, error: "structured_value", reason: STRUCTURED_HINT, fields: structured };
     // Per-field compare-and-set: a property someone else changed since the client
     // read it is a conflict; edits to OTHER fields (or the body) are not.
@@ -1303,7 +1332,8 @@ async function writeProperties(actor: Actor, entry: VaultEntry, id: string, entr
     if (entries.some(([k]) => k === "title")) void tellPagesChanged(entry.id, [updated.id]);
     // NP-CO-16: people ADDED to a person property hear about it (after the write
     // landed; fire-and-forget — never part of the response).
-    notifyAssignments(actor, entry, note, Object.fromEntries(entries), via);
+    // (A structured value is not an assignment list: its items are objects, not people.)
+    if (!opts.structured) notifyAssignments(actor, entry, note, Object.fromEntries(entries), via);
     const metadata: Record<string, unknown> = { ...(actor.kind === "link" ? stripIdentity(updated.metadata ?? {}) : updated.metadata ?? {}) };
     if (!isAdmin(actor)) for (const k of ACCESS_KEYS) delete metadata[k];
     return { ok: true, id: updated.id, updatedAt: updated.updatedAt, metadata };
@@ -1403,6 +1433,59 @@ databasesApi.post("/properties/batch", bodyLimit({ maxSize: 512 * 1024, onError:
   });
   c.header("Cache-Control", "private, no-store");
   return c.json({ results: out }, results.every((r) => r.ok) ? 200 : 207);
+});
+
+/**
+ * POST /api/properties/:id/structured {key, value, expect}
+ *   → 200 {id, updatedAt, metadata} — the structured-value editor's write.
+ *
+ * A property that holds OBJECTS (`members: [{name, role}]`) is refused by every other
+ * property route (400 `structured_value`): they carry text, numbers and lists of text,
+ * and would flatten it. This route is how it IS edited — safely:
+ *
+ *  - `value` is the WHOLE new value, in its own shape: a list or an object, JSON only,
+ *    bounded (`validateStructuredValue`: ≤ 64 KB, depth ≤ 8, ≤ 5,000 nodes, ≤ 500 items,
+ *    no prototype-named key). A list stays a list, an object an object (`shape_mismatch`).
+ *  - `expect` is REQUIRED and must be the structured value the editor loaded: the write
+ *    lands only if exactly that is still stored (per-field compare-and-set, key order
+ *    included) — else 409 `{fields: [key], current}` like `POST /properties/:id`. So a
+ *    plain value can never be turned into objects here, and a concurrent change (an
+ *    ingester rewriting the list) is never overwritten blind.
+ *  - Everything else is `writeProperties`: strict note id, view → 404, edit → 403, the
+ *    access / ingest / system-note / lock / trash rules, the vault `if_updated_at` retry,
+ *    the writer stamp, `markReconciled` for a live document. One key per request.
+ */
+databasesApi.post("/properties/:id/structured", bodyLimit({ maxSize: 256 * 1024, onError: (c) => c.json({ error: "too_large" }, 413) }), async (c) => {
+  const actor = resolveActor(c);
+  if (actor.kind === "anon") return c.json({ error: "unauthorized" }, 401);
+  const csrf = csrfRefusal(c, requestVia(c));
+  if (csrf) return csrf;
+  const id = c.req.param("id");
+  if (!id || !isNoteId(id)) return c.json({ error: "not_found" }, 404);
+  const body = (await c.req.json().catch(() => null)) as { key?: unknown; value?: unknown; expect?: unknown } | null;
+  if (!body || typeof body !== "object" || Array.isArray(body)) return c.json({ error: "bad_request", detail: "body must be {key, value, expect}" }, 400);
+  const key = body.key;
+  if (!isFieldKey(key) || isSystemKey(key)) return c.json({ error: "bad_request", detail: "not a property" }, 400);
+  if (!Object.hasOwn(body, "expect") || !isStructuredValue(body.expect)) {
+    return c.json({ error: "bad_request", detail: "expect must be the structured value being edited" }, 400);
+  }
+  const invalid = validateStructuredValue(body.value);
+  if (invalid) return c.json({ error: "unsupported_value", detail: invalid }, 400);
+  if (!sameTopShape(body.value, body.expect)) return c.json({ error: "shape_mismatch", detail: "a list stays a list and an object stays an object" }, 400);
+  const wait = consumeWriteBudget(actor, 1);
+  if (wait !== null) {
+    c.header("Retry-After", String(wait));
+    return c.json({ error: "rate_limited", retryAfter: wait }, 429);
+  }
+  const entry = entryFor(c, actor);
+  const out = await writeProperties(actor, entry, id, [[key, body.value]], [[key, body.expect]], requestVia(c), { structured: true });
+  if (!out.ok) {
+    const { ok: _ok, status, id: _id, ...rest } = out;
+    return c.json(rest, status);
+  }
+  evictVaultListings(entry);
+  c.header("Cache-Control", "private, no-store");
+  return c.json({ id: out.id, updatedAt: out.updatedAt, metadata: out.metadata });
 });
 
 databasesApi.post("/properties/:id", async (c) => {
@@ -1536,6 +1619,14 @@ databasesApi.post("/databases/import/csv", bodyLimit({ maxSize: IMPORT_MAX_BYTES
     return vaultFailure(c, e);
   }
   const fields = schema?.fields ?? {};
+  // The kind each mapped property is shown as (hint, else inferred from its type and name):
+  // a cell bound for a URL property must be a web address (`coerceCsvValue`).
+  const importHints = readHints(entry.id).get(tag) ?? {};
+  const kindOf = (key: string): PropertyKind | undefined => {
+    const f = Object.hasOwn(fields, key) ? fields[key] : undefined;
+    const h = Object.hasOwn(importHints, key) ? importHints[key] : undefined;
+    return f || h ? inferKind(key, { ...(f ?? {}), ...(h ?? {}) }) : undefined;
+  };
   const readKeyOf = (n: Note) => (keyProp === "$title" ? keyNorm(n.metadata?.title ?? n.path?.split("/").pop() ?? "") : keyNorm(n.metadata?.[keyProp]));
   const byKey = new Map<string, Note[]>();
   for (const n of existing) {
@@ -1556,7 +1647,7 @@ databasesApi.post("/databases/import/csv", bodyLimit({ maxSize: IMPORT_MAX_BYTES
         title = raw.trim().slice(0, 500);
         continue;
       }
-      const coerced = coerceCsvValue(raw, fields[key]);
+      const coerced = coerceCsvValue(raw, { ...(Object.hasOwn(fields, key) ? fields[key] : {}), kind: kindOf(key) });
       if ("error" in coerced) {
         error = `${col}: ${coerced.error}`;
         break;

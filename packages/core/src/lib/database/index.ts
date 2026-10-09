@@ -6,3 +6,5 @@ export * from "./wire";
 export * from "./convert";
 export * from "./relations";
 export * from "./structured";
+export * from "./url";
+export * from "./structuredEdit";

@@ -174,7 +174,7 @@ export function reportPendingWrites(pending: number, attention = 0): void {
 
 const WRITE_METHODS = new Set([
   "createNote", "updateNote", "deleteNote", "addTags", "removeTags", "changeTags", "createLink", "deleteLink",
-  "updateProperties", "restoreNoteVersion", "movePage", "duplicatePage", "setPageMeta", "trashPage",
+  "updateProperties", "updateStructuredProperty", "restoreNoteVersion", "movePage", "duplicatePage", "setPageMeta", "trashPage",
   "restoreFromTrash", "deleteFromTrash", "savePreferences",
 ]);
 const tracked = new WeakMap<VaultClient, VaultClient>();

@@ -9,18 +9,19 @@
  */
 import { containerTitle, leafTitle } from "../pages/containerTitle";
 import { useCallback } from "react";
-import { keepPreviousData, useInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-query";
+import { keepPreviousData, useInfiniteQuery, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { useVaultClient } from "../../data/VaultClientContext";
 import { PropertyConflictError, VaultRequestError, type PropertyWriteResult, type VaultClient } from "../../data/VaultClient";
 import { useAgentChatStore } from "../agent/chatStore";
 import { queryKeys } from "../parachute/queries";
 import type { Note } from "../types";
 import tagSchemas from "../schemas/tag-schemas.json";
-import { runQuery, type AggregateGroup, type AggregateGroupBy, type AggregateRequest, type AggregateValues, type QueryPage, type QuerySpec } from "./query";
-import { GENERIC_LEAF, type RelationTarget, type SchemaMap, type SchemaPatch, type TagSchema } from "./schema";
+import { runQuery, type AggregateGroup, type AggregateGroupBy, type AggregateRequest, type AggregateValues, type OptionOrders, type QueryPage, type QuerySpec } from "./query";
+import { GENERIC_LEAF, sortOptionOrders, type RelationTarget, type SchemaMap, type SchemaPatch, type TagSchema } from "./schema";
 import { buildRelationIndex, type RelationCandidate, type RelationIndex } from "./relations";
 import type { PropertyBatchItem, PropertyBatchResult } from "./wire";
-import { refuseStructuredWrite, StructuredValueError } from "./structured";
+import { isStructuredValue, refuseStructuredWrite, StructuredValueError } from "./structured";
+import { sameStructured, sameTopShape, validateStructuredValue } from "./structuredEdit";
 
 /** The active audience (vault/workspace/account) — part of every cache key. */
 export function useScope(): string {
@@ -42,23 +43,43 @@ const unsupported = (e: unknown) => e instanceof VaultRequestError && [404, 405,
 
 export const schemaKey = (scope: string) => ["vault", "schemas", scope] as const;
 
+type SchemasAnswer = { schemas: SchemaMap; live: boolean; canEdit: boolean };
+async function loadSchemas(client: VaultClient): Promise<SchemasAnswer> {
+  if (!client.getSchemas) return { schemas: bundledSchemas(), live: false, canEdit: false };
+  try {
+    const r = await client.getSchemas();
+    return { schemas: r.schemas, live: true, canEdit: r.canEdit === true };
+  } catch (e) {
+    if (unsupported(e)) return { schemas: bundledSchemas(), live: false, canEdit: false };
+    throw e;
+  }
+}
+
 export function useSchemas() {
   const client = useVaultClient();
   const scope = useScope();
   return useQuery({
     queryKey: schemaKey(scope),
     staleTime: 60_000,
-    queryFn: async (): Promise<{ schemas: SchemaMap; live: boolean; canEdit: boolean }> => {
-      if (!client.getSchemas) return { schemas: bundledSchemas(), live: false, canEdit: false };
-      try {
-        const r = await client.getSchemas();
-        return { schemas: r.schemas, live: true, canEdit: r.canEdit === true };
-      } catch (e) {
-        if (unsupported(e)) return { schemas: bundledSchemas(), live: false, canEdit: false };
-        throw e;
-      }
-    },
+    queryFn: () => loadSchemas(client),
   });
+}
+
+/**
+ * The option order of a spec's sorted select / status keys, for the engine when it
+ * runs HERE (a shell without the query route). The server computes the same thing from
+ * the same schemas, so a view sorts alike wherever it is evaluated. Never fails the
+ * query: without schemas the keys sort by value.
+ */
+async function fallbackOptionOrders(qc: QueryClient, client: VaultClient, scope: string, spec: QuerySpec): Promise<OptionOrders | undefined> {
+  const keys = (spec.sort ?? []).map((s) => s.key);
+  if (!keys.length) return undefined;
+  try {
+    const { schemas } = await qc.fetchQuery({ queryKey: schemaKey(scope), staleTime: 60_000, queryFn: () => loadSchemas(client) });
+    return sortOptionOrders(spec.tags, schemas, keys);
+  } catch {
+    return undefined;
+  }
 }
 
 export function useUpdateSchema() {
@@ -154,6 +175,66 @@ export function usePropertyWriter() {
     });
     void qc.invalidateQueries({ predicate: (q) => q.queryKey[0] === "vault" && q.queryKey[1] === "notes" && typeof q.queryKey[2] !== "string" });
     return result;
+  }, [client, qc, scope]);
+}
+
+/** Thrown by {@link useStructuredWriter} before anything is sent: the value cannot be stored as it is. `message` is for the person. */
+export class StructuredEditError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "StructuredEditError";
+  }
+}
+
+/** The same compare-and-set as the server route, for a shell without it: read fresh, compare the whole value, write that one key. */
+async function fallbackStructuredWrite(client: VaultClient, id: string, key: string, value: unknown, expect: unknown, expectedScope?: string): Promise<PropertyWriteResult> {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const fresh = await client.getNote(id, { fresh: true });
+    const stored = fresh.metadata && Object.prototype.hasOwnProperty.call(fresh.metadata, key) ? fresh.metadata[key] : null;
+    if (!sameStructured(stored, expect)) throw new PropertyConflictError([key], { [key]: stored ?? null });
+    try {
+      const n = await client.updateNote(id, { metadata: { [key]: value }, ifUpdatedAt: fresh.updatedAt ?? undefined }, { expectedScope });
+      return { id: n.id, updatedAt: n.updatedAt, metadata: n.metadata ?? {} };
+    } catch (e) {
+      // The note moved under us (another field, the body): look again once — the VALUE decides, not the revision.
+      if (!conflictStatus(e) || attempt) throw e;
+    }
+  }
+  throw new PropertyConflictError([key], {});
+}
+
+/**
+ * Write ONE structured property value (a list of objects, or an object) back in its own
+ * shape — the structured-value dialog's only writer. `expect` is the value the dialog
+ * loaded: the write lands only if exactly that is still stored, else
+ * {@link PropertyConflictError} carries what is stored now. Checked here before anything
+ * is sent (`validateStructuredValue`, same top shape) and again by the server on what
+ * arrives. Uses `POST /api/properties/:id/structured`; a shell or server without the
+ * route does the same compare-and-set over `getNote` + a metadata-only `updateNote`.
+ * Every OTHER property writer still refuses to touch such a value (`refuseStructuredWrite`).
+ */
+export function useStructuredWriter() {
+  const client = useVaultClient();
+  const scope = useScope();
+  const qc = useQueryClient();
+  return useCallback(async (id: string, key: string, value: unknown, expect: unknown): Promise<PropertyWriteResult> => {
+    const invalid = validateStructuredValue(value);
+    if (invalid) throw new StructuredEditError(`This can’t be saved: ${invalid}.`);
+    if (!isStructuredValue(expect) || !sameTopShape(value, expect)) throw new StructuredEditError("This can’t be saved: the value is no longer a list of items.");
+    let result: PropertyWriteResult | null = null;
+    if (client.updateStructuredProperty) {
+      try {
+        result = await client.updateStructuredProperty(id, key, value, expect);
+      } catch (e) {
+        // Only "this server has no such route" falls back; a real 404 (the page) fails the same way below.
+        if (!unsupported(e)) throw e;
+      }
+    }
+    if (!result) result = await fallbackStructuredWrite(client, id, key, value, expect, scope || undefined);
+    const written = result;
+    qc.setQueryData<Note>(queryKeys.vault.note(id), (old) => (old ? { ...old, updatedAt: written.updatedAt ?? old.updatedAt, metadata: { ...(old.metadata ?? {}), ...written.metadata, [key]: value } } : old));
+    void qc.invalidateQueries({ predicate: (q) => q.queryKey[0] === "vault" && q.queryKey[1] === "notes" && typeof q.queryKey[2] !== "string" });
+    return written;
   }, [client, qc, scope]);
 }
 
@@ -257,6 +338,7 @@ export function useReverseRelations(note: Pick<Note, "id" | "path" | "tags"> | n
 export function useDatabaseRows(spec: QuerySpec | null) {
   const client = useVaultClient();
   const scope = useScope();
+  const qc = useQueryClient();
   return useInfiniteQuery({
     queryKey: ["vault", "notes", { database: scope, spec }],
     enabled: !!spec,
@@ -276,7 +358,8 @@ export function useDatabaseRows(spec: QuerySpec | null) {
       // already permission-scoped, bounded listing.
       const notes = await client.listNotes({ tag: spec!.tags[0], limit: 5000 });
       const limited = notes.some((n) => Array.isArray(n._caps));
-      return runQuery(notes, s, { limited });
+      const optionOrders = await fallbackOptionOrders(qc, client, scope, s);
+      return runQuery(notes, s, { limited, ...(optionOrders ? { optionOrders } : {}) });
     },
   });
 }

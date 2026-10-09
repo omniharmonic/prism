@@ -1,7 +1,7 @@
 import React from "react";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { VaultClientProvider, PlatformProvider, type VaultClient, type Note } from "@prism/core";
+import { VaultClientProvider, PlatformProvider, PropertyConflictError, type VaultClient, type Note } from "@prism/core";
 import { ContextPanel } from "../../../packages/core/src/components/layout/ContextPanel";
 import { useUIStore } from "../../../packages/core/src/app/stores/ui";
 import { useAgentChatStore } from "../../../packages/core/src/lib/agent/chatStore";
@@ -71,7 +71,17 @@ const client = {
     return note;
   },
 } as unknown as VaultClient;
-Object.assign(window, { contextProperties: controls });
+// ?extra: a free property holding a web address (a URL property) and one holding OBJECTS (a structured value).
+if (params.has("extra")) {
+  note = { ...note, metadata: { ...note.metadata, website: "https://example.test/brief", reviewers: [{ name: "Ada Park", role: "lead", notes: { since: 2024 } }, { name: "Sam Rivera", role: "reader" }] } };
+  (client as VaultClient).updateStructuredProperty = async (id, key, value, expect) => {
+    await write("structured", { key, value, expect });
+    if (JSON.stringify(note.metadata?.[key] ?? null) !== JSON.stringify(expect ?? null)) throw new PropertyConflictError([key], { [key]: note.metadata?.[key] ?? null });
+    note = { ...note, metadata: { ...note.metadata, [key]: value }, updatedAt: "2026-10-02T12:00:00Z" };
+    return { id, updatedAt: note.updatedAt, metadata: { ...note.metadata } };
+  };
+}
+Object.assign(window, { contextProperties: controls, contextNote: () => note });
 function Fixture() {
   return (
     <>

@@ -469,6 +469,36 @@ export function splitPinned(props: PropertyDef[], pinned: string[]): { top: Prop
   return { top, rest: props.filter((p) => !top.includes(p)) };
 }
 
+/**
+ * The option order of each of `keys` that is a select / status / multi-select property
+ * of a database over `tags` — what the query engine sorts such a column by (`OptionOrders`
+ * in query.ts). The order is the one every picker and board shows: the `optionOrder`
+ * hint, then the remaining declared options in enum order; options no longer offered
+ * (`hiddenOptions`) follow, so a page still holding one sorts with the options, after them.
+ * The first tag that declares a key live decides, like `resolveProperties`. A key that is
+ * no option property (or has no options) is left out and sorts by its value.
+ */
+export function sortOptionOrders(tags: readonly string[], schemas: SchemaMap | ReadonlyMap<string, TagSchema>, keys: readonly string[]): Record<string, string[]> {
+  const out: Record<string, string[]> = {};
+  const schemaOf = (t: string): TagSchema | undefined =>
+    schemas instanceof Map ? schemas.get(t) : Object.prototype.hasOwnProperty.call(schemas, t) ? (schemas as SchemaMap)[t] : undefined;
+  for (const key of keys) {
+    if (Object.prototype.hasOwnProperty.call(out, key) || isPrototypeName(key)) continue;
+    for (const tag of tags) {
+      const fields = schemaOf(tag)?.fields;
+      const f = fields && Object.prototype.hasOwnProperty.call(fields, key) ? fields[key] : undefined;
+      if (!f || f.deleted) continue;
+      const def = propertyFromField(key, f, tag);
+      if (def.kind === "select" || def.kind === "status" || def.kind === "multi_select") {
+        const order = [...def.options.map((o) => o.value), ...(def.hiddenOptions ?? [])];
+        if (order.length) out[key] = order;
+      }
+      break;
+    }
+  }
+  return out;
+}
+
 /** Keys hidden everywhere for a page with these tags: deleted by one of them and declared LIVE by none. */
 export function deletedKeys(tags: string[], schemas: SchemaMap): Set<string> {
   const out = new Set<string>();

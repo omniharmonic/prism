@@ -1,5 +1,6 @@
 import { useState, useCallback, useEffect, useMemo, useRef } from "react";
-import { isStructuredValue, scalarText, STRUCTURED_HINT, structuredItems, valueText } from "../../lib/database/structured";
+import { isStructuredValue, scalarText, structuredItems, valueText } from "../../lib/database/structured";
+import { StructuredValueDialog } from "../database/StructuredValueDialog";
 import { invoke } from "@tauri-apps/api/core";
 import { Plus, X, RefreshCw, Cloud, Trash2, Check, AlertTriangle, ChevronDown, ChevronRight, GitFork } from "lucide-react";
 import type { Note, ContentType } from "../../lib/types";
@@ -21,7 +22,8 @@ import { addSyncConfig, removeSyncConfig, syncStatusFromNote, SERVER_NOTE_SYNC_A
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { PropertyBar } from "../database/PropertyBar";
 import { useSchemas } from "../../lib/database/hooks";
-import { resolveProperties } from "../../lib/database/schema";
+import { inferKind, resolveProperties } from "../../lib/database/schema";
+import { normalizeUrlValue, URL_INVALID_HINT } from "../../lib/database/url";
 
 import { formatDate as fmtDate } from "../../lib/datetime/format";
 interface MetadataPanelProps {
@@ -275,6 +277,7 @@ function EditableMetadata({ note, scope }: MetadataPanelProps & {scope:string|nu
             <PropertyRow
               key={key}
               fieldName={key}
+              noteId={note.id}
               value={meta[key]}
               allNotesForTag={null}
               onChange={(val) => handleMetadataFieldChange(key, val)}
@@ -394,6 +397,7 @@ function CollapsibleTagSection({
             <PropertyRow
               key={field.name}
               fieldName={field.name}
+              noteId={note.id}
               value={meta[field.name]}
               allNotesForTag={notesWithTag || null}
               onChange={(val) => onFieldChange(field.name, val)}
@@ -411,11 +415,14 @@ function CollapsibleTagSection({
 
 function PropertyRow({
   fieldName,
+  noteId,
   value,
   allNotesForTag,
   onChange,
 }: {
   fieldName: string;
+  /** The page the value belongs to: a structured value is edited (and written) for it. */
+  noteId: string;
   value: unknown;
   allNotesForTag: Note[] | null;
   onChange: (value: unknown) => Promise<void>;
@@ -433,10 +440,29 @@ function PropertyRow({
     try { await onChange(next); return true; } catch { setError("Not saved. Your value is kept; try again."); return false; }
     finally { pending.current=false;setBusy(false); }
   }
-  const failure = error ? <span role="alert" className="prism-context-field-error">{error}<button type="button" onClick={()=>void save(attempted.current)}>Retry</button></span> : null;
+  /** The error is about the text typed (not a web address): fixed by typing, so there is nothing to retry. */
+  const [invalid, setInvalid] = useState(false);
+  const failure = error ? <span role="alert" className="prism-context-field-error" data-invalid={invalid || undefined}>{error}{!invalid && <button type="button" onClick={()=>void save(attempted.current)}>Retry</button>}</span> : null;
+  // A free property whose value is a web address is a URL property everywhere (`inferKind`):
+  // here too it takes web addresses only — normalised or refused beside the field (`url.ts`).
+  const isUrl = typeof value === "string" && inferKind(fieldName, undefined, value) === "url";
+  const saveText = (text: string) => {
+    if (isUrl && text.trim() !== "") {
+      const url = normalizeUrlValue(text);
+      if (url === null) { setInvalid(true); setError(URL_INVALID_HINT); return; }
+      setInvalid(false);
+      if (url === value) { setError(""); setDraft(url); return; }
+      void save(url);
+      return;
+    }
+    setInvalid(false);
+    void save(text);
+  };
 
 
   const structured = isStructuredValue(value);
+  const [editingStructured, setEditingStructured] = useState(false);
+  const structuredOpener = useRef<HTMLButtonElement | null>(null);
 
   // Discover unique values if we have sibling notes
   const uniqueValues = useMemo(() => {
@@ -459,7 +485,9 @@ function PropertyRow({
         <ul className="text-xs space-y-0.5" aria-label={label} style={{ color: "var(--text-primary)" }}>
           {structuredItems(value).map((it, i) => <li key={i}>{it.text}</li>)}
         </ul>
-        <p className="text-[11px] mt-1" style={{ color: "var(--text-muted)" }}>{STRUCTURED_HINT}</p>
+        {/* Edited in its own dialog (rows = items), which writes the list back in the same shape. */}
+        <button type="button" className="db-structured-edit focus-ring" style={{ marginLeft: 0, marginTop: 4 }} aria-haspopup="dialog" aria-label={`Edit ${label}`} onClick={(e) => { structuredOpener.current = e.currentTarget; setEditingStructured(true); }}>Edit…</button>
+        {editingStructured && <StructuredValueDialog noteId={noteId} propertyKey={fieldName} label={label} value={value} opener={structuredOpener.current} onClose={() => setEditingStructured(false)} />}
       </div>
     );
   }
@@ -555,8 +583,10 @@ function PropertyRow({
       <input
         aria-label={label} disabled={busy}
         value={draft}
-        onChange={(e) => setDraft(e.target.value)}
-        onBlur={() => {if(draft!==strValue)void save(draft);}}
+        aria-invalid={invalid || undefined}
+        inputMode={isUrl ? "url" : undefined}
+        onChange={(e) => { setDraft(e.target.value); if (invalid) { setInvalid(false); setError(""); } }}
+        onBlur={() => {if(draft!==strValue)saveText(draft);}}
         onKeyDown={e=>{if(e.key==="Enter"&&!e.nativeEvent.isComposing){e.preventDefault();e.currentTarget.blur();}}}
         className="flex-1 h-6 rounded px-1.5 text-xs outline-none min-w-0"
         style={{
