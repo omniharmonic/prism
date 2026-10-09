@@ -5,6 +5,7 @@
  * what a copy carries, what is skipped (and only counted), limits before any write,
  * idempotent retry, re-pointed links, a failure midway, files.
  */
+import { probed } from "./probe";
 import { test, beforeEach, afterEach } from "node:test";
 import { createHash } from "node:crypto";
 import assert from "node:assert/strict";
@@ -708,11 +709,11 @@ test("S3: a 6 MB subtree is copied without holding the event loop; a body over 1
   const huge = '<p><span data-suggestion="insert">pending</span>kept</p>' + "<p>filler text</p>".repeat(70_000);
   assert.ok(Buffer.byteLength(huge) > 1_000_000);
   fv.put({ id: "huge", path: "Big/Root/Zz huge", content: huge });
-  let worst = 0;
-  let last = performance.now();
-  const probe = setInterval(() => { const now = performance.now(); worst = Math.max(worst, now - last - 5); last = now; }, 5);
-  let r: Response;
-  try { r = await dup("bigroot", OWNER); } finally { clearInterval(probe); }
+  // The loop's worst stall in CPU time of this thread (./probe): what the copy itself held, whatever the machine is doing.
+  const run = await probed(() => dup("bigroot", OWNER));
+  if (run.error) throw run.error;
+  const r = run.value!;
+  const worst = run.maxLagMs;
   assert.equal(r.status, 200, await r.clone().text());
   const out = await json(r);
   assert.deepEqual([out.created, out.uncleaned], [32, 1]);

@@ -13,6 +13,8 @@
  *    owner passthrough and the non-owner route alike; metadata writes, plain notes,
  *    current clients and in-process MCP dispatches pass.
  */
+// Timed in CPU time of this thread (./probe), never on the wall clock: the figure is the work, not the machine's load.
+import { threadCpuMs } from "./probe";
 import { test, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { createServer, type Server } from "node:http";
@@ -255,9 +257,9 @@ test("L1: markers are read the way an HTML parser reads them — quotes, case an
     assert.equal(needsEditorUpdate(html), false, html);
   }
   // Linear on a pathological body.
-  const t = performance.now();
+  const t = threadCpuMs();
   needsEditorUpdate("<p>" + "data-type ".repeat(200_000) + "</p>" + "<details".repeat(100_000));
-  assert.ok(performance.now() - t < 500);
+  assert.ok(threadCpuMs() - t < 500);
 });
 
 test("in-process MCP dispatches (agents) are exempt", async () => {

@@ -5,6 +5,8 @@
  * surface prints `[object Object]`, nothing throws on a hostile object, and no
  * property route / CSV import ever replaces objects with text.
  */
+// Timed in CPU time of this thread (./probe), never on the wall clock: the figure is the work, not the machine's load.
+import { threadCpuMs } from "./probe";
 import { test, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import {
@@ -77,10 +79,10 @@ test("formatter: hostile and huge values are bounded and never throw", () => {
   for (let i = 0; i < 5000; i++) deep = { wrap: deep };
   assert.doesNotThrow(() => valueText(deep));
   const wide = Array.from({ length: 200_000 }, (_, i) => ({ name: `n${i}`, role: "x".repeat(50) }));
-  const t0 = performance.now();
+  const t0 = threadCpuMs();
   const text = valueText(wide);
   const items = structuredItems(wide);
-  assert.ok(performance.now() - t0 < 200, "bounded work on a 200k-item list");
+  assert.ok(threadCpuMs() - t0 < 200, "bounded work on a 200k-item list");
   assert.ok(text.length <= 160 && items.length <= 50);
   const fat = Object.fromEntries(Array.from({ length: 50_000 }, (_, i) => [`k${i}`, { a: i }]));
   assert.ok(valueText(fat).length <= 160);
@@ -126,11 +128,11 @@ test("engine: sort, filter, search, group and count over object values do not th
 
 test("engine: linear on object values", () => {
   const many = Array.from({ length: 20_000 }, (_, i) => row(`r${i}`, [{ name: `Person ${i % 997}`, role: "delegate" }, { name: "Shared", role: "x" }]));
-  const t0 = performance.now();
+  const t0 = threadCpuMs();
   sortRows(many, [{ key: "members", dir: "asc" }]);
   many.filter((r) => evaluateCondition(r, { key: "members", op: "contains", value: "person 5" }));
   computeAggregates(many, [{ key: "members", fn: "count_unique" }], { key: "members" });
-  assert.ok(performance.now() - t0 < 4000, `took ${Math.round(performance.now() - t0)} ms`);
+  assert.ok(threadCpuMs() - t0 < 4000, `took ${Math.round(threadCpuMs() - t0)} ms`);
 });
 
 // ── the write rule (pure) ────────────────────────────────────────────────────

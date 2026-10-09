@@ -5,6 +5,8 @@
  * compare-and-set (`if_updated_at`, never `force`) with an undo log that undo.ts
  * replays; production URLs need --production; tokens never reach the output.
  */
+// Timed in CPU time of this thread (./probe), never on the wall clock: the figure is the work, not the machine's load.
+import { threadCpuMs } from "./probe";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -643,9 +645,9 @@ test("(g) childPageIds: a linear scan that reads rows exactly like the server's 
   assert.deepEqual(subpageLinks.childPageIds(`<div data-page-id='q1' class="x" data-type="child-page"></div>`), ["q1"]); // attribute order and quote style do not matter
   assert.deepEqual(subpageLinks.childPageIds(null), []);
   // Linear on a hostile body.
-  const t0 = performance.now();
+  const t0 = threadCpuMs();
   subpageLinks.childPageIds(`data-type="child-page"` + "<div ".repeat(200_000) + "<div data-page-id=".repeat(50_000));
-  assert.ok(performance.now() - t0 < 2000);
+  assert.ok(threadCpuMs() - t0 < 2000);
 });
 
 test("(g) planNote: links only live sub-pages that are not linked yet", () => {

@@ -2,6 +2,8 @@
  * Review fixes for wave 2C (database depth): H1 writer-stamp exposure, H2 ReDoS,
  * M1 keyed CSV re-import, M4 passthrough stamping, L1/L2/L3.
  */
+// Timed in CPU time of this thread (./probe), never on the wall clock: the figure is the work, not the machine's load.
+import { threadCpuMs } from "./probe";
 import { test, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { api } from "../src/routes/api";
@@ -173,7 +175,7 @@ test("M4: a non-owner path/tag-only write is not stamped", async () => {
 test("H2: search/eq/contains on huge pathological values stay linear (time-bounded)", () => {
   const evil = ["|".repeat(200_000) + "\nx", "a|".repeat(100_000) + "\nx", "a@" + ".".repeat(100_000) + " ", "[[" + "[".repeat(100_000), " ".repeat(200_000) + "x", "a".repeat(200_000)];
   const rows = evil.map((v, i) => ({ id: `r${i}`, path: null, tags: ["t"], createdAt: "", updatedAt: "", metadata: { title: `row ${i}`, v } }));
-  const t0 = performance.now();
+  const t0 = threadCpuMs();
   runQuery(rows, { tags: ["t"], search: "zzz" }, { limited: false });
   for (const r of rows) {
     evaluateCondition(r, { key: "v", op: "eq", value: "zzz" });
@@ -184,15 +186,15 @@ test("H2: search/eq/contains on huge pathological values stay linear (time-bound
     linkLabel(r.metadata.v);
     inferKind("v", undefined, r.metadata.v);
   }
-  const ms = performance.now() - t0;
+  const ms = threadCpuMs() - t0;
   assert.ok(ms < 1500, `took ${ms.toFixed(0)} ms`);
   // Semantics kept: [[link|alias]] still compares by its target.
   assert.equal(evaluateCondition({ id: "x", path: null, tags: [], createdAt: "", updatedAt: "", metadata: { p: "[[People/Ada|Ada L]]" } }, { key: "p", op: "eq", value: "people/ada" }), true);
   // CSV parser on pathological input.
-  const t1 = performance.now();
+  const t1 = threadCpuMs();
   parseCsv('"' + '""'.repeat(300_000) + '"', { maxCell: 1_000_000 });
   parseCsv(",".repeat(150), { maxCols: 200 });
-  assert.ok(performance.now() - t1 < 1500);
+  assert.ok(threadCpuMs() - t1 < 1500);
 });
 
 // ── M1: keyed re-import on a non-schema property converges ───────────────────
