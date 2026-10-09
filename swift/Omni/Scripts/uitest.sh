@@ -111,6 +111,8 @@ sim() { # sim <name> <device type> → UDID (created when missing, booted)
   local name="$1" type="$2" udid
   udid="$(xcrun simctl list devices -j | /usr/bin/python3 -c 'import json,sys; n=sys.argv[1]; d=json.load(sys.stdin)["devices"]; print(next((x["udid"] for v in d.values() for x in v if x["name"]==n and x.get("isAvailable")), ""))' "$name")"
   [ -n "$udid" ] || udid="$(xcrun simctl create "$name" "$type")"
+  # One of this script's simulators at a time: two at once, with a build, has run a laptop out of memory.
+  for other in $CREATED_BOOT; do [ "$other" = "$udid" ] || xcrun simctl shutdown "$other" >/dev/null 2>&1 || true; done
   if ! xcrun simctl list devices | grep "$udid" | grep -q Booted; then xcrun simctl boot "$udid" >/dev/null; CREATED_BOOT="$CREATED_BOOT $udid"; fi
   xcrun simctl bootstatus "$udid" >/dev/null 2>&1 || true
   echo "$udid"
@@ -124,8 +126,22 @@ gone_thread() {
   sqlite3 "$DB" "INSERT INTO omni_threads (id, title, state, source, created_at, last_activity_at) VALUES ('$id', 'Plan the retreat agenda', 'done', 'text', $now - 86400000, $now - 86400000);" 2>/dev/null || echo "uitest: could not add the 'no longer available' sample thread (that screen will be skipped)" >&2
 }
 
+# Wait while the Mac is short of memory (under 30% free) rather than add a build to it.
+wait_for_memory() {
+  local free n=0
+  while :; do
+    free="$(memory_pressure -Q 2>/dev/null | sed -n 's/.*free percentage: \([0-9]*\)%.*/\1/p')"
+    [ -z "$free" ] && return 0
+    [ "$free" -ge 30 ] && return 0
+    n=$((n + 1)); [ "$n" -gt 60 ] && die "memory stayed under 30% free for ten minutes — not starting a run"
+    [ "$n" = 1 ] && echo "uitest: memory is ${free}% free — waiting for 30%…" >&2
+    sleep 10
+  done
+}
+
 FAILED=0
 run() { # run <platform> <theme> <variant>
+  wait_for_memory
   local platform="$1" theme="$2" variant="$3" dest device udid="" extra=()
   case "$platform" in
     mac) dest="platform=macOS"; device="mac" ;;

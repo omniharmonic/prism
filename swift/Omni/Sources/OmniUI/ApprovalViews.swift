@@ -191,7 +191,8 @@ struct ApprovalEditSheet: View {
                         if field.multiline {
                             TextEditor(text: $field.text).frame(minHeight: 160).accessibilityLabel(field.label)
                         } else {
-                            TextField(field.label, text: $field.text).accessibilityLabel(field.label)
+                            // The section already names it: no second label beside the field.
+                            TextField(field.label, text: $field.text).labelsHidden().accessibilityLabel(field.label)
                         }
                     }
                 }
@@ -235,7 +236,9 @@ struct ReviseSheet: View {
         NavigationStack {
             Form {
                 Section("What should change?") {
-                    TextField("Make it shorter, mention Friday…", text: $feedback, axis: .vertical)
+                    // The example is a prompt inside the field, not a label beside it.
+                    TextField("What should change", text: $feedback, prompt: Text("Make it shorter, mention Friday…"), axis: .vertical)
+                        .labelsHidden()
                         .lineLimit(3...8)
                         .accessibilityLabel("What should change")
                 }

@@ -122,11 +122,14 @@ struct ThreadSections: View {
         }
         if let problem = threads.removeError {
             Label(problem, systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
         }
         if threads.agentUnavailable {
+            // The whole sentence, on as many lines as it needs (a Mac sidebar row is one line by default).
             Label("The server can't reach the agent right now. This list may be incomplete.", systemImage: "exclamationmark.triangle")
                 .font(.caption)
                 .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
         }
         if let failure = threads.phase.failure {
             VStack(alignment: .leading, spacing: 6) {
@@ -142,6 +145,7 @@ struct ThreadSections: View {
                 Text(threads.isSearching ? "No threads match that search." : "No threads yet. Start one to hand something to Omni.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
         ForEach(threads.sections) { section in

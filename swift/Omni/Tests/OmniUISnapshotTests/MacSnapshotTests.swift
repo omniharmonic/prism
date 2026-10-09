@@ -66,6 +66,7 @@ struct SampleWindow: View {
             NavigationStack {
                 DestinationView(session: session, destination: session.destination)
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .environment(\.navigator, Navigator { session.destination = $0 })
         .task { await session.threads.refresh() }
@@ -88,8 +89,10 @@ struct Walk {
         window.isReleasedWhenClosed = false
         window.appearance = NSAppearance(named: variant.dark ? .darkAqua : .aqua)
         window.title = "Omni"
-        let host = NSHostingController(rootView: view.frame(minWidth: size.width, maxWidth: size.width, minHeight: size.height, maxHeight: size.height))
+        let host = NSHostingController(rootView: view.frame(width: size.width, height: size.height))
         host.sceneBridgingOptions = [.toolbars, .title]
+        // The window sets the size, as a real one does; a view's ideal size must not stretch it.
+        host.sizingOptions = []
         window.contentViewController = host
         window.setContentSize(size)
         // In the window list so AppKit lays it out and SwiftUI runs its tasks — but fully
@@ -191,8 +194,7 @@ struct Walk {
         first.serverText = "https://prism.example.com"
         await first.submitServer()
         try await draw("sign-in", RootView(app: first))
-        first.signIn()
-        try await draw("signing-in-waiting", RootView(app: first))
+        try await draw("signing-in-waiting", RootView(app: first)) { first.signIn() }
         first.cancelSignIn()
 
         let unreachable = model(probe: .unreachable("timed out"), signedIn: false)
@@ -264,7 +266,7 @@ struct Walk {
         await settings.start()
         settings.diagnostics?.note("sign-in: finished, the device is signed in")
         settings.diagnostics?.note("server check: no answer (timed out)", isFailure: true)
-        try await draw("settings", size: CGSize(width: 620, height: 560), SettingsView(app: settings))
+        try await draw("settings", size: CGSize(width: 620, height: 680), SettingsView(app: settings))
         let signedOut = model(signedIn: false)
         await signedOut.start()
         try await draw("signed-out", RootView(app: signedOut))

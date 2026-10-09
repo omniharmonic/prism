@@ -521,7 +521,9 @@ final class TodayAndJobsTests: XCTestCase {
         XCTAssertEqual(JobPresentation.lastRun(cron), "Last run failed")
         XCTAssertTrue(JobPresentation.isPaused(cron))
         let plain: OmniJob = Fixture.decode(["id": "b", "name": "Brief", "schedule": "30 7 * * *", "next_run_at": 1_791_000_000_000 as Int64, "last_status": "ok"])
-        XCTAssertEqual(JobPresentation.schedule(plain), "30 7 * * *")
+        // A plain cron line is said in words; anything unusual stays as Hermes wrote it.
+        XCTAssertEqual(JobPresentation.cronInWords("30 7 * * *", locale: Locale(identifier: "en_US"))?.replacingOccurrences(of: "\u{202F}", with: " "), "Every day at 7:30 AM")
+        XCTAssertNotEqual(JobPresentation.schedule(plain), "30 7 * * *")
         XCTAssertEqual(JobPresentation.date(plain.nextRunAt), Date(timeIntervalSince1970: 1_791_000_000))
         XCTAssertEqual(JobPresentation.lastRun(plain), "Last run worked")
         XCTAssertNil(JobPresentation.date(nil))

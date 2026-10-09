@@ -246,10 +246,16 @@ final class OmniWalkTests: OmniUITestCase {
         pause(1)
         shot("thread-connection-dropped")
 
-        openThread(try XCTUnwrap(ids["queued"]))
+        // A tool that failed, and an answer with nothing in it.
+        openThread(try XCTUnwrap(ids["toolfail"]))
         wait(composer)
         pause(1)
-        shot("thread-queued")
+        shot("thread-tool-failed")
+
+        openThread(try XCTUnwrap(ids["empty"]))
+        wait(composer)
+        pause(1)
+        shot("thread-empty-answer")
 
         if let card = ids["card"] {
             openThread(card)
@@ -474,7 +480,8 @@ final class OmniWalkTests: OmniUITestCase {
             ids["scheduled"] = try await backend.thread("Check the forecast on Friday", "Check the marine forecast on Friday morning and tell me if the crossing is on.")
             ids["error"] = try await backend.thread("Look up the tide tables", "Look up the tide tables for Saturday. stub:error")
             ids["drop"] = try await backend.thread("Draft the packing list", "Draft the packing list for the retreat. stub:drop")
-            ids["queued"] = try await backend.thread("File the receipts", "File last month's receipts. stub:queued")
+            ids["toolfail"] = try await backend.thread("File the receipts", "File last month's receipts. stub:toolfail:sample-note-2")
+            ids["empty"] = try await backend.thread("Name the boat", "Suggest a name for the boat. stub:empty")
             // A made-up note id: the gateway builds the card without asking the vault for it.
             ids["card"] = try await backend.thread("Update the task for Dana", "Mark the call with Dana as due Friday. stub:card:sample-note-1")
             for id in ids.values { try await backend.settle(id) }
