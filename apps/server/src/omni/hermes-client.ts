@@ -1,22 +1,33 @@
 /**
  * Hermes API client (Omni module). Talks to the Hermes gateway's `api_server`
  * platform (Nous Research Hermes Agent, `gateway/platforms/api_server.py`), which
- * the Prism Server reaches on loopback with Hermes' `API_SERVER_KEY`:
+ * the Prism Server reaches on loopback with Hermes' `API_SERVER_KEY`. Shapes below are
+ * v0.20.5's, checked against a running one (`scripts/omni-contract.ts`):
  *
- *   GET    /api/sessions?limit=&offset=          → {object:"list", data:[Session], has_more}
+ *   GET    /api/sessions?limit=&offset=          → {object:"list", data:[Session], limit, offset, has_more}
+ *          Every source (Telegram, CLI, cron…), newest activity first. ARCHIVED sessions are
+ *          left out (Hermes also archives old ones by itself) — absence proves nothing.
  *   POST   /api/sessions {id?, title?}           → 201 {object:"hermes.session", session}
+ *          Our own id is accepted (409 `session_exists`). A title must be unique across ALL
+ *          sessions and ≤ 100 characters, else 400 `invalid_title`.
  *   GET    /api/sessions/{id}                    → {session}            (404 code session_not_found)
- *   PATCH  /api/sessions/{id} {title?, pinned?, archived?, unread?}
- *   GET    /api/sessions/{id}/messages?limit=&order=latest → {data:[Message]}
- *   POST   /api/sessions/{id}/chat/stream {message} → SSE `event: <name>` / `data: {…, seq, run_id}`
- *          names: run.started, message.started, assistant.delta {delta}, assistant.commentary {text},
- *          tool.started {tool_name, preview, args}, tool.completed|tool.failed {tool_name, preview},
- *          tool.progress, approval.request, assistant.completed {content}, run.completed|run.failed|
- *          run.cancelled, run.queued, error {message, code?}, done. `: keepalive` comments.
- *   POST   /v1/runs/{run_id}/stop               → {run_id, status:"stopping"}
- *   GET    /api/jobs[?include_disabled=true]     → {jobs:[Job]}
- *   GET|PATCH|DELETE /api/jobs/{id}; POST /api/jobs; POST /api/jobs/{id}/{pause,resume,run} → {job}
- * Errors are OpenAI-shaped `{error:{message,type,code}}` (jobs: `{error: "…"}`).
+ *   PATCH  /api/sessions/{id} {title?, pinned?, archived?, unread?}     (unknown key → 400)
+ *   GET    /api/sessions/{id}/messages?limit=&order=latest → {data:[Message], pagination}
+ *          The newest `limit` rows, oldest first. Tool rows carry the tool's RESULT.
+ *   POST   /api/sessions/{id}/chat/stream {message} → SSE `event: <name>` / `data: {…, seq, run_id, ts}`
+ *          names: run.started, message.started, assistant.delta {delta}, tool.progress,
+ *          tool.started {tool_name, preview, args}, tool.completed {tool_name},
+ *          assistant.completed {content}, run.completed {messages, usage}, error {message},
+ *          done. `: keepalive` every 30 s of silence. See stream.ts for what is NOT sent.
+ *   POST   /v1/runs/{run_id}/stop               → {run_id, status:"stopping"}; 404 `run_not_found`
+ *          until the run's agent exists (a few seconds after `run.started`) and once it ended.
+ *   GET    /api/jobs[?include_disabled=true]     → {jobs:[Job]}   (a paused job is disabled)
+ *   GET|PATCH|DELETE /api/jobs/{id}; POST /api/jobs {name, schedule, prompt?, skills?, deliver?};
+ *   POST /api/jobs/{id}/{pause,resume,run} → {job}. `schedule` comes back as an object
+ *   {kind, expr, display}.
+ * Errors are OpenAI-shaped `{error:{message,type,code}}`; a refused key is 401
+ * `gateway_auth_failed`. Jobs answer `{error: "…"}`, and a job Hermes will not accept
+ * (bad schedule, nothing to run) is a 500 with that text.
  *
  * SECURITY: the key comes from the environment (`omniConfig.hermesKey`) and goes ONLY
  * in the Authorization header to the configured base URL; redirects are refused (a
@@ -66,8 +77,11 @@ export interface HermesMessage {
   role: string;
   content?: unknown;
   tool_name?: string | null;
+  tool_call_id?: string | null;
   tool_calls?: unknown;
   timestamp?: number | string | null;
+  /** `hidden` = model-only scaffolding (a compaction handoff), not conversation. */
+  display_kind?: string | null;
 }
 export interface HermesJob {
   id: string;
@@ -81,6 +95,8 @@ export interface HermesStreamFrame {
   data: Record<string, unknown>;
 }
 
+/** Hermes' own limit on a session title (`SessionDB.MAX_TITLE_LENGTH`). */
+export const HERMES_TITLE_MAX = 100;
 /** Hermes session ids we accept from a client (Hermes' own mint: `api_<ts>_<hex8>`; ours: `omni_<hex>`). */
 export const SESSION_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
 /** Hermes cron job ids (`_JOB_ID_RE` in api_server.py). */
@@ -112,6 +128,11 @@ function classify(status: number, body: unknown): HermesError {
   if (status === 404) return new HermesError("not_found", 404, "not found in Hermes", hermesCode);
   if (status === 409) return new HermesError("conflict", 409, "Hermes reported a conflict", hermesCode);
   if (status >= 400 && status < 500) return new HermesError("hermes_rejected", 400, `Hermes rejected the request (${status})`, hermesCode);
+  // The cron routes answer a job they will not accept with a 500 and the reason as text
+  // (`{"error": "Invalid schedule …"}`): that is the request's fault, not an outage.
+  if (status === 500 && typeof err === "string" && /^(Invalid schedule|Cron job has nothing to run|Name |Prompt |Schedule |Repeat )/.test(err)) {
+    return new HermesError("hermes_rejected", 400, "Hermes rejected the job", "invalid_job");
+  }
   return new HermesError("hermes_unavailable", 502, `Hermes answered ${status}`, hermesCode);
 }
 
@@ -168,8 +189,22 @@ export const hermes = {
     const r = await request<{ data?: HermesSession[]; has_more?: boolean }>("GET", `/api/sessions?${q}`);
     return { sessions: Array.isArray(r?.data) ? r.data : [], hasMore: !!r?.has_more };
   },
+  /**
+   * Create the session under OUR id. The title is a convenience for Hermes' own lists: it
+   * must be unique there and short, so one Hermes refuses (`invalid_title` — say, a second
+   * "Call Dana") is dropped and the session is created untitled. The gateway keeps the
+   * thread's real title itself.
+   */
   async createSession(o: { id: string; title?: string }): Promise<HermesSession> {
-    const r = await request<{ session?: HermesSession }>("POST", "/api/sessions", { id: o.id, ...(o.title ? { title: o.title } : {}) });
+    const title = o.title?.trim().slice(0, HERMES_TITLE_MAX);
+    const create = (withTitle: boolean) => request<{ session?: HermesSession }>("POST", "/api/sessions", { id: o.id, ...(withTitle && title ? { title } : {}) });
+    let r: { session?: HermesSession };
+    try {
+      r = await create(true);
+    } catch (e) {
+      if (!(e instanceof HermesError && e.hermesCode === "invalid_title")) throw e;
+      r = await create(false);
+    }
     if (!r?.session?.id) throw new HermesError("hermes_unavailable", 502, "Hermes created no session");
     return r.session;
   },
@@ -178,25 +213,48 @@ export const hermes = {
     if (!r?.session) throw new HermesError("not_found", 404, "no such session");
     return r.session;
   },
-  async patchSession(id: string, patch: { title?: string; pinned?: boolean; archived?: boolean; unread?: boolean }): Promise<HermesSession | null> {
-    const r = await request<{ session?: HermesSession }>("PATCH", `/api/sessions/${sid(id)}`, patch);
-    return r?.session ?? null;
+  /**
+   * Change a session's flags and, when it will take it, its title. A title Hermes refuses
+   * (not unique, or too long for it) is skipped — `titleKept: false` — and the flags are
+   * still written; the gateway's own row holds the title the app shows.
+   */
+  async patchSession(id: string, patch: { title?: string; pinned?: boolean; archived?: boolean; unread?: boolean }): Promise<{ session: HermesSession | null; titleKept: boolean }> {
+    const { title, ...flags } = patch;
+    let session: HermesSession | null = null;
+    let titleKept = true;
+    if (Object.keys(flags).length) session = (await request<{ session?: HermesSession }>("PATCH", `/api/sessions/${sid(id)}`, flags))?.session ?? null;
+    if (title !== undefined) {
+      try {
+        session = (await request<{ session?: HermesSession }>("PATCH", `/api/sessions/${sid(id)}`, { title: title.slice(0, HERMES_TITLE_MAX) }))?.session ?? session;
+      } catch (e) {
+        if (!(e instanceof HermesError && e.hermesCode === "invalid_title")) throw e;
+        titleKept = false;
+      }
+    }
+    return { session, titleKept };
   },
-  async getMessages(id: string, o: { limit?: number } = {}): Promise<HermesMessage[]> {
+  async getMessages(id: string, o: { limit?: number; timeoutMs?: number } = {}): Promise<HermesMessage[]> {
     const q = new URLSearchParams({ limit: String(Math.min(500, Math.max(1, o.limit ?? 200))), order: "latest" });
-    const r = await request<{ data?: HermesMessage[] }>("GET", `/api/sessions/${sid(id)}/messages?${q}`);
+    const r = await request<{ data?: HermesMessage[] }>("GET", `/api/sessions/${sid(id)}/messages?${q}`, undefined, o.timeoutMs);
     return Array.isArray(r?.data) ? r.data : [];
   },
   /**
    * One streamed turn. Yields parsed SSE frames until Hermes ends the stream. `signal`
-   * aborts it (Hermes treats a dropped stream as an interrupt of the live run). A gap
-   * of `idleMs` with no bytes at all (Hermes sends `: keepalive`) ends it with
-   * `hermes_timeout`.
+   * aborts it. Hanging up is NOT a reliable stop: Hermes notices only at its next write,
+   * and before the run's agent exists it does not stop the run at all — use `stopRun`.
+   * A gap of `idleMs` with no bytes at all (Hermes sends `: keepalive` every 30 s) ends it
+   * with `hermes_timeout`.
    */
   async *chatStream(id: string, message: string, signal: AbortSignal, idleMs = omniConfig.streamIdleMs()): AsyncGenerator<HermesStreamFrame> {
     const { url, key } = base();
     const ac = new AbortController();
-    const onAbort = () => ac.abort();
+    let reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
+    // An abort ends the request AND the read: a body that is not bound to the request's
+    // signal would otherwise keep being read after the caller gave up.
+    const onAbort = () => {
+      ac.abort();
+      void reader?.cancel().catch(() => {});
+    };
     signal.addEventListener("abort", onAbort, { once: true });
     let idle: NodeJS.Timeout | undefined;
     let idled = false;
@@ -205,6 +263,7 @@ export const hermes = {
       idle = setTimeout(() => {
         idled = true;
         ac.abort();
+        void reader?.cancel().catch(() => {});
       }, idleMs);
     };
     arm();
@@ -232,7 +291,8 @@ export const hermes = {
         }
         throw classify(res.status, parsed);
       }
-      const reader = res.body.getReader();
+      reader = res.body.getReader();
+      if (signal.aborted) return void reader.cancel().catch(() => {});
       const dec = new TextDecoder();
       let buf = "";
       let evName = "";
@@ -247,7 +307,7 @@ export const hermes = {
             if (idled) throw new HermesError("hermes_timeout", 504, "Hermes stream went silent");
             throw new HermesError("hermes_unavailable", 502, "Hermes stream broke");
           }
-          if (chunk.done) break;
+          if (chunk.done || signal.aborted) break;
           arm();
           buf += dec.decode(chunk.value, { stream: true });
           let nl: number;
@@ -281,14 +341,27 @@ export const hermes = {
       } finally {
         reader.cancel().catch(() => {});
       }
+      // The read ended because it went silent, not because Hermes closed the stream.
+      if (idled && !signal.aborted) throw new HermesError("hermes_timeout", 504, "Hermes stream went silent");
     } finally {
       clearTimeout(idle);
       signal.removeEventListener("abort", onAbort);
     }
   },
-  async stopRun(runId: string): Promise<void> {
-    if (!RUN_ID_RE.test(runId)) return;
-    await request("POST", `/v1/runs/${enc(runId)}/stop`, {});
+  /**
+   * Ask Hermes to stop a run. `true` = accepted. `false` = Hermes does not know the run
+   * (`run_not_found`): either it already ended, or its agent is not built yet — in the
+   * first seconds after `run.started` nothing can be stopped, so the caller retries.
+   */
+  async stopRun(runId: string): Promise<boolean> {
+    if (!RUN_ID_RE.test(runId)) return false;
+    try {
+      await request("POST", `/v1/runs/${enc(runId)}/stop`, {});
+      return true;
+    } catch (e) {
+      if (e instanceof HermesError && e.code === "not_found") return false;
+      throw e;
+    }
   },
   async listJobs(includeDisabled = true): Promise<HermesJob[]> {
     const r = await request<{ jobs?: HermesJob[] }>("GET", `/api/jobs${includeDisabled ? "?include_disabled=true" : ""}`);

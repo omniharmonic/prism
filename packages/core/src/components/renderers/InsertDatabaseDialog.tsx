@@ -48,6 +48,8 @@ export function InsertDatabaseDialog({ editor, request, hostPath, onClose }: { e
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose, editor]);
 
+  /** Cancel / a press outside: the caret goes back to the document (a phone keeps its keyboard and toolbar). */
+  const cancel = () => { onClose(); if (!editor.isDestroyed) editor.commands.focus(); };
   const finish = (attrs: { noteId: string; viewId: string | null }) => {
     if (!insertDatabaseBlock(editor, request.pos, attrs)) setError("This page is no longer editable here, so the database was not added.");
     else onClose();
@@ -108,7 +110,7 @@ export function InsertDatabaseDialog({ editor, request, hostPath, onClose }: { e
     );
   return createPortal(
     <>
-      <div style={{ position: "fixed", inset: 0, zIndex: 70, background: "rgba(0,0,0,.25)" }} onClick={onClose} />
+      <div style={{ position: "fixed", inset: 0, zIndex: 70, background: "rgba(0,0,0,.25)" }} onClick={cancel} />
       <div role="dialog" aria-modal="true" aria-label={request.mode === "page" ? "New full-page database" : request.mode === "new" ? `New ${label.toLowerCase()} database` : "Link a database"} className="prism-db-insert glass-elevated">
         <h2>{request.mode === "page" ? "New full-page database" : request.mode === "new" ? `New ${label.toLowerCase()}` : `Linked ${label.toLowerCase()} of a database`}</h2>
         {request.mode !== "linked" ? (
@@ -116,7 +118,7 @@ export function InsertDatabaseDialog({ editor, request, hostPath, onClose }: { e
             <label htmlFor="prism-db-insert-tag">Rows are pages tagged</label>
             <input id="prism-db-insert-tag" ref={inputRef} value={value} onChange={(e) => setValue(e.target.value)} placeholder="task" autoComplete="off" spellCheck={false} disabled={busy} />
             <div className="prism-db-insert-actions">
-              <button type="button" className="focus-ring" onClick={onClose}>Cancel</button>
+              <button type="button" className="focus-ring" onClick={cancel}>Cancel</button>
               <button type="submit" className="prism-db-insert-primary focus-ring" disabled={busy || !value.trim()}>{busy ? "Creating…" : "Create database"}</button>
             </div>
           </form>
@@ -129,7 +131,7 @@ export function InsertDatabaseDialog({ editor, request, hostPath, onClose }: { e
               ))}
               {!databases.length && <li className="prism-db-insert-empty">No databases found.</li>}
             </ul>
-            <div className="prism-db-insert-actions"><button type="button" className="focus-ring" onClick={onClose}>Cancel</button></div>
+            <div className="prism-db-insert-actions"><button type="button" className="focus-ring" onClick={cancel}>Cancel</button></div>
           </>
         )}
         {error && <p role="alert" className="prism-db-insert-error">{error}</p>}

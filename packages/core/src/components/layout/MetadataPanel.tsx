@@ -26,6 +26,7 @@ import { inferKind, resolveProperties } from "../../lib/database/schema";
 import { normalizeUrlValue, URL_INVALID_HINT } from "../../lib/database/url";
 
 import { formatDate as fmtDate } from "../../lib/datetime/format";
+import { showMessage } from "../ui/ConfirmDialog";
 interface MetadataPanelProps {
   note: Note;
 }
@@ -994,7 +995,7 @@ function SyncSection({ noteId, metadata, notePath }: { noteId: string; metadata:
                   setSyncError((result as { message?: string }).message || "Pull failed");
                 } else {
                   queryClient.invalidateQueries({ queryKey: ["vault"] });
-                  alert("Pulled from Google Docs. Close and reopen the tab to see updated content.");
+                  void showMessage("Close and reopen the tab to see the updated content.", "Pulled from Google Docs");
                 }
               } catch (e) {
                 setSyncError(`Pull failed: ${viaServer ? hostServiceErrorText(e) : e}`);

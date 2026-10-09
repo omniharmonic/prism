@@ -260,6 +260,8 @@ test("settings sections support keyboard navigation and a failed clipboard never
         },
       },
     });
+    // The legacy fallback (lib/clipboard.ts) is refused too: nothing reaches the clipboard.
+    document.execCommand = () => false;
   });
   await page.locator("summary").filter({hasText: "Site address & membership"}).click();
   await page.getByRole("button", { name: "Copy", exact: true }).click();

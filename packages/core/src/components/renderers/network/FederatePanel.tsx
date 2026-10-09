@@ -58,6 +58,7 @@ import type { Note, TagCount } from "../../../lib/types";
 import { TagPicker } from "./TagPicker";
 
 import { formatDate as regionDate, formatDateTime as fmtDateTime } from "../../../lib/datetime/format";
+import { copyText } from "../../../lib/clipboard";
 // The full share ladder for space peer grants (4.3): "comment" was already
 // honored by permissions.ts / effectiveLevel, just never offered in the UI.
 const SPACE_LEVELS: ShareLevel[] = ["view", "comment", "suggest", "edit"];
@@ -206,24 +207,30 @@ function SectionHeader({
 }
 
 function CopyButton({ value, label }: { value: string; label?: string }) {
-  const [copied, setCopied] = useState(false);
+  const [state, setState] = useState<"idle" | "copied" | "failed">("idle");
+  const copied = state === "copied";
   return (
-    <Button
-      size="sm"
-      variant="ghost"
-      icon={copied ? <Check size={13} /> : <Copy size={13} />}
-      onClick={async () => {
-        try {
-          await navigator.clipboard.writeText(value);
-          setCopied(true);
-          setTimeout(() => setCopied(false), 1500);
-        } catch {
-          /* clipboard blocked — no-op */
-        }
-      }}
-    >
-      {label ?? (copied ? "Copied" : "Copy")}
-    </Button>
+    <span style={{ display: "inline-flex", alignItems: "center", gap: 8, flexWrap: "wrap", justifyContent: "flex-end" }}>
+      {/* Every value this button copies is shown next to it, so a refusal points there. */}
+      {state === "failed" && (
+        <span role="alert" style={{ fontSize: 12, color: "var(--color-danger, #EB5757)" }}>
+          Couldn’t copy — select it and copy it by hand.
+        </span>
+      )}
+      <Button
+        size="sm"
+        variant="ghost"
+        icon={copied ? <Check size={13} /> : <Copy size={13} />}
+        onClick={() => {
+          void copyText(value).then((ok) => {
+            setState(ok ? "copied" : "failed");
+            if (ok) setTimeout(() => setState((s) => (s === "copied" ? "idle" : s)), 1500);
+          });
+        }}
+      >
+        {label ?? (copied ? "Copied" : "Copy")}
+      </Button>
+    </span>
   );
 }
 

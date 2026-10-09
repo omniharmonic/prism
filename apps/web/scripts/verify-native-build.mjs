@@ -16,7 +16,7 @@
  * Dependency-free (node:fs + child_process).
  */
 import { readFileSync, readdirSync, statSync, existsSync } from "node:fs";
-import { execSync } from "node:child_process";
+import { execSync, spawnSync } from "node:child_process";
 import { dirname, resolve, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -97,6 +97,20 @@ for (const f of srcFiles(coreSrc)) {
   if (/(^|[^\w.])fetch\(/.test(strip(readFileSync(f, "utf8")))) bad(`@prism/core ${rel}: bare fetch() — use serverFetch (lib/transport/serverFetch.ts)`);
 }
 ok("no stray fetch() in apps/web + @prism/core server paths (see allowlist)");
+
+// 2b. no browser dialogs: the app's web view (wry, macOS + iOS) shows none of window.prompt /
+// confirm / alert — the action behind one silently does nothing (check-no-browser-dialogs.mjs).
+{
+  const run = spawnSync(process.execPath, [join(here, "check-no-browser-dialogs.mjs")], { encoding: "utf8" });
+  if (run.status === 0) ok(run.stdout.trim());
+  else bad(`browser dialogs in shipped UI:\n${(run.stderr || run.stdout).trim()}`);
+}
+// 2c. every clipboard write goes through lib/clipboard.ts `copyText` (inside the gesture, honest result).
+{
+  const run = spawnSync(process.execPath, [join(here, "check-clipboard.mjs")], { encoding: "utf8" });
+  if (run.status === 0) ok(run.stdout.trim());
+  else bad(`clipboard writes outside the helper:\n${(run.stderr || run.stdout).trim()}`);
+}
 
 // 3. host contract in source
 for (const k of ["__PRISM_HOST__", "getToken", "onUnauthorized", "apiOrigin", "signIn"]) {

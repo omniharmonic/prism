@@ -216,7 +216,7 @@ impl<R: Runtime> PrismIos<R> {
             .unwrap_or(false)
     }
 
-    /// The system share sheet for one exported file (.zip / .md / .html) under `<tmp>/prism-exports/`
+    /// The system share sheet for one exported file (.zip / .md / .html / .csv / .json) or one attached file (attachment_save.rs) under `<tmp>/prism-exports/`
     /// (the Swift side refuses any other path). `Ok(true)` = an activity completed
     /// (Save to Files, AirDrop, …); `Ok(false)` = dismissed. The caller deletes the file.
     pub async fn share_file(&self, path: &str) -> Result<bool, String> {

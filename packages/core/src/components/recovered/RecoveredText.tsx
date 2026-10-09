@@ -15,6 +15,7 @@ import { QueryClientContext } from "@tanstack/react-query";
 import { isDesktop } from "../../lib/platform";
 import { serverContextHeaders } from "../../lib/import-export/client";
 import { RecoveredError, RecoveredUnavailable, recoveredApi, setAsideReason, sizeLabel, unsavedReason, type RecoveredList, type SetAsideEntry, type UnsavedEntry } from "../../lib/recovered/client";
+import { copyText } from "../../lib/clipboard";
 
 const when = (ms: number): string => (ms > 0 ? new Date(ms).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" }) : "Unknown date");
 const btn = "focus-ring inline-flex min-h-9 items-center rounded-lg border border-[var(--glass-border)] px-3 text-xs font-medium text-[var(--text-primary)] disabled:opacity-40";
@@ -95,8 +96,8 @@ export function RecoveredText({ noteId, vaultHeaders, fallback = null, bare = fa
     }
   };
   const copy = async (body: string) => {
-    try { await navigator.clipboard.writeText(body); say("Copied."); }
-    catch { say("Copy is not available here — select the text and copy it.", true); }
+    if (await copyText(body)) say("Copied.");
+    else say("Copy is not available here — select the text and copy it.", true);
   };
   const remove = async (entry: SetAsideEntry) => {
     setBusy(true);

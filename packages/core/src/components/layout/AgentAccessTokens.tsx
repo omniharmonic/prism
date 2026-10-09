@@ -12,6 +12,8 @@ import { Input } from "../ui/Input";
 import { useAccount, type AgentToken, type CreatedAgentToken } from "../../data/Account";
 
 import { formatDate as fmtDate } from "../../lib/datetime/format";
+import { askConfirm } from "../ui/ConfirmDialog";
+import { copyText } from "../../lib/clipboard";
 const cardStyle = { border: "1px solid var(--glass-border)", borderRadius: 10, padding: 16, marginBottom: 16, background: "var(--glass-bg)" } as const;
 const labelStyle = { fontSize: 12, fontWeight: 600, color: "var(--text-secondary)", marginBottom: 6 } as const;
 const mutedStyle = { fontSize: 11.5, color: "var(--text-muted)" } as const;
@@ -38,14 +40,12 @@ const selectStyle = {
 
 function CopyBlock({ title, text }: { title: string; text: string }) {
   const [copied, setCopied] = useState(false);
+  const [failed, setFailed] = useState(false);
   const copy = useCallback(async () => {
-    try {
-      await navigator.clipboard.writeText(text);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
-    } catch {
-      /* clipboard blocked — the text is selectable */
-    }
+    const ok = await copyText(text); // starts the write before the await: still inside the click
+    setCopied(ok);
+    setFailed(!ok);
+    if (ok) setTimeout(() => setCopied(false), 1500);
   }, [text]);
   return (
     <div style={{ marginTop: 10 }}>
@@ -55,6 +55,11 @@ function CopyBlock({ title, text }: { title: string; text: string }) {
           {copied ? <Check size={12} /> : <Copy size={12} />} {copied ? "Copied" : "Copy"}
         </Button>
       </div>
+      {failed && (
+        <p role="alert" style={{ fontSize: 12, margin: "0 0 4px", color: "var(--color-danger, #EB5757)" }}>
+          Couldn’t copy — select the text below and copy it by hand.
+        </p>
+      )}
       <pre style={codeStyle}>{text}</pre>
     </div>
   );
@@ -127,7 +132,7 @@ export function AgentAccessTokens() {
 
   const revoke = useCallback(async (t: AgentToken) => {
     if (!account?.revokeAgentToken) return;
-    if (!window.confirm(`Revoke "${t.label ?? t.prefix}"? Any agent using it loses access immediately.`)) return;
+    if (!(await askConfirm({ title: `Revoke "${t.label ?? t.prefix}"?`, body: "Any agent using it loses access immediately.", confirm: "Revoke", danger: true }))) return;
     setError(null);
     try {
       await account.revokeAgentToken(t.id);

@@ -276,8 +276,11 @@ test("clipboard failure remains visible and account switch hides old summary", a
       },
     }),
   );
+  // The legacy fallback (lib/clipboard.ts) is refused too: nothing reaches the clipboard.
+  await page.evaluate(() => { document.execCommand = () => false; });
   await page.getByRole("button", { name: "Copy summary", exact: true }).click();
-  await expect(page.getByRole("alert")).toContainText("Clipboard unavailable");
+  await expect(page.getByRole("alert")).toContainText("Summary could not be copied. Select the summary text and copy it by hand.");
+  await expect(page.getByText("Summary copied", { exact: true })).toHaveCount(0);
   await page.evaluate(() => (window as any).prismMessagesFixture.switchActor());
   await expect(
     page.getByRole("region", { name: "Saved summary", exact: true }),

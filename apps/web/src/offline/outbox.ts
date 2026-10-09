@@ -562,7 +562,7 @@ interface Delivered { id?: string; updatedAt?: string; from?: Array<string | und
  * Row is delivered: remove it, learn the new revision, and re-base every later
  * queued write for the same note that was made on top of it.
  */
-async function confirm(item: QueuedWrite, result: Delivered): Promise<void> {
+async function confirmDelivered(item: QueuedWrite, result: Delivered): Promise<void> {
   const originalId = decodeURIComponent(
     item.path.match(/^\/notes\/([^/?]+)/)?.[1] ?? "",
   );
@@ -820,7 +820,7 @@ export async function flush(): Promise<void> {
         outcome = retrySafe(item) ? { ok: false, retry: true } : stuck("unknown", "The result could not be confirmed. Your saved change is preserved; it will not be sent twice automatically.");
       }
       if (outcome.ok) {
-        await confirm(item, outcome.result);
+        await confirmDelivered(item, outcome.result);
         continue;
       }
       if (outcome.retry) {

@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Copy, Check } from "lucide-react";
 import { Button } from "../../ui/Button";
 import type { SetPersonResult, ShareLevel } from "../../../data/CollabSharing";
+import { copyText } from "../../../lib/clipboard";
 
 export const ACCESS_LABELS: Record<ShareLevel, string> = {
   view: "Can view",
@@ -75,16 +76,11 @@ export function InvitationResult({
             <Button
               className="min-h-control"
               loading={copy === "pending"}
-              onClick={async () => {
+              onClick={() => {
                 setCopy("pending");
-                try {
-                  if (!navigator.clipboard)
-                    throw Error("Clipboard unavailable");
-                  await navigator.clipboard.writeText(result.inviteUrl!);
-                  setCopy("copied");
-                } catch {
-                  setCopy("failed");
-                }
+                void copyText(result.inviteUrl!).then((ok) =>
+                  setCopy(ok ? "copied" : "failed"),
+                );
               }}
             >
               {copy === "copied" ? <Check size={16} /> : <Copy size={16} />}{" "}
