@@ -70,7 +70,7 @@ Closed 2026-10-08 (`polish4/parity-quick-wins`): ~~NP-PG-05 · checkbox, URL and
 | NP-AX-01 | partial | System is built. Left: three unswept surfaces (a.2), the native launch screen on a device, S 09 / 15. |
 | NP-AX-02 | passed | — |
 | NP-AX-03 | needs-device | VoiceOver on macOS and iOS. |
-| NP-AX-04 | partial | Decision c.17 (field borders are a 1 px hairline, about 1.3 : 1). Then the unmeasured kinds in a.2. |
+| NP-AX-04 | partial | Decision c.17 is answered and built (2026-10-09: `--control-border`, every measured form control ≥ 3 : 1, asserted by `notion-a11y-contrast`). Left: the unmeasured kinds in a.2 (icons, text over images) and a look by eye at the darker field borders. |
 | NP-AX-05 | needs-device | Dynamic Type XXL on an iPhone. |
 | NP-AX-06 | needs-screenshot | S 15. |
 | NP-AX-07 | passed | — (iPad chips: slice U, not a clause of the row). |
@@ -221,7 +221,7 @@ c.1 NP-ED-05 → passed · c.2 NP-ED-06 → passed · c.5 NP-DB-12 → passed ·
 |---|---|---|---|---|
 | c.9 | NP-PG-09 | Make `prism-rw` (gateway-enforced: locks, grants, private pages) the Read-write agent profile and retire `vault-rw` for sessions? | **Yes.** Cost: no delete and no attachment tools for the agent. | passed |
 | c.11 | NP-RF-07 | A member mentioned by account (no person page) gets no backlink — accept? | **Yes.** There is no page to link to. | stays passed |
-| c.17 | NP-AX-04 | **New (2026-10-08).** Text fields, selects and custom checkboxes are drawn with the shared 1 px hairline (about 1.3 : 1 against the page; 157 of 170 measured are under 3 : 1). WCAG 1.4.11 asks 3 : 1 for a control's boundary. Raise the field border, or accept the hairline as Notion does? | **Raise it for form fields only**: a `--control-border` token at 3 : 1 used by inputs / selects / checkboxes, leaving dividers on `--glass-border`. Size M (every field style), with a screenshot review. | passed after the build and the a.2 leftovers |
+| c.17 | NP-AX-04 | **New (2026-10-08).** Text fields, selects and custom checkboxes are drawn with the shared 1 px hairline (about 1.3 : 1 against the page; 157 of 170 measured are under 3 : 1). WCAG 1.4.11 asks 3 : 1 for a control's boundary. Raise the field border, or accept the hairline as Notion does? | **Raise it for form fields only**: a `--control-border` token at 3 : 1 used by inputs / selects / checkboxes, leaving dividers on `--glass-border`. Size M (every field style), with a screenshot review. | **Answered and built 2026-10-09** as recommended: `--control-border` in `tokens.css` (both themes + print), re-pointed on form controls and on the boxes around seamless fields; 224 of 224 measured controls ≥ 3 : 1 (was 13 of 170), and `notion-a11y-contrast` now fails on any below. NP-AX-04 passes after the a.2 leftovers. |
 
 ---
 
@@ -241,6 +241,6 @@ c.1 NP-ED-05 → passed · c.2 NP-ED-06 → passed · c.5 NP-DB-12 → passed ·
 2. **Independent re-run** of the rows moved on 2026-10-08 (NP-AX-07, NP-DB-08, NP-PG-05 and the reconciled rows) by someone other than the agent that built them — Chromium + WebKit.
 3. **Device sitting** — `qa/device-pass-script.md` (about 100 minutes). It records the 33 `needs-device` rows, including embeds in the apps and native links.
 4. **Screenshot gallery** from §b.2 (43 rows), then the reviewer's pass over it.
-5. **Decisions c.9, c.11, c.17**; then slices R, T, U and the c.17 border token.
+5. **Decisions c.9, c.11** (c.17 is answered and built); then the slices still open.
 6. **Spec leftovers** of §a.2 (the NP-CO-03 real-server journey; three surfaces; WebKit for the newest specs).
 7. **Measurements** (d) on a quiet machine and a sandbox vault; production smoke b.4.
