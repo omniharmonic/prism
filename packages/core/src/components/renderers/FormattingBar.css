@@ -25,7 +25,16 @@
   box-shadow: 0 -6px 18px rgb(0 0 0 / 8%);
   animation: prism-fade-in var(--motion-fast, 120ms) ease-out;
 }
-.keyboard-toolbar-row { display: flex; align-items: center; gap: 2px; overflow-x: auto; }
+/* The software keyboard covers the home indicator: no safe-area gap between the row and the keys. */
+.keyboard-toolbar[data-keyboard="open"] { padding-bottom: 4px; }
+.keyboard-toolbar { display: flex; align-items: center; }
+.keyboard-toolbar-row { display: flex; align-items: center; gap: 2px; overflow-x: auto; flex: 1 1 0; min-width: 0; }
+/* "Dismiss keyboard" is outside the scroller: always in reach (the iOS app removes the system's own bar). */
+.keyboard-toolbar-end { flex: none; display: flex; align-items: center; margin-left: 4px; padding-left: 4px; border-left: 1px solid var(--glass-border); }
+.keyboard-toolbar-row .selection-divider { flex: none; align-self: stretch; width: 1px; margin: 8px 3px; background: var(--glass-border); }
+.keyboard-toolbar-review { font-weight: 500; color: var(--text-primary); }
+.keyboard-toolbar-review[data-tone="accept"] > svg { color: var(--color-success, #22c55e); }
+.keyboard-toolbar-review[data-tone="reject"] > svg { color: var(--color-danger, #ef4444); }
 .keyboard-toolbar-button {
   display: grid; place-items: center; flex-shrink: 0; width: 44px; height: 44px; border-radius: 8px;
   color: var(--text-secondary);
@@ -60,10 +69,11 @@ div:has(> div > .empty-page-starters) .prose-editor { min-height: 2.5em !importa
 /* w14 visual, defect 44: the row scrolls sideways — its end fades instead of cutting a button in half. */
 .keyboard-toolbar-row { scrollbar-width: none; }
 .keyboard-toolbar-row::-webkit-scrollbar { display: none; }
-.keyboard-toolbar-row::after {
-  content: ""; position: sticky; right: 0; flex: none; align-self: stretch; width: 32px; min-height: 44px; margin-left: -6px;
-  background: linear-gradient(to right, color-mix(in srgb, var(--bg-elevated) 0%, transparent), var(--bg-elevated) 70%); pointer-events: none;
-}
+/* Polish round 3: no fade over the row's end. KeyboardToolbar stretches the row's gaps so whole items
+   fill it exactly (no half icon at rest); while there is more to the right (`data-more`) a chevron
+   sits BESIDE the row. */
+.keyboard-toolbar-more { display: none; flex: none; width: 14px; place-items: center; font-size: 15px; line-height: 1; color: var(--text-muted); pointer-events: none; }
+.keyboard-toolbar[data-more] > .keyboard-toolbar-more { display: grid; }
 
 /* w14 visual, defect 14: "accept / reject all suggestions" say so. On a phone they stay icon buttons. */
 .document-review-all { display: inline-flex; align-items: center; gap: 5px; min-height: 32px; padding: 0 8px; border-radius: 7px; font-size: 12.5px; font-weight: 500; color: var(--text-secondary); white-space: nowrap; }
@@ -112,3 +122,43 @@ div:has(> div > .empty-page-starters) .prose-editor { min-height: 2.5em !importa
 .document-formatting-bar[data-reader]:not([data-chrome]) { border-bottom-color: var(--glass-border); }
 /* A reader whose selection offers nothing (no agent, no comments): no empty row. */
 .keyboard-toolbar:has(> .keyboard-toolbar-selection:empty) { display: none; }
+
+/* ── Touch: a composer opened from the selection row (Comment, Suggest edit) docks on the keyboard ──
+   It used to open under the selection, where the keyboard that its own field raises covers it.
+   `--keyboard-inset` exists only while a software keyboard is open (`lib/softKeyboard`); without one
+   it sits above the phone bottom bar. It never grows past the visible area: it scrolls inside. */
+.prism-docked-composer {
+  position: fixed; z-index: var(--z-overlay, 60); left: 8px; right: 8px; top: auto; width: auto; box-sizing: border-box;
+  bottom: calc(var(--keyboard-inset, var(--workspace-bottom-inset, 0px)) + 8px);
+  max-height: calc(var(--visual-viewport-height, 100dvh) - 16px); overflow-y: auto; overscroll-behavior: contain;
+}
+
+/* The mode button (Editing ⇄ Suggesting). Desktop: the bordered 32 px button it always was. */
+.document-mode-toggle { display: inline-flex; align-items: center; height: 32px; padding: 0 10px; border-radius: 7px; font-size: 12.5px; font-weight: 600; cursor: pointer; color: var(--text-secondary); background: transparent; border: 1px solid var(--glass-border); }
+.document-mode-toggle[data-suggesting] { color: #fff; background: #22c55e; border-color: #22c55e; }
+.document-mode-chip { display: inline-flex; align-items: center; gap: 5px; }
+
+/* ── The chrome row on a phone: ONE control height, ONE type size, even gaps ──
+   Every item is a 44 px target with the same 8 px side padding and no box of its own, so the gap
+   between two neighbours is the same everywhere and all of them share the row's centre line. The
+   mode is not a heavier, taller button than the icons beside it: "Editing" is plain text with its
+   pencil; "Suggesting" is the same size with a quiet green tint behind the words. Counts sit on
+   their icon's centre line (tabular figures, line-height 1). */
+.document-formatting-bar[data-chrome="row"] .document-formatting-entry { gap: 0; padding: 0; min-height: var(--touch-target, 44px); align-items: center; }
+.document-formatting-bar[data-chrome="row"] .document-chrome-status { gap: 7px; padding-right: 8px; font-size: 13px; line-height: 1; }
+.document-formatting-bar[data-chrome="row"] .document-chrome-trailing,
+.document-formatting-bar[data-chrome="row"] .document-review-controls > div { gap: 0 !important; }
+.document-formatting-bar[data-chrome="row"] :is(.document-outline-toggle, .document-chrome-action, .document-mode-toggle, .backlinks-pill) {
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px; box-sizing: border-box;
+  min-width: var(--touch-target, 44px); height: var(--touch-target, 44px); min-height: var(--touch-target, 44px); padding: 0 8px;
+  border: 0; border-radius: 8px; background: transparent; font-size: 13px; font-weight: 500; line-height: 1; color: var(--text-muted);
+  font-variant-numeric: tabular-nums; white-space: nowrap;
+}
+.document-formatting-bar[data-chrome="row"] :is(.document-outline-toggle, .document-chrome-action, .document-mode-toggle, .backlinks-pill) > svg,
+.document-formatting-bar[data-chrome="row"] .document-mode-chip > svg { flex: none; width: 17px; height: 17px; }
+.document-formatting-bar[data-chrome="row"] .document-mode-chip { gap: 6px; height: 28px; padding: 0 8px; margin: 0 -8px; border-radius: 7px; }
+.document-formatting-bar[data-chrome="row"] .document-mode-toggle { padding: 0 16px; color: var(--text-secondary); }
+.document-formatting-bar[data-chrome="row"] .document-mode-toggle[data-suggesting] { color: var(--text-primary); background: transparent; }
+.document-formatting-bar[data-chrome="row"] .document-mode-toggle[data-suggesting] .document-mode-chip { background: color-mix(in srgb, #22c55e 18%, transparent); }
+.document-formatting-bar[data-chrome="row"] .document-mode-toggle[data-suggesting] .document-mode-chip > svg { color: var(--color-success, #22c55e); }
+.document-formatting-bar[data-chrome="row"] :is(.document-chrome-action, .document-mode-toggle, .backlinks-pill):is(:hover, [aria-expanded=true]) { color: var(--text-primary); }

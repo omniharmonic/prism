@@ -63,7 +63,7 @@
 .keyboard-toolbar-selection .selection-ask { color: var(--color-accent); font-weight: 500; }
 .keyboard-toolbar-selection .selection-divider { flex: none; align-self: stretch; width: 1px; margin: 8px 3px; background: var(--glass-border); }
 .keyboard-toolbar .selection-dropdown { position: static; flex: none; }
-.keyboard-toolbar .selection-menu { top: auto; bottom: calc(100% + 6px); left: 6px; max-width: calc(100vw - 12px); max-height: min(340px, calc(100dvh - var(--keyboard-toolbar-space, 56px) - 16px)) !important; }
+.keyboard-toolbar .selection-menu { top: auto; bottom: calc(100% + 6px); left: 6px; max-width: calc(100vw - 12px); max-height: min(340px, calc(var(--visual-viewport-height, 100dvh) - 76px)) !important; }
 .keyboard-toolbar .selection-link-form { flex: 1; min-width: 0; min-height: 44px; flex-wrap: nowrap; }
 .keyboard-toolbar .selection-link-form input { flex: 1; width: auto; min-width: 0; min-height: 40px; font-size: 16px; }
 .keyboard-toolbar .selection-link-form button { flex: none; min-width: 44px; min-height: 44px; }

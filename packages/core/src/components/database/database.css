@@ -550,6 +550,24 @@
   /* The trailing "Updated … · Open all properties" group may wrap: at 320 px (200 % zoom on a phone)
      one line pushed its button off the screen (reflow spec). */
   .db-props-bar .db-prop-trailing { white-space: normal; flex-wrap: wrap; justify-content: flex-end; min-width: 0; max-width: 100%; }
+  /* Polish round 3 (the owner's iPhone screenshots): a tidier block.
+     - Tag chips are narrower, so two ordinary tags share a line in the value column instead of
+       taking one line each (on the phone "reference" + "research" missed by 3 px).
+     - "Add property" / "Customize…" and the trailing "Properties ›" share ONE line: the bar is two
+       columns there (everything else spans both). Where they do not fit (320 px) the left group
+       wraps inside its column; an opened "Properties" takes a full row of its own. */
+  .db-props-bar { grid-template-columns: minmax(0, 1fr) auto; column-gap: 8px; }
+  .db-props-bar > * { grid-column: 1 / -1; }
+  .db-props-bar > .db-prop-actions { grid-column: 1; align-self: center; align-items: center; min-width: 0; }
+  .db-props-bar > .db-prop-actions + .db-prop-trailing { grid-column: 2; align-self: start; margin-left: 0; min-height: var(--touch-target); }
+  .db-props-bar:has(.document-properties-disclosure[open]) > .db-prop-trailing { grid-column: 1 / -1; }
+  /* On the shared line the date gives its room to the buttons: "Updated" is the first line of "Properties". */
+  .db-props-bar > .db-prop-actions + .db-prop-trailing > time { display: none; }
+  .db-props-bar .db-prop-trailing .document-properties-disclosure > summary { min-height: var(--touch-target); }
+  /* The "×" keeps its full touch box (touch.css: 44 px) but only ~31 px of it widens the chip: it
+     starts 4 px inside the name's padding and reaches 6 px past the chip's drawn edge, into the gap. */
+  .db-props-bar .db-prop-tags .db-chips { gap: 2px 10px; }
+  .db-props-bar .db-tag .db-opt-remove { margin-left: -4px; margin-right: -9px; }
 }
 
 /* The table's "+" column and the one-step New property form (A). */

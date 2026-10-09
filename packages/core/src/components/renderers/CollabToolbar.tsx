@@ -95,26 +95,14 @@ export function CollabToolbar({
             <button
               type="button"
               title={suggesting ? "Suggesting — your changes are tracked" : "Switch to suggesting"}
-              className="document-mode-toggle"
+              className="document-mode-toggle focus-ring"
+              data-suggesting={suggesting || undefined}
               onMouseDown={(e) => e.preventDefault()}
               onClick={() => onSetSuggesting(!suggesting)}
-              style={{
-                display: "inline-flex",
-                alignItems: "center",
-                gap: 5,
-                height: 32,
-                padding: "0 10px",
-                borderRadius: 7,
-                fontSize: 12.5,
-                fontWeight: 600,
-                cursor: "pointer",
-                color: suggesting ? "#fff" : "var(--text-secondary)",
-                background: suggesting ? "#22c55e" : "transparent",
-                border: `1px solid ${suggesting ? "#22c55e" : "var(--glass-border)"}`,
-              }}
             >
-              <PencilLine size={14} />
-              {suggesting ? "Suggesting" : "Editing"}
+              {/* The look is CSS (`FormattingBar.css`): a bordered 32 px button on a desktop, a quiet
+                  item of the row's one control height on a phone. */}
+              <span className="document-mode-chip"><PencilLine size={14} aria-hidden="true" />{suggesting ? "Suggesting" : "Editing"}</span>
             </button>
           ) : suggesting ? (
             <span style={{ display: "inline-flex", alignItems: "center", gap: 5, fontSize: 12.5, fontWeight: 600, color: "#22c55e", padding: "0 6px" }}>

@@ -11,6 +11,7 @@ export * from "./shell";
 // The block editor and what is built on it.
 export { CollabEditor } from "./components/renderers/CollabEditor";
 export { CommentsSidebar, CommentsRowButton, type CommentCommandActions } from "./components/renderers/CommentsSidebar";
+export { useSoftKeyboard, type SoftKeyboard } from "./lib/softKeyboard";
 export { HumanSuggestionComposer, humanFailureText, type HumanCommandChannel } from "./components/renderers/HumanSuggestionComposer";
 export { PresenceAvatars, presentPeople, jumpToCaret, type PresentPerson, type PresenceAwareness } from "./components/sharing/PresenceAvatars";
 export { PageDiscussion } from "./components/renderers/PageDiscussion";
