@@ -109,11 +109,21 @@ struct ApprovalCardView: View {
         }
     }
 
+    /// Side by side where the whole row fits; one under another where it does not (large
+    /// text, a narrow column, a long label) — never squeezed onto two lines or cut.
     @ViewBuilder private func buttons(_ card: ApprovalCard, _ standing: ApprovalCard.Standing) -> some View {
-        // Side by side where they fit; one under another where they do not (large text, a
-        // narrow column) — never squeezed or cut.
-        let layout = buttonsFit ? AnyLayout(HStackLayout(spacing: 8)) : AnyLayout(VStackLayout(alignment: .leading, spacing: 8))
-        layout {
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 8) { actions(card, standing) }
+            VStack(alignment: .leading, spacing: 8) { actions(card, standing) }
+        }
+        #if os(iOS)
+        .buttonStyle(.bordered)
+        #endif
+        .disabled(card.isBusy)
+    }
+
+    @ViewBuilder private func actions(_ card: ApprovalCard, _ standing: ApprovalCard.Standing) -> some View {
+        Group {
             if let retry = card.retry, standing == .pending {
                 Button("Try Again") { Task { await center.retry(card.id) } }
                     .buttonStyle(.borderedProminent)
@@ -142,15 +152,10 @@ struct ApprovalCardView: View {
                     .accessibilityHint("Reads the draft from the server again")
             }
         }
-        #if os(iOS)
-        .buttonStyle(.bordered)
-        #endif
-        .disabled(card.isBusy)
+        .fixedSize()
     }
 
     @Environment(\.dynamicTypeSize) private var typeSize
-    /// Four buttons in a row fit at ordinary text sizes; from the accessibility sizes up they stack.
-    private var buttonsFit: Bool { !typeSize.isAccessibilitySize }
 
     private func header(_ standing: ApprovalCard.Standing, _ card: ApprovalCard) -> String {
         let kind = card.content.kindLabel
