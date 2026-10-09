@@ -27,7 +27,7 @@ pub fn show<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
         .always_on_top(true)
         .center()
         .focused(true)
-        .on_navigation(|url| navigation_decision(url) == NavDecision::Allow)
+        .on_navigation(|url| navigation_decision(url, false) == NavDecision::Allow)
         .on_new_window(|_url, _features| NewWindowResponse::Deny)
         .build()?;
     Ok(())

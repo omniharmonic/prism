@@ -800,11 +800,44 @@ export function CalendarView({ ctx, month, onMonth, onPickDate }: { ctx: ViewCon
 export const weekStart = (d: Date): Date => new Date(d.getFullYear(), d.getMonth(), d.getDate() - ((d.getDay() + 6) % 7));
 
 /**
+ * One day of a phone calendar: its heading with "+", the new-page form and its pages — each a
+ * 44 px row that opens the page, with the same date editor a table cell has (that is how a page
+ * is rescheduled on a phone). Shared by the week list and the month grid's chosen day.
+ */
+function AgendaDay({ ctx, dateKey: key, day: k, name, isToday, rows, adding, onAdding }: { ctx: ViewContext; dateKey: string; day: string; name: string; isToday: boolean; rows: QueryRow[]; adding: boolean; onAdding: (on: boolean) => void }) {
+  const editableKey = key !== "$createdAt";
+  const dateDef = ctx.props.find((p) => p.key === key) ?? ({ key, label: editableKey ? key : "Created", kind: "date", options: [], tag: null, multiple: false, enumValues: [] } satisfies PropertyDef);
+  const canMove = (r: QueryRow) => editableKey && !dateDef.system && ctx.canEditRow(r) && !integrationOwned(r);
+  const locked = (r: QueryRow) => editableKey && !dateDef.system && ctx.canEditRow(r) && integrationOwned(r);
+  return (
+    <>
+      <div className="db-agenda-date">
+        <h3>{name}{isToday && <span className="db-agenda-today">Today</span>}</h3>
+        {ctx.canCreate && editableKey && !adding && <button type="button" className="db-control db-agenda-nav" aria-label={`New page on ${k}`} onClick={() => onAdding(true)}><Plus size={16} aria-hidden="true" /></button>}
+      </div>
+      {adding && <NewRowForm label={`New page on ${k}`} onCreate={(t) => ctx.create(t, { [key]: k })} onCancel={() => onAdding(false)} />}
+      {rows.length ? (
+        <ul className="db-agenda-items" aria-label={name}>
+          {rows.map((r) => (
+            <li key={r.id} data-agenda-item={r.id}>
+              <button type="button" className="db-agenda-open focus-ring" onClick={(e) => ctx.open(r, e)}>{title(r)}</button>
+              <PropertyValue def={dateDef} value={propertyValue(r, key)} variant="bar" noteId={r.id} readOnly={!canMove(r)} onCommit={ctx.commit(r, dateDef)} />
+              {locked(r) && <span className="db-agenda-note">Its date is {LOCKED_WHY}.</span>}
+            </li>
+          ))}
+        </ul>
+      ) : !adding && <p className="db-agenda-empty">Nothing on this day</p>}
+    </>
+  );
+}
+
+/**
  * The calendar view on a phone (NP-AX-07): seven day columns in 390 px leave 51 px per day,
  * too little for a 44 px "+" and 44 px page chips. So a week is a LIST — one full-width row
  * per day with its pages, each with the same date editor a table cell has (that is how a
- * page is rescheduled here; dragging is the month grid's). The month grid stays one tap
- * away (`DatabaseRenderer`), and the saved view is the same either way.
+ * page is rescheduled here; dragging is the desktop month grid's). A month a thumb can use
+ * (`CalendarMonthTouch`) stays one tap away (`DatabaseRenderer`), and the saved view is the
+ * same either way.
  *
  * Rows are queried for `month`'s 6-week grid, so moving to a week outside it moves `month`.
  */
@@ -835,10 +868,6 @@ export function CalendarAgenda({ ctx, month, onMonth }: { ctx: ViewContext; mont
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ctx.rows, key, keys[0]]);
   const today = ymd(new Date());
-  const editableKey = key !== "$createdAt";
-  const dateDef = ctx.props.find((p) => p.key === key) ?? ({ key, label: editableKey ? key : "Created", kind: "date", options: [], tag: null, multiple: false, enumValues: [] } satisfies PropertyDef);
-  const canMove = (r: QueryRow) => editableKey && !dateDef.system && ctx.canEditRow(r) && !integrationOwned(r);
-  const locked = (r: QueryRow) => editableKey && !dateDef.system && ctx.canEditRow(r) && integrationOwned(r);
   const last = days[6]!;
   const range = `${start.toLocaleDateString(undefined, { month: "short", day: "numeric" })} – ${last.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })}`;
   return (
@@ -856,26 +885,85 @@ export function CalendarAgenda({ ctx, month, onMonth }: { ctx: ViewContext; mont
           const name = d.toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" });
           return (
             <li key={k} className="db-agenda-day" data-day={k} data-today={k === today || undefined} aria-current={k === today ? "date" : undefined}>
-              <div className="db-agenda-date">
-                <h3>{name}{k === today && <span className="db-agenda-today">Today</span>}</h3>
-                {ctx.canCreate && editableKey && adding !== k && <button type="button" className="db-control db-agenda-nav" aria-label={`New page on ${k}`} onClick={() => setAdding(k)}><Plus size={16} aria-hidden="true" /></button>}
-              </div>
-              {adding === k && <NewRowForm label={`New page on ${k}`} onCreate={(t) => ctx.create(t, { [key]: k })} onCancel={() => setAdding(null)} />}
-              {rows.length ? (
-                <ul className="db-agenda-items" aria-label={name}>
-                  {rows.map((r) => (
-                    <li key={r.id} data-agenda-item={r.id}>
-                      <button type="button" className="db-agenda-open focus-ring" onClick={(e) => ctx.open(r, e)}>{title(r)}</button>
-                      <PropertyValue def={dateDef} value={propertyValue(r, key)} variant="bar" noteId={r.id} readOnly={!canMove(r)} onCommit={ctx.commit(r, dateDef)} />
-                      {locked(r) && <span className="db-agenda-note">Its date is {LOCKED_WHY}.</span>}
-                    </li>
-                  ))}
-                </ul>
-              ) : adding !== k && <p className="db-agenda-empty">Nothing on this day</p>}
+              <AgendaDay ctx={ctx} dateKey={key} day={k} name={name} isToday={k === today} rows={rows} adding={adding === k} onAdding={(on) => setAdding(on ? k : null)} />
             </li>
           );
         })}
       </ol>
+    </div>
+  );
+}
+
+// ── calendar on a phone: the month, a day per target ─────────────────────────
+
+/**
+ * The MONTH of a database calendar on a phone (NP-AX-07, slice S; modelled on the Calendar
+ * tool's `PhoneMonthGrid`). The desktop grid's per-day "+" (19–22 px) and page chips (18 px tall
+ * in seven 51 px columns) cannot be finger-sized, so here each day is ONE target — its number
+ * and up to three marks — and the chosen day's pages are listed under the grid, where a title
+ * can be read and tapped (44 px rows, "+" for a new page on that day, the date editor to move a
+ * page). There is no drag on a phone: a 44 px cell holds no chip to pick up.
+ *
+ * A page with a date range is marked on every day it covers.
+ */
+export function CalendarMonthTouch({ ctx, month, onMonth }: { ctx: ViewContext; month: Date; onMonth: (d: Date) => void }) {
+  const key = ctx.view.dateKey ?? "";
+  const today = ymd(new Date());
+  const firstOf = (m: Date) => {
+    const now = new Date();
+    return now.getFullYear() === m.getFullYear() && now.getMonth() === m.getMonth() ? today : ymd(new Date(m.getFullYear(), m.getMonth(), 1));
+  };
+  const [selected, setSelected] = useState(() => firstOf(month));
+  const [adding, setAdding] = useState(false);
+  const days = monthGrid(month);
+  const keys = days.map(ymd);
+  const byDay = useMemo(() => {
+    const m = new Map<string, QueryRow[]>();
+    for (const r of ctx.rows) {
+      const v = propertyValue(r, key);
+      const span = typeof v === "string" ? daySpan(v) : null;
+      if (!span) continue;
+      for (const k of keys) if (k >= span[0] && k <= span[1]) m.set(k, [...(m.get(k) ?? []), r]);
+    }
+    return m;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ctx.rows, key, keys[0]]);
+  const go = (next: Date) => { setAdding(false); setSelected(firstOf(next)); onMonth(next); };
+  const pick = (d: Date) => {
+    setAdding(false);
+    setSelected(ymd(d));
+    // A leading / trailing day of the neighbouring month: show that month.
+    if (d.getMonth() !== month.getMonth() || d.getFullYear() !== month.getFullYear()) onMonth(new Date(d.getFullYear(), d.getMonth(), 1));
+  };
+  const chosen = days.find((d) => ymd(d) === selected) ?? new Date(Number(selected.slice(0, 4)), Number(selected.slice(5, 7)) - 1, Number(selected.slice(8, 10)));
+  const chosenName = chosen.toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" });
+  return (
+    <div className="db-month">
+      <div className="db-cal-head">
+        <h2>{month.toLocaleDateString(undefined, { month: "long", year: "numeric" })}</h2>
+        <button type="button" className="db-control db-agenda-nav" aria-label="Previous month" onClick={() => go(new Date(month.getFullYear(), month.getMonth() - 1, 1))}><ChevronLeft size={16} aria-hidden="true" /></button>
+        <button type="button" className="db-control" onClick={() => go(new Date(new Date().getFullYear(), new Date().getMonth(), 1))}>Today</button>
+        <button type="button" className="db-control db-agenda-nav" aria-label="Next month" onClick={() => go(new Date(month.getFullYear(), month.getMonth() + 1, 1))}><ChevronRight size={16} aria-hidden="true" /></button>
+      </div>
+      <div className="db-month-grid" role="group" aria-label={`${ctx.view.name} month`}>
+        {["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map((d) => <div key={d} className="db-month-dow" aria-hidden="true">{d}</div>)}
+        {days.map((d, i) => {
+          const k = keys[i]!;
+          const count = (byDay.get(k) ?? []).length;
+          return (
+            <button key={k} type="button" className="db-month-day focus-ring" data-day={k} aria-pressed={k === selected}
+              data-outside={d.getMonth() !== month.getMonth() || undefined} data-today={k === today || undefined} aria-current={k === today ? "date" : undefined}
+              aria-label={`${d.toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" })}${count ? `, ${count} ${count === 1 ? "page" : "pages"}` : ""}`}
+              onClick={() => pick(d)}>
+              <span className="db-month-num">{d.getDate()}</span>
+              <span className="db-month-marks" aria-hidden="true">{Array.from({ length: Math.min(count, 3) }, (_, n) => <span key={n} />)}</span>
+            </button>
+          );
+        })}
+      </div>
+      <section className="db-agenda-day db-month-chosen" data-day={selected} data-today={selected === today || undefined} aria-label={chosenName}>
+        <AgendaDay ctx={ctx} dateKey={key} day={selected} name={chosenName} isToday={selected === today} rows={byDay.get(selected) ?? []} adding={adding} onAdding={setAdding} />
+      </section>
     </div>
   );
 }

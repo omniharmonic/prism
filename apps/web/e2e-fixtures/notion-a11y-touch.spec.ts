@@ -1,7 +1,7 @@
 import { test, expect } from "@playwright/test";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { SURFACES, openSurface } from "./a11y-surfaces";
-import { touchTargets } from "./a11y-measure";
+import { touchTargets, touchTargetsBelowFold } from "./a11y-measure";
 
 /**
  * NP-AX-07 "touch targets ≥44px": every primary surface on a phone (390×844, touch, coarse pointer).
@@ -14,12 +14,10 @@ const REPORT = process.env.A11Y_REPORT;
 /** Buttons the fixture pages add around the product UI (unstyled, class-less). */
 const SCAFFOLD = ["Toggle panel", "Alex", "Morgan", "Switch workspace", "Switch to view-only", "Open search", "Query", "Prepend history", "Receive message", "Room A", "Room B", "Alex account", "Morgan account"];
 /**
- * Known and NOT fixed — ONLY on the opt-in month grid (surface `db-calendar-month`: the phone
- * calendar after tapping "Month"). Seven day columns in 390 px are 51 px wide; a 44 px "+" and 44 px
- * page chips cannot fit a day cell. The DEFAULT phone calendar (`db-calendar`) is a week list with a
- * day per row and is held to 44 px like every other surface (asserted below: no exception there).
+ * No exception is left. The one there was — the 19–22 px "+" and 18 px page chips of a database
+ * calendar's month grid on a phone (surface `db-calendar-month`) — is gone: a phone's month is one
+ * target per day with the chosen day's pages under it (`CalendarMonthTouch`, parity6-databases.spec.ts).
  */
-const KNOWN = [/^button\.db-cal-add/, /^button\.db-cal-item/];
 const only = (process.env.A11Y_ONLY ?? "").split(",").filter(Boolean);
 
 test.describe("touch targets ≥44px", () => {
@@ -30,11 +28,25 @@ test.describe("touch targets ≥44px", () => {
       await openSurface(page, s, "phone", "light");
       const offenders = await touchTargets(page, SCAFFOLD);
       if (REPORT) { mkdirSync(REPORT, { recursive: true }); writeFileSync(`${REPORT}/touch_${s.id}.json`, JSON.stringify(offenders, null, 1)); }
-      if (s.id !== "db-calendar-month") expect(offenders.filter((o) => KNOWN.some((k) => k.test(o.what))), "the month-grid exception applies only to the opt-in month grid").toEqual([]);
-      const known = offenders.filter((o) => KNOWN.some((k) => k.test(o.what)));
-      const bad = offenders.filter((o) => !known.includes(o));
-      if (known.length) test.info().annotations.push({ type: "known-small-targets", description: `${known.length} (month grid)` });
-      expect(bad, "controls smaller than a touch target").toEqual([]);
+      expect(offenders, "controls smaller than a touch target").toEqual([]);
+    });
+  }
+});
+
+/**
+ * The same rule for what is BELOW the first screenful (PARITY-GAPS §a.2): each surface's scrolling
+ * regions are scrolled a screenful at a time and measured at every stop. A surface with nothing to
+ * scroll passes trivially — the first sweep above already measured all of it.
+ */
+test.describe("touch targets ≥44px · scrolled", () => {
+  for (const s of SURFACES) {
+    if (s.only === "desktop") continue;
+    if (only.length && !only.includes(s.id)) continue;
+    test(`${s.id} · phone · below the first screen`, async ({ page }) => {
+      await openSurface(page, s, "phone", "light");
+      const offenders = await touchTargetsBelowFold(page, SCAFFOLD);
+      if (REPORT) { mkdirSync(REPORT, { recursive: true }); writeFileSync(`${REPORT}/touch_scrolled_${s.id}.json`, JSON.stringify(offenders, null, 1)); }
+      expect(offenders, "controls smaller than a touch target, below the first screen").toEqual([]);
     });
   }
 });

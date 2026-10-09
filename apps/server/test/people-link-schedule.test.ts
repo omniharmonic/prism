@@ -103,13 +103,15 @@ const deps = (v: LinkJobVault, o: Partial<PeopleLinkScheduleDeps> = {}): PeopleL
 const audit = () => listActionAudit({ action: ["worker.people-link-schedule"] });
 const WEEK = 7 * 86_400_000;
 
+// `config` is declared `as const`; tests flip the schedule switches through a writable view.
+const cfg = config as { -readonly [K in keyof typeof config]: (typeof config)[K] };
 const saved = {
-  enabled: config.peopleLinkScheduleEnabled,
-  ms: config.peopleLinkScheduleMs,
-  dry: config.peopleLinkScheduleDryRun,
-  max: config.peopleLinkScheduleMaxWrites,
-  phases: config.peopleLinkSchedulePhases,
-  lookups: config.peopleLinkScheduleMatrixLookups,
+  enabled: cfg.peopleLinkScheduleEnabled,
+  ms: cfg.peopleLinkScheduleMs,
+  dry: cfg.peopleLinkScheduleDryRun,
+  max: cfg.peopleLinkScheduleMaxWrites,
+  phases: cfg.peopleLinkSchedulePhases,
+  lookups: cfg.peopleLinkScheduleMatrixLookups,
 };
 
 beforeEach(() => {
@@ -121,12 +123,12 @@ beforeEach(() => {
   resetDb();
 });
 afterEach(() => {
-  config.peopleLinkScheduleEnabled = saved.enabled;
-  config.peopleLinkScheduleMs = saved.ms;
-  config.peopleLinkScheduleDryRun = saved.dry;
-  config.peopleLinkScheduleMaxWrites = saved.max;
-  config.peopleLinkSchedulePhases = saved.phases;
-  config.peopleLinkScheduleMatrixLookups = saved.lookups;
+  cfg.peopleLinkScheduleEnabled = saved.enabled;
+  cfg.peopleLinkScheduleMs = saved.ms;
+  cfg.peopleLinkScheduleDryRun = saved.dry;
+  cfg.peopleLinkScheduleMaxWrites = saved.max;
+  cfg.peopleLinkSchedulePhases = saved.phases;
+  cfg.peopleLinkScheduleMatrixLookups = saved.lookups;
 });
 
 test("the defaults: off, weekly, a dry run, 200 writes, the four additive phases, no Matrix lookups", () => {
@@ -148,15 +150,15 @@ test("off by default: nothing is read, written, persisted or audited", async () 
   assert.equal(lastLinkJobOutcome("primary"), null);
   assert.equal(audit().length, 0);
   // An interval of 0 is off too, whatever ENABLED says.
-  config.peopleLinkScheduleEnabled = true;
-  config.peopleLinkScheduleMs = 0;
+  cfg.peopleLinkScheduleEnabled = true;
+  cfg.peopleLinkScheduleMs = 0;
   assert.equal(peopleLinkScheduleDue(), false);
   assert.deepEqual(await runPeopleLinkScheduleOnce("primary", deps(v)), { ran: false, reason: "disabled" });
   assert.equal(v.lists.length, 0);
 });
 
 test("enabled alone is a DRY RUN: it plans and records counts, and writes nothing", async () => {
-  config.peopleLinkScheduleEnabled = true;
+  cfg.peopleLinkScheduleEnabled = true;
   const v = new MemVault();
   seed(v);
   const edgesBefore = JSON.stringify(v.edges);
@@ -186,7 +188,7 @@ test("enabled alone is a DRY RUN: it plans and records counts, and writes nothin
 });
 
 test("due / not due survives a restart; an errored or interrupted run comes back after a day", async () => {
-  config.peopleLinkScheduleEnabled = true;
+  cfg.peopleLinkScheduleEnabled = true;
   const v = new MemVault();
   seed(v);
   const t0 = Date.UTC(2026, 9, 8, 12);
@@ -228,8 +230,8 @@ test("due / not due survives a restart; an errored or interrupted run comes back
 });
 
 test("a write run: strong keys only, compare-and-set, additive, and inside the cap", async () => {
-  config.peopleLinkScheduleEnabled = true;
-  config.peopleLinkScheduleDryRun = false;
+  cfg.peopleLinkScheduleEnabled = true;
+  cfg.peopleLinkScheduleDryRun = false;
   const v = new MemVault();
   seed(v);
   const t0 = Date.UTC(2026, 9, 8, 12);
@@ -263,9 +265,9 @@ test("a write run: strong keys only, compare-and-set, additive, and inside the c
 });
 
 test("the cap is hard, and is shared between the phases so a mail backlog cannot starve the rest", async () => {
-  config.peopleLinkScheduleEnabled = true;
-  config.peopleLinkScheduleDryRun = false;
-  config.peopleLinkScheduleMaxWrites = 4;
+  cfg.peopleLinkScheduleEnabled = true;
+  cfg.peopleLinkScheduleDryRun = false;
+  cfg.peopleLinkScheduleMaxWrites = 4;
   const v = new MemVault();
   seed(v, 30);
   const res = await runPeopleLinkScheduleOnce("primary", deps(v));
@@ -279,7 +281,7 @@ test("the cap is hard, and is shared between the phases so a mail backlog cannot
   // A dry run with the same cap plans the same window (and still writes nothing).
   _resetLinkJob();
   resetDb();
-  config.peopleLinkScheduleDryRun = true;
+  cfg.peopleLinkScheduleDryRun = true;
   const v2 = new MemVault();
   seed(v2, 30);
   const dry = await runPeopleLinkScheduleOnce("primary", deps(v2));
@@ -289,8 +291,8 @@ test("the cap is hard, and is shared between the phases so a mail backlog cannot
   // A nonsense cap never means "no cap".
   _resetLinkJob();
   resetDb();
-  config.peopleLinkScheduleDryRun = false;
-  config.peopleLinkScheduleMaxWrites = 0;
+  cfg.peopleLinkScheduleDryRun = false;
+  cfg.peopleLinkScheduleMaxWrites = 0;
   const v3 = new MemVault();
   seed(v3, 30);
   const z = await runPeopleLinkScheduleOnce("primary", deps(v3));
@@ -298,8 +300,8 @@ test("the cap is hard, and is shared between the phases so a mail backlog cannot
 });
 
 test("busy: a merge / review / manual job holds the lock → this tick is skipped and the next one runs", async () => {
-  config.peopleLinkScheduleEnabled = true;
-  config.peopleLinkScheduleDryRun = false;
+  cfg.peopleLinkScheduleEnabled = true;
+  cfg.peopleLinkScheduleDryRun = false;
   const v = new MemVault();
   seed(v);
   const release = acquirePeopleLock("people-merge")!;
@@ -332,10 +334,10 @@ test("busy: a merge / review / manual job holds the lock → this tick is skippe
 });
 
 test("PEOPLE_LINK_SCHEDULE_PHASES can only narrow the run; the manual-only phases are ignored", async () => {
-  config.peopleLinkScheduleEnabled = true;
+  cfg.peopleLinkScheduleEnabled = true;
   assert.deepEqual(schedulePhases("owner, tombstones, repoint, normalize, Emails ,bogus"), ["emails"]);
   assert.deepEqual(schedulePhases("tasks,emails"), ["emails", "tasks"], "always in the job's own order");
-  config.peopleLinkSchedulePhases = "owner,tombstones,repoint,normalize";
+  cfg.peopleLinkSchedulePhases = "owner,tombstones,repoint,normalize";
   const v = new MemVault();
   seed(v);
   assert.deepEqual(await runPeopleLinkScheduleOnce("primary", deps(v)), { ran: false, reason: "no-phases" });
@@ -346,7 +348,7 @@ test("PEOPLE_LINK_SCHEDULE_PHASES can only narrow the run; the manual-only phase
 test("health: with the schedule on, `people-link` is always listed, says what is next, and goes stale after two missed runs", async () => {
   const find = async (now?: number) => (await getSourceHealth({ list: async () => [], ...(now ? { now } : {}) })).find((h) => h.name === "people-link");
   assert.equal(await find(), undefined, "schedule off and nothing ever ran → not listed (as before)");
-  config.peopleLinkScheduleEnabled = true;
+  cfg.peopleLinkScheduleEnabled = true;
   let h = (await find())!;
   assert.deepEqual([h.status, h.staleAfterMs, h.detail!.scheduleEnabled, h.detail!.scheduleDryRun, h.detail!.scheduleLastStatus], ["ok", 2 * WEEK, true, true, null]);
   const v = new MemVault();

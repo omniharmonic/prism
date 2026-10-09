@@ -67,6 +67,11 @@
   html .db-table .db-value-button { min-height: 44px !important; }
   html .db-dialog input:not([type=checkbox]):not([type=radio]), html .db-dialog select,
   html .db-popover input:not([type=checkbox]):not([type=radio]), html .db-popover select { min-height: 44px; font-size: 16px; }
+  /* View settings on a phone is a sheet, not `.db-dialog`: its selects (Layout, Group by, Add a calculation) were 34 px
+     and sat against the field under them once the sheet was scrolled (scrolled touch sweep). */
+  html .db-settings select, html select.db-control { min-height: 44px; }
+  /* The @-menu's rows (people, pages, dates): 40 px rows stacked with no gap. */
+  html .prism-mention-option { min-height: 44px; }
   html .db-link-open { position: relative; }
   html .db-link-open::after { content: ""; position: absolute; left: 0; right: 0; top: 50%; height: 44px; transform: translateY(-50%); }
   /* A checkbox keeps a 24 px box with clear space on every side (WCAG 2.5.8 spacing). */

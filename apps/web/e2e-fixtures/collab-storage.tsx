@@ -31,6 +31,8 @@ Object.assign(window, { prismCollabFixture: {
     await entry.persistence.flush();
     return states[label];
   },
+  /** The last local save state reported for a document opened under `label`. */
+  state(label: string) { return states[label]; },
   close(label: string) { const entry = opened.get(label)!; entry.persistence.close(); entry.doc.destroy(); opened.delete(label); },
   async checkAuth() { return fetchMe(); },
   /** Sign out through the real path (review M3). `answer` = what the person picks in the leave prompt. */

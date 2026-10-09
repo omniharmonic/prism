@@ -72,11 +72,22 @@
     return (e && (e.message || e)) + "";
   }
 
+  // The embed players this shell can frame (owner decision c.7): YouTube
+  // (no-cookie) and Vimeo, nothing else. It mirrors the shell's CSP `frame-src`
+  // and navigation rule (origin.rs EMBED_FRAME_SOURCES) — the page only reads
+  // it to choose between a player and an "Open in …" card; the CSP is what
+  // enforces it. Empty until a server is configured, like the CSP.
+  var FRAME_ORIGINS = Object.freeze(["https://www.youtube-nocookie.com", "https://player.vimeo.com"]);
+  var NO_FRAMES = Object.freeze([]);
+
   // ---- the host contract ----------------------------------------------------
   var signInFlight = null; // the sign-in in progress, if any (see signIn)
   var host = {
     get apiOrigin() {
       return currentOrigin();
+    },
+    get frameOrigins() {
+      return currentOrigin() ? FRAME_ORIGINS : NO_FRAMES;
     },
     getToken: function () {
       // The shell hands the token out only for the origin it is bound to.

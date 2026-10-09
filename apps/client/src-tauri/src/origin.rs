@@ -174,6 +174,7 @@ pub fn build_csp_for(origin: Option<&ServerOrigin>) -> String {
         "media-src 'self' blob:".to_string(),
         "worker-src 'self' blob:".to_string(),
         connect_src(origin),
+        frame_src(origin),
         "object-src 'none'".to_string(),
         "base-uri 'self'".to_string(),
         "form-action 'none'".to_string(),
@@ -186,6 +187,43 @@ fn img_src(origin: Option<&ServerOrigin>) -> String {
     match origin {
         Some(o) => format!("img-src 'self' data: blob: {}", o.as_str()),
         None => "img-src 'self' data: blob:".to_string(),
+    }
+}
+
+/// The embed players a page may frame inside the app (owner decision c.7,
+/// 2026-10-08): YouTube (no-cookie) and Vimeo ONLY, each scoped to its player
+/// path. A trailing "/" is a CSP prefix match. Every other provider the PWA
+/// frames (Spotify, Loom, Figma, Google, X) stays an "Open in …" card here.
+/// The page's `__PRISM_HOST__.frameOrigins` (host.js) and
+/// [`is_embed_player_url`] must name the same two — `verify-client.mjs` checks.
+pub const EMBED_FRAME_SOURCES: [&str; 2] = [
+    "https://www.youtube-nocookie.com/embed/",
+    "https://player.vimeo.com/video/",
+];
+
+/// Is `url` one of the two embed players, exactly as the CSP scopes them:
+/// https, the exact host, the default port, no credentials, under the player
+/// path? Used by the navigation rule (window.rs), which sees a frame's load as
+/// a navigation and cannot tell it from a main-frame one.
+pub fn is_embed_player_url(url: &Url) -> bool {
+    if url.scheme() != "https"
+        || url.port().is_some()
+        || !url.username().is_empty()
+        || url.password().is_some()
+    {
+        return false;
+    }
+    EMBED_FRAME_SOURCES.iter().any(|source| {
+        let s = Url::parse(source).expect("a constant URL parses");
+        url.host_str() == s.host_str() && url.path().starts_with(s.path())
+    })
+}
+
+/// No server configured (iOS first run): nothing remote, players included.
+fn frame_src(origin: Option<&ServerOrigin>) -> String {
+    match origin {
+        Some(_) => format!("frame-src 'self' {}", EMBED_FRAME_SOURCES.join(" ")),
+        None => "frame-src 'self'".to_string(),
     }
 }
 
@@ -202,13 +240,14 @@ fn connect_src(origin: Option<&ServerOrigin>) -> String {
 }
 
 /// Re-point a served page's CSP header at the CURRENT origin (iOS, where the
-/// origin can change without a process restart). Only the two directives that
-/// name the server are replaced; everything else Tauri put in the header
+/// origin can change without a process restart). Only the directives that
+/// depend on the server (`connect-src`, `img-src`, and `frame-src`, which names
+/// the embed players only once a server is set) are replaced; everything else Tauri put in the header
 /// (script hashes, nonces) is kept as is. A header without those directives
 /// gets them appended, so the result never allows more than [`build_csp_for`].
 pub fn retarget_csp(header: &str, origin: Option<&ServerOrigin>) -> String {
     let mut out: Vec<String> = Vec::new();
-    let (mut saw_connect, mut saw_img) = (false, false);
+    let (mut saw_connect, mut saw_img, mut saw_frame) = (false, false, false);
     for d in header.split(';').map(str::trim).filter(|d| !d.is_empty()) {
         let name = d
             .split_whitespace()
@@ -228,6 +267,12 @@ pub fn retarget_csp(header: &str, origin: Option<&ServerOrigin>) -> String {
                 }
                 saw_img = true;
             }
+            "frame-src" => {
+                if !saw_frame {
+                    out.push(frame_src(origin));
+                }
+                saw_frame = true;
+            }
             _ => out.push(d.to_string()),
         }
     }
@@ -236,6 +281,9 @@ pub fn retarget_csp(header: &str, origin: Option<&ServerOrigin>) -> String {
     }
     if !saw_connect {
         out.push(connect_src(origin));
+    }
+    if !saw_frame {
+        out.push(frame_src(origin));
     }
     out.join("; ")
 }
@@ -363,6 +411,47 @@ mod tests {
         let img = csp.split("; ").find(|d| d.starts_with("img-src")).unwrap();
         assert_eq!(img, "img-src 'self' data: blob:");
         assert!(!csp.contains("https://prism"));
+        // No remote origin of ANY kind before a server is chosen — the embed players included.
+        let frame = csp.split("; ").find(|d| d.starts_with("frame-src")).unwrap();
+        assert_eq!(frame, "frame-src 'self'");
+        assert!(!csp.contains("youtube") && !csp.contains("vimeo"), "{csp}");
+    }
+
+    #[test]
+    fn frames_only_the_two_embed_players() {
+        let o = ServerOrigin::parse("https://prism.example.com").unwrap();
+        let csp = build_csp(&o);
+        let frame = csp.split("; ").find(|d| d.starts_with("frame-src")).unwrap();
+        assert_eq!(
+            frame,
+            "frame-src 'self' https://www.youtube-nocookie.com/embed/ https://player.vimeo.com/video/"
+        );
+        // Nothing else the PWA frames is allowed in the app.
+        for other in ["spotify", "loom", "figma", "google", "twitter", "youtube.com"] {
+            assert!(!frame.contains(other), "{other} must stay a card: {frame}");
+        }
+        assert_eq!(csp.matches("frame-src").count(), 1);
+        let u = |s: &str| Url::parse(s).unwrap();
+        assert!(is_embed_player_url(&u("https://www.youtube-nocookie.com/embed/dQw4w9WgXcQ")));
+        assert!(is_embed_player_url(&u("https://player.vimeo.com/video/76979871?h=abc")));
+        for no in [
+            "https://www.youtube-nocookie.com/",
+            "https://www.youtube-nocookie.com/watch?v=x",
+            "https://www.youtube-nocookie.com/embedded/x",
+            "https://www.youtube.com/embed/x",
+            "https://youtube-nocookie.com/embed/x",
+            "http://www.youtube-nocookie.com/embed/x",
+            "https://www.youtube-nocookie.com:8443/embed/x",
+            "https://user@www.youtube-nocookie.com/embed/x",
+            "https://www.youtube-nocookie.com.evil.example/embed/x",
+            "https://evil.example/https://player.vimeo.com/video/1",
+            "https://player.vimeo.com/",
+            "https://vimeo.com/video/1",
+            "https://open.spotify.com/embed/track/x",
+            "https://www.loom.com/embed/x",
+        ] {
+            assert!(!is_embed_player_url(&u(no)), "{no}");
+        }
     }
 
     #[test]
@@ -379,13 +468,23 @@ mod tests {
         assert!(out.contains("'sha256-abc='"), "Tauri's hashes are kept");
         assert!(out.contains("default-src 'self'"));
         // Back to unconfigured: no remote origin at all.
+        // The players come and go with the server.
+        assert!(out.contains("frame-src 'self' https://www.youtube-nocookie.com/embed/ https://player.vimeo.com/video/"));
         let none = retarget_csp(&out, None);
         assert!(!none.contains("example.com"), "{none}");
+        assert!(none.contains("frame-src 'self'") && !none.contains("youtube") && !none.contains("vimeo"), "{none}");
+        let back = retarget_csp(&none, Some(&b));
+        assert!(back.contains("https://player.vimeo.com/video/"), "{back}");
+        assert_eq!(back.matches("frame-src").count(), 1);
         assert!(none.contains("connect-src 'self' ipc: http://ipc.localhost"));
         // A header missing the directives gets them (never wider than ours).
         let bare = retarget_csp("default-src 'self'", Some(&b));
         assert!(bare.contains("connect-src 'self' ipc: http://ipc.localhost https://b.example.com"));
         assert!(bare.contains("img-src 'self' data: blob: https://b.example.com"));
+        assert!(bare.contains("frame-src 'self' https://www.youtube-nocookie.com/embed/"));
+        let widened = retarget_csp("frame-src *; frame-src https://evil", Some(&b));
+        assert_eq!(widened.matches("frame-src").count(), 1);
+        assert!(!widened.contains('*') && !widened.contains("evil"));
         // Duplicated directives collapse to one (ours).
         let dup = retarget_csp("connect-src *; connect-src https://evil", Some(&b));
         assert_eq!(dup.matches("connect-src").count(), 1);
@@ -468,7 +567,7 @@ mod tests {
             "https://a-b.c-d.example",
         ] {
             let csp = build_csp(&ServerOrigin::parse(ok).unwrap());
-            assert_eq!(csp.matches(';').count(), 11, "{csp}");
+            assert_eq!(csp.matches(';').count(), 12, "{csp}");
             assert!(!csp.contains('*') && !csp.contains(','), "{csp}");
         }
     }

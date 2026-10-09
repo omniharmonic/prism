@@ -100,7 +100,7 @@ export function SetPasswordScreen() {
             >
               {status === "working" ? "Saving…" : "Set password"}
             </button>
-            <button type="button" onClick={() => window.location.assign("/")} style={{ background: "none", border: "none", color: "var(--text-muted, #888)", fontSize: 12, cursor: "pointer" }}>
+            <button type="button" onClick={() => window.location.assign("/")} style={{ background: "none", border: "none", color: "var(--text-muted, #888)", fontSize: 12, cursor: "pointer", minHeight: 44 }}>
               Skip for now
             </button>
           </>

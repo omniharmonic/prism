@@ -303,3 +303,80 @@ test("pinned layout on a phone: 44px targets, no sideways scroll", async ({ page
   for (const b of await bar(page).getByRole("button").all()) expect((await b.boundingBox())!.height).toBeGreaterThanOrEqual(44);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
 });
+
+// NP-PG-05 — the last [T] of the row (PARITY-GAPS §a.2): the checkbox, URL and number editors UNDER THE TITLE.
+// The table's editors are asserted in databases / parity3-databases; this is the page property bar.
+test("NP-PG-05: checkbox, URL and number editors under the title — typed editors, per-field compare-and-set, the body untouched", async ({ page }) => {
+  await page.goto("/e2e-fixtures/databases.html?open=page");
+  await expect(page.locator(".tiptap")).toContainText("A single, evolving place");
+  const props = bar(page);
+  const add = async (name: RegExp) => {
+    await props.getByRole("button", { name: "Add property" }).click();
+    await page.getByRole("dialog", { name: "Add a property" }).getByRole("button", { name }).click();
+  };
+  const last = async () => (await state(page)).writes.at(-1);
+
+  // Number: a numeric input, stored as a NUMBER (not "6"), shown under the title; a second edit compares against the first.
+  await add(/Estimate \(h\)$/);
+  const estimate = page.getByLabel("Estimate (h)", { exact: true });
+  await expect(estimate).toBeFocused();
+  expect(await estimate.evaluate((el) => (el as HTMLInputElement).inputMode || (el as HTMLInputElement).type)).toMatch(/decimal|numeric|number/);
+  await estimate.fill("6");
+  await estimate.press("Enter");
+  expect(await last()).toEqual({ id: "page", set: { estimate: 6 }, expect: { estimate: null } });
+  await props.getByRole("button", { name: "Estimate (h): 6" }).click();
+  await page.getByLabel("Estimate (h)", { exact: true }).fill("7.5");
+  await page.keyboard.press("Enter");
+  expect(await last()).toEqual({ id: "page", set: { estimate: 7.5 }, expect: { estimate: 6 } });
+  await expect(props.getByRole("button", { name: "Estimate (h): 7.5" })).toBeVisible();
+  // Escape leaves the value alone.
+  await props.getByRole("button", { name: "Estimate (h): 7.5" }).click();
+  await page.getByLabel("Estimate (h)", { exact: true }).fill("99");
+  await page.keyboard.press("Escape");
+  await expect(props.getByRole("button", { name: "Estimate (h): 7.5" })).toBeVisible();
+  expect(await last()).toEqual({ id: "page", set: { estimate: 7.5 }, expect: { estimate: 6 } });
+
+  // URL: a url input; the stored value is shown as a real link that opens in a new tab.
+  await add(/Link$/);
+  const link = page.getByRole("textbox", { name: "Link", exact: true });
+  await expect(link).toBeFocused();
+  await expect(link).toHaveAttribute("type", "url");
+  await link.fill("https://example.test/handbook");
+  await link.press("Enter");
+  expect(await last()).toEqual({ id: "page", set: { link: "https://example.test/handbook" }, expect: { link: null } });
+  const anchor = props.getByRole("link", { name: /example\.test\/handbook/ });
+  await expect(anchor).toHaveAttribute("href", "https://example.test/handbook");
+  await expect(anchor).toHaveAttribute("target", "_blank");
+  await expect(anchor).toHaveAttribute("rel", /noopener/);
+  // Text that is not an http(s) address is kept as typed (it is the person's value) but is NEVER drawn as a link.
+  await props.getByRole("button", { name: /^Link: / }).click();
+  await page.getByRole("textbox", { name: "Link", exact: true }).fill("javascript:alert(1)");
+  await page.keyboard.press("Enter");
+  await expect(props.getByRole("button", { name: "Link: javascript:alert(1)" })).toBeVisible();
+  await expect(props.locator('a[href^="javascript:" i]')).toHaveCount(0);
+  await expect(props.getByRole("link")).toHaveCount(0);
+
+  // Checkbox: a real checkbox. Adding it under the title shows it UNTICKED and writes nothing
+  // (it used to tick itself — twice — because "open the editor of the property just added" toggled it).
+  await add(/Flagged$/);
+  const flagged = props.getByRole("checkbox", { name: "Flagged" });
+  const flagWrites = async () => (await state(page)).writes.filter((w: any) => "flagged" in (w.set ?? {})).map((w: any) => ({ set: w.set, expect: w.expect }));
+  await expect(flagged).toBeVisible();
+  await expect(flagged).not.toBeChecked();
+  await page.waitForTimeout(300);
+  expect(await flagWrites()).toEqual([]);
+  const ticked = { set: { flagged: true }, expect: { flagged: null } };
+  await flagged.click();
+  await expect(flagged).toBeChecked();
+  await expect.poll(flagWrites).toEqual([ticked]);
+  await flagged.click();
+  await expect(flagged).not.toBeChecked();
+  await expect.poll(flagWrites).toEqual([ticked, { set: { flagged: false }, expect: { flagged: true } }]);
+
+  // Every write was metadata only: the body was never sent, and no schema changed.
+  const s = await state(page);
+  expect(s.page.content).toContain("A single, evolving place");
+  expect(s.writes.every((w: any) => w.id === "page" && w.set && !("content" in w))).toBe(true);
+  expect(s.schemaWrites).toEqual([]);
+  expect(s.page.metadata).toMatchObject({ estimate: 7.5, flagged: false });
+});

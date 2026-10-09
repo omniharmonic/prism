@@ -52,6 +52,11 @@
   color: var(--text-primary);
   box-shadow: inset 0 0 0 1px var(--glass-border);
 }
+/* The pressed view keeps its hairline AND shows the focus ring: the rule above outranked
+   `.focus-ring:focus-visible`, so the selected toggle had no focus indicator (NP-AX-04 sweep). */
+.prism-message-views button[aria-pressed="true"]:focus-visible {
+  box-shadow: inset 0 0 0 1px var(--glass-border), 0 0 0 2px var(--focus-ring);
+}
 /* ── Category: one row of filter chips (the Inbox chip pattern) + one chip per row ──
    Tone comes from tokens only (color-mix over --color-*), so both themes and print follow. */
 .prism-triage-filters {
@@ -331,8 +336,9 @@
   box-shadow: 0 2px 5px #00000004;
   background: var(--bg-base);
 }
+/* The border IS the focus indicator here (the glow is decoration): full strength, ≥ 3 : 1 (NP-AX-04). */
 .prism-compose-surface:focus-within {
-  border-color: color-mix(in srgb, var(--action-bg) 55%, var(--glass-border));
+  border-color: var(--action-bg);
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--action-bg) 7%, transparent);
 }
 .prism-compose-surface textarea {

@@ -215,11 +215,11 @@ export const SURFACES: Surface[] = [
   { id: "db-gallery", path: "/e2e-fixtures/databases.html", open: (page) => dbView(page, "Gallery") },
   { id: "db-list", path: "/e2e-fixtures/databases.html", open: (page) => dbView(page, "List") },
   { id: "db-calendar", path: "/e2e-fixtures/databases.html", open: (page) => dbView(page, "Calendar") },
-  // Phones get the calendar as a week list (above, at 390 px); the dense month grid is opt-in ("Month").
+  // Phones get the calendar as a week list (above, at 390 px); the month — one target per day — is opt-in ("Month").
   { id: "db-calendar-month", path: "/e2e-fixtures/databases.html", only: "phone", open: async (page) => {
     await dbView(page, "Calendar");
     await page.getByRole("button", { name: "Month", exact: true }).click();
-    await expect(page.getByRole("grid", { name: "Calendar calendar" })).toBeVisible();
+    await expect(page.getByRole("group", { name: "Calendar month" })).toBeVisible();
   } },
   { id: "db-filter", path: "/e2e-fixtures/databases.html", open: async (page) => {
     await dbReady(page);
@@ -432,6 +432,20 @@ export const SURFACES: Surface[] = [
     await page.route("**/auth/invite-info**", (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ valid: true, email: "guest@example.test" }) }));
   }, open: async (page) => {
     await expect(page.getByText("guest@example.test").first()).toBeVisible();
+  } },
+  // ── Pass 5 (PARITY-GAPS §a.2, NP-AX-01): screens outside the workspace the dark sweep had not opened ──
+  { id: "set-password", path: "/e2e-fixtures/auth-screens.html?screen=set-password", before: async (page) => {
+    await page.route("**/auth/me**", (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ authenticated: true, email: "owner@example.test", name: "Owner", role: "owner", isOwner: true }) }));
+  }, open: async (page) => {
+    await expect(page.locator("input[type=password]").first()).toBeVisible();
+    await expect(page.getByText("owner@example.test").first()).toBeVisible();
+  } },
+  { id: "reconnect", path: "/e2e-fixtures/auth-screens.html?screen=reconnect", open: async (page) => {
+    await expect(page.getByRole("heading", { name: "Reconnect to your workspace" })).toBeVisible();
+  } },
+  { id: "network-connections", path: "/e2e-fixtures/connections.html", open: async (page) => {
+    await expect(page.getByRole("heading", { name: "Connections", exact: true })).toBeVisible();
+    await page.waitForLoadState("networkidle").catch(() => {});
   } },
   { id: "published-wiki", path: "/e2e-fixtures/publication.html", open: async (page) => {
     await expect(page.getByText("PRISM_PUBLICATION_guide_first_BODY", { exact: true })).toBeVisible();

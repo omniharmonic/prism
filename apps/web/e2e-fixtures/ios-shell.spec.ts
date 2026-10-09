@@ -425,3 +425,52 @@ test("iOS sign-in: a token the server refused is only FORGOTTEN — the hook nev
   expect(made).toEqual([{ cmd: "sign_out", args: { revoke: false } }, { cmd: "sign_out", args: { revoke: false } }]);
   await expect(page.getByRole("heading", { name: "Sign in to Prism" })).toBeVisible();
 });
+
+// ── Embeds in the app (NP-ED-15, owner decision c.7: YouTube no-cookie + Vimeo only) ──────────
+const EMBEDS: Array<[url: string, label: string, player: string | null]> = [
+  ["https://www.youtube.com/watch?v=dQw4w9WgXcQ", "YouTube", "https://www.youtube-nocookie.com/embed/dQw4w9WgXcQ"],
+  ["https://vimeo.com/76979871", "Vimeo", "https://player.vimeo.com/video/76979871"],
+  ["https://www.loom.com/share/0281766fa2d04bb788eaf19e65135184", "Loom", null],
+  ["https://www.figma.com/design/AbCdEf123456/Atlas", "Figma", null],
+  ["https://docs.google.com/document/d/1AbCdEfGhIjKlMnOpQrStUvWxYz012345/edit", "Google Docs", null],
+  ["https://open.spotify.com/track/4uLU6hMCjMI75M1A2tKUQC", "Spotify", null],
+  ["https://x.com/prism/status/1234567890123", "Post on X", null],
+];
+const EMBED_PAGE = "/e2e-fixtures/notion-media.html?content=" + encodeURIComponent(EMBEDS.map(([u]) => `<div data-type="embed" data-url="${u}"></div>`).join(""));
+
+test("iOS embeds: with a server set, YouTube and Vimeo are frames (no popups) and the rest are cards; before a server is set nothing is framed", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  // Never reach the internet from a fixture: a provider's frame gets an empty page.
+  await page.route(/^https:\/\/(www\.youtube-nocookie\.com|player\.vimeo\.com|www\.loom\.com|www\.figma\.com|docs\.google\.com|open\.spotify\.com|platform\.twitter\.com)\//, (r) => r.fulfill({ status: 200, contentType: "text/html", body: "<!doctype html><title>player</title>" }));
+  // A server is configured: the shell's CSP names the two players and the hook advertises them.
+  await installIosShell(page, "https://prism.example.com");
+  await page.goto(EMBED_PAGE);
+  expect(await page.evaluate(() => [...(window as any).__PRISM_HOST__.frameOrigins])).toEqual(["https://www.youtube-nocookie.com", "https://player.vimeo.com"]);
+  const blocks = page.locator(".prism-embed");
+  await expect(blocks).toHaveCount(EMBEDS.length);
+  const frames = page.locator(".prism-embed iframe");
+  await expect(frames).toHaveCount(2);
+  await expect(frames.nth(0)).toHaveAttribute("src", /^https:\/\/www\.youtube-nocookie\.com\/embed\/dQw4w9WgXcQ/);
+  await expect(frames.nth(1)).toHaveAttribute("src", /^https:\/\/player\.vimeo\.com\/video\/76979871/);
+  for (const i of [0, 1]) await expect(frames.nth(i)).toHaveAttribute("sandbox", "allow-scripts allow-same-origin allow-presentation");
+  await expect(page.locator(".prism-embed[data-fallback]")).toHaveCount(EMBEDS.length - 2);
+  for (const [, label, player] of EMBEDS) if (!player) await expect(page.locator(".prism-embed[data-fallback]").filter({ hasText: `Open in ${label}` })).toHaveCount(1);
+  // The player fits a phone: no sideways scroll.
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  // The player's own way out goes through the shell, like every external link.
+  await blocks.nth(1).getByRole("link", { name: "Open in Vimeo" }).click();
+  await expect.poll(() => calls(page, "open_external")).toEqual([{ cmd: "open_external", args: { url: EMBEDS[1]![0] } }]);
+});
+
+test("iOS embeds: before a server is configured the hook advertises no player (the first-run CSP reaches nothing remote)", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  const requested: string[] = [];
+  page.on("request", (r) => { if (/youtube|vimeo/.test(new URL(r.url()).hostname)) requested.push(r.url()); });
+  await installIosShell(page, "");
+  await page.goto(EMBED_PAGE);
+  expect(await page.evaluate(() => [...(window as any).__PRISM_HOST__.frameOrigins])).toEqual([]);
+  await expect(page.locator(".prism-embed")).toHaveCount(EMBEDS.length);
+  await expect(page.locator(".prism-embed iframe")).toHaveCount(0);
+  await expect(page.locator(".prism-embed[data-fallback]")).toHaveCount(EMBEDS.length);
+  expect(requested).toEqual([]);
+});
