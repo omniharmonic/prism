@@ -230,10 +230,10 @@ test("Needs refresh: a suggestion a collaborator edits while it is being reviewe
 // ── review round: what is NOT a removal, and what cannot be tracked ─────────
 const chip = '<span data-type="mention" data-kind="date" data-date="2026-10-01" data-mention-uid="chip-1">@x</span>';
 const leafPage = `<p>Due ${chip} for the team.</p><img src="/e2e-fixtures/fixture-image.svg" alt="chart"><p>Second paragraph stays here.</p><p>Closing line.</p>`;
-const openWith = async (page: Page, html: string) => {
+const openWith = async (page: Page, html: string, marker = "Closing line.") => {
   await page.goto(`/e2e-fixtures/parity4-suggest.html?content=${encodeURIComponent(html)}`);
   const editor = page.locator(".ProseMirror").first();
-  await expect(editor).toContainText("Closing line.");
+  await expect(editor).toContainText(marker);
   await page.getByRole("button", { name: "Editing", exact: true }).click();
   await expect(page.getByRole("button", { name: "Suggesting", exact: true })).toBeVisible();
   await editor.click();
@@ -435,3 +435,59 @@ test("J-6: a long composition is never interrupted by the put-back", async ({ pa
   await expect(struck(page, "rollout")).toBeVisible();
   await expect(paragraphs(page).first()).toHaveText("The rollout火 plan is ready for review.");
 });
+
+// ── Review of PR #42, finding 1: a removal that crosses NESTING DEPTH ──────────────────────────
+// From the middle of a paragraph into the first item of the list below (or out of a list, into a
+// quote, into a table cell): ProseMirror writes that replacement as a ReplaceAroundStep (the rest
+// of the last block is carried into the first). It is a removal like any other: the text taken out
+// stays, struck, for every collaborator — and Reject all gives the page back.
+const TABLE = "<table><tbody><tr><th><p>charlie delta</p></th><th><p>head two</p></th></tr><tr><td><p>cell one</p></td><td><p>cell two</p></td></tr></tbody></table>";
+// `struck: null` = REFUSED: across the boundary of a table cell no put-back is faithful (the edit
+// empties a cell and the removed part would come back as a table of its own), so nothing changes
+// and the person is told. These selections are real: the tables plugin only normalises a text
+// selection that ends at the very START of a cell's block (or is a NodeSelection of a cell / row);
+// one that ends in the middle of a cell's text — a drag from the paragraph above, a phone's
+// selection handles, Shift+click from outside the table — stays as it is.
+const DEPTH_SHAPES: Array<{ name: string; html: string; from: string; to: string; struck: string | null; selected?: string }> = [
+  { name: "paragraph → list item", html: "<p>alpha bravo</p><ul><li><p>charlie delta</p></li><li><p>echo</p></li></ul><p>End.</p>", from: "bravo", to: "charlie ", struck: "bravo|charlie " },
+  { name: "list item → paragraph", html: "<ul><li><p>zulu</p></li><li><p>alpha bravo</p></li></ul><p>charlie delta</p><p>End.</p>", from: "bravo", to: "charlie ", struck: "bravo|charlie " },
+  { name: "paragraph → quote", html: "<p>alpha bravo</p><blockquote><p>charlie delta</p></blockquote><p>End.</p>", from: "bravo", to: "charlie ", struck: "bravo|charlie " },
+  { name: "paragraph → nested list item", html: "<p>alpha bravo</p><ul><li><p>one</p><ul><li><p>charlie delta</p></li><li><p>foxtrot</p></li></ul></li><li><p>golf</p></li></ul><p>End.</p>", from: "bravo", to: "charlie ", struck: "bravo|one|charlie ", selected: "bravo|one|charlie " },
+  { name: "quote → paragraph", html: "<blockquote><p>alpha bravo</p></blockquote><p>charlie delta</p><p>End.</p>", from: "bravo", to: "charlie ", struck: "bravo|charlie " },
+  { name: "table cell → paragraph after the table", html: `<p>Start.</p>${TABLE.replace("charlie delta", "head one").replace("cell two", "alpha bravo")}<p>charlie delta</p><p>End.</p>`, from: "bravo", to: "charlie ", struck: null },
+  { name: "table cell → table cell", html: `<p>Start.</p>${TABLE.replace("cell one", "alpha bravo").replace("cell two", "charlie delta").replace("charlie delta", "head one")}<p>End.</p>`, from: "bravo", to: "charlie ", struck: null },
+  { name: "paragraph → table cell", html: `<p>alpha bravo</p>${TABLE}<p>End.</p>`, from: "bravo", to: "charlie ", struck: null },
+];
+const DEPTH_ACTIONS: Array<{ name: string; keepsShape: boolean; run: (page: Page) => Promise<void> }> = [
+  { name: "typed over", keepsShape: true, run: async (page) => { await page.keyboard.type("X"); } },
+  { name: "pasted over", keepsShape: true, run: async (page) => { await fx(page, "paste", "X"); } },
+  { name: "cut", keepsShape: true, run: async (page) => { await page.keyboard.press("ControlOrMeta+x"); } },
+  // The blocks are separate already: Enter strikes the selection and moves on to what follows it.
+  { name: "Enter", keepsShape: true, run: async (page) => { await page.keyboard.press("Enter"); } },
+];
+const words = (text: string) => text.split(/\s+/).filter(Boolean).join(" ");
+for (const shape of DEPTH_SHAPES) {
+  for (const action of DEPTH_ACTIONS) {
+    test(`across depth — ${shape.name}, ${action.name}: the removed text is kept struck where it stands (across a table cell: refused, with a notice); Reject all gives the page back`, async ({ page }) => {
+      await openWith(page, shape.html, "End.");
+      const before = { html: await fx<string>(page, "html"), text: await fx<string>(page, "text") };
+      await fx(page, "selectAcross", shape.from, shape.to);
+      // The selection really does cross the blocks (nothing normalised it away).
+      expect(await fx<string>(page, "selectedText")).toBe(shape.selected ?? "bravo|charlie ");
+      await action.run(page);
+      await same(page);
+      if (shape.struck === null) {
+        // Refused: nothing changed at all — and the person is told why.
+        expect(await fx<string>(page, "html")).toBe(before.html);
+        await expect(page.getByRole("status").filter({ hasText: "can’t be tracked while suggesting" })).toBeVisible();
+      } else {
+        // Every removed character is still there, struck, where a collaborator reads it.
+        expect(await fx<string>(page, "struckText")).toBe(shape.struck);
+      }
+      await rejectAll(page);
+      expect(words(await fx<string>(page, "text"))).toBe(words(before.text));
+      if (action.keepsShape) expect(await fx<string>(page, "html")).toBe(before.html);
+      await expect(page.locator(".ProseMirror").first().locator('[data-suggestion]')).toHaveCount(0);
+    });
+  }
+}

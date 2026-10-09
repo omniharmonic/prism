@@ -66,3 +66,13 @@ test("a blank stored title is compared as it was read; someone else's newer titl
   assert.equal(await syncStoredTitle(client(conflict).api, note("vault/Old", "Old"), "vault/New", "New"), "unchanged");
   assert.equal(await syncStoredTitle(client(new Error("offline")).api, note("vault/Old", "Old"), "vault/New", "New"), "failed");
 });
+
+// Review of PR #42, finding 4: a definite refusal is not offered as a retry.
+test("a refusal (403 / 404 / 423) is `refused`, not the retryable `failed`; a network failure stays `failed`", async () => {
+  for (const status of [403, 404, 423]) {
+    const no = Object.assign(new Error("no"), { name: "VaultRequestError", status });
+    assert.equal(await syncStoredTitle(client(no).api, note("vault/ingest/Old", "Old"), "vault/ingest/New", "New"), "refused", String(status));
+  }
+  assert.equal(await syncStoredTitle(client(Object.assign(new Error("boom"), { status: 502 })).api, note("vault/Old", "Old"), "vault/New", "New"), "failed");
+  assert.equal(await syncStoredTitle(client(new TypeError("Failed to fetch")).api, note("vault/Old", "Old"), "vault/New", "New"), "failed");
+});

@@ -1,7 +1,7 @@
 import { Extension } from "@tiptap/core";
 import { Plugin, Selection, TextSelection } from "@tiptap/pm/state";
 import { suggestionKey } from "./suggestionMeta";
-import { Mapping, ReplaceStep, Transform } from "@tiptap/pm/transform";
+import { Mapping, ReplaceAroundStep, ReplaceStep, Transform, canJoin } from "@tiptap/pm/transform";
 import { absolutePositionToRelativePosition, relativePositionToAbsolutePosition, ySyncPluginKey } from "@tiptap/y-tiptap";
 
 /**
@@ -21,7 +21,9 @@ import { absolutePositionToRelativePosition, relativePositionToAbsolutePosition,
  *  - text that is the same person's own pending insertion (it just disappears);
  *  - removals that hold no content at all (joining two blocks, an empty block) —
  *    untracked, like the split Enter makes;
- *  - structure changes made by `ReplaceAroundStep` (lift / wrap / turn into).
+ *  - structure changes (lift / wrap / turn into): a `ReplaceAroundStep` that takes out node
+ *    boundaries only. One that takes out TEXT — a replacement across nesting depth, e.g. from a
+ *    paragraph into the first item of the list below — is tracked like any other removal.
  * Suggestion marks go on TEXT only — the sync layer carries marks on text and nowhere else,
  * so a "struck" chip or line break would exist in this session alone. Every leaf that is not
  * text (image, mention chip, divider, embed, sub-page row, database block, line break) is
@@ -41,7 +43,7 @@ export interface SuggestionUser {
   color: string;
 }
 
-import type { Mark as PMMark, MarkType, Node as PMNode, Slice } from "@tiptap/pm/model";
+import type { Fragment, Mark as PMMark, MarkType, Node as PMNode, ResolvedPos, Slice } from "@tiptap/pm/model";
 import type { Transaction } from "@tiptap/pm/state";
 import type { EditorState } from "@tiptap/pm/state";
 
@@ -161,6 +163,84 @@ function canStrike(node: PMNode, parent: PMNode | null, deletion: MarkType): boo
   return !node.marks.some((m) => m.type !== deletion && m.type.excludes(deletion));
 }
 
+/** Where the nearest ISOLATING ancestor of a position starts (a table cell, a table, a column…), or -1. */
+function isolatedIn($pos: ResolvedPos): number {
+  for (let d = $pos.depth; d > 0; d--) if ($pos.node(d).type.spec.isolating) return $pos.before(d);
+  return -1;
+}
+
+/** How many isolating blocks (table cells, tables, columns…) a document or a fragment holds. */
+function isolatingCount(content: PMNode | Fragment): number {
+  let n = 0;
+  content.descendants((node) => { if (node.type.spec.isolating) n++; return !node.isTextblock; });
+  return n;
+}
+
+/** The isolating blocks a slice holds WHOLE — not the ones it is open into at either end (those
+ *  are a part of a block that is still in the document: putting it back must not make another). */
+function wholeIsolating(slice: Slice): number {
+  const open = new Set<PMNode>();
+  let node: PMNode | null = slice.content.firstChild;
+  for (let d = 0; d < slice.openStart && node; d++, node = node.firstChild) open.add(node);
+  node = slice.content.lastChild;
+  for (let d = 0; d < slice.openEnd && node; d++, node = node.lastChild) open.add(node);
+  let partial = 0;
+  for (const n of open) if (n.type.spec.isolating) partial++;
+  return isolatingCount(slice.content) - partial;
+}
+
+/** Does the removal [a, b) cross the boundary of a table cell, a column or another isolating block? */
+export function crossesIsolating(doc: PMNode, a: number, b: number): boolean {
+  return isolatedIn(doc.resolve(a)) !== isolatedIn(doc.resolve(b));
+}
+
+/**
+ * For a removal that ended INSIDE nested blocks (its slice is open at the end): which of those
+ * blocks went on after the removed range — outermost first, the textblock itself left out.
+ * After the put-back each of those is joined with what was left of it (see `putBack`).
+ */
+function continuedAfter(doc: PMNode, b: number, openEnd: number): boolean[] {
+  const $b = doc.resolve(b);
+  const out: boolean[] = [];
+  for (let j = openEnd - 1; j >= 1; j--) {
+    const d = $b.depth - j;
+    out.push(d >= 1 && $b.indexAfter(d) < $b.node(d).childCount);
+  }
+  return out;
+}
+
+/**
+ * Strike [a, b) WHERE IT IS — no structure is touched (the way Backspace over a selection works).
+ * Text that is the person's own pending insertion, and text that cannot carry the mark (code), is
+ * removed; text already struck keeps its mark; a leaf that is not text stays (`refused`).
+ * Returns where `b` is afterwards.
+ */
+export function strikeInPlace(tr: Transaction, a: number, b: number, ctx: { insertion: MarkType; deletion: MarkType; userName: string }): { end: number; refused: boolean; untracked: boolean } {
+  const { insertion, deletion, userName } = ctx;
+  const strike: Array<[number, number]> = [];
+  const drop: Array<[number, number]> = [];
+  let run: [number, number] | null = null;
+  const close = () => { if (run) strike.push(run); run = null; };
+  const out = { refused: false, untracked: false };
+  tr.doc.nodesBetween(a, b, (node, pos, parent) => {
+    if (!node.isLeaf) { close(); return; }
+    const range: [number, number] = [Math.max(pos, a), Math.min(pos + node.nodeSize, b)];
+    if (range[1] <= range[0]) return;
+    if (!node.isText) { close(); if (isBlockLeaf(node)) out.refused = true; return; }
+    const mine = node.marks.find((m) => m.type === insertion);
+    if (mine && mine.attrs.user === userName) { close(); drop.push(range); }
+    else if (node.marks.some((m) => m.type === deletion)) close();
+    else if (!canStrike(node, parent, deletion)) { close(); drop.push(range); out.untracked = true; }
+    else if (run && run[1] === range[0]) run[1] = range[1];
+    else { close(); run = [range[0], range[1]]; }
+  });
+  close();
+  const first = tr.steps.length;
+  for (const [x, y] of strike) tr.addMark(x, y, deletion.create({ user: userName, color: "#ef4444" }));
+  for (const [x, y] of drop.sort((m, n) => n[0] - m[0])) tr.delete(x, y);
+  return { end: tr.mapping.slice(first).map(b, -1), ...out };
+}
+
 export interface PutBackResult { refused: boolean; untracked: boolean; misplaced: boolean; lost: boolean; caret: boolean }
 
 /** The notices a put-back raises, for the editor's status line. */
@@ -176,13 +256,15 @@ export function putBackMessages(r: PutBackResult): string[] {
  *  - a leaf that is not text (a chip, an image, a divider…) takes no mark: it comes back
  *    unmarked (`refused`; a line break silently), and a copy of it the same dispatch put
  *    elsewhere (`moved` — it was dragged along with text) is taken out again;
- *  - a slice the document cannot take back in place (the fitter places nothing, or drops part
- *    of it) is kept as struck text beside the change (`misplaced`) — never silently lost.
+ *  - a slice the document cannot take back in place (the fitter places nothing, drops part of
+ *    it, or would change the shape of a table / column layout around it) is kept as struck text
+ *    beside the change (`misplaced`) — never silently lost;
+ *  - `rejoin`: a list / quote the removal ended inside is one block again afterwards.
  * `caret`: a plain removal at the caret leaves the caret BEFORE the struck text.
  */
 export function putBack(
   tr: Transaction,
-  items: Array<{ at: number; slice: Slice; pure: boolean; order: number }>,
+  items: Array<{ at: number; slice: Slice; pure: boolean; order: number; /** `continuedAfter` of the removal, when it ended inside nested blocks. */ rejoin?: boolean[] }>,
   ctx: { selection: Selection; insertion: MarkType; deletion: MarkType; userName: string; /** Block leaves the dispatch inserted… */ moved?: PMNode[]; /** …and where (ranges in `tr.doc` as it is at the call). */ arrivedIn?: Array<[number, number]> },
 ): PutBackResult {
   const { selection, insertion, deletion, userName } = ctx;
@@ -201,7 +283,11 @@ export function putBack(
     let fits = false;
     try {
       probe.replace(at, at, r.slice);
-      fits = probe.steps.length > 0 && probe.doc.textBetween(at, probe.mapping.map(at, 1), "") === text;
+      // …and one that changes the SHAPE around it is not applied either: the put-back may add
+      // exactly the table cells / tables / columns the removed slice holds, no more (the fitter
+      // can wrap a piece in a table of its own, or add a cell to a row) and no fewer.
+      fits = probe.steps.length > 0 && probe.doc.textBetween(at, probe.mapping.map(at, 1), "") === text
+        && isolatingCount(probe.doc) === isolatingCount(tr.doc) + wholeIsolating(r.slice);
     } catch { fits = false; }
     if (!fits) {
       if (!text) {
@@ -253,6 +339,26 @@ export function putBack(
     });
     close();
     for (const [a, b] of strike) tr.addMark(a, b, struck());
+    // The removal ended inside nested blocks (a list, a quote…) that went on after it: what was
+    // left of each stands right behind the part just put back — they are one block again.
+    // (Outermost first: a join further out does not move the places further in — nor the
+    // ranges deleted below, which all lie before it.)
+    if (r.rejoin?.some(Boolean)) {
+      const levels = r.rejoin.length;
+      r.rejoin.forEach((continued, i) => {
+        if (!continued) return;
+        try {
+          const $end = tr.doc.resolve(tr.mapping.slice(first).map(at, 1));
+          const depth = $end.depth - (levels - i);
+          if (depth < 1) return;
+          const cut = $end.after(depth);
+          const $cut = tr.doc.resolve(cut);
+          const before = $cut.nodeBefore;
+          const after = $cut.nodeAfter;
+          if (before && after && !before.isTextblock && before.type === after.type && before.sameMarkup(after) && canJoin(tr.doc, cut)) tr.join(cut);
+        } catch { /* the blocks stay apart: nothing is lost */ }
+      });
+    }
     for (const [a, b] of drop.sort((x, y) => y[0] - x[0])) tr.delete(a, b);
     // A plain removal (cut, a phone keyboard's delete): the caret goes BEFORE the struck
     // text, where Backspace leaves it, so the next delete moves on.
@@ -303,6 +409,7 @@ export const SUGGESTION_REFUSED_MESSAGE = "Images, mentions and other blocks can
 export const SUGGESTION_CODE_MESSAGE = "Changes inside code aren’t tracked while suggesting — this one was applied directly.";
 export const SUGGESTION_LOST_MESSAGE = "A block removed while suggesting could not be put back — use Undo to bring it back.";
 export const SUGGESTION_TODO_MESSAGE = "Checking a to-do isn’t tracked while suggesting — switch to Editing to check it.";
+export const SUGGESTION_ISOLATED_MESSAGE = "A change that starts in one table cell or column and ends outside it can’t be tracked while suggesting — nothing was changed. Select inside one cell, or switch to Editing.";
 export const SUGGESTION_MISPLACED_MESSAGE = "Some removed text could not go back where it was — it was kept, struck, next to the change.";
 
 export const SuggestionMode = Extension.create<SuggestionOptions>({
@@ -544,7 +651,12 @@ export const SuggestionMode = Extension.create<SuggestionOptions>({
           const all = new Mapping();
           for (const t of transactions) for (const map of t.mapping.maps) all.appendMap(map);
           const added: Array<{ k: number; from: number; to: number }> = [];
-          let removed: Array<{ k: number; pos: number; slice: Slice; pure: boolean }> = [];
+          let removed: Array<{ k: number; pos: number; slice: Slice; pure: boolean; rejoin?: boolean[] }> = [];
+          // A removal across the boundary of a table cell / column: the whole dispatch is taken back.
+          let isolated = false;
+          // A removal across nesting depth (see `inPlace` below): [a, b) in the document before the dispatch.
+          const deep: { at: { a: number; b: number; /** What the step put in at that place (after the step). */ put: [number, number]; /** It was the dispatch's first step: [a, b) are places in the document before the dispatch. */ first: boolean } | null } = { at: null };
+          let steps = 0;
           // Leaves (images, chips, dividers…) this dispatch put in: one that was also taken out, in a
           // removal made of nothing else, MOVED.
           const arrived: PMNode[] = [];
@@ -559,10 +671,15 @@ export const SuggestionMode = Extension.create<SuggestionOptions>({
               const before = t.docs[i]!;
               const made: Array<[number, number]> = [];
               if (on) {
+                if (step instanceof ReplaceStep || step instanceof ReplaceAroundStep) step.slice.content.descendants((node) => { if (isBlockLeaf(node)) arrived.push(node); });
                 map.forEach((oldStart, oldEnd, newStart, newEnd) => {
-                  if (step instanceof ReplaceStep) step.slice.content.descendants((node) => { if (isBlockLeaf(node)) arrived.push(node); });
                   if (newEnd > newStart) { added.push({ k, from: newStart, to: newEnd }); made.push([newStart, newEnd]); }
-                  if (oldEnd <= oldStart || !(step instanceof ReplaceStep)) return;
+                  // Any step that takes content out is read — a ReplaceAroundStep too: a replacement
+                  // that crosses nesting depth (from a paragraph into the list, quote or table cell
+                  // below it, or out of one) is written as one (the rest of the last block is carried
+                  // into the first), and its two removed ranges hold the removed text. Pure structure
+                  // (lift / wrap / turn into, a block join) removes only node boundaries: `keepsNothing`.
+                  if (oldEnd <= oldStart || !(step instanceof ReplaceStep || step instanceof ReplaceAroundStep)) return;
                   let at = oldStart;
                   const pieces: Array<[number, number]> = [];
                   for (const [a, b] of fresh) {
@@ -574,7 +691,9 @@ export const SuggestionMode = Extension.create<SuggestionOptions>({
                   for (const [a, b] of pieces) {
                     const slice = before.slice(a, b);
                     if (keepsNothing(slice, insertion, user.name)) continue;
-                    removed.push({ k, pos: newStart, slice, pure: newEnd === newStart });
+                    if (crossesIsolating(before, a, b)) isolated = true;
+                    if (step instanceof ReplaceAroundStep || slice.openStart !== slice.openEnd) deep.at = { a, b, put: [newStart, newEnd], first: k === 0 };
+                    removed.push({ k, pos: newStart, slice, pure: newEnd === newStart, rejoin: slice.openEnd > 1 ? continuedAfter(before, b, slice.openEnd) : undefined });
                   }
                 });
               }
@@ -584,6 +703,7 @@ export const SuggestionMode = Extension.create<SuggestionOptions>({
                 .concat(made)
                 .sort((x, y) => x[0] - y[0]);
               k++;
+              if (on) steps++;
             });
           }
           // A removal that is nothing but leaves which arrived elsewhere in this dispatch is a move.
@@ -601,6 +721,89 @@ export const SuggestionMode = Extension.create<SuggestionOptions>({
             });
           }
           if (!added.length && !removed.length) return null;
+
+          const tell = ext.options.onRefused;
+          const local = transactions.filter(tracked);
+          /** The dispatch, taken back step by step: `tr.doc` is the document before it again. */
+          const takenBack = (): Transaction | null => {
+            const back = newState.tr.setMeta(suggestionKey, true);
+            try {
+              for (let i = transactions.length - 1; i >= 0; i--) {
+                const t = transactions[i]!;
+                for (let j = t.steps.length - 1; j >= 0; j--) back.step(t.steps[j]!.invert(t.docs[j]!));
+              }
+              if (!back.doc.eq(_oldState.doc)) return null;
+              try { back.setSelection(Selection.fromJSON(back.doc, _oldState.selection.toJSON())); } catch { /* the mapped selection stands */ }
+              return back;
+            } catch { return null; }
+          };
+          // REFUSED: a removal across the boundary of a table cell or a column. No put-back can be
+          // faithful there (the edit leaves an emptied cell behind and the removed part would come
+          // back as a table of its own, or as a cell too many) — and Reject could never undo that.
+          // Nothing changes, and the person is told.
+          if (isolated) {
+            const back = takenBack();
+            if (back) {
+              if (tell) queueMicrotask(() => tell(SUGGESTION_ISOLATED_MESSAGE));
+              return back;
+            }
+          }
+          // IN PLACE: one replacement whose removed part crosses NESTING DEPTH (from a paragraph
+          // into the first item of the list below, out of a quote…). ProseMirror carries the rest
+          // of the last block into the first one and drops the emptied blocks, so a put-back would
+          // have to rebuild them. Instead the dispatch is taken back and redone the tracked way:
+          // the removed text is struck where it stands (no block is touched — as Backspace over a
+          // selection does) and what was put in goes right after it, marked inserted. Reject
+          // gives the page back exactly; Accept removes the struck text as the edit would have.
+          // The same when the rest of the dispatch only made block boundaries (Enter over such a
+          // selection: the blocks are separate already, so the text is struck and the caret moves
+          // to the start of what follows). Anything else in several steps (a drop that also puts
+          // the text elsewhere) goes through the put-back below.
+          const spot = deep.at;
+          const one = steps === 1;
+          let onlyBoundaries = !one;
+          if (!one) for (const { k: at, from, to } of added) {
+            const x = all.slice(at + 1).map(from, 1);
+            const y = all.slice(at + 1).map(to, -1);
+            if (y > x) newState.doc.nodesBetween(x, y, (node) => { if (node.isLeaf) onlyBoundaries = false; return onlyBoundaries; });
+          }
+          if (spot && spot.first && !isolated && (one || onlyBoundaries) && local.length === 1 && removed.length === 1 && !heldOf(newState).length) {
+            // What the one step put in where the removed part was (not what it carried along,
+            // and not the block boundaries it rebuilt behind it): content only.
+            const raw = one && spot.put[1] > spot.put[0] ? newState.doc.slice(spot.put[0], spot.put[1]) : null;
+            let holds = false;
+            raw?.content.descendants((node) => { if (node.isLeaf) holds = true; return !holds; });
+            const put = holds ? raw : null;
+            const back = takenBack();
+            if (back) {
+              const result = strikeInPlace(back, spot.a, spot.b, { insertion, deletion, userName: user.name });
+              // A plain removal (cut): the caret goes BEFORE the struck text, as everywhere.
+              let caret = one && removed[0]!.pure ? spot.a : result.end;
+              let placed = true;
+              if (put && put.content.size) {
+                const before = back.steps.length;
+                try {
+                  // Inline content goes in as it is; anything with blocks is fitted (`replaceRange`).
+                  if (put.openStart === 0 && put.openEnd === 0 && !put.content.firstChild?.isBlock) back.replaceWith(result.end, result.end, put.content);
+                  else back.replaceRange(result.end, result.end, put);
+                  const end = back.mapping.slice(before).map(result.end, 1);
+                  for (const [x, y] of textRuns(back.doc, result.end, end)) {
+                    back.addMark(x, y, insertion.create({ user: user.name, color: user.color }));
+                    back.removeMark(x, y, deletion);
+                  }
+                  caret = end;
+                } catch { placed = false; }
+              }
+              if (placed) {
+                try {
+                  const $caret = back.doc.resolve(Math.min(caret, back.doc.content.size));
+                  back.setSelection($caret.parent.inlineContent ? TextSelection.create(back.doc, $caret.pos) : Selection.near($caret, -1));
+                } catch { /* the selection stands */ }
+                if (tell) for (const message of [result.refused && SUGGESTION_REFUSED_MESSAGE, result.untracked && SUGGESTION_CODE_MESSAGE].filter((m): m is string => !!m)) queueMicrotask(() => tell(message));
+                return back;
+              }
+            }
+          }
 
           const tr = newState.tr.setMeta(suggestionKey, true);
           for (const { k: at, from, to } of added) {
@@ -625,7 +828,7 @@ export const SuggestionMode = Extension.create<SuggestionOptions>({
           // half-typed character): what the composition replaced is HELD in plugin state
           // and put back when it ends (`releaseHeld`), or with the next ordinary edit.
           const composing = transactions.some((t) => tracked(t) && t.getMeta("composition") !== undefined);
-          const here = removed.map((r, order) => ({ at: all.slice(r.k + 1).map(r.pos, -1), slice: r.slice, pure: r.pure, order }));
+          const here: Array<{ at: number; slice: Slice; pure: boolean; order: number; rejoin?: boolean[] }> = removed.map((r, order) => ({ at: all.slice(r.k + 1).map(r.pos, -1), slice: r.slice, pure: r.pure, order, rejoin: r.rejoin }));
           if (composing) {
             if (here.length) tr.setMeta(suggestionKey, { hold: here.map(({ at, slice }) => ({ pos: at, slice })) });
             return tr.steps.length || here.length ? tr : null;
@@ -639,7 +842,6 @@ export const SuggestionMode = Extension.create<SuggestionOptions>({
           }
           const arrivedIn = added.map(({ k: at, from, to }): [number, number] => [all.slice(at + 1).map(from, 1), all.slice(at + 1).map(to, -1)]);
           const result = putBack(tr, here, { selection: newState.selection, insertion, deletion, userName: user.name, moved: arrived, arrivedIn });
-          const tell = ext.options.onRefused;
           if (tell) for (const message of putBackMessages(result)) queueMicrotask(() => tell(message));
           return tr.steps.length || result.caret || held?.length ? tr : null;
         },

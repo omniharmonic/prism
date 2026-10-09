@@ -11,9 +11,12 @@
  */
 import type { VaultClient } from "../../data/VaultClient";
 import { PagesRequestError, isContainerPath, pageTitle, renamePath, type MoveResult } from "./model";
-import { syncStoredTitle } from "./storedTitle";
+import { syncStoredTitle, type StoredTitleOutcome } from "./storedTitle";
 
 export { syncStoredTitle };
+
+/** The page is renamed; the server refused the stored-title write (no permission, locked…): said once, no retry offered. */
+export const TITLE_REFUSED = "Renamed. The title shown in lists could not be changed — you can’t change this page’s properties.";
 import * as ops from "./ops";
 import { flushPendingSaves } from "../../app/hooks/useAutoSave";
 import { usePagesUI } from "./store";
@@ -116,9 +119,8 @@ export async function renamePageFromTitle(
   onChanged?: () => void,
 ): Promise<TitleRenameResult | null> {
   const title = newName.trim();
-  if (isContainerPath(page.path)) {
-    if (!title) return null;
-    if (typeof navigator !== "undefined" && navigator.onLine === false) throw offlineRefusal();
+  /** A container-named page: the title is stored, nothing moves. */
+  const storeContainerTitle = async (path: string): Promise<TitleRenameResult> => {
     try {
       // A metadata-only write (merged by the vault): the body and the path are not sent.
       await client.updateNote(page.id, { metadata: { title } });
@@ -126,7 +128,12 @@ export async function renamePageFromTitle(
       throw refusalOf(e, title) ?? e;
     }
     onChanged?.();
-    return { path: page.path!, partial: false, title };
+    return { path, partial: false, title };
+  };
+  if (isContainerPath(page.path)) {
+    if (!title) return null;
+    if (typeof navigator !== "undefined" && navigator.onLine === false) throw offlineRefusal();
+    return storeContainerTitle(page.path!);
   }
   if (!title) return null;
   if (typeof navigator !== "undefined" && navigator.onLine === false) throw offlineRefusal();
@@ -134,13 +141,17 @@ export async function renamePageFromTitle(
   // read and the move would make the move conflict with the page's own save.
   await flushPendingSaves(page.id).catch(() => {});
   let result: MoveResult;
-  let titleWrite: "unchanged" | "written" | "failed";
+  let titleWrite: StoredTitleOutcome;
   try {
     // CAS against the page as the server has it NOW (the tree's Rename does the same) — and the
     // new path is worked out from where the page is now (a retry after a rename that already
     // moved it must not ask for the same move again).
     const fresh = await client.getNote(page.id, { fresh: true });
     const from = fresh?.path ?? page.path;
+    // The caller's path can be stale (the page was moved to `<folder>/PROJECT` elsewhere, the tab
+    // has not heard yet): the guard is repeated on the path the server has NOW — a container
+    // file is never moved by a title edit.
+    if (isContainerPath(from)) return await storeContainerTitle(from!);
     const next = renamePath(from, newName);
     if (!next) {
       // The file name already says this (as far as a path can): only the stored title differs —
@@ -148,6 +159,8 @@ export async function renamePageFromTitle(
       if (!from) return null;
       titleWrite = await syncStoredTitle(client, fresh, from, title);
       if (titleWrite === "failed") throw new TitleNotUpdated();
+      // Nothing moved and the title may not be written: the old title goes back, with the reason.
+      if (titleWrite === "refused") throw new TitleRenameRefused("The title could not be changed — you can’t change this page’s properties.", "title_refused");
       if (titleWrite === "unchanged") return null;
       onChanged?.();
       return { path: from, partial: false };
@@ -164,6 +177,7 @@ export async function renamePageFromTitle(
     throw new TitleNotUpdated();
   }
   onChanged?.();
+  if (titleWrite === "refused") usePagesUI.getState().showToast({ message: TITLE_REFUSED, tone: "error" });
   partialNotice(client, page.id, pageTitle(result.path) || title, result, onChanged);
   const name = pageTitle(result.path) || title;
   const moveId = !result.ok ? result.partial?.resume.moveId : undefined;

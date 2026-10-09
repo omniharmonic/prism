@@ -20,10 +20,16 @@ const fileTitle = (path: string | null | undefined): string => (path ? withoutEx
  *  - the new file name cannot hold it (a `/`, an ending the server strips…) → the typed title
  *    is stored.
  * Compare-and-set on the value read just before the move (a title someone changed meanwhile is
- * left alone). A move that is not a rename (nothing typed) changes nothing. Best effort: without edit access the
+ * left alone). A move that is not a rename (nothing typed) changes nothing. Best effort (a
+ * refusal is reported as `refused`, a failure worth retrying as `failed`): without edit access the
  * stored title stays as it was.
  */
-export async function syncStoredTitle(client: VaultClient, before: Note | null | undefined, newPath: string, typed?: string): Promise<"unchanged" | "written" | "failed"> {
+export type StoredTitleOutcome = "unchanged" | "written" | /** Could not be written this time: worth another try. */ "failed" | /** The server said no (no permission, gone, locked): another try gets the same answer. */ "refused";
+
+/** A definite answer from the server — not a failure a retry can fix. */
+const DEFINITE = [401, 403, 404, 409, 410, 423];
+
+export async function syncStoredTitle(client: VaultClient, before: Note | null | undefined, newPath: string, typed?: string): Promise<StoredTitleOutcome> {
   if (!before) return "unchanged";
   // A container-named page (`<folder>/PROJECT`) is not named by its file: its stored title is its
   // own (written by `renamePageFromTitle`) and no move or rename of the file may touch it.
@@ -52,6 +58,10 @@ export async function syncStoredTitle(client: VaultClient, before: Note | null |
     return "written";
   } catch (e) {
     // Someone set another title meanwhile: theirs stands.
-    return e instanceof Error && e.name === "PropertyConflictError" ? "unchanged" : "failed";
+    if (e instanceof Error && e.name === "PropertyConflictError") return "unchanged";
+    // No permission to change this page's properties (an ingest-owned note, a member without
+    // edit access to them), the page is gone or locked: said once, never offered as a retry.
+    const status = (e as { status?: unknown } | null)?.status;
+    return typeof status === "number" && DEFINITE.includes(status) ? "refused" : "failed";
   }
 }

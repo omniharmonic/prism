@@ -36,6 +36,20 @@ Object.assign(window, {
     // local state: a mark or node that never reaches the Y.Doc must never satisfy a spec.
     html: () => peer!.getHTML(),
     authorHtml: () => editor!.getHTML(),
+    /** All the text of the collaborator's copy, block after block. */
+    text: () => peer!.state.doc.textBetween(0, peer!.state.doc.content.size, "\n"),
+    /** The text the collaborator sees struck (tracked deletions), in document order; blocks joined by "|". */
+    struckText: () => {
+      const out: string[] = [];
+      peer!.state.doc.descendants((node) => {
+        if (!node.isTextblock) return true;
+        let run = "";
+        node.forEach((child) => { if (child.isText && child.marks.some((m) => m.type.name === "deletion")) run += child.text; });
+        if (run) out.push(run);
+        return false;
+      });
+      return out.join("|");
+    },
     /** "" when the author's document and the collaborator's are the same (text, nodes AND marks). */
     // (Compared as JSON: the two editors have a schema instance each, so `Node.eq` — which
     // compares node TYPES by identity — is false for any pair of their documents.)
@@ -45,6 +59,8 @@ Object.assign(window, {
       const theirs = JSON.stringify(peer.state.doc.toJSON());
       return mine === theirs ? "" : `author: ${mine}\npeer:   ${theirs}`;
     },
+    /** The text of the author's selection, blocks joined by "|" (as the editor holds it after any normalising). */
+    selectedText: () => { const { from, to } = editor!.state.selection; return editor!.state.doc.textBetween(from, to, "|"); },
     updates: () => updates,
     select(text: string) { const at = find(editor!, text); editor!.chain().focus().setTextSelection({ from: at, to: at + text.length }).run(); },
     /** From the start of `a` to the end of `b` (they may sit in different blocks). */
