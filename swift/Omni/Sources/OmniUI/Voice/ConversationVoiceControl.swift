@@ -13,8 +13,9 @@ struct ConversationVoiceControl: View {
     @Environment(\.scenePhase) private var phase
     @Environment(\.voiceActivationSceneID) private var voiceSceneID
     @Environment(\.dynamicTypeSize) private var typeSize
+    @State private var binding: VoiceControlBinding
     @State private var device: ConversationDevice
-    @State private var voice: VoiceConversation
+    private var voice: VoiceConversation { binding.voice }
     @State private var selected = ConversationDevice.Engine.apple
     @State private var showingVoiceSettings = false
     @State private var showingTranscript = false
@@ -31,7 +32,7 @@ struct ConversationVoiceControl: View {
         #else
         let voice = existingVoice ?? VoiceConversation(audio: device)
         #endif
-        _device = State(initialValue: device); _voice = State(initialValue: voice)
+        _binding = State(initialValue: VoiceControlBinding(audio: device, voice: voice)); _device = State(initialValue: device)
         _selected = State(initialValue: device.selected)
     }
     var body: some View {
@@ -49,6 +50,9 @@ struct ConversationVoiceControl: View {
             .sheet(isPresented: $showingVoiceSettings, onDismiss: device.stopPreview) {
                 ConversationVoiceSettings(device: device)
             }
+            .onChange(of: model?.threadID, ownerChanged)
+            .onChange(of: session.voiceThreadID, ownerChanged)
+            .onChange(of: session.conversationVoice.map { ObjectIdentifier($0) }, ownerChanged)
             .onChange(of: model?.completedVoiceTurnID, consume)
             .onChange(of: model?.timeline, consume)
             .onChange(of: model?.isRunning, consume)
@@ -149,6 +153,7 @@ struct ConversationVoiceControl: View {
     }
     private func appeared() {
         mounted = true
+        reconcileOwner()
         installAutomaticListeningGuard()
         endpointPreferencesChanged()
         voice.setPrivacyLocked(PrivacyLock.shared.locked)
@@ -240,14 +245,25 @@ struct ConversationVoiceControl: View {
         .font(.callout).controlSize(.regular).buttonBorderShape(.capsule)
         .frame(maxWidth: .infinity, minHeight: 44)
     }
+    private func reconcileOwner() {
+        guard let sharedDevice = session.conversationAudio as? ConversationDevice else { return }
+        if binding.reconcile(session: session, threadID: model?.threadID) {
+            device = sharedDevice; selected = sharedDevice.selected
+        }
+    }
+    private func ownerChanged() {
+        guard mounted else { return }
+        reconcileOwner()
+        guard session.ownsVoice(voice, threadID: model?.threadID) else { return }
+        installAutomaticListeningGuard()
+        consume()
+    }
     private func consume() {
-        guard let model, session.voiceThreadID == model.threadID else { return }
-        if model.completedVoiceTurnID != nil {
-            voice.agentDidComplete(model.takeCompletedVoiceTimeline())
-        }
-        if voice.state == .answering || voice.state == .speaking {
-            voice.consume(model.timeline, running: model.isRunning)
-        }
+        guard mounted, let model else { return }
+        reconcileOwner()
+        guard session.ownsVoice(voice, threadID: model.threadID) else { return }
+        installAutomaticListeningGuard()
+        binding.consume(session: session, model: model)
     }
     private func consumeShortcutActivation() {
         guard session.pendingVoiceActivationID != nil, model == nil, mounted, phase == .active, !PrivacyLock.shared.locked else { return }
