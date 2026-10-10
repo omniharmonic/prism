@@ -235,9 +235,14 @@ final class OmniWalkTests: OmniUITestCase {
         // …and by dragging the conversation down.
         composer.tap()
         showKeyboard()
-        let conversation = element("transcript")
-        let top = conversation.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.2))
-        let bottom = conversation.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.8))
+        // Accessibility may expose the transcript's full scroll content frame. Gesture
+        // coordinates must stay in its visible region, between the bar and the composer.
+        let barBottom = app.navigationBars.firstMatch.frame.maxY
+        let composerTop = composer.frame.minY
+        let origin = app.coordinate(withNormalizedOffset: .zero)
+        let top = origin.withOffset(CGVector(dx: app.frame.width / 2, dy: barBottom + 12))
+        let bottom = origin.withOffset(CGVector(dx: app.frame.width / 2, dy: composerTop - 12))
+        XCTAssertGreaterThan(composerTop - barBottom, 40, "no visible transcript remains above the composer")
         top.press(forDuration: 0.05, thenDragTo: bottom, withVelocity: .default, thenHoldForDuration: 0.1)
         XCTAssertTrue(gone(app.keyboards.firstMatch, 5), "the keyboard cannot be put away by dragging the conversation")
         #endif
@@ -401,9 +406,6 @@ final class OmniWalkTests: OmniUITestCase {
         shot("signed-out")
     }
 
-    #if os(macOS)
-    // MARK: Mac keys and the window
-
     func test11CommandApprovalCanBeDenied() throws {
         let id = try XCTUnwrap(server { backend in
             try await backend.thread("Check a page from the shell", "Check the sample status page. stub:command")
@@ -422,6 +424,38 @@ final class OmniWalkTests: OmniUITestCase {
         shot("command-denied")
     }
 
+    /// A short visual matrix pass, with real stub-backed cards and the adaptive shell.
+    func test12RepresentativeLayouts() throws {
+        let ids = try XCTUnwrap(server { backend -> [String] in
+            let approval = try await backend.thread("Email Kevin about the buoy spec", "Email Kevin. stub:approval:email")
+            let card = try await backend.thread("Update the task for Dana", "Update Dana's task. stub:card:sample-note-1")
+            try await backend.settle(approval)
+            try await backend.settle(card)
+            return [approval, card]
+        })
+        launch(faults: "sample-data")
+        go(.today)
+        see("Stand-up")
+        shot("layout-today")
+        openThread(ids[0])
+        see("APPROVE")
+        shot("layout-approval")
+        openThread(ids[1])
+        see("Call Dana about the buoy spec")
+        shot("layout-record-card")
+        composer.tap()
+        showKeyboard()
+        shot("layout-composer-keyboard")
+        #if os(iOS)
+        if element("composer.hideKeyboard").exists { element("composer.hideKeyboard").tap() }
+        #endif
+        openSettings()
+        see("Diagnostics")
+        shot("layout-settings", window: settingsWindow)
+    }
+
+    #if os(macOS)
+    // MARK: Mac keys and the window
     func test10MacKeysAndWindow() {
         if OmniUITestCase.seeded.isEmpty { seed() }
         launch(faults: "sample-data")
