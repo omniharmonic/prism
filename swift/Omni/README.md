@@ -189,10 +189,10 @@ The app icon and Settings mark use the owner's supplied 2026-06-29 artwork uncha
 with standard PNG sizing for iPhone/iPad and Mac. The same image is available to web
 clients at `/omni-icon.png`; Prism's separate branding is unchanged.
 
-A conversation without authoritative runtime or dependency evidence is grouped under
+An imported conversation with no persisted Omni state is grouped under
 “Conversations”, rather than asserting that it is waiting or completed. The server
 preserves stored history and state; active Omni turns and pending approvals still take
-precedence, and explicit scheduled/done states remain. Hermes' current persisted session
+precedence, and all persisted states, including an owner-selected Waiting state, remain. Hermes' current persisted session
 API does not prove that an external CLI/cron turn is idle, so message age and old assistant
 text are not used as completion evidence. This is a display correction, not a history
 migration or cancellation of work.

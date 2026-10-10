@@ -244,9 +244,9 @@ function threadView(t: ThreadRow | null, s: HermesSession | null, gone = false):
   const running = !!activeTurn(id);
   const hermesActive = s?.last_active ? s.last_active * 1000 : 0;
   const pending = threadApprovals(id).some((a) => a.status === "pending");
-  // Waiting is meaningful only with actual dependency evidence. Imported/session
-  // history has no runtime signal; do not invent work or completion from its age.
-  const state: ThreadState | "conversation" = running ? "working" : pending ? "needs-you" : !t || t.state === "waiting" ? "conversation" : t.state;
+  // Imported session history has no runtime signal. Preserve every persisted state,
+  // including an owner-selected waiting state; never infer completion from age.
+  const state: ThreadState | "conversation" = running ? "working" : pending ? "needs-you" : !t ? "conversation" : t.state;
   return {
     id,
     title: t?.title ?? s?.title ?? null,
@@ -324,7 +324,7 @@ omniApi.get("/health", async (c) => {
 
 omniApi.get("/threads", async (c) => {
   const states = (c.req.query("state") ?? "").split(",").filter(Boolean);
-  if (states.some((s) => !(THREAD_STATES as readonly string[]).includes(s))) return bad(c, `state: ${THREAD_STATES.join(",")}`);
+  if (states.some((s) => ![...THREAD_STATES, "conversation"].includes(s as ThreadState))) return bad(c, `state: ${[...THREAD_STATES, "conversation"].join(",")}`);
   const q = (c.req.query("q") ?? "").trim().toLowerCase().slice(0, 200);
   const local = new Map(listThreads(500).map((t) => [t.id, t]));
   let sessions: HermesSession[] = [];

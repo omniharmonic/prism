@@ -993,3 +993,13 @@ test("job creation retries retain a single approval conversation and job", async
  assert.equal(fake.calls.filter(c=>c.method==="POST"&&c.path==="/api/jobs").length,1);
  assert.equal((await post("/jobs",{...body,prompt:"Different"},headers)).status,409);
 });
+
+test("neutral imported history filters consistently and explicit Waiting survives roundtrip", async () => {
+ fake.sessions.set("api_history",{id:"api_history",title:"History"});
+ assert.equal((await listThreadsOf("?state=conversation")).threads[0]?.state,"conversation");
+ const patched=await req("/threads/api_history",{method:"PATCH",headers:owner(),body:JSON.stringify({state:"waiting"})});
+ assert.equal(patched.status,200);
+ assert.equal((await patched.json() as {thread:{state:string}}).thread.state,"waiting");
+ assert.equal((await listThreadsOf("?state=waiting")).threads[0]?.state,"waiting");
+ assert.equal((await listThreadsOf("?state=conversation")).threads.length,0);
+});
