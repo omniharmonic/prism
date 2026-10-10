@@ -2,7 +2,7 @@ import { PublicationNavigationEditor } from "./PublicationNavigationEditor";
 import { parsePublicationNavigation } from "../../../../lib/publishing/navigation";
 import { Eye, Globe, FileText } from "lucide-react";
 import "./publishing-studio.css";
-import { Suspense, useEffect, useId, useRef, useState } from "react";
+import { Suspense, useEffect, useLayoutEffect, useId, useRef, useState } from "react";
 import type {
   CollabSharing,
   PublicationInfo,
@@ -40,29 +40,33 @@ export function PresentationDraft({
   const previewReturn = useRef<"closed" | "inline">("closed");
   const previewLaunch = useRef<HTMLButtonElement | null>(null);
   const studio = useRef<HTMLDivElement>(null);
+  const focusAfterClose = useRef(false);
   function closePreview() {
     if (preview === "dialog" && previewReturn.current === "inline") {
       previewReturn.current = "closed";
       setPreview("inline");
       return;
     }
+    focusAfterClose.current = true;
     setPreview("closed");
-    requestAnimationFrame(() => {
-      const target = previewLaunch.current?.isConnected
-        ? previewLaunch.current
-        : studio.current?.querySelector<HTMLButtonElement>(
-            "[data-inline-preview]",
-          );
-      if (target?.disabled) {
-        setMobilePane("settings");
-        requestAnimationFrame(() =>
-          studio.current
-            ?.querySelector<HTMLInputElement>('[aria-label="Draft site title"]')
-            ?.focus({ preventScroll: true }),
-        );
-      } else target?.focus({ preventScroll: true });
-    });
   }
+  // The launcher remounts on close; focus only after its pane is committed visible.
+  useLayoutEffect(() => {
+    if (preview !== "closed" || !focusAfterClose.current) return;
+    const launcher = previewLaunch.current?.isConnected
+      ? previewLaunch.current
+      : studio.current?.querySelector<HTMLButtonElement>("[data-inline-preview]");
+    if (launcher?.disabled && mobilePane !== "settings") {
+      setMobilePane("settings");
+      return;
+    }
+    const target = launcher?.disabled
+      ? studio.current?.querySelector<HTMLInputElement>('[aria-label="Draft site title"]')
+      : launcher;
+    focusAfterClose.current = false;
+    target?.focus({ preventScroll: true });
+  }, [preview, mobilePane]);
+
   const lock = useRef(false);
   const generation = useRef(0);
   const Preview = usePublicationPreview();

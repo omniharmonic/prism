@@ -110,6 +110,11 @@
 .tabbar-phone-side[data-side="end"] { justify-content: flex-end; }
 .tabbar-phone-centre { display: flex; align-items: center; justify-content: center; flex: 0 1 auto; min-width: 0; padding: 0 4px; }
 .tabbar-phone-crumbs { display: flex; min-width: 0; max-width: 100%; }
+/* At WCAG reflow width, reserve room for the save label and every 44px action. */
+@media (max-width: 359px) {
+  .tabbar-phone { gap: 2px; }
+  .tabbar-phone-centre { padding-inline: 0; }
+}
 .tabbar-phone-title {
   display: inline-flex; align-items: center; gap: 3px; min-width: 0; max-width: 100%;
   font-size: var(--text-sm); font-weight: 550; color: var(--text-primary); text-align: center;
