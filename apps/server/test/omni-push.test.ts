@@ -61,3 +61,19 @@ test("push registration requires authentication, caps input and limits replaceme
   assert.equal(limited.status, 429);
   assert.ok(limited.headers.get("Retry-After"));
 });
+
+test("invalid-token pruning cannot delete another app or signing environment", async () => {
+  const sandbox = issueDeviceToken(config.ownerEmail, "Omni sandbox", "omni-native");
+  const production = issueDeviceToken(config.ownerEmail, "Omni production", "omni-native");
+  const prism = issueDeviceToken(config.ownerEmail, "Prism", "prism-native");
+  const token = "a".repeat(64);
+  await register(omniApi, "/push", sandbox.token, token);
+  await omniApi.request("/push", { method: "POST", headers: headers(production.token), body: JSON.stringify({ token, environment: "production" }) });
+  await register(pushApi, "/apns", prism.token, token);
+  assert.equal(liveApnsTokens(config.ownerEmail, "omni").length, 2);
+  configureApns({ transport: { send: async r => ({ status: r.origin.includes("sandbox") ? 410 : 200, body: "" }), close() {} } });
+  await sendApnsToOwner(config.ownerEmail, { payload: { aps: { alert: "An update" } } }, "omni");
+  assert.equal(apnsTokenForDevice(sandbox.id), null);
+  assert.equal(apnsTokenForDevice(production.id)?.application, "omni");
+  assert.equal(apnsTokenForDevice(prism.id)?.application, "prism");
+});
