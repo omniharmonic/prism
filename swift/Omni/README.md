@@ -206,8 +206,10 @@ physical acceptance checks.
 
 ## Conversational voice
 
-An open conversation offers local Apple or Parakeet speech, with explicit Speak and
-Send Voice controls. First use requests microphone/speech permission and may download
+The Voice toolbar action opens a centered glass panel in a conversation, or a new
+voice composer from the main interface. Opening it does not record or create a thread;
+the first Send Voice creates the conversation and keeps its voice controls open.
+Apple and Parakeet speech remain local, with explicit Speak and Send Voice controls. First use requests microphone/speech permission and may download
 models. Audio is temporary and deleted after transcription or cancellation; only the
 recognized text is submitted to the ordinary Hermes turn stream. The transcript remains
 visible and failures use the existing chat retry path.
