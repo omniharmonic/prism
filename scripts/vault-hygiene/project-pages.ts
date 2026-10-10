@@ -186,7 +186,7 @@ export async function main(argv: string[], ctx: Ctx): Promise<number> {
         if ((fresh.content?.length ?? 0) > 40000) {
           const path = `${folderOf(fresh)}/Project background`;
           const archive = await create(path, fresh.content!, ["document"], { title: "Project background", projects: [`[[${fresh.path}]]`], split_from: fresh.id });
-          if (archive?.content === fresh.content && archive.metadata?.split_from === fresh.id) await patch(fresh, { content: `${String(fresh.metadata?.description || fresh.metadata?.purpose || "Project background and working notes are preserved below.")}\n\n[[${path}|Project background]]\n` });
+          if (archive && archive.content === fresh.content && archive.metadata?.split_from === fresh.id) await patch(fresh, { content: `${String(fresh.metadata?.description || fresh.metadata?.purpose || "Project background and working notes are preserved below.")}\n\n[[${path}|Project background]]\n` });
           else { failures++; ctx.log(`  skip split ${fresh.id}: archive path differs`); }
         }
       } catch { failures++; ctx.log(`  failed split ${candidate.id}`); }
@@ -202,7 +202,7 @@ export async function main(argv: string[], ctx: Ctx): Promise<number> {
         const fresh = await vault.getNote(duplicate.id); if (!fresh || !isLive(fresh)) continue;
         if (fresh.path && notes.some(n => n.id !== fresh.id && n.path?.startsWith(`${fresh.path}/`))) throw new Error("duplicate has descendants");
         const archive = await create(`${folderOf(canonical)}/Merged project ${from}`, fresh.content ?? "", ["document"], { ...fresh.metadata, title: `Merged project: ${titleOf(fresh)}`, type: "document", projects: [`[[${canonical.path}]]`], merged_from: fresh.id });
-        if (archive?.content !== (fresh.content ?? "") || archive.metadata?.merged_from !== fresh.id) throw new Error("archive differs");
+        if (archive?.content !== (fresh.content ?? "") || archive?.metadata?.merged_from !== fresh.id) throw new Error("archive differs");
         // Old wikilinks resolve through aliases; never rewrite ingester-owned text.
         const target = await vault.getNote(canonical.id);
         if (!target || !isLive(target)) throw new Error("canonical unavailable");
@@ -234,7 +234,7 @@ export async function main(argv: string[], ctx: Ctx): Promise<number> {
       if (!candidate.path?.startsWith(ROOT) || !/(?:^|\/)(?:INDEX|index)(?:\.md)?$/.test(candidate.path)) continue;
       const body = candidate.content ?? "";
       if (!body.includes("```dataview") || body.replace(/^#.*$/gm, "").replace(/```dataview[\s\S]*?```/g, "").trim()) continue;
-      try { const fresh = await vault.getNote(candidate.id); if (fresh?.content === candidate.content && isLive(fresh)) await trash(fresh, "live-project-sections"); }
+      try { const fresh = await vault.getNote(candidate.id); if (fresh && fresh.content === candidate.content && isLive(fresh)) await trash(fresh, "live-project-sections"); }
       catch { failures++; ctx.log(`  failed index ${candidate.id}`); }
     }
   }
