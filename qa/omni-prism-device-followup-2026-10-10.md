@@ -180,4 +180,4 @@ Final validation: 176 Core, 21 Client, five callback/playback and one empty-reco
 
 Mac Omni v9 signature verified and notarization uploaded as `5b42176e-30e4-4e0b-bf6b-bf7ec70ab719`; status remains InProgress. Mac staple/install is pending. Prism laptop v6 installation, native launch, signed-in workspace, document opening and Synced indicator were verified. These later receipts supersede the earlier work-in-progress entries above.
 
-Hosted PR106 Node checks and Rust passed; browser-fixture CI remained in progress at this checkpoint. The isolated development backend on port 10396 was stopped cleanly. Apple notarization remains in progress; no Mac release completion claim.
+Hosted PR106 Node checks and Rust passed; browser-fixture CI remained in progress at this checkpoint. The isolated development backend on port 8797 was stopped cleanly. Apple notarization remains in progress; no Mac release completion claim.
