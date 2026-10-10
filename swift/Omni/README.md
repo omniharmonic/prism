@@ -67,9 +67,9 @@ keeps its sign-in there (see "Decisions" below).
   text of what would be sent; Send / Edit / Revise / Cancel Draft. Send is not offered when
   the draft does not match the server's fingerprint. Send asks for Touch ID or your
   password first.
-- **Today** and **Recurring** (jobs, with Pause / Resume): read-only lists. Today shows
-  what loaded and names what did not ("Some of Today couldn't be loaded: the agenda"), with
-  Try Again; a refresh that fails keeps what was on screen.
+- **Today** reads the day’s agenda and tasks, names unavailable sections, and keeps
+  previous content when refresh fails. **Recurring** creates and edits guarded local agent
+  jobs, dispatches Run Now, and manages schedules; legacy script runners remain read-only.
 - Mac keys: ⌘N new thread · ⌘F search · ⌘. stop · ⌘R refresh (whatever the window shows) ·
   ⌘, settings.
 - **iPhone and iPad.** iPhone: tabs Today · Needs you · Threads. iPad: the Mac's sidebar
@@ -77,8 +77,10 @@ keeps its sign-in there (see "Decisions" below).
   keyboard has a Done button and goes away when the conversation is dragged; every screen
   reflows at the largest text sizes.
 
-Not here: voice (the composer has a marked slot for the microphone), push, nudges, task
-dispatch, a read-only record preview, the context inspector, the app lock.
+Conversational voice uses local Apple/Parakeet transcription with Hermes text streaming,
+speech output and explicit interruption. Completion push, contextual source navigation,
+nudges and biometric privacy lock are implemented. Voice hardware/quality acceptance and
+extended record/context inspection remain separate follow-ups; skills editing is in progress.
 
 ## Layout
 
