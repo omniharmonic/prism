@@ -60,7 +60,10 @@ test("prose startup requests none of the specialized collaborative editing engin
   } finally { await fixture.close(); }
 });
 
-test("a delayed code engine retains its live session and receives remote edits before opening", async ({ page }) => {
+for (const platform of ["native", "linux"] as const) {
+ test(`a delayed code engine retains its live session and receives remote edits before opening — ${platform}`, async ({ page }) => {
+  if (platform === "linux") await page.addInitScript(() => Object.defineProperty(navigator, "platform", { get: () => "Linux x86_64" }));
+  const modifier = platform === "linux" ? "Control" : "ControlOrMeta";
   let release!: () => void;
   const blocked = new Promise<void>(resolve => { release = resolve; });
   await page.route("**/CollabCodeEditor.tsx*", async route => { await blocked; await route.continue(); });
@@ -76,7 +79,7 @@ test("a delayed code engine retains its live session and receives remote edits b
     const editor = page.locator(".cm-content[contenteditable=true]");
     await expect(editor).toContainText("REMOTE_DURING_LOAD");
     expect([...doc.getConnections()]).toEqual(connections);
-    await editor.press("ControlOrMeta+End");
+    await editor.press(`${modifier}+End`);
     await editor.pressSequentially(" LOCAL_LAZY_EDIT");
     await expect.poll(() => doc.getText("codemirror").toString()).toContain("LOCAL_LAZY_EDIT");
     await page.evaluate(() => (window as any).prismCodeBeforeResize = document.querySelector(".cm-content"));
@@ -86,10 +89,11 @@ test("a delayed code engine retains its live session and receives remote edits b
       expect(await page.evaluate(() => (window as any).prismCodeBeforeResize === document.querySelector(".cm-content"))).toBe(true);
       await expect(editor).toBeFocused();
     }
-    await editor.press("ControlOrMeta+z");
+    await editor.press(`${modifier}+z`);
     await expect(editor).not.toContainText("LOCAL_LAZY_EDIT");
     await expect(editor).toContainText("REMOTE_DURING_LOAD");
-    await editor.press("ControlOrMeta+Shift+z");
+    // Use the collaborative editor's platform-default redo binding (yUndoManagerKeymap).
+    await editor.press(platform === "native" && process.platform === "darwin" ? "Meta+Shift+z" : `${modifier}+y`);
     await expect(editor).toContainText("LOCAL_LAZY_EDIT");
     await page.reload();
     await expect(editor).toContainText("LOCAL_LAZY_EDIT");
@@ -100,11 +104,12 @@ test("a delayed code engine retains its live session and receives remote edits b
     await expect(page.getByText("Live · View only", { exact: true })).toBeVisible();
     const source = fixture.doc().getText("codemirror").toString();
     await reader.dispatchEvent("beforeinput", { inputType: "historyUndo", bubbles: true, cancelable: true });
-    await reader.press("ControlOrMeta+z");
+    await reader.press(`${modifier}+z`);
     expect(fixture.doc().getText("codemirror").toString()).toBe(source);
     await expect(reader).toContainText("LOCAL_LAZY_EDIT");
   } finally { release(); await fixture.close(); }
 });
+}
 
 test("a failed sheet import offers explicit reload and preserves remote cells", async ({ page }) => {
   let attempts = 0;

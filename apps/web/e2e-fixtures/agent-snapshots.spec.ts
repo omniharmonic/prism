@@ -14,7 +14,7 @@ test("selected unsaved text is previewable, survives reload and remains separate
     .getByRole("region", { name: "Working document" })
     .locator("[contenteditable=true]");
   await editor.fill("UNSAVED_SELECTED_PASSAGE");
-  await editor.press("Meta+a");
+  await editor.press("ControlOrMeta+a");
   await page
     .getByRole("button", { name: "Attach selection", exact: true })
     .click();

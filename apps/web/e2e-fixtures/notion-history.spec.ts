@@ -1,7 +1,6 @@
 /** NP-PG-13, NP-CO-15 — version attribution and the page Updates feed. */
 import { test, expect } from "@playwright/test";
 
-const shots = "/private/tmp/claude-501/-Users-benjaminlife-dev-prism/94600911-66b9-4b8d-b802-fc8f8fe9305f/scratchpad/w2-sharing";
 const rows = ".prism-context-history .prism-context-history-row";
 
 test("versions name their author kind", async ({ page }) => {
@@ -19,10 +18,10 @@ test("versions name their author kind", async ({ page }) => {
   // Unknown writers are never named.
   await expect(row(5)).not.toContainText("·  ·");
   await expect(row(5).locator("[data-writer-kind]")).toHaveAttribute("data-writer-kind", "unknown");
-  await page.screenshot({ path: `${shots}/history-versions-light.png` });
+  await page.screenshot({ path: test.info().outputPath("history-versions-light.png") });
   await page.goto("/e2e-fixtures/notion-sharing.html?panel=history&dark");
   await expect(page.locator(rows)).toHaveCount(6);
-  await page.screenshot({ path: `${shots}/history-versions-dark.png` });
+  await page.screenshot({ path: test.info().outputPath("history-versions-dark.png") });
 });
 
 test("page updates feed", async ({ page }) => {
@@ -44,7 +43,7 @@ test("page updates feed", async ({ page }) => {
   await expect(feed).toContainText("Agent revision");
   await page.setViewportSize({ width: 390, height: 844 });
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBe(true);
-  await page.screenshot({ path: `${shots}/history-updates-phone.png` });
+  await page.screenshot({ path: test.info().outputPath("history-updates-phone.png") });
 });
 
 test("changes made outside Prism are never credited to the last person; the owner sees which agent", async ({ page }) => {
