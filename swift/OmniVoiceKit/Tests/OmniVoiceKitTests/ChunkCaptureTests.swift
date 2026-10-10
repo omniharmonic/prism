@@ -53,6 +53,7 @@ final class ChunkCaptureTests: XCTestCase {
     func testTranscriptOverlapKeepsWordsAndPunctuation() {
         XCTAssertEqual(ConversationTranscript.join("I was thinking about the garden.", "the garden and its trees."), "I was thinking about the garden. and its trees.")
         XCTAssertEqual(ConversationTranscript.join("First thought.", "Second thought."), "First thought. Second thought.")
+        XCTAssertEqual(ConversationTranscript.join("No", "no, I meant yes."), "No no, I meant yes.")
         XCTAssertEqual(ConversationTranscript.join("", "A new thought."), "A new thought.")
     }
 }

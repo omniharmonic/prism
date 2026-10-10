@@ -196,8 +196,8 @@ public extension ConversationAudio {
         }
     }
 
-    /// Speak complete sentences as the real Hermes text stream grows. Remember the
-    /// emitted prefix per block, so sequence replay and final replacement cannot repeat it.
+    /// Narrate completed assistant blocks only. Markdown structures can span stream
+    /// fragments; the complete original stays in chat while narration omits artifacts.
     public func consume(_ timeline: [TimelineItem], running: Bool) {
         guard isSessionActive, state == .answering || state == .speaking else { return }
         if running {
@@ -205,18 +205,12 @@ public extension ConversationAudio {
             state = .answering
         }
         for item in timeline {
-            guard case .streamingText(let id, let text, let final) = item else { continue }
-            let prefix = spoken[id] ?? ""
-            guard text.hasPrefix(prefix) else { continue } // a revised hypothesis is never repeated
-            let remainder = String(text.dropFirst(prefix.count))
-            let end = final || !running ? remainder.endIndex : remainder.lastIndex(where: { ".!?\n".contains($0) }).map { remainder.index(after: $0) }
-            guard let end else { continue }
-            let sentence = String(remainder[..<end])
-            spoken[id] = prefix + sentence
-            let words = sentence.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard case .streamingText(let id, let text, let final) = item, final || !running else { continue }
+            guard spoken[id] == nil else { continue }
+            spoken[id] = text
+            let words = SpeechText.narration(from: text).trimmingCharacters(in: .whitespacesAndNewlines)
             if !words.isEmpty { audio.speak(words) }
         }
-
     }
 
     /// Call only for the completed voice run, including replies completed before

@@ -71,7 +71,7 @@ import OmniVoiceKit
         { [weak device] url in
             Task { @MainActor in
                 guard let device, device.generation == request else { return }
-                if !device.monitoringPlayback { device.enqueueChunk(url, request: request) }
+                if !device.monitoringPlayback && FileManager.default.fileExists(atPath: url.path) { device.enqueueChunk(url, request: request) }
             }
         }
     }

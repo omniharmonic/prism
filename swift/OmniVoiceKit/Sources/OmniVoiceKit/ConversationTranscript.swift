@@ -11,8 +11,8 @@ public enum ConversationTranscript {
         }
         var overlap = 0
         let limit = min(12, left.count, right.count)
-        if limit > 0 {
-            for count in 1...limit {
+        if limit >= 2 {
+            for count in 2...limit {
                 if left.suffix(count).map(key) == right.prefix(count).map(key) { overlap = count }
             }
         }
