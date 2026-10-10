@@ -22,6 +22,25 @@ struct ConversationVoiceSettings: View {
         NavigationStack {
             Form {
                 Section {
+                    Picker("Turn taking", selection: Binding(get: { device.turnPreferences.mode }, set: { device.turnPreferences.mode = $0 })) {
+                        Text("Think aloud").tag(VoiceTurnMode.thinkAloud)
+                        Text("Automatic").tag(VoiceTurnMode.automatic)
+                    }
+                    if device.turnPreferences.mode == .automatic {
+                        Picker("Wait after speech", selection: Binding(get: { device.turnPreferences.pauseSeconds }, set: { device.turnPreferences.pauseSeconds = $0 })) {
+                            Text("8 seconds").tag(8.0)
+                            Text("12 seconds").tag(12.0)
+                            Text("20 seconds").tag(20.0)
+                        }
+                    }
+                } header: { Text("Conversation") } footer: {
+                    if device.turnPreferences.mode == .automatic {
+                        Text("After you speak, Omni waits through the selected pause, then shows a 3-second countdown. Speak again or tap Keep listening to cancel it. Speech detection runs on this device and may download a small model on first use.")
+                    } else {
+                        Text("Take as long as you need. Tap Send turn when you're ready for Omni to respond. Pause keeps your words as an unsent draft.")
+                    }
+                }
+                Section {
                     Picker("Language & region", selection: Binding(get: { preferences.language }, set: {
                         device.stopPreview(); preferences.selectLanguage($0)
                     })) {
