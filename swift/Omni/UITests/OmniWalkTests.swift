@@ -13,6 +13,9 @@ final class OmniWalkTests: OmniUITestCase {
         for state in ["listening", "paused"] {
             launch(faults: "sample-data,voice-layout-\(state)")
             openThread(id)
+            let openVoice = element("voice.open")
+            XCTAssertTrue(openVoice.waitForExistence(timeout: 10))
+            if openVoice.exists { openVoice.tap() }
             let panel = element("voice.panel")
             XCTAssertTrue(panel.waitForExistence(timeout: 10))
             let status = element("voice.status")
