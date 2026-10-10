@@ -20,6 +20,7 @@
  */
 import { apnsApplicationForDevice, apnsEnabled, isApnsToken, isApnsEnvironment, saveApnsToken, removeApnsTokenForDevice } from "../apns";
 import { Hono, type Context } from "hono";
+import { omniVoiceApi } from "./omni-voice";
 import { streamSSE } from "hono/streaming";
 import { timingSafeEqual } from "node:crypto";
 import { resolveActor, requestVia } from "../auth/actor";
@@ -189,6 +190,8 @@ omniApi.use("*", async (c, next) => {
   }
   await next();
 });
+
+omniApi.route("/voice", omniVoiceApi);
 
 /** Omni's own registration; browser credentials and Prism device credentials cannot claim it. */
 omniApi.post("/push", async c => {
