@@ -186,7 +186,7 @@ export function Settings({ open, onClose }: SettingsProps) {
   const activeTab: SectionId = tabs.some((t) => t.id === tab) ? tab : "appearance";
 
   return (
-    <dialog ref={dialog} aria-label="Settings" onCancel={(event) => { event.preventDefault(); onClose(); }} className="fixed inset-0 m-0 h-dvh max-h-none w-full max-w-none border-0 p-3 text-[var(--text-primary)] z-50 flex items-center justify-center" style={{ background: "rgba(0,0,0,0.6)" }} onClick={onClose}>
+    <dialog ref={dialog} aria-label="Settings" onCancel={(event) => { event.preventDefault(); onClose(); }} className="prism-settings-overlay fixed inset-0 m-0 h-dvh max-h-none w-full max-w-none border-0 text-[var(--text-primary)] z-50 flex items-center justify-center" style={{ background: "rgba(0,0,0,0.6)" }} onClick={onClose}>
       <div className="prism-settings" onClick={(e) => e.stopPropagation()}>
         <header className="prism-settings__header">
           <div><h2>Settings</h2><p>Make Prism work the way you do.</p></div>

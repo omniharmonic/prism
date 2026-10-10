@@ -23,7 +23,7 @@ for (const [device,width,height] of [["phone",390,844],["ipad",1024,768],["deskt
   await page.reload(); await expect(bar.getByRole("button",{name:"Status: In progress"})).toBeVisible(); await expect(page.locator(".tiptap")).toContainText("A single, evolving place"); await expect(bar.getByRole("button",{name:"Priority: Medium"})).toHaveCount(0);
   expect(await bar.locator(".db-more-chevron").evaluate(el => parseFloat(getComputedStyle(el).transitionDuration))).toBeLessThanOrEqual(0.001);
   await page.screenshot({path:`${shots}/properties-${device}.png`});
-  await bar.getByRole("button",{name:/more properties/}).click();
+  await bar.getByRole("button",{name:/Show .* more fields/}).click();
   await expect(bar.getByRole("button",{name:"Priority: Medium"})).toBeVisible();
   await bar.locator(".db-property-expand").click();
   await configure(page);
@@ -103,4 +103,19 @@ test("cross-tab property removal discards the scoped memory fallback", async ({ 
    window.dispatchEvent(new StorageEvent("storage", { key, newValue:null, storageArea:localStorage }));
  });
  await expect(bar.getByRole("button", { name:"Status: In progress" })).toBeVisible();
+});
+
+test("field expansion and property options are distinct and no empty collapse remains", async ({page}) => {
+ await page.setViewportSize({width:390,height:844});
+ await page.goto("/e2e-fixtures/databases.html?open=page");
+ const bar=page.getByRole("group",{name:"Page properties"});
+ await expect(bar.locator("summary")).toHaveText("Property options");
+ await configure(page);
+ await bar.getByRole("button",{name:"Display properties",exact:true}).click();
+ const display=page.getByRole("dialog",{name:"Display properties"});
+ for (const box of await display.getByRole("checkbox").all()) await box.check();
+ await page.keyboard.press("Escape");
+ await expect(bar.locator(".db-property-expand")).toHaveCount(0);
+ await expect(bar.getByRole("button",{name:"Priority: Medium"})).toBeVisible();
+ await expect(bar.locator("summary")).toHaveText("Property options");
 });
