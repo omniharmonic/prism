@@ -30,6 +30,7 @@ import { newId } from "./store";
 import { omniConfig } from "./config";
 import { rsvpArgs } from "../actions/calendar";
 import { protonSendConfigured } from "./proton-send";
+import { tweetSendConfigured } from "./tweet-send";
 
 export const APPROVAL_KINDS = ["email", "email-reply", "message", "calendar-rsvp", "calendar-invite", "tweet", "wallet-proposal", "command"] as const;
 export type ApprovalKind = (typeof APPROVAL_KINDS)[number];
@@ -281,10 +282,12 @@ function executorOf(kind: ApprovalKind): { name: string; available: boolean; ena
     case "calendar-rsvp":
     case "calendar-invite":
       return { name: "prism-live-actions:calendar", available: true, enabled: config.actionsCalendarEnabled };
+    case "tweet":
+      return { name: "approved-tweet", available: true, enabled: tweetSendConfigured() };
     case "message":
       return { name: "prism-live-actions:matrix", available: true, enabled: config.actionsMatrixEnabled };
     default:
-      // tweet / wallet-proposal: their executors (twitter_post.py, wallet.py propose) live in the
+      // wallet-proposal: its executor (wallet.py propose) lives in the
       // agent repo and are not wired to this gateway yet.
       return { name: "none", available: false, enabled: false };
   }

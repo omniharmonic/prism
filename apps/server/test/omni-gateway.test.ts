@@ -525,7 +525,7 @@ test("decide: wrong digest, agent origin, missing key and a disabled executor ar
   assert.equal(still.approval.status, "pending", "a disabled executor leaves it pending");
   const t = await propose("tweet", { text: "hello" });
   const un = await decide(t.id, { decision: "send", digest: t.digest });
-  assert.equal(((await un.json()) as { error: string }).error, "executor_unavailable");
+  assert.equal(((await un.json()) as { error: string }).error, "executor_disabled");
   const audit = auditRows().map((r) => [r.action, r.status, r.error]);
   assert.ok(audit.some((a) => a[2] === "digest_mismatch") && audit.some((a) => a[2] === "human_origin_required") && audit.some((a) => a[2] === "executor_disabled"));
   assert.ok(!JSON.stringify(auditRows()).includes("kevin@"), "audit: ids + digests only");
@@ -839,7 +839,7 @@ test("health: Hermes reachability, whether the plugin's hooks can be reached, an
     assert.equal(ok.hermes, "ok");
     assert.deepEqual(ok.hooks, { serviceToken: true, trustLocal: true, ready: true });
     assert.deepEqual((ok.executors as Record<string, unknown>).email, { name: "proton-send", available: true, enabled: false });
-    assert.deepEqual((ok.executors as Record<string, unknown>).tweet, { name: "none", available: false, enabled: false });
+    assert.deepEqual((ok.executors as Record<string, unknown>).tweet, { name: "approved-tweet", available: true, enabled: false });
     assert.equal(ok.runningTurns, 0);
     assert.ok(!JSON.stringify(ok).includes(process.env.OMNI_SERVICE_TOKEN!) && !JSON.stringify(ok).includes(process.env.OMNI_HERMES_KEY!));
     // The server does not trust loopback (an https origin without TRUST_LOCAL): the plugin's calls would be refused.
@@ -869,7 +869,7 @@ test("OMNI_EXECUTORS=off: nothing Omni proposes is sent, even with every family 
   });
   const h = (await (await req("/health", { headers: owner() })).json()) as { executors: Record<string, { enabled: boolean }> };
   // Every sender is off. `command` is not a sender (Hermes runs its own paused call; OMNI_COMMAND_APPROVALS is its switch).
-  assert.deepEqual(Object.entries(h.executors).map(([k, e]) => [k, e.enabled]), [["email", false], ["email-reply", false], ["message", false], ["calendar-invite", false], ["tweet", false], ["wallet-proposal", false], ["command", true]]);
+  assert.deepEqual(Object.entries(h.executors).map(([k, e]) => [k, e.enabled]), [["email", false], ["email-reply", false], ["message", false], ["calendar-rsvp", false], ["calendar-invite", false], ["tweet", false], ["wallet-proposal", false], ["command", true]]);
   for (const [kind, payload] of [["email", draft], ["message", { roomId: "!r:example.test", body: "hi" }], ["calendar-invite", { title: "Sync", start: "2026-10-09T17:00:00Z", end: "2026-10-09T17:30:00Z" }]] as const) {
     const p = await propose(kind, payload as Record<string, unknown>);
     const r = await decide(p.id, { decision: "send", digest: p.digest }, { ...owner(), "idempotency-key": key() });
@@ -906,4 +906,29 @@ test("run.completed that carries the WHOLE conversation: an earlier turn's faile
   const ev = events(id);
   assert.deepEqual(ev.filter((e) => e.t === "tool_result").map((e) => (e as { ok: boolean }).ok), [true], "not corrected by the old failure");
   assert.equal(ev.filter((e) => e.t === "card").length, 1);
+});
+
+test("approved tweet uses the exact human-reviewed draft once; no send before approval", async (t) => {
+  const { setTweetSpawnerForTests } = await import("../src/omni/tweet-send");
+  process.env.OMNI_TWEET_SEND = process.execPath;
+  setOmniExecutorForTests(null);
+  const inputs: string[] = [];
+  setTweetSpawnerForTests(async (_cmd, _args, options) => {
+    inputs.push(options.input);
+    return { code: 0, signal: null, stdout: '{"status":"sent","postId":"123"}', stderr: "", timedOut: false };
+  });
+  t.after(() => { delete process.env.OMNI_TWEET_SEND; setTweetSpawnerForTests(null); });
+  const text = '  Exact approved tweet.\nNo rewrite.  ';
+  const p = await propose("tweet", { text });
+  assert.equal(inputs.length, 0);
+  assert.equal((await decide(p.id, { decision: "send", digest: "0".repeat(64) })).status, 409);
+  assert.equal((await decide(p.id, { decision: "send", digest: p.digest }, { ...owner(), "x-prism-action-origin": "agent", "idempotency-key": key() })).status, 403);
+  assert.equal(inputs.length, 0);
+  const headers = { ...owner(), "idempotency-key": key() };
+  const result = await decide(p.id, { decision: "send", digest: p.digest }, headers);
+  assert.equal(result.status, 200);
+  assert.equal(((await result.json()) as { approval: { status: string } }).approval.status, "sent");
+  assert.deepEqual(inputs, [JSON.stringify({ text })]);
+  await decide(p.id, { decision: "send", digest: p.digest }, headers);
+  assert.equal(inputs.length, 1, "replayed tap never reposts");
 });
