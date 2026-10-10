@@ -1,3 +1,4 @@
+import { ProjectSections } from "../ProjectSections";
 import { leafTitle } from "../../lib/pages/containerTitle";
 import { useAgentDocumentSnapshot } from "../../lib/agent/documentSnapshots";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -527,6 +528,7 @@ export default function DocumentRenderer({ note, onMetadataChange, readOnly }: R
           />
           {!readOnly && !phone && <BacklinksPill noteId={note.id} title={leafTitle(note.path, note.metadata) ?? ""} />}
           <EditorContent editor={editor} />
+          {!readOnly && (note.tags?.includes("project") || note.metadata?.type === "project") && <ProjectSections project={note} onNavigate={handleWikilinkNavigate} />}
           {editor && !notEditable && <EmptyPageStarters editor={editor} noteId={note.id} title={leafTitle(note.path, note.metadata) ?? ""} />}
         </div>
         {/* Block gutter: ⋮⋮ drag / block menu and + insert (tap menu on phones) */}

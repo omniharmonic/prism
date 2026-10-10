@@ -1,3 +1,4 @@
+import { ProjectSections } from "@prism/core";
 import { useEffect, useMemo, useRef, useState } from "react";
 import * as Y from "yjs";
 import { HocuspocusProvider } from "@hocuspocus/provider";
@@ -208,6 +209,7 @@ function ScopedCollabDoc({
   const mounted = useRef(false);
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
   const [path, setPath] = useState<string | null>(null);
+  const [projectNote, setProjectNote] = useState<Note | null>(null);
   // The page's own font, else the device's writing font (Settings → Appearance).
   const writingFont = useWritingFont();
   const [ownFont, setContentFont] = useState<ContentFont | null>(null);
@@ -503,6 +505,7 @@ function ScopedCollabDoc({
         let noteLevel: string = note._level ?? "own";
         setLevel(note._level ?? "own");
         setPath(note.path ?? null);
+        setProjectNote(note.tags?.includes("project") || note.metadata?.type === "project" ? note as Note : null);
         if (typeof note.metadata?.contentFont === "string") setContentFont(note.metadata.contentFont as ContentFont);
         setIcon(typeof note.metadata?.icon === "string" ? note.metadata.icon : null);
         setCover(parseCover(note.metadata ?? null));
@@ -948,6 +951,7 @@ function ScopedCollabDoc({
                 noteId={noteId}
               />
             )}
+            {projectNote?.id === noteId && isDocument && !getCapabilityToken() && <ProjectSections project={projectNote} onNavigate={onWikilinkNavigate} />}
             {/* Only once synced: a starter must never race the server's own content. */}
             {embedded && isDocument && editor && editable && synced && !effectiveSuggesting && (
               <div style={{ maxWidth: "var(--content-measure)", margin: "0 auto" }}><EmptyPageStarters editor={editor} noteId={noteId} title={title} /></div>

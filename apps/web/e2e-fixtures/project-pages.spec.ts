@@ -174,3 +174,16 @@ test("a 53,000-character Markdown project body opens formatted and writes nothin
   expect((await writes(page)).filter((w) => w.patch === "big")).toEqual([]);
   expect((await noteOf(page, "big"))!.content).toBe(stored);
 });
+
+
+test("plain: four project sections have distinct populated, empty and error states", async ({ page }) => {
+  await open(page, "food");
+  const activity = page.getByRole("complementary", { name: "Project activity" });
+  await expect(activity.getByRole("button", { name: /Call the growers/ })).toBeVisible();
+  await expect(activity.getByText("No meetings linked to this project yet.")).toBeVisible();
+  await expect(activity.getByText("No documents linked to this project yet.")).toBeVisible();
+  await page.goto(url("?open=food&sections-error"));
+  await expect(activity.getByText("Couldn’t load tasks.")).toBeVisible();
+  await expect(activity.getByText("No tasks linked to this project yet.")).toHaveCount(0);
+  await expect(body(page)).toHaveAttribute("contenteditable", "true");
+});

@@ -1,3 +1,4 @@
+import { projectRelatedPage } from "@prism/core/projects";
 import { invoke } from "@tauri-apps/api/core";
 import {
   vaultApi,
@@ -25,9 +26,24 @@ function historyError(e: unknown): never {
  * `fetch`-based implementation of this same interface, so the shared UI in
  * `@prism/core` stays identical across both.
  */
+let projectTree: { at: number; rows: ReturnType<typeof vaultApi.listTree> } | undefined;
+function projectInventory() {
+  if (!projectTree || Date.now() - projectTree.at > 3000) {
+    const rows = vaultApi.listTree();
+    projectTree = { at: Date.now(), rows };
+    rows.catch(() => { if (projectTree?.rows === rows) projectTree = undefined; });
+  }
+  return projectTree.rows;
+}
 export const tauriVaultClient: VaultClient = {
   listNotes: (filters) => vaultApi.listNotes(filters),
   listTree: () => vaultApi.listTree(),
+  getProjectRelated: async (id, kind, after) => {
+    const notes = await projectInventory();
+    const project = notes.find(note => note.id === id);
+    if (!project) throw new Error("Project unavailable");
+    return projectRelatedPage(notes, project, kind, after);
+  },
   getNote: (id) => vaultApi.getNote(id),
   createNote: (params) => vaultApi.createNote(params),
   updateNote: (id, params) => vaultApi.updateNote(id, params),

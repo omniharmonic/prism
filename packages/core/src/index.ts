@@ -16,3 +16,5 @@ export { HumanSuggestionComposer, humanFailureText, type HumanCommandChannel } f
 export { PresenceAvatars, presentPeople, jumpToCaret, type PresentPerson, type PresenceAwareness } from "./components/sharing/PresenceAvatars";
 export { PageDiscussion } from "./components/renderers/PageDiscussion";
 export { MentionNode, mentionExtensions, setMentionNodeView, newMentionUid, mentionFallbackText, MENTION_KINDS, type MentionKind, type MentionAttrs } from "./lib/tiptap/MentionNode";
+
+export { ProjectSections } from "./components/ProjectSections";
