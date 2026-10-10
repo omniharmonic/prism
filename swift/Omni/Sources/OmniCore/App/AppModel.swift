@@ -215,6 +215,7 @@ public final class AppModel {
 
     /// The person gave up waiting for the browser.
     public func cancelSignIn() {
+        VoiceActivationCoordinator.shared.cancel()
         guard phase == .signingIn else { return }
         generation += 1
         signInTask?.cancel()
@@ -224,6 +225,7 @@ public final class AppModel {
 
     /// Revoke the token on the server and forget it. The server address is kept.
     public func signOut() async {
+        VoiceActivationCoordinator.shared.cancel()
         guard let env = environment else { return }
         generation += 1
         closeSession()
@@ -233,6 +235,7 @@ public final class AppModel {
 
     /// Go back to the server screen (signs out first when signed in).
     public func changeServer() async {
+        VoiceActivationCoordinator.shared.cancel()
         if phase == .signedIn { await signOut() }
         signInTask?.cancel()
         tearDown()
@@ -242,6 +245,7 @@ public final class AppModel {
     /// The server confirmed the token dead (a 401 that `/auth/me` agreed with). PrismKit
     /// has already forgotten it; show sign-in again, on the same server.
     public func handleSignedOut() {
+        VoiceActivationCoordinator.shared.cancel()
         guard phase == .signedIn || phase == .connecting else { return }
         diagnostics?.note("signed out: the server no longer accepts this device's sign-in", isFailure: true)
         generation += 1

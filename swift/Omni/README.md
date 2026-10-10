@@ -224,3 +224,25 @@ without replay delays. Personal speech quality and physical microphone/playback
 acceptance remain to verify on each device.
 
 Composer keys: Return sends on Mac, iPad and iPhone (the software keyboard shows Send). Shift-Return inserts a line. Pasted multiline text and input-method composition remain editing operations. On iOS, Hide Keyboard is a 44-point composer control rather than a floating keyboard toolbar. Notification-icon acceptance still requires a physical banner check; the v4 built bundle contains phone/iPad AppIcon metadata and compiled renditions.
+
+
+### Talk to Omni shortcut
+
+In Shortcuts, choose Omni → **Talk to Omni**. On a supported iPhone, assign that
+shortcut in Settings → Action Button → Shortcut. On iPad, add the shortcut to the
+Home Screen or a Shortcuts widget; on Mac, assign it a keyboard shortcut in Shortcuts and keep Omni’s main window open
+(closed-window reopening has not been implemented or verified).
+System availability and assignment depend on the device. The shortcut brings Omni
+forward and starts listening once sign-in, the app privacy unlock, the main scene and
+microphone/speech permission are ready. Sign-in and privacy unlock still require your
+normal interaction. The request expires after one minute; invoke it again if setup takes
+longer. Permission denial or an inactive permission prompt leaves the Voice panel ready for a
+manual retry: tap **Speak** after returning to Omni. A canceled prompt cannot start
+recording later.
+
+Repeated presses keep an active conversation open without restarting recording or
+interrupting a spoken reply. Use **Interrupt and Speak** to interrupt deliberately.
+Typed drafts stay editable and prevent automatic capture. Closing Voice, leaving its
+screen, signing out, locking, or becoming inactive after entry cancels the activation.
+The regular Voice toolbar action continues to open the panel and wait for **Speak**.
+Hardware activation, cold launch and permission prompts need physical device acceptance.

@@ -10,10 +10,12 @@ struct ConversationVoiceControl: View {
     @Binding var expanded: Bool
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @Environment(\.scenePhase) private var phase
+    @Environment(\.voiceActivationSceneID) private var voiceSceneID
     @Environment(\.dynamicTypeSize) private var typeSize
     @State private var device: ConversationDevice
     @State private var voice: VoiceConversation
     @State private var selected = ConversationDevice.Engine.apple
+    @State private var showingVoiceSettings = false
     @State private var mounted = false
     @State private var action: Task<Void, Never>?
     @State private var timeout: Task<Void, Never>?
@@ -33,9 +35,10 @@ struct ConversationVoiceControl: View {
                         Label("Voice", systemImage: "waveform").font(.headline)
                         Spacer()
                         Menu {
-                            Picker("Local speech engine", selection: $selected) {
+                            Picker("Speech recognition", selection: $selected) {
                                 ForEach(ConversationDevice.Engine.allCases, id: \.self) { Text($0.rawValue).tag($0) }
                             }
+                            Button("Voice & Playback", systemImage: "speaker.wave.2") { showingVoiceSettings = true }
                         } label: { Image(systemName: "slider.horizontal.3").frame(width: 44, height: 44) }
                         .accessibilityLabel("Voice options").disabled(voice.state != .off)
                         Button { cancel(); expanded = false } label: {
@@ -68,19 +71,23 @@ struct ConversationVoiceControl: View {
                 .accessibilityIdentifier("voice.panel")
             }
         }
+        .sheet(isPresented: $showingVoiceSettings, onDismiss: { device.stopPreview() }) {
+            ConversationVoiceSettings(device: device)
+        }
         .onChange(of: model?.completedVoiceTimeline) { _, _ in consume() }
         .onChange(of: model?.timeline) { consume() }
         .onChange(of: model?.isRunning) { consume() }
-        .onChange(of: voice.state) { if voice.state != .off { expanded = true }; consume() }
-        .onChange(of: phase) { if phase != .active { cancel() } }
+        .onChange(of: voice.state) { if voice.state != .off { expanded = true; showingVoiceSettings = false; device.stopPreview() }; consume() }
+        .onChange(of: session.pendingVoiceActivationID) { consumeShortcutActivation() }
+        .onChange(of: phase) { if phase != .active { cancel() } else { consumeShortcutActivation() } }
         #if os(iOS)
         .onReceive(NotificationCenter.default.publisher(for: AVAudioSession.interruptionNotification)) { _ in cancel() }
         #endif
         .onChange(of: PrivacyLock.shared.locked) {
             voice.setPrivacyLocked(PrivacyLock.shared.locked)
-            if PrivacyLock.shared.locked { cancel() }
+            if PrivacyLock.shared.locked { cancel() } else { consumeShortcutActivation() }
         }
-        .onAppear { mounted = true; voice.setPrivacyLocked(PrivacyLock.shared.locked); consume() }
+        .onAppear { mounted = true; voice.setPrivacyLocked(PrivacyLock.shared.locked); consume(); consumeShortcutActivation() }
         .onDisappear {
             mounted = false
             // The first send moves this same voice session into its newly created thread.
@@ -130,12 +137,25 @@ struct ConversationVoiceControl: View {
         guard voice.state == .answering else { return }
         voice.consume(model.timeline + model.takeCompletedVoiceTimeline(), running: model.isRunning)
     }
+    private func consumeShortcutActivation() {
+        guard session.pendingVoiceActivationID != nil, model == nil, mounted, phase == .active, !PrivacyLock.shared.locked else { return }
+        // Never overwrite or dispatch a typed draft, or retry automatically after a failure.
+        guard canSpeak else { session.cancelPendingVoiceActivation(); return }
+        if VoiceActivationCoordinator.shared.consume(session: session, sceneID: voiceSceneID, threadID: model?.threadID) { start() }
+    }
+    private var canSpeak: Bool {
+        voice.canStart && model?.isUnavailable != true && model?.sendState != .sending &&
+        (running || model?.pendingText == nil) && (model?.draft ?? draft?.wrappedValue ?? "").isEmpty && !session.threads.isCreating
+    }
     private func start() {
+        guard canSpeak, mounted, phase == .active, !PrivacyLock.shared.locked else { return }
         cancel()
         _ = model?.takeCompletedVoiceTimeline()
         session.claimVoice(audio: device, voice: voice, threadID: model?.threadID)
         let lease = session.voiceLease
+        session.beginVoiceStart()
         action = Task {
+            defer { session.endVoiceStart(lease: lease) }
             if let model, model.isRunning { await model.stop() }
             for _ in 0..<40 where running {
                 if Task.isCancelled || PrivacyLock.shared.locked || !mounted || phase != .active { return }
@@ -150,6 +170,8 @@ struct ConversationVoiceControl: View {
         }
     }
     private func cancel() {
+        if model == nil { session.cancelPendingVoiceActivation() }
+        showingVoiceSettings = false; device.stopPreview()
         action?.cancel(); action = nil; timeout?.cancel(); timeout = nil
         if session.conversationVoice !== voice { voice.cancel() }
         else { session.cancelVoice(voice, threadID: model?.threadID) }
