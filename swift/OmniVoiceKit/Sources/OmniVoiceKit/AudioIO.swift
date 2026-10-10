@@ -2,11 +2,16 @@
 import Foundation
 import FluidAudio
 
-private final class CaptureFile: @unchecked Sendable {
+final class CaptureFile: @unchecked Sendable {
     private let lock = NSLock()
     private var file: AVAudioFile?
     private var failure: Error?
     init(url: URL, format: AVAudioFormat) throws { file = try AVAudioFile(forWriting: url, settings: format.settings) }
+    /// Build outside AudioIO's main-actor context. The AVAudioEngine callback runs on
+    /// its realtime thread; do not capture an actor executor or escape its PCM buffer.
+    nonisolated static func tap(for writer: CaptureFile) -> @Sendable (AVAudioPCMBuffer, AVAudioTime) -> Void {
+        { buffer, _ in writer.append(buffer) }
+    }
     func append(_ buffer: AVAudioPCMBuffer) {
         lock.lock(); defer { lock.unlock() }
         do { try file?.write(from: buffer) } catch { failure = error }
@@ -54,7 +59,7 @@ private final class CaptureFile: @unchecked Sendable {
             guard format.sampleRate > 0 else { throw VoiceFailure.unavailable("No microphone input is available.") }
             let writer = try CaptureFile(url: url, format: format)
             capture = writer
-            input.installTap(onBus: 0, bufferSize: 1024, format: format) { buffer, _ in writer.append(buffer) }
+            input.installTap(onBus: 0, bufferSize: 1024, format: format, block: CaptureFile.tap(for: writer))
             tapInstalled = true
             engine.prepare(); try engine.start(); file = writer
         } catch {
