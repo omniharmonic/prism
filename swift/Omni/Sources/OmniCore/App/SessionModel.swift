@@ -55,6 +55,7 @@ public enum Destination: Hashable, Sendable {
 public final class SessionModel {
     public let threads: ThreadListModel
     public let approvals: ApprovalCenter
+    public let nudges: NudgeCenter?
     public let today: TodayModel
     public let jobs: JobsModel
 
@@ -83,6 +84,7 @@ public final class SessionModel {
         self.sink = sink
         self.threads = ThreadListModel(service: service, sink: sink)
         self.approvals = ApprovalCenter(service: service, sink: sink, confirmation: confirmation)
+        self.nudges = (service as? any NudgeService).map { NudgeCenter(service: $0, sink: sink) }
         self.today = TodayModel(service: service, sink: sink, approvals: approvals)
         self.jobs = JobsModel(service: service, sink: sink)
         approvals.threadDidChange = { [weak self] threadID in
@@ -197,6 +199,7 @@ public final class SessionModel {
     func refreshEverything() async {
         await threads.refresh()
         await approvals.refresh()
+        await nudges?.refresh()
         for model in threadModels.values where model.isOpen { await model.changedOnServer() }
         // Today lists approvals and what is in flight: keep it honest once it has been shown.
         if today.hasContent, destination == .today || destination == nil { await today.refresh() }
@@ -212,6 +215,7 @@ public final class SessionModel {
             await approvals.refresh()
             if let threadID = notice.threadId, let model = threadModels[threadID], model.isOpen { await model.changedOnServer() }
         case "card":
+            if notice.op == "nudge" { await nudges?.refresh() }
             if let threadID = notice.threadId, let model = threadModels[threadID], model.isOpen { await model.changedOnServer() }
         default:
             break

@@ -1,3 +1,4 @@
+import { listNudges } from "./nudges";
 /**
  * `GET /api/omni/today` (M2, read-only aggregation). Every section is built from an
  * existing Prism route, called IN-PROCESS with the requesting owner's own credential
@@ -122,7 +123,7 @@ export async function buildToday(dispatch: Dispatch, date: string, opts: { retry
     agenda,
     tasks: tasks?.rows ?? null,
     taskIdentity: tasks?.identity ?? null,
-    needsYou: { approvals, nudges: [] },
+    needsYou: { approvals, nudges: listNudges(omniConfig.ownerEmail()) },
     inFlight,
     openLoops: null,
     brief: null,
