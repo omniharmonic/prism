@@ -220,7 +220,10 @@ final class OmniWalkTests: OmniUITestCase {
 
         // A long message: the box grows, and the transcript stays reachable.
         composer.tap()
-        composer.typeText("One\nTwo\nThree\nFour\nFive — a longer line that should wrap inside the box rather than run off its edge, however narrow the window is.")
+        for (index, line) in ["One", "Two", "Three", "Four", "Five — a longer line that should wrap inside the box rather than run off its edge, however narrow the window is."].enumerated() {
+            if index > 0 { composer.typeKey(.return, modifierFlags: .shift) }
+            composer.typeText(line)
+        }
         showKeyboard()
         shot("composer-multiline")
         #if os(iOS)
@@ -228,7 +231,7 @@ final class OmniWalkTests: OmniUITestCase {
         XCTAssertTrue(text("I answer the same way every time").isHittable, "the end of the conversation is hidden behind the message box")
         // The keyboard goes away: by its Done button…
         let done = element("composer.hideKeyboard")
-        wait(done, 5, "Done above the keyboard")
+        wait(done, 5, "Hide keyboard in the composer")
         done.tap()
         XCTAssertTrue(gone(app.keyboards.firstMatch, 5), "Done did not put the keyboard away")
         shot("composer-keyboard-dismissed")

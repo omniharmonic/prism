@@ -196,7 +196,7 @@ struct Composer<Accessory: View>: View {
     /// because there the cursor brings the keyboard up over half the conversation.
     var focusOnAppear = Composer.focusesByDefault
     @ViewBuilder var accessory: Accessory
-    @FocusState private var focused: Bool
+    @State private var focused = false
     @Environment(\.dynamicTypeSize) private var typeSize
 
     init(
@@ -235,38 +235,24 @@ struct Composer<Accessory: View>: View {
                 .foregroundStyle(text.isEmpty ? AnyShapeStyle(Color.quietText) : AnyShapeStyle(.clear))
                 .accessibilityHidden(true)
                 .overlay {
-                    TextEditor(text: $text)
-                        .font(.body)
-                        .scrollContentBackground(.hidden)
-                        .focused($focused)
-                        .accessibilityLabel(placeholder)
-                        .accessibilityIdentifier("composer")
-                        #if os(iOS)
-                        // Return starts a new line here, so the keyboard needs its own way out.
-                        .toolbar {
-                            if focused {
-                                ToolbarItemGroup(placement: .keyboard) {
-                                    Spacer()
-                                    Button("Done") { focused = false }
-                                        .accessibilityLabel("Hide keyboard")
-                                        .accessibilityIdentifier("composer.hideKeyboard")
-                                }
-                            }
-                        }
-                        #endif
-                        #if os(macOS)
-                        .onKeyPress(.return, phases: .down) { press in
-                            // Shift- or Option-Return: let the editor insert the new line.
-                            if press.modifiers.contains(.shift) || press.modifiers.contains(.option) { return .ignored }
-                            if canSend { onSend() }
-                            return .handled
-                        }
-                        #endif
+                    ReturnSendingTextView(text: $text, focused: $focused, label: placeholder, canSend: canSend, onSend: onSend)
                 }
                 .padding(.horizontal, 8)
                 .padding(.vertical, 6)
                 .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 12))
             accessory
+            #if os(iOS)
+            if focused {
+                Button { focused = false } label: {
+                    Image(systemName: "keyboard.chevron.compact.down")
+                        .frame(width: 44, height: 44)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Hide keyboard")
+                .accessibilityIdentifier("composer.hideKeyboard")
+            }
+            #endif
             if isRunning {
                 Button(action: onStop) {
                     Image(systemName: "stop.circle.fill").font(.title2)
