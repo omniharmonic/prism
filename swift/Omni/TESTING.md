@@ -9,8 +9,8 @@ sent).
 
 | Layer | What it proves | Command | Needs |
 |---|---|---|---|
-| Unit tests (`Tests/OmniCoreTests`, 100 tests) | Every rule in OmniCore, with a fake server | `swift test --skip OmniUISnapshotTests` | nothing |
-| Mac snapshots (`Tests/OmniUISnapshotTests`) | Every Mac screen draws, in light, dark and a narrow window | `swift test --filter OmniUISnapshotTests` | nothing; nothing appears on screen |
+| Unit tests (`Tests/OmniCoreTests`, 99 tests) | Every rule in OmniCore, with a fake server | `swift test --skip OmniUISnapshotTests` | nothing |
+| Mac snapshots (`Tests/OmniUISnapshotTests`) | Every Mac screen draws, in light, dark and a narrow window; the app's text colours meet 4.5:1 | `swift test --filter OmniUISnapshotTests` | nothing; nothing appears on screen |
 | UI tests (`UITests/`, XCUITest) | The real app, tapped and typed into, on iPhone and iPad (and the Mac, once allowed) | `Scripts/uitest.sh iphone` · `ipad` · `mac` · `all` | dev backend |
 | Smoke (`Sources/OmniSmoke`) | The same calls the app makes, through its own view models, incl. the real sign-in | `Scripts/smoke.sh` | dev backend |
 
@@ -27,7 +27,7 @@ qa/screenshots/omni/
   iphone/iphone-18-pro-xxxl/light/                    the same at the largest Dynamic Type size
   ipad/ipad-pro-13-portrait/{light,dark}/             iPad Pro 13", sidebar + content
   ipad/ipad-pro-13-landscape/light/
-  ipad/ipad-pro-13-split/light/                       a 375-point column (a Split View width): tabs
+  ipad/ipad-pro-13-split/light/                       the iPad window dragged to 375 points wide: tabs
   mac/mac-default/{light,dark}/                       1040 × 700, drawn off-screen from sample data
   mac/mac-narrow/light/                               760 × 500, the window's minimum
 ```
@@ -55,6 +55,11 @@ Scripts/uitest.sh ipad light portrait          # also: landscape, split
 Scripts/uitest.sh all                          # everything above, one after another (~1 h)
 ```
 
+**Start from a clean dev database now and then.** Each run adds about twenty test threads
+(archived afterwards, never deleted). Past 200 sessions the gateway can no longer prove a
+thread is gone, so the "no longer available" test fails; `uitest.sh` warns from 170. Stop
+`omni-dev.sh`, delete the dev database and its `.stub.json`, start it again.
+
 A second backend on other ports: `OMNI_DEV_PORT`, `OMNI_DEV_DB` (as for `omni-dev.sh`).
 `OMNI_UITEST_ONLY=OmniUITests/OmniWalkTests/test08Approvals` runs one test.
 
@@ -70,6 +75,9 @@ What the script does, in order:
    Mac has less than 30% of its memory free.
 3. Sets the simulator's appearance and text size, adds one "no longer available" sample
    thread to the dev database, and runs `xcodebuild test`.
+   For `ipad … split` the test drags the window's bottom-right corner in until the window is
+   375 points wide — a real narrow iPad window, with the compact layout the system gives it —
+   and the other iPad runs drag it back out to the whole screen.
 4. The tests put the backend in a known state through the gateway (`UITests/Seed.swift`:
    one thread per state, one draft per kind), launch the app, and walk it.
 
@@ -84,6 +92,9 @@ launched with `OMNI_UITEST=1`:
 - the device token comes from the runner (the browser cannot be driven by a UI test);
 - the Keychain and the remembered server are in memory;
 - Touch ID / Face ID before Send is let through;
+- `OMNI_UITEST_ANIMATIONS=0` turns UIKit's transitions off (the runner waits for every
+  animation to end before each step; a spinner removed mid-transition had it waiting a minute
+  at a time — one test took 19 minutes instead of one);
 - `OMNI_UITEST_FAULTS` changes a few answers to show states the dev backend cannot produce:
   `digest-mismatch`, `today-partial`, `today-fail`, `threads-fail`, `jobs-fail`, `sample-data`;
 - it refuses any server that is not `http://127.0.0.1:<port>`.
@@ -108,6 +119,20 @@ release.
 | `test10MacKeysAndWindow` (Mac) | ⌘N, the cursor in the composer, Shift-Return, Return, ⌘R, ⌘F, ⌘, |
 | `AccessibilityAuditTests` (iOS) | `performAccessibilityAudit` on sign-in, Today, Needs you, Threads, Recurring, a thread with a draft, a thread with a record card, New Thread, Settings |
 
+**What the accessibility audit asserts, and what it only reports.** A finding fails the test
+when it is a touch target that is too small, an element with no or an unhelpful description, a
+wrong trait, or text clipped in one of the app's own elements. Two kinds are attached to the
+test as "audit notes" instead of failing it, because the audit misjudges them here:
+
+- *Contrast.* The audit samples the screen and fails, for instance, a black title on a white
+  row, and it marks the system's own section headers. The app's own text colours are checked
+  exactly instead: `ContrastTests` computes each (quiet, warning, failure, accent) against the
+  backgrounds it is used on and requires 4.5:1.
+- *Dynamic Type.* The audit says "cannot change the font size" of SwiftUI text that uses the
+  system text styles. It does change: the whole walk is run at the largest size
+  (`iphone light xxxl`), and those screenshots show every one of them grown — and are where
+  the real large-text defects were found and fixed.
+
 ### On the Mac
 
 macOS will not let a test drive another app until **you** allow UI automation — it asks for
@@ -127,7 +152,7 @@ swift test --filter OmniUISnapshotTests        # writes qa/screenshots/omni/mac/
 
 `Tests/OmniUISnapshotTests` hosts the app's own SwiftUI views in a window that is never shown
 (transparent, behind everything, never key) and draws them into PNGs: 36 screens × light,
-dark, narrow. The data is an in-memory gateway (`SampleService`), shaped as the real one
+dark, narrow. (`OMNI_SNAPSHOT_DIR=<folder>` writes them somewhere else.) The data is an in-memory gateway (`SampleService`), shaped as the real one
 answers. Safe to run while you work: nothing appears, nothing takes focus.
 
 Its limits, plainly:

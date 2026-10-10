@@ -185,17 +185,32 @@ struct SidebarList: View {
 
     var body: some View {
         List(selection: $session.destination) {
-            Label("Today", systemImage: "sun.max").tag(Destination.today)
+            #if os(iOS)
+            SearchExit { session.threads.searchText = "" }
+            #endif
+            row("Today", "sun.max").tag(Destination.today)
                 .accessibilityIdentifier("nav.today")
-            Label("Needs you", systemImage: "hand.raised")
+            row("Needs you", "hand.raised")
                 .badge(session.approvals.pendingCount)
                 .tag(Destination.needsYou)
                 .accessibilityIdentifier("nav.needsYou")
             ThreadSections(threads: session.threads) { id in Task { await session.removeThread(id) } }
             Section("Recurring") {
-                Label("Recurring jobs", systemImage: "arrow.triangle.2.circlepath").tag(Destination.recurring)
+                row("Recurring jobs", "arrow.triangle.2.circlepath").tag(Destination.recurring)
                     .accessibilityIdentifier("nav.recurring")
             }
+        }
+        #if os(iOS)
+        .scrollDismissesKeyboard(.immediately)
+        #endif
+    }
+
+    /// A sidebar row whose words wrap at large text sizes instead of being cut.
+    private func row(_ title: String, _ symbol: String) -> some View {
+        Label {
+            Text(title).fixedSize(horizontal: false, vertical: true)
+        } icon: {
+            Image(systemName: symbol)
         }
     }
 }

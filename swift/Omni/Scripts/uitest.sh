@@ -46,6 +46,15 @@ case "$WHAT" in mac|iphone|ipad|all) ;; *) sed -n '2,12p' "$0" | sed 's/^# \{0,1
 [ -f "$DB" ] || die "no dev database at $DB — start the backend first (apps/server/scripts/omni-dev.sh)"
 curl -s -o /dev/null --max-time 5 "$BASE/api/omni/version" || die "nothing answers on 127.0.0.1:$PORT — start apps/server/scripts/omni-dev.sh"
 
+# The gateway says a thread is "no longer available" only when it can see the agent's whole
+# session list (up to 200). Every run adds about twenty test threads, so after a dozen runs
+# that screen can no longer be shown — and its test fails. Say so before the run.
+THREADS="$(sqlite3 "$DB" "SELECT count(*) FROM omni_threads" 2>/dev/null || echo 0)"
+if [ "${THREADS:-0}" -gt 170 ]; then
+  echo "uitest: the dev database holds $THREADS threads; past 200 the 'no longer available' screen cannot be shown and test03GoneThread will fail." >&2
+  echo "uitest: for a clean run stop omni-dev.sh, delete $(basename "$DB")* (the database and its .stub.json) and start it again." >&2
+fi
+
 # ── the dev owner's device token (in the environment only) ────────────────────────────────
 session_tool() { # mint | drop
   (cd "$SERVER" && DB_PATH="$DB" PORT="$PORT" OMNI_UITEST_OP="$1" node --env-file="$ENV_FILE" --import tsx -e '
