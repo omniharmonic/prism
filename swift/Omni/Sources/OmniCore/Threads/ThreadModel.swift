@@ -49,6 +49,7 @@ public final class ThreadModel {
     /// The view is on screen (set by ``open()`` / ``close()``).
     public private(set) var isOpen = false
     private var sceneActive = false
+    private var acknowledgedSequence: Int?
     /// The thread's `lastSeq` when its stored events were last read for a failed turn's reason.
     private var outcomeReadAtSeq: Int?
     /// The composer's text.
@@ -217,6 +218,7 @@ public final class ThreadModel {
         await Task.yield()
         guard isOpen, sceneActive, snapshot.unread > 0 else { return }
         guard (try? await service.acknowledgeThreadRead(threadID, through: snapshot.lastSeq)) == true else { return }
+        acknowledgedSequence = snapshot.lastSeq
         guard isOpen, sceneActive else { return }
         onRead(threadID, snapshot.lastSeq)
         if thread?.lastSeq == snapshot.lastSeq { thread?.unread = 0 }
@@ -225,6 +227,7 @@ public final class ThreadModel {
     private func apply(_ fresh: ThreadDetail) {
         detail = fresh
         thread = fresh.thread
+        if fresh.thread.lastSeq == acknowledgedSequence { thread?.unread = 0 }
         approvals.ingest(fresh.approvals)
         if followTask == nil { cursor = max(cursor, fresh.thread.lastSeq) }
         // The server now lists the message that was pending.
