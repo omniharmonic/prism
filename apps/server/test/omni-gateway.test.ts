@@ -17,13 +17,13 @@ import { config } from "../src/config";
 import { omniApi, setOmniExecutorForTests } from "../src/routes/omni";
 import { setHermesFetchForTests } from "../src/omni/hermes-client";
 import { setOmniRecordSourcesForTests, type NoteMeta } from "../src/omni/records";
-import { setOmniPusherForTests } from "../src/omni/bus";
+import { setOmniPusherForTests, subscribeThread, threadWatched } from "../src/omni/bus";
 import { turnSettled, stopOrphanedRuns } from "../src/omni/turns";
 import { eventsAfter, getTurn, getThread, auditRows, resetOmniStoreForTests, runningRunIds } from "../src/omni/store";
 import { approvalDigest, canonicalJson, type Executor } from "../src/omni/approvals";
 import { INPROCESS_ACTOR, INPROCESS_CLIENT_KEY } from "../src/auth/actor";
 import { issueDeviceToken } from "../src/auth/device";
-import { setMembership } from "../src/db";
+import { db, setMembership } from "../src/db";
 import { resetDb, makeSession, sessionCookie, makeCapability } from "./helpers";
 import type { TreeChange } from "../src/tree";
 import { createHermesStub, type HermesStub, type StubAct, type StubFrame, type StubTurn } from "../scripts/lib/hermes-stub";
@@ -218,7 +218,7 @@ test("create a thread: Hermes session + streamed turn → normalized, persisted 
   assert.equal(getTurn(turnId)!.status, "done");
   assert.equal(getTurn(turnId)!.runId, "run_abc123");
   assert.equal(getThread(id)!.state, "done");
-  assert.deepEqual(pushes, [["OMNI_THREAD", id]], "nobody watched → one ids-only push");
+  assert.deepEqual(pushes, [["OMNI_THREAD", id]], "a completed turn → one ids-only push");
 
   // Replay over SSE after reconnect: persisted events with ids, then the stream closes.
   const s = await req(`/threads/${id}/stream?after=2`, { headers: owner() });
@@ -395,6 +395,36 @@ test("Hermes failures map to codes: refused key, unreachable, not configured", a
   assert.equal(getThread(id)!.state, "needs-you");
 });
 
+test("completion pushes even while a live SSE subscriber still watches the thread", async () => {
+  const { id, turnId } = await newThread(HELD);
+  const stream = await req(`/threads/${id}/stream`, { headers: owner() });
+  assert.equal(stream.status, 200);
+  assert.equal(threadWatched(id), true, "the stream is subscribed before completion");
+  const body = stream.text();
+  assert.ok(fake.stub.runs.get("run_abc123"));
+  fake.stub.runs.get("run_abc123")!();
+  await turnSettled(turnId);
+  assert.equal(getTurn(turnId)!.status, "done");
+  assert.deepEqual(pushes, [["OMNI_THREAD", id]], "a subscriber may be backgrounded or on another device");
+  assert.match(await body, /"state":"done"/);
+});
+
+test("completion stays quiet if its thread disappears before notification fanout", async () => {
+  const { id, turnId } = await newThread(HELD);
+  await new Promise((r) => setTimeout(r, 20));
+  const unsubscribe = subscribeThread(id, message => {
+    if (message.event.t === "status" && message.event.state === "done") {
+      db.prepare("DELETE FROM omni_threads WHERE id = ?").run(id);
+    }
+  });
+  try {
+    fake.stub.runs.get("run_abc123")!();
+    await turnSettled(turnId);
+    assert.equal(getThread(id), null);
+    assert.deepEqual(pushes, []);
+  } finally { unsubscribe(); }
+});
+
 test("one turn at a time; idempotent replay; cancel stops the Hermes run", async () => {
   const { id, turnId } = await newThread(HELD);
   await new Promise((r) => setTimeout(r, 20));
@@ -406,6 +436,7 @@ test("one turn at a time; idempotent replay; cancel stops the Hermes run", async
   await turnSettled(turnId);
   assert.ok(fake.calls.some((x) => x.path === "/v1/runs/run_abc123/stop"));
   assert.equal(getTurn(turnId)!.status, "cancelled");
+  assert.deepEqual(pushes, [], "cancelled turns do not notify");
   assert.equal((events(id).find((e) => e.t === "result") as { errorCode: string }).errorCode, "cancelled");
   assert.equal(getThread(id)!.state, "waiting");
   // Idempotency: the same key replays the first turn instead of starting a second.

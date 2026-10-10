@@ -319,7 +319,9 @@ gateway stores what was proposed, and the app's decision must carry that digest.
 Push (APNs, content-free, through the existing sender): `{aps:{alert:{title:"Omni", body:
 <generic>}, category}, type:"omni", category:"OMNI_THREAD"|"OMNI_APPROVAL", id, url:
 "omni://thread/<id>"|"omni://approval/<id>"}` — on a proposal, on an agent-initiated
-message, and when a turn ends while nobody watches its stream.
+message, and when any non-cancelled turn ends for an existing thread. Stream
+subscriptions do not prove foreground visibility, so they never suppress completion
+pushes. Foreground presentation remains controlled by the OS.
 
 `POST /api/omni/push` takes `{token, environment:"sandbox"|"production"}` from an
 owner's live `omni-native` device credential. `DELETE /api/omni/push` removes that
