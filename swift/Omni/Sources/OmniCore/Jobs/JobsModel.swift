@@ -1,6 +1,7 @@
 import Foundation
 import Observation
 import OmniClient
+import PrismTransport
 
 /// Recurring jobs (Hermes cron), read-only plus pause / resume.
 @MainActor
@@ -11,6 +12,7 @@ public final class JobsModel {
     /// The job a pause/resume is running for.
     public private(set) var busyJobID: String?
     public private(set) var actionProblem: String?
+    public private(set) var creationDefinitelyRejected = false
 
     private let service: any OmniService
     private let sink: ErrorSink
@@ -29,6 +31,46 @@ public final class JobsModel {
             guard let message = sink.describe(error, reading: true) else { return }
             phase = .failed(message)
         }
+    }
+
+    public var canManage: Bool { service is any JobManagementService }
+    public func save(new: NewJob, key: IdempotencyKey, editing: OmniJob? = nil) async -> Bool {
+        guard busyJobID == nil, let manager = service as? any JobManagementService else { return false }
+        busyJobID = editing?.id ?? "new"; actionProblem = nil
+        defer { busyJobID = nil }
+        do {
+            if let editing {
+                guard editing.noAgent != true, editing.script == nil, editing.monitorScript == nil, editing.monitor == nil || editing.monitor?.isNull == true else { return false }
+                _ = try await manager.updateJob(editing.id, edit: JobEdit(name: new.name, schedule: new.schedule, prompt: new.prompt))
+            } else { _ = try await manager.createJob(new, key: key) }
+            await refresh(); return true
+        } catch {
+            if editing == nil { creationDefinitelyRejected = Self.definitelyNoCreation(error) }
+            actionProblem = sink.describe(error) ?? "The job could not be saved. Refresh Recurring before creating it again."
+            await refresh(); return false
+        }
+    }
+    public static func definitelyNoCreation(_ error: any Error) -> Bool {
+        guard let error = error as? PrismError else { return false }
+        switch error {
+        case .invalidRequest: return true
+        case .rejected(let failure): return failure.status == 400 && ["bad_request", "hermes_rejected"].contains(failure.code ?? "")
+        default: return false
+        }
+    }
+    public func remove(_ job: OmniJob) async -> Bool {
+        guard busyJobID == nil, let manager = service as? any JobManagementService else { return false }
+        busyJobID = job.id; actionProblem = nil
+        defer { busyJobID = nil }
+        do { try await manager.deleteJob(job.id); await refresh(); return true }
+        catch { actionProblem = sink.describe(error); return false }
+    }
+    public func run(_ job: OmniJob) async {
+        guard busyJobID == nil else { return }
+        busyJobID = job.id; actionProblem = nil
+        defer { busyJobID = nil }
+        do { _ = try await service.job(job.id, .run); await refresh() }
+        catch { actionProblem = sink.describe(error); await refresh() }
     }
 
     /// Pause a running job, or resume a paused one.

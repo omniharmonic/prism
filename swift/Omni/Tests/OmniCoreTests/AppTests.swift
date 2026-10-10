@@ -554,3 +554,12 @@ final class PlainLanguageTests: XCTestCase {
         XCTAssertFalse(PlainLanguage.outcomeIsUnknown(OmniError.executorNotReady(code: "executor_disabled", executor: nil)))
     }
 }
+
+@MainActor
+final class JobCreationRetryTests: XCTestCase {
+    func testOnlyDefiniteNoCreateFailurePermitsNewPayloadKey() {
+        XCTAssertTrue(JobsModel.definitelyNoCreation(PrismError.rejected(ServerFailure(status: 400, code: "hermes_rejected", detail: nil, body: Data()))))
+        XCTAssertFalse(JobsModel.definitelyNoCreation(PrismError.outcomeUnknown(OutcomeUnknown(status: 502, code: "job_creation_outcome_unknown", reason: "uncertain"))))
+        XCTAssertFalse(JobsModel.definitelyNoCreation(PrismError.conflict(ServerFailure(status: 409, code: "job_creation_outcome_unknown", detail: nil, body: Data()))))
+    }
+}
