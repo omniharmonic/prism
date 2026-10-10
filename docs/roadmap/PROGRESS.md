@@ -1,5 +1,7 @@
 # Roadmap Implementation Progress
 
+> Current product scope, owner feedback, acceptance status and next steps: [Prism + Omni product roadmap](prism-omni-product-roadmap.md).
+
 Tracking execution of [`master-implementation-plan.md`](./master-implementation-plan.md) on branch `claude/prism-roadmap-exploration-u90og6`.
 
 Legend: ⬜ not started · 🟡 in progress · ✅ done · 🔵 verified at barrier
