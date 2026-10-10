@@ -129,6 +129,14 @@ public struct ThreadDetail: Decodable, Sendable, Equatable {
     public let approvals: [Approval]
     /// Attach to it with the thread stream when non-nil.
     public let activeTurnId: String?
+
+    public init(thread: OmniThread, messages: [OmniMessage], cards: [RecordCard], approvals: [Approval], activeTurnId: String?) {
+        self.thread = thread
+        self.messages = messages
+        self.cards = cards
+        self.approvals = approvals
+        self.activeTurnId = activeTurnId
+    }
 }
 
 /// `POST /api/omni/threads` body.
@@ -389,8 +397,8 @@ public enum JobAction: String, Sendable {
 // MARK: - Today
 
 /// `GET /api/omni/today`. A section that failed on the server is nil and named in `errors`.
-public struct OmniToday: Decodable, Sendable, Equatable {
-    public struct AgendaItem: Decodable, Sendable, Equatable {
+public struct OmniToday: Codable, Sendable, Equatable {
+    public struct AgendaItem: Codable, Sendable, Equatable {
         public let noteId: String
         public let title: String
         /// As stored on the meeting note (normally RFC 3339).
@@ -400,7 +408,7 @@ public struct OmniToday: Decodable, Sendable, Equatable {
         public let meetLink: String?
         public let link: String?
     }
-    public struct TaskItem: Decodable, Sendable, Equatable {
+    public struct TaskItem: Codable, Sendable, Equatable {
         public let noteId: String
         public let title: String
         public let status: String?
@@ -410,12 +418,12 @@ public struct OmniToday: Decodable, Sendable, Equatable {
         public let threadId: String?
         public let link: String?
     }
-    public struct NeedsYou: Decodable, Sendable, Equatable {
+    public struct NeedsYou: Codable, Sendable, Equatable {
         public let approvals: [Approval]
         /// TODO(M3): nudges are not built; always empty today.
         public let nudges: [JSONValue]
     }
-    public struct InFlight: Decodable, Sendable, Equatable {
+    public struct InFlight: Codable, Sendable, Equatable {
         public let id: String
         public let title: String?
         public let state: ThreadState?

@@ -310,6 +310,20 @@ public struct OmniClient: Sendable {
         throw error
     }
 
+    // MARK: Native push
+
+    public func registerPush(token: String, environment: String) async throws -> Bool {
+        struct Body: Encodable { let token: String; let environment: String }
+        struct Answer: Decodable { let ok: Bool; let apnsEnabled: Bool }
+        let answer: Answer = try await transport.send(.json("POST", "\(Self.base)/push", body: Body(token: token, environment: environment)))
+        return answer.apnsEnabled
+    }
+
+    public func unregisterPush() async throws {
+        struct Answer: Decodable { let ok: Bool }
+        let _: Answer = try await transport.send(PrismRequest(method: "DELETE", path: "\(Self.base)/push"))
+    }
+
     // MARK: Jobs
 
     public func jobs() async throws -> [OmniJob] {
@@ -334,7 +348,11 @@ public struct OmniClient: Sendable {
 
     /// `date` is `YYYY-MM-DD` in the PERSON's zone (the server would otherwise use its own).
     public func today(date: String) async throws -> OmniToday {
-        try await transport.send(.get("\(Self.base)/today", query: [URLQueryItem(name: "date", value: date)]))
+        // The server reads two whole-tag listings from the vault for this; the first read of
+        // a day has been seen to take 40 s. Wait for it rather than give up at the default.
+        var request: PrismRequest = .get("\(Self.base)/today", query: [URLQueryItem(name: "date", value: date)])
+        request.timeout = 120
+        return try await transport.send(request)
     }
 
     /// Today for a moment in a calendar's time zone (default: the device's).

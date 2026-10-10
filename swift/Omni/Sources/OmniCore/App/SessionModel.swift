@@ -27,13 +27,16 @@ public struct ErrorSink {
 
     /// The message to show, or nil when there is nothing to show (signed out — the app is
     /// already going back to sign-in — or the work was cancelled).
-    public func describe(_ error: any Error) -> String? {
+    ///
+    /// - Parameter reading: the call only read something. An unclear answer to a read is
+    ///   not "it may or may not have gone through": nothing was changed, so it says to try again.
+    public func describe(_ error: any Error, reading: Bool = false) -> String? {
         if PlainLanguage.isSignedOut(error) {
             onSignedOut()
             return nil
         }
         if error is CancellationError { return nil }
-        return PlainLanguage.message(for: error)
+        return reading ? PlainLanguage.readMessage(for: error) : PlainLanguage.message(for: error)
     }
 }
 
@@ -65,6 +68,12 @@ public final class SessionModel {
     public private(set) var searchRequests = 0
     /// Bumped by ⌘N on platforms that present the new-thread composer as a sheet.
     public private(set) var newThreadRequests = 0
+
+    public private(set) var externalNavigationRequests = 0
+    public func openExternal(_ destination: Destination) {
+        self.destination = destination
+        externalNavigationRequests += 1
+    }
 
     private let service: any OmniService
     private let sink: ErrorSink

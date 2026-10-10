@@ -66,7 +66,7 @@ public enum PlainLanguage {
             default: return "The server refused that request."
             }
         case .redirectRefused: return "The server tried to send this somewhere else. Check the server address."
-        case .unreachable: return "Can't reach the server. Check that it's running and that this Mac is on the right network."
+        case .unreachable: return "Can't reach the server. Check that it's running and that this device is on the right network."
         case .outcomeUnknown(let u):
             switch u.code {
             case "hermes_unavailable", "hermes_timeout": return "The server is up, but it can't reach the agent right now."
@@ -76,6 +76,15 @@ public enum PlainLanguage {
         case .decoding: return "The server answered in a way this version of Omni doesn't understand."
         case .tokenStore: return "The Keychain refused. Unlock your keychain and try again."
         }
+    }
+
+    /// The message for a failed READ. Same words as ``message(for:)`` except when the server
+    /// answered unclearly or too late: a read changed nothing, so there is no doubt to voice.
+    public static func readMessage(for error: any Error) -> String {
+        if let e = error as? PrismError, case .outcomeUnknown(let u) = e, !["hermes_unavailable", "hermes_timeout", "hermes_auth", "hermes_not_configured"].contains(u.code ?? "") {
+            return "The server took too long to answer, or answered with an error. Try again."
+        }
+        return message(for: error)
     }
 
     /// A turn's `result.errorCode`, in words. `nil` for a turn that worked.
@@ -106,7 +115,7 @@ public enum PlainLanguage {
         case .notAURL: return "That isn't a web address. It should look like https://prism.example.com."
         case .invalidHost: return "That address has a host name Omni can't use."
         case .unsupportedScheme: return "The address must start with https://."
-        case .insecureScheme: return "Use https://. Plain http:// only works for a server on this Mac (127.0.0.1)."
+        case .insecureScheme: return "Use https://. Plain http:// only works for a server on this device (127.0.0.1)."
         case .hasUserInfo: return "Leave the user name and password out of the address."
         case .hasQueryOrFragment, .hasPath: return "Use just the server's address, with nothing after the host name."
         case .forbiddenPort: return "That port is the vault, not the Prism Server."

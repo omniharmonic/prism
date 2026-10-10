@@ -27,7 +27,10 @@ public final class AppModel {
 
     public private(set) var phase: Phase = .needsServer
     /// The address field on the first-run screen.
-    public var serverText: String
+    public var serverText: String {
+        // The reason an address was refused is about the address that was there.
+        didSet { if serverText != oldValue { serverError = nil } }
+    }
     /// Why the address in ``serverText`` was refused.
     public private(set) var serverError: String?
     public private(set) var origin: ServerOrigin?
@@ -70,6 +73,17 @@ public final class AppModel {
         self.sleep = sleep
         self.makeEnvironment = makeEnvironment
         self.serverText = settings.serverURL() ?? defaultServerURL
+    }
+
+    /// Requires a live native session; registration is triggered only after Settings opt-in.
+    public func registerPush(token: String, environment: String) async throws -> Bool {
+        guard phase == .signedIn, let service = self.environment?.service as? any NativePushService else { throw CancellationError() }
+        return try await service.registerPush(token: token, environment: environment)
+    }
+
+    public func unregisterPush() async throws {
+        guard phase == .signedIn, let service = environment?.service as? any NativePushService else { return }
+        try await service.unregisterPush()
     }
 
     /// Call once at launch: reconnect to the remembered server, if there is one.

@@ -48,6 +48,8 @@ public final class ThreadModel {
     public private(set) var isUnavailable = false
     /// The view is on screen (set by ``open()`` / ``close()``).
     public private(set) var isOpen = false
+    /// The thread's `lastSeq` when its stored events were last read for a failed turn's reason.
+    private var outcomeReadAtSeq: Int?
     /// The composer's text.
     public var draft = ""
 
@@ -165,13 +167,14 @@ public final class ThreadModel {
                 if followTask == nil { startFollowing(turn: turn, replayTurn: true) }
             } else if followTask == nil {
                 activeTurnID = nil
+                await readWhyTheLastTurnFailed(fresh)
             }
         } catch {
             if PlainLanguage.isNotFound(error) {
                 markUnavailable()
                 return
             }
-            guard let message = sink.describe(error) else {
+            guard let message = sink.describe(error, reading: true) else {
                 // Signed out or cancelled: never leave the spinner up.
                 if detail == nil, phase == .loading { phase = .idle }
                 return
@@ -395,6 +398,30 @@ public final class ThreadModel {
         guard generation == followGeneration else { return }
         followTask = nil
         connection = .idle
+    }
+
+    /// A thread opened after its last turn failed shows only the person's message: the reason
+    /// was said on the stream, while it ran. The stored events still hold it, so read the last
+    /// few once and say it again ("The connection to the agent was lost before it finished.").
+    /// Only for a thread the server marks as needing the person with no draft waiting — the
+    /// mark a failed turn leaves — and once per state of the thread.
+    private func readWhyTheLastTurnFailed(_ fresh: ThreadDetail) async {
+        let lastSeq = fresh.thread.lastSeq
+        guard turnEnded == nil, fresh.thread.state == .needsYou, lastSeq > 0, outcomeReadAtSeq != lastSeq,
+              !fresh.approvals.contains(where: \.isPending) else { return }
+        outcomeReadAtSeq = lastSeq
+        var last: (ok: Bool, code: String?)?
+        do {
+            for try await update in service.threadStream(threadID: threadID, after: max(0, lastSeq - 12)) {
+                if case .reconnecting = update { break }
+                if case .event(let envelope) = update, case .result(let ok, _, let code) = envelope.event { last = (ok, code) }
+            }
+        } catch {
+            return // Not worth a message of its own: the thread itself loaded.
+        }
+        // Something started meanwhile: its own stream says what happens.
+        guard followTask == nil, activeTurnID == nil, turnEnded == nil, let last, !last.ok, last.code != "cancelled" else { return }
+        turnEnded = PlainLanguage.turnFailure(last.code)
     }
 
     private func finishTurn(with fresh: ThreadDetail) {

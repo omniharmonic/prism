@@ -124,7 +124,7 @@ public final class ThreadListModel {
             agentUnavailable = !list.hermesAvailable
             phase = .loaded
         } catch {
-            guard let message = sink.describe(error) else { return }
+            guard let message = sink.describe(error, reading: true) else { return }
             phase = .failed(message)
         }
     }

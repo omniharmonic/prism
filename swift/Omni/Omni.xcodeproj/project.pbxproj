@@ -14,12 +14,28 @@
 /* Begin PBXFileReference section */
 		0A0000000000000000000031 /* Omni.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Omni.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		0A0000000000000000000032 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		0A0000000000000000000033 /* OmniUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = OmniUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
+
+/* Begin PBXContainerItemProxy section */
+		0A00000000000000000000C1 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 0A0000000000000000000081 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 0A0000000000000000000071;
+			remoteInfo = Omni;
+		};
+/* End PBXContainerItemProxy section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		0A0000000000000000000041 /* App */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			path = App;
+			sourceTree = "<group>";
+		};
+		0A0000000000000000000042 /* UITests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = UITests;
 			sourceTree = "<group>";
 		};
 /* End PBXFileSystemSynchronizedRootGroup section */
@@ -34,6 +50,13 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		0A0000000000000000000054 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -41,6 +64,7 @@
 			isa = PBXGroup;
 			children = (
 				0A0000000000000000000041 /* App */,
+				0A0000000000000000000042 /* UITests */,
 				0A0000000000000000000063 /* Support */,
 				0A0000000000000000000062 /* Products */,
 			);
@@ -50,6 +74,7 @@
 			isa = PBXGroup;
 			children = (
 				0A0000000000000000000031 /* Omni.app */,
+				0A0000000000000000000033 /* OmniUITests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -89,6 +114,27 @@
 			productReference = 0A0000000000000000000031 /* Omni.app */;
 			productType = "com.apple.product-type.application";
 		};
+		0A0000000000000000000072 /* OmniUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 0A0000000000000000000093 /* Build configuration list for PBXNativeTarget "OmniUITests" */;
+			buildPhases = (
+				0A0000000000000000000055 /* Sources */,
+				0A0000000000000000000054 /* Frameworks */,
+				0A0000000000000000000056 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				0A00000000000000000000C2 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				0A0000000000000000000042 /* UITests */,
+			);
+			name = OmniUITests;
+			productName = OmniUITests;
+			productReference = 0A0000000000000000000033 /* OmniUITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -101,6 +147,10 @@
 				TargetAttributes = {
 					0A0000000000000000000071 = {
 						CreatedOnToolsVersion = 27.0;
+					};
+					0A0000000000000000000072 = {
+						CreatedOnToolsVersion = 27.0;
+						TestTargetID = 0A0000000000000000000071;
 					};
 				};
 			};
@@ -122,12 +172,20 @@
 			projectRoot = "";
 			targets = (
 				0A0000000000000000000071 /* Omni */,
+				0A0000000000000000000072 /* OmniUITests */,
 			);
 		};
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
 		0A0000000000000000000053 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		0A0000000000000000000056 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -144,7 +202,22 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		0A0000000000000000000055 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		0A00000000000000000000C2 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 0A0000000000000000000071 /* Omni */;
+			targetProxy = 0A00000000000000000000C1 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
 		0A00000000000000000000B1 /* Debug */ = {
@@ -197,6 +270,9 @@
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+                APS_ENVIRONMENT = development;
+                "CODE_SIGN_ENTITLEMENTS[sdk=iphone*]" = Support/Omni-iOS.entitlements;
+                "CODE_SIGN_ENTITLEMENTS[sdk=macosx*]" = Support/Omni-macOS.entitlements;
 				INFOPLIST_FILE = Support/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = Omni;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.productivity";
@@ -208,7 +284,7 @@
 				"LD_RUNPATH_SEARCH_PATHS[sdk=iphone*]" = "$(inherited) @executable_path/Frameworks";
 				"LD_RUNPATH_SEARCH_PATHS[sdk=macosx*]" = "$(inherited) @executable_path/../Frameworks";
 				MARKETING_VERSION = 0.1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.benjaminlife.omni;
+				PRODUCT_BUNDLE_IDENTIFIER = "com.benjaminlife.omni$(OMNI_BUNDLE_SUFFIX)";
 				PRODUCT_NAME = Omni;
 				SDKROOT = auto;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx";
@@ -228,6 +304,9 @@
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+                APS_ENVIRONMENT = development;
+                "CODE_SIGN_ENTITLEMENTS[sdk=iphone*]" = Support/Omni-iOS.entitlements;
+                "CODE_SIGN_ENTITLEMENTS[sdk=macosx*]" = Support/Omni-macOS.entitlements;
 				INFOPLIST_FILE = Support/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = Omni;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.productivity";
@@ -239,13 +318,57 @@
 				"LD_RUNPATH_SEARCH_PATHS[sdk=iphone*]" = "$(inherited) @executable_path/Frameworks";
 				"LD_RUNPATH_SEARCH_PATHS[sdk=macosx*]" = "$(inherited) @executable_path/../Frameworks";
 				MARKETING_VERSION = 0.1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.benjaminlife.omni;
+				PRODUCT_BUNDLE_IDENTIFIER = "com.benjaminlife.omni$(OMNI_BUNDLE_SUFFIX)";
 				PRODUCT_NAME = Omni;
 				SDKROOT = auto;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx";
 				SUPPORTS_MACCATALYST = NO;
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		0A00000000000000000000B5 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_IDENTITY = "Apple Development";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 83Y42N33H8;
+				GENERATE_INFOPLIST_FILE = YES;
+				"LD_RUNPATH_SEARCH_PATHS[sdk=iphone*]" = "$(inherited) @executable_path/Frameworks @loader_path/Frameworks";
+				"LD_RUNPATH_SEARCH_PATHS[sdk=macosx*]" = "$(inherited) @executable_path/../Frameworks @loader_path/../Frameworks";
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.benjaminlife.omni.uitests;
+				PRODUCT_NAME = OmniUITests;
+				SDKROOT = auto;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx";
+				SUPPORTS_MACCATALYST = NO;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = Omni;
+			};
+			name = Debug;
+		};
+		0A00000000000000000000B6 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_IDENTITY = "Apple Development";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 83Y42N33H8;
+				GENERATE_INFOPLIST_FILE = YES;
+				"LD_RUNPATH_SEARCH_PATHS[sdk=iphone*]" = "$(inherited) @executable_path/Frameworks @loader_path/Frameworks";
+				"LD_RUNPATH_SEARCH_PATHS[sdk=macosx*]" = "$(inherited) @executable_path/../Frameworks @loader_path/../Frameworks";
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.benjaminlife.omni.uitests;
+				PRODUCT_NAME = OmniUITests;
+				SDKROOT = auto;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx";
+				SUPPORTS_MACCATALYST = NO;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = Omni;
 			};
 			name = Release;
 		};
@@ -266,6 +389,15 @@
 			buildConfigurations = (
 				0A00000000000000000000B3 /* Debug */,
 				0A00000000000000000000B4 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		0A0000000000000000000093 /* Build configuration list for PBXNativeTarget "OmniUITests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				0A00000000000000000000B5 /* Debug */,
+				0A00000000000000000000B6 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Debug;

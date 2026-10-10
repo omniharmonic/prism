@@ -24,20 +24,46 @@ struct ThreadView: View {
                 )
             }
         }
-        .navigationTitle(model.title)
+        .navigationTitle(barTitle)
+        #if os(iOS)
+        // A thread's own title, whole, in the bar; its state under it. (A label in the bar
+        // was cut down to a sliver on an iPhone.)
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .principal) {
+                VStack(spacing: 0) {
+                    Text(barTitle).font(.headline).lineLimit(1)
+                    if let state = model.thread.map({ $0.gone ? "No longer available" : ThreadGrouping.title(for: $0.state) }) {
+                        Text(state).font(.caption).foregroundStyle(Color.quietText).lineLimit(1)
+                    }
+                }
+                // A bar does not grow with the text size (the system shows its items large
+                // on a long press instead); held to sizes that fit it.
+                .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
+                .accessibilityElement(children: .combine)
+                .accessibilityAddTraits(.isHeader)
+            }
+        }
+        #else
         .toolbar {
             if let thread = model.thread {
                 ToolbarItem {
                     Label(ThreadGrouping.title(for: thread.state), systemImage: StateStyle.symbol(thread.state))
                         .labelStyle(.titleAndIcon)
                         .font(.callout)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Color.quietText)
                         .accessibilityLabel("State: \(ThreadGrouping.title(for: thread.state))")
                 }
             }
         }
+        #endif
         .task(id: model.threadID) { await session.openThread(model) }
         .onDisappear { model.close() }
+    }
+
+    /// The thread's title; the list's, while the thread itself has not loaded (or never will).
+    private var barTitle: String {
+        model.thread == nil ? session.threads.thread(model.threadID).map(ThreadGrouping.displayTitle) ?? model.title : model.title
     }
 
     @ViewBuilder private var transcript: some View {
@@ -74,7 +100,7 @@ struct ThreadView: View {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 14) {
                         if model.timeline.isEmpty {
-                            Text("Nothing here yet.").foregroundStyle(.secondary).frame(maxWidth: .infinity)
+                            Text("Nothing here yet.").foregroundStyle(Color.quietText).frame(maxWidth: .infinity)
                         }
                         ForEach(model.timeline) { item in
                             TimelineRow(item: item, model: model, approvals: session.approvals)
@@ -85,9 +111,23 @@ struct ThreadView: View {
                     .frame(maxWidth: 820, alignment: .leading)
                     .frame(maxWidth: .infinity)
                 }
-                .defaultScrollAnchor(.bottom)
+                // A short conversation starts at the top; a long one opens at its end and
+                // stays there as the answer grows.
+                .defaultScrollAnchor(.top, for: .alignment)
+                .defaultScrollAnchor(.bottom, for: .initialOffset)
+                .defaultScrollAnchor(.bottom, for: .sizeChanges)
+                .accessibilityIdentifier("transcript")
+                #if os(iOS)
+                // Dragging the conversation puts the keyboard away (there is no other way to on an iPhone).
+                .scrollDismissesKeyboard(.immediately)
+                #endif
                 .refreshable { await model.reload() }
                 .onChange(of: model.timeline) { proxy.scrollTo("bottom", anchor: .bottom) }
+                // The keyboard came up, or the message box grew: the room for the conversation
+                // shrank, and its end must not slide under the box.
+                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { old, new in
+                    if new < old { proxy.scrollTo("bottom", anchor: .bottom) }
+                }
             }
         }
     }
@@ -125,7 +165,7 @@ struct Banner<Actions: View>: View {
 
     var body: some View {
         HStack(spacing: 10) {
-            Image(systemName: symbol).foregroundStyle(.secondary).accessibilityHidden(true)
+            Image(systemName: symbol).foregroundStyle(Color.quietText).accessibilityHidden(true)
             Text(text).font(.callout).fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 8)
             actions.controlSize(.small)
@@ -150,8 +190,13 @@ struct Composer<Accessory: View>: View {
     var isStopping = false
     let onSend: () -> Void
     var onStop: () -> Void = {}
+    /// Put the cursor in the box when it appears. Always on the Mac (a thread opens ready to
+    /// type in). On iPhone and iPad only where typing is the whole point — a new thread —
+    /// because there the cursor brings the keyboard up over half the conversation.
+    var focusOnAppear = Composer.focusesByDefault
     @ViewBuilder var accessory: Accessory
     @FocusState private var focused: Bool
+    @Environment(\.dynamicTypeSize) private var typeSize
 
     init(
         text: Binding<String>,
@@ -161,8 +206,10 @@ struct Composer<Accessory: View>: View {
         isStopping: Bool = false,
         onSend: @escaping () -> Void,
         onStop: @escaping () -> Void = {},
+        focusOnAppear: Bool = Composer.focusesByDefault,
         @ViewBuilder accessory: () -> Accessory = { EmptyView() }
     ) {
+        self.focusOnAppear = focusOnAppear
         _text = text
         self.placeholder = placeholder
         self.canSend = canSend
@@ -178,11 +225,13 @@ struct Composer<Accessory: View>: View {
             // An invisible copy of the text sets the height; the editor fills it.
             Text(text.isEmpty ? placeholder : text + (text.hasSuffix("\n") ? " " : ""))
                 .font(.body)
-                .lineLimit(1...8)
+                // Up to eight lines, then the box scrolls. Four at the accessibility text
+                // sizes, where eight would fill the screen and push Send under the keyboard.
+                .lineLimit(1...(typeSize.isAccessibilitySize ? 4 : 8))
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, 5)
                 .padding(.vertical, Self.verticalInset)
-                .foregroundStyle(text.isEmpty ? AnyShapeStyle(.tertiary) : AnyShapeStyle(.clear))
+                .foregroundStyle(text.isEmpty ? AnyShapeStyle(Color.quietText) : AnyShapeStyle(.clear))
                 .accessibilityHidden(true)
                 .overlay {
                     TextEditor(text: $text)
@@ -190,6 +239,20 @@ struct Composer<Accessory: View>: View {
                         .scrollContentBackground(.hidden)
                         .focused($focused)
                         .accessibilityLabel(placeholder)
+                        .accessibilityIdentifier("composer")
+                        #if os(iOS)
+                        // Return starts a new line here, so the keyboard needs its own way out.
+                        .toolbar {
+                            if focused {
+                                ToolbarItemGroup(placement: .keyboard) {
+                                    Spacer()
+                                    Button("Done") { focused = false }
+                                        .accessibilityLabel("Hide keyboard")
+                                        .accessibilityIdentifier("composer.hideKeyboard")
+                                }
+                            }
+                        }
+                        #endif
                         #if os(macOS)
                         .onKeyPress(.return, phases: .down) { press in
                             // Shift- or Option-Return: let the editor insert the new line.
@@ -211,21 +274,32 @@ struct Composer<Accessory: View>: View {
                 .disabled(isStopping)
                 .help("Stop (⌘.)")
                 .accessibilityLabel("Stop")
+                .accessibilityIdentifier("composer.stop")
                 .accessibilityHint("Stops what Omni is doing in this thread")
             } else {
                 Button(action: onSend) {
                     Image(systemName: "arrow.up.circle.fill").font(.title2)
                 }
                 .buttonStyle(.plain)
-                .foregroundStyle(canSend ? AnyShapeStyle(.tint) : AnyShapeStyle(.tertiary))
+                .foregroundStyle(canSend ? AnyShapeStyle(.tint) : AnyShapeStyle(Color.quietText))
+                .opacity(canSend ? 1 : 0.6)
                 .disabled(!canSend)
                 .help("Send (Return)")
-                .accessibilityLabel("Send")
+                .accessibilityLabel("Send message")
+                .accessibilityIdentifier("composer.send")
             }
         }
         .padding(.horizontal)
         .padding(.vertical, 10)
-        .onAppear { focused = true }
+        .onAppear { if focusOnAppear { focused = true } }
+    }
+
+    static var focusesByDefault: Bool {
+        #if os(macOS)
+        true
+        #else
+        false
+        #endif
     }
 
     private static var verticalInset: CGFloat {
@@ -244,10 +318,17 @@ struct NewThreadView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            ContentUnavailableView {
-                Label("New thread", systemImage: "square.and.pencil")
-            } description: {
-                Text("Say what you want done. Omni works on it in its own thread and asks before anything goes out.")
+            // Centred when there is room; scrolls under the keyboard at the largest text sizes.
+            GeometryReader { area in
+                ScrollView {
+                    ContentUnavailableView {
+                        Label("New thread", systemImage: "square.and.pencil")
+                    } description: {
+                        Text("Say what you want done. Omni works on it in its own thread and asks before anything goes out.")
+                    }
+                    .frame(maxWidth: .infinity, minHeight: area.size.height)
+                }
+                .scrollBounceBehavior(.basedOnSize)
             }
             if let error = session.threads.createError {
                 Banner(symbol: "exclamationmark.triangle", text: error) {
@@ -264,11 +345,18 @@ struct NewThreadView: View {
                     Task {
                         if await session.startThread(prompt: prompt) { text = "" }
                     }
-                }
+                },
+                focusOnAppear: true
             )
             .disabled(session.threads.isCreating)
+            // The box keeps the height its text needs; the words above give way.
+            .fixedSize(horizontal: false, vertical: true)
+            .layoutPriority(1)
         }
         .navigationTitle("New Thread")
+        #if os(iOS)
+        .navigationBarTitleDisplayMode(.inline)
+        #endif
     }
 
     private var canSend: Bool {

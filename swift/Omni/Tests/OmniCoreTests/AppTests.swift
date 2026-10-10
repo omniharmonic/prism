@@ -37,7 +37,7 @@ final class AppModelTests: XCTestCase {
         for (text, message) in [
             ("", "Enter the server address."),
             ("prism.example.com", "That isn't a web address. It should look like https://prism.example.com."),
-            ("http://prism.example.com", "Use https://. Plain http:// only works for a server on this Mac (127.0.0.1)."),
+            ("http://prism.example.com", "Use https://. Plain http:// only works for a server on this device (127.0.0.1)."),
             ("https://prism.example.com/app", "Use just the server's address, with nothing after the host name."),
             ("http://127.0.0.1:1940", "That port is the vault, not the Prism Server."),
         ] {
@@ -452,7 +452,7 @@ final class TodayAndJobsTests: XCTestCase {
         service.todays(.failure(PrismError.unreachable("connection refused")), .success(Fixture.today(tasks: [["noteId": "n1", "title": "Call Dana"]])), .failure(PrismError.outcomeUnknown(OutcomeUnknown(status: nil, code: nil, reason: "timed out"))))
         await model.refresh()
         XCTAssertFalse(model.hasContent)
-        XCTAssertEqual(model.phase.failure, "Can't reach the server. Check that it's running and that this Mac is on the right network.")
+        XCTAssertEqual(model.phase.failure, "Can't reach the server. Check that it's running and that this device is on the right network.")
         await model.refresh()
         XCTAssertEqual(model.phase, .loaded)
         XCTAssertNil(model.partialNotice)
@@ -460,7 +460,7 @@ final class TodayAndJobsTests: XCTestCase {
         // A later refresh fails: the tasks stay on screen, with a line saying it could not refresh.
         await model.refresh()
         XCTAssertEqual(model.tasks.map(\.title), ["Call Dana"])
-        XCTAssertEqual(model.phase.failure, "Couldn't refresh Today. The server didn't answer clearly, so it's not known whether this went through.")
+        XCTAssertEqual(model.phase.failure, "Couldn't refresh Today. The server took too long to answer, or answered with an error. Try again.")
         XCTAssertFalse(model.isRefreshing)
     }
 
@@ -521,7 +521,9 @@ final class TodayAndJobsTests: XCTestCase {
         XCTAssertEqual(JobPresentation.lastRun(cron), "Last run failed")
         XCTAssertTrue(JobPresentation.isPaused(cron))
         let plain: OmniJob = Fixture.decode(["id": "b", "name": "Brief", "schedule": "30 7 * * *", "next_run_at": 1_791_000_000_000 as Int64, "last_status": "ok"])
-        XCTAssertEqual(JobPresentation.schedule(plain), "30 7 * * *")
+        // A plain cron line is said in words; anything unusual stays as Hermes wrote it.
+        XCTAssertEqual(JobPresentation.cronInWords("30 7 * * *", locale: Locale(identifier: "en_US"))?.replacingOccurrences(of: "\u{202F}", with: " "), "Every day at 7:30 AM")
+        XCTAssertNotEqual(JobPresentation.schedule(plain), "30 7 * * *")
         XCTAssertEqual(JobPresentation.date(plain.nextRunAt), Date(timeIntervalSince1970: 1_791_000_000))
         XCTAssertEqual(JobPresentation.lastRun(plain), "Last run worked")
         XCTAssertNil(JobPresentation.date(nil))

@@ -45,6 +45,29 @@ export function projectResolver(notes: VaultNote[]) {
 }
 
 export interface Patch { content?: string; metadata?: Record<string, unknown> }
+/** Repair changes only references to THIS duplicate. General normalization belongs to hygiene. */
+export function mergeMembershipPatch(note: VaultNote, duplicate: VaultNote, canonical: VaultNote, notes: VaultNote[] = []): Patch {
+  const keys = new Set([duplicate.id, duplicate.path, folderOf(duplicate), folderOf(duplicate).replace(ROOT, ""), duplicate.metadata?.slug, ...values(duplicate.metadata?.aliases)].filter((v): v is string => typeof v === "string" && !!v).map(projectTarget));
+  for (const other of notes.filter(n => isLive(n) && isProject(n) && n.id !== duplicate.id && n.id !== canonical.id)) {
+    for (const value of [other.id, other.path, folderOf(other), folderOf(other).replace(ROOT, ""), other.metadata?.slug, ...values(other.metadata?.aliases)]) {
+      if (typeof value === "string" && value !== duplicate.id && value !== duplicate.path) keys.delete(projectTarget(value));
+    }
+  }
+  const matches = (value: unknown) => typeof value === "string" && keys.has(projectTarget(value));
+  const canonicalRef = `[[${canonical.path}]]`;
+  const projects = values(note.metadata?.projects);
+  const legacy = values(note.metadata?.project);
+  const metadata: Record<string, unknown> = {};
+  if (projects.some(matches)) metadata.projects = [...new Map(projects.map(v => matches(v) ? canonicalRef : v).map(v => [JSON.stringify(v), v])).values()];
+  if (legacy.some(matches)) {
+    // Populated projects remain authoritative; repair does not add a stale legacy membership.
+    if (!projects.length) metadata.projects = [...new Map(legacy.map(v => matches(v) ? canonicalRef : v).map(v => [JSON.stringify(v), v])).values()];
+    const kept = legacy.filter(v => !matches(v));
+    metadata.project = kept.length ? Array.isArray(note.metadata?.project) ? kept : kept[0] : null;
+  }
+  return Object.keys(metadata).length ? { metadata } : {};
+}
+
 export function hygienePatch(note: VaultNote, notes: VaultNote[], resolver = projectResolver(notes)): Patch {
   const { projects, resolve } = resolver;
   const metadata: Record<string, unknown> = {};
@@ -94,7 +117,7 @@ export function missingProjects(notes: VaultNote[]): Array<{ path: string; sourc
 
 export async function main(argv: string[], ctx: Ctx): Promise<number> {
   const args = parseArgs(argv, ["vault-url", "vault", "prism-url", "rate", "undo-log", "phase"]);
-  for (const flag of args.flags) if (!["apply", "backup-confirmed", "production", "live-sections-confirmed"].includes(flag)) throw new UsageError(`unknown flag --${flag}`);
+  for (const flag of args.flags) if (!["apply", "backup-confirmed", "production", "live-sections-confirmed", "summary-only"].includes(flag)) throw new UsageError(`unknown flag --${flag}`);
   const phase = args.get("phase") ?? "hygiene";
   if (!["repair", "hygiene", "indexes"].includes(phase)) throw new UsageError("--phase repair|hygiene|indexes");
   if (phase === "indexes" && !args.has("live-sections-confirmed")) throw new UsageError("index retirement needs --live-sections-confirmed after deploying live sections");
@@ -122,16 +145,25 @@ export async function main(argv: string[], ctx: Ctx): Promise<number> {
     }
     return live;
   };
-  let notes = await loadInventory();
-  let resolver = projectResolver(notes);
+  const notes = await loadInventory();
+  const resolver = projectResolver(notes);
   let writes = 0;
   let planned = 0;
   let failures = 0;
+  const summary = { creates: 0, patches: 0, content: 0, membership: 0, agentContext: 0, otherMetadata: 0, metadataFields: {} as Record<string, number>, linkOperations: 0, linksAdded: 0, linksRemoved: 0, trash: 0 };
+  const detail = (line: string) => { if (!args.has("summary-only")) ctx.log(line); };
   ctx.log(`${apply ? "APPLY" : "DRY RUN"} project-${phase}: ${notes.length} live notes`);
   const patch = async (fresh: VaultNote, change: Patch) => {
     if (!Object.keys(change).length) return;
     planned++;
-    ctx.log(`  ${apply ? "patch" : "would patch"} ${fresh.id} ${fresh.path ?? ""}`);
+    summary.patches++;
+    if (change.content !== undefined) summary.content++;
+    const fields = Object.keys(change.metadata ?? {});
+    if (fields.some(k => ["projects", "project"].includes(k))) summary.membership++;
+    if (fields.some(k => ["agent_context", "agent_recent_activity"].includes(k))) summary.agentContext++;
+    if (fields.some(k => !["projects", "project", "agent_context", "agent_recent_activity"].includes(k))) summary.otherMetadata++;
+    for (const field of fields) summary.metadataFields[field] = (summary.metadataFields[field] ?? 0) + 1;
+    detail(`  ${apply ? "patch" : "would patch"} ${fresh.id} ${fresh.path ?? ""}`);
     if (!apply) return;
     if (!fresh.updatedAt) throw new Error("fresh revision missing");
     const before = { ...(change.content !== undefined ? { content: fresh.content ?? "" } : {}), ...(change.metadata ? { metadata: Object.fromEntries(Object.keys(change.metadata).map(k => [k, fresh.metadata?.[k] ?? null])) } : {}) };
@@ -145,7 +177,8 @@ export async function main(argv: string[], ctx: Ctx): Promise<number> {
       return existing;
     }
     planned++;
-    ctx.log(`  ${apply ? "create" : "would create"} ${path}`);
+    summary.creates++;
+    detail(`  ${apply ? "create" : "would create"} ${path}`);
     if (!apply) return { id: `planned:${path}`, path, content, tags, metadata };
     await throttle.wait(); const after = await vault.create({ path, content, tags, metadata });
     if (!after.existed) { log.append({ kind: "vault-create", script: `project-${phase}`, at: ctx.now().toISOString(), id: after.id, path: after.path ?? path, afterUpdatedAt: after.updatedAt ?? "" }); writes++; }
@@ -153,7 +186,8 @@ export async function main(argv: string[], ctx: Ctx): Promise<number> {
   };
   const trash = async (note: VaultNote, canonicalId: string) => {
     planned++;
-    ctx.log(`  ${apply ? "trash" : "would trash"} ${note.id} ${note.path ?? ""}`);
+    summary.trash++;
+    detail(`  ${apply ? "trash" : "would trash"} ${note.id} ${note.path ?? ""}`);
     const children = note.path ? (await vault.listNotes({ pathPrefix: `${note.path}/`, includeMetadata: ["prism_trashed_at"] })).filter(isLive) : [];
     if (children.length) throw new Error("refusing cascading Trash of descendants");
     if (!apply) return;
@@ -179,7 +213,8 @@ export async function main(argv: string[], ctx: Ctx): Promise<number> {
         await create(candidate.path, source?.content ?? "", ["project"], { ...(source?.metadata ?? {}), title: source ? titleOf(source) : slug.split("/").pop()!.replace(/-/g, " "), type: "project", slug, ...(source ? { promoted_from: source.id } : {}) });
       } catch { failures++; ctx.log(`  failed create ${candidate.path}`); }
     }
-    if (apply) { notes = await loadInventory(); resolver = projectResolver(notes); }
+    // Keep the reviewed inventory for this invocation. Newly created projects
+    // can enable merges/splits only in the next dry-run and apply cycle.
     for (const candidate of notes.filter(isProject)) {
       try {
         const fresh = await vault.getNote(candidate.id); if (!fresh || !isLive(fresh)) continue;
@@ -210,15 +245,19 @@ export async function main(argv: string[], ctx: Ctx): Promise<number> {
         if (JSON.stringify(aliases) !== JSON.stringify(target.metadata?.aliases)) await patch(target, { metadata: { aliases } });
         for (const member of notes) {
           if (member.id === fresh.id) continue;
-          const change = hygienePatch(member, notes, resolver);
+          const change = mergeMembershipPatch(member, fresh, canonical, notes);
           const refs = (member.links ?? []).filter(l => l.sourceId === member.id && l.targetId === fresh.id);
           if (!change.metadata && !refs.length) continue;
           const current = await vault.getNote(member.id, { includeLinks: true, includeContent: false }); if (!current || !isLive(current)) continue;
-          await patch(current, { ...(hygienePatch(current, notes, resolver).metadata ? { metadata: hygienePatch(current, notes, resolver).metadata } : {}) });
+          await patch(current, mergeMembershipPatch(current, fresh, canonical, notes));
           const latest = apply ? await vault.getNote(current.id, { includeLinks: true, includeContent: false }) : current;
           const removed = (latest?.links ?? []).filter(l => l.sourceId === current.id && l.targetId === fresh.id).map(l => ({ target: l.targetId, relationship: l.relationship }));
-          if (removed.length && apply) {
+          if (removed.length) {
             const added = removed.map(l => ({ target: canonical.id, relationship: l.relationship })).filter(l => !(latest?.links ?? []).some(x => x.sourceId === current.id && x.targetId === l.target && x.relationship === l.relationship));
+            planned++;
+            summary.linkOperations++; summary.linksAdded += added.length; summary.linksRemoved += removed.length;
+            detail(`  ${apply ? "links" : "would links"} ${current.id} ${JSON.stringify({ add: added, remove: removed })}`);
+            if (!apply) continue;
             await throttle.wait(); const after = await vault.patchLinks(current.id, { add: added, remove: removed }, latest!.updatedAt!);
             log.append({ kind: "vault-links", script: "project-repair", at: ctx.now().toISOString(), id: current.id, path: current.path ?? null, afterUpdatedAt: after.updatedAt ?? "", added, removed }); writes++;
           }
@@ -238,6 +277,7 @@ export async function main(argv: string[], ctx: Ctx): Promise<number> {
       catch { failures++; ctx.log(`  failed index ${candidate.id}`); }
     }
   }
+  ctx.log(`summary: ${JSON.stringify(summary)}`);
   ctx.log(`done: ${planned} planned, ${writes} writes, ${failures} failed; undo ${log.path}`);
   return failures ? 1 : 0;
 }

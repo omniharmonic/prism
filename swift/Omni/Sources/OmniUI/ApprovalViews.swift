@@ -36,11 +36,11 @@ struct ApprovalCardView: View {
                 draft(card.content)
             }
             if let line = card.statusLine() {
-                Text(line).font(.callout).foregroundStyle(standing == .mismatch || standing == .unknown ? AnyShapeStyle(.orange) : AnyShapeStyle(.secondary))
+                Text(line).font(.callout).foregroundStyle(standing == .mismatch || standing == .unknown ? AnyShapeStyle(Color.warningText) : AnyShapeStyle(Color.quietText))
                     .fixedSize(horizontal: false, vertical: true)
             }
             if standing == .pending, let off = card.sendingSwitchedOff {
-                Label(off, systemImage: "powerplug").font(.caption).foregroundStyle(.secondary)
+                Label(off, systemImage: "powerplug").font(.caption).foregroundStyle(Color.quietText)
             }
             if let notice = card.notice {
                 Label(notice.text, systemImage: noticeSymbol(notice.tone))
@@ -52,7 +52,7 @@ struct ApprovalCardView: View {
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.background.secondary, in: RoundedRectangle(cornerRadius: 12))
+        .background(.background, in: RoundedRectangle(cornerRadius: 12))
         .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(standing == .pending ? AnyShapeStyle(.tint.opacity(0.5)) : AnyShapeStyle(.separator)))
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Approval: \(card.content.headline)")
@@ -68,24 +68,32 @@ struct ApprovalCardView: View {
                 Task { await center.revise(card.id, feedback: text) }
             }
         }
-        .confirmationDialog("Cancel this draft?", isPresented: $confirmingCancel) {
-            Button("Cancel Draft", role: .destructive) { Task { await center.cancel(card.id) } }
-            Button("Keep", role: .cancel) {}
-        } message: {
-            Text("Nothing is sent. Omni can write a new one if you ask.")
-        }
     }
 
     @ViewBuilder private func draft(_ content: ApprovalContent) -> some View {
+        if typeSize.isAccessibilitySize {
+            // Each label above its value: beside it, a long address gets a column five characters wide.
+            VStack(alignment: .leading, spacing: 8) {
+                ForEach(content.fields) { field in
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(field.label).font(.callout).foregroundStyle(Color.quietText)
+                        Text(field.value).font(.callout).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+                    }
+                    .accessibilityElement(children: .combine)
+                    .accessibilityLabel("\(field.label): \(field.value)")
+                }
+            }
+        } else {
         Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: 10, verticalSpacing: 4) {
             ForEach(content.fields) { field in
                 GridRow {
-                    Text(field.label).font(.callout).foregroundStyle(.secondary).gridColumnAlignment(.trailing)
+                    Text(field.label).font(.callout).foregroundStyle(Color.quietText).gridColumnAlignment(.trailing)
                     Text(field.value).font(.callout).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
                 }
                 .accessibilityElement(children: .combine)
                 .accessibilityLabel("\(field.label): \(field.value)")
             }
+        }
         }
         if let body = content.body {
             Divider()
@@ -95,8 +103,21 @@ struct ApprovalCardView: View {
         }
     }
 
+    /// Side by side where the whole row fits; one under another where it does not (large
+    /// text, a narrow column, a long label) — never squeezed onto two lines or cut.
     @ViewBuilder private func buttons(_ card: ApprovalCard, _ standing: ApprovalCard.Standing) -> some View {
-        HStack(spacing: 8) {
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 8) { actions(card, standing) }
+            VStack(alignment: .leading, spacing: 8) { actions(card, standing) }
+        }
+        #if os(iOS)
+        .buttonStyle(.bordered)
+        #endif
+        .disabled(card.isBusy)
+    }
+
+    @ViewBuilder private func actions(_ card: ApprovalCard, _ standing: ApprovalCard.Standing) -> some View {
+        Group {
             if let retry = card.retry, standing == .pending {
                 Button("Try Again") { Task { await center.retry(card.id) } }
                     .buttonStyle(.borderedProminent)
@@ -104,10 +125,12 @@ struct ApprovalCardView: View {
             } else if card.canOfferSend() {
                 Button(card.isCommand ? "Approve Once" : "Send") { Task { await center.send(card.id) } }
                     .buttonStyle(.borderedProminent)
+                    .accessibilityIdentifier("approval.send")
                     .accessibilityHint(card.isCommand ? "Lets Omni run exactly what is shown, once, after you confirm on this device" : "Sends exactly what is shown, after you confirm on this device")
             }
             if card.canOfferEdit() {
                 Button("Edit") { editing = ApprovalDraft(card.approval) }
+                    .accessibilityIdentifier("approval.edit")
                     .accessibilityHint("Change the wording yourself")
             }
             if card.canOfferCancel() && card.isCommand {
@@ -115,17 +138,28 @@ struct ApprovalCardView: View {
                     .accessibilityHint("Omni does not run it")
             } else if card.canOfferCancel() {
                 Button("Revise…") { revising = true }
+                    .accessibilityIdentifier("approval.revise")
                     .accessibilityHint("Ask Omni for a new draft")
                 Button("Cancel Draft") { confirmingCancel = true }
+                    .accessibilityIdentifier("approval.cancel")
                     .accessibilityHint("Discards this draft; nothing is sent")
+                    // On the button: the question appears beside what was pressed.
+                    .confirmationDialog("Cancel this draft?", isPresented: $confirmingCancel, titleVisibility: .visible) {
+                        Button("Cancel Draft", role: .destructive) { Task { await center.cancel(card.id) } }
+                        Button("Keep", role: .cancel) {}
+                    } message: {
+                        Text("Nothing is sent. Omni can write a new one if you ask.")
+                    }
             }
             if standing == .mismatch {
                 Button("Reload") { Task { await center.reload(card.id) } }
                     .accessibilityHint("Reads the draft from the server again")
             }
         }
-        .disabled(card.isBusy)
+        .fixedSize()
     }
+
+    @Environment(\.dynamicTypeSize) private var typeSize
 
     private func header(_ standing: ApprovalCard.Standing, _ card: ApprovalCard) -> String {
         let kind = card.content.kindLabel
@@ -168,8 +202,8 @@ struct ApprovalCardView: View {
     private func tint(_ standing: ApprovalCard.Standing) -> AnyShapeStyle {
         switch standing {
         case .pending: return AnyShapeStyle(.tint)
-        case .mismatch, .unknown: return AnyShapeStyle(.orange)
-        default: return AnyShapeStyle(.secondary)
+        case .mismatch, .unknown: return AnyShapeStyle(Color.warningText)
+        default: return AnyShapeStyle(Color.quietText)
         }
     }
 
@@ -184,9 +218,9 @@ struct ApprovalCardView: View {
 
     private func noticeStyle(_ tone: ApprovalCard.Tone) -> AnyShapeStyle {
         switch tone {
-        case .warning: return AnyShapeStyle(.orange)
-        case .failure: return AnyShapeStyle(.red)
-        default: return AnyShapeStyle(.secondary)
+        case .warning: return AnyShapeStyle(Color.warningText)
+        case .failure: return AnyShapeStyle(Color.failureText)
+        default: return AnyShapeStyle(Color.quietText)
         }
     }
 }
@@ -197,6 +231,8 @@ struct ApprovalEditSheet: View {
     let save: (ApprovalDraft) async -> Bool
     @State private var saving = false
     @Environment(\.dismiss) private var dismiss
+    /// The body's box grows with the text size.
+    @ScaledMetric private var editorHeight: CGFloat = 160
 
     var body: some View {
         NavigationStack {
@@ -204,16 +240,17 @@ struct ApprovalEditSheet: View {
                 ForEach($draft.fields) { $field in
                     Section(field.label) {
                         if field.multiline {
-                            TextEditor(text: $field.text).frame(minHeight: 160).accessibilityLabel(field.label)
+                            TextEditor(text: $field.text).frame(minHeight: editorHeight).accessibilityLabel(field.label)
                         } else {
-                            TextField(field.label, text: $field.text).accessibilityLabel(field.label)
+                            // The section already names it: no second label beside the field.
+                            TextField(field.label, text: $field.text).labelsHidden().accessibilityLabel(field.label)
                         }
                     }
                 }
                 Section {
                     Text("Saving makes a new draft to review. Recipients and times can't be changed here — ask Omni to revise instead.")
                         .font(.footnote)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Color.quietText)
                 }
             }
             .formStyle(.grouped)
@@ -250,14 +287,16 @@ struct ReviseSheet: View {
         NavigationStack {
             Form {
                 Section("What should change?") {
-                    TextField("Make it shorter, mention Friday…", text: $feedback, axis: .vertical)
+                    // The example is a prompt inside the field, not a label beside it.
+                    TextField("What should change", text: $feedback, prompt: Text("Make it shorter, mention Friday…"), axis: .vertical)
+                        .labelsHidden()
                         .lineLimit(3...8)
                         .accessibilityLabel("What should change")
                 }
                 Section {
                     Text("This draft is set aside and Omni writes a new one for you to review. Nothing is sent.")
                         .font(.footnote)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Color.quietText)
                 }
             }
             .formStyle(.grouped)
