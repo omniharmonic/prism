@@ -1,0 +1,240 @@
+{
+  "sdk": "FluidAudio v0.17.7",
+  "modelRepository": "FluidInference/kokoro-82m-coreml",
+  "revision": "6c0750dd02ef9d981fb82f147d784a3f171755ee",
+  "baseRevision": "006395f65025af251858b1ab0a7178a6a1e73f9f",
+  "mutableFrontendObservedRevision": "d93c5f3eed11847fb81bd6d6a76665e133d7ca77",
+  "v3Files": [
+    {
+      "path": "decoder/KokoroDecoderPre_120.mlpackage/Data/com.apple.CoreML/model.mlmodel",
+      "bytes": 87461,
+      "sha256": "cd1fc5ed538f7fb6f57e38dc30c71cbe498344fde764720ec41d8d9b868887ba"
+    },
+    {
+      "path": "decoder/KokoroDecoderPre_120.mlpackage/Data/com.apple.CoreML/weights/weight.bin",
+      "bytes": 33642176,
+      "sha256": "7f4ba8ddae5d4b6e73bdd19f2d79489963ab41fc1a57d1606001f3cfe5fe82dc"
+    },
+    {
+      "path": "decoder/KokoroDecoderPre_120.mlpackage/Manifest.json",
+      "bytes": 617,
+      "sha256": "72d8e9e63859d9df75d74692dd280ffb9f5a106d12f5d25980ab85ecb7a8aefa"
+    },
+    {
+      "path": "decoder/KokoroDecoderPre_200.mlpackage/Data/com.apple.CoreML/model.mlmodel",
+      "bytes": 87594,
+      "sha256": "1f85ffa9dce80aee4a24392b41aa41d765e39dd55748b1e0b69df6c1b9d0fa60"
+    },
+    {
+      "path": "decoder/KokoroDecoderPre_200.mlpackage/Data/com.apple.CoreML/weights/weight.bin",
+      "bytes": 33642176,
+      "sha256": "0b758dd755a4fab0c1f4a0a16f302d59e8bb38b2200a8bd29f21acfa61e6547c"
+    },
+    {
+      "path": "decoder/KokoroDecoderPre_200.mlpackage/Manifest.json",
+      "bytes": 617,
+      "sha256": "97d52d353b1229c955316a14e056688b1d742b27fe5736d3ff4e1fbe2189539a"
+    },
+    {
+      "path": "fast/KokoroAlbert_32.mlpackage/Data/com.apple.CoreML/model.mlmodel",
+      "bytes": 90614,
+      "sha256": "445dc9bcfa196da380a3b47bf602307cbec01a529b407df4ba31c34ba9980b86"
+    },
+    {
+      "path": "fast/KokoroAlbert_32.mlpackage/Data/com.apple.CoreML/weights/weight.bin",
+      "bytes": 5718848,
+      "sha256": "36089a39359b800d3e2c60e5e8ac9217d8f2d1010a8b9273192290e621f1fabc"
+    },
+    {
+      "path": "fast/KokoroAlbert_32.mlpackage/Manifest.json",
+      "bytes": 617,
+      "sha256": "7275b5a061ed9a95dfa8b182a553e0e97c64d619000899f14a8d922d75d0b9e8"
+    },
+    {
+      "path": "fast/KokoroAlbert_64.mlpackage/Data/com.apple.CoreML/model.mlmodel",
+      "bytes": 90646,
+      "sha256": "8dacdea951068efa8dd1370b4d8b7156fcdcef6c34f0f8d15e4d35070db8e645"
+    },
+    {
+      "path": "fast/KokoroAlbert_64.mlpackage/Data/com.apple.CoreML/weights/weight.bin",
+      "bytes": 5718848,
+      "sha256": "36089a39359b800d3e2c60e5e8ac9217d8f2d1010a8b9273192290e621f1fabc"
+    },
+    {
+      "path": "fast/KokoroAlbert_64.mlpackage/Manifest.json",
+      "bytes": 617,
+      "sha256": "3a99d60a9b318f65caa4918799e69fe7a1548f15dbf38d0cdc3c95afa6f66561"
+    },
+    {
+      "path": "fast/KokoroSourceGenerator.mlpackage/Data/com.apple.CoreML/model.mlmodel",
+      "bytes": 357002,
+      "sha256": "e2fadc3aba5d8ff69b2473fcd69e9a4d988d4d6c7ca8c383e5902d2b68338cab"
+    },
+    {
+      "path": "fast/KokoroSourceGenerator.mlpackage/Data/com.apple.CoreML/weights/weight.bin",
+      "bytes": 39353848,
+      "sha256": "e4ada8b28c56a4acda6a88e7c6d076aa65a39051841597bc0c4c07a60afe5ac2"
+    },
+    {
+      "path": "fast/KokoroSourceGenerator.mlpackage/Manifest.json",
+      "bytes": 617,
+      "sha256": "c33fd43b96f425410f39d1b5b2fb805ddba985b543f04b6fa6b516bc96caeddb"
+    },
+    {
+      "path": "fast/native-source.json",
+      "bytes": 8340,
+      "sha256": "8c673a8a177056db2a91f214b40ab9033f7a3221bd1be5ef4282c6403cff0de3"
+    }
+  ],
+  "baseFiles": [
+    {
+      "path": "ANE/KokoroAlbert.mlpackage/Data/com.apple.CoreML/model.mlmodel",
+      "bytes": 92156,
+      "gitBlob": "e34b4d1b7a82d0d2e25110b7cbd05f6d8fc67ac1",
+      "sha256": "1efeed89cf916ee5fd38a7b4aef8d79a6444eef6b5521514c5ab34e7164f36a2"
+    },
+    {
+      "path": "ANE/KokoroAlbert.mlpackage/Data/com.apple.CoreML/weights/weight.bin",
+      "bytes": 5718848,
+      "gitBlob": "3ea054a139169a5f302b6326f08b9393b20a2818",
+      "sha256": "36089a39359b800d3e2c60e5e8ac9217d8f2d1010a8b9273192290e621f1fabc"
+    },
+    {
+      "path": "ANE/KokoroAlbert.mlpackage/Manifest.json",
+      "bytes": 617,
+      "gitBlob": "e25699d8505057bd948dc7cdc94c165d3132917f"
+    },
+    {
+      "path": "ANE/KokoroAlignment.mlpackage/Data/com.apple.CoreML/model.mlmodel",
+      "bytes": 6971,
+      "gitBlob": "e780e55688c0640578a90a1d7d149f7726070bed",
+      "sha256": "2d87764d55eb2bdf4ea9ced45b63ff51b4a0e139d5440b2d52c03076f06d8512"
+    },
+    {
+      "path": "ANE/KokoroAlignment.mlpackage/Data/com.apple.CoreML/weights/weight.bin",
+      "bytes": 4128,
+      "gitBlob": "6104dbdaf764de798e11c12c90ac8fa596b41bd5",
+      "sha256": "2e7d69128b59d615fc3d3cf85637a687235fc086b1eb136359adb11a61615f6b"
+    },
+    {
+      "path": "ANE/KokoroAlignment.mlpackage/Manifest.json",
+      "bytes": 617,
+      "gitBlob": "2f2208d744d6efc9ddea31784f94f429189aff5b"
+    },
+    {
+      "path": "ANE/KokoroNoise_v2.mlpackage/Data/com.apple.CoreML/model.mlmodel",
+      "bytes": 76250,
+      "gitBlob": "5cc566d7ff5899f37afeb4cdbe00ff3e2656049c",
+      "sha256": "894168c950938e0b776f010b4278b1aae65aa1ce3dd8bdfa4c4170ca80362d0d"
+    },
+    {
+      "path": "ANE/KokoroNoise_v2.mlpackage/Data/com.apple.CoreML/weights/weight.bin",
+      "bytes": 4580160,
+      "gitBlob": "d81342c6856d163be9c9f601092883f763f8170a",
+      "sha256": "1102fc2d31dfcfe3de3978a4c78b65202ff8b0a4d55a9304213bd4e8bda66bc2"
+    },
+    {
+      "path": "ANE/KokoroNoise_v2.mlpackage/Manifest.json",
+      "bytes": 617,
+      "gitBlob": "2d85221aacada2e984c45d5243bf95c2ff83e032"
+    },
+    {
+      "path": "ANE/KokoroPostAlbert.mlpackage/Data/com.apple.CoreML/model.mlmodel",
+      "bytes": 49183,
+      "gitBlob": "138c538a596c5627044223454e60931a95637224",
+      "sha256": "5b1ec258a17ca6419da5c90c66e147a7c3699ea3ed620c4b0db715f6b3f5aa26"
+    },
+    {
+      "path": "ANE/KokoroPostAlbert.mlpackage/Data/com.apple.CoreML/weights/weight.bin",
+      "bytes": 13806464,
+      "gitBlob": "b69a4f75779298b1bbd5c56a3ef3d68c980f2eb3",
+      "sha256": "e4f300a23cc2e05d38680d9fc94681cc722d445076d1d248f83255122ba091c8"
+    },
+    {
+      "path": "ANE/KokoroPostAlbert.mlpackage/Manifest.json",
+      "bytes": 617,
+      "gitBlob": "c7eb11b86c1ed2c05ea6e4962a5402a6a0697996"
+    },
+    {
+      "path": "ANE/KokoroProsody_v2.mlmodelc/analytics/coremldata.bin",
+      "bytes": 243,
+      "gitBlob": "55c5a25a5080666919c9363717cecbd628e96f9e",
+      "sha256": "804d7d2e9a8fed345cedb57da61bd27fdd95db22a070cfa7d42ccd4f8e80a443"
+    },
+    {
+      "path": "ANE/KokoroProsody_v2.mlmodelc/coremldata.bin",
+      "bytes": 421,
+      "gitBlob": "48dd20e5e80818a8a1c92b5ece72d73c111ea42a",
+      "sha256": "db8776a4896f690fd254cdb68a4551c168411c9b3fb98219630215bc3c357986"
+    },
+    {
+      "path": "ANE/KokoroProsody_v2.mlmodelc/model.mil",
+      "bytes": 73353,
+      "gitBlob": "989a67f877974a78dae29fb5b9a331783df55be8"
+    },
+    {
+      "path": "ANE/KokoroProsody_v2.mlmodelc/weights/weight.bin",
+      "bytes": 8513664,
+      "gitBlob": "626371a81839764315507f8319b53fe19c262a67",
+      "sha256": "70eea4cd2523992fa1fea840e31ab6f4fdd69c1598e220985a2ae6ea5da1e944"
+    },
+    {
+      "path": "ANE/KokoroTail_v2.mlmodelc/analytics/coremldata.bin",
+      "bytes": 243,
+      "gitBlob": "e0d13de333d78cb4e5d4c25df52dab4d447457c1",
+      "sha256": "a06e4b91c2b8a8be3ff701558a5f1f6484921f948202663fe6df78f248d42222"
+    },
+    {
+      "path": "ANE/KokoroTail_v2.mlmodelc/coremldata.bin",
+      "bytes": 392,
+      "gitBlob": "104166a1da8fae22b2d0fbaab0aef355915f3151",
+      "sha256": "527271f6df56cc308a5f89374c92108aef7b837ab15f0ba4900d555588dbd905"
+    },
+    {
+      "path": "ANE/KokoroTail_v2.mlmodelc/metadata.json",
+      "bytes": 1872,
+      "gitBlob": "7b64b026357b111557d44d7b80f14f27b01c39f2"
+    },
+    {
+      "path": "ANE/KokoroTail_v2.mlmodelc/model.mil",
+      "bytes": 7014,
+      "gitBlob": "24c17efb2e66b789ab3329a6b00bdaa29fc1695e"
+    },
+    {
+      "path": "ANE/KokoroTail_v2.mlmodelc/weights/weight.bin",
+      "bytes": 81088,
+      "gitBlob": "21f8ff72d34f81c715fa7c952cd483a60fccd1b0",
+      "sha256": "8ede31ec20df7d86a124287ac12d13507651e2a693e9d4f35f0e7f92cba422c7"
+    },
+    {
+      "path": "ANE/KokoroVocoder.mlpackage/Data/com.apple.CoreML/model.mlmodel",
+      "bytes": 255741,
+      "gitBlob": "138bfd648044bbc2573fea879fef6de8fd4cf1a1",
+      "sha256": "18481f9531abd0d01cf6fe6b8837b98263e8a63d87db56324d49ed57cc5c75fa"
+    },
+    {
+      "path": "ANE/KokoroVocoder.mlpackage/Data/com.apple.CoreML/weights/weight.bin",
+      "bytes": 48889920,
+      "gitBlob": "fb88aab245ab34ccf07fc8f69bba1f78c2f20e86",
+      "sha256": "6d1f96eb50218ab687b12d6d862d2ae854c12b7165c3cd9b6b5cef261ef02ff1"
+    },
+    {
+      "path": "ANE/KokoroVocoder.mlpackage/Manifest.json",
+      "bytes": 617,
+      "gitBlob": "6286acebfa580f4abed593c3337d42c917b3e9da"
+    }
+  ],
+  "frontendBytes": 12015574,
+  "defaultVoiceBytes": 522240,
+  "englishVocabBytes": 1416,
+  "manifestBytes": 20416,
+  "totalKnownDownloadBytes": 213521480,
+  "excluded": [
+    "base index JSON",
+    "HTTP metadata and notices",
+    "Core ML local compilation output",
+    "cache duplication/transient disk",
+    "resident memory"
+  ],
+  "license": "Apache-2.0 repository card and conversion notice; voice provenance requires final release manifest review"
+}
