@@ -33,7 +33,7 @@ Do not close an item solely because tests pass, a PR merged, or a bundle install
 | C01 | Reliable multi-vault/multi-user permissions and setup | **Partial.** PR74 authorization repairs and focused isolation/sharing tests passed. | Run a real two-user/two-vault pilot: invitations, roles, revocation, switching, offline caches, files, search, graph and realtime. Passing route tests is not collaboration acceptance. |
 | D01 | Simple onboarding, App Store distribution and server installation on chosen machine | **Planned.** First-run proposal written; no installer or App Store submission. | Build signed host installer, pairing, account setup, remote access, updates, backups/recovery and supported-host matrix; then TestFlight/App Store readiness. |
 | D02 | Optional Omni bundled into Prism setup | **Planned.** Included in first-run proposal. | Implement optional component/provider/integration setup. Collaborative per-user Omni requires separate identities and access boundaries; current owner-only agent is not that feature. |
-| O03 | Conversational voice with Hermes | **Released; acceptance pending.** Omni v6 fixes confirmed audio callback crash and adds modern toolbar/panel UX (PR95/96); installed on both devices. | Physical recording, transcription, first spoken reply, Interrupt, cancellation and reconnect acceptance pending. Current mode is explicit turn-by-turn; hands-free continuous conversation is not implemented. |
+| O03 | Conversational voice with Hermes | **Partial; basic exchange accepted.** Owner reports voice works after v6; speech quality and natural conversation remain open. PR95/96 shipped on both devices. | Owner did not specify per-device coverage; Interrupt/cancellation/reconnect still need acceptance. Track better TTS, patient continuous conversation, mobile activation and Mac wake word as V01–V05 in the [voice plan](omni-conversational-voice-plan.md). |
 | O04 | Clean up old Hermes conversations incorrectly Waiting | **Partial.** PR85 treats imported unpersisted history as neutral conversation; preserves explicit owner status. | Inspect remaining stale Waiting examples and distinguish active/intentional states from stale ones before changing stored history. No blanket cleanup claim. |
 | O05 | View source opens native Prism | **Accepted.** Owner confirmed native Prism opening. | Keep as regression check across source/vault links and platform releases. |
 | O06 | Notification tap opens exact conversation | **Released; acceptance pending.** Completion delivery owner-confirmed; PR87 fixes callback crash and early navigation reconciliation. | Retest tap from locked/background/cold-start states on both devices. Earlier iPad crash/iPhone Home failure is not closed by delivery success. |
@@ -52,7 +52,7 @@ Do not close an item solely because tests pass, a PR merged, or a bundle install
 | F04 | Return sends everywhere; Shift-Return adds a line | PR91 shipped. Owner confirmed Return; retain explicit Shift-Return, IME and paste regression coverage. See O02. |
 | F05 | Done overlaps Send | PR91 replaces floating control with inline dismissal. Physical spacing acceptance pending. See O02. |
 | F06 | Notification missing icon | Assets verified, device appearance unconfirmed. See O09; do not assume a cache cause. |
-| F07 | Voice crashes after models download | Actual crash was audio callback actor isolation; PR95 repair shipped in Omni v6. Await both-device retest. See O03. |
+| F07 | Voice crashes after models download | Actual crash was audio callback actor isolation; PR95 repair shipped in Omni v6. Owner reports voice now works; per-device coverage not specified. See O03. |
 | F08 | Voice easy to launch, main toolbar entry, contemporary centered Apple-style UX | PR96 toolbar entry and glass panel shipped in v6; simulator light/dark reviewed. Owner usability acceptance pending. |
 | R01 | Working current Mac apps | Prism v6 signed and submitted; Apple acceptance/staple/install pending at last check. Omni v6 unsigned universal build verified; hold signing/install until physical voice result. Do not install known-bad Omni v5. |
 | R02 | Proactive assistant reliability | Three reviewed M3 jobs active; smoke checks passed. Week-long observation gate remains pending; retain existing fallbacks until accepted. |
@@ -68,6 +68,8 @@ Do not close an item solely because tests pass, a PR merged, or a bundle install
 This order is the default; a regression can interrupt it without removing downstream commitments. No feature here is silently dropped when attention moves to a crash or release.
 
 ## Evidence and related plans
+
+- [Conversational voice plan: V01–V05](omni-conversational-voice-plan.md) — researched follow-on, including patient listening and activation.
 
 - [Current release and device evidence](../../qa/omni-prism-device-followup-2026-10-10.md) — chronological; later entries supersede earlier states.
 - [Mobile gesture/settings follow-up](../../qa/mobile-followup-2026-10-10.md).
