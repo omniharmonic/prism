@@ -4,9 +4,16 @@ import SwiftUI
 /// The whole app: which of first-run, can't-reach, sign-in or the main window to show.
 public struct RootView: View {
     @Bindable private var app: AppModel
+    private let connectsNativeNotifications: Bool
 
     public init(app: AppModel) {
+        self.init(app: app, connectsNativeNotifications: true)
+    }
+
+    /// Sample hosts have no application bundle for UserNotifications.
+    init(app: AppModel, connectsNativeNotifications: Bool) {
         self.app = app
+        self.connectsNativeNotifications = connectsNativeNotifications
     }
 
     public var body: some View {
@@ -51,14 +58,15 @@ public struct RootView: View {
         .modifier(UITestCompactWidth())
         #endif
         .task {
-            NativeNotifications.shared.attach(app)
+            if connectsNativeNotifications { NativeNotifications.shared.attach(app) }
             await app.start()
+            guard connectsNativeNotifications else { return }
             await NativeNotifications.shared.reconnect()
             NativeNotifications.shared.deliverPending()
         }
-        .onOpenURL { NativeNotifications.shared.open($0) }
+        .onOpenURL { if connectsNativeNotifications { NativeNotifications.shared.open($0) } }
         .onChange(of: app.phase) { _, phase in
-            if phase == .signedIn {
+            if connectsNativeNotifications, phase == .signedIn {
                 Task { await NativeNotifications.shared.reconnect() }
                 NativeNotifications.shared.deliverPending()
             }
