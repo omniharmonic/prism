@@ -1,6 +1,6 @@
 # Omni voice follow-through — build 11 working ledger
 
-Updated 2026-10-10; client release source `71bb3e8205` (PR111). The owner authorized autonomous roadmap work and explicitly selected Hermes speech while retaining local choices. Build 11 is installed on both mobile devices. Server13 deployed healthy; TTS configuration is saved and activation verification is in progress. Mac11 is staged for desktop signing. Physical acceptance remains open.
+Updated 2026-10-10; client release source `71bb3e8205` (PR111). The owner authorized autonomous roadmap work and explicitly selected Hermes speech while retaining local choices. Build 11 is installed on both mobile devices. Server14 deployed healthy and actual authenticated Edge synthesis/cancellation passed. Mac11 is signed, verified and submitted for notarization; Apple reports In Progress. Physical acceptance remains open.
 
 | Item | Implemented evidence | Remaining acceptance |
 | --- | --- | --- |
@@ -45,3 +45,11 @@ Launch-at-login remains an explicit future setting, not enabled by this release.
 PR111 merged as `71bb3e8205`; client tag `omni-client-v2026.10.10-11`, initial server tag `prism-v2026.10.10-13`. Both physical mobile install receipts succeeded. iOS ZIP SHA-256 `51f1b8cdd43e21a6c00845b5952cbedeece8ee6c5763a133b2a69d353168afe4`; Mac unsigned ZIP `7c3d69199c24abd05b8dc54856b0c84ecd199f247790f6b97c05ee5b45a862ab`, matched on Mini before extraction. Mac11 is staged at `~/release-artifacts/omni-client-v2026.10.10-11/omni`; helper `~/release-artifacts/sign-omni-v11.sh`. Required public profile and production entitlements preserved; one executable, no get-task-allow. Signing/notarization/install remain pending.
 
 Earlier Mac9 notarization `5b42176e-30e4-4e0b-bf6b-bf7ec70ab719` is now Accepted, stapled, validated and Gatekeeper-accepted. This does not establish installation of Mac9 or acceptance of Mac11. Local raw build/install/deploy receipts are under `/private/tmp/omni-client-v2026.10.10-11` and `/private/tmp/omni-v11-*.log`.
+
+## Production activation — verified
+
+Server tag `prism-v2026.10.10-14` / `e1767178` deployed through the normal dry-run, backup, tagged apply and health checks. Process, vault, ingest-source comparison and desktop independence passed. The corrected runbook records why same-tag deployment was a no-op; the new tagged deployment loaded the previously saved two-path configuration. Private configuration backup remains `apps/server/omni-tts-config-backups/20261010T235426.736764Z` on the Mini.
+
+The tagged synthetic owner-session helper exited zero: metadata 200; valid audio/mpeg, 40,320 bytes in 948ms; scoped DELETE 200; cancelled POST 409; final cleanup DELETE 200. Only a fixed synthetic sentence was sent to Microsoft; the helper removed its temporary session. These receipts verify API delivery, not audible quality or device continuity.
+
+Owner signed Mac11; strict verification confirms Developer ID, secure timestamp and hardened runtime, with only the required release entitlements. Signed ZIP SHA-256 `db1642af2aae45dff915335dcdee9f0aebfa94aa17e7b0f19729b2df76cdca8d`. Notary submission `b4e56e1f-dcd5-472d-bfa2-34720021eab4` is In Progress; do not resubmit it. Mac11 stapling/Gatekeeper/install await Accepted. Hosted PR111 Rust checks passed; server/e2e CI remained running at this checkpoint despite passing local verification.
