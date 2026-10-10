@@ -11,7 +11,9 @@ struct ThreadView: View {
 
     var body: some View {
         GeometryReader { area in
-            transcript
+            // Keep the composer and voice owner stable while the transcript changes
+            // from loading to loaded (or an error).
+            ZStack { transcript }
                 .safeAreaInset(edge: .bottom, spacing: 0) {
                     if !model.isUnavailable {
                         VStack(spacing: 0) {

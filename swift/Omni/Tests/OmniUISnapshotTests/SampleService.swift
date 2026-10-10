@@ -15,6 +15,8 @@ final class SampleService: OmniService, @unchecked Sendable {
     private var jobRows: [[String: Any]] = []
     private var liveStreams: [String: [OmniStreamEnvelope]] = [:]
 
+    var completeStreamOnResult = false
+    var createdVoiceThreadID: String?
     var todayPartial = false
     var failReads = false
     var agentUnavailable = false
@@ -103,7 +105,13 @@ final class SampleService: OmniService, @unchecked Sendable {
         return Self.decode(["threads": rows, "next": NSNull(), "hermes": agentUnavailable ? "unavailable" : "ok"])
     }
 
-    func createThread(_ new: NewThread) async throws -> CreatedThread { throw PrismError.invalidRequest("sample") }
+    func createThread(_ new: NewThread) async throws -> CreatedThread {
+        guard let id = createdVoiceThreadID,
+              let row = lock.withLock({ threadRows.first { $0["id"] as? String == id } }) else {
+            throw PrismError.invalidRequest("sample")
+        }
+        return Self.decode(["thread": row, "turnId": "turn-\(id)"])
+    }
 
     func thread(_ id: String) async throws -> ThreadDetail {
         let detail = lock.withLock { details[id] }
@@ -132,11 +140,20 @@ final class SampleService: OmniService, @unchecked Sendable {
 
     /// A running turn's events, then silence: the turn stays mid-flight for the picture.
     func threadStream(threadID: String, after: Int) -> AsyncThrowingStream<ThreadStreamUpdate, any Error> {
-        let events = lock.withLock { liveStreams[threadID] ?? [] }
+        let events = lock.withLock { () -> [OmniStreamEnvelope] in
+            let events = liveStreams[threadID] ?? []
+            if completeStreamOnResult, var detail = details[threadID], var row = detail["thread"] as? [String: Any] {
+                row["state"] = "done"; row["running"] = false
+                detail["thread"] = row; detail["activeTurnId"] = NSNull()
+                details[threadID] = detail
+                if let index = threadRows.firstIndex(where: { $0["id"] as? String == threadID }) { threadRows[index] = row }
+            }
+            return events
+        }
         return AsyncThrowingStream { continuation in
             continuation.yield(.connected)
             for event in events { continuation.yield(.event(event)) }
-            if events.isEmpty { continuation.finish() }
+            if events.isEmpty || completeStreamOnResult { continuation.finish() }
         }
     }
 

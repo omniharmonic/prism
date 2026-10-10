@@ -26,6 +26,7 @@ struct ConversationVoiceControl: View {
         self.session = session; self.model = model; self.draft = draft; self.maximumHeight = maximumHeight; _expanded = expanded
         let sameContext = model.map { session.voiceThreadID == $0.threadID } ?? (session.newThreadUsesVoice && session.voiceThreadID == nil)
         let device = (sameContext ? session.conversationAudio as? ConversationDevice : nil) ?? ConversationDevice()
+        device.configureReplySpeech(service: session.replySpeechService)
         let existingVoice = sameContext ? session.conversationVoice : nil
         #if DEBUG
         let voice = existingVoice ?? UITestLaunch.voiceLayoutFixture() ?? VoiceConversation(audio: device)
@@ -36,7 +37,9 @@ struct ConversationVoiceControl: View {
         _selected = State(initialValue: device.selected)
     }
     var body: some View {
-        observedPanel
+        // Keep lifecycle observation mounted even when the panel has no visible content.
+        // A retained destination must be able to adopt a newly handed-off session.
+        VStack(spacing: 0) { observedPanel }
             .onChange(of: phase, scenePhaseChanged)
             .onChange(of: PrivacyLock.shared.locked, privacyChanged)
             .onAppear(perform: appeared)
@@ -75,6 +78,7 @@ struct ConversationVoiceControl: View {
         if phase != .active { cancel() } else { consumeShortcutActivation() }
     }
     private func privacyChanged() {
+        guard controlsCurrentVoice else { return }
         voice.setPrivacyLocked(PrivacyLock.shared.locked)
         if PrivacyLock.shared.locked { cancel() } else { consumeShortcutActivation() }
     }
@@ -132,6 +136,11 @@ struct ConversationVoiceControl: View {
                     .fixedSize(horizontal: false, vertical: true)
                     .accessibilityIdentifier("voice.problem")
             }
+            if let notice = device.replySpeechNotice {
+                Text(notice).font(.caption).foregroundStyle(Color.quietText)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityIdentifier("voice.replySpeechNotice")
+            }
             if let notice = voice.activityNotice {
                 Text(notice).font(.caption).foregroundStyle(Color.quietText)
                     .fixedSize(horizontal: false, vertical: true)
@@ -154,6 +163,7 @@ struct ConversationVoiceControl: View {
     private func appeared() {
         mounted = true
         reconcileOwner()
+        device.configureReplySpeech(service: session.replySpeechService)
         installAutomaticListeningGuard()
         endpointPreferencesChanged()
         voice.setPrivacyLocked(PrivacyLock.shared.locked)
@@ -248,9 +258,10 @@ struct ConversationVoiceControl: View {
         .frame(maxWidth: .infinity, minHeight: 44)
     }
     private func reconcileOwner() {
-        guard let sharedDevice = session.conversationAudio as? ConversationDevice else { return }
-        if binding.reconcile(session: session, threadID: model?.threadID) {
+        if binding.reconcile(session: session, threadID: model?.threadID),
+           let sharedDevice = session.conversationAudio as? ConversationDevice {
             device = sharedDevice; selected = sharedDevice.selected
+            device.configureReplySpeech(service: session.replySpeechService)
         }
     }
     private func ownerChanged() {
@@ -346,7 +357,13 @@ struct ConversationVoiceControl: View {
         action?.cancel(); action = nil
         device.stopPreview(); voice.pause()
     }
+    private var controlsCurrentVoice: Bool {
+        session.conversationVoice !== voice || session.ownsVoice(voice, threadID: model?.threadID)
+    }
     private func cancel() {
+        // The departed new-thread view can still receive scene and privacy callbacks.
+        // Its finish task belongs to the transferred session until the send returns.
+        guard controlsCurrentVoice else { return }
         if model == nil { session.cancelPendingVoiceActivation() }
         showingVoiceSettings = false; device.stopPreview()
         action?.cancel(); action = nil
