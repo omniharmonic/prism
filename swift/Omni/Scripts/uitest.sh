@@ -125,7 +125,7 @@ sim() { # sim <name> <device type> → UDID (created when missing, booted)
   for other in $CREATED_BOOT; do [ "$other" = "$udid" ] || xcrun simctl shutdown "$other" >/dev/null 2>&1 || true; done
   if ! xcrun simctl list devices | grep "$udid" | grep -q Booted; then xcrun simctl boot "$udid" >/dev/null; CREATED_BOOT="$CREATED_BOOT $udid"; fi
   xcrun simctl bootstatus "$udid" >/dev/null 2>&1 || true
-  echo "$udid"
+  SIM_UDID="$udid"
 }
 
 # A thread only the gateway knows, so the app's "no longer available" screen has something
@@ -156,10 +156,10 @@ run() { # run <platform> <theme> <variant>
   case "$platform" in
     mac) dest="platform=macOS"; device="mac" ;;
     iphone)
-      udid="${OMNI_UITEST_IPHONE:-$(sim "Omni UITest iPhone" com.apple.CoreSimulator.SimDeviceType.iPhone-18-Pro)}"
+      if [ -n "${OMNI_UITEST_IPHONE:-}" ]; then udid="$OMNI_UITEST_IPHONE"; else sim "Omni UITest iPhone" com.apple.CoreSimulator.SimDeviceType.iPhone-18-Pro; udid="$SIM_UDID"; fi
       dest="platform=iOS Simulator,id=$udid"; device="iphone-18-pro" ;;
     ipad)
-      udid="${OMNI_UITEST_IPAD:-$(sim "Omni UITest iPad" com.apple.CoreSimulator.SimDeviceType.iPad-Pro-13-inch-M5-12GB)}"
+      if [ -n "${OMNI_UITEST_IPAD:-}" ]; then udid="$OMNI_UITEST_IPAD"; else sim "Omni UITest iPad" com.apple.CoreSimulator.SimDeviceType.iPad-Pro-13-inch-M5-12GB; udid="$SIM_UDID"; fi
       dest="platform=iOS Simulator,id=$udid"; device="ipad-pro-13" ;;
   esac
   if [ -n "$udid" ]; then
