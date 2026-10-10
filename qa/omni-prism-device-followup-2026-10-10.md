@@ -106,3 +106,29 @@ Mac v7 unsigned ZIP SHA256 `541c6e9adfcecf2f3ee612c7c580d05d850675fbc0fa64250bb6
 Repository CI separately failed web fixture collection on Linux because a pre-existing screenshot directory is hardcoded to `/private/tmp/prism-web-controls-shots`; native files do not alter that path. A separate portability repair is in progress. Rust CI passed; other web/server checks were still running when checked. Native test/build success is not a claim that all repository CI is green.
 
 The two diagnosed CI failures have separate test-only repairs in PR103: portable screenshot temporary-directory selection and the jobs-list fixture's strict expected `reviewedScript/canEdit/canRun/canResume=false` fields. All 2,624 fixture tests collect under custom TMPDIR, e2e typecheck passes, and all 41 gateway tests pass via the safe npm/.env.test harness on Node 22. No production behavior or native artifact changes. Full hosted CI rerun remains pending; do not describe the earlier PR101 run as green.
+
+
+## Mac notarization follow-up
+
+Prism v6 submission `2eb9f3fc-6623-41cc-8636-869a369bed18` is now **Accepted**. The Mini bundle passes stapler validation and Gatekeeper reports `Notarized Developer ID`. Stapled ZIP SHA256 `94d16ccf11de979620e2687e8bde5fe3e2a7511704f3838401245a4e74ea1cb4`; copied to laptop with matching checksum. Final installed-copy replacement remains pending owner saving/quitting the running Mini Prism app under the signing runbook.
+
+Owner reported both apps signed, but inspection of the exact Omni v7 path still reports unsigned. Requested `bash "$HOME/release-artifacts/sign-omni-v7.sh"`; the older combined helper does not sign this Apple-voice-picker release. Do not install obsolete Omni v5. Both physical devices are connected and report both apps installed; earlier v7 installation receipts remain the precise build evidence because marketing/build numbers are unchanged. Apple voice/shortcut listening acceptance remains pending.
+
+PR103 hosted typecheck/test/build and Rust checks now pass; browser toolchain checks were still pending at inspection. No runtime release changes or external messages in this follow-up.
+
+
+Owner completed the correct Omni v7 signing helper. Exact v7 bundle strict signature verified: Developer ID team `83Y42N33H8`, secure timestamp, hardened runtime, universal binary, production APNs and audio-input entitlement, expected application/Keychain identities and no debug entitlement. Signed ZIP SHA256 `b50c43954877501b54b12c2092d52737cb6a745d4d597865a87089b5723676ff`. Uploaded once to Apple; submission `43f5a80d-741d-41c1-84c3-eec7caa8005a`, receipt saved at `~/release-artifacts/omni-client-v2026.10.10-7/notary-submission.json`. Acceptance/stapling/install remain pending. Prism v6 copied artifact also passes laptop strict signature, stapler validation and Gatekeeper. Mini Prism remains running; preserve its session pending owner saving/quitting.
+
+
+Owner saved/quit Prism on the Mini. Confirmed its process was stopped, reverified signature/ticket/Gatekeeper, preserved the prior app at `~/release-artifacts/installed-backups/20261010T150853-prism-v6/Prism Client.app`, and installed verified v6 into `/Applications/Prism Client.app`. Installed signature and ticket validation pass. Interactive sign-in/note/navigation acceptance remains pending. Omni v7 notarization still In Progress at this check. Owner confirms Omni mobile notifications still lack the logo; updated roadmap F06/O09 from unconfirmed to a confirmed open defect and assigned a Sol investigation. No cache diagnosis or device reset assumed.
+
+Notification icon investigation: Sol inspected the exact signed iOS v7 artifact at `~/dev-data/omni-current-pass/Build/Products/Release-iphoneos/Omni.app`; executable checksum matches `8ea06f52ac3d73df2bf00e4fa15160bff658c1c11ddf0a535c8be2341f0b81bf`. Phone/iPad primary-icon Info.plist mappings, standalone icons, opaque RGB catalog images and multi-size mappings are present. Standard notification delegate has no custom icon override. No concrete packaging defect found; unchanged build number 1 is not proof of cache causation. Need observation of affected notification to narrow presentation issue; do not uninstall/reset as a speculative fix. Mini Prism v6 process launched successfully after install. Omni v7 remains Apple In Progress.
+
+
+## Persistent voice and Today tasks — implementation
+
+Owner confirms the downloaded Apple voice appears in the picker and sounds better. V02 explicit-completion sessions now preserve active conversation state through agent completion plus playback drain, with guarded re-listening, draft-preserving Pause and End. Focused integrated tests passed: 33 voice Core, 7 playback/layout, and 37 existing thread regressions (77 total). Narrow and accessibility-layout Mac snapshots reviewed; these do not establish physical iOS acceptance. Compile errors from a missing test import and a large SwiftUI expression were repaired before the passing run.
+
+Owner additionally requested Voice beside New Chat in Threads, Today task dispatch, and expansion to all tasks. Added roadmap F09–F11. Threads voice entry is implemented; paginated assigned-open-task browsing and explicit task-context handoff are being integrated. Build number increments to 8 for reliable installed-release identification; this is not a claim to fix the unexplained notification logo issue. No new native release or task dispatch has occurred in production yet.
+
+Combined V02/Today task integration passes 162 OmniCore tests and 7 playback/layout tests. The new task endpoint's focused fake-vault server checks pass 48/48 with explicit `.env.test`. Client transport tests and repository checks are running. The tasks test fake was corrected to use the existing Result-under-lock pattern before this passing native run. No real task was dispatched in validation.

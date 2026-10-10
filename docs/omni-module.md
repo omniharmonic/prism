@@ -374,6 +374,12 @@ on a large vault; the app shows a loading state meanwhile. Agenda = `meeting` no
 `date` is the day, cancelled dropped. Tasks = open `assignedToMe` tasks by due date. Nudges,
 open loops and the brief arrive with M3.
 
+### Expanded task list and native handoff
+
+`GET /api/omni/tasks?cursor=<opaque>` reads one page of up to 50 open tasks assigned to the caller, through the same authenticated `/api/query` dispatch as Today. It returns `tasks` (the Today task shape), `next`, `total`, `limited`, `truncated`, and `identity`. The native client requests pages explicitly and shows permission/scan-limit notices rather than treating a partial response as the complete task set.
+
+The native **Run with Omni** action uses the existing thread-creation API with `taskNoteId` and a task-context prompt. Expanding or loading tasks never starts an agent. Existing linked conversations can be opened; dispatch does not bypass approval for outbound communications. This does not implement the separate deferred task write-back endpoint.
+
 ## Hooks (Hermes `omni-bridge` plugin; loopback + service token)
 
 | Route | Body | Answer |

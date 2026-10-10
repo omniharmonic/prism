@@ -293,10 +293,10 @@ final class FakeService: OmniService, @unchecked Sendable {
         }.get()
     }
     func tasks(cursor: String?) async throws -> OmniTasksPage {
-        try locked {
+        try locked { () -> Result<OmniTasksPage, any Error> in
             _taskCursors.append(cursor)
-            return try _tasks.next()
-        }
+            return Result { try _tasks.next() }
+        }.get()
     }
     func today(date: String) async throws -> OmniToday {
         try locked { () -> Result<OmniToday, any Error> in
