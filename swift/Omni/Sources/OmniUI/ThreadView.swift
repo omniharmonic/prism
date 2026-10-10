@@ -119,7 +119,7 @@ struct ThreadView: View {
                 .accessibilityIdentifier("transcript")
                 #if os(iOS)
                 // Dragging the conversation puts the keyboard away (there is no other way to on an iPhone).
-                .scrollDismissesKeyboard(.immediately)
+                .scrollDismissesKeyboard(.interactively)
                 #endif
                 .refreshable { await model.reload() }
                 .onChange(of: model.timeline) { proxy.scrollTo("bottom", anchor: .bottom) }
@@ -269,6 +269,7 @@ struct Composer<Accessory: View>: View {
             if isRunning {
                 Button(action: onStop) {
                     Image(systemName: "stop.circle.fill").font(.title2)
+                        .frame(width: 44, height: 44).contentShape(Circle())
                 }
                 .buttonStyle(.plain)
                 .disabled(isStopping)
@@ -279,6 +280,7 @@ struct Composer<Accessory: View>: View {
             } else {
                 Button(action: onSend) {
                     Image(systemName: "arrow.up.circle.fill").font(.title2)
+                        .frame(width: 44, height: 44).contentShape(Circle())
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(canSend ? AnyShapeStyle(.tint) : AnyShapeStyle(Color.quietText))

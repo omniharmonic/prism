@@ -120,7 +120,10 @@ struct RecordCardView: View {
 
     var body: some View {
         Button {
-            if let url = link { openURL(url) }
+            if let link {
+                if let native = link.native { openURL(native) { accepted in if !accepted { openURL(link.web) } } }
+                else { openURL(link.web) }
+            }
         } label: {
             HStack(alignment: .top, spacing: 10) {
                 Image(systemName: symbol).font(.title3).foregroundStyle(Color.quietText).frame(width: 24)
@@ -175,9 +178,8 @@ struct RecordCardView: View {
         }
     }
 
-    /// The Prism link the server gave, if it is a web link (nothing else is ever opened).
-    private var link: URL? {
-        guard card.op != .deleted, let text = card.links?.prism, let url = URL(string: text), let scheme = url.scheme?.lowercased(), scheme == "https" || scheme == "http" else { return nil }
-        return url
+    private var link: PrismSourceLink? {
+        guard card.op != .deleted else { return nil }
+        return PrismSourceLink(web: card.links?.prism, noteID: card.noteId)
     }
 }

@@ -15,13 +15,29 @@ struct MainView: View {
     var body: some View {
         #if os(macOS)
         SplitMainView(app: app, session: session)
+            .modifier(NotificationNavigationReady(session: session))
         #else
         if widthClass == .regular {
             SplitMainView(app: app, session: session)
+                .modifier(NotificationNavigationReady(session: session))
         } else {
             TabMainView(app: app, session: session)
+                .modifier(NotificationNavigationReady(session: session))
         }
         #endif
+    }
+}
+
+/// Queue delivery happens after the phone stack has restored its initial path.
+private struct NotificationNavigationReady: ViewModifier {
+    let session: SessionModel
+    func body(content: Content) -> some View {
+        content.task(id: ObjectIdentifier(session)) {
+            await Task.yield()
+            guard !Task.isCancelled else { return }
+            NativeNotifications.shared.navigationAppeared(session)
+        }
+        .onDisappear { NativeNotifications.shared.navigationDisappeared(session) }
     }
 }
 

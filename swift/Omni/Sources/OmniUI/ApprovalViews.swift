@@ -436,8 +436,11 @@ struct NudgeCardView: View {
             } else {
                 Button { showHealth = true } label: { Text("Open status").frame(minHeight: 44).contentShape(Rectangle()) }
             }
-        } else if let text = item.sourceLink, let url = URL(string: text), ["https", "http"].contains(url.scheme?.lowercased() ?? "") {
-            Button { openURL(url) } label: { Text("Open source").frame(minHeight: 44).contentShape(Rectangle()) }
+        } else if let link = PrismSourceLink(web: item.sourceLink, noteID: item.candidate.sourceId) {
+            Button {
+                if let native = link.native { openURL(native) { accepted in if !accepted { openURL(link.web) } } }
+                else { openURL(link.web) }
+            } label: { Text("Open source").frame(minHeight: 44).contentShape(Rectangle()) }
         }
     }
     private var moreActions: some View {
