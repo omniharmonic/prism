@@ -30,7 +30,7 @@ final class ExternalNavigationTests: XCTestCase {
         XCTAssertEqual(native.path, "/note_1")
         XCTAssertEqual(native.queryItems?.first(where: { $0.name == "server" })?.value, "https://workspace.example")
         XCTAssertEqual(native.queryItems?.first(where: { $0.name == "vault" })?.value, "primary")
-        XCTAssertEqual(link.web.absoluteString, "https://workspace.example/page/note_1")
+        XCTAssertEqual(link.web.absoluteString, "https://workspace.example/page/note_1?vault=primary")
         XCTAssertNil(PrismSourceLink(web: "file:///secret", noteID: "note_1"))
         XCTAssertNil(PrismSourceLink(web: "https://user:password@example.test/page/id", noteID: "id"))
         XCTAssertNil(PrismSourceLink(web: "https://example.test/page/id", noteID: "../auth")?.native)
