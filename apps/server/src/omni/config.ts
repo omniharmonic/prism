@@ -58,7 +58,7 @@ export const omniConfig = {
     const raw = process.env.OMNI_EXECUTOR_KINDS;
     if (raw === undefined) return true;
     const kinds = raw.split(",").map(k => k.trim());
-    const known = new Set(["email", "email-reply", "message", "calendar-invite", "tweet", "wallet-proposal"]);
+    const known = new Set(["email", "email-reply", "message", "calendar-rsvp", "calendar-invite", "tweet", "wallet-proposal"]);
     return kinds.length > 0 && kinds.every(k => known.has(k)) && kinds.includes(kind);
   },
   executorsOff: (): boolean => (env("OMNI_EXECUTORS") ?? "").toLowerCase() === "off",

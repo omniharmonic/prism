@@ -28,9 +28,10 @@ import { db } from "../db";
 import { config } from "../config";
 import { newId } from "./store";
 import { omniConfig } from "./config";
+import { rsvpArgs } from "../actions/calendar";
 import { protonSendConfigured } from "./proton-send";
 
-export const APPROVAL_KINDS = ["email", "email-reply", "message", "calendar-invite", "tweet", "wallet-proposal", "command"] as const;
+export const APPROVAL_KINDS = ["email", "email-reply", "message", "calendar-rsvp", "calendar-invite", "tweet", "wallet-proposal", "command"] as const;
 export type ApprovalKind = (typeof APPROVAL_KINDS)[number];
 export type ApprovalStatus = "pending" | "approved" | "sent" | "failed" | "unknown" | "expired" | "cancelled" | "revised";
 
@@ -93,6 +94,11 @@ export function validatePayload(kind: unknown, raw: unknown): { kind: ApprovalKi
       break;
     case "message":
       payload = pick({ roomId: str(b.roomId, "roomId", 255), body: str(b.body, "body", 60_000) });
+      break;
+    case "calendar-rsvp":
+      payload = { eventId: str(b.eventId, "eventId", 1024), response: str(b.response, "response", 16) };
+      try { rsvpArgs("validation@example.invalid", payload.eventId as string, payload.response as string); }
+      catch { throw new ApprovalInputError("calendar-rsvp: valid eventId and accepted, declined or tentative response required"); }
       break;
     case "calendar-invite":
       payload = pick({
@@ -272,6 +278,7 @@ function executorOf(kind: ApprovalKind): { name: string; available: boolean; ena
       return omniConfig.emailExecutor() === "proton-send"
         ? { name: "proton-send", available: true, enabled: protonSendConfigured() }
         : { name: "prism-live-actions:email", available: true, enabled: config.actionsEmailEnabled };
+    case "calendar-rsvp":
     case "calendar-invite":
       return { name: "prism-live-actions:calendar", available: true, enabled: config.actionsCalendarEnabled };
     case "message":
@@ -292,6 +299,8 @@ export function liveActionRequest(kind: ApprovalKind, p: Record<string, unknown>
       return { path: "/api/actions/email/reply", body: pick({ noteId: p.noteId, expectTo: p.expectTo, cc: p.cc, body: p.body }) };
     case "message":
       return { path: "/api/actions/matrix/send", body: { roomId: p.roomId, body: p.body } };
+    case "calendar-rsvp":
+      return { path: "/api/actions/calendar/rsvp", body: { eventId: p.eventId, response: p.response } };
     case "calendar-invite":
       return { path: "/api/actions/calendar/create", body: pick({ title: p.title, start: p.start, end: p.end, attendees: p.attendees, location: p.location, description: p.description }) };
     default:

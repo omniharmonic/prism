@@ -243,6 +243,7 @@ public struct ApprovalKind: RawRepresentable, Codable, Hashable, Sendable {
     public static let email = ApprovalKind(rawValue: "email")
     public static let emailReply = ApprovalKind(rawValue: "email-reply")
     public static let message = ApprovalKind(rawValue: "message")
+    public static let calendarRSVP = ApprovalKind(rawValue: "calendar-rsvp")
     public static let calendarInvite = ApprovalKind(rawValue: "calendar-invite")
     public static let tweet = ApprovalKind(rawValue: "tweet")
     public static let walletProposal = ApprovalKind(rawValue: "wallet-proposal")
