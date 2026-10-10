@@ -69,7 +69,7 @@ struct ConversationVoiceControl: View {
         consume()
     }
     private func draftChanged() {
-        if !currentDraft.isEmpty, voice.state == .listening || voice.state == .preparing { pause() }
+        if currentDraft != voice.continuingDraft, voice.state == .listening || voice.state == .preparing { pause() }
     }
     private func scenePhaseChanged() {
         if phase != .active { cancel() } else { consumeShortcutActivation() }
@@ -191,7 +191,7 @@ struct ConversationVoiceControl: View {
         switch voice.state {
         case .off: voice.endpointMode == .thinkAloud ? "Think aloud · manual send" : "Automatic · \(Int(voice.endpointPause))s pause"
         case .paused:
-            if !currentDraft.isEmpty { "Send your draft in chat, or clear it to resume." }
+            if !currentDraft.isEmpty { "Resume to keep adding to your unsent draft." }
             else if session.approvals.pending.contains(where: { $0.approval.threadId == model?.threadID }) { "Review the approval in chat." }
             else if model?.isUnavailable == true { "This conversation is unavailable." }
             else if model?.pendingText != nil { "Review the unsent message in chat." }
@@ -274,11 +274,12 @@ struct ConversationVoiceControl: View {
         if VoiceActivationCoordinator.shared.consume(session: session, sceneID: voiceSceneID, threadID: model?.threadID) { start() }
     }
     private var canSpeak: Bool {
-        voice.canStart && model?.isUnavailable != true && model?.sendState != .sending &&
-        (running || model?.pendingText == nil) && (model?.draft ?? draft?.wrappedValue ?? "").isEmpty && !session.threads.isCreating
+        voice.canStart(withDraft: currentDraft) && model?.isUnavailable != true && model?.sendState != .sending &&
+        (running || model?.pendingText == nil) && !session.threads.isCreating
     }
     private func start() {
         guard canSpeak, mounted, phase == .active, !PrivacyLock.shared.locked else { return }
+        let continuingDraft = voice.state == .paused && voice.isSessionActive ? currentDraft : ""
         cancel()
         _ = model?.takeCompletedVoiceTimeline()
         guard session.claimVoice(audio: device, voice: voice, threadID: model?.threadID) else { return }
@@ -295,7 +296,7 @@ struct ConversationVoiceControl: View {
             guard !Task.isCancelled, !PrivacyLock.shared.locked, mounted, !running, phase == .active, lease == session.voiceLease, session.ownsVoice(voice, threadID: model?.threadID) else { return }
             device.selected = selected
             configureEndpoint()
-            await voice.start()
+            await voice.start(continuingDraft: continuingDraft)
         }
     }
     private func endpointPreferencesChanged() {
@@ -314,16 +315,17 @@ struct ConversationVoiceControl: View {
                   voice.state == .listening else { return }
             finish(submit: false)
         }
-        voice.saveRecoveredDraft = { text in
+        voice.saveRecoveredDraft = { _ in
             guard mounted, phase == .active, !PrivacyLock.shared.locked,
                   lease == session.voiceLease, session.ownsVoice(voice, threadID: model?.threadID),
-                  currentDraft.isEmpty else { return }
-            if let model { model.draft = text } else { draft?.wrappedValue = text }
+                  voice.state == .transcribing else { return }
+            let preserved = voice.draftAfterCapture(preserving: currentDraft)
+            if let model { model.draft = preserved } else { draft?.wrappedValue = preserved }
         }
         voice.automaticFinish = {
             guard mounted, phase == .active, !PrivacyLock.shared.locked,
                   lease == session.voiceLease, session.ownsVoice(voice, threadID: model?.threadID),
-                  voice.state == .listening, currentDraft.isEmpty else { return }
+                  voice.state == .listening, currentDraft == voice.continuingDraft else { return }
             guard !running else { voice.keepListening(); return }
             finish()
         }
@@ -337,7 +339,7 @@ struct ConversationVoiceControl: View {
         }
     }
     private func pause() {
-        if voice.state == .listening, (model?.draft ?? draft?.wrappedValue ?? "").isEmpty {
+        if voice.state == .listening {
             finish(submit: false, draftReason: .pause)
             return
         }
@@ -354,12 +356,13 @@ struct ConversationVoiceControl: View {
     private func finish(submit: Bool = true, draftReason: VoiceConversation.DraftReason = .recordingLimit) {
         let lease = session.voiceLease
         action = Task {
-            await voice.finish(submit: submit, draftReason: draftReason) { text in
-                guard !Task.isCancelled, lease == session.voiceLease, !PrivacyLock.shared.locked, mounted, phase == .active, (!submit || !running), (model?.draft ?? draft?.wrappedValue ?? "").isEmpty else { return false }
-                if let model { model.draft = text } else { draft?.wrappedValue = text }
+            await voice.finish(submit: submit, draftReason: draftReason) { _ in
+                guard !Task.isCancelled, lease == session.voiceLease, !PrivacyLock.shared.locked, mounted, phase == .active, (!submit || !running), (!submit || currentDraft == voice.continuingDraft) else { return false }
+                let preserved = voice.draftAfterCapture(preserving: currentDraft)
+                if let model { model.draft = preserved } else { draft?.wrappedValue = preserved }
                 if !submit { return true }
                 if let model { return await model.send() }
-                let sent = await session.startVoiceThread(prompt: text, voice: voice)
+                let sent = await session.startVoiceThread(prompt: preserved, voice: voice)
                 if sent { draft?.wrappedValue = "" }
                 return sent
             }
