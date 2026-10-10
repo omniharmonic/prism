@@ -10,7 +10,11 @@
 @source "../**/*.{ts,tsx}";
 
 /* `coarse:` = the touch-target condition of touch.css (phones, coarse pointers, narrow windows). */
-@custom-variant coarse (@media screen and (max-width: 767px), screen and (hover: none) and (pointer: coarse));
+@custom-variant coarse {
+  @media screen and (max-width: 767px), screen and (hover: none) and (pointer: coarse) {
+    @slot;
+  }
+}
 
 /* Control sizing bound to the tokens below: the desktop size, raised to --touch-target under
    `coarse`. Use these instead of `min-h-11` / `h-11 w-11` (which forced the touch size on desktop). */

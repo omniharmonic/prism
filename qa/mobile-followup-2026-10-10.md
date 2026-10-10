@@ -9,3 +9,7 @@ Phone settings use a single horizontally scrolling section row and consistent la
 Validation: web typecheck passed; 34 focused property/editing/mobile-navigation regressions passed; 22 final edge/settings cases passed, including real Chromium touch input proving a horizontal edge gesture neither initializes an underlying pointer drag nor clicks, while an ordinary edge tap still clicks. Reduced-motion fixtures and screenshot review covered 320/390/1024/1440px, with saved phone/iPad/desktop examples in `qa/screenshots/mobile-followup/`.
 
 No production calls, server/Swift changes, sends, or data writes. Browser fixtures cannot replace the coordinator's physical WKWebView smoke check after rebuilding.
+
+## Native packaging touch-size correction
+
+The pre-package build exposed a malformed Tailwind `coarse:` variant: its comma media-query shorthand emitted invalid nested `screen and` selectors. An explicit variant block now emits a real media query. Settings' own 32px component rules also overrode utility sizing on wide touch devices, so the shared coarse touch rules now raise those buttons/selects/text inputs to 44px. Two focused 1024px coarse/fine-pointer cases passed, including actual computed utility dimensions, every settings button/select, unchanged mouse sizing and content bounds. The native web build/typecheck passed with zero malformed-CSS optimizer warnings. The coarse iPad screenshot is `screenshots/mobile-followup/settings-ipad-coarse.png`.

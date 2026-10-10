@@ -80,7 +80,7 @@ keeps its sign-in there (see "Decisions" below).
 Conversational voice uses local Apple/Parakeet transcription with Hermes text streaming,
 speech output and explicit interruption. Completion push, contextual source navigation,
 nudges and biometric privacy lock are implemented. Voice hardware/quality acceptance and
-extended record/context inspection remain separate follow-ups; skills editing is in progress.
+extended record/context inspection remain separate follow-ups; installed local skills have a revision-checked editor in Settings, with linked sources read-only.
 
 ## Layout
 
