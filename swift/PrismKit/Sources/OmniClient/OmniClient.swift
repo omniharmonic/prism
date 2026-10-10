@@ -310,6 +310,20 @@ public struct OmniClient: Sendable {
         throw error
     }
 
+    // MARK: Native push
+
+    public func registerPush(token: String, environment: String) async throws -> Bool {
+        struct Body: Encodable { let token: String; let environment: String }
+        struct Answer: Decodable { let ok: Bool; let apnsEnabled: Bool }
+        let answer: Answer = try await transport.send(.json("POST", "\(Self.base)/push", body: Body(token: token, environment: environment)))
+        return answer.apnsEnabled
+    }
+
+    public func unregisterPush() async throws {
+        struct Answer: Decodable { let ok: Bool }
+        let _: Answer = try await transport.send(PrismRequest(method: "DELETE", path: "\(Self.base)/push"))
+    }
+
     // MARK: Jobs
 
     public func jobs() async throws -> [OmniJob] {

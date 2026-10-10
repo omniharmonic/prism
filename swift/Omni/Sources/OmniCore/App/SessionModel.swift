@@ -68,6 +68,12 @@ public final class SessionModel {
     /// Bumped by ⌘N on platforms that present the new-thread composer as a sheet.
     public private(set) var newThreadRequests = 0
 
+    public private(set) var externalNavigationRequests = 0
+    public func openExternal(_ destination: Destination) {
+        self.destination = destination
+        externalNavigationRequests += 1
+    }
+
     private let service: any OmniService
     private let sink: ErrorSink
     private let sleep: @Sendable (Duration) async throws -> Void

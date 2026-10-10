@@ -75,6 +75,17 @@ public final class AppModel {
         self.serverText = settings.serverURL() ?? defaultServerURL
     }
 
+    /// Requires a live native session; registration is triggered only after Settings opt-in.
+    public func registerPush(token: String, environment: String) async throws -> Bool {
+        guard phase == .signedIn, let service = self.environment?.service as? any NativePushService else { throw CancellationError() }
+        return try await service.registerPush(token: token, environment: environment)
+    }
+
+    public func unregisterPush() async throws {
+        guard phase == .signedIn, let service = environment?.service as? any NativePushService else { return }
+        try await service.unregisterPush()
+    }
+
     /// Call once at launch: reconnect to the remembered server, if there is one.
     public func start() async {
         guard let saved = settings.serverURL(), let origin = try? ServerOrigin(saved) else {

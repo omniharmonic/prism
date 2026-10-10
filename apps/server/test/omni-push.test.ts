@@ -1,0 +1,79 @@
+import { test, beforeEach, after } from "node:test";
+import assert from "node:assert/strict";
+import { generateKeyPairSync } from "node:crypto";
+import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+process.env.OMNI_ENABLED = "true";
+import { omniApi } from "../src/routes/omni";
+import { pushApi } from "../src/routes/push";
+import { config } from "../src/config";
+import { db } from "../src/db";
+import { issueDeviceToken, revokeDevice } from "../src/auth/device";
+import { apnsTokenForDevice, configureApns, _resetApns, sendApnsToOwner, liveApnsTokens, type ApnsRequest } from "../src/apns";
+import { resetDb, makeSession, sessionCookie } from "./helpers";
+const dir = mkdtempSync(join(tmpdir(), "omni-apns-test-"));
+const path = join(dir, "key.p8");
+writeFileSync(path, generateKeyPairSync("ec", { namedCurve: "prime256v1" }).privateKey.export({ type: "pkcs8", format: "pem" }), { mode: 0o600 });
+let requests: ApnsRequest[] = [];
+beforeEach(() => {
+  resetDb(); requests = [];
+  configureApns({ keyPath: path, keyId: "TESTKEY123", teamId: "TEAM123456", topic: "com.benjaminlife.prism.client", transport: { send: async r => { requests.push(r); return { status: 200, body: "" }; }, close() {} } });
+});
+after(() => { _resetApns(); rmSync(dir, { recursive: true }); });
+const headers = (token: string) => ({ authorization: `Bearer ${token}`, "content-type": "application/json" });
+const register = (api: typeof omniApi, route: string, token: string, value = "a".repeat(64)) => api.request(route, { method: "POST", headers: headers(token), body: JSON.stringify({ token: value, environment: "sandbox", topic: "attacker.topic" }) });
+test("native app identity fixes registration topic and prevents cross-app mutation", async () => {
+  const omni = issueDeviceToken(config.ownerEmail, "Omni phone", "omni-native");
+  const prism = issueDeviceToken(config.ownerEmail, "Prism phone", "prism-native");
+  assert.equal((await register(omniApi, "/push", omni.token)).status, 200);
+  assert.equal((await register(pushApi, "/apns", prism.token, "b".repeat(64))).status, 200);
+  assert.equal(apnsTokenForDevice(omni.id)?.application, "omni");
+  assert.equal((await register(pushApi, "/apns", omni.token)).status, 403);
+  assert.equal((await register(omniApi, "/push", prism.token)).status, 403);
+  assert.equal((await omniApi.request("/push", { method: "DELETE", headers: headers(prism.token) })).status, 403);
+  assert.equal((await pushApi.request("/apns", { method: "DELETE", headers: headers(omni.token) })).status, 403);
+  await sendApnsToOwner(config.ownerEmail, { payload: { aps: { alert: "Omni has an update" }, id: "thread-1" } }, "omni");
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0]!.headers["apns-topic"], "com.benjaminlife.omni");
+  assert.equal(requests[0]!.origin, "https://api.sandbox.push.apple.com");
+  assert.equal(liveApnsTokens(config.ownerEmail).length, 1, "Prism fanout remains separate");
+});
+test("registration rejects browsers, non-owners and invalid data; expired/revoked devices never receive pushes", async () => {
+  const device = issueDeviceToken(config.ownerEmail, "Omni", "omni-native");
+  assert.equal((await omniApi.request("/push", { method: "POST", headers: { "content-type": "application/json", cookie: sessionCookie(makeSession(config.ownerEmail)) }, body: "{}" })).status, 403);
+  assert.equal((await register(omniApi, "/push", device.token, "invalid")).status, 400);
+  const other = issueDeviceToken("other@example.com", "Other", "omni-native");
+  assert.equal((await register(omniApi, "/push", other.token)).status, 403);
+  await register(omniApi, "/push", device.token);
+  db.prepare("UPDATE device_tokens SET expires_at = 0 WHERE id = ?").run(device.id);
+  assert.equal(liveApnsTokens(config.ownerEmail, "omni").length, 0);
+  await revokeDevice(device.id);
+  assert.equal(apnsTokenForDevice(device.id), null);
+});
+
+test("push registration requires authentication, caps input and limits replacement churn", async () => {
+  assert.equal((await omniApi.request("/push", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" })).status, 401);
+  const device = issueDeviceToken(config.ownerEmail, "Omni", "omni-native");
+  assert.equal((await omniApi.request("/push", { method: "POST", headers: headers(device.token), body: JSON.stringify({ padding: "x".repeat(512 * 1024) }) })).status, 400);
+  for (let i = 0; i < 19; i++) assert.equal((await register(omniApi, "/push", device.token)).status, 200);
+  const limited = await register(omniApi, "/push", device.token);
+  assert.equal(limited.status, 429);
+  assert.ok(limited.headers.get("Retry-After"));
+});
+
+test("invalid-token pruning cannot delete another app or signing environment", async () => {
+  const sandbox = issueDeviceToken(config.ownerEmail, "Omni sandbox", "omni-native");
+  const production = issueDeviceToken(config.ownerEmail, "Omni production", "omni-native");
+  const prism = issueDeviceToken(config.ownerEmail, "Prism", "prism-native");
+  const token = "a".repeat(64);
+  await register(omniApi, "/push", sandbox.token, token);
+  await omniApi.request("/push", { method: "POST", headers: headers(production.token), body: JSON.stringify({ token, environment: "production" }) });
+  await register(pushApi, "/apns", prism.token, token);
+  assert.equal(liveApnsTokens(config.ownerEmail, "omni").length, 2);
+  configureApns({ transport: { send: async r => ({ status: r.origin.includes("sandbox") ? 410 : 200, body: "" }), close() {} } });
+  await sendApnsToOwner(config.ownerEmail, { payload: { aps: { alert: "An update" } } }, "omni");
+  assert.equal(apnsTokenForDevice(sandbox.id), null);
+  assert.equal(apnsTokenForDevice(production.id)?.application, "omni");
+  assert.equal(apnsTokenForDevice(prism.id)?.application, "prism");
+});

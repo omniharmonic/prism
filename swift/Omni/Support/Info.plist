@@ -11,7 +11,9 @@
 		<key>NSAllowsLocalNetworking</key>
 		<true/>
 	</dict>
+	<key>CFBundleURLTypes</key>
+    <array><dict><key>CFBundleURLSchemes</key><array><string>omni</string></array></dict></array>
 	<key>NSFaceIDUsageDescription</key>
-	<string>Omni asks for Face ID before it sends anything on your behalf.</string>
+	<string>Omni uses Face ID to unlock private conversations and confirm actions you approve.</string>
 </dict>
 </plist>

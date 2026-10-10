@@ -367,6 +367,9 @@ struct TabMainView: View {
                 if let destination { open(destination) }
             }
         }
+        .onChange(of: session.externalNavigationRequests) {
+            if let destination = session.destination { open(destination) }
+        }
         .onChange(of: session.newThreadRequests) { showingNewThread = true }
         .task { await session.approvals.refresh() }
     }

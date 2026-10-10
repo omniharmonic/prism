@@ -18,11 +18,13 @@
  *    `X-Prism-Action-Origin: agent` downgrade is honoured), the digest the person saw and
  *    an `Idempotency-Key`; execution goes only through Prism's live-action routes.
  */
+import { apnsApplicationForDevice, apnsEnabled, isApnsToken, isApnsEnvironment, saveApnsToken, removeApnsTokenForDevice } from "../apns";
 import { Hono, type Context } from "hono";
 import { streamSSE } from "hono/streaming";
 import { timingSafeEqual } from "node:crypto";
 import { resolveActor, requestVia } from "../auth/actor";
 import { isLocalRequest } from "../auth/local";
+import { consumeRateLimit } from "../middleware/ratelimit";
 import { csrfRefusal, readCapped } from "./actions";
 import { IDEMPOTENCY_KEY_RE } from "../actions/store";
 import { omniConfig, OMNI_API_VERSION, OMNI_MIN_CLIENT } from "../omni/config";
@@ -175,6 +177,24 @@ omniApi.use("*", async (c, next) => {
     if (csrf) return csrf;
   }
   await next();
+});
+
+/** Omni's own registration; browser credentials and Prism device credentials cannot claim it. */
+omniApi.post("/push", async c => {
+  const actor = resolveActor(c);
+  if (requestVia(c) !== "device" || actor.kind !== "user" || !actor.deviceId || apnsApplicationForDevice(actor.deviceId) !== "omni") return c.json({ error: "omni_device_token_required" }, 403);
+  const retry = consumeRateLimit(`omni-push:${actor.deviceId}`, 20, 60_000);
+  if (retry !== null) { c.header("Retry-After", String(retry)); return c.json({ error: "rate_limited", retryAfter: retry }, 429); }
+  const b = await jsonBody(c);
+  if (!b) return c.json({ error: "bad_request", detail: "bounded JSON body required" }, 400);
+  if (!isApnsToken(b.token) || !isApnsEnvironment(b.environment)) return c.json({ error: "bad_request", detail: "token (hex) and environment (sandbox|production) required" }, 400);
+  saveApnsToken({ deviceId: actor.deviceId, email: actor.email, vaultId: actor.vaultId, token: b.token, environment: b.environment, application: "omni" });
+  return c.json({ ok: true, apnsEnabled: apnsEnabled() });
+});
+omniApi.delete("/push", c => {
+  const actor = resolveActor(c);
+  if (requestVia(c) !== "device" || actor.kind !== "user" || !actor.deviceId || apnsApplicationForDevice(actor.deviceId) !== "omni") return c.json({ error: "omni_device_token_required" }, 403);
+  return c.json({ ok: removeApnsTokenForDevice(actor.deviceId) });
 });
 
 const MAX_BODY = 512 * 1024;

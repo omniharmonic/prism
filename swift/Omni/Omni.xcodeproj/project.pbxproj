@@ -270,6 +270,9 @@
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+                APS_ENVIRONMENT = development;
+                "CODE_SIGN_ENTITLEMENTS[sdk=iphone*]" = Support/Omni-iOS.entitlements;
+                "CODE_SIGN_ENTITLEMENTS[sdk=macosx*]" = Support/Omni-macOS.entitlements;
 				INFOPLIST_FILE = Support/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = Omni;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.productivity";
@@ -301,6 +304,9 @@
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+                APS_ENVIRONMENT = development;
+                "CODE_SIGN_ENTITLEMENTS[sdk=iphone*]" = Support/Omni-iOS.entitlements;
+                "CODE_SIGN_ENTITLEMENTS[sdk=macosx*]" = Support/Omni-macOS.entitlements;
 				INFOPLIST_FILE = Support/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = Omni;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.productivity";

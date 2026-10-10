@@ -785,6 +785,15 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS grants_vault_resource ON grants(vault_id, resource_type, resource);
 `);
 
+// APNs applications are selected by the authenticated native client, never a client topic.
+// Existing installations retain Prism registration and device pairing.
+{
+  const cols = db.prepare("PRAGMA table_info(apns_tokens)").all() as Array<{ name: string }>;
+  if (!cols.some(c => c.name === "application")) {
+    db.exec("ALTER TABLE apns_tokens ADD COLUMN application TEXT NOT NULL DEFAULT 'prism' CHECK (application IN ('prism', 'omni'))");
+  }
+}
+
 // TTL / expiry on grants (Phase 4.3): a nullable epoch-ms deadline. NULL = never
 // expires (every existing grant → byte-identical behavior). Today only PEER
 // grants honor it (time-boxed federation access); grantsForPeer filters expired.
