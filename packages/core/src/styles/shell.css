@@ -88,7 +88,7 @@
 /* Header bar (NP-PG-06): labelled actions stay one quiet row. */
 .tabbar-labelled {
   position: relative; display: inline-flex; align-items: center; gap: 6px;
-  height: 30px; padding: 0 10px; border-radius: 6px; flex-shrink: 0;
+  height: 30px; padding: 0 10px; border-radius: 8px; flex-shrink: 0;
   font-size: 12.5px; font-weight: 500; color: var(--text-secondary);
 }
 .tabbar-labelled:hover { color: var(--text-primary); }
@@ -113,7 +113,7 @@
   display: inline-flex; align-items: center; gap: 3px; min-width: 0; max-width: 100%;
   font-size: var(--text-sm); font-weight: 550; color: var(--text-primary); text-align: center;
 }
-button.tabbar-phone-title { min-height: 44px; padding: 0 6px; border-radius: 6px; }
+button.tabbar-phone-title { min-height: 44px; padding: 0 6px; border-radius: 8px; }
 
 /* Collapsed-sidebar peek (NP-SB-12): a thin hover strip on the left edge
    reveals the sidebar as a floating overlay; it leaves on mouse-out or Esc. */
@@ -131,7 +131,7 @@ button.tabbar-phone-title { min-height: 44px; padding: 0 6px; border-radius: 6px
 .sidebar-peek {
   position: absolute; top: 8px; bottom: 8px; left: 0; z-index: 41;
   width: min(300px, 80vw); overflow: hidden;
-  border: 1px solid var(--glass-border); border-left: 0; border-radius: 0 10px 10px 0;
+  border: 1px solid var(--glass-border); border-left: 0; border-radius: 0 14px 14px 0;
   background: var(--bg-surface); box-shadow: var(--glass-shadow-elevated);
   animation: prism-peek-in var(--motion-slow) var(--motion-ease);
 }

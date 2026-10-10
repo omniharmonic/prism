@@ -1,10 +1,10 @@
-.prism-mobile-navigation { position: absolute; inset: auto 0 0; z-index: var(--z-sticky); display: grid; grid-template-columns: repeat(5,minmax(0,1fr)); gap: 2px; height: 68px; padding: 5px 8px 7px; box-sizing: border-box; border-top: 1px solid var(--border-subtle); background: var(--bg-surface); color: var(--text-secondary); }
+.prism-mobile-navigation { position: absolute; inset: auto 8px 6px; z-index: var(--z-sticky); display: grid; grid-template-columns: repeat(5,minmax(0,1fr)); gap: 2px; height: 62px; padding: 4px 6px; box-sizing: border-box; border: 1px solid var(--glass-border); border-radius: 18px; background: var(--material-solid, var(--bg-surface)); color: var(--text-secondary); box-shadow: 0 3px 14px rgb(0 0 0 / 6%); }
 .prism-mobile-navigation[hidden] { display: none; }
-.prism-mobile-navigation > button { display: flex; flex-direction: column; justify-content: center; align-items: center; gap: 5px; min-width: 44px; min-height: 44px; border-radius: 7px; font-size: 11px; line-height: 1.2; font-weight: 500; }
+.prism-mobile-navigation > button { display: flex; flex-direction: column; justify-content: center; align-items: center; gap: 5px; min-width: 44px; min-height: 44px; border-radius: 12px; font-size: 11px; line-height: 1.2; font-weight: 500; }
 .prism-mobile-navigation > button:hover { background: var(--glass-hover); }
 .prism-mobile-navigation > button[aria-pressed=true] { color: var(--color-accent); background: var(--surface-selected); }
 .prism-mobile-navigation > button:focus-visible, .prism-mobile-sheet button:focus-visible { outline: 2px solid var(--color-accent); outline-offset: -2px; }
-.prism-mobile-sheet { position: fixed; top: auto; left: 0; right: 0; width: min(100% - 16px, 440px); max-width: none; max-height: 82dvh; padding: 0; margin: auto auto calc(env(safe-area-inset-bottom) + 8px); border: 1px solid var(--glass-border); border-radius: 16px; background: var(--bg-surface); color: var(--text-primary); box-shadow: 0 16px 60px #0003; overflow: hidden; }
+.prism-mobile-sheet { position: fixed; top: auto; left: 0; right: 0; width: min(100% - 16px, 440px); max-width: none; max-height: 82dvh; padding: 0; margin: auto auto calc(env(safe-area-inset-bottom) + 8px); border: 1px solid var(--glass-border); border-radius: 20px; background: var(--bg-elevated); color: var(--text-primary); box-shadow: var(--glass-shadow-elevated); overflow: hidden; }
 .prism-mobile-sheet::backdrop { background: #0006; }
 /* Entrance (NP-AX-06): every phone bottom sheet (More, page actions, tree row actions, database
    panels — all `BottomSheet`) rises 8px while fading in, on the shared motion tokens. 8px = the sheet's own bottom margin, so it is
@@ -22,7 +22,7 @@
 .prism-mobile-sheet-handle > span { width: 36px; height: 4px; border-radius: 3px; background: var(--glass-border-strong); }
 .prism-mobile-sheet-heading { display: flex; align-items: center; gap: 12px; padding: 0 10px 8px 20px; flex-shrink: 0; border-bottom: 1px solid var(--border-subtle); }
 .prism-mobile-sheet-heading h2 { flex: 1; min-width: 0; margin: 0; font-size: 15px; font-weight: 600; line-height: 1.5; color: var(--text-primary); overflow-wrap: anywhere; }
-.prism-mobile-sheet-heading button { width: 44px; height: 44px; display: grid; place-items: center; flex-shrink: 0; border-radius: 6px; color: var(--text-muted); }
+.prism-mobile-sheet-heading button { width: 44px; height: 44px; display: grid; place-items: center; flex-shrink: 0; border-radius: var(--control-radius, 8px); color: var(--text-muted); }
 .prism-mobile-sheet-content { min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding-bottom: env(safe-area-inset-bottom); }
 /* w16 (defect 46): the last row is never cut without a cue — a fade that sticks to the bottom while
    there is more below, and sits in its own 20 px under the last row at the end (a sticky ::after,
@@ -47,3 +47,12 @@
 .prism-mobile-document-dirty { width: 6px; height: 6px; flex-shrink: 0; border-radius: 50%; background: var(--color-accent); }
 .prism-mobile-document-close { display: grid; place-items: center; flex-shrink: 0; width: 44px; height: 44px; border-radius: 6px; color: var(--text-muted); }
 .prism-mobile-new-page { display: flex; align-items: center; gap: 12px; width: 100%; min-height: 50px; padding: 10px 20px; border-top: 1px solid var(--border-subtle); color: var(--color-accent); font-size: 14px; text-align: left; }
+
+/* Navigation alone carries the translucent material; the writing surface stays opaque. */
+@supports (backdrop-filter: blur(16px)) or (-webkit-backdrop-filter: blur(16px)) {
+  .prism-mobile-navigation { background: var(--material-floating, var(--bg-surface)); backdrop-filter: blur(var(--material-blur, 20px)) saturate(1.15); -webkit-backdrop-filter: blur(var(--material-blur, 20px)) saturate(1.15); }
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  .prism-mobile-navigation { background: var(--material-solid, var(--bg-surface)); backdrop-filter: none; -webkit-backdrop-filter: none; }
+}
