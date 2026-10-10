@@ -202,13 +202,21 @@ export class VaultApi {
   }
 
   /** Full read (body + metadata) — the fresh copy every write is built on. */
-  async getNote(id: string, opts: { includeLinks?: boolean } = {}): Promise<VaultNote | null> {
+  async getNote(id: string, opts: { includeLinks?: boolean; includeContent?: boolean } = {}): Promise<VaultNote | null> {
     try {
-      return (await (await this.req(`/notes/${encodeURIComponent(id)}${opts.includeLinks ? "?include_links=true" : ""}`)).json()) as VaultNote;
+      const sp = new URLSearchParams();
+      if (opts.includeLinks) sp.set("include_links", "true");
+      if (opts.includeContent === false) sp.set("include_content", "false");
+      return (await (await this.req(`/notes/${encodeURIComponent(id)}${sp.size ? `?${sp}` : ""}`)).json()) as VaultNote;
     } catch (e) {
       if (e instanceof HttpError && e.status === 404) return null;
       throw e;
     }
+  }
+
+  /** Atomic create-if-absent; never replaces an existing path. */
+  async create(body: { path: string; content: string; tags: string[]; metadata: Record<string, unknown> }): Promise<VaultNote & { existed?: boolean }> {
+    return (await (await this.req("/notes", { method: "POST", body: JSON.stringify({ ...body, if_exists: "ignore" }) })).json()) as VaultNote & { existed?: boolean };
   }
 
   /** Compare-and-set PATCH. NEVER sends `force`. */
@@ -277,6 +285,7 @@ export class Throttle {
 
 /** One undo record per write. `before` holds exactly the values the write replaced. */
 export type UndoRecord =
+  | { kind: "vault-create"; script: string; at: string; id: string; path: string | null; afterUpdatedAt: string }
   | {
       kind: "vault-patch";
       script: string;
@@ -297,6 +306,7 @@ export type UndoRecord =
       path: string | null;
       afterUpdatedAt: string;
       added: LinkInput[];
+      removed?: LinkInput[];
     };
 
 export class UndoLog {

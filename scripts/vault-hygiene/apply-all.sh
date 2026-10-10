@@ -50,7 +50,7 @@ KC_OWNER_TOKEN="${KC_OWNER_TOKEN:-prism-owner-device-token}"
 KC_ADMIN_TOKEN="${KC_ADMIN_TOKEN:-prism-parachute-admin-token}"
 STEPS=(schema m-a m-c-ff m-c m-b m-f m-e m-d)
 # Run only by `--only <step>`: not in the approved order, so never part of a default or --from run.
-OPTIONAL_STEPS=(m-g)
+OPTIONAL_STEPS=(m-g m-project-repair m-project-hygiene m-project-indexes)
 
 BACKUP=""
 FROM=""
@@ -211,6 +211,17 @@ fi
 
 # ── optional steps (only with --only) ───────────────────────────────────────
 [ "$ONLY" = "m-g" ] && migration m-g backfill-subpage-links.ts
+if [ "$ONLY" = "m-project-repair" ] || [ "$ONLY" = "m-project-indexes" ]; then
+  PRISM_OWNER_TOKEN="${PRISM_OWNER_TOKEN:-$(kc "$KC_OWNER_TOKEN")}"
+  [ -n "$PRISM_OWNER_TOKEN" ] || die "Keychain item '$KC_OWNER_TOKEN' not found"
+  export PRISM_OWNER_TOKEN
+fi
+[ "$ONLY" = "m-project-repair" ] && migration m-project-repair project-pages.ts --phase repair --prism-url "$PRISM_URL"
+[ "$ONLY" = "m-project-hygiene" ] && migration m-project-hygiene project-pages.ts --phase hygiene
+if [ "$ONLY" = "m-project-indexes" ]; then
+  [ "${PROJECT_LIVE_SECTIONS_CONFIRMED:-}" = "1" ] || die "deploy live project sections first, then set PROJECT_LIVE_SECTIONS_CONFIRMED=1"
+  migration m-project-indexes project-pages.ts --phase indexes --live-sections-confirmed --prism-url "$PRISM_URL"
+fi
 
 if want m-d; then
   say "m-d — untagged notes report (writes nothing)"
