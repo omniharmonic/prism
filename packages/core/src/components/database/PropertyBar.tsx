@@ -38,6 +38,8 @@ import { REVEAL_PROPERTY_EVENT } from "../../lib/notifications/anchor";
 import { PropertyEditor } from "./PropertyEditor";
 import { propertyFromField } from "../../lib/database/schema";
 import { Popover } from "./Popover";
+import { PropertyDisplay } from "./PropertyDisplay";
+import { usePropertyPresentation } from "./propertyPresentation";
 import { CustomizeProperties } from "./PinnedProperties";
 import "./database.css";
 
@@ -56,6 +58,8 @@ export function PropertyBar({ note, readOnly, onOpenAll, layout = "bar", trailin
   layout?: "bar" | "panel";
 }) {
   const { data } = useSchemas();
+  const scope = useScope();
+  const presentation = usePropertyPresentation(scope, note.id);
   const write = usePropertyWriter();
   const schemaEdit = useUpdateSchema();
   const access = noteAccess(note);
@@ -89,12 +93,20 @@ export function PropertyBar({ note, readOnly, onOpenAll, layout = "bar", trailin
     () => splitPinned(props, layout === "bar" ? pinnedKeys(tags, schemas) : []),
     [props, layout, tags, schemas],
   );
-  const pinMode = top.length > 0;
+  const personal = layout === "bar" ? presentation.value : null;
+  const kept = personal?.visible ? personal.visible.flatMap(key => props.filter(p => p.key === key)) : top;
+  const remaining = personal?.visible ? props.filter(p => !personal.visible!.includes(p.key)) : personal && !top.length ? props : rest;
+  const pinMode = personal !== null || top.length > 0;
   const [moreOpen, setMoreOpen] = useState(false);
+  const expanded = personal ? !personal.collapsed : pinMode ? moreOpen : true;
+  const toggleExpanded = () => {
+    if (layout === "bar" && presentation.available) presentation.save({ visible: personal?.visible ?? null, collapsed: expanded });
+    else setMoreOpen(v => !v);
+  };
   const visible = (p: PropertyDef) => showEmpty || !isBlank(meta[p.key]) || revealed.includes(p.key);
-  const more = pinMode ? rest.filter(visible) : [];
-  const shown = pinMode ? [...top, ...(moreOpen ? more : [])] : props.filter(visible);
-  const hiddenEmpty = (pinMode ? rest : props).filter((p) => isBlank(meta[p.key]) && !revealed.includes(p.key));
+  const more = pinMode ? remaining.filter(visible) : [];
+  const shown = pinMode ? [...kept, ...(expanded ? more : [])] : props.filter(visible);
+  const hiddenEmpty = (pinMode ? remaining : props).filter((p) => isBlank(meta[p.key]) && !revealed.includes(p.key));
   // "Customize…": the server says who may change a tag's presentation (owner role).
   const customTags = useMemo(
     () => tags.filter((t) => Object.entries(schemas[t]?.fields ?? {}).some(([k, f]) => !f.deleted && !isSystemKey(k))),
@@ -118,21 +130,22 @@ export function PropertyBar({ note, readOnly, onOpenAll, layout = "bar", trailin
     setRevealed((r) => (r.includes(key) ? r : [...r, key]));
     setJustAdded(key);
     setMoreOpen(true); // a property brought out is never left folded away
+    if (personal) presentation.save({ ...personal, collapsed: false });
   };
   // An "assigned you" notification lands on its property: bring it out if it is folded away.
   useEffect(() => {
     const h = (e: Event) => {
       const d = (e as CustomEvent<{ noteId?: string; key?: string }>).detail;
-      if (d?.noteId === note.id && typeof d.key === "string") { setRevealed((r) => (r.includes(d.key!) ? r : [...r, d.key!])); setMoreOpen(true); }
+      if (d?.noteId === note.id && typeof d.key === "string") { setRevealed((r) => (r.includes(d.key!) ? r : [...r, d.key!])); setMoreOpen(true); if (personal) presentation.save({ ...personal, collapsed: false }); }
     };
     window.addEventListener(REVEAL_PROPERTY_EVENT, h);
     return () => window.removeEventListener(REVEAL_PROPERTY_EVENT, h);
-  }, [note.id]);
+  }, [note.id, personal, scope]);
 
   return (
     <div className={`db-props db-props-${layout}`} role="group" aria-label="Page properties" data-pinned={pinMode || undefined}>
       {shown.map((def) => (
-        <div className="db-prop" key={def.key} data-kind={def.kind} data-property-key={def.key} data-pinned-property={top.includes(def) || undefined}>
+        <div className="db-prop" key={def.key} data-kind={def.kind} data-property-key={def.key} data-pinned-property={kept.includes(def) || undefined}>
           {canEditSchema && def.tag ? (
             <button type="button" className="db-prop-label db-prop-label-edit focus-ring" title={`Edit the “${def.label}” property`} aria-label={`Edit property ${def.label}`} onClick={() => setEditingProp({ tag: def.tag!, key: def.key })}>{def.label}</button>
           ) : <span className="db-prop-label" title={def.description || def.label}>{def.label}</span>}
@@ -149,13 +162,14 @@ export function PropertyBar({ note, readOnly, onOpenAll, layout = "bar", trailin
           />
         </div>
       ))}
-      {more.length > 0 && (
+      {(more.length > 0 || (layout === "bar" && presentation.available && props.length > 0)) && (
         <div className="db-prop-actions db-prop-more">
-          <button type="button" className="db-ghost focus-ring" aria-expanded={moreOpen} onClick={() => setMoreOpen((v) => !v)}>
-            <ChevronRight size={13} aria-hidden="true" className="db-more-chevron" /> {more.length} more {more.length === 1 ? "property" : "properties"}
+          <button type="button" className="db-ghost focus-ring" aria-expanded={expanded} onClick={toggleExpanded}>
+            <ChevronRight size={13} aria-hidden="true" className="db-more-chevron" /> {more.length ? `${more.length} more ${more.length === 1 ? "property" : "properties"}` : expanded ? "Collapse properties" : "Properties"}
           </button>
         </div>
       )}
+      {layout === "bar" && presentation.available && props.length > 0 && <div className="db-prop-actions"><PropertyDisplay properties={props} visible={personal?.visible ?? (pinMode ? top : props.filter(visible)).map(p => p.key)} onChange={keys => presentation.save({ visible: keys, collapsed: personal?.collapsed ?? true })} onReset={() => presentation.save(null)} /></div>}
       <ReverseRelations note={note} editable={editable} />
       {showTags && (
         <div className="db-prop db-prop-tags">

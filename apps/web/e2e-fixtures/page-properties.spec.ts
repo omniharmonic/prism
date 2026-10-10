@@ -252,6 +252,8 @@ test("owner pins properties: exact order, empty ones as placeholders, the rest b
   expect(await keysShown(page)).toEqual(["due", "priority", "status", "owner"]);
   expect((await state(page)).writes).toEqual([]); // choosing a layout writes no page
   await page.screenshot({ path: info.outputPath("pinned-bar.png") });
+  // Collapse is now a remembered personal presentation choice.
+  await more.click();
 
   await page.reload();
   await expect(bar(page).getByRole("button", { name: "Due: Empty" })).toBeVisible();
@@ -269,6 +271,10 @@ test("owner pins properties: exact order, empty ones as placeholders, the rest b
   // Back to "every filled property".
   await bar(page).getByRole("button", { name: "Customize…" }).click();
   await page.getByRole("dialog", { name: "Customize properties" }).getByRole("button", { name: "Show every filled property instead" }).click();
+  // A personal collapsed preference survives shared changes; explicitly return to defaults.
+  await page.keyboard.press("Escape");
+  await bar(page).getByRole("button", { name: "Display properties", exact: true }).click();
+  await page.getByRole("dialog", { name: "Display properties" }).getByRole("button", { name: "Use shared defaults" }).click();
   await expect.poll(() => keysShown(page)).toEqual(["status", "priority", "due", "owner"]);
   expect((await state(page)).schemaWrites.at(-1)).toEqual({ tag: "task", patch: { pinned: [] } });
 });

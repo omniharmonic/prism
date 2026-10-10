@@ -1,3 +1,4 @@
+import { EmailThreadStatus } from "../comms/EmailThreadStatus";
 import { ConversationBack, ConversationOpenPage } from "../comms/conversationChrome";
 import "../comms/email-workspace.css";
 import { splitEmailQuote } from "../../lib/messages/emailQuote";
@@ -175,6 +176,7 @@ function VaultEmailView({
               {meta?.source === "proton-bridge" ? "Proton Bridge" : "Email"}
               {messageCount > 1 && <span> · {messageCount} messages</span>}
             </p>
+            <EmailThreadStatus note={note} readOnly={readOnly} />
             <div className="flex flex-wrap gap-2 mt-2">
               {replyTo && (
                 <Button

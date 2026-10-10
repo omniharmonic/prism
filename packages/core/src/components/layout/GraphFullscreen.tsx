@@ -26,18 +26,20 @@ function GraphDialog({ noteId }: { noteId: string }) {
     <dialog
       ref={dialog}
       aria-label="Explore connected knowledge"
+      style={{ paddingTop: "env(safe-area-inset-top)", paddingLeft: "env(safe-area-inset-left)", paddingRight: "env(safe-area-inset-right)", paddingBottom: "env(safe-area-inset-bottom)", boxSizing: "border-box" }}
       onCancel={(e) => {
         e.preventDefault();
         close();
       }}
-      className="fixed inset-0 m-0 h-dvh max-h-none w-full max-w-none border-0 bg-[var(--bg-surface)] p-0 text-[var(--text-primary)]"
+      className="fixed inset-0 m-0 h-dvh max-h-[100dvh] w-screen max-w-[100vw] overflow-hidden border-0 bg-[var(--bg-surface)] p-0 text-[var(--text-primary)]"
     >
-      <div className="flex h-full flex-col">
-        <header className="flex items-center justify-between border-b border-[var(--glass-border)] px-4 py-2">
-          <h2 className="text-sm font-medium">Explore your knowledge</h2>
+      <div className="flex h-full min-w-0 flex-col">
+        <header className="flex shrink-0 items-center justify-between gap-3 border-b border-[var(--glass-border)] px-4 py-2">
+          <h2 className="min-w-0 truncate text-sm font-medium">Explore your knowledge</h2>
           <button
             aria-label="Close graph"
-            className="focus-ring rounded-lg p-3"
+            className="focus-ring flex shrink-0 items-center justify-center rounded-lg p-3"
+            style={{ minWidth: 44, minHeight: 44 }}
             onClick={close}
           >
             <X size={18} />

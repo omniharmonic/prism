@@ -93,7 +93,7 @@ function ScopedMessageRenderer({
         await writeTagChange(vault, note, change);
         const tags = [...triageTags.filter((t) => !change.remove.includes(t)), ...change.add.filter((t) => !triageTags.includes(t))];
         setTriageTags(tags);
-        syncTriageCaches(queryClient, note.id, tags);
+        syncTriageCaches(queryClient, note.id, tags, vault.scope?.() ?? scope);
         setSent(false);
       } catch {
         setTriageStatus(previous); // roll back: nothing was confirmed
@@ -104,7 +104,7 @@ function ScopedMessageRenderer({
         setTriagePending(false);
       }
     },
-    [note, queryClient, triagePending, triageStatus, triageTags, vault, canTriage],
+    [note, queryClient, triagePending, triageStatus, triageTags, vault, canTriage, scope],
   );
   const handleTriageChange = useCallback(
     (newTag: (typeof TRIAGE_TAGS)[number]) => applyTriage(statusChange(triageTags, newTag), newTag),

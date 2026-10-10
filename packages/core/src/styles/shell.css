@@ -201,16 +201,20 @@ html[data-page-width="wide"] #workspace-document:not([data-page-full="true"]) { 
 .workspace-footer-status { display: flex; flex-wrap: wrap; align-items: center; column-gap: 4px; min-width: 0; }
 .workspace-footer-status .workspace-account { flex: 1 1 96px; min-width: 0; }
 .workspace-footer-status .sync-state-region { flex: 0 1 auto; max-width: 100%; }
-/* The tree ends in a fade, never a row cut in half at the footer's edge. The fade is a sticky
-   element at the end of the scroller's content (NOT a mask: a mask clips and traps the row menus,
-   which are fixed-position descendants). Its natural place is the scroller's own bottom padding, so
-   at the end of the list it covers nothing. */
-.workspace-nav-scroll::after {
-  content: ""; display: block; position: sticky; bottom: 0; z-index: 1; height: 20px; margin: 0 -8px -20px;
-  background: linear-gradient(to bottom, transparent, var(--bg-sidebar, var(--bg-surface))); pointer-events: none;
+/* Anchor the fade to the footer itself: its opaque edge meets the tray with no gap.
+   The scroller retains 20px bottom padding so the last row can move clear of the fade.
+   This overlay does not mask or clip fixed row menus. */
+.workspace-nav-footer::before {
+  content: ""; position:absolute; left:0; right:0; top:-20px; height:20px; z-index:1;
+  background:linear-gradient(to bottom,transparent,var(--bg-sidebar,var(--bg-surface))); pointer-events:none;
 }
-@media (forced-colors: active) { .workspace-nav-scroll::after { display: none; } }
+@media (forced-colors:active) { .workspace-nav-footer::before { display:none; } }
 
 /* Offline (defect 6): the header carries the state; this line is the one announcement, and a quiet
    one — a caption, not a band that pushes the page down. */
 .offline-copy-notice { padding: 6px 16px 0; background: transparent; border-bottom: 0; color: var(--text-muted); }
+
+.workspace-trash-target { display:flex; align-items:center; gap:8px; width:100%; min-height:44px; padding:8px 10px; border-radius:8px; color:var(--text-secondary); font-size:var(--text-base); text-align:left; transition:background var(--motion-fast,120ms),color var(--motion-fast,120ms); }
+.workspace-trash-target:hover { background:var(--glass-hover); }
+.workspace-trash-target[data-drop-over] { background:var(--glass-active); color:var(--text-primary); outline:2px solid var(--color-accent); outline-offset:-2px; }
+@media (prefers-reduced-motion:reduce) { .workspace-trash-target { transition:none; } }

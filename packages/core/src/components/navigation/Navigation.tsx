@@ -1,7 +1,7 @@
 import { NavigationPreferences, useNavigationPreferences, TOOL_NAMES, type NavigationTool } from "./NavigationPreferences";
 import { useNoteShortcuts } from "./NoteShortcuts";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Search, Calendar, MessageSquare, PenSquare, Bot, RefreshCw, ChevronRight, FileText, Star, X, MapPin, FolderPlus, ChevronsDownUp, Sparkles, Users, Plus, Settings2, Trash2, LayoutTemplate, ChevronDown } from "lucide-react";
+import { Search, Calendar, MessageSquare, PenSquare, Bot, RefreshCw, ChevronRight, FileText, Star, X, MapPin, FolderPlus, ChevronsDownUp, Sparkles, Users, Plus, Settings2, LayoutTemplate, ChevronDown } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useIsMobile } from "../../app/hooks/useIsMobile";
 import { usePullToRefresh } from "../../lib/gestures/usePullToRefresh";
@@ -24,6 +24,7 @@ import { PageIcon } from "../../lib/pages/icons";
 import { Home as HomeIcon, Inbox as InboxIcon } from "lucide-react";
 import { InboxBadge, openInbox } from "../inbox/InboxNavButton";
 import { SyncStateBadge } from "../layout/SyncStateBadge";
+import { TrashDropTarget } from "./TrashDropTarget";
 import { AccountMenu } from "./AccountMenu";
 import { useQuickCreatePage } from "../../lib/pages/quickCreate";
 import { useUnreadCount } from "../../lib/notifications/hooks";
@@ -335,7 +336,7 @@ export function Navigation() {
             <ChevronDown size={16} aria-hidden />
           </button>
         </div>}
-        {!guest && <NavItem icon={<Trash2 size={16} />} label="Trash" active={false} onClick={() => usePagesUI.getState().openTrash(true)} />}
+        {!guest && <TrashDropTarget />}
         <NavItem icon={<Settings2 size={16} />} label="Workspace settings" active={openTabs.find(t => t.id === activeTabId)?.noteId === "network"} onClick={handleOpenNetwork} />
         {/* NP-SB-15: the one truthful sync state, in the sidebar footer — beside the account while it
             is short ("Synced"), on its own line when it has more to say. */}
