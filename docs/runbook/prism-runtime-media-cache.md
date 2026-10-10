@@ -15,8 +15,8 @@ Mini checkout (for example, under `~/release-artifacts/`). Pass the real Prism
 checkout root; the helper defaults to a read-only dry run:
 
 ```bash
-bash "$HOME/release-artifacts/ignore-runtime-media-cache.sh" "$HOME/prism"
-bash "$HOME/release-artifacts/ignore-runtime-media-cache.sh" --apply "$HOME/prism"
+bash "$HOME/release-artifacts/ignore-runtime-media-cache.sh" "$HOME/dev/prism"
+bash "$HOME/release-artifacts/ignore-runtime-media-cache.sh" --apply "$HOME/dev/prism"
 ```
 
 Use the actual checkout path reported by deployment preflight. Run apply only after
