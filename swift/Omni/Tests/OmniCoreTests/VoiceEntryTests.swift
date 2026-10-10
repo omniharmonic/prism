@@ -1,4 +1,5 @@
 import XCTest
+import PrismTransport
 @testable import OmniCore
 
 @MainActor final class VoiceEntryTests: XCTestCase {
@@ -88,6 +89,38 @@ import XCTest
         session.requestNewThread(); XCTAssertEqual(voice.state, .off)
         session.requestNewVoice(); session.claimVoice(audio: audio, voice: voice, threadID: nil)
         await voice.start(); session.closeNewVoice(); XCTAssertEqual(voice.state, .off)
+    }
+
+    func testEveryCompletedTurnPreservesAnAtomicVoiceReceiptIncludingEmptyReply() async {
+        let service = FakeService(); let session = SessionModel(service: service, sleep: noSleep) {}
+        service.details(.success(Fixture.detail(lastSeq: 0)))
+        service.starts(.success(.started(turnId: "one")), .success(.started(turnId: "two")))
+        service.streams(
+            [.success(Fixture.event(1, turn: "one", .text(blockId: "a", text: "First."))), .success(Fixture.event(2, turn: "one", .result(ok: true, durationMs: 1, errorCode: nil)))],
+            [.success(Fixture.event(3, turn: "two", .result(ok: true, durationMs: 1, errorCode: nil)))]
+        )
+        let model = session.threadModel(for: "t1"); await model.open()
+        model.draft = "one"; let first = await model.send(); XCTAssertTrue(first)
+        await eventually { model.completedVoiceTurnID == "one" }
+        XCTAssertFalse(model.takeCompletedVoiceTimeline().isEmpty)
+        XCTAssertNil(model.completedVoiceTurnID)
+        model.draft = "two"; let second = await model.send(); XCTAssertTrue(second)
+        await eventually { model.completedVoiceTurnID == "two" }
+        XCTAssertTrue(model.takeCompletedVoiceTimeline().isEmpty)
+        XCTAssertNil(model.completedVoiceTurnID); model.close()
+    }
+    func testVoiceSendAcceptanceDoesNotConfuseAlreadyRunningOrRejectedWithSent() async {
+        for rejected in [false, true] {
+            let service = FakeService(); let session = SessionModel(service: service, sleep: noSleep) {}
+            service.details(.success(Fixture.detail()))
+            if rejected { service.starts(.failure(PrismError.rejected(Fixture.failure(400, "hermes_rejected")))) }
+            else { service.starts(.success(.alreadyRunning(turnId: "old"))); _ = service.manualStream() }
+            let model = session.threadModel(for: "t1"); await model.open()
+            model.draft = "new words"
+            let accepted = await model.send()
+            XCTAssertFalse(accepted); XCTAssertEqual(model.draft, "new words")
+            model.close()
+        }
     }
 
 }

@@ -60,6 +60,7 @@ import OmniVoiceKit
         let voice = AppleVoiceCatalog.resolve(speechPreferences, voices: AppleVoiceCatalog.installed())
         speech.speak(text, owner: recordingOwner, identifier: voice?.id, rate: speechPreferences.rate)
     }
+    func waitForPlayback() async { await speech.waitForPlayback(owner: recordingOwner) }
     func silence() { speech.silence(owner: recordingOwner) }
     func stopPreview() { speech.stopPreview(owner: recordingOwner) }
     func previewVoice(identifier: String?) { speech.preview(owner: recordingOwner, identifier: identifier, rate: speechPreferences.rate) }

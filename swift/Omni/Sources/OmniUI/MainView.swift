@@ -487,6 +487,11 @@ struct ThreadListScreen: View {
         .refreshable { await session.threads.refresh() }
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
+                Button("Voice", systemImage: "waveform") { session.requestNewVoice() }
+                    .accessibilityLabel("Start voice session")
+                    .accessibilityIdentifier("voice.new")
+            }
+            ToolbarItem(placement: .topBarTrailing) {
                 Button {
                     showingNewThread = true
                 } label: {

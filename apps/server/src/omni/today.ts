@@ -46,12 +46,12 @@ const CODE_RE = /^[a-z0-9_]{1,40}$/;
  * route's own code (`vault_error`, `vault_unreachable`, `rate_limited`, …), else
  * `query_<status>` — never the vault's text.
  */
-async function query(dispatch: Dispatch, spec: Record<string, unknown>, retryDelayMs: number): Promise<{ rows: Row[]; identity?: string }> {
+async function query(dispatch: Dispatch, spec: Record<string, unknown>, retryDelayMs: number): Promise<{ rows: Row[]; identity?: string; next?: string | null; total?: number; limited?: boolean; truncated?: boolean }> {
   for (let attempt = 0; ; attempt++) {
     const res = await dispatch("/api/query", { method: "POST", body: spec });
     if (res.ok) {
-      const j = (await res.json()) as { rows?: Row[]; identity?: string };
-      return { rows: Array.isArray(j.rows) ? j.rows : [], identity: j.identity };
+      const j = (await res.json()) as { rows?: Row[]; identity?: string; next?: string | null; total?: number; limited?: boolean; truncated?: boolean };
+      return { ...j, rows: Array.isArray(j.rows) ? j.rows : [] };
     }
     const inner = ((await res.json().catch(() => null)) as { error?: unknown } | null)?.error;
     if (res.status >= 500 && attempt === 0) {
@@ -128,5 +128,23 @@ export async function buildToday(dispatch: Dispatch, date: string, opts: { retry
     openLoops: null,
     brief: null,
     errors,
+  };
+}
+
+/** A bounded page of open tasks assigned to this caller, through the same gateway. */
+export async function buildTasksPage(dispatch: Dispatch, cursor?: string, opts: { retryDelayMs?: number } = {}): Promise<Record<string, unknown>> {
+  const page = await query(dispatch, {
+    tags: ["task"], assignedToMe: true,
+    filter: { match: "all", conditions: [{ key: "status", op: "nin", value: OPEN_TASK_EXCLUDE }] },
+    sort: [{ key: "due", dir: "asc" }], limit: 50,
+    fields: ["title", "status", "due", "deadline", "priority", "omni_thread"],
+    ...(cursor ? { cursor } : {}),
+  }, opts.retryDelayMs ?? RETRY_DELAY_MS);
+  const origin = omniConfig.appOrigin();
+  return {
+    tasks: page.rows.map((r) => ({ noteId: r.id, title: title(r), status: s(r.metadata.status), due: s(r.metadata.due) ?? s(r.metadata.deadline), priority: s(r.metadata.priority), threadId: s(r.metadata.omni_thread), link: `${origin}/page/${encodeURIComponent(r.id)}` })),
+    next: page.next ?? null, total: page.total ?? null,
+    limited: page.limited === true, truncated: page.truncated === true,
+    identity: page.identity ?? null,
   };
 }

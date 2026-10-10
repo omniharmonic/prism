@@ -20,7 +20,14 @@ public protocol OmniService: Sendable {
     func decide(shown: Approval, _ decision: ApprovalDecisionKind, feedback: String?, idempotencyKey: IdempotencyKey) async throws -> ApprovalDecision
     func jobs() async throws -> [OmniJob]
     func job(_ id: String, _ action: JobAction) async throws -> OmniJob
+    func tasks(cursor: String?) async throws -> OmniTasksPage
     func today(date: String) async throws -> OmniToday
+}
+
+public extension OmniService {
+    func tasks(cursor: String?) async throws -> OmniTasksPage {
+        throw PrismError.invalidRequest("Task pagination is unavailable in this service.")
+    }
 }
 
 /// Optional native registration capability; sample services do not register with Apple.
@@ -64,6 +71,7 @@ public struct LiveOmniService: OmniService, NativePushService {
     }
     public func jobs() async throws -> [OmniJob] { try await client.jobs() }
     public func job(_ id: String, _ action: JobAction) async throws -> OmniJob { try await client.job(id, action) }
+    public func tasks(cursor: String?) async throws -> OmniTasksPage { try await client.tasks(cursor: cursor) }
     public func today(date: String) async throws -> OmniToday { try await client.today(date: date) }
 }
 

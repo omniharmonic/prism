@@ -12,6 +12,17 @@ public final class TodayModel {
     /// A read is in flight (the first one, or a refresh over what is already shown).
     public private(set) var isRefreshing = false
 
+    public private(set) var expandedTasks: [OmniToday.TaskItem] = []
+    public private(set) var tasksPhase: LoadPhase = .idle
+    public private(set) var isLoadingTasks = false
+    public private(set) var tasksNext: String?
+    public private(set) var tasksTotal: Int?
+    public private(set) var tasksLimited = false
+    public private(set) var tasksTruncated = false
+    public private(set) var tasksIdentity: String?
+    private var failedTaskReset = false
+    private var loadedTaskCursors: Set<String> = []
+
     private let service: any OmniService
     private let sink: ErrorSink
     private let approvals: ApprovalCenter
@@ -59,6 +70,47 @@ public final class TodayModel {
             // What was already shown stays; the message says it may be out of date.
             phase = .failed(today == nil ? message : "Couldn't refresh Today. \(message)")
         }
+    }
+
+    /// Expansion is read-only. Each explicit request reads at most one server page.
+    public func loadTasks(reset: Bool = false) async {
+        guard !isLoadingTasks else { return }
+        if !reset, tasksPhase == .loaded, tasksNext == nil { return }
+        let cursor = reset ? nil : tasksNext
+        isLoadingTasks = true
+        defer { isLoadingTasks = false }
+        if expandedTasks.isEmpty { tasksPhase = .loading }
+        do {
+            let page = try await service.tasks(cursor: cursor)
+            if reset { expandedTasks = []; loadedTaskCursors = [] }
+            var known = Set(expandedTasks.map(\.noteId))
+            expandedTasks += page.tasks.filter { known.insert($0.noteId).inserted }
+            if let cursor { loadedTaskCursors.insert(cursor) }
+            tasksNext = page.next
+            tasksTotal = page.total
+            tasksLimited = page.limited
+            tasksTruncated = page.truncated
+            tasksIdentity = page.identity
+            if let next = page.next, loadedTaskCursors.contains(next) {
+                tasksNext = nil
+                tasksTruncated = true // A repeated cursor cannot cause an endless load loop.
+            }
+            tasksPhase = .loaded
+            failedTaskReset = false
+        } catch {
+            failedTaskReset = reset
+            if let message = sink.describe(error, reading: true) { tasksPhase = .failed(message) }
+            else if expandedTasks.isEmpty { tasksPhase = .idle }
+        }
+    }
+
+    public func retryTasks() async { await loadTasks(reset: failedTaskReset) }
+
+    public var tasksNotice: String? {
+        if tasksTruncated { return "The server reached its reading limit. More tasks may be available in Prism." }
+        if tasksIdentity == "unset" { return "Task assignment identity is not configured. These are the open tasks the server can read." }
+        if tasksLimited { return "Showing tasks you have permission to read." }
+        return nil
     }
 
     /// Something has been read at least once (an older answer stays up when a refresh fails).

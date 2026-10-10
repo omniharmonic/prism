@@ -131,14 +131,14 @@ public final class ThreadListModel {
     }
 
     /// Start a new thread from a typed request. Returns nil when it could not be confirmed.
-    public func create(prompt: String, source: String = "text") async -> CreatedThread? {
+    public func create(prompt: String, source: String = "text", taskNoteID: String? = nil, title: String? = nil) async -> CreatedThread? {
         let text = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
         guard ["text", "voice"].contains(source), !text.isEmpty, !isCreating else { return nil }
         isCreating = true
         createError = nil
         defer { isCreating = false }
         do {
-            let created = try await service.createThread(NewThread(prompt: text, source: source))
+            let created = try await service.createThread(NewThread(prompt: text, title: title, taskNoteId: taskNoteID, noteIds: taskNoteID.map { [$0] }, source: source))
             threads.removeAll { $0.id == created.thread.id }
             threads.insert(created.thread, at: 0)
             if phase != .loaded { phase = .loaded }

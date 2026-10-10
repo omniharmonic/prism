@@ -54,4 +54,37 @@ import XCTest
         XCTAssertEqual(output.texts.count, 4)
         speech.stopPreview(owner: playbackOwner); XCTAssertFalse(speech.isPreviewing)
     }
+    func testPlaybackDrainWaitsForEveryQueuedSentence() async {
+        let output = Output(); let speech = ConversationSpeech(output: output); let owner = UUID()
+        speech.speak("First.", owner: owner, identifier: nil, rate: 0.5)
+        speech.speak("Second.", owner: owner, identifier: nil, rate: 0.5)
+        var drained = false
+        let waiter = Task { await speech.waitForPlayback(owner: owner); drained = true }
+        await Task.yield()
+        output.completions[0]()
+        await Task.yield()
+        XCTAssertFalse(drained)
+        output.completions[1]()
+        await waiter.value
+        XCTAssertTrue(drained)
+    }
+    func testSilenceReleasesDrainAndLateCallbackCannotFinishNewPlayback() async {
+        let output = Output(); let speech = ConversationSpeech(output: output); let owner = UUID()
+        speech.speak("Cancelled.", owner: owner, identifier: nil, rate: 0.5)
+        let waiter = Task { await speech.waitForPlayback(owner: owner) }
+        await Task.yield()
+        speech.silence(owner: owner)
+        await waiter.value
+        speech.speak("Current.", owner: owner, identifier: nil, rate: 0.5)
+        var drained = false
+        let current = Task { await speech.waitForPlayback(owner: owner); drained = true }
+        await Task.yield()
+        output.completions[0]()
+        await Task.yield()
+        XCTAssertFalse(drained)
+        output.completions[1]()
+        await current.value
+        XCTAssertTrue(drained)
+    }
+
 }

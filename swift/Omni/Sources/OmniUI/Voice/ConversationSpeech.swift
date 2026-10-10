@@ -17,6 +17,7 @@ import OmniCore
     private var playbackOwner: UUID?
     private var generation = 0
     private var pending = 0
+    private var drainWaiters: [UUID: [CheckedContinuation<Void, Never>]] = [:]
     init(output: any ConversationSpeechOutput) { self.output = output }
     func beginRecording(owner: UUID) { stopAll(); recordingOwner = owner }
     func endRecording(owner: UUID) { if recordingOwner == owner { recordingOwner = nil } }
@@ -31,16 +32,34 @@ import OmniCore
         playbackOwner = owner
         enqueue(text, identifier: identifier, rate: rate)
     }
+    func waitForPlayback(owner: UUID) async {
+        guard playbackOwner == owner, pending > 0 else { return }
+        await withCheckedContinuation { continuation in
+            drainWaiters[owner, default: []].append(continuation)
+        }
+    }
+    private func resolveDrain(owner: UUID) {
+        drainWaiters.removeValue(forKey: owner)?.forEach { $0.resume() }
+    }
     func stopPreview(owner: UUID) { if isPreviewing, playbackOwner == owner { stopAll() } }
     func silence(owner: UUID) { if playbackOwner == owner { stopAll() } }
-    private func stopAll() { generation += 1; pending = 0; isPreviewing = false; playbackOwner = nil; output.stop() }
+    private func stopAll() {
+        generation += 1; pending = 0; isPreviewing = false
+        let owner = playbackOwner
+        playbackOwner = nil; output.stop()
+        if let owner { resolveDrain(owner: owner) }
+    }
     private func enqueue(_ text: String, identifier: String?, rate: Float) {
         pending += 1
         let request = generation
         output.speak(text, identifier: identifier, rate: rate) { [weak self] in
             guard let self, self.generation == request else { return }
             self.pending -= 1
-            if self.pending == 0 { self.isPreviewing = false; self.playbackOwner = nil }
+            if self.pending == 0 {
+                let owner = self.playbackOwner
+                self.isPreviewing = false; self.playbackOwner = nil
+                if let owner { self.resolveDrain(owner: owner) }
+            }
         }
     }
 }

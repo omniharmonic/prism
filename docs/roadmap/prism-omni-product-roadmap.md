@@ -39,22 +39,25 @@ Do not close an item solely because tests pass, a PR merged, or a bundle install
 | O06 | Notification tap opens exact conversation | **Released; acceptance pending.** Completion delivery owner-confirmed; PR87 fixes callback crash and early navigation reconciliation. | Retest tap from locked/background/cold-start states on both devices. Earlier iPad crash/iPhone Home failure is not closed by delivery success. |
 | O07 | Create, edit and manage recurring jobs in app | **Partial.** PR80/88 CRUD/run controls; three reviewed M3 jobs manageable. | Eight legacy raw-script jobs remain restricted. Migrate/review their execution and approval behavior, then verify create/edit/pause/resume/delete/run end to end. |
 | O08 | View and edit skills in app | **Released; acceptance pending.** PR83 catalog/editor; 54 active skills: 52 editable local, two linked read-only. | Owner verifies discovery/edit/save/conflict handling; explain linked source ownership without exposing irrelevant implementation details. |
-| O09 | Use supplied Omni logo | **Partial.** PR81 native/web assets compiled from supplied image. | App icon assets verified; notification icon still needs physical acceptance; finish current Mac release. |
+| O09 | Use supplied Omni logo | **Partial.** PR81 native/web assets compiled from supplied image. | App icon assets verified; owner confirms notification logo remains missing on installed mobile build. Investigate packaged icons/system presentation; finish current Mac release. |
 | O10 | More capable than Claude -p: tweets, email, Matrix, RSVP and other existing abilities | **Partial.** Capability audit, approved executors and internal autonomy shipped; approved tweet adapter added. | Maintain capability-by-capability acceptance against prior workflow, including drafts and approved sends/RSVP. Offline executor tests are not proof of successful real sends. Never send test communications without exact owner authorization. |
 
 ## Subsequent feedback and inherited release obligations
 
 | ID | Follow-up | State / next step |
 | --- | --- | --- |
-| F01 | Old comments/backlinks/suggested-edit chrome on iPad/Mac | PR92 fixes source breakpoint discrepancy; Prism v6 installed on both mobile devices. Verify wide UI; Mac v6 installation still pending. |
+| F01 | Old comments/backlinks/suggested-edit chrome on iPad/Mac | PR92 fixes source breakpoint discrepancy; Prism v6 installed on both mobile devices. Mac v6 is notarized and installed on the Mini; verify wide UI. |
 | F02 | Prism replies disabled on server | Direct owner replies enabled/configured and SMTP readiness verified; no email sent. Owner reply acceptance remains; Omni approval boundary is separate. |
 | F03 | Add Folder cancel/exit overflow | PR92 responsive repair shipped in Prism v6; physical acceptance pending. |
 | F04 | Return sends everywhere; Shift-Return adds a line | PR91 shipped. Owner confirmed Return; retain explicit Shift-Return, IME and paste regression coverage. See O02. |
 | F05 | Done overlaps Send | PR91 replaces floating control with inline dismissal. Physical spacing acceptance pending. See O02. |
-| F06 | Notification missing icon | Assets verified, device appearance unconfirmed. See O09; do not assume a cache cause. |
+| F06 | Notification missing icon | Owner confirms the notification logo is still missing after v7. Sol investigation active; see O09. Do not assume a cache cause. |
 | F07 | Voice crashes after models download | Actual crash was audio callback actor isolation; PR95 repair shipped in Omni v6. Owner reports voice now works; per-device coverage not specified. See O03. |
 | F08 | Voice easy to launch, main toolbar entry, contemporary centered Apple-style UX | PR96 toolbar entry and glass panel shipped in v6; simulator light/dark reviewed. Owner usability acceptance pending. |
-| R01 | Working current Mac apps | Prism v6 signed and submitted; Apple acceptance/staple/install pending at last check. Omni v6 unsigned universal build verified; hold signing/install until physical voice result. Do not install known-bad Omni v5. |
+| F09 | Voice beside New Chat in Threads | In progress for next Omni release; reuse existing voice-session entry and retain Today access. |
+| F10 | Dispatch Omni from Today tasks | In progress: explicit task handoff with source context and existing outbound approval requirements. |
+| F11 | Expand Today to all tasks | In progress: all assigned open tasks, with pagination rather than the current 50-task server cutoff. |
+| R01 | Working current Mac apps | Prism v6 notarized, installed and launched on the Mini; interactive acceptance and laptop installation pending. Omni v7 signed and submitted; Apple acceptance/staple/install pending. Do not install known-bad Omni v5. |
 | R02 | Proactive assistant reliability | Three reviewed M3 jobs active; smoke checks passed. Week-long observation gate remains pending; retain existing fallbacks until accepted. |
 
 ## Sequence and exit criteria

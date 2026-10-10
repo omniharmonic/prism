@@ -6,6 +6,8 @@ import SwiftUI
 /// A short read-only list (product-spec.md § 8a).
 struct TodayView: View {
     let session: SessionModel
+    @Environment(\.openURL) private var openURL
+    @State private var showingTasks = false
     @Environment(\.dynamicTypeSize) private var typeSize
     @Environment(\.navigator) private var navigator
 
@@ -106,25 +108,43 @@ struct TodayView: View {
                     .accessibilityHint("Opens the thread")
                 }
             }
-            Section("Tasks today") {
+            Section("Your tasks") {
+                if let problem = session.threads.createError { Text(problem).foregroundStyle(Color.failureText) }
                 if let problem = model.sectionProblems["tasks"] {
                     Text(problem).foregroundStyle(Color.quietText)
                 } else if model.tasks.isEmpty {
                     Text("No open tasks.").foregroundStyle(Color.quietText)
                 }
-                ForEach(model.tasks, id: \.noteId) { task in
-                    HStack(alignment: .firstTextBaseline) {
-                        Image(systemName: "circle").foregroundStyle(Color.quietText).accessibilityHidden(true)
-                        Text(task.title)
-                        Spacer()
-                        if let due = TodayModel.dueText(task.due) ?? task.due.flatMap({ $0.isEmpty ? nil : String($0.prefix(10)) }) {
-                            Text(due).font(.caption).foregroundStyle(Color.quietText)
-                        }
-                    }
-                    .accessibilityElement(children: .combine)
-                    .accessibilityLabel("Task: \(task.title)\((TodayModel.dueText(task.due) ?? task.due).map { ", due \($0)" } ?? "")")
+                ForEach(Array(model.tasks.prefix(5)), id: \.noteId) { task in
+                    taskRow(task)
                 }
+                Button("Show all tasks", systemImage: "list.bullet") { showingTasks = true }
+                    .accessibilityHint("Opens the task list. More tasks can be loaded in pages.")
+
             }
+            }
+        }
+        .sheet(isPresented: $showingTasks) {
+            NavigationStack {
+                List {
+                    if let notice = model.tasksNotice { Text(notice).font(.caption).foregroundStyle(Color.quietText) }
+                    if let problem = model.tasksPhase.failure {
+                        Text(problem).foregroundStyle(Color.failureText)
+                        Button("Try Again") { Task { await model.retryTasks() } }.disabled(model.isLoadingTasks)
+                    }
+                    if let problem = session.threads.createError { Text(problem).foregroundStyle(Color.failureText) }
+                    ForEach(model.expandedTasks, id: \.noteId) { task in taskRow(task) }
+                    if model.isLoadingTasks { ProgressView("Loading tasks…") }
+                    else if model.tasksPhase == .loaded, model.tasksNext != nil {
+                        Button("Load more tasks") { Task { await model.loadTasks() } }
+                    } else if model.tasksPhase == .loaded, model.expandedTasks.isEmpty {
+                        Text("No open tasks.").foregroundStyle(Color.quietText)
+                    }
+                }
+                .navigationTitle("Your tasks")
+                .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { showingTasks = false } } }
+                .refreshable { await model.loadTasks(reset: true) }
+                .task { await model.loadTasks(reset: true) }
             }
         }
         .navigationTitle(Date.now.formatted(.dateTime.weekday(.wide).month().day()))
@@ -145,6 +165,39 @@ struct TodayView: View {
         }
         .task { await model.refresh() }
     }
+    @ViewBuilder private func taskRow(_ task: OmniToday.TaskItem) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .firstTextBaseline) {
+                Image(systemName: "circle").foregroundStyle(Color.quietText).accessibilityHidden(true)
+                Text(task.title)
+                Spacer()
+                if let due = TodayModel.dueText(task.due) ?? task.due.flatMap({ $0.isEmpty ? nil : String($0.prefix(10)) }) { Text(due).font(.caption).foregroundStyle(Color.quietText) }
+            }
+            let actions = typeSize.isAccessibilitySize ? AnyLayout(VStackLayout(alignment: .leading, spacing: 8)) : AnyLayout(HStackLayout(spacing: 12))
+            actions {
+                Button(session.taskThreadID(task) != nil ? "Open conversation" : "Run with Omni", systemImage: session.taskThreadID(task) != nil ? "bubble.left" : "play.fill") {
+                    Task {
+                        if await session.startTask(task), case .thread(let id) = session.destination {
+                            showingTasks = false
+                            navigator.open(.thread(id))
+                        }
+                    }
+                }
+                .accessibilityLabel("\(session.taskThreadID(task) != nil ? "Open conversation for" : "Run with Omni:") \(task.title)")
+                .disabled(session.threads.isCreating)
+                .accessibilityHint(session.taskThreadID(task) != nil ? "Opens the conversation already linked to this task" : "Starts a conversation with this task as context")
+                if let link = PrismSourceLink(web: task.link, noteID: task.noteId) {
+                    Button("Open task") {
+                        if let native = link.native { openURL(native) { accepted in if !accepted { openURL(link.web) } } }
+                        else { openURL(link.web) }
+                    }
+                    .contextMenu { Button("Open in Browser") { openURL(link.web) } }
+                }
+            }.font(.callout)
+        }
+        .padding(.vertical, 4)
+    }
+
 }
 
 /// Recurring jobs: what runs on a schedule, with pause and resume.

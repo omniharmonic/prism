@@ -69,6 +69,8 @@ public final class ThreadModel {
     private var isLoading = false
     private var createdVoiceTurn: String?
     private var replayedVoiceTurn: String?
+    public private(set) var completedVoiceTurnID: String?
+    private var lastSendAccepted = false
     public private(set) var completedVoiceTimeline: [TimelineItem] = []
 
     /// Replay only the exact first turn created by this voice composer.
@@ -76,6 +78,7 @@ public final class ThreadModel {
     public func takeCompletedVoiceTimeline() -> [TimelineItem] {
         let result = completedVoiceTimeline
         completedVoiceTimeline = []
+        completedVoiceTurnID = nil
         return result
     }
 
@@ -213,13 +216,16 @@ public final class ThreadModel {
     // MARK: Sending
 
     /// Send the composer's text. One new `Idempotency-Key` per press.
-    public func send() async {
+    @discardableResult public func send() async -> Bool {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard canSend, !text.isEmpty else { return }
+        guard canSend, !text.isEmpty else { return false }
+        completedVoiceTimeline = []; completedVoiceTurnID = nil
+        lastSendAccepted = false
         draft = ""
         pendingText = text
         pendingKey = .random()
         await deliver()
+        return lastSendAccepted
     }
 
     /// Try the kept message again — with the key of the press that made it.
@@ -247,8 +253,10 @@ public final class ThreadModel {
             sendState = .idle
             switch start {
             case .started(let turnId):
+                lastSendAccepted = true
                 startFollowing(turn: turnId, replayTurn: false)
             case .replayed(let turnId, let status):
+                lastSendAccepted = true
                 // The server had already started this turn (an earlier attempt got through).
                 if status == "running" {
                     startFollowing(turn: turnId, replayTurn: true)
@@ -449,7 +457,8 @@ public final class ThreadModel {
         } else {
             turnEnded = nil
         }
-        if activeTurnID == replayedVoiceTurn, replayedVoiceTurn != nil {
+        if let turn = activeTurnID {
+            completedVoiceTurnID = turn
             completedVoiceTimeline = timeline.filter { if case .streamingText = $0 { return true }; return false }
             replayedVoiceTurn = nil
         }
