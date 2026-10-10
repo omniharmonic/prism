@@ -77,4 +77,4 @@ This order is the default; a regression can interrupt it without removing downst
 - [First-run and distribution proposal](../distribution/first-run-proposal.md).
 - [Earlier architectural implementation progress](PROGRESS.md) — historical milestones, not completion of this product checklist.
 
-Snapshot: Prism server v10, agent v10, Prism mobile v6 and Omni mobile v6. These are recorded release states, not a fresh production health check. Full hashes, signatures and deployment receipts belong in the evidence log.
+Snapshot: Prism server v10, agent v10, Prism mobile v6 and Omni mobile v7. V01 Apple voices and V04 foreground shortcut are installed on both mobile devices, with owner acceptance pending; V02/V03/V05 remain planned. These are recorded release states, not a fresh production health check. Full hashes, signatures and deployment receipts belong in the evidence log.

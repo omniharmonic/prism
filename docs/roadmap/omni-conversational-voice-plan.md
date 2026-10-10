@@ -1,6 +1,6 @@
 # Omni conversational voice: patient, personal, readily available
 
-Research and proposed implementation sequence, 2026-10-10. Extends O03 in the [product roadmap](prism-omni-product-roadmap.md); does not replace other product commitments. No new speech engine, wake listener or device shortcut is enabled by this document.
+Research and proposed implementation sequence, 2026-10-10. Extends O03 in the [product roadmap](prism-omni-product-roadmap.md); does not replace other product commitments. Implementation checkpoint: V01 Apple voice selection and the V04 foreground Talk to Omni shortcut shipped in Omni v7 on both mobile devices (PR101). Owner sound-quality/shortcut acceptance remains pending. V02/V03/V05 and neural TTS remain planned; no wake listener or continuous recording has been enabled.
 
 ## Accepted baseline and remaining gap
 
