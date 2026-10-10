@@ -13,6 +13,7 @@ import Observation
 }
 
 @MainActor @Observable public final class VoiceConversation {
+    public enum DraftReason { case pause, recordingLimit }
     public enum State: Equatable { case off, preparing, listening, transcribing, answering, speaking, paused }
     public private(set) var state: State = .off
     public private(set) var problem: String?
@@ -54,7 +55,7 @@ import Observation
         }
     }
 
-    public func finish(submit: Bool = true, send: @MainActor (String) async -> Bool) async {
+    public func finish(submit: Bool = true, draftReason: DraftReason = .recordingLimit, send: @MainActor (String) async -> Bool) async {
         guard !privacyLocked, state == .listening else { return }
         let request = generation
         state = .transcribing
@@ -69,7 +70,9 @@ import Observation
             guard generation == request else { return }
             if sent {
                 state = submit ? .answering : .paused
-                if !submit { problem = "Recording limit reached. Your words are saved as a draft." }
+                if !submit {
+                    problem = draftReason == .pause ? "Your words are saved as an unsent draft." : "Recording limit reached. Your words are saved as a draft."
+                }
                 if submit, let completed = pendingCompletion {
                     pendingCompletion = nil
                     agentDidComplete(completed)

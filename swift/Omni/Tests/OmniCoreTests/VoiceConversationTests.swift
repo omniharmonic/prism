@@ -222,4 +222,15 @@ import XCTest
         XCTAssertEqual(audio.starts, 1); XCTAssertEqual(voice.state, .answering)
     }
 
+    func testExplicitPauseKeepsTranscriptAsUnsentDraft() async {
+        let audio = Audio(); let voice = VoiceConversation(audio: audio)
+        await voice.start()
+        var draft = ""
+        await voice.finish(submit: false, draftReason: .pause) { draft = $0; return true }
+        XCTAssertEqual(draft, "What is next?")
+        XCTAssertEqual(voice.state, .paused)
+        XCTAssertEqual(voice.problem, "Your words are saved as an unsent draft.")
+        XCTAssertTrue(voice.isSessionActive)
+    }
+
 }
