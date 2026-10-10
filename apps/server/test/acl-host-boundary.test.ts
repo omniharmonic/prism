@@ -27,7 +27,7 @@ test("vault admin cannot enumerate or mutate global federation and server manage
   for (const path of ["/peers", "/peers/identity", "/spaces", "/federation/status", "/federation/mirrors", "/mirrors", "/workspace", "/workspaces", "/server", "/workers"]) {
     assert.equal((await request(path)).status, 403, path);
   }
-  for (const [path, body] of [["/peers/pair", { label: "escape" }], ["/spaces", { label: "escape" }], ["/federation/enabled", { enabled: false }]] as const) {
+  for (const [path, body] of [["/notes/private/mirror", { pubkey: "other-tenant-peer" }], ["/peers/pair", { label: "escape" }], ["/spaces", { label: "escape" }], ["/federation/enabled", { enabled: false }]] as const) {
     assert.equal((await request(path, "POST", body)).status, 403, path);
   }
   assert.deepEqual(listPeers(), []);assert.deepEqual(listSpaces(), []);

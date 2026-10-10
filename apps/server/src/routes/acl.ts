@@ -2167,6 +2167,7 @@ acl.get("/federation/peer-edits", (c) => {
 // shares it. Idempotent per note: re-mirroring refreshes the peer grant/level.
 const SYNC_SPACE_TITLE = "Parachute Sync";
 acl.post("/notes/:id/mirror", async (c) => {
+  if (!isServerOwner(c)) return c.json({ error: "forbidden" }, 403);
   const noteId = c.req.param("id");
   const { pubkey, level, expiresInDays } = await c.req
     .json<{ pubkey?: string; level?: string; expiresInDays?: number }>()
