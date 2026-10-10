@@ -64,12 +64,18 @@ import OmniVoiceKit
         try audio.stop()
         speech.endRecording(owner: recordingOwner)
         defer { try? FileManager.default.removeItem(at: file); if self.file == file { self.file = nil } }
+        if try Self.recordingIsEmpty(file) { return "" }
         let request = generation
         return try await engine.transcribeConversation(file: file) { event in
             await MainActor.run {
                 if self.generation == request { self.hypothesis = [event.confirmed, event.volatile].filter { !$0.isEmpty }.joined(separator: " ") }
             }
         }
+    }
+    /// A freshly resumed capture can be paused before the first microphone tap.
+    /// Frame count distinguishes that case without treating quiet PCM as silence.
+    nonisolated static func recordingIsEmpty(_ file: URL) throws -> Bool {
+        try AVAudioFile(forReading: file).length == 0
     }
     func cancel() {
         generation += 1; receiveActivity = nil; hypothesis = ""; try? audio.stop()
