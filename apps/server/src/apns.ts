@@ -35,6 +35,8 @@ import http2 from "node:http2";
 import { config } from "./config";
 import { db } from "./db";
 
+export type ApnsApplication = "prism" | "omni";
+export const apnsTopicForApplication = (application: ApnsApplication): string => application === "omni" ? "com.benjaminlife.omni" : apnsTopic();
 export type ApnsEnvironment = "sandbox" | "production";
 export const APNS_ORIGINS: Record<ApnsEnvironment, string> = {
   production: "https://api.push.apple.com",
@@ -272,6 +274,7 @@ function tokenAfterExpiry(used: string): string | null {
 // ── storage ──────────────────────────────────────────────────────────────────
 export interface ApnsTokenRow {
   device_id: string;
+  application: ApnsApplication;
   token: string;
   environment: ApnsEnvironment;
   owner_email: string;
@@ -288,41 +291,42 @@ export const tokenRef = (token: string): string => createHash("sha256").update(t
 
 const st = {
   upsert: db.prepare(
-    `INSERT INTO apns_tokens (device_id, token, environment, owner_email, vault_id, created_at, last_seen_at)
-     VALUES (@device_id, @token, @environment, @owner_email, @vault_id, @t, @t)
-     ON CONFLICT(device_id) DO UPDATE SET token = excluded.token, environment = excluded.environment,
+    `INSERT INTO apns_tokens (device_id, token, environment, owner_email, vault_id, application, created_at, last_seen_at)
+     VALUES (@device_id, @token, @environment, @owner_email, @vault_id, @application, @t, @t)
+     ON CONFLICT(device_id) DO UPDATE SET application = excluded.application, token = excluded.token, environment = excluded.environment,
        owner_email = excluded.owner_email, vault_id = excluded.vault_id, last_seen_at = excluded.last_seen_at,
        created_at = CASE WHEN apns_tokens.token = excluded.token THEN apns_tokens.created_at ELSE excluded.created_at END`,
   ),
-  dropTokenElsewhere: db.prepare("DELETE FROM apns_tokens WHERE token = ? AND device_id <> ?"),
+  dropTokenElsewhere: db.prepare("DELETE FROM apns_tokens WHERE token = ? AND application = ? AND environment = ? AND device_id <> ?"),
   delDevice: db.prepare("DELETE FROM apns_tokens WHERE device_id = ?"),
-  delToken: db.prepare("DELETE FROM apns_tokens WHERE token = ? AND environment = ?"),
+  delToken: db.prepare("DELETE FROM apns_tokens WHERE token = ? AND environment = ? AND application = ?"),
   forDevice: db.prepare("SELECT * FROM apns_tokens WHERE device_id = ?"),
   // Only rows whose registering device is still live AND still belongs to the
   // same account — a revoked/expired device is never pushed to.
   liveForOwner: db.prepare(
     `SELECT a.* FROM apns_tokens a JOIN device_tokens d ON d.id = a.device_id
-     WHERE a.owner_email = ? AND d.email = a.owner_email AND d.revoked_at IS NULL AND d.expires_at > ? AND d.max_expires_at > ?`,
+     WHERE a.owner_email = ? AND a.application = ? AND d.email = a.owner_email AND d.revoked_at IS NULL AND d.expires_at > ? AND d.max_expires_at > ?`,
   ),
   countLive: db.prepare(
     `SELECT count(*) AS n FROM apns_tokens a JOIN device_tokens d ON d.id = a.device_id
-     WHERE a.owner_email = ? AND d.email = a.owner_email AND d.revoked_at IS NULL AND d.expires_at > ? AND d.max_expires_at > ?`,
+     WHERE a.owner_email = ? AND a.application = ? AND d.email = a.owner_email AND d.revoked_at IS NULL AND d.expires_at > ? AND d.max_expires_at > ?`,
   ),
 };
 
 /** Register (or replace) the APNs token of one native device. One row per device. */
 export const saveApnsToken = db.transaction(
-  (p: { deviceId: string; token: string; environment: ApnsEnvironment; email: string; vaultId: string }): void => {
+  (p: { deviceId: string; token: string; environment: ApnsEnvironment; email: string; vaultId: string; application?: ApnsApplication }): void => {
     const token = p.token.toLowerCase();
     // The same APNs token re-registered by a NEW device credential (re-sign-in)
     // moves; it never lives on two rows (that would double every notification).
-    st.dropTokenElsewhere.run(token, p.deviceId);
+    st.dropTokenElsewhere.run(token, p.application ?? "prism", p.environment, p.deviceId);
     st.upsert.run({
       device_id: p.deviceId,
       token,
       environment: p.environment,
       owner_email: p.email.toLowerCase(),
       vault_id: p.vaultId,
+      application: p.application ?? "prism",
       t: Date.now(),
     });
   },
@@ -330,13 +334,13 @@ export const saveApnsToken = db.transaction(
 export const removeApnsTokenForDevice = (deviceId: string): boolean => st.delDevice.run(deviceId).changes > 0;
 export const apnsTokenForDevice = (deviceId: string): ApnsTokenRow | null =>
   (st.forDevice.get(deviceId) as ApnsTokenRow | undefined) ?? null;
-export function liveApnsTokens(email: string): ApnsTokenRow[] {
+export function liveApnsTokens(email: string, application: ApnsApplication = "prism"): ApnsTokenRow[] {
   const t = Date.now();
-  return st.liveForOwner.all(email.toLowerCase(), t, t) as ApnsTokenRow[];
+  return st.liveForOwner.all(email.toLowerCase(), application, t, t) as ApnsTokenRow[];
 }
-export function countLiveApnsTokens(email: string): number {
+export function countLiveApnsTokens(email: string, application: ApnsApplication = "prism"): number {
   const t = Date.now();
-  return (st.countLive.get(email.toLowerCase(), t, t) as { n: number }).n;
+  return (st.countLive.get(email.toLowerCase(), application, t, t) as { n: number }).n;
 }
 
 // ── payloads ─────────────────────────────────────────────────────────────────
@@ -438,7 +442,7 @@ const backoff = (attempt: number) => {
 };
 
 /** Send one notification to one device token. Never throws. */
-export async function sendApns(row: Pick<ApnsTokenRow, "token" | "environment">, n: ApnsNotification): Promise<ApnsOutcome> {
+export async function sendApns(row: Pick<ApnsTokenRow, "token" | "environment"> & Partial<Pick<ApnsTokenRow, "application">>, n: ApnsNotification): Promise<ApnsOutcome> {
   const ref = tokenRef(row.token);
   let token = providerToken();
   if (!token) return "failed";
@@ -448,7 +452,7 @@ export async function sendApns(row: Pick<ApnsTokenRow, "token" | "environment">,
   for (let attempt = 0; ; attempt++) {
     const headers: Record<string, string> = {
       authorization: `bearer ${token}`,
-      "apns-topic": apnsTopic(),
+      "apns-topic": apnsTopicForApplication(row.application ?? "prism"),
       "apns-push-type": "alert",
       "apns-priority": "10",
       "apns-expiration": String(Math.floor(now() / 1000) + EXPIRATION_S),
@@ -471,7 +475,7 @@ export async function sendApns(row: Pick<ApnsTokenRow, "token" | "environment">,
       const reason = reasonOf(res.body);
       if (res.status === 200) return "sent";
       if (res.status === 410 || (res.status === 400 && PRUNE_400.has(reason))) {
-        st.delToken.run(row.token, row.environment);
+        st.delToken.run(row.token, row.environment, row.application ?? "prism");
         console.log(`[apns] ${ref}: ${res.status} ${reason || "Unregistered"} — token removed`);
         return "pruned";
       }
@@ -499,11 +503,17 @@ export async function sendApns(row: Pick<ApnsTokenRow, "token" | "environment">,
 }
 
 /** Fan out to every live device of `email`. Never throws. */
-export async function sendApnsToOwner(email: string, n: ApnsNotification): Promise<{ sent: number; pruned: number; failed: number }> {
+export async function sendApnsToOwner(email: string, n: ApnsNotification, application: ApnsApplication = "prism"): Promise<{ sent: number; pruned: number; failed: number }> {
   const out = { sent: 0, pruned: 0, failed: 0 };
   if (!apnsEnabled()) return out;
-  const rows = liveApnsTokens(email);
+  const rows = liveApnsTokens(email, application);
   const results = await Promise.all(rows.map((r) => sendApns(r, n).catch(() => "failed" as const)));
   for (const r of results) out[r]++;
   return out;
+}
+
+/** A registration may only address the app that minted this live device credential. */
+export function apnsApplicationForDevice(deviceId: string): ApnsApplication | null {
+  const row = db.prepare("SELECT client_id FROM device_tokens WHERE id = ? AND revoked_at IS NULL AND expires_at > ? AND max_expires_at > ?").get(deviceId, Date.now(), Date.now()) as { client_id: string } | undefined;
+  return row?.client_id === "omni-native" ? "omni" : row?.client_id === "prism-native" ? "prism" : null;
 }

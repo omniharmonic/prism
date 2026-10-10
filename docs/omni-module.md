@@ -26,6 +26,7 @@ What Hermes really does, and how it was checked: [The contract with Hermes](#the
 | `OMNI_EVENTS_PER_THREAD` | 2000 | Persisted stream events kept per thread. |
 | `OMNI_MAX_STREAMS` | 16 | Concurrent SSE connections (thread streams + `/events`). |
 | `OMNI_EXECUTORS` | unset | `off` = no approved draft is executed, whatever `ACTIONS_*_ENABLED` and `OMNI_PROTON_SEND` say (those also serve Prism's own live actions). Approving answers `executor_disabled`; the draft stays pending. The switch for running Omni with sending off. |
+| `OMNI_EXECUTOR_KINDS` | unset | Optional non-command allowlist, comma-separated exact kinds. Unset preserves existing family gates; empty or any unknown kind denies all sends. `email,email-reply` enables only email kinds, still subject to their family gates. `OMNI_EXECUTORS=off` remains strongest. Commands retain their independent gate. |
 | `OMNI_COMMAND_APPROVALS` | unset | `off` = no `command` approval (a tool call of a turn that Hermes' `omni-bridge` plugin paused) can be approved: approving answers `executor_disabled`, so the call never runs. Independent of `OMNI_EXECUTORS`, which is about sends. |
 | `OMNI_EMAIL_EXECUTOR` | `proton-send` | Who sends an approved email (Benjamin, 2026-10-08: option B). `proton-send` = the agent repo's `scripts/proton_send.py --approved` (markdown refusal + third-party-recipient guard); `live-actions` = Prism's own `/api/actions/email/*` (`ACTIONS_EMAIL_ENABLED`). |
 | `OMNI_PROTON_SEND` | unset | ABSOLUTE path to `proton_send.py` on the Mini (e.g. `/Users/benjaminlife/dev/omniharmonic_agent/scripts/proton_send.py`). Unset or missing file → approved emails answer `executor_disabled` and stay pending. |
@@ -318,9 +319,18 @@ gateway stores what was proposed, and the app's decision must carry that digest.
 Push (APNs, content-free, through the existing sender): `{aps:{alert:{title:"Omni", body:
 <generic>}, category}, type:"omni", category:"OMNI_THREAD"|"OMNI_APPROVAL", id, url:
 "omni://thread/<id>"|"omni://approval/<id>"}` — on a proposal, on an agent-initiated
-message, and when a turn ends while nobody watches its stream. **Deferred:** it uses Prism's
-configured APNs topic; an Omni-own registration (`/api/omni/push`, own bundle topic) is not
-built yet.
+message, and when a turn ends while nobody watches its stream.
+
+`POST /api/omni/push` takes `{token, environment:"sandbox"|"production"}` from an
+owner's live `omni-native` device credential. `DELETE /api/omni/push` removes that
+credential's registration. Browser sessions and Prism device credentials are refused.
+The server binds the application to the authenticated device client id and fixes Omni's
+topic to `com.benjaminlife.omni`; a client cannot supply a topic. Prism retains its
+configured topic and its existing `/api/push/apns` route, which accepts only
+`prism-native` credentials. Legacy rows migrate to Prism. Token replacement and invalid
+token cleanup stay within an application and signing environment; device revoke removes
+its row, and expired credentials are excluded from fanout. Native apps must derive the
+APNs environment from the signed provisioning entitlement, never the build configuration.
 
 ## Jobs (Hermes cron)
 
@@ -585,7 +595,7 @@ that check: `scripts/omni_policy_check.py --run 'gog calendar events …'` on th
 
 ## Not built yet (deferred, with reasons)
 
-- `/api/omni/push` (Omni-own APNs topic), `/nudges*` (M3), `POST /tasks/:id/dispatch` (M2,
+- `/nudges*` (M3), `POST /tasks/:id/dispatch` (M2,
   needs the task write-back design), voice (M4).
 - `tweet` / `wallet-proposal` executors (their scripts live in the agent repo).
 - Switching it on in production: the steps are `docs/omni/row10-runbook.md` in the agent repo.
