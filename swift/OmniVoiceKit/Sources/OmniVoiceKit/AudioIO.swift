@@ -19,27 +19,57 @@ private final class CaptureFile: @unchecked Sendable {
 @MainActor public final class AudioIO {
     private let engine = AVAudioEngine()
     private var file: CaptureFile?
-    public init() {}
+    private var starting = false
+    private var generation: UInt64 = 0
+    private let permission: (@MainActor () async -> Bool)?
+    public init() { permission = nil }
+    init(permission: @escaping @MainActor () async -> Bool) { self.permission = permission }
     public func start(url: URL) async throws {
-        guard file == nil else { throw VoiceFailure.unavailable("A recording is already running.") }
-        #if os(iOS)
-        guard await AVAudioApplication.requestRecordPermission() else { throw VoiceFailure.permission }
-        let session = AVAudioSession.sharedInstance()
-        try session.setCategory(.playAndRecord, mode: .voiceChat, options: [.defaultToSpeaker, .allowBluetoothHFP])
-        try session.setActive(true)
-        #else
-        guard await AVCaptureDevice.requestAccess(for: .audio) else { throw VoiceFailure.permission }
-        #endif
-        let input = engine.inputNode
-        try input.setVoiceProcessingEnabled(true)
-        let format = input.outputFormat(forBus: 0)
-        guard format.sampleRate > 0 else { throw VoiceFailure.unavailable("No microphone input is available.") }
-        let capture = try CaptureFile(url: url, format: format)
-        input.installTap(onBus: 0, bufferSize: 1024, format: format) { buffer, _ in capture.append(buffer) }
-        do { engine.prepare(); try engine.start(); file = capture }
-        catch { input.removeTap(onBus: 0); try? capture.close(); throw error }
+        guard file == nil, !starting else { throw VoiceFailure.unavailable("A recording is already starting or running.") }
+        starting = true
+        let requestGeneration = generation
+        defer { starting = false }
+        let granted: Bool
+        if let permission { granted = await permission() }
+        else {
+            #if os(iOS)
+            granted = await AVAudioApplication.requestRecordPermission()
+            #else
+            granted = await AVCaptureDevice.requestAccess(for: .audio)
+            #endif
+        }
+        guard requestGeneration == generation, !Task.isCancelled else { throw CancellationError() }
+        guard granted else { throw VoiceFailure.permission }
+        var tapInstalled = false
+        var capture: CaptureFile?
+        do {
+            #if os(iOS)
+            let session = AVAudioSession.sharedInstance()
+            try session.setCategory(.playAndRecord, mode: .voiceChat, options: [.defaultToSpeaker, .allowBluetoothHFP])
+            try session.setActive(true)
+            #endif
+            let input = engine.inputNode
+            try input.setVoiceProcessingEnabled(true)
+            let format = input.outputFormat(forBus: 0)
+            guard format.sampleRate > 0 else { throw VoiceFailure.unavailable("No microphone input is available.") }
+            let writer = try CaptureFile(url: url, format: format)
+            capture = writer
+            input.installTap(onBus: 0, bufferSize: 1024, format: format) { buffer, _ in writer.append(buffer) }
+            tapInstalled = true
+            engine.prepare(); try engine.start(); file = writer
+        } catch {
+            engine.stop()
+            if tapInstalled { engine.inputNode.removeTap(onBus: 0) }
+            try? capture?.close()
+            #if os(iOS)
+            try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+            #endif
+            throw error
+        }
     }
     public func stop() throws {
+        // Also cancels a pending permission prompt, even before a file/tap exists.
+        generation &+= 1
         guard let capture = file else { return }
         engine.stop(); engine.inputNode.removeTap(onBus: 0); file = nil
         #if os(iOS)

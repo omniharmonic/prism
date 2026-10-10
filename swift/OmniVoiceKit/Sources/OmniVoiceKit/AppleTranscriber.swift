@@ -49,6 +49,8 @@ public actor AppleTranscriber: STTEngine {
         }
         let (input, continuation) = AsyncStream<AnalyzerInput>.makeStream()
         do {
+            // Apple's autonomous start returns immediately; unlike analyzeSequence,
+            // it does not wait for the producer to finish supplying input.
             try await analyzer.start(inputSequence: input)
             for offset in stride(from: 0, to: samples.count, by: 1600) {
                 try Task.checkCancellation()

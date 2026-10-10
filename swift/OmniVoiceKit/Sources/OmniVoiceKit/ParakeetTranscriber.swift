@@ -46,10 +46,12 @@ public actor ParakeetTranscriber: STTEngine {
                 try await Task.sleep(for: .seconds(Double(chunk.count) / 16_000))
             }
             let final = try await manager.finish()
-            let answer = await collector.result(engine: name, final: final, speechEnd: speechEnd)
             await manager.cancel()
             await results.value
-            return answer
+            // Some utterances produce only a final output. Drain earlier updates first,
+            // then count final delivery as the first word if no hypothesis arrived.
+            await collector.accept(TranscriptEvent(confirmed: final, volatile: ""))
+            return await collector.result(engine: name, final: final, speechEnd: speechEnd)
         } catch { results.cancel(); await manager.cancel(); throw error }
     }
 }

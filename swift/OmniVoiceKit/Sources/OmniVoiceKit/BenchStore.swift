@@ -59,19 +59,27 @@ public struct BenchUtterance: Codable, Identifiable, Sendable {
     public func start(condition: SpeechCondition) async {
         guard !busy, !recording else { return }
         let id = UUID(), filename = "\(UUID().uuidString).caf"
+        // Reserve before permission suspends. Lifecycle stop() sees a pending start and
+        // invalidates AudioIO even if the owner has not answered the system prompt.
+        pending = BenchUtterance(id: id, condition: condition, filename: filename, reference: "", results: [])
+        recording = true; status = "Starting recording…"
         do {
             try await audio.start(url: directory.appending(path: filename))
-            pending = BenchUtterance(id: id, condition: condition, filename: filename, reference: "", results: [])
-            recording = true; status = "Recording. Stop after the utterance, then correct the reference once."
+            guard recording, pending?.id == id else { try? audio.stop(); throw CancellationError() }
+            status = "Recording. Stop after the utterance, then correct the reference once."
             stopTimer = Task { try? await Task.sleep(for: .seconds(120)); if !Task.isCancelled { stop() } }
-        } catch { status = error.localizedDescription; try? FileManager.default.removeItem(at: directory.appending(path: filename)) }
+        } catch {
+            if pending?.id == id { pending = nil; recording = false }
+            if !(error is CancellationError) { status = error.localizedDescription }
+            try? FileManager.default.removeItem(at: directory.appending(path: filename))
+        }
     }
     public func stop() {
         guard recording else { return }
         stopTimer?.cancel(); stopTimer = nil; recording = false
         do {
             try audio.stop()
-            if let pending {
+            if let pending, FileManager.default.fileExists(atPath: directory.appending(path: pending.filename).path) {
                 #if os(iOS)
                 try FileManager.default.setAttributes([.protectionKey: FileProtectionType.complete], ofItemAtPath: directory.appending(path: pending.filename).path)
                 #endif
