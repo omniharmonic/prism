@@ -42,6 +42,7 @@
 
 @theme {
   /* Fonts — user-configurable via Settings */
+  --font-ui: -apple-system, BlinkMacSystemFont, 'Helvetica Neue', system-ui, sans-serif;
   --font-sans: 'Inter', 'DM Sans', system-ui, sans-serif;
   --font-mono: 'JetBrains Mono', 'SF Mono', ui-monospace, monospace;
   --font-serif: 'Newsreader', Georgia, 'Times New Roman', serif;
@@ -275,7 +276,7 @@ input:focus, textarea:focus, select:focus, button:hover {
   --control-px-md: 12px;
   --control-px-lg: 14px;
   --control-gap: 6px;
-  --control-radius: var(--radius-sm);
+  --control-radius: 8px;
   --control-font: var(--text-sm);
   --touch-target: 44px;
 

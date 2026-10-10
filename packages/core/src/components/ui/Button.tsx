@@ -23,9 +23,9 @@ const variantStyles: Record<ButtonVariant, string> = {
 
 /* Bound to the control tokens (tokens.css); `.ui-button` gets the touch size in touch.css. */
 const sizeStyles: Record<ButtonSize, string> = {
-  sm: "h-[var(--control-h-sm)] px-[var(--control-px-sm)] text-xs gap-1.5 rounded-md",
-  md: "h-[var(--control-h-md)] px-[var(--control-px-md)] text-sm gap-[var(--control-gap)] rounded-lg",
-  lg: "h-[var(--control-h-lg)] px-[var(--control-px-lg)] text-sm gap-2 rounded-lg",
+  sm: "h-[var(--control-h-sm)] px-[var(--control-px-sm)] text-xs gap-1.5 rounded-[var(--control-radius)]",
+  md: "h-[var(--control-h-md)] px-[var(--control-px-md)] text-sm gap-[var(--control-gap)] rounded-[var(--control-radius)]",
+  lg: "h-[var(--control-h-lg)] px-[var(--control-px-lg)] text-sm gap-2 rounded-[var(--control-radius)]",
 };
 
 export const Button = forwardRef<HTMLButtonElement, ButtonProps>(
@@ -38,7 +38,7 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(
         disabled={disabled || loading}
         className={cn(
           "ui-button inline-flex min-w-0 max-w-full items-center justify-center whitespace-nowrap font-medium transition-all",
-          "outline-none focus-visible:ring-2 focus-visible:ring-accent/50",
+          "focus-ring",
           "disabled:opacity-40 disabled:pointer-events-none",
           variantStyles[variant],
           sizeStyles[size],

@@ -11,8 +11,6 @@
 /* ─── Base Glass (panels, sidebars, bars) ─── */
 .glass {
   background: var(--glass);
-  backdrop-filter: blur(var(--glass-blur)) saturate(1.2);
-  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(1.2);
   border: 1px solid var(--glass-border);
   border-radius: var(--radius-md);
   box-shadow: var(--glass-shadow);
@@ -21,8 +19,6 @@
 /* ─── Interactive Glass (glass buttons, cards) ─── */
 .glass-interactive {
   background: var(--glass);
-  backdrop-filter: blur(var(--glass-blur)) saturate(1.2);
-  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(1.2);
   border: 1px solid var(--glass-border);
   border-radius: var(--radius-md);
   box-shadow: var(--glass-shadow);
@@ -66,9 +62,7 @@
 
 /* ─── Elevated Glass (modals, dropdowns, command palette, popovers) ─── */
 .glass-elevated {
-  background: var(--glass-hover);
-  backdrop-filter: blur(28px) saturate(1.3);
-  -webkit-backdrop-filter: blur(28px) saturate(1.3);
+  background: var(--material-solid, var(--bg-elevated));
   border: 1px solid var(--glass-border-strong);
   border-radius: var(--radius-lg);
   box-shadow: var(--glass-shadow-elevated);
@@ -187,9 +181,7 @@ html.light ::-webkit-scrollbar-thumb:hover {
    The signature surface: one frosted row of high-frequency actions, lifted off
    the canvas so content scrolls beneath it. */
 .command-pill {
-  background: var(--glass-hover);
-  backdrop-filter: blur(28px) saturate(1.3);
-  -webkit-backdrop-filter: blur(28px) saturate(1.3);
+  background: var(--material-solid, var(--bg-elevated));
   border: 1px solid var(--glass-border-strong);
   border-radius: 999px;
   box-shadow: var(--glass-shadow-elevated);
@@ -242,4 +234,27 @@ html.light ::-webkit-scrollbar-thumb:hover {
   .modal-rise,
   .drawer-left,
   .drawer-right { animation: none; }
+}
+
+/* Translucency belongs to floating layers; content and controls remain opaque.
+   Start solid so engines without backdrop-filter have a legible fallback. */
+@supports ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .glass-elevated, .command-pill {
+    background: var(--material-floating, var(--bg-elevated));
+    backdrop-filter: blur(var(--material-blur, 20px));
+    -webkit-backdrop-filter: blur(var(--material-blur, 20px));
+  }
+}
+@media (prefers-reduced-transparency: reduce) {
+  .glass-elevated, .command-pill {
+    background: var(--material-solid, var(--bg-elevated));
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+}
+:root.reduce-motion *, :root.reduce-motion *::before, :root.reduce-motion *::after {
+  animation-duration: 0.01ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.01ms !important;
+  scroll-behavior: auto !important;
 }

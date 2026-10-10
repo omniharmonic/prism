@@ -5,7 +5,7 @@
  */
 
 body {
-  font-family: var(--font-sans);
+  font-family: var(--font-ui);
   font-size: var(--text-base);
   color: var(--text-primary);
   -webkit-font-smoothing: antialiased;
