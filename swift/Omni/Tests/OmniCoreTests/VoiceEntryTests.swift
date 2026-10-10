@@ -1,4 +1,5 @@
 import XCTest
+import PrismTransport
 @testable import OmniCore
 
 @MainActor final class VoiceEntryTests: XCTestCase {
