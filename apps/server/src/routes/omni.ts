@@ -28,6 +28,7 @@ import { consumeRateLimit } from "../middleware/ratelimit";
 import { csrfRefusal, readCapped } from "./actions";
 import { IDEMPOTENCY_KEY_RE } from "../actions/store";
 import { omniConfig, OMNI_API_VERSION, OMNI_MIN_CLIENT } from "../omni/config";
+import { listSkills, readSkill, saveSkill, SkillError, SKILL_CAP } from "../omni/skills";
 import { reserveJobCreation, finishJobCreation } from "../omni/job-creations";
 import { hermes, HermesError, SESSION_ID_RE, JOB_ID_RE, type HermesSession, type HermesMessage } from "../omni/hermes-client";
 import {
@@ -882,6 +883,28 @@ omniApi.post("/jobs/:id/:action", async (c) => {
   } catch (e) {
     return hermesFailure(c, e);
   }
+});
+
+// Existing skills only; all routes inherit owner authentication and capped JSON.
+function skillFailure(c: Context, error: unknown) {
+  if (error instanceof SkillError) return c.json({ error: error.code }, error.status as 400);
+  return c.json({ error: "skills_unavailable" }, 503);
+}
+omniApi.get("/skills", async c => {
+  try { return c.json({ skills: await listSkills() }); } catch(e) { return skillFailure(c,e); }
+});
+omniApi.get("/skills/:id", async c => {
+  try { return c.json({ skill: await readSkill(c.req.param("id")) }); } catch(e) { return skillFailure(c,e); }
+});
+omniApi.put("/skills/:id", async c => {
+  const body = await jsonBody(c);
+  if (!body || typeof body.text !== "string" || typeof body.revision !== "string" || Object.keys(body).some(k => !["text", "revision"].includes(k))) return bad(c,"text and revision are required");
+  if (Buffer.byteLength(body.text) > SKILL_CAP) return c.json({error:"skill_too_large"},413);
+  try {
+    const skill = await saveSkill(c.req.param("id"),body.text,body.revision);
+    omniAudit({ actor: omniConfig.ownerEmail(), via: requestVia(c), action: "skill.save", digest: skill.revision, status: "ok" });
+    return c.json({skill});
+  } catch(e) { return skillFailure(c,e); }
 });
 
 // ── today ───────────────────────────────────────────────────────────────────

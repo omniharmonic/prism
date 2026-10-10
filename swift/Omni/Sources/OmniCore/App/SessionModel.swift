@@ -61,6 +61,7 @@ public final class SessionModel {
     public let nudges: NudgeCenter?
     public let today: TodayModel
     public let jobs: JobsModel
+    public let skills: SkillsModel?
 
     /// The selected destination (the Mac sidebar's selection).
     public var destination: Destination? = .today
@@ -96,6 +97,7 @@ public final class SessionModel {
         self.nudges = (service as? any NudgeService).map { NudgeCenter(service: $0, sink: sink) }
         self.today = TodayModel(service: service, sink: sink, approvals: approvals)
         self.jobs = JobsModel(service: service, sink: sink)
+        self.skills = (service as? any SkillService).map { SkillsModel(service: $0, sink: sink) }
         approvals.threadDidChange = { [weak self] threadID in
             guard let self else { return }
             await self.threads.refresh()

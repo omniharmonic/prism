@@ -173,11 +173,11 @@ export function PropertyBar({ note, readOnly, onOpenAll, layout = "bar", trailin
       )}
       {(editable || canCustomize || detailsContent || (layout === "bar" && presentation.available && props.length > 0) || (onOpenAll && !trailing)) && (
         <div className="db-prop-actions db-property-toolbar">
-          {(more.length > 0 || (layout === "bar" && presentation.available && props.length > 0)) && <button type="button" className="db-ghost focus-ring db-property-expand" aria-expanded={expanded} onClick={toggleExpanded}>
-            <ChevronRight size={13} aria-hidden="true" className="db-more-chevron" /> {more.length ? `${more.length} more ${more.length === 1 ? "property" : "properties"}` : expanded ? "Collapse properties" : "Show properties"}
+          {(more.length > 0 || (!pinMode && layout === "bar" && presentation.available && props.length > 0)) && <button type="button" className="db-ghost focus-ring db-property-expand" aria-expanded={expanded} onClick={toggleExpanded}>
+            <ChevronRight size={13} aria-hidden="true" className="db-more-chevron" /> {expanded ? (kept.length ? "Hide extra fields" : "Hide fields") : more.length ? `Show ${more.length} more ${more.length === 1 ? "field" : "fields"}` : "Show all fields"}
           </button>}
           <details className="db-properties-menu" open={layout === "panel" || undefined} onKeyDown={event => { if (layout === "bar" && event.key === "Escape") { event.currentTarget.open = false; event.currentTarget.querySelector("summary")?.focus(); } }}>
-            <summary className="db-ghost focus-ring">Properties <ChevronRight size={13} aria-hidden="true" /></summary>
+            <summary className="db-ghost focus-ring">Property options <ChevronRight size={13} aria-hidden="true" /></summary>
             <div className="db-properties-menu-content">
               {layout === "bar" && presentation.available && props.length > 0 && <PropertyDisplay properties={props} visible={personal?.visible ?? (pinMode ? top : props.filter(visible)).map(p => p.key)} onChange={keys => presentation.save({ visible: keys, collapsed: personal?.collapsed ?? true })} onReset={() => presentation.save(null)} />}
               {editable && (
@@ -212,7 +212,7 @@ export function PropertyBar({ note, readOnly, onOpenAll, layout = "bar", trailin
                 <CustomizeProperties tags={customTags} schemas={schemas} onSave={(tag, pinned) => schemaEdit.update(tag, { pinned })} />
               )}
               {onOpenAll && layout === "bar" && !trailing && (
-                <button type="button" className="db-ghost focus-ring" onClick={onOpenAll}>All properties <ChevronRight size={13} aria-hidden="true" /></button>
+                <button type="button" className="db-ghost focus-ring" onClick={onOpenAll}>Open property panel <ChevronRight size={13} aria-hidden="true" /></button>
               )}
               {detailsContent}
               {layout === "bar" && !detailsContent && !trailing && note.updatedAt && !Number.isNaN(Date.parse(note.updatedAt)) && <p className="db-property-updated-detail">Updated <time dateTime={note.updatedAt}>{fmtDateTime(new Date(note.updatedAt))}</time></p>}

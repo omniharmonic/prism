@@ -74,3 +74,15 @@ for (const width of [390,1440]) test(`dark settings material at ${width}px`, asy
  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
  await page.screenshot({path:test.info().outputPath(`settings-dark-${width}.png`)});
 });
+
+for (const width of [390,1024]) test(`workspace settings content gutters at ${width}px`, async ({page}, info) => {
+ await page.setViewportSize({width,height:900}); await page.emulateMedia({reducedMotion:"reduce"});
+ await page.goto("/e2e-fixtures/workspace-settings.html");
+ const content=page.locator(".network-workspace-content");
+ for (const section of ["Publish","Members","Vaults"]) {
+  await page.getByRole("tab",{name:section,exact:true}).click();
+  expect(await content.evaluate(el => el.scrollWidth <= el.clientWidth)).toBe(true);
+  expect(await page.evaluate(()=>document.documentElement.scrollWidth)).toBe(width);
+  await page.screenshot({path:info.outputPath(`workspace-${section.toLowerCase()}-${width}.png`),animations:"disabled"});
+ }
+});
