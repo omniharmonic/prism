@@ -261,6 +261,10 @@ struct SplitMainView: View {
                 }
                 #endif
                 ToolbarItem {
+                    Button("Voice", systemImage: "waveform") { session.requestNewVoice() }
+                        .accessibilityIdentifier("voice.new")
+                }
+                ToolbarItem {
                     Button {
                         session.requestNewThread()
                     } label: {
@@ -318,6 +322,10 @@ struct TabMainView: View {
                 NavigationStack {
                     TodayView(session: session)
                         .toolbar {
+                            ToolbarItem(placement: .topBarTrailing) {
+                                Button("Voice", systemImage: "waveform") { session.requestNewVoice() }
+                                    .accessibilityIdentifier("voice.new")
+                            }
                             ToolbarItem(placement: .topBarTrailing) {
                                 Button {
                                     showingSettings = true

@@ -6,6 +6,7 @@ import SwiftUI
 struct ThreadView: View {
     let session: SessionModel
     @Bindable var model: ThreadModel
+    @State private var voiceExpanded = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -13,7 +14,7 @@ struct ThreadView: View {
             if !model.isUnavailable {
                 banners
                 Divider()
-                ConversationVoiceControl(model: model)
+                ConversationVoiceControl(session: session, model: model, expanded: $voiceExpanded)
                 Composer(
                     text: $model.draft,
                     placeholder: "Message Omni…",
@@ -58,6 +59,15 @@ struct ThreadView: View {
             }
         }
         #endif
+        .toolbar {
+            ToolbarItem {
+                Button("Voice", systemImage: "waveform") {
+                    session.showVoice(in: model.threadID); voiceExpanded = true
+                }.accessibilityIdentifier("voice.open")
+                .disabled(model.isUnavailable)
+            }
+        }
+        .onAppear { voiceExpanded = session.voiceThreadID == model.threadID }
         .task(id: model.threadID) { await session.openThread(model) }
         .onDisappear { model.close() }
     }
@@ -178,11 +188,10 @@ struct Banner<Actions: View>: View {
 }
 
 /// The message box. Mac: Return sends, Shift-Return (or Option-Return) starts a new line.
-/// iPhone: Return starts a new line; the button sends.
+/// iPhone: Return sends; Shift-Return adds a line, and the visible Send button remains available.
 ///
 /// `accessory` is the seam for the voice track: the microphone button goes there, and what
-/// it hears lands in `text` (or starts a thread with `source: "voice"`). Nothing is built
-/// for it yet.
+/// it hears lands in `text` (or starts a thread with `source: "voice"`).
 struct Composer<Accessory: View>: View {
     @Binding var text: String
     let placeholder: String
@@ -311,7 +320,7 @@ struct NewThreadView: View {
             GeometryReader { area in
                 ScrollView {
                     ContentUnavailableView {
-                        Label("New thread", systemImage: "square.and.pencil")
+                        Label(session.newThreadUsesVoice ? "New voice conversation" : "New thread", systemImage: session.newThreadUsesVoice ? "waveform" : "square.and.pencil")
                     } description: {
                         Text("Say what you want done. Omni works on it in its own thread and asks before anything goes out.")
                     }
@@ -325,6 +334,9 @@ struct NewThreadView: View {
                 }
             }
             Divider()
+            if session.newThreadUsesVoice {
+                ConversationVoiceControl(session: session, draft: $text, expanded: Binding(get: { session.newThreadUsesVoice }, set: { if !$0 { session.closeNewVoice() } }))
+            }
             Composer(
                 text: $text,
                 placeholder: "What should Omni do?",
@@ -335,7 +347,7 @@ struct NewThreadView: View {
                         if await session.startThread(prompt: prompt) { text = "" }
                     }
                 },
-                focusOnAppear: true
+                focusOnAppear: !session.newThreadUsesVoice
             )
             .disabled(session.threads.isCreating)
             // The box keeps the height its text needs; the words above give way.

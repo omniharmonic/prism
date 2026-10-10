@@ -69,6 +69,38 @@ public final class SessionModel {
     public private(set) var searchRequests = 0
     /// Bumped by ⌘N on platforms that present the new-thread composer as a sheet.
     public private(set) var newThreadRequests = 0
+    public private(set) var newThreadUsesVoice = false
+    public private(set) var voiceThreadID: String?
+    private var voiceGeneration = 0
+    public var conversationAudio: (any ConversationAudio)?
+    public var conversationVoice: VoiceConversation?
+
+    public func requestNewVoice() {
+        voiceGeneration += 1
+        conversationVoice?.cancel()
+        voiceThreadID = nil
+        newThreadUsesVoice = true
+        destination = .newThread
+        newThreadRequests += 1
+    }
+    public func closeNewVoice() { voiceGeneration += 1; conversationVoice?.cancel(); newThreadUsesVoice = false }
+    public func claimVoice(audio: any ConversationAudio, voice: VoiceConversation, threadID: String?) {
+        voiceGeneration += 1
+        if conversationVoice !== voice { conversationVoice?.cancel() }
+        conversationAudio = audio; conversationVoice = voice; voiceThreadID = threadID
+    }
+    public var voiceLease: Int { voiceGeneration }
+    public func ownsVoice(_ voice: VoiceConversation, threadID: String?) -> Bool {
+        conversationVoice === voice && (threadID.map { voiceThreadID == $0 } ?? (newThreadUsesVoice && voiceThreadID == nil))
+    }
+    @discardableResult public func cancelVoice(_ voice: VoiceConversation, threadID: String?) -> Bool {
+        guard ownsVoice(voice, threadID: threadID) else { return false }
+        voiceGeneration += 1; voice.cancel(); return true
+    }
+    public func showVoice(in threadID: String) {
+        if voiceThreadID != threadID { voiceGeneration += 1; conversationVoice?.cancel() }
+        voiceThreadID = threadID
+    }
 
     public private(set) var externalNavigationRequests = 0
     public func openExternal(_ destination: Destination) {
@@ -112,6 +144,9 @@ public final class SessionModel {
     }
 
     public func stop() {
+        voiceGeneration += 1
+        conversationVoice?.cancel(); conversationVoice = nil; conversationAudio = nil
+        voiceThreadID = nil; newThreadUsesVoice = false
         noticeTask?.cancel()
         noticeTask = nil
         for model in threadModels.values { model.close() }
@@ -163,11 +198,27 @@ public final class SessionModel {
     @discardableResult
     public func startThread(prompt: String) async -> Bool {
         guard let created = await threads.create(prompt: prompt) else { return false }
+        newThreadUsesVoice = false
+        destination = .thread(created.thread.id)
+        return true
+    }
+
+    /// A late creation still appears in the list, but cannot navigate or adopt a newer voice session.
+    @discardableResult public func startVoiceThread(prompt: String, voice: VoiceConversation) async -> Bool {
+        guard ownsVoice(voice, threadID: nil) else { return false }
+        let request = voiceGeneration
+        guard let created = await threads.create(prompt: prompt, source: "voice") else { return false }
+        guard request == voiceGeneration, ownsVoice(voice, threadID: nil) else { return false }
+        if let turn = created.turnId { threadModel(for: created.thread.id).rememberCreatedVoiceTurn(turn) }
+        voiceThreadID = created.thread.id; newThreadUsesVoice = false
         destination = .thread(created.thread.id)
         return true
     }
 
     public func requestNewThread() {
+        conversationVoice?.cancel()
+        voiceGeneration += 1
+        newThreadUsesVoice = false
         destination = .newThread
         newThreadRequests += 1
     }

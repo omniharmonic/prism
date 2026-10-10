@@ -4,78 +4,74 @@ import SwiftUI
 
 /// Explicit, turn-by-turn local voice. Only recognized text goes to Hermes.
 struct ConversationVoiceControl: View {
-    @Bindable var model: ThreadModel
+    let session: SessionModel
+    let model: ThreadModel?
+    let draft: Binding<String>?
+    @Binding var expanded: Bool
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @Environment(\.scenePhase) private var phase
     @Environment(\.dynamicTypeSize) private var typeSize
     @State private var device: ConversationDevice
     @State private var voice: VoiceConversation
     @State private var selected = ConversationDevice.Engine.apple
-    @State private var expanded = false
     @State private var mounted = false
     @State private var action: Task<Void, Never>?
     @State private var timeout: Task<Void, Never>?
-    init(model: ThreadModel) {
-        self.model = model
-        let device = ConversationDevice()
-        _device = State(initialValue: device)
-        _voice = State(initialValue: VoiceConversation(audio: device))
+    init(session: SessionModel, model: ThreadModel? = nil, draft: Binding<String>? = nil, expanded: Binding<Bool>) {
+        self.session = session; self.model = model; self.draft = draft; _expanded = expanded
+        let sameContext = model.map { session.voiceThreadID == $0.threadID } ?? (session.newThreadUsesVoice && session.voiceThreadID == nil)
+        let device = (sameContext ? session.conversationAudio as? ConversationDevice : nil) ?? ConversationDevice()
+        let voice = (sameContext ? session.conversationVoice : nil) ?? VoiceConversation(audio: device)
+        _device = State(initialValue: device); _voice = State(initialValue: voice)
+        _selected = State(initialValue: device.selected)
     }
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            if expanded || voice.state != .off {
-                let layout = typeSize.isAccessibilitySize ? AnyLayout(VStackLayout(alignment: .leading, spacing: 8)) : AnyLayout(HStackLayout(spacing: 10))
-                layout {
-                    Menu {
-                        Picker("Local speech engine", selection: $selected) {
-                            ForEach(ConversationDevice.Engine.allCases, id: \.self) { Text($0.rawValue).tag($0) }
-                        }
-                    } label: { Label(selected.rawValue, systemImage: "waveform") }
-                    .disabled(voice.state != .off)
-                    if !typeSize.isAccessibilitySize { Spacer() }
-                    if voice.state == .listening {
-                        Button("Send Voice", systemImage: "arrow.up.circle.fill") { finish() }
-                            .buttonStyle(.borderedProminent)
-                        Button("Cancel Recording") { cancel() }
-                    } else if voice.state == .preparing || voice.state == .transcribing {
-                        ProgressView().accessibilityLabel(voice.state == .preparing ? "Preparing speech" : "Transcribing")
-                        Button("Cancel") { cancel() }
-                    } else {
-                        Button(voice.state == .answering || model.isRunning ? "Interrupt and Speak" : "Speak", systemImage: "mic.fill") {
-                            cancel()
-                            action = Task {
-                                if model.isRunning { await model.stop() }
-                                for _ in 0..<40 where model.isRunning {
-                                    if Task.isCancelled || PrivacyLock.shared.locked || !mounted || phase != .active { return }
-                                    try? await Task.sleep(for: .milliseconds(50))
-                                }
-                                guard !Task.isCancelled, !PrivacyLock.shared.locked, mounted, !model.isRunning, phase == .active else { return }
-                                device.selected = selected
-                                await voice.start()
-                                if voice.state == .listening {
-                                    timeout = Task { try? await Task.sleep(for: .seconds(120)); if !Task.isCancelled { finish(submit: false) } }
-                                }
+        Group {
+            if (expanded || voice.state != .off) && (session.conversationVoice !== voice || session.ownsVoice(voice, threadID: model?.threadID)) {
+                VStack(spacing: 12) {
+                    HStack {
+                        Label("Voice", systemImage: "waveform").font(.headline)
+                        Spacer()
+                        Menu {
+                            Picker("Local speech engine", selection: $selected) {
+                                ForEach(ConversationDevice.Engine.allCases, id: \.self) { Text($0.rawValue).tag($0) }
                             }
-                        }.disabled(!voice.canStart || model.isUnavailable || model.sendState == .sending || (!model.isRunning && model.pendingText != nil) || !model.draft.isEmpty)
+                        } label: { Image(systemName: "slider.horizontal.3").frame(width: 44, height: 44) }
+                        .accessibilityLabel("Voice options").disabled(voice.state != .off)
+                        Button { cancel(); expanded = false } label: {
+                            Image(systemName: "xmark").frame(width: 44, height: 44)
+                        }.accessibilityLabel("Close Voice")
                     }
-                    if voice.state == .answering { Button("Mute", systemImage: "speaker.slash") { cancel() } }
+                    let layout = AnyLayout(VStackLayout(spacing: 12))
+                    layout {
+                        Image(systemName: "waveform")
+                            .font(.system(size: 25, weight: .medium))
+                            .foregroundStyle(Color.omniAccent)
+                            .frame(width: 64, height: 64)
+                            .background(Color.omniAccent.opacity(0.10), in: Circle())
+                            .accessibilityHidden(true)
+                        VStack(alignment: .center, spacing: 4) {
+                            Text(stateTitle).font(.headline)
+                            Text(status).font(.caption).foregroundStyle(Color.quietText)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }.frame(maxWidth: .infinity, alignment: .center).multilineTextAlignment(.center)
+                    }
+                    controls
+                    if voice.state == .transcribing, !device.hypothesis.isEmpty { Text(device.hypothesis).font(.callout) }
+                    if !voice.transcript.isEmpty { Text(voice.transcript).font(.callout).textSelection(.enabled) }
+                    if let problem = voice.problem { Text(problem).font(.caption).foregroundStyle(Color.failureText) }
                 }
-                .frame(minHeight: 44)
-                .controlSize(.large)
-                Text(status).font(.caption).foregroundStyle(Color.quietText)
-                    .fixedSize(horizontal: false, vertical: true)
-                if voice.state == .transcribing, !device.hypothesis.isEmpty { Text(device.hypothesis).font(.caption) }
-                if !voice.transcript.isEmpty { Text(voice.transcript).font(.caption).textSelection(.enabled) }
-                if voice.state == .off { Button("Close Voice") { expanded = false } }
-            } else {
-                HStack { Button("Voice", systemImage: "mic") { expanded = true }; Spacer() }.frame(minHeight: 44)
+                .padding(20).frame(maxWidth: 440)
+                .modifier(VoicePanelMaterial(solid: reduceTransparency))
+                .padding(.horizontal).padding(.vertical, 10)
+                .frame(maxWidth: .infinity)
+                .accessibilityIdentifier("voice.panel")
             }
-            if let problem = voice.problem { Text(problem).font(.caption).foregroundStyle(.red) }
         }
-        .padding(.horizontal).padding(.vertical, 6)
-        .background(.bar)
-        .onChange(of: model.timeline) { voice.consume(model.timeline, running: model.isRunning) }
-        .onChange(of: model.isRunning) { voice.consume(model.timeline, running: model.isRunning) }
-        .onChange(of: voice.state) { if voice.state != .off { expanded = true } }
+        .onChange(of: model?.completedVoiceTimeline) { _, _ in consume() }
+        .onChange(of: model?.timeline) { consume() }
+        .onChange(of: model?.isRunning) { consume() }
+        .onChange(of: voice.state) { if voice.state != .off { expanded = true }; consume() }
         .onChange(of: phase) { if phase != .active { cancel() } }
         #if os(iOS)
         .onReceive(NotificationCenter.default.publisher(for: AVAudioSession.interruptionNotification)) { _ in cancel() }
@@ -84,30 +80,107 @@ struct ConversationVoiceControl: View {
             voice.setPrivacyLocked(PrivacyLock.shared.locked)
             if PrivacyLock.shared.locked { cancel() }
         }
-        .onAppear { mounted = true; voice.setPrivacyLocked(PrivacyLock.shared.locked) }
-        .onDisappear { mounted = false; cancel() }
+        .onAppear { mounted = true; voice.setPrivacyLocked(PrivacyLock.shared.locked); consume() }
+        .onDisappear {
+            mounted = false
+            // The first send moves this same voice session into its newly created thread.
+            if model == nil, let id = session.voiceThreadID, session.destination == .thread(id) { return }
+            cancel()
+        }
+    }
+    private var running: Bool { model?.isRunning ?? false }
+    private var stateTitle: String {
+        switch voice.state {
+        case .off: "Ready to speak"
+        case .preparing: "Preparing voice"
+        case .listening: "Listening"
+        case .transcribing: "Transcribing"
+        case .answering: running ? "Omni is responding" : "Ready for your next turn"
+        }
     }
     private var status: String {
         switch voice.state {
-        case .off: voice.canStart ? "Voice stays local until you send the recognized text. Models may download on first use." : "Waiting for the previous speech preparation to finish…"
-        case .preparing: "Preparing local speech…"
-        case .listening: "Listening. Send Voice or cancel. After two minutes, recording stops and recognized text is left in the draft."
-        case .transcribing: "Transcribing on this device…"
-        case .answering: "Omni's answer is spoken as it arrives. Mute or interrupt at any time."
+        case .off: voice.canStart ? "Speak naturally. Send when you’re ready." : "Finishing speech preparation…"
+        case .preparing: "Preparing speech on this device. Models may download on first use."
+        case .listening: "Send when you're ready. At two minutes, text is kept as a draft."
+        case .transcribing: "Recognizing your words on this device…"
+        case .answering: "Voice is on. You can mute or interrupt at any time."
         }
     }
-    private func cancel() { action?.cancel(); action = nil; timeout?.cancel(); timeout = nil; voice.cancel() }
+    @ViewBuilder private var controls: some View {
+        let layout = typeSize.isAccessibilitySize ? AnyLayout(VStackLayout(spacing: 8)) : AnyLayout(HStackLayout(spacing: 10))
+        layout {
+            if voice.state == .listening {
+                Button("Send Voice", systemImage: "arrow.up") { finish() }.buttonStyle(.borderedProminent)
+                Button { cancel() } label: { Text("Cancel").frame(minHeight: 44) }
+            } else if voice.state == .preparing || voice.state == .transcribing {
+                ProgressView().accessibilityLabel(stateTitle)
+                Button { cancel() } label: { Text("Cancel").frame(minHeight: 44) }
+            } else {
+                Button(running || voice.state == .answering ? "Interrupt and Speak" : "Speak", systemImage: "mic.fill") { start() }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(!voice.canStart || model?.isUnavailable == true || model?.sendState == .sending || (!running && model?.pendingText != nil) || !(model?.draft ?? draft?.wrappedValue ?? "").isEmpty || session.threads.isCreating)
+                if voice.state == .answering { Button { cancel() } label: { Label("Mute", systemImage: "speaker.slash").frame(minHeight: 44) } }
+            }
+        }.controlSize(.large).buttonBorderShape(.capsule)
+        .frame(minHeight: 44)
+    }
+    private func consume() {
+        guard let model, session.voiceThreadID == model.threadID else { return }
+        guard voice.state == .answering else { return }
+        voice.consume(model.timeline + model.takeCompletedVoiceTimeline(), running: model.isRunning)
+    }
+    private func start() {
+        cancel()
+        _ = model?.takeCompletedVoiceTimeline()
+        session.claimVoice(audio: device, voice: voice, threadID: model?.threadID)
+        let lease = session.voiceLease
+        action = Task {
+            if let model, model.isRunning { await model.stop() }
+            for _ in 0..<40 where running {
+                if Task.isCancelled || PrivacyLock.shared.locked || !mounted || phase != .active { return }
+                try? await Task.sleep(for: .milliseconds(50))
+            }
+            guard !Task.isCancelled, !PrivacyLock.shared.locked, mounted, !running, phase == .active, lease == session.voiceLease, session.ownsVoice(voice, threadID: model?.threadID) else { return }
+            device.selected = selected
+            await voice.start()
+            if lease == session.voiceLease, session.ownsVoice(voice, threadID: model?.threadID), voice.state == .listening {
+                timeout = Task { try? await Task.sleep(for: .seconds(120)); if !Task.isCancelled { finish(submit: false) } }
+            }
+        }
+    }
+    private func cancel() {
+        action?.cancel(); action = nil; timeout?.cancel(); timeout = nil
+        if session.conversationVoice !== voice { voice.cancel() }
+        else { session.cancelVoice(voice, threadID: model?.threadID) }
+    }
     private func finish(submit: Bool = true) {
         timeout?.cancel(); timeout = nil
+        let lease = session.voiceLease
         action = Task {
             await voice.finish(submit: submit) { text in
-                guard !Task.isCancelled, !PrivacyLock.shared.locked, mounted, phase == .active, !model.isRunning, model.draft.isEmpty else { return false }
-                model.draft = text
+                guard !Task.isCancelled, lease == session.voiceLease, !PrivacyLock.shared.locked, mounted, phase == .active, !running, (model?.draft ?? draft?.wrappedValue ?? "").isEmpty else { return false }
+                if let model { model.draft = text } else { draft?.wrappedValue = text }
                 if !submit { return true }
-                await model.send()
-                return model.isRunning
+                if let model { await model.send(); return model.isRunning }
+                let sent = await session.startVoiceThread(prompt: text, voice: voice)
+                if sent { draft?.wrappedValue = "" }
+                return sent
             }
-            voice.consume(model.timeline, running: model.isRunning)
+            consume()
+        }
+    }
+}
+
+/// Glass is confined to this floating control layer. Accessibility can request an opaque surface.
+private struct VoicePanelMaterial: ViewModifier {
+    let solid: Bool
+    func body(content: Content) -> some View {
+        if solid {
+            content.background(.background, in: RoundedRectangle(cornerRadius: 24))
+                .overlay(RoundedRectangle(cornerRadius: 24).stroke(.primary.opacity(0.15)))
+        } else {
+            content.glassEffect(.regular, in: RoundedRectangle(cornerRadius: 24))
         }
     }
 }

@@ -67,6 +67,17 @@ public final class ThreadModel {
     /// Told when the server says the thread is gone, so the list can show it too.
     private let onUnavailable: @MainActor (String) -> Void
     private var isLoading = false
+    private var createdVoiceTurn: String?
+    private var replayedVoiceTurn: String?
+    public private(set) var completedVoiceTimeline: [TimelineItem] = []
+
+    /// Replay only the exact first turn created by this voice composer.
+    public func rememberCreatedVoiceTurn(_ turn: String) { createdVoiceTurn = turn }
+    public func takeCompletedVoiceTimeline() -> [TimelineItem] {
+        let result = completedVoiceTimeline
+        completedVoiceTimeline = []
+        return result
+    }
 
     init(threadID: String, service: any OmniService, approvals: ApprovalCenter, sink: ErrorSink, sleep: @escaping @Sendable (Duration) async throws -> Void, onUnavailable: @escaping @MainActor (String) -> Void = { _ in }) {
         self.threadID = threadID
@@ -163,7 +174,11 @@ public final class ThreadModel {
             apply(fresh)
             isUnavailable = false
             phase = .loaded
-            if let turn = fresh.activeTurnId {
+            if let turn = createdVoiceTurn, followTask == nil {
+                createdVoiceTurn = nil
+                replayedVoiceTurn = turn
+                startFollowing(turn: turn, replayTurn: true)
+            } else if let turn = fresh.activeTurnId {
                 if followTask == nil { startFollowing(turn: turn, replayTurn: true) }
             } else if followTask == nil {
                 activeTurnID = nil
@@ -332,7 +347,11 @@ public final class ThreadModel {
                         }
                         if case .approval(let approval) = envelope.event { approvals.ingest([approval]) }
                         // Stored events of earlier turns are history, not this turn.
-                        guard envelope.turnId == nil || envelope.turnId == activeTurnID else { continue }
+                        if replayedVoiceTurn != nil {
+                            guard envelope.turnId == activeTurnID else { continue }
+                        } else {
+                            guard envelope.turnId == nil || envelope.turnId == activeTurnID else { continue }
+                        }
                         transcript.apply(envelope)
                         if case .result = envelope.event { sawResult = true }
                     }
@@ -429,6 +448,10 @@ public final class ThreadModel {
             turnEnded = PlainLanguage.turnFailure(result.errorCode)
         } else {
             turnEnded = nil
+        }
+        if activeTurnID == replayedVoiceTurn, replayedVoiceTurn != nil {
+            completedVoiceTimeline = timeline.filter { if case .streamingText = $0 { return true }; return false }
+            replayedVoiceTurn = nil
         }
         // History now holds what the stream showed; keeping both would show it twice.
         transcript = TurnTranscript()
