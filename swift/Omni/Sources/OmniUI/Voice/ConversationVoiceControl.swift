@@ -99,27 +99,29 @@ struct ConversationVoiceControl: View {
     private var panelContent: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 8) {
-                Label(voice.endpointMode == .thinkAloud ? "Think aloud" : "Conversation", systemImage: "waveform").font(.headline)
-                    .fixedSize(horizontal: false, vertical: true)
-                Spacer(minLength: 0)
+                Image(systemName: "waveform").font(.system(size: 20, weight: .medium))
+                    .foregroundStyle(Color.omniAccent).accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(stateTitle).font(.subheadline.weight(.semibold))
+                        .accessibilityIdentifier("voice.state")
+                    Text(status).font(.caption).foregroundStyle(Color.quietText)
+                        .accessibilityIdentifier("voice.status")
+                }.fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
                 Menu {
-                    // Conversation mode options share this menu with local voice settings.
                     Picker("Speech recognition", selection: $selected) {
                         ForEach(ConversationDevice.Engine.allCases, id: \.self) { Text($0.rawValue).tag($0) }
                     }
-                    Button("Voice & Playback", systemImage: "speaker.wave.2") { showingVoiceSettings = true }
+                    Button("Voice settings", systemImage: "speaker.wave.2") { showingVoiceSettings = true }
                 } label: { Image(systemName: "slider.horizontal.3").frame(width: 44, height: 44) }
                 .accessibilityLabel("Voice options").disabled(voice.state != .off && voice.state != .paused)
                 Button { cancel(); expanded = false } label: {
                     Image(systemName: "xmark").frame(width: 44, height: 44)
-                }.accessibilityLabel(voice.isSessionActive ? "End voice session" : "Close Voice")
+                }
+                .accessibilityLabel(voice.isSessionActive ? "End voice session" : "Close Voice")
+                .accessibilityIdentifier(voice.isSessionActive ? "voice.end" : "voice.close")
+                .accessibilityHint("Ends microphone capture and narration. Omni’s task continues in chat.")
             }
-            VStack(alignment: .leading, spacing: 4) {
-                Text(stateTitle).font(.subheadline.weight(.semibold))
-                    .accessibilityIdentifier("voice.state")
-                Text(status).font(.caption).foregroundStyle(Color.quietText)
-                    .accessibilityIdentifier("voice.status")
-            }.fixedSize(horizontal: false, vertical: true)
             if let problem = voice.problem {
                 Text(problem).font(.caption).foregroundStyle(Color.failureText)
                     .fixedSize(horizontal: false, vertical: true)
@@ -129,16 +131,8 @@ struct ConversationVoiceControl: View {
                 Text(notice).font(.caption).foregroundStyle(Color.quietText)
                     .fixedSize(horizontal: false, vertical: true)
             }
-            if let countdown = voice.endpointCountdown {
-                HStack {
-                    Text("Sending in \(countdown)…").font(.caption)
-                    Spacer()
-                    Button("Keep listening") { voice.keepListening() }
-                        .accessibilityIdentifier("voice.keepListening")
-                }.fixedSize(horizontal: false, vertical: true)
-            }
             controls.fixedSize(horizontal: false, vertical: true)
-            if !voice.transcript.isEmpty || !device.hypothesis.isEmpty {
+            if (voice.state == .paused && !voice.transcript.isEmpty) || (voice.state == .transcribing && !device.hypothesis.isEmpty) {
                 DisclosureGroup("Transcript", isExpanded: $showingTranscript) {
                     Text(voice.state == .transcribing ? device.hypothesis : voice.transcript)
                         .font(.callout).textSelection(.enabled)
@@ -146,7 +140,7 @@ struct ConversationVoiceControl: View {
                 }.font(.caption)
             }
         }
-        .padding(.horizontal, 16).padding(.vertical, 10)
+        .padding(.horizontal, 12).padding(.vertical, 10)
     }
     private func appeared() {
         mounted = true
@@ -186,63 +180,61 @@ struct ConversationVoiceControl: View {
     }
     private var status: String {
         switch voice.state {
-        case .off:
-            if !voice.canStart { "Finishing speech preparation…" }
-            else if voice.endpointMode == .thinkAloud { "Start a session. Silence never sends your turn." }
-            else { "Start a session. Your selected pause controls when each turn sends." }
+        case .off: voice.endpointMode == .thinkAloud ? "Think aloud · manual send" : "Automatic · \(Int(voice.endpointPause))s pause"
         case .paused:
-            if !(model?.draft ?? draft?.wrappedValue ?? "").isEmpty { "Microphone is off. Send your draft in chat, or clear it to resume listening." }
-            else if session.approvals.pending.contains(where: { $0.approval.threadId == model?.threadID }) { "Microphone is off. An approval needs your review in chat." }
-            else if model?.isUnavailable == true { "Microphone is off. This conversation is unavailable." }
-            else if model?.pendingText != nil { "Microphone is off. Review the unsent message in chat before resuming." }
-            else if model?.sendState == .sending || session.threads.isCreating { "Microphone is off while your message is being sent." }
-            else if model?.streamProblem != nil { "Microphone is off. Check the connection issue in chat before resuming." }
-            else if model?.turnEnded != nil { "Microphone is off. Review the interrupted turn in chat before resuming." }
-            else if running { "Microphone and narration are off. Omni’s task continues in chat." }
-            else { "Microphone is off. Resume when you’re ready." }
-        case .speaking: "Microphone is off during playback. Listening resumes after the full reply."
-        case .preparing: "Preparing speech on this device. Models may download on first use."
+            if !currentDraft.isEmpty { "Send your draft in chat, or clear it to resume." }
+            else if session.approvals.pending.contains(where: { $0.approval.threadId == model?.threadID }) { "Review the approval in chat." }
+            else if model?.isUnavailable == true { "This conversation is unavailable." }
+            else if model?.pendingText != nil { "Review the unsent message in chat." }
+            else if model?.sendState == .sending || session.threads.isCreating { "Sending your message…" }
+            else if model?.streamProblem != nil { "Check the connection issue in chat." }
+            else if model?.turnEnded != nil { "Review the interrupted turn in chat." }
+            else if running { "Mic off · Omni’s task continues." }
+            else { "Mic off · resume when ready." }
+        case .speaking: "Mic off · reply playing"
+        case .preparing: "Preparing speech on this device…"
         case .listening:
-            if voice.activityNotice != nil || voice.endpointMode == .thinkAloud {
-                "Take your time. Tap Send turn when ready. At two minutes, we pause and keep a draft."
-            } else {
-                "Your turn sends after a \(Int(voice.endpointPause))-second pause and a countdown. Speak again or tap Keep listening for more time."
-            }
-        case .transcribing: "Recognizing your words on this device…"
-        case .answering: "Microphone is off while Omni responds. Your session stays open."
+            if let countdown = voice.endpointCountdown { "Sending in \(countdown)…" }
+            else if voice.activityNotice != nil || voice.endpointMode == .thinkAloud { "Send when you’re ready." }
+            else { "Automatic · \(Int(voice.endpointPause))s pause" }
+        case .transcribing: "Recognizing your words…"
+        case .answering: "Mic off while Omni responds."
         }
     }
     @ViewBuilder private var controls: some View {
-        VStack(spacing: 10) {
+        let layout = typeSize.isAccessibilitySize ? AnyLayout(VStackLayout(spacing: 8)) : AnyLayout(HStackLayout(spacing: 10))
+        layout {
             if voice.state == .listening {
-                Button { finish() } label: { Label("Send turn", systemImage: "arrow.up").frame(minHeight: 32) }
-                    .buttonStyle(.borderedProminent)
-                    .accessibilityIdentifier("voice.send")
+                Button { finish() } label: {
+                    Label("Send turn", systemImage: "arrow.up").frame(maxWidth: .infinity, minHeight: 32)
+                }
+                .buttonStyle(.borderedProminent)
+                .accessibilityIdentifier("voice.send")
+                .accessibilityHint("Silence never sends in Think aloud. At two minutes, recording pauses and your words are kept as a draft.")
             } else if voice.state == .preparing || voice.state == .transcribing {
-                ProgressView().accessibilityLabel(stateTitle)
+                ProgressView().frame(maxWidth: .infinity, minHeight: 44).accessibilityLabel(stateTitle)
             } else {
                 Button { start() } label: {
                     Label(voice.state == .paused ? "Resume" : voice.isSessionActive ? "Interrupt and speak" : "Start session", systemImage: "mic.fill")
-                        .frame(minHeight: 32)
+                        .frame(maxWidth: .infinity, minHeight: 32)
                 }
-                    .buttonStyle(.borderedProminent).disabled(!canSpeak)
-                    .accessibilityIdentifier("voice.start")
+                .buttonStyle(.borderedProminent).disabled(!canSpeak)
+                .accessibilityIdentifier("voice.start")
             }
-            if voice.isSessionActive {
-                let secondaryLayout = typeSize.isAccessibilitySize ? AnyLayout(VStackLayout(spacing: 8)) : AnyLayout(HStackLayout(spacing: 10))
-                secondaryLayout {
-                    if voice.state != .paused {
-                        Button { pause() } label: { Label("Pause", systemImage: "pause.fill").frame(minHeight: 44) }
-                            .accessibilityIdentifier("voice.pause")
-                            .accessibilityHint(voice.state == .listening ? "Keeps your words as an unsent draft" : "Turns off the microphone and stops narration. Omni’s task continues in chat.")
-                    }
-                    Button { cancel() } label: { Text("End session").frame(minHeight: 44) }
-                        .accessibilityIdentifier("voice.end")
-                        .accessibilityHint("Ends microphone capture and narration. Omni’s task continues in chat.")
-                }
+            if voice.endpointCountdown != nil {
+                Button("Keep listening") { voice.keepListening() }
+                    .frame(minHeight: 44)
+                    .fixedSize(horizontal: !typeSize.isAccessibilitySize, vertical: true)
+                    .accessibilityIdentifier("voice.keepListening")
+            } else if voice.isSessionActive && voice.state != .paused {
+                Button { pause() } label: { Label("Pause", systemImage: "pause.fill").frame(minHeight: 44) }
+                    .fixedSize(horizontal: !typeSize.isAccessibilitySize, vertical: true)
+                    .accessibilityIdentifier("voice.pause")
+                    .accessibilityHint(voice.state == .listening ? "Keeps your words as an unsent draft" : "Turns off the microphone and stops narration. Omni’s task continues in chat.")
             }
-        }.controlSize(.regular).buttonBorderShape(.capsule)
-        .frame(minHeight: 44)
+        }
+        .font(.callout).controlSize(.regular).buttonBorderShape(.capsule)
+        .frame(maxWidth: .infinity, minHeight: 44)
     }
     private func consume() {
         guard let model, session.voiceThreadID == model.threadID else { return }

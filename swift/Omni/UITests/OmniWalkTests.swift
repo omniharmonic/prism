@@ -5,6 +5,7 @@ import XCTest
 final class OmniWalkTests: OmniUITestCase {
     #if os(iOS)
     func testVoicePanelInThreadKeepsControlsBelowText() throws {
+        continueAfterFailure = false
         let id = try XCTUnwrap(server { backend in
             let id = try await backend.thread("Voice layout check", "Give a short welcome.")
             try await backend.settle(id)
@@ -53,20 +54,21 @@ final class OmniWalkTests: OmniUITestCase {
                 checkVisibleOverlap()
             }
             if state == "paused" { XCTAssertTrue(problem.exists) }
-            XCTAssertLessThan(panel.frame.height, app.frame.height * 0.45, "Voice controls must leave room for the conversation")
+            let maximumFraction: CGFloat = Run.variant == "xxxl" ? 0.45 : 0.25
+            XCTAssertLessThan(panel.frame.height, app.frame.height * maximumFraction, "Voice controls must leave room for the conversation")
             checkVisibleOverlap()
             shot("voice-thread-\(state)-text")
             revealInVoicePanel(primary)
             shot("voice-thread-\(state)-primary")
             revealInVoicePanel(end)
-            shot("voice-thread-\(state)-end")
+            shot("voice-thread-\(state)-close")
             if state == "paused" {
                 composer.tap()
                 XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5))
                 revealInVoicePanel(primary)
                 shot("voice-thread-paused-keyboard-primary")
                 revealInVoicePanel(end)
-                shot("voice-thread-paused-keyboard-end")
+                shot("voice-thread-paused-keyboard-close")
             }
         }
     }
