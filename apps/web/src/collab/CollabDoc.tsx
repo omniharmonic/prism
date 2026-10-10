@@ -835,7 +835,7 @@ function ScopedCollabDoc({
           path={path}
           title={isContainerPath(path) ? title : undefined}
           fallbackName={title}
-          details={<NotePropertyBar noteId={noteId} readOnly={!canReview} fallback={<PageProperties path={path} />} />}
+          details={<NotePropertyBar noteId={noteId} readOnly={!canReview} fallback={<PageProperties path={path} />} detailsContent={<PageProperties embedded path={path} onOpenAll={() => useUIStore.setState({contextPanelOpen:true,contextPanelTab:"metadata"})} />} />}
           onRename={canReview ? handleRename : undefined}
           icon={icon}
           onIconChange={canReview ? handleIconChange : undefined}

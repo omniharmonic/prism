@@ -354,10 +354,9 @@ function useSidebarPeek(enabled: boolean) {
 }
 
 /**
- * NP-MB-06: on phones a swipe that STARTS within 20 px of the left edge goes
- * back (when there is somewhere to go) or opens the Browse drawer. It never
- * starts mid-screen, so it doesn't fight text selection, horizontal scrollers
- * or the editor; visible Back and Browse buttons remain the alternatives.
+ * On phones, a left-edge swipe over header space opens navigation. Elsewhere
+ * it goes back, or opens navigation when history is empty. Interactive content
+ * owns its gestures; visible Back and Notes buttons remain available.
  */
 const EDGE_PX = 20;
 const SWIPE_PX = 64;
@@ -365,26 +364,27 @@ function useEdgeSwipe(enabled: boolean): boolean {
   const [active, setActive] = useState(false);
   useEffect(() => {
     if (!enabled) { setActive(false); return; }
-    let start: { x: number; y: number } | null = null;
+    let start: { x: number; y: number; at: number; navigation: boolean } | null = null;
     let tracking = false;
     const onStart = (e: TouchEvent) => {
       const t = e.touches[0];
       if (e.touches.length !== 1 || !t || t.clientX > EDGE_PX) { start = null; return; }
       const target = e.target as Element | null;
-      if (target?.closest?.("dialog[open], [role=dialog], [data-no-edge-swipe]")) { start = null; return; }
+      if (window.getSelection()?.toString() || target?.closest?.("dialog[open], [role=dialog], [data-no-edge-swipe], [contenteditable]:not([contenteditable=false]), input, textarea, select, button, a, summary, [role=slider], canvas, svg, .tiptap, .monaco-editor, .cm-editor, .excalidraw")) { start = null; return; }
       // A table, board, code block or any other sideways scroller owns its own
       // horizontal drag — even when it starts at the screen edge.
       for (let node: Element | null = target; node && node !== document.body; node = node.parentElement) {
         if (node.scrollWidth > node.clientWidth + 1 && /(auto|scroll)/.test(getComputedStyle(node).overflowX)) { start = null; return; }
       }
-      start = { x: t.clientX, y: t.clientY };
+      start = { x: t.clientX, y: t.clientY, at: performance.now(), navigation: !!target?.closest(".tabbar-phone, .document-page-header") };
       tracking = true;
-      setActive(true);
+      setActive(false);
     };
     const onMove = (e: TouchEvent) => {
       if (!start || !tracking) return;
       const t = e.touches[0];
-      if (!t) return;
+      if (!t || e.touches.length !== 1) { tracking = false; setActive(false); return; }
+      if (t.clientX - start.x >= 12 && Math.abs(t.clientY - start.y) < (t.clientX - start.x) * .6) setActive(true);
       if (Math.abs(t.clientY - start.y) > 48 && Math.abs(t.clientY - start.y) > (t.clientX - start.x)) { tracking = false; setActive(false); }
     };
     const onEnd = (e: TouchEvent) => {
@@ -396,12 +396,12 @@ function useEdgeSwipe(enabled: boolean): boolean {
       tracking = false;
       const dx = t.clientX - began.x;
       const dy = Math.abs(t.clientY - began.y);
-      if (dx < SWIPE_PX || dy > dx * 0.6) return;
+      if (dx < SWIPE_PX || dy > dx * 0.6 || performance.now() - began.at > 900) return;
       if (window.getSelection()?.toString()) return;
       const ui = useUIStore.getState();
       const open = new Set(ui.openTabs.map((tab) => tab.id));
       const canBack = ui.navHistory.slice(0, Math.max(0, ui.navIndex)).some((id) => open.has(id));
-      if (canBack) ui.navBack();
+      if (canBack && !began.navigation) ui.navBack();
       else useUIStore.setState({ sidebarOpen: true });
     };
     const cancel = () => { start = null; tracking = false; setActive(false); };

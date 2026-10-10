@@ -1,5 +1,9 @@
 import { mkdirSync } from "node:fs";
-import { test, expect } from "@playwright/test";
+import { test, expect, type Page } from "@playwright/test";
+async function configure(page: Page) {
+ const menu = page.getByRole("group", { name:"Page properties" }).locator(".db-properties-menu");
+ if (await menu.getAttribute("open") === null) await menu.locator("summary").click();
+}
 const shots = "/private/tmp/prism-web-controls-shots";
 mkdirSync(shots, { recursive: true });
 for (const [device,width,height] of [["phone",390,844],["ipad",1024,768],["desktop",1440,900]] as const) {
@@ -7,6 +11,9 @@ for (const [device,width,height] of [["phone",390,844],["ipad",1024,768],["deskt
   await page.setViewportSize({width,height}); await page.emulateMedia({reducedMotion:"reduce"});
   await page.goto("/e2e-fixtures/databases.html?open=page");
   const bar=page.getByRole("group",{name:"Page properties"});
+  await expect(bar.locator(".db-prop-actions")).toHaveCount(1);
+  await expect(bar.getByRole("button",{name:"Display properties",exact:true})).toHaveCount(0);
+  await configure(page);
   await bar.getByRole("button",{name:"Display properties",exact:true}).click();
   const dialog=page.getByRole("dialog",{name:"Display properties"});
   for(const box of await dialog.getByRole("checkbox").all()) await box.uncheck();
@@ -18,7 +25,8 @@ for (const [device,width,height] of [["phone",390,844],["ipad",1024,768],["deskt
   await page.screenshot({path:`${shots}/properties-${device}.png`});
   await bar.getByRole("button",{name:/more properties/}).click();
   await expect(bar.getByRole("button",{name:"Priority: Medium"})).toBeVisible();
-  await bar.locator(".db-prop-more button").click();
+  await bar.locator(".db-property-expand").click();
+  await configure(page);
   await bar.getByRole("button",{name:"Display properties",exact:true}).click();
   await dialog.getByRole("checkbox",{name:"Status",exact:true}).uncheck(); await page.keyboard.press("Escape");
   await page.reload(); await expect(bar.getByRole("button",{name:"Status: In progress"})).toHaveCount(0);
@@ -83,6 +91,7 @@ test("Trash rejects another audience and cancels confirmation when the audience 
 test("cross-tab property removal discards the scoped memory fallback", async ({ page }) => {
  await page.goto("/e2e-fixtures/databases.html?open=page");
  const bar = page.getByRole("group", { name:"Page properties" });
+  await configure(page);
  await bar.getByRole("button", { name:"Display properties", exact:true }).click();
  const dialog = page.getByRole("dialog", { name:"Display properties" });
  for (const box of await dialog.getByRole("checkbox").all()) await box.uncheck();

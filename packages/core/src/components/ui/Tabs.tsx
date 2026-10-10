@@ -12,9 +12,10 @@ interface TabsProps {
   activeTab: string;
   onChange: (id: string) => void;
   className?: string;
+  orientation?: "horizontal" | "vertical";
 }
 
-export function Tabs({ tabs, activeTab, onChange, className }: TabsProps) {
+export function Tabs({ tabs, activeTab, onChange, className, orientation = "horizontal" }: TabsProps) {
   const buttons = useRef<Array<HTMLButtonElement | null>>([]);
   return (
     // Horizontally scrollable so a strip too wide for the viewport (e.g. the
@@ -24,6 +25,7 @@ export function Tabs({ tabs, activeTab, onChange, className }: TabsProps) {
     <div
       role="tablist"
       aria-label="Views"
+      aria-orientation={orientation}
       className={cn("prism-tabs", className)}
       style={{ WebkitOverflowScrolling: "touch" }}
     >
@@ -36,8 +38,8 @@ export function Tabs({ tabs, activeTab, onChange, className }: TabsProps) {
           tabIndex={activeTab === tab.id ? 0 : -1}
           ref={(node) => { buttons.current[index] = node; }}
           onKeyDown={(event) => {
-            const next = event.key === "ArrowRight" ? (index + 1) % tabs.length
-              : event.key === "ArrowLeft" ? (index - 1 + tabs.length) % tabs.length
+            const next = event.key === (orientation === "vertical" ? "ArrowDown" : "ArrowRight") ? (index + 1) % tabs.length
+              : event.key === (orientation === "vertical" ? "ArrowUp" : "ArrowLeft") ? (index - 1 + tabs.length) % tabs.length
               : event.key === "Home" ? 0 : event.key === "End" ? tabs.length - 1 : null;
             if (next === null) return;
             event.preventDefault();

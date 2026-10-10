@@ -54,21 +54,19 @@ test.describe("phone", () => {
     await page.screenshot({ path: test.info().outputPath(`phone-properties-${width}.png`) });
   });
 
-  // Polish round 3 (the owner's iPhone screenshots): every tag sat on a line of its own, and
-  // "Properties ›" floated on a row of its own under "Add property / Customize…".
-  for (const width of [390, 320]) test(`tags share a line where they fit; the property actions and "Properties" share one line · ${width}`, async ({ page }) => {
+  // Configuration stays in one disclosure; tag spacing and 44px removal targets remain intact.
+  for (const width of [390, 320]) test(`tags share a line where they fit; property configuration stays in one disclosure · ${width}`, async ({ page }) => {
     await page.setViewportSize({ width, height: 844 });
     await page.goto(URL);
     const props = bar(page);
-    await expect(props.getByRole("button", { name: "Add property" })).toBeVisible();
+    await expect(props.getByRole("button", { name: "Add property" })).toHaveCount(0);
+    await expect(props.locator(".db-prop-actions")).toHaveCount(1);
     const middle = async (locator: ReturnType<Page["locator"]>) => { const b = (await locator.boundingBox())!; return b.y + b.height / 2; };
-    const add = await middle(props.getByRole("button", { name: "Add property" }));
-    const more = props.locator(".document-properties-disclosure > summary");
-    expect(Math.abs((await middle(more)) - add), '"Properties" is on the line of "Add property"').toBeLessThanOrEqual(2);
+    const more = props.locator(".db-properties-menu > summary");
     const right = (await more.boundingBox())!;
+    expect(right.height).toBeGreaterThanOrEqual(44);
     expect(right.x + right.width, '"Properties" is inside the bar').toBeLessThanOrEqual(width);
     if (width === 390) {
-      expect(Math.abs((await middle(props.getByRole("button", { name: /^Customize/ }))) - add), '"Customize…" is on the same line').toBeLessThanOrEqual(2);
       const row = props.locator(".db-prop-tags");
       expect(Math.abs((await middle(row.getByRole("button", { name: "task", exact: true }))) - (await middle(row.getByRole("button", { name: "research", exact: true })))), "two tags share a line").toBeLessThanOrEqual(2);
     }
@@ -81,7 +79,8 @@ test.describe("phone", () => {
     }
     // Opening "Properties" gives it a full row: nothing is squeezed into the right-hand column.
     await more.click();
-    const content = (await props.locator(".document-properties-content").boundingBox())!;
+    await expect(props.getByRole("button", { name:"Add property" })).toBeVisible();
+    const content = (await props.locator(".db-properties-menu-content").boundingBox())!;
     expect(content.width).toBeGreaterThan(width * 0.6);
     expect(content.x + content.width).toBeLessThanOrEqual(width);
   });

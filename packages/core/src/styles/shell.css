@@ -218,3 +218,6 @@ html[data-page-width="wide"] #workspace-document:not([data-page-full="true"]) { 
 .workspace-trash-target:hover { background:var(--glass-hover); }
 .workspace-trash-target[data-drop-over] { background:var(--glass-active); color:var(--text-primary); outline:2px solid var(--color-accent); outline-offset:-2px; }
 @media (prefers-reduced-motion:reduce) { .workspace-trash-target { transition:none; } }
+
+@media(prefers-reduced-motion:reduce) { .edge-swipe-hint { transition:none; } }
+:root.reduce-motion .edge-swipe-hint { transition:none; }

@@ -726,3 +726,22 @@ dialog.db-sv-wrap::backdrop { background: transparent; }
 
 .db-personal-property { min-height:44px; }
 @media (prefers-reduced-motion:reduce) { .db-more-chevron { transition:none; } }
+
+/* One secondary disclosure keeps configuration out of the writing flow. */
+.db-property-toolbar { align-self:center; align-items:center; }
+.db-properties-menu { min-width:0; }
+.db-properties-menu > summary { cursor:pointer; list-style:none; min-height:44px; }
+.db-properties-menu > summary::-webkit-details-marker { display:none; }
+.db-property-expand { min-height:44px; }
+.db-property-expand[aria-expanded="true"] .db-more-chevron { transform:rotate(90deg); }
+.db-properties-menu[open] { flex:1 1 100%; }
+.db-properties-menu-content { display:flex; flex-wrap:wrap; gap:4px; padding:8px; border:1px solid var(--glass-border); border-radius:10px; background:var(--bg-surface); }
+.db-properties-menu-content > .db-ghost { min-height:44px; }
+.db-properties-menu-content > .document-properties-content { flex:1 1 100%; margin-top:4px; }
+.db-props-bar .db-property-toolbar { flex:1 1 100%; grid-column:1/-1; gap:4px; }
+@media(prefers-reduced-motion:reduce) { .db-property-expand .db-more-chevron { transition:none; } }
+
+.db-props-panel .db-properties-menu > summary { display:none; }
+.db-props-panel .db-properties-menu-content { padding:0; border:0; background:none; }
+
+.db-property-updated-detail { flex:1 1 100%; margin:8px 4px 4px; color:var(--text-muted); font-size:12px; }
