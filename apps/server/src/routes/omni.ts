@@ -108,7 +108,7 @@ export function mountOmni(app: Hono): void {
  *  their behalf (so the inner route judges the SAME person and origin). */
 function forwardHeaders(c: Context, extra: Record<string, string> = {}): Record<string, string> {
   const h: Record<string, string> = { "content-type": "application/json", ...extra };
-  for (const k of ["cookie", "authorization", "origin", "sec-fetch-site"]) {
+  for (const k of ["cookie", "authorization", "origin", "sec-fetch-site", "x-prism-vault"]) {
     const v = c.req.header(k);
     if (v) h[k] = v;
   }
