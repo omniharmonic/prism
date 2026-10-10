@@ -369,9 +369,9 @@ struct NeedsYouView: View {
                 if let center = session.nudges {
                     if let audit = center.audit {
                         DisclosureGroup("Weekly reply audit") {
-                            Text("Caught \(audit.caught) · Missed \(audit.missed) · Not important \(audit.noise)")
+                            Text("Caught \(audit.caught) · Missed \(audit.missed) · Not important \(audit.noise) · Unknown chat \(audit.unknownChat)")
                                 .font(.callout).fixedSize(horizontal: false, vertical: true)
-                            Text("Caught means viewed or delivered before your reply. Missed means no such evidence. This report covers email replies with complete sent-mail evidence.")
+                            Text("Caught means viewed or delivered before your reply. Missed means no such evidence. Verified email and Matrix replies are included. Chat sources without trusted identity and reply timing remain unknown.")
                                 .font(.caption).foregroundStyle(Color.quietText)
                         }
                     }
@@ -391,11 +391,12 @@ struct NeedsYouView: View {
     }
 }
 
-private struct NudgeCardView: View {
+struct NudgeCardView: View {
     let center: NudgeCenter
     let item: OmniNudge
     @Environment(\.navigator) private var navigator
     @Environment(\.openURL) private var openURL
+    @State private var showHealth = false
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text(item.candidate.title).font(.headline)
@@ -405,26 +406,54 @@ private struct NudgeCardView: View {
                 HStack { primaryActions }
                 VStack(alignment: .leading) { primaryActions }
             }
-            HStack {
-                Button("Snooze") { Task { await center.act(item.id, .snooze, until: Date().addingTimeInterval(86400)) } }
-                Button("Not important") { Task { await center.act(item.id, .noise) } }
-                Menu {
-                    Button("Relevant") { Task { await center.act(item.id, .relevant) } }
-                    Button("Hide") { Task { await center.act(item.id, .dismiss) } }
-                } label: { Image(systemName: "ellipsis").accessibilityLabel("More nudge actions") }
-                if let text = item.sourceLink, let url = URL(string: text), ["https", "http"].contains(url.scheme?.lowercased() ?? "") {
-                    Button("Open source") { openURL(url) }
-                }
-            }.buttonStyle(.borderless).font(.callout).frame(minHeight: 44)
+            ViewThatFits(in: .horizontal) {
+                HStack { sourceAction; Spacer(minLength: 8); moreActions }
+                VStack(alignment: .leading) { sourceAction; moreActions }
+            }.buttonStyle(.borderless).font(.callout)
+
         }
         .padding().background(.background, in: RoundedRectangle(cornerRadius: 16))
         .overlay(RoundedRectangle(cornerRadius: 16).stroke(.quaternary, lineWidth: 1))
         .disabled(center.busy.contains(item.id))
+        .sheet(isPresented: $showHealth) {
+            VStack(alignment: .leading, spacing: 12) {
+                Text("Pipeline status").font(.title2)
+                Text(item.candidate.operationalSource?.subsystem ?? "Pipeline").font(.headline)
+                Text(item.candidate.summary)
+                if let last = item.candidate.operationalSource?.lastSeen, last > 0 {
+                    Text("Last source update: \(Date(timeIntervalSince1970: last / 1000).formatted())").font(.callout)
+                } else { Text("No source update found in the complete inventory.").font(.callout) }
+                Text("Checked: \(Date(timeIntervalSince1970: item.updatedAt / 1000).formatted())").font(.caption).foregroundStyle(Color.quietText)
+                Button("Done") { showHealth = false }.frame(minHeight: 44)
+            }.padding().frame(minWidth: 280, idealWidth: 400)
+        }
         .task(id: item.updatedAt) { await center.markSeen(item.id, updatedAt: item.updatedAt) }
     }
+    @ViewBuilder private var sourceAction: some View {
+        if let source = item.candidate.operationalSource {
+            if source.kind == "job" {
+                Button { navigator.open(.recurring) } label: { Text("Open Recurring").frame(minHeight: 44).contentShape(Rectangle()) }
+            } else {
+                Button { showHealth = true } label: { Text("Open status").frame(minHeight: 44).contentShape(Rectangle()) }
+            }
+        } else if let text = item.sourceLink, let url = URL(string: text), ["https", "http"].contains(url.scheme?.lowercased() ?? "") {
+            Button { openURL(url) } label: { Text("Open source").frame(minHeight: 44).contentShape(Rectangle()) }
+        }
+    }
+    private var moreActions: some View {
+        Menu {
+            Button("Snooze one day") { Task { await center.act(item.id, .snooze, until: Date().addingTimeInterval(86400)) } }
+            Button("Not important") { Task { await center.act(item.id, .noise) } }
+            Button("Relevant") { Task { await center.act(item.id, .relevant) } }
+            Button("Hide") { Task { await center.act(item.id, .dismiss) } }
+        } label: { Label("More", systemImage: "ellipsis").frame(minWidth: 44, minHeight: 44).contentShape(Rectangle()) }
+        .accessibilityLabel("More nudge actions")
+    }
     @ViewBuilder private var primaryActions: some View {
-        Button("Draft reply") { start(.draftReply) }.buttonStyle(.bordered).frame(minHeight: 44)
-        Button("Start working") { start(.startWorking) }.buttonStyle(.bordered).frame(minHeight: 44)
+        if ["reply-owed", "unprocessed"].contains(item.candidate.kind) && item.candidate.operationalSource == nil {
+            Button { start(.draftReply) } label: { Text("Draft reply").frame(minHeight: 44).contentShape(Rectangle()) }.buttonStyle(.bordered)
+        }
+        Button { start(.startWorking) } label: { Text("Start working").frame(minHeight: 44).contentShape(Rectangle()) }.buttonStyle(.borderedProminent)
     }
     private func start(_ action: NudgeStart) {
         Task { if let thread = await center.start(item.id, action) { navigator.open(.thread(thread)) } }

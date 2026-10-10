@@ -2,7 +2,9 @@ import Foundation
 import PrismTransport
 
 public struct OmniNudge: Decodable, Sendable, Equatable, Identifiable {
+    public struct OperationalSource: Decodable, Sendable, Equatable { public let kind: String; public let jobId: String?; public let runAt: Double?; public let subsystem: String?; public let lastSeen: Double? }
     public struct Candidate: Decodable, Sendable, Equatable {
+        public let operationalSource: OperationalSource?
         public let sourceId: String
         public let sourcePath: String
         public let kind: String
@@ -22,7 +24,7 @@ public struct OmniNudge: Decodable, Sendable, Equatable, Identifiable {
     public let dismissed: Bool
     public let threadId: String?
 }
-public struct NudgeWeeklyAudit: Decodable, Sendable, Equatable { public let caught: Int; public let missed: Int; public let noise: Int; public let replied: Int; public let since: Double; public let through: Double }
+public struct NudgeWeeklyAudit: Decodable, Sendable, Equatable { public let caught: Int; public let missed: Int; public let noise: Int; public let replied: Int; public let unknownChat: Int; public let since: Double; public let through: Double }
 public enum ProactivityDial: String, Codable, Sendable, CaseIterable { case off, conservative, balanced, eager }
 public struct NudgeSettings: Codable, Sendable, Equatable {
     public var dial: ProactivityDial
