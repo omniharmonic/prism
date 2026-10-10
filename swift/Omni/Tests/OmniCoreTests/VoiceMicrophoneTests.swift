@@ -26,4 +26,26 @@ import XCTest
         XCTAssertTrue(coordinator.acquireConversation(owner: first))
         XCTAssertFalse(coordinator.acquireConversation(owner: UUID()))
     }
+    func testSessionOwnershipPreemptsWakeAndEndAllowsAnotherSession() {
+        let first = SessionModel(service: FakeService(), sleep: noSleep) {}
+        let second = SessionModel(service: FakeService(), sleep: noSleep) {}
+        defer { first.stop(); second.stop() }
+        let coordinator = VoiceMicrophoneCoordinator.shared
+        let wake = UUID()
+        var preempted = false
+        XCTAssertTrue(coordinator.acquireWake(owner: wake) { preempted = true })
+        let audio = VoiceConversationTests.Audio()
+        let voice = VoiceConversation(audio: audio)
+        first.requestNewVoice()
+        XCTAssertTrue(first.claimVoice(audio: audio, voice: voice, threadID: nil))
+        XCTAssertTrue(preempted)
+        let anotherAudio = VoiceConversationTests.Audio()
+        let anotherVoice = VoiceConversation(audio: anotherAudio)
+        second.requestNewVoice()
+        XCTAssertFalse(second.claimVoice(audio: anotherAudio, voice: anotherVoice, threadID: nil))
+        XCTAssertFalse(coordinator.acquireWake(owner: wake) {})
+        XCTAssertTrue(first.cancelVoice(voice, threadID: nil))
+        XCTAssertTrue(second.claimVoice(audio: anotherAudio, voice: anotherVoice, threadID: nil))
+    }
+
 }
