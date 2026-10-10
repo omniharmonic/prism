@@ -40,22 +40,24 @@ import OmniVoiceKit
         let url = FileManager.default.temporaryDirectory.appending(path: "omni-voice-\(UUID().uuidString).caf")
         file = url
         do {
-            var callback: (@Sendable (SpeechActivityEvent) -> Void)?
-            if activityEnabled {
-                callback = { [weak self] (event: SpeechActivityEvent) in
-                    Task { @MainActor in
-                        guard let self, self.generation == request else { return }
-                        switch event {
-                        case .frame(let time, let captured, let duration, let speech):
-                            self.receiveActivity?(.frame(VoiceActivityFrame(audioTime: time, capturedAt: captured, duration: duration, isSpeech: speech)))
-                        case .unavailable(let reason): self.receiveActivity?(.unavailable(reason))
-                        }
-                }
-                }
-            }
+            let callback: (@Sendable (SpeechActivityEvent) -> Void)? = activityEnabled ? Self.activityCallback(for: self, request: request) : nil
             try await audio.start(url: url, activity: callback)
             guard request == generation, !Task.isCancelled else { throw CancellationError() }
         } catch { if request == generation { cancel() }; throw error }
+    }
+    /// This factory has no actor executor. Only the explicit Task may access the
+    /// main-actor device, whether the detector calls from its worker or audio tap.
+    nonisolated static func activityCallback(for device: ConversationDevice, request: Int) -> @Sendable (SpeechActivityEvent) -> Void {
+        { [weak device] event in
+            Task { @MainActor in
+                guard let device, device.generation == request else { return }
+                switch event {
+                case .frame(let time, let captured, let duration, let speech):
+                    device.receiveActivity?(.frame(VoiceActivityFrame(audioTime: time, capturedAt: captured, duration: duration, isSpeech: speech)))
+                case .unavailable(let reason): device.receiveActivity?(.unavailable(reason))
+                }
+            }
+        }
     }
     func finish() async throws -> String {
         guard let file else { throw VoiceFailure.unavailable("No voice recording is active.") }
