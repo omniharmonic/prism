@@ -215,7 +215,7 @@ final class OmniWalkTests: OmniUITestCase {
             _ = try await backend.call("PATCH", "/api/omni/threads/\(fresh)", ["unread": true])
             return ["read": read, "fresh": fresh, "draft": draft]
         })
-        launch(faults: "sample-data", arguments: ["-omni.history.collapsedSections", ""])
+        launch(faults: "sample-data")
         go(.threads)
         let fresh = element("thread.\(try XCTUnwrap(ids["fresh"]))")
         let read = element("thread.\(try XCTUnwrap(ids["read"]))")
@@ -223,6 +223,9 @@ final class OmniWalkTests: OmniUITestCase {
         let replied = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Replied,")).firstMatch
         wait(replied, 15, "the Replied history disclosure")
         bring(replied)
+        // A launch argument would override AppStorage writes for this entire process.
+        // Normalize the persisted disclosure through its real control instead.
+        if replied.value as? String == "Collapsed" || !read.exists { replied.tap() }
         wait(read, 10, "the reviewed reply")
         XCTAssertLessThan(fresh.frame.minY, read.frame.minY, "Fresh replies must lead older reviewed history")
         shot("history-new-replies-expanded")
