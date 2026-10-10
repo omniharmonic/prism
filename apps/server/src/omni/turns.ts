@@ -16,7 +16,7 @@
 import { hermes, HermesError } from "./hermes-client";
 import { HermesNormalizer, toolRowsOf, type OmniEvent, type WriteSignal } from "./stream";
 import { cardForWrite, watchPendingCreates, buildCard, type PendingCreate } from "./records";
-import { appendEvent, claimTurn, endTurn, getThread, omniAudit, saveCard, setThreadState, setTurnRun, touchThread, type ThreadState, type TurnRow } from "./store";
+import { appendEvent, bumpUnread, claimTurn, endTurn, getThread, omniAudit, saveCard, setThreadState, setTurnRun, touchThread, type ThreadState, type TurnRow } from "./store";
 import { publishNotice, publishThread, pushOmni } from "./bus";
 import { approvalView, closeApproval, listApprovals, pendingTurnCommands } from "./approvals";
 import { omniConfig } from "./config";
@@ -229,6 +229,7 @@ async function run(threadId: string, turnId: string, message: string, entry: Liv
   const state: ThreadState = pendingHere ? "needs-you" : cancelled ? "waiting" : errorCode ? "needs-you" : "done";
   setThreadState(threadId, state);
   touchThread(threadId);
+  if (!cancelled) bumpUnread(threadId);
   emit(threadId, turnId, { t: "status", state, ...(errorCode ? { reason: errorCode } : {}) });
   publishNotice({ type: "thread", id: threadId, op: state });
   // A stream can survive backgrounding, and one device cannot speak for the others.

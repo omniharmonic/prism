@@ -22,7 +22,7 @@ final class ThreadListTests: XCTestCase {
             Fixture.thread("f", state: "working"),
         ]
         let sections = ThreadGrouping.sections(threads)
-        XCTAssertEqual(sections.map(\.title), ["Needs you", "Working", "Waiting", "Scheduled", "Done"])
+        XCTAssertEqual(sections.map(\.title), ["Needs you", "Working", "Waiting", "Scheduled", "Replied"])
         // The server's order is kept inside a group.
         XCTAssertEqual(sections[1].threads.map(\.id), ["b", "f"])
     }
@@ -33,8 +33,35 @@ final class ThreadListTests: XCTestCase {
             Fixture.thread("b", state: "done"),
             Fixture.thread("c", state: "done", archived: true),
         ])
-        XCTAssertEqual(sections.map(\.title), ["Done", "On hold"])
+        XCTAssertEqual(sections.map(\.title), ["Replied", "On hold"])
         XCTAssertEqual(sections[0].threads.map(\.id), ["b"])
+    }
+
+    func testNewRepliesStayAboveRecentGroupsAndCompletedRunsAreNotArchived() {
+        let fresh: OmniThread = Fixture.decode(["id": "fresh", "state": "done", "unread": 1, "lastActivityAt": "2026-10-10T16:00:00.000Z"])
+        let recent: OmniThread = Fixture.decode(["id": "recent", "state": "done", "lastActivityAt": "2026-10-10T15:00:00.000Z"])
+        let old: OmniThread = Fixture.decode(["id": "old", "state": "working", "lastActivityAt": "2026-10-09T15:00:00.000Z"])
+        let sections = ThreadGrouping.sections([old, recent, fresh])
+        XCTAssertEqual(sections.map(\.title), ["New replies", "Replied", "Working"])
+        XCTAssertEqual(sections[0].threads.map(\.id), ["fresh"])
+        XCTAssertFalse(fresh.archived)
+    }
+    func testHistoryUsesActivityDatesAndPinnedRowsStayFirst() {
+        func row(_ id: String, _ day: String, pinned: Bool = false) -> OmniThread {
+            Fixture.decode(["id": id, "state": "done", "pinned": pinned, "lastActivityAt": "2026-10-\(day)T15:00:00.000Z"])
+        }
+        let section = ThreadGrouping.sections([row("old", "08"), row("fresh", "10"), row("pinned", "07", pinned: true)])[0]
+        XCTAssertEqual(section.threads.map(\.id), ["pinned", "fresh", "old"])
+    }
+    func testStaleReadAcknowledgementCannotClearANewerReply() async {
+        let service = FakeService()
+        service.lists(.success(Fixture.list([Fixture.threadJSON("fresh", unread: 1, lastSeq: 9)])))
+        let model = make(service)
+        await model.refresh()
+        model.markRead("fresh", through: 8)
+        XCTAssertEqual(model.thread("fresh")?.unread, 1)
+        model.markRead("fresh", through: 9)
+        XCTAssertEqual(model.thread("fresh")?.unread, 0)
     }
 
     func testTitlesFallBackToThePreview() {
@@ -56,7 +83,7 @@ final class ThreadListTests: XCTestCase {
         let model = make(service)
         await model.refresh()
         XCTAssertEqual(model.phase, .loaded)
-        XCTAssertEqual(model.sections.map(\.title), ["Needs you", "Done"])
+        XCTAssertEqual(model.sections.map(\.title), ["New replies", "Replied"])
         XCTAssertEqual(model.unreadCount, 1)
         XCTAssertFalse(model.agentUnavailable)
         XCTAssertFalse(model.isEmpty)
@@ -195,6 +222,43 @@ final class ThreadModelTests: XCTestCase {
         let sink = ErrorSink { counter.bump() }
         approvals = ApprovalCenter(service: service, sink: sink)
         return ThreadModel(threadID: id, service: service, approvals: approvals, sink: sink, sleep: noSleep)
+    }
+
+    func testOnlyVisibleSnapshotsAcknowledgeUnreadAndLateClosedReadsDoNot() async {
+        func detail() -> ThreadDetail {
+            Fixture.decode(["thread": Fixture.threadJSON("t1", unread: 1, lastSeq: 7), "messages": [], "cards": [], "approvals": []])
+        }
+        service.details(.success(detail()), .success(detail()), .success(detail()))
+        let model = make()
+        await model.checkAgain() // background read: never presented
+        XCTAssertTrue(service.readCalls.isEmpty)
+        await model.open()
+        XCTAssertTrue(service.readCalls.isEmpty, "Inactive scenes cannot acknowledge a visible reply")
+        model.setSceneActive(true)
+        while service.readCalls.isEmpty { await Task.yield() }
+        XCTAssertEqual(service.readCalls, ["t1:7"])
+        model.close()
+        service.holdNextDetail()
+        let pending = Task { await model.open() }
+        while !service.detailIsWaiting { await Task.yield() }
+        model.close()
+        service.releaseDetail()
+        await pending.value
+        XCTAssertEqual(service.readCalls, ["t1:7"], "A request finishing after the screen closes cannot mark its reply read")
+    }
+
+    func testBackgroundReloadOfAnOpenConversationKeepsReplyUnread() async {
+        let unread: ThreadDetail = Fixture.decode(["thread": Fixture.threadJSON("t1", unread: 1, lastSeq: 7), "messages": [], "cards": [], "approvals": []])
+        service.details(.success(unread), .success(unread))
+        let model = make()
+        await model.open()
+        await model.changedOnServer()
+        XCTAssertTrue(model.isOpen)
+        XCTAssertTrue(service.readCalls.isEmpty)
+        model.close()
+        model.setSceneActive(true)
+        await Task.yield()
+        XCTAssertTrue(service.readCalls.isEmpty, "Foregrounding a closed conversation is not a read")
     }
 
     private let hello = Fixture.message("user", "hello", at: "2026-10-08T15:00:00.000Z", id: 1)

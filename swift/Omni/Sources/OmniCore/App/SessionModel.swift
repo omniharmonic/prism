@@ -207,9 +207,11 @@ public final class SessionModel {
         if threadModels.count >= 12 {
             for (key, model) in threadModels where !model.isOpen && model.draft.isEmpty { threadModels[key] = nil }
         }
-        let model = ThreadModel(threadID: id, service: service, approvals: approvals, sink: sink, sleep: sleep) { [weak self] id in
+        let model = ThreadModel(threadID: id, service: service, approvals: approvals, sink: sink, sleep: sleep, onRead: { [weak self] id, sequence in
+            self?.threads.markRead(id, through: sequence)
+        }, onUnavailable: { [weak self] id in
             self?.threads.markGone(id)
-        }
+        })
         threadModels[id] = model
         return model
     }

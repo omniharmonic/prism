@@ -428,6 +428,8 @@ function messageView(m: HermesMessage): Record<string, unknown> | null {
 omniApi.get("/threads/:id", async (c) => {
   const id = threadIdParam(c);
   if (!id) return c.json({ error: "not_found" }, 404);
+  const nonmarking = c.req.query("read") === "0";
+  const readSequence = getThread(id)?.eventSeq ?? 0;
   let session: HermesSession;
   let messages: HermesMessage[];
   try {
@@ -439,15 +441,29 @@ omniApi.get("/threads/:id", async (c) => {
     return hermesFailure(c, e);
   }
   const t = getThread(id);
-  if (t && t.unread) updateThread(id, { unread: 0 });
+  if (!nonmarking && t && t.unread) updateThread(id, { unread: 0 });
   expireApprovals();
   return c.json({
-    thread: threadView(getThread(id), session),
+    thread: { ...threadView(getThread(id), session), ...(nonmarking ? { lastSeq: readSequence } : {}) },
     messages: messages.map(messageView).filter(Boolean),
     cards: threadCards(id),
     approvals: threadApprovals(id).map(approvalView),
     activeTurnId: activeTurn(id)?.id ?? null,
   });
+});
+
+// Acknowledge only the snapshot displayed by a native client. New events remain unread.
+omniApi.post("/threads/:id/read", async (c) => {
+  const id = threadIdParam(c);
+  if (!id) return c.json({ error: "not_found" }, 404);
+  const b = await jsonBody(c);
+  if (!b || !Number.isSafeInteger(b.throughSeq) || Number(b.throughSeq) < 0) return bad(c, "throughSeq: a nonnegative event sequence");
+  const thread = getThread(id);
+  if (!thread) return c.json({ error: "not_found" }, 404);
+  if (Number(b.throughSeq) > thread.eventSeq) return bad(c, "throughSeq: a displayed event sequence");
+  const acknowledged = Number(b.throughSeq) === thread.eventSeq;
+  if (acknowledged) updateThread(id, { unread: 0 });
+  return c.json({ acknowledged });
 });
 
 omniApi.patch("/threads/:id", async (c) => {

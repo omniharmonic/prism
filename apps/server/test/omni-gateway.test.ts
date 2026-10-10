@@ -19,7 +19,7 @@ import { setHermesFetchForTests } from "../src/omni/hermes-client";
 import { setOmniRecordSourcesForTests, type NoteMeta } from "../src/omni/records";
 import { setOmniPusherForTests, subscribeThread, threadWatched } from "../src/omni/bus";
 import { turnSettled, stopOrphanedRuns } from "../src/omni/turns";
-import { eventsAfter, getTurn, getThread, auditRows, resetOmniStoreForTests, runningRunIds } from "../src/omni/store";
+import { eventsAfter, appendEvent, bumpUnread, getTurn, getThread, auditRows, resetOmniStoreForTests, runningRunIds } from "../src/omni/store";
 import { approvalDigest, canonicalJson, type Executor } from "../src/omni/approvals";
 import { INPROCESS_ACTOR, INPROCESS_CLIENT_KEY } from "../src/auth/actor";
 import { issueDeviceToken } from "../src/auth/device";
@@ -1044,4 +1044,27 @@ test("task pagination is owner-only and rejects cursor injection before vault di
     assert.equal(response.status, 400);
     assert.equal(response.headers.get("cache-control"), "private, no-store");
   }
+});
+
+
+test("native background reads preserve replies and sequence-bound receipts reject newer activity", async () => {
+  const { id, turnId } = await newThread([say("Here is the answer")]);
+  await turnSettled(turnId);
+  assert.equal(getThread(id)!.archived, false, "finishing a run never archives its conversation");
+  assert.ok(getThread(id)!.unread > 0, "a completed reply remains unread until displayed");
+  const detail = await (await req(`/threads/${id}?read=0`, { headers: owner() })).json() as {thread:{lastSeq:number}};
+  assert.ok(getThread(id)!.unread > 0, "nonmarking native fetch leaves unread intact");
+  appendEvent(id, null, {type:"status", state:"done"}, 100);
+  bumpUnread(id);
+  const stale = await post(`/threads/${id}/read`, {throughSeq:detail.thread.lastSeq});
+  assert.deepEqual(await stale.json(), {acknowledged:false});
+  assert.ok(getThread(id)!.unread > 0, "a late receipt cannot erase a newer reply");
+  const sequence = getThread(id)!.eventSeq;
+  assert.equal((await post(`/threads/${id}/read`, {throughSeq:sequence + 1})).status, 400);
+  assert.equal((await post(`/threads/${id}/read`, {throughSeq:sequence}, J)).status, 401);
+  assert.deepEqual(await (await post(`/threads/${id}/read`, {throughSeq:sequence})).json(), {acknowledged:true});
+  assert.equal(getThread(id)!.unread, 0);
+  bumpUnread(id);
+  await req(`/threads/${id}`, {headers:owner()});
+  assert.equal(getThread(id)!.unread, 0, "legacy clients retain their documented GET read behavior");
 });
