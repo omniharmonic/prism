@@ -87,13 +87,20 @@ interface SettingsStore {
   toggleFavorite: (item: RecentItem) => void;
 }
 
+/** CSS generic families must be unquoted; named fonts keep their saved choice. */
+function uiFontStack(fontFamily: string): string {
+  return fontFamily === "System UI" || fontFamily === "system-ui"
+    ? "-apple-system, BlinkMacSystemFont, 'Helvetica Neue', system-ui, sans-serif"
+    : `'${fontFamily}', system-ui, sans-serif`;
+}
+
 export const useSettingsStore = create<SettingsStore>()(
   persist(
     (set, get) => ({
       // Defaults
       // New installs follow the OS; a stored choice (every existing install has one) is kept.
       theme: "system",
-      fontFamily: "Inter",
+      fontFamily: "System UI",
       fontSize: 14,
       editorFontFamily: "Newsreader",
       monoFontFamily: "JetBrains Mono",
@@ -124,7 +131,7 @@ export const useSettingsStore = create<SettingsStore>()(
       },
       setFontFamily: (fontFamily) => {
         set({ fontFamily });
-        document.documentElement.style.setProperty("--font-sans", `'${fontFamily}', system-ui, sans-serif`);
+        document.documentElement.style.setProperty("--font-sans", uiFontStack(fontFamily));
       },
       setFontSize: (fontSize) => {
         set({ fontSize });
@@ -275,7 +282,7 @@ export function initializeSettings() {
 function applyTypography() {
   const state = useSettingsStore.getState();
   const root = document.documentElement;
-  root.style.setProperty("--font-sans", `'${state.fontFamily}', system-ui, sans-serif`);
+  root.style.setProperty("--font-sans", uiFontStack(state.fontFamily));
   root.style.setProperty("--font-serif", `'${state.editorFontFamily}', Georgia, serif`);
   root.style.setProperty("--font-mono", `'${state.monoFontFamily}', 'SF Mono', monospace`);
   if (state.fontSize !== 14) applyFontSize(state.fontSize);
