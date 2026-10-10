@@ -48,6 +48,8 @@ apps/server/*.sqlite-journal
 apps/server/data/
 # Private runtime media/map cache, generated beside the server database.
 /apps/server/media-cache/
+# Private environment snapshots from the named voice rollout helper.
+/apps/server/omni-tts-config-backups/
 
 # Never commit env files or their backups (only *.example templates) — secrets.
 apps/server/.env*
