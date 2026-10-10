@@ -614,7 +614,11 @@ test("agent-initiated turn: unread + an ids-only push + a notice on /events", as
 
 test("jobs: list (allowlisted fields) and pause through Hermes; bad ids never reach it", async () => {
   const l = (await (await req("/jobs", { headers: owner() })).json()) as { jobs: Array<Record<string, unknown>> };
-  assert.deepEqual(l.jobs, [{ id: "abcdef012345", name: "Brief", schedule: { kind: "cron", expr: "0 7 * * *", display: "0 7 * * *" }, enabled: true }]);
+  assert.deepEqual(l.jobs, [{
+    id: "abcdef012345", name: "Brief",
+    schedule: { kind: "cron", expr: "0 7 * * *", display: "0 7 * * *" }, enabled: true,
+    reviewedScript: false, canEdit: false, canRun: false, canResume: false,
+  }]);
   const p = await post("/jobs/abcdef012345/pause", {});
   assert.equal(p.status, 200);
   assert.equal(((await p.json()) as { job: { enabled: boolean } }).job.enabled, false);
