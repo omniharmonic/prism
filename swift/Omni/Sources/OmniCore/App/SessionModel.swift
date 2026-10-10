@@ -80,6 +80,7 @@ public final class SessionModel {
     public private(set) var voiceThreadID: String?
     /// Set only by an explicit foreground shortcut; toolbar entry never sets this.
     public private(set) var pendingVoiceActivationID: UUID?
+    private let microphoneOwner = UUID()
     private var voiceGeneration = 0
     private var voiceStartLease: Int?
     public var conversationAudio: (any ConversationAudio)?
@@ -119,18 +120,28 @@ public final class SessionModel {
         cancelPendingVoiceActivation()
         voiceStartLease = nil
         voiceGeneration += 1
-        conversationVoice?.cancel()
+        cancelConversationVoice()
         voiceThreadID = nil
         newThreadUsesVoice = true
         destination = .newThread
         newThreadRequests += 1
     }
-    public func closeNewVoice() { cancelPendingVoiceActivation(); voiceStartLease = nil; voiceGeneration += 1; conversationVoice?.cancel(); newThreadUsesVoice = false }
-    public func claimVoice(audio: any ConversationAudio, voice: VoiceConversation, threadID: String?) {
+    public func closeNewVoice() { cancelPendingVoiceActivation(); voiceStartLease = nil; voiceGeneration += 1; cancelConversationVoice(); newThreadUsesVoice = false }
+    @discardableResult public func claimVoice(audio: any ConversationAudio, voice: VoiceConversation, threadID: String?) -> Bool {
+        guard VoiceMicrophoneCoordinator.shared.acquireConversation(owner: microphoneOwner) else { return false }
         voiceStartLease = nil
         voiceGeneration += 1
         if conversationVoice !== voice { conversationVoice?.cancel() }
         conversationAudio = audio; conversationVoice = voice; voiceThreadID = threadID
+        return true
+    }
+    private func cancelConversationVoice() {
+        conversationVoice?.cancel()
+        VoiceMicrophoneCoordinator.shared.releaseConversation(owner: microphoneOwner)
+    }
+    isolated deinit {
+        conversationVoice?.cancel()
+        VoiceMicrophoneCoordinator.shared.releaseConversation(owner: microphoneOwner)
     }
     public var voiceLease: Int { voiceGeneration }
     public func ownsVoice(_ voice: VoiceConversation, threadID: String?) -> Bool {
@@ -139,11 +150,11 @@ public final class SessionModel {
     @discardableResult public func cancelVoice(_ voice: VoiceConversation, threadID: String?) -> Bool {
         guard ownsVoice(voice, threadID: threadID) else { return false }
         voiceStartLease = nil
-        voiceGeneration += 1; voice.cancel(); return true
+        voiceGeneration += 1; voice.cancel(); VoiceMicrophoneCoordinator.shared.releaseConversation(owner: microphoneOwner); return true
     }
     public func showVoice(in threadID: String) {
         cancelPendingVoiceActivation()
-        if voiceThreadID != threadID { voiceStartLease = nil; voiceGeneration += 1; conversationVoice?.cancel() }
+        if voiceThreadID != threadID { voiceStartLease = nil; voiceGeneration += 1; cancelConversationVoice() }
         voiceThreadID = threadID
     }
 
@@ -193,7 +204,7 @@ public final class SessionModel {
         cancelPendingVoiceActivation()
         voiceStartLease = nil
         voiceGeneration += 1
-        conversationVoice?.cancel(); conversationVoice = nil; conversationAudio = nil
+        cancelConversationVoice(); conversationVoice = nil; conversationAudio = nil
         voiceThreadID = nil; newThreadUsesVoice = false
         noticeTask?.cancel()
         noticeTask = nil
@@ -286,7 +297,7 @@ public final class SessionModel {
         dispatchedTaskThreads[task.noteId] = created.thread.id
         guard !Task.isCancelled, navigation == navigationGeneration, voiceRequest == voiceGeneration else { return false }
         cancelPendingVoiceActivation()
-        conversationVoice?.cancel()
+        cancelConversationVoice()
         voiceStartLease = nil
         voiceGeneration += 1
         newThreadUsesVoice = false
@@ -308,7 +319,7 @@ public final class SessionModel {
 
     public func requestNewThread() {
         cancelPendingVoiceActivation()
-        conversationVoice?.cancel()
+        cancelConversationVoice()
         voiceStartLease = nil
         voiceGeneration += 1
         newThreadUsesVoice = false

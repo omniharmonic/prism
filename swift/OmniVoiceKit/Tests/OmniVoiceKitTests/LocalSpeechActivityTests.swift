@@ -74,7 +74,7 @@ final class LocalSpeechActivityTests: XCTestCase {
         activity.append(Self.buffer())
         await fulfillment(of: [started], timeout: 2)
         let waiting = await probe.waiting; XCTAssertTrue(waiting)
-        for _ in 0..<20 { activity.append(Self.buffer()) }
+        for _ in 0..<40 { activity.append(Self.buffer()) }
         await fulfillment(of: [unavailable], timeout: 2)
         await probe.release()
         await fulfillment(of: [late], timeout: 0.1)
@@ -103,6 +103,84 @@ final class LocalSpeechActivityTests: XCTestCase {
         }.value
         await fulfillment(of: [unavailable], timeout: 1)
         await fulfillment(of: [inferred], timeout: 0.1)
+    }
+
+    nonisolated static func nativeBuffer(rate: Double, frames: Int, interleaved: Bool) -> AVAudioPCMBuffer {
+        let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: rate, channels: 2, interleaved: interleaved)!
+        let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(frames))!
+        buffer.frameLength = AVAudioFrameCount(frames)
+        for frame in 0..<frames {
+            if interleaved {
+                buffer.floatChannelData![0][frame * 2] = 0.2
+                buffer.floatChannelData![0][frame * 2 + 1] = 0.4
+            } else {
+                buffer.floatChannelData![0][frame] = 0.2
+                buffer.floatChannelData![1][frame] = 0.4
+            }
+        }
+        return buffer
+    }
+    func testNativeTapSizesProduceFreshFramesWithoutFormatFallback() async {
+        // 100 ms and 400 ms taps, including Apple's 4,800/19,200-frame 48 kHz sizes.
+        for rate in [16_000.0, 44_100.0, 48_000.0, 96_000.0] {
+            for duration in [0.1, 0.4] {
+                for interleaved in [false, true] {
+                    let probe = Probe()
+                    let first = expectation(description: "First fresh local result \(rate)/\(duration)/\(interleaved)")
+                    first.assertForOverFulfill = false
+                    let unavailable = expectation(description: "Valid tap must not fall back"); unavailable.isInverted = true
+                    let activity = LocalSpeechActivity(process: { await probe.process($0, state: $1) }, receive: { event in
+                        switch event {
+                        case let .frame(_, capturedAt, duration, _):
+                            XCTAssertLessThanOrEqual(ProcessInfo.processInfo.systemUptime - capturedAt, 0.5)
+                            XCTAssertEqual(duration, Double(VadManager.chunkSize) / 16_000)
+                            first.fulfill()
+                        case .unavailable: unavailable.fulfill()
+                        }
+                    })
+                    let count = duration == 0.1 ? 3 : 1
+                    let end = ProcessInfo.processInfo.systemUptime
+                    for index in 0..<count {
+                        let input = Self.nativeBuffer(rate: rate, frames: Int(rate * duration), interleaved: interleaved)
+                        activity.append(input, capturedEnd: end - Double(count - index - 1) * duration)
+                    }
+                    await fulfillment(of: [first], timeout: 2)
+                    activity.stop()
+                    await fulfillment(of: [unavailable], timeout: 0.01)
+                    let samples = await probe.samples
+                    XCTAssertEqual(samples.count, VadManager.chunkSize)
+                    let middle = samples.dropFirst(256).dropLast(256)
+                    XCTAssertEqual(Double(middle.reduce(0, +)) / Double(middle.count), 0.3, accuracy: 0.01)
+                }
+            }
+        }
+    }
+    func testOversizedDurationIsBoundedAndNeverInferred() async {
+        let unavailable = expectation(description: "Unbounded tap rejected")
+        let inferred = expectation(description: "Oversized tap never inferred"); inferred.isInverted = true
+        let activity = LocalSpeechActivity(process: { _, state in
+            inferred.fulfill(); return VadStreamResult(state: state, event: nil, probability: 0)
+        }, receive: { if case .unavailable = $0 { unavailable.fulfill() } })
+        activity.append(Self.nativeBuffer(rate: 48_000, frames: 24_000, interleaved: true))
+        await fulfillment(of: [unavailable], timeout: 1)
+        await fulfillment(of: [inferred], timeout: 0.01)
+        activity.stop()
+    }
+    func testInferenceThatBecomesStaleCannotEmitSilence() async {
+        let probe = Probe()
+        let started = expectation(description: "Inference started")
+        let unavailable = expectation(description: "Stale inference disables detector")
+        let emitted = expectation(description: "No stale silence evidence"); emitted.isInverted = true
+        let activity = LocalSpeechActivity(process: { await probe.process($0, state: $1, hold: true, onWaiting: { started.fulfill() }) }, receive: {
+            switch $0 { case .frame: emitted.fulfill(); case .unavailable: unavailable.fulfill() }
+        })
+        defer { activity.stop() }
+        activity.append(Self.buffer())
+        await fulfillment(of: [started], timeout: 2)
+        try? await Task.sleep(for: .milliseconds(550))
+        await probe.release()
+        await fulfillment(of: [unavailable], timeout: 1)
+        await fulfillment(of: [emitted], timeout: 0.01)
     }
 
 }

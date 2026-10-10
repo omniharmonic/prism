@@ -27,9 +27,15 @@ struct OmniApp: App {
         Window("Omni", id: "main") {
             RootView(app: app)
                 .frame(minWidth: 760, minHeight: 500)
+                .modifier(MacVoiceShortcutSetup())
+                .modifier(MacWakeReadiness(app: app))
         }
         .defaultSize(width: 1040, height: 700)
         .commands { OmniCommands(app: app) }
+
+        MenuBarExtra("Omni Voice", systemImage: "waveform") {
+            MacVoiceMenu()
+        }
 
         Settings {
             SettingsView(app: app)

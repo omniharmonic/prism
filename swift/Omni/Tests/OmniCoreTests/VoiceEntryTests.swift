@@ -123,4 +123,48 @@ import PrismTransport
         }
     }
 
+    func testRetainedPanelBindingAdoptsFirstCreatedVoiceAndCannotStealCompletion() async {
+        let service = FakeService(); let session = SessionModel(service: service, sleep: noSleep) {}
+        // This binding represents State already initialized before the first creation.
+        let staleAudio = VoiceConversationTests.Audio()
+        let staleVoice = VoiceConversation(audio: staleAudio)
+        let retainedPanel = VoiceControlBinding(audio: staleAudio, voice: staleVoice)
+        let audio = VoiceConversationTests.Audio(); audio.holdPlayback = true
+        let voice = VoiceConversation(audio: audio)
+        session.requestNewVoice()
+        XCTAssertTrue(session.claimVoice(audio: audio, voice: voice, threadID: nil))
+        await voice.start()
+        service.created(.success(Fixture.decode(["thread": Fixture.threadJSON("t1", state: "done"), "turnId": "turn1"])))
+        await voice.finish { await session.startVoiceThread(prompt: $0, voice: voice) }
+        service.details(.success(Fixture.detail(lastSeq: 2)))
+        service.streams([.success(Fixture.event(1, turn: "turn1", .text(blockId: "answer", text: "First answer."))), .success(Fixture.event(2, turn: "turn1", .result(ok: true, durationMs: 1, errorCode: nil)))])
+        let model = session.threadModel(for: "t1"); await model.open()
+        await eventually { model.completedVoiceTurnID == "turn1" }
+        // An unadopted control may observe completion first. The receipt stays intact.
+        retainedPanel.consume(session: session, model: model)
+        XCTAssertEqual(model.completedVoiceTurnID, "turn1")
+        XCTAssertTrue(staleAudio.speech.isEmpty)
+        XCTAssertTrue(retainedPanel.reconcile(session: session, threadID: "t1"))
+        XCTAssertTrue(retainedPanel.voice === voice)
+        XCTAssertTrue(retainedPanel.audio === audio)
+        voice.canAutomaticallyListen = { session.ownsVoice(retainedPanel.voice, threadID: model.threadID) && !model.isRunning }
+        retainedPanel.consume(session: session, model: model)
+        XCTAssertNil(model.completedVoiceTurnID)
+        XCTAssertEqual(audio.speech, ["First answer."])
+        await eventually { audio.playbackGate != nil }
+        XCTAssertEqual(voice.state, .speaking)
+        XCTAssertEqual(audio.starts, 1)
+        retainedPanel.consume(session: session, model: model)
+        XCTAssertEqual(audio.speech, ["First answer."], "Repeated observation must not replay the receipt")
+        audio.holdPlayback = false; audio.playbackGate?.resume(); audio.playbackGate = nil
+        await eventually { voice.state == .listening }
+        XCTAssertEqual(audio.starts, 2)
+        XCTAssertEqual(staleAudio.starts, 0)
+        session.cancelVoice(voice, threadID: "t1")
+        XCTAssertEqual(voice.state, .off)
+        XCTAssertFalse(retainedPanel.reconcile(session: session, threadID: "t1"))
+        XCTAssertEqual(voice.state, .off, "Reconciliation cannot restart an ended session")
+        model.close(); session.stop()
+    }
+
 }

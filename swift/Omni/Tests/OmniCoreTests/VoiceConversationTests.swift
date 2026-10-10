@@ -107,7 +107,7 @@ import XCTest
         XCTAssertFalse(sent)
         XCTAssertEqual(voice.state, .off)
     }
-    func testActualStreamSentencesAreNotRepeatedOnReplayOrFinalReplacement() async {
+    func testCompletedAssistantBlocksAreNotRepeatedOnReplay() async {
         let audio = Audio(); let voice = VoiceConversation(audio: audio)
         await voice.start()
         var submitted = ""
@@ -115,11 +115,14 @@ import XCTest
         XCTAssertEqual(submitted, "What is next?")
         voice.consume([.streamingText(id: "b1", text: "First answer. More", isFinal: false)], running: true)
         voice.consume([.streamingText(id: "b1", text: "First answer. More", isFinal: false)], running: true)
-        voice.consume([.streamingText(id: "b1", text: "First answer. More detail.", isFinal: true)], running: false)
-        XCTAssertEqual(audio.speech, ["First answer.", "More detail."])
+        XCTAssertTrue(audio.speech.isEmpty, "Incomplete Markdown must not leak into narration")
+        let completed: [TimelineItem] = [.streamingText(id: "b1", text: "First answer. More detail.", isFinal: true)]
+        voice.consume(completed, running: false)
+        voice.consume(completed, running: false)
+        XCTAssertEqual(audio.speech, ["First answer. More detail."])
         voice.cancel()
         voice.consume([.streamingText(id: "b2", text: "Late answer.", isFinal: true)], running: false)
-        XCTAssertEqual(audio.speech.count, 2)
+        XCTAssertEqual(audio.speech.count, 1)
     }
     func testPreviousAnswerBaselineIsNotReadAsNewVoiceResponse() async {
         let audio = Audio(); let voice = VoiceConversation(audio: audio)
@@ -158,7 +161,7 @@ import XCTest
         audio.playbackGate?.resume()
         while audio.starts == 1 { await Task.yield() }
         XCTAssertEqual(voice.state, .listening)
-        XCTAssertEqual(audio.speech, ["First sentence.", "Final."])
+        XCTAssertEqual(audio.speech, ["First sentence. Final."])
     }
     func testEndMuteAndPrivacyPreventLatePlaybackRestart() async {
         for action in 0..<3 {

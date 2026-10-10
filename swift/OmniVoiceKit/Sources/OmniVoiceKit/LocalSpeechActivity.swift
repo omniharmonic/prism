@@ -23,7 +23,7 @@ final class LocalSpeechActivity: @unchecked Sendable {
     init(process: @escaping @Sendable ([Float], VadStreamState) async throws -> VadStreamResult,
          receive: @escaping @Sendable (SpeechActivityEvent) -> Void) {
         self.receive = receive
-        let (stream, continuation) = AsyncStream<PCM>.makeStream(bufferingPolicy: .bufferingNewest(16))
+        let (stream, continuation) = AsyncStream<PCM>.makeStream(bufferingPolicy: .bufferingNewest(32))
         self.continuation = continuation
         worker = Task.detached(priority: .userInitiated) { [weak self] in
             guard let self else { return }
@@ -36,7 +36,7 @@ final class LocalSpeechActivity: @unchecked Sendable {
                     guard !Task.isCancelled, self.isActive else { return }
                     let inputDuration = Double(pcm.samples.count) / pcm.rate
                     // Gaps or stalled audio never become evidence of silence.
-                    if let previousCapture, pcm.capturedAt - previousCapture > inputDuration + 0.15 {
+                    if let previousCapture, abs((pcm.capturedAt - inputDuration) - previousCapture) > 0.15 {
                         self.stop(reason: "Automatic detection lost audio continuity. Use Send turn."); return
                     }
                     previousCapture = pcm.capturedAt
@@ -55,6 +55,9 @@ final class LocalSpeechActivity: @unchecked Sendable {
                         let result = try await process(chunk, state)
                         state = result.state
                         guard !Task.isCancelled, self.isActive else { return }
+                        guard ProcessInfo.processInfo.systemUptime - capturedAt <= 0.5 else {
+                            self.stop(reason: "Automatic detection fell behind. Use Send turn."); return
+                        }
                         // Low-confidence speech cancels endpoints conservatively; silence
                         // hysteresis is not counted as observed speech for the minimum.
                         self.receive(.frame(audioTime: Double(state.processedSamples) / 16_000,
@@ -72,7 +75,11 @@ final class LocalSpeechActivity: @unchecked Sendable {
     nonisolated func append(_ buffer: AVAudioPCMBuffer, capturedEnd: Double? = nil) {
         guard isActive else { return }
         let frames = Int(buffer.frameLength), channels = Int(buffer.format.channelCount)
-        guard frames > 0, frames <= 4096, channels > 0, channels <= 8,
+        // Apple may supply a different frame count than the requested tap size.
+        // Accept at most 400 ms, then copy bounded pieces rather than allocating
+        // a callback-sized array. At 192 kHz this is at most 19 queued pieces.
+        let rate = buffer.format.sampleRate
+        guard frames > 0, Double(frames) / rate <= 0.4, channels > 0, channels <= 8,
               buffer.format.sampleRate >= 8_000, buffer.format.sampleRate <= 192_000,
               let data = buffer.floatChannelData else {
             stop(reason: "Automatic detection cannot read this microphone format. Use Send turn."); return
@@ -82,20 +89,33 @@ final class LocalSpeechActivity: @unchecked Sendable {
         guard capturedAt.isFinite, now - capturedAt >= -0.05, now - capturedAt <= 0.5 else {
             stop(reason: "Automatic detection received delayed microphone audio. Use Send turn."); return
         }
-        var mono = [Float](repeating: 0, count: frames)
-        for frame in 0..<frames {
-            var value: Float = 0
-            for channel in 0..<channels {
-                value += buffer.format.isInterleaved ? data[0][frame * channels + channel] : data[channel][frame]
+        let pieceSize = min(4096, max(1, Int(rate * 0.1)))
+        var offset = 0
+        while offset < frames {
+            guard isActive else { return }
+            let count = min(pieceSize, frames - offset)
+            var mono = [Float](repeating: 0, count: count)
+            for index in 0..<count {
+                let frame = offset + index
+                var value: Float = 0
+                for channel in 0..<channels {
+                    value += buffer.format.isInterleaved ? data[0][frame * channels + channel] : data[channel][frame]
+                }
+                mono[index] = value / Float(channels)
             }
-            mono[frame] = value / Float(channels)
-        }
-        let pcm = PCM(samples: mono, rate: buffer.format.sampleRate, capturedAt: capturedAt)
-        switch continuation.yield(pcm) {
-        case .dropped: stop(reason: "Automatic detection could not keep up with microphone audio. Use Send turn.")
-        case .terminated: break
-        case .enqueued: break
-        @unknown default: stop(reason: "Automatic detection lost microphone audio. Use Send turn.")
+            // capturedAt denotes the end of this piece, not callback arrival.
+            // All pieces retain their position within the original tap buffer.
+            let pieceEnd = capturedAt - Double(frames - offset - count) / rate
+            let pcm = PCM(samples: mono, rate: rate, capturedAt: pieceEnd)
+            switch continuation.yield(pcm) {
+            case .dropped:
+                stop(reason: "Automatic detection could not keep up with microphone audio. Use Send turn."); return
+            case .terminated: return
+            case .enqueued: break
+            @unknown default:
+                stop(reason: "Automatic detection lost microphone audio. Use Send turn."); return
+            }
+            offset += count
         }
     }
     func stop(reason: String? = nil) {

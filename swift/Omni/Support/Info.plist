@@ -15,7 +15,7 @@
     <array><dict><key>CFBundleURLSchemes</key><array><string>omni</string></array></dict></array>
 	<key>NSFaceIDUsageDescription</key>
 	<string>Omni uses Face ID to unlock private conversations and confirm actions you approve.</string>
-	<key>NSMicrophoneUsageDescription</key><string>Talk to Omni using the microphone. Recording starts when you choose to speak.</string>
-	<key>NSSpeechRecognitionUsageDescription</key><string>Transcribe your speech on this device so you can send the text to Omni.</string>
+	<key>NSMicrophoneUsageDescription</key><string>Talk to Omni using the microphone. On Mac, you can also choose to enable local Hey Omni listening.</string>
+	<key>NSSpeechRecognitionUsageDescription</key><string>Recognize your speech on this device for voice conversations and optional Hey Omni activation on Mac.</string>
 </dict>
 </plist>

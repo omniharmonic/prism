@@ -159,4 +159,16 @@ import XCTest
         XCTAssertFalse(app.session!.newThreadUsesVoice)
         app.session?.stop()
     }
+    func testMostRecentlyReadySceneReceivesAnUnroutedRequest() async {
+        let first = await app(); let second = await app()
+        let coordinator = VoiceActivationCoordinator()
+        _ = ready(coordinator, app: first)
+        let secondID = ready(coordinator, app: second)
+        coordinator.request()
+        XCTAssertNil(first.session!.pendingVoiceActivationID)
+        XCTAssertNotNil(second.session!.pendingVoiceActivationID)
+        XCTAssertTrue(coordinator.consume(session: second.session!, sceneID: secondID, threadID: nil))
+        first.session?.stop(); second.session?.stop()
+    }
+
 }

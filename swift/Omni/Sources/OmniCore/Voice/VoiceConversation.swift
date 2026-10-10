@@ -4,6 +4,9 @@ import Observation
 /// The microphone and speech engines are injected. No lifecycle callback can make a
 /// pending permission request begin capture or submit a late transcript off screen.
 @MainActor public protocol ConversationAudio: AnyObject {
+    var recoveryNotice: String? { get }
+    func configureInterruption(enabled: Bool, receive: @escaping @MainActor (VoiceInterruptionEvent) -> Void)
+    func configureRecordingLimit(_ receive: @escaping @MainActor () -> Void)
     func start() async throws
     func finish() async throws -> String
     func cancel()
@@ -13,7 +16,12 @@ import Observation
     func silence()
 }
 
+public enum VoiceInterruptionEvent: Sendable { case speech, speechEvidence(VoiceActivityFrame), unavailable(String), playbackFailed(String) }
+
 public extension ConversationAudio {
+    func configureInterruption(enabled: Bool, receive: @escaping @MainActor (VoiceInterruptionEvent) -> Void) {}
+    var recoveryNotice: String? { nil }
+    func configureRecordingLimit(_ receive: @escaping @MainActor () -> Void) {}
     func configureActivity(enabled: Bool, receive: @escaping @MainActor (VoiceActivityEvent) -> Void) {
         if enabled { receive(.unavailable("Automatic speech detection is unavailable. Use Send turn.")) }
     }
@@ -30,6 +38,10 @@ public extension ConversationAudio {
     public var canAutomaticallyListen: @MainActor () -> Bool = { false }
     public private(set) var endpointCountdown: Int?
     public private(set) var activityNotice: String?
+    public var acousticInterruptionEnabled = false
+    public private(set) var interruptionNotice: String?
+    public var saveRecoveredDraft: @MainActor (String) -> Void = { _ in }
+    public var recordingLimitReached: @MainActor () -> Void = {}
     public var automaticFinish: @MainActor () -> Void = {}
     public private(set) var endpointMode: VoiceTurnMode = .thinkAloud
     public private(set) var endpointPause = 12.0
@@ -108,8 +120,30 @@ public extension ConversationAudio {
         isSessionActive = true
         let request = generation
         state = .preparing; problem = nil; transcript = ""
-        activityNotice = nil; endpointCountdown = nil
+        activityNotice = nil; interruptionNotice = nil; endpointCountdown = nil
+        audio.configureInterruption(enabled: acousticInterruptionEnabled) { [weak self] event in
+            guard let self, self.generation == request, self.isSessionActive, !self.privacyLocked else { return }
+            switch event {
+            case .unavailable(let reason): self.interruptionNotice = reason
+            case .playbackFailed(let reason):
+                self.pause(); self.problem = "Speech playback stopped: \(reason). Resume or review the reply in chat."
+            case .speech, .speechEvidence:
+                guard self.state == .answering || self.state == .speaking else { return }
+                self.drainTask?.cancel(); self.drainTask = nil
+                self.audio.silence(); self.spoken = [:]; self.pendingCompletion = nil
+                self.endpointPolicy = VoiceEndpointPolicy(pauseSeconds: self.endpointPause)
+                if case .speechEvidence(let evidence) = event {
+                    _ = self.endpointPolicy.accept(evidence, now: ProcessInfo.processInfo.systemUptime)
+                }
+                self.state = .listening; self.transcript = ""
+                self.watchActivity(request: request)
+            }
+        }
         endpointPolicy = VoiceEndpointPolicy(pauseSeconds: endpointPause)
+        audio.configureRecordingLimit { [weak self] in
+            guard let self, self.generation == request, self.state == .listening else { return }
+            self.recordingLimitReached()
+        }
         audio.configureActivity(enabled: endpointMode == .automatic) { [weak self] event in
             self?.receiveActivity(event, request: request)
         }
@@ -138,7 +172,13 @@ public extension ConversationAudio {
                 problem = !submit && draftReason == .pause ? nil : "No speech was recognized. Try again."
                 return
             }
+            let recovery = audio.recoveryNotice
             transcript = text; spoken = [:]; pendingCompletion = nil
+            if let recovery {
+                saveRecoveredDraft(text)
+                state = .paused; problem = recovery
+                return
+            }
             submitting = submit
             let sent = await send(text)
             guard generation == request, !Task.isCancelled else { return }
@@ -161,8 +201,8 @@ public extension ConversationAudio {
         }
     }
 
-    /// Speak complete sentences as the real Hermes text stream grows. Remember the
-    /// emitted prefix per block, so sequence replay and final replacement cannot repeat it.
+    /// Narrate completed assistant blocks only. Markdown structures can span stream
+    /// fragments; the complete original stays in chat while narration omits artifacts.
     public func consume(_ timeline: [TimelineItem], running: Bool) {
         guard isSessionActive, state == .answering || state == .speaking else { return }
         if running {
@@ -170,18 +210,12 @@ public extension ConversationAudio {
             state = .answering
         }
         for item in timeline {
-            guard case .streamingText(let id, let text, let final) = item else { continue }
-            let prefix = spoken[id] ?? ""
-            guard text.hasPrefix(prefix) else { continue } // a revised hypothesis is never repeated
-            let remainder = String(text.dropFirst(prefix.count))
-            let end = final || !running ? remainder.endIndex : remainder.lastIndex(where: { ".!?\n".contains($0) }).map { remainder.index(after: $0) }
-            guard let end else { continue }
-            let sentence = String(remainder[..<end])
-            spoken[id] = prefix + sentence
-            let words = sentence.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard case .streamingText(let id, let text, let final) = item, final || !running else { continue }
+            guard spoken[id] == nil else { continue }
+            spoken[id] = text
+            let words = SpeechText.narration(from: text).trimmingCharacters(in: .whitespacesAndNewlines)
             if !words.isEmpty { audio.speak(words) }
         }
-
     }
 
     /// Call only for the completed voice run, including replies completed before

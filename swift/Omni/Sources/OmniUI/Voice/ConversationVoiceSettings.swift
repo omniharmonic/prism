@@ -28,6 +28,8 @@ struct ConversationVoiceSettings: View {
                     }
                     if device.turnPreferences.mode == .automatic {
                         Picker("Wait after speech", selection: Binding(get: { device.turnPreferences.pauseSeconds }, set: { device.turnPreferences.pauseSeconds = $0 })) {
+                            Text("2 seconds").tag(2.0)
+                            Text("4 seconds").tag(4.0)
                             Text("8 seconds").tag(8.0)
                             Text("12 seconds").tag(12.0)
                             Text("20 seconds").tag(20.0)
@@ -37,8 +39,13 @@ struct ConversationVoiceSettings: View {
                     if device.turnPreferences.mode == .automatic {
                         Text("After you speak, Omni waits through the selected pause, then shows a 3-second countdown. Speak again or tap Keep listening to cancel it. Speech detection runs on this device and may download a small model on first use. Changes apply when you next start or resume a session.")
                     } else {
-                        Text("Tap Send turn when you're ready for Omni to respond. Pause keeps your words as an unsent draft. At two minutes, recording pauses and saves a draft.")
+                        Text("Tap Send turn when you're ready for Omni to respond. Pause keeps your words as an unsent draft. Long recordings are transcribed in sections on this device. At 15 minutes, or if transcription cannot keep up, Omni pauses and keeps recognized words as an unsent draft.")
                     }
+                }
+                Section {
+                    Toggle("Interrupt by speaking", isOn: Binding(get: { device.turnPreferences.acousticInterruption }, set: { device.turnPreferences.acousticInterruption = $0 }))
+                } header: { Text("Experimental") } footer: {
+                    Text("Listen for your voice while Omni speaks, using on-device echo cancellation. If playback interrupts itself, turn this off and use Interrupt and speak. Changes apply to the next session.")
                 }
                 Section {
                     Picker("Language & region", selection: Binding(get: { preferences.language }, set: {
@@ -76,6 +83,16 @@ struct ConversationVoiceSettings: View {
                         if device.speech.isPreviewing { device.stopPreview() }
                         else { device.previewVoice(identifier: chosen?.id) }
                     }.accessibilityIdentifier("voice.preview")
+                }
+                Section("Open voice quickly") {
+                    #if os(macOS)
+                    Text("Press Control–Option–Command–Space while Omni is running, or choose Talk to Omni from the menu bar.")
+                    Text("For experimental Hey Omni, enable it in the menu bar. Wait for Listening before speaking your request.")
+                    #else
+                    Text("On iPhone, open Settings → Action Button → Shortcut → Choose a Shortcut, then choose Talk to Omni.")
+                    Text("On iPad, add Omni’s Talk to Omni action to a shortcut, then put it on your Home Screen or in a Shortcuts widget.")
+                    #endif
+                    Text("Unlock and sign in when asked. Repeated presses keep the current conversation.").font(.callout).foregroundStyle(.secondary)
                 }
                 Section("More voices") {
                     if !available.contains(where: { $0.quality > .standard }) {
