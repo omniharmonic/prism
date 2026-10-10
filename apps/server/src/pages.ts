@@ -857,7 +857,7 @@ export function createPagesApi(opts: PagesApiOptions = {}) {
         } catch { return "leaf_check_failed" as const; }
       }
       const done: string[] = [];
-      const items = [{ id: root.id, path: root.path, stamp: (typeof body.if_updated_at === "string" ? body.if_updated_at : root.updatedAt) as string | null }, ...group.map((g) => ({ id: g.id, path: g.path, stamp: g.updatedAt }))];
+      const items = [{ id: root.id, path: root.path, stamp: (typeof body.if_updated_at === "string" ? body.if_updated_at : root.updatedAt) as string | null }, ...(body.require_leaf === true ? [] : group.map((g) => ({ id: g.id, path: g.path, stamp: g.updatedAt })))];
       for (const it of items) {
         try {
           await casWrite(entry, it.id, it.path, it.stamp, {

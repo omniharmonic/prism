@@ -335,3 +335,12 @@ test("require_leaf rechecks the subtree inside the mutation lock", async () => {
     assert.equal(response.status, 409); assert.equal(reads, 2); assert.equal(patches().length, 0);
   } finally { globalThis.fetch = original; }
 });
+
+
+test("require_leaf only writes the root after an initially live child disappears", async () => {
+  fv.put({id:"leaf",path:"vault/Leaf",tags:["team"]});fv.put({id:"child",path:"vault/Leaf/Child",tags:["team"]});
+  const original=globalThis.fetch;let reads=0;
+  globalThis.fetch=async(input,init)=>{const url=new URL(typeof input==="string"?input:input instanceof URL?input.href:input.url);const response=await original(input,init);
+    if(url.pathname.endsWith("/notes")&&url.searchParams.get("path_prefix")==="vault/Leaf"&&++reads===1){fv.notes.get("child")!.tags!.push(TRASH_TAG);fv.notes.get("child")!.updatedAt="2026-10-10T12:00:00.000Z";}return response;};
+  try {const response=await post("/notes/leaf/trash",{if_updated_at:fv.notes.get("leaf")!.updatedAt,require_leaf:true},as(OWNER));assert.equal(response.status,200);assert.deepEqual(patches().map(c=>c.path.split("/").pop()),["leaf"]);}finally{globalThis.fetch=original;}
+});
