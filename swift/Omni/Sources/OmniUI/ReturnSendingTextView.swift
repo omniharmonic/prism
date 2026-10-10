@@ -5,7 +5,7 @@ import UIKit
 /// Software-keyboard Return submits; hardware Shift-Return remains a deliberate newline.
 struct ReturnSendingTextView: UIViewRepresentable {
     @Binding var text: String
-    var focused: FocusState<Bool>.Binding
+    @Binding var focused: Bool
     let label: String
     let canSend: Bool
     let onSend: () -> Void
@@ -29,15 +29,15 @@ struct ReturnSendingTextView: UIViewRepresentable {
         view.accessibilityHint = "Return sends. Shift-Return starts a new line."
         Task { @MainActor [weak view, weak coordinator = context.coordinator] in
             guard let view, let coordinator, view.window != nil else { return }
-            if coordinator.parent.focused.wrappedValue && !view.isFirstResponder { view.becomeFirstResponder() }
-            else if !coordinator.parent.focused.wrappedValue && view.isFirstResponder { view.resignFirstResponder() }
+            if coordinator.parent.focused && !view.isFirstResponder { view.becomeFirstResponder() }
+            else if !coordinator.parent.focused && view.isFirstResponder { view.resignFirstResponder() }
         }
     }
     final class Coordinator: NSObject, UITextViewDelegate {
         var parent: ReturnSendingTextView
         init(_ parent: ReturnSendingTextView) { self.parent = parent }
-        func textViewDidBeginEditing(_ view: UITextView) { parent.focused.wrappedValue = true }
-        func textViewDidEndEditing(_ view: UITextView) { parent.focused.wrappedValue = false }
+        func textViewDidBeginEditing(_ view: UITextView) { parent.focused = true }
+        func textViewDidEndEditing(_ view: UITextView) { parent.focused = false }
         func textViewDidChange(_ view: UITextView) { parent.text = view.text }
         func textView(_ view: UITextView, shouldChangeTextIn range: NSRange, replacementText text: String) -> Bool {
             // Do not submit an IME composition or treat pasted multiline text as a send.
@@ -77,7 +77,7 @@ import AppKit
 
 struct ReturnSendingTextView: NSViewRepresentable {
     @Binding var text: String
-    var focused: FocusState<Bool>.Binding
+    @Binding var focused: Bool
     let label: String
     let canSend: Bool
     let onSend: () -> Void
@@ -88,7 +88,11 @@ struct ReturnSendingTextView: NSViewRepresentable {
         scroll.drawsBackground = false
         scroll.hasVerticalScroller = true
         scroll.autohidesScrollers = true
-        let view = NSTextView()
+        let view = ComposerNSTextView()
+        view.focusChanged = { [weak coordinator = context.coordinator] focused in
+            guard let coordinator, coordinator.parent.focused != focused else { return }
+            coordinator.parent.focused = focused
+        }
         view.delegate = context.coordinator
         view.isRichText = false
         view.drawsBackground = false
@@ -110,21 +114,19 @@ struct ReturnSendingTextView: NSViewRepresentable {
         view.setAccessibilityHelp("Return sends. Shift-Return starts a new line.")
         Task { @MainActor [weak view, weak coordinator = context.coordinator] in
             guard let view, let coordinator, let window = view.window else { return }
-            if coordinator.parent.focused.wrappedValue, window.firstResponder !== view { window.makeFirstResponder(view) }
-            else if !coordinator.parent.focused.wrappedValue, window.firstResponder === view { window.makeFirstResponder(nil) }
+            if coordinator.parent.focused, window.firstResponder !== view { window.makeFirstResponder(view) }
+            else if !coordinator.parent.focused, window.firstResponder === view { window.makeFirstResponder(nil) }
         }
     }
     final class Coordinator: NSObject, NSTextViewDelegate {
         var parent: ReturnSendingTextView
         init(_ parent: ReturnSendingTextView) { self.parent = parent }
-        func textDidBeginEditing(_ notification: Notification) { parent.focused.wrappedValue = true }
-        func textDidEndEditing(_ notification: Notification) { parent.focused.wrappedValue = false }
         func textDidChange(_ notification: Notification) {
             if let view = notification.object as? NSTextView { parent.text = view.string }
         }
         func textView(_ view: NSTextView, doCommandBy selector: Selector) -> Bool {
             guard selector == #selector(NSResponder.insertNewline(_:)) else { return false }
-            switch ComposerReturnBehavior.action(replacement: "\n", shift: false,
+            switch ComposerReturnBehavior.action(replacement: "\n", shift: (view as? ComposerNSTextView)?.shiftReturn == true,
                 composing: view.hasMarkedText(), canSend: parent.canSend) {
             case .send: parent.onSend(); return true
             case .consume: return true
@@ -134,7 +136,7 @@ struct ReturnSendingTextView: NSViewRepresentable {
     }
 }
 /// Keep the editable document hittable even while its draft is empty.
-private final class ComposerScrollView: NSScrollView {
+final class ComposerScrollView: NSScrollView {
     override func layout() {
         super.layout()
         guard let editor = documentView as? NSTextView else { return }
@@ -142,6 +144,26 @@ private final class ComposerScrollView: NSScrollView {
         editor.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
         let size = NSSize(width: contentSize.width, height: max(editor.frame.height, contentSize.height))
         if editor.frame.size != size { editor.setFrameSize(size) }
+    }
+}
+/// Focus acquisition happens before editing; synchronize it at the responder boundary.
+final class ComposerNSTextView: NSTextView {
+    var focusChanged: ((Bool) -> Void)?
+    private(set) var shiftReturn = false
+    override func becomeFirstResponder() -> Bool {
+        let accepted = super.becomeFirstResponder()
+        if accepted { focusChanged?(true) }
+        return accepted
+    }
+    override func resignFirstResponder() -> Bool {
+        let accepted = super.resignFirstResponder()
+        if accepted { focusChanged?(false) }
+        return accepted
+    }
+    override func keyDown(with event: NSEvent) {
+        shiftReturn = (event.keyCode == 36 || event.keyCode == 76) && event.modifierFlags.contains(.shift)
+        defer { shiftReturn = false }
+        super.keyDown(with: event)
     }
 }
 #endif

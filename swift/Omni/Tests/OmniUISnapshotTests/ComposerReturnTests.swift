@@ -20,9 +20,8 @@ import SwiftUI
 
 extension ComposerReturnTests {
     @MainActor func testNativeMacDelegateSendsReturnButLeavesLineBreakPasteAndCompositionToEditor() {
-        let focus = FocusState<Bool>()
         var sends = 0
-        let editor = ReturnSendingTextView(text: .constant("draft"), focused: focus.projectedValue,
+        let editor = ReturnSendingTextView(text: .constant("draft"), focused: .constant(false),
             label: "Message", canSend: true, onSend: { sends += 1 })
         let delegate = editor.makeCoordinator()
         let view = NSTextView()
@@ -36,6 +35,48 @@ extension ComposerReturnTests {
         XCTAssertTrue(view.hasMarkedText())
         XCTAssertFalse(delegate.textView(view, doCommandBy: #selector(NSResponder.insertNewline(_:))))
         XCTAssertEqual(sends, 1, "Return must first commit marked input")
+    }
+}
+#endif
+
+#if os(macOS)
+extension ComposerReturnTests {
+    @MainActor func testNativeMacResponderAndHardwareReturnInEmptyComposer() throws {
+        _ = NSApplication.shared
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 360, height: 80), styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        let scroll = ComposerScrollView(frame: NSRect(x: 0, y: 0, width: 360, height: 80))
+        let view = ComposerNSTextView()
+        view.isRichText = false
+        view.isVerticallyResizable = true
+        view.isHorizontallyResizable = false
+        view.textContainer?.widthTracksTextView = true
+        scroll.documentView = view
+        window.contentView = scroll
+        scroll.layoutSubtreeIfNeeded()
+        scroll.layout()
+        XCTAssertGreaterThan(view.frame.height, 0)
+        XCTAssertGreaterThan(view.frame.width, 0)
+        var actualFocus = false
+        view.focusChanged = { actualFocus = $0 }
+        XCTAssertTrue(window.makeFirstResponder(view))
+        XCTAssertTrue(actualFocus, "Click focus must be reported before the first text change")
+        var sends = 0
+        let editor = ReturnSendingTextView(text: .constant(""), focused: .constant(false), label: "Message", canSend: true, onSend: { sends += 1 })
+        let delegate = editor.makeCoordinator()
+        view.delegate = delegate
+        view.insertText("first")
+        let shifted = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: .shift, timestamp: 0, windowNumber: window.windowNumber, context: nil, characters: "\r", charactersIgnoringModifiers: "\r", isARepeat: false, keyCode: 36))
+        view.keyDown(with: shifted)
+        view.insertText("second")
+        XCTAssertTrue(view.string.contains("\n"))
+        XCTAssertEqual(sends, 0)
+        let plain = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: window.windowNumber, context: nil, characters: "\r", charactersIgnoringModifiers: "\r", isARepeat: false, keyCode: 36))
+        view.keyDown(with: plain)
+        XCTAssertEqual(sends, 1)
+        XCTAssertTrue(window.makeFirstResponder(nil))
+        XCTAssertFalse(actualFocus)
+        window.close()
     }
 }
 #endif

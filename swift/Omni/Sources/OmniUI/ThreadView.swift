@@ -196,7 +196,7 @@ struct Composer<Accessory: View>: View {
     /// because there the cursor brings the keyboard up over half the conversation.
     var focusOnAppear = Composer.focusesByDefault
     @ViewBuilder var accessory: Accessory
-    @FocusState private var focused: Bool
+    @State private var focused = false
     @Environment(\.dynamicTypeSize) private var typeSize
 
     init(
