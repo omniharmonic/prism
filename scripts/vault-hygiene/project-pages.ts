@@ -122,8 +122,8 @@ export async function main(argv: string[], ctx: Ctx): Promise<number> {
     }
     return live;
   };
-  let notes = await loadInventory();
-  let resolver = projectResolver(notes);
+  const notes = await loadInventory();
+  const resolver = projectResolver(notes);
   let writes = 0;
   let planned = 0;
   let failures = 0;
@@ -179,7 +179,8 @@ export async function main(argv: string[], ctx: Ctx): Promise<number> {
         await create(candidate.path, source?.content ?? "", ["project"], { ...(source?.metadata ?? {}), title: source ? titleOf(source) : slug.split("/").pop()!.replace(/-/g, " "), type: "project", slug, ...(source ? { promoted_from: source.id } : {}) });
       } catch { failures++; ctx.log(`  failed create ${candidate.path}`); }
     }
-    if (apply) { notes = await loadInventory(); resolver = projectResolver(notes); }
+    // Keep the reviewed inventory for this invocation. Newly created projects
+    // can enable merges/splits only in the next dry-run and apply cycle.
     for (const candidate of notes.filter(isProject)) {
       try {
         const fresh = await vault.getNote(candidate.id); if (!fresh || !isLive(fresh)) continue;

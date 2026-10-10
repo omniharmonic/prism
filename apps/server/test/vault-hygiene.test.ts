@@ -880,3 +880,26 @@ test("project-pages: partial Trash response is a failed migration, not success",
  assert.equal(await projectPages.main([...VAULT,"--phase","indexes","--live-sections-confirmed","--prism-url","http://prism.test","--apply","--backup-confirmed"],c),1);
  assert.equal(c.undo.length,0);assert.ok(!v.notes.get("pure")!.tags!.includes("prism-trashed"));
 });
+
+
+test("project-pages: repair preview and apply share snapshot; new canonical merges need next preview", async () => {
+ const v=new FakeVault();
+ v.add({id:"folder-note",path:"vault/projects/eth-boulder/Notes"});
+ v.add({id:"duplicate",path:"vault/projects/ethboulder/PROJECT",tags:["project"],content:"Preserved duplicate"});
+ const argv=[...VAULT,"--phase","repair","--prism-url","http://prism.test"];
+ const preview=ctxFor(v,{PRISM_OWNER_TOKEN:OWNER});
+ assert.equal(await projectPages.main(argv,preview),0,out(preview));
+ assert.match(out(preview),/done: 1 planned, 0 writes, 0 failed/);
+ assert.doesNotMatch(out(preview),/would trash|Merged project/);
+ const apply=ctxFor(v,{PRISM_OWNER_TOKEN:OWNER});
+ assert.equal(await projectPages.main([...argv,"--apply","--backup-confirmed"],apply),0,out(apply));
+ assert.match(out(apply),/done: 1 planned, 1 writes, 0 failed/);
+ assert.ok(!v.notes.get("duplicate")!.tags!.includes("prism-trashed"));
+ assert.ok(!v.find("vault/projects/eth-boulder/Merged project ethboulder"));
+ const writes=v.writes().length;
+ const next=ctxFor(v,{PRISM_OWNER_TOKEN:OWNER});
+ assert.equal(await projectPages.main(argv,next),0,out(next));
+ assert.match(out(next),/would create vault\/projects\/eth-boulder\/Merged project ethboulder/);
+ assert.match(out(next),/would trash duplicate/);
+ assert.equal(v.writes().length,writes,"second preview remains read-only");
+});
