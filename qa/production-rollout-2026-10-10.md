@@ -1,5 +1,7 @@
 # Production rollout — 2026-10-10
 
+Historical checkpoint: see [the latest device and production follow-up](omni-prism-device-followup-2026-10-10.md) for subsequent releases, corrected voice integration, and current acceptance blockers.
+
 Checkpoint after final client builds; production and device acceptance are still in progress.
 
 ## Verified production
