@@ -160,7 +160,8 @@ export async function main(argv: string[], ctx: Ctx): Promise<number> {
     if (!note.updatedAt) throw new Error("fresh revision missing");
     await throttle.wait(); const res = await ctx.fetch(`${prism!.origin}/api/notes/${encodeURIComponent(note.id)}/trash`, { method: "POST", headers: { Authorization: `Bearer ${owner}`, "Content-Type": "application/json" }, body: JSON.stringify({ if_updated_at: note.updatedAt }) });
     if (!res.ok) throw new HttpError(res.status, `trash ${note.id}: ${res.status}`);
-    log.append({ kind: "prism-trash", script: `project-${phase}`, at: ctx.now().toISOString(), id: note.id, path: note.path ?? null, canonicalId }); writes++;
+    const after = await vault.getNote(note.id, { includeContent: false }).catch(() => null);
+    log.append({ kind: "prism-trash", script: `project-${phase}`, at: ctx.now().toISOString(), id: note.id, path: note.path ?? null, canonicalId, ...(after?.updatedAt ? { afterUpdatedAt: after.updatedAt } : {}) }); writes++;
   };
   if (phase === "hygiene") {
     for (const candidate of notes) {

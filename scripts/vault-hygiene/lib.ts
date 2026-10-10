@@ -296,7 +296,7 @@ export type UndoRecord =
       afterUpdatedAt: string;
       before: { content?: string; metadata?: Record<string, unknown> };
     }
-  | { kind: "prism-trash"; script: string; at: string; id: string; path: string | null; canonicalId: string }
+  | { kind: "prism-trash"; script: string; at: string; id: string; path: string | null; canonicalId: string; afterUpdatedAt?: string }
   | {
       /** Links this write ADDED to note `id` (nothing else was written). Undo removes exactly these. */
       kind: "vault-links";

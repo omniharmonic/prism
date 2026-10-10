@@ -65,6 +65,8 @@ export async function main(argv: string[], ctx: Ctx, records?: UndoRecord[]): Pr
           ctx.log(`  would restore from Trash ${r.id} ${r.path ?? ""}`);
           continue;
         }
+        const beforeRestore = r.afterUpdatedAt ? await vault.getNote(r.id, { includeContent: false }) : null;
+        const continuous = beforeRestore?.updatedAt === r.afterUpdatedAt && !!r.afterUpdatedAt;
         await throttle.wait();
         const res = await ctx.fetch(`${prismUrl!.origin}/api/trash/${encodeURIComponent(r.id)}/restore`, {
           method: "POST",
@@ -72,6 +74,8 @@ export async function main(argv: string[], ctx: Ctx, records?: UndoRecord[]): Pr
           body: "{}",
         });
         if (!res.ok) throw new HttpError(res.status, `restore ${r.id}: ${res.status}`);
+        const afterRestore = continuous ? await vault.getNote(r.id, { includeContent: false }) : null;
+        revisions.set(r.id, afterRestore?.updatedAt ?? null);
         restored++;
         continue;
       }

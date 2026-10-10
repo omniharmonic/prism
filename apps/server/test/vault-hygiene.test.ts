@@ -158,6 +158,7 @@ class FakeVault {
       const note = this.find(decodeURIComponent(restore[1]!))!;
       note.tags = (note.tags ?? []).filter((t) => t !== "prism-trashed");
       delete note.metadata!.prism_trashed_at;
+      note.updatedAt = this.stamp();
       return json({ ok: true });
     }
     return json({ error: "unexpected route" }, 500);
@@ -830,7 +831,7 @@ test("project-pages: dryrun prints no bodies, apply requires backup and CAS conf
 });
 test("project-pages: repair creates, archives, repoints IDs and links before Trash, undo restores",async()=>{
  const v=new FakeVault();v.add({id:"canonical",path:"vault/projects/eth-boulder/PROJECT",tags:["project"],metadata:{title:"ETH Boulder"},content:"Human canonical."});
- v.add({id:"dup",path:"vault/projects/ethboulder/PROJECT",tags:["project"],metadata:{title:"Other"},content:"DUPLICATE_BODY"});
+ v.add({id:"dup",path:"vault/projects/ethboulder/PROJECT",tags:["project"],metadata:{title:"Other"},content:"DUPLICATE_BODY ".repeat(4000)});
  const member=v.add({id:"member",path:"Notes/member",metadata:{projects:["dup"]},content:"[[vault/projects/ethboulder/PROJECT|Old]]"});
  v.links.push({sourceId:"member",targetId:"dup",relationship:"project"});
  v.add({id:"large",path:"vault/projects/large/PROJECT",tags:["project"],content:"ORIGINAL_BODY ".repeat(4000)});
@@ -839,12 +840,12 @@ test("project-pages: repair creates, archives, repoints IDs and links before Tra
  assert.equal(await projectPages.main(argv,c),0,out(c));
  assert.deepEqual(member.metadata!.projects,["[[vault/projects/eth-boulder/PROJECT]]"]);assert.equal(member.content,"[[vault/projects/ethboulder/PROJECT|Old]]");assert.ok(v.notes.get("canonical")!.metadata!.aliases instanceof Array);
  assert.equal(v.links[0]!.targetId,"canonical");assert.ok(v.notes.get("dup")!.tags!.includes("prism-trashed"));
- assert.equal(v.find("vault/projects/eth-boulder/Merged project ethboulder")!.content,"DUPLICATE_BODY");
+ assert.match(v.find("vault/projects/eth-boulder/Merged project ethboulder")!.content!,/Project background/);
  assert.match(v.find("vault/projects/large/Project background")!.content!,/^ORIGINAL_BODY/);assert.ok(v.find("vault/projects/new-project/PROJECT"));
  const count=v.writes().length;assert.equal(await projectPages.main(argv,c),0);assert.equal(v.writes().length,count,"rerun is idempotent");
  assert.equal(await undo.main([...VAULT,"--prism-url","http://prism.test:8888","--apply"],c,c.undo.map(x=>JSON.parse(x))),0);
  assert.deepEqual(member.metadata!.projects,["dup"]);assert.equal(v.links[0]!.targetId,"dup");assert.equal(member.content,"[[vault/projects/ethboulder/PROJECT|Old]]");
- assert.ok(!v.notes.get("dup")!.tags!.includes("prism-trashed"));assert.ok(v.find("vault/projects/new-project/PROJECT")!.tags!.includes("prism-trashed"));
+ assert.ok(!v.notes.get("dup")!.tags!.includes("prism-trashed"));assert.equal(v.notes.get("dup")!.content,"DUPLICATE_BODY ".repeat(4000));assert.ok(v.find("vault/projects/new-project/PROJECT")!.tags!.includes("prism-trashed"));
  noSecrets(c);
 });
 test("project-pages: generated indexes are gated and human prose blocks retirement",async()=>{
