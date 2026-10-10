@@ -280,8 +280,12 @@ class OmniUITestCase: XCTestCase {
             guard target.exists, target.isHittable else { return false }
             let frame = target.frame
             let box = app.textViews["composer"].firstMatch
-            let floor = box.exists && box.frame.minY > frame.minY ? box.frame.minY : app.frame.maxY - 100
-            return frame.minY >= 110 && frame.maxY <= floor - 4
+            let tabs = app.tabBars.firstMatch
+            let floor = box.exists && box.frame.minY > frame.minY ? box.frame.minY
+                : tabs.exists ? tabs.frame.minY : app.frame.maxY - 24
+            let bar = app.navigationBars.firstMatch
+            let ceiling = bar.exists ? bar.frame.maxY : app.frame.minY + 24
+            return frame.minY >= ceiling && frame.maxY <= floor - 4
         }
         var tries = 0
         while !ready(), tries < 14 {
@@ -439,13 +443,13 @@ class OmniUITestCase: XCTestCase {
             start.press(forDuration: 0.05, thenDragTo: list.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: to)), withVelocity: .slow, thenHoldForDuration: 0.1)
         }
         var tries = 0
-        while !ready(), tries < 14 {
-            drag(0.65, 0.35)
+        while !ready(), tries < 28 {
+            drag(0.8, 0.2)
             tries += 1
         }
         tries = 0
         while !ready(), tries < 28 {
-            drag(0.35, 0.65)
+            drag(0.2, 0.8)
             tries += 1
         }
     }
