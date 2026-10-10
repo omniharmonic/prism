@@ -6,7 +6,21 @@ final class CaptureFile: @unchecked Sendable {
     private let lock = NSLock()
     private var file: AVAudioFile?
     private var failure: Error?
-    init(url: URL, format: AVAudioFormat) throws { file = try AVAudioFile(forWriting: url, settings: format.settings) }
+    private let url: URL
+    private let format: AVAudioFormat
+    private let chunkFrames: AVAudioFramePosition?
+    private var frames: AVAudioFramePosition = 0
+    private var urls: [URL]
+    private var tail: [AVAudioPCMBuffer] = []
+    private let chunkClosed: (@Sendable (URL) -> Void)?
+    private var tailFrames: AVAudioFramePosition = 0
+    init(url: URL, format: AVAudioFormat, chunkSeconds: Double? = nil, chunkClosed: (@Sendable (URL) -> Void)? = nil) throws {
+        self.chunkClosed = chunkClosed
+        self.url = url; self.format = format; urls = [url]
+        chunkFrames = chunkSeconds.map { AVAudioFramePosition($0 * format.sampleRate) }
+        file = try AVAudioFile(forWriting: url, settings: format.settings)
+    }
+    func recordings() -> [URL] { lock.lock(); defer { lock.unlock() }; return urls }
     /// Build outside AudioIO's main-actor context. The AVAudioEngine callback runs on
     /// its realtime thread; do not capture an actor executor or escape its PCM buffer.
     nonisolated static func tap(for writer: CaptureFile, activity: LocalSpeechActivity? = nil) -> @Sendable (AVAudioPCMBuffer, AVAudioTime) -> Void {
@@ -19,7 +33,31 @@ final class CaptureFile: @unchecked Sendable {
     }
     func append(_ buffer: AVAudioPCMBuffer) {
         lock.lock(); defer { lock.unlock() }
-        do { try file?.write(from: buffer) } catch { failure = error }
+        guard file != nil, failure == nil else { return }
+        do {
+            if let chunkFrames, frames >= chunkFrames {
+                file = nil
+                chunkClosed?(urls.last!)
+                let next = url.deletingPathExtension().appendingPathExtension("chunk-\(urls.count).caf")
+                file = try AVAudioFile(forWriting: next, settings: format.settings)
+                urls.append(next); frames = 0
+                for retained in tail { try file?.write(from: retained); frames += AVAudioFramePosition(retained.frameLength) }
+            }
+            try file?.write(from: buffer)
+            frames += AVAudioFramePosition(buffer.frameLength)
+            if chunkFrames != nil, let retained = AVAudioPCMBuffer(pcmFormat: buffer.format, frameCapacity: buffer.frameLength) {
+                retained.frameLength = buffer.frameLength
+                let source = UnsafeMutableAudioBufferListPointer(buffer.mutableAudioBufferList)
+                let destination = UnsafeMutableAudioBufferListPointer(retained.mutableAudioBufferList)
+                for index in 0..<source.count {
+                    if let from = source[index].mData, let to = destination[index].mData { memcpy(to, from, Int(source[index].mDataByteSize)) }
+                }
+                tail.append(retained); tailFrames += AVAudioFramePosition(buffer.frameLength)
+                while tail.count > 1, tailFrames - AVAudioFramePosition(tail[0].frameLength) >= AVAudioFramePosition(format.sampleRate) {
+                    tailFrames -= AVAudioFramePosition(tail.removeFirst().frameLength)
+                }
+            }
+        } catch { failure = error }
     }
     func close() throws { lock.lock(); defer { lock.unlock() }; file = nil; if let failure { throw failure } }
 }
@@ -36,7 +74,7 @@ final class CaptureFile: @unchecked Sendable {
     private let permission: (@MainActor () async -> Bool)?
     public init() { permission = nil }
     init(permission: @escaping @MainActor () async -> Bool) { self.permission = permission }
-    public func start(url: URL, activity: (@Sendable (SpeechActivityEvent) -> Void)? = nil) async throws {
+    public func start(url: URL, chunkSeconds: Double? = nil, chunkClosed: (@Sendable (URL) -> Void)? = nil, activity: (@Sendable (SpeechActivityEvent) -> Void)? = nil) async throws {
         guard file == nil, !starting else { throw VoiceFailure.unavailable("A recording is already starting or running.") }
         starting = true
         let requestGeneration = generation
@@ -75,11 +113,11 @@ final class CaptureFile: @unchecked Sendable {
             try input.setVoiceProcessingEnabled(true)
             let format = input.outputFormat(forBus: 0)
             guard format.sampleRate > 0 else { throw VoiceFailure.unavailable("No microphone input is available.") }
-            let writer = try CaptureFile(url: url, format: format)
+            let writer = try CaptureFile(url: url, format: format, chunkSeconds: chunkSeconds, chunkClosed: chunkClosed)
             capture = writer
             input.installTap(onBus: 0, bufferSize: 1024, format: format, block: CaptureFile.tap(for: writer, activity: monitor))
             tapInstalled = true
-            engine.prepare(); try engine.start(); file = writer; speechActivity = monitor
+            engine.prepare(); try engine.start(); completedRecordings = []; file = writer; speechActivity = monitor
         } catch {
             monitor?.stop()
             engine.stop()
@@ -91,12 +129,14 @@ final class CaptureFile: @unchecked Sendable {
             throw error
         }
     }
+    public func recordings() -> [URL] { file?.recordings() ?? completedRecordings }
+    private var completedRecordings: [URL] = []
     public func stop() throws {
         // Also cancels a pending permission prompt, even before a file/tap exists.
         generation &+= 1
         speechActivity?.stop(); speechActivity = nil
         guard let capture = file else { return }
-        engine.stop(); engine.inputNode.removeTap(onBus: 0); file = nil
+        engine.stop(); engine.inputNode.removeTap(onBus: 0); completedRecordings = capture.recordings(); file = nil
         #if os(iOS)
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
         #endif

@@ -4,6 +4,8 @@ import Observation
 /// The microphone and speech engines are injected. No lifecycle callback can make a
 /// pending permission request begin capture or submit a late transcript off screen.
 @MainActor public protocol ConversationAudio: AnyObject {
+    var recoveryNotice: String? { get }
+    func configureRecordingLimit(_ receive: @escaping @MainActor () -> Void)
     func start() async throws
     func finish() async throws -> String
     func cancel()
@@ -14,6 +16,8 @@ import Observation
 }
 
 public extension ConversationAudio {
+    var recoveryNotice: String? { nil }
+    func configureRecordingLimit(_ receive: @escaping @MainActor () -> Void) {}
     func configureActivity(enabled: Bool, receive: @escaping @MainActor (VoiceActivityEvent) -> Void) {
         if enabled { receive(.unavailable("Automatic speech detection is unavailable. Use Send turn.")) }
     }
@@ -30,6 +34,8 @@ public extension ConversationAudio {
     public var canAutomaticallyListen: @MainActor () -> Bool = { false }
     public private(set) var endpointCountdown: Int?
     public private(set) var activityNotice: String?
+    public var saveRecoveredDraft: @MainActor (String) -> Void = { _ in }
+    public var recordingLimitReached: @MainActor () -> Void = {}
     public var automaticFinish: @MainActor () -> Void = {}
     public private(set) var endpointMode: VoiceTurnMode = .thinkAloud
     public private(set) var endpointPause = 12.0
@@ -110,6 +116,10 @@ public extension ConversationAudio {
         state = .preparing; problem = nil; transcript = ""
         activityNotice = nil; endpointCountdown = nil
         endpointPolicy = VoiceEndpointPolicy(pauseSeconds: endpointPause)
+        audio.configureRecordingLimit { [weak self] in
+            guard let self, self.generation == request, self.state == .listening else { return }
+            self.recordingLimitReached()
+        }
         audio.configureActivity(enabled: endpointMode == .automatic) { [weak self] event in
             self?.receiveActivity(event, request: request)
         }
@@ -138,7 +148,13 @@ public extension ConversationAudio {
                 problem = !submit && draftReason == .pause ? nil : "No speech was recognized. Try again."
                 return
             }
+            let recovery = audio.recoveryNotice
             transcript = text; spoken = [:]; pendingCompletion = nil
+            if let recovery {
+                saveRecoveredDraft(text)
+                state = .paused; problem = recovery
+                return
+            }
             submitting = submit
             let sent = await send(text)
             guard generation == request, !Task.isCancelled else { return }
