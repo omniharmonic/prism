@@ -21,8 +21,7 @@ struct ConversationVoiceControl: View {
     @State private var panelContentHeight: CGFloat = 280
     @State private var mounted = false
     @State private var action: Task<Void, Never>?
-    @State private var timeout: Task<Void, Never>?
-    init(session: SessionModel, model: ThreadModel? = nil, draft: Binding<String>? = nil, expanded: Binding<Bool>, maximumHeight: CGFloat = 280) {
+        init(session: SessionModel, model: ThreadModel? = nil, draft: Binding<String>? = nil, expanded: Binding<Bool>, maximumHeight: CGFloat = 280) {
         self.session = session; self.model = model; self.draft = draft; self.maximumHeight = maximumHeight; _expanded = expanded
         let sameContext = model.map { session.voiceThreadID == $0.threadID } ?? (session.newThreadUsesVoice && session.voiceThreadID == nil)
         let device = (sameContext ? session.conversationAudio as? ConversationDevice : nil) ?? ConversationDevice()
@@ -58,11 +57,12 @@ struct ConversationVoiceControl: View {
             .onChange(of: session.pendingVoiceActivationID, consumeShortcutActivation)
             .onChange(of: device.turnPreferences.mode, endpointPreferencesChanged)
             .onChange(of: device.turnPreferences.pauseSeconds, endpointPreferencesChanged)
+            .onChange(of: device.turnPreferences.acousticInterruption, endpointPreferencesChanged)
     }
     private var currentDraft: String { model?.draft ?? draft?.wrappedValue ?? "" }
     private func voiceStateChanged() {
         if voice.state != .off { expanded = true; showingVoiceSettings = false; device.stopPreview() }
-        updateCaptureTimeout(); consume()
+        consume()
     }
     private func draftChanged() {
         if !currentDraft.isEmpty, voice.state == .listening || voice.state == .preparing { pause() }
@@ -132,6 +132,10 @@ struct ConversationVoiceControl: View {
                 Text(notice).font(.caption).foregroundStyle(Color.quietText)
                     .fixedSize(horizontal: false, vertical: true)
             }
+            if let notice = voice.interruptionNotice {
+                Text(notice).font(.caption).foregroundStyle(Color.quietText)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             controls.fixedSize(horizontal: false, vertical: true)
             if (voice.state == .paused && !voice.transcript.isEmpty) || (voice.state == .transcribing && !device.hypothesis.isEmpty) {
                 DisclosureGroup("Transcript", isExpanded: $showingTranscript) {
@@ -148,7 +152,7 @@ struct ConversationVoiceControl: View {
         installAutomaticListeningGuard()
         endpointPreferencesChanged()
         voice.setPrivacyLocked(PrivacyLock.shared.locked)
-        updateCaptureTimeout(); consume(); consumeShortcutActivation()
+        consume(); consumeShortcutActivation()
         #if DEBUG
         if model != nil { Task { await UITestLaunch.prepareVoiceLayoutFixture(voice) } }
         #endif
@@ -157,7 +161,6 @@ struct ConversationVoiceControl: View {
         mounted = false
         // The first send retains the session while its new thread mounts.
         if isHandingOffToCreatedThread {
-            timeout?.cancel(); timeout = nil
             return
         }
         cancel()
@@ -192,7 +195,7 @@ struct ConversationVoiceControl: View {
             else if model?.turnEnded != nil { "Review the interrupted turn in chat." }
             else if running { "Mic off · Omni’s task continues." }
             else { "Mic off · resume when ready." }
-        case .speaking: "Mic off · reply playing"
+        case .speaking: voice.acousticInterruptionEnabled && voice.interruptionNotice == nil ? "Speak to interrupt · reply playing" : "Mic off · reply playing"
         case .preparing: "Preparing speech on this device…"
         case .listening:
             if let countdown = voice.endpointCountdown { "Sending in \(countdown)…" }
@@ -211,7 +214,7 @@ struct ConversationVoiceControl: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .accessibilityIdentifier("voice.send")
-                .accessibilityHint("Silence never sends in Think aloud. At two minutes, recording pauses and your words are kept as a draft.")
+                .accessibilityHint("Silence never sends in Think aloud. Long recordings are kept as an unsent draft if recording reaches its limit.")
             } else if voice.state == .preparing || voice.state == .transcribing {
                 ProgressView().frame(maxWidth: .infinity, minHeight: 44).accessibilityLabel(stateTitle)
             } else {
@@ -260,7 +263,7 @@ struct ConversationVoiceControl: View {
         guard canSpeak, mounted, phase == .active, !PrivacyLock.shared.locked else { return }
         cancel()
         _ = model?.takeCompletedVoiceTimeline()
-        session.claimVoice(audio: device, voice: voice, threadID: model?.threadID)
+        guard session.claimVoice(audio: device, voice: voice, threadID: model?.threadID) else { return }
         let lease = session.voiceLease
         installAutomaticListeningGuard()
         session.beginVoiceStart()
@@ -275,7 +278,6 @@ struct ConversationVoiceControl: View {
             device.selected = selected
             configureEndpoint()
             await voice.start()
-            updateCaptureTimeout()
         }
     }
     private func endpointPreferencesChanged() {
@@ -283,10 +285,23 @@ struct ConversationVoiceControl: View {
         configureEndpoint()
     }
     private func configureEndpoint() {
+        voice.acousticInterruptionEnabled = device.turnPreferences.acousticInterruption
         voice.configureEndpoint(mode: device.turnPreferences.mode, pauseSeconds: device.turnPreferences.pauseSeconds)
     }
     private func installAutomaticListeningGuard() {
         let lease = session.voiceLease
+        voice.recordingLimitReached = {
+            guard mounted, phase == .active, !PrivacyLock.shared.locked,
+                  lease == session.voiceLease, session.ownsVoice(voice, threadID: model?.threadID),
+                  voice.state == .listening else { return }
+            finish(submit: false)
+        }
+        voice.saveRecoveredDraft = { text in
+            guard mounted, phase == .active, !PrivacyLock.shared.locked,
+                  lease == session.voiceLease, session.ownsVoice(voice, threadID: model?.threadID),
+                  currentDraft.isEmpty else { return }
+            if let model { model.draft = text } else { draft?.wrappedValue = text }
+        }
         voice.automaticFinish = {
             guard mounted, phase == .active, !PrivacyLock.shared.locked, !running,
                   lease == session.voiceLease, session.ownsVoice(voice, threadID: model?.threadID),
@@ -302,34 +317,22 @@ struct ConversationVoiceControl: View {
             (model?.draft ?? draft?.wrappedValue ?? "").isEmpty && !session.threads.isCreating
         }
     }
-    private func updateCaptureTimeout() {
-        timeout?.cancel(); timeout = nil
-        guard voice.state == .listening, mounted, session.ownsVoice(voice, threadID: model?.threadID) else { return }
-        let lease = session.voiceLease
-        timeout = Task {
-            do { try await Task.sleep(for: .seconds(120)) } catch { return }
-            guard mounted, phase == .active, lease == session.voiceLease,
-                  session.ownsVoice(voice, threadID: model?.threadID), voice.state == .listening else { return }
-            finish(submit: false)
-        }
-    }
     private func pause() {
         if voice.state == .listening, (model?.draft ?? draft?.wrappedValue ?? "").isEmpty {
             finish(submit: false, draftReason: .pause)
             return
         }
-        action?.cancel(); action = nil; timeout?.cancel(); timeout = nil
+        action?.cancel(); action = nil
         device.stopPreview(); voice.pause()
     }
     private func cancel() {
         if model == nil { session.cancelPendingVoiceActivation() }
         showingVoiceSettings = false; device.stopPreview()
-        action?.cancel(); action = nil; timeout?.cancel(); timeout = nil
+        action?.cancel(); action = nil
         if session.conversationVoice !== voice { voice.cancel() }
         else { session.cancelVoice(voice, threadID: model?.threadID) }
     }
     private func finish(submit: Bool = true, draftReason: VoiceConversation.DraftReason = .recordingLimit) {
-        timeout?.cancel(); timeout = nil
         let lease = session.voiceLease
         action = Task {
             await voice.finish(submit: submit, draftReason: draftReason) { text in

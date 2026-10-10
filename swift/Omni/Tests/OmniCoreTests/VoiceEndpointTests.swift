@@ -72,6 +72,10 @@ import XCTest
         let restored = VoiceTurnPreferences(defaults: defaults)
         XCTAssertEqual(restored.mode, .automatic); XCTAssertEqual(restored.pauseSeconds, 20)
         preferences.pauseSeconds = 2
+        XCTAssertEqual(preferences.pauseSeconds, 2)
+        preferences.pauseSeconds = 4
+        XCTAssertEqual(preferences.pauseSeconds, 4)
+        preferences.pauseSeconds = 1
         XCTAssertEqual(preferences.pauseSeconds, 12)
     }
     func testManualModeDoesNotInstallDetectorOrAutoFinish() async {
