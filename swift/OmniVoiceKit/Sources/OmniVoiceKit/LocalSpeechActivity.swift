@@ -107,7 +107,7 @@ final class LocalSpeechActivity: @unchecked Sendable {
 
 /// Keeps AVAudioConverter state across taps; inputRanDry is not endOfStream.
 /// Constructed and used only inside the detached detector worker.
-private final class ActivityResampler {
+final class ActivityResampler {
     private var converter: AVAudioConverter?
     private var sourceFormat: AVAudioFormat?
     private let targetFormat = AVAudioFormat(standardFormatWithSampleRate: 16_000, channels: 1)!
