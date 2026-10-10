@@ -129,3 +129,18 @@ test("live: a 53,000-character Markdown project body opens, stays as stored, and
   expect(after.path).toBe(path);
   for (const kept of ["Front Range Commons", `Section ${sections}`, "<strong>bold text</strong>", "Task 1.1"]) expect(after.content).toContain(kept);
 });
+
+
+test("live: project sections show current members and preserve the editor", async ({ page, context }) => {
+  const { id } = await seed("Human purpose.", { title: "Project sections" });
+  for (const [suffix, tags, title] of [["meeting", ["meeting"], "Planning meeting"], ["task", ["task"], "Next task"], ["document", [], "Field notes"], ["person", ["person"], "Ada Park"]] as const) {
+    expect(await server.add({ id: `${id}-${suffix}`, path: `Notes/${id}-${suffix}`, content: "Body remains private to section queries.", tags: [...tags], metadata: { title, projects: [id] } })).toBe(true);
+  }
+  await openLive(page, context, id);
+  const activity = page.getByRole("complementary", { name: "Project activity" });
+  await expect(activity).toBeVisible();
+  for (const title of ["Planning meeting", "Next task", "Field notes", "Ada Park"]) await expect(activity.getByRole("button", { name: title, exact: true })).toBeVisible();
+  await expect(activity).not.toContainText("Body remains private");
+  await expect(editor(page)).toContainText("Human purpose.");
+  await expect(editor(page)).toHaveAttribute("contenteditable", "true");
+});

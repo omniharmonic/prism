@@ -11,6 +11,7 @@ import { agentScope } from "../config";
  */
 export const httpVaultClient: VaultClient = {
   scope: () => agentScope() ?? "",
+  getProjectRelated: rest.getProjectRelated,
   listNotes: rest.listNotes,
   listPeople: rest.listPeople,
   changePersonIdentity: rest.changePersonIdentity,

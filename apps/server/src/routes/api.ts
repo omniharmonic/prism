@@ -27,6 +27,7 @@ import { ensureTree, renderTree, etagMatches, treeUpsertNote, treeRemoveNote, tr
 import { canvasApi } from "./canvas";
 import { threadsApi } from "./threads";
 import { peopleApi } from "./people";
+import { projectsApi } from "./projects";
 import { humanCollabApi } from "./human-collab";
 import { tellPagesChanged, writesTitle } from "../page-notice";
 import { transcriptsApi } from "./transcripts";
@@ -399,6 +400,7 @@ async function coalescedGet(target: string, init: RequestInit, fresh = false): P
 // owner/admin passthrough below, which would otherwise proxy the path to the vault.
 api.route("/collab", humanCollabApi);
 api.route("/people", peopleApi);
+api.route("/projects", projectsApi);
 api.route("/threads", threadsApi);
 api.use("/canvas/*", async (c, next) => {
   await next();

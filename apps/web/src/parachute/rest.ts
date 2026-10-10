@@ -837,3 +837,7 @@ export async function updatePropertiesBatch(items: PropertyBatchItem[]): Promise
 export async function importCsv(request: CsvImportRequest): Promise<CsvImportResponse> {
   return (await req(`/databases/import/csv`, { method: "POST", body: JSON.stringify(request), cache: "no-store" })).json();
 }
+
+export async function getProjectRelated(id: string, kind: import("@prism/core/projects").ProjectSection, after?: string): Promise<import("@prism/core/projects").ProjectRelatedPage> {
+  return (await req(`/projects/${encodeURIComponent(id)}/related${qs({ kind, after })}`)).json();
+}

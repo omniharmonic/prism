@@ -12,6 +12,7 @@
  * The tree route here answers as the real server does for these notes: a row carries
  * `title` (for a container-named page, its `name` when it has no title).
  */
+import { projectRelatedPage, type ProjectSection } from "@prism/core/projects";
 import type { Note } from "@prism/core";
 import { isTrashed } from "../../../packages/core/src/lib/pages/model";
 import { largeMarkdown } from "./project-pages-data";
@@ -40,10 +41,16 @@ Object.assign(window, {
         project("food", "bioregional-food-chain", BODY, { lead: "Ada Park" }),
         project("named", "watershed", "A council of the **South Platte** basin.", { name: "Watershed Council" }),
         project("big", "front-range-commons", largeMarkdown()),
-        doc("task1", "vault/projects/bioregional-food-chain/Call the growers", "<p>Ring round.</p>", { tags: ["task"], metadata: { type: "task", status: "todo" } }),
+        doc("task1", "vault/projects/bioregional-food-chain/Call the growers", "<p>Ring round.</p>", { tags: ["task"], metadata: { type: "task", status: "todo", projects: ["food"] } }),
       );
     },
     async fetch(url: URL, method: string) {
+      const related = /^\/api\/projects\/([^/]+)\/related$/.exec(url.pathname);
+      if (related && method === "GET") {
+        if (url.searchParams.get("fail") || location.search.includes("sections-error")) return Response.json({ error: "project_unavailable" }, { status: 503 });
+        const project = seeded.find(note => note.id === decodeURIComponent(related[1]!));
+        return project ? Response.json(projectRelatedPage(seeded, project, (url.searchParams.get("kind") ?? "documents") as ProjectSection, url.searchParams.get("after") ?? "")) : Response.json({}, { status: 404 });
+      }
       if (url.pathname !== "/api/tree" || method !== "GET") return null;
       const container = (p: string | null) => !!p && /\/PROJECT$/.test(p);
       return Response.json(seeded.filter((n) => !isTrashed(n)).map((n) => {

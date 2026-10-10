@@ -29,7 +29,8 @@
     "./import-export": "./src/lib/import-export/index.ts",
     "./styles/*": "./src/styles/*",
     "./messages": "./src/lib/matrix/types.ts",
-    "./task-lists": "./src/lib/html/taskLists.ts"
+    "./task-lists": "./src/lib/html/taskLists.ts",
+    "./projects": "./src/lib/projects/related.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit -p tsconfig.json"
