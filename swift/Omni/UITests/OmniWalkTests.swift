@@ -18,22 +18,52 @@ final class OmniWalkTests: OmniUITestCase {
             let status = element("voice.status")
             let primary = element(state == "listening" ? "voice.send" : "voice.start")
             XCTAssertTrue(primary.waitForExistence(timeout: 5))
-            XCTAssertGreaterThanOrEqual(primary.frame.minY, status.frame.maxY, "Voice button must not cover status text")
-            if state == "paused" {
-                let problem = element("voice.problem")
-                XCTAssertTrue(problem.exists)
-                XCTAssertGreaterThanOrEqual(primary.frame.minY, problem.frame.maxY, "Voice button must not cover the problem")
-            }
             let end = element("voice.end")
-            XCTAssertTrue(end.isHittable)
-            XCTAssertGreaterThanOrEqual(end.frame.minY, primary.frame.maxY)
-            XCTAssertLessThanOrEqual(panel.frame.maxY, composer.frame.minY)
+            let problem = element("voice.problem")
+            let pauseButton = element("voice.pause")
+            let elements = [status, problem, primary, pauseButton, end]
+            func visible(_ target: XCUIElement) -> Bool {
+                target.exists && target.isHittable && panel.frame.contains(target.frame)
+            }
+            func checkVisibleOverlap() {
+                let visibleElements = elements.filter(visible)
+                for first in visibleElements.indices {
+                    for second in visibleElements.indices where second > first {
+                        let overlap = visibleElements[first].frame.intersection(visibleElements[second].frame)
+                        XCTAssertTrue(overlap.isNull || overlap.width <= 0 || overlap.height <= 0,
+                                      "Visible voice text and controls must not overlap: \(visibleElements[first].identifier), \(visibleElements[second].identifier)")
+                    }
+                }
+                XCTAssertLessThanOrEqual(panel.frame.maxY, composer.frame.minY)
+            }
+            func revealInVoicePanel(_ target: XCUIElement) {
+                // Scroll only the bounded voice panel, never the conversation behind it.
+                for _ in 0..<10 {
+                    if visible(target) { break }
+                    panel.swipeUp()
+                }
+                for _ in 0..<10 {
+                    if visible(target) { break }
+                    panel.swipeDown()
+                }
+                XCTAssertTrue(visible(target), "Voice controls must remain reachable inside the bounded panel")
+                checkVisibleOverlap()
+            }
+            if state == "paused" { XCTAssertTrue(problem.exists) }
             XCTAssertLessThan(panel.frame.height, app.frame.height * 0.45, "Voice controls must leave room for the conversation")
-            shot("voice-thread-\(state)")
+            checkVisibleOverlap()
+            shot("voice-thread-\(state)-text")
+            revealInVoicePanel(primary)
+            shot("voice-thread-\(state)-primary")
+            revealInVoicePanel(end)
+            shot("voice-thread-\(state)-end")
             if state == "paused" {
                 composer.tap()
                 XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5))
-                shot("voice-thread-paused-keyboard")
+                revealInVoicePanel(primary)
+                shot("voice-thread-paused-keyboard-primary")
+                revealInVoicePanel(end)
+                shot("voice-thread-paused-keyboard-end")
             }
         }
     }
