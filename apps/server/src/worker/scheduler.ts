@@ -403,6 +403,7 @@ async function runMatrixPass(entry: VaultEntry, deps: MatrixPassDeps): Promise<n
     linkExisting: config.matrixLinkExisting,
     storeParticipantIds: config.matrixStoreParticipantIds,
     selfUserId,
+    ownerSenderIds: (people: PeopleIndex) => [...ownerProfile(people.identity, ownerConfigFor(entry.id)).matrixIds],
     // Identity layer (only with MATRIX_LINK_EXISTING): never link the owner's own
     // note; queue DM counterparts that have a candidate but no exact match.
     ...(config.matrixLinkExisting
