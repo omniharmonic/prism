@@ -64,14 +64,21 @@ import OmniCore
     }
     func stop() { completions.removeAll(); speaker.stopSpeaking(at: .immediate) }
     nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
-        complete(ObjectIdentifier(utterance))
+        complete(utterance)
     }
     nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didCancel utterance: AVSpeechUtterance) {
-        complete(ObjectIdentifier(utterance))
+        complete(utterance)
     }
-    nonisolated private func complete(_ id: ObjectIdentifier) {
-        Task { @MainActor [weak self] in self?.completions.removeValue(forKey: id)?() }
+    nonisolated private func complete(_ utterance: AVSpeechUtterance) {
+        // Retain the utterance until the actor handles it. Its identity cannot be
+        // reused by a new preview while a cancelled delegate callback is queued.
+        let retained = RetainedUtterance(utterance: utterance)
+        Task { @MainActor [weak self] in
+            self?.completions.removeValue(forKey: ObjectIdentifier(retained.utterance))?()
+        }
     }
+    // Only identity is read across the actor hop; speech state stays on MainActor.
+    private struct RetainedUtterance: @unchecked Sendable { let utterance: AVSpeechUtterance }
 }
 
 @MainActor enum AppleVoiceCatalog {
