@@ -69,7 +69,7 @@ Compare Porcupine's native/custom phrase path against an open local alternative.
 
 1. V01 Apple voice picker/previews and V04 launch-intent skeleton can be separate Sol assignments. Parent reviews one shared session activation contract first. No speech-model upgrade in this first small release.
 2. V02 persistent explicit-completion conversation, automatic re-listening and readable session controls. Replay tests with 2/5/10/20-second pauses must cause zero early submissions in Think aloud mode. End and late callbacks must never restart capture.
-3. V9 local endpointing failed the owner’s new-chat Automatic acceptance. V10 implements lifecycle repair, shorter pause choices, chunked capture and optional V03 interruption; release and physical acceptance remain pending. Measure false endings separately from transcript errors and end-to-first-reply latency; do not hide Hermes/network delays inside speech-engine measurements.
+3. V9 local endpointing failed the owner’s new-chat Automatic acceptance. V10 implements lifecycle repair, shorter pause choices, chunked capture and optional V03 interruption; mobile release is installed and physical acceptance remains pending. Measure false endings separately from transcript errors and end-to-first-reply latency; do not hide Hermes/network delays inside speech-engine measurements.
 4. V10 implements an experimental V05 Mac listener using shared audio ownership; release and physical acceptance remain pending. Test missed wakes and false wakes during ordinary speech/media playback, plus idle energy over a normal work session. Freeze the engine/phrase only after listening and licensing checks.
 5. Select optional neural TTS from measured owner preference; the Mini is a fallback host before any workstation purchase. Workstation acceleration remains independent of these UX milestones.
 
@@ -100,7 +100,7 @@ Prism server `prism-v2026.10.10-12` deployed from `959e6af3` on the Mini, with b
 Validation: 176 Core tests, 21 Client tests, five callback tests and one empty-recording regression passed; the full server suite passed 2,984 tests with one skip, plus 95 focused tests. Phone history geometry and 108 Mac snapshots passed. iPad visible-keyboard validation passed; iPhone keyboard automation was blocked by an offscreen target, and Mac XCUITest was blocked by the automation profile. Those blocked checks remain unverified. Prism laptop v6 was installed and native sign-in, opening and synchronization were verified.
 
 
-## V10 implementation checkpoint — release and physical acceptance pending
+## V10 implementation checkpoint — mobile installed, physical acceptance pending
 
 The owner narrowed the v9 failure to Automatic mode’s first turn in a new toolbar voice chat. Server metadata for the reported turns at **22:40:38 and 22:41:57 UTC on 2026-10-10** shows successful completion in approximately **2.7 and 3.3 seconds**, with response text and result events and no server error. This establishes server completion, not client playback or resumption.
 
@@ -110,7 +110,7 @@ V10 also implements 2/4/8/12/20-second Automatic pauses plus the existing 3-seco
 
 Outstanding acceptance and scope:
 
-- Release/install v10 on phone, older A12Z iPad and Mac, then verify first new-chat Automatic send → audible reply → re-listening and subsequent turns. Check every pause option, speech during grace, Keep listening, quiet Pause and narrow/accessibility controls.
+- Retest installed v10 on phone and older A12Z iPad, complete Mac rollout, and verify first new-chat Automatic send → audible reply → re-listening and subsequent turns. Check every pause option, speech during grace, Keep listening, quiet Pause and narrow/accessibility controls.
 - Verify long-turn chunk boundaries, repeated words across overlap, backlog/disk/15-minute limits, partial unsent recovery, cancel/restart and slow STT. A spoken finishing phrase remains planned.
 - Test default-off acoustic interruption on speaker and headphones: echo suppression, false positives, retained first words, playback backpressure/failure, cancellation, privacy lock, route changes and calls. No claim of reliable physical echo behavior yet.
 - Verify shortcut cold/warm launch, denied permissions, lock/authentication and shared-microphone handoff. Background/locked continuation remains a separate capability; no bypass of system authentication is promised.
