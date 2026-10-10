@@ -57,7 +57,13 @@ public struct STTBench: View {
         .navigationTitle("Speech Benchmark")
         .task { availability = await store.probe() }
         .onDisappear { if store.recording { store.stop() } }
-        .onChange(of: phase) { _, phase in if phase == .background && store.recording { store.stop() } }
+        .onChange(of: phase) { _, phase in
+            #if os(macOS)
+            if phase != .active && store.recording { store.stop() }
+            #else
+            if phase == .background && store.recording { store.stop() }
+            #endif
+        }
     }
     private func report(_ items: [BenchUtterance], engine: String) -> String {
         var errors = 0, words = 0, nameErrors = 0, names = 0
