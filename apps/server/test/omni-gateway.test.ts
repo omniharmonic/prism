@@ -1035,3 +1035,13 @@ test('reviewed M3 script capabilities allow name schedule and resume but never r
   assert.equal((await req('/jobs/abcdef012345',{method:'PUT',headers:owner(),body:JSON.stringify({name:'No'})})).status,403);
  }finally{if(prior===undefined)delete process.env.OMNI_REVIEWED_JOB_SCRIPTS_DIR;else process.env.OMNI_REVIEWED_JOB_SCRIPTS_DIR=prior;await fs.rm(root,{recursive:true,force:true});}
 });
+
+test("task pagination is owner-only and rejects cursor injection before vault dispatch", async () => {
+  assert.equal((await req("/tasks")).status, 401);
+  assert.equal((await req("/tasks", { headers: { cookie: sessionCookie(makeSession("other@example.test")) } })).status, 403);
+  for (const cursor of ["https://evil.test/query", "../notes", "x".repeat(513), ""]) {
+    const response = await req(`/tasks?cursor=${encodeURIComponent(cursor)}`, { headers: owner() });
+    assert.equal(response.status, 400);
+    assert.equal(response.headers.get("cache-control"), "private, no-store");
+  }
+});

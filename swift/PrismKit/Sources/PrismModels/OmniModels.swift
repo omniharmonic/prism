@@ -472,3 +472,13 @@ public struct OmniToday: Codable, Sendable, Equatable {
     /// Section name → error code (`{"agenda": "query_502"}`).
     public let errors: [String: String]
 }
+
+/// One bounded page of open tasks assigned to the authenticated caller.
+public struct OmniTasksPage: Codable, Sendable, Equatable {
+    public let tasks: [OmniToday.TaskItem]
+    public let next: String?
+    public let total: Int?
+    public let limited: Bool
+    public let truncated: Bool
+    public let identity: String?
+}

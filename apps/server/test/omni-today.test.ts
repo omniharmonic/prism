@@ -5,9 +5,10 @@
  */
 import { test, beforeEach } from "node:test";
 import assert from "node:assert/strict";
-import { buildToday, type Dispatch } from "../src/omni/today";
+import { buildToday, buildTasksPage, type Dispatch } from "../src/omni/today";
 import { resetOmniStoreForTests } from "../src/omni/store";
 import { resetDb } from "./helpers";
+import { encodeCursor, decodeCursor, type QuerySpec } from "@prism/core/database";
 
 beforeEach(() => {
   resetDb();
@@ -82,4 +83,38 @@ test("a dispatcher that throws fails that section only", async () => {
   const t = await build(dispatch);
   assert.deepEqual(t.errors, { tasks: "omni_not_mounted" });
   assert.equal(t.agenda?.length, 1);
+});
+
+test("task pages keep assignment/status filters and use opaque cursor with a fixed bound", async () => {
+  const calls: QuerySpec[] = [];
+  let next: string | undefined;
+  const dispatch: Dispatch = async (path, init) => {
+    assert.equal(path, "/api/query");
+    assert.equal(init.method, "POST");
+    const spec = init.body as QuerySpec;
+    calls.push(spec);
+    assert.equal(spec.assignedToMe, true);
+    assert.equal(spec.limit, 50);
+    assert.deepEqual(spec.tags, ["task"]);
+    assert.deepEqual(spec.filter, { match: "all", conditions: [{ key: "status", op: "nin", value: ["completed", "cancelled", "archived", "done"] }] });
+    assert.equal(decodeCursor(spec), calls.length === 1 ? 0 : 50);
+    next ??= encodeCursor(50, spec);
+    return json({ rows: [task], next: calls.length === 1 ? next : null, total: 51, limited: true, truncated: true, identity: "person" });
+  };
+  const first = await buildTasksPage(dispatch);
+  assert.equal(first.next, next); assert.equal(first.total, 51);
+  assert.equal(first.limited, true); assert.equal(first.truncated, true);
+  assert.equal(first.identity, "person");
+  assert.equal((first.tasks as Array<{ noteId: string }>)[0]?.noteId, "t1");
+  const second = await buildTasksPage(dispatch, next);
+  assert.equal(second.next, null);
+  assert.equal(calls.length, 2);
+  assert.equal(calls[1]?.cursor, next);
+});
+
+test("task page retries a transient read but never converts a failed read into an empty full inventory", async () => {
+  let calls = 0;
+  const dispatch: Dispatch = async () => { calls++; return json({ error: "vault_error" }, 502); };
+  await assert.rejects(buildTasksPage(dispatch, undefined, { retryDelayMs: 1 }), /vault_error/);
+  assert.equal(calls, 2);
 });

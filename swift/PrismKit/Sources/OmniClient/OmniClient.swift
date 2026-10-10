@@ -354,6 +354,14 @@ public struct OmniClient: Sendable {
         return a.job
     }
 
+    /// Open assigned tasks, one fixed-size server page at a time.
+    public func tasks(cursor: String? = nil) async throws -> OmniTasksPage {
+        let query = cursor.map { [URLQueryItem(name: "cursor", value: $0)] } ?? []
+        var request: PrismRequest = .get("\(Self.base)/tasks", query: query)
+        request.timeout = 120
+        return try await transport.send(request)
+    }
+
     // MARK: Today
 
     /// `date` is `YYYY-MM-DD` in the PERSON's zone (the server would otherwise use its own).

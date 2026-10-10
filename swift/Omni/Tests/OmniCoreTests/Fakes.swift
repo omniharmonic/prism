@@ -114,6 +114,9 @@ final class FakeService: OmniService, @unchecked Sendable {
     private var _jobs = Queue<[OmniJob]>()
     private var _jobActions = Queue<OmniJob>()
     private var _today = Queue<OmniToday>()
+    private var _tasks = Queue<OmniTasksPage>()
+    private var _taskCursors: [String?] = []
+    private var _createdRequests: [NewThread] = []
     private var _patches = Queue<OmniThread>()
     private var _patchCalls: [String] = []
     private var _streams: [[Result<ThreadStreamUpdate, any Error>]] = []
@@ -155,6 +158,9 @@ final class FakeService: OmniService, @unchecked Sendable {
     func decisions(_ items: Result<ApprovalDecision, any Error>...) { locked { _decisions.items = items } }
     func jobs(_ items: Result<[OmniJob], any Error>...) { locked { _jobs.items = items } }
     func jobActions(_ items: Result<OmniJob, any Error>...) { locked { _jobActions.items = items } }
+    func taskPages(_ items: Result<OmniTasksPage, any Error>...) { locked { _tasks.items = items } }
+    var taskCursors: [String?] { locked { _taskCursors } }
+    var createdRequests: [NewThread] { locked { _createdRequests } }
     func todays(_ items: Result<OmniToday, any Error>...) { locked { _today.items = items } }
     func patches(_ items: Result<OmniThread, any Error>...) { locked { _patches.items = items } }
     /// `"<id> archived=true"` for every `updateThread`.
@@ -202,6 +208,7 @@ final class FakeService: OmniService, @unchecked Sendable {
     func createThread(_ new: NewThread) async throws -> CreatedThread {
         if let createGate { await createGate() }
         return try locked { () -> Result<CreatedThread, any Error> in
+            _createdRequests.append(new)
             _createdPrompts.append(new.prompt)
             _createdSources.append(new.source ?? "text")
             return Result { try _created.next() }
@@ -284,6 +291,12 @@ final class FakeService: OmniService, @unchecked Sendable {
             _jobCalls.append("\(id):\(action.rawValue)")
             return Result { try _jobActions.next() }
         }.get()
+    }
+    func tasks(cursor: String?) async throws -> OmniTasksPage {
+        try locked {
+            _taskCursors.append(cursor)
+            return try _tasks.next()
+        }
     }
     func today(date: String) async throws -> OmniToday {
         try locked { () -> Result<OmniToday, any Error> in

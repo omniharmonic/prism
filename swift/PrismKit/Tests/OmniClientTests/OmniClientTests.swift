@@ -375,6 +375,17 @@ final class OmniClientTests: XCTestCase {
         XCTAssertEqual(server.requests[1].query, ["date": "2026-01-02"])
     }
 
+    func testTasksUsesOnlyOpaqueCursorAndDecodesPaginationLimits() async throws {
+        let (omni, server) = try make { _ in .json(200, #"{"tasks":[{"noteId":"task1","title":"Task"}],"next":"nextPage","total":51,"limited":true,"truncated":false,"identity":"person"}"#) }
+        let page = try await omni.tasks(cursor: "cursor+/=")
+        XCTAssertEqual(server.requests[0].query, ["cursor": "cursor+/="])
+        XCTAssertEqual(page.next, "nextPage"); XCTAssertEqual(page.total, 51)
+        XCTAssertTrue(page.limited); XCTAssertFalse(page.truncated)
+        XCTAssertEqual(page.tasks.first?.noteId, "task1")
+        _ = try await omni.tasks()
+        XCTAssertEqual(server.requests[1].query, [:])
+    }
+
     // MARK: streams (over the stubbed URL loading system)
 
     func testThreadStreamReplaysResumesAndFoldsDeltas() async throws {

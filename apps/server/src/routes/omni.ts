@@ -76,7 +76,7 @@ import {
   type ExecOutcome,
   type Executor,
 } from "../omni/approvals";
-import { buildToday, localDate, validDate, type Dispatch } from "../omni/today";
+import { buildToday, buildTasksPage, localDate, validDate, type Dispatch } from "../omni/today";
 import { runProtonSend } from "../omni/proton-send";
 import { runTweetSend } from "../omni/tweet-send";
 
@@ -919,6 +919,18 @@ omniApi.get("/today", async (c) => {
   const q = c.req.query("date");
   if (q !== undefined && !validDate(q)) return bad(c, "date: YYYY-MM-DD");
   return c.json(await buildToday(dispatcherFor(c), q ?? localDate()));
+});
+
+// Uses the same owner authentication and vault credential as Today; cursors are data.
+omniApi.get("/tasks", async (c) => {
+  c.header("Cache-Control", "private, no-store");
+  const cursor = c.req.query("cursor");
+  if (cursor !== undefined && (!cursor || cursor.length > 512 || !/^[A-Za-z0-9+/]+$/.test(cursor))) return bad(c, "cursor: an opaque task page cursor");
+  try { return c.json(await buildTasksPage(dispatcherFor(c), cursor)); }
+  catch (e) {
+    if (e instanceof Error && ["bad_request", "invalid_query", "query_400"].includes(e.message)) return bad(c, "cursor: invalid or no longer belongs to this task query");
+    return c.json({ error: "tasks_unavailable" }, 502);
+  }
 });
 
 // ── hooks (Hermes omni-bridge plugin, sweeps): loopback + service token ────
