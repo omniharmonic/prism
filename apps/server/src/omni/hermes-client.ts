@@ -272,7 +272,7 @@ export const hermes = {
       try {
         res = await doFetch(`${url}/api/sessions/${sid(id)}/chat/stream`, {
           method: "POST",
-          headers: { ...extraHeaders, authorization: `Bearer ${key}`, accept: "text/event-stream", "content-type": "application/json" },
+          headers: { authorization: `Bearer ${key}`, accept: "text/event-stream", "content-type": "application/json" },
           body: JSON.stringify({ message }),
           redirect: "error",
           signal: ac.signal,

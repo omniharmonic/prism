@@ -33,3 +33,19 @@ test("created routing failure replays without a second creation", () => {
  const retry=reserveJobCreation("owner","test-key","digest","omni_def");
  assert.equal(retry.status,503); assert.equal(JSON.parse(retry.response!).created,true);
 });
+test("job origin headers do not leak into conversation streaming", async () => {
+ let calls=0;
+ setHermesFetchForTests(async (_url,init) => {
+  calls++;
+  const headers=new Headers(init.headers);
+  if(calls===1) { assert.equal(headers.get("X-Omni-Thread"),"omni_abcdef"); return Response.json({job:{id:"abcdef012345"}}); }
+  assert.equal(headers.get("X-Omni-Thread"),null);
+  assert.equal(headers.get("accept"),"text/event-stream");
+  assert.match(headers.get("authorization")??"",/^Bearer /);
+  return new Response('event: run.completed\ndata: {"run_id":"run_abc"}\n\nevent: done\ndata: {}\n\n',{headers:{"content-type":"text/event-stream"}});
+ });
+ await hermes.createJob({name:"Test",deliver:"local"},"omni_abcdef");
+ const frames=[];
+ for await(const frame of hermes.chatStream("omni_abcdef","Hello",new AbortController().signal)) frames.push(frame.event);
+ assert.deepEqual(frames,["run.completed","done"]);
+});

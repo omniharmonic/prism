@@ -945,15 +945,15 @@ test("approved tweet uses the exact human-reviewed draft once; no send before ap
 });
 
 test("jobs run refuses script jobs and jobs without approval routing", async () => {
- fake.jobs[0].no_agent = true; fake.jobs[0].script = "/reviewed/sweep.py";
+ fake.jobs[0]!.no_agent = true; fake.jobs[0]!.script = "/reviewed/sweep.py";
  assert.equal((await post("/jobs/abcdef012345/run", {})).status,403);
- delete fake.jobs[0].no_agent; delete fake.jobs[0].script;
- fake.jobs[0].deliver="local"; fake.jobs[0].origin={platform:"api_server",chat_id:"api"};
+ delete fake.jobs[0]!.no_agent; delete fake.jobs[0]!.script;
+ fake.jobs[0]!.deliver="local"; fake.jobs[0]!.origin={platform:"api_server",chat_id:"api"};
  assert.equal((await post("/jobs/abcdef012345/run", {})).status,409);
  assert.equal(fake.calls.some(c=>c.path.endsWith("/run")),false);
 });
 test("jobs edits refuse script runners and unsupported fields", async () => {
- fake.jobs[0].no_agent=true;
+ fake.jobs[0]!.no_agent=true;
  assert.equal((await req("/jobs/abcdef012345",{method:"PUT",headers:owner(),body:JSON.stringify({prompt:"replace script"})})).status,403);
  assert.equal((await req("/jobs/abcdef012345",{method:"PUT",headers:owner(),body:JSON.stringify({script:"/tmp/x"})})).status,400);
  assert.equal(fake.calls.some(c=>c.method==="PATCH"),false);
@@ -964,10 +964,10 @@ test("job creation rejects outward delivery before reaching Hermes", async () =>
 });
 
 test("legacy resume and edit cannot enable unguarded recurring actions", async () => {
- fake.jobs[0].deliver="local"; fake.jobs[0].origin={platform:"api_server",chat_id:"api"};
+ fake.jobs[0]!.deliver="local"; fake.jobs[0]!.origin={platform:"api_server",chat_id:"api"};
  assert.equal((await post("/jobs/abcdef012345/resume",{})).status,409);
  assert.equal((await req("/jobs/abcdef012345",{method:"PUT",headers:owner(),body:JSON.stringify({name:"Changed"})})).status,409);
- fake.jobs[0].monitor={script:"unreviewed.sh"};
+ fake.jobs[0]!.monitor={script:"unreviewed.sh"};
  assert.equal((await post("/jobs/abcdef012345/run",{})).status,403);
  assert.equal(fake.calls.some(c=>c.path.endsWith("/resume") || c.path.endsWith("/run") || c.method==="PATCH"),false);
 });

@@ -12,6 +12,7 @@ public final class JobsModel {
     /// The job a pause/resume is running for.
     public private(set) var busyJobID: String?
     public private(set) var actionProblem: String?
+    public private(set) var creationDefinitelyRejected = false
 
     private let service: any OmniService
     private let sink: ErrorSink
@@ -44,8 +45,17 @@ public final class JobsModel {
             } else { _ = try await manager.createJob(new, key: key) }
             await refresh(); return true
         } catch {
+            if editing == nil { creationDefinitelyRejected = Self.definitelyNoCreation(error) }
             actionProblem = sink.describe(error) ?? "The job could not be saved. Refresh Recurring before creating it again."
             await refresh(); return false
+        }
+    }
+    public static func definitelyNoCreation(_ error: any Error) -> Bool {
+        guard let error = error as? PrismError else { return false }
+        switch error {
+        case .invalidRequest: return true
+        case .rejected(let failure): return failure.status == 400 && ["bad_request", "hermes_rejected"].contains(failure.code ?? "")
+        default: return false
         }
     }
     public func remove(_ job: OmniJob) async -> Bool {

@@ -11,6 +11,7 @@ struct JobEditor: View {
     @State private var schedule: String
     @State private var prompt: String
     @State private var key = IdempotencyKey.random()
+    @State private var lastAttempt: NewJob?
     @State private var confirmDelete = false
     private var scriptJob: Bool { job?.noAgent == true || job?.script != nil || job?.monitorScript != nil || (job?.monitor != nil && job?.monitor?.isNull != true) }
     init(model: JobsModel, job: OmniJob?) {
@@ -26,7 +27,7 @@ struct JobEditor: View {
                 if scriptJob {
                     Section {
                         Text("Script job").font(.headline)
-                        Text("This existing runner is read-only. You can pause, resume or delete its schedule from Recurring.").foregroundStyle(.secondary)
+                        Text("This existing runner is read-only. You can pause or delete its schedule from Recurring. Running and resuming this runner require a separately reviewed migration.").foregroundStyle(.secondary)
                         Text(name)
                         Text(JobPresentation.schedule(job!) ?? "Schedule unavailable")
                     }
@@ -65,6 +66,8 @@ struct JobEditor: View {
                         Button("Save") {
                             Task {
                                 let new = NewJob(name: name, schedule: schedule, prompt: prompt, deliver: job == nil ? "local" : nil)
+                                if job == nil, model.creationDefinitelyRejected, let lastAttempt, lastAttempt != new { key = .random() }
+                                lastAttempt = new
                                 if await model.save(new: new, key: key, editing: job) { dismiss() }
                             }
                         }
