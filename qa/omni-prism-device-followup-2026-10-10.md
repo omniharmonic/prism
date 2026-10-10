@@ -1,5 +1,7 @@
 # Prism and Omni follow-up — 2026-10-10
 
+> Current product scope, owner feedback, acceptance status and next steps: [Prism + Omni product roadmap](../docs/roadmap/prism-omni-product-roadmap.md).
+
 ## Production
 
 Prism `prism-v2026.10.10-8` = `422ad503fa7c55a912fc7371df90e80f9cfec126` deployed through the required dry/apply workflow. Mini log `~/deploy-state/prism-20261010T182727Z.log`. Process, vault, ingest regression and desktop-independence checks passed. Required check components passed: all four application typechecks, e2e typecheck, dialog restriction, service-worker exclusions and initial-bundle lazy assertions. A fixture typing error introduced with the real-touch regression was corrected in PR86 before deployment. Skills filesystem/owner-route tests passed on integrated source.
