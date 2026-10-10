@@ -373,6 +373,9 @@ import OmniVoiceKit
                 let rendered = try await provider.render("Hello, I'm Omni. Take your time. We can think this through together.")
                 guard !Task.isCancelled, self.generation == request, self.speech.ownsPreview(lease, owner: self.replyPreviewOwner) else { return }
                 if case .encodedAudio(let data) = rendered {
+                    self.speech.configurePlaybackFailure(owner: self.replyPreviewOwner) { [weak self] reason in
+                        self?.replySpeechNotice = reason
+                    }
                     try self.speech.playPreviewAudio(data, owner: self.replyPreviewOwner, lease: lease)
                     await self.speech.waitForPlayback(owner: self.replyPreviewOwner)
                 }

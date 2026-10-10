@@ -255,4 +255,18 @@ import OmniClient
         XCTAssertEqual(count, 1); XCTAssertEqual(output.audio.count, 1)
     }
 
+    func testEncodedPreviewFailureClearsLeaseAndReleasesDrain() async throws {
+        let output = Output(); let speech = ConversationSpeech(output: output); let owner = UUID()
+        var failure = ""
+        let lease = try XCTUnwrap(speech.reservePreview(owner: owner, cancel: {}))
+        speech.configurePlaybackFailure(owner: owner) { failure = $0 }
+        try speech.playPreviewAudio(Data([1]), owner: owner, lease: lease)
+        let drain = Task { await speech.waitForPlayback(owner: owner) }
+        await Task.yield()
+        output.failure?("Preview route failed")
+        await drain.value
+        XCTAssertEqual(failure, "Preview route failed")
+        XCTAssertFalse(speech.isPreviewing); XCTAssertFalse(speech.ownsPreview(lease, owner: owner))
+    }
+
 }
