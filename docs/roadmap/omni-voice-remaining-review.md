@@ -16,7 +16,7 @@ Physical checks still required: cold launch and warm launch; signed out then sig
 
 Hey Omni is opt-in, experimental full Apple speech recognition with an on-device capability check and requiresOnDeviceRecognition. It is not a dedicated efficient wake engine. Matching uses whole words in a bounded 4,096-character preview; request epochs reject stale and duplicate callbacks. Ambient audio is never written to a file or sent to Hermes. Recognition requests roll over at 50 seconds. Permission denial, unsupported local recognition and recognition errors have visible menu state; no remote fallback exists.
 
-One coordinator preempts wake capture synchronously before a conversation takes the microphone. Conversation ownership lasts through narration and Pause, until End/cancellation. Sleep, privacy lock, sign-out and window readiness stop listening. No sleeping-Mac wake claim or login-helper registration exists. Launch-at-login remains a later explicit setting.
+One coordinator preempts wake capture synchronously before a conversation takes the microphone. Conversation ownership lasts through narration and Pause, until End/cancellation. Sleep, app privacy lock, sign-out, window readiness and Mac user-session switch stop listening. Public session-switch notifications do not promise ordinary OS screen-lock coverage; verify that separately. A listener initialized after application launch may also miss the early inactive-session launch notification. No sleeping-Mac wake claim or login-helper registration exists. Launch-at-login remains a later explicit setting.
 
 **Lead-in audio is currently missing.** Saying “Hey Omni, tell me…” immediately can clip words during recognition, window activation and conversation preparation. Current honest instruction: after Hey Omni, wait until the voice panel says Listening before speaking. A visual Listening cue is already present. Any optional audible ready cue should be a short local sound after capture readiness, controlled by a remembered preference and suppressed while locked, cancelled, playing previews or denied permission; it must never speak an unapproved action.
 
@@ -45,7 +45,7 @@ No hands-free detector establishes semantic completion or authorizes an outbound
 
 ## Optional Kokoro foreground Mac spike
 
-Public metadata only, no model blobs downloaded. FluidAudio v0.17.7 pins v3 release 6c0750dd02ef9d981fb82f147d784a3f171755ee and seven-stage base 006395f65025af251858b1ab0a7178a6a1e73f9f. Applying the actual SDK selection rules yields 118,800,638 bytes for 16 v3 source/metadata files and 82,161,196 bytes for 24 base files. Default English voice adds 522,240 bytes; English vocab adds 1,416 bytes; manifest adds 20,416 bytes. Observed English frontend/G2P plus lexicon adds 12,015,574 bytes. Known download subtotal: **213,521,480 bytes (~213.5 MB decimal)**, excluding base-index JSON, HTTP metadata/notices and compiled caches. Full file hashes/sizes are in omni-kokoro-asset-inventory.json.
+The inventory was first measured from public metadata; the corresponding pinned files have now downloaded for the isolated Mac spike. FluidAudio v0.17.7 pins v3 release 6c0750dd02ef9d981fb82f147d784a3f171755ee and seven-stage base 006395f65025af251858b1ab0a7178a6a1e73f9f. Applying the actual SDK selection rules yields 118,800,638 bytes for 16 v3 source/metadata files and 82,161,196 bytes for 24 base files. Default English voice adds 522,240 bytes; English vocab adds 1,416 bytes; manifest adds 20,416 bytes. Observed English frontend/G2P plus lexicon adds 12,015,574 bytes. Known download subtotal: **213,521,480 bytes (~213.5 MB decimal)**, excluding base-index JSON, HTTP metadata/notices and compiled caches. Full file hashes/sizes are in omni-kokoro-asset-inventory.json.
 
 This fits a 750 MB download budget with room for metadata, but does not establish retained/transient disk or RAM limits. Local compilation duplicates source/cache assets; measure actual totals separately. Use default af_heart first to minimize extra voices. Preloading af_bella adds a 2,678,538-byte JSON download and a 522,240-byte converted cache file.
 
@@ -53,4 +53,28 @@ Important reproducibility gap: v3/base weights are pinned; shared English G2P an
 
 Recommended next measurement: isolated foreground Mac subprocess, af_heart, ten synthetic passages, one persistent warm manager, controlled cache/download cap and crash-isolated output. Measure download, compilation, first PCM, resident memory, waveform frames and a 15-minute soak. Do not enable Kokoro in mobile builds before physical iPhone/A12Z testing; pinned upstream still documents unresolved mobile Core ML stability concerns.
 
-Apple baseline attempted with the existing harness and say/Samantha, rendering files without playback at /private/tmp/omni-apple-voice-baseline. The command exited successfully, but sampled WAVs have zero PCM frames; these are unusable for a listening comparison. A renderer must reject empty audio rather than treating file existence as speech. No quality or latency result is recorded from that attempt.
+The initial sandboxed Apple baseline produced zero-frame WAVs despite a successful process exit. The harness now rejects empty PCM. A subsequent unsandboxed say/Samantha render produced ten validated WAVs at /private/tmp/omni-apple-voice-baseline-valid without playback; these are available for listening comparison. No subjective quality or first-audible latency result is recorded yet.
+
+## Evaluation evidence update
+
+The pinned download completed: **213,544,176 bytes** across 57 files including both Apache notices, all checksums verified, within the 750 MB cap. Receipt: /private/tmp/omni-kokoro-cache/download-receipt.json. The complete downloaded manifest also includes exact frontend hashes and observed immutable revision; it is checked in with the isolated tool, not model blobs.
+
+A single Apple say/Samantha render retried outside the sandbox produced 49,704 frames at 24 kHz. Ten fixed synthetic passages then rendered successfully with zero-frame validation: ten WAVs, 1,536,642 total frames, at /private/tmp/omni-apple-voice-baseline-valid. No playback was performed, so subjective quality and first audible latency remain unmeasured. The harness now rejects empty PCM WAVs.
+
+## Isolated Mac Kokoro results
+
+The default af_heart v3 engine successfully rendered three initial passages (nine files), then all ten passages with three renders each (30 finite, nonempty 24 kHz PCM WAVs). Inference ran with ModelHub.offlineMode after the pinned download. It did not play audio or enable Kokoro in Omni. Hardware: Mac14,5 / Apple M2 Max / macOS 26.6.2.
+
+| Measurement | Observed | Boundary |
+|---|---|---|
+| First initialization with local compilation | 21,215 ms | Download already complete |
+| Later process initialization with compiled cache | 872 ms | Model loading, no speech yet |
+| Warm whole-utterance PCM, median | 197 ms | Twenty second/third renders; includes text processing |
+| Warm whole-utterance PCM, range | 45–410 ms | Utterance lengths differ; not streaming first PCM |
+| Peak process RSS | 1,091,207,168 bytes (~1.09 GB) | macOS getrusage peak, not mobile projection |
+| Retained cache files after compilation | 406,075,811 bytes (~406 MB) | Transient/system compiler cache peak unmeasured |
+| Downloaded bytes incl notices | 213,544,176 | No further inference-time model downloads |
+
+The first short utterance took 3,288 ms to completed PCM in the initial process, then 55/44 ms on repetition; first longer passage took 3,624 ms then 159/147 ms. These show first-use graph costs that warm-only stage timing hides. Six of 30 ten-passage renders used the fast vocoder; longer responses correctly used the fallback path. The NeMo normalization trait was disabled to match the small dependency configuration; number/currency pronunciation is not accepted from this run.
+
+Raw results: /private/tmp/omni-kokoro-ten/measurements.json and summary.json. Compare the warm second render of p02 or p03 against the corresponding Apple WAV at /private/tmp/omni-apple-voice-baseline-valid. Neither engine has been auditioned in this engineering pass; owner preference remains pending. First audible latency, playback underruns, cancellation/route changes, a 15-minute soak, peak transient disk and all iPhone/A12Z measurements remain unmeasured. **The Mac backend is demonstrated feasible to evaluate, not accepted to ship.**

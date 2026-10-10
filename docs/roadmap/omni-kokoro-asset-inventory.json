@@ -236,5 +236,8 @@
     "cache duplication/transient disk",
     "resident memory"
   ],
-  "license": "Apache-2.0 repository card and conversion notice; voice provenance requires final release manifest review"
+  "license": "Apache-2.0 repository card and conversion notice; voice provenance requires final release manifest review",
+  "actualVerifiedDownloadBytesIncludingNotices": 213544176,
+  "actualVerifiedDownloadedFiles": 57,
+  "completeDownloadManifest": "../../tools/voice-evaluation/kokoro-spike/asset-manifest.json"
 }
