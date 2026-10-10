@@ -39,3 +39,15 @@ Backend tests use synthetic injected providers and a fake Hermes generator; no t
 The new synthesis endpoint speaks supplied completed reply prose; it does not deliver a pre-existing Hermes TTS file. Current Hermes API replies can contain `MEDIA:<local path>` but its resolver inlines images only. A media-only reply therefore has no narrated prose or usable audio reference today. The client filters file directives from narration and must not claim attachment playback or fetch a path taken from assistant text.
 
 Proposed separately reviewed contract: the Hermes producer registers its actual generated audio in its existing principal-scoped artifact store and emits a trusted receipt. Omni persists a message-bound descriptor `{id, type:"audio", contentType, byteCount, sha256, durationSeconds?, expiresAt}` tied to thread/turn/message identity. An owner-authenticated `GET /api/omni/threads/:threadID/messages/:messageID/media/:mediaID` verifies that binding and receipt before bounded audio delivery, with no raw path/URL query, redirects, arbitrary filesystem fetch or public cache route. The native caller uses the same cancellation epoch and audio drain as prose synthesis, suppresses duplicate narration, and reports unavailable/expired media honestly. Hermes currently has a one-shot `/v1/artifacts/download/:artifact_id` route, but TTS output is not automatically registered there. Producer registration and message metadata must be implemented before this delivery can be claimed. Legacy path recovery is deferred.
+
+## Synthetic authenticated deployment smoke
+
+From the Mini's tagged `apps/server` checkout, run:
+
+```sh
+node --env-file=.env --import tsx scripts/verify-omni-tts.ts
+```
+
+This named deployment verification performs one explicitly bounded database write: it creates a random owner browser session with a 60-second TTL, then deletes exactly that session in `finally`, including failed synthesis. It never deletes or reads another device/session credential. The existing owner/device security gates remain unchanged; loopback `COLLAB_TOKEN` is deliberately not accepted by voice routes. No token is passed in argv or printed. Do not use this helper against a different database than the running tagged server's `.env` selects.
+
+The helper takes no custom text/URL/credential arguments, calls only fixed loopback voice endpoints with normal browser CSRF headers, forbids redirects, limits response-body reads, and has a 45-second workflow deadline plus a five-second cleanup request. It checks available Edge metadata, synthesizes a fixed nonpersonal sentence, verifies MP3 type/signature/size, and verifies DELETE-before-POST suppresses the exact cancelled request. Logs contain only HTTP status, content type, bytes, timing and fixed provider ID. Exit zero confirms these API checks; it does not claim audible quality, physical cancellation or mobile parity. Abrupt process termination can leave its exact credential until the short TTL expires; normal failure paths remove it. No vault or agent tool dispatch is involved.
