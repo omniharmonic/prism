@@ -259,7 +259,7 @@ export function executorFor(kind: ApprovalKind): { name: string; available: bool
   const e = executorOf(kind);
   // OMNI_EXECUTORS=off wins over every family flag: nothing Omni proposes can be sent. A
   // `command` is not a send (Hermes runs its own paused call); it has its own switch.
-  return omniConfig.executorsOff() && kind !== "command" ? { ...e, enabled: false } : e;
+  return kind !== "command" && (omniConfig.executorsOff() || !omniConfig.executorKindAllowed(kind)) ? { ...e, enabled: false } : e;
 }
 function executorOf(kind: ApprovalKind): { name: string; available: boolean; enabled: boolean } {
   switch (kind) {

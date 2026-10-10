@@ -14,6 +14,7 @@ process.env.OMNI_HERMES_KEY = "hermes-test-key-0123456789";
 process.env.OMNI_SERVICE_TOKEN = "omni-service-token-0123456789";
 
 import { config } from "../src/config";
+import { executorFor } from "../src/omni/approvals";
 import { createApp } from "../src/app";
 import { db } from "../src/db";
 import { putSecret } from "../src/secrets";
@@ -30,6 +31,9 @@ let fv: FakeVault;
 const app = createApp();
 
 beforeEach(() => {
+  delete process.env.OMNI_EXECUTOR_KINDS;
+  delete process.env.OMNI_EXECUTORS;
+  delete process.env.OMNI_COMMAND_APPROVALS;
   resetDb();
   resetOmniStoreForTests();
   fv = installFakeVault();
@@ -91,4 +95,38 @@ test("flag on: a device-token decision sends once through /api/actions/matrix/se
   const again = await decide(p.id, p.digest, { authorization: `Bearer ${dev}` }, "omni-exec-key-0003");
   assert.equal(again.status, 409);
   assert.equal(sent.length, 1);
+});
+
+for (const allowlist of ["", "unknown", "email,email-reply", "message,unknown"]) {
+  test(`executor allowlist ${JSON.stringify(allowlist)} blocks a real message approval`, async () => {
+    Object.assign(config, { actionsMatrixEnabled: true });
+    process.env.OMNI_EXECUTOR_KINDS = allowlist;
+    const p = await propose();
+    const r = await decide(p.id, p.digest, { cookie: sessionCookie(makeSession(config.ownerEmail)) }, "omni-allowlist-0001");
+    assert.equal(r.status, 503);
+    assert.equal((await r.json() as { error: string }).error, "executor_disabled");
+    assert.equal(sent.length, 0);
+    assert.equal((db.prepare("SELECT count(*) n FROM action_audit").get() as { n: number }).n, 0);
+  });
+}
+
+test("an allowed kind executes, while the master off switch still wins", async () => {
+  Object.assign(config, { actionsMatrixEnabled: true });
+  process.env.OMNI_EXECUTOR_KINDS = "message";
+  process.env.OMNI_EXECUTORS = "off";
+  let p = await propose();
+  assert.equal((await decide(p.id, p.digest, { cookie: sessionCookie(makeSession(config.ownerEmail)) }, "omni-allowlist-0002")).status, 503);
+  assert.equal(sent.length, 0);
+  delete process.env.OMNI_EXECUTORS;
+  p = await propose();
+  assert.equal((await decide(p.id, p.digest, { cookie: sessionCookie(makeSession(config.ownerEmail)) }, "omni-allowlist-0003")).status, 200);
+  assert.equal(sent.length, 1);
+});
+
+test("sender allowlist never changes the independent command gate", () => {
+  process.env.OMNI_EXECUTOR_KINDS = "";
+  process.env.OMNI_EXECUTORS = "off";
+  assert.equal(executorFor("command").enabled, true);
+  process.env.OMNI_COMMAND_APPROVALS = "off";
+  assert.equal(executorFor("command").enabled, false);
 });

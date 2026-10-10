@@ -10,6 +10,7 @@ import { csrfRefusal } from "./actions";
 import { consumeRateLimit } from "../middleware/ratelimit";
 import {
   apnsEnabled,
+  apnsApplicationForDevice,
   apnsTokenForDevice,
   isApnsEnvironment,
   isApnsToken,
@@ -95,7 +96,7 @@ function deviceActor(c: Parameters<typeof resolveActor>[0]): DeviceActor | null 
   // requestVia: the device path itself, never an in-process (MCP) dispatch.
   if (requestVia(c) !== "device") return null;
   const a = resolveActor(c);
-  return a.kind === "user" && a.deviceId ? { kind: "user", email: a.email, vaultId: a.vaultId, deviceId: a.deviceId } : null;
+  return a.kind === "user" && a.deviceId && apnsApplicationForDevice(a.deviceId) === "prism" ? { kind: "user", email: a.email, vaultId: a.vaultId, deviceId: a.deviceId } : null;
 }
 const needDevice = { error: "device_token_required", detail: "register APNs with the app's device token (Bearer pd_…)" };
 

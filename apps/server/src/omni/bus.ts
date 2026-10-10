@@ -65,8 +65,7 @@ export type OmniPusher = (owner: string, kind: OmniPushKind, id: string) => Prom
 
 /**
  * Default: the existing APNs sender, content-free (`{type:"omni", category, id}` +
- * generic alert text; the app fetches everything else). NOTE: it is sent with Prism's
- * configured APNs topic; an Omni-own topic (`/api/omni/push`, contract § 4) is deferred.
+ * generic alert text; the app fetches everything else), only to Omni registrations.
  */
 const defaultPusher: OmniPusher = async (owner, kind, id) => {
   if (!apnsEnabled()) return;
@@ -81,7 +80,7 @@ const defaultPusher: OmniPusher = async (owner, kind, id) => {
       url: `omni://${path}`,
     },
     collapseId: `omni-${kind}-${id}`.slice(0, 64),
-  });
+  }, "omni");
 };
 let pusher: OmniPusher = defaultPusher;
 export function setOmniPusherForTests(p: OmniPusher | null): void {

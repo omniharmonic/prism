@@ -53,6 +53,14 @@ export const omniConfig = {
    * this is the switch that turns OMNI's sending off by itself. Approving then answers
    * `executor_disabled` and the draft stays pending.
    */
+  /** Unset preserves family flags; set values must be entirely recognized, or all sends fail closed. */
+  executorKindAllowed: (kind: string): boolean => {
+    const raw = process.env.OMNI_EXECUTOR_KINDS;
+    if (raw === undefined) return true;
+    const kinds = raw.split(",").map(k => k.trim());
+    const known = new Set(["email", "email-reply", "message", "calendar-invite", "tweet", "wallet-proposal"]);
+    return kinds.length > 0 && kinds.every(k => known.has(k)) && kinds.includes(kind);
+  },
   executorsOff: (): boolean => (env("OMNI_EXECUTORS") ?? "").toLowerCase() === "off",
   /** `OMNI_COMMAND_APPROVALS=off`: a tool call Hermes paused for approval can never be
    *  approved (so it never runs). On by default. */
