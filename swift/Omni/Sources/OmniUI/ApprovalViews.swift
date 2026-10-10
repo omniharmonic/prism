@@ -322,56 +322,140 @@ struct ReviseSheet: View {
 struct NeedsYouView: View {
     let session: SessionModel
     @Environment(\.navigator) private var navigator
+    @State private var showLater = false
 
+    private func refresh() async { await session.approvals.refresh(); await session.nudges?.refresh() }
     var body: some View {
         let pending = session.approvals.pending
-        Group {
-            if let failure = session.approvals.phase.failure, pending.isEmpty {
-                ContentUnavailableView {
-                    Label("Couldn't load", systemImage: "wifi.exclamationmark")
-                } description: {
-                    Text(failure)
-                } actions: {
-                    Button("Try Again") { Task { await session.approvals.refresh() } }
+        let nudges = session.nudges?.items ?? []
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 16) {
+                if let center = session.nudges {
+                    DisclosureGroup("Proactivity") {
+                        Picker("Attention level", selection: Binding(get: { center.settings.dial }, set: { dial in
+                            Task { await center.save(NudgeSettings(dial: dial, killed: center.settings.killed)) }
+                        })) {
+                            ForEach(ProactivityDial.allCases, id: \.self) { dial in Text(dial.rawValue.capitalized).tag(dial) }
+                        }
+                        Toggle("Pause nudges", isOn: Binding(get: { center.settings.killed }, set: { killed in
+                            Task { await center.save(NudgeSettings(dial: center.settings.dial, killed: killed)) }
+                        }))
+                        Text("Off and Pause keep your queue available. Apple’s notification settings and Focus control delivery; Omni does not read your current Focus. Drafts always need your review.").font(.caption).foregroundStyle(.secondary)
+                    }.disabled(center.busy.contains("settings") || center.phase != .loaded)
+                    if let failure = center.phase.failure ?? center.failure {
+                        Label(failure, systemImage: "wifi.exclamationmark").foregroundStyle(.secondary)
+                        Button("Retry nudges") { Task { await center.refresh() } }.frame(minHeight: 44)
+                    }
                 }
-            } else if pending.isEmpty {
-                ContentUnavailableView("Nothing needs you", systemImage: "checkmark.circle", description: Text("Drafts that need your decision appear here. Nothing goes out without your tap."))
-            } else {
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 16) {
-                        ForEach(pending) { card in
-                            VStack(alignment: .leading, spacing: 6) {
-                                ApprovalCardView(center: session.approvals, id: card.id)
-                                if let threadID = card.approval.threadId {
-                                    Button("Open thread") { navigator.open(.thread(threadID)) }
-                                        .buttonStyle(.borderless)
-                                        .font(.callout)
-                                        #if os(iOS)
-                                        .frame(minHeight: 44)
-                                        .contentShape(Rectangle())
-                                        #endif
-                                        .accessibilityHint("Shows the conversation this draft came from")
-                                }
-                            }
+                if let failure = session.approvals.phase.failure {
+                    Label(failure, systemImage: "wifi.exclamationmark").foregroundStyle(.secondary)
+                    Button("Retry drafts") { Task { await session.approvals.refresh() } }.frame(minHeight: 44)
+                }
+                if pending.isEmpty && nudges.isEmpty && session.approvals.phase.failure == nil && session.nudges?.phase.failure == nil {
+                    ContentUnavailableView("Nothing needs you", systemImage: "checkmark.circle", description: Text("Drafts and items needing your attention appear here. Nothing goes out without your tap."))
+                }
+                ForEach(nudges) { nudge in
+                    if let center = session.nudges { NudgeCardView(center: center, item: nudge) }
+                }
+                ForEach(pending) { card in
+                    VStack(alignment: .leading, spacing: 6) {
+                        ApprovalCardView(center: session.approvals, id: card.id)
+                        if let threadID = card.approval.threadId {
+                            Button("Open thread") { navigator.open(.thread(threadID)) }
+                                .buttonStyle(.borderless).font(.callout).frame(minHeight: 44)
                         }
                     }
-                    .padding()
-                    .frame(maxWidth: 820, alignment: .leading)
-                    .frame(maxWidth: .infinity)
+                }
+                if let center = session.nudges {
+                    if let audit = center.audit {
+                        DisclosureGroup("Weekly reply audit") {
+                            Text("Caught \(audit.caught) · Missed \(audit.missed) · Not important \(audit.noise) · Unknown chat \(audit.unknownChat)")
+                                .font(.callout).fixedSize(horizontal: false, vertical: true)
+                            Text("Caught means viewed or delivered before your reply. Missed means no such evidence. Verified email and Matrix replies are included. Chat sources without trusted identity and reply timing remain unknown.")
+                                .font(.caption).foregroundStyle(Color.quietText)
+                        }
+                    }
+                    if !center.later.isEmpty {
+                        DisclosureGroup("Later", isExpanded: $showLater) {
+                            ForEach(center.later) { NudgeCardView(center: center, item: $0) }
+                        }
+                    }
                 }
             }
+            .padding().frame(maxWidth: 820, alignment: .leading).frame(maxWidth: .infinity)
         }
         .navigationTitle("Needs you")
-        .refreshable { await session.approvals.refresh() }
-        .toolbar {
-            ToolbarItem {
-                Button {
-                    Task { await session.approvals.refresh() }
-                } label: {
-                    Label("Refresh", systemImage: "arrow.clockwise")
-                }
+        .refreshable { await refresh() }
+        .toolbar { ToolbarItem { Button { Task { await refresh() } } label: { Label("Refresh", systemImage: "arrow.clockwise") } } }
+        .task { await refresh() }
+    }
+}
+
+struct NudgeCardView: View {
+    let center: NudgeCenter
+    let item: OmniNudge
+    @Environment(\.navigator) private var navigator
+    @Environment(\.openURL) private var openURL
+    @State private var showHealth = false
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(item.candidate.title).font(.headline)
+            Text(item.candidate.summary).font(.body)
+            Text(item.candidate.reasons.joined(separator: " · ")).font(.callout).foregroundStyle(.secondary)
+            ViewThatFits(in: .horizontal) {
+                HStack { primaryActions }
+                VStack(alignment: .leading) { primaryActions }
             }
+            ViewThatFits(in: .horizontal) {
+                HStack { sourceAction; Spacer(minLength: 8); moreActions }
+                VStack(alignment: .leading) { sourceAction; moreActions }
+            }.buttonStyle(.borderless).font(.callout)
+
         }
-        .task { await session.approvals.refresh() }
+        .padding().background(.background, in: RoundedRectangle(cornerRadius: 16))
+        .overlay(RoundedRectangle(cornerRadius: 16).stroke(.quaternary, lineWidth: 1))
+        .disabled(center.busy.contains(item.id))
+        .sheet(isPresented: $showHealth) {
+            VStack(alignment: .leading, spacing: 12) {
+                Text("Pipeline status").font(.title2)
+                Text(item.candidate.operationalSource?.subsystem ?? "Pipeline").font(.headline)
+                Text(item.candidate.summary)
+                if let last = item.candidate.operationalSource?.lastSeen, last > 0 {
+                    Text("Last source update: \(Date(timeIntervalSince1970: last / 1000).formatted())").font(.callout)
+                } else { Text("No source update found in the complete inventory.").font(.callout) }
+                Text("Checked: \(Date(timeIntervalSince1970: item.updatedAt / 1000).formatted())").font(.caption).foregroundStyle(Color.quietText)
+                Button("Done") { showHealth = false }.frame(minHeight: 44)
+            }.padding().frame(minWidth: 280, idealWidth: 400)
+        }
+        .task(id: item.updatedAt) { await center.markSeen(item.id, updatedAt: item.updatedAt) }
+    }
+    @ViewBuilder private var sourceAction: some View {
+        if let source = item.candidate.operationalSource {
+            if source.kind == "job" {
+                Button { navigator.open(.recurring) } label: { Text("Open Recurring").frame(minHeight: 44).contentShape(Rectangle()) }
+            } else {
+                Button { showHealth = true } label: { Text("Open status").frame(minHeight: 44).contentShape(Rectangle()) }
+            }
+        } else if let text = item.sourceLink, let url = URL(string: text), ["https", "http"].contains(url.scheme?.lowercased() ?? "") {
+            Button { openURL(url) } label: { Text("Open source").frame(minHeight: 44).contentShape(Rectangle()) }
+        }
+    }
+    private var moreActions: some View {
+        Menu {
+            Button("Snooze one day") { Task { await center.act(item.id, .snooze, until: Date().addingTimeInterval(86400)) } }
+            Button("Not important") { Task { await center.act(item.id, .noise) } }
+            Button("Relevant") { Task { await center.act(item.id, .relevant) } }
+            Button("Hide") { Task { await center.act(item.id, .dismiss) } }
+        } label: { Label("More", systemImage: "ellipsis").frame(minWidth: 44, minHeight: 44).contentShape(Rectangle()) }
+        .accessibilityLabel("More nudge actions")
+    }
+    @ViewBuilder private var primaryActions: some View {
+        if ["reply-owed", "unprocessed"].contains(item.candidate.kind) && item.candidate.operationalSource == nil {
+            Button { start(.draftReply) } label: { Text("Draft reply").frame(minHeight: 44).contentShape(Rectangle()) }.buttonStyle(.bordered)
+        }
+        Button { start(.startWorking) } label: { Text("Start working").frame(minHeight: 44).contentShape(Rectangle()) }.buttonStyle(.borderedProminent)
+    }
+    private func start(_ action: NudgeStart) {
+        Task { if let thread = await center.start(item.id, action) { navigator.open(.thread(thread)) } }
     }
 }

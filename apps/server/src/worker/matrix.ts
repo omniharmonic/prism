@@ -766,6 +766,7 @@ export async function ingestMatrix(
     selfUserId?: string | null;
     /** The owner's own person note, resolved from the pass's people index (never linked). */
     ownerPersonId?: (people: PeopleIndex) => string | null;
+    ownerSenderIds?: (people: PeopleIndex) => string[];
     /** PEOPLE_QUEUE_ON_INGEST: collects unresolved DM counterparts; flushed with the thread's note id. */
     reviewSink?: { collect(roomId: string): (r: PersonReview) => void; flush(roomId: string, noteId: string | null | undefined): void };
     /** Rooms an EARLIER pass failed on (its `failedRooms`), replayed before this
@@ -774,6 +775,8 @@ export async function ingestMatrix(
   } = {},
 ): Promise<IngestResult> {
   const { nextBatch, rooms, invites: fresh } = await client.sync(opts.since);
+  let people: PeopleIndex | null = null;
+  let ownerSenderIds:string[]=[];
   // Incremental sync only carries NEW invites; the probe sees the whole backlog.
   const invites = [...fresh];
   if (opts.probeInvites && client.pendingInvites) {
@@ -827,6 +830,7 @@ export async function ingestMatrix(
   }
   // Lean: rows only. A body is read by `loadThread`, for a note about to be written.
   const existing = await listThreadRows(vault);
+  if(opts.ownerSenderIds){try{people=await PeopleIndex.load(vault);ownerSenderIds=opts.ownerSenderIds(people);}catch{/* Missing verified owner identity stays unknown. */}}
   const byRoom = threadsByRoom(existing);
   await sweepOversizedThreads(vault, byRoom);
 
@@ -859,7 +863,7 @@ export async function ingestMatrix(
         };
         await resolveDisplayNames(client, rb);
         // A thread created here must be the one this pass's own batch appends to.
-        if (await ingestRoom(rb, vault, byRoom, { dedupe: true, onCreated: (n) => byRoom.set(p.roomId, n) })) replayed.messages += gap.messages.length;
+        if (await ingestRoom(rb, vault, byRoom, { dedupe: true,selfUserId:ownerSenderIds, onCreated: (n) => byRoom.set(p.roomId, n) })) replayed.messages += gap.messages.length;
       }
       replayed.ok.push(p.roomId);
     } catch (e) {
@@ -878,7 +882,6 @@ export async function ingestMatrix(
   let peopleLinked = 0;
   const failedRooms = new Set<string>();
   // Built lazily, once per pass, only when a room actually needs linking.
-  let people: PeopleIndex | null = null;
   const peopleBefore = () => people?.created ?? 0;
   const peopleAtStart = peopleBefore();
   for (const rb of rooms) {
@@ -950,7 +953,7 @@ export async function ingestMatrix(
       }
     }
     try {
-      await ingestRoom(rb, vault, byRoom, { dedupe, links, ...(opts.storeParticipantIds ? { participantIds: memberIds ?? rb.memberIds } : {}) });
+      await ingestRoom(rb, vault, byRoom, { dedupe, links,selfUserId:ownerSenderIds, ...(opts.storeParticipantIds ? { participantIds: memberIds ?? rb.memberIds } : {}) });
       peopleLinked += links.length;
       // A thread created this pass has no id here yet; its counterpart queues on the next append.
       opts.reviewSink?.flush(rb.roomId, byRoom.get(rb.roomId)?.id);
@@ -1088,12 +1091,36 @@ export function lastMessageAtOf(note: Note): number {
  * used by the repair paths, whose timestamp boundary can overlap what the note
  * already holds.
  */
+/** Identity evidence is taken from Matrix event fields, never transcript text/display names. */
+export function lastMessageEvidence(messages: MatrixMessage[], previous?:Record<string,unknown>, selfUserId?:string|string[]|null):Record<string,unknown> {
+ const selfIds=new Set(Array.isArray(selfUserId)?selfUserId:selfUserId?[selfUserId]:[]);
+ const chronology:Record<string,unknown>={};let inbound=Number(previous?.lastInboundMessageAt??0);
+ if(selfIds.size){
+  for(const m of [...messages].sort((a,b)=>a.ts-b.ts)){
+   if(!selfIds.has(m.sender))inbound=Math.max(inbound,m.ts);
+   else if(inbound>0&&inbound<m.ts&&m.ts>Number(previous?.lastSelfReplyAt??0)&&!messages.some(other=>other.ts===m.ts&&!selfIds.has(other.sender))){
+    chronology.lastSelfReplyAt=m.ts;chronology.lastReplyInboundAt=inbound;
+   }
+  }
+  if(inbound>0)chronology.lastInboundMessageAt=inbound;
+ }
+ const at=Math.max(...messages.map(m=>m.ts));
+ if(!Number.isFinite(at)||at<Number(previous?.lastMessageAt??0))return chronology;
+ const latest=messages.filter(m=>m.ts===at),senders=new Set(latest.map(m=>m.sender));
+ const sender=senders.size===1?latest[latest.length-1]?.sender:null;
+ const conflicts=at===previous?.lastMessageAt&&previous?.lastMessageSender&&previous.lastMessageSender!==sender;
+ if(!sender||conflicts)return {...chronology,lastMessageSender:null,lastMessageEventId:null,lastMessageText:null,lastMessageIsSelf:null};
+ const message=latest[latest.length-1]!;
+ return {...chronology,lastMessageSender:message.sender,lastMessageEventId:message.eventId,lastMessageText:message.body.slice(0,1000),lastMessageIsSelf:selfIds.size?selfIds.has(message.sender):null};
+}
+
 async function ingestRoom(
   rb: RoomBatch,
   vault: IngestVault,
   byRoom: Map<string, Note>,
   opts: {
     dedupe?: boolean;
+    selfUserId?:string|string[]|null;
     links?: NoteLinkInput[];
     /** Stable member ids to keep on the note (MATRIX_STORE_PARTICIPANT_IDS). */
     participantIds?: string[];
@@ -1126,7 +1153,7 @@ async function ingestRoom(
     const wanted = items;
     for (let attempt = 0; ; attempt++) {
       try {
-        await appendToThread(rb, vault, byRoom, note, lines, { platform, lastMessageAt, participants, linkAdd, participantIds: opts.participantIds });
+        await appendToThread(rb, vault, byRoom, note, lines, { platform, lastMessageAt, participants, linkAdd, participantIds: opts.participantIds,selfUserId:opts.selfUserId });
         break;
       } catch (e) {
         if (!isConflict(e) || attempt >= 1) throw e;
@@ -1158,6 +1185,7 @@ async function ingestRoom(
         platform,
         matrixRoomId: rb.roomId,
         lastMessageAt,
+        ...lastMessageEvidence(rb.messages,undefined,opts.selfUserId),
         messageCount: lines.length,
         participants,
         ...(opts.participantIds ? { participantIds: mergeIds(undefined, opts.participantIds) } : {}),
@@ -1193,7 +1221,7 @@ async function appendToThread(
   byRoom: Map<string, Note>,
   note: Note,
   lines: string[],
-  ctx: { platform: string; lastMessageAt: number; participants: string[]; linkAdd: { links?: { add: NoteLinkInput[] } }; participantIds?: string[] },
+  ctx: { platform: string; lastMessageAt: number; participants: string[]; linkAdd: { links?: { add: NoteLinkInput[] } }; participantIds?: string[];selfUserId?:string|string[]|null },
 ): Promise<void> {
   const { platform, lastMessageAt, participants, linkAdd } = ctx;
   const cas = note.updatedAt ? { ifUpdatedAt: note.updatedAt } : {};
@@ -1211,6 +1239,7 @@ async function appendToThread(
     // Monotonic: a bridge backfilling a gap posts OLD timestamps late, and
     // must not rewind the high-water mark the repair sweep compares against.
     lastMessageAt: Math.max(lastMessageAt, lastMessageAtOf(note)),
+    ...lastMessageEvidence(rb.messages,prev,ctx.selfUserId),
     messageCount: prevCount + lines.length,
     ...(mergedParticipants.length ? { participants: mergedParticipants } : {}),
     ...(ctx.participantIds ? { participantIds: mergeIds(prev.participantIds, ctx.participantIds) } : {}),

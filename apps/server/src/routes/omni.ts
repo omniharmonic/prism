@@ -30,6 +30,7 @@ import { IDEMPOTENCY_KEY_RE } from "../actions/store";
 import { omniConfig, OMNI_API_VERSION, OMNI_MIN_CLIENT } from "../omni/config";
 import { hermes, HermesError, SESSION_ID_RE, JOB_ID_RE, type HermesSession, type HermesMessage } from "../omni/hermes-client";
 import {
+  sha256,
   THREAD_STATES,
   bumpUnread,
   ensureThread,
@@ -75,6 +76,11 @@ import {
 import { buildToday, localDate, validDate, type Dispatch } from "../omni/today";
 import { runProtonSend } from "../omni/proton-send";
 
+import { DIALS, type InterruptContext } from "../omni/nudge-policy";
+import { priorNudgeSources, resolveNudgeSource, nudgeWeeklyAudit, latestNudgeAudit, FRESHNESS_SUBSYSTEMS, NUDGE_KINDS, upsertNudge, listNudges, getNudge, nudgeAction, nudgeSettings, setNudgeSettings, bindNudgeThread, type Candidate } from "../omni/nudges";
+import { startNudgeDelivery } from "../omni/nudge-delivery";
+import { resolveNote } from "../omni/records";
+
 export const omniApi = new Hono();
 
 // ── wiring ──────────────────────────────────────────────────────────────────
@@ -91,6 +97,7 @@ export function mountOmni(app: Hono): void {
   sweepRunningTurns();
   if (orphans.length) stopOrphanedRuns(orphans);
   app.route("/api/omni", omniApi);
+  if (omniConfig.enabled()) startNudgeDelivery();
 }
 
 /** The person's own credential + CSRF-relevant headers, for an in-process call made on
@@ -895,4 +902,119 @@ omniApi.post("/hooks/turn", async (c) => {
   publishNotice({ type: "thread", id: t.id, op: "message" });
   pushOmni("OMNI_THREAD", t.id);
   return c.json({ ok: true, threadId: t.id }, 202);
+});
+
+
+// ── M3 nudges: hooks only propose, app presses only start private work ─────────
+omniApi.get("/nudges", c => c.json({nudges:listNudges(omniConfig.ownerEmail(),c.req.query("later")==="1")}));
+omniApi.get("/nudges/settings", c => { const {dial,killed}=nudgeSettings(omniConfig.ownerEmail());return c.json({dial,killed}); });
+omniApi.patch("/nudges/settings",async c=>{
+ if(!humanOrigin(c).human)return c.json({error:"human_origin_required"},403);
+ const b=await jsonBody(c);if(!b)return bad(c,"JSON object required");
+ if(b.dial!==undefined&&!(DIALS as readonly unknown[]).includes(b.dial))return bad(c,"invalid dial");
+ if(b.killed!==undefined&&typeof b.killed!=="boolean")return bad(c,"killed: boolean");
+ setNudgeSettings(omniConfig.ownerEmail(),{...(b.dial!==undefined?{dial:b.dial as typeof DIALS[number]}:{}),...(b.killed!==undefined?{killed:b.killed as boolean}:{})});
+ const {dial,killed}=nudgeSettings(omniConfig.ownerEmail());return c.json({dial,killed});
+});
+omniApi.get("/nudges/audit",c=>c.json({report:latestNudgeAudit(omniConfig.ownerEmail())}));
+omniApi.get("/nudges/:id",c=>{const n=getNudge(omniConfig.ownerEmail(),c.req.param("id"));return n?c.json(n):c.json({error:"not_found"},404);});
+omniApi.post("/hooks/nudges",async c=>{
+ const b=await jsonBody(c);if(!b)return bad(c,"JSON object required");
+ const finite=(x:unknown):x is number=>typeof x==="number"&&Number.isFinite(x);
+ const text=(x:unknown,max:number):x is string=>typeof x==="string"&&x.trim().length>0&&x.length<=max;
+ if(b.operationalSource!==undefined)return bad(c,"operational source requires its dedicated hook");
+ if(!text(b.sourceId,128)||!NOTE_ID_RE.test(b.sourceId)||!(NUDGE_KINDS as readonly unknown[]).includes(b.kind)||!text(b.title,200)||!text(b.summary,1000)||!Array.isArray(b.reasons)||b.reasons.length>8||b.reasons.some(x=>!text(x,300))||!finite(b.baseScore)||b.baseScore<0||b.baseScore>1||!finite(b.priority)||b.priority<0||b.priority>1||typeof b.commitment!=="boolean")return bad(c,"invalid nudge candidate");
+ for(const field of ["deadline","urgentAt"])if(b[field]!==null&&(!finite(b[field])||!Number.isSafeInteger(b[field] as number)||Number(b[field])<0))return bad(c,`${field}: timestamp or null`);
+ if(b.senderId!==null&&(!text(b.senderId,128)||!NOTE_ID_RE.test(b.senderId)))return bad(c,"senderId: note id or null");
+ const source=await resolveNote({id:b.sourceId,fresh:true});if(!source?.path||source.tags?.includes("prism-trashed")||source.trashed)return c.json({error:"source_unavailable"},422);
+ const n=upsertNudge(omniConfig.ownerEmail(),{...b,sourcePath:source.path} as unknown as Candidate);
+ publishNotice({type:"card",id:n.id,op:"nudge"});return c.json(n,201);
+});
+omniApi.post("/hooks/nudges/operational",async c=>{
+ const b=await jsonBody(c),now=Date.now();if(!b)return bad(c,"JSON required");
+ let source:Candidate["operationalSource"],sourceId:string,title:string,summary:string,baseScore:number;
+ if(b.kind==="job"){
+  if(typeof b.jobId!=="string"||!/^[a-f0-9]{12}$/.test(b.jobId)||typeof b.runAt!=="number"||!Number.isSafeInteger(b.runAt)||b.runAt<now-7*86400000||b.runAt>now)return bad(c,"verified job run required");
+  try{const job=await hermes.getJob(b.jobId);if(job.last_status!=="error"||Date.parse(String(job.last_run_at))!==b.runAt)return c.json({error:"job_run_changed"},409);}catch(e){return hermesFailure(c,e);}
+  source={kind:"job",jobId:b.jobId,runAt:b.runAt};sourceId=`ops_job_${b.jobId}_${b.runAt}`;title="Scheduled job needs attention";summary="The latest run failed. Open Recurring to inspect its status. No automatic retry or outward action has been taken.";baseScore=.7;
+ }else if(b.kind==="freshness"){
+  if(typeof b.subsystem!=="string"||!Object.hasOwn(FRESHNESS_SUBSYSTEMS,b.subsystem)||typeof b.lastSeen!=="number"||!Number.isSafeInteger(b.lastSeen)||b.lastSeen<0||b.lastSeen>now)return bad(c,"verified freshness subsystem required");
+  const subsystem=b.subsystem as keyof typeof FRESHNESS_SUBSYSTEMS;if(b.lastSeen&&now-b.lastSeen<=FRESHNESS_SUBSYSTEMS[subsystem]*3600000)return bad(c,"source is not stale");
+  source={kind:"freshness",subsystem,lastSeen:b.lastSeen};sourceId=`ops_freshness_${subsystem.replaceAll("-","_")}_${b.lastSeen}`;title="Pipeline freshness needs attention";summary="The source has exceeded its configured freshness window. Check this pipeline before relying on it.";baseScore=.65;
+ }else return bad(c,"operational kind: job|freshness");
+ const n=upsertNudge(omniConfig.ownerEmail(),{sourceId,sourcePath:source.kind==="job"?`omni/jobs/${source.jobId}`:`omni/health/${source.subsystem}`,kind:source.kind,operationalSource:source,title,summary,reasons:["Verified source status"],senderId:null,baseScore,priority:.7,deadline:null,urgentAt:null,commitment:false},now);
+ publishNotice({type:"card",id:n.id,op:"nudge"});return c.json(n,201);
+});
+omniApi.post("/nudges/:id/action",async c=>{
+ if(!humanOrigin(c).human)return c.json({error:"human_origin_required"},403);
+ const b=await jsonBody(c);if(!b)return bad(c,"JSON object required");
+ const owner=omniConfig.ownerEmail(),id=c.req.param("id");const n=getNudge(owner,id);if(!n)return c.json({error:"not_found"},404);
+ if(!["noise","relevant","dismiss","snooze","seen"].includes(String(b.action)))return bad(c,"invalid action");
+ const until=b.until;
+ if(b.action==="snooze"&&(typeof until!=="number"||!Number.isSafeInteger(until)||until<=Date.now()||until>Date.now()+30*86400000))return bad(c,"until: future timestamp within 30 days");
+ return c.json(nudgeAction(owner,id,b.action as "noise"|"relevant"|"dismiss"|"snooze"|"seen",b.action==="snooze"?until as number:null));
+});
+
+/** Meeting evidence comes from the read-only calendar producer; Focus comes from the owner's device. */
+omniApi.post("/hooks/nudges/context",async c=>{
+ const b=await jsonBody(c);if(!b||typeof b.inMeeting!=="boolean")return bad(c,"inMeeting: boolean");
+ const owner=omniConfig.ownerEmail(),now=Date.now(),old=nudgeSettings(owner).context;
+ const context:InterruptContext={inMeeting:b.inMeeting,focus:old?.focus??"unknown",meetingObservedAt:now,focusObservedAt:old?.focusObservedAt??0,observedAt:now};
+ setNudgeSettings(owner,{context},now);return c.json({ok:true});
+});
+omniApi.post("/nudges/context",async c=>{
+ if(!humanOrigin(c).human||requestVia(c)!=="device")return c.json({error:"device_token_required"},403);
+ const b=await jsonBody(c);if(!b||!["none","work","unknown"].includes(String(b.focus)))return bad(c,"focus: none|work|unknown");
+ const owner=omniConfig.ownerEmail(),now=Date.now(),old=nudgeSettings(owner).context;
+ const context:InterruptContext={inMeeting:old?.inMeeting??true,focus:b.focus as InterruptContext["focus"],meetingObservedAt:old?.meetingObservedAt??0,focusObservedAt:now,observedAt:old?.meetingObservedAt??0};
+ setNudgeSettings(owner,{context},now);return c.json({ok:true});
+});
+const nudgeStarts=new Map<string,Promise<Response>>();
+omniApi.post("/nudges/:id/start",async c=>{
+ if(!humanOrigin(c).human)return c.json({error:"human_origin_required"},403);
+ const b=await jsonBody(c);if(!b||!["draft-reply","start-working"].includes(String(b.action)))return bad(c,"action: draft-reply|start-working");
+ const owner=omniConfig.ownerEmail(),id=c.req.param("id"),n=getNudge(owner,id);if(!n)return c.json({error:"not_found"},404);
+ if(n.resolved)return c.json({error:"source_resolved"},409);
+ const key=idemKeyOf(c);if(!key)return bad(c,"Idempotency-Key required");
+ if(nudgeStarts.has(id))return c.json({error:"start_in_progress"},409);
+ const work=(async()=>{
+  const operational=n.candidate.operationalSource;
+  if(operational&&b.action==="draft-reply")return bad(c,"operational sources support private investigation only");
+  if(!operational){const source=await resolveNote({id:n.candidate.sourceId,fresh:true});if(!source||source.tags?.includes("prism-trashed")||source.trashed)return c.json({error:"source_unavailable"},422);}
+  if(operational?.kind==="job"){
+   try{const job=await hermes.getJob(operational.jobId);if(job.last_status!=="error"||Date.parse(String(job.last_run_at))!==operational.runAt)return c.json({error:"job_run_changed"},409);}catch(e){return hermesFailure(c,e);}
+  }
+  let threadId=n.threadId;
+  if(!threadId){
+   threadId=newId("omni");
+   try{await hermes.createSession({id:threadId,title:n.candidate.title.slice(0,100)});}catch(e){return hermesFailure(c,e);}
+   ensureThread({id:threadId,title:n.candidate.title,taskNoteId:operational?null:n.candidate.sourceId,source:"nudge"});
+   bindNudgeThread(owner,id,threadId);
+  }
+  const instruction=b.action==="draft-reply"?"Read the source and prepare a reply draft for my review. Propose it with omni_propose; do not send, publish or execute anything.":"Read the source and help me start working on this item. Explain the next useful step. Do not send, publish or execute anything.";
+  const prompt=operational?`Investigate this operational source privately: ${JSON.stringify(operational)}. ${n.candidate.summary} Check current status before proposing a fix. Do not send, publish, retry or execute anything without my review.`:withNotes(instruction,[n.candidate.sourceId]);
+  const r=startTurn(threadId,prompt,`nudge-${sha256(`${id}:${b.action}:${key}`)}`);
+  publishNotice({type:"thread",id:threadId,op:"nudge-started"});
+  return c.json({threadId,turnId:"turn" in r?r.turn.id:"replay" in r?r.replay.id:r.active.id});
+ })();nudgeStarts.set(id,work);try{return await work;}finally{nudgeStarts.delete(id);}
+});
+
+/** These hooks expose IDs/counts only to the already authenticated loopback producer. */
+omniApi.get("/hooks/nudges/jobs",async c=>{
+ try { const jobs=await hermes.listJobs(true);if(jobs.length>=500)return c.json({error:"jobs_incomplete"},503);
+ return c.json({complete:true,jobs:jobs.map(j=>({id:j.id,last_run_at:j.last_run_at,last_status:j.last_status}))}); }catch(e){return hermesFailure(c,e);}
+});
+omniApi.get("/hooks/nudges/sources",c=>c.json(priorNudgeSources(omniConfig.ownerEmail())));
+omniApi.post("/hooks/nudges/resolve",async c=>{
+ const b=await jsonBody(c);if(!b||b.complete!==true||!Array.isArray(b.sourceIds)||b.sourceIds.length>5000||b.sourceIds.some(id=>typeof id!=="string"||!NOTE_ID_RE.test(id)))return bad(c,"complete verified resolution IDs required");
+ for(const id of new Set(b.sourceIds as string[])){const resolved=resolveNudgeSource(omniConfig.ownerEmail(),id);if(resolved)publishNotice({type:"card",id:resolved,op:"nudge"});}
+ return c.json({resolved:new Set(b.sourceIds as string[]).size});
+});
+omniApi.post("/hooks/nudges/audit",async c=>{
+ const b=await jsonBody(c),now=Date.now();
+ if(!b||b.complete!==true||typeof b.since!=="number"||!Number.isSafeInteger(b.since)||b.since<now-8*86400000||b.since>now||!Array.isArray(b.replies)||b.replies.length>5000||typeof b.unknownChat!=="number"||!Number.isSafeInteger(b.unknownChat)||b.unknownChat<0||b.unknownChat>50000)return bad(c,"complete weekly reply evidence required");
+ const since=b.since;
+ if(b.replies.some(r=>!r||typeof r!=="object"||typeof r.sourceId!=="string"||!NOTE_ID_RE.test(r.sourceId)||!Number.isSafeInteger(r.repliedAt)||r.repliedAt<since||r.repliedAt>now||!Number.isSafeInteger(r.inboundAt)||r.inboundAt<since||r.inboundAt>r.repliedAt))return bad(c,"complete dated weekly reply evidence required");
+ const report=nudgeWeeklyAudit(omniConfig.ownerEmail(),b.replies as {sourceId:string;repliedAt:number;inboundAt:number}[],since,now,b.unknownChat as number);
+ publishNotice({type:"card",id:"nudge-audit",op:"nudge"});return c.json(report);
 });

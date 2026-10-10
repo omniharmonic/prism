@@ -365,7 +365,8 @@ export const hermes = {
   },
   async listJobs(includeDisabled = true): Promise<HermesJob[]> {
     const r = await request<{ jobs?: HermesJob[] }>("GET", `/api/jobs${includeDisabled ? "?include_disabled=true" : ""}`);
-    return Array.isArray(r?.jobs) ? r.jobs : [];
+    if (!Array.isArray(r?.jobs)) throw new HermesError("hermes_unavailable",503,"Hermes jobs response is incomplete");
+    return r.jobs;
   },
   async getJob(id: string): Promise<HermesJob> {
     const r = await request<{ job?: HermesJob }>("GET", `/api/jobs/${jid(id)}`);
