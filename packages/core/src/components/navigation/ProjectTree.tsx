@@ -1,3 +1,4 @@
+import { PAGE_DRAG_TYPE } from "../../lib/pages/drag";
 import { leafTitle } from "../../lib/pages/containerTitle";
 import { useState, useMemo, useCallback, useRef, useEffect } from "react";
 import {
@@ -806,6 +807,7 @@ function TreeNodeView({ node, depth, ctx }: { node: TreeNode; depth: number; ctx
           if (!isPage) return;
           e.dataTransfer.effectAllowed = "move";
           e.dataTransfer.setData("text/plain", node.note!.id);
+          e.dataTransfer.setData(PAGE_DRAG_TYPE, JSON.stringify({ ...pageRef(node), tags: node.note!.tags }));
           ctx.setDrag({ node, over: null, zone: null });
         }}
         onDragOver={(e) => {

@@ -245,3 +245,8 @@
   .prism-email-quoted summary { min-height: var(--touch-target); }
   .prism-agent-draft-panel [role="alert"] button { min-height: var(--touch-target); }
 }
+
+.prism-email-category { margin-top:8px; }
+.prism-email-category label { display:flex; flex-wrap:wrap; align-items:center; gap:8px; color:var(--text-secondary); font-size:12px; }
+.prism-email-category select { min-height:44px; max-width:100%; padding:6px 28px 6px 10px; border:1px solid var(--glass-border); border-radius:8px; background-color:var(--bg-elevated); color:var(--text-primary); font:inherit; }
+.prism-email-category p { margin:6px 0 0; color:var(--color-danger); font-size:12px; }

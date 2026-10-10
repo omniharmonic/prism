@@ -115,6 +115,7 @@ if (resolved) {
 // `?triage`: every classification state, mixed `lastMessageAt` shapes (epoch ms and ISO), and a
 // fake that records each tag write. `&legacy`: a shell without `changeTags` (add, then remove).
 const triage = location.search.includes("triage");
+const emailStatusMode = new URLSearchParams(location.search).get("email-status");
 if (triage) {
   const T = Date.UTC(2026, 9, 6, 12, 0);
   notes.length = 0;
@@ -175,9 +176,11 @@ const vault = {
     const found = structuredClone(notes.find((note) => note.id === id)!);
     // A member's read through the gateway carries `_caps` (the status write then speaks add_tags/remove_tags).
     if (triage && id === "t-needs") found._caps = ["view", "comment", "suggest", "edit"];
+    if (id === "mail-agenda" && emailStatusMode === "member") found._caps = ["view", "edit"];
+    if (id === "mail-agenda" && emailStatusMode === "view") found._caps = ["view"];
     return found;
   },
-  ...(triage && !location.search.includes("legacy")
+  ...((triage || emailStatusMode) && !location.search.includes("legacy")
     ? {
         changeTags: async (id: string, change: { add: string[]; remove: string[] }, options?: { member?: boolean }) => {
           controls.tagWrites.push({ id, op: "change", ...change, member: options?.member });

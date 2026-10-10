@@ -32,7 +32,8 @@ applyTheme(params.has("dark") ? "dark" : "light");
 const viewer = params.has("viewer");
 const link = params.has("link");
 const legacy = params.has("legacy");
-useAgentChatStore.setState({ scope: "db-fixture" });
+const audience = params.get("audience") ?? "db-fixture";
+useAgentChatStore.setState({ scope: audience });
 
 const day = (offset: number) => {
   const d = new Date();
@@ -238,7 +239,7 @@ const bump = (n: Note) => { rev0 += 1; n.updatedAt = `2026-10-02T00:${String(Mat
 const uploads: Array<{ noteId: string; name: string; kind?: string }> = [];
 Object.assign(window, { dbUploads: uploads });
 const client: Partial<VaultClient> = {
-  scope: () => "db-fixture",
+  scope: () => audience,
   // Attachments (wave 2B): the specs fulfil /api/attachments/* themselves.
   uploadAttachment: async (noteId, file, opts) => {
     uploads.push({ noteId, name: file.name, kind: opts?.kind });

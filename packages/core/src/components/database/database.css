@@ -723,3 +723,6 @@ dialog.db-sv-wrap::backdrop { background: transparent; }
   .db-sv-actions { text-align: left; }
   .db-sv-nested { max-width: 100%; white-space: normal; }
 }
+
+.db-personal-property { min-height:44px; }
+@media (prefers-reduced-motion:reduce) { .db-more-chevron { transition:none; } }
