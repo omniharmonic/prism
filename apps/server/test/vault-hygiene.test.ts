@@ -18,6 +18,7 @@ import { LIST_FIELDS_BY_TAG } from "../src/vault-shapes";
 import * as folderLinks from "../../../scripts/vault-hygiene/migrate-project-folder-links";
 import * as dups from "../../../scripts/vault-hygiene/trash-duplicates";
 import * as untagged from "../../../scripts/vault-hygiene/report-untagged";
+import * as projectPages from "../../../scripts/vault-hygiene/project-pages";
 import * as undo from "../../../scripts/vault-hygiene/undo";
 import * as subpageLinks from "../../../scripts/vault-hygiene/backfill-subpage-links";
 import { extractChildPageIds } from "@prism/core/mentions";
@@ -84,6 +85,13 @@ class FakeVault {
       t.description = body.description;
       return json({ ok: true });
     }
+    if (url.pathname === `${api}/notes` && method === "POST") {
+      assert.equal(body.if_exists, "ignore");
+      const exists = this.find(body.path);
+      if (exists) return json({ ...exists, existed: true });
+      const note = this.add({ id: `created-${this.clock}`, path: body.path, content: body.content, tags: body.tags, metadata: body.metadata });
+      return json({ ...note, existed: false });
+    }
     if (url.pathname === `${api}/notes` && method === "GET") {
       const tags = url.searchParams.getAll("tag");
       const prefix = url.searchParams.get("path_prefix");
@@ -107,6 +115,7 @@ class FakeVault {
       if (!note) return json({ error: "not_found" }, 404);
       if (method === "GET") {
         const copy = structuredClone(note);
+        if (url.searchParams.get("include_content") === "false") delete copy.content;
         if (url.searchParams.get("include_links") === "true") copy.links = this.linksOf(note.id);
         else delete copy.links;
         return json(copy);
@@ -149,6 +158,7 @@ class FakeVault {
       const note = this.find(decodeURIComponent(restore[1]!))!;
       note.tags = (note.tags ?? []).filter((t) => t !== "prism-trashed");
       delete note.metadata!.prism_trashed_at;
+      note.updatedAt = this.stamp();
       return json({ ok: true });
     }
     return json({ error: "unexpected route" }, 500);
@@ -794,4 +804,79 @@ test("(g) default scope: only notes with a live note under their own path are re
   assert.match(out(c), /2 link\(s\) to add on 1 note\(s\)/);
   assert.equal(v.writes().length, 0);
   assert.ok(!out(c).includes(BODY_SECRET));
+});
+
+
+// Project migration fixtures, selected with --test-name-pattern=project-pages.
+test("project-pages: canonical membership, deepest folder, unknown values and human prose", () => {
+  const v = new FakeVault();
+  const p = v.add({id:"p",path:"vault/projects/alpha/PROJECT",tags:["project"],metadata:{title:"Alpha",slug:"alpha"}});
+  v.add({id:"child",path:"vault/projects/alpha/nested/PROJECT",tags:["project"]});
+  assert.deepEqual(projectPages.hygienePatch(v.add({id:"m",metadata:{project:"alpha",projects:["unknown"]}}),[...v.notes.values()]).metadata,{project:null});
+  assert.deepEqual(projectPages.hygienePatch(v.add({id:"f",path:"vault/projects/alpha/nested/Notes"}),[...v.notes.values()]).metadata,{projects:["[[vault/projects/alpha/nested/PROJECT]]"]});
+  const doc={...p,content:"# Alpha\n\nHuman purpose.\n\n## Key Context for Agents\nSecret agent prose.\n\n## Objectives\n- [ ] Human objective.\n"};
+  const change=projectPages.hygienePatch(doc,[p]);
+  assert.ok(change.content!.includes("Human objective"));assert.ok(change.content!.includes("Human purpose"));assert.ok(!change.content!.includes("Secret agent"));assert.match(String(change.metadata!.agent_context),/Secret agent prose/);
+});
+test("project-pages: missing folders and only approved nested promotions",()=>{
+ const notes=[{id:"a",path:"vault/projects/missing/Note"},{id:"b",path:"vault/projects/opencivics/icfc/Note"},{id:"c",path:"vault/projects/opencivics/other/Note"}];
+ assert.deepEqual(projectPages.missingProjects(notes).map(x=>x.path),["vault/projects/missing/PROJECT","vault/projects/opencivics/PROJECT","vault/projects/opencivics/icfc/PROJECT"]);
+});
+test("project-pages: dryrun prints no bodies, apply requires backup and CAS conflict preserves notes",async()=>{
+ const v=new FakeVault();const p=v.add({id:"p",path:"vault/projects/alpha/PROJECT",tags:["project"],metadata:{title:"Alpha"},content:"# Alpha\n\nBODY_SECRET"});const c=ctxFor(v);
+ assert.equal(await projectPages.main(VAULT,c),0);assert.equal(v.writes().length,0);assert.ok(!out(c).includes("BODY_SECRET"));
+ await assert.rejects(()=>projectPages.main([...VAULT,"--apply"],c),/backup-confirmed/);
+ v.beforePatch=id=>{v.notes.get(id)!.updatedAt=v.stamp();};
+ assert.equal(await projectPages.main([...VAULT,"--apply","--backup-confirmed"],c),1);assert.equal(p.content,"# Alpha\n\nBODY_SECRET");
+});
+test("project-pages: repair creates, archives, repoints IDs and links before Trash, undo restores",async()=>{
+ const v=new FakeVault();v.add({id:"canonical",path:"vault/projects/eth-boulder/PROJECT",tags:["project"],metadata:{title:"ETH Boulder"},content:"Human canonical."});
+ v.add({id:"dup",path:"vault/projects/ethboulder/PROJECT",tags:["project"],metadata:{title:"Other"},content:"DUPLICATE_BODY ".repeat(4000)});
+ const member=v.add({id:"member",path:"Notes/member",metadata:{projects:["dup"]},content:"[[vault/projects/ethboulder/PROJECT|Old]]"});
+ v.links.push({sourceId:"member",targetId:"dup",relationship:"project"});
+ v.add({id:"large",path:"vault/projects/large/PROJECT",tags:["project"],content:"ORIGINAL_BODY ".repeat(4000)});
+ v.add({id:"missing",path:"vault/projects/new-project/Note"});
+ const c=ctxFor(v,{PRISM_OWNER_TOKEN:OWNER});const argv=[...VAULT,"--phase","repair","--prism-url","http://prism.test:8888","--apply","--backup-confirmed"];
+ assert.equal(await projectPages.main(argv,c),0,out(c));
+ assert.deepEqual(member.metadata!.projects,["[[vault/projects/eth-boulder/PROJECT]]"]);assert.equal(member.content,"[[vault/projects/ethboulder/PROJECT|Old]]");assert.ok(v.notes.get("canonical")!.metadata!.aliases instanceof Array);
+ assert.equal(v.links[0]!.targetId,"canonical");assert.ok(v.notes.get("dup")!.tags!.includes("prism-trashed"));
+ assert.match(v.find("vault/projects/eth-boulder/Merged project ethboulder")!.content!,/Project background/);
+ assert.match(v.find("vault/projects/large/Project background")!.content!,/^ORIGINAL_BODY/);assert.ok(v.find("vault/projects/new-project/PROJECT"));
+ const count=v.writes().length;assert.equal(await projectPages.main(argv,c),0);assert.equal(v.writes().length,count,"rerun is idempotent");
+ assert.equal(await undo.main([...VAULT,"--prism-url","http://prism.test:8888","--apply"],c,c.undo.map(x=>JSON.parse(x))),0);
+ assert.deepEqual(member.metadata!.projects,["dup"]);assert.equal(v.links[0]!.targetId,"dup");assert.equal(member.content,"[[vault/projects/ethboulder/PROJECT|Old]]");
+ assert.ok(!v.notes.get("dup")!.tags!.includes("prism-trashed"));assert.equal(v.notes.get("dup")!.content,"DUPLICATE_BODY ".repeat(4000));assert.ok(v.find("vault/projects/new-project/PROJECT")!.tags!.includes("prism-trashed"));
+ noSecrets(c);
+});
+test("project-pages: generated indexes are gated and human prose blocks retirement",async()=>{
+ const v=new FakeVault();v.add({id:"pure",path:"vault/projects/a/INDEX",content:"# Index\n```dataview\nTABLE title\n```"});v.add({id:"human",path:"vault/projects/a/index",content:"Human prose.\n```dataview\nTABLE title\n```"});
+ const c=ctxFor(v,{PRISM_OWNER_TOKEN:OWNER});await assert.rejects(()=>projectPages.main([...VAULT,"--phase","indexes"],c),/live-sections-confirmed/);
+ assert.equal(await projectPages.main([...VAULT,"--phase","indexes","--live-sections-confirmed","--prism-url","http://prism.test","--apply","--backup-confirmed"],c),0);
+ assert.ok(v.notes.get("pure")!.tags!.includes("prism-trashed"));assert.ok(!v.notes.get("human")!.tags!.includes("prism-trashed"));
+});
+
+test("project-pages: merge conflict leaves the duplicate live and later edits survive undo",async()=>{
+ const v=new FakeVault();v.add({id:"canon",path:"vault/projects/eth-boulder/PROJECT",tags:["project"]});v.add({id:"dup",path:"vault/projects/ethboulder/PROJECT",tags:["project"],content:"Preserved original"});
+ const m=v.add({id:"m",metadata:{project:"dup"},content:"Original"});const c=ctxFor(v,{PRISM_OWNER_TOKEN:OWNER});const argv=[...VAULT,"--phase","repair","--prism-url","http://prism.test","--apply","--backup-confirmed"];
+ v.beforePatch=id=>{if(id==="m")v.notes.get(id)!.updatedAt=v.stamp();};
+ assert.equal(await projectPages.main(argv,c),1);assert.ok(!v.notes.get("dup")!.tags!.includes("prism-trashed"));
+ v.beforePatch=undefined;assert.equal(await projectPages.main(argv,c),0);
+ m.content="Later human edit";m.updatedAt=v.stamp();
+ assert.equal(await undo.main([...VAULT,"--prism-url","http://prism.test","--apply"],c,c.undo.map(x=>JSON.parse(x))),0);
+ assert.equal(m.content,"Later human edit");assert.deepEqual(m.metadata!.projects,["[[vault/projects/eth-boulder/PROJECT]]"]);
+});
+
+test("project-pages: legacy folder projects and descendant pages prevent cascading Trash",async()=>{
+ const v=new FakeVault();v.add({id:"legacy",path:"vault/projects/legacy",tags:["project"]});v.add({id:"legacychild",path:"vault/projects/legacy/Note"});
+ assert.deepEqual(projectPages.missingProjects([...v.notes.values()]),[]);
+ v.add({id:"canon",path:"vault/projects/eth-boulder/PROJECT",tags:["project"]});v.add({id:"dup",path:"vault/projects/ethboulder/PROJECT",tags:["project"]});v.add({id:"child",path:"vault/projects/ethboulder/PROJECT/Child"});
+ const c=ctxFor(v,{PRISM_OWNER_TOKEN:OWNER});assert.equal(await projectPages.main([...VAULT,"--phase","repair","--prism-url","http://prism.test","--apply","--backup-confirmed"],c),1);
+ assert.ok(!v.notes.get("dup")!.tags!.includes("prism-trashed"));assert.ok(!v.find("vault/projects/eth-boulder/Merged project ethboulder"));
+});
+
+test("project-pages: partial Trash response is a failed migration, not success",async()=>{
+ const v=new FakeVault();v.add({id:"pure",path:"vault/projects/a/INDEX",content:"```dataview\nTABLE title\n```"});const c=ctxFor(v,{PRISM_OWNER_TOKEN:OWNER});const original=c.fetch;
+ c.fetch=async(input,init)=>{const url=new URL(String(input));if(url.pathname.endsWith("/trash")){assert.equal(JSON.parse(String(init?.body)).require_leaf,true);return Response.json({ok:false,error:"partial_trash"},{status:207});}return original(input,init);};
+ assert.equal(await projectPages.main([...VAULT,"--phase","indexes","--live-sections-confirmed","--prism-url","http://prism.test","--apply","--backup-confirmed"],c),1);
+ assert.equal(c.undo.length,0);assert.ok(!v.notes.get("pure")!.tags!.includes("prism-trashed"));
 });
