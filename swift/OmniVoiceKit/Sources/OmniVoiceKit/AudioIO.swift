@@ -81,6 +81,7 @@ final class CaptureFile: @unchecked Sendable {
 @MainActor public final class AudioIO {
     private let engine = AVAudioEngine()
     private let player = AVAudioPlayerNode()
+    private let playbackQueue = SpeechPlaybackQueue()
     private var playbackFormat: AVAudioFormat?
     private var file: CaptureFile?
     private var speechActivity: LocalSpeechActivity?
@@ -147,7 +148,7 @@ final class CaptureFile: @unchecked Sendable {
     }
     /// Synthesized PCM shares the voice-processing engine's output reference.
     /// This is only valid while explicitly opted-in microphone capture is active.
-    public func play(_ buffer: AVAudioPCMBuffer, completion: @escaping @Sendable () -> Void) throws {
+    public func play(_ buffer: AVAudioPCMBuffer, completion: @escaping @Sendable () -> Void) async throws {
         guard engine.isRunning, file != nil else { throw VoiceFailure.unavailable("The conversation microphone is not active.") }
         if playbackFormat != buffer.format {
             player.stop()
@@ -155,11 +156,14 @@ final class CaptureFile: @unchecked Sendable {
             engine.connect(player, to: engine.mainMixerNode, format: buffer.format)
             playbackFormat = buffer.format
         }
-        player.scheduleBuffer(buffer, completionCallbackType: .dataPlayedBack) { _ in completion() }
-        if !player.isPlaying { player.play() }
+        try await playbackQueue.schedule(buffer) { [self] pcm, release in
+            guard engine.isRunning, file != nil else { throw VoiceFailure.unavailable("The conversation playback route ended.") }
+            player.scheduleBuffer(pcm, completionCallbackType: .dataPlayedBack) { _ in release(); completion() }
+            if !player.isPlaying { player.play() }
+        }
     }
     public func retainInterruptionLeadIn() throws { try file?.retainLeadIn() }
-    public func silencePlayback() { player.stop() }
+    public func silencePlayback() { playbackQueue.cancel(); player.stop() }
     public func recordings() -> [URL] { file?.recordings() ?? completedRecordings }
     private var completedRecordings: [URL] = []
     public func stop() throws {
@@ -167,7 +171,7 @@ final class CaptureFile: @unchecked Sendable {
         generation &+= 1
         speechActivity?.stop(); speechActivity = nil
         guard let capture = file else { return }
-        player.stop(); engine.stop(); engine.inputNode.removeTap(onBus: 0); completedRecordings = capture.recordings(); file = nil
+        playbackQueue.cancel(); player.stop(); engine.stop(); engine.inputNode.removeTap(onBus: 0); completedRecordings = capture.recordings(); file = nil
         #if os(iOS)
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
         #endif

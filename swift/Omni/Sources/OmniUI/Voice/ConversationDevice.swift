@@ -28,11 +28,11 @@ import OmniVoiceKit
     private let recordingOwner = UUID()
     private var file: URL?
     private var generation = 0
-    private var transcriptionTask: Task<Void, Never>?
+    private let chunkWork = VoiceCaptureWorkQueue()
     private var captureDeadline: Task<Void, Never>?
     private var completedText = ""
     private var chunkPartial = ""
-    private var queuedChunks = 0
+    private var queuedChunks: Int { chunkWork.pendingCount }
     private var enqueuedChunks = Set<URL>()
     private var chunkFailure = false
     private(set) var recoveryNotice: String?
@@ -45,7 +45,7 @@ import OmniVoiceKit
     }
     func start() async throws {
         speech.beginRecording(owner: recordingOwner)
-        hypothesis = ""; completedText = ""; queuedChunks = 0; enqueuedChunks = []; chunkFailure = false; recoveryNotice = nil
+        hypothesis = ""; completedText = ""; chunkWork.cancel(); enqueuedChunks = []; chunkFailure = false; recoveryNotice = nil
         let request = generation
         let selected = self.selected
         let current = engine
@@ -78,13 +78,9 @@ import OmniVoiceKit
     }
     private func enqueueChunk(_ url: URL, request: Int) {
         guard enqueuedChunks.insert(url).inserted else { return }
-        queuedChunks += 1
-        let previous = transcriptionTask
         let transcriber = engine
-        transcriptionTask = Task { [weak self] in
-            await previous?.value
+        chunkWork.enqueue { [weak self] in
             guard let self, self.generation == request, !Task.isCancelled else { return }
-            defer { self.queuedChunks -= 1 }
             let prefix = self.completedText
             self.chunkPartial = ""
             do {
@@ -190,7 +186,7 @@ import OmniVoiceKit
         // removes the tap. Yield before taking the serial transcription tail.
         for recording in recordings.dropLast() { enqueueChunk(recording, request: request) }
         await Task.yield()
-        await transcriptionTask?.value
+        await chunkWork.drain()
         guard request == generation, !Task.isCancelled else { throw CancellationError() }
         var result = completedText
         if !chunkFailure, let last = recordings.last, !Self.fileWasRemoved(last) {
@@ -229,7 +225,7 @@ import OmniVoiceKit
         monitoringPlayback = false; nearEndDuration = 0
         speech.configureDuplex(nil, owner: recordingOwner)
         captureDeadline?.cancel(); captureDeadline = nil
-        transcriptionTask?.cancel(); transcriptionTask = nil
+        chunkWork.cancel()
         generation += 1; receiveActivity = nil; hypothesis = ""; try? audio.stop()
         speech.endRecording(owner: recordingOwner)
         stopPreview()

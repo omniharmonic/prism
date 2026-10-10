@@ -125,7 +125,7 @@ import OmniVoiceKit
                 do {
                     for try await owned in bridge.stream {
                         guard !Task.isCancelled else { return }
-                        self?.accept(owned.buffer, id: id)
+                        await self?.accept(owned.buffer, id: id)
                     }
                     guard !Task.isCancelled else { return }
                     self?.pcmEnded.insert(ObjectIdentifier(utterance)); self?.completePCM(id)
@@ -151,18 +151,19 @@ import OmniVoiceKit
         completions.removeAll(); pcmPending = [:]; pcmEnded = []
         duplex?.silencePlayback(); speaker.stopSpeaking(at: .immediate)
     }
-    private func accept(_ buffer: AVAudioPCMBuffer, id: ObjectIdentifier) {
+    private func accept(_ buffer: AVAudioPCMBuffer, id: ObjectIdentifier) async {
         guard completions[id] != nil else { return }
         pcmPending[id, default: 0] += 1
         do {
             guard let duplex else { throw VoiceFailure.unavailable("The speech playback route was lost.") }
-            try duplex.play(buffer) { [weak self] in
+            try await duplex.play(buffer) { [weak self] in
                 Task { @MainActor in
                     guard let self, self.completions[id] != nil else { return }
                     self.pcmPending[id, default: 0] -= 1; self.completePCM(id)
                 }
             }
         } catch {
+            guard completions[id] != nil, !Task.isCancelled else { return }
             pcmPending[id, default: 0] -= 1
             receiveFailure?(error.localizedDescription)
         }
