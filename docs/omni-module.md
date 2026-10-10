@@ -607,3 +607,26 @@ that check: `scripts/omni_policy_check.py --run 'gog calendar events …'` on th
 `calendar-rsvp` proposals contain only `{eventId, response}`; response is `accepted`, `declined` or `tentative`. The native card shows the exact Google occurrence ID and response. Proposing sends nothing. A signed-in human Send decision with matching digest executes the existing audited `/api/actions/calendar/rsvp` route once. Invite creation stays separate. Direct shell RSVP commands redirect to this card.
 
 After reviewed tagged server/agent deploy, back up server environment with mode0600 and change only `OMNI_EXECUTOR_KINDS=email,email-reply,calendar-rsvp`. Preserve `ACTIONS_CALENDAR_ENABLED=true`, email executor configuration and Matrix/invite restrictions. Restart through named tagged deploy. Activation grants no RSVP itself: owner must approve the exact event and response card. Rollback restores backup or removes `calendar-rsvp`; `OMNI_EXECUTORS=off` disables all non-command executors.
+
+### Owner recurring-job editor
+
+The native Recurring screen can create agent jobs and edit their name, schedule and
+instructions. `POST /api/omni/jobs` requires `Idempotency-Key`; new jobs always deliver
+locally and use a dedicated, accessible scheduled owner conversation. The server sends
+its selected `X-Omni-Thread` to the managed Hermes adapter and checks the returned origin.
+An uncertain creation retains its reservation and conversation: refresh Recurring before
+creating another job. A routing-verification failure explicitly reports `created: true`
+and attempts to pause that already-created job; retrying the same key replays the result.
+
+`PUT /jobs/:id` accepts only name, schedule and prompt; other runner fields and delivery
+remain unchanged. `DELETE /jobs/:id` removes the schedule, preserving conversation history.
+Editing, resuming and running require local delivery and an existing, nonarchived Omni
+owner conversation in the `api_server` origin. Legacy jobs without that routing need an
+explicit migration. Script, no-agent and monitor jobs are shown as read-only runners;
+viewing, pausing and deleting remain available, but this initial editor does not run or
+resume them. Existing active scripts are not changed by listing them.
+
+Run Now is accepted only when Hermes reports `executed: true` and
+`execution_mode: "background"`. This confirms dispatch, not successful completion; an
+old reschedule-only response is an error. All endpoints retain the module's owner-only
+access and capped JSON handling. Physical-device interaction checks remain pending.

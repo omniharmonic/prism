@@ -136,7 +136,7 @@ function classify(status: number, body: unknown): HermesError {
   return new HermesError("hermes_unavailable", 502, `Hermes answered ${status}`, hermesCode);
 }
 
-async function request<T>(method: string, path: string, body?: unknown, timeoutMs = omniConfig.requestTimeoutMs()): Promise<T> {
+async function request<T>(method: string, path: string, body?: unknown, timeoutMs = omniConfig.requestTimeoutMs(), extraHeaders: Record<string, string> = {}): Promise<T> {
   const { url, key } = base();
   const ac = new AbortController();
   const timer = setTimeout(() => ac.abort(), timeoutMs);
@@ -144,7 +144,7 @@ async function request<T>(method: string, path: string, body?: unknown, timeoutM
   try {
     res = await doFetch(url + path, {
       method,
-      headers: { authorization: `Bearer ${key}`, accept: "application/json", ...(body !== undefined ? { "content-type": "application/json" } : {}) },
+      headers: { ...extraHeaders, authorization: `Bearer ${key}`, accept: "application/json", ...(body !== undefined ? { "content-type": "application/json" } : {}) },
       body: body !== undefined ? JSON.stringify(body) : undefined,
       redirect: "error",
       signal: ac.signal,
@@ -272,7 +272,7 @@ export const hermes = {
       try {
         res = await doFetch(`${url}/api/sessions/${sid(id)}/chat/stream`, {
           method: "POST",
-          headers: { authorization: `Bearer ${key}`, accept: "text/event-stream", "content-type": "application/json" },
+          headers: { ...extraHeaders, authorization: `Bearer ${key}`, accept: "text/event-stream", "content-type": "application/json" },
           body: JSON.stringify({ message }),
           redirect: "error",
           signal: ac.signal,
@@ -373,14 +373,27 @@ export const hermes = {
     if (!r?.job) throw new HermesError("not_found", 404, "no such job");
     return r.job;
   },
-  async createJob(body: Record<string, unknown>): Promise<HermesJob> {
-    const r = await request<{ job?: HermesJob }>("POST", "/api/jobs", body);
+  async createJob(body: Record<string, unknown>, threadId?: string): Promise<HermesJob> {
+    if (threadId !== undefined && !/^omni_[a-f0-9]+$/.test(threadId)) throw new HermesError("hermes_rejected", 400, "Invalid job thread");
+    const r = await request<{ job?: HermesJob }>("POST", "/api/jobs", body, omniConfig.requestTimeoutMs(), threadId ? { "X-Omni-Thread": threadId } : {});
     if (!r?.job) throw new HermesError("hermes_unavailable", 502, "Hermes created no job");
     return r.job;
+  },
+  async updateJob(id: string, body: Record<string, unknown>): Promise<HermesJob> {
+    const r = await request<{ job?: HermesJob }>("PATCH", `/api/jobs/${jid(id)}`, body);
+    if (!r?.job) throw new HermesError("hermes_unavailable", 502, "Hermes updated no job");
+    return r.job;
+  },
+  async deleteJob(id: string): Promise<void> {
+    const r = await request<{ ok?: boolean }>("DELETE", `/api/jobs/${jid(id)}`);
+    if (r?.ok !== true) throw new HermesError("hermes_unavailable", 502, "Hermes did not confirm deletion");
   },
   async jobAction(id: string, action: "pause" | "resume" | "run"): Promise<HermesJob> {
     const r = await request<{ job?: HermesJob }>("POST", `/api/jobs/${jid(id)}/${action}`, {});
     if (!r?.job) throw new HermesError("not_found", 404, "no such job");
+    if (action === "run" && (r.job.executed !== true || r.job.execution_mode !== "background")) {
+      throw new HermesError("hermes_unavailable", 502, "Hermes did not confirm job dispatch", "job_dispatch_unconfirmed");
+    }
     return r.job;
   },
 };

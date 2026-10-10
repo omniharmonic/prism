@@ -28,6 +28,7 @@ import { consumeRateLimit } from "../middleware/ratelimit";
 import { csrfRefusal, readCapped } from "./actions";
 import { IDEMPOTENCY_KEY_RE } from "../actions/store";
 import { omniConfig, OMNI_API_VERSION, OMNI_MIN_CLIENT } from "../omni/config";
+import { reserveJobCreation, finishJobCreation } from "../omni/job-creations";
 import { hermes, HermesError, SESSION_ID_RE, JOB_ID_RE, type HermesSession, type HermesMessage } from "../omni/hermes-client";
 import {
   sha256,
@@ -758,8 +759,17 @@ omniApi.post("/approvals/:id/decide", decide);
 
 // ── jobs (Hermes cron) ──────────────────────────────────────────────────────
 
+function rawJobRunner(j: Record<string, unknown>): boolean {
+  return j.no_agent === true || !!j.script || !!j.monitor_script || !!j.monitor;
+}
+function guardedJob(j: Record<string, unknown>): boolean {
+  const origin = j.origin as Record<string, unknown> | undefined;
+  if (rawJobRunner(j) || j.deliver !== "local" || origin?.platform !== "api_server" || typeof origin.chat_id !== "string" || !/^omni_[a-f0-9]+$/.test(origin.chat_id)) return false;
+  const thread = getThread(origin.chat_id);
+  return !!thread && !thread.archived;
+}
 function jobView(j: Record<string, unknown>): Record<string, unknown> {
-  const keep = ["id", "name", "schedule", "enabled", "paused", "next_run_at", "last_run_at", "last_status", "last_error", "deliver", "skill", "skills", "repeat", "state"];
+  const keep = ["id", "name", "schedule", "enabled", "paused", "next_run_at", "last_run_at", "last_status", "last_error", "deliver", "skill", "skills", "repeat", "state", "prompt", "origin", "no_agent", "script", "monitor_script", "monitor", "executed", "execution_mode"];
   return Object.fromEntries(keep.filter((k) => j[k] !== undefined).map((k) => [k, k === "last_error" && typeof j[k] === "string" ? (j[k] as string).slice(0, 300) : j[k]]));
 }
 omniApi.get("/jobs", async (c) => {
@@ -775,22 +785,81 @@ omniApi.post("/jobs", async (c) => {
   const name = typeof b.name === "string" ? b.name.trim() : "";
   const schedule = typeof b.schedule === "string" ? b.schedule.trim() : "";
   const prompt = typeof b.prompt === "string" ? b.prompt : "";
-  const skill = typeof b.skill === "string" && b.skill.trim() ? b.skill.trim().slice(0, 200) : undefined;
+  const skill = typeof b.skill === "string" && b.skill.trim() ? b.skill.trim() : undefined;
   if (!name || name.length > 200) return bad(c, "name: 1–200 characters");
   if (!schedule || schedule.length > 200) return bad(c, "schedule: required");
   if (!prompt && !skill) return bad(c, "prompt or skill: required");
+  if (skill && (skill.length > 200 || skill.startsWith("/") || skill.split("/").includes(".."))) return bad(c, "invalid skill name");
   if (prompt.length > 5000) return bad(c, "prompt: ≤5000 characters");
-  // Hermes' route reads `skills` (a list); a lone `skill` key is ignored there and the job
-  // is then refused as having nothing to run.
-  const body: Record<string, unknown> = { name, schedule, ...(prompt ? { prompt } : {}), ...(skill ? { skills: [skill] } : {}) };
-  if (typeof b.deliver === "string" && b.deliver.length <= 200) body.deliver = b.deliver;
-  try {
-    const job = await hermes.createJob(body);
-    omniAudit({ actor: omniConfig.ownerEmail(), via: requestVia(c), action: "job.create", status: "ok" });
-    return c.json({ job: jobView(job as Record<string, unknown>) }, 201);
-  } catch (e) {
-    return hermesFailure(c, e);
+  if (b.deliver !== undefined && b.deliver !== "local") return bad(c, "new jobs deliver locally; outward actions require approval");
+  const idem = idemKeyOf(c);
+  if (!idem) return bad(c, "a valid Idempotency-Key is required");
+  const body: Record<string, unknown> = { name, schedule, deliver: "local", ...(prompt ? { prompt } : {}), ...(skill ? { skills: [skill] } : {}) };
+  const owner = omniConfig.ownerEmail();
+  const reservation = reserveJobCreation(owner, idem, sha256(JSON.stringify(body)), newId("omni"));
+  if (!reservation.inserted) {
+    if (reservation.digest !== sha256(JSON.stringify(body))) return c.json({ error: "idempotency_conflict" }, 409);
+    if (reservation.response && reservation.status) return c.json(JSON.parse(reservation.response), reservation.status as 201);
+    return c.json({ error: "job_creation_outcome_unknown", mayHaveCreated: true, threadId: reservation.thread_id, message: "Refresh Recurring before creating another job." }, 409);
   }
+  const threadId = reservation.thread_id;
+  try {
+    await hermes.createSession({ id: threadId, title: name });
+    ensureThread({ id: threadId, title: name, source: "job", state: "scheduled" });
+    publishNotice({ type: "thread", id: threadId, op: "created" });
+    const job = await hermes.createJob(body, threadId);
+    const origin = job.origin as Record<string, unknown> | undefined;
+    if (origin?.platform !== "api_server" || origin.chat_id !== threadId || job.deliver !== "local") {
+      let paused = false;
+      try { await hermes.jobAction(job.id, "pause"); paused = true; } catch { /* outcome is explicitly reported */ }
+      const response = { error: "job_approval_routing_unavailable", created: true, paused, threadId, job: jobView(job), message: "The job was created. Do not create it again; verify its approval routing." };
+      finishJobCreation(owner, idem, 503, response);
+      return c.json(response, 503);
+    }
+    const response = { job: jobView(job), threadId };
+    finishJobCreation(owner, idem, 201, response);
+    omniAudit({ actor: owner, via: requestVia(c), action: "job.create", threadId, status: "ok" });
+    return c.json(response, 201);
+  } catch (e) {
+    if (e instanceof HermesError && e.code === "hermes_rejected") {
+      const response = { error: "hermes_rejected", created: false, threadId };
+      finishJobCreation(owner, idem, 400, response);
+      return c.json(response, 400);
+    }
+    // Keep both the reservation and owner thread: a transport failure can follow a
+    // successful creation, and that job must retain its approval destination.
+    return c.json({ error: "job_creation_outcome_unknown", mayHaveCreated: true, threadId, message: "Refresh Recurring before creating another job." }, 502);
+  }
+});
+omniApi.put("/jobs/:id", async (c) => {
+  const id = c.req.param("id") ?? "";
+  if (!JOB_ID_RE.test(id)) return c.json({ error: "not_found" }, 404);
+  const b = await jsonBody(c);
+  if (!b) return bad(c, "a JSON object body is required");
+  if (Object.keys(b).some(k => !["name", "schedule", "prompt"].includes(k))) return bad(c, "only name, schedule and prompt can be edited");
+  const patch: Record<string, unknown> = {};
+  for (const k of ["name", "schedule", "prompt"]) {
+    if (b[k] === undefined) continue;
+    if (typeof b[k] !== "string" || (b[k] as string).length > (k === "prompt" ? 5000 : 200)) return bad(c, `invalid ${k}`);
+    const value = k === "prompt" ? b[k] as string : (b[k] as string).trim();
+    if (k !== "prompt" && !value) return bad(c, `${k}: required`);
+    patch[k] = value;
+  }
+  if (!Object.keys(patch).length) return bad(c, "an edit is required");
+  try {
+    const existing = await hermes.getJob(id);
+    if (rawJobRunner(existing)) return c.json({ error: "script_job_read_only" }, 403);
+    if (!guardedJob(existing)) return c.json({ error: "job_approval_routing_required" }, 409);
+    if (patch.prompt === "" && !existing.skill && !(Array.isArray(existing.skills) && existing.skills.length)) return bad(c, "prompt or skill: required");
+    const job = await hermes.updateJob(id, patch);
+    return c.json({ job: jobView(job) });
+  } catch (e) { return hermesFailure(c, e); }
+});
+omniApi.delete("/jobs/:id", async (c) => {
+  const id = c.req.param("id") ?? "";
+  if (!JOB_ID_RE.test(id)) return c.json({ error: "not_found" }, 404);
+  try { await hermes.deleteJob(id); return c.json({ ok: true }); }
+  catch (e) { return hermesFailure(c, e); }
 });
 omniApi.post("/jobs/:id/:action", async (c) => {
   const id = c.req.param("id") ?? "";
@@ -798,6 +867,13 @@ omniApi.post("/jobs/:id/:action", async (c) => {
   if (!JOB_ID_RE.test(id)) return c.json({ error: "not_found" }, 404);
   if (action !== "pause" && action !== "resume" && action !== "run") return c.json({ error: "not_found" }, 404);
   try {
+    if (action === "run" || action === "resume") {
+      const stored = await hermes.getJob(id);
+      if (action === "run" && rawJobRunner(stored)) return c.json({ error: "script_job_run_unavailable" }, 403);
+      if (!guardedJob(stored)) {
+        return c.json({ error: "job_approval_routing_required", message: "This job needs local delivery and an accessible owner conversation before it can run." }, 409);
+      }
+    }
     const job = await hermes.jobAction(id, action);
     omniAudit({ actor: omniConfig.ownerEmail(), via: requestVia(c), action: `job.${action}`, status: "ok" });
     return c.json({ job: jobView(job as Record<string, unknown>) });

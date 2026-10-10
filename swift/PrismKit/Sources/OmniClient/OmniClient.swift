@@ -331,10 +331,20 @@ public struct OmniClient: Sendable {
         return list.jobs
     }
 
-    public func createJob(_ new: NewJob) async throws -> OmniJob {
+    public func createJob(_ new: NewJob, idempotencyKey: IdempotencyKey = .random()) async throws -> OmniJob {
         struct Answer: Decodable { let job: OmniJob }
-        let a: Answer = try await transport.send(.json("POST", "\(Self.base)/jobs", body: new))
+        let a: Answer = try await transport.send(.json("POST", "\(Self.base)/jobs", body: new, idempotencyKey: idempotencyKey))
         return a.job
+    }
+
+    public func updateJob(_ id: String, edit: JobEdit) async throws -> OmniJob {
+        struct Answer: Decodable { let job: OmniJob }
+        let answer: Answer = try await transport.send(.json("PUT", "\(Self.base)/jobs/\(try Self.segment(id))", body: edit))
+        return answer.job
+    }
+    public func deleteJob(_ id: String) async throws {
+        struct Answer: Decodable { let ok: Bool }
+        let _: Answer = try await transport.send(PrismRequest(method: "DELETE", path: "\(Self.base)/jobs/\(try Self.segment(id))"))
     }
 
     /// Pause, resume, or run a job now.

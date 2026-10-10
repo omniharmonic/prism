@@ -150,6 +150,8 @@ struct TodayView: View {
 /// Recurring jobs: what runs on a schedule, with pause and resume.
 struct JobsView: View {
     let model: JobsModel
+    @State private var adding = false
+    @State private var editing: OmniJob?
 
     var body: some View {
         List {
@@ -173,12 +175,21 @@ struct JobsView: View {
                 Text("No recurring jobs.").foregroundStyle(Color.quietText)
             }
             ForEach(model.jobs) { job in
-                JobRow(job: job, busy: model.busyJobID == job.id) {
-                    Task { await model.toggle(job) }
+                VStack(alignment: .leading, spacing: 8) {
+                    JobRow(job: job, busy: model.busyJobID == job.id) {
+                        Task { await model.toggle(job) }
+                    }
+                    if model.canManage {
+                        Button(job.noAgent == true || job.script != nil || job.monitorScript != nil || (job.monitor != nil && job.monitor?.isNull != true) ? "View Script Schedule" : "Edit Job") { editing = job }
+                            .accessibilityLabel("View \(JobPresentation.name(job))")
+                    }
                 }
             }
         }
         .navigationTitle("Recurring")
+        .sheet(isPresented: $adding) { JobEditor(model: model, job: nil) }
+        .sheet(item: $editing) { JobEditor(model: model, job: $0) }
+        .toolbar { if model.canManage { Button("Add Job", systemImage: "plus") { adding = true } } }
         .refreshable { await model.refresh() }
         .toolbar {
             ToolbarItem {

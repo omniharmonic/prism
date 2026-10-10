@@ -27,6 +27,7 @@ import { db, setMembership } from "../src/db";
 import { resetDb, makeSession, sessionCookie, makeCapability } from "./helpers";
 import type { TreeChange } from "../src/tree";
 import { createHermesStub, type HermesStub, type StubAct, type StubFrame, type StubTurn } from "../scripts/lib/hermes-stub";
+import { resetJobCreationsForTests } from "../src/omni/job-creations";
 import { resetOmniPresenceForTests } from "../src/routes/omni";
 import { HermesNormalizer, toolFailed, createdIdOf, errorCodeOf, toolRowsOf, unwrapResult } from "../src/omni/stream";
 
@@ -74,7 +75,16 @@ function installHermes(): void {
       throw new TypeError("fetch failed");
     }
     if (fake.status) return new Response(JSON.stringify({ error: { message: "no", code: "x" } }), { status: fake.status });
-    return stub.fetch(url, init);
+    const result = await stub.fetch(url, init);
+    if (u.pathname === "/api/jobs" && init.method === "POST" && result.ok) {
+      const answer = await result.json() as {job:Record<string,unknown>};
+      const origin = { platform: "api_server", chat_id: new Headers(init.headers).get("X-Omni-Thread") ?? "api" };
+      answer.job.origin = origin;
+      const stored = fake.jobs.find(j => j.id === answer.job.id);
+      if (stored) stored.origin = origin;
+      return Response.json(answer, {status:result.status});
+    }
+    return result;
   });
 }
 
@@ -86,6 +96,7 @@ let execCalls: Array<Parameters<Executor>[0]>;
 beforeEach(() => {
   resetDb();
   resetOmniStoreForTests();
+  resetJobCreationsForTests();
   resetOmniPresenceForTests();
   installHermes();
   notes.clear();
@@ -740,15 +751,15 @@ test("an archived thread is not `gone`: Hermes leaves archived sessions out of i
 });
 
 test("jobs: a skill goes to Hermes as `skills`; a job Hermes will not take is the request's fault (400), not an outage", async () => {
-  const r = await post("/jobs", { name: "Brief", schedule: "0 7 * * *", skill: "omni-briefing" });
+  const r = await post("/jobs", { name: "Brief", schedule: "0 7 * * *", skill: "omni-briefing" }, { ...owner(), "idempotency-key": key() });
   assert.equal(r.status, 201);
   const sent = fake.calls.find((c) => c.method === "POST" && c.path === "/api/jobs")!.body as Record<string, unknown>;
-  assert.deepEqual(sent, { name: "Brief", schedule: "0 7 * * *", skills: ["omni-briefing"] });
+  assert.deepEqual(sent, { name: "Brief", schedule: "0 7 * * *", skills: ["omni-briefing"], deliver: "local" });
   const job = ((await r.json()) as { job: { schedule: { display: string }; skills: string[]; state: string } }).job;
   assert.deepEqual([job.schedule.display, job.skills, job.state], ["0 7 * * *", ["omni-briefing"], "scheduled"]);
-  const bad = await post("/jobs", { name: "Brief", schedule: "whenever", prompt: "hello" });
+  const bad = await post("/jobs", { name: "Brief", schedule: "whenever", prompt: "hello" }, { ...owner(), "idempotency-key": key() });
   assert.equal(bad.status, 400);
-  assert.deepEqual(await bad.json(), { error: "hermes_rejected" });
+  assert.equal((await bad.json() as {error:string}).error, "hermes_rejected");
   // Pause: disabled + paused, and still listed (the gateway asks with include_disabled).
   const id = fake.jobs.find((j) => j.name === "Brief" && Array.isArray(j.skills))!.id as string;
   const p = ((await (await post(`/jobs/${id}/pause`, {})).json()) as { job: { enabled: boolean; state: string } }).job;
@@ -931,4 +942,46 @@ test("approved tweet uses the exact human-reviewed draft once; no send before ap
   assert.deepEqual(inputs, [JSON.stringify({ text })]);
   await decide(p.id, { decision: "send", digest: p.digest }, headers);
   assert.equal(inputs.length, 1, "replayed tap never reposts");
+});
+
+test("jobs run refuses script jobs and jobs without approval routing", async () => {
+ fake.jobs[0].no_agent = true; fake.jobs[0].script = "/reviewed/sweep.py";
+ assert.equal((await post("/jobs/abcdef012345/run", {})).status,403);
+ delete fake.jobs[0].no_agent; delete fake.jobs[0].script;
+ fake.jobs[0].deliver="local"; fake.jobs[0].origin={platform:"api_server",chat_id:"api"};
+ assert.equal((await post("/jobs/abcdef012345/run", {})).status,409);
+ assert.equal(fake.calls.some(c=>c.path.endsWith("/run")),false);
+});
+test("jobs edits refuse script runners and unsupported fields", async () => {
+ fake.jobs[0].no_agent=true;
+ assert.equal((await req("/jobs/abcdef012345",{method:"PUT",headers:owner(),body:JSON.stringify({prompt:"replace script"})})).status,403);
+ assert.equal((await req("/jobs/abcdef012345",{method:"PUT",headers:owner(),body:JSON.stringify({script:"/tmp/x"})})).status,400);
+ assert.equal(fake.calls.some(c=>c.method==="PATCH"),false);
+});
+test("job creation rejects outward delivery before reaching Hermes", async () => {
+ assert.equal((await post("/jobs",{name:"Outbound",schedule:"0 8 * * *",prompt:"hello",deliver:"telegram"})).status,400);
+ assert.equal(fake.calls.some(c=>c.method==="POST"&&c.path==="/api/jobs"),false);
+});
+
+test("legacy resume and edit cannot enable unguarded recurring actions", async () => {
+ fake.jobs[0].deliver="local"; fake.jobs[0].origin={platform:"api_server",chat_id:"api"};
+ assert.equal((await post("/jobs/abcdef012345/resume",{})).status,409);
+ assert.equal((await req("/jobs/abcdef012345",{method:"PUT",headers:owner(),body:JSON.stringify({name:"Changed"})})).status,409);
+ fake.jobs[0].monitor={script:"unreviewed.sh"};
+ assert.equal((await post("/jobs/abcdef012345/run",{})).status,403);
+ assert.equal(fake.calls.some(c=>c.path.endsWith("/resume") || c.path.endsWith("/run") || c.method==="PATCH"),false);
+});
+test("job creation retries retain a single approval conversation and job", async () => {
+ const headers={...owner(),"idempotency-key":key()};
+ const body={name:"Local job",schedule:"0 8 * * *",prompt:"Review tasks"};
+ const first=await post("/jobs",body,headers);
+ assert.equal(first.status,201);
+ const created=await first.json() as {job:{id:string;origin:{chat_id:string};deliver:string};threadId:string};
+ assert.equal(created.job.deliver,"local");
+ assert.equal(created.job.origin.chat_id,created.threadId);
+ assert.equal(getThread(created.threadId)?.state,"scheduled");
+ const retry=await post("/jobs",body,headers);
+ assert.equal(retry.status,201); assert.deepEqual(await retry.json(),created);
+ assert.equal(fake.calls.filter(c=>c.method==="POST"&&c.path==="/api/jobs").length,1);
+ assert.equal((await post("/jobs",{...body,prompt:"Different"},headers)).status,409);
 });
