@@ -23,11 +23,19 @@ final class ChunkCaptureTests: XCTestCase {
         for (index, url) in files.enumerated() {
             let file = try AVAudioFile(forReading: url)
             XCTAssertLessThanOrEqual(file.length, 32_000)
-            let buffer = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: AVAudioFrameCount(file.length)))
-            try file.read(into: buffer)
-            // Drop the deliberately duplicated one-second lead-in after chunk zero.
+            var chunk: [Float] = []
+            // AVAudioFile.read may return a partial buffer (observed 31,744 of
+            // 32,000 frames). Drain the file rather than mistaking one read for EOF.
+            while file.framePosition < file.length {
+                let buffer = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: AVAudioFrameCount(file.length - file.framePosition)))
+                try file.read(into: buffer)
+                XCTAssertGreaterThan(buffer.frameLength, 0)
+                guard buffer.frameLength > 0 else { break }
+                chunk.append(contentsOf: UnsafeBufferPointer(start: buffer.floatChannelData![0], count: Int(buffer.frameLength)))
+            }
+            XCTAssertEqual(chunk.count, Int(file.length))
             let offset = index == 0 ? 0 : 16_000
-            values.append(contentsOf: UnsafeBufferPointer(start: buffer.floatChannelData![0] + offset, count: Int(buffer.frameLength) - offset))
+            values.append(contentsOf: chunk.dropFirst(offset))
         }
         XCTAssertEqual(values.count, 80_000)
         for index in 0..<5 { XCTAssertEqual(values[index * 16_000], Float(index + 1) / 10, accuracy: 0.001) }

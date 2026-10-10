@@ -3,6 +3,8 @@ import XCTest
 
 @MainActor final class VoiceContinuityTests: XCTestCase {
     final class Audio: ConversationAudio {
+        var activity: (@MainActor (VoiceActivityEvent) -> Void)?
+        func configureActivity(enabled: Bool, receive: @escaping @MainActor (VoiceActivityEvent) -> Void) { activity = receive }
         var recoveryNotice: String?
         var interruption: (@MainActor (VoiceInterruptionEvent) -> Void)?
         var limit: (@MainActor () -> Void)?
@@ -43,6 +45,33 @@ import XCTest
         voice.cancel()
         receive?(.speech)
         XCTAssertEqual(voice.state, .off)
+        XCTAssertEqual(audio.starts, 1)
+    }
+    func testShortInterruptionLeadInSeedsAutomaticCompletion() async {
+        let audio = Audio(); let voice = VoiceConversation(audio: audio)
+        voice.acousticInterruptionEnabled = true
+        voice.configureEndpoint(mode: .automatic, pauseSeconds: 8)
+        var completions = 0
+        voice.automaticFinish = { completions += 1 }
+        await voice.start(); await voice.finish { _ in true }
+        let now = ProcessInfo.processInfo.systemUptime
+        audio.interruption?(.speechEvidence(VoiceActivityFrame(audioTime: 1, capturedAt: now, duration: 0.32, isSpeech: true)))
+        // The short utterance ended inside the preserved lead-in. Only actual
+        // subsequent detector silence follows; it must still finish the turn.
+        for index in 1...36 {
+            audio.activity?(.frame(VoiceActivityFrame(audioTime: 1 + Double(index) * 0.32, capturedAt: now, duration: 0.32, isSpeech: false)))
+        }
+        XCTAssertEqual(completions, 1)
+        voice.cancel()
+    }
+    func testPlaybackFailurePausesInsteadOfPretendingReplyDrained() async {
+        let audio = Audio(); let voice = VoiceConversation(audio: audio)
+        voice.acousticInterruptionEnabled = true
+        voice.canAutomaticallyListen = { true }
+        await voice.start(); await voice.finish { _ in true }
+        audio.interruption?(.playbackFailed("Audio route disconnected"))
+        XCTAssertEqual(voice.state, .paused)
+        XCTAssertTrue(voice.problem?.contains("Audio route disconnected") == true)
         XCTAssertEqual(audio.starts, 1)
     }
     func testRecordingLimitRequestsDraftWithoutAutomaticSubmission() async {

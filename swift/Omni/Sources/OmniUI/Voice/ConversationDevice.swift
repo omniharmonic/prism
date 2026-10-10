@@ -134,15 +134,16 @@ import OmniVoiceKit
         switch event {
         case .unavailable:
             receiveInterruption?(.unavailable("Acoustic interruption is unavailable. Use Interrupt and speak."))
-        case .frame(_, let captured, let duration, let isSpeech):
+        case .frame(let audioTime, let captured, let duration, let isSpeech):
             guard ProcessInfo.processInfo.systemUptime - captured < 0.5 else { nearEndDuration = 0; return }
             nearEndDuration = isSpeech ? nearEndDuration + duration : 0
-            guard nearEndDuration >= 0.18 else { return }
+            guard nearEndDuration >= 0.3 else { return }
             do {
                 try audio.retainInterruptionLeadIn()
                 speech.silence(owner: recordingOwner)
                 speech.configureDuplex(nil, owner: recordingOwner)
                 speech.beginRecording(owner: recordingOwner)
+                let detectedDuration = nearEndDuration
                 monitoringPlayback = false; nearEndDuration = 0
                 completedText = ""; hypothesis = ""; enqueuedChunks = []
                 captureDeadline = Task { [weak self] in
@@ -150,7 +151,7 @@ import OmniVoiceKit
                     guard let self, self.generation == requestGeneration else { return }
                     self.receiveLimit?()
                 }
-                receiveInterruption?(.speech)
+                receiveInterruption?(.speechEvidence(VoiceActivityFrame(audioTime: audioTime, capturedAt: captured, duration: min(0.4, detectedDuration), isSpeech: true)))
             } catch {
                 receiveInterruption?(.unavailable("Interruption audio could not be retained. Use Interrupt and speak."))
             }
@@ -245,6 +246,10 @@ import OmniVoiceKit
                 _ = await self.beginPlaybackMonitor(request: request)
             }
             guard self.generation == request, !Task.isCancelled else { return }
+            self.speech.configurePlaybackFailure(owner: self.recordingOwner) { [weak self] reason in
+                guard let self, self.generation == request else { return }
+                self.receiveInterruption?(.playbackFailed(reason))
+            }
             let voice = AppleVoiceCatalog.resolve(self.speechPreferences, voices: AppleVoiceCatalog.installed())
             self.speech.speak(text, owner: self.recordingOwner, identifier: voice?.id, rate: self.speechPreferences.rate)
         }

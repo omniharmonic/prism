@@ -7,9 +7,13 @@ import OmniVoiceKit
     func speak(_ text: String, identifier: String?, rate: Float, completion: @escaping @MainActor () -> Void)
     func stop()
     func configureDuplex(_ audio: AudioIO?)
+    func configureFailure(_ receive: @escaping @MainActor (String) -> Void)
 }
 
-@MainActor extension ConversationSpeechOutput { func configureDuplex(_ audio: AudioIO?) {} }
+@MainActor extension ConversationSpeechOutput {
+    func configureDuplex(_ audio: AudioIO?) {}
+    func configureFailure(_ receive: @escaping @MainActor (String) -> Void) {}
+}
 
 /// One playback owner for all voice panels; previews cannot overlap capture or replies.
 @MainActor @Observable final class ConversationSpeech {
@@ -24,6 +28,13 @@ import OmniVoiceKit
     private var pending = 0
     private var drainWaiters: [UUID: [CheckedContinuation<Void, Never>]] = [:]
     init(output: any ConversationSpeechOutput) { self.output = output }
+    func configurePlaybackFailure(owner: UUID, receive: @escaping @MainActor (String) -> Void) {
+        output.configureFailure { [weak self] reason in
+            guard let self, self.playbackOwner == owner || self.duplexOwner == owner else { return }
+            receive(reason)
+            self.stopAll()
+        }
+    }
     func configureDuplex(_ audio: AudioIO?, owner: UUID) {
         if audio == nil {
             guard duplexOwner == owner else { return }
@@ -83,6 +94,8 @@ import OmniVoiceKit
 @MainActor private final class AppleSpeechOutput: NSObject, ConversationSpeechOutput, AVSpeechSynthesizerDelegate {
     private let speaker = AVSpeechSynthesizer()
     private var duplex: AudioIO?
+    private var pcmTasks: [ObjectIdentifier: Task<Void, Never>] = [:]
+    private var receiveFailure: (@MainActor (String) -> Void)?
     private var pcmPending: [ObjectIdentifier: Int] = [:]
     private var pcmEnded = Set<ObjectIdentifier>()
     private var completions: [ObjectIdentifier: @MainActor () -> Void] = [:]
@@ -102,7 +115,23 @@ import OmniVoiceKit
             #if os(iOS)
             speaker.usesApplicationAudioSession = true
             #endif
-            speaker.write(utterance, toBufferCallback: Self.bufferCallback(for: self, utterance: utterance))
+            let bridge = SpeechPCMStream()
+            let id = ObjectIdentifier(utterance)
+            pcmTasks[id] = Task { [weak self, utterance] in
+                do {
+                    for try await owned in bridge.stream {
+                        guard !Task.isCancelled else { return }
+                        self?.accept(owned.buffer, id: id)
+                    }
+                    guard !Task.isCancelled else { return }
+                    self?.pcmEnded.insert(ObjectIdentifier(utterance)); self?.completePCM(id)
+                } catch {
+                    guard !Task.isCancelled else { return }
+                    self?.receiveFailure?(error.localizedDescription)
+                }
+                self?.pcmTasks.removeValue(forKey: id)
+            }
+            speaker.write(utterance, toBufferCallback: { buffer in bridge.accept(buffer) })
         } else {
             #if os(iOS)
             speaker.usesApplicationAudioSession = false
@@ -111,26 +140,18 @@ import OmniVoiceKit
         }
     }
     func configureDuplex(_ audio: AudioIO?) { duplex = audio }
+    func configureFailure(_ receive: @escaping @MainActor (String) -> Void) { receiveFailure = receive }
     func stop() {
+        pcmTasks.values.forEach { $0.cancel() }; pcmTasks = [:]
         completions.removeAll(); pcmPending = [:]; pcmEnded = []
         duplex?.silencePlayback(); speaker.stopSpeaking(at: .immediate)
     }
-    private struct SpeechBuffer: @unchecked Sendable { let buffer: AVAudioBuffer; let utterance: AVSpeechUtterance }
-    nonisolated private static func bufferCallback(for output: AppleSpeechOutput, utterance: AVSpeechUtterance) -> @Sendable (AVAudioBuffer) -> Void {
-        { [weak output] buffer in
-            let retained = SpeechBuffer(buffer: buffer, utterance: utterance)
-            Task { @MainActor in output?.accept(retained) }
-        }
-    }
-    private func accept(_ retained: SpeechBuffer) {
-        let id = ObjectIdentifier(retained.utterance)
+    private func accept(_ buffer: AVAudioPCMBuffer, id: ObjectIdentifier) {
         guard completions[id] != nil else { return }
-        guard let buffer = retained.buffer as? AVAudioPCMBuffer, buffer.frameLength > 0 else {
-            pcmEnded.insert(id); completePCM(id); return
-        }
         pcmPending[id, default: 0] += 1
         do {
-            try duplex?.play(buffer) { [weak self] in
+            guard let duplex else { throw VoiceFailure.unavailable("The speech playback route was lost.") }
+            try duplex.play(buffer) { [weak self] in
                 Task { @MainActor in
                     guard let self, self.completions[id] != nil else { return }
                     self.pcmPending[id, default: 0] -= 1; self.completePCM(id)
@@ -138,7 +159,7 @@ import OmniVoiceKit
             }
         } catch {
             pcmPending[id, default: 0] -= 1
-            pcmEnded.insert(id); completePCM(id)
+            receiveFailure?(error.localizedDescription)
         }
     }
     private func completePCM(_ id: ObjectIdentifier) {

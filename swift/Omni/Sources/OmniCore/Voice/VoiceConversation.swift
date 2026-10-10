@@ -16,7 +16,7 @@ import Observation
     func silence()
 }
 
-public enum VoiceInterruptionEvent: Sendable { case speech, unavailable(String) }
+public enum VoiceInterruptionEvent: Sendable { case speech, speechEvidence(VoiceActivityFrame), unavailable(String), playbackFailed(String) }
 
 public extension ConversationAudio {
     func configureInterruption(enabled: Bool, receive: @escaping @MainActor (VoiceInterruptionEvent) -> Void) {}
@@ -125,11 +125,16 @@ public extension ConversationAudio {
             guard let self, self.generation == request, self.isSessionActive, !self.privacyLocked else { return }
             switch event {
             case .unavailable(let reason): self.interruptionNotice = reason
-            case .speech:
+            case .playbackFailed(let reason):
+                self.pause(); self.problem = "Speech playback stopped: \(reason). Resume or review the reply in chat."
+            case .speech, .speechEvidence:
                 guard self.state == .answering || self.state == .speaking else { return }
                 self.drainTask?.cancel(); self.drainTask = nil
                 self.audio.silence(); self.spoken = [:]; self.pendingCompletion = nil
                 self.endpointPolicy = VoiceEndpointPolicy(pauseSeconds: self.endpointPause)
+                if case .speechEvidence(let evidence) = event {
+                    _ = self.endpointPolicy.accept(evidence, now: ProcessInfo.processInfo.systemUptime)
+                }
                 self.state = .listening; self.transcript = ""
                 self.watchActivity(request: request)
             }
