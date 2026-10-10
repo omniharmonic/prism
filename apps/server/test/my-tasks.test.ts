@@ -158,3 +158,24 @@ test("Omni task pagination exhausts more than two pages without losing tasks or 
   assert.ok(!found.includes("t5"), "hidden task never crosses the gateway");
   assert.ok(!found.includes("t8"), "trash is excluded");
 });
+
+
+test("Omni inventories tagged OR typed tasks through the same permission filter", async () => {
+  fv.put({ id: "typed-legacy", tags: ["personal"], metadata: { type: "task", status: "todo" } });
+  fv.put({ id: "typed-prism", tags: ["personal"], metadata: { prism_type: "task", status: "todo" } });
+  fv.put({ id: "typed-both", tags: ["task", "personal"], metadata: { type: "task", prism_type: "task", status: "todo" } });
+  fv.put({ id: "typed-hidden", tags: ["hidden"], metadata: { prism_type: "task", status: "todo" } });
+  fv.put({ id: "not-a-task", tags: ["personal"], metadata: { type: "note", status: "todo" } });
+  fv.put({ id: "typed-closed", tags: ["personal"], metadata: { type: "task", status: "done" } });
+  fv.put({ id: "typed-template", tags: ["personal", "template"], metadata: { type: "task", status: "todo" } });
+  fv.put({ id: "typed-trash", tags: ["personal", "prism-trashed"], metadata: { type: "task", status: "todo" } });
+  grantUser(MIRA, "tag", "personal", "view");
+  const page = await buildTasksPage(omniDispatch(MIRA));
+  assert.deepEqual((page.tasks as Array<{ noteId: string }>).map(t => t.noteId).sort(), ["typed-both", "typed-legacy", "typed-prism"]);
+  assert.equal(page.total, 3);
+  // The ordinary database source still requires tags, and broadening cannot disguise another tag source.
+  const regular = await ids(await query(login(MIRA), { tags: ["task"] }));
+  assert.deepEqual(regular.ids, ["typed-both"]);
+  assert.equal((await query(login(MIRA), { tags: ["personal"], includeTypedTasks: true })).status, 400);
+  assert.equal((await query(login(MIRA), { tags: ["task"], includeTypedTasks: "yes" })).status, 400);
+});

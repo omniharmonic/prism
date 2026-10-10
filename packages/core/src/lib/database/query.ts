@@ -54,6 +54,8 @@ export interface QuerySort {
 export interface QuerySpec {
   /** Notes must carry EVERY tag (1–5). */
   tags: string[];
+  /** For the task inventory only: task tag OR metadata type/prism_type = task. */
+  includeTypedTasks?: boolean;
   filter?: QueryFilter;
   sort?: QuerySort[];
   /** Page size, 1–500 (default 100). */
@@ -225,6 +227,12 @@ export function validateQuerySpec(raw: unknown): { ok: true; spec: QuerySpec } |
     return { ok: false, error: `tags must be 1–${MAX_TAGS} tag names` };
   }
   const spec: QuerySpec = { tags: [...new Set(tags as string[])] };
+  if (raw.includeTypedTasks !== undefined) {
+    if (typeof raw.includeTypedTasks !== "boolean" || (raw.includeTypedTasks && (spec.tags.length !== 1 || spec.tags[0] !== "task"))) {
+      return { ok: false, error: "includeTypedTasks requires the single task tag and a boolean" };
+    }
+    if (raw.includeTypedTasks) spec.includeTypedTasks = true;
+  }
   if (raw.filter !== undefined && raw.filter !== null) {
     const f = raw.filter;
     if (!record(f) || (f.match !== "all" && f.match !== "any") || !Array.isArray(f.conditions) || f.conditions.length > MAX_CONDITIONS) {
@@ -942,6 +950,11 @@ export function projectRow(n: QueryInput, fields: string[] | undefined): QueryRo
   };
 }
 
+/** Task inventory source, shared by server pre-scan narrowing and the pure engine. */
+export function isTaskQueryNote(note: { tags?: string[] | null; metadata?: Record<string, unknown> | null }): boolean {
+  return (note.tags ?? []).includes("task") || note.metadata?.type === "task" || note.metadata?.prism_type === "task";
+}
+
 /**
  * Evaluate `spec` over `notes` (already permission-filtered by the caller) and
  * cut one page. Throws `CursorMismatchError` for a cursor from another query.
@@ -968,7 +981,7 @@ export function runQuery(
   const matched = notes.filter(
     (n) =>
       (wantsTemplates || !isTemplateNote(n)) &&
-      spec.tags.every((t) => (n.tags ?? []).includes(t)) &&
+      (spec.includeTypedTasks ? isTaskQueryNote(n) : spec.tags.every((t) => (n.tags ?? []).includes(t))) &&
       matchesFilter(n, spec.filter, now, spec.tzOffset ?? 0, opts.me) &&
       (!needle || matchesSearch(n, needle, spec.fields)),
   );

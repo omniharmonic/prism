@@ -93,6 +93,7 @@ import {
   filterConditions,
   ME_TOKEN,
   runQuery,
+  isTaskQueryNote,
   validateQuerySpec,
   validateSchemaPatch,
   mergeFieldHints,
@@ -1016,9 +1017,11 @@ const PERMISSION_KEYS = ["prism_creator", "prism_visibility"];
 const ROW_META = ["title", "type", "prism_type", "icon", "cover", "coverY", WRITER_KEY, WRITER_AT_KEY, "source", "source_id", "calendarEventId"];
 
 /**
- * Listing cache (review H1): ONE canonical listing per (vault, tag) — the tag's
+ * Listing cache (review H1): ONE canonical listing per (vault, source) — the tag's
  * schema keys + row/permission keys, or whole metadata for a tag with no schema —
  * so `fields` only shapes the response and can never force a fresh vault list.
+ * Typed-task inventory uses a bounded metadata-only vault listing; the same
+ * permission filtering still runs before the task scan cap.
  * LRU-bounded by entries AND total rows.
  */
 interface ListEntry { expires: number; value: Promise<Note[]>; rows: number }
@@ -1036,8 +1039,8 @@ function evictListing(k: string) {
   listCache.delete(k);
 }
 
-async function canonicalListing(entry: VaultEntry, tag: string): Promise<Note[]> {
-  const k = `${entry.id}\u0000${tag}`;
+async function canonicalListing(entry: VaultEntry, tag: string | null): Promise<Note[]> {
+  const k = JSON.stringify([entry.id, tag]);
   const hit = listCache.get(k);
   if (hit && hit.expires > Date.now()) {
     listCache.delete(k); // LRU touch
@@ -1045,11 +1048,11 @@ async function canonicalListing(entry: VaultEntry, tag: string): Promise<Note[]>
     return hit.value;
   }
   if (hit) evictListing(k);
-  const schema = (await vaultSchemas(entry)).get(tag);
+  const schema = tag ? (await vaultSchemas(entry)).get(tag) : undefined;
   const schemaKeys = Object.keys(schema?.fields ?? {});
   // + the assignee spellings "assigned to me" reads (my-tasks.ts); `assigned` is in the task schema.
   const keys = schemaKeys.length ? [...new Set([...schemaKeys, ...ROW_META, ...PERMISSION_KEYS, "assigned", "assignee", "assigneeEmail", "assignee_email"])] : undefined;
-  const value = vaultClient(entry.id).listNotes({ tags: [tag], includeContent: false, includeMetadata: keys, orderBy: "updated_at", limit: RAW_MAX });
+  const value = vaultClient(entry.id).listNotes({ ...(tag ? { tags: [tag] } : {}), includeContent: false, includeMetadata: keys, orderBy: "updated_at", limit: RAW_MAX });
   const e: ListEntry = { expires: Date.now() + LIST_TTL_MS, value, rows: 0 };
   listCache.set(k, e);
   value.then((notes) => {
@@ -1088,8 +1091,9 @@ databasesApi.post("/query", async (c) => {
   const entry = entryFor(c, actor);
   const empty = () => c.json({ rows: [], next: null, total: 0, limited: true, truncated: false });
   // Non-admins may only list tags they can already see (memory-only check) —
-  // anything else is an empty answer that costs the vault nothing.
-  if (!owner) {
+  // anything else is an empty answer that costs the vault nothing. Typed tasks may
+  // lack a task tag: that source instead filters each note through caps below.
+  if (!owner && !spec.includeTypedTasks) {
     let seen: Set<string>;
     try {
       seen = await visibleTags(actor, entry);
@@ -1100,7 +1104,7 @@ databasesApi.post("/query", async (c) => {
   }
   let notes: Note[];
   try {
-    notes = await canonicalListing(entry, spec.tags[0]!);
+    notes = await canonicalListing(entry, spec.includeTypedTasks ? null : spec.tags[0]!);
   } catch (e) {
     return vaultFailure(c, e);
   }
@@ -1165,6 +1169,7 @@ databasesApi.post("/query", async (c) => {
   // has the same rule; here it also keeps templates out of the scan cap).
   const wantsTemplates = spec.tags.includes("template");
   for (const n of notes) {
+    if (spec.includeTypedTasks && !isTaskQueryNote(n)) continue;
     if (!wantsTrash && (n.tags ?? []).includes("prism-trashed")) continue;
     if (!wantsTemplates && (n.tags ?? []).includes("template")) continue;
     if (mine && !assignedToMe(n.metadata, mine)) continue;
@@ -1560,7 +1565,7 @@ export function notifyAssignments(actor: Actor, entry: VaultEntry, before: Pick<
 }
 
 const evictVaultListings = (entry: VaultEntry) => {
-  for (const k of [...listCache.keys()]) if (k.startsWith(`${entry.id}\u0000`)) evictListing(k);
+  for (const k of [...listCache.keys()]) if (k.startsWith(`[${JSON.stringify(entry.id)},`)) evictListing(k);
 };
 /** Spend `n` units of the actor's per-minute property-write budget; seconds to wait, or null. */
 function consumeWriteBudget(a: Actor, n: number): number | null {

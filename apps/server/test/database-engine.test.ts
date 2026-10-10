@@ -128,3 +128,22 @@ test("L2: @today and dates resolve in the caller's timezone; datetimes compare a
   assert.equal(validateQuerySpec({ tags: ["a"], tzOffset: 9999 }).ok, false);
   assert.equal(validateQuerySpec({ tags: ["a"], tzOffset: -330 }).ok, true);
 });
+
+
+test("typed task inventory source is validated and cursor-bound", () => {
+  for (const raw of [
+    { tags: ["note"], includeTypedTasks: true },
+    { tags: ["task", "other"], includeTypedTasks: true },
+    { tags: ["task"], includeTypedTasks: "true" },
+  ]) assert.equal(validateQuerySpec(raw).ok, false);
+  const validated = validateQuerySpec({ tags: ["task"], includeTypedTasks: true, limit: 1 });
+  assert.equal(validated.ok, true);
+  if (!validated.ok) return;
+  const rows = [n("tagged", {}), n("typed", { type: "task" }, { tags: ["other"] }), n("prism", { prism_type: "task" }, { tags: null }), n("note", { type: "note" }, { tags: ["other"] })];
+  const first = runQuery(rows, validated.spec, { limited: false });
+  assert.equal(first.total, 3);
+  assert.ok(first.next);
+  assert.throws(() => runQuery(rows, { ...validated.spec, includeTypedTasks: false, cursor: first.next }, { limited: false }), CursorMismatchError);
+  const all = runQuery(rows, { ...validated.spec, limit: 50 }, { limited: false });
+  assert.deepEqual(all.rows.map(row => row.id).sort(), ["prism", "tagged", "typed"]);
+});

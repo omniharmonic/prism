@@ -108,7 +108,7 @@ struct TodayView: View {
                     .accessibilityHint("Opens the thread")
                 }
             }
-            Section("Your tasks") {
+            Section("Tasks in this vault") {
                 if let problem = session.threads.createError { Text(problem).foregroundStyle(Color.failureText) }
                 if let problem = model.sectionProblems["tasks"] {
                     Text(problem).foregroundStyle(Color.quietText)
@@ -141,7 +141,7 @@ struct TodayView: View {
                         Text("No open tasks.").foregroundStyle(Color.quietText)
                     }
                 }
-                .navigationTitle("Your tasks")
+                .navigationTitle("Tasks in this vault")
                 .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { showingTasks = false } } }
                 .refreshable { await model.loadTasks(reset: true) }
                 .task { await model.loadTasks(reset: true) }

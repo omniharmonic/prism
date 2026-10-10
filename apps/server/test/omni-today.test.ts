@@ -3,6 +3,9 @@
  * error codes. First-run fix: the laptop dev vault refused / dropped one of Today's two
  * listings now and then, and the section was given up at once (`query_502`).
  */
+import { Hono } from "hono";
+import { mountOmni, omniApi } from "../src/routes/omni";
+import { makeSession, sessionCookie } from "./helpers";
 import { test, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { buildToday, buildTasksPage, type Dispatch } from "../src/omni/today";
@@ -94,6 +97,7 @@ test("task pages include all visible tasks and keep status filters and use opaqu
     const spec = init.body as QuerySpec;
     calls.push(spec);
     assert.equal(spec.assignedToMe, undefined);
+    assert.equal(spec.includeTypedTasks, true);
     assert.equal(spec.limit, 50);
     assert.deepEqual(spec.tags, ["task"]);
     assert.deepEqual(spec.filter, { match: "all", conditions: [{ key: "status", op: "nin", value: ["completed", "cancelled", "archived", "done"] }] });
@@ -117,4 +121,24 @@ test("task page retries a transient read but never converts a failed read into a
   const dispatch: Dispatch = async () => { calls++; return json({ error: "vault_error" }, 502); };
   await assert.rejects(buildTasksPage(dispatch, undefined, { retryDelayMs: 1 }), /vault_error/);
   assert.equal(calls, 2);
+});
+
+
+test("Omni task dispatcher preserves selected vault and caller credentials", async t => {
+  const enabled = process.env.OMNI_ENABLED;
+  process.env.OMNI_ENABLED = "true";
+  t.after(() => { if (enabled === undefined) delete process.env.OMNI_ENABLED; else process.env.OMNI_ENABLED = enabled; });
+  const app = new Hono();
+  const cookie = sessionCookie(makeSession("owner@test.local"));
+  app.post("/api/query", async c => {
+    assert.equal(c.req.header("x-prism-vault"), "selected-vault");
+    assert.equal(c.req.header("cookie"), cookie);
+    assert.equal((await c.req.json()).includeTypedTasks, true);
+    return c.json({ rows: [task], next: null });
+  });
+  app.route("/api/omni", omniApi);
+  mountOmni(app);
+  const response = await app.request("/api/omni/tasks", { headers: { cookie, "x-prism-vault": "selected-vault" } });
+  assert.equal(response.status, 200, await response.clone().text());
+  assert.equal(((await response.json()) as { tasks: Array<{ noteId: string }> }).tasks[0]?.noteId, "t1");
 });
