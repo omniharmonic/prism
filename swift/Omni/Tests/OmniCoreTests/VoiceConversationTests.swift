@@ -258,4 +258,16 @@ import XCTest
         XCTAssertTrue(voice.isSessionActive)
     }
 
+    func testEmptyManualPauseIsQuietButEmptySendStillReportsRecognitionFailure() async {
+        for submit in [false, true] {
+            let audio = Audio(); audio.recognized = "  "
+            let voice = VoiceConversation(audio: audio)
+            await voice.start()
+            var sent = false
+            await voice.finish(submit: submit, draftReason: .pause) { _ in sent = true; return true }
+            XCTAssertFalse(sent); XCTAssertEqual(voice.state, .paused)
+            if submit { XCTAssertNotNil(voice.problem) } else { XCTAssertNil(voice.problem) }
+        }
+    }
+
 }

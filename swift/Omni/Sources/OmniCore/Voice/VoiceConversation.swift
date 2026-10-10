@@ -62,7 +62,11 @@ import Observation
         do {
             let text = try await audio.finish().trimmingCharacters(in: .whitespacesAndNewlines)
             guard generation == request, !Task.isCancelled else { return }
-            guard !text.isEmpty else { state = .paused; problem = "No speech was recognized. Try again."; return }
+            guard !text.isEmpty else {
+                state = .paused
+                problem = !submit && draftReason == .pause ? nil : "No speech was recognized. Try again."
+                return
+            }
             transcript = text; spoken = [:]; pendingCompletion = nil
             submitting = submit
             let sent = await send(text)
