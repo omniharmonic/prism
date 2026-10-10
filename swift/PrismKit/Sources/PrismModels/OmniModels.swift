@@ -369,9 +369,14 @@ public struct OmniJob: Decodable, Sendable, Equatable, Identifiable {
     public let monitorScript: String?
     public let executed: Bool?
     public let executionMode: String?
+    public let reviewedScript: Bool?
+    public let canEdit: Bool?
+    public let canRun: Bool?
+    public let canResume: Bool?
 
     enum CodingKeys: String, CodingKey {
         case id, name, schedule, enabled, paused, deliver, skill, skills, state, prompt, origin, script, executed, monitor
+        case reviewedScript, canEdit, canRun, canResume
         case monitorScript = "monitor_script"
         case noAgent = "no_agent"
         case executionMode = "execution_mode"

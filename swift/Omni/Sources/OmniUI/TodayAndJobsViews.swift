@@ -180,7 +180,7 @@ struct JobsView: View {
                         Task { await model.toggle(job) }
                     }
                     if model.canManage {
-                        Button(job.noAgent == true || job.script != nil || job.monitorScript != nil || (job.monitor != nil && job.monitor?.isNull != true) ? "View Script Schedule" : "Edit Job") { editing = job }
+                        Button(job.noAgent == true || job.script != nil || job.monitorScript != nil || (job.monitor != nil && job.monitor?.isNull != true) ? (job.canEdit == true ? "Edit Script Schedule" : "View Script Schedule") : "Edit Job") { editing = job }
                             .accessibilityLabel("View \(JobPresentation.name(job))")
                     }
                 }
@@ -232,6 +232,7 @@ struct JobRow: View {
                 ProgressView().controlSize(.small).accessibilityLabel("Working")
             } else {
                 Button(paused ? "Resume" : "Pause", action: toggle)
+                    .disabled(paused && job.canResume == false)
                     #if os(iOS)
                     .buttonStyle(.bordered) // its own target: a tap on the row's text pauses nothing
                     #else

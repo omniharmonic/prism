@@ -28,6 +28,7 @@ import { consumeRateLimit } from "../middleware/ratelimit";
 import { csrfRefusal, readCapped } from "./actions";
 import { IDEMPOTENCY_KEY_RE } from "../actions/store";
 import { omniConfig, OMNI_API_VERSION, OMNI_MIN_CLIENT } from "../omni/config";
+import { reviewedNudgeJob } from "../omni/reviewed-jobs";
 import { listSkills, readSkill, saveSkill, SkillError, SKILL_CAP } from "../omni/skills";
 import { reserveJobCreation, finishJobCreation } from "../omni/job-creations";
 import { hermes, HermesError, SESSION_ID_RE, JOB_ID_RE, type HermesSession, type HermesMessage } from "../omni/hermes-client";
@@ -771,13 +772,15 @@ function guardedJob(j: Record<string, unknown>): boolean {
   const thread = getThread(origin.chat_id);
   return !!thread && !thread.archived;
 }
-function jobView(j: Record<string, unknown>): Record<string, unknown> {
+async function jobView(j: Record<string, unknown>): Promise<Record<string, unknown>> {
+  const reviewedScript = await reviewedNudgeJob(j);
+  const manageable = reviewedScript || guardedJob(j);
   const keep = ["id", "name", "schedule", "enabled", "paused", "next_run_at", "last_run_at", "last_status", "last_error", "deliver", "skill", "skills", "repeat", "state", "prompt", "origin", "no_agent", "script", "monitor_script", "monitor", "executed", "execution_mode"];
-  return Object.fromEntries(keep.filter((k) => j[k] !== undefined).map((k) => [k, k === "last_error" && typeof j[k] === "string" ? (j[k] as string).slice(0, 300) : j[k]]));
+  return { reviewedScript, canEdit: manageable, canRun: manageable, canResume: manageable, ...Object.fromEntries(keep.filter((k) => j[k] !== undefined).map((k) => [k, k === "last_error" && typeof j[k] === "string" ? (j[k] as string).slice(0, 300) : j[k]])) };
 }
 omniApi.get("/jobs", async (c) => {
   try {
-    return c.json({ jobs: (await hermes.listJobs(true)).map((j) => jobView(j as Record<string, unknown>)) });
+    return c.json({ jobs: await Promise.all((await hermes.listJobs(true)).map((j) => jobView(j as Record<string, unknown>))) });
   } catch (e) {
     return hermesFailure(c, e);
   }
@@ -815,11 +818,11 @@ omniApi.post("/jobs", async (c) => {
     if (origin?.platform !== "api_server" || origin.chat_id !== threadId || job.deliver !== "local") {
       let paused = false;
       try { await hermes.jobAction(job.id, "pause"); paused = true; } catch { /* outcome is explicitly reported */ }
-      const response = { error: "job_approval_routing_unavailable", created: true, paused, threadId, job: jobView(job), message: "The job was created. Do not create it again; verify its approval routing." };
+      const response = { error: "job_approval_routing_unavailable", created: true, paused, threadId, job: await jobView(job), message: "The job was created. Do not create it again; verify its approval routing." };
       finishJobCreation(owner, idem, 503, response);
       return c.json(response, 503);
     }
-    const response = { job: jobView(job), threadId };
+    const response = { job: await jobView(job), threadId };
     finishJobCreation(owner, idem, 201, response);
     omniAudit({ actor: owner, via: requestVia(c), action: "job.create", threadId, status: "ok" });
     return c.json(response, 201);
@@ -851,11 +854,13 @@ omniApi.put("/jobs/:id", async (c) => {
   if (!Object.keys(patch).length) return bad(c, "an edit is required");
   try {
     const existing = await hermes.getJob(id);
-    if (rawJobRunner(existing)) return c.json({ error: "script_job_read_only" }, 403);
-    if (!guardedJob(existing)) return c.json({ error: "job_approval_routing_required" }, 409);
+    const reviewed = await reviewedNudgeJob(existing);
+    if (rawJobRunner(existing) && !reviewed) return c.json({ error: "script_job_read_only" }, 403);
+    if (reviewed && b.prompt !== undefined) return c.json({ error: "script_job_read_only" }, 403);
+    if (!guardedJob(existing) && !reviewed) return c.json({ error: "job_approval_routing_required" }, 409);
     if (patch.prompt === "" && !existing.skill && !(Array.isArray(existing.skills) && existing.skills.length)) return bad(c, "prompt or skill: required");
     const job = await hermes.updateJob(id, patch);
-    return c.json({ job: jobView(job) });
+    return c.json({ job: await jobView(job) });
   } catch (e) { return hermesFailure(c, e); }
 });
 omniApi.delete("/jobs/:id", async (c) => {
@@ -872,14 +877,15 @@ omniApi.post("/jobs/:id/:action", async (c) => {
   try {
     if (action === "run" || action === "resume") {
       const stored = await hermes.getJob(id);
-      if (action === "run" && rawJobRunner(stored)) return c.json({ error: "script_job_run_unavailable" }, 403);
-      if (!guardedJob(stored)) {
+      const reviewed = await reviewedNudgeJob(stored);
+      if (action === "run" && rawJobRunner(stored) && !reviewed) return c.json({ error: "script_job_run_unavailable" }, 403);
+      if (!guardedJob(stored) && !reviewed) {
         return c.json({ error: "job_approval_routing_required", message: "This job needs local delivery and an accessible owner conversation before it can run." }, 409);
       }
     }
     const job = await hermes.jobAction(id, action);
     omniAudit({ actor: omniConfig.ownerEmail(), via: requestVia(c), action: `job.${action}`, status: "ok" });
-    return c.json({ job: jobView(job as Record<string, unknown>) });
+    return c.json({ job: await jobView(job as Record<string, unknown>) });
   } catch (e) {
     return hermesFailure(c, e);
   }
