@@ -30,7 +30,13 @@ public enum SpeechText {
             if hiddenBlock != nil || ["tool", "tool_result", "script", "style"].contains(where: { line.hasPrefix("<" + $0 + ">") }) { continue }
             if line.hasPrefix("<!--") || line.hasPrefix("<") || line.hasPrefix("|") { continue }
             if matches(line, #"^\[[^\]]+\]:\s*\S+"#) || matches(line, #"^([-*_]\s*){3,}$"#) { continue }
+            // Hermes media directives/cache paths describe attachment delivery,
+            // not another spoken answer. Preserve the original in chat.
+            let audioPath = #"(?i)(?:file://)?(?:/|~/?|[A-Z]:\\)[^\s`<>\[\]()\"']+\.(?:mp3|wav|m4a|aac|ogg|opus|caf)(?:\?[^\s]*)?"#
+            if matches(line, #"(?i)^\s*(?:[-*]\s*)?(?:MEDIA:|(?:saved\s+)?(?:audio|voice|speech|tts)(?:[ _-]?(?:file|path|cache|attachment))?\s*[:=])"#), matches(line, audioPath) { continue }
+            if matches(line, #"(?i)^\s*\{.*\"audio_(?:path|file|url)\"\s*:"#), matches(line, audioPath) { continue }
             var text = replacing(line, #"!\[[^\]]*\]\([^)]*\)"#, "")
+            text = replacing(text, #"(?i)\[[^\]]*\]\((?:file://)?(?:/|~)[^)]*\.(?:mp3|wav|m4a|aac|ogg|opus|caf)\)"#, "")
             text = replacing(text, #"\[([^\]]+)\]\([^)]*\)"#, "$1")
             text = replacing(text, #"\[([^\]]+)\]\[[^\]]*\]"#, "$1")
             text = replacing(text, #"^\s*(?:#{1,6}\s+|>\s*|[-+*]\s+|\d+[.)]\s+)"#, "")
@@ -38,6 +44,7 @@ public enum SpeechText {
             text = replacing(text, #"(`+|\*\*|__|~~)"#, "")
             text = replacing(text, #"(?<!\w)[*_]([^*_]+)[*_](?!\w)"#, "$1")
             text = replacing(text, #"\\([\\`*_{}\[\]()#+.!>-])"#, "$1")
+            text = replacing(text, audioPath, "")
             text = replacing(text, #"\s+"#, " ").trimmingCharacters(in: .whitespacesAndNewlines)
             if !text.isEmpty { lines.append(text) }
         }

@@ -11,7 +11,9 @@ struct ThreadView: View {
 
     var body: some View {
         GeometryReader { area in
-            transcript
+            // Keep the composer and voice owner stable while the transcript changes
+            // from loading to loaded (or an error).
+            ZStack { transcript }
                 .safeAreaInset(edge: .bottom, spacing: 0) {
                     if !model.isUnavailable {
                         VStack(spacing: 0) {
@@ -30,6 +32,8 @@ struct ThreadView: View {
                             )
                             .fixedSize(horizontal: false, vertical: true)
                         }
+                        // Keep scrolling messages from showing through the voice/composer dock.
+                        .background(Color.composerSurface)
                     }
                 }
         }
@@ -301,6 +305,7 @@ struct Composer<Accessory: View>: View {
         }
         .padding(.horizontal)
         .padding(.vertical, 10)
+        .background(Color.composerSurface)
         .onAppear { if focusOnAppear { focused = true } }
     }
 
@@ -374,5 +379,15 @@ struct NewThreadView: View {
 
     private var canSend: Bool {
         !session.threads.isCreating && !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+}
+
+private extension Color {
+    static var composerSurface: Color {
+        #if os(iOS)
+        Color(uiColor: .systemBackground)
+        #else
+        Color(nsColor: .windowBackgroundColor)
+        #endif
     }
 }

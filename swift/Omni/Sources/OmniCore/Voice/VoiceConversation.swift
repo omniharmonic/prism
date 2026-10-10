@@ -33,6 +33,19 @@ public extension ConversationAudio {
     public private(set) var state: State = .off
     public private(set) var problem: String?
     public private(set) var transcript = ""
+    public private(set) var continuingDraft = ""
+    private var capturedText = ""
+    /// An explicit Resume may continue an unsent draft; a fresh voice launch must
+    /// still leave unrelated composer text alone.
+    public func canStart(withDraft draft: String) -> Bool {
+        canStart && (draft.isEmpty || (state == .paused && isSessionActive))
+    }
+    public func draftAfterCapture(preserving currentDraft: String) -> String {
+        currentDraft == continuingDraft ? transcript : Self.join(currentDraft, capturedText)
+    }
+    private static func join(_ prefix: String, _ suffix: String) -> String {
+        [prefix, suffix].map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }.joined(separator: " ")
+    }
     private let audio: any ConversationAudio
     public private(set) var isSessionActive = false
     public var canAutomaticallyListen: @MainActor () -> Bool = { false }
@@ -112,14 +125,15 @@ public extension ConversationAudio {
         if locked { cancel() }
     }
 
-    public func start() async {
+    public func start(continuingDraft draft: String = "") async {
         guard canStart else { return }
         starting = true
         defer { starting = false }
         cancel()
         isSessionActive = true
         let request = generation
-        state = .preparing; problem = nil; transcript = ""
+        continuingDraft = draft; capturedText = ""
+        state = .preparing; problem = nil; transcript = draft
         activityNotice = nil; interruptionNotice = nil; endpointCountdown = nil
         audio.configureInterruption(enabled: acousticInterruptionEnabled) { [weak self] event in
             guard let self, self.generation == request, self.isSessionActive, !self.privacyLocked else { return }
@@ -165,8 +179,10 @@ public extension ConversationAudio {
         activityWatchdog?.cancel(); activityWatchdog = nil; endpointCountdown = nil
         state = .transcribing
         do {
-            let text = try await audio.finish().trimmingCharacters(in: .whitespacesAndNewlines)
+            let captured = try await audio.finish().trimmingCharacters(in: .whitespacesAndNewlines)
             guard generation == request, !Task.isCancelled else { return }
+            capturedText = captured
+            let text = Self.join(continuingDraft, captured)
             guard !text.isEmpty else {
                 state = .paused
                 problem = !submit && draftReason == .pause ? nil : "No speech was recognized. Try again."
@@ -263,5 +279,6 @@ public extension ConversationAudio {
 
     public func cancel() {
         stopAudio(); isSessionActive = false; state = .off
+        continuingDraft = ""; capturedText = ""
     }
 }

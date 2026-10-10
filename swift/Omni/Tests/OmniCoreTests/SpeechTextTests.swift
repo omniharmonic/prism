@@ -24,4 +24,13 @@ final class SpeechTextTests: XCTestCase {
     func testReferenceLinksQuotesAndDividers() {
         XCTAssertEqual(SpeechText.narration(from: "> *Read* [the note][n].\n[n]: https://example.com\n---"), "Read the note.")
     }
+    func testHermesAudioAttachmentAndCachePlumbingIsNotNarratedAgain() {
+        let markdown = "The answer is ready.\nMEDIA:/tmp/hermes/audio_cache/tts_123.mp3\nAudio path: `/Users/owner/.hermes/audio_cache/reply.wav`\n[Listen](file:///tmp/reply.mp3)\n{\"audio_path\":\"/tmp/reply.ogg\"}\nWe can continue."
+        XCTAssertEqual(SpeechText.narration(from: markdown), "The answer is ready.\nWe can continue.")
+        XCTAssertTrue(markdown.contains("audio_cache"), "Chat content remains untouched")
+    }
+    func testAudioFilenameDiscussionIsStillReadable() {
+        XCTAssertEqual(SpeechText.narration(from: "Use an MP3 file named answer.mp3. The notes are in Prism."), "Use an MP3 file named answer.mp3. The notes are in Prism.")
+    }
+
 }

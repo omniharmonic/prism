@@ -164,6 +164,7 @@ public final class SessionModel {
         externalNavigationRequests += 1
     }
 
+    public var replySpeechService: (any HermesSpeechService)? { service as? any HermesSpeechService }
     private let service: any OmniService
     private let sink: ErrorSink
     private let sleep: @Sendable (Duration) async throws -> Void

@@ -1,6 +1,6 @@
 # Voice readiness review — implementation versus remaining acceptance
 
-2026-10-10 engineering review draft. This supplements the canonical roadmap; it does not establish physical acceptance or authorize production deployment.
+2026-10-10 implementation/acceptance review, updated for v11 integrated source `a2677907`. This supplements the canonical roadmap; physical acceptance remains separate from engineering tests. The [v11 ledger](../../qa/omni-voice-v11-tracker.md) records current repair/provider evidence and independently actionable V03–V05 work. Parent owns tagged release and actual deployment/install receipts.
 
 ## V04 activation setup and acceptance
 
@@ -51,7 +51,7 @@ This fits a 750 MB download budget with room for metadata, but does not establis
 
 Important reproducibility gap: v3/base weights are pinned; shared English G2P and lexicon use the mutable repository main through the SDK downloader. Public main observed revision is d93c5f3eed11847fb81bd6d6a76665e133d7ca77. Pin or prepopulate those exact frontend files and verify cache checks before accepting a repeatable spike. The repository model card and conversion notice list Apache-2.0; retain model/conversion notices and finish selected voice provenance review before distribution. [Pinned SDK asset selection](https://github.com/FluidInference/FluidAudio/blob/v0.17.7/Sources/FluidAudio/TTS/KokoroAne/V3/KokoroAneV3Assets.swift), [model release](https://huggingface.co/FluidInference/kokoro-82m-coreml/tree/6c0750dd02ef9d981fb82f147d784a3f171755ee/ANE-v3).
 
-Recommended next measurement: isolated foreground Mac subprocess, af_heart, ten synthetic passages, one persistent warm manager, controlled cache/download cap and crash-isolated output. Measure download, compilation, first PCM, resident memory, waveform frames and a 15-minute soak. Do not enable Kokoro in mobile builds before physical iPhone/A12Z testing; pinned upstream still documents unresolved mobile Core ML stability concerns.
+The isolated af_heart ten-passage subprocess measurement is complete, as recorded below. Next: owner audition of preserved corresponding synthetic WAVs, measured first-audible playback, cancellation/routes, number/date normalization and a 15-minute soak. Retain downloaded local assets; do not repeat the download to measure already-established totals. Do not enable Kokoro in mobile builds before physical iPhone/A12Z testing; pinned upstream still documents unresolved mobile Core ML stability concerns.
 
 The initial sandboxed Apple baseline produced zero-frame WAVs despite a successful process exit. The harness now rejects empty PCM. A subsequent unsandboxed say/Samantha render produced ten validated WAVs at /private/tmp/omni-apple-voice-baseline-valid without playback; these are available for listening comparison. No subjective quality or first-audible latency result is recorded yet.
 
@@ -78,3 +78,10 @@ The default af_heart v3 engine successfully rendered three initial passages (nin
 The first short utterance took 3,288 ms to completed PCM in the initial process, then 55/44 ms on repetition; first longer passage took 3,624 ms then 159/147 ms. These show first-use graph costs that warm-only stage timing hides. Six of 30 ten-passage renders used the fast vocoder; longer responses correctly used the fallback path. The NeMo normalization trait was disabled to match the small dependency configuration; number/currency pronunciation is not accepted from this run.
 
 Raw results: /private/tmp/omni-kokoro-ten/measurements.json and summary.json. Compare the warm second render of p02 or p03 against the corresponding Apple WAV at /private/tmp/omni-apple-voice-baseline-valid. Neither engine has been auditioned in this engineering pass; owner preference remains pending. First audible latency, playback underruns, cancellation/route changes, a 15-minute soak, peak transient disk and all iPhone/A12Z measurements remain unmeasured. **The Mac backend is demonstrated feasible to evaluate, not accepted to ship.**
+
+
+## V11 provider checkpoint
+
+The owner now selects Hermes Edge speech by default, with Apple local selection/fallback and its downloaded voice preferences preserved. The backend uses a typed fixed provider registry, owner-authenticated bounded MP3 synthesis and scoped cancellation; only Edge is registered. Native narration uses the same hardware drain for Apple/Edge, independent narration cancellation for barge-in, and shared preview/reply preparation ownership. A future vetted local model adapter can register without editing HTTP validation or replacing conversation lifecycle. These are implemented paths awaiting deployment/device evidence, not a claim that the optional Kokoro model is enabled.
+
+The Mini's existing Edge 7.2.7 / Aria configuration was verified read-only. No ambient microphone upload is introduced: only completed response text is synthesized remotely, with visible Microsoft disclosure. No arbitrary Hermes cache/file path is exposed. Existing media-only Hermes replies still need a trusted producer artifact receipt/message binding; filtering a cache marker is not attachment playback. See [the provider rollout/media contract](../runbook/omni-hermes-tts.md).

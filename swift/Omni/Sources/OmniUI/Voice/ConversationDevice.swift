@@ -2,6 +2,7 @@
 import Foundation
 import Observation
 import OmniCore
+import OmniClient
 import OmniVoiceKit
 
 @MainActor @Observable final class ConversationDevice: ConversationAudio {
@@ -11,12 +12,50 @@ import OmniVoiceKit
     private let apple = AppleTranscriber()
     private let parakeet = ParakeetTranscriber()
     private let audio = AudioIO()
-    let speech = ConversationSpeech.shared
+    let speech: ConversationSpeech
     static let sharedTurnPreferences = VoiceTurnPreferences()
     let turnPreferences = ConversationDevice.sharedTurnPreferences
     private var interruptionEnabled = false
     private var receiveInterruption: (@MainActor (VoiceInterruptionEvent) -> Void)?
-    private var playbackSetup: Task<Void, Never>?
+    private let narrationWork = ReplyNarrationWork()
+    private var replySpeechService: (any HermesSpeechService)?
+    static let sharedReplyPreferences = ReplySpeechPreferences()
+    let replyPreferences: ReplySpeechPreferences
+    init(speech: ConversationSpeech = .shared, replyPreferences: ReplySpeechPreferences = ConversationDevice.sharedReplyPreferences) {
+        self.speech = speech; self.replyPreferences = replyPreferences
+    }
+    private(set) var replyProviders: [VoiceProvider] = []
+    private(set) var replySpeechNotice: String?
+    private var replySpeechSessionID = UUID().uuidString
+    private let replyPreviewOwner = UUID()
+    private var replyPreviewTask: Task<Void, Never>?
+    private(set) var replyIsPreviewing = false
+    private var replyServiceRevision = 0
+    private var replyCatalogGeneration: Int?
+    func configureReplySpeech(service: (any HermesSpeechService)?) {
+        guard replySpeechService?.speechServiceIdentity != service?.speechServiceIdentity else { return }
+        replyServiceRevision += 1; replySpeechService = service
+        replyCatalogGeneration = nil; replyProviders = []
+    }
+    func refreshReplyProviders() async {
+        let request = generation; let revision = replyServiceRevision
+        guard let service = replySpeechService else { replyProviders = []; return }
+        do {
+            let providers = try await service.voiceProviders().providers
+            guard !Task.isCancelled, generation == request, replyServiceRevision == revision else { return }
+            replyProviders = providers; replyCatalogGeneration = request
+        } catch {
+            guard !Task.isCancelled, generation == request, replyServiceRevision == revision else { return }
+            replyProviders = []; replyCatalogGeneration = request
+        }
+    }
+    // Capture opens a fresh provider availability checkpoint. Deployment of the
+    // optional server voice is discovered at the next turn, without PCM polling.
+    func beginReplySpeechSession() {
+        replySpeechNotice = nil; replySpeechSessionID = UUID().uuidString
+        replyCatalogGeneration = nil; replyServiceRevision += 1
+    }
+    private var edgeProvider: VoiceProvider? { replyProviders.first { $0.id == "hermes-edge" && $0.available } }
     private var monitoringPlayback = false
     private var nearEndDuration = 0.0
     private var activityEnabled = false
@@ -46,6 +85,7 @@ import OmniVoiceKit
     func start() async throws {
         speech.beginRecording(owner: recordingOwner)
         hypothesis = ""; completedText = ""; chunkWork.cancel(); enqueuedChunks = []; chunkFailure = false; recoveryNotice = nil
+        beginReplySpeechSession()
         let request = generation
         let selected = self.selected
         let current = engine
@@ -136,7 +176,7 @@ import OmniVoiceKit
             guard nearEndDuration >= 0.3 else { return }
             do {
                 try audio.retainInterruptionLeadIn()
-                speech.silence(owner: recordingOwner)
+                silence()
                 speech.configureDuplex(nil, owner: recordingOwner)
                 speech.beginRecording(owner: recordingOwner)
                 let detectedDuration = nearEndDuration
@@ -221,7 +261,7 @@ import OmniVoiceKit
         try AVAudioFile(forReading: file).length == 0
     }
     func cancel() {
-        playbackSetup?.cancel(); playbackSetup = nil
+        narrationWork.cancel()
         monitoringPlayback = false; nearEndDuration = 0
         speech.configureDuplex(nil, owner: recordingOwner)
         captureDeadline?.cancel(); captureDeadline = nil
@@ -235,24 +275,63 @@ import OmniVoiceKit
     }
     func speak(_ text: String) {
         let request = generation
-        let previous = playbackSetup
-        playbackSetup = Task { [weak self] in
-            await previous?.value
-            guard let self, self.generation == request, !Task.isCancelled else { return }
-            if self.interruptionEnabled && !self.monitoringPlayback && self.file == nil {
-                _ = await self.beginPlaybackMonitor(request: request)
+        stopPreview()
+        let preference = replyPreferences.provider
+        let sessionID = replySpeechSessionID
+        narrationWork.enqueue { [weak self] isCurrent in
+            guard let self, self.generation == request, isCurrent() else { return }
+            guard let preparation = self.speech.reserveReplyPreparation(owner: self.recordingOwner) else { return }
+            defer { self.speech.releaseReplyPreparation(preparation) }
+            if preference == .hermesEdge, self.replyCatalogGeneration != request { await self.refreshReplyProviders() }
+            guard self.generation == request, isCurrent() else { return }
+            var provider: any ReplySpeechProvider
+            if preference == .hermesEdge, let service = self.replySpeechService, let metadata = self.edgeProvider {
+                let voiceID = metadata.voices.contains(where: { $0.id == self.replyPreferences.edgeVoiceID }) ? self.replyPreferences.edgeVoiceID! : metadata.defaultVoiceID
+                provider = HermesEdgeReplySpeechProvider(service: service, sessionID: sessionID, voiceID: voiceID)
+            } else {
+                provider = AppleReplySpeechProvider()
+                if preference == .hermesEdge { self.replySpeechNotice = "Hermes speech is unavailable. Using the Apple voice on this device." }
             }
-            guard self.generation == request, !Task.isCancelled else { return }
-            self.speech.configurePlaybackFailure(owner: self.recordingOwner) { [weak self] reason in
-                guard let self, self.generation == request else { return }
-                self.receiveInterruption?(.playbackFailed(reason))
+            let passages = ReplySpeechPassages.split(text)
+            guard !passages.isEmpty else { self.replySpeechNotice = "This reply could not be prepared for speech. Read it in chat."; return }
+            for passage in passages {
+                guard self.generation == request, isCurrent() else { return }
+                var rendered: ReplySpeechRendering
+                do { rendered = try await provider.render(passage) }
+                catch {
+                    guard self.generation == request, isCurrent() else { return }
+                    self.replySpeechNotice = "Hermes speech could not be generated. Using the Apple voice on this device."
+                    provider = AppleReplySpeechProvider()
+                    rendered = .systemVoice(passage)
+                }
+                guard self.generation == request, isCurrent() else { return }
+                if self.interruptionEnabled && !self.monitoringPlayback && self.file == nil {
+                    _ = await self.beginPlaybackMonitor(request: request)
+                }
+                guard self.generation == request, isCurrent() else { return }
+                self.speech.configurePlaybackFailure(owner: self.recordingOwner) { [weak self] reason in
+                    guard let self, self.generation == request else { return }
+                    self.receiveInterruption?(.playbackFailed(reason))
+                }
+                switch rendered {
+                case .systemVoice(let words): self.speakApple(words)
+                case .encodedAudio(let data):
+                    do { try self.speech.playAudio(data, owner: self.recordingOwner) }
+                    catch {
+                        self.replySpeechNotice = "Generated speech could not start. Using the Apple voice on this device."
+                        self.speakApple(passage)
+                    }
+                }
+                await self.speech.waitForPlayback(owner: self.recordingOwner)
             }
-            let voice = AppleVoiceCatalog.resolve(self.speechPreferences, voices: AppleVoiceCatalog.installed())
-            self.speech.speak(text, owner: self.recordingOwner, identifier: voice?.id, rate: self.speechPreferences.rate)
         }
     }
+    private func speakApple(_ text: String) {
+        let voice = AppleVoiceCatalog.resolve(speechPreferences, voices: AppleVoiceCatalog.installed())
+        speech.speak(text, owner: recordingOwner, identifier: voice?.id, rate: speechPreferences.rate)
+    }
     func waitForPlayback() async {
-        await playbackSetup?.value
+        await narrationWork.wait()
         await speech.waitForPlayback(owner: recordingOwner)
         // Normal drain releases monitor audio; acoustic interruption promotes it
         // into capture and must keep the retained lead-in and microphone running.
@@ -261,7 +340,50 @@ import OmniVoiceKit
             try? audio.stop(); audio.recordings().forEach { try? FileManager.default.removeItem(at: $0) }; file = nil
         }
     }
-    func silence() { speech.silence(owner: recordingOwner) }
-    func stopPreview() { speech.stopPreview(owner: recordingOwner) }
-    func previewVoice(identifier: String?) { speech.preview(owner: recordingOwner, identifier: identifier, rate: speechPreferences.rate) }
+    func silence() {
+        narrationWork.cancel()
+        speech.silence(owner: recordingOwner)
+    }
+    func stopPreview() {
+        replyPreviewTask?.cancel(); replyPreviewTask = nil
+        if replyIsPreviewing { speech.silence(owner: replyPreviewOwner); replyIsPreviewing = false }
+        speech.stopPreview(owner: replyPreviewOwner)
+    }
+    func previewVoice(identifier: String?) {
+        stopPreview()
+        guard !narrationWork.isBusy else { return }
+        guard replyPreferences.provider == .hermesEdge else {
+            speech.preview(owner: replyPreviewOwner, identifier: identifier, rate: speechPreferences.rate); return
+        }
+        guard let lease = speech.reservePreview(owner: replyPreviewOwner, cancel: { [weak self] in self?.replyPreviewTask?.cancel() }) else { return }
+        let request = generation
+        replyIsPreviewing = true
+        replyPreviewTask = Task { [weak self] in
+            guard let self else { return }
+            defer { if self.generation == request { self.replyIsPreviewing = false } }
+            await self.refreshReplyProviders()
+            guard !Task.isCancelled, self.generation == request, self.speech.ownsPreview(lease, owner: self.replyPreviewOwner) else { return }
+            guard let service = self.replySpeechService, let metadata = self.edgeProvider else {
+                self.replySpeechNotice = "Hermes speech is unavailable. Previewing the Apple voice."
+                self.speech.preview(owner: self.replyPreviewOwner, identifier: identifier, rate: self.speechPreferences.rate); return
+            }
+            let voiceID = metadata.voices.first { $0.id == self.replyPreferences.edgeVoiceID }?.id ?? metadata.defaultVoiceID
+            let provider = HermesEdgeReplySpeechProvider(service: service, sessionID: UUID().uuidString, voiceID: voiceID)
+            do {
+                let rendered = try await provider.render("Hello, I'm Omni. Take your time. We can think this through together.")
+                guard !Task.isCancelled, self.generation == request, self.speech.ownsPreview(lease, owner: self.replyPreviewOwner) else { return }
+                if case .encodedAudio(let data) = rendered {
+                    self.speech.configurePlaybackFailure(owner: self.replyPreviewOwner) { [weak self] reason in
+                        self?.replySpeechNotice = reason
+                    }
+                    try self.speech.playPreviewAudio(data, owner: self.replyPreviewOwner, lease: lease)
+                    await self.speech.waitForPlayback(owner: self.replyPreviewOwner)
+                }
+            } catch {
+                guard !Task.isCancelled, self.generation == request else { return }
+                self.replySpeechNotice = "Hermes speech could not be previewed. Using the Apple voice."
+                self.speech.preview(owner: self.replyPreviewOwner, identifier: identifier, rate: self.speechPreferences.rate)
+            }
+        }
+    }
 }

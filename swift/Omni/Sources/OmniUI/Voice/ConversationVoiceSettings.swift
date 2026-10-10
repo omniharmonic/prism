@@ -1,7 +1,7 @@
 import OmniCore
 import SwiftUI
 
-/// Installed Apple playback voices. Recognition engine settings remain in Voice options.
+/// Swappable reply speech providers; recognition stays independent.
 struct ConversationVoiceSettings: View {
     let device: ConversationDevice
     @Environment(\.dismiss) private var dismiss
@@ -48,6 +48,32 @@ struct ConversationVoiceSettings: View {
                     Text("Listen for your voice while Omni speaks, using on-device echo cancellation. If playback interrupts itself, turn this off and use Interrupt and speak. Changes apply to the next session.")
                 }
                 Section {
+                    Picker("Speech provider", selection: Binding(get: { device.replyPreferences.provider }, set: {
+                        device.stopPreview(); device.replyPreferences.provider = $0
+                    })) {
+                        Text("Hermes · Microsoft Edge").tag(ReplySpeechPreferences.Provider.hermesEdge)
+                        Text("Apple · on this device").tag(ReplySpeechPreferences.Provider.apple)
+                    }
+                    if device.replyPreferences.provider == .hermesEdge {
+                        if let provider = device.replyProviders.first(where: { $0.id == "hermes-edge" && $0.available }) {
+                            Picker("Hermes voice", selection: Binding(get: { device.replyPreferences.edgeVoiceID ?? provider.defaultVoiceID }, set: {
+                                device.stopPreview(); device.replyPreferences.edgeVoiceID = $0
+                            })) {
+                                ForEach(provider.voices) { Text($0.name).tag($0.id) }
+                            }
+                        } else {
+                            Text("Hermes speech is unavailable on this server. Replies use the Apple voice until it is available.").foregroundStyle(.secondary)
+                        }
+                    }
+                    if let notice = device.replySpeechNotice { Text(notice).foregroundStyle(.secondary) }
+                } header: { Text("Reply speech") } footer: {
+                    if device.replyPreferences.provider == .hermesEdge {
+                        Text("Hermes sends spoken reply text to Microsoft’s online Edge speech service. Microphone audio stays on this device. Internet access is required; Apple is the on-device fallback.")
+                    } else {
+                        Text("Apple generates speech on this device. Your downloaded Apple voice selection is preserved when switching providers.")
+                    }
+                }
+                Section {
                     Picker("Language & region", selection: Binding(get: { preferences.language }, set: {
                         device.stopPreview(); preferences.selectLanguage($0)
                     })) {
@@ -68,10 +94,10 @@ struct ConversationVoiceSettings: View {
                             .font(.callout).foregroundStyle(.secondary)
                     }
                     if available.isEmpty { Text("No installed voices for this region. Using the closest available system voice.").foregroundStyle(.secondary) }
-                } header: { Text("Spoken reply voice") } footer: {
+                } header: { Text(device.replyPreferences.provider == .apple ? "Apple reply voice" : "Apple fallback voice") } footer: {
                     Text("Apple voices installed on this device. Automatic prefers Premium, then Enhanced quality. This choice is remembered on this device.")
                 }
-                Section("Speaking rate") {
+                Section("Apple speaking rate") {
                     Slider(value: Binding(get: { preferences.rate }, set: { device.stopPreview(); preferences.rate = $0 }),
                            in: SpeechPreferences.rateRange) { Text("Speaking rate") }
                     HStack {
@@ -79,8 +105,8 @@ struct ConversationVoiceSettings: View {
                     }.font(.caption).foregroundStyle(.secondary)
                     Button("Use default rate") { device.stopPreview(); preferences.rate = SpeechPreferences.defaultRate }
                         .disabled(preferences.rate == SpeechPreferences.defaultRate)
-                    Button(device.speech.isPreviewing ? "Stop preview" : "Preview voice", systemImage: device.speech.isPreviewing ? "stop.fill" : "play.fill") {
-                        if device.speech.isPreviewing { device.stopPreview() }
+                    Button((device.speech.isPreviewing || device.replyIsPreviewing) ? "Stop preview" : "Preview selected provider", systemImage: (device.speech.isPreviewing || device.replyIsPreviewing) ? "stop.fill" : "play.fill") {
+                        if device.speech.isPreviewing || device.replyIsPreviewing { device.stopPreview() }
                         else { device.previewVoice(identifier: chosen?.id) }
                     }.accessibilityIdentifier("voice.preview")
                 }
@@ -116,6 +142,7 @@ struct ConversationVoiceSettings: View {
             #endif
         }
         .onAppear { refresh() }
+        .task { await device.refreshReplyProviders() }
         .onChange(of: phase) { if phase == .active { refresh() } else { device.stopPreview() } }
         .onDisappear { device.stopPreview() }
     }

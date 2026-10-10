@@ -1,6 +1,6 @@
 # Optional neural speech feasibility and repeatable listening protocol
 
-Checkpoint: 2026-10-10, FluidAudio **v0.17.7**, researched from pinned sources and then measured in an isolated Mac-only offline spike. Apple premium/enhanced remains the accepted default. No neural backend is enabled by this change. The SDK already exists for VAD; importing its TTS API does not establish that assets, mobile reliability or owner preference pass our gates.
+Checkpoint: 2026-10-10, FluidAudio **v0.17.7**, researched from pinned sources and then measured in an isolated Mac-only offline spike. Apple premium/enhanced is owner-accepted and remains the local fallback/explicit choice. For v11 the owner selected Hermes Edge as the default; that online provider is separate from the local neural evaluation below. No local neural backend is enabled by this change. The SDK already exists for VAD; importing its TTS API does not establish that assets, mobile reliability or owner preference pass our gates.
 
 ## Pinned API and asset findings
 
