@@ -1,0 +1,22 @@
+{
+  "rows": 30,
+  "wavFiles": 30,
+  "waveBytes": 10282920,
+  "cachedInitializationMs": 872.3910833332411,
+  "warmWholePCMMedianMs": 196.52595833304076,
+  "warmWholePCMMinMs": 45.24537500037695,
+  "warmWholePCMMaxMs": 409.83045833309006,
+  "peakRSSBytes": 1091207168,
+  "cacheFileBytes": 406075811,
+  "fastVocoderRenders": 6,
+  "downloadBytes": 213544176,
+  "hostModel": "Mac14,5",
+  "cpu": "Apple M2 Max",
+  "os": "macOS26.6.2",
+  "noPlayback": true,
+  "offlineInference": true,
+  "subjectiveQuality": "unmeasured",
+  "firstAudibleLatency": "unmeasured",
+  "fifteenMinuteSoak": "unmeasured",
+  "normalizationTrait": "disabled"
+}
