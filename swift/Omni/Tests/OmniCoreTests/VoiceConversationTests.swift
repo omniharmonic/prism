@@ -212,6 +212,31 @@ import XCTest
         XCTAssertEqual(audio.starts, 1)
         voice.cancel(); audio.playbackGate?.resume()
     }
+    func testLateSendAcceptanceCannotClearNewTurnCompletionBuffer() async {
+        let audio = Audio(); let voice = VoiceConversation(audio: audio)
+        await voice.start()
+        var oldAcceptance: CheckedContinuation<Bool, Never>?
+        let oldTurn = Task {
+            await voice.finish { _ in await withCheckedContinuation { oldAcceptance = $0 } }
+        }
+        while oldAcceptance == nil { await Task.yield() }
+        voice.pause()
+        await voice.start()
+        var newAcceptance: CheckedContinuation<Bool, Never>?
+        let newTurn = Task {
+            await voice.finish { _ in await withCheckedContinuation { newAcceptance = $0 } }
+        }
+        while newAcceptance == nil { await Task.yield() }
+        oldAcceptance?.resume(returning: true)
+        await oldTurn.value
+        XCTAssertEqual(voice.state, .transcribing)
+        voice.agentDidComplete([.streamingText(id: "new", text: "The current reply.", isFinal: true)])
+        newAcceptance?.resume(returning: true)
+        await newTurn.value
+        XCTAssertEqual(audio.speech, ["The current reply."], "The older send must not disable buffering of the current turn’s fast completion")
+        voice.cancel()
+    }
+
     func testRunningFalseWithoutCompletionNeverRestarts() async {
         let audio = Audio(); let voice = VoiceConversation(audio: audio)
         voice.canAutomaticallyListen = { true }

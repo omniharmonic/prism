@@ -66,8 +66,8 @@ import Observation
             transcript = text; spoken = [:]; pendingCompletion = nil
             submitting = submit
             let sent = await send(text)
+            guard generation == request, !Task.isCancelled else { return }
             submitting = false
-            guard generation == request else { return }
             if sent {
                 state = submit ? .answering : .paused
                 if !submit {
