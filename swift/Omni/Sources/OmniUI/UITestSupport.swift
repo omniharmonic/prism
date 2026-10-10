@@ -60,6 +60,32 @@ enum UITestLaunch {
         return (url.path.isEmpty || url.path == "/") && url.query == nil && url.user == nil
     }
 
+    /// Synthetic audio only, used to render the real ThreadView composer in iOS UI tests.
+    /// These states never request microphone permission or contact a speech engine.
+    static func voiceLayoutFixture() -> VoiceConversation? {
+        guard let faults = configuration?.faults,
+              faults.contains("voice-layout-listening") || faults.contains("voice-layout-paused") else { return nil }
+        return VoiceConversation(audio: VoiceLayoutAudio())
+    }
+    static func prepareVoiceLayoutFixture(_ voice: VoiceConversation) async {
+        guard let faults = configuration?.faults,
+              faults.contains("voice-layout-listening") || faults.contains("voice-layout-paused"),
+              voice.state == .off else { return }
+        await voice.start()
+        if faults.contains("voice-layout-paused") { await voice.finish { _ in false } }
+    }
+    @MainActor private final class VoiceLayoutAudio: ConversationAudio {
+        func start() async throws {}
+        func finish() async throws -> String {
+            throw NSError(domain: "voice-layout-fixture", code: 1, userInfo: [NSLocalizedDescriptionKey:
+                "Speech recognition is temporarily unavailable. Check your connection and try again when you’re ready."])
+        }
+        func cancel() {}
+        func speak(_ text: String) {}
+        func waitForPlayback() async {}
+        func silence() {}
+    }
+
     static func model(_ configuration: Configuration) -> AppModel {
         let tokens = InMemoryTokenStore()
         if let token = configuration.token, let origin = try? ServerOrigin(configuration.server) {

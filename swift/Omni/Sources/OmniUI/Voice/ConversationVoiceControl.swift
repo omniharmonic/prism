@@ -7,6 +7,7 @@ struct ConversationVoiceControl: View {
     let session: SessionModel
     let model: ThreadModel?
     let draft: Binding<String>?
+    let maximumHeight: CGFloat
     @Binding var expanded: Bool
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @Environment(\.scenePhase) private var phase
@@ -16,14 +17,20 @@ struct ConversationVoiceControl: View {
     @State private var voice: VoiceConversation
     @State private var selected = ConversationDevice.Engine.apple
     @State private var showingVoiceSettings = false
+    @State private var showingTranscript = false
     @State private var mounted = false
     @State private var action: Task<Void, Never>?
     @State private var timeout: Task<Void, Never>?
-    init(session: SessionModel, model: ThreadModel? = nil, draft: Binding<String>? = nil, expanded: Binding<Bool>) {
-        self.session = session; self.model = model; self.draft = draft; _expanded = expanded
+    init(session: SessionModel, model: ThreadModel? = nil, draft: Binding<String>? = nil, expanded: Binding<Bool>, maximumHeight: CGFloat = 280) {
+        self.session = session; self.model = model; self.draft = draft; self.maximumHeight = maximumHeight; _expanded = expanded
         let sameContext = model.map { session.voiceThreadID == $0.threadID } ?? (session.newThreadUsesVoice && session.voiceThreadID == nil)
         let device = (sameContext ? session.conversationAudio as? ConversationDevice : nil) ?? ConversationDevice()
-        let voice = (sameContext ? session.conversationVoice : nil) ?? VoiceConversation(audio: device)
+        let existingVoice = sameContext ? session.conversationVoice : nil
+        #if DEBUG
+        let voice = existingVoice ?? UITestLaunch.voiceLayoutFixture() ?? VoiceConversation(audio: device)
+        #else
+        let voice = existingVoice ?? VoiceConversation(audio: device)
+        #endif
         _device = State(initialValue: device); _voice = State(initialValue: voice)
         _selected = State(initialValue: device.selected)
     }
@@ -70,53 +77,68 @@ struct ConversationVoiceControl: View {
     private var panel: some View {
         Group {
             if (expanded || voice.state != .off) && (session.conversationVoice !== voice || session.ownsVoice(voice, threadID: model?.threadID)) {
-                VStack(spacing: 12) {
-                    HStack {
-                        Label("Think aloud", systemImage: "waveform").font(.headline)
-                        Spacer()
-                        Menu {
-                            Picker("Speech recognition", selection: $selected) {
-                                ForEach(ConversationDevice.Engine.allCases, id: \.self) { Text($0.rawValue).tag($0) }
-                            }
-                            Button("Voice & Playback", systemImage: "speaker.wave.2") { showingVoiceSettings = true }
-                        } label: { Image(systemName: "slider.horizontal.3").frame(width: 44, height: 44) }
-                        .accessibilityLabel("Voice options").disabled(voice.state != .off && voice.state != .paused)
-                        Button { cancel(); expanded = false } label: {
-                            Image(systemName: "xmark").frame(width: 44, height: 44)
-                        }.accessibilityLabel(voice.isSessionActive ? "End voice session" : "Close Voice")
-                    }
-                    let layout = AnyLayout(VStackLayout(spacing: 12))
-                    layout {
-                        Image(systemName: "waveform")
-                            .font(.system(size: 25, weight: .medium))
-                            .foregroundStyle(Color.omniAccent)
-                            .frame(width: 64, height: 64)
-                            .background(Color.omniAccent.opacity(0.10), in: Circle())
-                            .accessibilityHidden(true)
-                        VStack(alignment: .center, spacing: 4) {
-                            Text(stateTitle).font(.headline)
-                            Text(status).font(.caption).foregroundStyle(Color.quietText)
-                                .fixedSize(horizontal: false, vertical: true)
-                        }.frame(maxWidth: .infinity, alignment: .center).multilineTextAlignment(.center)
-                    }
-                    controls
-                    if voice.state == .transcribing, !device.hypothesis.isEmpty { Text(device.hypothesis).font(.callout) }
-                    if !voice.transcript.isEmpty { Text(voice.transcript).font(.callout).textSelection(.enabled) }
-                    if let problem = voice.problem { Text(problem).font(.caption).foregroundStyle(Color.failureText) }
+                ViewThatFits(in: .vertical) {
+                    panelContent.fixedSize(horizontal: false, vertical: true)
+                    ScrollView(.vertical) { panelContent.fixedSize(horizontal: false, vertical: true) }
+                        .scrollBounceBehavior(.basedOnSize)
                 }
-                .padding(20).frame(maxWidth: 440)
+                .frame(maxHeight: maximumHeight)
+                .frame(maxWidth: 440)
                 .modifier(VoicePanelMaterial(solid: reduceTransparency))
-                .padding(.horizontal).padding(.vertical, 10)
+                .padding(.horizontal, 12).padding(.vertical, 8)
                 .frame(maxWidth: .infinity)
                 .accessibilityIdentifier("voice.panel")
             }
         }
+    }
+    private var panelContent: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Label("Think aloud", systemImage: "waveform").font(.headline)
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 0)
+                Menu {
+                    // Conversation mode options share this menu with local voice settings.
+                    Picker("Speech recognition", selection: $selected) {
+                        ForEach(ConversationDevice.Engine.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+                    }
+                    Button("Voice & Playback", systemImage: "speaker.wave.2") { showingVoiceSettings = true }
+                } label: { Image(systemName: "slider.horizontal.3").frame(width: 44, height: 44) }
+                .accessibilityLabel("Voice options").disabled(voice.state != .off && voice.state != .paused)
+                Button { cancel(); expanded = false } label: {
+                    Image(systemName: "xmark").frame(width: 44, height: 44)
+                }.accessibilityLabel(voice.isSessionActive ? "End voice session" : "Close Voice")
+            }
+            VStack(alignment: .leading, spacing: 4) {
+                Text(stateTitle).font(.subheadline.weight(.semibold))
+                    .accessibilityIdentifier("voice.state")
+                Text(status).font(.caption).foregroundStyle(Color.quietText)
+                    .accessibilityIdentifier("voice.status")
+            }.fixedSize(horizontal: false, vertical: true)
+            if let problem = voice.problem {
+                Text(problem).font(.caption).foregroundStyle(Color.failureText)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityIdentifier("voice.problem")
+            }
+            controls.fixedSize(horizontal: false, vertical: true)
+            if !voice.transcript.isEmpty || !device.hypothesis.isEmpty {
+                DisclosureGroup("Transcript", isExpanded: $showingTranscript) {
+                    Text(voice.state == .transcribing ? device.hypothesis : voice.transcript)
+                        .font(.callout).textSelection(.enabled)
+                        .fixedSize(horizontal: false, vertical: true)
+                }.font(.caption)
+            }
+        }
+        .padding(.horizontal, 16).padding(.vertical, 10)
     }
     private func appeared() {
         mounted = true
         installAutomaticListeningGuard()
         voice.setPrivacyLocked(PrivacyLock.shared.locked)
         updateCaptureTimeout(); consume(); consumeShortcutActivation()
+        #if DEBUG
+        if model != nil { Task { await UITestLaunch.prepareVoiceLayoutFixture(voice) } }
+        #endif
     }
     private func disappeared() {
         mounted = false
@@ -167,25 +189,33 @@ struct ConversationVoiceControl: View {
     @ViewBuilder private var controls: some View {
         VStack(spacing: 10) {
             if voice.state == .listening {
-                Button("Send turn", systemImage: "arrow.up") { finish() }.buttonStyle(.borderedProminent)
+                Button { finish() } label: { Label("Send turn", systemImage: "arrow.up").frame(minHeight: 32) }
+                    .buttonStyle(.borderedProminent)
+                    .accessibilityIdentifier("voice.send")
             } else if voice.state == .preparing || voice.state == .transcribing {
                 ProgressView().accessibilityLabel(stateTitle)
             } else {
-                Button(voice.state == .paused ? "Resume" : voice.isSessionActive ? "Interrupt and speak" : "Start session", systemImage: "mic.fill") { start() }
+                Button { start() } label: {
+                    Label(voice.state == .paused ? "Resume" : voice.isSessionActive ? "Interrupt and speak" : "Start session", systemImage: "mic.fill")
+                        .frame(minHeight: 32)
+                }
                     .buttonStyle(.borderedProminent).disabled(!canSpeak)
+                    .accessibilityIdentifier("voice.start")
             }
             if voice.isSessionActive {
                 let secondaryLayout = typeSize.isAccessibilitySize ? AnyLayout(VStackLayout(spacing: 8)) : AnyLayout(HStackLayout(spacing: 10))
                 secondaryLayout {
                     if voice.state != .paused {
                         Button { pause() } label: { Label("Pause", systemImage: "pause.fill").frame(minHeight: 44) }
+                            .accessibilityIdentifier("voice.pause")
                             .accessibilityHint(voice.state == .listening ? "Keeps your words as an unsent draft" : "Turns off the microphone and stops narration. Omni’s task continues in chat.")
                     }
                     Button { cancel() } label: { Text("End session").frame(minHeight: 44) }
+                        .accessibilityIdentifier("voice.end")
                         .accessibilityHint("Ends microphone capture and narration. Omni’s task continues in chat.")
                 }
             }
-        }.controlSize(.large).buttonBorderShape(.capsule)
+        }.controlSize(.regular).buttonBorderShape(.capsule)
         .frame(minHeight: 44)
     }
     private func consume() {

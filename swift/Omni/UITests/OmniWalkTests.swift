@@ -3,6 +3,42 @@ import XCTest
 /// The walk: every screen and state of the app, in the order a person would meet them, with
 /// a screenshot of each. Runs against the laptop dev backend (stub Hermes; nothing can send).
 final class OmniWalkTests: OmniUITestCase {
+    #if os(iOS)
+    func testVoicePanelInThreadKeepsControlsBelowText() throws {
+        let id = try XCTUnwrap(server { backend in
+            let id = try await backend.thread("Voice layout check", "Give a short welcome.")
+            try await backend.settle(id)
+            return id
+        })
+        for state in ["listening", "paused"] {
+            launch(faults: "sample-data,voice-layout-\(state)")
+            openThread(id)
+            let panel = element("voice.panel")
+            XCTAssertTrue(panel.waitForExistence(timeout: 10))
+            let status = element("voice.status")
+            let primary = element(state == "listening" ? "voice.send" : "voice.start")
+            XCTAssertTrue(primary.waitForExistence(timeout: 5))
+            XCTAssertGreaterThanOrEqual(primary.frame.minY, status.frame.maxY, "Voice button must not cover status text")
+            if state == "paused" {
+                let problem = element("voice.problem")
+                XCTAssertTrue(problem.exists)
+                XCTAssertGreaterThanOrEqual(primary.frame.minY, problem.frame.maxY, "Voice button must not cover the problem")
+            }
+            let end = element("voice.end")
+            XCTAssertTrue(end.isHittable)
+            XCTAssertGreaterThanOrEqual(end.frame.minY, primary.frame.maxY)
+            XCTAssertLessThanOrEqual(panel.frame.maxY, composer.frame.minY)
+            XCTAssertLessThan(panel.frame.height, app.frame.height * 0.45, "Voice controls must leave room for the conversation")
+            shot("voice-thread-\(state)")
+            if state == "paused" {
+                composer.tap()
+                XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5))
+                shot("voice-thread-paused-keyboard")
+            }
+        }
+    }
+    #endif
+
     // MARK: Before the app
 
     func test01FirstRunAndSignIn() {
