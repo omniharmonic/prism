@@ -7,12 +7,17 @@ async function openSettings(page: Page) {
   return dialog;
 }
 
-for (const width of [1440, 390, 320]) {
+for (const width of [1440, 1024, 390, 320]) {
   test(`settings sections and device appearance work at ${width}`, async ({ page }, testInfo) => {
     await page.setViewportSize({ width, height: 900 });
     await page.goto("/e2e-fixtures/workspace.html");
     let dialog = await openSettings(page);
     await expect(dialog.getByRole("navigation", { name: "Settings sections" })).toBeVisible();
+    if (width <= 640) {
+      const navigation=dialog.getByRole("navigation",{name:"Settings sections"});
+      expect((await navigation.boundingBox())!.height).toBeLessThan(65);
+      expect(await dialog.locator(".prism-settings__content").evaluate(el => el.scrollWidth <= el.clientWidth)).toBe(true);
+    }
     await dialog.getByLabel("Editor Font", { exact: true }).selectOption("Georgia");
     await dialog.getByLabel("Code Font", { exact: true }).selectOption("Menlo");
     await dialog.getByLabel("Sidebar Label", { exact: true }).fill("Knowledge");
@@ -52,3 +57,26 @@ for (const width of [1440, 390, 320]) {
     await expect(dialog).toHaveCount(0);
   });
 }
+
+for (const [width,height,top,bottom] of [[390,844,59,34],[1024,768,24,20]]) test(`settings respect native safe insets at ${width}`, async ({page}, info) => {
+ await page.setViewportSize({width,height}); await page.emulateMedia({reducedMotion:"reduce"});
+ await page.goto("/e2e-fixtures/workspace.html");
+ await page.evaluate(({top,bottom}) => {
+  document.documentElement.style.setProperty("--prism-safe-area-top",`${top}px`);
+  document.documentElement.style.setProperty("--prism-safe-area-bottom",`${bottom}px`);
+ }, {top,bottom});
+ const dialog=await openSettings(page), surface=dialog.locator(".prism-settings");
+ const bounds=await surface.boundingBox(); expect(bounds!.y).toBeGreaterThanOrEqual(top); expect(bounds!.y+bounds!.height).toBeLessThanOrEqual(height-bottom+1);
+ const content=dialog.locator(".prism-settings__content");
+ expect(await content.evaluate(el => el.scrollWidth <= el.clientWidth)).toBe(true);
+ await page.screenshot({path:info.outputPath(`settings-native-appearance-${width}.png`),animations:"disabled"});
+ for (const section of ["Inputs & integrations","AI & agent","Advanced"]) {
+  await dialog.getByRole("button",{name:section,exact:true}).click();
+  expect(await content.evaluate(el => el.scrollWidth <= el.clientWidth)).toBe(true);
+ }
+
+ await content.evaluate(el => {el.scrollTop=el.scrollHeight;});
+ await expect(dialog.getByRole("button",{name:"Close settings"})).toBeVisible();
+ expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(width);
+ await page.screenshot({path:info.outputPath(`settings-native-${width}.png`),animations:"disabled"});
+});

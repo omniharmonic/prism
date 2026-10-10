@@ -229,7 +229,7 @@ test("owner pins properties: exact order, empty ones as placeholders, the rest b
   const props = bar(page);
   await expect(props.getByRole("button", { name: "Status: in-progress" })).toBeVisible();
   expect(await keysShown(page)).toEqual(["status", "priority", "owner"]); // no hint → every filled property
-  await expect(props.getByRole("button", { name: /more propert/ })).toHaveCount(0);
+  await expect(props.getByRole("button", { name: /Show .* more fields/ })).toHaveCount(0);
 
   await configure(page);
   await props.getByRole("button", { name: "Customize…" }).click();
@@ -254,7 +254,8 @@ test("owner pins properties: exact order, empty ones as placeholders, the rest b
   // The empty pinned property is a quiet placeholder that can be filled in place.
   await expect(props.getByRole("button", { name: "Due: Empty" })).toBeVisible();
   await expect(props.getByRole("button", { name: "Status: in-progress" })).toHaveCount(0);
-  const more = props.getByRole("button", { name: "2 more properties" });
+  const more = props.locator(".db-property-expand");
+  await expect(more).toHaveText("Show 2 more fields");
   await expect(more).toHaveAttribute("aria-expanded", "false");
   await more.click();
   await expect(more).toHaveAttribute("aria-expanded", "true");
@@ -267,7 +268,7 @@ test("owner pins properties: exact order, empty ones as placeholders, the rest b
   await page.reload();
   await expect(bar(page).getByRole("button", { name: "Due: Empty" })).toBeVisible();
   expect(await keysShown(page)).toEqual(["due", "priority"]);
-  await expect(bar(page).getByRole("button", { name: "2 more properties" })).toHaveAttribute("aria-expanded", "false");
+  await expect(bar(page).getByRole("button", { name: "Show 2 more fields" })).toHaveAttribute("aria-expanded", "false");
 
   // Filling the placeholder is an ordinary property write.
   await bar(page).getByRole("button", { name: "Due: Empty" }).click();
@@ -305,7 +306,7 @@ test("a non-owner sees the pinned layout and no Customize", async ({ page }) => 
   await expect(props.getByRole("button", { name: "Add property" })).toHaveCount(0);
   expect(await keysShown(page)).toEqual(["due", "status"]);
   await expect(page.getByRole("button", { name: "Customize…" })).toHaveCount(0);
-  await props.getByRole("button", { name: "2 more properties" }).click();
+  await props.getByRole("button", { name: "Show 2 more fields" }).click();
   expect(await keysShown(page)).toEqual(["due", "status", "priority", "owner"]);
 });
 

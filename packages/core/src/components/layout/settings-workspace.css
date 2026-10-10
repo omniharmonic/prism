@@ -1,4 +1,5 @@
-.prism-settings { color:var(--text-primary); width:min(900px,100%); max-height:90dvh; display:flex; flex-direction:column; overflow:hidden; background:var(--bg-surface); border:1px solid var(--glass-border); border-radius:12px; box-shadow:0 16px 60px #0003; }
+.prism-settings-overlay { box-sizing:border-box; padding:max(12px,var(--prism-safe-area-top,env(safe-area-inset-top))) max(12px,var(--prism-safe-area-right,env(safe-area-inset-right))) max(12px,var(--prism-safe-area-bottom,env(safe-area-inset-bottom))) max(12px,var(--prism-safe-area-left,env(safe-area-inset-left))); }
+.prism-settings { color:var(--text-primary); width:min(900px,100%); max-height:min(90dvh,100%); display:flex; flex-direction:column; overflow:hidden; background:var(--bg-surface); border:1px solid var(--glass-border); border-radius:12px; box-shadow:0 16px 60px #0003; }
 .prism-settings__header { display:flex; justify-content:space-between; align-items:center; gap:16px; padding:22px 28px; border-bottom:1px solid var(--glass-border); }
 .prism-settings__header h2 { font-size:22px; font-weight:600; letter-spacing:-.03em; }
 .prism-settings__header p { margin-top:4px; font-size:12px; color:var(--text-secondary); }
@@ -8,7 +9,7 @@
    scrollbar is there: with `overflow: auto`, WebKit did not re-lay the items when the scrollbar appeared
    (200 % zoom + text spacing) and the column scrolled sideways by the scrollbar's own width.
    (`scrollbar-gutter: stable` has no effect beside the custom ::-webkit-scrollbar.) */
-.prism-settings__body { display:grid; grid-template-columns:205px minmax(0,1fr); min-height:0; }
+.prism-settings__body { display:grid; grid-template-columns:205px minmax(0,1fr); min-height:0; flex:1; }
 .prism-settings__navigation { display:flex; flex-direction:column; gap:4px; min-width:0; padding:18px 12px; background:var(--bg-sidebar); border-right:1px solid var(--glass-border); overflow-x:auto; overflow-y:scroll; }
 .prism-settings__navigation button { min-width:0; overflow-wrap:anywhere; padding:7px 12px; min-height:var(--control-h-lg); border-radius:6px; text-align:left; font-size:13px; color:var(--text-secondary); }
 .prism-settings__navigation button:hover { background:var(--glass-hover); }
@@ -16,8 +17,8 @@
 .prism-settings__navigation p { margin-top:auto; padding:24px 12px 4px; font-size:11px; line-height:1.6; color:var(--text-muted); }
 .prism-settings__content { min-height:0; min-width:0; overflow:auto; padding:28px 32px 40px; }
 .prism-settings__section-heading h3 { font-size:20px; font-weight:600; letter-spacing:-.025em; }
-.prism-settings__section-heading p { margin:5px 0 26px; font-size:13px; line-height:1.6; color:var(--text-secondary); }
-.prism-settings__section { margin-top:26px; padding-top:20px; border-top:1px solid var(--glass-border); }
+.prism-settings__section-heading p { margin:5px 0 18px; font-size:13px; line-height:1.6; color:var(--text-secondary); }
+.prism-settings__section { margin-top:20px; padding-top:18px; border-top:1px solid var(--glass-border); }
 .prism-settings__section h4 { margin-bottom:14px; font-size:14px; font-weight:550; }
 .prism-settings__row { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:10px; padding:9px 0; }
 .prism-settings input:not([type=checkbox]), .prism-settings select { min-height:var(--control-h-md); max-width:100%; }
@@ -25,16 +26,18 @@
 .prism-settings button { min-height:var(--control-h-md); }
 .prism-settings__content [role=alert] { padding:12px; border:1px solid var(--glass-border); border-radius:6px; line-height:1.5; }
 @media(max-width:640px) {
- .prism-settings { max-height:calc(100dvh - 24px); }
+ .prism-settings { max-height:100%; }
  .prism-settings__header { padding:16px; }
  .prism-settings__body { display:flex; flex-direction:column; }
- .prism-settings__navigation { flex-shrink:0; flex-direction:row; flex-wrap:wrap; overflow-x:visible; overflow-y:auto; padding:6px 12px; border-right:0; border-bottom:1px solid var(--glass-border); }
- .prism-settings__navigation button { white-space:normal; min-height:44px; }
+ .prism-settings__navigation { flex-shrink:0; flex-direction:row; flex-wrap:nowrap; overflow-x:auto; overflow-y:hidden; padding:6px 12px; border-right:0; border-bottom:1px solid var(--glass-border); }
+ .prism-settings__navigation button { white-space:nowrap; flex:none; min-height:44px; }
  .prism-settings__navigation p { display:none; }
- .prism-settings__content { padding:22px 16px 36px; }
+ .prism-settings__content { padding:20px 16px 28px; }
+ .prism-settings__section-heading + .prism-settings__section { margin-top:0; }
  .prism-settings input:not([type=checkbox]), .prism-settings select { min-height:44px; font-size:16px; }
  .prism-settings button { min-height:44px; }
- .prism-settings__row { gap:8px; }
+ .prism-settings__row { display:grid; grid-template-columns:minmax(0,1fr); gap:8px; padding:10px 0; }
+ .prism-settings__row select, .prism-settings__row input:not([type=checkbox]):not([type=range]) { width:100%; min-width:0; }
 }
 .prism-settings__hint { display:block; margin-top:2px; font-size:12px; line-height:1.45; color:var(--text-secondary); }
 .prism-settings__list { display:grid; gap:0; border:1px solid var(--glass-border); border-radius:8px; overflow:hidden; }
@@ -42,3 +45,6 @@
 .prism-settings__list li + li { border-top:1px solid var(--glass-border); }
 .prism-settings__badge { font-size:12px; color:var(--text-secondary); }
 .prism-settings__badge[data-on=true] { color:var(--color-success-text, var(--text-primary)); font-weight:500; }
+
+.prism-settings__section-heading + .prism-settings__section { margin-top:0; }
+.prism-settings__row > * { min-width:0; max-width:100%; }
