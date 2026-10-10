@@ -1,4 +1,6 @@
 import XCTest
+import OmniCore
+import OmniClient
 @testable import OmniUI
 
 @MainActor final class ConversationSpeechTests: XCTestCase {
@@ -136,6 +138,121 @@ import XCTest
         XCTAssertThrowsError(try speech.playAudio(Data([1]), owner: owner))
         await speech.waitForPlayback(owner: owner)
         XCTAssertTrue(output.audio.isEmpty)
+    }
+
+    func testRemotePreviewReservationBlocksCaptureReplyPreparationAndPendingAudio() throws {
+        let output = Output(); let speech = ConversationSpeech(output: output); let owner = UUID()
+        speech.beginRecording(owner: owner)
+        XCTAssertNil(speech.reservePreview(owner: UUID(), cancel: {}))
+        speech.endRecording(owner: owner)
+        let preparation = try XCTUnwrap(speech.reserveReplyPreparation(owner: owner))
+        XCTAssertNil(speech.reservePreview(owner: owner, cancel: {}))
+        speech.releaseReplyPreparation(preparation)
+        try speech.playAudio(Data([1]), owner: owner)
+        XCTAssertNil(speech.reservePreview(owner: owner, cancel: {}))
+        XCTAssertThrowsError(try speech.playAudio(Data([2]), owner: owner))
+        XCTAssertEqual(output.audio, [Data([1])])
+        output.completions[0]()
+        XCTAssertNotNil(speech.reservePreview(owner: UUID(), cancel: {}))
+    }
+    func testPreviewLeaseCancelledByCaptureRejectsLateGeneratedAudio() throws {
+        let output = Output(); let speech = ConversationSpeech(output: output); let previewOwner = UUID()
+        var cancelled = false
+        let lease = try XCTUnwrap(speech.reservePreview(owner: previewOwner, cancel: { cancelled = true }))
+        speech.beginRecording(owner: UUID())
+        XCTAssertTrue(cancelled)
+        XCTAssertThrowsError(try speech.playPreviewAudio(Data([1]), owner: previewOwner, lease: lease))
+        XCTAssertTrue(output.audio.isEmpty)
+    }
+    func testEncodedPreviewUsesLeaseAndDrains() async throws {
+        let output = Output(); let speech = ConversationSpeech(output: output); let owner = UUID()
+        let lease = try XCTUnwrap(speech.reservePreview(owner: owner, cancel: {}))
+        try speech.playPreviewAudio(Data([1]), owner: owner, lease: lease)
+        var drained = false
+        let task = Task { await speech.waitForPlayback(owner: owner); drained = true }
+        await Task.yield(); XCTAssertFalse(drained)
+        output.completions[0](); await task.value
+        XCTAssertFalse(speech.isPreviewing); XCTAssertFalse(speech.ownsPreview(lease, owner: owner))
+    }
+
+    actor CatalogService: HermesSpeechService {
+        var synthesisCount = 0
+        var gate: CheckedContinuation<VoiceProviderCatalog, Never>?
+        func voiceProviders() async throws -> VoiceProviderCatalog {
+            await withCheckedContinuation { gate = $0 }
+        }
+        func waiting() -> Bool { gate != nil }
+        func finish(available: Bool = true) throws {
+            let source = Data("{\"providers\":[{\"id\":\"hermes-edge\",\"name\":\"Edge\",\"available\":true,\"cloud\":true,\"disclosure\":\"Microsoft\",\"defaultVoiceID\":\"aria\",\"voices\":[],\"maxCharacters\":4000,\"maxAudioBytes\":10485760}]}".utf8)
+            let catalog = try JSONDecoder().decode(VoiceProviderCatalog.self, from: source)
+            let updated = try JSONDecoder().decode(VoiceProviderCatalog.self, from: Data(String(decoding: source, as: UTF8.self).replacingOccurrences(of: "\"available\":true", with: "\"available\":false").utf8))
+            gate?.resume(returning: available ? catalog : updated); gate = nil
+        }
+        func synthesizeVoice(_ request: VoiceSynthesisRequest) async throws -> Data { synthesisCount += 1; return Data([1]) }
+        func cancelVoiceSynthesis(sessionID: String, requestID: String) async throws {}
+    }
+    func testProviderCatalogCannotRepopulateAfterCancellationOrServiceReplacement() async throws {
+        let device = ConversationDevice(); let service = CatalogService()
+        device.configureReplySpeech(service: service)
+        let task = Task { await device.refreshReplyProviders() }
+        while !(await service.waiting()) { await Task.yield() }
+        device.configureReplySpeech(service: service) // repeated SwiftUI adoption keeps in-flight metadata valid
+        try await service.finish(); await task.value
+        XCTAssertEqual(device.replyProviders.first?.available, true)
+        device.configureReplySpeech(service: nil)
+        device.configureReplySpeech(service: service)
+        let cancelled = Task { await device.refreshReplyProviders() }
+        while !(await service.waiting()) { await Task.yield() }
+        device.cancel(); try await service.finish(); await cancelled.value
+        XCTAssertTrue(device.replyProviders.isEmpty)
+        let replacement = CatalogService()
+        device.configureReplySpeech(service: replacement)
+        let stale = Task { await device.refreshReplyProviders() }
+        while !(await replacement.waiting()) { await Task.yield() }
+        device.configureReplySpeech(service: nil)
+        try await replacement.finish(); await stale.value
+        XCTAssertTrue(device.replyProviders.isEmpty)
+    }
+
+    func testNextReplySessionRefreshesUnavailableCatalogAndRejectsPriorSessionResult() async throws {
+        let device = ConversationDevice(); let service = CatalogService()
+        device.configureReplySpeech(service: service)
+        let initial = Task { await device.refreshReplyProviders() }
+        while !(await service.waiting()) { await Task.yield() }
+        try await service.finish(available: false); await initial.value
+        XCTAssertEqual(device.replyProviders.first?.available, false)
+        let stale = Task { await device.refreshReplyProviders() }
+        while !(await service.waiting()) { await Task.yield() }
+        device.beginReplySpeechSession()
+        try await service.finish(); await stale.value
+        XCTAssertEqual(device.replyProviders.first?.available, false)
+        let fresh = Task { await device.refreshReplyProviders() }
+        while !(await service.waiting()) { await Task.yield() }
+        try await service.finish(); await fresh.value
+        XCTAssertEqual(device.replyProviders.first?.id, "hermes-edge")
+    }
+
+    func testDeviceSilenceCancelsLongReplyAndQueuedReplyWithoutStartingAnotherCloudPassage() async throws {
+        let output = Output(); let speech = ConversationSpeech(output: output)
+        let name = "NarrationCancellation." + UUID().uuidString
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: name))
+        defer { defaults.removePersistentDomain(forName: name) }
+        let preferences = ReplySpeechPreferences(defaults: defaults)
+        let device = ConversationDevice(speech: speech, replyPreferences: preferences)
+        let service = CatalogService(); device.configureReplySpeech(service: service)
+        device.speak(String(repeating: "passage ", count: 1000))
+        device.speak("Queued second reply.")
+        while !(await service.waiting()) { await Task.yield() }
+        try await service.finish()
+        while output.audio.isEmpty { await Task.yield() }
+        let firstCount = await service.synthesisCount
+        XCTAssertEqual(firstCount, 1)
+        device.silence()
+        output.completions[0]() // hardware callback from the cancelled passage
+        await device.waitForPlayback()
+        for _ in 0..<10 { await Task.yield() }
+        let count = await service.synthesisCount
+        XCTAssertEqual(count, 1); XCTAssertEqual(output.audio.count, 1)
     }
 
 }

@@ -64,4 +64,26 @@ import OmniClient
         preferences.edgeVoiceID = "en-US-AriaNeural"
         XCTAssertEqual(ReplySpeechPreferences(defaults: defaults).edgeVoiceID, "en-US-AriaNeural")
     }
+    func testNarrationCancellationStopsRemainingPassagesAndQueuedReplies() async {
+        let work = ReplyNarrationWork()
+        var gate: CheckedContinuation<Void, Never>?
+        var rendered: [String] = []
+        work.enqueue { current in
+            rendered.append("first")
+            await withCheckedContinuation { gate = $0 }
+            guard current() else { return }
+            rendered.append("second")
+        }
+        work.enqueue { _ in rendered.append("queued") }
+        while gate == nil { await Task.yield() }
+        work.cancel()
+        gate?.resume(); gate = nil
+        for _ in 0..<10 { await Task.yield() }
+        XCTAssertEqual(rendered, ["first"])
+        XCTAssertFalse(work.isBusy)
+        work.enqueue { current in if current() { rendered.append("new turn") } }
+        await work.wait()
+        XCTAssertEqual(rendered, ["first", "new turn"])
+    }
+
 }

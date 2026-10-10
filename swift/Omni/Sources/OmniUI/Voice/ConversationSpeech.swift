@@ -28,6 +28,9 @@ import OmniVoiceKit
     private var duplexOwner: UUID?
     private var recordingOwner: UUID?
     private var playbackOwner: UUID?
+    private var previewLease: UUID?
+    private var cancelPreview: (@MainActor () -> Void)?
+    private var replyPreparations: [UUID: UUID] = [:]
     private var generation = 0
     private var pending = 0
     private var drainWaiters: [UUID: [CheckedContinuation<Void, Never>]] = [:]
@@ -51,8 +54,29 @@ import OmniVoiceKit
     }
     func beginRecording(owner: UUID) { stopAll(); output.configureDuplex(nil); duplexOwner = nil; recordingOwner = owner }
     func endRecording(owner: UUID) { if recordingOwner == owner { recordingOwner = nil } }
+    func reserveReplyPreparation(owner: UUID) -> UUID? {
+        guard recordingOwner == nil else { return nil }
+        if isPreviewing { stopAll() }
+        let token = UUID(); replyPreparations[token] = owner; return token
+    }
+    func releaseReplyPreparation(_ token: UUID) { replyPreparations.removeValue(forKey: token) }
+    func reservePreview(owner: UUID, cancel: @escaping @MainActor () -> Void) -> UUID? {
+        guard recordingOwner == nil, pending == 0, replyPreparations.isEmpty else { return nil }
+        stopAll(); output.configureDuplex(nil); duplexOwner = nil
+        let token = UUID(); previewLease = token; cancelPreview = cancel
+        playbackOwner = owner; isPreviewing = true; return token
+    }
+    func ownsPreview(_ token: UUID, owner: UUID) -> Bool {
+        previewLease == token && playbackOwner == owner && recordingOwner == nil
+    }
+    func playPreviewAudio(_ data: Data, owner: UUID, lease: UUID) throws {
+        guard ownsPreview(lease, owner: owner), pending == 0 else {
+            throw VoiceFailure.unavailable("Voice preview is no longer available.")
+        }
+        try enqueueAudio(data, owner: owner)
+    }
     func preview(owner: UUID, identifier: String?, rate: Float) {
-        guard recordingOwner == nil, pending == 0 || isPreviewing else { return }
+        guard recordingOwner == nil, replyPreparations.isEmpty, pending == 0 || isPreviewing else { return }
         stopAll(); output.configureDuplex(nil); duplexOwner = nil; playbackOwner = owner; isPreviewing = true
         enqueue("Hello, I'm Omni. Take your time. When you're ready, we can think this through together.", identifier: identifier, rate: rate)
     }
@@ -66,21 +90,27 @@ import OmniVoiceKit
     }
     func playAudio(_ data: Data, owner: UUID) throws {
         guard recordingOwner == nil else { throw VoiceFailure.unavailable("Microphone capture is still active.") }
+        guard pending == 0 || isPreviewing else { throw VoiceFailure.unavailable("Reply playback is still active.") }
         if isPreviewing || playbackOwner != owner { stopAll() }
         if duplexOwner != owner { output.configureDuplex(nil); duplexOwner = nil }
-        playbackOwner = owner; pending += 1
+        playbackOwner = owner
+        try enqueueAudio(data, owner: owner)
+    }
+    private func enqueueAudio(_ data: Data, owner: UUID) throws {
+        pending += 1
         let request = generation
         do {
             try output.playAudio(data) { [weak self] in
                 guard let self, self.generation == request else { return }
                 self.pending -= 1
                 if self.pending == 0 {
+                    self.isPreviewing = false; self.previewLease = nil; self.cancelPreview = nil
                     self.playbackOwner = nil; self.resolveDrain(owner: owner)
                 }
             }
         } catch {
             pending -= 1
-            if pending == 0 { playbackOwner = nil; resolveDrain(owner: owner) }
+            if pending == 0 { isPreviewing = false; previewLease = nil; cancelPreview = nil; playbackOwner = nil; resolveDrain(owner: owner) }
             throw error
         }
     }
@@ -96,7 +126,9 @@ import OmniVoiceKit
     func stopPreview(owner: UUID) { if isPreviewing, playbackOwner == owner { stopAll() } }
     func silence(owner: UUID) { if playbackOwner == owner { stopAll() } }
     private func stopAll() {
+        let cancel = cancelPreview; cancelPreview = nil; previewLease = nil
         generation += 1; pending = 0; isPreviewing = false
+        cancel?()
         let owner = playbackOwner
         playbackOwner = nil; output.stop()
         if let owner { resolveDrain(owner: owner) }

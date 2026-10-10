@@ -4,11 +4,18 @@ import OmniClient
 
 /// Optional authenticated synthesis capability. No microphone audio is sent.
 public protocol HermesSpeechService: Sendable {
+    var speechServiceIdentity: ObjectIdentifier { get }
     func voiceProviders() async throws -> VoiceProviderCatalog
     func synthesizeVoice(_ request: VoiceSynthesisRequest) async throws -> Data
     func cancelVoiceSynthesis(sessionID: String, requestID: String) async throws
 }
+public extension HermesSpeechService {
+    /// Reference adapters retain their identity; value adapters should expose
+    /// the identity of their stable authenticated transport.
+    var speechServiceIdentity: ObjectIdentifier { ObjectIdentifier(self as AnyObject) }
+}
 extension LiveOmniService: HermesSpeechService {
+    public var speechServiceIdentity: ObjectIdentifier { ObjectIdentifier(client.transport) }
     public func voiceProviders() async throws -> VoiceProviderCatalog { try await client.voiceProviders() }
     public func synthesizeVoice(_ request: VoiceSynthesisRequest) async throws -> Data { try await client.synthesizeVoice(request) }
     public func cancelVoiceSynthesis(sessionID: String, requestID: String) async throws { try await client.cancelVoiceSynthesis(sessionID: sessionID, requestID: requestID) }
