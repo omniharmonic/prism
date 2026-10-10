@@ -1,6 +1,6 @@
 # Omni voice follow-through — build 11 working ledger
 
-Updated 2026-10-10 at integrated source `a2677907`. The owner authorized autonomous roadmap work and explicitly selected Hermes speech while retaining local choices. This is an implementation/test checkpoint. Parent is integrating and releasing; v11 production deployment, installed artifact identity and physical acceptance must be recorded from actual receipts, not inferred below.
+Updated 2026-10-10; client release source `71bb3e8205` (PR111). The owner authorized autonomous roadmap work and explicitly selected Hermes speech while retaining local choices. Build 11 is installed on both mobile devices. Server13 deployed healthy; TTS configuration is saved and activation verification is in progress. Mac11 is staged for desktop signing. Physical acceptance remains open.
 
 | Item | Implemented evidence | Remaining acceptance |
 | --- | --- | --- |
@@ -15,7 +15,7 @@ Updated 2026-10-10 at integrated source `a2677907`. The owner authorized autonom
 
 ## Test and release evidence boundaries
 
-Backend registry/gateway pass: 53 tests. Synthetic smoke helper plus voice tests: 16 tests, including real owner auth/routes with an in-memory session database, wrong MIME, zero audio, oversized response and failure cleanup. Native worker reported 18 focused speech/provider tests before preview-failure follow-up; record follow-up/integrated totals in release receipts. Server typecheck on the worker's shared installation reports existing missing `diff` declarations in `packages/core/src/lib/history/diff.ts`; no new voice errors were reported. These are focused results, not an assertion that every integrated release check has run.
+Backend registry/gateway pass: 53 tests. Synthetic smoke helper plus voice tests: 16 tests, including real owner auth/routes with an in-memory session database, wrong MIME, zero audio, oversized response and failure cleanup. Native worker reported 18 focused speech/provider tests before preview-failure follow-up; record follow-up/integrated totals in release receipts. The integrated parent server typecheck and workspace checks pass. The worker-only missing `diff` declaration was absent from the integrated installation. Integrated native run: 208 Core +25 UI tests; final preview follow-up: 14 speech tests. Full server suite: 2,993 pass, one skip. iOS and universal Mac Release builds pass, including builds from the merged tag; debug launch markers absent and iOS signature verifies.
 
 `d0e3fe1e` supplies the named Mini synthetic smoke. It creates one random owner browser session with a 60-second TTL and destroys exactly it in `finally`; its bounded database write is part of authorized deployment verification. No credential is logged or passed on argv, no private text is accepted, and no agent/vault tool is dispatched. Its successful exit checks API delivery/cancellation, not audible quality. Use [the tagged deployment/configuration runbook](../docs/runbook/omni-hermes-tts.md).
 
@@ -39,3 +39,9 @@ Launch-at-login remains an explicit future setting, not enabled by this release.
 - Verify Hermes disclosure, unavailable fallback, cancellation, fixed authenticated MP3 bounds, no duplicate prose/audio and preview isolation.
 - Record tagged native/server builds, named deployment/signing/install receipts, then physical owner results. Preserve previously installed rollback artifacts and local model caches.
 - V03 echo/route/first-word retention, V04 hardware shortcuts and V05 missed/false wakes/idle energy/OS lock remain acceptance gates. No real outbound action is part of these engineering tests; existing exact-action approvals remain required.
+
+## Build 11 artifact receipts
+
+PR111 merged as `71bb3e8205`; client tag `omni-client-v2026.10.10-11`, initial server tag `prism-v2026.10.10-13`. Both physical mobile install receipts succeeded. iOS ZIP SHA-256 `51f1b8cdd43e21a6c00845b5952cbedeece8ee6c5763a133b2a69d353168afe4`; Mac unsigned ZIP `7c3d69199c24abd05b8dc54856b0c84ecd199f247790f6b97c05ee5b45a862ab`, matched on Mini before extraction. Mac11 is staged at `~/release-artifacts/omni-client-v2026.10.10-11/omni`; helper `~/release-artifacts/sign-omni-v11.sh`. Required public profile and production entitlements preserved; one executable, no get-task-allow. Signing/notarization/install remain pending.
+
+Earlier Mac9 notarization `5b42176e-30e4-4e0b-bf6b-bf7ec70ab719` is now Accepted, stapled, validated and Gatekeeper-accepted. This does not establish installation of Mac9 or acceptance of Mac11. Local raw build/install/deploy receipts are under `/private/tmp/omni-client-v2026.10.10-11` and `/private/tmp/omni-v11-*.log`.
