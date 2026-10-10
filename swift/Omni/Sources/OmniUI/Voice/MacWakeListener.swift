@@ -39,7 +39,7 @@ private final class WakeAudioSink: @unchecked Sendable {
     private var gate = WakeListeningGate()
     private var scenes: [UUID: Bool] = [:]
     private var sleeping = false
-    private var generation = UUID()
+    private var epoch = WakeRecognitionEpoch()
     private var rollover: Task<Void, Never>?
     private var authorization: Task<Void, Never>?
     private var observers: [NSObjectProtocol] = []
@@ -98,15 +98,16 @@ private final class WakeAudioSink: @unchecked Sendable {
         request.shouldReportPartialResults = true
         self.request = request
         let sink = WakeAudioSink(request); audioSink = sink
-        let token = UUID(); generation = token
+        let token = epoch.begin()
         let input = engine.inputNode
         let format = input.outputFormat(forBus: 0)
         guard format.sampleRate > 0, format.channelCount > 0 else { stop(); status = "Microphone unavailable"; return }
         input.installTap(onBus: 0, bufferSize: 1024, format: format, block: Self.audioTap(sink))
         tapped = true
         recognition = recognizer.recognitionTask(with: request, resultHandler: Self.recognitionCallback { [weak self] wake, finished in
-            guard let self, self.generation == token else { return }
+            guard let self, self.epoch.isCurrent(token) else { return }
                 if wake {
+                    guard self.epoch.consumeWake(token) else { return }
                     self.stop(); self.status = "Opening conversation"
                     MacVoiceShortcut.shared.activate()
                 } else if finished {
@@ -117,7 +118,7 @@ private final class WakeAudioSink: @unchecked Sendable {
             engine.prepare(); try engine.start(); status = "Listening locally (experimental)"
             rollover = Task { [weak self] in
                 try? await Task.sleep(for: .seconds(50))
-                guard !Task.isCancelled, let self, self.generation == token else { return }
+                guard !Task.isCancelled, let self, self.epoch.isCurrent(token) else { return }
                 self.stop(); self.reconcile()
             }
         }
@@ -128,14 +129,13 @@ private final class WakeAudioSink: @unchecked Sendable {
     }
     nonisolated private static func recognitionCallback(_ deliver: @escaping @MainActor @Sendable (Bool, Bool) -> Void) -> @Sendable (SFSpeechRecognitionResult?, (any Error)?) -> Void {
         { result, error in
-            let words = result?.bestTranscription.formattedString.lowercased().split(whereSeparator: { !$0.isLetter }).map(String.init) ?? []
-            let wake = zip(words, words.dropFirst()).contains { $0.0 == "hey" && $0.1 == "omni" }
+            let wake = result.map { WakePhraseMatcher.matches($0.bestTranscription.formattedString) } ?? false
             let finished = result?.isFinal == true || error != nil
             Task { @MainActor in deliver(wake, finished) }
         }
     }
     private func stop() {
-        generation = UUID()
+        epoch.invalidate()
         rollover?.cancel(); rollover = nil
         engine.stop()
         if tapped { engine.inputNode.removeTap(onBus: 0); tapped = false }
