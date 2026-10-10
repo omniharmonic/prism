@@ -168,3 +168,16 @@ Owner clarified all tasks means task pages mainly. Inventory now includes tagged
 Integrated 95 server regressions and server typecheck pass; 176 OmniCore tests pass. Additional callback/playback5 and zero-frame recording1 pass. iPad portrait strict voice layout test passes including genuinely visible software keyboard; parent reviewed the resulting screenshot. iPhone strict keyboard remains pending. Prism laptop launch verified through native UI: existing signed-in workspace, open document, Synced indicator and updated collapsible comments/backlinks chrome visible.
 
 Final shared-code verification: full server suite 2,984 passed, one skipped, zero failed; server and web typechecks pass. Native OmniClient21 tests pass. Phone history disclosure/read ordering and44-point approval geometry test passed; preference-reset test harness initially overrode AppStorage and was corrected. Visual review then tightened the four-action vertical stack into Send/Edit/Revise row plus quiet Cancel Draft below. Final phone/Mac snapshots in progress. iPhone voice keyboard check still fails because simulator software keyboard remains outside viewport, while iPad strict equivalent passes; do not claim phone keyboard acceptance.
+
+
+## Build 9 installed on both mobile devices; server v12 deployed
+
+Release source `959e6af3`, tags `omni-client-v2026.10.10-9` and `prism-v2026.10.10-12`. Server deployment on the Mini completed with backup and passing vault-health, workers and desktop-independence checks; receipt `/Users/benjaminlife/deploy-state/prism-20261010T223722Z.log`. iPhone and iPad v9 install receipts both report success: `/private/tmp/omni-client-v2026.10.10-9/iphone-install.log` and `/private/tmp/omni-client-v2026.10.10-9/ipad-install.log`. No physical Automatic-mode acceptance yet.
+
+V9 implements opt-in local-VAD Automatic completion with 8/12/20-second pauses (default 12) plus 3-second cancellable grace, quiet empty Pause and compact controls. Think aloud remains default. Task-page inventory and prominent unread/collapsible history repairs are installed; owner acceptance of task coverage, unread behavior and control spacing remains pending. No real outbound sends or task dispatch were performed in validation.
+
+Final validation: 176 Core, 21 Client, five callback/playback and one empty-recording test passed; full server suite 2,984 passed, one skipped, zero failed, plus 95 focused regressions. Phone history geometry passed; all 108 Mac snapshots passed. iPad visible-keyboard validation passed. iPhone keyboard automation remains blocked by an offscreen target; Mac XCUITest remains blocked by the automation profile. Neither blocked check is recorded as passing.
+
+Mac Omni v9 signature verified and notarization uploaded as `5b42176e-30e4-4e0b-bf6b-bf7ec70ab719`; status remains InProgress. Mac staple/install is pending. Prism laptop v6 installation, native launch, signed-in workspace, document opening and Synced indicator were verified. These later receipts supersede the earlier work-in-progress entries above.
+
+Hosted PR106 Node checks and Rust passed; browser-fixture CI remained in progress at this checkpoint. The isolated development backend on port 10396 was stopped cleanly. Apple notarization remains in progress; no Mac release completion claim.
