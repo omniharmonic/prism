@@ -28,33 +28,45 @@ struct ConversationVoiceControl: View {
         _selected = State(initialValue: device.selected)
     }
     var body: some View {
-        panel
-        .sheet(isPresented: $showingVoiceSettings, onDismiss: { device.stopPreview() }) {
-            ConversationVoiceSettings(device: device)
-        }
-        .onChange(of: model?.completedVoiceTurnID) { _, _ in consume() }
-        .onChange(of: model?.timeline) { consume() }
-        .onChange(of: model?.isRunning) { consume() }
-        .onChange(of: voice.state) {
-            if voice.state != .off { expanded = true; showingVoiceSettings = false; device.stopPreview() }
-            updateCaptureTimeout()
-            consume()
-        }
-        .onChange(of: model?.draft ?? draft?.wrappedValue ?? "") {
-            if !(model?.draft ?? draft?.wrappedValue ?? "").isEmpty, voice.state == .listening || voice.state == .preparing { pause() }
-        }
-        .onChange(of: session.pendingVoiceActivationID) { consumeShortcutActivation() }
-        .onChange(of: phase) { if phase != .active { cancel() } else { consumeShortcutActivation() } }
-        #if os(iOS)
-        .onReceive(NotificationCenter.default.publisher(for: AVAudioSession.interruptionNotification)) { _ in cancel() }
-        #endif
-        .onChange(of: PrivacyLock.shared.locked) {
-            voice.setPrivacyLocked(PrivacyLock.shared.locked)
-            if PrivacyLock.shared.locked { cancel() } else { consumeShortcutActivation() }
-        }
-        .onAppear(perform: appeared)
-        .onDisappear(perform: disappeared)
+        observedPanel
+            .onChange(of: phase, scenePhaseChanged)
+            .onChange(of: PrivacyLock.shared.locked, privacyChanged)
+            .onAppear(perform: appeared)
+            .onDisappear(perform: disappeared)
+            #if os(iOS)
+            .onReceive(NotificationCenter.default.publisher(for: AVAudioSession.interruptionNotification), perform: interrupted)
+            #endif
     }
+    private var observedPanel: some View {
+        panel
+            .sheet(isPresented: $showingVoiceSettings, onDismiss: device.stopPreview) {
+                ConversationVoiceSettings(device: device)
+            }
+            .onChange(of: model?.completedVoiceTurnID, consume)
+            .onChange(of: model?.timeline, consume)
+            .onChange(of: model?.isRunning, consume)
+            .onChange(of: voice.state, voiceStateChanged)
+            .onChange(of: currentDraft, draftChanged)
+            .onChange(of: session.pendingVoiceActivationID, consumeShortcutActivation)
+    }
+    private var currentDraft: String { model?.draft ?? draft?.wrappedValue ?? "" }
+    private func voiceStateChanged() {
+        if voice.state != .off { expanded = true; showingVoiceSettings = false; device.stopPreview() }
+        updateCaptureTimeout(); consume()
+    }
+    private func draftChanged() {
+        if !currentDraft.isEmpty, voice.state == .listening || voice.state == .preparing { pause() }
+    }
+    private func scenePhaseChanged() {
+        if phase != .active { cancel() } else { consumeShortcutActivation() }
+    }
+    private func privacyChanged() {
+        voice.setPrivacyLocked(PrivacyLock.shared.locked)
+        if PrivacyLock.shared.locked { cancel() } else { consumeShortcutActivation() }
+    }
+    #if os(iOS)
+    private func interrupted(_ notification: Notification) { cancel() }
+    #endif
     private var panel: some View {
         Group {
             if (expanded || voice.state != .off) && (session.conversationVoice !== voice || session.ownsVoice(voice, threadID: model?.threadID)) {
