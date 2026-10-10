@@ -39,6 +39,7 @@ private final class WakeAudioSink: @unchecked Sendable {
     private var gate = WakeListeningGate()
     private var scenes: [UUID: Bool] = [:]
     private var sleeping = false
+    private var userSessionActive = true
     private var epoch = WakeRecognitionEpoch()
     private var rollover: Task<Void, Never>?
     private var authorization: Task<Void, Never>?
@@ -49,6 +50,12 @@ private final class WakeAudioSink: @unchecked Sendable {
             observers.append(NSWorkspace.shared.notificationCenter.addObserver(forName: name, object: nil, queue: .main) { note in
                 let sleep = note.name == NSWorkspace.willSleepNotification
                 Task { @MainActor in self.sleeping = sleep; self.reconcile() }
+            })
+        }
+        for name in [NSWorkspace.sessionDidResignActiveNotification, NSWorkspace.sessionDidBecomeActiveNotification] {
+            observers.append(NSWorkspace.shared.notificationCenter.addObserver(forName: name, object: nil, queue: .main) { note in
+                let active = note.name == NSWorkspace.sessionDidBecomeActiveNotification
+                Task { @MainActor in self.userSessionActive = active; self.reconcile() }
             })
         }
         observers.append(NotificationCenter.default.addObserver(forName: .AVAudioEngineConfigurationChange, object: engine, queue: .main) { _ in
@@ -66,7 +73,7 @@ private final class WakeAudioSink: @unchecked Sendable {
         reconcile()
     }
     private func reconcile() {
-        gate.update(enabled: enabled, ready: eligible, sleeping: sleeping,
+        gate.update(enabled: enabled, ready: eligible && userSessionActive, sleeping: sleeping,
                     conversationActive: VoiceMicrophoneCoordinator.shared.conversationOwner != nil)
         guard gate.canListen else {
             authorization?.cancel(); authorization = nil
