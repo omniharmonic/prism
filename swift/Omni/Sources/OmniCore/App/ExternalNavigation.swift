@@ -22,7 +22,7 @@ public struct ExternalNavigationQueue: Sendable {
     }
 }
 
-/// Native Prism supports exactly prism://page/<id>; a web URL remains the fallback.
+/// Contextual sources preserve the server and explicit primary vault at the receiver.
 public struct PrismSourceLink: Equatable, Sendable {
     public let native: URL?
     public let web: URL
@@ -30,11 +30,16 @@ public struct PrismSourceLink: Equatable, Sendable {
         guard let text, let url = URL(string: text), ["http", "https"].contains(url.scheme?.lowercased() ?? ""),
               url.host != nil, url.user == nil, url.password == nil else { return nil }
         web = url
-        if let noteID, noteID.utf8.count <= 128,
+        if let noteID, noteID.utf8.count <= 128, url.scheme?.lowercased() == "https",
            url.query == nil, url.fragment == nil, url.pathComponents.count == 3,
            ["page", "collab"].contains(url.pathComponents[1]), url.pathComponents[2] == noteID,
            noteID.range(of: "^[A-Za-z0-9_-]+$", options: .regularExpression) != nil {
-            native = URL(string: "prism://page/\(noteID)")
+            var origin = URLComponents(url: url, resolvingAgainstBaseURL: false)!
+            origin.path = ""; origin.query = nil; origin.fragment = nil
+            var target = URLComponents()
+            target.scheme = "prism"; target.host = "source"; target.path = "/\(noteID)"
+            target.queryItems = [URLQueryItem(name: "server", value: origin.string), URLQueryItem(name: "vault", value: "primary")]
+            native = target.url
         } else { native = nil }
     }
 }

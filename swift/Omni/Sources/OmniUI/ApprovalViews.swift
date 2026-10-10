@@ -441,6 +441,7 @@ struct NudgeCardView: View {
                 if let native = link.native { openURL(native) { accepted in if !accepted { openURL(link.web) } } }
                 else { openURL(link.web) }
             } label: { Text("Open source").frame(minHeight: 44).contentShape(Rectangle()) }
+            .contextMenu { Button("Open in Browser") { openURL(link.web) } }
         }
     }
     private var moreActions: some View {

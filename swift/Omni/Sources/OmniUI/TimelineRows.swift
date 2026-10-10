@@ -145,6 +145,9 @@ struct RecordCardView: View {
             .contentShape(RoundedRectangle(cornerRadius: 10))
         }
         .buttonStyle(.plain)
+        .contextMenu {
+            if let link { Button("Open in Browser") { openURL(link.web) } }
+        }
         .disabled(link == nil)
         .accessibilityLabel("\(opLabel) \(card.type ?? "note"): \(card.title ?? "untitled")")
         .accessibilityHint(link == nil ? "" : "Opens the note in Prism")

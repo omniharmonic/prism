@@ -18,10 +18,14 @@
 //   apps/server/src/routes/app-links.ts   (what the OS may hand to the app)
 //   apps/client/src-tauri/src/links.rs    (what the shell accepts)
 //   here                                   (what the page opens)
-import { openAgentChat, setPendingNotification, useUIStore } from "@prism/core/shell";
+import { askConfirm, openAgentChat, setPendingNotification, useUIStore } from "@prism/core/shell";
+
+import { apiBase, getMe } from "../config";
+import { sourceLinkTarget, sourceContextMatches, type SourceLinkTarget } from "./sourceLinks";
 
 export type AppLinkTarget =
   | { kind: "page"; id: string }
+  | SourceLinkTarget
   | { kind: "inbox"; id: string | null }
   | { kind: "agent"; id: string | null };
 
@@ -32,10 +36,12 @@ const SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12
 /**
  * The destination a shell-delivered path names, or null. Strict on purpose
  * (defence in depth — the shell already validated): a plain path of one or two
- * segments, no query, fragment, escape, dot or backslash.
+ * segments, no query, fragment, escape, dot or backslash. The contextual source
+ * descriptor alone permits its two validated query keys.
  */
 export function appLinkTarget(path: unknown): AppLinkTarget | null {
-  if (typeof path !== "string" || path.length > 256) return null;
+  if (typeof path !== "string" || path.length > 2048) return null;
+  if (path.startsWith("/source/")) return sourceLinkTarget(path);
   const m = /^\/(page|inbox|agent)(?:\/([A-Za-z0-9_-]+))?\/?$/.exec(path);
   if (!m) return null;
   const [, route, id] = m;
@@ -48,7 +54,15 @@ export function appLinkTarget(path: unknown): AppLinkTarget | null {
 export function openAppLink(path: unknown): boolean {
   const target = appLinkTarget(path);
   if (!target) return false;
-  if (target.kind === "page") {
+  if (target.kind === "source") {
+    const me = getMe();
+    if (!sourceContextMatches(target, new URL(apiBase(), location.origin).origin, me)) {
+      void askConfirm({ title: "This source belongs to a different workspace", body: "Prism will keep its current server and vault. Open the source in your browser instead?", confirm: "Open in Browser" })
+        .then(yes => { if (yes) window.open(`${target.server}/page/${target.id}`, "_blank", "noopener,noreferrer"); });
+      return true;
+    }
+    useUIStore.getState().openTab(target.id, "Page", "document");
+  } else if (target.kind === "page") {
     useUIStore.getState().openTab(target.id, "Page", "document");
   } else if (target.kind === "inbox") {
     if (target.id) setPendingNotification(target.id);

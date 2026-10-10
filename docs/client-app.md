@@ -277,6 +277,16 @@ it would dead-end with no way back to the browser) and paths deeper than `/<rout
 explicitly, and `links.rs` refuses everything under `prism://auth` (silently, and without
 logging the URL — it can carry a code).
 
+**Omni source links.** `prism://source/<id>?server=<encoded HTTPS origin>&vault=primary`
+is the explicit contextual source route. The shell validates both query keys, server
+origin and identifiers, then hands the page a canonical source descriptor, including
+whether the server matches this pairing. The page opens the note only when the paired
+server and authenticated vault both match. Otherwise it explains the mismatch and
+offers the original server's page in the browser. It never changes pairing or vault
+selection. Omni also exposes an Open in Browser source action; OS acceptance of a
+custom URL does not establish receiver acceptance. Query/capability source URLs remain
+web links. This route is separate from the legacy context-free `prism://page/<id>`.
+
 **Server.** `APPLE_APP_ID` = `<TeamID>.<bundle id>` (comma-separated for several apps);
 unset = `83Y42N33H8.com.benjaminlife.prism.client`; set to an empty string → both paths
 answer 404 (the host advertises no app). The file is public JSON (`application/json`, no

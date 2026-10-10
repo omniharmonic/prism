@@ -23,9 +23,13 @@ final class ExternalNavigationTests: XCTestCase {
         XCTAssertTrue(queue.receive(URL(string: "omni://nudge/digest")!))
         XCTAssertEqual(queue.take(signedIn: true, unlocked: true, navigationReady: true), .needsYou)
     }
-    func testPrismSourceUsesSupportedNativePageRouteAndPreservesFallback() {
+    func testPrismSourcePreservesServerVaultAndBrowserFallback() {
         let link = PrismSourceLink(web: "https://workspace.example/page/note_1", noteID: "note_1")!
-        XCTAssertEqual(link.native?.absoluteString, "prism://page/note_1")
+        let native = URLComponents(url: link.native!, resolvingAgainstBaseURL: false)!
+        XCTAssertEqual(native.host, "source")
+        XCTAssertEqual(native.path, "/note_1")
+        XCTAssertEqual(native.queryItems?.first(where: { $0.name == "server" })?.value, "https://workspace.example")
+        XCTAssertEqual(native.queryItems?.first(where: { $0.name == "vault" })?.value, "primary")
         XCTAssertEqual(link.web.absoluteString, "https://workspace.example/page/note_1")
         XCTAssertNil(PrismSourceLink(web: "file:///secret", noteID: "note_1"))
         XCTAssertNil(PrismSourceLink(web: "https://user:password@example.test/page/id", noteID: "id"))
