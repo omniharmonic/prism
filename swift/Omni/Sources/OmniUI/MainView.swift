@@ -378,9 +378,11 @@ struct TabMainView: View {
             // The open thread was taken out of the list: go back to the list, not a dead screen.
             if destination == .today, !path.isEmpty, tab == .threads { path = [] }
             // A thread was just created from the sheet: show it.
-            if case .thread = destination, showingNewThread {
+            if case .thread = destination {
                 showingNewThread = false
-                if let destination { open(destination) }
+                // A cold notification can arrive before the request-counter observer
+                // mounts. The destination itself is also authoritative navigation state.
+                if let destination, tab != .threads || path != [destination] { open(destination) }
             }
         }
         .onChange(of: session.externalNavigationRequests) {
