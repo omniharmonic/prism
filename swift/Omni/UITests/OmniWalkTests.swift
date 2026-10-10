@@ -408,7 +408,8 @@ final class OmniWalkTests: OmniUITestCase {
 
     func test11CommandApprovalCanBeDenied() throws {
         let id = try XCTUnwrap(server { backend in
-            try await backend.thread("Check a page from the shell", "Check the sample status page. stub:command")
+            try await backend.reset(keepGone: true)
+            return try await backend.thread("Check a page from the shell", "Check the sample status page. stub:command")
         })
         launch(faults: "sample-data")
         openThread(id)
@@ -427,6 +428,7 @@ final class OmniWalkTests: OmniUITestCase {
     /// A short visual matrix pass, with real stub-backed cards and the adaptive shell.
     func test12RepresentativeLayouts() throws {
         let ids = try XCTUnwrap(server { backend -> [String] in
+            try await backend.reset(keepGone: true)
             let approval = try await backend.thread("Email Kevin about the buoy spec", "Email Kevin. stub:approval:email")
             let card = try await backend.thread("Update the task for Dana", "Update Dana's task. stub:card:sample-note-1")
             try await backend.settle(approval)
