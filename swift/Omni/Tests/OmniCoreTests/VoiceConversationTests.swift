@@ -7,6 +7,10 @@ import XCTest
         var finishGate: CheckedContinuation<String, Never>?
         var wait = false
         var waitForTranscript = false
+        var playbackGate: CheckedContinuation<Void, Never>?
+        var holdPlayback = false
+        var recognized = "  What is next?  "
+        var failFinish = false
         var starts = 0
         var failStart = false
         var cancelled = 0
@@ -18,10 +22,14 @@ import XCTest
         }
         func finish() async throws -> String {
             if waitForTranscript { return await withCheckedContinuation { finishGate = $0 } }
-            return "  What is next?  "
+            if failFinish { throw NSError(domain: "transcription", code: 1) }
+            return recognized
         }
         func cancel() { cancelled += 1 }
         func speak(_ text: String) { speech.append(text) }
+        func waitForPlayback() async {
+            if holdPlayback { await withCheckedContinuation { playbackGate = $0 } }
+        }
         func silence() {}
     }
     func testLifecycleCancelsPendingPermissionAndLateSuccessCannotListen() async {
@@ -80,7 +88,7 @@ import XCTest
         var draft = ""
         await voice.finish(submit: false) { draft = $0; return true }
         XCTAssertEqual(draft, "What is next?")
-        XCTAssertEqual(voice.state, .off)
+        XCTAssertEqual(voice.state, .paused)
         voice.consume([.streamingText(id: "old", text: "Old answer.", isFinal: true)], running: false)
         XCTAssertTrue(audio.speech.isEmpty)
     }
@@ -122,4 +130,96 @@ import XCTest
         voice.consume([.streamingText(id: "old", text: "New answer.", isFinal: true)], running: false)
         XCTAssertEqual(audio.speech, ["New answer."])
     }
+    func testThinkingPausesNeverFinishOrSubmit() async {
+        let audio = Audio(); let voice = VoiceConversation(audio: audio)
+        await voice.start()
+        // Simulated idle observation at 2/5/10/20 seconds has no endpoint action.
+        for _ in [2, 5, 10, 20] {
+            voice.consume([], running: false)
+            await Task.yield()
+            XCTAssertEqual(voice.state, .listening)
+            XCTAssertNil(audio.finishGate)
+            XCTAssertEqual(voice.transcript, "")
+        }
+    }
+    func testCompletedAgentWaitsForPlaybackThenListens() async {
+        let audio = Audio(); audio.holdPlayback = true
+        let voice = VoiceConversation(audio: audio)
+        voice.canAutomaticallyListen = { true }
+        await voice.start(); await voice.finish { _ in true }
+        voice.consume([.streamingText(id: "a", text: "First sentence.", isFinal: false)], running: true)
+        await Task.yield()
+        XCTAssertEqual(audio.starts, 1, "Sentence gaps cannot resume capture")
+        voice.agentDidComplete([.streamingText(id: "a", text: "First sentence. Final.", isFinal: true)])
+        while audio.playbackGate == nil { await Task.yield() }
+        XCTAssertEqual(voice.state, .speaking); XCTAssertEqual(audio.starts, 1)
+        audio.playbackGate?.resume()
+        while audio.starts == 1 { await Task.yield() }
+        XCTAssertEqual(voice.state, .listening)
+        XCTAssertEqual(audio.speech, ["First sentence.", "Final."])
+    }
+    func testEndMuteAndPrivacyPreventLatePlaybackRestart() async {
+        for action in 0..<3 {
+            let audio = Audio(); audio.holdPlayback = true
+            let voice = VoiceConversation(audio: audio)
+            voice.canAutomaticallyListen = { true }
+            await voice.start(); await voice.finish { _ in true }
+            voice.agentDidComplete([]) // Fast, empty completion still has a boundary.
+            while audio.playbackGate == nil { await Task.yield() }
+            if action == 0 { voice.cancel() }
+            else if action == 1 { voice.pause() }
+            else { voice.setPrivacyLocked(true) }
+            audio.playbackGate?.resume()
+            for _ in 0..<10 { await Task.yield() }
+            XCTAssertEqual(audio.starts, 1)
+            XCTAssertEqual(voice.state, action == 1 ? .paused : .off)
+        }
+    }
+    func testEmptyOrFailedTranscriptPausesAndCanRecoverExplicitly() async {
+        for fails in [false, true] {
+            let audio = Audio(); audio.recognized = " "; audio.failFinish = fails
+            let voice = VoiceConversation(audio: audio)
+            await voice.start()
+            var sent = false
+            await voice.finish { _ in sent = true; return true }
+            XCTAssertFalse(sent); XCTAssertEqual(voice.state, .paused)
+            XCTAssertNotNil(voice.problem); XCTAssertTrue(voice.isSessionActive)
+            audio.failFinish = false
+            await voice.start()
+            XCTAssertEqual(voice.state, .listening)
+        }
+    }
+    func testAutomaticListenEligibilityPausesForDraftOrApproval() async {
+        let audio = Audio(); let voice = VoiceConversation(audio: audio)
+        voice.canAutomaticallyListen = { false }
+        await voice.start(); await voice.finish { _ in true }
+        voice.agentDidComplete([])
+        for _ in 0..<10 { await Task.yield() }
+        XCTAssertEqual(voice.state, .paused); XCTAssertEqual(audio.starts, 1)
+    }
+
+    func testFastCompletionDuringSendIsDrainedAfterAcceptance() async {
+        let audio = Audio(); audio.holdPlayback = true
+        let voice = VoiceConversation(audio: audio)
+        voice.canAutomaticallyListen = { true }
+        await voice.start()
+        await voice.finish { _ in
+            voice.agentDidComplete([.streamingText(id: "fast", text: "Done.", isFinal: true)])
+            return true
+        }
+        while audio.playbackGate == nil { await Task.yield() }
+        XCTAssertEqual(audio.speech, ["Done."])
+        XCTAssertEqual(audio.starts, 1)
+        voice.cancel(); audio.playbackGate?.resume()
+    }
+    func testRunningFalseWithoutCompletionNeverRestarts() async {
+        let audio = Audio(); let voice = VoiceConversation(audio: audio)
+        voice.canAutomaticallyListen = { true }
+        await voice.start(); await voice.finish { _ in true }
+        voice.consume([], running: true)
+        voice.consume([], running: false)
+        for _ in 0..<10 { await Task.yield() }
+        XCTAssertEqual(audio.starts, 1); XCTAssertEqual(voice.state, .answering)
+    }
+
 }
