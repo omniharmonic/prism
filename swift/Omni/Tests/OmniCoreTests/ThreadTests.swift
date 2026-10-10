@@ -306,7 +306,7 @@ final class ThreadModelTests: XCTestCase {
         let counter = signedOut
         let sink = ErrorSink { counter.bump() }
         approvals = ApprovalCenter(service: service, sink: sink)
-        let model = ThreadModel(threadID: "t1", service: service, approvals: approvals, sink: sink, sleep: noSleep) { told.append($0) }
+        let model = ThreadModel(threadID: "t1", service: service, approvals: approvals, sink: sink, sleep: noSleep, onUnavailable: { told.append($0) })
         await model.open()
         XCTAssertTrue(model.isUnavailable)
         XCTAssertEqual(model.phase.failure, PlainLanguage.threadUnavailable)
