@@ -99,7 +99,7 @@ export const sha256 = (s: string): string => createHash("sha256").update(s, "utf
 
 // ── threads ─────────────────────────────────────────────────────────────────
 
-export const THREAD_STATES = ["working", "needs-you", "waiting", "scheduled", "done"] as const;
+export const THREAD_STATES = ["working", "needs-you", "waiting", "scheduled", "conversation", "done"] as const;
 export type ThreadState = (typeof THREAD_STATES)[number];
 
 export interface ThreadRow {

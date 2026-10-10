@@ -246,7 +246,7 @@ function threadView(t: ThreadRow | null, s: HermesSession | null, gone = false):
   const pending = threadApprovals(id).some((a) => a.status === "pending");
   // Imported session history has no runtime signal. Preserve every persisted state,
   // including an owner-selected waiting state; never infer completion from age.
-  const state: ThreadState | "conversation" = running ? "working" : pending ? "needs-you" : !t ? "conversation" : t.state;
+  const state: ThreadState = running ? "working" : pending ? "needs-you" : !t ? "conversation" : t.state;
   return {
     id,
     title: t?.title ?? s?.title ?? null,
@@ -324,7 +324,7 @@ omniApi.get("/health", async (c) => {
 
 omniApi.get("/threads", async (c) => {
   const states = (c.req.query("state") ?? "").split(",").filter(Boolean);
-  if (states.some((s) => ![...THREAD_STATES, "conversation"].includes(s as ThreadState))) return bad(c, `state: ${[...THREAD_STATES, "conversation"].join(",")}`);
+  if (states.some((s) => !(THREAD_STATES as readonly string[]).includes(s))) return bad(c, `state: ${THREAD_STATES.join(",")}`);
   const q = (c.req.query("q") ?? "").trim().toLowerCase().slice(0, 200);
   const local = new Map(listThreads(500).map((t) => [t.id, t]));
   let sessions: HermesSession[] = [];
@@ -478,7 +478,7 @@ omniApi.patch("/threads/:id", async (c) => {
     session = null;
   }
   const gone = session === null;
-  if (!gone) ensureThread({ id, title: session?.title ?? null, source: "hermes" });
+  if (!gone) ensureThread({ id, title: session?.title ?? null, source: "hermes", state: "conversation" });
   const t = updateThread(id, {
     title: typeof b.title === "string" ? b.title : undefined,
     pinned: b.pinned as boolean | undefined,
@@ -504,7 +504,7 @@ omniApi.post("/threads/:id/turns", async (c) => {
     // A Hermes session started elsewhere (Telegram, Buzz, the Hermes desktop): adopt it.
     try {
       const s = await hermes.getSession(id);
-      ensureThread({ id, title: s.title ?? null, source: "hermes" });
+      ensureThread({ id, title: s.title ?? null, source: "hermes", state: "conversation" });
     } catch (e) {
       return hermesFailure(c, e);
     }
