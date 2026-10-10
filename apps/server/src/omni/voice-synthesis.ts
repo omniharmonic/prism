@@ -9,8 +9,19 @@ import { fileURLToPath } from "node:url";
 export const VOICE_LIMITS = { characters: 4000, audioBytes: 10 * 1024 * 1024, timeoutMs: 30_000, concurrency: 2 } as const;
 export const VOICE_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 export interface VoiceRequest { sessionID: string; requestID: string; providerID: string; voiceID: string; text: string }
+export interface VoiceProviderDescriptor {
+  readonly id: string;
+  readonly name: string;
+  readonly cloud: boolean;
+  readonly disclosure: string;
+  readonly defaultVoiceID: string;
+  readonly voices: readonly { readonly id: string; readonly name: string; readonly language: string }[];
+  readonly maxCharacters: number;
+  readonly maxAudioBytes: number;
+  readonly contentType: "audio/mpeg";
+}
 export interface VoiceProvider {
-  id: string;
+  readonly descriptor: VoiceProviderDescriptor;
   available(): Promise<boolean>;
   synthesize(request: VoiceRequest, signal: AbortSignal): Promise<Uint8Array>;
 }
@@ -56,8 +67,14 @@ async function runWorker(mode: string, input: string, signal: AbortSignal): Prom
 }
 let checkInFlight: Promise<boolean> | null = null;
 let checkCache: { key: string; expires: number; available: boolean } | null = null;
+const edgeDescriptor: VoiceProviderDescriptor = Object.freeze({
+  id: "hermes-edge", name: "Hermes · Microsoft Edge", cloud: true,
+  disclosure: "Response text is sent to Microsoft for speech synthesis. Apple speech is used when unavailable.",
+  defaultVoiceID: "en-US-AriaNeural", voices: Object.freeze([{ id: "en-US-AriaNeural", name: "Aria", language: "en-US" }]),
+  maxCharacters: VOICE_LIMITS.characters, maxAudioBytes: VOICE_LIMITS.audioBytes, contentType: "audio/mpeg",
+});
 const edge: VoiceProvider = {
-  id: "hermes-edge",
+  descriptor: edgeDescriptor,
   async available() {
     const r = runtime();
     if (!r) return false;
@@ -104,13 +121,37 @@ const edge: VoiceProvider = {
     } finally { await rm(directory, { recursive: true, force: true }); }
   },
 };
-let provider: VoiceProvider = edge;
-export function setVoiceProviderForTests(value: VoiceProvider | null): void { provider = value ?? edge; }
+// Fixed code registrations only: a vetted local adapter is added here, not by
+// accepting a module/command/path from HTTP or configuration.
+const shippedProviders: readonly VoiceProvider[] = [edge];
+let providers = providerRegistry(shippedProviders);
+/** Preserve the original single-Edge test injection without coupling routes to Edge. */
+export function setVoiceProviderForTests(value: (Omit<VoiceProvider, "descriptor"> & { id: string; descriptor?: VoiceProviderDescriptor }) | null): void {
+  if (value && value.id !== edgeDescriptor.id && !value.descriptor) throw new Error("test provider descriptor required");
+  setVoiceProvidersForTests(value ? [{ ...value, descriptor: value.descriptor ?? edgeDescriptor }] : null);
+}
+export function setVoiceProvidersForTests(values: readonly VoiceProvider[] | null): void {
+  providers = providerRegistry(values ?? shippedProviders);
+}
+function providerRegistry(registry: readonly VoiceProvider[]): Map<string, VoiceProvider> {
+  if (new Set(registry.map(value => value.descriptor.id)).size !== registry.length) throw new Error("duplicate voice provider");
+  for (const { descriptor } of registry) {
+    if (!descriptor.voices.some(voice => voice.id === descriptor.defaultVoiceID) ||
+      !Number.isInteger(descriptor.maxCharacters) || descriptor.maxCharacters <= 0 || descriptor.maxCharacters > VOICE_LIMITS.characters ||
+      !Number.isInteger(descriptor.maxAudioBytes) || descriptor.maxAudioBytes <= 0 || descriptor.maxAudioBytes > VOICE_LIMITS.audioBytes) throw new Error("invalid voice provider descriptor");
+  }
+  return new Map(registry.map(provider => [provider.descriptor.id, provider]));
+}
+export function voiceProviderDescriptor(id: string): VoiceProviderDescriptor | undefined { return providers.get(id)?.descriptor; }
+export function validVoiceRequest(input: Record<string, unknown> | null): input is Record<string, unknown> & VoiceRequest {
+  if (!input || Object.keys(input).sort().join(",") !== "providerID,requestID,sessionID,text,voiceID" ||
+    typeof input.sessionID !== "string" || !VOICE_UUID.test(input.sessionID) || typeof input.requestID !== "string" || !VOICE_UUID.test(input.requestID) ||
+    typeof input.providerID !== "string" || typeof input.voiceID !== "string" || typeof input.text !== "string" || !input.text.trim()) return false;
+  const descriptor = voiceProviderDescriptor(input.providerID);
+  return !!descriptor && descriptor.voices.some(voice => voice.id === input.voiceID) && input.text.length <= descriptor.maxCharacters;
+}
 export async function voiceProviders() {
-  return { providers: [{ id: "hermes-edge", name: "Hermes · Microsoft Edge", available: await provider.available(), cloud: true,
-    disclosure: "Response text is sent to Microsoft for speech synthesis. Apple speech is used when unavailable.",
-    defaultVoiceID: "en-US-AriaNeural", voices: [{ id: "en-US-AriaNeural", name: "Aria", language: "en-US" }],
-    maxCharacters: VOICE_LIMITS.characters, maxAudioBytes: VOICE_LIMITS.audioBytes }] };
+  return { providers: await Promise.all([...providers.values()].map(async provider => ({ ...provider.descriptor, available: await provider.available() }))) };
 }
 interface Active { sessionID: string; requestID: string; controller: AbortController }
 const active = new Map<string, Active>();
@@ -126,6 +167,8 @@ export function cancelVoice(scope: string, sessionID: string, requestID: string)
   if (current?.sessionID === sessionID && current.requestID === requestID) current.controller.abort();
 }
 export async function synthesizeVoice(scope: string, request: VoiceRequest, disconnect: AbortSignal): Promise<Uint8Array> {
+  const provider = providers.get(request.providerID);
+  if (!validVoiceRequest(request as unknown as Record<string, unknown>) || !provider) throw new VoiceError("bad_request", 400);
   pruneCancelled();
   if (cancelled.has(key(scope, request.sessionID, request.requestID))) throw new VoiceError("voice_cancelled", 409);
   if (active.has(scope) || active.size >= VOICE_LIMITS.concurrency) throw new VoiceError("voice_busy", 429);
@@ -142,7 +185,7 @@ export async function synthesizeVoice(scope: string, request: VoiceRequest, disc
     if (controller.signal.aborted) throw new VoiceError("voice_cancelled", 409);
     const audio = await provider.synthesize(request, controller.signal);
     if (controller.signal.aborted) throw new VoiceError("voice_cancelled", 409);
-    if (!audio.byteLength || audio.byteLength > VOICE_LIMITS.audioBytes) throw new VoiceError("voice_failed", 502);
+    if (!audio.byteLength || audio.byteLength > provider.descriptor.maxAudioBytes) throw new VoiceError("voice_failed", 502);
     return audio;
   } catch (error) {
     if (timedOut) throw new VoiceError("voice_timeout", 504);

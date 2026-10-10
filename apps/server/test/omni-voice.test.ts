@@ -5,7 +5,7 @@ import { omniApi } from "../src/routes/omni";
 import { config } from "../src/config";
 import { issueDeviceToken } from "../src/auth/device";
 import { makeSession, sessionCookie } from "./helpers";
-import { cancelVoice, setVoiceProviderForTests, synthesizeVoice, VoiceError, VOICE_LIMITS, type VoiceRequest } from "../src/omni/voice-synthesis";
+import { cancelVoice, setVoiceProvidersForTests, setVoiceProviderForTests, synthesizeVoice, VoiceError, VOICE_LIMITS, type VoiceRequest } from "../src/omni/voice-synthesis";
 const sessionID = "aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa";
 let sequence = 0;
 const request = (): VoiceRequest => ({ sessionID, requestID: `bbbbbbbb-bbbb-4bbb-bbbb-${String(++sequence).padStart(12, "0")}`, providerID: "hermes-edge", voiceID: "en-US-AriaNeural", text: "Synthetic speech fixture." });
@@ -152,4 +152,28 @@ test("named config helper dry-run preserves all values; apply backs up and updat
     const [backup] = await readdir(join(root, "omni-tts-config-backups"));
     assert.equal(await readFile(join(root, "omni-tts-config-backups", backup!, ".env.tmpl"), "utf8"), original);
   } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("registered local fixture advertises and validates its own voices and limits without route edits", async () => {
+  const descriptor = {
+    id: "local-fixture", name: "Synthetic local provider", cloud: false, disclosure: "Synthetic local fixture only.",
+    defaultVoiceID: "fixture-voice", voices: [{ id: "fixture-voice", name: "Fixture", language: "en-US" }],
+    maxCharacters: 24, maxAudioBytes: 4, contentType: "audio/mpeg" as const,
+  };
+  setVoiceProvidersForTests([{ descriptor, available: async () => true, synthesize: async () => audio }]);
+  try {
+    const metadata = await (await omniApi.request("/voice/providers", { headers })).json();
+    assert.equal(metadata.providers.length, 1);
+    assert.equal(metadata.providers[0].id, descriptor.id);
+    assert.equal(metadata.providers[0].cloud, false);
+    assert.equal(metadata.providers[0].maxCharacters, 24);
+    const input = { ...request(), providerID: descriptor.id, voiceID: descriptor.defaultVoiceID, text: "Local synthetic fixture." };
+    assert.equal((await send(input)).status, 200);
+    assert.equal((await send({ ...input, voiceID: "en-US-AriaNeural" })).status, 400);
+    assert.equal((await send({ ...input, text: "x".repeat(25) })).status, 400);
+    assert.equal((await send(request())).status, 400, "unregistered Edge cannot bypass registry");
+    setVoiceProvidersForTests([{ descriptor, available: async () => true, synthesize: async () => new Uint8Array(5) }]);
+    assert.equal((await send(input)).status, 502, "provider-specific audio cap enforced");
+    assert.throws(() => setVoiceProvidersForTests([{ descriptor: { ...descriptor, maxCharacters: 4001 }, available: async () => true, synthesize: async () => audio }]));
+  } finally { setVoiceProviderForTests({ id: "hermes-edge", available: async () => true, synthesize: async () => audio }); }
 });
