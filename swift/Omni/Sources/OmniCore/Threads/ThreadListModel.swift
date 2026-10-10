@@ -22,7 +22,7 @@ public enum ThreadGrouping {
         case .working: return "Working"
         case .waiting: return "Waiting"
         case .scheduled: return "Scheduled"
-        case .done: return "Done"
+        case .done: return "Replied"
         case .conversation: return "Conversations"
         default:
             // A state a newer server added: show its own word rather than hiding the thread.
@@ -31,19 +31,30 @@ public enum ThreadGrouping {
         }
     }
 
-    /// Sections in the spec's order, then any unknown state; empty groups are left out.
-    /// Inside a group the server's order is kept (pinned first, then newest).
+    /// Fresh unread replies lead; remaining groups follow their latest activity.
+    /// New replies lead; other groups and their rows follow actual recent activity.
     public static func sections(_ threads: [OmniThread]) -> [ThreadSection] {
-        var byState: [ThreadState: [OmniThread]] = [:]
-        var unknown: [ThreadState] = []
-        for thread in threads where !thread.archived {
-            if byState[thread.state] == nil, !order.contains(thread.state) { unknown.append(thread.state) }
-            byState[thread.state, default: []].append(thread)
+        let visible = threads.filter { !$0.archived }
+        func recent(_ rows: [OmniThread]) -> [OmniThread] {
+            rows.enumerated().sorted { a, b in
+                if a.element.pinned != b.element.pinned { return a.element.pinned }
+                let first = a.element.lastActivityAt ?? .distantPast
+                let second = b.element.lastActivityAt ?? .distantPast
+                return first == second ? a.offset < b.offset : first > second
+            }.map(\.element)
         }
-        return (order + unknown).compactMap { state in
-            guard let group = byState[state], !group.isEmpty else { return nil }
-            return ThreadSection(state: state, title: title(for: state), threads: group)
-        }
+        let unread = recent(visible.filter { $0.unread > 0 })
+        let read = visible.filter { $0.unread == 0 }
+        let states = order + read.map(\.state).filter { !order.contains($0) }.reduce(into: [ThreadState]()) { if !$0.contains($1) { $0.append($1) } }
+        let groups = states.compactMap { state -> ThreadSection? in
+            let rows = recent(read.filter { $0.state == state })
+            return rows.isEmpty ? nil : ThreadSection(state: state, title: title(for: state), threads: rows)
+        }.enumerated().sorted { first, second in
+            let a = first.element.threads.compactMap(\.lastActivityAt).max() ?? .distantPast
+            let b = second.element.threads.compactMap(\.lastActivityAt).max() ?? .distantPast
+            return a == b ? first.offset < second.offset : a > b
+        }.map(\.element)
+        return (unread.isEmpty ? [] : [ThreadSection(state: ThreadState(rawValue: "new-replies"), title: "New replies", threads: unread)]) + groups
     }
 
     public static func displayTitle(_ thread: OmniThread) -> String {
@@ -180,6 +191,11 @@ public final class ThreadListModel {
         }
         threads.removeAll { $0.id == id }
         return true
+    }
+
+    func markRead(_ id: String, through sequence: Int) {
+        guard let index = threads.firstIndex(where: { $0.id == id }), threads[index].lastSeq <= sequence else { return }
+        threads[index].unread = 0
     }
 
     public func clearRemoveError() {

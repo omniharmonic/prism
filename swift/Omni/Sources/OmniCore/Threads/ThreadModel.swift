@@ -48,6 +48,8 @@ public final class ThreadModel {
     public private(set) var isUnavailable = false
     /// The view is on screen (set by ``open()`` / ``close()``).
     public private(set) var isOpen = false
+    private var sceneActive = false
+    private var acknowledgedSequence: Int?
     /// The thread's `lastSeq` when its stored events were last read for a failed turn's reason.
     private var outcomeReadAtSeq: Int?
     /// The composer's text.
@@ -82,7 +84,9 @@ public final class ThreadModel {
         return result
     }
 
-    init(threadID: String, service: any OmniService, approvals: ApprovalCenter, sink: ErrorSink, sleep: @escaping @Sendable (Duration) async throws -> Void, onUnavailable: @escaping @MainActor (String) -> Void = { _ in }) {
+    private let onRead: @MainActor (String, Int) -> Void
+    init(threadID: String, service: any OmniService, approvals: ApprovalCenter, sink: ErrorSink, sleep: @escaping @Sendable (Duration) async throws -> Void, onRead: @escaping @MainActor (String, Int) -> Void = { _, _ in }, onUnavailable: @escaping @MainActor (String) -> Void = { _ in }) {
+        self.onRead = onRead
         self.threadID = threadID
         self.service = service
         self.approvals = approvals
@@ -177,6 +181,7 @@ public final class ThreadModel {
             apply(fresh)
             isUnavailable = false
             phase = .loaded
+            await acknowledgeVisibleSnapshot(fresh.thread)
             if let turn = createdVoiceTurn, followTask == nil {
                 createdVoiceTurn = nil
                 replayedVoiceTurn = turn
@@ -201,9 +206,28 @@ public final class ThreadModel {
         }
     }
 
+    /// Read receipts require both a displayed conversation and a foreground app.
+    public func setSceneActive(_ active: Bool) {
+        sceneActive = active
+        if active, isOpen, let snapshot = thread {
+            Task { await acknowledgeVisibleSnapshot(snapshot) }
+        }
+    }
+
+    private func acknowledgeVisibleSnapshot(_ snapshot: OmniThread) async {
+        await Task.yield()
+        guard isOpen, sceneActive, snapshot.unread > 0 else { return }
+        guard (try? await service.acknowledgeThreadRead(threadID, through: snapshot.lastSeq)) == true else { return }
+        acknowledgedSequence = snapshot.lastSeq
+        guard isOpen, sceneActive else { return }
+        onRead(threadID, snapshot.lastSeq)
+        if thread?.lastSeq == snapshot.lastSeq { thread?.unread = 0 }
+    }
+
     private func apply(_ fresh: ThreadDetail) {
         detail = fresh
         thread = fresh.thread
+        if fresh.thread.lastSeq == acknowledgedSequence { thread?.unread = 0 }
         approvals.ingest(fresh.approvals)
         if followTask == nil { cursor = max(cursor, fresh.thread.lastSeq) }
         // The server now lists the message that was pending.
@@ -394,6 +418,8 @@ public final class ThreadModel {
                 if let message = sink.describe(error) { streamProblem = message }
                 break attach
             }
+            guard generation == followGeneration else { return }
+            await acknowledgeVisibleSnapshot(fresh.thread)
             guard generation == followGeneration else { return }
 
             if sawResult {

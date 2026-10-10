@@ -9,6 +9,7 @@ public protocol OmniService: Sendable {
     func threads(states: [ThreadState], search: String?, includeArchived: Bool) async throws -> ThreadList
     func createThread(_ new: NewThread) async throws -> CreatedThread
     func thread(_ id: String) async throws -> ThreadDetail
+    func acknowledgeThreadRead(_ id: String, through sequence: Int) async throws -> Bool
     func updateThread(_ id: String, _ patch: ThreadPatch) async throws -> OmniThread
     func startTurn(threadID: String, text: String, idempotencyKey: IdempotencyKey) async throws -> TurnStart
     func cancelTurn(_ turnID: String) async throws -> TurnCancellation
@@ -25,6 +26,7 @@ public protocol OmniService: Sendable {
 }
 
 public extension OmniService {
+    func acknowledgeThreadRead(_ id: String, through sequence: Int) async throws -> Bool { false }
     func tasks(cursor: String?) async throws -> OmniTasksPage {
         throw PrismError.invalidRequest("Task pagination is unavailable in this service.")
     }
@@ -52,6 +54,7 @@ public struct LiveOmniService: OmniService, NativePushService {
     }
     public func createThread(_ new: NewThread) async throws -> CreatedThread { try await client.createThread(new) }
     public func thread(_ id: String) async throws -> ThreadDetail { try await client.thread(id) }
+    public func acknowledgeThreadRead(_ id: String, through sequence: Int) async throws -> Bool { try await client.acknowledgeThreadRead(id, through: sequence) }
     public func updateThread(_ id: String, _ patch: ThreadPatch) async throws -> OmniThread { try await client.updateThread(id, patch) }
     public func startTurn(threadID: String, text: String, idempotencyKey: IdempotencyKey) async throws -> TurnStart {
         try await client.startTurn(threadID: threadID, text: text, idempotencyKey: idempotencyKey)

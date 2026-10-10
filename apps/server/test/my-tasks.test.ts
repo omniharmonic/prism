@@ -11,6 +11,7 @@ import { api } from "../src/routes/api";
 import { resetTreeForTests } from "../src/tree";
 import { resetDatabaseCachesForTests } from "../src/routes/databases";
 import { saveOwnerSettings } from "../src/people-owner";
+import { buildTasksPage, buildToday, type Dispatch } from "../src/omni/today";
 import { assignedToMe } from "../src/my-tasks";
 import { installFakeVault, resetDb, makeSession, sessionCookie, grantUser, makeCapability, type FakeVault } from "./helpers";
 
@@ -110,4 +111,71 @@ test("assignedToMe: tombstones never stand for a person; long or odd values are 
   const started = threadCpuMs(); // CPU time of this thread (./probe), not the wall clock
   assert.equal(assignedToMe({ assigned: "[[".repeat(900) + " and ".repeat(50) }, me), false);
   assert.ok(threadCpuMs() - started < 200);
+});
+
+
+/** Omni inventories readable open tasks, unlike Home's assigned-only widget. */
+const omniDispatch = (email: string): Dispatch => async (_path, init) => query(login(email), init.body as Record<string, unknown>);
+
+test("Omni Today and expanded tasks include unassigned and other-assigned open tasks", async () => {
+  saveOwnerSettings("primary", { person: "p-owner", emails: [], aliases: ["Benjamin"] });
+  for (const status of ["done", "completed", "cancelled", "archived"]) {
+    fv.put({ id: `closed-${status}`, tags: ["task"], metadata: { status } });
+  }
+  fv.put({ id: "template-task", tags: ["task", "template"], metadata: { status: "todo" } });
+  const today = await buildToday(omniDispatch(OWNER), "2026-10-10", { retryDelayMs: 0 });
+  const page = await buildTasksPage(omniDispatch(OWNER));
+  const expected = ["t1", "t2", "t3", "t4", "t5", "t6", "t7"];
+  for (const tasks of [today.tasks, page.tasks]) {
+    assert.deepEqual((tasks as Array<{ noteId: string }>).map(t => t.noteId).sort(), expected);
+  }
+});
+
+test("Omni task pagination exhausts more than two pages without losing tasks or bypassing visibility", async () => {
+  grantUser(MIRA, "tag", "team", "view");
+  for (let i = 0; i < 121; i++) {
+    fv.put({ id: `extra-${String(i).padStart(3, "0")}`, tags: ["task", "team"], metadata: { status: "todo", due: "2026-11-01" } });
+  }
+  const found: string[] = [];
+  let cursor: string | undefined;
+  let pages = 0;
+  do {
+    const page = await buildTasksPage(omniDispatch(MIRA), cursor);
+    const rows = page.tasks as Array<{ noteId: string }>;
+    assert.ok(rows.length <= 50);
+    assert.equal(page.total, 127);
+    assert.equal(page.limited, true);
+    assert.equal(page.truncated, false);
+    found.push(...rows.map(t => t.noteId));
+    cursor = page.next as string | undefined;
+    assert.ok(++pages <= 3, "pagination must finish");
+  } while (cursor);
+  assert.equal(pages, 3);
+  assert.equal(found.length, 127);
+  assert.equal(new Set(found).size, 127);
+  assert.ok(found.includes("t7"), "unassigned task remains visible");
+  assert.ok(found.includes("t6"), "another person's assignment does not hide a readable task");
+  assert.ok(!found.includes("t5"), "hidden task never crosses the gateway");
+  assert.ok(!found.includes("t8"), "trash is excluded");
+});
+
+
+test("Omni inventories tagged OR typed tasks through the same permission filter", async () => {
+  fv.put({ id: "typed-legacy", tags: ["personal"], metadata: { type: "task", status: "todo" } });
+  fv.put({ id: "typed-prism", tags: ["personal"], metadata: { prism_type: "task", status: "todo" } });
+  fv.put({ id: "typed-both", tags: ["task", "personal"], metadata: { type: "task", prism_type: "task", status: "todo" } });
+  fv.put({ id: "typed-hidden", tags: ["hidden"], metadata: { prism_type: "task", status: "todo" } });
+  fv.put({ id: "not-a-task", tags: ["personal"], metadata: { type: "note", status: "todo" } });
+  fv.put({ id: "typed-closed", tags: ["personal"], metadata: { type: "task", status: "done" } });
+  fv.put({ id: "typed-template", tags: ["personal", "template"], metadata: { type: "task", status: "todo" } });
+  fv.put({ id: "typed-trash", tags: ["personal", "prism-trashed"], metadata: { type: "task", status: "todo" } });
+  grantUser(MIRA, "tag", "personal", "view");
+  const page = await buildTasksPage(omniDispatch(MIRA));
+  assert.deepEqual((page.tasks as Array<{ noteId: string }>).map(t => t.noteId).sort(), ["typed-both", "typed-legacy", "typed-prism"]);
+  assert.equal(page.total, 3);
+  // The ordinary database source still requires tags, and broadening cannot disguise another tag source.
+  const regular = await ids(await query(login(MIRA), { tags: ["task"] }));
+  assert.deepEqual(regular.ids, ["typed-both"]);
+  assert.equal((await query(login(MIRA), { tags: ["personal"], includeTypedTasks: true })).status, 400);
+  assert.equal((await query(login(MIRA), { tags: ["task"], includeTypedTasks: "yes" })).status, 400);
 });

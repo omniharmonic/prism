@@ -143,3 +143,28 @@ PR104 merged source `92f5dc54bc7a20399e51dac81d4a4fd09a5f7052`, tagged `omni-cli
 Signed iOS Release build 8 passed strict signature, both-device provisioning, production-code feature symbols, DEBUG-hook exclusion, and phone/iPad icon mappings. Profile `6035299e-8da5-4fa4-8a18-f2f1afd83348`, development APNs. Executable SHA256 `dce69adf343bc62ead8798a4eb2224041fc3151a73f8a0cd7440a907063ac8ae`; signed ZIP `2222f724a8d581d3fbfba8ceaccb2ff89fe8ca0515ac37c1d57d0f1d198ab457`. Both installation receipts report success at `/private/tmp/omni-client-v2026.10.10-8/{iphone,ipad}-install.log`. Owner asked to verify two-turn automatic re-listening, no silence send, Pause draft preservation, and Today task browsing/dispatch. Universal Mac build underway; no v8 Mac installation yet.
 
 Universal Mac build 8 completed without compiler warnings/errors. Both architectures contain new voice/task features, Apple voice preferences and shortcut metadata; DEBUG hooks absent. Unsigned ZIP SHA256 `1ee41190cb31f726c3087ae4689e49ec905f54da7d616a8193e66c3f204c56fa`; executable `5d21026bf8acf85ca1fa44f1fdbe93bfb7b022ef9df5699bf40d6e602e99b170`. Both hashes match after transfer to `~/release-artifacts/omni-client-v2026.10.10-8/omni/Omni.app`. Existing public profile and exact required release entitlements copied from v7. Owner desktop signing requested with `bash "$HOME/release-artifacts/sign-omni-v8.sh"`; v8 signing/notarization/install pending. The earlier v7 submission is a separate artifact and must not be described as v8 approval. Hosted CI for PR104 was still running at last inspection (Rust passed); local required checks are green.
+
+
+Owner accepts build8 re-listening but expects automatic turn submission. Empty-turn Pause currently shows a misleading recognition error. Actual iPhone screenshots confirm status/button and error/secondary-action overlap; next pass addresses these and opt-in local-VAD endpointing. Owner signed Mac v8; strict signature, universal architecture, Developer ID team and timestamp verify. V8 has not been submitted to Apple yet; avoid claiming v7 acceptance covers it.
+
+
+## Build 9 work in progress — endpointing and compact voice control
+
+171 OmniCore tests and 5 model-free audio callback/resampling tests pass. Automatic mode is explicit opt-in, with 8/12/20-second silence windows plus 3 seconds of cancellable grace, genuine local Silero activity, capture-host-time freshness, and manual fallback on missing/dropped/stalled evidence. Think aloud remains the default. Empty manual Pause is quiet.
+
+The initial repaired iPhone panel passed the focused default-size simulator layout/keyboard check, but the owner rejected its excess space while viewing the simulator. This design is superseded by a smaller two-row control under development; no build 9 device installation yet. Preserve individual control accessibility and verify new screenshots before release.
+
+
+### Build 9 follow-up: task coverage, unread history, laptop installation
+
+Owner requests before release: expanded Today omits expected tasks; Needs You button padding; collapsible history with newly received unread replies prominent; current Mac apps on laptop. Recorded as F13–F16. Investigation confirms assigned-only task scope and GET thread clearing unread on background fetch; scoped repairs in progress.
+
+Voice callback integration adds an explicitly nonisolated factory and actual off-main delivery/stale-generation regression test. Five callback/playback tests pass. Universal Mac and signed iOS Release compile passed before this last callback change; final artifact builds still required. Strict keyboard layout test remains blocked by simulator keyboard offscreen; no keyboard acceptance claimed.
+
+Prism v6 stapled artifact copied to laptop with SHA256 `94d16ccf11de979620e2687e8bde5fe3e2a7511704f3838401245a4e74ea1cb4`; strict signature, stapler and Gatekeeper passed. Installed a new `/Applications/Prism Client.app`; running development app and separate `/Applications/Prism.app` preserved. Launch waits for owner to save/quit running development copy. Omni laptop install awaits current release.
+
+Owner clarified all tasks means task pages mainly. Inventory now includes tagged and type/prism_type task pages; native scope is the server default vault, explicitly labelled Tasks in this vault. No cross-vault aggregation or embedded checkbox extraction claimed. Selected-vault headers are preserved for clients that supply one.
+
+Integrated 95 server regressions and server typecheck pass; 176 OmniCore tests pass. Additional callback/playback5 and zero-frame recording1 pass. iPad portrait strict voice layout test passes including genuinely visible software keyboard; parent reviewed the resulting screenshot. iPhone strict keyboard remains pending. Prism laptop launch verified through native UI: existing signed-in workspace, open document, Synced indicator and updated collapsible comments/backlinks chrome visible.
+
+Final shared-code verification: full server suite 2,984 passed, one skipped, zero failed; server and web typechecks pass. Native OmniClient21 tests pass. Phone history disclosure/read ordering and44-point approval geometry test passed; preference-reset test harness initially overrode AppStorage and was corrected. Visual review then tightened the four-action vertical stack into Send/Edit/Revise row plus quiet Cancel Draft below. Final phone/Mac snapshots in progress. iPhone voice keyboard check still fails because simulator software keyboard remains outside viewport, while iPad strict equivalent passes; do not claim phone keyboard acceptance.

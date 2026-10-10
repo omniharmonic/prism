@@ -3,6 +3,8 @@ import XCTest
 
 @MainActor final class VoiceConversationTests: XCTestCase {
     final class Audio: ConversationAudio {
+        var activity: (@MainActor (VoiceActivityEvent) -> Void)?
+        func configureActivity(enabled: Bool, receive: @escaping @MainActor (VoiceActivityEvent) -> Void) { activity = enabled ? receive : nil }
         var gate: CheckedContinuation<Void, Never>?
         var finishGate: CheckedContinuation<String, Never>?
         var wait = false
@@ -256,6 +258,18 @@ import XCTest
         XCTAssertEqual(voice.state, .paused)
         XCTAssertEqual(voice.problem, "Your words are saved as an unsent draft.")
         XCTAssertTrue(voice.isSessionActive)
+    }
+
+    func testEmptyManualPauseIsQuietButEmptySendStillReportsRecognitionFailure() async {
+        for submit in [false, true] {
+            let audio = Audio(); audio.recognized = "  "
+            let voice = VoiceConversation(audio: audio)
+            await voice.start()
+            var sent = false
+            await voice.finish(submit: submit, draftReason: .pause) { _ in sent = true; return true }
+            XCTAssertFalse(sent); XCTAssertEqual(voice.state, .paused)
+            if submit { XCTAssertNotNil(voice.problem) } else { XCTAssertNil(voice.problem) }
+        }
     }
 
 }

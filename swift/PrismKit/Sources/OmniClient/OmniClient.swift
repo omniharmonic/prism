@@ -121,9 +121,16 @@ public struct OmniClient: Sendable {
         try await transport.send(.json("POST", "\(Self.base)/threads", body: new))
     }
 
-    /// The thread with its messages, cards and approvals. Clears `unread`.
+    /// Read a snapshot without acknowledging it; background reads preserve unread replies.
     public func thread(_ id: String) async throws -> ThreadDetail {
-        try await transport.send(.get("\(Self.base)/threads/\(try Self.segment(id))"))
+        try await transport.send(.get("\(Self.base)/threads/\(try Self.segment(id))", query: [URLQueryItem(name: "read", value: "0")]))
+    }
+
+    public func acknowledgeThreadRead(_ id: String, through sequence: Int) async throws -> Bool {
+        struct Body: Encodable { let throughSeq: Int }
+        struct Answer: Decodable { let acknowledged: Bool }
+        let answer: Answer = try await transport.send(.json("POST", "\(Self.base)/threads/\(try Self.segment(id))/read", body: Body(throughSeq: sequence)))
+        return answer.acknowledged
     }
 
     public func updateThread(_ id: String, _ patch: ThreadPatch) async throws -> OmniThread {

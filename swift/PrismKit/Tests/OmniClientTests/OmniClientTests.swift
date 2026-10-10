@@ -116,10 +116,19 @@ final class OmniClientTests: XCTestCase {
         XCTAssertEqual(try JSONDecoder().decode(JSONValue.self, from: server.requests[0].body), ["prompt": "Call Dana Friday", "noteIds": ["01JNOTE"], "source": "text"])
         let detail = try await omni.thread("omni_abc")
         XCTAssertEqual(detail.activeTurnId, "turn_1")
+        XCTAssertEqual(server.requests[1].query, ["read": "0"])
         let patched = try await omni.updateThread("omni_abc", ThreadPatch(archived: true))
         XCTAssertEqual(patched.id, "omni_abc")
         XCTAssertEqual(server.requests[2].bodyString, #"{"archived":true}"#)
         XCTAssertEqual(server.requests[2].header("Content-Type"), "application/json")
+    }
+
+    func testExplicitReadAcknowledgementBindsTheDisplayedSequence() async throws {
+        let (omni, server) = try make { _ in .json(200, "{\"acknowledged\":true}") }
+        let read = try await omni.acknowledgeThreadRead("omni_abc", through: 12)
+        XCTAssertTrue(read)
+        XCTAssertEqual(server.requests[0].path, "/api/omni/threads/omni_abc/read")
+        XCTAssertEqual(server.requests[0].bodyString, "{\"throughSeq\":12}")
     }
 
     func testIdsThatCouldReshapeThePathAreRefusedLocally() async throws {

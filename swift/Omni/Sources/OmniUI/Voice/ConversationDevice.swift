@@ -12,12 +12,19 @@ import OmniVoiceKit
     private let parakeet = ParakeetTranscriber()
     private let audio = AudioIO()
     let speech = ConversationSpeech.shared
+    static let sharedTurnPreferences = VoiceTurnPreferences()
+    let turnPreferences = ConversationDevice.sharedTurnPreferences
+    private var activityEnabled = false
+    private var receiveActivity: (@MainActor (VoiceActivityEvent) -> Void)?
     let speechPreferences = ConversationSpeech.preferences
     private let recordingOwner = UUID()
     private var file: URL?
     private var generation = 0
     private var prepared = Set<Engine>()
     private var engine: any ConversationSTTEngine { selected == .apple ? apple : parakeet }
+    func configureActivity(enabled: Bool, receive: @escaping @MainActor (VoiceActivityEvent) -> Void) {
+        activityEnabled = enabled; receiveActivity = receive
+    }
     func start() async throws {
         speech.beginRecording(owner: recordingOwner)
         hypothesis = ""
@@ -33,15 +40,31 @@ import OmniVoiceKit
         let url = FileManager.default.temporaryDirectory.appending(path: "omni-voice-\(UUID().uuidString).caf")
         file = url
         do {
-            try await audio.start(url: url)
+            let callback: (@Sendable (SpeechActivityEvent) -> Void)? = activityEnabled ? Self.activityCallback(for: self, request: request) : nil
+            try await audio.start(url: url, activity: callback)
             guard request == generation, !Task.isCancelled else { throw CancellationError() }
         } catch { if request == generation { cancel() }; throw error }
+    }
+    /// This factory has no actor executor. Only the explicit Task may access the
+    /// main-actor device, whether the detector calls from its worker or audio tap.
+    nonisolated static func activityCallback(for device: ConversationDevice, request: Int) -> @Sendable (SpeechActivityEvent) -> Void {
+        { [weak device] event in
+            Task { @MainActor in
+                guard let device, device.generation == request else { return }
+                switch event {
+                case .frame(let time, let captured, let duration, let speech):
+                    device.receiveActivity?(.frame(VoiceActivityFrame(audioTime: time, capturedAt: captured, duration: duration, isSpeech: speech)))
+                case .unavailable(let reason): device.receiveActivity?(.unavailable(reason))
+                }
+            }
+        }
     }
     func finish() async throws -> String {
         guard let file else { throw VoiceFailure.unavailable("No voice recording is active.") }
         try audio.stop()
         speech.endRecording(owner: recordingOwner)
         defer { try? FileManager.default.removeItem(at: file); if self.file == file { self.file = nil } }
+        if try Self.recordingIsEmpty(file) { return "" }
         let request = generation
         return try await engine.transcribeConversation(file: file) { event in
             await MainActor.run {
@@ -49,8 +72,13 @@ import OmniVoiceKit
             }
         }
     }
+    /// A freshly resumed capture can be paused before the first microphone tap.
+    /// Frame count distinguishes that case without treating quiet PCM as silence.
+    nonisolated static func recordingIsEmpty(_ file: URL) throws -> Bool {
+        try AVAudioFile(forReading: file).length == 0
+    }
     func cancel() {
-        generation += 1; hypothesis = ""; try? audio.stop()
+        generation += 1; receiveActivity = nil; hypothesis = ""; try? audio.stop()
         speech.endRecording(owner: recordingOwner)
         stopPreview()
         if let file { try? FileManager.default.removeItem(at: file) }

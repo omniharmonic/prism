@@ -106,57 +106,71 @@ struct ApprovalCardView: View {
     /// Side by side where the whole row fits; one under another where it does not (large
     /// text, a narrow column, a long label) — never squeezed onto two lines or cut.
     @ViewBuilder private func buttons(_ card: ApprovalCard, _ standing: ApprovalCard.Standing) -> some View {
-        ViewThatFits(in: .horizontal) {
-            HStack(spacing: 8) { actions(card, standing) }
-            VStack(alignment: .leading, spacing: 8) { actions(card, standing) }
+        VStack(alignment: .leading, spacing: 4) {
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 8) { actions(card, standing) }
+                VStack(alignment: .leading, spacing: 8) { actions(card, standing) }
+            }
+            #if os(iOS)
+            .buttonStyle(.bordered)
+            #endif
+            .controlSize(.regular)
+            .fixedSize(horizontal: false, vertical: true)
+            if card.canOfferCancel(), !card.isCommand {
+                Button { confirmingCancel = true } label: {
+                    Text("Cancel Draft").frame(minHeight: 44).contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(Color.quietText)
+                .accessibilityIdentifier("approval.cancel")
+                .accessibilityHint("Discards this draft; nothing is sent")
+                .confirmationDialog("Cancel this draft?", isPresented: $confirmingCancel, titleVisibility: .visible) {
+                    Button("Cancel Draft", role: .destructive) { Task { await center.cancel(card.id) } }
+                    Button("Keep", role: .cancel) {}
+                } message: {
+                    Text("Nothing is sent. Omni can write a new one if you ask.")
+                }
+            }
         }
-        #if os(iOS)
-        .buttonStyle(.bordered)
-        #endif
         .disabled(card.isBusy)
     }
 
     @ViewBuilder private func actions(_ card: ApprovalCard, _ standing: ApprovalCard.Standing) -> some View {
         Group {
             if let retry = card.retry, standing == .pending {
-                Button("Try Again") { Task { await center.retry(card.id) } }
+                Button { Task { await center.retry(card.id) } } label: { actionLabel("Try Again") }
                     .buttonStyle(.borderedProminent)
                     .accessibilityHint("Repeats the \(retry.rawValue) decision; the server will not act on it twice")
             } else if card.canOfferSend() {
-                Button(card.isCommand ? "Approve Once" : "Send") { Task { await center.send(card.id) } }
+                Button { Task { await center.send(card.id) } } label: { actionLabel(card.isCommand ? "Approve Once" : "Send") }
                     .buttonStyle(.borderedProminent)
                     .accessibilityIdentifier("approval.send")
                     .accessibilityHint(card.isCommand ? "Lets Omni run exactly what is shown, once, after you confirm on this device" : "Sends exactly what is shown, after you confirm on this device")
             }
             if card.canOfferEdit() {
-                Button("Edit") { editing = ApprovalDraft(card.approval) }
+                Button { editing = ApprovalDraft(card.approval) } label: { actionLabel("Edit") }
                     .accessibilityIdentifier("approval.edit")
                     .accessibilityHint("Change the wording yourself")
             }
             if card.canOfferCancel() && card.isCommand {
-                Button("Deny", role: .destructive) { Task { await center.cancel(card.id) } }
+                Button(role: .destructive) { Task { await center.cancel(card.id) } } label: { actionLabel("Deny") }
                     .accessibilityHint("Omni does not run it")
             } else if card.canOfferCancel() {
-                Button("Revise…") { revising = true }
+                Button { revising = true } label: { actionLabel("Revise…") }
                     .accessibilityIdentifier("approval.revise")
                     .accessibilityHint("Ask Omni for a new draft")
-                Button("Cancel Draft") { confirmingCancel = true }
-                    .accessibilityIdentifier("approval.cancel")
-                    .accessibilityHint("Discards this draft; nothing is sent")
-                    // On the button: the question appears beside what was pressed.
-                    .confirmationDialog("Cancel this draft?", isPresented: $confirmingCancel, titleVisibility: .visible) {
-                        Button("Cancel Draft", role: .destructive) { Task { await center.cancel(card.id) } }
-                        Button("Keep", role: .cancel) {}
-                    } message: {
-                        Text("Nothing is sent. Omni can write a new one if you ask.")
-                    }
+
             }
             if standing == .mismatch {
-                Button("Reload") { Task { await center.reload(card.id) } }
+                Button { Task { await center.reload(card.id) } } label: { actionLabel("Reload") }
                     .accessibilityHint("Reads the draft from the server again")
             }
         }
         .fixedSize()
+    }
+
+    private func actionLabel(_ title: String) -> some View {
+        Text(title).frame(minHeight: 32) // Native bordered padding brings the tap target to 44 points.
     }
 
     @Environment(\.dynamicTypeSize) private var typeSize
@@ -405,7 +419,7 @@ struct NudgeCardView: View {
             ViewThatFits(in: .horizontal) {
                 HStack { primaryActions }
                 VStack(alignment: .leading) { primaryActions }
-            }
+            }.controlSize(.regular).fixedSize(horizontal: false, vertical: true)
             ViewThatFits(in: .horizontal) {
                 HStack { sourceAction; Spacer(minLength: 8); moreActions }
                 VStack(alignment: .leading) { sourceAction; moreActions }
@@ -455,9 +469,9 @@ struct NudgeCardView: View {
     }
     @ViewBuilder private var primaryActions: some View {
         if ["reply-owed", "unprocessed"].contains(item.candidate.kind) && item.candidate.operationalSource == nil {
-            Button { start(.draftReply) } label: { Text("Draft reply").frame(minHeight: 44).contentShape(Rectangle()) }.buttonStyle(.bordered)
+            Button { start(.draftReply) } label: { Text("Draft reply").frame(minHeight: 32).contentShape(Rectangle()) }.buttonStyle(.bordered)
         }
-        Button { start(.startWorking) } label: { Text("Start working").frame(minHeight: 44).contentShape(Rectangle()) }.buttonStyle(.borderedProminent)
+        Button { start(.startWorking) } label: { Text("Start working").frame(minHeight: 32).contentShape(Rectangle()) }.buttonStyle(.borderedProminent)
     }
     private func start(_ action: NudgeStart) {
         Task { if let thread = await center.start(item.id, action) { navigator.open(.thread(thread)) } }

@@ -3,6 +3,91 @@ import XCTest
 /// The walk: every screen and state of the app, in the order a person would meet them, with
 /// a screenshot of each. Runs against the laptop dev backend (stub Hermes; nothing can send).
 final class OmniWalkTests: OmniUITestCase {
+    #if os(iOS)
+    func testVoicePanelInThreadKeepsControlsBelowText() throws {
+        continueAfterFailure = false
+        let id = try XCTUnwrap(server { backend in
+            let id = try await backend.thread("Voice layout check", "Give a short welcome.")
+            try await backend.settle(id)
+            return id
+        })
+        for state in ["listening", "paused"] {
+            launch(faults: "sample-data,voice-layout-\(state)")
+            openThread(id)
+            let openVoice = element("voice.open")
+            XCTAssertTrue(openVoice.waitForExistence(timeout: 10))
+            if openVoice.exists { openVoice.tap() }
+            let panel = element("voice.panel")
+            XCTAssertTrue(panel.waitForExistence(timeout: 10))
+            let status = element("voice.status")
+            let primary = element(state == "listening" ? "voice.send" : "voice.start")
+            XCTAssertTrue(primary.waitForExistence(timeout: 5))
+            let end = element("voice.end")
+            let problem = element("voice.problem")
+            let pauseButton = element("voice.pause")
+            let elements = [status, problem, primary, pauseButton, end]
+            func visible(_ target: XCUIElement) -> Bool {
+                target.exists && target.isHittable && panel.frame.contains(target.frame)
+            }
+            func checkVisibleOverlap() {
+                let visibleElements = elements.filter(visible)
+                for first in visibleElements.indices {
+                    for second in visibleElements.indices where second > first {
+                        let overlap = visibleElements[first].frame.intersection(visibleElements[second].frame)
+                        XCTAssertTrue(overlap.isNull || overlap.width <= 0 || overlap.height <= 0,
+                                      "Visible voice text and controls must not overlap: \(visibleElements[first].identifier), \(visibleElements[second].identifier)")
+                    }
+                }
+                XCTAssertLessThanOrEqual(panel.frame.maxY, composer.frame.minY)
+            }
+            func revealInVoicePanel(_ target: XCUIElement) {
+                // Scroll only the bounded voice panel, never the conversation behind it.
+                for _ in 0..<10 {
+                    if visible(target) { break }
+                    panel.swipeUp()
+                }
+                for _ in 0..<10 {
+                    if visible(target) { break }
+                    panel.swipeDown()
+                }
+                XCTAssertTrue(visible(target), "Voice controls must remain reachable inside the bounded panel")
+                checkVisibleOverlap()
+            }
+            if state == "paused" { XCTAssertTrue(problem.exists) }
+            let maximumFraction: CGFloat = Run.variant == "xxxl" ? 0.45 : 0.25
+            XCTAssertLessThan(panel.frame.height, app.frame.height * maximumFraction, "Voice controls must leave room for the conversation")
+            checkVisibleOverlap()
+            shot("voice-thread-\(state)-text")
+            revealInVoicePanel(primary)
+            shot("voice-thread-\(state)-primary")
+            revealInVoicePanel(end)
+            shot("voice-thread-\(state)-close")
+            if state == "paused" {
+                composer.tap()
+                let keyboard = app.keyboards.firstMatch
+                func assertSoftwareKeyboardVisible() {
+                    let predicate = NSPredicate { _, _ in
+                        keyboard.exists && keyboard.frame.height > 150 &&
+                        keyboard.frame.intersection(self.app.frame).height > 150
+                    }
+                    let appeared = XCTNSPredicateExpectation(predicate: predicate, object: keyboard)
+                    XCTAssertEqual(XCTWaiter.wait(for: [appeared], timeout: 5), .completed,
+                                   "A real software keyboard must occupy the app viewport, not only exist in accessibility")
+                    XCTAssertGreaterThan(keyboard.frame.intersection(app.frame).width, app.frame.width * 0.75)
+                }
+                assertSoftwareKeyboardVisible()
+                shot("voice-thread-paused-keyboard-open")
+                revealInVoicePanel(primary)
+                assertSoftwareKeyboardVisible()
+                shot("voice-thread-paused-keyboard-primary")
+                revealInVoicePanel(end)
+                assertSoftwareKeyboardVisible()
+                shot("voice-thread-paused-keyboard-close")
+            }
+        }
+    }
+    #endif
+
     // MARK: Before the app
 
     func test01FirstRunAndSignIn() {
@@ -113,6 +198,62 @@ final class OmniWalkTests: OmniUITestCase {
     }
 
     // MARK: The list, in every state
+
+    /// A small history fixture: no full seed and no approval action is performed.
+    func testHistoryDisclosuresAndNeedsYouSpacing() throws {
+        continueAfterFailure = false
+        let ids = try XCTUnwrap(server { backend -> [String: String] in
+            try await backend.reset()
+            let read = try await backend.thread("Earlier reviewed answer", "Give a short welcome.")
+            try await backend.settle(read)
+            _ = try await backend.call("PATCH", "/api/omni/threads/\(read)", ["unread": false])
+            let draft = try await backend.thread("Review the email draft", "Draft an email. stub:approval:email")
+            try await backend.settle(draft)
+            _ = try await backend.call("PATCH", "/api/omni/threads/\(draft)", ["unread": false])
+            let fresh = try await backend.thread("Fresh reply stays prominent", "Give a short welcome.")
+            try await backend.settle(fresh)
+            _ = try await backend.call("PATCH", "/api/omni/threads/\(fresh)", ["unread": true])
+            return ["read": read, "fresh": fresh, "draft": draft]
+        })
+        launch(faults: "sample-data")
+        go(.threads)
+        let fresh = element("thread.\(try XCTUnwrap(ids["fresh"]))")
+        let read = element("thread.\(try XCTUnwrap(ids["read"]))")
+        wait(fresh, 15, "the fresh unread reply")
+        let replied = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Replied,")).firstMatch
+        wait(replied, 15, "the Replied history disclosure")
+        bring(replied)
+        // A launch argument would override AppStorage writes for this entire process.
+        // Normalize the persisted disclosure through its real control instead.
+        if replied.value as? String == "Collapsed" || !read.exists { replied.tap() }
+        wait(read, 10, "the reviewed reply")
+        XCTAssertLessThan(fresh.frame.minY, read.frame.minY, "Fresh replies must lead older reviewed history")
+        shot("history-new-replies-expanded")
+        replied.tap()
+        XCTAssertTrue(gone(read, 5), "Collapsing history hides its rows")
+        XCTAssertTrue(fresh.exists, "New replies remain visible when history is collapsed")
+        shot("history-replied-collapsed")
+        replied.tap()
+        wait(read, 10, "the expanded reviewed reply")
+
+        go(.needsYou)
+        let send = element("approval.send")
+        let edit = element("approval.edit")
+        let revise = element("approval.revise")
+        wait(send, 15, "the review-only draft's Send control")
+        bring(send)
+        #if os(iOS)
+        XCTAssertGreaterThanOrEqual(send.frame.height, 44)
+        XCTAssertGreaterThanOrEqual(edit.frame.height, 44)
+        XCTAssertGreaterThanOrEqual(revise.frame.height, 44)
+        #endif
+        for control in [send, edit, revise] {
+            XCTAssertFalse(control.frame.isEmpty)
+        }
+        XCTAssertFalse(send.frame.intersects(edit.frame), "Approval controls must not overlap")
+        XCTAssertFalse(edit.frame.intersects(revise.frame), "Approval controls must not overlap")
+        shot("needs-you-compact-approval-controls")
+    }
 
     func test05ThreadListSearchAndToday() {
         seed()

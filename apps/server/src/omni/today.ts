@@ -9,7 +9,7 @@ import { listNudges } from "./nudges";
  *
  *  agenda   — meeting notes (the calendar ingest's `meeting` tag) whose `date` is the day,
  *             cancelled ones dropped, by start.
- *  tasks    — `/api/query {assignedToMe:true}` open tasks, by due date.
+ *  tasks    — `/api/query` open tasks visible to the caller, by due date.
  *  needsYou — pending approvals (+ nudges: M3, always [] for now).
  *  inFlight — threads with a running turn.
  */
@@ -86,8 +86,7 @@ export async function buildToday(dispatch: Dispatch, date: string, opts: { retry
     });
 
   const tasksP = query(dispatch, {
-    tags: ["task"],
-    assignedToMe: true,
+    tags: ["task"], includeTypedTasks: true,
     filter: { match: "all", conditions: [{ key: "status", op: "nin", value: OPEN_TASK_EXCLUDE }] },
     sort: [{ key: "due", dir: "asc" }],
     limit: 50,
@@ -131,10 +130,10 @@ export async function buildToday(dispatch: Dispatch, date: string, opts: { retry
   };
 }
 
-/** A bounded page of open tasks assigned to this caller, through the same gateway. */
+/** A bounded page of open tasks visible to this caller, through the same gateway. */
 export async function buildTasksPage(dispatch: Dispatch, cursor?: string, opts: { retryDelayMs?: number } = {}): Promise<Record<string, unknown>> {
   const page = await query(dispatch, {
-    tags: ["task"], assignedToMe: true,
+    tags: ["task"], includeTypedTasks: true,
     filter: { match: "all", conditions: [{ key: "status", op: "nin", value: OPEN_TASK_EXCLUDE }] },
     sort: [{ key: "due", dir: "asc" }], limit: 50,
     fields: ["title", "status", "due", "deadline", "priority", "omni_thread"],

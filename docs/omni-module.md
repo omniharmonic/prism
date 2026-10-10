@@ -371,12 +371,12 @@ A section whose query failed on the vault side (5xx) is asked **once more** afte
 before it is given up: the vault has been seen to refuse a good token, or drop a large
 listing, now and then. The two sections are whole-tag listings and can take several seconds
 on a large vault; the app shows a loading state meanwhile. Agenda = `meeting` notes whose
-`date` is the day, cancelled dropped. Tasks = open `assignedToMe` tasks by due date. Nudges,
+`date` is the day, cancelled dropped. Tasks = all open task-tagged or task-typed (`type`/`prism_type`) notes the caller can read in the selected vault, by due date; assignment is not required. Nudges,
 open loops and the brief arrive with M3.
 
 ### Expanded task list and native handoff
 
-`GET /api/omni/tasks?cursor=<opaque>` reads one page of up to 50 open tasks assigned to the caller, through the same authenticated `/api/query` dispatch as Today. It returns `tasks` (the Today task shape), `next`, `total`, `limited`, `truncated`, and `identity`. The native client requests pages explicitly and shows permission/scan-limit notices rather than treating a partial response as the complete task set.
+`GET /api/omni/tasks?cursor=<opaque>` reads one page of up to 50 open tasks visible to the caller in one vault, through the same authenticated `/api/query` dispatch as Today. It returns `tasks` (the Today task shape), `next`, `total`, `limited`, `truncated`, and `identity`. The gateway forwards `X-Prism-Vault` to the permission-filtered query; non-admin callers remain bound to their authorized vault. The native Omni session currently uses the server default vault (no vault picker), rather than aggregating every vault. The native client requests pages explicitly and shows permission/scan-limit notices rather than treating a partial response as the complete task set.
 
 The native **Run with Omni** action uses the existing thread-creation API with `taskNoteId` and a task-context prompt. Expanding or loading tasks never starts an agent. Existing linked conversations can be opened; dispatch does not bypass approval for outbound communications. This does not implement the separate deferred task write-back endpoint.
 

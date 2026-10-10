@@ -183,7 +183,9 @@ test("enabled alone is a DRY RUN: it plans and records counts, and writes nothin
   const target = rows[0]!.target as Record<string, unknown>;
   assert.deepEqual([target.dryRun, target.scheduled, target.writes, target.allowNameLinks], [true, true, 0, false]);
   assert.equal((target.emails as { wouldLink: number }).wouldLink, job.report.emails.wouldLink);
-  const text = JSON.stringify(target);
+  assert.equal(target.jobId, job.id, "the generated job identifier is audit correlation, not note data");
+  const { jobId: _jobId, ...payload } = target;
+  const text = JSON.stringify(payload);
   for (const secret of ["example.test", "Alex", "p-alex", "e0", "vault/"]) assert.ok(!text.includes(secret), `the audit row holds counts only (found ${secret})`);
 });
 

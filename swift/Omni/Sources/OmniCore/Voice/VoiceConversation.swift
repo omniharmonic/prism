@@ -9,7 +9,14 @@ import Observation
     func cancel()
     func speak(_ text: String)
     func waitForPlayback() async
+    func configureActivity(enabled: Bool, receive: @escaping @MainActor (VoiceActivityEvent) -> Void)
     func silence()
+}
+
+public extension ConversationAudio {
+    func configureActivity(enabled: Bool, receive: @escaping @MainActor (VoiceActivityEvent) -> Void) {
+        if enabled { receive(.unavailable("Automatic speech detection is unavailable. Use Send turn.")) }
+    }
 }
 
 @MainActor @Observable public final class VoiceConversation {
@@ -21,6 +28,14 @@ import Observation
     private let audio: any ConversationAudio
     public private(set) var isSessionActive = false
     public var canAutomaticallyListen: @MainActor () -> Bool = { false }
+    public private(set) var endpointCountdown: Int?
+    public private(set) var activityNotice: String?
+    public var automaticFinish: @MainActor () -> Void = {}
+    public private(set) var endpointMode: VoiceTurnMode = .thinkAloud
+    public private(set) var endpointPause = 12.0
+    private var endpointPolicy = VoiceEndpointPolicy()
+    private var activityWatchdog: Task<Void, Never>?
+    private var lastActivityAt: Double?
     private var pendingCompletion: [TimelineItem]?
     private var submitting = false
     private var drainTask: Task<Void, Never>?
@@ -30,6 +45,55 @@ import Observation
     public var canStart: Bool { !privacyLocked && !starting && (state == .off || state == .paused || state == .answering || state == .speaking) }
     private var spoken: [String: String] = [:]
     public init(audio: any ConversationAudio) { self.audio = audio }
+
+    /// Preferences apply to the next capture. Changing modes requires pausing first.
+    public func configureEndpoint(mode: VoiceTurnMode, pauseSeconds: Double) {
+        guard state == .off || state == .paused else { return }
+        endpointMode = mode
+        endpointPause = VoiceTurnPreferences.pauseChoices.contains(pauseSeconds) ? pauseSeconds : 12
+    }
+    public func keepListening() {
+        guard state == .listening else { return }
+        endpointPolicy.keepListening()
+        endpointCountdown = nil
+    }
+    private func receiveActivity(_ event: VoiceActivityEvent, request: Int) {
+        guard request == generation, isSessionActive, endpointMode == .automatic else { return }
+        switch event {
+        case .unavailable(let reason): disableEndpoint(reason)
+        case .frame(let frame):
+            guard state == .listening else { return }
+            let now = ProcessInfo.processInfo.systemUptime
+            lastActivityAt = frame.capturedAt
+            switch endpointPolicy.accept(frame, now: now) {
+            case .none: endpointCountdown = nil
+            case .countdown(let seconds): endpointCountdown = seconds
+            case .send:
+                endpointCountdown = nil
+                guard !privacyLocked else { return }
+                automaticFinish()
+            case .unavailable: disableEndpoint("Automatic detection fell behind. Use Send turn.")
+            }
+        }
+    }
+    private func disableEndpoint(_ reason: String) {
+        endpointPolicy.disable(); endpointCountdown = nil; activityNotice = reason
+        activityWatchdog?.cancel(); activityWatchdog = nil
+    }
+    private func watchActivity(request: Int) {
+        guard endpointMode == .automatic, activityNotice == nil else { return }
+        lastActivityAt = ProcessInfo.processInfo.systemUptime
+        activityWatchdog = Task { [weak self] in
+            while !Task.isCancelled {
+                do { try await Task.sleep(for: .milliseconds(200)) } catch { return }
+                guard let self, self.generation == request, self.state == .listening else { return }
+                if let last = self.lastActivityAt, ProcessInfo.processInfo.systemUptime - last > 0.75 {
+                    self.disableEndpoint("Automatic detection stopped receiving audio. Use Send turn.")
+                    return
+                }
+            }
+        }
+    }
 
     public func setPrivacyLocked(_ locked: Bool) {
         privacyLocked = locked
@@ -44,10 +108,16 @@ import Observation
         isSessionActive = true
         let request = generation
         state = .preparing; problem = nil; transcript = ""
+        activityNotice = nil; endpointCountdown = nil
+        endpointPolicy = VoiceEndpointPolicy(pauseSeconds: endpointPause)
+        audio.configureActivity(enabled: endpointMode == .automatic) { [weak self] event in
+            self?.receiveActivity(event, request: request)
+        }
         do {
             try await audio.start()
             guard generation == request, !Task.isCancelled else { return }
             state = .listening
+            watchActivity(request: request)
         } catch {
             guard generation == request else { return }
             audio.cancel(); state = .paused
@@ -58,11 +128,16 @@ import Observation
     public func finish(submit: Bool = true, draftReason: DraftReason = .recordingLimit, send: @MainActor (String) async -> Bool) async {
         guard !privacyLocked, state == .listening else { return }
         let request = generation
+        activityWatchdog?.cancel(); activityWatchdog = nil; endpointCountdown = nil
         state = .transcribing
         do {
             let text = try await audio.finish().trimmingCharacters(in: .whitespacesAndNewlines)
             guard generation == request, !Task.isCancelled else { return }
-            guard !text.isEmpty else { state = .paused; problem = "No speech was recognized. Try again."; return }
+            guard !text.isEmpty else {
+                state = .paused
+                problem = !submit && draftReason == .pause ? nil : "No speech was recognized. Try again."
+                return
+            }
             transcript = text; spoken = [:]; pendingCompletion = nil
             submitting = submit
             let sent = await send(text)
@@ -147,6 +222,7 @@ import Observation
 
     private func stopAudio() {
         generation += 1
+        activityWatchdog?.cancel(); activityWatchdog = nil; endpointCountdown = nil; lastActivityAt = nil
         drainTask?.cancel(); drainTask = nil
         audio.cancel(); audio.silence(); spoken = [:]; submitting = false; pendingCompletion = nil
     }

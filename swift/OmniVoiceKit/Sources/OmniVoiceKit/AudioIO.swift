@@ -9,8 +9,13 @@ final class CaptureFile: @unchecked Sendable {
     init(url: URL, format: AVAudioFormat) throws { file = try AVAudioFile(forWriting: url, settings: format.settings) }
     /// Build outside AudioIO's main-actor context. The AVAudioEngine callback runs on
     /// its realtime thread; do not capture an actor executor or escape its PCM buffer.
-    nonisolated static func tap(for writer: CaptureFile) -> @Sendable (AVAudioPCMBuffer, AVAudioTime) -> Void {
-        { buffer, _ in writer.append(buffer) }
+    nonisolated static func tap(for writer: CaptureFile, activity: LocalSpeechActivity? = nil) -> @Sendable (AVAudioPCMBuffer, AVAudioTime) -> Void {
+        { buffer, time in
+            writer.append(buffer)
+            // Convert host-time evidence to a scalar before leaving this callback.
+            let capturedEnd = time.isHostTimeValid ? AVAudioTime.seconds(forHostTime: time.hostTime) + Double(buffer.frameLength) / buffer.format.sampleRate : nil
+            activity?.append(buffer, capturedEnd: capturedEnd)
+        }
     }
     func append(_ buffer: AVAudioPCMBuffer) {
         lock.lock(); defer { lock.unlock() }
@@ -24,12 +29,14 @@ final class CaptureFile: @unchecked Sendable {
 @MainActor public final class AudioIO {
     private let engine = AVAudioEngine()
     private var file: CaptureFile?
+    private var speechActivity: LocalSpeechActivity?
+    private var vadManager: VadManager?
     private var starting = false
     private var generation: UInt64 = 0
     private let permission: (@MainActor () async -> Bool)?
     public init() { permission = nil }
     init(permission: @escaping @MainActor () async -> Bool) { self.permission = permission }
-    public func start(url: URL) async throws {
+    public func start(url: URL, activity: (@Sendable (SpeechActivityEvent) -> Void)? = nil) async throws {
         guard file == nil, !starting else { throw VoiceFailure.unavailable("A recording is already starting or running.") }
         starting = true
         let requestGeneration = generation
@@ -45,6 +52,17 @@ final class CaptureFile: @unchecked Sendable {
         }
         guard requestGeneration == generation, !Task.isCancelled else { throw CancellationError() }
         guard granted else { throw VoiceFailure.permission }
+        var monitor: LocalSpeechActivity?
+        if let activity {
+            do {
+                if vadManager == nil { vadManager = try await VadManager() }
+                guard requestGeneration == generation, !Task.isCancelled else { throw CancellationError() }
+                if let vadManager { monitor = LocalSpeechActivity(manager: vadManager, receive: activity) }
+            } catch {
+                guard requestGeneration == generation, !Task.isCancelled else { throw CancellationError() }
+                activity(.unavailable("The local speech detector could not be prepared. Use Send turn. Automatic mode may need a model download."))
+            }
+        }
         var tapInstalled = false
         var capture: CaptureFile?
         do {
@@ -59,10 +77,11 @@ final class CaptureFile: @unchecked Sendable {
             guard format.sampleRate > 0 else { throw VoiceFailure.unavailable("No microphone input is available.") }
             let writer = try CaptureFile(url: url, format: format)
             capture = writer
-            input.installTap(onBus: 0, bufferSize: 1024, format: format, block: CaptureFile.tap(for: writer))
+            input.installTap(onBus: 0, bufferSize: 1024, format: format, block: CaptureFile.tap(for: writer, activity: monitor))
             tapInstalled = true
-            engine.prepare(); try engine.start(); file = writer
+            engine.prepare(); try engine.start(); file = writer; speechActivity = monitor
         } catch {
+            monitor?.stop()
             engine.stop()
             if tapInstalled { engine.inputNode.removeTap(onBus: 0) }
             try? capture?.close()
@@ -75,6 +94,7 @@ final class CaptureFile: @unchecked Sendable {
     public func stop() throws {
         // Also cancels a pending permission prompt, even before a file/tap exists.
         generation &+= 1
+        speechActivity?.stop(); speechActivity = nil
         guard let capture = file else { return }
         engine.stop(); engine.inputNode.removeTap(onBus: 0); file = nil
         #if os(iOS)

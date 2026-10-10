@@ -187,22 +187,22 @@ struct Walk {
         // Before the app.
         let first = model(server: nil, signedIn: false)
         await first.start()
-        try await draw("first-run-server", RootView(app: first))
+        try await draw("first-run-server", RootView(app: first, connectsNativeNotifications: false))
         first.serverText = "not an address"
         await first.submitServer()
-        try await draw("first-run-bad-address", RootView(app: first))
+        try await draw("first-run-bad-address", RootView(app: first, connectsNativeNotifications: false))
         first.serverText = "https://prism.example.com"
         await first.submitServer()
-        try await draw("sign-in", RootView(app: first))
-        try await draw("signing-in-waiting", RootView(app: first)) { first.signIn() }
+        try await draw("sign-in", RootView(app: first, connectsNativeNotifications: false))
+        try await draw("signing-in-waiting", RootView(app: first, connectsNativeNotifications: false)) { first.signIn() }
         first.cancelSignIn()
 
         let unreachable = model(probe: .unreachable("timed out"), signedIn: false)
         await unreachable.start()
-        try await draw("cant-connect", RootView(app: unreachable))
+        try await draw("cant-connect", RootView(app: unreachable, connectsNativeNotifications: false))
         let off = model(probe: .omniOff, signedIn: false)
         await off.start()
-        try await draw("server-without-omni", RootView(app: off))
+        try await draw("server-without-omni", RootView(app: off, connectsNativeNotifications: false))
 
         // Nothing yet.
         let empty = SampleService()
@@ -269,7 +269,7 @@ struct Walk {
         try await draw("settings", size: CGSize(width: 620, height: 680), SettingsView(app: settings))
         let signedOut = model(signedIn: false)
         await signedOut.start()
-        try await draw("signed-out", RootView(app: signedOut))
+        try await draw("signed-out", RootView(app: signedOut, connectsNativeNotifications: false))
     }
 }
 #endif

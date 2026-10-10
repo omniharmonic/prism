@@ -133,6 +133,7 @@ struct ThreadSections: View {
     /// true in a sidebar whose list holds the selection; false where a row is a link that
     /// pushes the thread (the iPhone's list).
     var selectable = true
+    @AppStorage("omni.history.collapsedSections") private var collapsedSections = ""
     /// Take a thread out of the list (the row's menu, or a swipe).
     var remove: (String) -> Void = { _ in }
 
@@ -173,28 +174,52 @@ struct ThreadSections: View {
             }
         }
         ForEach(threads.sections) { section in
-            Section(section.title) {
-                ForEach(section.threads) { thread in
-                    Group {
-                        if selectable {
-                            ThreadRow(thread: thread).tag(Destination.thread(thread.id))
-                        } else {
-                            NavigationLink(value: Destination.thread(thread.id)) { ThreadRow(thread: thread) }
+            Section {
+                if !isCollapsed(section) || threads.isSearching {
+                    ForEach(section.threads) { thread in
+                        Group {
+                            if selectable {
+                                ThreadRow(thread: thread).tag(Destination.thread(thread.id))
+                            } else {
+                                NavigationLink(value: Destination.thread(thread.id)) { ThreadRow(thread: thread) }
+                            }
                         }
+                        .accessibilityIdentifier("thread.\(thread.id)")
+                        .contextMenu {
+                            Button(thread.gone ? "Remove from List" : "Archive Thread") { remove(thread.id) }
+                        }
+                        #if os(iOS)
+                        .swipeActions(edge: .trailing) {
+                            Button(thread.gone ? "Remove" : "Archive") { remove(thread.id) }
+                                .tint(.gray)
+                        }
+                        #endif
                     }
-                    .accessibilityIdentifier("thread.\(thread.id)")
-                    .contextMenu {
-                        Button(thread.gone ? "Remove from List" : "Archive Thread") { remove(thread.id) }
-                    }
-                    #if os(iOS)
-                    .swipeActions(edge: .trailing) {
-                        Button(thread.gone ? "Remove" : "Archive") { remove(thread.id) }
-                            .tint(.gray)
-                    }
-                    #endif
                 }
-            }
+            } header: {
+                if section.id == "new-replies" {
+                    Text("New replies (\(section.threads.count))")
+                } else {
+                    Button { toggleSection(section) } label: {
+                        HStack {
+                            Text("\(section.title) (\(section.threads.count))")
+                            Spacer()
+                            Image(systemName: isCollapsed(section) ? "chevron.right" : "chevron.down")
+                        }.frame(minHeight: 44).contentShape(Rectangle())
+                    }.buttonStyle(.plain)
+                    .accessibilityLabel("\(section.title), \(section.threads.count) conversations")
+                    .accessibilityHint(isCollapsed(section) ? "Expand history section" : "Collapse history section")
+                }
+            }.textCase(nil)
         }
+    }
+    private func isCollapsed(_ section: ThreadSection) -> Bool {
+        section.id != "new-replies" && collapsedSections.split(separator: ",").contains(Substring(section.id))
+    }
+    private func toggleSection(_ section: ThreadSection) {
+        var collapsed = Set(collapsedSections.split(separator: ",").map(String.init))
+        if !collapsed.insert(section.id).inserted { collapsed.remove(section.id) }
+        collapsedSections = collapsed.sorted().joined(separator: ",")
     }
 }
 

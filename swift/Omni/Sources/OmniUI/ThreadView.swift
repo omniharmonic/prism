@@ -7,24 +7,31 @@ struct ThreadView: View {
     let session: SessionModel
     @Bindable var model: ThreadModel
     @State private var voiceExpanded = false
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
-        VStack(spacing: 0) {
+        GeometryReader { area in
             transcript
-            if !model.isUnavailable {
-                banners
-                Divider()
-                ConversationVoiceControl(session: session, model: model, expanded: $voiceExpanded)
-                Composer(
-                    text: $model.draft,
-                    placeholder: "Message Omni…",
-                    canSend: model.canSend,
-                    isRunning: model.isRunning,
-                    isStopping: model.isStopping,
-                    onSend: { Task { await model.send() } },
-                    onStop: { Task { await model.stop() } }
-                )
-            }
+                .safeAreaInset(edge: .bottom, spacing: 0) {
+                    if !model.isUnavailable {
+                        VStack(spacing: 0) {
+                            banners
+                            Divider()
+                            ConversationVoiceControl(session: session, model: model, expanded: $voiceExpanded,
+                                                     maximumHeight: max(120, min(280, area.size.height * 0.42)))
+                            Composer(
+                                text: $model.draft,
+                                placeholder: "Message Omni…",
+                                canSend: model.canSend,
+                                isRunning: model.isRunning,
+                                isStopping: model.isStopping,
+                                onSend: { Task { await model.send() } },
+                                onStop: { Task { await model.stop() } }
+                            )
+                            .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                }
         }
         .navigationTitle(barTitle)
         #if os(iOS)
@@ -67,7 +74,12 @@ struct ThreadView: View {
                 .disabled(model.isUnavailable)
             }
         }
-        .onAppear { voiceExpanded = session.voiceThreadID == model.threadID }
+        .onAppear {
+            model.setSceneActive(scenePhase == .active && !PrivacyLock.shared.locked)
+            voiceExpanded = session.voiceThreadID == model.threadID
+        }
+        .onChange(of: scenePhase) { model.setSceneActive(scenePhase == .active && !PrivacyLock.shared.locked) }
+        .onChange(of: PrivacyLock.shared.locked) { model.setSceneActive(scenePhase == .active && !PrivacyLock.shared.locked) }
         .task(id: model.threadID) { await session.openThread(model) }
         .onDisappear { model.close() }
     }

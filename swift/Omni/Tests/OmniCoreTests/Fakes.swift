@@ -119,6 +119,20 @@ final class FakeService: OmniService, @unchecked Sendable {
     private var _createdRequests: [NewThread] = []
     private var _patches = Queue<OmniThread>()
     private var _patchCalls: [String] = []
+    private var _readCalls: [String] = []
+    private var _holdDetail = false
+    private var _detailGate: CheckedContinuation<Void, Never>?
+    var readCalls: [String] { locked { _readCalls } }
+    var detailIsWaiting: Bool { locked { _detailGate != nil } }
+    func holdNextDetail() { locked { _holdDetail = true } }
+    func releaseDetail() {
+        let gate = locked { let gate = _detailGate; _detailGate = nil; return gate }
+        gate?.resume()
+    }
+    func acknowledgeThreadRead(_ id: String, through sequence: Int) async throws -> Bool {
+        locked { _readCalls.append("\(id):\(sequence)") }
+        return true
+    }
     private var _streams: [[Result<ThreadStreamUpdate, any Error>]] = []
     private var _manualStreams: [AsyncThrowingStream<ThreadStreamUpdate, any Error>] = []
     private var _notices: AsyncThrowingStream<NoticeStreamUpdate, any Error>?
@@ -215,7 +229,10 @@ final class FakeService: OmniService, @unchecked Sendable {
         }.get()
     }
     func thread(_ id: String) async throws -> ThreadDetail {
-        try locked { () -> Result<ThreadDetail, any Error> in
+        if locked({ let hold = _holdDetail; _holdDetail = false; return hold }) {
+            await withCheckedContinuation { continuation in locked { _detailGate = continuation } }
+        }
+        return try locked { () -> Result<ThreadDetail, any Error> in
             _detailReads += 1
             return Result { try _details.next() }
         }.get()
