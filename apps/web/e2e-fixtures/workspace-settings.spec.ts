@@ -40,3 +40,37 @@ test("connections without settings show a useful empty state and never read publ
   await expect(page.getByRole("tablist")).toHaveCount(0);
   expect(await page.evaluate(() => (window as any).prismSettingsFixture.publicationReads)).toBe(0);
 });
+
+test("delegated vault admins retain Members but cannot manage global vaults or federation", async ({ page }) => {
+ await page.goto("/e2e-fixtures/workspace-settings.html?admin");
+ await expect(page.getByRole("tab", { name:"Members", exact:true })).toBeVisible();
+ await expect(page.getByRole("tab", { name:"Federate", exact:true })).toHaveCount(0);
+ await expect(page.getByRole("tab", { name:"Workspaces", exact:true })).toHaveCount(0);
+ await expect(page.getByRole("tab", { name:"Access", exact:true })).toHaveCount(0);
+ await page.getByRole("tab", { name:"Vaults", exact:true }).click();
+ await expect(page.getByText("Shared", { exact:true })).toBeVisible();
+ await expect(page.getByRole("button", { name:/remove|create|link/i })).toHaveCount(0);
+});
+
+for (const width of [1024, 1440]) test(`settings section navigation at ${width}px`, async ({page}) => {
+ await page.setViewportSize({width,height:900});
+ await page.emulateMedia({reducedMotion:"reduce"});
+ await page.goto("/e2e-fixtures/workspace-settings.html");
+ await expect(page.getByRole("tablist")).toHaveAttribute("aria-orientation","vertical");
+ const publish = page.getByRole("tab",{name:"Publish",exact:true});
+ await publish.focus(); await page.keyboard.press("ArrowDown");
+ await expect(page.getByRole("tab",{name:"Federate",exact:true})).toBeFocused();
+ await page.getByRole("tab",{name:"Vaults",exact:true}).click();
+ await expect(page.getByText("Connected vaults",{exact:true})).toBeVisible();
+ expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+ await page.screenshot({path:test.info().outputPath(`settings-${width}.png`)});
+});
+
+for (const width of [390,1440]) test(`dark settings material at ${width}px`, async ({page}) => {
+ await page.setViewportSize({width,height:900});
+ await page.goto("/e2e-fixtures/workspace-settings.html?dark");
+ await page.getByRole("tab",{name:"Vaults",exact:true}).click();
+ await expect(page.getByText("Shared",{exact:true})).toBeVisible();
+ expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+ await page.screenshot({path:test.info().outputPath(`settings-dark-${width}.png`)});
+});

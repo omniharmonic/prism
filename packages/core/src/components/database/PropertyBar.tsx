@@ -43,9 +43,9 @@ import { usePropertyPresentation } from "./propertyPresentation";
 import { CustomizeProperties } from "./PinnedProperties";
 import "./database.css";
 
-import { formatDate as fmtDate, formatDateTime as fmtDateTime } from "../../lib/datetime/format";
+import { formatDateTime as fmtDateTime } from "../../lib/datetime/format";
 
-export function PropertyBar({ note, readOnly, onOpenAll, layout = "bar", trailing, schemaOnly = false, showTags = true }: {
+export function PropertyBar({ note, readOnly, onOpenAll, layout = "bar", trailing, detailsContent, schemaOnly = false, showTags = true }: {
   note: Note;
   /** Only schema-declared fields (the side panel lists free keys itself). */
   schemaOnly?: boolean;
@@ -53,6 +53,8 @@ export function PropertyBar({ note, readOnly, onOpenAll, layout = "bar", trailin
   readOnly?: boolean;
   /** Replaces the built-in Updated + "All properties" items (e.g. the page's details disclosure). */
   trailing?: ReactNode;
+  /** Read-only details placed inside the single Properties disclosure. */
+  detailsContent?: ReactNode;
   /** Opens the full properties panel (the page's side panel). */
   onOpenAll?: () => void;
   layout?: "bar" | "panel";
@@ -162,14 +164,6 @@ export function PropertyBar({ note, readOnly, onOpenAll, layout = "bar", trailin
           />
         </div>
       ))}
-      {(more.length > 0 || (layout === "bar" && presentation.available && props.length > 0)) && (
-        <div className="db-prop-actions db-prop-more">
-          <button type="button" className="db-ghost focus-ring" aria-expanded={expanded} onClick={toggleExpanded}>
-            <ChevronRight size={13} aria-hidden="true" className="db-more-chevron" /> {more.length ? `${more.length} more ${more.length === 1 ? "property" : "properties"}` : expanded ? "Collapse properties" : "Properties"}
-          </button>
-        </div>
-      )}
-      {layout === "bar" && presentation.available && props.length > 0 && <div className="db-prop-actions"><PropertyDisplay properties={props} visible={personal?.visible ?? (pinMode ? top : props.filter(visible)).map(p => p.key)} onChange={keys => presentation.save({ visible: keys, collapsed: personal?.collapsed ?? true })} onReset={() => presentation.save(null)} /></div>}
       <ReverseRelations note={note} editable={editable} />
       {showTags && (
         <div className="db-prop db-prop-tags">
@@ -177,48 +171,53 @@ export function PropertyBar({ note, readOnly, onOpenAll, layout = "bar", trailin
           <TagChips note={note} editable={canOrganize} />
         </div>
       )}
-      {layout === "bar" && !trailing && note.updatedAt && !Number.isNaN(Date.parse(note.updatedAt)) && (
-        <div className="db-prop db-prop-updated">
-          <span className="db-prop-label">Updated</span>
-          <time dateTime={note.updatedAt} title={fmtDateTime(new Date(note.updatedAt))}>{relativeDay(note.updatedAt)}</time>
-        </div>
-      )}
-      {(editable || canCustomize || (onOpenAll && !trailing)) && (
-        <div className="db-prop-actions">
-          {editable && (
-            <AddProperty
-              empty={editable ? hiddenEmpty : []}
-              canCreate={editable}
-              canEditSchema={canEditSchema}
-              firstTag={tags[0] ?? null}
-              existing={[...props.map((p) => p.key), ...resolved.filter(isShadowTagsKey).map((p) => p.key)]}
-              showEmpty={showEmpty}
-              deleted={canEditSchema ? deletedProps : []}
-              onManageDeleted={(p) => { if (p.tag) setEditingProp({ tag: p.tag, key: p.key }); }}
-              hiddenCount={hiddenEmpty.length}
-              onToggleEmpty={() => setShowEmpty((v) => !v)}
-              onReveal={reveal}
-              knownTags={Object.keys(schemas)}
-              onCreateSchema={async (tag, key, patch) => {
-                await schemaEdit.update(tag, patch);
-                reveal(key);
-              }}
-              onCreateFree={(label, kind) => {
-                // A free property exists once it has a value; seed the editor with the kind's empty value.
-                const key = keyFromLabel(label);
-                if (kind === "checkbox") void write(note, { [key]: false }, { [key]: null }).then(() => reveal(key));
-                else {
-                  setFreeDraft({ key, label: label.trim(), kind });
-                }
-              }}
-            />
-          )}
-          {canCustomize && (
-            <CustomizeProperties tags={customTags} schemas={schemas} onSave={(tag, pinned) => schemaEdit.update(tag, { pinned })} />
-          )}
-          {onOpenAll && layout === "bar" && !trailing && (
-            <button type="button" className="db-ghost focus-ring" onClick={onOpenAll}>All properties <ChevronRight size={13} aria-hidden="true" /></button>
-          )}
+      {(editable || canCustomize || detailsContent || (layout === "bar" && presentation.available && props.length > 0) || (onOpenAll && !trailing)) && (
+        <div className="db-prop-actions db-property-toolbar">
+          {(more.length > 0 || (layout === "bar" && presentation.available && props.length > 0)) && <button type="button" className="db-ghost focus-ring db-property-expand" aria-expanded={expanded} onClick={toggleExpanded}>
+            <ChevronRight size={13} aria-hidden="true" className="db-more-chevron" /> {more.length ? `${more.length} more ${more.length === 1 ? "property" : "properties"}` : expanded ? "Collapse properties" : "Show properties"}
+          </button>}
+          <details className="db-properties-menu" open={layout === "panel" || undefined} onKeyDown={event => { if (layout === "bar" && event.key === "Escape") { event.currentTarget.open = false; event.currentTarget.querySelector("summary")?.focus(); } }}>
+            <summary className="db-ghost focus-ring">Properties <ChevronRight size={13} aria-hidden="true" /></summary>
+            <div className="db-properties-menu-content">
+              {layout === "bar" && presentation.available && props.length > 0 && <PropertyDisplay properties={props} visible={personal?.visible ?? (pinMode ? top : props.filter(visible)).map(p => p.key)} onChange={keys => presentation.save({ visible: keys, collapsed: personal?.collapsed ?? true })} onReset={() => presentation.save(null)} />}
+              {editable && (
+                <AddProperty
+                  empty={editable ? hiddenEmpty : []}
+                  canCreate={editable}
+                  canEditSchema={canEditSchema}
+                  firstTag={tags[0] ?? null}
+                  existing={[...props.map((p) => p.key), ...resolved.filter(isShadowTagsKey).map((p) => p.key)]}
+                  showEmpty={showEmpty}
+                  deleted={canEditSchema ? deletedProps : []}
+                  onManageDeleted={(p) => { if (p.tag) setEditingProp({ tag: p.tag, key: p.key }); }}
+                  hiddenCount={hiddenEmpty.length}
+                  onToggleEmpty={() => setShowEmpty((v) => !v)}
+                  onReveal={reveal}
+                  knownTags={Object.keys(schemas)}
+                  onCreateSchema={async (tag, key, patch) => {
+                    await schemaEdit.update(tag, patch);
+                    reveal(key);
+                  }}
+                  onCreateFree={(label, kind) => {
+                    // A free property exists once it has a value; seed the editor with the kind's empty value.
+                    const key = keyFromLabel(label);
+                    if (kind === "checkbox") void write(note, { [key]: false }, { [key]: null }).then(() => reveal(key));
+                    else {
+                      setFreeDraft({ key, label: label.trim(), kind });
+                    }
+                  }}
+                />
+              )}
+              {canCustomize && (
+                <CustomizeProperties tags={customTags} schemas={schemas} onSave={(tag, pinned) => schemaEdit.update(tag, { pinned })} />
+              )}
+              {onOpenAll && layout === "bar" && !trailing && (
+                <button type="button" className="db-ghost focus-ring" onClick={onOpenAll}>All properties <ChevronRight size={13} aria-hidden="true" /></button>
+              )}
+              {detailsContent}
+              {layout === "bar" && !detailsContent && !trailing && note.updatedAt && !Number.isNaN(Date.parse(note.updatedAt)) && <p className="db-property-updated-detail">Updated <time dateTime={note.updatedAt}>{fmtDateTime(new Date(note.updatedAt))}</time></p>}
+            </div>
+          </details>
         </div>
       )}
       {freeDraftNode()}
@@ -246,15 +245,6 @@ export function PropertyBar({ note, readOnly, onOpenAll, layout = "bar", trailin
 const isShadowTagsKey = (p: PropertyDef): boolean => p.tag === null && p.key.toLowerCase() === "tags";
 
 type FreeDraft = { key: string; label: string; kind: PropertyKind } | null;
-
-function relativeDay(iso: string): string {
-  const d = new Date(iso);
-  const today = new Date();
-  const days = Math.round((new Date(today.toDateString()).getTime() - new Date(d.toDateString()).getTime()) / 86_400_000);
-  if (days === 0) return "Today";
-  if (days === 1) return "Yesterday";
-  return fmtDate(d, { month: "short", day: "numeric", ...(d.getFullYear() === today.getFullYear() ? {} : { year: "numeric" }) });
-}
 
 function AddProperty({ empty, canCreate, canEditSchema, firstTag, existing, knownTags, showEmpty, hiddenCount, onToggleEmpty, onReveal, onCreateSchema, onCreateFree, deleted, onManageDeleted }: {
   deleted: PropertyDef[]; onManageDeleted: (p: PropertyDef) => void;

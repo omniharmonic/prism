@@ -1,3 +1,5 @@
+import "./network/network-workspace.css";
+import { useIsMobile } from "../../app/hooks/useIsMobile";
 import { useEffect, useState } from "react";
 import { Globe, Radio, Database, Scale, Users, Building2, Server, Boxes } from "lucide-react";
 import { Tabs } from "../ui/Tabs";
@@ -33,6 +35,7 @@ export default function NetworkRenderer(_props: RendererProps) {
   // plain member would mount them, fire admin-only /acl/* calls, and see 403s.
   // Re-read whenever the active vault changes (role is per-workspace). When the
   // shell has no getViewer (desktop = local operator), treat as owner.
+  const compact = useIsMobile();
   const [role, setRole] = useState<WorkspaceRole | null>(sharing?.getViewer ? null : "owner");
   const [isServerOwner, setIsServerOwner] = useState<boolean>(!sharing?.getViewer);
   useEffect(() => {
@@ -40,6 +43,7 @@ export default function NetworkRenderer(_props: RendererProps) {
     if (!getViewer) { setRole("owner"); setIsServerOwner(true); return; }
     let live = true;
     setRole(null);
+    setIsServerOwner(false);
     getViewer()
       .then((v) => { if (live) { setRole(v.role); setIsServerOwner(v.isServerOwner); } })
       .catch(() => { if (live) { setRole("guest"); setIsServerOwner(false); } });
@@ -49,7 +53,7 @@ export default function NetworkRenderer(_props: RendererProps) {
   const isAdmin = role === "owner" || role === "admin";
 
   const canPublish = !!sharing?.publishTag && isAdmin;
-  const canFederate = !!sharing?.getNodeIdentity && isAdmin;
+  const canFederate = !!sharing?.getNodeIdentity && isServerOwner;
   // Multi-vault is the Prism Server's owner-passthrough registry — web only. The
   // desktop talks to its own single configured vault, so it doesn't expose
   // listVaults; hide the tab there rather than show a dead "not available" panel.
@@ -104,36 +108,31 @@ export default function NetworkRenderer(_props: RendererProps) {
   return (
     <section
       aria-label="Workspace settings"
-      className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden bg-[var(--bg-base)]"
+      className="network-workspace"
     >
-      <header className="shrink-0 border-b border-[var(--glass-border)] px-4 pb-3 pt-5 sm:px-7 sm:pt-7">
-        <div className={`mx-auto ${activeTab === "publish" ? "max-w-[1180px]" : "max-w-[880px]"}`}>
+      <header className="network-workspace-header">
+        <div className="network-workspace-title">
           <h1 className="m-0 text-[22px] font-semibold tracking-tight text-[var(--text-primary)]">Workspace settings</h1>
           <p className="mb-0 mt-1 text-[13px] leading-relaxed text-[var(--text-secondary)]">
-            {isAdmin
+            {isServerOwner
               ? "Manage your people, published sites, connected vaults, and shared workspace."
+              : isAdmin ? "Manage members and publishing for this vault."
               : "Explore your connected vaults and workspace governance. Your admin manages access and publishing."}
           </p>
-          {tabs.length > 0 && (
-            <div className="mt-4 min-w-0">
-              <Tabs
-                tabs={tabs}
-                activeTab={activeTab!}
-                onChange={setTab}
-                className="[&>button]:min-h-control"
-              />
-            </div>
-          )}
+
         </div>
       </header>
-      <div className="min-h-0 min-w-0 flex-1 overflow-auto px-4 pb-12 pt-5 sm:px-7">
+      {tabs.length > 0 && <nav className="network-workspace-nav" aria-label="Settings sections">
+        <Tabs tabs={tabs} activeTab={activeTab!} onChange={setTab} orientation={compact ? "horizontal" : "vertical"} />
+      </nav>}
+      <div className="network-workspace-content">
         <div className={`mx-auto ${activeTab === "publish" ? "max-w-[1180px]" : "max-w-[880px]"}`}>
           {activeTab === "workspaces" && <WorkspacesPanel />}
           {activeTab === "access" && <WorkspacePanel />}
           {activeTab === "publish" && <PublishPanel />}
           {activeTab === "federate" && <FederatePanel />}
           {activeTab === "members" && <MembersPanel />}
-          {activeTab === "vaults" && <VaultsPanel />}
+          {activeTab === "vaults" && <VaultsPanel isServerOwner={isServerOwner} />}
           {activeTab === "governance" && <GovernancePanel />}
           {activeTab === "server" && <ServerPanel />}
           {!activeTab && (

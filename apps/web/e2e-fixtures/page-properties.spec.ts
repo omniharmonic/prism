@@ -1,6 +1,10 @@
 import { test, expect, type Page } from "@playwright/test";
 
 const state = (page: Page) => page.evaluate(() => { const f = (window as any).dbFixture; return { writes: f.writes, schemaWrites: f.schemaWrites, page: f.notes().find((n: any) => n.id === "page") }; });
+async function configure(page: Page) {
+ const menu = page.getByRole("group", { name:"Page properties" }).locator(".db-properties-menu");
+ if (await menu.getAttribute("open") === null) await menu.locator("summary").click();
+}
 const bar = (page: Page) => page.getByRole("group", { name: "Page properties" });
 
 test("properties under the title: typed values, metadata-only CAS writes, empty fields behind Add property", async ({ page }, info) => {
@@ -20,6 +24,7 @@ test("properties under the title: typed values, metadata-only CAS writes, empty 
   expect(s.writes).toEqual([{ id: "page", set: { status: "done" }, expect: { status: "in-progress" } }]);
   expect(s.page.content).toContain("A single, evolving place"); // the body is never written
 
+  await configure(page);
   await props.getByRole("button", { name: "Add property" }).click();
   await page.getByRole("dialog", { name: "Add a property" }).getByRole("button", { name: /Due$/ }).click();
   const due = page.getByLabel("Due", { exact: true });
@@ -40,6 +45,7 @@ test("properties under the title: typed values, metadata-only CAS writes, empty 
 test("owner adds a typed property and a new option through the schema", async ({ page }) => {
   await page.goto("/e2e-fixtures/databases.html?open=page");
   const props = bar(page);
+  await configure(page);
   await props.getByRole("button", { name: "Add property" }).click();
   const dialog = page.getByRole("dialog", { name: "Add a property" });
   await expect(dialog).toContainText("New property on every “task” page");
@@ -80,6 +86,7 @@ test("tags use a searchable checklist", async ({ page }) => {
 test("person picker links a person note as a wikilink", async ({ page }) => {
   await page.goto("/e2e-fixtures/databases.html?open=page");
   const props = bar(page);
+  await configure(page);
   await props.getByRole("button", { name: "Add property" }).click();
   await page.getByRole("dialog", { name: "Add a property" }).getByRole("button", { name: /Assignee$/ }).click();
   const picker = page.getByRole("dialog", { name: "Link Assignee" });
@@ -184,6 +191,7 @@ test("rename, retype with preview, delete property", async ({ page }) => {
   expect((await stored()).priority).toBe("medium");
   await priority.getByRole("button", { name: "Close" }).click();
   // Restore from "Add property" → Deleted properties.
+  await configure(page);
   await props.getByRole("button", { name: "Add property" }).click();
   await page.getByRole("dialog", { name: "Add a property" }).getByRole("button", { name: "Manage deleted property Priority" }).click();
   await page.getByRole("dialog", { name: "Edit property Priority" }).getByRole("button", { name: "Restore property" }).click();
@@ -223,6 +231,7 @@ test("owner pins properties: exact order, empty ones as placeholders, the rest b
   expect(await keysShown(page)).toEqual(["status", "priority", "owner"]); // no hint → every filled property
   await expect(props.getByRole("button", { name: /more propert/ })).toHaveCount(0);
 
+  await configure(page);
   await props.getByRole("button", { name: "Customize…" }).click();
   const dialog = page.getByRole("dialog", { name: "Customize properties" });
   await expect(dialog).toContainText("Show at the top of every “task” page");
@@ -269,10 +278,12 @@ test("owner pins properties: exact order, empty ones as placeholders, the rest b
   expect((await state(page)).writes.at(-1)).toEqual({ id: "page", set: { due: "2026-11-02" }, expect: { due: null } });
 
   // Back to "every filled property".
+  await configure(page);
   await bar(page).getByRole("button", { name: "Customize…" }).click();
   await page.getByRole("dialog", { name: "Customize properties" }).getByRole("button", { name: "Show every filled property instead" }).click();
   // A personal collapsed preference survives shared changes; explicitly return to defaults.
   await page.keyboard.press("Escape");
+  await configure(page);
   await bar(page).getByRole("button", { name: "Display properties", exact: true }).click();
   await page.getByRole("dialog", { name: "Display properties" }).getByRole("button", { name: "Use shared defaults" }).click();
   await expect.poll(() => keysShown(page)).toEqual(["status", "priority", "due", "owner"]);
@@ -281,6 +292,7 @@ test("owner pins properties: exact order, empty ones as placeholders, the rest b
 
 test("a non-owner sees the pinned layout and no Customize", async ({ page }) => {
   await page.goto("/e2e-fixtures/databases.html?open=page");
+  await configure(page);
   await bar(page).getByRole("button", { name: "Customize…" }).click();
   const dialog = page.getByRole("dialog", { name: "Customize properties" });
   await dialog.getByLabel("Show Due at top").check();
@@ -300,6 +312,7 @@ test("a non-owner sees the pinned layout and no Customize", async ({ page }) => 
 test("pinned layout on a phone: 44px targets, no sideways scroll", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto("/e2e-fixtures/databases.html?open=page");
+  await configure(page);
   await bar(page).getByRole("button", { name: "Customize…" }).click();
   const dialog = page.getByRole("dialog", { name: "Customize properties" });
   await dialog.getByLabel("Show Due at top").check();
@@ -317,6 +330,7 @@ test("NP-PG-05: checkbox, URL and number editors under the title — typed edito
   await expect(page.locator(".tiptap")).toContainText("A single, evolving place");
   const props = bar(page);
   const add = async (name: RegExp) => {
+  await configure(page);
     await props.getByRole("button", { name: "Add property" }).click();
     await page.getByRole("dialog", { name: "Add a property" }).getByRole("button", { name }).click();
   };

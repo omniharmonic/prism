@@ -12,7 +12,7 @@ import { Badge } from "../../ui/Badge";
 import { Input } from "../../ui/Input";
 import { useCollabSharing, type VaultSummary } from "../../../data/CollabSharing";
 
-export function VaultsPanel() {
+export function VaultsPanel({ isServerOwner = false }: { isServerOwner?: boolean }) {
   const sharing = useCollabSharing();
 
   const [vaults, setVaults] = useState<VaultSummary[]>([]);
@@ -59,7 +59,7 @@ export function VaultsPanel() {
 
   const remove = useCallback(
     async (v: VaultSummary) => {
-      if (!sharing?.removeVault) return;
+      if (!isServerOwner || !sharing?.removeVault) return;
       await sharing.removeVault(v.id);
       await refresh();
     },
@@ -147,7 +147,7 @@ export function VaultsPanel() {
                   </Button>
                 )}
                 {/* Primary (env) vault can't be removed; only added ones. */}
-                {i !== 0 && sharing.removeVault && <RemoveVault vault={v} onRemove={() => remove(v)} />}
+                {isServerOwner && i !== 0 && sharing.removeVault && <RemoveVault vault={v} onRemove={() => remove(v)} />}
               </div>
             );
           })}
@@ -155,11 +155,11 @@ export function VaultsPanel() {
       </section>
 
       {/* Add a vault — create new or link existing (mini onboarding). */}
-      <AddVault sharing={sharing} onAdded={refresh} onSwitch={switchTo} />
+      {isServerOwner && <AddVault sharing={sharing} onAdded={refresh} onSwitch={switchTo} />}
 
       <p style={{ fontSize: 11.5, color: "var(--text-muted)", margin: 0, lineHeight: 1.5 }}>
-        Switching changes which vault every view reads and writes. Publications, share grants, and
-        federation belong to the vault that owns them.
+        Switching changes which vault every view reads and writes. Publications and share grants belong
+        to their vault; the server operator manages connected vaults and federation.
       </p>
     </div>
   );

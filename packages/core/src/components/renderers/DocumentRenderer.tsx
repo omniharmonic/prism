@@ -519,7 +519,7 @@ export default function DocumentRenderer({ note, onMetadataChange, readOnly }: R
             details={(() => {
               const pageDetails = <PageProperties path={note.path} tags={note.tags ?? []} updatedAt={note.updatedAt} onOpenAll={() => useUIStore.setState({contextPanelOpen:true,contextPanelTab:"metadata"})}/>;
               // Published / anonymous surfaces keep the plain details: page metadata is not published.
-              return readOnly ? pageDetails : <PropertyBar note={note} trailing={pageDetails} />;
+              return readOnly ? pageDetails : <PropertyBar note={note} detailsContent={<PageProperties embedded path={note.path} tags={note.tags ?? []} updatedAt={note.updatedAt} onOpenAll={() => useUIStore.setState({contextPanelOpen:true,contextPanelTab:"metadata"})}/>} />;
             })()}
             onRename={readOnly || governed ? undefined : handleRename}
             icon={note.metadata?.icon as string | undefined}

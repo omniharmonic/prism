@@ -254,6 +254,7 @@ function Explorer({
   return (
     <section
       aria-label="Connected knowledge"
+      data-no-edge-swipe
       className={`prism-graph flex h-full min-h-0 flex-col bg-[var(--bg-surface)] text-[var(--text-primary)] ${fullscreen ? "prism-graph--full" : ""}`}
     >
       <header className="prism-graph__header">

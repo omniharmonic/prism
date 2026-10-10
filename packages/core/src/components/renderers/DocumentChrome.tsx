@@ -418,22 +418,24 @@ export function FontSwitch({ value, onChange }: { value: ContentFont; onChange: 
 /** A compact, read-only properties disclosure shared by normal and live pages.
  * Hosts may supply their existing full-properties action; this never mutates a
  * document or invents save/permission state. */
-export function PageProperties({path, tags, updatedAt, onOpenAll}: {
-  path?: string | null; tags?: string[]; updatedAt?: string | null; onOpenAll?: () => void;
+export function PageProperties({path, tags, updatedAt, onOpenAll, embedded = false}: {
+  path?: string | null; tags?: string[]; updatedAt?: string | null; onOpenAll?: () => void; embedded?: boolean;
 }) {
   const date = updatedAt && !Number.isNaN(new Date(updatedAt).getTime()) ? new Date(updatedAt) : null;
+  const content = <div className="document-properties-content">
+    <dl>
+      {path && <><dt>Location</dt><dd>{path}</dd></>}
+      {tags && <><dt>Tags</dt><dd>{tags.length ? tags.map(tag => <span className="document-property-tag" key={tag}>{tag}</span>) : "No tags"}</dd></>}
+      {date && <><dt>Updated</dt><dd>{fmtDateTime(date)}</dd></>}
+    </dl>
+    {onOpenAll && <button type="button" className="document-properties-control focus-ring" onClick={onOpenAll}>Open all properties <ChevronRight size={14} aria-hidden="true" /></button>}
+  </div>;
+  if (embedded) return content;
   return <>
     {date && <time dateTime={updatedAt!} title={fmtDateTime(date)}>Updated {fmtDate(date, {month:"short",day:"numeric"})}</time>}
     <details className="document-properties-disclosure">
       <summary className="focus-ring">Properties <ChevronRight size={14} aria-hidden="true" /></summary>
-      <div className="document-properties-content">
-        <dl>
-          {path && <><dt>Location</dt><dd>{path}</dd></>}
-          {tags && <><dt>Tags</dt><dd>{tags.length ? tags.map(tag => <span className="document-property-tag" key={tag}>{tag}</span>) : "No tags"}</dd></>}
-          {date && <><dt>Updated</dt><dd>{fmtDateTime(date)}</dd></>}
-        </dl>
-        {onOpenAll && <button type="button" className="document-properties-control focus-ring" onClick={onOpenAll}>Open all properties <ChevronRight size={14} aria-hidden="true" /></button>}
-      </div>
+      {content}
     </details>
   </>;
 }
