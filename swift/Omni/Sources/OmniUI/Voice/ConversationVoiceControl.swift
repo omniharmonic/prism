@@ -126,9 +126,14 @@ struct ConversationVoiceControl: View {
         switch voice.state {
         case .off: voice.canStart ? "Start a session. Silence never sends your turn." : "Finishing speech preparation…"
         case .paused:
-            if !(model?.draft ?? draft?.wrappedValue ?? "").isEmpty { "Microphone is off. Review or clear your draft before resuming." }
+            if !(model?.draft ?? draft?.wrappedValue ?? "").isEmpty { "Microphone is off. Send your draft in chat, or clear it to resume listening." }
+            else if session.approvals.pending.contains(where: { $0.approval.threadId == model?.threadID }) { "Microphone is off. An approval needs your review in chat." }
+            else if model?.isUnavailable == true { "Microphone is off. This conversation is unavailable." }
+            else if model?.pendingText != nil { "Microphone is off. Review the unsent message in chat before resuming." }
+            else if model?.sendState == .sending || session.threads.isCreating { "Microphone is off while your message is being sent." }
+            else if model?.streamProblem != nil { "Microphone is off. Check the connection issue in chat before resuming." }
+            else if model?.turnEnded != nil { "Microphone is off. Review the interrupted turn in chat before resuming." }
             else if running { "Microphone and narration are off. Omni’s task continues in chat." }
-            else if model?.turnEnded != nil || model?.streamProblem != nil || session.approvals.pending.contains(where: { $0.approval.threadId == model?.threadID }) { "Microphone is off. Review the conversation before resuming." }
             else { "Microphone is off. Resume when you’re ready." }
         case .speaking: "Microphone is off during playback. Listening resumes after the full reply."
         case .preparing: "Preparing speech on this device. Models may download on first use."
@@ -152,7 +157,7 @@ struct ConversationVoiceControl: View {
                 secondaryLayout {
                     if voice.state != .paused {
                         Button { pause() } label: { Label("Pause", systemImage: "pause.fill").frame(minHeight: 44) }
-                            .accessibilityHint("Turns off the microphone and stops narration. Omni’s task continues in chat.")
+                            .accessibilityHint(voice.state == .listening ? "Keeps your words as an unsent draft" : "Turns off the microphone and stops narration. Omni’s task continues in chat.")
                     }
                     Button { cancel() } label: { Text("End session").frame(minHeight: 44) }
                         .accessibilityHint("Ends microphone capture and narration. Omni’s task continues in chat.")
@@ -224,6 +229,10 @@ struct ConversationVoiceControl: View {
         }
     }
     private func pause() {
+        if voice.state == .listening, (model?.draft ?? draft?.wrappedValue ?? "").isEmpty {
+            finish(submit: false, draftReason: .pause)
+            return
+        }
         action?.cancel(); action = nil; timeout?.cancel(); timeout = nil
         device.stopPreview(); voice.pause()
     }
@@ -234,11 +243,11 @@ struct ConversationVoiceControl: View {
         if session.conversationVoice !== voice { voice.cancel() }
         else { session.cancelVoice(voice, threadID: model?.threadID) }
     }
-    private func finish(submit: Bool = true) {
+    private func finish(submit: Bool = true, draftReason: VoiceConversation.DraftReason = .recordingLimit) {
         timeout?.cancel(); timeout = nil
         let lease = session.voiceLease
         action = Task {
-            await voice.finish(submit: submit) { text in
+            await voice.finish(submit: submit, draftReason: draftReason) { text in
                 guard !Task.isCancelled, lease == session.voiceLease, !PrivacyLock.shared.locked, mounted, phase == .active, !running, (model?.draft ?? draft?.wrappedValue ?? "").isEmpty else { return false }
                 if let model { model.draft = text } else { draft?.wrappedValue = text }
                 if !submit { return true }
