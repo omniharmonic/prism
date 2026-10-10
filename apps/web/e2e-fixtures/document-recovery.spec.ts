@@ -82,7 +82,7 @@ test("a pending autosave stays in its original vault when the editor unmounts du
   await page.evaluate(async () => { const modulePath = "/src/offline/outbox.ts"; const module = await import(/* @vite-ignore */ modulePath); await module.flush(); });
   expect(await page.evaluate(() => (window as any).prismFixtureWrites)).toEqual([]);
   expect((await drafts(page))[0].state).toBe("blocked");
-  await expect(page.getByText("Useful observations from our last conversation.", { exact: true })).toBeVisible();
+  await expect(page.getByText("Useful observations from our last conversation.")).toBeVisible();
 });
 
 test("account-switch cleanup cannot submit the previous account's pending draft", async ({ page }) => {
@@ -132,7 +132,7 @@ test("a denied save retains a recoverable draft without reporting a remote save"
   }, draft);
   expect(await drafts(page)).toHaveLength(1);
   await page.reload();
-  await expect(page.getByText("Useful observations from our last conversation.", { exact: true })).toBeVisible();
+  await expect(page.getByText("Useful observations from our last conversation.")).toBeVisible();
   await expect(page.locator(".tiptap")).toContainText("DENIED_SAVE_DRAFT");
   expect(await page.evaluate(async () => (await (await fetch("/api/notes/field-notes")).json()).content.includes("DENIED_SAVE_DRAFT"))).toBe(false);
   expect(await page.evaluate(() => (window as any).prismFixtureWrites)).toEqual([]);

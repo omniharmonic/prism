@@ -189,6 +189,12 @@ test.describe("plain editor selection toolbar", () => {
       // The other modifier family is not a second binding. (Checked with Apple's modifiers only: under the emulated
       // Windows platform this Mac's own browser would still act on ⌘B natively.)
       if (os === "apple") {
+        // Block only the host browser's editable default after the editor has had
+        // its chance to handle the key. Linux Ctrl+B otherwise applies native bold
+        // even while navigator.platform is emulated as Apple.
+        await page.evaluate(() => window.addEventListener("keydown", e => {
+          if (e.key.toLowerCase() === "b" && e.ctrlKey && !e.metaKey) e.preventDefault();
+        }));
         await select(page, "Bravo paragraph");
         await page.keyboard.press(`${other}+b`);
         expect(await html(page)).toContain("<p>Bravo paragraph</p>");

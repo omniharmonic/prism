@@ -5,7 +5,6 @@
 import { test, expect, type Page } from "@playwright/test";
 import { connect, startRealServer, type RealServer } from "./real-server";
 
-const shots = "/private/tmp/claude-501/-Users-benjaminlife-dev-prism/94600911-66b9-4b8d-b802-fc8f8fe9305f/scratchpad/w2-sharing";
 
 async function openShare(page: import("@playwright/test").Page, query = "?page") {
   await page.goto(`/e2e-fixtures/sharing.html${query}`);
@@ -54,7 +53,7 @@ test("sub-pages inherit and show source", async ({ page }) => {
   await expect(dialog.locator('[data-inherited-from="prism"]')).toHaveCount(0);
   await expect(dialog.getByLabel("Permission for jordan.diaz@prism.test", { exact: true })).toHaveValue("comment");
   expect((await calls(page, "setPerson"))[2]).toEqual(["private", "jordan.diaz@prism.test", "comment", { scope: "page" }]);
-  await page.screenshot({ path: `${shots}/share-dialog-desktop-light.png` });
+  await page.screenshot({ path: test.info().outputPath("share-dialog-desktop-light.png") });
   // Moving a page out of a shared page warns who loses access.
   await page.goto("/e2e-fixtures/notion-sharing.html?panel=move");
   const warning = page.getByRole("alert");
@@ -75,12 +74,12 @@ test("share dialog is a phone sheet with underline tabs and no horizontal scroll
   await page.keyboard.press("ArrowRight");
   await expect(dialog.getByRole("tab", { name: "Link access" })).toHaveAttribute("aria-selected", "true");
   await expect(dialog.getByText(/^Anyone with a link below|^Restricted/)).toBeVisible();
-  await page.screenshot({ path: `${shots}/share-dialog-phone-light.png` });
+  await page.screenshot({ path: test.info().outputPath("share-dialog-phone-light.png") });
   await page.keyboard.press("Escape");
   await page.evaluate(() => document.documentElement.classList.replace("light", "dark"));
   await page.getByRole("button", { name: "Share fixture", exact: true }).click();
   await expect(dialog.getByRole("tab", { name: "People" })).toHaveAttribute("aria-selected", "true");
-  await page.screenshot({ path: `${shots}/share-dialog-phone-dark.png` });
+  await page.screenshot({ path: test.info().outputPath("share-dialog-phone-dark.png") });
 });
 
 test("guest sidebar shows only shared pages", async ({ page }) => {
@@ -93,7 +92,7 @@ test("guest sidebar shows only shared pages", async ({ page }) => {
   await section.getByRole("button", { name: /Launch plan/ }).click();
   await expect(section.getByRole("button", { name: /Launch plan/ })).toHaveAttribute("aria-current", "page");
   expect(await page.evaluate(() => (window as any).notionSharing.opened)).toEqual(["plan"]);
-  await page.screenshot({ path: `${shots}/shared-with-me-guest.png` });
+  await page.screenshot({ path: test.info().outputPath("shared-with-me-guest.png") });
   await page.goto("/e2e-fixtures/notion-sharing.html?panel=shared&guest&empty");
   await expect(page.getByText("Nothing has been shared with you yet.")).toBeVisible();
   // A member with nothing shared sees no section at all.

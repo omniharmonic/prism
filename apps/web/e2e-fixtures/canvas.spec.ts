@@ -139,7 +139,7 @@ for(const mode of ["","&collab"]){
   await page.evaluate(()=>{(window as any).prismCanvasFixture.rejectRelations=false;});
   await expect(page.getByText("Relationships saved",{exact:true})).toBeVisible();
   await page.locator("canvas.interactive").click({position:{x:30,y:250}});
-  await page.keyboard.press("Meta+a");
+  await page.keyboard.press("ControlOrMeta+a");
   await page.getByRole("checkbox",{name:"Link this arrow to notes"}).uncheck();
   await expect(page.getByRole("checkbox",{name:"Decorative arrow"})).not.toBeChecked();
   await expect.poll(()=>page.evaluate(()=>(window as any).prismCanvasFixture.syncAttempts.at(-1))).toBe("[]");
