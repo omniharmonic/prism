@@ -259,10 +259,26 @@ test("GOLDEN: the lean ingester leaves the vault exactly as the body-listing ing
     const { rooms: joinedRooms, ...r2 } = newR.r2 as typeof newR.r2 & { rooms: number };
     assert.deepEqual(r2, oldR.r2);
     assert.equal(joinedRooms, (oldR.r2 as { scanned: number }).scanned);
-    const uncas = (ws: Array<Record<string, unknown>>) => ws.map(({ ifUpdatedAt: _cas, ...w }) => w);
+    // Only these four intentional evidence fields differ from the legacy fixture.
+    // Preserve every original body, ordering, and other metadata comparison.
+    const withoutEvidence = (metadata: unknown) => {
+      if (!metadata || typeof metadata !== "object") return metadata;
+      const { lastMessageEventId, lastMessageIsSelf, lastMessageSender, lastMessageText, ...original } = metadata as Record<string, unknown>;
+      if (lastMessageEventId !== undefined) {
+        assert.match(String(lastMessageEventId), /^\$e\d+$/);
+        assert.equal(lastMessageSender, "@telegram_1:hs");
+        assert.equal(lastMessageIsSelf, null, "no canonical owner identity is supplied by this fixture");
+        assert.equal(typeof lastMessageText, "string");
+        assert.ok(String(lastMessageText).length <= 1000);
+      }
+      return original;
+    };
+    const uncas = (ws: Array<Record<string, unknown>>) => ws.map(({ ifUpdatedAt: _cas, ...w }) => ({...w,...("metadata" in w ? {metadata:withoutEvidence(w.metadata)} : {})}));
     assert.deepEqual(uncas(newV.writes), uncas(oldV.writes), "the same writes, in the same order, with the same bodies and metadata");
     assert.ok(newV.writes.filter((w) => w.op === "update").every((w) => typeof w.ifUpdatedAt === "string"), "every lean write names the version it read");
-    assert.deepEqual(snapshot(newV.notes), snapshot(oldV.notes), "identical vault contents");
+    assert.deepEqual(snapshot(newV.notes).map(n=>({...n,metadata:withoutEvidence(n.metadata)})), snapshot(oldV.notes), "identical original vault contents");
+    assert.equal(newV.notes.get("b")!.metadata!.lastMessageEventId,"$e500");
+    assert.equal(newV.notes.get("b")!.metadata!.lastMessageText,m(500).body);
 
     // …and the run really exercised what it claims to.
     assert.equal(oldR.r1.created, 2);
