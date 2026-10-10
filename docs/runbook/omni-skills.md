@@ -25,7 +25,8 @@ and read-only explanation are shown, without reading their contents. The main ro
 canonicalized; linked ancestor folders or final files are never writable.
 
 After deploying, verify the authenticated owner receives the expected catalog (the
-current Mini inventory has 107 documents), a linked entry is read-only, and a local skill
+current Mini catalog has 54 active documents: 52 local files and two linked sources;
+55 archived documents under `.archive` are intentionally excluded), a linked entry is read-only, and a local skill
 loads. An edit is an intentional owner action: choose a disposable local skill only if a
 live save test is explicitly authorized, preserve its original bytes and restore them.
 Offline fixture tests already verify writes and revision conflicts; no live skill has
