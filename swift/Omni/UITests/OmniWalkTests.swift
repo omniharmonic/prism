@@ -64,10 +64,24 @@ final class OmniWalkTests: OmniUITestCase {
             shot("voice-thread-\(state)-close")
             if state == "paused" {
                 composer.tap()
-                XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5))
+                let keyboard = app.keyboards.firstMatch
+                func assertSoftwareKeyboardVisible() {
+                    let predicate = NSPredicate { _, _ in
+                        keyboard.exists && keyboard.frame.height > 150 &&
+                        keyboard.frame.intersection(self.app.frame).height > 150
+                    }
+                    let appeared = XCTNSPredicateExpectation(predicate: predicate, object: keyboard)
+                    XCTAssertEqual(XCTWaiter.wait(for: [appeared], timeout: 5), .completed,
+                                   "A real software keyboard must occupy the app viewport, not only exist in accessibility")
+                    XCTAssertGreaterThan(keyboard.frame.intersection(app.frame).width, app.frame.width * 0.75)
+                }
+                assertSoftwareKeyboardVisible()
+                shot("voice-thread-paused-keyboard-open")
                 revealInVoicePanel(primary)
+                assertSoftwareKeyboardVisible()
                 shot("voice-thread-paused-keyboard-primary")
                 revealInVoicePanel(end)
+                assertSoftwareKeyboardVisible()
                 shot("voice-thread-paused-keyboard-close")
             }
         }

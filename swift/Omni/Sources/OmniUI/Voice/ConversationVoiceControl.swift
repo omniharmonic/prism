@@ -85,6 +85,7 @@ struct ConversationVoiceControl: View {
                         .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { panelContentHeight = $0 }
                 }
                 .scrollBounceBehavior(.basedOnSize)
+                .scrollDismissesKeyboard(.never)
                 .scrollDisabled(panelContentHeight <= maximumHeight)
                 .frame(height: min(maximumHeight, panelContentHeight))
                 .frame(maxWidth: 440)
