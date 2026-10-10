@@ -180,3 +180,20 @@ ten-minute dev-owner session row the script adds to the dev database and removes
   build refuses.
 - **Tool chips of a finished turn come from Hermes' stored messages.** The dev stub stores
   none, so chips show while a turn streams and are gone after it.
+
+## Conversational voice
+
+An open conversation offers local Apple or Parakeet speech, with explicit Speak and
+Send Voice controls. First use requests microphone/speech permission and may download
+models. Audio is temporary and deleted after transcription or cancellation; only the
+recognized text is submitted to the ordinary Hermes turn stream. The transcript remains
+visible and failures use the existing chat retry path.
+
+New assistant sentences are spoken as the live stream arrives; Mute cancels queued
+speech and Interrupt and Speak cancels the active turn before starting another capture.
+Leaving the screen, becoming inactive, or an iOS audio interruption stops microphone
+capture and speech, including a pending permission request. No always-listening or
+background capture is enabled. The two-minute capture bound is explicit. Existing V0
+benchmark replay remains paced; conversational transcription feeds captured audio
+without replay delays. Personal speech quality and physical microphone/playback
+acceptance remain to verify on each device.

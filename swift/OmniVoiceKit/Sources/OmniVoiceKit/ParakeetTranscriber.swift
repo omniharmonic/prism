@@ -2,7 +2,7 @@
 import FluidAudio
 import Foundation
 
-public actor ParakeetTranscriber: STTEngine {
+public actor ParakeetTranscriber: ConversationSTTEngine {
     public nonisolated let name = "Parakeet 0.6B (FluidAudio)"
     private var models: AsrModels?
     private var ctc: CtcModels?
@@ -16,6 +16,13 @@ public actor ParakeetTranscriber: STTEngine {
     }
 
     public func transcribe(file: URL, speechEnd: Double, update: @escaping @Sendable (TranscriptEvent) async -> Void) async throws -> EngineResult {
+        try await transcribe(file: file, speechEnd: speechEnd, paced: true, update: update)
+    }
+    /// Conversation input is already captured; feed it without benchmark replay delays.
+    public func transcribeConversation(file: URL, update: @escaping @Sendable (TranscriptEvent) async -> Void) async throws -> String {
+        try await transcribe(file: file, speechEnd: 0, paced: false, update: update).text
+    }
+    private func transcribe(file: URL, speechEnd: Double, paced: Bool, update: @escaping @Sendable (TranscriptEvent) async -> Void) async throws -> EngineResult {
         guard let models else { throw VoiceFailure.notPrepared }
         // A SlidingWindow manager owns a one-shot input stream. Use a fresh session for
         // every utterance while retaining the already-loaded model objects.
@@ -43,7 +50,7 @@ public actor ParakeetTranscriber: STTEngine {
                 try Task.checkCancellation()
                 let chunk = Array(samples[offset..<min(offset + 1600, samples.count)])
                 await manager.streamAudio(try Replay.buffer(samples: chunk, format: format))
-                try await Task.sleep(for: .seconds(Double(chunk.count) / 16_000))
+                if paced { try await Task.sleep(for: .seconds(Double(chunk.count) / 16_000)) }
             }
             let final = try await manager.finish()
             await manager.cancel()
