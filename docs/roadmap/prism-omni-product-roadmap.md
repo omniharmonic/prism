@@ -57,6 +57,7 @@ Do not close an item solely because tests pass, a PR merged, or a bundle install
 | F09 | Voice beside New Chat in Threads | Released in build 8 on both mobile devices; retains Today access. Physical acceptance pending. |
 | F10 | Dispatch Omni from Today tasks | Released in build 8: explicit task-context handoff with existing outbound approval requirements. Physical acceptance pending. |
 | F11 | Expand Today to all tasks | Released in build 8 and server v11: paginated assigned open tasks. Physical acceptance pending. |
+| F12 | Build 8 voice panel overlap and empty-Pause error | Owner screenshots confirm overlapping primary/status/secondary controls on iPhone. Empty Pause should be quiet. Repairs underway with real iOS layout checks. |
 | R01 | Working current Mac apps | Prism v6 notarized, installed and launched on the Mini; interactive acceptance and laptop installation pending. Omni v8 universal build staged for owner signing; acceptance/staple/install pending. V7 submission is separate. Do not install known-bad Omni v5. |
 | R02 | Proactive assistant reliability | Three reviewed M3 jobs active; smoke checks passed. Week-long observation gate remains pending; retain existing fallbacks until accepted. |
 
@@ -80,4 +81,4 @@ This order is the default; a regression can interrupt it without removing downst
 - [First-run and distribution proposal](../distribution/first-run-proposal.md).
 - [Earlier architectural implementation progress](PROGRESS.md) — historical milestones, not completion of this product checklist.
 
-Snapshot: Prism server v10, agent v10, Prism mobile v6 and Omni mobile v7. V01 Apple voices and V04 foreground shortcut are installed on both mobile devices, with owner acceptance pending; V02/V03/V05 remain planned. These are recorded release states, not a fresh production health check. Full hashes, signatures and deployment receipts belong in the evidence log.
+Snapshot: Prism server v11, agent v10, Prism mobile v6 and Omni mobile v8. V01 Apple voices are owner-accepted; V04 foreground shortcut acceptance remains pending. V02 explicit sessions are installed and re-listening is owner-confirmed; empty-Pause/layout repairs and opt-in automatic endpointing are in progress. V03/V05 remain planned. These are recorded release states, not a fresh production health check. Full hashes, signatures and deployment receipts belong in the evidence log.
