@@ -13,6 +13,7 @@ struct ThreadView: View {
             if !model.isUnavailable {
                 banners
                 Divider()
+                ConversationVoiceControl(model: model)
                 Composer(
                     text: $model.draft,
                     placeholder: "Message Omni…",
