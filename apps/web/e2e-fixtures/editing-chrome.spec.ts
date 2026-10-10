@@ -5,8 +5,7 @@
  * backlinks — instead of four stacked strips; ONE comments entry point; review controls only while
  * there is something to review. On a touch device Prism shows ONE formatting surface: the keyboard
  * toolbar, which also carries the selection's actions (the system's selection callout sits where
- * the bubble used to float). Nothing may cover the caret or the selected text. Desktop is unchanged
- * apart from alignment.
+ * the bubble used to float). Nothing may cover the caret or the selected text. Wider screens share the same row while retaining mouse formatting.
  *
  * Both editors: the plain one (`DocumentRenderer`, notion-shell fixture) and the live one
  * (`CollabDoc` → `CollabEditor`, against the REAL server: owner = edit, sam = suggest-only, gina = view).
@@ -172,16 +171,16 @@ test.describe("plain page", () => {
     await context.close();
   });
 
-  test("desktop: unchanged — the pill under the title, Formatting in the bar, the bubble on a selection", async ({ page }) => {
+  test("desktop: unified row retains Formatting and the selection bubble", async ({ page }) => {
     await page.setViewportSize(DESKTOP);
     await ready(page);
-    await expect(page.locator(".document-writing-measure .backlinks:not([data-inline]) .backlinks-pill")).toHaveText(/2 backlinks/);
-    await expect(page.locator(".document-formatting-bar .backlinks")).toHaveCount(0);
+    await expect(page.locator(".document-writing-measure .backlinks:not([data-inline])")).toHaveCount(0);
     const bar = page.locator(".document-formatting-bar");
-    await expect(bar).not.toHaveAttribute("data-chrome", "row");
-    await expect(bar.getByRole("button", { name: "Outline", exact: true })).toHaveText(/Outline/);
+    await expect(bar).toHaveAttribute("data-chrome", "row");
+    await expect(bar.getByRole("button", { name: "2 backlinks" })).toBeVisible();
+    await expect(bar.getByRole("button", { name: "Outline", exact: true })).toBeVisible();
     const formatting = bar.getByRole("button", { name: "Formatting", exact: true });
-    expect((await formatting.boundingBox())!.width).toBeGreaterThan(80); // icon AND label
+    expect((await formatting.boundingBox())!.width).toBeGreaterThanOrEqual(44);
     await formatting.click();
     await expect(page.getByRole("group", { name: "Text formatting" }).getByRole("button", { name: "Heading 2" })).toBeVisible();
     await formatting.click();
@@ -366,26 +365,19 @@ test.describe("live page", () => {
     await context.close();
   });
 
-  test("desktop: unchanged — status and Comments in the header, the page discussion, bulk review in the bar, the bubble; the bar now shares the text column", async ({ page }) => {
+  test("desktop: unified status/comments row keeps mouse selection actions", async ({ page }) => {
     await page.setViewportSize(DESKTOP);
     await open(page, "owner");
-    const status = page.locator(".document-page-status");
-    await expect(status).toContainText("Live · Editing");
-    await expect(status.getByRole("button", { name: "Comments" })).toHaveText("Comments");
-    await expect(page.getByRole("region", { name: "Page discussion" })).toBeVisible();
+    await expect(page.locator(".document-page-status")).toHaveCount(0);
+    await expect(page.getByRole("region", { name: "Page discussion" })).toHaveCount(0);
     const bar = page.locator(".document-formatting-bar");
-    await expect(bar).not.toHaveAttribute("data-chrome", "row");
-    await expect(bar.locator(".document-chrome-status, .document-chrome-trailing")).toHaveCount(0);
-    for (const name of ["Outline", "Formatting", "Editing", "Accept all suggestions", "Reject all suggestions"]) await expect(bar.getByRole("button", { name, exact: true })).toBeVisible();
-    await expect(bar.getByRole("button", { name: "Accept all suggestions" })).toHaveText(/Accept all/);
-    // Alignment: the row starts and ends on the text column (it used to start 140 px left of the title).
-    const edges = await page.evaluate(() => {
-      const r = (s: string) => document.querySelector(s)!.getBoundingClientRect();
-      return { icon: r(".document-outline-toggle svg").left, review: r(".document-review-controls").right, title: r(".document-page-header").left, text: r(".tiptap").left, textRight: r(".tiptap").right };
-    });
-    expect(Math.abs(edges.icon - edges.text)).toBeLessThanOrEqual(1);
-    expect(Math.abs(edges.icon - edges.title)).toBeLessThanOrEqual(1);
-    expect(Math.abs(edges.review - edges.textRight)).toBeLessThanOrEqual(1);
+    await expect(bar).toHaveAttribute("data-chrome", "row");
+    await expect(bar.locator(".document-chrome-status")).toContainText("Live");
+    for (const name of ["Outline", "Formatting", "Editing"]) await expect(bar.getByRole("button", { name, exact: true })).toBeVisible();
+    await expect(bar.getByRole("button", { name: /^(Accept|Reject) all suggestions$/ })).toHaveCount(0);
+    await bar.getByRole("button", { name: /^Comments/ }).click();
+    await expect(page.getByRole("region", { name: "Page discussion" })).toBeVisible();
+    await bar.getByRole("button", { name: /^Comments/ }).click();
     await page.locator(".tiptap p").first().click();
     await selectWord(page, "gamma");
     const bubble = page.locator(".cd-bubble");
@@ -406,6 +398,13 @@ test.describe("live page", () => {
     await composer.getByRole("button", { name: "Suggest", exact: true }).click();
     await expect(sam.locator('[data-suggestion="insert"]')).toHaveText("delta");
     await desk.close();
+    for (const width of [1024, 1440]) {
+      const context = await browser.newContext({ viewport: { width, height: 900 }, hasTouch: width === 1024 });
+      const page = await context.newPage(); await open(page, "owner");
+      const bar = page.locator(".document-formatting-bar");
+      for (const name of ["Accept all suggestions", "Reject all suggestions"]) await expect(bar.getByRole("button", { name })).toBeVisible();
+      await context.close();
+    }
 
     for (const width of WIDTHS) {
       const { context, page } = await phone(browser, width);

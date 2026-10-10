@@ -64,7 +64,6 @@ import { DocumentOutline } from "./DocumentOutline";
 import { EditorToolbarCommands } from "./EditorToolbar";
 import { FormattingBar } from "./FormattingBar";
 import { KeyboardToolbar, useCoarsePointer } from "./KeyboardToolbar";
-import { useIsMobile } from "../../app/hooks/useIsMobile";
 import { BacklinksPill } from "../layout/BacklinksPill";
 import { EmptyPageStarters } from "./EmptyPageStarters";
 import { PageHeader, PageProperties, type ContentFont } from "./DocumentChrome";
@@ -91,7 +90,6 @@ export default function DocumentRenderer({ note, onMetadataChange, readOnly }: R
   //   "read-only" → editor read-only with a one-line notice.
   const mode = reviewMode(note);
   const coarse = useCoarsePointer();
-  const phone = useIsMobile();
   // `readOnly` (published wiki / anonymous surfaces) wins outright: those
   // responses carry no `_caps` today, and if they ever did, a public reader must
   // not be offered a submit button.
@@ -485,10 +483,10 @@ export default function DocumentRenderer({ note, onMetadataChange, readOnly }: R
       {editor && !coarse && <BubbleMenu editor={editor} pluginKey="documentSelectionActions" shouldShow={({ state }) => !state.selection.empty && !blockSelectionActive(state)}>
         <div className="document-selection-actions"><SelectionActions editor={editor} allowFormatting={!notEditable} /></div>
       </BubbleMenu>}
-      {/* The page's chrome row (no formatting commands on read-only surfaces). On a phone it also
-          carries the backlinks count, which is otherwise a strip of its own under the title. */}
+      {/* The page's chrome row (no formatting commands on read-only surfaces). It carries the
+          backlinks count at every width, without another strip under the title. */}
       {editor && <FormattingBar formatting={!notEditable} navigation={<DocumentOutline editor={editor} />}
-        trailing={phone && !readOnly ? <BacklinksPill inline noteId={note.id} title={leafTitle(note.path, note.metadata) ?? ""} /> : undefined}>
+        trailing={!readOnly ? <BacklinksPill inline noteId={note.id} title={leafTitle(note.path, note.metadata) ?? ""} /> : undefined}>
         {!notEditable && <EditorToolbarCommands editor={editor} />}
       </FormattingBar>}
       {editor && <KeyboardToolbar editor={editor} selection={<SelectionActions editor={editor} allowFormatting={!notEditable} />} />}
@@ -526,7 +524,6 @@ export default function DocumentRenderer({ note, onMetadataChange, readOnly }: R
             onIconChange={persistMetadata ? (emoji) => persistMetadata({ icon: emoji }) : undefined}
             onAddCover={persistMetadata && !cover ? () => changeCover({ kind: "gradient", value: COVER_GRADIENTS[Math.floor(Math.random() * COVER_GRADIENTS.length)].name, y: 50 }) : undefined}
           />
-          {!readOnly && !phone && <BacklinksPill noteId={note.id} title={leafTitle(note.path, note.metadata) ?? ""} />}
           <EditorContent editor={editor} />
           {!readOnly && (note.tags?.includes("project") || note.metadata?.type === "project") && <ProjectSections project={note} onNavigate={handleWikilinkNavigate} />}
           {editor && !notEditable && <EmptyPageStarters editor={editor} noteId={note.id} title={leafTitle(note.path, note.metadata) ?? ""} />}

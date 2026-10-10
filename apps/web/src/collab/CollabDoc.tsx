@@ -784,9 +784,9 @@ function ScopedCollabDoc({
   // Comments + suggestions are prose-only; code/spreadsheets are pure collab data.
   const showComments = isDocument;
   const statusColor = connected ? "#22c55e" : online ? "#eab308" : "#ef4444";
-  // A phone: the page has ONE chrome row (in the editor, above the body). The connection state, the
+  // Every document has ONE chrome row (in the editor, above the body). The connection state, the
   // Comments button and the backlinks count are items of it instead of three strips of their own.
-  const inRow = narrow && isDocument;
+  const inRow = isDocument;
   // The row's mode button already says Editing / Suggesting: next to it the state is just "Live".
   const modeInRow = editable && !useCommands && canReview && !isSuggestLevel;
   const rowStatus = (
@@ -957,7 +957,7 @@ function ScopedCollabDoc({
               <div style={{ maxWidth: "var(--content-measure)", margin: "0 auto" }}><EmptyPageStarters editor={editor} noteId={noteId} title={title} /></div>
             )}
           </div>
-          {showComments && !narrow && commentsOpen && <div style={{ width: 320, flexShrink: 0 }}>{sidebar}</div>}
+          {showComments && !narrow && commentsOpen && <div style={{ width: 320, flexShrink: 0 }}><PageDiscussion composeOnly ydoc={ydoc} user={user} canComment={canComment} editor={editor} actions={commentActions} />{sidebar}</div>}
         </div>
       </div>
 

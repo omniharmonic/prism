@@ -91,7 +91,8 @@ test("live page with pending suggestions and comments", async ({ browser }) => {
   await composer.getByLabel("Replacement text").fill("delta");
   await composer.getByRole("button", { name: "Suggest", exact: true }).click();
   await expect(sam.locator('[data-suggestion="insert"]')).toHaveText("delta");
-  await sam.getByRole("button", { name: "Add comment" }).click(); // desktop width: the page discussion under the title
+  await sam.getByRole("button", { name: /^Comments/ }).click();
+  await sam.getByRole("button", { name: "Add comment" }).click(); // page discussion lives in the comments panel
   await sam.getByLabel("Comment on this page").fill("Is this the final plan?");
   await sam.getByRole("button", { name: "Comment", exact: true }).click();
   await expect(sam.getByText("Is this the final plan?")).toBeVisible();

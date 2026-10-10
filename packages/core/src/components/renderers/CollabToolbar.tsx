@@ -1,4 +1,5 @@
-import type { Editor } from "@tiptap/react";
+import { useEditorState, type Editor } from "@tiptap/react";
+import { nodeSuggestionOf } from "../../editor/suggestionNodes";
 import {
   Bold,
   Italic,
@@ -43,6 +44,15 @@ export function CollabToolbar({
   status?: React.ReactNode;
   trailing?: React.ReactNode;
 }) {
+  const hasSuggestions = useEditorState({ editor, selector: ({ editor }) => {
+    let found = false;
+    editor.state.doc.descendants(node => {
+      if (found) return false;
+      found = !!nodeSuggestionOf(node) || node.marks.some(mark => mark.type.name === "insertion" || mark.type.name === "deletion");
+      return !found;
+    });
+    return found;
+  } });
   const c = () => editor.chain().focus();
 
   const Btn = ({
@@ -111,7 +121,7 @@ export function CollabToolbar({
             </span>
           ) : null}
 
-          {canReview && (
+          {canReview && hasSuggestions && (
             <>
               {/* Labelled: a bare green tick and red cross did not say they act on EVERY suggestion. */}
               <button type="button" className="document-review-all" title="Accept all suggestions" aria-label="Accept all suggestions" onMouseDown={(e) => e.preventDefault()} onClick={() => c().acceptAllSuggestions().run()}>
