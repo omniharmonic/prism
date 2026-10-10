@@ -903,3 +903,49 @@ test("project-pages: repair preview and apply share snapshot; new canonical merg
  assert.match(out(next),/would trash duplicate/);
  assert.equal(v.writes().length,writes,"second preview remains read-only");
 });
+
+
+test("project-pages: repair merge touches only duplicate membership and previews exact typed links", async () => {
+ const v=new FakeVault();
+ const canonical=v.add({id:"canonical",path:"vault/projects/eth-boulder/PROJECT",tags:["project"]});
+ const duplicate=v.add({id:"duplicate",path:"vault/projects/ethboulder/PROJECT",tags:["project"],content:"Preserved"});
+ v.add({id:"other",path:"vault/projects/other/PROJECT",tags:["project"]});
+ const unrelated=v.add({id:"unrelated",path:"vault/projects/other/Notes",metadata:{project:"other",projects:["other"]}});
+ const child=v.add({id:"unassigned",path:"vault/projects/other/Unassigned",metadata:{}});
+ const member=v.add({id:"member",metadata:{projects:["duplicate","other","unknown"],project:"unrelated-legacy"}});
+ v.links.push({sourceId:"member",targetId:"duplicate",relationship:"project"});
+ const argv=[...VAULT,"--phase","repair","--prism-url","http://prism.test"];
+ const preview=ctxFor(v,{PRISM_OWNER_TOKEN:OWNER});
+ assert.equal(await projectPages.main(argv,preview),0,out(preview));
+ assert.match(out(preview),/done: 5 planned, 0 writes, 0 failed/);
+ assert.match(out(preview),/would links member \{"add":\[\{"target":"canonical","relationship":"project"\}\],"remove":\[\{"target":"duplicate","relationship":"project"\}\]\}/);
+ assert.doesNotMatch(out(preview),/would patch unrelated|would patch unassigned/);
+ assert.equal(v.writes().length,0);
+ const apply=ctxFor(v,{PRISM_OWNER_TOKEN:OWNER});
+ assert.equal(await projectPages.main([...argv,"--apply","--backup-confirmed"],apply),0,out(apply));
+ assert.match(out(apply),/done: 5 planned, 5 writes, 0 failed/);
+ assert.deepEqual(member.metadata!.projects,["[[vault/projects/eth-boulder/PROJECT]]","other","unknown"]);
+ assert.equal(member.metadata!.project,"unrelated-legacy");
+ assert.deepEqual(unrelated.metadata,{project:"other",projects:["other"]});assert.deepEqual(child.metadata,{});
+ assert.equal(v.links[0]!.targetId,"canonical");
+});
+
+
+test("project-pages: merge repair preserves ambiguous aliases and unrelated legacy fields", () => {
+ const duplicate={id:"dup",path:"vault/projects/ethboulder/PROJECT",tags:["project"],metadata:{aliases:["shared","unique"]}};
+ const canonical={id:"canonical",path:"vault/projects/eth-boulder/PROJECT",tags:["project"]};
+ const other={id:"other",path:"vault/projects/other/PROJECT",tags:["project"],metadata:{aliases:["shared"]}};
+ assert.deepEqual(projectPages.mergeMembershipPatch({id:"member",metadata:{projects:["shared","unique","other"],project:"unrelated"}},duplicate,canonical,[duplicate,canonical,other]),{metadata:{projects:["shared","[[vault/projects/eth-boulder/PROJECT]]","other"]}});
+});
+
+
+test("project-pages: compact hygiene summary separates content/membership/agent fields without prose or titles", async () => {
+ const v=new FakeVault();
+ v.add({id:"project1",path:"vault/projects/alpha/PROJECT",tags:["project"],metadata:{title:"PRIVATE_TITLE"},content:"# PRIVATE_TITLE\n\nHuman prose.\n\n## Key Context for Agents\nPRIVATE_AGENT_PROSE\n"});
+ v.add({id:"member1",path:"vault/projects/alpha/PRIVATE_CHILD",metadata:{}});
+ const c=ctxFor(v);assert.equal(await projectPages.main([...VAULT,"--summary-only"],c),0,out(c));
+ const summary=JSON.parse(out(c).split("\n").find(line=>line.startsWith("summary: "))!.slice(9));
+ assert.deepEqual(summary,{creates:0,patches:2,content:1,membership:1,agentContext:1,otherMetadata:0,metadataFields:{agent_context:1,projects:1},linkOperations:0,linksAdded:0,linksRemoved:0,trash:0});
+ assert.doesNotMatch(out(c),/PRIVATE_TITLE|PRIVATE_AGENT_PROSE|PRIVATE_CHILD|would patch/);
+ assert.equal(v.writes().length,0);
+});
