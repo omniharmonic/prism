@@ -236,8 +236,9 @@ final class OmniWalkTests: OmniUITestCase {
         composer.tap()
         showKeyboard()
         let conversation = element("transcript")
-        let top = conversation.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.15))
-        top.press(forDuration: 0.05, thenDragTo: top.withOffset(CGVector(dx: 0, dy: 220)), withVelocity: .default, thenHoldForDuration: 0.1)
+        let top = conversation.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.2))
+        let bottom = conversation.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.8))
+        top.press(forDuration: 0.05, thenDragTo: bottom, withVelocity: .default, thenHoldForDuration: 0.1)
         XCTAssertTrue(gone(app.keyboards.firstMatch, 5), "the keyboard cannot be put away by dragging the conversation")
         #endif
     }
@@ -402,6 +403,24 @@ final class OmniWalkTests: OmniUITestCase {
 
     #if os(macOS)
     // MARK: Mac keys and the window
+
+    func test11CommandApprovalCanBeDenied() throws {
+        let id = try XCTUnwrap(server { backend in
+            try await backend.thread("Check a page from the shell", "Check the sample status page. stub:command")
+        })
+        launch(faults: "sample-data")
+        openThread(id)
+        see("OMNI IS WAITING", 20)
+        wait(element("approval.send"), 15, "Approve Once on the command card")
+        XCTAssertEqual(element("approval.send").label, "Approve Once")
+        XCTAssertFalse(element("approval.edit").exists)
+        XCTAssertFalse(element("approval.revise").exists)
+        see("curl -s https://example.com/status")
+        shot("command-approval")
+        press("Deny")
+        see("NOT RUN", 20)
+        shot("command-denied")
+    }
 
     func test10MacKeysAndWindow() {
         if OmniUITestCase.seeded.isEmpty { seed() }
