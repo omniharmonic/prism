@@ -45,6 +45,7 @@ public struct RootView: View {
             }
         }
         .modifier(PrivacyLockCover())
+        .modifier(VoiceActivationScene(app: app))
         .tint(Color.omniAccent)
         #if DEBUG
         .modifier(UITestCompactWidth())

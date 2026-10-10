@@ -64,18 +64,55 @@ public final class SessionModel {
     public let skills: SkillsModel?
 
     /// The selected destination (the Mac sidebar's selection).
-    public var destination: Destination? = .today
+    public var destination: Destination? = .today {
+        didSet { if destination != .newThread { pendingVoiceActivationID = nil } }
+    }
     /// Bumped by ⌘F; the list's search field focuses when it changes.
     public private(set) var searchRequests = 0
     /// Bumped by ⌘N on platforms that present the new-thread composer as a sheet.
     public private(set) var newThreadRequests = 0
     public private(set) var newThreadUsesVoice = false
     public private(set) var voiceThreadID: String?
+    /// Set only by an explicit foreground shortcut; toolbar entry never sets this.
+    public private(set) var pendingVoiceActivationID: UUID?
     private var voiceGeneration = 0
+    private var voiceStartLease: Int?
     public var conversationAudio: (any ConversationAudio)?
     public var conversationVoice: VoiceConversation?
 
+    /// Keep an active voice exchange on repeated shortcut presses; do not interrupt narration.
+    /// Otherwise open the composer, retaining any existing text draft for manual review.
+    @discardableResult public func routeVoiceActivation(_ id: UUID) -> Bool {
+        if voiceStartLease != nil || conversationVoice.map({ $0.state != .off }) == true {
+            if let voiceThreadID { openExternal(.thread(voiceThreadID)) }
+            else if newThreadUsesVoice, destination != .newThread {
+                destination = .newThread; newThreadRequests += 1
+            }
+            return false
+        }
+        if !newThreadUsesVoice || destination != .newThread { requestNewVoice() }
+        pendingVoiceActivationID = id
+        return true
+    }
+    public func consumeVoiceActivation(_ id: UUID, threadID: String?) -> Bool {
+        guard pendingVoiceActivationID == id, threadID == nil,
+              newThreadUsesVoice, voiceThreadID == nil, destination == .newThread else { return false }
+        pendingVoiceActivationID = nil
+        return true
+    }
+    public func cancelVoiceActivation(_ id: UUID) {
+        if pendingVoiceActivationID == id { pendingVoiceActivationID = nil }
+    }
+    public func cancelPendingVoiceActivation() { pendingVoiceActivationID = nil }
+    /// Reserve synchronously before a start Task runs, closing the repeated-press race.
+    public func beginVoiceStart() { voiceStartLease = voiceGeneration }
+    public func endVoiceStart(lease: Int) {
+        if voiceStartLease == lease { voiceStartLease = nil }
+    }
+
     public func requestNewVoice() {
+        cancelPendingVoiceActivation()
+        voiceStartLease = nil
         voiceGeneration += 1
         conversationVoice?.cancel()
         voiceThreadID = nil
@@ -83,8 +120,9 @@ public final class SessionModel {
         destination = .newThread
         newThreadRequests += 1
     }
-    public func closeNewVoice() { voiceGeneration += 1; conversationVoice?.cancel(); newThreadUsesVoice = false }
+    public func closeNewVoice() { cancelPendingVoiceActivation(); voiceStartLease = nil; voiceGeneration += 1; conversationVoice?.cancel(); newThreadUsesVoice = false }
     public func claimVoice(audio: any ConversationAudio, voice: VoiceConversation, threadID: String?) {
+        voiceStartLease = nil
         voiceGeneration += 1
         if conversationVoice !== voice { conversationVoice?.cancel() }
         conversationAudio = audio; conversationVoice = voice; voiceThreadID = threadID
@@ -95,10 +133,12 @@ public final class SessionModel {
     }
     @discardableResult public func cancelVoice(_ voice: VoiceConversation, threadID: String?) -> Bool {
         guard ownsVoice(voice, threadID: threadID) else { return false }
+        voiceStartLease = nil
         voiceGeneration += 1; voice.cancel(); return true
     }
     public func showVoice(in threadID: String) {
-        if voiceThreadID != threadID { voiceGeneration += 1; conversationVoice?.cancel() }
+        cancelPendingVoiceActivation()
+        if voiceThreadID != threadID { voiceStartLease = nil; voiceGeneration += 1; conversationVoice?.cancel() }
         voiceThreadID = threadID
     }
 
@@ -144,6 +184,8 @@ public final class SessionModel {
     }
 
     public func stop() {
+        cancelPendingVoiceActivation()
+        voiceStartLease = nil
         voiceGeneration += 1
         conversationVoice?.cancel(); conversationVoice = nil; conversationAudio = nil
         voiceThreadID = nil; newThreadUsesVoice = false
@@ -216,7 +258,9 @@ public final class SessionModel {
     }
 
     public func requestNewThread() {
+        cancelPendingVoiceActivation()
         conversationVoice?.cancel()
+        voiceStartLease = nil
         voiceGeneration += 1
         newThreadUsesVoice = false
         destination = .newThread

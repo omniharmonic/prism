@@ -31,13 +31,18 @@ struct MainView: View {
 /// Queue delivery happens after the phone stack has restored its initial path.
 private struct NotificationNavigationReady: ViewModifier {
     let session: SessionModel
+    @Environment(\.voiceActivationSceneID) private var voiceSceneID
     func body(content: Content) -> some View {
         content.task(id: ObjectIdentifier(session)) {
             await Task.yield()
             guard !Task.isCancelled else { return }
             NativeNotifications.shared.navigationAppeared(session)
+            if let voiceSceneID { VoiceActivationCoordinator.shared.navigationAppeared(session, sceneID: voiceSceneID) }
         }
-        .onDisappear { NativeNotifications.shared.navigationDisappeared(session) }
+        .onDisappear {
+            NativeNotifications.shared.navigationDisappeared(session)
+            if let voiceSceneID { VoiceActivationCoordinator.shared.navigationDisappeared(session, sceneID: voiceSceneID) }
+        }
     }
 }
 
