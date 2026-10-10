@@ -639,7 +639,7 @@ test("today degrades per section: approvals + in-flight still answer when the qu
 // ── first-run fix: a thread Hermes no longer has ────────────────────────────────────────
 
 const DONE: StubAct[] = [say("ok")];
-type ListedThread = { id: string; gone: boolean; archived: boolean; title: string | null };
+type ListedThread = { state: string; running: boolean; id: string; gone: boolean; archived: boolean; title: string | null };
 const listThreadsOf = async (q = "") => ((await (await req(`/threads${q}`, { headers: owner() })).json()) as { threads: ListedThread[]; hermes: string });
 
 test("a thread Hermes forgot: the list marks it gone, opening it is a clear 404, and it can be removed (archived locally)", async () => {
@@ -944,6 +944,14 @@ test("approved tweet uses the exact human-reviewed draft once; no send before ap
   assert.equal(inputs.length, 1, "replayed tap never reposts");
 });
 
+test("imported conversation history never invents a waiting or completed task", async () => {
+ fake.sessions.set("api_history",{id:"api_history",title:"Old conversation",ended_at:1,last_active:1,message_count:20});
+ const list=await listThreadsOf();
+ const old=list.threads.find(t=>t.id==="api_history");
+ assert.equal(old?.state,"conversation");
+ assert.equal(old?.running,false);
+});
+
 test("jobs run refuses script jobs and jobs without approval routing", async () => {
  fake.jobs[0]!.no_agent = true; fake.jobs[0]!.script = "/reviewed/sweep.py";
  assert.equal((await post("/jobs/abcdef012345/run", {})).status,403);
@@ -984,4 +992,14 @@ test("job creation retries retain a single approval conversation and job", async
  assert.equal(retry.status,201); assert.deepEqual(await retry.json(),created);
  assert.equal(fake.calls.filter(c=>c.method==="POST"&&c.path==="/api/jobs").length,1);
  assert.equal((await post("/jobs",{...body,prompt:"Different"},headers)).status,409);
+});
+
+test("neutral imported history filters consistently and explicit Waiting survives roundtrip", async () => {
+ fake.sessions.set("api_history",{id:"api_history",title:"History"});
+ assert.equal((await listThreadsOf("?state=conversation")).threads[0]?.state,"conversation");
+ const patched=await req("/threads/api_history",{method:"PATCH",headers:owner(),body:JSON.stringify({state:"waiting"})});
+ assert.equal(patched.status,200);
+ assert.equal((await patched.json() as {thread:{state:string}}).thread.state,"waiting");
+ assert.equal((await listThreadsOf("?state=waiting")).threads[0]?.state,"waiting");
+ assert.equal((await listThreadsOf("?state=conversation")).threads.length,0);
 });

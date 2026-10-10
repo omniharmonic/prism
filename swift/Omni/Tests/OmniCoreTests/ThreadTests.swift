@@ -6,6 +6,12 @@ import XCTest
 
 @MainActor
 final class ThreadListTests: XCTestCase {
+    func testUnknownRuntimeHistoryUsesNeutralConversationGroup() {
+        let thread: OmniThread = Fixture.decode(["id": "history", "state": "conversation", "title": "Past chat"])
+        XCTAssertEqual(ThreadGrouping.sections([thread]).map(\.title), ["Conversations"])
+        XCTAssertEqual(ThreadGrouping.title(for: thread.state), "Conversations")
+    }
+
     func testSectionsFollowTheSpecOrderAndWords() {
         let threads = [
             Fixture.thread("a", state: "done"),

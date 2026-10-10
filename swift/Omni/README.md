@@ -67,9 +67,9 @@ keeps its sign-in there (see "Decisions" below).
   text of what would be sent; Send / Edit / Revise / Cancel Draft. Send is not offered when
   the draft does not match the server's fingerprint. Send asks for Touch ID or your
   password first.
-- **Today** and **Recurring** (jobs, with Pause / Resume): read-only lists. Today shows
-  what loaded and names what did not ("Some of Today couldn't be loaded: the agenda"), with
-  Try Again; a refresh that fails keeps what was on screen.
+- **Today** reads the day’s agenda and tasks, names unavailable sections, and keeps
+  previous content when refresh fails. **Recurring** creates and edits guarded local agent
+  jobs, dispatches Run Now, and manages schedules; legacy script runners remain read-only.
 - Mac keys: ⌘N new thread · ⌘F search · ⌘. stop · ⌘R refresh (whatever the window shows) ·
   ⌘, settings.
 - **iPhone and iPad.** iPhone: tabs Today · Needs you · Threads. iPad: the Mac's sidebar
@@ -77,8 +77,10 @@ keeps its sign-in there (see "Decisions" below).
   keyboard has a Done button and goes away when the conversation is dragged; every screen
   reflows at the largest text sizes.
 
-Not here: voice (the composer has a marked slot for the microphone), push, nudges, task
-dispatch, a read-only record preview, the context inspector, the app lock.
+Conversational voice uses local Apple/Parakeet transcription with Hermes text streaming,
+speech output and explicit interruption. Completion push, contextual source navigation,
+nudges and biometric privacy lock are implemented. Voice hardware/quality acceptance and
+extended record/context inspection remain separate follow-ups; skills editing is in progress.
 
 ## Layout
 
@@ -180,3 +182,24 @@ ten-minute dev-owner session row the script adds to the dev database and removes
   build refuses.
 - **Tool chips of a finished turn come from Hermes' stored messages.** The dev stub stores
   none, so chips show while a turn streams and are gone after it.
+
+### Branding and conversation history
+
+The app icon and Settings mark use the owner's supplied 2026-06-29 artwork unchanged,
+with standard PNG sizing for iPhone/iPad and Mac. The same image is available to web
+clients at `/omni-icon.png`; Prism's separate branding is unchanged.
+
+An imported conversation with no persisted Omni state is grouped under
+“Conversations”, rather than asserting that it is waiting or completed. The server
+preserves stored history and state; active Omni turns and pending approvals still take
+precedence, and all persisted states, including an owner-selected Waiting state, remain. Hermes' current persisted session
+API does not prove that an external CLI/cron turn is idle, so message age and old assistant
+text are not used as completion evidence. This is a display correction, not a history
+migration or cancellation of work.
+
+For Mac hardened-runtime signing, retain `com.apple.security.device.audio-input = true`
+from `Support/Omni-macOS.entitlements` alongside the verified production APNs, app/team
+and Keychain entitlements. Earlier signing sidecars lacking audio input must be updated,
+not reused unchanged. Permission copy now describes explicit conversational recording
+and on-device transcription. Microphone/speech permission and actual capture remain
+physical acceptance checks.

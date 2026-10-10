@@ -14,7 +14,7 @@ public struct ThreadSection: Identifiable, Equatable, Sendable {
 /// The thread list reads like a work queue: grouped by state, in the product spec's order
 /// and words (product-spec.md § 8c).
 public enum ThreadGrouping {
-    public static let order: [ThreadState] = [.needsYou, .working, .waiting, .scheduled, .done]
+    public static let order: [ThreadState] = [.needsYou, .working, .waiting, .scheduled, .conversation, .done]
 
     public static func title(for state: ThreadState) -> String {
         switch state {
@@ -23,6 +23,7 @@ public enum ThreadGrouping {
         case .waiting: return "Waiting"
         case .scheduled: return "Scheduled"
         case .done: return "Done"
+        case .conversation: return "Conversations"
         default:
             // A state a newer server added: show its own word rather than hiding the thread.
             let words = state.rawValue.replacingOccurrences(of: "-", with: " ")

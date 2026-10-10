@@ -14,6 +14,12 @@ public struct SettingsView: View {
 
     public var body: some View {
         Form {
+            Section {
+                HStack(spacing: 12) {
+                    Image("OmniLogo").resizable().frame(width: 48, height: 48).clipShape(RoundedRectangle(cornerRadius: 12)).accessibilityHidden(true)
+                    Text("Omni").font(.title2.weight(.semibold))
+                }
+            }
             Section("Server") {
                 LabeledContent("Address") {
                     Text(app.origin?.value ?? "Not set").textSelection(.enabled)
