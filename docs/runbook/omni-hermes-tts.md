@@ -28,11 +28,42 @@ Read `HANDOFF-LAPTOP.md` section 2 in the agent repository. No ad hoc production
    ```
 
    Review only its two nonsensitive path variables. Run the same command with `--apply` to create a private timestamped backup of existing `.env` / `.env.tmpl` and atomically update only `OMNI_TTS_HERMES_ROOT` and `OMNI_TTS_PYTHON`. It selects `.env.tmpl` if present, otherwise `.env`; every other setting and Keychain reference is preserved. It performs no restart and never prints existing environment contents.
-3. Continue the existing tagged `deploy.sh` flow. Its existing `render_env` invokes `secrets.sh env-file` for templates and otherwise retains `.env`; its `pm2 restart prism-server` deliberately does not use `--update-env`, preserving production PATH. Do not add environment variables through shell-export/pm2 overrides. If deploying code first to obtain the tagged helper, run the same tagged deployment again after reviewed configuration to render/restart normally.
+3. Activate the reviewed configuration through a **newer tagged deployment whose commit differs from the running HEAD**, or the explicit configuration-only activation below. `deploy.sh` exits early when the requested tag resolves to the current HEAD: repeating the same-tag deployment does **not** render environment files or restart. During a real code swap its `render_env` invokes `secrets.sh env-file` for templates and otherwise retains `.env`; its `pm2 restart prism-server` deliberately omits `--update-env`, preserving production PATH. Do not use shell-export/pm2 overrides. A successful same-tag no-op is not activation evidence.
 4. Verify owner-authenticated metadata reports available; then synthesize a **synthetic** sentence with a fresh request/session UUID and verify nonempty MP3, no-store and cancellation. Never put bearer tokens in argv/logs or use private text as a smoke test. Record only status/type/byte count/timing. Check owner/device isolation and native Apple fallback.
-5. Rollback uses existing `deploy.sh` release rollback. To restore configuration, follow this named runbook: restore the exact prior `.env` and, when present, `.env.tmpl` from the helper's printed backup directory with mode 0600, then redeploy the prior verified tag through `deploy.sh`. Never print backup contents or copy them off the Mini.
+5. Code rollback uses existing `deploy.sh` release rollback. Configuration rollback follows the exact backup restoration and explicit restart below; a same-HEAD redeploy cannot activate restored values. Never print backup contents or copy them off the Mini.
 
 Backend tests use synthetic injected providers and a fake Hermes generator; no tests call Microsoft or a live agent. Physical listening preference, network latency, interruption/cancel and mobile parity remain owner acceptance gates.
+
+
+## Configuration-only activation and rollback
+
+This is a named activation step for already deployed, reviewed code, not an ad hoc source/configuration edit. No Hermes or Telegram restart is included.
+
+1. Record the current exact tag/commit and the helper's private configuration backup path. Confirm the Mini Prism checkout has no tracked/untracked source changes and that HEAD resolves to the reviewed release tag. Run the existing `deploy.sh prism <current-tag>` dry-run preflight: it checks the PM2-held production PATH and loads `better-sqlite3` under that runtime before reaching its same-tag no-op. Refuse activation if runtime validation fails. Do not print PM2's full environment or `.env`.
+2. Capture the existing deployment health/worker baseline and run `scripts/check-desktop-independence.sh` using the existing deploy credential handling (credential in memory/stdin, never argv or logs). Configuration-only activation must not introduce newly failing workers. If `.env.tmpl` exists, use the existing agent `scripts/secrets.sh --repo prism env-file apps/server/.env.tmpl` from the Mini Prism root to render the 0600 `.env`, as `deploy.sh` normally does. If no template exists, retain the helper-updated `.env`. Do not re-render unrelated secrets or alter the production PATH.
+3. From the Mini's tagged clean checkout, run exactly:
+
+   ```sh
+   pm2 restart prism-server
+   ```
+
+   **Do not add `--update-env`.** This reloads the server's own env-file while preserving the environment/runtime PM2 already holds. Record the restart result and changed process start time; a previously healthy process with an unchanged start time is not proof that new settings loaded.
+4. Repeat the deployment checks: loopback `/health?live=1` and `/health` must return 200; compare authenticated worker health with the baseline and rerun desktop independence using existing secure credential handling. Then run the synthetic owner-session helper below; it must report available provider metadata, valid MP3 and scoped cancellation. Record only statuses/timings/bytes and release identity. No physical quality claim follows from these checks.
+5. If configuration activation fails, restore the **exact** `.env` and, when backed up, `.env.tmpl` from the helper's printed private backup directory. From the Mini Prism root, set a nonsensitive `OMNI_TTS_CONFIG_BACKUP` variable to that exact existing directory and run:
+
+   ```sh
+   cp "$OMNI_TTS_CONFIG_BACKUP/.env" apps/server/.env
+   chmod 600 apps/server/.env
+   if [ -f "$OMNI_TTS_CONFIG_BACKUP/.env.tmpl" ]; then
+     cp "$OMNI_TTS_CONFIG_BACKUP/.env.tmpl" apps/server/.env.tmpl
+     chmod 600 apps/server/.env.tmpl
+   fi
+   pm2 restart prism-server
+   ```
+
+   No secret content is displayed. The helper backs up an existing template when it exists; do not invent/delete unrelated template state. Repeat live/vault health, worker comparison and desktop independence. If the code also needs rollback, deploy the prior verified tag through the existing runbook; if it already equals HEAD, the explicit restart remains required to load restored configuration. Preserve backup and activation receipts.
+
+For the v11 rollout, the parent will activate through the next reviewed doc/release tag with a different SHA, allowing normal `deploy.sh` rendering/restart and health checks. The configuration-only path is an alternative for an unchanged source tag, not an additional required restart after a successful real deployment.
 
 ## Deferred existing audio attachments
 
@@ -42,7 +73,7 @@ Proposed separately reviewed contract: the Hermes producer registers its actual 
 
 ## Synthetic authenticated deployment smoke
 
-From the Mini's tagged `apps/server` checkout, run:
+After a newer tagged deployment or the explicit configuration-only activation above, from the Mini's tagged `apps/server` checkout run:
 
 ```sh
 node --env-file=.env --import tsx scripts/verify-omni-tts.ts
