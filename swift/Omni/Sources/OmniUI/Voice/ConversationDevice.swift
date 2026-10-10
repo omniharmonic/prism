@@ -159,7 +159,7 @@ import OmniVoiceKit
     }
     private func beginPlaybackMonitor(request: Int) async -> Bool {
         let url = FileManager.default.temporaryDirectory.appending(path: "omni-interruption-\(UUID().uuidString).caf")
-        file = url
+        file = url; monitoringPlayback = true
         do {
             try await audio.start(url: url, chunkSeconds: 60, chunkClosed: Self.chunkCallback(for: self, request: request), activity: Self.activityCallback(for: self, request: request))
             guard generation == request, !Task.isCancelled else { throw CancellationError() }
@@ -168,6 +168,7 @@ import OmniVoiceKit
             return true
         } catch {
             guard generation == request else { return false }
+            monitoringPlayback = false
             try? audio.stop(); audio.recordings().forEach { try? FileManager.default.removeItem(at: $0) }; file = nil
             speech.configureDuplex(nil, owner: recordingOwner)
             receiveInterruption?(.unavailable("Acoustic interruption could not start. Use Interrupt and speak."))

@@ -94,6 +94,7 @@ import OmniVoiceKit
 @MainActor private final class AppleSpeechOutput: NSObject, ConversationSpeechOutput, AVSpeechSynthesizerDelegate {
     private let speaker = AVSpeechSynthesizer()
     private var duplex: AudioIO?
+    private var pcmDrainTask: Task<Void, Never>?
     private var pcmTasks: [ObjectIdentifier: Task<Void, Never>] = [:]
     private var receiveFailure: (@MainActor (String) -> Void)?
     private var pcmPending: [ObjectIdentifier: Int] = [:]
@@ -117,7 +118,10 @@ import OmniVoiceKit
             #endif
             let bridge = SpeechPCMStream()
             let id = ObjectIdentifier(utterance)
-            pcmTasks[id] = Task { [weak self, utterance] in
+            let previous = pcmDrainTask
+            let drain = Task { [weak self, utterance] in
+                await previous?.value
+                guard !Task.isCancelled, self?.completions[id] != nil else { return }
                 do {
                     for try await owned in bridge.stream {
                         guard !Task.isCancelled else { return }
@@ -131,6 +135,7 @@ import OmniVoiceKit
                 }
                 self?.pcmTasks.removeValue(forKey: id)
             }
+            pcmTasks[id] = drain; pcmDrainTask = drain
             speaker.write(utterance, toBufferCallback: { buffer in bridge.accept(buffer) })
         } else {
             #if os(iOS)
@@ -142,7 +147,7 @@ import OmniVoiceKit
     func configureDuplex(_ audio: AudioIO?) { duplex = audio }
     func configureFailure(_ receive: @escaping @MainActor (String) -> Void) { receiveFailure = receive }
     func stop() {
-        pcmTasks.values.forEach { $0.cancel() }; pcmTasks = [:]
+        pcmTasks.values.forEach { $0.cancel() }; pcmTasks = [:]; pcmDrainTask = nil
         completions.removeAll(); pcmPending = [:]; pcmEnded = []
         duplex?.silencePlayback(); speaker.stopSpeaking(at: .immediate)
     }
