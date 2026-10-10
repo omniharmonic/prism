@@ -79,6 +79,8 @@ public struct ApprovalContent: Equatable, Sendable {
             return Spec(label: "Reply", fields: [("expectTo", "To"), ("cc", "Cc"), ("noteId", "In reply to")], body: "body")
         case .message:
             return Spec(label: "Message", fields: [("roomId", "Room")], body: "body")
+        case .calendarRSVP:
+            return Spec(label: "Calendar RSVP", fields: [("eventId", "Event"), ("response", "Response")], body: nil)
         case .calendarInvite:
             return Spec(label: "Invite", fields: [("title", "Title"), ("start", "Starts"), ("end", "Ends"), ("attendees", "Attendees"), ("location", "Where")], body: "description")
         case .tweet:

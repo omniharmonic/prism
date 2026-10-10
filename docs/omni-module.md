@@ -599,3 +599,9 @@ that check: `scripts/omni_policy_check.py --run 'gog calendar events …'` on th
   needs the task write-back design), voice (M4).
 - `tweet` / `wallet-proposal` executors (their scripts live in the agent repo).
 - Switching it on in production: the steps are `docs/omni/row10-runbook.md` in the agent repo.
+
+### Exact-event calendar RSVP activation
+
+`calendar-rsvp` proposals contain only `{eventId, response}`; response is `accepted`, `declined` or `tentative`. The native card shows the exact Google occurrence ID and response. Proposing sends nothing. A signed-in human Send decision with matching digest executes the existing audited `/api/actions/calendar/rsvp` route once. Invite creation stays separate. Direct shell RSVP commands redirect to this card.
+
+After reviewed tagged server/agent deploy, back up server environment with mode0600 and change only `OMNI_EXECUTOR_KINDS=email,email-reply,calendar-rsvp`. Preserve `ACTIONS_CALENDAR_ENABLED=true`, email executor configuration and Matrix/invite restrictions. Restart through named tagged deploy. Activation grants no RSVP itself: owner must approve the exact event and response card. Rollback restores backup or removes `calendar-rsvp`; `OMNI_EXECUTORS=off` disables all non-command executors.

@@ -14,7 +14,8 @@ process.env.OMNI_HERMES_KEY = "hermes-test-key-0123456789";
 process.env.OMNI_SERVICE_TOKEN = "omni-service-token-0123456789";
 
 import { config } from "../src/config";
-import { executorFor } from "../src/omni/approvals";
+import { setActionsGogRunnerForTests } from "../src/actions/calendar";
+import { validatePayload, executorFor } from "../src/omni/approvals";
 import { createApp } from "../src/app";
 import { db } from "../src/db";
 import { putSecret } from "../src/secrets";
@@ -129,4 +130,35 @@ test("sender allowlist never changes the independent command gate", () => {
   assert.equal(executorFor("command").enabled, true);
   process.env.OMNI_COMMAND_APPROVALS = "off";
   assert.equal(executorFor("command").enabled, false);
+});
+
+
+test("RSVP requires exact kind and digest; human decision executes once through audited calendar route", async () => {
+  Object.assign(config, { actionsCalendarEnabled: true });
+  putSecret("primary", config.ownerEmail, "google", JSON.stringify({ account: "owner@example.test" }));
+  const calls: string[][] = [];
+  setActionsGogRunnerForTests(async args => { calls.push(args); return "{}"; });
+  try {
+    const r = await app.request("/api/omni/hooks/propose", { method: "POST", headers: { ...J, authorization: `Bearer ${process.env.OMNI_SERVICE_TOKEN}` }, body: JSON.stringify({ kind: "calendar-rsvp", payload: { eventId: "event_20261011T150000Z", response: "tentative", hidden: "dropped" } }) });
+    assert.equal(r.status, 201);
+    const p = await r.json() as { id: string; digest: string };
+    assert.equal(calls.length, 0, "proposal sends nothing");
+    const human = { cookie: sessionCookie(makeSession(config.ownerEmail)) };
+    process.env.OMNI_EXECUTOR_KINDS = "email,email-reply";
+    assert.equal((await decide(p.id, p.digest, human, "rsvp-disabled-0001")).status, 503);
+    process.env.OMNI_EXECUTOR_KINDS = "email,email-reply,calendar-rsvp";
+    assert.equal(executorFor("calendar-invite").enabled, false);
+    assert.equal((await decide(p.id, "0".repeat(64), human, "rsvp-stale-000001")).status, 409);
+    assert.equal(calls.length, 0);
+    assert.equal((await decide(p.id, p.digest, human, "rsvp-send-0000001")).status, 200);
+    assert.deepEqual(calls, [["calendar", "respond", "primary", "event_20261011T150000Z", "--status=tentative", "--account=owner@example.test", "--json", "--no-input"]]);
+    assert.equal((await decide(p.id, p.digest, human, "rsvp-send-0000002")).status, 409);
+    assert.equal(calls.length, 1);
+    assert.deepEqual(db.prepare("SELECT action, origin, status FROM action_audit").all(), [{ action: "calendar.rsvp", origin: "human", status: "ok" }]);
+  } finally { setActionsGogRunnerForTests(null); }
+});
+
+test("RSVP rejects malformed event/response at proposal and strips undisplayed extras", () => {
+  for (const payload of [{ eventId: "--account=other", response: "accepted" }, { eventId: "event", response: "maybe" }]) assert.throws(() => validatePayload("calendar-rsvp", payload));
+  assert.deepEqual(validatePayload("calendar-rsvp", { eventId: "event", response: "declined", attendees: ["hidden@example.test"] }).payload, { eventId: "event", response: "declined" });
 });

@@ -28,6 +28,13 @@ final class PolishTests: XCTestCase {
         }
     }
 
+    func testRSVPDisplaysExactOccurrenceAndResponseWithoutEditing() {
+        let content = ApprovalContent(kind: .calendarRSVP, payload: .object(["eventId": .string("event_20261011T150000Z"), "response": .string("tentative")]))
+        XCTAssertEqual(content.kindLabel, "Calendar RSVP")
+        XCTAssertEqual(content.fields.map(\.value), ["event_20261011T150000Z", "tentative"])
+        XCTAssertEqual(ApprovalDraft.editableKeys(for: .calendarRSVP).count, 0)
+    }
+
     func testATasksDueDateReadsAsADay() {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(identifier: "America/Denver")!
