@@ -106,15 +106,32 @@ struct ApprovalCardView: View {
     /// Side by side where the whole row fits; one under another where it does not (large
     /// text, a narrow column, a long label) — never squeezed onto two lines or cut.
     @ViewBuilder private func buttons(_ card: ApprovalCard, _ standing: ApprovalCard.Standing) -> some View {
-        ViewThatFits(in: .horizontal) {
-            HStack(spacing: 8) { actions(card, standing) }
-            VStack(alignment: .leading, spacing: 8) { actions(card, standing) }
+        VStack(alignment: .leading, spacing: 4) {
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 8) { actions(card, standing) }
+                VStack(alignment: .leading, spacing: 8) { actions(card, standing) }
+            }
+            #if os(iOS)
+            .buttonStyle(.bordered)
+            #endif
+            .controlSize(.regular)
+            .fixedSize(horizontal: false, vertical: true)
+            if card.canOfferCancel(), !card.isCommand {
+                Button { confirmingCancel = true } label: {
+                    Text("Cancel Draft").frame(minHeight: 44).contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(Color.quietText)
+                .accessibilityIdentifier("approval.cancel")
+                .accessibilityHint("Discards this draft; nothing is sent")
+                .confirmationDialog("Cancel this draft?", isPresented: $confirmingCancel, titleVisibility: .visible) {
+                    Button("Cancel Draft", role: .destructive) { Task { await center.cancel(card.id) } }
+                    Button("Keep", role: .cancel) {}
+                } message: {
+                    Text("Nothing is sent. Omni can write a new one if you ask.")
+                }
+            }
         }
-        #if os(iOS)
-        .buttonStyle(.bordered)
-        #endif
-        .controlSize(.regular)
-        .fixedSize(horizontal: false, vertical: true)
         .disabled(card.isBusy)
     }
 
@@ -142,16 +159,7 @@ struct ApprovalCardView: View {
                 Button { revising = true } label: { actionLabel("Revise…") }
                     .accessibilityIdentifier("approval.revise")
                     .accessibilityHint("Ask Omni for a new draft")
-                Button { confirmingCancel = true } label: { actionLabel("Cancel Draft") }
-                    .accessibilityIdentifier("approval.cancel")
-                    .accessibilityHint("Discards this draft; nothing is sent")
-                    // On the button: the question appears beside what was pressed.
-                    .confirmationDialog("Cancel this draft?", isPresented: $confirmingCancel, titleVisibility: .visible) {
-                        Button("Cancel Draft", role: .destructive) { Task { await center.cancel(card.id) } }
-                        Button("Keep", role: .cancel) {}
-                    } message: {
-                        Text("Nothing is sent. Omni can write a new one if you ask.")
-                    }
+
             }
             if standing == .mismatch {
                 Button { Task { await center.reload(card.id) } } label: { actionLabel("Reload") }
