@@ -199,6 +199,59 @@ final class OmniWalkTests: OmniUITestCase {
 
     // MARK: The list, in every state
 
+    /// A small history fixture: no full seed and no approval action is performed.
+    func testHistoryDisclosuresAndNeedsYouSpacing() throws {
+        continueAfterFailure = false
+        let ids = try XCTUnwrap(server { backend -> [String: String] in
+            try await backend.reset()
+            let read = try await backend.thread("Earlier reviewed answer", "Give a short welcome.")
+            try await backend.settle(read)
+            _ = try await backend.call("PATCH", "/api/omni/threads/\(read)", ["unread": false])
+            let draft = try await backend.thread("Review the email draft", "Draft an email. stub:approval:email")
+            try await backend.settle(draft)
+            _ = try await backend.call("PATCH", "/api/omni/threads/\(draft)", ["unread": false])
+            let fresh = try await backend.thread("Fresh reply stays prominent", "Give a short welcome.")
+            try await backend.settle(fresh)
+            _ = try await backend.call("PATCH", "/api/omni/threads/\(fresh)", ["unread": true])
+            return ["read": read, "fresh": fresh, "draft": draft]
+        })
+        launch(faults: "sample-data", arguments: ["-omni.history.collapsedSections", ""])
+        go(.threads)
+        let fresh = element("thread.\(try XCTUnwrap(ids["fresh"]))")
+        let read = element("thread.\(try XCTUnwrap(ids["read"]))")
+        wait(fresh, 15, "the fresh unread reply")
+        let replied = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Replied,")).firstMatch
+        wait(replied, 15, "the Replied history disclosure")
+        bring(replied)
+        wait(read, 10, "the reviewed reply")
+        XCTAssertLessThan(fresh.frame.minY, read.frame.minY, "Fresh replies must lead older reviewed history")
+        shot("history-new-replies-expanded")
+        replied.tap()
+        XCTAssertTrue(gone(read, 5), "Collapsing history hides its rows")
+        XCTAssertTrue(fresh.exists, "New replies remain visible when history is collapsed")
+        shot("history-replied-collapsed")
+        replied.tap()
+        wait(read, 10, "the expanded reviewed reply")
+
+        go(.needsYou)
+        let send = element("approval.send")
+        let edit = element("approval.edit")
+        let revise = element("approval.revise")
+        wait(send, 15, "the review-only draft's Send control")
+        bring(send)
+        #if os(iOS)
+        XCTAssertGreaterThanOrEqual(send.frame.height, 44)
+        XCTAssertGreaterThanOrEqual(edit.frame.height, 44)
+        XCTAssertGreaterThanOrEqual(revise.frame.height, 44)
+        #endif
+        for control in [send, edit, revise] {
+            XCTAssertFalse(control.frame.isEmpty)
+        }
+        XCTAssertFalse(send.frame.intersects(edit.frame), "Approval controls must not overlap")
+        XCTAssertFalse(edit.frame.intersects(revise.frame), "Approval controls must not overlap")
+        shot("needs-you-compact-approval-controls")
+    }
+
     func test05ThreadListSearchAndToday() {
         seed()
         launch(faults: "sample-data")
