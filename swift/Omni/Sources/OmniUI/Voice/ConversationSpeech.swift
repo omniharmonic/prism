@@ -5,12 +5,16 @@ import OmniVoiceKit
 
 @MainActor protocol ConversationSpeechOutput: AnyObject {
     func speak(_ text: String, identifier: String?, rate: Float, completion: @escaping @MainActor () -> Void)
+    func playAudio(_ data: Data, completion: @escaping @MainActor () -> Void) throws
     func stop()
     func configureDuplex(_ audio: AudioIO?)
     func configureFailure(_ receive: @escaping @MainActor (String) -> Void)
 }
 
 @MainActor extension ConversationSpeechOutput {
+    func playAudio(_ data: Data, completion: @escaping @MainActor () -> Void) throws {
+        throw VoiceFailure.unavailable("Encoded speech playback is unavailable.")
+    }
     func configureDuplex(_ audio: AudioIO?) {}
     func configureFailure(_ receive: @escaping @MainActor (String) -> Void) {}
 }
@@ -60,6 +64,26 @@ import OmniVoiceKit
         let segments = duplexOwner == owner ? SpeechUtteranceSegments.split(text) : [text]
         for segment in segments { enqueue(segment, identifier: identifier, rate: rate) }
     }
+    func playAudio(_ data: Data, owner: UUID) throws {
+        guard recordingOwner == nil else { throw VoiceFailure.unavailable("Microphone capture is still active.") }
+        if isPreviewing || playbackOwner != owner { stopAll() }
+        if duplexOwner != owner { output.configureDuplex(nil); duplexOwner = nil }
+        playbackOwner = owner; pending += 1
+        let request = generation
+        do {
+            try output.playAudio(data) { [weak self] in
+                guard let self, self.generation == request else { return }
+                self.pending -= 1
+                if self.pending == 0 {
+                    self.playbackOwner = nil; self.resolveDrain(owner: owner)
+                }
+            }
+        } catch {
+            pending -= 1
+            if pending == 0 { playbackOwner = nil; resolveDrain(owner: owner) }
+            throw error
+        }
+    }
     func waitForPlayback(owner: UUID) async {
         guard playbackOwner == owner, pending > 0 else { return }
         await withCheckedContinuation { continuation in
@@ -92,9 +116,14 @@ import OmniVoiceKit
     }
 }
 
-@MainActor private final class AppleSpeechOutput: NSObject, ConversationSpeechOutput, AVSpeechSynthesizerDelegate {
+@MainActor private final class AppleSpeechOutput: NSObject, ConversationSpeechOutput, AVSpeechSynthesizerDelegate, AVAudioPlayerDelegate {
     private let speaker = AVSpeechSynthesizer()
     private var duplex: AudioIO?
+    private var encodedPlayer: AVAudioPlayer?
+    private var encodedCompletion: (@MainActor () -> Void)?
+    private var encodedTask: Task<Void, Never>?
+    private var encodedGeneration = 0
+    private var playbackGeneration = 0
     private var pcmDrainTask: Task<Void, Never>?
     private var pcmTasks: [ObjectIdentifier: Task<Void, Never>] = [:]
     private var receiveFailure: (@MainActor (String) -> Void)?
@@ -146,12 +175,88 @@ import OmniVoiceKit
             speaker.speak(utterance)
         }
     }
+    func playAudio(_ data: Data, completion: @escaping @MainActor () -> Void) throws {
+        guard !data.isEmpty, data.count <= 10 * 1024 * 1024 else { throw VoiceFailure.unavailable("Speech audio exceeded its size limit.") }
+        encodedGeneration += 1
+        let request = encodedGeneration
+        if duplex != nil {
+            // Decode in bounded frames and use the same voice-processing output
+            // reference as Apple PCM. Never leave downloaded speech in a cache.
+            let url = FileManager.default.temporaryDirectory.appending(path: "omni-reply-\(UUID().uuidString).mp3")
+            guard FileManager.default.createFile(atPath: url.path, contents: data, attributes: [.posixPermissions: 0o600]) else {
+                throw VoiceFailure.unavailable("Speech audio could not be prepared.")
+            }
+            let file: AVAudioFile
+            do { file = try AVAudioFile(forReading: url) }
+            catch { try? FileManager.default.removeItem(at: url); throw error }
+            try? FileManager.default.removeItem(at: url)
+            guard file.processingFormat.sampleRate >= 8_000, file.processingFormat.sampleRate <= 192_000,
+                  file.processingFormat.channelCount > 0, file.processingFormat.channelCount <= 8,
+                  Double(file.length) / file.processingFormat.sampleRate <= 600 else {
+                throw VoiceFailure.unavailable("Speech audio exceeded its playback limits.")
+            }
+            let token = NSObject()
+            let id = ObjectIdentifier(token)
+            completions[id] = completion
+            encodedTask = Task { [weak self, token] in
+                guard let self else { return }
+                do {
+                    while file.framePosition < file.length {
+                        try Task.checkCancellation()
+                        guard self.encodedGeneration == request, self.completions[id] != nil else { return }
+                        let count = AVAudioFrameCount(min(4096, file.length - file.framePosition))
+                        guard let buffer = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: count) else { throw VoiceFailure.unavailable("Speech audio could not be decoded.") }
+                        try file.read(into: buffer, frameCount: count)
+                        await self.accept(buffer, id: id)
+                    }
+                    guard !Task.isCancelled, self.encodedGeneration == request else { return }
+                    self.pcmEnded.insert(ObjectIdentifier(token)); self.completePCM(id)
+                    self.encodedTask = nil
+                } catch {
+                    guard !Task.isCancelled, self.encodedGeneration == request else { return }
+                    self.receiveFailure?("The generated reply could not be played.")
+                }
+            }
+        } else {
+            #if os(iOS)
+            try AVAudioSession.sharedInstance().setCategory(.playback, mode: .spokenAudio)
+            try AVAudioSession.sharedInstance().setActive(true)
+            #endif
+            let player = try AVAudioPlayer(data: data)
+            guard player.duration <= 600 else { throw VoiceFailure.unavailable("Speech audio exceeded its playback limits.") }
+            encodedPlayer = player; encodedCompletion = completion; player.delegate = self
+            guard player.prepareToPlay(), player.play() else {
+                encodedPlayer = nil; encodedCompletion = nil
+                throw VoiceFailure.unavailable("The generated reply could not start playback.")
+            }
+        }
+    }
+    nonisolated func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
+        let retained = RetainedPlayer(player: player)
+        Task { @MainActor [weak self] in
+            guard let self, self.encodedPlayer === retained.player else { return }
+            self.encodedPlayer = nil
+            let completed = self.encodedCompletion; self.encodedCompletion = nil
+            if flag { completed?() } else { self.receiveFailure?("The generated reply stopped before completion.") }
+        }
+    }
+    nonisolated func audioPlayerDecodeErrorDidOccur(_ player: AVAudioPlayer, error: Error?) {
+        let retained = RetainedPlayer(player: player)
+        Task { @MainActor [weak self] in
+            guard let self, self.encodedPlayer === retained.player else { return }
+            self.receiveFailure?("The generated reply could not be decoded.")
+        }
+    }
+    private struct RetainedPlayer: @unchecked Sendable { let player: AVAudioPlayer }
     nonisolated private static func pcmCallback(for bridge: SpeechPCMStream) -> @Sendable (AVAudioBuffer) -> Void {
         { buffer in bridge.accept(buffer) }
     }
     func configureDuplex(_ audio: AudioIO?) { duplex = audio }
     func configureFailure(_ receive: @escaping @MainActor (String) -> Void) { receiveFailure = receive }
     func stop() {
+        playbackGeneration += 1
+        encodedGeneration += 1; encodedTask?.cancel(); encodedTask = nil
+        encodedPlayer?.stop(); encodedPlayer = nil; encodedCompletion = nil
         pcmTasks.values.forEach { $0.cancel() }; pcmTasks = [:]; pcmDrainTask = nil
         completions.removeAll(); pcmPending = [:]; pcmEnded = []
         duplex?.silencePlayback(); speaker.stopSpeaking(at: .immediate)
@@ -159,11 +264,12 @@ import OmniVoiceKit
     private func accept(_ buffer: AVAudioPCMBuffer, id: ObjectIdentifier) async {
         guard completions[id] != nil else { return }
         pcmPending[id, default: 0] += 1
+        let playbackRequest = playbackGeneration
         do {
             guard let duplex else { throw VoiceFailure.unavailable("The speech playback route was lost.") }
             try await duplex.play(buffer) { [weak self] in
                 Task { @MainActor in
-                    guard let self, self.completions[id] != nil else { return }
+                    guard let self, self.playbackGeneration == playbackRequest, self.completions[id] != nil else { return }
                     self.pcmPending[id, default: 0] -= 1; self.completePCM(id)
                 }
             }

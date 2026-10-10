@@ -7,6 +7,12 @@ import XCTest
         var identifiers: [String?] = []
         var rates: [Float] = []
         var completions: [@MainActor () -> Void] = []
+        var audio: [Data] = []
+        var failAudio = false
+        func playAudio(_ data: Data, completion: @escaping @MainActor () -> Void) throws {
+            if failAudio { throw NSError(domain: "fixture", code: 1) }
+            audio.append(data); completions.append(completion)
+        }
         var stops = 0
         var failure: (@MainActor (String) -> Void)?
         func configureFailure(_ receive: @escaping @MainActor (String) -> Void) { failure = receive }
@@ -105,6 +111,31 @@ import XCTest
         speech.speak("Different session.", owner: UUID(), identifier: nil, rate: 0.5)
         oldFailure?("Stale error")
         XCTAssertTrue(failure.isEmpty)
+    }
+
+    func testGeneratedAudioUsesSameOwnedDrainAndCancelledCompletionCannotReleaseNewReply() async throws {
+        let output = Output(); let speech = ConversationSpeech(output: output); let owner = UUID()
+        try speech.playAudio(Data([1]), owner: owner)
+        var drained = false
+        let waiting = Task { await speech.waitForPlayback(owner: owner); drained = true }
+        await Task.yield(); XCTAssertFalse(drained)
+        speech.silence(owner: owner); await waiting.value
+        XCTAssertTrue(drained)
+        try speech.playAudio(Data([2]), owner: owner)
+        var nextDrained = false
+        let next = Task { await speech.waitForPlayback(owner: owner); nextDrained = true }
+        await Task.yield()
+        output.completions[0](); await Task.yield()
+        XCTAssertFalse(nextDrained)
+        output.completions[1](); await next.value
+        XCTAssertTrue(nextDrained); XCTAssertEqual(output.audio, [Data([1]), Data([2])])
+    }
+    func testGeneratedAudioSetupFailureDoesNotStrandDrain() async {
+        let output = Output(); output.failAudio = true
+        let speech = ConversationSpeech(output: output); let owner = UUID()
+        XCTAssertThrowsError(try speech.playAudio(Data([1]), owner: owner))
+        await speech.waitForPlayback(owner: owner)
+        XCTAssertTrue(output.audio.isEmpty)
     }
 
 }
