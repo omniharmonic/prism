@@ -87,3 +87,8 @@ test("digest slot persists: a newly arrived item cannot create a second notifica
  assert.equal(claimNudgeDigest("owner",T+60000),null);
  assert.equal(listNudges("owner",false,T+60000).find(n=>n.candidate.sourceId==="new")!.surfaces,0);
 });
+
+test("business-hours freshness stays in queue but holds weekend/after-hours notifications",()=>{
+ assert.equal(interruptDecision({...base,businessHoursOnly:true},context,"balanced",false,0,T),"hold");
+ const weekday=Date.parse("2026-10-12T15:00:00Z");assert.equal(interruptDecision({...base,businessHoursOnly:true},{...context,observedAt:weekday},"balanced",false,0,weekday),"digest");
+});

@@ -36,20 +36,22 @@ export interface NoteMeta {
   prismType?: string | null;
   icon?: string | null;
   private?: boolean;
+  trashed?: boolean;
   updatedAt?: string | null;
 }
-export type NoteResolver = (ref: { id?: string; path?: string }) => Promise<NoteMeta | null>;
+export type NoteResolver = (ref: { id?: string; path?: string; fresh?: boolean }) => Promise<NoteMeta | null>;
 export type TreeSubscriber = (l: (c: TreeChange) => void) => Promise<() => void>;
 
 const rowMeta = (r: TreeRow): NoteMeta => ({
   id: r.id, path: r.path, tags: r.tags, title: r.title ?? null, type: r.type ?? null, prismType: r.prismType ?? null,
-  icon: r.icon ?? null, private: r.visibility === "private", updatedAt: r.updatedAt,
+  icon: r.icon ?? null, private: r.visibility === "private", updatedAt: r.updatedAt, trashed: !!r.trashedAt || r.tags.includes("prism-trashed"),
 });
 
 /** Default: the primary vault's tree projection, then one lean vault read by id. */
 const defaultResolver: NoteResolver = async (ref) => {
   const entry = resolveVaultEntry(undefined);
   try {
+    if (ref.fresh) throw new Error("Fresh metadata required");
     const t = await ensureTree(entry);
     const rows = t.rows();
     const key = ref.path?.replace(/\.md$/i, "").toLowerCase();
@@ -60,12 +62,12 @@ const defaultResolver: NoteResolver = async (ref) => {
   }
   if (!ref.id) return null;
   try {
-    const n = await vaultClient(entry.id, { timeoutMs: 5_000 }).getNote(ref.id, { includeContent: false, includeMetadata: ["title", "type", "prism_type", "icon", "prism_visibility"] });
+    const n = await vaultClient(entry.id, { timeoutMs: 5_000 }).getNote(ref.id, { includeContent: false, includeMetadata: ["title", "type", "prism_type", "icon", "prism_visibility", "prism_trashed_at"] });
     const m = n.metadata ?? {};
     return {
       id: n.id, path: n.path, tags: n.tags ?? [], title: typeof m.title === "string" ? m.title : null,
       type: typeof m.type === "string" ? m.type : null, prismType: typeof m.prism_type === "string" ? m.prism_type : null,
-      icon: typeof m.icon === "string" ? m.icon : null, private: m.prism_visibility === "private", updatedAt: n.updatedAt,
+      icon: typeof m.icon === "string" ? m.icon : null, private: m.prism_visibility === "private", updatedAt: n.updatedAt, trashed: !!m.prism_trashed_at || (n.tags ?? []).includes("prism-trashed"),
     };
   } catch {
     return null;

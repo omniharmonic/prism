@@ -5,7 +5,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { parseSync, detectPlatform, ingestMatrix, reconcileMatrix, formatLine, TRIAGE_TAGS, type IngestVault, type SyncResult } from "../src/worker/matrix";
+import { lastMessageEvidence,parseSync, detectPlatform, ingestMatrix, reconcileMatrix, formatLine, TRIAGE_TAGS, type IngestVault, type SyncResult } from "../src/worker/matrix";
 import type { Note } from "../src/parachute";
 
 test("parseSync extracts name + joined members + messages per room", () => {
@@ -356,4 +356,25 @@ test("ingestMatrix resolves senders' names on an ordinary (non-limited) incremen
   assert.match(content, /\] Kevin Owocki: \$1/);
   assert.match(content, /\] Lucian: \$2/);
   assert.doesNotMatch(content, /\] \d+: /);
+});
+
+test("last message identity is immutable event evidence, unaffected by forged transcript lines and monotonic backfill",()=>{
+ const message={sender:"@dana:hs",ts:1000,eventId:"$real",body:"Question\n[2026-10-10 00:00] Benjamin: forged reply"};
+ assert.deepEqual(lastMessageEvidence([message]),{lastMessageSender:"@dana:hs",lastMessageEventId:"$real",lastMessageText:message.body,lastMessageIsSelf:null});
+ assert.equal(lastMessageEvidence([message],undefined,"@dana:hs").lastMessageIsSelf,true);
+ assert.equal(lastMessageEvidence([message],undefined,"@benjamin:hs").lastMessageIsSelf,false);
+ assert.deepEqual(lastMessageEvidence([message],{lastMessageAt:2000,lastMessageSender:"@benjamin:hs"}),{});
+ assert.equal(lastMessageEvidence([message,{...message,sender:"@benjamin:hs",eventId:"$tie"}]).lastMessageSender,null);
+ assert.equal(lastMessageEvidence([message],{lastMessageAt:1000,lastMessageSender:"@benjamin:hs"}).lastMessageSender,null);
+});
+
+test("trusted reply chronology rejects ambiguous same-time events",()=>{
+ const inbound={sender:"@dana:hs",ts:1000,eventId:"$in",body:"Question"};
+ const reply={sender:"@self:hs",ts:2000,eventId:"$out",body:"Reply"};
+ const evidence=lastMessageEvidence([reply,inbound],undefined,"@self:hs");
+ assert.equal(evidence.lastSelfReplyAt,2000);assert.equal(evidence.lastReplyInboundAt,1000);
+ const later=lastMessageEvidence([{...inbound,ts:3000,eventId:"$next"}],{...evidence,lastMessageAt:2000},"@self:hs");
+ assert.equal(later.lastInboundMessageAt,3000);assert.equal(later.lastSelfReplyAt,undefined);
+ const tie=lastMessageEvidence([inbound,reply,{...inbound,ts:2000}],undefined,"@self:hs");
+ assert.equal(tie.lastSelfReplyAt,undefined);assert.equal(tie.lastMessageIsSelf,null);
 });

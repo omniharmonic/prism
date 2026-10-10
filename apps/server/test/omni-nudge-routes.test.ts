@@ -80,10 +80,36 @@ test("service reconciliation and audit require complete evidence, preserve parti
  assert.equal((await post("/hooks/nudges/resolve",{complete:true,sourceIds:["source1"]},owner())).status,403);
  assert.equal((await post("/hooks/nudges/resolve",{complete:true,sourceIds:["source1"]},hook)).status,200);
  assert.equal((await post(`/nudges/${n.id}/start`,{action:"draft-reply"},{...owner(),"idempotency-key":"resolved-start-12345"})).status,409);
- const now=Date.now(),body={complete:true,since:now-86400000,replies:[{sourceId:"source1",inboundAt:now-3600000,repliedAt:now-1000}]};
+ const now=Date.now(),body={complete:true,unknownChat:2,since:now-86400000,replies:[{sourceId:"source1",inboundAt:now-3600000,repliedAt:now-1000}]};
  assert.equal((await post("/hooks/nudges/audit",{...body,complete:false},hook)).status,400);
  assert.equal((await post("/hooks/nudges/audit",{...body,replies:[{...body.replies[0],repliedAt:now+100000}]},hook)).status,400);
  assert.equal((await post("/hooks/nudges/audit",body,hook)).status,200);
  assert.equal((await omniApi.request("/nudges/audit",{headers:hook})).status,401);
  const report=await (await omniApi.request("/nudges/audit",{headers:owner()})).json() as {report:{missed:number}};assert.equal(report.report.missed,1);
+});
+
+test("operational sources are gateway-only bounded namespaces with generated text and private start constraints",async()=>{
+ const now=Date.now();
+ assert.equal((await post("/hooks/nudges/operational",{kind:"freshness",subsystem:"arbitrary/path",lastSeen:0},hook)).status,400);
+ const res=await post("/hooks/nudges/operational",{kind:"freshness",subsystem:"email",lastSeen:0,summary:"PRIVATE_SECRET"},hook);assert.equal(res.status,201);
+ const n=await res.json() as {id:string;sourceLink:string;candidate:Candidate};assert.equal(n.candidate.sourceId,"ops_freshness_email_0");assert.equal(n.sourceLink,"omni://health/email");assert.doesNotMatch(n.candidate.summary,/PRIVATE_SECRET/);
+ assert.equal((await post(`/nudges/${n.id}/start`,{action:"draft-reply"},{...owner(),"idempotency-key":"operational-start-12345"})).status,400);
+ assert.equal((await post("/hooks/nudges",{...candidate,operationalSource:{kind:"freshness",subsystem:"email",lastSeen:0}},hook)).status,400);
+ const stub=createHermesStub({key:process.env.OMNI_HERMES_KEY!,script:()=>({acts:[{say:"Private investigation only"}]})});setHermesFetchForTests(stub.fetch);
+ try{
+  const started=await post(`/nudges/${n.id}/start`,{action:"start-working"},{...owner(),"idempotency-key":"operational-work-12345"});assert.equal(started.status,200);
+  const t=await started.json() as {threadId:string;turnId:string};assert.equal(getThread(t.threadId)!.taskNoteId,null);await turnSettled(t.turnId);
+ }finally{setHermesFetchForTests(null);}
+ setHermesFetchForTests(async()=>new Response(JSON.stringify({job:{id:"abcdef123456",last_status:"error",last_run_at:new Date(now-1000).toISOString(),last_error:"PRIVATE_SECRET"}}),{status:200,headers:{"content-type":"application/json"}}));
+ try{
+  const job=await post("/hooks/nudges/operational",{kind:"job",jobId:"abcdef123456",runAt:now-1000},hook);assert.equal(job.status,201);assert.doesNotMatch(JSON.stringify(await job.json()),/PRIVATE_SECRET/);
+  assert.equal((await post("/hooks/nudges/operational",{kind:"job",jobId:"abcdef123456",runAt:now-2000},hook)).status,409);
+ }finally{setHermesFetchForTests(null);}
+});
+
+test("trashed source cannot be re-proposed or privately started before the next reconciliation",async()=>{
+ const n=upsertNudge(config.ownerEmail,candidate);
+ setOmniRecordSourcesForTests({resolver:async()=>({id:"source1",path:"actual/source",tags:["prism-trashed"]})});
+ assert.equal((await post("/hooks/nudges",candidate,hook)).status,422);
+ assert.equal((await post(`/nudges/${n.id}/start`,{action:"start-working"},{...owner(),"idempotency-key":"trashed-source-start-12345"})).status,422);
 });

@@ -39,14 +39,18 @@ for (const [column, definition] of [["resolved", "INTEGER NOT NULL DEFAULT 0"], 
 if (!(db.prepare("PRAGMA table_info(omni_nudge_pushes)").all() as {name:string}[]).some(r=>r.name==="batch_key")) db.exec("ALTER TABLE omni_nudge_pushes ADD COLUMN batch_key TEXT");
 const rateCount=(owner:string,now:number)=>(db.prepare("SELECT count(DISTINCT COALESCE(batch_key,'legacy-'||id)) n FROM omni_nudge_pushes WHERE owner_email=? AND ts>?").get(owner,now-3_600_000) as {n:number}).n;
 export const NUDGE_KINDS = ["reply-owed", "unprocessed", "task", "commitment", "meeting", "job", "freshness"] as const;
+export const FRESHNESS_SUBSYSTEMS = {"agent-insight":28,"agent-sense":76,"email":6,"message-thread":30,"transcript":72} as const;
+export type OperationalSource = {kind:"job";jobId:string;runAt:number}|{kind:"freshness";subsystem:keyof typeof FRESHNESS_SUBSYSTEMS;lastSeen:number};
 export interface Candidate {
+ operationalSource?:OperationalSource;
  sourceId: string; kind: typeof NUDGE_KINDS[number]; title: string; summary: string; reasons: string[];
  sourcePath: string; senderId: string | null; baseScore: number; priority: number;
  deadline: number | null; urgentAt: number | null; commitment: boolean;
 }
 interface Raw { resolved: number; seen_at:number|null; id: string; owner_email: string; source_id: string; candidate: string; score: number; priority: number; deadline: number | null; urgent_at: number | null; surfaces: number; last_surface_at: number | null; snoozed_until: number | null; dismissed: number; thread_id: string | null; created_at: number; updated_at: number }
 export interface Nudge extends NudgePolicyInput { resolved:boolean; seenAt:number|null; sourceLink: string; id: string; candidate: Candidate; threadId: string | null; createdAt: number; updatedAt: number }
-const view = (r: Raw): Nudge => ({ resolved:!!r.resolved, seenAt:r.seen_at, sourceLink:`${omniConfig.appOrigin()}/page/${encodeURIComponent(r.source_id)}`, id:r.id, candidate:JSON.parse(r.candidate), score:r.score, priority:r.priority, deadline:r.deadline, urgentAt:r.urgent_at, surfaces:r.surfaces, lastSurfaceAt:r.last_surface_at, snoozedUntil:r.snoozed_until, dismissed:!!r.dismissed, threadId:r.thread_id, createdAt:r.created_at, updatedAt:r.updated_at });
+function sourceLink(c:Candidate,id:string):string { const op=c.operationalSource;return op ? op.kind==="job"?`omni://jobs/${op.jobId}`:`omni://health/${op.subsystem}` : `${omniConfig.appOrigin()}/page/${encodeURIComponent(id)}`; }
+const view = (r: Raw): Nudge => { const candidate=JSON.parse(r.candidate) as Candidate;return({ businessHoursOnly:candidate.operationalSource?.kind==="freshness"&&["email","message-thread"].includes(candidate.operationalSource.subsystem), resolved:!!r.resolved, seenAt:r.seen_at, sourceLink:sourceLink(candidate,r.source_id), id:r.id, candidate, score:r.score, priority:r.priority, deadline:r.deadline, urgentAt:r.urgent_at, surfaces:r.surfaces, lastSurfaceAt:r.last_surface_at, snoozedUntil:r.snoozed_until, dismissed:!!r.dismissed, threadId:r.thread_id, createdAt:r.created_at, updatedAt:r.updated_at });};
 export function getNudge(owner: string, id: string): Nudge | null { const r=db.prepare("SELECT * FROM omni_nudges WHERE owner_email=? AND id=?").get(owner,id) as Raw|undefined; return r?view(r):null; }
 export function listNudges(owner: string, later=false, now=Date.now()): Nudge[] {
  const state = later ? "(dismissed=1 OR surfaces>=2 OR COALESCE(snoozed_until,0)>?)" : "dismissed=0 AND surfaces<2 AND COALESCE(snoozed_until,0)<=?";
@@ -95,14 +99,14 @@ export function priorNudgeSources(owner:string):{sources:{sourceId:string;kind:C
  return {sources:rows.slice(0,5000).map(r=>({sourceId:r.source_id,kind:(JSON.parse(r.candidate) as Candidate).kind})),complete:rows.length<=5000};
 }
 export function resolveNudgeSource(owner:string,sourceId:string,now=Date.now()):string|null {const row=db.prepare("SELECT id FROM omni_nudges WHERE owner_email=? AND source_id=? AND resolved=0").get(owner,sourceId) as {id:string}|undefined;if(!row)return null;db.prepare("UPDATE omni_nudges SET resolved=1,updated_at=? WHERE owner_email=? AND source_id=?").run(now,owner,sourceId);return row.id;}
-export interface WeeklyAudit {caught:number;missed:number;noise:number;replied:number;since:number;through:number}
+export interface WeeklyAudit {caught:number;missed:number;noise:number;replied:number;unknownChat:number;since:number;through:number}
 export function latestNudgeAudit(owner:string):WeeklyAudit|null { const r=db.prepare("SELECT report FROM omni_nudge_audits WHERE owner_email=?").get(owner) as {report:string}|undefined;return r?JSON.parse(r.report):null; }
-export function nudgeWeeklyAudit(owner:string,replies:{sourceId:string;repliedAt:number;inboundAt?:number}[],since:number,now=Date.now()):WeeklyAudit {
+export function nudgeWeeklyAudit(owner:string,replies:{sourceId:string;repliedAt:number;inboundAt?:number}[],since:number,now=Date.now(),unknownChat=0):WeeklyAudit {
  const caught=db.prepare("SELECT id FROM omni_nudges n WHERE owner_email=? AND source_id=? AND (EXISTS(SELECT 1 FROM omni_nudge_views v WHERE v.owner_email=n.owner_email AND v.nudge_id=n.id AND v.ts>=? AND v.ts<=?) OR EXISTS(SELECT 1 FROM omni_nudge_pushes p WHERE p.owner_email=n.owner_email AND p.nudge_id=n.id AND p.outcome='sent' AND p.ts>=? AND p.ts<=?))");
  const ids=new Map<string,{repliedAt:number;inboundAt:number}>();for(const r of replies)if(!ids.has(r.sourceId)||r.repliedAt<ids.get(r.sourceId)!.repliedAt)ids.set(r.sourceId,{repliedAt:r.repliedAt,inboundAt:Math.max(since,r.inboundAt??since)});let surfaced=0;
  for(const [id,{repliedAt,inboundAt}] of ids)if(caught.get(owner,id,inboundAt,repliedAt,inboundAt,repliedAt))surfaced++;
  const noise=(db.prepare("SELECT count(DISTINCT nudge_id) n FROM omni_feedback WHERE owner_email=? AND kind='noise' AND ts>=?").get(owner,since) as {n:number}).n;
- const report={caught:surfaced,missed:ids.size-surfaced,noise,replied:ids.size,since,through:now};
+ const report={caught:surfaced,missed:ids.size-surfaced,noise,replied:ids.size,unknownChat,since,through:now};
  db.prepare("INSERT INTO omni_nudge_audits(owner_email,report,updated_at) VALUES(?,?,?) ON CONFLICT(owner_email) DO UPDATE SET report=excluded.report,updated_at=excluded.updated_at").run(owner,JSON.stringify(report),now);return report;
 }
 /** A digest consumes one interruption budget slot, while each included item claims its surface atomically. */
