@@ -1,0 +1,9 @@
+# Responsive editor follow-up — 2026-10-10
+
+The installed Prism v5 manifest identifies source `8d1432dda1cd0d4e7407a66bf4a1ccf5cec15659`. That source explicitly sets the live document's unified chrome only at `<=820px`; the plain editor similarly moves backlinks into the row only below 768px. This explains the iPhone/iPad difference without attributing it to caches. The final v5 Mac artifact was staged for signing, not installed, so the owner's running Mac version also requires separate installation verification.
+
+Documents now use the same status, mode, comments and backlinks row at every width. Page-level comment composition stays inside the opened comments panel (drawer on narrow screens, inline panel on wide screens). Bulk review appears only while actual text or structural suggestions exist. Mouse formatting and selection bubbles, phone keyboard commands, suggestion approval behavior and permission restrictions remain covered.
+
+The sidebar folder input had intrinsic minimum width alongside Add/Cancel controls. It now shrinks within the existing sidebar while buttons retain their size. At 1024px the fixture initially opens a modal Document panel, which intercepted clicks; closing that fixture panel makes the normal New folder click work. No product gesture change was necessary for that fixture issue.
+
+Validation: web and fixture typechecks; 20 focused editing-chrome and responsive-document-chrome tests; one additional pending-suggestion test with tablet/desktop assertions, and three existing collaborative insertion/deletion/structural-suggestion tests. All passed. Screenshots in `qa/screenshots/responsive-editor/` show closed/opened comments chrome and folder input at 390, 1024 and 1440px. Tablet/phone fixtures use touch input; no live vault writes or native rebuild occurred in this stage. Native installation of the merged release remains a separate acceptance step.

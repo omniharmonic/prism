@@ -294,7 +294,7 @@ export function Navigation() {
               e.preventDefault();
               handleCreateFolder();
             }}
-            className="flex items-center gap-1.5"
+            className="flex min-w-0 items-center gap-1.5"
           >
             <FolderPlus size={14} style={{ color: "var(--text-muted)", flexShrink: 0 }} />
             <input
@@ -311,15 +311,15 @@ export function Navigation() {
               }}
               aria-label="Folder name"
               placeholder="Folder name"
-              className="flex-1 h-7 px-2 text-sm rounded outline-none"
+              className="flex-1 min-w-0 w-0 h-7 px-2 text-sm rounded outline-none"
               style={{
                 background: "var(--glass)",
                 border: "1px solid var(--color-accent)",
                 color: "var(--text-primary)",
               }}
             />
-            <button type="submit" className="focus-ring text-xs px-2 py-2" disabled={createNote.isPending || !newFolderName.trim()}>Add</button>
-            <button disabled={createNote.isPending} type="button" aria-label="Cancel folder" className="focus-ring p-2" onClick={() => setNewFolderOpen(false)}><X size={14} /></button>
+            <button type="submit" className="focus-ring shrink-0 text-xs px-2 py-2" disabled={createNote.isPending || !newFolderName.trim()}>Add</button>
+            <button disabled={createNote.isPending} type="button" aria-label="Cancel folder" className="focus-ring shrink-0 p-2" onClick={() => setNewFolderOpen(false)}><X size={14} /></button>
           </form>
         )}
 
