@@ -280,10 +280,11 @@ class OmniUITestCase: XCTestCase {
             guard target.exists, target.isHittable else { return false }
             let frame = target.frame
             let box = app.textViews["composer"].firstMatch
+            let bar = app.navigationBars.firstMatch
             let tabs = app.tabBars.firstMatch
+            if app.navigationBars.allElementsBoundByIndex.contains(where: { $0.exists && $0.frame.contains(frame) }) || tabs.exists && tabs.frame.contains(frame) { return true }
             let floor = box.exists && box.frame.minY > frame.minY ? box.frame.minY
                 : tabs.exists ? tabs.frame.minY : app.frame.maxY - 24
-            let bar = app.navigationBars.firstMatch
             let ceiling = bar.exists ? bar.frame.maxY : app.frame.minY + 24
             return frame.minY >= ceiling && frame.maxY <= floor - 4
         }

@@ -120,6 +120,12 @@ struct ThreadView: View {
                 #if os(iOS)
                 // Dragging the conversation puts the keyboard away (there is no other way to on an iPhone).
                 .scrollDismissesKeyboard(.immediately)
+                // A focused TextEditor can retain its keyboard at the largest text sizes
+                // even when the enclosing conversation is dragged. Keep scrolling's
+                // gesture and explicitly relinquish the editor's first responder.
+                .simultaneousGesture(DragGesture(minimumDistance: 10).onChanged { _ in
+                    UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+                })
                 #endif
                 .refreshable { await model.reload() }
                 .onChange(of: model.timeline) { proxy.scrollTo("bottom", anchor: .bottom) }
