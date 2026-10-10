@@ -66,6 +66,8 @@ pub const SCHEME: &str = "prism";
 pub enum AppLink {
     /// `/page/<id>` and `/collab/<id>`: open that page in the workspace.
     Page(String),
+    /// An Omni source carries server/vault context; mismatches are presented, never opened.
+    Source { id: String, vault: String, server: String, paired: bool },
     /// `/inbox[/<notification id>]`.
     Inbox(Option<String>),
     /// `/agent[/<session uuid>]`.
@@ -78,6 +80,11 @@ impl AppLink {
     pub fn path(&self) -> String {
         match self {
             AppLink::Page(id) => format!("/page/{id}"),
+            AppLink::Source { id, vault, server, paired } => {
+                let query: String = url::form_urlencoded::Serializer::new(String::new())
+                    .append_pair("server", server).append_pair("paired", if *paired { "1" } else { "0" }).finish();
+                format!("/source/{vault}/{id}?{query}")
+            },
             AppLink::Inbox(None) => "/inbox".into(),
             AppLink::Inbox(Some(id)) => format!("/inbox/{id}"),
             AppLink::Agent(None) => "/agent".into(),
@@ -153,6 +160,18 @@ pub fn parse(raw: &str, origin: &ServerOrigin) -> Option<AppLink> {
         return None;
     }
     let url = Url::parse(raw).ok()?;
+    if url.scheme() == SCHEME && url.host_str() == Some("source") {
+        if !url.username().is_empty() || url.password().is_some() || url.port().is_some() || url.fragment().is_some() { return None; }
+        let id = url.path().strip_prefix('/')?;
+        if !is_id(id, MAX_PAGE_ID) { return None; }
+        let pairs: Vec<_> = url.query_pairs().collect();
+        if pairs.len() != 2 { return None; }
+        let server = pairs.iter().find(|(k, _)| k == "server")?.1.as_ref();
+        let vault = pairs.iter().find(|(k, _)| k == "vault")?.1.as_ref();
+        if !is_id(vault, 128) { return None; }
+        let server = ServerOrigin::parse(server).ok()?;
+        return Some(AppLink::Source { id: id.into(), vault: vault.into(), paired: server.as_str() == origin.as_str(), server: server.as_str().into() });
+    }
     if !url.username().is_empty() || url.password().is_some() || url.query().is_some() {
         return None;
     }
@@ -495,6 +514,21 @@ mod tests {
         assert_eq!(p("prism://inbox/n1").as_deref(), Some("/inbox/n1"));
         assert_eq!(p("prism://agent").as_deref(), Some("/agent"));
         assert_eq!(p(&format!("prism://agent/{UUID}")), Some(format!("/agent/{UUID}")));
+    }
+
+    #[test]
+    fn contextual_sources_preserve_server_and_vault_without_opening_mismatches() {
+        let valid = "prism://source/note_1?server=https%3A%2F%2Fprism.example.com&vault=primary";
+        assert_eq!(p(valid).as_deref(), Some("/source/primary/note_1?server=https%3A%2F%2Fprism.example.com&paired=1"));
+        let wrong = "prism://source/note_1?server=https%3A%2F%2Fother.example&vault=primary";
+        assert_eq!(p(wrong).as_deref(), Some("/source/primary/note_1?server=https%3A%2F%2Fother.example&paired=0"));
+        for invalid in [
+            "prism://source/note_1?server=https%3A%2F%2Fprism.example.com",
+            "prism://source/note_1?server=https%3A%2F%2Fprism.example.com&server=https%3A%2F%2Fevil.example",
+            "prism://source/note_1?server=https%3A%2F%2Fprism.example.com&vault=primary&extra=1",
+            "prism://source/note_1?server=https%3A%2F%2Fu%3Ap%40prism.example.com&vault=primary",
+            "prism://source/a%2Fb?server=https%3A%2F%2Fprism.example.com&vault=primary",
+        ] { assert_eq!(p(invalid), None, "{invalid}"); }
     }
 
     #[test]

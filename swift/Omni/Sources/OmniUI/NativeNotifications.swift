@@ -18,7 +18,8 @@ public final class NativeNotifications: NSObject, UNUserNotificationCenterDelega
     public private(set) var enabled = UserDefaults.standard.bool(forKey: "omni.notifications.enabled")
     @ObservationIgnored private weak var app: AppModel?
     @ObservationIgnored private var token: String?
-    @ObservationIgnored private var pendingURL: URL?
+    @ObservationIgnored private var navigation = ExternalNavigationQueue()
+    @ObservationIgnored private weak var readySession: SessionModel?
 
     private override init() { super.init() }
 
@@ -99,16 +100,24 @@ public final class NativeNotifications: NSObject, UNUserNotificationCenterDelega
     }
 
     public func open(_ url: URL) {
-        guard url.scheme == "omni", ["thread", "approval", "nudge"].contains(url.host),
-              url.pathComponents.count == 2, !url.pathComponents[1].isEmpty else { return }
-        pendingURL = url
+        guard navigation.receive(url) else { return }
         deliverPending()
     }
 
+    public func navigationAppeared(_ session: SessionModel) {
+        readySession = session
+        deliverPending()
+    }
+
+    public func navigationDisappeared(_ session: SessionModel) {
+        if readySession === session { readySession = nil }
+    }
+
     public func deliverPending() {
-        guard !PrivacyLock.shared.locked, let session = app?.session, let url = pendingURL else { return }
-        pendingURL = nil
-        session.openExternal(url.host == "thread" ? .thread(url.pathComponents[1]) : .needsYou)
+        guard let app, let session = app.session,
+              let destination = navigation.take(signedIn: app.phase == .signedIn,
+                unlocked: !PrivacyLock.shared.locked, navigationReady: readySession === session) else { return }
+        session.openExternal(destination)
     }
 
     nonisolated public func userNotificationCenter(_ center: UNUserNotificationCenter,
