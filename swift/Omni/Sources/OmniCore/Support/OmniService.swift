@@ -23,13 +23,22 @@ public protocol OmniService: Sendable {
     func today(date: String) async throws -> OmniToday
 }
 
+/// Optional native registration capability; sample services do not register with Apple.
+public protocol NativePushService: Sendable {
+    func registerPush(token: String, environment: String) async throws -> Bool
+    func unregisterPush() async throws
+}
+
 /// `OmniClient` behind ``OmniService``.
-public struct LiveOmniService: OmniService {
+public struct LiveOmniService: OmniService, NativePushService {
     public let client: OmniClient
 
     public init(client: OmniClient) {
         self.client = client
     }
+
+    public func registerPush(token: String, environment: String) async throws -> Bool { try await client.registerPush(token: token, environment: environment) }
+    public func unregisterPush() async throws { try await client.unregisterPush() }
 
     public func threads(states: [ThreadState], search: String?, includeArchived: Bool) async throws -> ThreadList {
         try await client.threads(states: states, search: search, includeArchived: includeArchived)

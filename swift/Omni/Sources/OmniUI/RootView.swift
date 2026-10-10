@@ -44,11 +44,24 @@ public struct RootView: View {
                 }
             }
         }
+        .modifier(PrivacyLockCover())
         .tint(Color.omniAccent)
         #if DEBUG
         .modifier(UITestCompactWidth())
         #endif
-        .task { await app.start() }
+        .task {
+            NativeNotifications.shared.attach(app)
+            await app.start()
+            await NativeNotifications.shared.reconnect()
+            NativeNotifications.shared.deliverPending()
+        }
+        .onOpenURL { NativeNotifications.shared.open($0) }
+        .onChange(of: app.phase) { _, phase in
+            if phase == .signedIn {
+                Task { await NativeNotifications.shared.reconnect() }
+                NativeNotifications.shared.deliverPending()
+            }
+        }
         #if os(macOS)
         // Sign-in ends in the browser: bring Omni back to the front when it has worked, so
         // the last thing on screen is the app, signed in — not a browser tab.

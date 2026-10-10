@@ -35,6 +35,29 @@ public struct SettingsView: View {
                         Text("The device is revoked on the server. The server address is kept.")
                     }
             }
+            Section("Privacy") {
+                Toggle("Require Unlock", isOn: Binding(get: { PrivacyLock.shared.enabled }, set: { value in
+                    Task { await PrivacyLock.shared.setEnabled(value) }
+                }))
+                .disabled(PrivacyLock.shared.busy || !PrivacyLock.shared.available)
+                .accessibilityHint("Uses biometrics or your device passcode whenever Omni returns from the background")
+                Text(PrivacyLock.shared.message ?? "The lock protects this device's screen. It does not sign you out.")
+                    .foregroundStyle(Color.quietText)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Section("Notifications") {
+                Text(NativeNotifications.shared.status)
+                    .foregroundStyle(Color.quietText)
+                    .fixedSize(horizontal: false, vertical: true)
+                if NativeNotifications.shared.enabled {
+                    Button("Reconnect Notifications") { Task { await NativeNotifications.shared.reconnect() } }
+                    Button("Turn Off Notifications") { Task { await NativeNotifications.shared.disable() } }
+                } else {
+                    Button("Enable Notifications") { Task { await NativeNotifications.shared.enable() } }
+                        .accessibilityHint("Asks permission for generic updates, never message content")
+                }
+            }
+            .disabled(app.phase != .signedIn || NativeNotifications.shared.busy)
             if let log = app.diagnostics {
                 DiagnosticsSection(log: log)
             }
@@ -158,22 +181,22 @@ public struct OmniCommands: Commands {
         CommandGroup(replacing: .newItem) {
             Button("New Thread") { app.session?.requestNewThread() }
                 .keyboardShortcut("n", modifiers: .command)
-                .disabled(app.session == nil)
+                .disabled(app.session == nil || PrivacyLock.shared.locked)
         }
         CommandGroup(after: .textEditing) {
             Button("Search Threads") { app.session?.requestSearch() }
                 .keyboardShortcut("f", modifiers: .command)
-                .disabled(app.session == nil)
+                .disabled(app.session == nil || PrivacyLock.shared.locked)
         }
         CommandMenu("Thread") {
             Button("Stop") { Task { await app.session?.stopCurrentTurn() } }
                 .keyboardShortcut(".", modifiers: .command)
-                .disabled(!(app.session?.canStopCurrentTurn ?? false))
+                .disabled(PrivacyLock.shared.locked || !(app.session?.canStopCurrentTurn ?? false))
             Button("Refresh") {
                 Task { await app.session?.refreshVisible() }
             }
             .keyboardShortcut("r", modifiers: .command)
-            .disabled(app.session == nil)
+            .disabled(app.session == nil || PrivacyLock.shared.locked)
         }
     }
 }

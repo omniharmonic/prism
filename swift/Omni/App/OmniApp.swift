@@ -6,6 +6,11 @@ import SwiftUI
 /// OmniCore (both in this folder's Swift package), so they build and test without Xcode.
 @main
 struct OmniApp: App {
+    #if os(macOS)
+    @NSApplicationDelegateAdaptor(OmniNotificationDelegate.self) private var notificationDelegate
+    #else
+    @UIApplicationDelegateAdaptor(OmniNotificationDelegate.self) private var notificationDelegate
+    #endif
     @State private var app = OmniAppFactory.liveModel(developmentBuild: OmniApp.isDevelopmentBuild)
 
     /// DEBUG builds default to the laptop dev gateway and use the login keychain on macOS.
@@ -28,6 +33,7 @@ struct OmniApp: App {
 
         Settings {
             SettingsView(app: app)
+                .modifier(PrivacyLockCover())
         }
         #else
         WindowGroup {
