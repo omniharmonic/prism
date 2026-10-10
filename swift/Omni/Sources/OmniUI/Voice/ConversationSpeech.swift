@@ -17,23 +17,34 @@ import OmniVoiceKit
     static let preferences = SpeechPreferences(defaultLanguage: AVSpeechSynthesisVoice.currentLanguageCode())
     private(set) var isPreviewing = false
     private let output: any ConversationSpeechOutput
+    private var duplexOwner: UUID?
     private var recordingOwner: UUID?
     private var playbackOwner: UUID?
     private var generation = 0
     private var pending = 0
     private var drainWaiters: [UUID: [CheckedContinuation<Void, Never>]] = [:]
     init(output: any ConversationSpeechOutput) { self.output = output }
-    func configureDuplex(_ audio: AudioIO?) { output.configureDuplex(audio) }
-    func beginRecording(owner: UUID) { stopAll(); recordingOwner = owner }
+    func configureDuplex(_ audio: AudioIO?, owner: UUID) {
+        if audio == nil {
+            guard duplexOwner == owner else { return }
+            duplexOwner = nil
+        } else {
+            guard playbackOwner == nil || playbackOwner == owner else { return }
+            duplexOwner = owner
+        }
+        output.configureDuplex(audio)
+    }
+    func beginRecording(owner: UUID) { stopAll(); output.configureDuplex(nil); duplexOwner = nil; recordingOwner = owner }
     func endRecording(owner: UUID) { if recordingOwner == owner { recordingOwner = nil } }
     func preview(owner: UUID, identifier: String?, rate: Float) {
         guard recordingOwner == nil, pending == 0 || isPreviewing else { return }
-        stopAll(); playbackOwner = owner; isPreviewing = true
+        stopAll(); output.configureDuplex(nil); duplexOwner = nil; playbackOwner = owner; isPreviewing = true
         enqueue("Hello, I'm Omni. Take your time. When you're ready, we can think this through together.", identifier: identifier, rate: rate)
     }
     func speak(_ text: String, owner: UUID, identifier: String?, rate: Float) {
         guard recordingOwner == nil else { return }
         if isPreviewing || playbackOwner != owner { stopAll() }
+        if duplexOwner != owner { output.configureDuplex(nil); duplexOwner = nil }
         playbackOwner = owner
         enqueue(text, identifier: identifier, rate: rate)
     }

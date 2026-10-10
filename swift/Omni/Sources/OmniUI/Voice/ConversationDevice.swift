@@ -141,7 +141,7 @@ import OmniVoiceKit
             do {
                 try audio.retainInterruptionLeadIn()
                 speech.silence(owner: recordingOwner)
-                speech.configureDuplex(nil)
+                speech.configureDuplex(nil, owner: recordingOwner)
                 speech.beginRecording(owner: recordingOwner)
                 monitoringPlayback = false; nearEndDuration = 0
                 completedText = ""; hypothesis = ""; enqueuedChunks = []
@@ -163,12 +163,12 @@ import OmniVoiceKit
             try await audio.start(url: url, chunkSeconds: 60, chunkClosed: Self.chunkCallback(for: self, request: request), activity: Self.activityCallback(for: self, request: request))
             guard generation == request, !Task.isCancelled else { throw CancellationError() }
             monitoringPlayback = true; nearEndDuration = 0
-            speech.configureDuplex(audio)
+            speech.configureDuplex(audio, owner: recordingOwner)
             return true
         } catch {
             guard generation == request else { return false }
             try? audio.stop(); audio.recordings().forEach { try? FileManager.default.removeItem(at: $0) }; file = nil
-            speech.configureDuplex(nil)
+            speech.configureDuplex(nil, owner: recordingOwner)
             receiveInterruption?(.unavailable("Acoustic interruption could not start. Use Interrupt and speak."))
             return false
         }
@@ -225,7 +225,7 @@ import OmniVoiceKit
     func cancel() {
         playbackSetup?.cancel(); playbackSetup = nil
         monitoringPlayback = false; nearEndDuration = 0
-        speech.configureDuplex(nil)
+        speech.configureDuplex(nil, owner: recordingOwner)
         captureDeadline?.cancel(); captureDeadline = nil
         transcriptionTask?.cancel(); transcriptionTask = nil
         generation += 1; receiveActivity = nil; hypothesis = ""; try? audio.stop()
@@ -255,7 +255,7 @@ import OmniVoiceKit
         // Normal drain releases monitor audio; acoustic interruption promotes it
         // into capture and must keep the retained lead-in and microphone running.
         if monitoringPlayback && !Task.isCancelled {
-            monitoringPlayback = false; speech.configureDuplex(nil)
+            monitoringPlayback = false; speech.configureDuplex(nil, owner: recordingOwner)
             try? audio.stop(); audio.recordings().forEach { try? FileManager.default.removeItem(at: $0) }; file = nil
         }
     }
