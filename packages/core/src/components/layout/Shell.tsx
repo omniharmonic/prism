@@ -125,10 +125,10 @@ function ShellLayout() {
     width: "100%",
     background: "var(--bg-base)",
     color: "var(--text-primary)",
-    paddingTop: "env(safe-area-inset-top)",
-    paddingBottom: "env(safe-area-inset-bottom)",
-    paddingLeft: "env(safe-area-inset-left)",
-    paddingRight: "env(safe-area-inset-right)",
+    paddingTop: "var(--prism-safe-area-top, env(safe-area-inset-top))",
+    paddingBottom: "var(--prism-safe-area-bottom, env(safe-area-inset-bottom))",
+    paddingLeft: "var(--prism-safe-area-left, env(safe-area-inset-left))",
+    paddingRight: "var(--prism-safe-area-right, env(safe-area-inset-right))",
     boxSizing: "border-box",
   };
 
@@ -235,6 +235,48 @@ function MobileDrawer({
       if (previousFocus?.isConnected) previousFocus.focus();
     };
   }, []);
+  useEffect(() => {
+    const dialog = dialogRef.current;
+    if (!dialog || side !== "left") return;
+    let start: { x: number; y: number; at: number } | null = null;
+    let claimed = false;
+    const cancel = () => { start = null; claimed = false; };
+    const begin = (event: TouchEvent) => {
+      claimed = false;
+      const touch = event.touches[0];
+      const target = event.target as Element | null;
+      if (event.touches.length !== 1 || !touch || window.getSelection()?.toString() ||
+          target?.closest("input, textarea, select, [contenteditable], [role=slider], canvas, [data-no-edge-swipe]")) { cancel(); return; }
+      for (let node: Element | null = target; node && node !== dialog; node = node.parentElement) {
+        if (node.scrollWidth > node.clientWidth + 1 && /(auto|scroll)/.test(getComputedStyle(node).overflowX)) { cancel(); return; }
+      }
+      start = { x: touch.clientX, y: touch.clientY, at: performance.now() };
+    };
+    const move = (event: TouchEvent) => {
+      const touch = event.touches[0];
+      if (!start || event.touches.length !== 1 || !touch) { cancel(); return; }
+      const dx = start.x - touch.clientX;
+      if (dx >= 12 && Math.abs(touch.clientY - start.y) < dx * .6) claimed = true;
+      if (claimed) { if (event.cancelable) event.preventDefault(); event.stopPropagation(); }
+      if (Math.abs(touch.clientY - start.y) > 24 && Math.abs(touch.clientY - start.y) > Math.abs(touch.clientX - start.x)) cancel();
+    };
+    const end = (event: TouchEvent) => {
+      const touch = event.changedTouches[0], began = start;
+      if (claimed) { if (event.cancelable) event.preventDefault(); event.stopPropagation(); }
+      cancel();
+      if (!began || !touch || window.getSelection()?.toString()) return;
+      const distance = began.x - touch.clientX;
+      if (distance >= SWIPE_PX && Math.abs(touch.clientY - began.y) < distance * .6 && performance.now() - began.at <= 900) onClose();
+    };
+    dialog.addEventListener("touchstart", begin, { passive: true });
+    dialog.addEventListener("touchmove", move, { passive: false, capture: true });
+    dialog.addEventListener("touchend", end, { passive: false, capture: true });
+    dialog.addEventListener("touchcancel", cancel, { passive: true });
+    return () => {
+      dialog.removeEventListener("touchstart", begin); dialog.removeEventListener("touchmove", move, true);
+      dialog.removeEventListener("touchend", end, true); dialog.removeEventListener("touchcancel", cancel);
+    };
+  }, [side, onClose]);
   return (
     <dialog ref={dialogRef} className="workspace-mobile-drawer" data-side={side} aria-label={side === "left" ? "Workspace navigation" : "Document panel"}
       onCancel={(event) => { event.preventDefault(); onClose(); }}
@@ -354,11 +396,12 @@ function useSidebarPeek(enabled: boolean) {
 }
 
 /**
- * On phones, a left-edge swipe over header space opens navigation. Elsewhere
- * it goes back, or opens navigation when history is empty. Interactive content
- * owns its gestures; visible Back and Notes buttons remain available.
+ * The outer 14px always opens phone navigation without intercepting taps.
+ * Between 14–32px, only unambiguous noninteractive content can navigate back;
+ * header space opens navigation. Editors/graphs keep all other gestures.
  */
-const EDGE_PX = 20;
+const NAV_EDGE_PX = 14;
+const EDGE_PX = 32;
 const SWIPE_PX = 64;
 function useEdgeSwipe(enabled: boolean): boolean {
   const [active, setActive] = useState(false);
@@ -366,17 +409,28 @@ function useEdgeSwipe(enabled: boolean): boolean {
     if (!enabled) { setActive(false); return; }
     let start: { x: number; y: number; at: number; navigation: boolean } | null = null;
     let tracking = false;
+    let claimed = false;
+    // Reserved edge: do not let a graph/drag handler initialize before we know
+    // whether this is navigation. Default taps and vertical scrolling still run.
+    const onPointerStart = (event: PointerEvent) => {
+      const target = event.target as Element | null;
+      if (event.pointerType === "touch" && event.clientX >= 0 && event.clientX <= NAV_EDGE_PX &&
+          !window.getSelection()?.toString() && !target?.closest?.("dialog[open], [role=dialog]")) event.stopPropagation();
+    };
     const onStart = (e: TouchEvent) => {
+      claimed = false;
       const t = e.touches[0];
       if (e.touches.length !== 1 || !t || t.clientX > EDGE_PX) { start = null; return; }
       const target = e.target as Element | null;
-      if (window.getSelection()?.toString() || target?.closest?.("dialog[open], [role=dialog], [data-no-edge-swipe], [contenteditable]:not([contenteditable=false]), input, textarea, select, button, a, summary, [role=slider], canvas, svg, .tiptap, .monaco-editor, .cm-editor, .excalidraw")) { start = null; return; }
+      const navigationEdge = t.clientX >= 0 && t.clientX <= NAV_EDGE_PX;
+      if (target?.closest?.("dialog[open], [role=dialog]") || window.getSelection()?.toString() || (!navigationEdge && target?.closest?.("[data-no-edge-swipe], [contenteditable]:not([contenteditable=false]), input, textarea, select, button, a, summary, [role=slider], canvas, svg, .tiptap, .monaco-editor, .cm-editor, .excalidraw"))) { start = null; return; }
       // A table, board, code block or any other sideways scroller owns its own
       // horizontal drag — even when it starts at the screen edge.
       for (let node: Element | null = target; node && node !== document.body; node = node.parentElement) {
-        if (node.scrollWidth > node.clientWidth + 1 && /(auto|scroll)/.test(getComputedStyle(node).overflowX)) { start = null; return; }
+        if (!navigationEdge && node.scrollWidth > node.clientWidth + 1 && /(auto|scroll)/.test(getComputedStyle(node).overflowX)) { start = null; return; }
       }
-      start = { x: t.clientX, y: t.clientY, at: performance.now(), navigation: !!target?.closest(".tabbar-phone, .document-page-header") };
+      if (navigationEdge) e.stopPropagation();
+      start = { x: t.clientX, y: t.clientY, at: performance.now(), navigation: navigationEdge || !!target?.closest(".tabbar-phone, .document-page-header") };
       tracking = true;
       setActive(false);
     };
@@ -384,10 +438,13 @@ function useEdgeSwipe(enabled: boolean): boolean {
       if (!start || !tracking) return;
       const t = e.touches[0];
       if (!t || e.touches.length !== 1) { tracking = false; setActive(false); return; }
-      if (t.clientX - start.x >= 12 && Math.abs(t.clientY - start.y) < (t.clientX - start.x) * .6) setActive(true);
+      if (t.clientX - start.x >= 12 && Math.abs(t.clientY - start.y) < (t.clientX - start.x) * .6) { claimed = true; setActive(true); }
+      if (claimed) { if (e.cancelable) e.preventDefault(); e.stopPropagation(); }
       if (Math.abs(t.clientY - start.y) > 48 && Math.abs(t.clientY - start.y) > (t.clientX - start.x)) { tracking = false; setActive(false); }
     };
     const onEnd = (e: TouchEvent) => {
+      if (claimed) { if (e.cancelable) e.preventDefault(); e.stopPropagation(); }
+      claimed = false;
       const t = e.changedTouches[0];
       const began = start;
       start = null;
@@ -404,15 +461,17 @@ function useEdgeSwipe(enabled: boolean): boolean {
       if (canBack && !began.navigation) ui.navBack();
       else useUIStore.setState({ sidebarOpen: true });
     };
-    const cancel = () => { start = null; tracking = false; setActive(false); };
-    document.addEventListener("touchstart", onStart, { passive: true });
-    document.addEventListener("touchmove", onMove, { passive: true });
-    document.addEventListener("touchend", onEnd, { passive: true });
+    const cancel = () => { start = null; tracking = false; claimed = false; setActive(false); };
+    document.addEventListener("pointerdown", onPointerStart, { passive: true, capture: true });
+    document.addEventListener("touchstart", onStart, { passive: true, capture: true });
+    document.addEventListener("touchmove", onMove, { passive: false, capture: true });
+    document.addEventListener("touchend", onEnd, { passive: false, capture: true });
     document.addEventListener("touchcancel", cancel, { passive: true });
     return () => {
-      document.removeEventListener("touchstart", onStart);
-      document.removeEventListener("touchmove", onMove);
-      document.removeEventListener("touchend", onEnd);
+      document.removeEventListener("pointerdown", onPointerStart, true);
+      document.removeEventListener("touchstart", onStart, true);
+      document.removeEventListener("touchmove", onMove, true);
+      document.removeEventListener("touchend", onEnd, true);
       document.removeEventListener("touchcancel", cancel);
     };
   }, [enabled]);

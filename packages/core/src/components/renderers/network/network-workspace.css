@@ -1,18 +1,18 @@
 /* Settings retain opaque content; only the navigation uses the floating material. */
 .network-workspace { display:grid; grid-template-columns:200px minmax(0,1fr); grid-template-rows:auto minmax(0,1fr); height:100%; min-height:0; min-width:0; overflow:hidden; background:var(--bg-base); }
-.network-workspace-header { grid-column:1/-1; padding:24px 28px 20px; border-bottom:1px solid var(--glass-border); }
+.network-workspace-header { grid-column:1/-1; padding:20px 24px 16px; border-bottom:1px solid var(--glass-border); }
 .network-workspace-nav { min-height:0; padding:16px 12px; overflow:auto; background:var(--material-solid,var(--bg-sidebar)); border-right:1px solid var(--glass-border); }
 .network-workspace-nav .prism-tabs { display:flex; flex-direction:column; gap:4px; box-shadow:none; overflow:visible; }
 .network-workspace-nav .prism-tab { justify-content:flex-start; width:100%; min-height:44px; padding:0 12px; border:0; border-radius:8px; text-align:left; transition:background var(--motion-fast,120ms),color var(--motion-fast,120ms); }
 .network-workspace-nav .prism-tab[aria-selected="true"] { background:var(--glass-hover); }
-.network-workspace-content { min-height:0; min-width:0; overflow:auto; padding:24px 28px 48px; }
+.network-workspace-content { min-height:0; min-width:0; overflow:auto; padding:20px 24px 32px; }
 @media(max-width:767px) {
  .network-workspace { display:flex; flex-direction:column; }
  .network-workspace-header { padding:20px 16px 14px; }
  .network-workspace-nav { flex:none; padding:4px 8px; overflow:hidden; border-right:0; border-bottom:1px solid var(--glass-border); }
  .network-workspace-nav .prism-tabs { flex-direction:row; overflow-x:auto; }
  .network-workspace-nav .prism-tab { width:auto; flex:none; }
- .network-workspace-content { flex:1; padding:20px 16px 48px; }
+ .network-workspace-content { flex:1; padding:16px 16px 32px; }
 }
 @media(prefers-reduced-motion:reduce) { .network-workspace-nav .prism-tab { transition:none; } }
 
@@ -24,3 +24,6 @@
 @media(prefers-reduced-transparency:reduce) {
  .network-workspace-nav { background:var(--material-solid,var(--bg-sidebar)); backdrop-filter:none; -webkit-backdrop-filter:none; }
 }
+
+.network-workspace-header, .network-workspace-content { overflow-wrap:anywhere; }
+.network-workspace-content > div { min-width:0; }
