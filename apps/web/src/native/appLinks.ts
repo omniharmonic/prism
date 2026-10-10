@@ -21,7 +21,7 @@
 import { askConfirm, openAgentChat, setPendingNotification, useUIStore } from "@prism/core/shell";
 
 import { apiBase, getMe } from "../config";
-import { sourceLinkTarget, sourceContextMatches, type SourceLinkTarget } from "./sourceLinks";
+import { sourceLinkTarget, sourceContextMatches, sourceBrowserURL, type SourceLinkTarget } from "./sourceLinks";
 
 export type AppLinkTarget =
   | { kind: "page"; id: string }
@@ -58,7 +58,7 @@ export function openAppLink(path: unknown): boolean {
     const me = getMe();
     if (!sourceContextMatches(target, new URL(apiBase(), location.origin).origin, me)) {
       void askConfirm({ title: "This source belongs to a different workspace", body: "Prism will keep its current server and vault. Open the source in your browser instead?", confirm: "Open in Browser" })
-        .then(yes => { if (yes) window.open(`${target.server}/page/${target.id}`, "_blank", "noopener,noreferrer"); });
+        .then(yes => { if (yes) window.open(sourceBrowserURL(target), "_blank", "noopener,noreferrer"); });
       return true;
     }
     useUIStore.getState().openTab(target.id, "Page", "document");

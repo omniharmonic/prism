@@ -29,7 +29,6 @@ public struct PrismSourceLink: Equatable, Sendable {
     public init?(web text: String?, noteID: String?) {
         guard let text, let url = URL(string: text), ["http", "https"].contains(url.scheme?.lowercased() ?? ""),
               url.host != nil, url.user == nil, url.password == nil else { return nil }
-        web = url
         if let noteID, noteID.utf8.count <= 128, url.scheme?.lowercased() == "https",
            url.query == nil, url.fragment == nil, url.pathComponents.count == 3,
            ["page", "collab"].contains(url.pathComponents[1]), url.pathComponents[2] == noteID,
@@ -40,6 +39,9 @@ public struct PrismSourceLink: Equatable, Sendable {
             target.scheme = "prism"; target.host = "source"; target.path = "/\(noteID)"
             target.queryItems = [URLQueryItem(name: "server", value: origin.string), URLQueryItem(name: "vault", value: "primary")]
             native = target.url
-        } else { native = nil }
+            var browser = URLComponents(url: url, resolvingAgainstBaseURL: false)!
+            browser.queryItems = [URLQueryItem(name: "vault", value: "primary")]
+            web = browser.url!
+        } else { native = nil; web = url }
     }
 }

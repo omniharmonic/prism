@@ -29,6 +29,8 @@ import { UpdatePrompt } from "./offline/UpdatePrompt";
 import { webPush } from "./push/webPush";
 import { initAgentDeepLink } from "./push/deeplink";
 import { initNativeExtras } from "./native/extras";
+import { SourceVaultMismatch } from "./native/SourceVaultMismatch";
+import { requestedSourceVault } from "./native/sourceLinks";
 import { captureAppLinks, initAppLinks } from "./native/appLinks";
 import { installExternalImageProxy } from "./native/externalImages";
 import { installChunkReloadRecovery } from "./chunkReload";
@@ -247,6 +249,11 @@ export async function start() {
           <SignInScreen notice={notice} />
         </React.StrictMode>,
       );
+      return;
+    }
+    const sourceVault = pageId ? requestedSourceVault(window.location.search) : null;
+    if (sourceVault && me.vaultId !== sourceVault) {
+      root.render(<SourceVaultMismatch vault={sourceVault} />);
       return;
     }
     // Already signed in but bounced here by a native sign-in (?next=…): resume it.

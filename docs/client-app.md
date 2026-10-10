@@ -282,9 +282,12 @@ is the explicit contextual source route. The shell validates both query keys, se
 origin and identifiers, then hands the page a canonical source descriptor, including
 whether the server matches this pairing. The page opens the note only when the paired
 server and authenticated vault both match. Otherwise it explains the mismatch and
-offers the original server's page in the browser. It never changes pairing or vault
+offers the original server's page in the browser with its explicit vault. The browser
+checks that vault before opening; if different, an explicit selection verifies the
+permitted vault list and reloads to re-check identity. It never changes pairing or vault
 selection. Omni also exposes an Open in Browser source action; OS acceptance of a
-custom URL does not establish receiver acceptance. Query/capability source URLs remain
+custom URL does not establish receiver acceptance. External browser opening uses
+the existing host `window.open` interception → `open_external` native confirmation. Query/capability source URLs remain
 web links. This route is separate from the legacy context-free `prism://page/<id>`.
 
 **Server.** `APPLE_APP_ID` = `<TeamID>.<bundle id>` (comma-separated for several apps);

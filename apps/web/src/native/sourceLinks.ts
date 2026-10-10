@@ -19,3 +19,13 @@ export function sourceLinkTarget(path: string): SourceLinkTarget | null {
 export function sourceContextMatches(target: SourceLinkTarget, apiOrigin: string, identity: { authenticated: boolean; vaultId?: string } | null): boolean {
   return target.paired && apiOrigin === target.server && identity?.authenticated === true && identity.vaultId === target.vault;
 }
+
+export function sourceBrowserURL(target: SourceLinkTarget): string {
+  const url = new URL(`/page/${target.id}`, target.server);
+  url.searchParams.set("vault", target.vault);
+  return url.href;
+}
+export function requestedSourceVault(search: string): string | null {
+  const values = new URLSearchParams(search).getAll("vault");
+  return values.length === 1 && /^[A-Za-z0-9_-]{1,128}$/.test(values[0]) ? values[0] : null;
+}
