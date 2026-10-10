@@ -58,6 +58,10 @@ Do not close an item solely because tests pass, a PR merged, or a bundle install
 | F10 | Dispatch Omni from Today tasks | Released in build 8: explicit task-context handoff with existing outbound approval requirements. Physical acceptance pending. |
 | F11 | Expand Today to all tasks | Released in build 8 and server v11: paginated assigned open tasks. Physical acceptance pending. |
 | F12 | Build 8 voice panel overlap and empty-Pause error | Owner screenshots confirm overlapping primary/status/secondary controls on iPhone. Empty Pause should be quiet. Repairs underway with real iOS layout checks. |
+| F13 | Expanded Omni tasks omit expected Prism/Parachute tasks | Investigating source coverage, assignment filtering and pagination before next release; preserve vault/user access boundaries. |
+| F14 | Needs You buttons have excessive/uneven padding | Focused native layout repair before next release. |
+| F15 | Fresh replies disappear into Done; history needs disclosure controls | Separate execution completion from unread/open conversation state; keep fresh responses prominent and make history groups collapsible. |
+| F16 | Install Prism and Omni on the laptop as well as Mini | Reuse verified notarized Prism artifact and finish current Omni release; preserve drafts, preferences and device credentials. |
 | R01 | Working current Mac apps | Prism v6 notarized, installed and launched on the Mini; interactive acceptance and laptop installation pending. Omni v8 universal build staged for owner signing; acceptance/staple/install pending. V7 submission is separate. Do not install known-bad Omni v5. |
 | R02 | Proactive assistant reliability | Three reviewed M3 jobs active; smoke checks passed. Week-long observation gate remains pending; retain existing fallbacks until accepted. |
 

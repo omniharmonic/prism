@@ -153,3 +153,12 @@ Owner accepts build8 re-listening but expects automatic turn submission. Empty-t
 171 OmniCore tests and 5 model-free audio callback/resampling tests pass. Automatic mode is explicit opt-in, with 8/12/20-second silence windows plus 3 seconds of cancellable grace, genuine local Silero activity, capture-host-time freshness, and manual fallback on missing/dropped/stalled evidence. Think aloud remains the default. Empty manual Pause is quiet.
 
 The initial repaired iPhone panel passed the focused default-size simulator layout/keyboard check, but the owner rejected its excess space while viewing the simulator. This design is superseded by a smaller two-row control under development; no build 9 device installation yet. Preserve individual control accessibility and verify new screenshots before release.
+
+
+### Build 9 follow-up: task coverage, unread history, laptop installation
+
+Owner requests before release: expanded Today omits expected tasks; Needs You button padding; collapsible history with newly received unread replies prominent; current Mac apps on laptop. Recorded as F13–F16. Investigation confirms assigned-only task scope and GET thread clearing unread on background fetch; scoped repairs in progress.
+
+Voice callback integration adds an explicitly nonisolated factory and actual off-main delivery/stale-generation regression test. Five callback/playback tests pass. Universal Mac and signed iOS Release compile passed before this last callback change; final artifact builds still required. Strict keyboard layout test remains blocked by simulator keyboard offscreen; no keyboard acceptance claimed.
+
+Prism v6 stapled artifact copied to laptop with SHA256 `94d16ccf11de979620e2687e8bde5fe3e2a7511704f3838401245a4e74ea1cb4`; strict signature, stapler and Gatekeeper passed. Installed a new `/Applications/Prism Client.app`; running development app and separate `/Applications/Prism.app` preserved. Launch waits for owner to save/quit running development copy. Omni laptop install awaits current release.
