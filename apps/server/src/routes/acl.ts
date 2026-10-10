@@ -240,7 +240,11 @@ acl.use("*", async (c, next) => {
   if (expectedActor && expectedActor !== (actor.kind === "user" ? `user:${actor.email}` : null)) {
     return c.json({ error: "write_actor_changed" }, 409);
   }
-  if (roleAtLeast(resolveActor(c).role, "admin")) return next();
+  // Host-wide registries and federation are server-owner responsibilities,
+  // never authority inherited from administration of one vault.
+  const globalManagement = /^\/(?:vaults|mirrors|workspace|workspaces|server|workers|peers|spaces|federation)(?:\/|$)/.test(c.req.path.replace(/^\/acl(?=\/|$)/, ""));
+  if (globalManagement && !isServerOwner(c)) return c.json({ error: "forbidden" }, 403);
+  if (roleAtLeast(actor.role, "admin")) return next();
   const scope = shareScopeFor(c);
   if (!scope) return c.json({ error: "forbidden" }, 403);
   if (resolveActor(c).kind !== "user") return c.json({ error: "forbidden" }, 403);
@@ -341,7 +345,15 @@ function deriveTitle(content: string): string {
   return text.slice(0, 100) || "Untitled";
 }
 
-acl.get("/users", (c) => c.json(listUsers()));
+acl.get("/users", (c) => {
+  const users = listUsers();
+  if (isServerOwner(c)) return c.json(users);
+  const actor = resolveActor(c);
+  const visible = new Set(listMemberships(actor.vaultId).map((m) => m.email));
+  for (const g of listGrantsForVault(actor.vaultId)) if (g.subject_type === "user") visible.add(g.subject);
+  if (actor.kind === "user") visible.add(actor.email);
+  return c.json(users.filter((u) => visible.has(u.email)));
+});
 
 // ── Vault registry management (multi-vault: in-app create / link) ────────────
 // Owner-only (the whole /acl group is). Tokens are written to SQLite server-side
@@ -2155,6 +2167,7 @@ acl.get("/federation/peer-edits", (c) => {
 // shares it. Idempotent per note: re-mirroring refreshes the peer grant/level.
 const SYNC_SPACE_TITLE = "Parachute Sync";
 acl.post("/notes/:id/mirror", async (c) => {
+  if (!isServerOwner(c)) return c.json({ error: "forbidden" }, 403);
   const noteId = c.req.param("id");
   const { pubkey, level, expiresInDays } = await c.req
     .json<{ pubkey?: string; level?: string; expiresInDays?: number }>()
