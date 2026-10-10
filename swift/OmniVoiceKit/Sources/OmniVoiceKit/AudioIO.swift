@@ -158,9 +158,13 @@ final class CaptureFile: @unchecked Sendable {
         }
         try await playbackQueue.schedule(buffer) { [self] pcm, release in
             guard engine.isRunning, file != nil else { throw VoiceFailure.unavailable("The conversation playback route ended.") }
-            player.scheduleBuffer(pcm, completionCallbackType: .dataPlayedBack) { _ in release(); completion() }
+            player.scheduleBuffer(pcm, completionCallbackType: .dataPlayedBack, completionHandler: Self.playbackCallback(release: release, completion: completion))
             if !player.isPlaying { player.play() }
         }
+    }
+    nonisolated private static func playbackCallback(release: @escaping @Sendable () -> Void,
+                                                    completion: @escaping @Sendable () -> Void) -> @Sendable (AVAudioPlayerNodeCompletionCallbackType) -> Void {
+        { _ in release(); completion() }
     }
     public func retainInterruptionLeadIn() throws { try file?.retainLeadIn() }
     public func silencePlayback() { playbackQueue.cancel(); player.stop() }
