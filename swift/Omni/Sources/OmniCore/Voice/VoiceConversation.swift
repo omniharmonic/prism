@@ -18,17 +18,27 @@ import Observation
     public private(set) var transcript = ""
     private let audio: any ConversationAudio
     private var generation = 0
+    private var starting = false
+    private var privacyLocked = false
+    public var canStart: Bool { !privacyLocked && !starting && (state == .off || state == .answering) }
     private var spoken: [String: String] = [:]
     public init(audio: any ConversationAudio) { self.audio = audio }
 
+    public func setPrivacyLocked(_ locked: Bool) {
+        privacyLocked = locked
+        if locked { cancel() }
+    }
+
     public func start() async {
-        guard state == .off || state == .answering else { return }
+        guard canStart else { return }
+        starting = true
+        defer { starting = false }
         cancel()
         let request = generation
         state = .preparing; problem = nil; transcript = ""
         do {
             try await audio.start()
-            guard generation == request, !Task.isCancelled else { audio.cancel(); return }
+            guard generation == request, !Task.isCancelled else { return }
             state = .listening
         } catch {
             guard generation == request else { return }
@@ -37,8 +47,8 @@ import Observation
         }
     }
 
-    public func finish(send: @MainActor (String) async -> Bool) async {
-        guard state == .listening else { return }
+    public func finish(submit: Bool = true, send: @MainActor (String) async -> Bool) async {
+        guard !privacyLocked, state == .listening else { return }
         let request = generation
         state = .transcribing
         do {
@@ -48,7 +58,7 @@ import Observation
             transcript = text; spoken = [:]
             let sent = await send(text)
             guard generation == request else { return }
-            if sent { state = .answering }
+            if sent { state = submit ? .answering : .off }
             else { state = .off; problem = "The voice message could not be sent. Review it and retry in this conversation." }
         } catch {
             guard generation == request else { return }

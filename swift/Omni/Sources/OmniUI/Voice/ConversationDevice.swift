@@ -38,7 +38,7 @@ import OmniVoiceKit
         do {
             try await audio.start(url: url)
             guard request == generation, !Task.isCancelled else { throw CancellationError() }
-        } catch { cancel(); throw error }
+        } catch { if request == generation { cancel() }; throw error }
     }
     func finish() async throws -> String {
         guard let file else { throw VoiceFailure.unavailable("No voice recording is active.") }

@@ -193,7 +193,7 @@ New assistant sentences are spoken as the live stream arrives; Mute cancels queu
 speech and Interrupt and Speak cancels the active turn before starting another capture.
 Leaving the screen, becoming inactive, or an iOS audio interruption stops microphone
 capture and speech, including a pending permission request. No always-listening or
-background capture is enabled. The two-minute capture bound is explicit. Existing V0
+background capture is enabled. At the two-minute limit, capture stops and transcription goes into the editable draft; it is never automatically sent. Existing V0
 benchmark replay remains paced; conversational transcription feeds captured audio
 without replay delays. Personal speech quality and physical microphone/playback
 acceptance remain to verify on each device.
