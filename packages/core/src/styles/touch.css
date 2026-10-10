@@ -31,6 +31,10 @@
   /* ── Shared controls ── `ui/Button` is drawn at the desktop control size (tokens.css); here it is a
      touch target. (The `min-h-control` / `size-control` utilities do the same for hand-built ones.) */
   html .ui-button { min-height: var(--touch-target); }
+  /* Settings also appear on wide touch devices; their component rules must not
+     override the coarse control utilities with desktop-sized 32px targets. */
+  html .prism-settings button { min-width: var(--touch-target); min-height: var(--touch-target); }
+  html .prism-settings :is(select, input:not([type=checkbox], [type=radio], [type=color], [type=file])) { min-height: var(--touch-target); }
 
   /* ── Top bar ── */
   html button[title="Add to Favorites"], html button[title="Remove from Favorites"],
