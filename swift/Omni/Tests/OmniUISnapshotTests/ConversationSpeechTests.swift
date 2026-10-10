@@ -8,6 +8,8 @@ import XCTest
         var rates: [Float] = []
         var completions: [@MainActor () -> Void] = []
         var stops = 0
+        var failure: (@MainActor (String) -> Void)?
+        func configureFailure(_ receive: @escaping @MainActor (String) -> Void) { failure = receive }
         func speak(_ text: String, identifier: String?, rate: Float, completion: @escaping @MainActor () -> Void) {
             texts.append(text); identifiers.append(identifier); rates.append(rate); completions.append(completion)
         }
@@ -85,6 +87,24 @@ import XCTest
         output.completions[1]()
         await current.value
         XCTAssertTrue(drained)
+    }
+    func testPlaybackFailureReportsBeforeDrainAndIgnoresStaleOwner() async {
+        let output = Output(); let speech = ConversationSpeech(output: output); let owner = UUID()
+        var failure = ""
+        speech.configurePlaybackFailure(owner: owner) { failure = $0 }
+        let oldFailure = output.failure
+        speech.speak("Reply.", owner: owner, identifier: nil, rate: 0.5)
+        var drained = false
+        let waiter = Task { await speech.waitForPlayback(owner: owner); drained = true }
+        await Task.yield()
+        output.failure?("Output route failed")
+        await waiter.value
+        XCTAssertEqual(failure, "Output route failed")
+        XCTAssertTrue(drained)
+        failure = ""
+        speech.speak("Different session.", owner: UUID(), identifier: nil, rate: 0.5)
+        oldFailure?("Stale error")
+        XCTAssertTrue(failure.isEmpty)
     }
 
 }
