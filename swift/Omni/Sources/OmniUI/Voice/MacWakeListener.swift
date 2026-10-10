@@ -36,7 +36,7 @@ private final class WakeAudioSink: @unchecked Sendable {
     private var recognition: SFSpeechRecognitionTask?
     private var tapped = false
     private var eligible = false
-    private var authorizationGeneration = UUID()
+    private var gate = WakeListeningGate()
     private var scenes: [UUID: Bool] = [:]
     private var sleeping = false
     private var generation = UUID()
@@ -66,18 +66,20 @@ private final class WakeAudioSink: @unchecked Sendable {
         reconcile()
     }
     private func reconcile() {
-        guard enabled, eligible, !sleeping, VoiceMicrophoneCoordinator.shared.conversationOwner == nil else {
-            authorizationGeneration = UUID(); authorization?.cancel(); authorization = nil
+        gate.update(enabled: enabled, ready: eligible, sleeping: sleeping,
+                    conversationActive: VoiceMicrophoneCoordinator.shared.conversationOwner != nil)
+        guard gate.canListen else {
+            authorization?.cancel(); authorization = nil
             stop(); status = !enabled ? "Off" : sleeping ? "Paused while Mac sleeps" : "Paused"; return
         }
         guard recognition == nil, authorization == nil else { return }
-        let permissionToken = UUID(); authorizationGeneration = permissionToken
+        let permissionToken = gate.permissionRequest()
         authorization = Task {
             let mic = await AVCaptureDevice.requestAccess(for: .audio)
             let speech = await withCheckedContinuation { continuation in
                 SFSpeechRecognizer.requestAuthorization { continuation.resume(returning: $0) }
             }
-            guard !Task.isCancelled, authorizationGeneration == permissionToken else { return }
+            guard !Task.isCancelled, gate.acceptsPermission(permissionToken) else { return }
             authorization = nil
             guard enabled, eligible, !sleeping, VoiceMicrophoneCoordinator.shared.conversationOwner == nil else { return }
             guard mic, speech == .authorized else { status = "Microphone or speech permission denied"; return }
