@@ -18,6 +18,7 @@ struct ConversationVoiceControl: View {
     @State private var selected = ConversationDevice.Engine.apple
     @State private var showingVoiceSettings = false
     @State private var showingTranscript = false
+    @State private var panelContentHeight: CGFloat = 280
     @State private var mounted = false
     @State private var action: Task<Void, Never>?
     @State private var timeout: Task<Void, Never>?
@@ -79,16 +80,18 @@ struct ConversationVoiceControl: View {
     private var panel: some View {
         Group {
             if (expanded || voice.state != .off) && (session.conversationVoice !== voice || session.ownsVoice(voice, threadID: model?.threadID)) {
-                ViewThatFits(in: .vertical) {
+                ScrollView(.vertical) {
                     panelContent.fixedSize(horizontal: false, vertical: true)
-                    ScrollView(.vertical) { panelContent.fixedSize(horizontal: false, vertical: true) }
-                        .scrollBounceBehavior(.basedOnSize)
+                        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { panelContentHeight = $0 }
                 }
-                .frame(maxHeight: maximumHeight)
+                .scrollBounceBehavior(.basedOnSize)
+                .scrollDisabled(panelContentHeight <= maximumHeight)
+                .frame(height: min(maximumHeight, panelContentHeight))
                 .frame(maxWidth: 440)
                 .modifier(VoicePanelMaterial(solid: reduceTransparency))
                 .padding(.horizontal, 12).padding(.vertical, 8)
                 .frame(maxWidth: .infinity)
+                .accessibilityElement(children: .contain)
                 .accessibilityIdentifier("voice.panel")
             }
         }
