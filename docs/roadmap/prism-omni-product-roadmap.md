@@ -54,10 +54,10 @@ Do not close an item solely because tests pass, a PR merged, or a bundle install
 | F06 | Notification missing icon | Owner confirms the notification logo is still missing after v7. Sol investigation active; see O09. Do not assume a cache cause. |
 | F07 | Voice crashes after models download | Actual crash was audio callback actor isolation; PR95 repair shipped in Omni v6. Owner reports voice now works; per-device coverage not specified. See O03. |
 | F08 | Voice easy to launch, main toolbar entry, contemporary centered Apple-style UX | PR96 toolbar entry and glass panel shipped in v6; simulator light/dark reviewed. Owner usability acceptance pending. |
-| F09 | Voice beside New Chat in Threads | In progress for next Omni release; reuse existing voice-session entry and retain Today access. |
-| F10 | Dispatch Omni from Today tasks | In progress: explicit task handoff with source context and existing outbound approval requirements. |
-| F11 | Expand Today to all tasks | In progress: all assigned open tasks, with pagination rather than the current 50-task server cutoff. |
-| R01 | Working current Mac apps | Prism v6 notarized, installed and launched on the Mini; interactive acceptance and laptop installation pending. Omni v7 signed and submitted; Apple acceptance/staple/install pending. Do not install known-bad Omni v5. |
+| F09 | Voice beside New Chat in Threads | Released in build 8 on both mobile devices; retains Today access. Physical acceptance pending. |
+| F10 | Dispatch Omni from Today tasks | Released in build 8: explicit task-context handoff with existing outbound approval requirements. Physical acceptance pending. |
+| F11 | Expand Today to all tasks | Released in build 8 and server v11: paginated assigned open tasks. Physical acceptance pending. |
+| R01 | Working current Mac apps | Prism v6 notarized, installed and launched on the Mini; interactive acceptance and laptop installation pending. Omni v8 universal build staged for owner signing; acceptance/staple/install pending. V7 submission is separate. Do not install known-bad Omni v5. |
 | R02 | Proactive assistant reliability | Three reviewed M3 jobs active; smoke checks passed. Week-long observation gate remains pending; retain existing fallbacks until accepted. |
 
 ## Sequence and exit criteria
