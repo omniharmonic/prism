@@ -194,3 +194,10 @@ precedence, and explicit scheduled/done states remain. Hermes' current persisted
 API does not prove that an external CLI/cron turn is idle, so message age and old assistant
 text are not used as completion evidence. This is a display correction, not a history
 migration or cancellation of work.
+
+For Mac hardened-runtime signing, retain `com.apple.security.device.audio-input = true`
+from `Support/Omni-macOS.entitlements` alongside the verified production APNs, app/team
+and Keychain entitlements. Earlier signing sidecars lacking audio input must be updated,
+not reused unchanged. Permission copy now describes explicit conversational recording
+and on-device transcription. Microphone/speech permission and actual capture remain
+physical acceptance checks.
