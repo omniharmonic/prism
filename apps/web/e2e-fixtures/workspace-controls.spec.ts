@@ -1,10 +1,12 @@
 import { mkdirSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test, expect, type Page } from "@playwright/test";
 async function configure(page: Page) {
  const menu = page.getByRole("group", { name:"Page properties" }).locator(".db-properties-menu");
  if (await menu.getAttribute("open") === null) await menu.locator("summary").click();
 }
-const shots = "/private/tmp/prism-web-controls-shots";
+const shots = join(tmpdir(), "prism-web-controls-shots");
 mkdirSync(shots, { recursive: true });
 for (const [device,width,height] of [["phone",390,844],["ipad",1024,768],["desktop",1440,900]] as const) {
  test(`${device}: personal property visibility persists and is scoped`, async ({page}) => {
