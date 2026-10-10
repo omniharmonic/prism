@@ -57,7 +57,8 @@ import OmniVoiceKit
         if isPreviewing || playbackOwner != owner { stopAll() }
         if duplexOwner != owner { output.configureDuplex(nil); duplexOwner = nil }
         playbackOwner = owner
-        enqueue(text, identifier: identifier, rate: rate)
+        let segments = duplexOwner == owner ? SpeechUtteranceSegments.split(text) : [text]
+        for segment in segments { enqueue(segment, identifier: identifier, rate: rate) }
     }
     func waitForPlayback(owner: UUID) async {
         guard playbackOwner == owner, pending > 0 else { return }
@@ -122,8 +123,10 @@ import OmniVoiceKit
             let drain = Task { [weak self, utterance] in
                 await previous?.value
                 guard !Task.isCancelled, self?.completions[id] != nil else { return }
+                self?.speaker.write(utterance, toBufferCallback: { buffer in bridge.accept(buffer) })
                 do {
                     for try await owned in bridge.stream {
+                        bridge.release(owned)
                         guard !Task.isCancelled else { return }
                         await self?.accept(owned.buffer, id: id)
                     }
@@ -136,7 +139,6 @@ import OmniVoiceKit
                 self?.pcmTasks.removeValue(forKey: id)
             }
             pcmTasks[id] = drain; pcmDrainTask = drain
-            speaker.write(utterance, toBufferCallback: { buffer in bridge.accept(buffer) })
         } else {
             #if os(iOS)
             speaker.usesApplicationAudioSession = false
