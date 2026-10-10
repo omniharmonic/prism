@@ -628,7 +628,7 @@ test("today degrades per section: approvals + in-flight still answer when the qu
 // ── first-run fix: a thread Hermes no longer has ────────────────────────────────────────
 
 const DONE: StubAct[] = [say("ok")];
-type ListedThread = { id: string; gone: boolean; archived: boolean; title: string | null };
+type ListedThread = { state: string; running: boolean; id: string; gone: boolean; archived: boolean; title: string | null };
 const listThreadsOf = async (q = "") => ((await (await req(`/threads${q}`, { headers: owner() })).json()) as { threads: ListedThread[]; hermes: string });
 
 test("a thread Hermes forgot: the list marks it gone, opening it is a clear 404, and it can be removed (archived locally)", async () => {
@@ -931,4 +931,12 @@ test("approved tweet uses the exact human-reviewed draft once; no send before ap
   assert.deepEqual(inputs, [JSON.stringify({ text })]);
   await decide(p.id, { decision: "send", digest: p.digest }, headers);
   assert.equal(inputs.length, 1, "replayed tap never reposts");
+});
+
+test("imported conversation history never invents a waiting or completed task", async () => {
+ fake.sessions.set("api_history",{id:"api_history",title:"Old conversation",ended_at:1,last_active:1,message_count:20});
+ const list=await listThreadsOf();
+ const old=list.threads.find(t=>t.id==="api_history");
+ assert.equal(old?.state,"conversation");
+ assert.equal(old?.running,false);
 });

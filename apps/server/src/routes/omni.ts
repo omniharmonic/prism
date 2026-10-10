@@ -243,7 +243,9 @@ function threadView(t: ThreadRow | null, s: HermesSession | null, gone = false):
   const running = !!activeTurn(id);
   const hermesActive = s?.last_active ? s.last_active * 1000 : 0;
   const pending = threadApprovals(id).some((a) => a.status === "pending");
-  const state: ThreadState = running ? "working" : pending ? "needs-you" : (t?.state ?? "waiting");
+  // Waiting is meaningful only with actual dependency evidence. Imported/session
+  // history has no runtime signal; do not invent work or completion from its age.
+  const state: ThreadState | "conversation" = running ? "working" : pending ? "needs-you" : !t || t.state === "waiting" ? "conversation" : t.state;
   return {
     id,
     title: t?.title ?? s?.title ?? null,

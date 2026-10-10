@@ -18,6 +18,8 @@ public struct ThreadState: RawRepresentable, Codable, Hashable, Sendable {
     public static let working = ThreadState(rawValue: "working")
     public static let needsYou = ThreadState(rawValue: "needs-you")
     public static let waiting = ThreadState(rawValue: "waiting")
+    /// Conversation history with no authoritative runtime/dependency evidence.
+    public static let conversation = ThreadState(rawValue: "conversation")
     public static let scheduled = ThreadState(rawValue: "scheduled")
     public static let done = ThreadState(rawValue: "done")
     public static let allKnown: [ThreadState] = [.working, .needsYou, .waiting, .scheduled, .done]
