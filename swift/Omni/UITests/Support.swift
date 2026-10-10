@@ -136,11 +136,14 @@ class OmniUITestCase: XCTestCase {
         if let token { env["OMNI_UITEST_TOKEN"] = token }
         if firstRun { env["OMNI_UITEST_FIRST_RUN"] = "1" }
         if !faults.isEmpty { env["OMNI_UITEST_FAULTS"] = faults }
-        if Run.isPad, Run.variant == "split" { env["OMNI_UITEST_COMPACT_WIDTH"] = "375" }
+        if Run.isPad, Run.variant == "split", ProcessInfo.processInfo.environment["OMNI_UITEST_SPLIT_SEAM"] == "1" { env["OMNI_UITEST_COMPACT_WIDTH"] = "375" }
         app.launchEnvironment = env
         // No window restoration between launches: every launch starts from the same place.
         app.launchArguments = ["-ApplePersistenceIgnoreState", "YES"] + arguments
         app.launch()
+        #if os(iOS)
+        if Run.isPad { Run.variant == "split" ? narrowWindow() : fullWindow() }
+        #endif
         #if os(macOS)
         app.activate()
         if !arguments.contains("-keepWindowSize") { resizeWindow() }
@@ -161,6 +164,51 @@ class OmniUITestCase: XCTestCase {
         let corner = window.coordinate(withNormalizedOffset: CGVector(dx: 1, dy: 1)).withOffset(CGVector(dx: -2, dy: -2))
         let to = corner.withOffset(CGVector(dx: target.width - frame.width, dy: target.height - frame.height))
         corner.press(forDuration: 0.2, thenDragTo: to)
+    }
+    #endif
+
+    #if os(iOS)
+    /// Make the iPad window narrow, the way a person does: drag its bottom-right corner in
+    /// until the window is about a phone's width (iPadOS windows resize from that corner).
+    func narrowWindow() {
+        let window = app.windows.firstMatch
+        guard window.waitForExistence(timeout: 15) else { return }
+        var tries = 0
+        while window.frame.width > 520, tries < 3 {
+            let frame = window.frame
+            let board = XCUIApplication(bundleIdentifier: "com.apple.springboard")
+            let origin = board.coordinate(withNormalizedOffset: .zero)
+            let corner = origin.withOffset(CGVector(dx: frame.maxX - 6, dy: frame.maxY - 6))
+            let target = origin.withOffset(CGVector(dx: frame.minX + 400, dy: frame.maxY - 6))
+            corner.press(forDuration: 0.6, thenDragTo: target, withVelocity: .slow, thenHoldForDuration: 0.4)
+            pause(1)
+            tries += 1
+        }
+        XCTAssertLessThan(window.frame.width, 520, "the iPad window could not be made narrow")
+    }
+
+    /// Put the iPad window back to the whole screen (a narrow-width run leaves it narrow).
+    func fullWindow() {
+        let window = app.windows.firstMatch
+        guard window.waitForExistence(timeout: 15) else { return }
+        let board = XCUIApplication(bundleIdentifier: "com.apple.springboard")
+        var tries = 0
+        while window.frame.width < board.frame.width - 40, tries < 3 {
+            let frame = window.frame
+            let origin = board.coordinate(withNormalizedOffset: .zero)
+            let corner = origin.withOffset(CGVector(dx: frame.maxX - 6, dy: frame.maxY - 6))
+            let far = origin.withOffset(CGVector(dx: board.frame.maxX - 2, dy: board.frame.maxY - 2))
+            corner.press(forDuration: 0.6, thenDragTo: far, withVelocity: .slow, thenHoldForDuration: 0.4)
+            pause(1)
+            tries += 1
+            // Grown from its left edge, it may still sit away from the left: drag the other corner too.
+            let now = window.frame
+            if now.minX > 20 {
+                let left = origin.withOffset(CGVector(dx: now.minX + 6, dy: now.maxY - 6))
+                left.press(forDuration: 0.6, thenDragTo: origin.withOffset(CGVector(dx: 2, dy: board.frame.maxY - 2)), withVelocity: .slow, thenHoldForDuration: 0.4)
+                pause(1)
+            }
+        }
     }
     #endif
 
@@ -210,10 +258,17 @@ class OmniUITestCase: XCTestCase {
     }
 
     #if os(iOS)
+    /// Where, across the screen, the content being read is: the middle (a phone, a narrow
+    /// iPad window), or the middle of the content column beside an iPad's sidebar.
+    static var contentX: CGFloat {
+        if Run.isPad, Run.variant == "split" { return ProcessInfo.processInfo.environment["OMNI_UITEST_SPLIT_SEAM"] == "1" ? 0.18 : 0.5 }
+        return Run.isPad ? 0.65 : 0.5
+    }
+
     /// Drag the frontmost scrolling area by a third of the screen.
     func scrollPage(down: Bool) {
-        let from = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: down ? 0.62 : 0.38))
-        let to = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: down ? 0.30 : 0.70))
+        let from = app.coordinate(withNormalizedOffset: CGVector(dx: Self.contentX, dy: down ? 0.62 : 0.38))
+        let to = app.coordinate(withNormalizedOffset: CGVector(dx: Self.contentX, dy: down ? 0.30 : 0.70))
         from.press(forDuration: 0.05, thenDragTo: to, withVelocity: .slow, thenHoldForDuration: 0.1)
     }
 
@@ -304,11 +359,14 @@ class OmniUITestCase: XCTestCase {
     /// arrives lying on its side.
     private static func upright(_ shot: XCUIScreenshot) -> Data {
         #if os(iOS)
-        guard Run.isPad, Run.variant == "landscape", shot.image.size.height > shot.image.size.width, let cg = shot.image.cgImage else { return shot.pngRepresentation }
-        let turned = UIImage(cgImage: cg, scale: shot.image.scale, orientation: .left)
+        guard Run.isPad, Run.variant == "landscape", let cg = shot.image.cgImage, cg.height > cg.width else { return shot.pngRepresentation }
+        // The pixels are stored as the device is built (portrait); draw them turned.
+        let turned = UIImage(cgImage: cg, scale: 1, orientation: .left)
         let format = UIGraphicsImageRendererFormat()
-        format.scale = shot.image.scale
-        return UIGraphicsImageRenderer(size: turned.size, format: format).pngData { _ in turned.draw(at: .zero) }
+        format.scale = 1
+        return UIGraphicsImageRenderer(size: CGSize(width: cg.height, height: cg.width), format: format).pngData { _ in
+            turned.draw(in: CGRect(x: 0, y: 0, width: cg.height, height: cg.width))
+        }
         #else
         return shot.pngRepresentation
         #endif
@@ -335,8 +393,15 @@ class OmniUITestCase: XCTestCase {
         if Run.usesTabs {
             let name = [Place.today: "Today", .needsYou: "Needs you", .threads: "Threads", .recurring: "Threads"][place] ?? "Today"
             let tab = app.tabBars.buttons[name].firstMatch
+            if Run.isPad { hideKeyboard() }
             guard wait(tab, 15, "the \(name) tab", file: file, line: line) else { return }
             tab.tap()
+            // A tap that lands while a search field is still closing is swallowed: look, and press again.
+            for _ in 0..<3 where !tab.isSelected {
+                pause(1)
+                tab.tap()
+            }
+            XCTAssertTrue(tab.isSelected, "the \(name) tab did not open", file: file, line: line)
             // A pushed screen is still up: the tab again goes back to its first screen.
             if place == .threads || place == .recurring, !app.navigationBars["Threads"].exists { tab.tap() }
             if place == .recurring {
@@ -404,6 +469,22 @@ class OmniUITestCase: XCTestCase {
         let new = element("thread.new")
         wait(new, 10, "the New Thread button")
         new.tap()
+    }
+
+    /// Put the software keyboard away with its own key (an iPad's keyboard has one, bottom
+    /// right; in a narrow iPad window the keyboard lies over the window's tab bar until then).
+    func hideKeyboard() {
+        #if os(iOS)
+        let keyboard = app.keyboards.firstMatch
+        guard keyboard.exists else { return }
+        let key = keyboard.buttons.matching(NSPredicate(format: "label IN {'Hide keyboard', 'Dismiss', 'Dismiss keyboard'}")).firstMatch
+        if key.exists {
+            key.tap()
+        } else if Run.isPad {
+            keyboard.coordinate(withNormalizedOffset: CGVector(dx: 1, dy: 1)).withOffset(CGVector(dx: -28, dy: -28)).tap()
+        }
+        _ = gone(keyboard, 3)
+        #endif
     }
 
     // MARK: Typing

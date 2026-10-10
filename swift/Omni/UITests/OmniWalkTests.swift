@@ -235,8 +235,9 @@ final class OmniWalkTests: OmniUITestCase {
         // …and by dragging the conversation down.
         composer.tap()
         showKeyboard()
-        let top = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.22))
-        top.press(forDuration: 0.05, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)), withVelocity: .default, thenHoldForDuration: 0.1)
+        let conversation = element("transcript")
+        let top = conversation.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.15))
+        top.press(forDuration: 0.05, thenDragTo: top.withOffset(CGVector(dx: 0, dy: 220)), withVelocity: .default, thenHoldForDuration: 0.1)
         XCTAssertTrue(gone(app.keyboards.firstMatch, 5), "the keyboard cannot be put away by dragging the conversation")
         #endif
     }
@@ -500,8 +501,18 @@ final class OmniWalkTests: OmniUITestCase {
 
     private func cancelSearch() {
         #if os(iOS)
-        let cancel = app.buttons.matching(NSPredicate(format: "label IN {'Cancel', 'Close'}")).firstMatch
+        // Return puts the keyboard away (it covers the tab bar); then leave the search.
+        let field = app.searchFields.firstMatch
+        if field.exists, app.keyboards.firstMatch.exists { field.typeText("\n") }
+        let own = element("search.cancel")
+        let cancel = own.exists ? own : app.buttons.matching(NSPredicate(format: "label IN {'Cancel', 'Close'}")).firstMatch
         if cancel.exists, cancel.isHittable { cancel.tap() }
+        // Where the bar has no room for Cancel (a narrow iPad window), dragging the list puts
+        // the keyboard away, as it does in a conversation.
+        if app.keyboards.firstMatch.exists { scrollPage(down: false) }
+        if app.keyboards.firstMatch.exists { hideKeyboard() }
+        pause(1)
+        XCTAssertFalse(app.keyboards.firstMatch.exists, "the search could not be left: the keyboard is still up")
         #else
         app.typeKey(.escape, modifierFlags: [])
         #endif

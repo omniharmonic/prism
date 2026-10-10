@@ -391,6 +391,29 @@ struct SettingsSheet: View {
     }
 }
 
+/// The way out of a search on an iPad, as the first row of the list while searching. A
+/// narrow iPad window's bar has room for the search field and nothing else — no Cancel —
+/// and the iPad's keyboard then lies across the window's tab bar. (An iPhone's bar has its
+/// own close button.)
+struct SearchExit: View {
+    let clear: () -> Void
+    @Environment(\.isSearching) private var isSearching
+    @Environment(\.dismissSearch) private var dismissSearch
+
+    var body: some View {
+        if isSearching, UIDevice.current.userInterfaceIdiom == .pad {
+            Button {
+                clear()
+                dismissSearch()
+            } label: {
+                Label("Cancel Search", systemImage: "xmark.circle")
+            }
+            .accessibilityHint("Leaves the search and puts the keyboard away")
+            .accessibilityIdentifier("search.cancel")
+        }
+    }
+}
+
 struct ThreadListScreen: View {
     @Bindable var session: SessionModel
     @Binding var showingNewThread: Bool
@@ -398,6 +421,7 @@ struct ThreadListScreen: View {
     var body: some View {
         @Bindable var threads = session.threads
         List {
+            SearchExit { threads.searchText = "" }
             ThreadSections(threads: session.threads, selectable: false) { id in Task { await session.removeThread(id) } }
             Section("Recurring") {
                 NavigationLink(value: Destination.recurring) {
@@ -407,7 +431,10 @@ struct ThreadListScreen: View {
             }
         }
         .navigationTitle("Threads")
-        .searchable(text: $threads.searchText, prompt: "Search threads")
+        // Under the title, with its own Cancel: in the bar itself a narrow iPad window has no
+        // room for a way out of the search, and the keyboard then sits over the tab bar.
+        .searchable(text: $threads.searchText, placement: .navigationBarDrawer(displayMode: .automatic), prompt: "Search threads")
+        .scrollDismissesKeyboard(.immediately)
         .refreshable { await session.threads.refresh() }
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
