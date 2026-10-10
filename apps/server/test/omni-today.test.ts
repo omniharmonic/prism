@@ -85,7 +85,7 @@ test("a dispatcher that throws fails that section only", async () => {
   assert.equal(t.agenda?.length, 1);
 });
 
-test("task pages keep assignment/status filters and use opaque cursor with a fixed bound", async () => {
+test("task pages include all visible tasks and keep status filters and use opaque cursor with a fixed bound", async () => {
   const calls: QuerySpec[] = [];
   let next: string | undefined;
   const dispatch: Dispatch = async (path, init) => {
@@ -93,7 +93,7 @@ test("task pages keep assignment/status filters and use opaque cursor with a fix
     assert.equal(init.method, "POST");
     const spec = init.body as QuerySpec;
     calls.push(spec);
-    assert.equal(spec.assignedToMe, true);
+    assert.equal(spec.assignedToMe, undefined);
     assert.equal(spec.limit, 50);
     assert.deepEqual(spec.tags, ["task"]);
     assert.deepEqual(spec.filter, { match: "all", conditions: [{ key: "status", op: "nin", value: ["completed", "cancelled", "archived", "done"] }] });
