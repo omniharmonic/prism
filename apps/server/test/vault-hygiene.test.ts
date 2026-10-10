@@ -949,3 +949,35 @@ test("project-pages: compact hygiene summary separates content/membership/agent 
  assert.doesNotMatch(out(c),/PRIVATE_TITLE|PRIVATE_AGENT_PROSE|PRIVATE_CHILD|would patch/);
  assert.equal(v.writes().length,0);
 });
+
+
+test("project-pages: retired duplicate folder aliases backfill absent membership without touching explicit values", () => {
+ const canonical: VaultNote={id:"canonical",path:"vault/projects/bioregional-food-chain/PROJECT",tags:["project"],metadata:{aliases:["retired-id","Bioregional Foodchain Design","vault/projects/bioregional-foodchain-design/PROJECT","vault/projects/bioregional-foodchain-design","bioregional-foodchain-design"]}};
+ const retired: VaultNote={id:"retired-id",path:"vault/projects/bioregional-foodchain-design/PROJECT",tags:["project","prism-trashed"]};
+ const draft: VaultNote={id:"proposal",path:"vault/projects/bioregional-foodchain-design/proposal-draft-v1",content:"Substantive proposal, unchanged.",metadata:{}};
+ const notes=[canonical,retired,draft];
+ assert.deepEqual(projectPages.hygienePatch(draft,notes),{metadata:{projects:["[[vault/projects/bioregional-food-chain/PROJECT]]"]}});
+ assert.deepEqual(projectPages.hygienePatch({...draft,metadata:{projects:["unknown-explicit"]}},notes),{});
+ assert.deepEqual(projectPages.hygienePatch({...draft,metadata:{projects:["[[vault/projects/another/PROJECT]]"]}},notes),{});
+ assert.deepEqual(projectPages.hygienePatch({...draft,path:"vault/projects/Bioregional Foodchain Design/proposal"},notes),{},"a display title is not a folder alias");
+ assert.deepEqual(projectPages.hygienePatch({...draft,path:"vault/projects/bioregional-foodchain-design-extra/proposal"},notes),{},"folder matching respects the slash boundary");
+});
+
+test("project-pages: deepest alias folder wins; alias collisions and active folder ownership fail closed", () => {
+ const outer: VaultNote={id:"outer",path:"vault/projects/canonical/PROJECT",tags:["project"],metadata:{aliases:["vault/projects/old"]}};
+ const nested: VaultNote={id:"nested",path:"vault/projects/child/PROJECT",tags:["project"],metadata:{aliases:["[[vault/projects/old/nested/PROJECT.md]]"]}};
+ const note: VaultNote={id:"note",path:"vault/projects/old/nested/Notes"};
+ assert.equal(projectPages.inferAncestorProject(note,[outer,nested])?.id,"nested");
+ const collision: VaultNote={id:"collision",path:"vault/projects/elsewhere/PROJECT",tags:["project"],metadata:{aliases:["vault/projects/old/nested"]}};
+ assert.equal(projectPages.inferAncestorProject(note,[outer,nested,collision]),undefined,"ambiguous deepest match must not fall back to outer");
+ const active: VaultNote={id:"active",path:"vault/projects/old/nested/PROJECT",tags:["project"]};
+ assert.equal(projectPages.inferAncestorProject(note,[outer,nested,active]),undefined,"alias cannot take an active project's folder");
+ assert.equal(projectPages.inferAncestorProject({...note,tags:["prism-trashed"]},[outer,nested]),undefined);
+});
+
+
+test("project-pages: canonical folder named project is retained exactly", () => {
+ const project: VaultNote={id:"nested-project",path:"vault/projects/outer/project/PROJECT",tags:["project"]};
+ assert.equal(projectPages.inferAncestorProject({id:"inside",path:"vault/projects/outer/project/note"},[project])?.id,"nested-project");
+ assert.equal(projectPages.inferAncestorProject({id:"sibling",path:"vault/projects/outer/note"},[project]),undefined);
+});
