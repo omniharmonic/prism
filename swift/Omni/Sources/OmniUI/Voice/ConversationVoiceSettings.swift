@@ -84,6 +84,16 @@ struct ConversationVoiceSettings: View {
                         else { device.previewVoice(identifier: chosen?.id) }
                     }.accessibilityIdentifier("voice.preview")
                 }
+                Section("Open voice quickly") {
+                    #if os(macOS)
+                    Text("Press Control–Option–Command–Space while Omni is running, or choose Talk to Omni from the menu bar.")
+                    Text("For experimental Hey Omni, enable it in the menu bar. Wait for Listening before speaking your request.")
+                    #else
+                    Text("On iPhone, open Settings → Action Button → Shortcut → Choose a Shortcut, then choose Talk to Omni.")
+                    Text("On iPad, add Omni’s Talk to Omni action to a shortcut, then put it on your Home Screen or in a Shortcuts widget.")
+                    #endif
+                    Text("Unlock and sign in when asked. Repeated presses keep the current conversation.").font(.callout).foregroundStyle(.secondary)
+                }
                 Section("More voices") {
                     if !available.contains(where: { $0.quality > .standard }) {
                         Text("Only standard voices are installed for this region. Download an Enhanced or Premium voice in system settings to try a higher-quality option.")

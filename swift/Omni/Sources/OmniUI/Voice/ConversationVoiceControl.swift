@@ -22,7 +22,7 @@ struct ConversationVoiceControl: View {
     @State private var panelContentHeight: CGFloat = 280
     @State private var mounted = false
     @State private var action: Task<Void, Never>?
-        init(session: SessionModel, model: ThreadModel? = nil, draft: Binding<String>? = nil, expanded: Binding<Bool>, maximumHeight: CGFloat = 280) {
+    init(session: SessionModel, model: ThreadModel? = nil, draft: Binding<String>? = nil, expanded: Binding<Bool>, maximumHeight: CGFloat = 280) {
         self.session = session; self.model = model; self.draft = draft; self.maximumHeight = maximumHeight; _expanded = expanded
         let sameContext = model.map { session.voiceThreadID == $0.threadID } ?? (session.newThreadUsesVoice && session.voiceThreadID == nil)
         let device = (sameContext ? session.conversationAudio as? ConversationDevice : nil) ?? ConversationDevice()
@@ -203,7 +203,8 @@ struct ConversationVoiceControl: View {
         case .speaking: voice.acousticInterruptionEnabled && voice.interruptionNotice == nil ? "Speak to interrupt · reply playing" : "Mic off · reply playing"
         case .preparing: "Preparing speech on this device…"
         case .listening:
-            if let countdown = voice.endpointCountdown { "Sending in \(countdown)…" }
+            if running { "Listening · Omni’s task is still running." }
+            else if let countdown = voice.endpointCountdown { "Sending in \(countdown)…" }
             else if voice.activityNotice != nil || voice.endpointMode == .thinkAloud { "Send when you’re ready." }
             else { "Automatic · \(Int(voice.endpointPause))s pause" }
         case .transcribing: "Recognizing your words…"
@@ -218,6 +219,7 @@ struct ConversationVoiceControl: View {
                     Label("Send turn", systemImage: "arrow.up").frame(maxWidth: .infinity, minHeight: 32)
                 }
                 .buttonStyle(.borderedProminent)
+                .disabled(running)
                 .accessibilityIdentifier("voice.send")
                 .accessibilityHint("Silence never sends in Think aloud. Long recordings are kept as an unsent draft if recording reaches its limit.")
             } else if voice.state == .preparing || voice.state == .transcribing {
@@ -319,9 +321,10 @@ struct ConversationVoiceControl: View {
             if let model { model.draft = text } else { draft?.wrappedValue = text }
         }
         voice.automaticFinish = {
-            guard mounted, phase == .active, !PrivacyLock.shared.locked, !running,
+            guard mounted, phase == .active, !PrivacyLock.shared.locked,
                   lease == session.voiceLease, session.ownsVoice(voice, threadID: model?.threadID),
                   voice.state == .listening, currentDraft.isEmpty else { return }
+            guard !running else { voice.keepListening(); return }
             finish()
         }
         voice.canAutomaticallyListen = {
@@ -352,7 +355,7 @@ struct ConversationVoiceControl: View {
         let lease = session.voiceLease
         action = Task {
             await voice.finish(submit: submit, draftReason: draftReason) { text in
-                guard !Task.isCancelled, lease == session.voiceLease, !PrivacyLock.shared.locked, mounted, phase == .active, !running, (model?.draft ?? draft?.wrappedValue ?? "").isEmpty else { return false }
+                guard !Task.isCancelled, lease == session.voiceLease, !PrivacyLock.shared.locked, mounted, phase == .active, (!submit || !running), (model?.draft ?? draft?.wrappedValue ?? "").isEmpty else { return false }
                 if let model { model.draft = text } else { draft?.wrappedValue = text }
                 if !submit { return true }
                 if let model { return await model.send() }

@@ -44,7 +44,7 @@ public struct MacVoiceMenu: View {
         Divider()
         Toggle("Experimental Hey Omni", isOn: Binding(get: { MacWakeListener.shared.enabled }, set: { MacWakeListener.shared.enabled = $0 }))
         Text(MacWakeListener.shared.status)
-        Text("Local speech recognition. No ambient upload or recording. Energy and false wakes need evaluation.")
+        Text("Listen for Hey Omni on this Mac. Uses more energy while enabled.")
         Button("Open Omni") { openWindow(id: "main"); NSApplication.shared.activate() }
         Divider()
         Button("Quit Omni") { NSApplication.shared.terminate(nil) }

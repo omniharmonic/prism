@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 import subprocess
 import time
+import wave
 
 PASSAGES = [
     "Yes, Benjamin. I'm here.",
@@ -48,6 +49,12 @@ def main():
                     subprocess.run(argv, check=True, timeout=180)
                     if not audio.is_file() or audio.stat().st_size == 0:
                         raise RuntimeError("renderer did not produce a nonempty output")
+                    try:
+                        with wave.open(str(audio), "rb") as rendered:
+                            if rendered.getnframes() == 0 or not rendered.readframes(1):
+                                raise RuntimeError("renderer produced a WAV with zero PCM frames")
+                    except wave.Error as error:
+                        raise RuntimeError("renderer produced an invalid PCM WAV") from error
                     row["render_wall_ms"] = round((time.perf_counter() - started) * 1000, 2)
                     row["phase"] = "process-per-render"
                     row["notes"] = "Wall time includes process startup; not first-audio or warm session latency."
