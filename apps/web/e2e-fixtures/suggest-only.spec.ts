@@ -367,6 +367,6 @@ test("in the workspace itself: Shared with me opens the LIVE suggest-only editor
   expect(writes).toEqual([]);
   expect((await server.note("plan"))!.content).not.toContain("RAW");
   await expect.poll(async () => (await server.note("plan"))!.content).toContain("Omega");
-  await page.screenshot({ path: "/private/tmp/claude-501/-Users-benjaminlife-dev-prism/94600911-66b9-4b8d-b802-fc8f8fe9305f/scratchpad/w3-gaps/suggest-live-workspace.png" });
+  await page.screenshot({ path: test.info().outputPath("suggest-live-workspace.png") });
   await page.unrouteAll({ behavior: "ignoreErrors" });
 });

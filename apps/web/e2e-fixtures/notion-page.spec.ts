@@ -260,7 +260,6 @@ test("empty page starters vanish on typing", async ({ page }, info) => {
 // ── wave 2D ──────────────────────────────────────────────────────────────────
 /** NP-PG-17 — the page ⋯ menu's info footer (standalone component; 2B's chrome mounts it). */
 
-const shots = "/private/tmp/claude-501/-Users-benjaminlife-dev-prism/94600911-66b9-4b8d-b802-fc8f8fe9305f/scratchpad/w2-sharing";
 
 test("page info footer", async ({ page }) => {
   await page.goto("/e2e-fixtures/notion-sharing.html?panel=info");
@@ -273,7 +272,7 @@ test("page info footer", async ({ page }) => {
   await expect(value("Created")).toContainText("Sep 1");
   await expect(value("Last edited")).not.toHaveText("");
   await expect(value("Last edited by")).toHaveText("You");
-  await page.screenshot({ path: `${shots}/page-info.png` });
+  await page.screenshot({ path: test.info().outputPath("page-info.png") });
 });
 
 /** NP-PG-03 */

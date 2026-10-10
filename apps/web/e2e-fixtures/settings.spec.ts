@@ -42,7 +42,7 @@ test("sections: Appearance · Inputs & integrations · AI & agent · Advanced, n
 test("Writing font + Editor Font change the writing surface's font, and stay after a reload", async ({ page }) => {
   await page.goto("/e2e-fixtures/workspace.html");
   await expect(prose(page)).toContainText("A shared place to think");
-  expect(await firstFont(page)).toBe("Inter");
+  expect(await firstFont(page)).toBe("-apple-system");
   let dialog = await openSettings(page);
   await dialog.getByLabel("Writing font", { exact: true }).selectOption("serif");
   await dialog.getByLabel("Editor Font", { exact: true }).selectOption("Georgia");

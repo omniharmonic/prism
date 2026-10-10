@@ -6,7 +6,6 @@
 import { test, expect, type Page } from "@playwright/test";
 import { connect, startRealServer, type RealServer } from "./real-server";
 
-const shots = "/private/tmp/claude-501/-Users-benjaminlife-dev-prism/94600911-66b9-4b8d-b802-fc8f8fe9305f/scratchpad/w2-sharing";
 let server: RealServer;
 test.beforeAll(async ({}, info) => {
   server = await startRealServer(String(info.project.use.baseURL ?? "http://127.0.0.1:5188"));
@@ -35,13 +34,13 @@ test("header avatars and jump to cursor", async ({ page, browser }) => {
   await avatar.click();
   await expect(page.locator('.collaboration-carets__caret[data-prism-flash]')).toContainText("Eve Editor");
   await expect(page.getByRole("status").filter({ hasText: "Jumped to Eve Editor." })).toBeVisible();
-  await page.screenshot({ path: `${shots}/presence-desktop.png` });
+  await page.screenshot({ path: test.info().outputPath("presence-desktop.png") });
   // Phone: one compact count that lists who is here.
   await page.setViewportSize({ width: 390, height: 844 });
   const count = presence.getByRole("button", { name: /1 person on this page/ });
   await expect(count).toBeVisible();
   await count.click();
   await expect(page.getByRole("list", { name: "On this page" })).toContainText("Eve Editor");
-  await page.screenshot({ path: `${shots}/presence-phone.png` });
+  await page.screenshot({ path: test.info().outputPath("presence-phone.png") });
   await eve.close();
 });

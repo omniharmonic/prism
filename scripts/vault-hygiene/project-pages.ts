@@ -44,6 +44,31 @@ export function projectResolver(notes: VaultNote[]) {
   }};
 }
 
+/** Infer only absent membership, from the deepest unambiguous canonical/alias folder.
+ * Only rooted project-path aliases represent folders; titles, ids and bare nicknames do not.
+ * A collision at the deepest matching folder blocks inference rather than falling back.
+ */
+export function inferAncestorProject(note: VaultNote, projects: VaultNote[]): VaultNote | undefined {
+  if (!note.path || isProject(note) || !isLive(note)) return undefined;
+  const folders = new Map<string, Map<string, VaultNote>>();
+  const add = (value: string, project: VaultNote, projectPath = true) => {
+    const normalized = projectTarget(value);
+    const folder = projectPath ? normalized.replace(/\/project$/i, "") : normalized;
+    if (!folder.startsWith(ROOT) || folder === ROOT.slice(0, -1) || folder.split("/").some(part => !part || part === "." || part === "..")) return;
+    const owners = folders.get(folder) ?? new Map<string, VaultNote>();
+    owners.set(project.id, project); folders.set(folder, owners);
+  };
+  for (const project of projects) {
+    if (!isLive(project) || !isProject(project) || project.metadata?.merged_into || !project.path) continue;
+    add(folderOf(project), project, false);
+    for (const alias of values(project.metadata?.aliases)) if (typeof alias === "string") add(alias, project);
+  }
+  const path = projectTarget(note.path);
+  const matching = [...folders].filter(([folder]) => path.startsWith(`${folder}/`)).sort(([a], [b]) => b.length - a.length);
+  const owners = matching[0]?.[1];
+  return owners?.size === 1 ? owners.values().next().value : undefined;
+}
+
 export interface Patch { content?: string; metadata?: Record<string, unknown> }
 /** Repair changes only references to THIS duplicate. General normalization belongs to hygiene. */
 export function mergeMembershipPatch(note: VaultNote, duplicate: VaultNote, canonical: VaultNote, notes: VaultNote[] = []): Patch {
@@ -77,8 +102,8 @@ export function hygienePatch(note: VaultNote, notes: VaultNote[], resolver = pro
   const stored = canonicalValues.length ? canonicalValues : values(note.metadata?.project);
   let memberships = stored.map(v => typeof v === "string" ? resolve(v)?.path ? `[[${resolve(v)!.path}]]` : v : v);
   if (!stored.length && note.path && !isProject(note)) {
-    const ancestors = projects.filter(p => note.path!.startsWith(`${folderOf(p)}/`)).sort((a,b) => folderOf(b).length - folderOf(a).length);
-    if (ancestors[0]?.path) memberships = [`[[${ancestors[0].path}]]`];
+    const ancestor = inferAncestorProject(note, projects);
+    if (ancestor?.path) memberships = [`[[${ancestor.path}]]`];
   }
   memberships = [...new Map(memberships.map(v => [JSON.stringify(v), v])).values()];
   if (memberships.length && JSON.stringify(note.metadata?.projects) !== JSON.stringify(memberships)) metadata.projects = memberships;

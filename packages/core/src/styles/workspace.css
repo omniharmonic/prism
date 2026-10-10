@@ -136,7 +136,7 @@ select:not([multiple]):not([size]):dir(rtl) { background-position: left 8px top 
 }
 button:not(:disabled), [role="button"] { cursor: pointer; }
 button:disabled { cursor: not-allowed; }
-:where(button, a, input, select, textarea, [tabindex]):focus-visible {
+:where(button, a, input, select, textarea, summary, [tabindex]):focus-visible {
   outline: 2px solid var(--focus-ring);
   outline-offset: 3px;
 }
