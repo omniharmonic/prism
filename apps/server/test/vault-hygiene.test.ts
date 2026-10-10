@@ -937,3 +937,15 @@ test("project-pages: merge repair preserves ambiguous aliases and unrelated lega
  const other={id:"other",path:"vault/projects/other/PROJECT",tags:["project"],metadata:{aliases:["shared"]}};
  assert.deepEqual(projectPages.mergeMembershipPatch({id:"member",metadata:{projects:["shared","unique","other"],project:"unrelated"}},duplicate,canonical,[duplicate,canonical,other]),{metadata:{projects:["shared","[[vault/projects/eth-boulder/PROJECT]]","other"]}});
 });
+
+
+test("project-pages: compact hygiene summary separates content/membership/agent fields without prose or titles", async () => {
+ const v=new FakeVault();
+ v.add({id:"project1",path:"vault/projects/alpha/PROJECT",tags:["project"],metadata:{title:"PRIVATE_TITLE"},content:"# PRIVATE_TITLE\n\nHuman prose.\n\n## Key Context for Agents\nPRIVATE_AGENT_PROSE\n"});
+ v.add({id:"member1",path:"vault/projects/alpha/PRIVATE_CHILD",metadata:{}});
+ const c=ctxFor(v);assert.equal(await projectPages.main([...VAULT,"--summary-only"],c),0,out(c));
+ const summary=JSON.parse(out(c).split("\n").find(line=>line.startsWith("summary: "))!.slice(9));
+ assert.deepEqual(summary,{creates:0,patches:2,content:1,membership:1,agentContext:1,otherMetadata:0,metadataFields:{agent_context:1,projects:1},linkOperations:0,linksAdded:0,linksRemoved:0,trash:0});
+ assert.doesNotMatch(out(c),/PRIVATE_TITLE|PRIVATE_AGENT_PROSE|PRIVATE_CHILD|would patch/);
+ assert.equal(v.writes().length,0);
+});
