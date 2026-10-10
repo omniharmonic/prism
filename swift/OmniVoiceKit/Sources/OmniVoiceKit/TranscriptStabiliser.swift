@@ -46,3 +46,7 @@ public protocol STTEngine: Sendable {
     func prepare(vocabulary: [String]) async throws
     func transcribe(file: URL, speechEnd: Double, update: @escaping @Sendable (TranscriptEvent) async -> Void) async throws -> EngineResult
 }
+
+public protocol ConversationSTTEngine: STTEngine {
+    func transcribeConversation(file: URL, update: @escaping @Sendable (TranscriptEvent) async -> Void) async throws -> String
+}

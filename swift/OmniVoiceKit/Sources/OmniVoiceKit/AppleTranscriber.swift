@@ -2,7 +2,7 @@
 import Speech
 import Foundation
 
-public actor AppleTranscriber: STTEngine {
+public actor AppleTranscriber: ConversationSTTEngine {
     public nonisolated let name = "Apple SpeechAnalyzer"
     private var vocabulary: [String] = []
     private var locale: Locale?
@@ -28,6 +28,13 @@ public actor AppleTranscriber: STTEngine {
         }
     }
     public func transcribe(file: URL, speechEnd: Double, update: @escaping @Sendable (TranscriptEvent) async -> Void) async throws -> EngineResult {
+        try await transcribe(file: file, speechEnd: speechEnd, paced: true, update: update)
+    }
+    /// Conversation input is already captured; feed it without benchmark replay delays.
+    public func transcribeConversation(file: URL, update: @escaping @Sendable (TranscriptEvent) async -> Void) async throws -> String {
+        try await transcribe(file: file, speechEnd: 0, paced: false, update: update).text
+    }
+    private func transcribe(file: URL, speechEnd: Double, paced: Bool, update: @escaping @Sendable (TranscriptEvent) async -> Void) async throws -> EngineResult {
         guard let locale else { throw VoiceFailure.notPrepared }
         let transcriber = SpeechTranscriber(locale: locale, preset: .progressiveTranscription)
         let analyzer = SpeechAnalyzer(modules: [transcriber])
@@ -56,7 +63,7 @@ public actor AppleTranscriber: STTEngine {
                 try Task.checkCancellation()
                 let chunk = Array(samples[offset..<min(offset + 1600, samples.count)])
                 continuation.yield(AnalyzerInput(buffer: try Replay.buffer(samples: chunk, format: format)))
-                try await Task.sleep(for: .seconds(Double(chunk.count) / 16_000))
+                if paced { try await Task.sleep(for: .seconds(Double(chunk.count) / 16_000)) }
             }
             continuation.finish()
             try await analyzer.finalizeAndFinishThroughEndOfInput()
