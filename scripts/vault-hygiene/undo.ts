@@ -55,9 +55,10 @@ export async function main(argv: string[], ctx: Ctx, records?: UndoRecord[]): Pr
         if (!apply) { ctx.log(`  would trash created note ${r.id}`); continue; }
         await throttle.wait();
         const res = await ctx.fetch(`${prismUrl!.origin}/api/notes/${encodeURIComponent(r.id)}/trash`, {
-          method: "POST", headers: { Authorization: `Bearer ${ownerToken}`, "Content-Type": "application/json" }, body: JSON.stringify({ if_updated_at: note.updatedAt }),
+          method: "POST", headers: { Authorization: `Bearer ${ownerToken}`, "Content-Type": "application/json" }, body: JSON.stringify({ if_updated_at: note.updatedAt, require_leaf: true }),
         });
-        if (!res.ok) throw new HttpError(res.status, `trash created ${r.id}: ${res.status}`);
+        const result = await res.json().catch(() => null) as { ok?: boolean } | null;
+        if (res.status !== 200 || result?.ok !== true) throw new HttpError(res.status, `trash created ${r.id}: incomplete/refused (${res.status})`);
         restored++; continue;
       }
       if (r.kind === "prism-trash") {

@@ -850,6 +850,12 @@ export function createPagesApi(opts: PagesApiOptions = {}) {
     const at = new Date().toISOString();
     const by = actor.email;
     const outcome = await exclusive(entry.id, [root.path ?? root.id], async () => {
+      // Migration/undo leaf guard re-reads inside the page mutation lock.
+      if (body.require_leaf === true && root.path) {
+        try {
+          if ((await freshSubtree(entry, root.path)).some(n => !isTrashed(n))) return "not_leaf" as const;
+        } catch { return "leaf_check_failed" as const; }
+      }
       const done: string[] = [];
       const items = [{ id: root.id, path: root.path, stamp: (typeof body.if_updated_at === "string" ? body.if_updated_at : root.updatedAt) as string | null }, ...group.map((g) => ({ id: g.id, path: g.path, stamp: g.updatedAt }))];
       for (const it of items) {
@@ -868,6 +874,8 @@ export function createPagesApi(opts: PagesApiOptions = {}) {
       return { done, failed: null };
     });
     if (outcome === "busy") return c.json({ error: "busy", reason: "Another page change is in progress. Try again in a moment." }, 409);
+    if (outcome === "not_leaf") return c.json({ error: "has_descendants" }, 409);
+    if (outcome === "leaf_check_failed") return c.json({ error: "vault_unreachable" }, 502);
     if (outcome.done.length) wrote();
     if (!outcome.failed) return c.json({ ok: true, rootId: root.id, trashed: outcome.done });
     if (!outcome.done.length) return c.json({ error: outcome.failed.reason === "conflict" ? "conflict" : "trash_failed", failed: outcome.failed }, outcome.failed.reason === "conflict" ? 409 : 502);

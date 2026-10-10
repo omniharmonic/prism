@@ -873,3 +873,10 @@ test("project-pages: legacy folder projects and descendant pages prevent cascadi
  const c=ctxFor(v,{PRISM_OWNER_TOKEN:OWNER});assert.equal(await projectPages.main([...VAULT,"--phase","repair","--prism-url","http://prism.test","--apply","--backup-confirmed"],c),1);
  assert.ok(!v.notes.get("dup")!.tags!.includes("prism-trashed"));assert.ok(!v.find("vault/projects/eth-boulder/Merged project ethboulder"));
 });
+
+test("project-pages: partial Trash response is a failed migration, not success",async()=>{
+ const v=new FakeVault();v.add({id:"pure",path:"vault/projects/a/INDEX",content:"```dataview\nTABLE title\n```"});const c=ctxFor(v,{PRISM_OWNER_TOKEN:OWNER});const original=c.fetch;
+ c.fetch=async(input,init)=>{const url=new URL(String(input));if(url.pathname.endsWith("/trash")){assert.equal(JSON.parse(String(init?.body)).require_leaf,true);return Response.json({ok:false,error:"partial_trash"},{status:207});}return original(input,init);};
+ assert.equal(await projectPages.main([...VAULT,"--phase","indexes","--live-sections-confirmed","--prism-url","http://prism.test","--apply","--backup-confirmed"],c),1);
+ assert.equal(c.undo.length,0);assert.ok(!v.notes.get("pure")!.tags!.includes("prism-trashed"));
+});

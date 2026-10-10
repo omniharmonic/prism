@@ -158,8 +158,9 @@ export async function main(argv: string[], ctx: Ctx): Promise<number> {
     if (children.length) throw new Error("refusing cascading Trash of descendants");
     if (!apply) return;
     if (!note.updatedAt) throw new Error("fresh revision missing");
-    await throttle.wait(); const res = await ctx.fetch(`${prism!.origin}/api/notes/${encodeURIComponent(note.id)}/trash`, { method: "POST", headers: { Authorization: `Bearer ${owner}`, "Content-Type": "application/json" }, body: JSON.stringify({ if_updated_at: note.updatedAt }) });
-    if (!res.ok) throw new HttpError(res.status, `trash ${note.id}: ${res.status}`);
+    await throttle.wait(); const res = await ctx.fetch(`${prism!.origin}/api/notes/${encodeURIComponent(note.id)}/trash`, { method: "POST", headers: { Authorization: `Bearer ${owner}`, "Content-Type": "application/json" }, body: JSON.stringify({ if_updated_at: note.updatedAt, require_leaf: true }) });
+    const result = await res.json().catch(() => null) as { ok?: boolean } | null;
+    if (res.status !== 200 || result?.ok !== true) throw new HttpError(res.status, `trash ${note.id}: incomplete/refused (${res.status})`);
     const after = await vault.getNote(note.id, { includeContent: false }).catch(() => null);
     log.append({ kind: "prism-trash", script: `project-${phase}`, at: ctx.now().toISOString(), id: note.id, path: note.path ?? null, canonicalId, ...(after?.updatedAt ? { afterUpdatedAt: after.updatedAt } : {}) }); writes++;
   };

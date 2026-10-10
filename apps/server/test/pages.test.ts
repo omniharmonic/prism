@@ -301,3 +301,37 @@ test("preferences are bounded and need a signed-in user", async () => {
   const cap = makeCapability("tag", "team", "view");
   assert.equal((await req("/me/preferences", { headers: { authorization: `Capability ${cap}` } })).status, 401);
 });
+
+
+test("require_leaf refuses a child added after caller preflight without any Trash writes", async () => {
+  fv.put({ id: "leaf", path: "vault/Leaf", content: "Root", tags: ["team"] });
+  const revision = fv.notes.get("leaf")!.updatedAt;
+  const preflight = await req("/notes?path_prefix=vault/Leaf/", { cookie: as(OWNER) });
+  assert.equal(preflight.status, 200);
+  fv.put({ id: "late", path: "vault/Leaf/Late child", content: "Preserve", tags: ["team"] });
+  const response = await post("/notes/leaf/trash", { if_updated_at: revision, require_leaf: true }, as(OWNER));
+  assert.equal(response.status, 409);
+  assert.equal((await response.json() as any).error, "has_descendants");
+  assert.equal(patches().length, 0);
+  assert.ok(!fv.notes.get("leaf")!.tags!.includes(TRASH_TAG));
+  assert.ok(!fv.notes.get("late")!.tags!.includes(TRASH_TAG));
+});
+
+test("require_leaf rechecks the subtree inside the mutation lock", async () => {
+  fv.put({ id: "leaf", path: "vault/Leaf", content: "Root", tags: ["team"] });
+  const revision = fv.notes.get("leaf")!.updatedAt;
+  const original = globalThis.fetch;
+  let reads = 0;
+  globalThis.fetch = async (input, init) => {
+    const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
+    const response = await original(input, init);
+    if (url.pathname.endsWith("/notes") && url.searchParams.get("path_prefix") === "vault/Leaf" && ++reads === 1) {
+      fv.put({ id: "late", path: "vault/Leaf/Late child", content: "Preserve", tags: ["team"] });
+    }
+    return response;
+  };
+  try {
+    const response = await post("/notes/leaf/trash", { if_updated_at: revision, require_leaf: true }, as(OWNER));
+    assert.equal(response.status, 409); assert.equal(reads, 2); assert.equal(patches().length, 0);
+  } finally { globalThis.fetch = original; }
+});
