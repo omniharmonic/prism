@@ -6,6 +6,20 @@ import Observation
 import OmniCore
 import SwiftUI
 
+private final class WakeAudioSink: @unchecked Sendable {
+    private let lock = NSLock()
+    private var request: SFSpeechAudioBufferRecognitionRequest?
+    init(_ request: SFSpeechAudioBufferRecognitionRequest) { self.request = request }
+    func append(_ buffer: AVAudioPCMBuffer) {
+        lock.lock(); defer { lock.unlock() }
+        request?.append(buffer)
+    }
+    func close() {
+        lock.lock(); defer { lock.unlock() }
+        request?.endAudio(); request = nil
+    }
+}
+
 /// Experimental full speech recognition, not a dedicated low-energy wake engine.
 /// Ambient buffers go only to an explicitly on-device request and never to a file.
 @MainActor @Observable public final class MacWakeListener {
@@ -18,9 +32,12 @@ import SwiftUI
     private let engine = AVAudioEngine()
     private var recognizer: SFSpeechRecognizer?
     private var request: SFSpeechAudioBufferRecognitionRequest?
+    private var audioSink: WakeAudioSink?
     private var recognition: SFSpeechRecognitionTask?
     private var tapped = false
     private var eligible = false
+    private var authorizationGeneration = UUID()
+    private var scenes: [UUID: Bool] = [:]
     private var sleeping = false
     private var generation = UUID()
     private var rollover: Task<Void, Never>?
@@ -38,17 +55,29 @@ import SwiftUI
             Task { @MainActor in self.stop(); self.reconcile() }
         })
     }
-    public func update(eligible: Bool) { self.eligible = eligible; reconcile() }
+    public func update(scene: UUID, eligible: Bool) {
+        scenes[scene] = eligible
+        self.eligible = scenes.values.contains(true)
+        reconcile()
+    }
+    public func remove(scene: UUID) {
+        scenes[scene] = nil
+        eligible = scenes.values.contains(true)
+        reconcile()
+    }
     private func reconcile() {
         guard enabled, eligible, !sleeping, VoiceMicrophoneCoordinator.shared.conversationOwner == nil else {
+            authorizationGeneration = UUID(); authorization?.cancel(); authorization = nil
             stop(); status = !enabled ? "Off" : sleeping ? "Paused while Mac sleeps" : "Paused"; return
         }
         guard recognition == nil, authorization == nil else { return }
+        let permissionToken = UUID(); authorizationGeneration = permissionToken
         authorization = Task {
             let mic = await AVCaptureDevice.requestAccess(for: .audio)
             let speech = await withCheckedContinuation { continuation in
                 SFSpeechRecognizer.requestAuthorization { continuation.resume(returning: $0) }
             }
+            guard !Task.isCancelled, authorizationGeneration == permissionToken else { return }
             authorization = nil
             guard enabled, eligible, !sleeping, VoiceMicrophoneCoordinator.shared.conversationOwner == nil else { return }
             guard mic, speech == .authorized else { status = "Microphone or speech permission denied"; return }
@@ -66,26 +95,22 @@ import SwiftUI
         request.requiresOnDeviceRecognition = true
         request.shouldReportPartialResults = true
         self.request = request
+        let sink = WakeAudioSink(request); audioSink = sink
         let token = UUID(); generation = token
         let input = engine.inputNode
         let format = input.outputFormat(forBus: 0)
         guard format.sampleRate > 0, format.channelCount > 0 else { stop(); status = "Microphone unavailable"; return }
-        input.installTap(onBus: 0, bufferSize: 1024, format: format) { buffer, _ in request.append(buffer) }
+        input.installTap(onBus: 0, bufferSize: 1024, format: format, block: Self.audioTap(sink))
         tapped = true
-        recognition = recognizer.recognitionTask(with: request) { result, error in
-            let words = result?.bestTranscription.formattedString.lowercased().split(whereSeparator: { !$0.isLetter }).map(String.init) ?? []
-            let wake = zip(words, words.dropFirst()).contains { $0.0 == "hey" && $0.1 == "omni" }
-            let finished = result?.isFinal == true || error != nil
-            Task { @MainActor in
-                guard self.generation == token else { return }
+        recognition = recognizer.recognitionTask(with: request, resultHandler: Self.recognitionCallback { [weak self] wake, finished in
+            guard let self, self.generation == token else { return }
                 if wake {
                     self.stop(); self.status = "Opening conversation"
                     MacVoiceShortcut.shared.activate()
                 } else if finished {
                     self.stop(); self.status = "Recognition ended — toggle to retry"
                 }
-            }
-        }
+        })
         do {
             engine.prepare(); try engine.start(); status = "Listening locally (experimental)"
             rollover = Task { [weak self] in
@@ -96,12 +121,23 @@ import SwiftUI
         }
         catch { stop(); status = "Microphone unavailable" }
     }
+    nonisolated private static func audioTap(_ sink: WakeAudioSink) -> AVAudioNodeTapBlock {
+        { buffer, _ in sink.append(buffer) }
+    }
+    nonisolated private static func recognitionCallback(_ deliver: @escaping @MainActor @Sendable (Bool, Bool) -> Void) -> @Sendable (SFSpeechRecognitionResult?, (any Error)?) -> Void {
+        { result, error in
+            let words = result?.bestTranscription.formattedString.lowercased().split(whereSeparator: { !$0.isLetter }).map(String.init) ?? []
+            let wake = zip(words, words.dropFirst()).contains { $0.0 == "hey" && $0.1 == "omni" }
+            let finished = result?.isFinal == true || error != nil
+            Task { @MainActor in deliver(wake, finished) }
+        }
+    }
     private func stop() {
         generation = UUID()
         rollover?.cancel(); rollover = nil
         engine.stop()
         if tapped { engine.inputNode.removeTap(onBus: 0); tapped = false }
-        request?.endAudio(); recognition?.cancel()
+        audioSink?.close(); audioSink = nil; recognition?.cancel()
         request = nil; recognition = nil; recognizer = nil
         VoiceMicrophoneCoordinator.shared.releaseWake(owner: owner)
     }
@@ -109,16 +145,17 @@ import SwiftUI
 
 public struct MacWakeReadiness: ViewModifier {
     let app: AppModel
+    @State private var scene = UUID()
     public init(app: AppModel) { self.app = app }
     public func body(content: Content) -> some View {
         content.onAppear { update() }
             .onChange(of: app.phase) { update() }
             .onChange(of: PrivacyLock.shared.locked) { update() }
             .onChange(of: VoiceMicrophoneCoordinator.shared.conversationOwner) { update() }
-            .onDisappear { MacWakeListener.shared.update(eligible: false) }
+            .onDisappear { MacWakeListener.shared.remove(scene: scene) }
     }
     private func update() {
-        MacWakeListener.shared.update(eligible: app.phase == .signedIn && !PrivacyLock.shared.locked)
+        MacWakeListener.shared.update(scene: scene, eligible: app.phase == .signedIn && !PrivacyLock.shared.locked)
     }
 }
 #endif

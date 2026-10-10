@@ -98,9 +98,10 @@ import Foundation
             if routedSession.pendingVoiceActivationID != id { cancel() }
             return
         }
-        guard let scene = scenes.values.filter {
+        let candidates = scenes.values.filter {
             $0.active && !$0.locked && $0.app?.phase == .signedIn && $0.navigation != nil && $0.app?.session === $0.navigation
-        }.max(by: { $0.readinessOrder < $1.readinessOrder }), let session = scene.navigation else { return }
+        }
+        guard let scene = candidates.max(by: { $0.readinessOrder < $1.readinessOrder }), let session = scene.navigation else { return }
         routedSession = session
         if !session.routeVoiceActivation(id) { complete() }
     }
