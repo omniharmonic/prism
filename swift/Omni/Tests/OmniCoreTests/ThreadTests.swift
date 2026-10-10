@@ -84,7 +84,7 @@ final class ThreadListTests: XCTestCase {
         let second = await model.remove("b")
         XCTAssertFalse(second)
         XCTAssertEqual(model.threads.map(\.id), ["b"], "a thread that could not be removed stays")
-        XCTAssertEqual(model.removeError, "Couldn't remove it. Can't reach the server. Check that it's running and that this Mac is on the right network.")
+        XCTAssertEqual(model.removeError, "Couldn't remove it. Can't reach the server. Check that it's running and that this device is on the right network.")
         model.clearRemoveError()
         XCTAssertNil(model.removeError)
     }
@@ -115,7 +115,7 @@ final class ThreadListTests: XCTestCase {
         service.lists(.failure(PrismError.unreachable("offline")), .failure(PrismError.signedOut))
         let model = make(service, signedOut)
         await model.refresh()
-        XCTAssertEqual(model.phase.failure, "Can't reach the server. Check that it's running and that this Mac is on the right network.")
+        XCTAssertEqual(model.phase.failure, "Can't reach the server. Check that it's running and that this device is on the right network.")
         XCTAssertEqual(signedOut.count, 0)
         await model.refresh()
         XCTAssertEqual(signedOut.count, 1)
@@ -432,7 +432,7 @@ final class ThreadModelTests: XCTestCase {
         XCTAssertFalse(model.canSend)
 
         await model.retrySend()
-        XCTAssertEqual(model.sendState, .failed(message: "Can't reach the server. Check that it's running and that this Mac is on the right network."))
+        XCTAssertEqual(model.sendState, .failed(message: "Can't reach the server. Check that it's running and that this device is on the right network."))
         await model.retrySend()
         await eventually("turn end") { !model.isRunning && model.pendingText == nil }
 

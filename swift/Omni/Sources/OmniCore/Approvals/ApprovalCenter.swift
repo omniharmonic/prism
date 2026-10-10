@@ -193,6 +193,8 @@ public final class ApprovalCenter {
     func keptKey(for id: String) -> IdempotencyKey? { keptKeys[id]?.key }
 
     /// Take in approvals read elsewhere (a thread's detail, its stream, Today).
+    static let writingNewDraft = "Omni is writing a new draft."
+
     public func ingest(_ approvals: [Approval]) {
         for approval in approvals {
             if var card = cards[approval.id] {
@@ -207,6 +209,13 @@ public final class ApprovalCenter {
                 }
             } else {
                 cards[approval.id] = ApprovalCard(approval: approval)
+                // The new draft a revise asked for has arrived: the set-aside one need not
+                // go on saying that it is being written.
+                if approval.status == .pending, let thread = approval.threadId {
+                    for (id, card) in cards where card.approval.threadId == thread && card.approval.status == .revised && card.notice?.text == Self.writingNewDraft {
+                        cards[id]?.notice = nil
+                    }
+                }
             }
             if approval.status != .pending {
                 pendingIDs.removeAll { $0 == approval.id }
@@ -233,7 +242,7 @@ public final class ApprovalCenter {
                 if let fresh = try? await service.approval(id) { ingest([fresh]) }
             }
         } catch {
-            guard let message = sink.describe(error) else { return }
+            guard let message = sink.describe(error, reading: true) else { return }
             phase = .failed(message)
         }
     }
@@ -310,7 +319,7 @@ public final class ApprovalCenter {
             cards[id]?.retry = nil
             ingest([outcome.approval])
             if outcome.approval.status == .revised, outcome.turnId != nil {
-                cards[id]?.notice = .init(tone: .info, text: "Omni is writing a new draft.")
+                cards[id]?.notice = .init(tone: .info, text: Self.writingNewDraft)
             }
             if let threadID = outcome.approval.threadId { await threadDidChange?(threadID) }
         } catch let error as OmniError {

@@ -334,7 +334,11 @@ public struct OmniClient: Sendable {
 
     /// `date` is `YYYY-MM-DD` in the PERSON's zone (the server would otherwise use its own).
     public func today(date: String) async throws -> OmniToday {
-        try await transport.send(.get("\(Self.base)/today", query: [URLQueryItem(name: "date", value: date)]))
+        // The server reads two whole-tag listings from the vault for this; the first read of
+        // a day has been seen to take 40 s. Wait for it rather than give up at the default.
+        var request: PrismRequest = .get("\(Self.base)/today", query: [URLQueryItem(name: "date", value: date)])
+        request.timeout = 120
+        return try await transport.send(request)
     }
 
     /// Today for a moment in a calendar's time zone (default: the device's).

@@ -27,13 +27,16 @@ public struct ErrorSink {
 
     /// The message to show, or nil when there is nothing to show (signed out — the app is
     /// already going back to sign-in — or the work was cancelled).
-    public func describe(_ error: any Error) -> String? {
+    ///
+    /// - Parameter reading: the call only read something. An unclear answer to a read is
+    ///   not "it may or may not have gone through": nothing was changed, so it says to try again.
+    public func describe(_ error: any Error, reading: Bool = false) -> String? {
         if PlainLanguage.isSignedOut(error) {
             onSignedOut()
             return nil
         }
         if error is CancellationError { return nil }
-        return PlainLanguage.message(for: error)
+        return reading ? PlainLanguage.readMessage(for: error) : PlainLanguage.message(for: error)
     }
 }
 

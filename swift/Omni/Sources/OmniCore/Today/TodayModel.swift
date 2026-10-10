@@ -52,7 +52,7 @@ public final class TodayModel {
             approvals.ingest(fresh.needsYou.approvals)
             phase = .loaded
         } catch {
-            guard let message = sink.describe(error) else {
+            guard let message = sink.describe(error, reading: true) else {
                 if today == nil { phase = .idle }
                 return
             }
@@ -88,6 +88,31 @@ public final class TodayModel {
         case "agenda": return "the agenda"
         case "tasks": return "your tasks"
         default: return key
+        }
+    }
+
+    /// "Today", "Tomorrow", "Oct 14" (with the year when it is not this one) from a task's
+    /// stored due date (`YYYY-MM-DD`, or a full RFC 3339 moment). nil when it is neither.
+    public static func dueText(_ stored: String?, now: Date = Date(), calendar: Calendar = .current, locale: Locale = .current) -> String? {
+        guard let stored, !stored.isEmpty else { return nil }
+        var day: Date?
+        let parts = stored.prefix(10).split(separator: "-").compactMap { Int($0) }
+        if stored.count >= 10, parts.count == 3 {
+            day = calendar.date(from: DateComponents(year: parts[0], month: parts[1], day: parts[2]))
+        }
+        guard let day else { return nil }
+        let today = calendar.startOfDay(for: now)
+        let days = calendar.dateComponents([.day], from: today, to: calendar.startOfDay(for: day)).day ?? 0
+        switch days {
+        case 0: return "Today"
+        case 1: return "Tomorrow"
+        case -1: return "Yesterday"
+        default:
+            var style = Date.FormatStyle.dateTime.month(.abbreviated).day()
+            if calendar.component(.year, from: day) != calendar.component(.year, from: now) { style = style.year() }
+            style.timeZone = calendar.timeZone
+            style.locale = locale
+            return day.formatted(style)
         }
     }
 

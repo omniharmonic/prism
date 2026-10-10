@@ -17,6 +17,10 @@ public enum OmniAppFactory {
     ///   application identifier cannot use the data-protection keychain), and lets a send
     ///   through on a device with no passcode to check (a simulator).
     public static func liveModel(developmentBuild: Bool) -> AppModel {
+        #if DEBUG
+        // The XCUITest runner's launch (UITestSupport.swift). Not in a Release build.
+        if let test = UITestLaunch.configuration { return UITestLaunch.model(test) }
+        #endif
         let tokens = OmniLive.tokenStore(developmentBuild: developmentBuild)
         #if os(macOS)
         let flow: any RedirectFlow = LoopbackRedirectFlow.systemBrowser()
@@ -31,11 +35,24 @@ public enum OmniAppFactory {
             settings: UserDefaultsSettings(),
             probe: LiveServerProbe(),
             deviceLabel: label,
-            defaultServerURL: developmentBuild ? devGatewayURL : "",
+            defaultServerURL: defaultServerURL(developmentBuild: developmentBuild),
             confirmation: DeviceOwnerConfirmation(allowWhenUnavailable: developmentBuild),
             diagnostics: diagnostics,
             makeEnvironment: OmniLive.environmentFactory(tokenStore: tokens, flow: flow, diagnostics: diagnostics)
         )
+    }
+
+    /// What the server field holds on a first run. The laptop dev gateway only where it can
+    /// be reached: a development build on the Mac or in a simulator. On a real iPhone or
+    /// iPad `127.0.0.1` is the phone itself, so the field starts empty (its placeholder shows
+    /// the shape of an address). After the first Continue the address entered is remembered.
+    static func defaultServerURL(developmentBuild: Bool) -> String {
+        guard developmentBuild else { return "" }
+        #if os(iOS) && !targetEnvironment(simulator)
+        return ""
+        #else
+        return devGatewayURL
+        #endif
     }
 
     #if os(iOS)

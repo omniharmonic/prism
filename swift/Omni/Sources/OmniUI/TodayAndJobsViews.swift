@@ -6,6 +6,7 @@ import SwiftUI
 /// A short read-only list (product-spec.md § 8a).
 struct TodayView: View {
     let session: SessionModel
+    @Environment(\.dynamicTypeSize) private var typeSize
     @Environment(\.navigator) private var navigator
 
     var body: some View {
@@ -13,7 +14,7 @@ struct TodayView: View {
         List {
             if let failure = model.phase.failure {
                 Section {
-                    Label(failure, systemImage: "wifi.exclamationmark").foregroundStyle(.secondary)
+                    Label(failure, systemImage: "wifi.exclamationmark").foregroundStyle(Color.quietText)
                     Button("Try Again") { Task { await model.refresh() } }
                         .disabled(model.isRefreshing)
                 }
@@ -22,34 +23,45 @@ struct TodayView: View {
                 // The first read can take a few seconds (the server reads the calendar and tasks).
                 HStack(spacing: 8) {
                     ProgressView().controlSize(.small)
-                    Text("Loading Today…").foregroundStyle(.secondary)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Loading Today…").foregroundStyle(Color.quietText)
+                        Text("The server is reading your calendar and tasks. The first read of the day can take a little while.")
+                            .font(.caption)
+                            .foregroundStyle(Color.quietText)
+                    }
                 }
                 .accessibilityElement(children: .combine)
             }
             if let notice = model.partialNotice {
                 Section {
-                    Label(notice, systemImage: "exclamationmark.triangle").foregroundStyle(.secondary)
+                    Label(notice, systemImage: "exclamationmark.triangle").foregroundStyle(Color.quietText)
                     Button(model.isRefreshing ? "Trying…" : "Try Again") { Task { await model.refresh() } }
                         .disabled(model.isRefreshing)
                         .accessibilityHint("Reads Today again")
                 }
             }
+            if model.hasContent {
             Section("Next") {
                 if let problem = model.sectionProblems["agenda"] {
-                    Text(problem).foregroundStyle(.secondary)
+                    Text(problem).foregroundStyle(Color.quietText)
                 } else if model.agenda.isEmpty {
-                    Text(model.phase == .loaded ? "Nothing on the calendar today." : " ").foregroundStyle(.secondary)
+                    Text("Nothing on the calendar today.").foregroundStyle(Color.quietText)
                 }
                 ForEach(model.agenda, id: \.noteId) { item in
-                    HStack(alignment: .firstTextBaseline, spacing: 10) {
+                    // The time beside the title; above it at the accessibility text sizes, where
+                    // a column for the time would break "9:30 AM" in two.
+                    let large = typeSize.isAccessibilitySize
+                    let row = large ? AnyLayout(VStackLayout(alignment: .leading, spacing: 2)) : AnyLayout(HStackLayout(alignment: .firstTextBaseline, spacing: 10))
+                    row {
                         Text(TodayModel.timeText(item.start) ?? "All day")
                             .font(.callout.monospacedDigit())
-                            .foregroundStyle(.secondary)
-                            .frame(minWidth: 64, alignment: .leading)
+                            .foregroundStyle(Color.quietText)
+                            .fixedSize()
+                            .frame(minWidth: large ? nil : 64, alignment: .leading)
                         VStack(alignment: .leading, spacing: 2) {
                             Text(item.title)
                             if let location = item.location, !location.isEmpty {
-                                Text(location).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                                Text(location).font(.caption).foregroundStyle(Color.quietText).lineLimit(large ? 3 : 1)
                             }
                         }
                     }
@@ -59,7 +71,7 @@ struct TodayView: View {
             Section("Needs you") {
                 let ids = model.approvalIDs.filter { session.approvals.card(for: $0)?.approval.status == .pending }
                 if ids.isEmpty {
-                    Text(model.phase == .loaded ? "Nothing needs a decision." : " ").foregroundStyle(.secondary)
+                    Text("Nothing needs a decision.").foregroundStyle(Color.quietText)
                 }
                 ForEach(ids, id: \.self) { id in
                     if let card = session.approvals.card(for: id) {
@@ -75,7 +87,7 @@ struct TodayView: View {
             }
             Section("Omni is working on") {
                 if model.inFlight.isEmpty {
-                    Text(model.phase == .loaded ? "Nothing in flight." : " ").foregroundStyle(.secondary)
+                    Text("Nothing in flight.").foregroundStyle(Color.quietText)
                 }
                 ForEach(model.inFlight, id: \.id) { item in
                     Button {
@@ -85,7 +97,7 @@ struct TodayView: View {
                             Label(item.title ?? "Untitled thread", systemImage: StateStyle.symbol(item.state ?? .working))
                             Spacer()
                             if let state = item.state {
-                                Text(ThreadGrouping.title(for: state)).font(.caption).foregroundStyle(.secondary)
+                                Text(ThreadGrouping.title(for: state)).font(.caption).foregroundStyle(Color.quietText)
                             }
                         }
                         .contentShape(Rectangle())
@@ -96,22 +108,23 @@ struct TodayView: View {
             }
             Section("Tasks today") {
                 if let problem = model.sectionProblems["tasks"] {
-                    Text(problem).foregroundStyle(.secondary)
+                    Text(problem).foregroundStyle(Color.quietText)
                 } else if model.tasks.isEmpty {
-                    Text(model.phase == .loaded ? "No open tasks." : " ").foregroundStyle(.secondary)
+                    Text("No open tasks.").foregroundStyle(Color.quietText)
                 }
                 ForEach(model.tasks, id: \.noteId) { task in
                     HStack(alignment: .firstTextBaseline) {
-                        Image(systemName: "circle").foregroundStyle(.secondary).accessibilityHidden(true)
+                        Image(systemName: "circle").foregroundStyle(Color.quietText).accessibilityHidden(true)
                         Text(task.title)
                         Spacer()
-                        if let due = task.due, !due.isEmpty {
-                            Text(due.prefix(10)).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                        if let due = TodayModel.dueText(task.due) ?? task.due.flatMap({ $0.isEmpty ? nil : String($0.prefix(10)) }) {
+                            Text(due).font(.caption).foregroundStyle(Color.quietText)
                         }
                     }
                     .accessibilityElement(children: .combine)
-                    .accessibilityLabel("Task: \(task.title)\(task.due.map { ", due \($0.prefix(10))" } ?? "")")
+                    .accessibilityLabel("Task: \(task.title)\((TodayModel.dueText(task.due) ?? task.due).map { ", due \($0)" } ?? "")")
                 }
+            }
             }
         }
         .navigationTitle(Date.now.formatted(.dateTime.weekday(.wide).month().day()))
@@ -142,22 +155,22 @@ struct JobsView: View {
         List {
             if let failure = model.phase.failure {
                 Section {
-                    Label(failure, systemImage: "wifi.exclamationmark").foregroundStyle(.secondary)
+                    Label(failure, systemImage: "wifi.exclamationmark").foregroundStyle(Color.quietText)
                     Button("Try Again") { Task { await model.refresh() } }
                 }
             }
             if let problem = model.actionProblem {
-                Label(problem, systemImage: "exclamationmark.triangle").foregroundStyle(.secondary)
+                Label(problem, systemImage: "exclamationmark.triangle").foregroundStyle(Color.quietText)
             }
             if model.phase == .loading, model.jobs.isEmpty {
                 HStack(spacing: 8) {
                     ProgressView().controlSize(.small)
-                    Text("Loading recurring jobs…").foregroundStyle(.secondary)
+                    Text("Loading recurring jobs…").foregroundStyle(Color.quietText)
                 }
                 .accessibilityElement(children: .combine)
             }
             if model.phase == .loaded, model.jobs.isEmpty {
-                Text("No recurring jobs.").foregroundStyle(.secondary)
+                Text("No recurring jobs.").foregroundStyle(Color.quietText)
             }
             ForEach(model.jobs) { job in
                 JobRow(job: job, busy: model.busyJobID == job.id) {
@@ -184,26 +197,36 @@ struct JobRow: View {
     let job: OmniJob
     let busy: Bool
     let toggle: () -> Void
+    @Environment(\.dynamicTypeSize) private var typeSize
 
     var body: some View {
         let paused = JobPresentation.isPaused(job)
-        HStack(alignment: .center, spacing: 10) {
+        // The button beside the text; under it at the accessibility text sizes, where side by
+        // side leaves the name a column one syllable wide.
+        let row = typeSize.isAccessibilitySize ? AnyLayout(VStackLayout(alignment: .leading, spacing: 8)) : AnyLayout(HStackLayout(alignment: .center, spacing: 10))
+        row {
             Image(systemName: paused ? "pause.circle" : "arrow.triangle.2.circlepath")
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color.quietText)
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 2) {
-                Text(JobPresentation.name(job)).foregroundStyle(paused ? .secondary : .primary)
-                Text(details(paused)).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                Text(JobPresentation.name(job)).foregroundStyle(paused ? Color.quietText : Color.primary)
+                Text(details(paused)).font(.caption).foregroundStyle(Color.quietText).fixedSize(horizontal: false, vertical: true)
                 if let error = job.lastError, !error.isEmpty {
-                    Text(error).font(.caption).foregroundStyle(.orange).lineLimit(2)
+                    Text(error).font(.caption).foregroundStyle(Color.warningText).fixedSize(horizontal: false, vertical: true)
                 }
             }
-            Spacer(minLength: 8)
+            .accessibilityElement(children: .combine)
+            if !typeSize.isAccessibilitySize { Spacer(minLength: 8) }
             if busy {
                 ProgressView().controlSize(.small).accessibilityLabel("Working")
             } else {
                 Button(paused ? "Resume" : "Pause", action: toggle)
+                    #if os(iOS)
+                    .buttonStyle(.bordered) // its own target: a tap on the row's text pauses nothing
+                    #else
                     .controlSize(.small)
+                    #endif
+                    .fixedSize()
                     .accessibilityLabel("\(paused ? "Resume" : "Pause") \(JobPresentation.name(job))")
             }
         }

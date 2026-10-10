@@ -46,7 +46,7 @@ public enum ThreadTimeline {
             if message.role == .tool {
                 rows.append((message.at, .tool(id: "h\(id)", name: message.toolName ?? "tool", ok: nil, summary: nil, running: false)))
             } else if let text = message.text, !text.isEmpty {
-                rows.append((message.at, .message(id: id, role: message.role, text: text, at: message.at)))
+                rows.append((message.at, .message(id: id, role: message.role, text: message.role == .user ? userText(text) : text, at: message.at)))
             }
         }
         var extras: [(at: Date?, item: TimelineItem)] = []
@@ -68,6 +68,18 @@ public enum ThreadTimeline {
             rows.insert(extra, at: index)
         }
         return rows.map(\.item)
+    }
+
+    /// What the person's side of the transcript shows for a stored message. "Revise with
+    /// Omni" is sent to the agent by the server as an instruction wrapped around the
+    /// person's words ("Revise the email draft (approval apr_…) as follows. Propose the new
+    /// draft with omni_propose; do not send anything." + their text); only their words are
+    /// theirs, so only those are shown.
+    public static func userText(_ stored: String) -> String {
+        guard stored.hasPrefix("Revise the "), let marker = stored.range(of: " as follows. "), stored[..<marker.lowerBound].contains("draft (approval "),
+              let gap = stored.range(of: "\n\n", range: marker.upperBound..<stored.endIndex) else { return stored }
+        let words = stored[gap.upperBound...].trimmingCharacters(in: .whitespacesAndNewlines)
+        return words.isEmpty ? stored : "Revise the draft: \(words)"
     }
 
     /// The streaming turn's rows.

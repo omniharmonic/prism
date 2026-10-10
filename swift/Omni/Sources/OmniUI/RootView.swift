@@ -25,7 +25,7 @@ public struct RootView: View {
                         .accessibilityHint("Looks for the server again")
                     Button("Change Server…") { Task { await app.changeServer() } }
                     if let origin = app.origin {
-                        Text(origin.value).font(.footnote).foregroundStyle(.secondary).textSelection(.enabled)
+                        Text(origin.value).font(.footnote).foregroundStyle(Color.quietText).textSelection(.enabled)
                             .accessibilityLabel("Server address: \(origin.value)")
                     }
                 }
@@ -44,6 +44,10 @@ public struct RootView: View {
                 }
             }
         }
+        .tint(Color.omniAccent)
+        #if DEBUG
+        .modifier(UITestCompactWidth())
+        #endif
         .task { await app.start() }
         #if os(macOS)
         // Sign-in ends in the browser: bring Omni back to the front when it has worked, so
@@ -63,20 +67,33 @@ struct StatusScreen<Actions: View>: View {
     @ViewBuilder var actions: Actions
 
     var body: some View {
+        // Centred when it fits; scrolls when it cannot (the largest text sizes on a phone).
+        GeometryReader { area in
+            ScrollView {
+                content
+                    .frame(maxWidth: .infinity, minHeight: area.size.height)
+            }
+            .scrollBounceBehavior(.basedOnSize)
+        }
+    }
+
+    private var content: some View {
         VStack(spacing: 14) {
             Image(systemName: symbol)
                 .font(.system(size: 40, weight: .light))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color.quietText)
                 .accessibilityHidden(true)
             Text(title).font(.title2.weight(.semibold)).multilineTextAlignment(.center)
             if let message {
-                Text(message).foregroundStyle(.secondary).multilineTextAlignment(.center).fixedSize(horizontal: false, vertical: true)
+                Text(message).foregroundStyle(Color.quietText).multilineTextAlignment(.center).fixedSize(horizontal: false, vertical: true)
             }
             actions
         }
+        #if os(iOS)
+        .controlSize(.large)
+        #endif
         .frame(maxWidth: 420)
         .padding(32)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
 
@@ -101,8 +118,9 @@ struct ServerSetupView: View {
             if let error = app.serverError {
                 Label(error, systemImage: "exclamationmark.triangle")
                     .font(.callout)
-                    .foregroundStyle(.red)
+                    .foregroundStyle(Color.failureText)
                     .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityIdentifier("server.error")
             }
             Button("Continue") { Task { await app.submitServer() } }
                 .keyboardShortcut(.defaultAction)
@@ -120,14 +138,14 @@ struct SignInView: View {
     var body: some View {
         StatusScreen(symbol: "person.badge.key", title: "Sign in to Omni", message: "Your browser opens so you can approve this device with your Prism account. Omni is for the server's owner.") {
             if let notice {
-                Text(notice).font(.callout).foregroundStyle(.secondary).multilineTextAlignment(.center).fixedSize(horizontal: false, vertical: true)
+                Text(notice).font(.callout).foregroundStyle(Color.quietText).multilineTextAlignment(.center).fixedSize(horizontal: false, vertical: true)
             }
             Button("Sign In") { app.signIn() }
                 .keyboardShortcut(.defaultAction)
                 .buttonStyle(.borderedProminent)
                 .accessibilityHint("Opens your browser to approve this device")
             if let origin = app.origin {
-                Text(origin.value).font(.footnote).foregroundStyle(.secondary).textSelection(.enabled)
+                Text(origin.value).font(.footnote).foregroundStyle(Color.quietText).textSelection(.enabled)
                     .accessibilityLabel("Server address: \(origin.value)")
             }
             Button("Change Server…") { Task { await app.changeServer() } }
