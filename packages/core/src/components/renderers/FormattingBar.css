@@ -1,6 +1,6 @@
 .document-formatting-bar { flex-shrink: 0; min-width: 0; width: 100%; color: var(--text-secondary); background: var(--bg-document, var(--bg-base)); border-bottom: 1px solid var(--glass-border); }
 .document-formatting-entry { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 4px 12px; padding: 3px 8px; }
-.document-formatting-toggle { display: inline-flex; align-items: center; gap: 6px; min-height: 30px; padding: 0 7px; border-radius: 5px; color: var(--text-muted); font-size: 12px; }
+.document-formatting-toggle { display: inline-flex; align-items: center; gap: 6px; min-height: 30px; padding: 0 7px; border-radius: 8px; color: var(--text-muted); font-size: 12px; }
 .document-formatting-toggle:hover { background: var(--glass-hover); color: var(--text-primary); }
 .document-formatting-toggle[aria-expanded=true] > svg:last-child { transform: rotate(180deg); }
 .document-formatting-commands { display: flex; align-items: center; flex-wrap: wrap; gap: 2px; padding: 4px 12px; }
@@ -134,7 +134,7 @@ div:has(> div > .empty-page-starters) .prose-editor { min-height: 2.5em !importa
 }
 
 /* The mode button (Editing ⇄ Suggesting). Desktop: the bordered 32 px button it always was. */
-.document-mode-toggle { display: inline-flex; align-items: center; height: 32px; padding: 0 10px; border-radius: 7px; font-size: 12.5px; font-weight: 600; cursor: pointer; color: var(--text-secondary); background: transparent; border: 1px solid var(--glass-border); }
+.document-mode-toggle { display: inline-flex; align-items: center; height: 32px; padding: 0 10px; border-radius: 7px; font-size: 12.5px; font-weight: 600; cursor: pointer; color: var(--text-secondary); background: var(--surface-hover); border: 1px solid transparent; }
 .document-mode-toggle[data-suggesting] { color: #fff; background: #22c55e; border-color: #22c55e; }
 .document-mode-chip { display: inline-flex; align-items: center; gap: 5px; }
 

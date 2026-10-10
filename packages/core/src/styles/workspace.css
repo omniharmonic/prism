@@ -4,6 +4,9 @@
   --bg-surface: #202126;
   --bg-elevated: #292a30;
   --bg-sidebar: #1c1d21;
+  --material-floating: rgb(41 42 48 / 94%);
+  --material-solid: #292a30;
+  --material-blur: 20px;
   --bg-document: #191a1e;
   --text-primary: #edeeef;
   --text-secondary: #b4b5bd;
@@ -36,7 +39,9 @@ html.light {
   --bg-base: #ffffff;
   --bg-surface: #ffffff;
   --bg-elevated: #ffffff;
-  --bg-sidebar: #f5f5f3;
+  --bg-sidebar: #f2f2f5;
+  --material-floating: rgb(255 255 255 / 94%);
+  --material-solid: #ffffff;
   --bg-document: #ffffff;
   --text-primary: #292a30;
   --text-secondary: #565964;
