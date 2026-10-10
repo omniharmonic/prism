@@ -55,6 +55,8 @@ struct ConversationVoiceControl: View {
             .onChange(of: voice.state, voiceStateChanged)
             .onChange(of: currentDraft, draftChanged)
             .onChange(of: session.pendingVoiceActivationID, consumeShortcutActivation)
+            .onChange(of: device.turnPreferences.mode, endpointPreferencesChanged)
+            .onChange(of: device.turnPreferences.pauseSeconds, endpointPreferencesChanged)
     }
     private var currentDraft: String { model?.draft ?? draft?.wrappedValue ?? "" }
     private func voiceStateChanged() {
@@ -94,7 +96,7 @@ struct ConversationVoiceControl: View {
     private var panelContent: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 8) {
-                Label("Think aloud", systemImage: "waveform").font(.headline)
+                Label(device.turnPreferences.mode == .thinkAloud ? "Think aloud" : "Conversation", systemImage: "waveform").font(.headline)
                     .fixedSize(horizontal: false, vertical: true)
                 Spacer(minLength: 0)
                 Menu {
@@ -120,6 +122,18 @@ struct ConversationVoiceControl: View {
                     .fixedSize(horizontal: false, vertical: true)
                     .accessibilityIdentifier("voice.problem")
             }
+            if let notice = voice.activityNotice {
+                Text(notice).font(.caption).foregroundStyle(Color.quietText)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if let countdown = voice.endpointCountdown {
+                HStack {
+                    Text("Sending in \(countdown)…").font(.caption)
+                    Spacer()
+                    Button("Keep listening") { voice.keepListening() }
+                        .accessibilityIdentifier("voice.keepListening")
+                }.fixedSize(horizontal: false, vertical: true)
+            }
             controls.fixedSize(horizontal: false, vertical: true)
             if !voice.transcript.isEmpty || !device.hypothesis.isEmpty {
                 DisclosureGroup("Transcript", isExpanded: $showingTranscript) {
@@ -134,6 +148,7 @@ struct ConversationVoiceControl: View {
     private func appeared() {
         mounted = true
         installAutomaticListeningGuard()
+        endpointPreferencesChanged()
         voice.setPrivacyLocked(PrivacyLock.shared.locked)
         updateCaptureTimeout(); consume(); consumeShortcutActivation()
         #if DEBUG
@@ -157,7 +172,7 @@ struct ConversationVoiceControl: View {
     private var running: Bool { model?.isRunning ?? false }
     private var stateTitle: String {
         switch voice.state {
-        case .off: "Ready to think aloud"
+        case .off: device.turnPreferences.mode == .thinkAloud ? "Ready to think aloud" : "Ready to talk"
         case .paused: "Session paused"
         case .speaking: "Omni is speaking"
         case .preparing: "Preparing voice"
@@ -168,7 +183,10 @@ struct ConversationVoiceControl: View {
     }
     private var status: String {
         switch voice.state {
-        case .off: voice.canStart ? "Start a session. Silence never sends your turn." : "Finishing speech preparation…"
+        case .off:
+            if !voice.canStart { "Finishing speech preparation…" }
+            else if device.turnPreferences.mode == .thinkAloud { "Start a session. Silence never sends your turn." }
+            else { "Start a session. Your selected pause controls when each turn sends." }
         case .paused:
             if !(model?.draft ?? draft?.wrappedValue ?? "").isEmpty { "Microphone is off. Send your draft in chat, or clear it to resume listening." }
             else if session.approvals.pending.contains(where: { $0.approval.threadId == model?.threadID }) { "Microphone is off. An approval needs your review in chat." }
@@ -181,7 +199,10 @@ struct ConversationVoiceControl: View {
             else { "Microphone is off. Resume when you’re ready." }
         case .speaking: "Microphone is off during playback. Listening resumes after the full reply."
         case .preparing: "Preparing speech on this device. Models may download on first use."
-        case .listening: "Take your time. Tap Send turn when ready. At two minutes, we pause and keep a draft."
+        case .listening:
+            device.turnPreferences.mode == .thinkAloud
+                ? "Take your time. Tap Send turn when ready. At two minutes, we pause and keep a draft."
+                : "Your turn sends after a \(Int(device.turnPreferences.pauseSeconds))-second pause and a countdown. Tap Keep listening for more time."
         case .transcribing: "Recognizing your words on this device…"
         case .answering: "Microphone is off while Omni responds. Your session stays open."
         }
@@ -254,12 +275,26 @@ struct ConversationVoiceControl: View {
             }
             guard !Task.isCancelled, !PrivacyLock.shared.locked, mounted, !running, phase == .active, lease == session.voiceLease, session.ownsVoice(voice, threadID: model?.threadID) else { return }
             device.selected = selected
+            configureEndpoint()
             await voice.start()
             updateCaptureTimeout()
         }
     }
+    private func endpointPreferencesChanged() {
+        guard voice.state == .off || voice.state == .paused else { return }
+        configureEndpoint()
+    }
+    private func configureEndpoint() {
+        voice.configureEndpoint(mode: device.turnPreferences.mode, pauseSeconds: device.turnPreferences.pauseSeconds)
+    }
     private func installAutomaticListeningGuard() {
         let lease = session.voiceLease
+        voice.automaticFinish = {
+            guard mounted, phase == .active, !PrivacyLock.shared.locked, !running,
+                  lease == session.voiceLease, session.ownsVoice(voice, threadID: model?.threadID),
+                  voice.state == .listening, currentDraft.isEmpty else { return }
+            finish()
+        }
         voice.canAutomaticallyListen = {
             mounted && phase == .active && !PrivacyLock.shared.locked && !running &&
             lease == session.voiceLease && session.ownsVoice(voice, threadID: model?.threadID) &&
