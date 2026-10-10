@@ -11,18 +11,15 @@ import OmniVoiceKit
     private let apple = AppleTranscriber()
     private let parakeet = ParakeetTranscriber()
     private let audio = AudioIO()
-    private let speaker = AVSpeechSynthesizer()
+    let speech = ConversationSpeech.shared
+    let speechPreferences = ConversationSpeech.preferences
+    private let recordingOwner = UUID()
     private var file: URL?
     private var generation = 0
     private var prepared = Set<Engine>()
     private var engine: any ConversationSTTEngine { selected == .apple ? apple : parakeet }
-    init() {
-        #if os(iOS)
-        // System speech owns its playback session after capture releases the microphone.
-        speaker.usesApplicationAudioSession = false
-        #endif
-    }
     func start() async throws {
+        speech.beginRecording(owner: recordingOwner)
         hypothesis = ""
         let request = generation
         let selected = self.selected
@@ -43,6 +40,7 @@ import OmniVoiceKit
     func finish() async throws -> String {
         guard let file else { throw VoiceFailure.unavailable("No voice recording is active.") }
         try audio.stop()
+        speech.endRecording(owner: recordingOwner)
         defer { try? FileManager.default.removeItem(at: file); if self.file == file { self.file = nil } }
         let request = generation
         return try await engine.transcribeConversation(file: file) { event in
@@ -53,13 +51,16 @@ import OmniVoiceKit
     }
     func cancel() {
         generation += 1; hypothesis = ""; try? audio.stop()
+        speech.endRecording(owner: recordingOwner)
+        stopPreview()
         if let file { try? FileManager.default.removeItem(at: file) }
         file = nil
     }
     func speak(_ text: String) {
-        let utterance = AVSpeechUtterance(string: text)
-        utterance.voice = AVSpeechSynthesisVoice(language: "en-US")
-        speaker.speak(utterance)
+        let voice = AppleVoiceCatalog.resolve(speechPreferences, voices: AppleVoiceCatalog.installed())
+        speech.speak(text, owner: recordingOwner, identifier: voice?.id, rate: speechPreferences.rate)
     }
-    func silence() { speaker.stopSpeaking(at: .immediate) }
+    func silence() { speech.silence(owner: recordingOwner) }
+    func stopPreview() { speech.stopPreview(owner: recordingOwner) }
+    func previewVoice(identifier: String?) { speech.preview(owner: recordingOwner, identifier: identifier, rate: speechPreferences.rate) }
 }

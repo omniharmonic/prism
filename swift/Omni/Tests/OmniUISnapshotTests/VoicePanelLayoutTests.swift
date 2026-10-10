@@ -6,6 +6,22 @@ import SwiftUI
 import XCTest
 
 @MainActor final class VoicePanelLayoutTests: XCTestCase {
+    func testVoiceSettingsPhoneWidthAndLargeText() async throws {
+        NSApplication.shared.setActivationPolicy(.prohibited)
+        for (name, width, size) in [("voice-settings-phone", CGFloat(390), DynamicTypeSize.large), ("voice-settings-accessibility", CGFloat(390), DynamicTypeSize.accessibility3), ("voice-settings-mac", CGFloat(620), DynamicTypeSize.large)] {
+            var walk = Walk(variant: .init(folder: name, size: CGSize(width: width, height: 844), dark: false), root: MacSnapshotTests.outputRoot)
+            try await walk.draw("settings", settle: .milliseconds(700), ConversationVoiceSettings(device: ConversationDevice()).dynamicTypeSize(size))
+            XCTAssertEqual(walk.count, 1)
+            let image = try XCTUnwrap(NSBitmapImageRep(data: Data(contentsOf: MacSnapshotTests.outputRoot.appendingPathComponent("\(name)/01-settings.png"))))
+            var colors = Set<String>()
+            for y in stride(from: 0, to: image.pixelsHigh, by: 20) {
+                for x in stride(from: 0, to: image.pixelsWide, by: 20) {
+                    if let color = image.colorAt(x: x, y: y) { colors.insert(color.description) }
+                }
+            }
+            XCTAssertGreaterThan(colors.count, 20, "Settings snapshot must contain rendered content")
+        }
+    }
     func testVoicePanelPhoneWidthAndWideLayouts() async throws {
         NSApplication.shared.setActivationPolicy(.prohibited)
         let variants: [(String, CGFloat, DynamicTypeSize)] = [("voice-phone-width",390,.large),("voice-phone-accessibility",390,.accessibility3),("voice-wide",1040,.large)]

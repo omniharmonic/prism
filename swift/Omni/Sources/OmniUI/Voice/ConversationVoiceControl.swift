@@ -15,6 +15,7 @@ struct ConversationVoiceControl: View {
     @State private var device: ConversationDevice
     @State private var voice: VoiceConversation
     @State private var selected = ConversationDevice.Engine.apple
+    @State private var showingVoiceSettings = false
     @State private var mounted = false
     @State private var action: Task<Void, Never>?
     @State private var timeout: Task<Void, Never>?
@@ -34,9 +35,10 @@ struct ConversationVoiceControl: View {
                         Label("Voice", systemImage: "waveform").font(.headline)
                         Spacer()
                         Menu {
-                            Picker("Local speech engine", selection: $selected) {
+                            Picker("Speech recognition", selection: $selected) {
                                 ForEach(ConversationDevice.Engine.allCases, id: \.self) { Text($0.rawValue).tag($0) }
                             }
+                            Button("Voice & Playback", systemImage: "speaker.wave.2") { showingVoiceSettings = true }
                         } label: { Image(systemName: "slider.horizontal.3").frame(width: 44, height: 44) }
                         .accessibilityLabel("Voice options").disabled(voice.state != .off)
                         Button { cancel(); expanded = false } label: {
@@ -69,10 +71,13 @@ struct ConversationVoiceControl: View {
                 .accessibilityIdentifier("voice.panel")
             }
         }
+        .sheet(isPresented: $showingVoiceSettings, onDismiss: { device.stopPreview() }) {
+            ConversationVoiceSettings(device: device)
+        }
         .onChange(of: model?.completedVoiceTimeline) { _, _ in consume() }
         .onChange(of: model?.timeline) { consume() }
         .onChange(of: model?.isRunning) { consume() }
-        .onChange(of: voice.state) { if voice.state != .off { expanded = true }; consume() }
+        .onChange(of: voice.state) { if voice.state != .off { expanded = true; showingVoiceSettings = false; device.stopPreview() }; consume() }
         .onChange(of: session.pendingVoiceActivationID) { consumeShortcutActivation() }
         .onChange(of: phase) { if phase != .active { cancel() } else { consumeShortcutActivation() } }
         #if os(iOS)
@@ -166,6 +171,7 @@ struct ConversationVoiceControl: View {
     }
     private func cancel() {
         if model == nil { session.cancelPendingVoiceActivation() }
+        showingVoiceSettings = false; device.stopPreview()
         action?.cancel(); action = nil; timeout?.cancel(); timeout = nil
         if session.conversationVoice !== voice { voice.cancel() }
         else { session.cancelVoice(voice, threadID: model?.threadID) }
