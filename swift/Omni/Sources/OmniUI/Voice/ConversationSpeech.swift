@@ -123,7 +123,7 @@ import OmniVoiceKit
             let drain = Task { [weak self, utterance] in
                 await previous?.value
                 guard !Task.isCancelled, self?.completions[id] != nil else { return }
-                self?.speaker.write(utterance, toBufferCallback: { buffer in bridge.accept(buffer) })
+                self?.speaker.write(utterance, toBufferCallback: Self.pcmCallback(for: bridge))
                 do {
                     for try await owned in bridge.stream {
                         bridge.release(owned)
@@ -145,6 +145,9 @@ import OmniVoiceKit
             #endif
             speaker.speak(utterance)
         }
+    }
+    nonisolated private static func pcmCallback(for bridge: SpeechPCMStream) -> @Sendable (AVAudioBuffer) -> Void {
+        { buffer in bridge.accept(buffer) }
     }
     func configureDuplex(_ audio: AudioIO?) { duplex = audio }
     func configureFailure(_ receive: @escaping @MainActor (String) -> Void) { receiveFailure = receive }
