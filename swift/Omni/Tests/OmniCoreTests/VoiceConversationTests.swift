@@ -3,6 +3,8 @@ import XCTest
 
 @MainActor final class VoiceConversationTests: XCTestCase {
     final class Audio: ConversationAudio {
+        var activity: (@MainActor (VoiceActivityEvent) -> Void)?
+        func configureActivity(enabled: Bool, receive: @escaping @MainActor (VoiceActivityEvent) -> Void) { activity = enabled ? receive : nil }
         var gate: CheckedContinuation<Void, Never>?
         var finishGate: CheckedContinuation<String, Never>?
         var wait = false

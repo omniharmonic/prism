@@ -12,12 +12,19 @@ import OmniVoiceKit
     private let parakeet = ParakeetTranscriber()
     private let audio = AudioIO()
     let speech = ConversationSpeech.shared
+    static let sharedTurnPreferences = VoiceTurnPreferences()
+    let turnPreferences = ConversationDevice.sharedTurnPreferences
+    private var activityEnabled = false
+    private var receiveActivity: (@MainActor (VoiceActivityEvent) -> Void)?
     let speechPreferences = ConversationSpeech.preferences
     private let recordingOwner = UUID()
     private var file: URL?
     private var generation = 0
     private var prepared = Set<Engine>()
     private var engine: any ConversationSTTEngine { selected == .apple ? apple : parakeet }
+    func configureActivity(enabled: Bool, receive: @escaping @MainActor (VoiceActivityEvent) -> Void) {
+        activityEnabled = enabled; receiveActivity = receive
+    }
     func start() async throws {
         speech.beginRecording(owner: recordingOwner)
         hypothesis = ""
@@ -33,7 +40,17 @@ import OmniVoiceKit
         let url = FileManager.default.temporaryDirectory.appending(path: "omni-voice-\(UUID().uuidString).caf")
         file = url
         do {
-            try await audio.start(url: url)
+            let callback: (@Sendable (SpeechActivityEvent) -> Void)? = activityEnabled ? { [weak self] event in
+                Task { @MainActor in
+                    guard let self, self.generation == request else { return }
+                    switch event {
+                    case .frame(let time, let captured, let duration, let speech):
+                        self.receiveActivity?(.frame(VoiceActivityFrame(audioTime: time, capturedAt: captured, duration: duration, isSpeech: speech)))
+                    case .unavailable(let reason): self.receiveActivity?(.unavailable(reason))
+                    }
+                }
+            } : nil
+            try await audio.start(url: url, activity: callback)
             guard request == generation, !Task.isCancelled else { throw CancellationError() }
         } catch { if request == generation { cancel() }; throw error }
     }
@@ -50,7 +67,7 @@ import OmniVoiceKit
         }
     }
     func cancel() {
-        generation += 1; hypothesis = ""; try? audio.stop()
+        generation += 1; receiveActivity = nil; hypothesis = ""; try? audio.stop()
         speech.endRecording(owner: recordingOwner)
         stopPreview()
         if let file { try? FileManager.default.removeItem(at: file) }
