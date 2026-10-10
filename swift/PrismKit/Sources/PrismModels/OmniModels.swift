@@ -359,9 +359,20 @@ public struct OmniJob: Decodable, Sendable, Equatable, Identifiable {
     public let skills: JSONValue?
     public let `repeat`: JSONValue?
     public let state: JSONValue?
+    public let prompt: String?
+    public let origin: JSONValue?
+    public let noAgent: Bool?
+    public let script: String?
+    public let monitor: JSONValue?
+    public let monitorScript: String?
+    public let executed: Bool?
+    public let executionMode: String?
 
     enum CodingKeys: String, CodingKey {
-        case id, name, schedule, enabled, paused, deliver, skill, skills, state
+        case id, name, schedule, enabled, paused, deliver, skill, skills, state, prompt, origin, script, executed, monitor
+        case monitorScript = "monitor_script"
+        case noAgent = "no_agent"
+        case executionMode = "execution_mode"
         case `repeat`
         case nextRunAt = "next_run_at"
         case lastRunAt = "last_run_at"
@@ -388,6 +399,15 @@ public struct NewJob: Encodable, Sendable, Equatable {
         self.prompt = prompt
         self.skill = skill
         self.deliver = deliver
+    }
+}
+
+public struct JobEdit: Encodable, Sendable {
+    public var name: String?
+    public var schedule: String?
+    public var prompt: String?
+    public init(name: String? = nil, schedule: String? = nil, prompt: String? = nil) {
+        self.name = name; self.schedule = schedule; self.prompt = prompt
     }
 }
 
