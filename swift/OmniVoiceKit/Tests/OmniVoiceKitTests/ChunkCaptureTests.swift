@@ -32,6 +32,24 @@ final class ChunkCaptureTests: XCTestCase {
         XCTAssertEqual(values.count, 80_000)
         for index in 0..<5 { XCTAssertEqual(values[index * 16_000], Float(index + 1) / 10, accuracy: 0.001) }
     }
+    func testInterruptionPromotionRetainsOnlyRecentLeadIn() throws {
+        let url = FileManager.default.temporaryDirectory.appending(path: "lead-in-\(UUID().uuidString).caf")
+        let format = try XCTUnwrap(AVAudioFormat(standardFormatWithSampleRate: 16_000, channels: 1))
+        let writer = try CaptureFile(url: url, format: format, chunkSeconds: 60)
+        defer { writer.recordings().forEach { try? FileManager.default.removeItem(at: $0) } }
+        for index in 0..<4 {
+            let buffer = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 16_000))
+            buffer.frameLength = 16_000
+            for sample in 0..<16_000 { buffer.floatChannelData![0][sample] = Float(index + 1) / 10 }
+            writer.append(buffer)
+        }
+        try writer.retainLeadIn(); try writer.close()
+        let file = try AVAudioFile(forReading: url)
+        XCTAssertEqual(file.length, 16_000)
+        let buffer = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: 16_000))
+        try file.read(into: buffer)
+        XCTAssertEqual(buffer.floatChannelData![0][0], 0.4, accuracy: 0.001)
+    }
     func testTranscriptOverlapKeepsWordsAndPunctuation() {
         XCTAssertEqual(ConversationTranscript.join("I was thinking about the garden.", "the garden and its trees."), "I was thinking about the garden. and its trees.")
         XCTAssertEqual(ConversationTranscript.join("First thought.", "Second thought."), "First thought. Second thought.")

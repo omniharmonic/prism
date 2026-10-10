@@ -59,6 +59,15 @@ final class CaptureFile: @unchecked Sendable {
             }
         } catch { failure = error }
     }
+    func retainLeadIn() throws {
+        lock.lock(); defer { lock.unlock() }
+        guard file != nil else { throw VoiceFailure.unavailable("Interruption capture is no longer active.") }
+        file = nil
+        urls.forEach { try? FileManager.default.removeItem(at: $0) }
+        urls = [url]; frames = 0
+        file = try AVAudioFile(forWriting: url, settings: format.settings)
+        for retained in tail { try file?.write(from: retained); frames += AVAudioFramePosition(retained.frameLength) }
+    }
     func close() throws { lock.lock(); defer { lock.unlock() }; file = nil; if let failure { throw failure } }
 }
 
@@ -66,14 +75,16 @@ final class CaptureFile: @unchecked Sendable {
 /// assistant audio and never shares the microphone with another recognition engine.
 @MainActor public final class AudioIO {
     private let engine = AVAudioEngine()
+    private let player = AVAudioPlayerNode()
+    private var playbackFormat: AVAudioFormat?
     private var file: CaptureFile?
     private var speechActivity: LocalSpeechActivity?
     private var vadManager: VadManager?
     private var starting = false
     private var generation: UInt64 = 0
     private let permission: (@MainActor () async -> Bool)?
-    public init() { permission = nil }
-    init(permission: @escaping @MainActor () async -> Bool) { self.permission = permission }
+    public init() { permission = nil; engine.attach(player) }
+    init(permission: @escaping @MainActor () async -> Bool) { self.permission = permission; engine.attach(player) }
     public func start(url: URL, chunkSeconds: Double? = nil, chunkClosed: (@Sendable (URL) -> Void)? = nil, activity: (@Sendable (SpeechActivityEvent) -> Void)? = nil) async throws {
         guard file == nil, !starting else { throw VoiceFailure.unavailable("A recording is already starting or running.") }
         starting = true
@@ -129,6 +140,21 @@ final class CaptureFile: @unchecked Sendable {
             throw error
         }
     }
+    /// Synthesized PCM shares the voice-processing engine's output reference.
+    /// This is only valid while explicitly opted-in microphone capture is active.
+    public func play(_ buffer: AVAudioPCMBuffer, completion: @escaping @Sendable () -> Void) throws {
+        guard engine.isRunning, file != nil else { throw VoiceFailure.unavailable("The conversation microphone is not active.") }
+        if playbackFormat != buffer.format {
+            player.stop()
+            engine.disconnectNodeOutput(player)
+            engine.connect(player, to: engine.mainMixerNode, format: buffer.format)
+            playbackFormat = buffer.format
+        }
+        player.scheduleBuffer(buffer, completionCallbackType: .dataPlayedBack) { _ in completion() }
+        if !player.isPlaying { player.play() }
+    }
+    public func retainInterruptionLeadIn() throws { try file?.retainLeadIn() }
+    public func silencePlayback() { player.stop() }
     public func recordings() -> [URL] { file?.recordings() ?? completedRecordings }
     private var completedRecordings: [URL] = []
     public func stop() throws {
@@ -136,7 +162,7 @@ final class CaptureFile: @unchecked Sendable {
         generation &+= 1
         speechActivity?.stop(); speechActivity = nil
         guard let capture = file else { return }
-        engine.stop(); engine.inputNode.removeTap(onBus: 0); completedRecordings = capture.recordings(); file = nil
+        player.stop(); engine.stop(); engine.inputNode.removeTap(onBus: 0); completedRecordings = capture.recordings(); file = nil
         #if os(iOS)
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
         #endif

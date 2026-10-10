@@ -14,7 +14,15 @@ import OmniVoiceKit
     let speech = ConversationSpeech.shared
     static let sharedTurnPreferences = VoiceTurnPreferences()
     let turnPreferences = ConversationDevice.sharedTurnPreferences
+    private var interruptionEnabled = false
+    private var receiveInterruption: (@MainActor (VoiceInterruptionEvent) -> Void)?
+    private var playbackSetup: Task<Void, Never>?
+    private var monitoringPlayback = false
+    private var nearEndDuration = 0.0
     private var activityEnabled = false
+    func configureInterruption(enabled: Bool, receive: @escaping @MainActor (VoiceInterruptionEvent) -> Void) {
+        interruptionEnabled = enabled; receiveInterruption = receive
+    }
     private var receiveActivity: (@MainActor (VoiceActivityEvent) -> Void)?
     let speechPreferences = ConversationSpeech.preferences
     private let recordingOwner = UUID()
@@ -63,7 +71,7 @@ import OmniVoiceKit
         { [weak device] url in
             Task { @MainActor in
                 guard let device, device.generation == request else { return }
-                device.enqueueChunk(url, request: request)
+                if !device.monitoringPlayback { device.enqueueChunk(url, request: request) }
             }
         }
     }
@@ -101,12 +109,58 @@ import OmniVoiceKit
         { [weak device] event in
             Task { @MainActor in
                 guard let device, device.generation == request else { return }
+                if device.monitoringPlayback { device.receivePlaybackActivity(event); return }
                 switch event {
                 case .frame(let time, let captured, let duration, let speech):
                     device.receiveActivity?(.frame(VoiceActivityFrame(audioTime: time, capturedAt: captured, duration: duration, isSpeech: speech)))
                 case .unavailable(let reason): device.receiveActivity?(.unavailable(reason))
                 }
             }
+        }
+    }
+    private func receivePlaybackActivity(_ event: SpeechActivityEvent) {
+        let requestGeneration = generation
+        guard monitoringPlayback else { return }
+        switch event {
+        case .unavailable:
+            receiveInterruption?(.unavailable("Acoustic interruption is unavailable. Use Interrupt and speak."))
+        case .frame(_, let captured, let duration, let isSpeech):
+            guard ProcessInfo.processInfo.systemUptime - captured < 0.5 else { nearEndDuration = 0; return }
+            nearEndDuration = isSpeech ? nearEndDuration + duration : 0
+            guard nearEndDuration >= 0.18 else { return }
+            do {
+                try audio.retainInterruptionLeadIn()
+                speech.silence(owner: recordingOwner)
+                speech.configureDuplex(nil)
+                speech.beginRecording(owner: recordingOwner)
+                monitoringPlayback = false; nearEndDuration = 0
+                completedText = ""; hypothesis = ""; enqueuedChunks = []
+                captureDeadline = Task { [weak self] in
+                    do { try await Task.sleep(for: .seconds(900)) } catch { return }
+                    guard let self, self.generation == requestGeneration else { return }
+                    self.receiveLimit?()
+                }
+                receiveInterruption?(.speech)
+            } catch {
+                receiveInterruption?(.unavailable("Interruption audio could not be retained. Use Interrupt and speak."))
+            }
+        }
+    }
+    private func beginPlaybackMonitor(request: Int) async -> Bool {
+        let url = FileManager.default.temporaryDirectory.appending(path: "omni-interruption-\(UUID().uuidString).caf")
+        file = url
+        do {
+            try await audio.start(url: url, chunkSeconds: 60, chunkClosed: Self.chunkCallback(for: self, request: request), activity: Self.activityCallback(for: self, request: request))
+            guard generation == request, !Task.isCancelled else { throw CancellationError() }
+            monitoringPlayback = true; nearEndDuration = 0
+            speech.configureDuplex(audio)
+            return true
+        } catch {
+            guard generation == request else { return false }
+            try? audio.stop(); audio.recordings().forEach { try? FileManager.default.removeItem(at: $0) }; file = nil
+            speech.configureDuplex(nil)
+            receiveInterruption?(.unavailable("Acoustic interruption could not start. Use Interrupt and speak."))
+            return false
         }
     }
     func finish() async throws -> String {
@@ -150,6 +204,9 @@ import OmniVoiceKit
         try AVAudioFile(forReading: file).length == 0
     }
     func cancel() {
+        playbackSetup?.cancel(); playbackSetup = nil
+        monitoringPlayback = false; nearEndDuration = 0
+        speech.configureDuplex(nil)
         captureDeadline?.cancel(); captureDeadline = nil
         transcriptionTask?.cancel(); transcriptionTask = nil
         generation += 1; receiveActivity = nil; hypothesis = ""; try? audio.stop()
@@ -160,10 +217,29 @@ import OmniVoiceKit
         file = nil
     }
     func speak(_ text: String) {
-        let voice = AppleVoiceCatalog.resolve(speechPreferences, voices: AppleVoiceCatalog.installed())
-        speech.speak(text, owner: recordingOwner, identifier: voice?.id, rate: speechPreferences.rate)
+        let request = generation
+        let previous = playbackSetup
+        playbackSetup = Task { [weak self] in
+            await previous?.value
+            guard let self, self.generation == request, !Task.isCancelled else { return }
+            if self.interruptionEnabled && !self.monitoringPlayback && self.file == nil {
+                _ = await self.beginPlaybackMonitor(request: request)
+            }
+            guard self.generation == request, !Task.isCancelled else { return }
+            let voice = AppleVoiceCatalog.resolve(self.speechPreferences, voices: AppleVoiceCatalog.installed())
+            self.speech.speak(text, owner: self.recordingOwner, identifier: voice?.id, rate: self.speechPreferences.rate)
+        }
     }
-    func waitForPlayback() async { await speech.waitForPlayback(owner: recordingOwner) }
+    func waitForPlayback() async {
+        await playbackSetup?.value
+        await speech.waitForPlayback(owner: recordingOwner)
+        // Normal drain releases monitor audio; acoustic interruption promotes it
+        // into capture and must keep the retained lead-in and microphone running.
+        if monitoringPlayback && !Task.isCancelled {
+            monitoringPlayback = false; speech.configureDuplex(nil)
+            try? audio.stop(); audio.recordings().forEach { try? FileManager.default.removeItem(at: $0) }; file = nil
+        }
+    }
     func silence() { speech.silence(owner: recordingOwner) }
     func stopPreview() { speech.stopPreview(owner: recordingOwner) }
     func previewVoice(identifier: String?) { speech.preview(owner: recordingOwner, identifier: identifier, rate: speechPreferences.rate) }

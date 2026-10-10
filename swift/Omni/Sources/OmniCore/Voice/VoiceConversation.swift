@@ -5,6 +5,7 @@ import Observation
 /// pending permission request begin capture or submit a late transcript off screen.
 @MainActor public protocol ConversationAudio: AnyObject {
     var recoveryNotice: String? { get }
+    func configureInterruption(enabled: Bool, receive: @escaping @MainActor (VoiceInterruptionEvent) -> Void)
     func configureRecordingLimit(_ receive: @escaping @MainActor () -> Void)
     func start() async throws
     func finish() async throws -> String
@@ -15,7 +16,10 @@ import Observation
     func silence()
 }
 
+public enum VoiceInterruptionEvent: Sendable { case speech, unavailable(String) }
+
 public extension ConversationAudio {
+    func configureInterruption(enabled: Bool, receive: @escaping @MainActor (VoiceInterruptionEvent) -> Void) {}
     var recoveryNotice: String? { nil }
     func configureRecordingLimit(_ receive: @escaping @MainActor () -> Void) {}
     func configureActivity(enabled: Bool, receive: @escaping @MainActor (VoiceActivityEvent) -> Void) {
@@ -34,6 +38,8 @@ public extension ConversationAudio {
     public var canAutomaticallyListen: @MainActor () -> Bool = { false }
     public private(set) var endpointCountdown: Int?
     public private(set) var activityNotice: String?
+    public var acousticInterruptionEnabled = false
+    public private(set) var interruptionNotice: String?
     public var saveRecoveredDraft: @MainActor (String) -> Void = { _ in }
     public var recordingLimitReached: @MainActor () -> Void = {}
     public var automaticFinish: @MainActor () -> Void = {}
@@ -114,7 +120,20 @@ public extension ConversationAudio {
         isSessionActive = true
         let request = generation
         state = .preparing; problem = nil; transcript = ""
-        activityNotice = nil; endpointCountdown = nil
+        activityNotice = nil; interruptionNotice = nil; endpointCountdown = nil
+        audio.configureInterruption(enabled: acousticInterruptionEnabled) { [weak self] event in
+            guard let self, self.generation == request, self.isSessionActive, !self.privacyLocked else { return }
+            switch event {
+            case .unavailable(let reason): self.interruptionNotice = reason
+            case .speech:
+                guard self.state == .answering || self.state == .speaking else { return }
+                self.drainTask?.cancel(); self.drainTask = nil
+                self.audio.silence(); self.spoken = [:]; self.pendingCompletion = nil
+                self.endpointPolicy = VoiceEndpointPolicy(pauseSeconds: self.endpointPause)
+                self.state = .listening; self.transcript = ""
+                self.watchActivity(request: request)
+            }
+        }
         endpointPolicy = VoiceEndpointPolicy(pauseSeconds: endpointPause)
         audio.configureRecordingLimit { [weak self] in
             guard let self, self.generation == request, self.state == .listening else { return }
