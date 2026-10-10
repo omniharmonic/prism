@@ -38,6 +38,36 @@ final class ApprovalContentTests: XCTestCase {
         XCTAssertEqual(future.fields.map(\.value), ["left"])
     }
 
+    func testAPausedCommandShowsWhatWhyWhereAndTheWholeCommand() {
+        let command = "curl -s https://example.com/status | jq ."
+        let payload: [String: Any] = ["tool": "terminal", "command": command, "cwd": "/Users/b/omni-workspace", "rule": "net.program",
+                                      "title": "Reach the network from the shell", "reason": "This command talks to another machine."]
+        let approval = Fixture.approval("c", kind: "command", payload: payload)
+        let content = ApprovalContent(approval)
+        XCTAssertEqual(content.kindLabel, "Command")
+        XCTAssertEqual(content.body, command, "the exact command, never shortened")
+        XCTAssertEqual(content.fields.map(\.label), ["What", "Why", "Tool", "In", "rule"], "the rule id is shown too: nothing rides along unseen")
+        XCTAssertEqual(content.headline, "Reach the network from the shell")
+        XCTAssertNil(ApprovalDraft(approval), "a command is approved as written or not at all")
+        // Another tool's call: its whole input is listed.
+        let other = ApprovalContent(Fixture.approval("j", kind: "command", payload: ["tool": "cronjob", "rule": "tool.cron", "reason": "Runs later.", "input": ["action": "create", "schedule": "0 3 * * *"], "origin": "cron"]))
+        XCTAssertNil(other.body)
+        XCTAssertTrue(other.fields.contains { $0.key == "input" && $0.value.contains("0 3 * * *") })
+        XCTAssertTrue(other.fields.contains { $0.label == "Asked by" && $0.value == "A scheduled job this conversation created" })
+        XCTAssertEqual(ApprovalContent.askedBy("subagent"), "A sub-agent this conversation started")
+        XCTAssertEqual(ApprovalContent.askedBy("something-new"), "something-new", "an origin this build does not know is shown as it came")
+        XCTAssertFalse(content.fields.contains { $0.label == "Asked by" }, "the conversation itself: no extra line")
+        // The card's words: approve / deny, and what happened.
+        var card = ApprovalCard(approval: approval)
+        XCTAssertTrue(card.isCommand)
+        XCTAssertEqual(card.statusLine(), "Omni has paused here. It runs exactly this if you approve, and nothing if you don't.")
+        card = ApprovalCard(approval: Fixture.approval("c", kind: "command", payload: payload, status: "sent"))
+        XCTAssertEqual(card.statusLine(), "Approved — it ran.")
+        card = ApprovalCard(approval: Fixture.approval("c", kind: "command", payload: payload, status: "cancelled"))
+        XCTAssertEqual(card.statusLine(), "Denied — it was not run.")
+        XCTAssertFalse(ApprovalCard(approval: Fixture.approval("e")).isCommand)
+    }
+
     func testADraftEditChangesOnlyTheTextItEdits() {
         let approval = Fixture.approval("a")
         var draft = ApprovalDraft(approval)!

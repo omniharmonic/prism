@@ -23,6 +23,7 @@ public struct ApprovalContent: Equatable, Sendable {
 
     /// One line for a list row: "Email to kevin@example.com".
     public var headline: String {
+        if let what = fields.first(where: { $0.key == "title" }), kindLabel == "Command" { return what.value }
         if let to = fields.first(where: { ["to", "expectTo", "attendees", "roomId"].contains($0.key) }) {
             return "\(kindLabel) to \(to.value)"
         }
@@ -42,7 +43,8 @@ public struct ApprovalContent: Equatable, Sendable {
         for (key, label) in spec.fields {
             seen.insert(key)
             guard let value = object[key], !value.isNull else { continue }
-            fields.append(Field(key: key, label: label, value: Self.text(value)))
+            let text = Self.text(value)
+            fields.append(Field(key: key, label: label, value: kind == .command && key == "origin" ? Self.askedBy(text) : text))
         }
         var body: String?
         if let key = spec.body {
@@ -81,9 +83,24 @@ public struct ApprovalContent: Equatable, Sendable {
             return Spec(label: "Tweet", fields: [], body: "text")
         case .walletProposal:
             return Spec(label: "Wallet proposal", fields: [("to", "To"), ("amount", "Amount"), ("token", "Token"), ("chain", "Chain")], body: "purpose")
+        case .command:
+            // What was flagged and why, then the exact command (any other tool's whole input
+            // is listed below as it is — nothing rides along unseen).
+            return Spec(label: "Command", fields: [("title", "What"), ("reason", "Why"), ("tool", "Tool"), ("cwd", "In"), ("origin", "Asked by")], body: "command")
         default:
             let words = kind.rawValue.replacingOccurrences(of: "-", with: " ")
             return Spec(label: words.prefix(1).uppercased() + words.dropFirst(), fields: [], body: nil)
+        }
+    }
+
+    /// Who is asking, in words: a paused command can come from the conversation itself (no
+    /// `origin`), from a sub-agent it started, or from a scheduled job it created. An origin
+    /// this build does not know is shown as it came.
+    static func askedBy(_ origin: String) -> String {
+        switch origin {
+        case "subagent": return "A sub-agent this conversation started"
+        case "cron": return "A scheduled job this conversation created"
+        default: return origin
         }
     }
 

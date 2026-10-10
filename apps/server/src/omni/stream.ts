@@ -148,13 +148,16 @@ const parseJson = (s: unknown): unknown => {
  * `tool_call_id`, `tool_name` and the result as `content`; the assistant message before it
  * carries the call (`tool_calls[].id`, `.function.name`, `.function.arguments`).
  */
-export function toolRowsOf(messages: unknown): ToolRow[] {
+export function toolRowsOf(messages: unknown, sinceSec?: number): ToolRow[] {
   if (!Array.isArray(messages)) return [];
   const calls = new Map<string, { name: string; args: unknown }>();
   const out: ToolRow[] = [];
   for (const raw of messages) {
     if (!raw || typeof raw !== "object") continue;
     const m = raw as Record<string, unknown>;
+    // Rows from before this run are not this run's (Hermes sometimes hands back the whole
+    // conversation in `run.completed.messages`).
+    if (sinceSec !== undefined && typeof m.timestamp === "number" && m.timestamp < sinceSec) continue;
     if (m.role === "assistant") {
       const tcs = parseJson(m.tool_calls);
       if (Array.isArray(tcs)) {
@@ -181,10 +184,20 @@ export function toolRowsOf(messages: unknown): ToolRow[] {
       const call = callId ? calls.get(callId) : undefined;
       const name = typeof m.tool_name === "string" && m.tool_name ? m.tool_name : (call?.name ?? "");
       if (!name) continue;
-      out.push({ callId, name, ...(call ? { args: call.args } : {}), content: contentText(m.content) });
+      out.push({ callId, name, ...(call ? { args: call.args } : {}), content: unwrapResult(contentText(m.content)) });
     }
   }
   return out;
+}
+
+/**
+ * Hermes wraps what an MCP tool returned as data the model must not obey:
+ * `<untrusted_tool_result source="…">\n<notice>\n\n<the result>\n</untrusted_tool_result>`.
+ * The result itself is what is judged.
+ */
+export function unwrapResult(content: string): string {
+  const m = /^\s*<untrusted_tool_result\b[^>]*>\n[^\n]*\n\n([\s\S]*?)\n?<\/untrusted_tool_result>\s*$/.exec(content);
+  return m ? m[1]! : content;
 }
 
 /**
@@ -259,6 +272,8 @@ export class HermesNormalizer {
   /** `assistant.completed`'s text, held until `run.completed` says answer or error. */
   private held: string | null = null;
   private readonly started = Date.now();
+  /** Hermes' own clock at `run.started` (seconds): its rows from before are not this run's. */
+  private runStartSec: number | undefined;
   runId: string | null = null;
   ended = false;
   /** Verified successful writes, for the card builder. */
@@ -340,6 +355,7 @@ export class HermesNormalizer {
     if (typeof d.run_id === "string" && !this.runId) this.runId = d.run_id;
     switch (f.event) {
       case "run.started":
+        if (typeof d.ts === "number") this.runStartSec = d.ts - 2;
         return [{ t: "init", runId: this.runId }];
       case "run.queued":
         return [{ t: "status", state: "working", reason: "queued" }];
@@ -391,7 +407,7 @@ export class HermesNormalizer {
           // No transcript on the frame: nothing to judge by — the stream stands as it is.
           return [...this.trustStream(), ...this.closeBlock(final?.trim() ? final : undefined), this.result(true)];
         }
-        const out = this.reconcile(toolRowsOf(d.messages), true);
+        const out = this.reconcile(toolRowsOf(d.messages, this.runStartSec), true);
         const last = asObj(d.messages[d.messages.length - 1]);
         const pending = parseJson(last.tool_calls);
         const answer = last.role === "assistant" && !(Array.isArray(pending) && pending.length) ? contentText(last.content).trim() : "";

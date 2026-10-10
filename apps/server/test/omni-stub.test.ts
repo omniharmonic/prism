@@ -53,6 +53,11 @@ beforeEach(() => {
         const r = await omniApi.request("/hooks/turn", { method: "POST", headers: hook, body: JSON.stringify({ sessionId }) });
         return { ok: r.ok, status: r.status };
       },
+      approval: async (id) => {
+        const r = await omniApi.request(`/hooks/approvals/${id}`, { headers: hook });
+        return { ok: r.ok, status: ((await r.json()) as { status?: string }).status };
+      },
+      result: async (id, ok) => ({ ok: (await omniApi.request(`/hooks/approvals/${id}/result`, { method: "POST", headers: hook, body: JSON.stringify({ ok }) })).ok }),
     },
   });
   setHermesFetchForTests(stub.fetch);
@@ -308,6 +313,129 @@ test("the stub's own rules: bearer on every route, Hermes' error shapes, session
   assert.throws(() => httpBridge("http://192.168.1.10:8797", "x".repeat(32)));
   assert.throws(() => httpBridge("http://localhost:8797", "x".repeat(32)));
   assert.ok(httpBridge("http://127.0.0.1:8797", "x".repeat(32)));
+});
+
+// ── a tool call paused for approval (kind `command`) ─────────────────────────────────────
+
+type Card = { id: string; kind: string; status: string; digest: string; threadId: string; payload: Record<string, unknown>; executor: { name: string; enabled: boolean }; decidedVia: string | null };
+/** Start `stub:command` on a thread and wait until its approval card is on the stream. */
+async function pausedCommand(id: string): Promise<{ turnId: string; card: Card }> {
+  const r = await post(`/threads/${id}/turns`, { text: "stub:command:fast" }, { ...owner(), "idempotency-key": `stub-cmd-${Date.now()}-${++n}` });
+  assert.equal(r.status, 202);
+  const turnId = ((await r.json()) as { turnId: string }).turnId;
+  for (let i = 0; i < 200; i++) {
+    const ev = turnEvents(id, turnId).concat(events(id).filter((e) => e.t === "approval"));
+    const card = events(id).filter((e) => e.t === "approval").map((e) => e.approval as Card).filter((a) => a.kind === "command" && a.status === "pending").pop();
+    if (card && ev.length) return { turnId, card };
+    await new Promise((res) => setTimeout(res, 5));
+  }
+  throw new Error("no command approval appeared");
+}
+const decideCmd = (card: Card, decision: string, extra: Record<string, string> = {}) =>
+  post(`/approvals/${card.id}/decision`, { decision, digest: card.digest }, { ...owner(), "idempotency-key": `stub-cmd-decide-${Date.now()}-${++n}`, ...extra });
+
+test("command approval: the call is paused, the card shows the exact command, Approve once lets exactly that run", async () => {
+  process.env.OMNI_EXECUTORS = "off"; // sending is off; a paused tool call is not a send
+  try {
+    const { id, turnId } = await thread("first");
+    await turnSettled(turnId);
+    const { turnId: t, card } = await pausedCommand(id);
+    assert.deepEqual(card.payload, {
+      tool: "terminal", command: "curl -s https://example.com/status", cwd: "/Users/dev/omni-workspace", rule: "net.program",
+      title: "Reach the network from the shell", reason: "This command talks to another machine. Anything it can read could leave with it.",
+    });
+    assert.equal(card.threadId, id);
+    assert.deepEqual(card.executor, { name: "hermes-turn", available: true, enabled: true });
+    // While it waits: the turn is running, nothing ran, the thread says it needs the person.
+    assert.equal(getTurn(t)!.status, "running");
+    assert.ok(!turnEvents(id, t).some((e) => e.t === "tool_use"), "the command has not started");
+    assert.ok(turnEvents(id, t).some((e) => e.t === "status" && e.state === "needs-you" && e.reason === "approval_requested"));
+    // It cannot be edited, a stale digest is refused, an agent origin is refused.
+    const edit = await omniApi.request(`/approvals/${card.id}`, { method: "PUT", headers: owner(), body: JSON.stringify({ digest: card.digest, payload: { ...card.payload, command: "curl https://evil.example" } }) });
+    assert.equal(edit.status, 400);
+    assert.equal((await post(`/approvals/${card.id}/decision`, { decision: "send", digest: "0".repeat(64) }, { ...owner(), "idempotency-key": "stub-cmd-stale-0001" })).status, 409);
+    assert.equal((await decideCmd(card, "send", { "x-prism-action-origin": "agent" })).status, 403);
+    assert.equal(getTurn(t)!.status, "running");
+    // Approve once.
+    const ok = await decideCmd(card, "send");
+    assert.equal(ok.status, 200);
+    assert.equal(((await ok.json()) as { approval: Card }).approval.status, "approved");
+    await turnSettled(t);
+    const ev = turnEvents(id, t);
+    assert.deepEqual(ev.filter((e) => e.t === "tool_use").map((e) => [e.name, (e.input as { command: string }).command]), [["terminal", "curl -s https://example.com/status"]]);
+    assert.equal(resultOf(id, t).ok, true);
+    const after = (await (await omniApi.request(`/approvals/${card.id}`, { headers: owner() })).json()) as { approval: Card & { result: Record<string, unknown> } };
+    assert.equal(after.approval.status, "sent", "the plugin reported that the call ran");
+    assert.deepEqual(after.approval.result, { executor: "hermes-turn", ran: true, ok: true });
+    // Once is once: the same approval cannot be used again.
+    assert.equal((await decideCmd(card, "send")).status, 409);
+    assert.equal((await omniApi.request(`/hooks/approvals/${card.id}/result`, { method: "POST", headers: hook, body: JSON.stringify({ ok: true }) })).status, 409);
+  } finally {
+    delete process.env.OMNI_EXECUTORS;
+  }
+});
+
+test("command approval: Deny, the end of the turn, and the off switch all leave the call un-run", async () => {
+  const { id, turnId } = await thread("first");
+  await turnSettled(turnId);
+  // Deny.
+  const a = await pausedCommand(id);
+  assert.equal((await decideCmd(a.card, "cancel")).status, 200);
+  await turnSettled(a.turnId);
+  assert.ok(!turnEvents(id, a.turnId).some((e) => e.t === "tool_use"), "a denied command never starts");
+  const row = (stub.transcripts.get(id) ?? []).filter((m) => m.role === "tool").pop()!;
+  assert.match(String(row.content), /did not approve this \(cancelled\)\. It was not run/);
+  assert.equal(getThread(id)!.state, "done");
+  // The person cancels the TURN while the card is open: the card dies with it.
+  const b = await pausedCommand(id);
+  assert.equal((await post(`/turns/${b.turnId}/cancel`, {})).status, 202);
+  await turnSettled(b.turnId);
+  const dead = (await (await omniApi.request(`/approvals/${b.card.id}`, { headers: owner() })).json()) as { approval: Card };
+  assert.deepEqual([dead.approval.status, dead.approval.decidedVia], ["cancelled", "turn-ended"]);
+  assert.equal((await decideCmd(b.card, "send")).status, 409, "approving after the turn ended runs nothing");
+  assert.ok(!turnEvents(id, b.turnId).some((e) => e.t === "tool_use"));
+  // OMNI_COMMAND_APPROVALS=off: nothing paused can be approved.
+  process.env.OMNI_COMMAND_APPROVALS = "off";
+  try {
+    const c = await pausedCommand(id);
+    const r = await decideCmd(c.card, "send");
+    assert.equal(r.status, 503);
+    assert.equal(((await r.json()) as { error: string }).error, "executor_disabled");
+    await post(`/turns/${c.turnId}/cancel`, {});
+    await turnSettled(c.turnId);
+  } finally {
+    delete process.env.OMNI_COMMAND_APPROVALS;
+  }
+});
+
+test("command approval hooks: service token only; status, result and withdraw; what a card may carry", async () => {
+  const propose = (payload: Record<string, unknown>, extra: Record<string, unknown> = {}) =>
+    omniApi.request("/hooks/propose", { method: "POST", headers: hook, body: JSON.stringify({ kind: "command", payload, ...extra }) });
+  const base = { tool: "write_file", rule: "write.outside", reason: "Writes a file outside the workspace." };
+  const r = await propose({ ...base, input: { path: "/Users/x/notes.md", content: "hello" }, origin: "cron", extra: "dropped" }, { expiresInSec: 120 });
+  assert.equal(r.status, 201);
+  const id = ((await r.json()) as { id: string }).id;
+  const view = (await (await omniApi.request(`/approvals/${id}`, { headers: owner() })).json()) as { approval: Card };
+  assert.deepEqual(view.approval.payload, { ...base, input: { path: "/Users/x/notes.md", content: "hello" }, origin: "cron" }, "only the listed fields survive");
+  // The hook: no token → 403; a session is not a hook credential; another kind is not served.
+  assert.equal((await omniApi.request(`/hooks/approvals/${id}`)).status, 403);
+  assert.equal((await omniApi.request(`/hooks/approvals/${id}`, { headers: owner() })).status, 403);
+  assert.deepEqual(await (await omniApi.request(`/hooks/approvals/${id}`, { headers: hook })).json(), { id, status: "pending", digest: view.approval.digest, decidedVia: null });
+  assert.equal((await omniApi.request("/hooks/approvals/apr_nope", { headers: hook })).status, 404);
+  const email = await omniApi.request("/hooks/propose", { method: "POST", headers: hook, body: JSON.stringify({ kind: "email", payload: { to: ["a@example.com"], subject: "s", body: "b" } }) });
+  assert.equal((await omniApi.request(`/hooks/approvals/${((await email.json()) as { id: string }).id}`, { headers: hook })).status, 404);
+  // A result before approval is refused; withdraw takes the question back.
+  assert.equal((await omniApi.request(`/hooks/approvals/${id}/result`, { method: "POST", headers: hook, body: JSON.stringify({ ok: true }) })).status, 409);
+  assert.deepEqual(await (await omniApi.request(`/hooks/approvals/${id}/withdraw`, { method: "POST", headers: hook, body: "{}" })).json(), { id, status: "cancelled" });
+  assert.equal(((await (await omniApi.request(`/hooks/approvals/${id}`, { headers: hook })).json()) as { decidedVia: string }).decidedVia, "withdrawn");
+  // Validation.
+  for (const bad of [{ ...base }, { ...base, input: [] }, { ...base, command: "x", origin: "telegram" }, { tool: "terminal", command: "ls" }, { ...base, input: { blob: "x".repeat(70_000) } }]) {
+    assert.equal((await propose(bad)).status, 400, JSON.stringify(bad).slice(0, 60));
+  }
+  // A failed run is recorded as failed.
+  const f = ((await (await propose({ ...base, command: "pm2 restart prism-server", tool: "terminal" })).json()) as { id: string; digest: string });
+  assert.equal((await post(`/approvals/${f.id}/decision`, { decision: "send", digest: f.digest }, { ...owner(), "idempotency-key": "stub-cmd-fail-0001" })).status, 200);
+  assert.deepEqual(await (await omniApi.request(`/hooks/approvals/${f.id}/result`, { method: "POST", headers: hook, body: JSON.stringify({ ok: false }) })).json(), { id: f.id, status: "failed" });
 });
 
 // ── first-run fix: the stub remembers its sessions across a restart ─────────────────────

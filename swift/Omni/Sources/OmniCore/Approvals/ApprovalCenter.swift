@@ -82,6 +82,10 @@ public struct ApprovalCard: Equatable, Sendable, Identifiable {
 
     public var isBusy: Bool { activity != .idle }
 
+    /// A paused tool call of a running turn (kind `command`), not a draft: approving it lets
+    /// that exact call run once; there is nothing to edit or revise.
+    public var isCommand: Bool { approval.kind == .command }
+
     /// Send is offered only for a pending draft whose payload matches its digest.
     public func canOfferSend(now: Date = Date()) -> Bool { standing(now: now) == .pending && !isBusy }
     public func canOfferCancel(now: Date = Date()) -> Bool { standing(now: now) == .pending && !isBusy }
@@ -90,11 +94,26 @@ public struct ApprovalCard: Equatable, Sendable, Identifiable {
     /// Known before any press: this server would refuse to send this kind right now.
     public var sendingSwitchedOff: String? {
         guard let executor = approval.executor, !executor.canSend else { return nil }
+        if isCommand { return "Approving commands is switched off on this server." }
         return executor.available ? "Sending is switched off on this server." : "This server can't send this kind of thing yet."
     }
 
     /// The standing in words. nil while it is simply waiting.
     public func statusLine(now: Date = Date()) -> String? {
+        if isCommand {
+            switch standing(now: now) {
+            case .pending: return "Omni has paused here. It runs exactly this if you approve, and nothing if you don't."
+            case .mismatch: return "This doesn't match the fingerprint the server gave for it, so Omni won't offer to approve it. Reload it."
+            case .expired: return "No answer in time — it was not run."
+            case .sending: return "Approved — running…"
+            case .sent: return "Approved — it ran."
+            case .failed: return "Approved — it ran and reported a failure."
+            case .unknown: return "Approved, but Omni never said how it ended. Ask it."
+            case .cancelled: return approval.decidedVia == "turn-ended" || approval.decidedVia == "withdrawn" ? "The turn ended first — it was not run." : "Denied — it was not run."
+            case .revised: return "Denied — it was not run."
+            case .other(let status): return "Status: \(status)."
+            }
+        }
         switch standing(now: now) {
         case .pending: return nil
         case .mismatch: return "This draft doesn't match the fingerprint the server gave for it, so Omni won't offer to send it. Reload it."

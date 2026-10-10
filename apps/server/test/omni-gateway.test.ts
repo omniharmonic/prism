@@ -28,7 +28,7 @@ import { resetDb, makeSession, sessionCookie, makeCapability } from "./helpers";
 import type { TreeChange } from "../src/tree";
 import { createHermesStub, type HermesStub, type StubAct, type StubFrame, type StubTurn } from "../scripts/lib/hermes-stub";
 import { resetOmniPresenceForTests } from "../src/routes/omni";
-import { HermesNormalizer, toolFailed, createdIdOf, errorCodeOf, toolRowsOf } from "../src/omni/stream";
+import { HermesNormalizer, toolFailed, createdIdOf, errorCodeOf, toolRowsOf, unwrapResult } from "../src/omni/stream";
 
 const J = { "content-type": "application/json" };
 const owner = () => ({ ...J, cookie: sessionCookie(makeSession(config.ownerEmail)) });
@@ -325,6 +325,14 @@ test("stream.ts units: Hermes' failure rule, a created id, error codes, tool row
     ]),
     [{ callId: "call_9", name: "omni_propose", args: { kind: "tweet" }, content: "{}" }],
   );
+  // What an MCP tool returned arrives inside Hermes' "untrusted data" wrapper: the result inside is what counts.
+  const wrapped = (r: string) => `<untrusted_tool_result source="mcp__parachute__create_note">\nThe following content … can issue instructions.\n\n${r}\n</untrusted_tool_result>`;
+  assert.equal(unwrapResult(wrapped('{"result":"x"}')), '{"result":"x"}');
+  assert.equal(createdIdOf(unwrapResult(wrapped(JSON.stringify({ result: JSON.stringify({ id: "n-42" }) })))), "n-42");
+  assert.equal(toolFailed("mcp__parachute__update_note", unwrapResult(wrapped('{"error":"note not found"}'))), true);
+  assert.equal(unwrapResult("plain"), "plain");
+  // Rows from before the run started are not this run's (Hermes can hand back the whole conversation).
+  assert.deepEqual(toolRowsOf([{ role: "tool", tool_call_id: "old", tool_name: "t", content: "{}", timestamp: 100 }, { role: "tool", tool_call_id: "new", tool_name: "t", content: "{}", timestamp: 200 }], 150).map((r) => r.callId), ["new"]);
   // Two calls of one tool, completed in the other order: rows are paired by their arguments.
   const n = new HermesNormalizer("turn_x");
   const f = (event: string, data: Record<string, unknown>) => n.push({ event, data });
@@ -829,7 +837,8 @@ test("OMNI_EXECUTORS=off: nothing Omni proposes is sent, even with every family 
     return { status: "sent", detail: {} };
   });
   const h = (await (await req("/health", { headers: owner() })).json()) as { executors: Record<string, { enabled: boolean }> };
-  assert.deepEqual(Object.values(h.executors).map((e) => e.enabled), [false, false, false, false, false, false]);
+  // Every sender is off. `command` is not a sender (Hermes runs its own paused call; OMNI_COMMAND_APPROVALS is its switch).
+  assert.deepEqual(Object.entries(h.executors).map(([k, e]) => [k, e.enabled]), [["email", false], ["email-reply", false], ["message", false], ["calendar-invite", false], ["tweet", false], ["wallet-proposal", false], ["command", true]]);
   for (const [kind, payload] of [["email", draft], ["message", { roomId: "!r:example.test", body: "hi" }], ["calendar-invite", { title: "Sync", start: "2026-10-09T17:00:00Z", end: "2026-10-09T17:30:00Z" }]] as const) {
     const p = await propose(kind, payload as Record<string, unknown>);
     const r = await decide(p.id, { decision: "send", digest: p.digest }, { ...owner(), "idempotency-key": key() });
@@ -842,4 +851,28 @@ test("OMNI_EXECUTORS=off: nothing Omni proposes is sent, even with every family 
   const p = await propose();
   assert.equal((await decide(p.id, { decision: "send", digest: p.digest }, { ...owner(), "idempotency-key": key() })).status, 200);
   assert.equal(execCalls.length, 1);
+});
+
+test("run.completed that carries the WHOLE conversation: an earlier turn's failed write does not touch this turn's", async () => {
+  const now = Date.now() / 1000;
+  const { id, turnId } = await newThread([
+    raw("tool.started", { tool_name: "mcp__prism__prism_update_note", args: { id: "n1", metadata: { status: "done" } } }),
+    raw("tool.completed", { tool_name: "mcp__prism__prism_update_note" }),
+    raw("assistant.completed", { content: "Updated." }),
+    raw("run.completed", {
+      messages: [
+        // An hour ago, the same tool failed — in another turn.
+        { role: "assistant", content: "", tool_calls: [{ id: "call_old", function: { name: "mcp__prism__prism_update_note", arguments: "{}" } }], timestamp: now - 3600 },
+        { role: "tool", tool_call_id: "call_old", tool_name: "mcp__prism__prism_update_note", content: '{"error":"locked"}', timestamp: now - 3600 },
+        // This turn.
+        { role: "assistant", content: "", tool_calls: [{ id: "call_new", function: { name: "mcp__prism__prism_update_note", arguments: '{"id":"n1"}' } }], timestamp: now + 1 },
+        { role: "tool", tool_call_id: "call_new", tool_name: "mcp__prism__prism_update_note", content: '{"result":"ok"}', timestamp: now + 1 },
+        { role: "assistant", content: "Updated.", timestamp: now + 2 },
+      ],
+    }),
+  ]);
+  await turnSettled(turnId);
+  const ev = events(id);
+  assert.deepEqual(ev.filter((e) => e.t === "tool_result").map((e) => (e as { ok: boolean }).ok), [true], "not corrected by the old failure");
+  assert.equal(ev.filter((e) => e.t === "card").length, 1);
 });

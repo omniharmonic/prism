@@ -16,9 +16,9 @@
 import { hermes, HermesError } from "./hermes-client";
 import { HermesNormalizer, toolRowsOf, type OmniEvent, type WriteSignal } from "./stream";
 import { cardForWrite, watchPendingCreates, buildCard, type PendingCreate } from "./records";
-import { appendEvent, claimTurn, endTurn, getThread, saveCard, setThreadState, setTurnRun, touchThread, type ThreadState, type TurnRow } from "./store";
+import { appendEvent, claimTurn, endTurn, getThread, omniAudit, saveCard, setThreadState, setTurnRun, touchThread, type ThreadState, type TurnRow } from "./store";
 import { publishNotice, publishThread, pushOmni, threadWatched } from "./bus";
-import { listApprovals } from "./approvals";
+import { approvalView, closeApproval, listApprovals, pendingTurnCommands } from "./approvals";
 import { omniConfig } from "./config";
 
 interface Live {
@@ -128,6 +128,7 @@ const VERIFY_TIMEOUT_MS = 3_000;
 const DRAIN_MS = 2_000;
 
 async function run(threadId: string, turnId: string, message: string, entry: Live): Promise<void> {
+  const startedAt = Date.now();
   const norm = new HermesNormalizer(turnId);
   let watcher: Awaited<ReturnType<typeof watchPendingCreates>> | null = null;
   let seenWrites = 0;
@@ -214,6 +215,14 @@ async function run(threadId: string, turnId: string, message: string, entry: Liv
     await flushWrites().catch(() => {});
   }
   (watcher as Awaited<ReturnType<typeof watchPendingCreates>> | null)?.close();
+  // A tool call the plugin paused for the person's approval dies with the turn: nobody is
+  // holding that call any more, so its card must not stay answerable.
+  for (const a of pendingTurnCommands(threadId, startedAt)) {
+    if (!closeApproval(a.id, "cancelled", "turn-ended", null, null)) continue;
+    omniAudit({ actor: "gateway", via: "turn-ended", action: "approval.cancel", approvalId: a.id, threadId, digest: a.digest, status: "ok" });
+    emit(threadId, turnId, { t: "approval", approval: approvalView({ ...a, status: "cancelled", decidedVia: "turn-ended", decidedAt: Date.now() }) });
+    publishNotice({ type: "approval", id: a.id, op: "cancelled", threadId });
+  }
   const cancelled = errorCode === "cancelled";
   endTurn(turnId, cancelled ? "cancelled" : errorCode ? "error" : "done", errorCode);
   const pendingHere = listApprovals(omniConfig.ownerEmail(), "pending").some((a) => a.threadId === threadId);
