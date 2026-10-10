@@ -28,6 +28,34 @@ struct ConversationVoiceControl: View {
         _selected = State(initialValue: device.selected)
     }
     var body: some View {
+        panel
+        .sheet(isPresented: $showingVoiceSettings, onDismiss: { device.stopPreview() }) {
+            ConversationVoiceSettings(device: device)
+        }
+        .onChange(of: model?.completedVoiceTurnID) { _, _ in consume() }
+        .onChange(of: model?.timeline) { consume() }
+        .onChange(of: model?.isRunning) { consume() }
+        .onChange(of: voice.state) {
+            if voice.state != .off { expanded = true; showingVoiceSettings = false; device.stopPreview() }
+            updateCaptureTimeout()
+            consume()
+        }
+        .onChange(of: model?.draft ?? draft?.wrappedValue ?? "") {
+            if !(model?.draft ?? draft?.wrappedValue ?? "").isEmpty, voice.state == .listening || voice.state == .preparing { pause() }
+        }
+        .onChange(of: session.pendingVoiceActivationID) { consumeShortcutActivation() }
+        .onChange(of: phase) { if phase != .active { cancel() } else { consumeShortcutActivation() } }
+        #if os(iOS)
+        .onReceive(NotificationCenter.default.publisher(for: AVAudioSession.interruptionNotification)) { _ in cancel() }
+        #endif
+        .onChange(of: PrivacyLock.shared.locked) {
+            voice.setPrivacyLocked(PrivacyLock.shared.locked)
+            if PrivacyLock.shared.locked { cancel() } else { consumeShortcutActivation() }
+        }
+        .onAppear(perform: appeared)
+        .onDisappear(perform: disappeared)
+    }
+    private var panel: some View {
         Group {
             if (expanded || voice.state != .off) && (session.conversationVoice !== voice || session.ownsVoice(voice, threadID: model?.threadID)) {
                 VStack(spacing: 12) {
@@ -71,45 +99,27 @@ struct ConversationVoiceControl: View {
                 .accessibilityIdentifier("voice.panel")
             }
         }
-        .sheet(isPresented: $showingVoiceSettings, onDismiss: { device.stopPreview() }) {
-            ConversationVoiceSettings(device: device)
-        }
-        .onChange(of: model?.completedVoiceTurnID) { _, _ in consume() }
-        .onChange(of: model?.timeline) { consume() }
-        .onChange(of: model?.isRunning) { consume() }
-        .onChange(of: voice.state) {
-            if voice.state != .off { expanded = true; showingVoiceSettings = false; device.stopPreview() }
-            updateCaptureTimeout()
-            consume()
-        }
-        .onChange(of: model?.draft ?? draft?.wrappedValue ?? "") {
-            if !(model?.draft ?? draft?.wrappedValue ?? "").isEmpty, voice.state == .listening || voice.state == .preparing { pause() }
-        }
-        .onChange(of: session.pendingVoiceActivationID) { consumeShortcutActivation() }
-        .onChange(of: phase) { if phase != .active { cancel() } else { consumeShortcutActivation() } }
-        #if os(iOS)
-        .onReceive(NotificationCenter.default.publisher(for: AVAudioSession.interruptionNotification)) { _ in cancel() }
-        #endif
-        .onChange(of: PrivacyLock.shared.locked) {
-            voice.setPrivacyLocked(PrivacyLock.shared.locked)
-            if PrivacyLock.shared.locked { cancel() } else { consumeShortcutActivation() }
-        }
-        .onAppear {
-            mounted = true
-            installAutomaticListeningGuard()
-            voice.setPrivacyLocked(PrivacyLock.shared.locked)
-            updateCaptureTimeout(); consume(); consumeShortcutActivation()
-        }
-        .onDisappear {
-            mounted = false
-            // The first send moves this same voice session into its newly created thread.
-            if model == nil, let id = session.voiceThreadID, session.destination == .thread(id) {
-                timeout?.cancel(); timeout = nil
-                return
-            }
-            cancel()
-        }
     }
+    private func appeared() {
+        mounted = true
+        installAutomaticListeningGuard()
+        voice.setPrivacyLocked(PrivacyLock.shared.locked)
+        updateCaptureTimeout(); consume(); consumeShortcutActivation()
+    }
+    private func disappeared() {
+        mounted = false
+        // The first send retains the session while its new thread mounts.
+        if isHandingOffToCreatedThread {
+            timeout?.cancel(); timeout = nil
+            return
+        }
+        cancel()
+    }
+    private var isHandingOffToCreatedThread: Bool {
+        guard model == nil, let threadID = session.voiceThreadID else { return false }
+        return session.destination == .thread(threadID)
+    }
+
     private var running: Bool { model?.isRunning ?? false }
     private var stateTitle: String {
         switch voice.state {
