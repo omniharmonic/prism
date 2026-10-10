@@ -79,4 +79,30 @@ final class LocalSpeechActivityTests: XCTestCase {
         await probe.release()
         await fulfillment(of: [late], timeout: 0.1)
     }
+    func testTapRejectsDelayedValidHostTimeEvenWhenCallbackJustArrived() async throws {
+        let inferred = expectation(description: "Old captured audio cannot be inference evidence")
+        inferred.isInverted = true
+        let unavailable = expectation(description: "Delayed microphone capture falls back to manual")
+        let activity = LocalSpeechActivity(process: { chunk, state in
+            inferred.fulfill()
+            return VadStreamResult(state: state, event: nil, probability: 0.9)
+        }, receive: { event in
+            if case .unavailable = event { unavailable.fulfill() }
+        })
+        defer { activity.stop() }
+        let url = FileManager.default.temporaryDirectory.appending(path: "host-time-\(UUID().uuidString).caf")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let writer = try CaptureFile(url: url, format: AVAudioFormat(standardFormatWithSampleRate: 16_000, channels: 1)!)
+        let tap = await MainActor.run { CaptureFile.tap(for: writer, activity: activity) }
+        try await Task.detached {
+            let oldStart = ProcessInfo.processInfo.systemUptime - 2
+            let time = AVAudioTime(hostTime: AVAudioTime.hostTime(forSeconds: oldStart))
+            XCTAssertTrue(time.isHostTimeValid)
+            tap(Self.buffer(), time)
+            try writer.close()
+        }.value
+        await fulfillment(of: [unavailable], timeout: 1)
+        await fulfillment(of: [inferred], timeout: 0.1)
+    }
+
 }

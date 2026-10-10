@@ -69,13 +69,18 @@ final class LocalSpeechActivity: @unchecked Sendable {
         }
     }
     private var isActive: Bool { lock.lock(); defer { lock.unlock() }; return !stopped }
-    nonisolated func append(_ buffer: AVAudioPCMBuffer) {
+    nonisolated func append(_ buffer: AVAudioPCMBuffer, capturedEnd: Double? = nil) {
         guard isActive else { return }
         let frames = Int(buffer.frameLength), channels = Int(buffer.format.channelCount)
         guard frames > 0, frames <= 4096, channels > 0, channels <= 8,
               buffer.format.sampleRate >= 8_000, buffer.format.sampleRate <= 192_000,
               let data = buffer.floatChannelData else {
             stop(reason: "Automatic detection cannot read this microphone format. Use Send turn."); return
+        }
+        let now = ProcessInfo.processInfo.systemUptime
+        let capturedAt = capturedEnd ?? now
+        guard capturedAt.isFinite, now - capturedAt >= -0.05, now - capturedAt <= 0.5 else {
+            stop(reason: "Automatic detection received delayed microphone audio. Use Send turn."); return
         }
         var mono = [Float](repeating: 0, count: frames)
         for frame in 0..<frames {
@@ -85,7 +90,7 @@ final class LocalSpeechActivity: @unchecked Sendable {
             }
             mono[frame] = value / Float(channels)
         }
-        let pcm = PCM(samples: mono, rate: buffer.format.sampleRate, capturedAt: ProcessInfo.processInfo.systemUptime)
+        let pcm = PCM(samples: mono, rate: buffer.format.sampleRate, capturedAt: capturedAt)
         switch continuation.yield(pcm) {
         case .dropped: stop(reason: "Automatic detection could not keep up with microphone audio. Use Send turn.")
         case .terminated: break

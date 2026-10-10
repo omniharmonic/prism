@@ -10,7 +10,12 @@ final class CaptureFile: @unchecked Sendable {
     /// Build outside AudioIO's main-actor context. The AVAudioEngine callback runs on
     /// its realtime thread; do not capture an actor executor or escape its PCM buffer.
     nonisolated static func tap(for writer: CaptureFile, activity: LocalSpeechActivity? = nil) -> @Sendable (AVAudioPCMBuffer, AVAudioTime) -> Void {
-        { buffer, _ in writer.append(buffer); activity?.append(buffer) }
+        { buffer, time in
+            writer.append(buffer)
+            // Convert host-time evidence to a scalar before leaving this callback.
+            let capturedEnd = time.isHostTimeValid ? AVAudioTime.seconds(forHostTime: time.hostTime) + Double(buffer.frameLength) / buffer.format.sampleRate : nil
+            activity?.append(buffer, capturedEnd: capturedEnd)
+        }
     }
     func append(_ buffer: AVAudioPCMBuffer) {
         lock.lock(); defer { lock.unlock() }
