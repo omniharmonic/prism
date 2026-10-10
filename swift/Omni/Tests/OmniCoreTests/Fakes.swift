@@ -139,6 +139,7 @@ final class FakeService: OmniService, @unchecked Sendable {
     private var _jobCalls: [String] = []
     private var _todayDates: [String] = []
     private var _createdPrompts: [String] = []
+    private var _createdSources: [String] = []
     private var _listReads = 0
     private var _pendingReads = 0
 
@@ -184,6 +185,7 @@ final class FakeService: OmniService, @unchecked Sendable {
     var editedPayloads: [JSONValue] { locked { _edited } }
     var jobCalls: [String] { locked { _jobCalls } }
     var todayDates: [String] { locked { _todayDates } }
+    var createdSources: [String] { locked { _createdSources } }
     var createdPrompts: [String] { locked { _createdPrompts } }
     var listReads: Int { locked { _listReads } }
     var pendingReads: Int { locked { _pendingReads } }
@@ -196,9 +198,12 @@ final class FakeService: OmniService, @unchecked Sendable {
             return Result { try _lists.next() }
         }.get()
     }
+    var createGate: (@Sendable () async -> Void)?
     func createThread(_ new: NewThread) async throws -> CreatedThread {
-        try locked { () -> Result<CreatedThread, any Error> in
+        if let createGate { await createGate() }
+        return try locked { () -> Result<CreatedThread, any Error> in
             _createdPrompts.append(new.prompt)
+            _createdSources.append(new.source ?? "text")
             return Result { try _created.next() }
         }.get()
     }

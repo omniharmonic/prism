@@ -31,7 +31,7 @@ bad="$(cd "$HERE" && grep -rlE 'UITestLaunch|UITestCompactWidth|OMNI_UITEST' Sou
 done)"
 [ -z "$bad" ] || fail "the UI-test launch path is used outside #if DEBUG: $bad"
 echo "check-release: source — UITestSupport.swift is DEBUG-only, and so is every use of it"
-grep -q 'ConversationVoiceControl(model: model)' "$HERE/Sources/OmniUI/ThreadView.swift" || fail "conversation voice is not wired into ThreadView"
+grep -Fq 'ConversationVoiceControl(session: session, model: model, expanded: $voiceExpanded)' "$HERE/Sources/OmniUI/ThreadView.swift" || fail "conversation voice is not wired into ThreadView"
 [ -f "$HERE/Sources/OmniCore/Voice/VoiceConversation.swift" ] || fail "conversation voice implementation is missing"
 echo "check-release: source — conversation voice is wired into the thread composer"
 [ "${1:-}" = "--source" ] && exit 0
