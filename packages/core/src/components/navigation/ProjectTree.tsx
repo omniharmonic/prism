@@ -1,3 +1,4 @@
+import { useScope } from "../../lib/database/hooks";
 import { PAGE_DRAG_TYPE } from "../../lib/pages/drag";
 import { leafTitle } from "../../lib/pages/containerTitle";
 import { useState, useMemo, useCallback, useRef, useEffect } from "react";
@@ -718,6 +719,7 @@ interface TreeCtx {
 }
 
 function TreeNodeView({ node, depth, ctx }: { node: TreeNode; depth: number; ctx: TreeCtx }) {
+  const scope = useScope();
   const open = usePagesUI((s) => !!s.expanded[node.rawPath]);
   const toggle = () => usePagesUI.getState().toggleExpanded(node.rawPath);
   const openTab = useUIStore((s) => s.openTab);
@@ -807,7 +809,7 @@ function TreeNodeView({ node, depth, ctx }: { node: TreeNode; depth: number; ctx
           if (!isPage) return;
           e.dataTransfer.effectAllowed = "move";
           e.dataTransfer.setData("text/plain", node.note!.id);
-          e.dataTransfer.setData(PAGE_DRAG_TYPE, JSON.stringify({ ...pageRef(node), tags: node.note!.tags }));
+          e.dataTransfer.setData(PAGE_DRAG_TYPE, JSON.stringify({ ...pageRef(node), tags: node.note!.tags, scope }));
           ctx.setDrag({ node, over: null, zone: null });
         }}
         onDragOver={(e) => {

@@ -68,7 +68,7 @@ const dupFailOnce = new Set(params.getAll("dup-fail"));
 if (params.has("dup")) for (const [id, order] of [["plan", 1], ["living", 2]] as const) { const n = notes.find((x) => x.id === id)!; n.metadata = { ...(n.metadata ?? {}), prism_order: order }; }
 const moves = new Map<string, { from: string; to: string }>();
 const reads = { trash: 0, tree: 0 };
-const fixtureControls = { moveStatus: Number(params.get("move-status") ?? 0) };
+const fixtureControls = { switchAudience: () => setActiveVault("other-vault"), moveStatus: Number(params.get("move-status") ?? 0) };
 installOfflineSubPageLinks(); // as apps/web/src/main.tsx does
 Object.assign(window, { prismFixtureSubPageLink: { appendRowToClosedParent }, prismFixtureUI: useUIStore, prismFixtureNotes: notes, prismFixtureWrites: writes, prismFixtureReads: reads, prismFixtureControls: fixtureControls, prismFixturePrefs: () => ({ prefs, revision }) });
 // Wave 3A: `notion-transfer.html` loads this fixture with an extension (extra seed

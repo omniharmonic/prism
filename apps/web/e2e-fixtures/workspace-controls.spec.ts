@@ -61,3 +61,37 @@ test("view-only email status stays readable and cannot edit",async({page})=>{
  await page.goto("/e2e-fixtures/inbox.html?resolved&email-status=view");await page.locator(".prism-message-row").filter({hasText:"Saturday workshop agenda"}).click();
  await expect(page.getByRole("combobox",{name:"Thread status"})).toBeDisabled();expect(await page.evaluate(()=>(window as any).prismInboxFixture.tagWrites)).toEqual([]);
 });
+
+test("Trash rejects another audience and cancels confirmation when the audience changes", async ({ page }) => {
+ await page.goto("/e2e-fixtures/pages-nav.html");
+ const nav = page.locator(".workspace-navigation").first();
+ const trash = nav.getByRole("button", { name: "Trash", exact: true });
+ const foreign = await page.evaluateHandle(() => {
+   const d = new DataTransfer();
+   d.setData("application/x-prism-page", JSON.stringify({ id:"plan", path:"vault/Plan", title:"Plan", scope:"another-user-vault" }));
+   return d;
+ });
+ await trash.dispatchEvent("drop", { dataTransfer: foreign });
+ await expect(page.getByRole("alertdialog")).toHaveCount(0);
+ await nav.getByRole("button", { name:"Plan", exact:true }).dragTo(trash);
+ await expect(page.getByRole("alertdialog")).toBeVisible();
+ await page.evaluate(() => (window as any).prismFixtureControls.switchAudience());
+ await expect(page.getByRole("alertdialog")).toHaveCount(0);
+ expect(await page.evaluate(() => (window as any).prismFixtureWrites.filter((w:any) => !w.preferences))).toEqual([]);
+});
+
+test("cross-tab property removal discards the scoped memory fallback", async ({ page }) => {
+ await page.goto("/e2e-fixtures/databases.html?open=page");
+ const bar = page.getByRole("group", { name:"Page properties" });
+ await bar.getByRole("button", { name:"Display properties", exact:true }).click();
+ const dialog = page.getByRole("dialog", { name:"Display properties" });
+ for (const box of await dialog.getByRole("checkbox").all()) await box.uncheck();
+ await page.keyboard.press("Escape");
+ await expect(bar.getByRole("button", { name:"Status: In progress" })).toHaveCount(0);
+ await page.evaluate(() => {
+   const key = Object.keys(localStorage).find(k => k.startsWith("prism:property-view:"))!;
+   localStorage.removeItem(key);
+   window.dispatchEvent(new StorageEvent("storage", { key, newValue:null, storageArea:localStorage }));
+ });
+ await expect(bar.getByRole("button", { name:"Status: In progress" })).toBeVisible();
+});

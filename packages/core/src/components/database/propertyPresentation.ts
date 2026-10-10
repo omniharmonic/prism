@@ -5,8 +5,13 @@ const memory = new Map<string, string>();
 const EVENT = "prism:property-presentation";
 const subscribe = (notify: () => void) => {
   window.addEventListener(EVENT, notify);
-  window.addEventListener("storage", notify);
-  return () => { window.removeEventListener(EVENT, notify); window.removeEventListener("storage", notify); };
+  const changed = (event: StorageEvent) => {
+    if (event.key === null) memory.clear();
+    else memory.delete(event.key);
+    notify();
+  };
+  window.addEventListener("storage", changed);
+  return () => { window.removeEventListener(EVENT, notify); window.removeEventListener("storage", changed); };
 };
 /** Device-local presentation only: the authenticated audience includes user and vault. */
 export function usePropertyPresentation(scope: string, noteId: string) {
