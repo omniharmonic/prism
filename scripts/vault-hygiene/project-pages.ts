@@ -45,6 +45,29 @@ export function projectResolver(notes: VaultNote[]) {
 }
 
 export interface Patch { content?: string; metadata?: Record<string, unknown> }
+/** Repair changes only references to THIS duplicate. General normalization belongs to hygiene. */
+export function mergeMembershipPatch(note: VaultNote, duplicate: VaultNote, canonical: VaultNote, notes: VaultNote[] = []): Patch {
+  const keys = new Set([duplicate.id, duplicate.path, folderOf(duplicate), folderOf(duplicate).replace(ROOT, ""), duplicate.metadata?.slug, ...values(duplicate.metadata?.aliases)].filter((v): v is string => typeof v === "string" && !!v).map(projectTarget));
+  for (const other of notes.filter(n => isLive(n) && isProject(n) && n.id !== duplicate.id && n.id !== canonical.id)) {
+    for (const value of [other.id, other.path, folderOf(other), folderOf(other).replace(ROOT, ""), other.metadata?.slug, ...values(other.metadata?.aliases)]) {
+      if (typeof value === "string" && value !== duplicate.id && value !== duplicate.path) keys.delete(projectTarget(value));
+    }
+  }
+  const matches = (value: unknown) => typeof value === "string" && keys.has(projectTarget(value));
+  const canonicalRef = `[[${canonical.path}]]`;
+  const projects = values(note.metadata?.projects);
+  const legacy = values(note.metadata?.project);
+  const metadata: Record<string, unknown> = {};
+  if (projects.some(matches)) metadata.projects = [...new Map(projects.map(v => matches(v) ? canonicalRef : v).map(v => [JSON.stringify(v), v])).values()];
+  if (legacy.some(matches)) {
+    // Populated projects remain authoritative; repair does not add a stale legacy membership.
+    if (!projects.length) metadata.projects = [...new Map(legacy.map(v => matches(v) ? canonicalRef : v).map(v => [JSON.stringify(v), v])).values()];
+    const kept = legacy.filter(v => !matches(v));
+    metadata.project = kept.length ? Array.isArray(note.metadata?.project) ? kept : kept[0] : null;
+  }
+  return Object.keys(metadata).length ? { metadata } : {};
+}
+
 export function hygienePatch(note: VaultNote, notes: VaultNote[], resolver = projectResolver(notes)): Patch {
   const { projects, resolve } = resolver;
   const metadata: Record<string, unknown> = {};
@@ -211,15 +234,18 @@ export async function main(argv: string[], ctx: Ctx): Promise<number> {
         if (JSON.stringify(aliases) !== JSON.stringify(target.metadata?.aliases)) await patch(target, { metadata: { aliases } });
         for (const member of notes) {
           if (member.id === fresh.id) continue;
-          const change = hygienePatch(member, notes, resolver);
+          const change = mergeMembershipPatch(member, fresh, canonical, notes);
           const refs = (member.links ?? []).filter(l => l.sourceId === member.id && l.targetId === fresh.id);
           if (!change.metadata && !refs.length) continue;
           const current = await vault.getNote(member.id, { includeLinks: true, includeContent: false }); if (!current || !isLive(current)) continue;
-          await patch(current, { ...(hygienePatch(current, notes, resolver).metadata ? { metadata: hygienePatch(current, notes, resolver).metadata } : {}) });
+          await patch(current, mergeMembershipPatch(current, fresh, canonical, notes));
           const latest = apply ? await vault.getNote(current.id, { includeLinks: true, includeContent: false }) : current;
           const removed = (latest?.links ?? []).filter(l => l.sourceId === current.id && l.targetId === fresh.id).map(l => ({ target: l.targetId, relationship: l.relationship }));
-          if (removed.length && apply) {
+          if (removed.length) {
             const added = removed.map(l => ({ target: canonical.id, relationship: l.relationship })).filter(l => !(latest?.links ?? []).some(x => x.sourceId === current.id && x.targetId === l.target && x.relationship === l.relationship));
+            planned++;
+            ctx.log(`  ${apply ? "links" : "would links"} ${current.id} ${JSON.stringify({ add: added, remove: removed })}`);
+            if (!apply) continue;
             await throttle.wait(); const after = await vault.patchLinks(current.id, { add: added, remove: removed }, latest!.updatedAt!);
             log.append({ kind: "vault-links", script: "project-repair", at: ctx.now().toISOString(), id: current.id, path: current.path ?? null, afterUpdatedAt: after.updatedAt ?? "", added, removed }); writes++;
           }
