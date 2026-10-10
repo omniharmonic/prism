@@ -640,3 +640,5 @@ sources remain read-only; no client can choose a host path. Unconfigured roots f
 visibly. Configuration, limits and the trusted local-admin filesystem boundary are in
 [the skills runbook](runbook/omni-skills.md). Physical interaction and live activation
 remain rollout checks; no installed skill was modified during implementation.
+
+Reviewed M3 schedules can expose Run, Resume and name/schedule editing when `OMNI_REVIEWED_JOB_SCRIPTS_DIR` points to the local Hermes scripts directory. The server rechecks the three known wrapper basenames and SHA-256 bytes at every operation; symlinks, changed wrappers, monitors and nonlocal delivery fail closed. Prompt, script and delivery remain immutable. The six unrelated legacy script jobs remain read-only apart from Pause/Delete. Capabilities returned by `/jobs` drive the native controls; a successful Run receipt indicates background dispatch, not successful completion. Local filesystem administrators are trusted; this pinning is not an OS sandbox against concurrent privileged filesystem replacement.

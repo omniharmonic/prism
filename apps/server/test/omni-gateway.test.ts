@@ -1006,3 +1006,28 @@ test("neutral imported history filters consistently and explicit Waiting survive
  assert.equal((await listThreadsOf("?state=waiting")).threads[0]?.state,"waiting");
  assert.equal((await listThreadsOf("?state=conversation")).threads.length,0);
 });
+
+test('reviewed M3 script capabilities allow name schedule and resume but never runner edits',async()=>{
+ const fs=await import('node:fs/promises');const os=await import('node:os');const path=await import('node:path');
+ const root=await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(),'m3-route-')));const prior=process.env.OMNI_REVIEWED_JOB_SCRIPTS_DIR;process.env.OMNI_REVIEWED_JOB_SCRIPTS_DIR=root;
+ try{
+  const script='omni-nudges-context.sh';await fs.copyFile(new URL(`./fixtures/reviewed-nudge-jobs/${script}`,import.meta.url),path.join(root,script));
+  Object.assign(fake.jobs[0]!,{no_agent:true,script,deliver:'local',origin:null});
+  let list=await (await req('/jobs',{headers:owner()})).json() as {jobs:Array<{reviewedScript:boolean;canRun:boolean;canResume:boolean;canEdit:boolean}>};
+  assert.equal(list.jobs[0]?.reviewedScript,true);assert.equal(list.jobs[0]?.canRun,true);assert.equal(list.jobs[0]?.canResume,true);assert.equal(list.jobs[0]?.canEdit,true);
+  setHermesFetchForTests(async(url,init)=>{
+   const result=await fake.stub.fetch(url,init);
+   if(new URL(url).pathname.endsWith('/run')&&result.ok){const answer=await result.json() as {job:Record<string,unknown>};answer.job.executed=true;answer.job.execution_mode='background';return Response.json(answer,{status:202});}
+   return result;
+  });
+  assert.equal((await post('/jobs/abcdef012345/run',{})).status,200);
+  assert.equal((await post('/jobs/abcdef012345/resume',{})).status,200);
+  assert.equal((await req('/jobs/abcdef012345',{method:'PUT',headers:owner(),body:JSON.stringify({name:'Reviewed',schedule:'0 9 * * *'})})).status,200);
+  assert.equal(fake.jobs[0]!.script,script);assert.equal(fake.jobs[0]!.no_agent,true);assert.equal(fake.jobs[0]!.deliver,'local');
+  for(const body of [{prompt:'replace'},{script:'anything'},{deliver:'telegram'}])assert.ok((await req('/jobs/abcdef012345',{method:'PUT',headers:owner(),body:JSON.stringify(body)})).status>=400);
+  await fs.appendFile(path.join(root,script),'# changed');
+  assert.equal((await post('/jobs/abcdef012345/resume',{})).status,409);
+  assert.equal((await post('/jobs/abcdef012345/run',{})).status,403);
+  assert.equal((await req('/jobs/abcdef012345',{method:'PUT',headers:owner(),body:JSON.stringify({name:'No'})})).status,403);
+ }finally{if(prior===undefined)delete process.env.OMNI_REVIEWED_JOB_SCRIPTS_DIR;else process.env.OMNI_REVIEWED_JOB_SCRIPTS_DIR=prior;await fs.rm(root,{recursive:true,force:true});}
+});

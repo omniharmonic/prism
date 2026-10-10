@@ -40,8 +40,9 @@ public final class JobsModel {
         defer { busyJobID = nil }
         do {
             if let editing {
-                guard editing.noAgent != true, editing.script == nil, editing.monitorScript == nil, editing.monitor == nil || editing.monitor?.isNull == true else { return false }
-                _ = try await manager.updateJob(editing.id, edit: JobEdit(name: new.name, schedule: new.schedule, prompt: new.prompt))
+                guard editing.canEdit != false else { return false }
+                guard editing.reviewedScript == true || (editing.noAgent != true && editing.script == nil && editing.monitorScript == nil && (editing.monitor == nil || editing.monitor?.isNull == true)) else { return false }
+                _ = try await manager.updateJob(editing.id, edit: JobEdit(name: new.name, schedule: new.schedule, prompt: editing.reviewedScript == true ? nil : new.prompt))
             } else { _ = try await manager.createJob(new, key: key) }
             await refresh(); return true
         } catch {

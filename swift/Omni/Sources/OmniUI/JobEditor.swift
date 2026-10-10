@@ -14,6 +14,7 @@ struct JobEditor: View {
     @State private var lastAttempt: NewJob?
     @State private var confirmDelete = false
     private var scriptJob: Bool { job?.noAgent == true || job?.script != nil || job?.monitorScript != nil || (job?.monitor != nil && job?.monitor?.isNull != true) }
+    private var editable: Bool { job == nil || job?.canEdit == true || (!scriptJob && job?.canEdit == nil) }
     init(model: JobsModel, job: OmniJob?) {
         self.model = model; self.job = job
         _name = State(initialValue: job.map(JobPresentation.name) ?? "")
@@ -27,9 +28,15 @@ struct JobEditor: View {
                 if scriptJob {
                     Section {
                         Text("Script job").font(.headline)
-                        Text("This existing runner is read-only. You can pause or delete its schedule from Recurring. Running and resuming this runner require a separately reviewed migration.").foregroundStyle(.secondary)
-                        Text(name)
-                        Text(JobPresentation.schedule(job!) ?? "Schedule unavailable")
+                        if job?.reviewedScript == true {
+                            Text("Verified local nudge runner. You can change its name and schedule; instructions, script and delivery stay unchanged.").foregroundStyle(.secondary)
+                            TextField("Name", text: $name)
+                            TextField("Schedule (cron or interval)", text: $schedule)
+                        } else {
+                            Text("This existing runner is read-only. You can pause or delete its schedule from Recurring. Running and resuming require a reviewed migration.").foregroundStyle(.secondary)
+                            Text(name)
+                            Text(JobPresentation.schedule(job!) ?? "Schedule unavailable")
+                        }
                     }
                 } else {
                     Section("Agent job") {
@@ -49,7 +56,7 @@ struct JobEditor: View {
                 if let problem = model.actionProblem { Text(problem).foregroundStyle(Color.warningText) }
                 if let job {
                     Section {
-                        if !scriptJob {
+                        if job.canRun == true || (!scriptJob && job.canRun == nil) {
                             Button("Run Now") { Task { await model.run(job) } }
                                 .disabled(model.busyJobID != nil)
                             Text("Run Now dispatches a background run; it does not confirm completion.").font(.caption).foregroundStyle(.secondary)
@@ -61,7 +68,7 @@ struct JobEditor: View {
             .navigationTitle(job == nil ? "New Recurring Job" : "Recurring Job")
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Close") { dismiss() } }
-                if !scriptJob {
+                if editable {
                     ToolbarItem(placement: .confirmationAction) {
                         Button("Save") {
                             Task {

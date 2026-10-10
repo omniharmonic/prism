@@ -12,7 +12,10 @@ export async function reviewedNudgeJob(job:Record<string,unknown>):Promise<boole
  const root=process.env.OMNI_REVIEWED_JOB_SCRIPTS_DIR;
  if(!root||!path.isAbsolute(root)) return false;
  try {
-  const directory=await fs.realpath(root);const before=await fs.lstat(directory);
+  const directory=path.resolve(root);
+  let ancestor=path.parse(directory).root;
+  for(const part of directory.slice(ancestor.length).split(path.sep)){ancestor=path.join(ancestor,part);const entry=await fs.lstat(ancestor);if(entry.isSymbolicLink()||!entry.isDirectory())return false;}
+  const before=await fs.lstat(directory);
   if(!before.isDirectory()||before.isSymbolicLink()) return false;
   const filename=path.join(directory,job.script);const metadata=await fs.lstat(filename);
   if(!metadata.isFile()||metadata.isSymbolicLink()||metadata.size>16384) return false;
