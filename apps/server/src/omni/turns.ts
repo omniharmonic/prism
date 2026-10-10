@@ -17,7 +17,7 @@ import { hermes, HermesError } from "./hermes-client";
 import { HermesNormalizer, toolRowsOf, type OmniEvent, type WriteSignal } from "./stream";
 import { cardForWrite, watchPendingCreates, buildCard, type PendingCreate } from "./records";
 import { appendEvent, claimTurn, endTurn, getThread, omniAudit, saveCard, setThreadState, setTurnRun, touchThread, type ThreadState, type TurnRow } from "./store";
-import { publishNotice, publishThread, pushOmni, threadWatched } from "./bus";
+import { publishNotice, publishThread, pushOmni } from "./bus";
 import { approvalView, closeApproval, listApprovals, pendingTurnCommands } from "./approvals";
 import { omniConfig } from "./config";
 
@@ -231,6 +231,7 @@ async function run(threadId: string, turnId: string, message: string, entry: Liv
   touchThread(threadId);
   emit(threadId, turnId, { t: "status", state, ...(errorCode ? { reason: errorCode } : {}) });
   publishNotice({ type: "thread", id: threadId, op: state });
-  // Nobody is watching the thread live (app backgrounded) → an ids-only push.
-  if (!cancelled && !threadWatched(threadId) && getThread(threadId)) pushOmni("OMNI_THREAD", threadId);
+  // A stream can survive backgrounding, and one device cannot speak for the others.
+  // Send a content-free completion to registered devices; the OS handles presentation.
+  if (!cancelled && getThread(threadId)) pushOmni("OMNI_THREAD", threadId);
 }
