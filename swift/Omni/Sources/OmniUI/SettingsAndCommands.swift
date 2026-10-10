@@ -43,6 +43,9 @@ public struct SettingsView: View {
                         Text("The device is revoked on the server. The server address is kept.")
                     }
             }
+            if let skills = app.session?.skills {
+                Section("Agent") { NavigationLink("Skills") { SkillsView(model: skills) } }
+            }
             Section("Speech Benchmark") {
                 Button("Open Local Speech Benchmark") { showingSpeechBench = true }
                 Text("Record, correct and compare on-device engines. Nothing is sent to the agent.").font(.footnote)

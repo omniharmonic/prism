@@ -29,6 +29,7 @@ import { csrfRefusal, readCapped } from "./actions";
 import { IDEMPOTENCY_KEY_RE } from "../actions/store";
 import { omniConfig, OMNI_API_VERSION, OMNI_MIN_CLIENT } from "../omni/config";
 import { reviewedNudgeJob } from "../omni/reviewed-jobs";
+import { listSkills, readSkill, saveSkill, SkillError, SKILL_CAP } from "../omni/skills";
 import { reserveJobCreation, finishJobCreation } from "../omni/job-creations";
 import { hermes, HermesError, SESSION_ID_RE, JOB_ID_RE, type HermesSession, type HermesMessage } from "../omni/hermes-client";
 import {
@@ -247,7 +248,7 @@ function threadView(t: ThreadRow | null, s: HermesSession | null, gone = false):
   const pending = threadApprovals(id).some((a) => a.status === "pending");
   // Imported session history has no runtime signal. Preserve every persisted state,
   // including an owner-selected waiting state; never infer completion from age.
-  const state: ThreadState | "conversation" = running ? "working" : pending ? "needs-you" : !t ? "conversation" : t.state;
+  const state: ThreadState = running ? "working" : pending ? "needs-you" : !t ? "conversation" : t.state;
   return {
     id,
     title: t?.title ?? s?.title ?? null,
@@ -325,7 +326,7 @@ omniApi.get("/health", async (c) => {
 
 omniApi.get("/threads", async (c) => {
   const states = (c.req.query("state") ?? "").split(",").filter(Boolean);
-  if (states.some((s) => ![...THREAD_STATES, "conversation"].includes(s as ThreadState))) return bad(c, `state: ${[...THREAD_STATES, "conversation"].join(",")}`);
+  if (states.some((s) => !(THREAD_STATES as readonly string[]).includes(s))) return bad(c, `state: ${THREAD_STATES.join(",")}`);
   const q = (c.req.query("q") ?? "").trim().toLowerCase().slice(0, 200);
   const local = new Map(listThreads(500).map((t) => [t.id, t]));
   let sessions: HermesSession[] = [];
@@ -479,7 +480,7 @@ omniApi.patch("/threads/:id", async (c) => {
     session = null;
   }
   const gone = session === null;
-  if (!gone) ensureThread({ id, title: session?.title ?? null, source: "hermes" });
+  if (!gone) ensureThread({ id, title: session?.title ?? null, source: "hermes", state: "conversation" });
   const t = updateThread(id, {
     title: typeof b.title === "string" ? b.title : undefined,
     pinned: b.pinned as boolean | undefined,
@@ -505,7 +506,7 @@ omniApi.post("/threads/:id/turns", async (c) => {
     // A Hermes session started elsewhere (Telegram, Buzz, the Hermes desktop): adopt it.
     try {
       const s = await hermes.getSession(id);
-      ensureThread({ id, title: s.title ?? null, source: "hermes" });
+      ensureThread({ id, title: s.title ?? null, source: "hermes", state: "conversation" });
     } catch (e) {
       return hermesFailure(c, e);
     }
@@ -888,6 +889,28 @@ omniApi.post("/jobs/:id/:action", async (c) => {
   } catch (e) {
     return hermesFailure(c, e);
   }
+});
+
+// Existing skills only; all routes inherit owner authentication and capped JSON.
+function skillFailure(c: Context, error: unknown) {
+  if (error instanceof SkillError) return c.json({ error: error.code }, error.status as 400);
+  return c.json({ error: "skills_unavailable" }, 503);
+}
+omniApi.get("/skills", async c => {
+  try { return c.json({ skills: await listSkills() }); } catch(e) { return skillFailure(c,e); }
+});
+omniApi.get("/skills/:id", async c => {
+  try { return c.json({ skill: await readSkill(c.req.param("id")) }); } catch(e) { return skillFailure(c,e); }
+});
+omniApi.put("/skills/:id", async c => {
+  const body = await jsonBody(c);
+  if (!body || typeof body.text !== "string" || typeof body.revision !== "string" || Object.keys(body).some(k => !["text", "revision"].includes(k))) return bad(c,"text and revision are required");
+  if (Buffer.byteLength(body.text) > SKILL_CAP) return c.json({error:"skill_too_large"},413);
+  try {
+    const skill = await saveSkill(c.req.param("id"),body.text,body.revision);
+    omniAudit({ actor: omniConfig.ownerEmail(), via: requestVia(c), action: "skill.save", digest: skill.revision, status: "ok" });
+    return c.json({skill});
+  } catch(e) { return skillFailure(c,e); }
 });
 
 // ── today ───────────────────────────────────────────────────────────────────

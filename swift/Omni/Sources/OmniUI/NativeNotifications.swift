@@ -121,8 +121,18 @@ public final class NativeNotifications: NSObject, UNUserNotificationCenterDelega
     }
 
     nonisolated public func userNotificationCenter(_ center: UNUserNotificationCenter,
-        didReceive response: UNNotificationResponse) async {
+        didReceive response: UNNotificationResponse,
+        withCompletionHandler completionHandler: @escaping @Sendable () -> Void) {
         let value = response.notification.request.content.userInfo["url"] as? String
-        if let value, let url = URL(string: value) { await open(url) }
+        Task { @MainActor in
+            completeResponse(value, completion: completionHandler)
+        }
+    }
+
+    func completeResponse(_ value: String?, completion: @MainActor () -> Void) {
+        if let value, let url = URL(string: value) { open(url) }
+        // UIKit performs snapshot/restoration work from this completion.
+        // Complete exactly once on main, without waiting for auth or network.
+        completion()
     }
 }

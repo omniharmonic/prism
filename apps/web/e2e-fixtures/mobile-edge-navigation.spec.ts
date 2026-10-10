@@ -90,7 +90,7 @@ test("real touch navigation consumes the horizontal edge drag but retains an ord
   button.addEventListener("click",()=>{(window as any).edgeActions.clicks++;}); el.append(button);
  });
  const cdp=await page.context().newCDPSession(page);
- const touch=async(type:string,x?:number,y=150)=>cdp.send("Input.dispatchTouchEvent",{type,touchPoints:x===undefined?[]:[{x,y}]});
+ const touch=async(type:"touchStart"|"touchEnd"|"touchMove"|"touchCancel",x?:number,y=150)=>cdp.send("Input.dispatchTouchEvent",{type,touchPoints:x===undefined?[]:[{x,y}]});
  await touch("touchStart",3); await touch("touchMove",35); await touch("touchMove",105); await touch("touchEnd");
  await expect(drawer(page)).toBeVisible();
  expect(await page.evaluate(()=>(window as any).edgeActions)).toEqual({pointers:0,clicks:0});

@@ -80,7 +80,7 @@ keeps its sign-in there (see "Decisions" below).
 Conversational voice uses local Apple/Parakeet transcription with Hermes text streaming,
 speech output and explicit interruption. Completion push, contextual source navigation,
 nudges and biometric privacy lock are implemented. Voice hardware/quality acceptance and
-extended record/context inspection remain separate follow-ups; skills editing is in progress.
+extended record/context inspection remain separate follow-ups; installed local skills have a revision-checked editor in Settings, with linked sources read-only.
 
 ## Layout
 
@@ -203,3 +203,20 @@ and Keychain entitlements. Earlier signing sidecars lacking audio input must be 
 not reused unchanged. Permission copy now describes explicit conversational recording
 and on-device transcription. Microphone/speech permission and actual capture remain
 physical acceptance checks.
+
+## Conversational voice
+
+An open conversation offers local Apple or Parakeet speech, with explicit Speak and
+Send Voice controls. First use requests microphone/speech permission and may download
+models. Audio is temporary and deleted after transcription or cancellation; only the
+recognized text is submitted to the ordinary Hermes turn stream. The transcript remains
+visible and failures use the existing chat retry path.
+
+New assistant sentences are spoken as the live stream arrives; Mute cancels queued
+speech and Interrupt and Speak cancels the active turn before starting another capture.
+Leaving the screen, becoming inactive, or an iOS audio interruption stops microphone
+capture and speech, including a pending permission request. No always-listening or
+background capture is enabled. At the two-minute limit, capture stops and transcription goes into the editable draft; it is never automatically sent. Existing V0
+benchmark replay remains paced; conversational transcription feeds captured audio
+without replay delays. Personal speech quality and physical microphone/playback
+acceptance remain to verify on each device.

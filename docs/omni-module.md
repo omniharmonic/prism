@@ -630,3 +630,13 @@ Run Now is accepted only when Hermes reports `executed: true` and
 `execution_mode: "background"`. This confirms dispatch, not successful completion; an
 old reschedule-only response is an error. All endpoints retain the module's owner-only
 access and capped JSON handling. Physical-device interaction checks remain pending.
+
+### Installed skills
+
+The owner-only native Skills screen (Settings → Agent) reads and edits existing local
+`SKILL.md` documents. Routes `/skills`, `/skills/:id` and `PUT /skills/:id` use a configured
+server-side root, opaque IDs, bounded reads and revision-checked saves. Linked repository
+sources remain read-only; no client can choose a host path. Unconfigured roots fail
+visibly. Configuration, limits and the trusted local-admin filesystem boundary are in
+[the skills runbook](runbook/omni-skills.md). Physical interaction and live activation
+remain rollout checks; no installed skill was modified during implementation.
