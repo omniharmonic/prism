@@ -51,3 +51,13 @@ test("registration rejects browsers, non-owners and invalid data; expired/revoke
   await revokeDevice(device.id);
   assert.equal(apnsTokenForDevice(device.id), null);
 });
+
+test("push registration requires authentication, caps input and limits replacement churn", async () => {
+  assert.equal((await omniApi.request("/push", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" })).status, 401);
+  const device = issueDeviceToken(config.ownerEmail, "Omni", "omni-native");
+  assert.equal((await omniApi.request("/push", { method: "POST", headers: headers(device.token), body: JSON.stringify({ padding: "x".repeat(512 * 1024) }) })).status, 400);
+  for (let i = 0; i < 19; i++) assert.equal((await register(omniApi, "/push", device.token)).status, 200);
+  const limited = await register(omniApi, "/push", device.token);
+  assert.equal(limited.status, 429);
+  assert.ok(limited.headers.get("Retry-After"));
+});
