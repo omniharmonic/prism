@@ -1,6 +1,6 @@
 # Omni conversational voice: patient, personal, readily available
 
-Research and implementation sequence, 2026-10-10. Extends O03 in the [product roadmap](prism-omni-product-roadmap.md); does not replace other product commitments. **V10 is implemented, not yet released or physically accepted.** The last recorded mobile release is v9. V01 Apple voice selection is owner-accepted; V02 build 8 explicit-session re-listening is owner-confirmed. The owner reports that v9 Automatic mode sends the first turn from a **new voice chat opened from the toolbar**, but produces no spoken reply and does not continue. That failure reopens Automatic acceptance. V10 implements retained-controller adoption, shorter pause choices, long capture, optional acoustic interruption and experimental Mac wake entry. These are implementation checkpoints, not claims that the reported failure or physical audio behavior is resolved. V04 foreground shortcut acceptance and Mac release/acceptance remain pending.
+Research and implementation sequence, 2026-10-10. Extends O03 in the [product roadmap](prism-omni-product-roadmap.md); does not replace other product commitments. **V10 is installed on iPhone and iPad; physical acceptance and Mac rollout remain pending.** V01 Apple voice selection is owner-accepted; V02 build 8 explicit-session re-listening is owner-confirmed. The owner reports that v9 Automatic mode sends the first turn from a **new voice chat opened from the toolbar**, but produces no spoken reply and does not continue. That failure reopens Automatic acceptance. V10 implements retained-controller adoption, shorter pause choices, long capture, optional acoustic interruption and experimental Mac wake entry. These are implementation checkpoints, not claims that the reported failure or physical audio behavior is resolved. V04 foreground shortcut acceptance and Mac release/acceptance remain pending.
 
 ## Accepted baseline and remaining gap
 
@@ -116,3 +116,12 @@ Outstanding acceptance and scope:
 - Verify shortcut cold/warm launch, denied permissions, lock/authentication and shared-microphone handoff. Background/locked continuation remains a separate capability; no bypass of system authentication is promised.
 - Test experimental Mac wake misses/false wakes, media playback, global hotkey, menu state, sleep/wake, logout/quit and idle energy. Wake lead-in and a measured dedicated low-energy detector remain gaps.
 - Run the fixed listening comparison and cold/warm first-audio, download/cache, RAM, battery and soak measurements before selecting optional neural speech. Preserve outbound approval boundaries and the broader collaboration, capability-parity and onboarding roadmap.
+
+
+### Build 10 release checkpoint
+
+PR109 merged as `f9f921b2430b7c7ee10ac74333b65cf9e7402512`, tagged `omni-client-v2026.10.10-10`. Both physical mobile installations succeeded. The server remains `prism-v2026.10.10-12`; this native-only release needs no server deployment. Mac build 10 is staged on the Mini with `sign-omni-v10.sh`; signing, notarization and installation remain pending. Build 9's prior notarization submission remains in progress and is not evidence that either Mac release is installed.
+
+Validation: 197 Core tests, 24 VoiceKit tests and 10 targeted audio/layout tests passed; workspace `npm run check` passed. iOS Release and universal arm64/x86_64 Mac Release built successfully from the merged tag. Both binaries exclude DEBUG launch markers; strict iOS signature and both-device provisioning checks passed. Hosted CI was still running at this checkpoint; Rust jobs passed. Artifact hashes and install logs are in `/private/tmp/omni-client-v2026.10.10-10/release-evidence.txt`.
+
+Requested physical acceptance: start from the Today/Threads **new voice chat** entry, select Automatic with a 4-second pause, and complete two turns. Verify the first full reply is spoken, re-listening starts, and the second turn works. Keep acoustic interruption off for this baseline; test its optional speaker/headset behavior separately. Installation alone does not close the reported failure.
