@@ -1,3 +1,4 @@
+import OmniVoiceKit
 import OmniCore
 import SwiftUI
 
@@ -5,6 +6,7 @@ import SwiftUI
 public struct SettingsView: View {
     private let app: AppModel
     @State private var confirmingSignOut = false
+    @State private var showingSpeechBench = false
 
     public init(app: AppModel) {
         self.app = app
@@ -34,6 +36,10 @@ public struct SettingsView: View {
                     } message: {
                         Text("The device is revoked on the server. The server address is kept.")
                     }
+            }
+            Section("Speech Benchmark") {
+                Button("Open Local Speech Benchmark") { showingSpeechBench = true }
+                Text("Record, correct and compare on-device engines. Nothing is sent to the agent.").font(.footnote)
             }
             Section("Privacy") {
                 Toggle("Require Unlock", isOn: Binding(get: { PrivacyLock.shared.enabled }, set: { value in
@@ -66,6 +72,14 @@ public struct SettingsView: View {
                     .font(.footnote)
                     .foregroundStyle(Color.quietText)
             }
+        }
+        .sheet(isPresented: $showingSpeechBench) {
+            NavigationStack {
+                STTBench().toolbar {
+                    ToolbarItem(placement: .confirmationAction) { Button("Done") { showingSpeechBench = false } }
+                }
+            }
+            .modifier(PrivacyLockCover())
         }
         .formStyle(.grouped)
         .tint(Color.omniAccent)

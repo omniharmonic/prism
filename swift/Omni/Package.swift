@@ -1,6 +1,6 @@
 // swift-tools-version: 6.2
 // Omni — the native client for Benjamin Life's agent (macOS first, iOS compiling).
-// Builds on ../PrismKit. No third-party dependencies.
+// Builds on ../PrismKit and the local speech benchmark package.
 import PackageDescription
 
 let package = Package(
@@ -13,6 +13,7 @@ let package = Package(
     ],
     dependencies: [
         .package(path: "../PrismKit"),
+        .package(path: "../OmniVoiceKit"),
     ],
     targets: [
         // View models, stores and navigation state. No SwiftUI; tested with fake clients.
@@ -25,7 +26,7 @@ let package = Package(
             ]
         ),
         // The shared SwiftUI screens. The app target (App/, Omni.xcodeproj) is a thin shell.
-        .target(name: "OmniUI", dependencies: ["OmniCore"]),
+        .target(name: "OmniUI", dependencies: ["OmniCore", .product(name: "OmniVoiceKit", package: "OmniVoiceKit")]),
         // A command-line walk through the same calls the app makes, against the laptop dev
         // gateway only (Scripts/smoke.sh).
         .executableTarget(
