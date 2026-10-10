@@ -40,16 +40,19 @@ import OmniVoiceKit
         let url = FileManager.default.temporaryDirectory.appending(path: "omni-voice-\(UUID().uuidString).caf")
         file = url
         do {
-            let callback: (@Sendable (SpeechActivityEvent) -> Void)? = activityEnabled ? { [weak self] event in
-                Task { @MainActor in
-                    guard let self, self.generation == request else { return }
-                    switch event {
-                    case .frame(let time, let captured, let duration, let speech):
-                        self.receiveActivity?(.frame(VoiceActivityFrame(audioTime: time, capturedAt: captured, duration: duration, isSpeech: speech)))
-                    case .unavailable(let reason): self.receiveActivity?(.unavailable(reason))
-                    }
+            var callback: (@Sendable (SpeechActivityEvent) -> Void)?
+            if activityEnabled {
+                callback = { [weak self] (event: SpeechActivityEvent) in
+                    Task { @MainActor in
+                        guard let self, self.generation == request else { return }
+                        switch event {
+                        case .frame(let time, let captured, let duration, let speech):
+                            self.receiveActivity?(.frame(VoiceActivityFrame(audioTime: time, capturedAt: captured, duration: duration, isSpeech: speech)))
+                        case .unavailable(let reason): self.receiveActivity?(.unavailable(reason))
+                        }
                 }
-            } : nil
+                }
+            }
             try await audio.start(url: url, activity: callback)
             guard request == generation, !Task.isCancelled else { throw CancellationError() }
         } catch { if request == generation { cancel() }; throw error }

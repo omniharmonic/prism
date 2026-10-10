@@ -2,7 +2,7 @@ import AVFoundation
 import OmniCore
 import SwiftUI
 
-/// A persistent Think aloud session. Only explicitly committed text goes to Hermes.
+/// A persistent local voice session with explicit or opted-in automatic turn completion.
 struct ConversationVoiceControl: View {
     let session: SessionModel
     let model: ThreadModel?
@@ -96,7 +96,7 @@ struct ConversationVoiceControl: View {
     private var panelContent: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 8) {
-                Label(device.turnPreferences.mode == .thinkAloud ? "Think aloud" : "Conversation", systemImage: "waveform").font(.headline)
+                Label(voice.endpointMode == .thinkAloud ? "Think aloud" : "Conversation", systemImage: "waveform").font(.headline)
                     .fixedSize(horizontal: false, vertical: true)
                 Spacer(minLength: 0)
                 Menu {
@@ -172,7 +172,7 @@ struct ConversationVoiceControl: View {
     private var running: Bool { model?.isRunning ?? false }
     private var stateTitle: String {
         switch voice.state {
-        case .off: device.turnPreferences.mode == .thinkAloud ? "Ready to think aloud" : "Ready to talk"
+        case .off: voice.endpointMode == .thinkAloud ? "Ready to think aloud" : "Ready to talk"
         case .paused: "Session paused"
         case .speaking: "Omni is speaking"
         case .preparing: "Preparing voice"
@@ -185,7 +185,7 @@ struct ConversationVoiceControl: View {
         switch voice.state {
         case .off:
             if !voice.canStart { "Finishing speech preparation…" }
-            else if device.turnPreferences.mode == .thinkAloud { "Start a session. Silence never sends your turn." }
+            else if voice.endpointMode == .thinkAloud { "Start a session. Silence never sends your turn." }
             else { "Start a session. Your selected pause controls when each turn sends." }
         case .paused:
             if !(model?.draft ?? draft?.wrappedValue ?? "").isEmpty { "Microphone is off. Send your draft in chat, or clear it to resume listening." }
@@ -200,9 +200,11 @@ struct ConversationVoiceControl: View {
         case .speaking: "Microphone is off during playback. Listening resumes after the full reply."
         case .preparing: "Preparing speech on this device. Models may download on first use."
         case .listening:
-            device.turnPreferences.mode == .thinkAloud
-                ? "Take your time. Tap Send turn when ready. At two minutes, we pause and keep a draft."
-                : "Your turn sends after a \(Int(device.turnPreferences.pauseSeconds))-second pause and a countdown. Tap Keep listening for more time."
+            if voice.activityNotice != nil || voice.endpointMode == .thinkAloud {
+                "Take your time. Tap Send turn when ready. At two minutes, we pause and keep a draft."
+            } else {
+                "Your turn sends after a \(Int(voice.endpointPause))-second pause and a countdown. Speak again or tap Keep listening for more time."
+            }
         case .transcribing: "Recognizing your words on this device…"
         case .answering: "Microphone is off while Omni responds. Your session stays open."
         }

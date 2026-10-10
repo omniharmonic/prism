@@ -35,9 +35,9 @@ struct ConversationVoiceSettings: View {
                     }
                 } header: { Text("Conversation") } footer: {
                     if device.turnPreferences.mode == .automatic {
-                        Text("After you speak, Omni waits through the selected pause, then shows a 3-second countdown. Speak again or tap Keep listening to cancel it. Speech detection runs on this device and may download a small model on first use.")
+                        Text("After you speak, Omni waits through the selected pause, then shows a 3-second countdown. Speak again or tap Keep listening to cancel it. Speech detection runs on this device and may download a small model on first use. Changes apply when you next start or resume a session.")
                     } else {
-                        Text("Take as long as you need. Tap Send turn when you're ready for Omni to respond. Pause keeps your words as an unsent draft.")
+                        Text("Tap Send turn when you're ready for Omni to respond. Pause keeps your words as an unsent draft. At two minutes, recording pauses and saves a draft.")
                     }
                 }
                 Section {
