@@ -220,3 +220,5 @@ background capture is enabled. At the two-minute limit, capture stops and transc
 benchmark replay remains paced; conversational transcription feeds captured audio
 without replay delays. Personal speech quality and physical microphone/playback
 acceptance remain to verify on each device.
+
+Composer keys: Return sends on Mac, iPad and iPhone (the software keyboard shows Send). Shift-Return inserts a line. Pasted multiline text and input-method composition remain editing operations. On iOS, Hide Keyboard is a 44-point composer control rather than a floating keyboard toolbar. Notification-icon acceptance still requires a physical banner check; the v4 built bundle contains phone/iPad AppIcon metadata and compiled renditions.
