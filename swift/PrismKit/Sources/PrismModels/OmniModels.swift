@@ -246,6 +246,10 @@ public struct ApprovalKind: RawRepresentable, Codable, Hashable, Sendable {
     public static let calendarInvite = ApprovalKind(rawValue: "calendar-invite")
     public static let tweet = ApprovalKind(rawValue: "tweet")
     public static let walletProposal = ApprovalKind(rawValue: "wallet-proposal")
+    /// Not a draft to send: one tool call of a running turn that Hermes paused for the person
+    /// (a shell command that would reach the network, a write outside the workspace, a
+    /// scheduled job…). "Send" on it means "Approve once"; the turn then runs exactly it.
+    public static let command = ApprovalKind(rawValue: "command")
 }
 
 /// `pending → approved (claimed) → sent | failed | unknown`, or `expired`, `cancelled`,
@@ -280,7 +284,7 @@ public struct Approval: Codable, Sendable, Equatable, Identifiable {
     /// Per kind — email `{to, cc?, subject, body}`; email-reply `{noteId, expectTo, cc?,
     /// body}`; message `{roomId, body}`; calendar-invite `{title, start, end, attendees?,
     /// location?, description?}`; tweet `{text}`; wallet-proposal `{to, amount, token?,
-    /// chain, purpose}`.
+    /// chain, purpose}`; command `{tool, command?, cwd?, input?, reason, rule, title?, origin?}`.
     public let payload: JSONValue
     /// The server's digest of `{kind, payload}`; echoed back on a decision.
     public let digest: String
@@ -289,6 +293,9 @@ public struct Approval: Codable, Sendable, Equatable, Identifiable {
     public let createdAt: Date?
     public let expiresAt: Date?
     public let decidedAt: Date?
+    /// How it was decided: `session` / `device` (the person), or — for a `command` the
+    /// gateway closed itself — `turn-ended` / `withdrawn`.
+    public let decidedVia: String?
     /// The executor's outcome (`error`, `messageId`, …) once decided.
     public let result: JSONValue?
     public let supersededBy: String?

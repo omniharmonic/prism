@@ -8,18 +8,22 @@
  *   OMNI_FAKE_LLM_PORT    port (default 18651)
  *   OMNI_FAKE_LLM_QUIET=1 no request log
  *   OMNI_FAKE_LLM_TOOLS=1 also log the NAMES of the tools each request offers
+ *   OMNI_FAKE_LLM_PROBE   comma list of words: log which of them the prompt contains (never the prompt)
  *
  * What a completion does is chosen by a marker in the LAST user message:
  *
  *   (none)                    a short answer, streamed ~12 characters every 40 ms
  *   fake:slow[:<n>]           n chunks (default 60), one per second
  *   fake:silent:<seconds>     says nothing for that long, then answers (stream keepalive test)
- *   fake:tool:<name> <json>   asks for that tool with those arguments. `<name>` may be the bare
+ *   fake:tool:<name> <json>   asks for that tool with those arguments (the JSON may span lines and
+ *                             may itself contain markers — e.g. a goal handed to a sub-agent,
+ *                             which the fake model then obeys in the sub-agent). `<name>` may be the bare
  *                             name of an offered `mcp__server__tool`. A tool Hermes hides behind
  *                             its tool-search bridge is asked for through `tool_call`.
  *   fake:propose[:<kind>]     asks for `omni_propose` with a canned draft (example.com only)
  *   fake:error[:<status>]     the provider refuses the request (default 500; 401, 429, …)
  *   fake:empty                a completion with no text
+ *   fake:echo                 (with fake:tool) the answer repeats the start of the tool's result
  *   fake:then-error           (with fake:tool / fake:propose) the provider fails AFTER the tool ran
  *
  * After a tool result it answers once more, saying only whether the tool reported an error.
@@ -70,6 +74,22 @@ function callFor(tools: Tool[], want: string, args: Record<string, unknown>): { 
   return null;
 }
 
+/** Index just past the JSON object that opens at `open` (string-aware); -1 if it never closes. */
+function jsonEnd(text: string, open: number): number {
+  let depth = 0;
+  let inString = false;
+  for (let i = open; i < text.length; i++) {
+    const c = text[i]!;
+    if (inString) {
+      if (c === "\\") i++;
+      else if (c === '"') inString = false;
+    } else if (c === '"') inString = true;
+    else if (c === "{") depth++;
+    else if (c === "}" && --depth === 0) return i + 1;
+  }
+  return -1;
+}
+
 interface Plan {
   status?: number;
   text?: string;
@@ -86,16 +106,39 @@ function plan(messages: Msg[], tools: Tool[]): Plan {
   const user = [...messages].reverse().find((m) => m?.role === "user");
   const said = textOf(user?.content);
   // The LAST marker wins: Hermes merges a user message into the previous one when the turn
-  // before it left no answer (a failed run), so one message can carry two.
-  const all = [...said.matchAll(/\bfake:([a-z-]+)(?::([A-Za-z0-9_.-]+))?/gi)].filter((x) => x[1]!.toLowerCase() !== "then-error");
+  // before it left no answer (a failed run), so one message can carry two. A marker INSIDE
+  // a tool's JSON arguments is that tool's business (a delegated goal, a cron prompt), not
+  // this turn's: the JSON is skipped whole.
+  const all: Array<{ name: string; arg?: string; json?: string }> = [];
+  const re = /\bfake:([a-z-]+)(?::([A-Za-z0-9_.-]+))?/gi;
+  for (let mm = re.exec(said); mm; mm = re.exec(said)) {
+    const name = mm[1]!.toLowerCase();
+    if (name === "then-error" || name === "echo") continue;
+    const entry: { name: string; arg?: string; json?: string } = { name, arg: mm[2] };
+    if (name === "tool") {
+      const open = said.indexOf("{", re.lastIndex);
+      if (open >= 0 && /^\s*$/.test(said.slice(re.lastIndex, open))) {
+        const end = jsonEnd(said, open);
+        if (end > open) {
+          entry.json = said.slice(open, end);
+          re.lastIndex = end;
+        }
+      }
+    }
+    all.push(entry);
+  }
   const m = all.length ? all[all.length - 1]! : null;
   if (last?.role === "tool") {
     if (/\bfake:then-error\b/i.test(said)) return { marker: "after-tool-error", status: 500 };
-    const failed = /"error"|"success":\s*false|^Error/i.test(textOf(last.content).slice(0, 2000));
+    const out = textOf(last.content);
+    const failed = /"error"|"success":\s*false|^Error/i.test(out.slice(0, 2000)) && !/"exit_code":\s*0\b/.test(out.slice(0, 4000));
+    // `fake:echo`: repeat what the tool returned (the start of it), so a walk-through can see
+    // a command's output arrive in the conversation.
+    if (/\bfake:echo\b/i.test(said)) return { marker: "after-tool-echo", text: `${failed ? "The tool reported an error" : "The tool returned"}: ${out.replace(/<untrusted_tool_result[^>]*>[^\n]*\n[^\n]*\n\n/, "").replace(/\s+/g, " ").slice(0, 1500)}` };
     return { marker: "after-tool", text: failed ? "The tool reported an error, so I stopped there. Nothing was sent." : "The tool call went through. Nothing has been sent; it is waiting for your review." };
   }
-  const name = m ? m[1]!.toLowerCase() : "reply";
-  const arg = m?.[2];
+  const name = m ? m.name : "reply";
+  const arg = m?.arg;
   switch (name) {
     case "slow": {
       const n = Math.min(3600, Math.max(1, Number(arg) || 60));
@@ -114,12 +157,10 @@ function plan(messages: Msg[], tools: Tool[]): Plan {
       return { marker: call.name === "tool_call" ? "propose (through tool_call)" : "propose", tool: call };
     }
     case "tool": {
-      const rest = said.slice((m?.index ?? 0) + (m?.[0].length ?? 0));
-      const j = /\{[\s\S]*\}/.exec(rest.split("\n")[0] ?? "");
       let args: Record<string, unknown> = {};
-      if (j) {
+      if (m?.json) {
         try {
-          const v = JSON.parse(j[0]) as unknown;
+          const v = JSON.parse(m.json) as unknown;
           if (v && typeof v === "object" && !Array.isArray(v)) args = v as Record<string, unknown>;
         } catch {
           args = {};
@@ -166,6 +207,17 @@ async function completions(req: IncomingMessage, res: ServerResponse): Promise<v
   const p = stream ? plan(body.messages as Msg[], tools) : ({ marker: "aux", text: "Fake title" } satisfies Plan);
   if (!quiet) console.log(`[fake-llm] POST /v1/chat/completions stream=${stream} tools=${tools.length} → ${p.marker}`);
   if (!quiet && process.env.OMNI_FAKE_LLM_TOOLS === "1" && stream) console.log(`[fake-llm]   tools: ${tools.map((t) => t?.function?.name).join(" ")}`);
+  // OMNI_FAKE_LLM_PROBE="word,word": say which of these the prompt contains (system prompt and
+  // the newest user message apart) — to see that a surface loads its persona, skills and
+  // guidance, without logging the prompt itself.
+  const probe = (process.env.OMNI_FAKE_LLM_PROBE ?? "").split(",").map((w) => w.trim()).filter(Boolean);
+  if (!quiet && probe.length && stream) {
+    const msgs = body.messages as Msg[];
+    const sys = msgs.filter((x) => x?.role === "system").map((x) => textOf(x.content)).join("\n");
+    const usr = textOf([...msgs].reverse().find((x) => x?.role === "user")?.content);
+    const has = (t: string) => probe.filter((w) => t.toLowerCase().includes(w.toLowerCase())).join(",") || "-";
+    console.log(`[fake-llm]   prompt: system ${sys.length} chars has [${has(sys)}]; user turn has [${has(usr)}]`);
+  }
   const usage = { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 };
   if (p.status) {
     const type = p.status === 401 ? "authentication_error" : p.status === 429 ? "rate_limit_error" : "server_error";

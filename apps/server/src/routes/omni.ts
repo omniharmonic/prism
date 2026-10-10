@@ -622,6 +622,8 @@ omniApi.put("/approvals/:id", async (c) => {
   if (typeof seen !== "string" || !DIGEST_RE.test(seen)) return bad(c, "digest: the 64-hex digest of the draft you edited");
   if (a.status !== "pending") return c.json({ error: a.status === "expired" ? "expired" : "already_decided", status: a.status }, a.status === "expired" ? 410 : 409);
   if (seen !== a.digest) return c.json({ error: "digest_mismatch", detail: "the draft changed since it was shown" }, 409);
+  // A paused tool call is approved as written or not at all: Hermes is holding that exact call.
+  if (a.kind === "command") return bad(c, "a command cannot be edited: deny it and ask for another");
   let v;
   try {
     v = validatePayload(a.kind, b.payload);
@@ -677,7 +679,9 @@ async function decide(c: Context): Promise<Response> {
     publishNotice({ type: "approval", id, op: decision === "cancel" ? "cancelled" : "revised", threadId: a.threadId ?? undefined });
     let turnId: string | null = null;
     const feedback = typeof b.feedback === "string" ? b.feedback.trim().slice(0, 20_000) : "";
-    if (decision === "revise" && a.threadId && getThread(a.threadId) && feedback) {
+    // A denied tool call: the thread shows it (the turn that asked is still running).
+    if (a.kind === "command" && a.threadId && getThread(a.threadId)) emit(a.threadId, null, { t: "approval", approval: approvalView(getApproval(owner, id)!) });
+    if (decision === "revise" && a.kind !== "command" && a.threadId && getThread(a.threadId) && feedback) {
       // The feedback goes back into the thread as a turn; Hermes proposes a new draft.
       const r = startTurn(a.threadId, `Revise the ${a.kind} draft (approval ${a.id}) as follows. Propose the new draft with omni_propose; do not send anything.\n\n${feedback}`, `revise-${key}`.slice(0, 200));
       turnId = "turn" in r ? r.turn.id : "active" in r ? r.active.id : r.replay.id;
@@ -693,6 +697,14 @@ async function decide(c: Context): Promise<Response> {
   }
   if (!claimApproval(id, digest, o.via, o.device, key)) return c.json({ error: "already_decided" }, 409);
   omniAudit({ actor: owner, via: o.via, action: "approval.approve", approvalId: id, threadId: a.threadId, digest, status: "ok" });
+  if (a.kind === "command") {
+    // Nothing is executed here. The approval is now `approved`; the plugin that paused the
+    // call sees it on its next poll, lets that exact call run, and reports how it ended.
+    const approved = getApproval(owner, id)!;
+    publishNotice({ type: "approval", id, op: "approved", threadId: a.threadId ?? undefined });
+    if (a.threadId && getThread(a.threadId)) emit(a.threadId, null, { t: "approval", approval: approvalView(approved) });
+    return c.json({ approval: approvalView(approved) });
+  }
   let out: ExecOutcome;
   try {
     out = await executor({ kind: a.kind, payload: a.payload, approvalId: id, headers: forwardHeaders(c) });
@@ -799,10 +811,52 @@ omniApi.post("/hooks/propose", async (c) => {
   if (threadId) {
     ensureThread({ id: threadId, source: "hermes" });
     emit(threadId, null, { t: "approval", approval: approvalView(a) });
+    // A paused tool call: the turn is waiting for the person, and the thread says so.
+    if (a.kind === "command" && activeTurn(threadId)) emit(threadId, activeTurn(threadId)!.id, { t: "status", state: "needs-you", reason: "approval_requested" });
   }
   publishNotice({ type: "approval", id: a.id, op: "pending", threadId: threadId ?? undefined });
   pushOmni("OMNI_APPROVAL", a.id);
   return c.json({ id: a.id, digest: a.digest, status: a.status, expiresAt: new Date(a.expiresAt).toISOString() }, 201);
+});
+
+/**
+ * The plugin, while it holds a paused tool call: has the person decided? Only the status —
+ * never the payload (the plugin has it) and nothing that would let it decide for them.
+ */
+omniApi.get("/hooks/approvals/:id", (c) => {
+  expireApprovals();
+  const a = getApproval(omniConfig.ownerEmail(), c.req.param("id") ?? "");
+  if (!a || a.kind !== "command") return c.json({ error: "not_found" }, 404);
+  return c.json({ id: a.id, status: a.status, digest: a.digest, decidedVia: a.decidedVia });
+});
+
+/** The approved call ran: how it ended (`sent` = it ran, `failed` = it ran and failed). */
+omniApi.post("/hooks/approvals/:id/result", async (c) => {
+  const b = await jsonBody(c);
+  if (!b || typeof b.ok !== "boolean") return bad(c, "{ok: boolean} is required");
+  const owner = omniConfig.ownerEmail();
+  const a = getApproval(owner, c.req.param("id") ?? "");
+  if (!a || a.kind !== "command") return c.json({ error: "not_found" }, 404);
+  if (a.status !== "approved") return c.json({ error: "conflict", status: a.status }, 409);
+  finishApproval(a.id, b.ok ? "sent" : "failed", { executor: "hermes-turn", ran: true, ok: b.ok });
+  omniAudit({ actor: "hermes", via: "service-token", action: "approval.ran", approvalId: a.id, threadId: a.threadId, digest: a.digest, status: b.ok ? "sent" : "failed" });
+  const done = getApproval(owner, a.id)!;
+  publishNotice({ type: "approval", id: a.id, op: b.ok ? "sent" : "failed", threadId: a.threadId ?? undefined });
+  if (a.threadId && getThread(a.threadId)) emit(a.threadId, null, { t: "approval", approval: approvalView(done) });
+  return c.json({ id: a.id, status: done.status });
+});
+
+/** The plugin stopped waiting (nobody answered): the question is taken back. */
+omniApi.post("/hooks/approvals/:id/withdraw", async (c) => {
+  const owner = omniConfig.ownerEmail();
+  const a = getApproval(owner, c.req.param("id") ?? "");
+  if (!a || a.kind !== "command") return c.json({ error: "not_found" }, 404);
+  if (a.status === "pending" && closeApproval(a.id, "cancelled", "withdrawn", null, null)) {
+    omniAudit({ actor: "hermes", via: "service-token", action: "approval.withdraw", approvalId: a.id, threadId: a.threadId, digest: a.digest, status: "ok" });
+    publishNotice({ type: "approval", id: a.id, op: "cancelled", threadId: a.threadId ?? undefined });
+    if (a.threadId && getThread(a.threadId)) emit(a.threadId, null, { t: "approval", approval: approvalView(getApproval(owner, a.id)!) });
+  }
+  return c.json({ id: a.id, status: getApproval(owner, a.id)!.status });
 });
 
 /** Post-turn hook: Hermes finished a turn the app did not start (heartbeat, cron, /goal). */

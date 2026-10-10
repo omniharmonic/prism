@@ -54,6 +54,9 @@ export const omniConfig = {
    * `executor_disabled` and the draft stays pending.
    */
   executorsOff: (): boolean => (env("OMNI_EXECUTORS") ?? "").toLowerCase() === "off",
+  /** `OMNI_COMMAND_APPROVALS=off`: a tool call Hermes paused for approval can never be
+   *  approved (so it never runs). On by default. */
+  commandApprovalsOff: (): boolean => (env("OMNI_COMMAND_APPROVALS") ?? "").toLowerCase() === "off",
   /** Absolute path to proton_send.py. Unset = approved emails are refused (executor_disabled). */
   protonSendPath: (): string | undefined => env("OMNI_PROTON_SEND"),
   /** Python used to run it (the agent repo's venv on the Mini). */
