@@ -73,7 +73,7 @@ const PRE_SEND = [
 
 export type Spawner = (cmd: string, args: string[], o: { cwd: string; env: Record<string, string>; input: string; timeoutMs: number }) => Promise<{ code: number | null; signal: string | null; stdout: string; stderr: string; timedOut: boolean }>;
 
-const realSpawner: Spawner = (cmd, args, o) =>
+export const realSpawner: Spawner = (cmd, args, o) =>
   new Promise((resolve) => {
     const child = spawn(cmd, args, { cwd: o.cwd, env: o.env, stdio: ["pipe", "pipe", "pipe"] });
     let stdout = "";

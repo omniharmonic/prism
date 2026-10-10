@@ -70,6 +70,8 @@ export const omniConfig = {
   /** Python used to run it (the agent repo's venv on the Mini). */
   protonPython: (): string => env("OMNI_PROTON_PYTHON") ?? "python3",
   protonSendTimeoutMs: (): number => int("OMNI_PROTON_SEND_TIMEOUT_MS", 90_000),
+  tweetSendPath: (): string | undefined => env("OMNI_TWEET_SEND"),
+  tweetPython: (): string => env("OMNI_TWEET_PYTHON") ?? "python3",
   ownerEmail: (): string => config.ownerEmail,
   appOrigin: (): string => config.appOrigin,
 };

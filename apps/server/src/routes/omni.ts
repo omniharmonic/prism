@@ -75,6 +75,7 @@ import {
 } from "../omni/approvals";
 import { buildToday, localDate, validDate, type Dispatch } from "../omni/today";
 import { runProtonSend } from "../omni/proton-send";
+import { runTweetSend } from "../omni/tweet-send";
 
 import { DIALS, type InterruptContext } from "../omni/nudge-policy";
 import { priorNudgeSources, resolveNudgeSource, nudgeWeeklyAudit, latestNudgeAudit, FRESHNESS_SUBSYSTEMS, NUDGE_KINDS, upsertNudge, listNudges, getNudge, nudgeAction, nudgeSettings, setNudgeSettings, bindNudgeThread, type Candidate } from "../omni/nudges";
@@ -145,7 +146,7 @@ const liveActionExecutor: Executor = async ({ kind, payload, approvalId, headers
 const defaultExecutor: Executor = (o) =>
   (o.kind === "email" || o.kind === "email-reply") && omniConfig.emailExecutor() === "proton-send"
     ? runProtonSend(o.kind, o.payload)
-    : liveActionExecutor(o);
+    : o.kind === "tweet" ? runTweetSend(o.payload) : liveActionExecutor(o);
 let executor: Executor = defaultExecutor;
 export function setOmniExecutorForTests(e: Executor | null): void {
   executor = e ?? defaultExecutor;
