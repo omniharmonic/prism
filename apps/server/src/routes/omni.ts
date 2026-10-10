@@ -77,7 +77,7 @@ import { buildToday, localDate, validDate, type Dispatch } from "../omni/today";
 import { runProtonSend } from "../omni/proton-send";
 
 import { DIALS, type InterruptContext } from "../omni/nudge-policy";
-import { NUDGE_KINDS, upsertNudge, listNudges, getNudge, nudgeAction, nudgeSettings, setNudgeSettings, bindNudgeThread, type Candidate } from "../omni/nudges";
+import { priorNudgeSources, resolveNudgeSource, nudgeWeeklyAudit, latestNudgeAudit, NUDGE_KINDS, upsertNudge, listNudges, getNudge, nudgeAction, nudgeSettings, setNudgeSettings, bindNudgeThread, type Candidate } from "../omni/nudges";
 import { startNudgeDelivery } from "../omni/nudge-delivery";
 import { resolveNote } from "../omni/records";
 
@@ -916,6 +916,7 @@ omniApi.patch("/nudges/settings",async c=>{
  setNudgeSettings(omniConfig.ownerEmail(),{...(b.dial!==undefined?{dial:b.dial as typeof DIALS[number]}:{}),...(b.killed!==undefined?{killed:b.killed as boolean}:{})});
  const {dial,killed}=nudgeSettings(omniConfig.ownerEmail());return c.json({dial,killed});
 });
+omniApi.get("/nudges/audit",c=>c.json({report:latestNudgeAudit(omniConfig.ownerEmail())}));
 omniApi.get("/nudges/:id",c=>{const n=getNudge(omniConfig.ownerEmail(),c.req.param("id"));return n?c.json(n):c.json({error:"not_found"},404);});
 omniApi.post("/hooks/nudges",async c=>{
  const b=await jsonBody(c);if(!b)return bad(c,"JSON object required");
@@ -932,10 +933,10 @@ omniApi.post("/nudges/:id/action",async c=>{
  if(!humanOrigin(c).human)return c.json({error:"human_origin_required"},403);
  const b=await jsonBody(c);if(!b)return bad(c,"JSON object required");
  const owner=omniConfig.ownerEmail(),id=c.req.param("id");const n=getNudge(owner,id);if(!n)return c.json({error:"not_found"},404);
- if(!["noise","relevant","dismiss","snooze"].includes(String(b.action)))return bad(c,"invalid action");
+ if(!["noise","relevant","dismiss","snooze","seen"].includes(String(b.action)))return bad(c,"invalid action");
  const until=b.until;
  if(b.action==="snooze"&&(typeof until!=="number"||!Number.isSafeInteger(until)||until<=Date.now()||until>Date.now()+30*86400000))return bad(c,"until: future timestamp within 30 days");
- return c.json(nudgeAction(owner,id,b.action as "noise"|"relevant"|"dismiss"|"snooze",b.action==="snooze"?until as number:null));
+ return c.json(nudgeAction(owner,id,b.action as "noise"|"relevant"|"dismiss"|"snooze"|"seen",b.action==="snooze"?until as number:null));
 });
 
 /** Meeting evidence comes from the read-only calendar producer; Focus comes from the owner's device. */
@@ -957,6 +958,7 @@ omniApi.post("/nudges/:id/start",async c=>{
  if(!humanOrigin(c).human)return c.json({error:"human_origin_required"},403);
  const b=await jsonBody(c);if(!b||!["draft-reply","start-working"].includes(String(b.action)))return bad(c,"action: draft-reply|start-working");
  const owner=omniConfig.ownerEmail(),id=c.req.param("id"),n=getNudge(owner,id);if(!n)return c.json({error:"not_found"},404);
+ if(n.resolved)return c.json({error:"source_resolved"},409);
  const key=idemKeyOf(c);if(!key)return bad(c,"Idempotency-Key required");
  if(nudgeStarts.has(id))return c.json({error:"start_in_progress"},409);
  const work=(async()=>{
@@ -973,4 +975,24 @@ omniApi.post("/nudges/:id/start",async c=>{
   publishNotice({type:"thread",id:threadId,op:"nudge-started"});
   return c.json({threadId,turnId:"turn" in r?r.turn.id:"replay" in r?r.replay.id:r.active.id});
  })();nudgeStarts.set(id,work);try{return await work;}finally{nudgeStarts.delete(id);}
+});
+
+/** These hooks expose IDs/counts only to the already authenticated loopback producer. */
+omniApi.get("/hooks/nudges/jobs",async c=>{
+ try { const jobs=await hermes.listJobs(true);if(jobs.length>=500)return c.json({error:"jobs_incomplete"},503);
+ return c.json({complete:true,jobs:jobs.map(j=>({id:j.id,last_run_at:j.last_run_at,last_status:j.last_status}))}); }catch(e){return hermesFailure(c,e);}
+});
+omniApi.get("/hooks/nudges/sources",c=>c.json(priorNudgeSources(omniConfig.ownerEmail())));
+omniApi.post("/hooks/nudges/resolve",async c=>{
+ const b=await jsonBody(c);if(!b||b.complete!==true||!Array.isArray(b.sourceIds)||b.sourceIds.length>5000||b.sourceIds.some(id=>typeof id!=="string"||!NOTE_ID_RE.test(id)))return bad(c,"complete verified resolution IDs required");
+ for(const id of new Set(b.sourceIds as string[])){const resolved=resolveNudgeSource(omniConfig.ownerEmail(),id);if(resolved)publishNotice({type:"card",id:resolved,op:"nudge"});}
+ return c.json({resolved:new Set(b.sourceIds as string[]).size});
+});
+omniApi.post("/hooks/nudges/audit",async c=>{
+ const b=await jsonBody(c),now=Date.now();
+ if(!b||b.complete!==true||typeof b.since!=="number"||!Number.isSafeInteger(b.since)||b.since<now-8*86400000||b.since>now||!Array.isArray(b.replies)||b.replies.length>5000)return bad(c,"complete weekly reply evidence required");
+ const since=b.since;
+ if(b.replies.some(r=>!r||typeof r!=="object"||typeof r.sourceId!=="string"||!NOTE_ID_RE.test(r.sourceId)||!Number.isSafeInteger(r.repliedAt)||r.repliedAt<since||r.repliedAt>now||!Number.isSafeInteger(r.inboundAt)||r.inboundAt<since||r.inboundAt>r.repliedAt))return bad(c,"complete dated weekly reply evidence required");
+ const report=nudgeWeeklyAudit(omniConfig.ownerEmail(),b.replies as {sourceId:string;repliedAt:number;inboundAt:number}[],since,now);
+ publishNotice({type:"card",id:"nudge-audit",op:"nudge"});return c.json(report);
 });

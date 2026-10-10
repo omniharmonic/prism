@@ -1,7 +1,7 @@
 import { test, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { consequenceScore, interruptDecision, localClock, type NudgePolicyInput } from "../src/omni/nudge-policy";
-import { upsertNudge,listNudges,getNudge,setNudgeSettings,claimNudgePush,nudgeAction,resetNudgesForTests,type Candidate } from "../src/omni/nudges";
+import { resolveNudgeSource,nudgeWeeklyAudit,latestNudgeAudit,finishNudgePush,claimNudgeDigest,upsertNudge,listNudges,getNudge,setNudgeSettings,claimNudgePush,nudgeAction,resetNudgesForTests,type Candidate } from "../src/omni/nudges";
 const T=Date.parse("2026-10-10T15:00:00Z"); // 09:00 Denver
 const base:NudgePolicyInput={score:.65,priority:.4,deadline:null,urgentAt:null,surfaces:0,lastSurfaceAt:null,snoozedUntil:null,dismissed:false};
 const context={observedAt:T,inMeeting:false,focus:"none" as const};
@@ -50,4 +50,40 @@ test("nudge ledger: snoozed queue is later, Off keeps queue, persistent rate bud
  assert.ok(claimNudgePush("owner",first.id,T));assert.equal(claimNudgePush("owner",second.id,T),null);
  nudgeAction("owner",second.id,"snooze",T+86400000,T);assert.equal(listNudges("owner",false,T).length,1);assert.equal(listNudges("owner",true,T).length,1);
  setNudgeSettings("owner",{dial:"off"},T);assert.equal(listNudges("owner",false,T).length,1);
+});
+
+test("resolved sources leave both queues and cannot claim, while new verified source evidence can reopen",()=>{
+ const n=upsertNudge("owner",candidate,T);setNudgeSettings("owner",{context},T);
+ resolveNudgeSource("owner",candidate.sourceId,T+1);
+ assert.deepEqual(listNudges("owner",false,T),[]);assert.deepEqual(listNudges("owner",true,T),[]);
+ assert.equal(claimNudgePush("owner",n.id,T),null);assert.equal(claimNudgeDigest("owner",T),null);
+ assert.equal(upsertNudge("owner",candidate,T+2).id,n.id);assert.equal(listNudges("owner",false,T).length,1);
+});
+test("one grouped digest claims all items atomically and consumes one rate slot, including failed delivery",()=>{
+ setNudgeSettings("owner",{dial:"conservative",context},T);
+ const ids=["a","b","c"].map(sourceId=>upsertNudge("owner",{...candidate,sourceId},T).id);
+ const digest=claimNudgeDigest("owner",T)!;assert.deepEqual(new Set(digest.ids),new Set(ids));
+ for(const id of ids)assert.equal(getNudge("owner",id)!.surfaces,1);
+ for(const claim of digest.claims)finishNudgePush(claim,"failed");
+ upsertNudge("owner",{...candidate,sourceId:"d"},T);
+ assert.equal(claimNudgeDigest("owner",T),null);
+});
+test("weekly audit counts only owner views or delivered pushes BEFORE reply; failed claims and later views are missed",()=>{
+ const a=upsertNudge("owner",candidate,T);nudgeAction("owner",a.id,"seen",null,T+10);
+ const b=upsertNudge("owner",{...candidate,sourceId:"b"},T);nudgeAction("owner",b.id,"seen",null,T+30);
+ const c=upsertNudge("owner",{...candidate,sourceId:"c"},T);setNudgeSettings("owner",{context},T);
+ const claim=claimNudgePush("owner",c.id,T)!;finishNudgePush(claim,"failed");
+ nudgeAction("owner",a.id,"noise",null,T+40);
+ nudgeAction("owner",a.id,"seen",null,T+45); // A later re-view must not erase valid earlier catch evidence.
+ const r=nudgeWeeklyAudit("owner",[{sourceId:"source1",repliedAt:T+20},{sourceId:"b",repliedAt:T+20},{sourceId:"c",repliedAt:T+20}],T,T+50);
+ assert.equal(r.caught,1);assert.equal(r.missed,2);assert.equal(r.noise,1);assert.equal(r.replied,3);
+ assert.deepEqual(latestNudgeAudit("owner"),r);assert.equal(latestNudgeAudit("other"),null);
+});
+
+test("digest slot persists: a newly arrived item cannot create a second notification next minute",()=>{
+ setNudgeSettings("owner",{dial:"balanced",context},T);upsertNudge("owner",candidate,T);
+ const first=claimNudgeDigest("owner",T)!;for(const claim of first.claims)finishNudgePush(claim,"failed");
+ upsertNudge("owner",{...candidate,sourceId:"new"},T+60000);setNudgeSettings("owner",{context:{...context,observedAt:T+60000}},T+60000);
+ assert.equal(claimNudgeDigest("owner",T+60000),null);
+ assert.equal(listNudges("owner",false,T+60000).find(n=>n.candidate.sourceId==="new")!.surfaces,0);
 });

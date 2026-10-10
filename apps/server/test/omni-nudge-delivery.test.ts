@@ -22,7 +22,7 @@ test("nudge delivery: only Omni device/topic, ids-only standard Focus-respecting
  register("omni","a");register("prism","b");const n=upsertNudge(config.ownerEmail,candidate,T);setNudgeSettings(config.ownerEmail,{context:{observedAt:T,inMeeting:false,focus:"unknown"}},T);
  await deliverNudges(T);await deliverNudges(T);
  assert.equal(requests.length,1);assert.equal(requests[0]!.headers["apns-topic"],"com.benjaminlife.omni");
- const body=JSON.parse(requests[0]!.body);assert.equal(body.aps.category,"OMNI_NUDGE");assert.equal(body.aps["interruption-level"],"active");assert.equal(body.url,`omni://nudge/${n.id}`);
+ const body=JSON.parse(requests[0]!.body);assert.equal(body.aps.category,"OMNI_NUDGE");assert.equal(body.aps["interruption-level"],"active");assert.equal(body.url,"omni://nudge/digest");assert.deepEqual(body.ids,[n.id]);
  assert.doesNotMatch(requests[0]!.body,/PRIVATE_NAME|PRIVATE_BODY|PRIVATE_REASON|private\/source|source1/);
  assert.equal(getNudge(config.ownerEmail,n.id)!.surfaces,1);
 });
@@ -31,4 +31,16 @@ test("nudge delivery: absent Omni registrations, stale meeting evidence and kill
  await deliverNudges(T);assert.equal(getNudge(config.ownerEmail,n.id)!.surfaces,0);
  register("omni","a");await deliverNudges(T+300001);assert.equal(requests.length,0);
  setNudgeSettings(config.ownerEmail,{killed:true},T);await deliverNudges(T);assert.equal(requests.length,0);assert.equal(getNudge(config.ownerEmail,n.id)!.surfaces,0);
+});
+
+test("digest groups multiple candidates into one privacy-safe notification and urgent delivery stays single",async()=>{
+ register("omni","a");setNudgeSettings(config.ownerEmail,{context:{observedAt:T,inMeeting:false,focus:"unknown"}},T);
+ const items=["a","b","c"].map(sourceId=>upsertNudge(config.ownerEmail,{...candidate,sourceId},T));
+ await deliverNudges(T);assert.equal(requests.length,1);const payload=JSON.parse(requests[0]!.body);
+ assert.deepEqual(new Set(payload.ids),new Set(items.map(n=>n.id)));assert.equal(payload.count,3);
+ for(const n of items)assert.equal(getNudge(config.ownerEmail,n.id)!.surfaces,1);
+ assert.doesNotMatch(requests[0]!.body,/PRIVATE/);
+ const later=T+10*60000;setNudgeSettings(config.ownerEmail,{context:{observedAt:later,inMeeting:false,focus:"unknown"}},later);
+ const urgent=upsertNudge(config.ownerEmail,{...candidate,sourceId:"urgent",baseScore:.9,deadline:later+3600000},later);
+ await deliverNudges(later);assert.equal(requests.length,2);assert.equal(JSON.parse(requests[1]!.body).id,urgent.id);
 });

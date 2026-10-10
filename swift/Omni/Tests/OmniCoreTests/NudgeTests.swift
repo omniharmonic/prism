@@ -6,17 +6,18 @@ import PrismTransport
 private actor NudgeFake: NudgeService {
     var keys: [IdempotencyKey] = []
     var starts = 0
+    var seenCount = 0
     var failFirst = true
     let item: OmniNudge
     init() throws {
         item = try JSONDecoder().decode(OmniNudge.self, from: Data("""
-        {"id":"nud1","candidate":{"sourceId":"note1","sourcePath":"notes/source","kind":"reply-owed","title":"Reply owed","summary":"A question","reasons":["Waiting"],"senderId":null,"deadline":null},"score":0.7,"surfaces":0,"snoozedUntil":null,"dismissed":false,"threadId":null,"sourceLink":"https://prism.test/page/note1"}
+        {"id":"nud1","candidate":{"sourceId":"note1","sourcePath":"notes/source","kind":"reply-owed","title":"Reply owed","summary":"A question","reasons":["Waiting"],"senderId":null,"deadline":null},"updatedAt":1000,"score":0.7,"surfaces":0,"snoozedUntil":null,"dismissed":false,"threadId":null,"sourceLink":"https://prism.test/page/note1"}
         """.utf8))
     }
     func nudges(later: Bool) async throws -> [OmniNudge] { later ? [] : [item] }
     func nudgeSettings() async throws -> NudgeSettings { .init() }
     func saveNudgeSettings(_ settings: NudgeSettings) async throws -> NudgeSettings { settings }
-    func actOnNudge(_ id: String, action: NudgeAction, until: Date?) async throws -> OmniNudge { item }
+    func actOnNudge(_ id: String, action: NudgeAction, until: Date?) async throws -> OmniNudge { if action == .seen { seenCount += 1 };return item }
     func startNudge(_ id: String, action: NudgeStart, key: IdempotencyKey) async throws -> NudgeStarted {
         keys.append(key); starts += 1
         if failFirst && starts == 1 { throw URLError(.timedOut) }
@@ -24,6 +25,15 @@ private actor NudgeFake: NudgeService {
     }
 }
 @MainActor final class NudgeTests: XCTestCase {
+    func testSeenAcknowledgesEachSourceVersionOnce() async throws {
+        let fake = try NudgeFake()
+        let center = NudgeCenter(service: fake, sink: ErrorSink(onSignedOut: {}))
+        await center.markSeen("nud1", updatedAt: 1000)
+        await center.markSeen("nud1", updatedAt: 1000)
+        await center.markSeen("nud1", updatedAt: 2000)
+        let count = await fake.seenCount
+        XCTAssertEqual(count, 2)
+    }
     func testQueueAndSettingsRemainAvailableWithDialOff() async throws {
         let fake = try NudgeFake()
         let center = NudgeCenter(service: fake, sink: ErrorSink(onSignedOut: {}))

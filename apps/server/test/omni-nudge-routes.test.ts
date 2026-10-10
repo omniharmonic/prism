@@ -10,7 +10,7 @@ import { getThread,getTurn,resetOmniStoreForTests } from "../src/omni/store";
 import { config } from "../src/config";
 import { resetDb,makeSession,sessionCookie } from "./helpers";
 import { issueDeviceToken } from "../src/auth/device";
-import { resetNudgesForTests,nudgeSettings,upsertNudge,type Candidate } from "../src/omni/nudges";
+import { getNudge,resetNudgesForTests,nudgeSettings,upsertNudge,type Candidate } from "../src/omni/nudges";
 import { setOmniRecordSourcesForTests } from "../src/omni/records";
 const J={"content-type":"application/json"};
 const owner=()=>({...J,cookie:sessionCookie(makeSession(config.ownerEmail))});
@@ -71,4 +71,19 @@ test("nudge routes: a human private start binds source, retry reuses turn, no ex
   assert.equal(getTurn(started.turnId)!.status,"done");
   assert.equal(stub.sessions.size,1);
  }finally{setHermesFetchForTests(null);}
+});
+
+test("service reconciliation and audit require complete evidence, preserve partial failures and remain owner-only",async()=>{
+ const n=upsertNudge(config.ownerEmail,candidate);
+ assert.equal((await post("/hooks/nudges/resolve",{complete:false,sourceIds:["source1"]},hook)).status,400);
+ assert.equal(getNudge(config.ownerEmail,n.id)!.resolved,false);
+ assert.equal((await post("/hooks/nudges/resolve",{complete:true,sourceIds:["source1"]},owner())).status,403);
+ assert.equal((await post("/hooks/nudges/resolve",{complete:true,sourceIds:["source1"]},hook)).status,200);
+ assert.equal((await post(`/nudges/${n.id}/start`,{action:"draft-reply"},{...owner(),"idempotency-key":"resolved-start-12345"})).status,409);
+ const now=Date.now(),body={complete:true,since:now-86400000,replies:[{sourceId:"source1",inboundAt:now-3600000,repliedAt:now-1000}]};
+ assert.equal((await post("/hooks/nudges/audit",{...body,complete:false},hook)).status,400);
+ assert.equal((await post("/hooks/nudges/audit",{...body,replies:[{...body.replies[0],repliedAt:now+100000}]},hook)).status,400);
+ assert.equal((await post("/hooks/nudges/audit",body,hook)).status,200);
+ assert.equal((await omniApi.request("/nudges/audit",{headers:hook})).status,401);
+ const report=await (await omniApi.request("/nudges/audit",{headers:owner()})).json() as {report:{missed:number}};assert.equal(report.report.missed,1);
 });

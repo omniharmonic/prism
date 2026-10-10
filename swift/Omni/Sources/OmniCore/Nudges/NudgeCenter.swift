@@ -5,12 +5,15 @@ import PrismTransport
 
 public protocol NudgeService: Sendable {
     func nudges(later: Bool) async throws -> [OmniNudge]
+    func nudgeWeeklyAudit() async throws -> NudgeWeeklyAudit?
     func nudgeSettings() async throws -> NudgeSettings
     func saveNudgeSettings(_ settings: NudgeSettings) async throws -> NudgeSettings
     func actOnNudge(_ id: String, action: NudgeAction, until: Date?) async throws -> OmniNudge
     func startNudge(_ id: String, action: NudgeStart, key: IdempotencyKey) async throws -> NudgeStarted
 }
+public extension NudgeService { func nudgeWeeklyAudit() async throws -> NudgeWeeklyAudit? { nil } }
 extension LiveOmniService: NudgeService {
+    public func nudgeWeeklyAudit() async throws -> NudgeWeeklyAudit? { try await client.nudgeWeeklyAudit() }
     public func nudges(later: Bool) async throws -> [OmniNudge] { try await client.nudges(later: later) }
     public func nudgeSettings() async throws -> NudgeSettings { try await client.nudgeSettings() }
     public func saveNudgeSettings(_ settings: NudgeSettings) async throws -> NudgeSettings { try await client.saveNudgeSettings(settings) }
@@ -21,12 +24,14 @@ extension LiveOmniService: NudgeService {
 public final class NudgeCenter {
     public private(set) var items: [OmniNudge] = []
     public private(set) var later: [OmniNudge] = []
+    public private(set) var audit: NudgeWeeklyAudit?
     public private(set) var settings = NudgeSettings()
     public private(set) var phase: LoadPhase = .idle
     public private(set) var failure: String?
     public private(set) var busy: Set<String> = []
     private let service: any NudgeService
     private let sink: ErrorSink
+    @ObservationIgnored private var seen = Set<String>()
     @ObservationIgnored private var keys: [String: IdempotencyKey] = [:]
     public init(service: any NudgeService, sink: ErrorSink) { self.service = service; self.sink = sink }
     public func refresh() async {
@@ -35,9 +40,10 @@ public final class NudgeCenter {
         do {
             async let current = service.nudges(later: false)
             async let held = service.nudges(later: true)
+            async let report = service.nudgeWeeklyAudit()
             async let preferences = service.nudgeSettings()
-            let values = try await (current, held, preferences)
-            items = values.0; later = values.1; settings = values.2; phase = .loaded
+            let values = try await (current, held, preferences, report)
+            items = values.0; later = values.1; settings = values.2; audit = values.3; phase = .loaded
         } catch { phase = .failed(sink.describe(error) ?? "Couldn’t load nudges") }
     }
     public func act(_ id: String, _ action: NudgeAction, until: Date? = nil) async {
@@ -46,6 +52,12 @@ public final class NudgeCenter {
         failure = nil
         do { _ = try await service.actOnNudge(id, action: action, until: until); await refresh() }
         catch { failure = sink.describe(error) }
+    }
+    public func markSeen(_ id: String, updatedAt: Double) async {
+        let version = "\(id):\(updatedAt)"
+        guard seen.insert(version).inserted else { return }
+        do { _ = try await service.actOnNudge(id, action: .seen, until: nil) }
+        catch { seen.remove(version) }
     }
     public func start(_ id: String, _ action: NudgeStart) async -> String? {
         guard busy.insert(id).inserted else { return nil }

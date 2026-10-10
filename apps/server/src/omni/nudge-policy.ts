@@ -31,6 +31,6 @@ export function interruptDecision(n: NudgePolicyInput, context: InterruptContext
   if (clock.hour >= 21 || clock.hour < 7) return recentUrgent && !context.inMeeting ? "now" : "hold";
   if (context.inMeeting) return n.score >= .85 && deadlineToday ? "now" : "hold";
   if (n.score >= .85 && (deadlineToday || recentUrgent)) return "now";
-  // A five-minute window makes restart/timer jitter harmless. Repeat spacing prevents re-push within a slot.
+  // A five-minute window tolerates timer jitter; the persisted owner/date/hour slot claims one grouped digest.
   return [9, 11, 13, 15, 17].includes(clock.hour) && clock.minute < 5 ? "digest" : "hold";
 }

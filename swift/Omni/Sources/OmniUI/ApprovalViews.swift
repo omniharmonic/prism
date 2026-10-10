@@ -366,9 +366,19 @@ struct NeedsYouView: View {
                         }
                     }
                 }
-                if let center = session.nudges, !center.later.isEmpty {
-                    DisclosureGroup("Later", isExpanded: $showLater) {
-                        ForEach(center.later) { NudgeCardView(center: center, item: $0) }
+                if let center = session.nudges {
+                    if let audit = center.audit {
+                        DisclosureGroup("Weekly reply audit") {
+                            Text("Caught \(audit.caught) · Missed \(audit.missed) · Not important \(audit.noise)")
+                                .font(.callout).fixedSize(horizontal: false, vertical: true)
+                            Text("Caught means viewed or delivered before your reply. Missed means no such evidence. This report covers email replies with complete sent-mail evidence.")
+                                .font(.caption).foregroundStyle(Color.quietText)
+                        }
+                    }
+                    if !center.later.isEmpty {
+                        DisclosureGroup("Later", isExpanded: $showLater) {
+                            ForEach(center.later) { NudgeCardView(center: center, item: $0) }
+                        }
                     }
                 }
             }
@@ -410,6 +420,7 @@ private struct NudgeCardView: View {
         .padding().background(.background, in: RoundedRectangle(cornerRadius: 16))
         .overlay(RoundedRectangle(cornerRadius: 16).stroke(.quaternary, lineWidth: 1))
         .disabled(center.busy.contains(item.id))
+        .task(id: item.updatedAt) { await center.markSeen(item.id, updatedAt: item.updatedAt) }
     }
     @ViewBuilder private var primaryActions: some View {
         Button("Draft reply") { start(.draftReply) }.buttonStyle(.bordered).frame(minHeight: 44)
