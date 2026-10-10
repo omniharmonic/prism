@@ -17,7 +17,12 @@ final class CaptureFile: @unchecked Sendable {
     init(url: URL, format: AVAudioFormat, chunkSeconds: Double? = nil, chunkClosed: (@Sendable (URL) -> Void)? = nil) throws {
         self.chunkClosed = chunkClosed
         self.url = url; self.format = format; urls = [url]
-        chunkFrames = chunkSeconds.map { AVAudioFramePosition($0 * format.sampleRate) }
+        chunkFrames = chunkSeconds.map {
+            let bytesPerFrame = max(1, Int(format.streamDescription.pointee.mBytesPerFrame))
+            // Even a high-rate multichannel route cannot grow a single CAF
+            // beyond the disk budget before its first rotation callback.
+            return min(AVAudioFramePosition($0 * format.sampleRate), AVAudioFramePosition(16 * 1024 * 1024 / bytesPerFrame))
+        }
         file = try AVAudioFile(forWriting: url, settings: format.settings)
     }
     func recordings() -> [URL] { lock.lock(); defer { lock.unlock() }; return urls }

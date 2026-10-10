@@ -31,6 +31,7 @@ import OmniVoiceKit
     private var transcriptionTask: Task<Void, Never>?
     private var captureDeadline: Task<Void, Never>?
     private var completedText = ""
+    private var chunkPartial = ""
     private var queuedChunks = 0
     private var enqueuedChunks = Set<URL>()
     private var chunkFailure = false
@@ -84,14 +85,23 @@ import OmniVoiceKit
             await previous?.value
             guard let self, self.generation == request, !Task.isCancelled else { return }
             defer { self.queuedChunks -= 1 }
+            let prefix = self.completedText
+            self.chunkPartial = ""
             do {
-                let text = try await transcriber.transcribeConversation(file: url) { _ in }
+                let text = try await transcriber.transcribeConversation(file: url) { event in
+                    await MainActor.run {
+                        guard self.generation == request else { return }
+                        self.chunkPartial = [event.confirmed, event.volatile].filter { !$0.isEmpty }.joined(separator: " ")
+                        self.hypothesis = ConversationTranscript.join(prefix, self.chunkPartial)
+                    }
+                }
                 guard self.generation == request, !Task.isCancelled else { return }
                 self.completedText = ConversationTranscript.join(self.completedText, text)
                 self.hypothesis = self.completedText
                 try? FileManager.default.removeItem(at: url)
             } catch {
                 guard self.generation == request else { return }
+                self.completedText = ConversationTranscript.join(self.completedText, self.chunkPartial)
                 self.chunkFailure = true
                 self.recoveryNotice = "Transcription stopped. Recognized words are saved as an unsent draft; some recorded words could not be recognized."
                 self.receiveLimit?()
@@ -184,10 +194,19 @@ import OmniVoiceKit
         if !chunkFailure, let last = recordings.last, !Self.fileWasRemoved(last) {
             do {
                 if try !Self.recordingIsEmpty(last) {
-                    let text = try await engine.transcribeConversation(file: last) { _ in }
+                    chunkPartial = ""
+                    let prefix = result
+                    let text = try await engine.transcribeConversation(file: last) { event in
+                        await MainActor.run {
+                            guard self.generation == request else { return }
+                            self.chunkPartial = [event.confirmed, event.volatile].filter { !$0.isEmpty }.joined(separator: " ")
+                            self.hypothesis = ConversationTranscript.join(prefix, self.chunkPartial)
+                        }
+                    }
                     result = ConversationTranscript.join(result, text)
                 }
             } catch {
+                result = ConversationTranscript.join(result, chunkPartial)
                 if result.isEmpty { throw error }
                 recoveryNotice = "The final audio chunk could not be recognized. Earlier words are saved as an unsent draft."
             }
