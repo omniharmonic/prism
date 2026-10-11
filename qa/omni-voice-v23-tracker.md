@@ -23,4 +23,6 @@ Physical acceptance after final combined install: enable permissions and Hey Omn
 - The isolated menu-bar lifecycle harness compiled. Its eventual marker shows the label appearance callback at initial launch without opening the menu, but desktop automation failed (`stageManagerProcessNotRunning`) before close/reopen UI verification. Closed-window UI acceptance is unverified. Wake binds during Mac app initialization to the same app-owned model, independent of menu-label appearance; main-window shortcut setup remains an idempotent fallback. The final universal Release build passes after this adjustment and the toolbar fix.
 - No new app installed or notarization submitted yet. Batch remains held for integrated desktop lifecycle/Settings verification.
 
-- Toolbar fix: status text keeps its intrinsic width; Voice is icon-only; conversation title remains truncatable. Shared iOS Release compilation is in progress. Runtime glass-toolbar rendering remains unverified while desktop automation is unavailable.
+- Toolbar fix: status text keeps its intrinsic width; Voice is icon-only; conversation title remains truncatable. Shared iOS device Release compilation passed (covers iPhone/iPad targets; unsigned compile only, no installation). Runtime glass-toolbar rendering remains unverified while desktop automation is unavailable.
+
+- Source review: [PR141](https://github.com/omniharmonic/prism/pull/141), held as draft until integrated desktop acceptance.
