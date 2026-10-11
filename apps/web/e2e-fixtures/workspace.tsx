@@ -37,6 +37,11 @@ Object.assign(window, {
   prismFixtureWrites: writes, prismFixtureControls: controls, prismFixtureNotes: notes, prismFixtureOpenLink: () => navigateWikilink(httpVaultClient, "Duplicate", note => useUIStore.getState().openTab(note.id, note.path!, "document")) });
 notes.push({ id: "thread", path: "Messages/Project discussion", content: "# Project discussion\n\n[2026-10-01 10:15] @morgan:example.test: First line\nSecond line\n\n- A list\n[2026-10-01 10:20] Alex: Another thought.", tags: ["message-thread"], metadata: { type: "message-thread", platform: "telegram", ...(params.has("live") ? { matrixRoomId: "!fixture:example.test" } : {}) }, createdAt: date, updatedAt: date });
 if (params.has("canvas")) notes.push({ id: "focus-canvas", path: "Projects/Prism/Canvas fixture", content: JSON.stringify({ elements: [], appState: {} }), metadata: { type: "canvas" }, tags: ["canvas"], createdAt: date, updatedAt: date });
+// A broad active folder reproduces the work of mounting a real vault sidebar.
+if (params.has("large-navigation")) for (let i = 0; i < 1200; i++) notes.push({
+  id: `navigation-load-${i}`, path: `Projects/Prism/Load note ${String(i).padStart(4, "0")}`,
+  content: "", metadata: { type: "document" }, tags: [], createdAt: date, updatedAt: date,
+});
 const fixturePeople = [
       { updatedAt: date, canManageIdentities: !location.search.includes("people-readonly"), id: "person-a", name: "Alex Morgan", path: "People/Alex Morgan A", role: "Designer", identities: [{ kind: "email", value: "alex.design@example.test" }] },
       { updatedAt: date, canManageIdentities: !location.search.includes("people-readonly"), id: "person-b", name: "Alex Morgan", path: "People/Alex Morgan B", role: "Engineer", identities: [{ kind: "email", value: "alex.engineering@example.test" }] },

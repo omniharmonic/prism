@@ -236,3 +236,10 @@ html[data-pointer-focus="true"] .prism-workspace-shell button:focus-visible {
 /* Shared text metrics keep labels and icons centred independently of inherited body leading. */
 .tabbar-labelled, .tabbar-phone-title { line-height: 20px; }
 .tabbar-labelled > svg, .tabbar-phone-title > svg { display: block; flex-shrink: 0; }
+
+/* Keep large mobile trees available to search/accessibility while the browser
+   skips layout and paint inside rows outside the navigation scroll viewport. */
+.workspace-mobile-drawer .page-tree-row {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 44px;
+}

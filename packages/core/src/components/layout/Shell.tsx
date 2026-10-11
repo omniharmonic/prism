@@ -1,7 +1,7 @@
 import { NoteShortcutsProvider } from "../navigation/NoteShortcuts";
 import { takeAutomaticTab, useWorkspaceSession } from "../../app/hooks/useWorkspaceSession";
 import { X } from "lucide-react";
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, type RefObject } from "react";
+import { memo, startTransition, useCallback, useEffect, useLayoutEffect, useRef, useState, type RefObject } from "react";
 import { useRegionPrefs } from "../../lib/datetime/useRegionPrefs";
 import { useUIStore, persistSidebar } from "../../app/stores/ui";
 import { useKeyboardShortcuts } from "../../app/hooks/useKeyboardShortcuts";
@@ -33,7 +33,7 @@ function TrackedVaultWrites({ children }: { children: React.ReactNode }) {
 }
 
 export function Shell() {
-  return <TrackedVaultWrites><ShellLayout /></TrackedVaultWrites>;
+  return <TrackedVaultWrites><NoteShortcutsProvider><ShellLayout /></NoteShortcutsProvider></TrackedVaultWrites>;
 }
 
 function ShellLayout() {
@@ -148,7 +148,7 @@ function ShellLayout() {
   };
 
   return (
-    <NoteShortcutsProvider><div className="prism-workspace-shell flex flex-col overflow-hidden" style={rootStyle}>
+    <div className="prism-workspace-shell flex flex-col overflow-hidden" style={rootStyle}>
       {restoreNotice}
       <a className="workspace-skip-link" href="#workspace-document">Skip to document</a>
       <div ref={layoutRef} key="workspace" className="prism-workspace-layout relative flex flex-1 min-h-0">
@@ -193,11 +193,7 @@ function ShellLayout() {
             </div>
           </>
         )}
-        {isMobile && (sidebarOpen || swipe !== null) && (
-          <MobileDrawer externalRef={navigationDrawer} key="mobile-navigation" dragDistance={sidebarOpen ? undefined : swipe ?? undefined} side="left" onClose={() => useUIStore.setState({ sidebarOpen: false })}>
-            <Navigation />
-          </MobileDrawer>
-        )}
+        {isMobile && <MobileNavigation open={sidebarOpen} dragDistance={sidebarOpen ? undefined : swipe ?? undefined} drawerRef={navigationDrawer} />}
         {companionOverlay && contextPanelOpen && (
           <MobileDrawer key="mobile-panel" side="right" compact={!isMobile} onClose={() => useUIStore.setState({ contextPanelOpen: false })}>
             {close => <ContextPanel onClose={close} />}
@@ -217,7 +213,7 @@ function ShellLayout() {
       <PagesHost key="pages" />
       <ImportExportHost key="import-export" />
       <PageAgentHost key="page-agent" />
-    </div></NoteShortcutsProvider>
+    </div>
   );
 }
 
@@ -229,6 +225,30 @@ function SettingsHost() {
 
 /** Slide-in overlay panel for mobile: a backdrop that dismisses on tap plus a
  *  fixed-position drawer pinned to one edge. */
+// App's audience-keyed provider discards this cache on account/vault changes.
+const RetainedNavigation = memo(Navigation);
+const closeNavigation = () => useUIStore.setState({ sidebarOpen: false });
+function MobileNavigation({ open, dragDistance, drawerRef }: {
+  open: boolean; dragDistance?: number; drawerRef: RefObject<HTMLDialogElement | null>;
+}) {
+  const [ready, setReady] = useState(false);
+  const active = open || dragDistance !== undefined;
+  const prepare = useCallback(() => startTransition(() => setReady(true)), []);
+  useEffect(() => {
+    if (ready || active) return;
+    // Warm the closed drawer during idle time, not in the tap/drag handler.
+    if (window.requestIdleCallback) {
+      const id = window.requestIdleCallback(prepare);
+      return () => window.cancelIdleCallback(id);
+    }
+    const id = window.setTimeout(prepare, 200);
+    return () => window.clearTimeout(id);
+  }, [ready, active, prepare]);
+  return <MobileDrawer active={active} externalRef={drawerRef} dragDistance={dragDistance} side="left" onClose={closeNavigation} onEntered={prepare}>
+    {ready ? <RetainedNavigation /> : <div role="status" className="p-4 text-sm" style={{ color: "var(--text-muted)" }}>Loading navigation…</div>}
+  </MobileDrawer>;
+}
+
 function MobileDrawer({
   side,
   onClose,
@@ -236,7 +256,11 @@ function MobileDrawer({
   compact = false,
   dragDistance,
   externalRef,
+  active = true,
+  onEntered,
 }: {
+  active?: boolean;
+  onEntered?: () => void;
   externalRef?: RefObject<HTMLDialogElement | null>;
   dragDistance?: number;
   compact?: boolean;
@@ -263,33 +287,47 @@ function MobileDrawer({
     ], { duration: 240, easing: "cubic-bezier(.22,1,.36,1)", fill: "forwards" });
     void animation.finished.then(onClose).catch(() => {});
   }, [onClose, side]);
-  useLayoutEffect(() => {
+  useLayoutEffect(() => () => {
     const dialog = dialogRef.current;
-    previousFocus.current = document.activeElement as HTMLElement | null;
-    return () => {
-      dialog?.close();
+    if (dialog?.open) {
+      dialog.close();
       if (previousFocus.current?.isConnected) previousFocus.current.focus({ preventScroll: true });
-    };
-  }, []);
+    }
+  }, [dialogRef]);
   useLayoutEffect(() => {
     const dialog = dialogRef.current;
     if (!dialog) return;
+    if (!active) {
+      if (dialog.open) {
+        dialog.close();
+        if (previousFocus.current?.isConnected) previousFocus.current.focus({ preventScroll: true });
+      }
+      dialog.getAnimations().forEach(animation => animation.cancel());
+      dialog.style.transform = "";
+      closing.current = false;
+      return;
+    }
     if (dragging) {
-      // A non-modal preview must not steal the ongoing touch from the editor.
+      // Non-modal preview preserves the original touch target.
       dialog.setAttribute("open", "");
     } else {
+      previousFocus.current = document.activeElement as HTMLElement | null;
       const from = getComputedStyle(dialog).transform;
       dialog.close();
       dialog.style.transform = "";
       dialog.style.transition = "none";
       dialog.showModal();
       dialog.focus({ preventScroll: true });
-      if (!reduceMotion()) dialog.animate([
-        { transform: from === "none" ? `translateX(${side === "left" ? "-100%" : "100%"})` : from },
-        { transform: "translateX(0)" },
-      ], { duration: 320, easing: "cubic-bezier(.22,1,.36,1)" });
+      if (reduceMotion()) onEntered?.();
+      else {
+        const animation = dialog.animate([
+          { transform: from === "none" ? `translateX(${side === "left" ? "-100%" : "100%"})` : from },
+          { transform: "translateX(0)" },
+        ], { duration: 320, easing: "cubic-bezier(.22,1,.36,1)" });
+        void animation.finished.then(() => onEntered?.()).catch(() => {});
+      }
     }
-  }, [dragging, side]);
+  }, [active, dragging, side, onEntered]);
   useLayoutEffect(() => {
     if (dragDistance === undefined || !dialogRef.current) return;
     const dialog = dialogRef.current;
@@ -298,7 +336,7 @@ function MobileDrawer({
   }, [dragDistance]);
   useEffect(() => {
     const dialog = dialogRef.current;
-    if (!dialog || dragging) return;
+    if (!dialog || !active || dragging) return;
     const direction = side === "left" ? -1 : 1;
     let start: { x: number; y: number; at: number } | null = null;
     let claimed = false;
@@ -309,8 +347,8 @@ function MobileDrawer({
       claimed = false;
       const touch = event.touches[0];
       const target = event.target as Element | null;
-      if (event.touches.length !== 1 || !touch || window.getSelection()?.toString() ||
-          target?.closest("input, textarea, select, [contenteditable], [role=slider], canvas, [data-no-edge-swipe]")) { cancel(); return; }
+      if (target?.closest("dialog") !== dialog || event.touches.length !== 1 || !touch || window.getSelection()?.toString() ||
+          target?.closest("input, textarea, select, [contenteditable], [role=slider], canvas, .prism-swipe-row, [data-no-edge-swipe]")) { cancel(); return; }
       for (let node: Element | null = target; node && node !== dialog; node = node.parentElement) {
         if (node.scrollWidth > node.clientWidth + 1 && /(auto|scroll)/.test(getComputedStyle(node).overflowX)) { cancel(); return; }
       }
@@ -350,9 +388,9 @@ function MobileDrawer({
       dialog.removeEventListener("touchstart", begin); dialog.removeEventListener("touchmove", move, true);
       dialog.removeEventListener("touchend", end, true); dialog.removeEventListener("touchcancel", cancel);
     };
-  }, [side, close, dragging]);
+  }, [side, close, dragging, active]);
   return (
-    <dialog ref={dialogRef} tabIndex={-1} data-dragging={dragging || undefined} className="workspace-mobile-drawer" data-side={side} aria-label={side === "left" ? "Workspace navigation" : "Document panel"}
+    <dialog ref={dialogRef} tabIndex={-1} inert={!active} data-dragging={dragging || undefined} className="workspace-mobile-drawer" data-side={side} aria-label={side === "left" ? "Workspace navigation" : "Document panel"}
       onCancel={(event) => { event.preventDefault(); close(); }}
       onClick={(event) => { if (event.target === event.currentTarget) close(); }}
       style={{ left: side === "left" ? 0 : "auto", right: side === "right" ? 0 : "auto", width: side === "right" ? (compact ? "min(420px, 100vw)" : "100%") : "min(88vw, 360px)" }}>
@@ -524,7 +562,7 @@ function useEdgeSwipe(enabled: boolean, drawer: RefObject<HTMLDialogElement | nu
         if (start.navigation) {
           const distance = Math.max(0, t.clientX - start.x);
           const node = drawer.current;
-          if (node) {
+          if (node?.open) {
             node.style.transition = "none";
             node.style.transform = `translateX(${Math.min(0, distance - node.offsetWidth)}px)`;
           } else setActive(distance);
