@@ -77,7 +77,7 @@ import XCTest
         audio.interruption?(.speech)
         XCTAssertEqual(voice.state, .answering)
         XCTAssertEqual(audio.silenced, silenceCount)
-        voice.agentDidComplete([.streamingText(id: "reply", text: "Reply continues", final: true)])
+        voice.agentDidComplete([.streamingText(id: "reply", text: "Reply continues", isFinal: true)])
         while audio.playback == nil { await Task.yield() }
         XCTAssertEqual(audio.speech, ["Reply continues"])
         audio.playback?.resume()

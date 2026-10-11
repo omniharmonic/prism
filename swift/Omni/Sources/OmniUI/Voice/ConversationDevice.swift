@@ -107,7 +107,7 @@ import OmniVoiceKit
         file = url
         do {
             let callback: (@Sendable (SpeechActivityEvent) -> Void)? = activityEnabled ? Self.activityCallback(for: self, request: request) : nil
-            try await audio.startVerified(url: url, chunkSeconds: 60, chunkClosed: Self.chunkCallback(for: self, request: request), activity: callback, firstTap: Self.firstTapCallback(for: self, request: request), configurationChanged: Self.configurationCallback(for: self, request: request))
+            try await audio.startVerified(url: url, chunkSeconds: 60, chunkClosed: Self.chunkCallback(for: self, request: request), activity: callback, firstTap: Self.firstTapCallback(for: self, request: request), configurationChanged: Self.configurationCallback(for: self, request: request), retrying: { VoiceDiagnostics.record(.captureStartupRetry) })
             captureDeadline = Task { [weak self] in
                 do { try await Task.sleep(for: .seconds(900)) } catch { return }
                 guard let self, self.generation == request else { return }
