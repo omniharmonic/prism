@@ -2,6 +2,10 @@
 
 Owner accepted build17 iOS voice behavior and closed the reported session/playback troubleshooting. Owner prefers retained Kokoro af_heart audition over Hermes Microsoft TTS and requests implementation. Preserve the accepted session state machine.
 
+## Current production checkpoint
+
+Kokoro is active on the Mini after the owner upgraded it to macOS27.0.1. The full post-upgrade soak and authenticated WAV/cancellation smoke passed. Mobile18 is installed; physical Kokoro conversation acceptance is pending. Mac18 notarization remains In Progress, so no new Mac installation or wake acceptance is claimed. See the final receipt below; earlier sections retain their historical rollout state.
+
 ## Implementation
 
 - Optional registered `kokoro-local` provider, paired-server synthesis with explicit disclosure,160 UTF16-character chunks, fixed af_heart,24kHz PCM16 WAV. Existing authentication/CSRF/scoped cancellation remain. Apple fallback only; saved explicit Apple/Edge choices preserved. New installs default Kokoro.
@@ -36,3 +40,17 @@ Mini Software Update offers Tahoe26.7.1 and major27.0.1; prefer the offered26.x 
 ## Mini soak completed; OS update pause
 
 The isolated Mini worker passed171 synthetic requests over919seconds, including a full15-minute active test, exited0, and is confirmed stopped. Cold readiness14,322ms; `getrusage` child peakRSS694,501,376bytes. All responses were bounded valid nonsilent24kHz PCM WAV. No private text/microphone/agent traffic, production activation or OS mutation occurred. Receipt preserved in `tools/voice-evaluation/kokoro-worker/mini-soak-summary-20261010.json`. Owner offered a macOS update and has been asked to install Tahoe26.7.1 at this clean pause point; await signed-in readiness before rechecking services and enabling server16/Kokoro.
+
+## Post-upgrade production activation
+
+Owner reported Mini online after upgrading to macOS27.0.1. Live/vault health passed. The isolated worker then passed164 synthetic replies over922seconds (full15-minute active window), exited0, cold-ready19,617ms, child peakRSS466,698,240bytes. All responses were bounded valid nonsilent24kHz PCM WAV. Old26.5.2 evidence is preserved separately. New receipt: `tools/voice-evaluation/kokoro-worker/mini-soak-macos27-summary-20261010.json`.
+
+The parent deployed `prism-v2026.10.10-16` through dry-run/apply with backup and health checks; deployment log `/Users/benjaminlife/deploy-state/prism-20261011T033526Z.log`. During the soak a concurrent release advanced production to `prism-v2026.10.10-17` / `cb59bbb487` (Prism visual polish plus documentation). Inspected the two intervening commits: Kokoro/backend activation code was unchanged. Preserved17 and reran its tagged runtime preflight; no rollback or overwrite.
+
+Named configuration helper dry-run/apply set only the two Kokoro paths. Private backup: `/Users/benjaminlife/dev/prism/apps/server/omni-tts-config-backups/20261011T035121.602267Z`. No template present. Configuration-only `pm2 restart prism-server` omitted `--update-env`; process start changed. Live/vault health, no newly failing sources, and final desktop independence passed. Matrix intermittently reported a pre-existing fetch failure during baseline checks; final activation checks were healthy. Activation receipt: `/Users/benjaminlife/deploy-state/kokoro-activation-20261011T035121Z.log`.
+
+Existing Edge smoke also passed after activation: MP3 40,320bytes in961ms, scoped cancellation409 and cleanup200.
+
+Authenticated Kokoro smoke passed: provider metadata200, valid WAV277,244bytes in1,429ms, cancellation200, cancelled request409, final cleanup200. Exact short-lived synthetic owner session was removed. No microphone/private text or agent dispatch. Physical quality/long reply/interruption acceptance requested in existing mobile18 via Voice → options → Voice & Playback → Kokoro · your server; saved prior provider choices are preserved.
+
+Mac18 submission `3db229f4-915b-4ca0-859e-26a020abac3e` remains In Progress as of2026-10-11T03:52Z. No duplicate upload, stapling, installation or Gatekeeper bypass. Mac wake is implemented but physically unaccepted: menu/hotkey first, then opt-in Experimental Hey Omni with microphone/Speech permissions; wait for Listening after the wake phrase because lead-in audio is not retained. iPhone notification logo remains owner-accepted; iPad restart/retest is pending.
