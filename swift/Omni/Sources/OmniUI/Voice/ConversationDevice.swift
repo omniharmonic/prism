@@ -62,7 +62,16 @@ import OmniVoiceKit
         replySpeechNotice = nil; replySpeechSessionID = UUID().uuidString
         replyCatalogGeneration = nil; replyServiceRevision += 1
     }
-    private var edgeProvider: VoiceProvider? { replyProviders.first { $0.id == "hermes-edge" && $0.available } }
+    private func remoteProvider(_ preference: ReplySpeechPreferences.Provider) -> VoiceProvider? {
+        replyProviders.first { $0.id == preference.rawValue && $0.available }
+    }
+    private func makeReplyProvider(_ preference: ReplySpeechPreferences.Provider, sessionID: String) -> (any ReplySpeechProvider)? {
+        guard preference != .apple, let service = replySpeechService, let metadata = remoteProvider(preference) else { return nil }
+        let saved = preference == .kokoro ? replyPreferences.kokoroVoiceID : replyPreferences.edgeVoiceID
+        let voiceID = metadata.voices.first { $0.id == saved }?.id ?? metadata.defaultVoiceID
+        return HermesReplySpeechProvider(service: service, sessionID: sessionID, voiceID: voiceID, providerID: metadata.id, diagnostic: diagnostic)
+    }
+    private func providerName(_ preference: ReplySpeechPreferences.Provider) -> String { preference == .kokoro ? "Kokoro" : "Hermes" }
     private var monitoringPlayback = false
     private var playbackMonitorReady = false
     private var nearEndDuration = 0.0
@@ -318,26 +327,25 @@ import OmniVoiceKit
             guard let self, self.generation == request, isCurrent() else { return }
             guard let preparation = self.speech.reserveReplyPreparation(owner: self.recordingOwner) else { return }
             defer { self.speech.releaseReplyPreparation(preparation) }
-            if preference == .hermesEdge, self.replyCatalogGeneration != request { await self.refreshReplyProviders() }
+            if preference != .apple, self.replyCatalogGeneration != request { await self.refreshReplyProviders() }
             guard self.generation == request, isCurrent() else { return }
             var provider: any ReplySpeechProvider
-            if preference == .hermesEdge, let service = self.replySpeechService, let metadata = self.edgeProvider {
-                let voiceID = metadata.voices.contains(where: { $0.id == self.replyPreferences.edgeVoiceID }) ? self.replyPreferences.edgeVoiceID! : metadata.defaultVoiceID
-                provider = HermesEdgeReplySpeechProvider(service: service, sessionID: sessionID, voiceID: voiceID, diagnostic: self.diagnostic)
+            if let remote = self.makeReplyProvider(preference, sessionID: sessionID) {
+                provider = remote
             } else {
                 provider = AppleReplySpeechProvider()
-                if preference == .hermesEdge { self.diagnostic(.appleFallback); self.replySpeechNotice = "Hermes speech is unavailable. Using the Apple voice on this device." }
+                if preference != .apple { self.diagnostic(.appleFallback); self.replySpeechNotice = "\(self.providerName(preference)) speech is unavailable. Using the Apple voice on this device." }
             }
-            let passages = ReplySpeechPassages.split(text)
+            let passages = ReplySpeechPassages.split(text, maxCharacters: preference == .apple ? 4000 : min(4000, max(1, self.remoteProvider(preference)?.maxCharacters ?? 4000)))
             guard !passages.isEmpty else { self.replySpeechNotice = "This reply could not be prepared for speech. Read it in chat."; return }
             for passage in passages {
                 guard self.generation == request, isCurrent() else { return }
                 var rendered: ReplySpeechRendering
                 do { rendered = try await provider.render(passage) }
                 catch {
-                    guard self.generation == request, isCurrent() else { return }
+                    guard !Task.isCancelled, !(error is CancellationError), self.generation == request, isCurrent() else { return }
                     self.diagnostic(.appleFallback)
-                    self.replySpeechNotice = "Hermes speech could not be generated. Using the Apple voice on this device."
+                    self.replySpeechNotice = "\(self.providerName(preference)) speech could not be generated. Using the Apple voice on this device."
                     provider = AppleReplySpeechProvider()
                     rendered = .systemVoice(passage)
                 }
@@ -390,7 +398,8 @@ import OmniVoiceKit
     func previewVoice(identifier: String?) {
         stopPreview()
         guard !narrationWork.isBusy else { return }
-        guard replyPreferences.provider == .hermesEdge else {
+        let preference = replyPreferences.provider
+        guard preference != .apple else {
             speech.preview(owner: replyPreviewOwner, identifier: identifier, rate: speechPreferences.rate); return
         }
         guard let lease = speech.reservePreview(owner: replyPreviewOwner, cancel: { [weak self] in self?.replyPreviewTask?.cancel() }) else { return }
@@ -401,12 +410,10 @@ import OmniVoiceKit
             defer { if self.generation == request { self.replyIsPreviewing = false } }
             await self.refreshReplyProviders()
             guard !Task.isCancelled, self.generation == request, self.speech.ownsPreview(lease, owner: self.replyPreviewOwner) else { return }
-            guard let service = self.replySpeechService, let metadata = self.edgeProvider else {
-                self.replySpeechNotice = "Hermes speech is unavailable. Previewing the Apple voice."
+            guard let provider = self.makeReplyProvider(preference, sessionID: UUID().uuidString) else {
+                self.replySpeechNotice = "\(self.providerName(preference)) speech is unavailable. Previewing the Apple voice."
                 self.speech.preview(owner: self.replyPreviewOwner, identifier: identifier, rate: self.speechPreferences.rate); return
             }
-            let voiceID = metadata.voices.first { $0.id == self.replyPreferences.edgeVoiceID }?.id ?? metadata.defaultVoiceID
-            let provider = HermesEdgeReplySpeechProvider(service: service, sessionID: UUID().uuidString, voiceID: voiceID, diagnostic: self.diagnostic)
             do {
                 let rendered = try await provider.render("Hello, I'm Omni. Take your time. We can think this through together.")
                 guard !Task.isCancelled, self.generation == request, self.speech.ownsPreview(lease, owner: self.replyPreviewOwner) else { return }
@@ -418,8 +425,8 @@ import OmniVoiceKit
                     await self.speech.waitForPlayback(owner: self.replyPreviewOwner)
                 }
             } catch {
-                guard !Task.isCancelled, self.generation == request else { return }
-                self.replySpeechNotice = "Hermes speech could not be previewed. Using the Apple voice."
+                guard !Task.isCancelled, !(error is CancellationError), self.generation == request else { return }
+                self.replySpeechNotice = "\(self.providerName(preference)) speech could not be previewed. Using the Apple voice."
                 self.speech.preview(owner: self.replyPreviewOwner, identifier: identifier, rate: self.speechPreferences.rate)
             }
         }

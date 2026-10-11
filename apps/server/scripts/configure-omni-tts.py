@@ -12,16 +12,28 @@ from pathlib import Path
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--server-dir", type=Path, required=True)
-parser.add_argument("--hermes-root", type=Path, required=True)
-parser.add_argument("--python", type=Path, required=True)
+parser.add_argument("--hermes-root", type=Path)
+parser.add_argument("--python", type=Path)
+parser.add_argument("--kokoro-executable", type=Path)
+parser.add_argument("--kokoro-cache", type=Path)
 parser.add_argument("--apply", action="store_true")
 args = parser.parse_args()
-values = {"OMNI_TTS_HERMES_ROOT": str(args.hermes_root), "OMNI_TTS_PYTHON": str(args.python)}
-for path in (args.server_dir, args.hermes_root, args.python):
+values = {}
+if bool(args.hermes_root) != bool(args.python) or bool(args.kokoro_executable) != bool(args.kokoro_cache):
+    parser.error("supply both paths for each selected provider")
+if args.hermes_root:
+    values.update(OMNI_TTS_HERMES_ROOT=str(args.hermes_root), OMNI_TTS_PYTHON=str(args.python))
+if args.kokoro_executable:
+    values.update(OMNI_TTS_KOKORO_EXECUTABLE=str(args.kokoro_executable), OMNI_TTS_KOKORO_CACHE=str(args.kokoro_cache))
+if not values:
+    parser.error("select Hermes or Kokoro configuration")
+for path in [args.server_dir, *map(Path, values.values())]:
     if not path.is_absolute() or not path.exists() or not re.fullmatch(r"/[A-Za-z0-9_./-]+", str(path)):
         parser.error("existing absolute paths with no dotenv metacharacters required")
-if not (args.hermes_root / "tools/tts_tool.py").is_file() or not args.python.is_file():
+if args.hermes_root and (not (args.hermes_root / "tools/tts_tool.py").is_file() or not args.python.is_file()):
     parser.error("installed Hermes generator and Python required")
+if args.kokoro_executable and (not args.kokoro_executable.is_file() or not os.access(args.kokoro_executable, os.X_OK) or not args.kokoro_cache.is_dir()):
+    parser.error("executable Kokoro worker and cache directory required")
 target = args.server_dir / (".env.tmpl" if (args.server_dir / ".env.tmpl").exists() else ".env")
 if target.is_symlink() or not target.is_file():
     parser.error("regular existing environment/template file required")

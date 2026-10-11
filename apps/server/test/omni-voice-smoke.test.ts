@@ -67,3 +67,19 @@ test("smoke fixture crosses actual owner auth and synthesis routes with an ephem
     assert.ok(created); assert.equal(getSession(created), null);
   } finally { if (created) destroySession(created); setVoiceProviderForTests(null); }
 });
+
+test("Kokoro smoke verifies local WAV and scoped cancellation", async () => {
+  const f = fixture(); const original = f.deps.fetch;
+  f.deps.fetch = async (url, init) => {
+    if (init.method === "GET") return Response.json({ providers: [{ id: "kokoro-local", available: true, defaultVoiceID: "af_heart" }] });
+    const response = await original(url, init);
+    if (init.method === "POST" && response.status === 200) {
+      const payload = JSON.parse(String(init.body));
+      assert.equal(payload.providerID, "kokoro-local"); assert.equal(payload.voiceID, "af_heart");
+      const wav = Buffer.alloc(46); wav.write("RIFF"); wav.write("WAVE", 8);
+      return new Response(wav, { headers: { "content-type": "audio/wav" } });
+    }
+    return response;
+  };
+  await verifyOmniTTS(f.deps, "kokoro-local"); assert.equal(f.sessions.size, 0);
+});

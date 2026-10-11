@@ -30,6 +30,26 @@ import OmniClient
         XCTAssertEqual(request.sessionID, sessionID); XCTAssertNotNil(UUID(uuidString: request.requestID))
         XCTAssertEqual(request.providerID, "hermes-edge"); XCTAssertEqual(request.voiceID, "en-US-AriaNeural")
     }
+    func testKokoroUsesCatalogProviderAndHeartVoice() async throws {
+        let service = Service()
+        let provider = HermesReplySpeechProvider(service: service, sessionID: "session", voiceID: "af_heart", providerID: "kokoro-local", diagnostic: { _ in })
+        _ = try await provider.render("Take your time.")
+        let request = await service.requests.first!
+        XCTAssertEqual(request.providerID, "kokoro-local")
+        XCTAssertEqual(request.voiceID, "af_heart")
+        XCTAssertEqual(request.text, "Take your time.")
+    }
+    func testExistingHermesChoiceIsPreserved() {
+        let name = "ReplySpeechPreferencesTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: name)!
+        defer { defaults.removePersistentDomain(forName: name) }
+        defaults.set("hermes-edge", forKey: "omni.replySpeech.provider")
+        XCTAssertEqual(ReplySpeechPreferences(defaults: defaults).provider, .hermesEdge)
+        let preferences = ReplySpeechPreferences(defaults: defaults)
+        XCTAssertEqual(preferences.kokoroVoiceID, "af_heart")
+        preferences.kokoroVoiceID = "af_bella"
+        XCTAssertEqual(ReplySpeechPreferences(defaults: defaults).kokoroVoiceID, "af_bella")
+    }
     func testCancellationCancelsExactRemoteRequestAndCannotDeliverAudio() async {
         let service = Service(); await service.setHold()
         let sessionID = UUID().uuidString
@@ -50,14 +70,17 @@ import OmniClient
         XCTAssertEqual(chunks.joined(), text)
         XCTAssertTrue(chunks.allSatisfy { !$0.isEmpty && $0.utf16.count <= 4000 })
         XCTAssertEqual(ReplySpeechPassages.split("short"), ["short"])
+        let kokoroChunks = ReplySpeechPassages.split(text, maxCharacters: 160)
+        XCTAssertEqual(kokoroChunks.joined(), text)
+        XCTAssertTrue(kokoroChunks.allSatisfy { !$0.isEmpty && $0.utf16.count <= 160 })
     }
-    func testMigrationPrefersHermesButPreservesExplicitAppleAndDownloadedVoice() {
+    func testNewInstallPrefersKokoroButPreservesExplicitAppleAndDownloadedVoice() {
         let name = "ReplySpeechPreferencesTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: name)!
         defer { defaults.removePersistentDomain(forName: name) }
         defaults.set("downloaded-premium", forKey: "omni.speech.voice")
         let preferences = ReplySpeechPreferences(defaults: defaults)
-        XCTAssertEqual(preferences.provider, .hermesEdge)
+        XCTAssertEqual(preferences.provider, .kokoro)
         preferences.provider = .apple
         XCTAssertEqual(ReplySpeechPreferences(defaults: defaults).provider, .apple)
         XCTAssertEqual(defaults.string(forKey: "omni.speech.voice"), "downloaded-premium")
