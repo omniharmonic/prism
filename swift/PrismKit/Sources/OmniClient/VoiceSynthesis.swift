@@ -6,11 +6,17 @@ extension OmniClient {
         try await transport.send(.get("/api/omni/voice/providers"))
     }
     public func synthesizeVoice(_ request: VoiceSynthesisRequest) async throws -> Data {
+        let contentType: String
+        switch request.providerID {
+        case "hermes-edge": contentType = "audio/mpeg"
+        case "kokoro-local": contentType = "audio/wav"
+        default: throw PrismError.invalidRequest("Unsupported speech provider.")
+        }
         guard request.text.utf16.count <= 4000, !request.text.isEmpty else { throw PrismError.invalidRequest("The speech passage is too long or empty.") }
         var call = try PrismRequest.json("POST", "/api/omni/voice/synthesis", body: request)
         call.timeout = 40
         let response: PrismResponse = try await transport.send(call)
-        guard response.header("Content-Type")?.split(separator: ";").first?.trimmingCharacters(in: .whitespaces) == "audio/mpeg",
+        guard response.header("Content-Type")?.split(separator: ";").first?.trimmingCharacters(in: .whitespaces) == contentType,
               !response.body.isEmpty, response.body.count <= 10 * 1024 * 1024 else {
             throw PrismError.decoding("The speech server returned unsupported or oversized audio.")
         }

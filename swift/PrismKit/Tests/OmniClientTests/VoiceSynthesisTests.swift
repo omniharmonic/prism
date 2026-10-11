@@ -38,6 +38,33 @@ final class VoiceSynthesisTests: XCTestCase {
         do { _ = try await client.synthesizeVoice(tooLong); XCTFail("UTF-16 limit must reject this text") } catch {}
         XCTAssertEqual(server.requests.count, 1)
     }
+    func testKokoroAcceptsOnlyWAVAndProviderContentTypesCannotCross() async throws {
+        for (provider, type, succeeds) in [
+            ("kokoro-local", "audio/wav; charset=binary", true),
+            ("kokoro-local", "audio/mpeg", false),
+            ("hermes-edge", "audio/wav", false),
+            ("unknown", "audio/wav", false)
+        ] {
+            let (client, server) = try make { _ in
+                .response(status: 200, headers: ["Content-Type": type, "Cache-Control": "no-store"], chunks: [Data([1, 2, 3])])
+            }
+            let request = VoiceSynthesisRequest(sessionID: UUID().uuidString, requestID: UUID().uuidString, providerID: provider, voiceID: "af_heart", text: "Hello")
+            do {
+                let data = try await client.synthesizeVoice(request)
+                XCTAssertTrue(succeeds); XCTAssertEqual(data, Data([1, 2, 3]))
+            } catch { XCTAssertFalse(succeeds) }
+            XCTAssertEqual(server.requests.count, provider == "unknown" ? 0 : 1)
+        }
+    }
+    func testKokoroRejectsEmptyAndOversizedAudio() async throws {
+        for body in [Data(), Data(repeating: 0, count: 10 * 1024 * 1024 + 1)] {
+            let (client, _) = try make { _ in
+                .response(status: 200, headers: ["Content-Type": "audio/wav", "Cache-Control": "no-store"], chunks: [body])
+            }
+            let request = VoiceSynthesisRequest(sessionID: UUID().uuidString, requestID: UUID().uuidString, providerID: "kokoro-local", voiceID: "af_heart", text: "Hello")
+            do { _ = try await client.synthesizeVoice(request); XCTFail("Audio must be nonempty and bounded") } catch {}
+        }
+    }
     func testProviderMetadataDecodesAvailabilityAndCloudDisclosure() async throws {
         let (client, _) = try make { _ in .json(200, #"{"providers":[{"id":"hermes-edge","name":"Hermes · Microsoft Edge","available":true,"cloud":true,"disclosure":"Reply text is sent to Microsoft","defaultVoiceID":"en-US-AriaNeural","voices":[{"id":"en-US-AriaNeural","name":"Aria","language":"en-US"}],"maxCharacters":4000,"maxAudioBytes":10485760}]}"#) }
         let catalog = try await client.voiceProviders()

@@ -229,7 +229,7 @@ import OmniVoiceKit
         if duplex != nil {
             // Decode in bounded frames and use the same voice-processing output
             // reference as Apple PCM. Never leave downloaded speech in a cache.
-            let url = FileManager.default.temporaryDirectory.appending(path: "omni-reply-\(UUID().uuidString).mp3")
+            let url = FileManager.default.temporaryDirectory.appending(path: "omni-reply-\(UUID().uuidString).audio")
             guard FileManager.default.createFile(atPath: url.path, contents: data, attributes: [.posixPermissions: 0o600]) else {
                 throw VoiceFailure.unavailable("Speech audio could not be prepared.")
             }
