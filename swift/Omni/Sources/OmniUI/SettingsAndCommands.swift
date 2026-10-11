@@ -60,6 +60,20 @@ public struct SettingsView: View {
                 }
                     .accessibilityIdentifier("settings.voice")
             }
+            #if os(macOS)
+            Section("Hey Omni on this Mac") {
+                MacWakeControls()
+                Text("While Omni is running and signed in, say Hey Omni to open voice, then wait for Listening before speaking your request. Works in the background with the window closed; pauses when locked, asleep, or in a voice conversation.")
+                    .font(.footnote)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text("Wake recognition runs on this Mac. It keeps the microphone active and uses more energy while enabled. Ambient wake audio is not sent to the agent.")
+                    .font(.footnote)
+                    .foregroundStyle(Color.quietText)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text(MacVoiceShortcut.shared.available ? "Global shortcut: ⌃⌥⌘Space" : "Global shortcut unavailable — use Talk to Omni in the menu bar")
+                    .font(.footnote)
+            }
+            #endif
             Section("Speech Benchmark") {
                 Button("Open Local Speech Benchmark") { showingSpeechBench = true }
                 Text("Record, correct and compare on-device engines. Nothing is sent to the agent.").font(.footnote)

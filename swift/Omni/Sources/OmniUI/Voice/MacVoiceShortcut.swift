@@ -42,12 +42,22 @@ public struct MacVoiceMenu: View {
         Button("Talk to Omni") { MacVoiceShortcut.shared.activate() }
         Text(MacVoiceShortcut.shared.available ? "Global shortcut: ⌃⌥⌘Space" : "Global shortcut unavailable — use Talk to Omni")
         Divider()
-        Toggle("Experimental Hey Omni", isOn: Binding(get: { MacWakeListener.shared.enabled }, set: { MacWakeListener.shared.enabled = $0 }))
-        Text(MacWakeListener.shared.status)
-        Text("Listen for Hey Omni on this Mac. Uses more energy while enabled.")
+        MacWakeControls()
+        Text("Wake recognition stays on this Mac. Keeps the microphone active and uses more energy while enabled.")
         Button("Open Omni") { openWindow(id: "main"); NSApplication.shared.activate() }
         Divider()
         Button("Quit Omni") { NSApplication.shared.terminate(nil) }
+    }
+}
+
+/// Shared controls keep menu and Settings opt-in and readiness status consistent.
+struct MacWakeControls: View {
+    var body: some View {
+        Toggle("Experimental Hey Omni", isOn: Binding(get: { MacWakeListener.shared.enabled }, set: { MacWakeListener.shared.enabled = $0 }))
+            .accessibilityIdentifier("wake.enabled")
+        Text(MacWakeListener.shared.status)
+            .accessibilityLabel("Hey Omni status: \(MacWakeListener.shared.status)")
+            .accessibilityIdentifier("wake.status")
     }
 }
 

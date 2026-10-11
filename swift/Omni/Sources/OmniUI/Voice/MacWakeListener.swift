@@ -37,12 +37,15 @@ private final class WakeAudioSink: @unchecked Sendable {
     private var tapped = false
     private var eligible = false
     private var gate = WakeListeningGate()
-    private var scenes: [UUID: Bool] = [:]
+    private weak var boundApp: AppModel?
     private var sleeping = false
     private var userSessionActive = true
     private var epoch = WakeRecognitionEpoch()
     private var rollover: Task<Void, Never>?
     private var authorization: Task<Void, Never>?
+    private var authorizationToken: UUID?
+    private var retryTask: Task<Void, Never>?
+    private var recovery = WakeRecoveryPolicy()
     private var observers: [NSObjectProtocol] = []
     private init() {
         enabled = UserDefaults.standard.bool(forKey: "omni.experimentalHeyOmni")
@@ -58,47 +61,86 @@ private final class WakeAudioSink: @unchecked Sendable {
                 Task { @MainActor in self.userSessionActive = active; self.reconcile() }
             })
         }
+        observers.append(NotificationCenter.default.addObserver(forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main) { _ in
+            // Permission changes in System Settings do not change app readiness.
+            // Recheck on return without cancelling a pending recovery cooldown.
+            Task { @MainActor in self.reconcile() }
+        })
         observers.append(NotificationCenter.default.addObserver(forName: .AVAudioEngineConfigurationChange, object: engine, queue: .main) { _ in
-            Task { @MainActor in self.stop(); self.reconcile() }
+            Task { @MainActor in
+                guard self.recognition != nil || self.retryTask != nil else { return }
+                self.stop(); self.scheduleRecovery()
+            }
         })
     }
-    public func update(scene: UUID, eligible: Bool) {
-        scenes[scene] = eligible
-        self.eligible = scenes.values.contains(true)
+    /// App-lifetime readiness survives closing the main window. Observation is
+    /// rearmed after every change, including conversation microphone release.
+    public func bind(app: AppModel) {
+        guard boundApp !== app else { return }
+        boundApp = app
+        observeReadiness()
+    }
+    private func observeReadiness() {
+        guard let app = boundApp else { return }
+        withObservationTracking {
+            eligible = app.phase == .signedIn && !PrivacyLock.shared.locked
+            _ = VoiceMicrophoneCoordinator.shared.conversationOwner
+        } onChange: { [weak self] in
+            Task { @MainActor in self?.observeReadiness() }
+        }
         reconcile()
     }
-    public func remove(scene: UUID) {
-        scenes[scene] = nil
-        eligible = scenes.values.contains(true)
-        reconcile()
-    }
-    private func reconcile() {
+    private func updateGate() {
+        if let app = boundApp { eligible = app.phase == .signedIn && !PrivacyLock.shared.locked }
         gate.update(enabled: enabled, ready: eligible && userSessionActive, sleeping: sleeping,
                     conversationActive: VoiceMicrophoneCoordinator.shared.conversationOwner != nil)
+    }
+    private func reconcile() {
+        updateGate()
         guard gate.canListen else {
-            authorization?.cancel(); authorization = nil
+            authorization?.cancel(); authorization = nil; authorizationToken = nil
+            if recognition != nil || retryTask != nil { VoiceDiagnostics.record(.wakePaused) }
+            cancelRecovery()
             stop(); status = !enabled ? "Off" : sleeping ? "Paused while Mac sleeps" : "Paused"; return
         }
-        guard recognition == nil, authorization == nil else { return }
+        guard recognition == nil, authorization == nil, retryTask == nil else { return }
+        guard AVCaptureDevice.authorizationStatus(for: .audio) != .denied,
+              AVCaptureDevice.authorizationStatus(for: .audio) != .restricted,
+              SFSpeechRecognizer.authorizationStatus() != .denied,
+              SFSpeechRecognizer.authorizationStatus() != .restricted else {
+            VoiceDiagnostics.record(.wakePermissionDenied)
+            status = "Microphone or speech permission denied"; return
+        }
         let permissionToken = gate.permissionRequest()
+        authorizationToken = permissionToken
         authorization = Task {
+            defer {
+                // A cancelled old prompt must never clear a newer prompt's slot.
+                if authorizationToken == permissionToken {
+                    authorization = nil; authorizationToken = nil
+                }
+            }
             let mic = await AVCaptureDevice.requestAccess(for: .audio)
             let speech = await withCheckedContinuation { continuation in
                 SFSpeechRecognizer.requestAuthorization { continuation.resume(returning: $0) }
             }
+            updateGate()
             guard !Task.isCancelled, gate.acceptsPermission(permissionToken) else { return }
-            authorization = nil
-            guard enabled, eligible, !sleeping, VoiceMicrophoneCoordinator.shared.conversationOwner == nil else { return }
-            guard mic, speech == .authorized else { status = "Microphone or speech permission denied"; return }
+            authorization = nil; authorizationToken = nil
+            guard gate.canListen else { return }
+            guard mic, speech == .authorized else {
+                VoiceDiagnostics.record(.wakePermissionDenied)
+                status = "Microphone or speech permission denied"; return
+            }
             start()
         }
     }
     private func start() {
         let recognizer = SFSpeechRecognizer(locale: Locale(identifier: "en-US"))
         guard let recognizer, recognizer.isAvailable, recognizer.supportsOnDeviceRecognition else {
-            status = "On-device recognition unavailable"; return
+            scheduleRecovery(reason: "On-device recognition unavailable"); return
         }
-        guard VoiceMicrophoneCoordinator.shared.acquireWake(owner: owner, onPreempt: { [weak self] in self?.stop(); self?.status = "Paused for conversation" }) else { return }
+        guard VoiceMicrophoneCoordinator.shared.acquireWake(owner: owner, onPreempt: { [weak self] in self?.cancelRecovery(); self?.stop(); self?.status = "Paused for conversation" }) else { return }
         self.recognizer = recognizer
         let request = SFSpeechAudioBufferRecognitionRequest()
         request.requiresOnDeviceRecognition = true
@@ -106,39 +148,64 @@ private final class WakeAudioSink: @unchecked Sendable {
         self.request = request
         let sink = WakeAudioSink(request); audioSink = sink
         let token = epoch.begin()
+        let startedAt = ProcessInfo.processInfo.systemUptime
         let input = engine.inputNode
         let format = input.outputFormat(forBus: 0)
-        guard format.sampleRate > 0, format.channelCount > 0 else { stop(); status = "Microphone unavailable"; return }
+        guard format.sampleRate > 0, format.channelCount > 0 else { stop(); scheduleRecovery(reason: "Microphone unavailable"); return }
         input.installTap(onBus: 0, bufferSize: 1024, format: format, block: Self.audioTap(sink))
         tapped = true
-        recognition = recognizer.recognitionTask(with: request, resultHandler: Self.recognitionCallback { [weak self] wake, finished in
+        recognition = recognizer.recognitionTask(with: request, resultHandler: Self.recognitionCallback { [weak self] wake, finished, failed in
             guard let self, self.epoch.isCurrent(token) else { return }
                 if wake {
                     guard self.epoch.consumeWake(token) else { return }
+                    VoiceDiagnostics.record(.wakeDetected)
                     self.stop(); self.status = "Opening conversation"
                     MacVoiceShortcut.shared.activate()
                 } else if finished {
-                    self.stop(); self.status = "Recognition ended — toggle to retry"
+                    self.stop()
+                    self.scheduleRecovery(normalCompletion: !failed, elapsedSeconds: ProcessInfo.processInfo.systemUptime - startedAt)
                 }
         })
         do {
-            engine.prepare(); try engine.start(); status = "Listening locally (experimental)"
+            engine.prepare(); try engine.start(); VoiceDiagnostics.record(.wakeStarted); status = "Listening locally (experimental)"
             rollover = Task { [weak self] in
                 try? await Task.sleep(for: .seconds(50))
                 guard !Task.isCancelled, let self, self.epoch.isCurrent(token) else { return }
-                self.stop(); self.reconcile()
+                VoiceDiagnostics.record(.wakeRollover)
+                self.recovery.stable(); self.stop(); self.reconcile()
             }
         }
-        catch { stop(); status = "Microphone unavailable" }
+        catch { stop(); scheduleRecovery(reason: "Microphone unavailable") }
+    }
+    private func cancelRecovery() {
+        retryTask?.cancel(); retryTask = nil
+        recovery.cancel()
+    }
+    private func scheduleRecovery(reason: String = "Recognition ended", normalCompletion: Bool = false, elapsedSeconds: TimeInterval = 0) {
+        cancelRecovery()
+        updateGate()
+        guard gate.canListen else { reconcile(); return }
+        let retry = recovery.ended(normally: normalCompletion, elapsedSeconds: elapsedSeconds)
+        VoiceDiagnostics.record(retry.coolingDown ? .wakeCooldown : .wakeRetry)
+        status = "\(reason) — \(retry.coolingDown ? "cooling down" : "retrying") in \(retry.delaySeconds)s"
+        retryTask = Task { [weak self] in
+            do { try await Task.sleep(for: .seconds(retry.delaySeconds)) }
+            catch { return }
+            guard !Task.isCancelled, let self,
+                  self.recovery.consume(retry, allowed: self.gate.canListen) else { return }
+            self.retryTask = nil
+            self.reconcile()
+        }
     }
     nonisolated private static func audioTap(_ sink: WakeAudioSink) -> AVAudioNodeTapBlock {
         { buffer, _ in sink.append(buffer) }
     }
-    nonisolated private static func recognitionCallback(_ deliver: @escaping @MainActor @Sendable (Bool, Bool) -> Void) -> @Sendable (SFSpeechRecognitionResult?, (any Error)?) -> Void {
+    nonisolated private static func recognitionCallback(_ deliver: @escaping @MainActor @Sendable (Bool, Bool, Bool) -> Void) -> @Sendable (SFSpeechRecognitionResult?, (any Error)?) -> Void {
         { result, error in
             let wake = result.map { WakePhraseMatcher.matches($0.bestTranscription.formattedString) } ?? false
-            let finished = result?.isFinal == true || error != nil
-            Task { @MainActor in deliver(wake, finished) }
+            let failed = error != nil
+            let finished = result?.isFinal == true || failed
+            Task { @MainActor in deliver(wake, finished, failed) }
         }
     }
     private func stop() {
@@ -152,19 +219,4 @@ private final class WakeAudioSink: @unchecked Sendable {
     }
 }
 
-public struct MacWakeReadiness: ViewModifier {
-    let app: AppModel
-    @State private var scene = UUID()
-    public init(app: AppModel) { self.app = app }
-    public func body(content: Content) -> some View {
-        content.onAppear { update() }
-            .onChange(of: app.phase) { update() }
-            .onChange(of: PrivacyLock.shared.locked) { update() }
-            .onChange(of: VoiceMicrophoneCoordinator.shared.conversationOwner) { update() }
-            .onDisappear { MacWakeListener.shared.remove(scene: scene) }
-    }
-    private func update() {
-        MacWakeListener.shared.update(scene: scene, eligible: app.phase == .signedIn && !PrivacyLock.shared.locked)
-    }
-}
 #endif
