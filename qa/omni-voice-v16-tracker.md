@@ -17,3 +17,12 @@ The 37 KB synthetic MP3 is a test-only resource. Tests decode every frame with b
 Both short and long replies must finish their last words and return to Listening on physical devices, including after interruption. The underlying audio configuration stop on a separate capture remains open; do not conflate it with this reproduced decoder bug. V03 routes/echo/soak, V04 activation, V05 wake lead-in/energy, and modular local-model quality gates remain in the canonical voice roadmap. No backend/vault changes.
 
 Integrated verification: 219 Core + 42 UI tests passed in `/private/tmp/omni-v16-native-tests.log`; focused speech log `/private/tmp/omni-v16-speech-tests.log`. Source release guard and diff checks passed. Physical acceptance remains pending.
+
+## Tagged release candidates
+
+PR #121 merged as `aa8301a7`, tag `omni-client-v2026.10.10-16`. iOS and universal Mac Release builds passed; signature (iOS), identity/version, DEBUG exclusion, and synthetic test-fixture exclusion verified. Artifacts are at `/private/tmp/omni-client-v2026.10.10-16`:
+
+- `ios.zip`: `06c028fcd7e31d8e34eed8c68c5cb0410a5a6352e9f151264faf7bfbcaee1449`.
+- `mac-unsigned.zip`: `83e5d50c6823d3ae19ef506a453eed2bdf67e08998b34f3666ad6d1017452914` (local unsigned candidate only).
+
+Logs: `/private/tmp/omni-v16-ios-release.log`, `/private/tmp/omni-v16-mac-release.log`. Device readiness requested; installation/physical acceptance not yet claimed. GitHub repository CI still pending at packaging, separate from passing local native tests. Existing Mac 13 notarization remains In Progress at the latest check; no duplicate submission or desktop installation. Mobile 15 remains the last confirmed installed build.
