@@ -1,4 +1,5 @@
 import { useEffect, useId, useRef, useState, type ReactNode, type RefObject } from "react";
+import { useSurfaceDismiss } from "./useSurfaceDismiss";
 import { X } from "lucide-react";
 import "./mobile-workspace.css";
 
@@ -25,7 +26,7 @@ function sections(items: SheetItem[]): Array<{ label?: string; items: SheetItem[
   return out;
 }
 
-/** A modal mobile action surface. Only the handle can dismiss by dragging;
+/** A modal mobile action surface. The handle and heading can dismiss by dragging;
  * scrolling a long document list never turns into an accidental dismissal. */
 export function BottomSheet({
   open,
@@ -46,9 +47,7 @@ export function BottomSheet({
 }) {
   const titleId = useId();
   const dialog = useRef<HTMLDialogElement>(null);
-  const [dragY, setDragY] = useState(0);
-  const startY = useRef<number | null>(null);
-  const dragDistance = useRef(0);
+  const dismiss = useSurfaceDismiss(dialog, open, ".prism-mobile-sheet-handle, .prism-mobile-sheet-heading", onClose);
   const [viewport, setViewport] = useState<{ height: number; bottom: number } | null>(null);
 
   useEffect(() => {
@@ -56,9 +55,6 @@ export function BottomSheet({
     const element = dialog.current;
     const previous = document.activeElement as HTMLElement | null;
     const overflow = document.body.style.overflow;
-    setDragY(0);
-    startY.current = null;
-    dragDistance.current = 0;
     document.body.style.overflow = "hidden";
     element?.showModal();
     const vv = window.visualViewport;
@@ -89,11 +85,6 @@ export function BottomSheet({
   }, [open, returnFocusRef]);
 
   if (!open) return null;
-  const resetDrag = () => {
-    startY.current = null;
-    dragDistance.current = 0;
-    setDragY(0);
-  };
   return (
     <dialog
       ref={dialog}
@@ -107,7 +98,7 @@ export function BottomSheet({
       onCancel={(event) => {
         event.preventDefault();
         event.stopPropagation();
-        onClose();
+        dismiss();
       }}
       onClick={(event) => {
         const rect = event.currentTarget.getBoundingClientRect();
@@ -118,7 +109,7 @@ export function BottomSheet({
             event.clientY < rect.top ||
             event.clientY > rect.bottom)
         )
-          onClose();
+          dismiss();
       }}
       onKeyDown={(event) => {
         if ((event.target as HTMLElement).closest("dialog") !== event.currentTarget) return;
@@ -142,33 +133,17 @@ export function BottomSheet({
     >
       <div
         className="prism-mobile-sheet-panel"
-        style={{ transform: dragY ? `translateY(${dragY}px)` : undefined }}
       >
         <div
           className="prism-mobile-sheet-handle"
           aria-hidden="true"
-          onTouchStart={(event) => {
-            startY.current = event.touches[0].clientY;
-            dragDistance.current = 0;
-          }}
-          onTouchMove={(event) => {
-            if (startY.current !== null) {
-              dragDistance.current = Math.max(0, event.touches[0].clientY - startY.current);
-              setDragY(dragDistance.current);
-            }
-          }}
-          onTouchEnd={() => {
-            const dismiss = dragDistance.current > 90;
-            resetDrag();
-            if (dismiss) onClose();
-          }}
-          onTouchCancel={resetDrag}
+
         >
           <span />
         </div>
         <header className="prism-mobile-sheet-heading">
           <h2 id={titleId}>{title || "Page actions"}</h2>
-          <button type="button" aria-label="Close sheet" onClick={onClose}>
+          <button type="button" aria-label="Close sheet" onClick={dismiss}>
             <X size={18} />
           </button>
         </header>

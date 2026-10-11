@@ -58,8 +58,7 @@
    One rule each, on the motion tokens (so both reduced-motion switches zero them). Fade only where
    the surface is positioned with its own transform or is a full-screen layer (a transform there
    would re-anchor its fixed children for the length of the animation). `:where()` keeps the
-   generic dialog rule at zero specificity: any surface with its own entrance keeps it. Nothing
-   animates on the way out — a closed popup is gone at once and can catch no tap. */
+   generic dialog rule at zero specificity: any surface with its own entrance keeps it. Sheets and drawers own their interactive exit animations; other popups close immediately. */
 @keyframes prism-toast-in {
   from { opacity: 0; transform: translate(-50%, 8px); }
   to { opacity: 1; transform: translate(-50%, 0); }
@@ -233,3 +232,7 @@ html[data-pointer-focus="true"] .prism-workspace-shell button:focus-visible {
   html .prism-compact-select::after { content: ""; position: absolute; right: 10px; width: 5px; height: 5px; border-right: 1.5px solid var(--text-secondary); border-bottom: 1.5px solid var(--text-secondary); transform: translateY(-2px) rotate(45deg); pointer-events: none; }
   html .prism-compact-select select { appearance: none; -webkit-appearance: none; min-height: 44px !important; height: 44px; padding: 0 26px 0 10px !important; background: transparent !important; border: 0 !important; margin: 0; line-height: normal; }
 }
+
+/* Shared text metrics keep labels and icons centred independently of inherited body leading. */
+.tabbar-labelled, .tabbar-phone-title { line-height: 20px; }
+.tabbar-labelled > svg, .tabbar-phone-title > svg { display: block; flex-shrink: 0; }

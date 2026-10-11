@@ -18,7 +18,7 @@ async function swipe(locator: Locator) {
       ["touchend", 230],
     ] as const) {
       const event = new Event(type, { bubbles: true });
-      Object.defineProperty(event, "touches", { value: type === "touchend" ? [] : [{ clientY: y }] });
+      Object.defineProperty(event, "touches", { value: type === "touchend" ? [] : [{ clientX: 140, clientY: y }] });
       element.dispatchEvent(event);
     }
   });

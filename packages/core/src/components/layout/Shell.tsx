@@ -1,7 +1,7 @@
 import { NoteShortcutsProvider } from "../navigation/NoteShortcuts";
 import { takeAutomaticTab, useWorkspaceSession } from "../../app/hooks/useWorkspaceSession";
 import { X } from "lucide-react";
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type RefObject } from "react";
 import { useRegionPrefs } from "../../lib/datetime/useRegionPrefs";
 import { useUIStore, persistSidebar } from "../../app/stores/ui";
 import { useKeyboardShortcuts } from "../../app/hooks/useKeyboardShortcuts";
@@ -91,7 +91,8 @@ function ShellLayout() {
     return () => { window.removeEventListener("prism:note-confirmed", confirmed); window.removeEventListener("prism:note-discarded", discarded); };
   }, [queryClient]);
   const peek = useSidebarPeek(!isMobile && !sidebarOpen && !focusMode);
-  const swipe = useEdgeSwipe(isMobile && !sidebarOpen);
+  const navigationDrawer = useRef<HTMLDialogElement>(null);
+  const swipe = useEdgeSwipe(isMobile && !sidebarOpen, navigationDrawer);
   useEffect(() => {
     const pointer = () => { document.documentElement.dataset.pointerFocus = "true"; };
     const keyboard = () => { delete document.documentElement.dataset.pointerFocus; };
@@ -193,13 +194,13 @@ function ShellLayout() {
           </>
         )}
         {isMobile && (sidebarOpen || swipe !== null) && (
-          <MobileDrawer key="mobile-navigation" dragDistance={sidebarOpen ? undefined : swipe ?? undefined} side="left" onClose={() => useUIStore.setState({ sidebarOpen: false })}>
+          <MobileDrawer externalRef={navigationDrawer} key="mobile-navigation" dragDistance={sidebarOpen ? undefined : swipe ?? undefined} side="left" onClose={() => useUIStore.setState({ sidebarOpen: false })}>
             <Navigation />
           </MobileDrawer>
         )}
         {companionOverlay && contextPanelOpen && (
           <MobileDrawer key="mobile-panel" side="right" compact={!isMobile} onClose={() => useUIStore.setState({ contextPanelOpen: false })}>
-            <ContextPanel />
+            {close => <ContextPanel onClose={close} />}
           </MobileDrawer>
         )}
         {isMobile && <MobileActionBar key="mobile-actions" />}
@@ -234,14 +235,17 @@ function MobileDrawer({
   children,
   compact = false,
   dragDistance,
+  externalRef,
 }: {
+  externalRef?: RefObject<HTMLDialogElement | null>;
   dragDistance?: number;
   compact?: boolean;
   side: "left" | "right";
   onClose: () => void;
-  children: React.ReactNode;
+  children: React.ReactNode | ((close: () => void) => React.ReactNode);
 }) {
-  const dialogRef = useRef<HTMLDialogElement>(null);
+  const ownRef = useRef<HTMLDialogElement>(null);
+  const dialogRef = externalRef ?? ownRef;
   const previousFocus = useRef<HTMLElement | null>(null);
   const closing = useRef(false);
   const dragging = dragDistance !== undefined;
@@ -250,9 +254,11 @@ function MobileDrawer({
     const dialog = dialogRef.current;
     if (!dialog || closing.current) return;
     closing.current = true;
+    const from = getComputedStyle(dialog).transform;
+    dialog.getAnimations().forEach(animation => animation.cancel());
     if (reduceMotion()) { onClose(); return; }
     const animation = dialog.animate([
-      { transform: getComputedStyle(dialog).transform },
+      { transform: from },
       { transform: `translateX(${side === "left" ? "-100%" : "100%"})` },
     ], { duration: 240, easing: "cubic-bezier(.22,1,.36,1)", fill: "forwards" });
     void animation.finished.then(onClose).catch(() => {});
@@ -275,6 +281,7 @@ function MobileDrawer({
       const from = getComputedStyle(dialog).transform;
       dialog.close();
       dialog.style.transform = "";
+      dialog.style.transition = "none";
       dialog.showModal();
       dialog.focus({ preventScroll: true });
       if (!reduceMotion()) dialog.animate([
@@ -291,11 +298,14 @@ function MobileDrawer({
   }, [dragDistance]);
   useEffect(() => {
     const dialog = dialogRef.current;
-    if (!dialog || side !== "left" || dragging) return;
+    if (!dialog || dragging) return;
+    const direction = side === "left" ? -1 : 1;
     let start: { x: number; y: number; at: number } | null = null;
     let claimed = false;
+    let origin = 0;
     const cancel = () => { start = null; claimed = false; dialog.style.transform = ""; dialog.style.transition = reduceMotion() ? "none" : "transform 240ms cubic-bezier(.22,1,.36,1)"; };
     const begin = (event: TouchEvent) => {
+      if (closing.current) return;
       claimed = false;
       const touch = event.touches[0];
       const target = event.target as Element | null;
@@ -309,19 +319,28 @@ function MobileDrawer({
     const move = (event: TouchEvent) => {
       const touch = event.touches[0];
       if (!start || event.touches.length !== 1 || !touch) { cancel(); return; }
-      const dx = start.x - touch.clientX;
-      if (dx >= 12 && Math.abs(touch.clientY - start.y) < dx * .6) claimed = true;
-      if (claimed) { if (event.cancelable) event.preventDefault(); event.stopPropagation(); dialog.style.transition = "none"; dialog.style.transform = `translateX(${-Math.max(0, dx)}px)`; }
+      const dx = (touch.clientX - start.x) * direction;
+      if (!claimed && dx >= 12 && Math.abs(touch.clientY - start.y) < dx * .6) {
+        origin = new DOMMatrixReadOnly(getComputedStyle(dialog).transform).m41;
+        dialog.getAnimations().forEach(animation => animation.cancel());
+        claimed = true;
+      }
+      if (claimed) { if (event.cancelable) event.preventDefault(); event.stopPropagation(); dialog.style.transition = "none"; dialog.style.transform = `translateX(${origin + direction * Math.max(0, dx)}px)`; }
       if (Math.abs(touch.clientY - start.y) > 24 && Math.abs(touch.clientY - start.y) > Math.abs(touch.clientX - start.x)) cancel();
     };
     const end = (event: TouchEvent) => {
       const touch = event.changedTouches[0], began = start;
       if (claimed) { if (event.cancelable) event.preventDefault(); event.stopPropagation(); }
-      const offset = dialog.style.transform;
+      if (began && touch && claimed && !window.getSelection()?.toString()) {
+        const distance = (touch.clientX - began.x) * direction;
+        if (distance >= SWIPE_PX && Math.abs(touch.clientY - began.y) < distance * .6) {
+          start = null;
+          claimed = false;
+          close();
+          return;
+        }
+      }
       cancel();
-      if (!began || !touch || window.getSelection()?.toString()) return;
-      const distance = began.x - touch.clientX;
-      if (distance >= SWIPE_PX && Math.abs(touch.clientY - began.y) < distance * .6 && performance.now() - began.at <= 900) { dialog.style.transform = offset; close(); }
     };
     dialog.addEventListener("touchstart", begin, { passive: true });
     dialog.addEventListener("touchmove", move, { passive: false, capture: true });
@@ -343,7 +362,7 @@ function MobileDrawer({
           <button type="button" aria-label="Close navigation" onClick={close}
             className="interactive flex items-center justify-center" style={{ width: 44, height: 44 }}><X size={20} /></button>
         </div>}
-        <div className="flex-1 min-h-0">{children}</div>
+        <div className="flex-1 min-h-0">{typeof children === "function" ? children(close) : children}</div>
       </div>
     </dialog>
   );
@@ -458,7 +477,7 @@ function useSidebarPeek(enabled: boolean) {
 const NAV_EDGE_PX = 14;
 const EDGE_PX = 32;
 const SWIPE_PX = 64;
-function useEdgeSwipe(enabled: boolean): number | null {
+function useEdgeSwipe(enabled: boolean, drawer: RefObject<HTMLDialogElement | null>): number | null {
   const [active, setActive] = useState<number | null>(null);
   useEffect(() => {
     if (!enabled) { setActive(null); return; }
@@ -502,7 +521,14 @@ function useEdgeSwipe(enabled: boolean): number | null {
       if (!t || e.touches.length !== 1) { tracking = false; setActive(null); return; }
       if (t.clientX - start.x >= 12 && Math.abs(t.clientY - start.y) < (t.clientX - start.x) * .6) claimed = true;
       if (claimed) {
-        if (start.navigation) setActive(Math.max(0, t.clientX - start.x));
+        if (start.navigation) {
+          const distance = Math.max(0, t.clientX - start.x);
+          const node = drawer.current;
+          if (node) {
+            node.style.transition = "none";
+            node.style.transform = `translateX(${Math.min(0, distance - node.offsetWidth)}px)`;
+          } else setActive(distance);
+        }
         if (e.cancelable) e.preventDefault();
         e.stopPropagation();
       }
@@ -518,7 +544,7 @@ function useEdgeSwipe(enabled: boolean): number | null {
       tracking = false;
       const dx = t.clientX - began.x;
       const dy = Math.abs(t.clientY - began.y);
-      if (dx < SWIPE_PX || dy > dx * 0.6 || performance.now() - began.at > 900) { retract(); return; }
+      if (dx < SWIPE_PX || dy > dx * 0.6 || (!began.navigation && performance.now() - began.at > 900)) { retract(); return; }
       if (window.getSelection()?.toString()) { retract(); return; }
       setActive(null);
       const ui = useUIStore.getState();

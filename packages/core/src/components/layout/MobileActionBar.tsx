@@ -1,3 +1,4 @@
+import { flushSync } from "react-dom";
 import { isVaultNoteId } from "../../lib/noteIdentity";
 import { useCallback, useRef, useState, type RefObject } from "react";
 import { useSoftKeyboard } from "../../lib/softKeyboard";
@@ -71,9 +72,10 @@ export function MobileActionBar() {
   const isFav = isRealNote && favoriteIds.includes(activeTab!.noteId);
 
   const openPanel = (tab: "metadata" | "agent" | "history") => {
+    // Finish the sheet focus cleanup before the drawer captures its return target.
+    flushSync(() => setMoreOpen(false));
     setContextPanelTab(tab);
     if (!contextPanelOpen) toggleContextPanel();
-    setMoreOpen(false);
   };
 
   const openNew = useCallback(() => setNewOpen(true), []);
