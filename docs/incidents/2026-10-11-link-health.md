@@ -22,3 +22,7 @@ worker/health.ts maps any non-ok link-health result to config.workerFailStreak. 
 - Review active tasks with missing project references separately, matching only proven existing targets and retaining intentional standalone tasks.
 
 The prior frontend refinements remain separate and are not implicated by this evidence.
+
+## Implemented follow-up
+
+PR #133 adds separately sampled active and terminal task cohorts. `task.project` and its resolved-value metric now measure active work; `task.history.project` and its resolved-value metric expose historical coverage without firing task-quality alerts. A bounded complete task listing prevents archived updates from displacing active notes. Hitting the cap reports an incomplete scan, not a healthy empty cohort. Only task baselines are versioned/re-established; other existing baselines remain. Actual consecutive unhealthy scan counts and the last healthy scan timestamp are persisted. The first post-upgrade scan runs without waiting a day. No task associations are changed.

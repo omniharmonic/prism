@@ -229,7 +229,7 @@ html[data-pointer-focus="true"] .prism-workspace-shell button:focus-visible {
 @media screen and (max-width: 767px), screen and (hover: none) and (pointer: coarse) {
   /* Paint a compact pill inside the full 44px native select hit area. */
   html .prism-compact-select { display: inline-flex; position: relative; align-items: center; isolation: isolate; }
-  html .prism-compact-select::before { content: ""; position: absolute; inset: 6px 0; border: 1px solid var(--glass-border); border-radius: 9px; background: var(--bg-surface); z-index: -1; pointer-events: none; }
+  html .prism-compact-select::before { content: ""; position: absolute; inset: 6px 0; border: 1px solid var(--control-border); border-radius: 9px; background: var(--bg-surface); z-index: -1; pointer-events: none; }
   html .prism-compact-select::after { content: ""; position: absolute; right: 10px; width: 5px; height: 5px; border-right: 1.5px solid var(--text-secondary); border-bottom: 1.5px solid var(--text-secondary); transform: translateY(-2px) rotate(45deg); pointer-events: none; }
   html .prism-compact-select select { appearance: none; -webkit-appearance: none; min-height: 44px !important; height: 44px; padding: 0 26px 0 10px !important; background: transparent !important; border: 0 !important; margin: 0; line-height: normal; }
 }
