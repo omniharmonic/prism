@@ -41,15 +41,18 @@ function ShellLayout() {
   // preferences synchronously: re-render the workspace when one changes (NP-AX-09).
   useRegionPrefs();
   const {
-    sidebarOpen,
+    sidebarOpen: requestedSidebarOpen,
     sidebarWidth,
     setSidebarWidth,
-    contextPanelOpen,
+    contextPanelOpen: requestedContextOpen,
     contextPanelWidth,
     setContextPanelWidth,
   } = useUIStore();
   const activeTabId = useUIStore((s) => s.activeTabId);
   const isMobile = useIsMobile();
+  const focusMode = useUIStore(s => s.focusMode) && !isMobile;
+  const sidebarOpen = requestedSidebarOpen && !focusMode;
+  const contextPanelOpen = requestedContextOpen && !focusMode;
   const layoutRef = useRef<HTMLDivElement>(null);
   const [layoutWidth, setLayoutWidth] = useState(() => window.innerWidth);
   useEffect(() => {
@@ -66,7 +69,7 @@ function ShellLayout() {
   useKeyboardShortcuts();
   // NP-SB-11: remember the desktop sidebar (width + collapsed) on this device.
   // Phones use the same flag for their drawer, which must never be remembered.
-  useEffect(() => { if (!isMobile) persistSidebar(sidebarOpen, sidebarWidth); }, [isMobile, sidebarOpen, sidebarWidth]);
+  useEffect(() => { if (!isMobile) persistSidebar(requestedSidebarOpen, sidebarWidth); }, [isMobile, requestedSidebarOpen, sidebarWidth]);
   useEffect(() => { applyReduceMotion(); }, []);
   // The host's outbox confirmed one of OUR queued writes (this tab or another):
   // re-read that page so the cached revision is the server's, without waiting
@@ -87,7 +90,7 @@ function ShellLayout() {
     window.addEventListener("prism:note-discarded", discarded);
     return () => { window.removeEventListener("prism:note-confirmed", confirmed); window.removeEventListener("prism:note-discarded", discarded); };
   }, [queryClient]);
-  const peek = useSidebarPeek(!isMobile && !sidebarOpen);
+  const peek = useSidebarPeek(!isMobile && !sidebarOpen && !focusMode);
   const swipe = useEdgeSwipe(isMobile && !sidebarOpen);
   const restore = useWorkspaceSession();
   const restoreNotice = restore.state !== "idle" ? (
@@ -133,10 +136,10 @@ function ShellLayout() {
   };
 
   return (
-    <NoteShortcutsProvider><div className="flex flex-col overflow-hidden" style={rootStyle}>
+    <NoteShortcutsProvider><div className="prism-workspace-shell flex flex-col overflow-hidden" style={rootStyle}>
       {restoreNotice}
       <a className="workspace-skip-link" href="#workspace-document">Skip to document</a>
-      <div ref={layoutRef} key="workspace" className="relative flex flex-1 min-h-0">
+      <div ref={layoutRef} key="workspace" className="prism-workspace-layout relative flex flex-1 min-h-0">
         {!isMobile && sidebarOpen && (
           <>
             <div style={{ width: sidebarWidth, minWidth: 200, maxWidth: 400 }} className="flex-shrink-0">
@@ -149,7 +152,7 @@ function ShellLayout() {
         {/* The pinned sidebar and the peek are mutually exclusive, so there is only
             ever ONE <Navigation/> mounted on desktop. Keyboard: the first tab stop
             after the skip link opens the peek and moves focus into it. */}
-        {!isMobile && !sidebarOpen && (
+        {!isMobile && !sidebarOpen && !focusMode && (
           <div key="sidebar-peek-zone" className="sidebar-peek-zone" data-testid="sidebar-peek-zone" onMouseEnter={peek.enter} onMouseLeave={peek.leave}>
             <button ref={peek.trigger} type="button" className="sidebar-peek-trigger" aria-expanded={peek.open} aria-controls="sidebar-peek" onClick={peek.toggle}>
               {peek.open ? "Hide sidebar preview" : "Show sidebar preview"}
@@ -166,7 +169,7 @@ function ShellLayout() {
 
         {/* Keep this parent and Canvas mounted across breakpoints. Responsive
             navigation must not recreate an editor, socket, thread or draft. */}
-        <div key="document" className="flex-1 min-w-0 min-h-0" style={{ "--workspace-bottom-inset": isMobile ? "76px" : "0px" } as React.CSSProperties}>
+        <div key="document" className="prism-workspace-canvas flex-1 min-w-0 min-h-0" style={{ "--workspace-bottom-inset": isMobile ? "76px" : "0px" } as React.CSSProperties}>
           <Canvas />
         </div>
 

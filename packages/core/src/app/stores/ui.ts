@@ -18,10 +18,10 @@ function readSidebar(): { open: boolean; width: number } {
   try {
     const raw = JSON.parse(localStorage.getItem(SIDEBAR_KEY) ?? "null") as { open?: unknown; width?: unknown } | null;
     if (raw && typeof raw === "object") {
-      return { open: raw.open !== false, width: typeof raw.width === "number" && Number.isFinite(raw.width) ? clampSidebar(raw.width) : 260 };
+      return { open: raw.open !== false, width: typeof raw.width === "number" && Number.isFinite(raw.width) ? clampSidebar(raw.width) : 224 };
     }
   } catch { /* private window / no storage: defaults */ }
-  return { open: true, width: 260 };
+  return { open: true, width: 224 };
 }
 /** Called by the desktop shell only — the phone drawer's open state is never persisted. */
 export function persistSidebar(open: boolean, width: number): void {
@@ -36,6 +36,9 @@ export interface PendingEdit {
 }
 
 interface UIStore {
+  // Focus is transient; saved sidebar preferences stay intact.
+  focusMode: boolean;
+  toggleFocusMode: () => void;
   // Sidebar
   sidebarOpen: boolean;
   sidebarWidth: number;
@@ -144,6 +147,8 @@ let closedTabs: Array<{ tab: TabState; index: number }> = [];
 export const hasClosedTab = (): boolean => closedTabs.some((c) => !useUIStore.getState().openTabs.some((t) => t.noteId === c.tab.noteId));
 
 export const useUIStore = create<UIStore>((set, get) => ({
+  focusMode: false,
+  toggleFocusMode: () => set(s => ({ focusMode: !s.focusMode })),
   sidebarOpen: savedSidebar.open,
   sidebarWidth: savedSidebar.width,
   contextPanelOpen: false,
@@ -168,10 +173,10 @@ export const useUIStore = create<UIStore>((set, get) => ({
   ghostText: null,
   noteRevisions: {},
 
-  toggleSidebar: () => set((s) => ({ sidebarOpen: !s.sidebarOpen })),
+  toggleSidebar: () => set((s) => ({ focusMode: false, sidebarOpen: s.focusMode || !s.sidebarOpen })),
   setSidebarWidth: (width) => set({ sidebarWidth: clampSidebar(width) }),
 
-  toggleContextPanel: () => set((s) => ({ contextPanelOpen: !s.contextPanelOpen })),
+  toggleContextPanel: () => set((s) => ({ focusMode: false, contextPanelOpen: s.focusMode || !s.contextPanelOpen })),
   setContextPanelWidth: (width) => set({ contextPanelWidth: Math.max(260, Math.min(480, width)) }),
   setContextPanelTab: (tab) => set({ contextPanelTab: tab }),
   setGraphFullscreen: (open) => set({ graphFullscreen: open }),

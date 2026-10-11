@@ -5,6 +5,7 @@ import {
   X,
   PanelLeft,
   PanelRight,
+  Scan,
   Bot,
   ChevronLeft,
   ChevronRight,
@@ -98,6 +99,8 @@ export function TabBar() {
     navIndex,
     navBack,
     navForward,
+    focusMode,
+    toggleFocusMode,
     sidebarOpen,
     toggleSidebar,
     contextPanelOpen,
@@ -404,6 +407,7 @@ export function TabBar() {
 
       {/* Right actions: one quiet row — save state, favorite, Share, ⋯, Agent (NP-PG-06). */}
       <div className="flex items-center gap-0.5 flex-shrink-0">
+        <button type="button" className="prism-focus-toggle interactive focus-ring" aria-label={focusMode ? "Exit focus mode" : "Focus mode"} aria-pressed={focusMode} onClick={toggleFocusMode} title={focusMode ? "Exit focus mode" : "Focus mode"}><Scan size={16} /></button>
         {isRealNote && <SyncStateBadge key="sync" variant="header" />}
         {isRealNote && (
           <IconButton
@@ -439,6 +443,7 @@ export function TabBar() {
             event.currentTarget.focus({ preventScroll: true });
             // With text selected in the page, the selection rides along (unsent, like
             // every other "Ask agent" entry); otherwise the panel opens on the page.
+            useUIStore.setState({ focusMode: false });
             attachSelection.current?.();
             setContextPanelTab("agent");
             if (!useUIStore.getState().contextPanelOpen) toggleContextPanel();

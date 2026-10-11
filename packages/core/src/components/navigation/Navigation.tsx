@@ -145,7 +145,6 @@ export function Navigation() {
       className="workspace-navigation h-full flex flex-col"
       style={{
         background: "var(--bg-sidebar)",
-        borderRight: "1px solid var(--glass-border)",
       }}
     >
       {/* Workspace header — brand mark + name (Notion/Anytype space header) */}
