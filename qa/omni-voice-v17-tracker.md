@@ -19,3 +19,12 @@ Opening voice now starts capture through existing privacy, permission, draft and
 Additional model inventory is in `omni-voice-v17-local-tts-research.md` and the TTS evaluation roadmap. Kitten nano's pinned model assets are ~27.65 MB, but its normal runtime dependency path exceeds the bounded 150 MB download budget before complete dependencies. No new model/runtime was downloaded or enabled. Pocket is the next streaming candidate for inventory; existing Kokoro artifacts remain retained for audition and future modular adapter work. No subjective new-model quality claim.
 
 This release must be built from the merged tag. Mac signing/notarization/installation receipts and physical wake-word acceptance remain separate gates. The existing experimental local Hey Omni listener and global keyboard/menu activation remain implemented; a shipped binary does not prove wake capture, permissions, sleep/lock or microphone handoff. No server/vault/agent policy change in this bundle. Outbound communications still require owner approval.
+
+## Tagged builds and installations
+
+PR #123 merged as `a997dd55`, tag `omni-client-v2026.10.10-17`. Both Release builds succeeded. iOS strict signature, app identity/version, DEBUG and test-fixture exclusion passed. Mac universal arm64+x86_64, permission declarations, identity/version and exclusion checks passed. Artifact directory `/private/tmp/omni-client-v2026.10.10-17`:
+
+- iOS ZIP SHA-256 `c4585b48a180bc23b92fcb0d8b4a0cad9c4ff9a9b1c18630a8618a513a10d6ac`.
+- Unsigned Mac ZIP SHA-256 `64c3b32294c8580cbd2e46fdb22a712954438e3d37bcb4eb0a6034d5d9e73464`.
+
+Owner confirmed readiness; both iPhone and iPad installations succeeded (`iphone-install.log`, `ipad-install.log`). No physical voice result is inferred from installation. Mac ZIP transferred to unique Mini release directory, checksum matched, existing Developer ID identity verified, prior required entitlements retained, and `~/release-artifacts/sign-omni-v17.sh` staged. Owner signing request pending. Do not claim notarization, Mac installation or wake-word acceptance. GitHub cargo checks pass; wider e2e/typecheck jobs pending at last packaging check. Synthetic UI gateway stopped and dedicated simulator shut down after tests.
