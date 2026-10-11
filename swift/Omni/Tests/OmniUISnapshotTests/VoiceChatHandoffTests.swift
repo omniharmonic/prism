@@ -56,6 +56,9 @@ import XCTest
         var handoff = VoiceChatHandoff(); handoff.begin()
         await active.finish { await session.startVoiceThread(prompt: $0, voice: active) }
         XCTAssertTrue(handoff.adopt(session: session))
+        session.openExternal(.thread("main-voice"))
+        XCTAssertTrue(handoff.keepsEntry(for: .thread("main-voice"), session: session), "A same-chat notification preserves the mounted voice owner")
+        XCTAssertEqual(audio.starts, 1)
         session.openExternal(.thread("unrelated"))
         XCTAssertNil(handoff.contentThreadID(session: session), "External navigation cannot render a retained old chat before its observer resets")
         XCTAssertFalse(handoff.adopt(session: session))

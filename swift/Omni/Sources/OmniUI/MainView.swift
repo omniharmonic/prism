@@ -445,7 +445,12 @@ struct TabMainView: View {
         }
         .onChange(of: session.newThreadRequests) {
             if session.newThreadUsesVoice { openNewVoice() }
-            else { voiceChatHandoff.reset(); showingNewThread = true }
+            else {
+                let wasVoiceRoute = voiceChatHandoff.isPresented
+                voiceChatHandoff.reset()
+                if wasVoiceRoute { path = [] }
+                showingNewThread = true
+            }
         }
         .task { await session.approvals.refresh() }
     }
@@ -457,6 +462,13 @@ struct TabMainView: View {
         path = [.newThread]
     }
     private func open(_ destination: Destination) {
+        if voiceChatHandoff.keepsEntry(for: destination, session: session) {
+            // A notification for this chat brings it forward without replacing
+            // the navigation entry and cancelling its current voice owner.
+            showingNewThread = false
+            tab = .threads
+            return
+        }
         voiceChatHandoff.reset()
         showingNewThread = false
         switch destination {

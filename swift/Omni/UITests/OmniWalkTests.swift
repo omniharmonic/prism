@@ -18,7 +18,9 @@ final class OmniWalkTests: OmniUITestCase {
         let send = element("voice.send")
         XCTAssertTrue(send.waitForExistence(timeout: 5))
         send.tap()
-        XCTAssertTrue(composer.waitForExistence(timeout: 15), "Creation resolves to the main chat")
+        XCTAssertTrue(element("transcript").waitForExistence(timeout: 15), "Only a created ThreadView has a transcript")
+        see("Give a short synthetic welcome for the voice handoff test.", 15)
+        XCTAssertTrue(composer.exists, "Creation resolves to the main chat")
         XCTAssertTrue(element("voice.end").exists, "The same voice session remains active")
         XCTAssertFalse(element("voice.conversation.sheet").exists)
         XCTAssertFalse(element("voice.sheet.close").exists)
@@ -26,7 +28,7 @@ final class OmniWalkTests: OmniUITestCase {
         shot("voice-first-turn-main-chat")
         element("voice.end").tap()
         XCTAssertTrue(composer.exists, "Ending voice stays in the created chat")
-        let back = app.navigationBars.buttons.firstMatch
+        let back = app.navigationBars.buttons["Threads"]
         XCTAssertTrue(back.exists)
         back.tap()
         XCTAssertFalse(composer.exists, "Back returns to Threads")

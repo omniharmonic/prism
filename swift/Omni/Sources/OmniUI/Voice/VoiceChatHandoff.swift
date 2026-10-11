@@ -14,6 +14,10 @@ import OmniCore
               session.voiceThreadID == id, session.conversationVoice?.isSessionActive == true else { return nil }
         return id
     }
+    func keepsEntry(for destination: Destination, session: SessionModel) -> Bool {
+        guard let id = contentThreadID(session: session) else { return false }
+        return destination == .thread(id)
+    }
     mutating func adopt(session: SessionModel) -> Bool {
         guard let id = contentThreadID(session: session), session.destination == .thread(id) else { return false }
         threadID = id
