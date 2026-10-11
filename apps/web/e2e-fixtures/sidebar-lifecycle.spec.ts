@@ -52,22 +52,45 @@ test('a far-offscreen row remains reachable and opens the selected note', async 
   await expect(page.getByRole('heading', { name: 'Rename Load note 1100', exact: true })).toBeVisible();
 });
 
-test('a cold drawer animates before mounting the large tree', async ({ page }) => {
+test('startup prepares the full tree before navigation becomes interactive', async ({ page }) => {
   await page.addInitScript(() => {
     window.requestIdleCallback = () => 0;
     window.cancelIdleCallback = () => {};
-    const animate = Element.prototype.animate;
-    Element.prototype.animate = function (...args) {
-      const animation = animate.apply(this, args);
-      if (this instanceof HTMLDialogElement && this.dataset.side === 'left') animation.pause();
-      return animation;
-    };
   });
   await page.goto('/e2e-fixtures/workspace.html?navigation&large-navigation');
-  await page.getByRole('navigation', { name: 'Mobile workspace' }).getByRole('button', { name: 'Notes', exact: true }).click();
-  const drawer = page.getByRole('dialog', { name: 'Workspace navigation' });
-  await expect(drawer.getByRole('status')).toHaveText('Loading navigation…');
-  await expect(drawer.locator('.page-tree-row')).toHaveCount(0);
-  await drawer.evaluate(node => node.getAnimations().forEach(animation => animation.finish()));
+  const drawer = page.locator('.workspace-mobile-drawer[data-side="left"]');
   await expect(drawer.locator('.page-tree-row')).toHaveCount(1206);
+  await expect(page.getByRole('status', { name: 'Preparing workspace' })).toHaveCount(0);
+  const before = await drawer.locator('.page-tree-row').first().evaluate(node => {
+    (window as any).preparedRow = node;
+    return { height: node.getBoundingClientRect().height, visibility: getComputedStyle(node).contentVisibility };
+  });
+  expect(before.height).toBeGreaterThan(0);
+  expect(before.visibility).toBe('auto');
+  await page.getByRole('navigation', { name: 'Mobile workspace' }).getByRole('button', { name: 'Notes', exact: true }).click();
+  await expect(page.getByText('Loading navigation…', { exact: true })).toHaveCount(0);
+  expect(await drawer.locator('.page-tree-row').first().evaluate(node => node === (window as any).preparedRow)).toBe(true);
+});
+
+
+test('a slow tree loads behind one startup screen and appears complete on the first opening', async ({ page }) => {
+  await page.goto('/e2e-fixtures/workspace.html?navigation&large-navigation&hold-navigation');
+  const startup = page.getByRole('status', { name: 'Preparing workspace' });
+  await expect(startup).toBeVisible();
+  await expect(page.getByRole('navigation', { name: 'Mobile workspace' })).toHaveCount(0);
+  await expect.poll(() => page.evaluate(() => typeof (window as any).prismFixtureControls.treeRelease)).toBe('function');
+  await page.evaluate(() => { const c = (window as any).prismFixtureControls; c.treeHold = false; c.treeRelease(); });
+  await expect(startup).toHaveCount(0);
+  const rows = page.locator('.workspace-mobile-drawer[data-side="left"] .page-tree-row');
+  await expect(rows).toHaveCount(1206);
+  await page.getByRole('navigation', { name: 'Mobile workspace' }).getByRole('button', { name: 'Notes', exact: true }).click();
+  await expect(page.getByRole('dialog', { name: 'Workspace navigation' }).locator('.page-tree-row')).toHaveCount(1206);
+});
+
+test('a stalled startup offers a way back into the workspace', async ({ page }) => {
+  await page.goto('/e2e-fixtures/workspace.html?navigation&hold-navigation');
+  await expect(page.getByRole('status', { name: 'Preparing workspace' })).toBeVisible();
+  await page.getByRole('button', { name: 'Continue to workspace' }).click({ timeout: 20_000 });
+  await expect(page.getByRole('status', { name: 'Preparing workspace' })).toHaveCount(0);
+  await expect(page.getByRole('navigation', { name: 'Mobile workspace' })).toBeVisible();
 });

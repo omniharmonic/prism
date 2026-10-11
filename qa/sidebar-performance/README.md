@@ -27,3 +27,13 @@ With a fixture server at port 5198, run `node apps/web/scripts/profile-mobile-si
 `final.txt` records the final three trials: 153/118/120 ms to the first opening frame, 155/109/109 ms longest tasks, and 36/35/39 ms maximum subsequent frame gaps. Intermediate files document experiments, not acceptance thresholds. Device performance and very large first-time tree initialization still need physical acceptance; the improvement is not a promise of a specific iPhone frame rate.
 
 Regression checks cover retained row identity/scroll/search, editor identity, hidden focus exclusion, cold opening, offscreen note activation, row gestures, and existing account/vault isolation.
+
+## Build 6: prepare navigation during startup
+
+Owner acceptance of build 5 found that the first few swipes and progressive tree appearance still felt unfinished. Idle mounting was only a best effort, and a closed native dialog did not retain its layout. Its cold path deliberately mounted the tree after the entrance animation; that behavior is now removed.
+
+Mobile startup now mounts Navigation immediately and holds one workspace-opening screen until the tree, saved shortcuts, and workspace restoration have settled, followed by two animation frames for expansion and viewport layout. The closed drawer keeps its layout with `display: block`, `visibility: hidden`, `inert`, and explicit accessibility hiding. The tree and row instances remain alive between openings. Guests do not wait for a workspace tree they do not use. There is no artificial minimum loading duration. Slow/offline startup offers Retry and Continue after 12 seconds (or immediately on a tree error/paused request).
+
+All tree data and expanded DOM are retained, but offscreen row painting remains browser-managed. An experiment forcing all 1,206 rows to render during every opening restored approximately one-second main-thread stalls under 4× CPU throttling, so that experiment was rejected. This change prioritizes complete first-use preparation, not a claim of faster warmed opening than build 5.
+
+Tests cover startup with idle callbacks disabled, a held tree response, a stalled response escape, retained row/editor identity, scroll/search preservation, hidden focus exclusion, far-offscreen activation, gestures, and account/vault isolation. The profiling script now starts throttling before navigation and opens as soon as the startup boundary clears; it no longer grants an unmeasured 1.5-second idle warm-up. Physical first-swipe feel still needs owner acceptance.

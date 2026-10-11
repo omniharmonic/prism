@@ -4,6 +4,7 @@ async function start(page: Page) {
  await page.emulateMedia({reducedMotion:"reduce"});
  await page.goto("/e2e-fixtures/workspace.html?navigation");
  await expect(page.locator(".tiptap")).toContainText("A shared place");
+ await expect(page.locator(".prism-workspace-shell")).toHaveAttribute("aria-busy", "false");
  await page.evaluate(() => (window as any).prismFixtureUI.setState({sidebarOpen:false,contextPanelOpen:false}));
 }
 async function drag(target: Locator, options: {x?:number; vertical?:boolean; cancel?:boolean; multi?:boolean; left?:boolean} = {}) {
@@ -78,9 +79,11 @@ test("navigation drawer swipes closed while vertical scroll, forms and cancelled
  if (await input.count()) { await input.fill("Field"); await drag(input,{x:180,left:true}); await expect(drawer(page)).toBeVisible(); }
  await drag(header,{x:180,left:true}); await expect(drawer(page)).toHaveCount(0);
  await expect(page.locator(".tiptap")).toContainText("A shared place");
+ await expect(page.locator(".prism-workspace-shell")).toHaveAttribute("aria-busy", "false");
 });
 
-test("real touch navigation consumes the horizontal edge drag but retains an ordinary edge tap", async ({page}) => {
+test("real touch navigation consumes the horizontal edge drag but retains an ordinary edge tap", async ({page, browserName}) => {
+ test.skip(browserName !== "chromium", "Real touch injection uses Chromium CDP");
  await start(page);
  await page.locator(".document-writing-scroll").evaluate(el => {
   const button=document.createElement("button"); button.id="real-edge-control"; button.textContent="Edge control";
@@ -101,7 +104,8 @@ test("real touch navigation consumes the horizontal edge drag but retains an ord
  await cdp.detach();
 });
 
-test("sidebar follows the finger before release and retracts without navigating on cancellation", async ({page}) => {
+test("sidebar follows the finger before release and retracts without navigating on cancellation", async ({page, browserName}) => {
+ test.skip(browserName !== "chromium", "Real touch injection uses Chromium CDP");
  await start(page);
  await page.emulateMedia({ reducedMotion: "no-preference" });
  const cdp = await page.context().newCDPSession(page);

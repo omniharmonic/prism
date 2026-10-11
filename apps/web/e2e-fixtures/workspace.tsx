@@ -25,7 +25,7 @@ const notes: Note[] = [
   { id: "weekly-review", path: "Journal/Weekly review", content: "<h1>Weekly review</h1><p>What moved forward this week?</p>", tags: ["note"], metadata: { type: "document" }, createdAt: date, updatedAt: date },
 ];
 const writes: Array<Record<string, unknown>> = [];
-const controls = { noteStatus: {} as Record<string, number>, rejectWriteStatus: 403, actor: "owner@example.test", rejectWrite: false, peopleFail: false, peopleDenyOpen: false, peopleHold: false, peopleRelease: null as (() => void) | null,
+const controls = { treeHold: params.has("hold-navigation"), treeRelease: null as (() => void) | null, treeFail: false, noteStatus: {} as Record<string, number>, rejectWriteStatus: 403, actor: "owner@example.test", rejectWrite: false, peopleFail: false, peopleDenyOpen: false, peopleHold: false, peopleRelease: null as (() => void) | null,
   /** Hold the next identity checks (`/auth/me`) until `meRelease()` — a slow account check after a vault switch. */
   meHold: false, meRelease: null as (() => void) | null };
 Object.assign(window, {
@@ -62,6 +62,10 @@ window.fetch = async (input, init) => {
   if (url.origin !== location.origin) return Response.json({ error: "external_network_disabled_in_fixture" }, { status: 503 });
   const path = url.pathname;
   const method = init?.method ?? "GET";
+  if (path === "/api/tree") {
+    if (controls.treeHold) await new Promise<void>(resolve => { controls.treeRelease = resolve; });
+    if (controls.treeFail) return Response.json({ error: "unavailable" }, { status: 503 });
+  }
   if (path === "/api/people" || path.startsWith("/api/people/")) {
     if (controls.peopleHold) await new Promise<void>(resolve => { controls.peopleRelease = resolve; });
     if (controls.peopleFail) return Response.json({ error: "unavailable" }, { status: 503 });
