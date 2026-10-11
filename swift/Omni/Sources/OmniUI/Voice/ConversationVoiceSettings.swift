@@ -7,6 +7,7 @@ struct ConversationVoiceSettings: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var phase
     @State private var voices: [SpeechVoice] = []
+    @State private var recognitionVocabulary = ""
     private var preferences: SpeechPreferences { device.speechPreferences }
     private var chosen: SpeechVoice? { AppleVoiceCatalog.resolve(preferences, voices: voices) }
     private var languages: [String] {
@@ -41,6 +42,19 @@ struct ConversationVoiceSettings: View {
                     } else {
                         Text("Tap Send turn when you're ready for Omni to respond. Pause keeps your words as an unsent draft. Long recordings are transcribed in sections on this device. At 15 minutes, or if transcription cannot keep up, Omni pauses and keeps recognized words as an unsent draft.")
                     }
+                }
+                Section {
+                    TextField("Names and terms, separated by commas", text: $recognitionVocabulary, axis: .vertical)
+                        .lineLimit(3...6)
+                        .accessibilityIdentifier("voice.vocabulary")
+                        .onChange(of: recognitionVocabulary) {
+                            device.recognitionVocabulary = recognitionVocabulary
+                                .split(whereSeparator: { $0 == "," || $0.isNewline })
+                                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                                .filter { !$0.isEmpty }
+                        }
+                } header: { Text("Recognition vocabulary") } footer: {
+                    Text("Optional names and terms to help speech recognition. Leave blank for no custom vocabulary. Changes apply the next time you start or resume voice.")
                 }
                 Section {
                     Toggle("Interrupt by speaking", isOn: Binding(get: { device.turnPreferences.acousticInterruption }, set: { device.turnPreferences.acousticInterruption = $0 }))
@@ -157,7 +171,10 @@ struct ConversationVoiceSettings: View {
             .frame(minWidth: 380, idealWidth: 460, minHeight: 480, idealHeight: 640)
             #endif
         }
-        .onAppear { refresh() }
+        .onAppear {
+            recognitionVocabulary = device.recognitionVocabulary.joined(separator: ", ")
+            refresh()
+        }
         .task { await device.refreshReplyProviders() }
         .onChange(of: phase) { if phase == .active { refresh() } else { device.stopPreview() } }
         .onDisappear { device.stopPreview() }

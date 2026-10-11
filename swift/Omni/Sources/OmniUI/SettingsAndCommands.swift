@@ -7,6 +7,8 @@ public struct SettingsView: View {
     private let app: AppModel
     @State private var confirmingSignOut = false
     @State private var showingSpeechBench = false
+    @State private var showingVoiceSettings = false
+    @State private var voiceSettingsDevice: ConversationDevice?
 
     public init(app: AppModel) {
         self.app = app
@@ -46,6 +48,15 @@ public struct SettingsView: View {
             if let skills = app.session?.skills {
                 Section("Agent") { NavigationLink("Skills") { SkillsView(model: skills) } }
             }
+            Section("Voice & Playback") {
+                Button("Voice & Playback Settings") {
+                    let device = (app.session?.conversationAudio as? ConversationDevice) ?? ConversationDevice()
+                    device.configureReplySpeech(service: app.session?.replySpeechService)
+                    voiceSettingsDevice = device
+                    showingVoiceSettings = true
+                }
+                    .accessibilityIdentifier("settings.voice")
+            }
             Section("Speech Benchmark") {
                 Button("Open Local Speech Benchmark") { showingSpeechBench = true }
                 Text("Record, correct and compare on-device engines. Nothing is sent to the agent.").font(.footnote)
@@ -80,6 +91,12 @@ public struct SettingsView: View {
                 Text("Omni \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "dev"). Models are chosen on the server, not here.")
                     .font(.footnote)
                     .foregroundStyle(Color.quietText)
+            }
+        }
+        .sheet(isPresented: $showingVoiceSettings) {
+            if let device = voiceSettingsDevice {
+                ConversationVoiceSettings(device: device)
+                    .modifier(PrivacyLockCover())
             }
         }
         .sheet(isPresented: $showingSpeechBench) {

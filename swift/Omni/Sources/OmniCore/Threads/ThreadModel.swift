@@ -70,6 +70,7 @@ public final class ThreadModel {
     private let onUnavailable: @MainActor (String) -> Void
     private var isLoading = false
     private var createdVoiceTurn: String?
+    private var createdVoicePrompt: String?
     private var replayedVoiceTurn: String?
     public private(set) var completedVoiceTurnID: String?
     private var lastSendAccepted = false
@@ -77,6 +78,10 @@ public final class ThreadModel {
 
     /// Replay only the exact first turn created by this voice composer.
     public func rememberCreatedVoiceTurn(_ turn: String) { createdVoiceTurn = turn }
+    /// Creation accepts the first prompt before the new chat can read its history.
+    /// Keep that accepted message visible until the server lists it, even if the
+    /// first completed snapshot has only the reply.
+    public func rememberCreatedVoicePrompt(_ prompt: String) { createdVoicePrompt = prompt }
     public func takeCompletedVoiceTimeline() -> [TimelineItem] {
         let result = completedVoiceTimeline
         completedVoiceTimeline = []
@@ -109,6 +114,9 @@ public final class ThreadModel {
             if case .card(let id, _) = item { liveCards.insert(id) }
         }
         var items = detail.map { ThreadTimeline.history($0, excludingApprovals: liveApprovals, excludingCards: liveCards) } ?? []
+        if let createdVoicePrompt {
+            items.insert(.message(id: "created-voice", role: .user, text: createdVoicePrompt, at: nil), at: 0)
+        }
         if let pendingText {
             if case .failed = sendState {
                 items.append(.pendingMessage(text: pendingText, failed: true))
@@ -225,6 +233,9 @@ public final class ThreadModel {
     }
 
     private func apply(_ fresh: ThreadDetail) {
+        if let createdVoicePrompt, fresh.messages.contains(where: { $0.role == .user && $0.text == createdVoicePrompt }) {
+            self.createdVoicePrompt = nil
+        }
         detail = fresh
         thread = fresh.thread
         if fresh.thread.lastSeq == acknowledgedSequence { thread?.unread = 0 }
