@@ -1,0 +1,68 @@
+/* Concept 02: one quiet reading surface. Scoped shell styling keeps publications,
+   editor content and existing window/drag/portal behavior independent. */
+:root {
+  --workspace-frame: #191b20;
+  --workspace-radius: 18px;
+  --material-shadow: 0 6px 28px rgb(0 0 0 / 16%), 0 1px 3px rgb(0 0 0 / 10%);
+  --material-edge: rgb(255 255 255 / 12%);
+}
+html.light {
+  --workspace-frame: #eef0f4;
+  --bg-sidebar: #eef0f4;
+  --material-shadow: 0 6px 28px rgb(30 48 69 / 7%), 0 1px 3px rgb(30 48 69 / 3%);
+  --material-edge: rgb(255 255 255 / 95%);
+}
+.prism-workspace-layout { background: var(--workspace-frame); }
+.prism-workspace-canvas { background: var(--bg-document); }
+@media (min-width: 768px) {
+  .prism-workspace-layout { padding: 8px 8px 8px 0; }
+  .prism-workspace-canvas { border-radius: var(--workspace-radius); border: 1px solid var(--material-edge); }
+  /* No overflow/transform: fixed editor popovers keep their viewport anchor. */
+  .prism-workspace-canvas > div { border-radius: inherit; }
+  /* Round the painted surfaces themselves: the toolbar's square background
+     otherwise covers the canvas corners. Keep ancestor overflow visible so
+     editor menus and fixed popovers remain free to extend beyond the canvas. */
+  .prism-workspace-canvas > div > :first-child {
+    border-top-left-radius: calc(var(--workspace-radius) - 1px);
+    border-top-right-radius: calc(var(--workspace-radius) - 1px);
+  }
+  .prism-workspace-canvas #workspace-document {
+    border-bottom-left-radius: calc(var(--workspace-radius) - 1px);
+    border-bottom-right-radius: calc(var(--workspace-radius) - 1px);
+  }
+  .prism-workspace-layout > .prism-workspace-companion {
+    border-radius: var(--workspace-radius);
+    background: var(--bg-document);
+  }
+  .prism-workspace-companion > .document-companion { border-radius: inherit; }
+  .prism-workspace-companion .document-companion-header {
+    border-top-left-radius: var(--workspace-radius);
+    border-top-right-radius: var(--workspace-radius);
+  }
+  .prism-workspace-layout > .cursor-col-resize { background: transparent !important; }
+  .workspace-navigation { padding: 2px 4px; }
+  .workspace-navigation .workspace-nav-row { border-radius: 9px; }
+  .workspace-navigation .workspace-nav-row[data-active="true"] { background: var(--bg-surface); }
+}
+/* Motion only answers an interaction. Never animate layout widths while resizing,
+   streaming text, editor mounting, blur radius, or a positioned menu's transform. */
+.ui-button, .tabbar-labelled, .prism-agent-header-action {
+  transition: background-color var(--motion-fast) ease-out, color var(--motion-fast) ease-out,
+    box-shadow var(--motion-fast) ease-out;
+}
+.press { transition: transform var(--motion-fast) var(--motion-ease), background-color var(--motion-fast) ease-out; }
+.press:active { transform: scale(.97); }
+.sidebar-peek { animation: prism-fade-in var(--motion-slow) var(--motion-ease); }
+@media (prefers-reduced-motion: reduce) {
+  .press:active { transform: none; }
+  .sidebar-peek { animation: none; }
+}
+:root.reduce-motion .press:active { transform: none; }
+:root.reduce-motion .sidebar-peek { animation: none; }
+@media (forced-colors: active) {
+  .prism-workspace-canvas { border-color: CanvasText; }
+}
+
+.prism-focus-toggle { display: inline-flex; align-items: center; justify-content: center; min-width: 32px; min-height: 32px; border-radius: 50%; color: var(--text-secondary); }
+.prism-focus-toggle[aria-pressed="true"] { background: var(--surface-selected); color: var(--text-primary); }
+@media (hover: none) and (pointer: coarse) { .prism-focus-toggle { min-width: 44px; min-height: 44px; } }

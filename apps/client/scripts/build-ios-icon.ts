@@ -24,7 +24,7 @@ const out = process.argv[2];
 if (!out) throw new Error("usage: build-ios-icon.ts <out.png>");
 const SIZE = 1024;
 const mark = renderToStaticMarkup(
-  createElement(PrismMark, { x: 13, y: 25, width: 70, height: 47, color: "#faf9f6", decorative: true }),
+  createElement(PrismMark, { x: 19, y: 16, width: 58, height: 64, color: "#faf9f6", decorative: true }),
 );
 const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${SIZE}" height="${SIZE}" viewBox="0 0 96 96"><rect width="96" height="96" fill="#22242a"/>${mark}</svg>`;
 const browser = await chromium.launch();

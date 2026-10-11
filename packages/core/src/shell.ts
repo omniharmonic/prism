@@ -15,6 +15,7 @@ import "./styles/collab.css";
 import "./styles/workspace.css";
 import "./styles/shell.css";
 import "./styles/touch.css";
+import "./styles/liquid-workspace.css";
 import "./styles/print.css";
 import { installImeKeyGuard } from "./lib/ime/keyGuard";
 

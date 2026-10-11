@@ -24,6 +24,7 @@ import {
   Bot,
   Check,
   FileText,
+  History,
   Loader2,
   Lock,
   Maximize2,
@@ -140,6 +141,8 @@ function AgentChatView({ client }: { client: AgentClient }) {
   const setPendingAsk = useAgentChatStore((s) => s.setPendingAsk);
   const draft = useAgentChatStore((s) => s.draft);
   const setDraft = useAgentChatStore((s) => s.setDraft);
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const historyTrigger = useRef<HTMLButtonElement>(null);
   const [autoPrompt, setAutoPrompt] = useState<string | null>(null);
   const queryClient = useQueryClient();
   const keys = agentKeys(client);
@@ -191,10 +194,12 @@ function AgentChatView({ client }: { client: AgentClient }) {
   }, [pendingAsk, sessions, setPendingAsk, setActiveSession, setDraft]);
 
   const startNew = () => {
+    setHistoryOpen(false);
     setActiveSession(null);
     setDraft({});
   };
   const openSession = (id: string) => {
+    setHistoryOpen(false);
     setDraft(null);
     setActiveSession(id);
   };
@@ -231,6 +236,10 @@ function AgentChatView({ client }: { client: AgentClient }) {
           : undefined
       }
       onArchive={activeSessionId ? () => void archive(activeSessionId) : undefined}
+      headerActions={!isMobile ? <>
+        <button ref={historyTrigger} type="button" className="prism-agent-header-action focus-ring" aria-label="Conversation history" aria-haspopup="dialog" aria-expanded={historyOpen} onClick={() => setHistoryOpen(true)}><History size={17} /></button>
+        <button type="button" className="prism-agent-header-action focus-ring" aria-label="New conversation" onClick={startNew}><Plus size={17} /></button>
+      </> : undefined}
       fullScreen={isMobile}
     />
   ) : null;
@@ -263,9 +272,8 @@ function AgentChatView({ client }: { client: AgentClient }) {
   }
   return (
     <div className="prism-agent-workspace flex h-full" data-testid="agent-chat">
-      <div className="prism-agent-rail h-full flex-shrink-0 overflow-hidden">
-        {list}
-      </div>
+      {!showingConversation && <div className="prism-agent-rail h-full flex-shrink-0 overflow-hidden">{list}</div>}
+      {historyOpen && <ConversationHistory onClose={() => setHistoryOpen(false)} trigger={historyTrigger}>{list}</ConversationHistory>}
       <div className="h-full min-w-0 flex-1">
         {conversation ?? (
           <div className="flex h-full flex-col items-center justify-center gap-3 px-6 text-center">
@@ -281,6 +289,22 @@ function AgentChatView({ client }: { client: AgentClient }) {
       </div>
     </div>
   );
+}
+
+/** Native modal owns focus/inertness. The conversation stays mounted underneath it. */
+function ConversationHistory({ children, onClose, trigger }: { children: ReactNode; onClose: () => void; trigger: { current: HTMLButtonElement | null } }) {
+  const ref = useRef<HTMLDialogElement>(null);
+  useEffect(() => {
+    const dialog = ref.current;
+    dialog?.showModal();
+    return () => { dialog?.close(); trigger.current?.focus({ preventScroll: true }); };
+  }, [trigger]);
+  return <dialog ref={ref} className="prism-agent-history" aria-label="Conversation history"
+    onCancel={event => { event.preventDefault(); event.stopPropagation(); onClose(); }}
+    onClick={event => { if (event.target === event.currentTarget) { const rect = event.currentTarget.getBoundingClientRect(); if (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom) onClose(); } }}>
+    <button type="button" autoFocus className="prism-agent-history-close focus-ring" aria-label="Close conversation history" onClick={onClose}><X size={18} /></button>
+    {children}
+  </dialog>;
 }
 
 // ── session list ─────────────────────────────────────────────────────────────
@@ -636,7 +660,6 @@ export function Conversation({
       style={{
         minHeight: compact ? 40 : 52,
         paddingTop: fullScreen ? "env(safe-area-inset-top)" : undefined,
-        borderBottom: "1px solid var(--glass-border)",
       }}
     >
       <div className="prism-agent-heading-top">
@@ -664,7 +687,6 @@ export function Conversation({
       )}
       </div>
       {noteId && <div className="prism-agent-working-document" data-testid="agent-working-document"><span>Working on</span><NoteChip noteId={noteId} label={isDraft ? draft?.noteTitle : undefined} /></div>}
-      <div className="prism-agent-permissions">{permissionControls}{!isDraft && conv.session && !(permissionModes?.length && client.updatePermissions) && <p className="text-xs text-[var(--text-secondary)]">{conv.session.permission_mode ? modeLabels[conv.session.permission_mode] : PROFILE_LABELS[conv.session.profile].label}</p>}</div>
       {conv.conn === "reconnecting" && <p role="status" className="prism-agent-connection">Reconnecting… Your conversation and draft are kept here.</p>}
     </div>
   );
@@ -684,9 +706,7 @@ export function Conversation({
     <div
       className="prism-agent-composer flex-shrink-0"
       style={{
-        borderTop: "1px solid var(--glass-border)",
         paddingBottom: fullScreen ? "calc(env(safe-area-inset-bottom) + 8px)" : 8,
-        background: fullScreen ? "var(--bg-surface)" : undefined,
       }}
     >
       {canQueue && sessionId && <AgentFollowupQueue client={client} sessionId={sessionId} mode={conv.session?.permission_mode ?? "read-only"} policyVersion={conv.session?.policy_version ?? 0} onAdmitted={conv.reload}/> }
@@ -706,7 +726,8 @@ export function Conversation({
       </p>}
       {isDraft && draftPermissions.error && <p role="status" className="mb-2 text-xs">{draftPermissions.error}</p>}
       {composerDraft.error && <p role="status" className="mb-2 text-xs" style={{ color: "var(--text-secondary)" }}>{composerDraft.error}</p>}
-      <div className="prism-agent-compose-surface flex items-end gap-2">
+      <div className="prism-agent-compose-surface">
+      <div className="prism-agent-compose-row flex items-end gap-2">
         <textarea
           ref={inputRef}
           value={input}
@@ -738,7 +759,7 @@ export function Conversation({
             disabled={conv.cancelling}
             data-testid="agent-cancel"
             className="press flex flex-shrink-0 items-center justify-center rounded-full"
-            style={{ width: 44, height: 44, borderRadius: 9, background: "var(--danger-bg, var(--color-danger))", color: "#fff" }}
+            style={{ width: 44, height: 44, borderRadius: "50%", background: "var(--danger-bg, var(--color-danger))", color: "#fff" }}
           >
             {conv.cancelling ? <Loader2 size={15} className="animate-spin" /> : <Square size={14} fill="#fff" />}
           </button>
@@ -749,11 +770,13 @@ export function Conversation({
             aria-label={pendingQueuedRequest ? "Check queued message" : "Send"}
             data-testid="agent-send"
             className="press flex flex-shrink-0 items-center justify-center rounded-full disabled:opacity-40"
-            style={{ width: 44, height: 44, borderRadius: 9, background: "var(--action-bg)", color: "var(--action-fg)" }}
+            style={{ width: 44, height: 44, borderRadius: "50%", background: "var(--action-bg)", color: "var(--action-fg)" }}
           >
             {creating ? <Loader2 size={16} className="animate-spin" /> : <Send size={16} />}
           </button>
         )}
+      </div>
+      <div className="prism-agent-permissions">{permissionControls}{!isDraft && conv.session && !(permissionModes?.length && client.updatePermissions) && <p className="text-xs text-[var(--text-secondary)]">{conv.session.permission_mode ? modeLabels[conv.session.permission_mode] : PROFILE_LABELS[conv.session.profile].label}</p>}</div>
       </div>
     </div>
   );

@@ -1,5 +1,5 @@
 /** Deterministic vector/raster/native exports from the same React SVG geometry. */
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -34,6 +34,19 @@ try {
     for (const [name, size] of [["icon-192.png", 192], ["icon-512.png", 512], ["apple-touch-icon.png", 180]] as const) {
       await save(`apps/${app}/public/${name}`, pngs.get(size)!);
     }
+  }
+  // iPhone/iPad notification, settings, Home Screen and marketing renditions.
+  // Use the checked-in catalog's point size/scale, with an opaque full-bleed fill.
+  const catalog = "apps/client/src-tauri/gen/apple/Assets.xcassets/AppIcon.appiconset/";
+  const contents = JSON.parse(await readFile(new URL(catalog + "Contents.json", root), "utf8")) as { images: { filename?: string; size: string; scale?: string }[] };
+  for (const entry of contents.images) {
+    if (!entry.filename) continue;
+    const size = Math.round(parseFloat(entry.size) * parseFloat(entry.scale || "1"));
+    if (!Number.isFinite(size) || size < 1 || size > 1024 || !/^[\w@.-]+\.png$/.test(entry.filename)) throw new Error("Invalid icon catalog entry");
+    await page.setViewportSize({ width: size, height: size });
+    const mark = renderToStaticMarkup(createElement(PrismMark, { x: 19, y: 16, width: 58, height: 64, compact: size <= 60, color: "#faf9f6", decorative: true }));
+    await page.setContent(`<html><body style="margin:0;background:#22242a"><svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 96 96"><rect width="96" height="96" fill="#22242a"/>${mark}</svg></body></html>`);
+    await save(catalog + entry.filename, await page.screenshot({ omitBackground: false }));
   }
   const chunks = [["icp4", 16], ["icp5", 32], ["icp6", 64], ["ic07", 128], ["ic08", 256], ["ic09", 512], ["ic10", 1024]] as const;
   const encoded = chunks.map(([type, size]) => {
