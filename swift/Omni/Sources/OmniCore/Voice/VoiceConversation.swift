@@ -156,6 +156,10 @@ public extension ConversationAudio {
                 if case .speechEvidence(let evidence) = event {
                     _ = self.endpointPolicy.accept(evidence, now: ProcessInfo.processInfo.systemUptime)
                 }
+                // The resumed prefix belonged to the accepted previous turn.
+                // Retained microphone lead-in starts a new turn, never that draft again.
+                self.continuingDraft = ""; self.capturedText = ""; self.captureNotice = nil
+                self.emptyAutomaticAttempts = 0
                 self.state = .listening; self.transcript = ""
                 self.watchActivity(request: request)
             }
@@ -271,6 +275,7 @@ public extension ConversationAudio {
 
     private func beginPlaybackDrain() {
         if drainTask == nil {
+            VoiceDiagnostics.record(.playbackDrain)
             state = .speaking
             let request = generation
             drainTask = Task { [weak self] in
@@ -283,6 +288,7 @@ public extension ConversationAudio {
                     self.problem = "Session paused. Review the conversation, then resume when ready."
                     return
                 }
+                VoiceDiagnostics.record(.listeningAgain)
                 await self.start()
             }
         }
