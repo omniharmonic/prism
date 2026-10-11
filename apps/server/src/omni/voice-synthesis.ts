@@ -166,33 +166,64 @@ export function cancelVoice(scope: string, sessionID: string, requestID: string)
   const current = active.get(scope);
   if (current?.sessionID === sessionID && current.requestID === requestID) current.controller.abort();
 }
+export interface VoiceOutcomeMetadata {
+  kind: "success" | "rejected" | "cancelled" | "timeout" | "unavailable" | "failed";
+  stage: "validation" | "admission" | "availability" | "synthesis" | "delivery";
+  status: number;
+  elapsedMs: number;
+  bytes: number;
+  provider: string;
+}
+const defaultOutcomeSink = (value: VoiceOutcomeMetadata) => console.log(JSON.stringify({ event: "omni_voice_synthesis", ...value }));
+let outcomeSink = defaultOutcomeSink;
+export function setVoiceOutcomeSinkForTests(sink: ((value: VoiceOutcomeMetadata) => void) | null): void { outcomeSink = sink ?? defaultOutcomeSink; }
+/** Only registered code-owned IDs enter diagnostics; never arbitrary request input. */
+export function recordVoiceOutcome(providerID: unknown, stage: VoiceOutcomeMetadata["stage"], status: number, startedAt: number, bytes = 0): void {
+  const provider = typeof providerID === "string" ? providers.get(providerID)?.descriptor.id ?? "unregistered" : "unregistered";
+  const kind: VoiceOutcomeMetadata["kind"] = status === 200 ? "success" : status === 409 ? "cancelled" : status === 504 ? "timeout" : status === 503 ? "unavailable" : status < 500 ? "rejected" : "failed";
+  // Logging cannot fail the audio response or emit provider exceptions/content.
+  try { outcomeSink({ kind, stage, status, elapsedMs: Math.max(0, Math.round(performance.now() - startedAt)), bytes, provider }); } catch { /* diagnostic sink only */ }
+}
 export async function synthesizeVoice(scope: string, request: VoiceRequest, disconnect: AbortSignal): Promise<Uint8Array> {
-  const provider = providers.get(request.providerID);
-  if (!validVoiceRequest(request as unknown as Record<string, unknown>) || !provider) throw new VoiceError("bad_request", 400);
-  pruneCancelled();
-  if (cancelled.has(key(scope, request.sessionID, request.requestID))) throw new VoiceError("voice_cancelled", 409);
-  if (active.has(scope) || active.size >= VOICE_LIMITS.concurrency) throw new VoiceError("voice_busy", 429);
-  const controller = new AbortController();
-  const reservation = { sessionID: request.sessionID, requestID: request.requestID, controller };
-  active.set(scope, reservation);
-  let timedOut = false;
-  const timer = setTimeout(() => { timedOut = true; controller.abort(); }, VOICE_LIMITS.timeoutMs);
-  const stop = () => controller.abort();
-  disconnect.addEventListener("abort", stop, { once: true });
-  if (disconnect.aborted) stop();
+  const startedAt = performance.now();
+  let stage: VoiceOutcomeMetadata["stage"] = "validation";
+  let status = 502; let bytes = 0;
   try {
-    if (!await provider.available()) throw new VoiceError("voice_unavailable", 503);
-    if (controller.signal.aborted) throw new VoiceError("voice_cancelled", 409);
-    const audio = await provider.synthesize(request, controller.signal);
-    if (controller.signal.aborted) throw new VoiceError("voice_cancelled", 409);
-    if (!audio.byteLength || audio.byteLength > provider.descriptor.maxAudioBytes) throw new VoiceError("voice_failed", 502);
-    return audio;
+    const provider = providers.get(request.providerID);
+    if (!validVoiceRequest(request as unknown as Record<string, unknown>) || !provider) throw new VoiceError("bad_request", 400);
+    stage = "admission";
+    pruneCancelled();
+    if (cancelled.has(key(scope, request.sessionID, request.requestID))) throw new VoiceError("voice_cancelled", 409);
+    if (active.has(scope) || active.size >= VOICE_LIMITS.concurrency) throw new VoiceError("voice_busy", 429);
+    const controller = new AbortController();
+    const reservation = { sessionID: request.sessionID, requestID: request.requestID, controller };
+    active.set(scope, reservation);
+    let timedOut = false;
+    const timer = setTimeout(() => { timedOut = true; controller.abort(); }, VOICE_LIMITS.timeoutMs);
+    const stop = () => controller.abort();
+    disconnect.addEventListener("abort", stop, { once: true });
+    if (disconnect.aborted) stop();
+    try {
+      stage = "availability";
+      if (!await provider.available()) throw new VoiceError("voice_unavailable", 503);
+      if (controller.signal.aborted) throw new VoiceError("voice_cancelled", 409);
+      stage = "synthesis";
+      const audio = await provider.synthesize(request, controller.signal);
+      if (controller.signal.aborted) throw new VoiceError("voice_cancelled", 409);
+      stage = "delivery";
+      if (!audio.byteLength || audio.byteLength > provider.descriptor.maxAudioBytes) throw new VoiceError("voice_failed", 502);
+      status = 200; bytes = audio.byteLength;
+      return audio;
+    } catch (error) {
+      if (timedOut) throw new VoiceError("voice_timeout", 504);
+      if (controller.signal.aborted) throw new VoiceError("voice_cancelled", 409);
+      throw error instanceof VoiceError ? error : new VoiceError("voice_failed", 502);
+    } finally {
+      clearTimeout(timer); disconnect.removeEventListener("abort", stop);
+      if (active.get(scope) === reservation) active.delete(scope);
+    }
   } catch (error) {
-    if (timedOut) throw new VoiceError("voice_timeout", 504);
-    if (controller.signal.aborted) throw new VoiceError("voice_cancelled", 409);
-    throw error instanceof VoiceError ? error : new VoiceError("voice_failed", 502);
-  } finally {
-    clearTimeout(timer); disconnect.removeEventListener("abort", stop);
-    if (active.get(scope) === reservation) active.delete(scope);
-  }
+    status = error instanceof VoiceError ? error.status : 502;
+    throw error;
+  } finally { recordVoiceOutcome(request.providerID, stage, status, startedAt, bytes); }
 }
