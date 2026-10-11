@@ -51,8 +51,22 @@ struct ConversationVoiceSettings: View {
                     Picker("Speech provider", selection: Binding(get: { device.replyPreferences.provider }, set: {
                         device.stopPreview(); device.replyPreferences.provider = $0
                     })) {
+                        Text("Kokoro · your server").tag(ReplySpeechPreferences.Provider.kokoro)
                         Text("Hermes · Microsoft Edge").tag(ReplySpeechPreferences.Provider.hermesEdge)
                         Text("Apple · on this device").tag(ReplySpeechPreferences.Provider.apple)
+                    }
+                    if device.replyPreferences.provider == .kokoro {
+                        if let provider = device.replyProviders.first(where: { $0.id == "kokoro-local" && $0.available }) {
+                            Picker("Kokoro voice", selection: Binding(get: { device.replyPreferences.kokoroVoiceID }, set: {
+                                device.stopPreview(); device.replyPreferences.kokoroVoiceID = $0
+                            })) {
+                                ForEach(provider.voices) { Text($0.name).tag($0.id) }
+                            }
+                            Text("Ready on your paired server").foregroundStyle(.secondary)
+                        } else {
+                            Text("Kokoro is not ready on your paired server. Prepare the Kokoro model on that server, then refresh. Replies use your Apple fallback voice until it is ready.").foregroundStyle(.secondary)
+                            Button("Refresh server voices") { Task { await device.refreshReplyProviders() } }
+                        }
                     }
                     if device.replyPreferences.provider == .hermesEdge {
                         if let provider = device.replyProviders.first(where: { $0.id == "hermes-edge" && $0.available }) {
@@ -69,6 +83,8 @@ struct ConversationVoiceSettings: View {
                 } header: { Text("Reply speech") } footer: {
                     if device.replyPreferences.provider == .hermesEdge {
                         Text("Hermes sends spoken reply text to Microsoft’s online Edge speech service. Microphone audio stays on this device. Internet access is required; Apple is the on-device fallback.")
+                    } else if device.replyPreferences.provider == .kokoro {
+                        Text("Kokoro generates speech on your paired server using af_heart. Spoken reply text is sent to that server. A connection to your server is required; Apple is the on-device fallback.")
                     } else {
                         Text("Apple generates speech on this device. Your downloaded Apple voice selection is preserved when switching providers.")
                     }
