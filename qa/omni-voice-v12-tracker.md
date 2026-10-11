@@ -24,3 +24,11 @@ Native trace accepts only enum events and timestamps. It retains at most 256 ent
 - Long reply with acoustic interruption off and on; inspect metadata trace after reproduction.
 - Focused speech/provider/diagnostic tests:24 passed; VoiceKit long-stream/queue tests:8 passed. Recovery tests:34 Core +3 hosted UI, plus10 follow-up Core passed. Backend outcome/API/smoke:21 passed and integrated typecheck passes. Full relevant integrated native tests and Release builds are next.
 - Keep V03 physical echo/route checks, V04 shortcut acceptance, V05 wake lead-in/energy and local-model evaluation open in the canonical roadmap.
+
+## Release and device evidence
+
+PR114 merged as `d821662e`; tags `omni-client-v2026.10.10-12` and `prism-v2026.10.10-15`. Integrated native checks passed216Core+29UI; workspace/server checks and tagged iOS/universalMac Release builds pass. Both physical mobile installations succeeded. Server15 passed backup/tagged deployment and health/worker/desktop-independence checks. Synthetic speech smoke: metadata200,40320-byteMP3 in794ms, DELETE200/cancelledPOST409/cleanup200. Production terminal metadata was confirmed with no content fields.
+
+iOS ZIP SHA256 `dfb03660a30ef8761aafc3ff8ef0b58ab329ec115dd94e1aa00543ec3d8547cc`; unsignedMac ZIP `71d699259421827a7b0ddead77ef5892f7ee3009ac304ba413b9b2bd3bc5087f`. Mac12 staged with verified hash at `~/release-artifacts/omni-client-v2026.10.10-12/omni`; desktop signing pending. Mac11 notary `b4e56e1f-dcd5-472d-bfa2-34720021eab4` remains In Progress.
+
+Owner reconfirmed screen flash at first capture/message transition and Automatic detection stopping after the spoken reply. Actual iPhone enum trace at18:15MDT confirms accepted send, synthesis finished, playbackStarted→playbackFinished over3.7seconds, then listeningAgain/resumed/captureReady; no playback failure event in that turn. User cancellation occurred about58seconds later. This is a detector-restart issue separate from the earlier long-reply cutoff. Current trace lacks detector-start/first-tap/watchdog events; build13 investigation adds those boundaries. No claim all voice acceptance is complete.
