@@ -88,7 +88,7 @@ public struct SettingsView: View {
                 DiagnosticsSection(log: log)
             }
             Section {
-                Text("Omni \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "dev"). Models are chosen on the server, not here.")
+                Text("Omni \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "dev") (build \(Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "dev")). Models are chosen on the server, not here.")
                     .font(.footnote)
                     .foregroundStyle(Color.quietText)
             }
@@ -105,6 +105,10 @@ public struct SettingsView: View {
                     ToolbarItem(placement: .confirmationAction) { Button("Done") { showingSpeechBench = false } }
                 }
             }
+            #if os(macOS)
+            // List has no intrinsic size; give the sheet room for its scrollable content.
+            .frame(minWidth: 560, idealWidth: 640, minHeight: 480, idealHeight: 640)
+            #endif
             .modifier(PrivacyLockCover())
         }
         .formStyle(.grouped)
