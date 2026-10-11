@@ -12,7 +12,7 @@ function wav(): Buffer {
   b.writeUInt16LE(1, 20); b.writeUInt16LE(1, 22); b.writeUInt32LE(24000, 24); b.writeUInt32LE(48000, 28);
   b.writeUInt16LE(2, 32); b.writeUInt16LE(16, 34); b.write('data', 36); b.writeUInt32LE(2, 40); return b;
 }
-async function fixture(mode: string): Promise<{worker: KokoroWorker; cleanup: () => Promise<void>}> {
+async function fixture(mode: string, restartMs = 1): Promise<{worker: KokoroWorker; cleanup: () => Promise<void>}> {
   const root = await mkdtemp(join(tmpdir(), 'kokoro-supervisor-'));
   const executable = join(root, 'worker');
   await writeFile(executable, `#!${process.execPath}\nconst readline = require('node:readline');
@@ -27,7 +27,7 @@ readline.createInterface({input:process.stdin}).on('line', line => {
  console.log(JSON.stringify({id:${mode === 'wrong-id' ? "'wrong'" : 'id'},status:'ok',wavBase64:${JSON.stringify(wav().toString('base64'))},sampleRate:24000,frames:1}));
 });\n`);
   await chmod(executable, 0o700);
-  const worker = new KokoroWorker({ executable, cache: root, startupMs: 500, renderMs: mode === 'ignore-term' ? 5000 : 500, restartMs: 1, idleMs: 2000 });
+  const worker = new KokoroWorker({ executable, cache: root, startupMs: 500, renderMs: mode === 'ignore-term' ? 5000 : 500, restartMs, idleMs: 2000 });
   return { worker, cleanup: async () => { await worker.close(); await rm(root, {recursive:true, force:true}); } };
 }
 async function ready(worker: KokoroWorker): Promise<void> {
@@ -88,6 +88,19 @@ test('cancellation escalates when the native process ignores termination', async
     const pending = f.worker.synthesize('Hello', controller.signal);
     controller.abort();
     await assert.rejects(pending, {code:'aborted'});
+    await ready(f.worker);
+  } finally { await f.cleanup(); }
+});
+
+test('repeated post-readiness crashes increase restart backoff', async () => {
+  const f = await fixture('crash', 200);
+  try {
+    await ready(f.worker);
+    await assert.rejects(f.worker.synthesize('Hello'), {code:'failed'});
+    await ready(f.worker);
+    await assert.rejects(f.worker.synthesize('Hello'), {code:'failed'});
+    await delay(250);
+    assert.equal(await f.worker.available(), false);
     await ready(f.worker);
   } finally { await f.cleanup(); }
 });

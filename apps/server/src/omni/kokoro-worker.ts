@@ -107,14 +107,14 @@ export class KokoroWorker {
         const message = JSON.parse(line);
         if (!this.ready) {
           if (message.id !== '' || message.status !== 'ready' || message.ready !== true) throw new Error();
-          this.ready = true; this.failures = 0;
+          this.ready = true;
           clearTimeout(this.startup); this.startup = undefined;
           this.armIdle();
         } else {
           const active = this.active;
           if (!active || message.id !== active.id || message.status !== 'ok') throw new Error();
           const wav = validateKokoroWav(message.wavBase64, message.frames, message.sampleRate);
-          this.active = undefined; active.cleanup(); active.resolve(wav); this.armIdle();
+          this.active = undefined; this.failures = 0; active.cleanup(); active.resolve(wav); this.armIdle();
         }
       } catch { void this.stop('failed', true); return; }
     }
