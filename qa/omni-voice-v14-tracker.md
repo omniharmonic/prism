@@ -37,3 +37,11 @@ V04 still needs physical cold/warm Talk to Omni, Action Button/Shortcuts assignm
 ## Synthetic UI fixture
 
 The previous loopback gateway launcher PID 310 was stopped. A fresh backend process is required before the next XCUITest. Existing private synthetic env/DB under `/private/tmp/omni-v13-ui-fixture` may be reused for a focused test, but a new isolated DB/stub state is preferable for independent navigation fixtures and reproducible receipts. Launch with a scrubbed environment, explicit dummy `PARACHUTE_TOKEN` (preventing vault-token mint), dead-loopback Parachute URL and disabled executors/approvals. Never use production/dev secrets or real agents. `uitest.sh` creates a short-lived fixture browser session and real scoped test-device credential, then revokes/deletes them at cleanup; keep credentials out of logs. Check the selected loopback ports are free. No backend was started and no native build was run for this checkpoint.
+
+## Integrated repair candidate
+
+Voice creation now enters the main Threads navigation stack. A single retained entry resolves directly to the created conversation, without a popup or a second push. Same-thread external navigation preserves the owner; Back, text composition and unrelated destinations clear abandoned routes. The actual iPhone simulator test passed the main-chat creation, transcript, one-panel, End/Back/new-voice path; final integrated rerun is pending.
+
+Compressed speech now reads bounded chunks to actual decoded EOF, independently caps decoded duration, rejects empty audio and preserves thrown decoder errors. The private MP3 remains available until decoding exits, then is removed on completion, failure or cancellation. The actual resource scope is covered by 21 focused speech tests, including cancellation while the bounded hardware queue is full. The synthetic MP3 host probe failed to decode; it did not reproduce the owner's physical failure. No audio graph rewrite or root-cause claim is made.
+
+New fixed diagnostic categories distinguish decode, route, engine, capture and buffer-budget failures. Completion receipt, first narration queue and UI pause requests are also enum-only; no message/audio content, identifiers or raw errors are recorded. Independent review found no remaining blockers. Integrated native tests, Release builds and physical acceptance remain to be recorded.
