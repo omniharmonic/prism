@@ -355,6 +355,7 @@ struct ConversationVoiceControl: View {
         }
     }
     private func pause() {
+        VoiceDiagnostics.record(.pauseRequested)
         if voice.state == .listening {
             finish(submit: false, draftReason: .pause)
             return

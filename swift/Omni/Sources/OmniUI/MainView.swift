@@ -340,7 +340,7 @@ struct TabMainView: View {
     @State private var tab = Tab.today
     @State private var path: [Destination] = []
     @State private var showingNewThread = false
-    @State private var voiceSheetHandoff = VoiceSheetHandoff()
+    @State private var voiceChatHandoff = VoiceChatHandoff()
     @State private var showingSettings = false
 
     enum Tab: Hashable {
@@ -376,24 +376,28 @@ struct TabMainView: View {
                 NavigationStack(path: $path) {
                     ThreadListScreen(session: session, showingNewThread: $showingNewThread)
                         .navigationDestination(for: Destination.self) { destination in
-                            DestinationView(session: session, destination: destination)
+                            if destination == .newThread, voiceChatHandoff.isPresented {
+                                ZStack {
+                                    if let id = voiceChatHandoff.contentThreadID(session: session) {
+                                        ThreadView(session: session, model: session.threadModel(for: id)).id(id)
+                                    } else {
+                                        NewThreadView(session: session)
+                                    }
+                                }
+                            } else {
+                                DestinationView(session: session, destination: destination)
+                            }
                         }
                 }
             }
         }
         .environment(\.navigator, Navigator { open($0) })
-        .sheet(isPresented: $showingNewThread, onDismiss: newThreadSheetDismissed) {
+        .sheet(isPresented: $showingNewThread) {
             NavigationStack {
-                Group {
-                    if let id = voiceSheetThreadID {
-                        ThreadView(session: session, model: session.threadModel(for: id)).id(id)
-                    } else {
-                        NewThreadView(session: session)
-                    }
-                }
+                NewThreadView(session: session)
                     .toolbar {
                         ToolbarItem(placement: .cancellationAction) {
-                            Button(voiceSheetThreadID == nil ? "Cancel" : "Done") { showingNewThread = false }
+                            Button("Cancel") { showingNewThread = false }
                                 .accessibilityIdentifier("voice.sheet.close")
                         }
                     }
@@ -408,7 +412,8 @@ struct TabMainView: View {
             case .thread, .recurring:
                 tab = .threads
                 if let destination = session.destination { path = [destination] }
-            case .newThread: tab = .threads
+            case .newThread:
+                if session.newThreadUsesVoice { openNewVoice() } else { tab = .threads }
             case .today, nil: break
             }
         }
@@ -416,21 +421,19 @@ struct TabMainView: View {
             // What is pushed is where the session is (Stop, Refresh and "remove this thread"
             // act on it); back at the list, nothing is open.
             if let top = path.last {
-                if session.destination != top { session.destination = top }
-            } else if tab == .threads, session.destination != .newThread {
+                let destination = voiceChatHandoff.destination(for: top, session: session)
+                if session.destination != destination { session.destination = destination }
+            } else if tab == .threads, voiceChatHandoff.isPresented || session.destination != .newThread {
+                voiceChatHandoff.reset()
                 session.destination = nil
             }
         }
         .onChange(of: session.destination) { _, destination in
             // The open thread was taken out of the list: go back to the list, not a dead screen.
             if destination == .today, !path.isEmpty, tab == .threads { path = [] }
-            // A thread was just created from the sheet: show it.
+            // A voice thread keeps its main-chat entry; text creation closes its sheet.
             if case .thread = destination {
-                if voiceSheetHandoff.retain(session: session, destination: destination, isPresented: showingNewThread) {
-                    // Keep the active conversation in this sheet. Opening the same
-                    // ThreadView underneath would mount a second voice controller.
-                    return
-                }
+                if voiceChatHandoff.adopt(session: session) { return }
                 showingNewThread = false
                 // A cold notification can arrive before the request-counter observer
                 // mounts. The destination itself is also authoritative navigation state.
@@ -440,28 +443,44 @@ struct TabMainView: View {
         .onChange(of: session.externalNavigationRequests) {
             if let destination = session.destination { open(destination) }
         }
-        .onChange(of: session.newThreadRequests) { voiceSheetHandoff.reset(); showingNewThread = true }
+        .onChange(of: session.newThreadRequests) {
+            if session.newThreadUsesVoice { openNewVoice() }
+            else {
+                let wasVoiceRoute = voiceChatHandoff.isPresented
+                voiceChatHandoff.reset()
+                if wasVoiceRoute { path = [] }
+                showingNewThread = true
+            }
+        }
         .task { await session.approvals.refresh() }
     }
 
-    private var voiceSheetThreadID: String? {
-        voiceSheetHandoff.contentThreadID(session: session, destination: session.destination, isPresented: showingNewThread)
-    }
-    private func newThreadSheetDismissed() {
-        if let destination = voiceSheetHandoff.dismissed(destination: session.destination) { open(destination) }
+    private func openNewVoice() {
+        voiceChatHandoff.begin()
+        showingNewThread = false
+        tab = .threads
+        path = [.newThread]
     }
     private func open(_ destination: Destination) {
-        if let id = voiceSheetHandoff.threadID, destination == .thread(id), showingNewThread { return }
-        if let id = voiceSheetHandoff.threadID, destination != .thread(id) {
-            voiceSheetHandoff.reset(); showingNewThread = false
+        if voiceChatHandoff.keepsEntry(for: destination, session: session) {
+            // A notification for this chat brings it forward without replacing
+            // the navigation entry and cancelling its current voice owner.
+            showingNewThread = false
+            tab = .threads
+            return
         }
+        let wasVoiceRoute = voiceChatHandoff.isPresented
+        voiceChatHandoff.reset()
+        if wasVoiceRoute { path = [] }
+        showingNewThread = false
         switch destination {
         case .today:
             tab = .today
         case .needsYou:
             tab = .needsYou
         case .newThread:
-            showingNewThread = true
+            if session.newThreadUsesVoice { openNewVoice() }
+            else { showingNewThread = true }
         case .thread, .recurring:
             tab = .threads
             path = [destination]
@@ -542,7 +561,7 @@ struct ThreadListScreen: View {
             }
             ToolbarItem(placement: .topBarTrailing) {
                 Button {
-                    showingNewThread = true
+                    session.requestNewThread()
                 } label: {
                     Label("New Thread", systemImage: "square.and.pencil")
                 }

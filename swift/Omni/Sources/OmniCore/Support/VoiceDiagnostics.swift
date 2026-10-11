@@ -9,6 +9,10 @@ public enum VoiceDiagnosticEvent: String, Codable, Sendable {
     case acousticInterruption, synthesisStarted, synthesisFinished, synthesisFailed
     case appleFallback, playbackDrain, listeningAgain
     case activityFirstFrame, activityUnavailable, activityWatchdog, microphoneFirstTap
+    case replyCompletionReceived, replyTextQueued, pauseRequested
+    case playbackRouteLost, playbackEngineInactive, playbackCaptureMissing, playbackBufferBudget
+    case playbackDecodeFailed, playbackOtherFailure
+
 }
 public enum VoiceDiagnostics {
     // Package tests and command-line tools must not pollute the installed app's
