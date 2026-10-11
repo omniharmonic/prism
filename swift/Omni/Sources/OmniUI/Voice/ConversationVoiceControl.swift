@@ -487,9 +487,15 @@ private struct VoiceHeaderButtonStyle: ViewModifier {
     func body(content: Content) -> some View {
         #if os(macOS)
         if solid {
-            content.buttonStyle(.bordered).buttonBorderShape(.circle).menuIndicator(.hidden)
+            content.buttonStyle(.plain).menuStyle(.borderlessButton).menuIndicator(.hidden)
+                .background(.background, in: Circle())
+                .overlay(Circle().stroke(.primary.opacity(0.15)))
         } else {
-            content.buttonStyle(.glass).buttonBorderShape(.circle).menuIndicator(.hidden)
+            content.buttonStyle(.plain).menuStyle(.borderlessButton).menuIndicator(.hidden)
+                .frame(width: 32, height: 32)
+                .background {
+                    Circle().fill(.clear).glassEffect(.regular.interactive(), in: Circle())
+                }
         }
         #else
         content
