@@ -128,7 +128,7 @@ test("link-health: levels, the drop rule, floors, persistence and errors (inject
   assert.equal(first.measures["email.person"]!.level, null, "no sample, no level");
   // Bounded, lean: three capped target listings without links, then one sample listing per tag with links.
   assert.deepEqual(calls.slice(0, 3).map((c) => [c.tag, c.limit, c.withLinks]), [["person", 5000, false], ["project", 5000, false], ["organization", 5000, false]]);
-  assert.ok(calls.slice(3).every((c) => c.limit === 20 && c.withLinks));
+  assert.ok(calls.slice(3).every((c) => c.limit === (c.tag === "task" ? 5000 : 20) && c.withLinks));
   assert.ok(calls.every((c) => c.keys.length > 0), "never the whole metadata blob");
 
   linked = 15; // a small dip: not low, the level follows slowly
@@ -160,4 +160,45 @@ test("link-health: levels, the drop rule, floors, persistence and errors (inject
   // Nothing but numbers and measure names is persisted.
   assert.ok(!JSON.stringify(broken).includes("vault/people"));
   assert.ok(!JSON.stringify(first).includes("vault/people"));
+});
+
+test('link-health: archived updates do not crowd out active tasks or inherit their old baseline', async () => {
+  let stored = JSON.stringify({ at: '2026-10-01T00:00:00Z', status: 'failing', measures: { 'task.project': { n: 150, hit: 83, share: .553, level: .966 } } });
+  const archived = Array.from({ length: 150 }, (_, i) => ({ id: `old-${i}`, metadata: { status: 'archived' } }));
+  const active = Array.from({ length: 30 }, (_, i) => ({ id: `active-${i}`, metadata: { status: 'pending', projects: i < 20 ? ['opencivics'] : [] } }));
+  let fail = false;
+  const deps = {
+    sample: 150, minSample: 20, targetCap: 5000, floors: {},
+    getCursor: () => stored, setCursor: (_v: string, _n: string, raw: string) => { stored = raw; },
+    list: async (tag: string) => {
+      if (fail) throw Error('offline');
+      return tag === 'project' ? PROJECTS : tag === 'task' ? [...archived, ...active] : [];
+    },
+  };
+  const first = await runLinkHealthOnce('primary', deps);
+  assert.equal(first.status, 'ok');
+  assert.equal(first.measures['task.project']!.n, 30);
+  assert.equal(first.measures['task.project']!.hit, 20);
+  assert.equal(first.measures['task.project']!.level, .667, 'fresh baseline for the active cohort only');
+  assert.equal(first.measures['task.history.project']!.n, 150);
+  assert.equal(first.measures['task.history.project']!.hit, 0);
+  assert.equal(first.failureStreak, 0);
+  const healthyAt = first.lastSuccessAt;
+  fail = true;
+  assert.equal((await runLinkHealthOnce('primary', deps)).failureStreak, 1);
+  const secondFailure = await runLinkHealthOnce('primary', deps);
+  assert.equal(secondFailure.failureStreak, 2, 'count persists across scan calls');
+  assert.equal(secondFailure.lastSuccessAt, healthyAt);
+  fail = false;
+  const recovered = await runLinkHealthOnce('primary', deps);
+  assert.equal(recovered.failureStreak, 0);
+  const low = await runLinkHealthOnce('primary', { ...deps, floors: { 'task.project': .9, 'task.history.project': .9 } });
+  assert.deepEqual(low.low, ['task.project'], 'archive coverage is report-only');
+  assert.equal(low.failureStreak, 1);
+  const capped = await runLinkHealthOnce('primary', { ...deps, targetCap: 180 });
+  assert.equal(capped.status, 'error');
+  assert.ok(capped.truncated.includes('task'));
+  assert.equal(capped.failureStreak, 2);
+  assert.match(capped.error!, /coverage is incomplete/);
+  assert.equal(capped.measures['task.project']!.level, .667, 'incomplete scans cannot reset or train baselines');
 });

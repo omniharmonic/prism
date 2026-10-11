@@ -10,9 +10,9 @@ import { useAgentChatStore } from "../../lib/agent/chatStore";
 /** The name a page is shown by everywhere else (a container-named page is its folder, never "PROJECT"). */
 const noteName = (note: { path?: string | null; metadata?: Record<string, unknown> | null } | undefined): string => (note?.path ? pageTitle(note.path, note.metadata) : "");
 
-export function AgentContextAttachments({ ids, onChange, onPreview, disabled, maxNotes, maxCharacters }: {
+export function AgentContextAttachments({ ids, onChange, onPreview, disabled, maxNotes, maxCharacters, actions }: {
   ids: string[]; onChange: (ids: string[]) => void; onPreview: (id: string) => void;
-  disabled: boolean; maxNotes: number; maxCharacters: number;
+  disabled: boolean; maxNotes: number; maxCharacters: number; actions?: React.ReactNode;
 }) {
   const [open, setOpen] = useState(false);
   return <div className="prism-agent-context-attachments mb-2 text-xs" data-testid="agent-context-attachments">
@@ -22,6 +22,7 @@ export function AgentContextAttachments({ ids, onChange, onPreview, disabled, ma
         <button disabled={disabled} onClick={() => onChange(ids.filter((item) => item !== id))} aria-label={`Remove attached note ${index + 1}`} className="interactive focus-ring flex h-9 w-9 items-center justify-center rounded-lg"><X size={13} /></button>
       </div>)}
       <button disabled={disabled || ids.length >= maxNotes} onClick={event => { event.currentTarget.focus({ preventScroll: true }); setOpen(true); }} className="interactive focus-ring flex items-center gap-1.5 rounded-lg px-2 py-2 disabled:opacity-40"><Paperclip size={14} />Attach notes</button>
+      {actions}
     </div>
     {ids.length > 0 && <p className="mt-1" style={{ color: "var(--text-muted)" }}>Saved text is read when you send; up to {maxCharacters.toLocaleString()} characters per note.</p>}
     {open && <ContextPicker ids={ids} onChange={onChange} maxNotes={maxNotes} onClose={() => setOpen(false)} />}

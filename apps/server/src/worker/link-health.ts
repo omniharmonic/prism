@@ -19,8 +19,9 @@
  *                              that resolve to a project note
  *   transcript.meeting         transcripts tied to a meeting (also tagged `meeting`,
  *                              `meetingNoteId`, or a has-transcript / documented-by link)
- *   task.project               tasks with a resolvable project
+ *   task.project               active tasks with a resolvable project
  *   task.project.resolved      of the task `project` VALUES, the share that resolve
+ *   task.history.project       terminal task coverage (report-only)
  *   email.person               emails linked to a person note
  *   thread.person              message threads linked to a person note
  *   person.linked              person notes with ≥ 1 link of any kind (not orphans)
@@ -49,7 +50,7 @@ const LEVEL_ALPHA = 0.2;
 
 export const LINK_MEASURES = [
   "meeting.person", "meeting.project", "meeting.project.resolved", "transcript.meeting",
-  "task.project", "task.project.resolved", "email.person", "thread.person", "person.linked", "dangling",
+  "task.project", "task.project.resolved", "task.history.project", "task.history.project.resolved", "email.person", "thread.person", "person.linked", "dangling",
 ] as const;
 export type LinkMeasure = (typeof LINK_MEASURES)[number];
 /** Measures where a HIGHER share is worse. */
@@ -60,7 +61,7 @@ const RELATION_FIELDS = ["attendees", "people", "projects", "project", "organiza
 const SAMPLE_KEYS: Readonly<Record<string, readonly string[]>> = {
   meeting: ["attendees", "projects", "organizations", "transcriptNoteId", "transcriptNoteIds"],
   transcript: ["attendees", "projects", "meetingNoteId"],
-  task: ["project", "projects"],
+  task: ["project", "projects", "status"],
   email: ["source"],
   "message-thread": ["platform"],
   person: ["type"],
@@ -86,6 +87,10 @@ export interface MeasureResult {
 
 export interface LinkHealthOutcome {
   at: string;
+  /** Version 2 separates active tasks from terminal history. */
+  taskCohortVersion?: 2;
+  failureStreak?: number;
+  lastSuccessAt?: string | null;
   status: "ok" | "failing" | "error";
   error?: string;
   measures: Record<string, MeasureResult>;
@@ -185,6 +190,9 @@ export function projectValueResolves(v: unknown, t: Targets): boolean {
   return t.projectNames.has(lower(v));
 }
 
+const TERMINAL_TASK_STATUSES = new Set(["archived", "cancelled", "canceled", "completed", "complete", "done"]);
+export const isHistoricalTask = (row: LinkRow): boolean => TERMINAL_TASK_STATUSES.has(String(row.metadata?.status ?? "").trim().toLowerCase());
+
 const otherEnds = (row: LinkRow): string[] => (row.links ?? []).map((l) => (l.sourceId === row.id ? l.targetId : l.sourceId));
 
 class Tally {
@@ -245,8 +253,9 @@ export function measureLinks(samples: Readonly<Record<string, readonly LinkRow[]
   for (const row of samples.task ?? []) {
     const md = row.metadata ?? {};
     const projectValues = [...values(md.project), ...values(md.projects)].filter((v) => typeof v === "string" && v.trim());
-    tally.add("task.project", linkedToProject(row) || projectValues.some((v) => projectValueResolves(v, t)));
-    for (const v of projectValues) tally.add("task.project.resolved", projectValueResolves(v, t));
+    const measure = isHistoricalTask(row) ? "task.history.project" : "task.project";
+    tally.add(measure, linkedToProject(row) || projectValues.some((v) => projectValueResolves(v, t)));
+    for (const v of projectValues) tally.add(`${measure}.resolved`, projectValueResolves(v, t));
     tallyDangling(row, t, tally);
   }
   for (const row of samples.email ?? []) tally.add("email.person", linkedToPerson(row));
@@ -293,19 +302,33 @@ export async function runLinkHealthOnce(vaultId = "primary", deps: LinkHealthDep
     const targets = buildTargets(people, projects, orgs, cap);
     truncated = targets.truncated;
     const samples: Record<string, LinkRow[]> = {};
-    for (const [tag, keys] of Object.entries(SAMPLE_KEYS)) samples[tag] = await list(tag, keys, sample, true);
+    for (const [tag, keys] of Object.entries(SAMPLE_KEYS)) {
+      if (tag !== "task") { samples[tag] = await list(tag, keys, sample, true); continue; }
+      // A bulk archive/migration must not crowd active tasks out of the sample.
+      // Scan a bounded lean task population, then sample each lifecycle separately.
+      const tasks = await list(tag, keys, cap, true);
+      if (tasks.length >= cap) {
+        truncated.push("task");
+        throw new Error("task population reached the link-health cap; lifecycle coverage is incomplete");
+      }
+      samples.task = [
+        ...tasks.filter(row => !isHistoricalTask(row)).slice(0, sample),
+        ...tasks.filter(isHistoricalTask).slice(0, sample),
+      ];
+    }
     const counted = measureLinks(samples, targets);
     for (const m of LINK_MEASURES) {
       const c = counted[m] ?? { n: 0, hit: 0 };
       const share = c.n ? round3(c.hit / c.n) : 0;
-      const before = previous?.measures?.[m]?.level;
+      const before = m.startsWith("task.") && previous?.taskCohortVersion !== 2 ? null : previous?.measures?.[m]?.level;
       let level: number | null = typeof before === "number" && Number.isFinite(before) ? before : null;
       let isLow = false;
       if (c.n >= minSample) {
         const worseBy = level === null ? 0 : LOWER_IS_BETTER.has(m) ? share - level : level - share;
         const floor = floors[m];
         const underFloor = floor !== undefined && (LOWER_IS_BETTER.has(m) ? share > floor : share < floor);
-        isLow = underFloor || (maxDrop > 0 && worseBy >= maxDrop);
+        // Historical backlog is visible, but is not an operational linker alarm.
+        isLow = !m.startsWith("task.history.") && (underFloor || (maxDrop > 0 && worseBy >= maxDrop));
         // The level follows the measure slowly — and not at all while it is low, so a
         // linker that stopped is compared with how things were, not with its own outage.
         if (!isLow) level = round3(level === null ? share : level * (1 - LEVEL_ALPHA) + share * LEVEL_ALPHA);
@@ -321,9 +344,15 @@ export async function runLinkHealthOnce(vaultId = "primary", deps: LinkHealthDep
       if (before) measures[m] = { n: 0, hit: 0, share: before.share, level: before.level };
     }
   }
+  const status = error ? "error" : low.length ? "failing" : "ok";
+  const at = new Date(now()).toISOString();
   const outcome: LinkHealthOutcome = {
-    at: new Date(now()).toISOString(),
-    status: error ? "error" : low.length ? "failing" : "ok",
+    at,
+    status,
+    // An unsuccessful scan must not mark old mixed-cohort levels as migrated.
+    taskCohortVersion: error ? previous?.taskCohortVersion : 2,
+    failureStreak: status === "ok" ? 0 : (previous?.failureStreak ?? 0) + 1,
+    lastSuccessAt: status === "ok" ? at : previous?.lastSuccessAt ?? (previous?.status === "ok" ? previous.at : null),
     ...(error ? { error } : {}),
     measures,
     low,
@@ -342,5 +371,5 @@ export function linkHealthDue(vaultId = "primary", nowMs = Date.now(), getCursor
   if (!config.linkHealthEnabled || config.linkHealthIntervalMs <= 0) return false;
   const last = lastLinkHealthOutcome(vaultId, getCursor);
   const at = last ? Date.parse(last.at) : NaN;
-  return !Number.isFinite(at) || nowMs - at >= config.linkHealthIntervalMs;
+  return (!last?.taskCohortVersion && last?.status !== "error") || !Number.isFinite(at) || nowMs - at >= config.linkHealthIntervalMs;
 }

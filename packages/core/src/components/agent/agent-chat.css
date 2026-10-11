@@ -131,3 +131,10 @@
   .prism-agent-session-filter { font-size: 16px; }
   .prism-agent-compose-row > button { min-height: var(--touch-target); }
 }
+
+.prism-agent-history-trigger { width: auto; gap: 6px; padding: 0 10px; font-size: 12px; }
+.prism-agent-snapshots { min-width: 0; max-width: 100%; }
+.prism-agent-snapshots details > div { max-width: min(480px, calc(100vw - 40px)); }
+@media screen and (max-width: 767px), screen and (hover: none) and (pointer: coarse) {
+  .prism-agent-history-trigger { width: auto; }
+}

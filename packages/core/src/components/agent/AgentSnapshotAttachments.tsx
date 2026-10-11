@@ -88,35 +88,8 @@ export function AgentSnapshotAttachments({
     }
   }
   return (
-    <div className="mb-2 text-xs" data-testid="agent-snapshot-attachments">
+    <div className="prism-agent-snapshots text-xs" data-testid="agent-snapshot-attachments">
       <div className="flex flex-wrap gap-1">
-        {snapshots.map((s, index) => (
-          <span
-            key={index}
-            className="flex max-w-full items-center rounded-lg border border-[var(--glass-border)]"
-          >
-            <button
-              className={control + " min-w-0 truncate"}
-              onClick={event => { event.currentTarget.focus({ preventScroll: true }); setPreview(s); }}
-            >
-              <FileText size={13} className="mr-1 inline" />
-              {s.kind === "selection"
-                ? "Selected passage"
-                : s.kind === "document"
-                  ? "Document snapshot"
-                  : s.label}
-              {s.truncated ? " · truncated" : ""}
-            </button>
-            <button
-              className={control}
-              aria-label={`Remove snapshot ${index + 1}`}
-              disabled={disabled}
-              onClick={() => onChange(snapshots.filter((_, i) => i !== index))}
-            >
-              <X size={13} />
-            </button>
-          </span>
-        ))}
         {available && (
           <details className="rounded-lg">
             <summary className={control + " cursor-pointer"}>
@@ -160,6 +133,34 @@ export function AgentSnapshotAttachments({
             </div>
           </details>
         )}
+        {snapshots.map((s, index) => (
+          <span
+            key={index}
+            className="flex max-w-full items-center rounded-lg border border-[var(--glass-border)]"
+          >
+            <button
+              className={control + " min-w-0 truncate"}
+              onClick={event => { event.currentTarget.focus({ preventScroll: true }); setPreview(s); }}
+            >
+              <FileText size={13} className="mr-1 inline" />
+              {s.kind === "selection"
+                ? "Selected passage"
+                : s.kind === "document"
+                  ? "Document snapshot"
+                  : s.label}
+              {s.truncated ? " · truncated" : ""}
+            </button>
+            <button
+              className={control}
+              aria-label={`Remove snapshot ${index + 1}`}
+              disabled={disabled}
+              onClick={() => onChange(snapshots.filter((_, i) => i !== index))}
+            >
+              <X size={13} />
+            </button>
+          </span>
+        ))}
+
       </div>
       {snapshots.length > 0 && (
         <p className="mt-1 text-[var(--text-muted)]">

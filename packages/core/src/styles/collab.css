@@ -192,3 +192,6 @@ html[data-soft-keyboard="open"] .collab-comments-drawer { top: var(--visual-view
   .prism-suggest-banner-long { display: none; }
   .prism-suggest-banner-short { display: inline; }
 }
+
+/* Keep the live editing row close to the properties divider above it. */
+.collab-page-layout > .document-page-header { margin-bottom: 4px; }

@@ -35,9 +35,8 @@ import {
   Wrench,
   X,
 } from "lucide-react";
-import { useAgentClient, useAgentAvailability, useAgentLimits, useAgentLimitsQuery, agentKeys } from "../../data/AgentClientContext";
-import { AgentBudgetLine } from "./AgentBudget";
-import { formatAgentCost, PROFILE_LABELS, isReadOnlyProfile } from "../../lib/agent/cost";
+import { useAgentClient, useAgentAvailability, useAgentLimitsQuery, agentKeys } from "../../data/AgentClientContext";
+import { PROFILE_LABELS, isReadOnlyProfile } from "../../lib/agent/cost";
 import { useAgentChatStore, openAgentChat, isAskableNoteId, type PendingAsk, type AgentDraftContext } from "../../lib/agent/chatStore";
 import { useComposerDraft } from "../../lib/agent/useComposerDraft";
 import { requestReceipt, clearRequestReceipt } from "../../lib/agent/requestReceipt";
@@ -227,19 +226,12 @@ function AgentChatView({ client }: { client: AgentClient }) {
         setDraft(null);
         setActiveSession(id);
       }}
-      onBack={
-        isMobile
-          ? () => {
-              setDraft(null);
-              setActiveSession(null);
-            }
-          : undefined
-      }
+      onBack={isMobile ? () => { setDraft(null); setActiveSession(null); } : undefined}
       onArchive={activeSessionId ? () => void archive(activeSessionId) : undefined}
-      headerActions={!isMobile ? <>
-        <button ref={historyTrigger} type="button" className="prism-agent-header-action focus-ring" aria-label="Conversation history" aria-haspopup="dialog" aria-expanded={historyOpen} onClick={() => setHistoryOpen(true)}><History size={17} /></button>
+      headerActions={<>
+        {isMobile && <button ref={historyTrigger} type="button" className="prism-agent-header-action prism-agent-history-trigger focus-ring" aria-label="Conversation history" aria-haspopup="dialog" aria-expanded={historyOpen} onClick={() => setHistoryOpen(true)}><History size={17} /><span>History</span></button>}
         <button type="button" className="prism-agent-header-action focus-ring" aria-label="New conversation" onClick={startNew}><Plus size={17} /></button>
-      </> : undefined}
+      </>}
       fullScreen={isMobile}
     />
   ) : null;
@@ -265,15 +257,15 @@ function AgentChatView({ client }: { client: AgentClient }) {
   if (isMobile) {
     return (
       <div className="h-full" data-testid="agent-chat">
-        {list}
+        {!showingConversation && list}
         {conversation}
+        {historyOpen && <ConversationHistory onClose={() => setHistoryOpen(false)} trigger={historyTrigger}>{list}</ConversationHistory>}
       </div>
     );
   }
   return (
     <div className="prism-agent-workspace flex h-full" data-testid="agent-chat">
-      {!showingConversation && <div className="prism-agent-rail h-full flex-shrink-0 overflow-hidden">{list}</div>}
-      {historyOpen && <ConversationHistory onClose={() => setHistoryOpen(false)} trigger={historyTrigger}>{list}</ConversationHistory>}
+      <aside className="prism-agent-rail h-full flex-shrink-0 overflow-hidden" aria-label="Conversation history">{list}</aside>
       <div className="h-full min-w-0 flex-1">
         {conversation ?? (
           <div className="flex h-full flex-col items-center justify-center gap-3 px-6 text-center">
@@ -314,7 +306,6 @@ function SessionList({ sessions, loading, error, onRetry, activeId, onOpen, onNe
   activeId: string | null; onOpen: (id: string) => void; onNew: () => void;
   onArchive: (id: string) => void; mobile: boolean;
 }) {
-  const billing = useAgentLimits()?.billing;
   const [filter, setFilter] = useState("");
   const shown = sessions.filter(session => (session.title || "Untitled session").toLocaleLowerCase().includes(filter.trim().toLocaleLowerCase()));
   const today = new Date(); today.setHours(0, 0, 0, 0);
@@ -347,7 +338,7 @@ function SessionList({ sessions, loading, error, onRetry, activeId, onOpen, onNe
               {session.note_id ? <FileText size={18} className="shrink-0" /> : <Bot size={18} className="shrink-0" />}
               <span className="min-w-0 flex-1"><span className="prism-agent-session-title">{session.title || "Untitled session"}</span>
                 <span className="prism-agent-session-meta"><span className={running ? "prism-agent-session-running" : undefined}>{status}</span><span aria-hidden="true">·</span><span>{relTime(session.lastTurnAt ?? session.updated_at)}</span></span>
-                {(isReadOnlyProfile(session.profile) || session.cost_usd > 0) && <span className="prism-agent-session-meta">{isReadOnlyProfile(session.profile) && <span className="inline-flex items-center gap-1"><Lock size={10} /> Read-only</span>}{session.cost_usd > 0 && <span title={formatAgentCost(session.cost_usd, billing)?.title} data-testid="agent-session-cost">{formatAgentCost(session.cost_usd, billing)?.text}</span>}</span>}
+                {isReadOnlyProfile(session.profile) && <span className="prism-agent-session-meta"><Lock size={10} /> Read-only</span>}
               </span>
             </button>
             <button onClick={() => onArchive(session.id)} tabIndex={0} aria-label="Archive session" title="Archive" className={`prism-agent-session-archive focus-ring ${mobile ? "" : "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100"}`}><Archive size={14} /></button>
@@ -638,7 +629,7 @@ export function Conversation({
         <div className="mb-2 flex flex-wrap items-center gap-2 text-xs">
           <label className="flex items-center gap-2" style={{ color: "var(--text-secondary)" }}>
             Agent permissions
-            <select
+            <span className="prism-compact-select"><select
               aria-label="Agent permissions"
               value={isDraft ? draftMode : conv.session?.permission_mode ?? (isReadOnlyProfile(conv.session?.profile) ? "read-only" : conv.session?.profile === "prism-suggest" ? "suggest" : "read-write")}
               disabled={changingMode || !!permissionPending || (!isDraft && !conv.session)}
@@ -647,7 +638,7 @@ export function Conversation({
               style={{ background: "var(--bg-surface)", borderColor: "var(--glass-border)", color: "var(--text-primary)", minHeight: 36 }}
             >
               {permissionModes.map((mode) => <option key={mode} value={mode}>{modeLabels[mode]}</option>)}
-            </select>
+            </select></span>
           </label>
           {permissionPending && <span role="status">Stopping previous work before switching to {modeLabels[permissionPending]}…</span>}
         </div>
@@ -672,7 +663,7 @@ export function Conversation({
         <div className="prism-agent-conversation-title" style={{ color: "var(--text-primary)" }} data-testid="agent-conversation-title">
           {title}
         </div>
-        {!compact && !isDraft && <AgentBudgetLine sessionCostUsd={conv.session?.cost_usd} />}
+
       </div>
       {headerActions}
       {onExpand && (
@@ -702,6 +693,8 @@ export function Conversation({
     </div>
   );
 
+  const snapshotAttachments = (limits?.contextSnapshots || contextSnapshots.length > 0) && <AgentSnapshotAttachments noteId={isDraft ? draft?.noteId : conv.session?.note_id} snapshots={contextSnapshots} available={!!limits?.contextSnapshots} onReading={setReadingFile} disabled={sending} onChange={next=>snapshotDraft.setText(next.length ? JSON.stringify(next) : "")} />;
+
   const composer = (
     <div
       className="prism-agent-composer flex-shrink-0"
@@ -710,15 +703,15 @@ export function Conversation({
       }}
     >
       {canQueue && sessionId && <AgentFollowupQueue client={client} sessionId={sessionId} mode={conv.session?.permission_mode ?? "read-only"} policyVersion={conv.session?.policy_version ?? 0} onAdmitted={conv.reload}/> }
-      {isDraft && <AgentBudgetLine />}
+
       {conv.cancelling && <p role="status" className="prism-agent-stop-status">Stop requested · waiting for the task to finish stopping.</p>}
       {pendingQueuedRequest && <p role="status" className="mb-2 text-xs">A queued message is awaiting confirmation. Check it before sending another instruction.</p>}
       {pendingFollowup.error && <p role="status" className="mb-2 text-xs">{pendingFollowup.error}</p>}
       <SelectionHandoffNotice handoff={selectionHandoff} />
       <SavedNoteHandoffNotice handoff={savedNoteHandoff} />
-      {(limits?.contextSnapshots || contextSnapshots.length > 0) && <AgentSnapshotAttachments noteId={isDraft ? draft?.noteId : conv.session?.note_id} snapshots={contextSnapshots} available={!!limits?.contextSnapshots} onReading={setReadingFile} disabled={sending} onChange={next=>snapshotDraft.setText(next.length ? JSON.stringify(next) : "")} />}
+      {(limits?.contextNotes || contextNoteIds.length > 0) && <AgentContextAttachments ids={contextNoteIds} onChange={(ids) => contextDraft.setText(ids.length ? JSON.stringify(ids) : "")} onPreview={setAttachmentPreview} disabled={sending} actions={snapshotAttachments} maxNotes={limits?.contextNotes?.maxNotes ?? 0} maxCharacters={limits?.contextNotes?.maxCharactersPerNote ?? 8000} />}
+      {!limits?.contextNotes && contextNoteIds.length === 0 && snapshotAttachments}
       {snapshotDraft.error && <p role="status" className="mb-2 text-xs">{snapshotDraft.error}</p>}
-      {(limits?.contextNotes || contextNoteIds.length > 0) && <AgentContextAttachments ids={contextNoteIds} onChange={(ids) => contextDraft.setText(ids.length ? JSON.stringify(ids) : "")} onPreview={setAttachmentPreview} disabled={sending} maxNotes={limits?.contextNotes?.maxNotes ?? 0} maxCharacters={limits?.contextNotes?.maxCharactersPerNote ?? 8000} />}
       {attachmentPreview && <AgentSourcePreview noteId={attachmentPreview} onClose={() => setAttachmentPreview(null)} />}
       {contextDraft.error && <p role="status" className="mb-2 text-xs">{contextDraft.error}</p>}
       {limitsUnavailable && <p role="status" className="mb-2 text-xs" style={{ color: "var(--text-secondary)" }}>
@@ -873,8 +866,6 @@ function TurnBlock({ turn, compact, onRetry }: { turn: TurnView; compact?: boole
   const [snapshotPreview, setSnapshotPreview] = useState<AgentContextSnapshot | null>(null);
   const running = isRunning(turn.status);
   const problem = turnProblem(turn);
-  const billing = useAgentLimits()?.billing;
-  const cost = formatAgentCost(turn.costUsd, billing);
   const dur = fmtDuration(turn.durationMs);
   const hasText = turn.blocks.some((b) => b.text.trim());
   return (
@@ -929,11 +920,9 @@ function TurnBlock({ turn, compact, onRetry }: { turn: TurnView; compact?: boole
           )}
         </div>
       )}
-      {!running && (cost || dur) && (
+      {!running && dur && (
         <div className="text-[11px]" style={{ color: "var(--text-muted)" }} data-testid="agent-turn-footer">
           {dur}
-          {dur && cost ? " · " : ""}
-          {cost && <span title={cost.title}>{cost.text}</span>}
         </div>
       )}
     </div>

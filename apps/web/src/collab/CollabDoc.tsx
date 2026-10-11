@@ -823,7 +823,7 @@ function ScopedCollabDoc({
         </p>
       )}
       {/* Extra bottom padding on narrow viewports clears the floating command pill. */}
-      <div style={{ maxWidth: "var(--page-max-width, 1080px)", margin: "0 auto", padding: narrow ? "12px 14px 124px" : "16px 20px 96px" }}>
+      <div className={isDocument ? "collab-page-layout" : undefined} style={{ maxWidth: "var(--page-max-width, 1080px)", margin: "0 auto", padding: narrow ? "12px 14px 124px" : "16px 20px 96px" }}>
         {/* Cover band — same component and metadata as the non-collab view */}
         {isDocument && <div className="collab-cover-bleed"><PageCover
           cover={cover}
