@@ -63,6 +63,7 @@ public extension ConversationAudio {
     private var endpointPolicy = VoiceEndpointPolicy()
     private var activityWatchdog: Task<Void, Never>?
     private var lastActivityAt: Double?
+    private var activityStartedAt: Double?
     private var pendingCompletion: [TimelineItem]?
     public private(set) var isSubmitting = false
     private var drainTask: Task<Void, Never>?
@@ -89,10 +90,16 @@ public extension ConversationAudio {
         switch event {
         case .unavailable(let reason): disableEndpoint(reason)
         case .frame(let frame):
-            guard state == .listening else { return }
+            guard state == .listening, activityNotice == nil else { return }
             let now = ProcessInfo.processInfo.systemUptime
-            lastActivityAt = frame.capturedAt
-            switch endpointPolicy.accept(frame, now: now) {
+            let decision = endpointPolicy.accept(frame, now: now)
+            if decision != .unavailable {
+                if lastActivityAt == nil { VoiceDiagnostics.record(.activityFirstFrame) }
+                // Delivery liveness and source freshness are different checks.
+                // The endpoint policy above still rejects old or discontinuous audio.
+                lastActivityAt = now
+            }
+            switch decision {
             case .none: endpointCountdown = nil
             case .countdown(let seconds): endpointCountdown = seconds
             case .send:
@@ -104,18 +111,30 @@ public extension ConversationAudio {
         }
     }
     private func disableEndpoint(_ reason: String) {
+        guard activityNotice == nil else { return }
+        VoiceDiagnostics.record(.activityUnavailable)
         endpointPolicy.disable(); endpointCountdown = nil; activityNotice = reason
         activityWatchdog?.cancel(); activityWatchdog = nil
     }
     private func watchActivity(request: Int) {
         guard endpointMode == .automatic, activityNotice == nil else { return }
-        lastActivityAt = ProcessInfo.processInfo.systemUptime
+        activityWatchdog?.cancel()
+        lastActivityAt = nil
+        activityStartedAt = ProcessInfo.processInfo.systemUptime
         activityWatchdog = Task { [weak self] in
             while !Task.isCancelled {
                 do { try await Task.sleep(for: .milliseconds(200)) } catch { return }
                 guard let self, self.generation == request, self.state == .listening else { return }
-                if let last = self.lastActivityAt, ProcessInfo.processInfo.systemUptime - last > 0.75 {
-                    self.disableEndpoint("Automatic detection stopped receiving audio. Use Send turn.")
+                let now = ProcessInfo.processInfo.systemUptime
+                if let last = self.lastActivityAt {
+                    if now - last > 0.75 {
+                        VoiceDiagnostics.record(.activityWatchdog)
+                        self.disableEndpoint("Automatic detection stopped receiving audio. Use Send turn.")
+                        return
+                    }
+                } else if let started = self.activityStartedAt, now - started > 2 {
+                    VoiceDiagnostics.record(.activityWatchdog)
+                    self.disableEndpoint("Automatic detection did not start receiving audio. Use Send turn.")
                     return
                 }
             }
@@ -304,7 +323,7 @@ public extension ConversationAudio {
 
     private func stopAudio() {
         generation += 1
-        activityWatchdog?.cancel(); activityWatchdog = nil; endpointCountdown = nil; lastActivityAt = nil
+        activityWatchdog?.cancel(); activityWatchdog = nil; endpointCountdown = nil; lastActivityAt = nil; activityStartedAt = nil
         drainTask?.cancel(); drainTask = nil
         audio.cancel(); audio.silence(); spoken = [:]; isSubmitting = false; pendingCompletion = nil
     }

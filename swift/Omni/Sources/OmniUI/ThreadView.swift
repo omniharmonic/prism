@@ -8,6 +8,10 @@ struct ThreadView: View {
     @Bindable var model: ThreadModel
     @State private var voiceExpanded = false
     @Environment(\.scenePhase) private var scenePhase
+    init(session: SessionModel, model: ThreadModel) {
+        self.session = session; self.model = model
+        _voiceExpanded = State(initialValue: session.voiceThreadID == model.threadID)
+    }
 
     var body: some View {
         GeometryReader { area in
@@ -80,7 +84,6 @@ struct ThreadView: View {
         }
         .onAppear {
             model.setSceneActive(scenePhase == .active && !PrivacyLock.shared.locked)
-            voiceExpanded = session.voiceThreadID == model.threadID
         }
         .onChange(of: scenePhase) { model.setSceneActive(scenePhase == .active && !PrivacyLock.shared.locked) }
         .onChange(of: PrivacyLock.shared.locked) { model.setSceneActive(scenePhase == .active && !PrivacyLock.shared.locked) }

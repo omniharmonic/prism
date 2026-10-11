@@ -64,8 +64,8 @@ enum UITestLaunch {
     /// These states never request microphone permission or contact a speech engine.
     static func voiceLayoutFixture() -> VoiceConversation? {
         guard let faults = configuration?.faults,
-              faults.contains("voice-layout-listening") || faults.contains("voice-layout-paused") else { return nil }
-        return VoiceConversation(audio: VoiceLayoutAudio())
+              faults.contains("voice-layout-listening") || faults.contains("voice-layout-paused") || faults.contains("voice-handoff") else { return nil }
+        return VoiceConversation(audio: faults.contains("voice-handoff") ? VoiceHandoffAudio() : VoiceLayoutAudio())
     }
     static func prepareVoiceLayoutFixture(_ voice: VoiceConversation) async {
         guard let faults = configuration?.faults,
@@ -73,6 +73,16 @@ enum UITestLaunch {
               voice.state == .off else { return }
         await voice.start()
         if faults.contains("voice-layout-paused") { await voice.finish { _ in false } }
+    }
+    /// First-turn navigation fixture; speech stays synthetic and creation is
+    /// restricted by the existing loopback-only UI-test service configuration.
+    @MainActor private final class VoiceHandoffAudio: ConversationAudio {
+        func start() async throws {}
+        func finish() async throws -> String { "Give a short synthetic welcome for the voice handoff test." }
+        func cancel() {}
+        func speak(_ text: String) {}
+        func waitForPlayback() async {}
+        func silence() {}
     }
     @MainActor private final class VoiceLayoutAudio: ConversationAudio {
         func start() async throws {}

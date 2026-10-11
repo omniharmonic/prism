@@ -340,6 +340,7 @@ struct TabMainView: View {
     @State private var tab = Tab.today
     @State private var path: [Destination] = []
     @State private var showingNewThread = false
+    @State private var voiceSheetHandoff = VoiceSheetHandoff()
     @State private var showingSettings = false
 
     enum Tab: Hashable {
@@ -381,15 +382,23 @@ struct TabMainView: View {
             }
         }
         .environment(\.navigator, Navigator { open($0) })
-        .sheet(isPresented: $showingNewThread) {
+        .sheet(isPresented: $showingNewThread, onDismiss: newThreadSheetDismissed) {
             NavigationStack {
-                NewThreadView(session: session)
+                Group {
+                    if let id = voiceSheetThreadID {
+                        ThreadView(session: session, model: session.threadModel(for: id)).id(id)
+                    } else {
+                        NewThreadView(session: session)
+                    }
+                }
                     .toolbar {
                         ToolbarItem(placement: .cancellationAction) {
-                            Button("Cancel") { showingNewThread = false }
+                            Button(voiceSheetThreadID == nil ? "Cancel" : "Done") { showingNewThread = false }
+                                .accessibilityIdentifier("voice.sheet.close")
                         }
                     }
             }
+            .accessibilityIdentifier("voice.conversation.sheet")
         }
         .sheet(isPresented: $showingSettings) { SettingsSheet(app: app, isPresented: $showingSettings) }
         .onAppear {
@@ -417,6 +426,11 @@ struct TabMainView: View {
             if destination == .today, !path.isEmpty, tab == .threads { path = [] }
             // A thread was just created from the sheet: show it.
             if case .thread = destination {
+                if voiceSheetHandoff.retain(session: session, destination: destination, isPresented: showingNewThread) {
+                    // Keep the active conversation in this sheet. Opening the same
+                    // ThreadView underneath would mount a second voice controller.
+                    return
+                }
                 showingNewThread = false
                 // A cold notification can arrive before the request-counter observer
                 // mounts. The destination itself is also authoritative navigation state.
@@ -426,11 +440,21 @@ struct TabMainView: View {
         .onChange(of: session.externalNavigationRequests) {
             if let destination = session.destination { open(destination) }
         }
-        .onChange(of: session.newThreadRequests) { showingNewThread = true }
+        .onChange(of: session.newThreadRequests) { voiceSheetHandoff.reset(); showingNewThread = true }
         .task { await session.approvals.refresh() }
     }
 
+    private var voiceSheetThreadID: String? {
+        voiceSheetHandoff.contentThreadID(session: session, destination: session.destination, isPresented: showingNewThread)
+    }
+    private func newThreadSheetDismissed() {
+        if let destination = voiceSheetHandoff.dismissed(destination: session.destination) { open(destination) }
+    }
     private func open(_ destination: Destination) {
+        if let id = voiceSheetHandoff.threadID, destination == .thread(id), showingNewThread { return }
+        if let id = voiceSheetHandoff.threadID, destination != .thread(id) {
+            voiceSheetHandoff.reset(); showingNewThread = false
+        }
         switch destination {
         case .today:
             tab = .today

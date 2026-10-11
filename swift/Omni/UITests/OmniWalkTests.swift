@@ -4,6 +4,37 @@ import XCTest
 /// a screenshot of each. Runs against the laptop dev backend (stub Hermes; nothing can send).
 final class OmniWalkTests: OmniUITestCase {
     #if os(iOS)
+    func testIPhoneFirstVoiceTurnStaysInPresentedSheetUntilDone() throws {
+        try XCTSkipUnless(Run.usesTabs, "This regression exercises iPhone tab and sheet navigation.")
+        continueAfterFailure = false
+        launch(faults: "sample-data,voice-handoff")
+        let newVoice = element("voice.new")
+        XCTAssertTrue(newVoice.waitForExistence(timeout: 15))
+        newVoice.tap()
+        let sheet = element("voice.conversation.sheet")
+        XCTAssertTrue(sheet.waitForExistence(timeout: 5))
+        let start = element("voice.start")
+        XCTAssertTrue(start.waitForExistence(timeout: 5))
+        start.tap()
+        let send = element("voice.send")
+        XCTAssertTrue(send.waitForExistence(timeout: 5))
+        send.tap()
+        let close = element("voice.sheet.close")
+        let becameConversation = NSPredicate { _, _ in close.exists && close.label == "Done" }
+        expectation(for: becameConversation, evaluatedWith: close)
+        waitForExpectations(timeout: 15)
+        XCTAssertTrue(sheet.exists, "The original sheet must remain presented after thread creation")
+        XCTAssertTrue(element("voice.end").exists, "The same voice session remains active")
+        XCTAssertEqual(app.descendants(matching: .any).matching(identifier: "voice.panel").count, 1, "Do not mount another voice panel underneath the sheet")
+        shot("voice-first-turn-retained-sheet")
+        close.tap()
+        let dismissed = NSPredicate { _, _ in !sheet.exists }
+        expectation(for: dismissed, evaluatedWith: sheet)
+        waitForExpectations(timeout: 5)
+        XCTAssertTrue(composer.waitForExistence(timeout: 5), "Done opens the created conversation beneath the closed sheet")
+        XCTAssertFalse(element("voice.end").exists, "Closing the voice sheet ends capture rather than restarting it underneath")
+        shot("voice-first-turn-done-thread")
+    }
     func testVoicePanelInThreadKeepsControlsBelowText() throws {
         continueAfterFailure = false
         let id = try XCTUnwrap(server { backend in

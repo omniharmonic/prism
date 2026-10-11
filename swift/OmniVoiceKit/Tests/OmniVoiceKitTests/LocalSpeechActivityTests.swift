@@ -183,4 +183,33 @@ final class LocalSpeechActivityTests: XCTestCase {
         await fulfillment(of: [emitted], timeout: 0.01)
     }
 
+    private final class TapCount: @unchecked Sendable {
+        private let lock = NSLock()
+        private var value = 0
+        func add() { lock.lock(); value += 1; lock.unlock() }
+        var count: Int { lock.lock(); defer { lock.unlock() }; return value }
+    }
+    func testFirstTapReportsOncePerCaptureAndIgnoresEmptyOrClosedTap() throws {
+        let directory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let buffer = Self.buffer(); let count = TapCount()
+        for index in 0..<2 {
+            let writer = try CaptureFile(url: directory.appending(path: "capture-\(index).caf"), format: buffer.format)
+            let tap = CaptureFile.tap(for: writer, firstTap: count.add)
+            buffer.frameLength = 0; tap(buffer, AVAudioTime(sampleTime: 0, atRate: 16_000))
+            XCTAssertEqual(count.count, index)
+            buffer.frameLength = 4096
+            for _ in 0..<8 { tap(buffer, AVAudioTime(sampleTime: 0, atRate: 16_000)) }
+            XCTAssertEqual(count.count, index + 1)
+            try writer.close()
+            tap(buffer, AVAudioTime(sampleTime: 0, atRate: 16_000))
+            XCTAssertEqual(count.count, index + 1)
+        }
+        let closed = try CaptureFile(url: directory.appending(path: "closed.caf"), format: buffer.format)
+        let late = CaptureFile.tap(for: closed, firstTap: count.add)
+        try closed.close(); late(buffer, AVAudioTime(sampleTime: 0, atRate: 16_000))
+        XCTAssertEqual(count.count, 2)
+    }
+
 }

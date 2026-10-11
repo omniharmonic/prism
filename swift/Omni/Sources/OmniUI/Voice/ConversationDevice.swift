@@ -100,7 +100,7 @@ import OmniVoiceKit
         file = url
         do {
             let callback: (@Sendable (SpeechActivityEvent) -> Void)? = activityEnabled ? Self.activityCallback(for: self, request: request) : nil
-            try await audio.start(url: url, chunkSeconds: 60, chunkClosed: Self.chunkCallback(for: self, request: request), activity: callback)
+            try await audio.start(url: url, chunkSeconds: 60, chunkClosed: Self.chunkCallback(for: self, request: request), activity: callback, firstTap: Self.firstTapCallback(for: self, request: request))
             captureDeadline = Task { [weak self] in
                 do { try await Task.sleep(for: .seconds(900)) } catch { return }
                 guard let self, self.generation == request else { return }
@@ -108,6 +108,14 @@ import OmniVoiceKit
             }
             guard request == generation, !Task.isCancelled else { throw CancellationError() }
         } catch { if request == generation { cancel() }; throw error }
+    }
+    nonisolated static func firstTapCallback(for device: ConversationDevice, request: Int) -> @Sendable () -> Void {
+        { [weak device] in
+            Task { @MainActor in
+                guard let device, device.generation == request else { return }
+                device.diagnostic(.microphoneFirstTap)
+            }
+        }
     }
     nonisolated private static func chunkCallback(for device: ConversationDevice, request: Int) -> @Sendable (URL) -> Void {
         { [weak device] url in
@@ -199,7 +207,7 @@ import OmniVoiceKit
         let url = FileManager.default.temporaryDirectory.appending(path: "omni-interruption-\(UUID().uuidString).caf")
         file = url; monitoringPlayback = true
         do {
-            try await audio.start(url: url, chunkSeconds: 60, chunkClosed: Self.chunkCallback(for: self, request: request), activity: Self.activityCallback(for: self, request: request))
+            try await audio.start(url: url, chunkSeconds: 60, chunkClosed: Self.chunkCallback(for: self, request: request), activity: Self.activityCallback(for: self, request: request), firstTap: Self.firstTapCallback(for: self, request: request))
             guard generation == request, !Task.isCancelled else { throw CancellationError() }
             monitoringPlayback = true; nearEndDuration = 0
             speech.configureDuplex(audio, owner: recordingOwner)
