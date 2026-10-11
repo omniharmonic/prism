@@ -25,6 +25,10 @@ import PrismTransport
         XCTAssertEqual(session.destination, .thread("voice-new")); XCTAssertEqual(session.voiceThreadID, "voice-new")
         XCTAssertFalse(session.newThreadUsesVoice); XCTAssertTrue(session.conversationVoice === voice)
         XCTAssertEqual(voice.state, .answering)
+        XCTAssertTrue(session.threadModel(for: "voice-new").timeline.contains {
+            if case .message(_, .user, "What is next?", _) = $0 { return true }
+            return false
+        }, "The accepted prompt appears in the destination before its first history read")
         XCTAssertFalse(session.cancelVoice(voice, threadID: nil), "The old new-voice view cannot cancel its transferred controller")
         XCTAssertEqual(voice.state, .answering)
         XCTAssertTrue(session.ownsVoice(voice, threadID: "voice-new"))

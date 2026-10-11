@@ -94,7 +94,11 @@ import OmniVoiceKit
     private(set) var recoveryNotice: String?
     private var receiveLimit: (@MainActor () -> Void)?
     func configureRecordingLimit(_ receive: @escaping @MainActor () -> Void) { receiveLimit = receive }
-    private var prepared = Set<Engine>()
+    private var prepared: [Engine: [String]] = [:]
+    var recognitionVocabulary: [String] {
+        get { VoiceVocabularyStore().load() }
+        set { try? VoiceVocabularyStore().save(newValue) }
+    }
     private var engine: any ConversationSTTEngine { selected == .apple ? apple : parakeet }
     func configureActivity(enabled: Bool, receive: @escaping @MainActor (VoiceActivityEvent) -> Void) {
         activityEnabled = enabled; receiveActivity = receive
@@ -107,9 +111,10 @@ import OmniVoiceKit
         let selected = self.selected
         let current = engine
         if let reason = await current.availability() { throw VoiceFailure.unavailable(reason) }
-        if !prepared.contains(selected) {
-            try await current.prepare(vocabulary: ["Benjamin Life", "Omniharmonic", "Prism", "Hermes", "Parachute"])
-            prepared.insert(selected)
+        let vocabulary = recognitionVocabulary
+        if prepared[selected] != vocabulary {
+            try await current.prepare(vocabulary: vocabulary)
+            prepared[selected] = vocabulary
         }
         guard request == generation, !Task.isCancelled else { throw CancellationError() }
         let url = FileManager.default.temporaryDirectory.appending(path: "omni-voice-\(UUID().uuidString).caf")

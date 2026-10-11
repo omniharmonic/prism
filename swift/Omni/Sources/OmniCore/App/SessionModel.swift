@@ -312,7 +312,9 @@ public final class SessionModel {
         let request = voiceGeneration
         guard let created = await threads.create(prompt: prompt, source: "voice") else { return false }
         guard request == voiceGeneration, ownsVoice(voice, threadID: nil) else { return false }
-        if let turn = created.turnId { threadModel(for: created.thread.id).rememberCreatedVoiceTurn(turn) }
+        let model = threadModel(for: created.thread.id)
+        model.rememberCreatedVoicePrompt(prompt)
+        if let turn = created.turnId { model.rememberCreatedVoiceTurn(turn) }
         voiceThreadID = created.thread.id; newThreadUsesVoice = false
         destination = .thread(created.thread.id)
         return true

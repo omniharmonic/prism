@@ -9,6 +9,7 @@ struct ConversationVoiceControl: View {
     let draft: Binding<String>?
     let maximumHeight: CGFloat
     @Binding var expanded: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @Environment(\.scenePhase) private var phase
     @Environment(\.voiceActivationSceneID) private var voiceSceneID
@@ -101,6 +102,7 @@ struct ConversationVoiceControl: View {
                 .scrollDismissesKeyboard(.never)
                 .scrollDisabled(panelContentHeight <= maximumHeight)
                 .frame(height: min(maximumHeight, panelContentHeight))
+                .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: panelContentHeight)
                 .frame(maxWidth: 440)
                 .modifier(VoicePanelMaterial(solid: reduceTransparency))
                 .padding(.horizontal, 12).padding(.vertical, 8)
@@ -274,8 +276,11 @@ struct ConversationVoiceControl: View {
                     .fixedSize(horizontal: !typeSize.isAccessibilitySize, vertical: true)
                     .accessibilityIdentifier("voice.keepListening")
             } else if voice.isSessionActive && voice.state != .paused {
-                Button { pause() } label: { Label("Pause", systemImage: "pause.fill").frame(minHeight: 44) }
-                    .fixedSize(horizontal: !typeSize.isAccessibilitySize, vertical: true)
+                Button { pause() } label: {
+                    Image(systemName: "pause.fill").frame(minWidth: 32, minHeight: 32)
+                }
+                    .buttonStyle(.bordered)
+                    .accessibilityLabel("Pause voice session")
                     .accessibilityIdentifier("voice.pause")
                     .accessibilityHint(voice.state == .listening ? "Keeps your words as an unsent draft" : "Turns off the microphone and stops narration. Omni’s task continues in chat.")
             }

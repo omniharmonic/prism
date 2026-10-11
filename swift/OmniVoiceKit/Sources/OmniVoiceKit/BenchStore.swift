@@ -12,7 +12,7 @@ public struct BenchUtterance: Codable, Identifiable, Sendable {
 
 @MainActor @Observable public final class BenchStore {
     public private(set) var utterances: [BenchUtterance] = []
-    public var vocabulary = ["Benjamin Life", "Omniharmonic", "Prism", "Hermes", "Parachute", "Dana", "Kevin", "Tim"] { didSet { prepared = false; try? JSONEncoder().encode(vocabulary).write(to: directory.appending(path: "vocabulary.json"), options: .atomic) } }
+    public var vocabulary: [String] = [] { didSet { prepared = false; try? VoiceVocabularyStore(directory: directory).save(vocabulary) } }
     public private(set) var recording = false
     public private(set) var busy = false
     public private(set) var prepared = false
@@ -30,7 +30,7 @@ public struct BenchUtterance: Codable, Identifiable, Sendable {
         do {
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
             var local = directory; var values = URLResourceValues(); values.isExcludedFromBackup = true; try local.setResourceValues(values)
-            if let seeds = try? Data(contentsOf: directory.appending(path: "vocabulary.json")) { vocabulary = try JSONDecoder().decode([String].self, from: seeds) }
+            vocabulary = VoiceVocabularyStore(directory: directory).load()
             if let data = try? Data(contentsOf: directory.appending(path: "set.json")) { utterances = try JSONDecoder().decode([BenchUtterance].self, from: data) }
         } catch { status = "The local benchmark folder could not be opened." }
     }
