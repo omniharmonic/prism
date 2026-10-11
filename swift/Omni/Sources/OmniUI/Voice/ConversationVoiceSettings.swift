@@ -70,7 +70,9 @@ struct ConversationVoiceSettings: View {
                         Text("Apple · on this device").tag(ReplySpeechPreferences.Provider.apple)
                     }
                     if device.replyPreferences.provider == .kokoro {
-                        if let provider = device.replyProviders.first(where: { $0.id == "kokoro-local" && $0.available }) {
+                        if device.replyProvidersLoading {
+                            ProgressView("Checking server voices…")
+                        } else if let provider = device.replyProviders.first(where: { $0.id == "kokoro-local" && $0.available }) {
                             Picker("Kokoro voice", selection: Binding(get: { device.replyPreferences.kokoroVoiceID }, set: {
                                 device.stopPreview(); device.replyPreferences.kokoroVoiceID = $0
                             })) {
@@ -78,7 +80,7 @@ struct ConversationVoiceSettings: View {
                             }
                             Text("Ready on your paired server").foregroundStyle(.secondary)
                         } else {
-                            Text("Kokoro is not ready on your paired server. Prepare the Kokoro model on that server, then refresh. Replies use your Apple fallback voice until it is ready.").foregroundStyle(.secondary)
+                            Text("Kokoro is not ready yet. The server may be warming up; refresh shortly. Replies use your Apple fallback voice while it is unavailable.").foregroundStyle(.secondary)
                             Button("Refresh server voices") { Task { await device.refreshReplyProviders() } }
                         }
                     }

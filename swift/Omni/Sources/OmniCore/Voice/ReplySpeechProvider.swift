@@ -1,6 +1,7 @@
 import Foundation
 import Observation
 import OmniClient
+import PrismTransport
 
 /// Optional authenticated synthesis capability. No microphone audio is sent.
 public protocol HermesSpeechService: Sendable {
@@ -55,12 +56,39 @@ public struct HermesReplySpeechProvider: ReplySpeechProvider {
                 diagnostic(.synthesisFinished)
                 return .encodedAudio(data)
             } catch {
-                if !Task.isCancelled, !(error is CancellationError) { diagnostic(.synthesisFailed) }
+                if !Task.isCancelled, !(error is CancellationError) {
+                    diagnostic(.synthesisFailed)
+                    diagnostic(SynthesisFailureDiagnostic.event(for: error))
+                }
                 throw error
             }
         } onCancel: {
             Task { try? await service.cancelVoiceSynthesis(sessionID: sessionID, requestID: requestID) }
         }
+    }
+}
+/// Only fixed categories reach the event trace. Server details, raw errors and
+/// response bodies are never recorded. A remote cancellation remains a failure
+/// when this task is still active, allowing the caller to deliver its fallback.
+enum SynthesisFailureDiagnostic {
+    static func event(for error: Error) -> VoiceDiagnosticEvent {
+        if let error = error as? PrismError {
+            if error.httpStatus == 409, error.serverCode == "voice_cancelled" { return .synthesisRemoteCancelled }
+            if error.httpStatus == 408 || error.httpStatus == 504 { return .synthesisTimeout }
+            if error.httpStatus == 429 || error.httpStatus == 503 { return .synthesisUnavailable }
+            switch error {
+            case .notSignedIn, .signedOut, .unauthorized, .forbidden: return .synthesisUnauthorized
+            case .decoding: return .synthesisInvalidAudio
+            case .invalidRequest, .rejected: return .synthesisInvalidRequest
+            case .unreachable: return .synthesisTransportFailed
+            case .outcomeUnknown(let outcome): return outcome.status == nil ? .synthesisTransportFailed : .synthesisOtherFailure
+            default: return .synthesisOtherFailure
+            }
+        }
+        if let error = error as? URLError {
+            return error.code == .timedOut ? .synthesisTimeout : .synthesisTransportFailed
+        }
+        return .synthesisOtherFailure
     }
 }
 public typealias HermesEdgeReplySpeechProvider = HermesReplySpeechProvider

@@ -7,6 +7,8 @@ public enum VoiceDiagnosticEvent: String, Codable, Sendable {
     case sendAccepted, sendFailed, paused, resumed, cancelled, staleCallback
     case captureStartupRetry, captureFailed, playbackStarted, playbackFinished, playbackFailed
     case acousticInterruption, synthesisStarted, synthesisFinished, synthesisFailed
+    case synthesisRemoteCancelled, synthesisTimeout, synthesisUnavailable, synthesisUnauthorized
+    case synthesisInvalidAudio, synthesisInvalidRequest, synthesisTransportFailed, synthesisOtherFailure
     case appleFallback, playbackDrain, listeningAgain
     case activityFirstFrame, activityUnavailable, activityWatchdog, microphoneFirstTap
     case replyCompletionReceived, replyTextQueued, pauseRequested

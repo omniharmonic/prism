@@ -282,9 +282,11 @@ import OmniVoiceKit
         device.configureReplySpeech(service: service)
         let task = Task { await device.refreshReplyProviders() }
         while !(await service.waiting()) { await Task.yield() }
+        XCTAssertTrue(device.replyProvidersLoading)
         device.configureReplySpeech(service: service) // repeated SwiftUI adoption keeps in-flight metadata valid
         try await service.finish(); await task.value
         XCTAssertEqual(device.replyProviders.first?.available, true)
+        XCTAssertFalse(device.replyProvidersLoading)
         device.configureReplySpeech(service: nil)
         device.configureReplySpeech(service: service)
         let cancelled = Task { await device.refreshReplyProviders() }
