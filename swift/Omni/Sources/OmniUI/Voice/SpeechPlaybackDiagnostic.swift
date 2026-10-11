@@ -9,6 +9,9 @@ enum SpeechPlaybackDiagnostic {
         switch failure {
         case .routeLost: return .playbackRouteLost
         case .engineInactive: return .playbackEngineInactive
+        case .engineInactiveAfterReconnect: return .playbackEngineInactiveAfterReconnect
+        case .engineInactiveWhileQueued: return .playbackEngineInactiveWhileQueued
+        case .monitorNotReady: return .playbackMonitorNotReady
         case .captureMissing: return .playbackCaptureMissing
         case .bufferBudget: return .playbackBufferBudget
         }

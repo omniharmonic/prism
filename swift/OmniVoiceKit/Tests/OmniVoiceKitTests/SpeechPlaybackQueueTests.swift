@@ -3,6 +3,27 @@ import XCTest
 @testable import OmniVoiceKit
 
 @MainActor final class SpeechPlaybackQueueTests: XCTestCase {
+    func testLostEngineWhileBackpressuredRejectsPlaybackAndReleasesReservation() async throws {
+        let queue = SpeechPlaybackQueue(maximumSeconds: 1)
+        let format = try XCTUnwrap(AVAudioFormat(standardFormatWithSampleRate: 16_000, channels: 1))
+        let buffer = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 16_000))
+        buffer.frameLength = 16_000
+        var release: (@Sendable () -> Void)?
+        try await queue.schedule(buffer) { _, completed in release = completed }
+        let blocked = Task {
+            try await queue.schedule(buffer) { _, _ in throw SpeechPlaybackFailure.engineInactiveWhileQueued }
+        }
+        for _ in 0..<10 { await Task.yield() }
+        release?()
+        do { try await blocked.value; XCTFail("Inactive engine must not schedule audio") }
+        catch { XCTAssertEqual(error as? SpeechPlaybackFailure, .engineInactiveWhileQueued) }
+        XCTAssertEqual(queue.inFlightBytes, 0)
+        XCTAssertEqual(queue.inFlightSeconds, 0)
+        var recovered = false
+        try await queue.schedule(buffer) { _, completed in recovered = true; completed() }
+        XCTAssertTrue(recovered)
+        queue.cancel()
+    }
     func testHardwareCompletionBoundsSchedulingAndCancelReleasesBlockedProducer() async throws {
         let queue = SpeechPlaybackQueue()
         let format = try XCTUnwrap(AVAudioFormat(standardFormatWithSampleRate: 16_000, channels: 1))
