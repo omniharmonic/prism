@@ -324,6 +324,7 @@ import OmniVoiceKit
         let defaults = try XCTUnwrap(UserDefaults(suiteName: name))
         defer { defaults.removePersistentDomain(forName: name) }
         let preferences = ReplySpeechPreferences(defaults: defaults)
+        preferences.provider = .hermesEdge // This cancellation fixture supplies only Edge audio.
         let device = ConversationDevice(speech: speech, replyPreferences: preferences, diagnostic: { _ in })
         let service = CatalogService(); device.configureReplySpeech(service: service)
         device.speak(String(repeating: "passage ", count: 1000))
