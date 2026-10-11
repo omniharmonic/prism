@@ -38,17 +38,25 @@ public struct HermesEdgeReplySpeechProvider: ReplySpeechProvider {
     private let service: any HermesSpeechService
     private let sessionID: String
     private let voiceID: String
-    public init(service: any HermesSpeechService, sessionID: String, voiceID: String) {
-        self.service = service; self.sessionID = sessionID; self.voiceID = voiceID
+    private let diagnostic: @Sendable (VoiceDiagnosticEvent) -> Void
+    public init(service: any HermesSpeechService, sessionID: String, voiceID: String, diagnostic: @escaping @Sendable (VoiceDiagnosticEvent) -> Void = VoiceDiagnostics.record) {
+        self.service = service; self.sessionID = sessionID; self.voiceID = voiceID; self.diagnostic = diagnostic
     }
     public func render(_ text: String) async throws -> ReplySpeechRendering {
         let requestID = UUID().uuidString
         let request = VoiceSynthesisRequest(sessionID: sessionID, requestID: requestID, providerID: "hermes-edge", voiceID: voiceID, text: text)
         return try await withTaskCancellationHandler {
             try Task.checkCancellation()
-            let data = try await service.synthesizeVoice(request)
-            try Task.checkCancellation()
-            return .encodedAudio(data)
+            diagnostic(.synthesisStarted)
+            do {
+                let data = try await service.synthesizeVoice(request)
+                try Task.checkCancellation()
+                diagnostic(.synthesisFinished)
+                return .encodedAudio(data)
+            } catch {
+                if !Task.isCancelled, !(error is CancellationError) { diagnostic(.synthesisFailed) }
+                throw error
+            }
         } onCancel: {
             Task { try? await service.cancelVoiceSynthesis(sessionID: sessionID, requestID: requestID) }
         }

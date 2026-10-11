@@ -25,6 +25,7 @@ import OmniVoiceKit
     static let preferences = SpeechPreferences(defaultLanguage: AVSpeechSynthesisVoice.currentLanguageCode())
     private(set) var isPreviewing = false
     private let output: any ConversationSpeechOutput
+    private let diagnostic: @Sendable (VoiceDiagnosticEvent) -> Void
     private var duplexOwner: UUID?
     private var recordingOwner: UUID?
     private var playbackOwner: UUID?
@@ -34,12 +35,17 @@ import OmniVoiceKit
     private var generation = 0
     private var pending = 0
     private var drainWaiters: [UUID: [CheckedContinuation<Void, Never>]] = [:]
-    init(output: any ConversationSpeechOutput) { self.output = output }
+    init(output: any ConversationSpeechOutput, diagnostic: @escaping @Sendable (VoiceDiagnosticEvent) -> Void = VoiceDiagnostics.record) {
+        self.output = output; self.diagnostic = diagnostic
+    }
     func configurePlaybackFailure(owner: UUID, receive: @escaping @MainActor (String) -> Void) {
         output.configureFailure { [weak self] reason in
             guard let self, self.playbackOwner == owner || self.duplexOwner == owner else { return }
-            receive(reason)
+            // Release failed ownership before invoking session callbacks. They
+            // may synchronously start replacement playback or capture.
+            self.diagnostic(.playbackFailed)
             self.stopAll()
+            receive(reason)
         }
     }
     func configureDuplex(_ audio: AudioIO?, owner: UUID) {
@@ -104,11 +110,14 @@ import OmniVoiceKit
                 guard let self, self.generation == request else { return }
                 self.pending -= 1
                 if self.pending == 0 {
+                    self.diagnostic(.playbackFinished)
                     self.isPreviewing = false; self.previewLease = nil; self.cancelPreview = nil
                     self.playbackOwner = nil; self.resolveDrain(owner: owner)
                 }
             }
+            diagnostic(.playbackStarted)
         } catch {
+            diagnostic(.playbackFailed)
             pending -= 1
             if pending == 0 { isPreviewing = false; previewLease = nil; cancelPreview = nil; playbackOwner = nil; resolveDrain(owner: owner) }
             throw error
@@ -135,12 +144,14 @@ import OmniVoiceKit
     }
     private func enqueue(_ text: String, identifier: String?, rate: Float) {
         pending += 1
+        if pending == 1 { diagnostic(.playbackStarted) }
         let request = generation
         output.speak(text, identifier: identifier, rate: rate) { [weak self] in
             guard let self, self.generation == request else { return }
             self.pending -= 1
             if self.pending == 0 {
                 let owner = self.playbackOwner
+                self.diagnostic(.playbackFinished)
                 self.isPreviewing = false; self.playbackOwner = nil
                 if let owner { self.resolveDrain(owner: owner) }
             }

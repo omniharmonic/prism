@@ -20,9 +20,10 @@ import OmniVoiceKit
     private let narrationWork = ReplyNarrationWork()
     private var replySpeechService: (any HermesSpeechService)?
     static let sharedReplyPreferences = ReplySpeechPreferences()
+    private let diagnostic: @Sendable (VoiceDiagnosticEvent) -> Void
     let replyPreferences: ReplySpeechPreferences
-    init(speech: ConversationSpeech = .shared, replyPreferences: ReplySpeechPreferences = ConversationDevice.sharedReplyPreferences) {
-        self.speech = speech; self.replyPreferences = replyPreferences
+    init(speech: ConversationSpeech = .shared, replyPreferences: ReplySpeechPreferences = ConversationDevice.sharedReplyPreferences, diagnostic: @escaping @Sendable (VoiceDiagnosticEvent) -> Void = VoiceDiagnostics.record) {
+        self.speech = speech; self.replyPreferences = replyPreferences; self.diagnostic = diagnostic
     }
     private(set) var replyProviders: [VoiceProvider] = []
     private(set) var replySpeechNotice: String?
@@ -176,6 +177,7 @@ import OmniVoiceKit
             guard nearEndDuration >= 0.3 else { return }
             do {
                 try audio.retainInterruptionLeadIn()
+                diagnostic(.acousticInterruption)
                 silence()
                 speech.configureDuplex(nil, owner: recordingOwner)
                 speech.beginRecording(owner: recordingOwner)
@@ -287,10 +289,10 @@ import OmniVoiceKit
             var provider: any ReplySpeechProvider
             if preference == .hermesEdge, let service = self.replySpeechService, let metadata = self.edgeProvider {
                 let voiceID = metadata.voices.contains(where: { $0.id == self.replyPreferences.edgeVoiceID }) ? self.replyPreferences.edgeVoiceID! : metadata.defaultVoiceID
-                provider = HermesEdgeReplySpeechProvider(service: service, sessionID: sessionID, voiceID: voiceID)
+                provider = HermesEdgeReplySpeechProvider(service: service, sessionID: sessionID, voiceID: voiceID, diagnostic: self.diagnostic)
             } else {
                 provider = AppleReplySpeechProvider()
-                if preference == .hermesEdge { self.replySpeechNotice = "Hermes speech is unavailable. Using the Apple voice on this device." }
+                if preference == .hermesEdge { self.diagnostic(.appleFallback); self.replySpeechNotice = "Hermes speech is unavailable. Using the Apple voice on this device." }
             }
             let passages = ReplySpeechPassages.split(text)
             guard !passages.isEmpty else { self.replySpeechNotice = "This reply could not be prepared for speech. Read it in chat."; return }
@@ -300,6 +302,7 @@ import OmniVoiceKit
                 do { rendered = try await provider.render(passage) }
                 catch {
                     guard self.generation == request, isCurrent() else { return }
+                    self.diagnostic(.appleFallback)
                     self.replySpeechNotice = "Hermes speech could not be generated. Using the Apple voice on this device."
                     provider = AppleReplySpeechProvider()
                     rendered = .systemVoice(passage)
@@ -318,6 +321,7 @@ import OmniVoiceKit
                 case .encodedAudio(let data):
                     do { try self.speech.playAudio(data, owner: self.recordingOwner) }
                     catch {
+                        self.diagnostic(.appleFallback)
                         self.replySpeechNotice = "Generated speech could not start. Using the Apple voice on this device."
                         self.speakApple(passage)
                     }
@@ -368,7 +372,7 @@ import OmniVoiceKit
                 self.speech.preview(owner: self.replyPreviewOwner, identifier: identifier, rate: self.speechPreferences.rate); return
             }
             let voiceID = metadata.voices.first { $0.id == self.replyPreferences.edgeVoiceID }?.id ?? metadata.defaultVoiceID
-            let provider = HermesEdgeReplySpeechProvider(service: service, sessionID: UUID().uuidString, voiceID: voiceID)
+            let provider = HermesEdgeReplySpeechProvider(service: service, sessionID: UUID().uuidString, voiceID: voiceID, diagnostic: self.diagnostic)
             do {
                 let rendered = try await provider.render("Hello, I'm Omni. Take your time. We can think this through together.")
                 guard !Task.isCancelled, self.generation == request, self.speech.ownsPreview(lease, owner: self.replyPreviewOwner) else { return }
