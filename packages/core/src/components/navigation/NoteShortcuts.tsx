@@ -251,6 +251,8 @@ function useScopedShortcuts(scopeArg: string | null, enabled: boolean): Shortcut
   }, [scope, client]);
 
   const selected = tabs.find(tab => tab.id === active)?.noteId;
+  const selectedKey = selected && isVaultNoteId(selected) ? `${scope}:${selected}` : null;
+  const [checkedSelected, setCheckedSelected] = useState<string | null>(null);
   useEffect(() => {
     if (!selected || !isVaultNoteId(selected) || !current()) return;
     let cancelled = false;
@@ -261,9 +263,9 @@ function useScopedShortcuts(scopeArg: string | null, enabled: boolean): Shortcut
       if (cancelled || !current() || state.openTabs.find(tab => tab.id === state.activeTabId)?.noteId !== selected) return;
       const prior = recordRef.current;
       if (prior.recents[0] !== note.id) save({ ...prior, recents: [note.id, ...prior.recents.filter(id => id !== note.id)].slice(0, 12) });
-    }).catch(() => {});
+    }).catch(() => {}).finally(() => { if (!cancelled) setCheckedSelected(selectedKey); });
     return () => { cancelled = true; };
-  }, [selected, scope, client]);
+  }, [selected, selectedKey, scope, client]);
 
   const requested = [...new Set([...record.favorites, ...record.recents])];
   const queries = useQueries({ queries: requested.map(id => ({
@@ -305,7 +307,7 @@ function useScopedShortcuts(scopeArg: string | null, enabled: boolean): Shortcut
   const old = legacy();
   return scope ? {
     ...NO_SHORTCUTS,
-    loading: queries.some(query => query.isPending),
+    loading: (selectedKey !== null && checkedSelected !== selectedKey) || queries.some(query => query.isPending),
     favorites: materialize(record.favorites), recents: materialize(record.recents), favoriteIds: record.favorites,
     toggleFavorite: item => {
       if (!isVaultNoteId(item.id)) return;

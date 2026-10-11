@@ -157,9 +157,18 @@ window.fetch = async (input, init) => {
 setActiveVault("primary");
 await fetchMe();
 const agent = params.has("agent") ? replyAgent(() => agentScope() ?? "") : null;
+const shortcutGate = params.has("hold-shortcuts") ? new Promise<void>(resolve => {
+  Object.assign(window, { prismFixtureReleaseShortcuts: resolve });
+}) : null;
+const fixtureClient = shortcutGate ? { ...httpVaultClient,
+  getNote: async (id: string, options?: { fresh?: boolean; latest?: boolean }) => {
+    if (options?.fresh) await shortcutGate;
+    return httpVaultClient.getNote(id, options);
+  },
+} : httpVaultClient;
 useUIStore.setState({ contextPanelOpen: true, contextPanelTab: "agent", sidebarWidth: 240, contextPanelWidth: 360 });
 createRoot(document.getElementById("root")!).render(
-  <React.StrictMode><AgentClientProvider client={agent}><InvalidationSourceProvider source={params.has("events") ? eventSource : null}><PlatformProvider value="web"><VaultClientProvider client={httpVaultClient}><CollabSharingProvider value={{ ...(params.has("navigation") ? {
+  <React.StrictMode><AgentClientProvider client={agent}><InvalidationSourceProvider source={params.has("events") ? eventSource : null}><PlatformProvider value="web"><VaultClientProvider client={fixtureClient}><CollabSharingProvider value={{ ...(params.has("navigation") ? {
       listVaults: async () => { const chosen = params.has("vaultdata") ? getActiveVault() ?? "primary" : "primary"; return [{ id: "primary", label: "Personal vault", vault: "personal", active: chosen === "primary" }, { id: "secondary", label: "Shared research", vault: "research", active: chosen === "secondary" }]; },
       getActiveVault: () => params.has("vaultdata") ? getActiveVault() ?? "primary" : "primary",
       setActiveVault: (id: string) => {

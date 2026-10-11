@@ -94,3 +94,15 @@ test('a stalled startup offers a way back into the workspace', async ({ page }) 
   await expect(page.getByRole('status', { name: 'Preparing workspace' })).toHaveCount(0);
   await expect(page.getByRole('navigation', { name: 'Mobile workspace' })).toBeVisible();
 });
+
+
+test('startup waits for the initial recent-page access check, not just tree data', async ({ page }) => {
+  await page.goto('/e2e-fixtures/workspace.html?navigation&large-navigation&hold-shortcuts');
+  await expect(page.locator('.workspace-mobile-drawer .page-tree-row')).toHaveCount(1206);
+  await expect(page.locator('.tiptap')).toContainText('A shared place');
+  await expect(page.getByRole('status', { name: 'Preparing workspace' })).toBeVisible();
+  await page.evaluate(() => (window as any).prismFixtureReleaseShortcuts());
+  await expect(page.getByRole('status', { name: 'Preparing workspace' })).toHaveCount(0);
+  await page.getByRole('navigation', { name: 'Mobile workspace' }).getByRole('button', { name: 'Notes', exact: true }).click();
+  await expect(page.getByRole('dialog', { name: 'Workspace navigation' }).getByRole('button', { name: 'A living workspace', exact: true }).first()).toBeVisible();
+});
