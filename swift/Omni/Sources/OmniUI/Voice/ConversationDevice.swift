@@ -101,14 +101,17 @@ import OmniVoiceKit
         file = url
         do {
             let callback: (@Sendable (SpeechActivityEvent) -> Void)? = activityEnabled ? Self.activityCallback(for: self, request: request) : nil
-            try await audio.start(url: url, chunkSeconds: 60, chunkClosed: Self.chunkCallback(for: self, request: request), activity: callback, firstTap: Self.firstTapCallback(for: self, request: request), configurationChanged: Self.configurationCallback(for: self, request: request))
+            try await audio.startVerified(url: url, chunkSeconds: 60, chunkClosed: Self.chunkCallback(for: self, request: request), activity: callback, firstTap: Self.firstTapCallback(for: self, request: request), configurationChanged: Self.configurationCallback(for: self, request: request))
             captureDeadline = Task { [weak self] in
                 do { try await Task.sleep(for: .seconds(900)) } catch { return }
                 guard let self, self.generation == request else { return }
                 self.receiveLimit?()
             }
             guard request == generation, !Task.isCancelled else { throw CancellationError() }
-        } catch { if request == generation { cancel() }; throw error }
+        } catch {
+            if request == generation, (Task.isCancelled || !audio.hasRecordedInput) { cancel() }
+            throw error
+        }
     }
     nonisolated static func firstTapCallback(for device: ConversationDevice, request: Int) -> @Sendable () -> Void {
         { [weak device] in
