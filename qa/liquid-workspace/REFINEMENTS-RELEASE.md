@@ -25,10 +25,18 @@ IPA SHA-256: `fa453bd509cc25c7745023ae499ba2f6047cb59f2779d996ef28327540b8a3af`.
 Preserved app: `/private/tmp/prism-refinements-release/ios/Payload/Prism.app`.
 No full interactive physical-device acceptance is claimed from successful launch alone.
 
-## macOS: awaiting owner signing
+## macOS: installed on laptop and Mini
 
-Unsigned app SHA-256 (ZIP): `ee1d7c10516f9ba71ab643dc7bfaff2e0beea184d6596eb8991492c25539489d`.
-Mini staging: `~/release-artifacts/prism-client-v2026.10.11/prism-client`.
-SSH signing returned `errSecInternalComponent`; owner command prepared at `~/release-artifacts/sign-prism-refinements.sh` under `docs/runbook/mac-mini-signing.md`. Existing installed apps are unchanged pending signing, notarization, stapling and verification. Laptop pre-install UI showed Home/Synced, no active draft.
+Owner signed and verified the staged app through the Mini desktop session. Developer ID/team, secure timestamp, hardened runtime and empty release entitlements verified. Apple submission `78efe90f-c9e8-49f4-82eb-d1c977ed06f9` was Accepted; stapling, ticket validation and Gatekeeper assessment passed. Exact notarized artifact installed on both Macs, with each previous app backed up under `~/release-artifacts/backups/prism-before-2026.10.11/Prism Client.app`.
 
-The prior October 10 desktop submission `dfe8816f-d96a-42bb-a037-32acc5fa7b02` is now Accepted; this release still requires its own signature and notarization.
+- Unsigned ZIP SHA-256: `ee1d7c10516f9ba71ab643dc7bfaff2e0beea184d6596eb8991492c25539489d`.
+- Signed ZIP SHA-256: `d965c653c4a4b7028bb91f09563bf78e52b61d6bd3b2780560214e3ca7f405b6`.
+- Notarized ZIP SHA-256: `05a711e7df0facf70eb4caa364f19e6b9dff4d0ae97bca3bcd4822f2d43790d4`.
+- Mini artifact: `~/release-artifacts/prism-client-v2026.10.11/prism-client/notarized.zip`.
+- Laptop artifact: `/private/tmp/prism-refinements-release/macos/notarized.zip`.
+
+The installed icon on BOTH Macs exactly matches the approved golden-ratio tetrahedron asset (`icon.icns`, SHA-256 `e383b652e1c190d23b90c2368f519774348e46b7ff92bb49f82571a827b044ee`). The actual packaged icon was converted to PNG and visually inspected; CFBundleIconFile names this resource. No post-signing bundle modifications were made.
+
+Laptop launch and interactive verification passed: workspace Synced, restored Conversation history visible beside the chat, Attach notes beside Capture text, agent permissions present; an existing note opened and showed Saved / Live. No document content was edited. Mini was not running Prism when installed and its Screen Sharing session was locked during the subsequent check, so Mini interactive launch acceptance is not claimed. Its installed signature and icon hash were verified.
+
+The prior October 10 desktop submission `dfe8816f-d96a-42bb-a037-32acc5fa7b02` is also Accepted; this release supersedes it.
