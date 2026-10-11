@@ -42,3 +42,12 @@ Build 15 requires a first delivered microphone buffer and a running engine befor
 Independent continuity review found no blocker: canceled old drain tasks cannot stop the next monitor, and failed readiness clears duplex before ordinary playback. Parent reviewed first-tap and notification callback ownership and stop invalidation. Integrated verification: 219 Core tests and 39 UI tests passed; 7 focused VoiceKit readiness/queue tests passed. Logs: `/private/tmp/omni-v15-native-tests.log`, `/private/tmp/omni-v15-voicekit-tests.log`. Source release guard passed. The unrelated MacSnapshotTests full walkthrough remains excluded; host Contacts/CoreData XPC warnings did not fail the selected tests. No UI route changed in this repair; build 14's actual iPhone main-chat UI pass remains historical evidence.
 
 Physical acceptance remains mandatory: intentionally interrupt one reply, then hear a complete subsequent long reply and return to Listening. A successful build does not close this gate.
+
+## Tagged artifacts — installation pending
+
+PR #119 merged as `aee44ef3`, tagged `omni-client-v2026.10.10-15`. Both Release builds succeeded from that tag. iOS strict signature, bundle version/identifier and DEBUG-symbol exclusion passed; Mac version/identifier, universal arm64+x86_64 and exclusion checks passed. Artifacts are private at `/private/tmp/omni-client-v2026.10.10-15`:
+
+- `ios.zip`: SHA-256 `cef5ab815a2b83bb71b8ce3787d8df2781bb48c66476dd3496d9f8b328d6035e`.
+- `mac-unsigned.zip`: SHA-256 `444fbac6fa72bf2d802668cb03224136031e70a971658438003d31c9ad79e17f`. Local unsigned candidate only; not signed, notarized or installed.
+
+Build logs: `/private/tmp/omni-v15-ios-release.log`, `/private/tmp/omni-v15-mac-release.log`. The mobile readiness question is pending; no build 15 device installation is claimed. Mac 13's existing Apple submission was checked again and remains In Progress; no duplicate submission. GitHub cargo checks pass; wider e2e/typecheck jobs remain pending, separately from the passing relevant local native tests. No backend or vault change.
