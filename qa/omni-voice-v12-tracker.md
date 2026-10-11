@@ -11,7 +11,7 @@ Parallel ownership: continuity worker covers capture/submission/UI; speech worke
 - Build 11 has no persisted detailed voice lifecycle trace and disables its HTTP DiagnosticsLog in Release. Recent production logs have no synthesis markers because none were emitted. These logs cannot determine the cutoff cause.
 - Confirmed UI issue: awaiting send/create was labelled Transcribing. A read-only submission phase now displays Sending your turn and Creating your conversation/Sending your message.
 - Confirmed empty-capture behavior: successful empty STT always paused. Automatic mode now retries at most twice, only with current listening ownership, no draft/recovery notice and no error. Explicit Pause and failures remain paused.
-- Confirmed speech cleanup reentrancy and acoustic draft-prefix fixes are tracked in the pending integration. Do not claim either reproduces the owner's exact long-reply cutoff.
+- Confirmed speech cleanup reentrancy and acoustic draft-prefix fixes are integrated and independently reviewed. Do not claim either reproduces the owner's exact long-reply cutoff.
 
 ## Diagnostics contract
 
@@ -22,5 +22,5 @@ Native trace accepts only enum events and timestamps. It retains at most 256 ent
 - New voice chat transcription → visible sending → message/first reply → listening on iPhone and iPad.
 - Empty Automatic turn recovery, spoken and empty Pause/Resume, no duplicate prefix after acoustic interruption.
 - Long reply with acoustic interruption off and on; inspect metadata trace after reproduction.
-- Complete speech/provider/VoiceKit regressions, Release builds and rollout receipts before installation.
+- Focused speech/provider/diagnostic tests:24 passed; VoiceKit long-stream/queue tests:8 passed. Recovery tests:34 Core +3 hosted UI, plus10 follow-up Core passed. Backend outcome/API/smoke:21 passed and integrated typecheck passes. Full relevant integrated native tests and Release builds are next.
 - Keep V03 physical echo/route checks, V04 shortcut acceptance, V05 wake lead-in/energy and local-model evaluation open in the canonical roadmap.

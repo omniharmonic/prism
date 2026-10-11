@@ -10,8 +10,11 @@ public enum VoiceDiagnosticEvent: String, Codable, Sendable {
     case appleFallback, playbackDrain, listeningAgain
 }
 public enum VoiceDiagnostics {
-    private static let sink = VoiceEventLog(url: FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first?
-        .appending(path: "OmniVoiceDiagnostics/events.json"))
+    // Package tests and command-line tools must not pollute the installed app's
+    // trace. Explicit VoiceEventLog instances still support temporary test files.
+    private static let sink = VoiceEventLog(url: Bundle.main.bundleIdentifier == "com.benjaminlife.omni"
+        ? FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first?
+            .appending(path: "OmniVoiceDiagnostics/events.json") : nil)
     public static func record(_ event: VoiceDiagnosticEvent) { sink.record(event) }
 }
 
