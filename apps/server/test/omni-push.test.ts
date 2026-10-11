@@ -77,3 +77,79 @@ test("invalid-token pruning cannot delete another app or signing environment", a
   assert.equal(apnsTokenForDevice(production.id)?.application, "omni");
   assert.equal(apnsTokenForDevice(prism.id)?.application, "prism");
 });
+
+
+test("preview opt-in is device-scoped, validated and retained on token refresh", async () => {
+  const phone = issueDeviceToken(config.ownerEmail, "Phone", "omni-native");
+  const mac = issueDeviceToken(config.ownerEmail, "Mac", "omni-native");
+  await register(omniApi, "/push", phone.token);
+  await register(omniApi, "/push", mac.token, "b".repeat(64));
+  assert.equal(apnsTokenForDevice(phone.id)?.preview, "generic");
+  const set = (preview: unknown) => omniApi.request("/push", { method: "POST", headers: headers(phone.token), body: JSON.stringify({ token: "a".repeat(64), environment: "sandbox", preview, deviceId: mac.id }) });
+  assert.equal((await set("title_preview")).status, 200);
+  assert.equal(apnsTokenForDevice(phone.id)?.preview, "title_preview");
+  assert.equal(apnsTokenForDevice(mac.id)?.preview, "generic", "caller cannot select another device");
+  await register(omniApi, "/push", phone.token);
+  assert.equal(apnsTokenForDevice(phone.id)?.preview, "title_preview");
+  for (const bad of ["everything", null, {}, 1]) assert.equal((await set(bad)).status, 400);
+  assert.equal((await set("generic")).status, 200);
+  assert.equal(apnsTokenForDevice(phone.id)?.preview, "generic");
+});
+
+test("mixed device preferences produce distinct private alerts, owner/app scoped", async () => {
+  const { omniNotification, subscribeNotices, publishNotice } = await import("../src/omni/bus");
+  const generic = issueDeviceToken(config.ownerEmail, "Private", "omni-native");
+  const rich = issueDeviceToken(config.ownerEmail, "Rich", "omni-native");
+  const title = issueDeviceToken(config.ownerEmail, "Title", "omni-native");
+  await register(omniApi, "/push", generic.token);
+  for (const [device, preview, token] of [[rich, "title_preview", "b"], [title, "title", "c"]] as const) {
+    await omniApi.request("/push", { method: "POST", headers: headers(device.token), body: JSON.stringify({ token: token.repeat(64), environment: "sandbox", preview }) });
+  }
+  const stranger = issueDeviceToken("other@example.com", "Other", "omni-native");
+  const { saveApnsToken } = await import("../src/apns");
+  saveApnsToken({ deviceId: stranger.id, token: "d".repeat(64), environment: "sandbox", application: "omni", email: "other@example.com", vaultId: "test", preview: "title_preview" });
+  const notices: unknown[] = [];
+  const stop = subscribeNotices(n => notices.push(n));
+  publishNotice({ type: "thread", id: "thread", op: "done" });
+  stop();
+  await sendApnsToOwner(config.ownerEmail, row => omniNotification("OMNI_THREAD", "thread", row.preview, "Planning", "The answer is ready."), "omni");
+  assert.equal(requests.length, 3);
+  const alerts = requests.map(r => JSON.parse(r.body).aps.alert);
+  assert.deepEqual(alerts, [
+    { title: "Omni", body: "Omni has an update" },
+    { title: "Planning", body: "The answer is ready." },
+    { title: "Planning", body: "Omni has an update" },
+  ]);
+  assert.deepEqual(notices, [{ type: "thread", id: "thread", op: "done" }]);
+});
+
+test("bounded plain-text previews omit code, controls and paths with generic fallback", async () => {
+  const { omniNotification, notificationText } = await import("../src/omni/bus");
+  const alert = (reply?: string, kind: "OMNI_THREAD" | "OMNI_APPROVAL" = "OMNI_THREAD") => (omniNotification(kind, "thread", "title_preview", "Private title", reply).payload.aps as { alert: { title: string; body: string } }).alert;
+  for (const reply of [undefined, "", "```swift\nlet secret = 1\n```", "`command`", "/tmp/reply.wav", "file:///private/reply.mp3", "[Audio](/tmp/reply.wav)", "![Audio](/tmp/reply.wav)"]) {
+    assert.deepEqual(alert(reply), { title: "Omni", body: "Omni has an update" });
+  }
+  assert.deepEqual(alert("Final answer", "OMNI_APPROVAL"), { title: "Omni", body: "A draft is waiting for your review" });
+  assert.equal(notificationText("**Ready**\n[Details](https://example.com) /tmp/audio.wav `code`\u202E\u0000", 180), "Ready Details");
+  const text = notificationText("😀".repeat(500), 180);
+  assert.equal(Array.from(text).length, 180);
+  assert.ok(text.endsWith("…"));
+  const longTitle = omniNotification("OMNI_THREAD", "thread", "title_preview", "😀".repeat(200), "😀".repeat(500));
+  assert.ok(Buffer.byteLength(JSON.stringify(longTitle.payload)) < 4096);
+});
+
+
+test("transport failures cannot log opted-in reply or title content", async () => {
+  const { omniNotification } = await import("../src/omni/bus");
+  const { sendApns } = await import("../src/apns");
+  const logs: string[] = [];
+  const original = console.error;
+  console.error = (...args) => logs.push(args.join(" "));
+  configureApns({ sleep: async () => {}, transport: { send: async r => { throw new Error(`request failed ${r.body}`); }, close() {} } });
+  try {
+    await sendApns({ token: "a".repeat(64), environment: "sandbox", application: "omni" }, omniNotification("OMNI_THREAD", "thread", "title_preview", "PRIVATE_TITLE", "PRIVATE_REPLY"));
+    assert.ok(logs.length);
+    assert.ok(!logs.join(" ").includes("PRIVATE_TITLE"));
+    assert.ok(!logs.join(" ").includes("PRIVATE_REPLY"));
+  } finally { console.error = original; }
+});

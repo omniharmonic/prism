@@ -794,6 +794,14 @@ db.exec(`
   }
 }
 
+// Notification content is a per-registration opt-in; old devices stay generic.
+{
+  const cols = db.prepare("PRAGMA table_info(apns_tokens)").all() as Array<{ name: string }>;
+  if (!cols.some(c => c.name === "preview")) {
+    db.exec("ALTER TABLE apns_tokens ADD COLUMN preview TEXT NOT NULL DEFAULT 'generic' CHECK (preview IN ('generic', 'title', 'title_preview'))");
+  }
+}
+
 // TTL / expiry on grants (Phase 4.3): a nullable epoch-ms deadline. NULL = never
 // expires (every existing grant → byte-identical behavior). Today only PEER
 // grants honor it (time-boxed federation access); grantsForPeer filters expired.

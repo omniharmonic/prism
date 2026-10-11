@@ -70,6 +70,8 @@ struct ThreadView: View {
                     Label(ThreadGrouping.title(for: thread.state), systemImage: StateStyle.symbol(thread.state))
                         .labelStyle(.titleAndIcon)
                         .font(.callout)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 3)
                         .foregroundStyle(Color.quietText)
                         // The glass toolbar also contains Voice. Keep the state's
                         // short label whole while the navigation title can truncate.
@@ -260,7 +262,7 @@ struct Composer<Accessory: View>: View {
     }
 
     var body: some View {
-        HStack(alignment: .bottom, spacing: 10) {
+        HStack(alignment: .center, spacing: 10) {
             // An invisible copy of the text sets the height; the editor fills it.
             Text(text.isEmpty ? placeholder : text + (text.hasSuffix("\n") ? " " : ""))
                 .font(.body)
@@ -294,7 +296,7 @@ struct Composer<Accessory: View>: View {
             if isRunning {
                 Button(action: onStop) {
                     Image(systemName: "stop.circle.fill").font(.title2)
-                        .frame(width: 44, height: 44).contentShape(Circle())
+                        .frame(width: Self.actionSize, height: Self.actionSize).contentShape(Circle())
                 }
                 .buttonStyle(.plain)
                 .disabled(isStopping)
@@ -305,7 +307,7 @@ struct Composer<Accessory: View>: View {
             } else {
                 Button(action: onSend) {
                     Image(systemName: "arrow.up.circle.fill").font(.title2)
-                        .frame(width: 44, height: 44).contentShape(Circle())
+                        .frame(width: Self.actionSize, height: Self.actionSize).contentShape(Circle())
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(canSend ? AnyShapeStyle(.tint) : AnyShapeStyle(Color.quietText))
@@ -327,6 +329,14 @@ struct Composer<Accessory: View>: View {
         true
         #else
         false
+        #endif
+    }
+
+    private static var actionSize: CGFloat {
+        #if os(macOS)
+        32
+        #else
+        44
         #endif
     }
 

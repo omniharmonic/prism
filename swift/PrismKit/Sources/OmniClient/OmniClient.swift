@@ -319,10 +319,10 @@ public struct OmniClient: Sendable {
 
     // MARK: Native push
 
-    public func registerPush(token: String, environment: String) async throws -> Bool {
-        struct Body: Encodable { let token: String; let environment: String }
+    public func registerPush(token: String, environment: String, preview: String = "generic") async throws -> Bool {
+        struct Body: Encodable { let token: String; let environment: String; let preview: String }
         struct Answer: Decodable { let ok: Bool; let apnsEnabled: Bool }
-        let answer: Answer = try await transport.send(.json("POST", "\(Self.base)/push", body: Body(token: token, environment: environment)))
+        let answer: Answer = try await transport.send(.json("POST", "\(Self.base)/push", body: Body(token: token, environment: environment, preview: preview)))
         return answer.apnsEnabled
     }
 

@@ -37,3 +37,7 @@ PR145 merged; tag `omni-client-v2026.10.11-24` at `9d7fc478ecc0eafc3f034ff2e53ef
 - Main window closed through UI; app remained running. Awaiting 50-second renewal and owner spoken detection test.
 
 Actual closed-window renewal passed: wakeStarted at Apple-reference timestamp813429553.029382, wakeRollover813429605.352965, wakeStarted813429605.457238. No wakePaused event followed closing the window. Latest Omni crash report remains the original build23 failure at10:23:32; no new crash observed. Listener remains enabled for the owner's spoken phrase test. This proves running/renewal, not phrase recognition or successful conversation handoff.
+
+## Owner acceptance
+
+Owner reports wake works perfectly over headphones after the closed-window and second-activation test. Treat wake phrase detection/conversation handoff as accepted for this setup, not a claim of all routes or sleep scenarios. Remaining separate polish: small noises can trigger speech interruption; Replied pill needs padding; Send needs alignment; owner explicitly chose thread title plus short reply preview notifications.

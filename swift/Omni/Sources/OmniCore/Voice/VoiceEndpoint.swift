@@ -9,6 +9,7 @@ public enum VoiceTurnMode: String, CaseIterable, Sendable {
 @MainActor @Observable public final class VoiceTurnPreferences {
     nonisolated public static let pauseChoices: [Double] = [2, 4, 8, 12, 20]
     public var mode: VoiceTurnMode { didSet { defaults.set(mode.rawValue, forKey: "omni.voice.turnMode") } }
+    public var interruptionResponsiveness: VoiceInterruptionResponsiveness { didSet { defaults.set(interruptionResponsiveness.rawValue, forKey: "omni.voice.interruptionResponsiveness") } }
     public var acousticInterruption: Bool { didSet { defaults.set(acousticInterruption, forKey: "omni.voice.acousticInterruption") } }
     public var pauseSeconds: Double {
         didSet {
@@ -19,6 +20,7 @@ public enum VoiceTurnMode: String, CaseIterable, Sendable {
     private let defaults: UserDefaults
     public init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
+        interruptionResponsiveness = VoiceInterruptionResponsiveness(rawValue: defaults.string(forKey: "omni.voice.interruptionResponsiveness") ?? "") ?? .quick
         acousticInterruption = defaults.bool(forKey: "omni.voice.acousticInterruption")
         mode = VoiceTurnMode(rawValue: defaults.string(forKey: "omni.voice.turnMode") ?? "") ?? .thinkAloud
         let stored = defaults.double(forKey: "omni.voice.pauseSeconds")

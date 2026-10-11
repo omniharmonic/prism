@@ -91,6 +91,7 @@ function installHermes(): void {
 const notes = new Map<string, NoteMeta>();
 let treeListener: ((c: TreeChange) => void) | null = null;
 let pushes: Array<[string, string]>;
+let replyPreviews: Array<string | undefined>;
 let execCalls: Array<Parameters<Executor>[0]>;
 
 beforeEach(() => {
@@ -112,7 +113,8 @@ beforeEach(() => {
     },
   });
   pushes = [];
-  setOmniPusherForTests(async (_o, kind, id) => void pushes.push([kind, id]));
+  replyPreviews = [];
+  setOmniPusherForTests(async (_o, kind, id, reply) => { pushes.push([kind, id]); replyPreviews.push(reply); });
   execCalls = [];
   setOmniExecutorForTests(null);
   Object.assign(config, { actionsEmailEnabled: false, actionsCalendarEnabled: false, actionsMatrixEnabled: false });
@@ -229,7 +231,8 @@ test("create a thread: Hermes session + streamed turn → normalized, persisted 
   assert.equal(getTurn(turnId)!.status, "done");
   assert.equal(getTurn(turnId)!.runId, "run_abc123");
   assert.equal(getThread(id)!.state, "done");
-  assert.deepEqual(pushes, [["OMNI_THREAD", id]], "a completed turn → one ids-only push");
+  assert.deepEqual(pushes, [["OMNI_THREAD", id]], "a completed turn → one push");
+  assert.deepEqual(replyPreviews, ["Done — I set the due date."], "preview comes from the final assistant reply, not pre-tool text or tool output");
 
   // Replay over SSE after reconnect: persisted events with ids, then the stream closes.
   const s = await req(`/threads/${id}/stream?after=2`, { headers: owner() });
@@ -274,6 +277,7 @@ test("the stream as Hermes really sends it: no tool.failed, no run.failed, the e
   assert.ok(!JSON.stringify(ev).includes("rate limit exceeded"), "Hermes' error text is classified, never forwarded");
   assert.equal(getTurn(turnId)!.status, "error");
   assert.equal(getThread(id)!.state, "needs-you");
+  assert.deepEqual(replyPreviews, [undefined], "a failed turn never previews commentary or the Hermes error");
 });
 
 test("names this Hermes version never sends are still understood (other surfaces, other versions)", async () => {
@@ -1067,4 +1071,17 @@ test("native background reads preserve replies and sequence-bound receipts rejec
   bumpUnread(id);
   await req(`/threads/${id}`, {headers:owner()});
   assert.equal(getThread(id)!.unread, 0, "legacy clients retain their documented GET read behavior");
+});
+
+
+test("hidden or unverified terminal answers keep completion previews generic", async () => {
+  for (const messages of [undefined, [{ role: "assistant", display_kind: "hidden", content: "Hidden answer" }]]) {
+    replyPreviews = [];
+    const { turnId } = await newThread([
+      raw("assistant.completed", { content: "Hidden answer" }),
+      raw("run.completed", messages ? { messages } : {}),
+    ]);
+    await turnSettled(turnId);
+    assert.deepEqual(replyPreviews, [undefined]);
+  }
 });

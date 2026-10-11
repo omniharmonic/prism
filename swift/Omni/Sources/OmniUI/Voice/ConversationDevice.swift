@@ -18,7 +18,7 @@ import OmniVoiceKit
     private var inputMuted = false
     func setInputMuted(_ muted: Bool) {
         inputMuted = muted
-        nearEndDuration = 0
+        interruptionPolicy.reset()
         audio.setInputMuted(muted)
     }
     private var interruptionEnabled = false
@@ -79,7 +79,7 @@ import OmniVoiceKit
     private func providerName(_ preference: ReplySpeechPreferences.Provider) -> String { preference == .kokoro ? "Kokoro" : "Hermes" }
     private var monitoringPlayback = false
     private var playbackMonitorReady = false
-    private var nearEndDuration = 0.0
+    private var interruptionPolicy = VoiceInterruptionPolicy()
     private var activityEnabled = false
     func configureInterruption(enabled: Bool, receive: @escaping @MainActor (VoiceInterruptionEvent) -> Void) {
         interruptionEnabled = enabled; receiveInterruption = receive
@@ -216,19 +216,19 @@ import OmniVoiceKit
         guard !inputMuted, monitoringPlayback, playbackMonitorReady else { return }
         switch event {
         case .unavailable:
+            interruptionPolicy.reset()
             receiveInterruption?(.unavailable("Acoustic interruption is unavailable. Use Interrupt and speak."))
         case .frame(let audioTime, let captured, let duration, let isSpeech):
-            guard ProcessInfo.processInfo.systemUptime - captured < 0.5 else { nearEndDuration = 0; return }
-            nearEndDuration = isSpeech ? nearEndDuration + duration : 0
-            guard nearEndDuration >= 0.3 else { return }
+            let frame = VoiceActivityFrame(audioTime: audioTime, capturedAt: captured, duration: duration, isSpeech: isSpeech)
+            guard interruptionPolicy.accept(frame, now: ProcessInfo.processInfo.systemUptime) else { return }
             do {
                 try audio.retainInterruptionLeadIn()
                 diagnostic(.acousticInterruption)
                 silence()
                 speech.configureDuplex(nil, owner: recordingOwner)
                 speech.beginRecording(owner: recordingOwner)
-                let detectedDuration = nearEndDuration
-                monitoringPlayback = false; playbackMonitorReady = false; nearEndDuration = 0
+                let detectedDuration = interruptionPolicy.speechDuration
+                monitoringPlayback = false; playbackMonitorReady = false; interruptionPolicy.reset()
                 completedText = ""; hypothesis = ""; enqueuedChunks = []
                 captureDeadline = Task { [weak self] in
                     do { try await Task.sleep(for: .seconds(900)) } catch { return }
@@ -244,11 +244,12 @@ import OmniVoiceKit
     private func beginPlaybackMonitor(request: Int) async -> Bool {
         let url = FileManager.default.temporaryDirectory.appending(path: "omni-interruption-\(UUID().uuidString).caf")
         file = url; monitoringPlayback = true; playbackMonitorReady = false
+        interruptionPolicy = VoiceInterruptionPolicy(responsiveness: turnPreferences.interruptionResponsiveness)
         do {
             try await audio.start(url: url, chunkSeconds: 60, chunkClosed: Self.chunkCallback(for: self, request: request), activity: Self.activityCallback(for: self, request: request), firstTap: Self.firstTapCallback(for: self, request: request), configurationChanged: Self.configurationCallback(for: self, request: request))
             try await audio.waitForFirstTap()
             guard generation == request, file == url, monitoringPlayback, !Task.isCancelled else { throw CancellationError() }
-            monitoringPlayback = true; playbackMonitorReady = true; nearEndDuration = 0
+            monitoringPlayback = true; playbackMonitorReady = true; interruptionPolicy.reset()
             speech.configureDuplex(audio, owner: recordingOwner)
             diagnostic(.playbackMonitorReady)
             return true
@@ -317,7 +318,7 @@ import OmniVoiceKit
     }
     func cancel() {
         narrationWork.cancel()
-        monitoringPlayback = false; playbackMonitorReady = false; nearEndDuration = 0
+        monitoringPlayback = false; playbackMonitorReady = false; interruptionPolicy.reset()
         speech.configureDuplex(nil, owner: recordingOwner)
         captureDeadline?.cancel(); captureDeadline = nil
         chunkWork.cancel()

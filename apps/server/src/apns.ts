@@ -24,8 +24,8 @@
  * re-mint once (above) · 429 / 5xx / network error / timeout → bounded retry
  * with exponential backoff · anything else → failed, logged.
  *
- * PRIVACY: the payload is ids only + generic text (same spirit as web push) —
- * no prompt, answer, title or note content ever goes to Apple. The device token
+ * PRIVACY: Prism payloads contain ids and generic text. Omni may include a bounded
+ * title/reply after per-device opt-in. Notification payloads are never logged. The device token
  * value is never logged: logs carry `tokenRef()` (a sha256 prefix) only. The key
  * file's contents are never logged.
  */
@@ -272,7 +272,11 @@ function tokenAfterExpiry(used: string): string | null {
 }
 
 // ── storage ──────────────────────────────────────────────────────────────────
+export type NotificationPreview = "generic" | "title" | "title_preview";
+export const isNotificationPreview = (v: unknown): v is NotificationPreview => v === "generic" || v === "title" || v === "title_preview";
+
 export interface ApnsTokenRow {
+  preview: NotificationPreview;
   device_id: string;
   application: ApnsApplication;
   token: string;
@@ -291,10 +295,10 @@ export const tokenRef = (token: string): string => createHash("sha256").update(t
 
 const st = {
   upsert: db.prepare(
-    `INSERT INTO apns_tokens (device_id, token, environment, owner_email, vault_id, application, created_at, last_seen_at)
-     VALUES (@device_id, @token, @environment, @owner_email, @vault_id, @application, @t, @t)
+    `INSERT INTO apns_tokens (device_id, token, environment, owner_email, vault_id, application, preview, created_at, last_seen_at)
+     VALUES (@device_id, @token, @environment, @owner_email, @vault_id, @application, @preview, @t, @t)
      ON CONFLICT(device_id) DO UPDATE SET application = excluded.application, token = excluded.token, environment = excluded.environment,
-       owner_email = excluded.owner_email, vault_id = excluded.vault_id, last_seen_at = excluded.last_seen_at,
+       owner_email = excluded.owner_email, vault_id = excluded.vault_id, preview = excluded.preview, last_seen_at = excluded.last_seen_at,
        created_at = CASE WHEN apns_tokens.token = excluded.token THEN apns_tokens.created_at ELSE excluded.created_at END`,
   ),
   dropTokenElsewhere: db.prepare("DELETE FROM apns_tokens WHERE token = ? AND application = ? AND environment = ? AND device_id <> ?"),
@@ -315,7 +319,7 @@ const st = {
 
 /** Register (or replace) the APNs token of one native device. One row per device. */
 export const saveApnsToken = db.transaction(
-  (p: { deviceId: string; token: string; environment: ApnsEnvironment; email: string; vaultId: string; application?: ApnsApplication }): void => {
+  (p: { deviceId: string; token: string; environment: ApnsEnvironment; email: string; vaultId: string; application?: ApnsApplication; preview?: NotificationPreview }): void => {
     const token = p.token.toLowerCase();
     // The same APNs token re-registered by a NEW device credential (re-sign-in)
     // moves; it never lives on two rows (that would double every notification).
@@ -327,6 +331,7 @@ export const saveApnsToken = db.transaction(
       owner_email: p.email.toLowerCase(),
       vault_id: p.vaultId,
       application: p.application ?? "prism",
+      preview: p.preview ?? apnsTokenForDevice(p.deviceId)?.preview ?? "generic",
       t: Date.now(),
     });
   },
@@ -469,7 +474,8 @@ export async function sendApns(row: Pick<ApnsTokenRow, "token" | "environment"> 
         ),
       );
     } catch (e) {
-      err = (e as Error).message.replaceAll(row.token, ref);
+      // Transport errors can quote the request body. Never log notification content.
+      err = e instanceof Error && e.message === "apns request timed out" ? "request timed out" : "transport error";
     }
     if (res) {
       const reason = reasonOf(res.body);
@@ -503,11 +509,11 @@ export async function sendApns(row: Pick<ApnsTokenRow, "token" | "environment"> 
 }
 
 /** Fan out to every live device of `email`. Never throws. */
-export async function sendApnsToOwner(email: string, n: ApnsNotification, application: ApnsApplication = "prism"): Promise<{ sent: number; pruned: number; failed: number }> {
+export async function sendApnsToOwner(email: string, n: ApnsNotification | ((row: ApnsTokenRow) => ApnsNotification), application: ApnsApplication = "prism"): Promise<{ sent: number; pruned: number; failed: number }> {
   const out = { sent: 0, pruned: 0, failed: 0 };
   if (!apnsEnabled()) return out;
   const rows = liveApnsTokens(email, application);
-  const results = await Promise.all(rows.map((r) => sendApns(r, n).catch(() => "failed" as const)));
+  const results = await Promise.all(rows.map((r) => sendApns(r, typeof n === "function" ? n(r) : n).catch(() => "failed" as const)));
   for (const r of results) out[r]++;
   return out;
 }

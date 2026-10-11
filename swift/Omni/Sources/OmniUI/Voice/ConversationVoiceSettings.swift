@@ -58,8 +58,13 @@ struct ConversationVoiceSettings: View {
                 }
                 Section {
                     Toggle("Interrupt by speaking", isOn: Binding(get: { device.turnPreferences.acousticInterruption }, set: { device.turnPreferences.acousticInterruption = $0 }))
+                    if device.turnPreferences.acousticInterruption {
+                        Picker("Interruption responsiveness", selection: Binding(get: { device.turnPreferences.interruptionResponsiveness }, set: { device.turnPreferences.interruptionResponsiveness = $0 })) {
+                            ForEach(VoiceInterruptionResponsiveness.allCases, id: \.self) { Text($0.title).tag($0) }
+                        }
+                    }
                 } header: { Text("Experimental") } footer: {
-                    Text("Listen for your voice while Omni speaks, using on-device echo cancellation. If playback interrupts itself, turn this off and use Interrupt and speak. Changes apply to the next session.")
+                    Text("Listen for your voice while Omni speaks, using on-device echo cancellation. Sustained requires longer speech to interrupt and may reduce interruptions from brief noises; continuous noise can still interrupt. Quick responds sooner. If playback interrupts itself, turn this off and use Interrupt and speak. Responsiveness changes apply to the next reply.")
                 }
                 Section {
                     Picker("Speech provider", selection: Binding(get: { device.replyPreferences.provider }, set: {

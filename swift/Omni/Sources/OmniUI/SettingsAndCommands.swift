@@ -89,6 +89,18 @@ public struct SettingsView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
             Section("Notifications") {
+                Picker("Notification Preview", selection: Binding(get: { NativeNotifications.shared.preview }, set: { value in
+                    Task { await NativeNotifications.shared.setPreview(value) }
+                })) {
+                    ForEach(NativeNotifications.Preview.allCases) { value in
+                        Text(value.label).tag(value)
+                    }
+                }
+                .accessibilityIdentifier("settings.notification-preview")
+                Text("Titles and reply previews are sent through Apple notifications and may appear on this device’s lock screen. Choose Generic update to keep message content private.")
+                    .font(.footnote)
+                    .foregroundStyle(Color.quietText)
+                    .fixedSize(horizontal: false, vertical: true)
                 Text(NativeNotifications.shared.status)
                     .foregroundStyle(Color.quietText)
                     .fixedSize(horizontal: false, vertical: true)
@@ -97,7 +109,7 @@ public struct SettingsView: View {
                     Button("Turn Off Notifications") { Task { await NativeNotifications.shared.disable() } }
                 } else {
                     Button("Enable Notifications") { Task { await NativeNotifications.shared.enable() } }
-                        .accessibilityHint("Asks permission for generic updates, never message content")
+                        .accessibilityHint("Asks permission for updates using the selected preview")
                 }
             }
             .disabled(app.phase != .signedIn || NativeNotifications.shared.busy)
