@@ -72,6 +72,7 @@ public extension ConversationAudio {
     private var privacyLocked = false
     public var canStart: Bool { !privacyLocked && !starting && (state == .off || state == .paused || state == .answering || state == .speaking) }
     private var spoken: [String: String] = [:]
+    private var hasQueuedReplySpeech = false
     public init(audio: any ConversationAudio) { self.audio = audio }
 
     /// Preferences apply to the next capture. Changing modes requires pausing first.
@@ -170,7 +171,7 @@ public extension ConversationAudio {
             case .speech, .speechEvidence:
                 guard self.state == .answering || self.state == .speaking else { return }
                 self.drainTask?.cancel(); self.drainTask = nil
-                self.audio.silence(); self.spoken = [:]; self.pendingCompletion = nil
+                self.audio.silence(); self.spoken = [:]; self.hasQueuedReplySpeech = false; self.pendingCompletion = nil
                 self.endpointPolicy = VoiceEndpointPolicy(pauseSeconds: self.endpointPause)
                 if case .speechEvidence(let evidence) = event {
                     _ = self.endpointPolicy.accept(evidence, now: ProcessInfo.processInfo.systemUptime)
@@ -234,7 +235,7 @@ public extension ConversationAudio {
             }
             if !captured.isEmpty { emptyAutomaticAttempts = 0 }
             let recovery = audio.recoveryNotice
-            transcript = text; spoken = [:]; pendingCompletion = nil
+            transcript = text; spoken = [:]; hasQueuedReplySpeech = false; pendingCompletion = nil
             if let recovery {
                 saveRecoveredDraft(text)
                 state = .paused; problem = recovery
@@ -278,7 +279,13 @@ public extension ConversationAudio {
             guard spoken[id] == nil else { continue }
             spoken[id] = text
             let words = SpeechText.narration(from: text).trimmingCharacters(in: .whitespacesAndNewlines)
-            if !words.isEmpty { audio.speak(words) }
+            if !words.isEmpty {
+                if !hasQueuedReplySpeech {
+                    VoiceDiagnostics.record(.replyTextQueued)
+                    hasQueuedReplySpeech = true
+                }
+                audio.speak(words)
+            }
         }
     }
 
@@ -325,7 +332,7 @@ public extension ConversationAudio {
         generation += 1
         activityWatchdog?.cancel(); activityWatchdog = nil; endpointCountdown = nil; lastActivityAt = nil; activityStartedAt = nil
         drainTask?.cancel(); drainTask = nil
-        audio.cancel(); audio.silence(); spoken = [:]; isSubmitting = false; pendingCompletion = nil
+        audio.cancel(); audio.silence(); spoken = [:]; hasQueuedReplySpeech = false; isSubmitting = false; pendingCompletion = nil
     }
 
     public func cancel() { resetSession(recordEvent: true) }

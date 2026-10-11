@@ -20,6 +20,7 @@ import Observation
         // A stale panel must never drain a receipt intended for the current owner.
         guard session.ownsVoice(voice, threadID: model.threadID) else { return }
         if model.completedVoiceTurnID != nil {
+            VoiceDiagnostics.record(.replyCompletionReceived)
             voice.agentDidComplete(model.takeCompletedVoiceTimeline())
         }
         if voice.state == .answering || voice.state == .speaking {
