@@ -16,3 +16,25 @@ Run in a foreground Mac subprocess with Core ML compilation available. Begin wit
 Reported millisecondsToWholePCM measures completed PCM for the whole utterance, including text processing. It is not first streaming PCM or first audible latency. engineStageMilliseconds is the SDK’s narrower stage timing. peakRSSBytes is macOS process peak resident memory. This tool does not measure audible latency, subjective quality, underruns or a 15-minute soak. Keep those fields unmeasured until physical evaluation.
 
 Retain ANE/LICENSE and mattmireles-LICENSE in the downloaded cache with the model files. The model repository card and selected conversion notices are Apache-2.0. No model files or rendered WAVs belong in Git.
+
+### Hosted Mac worker preparation
+
+The optional provider runs on the Mac host. Client devices request synthesis from the authenticated service. Preparation is an explicit operator action; inference uses the isolated SDK copy and `ModelHub.offlineMode = true` before initialization. This avoids changing offline behavior in the client's ASR/VAD process.
+
+`download.py` now verifies by default. The reusable `assets.py` module validates immutable revisions, individual file sizes/checksums and relative paths, rejects symlinks within the selected cache, streams files instead of loading weights into memory, and publishes each verified download atomically. It never extracts archives. Both license notices in the manifest remain required. Missing or corrupt files fail before inference. Use `--download` only for installation; it preflights the missing-file byte budget before network access and rejects oversized responses.
+
+On the existing evaluation Mac, reuse the retained cache without fetching assets:
+
+```sh
+python3 tools/voice-evaluation/kokoro-spike/download.py --cache /private/tmp/omni-kokoro-cache
+```
+
+For the Mini, choose a service-owned persistent cache directory, prepare the exact pinned SDK checkout with `prepare.py`, and install once with:
+
+```sh
+python3 tools/voice-evaluation/kokoro-spike/download.py --cache "$KOKORO_CACHE" --download --budget 750000000
+```
+
+Pass that identical absolute directory to the worker through `OMNI_TTS_EVALUATION_CACHE`. The SDK seam redirects both models and the independently loaded English frontend. Verify again before startup with the command above, omitting `--download`; if verification fails, the worker must refuse startup. Keep the SDK revision receipt, downloaded model notices and asset manifest available alongside deployment records. The default evaluation `/private/tmp` SDK copy and cache are temporary and may disappear after reboot; production deployment must deliberately select and retain its service-owned location. No model weights or generated speech belong in Git.
+
+Run preparation safety tests with `python3 -m unittest discover -s tools/voice-evaluation/kokoro-spike -p 'test_assets.py'`.
